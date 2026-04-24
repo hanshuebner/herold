@@ -4,13 +4,20 @@ go 1.25.0
 
 require (
 	github.com/blevesearch/bleve/v2 v2.5.7
+	github.com/coreos/go-oidc/v3 v3.18.0
+	github.com/emersion/go-msgauth v0.7.0
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/jhillyerd/enmime v1.3.0
 	github.com/mattn/go-sqlite3 v1.14.42
 	github.com/pelletier/go-toml/v2 v2.3.0
+	github.com/pquerna/otp v1.5.0
 	github.com/prometheus/client_golang v1.23.2
+	github.com/zeebo/blake3 v0.2.4
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.43.0
 	go.opentelemetry.io/otel/sdk v1.43.0
 	go.opentelemetry.io/otel/trace v1.43.0
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.20.0
 	modernc.org/sqlite v1.34.4
 )
@@ -36,10 +43,12 @@ require (
 	github.com/blevesearch/zapx/v14 v14.4.2 // indirect
 	github.com/blevesearch/zapx/v15 v15.4.2 // indirect
 	github.com/blevesearch/zapx/v16 v16.2.8 // indirect
+	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cention-sany/utf7 v0.0.0-20170124080048-26cad61bd60a // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
@@ -47,8 +56,12 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jaytaylor/html2text v0.0.0-20230321000545-74c2419ad056 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/klauspost/cpuid/v2 v2.0.12 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
