@@ -1,0 +1,505 @@
+package protosmtp
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/mailarc"
+	"github.com/hanshuebner/herold/internal/mailauth"
+	"github.com/hanshuebner/herold/internal/maildkim"
+	"github.com/hanshuebner/herold/internal/maildmarc"
+	"github.com/hanshuebner/herold/internal/mailspf"
+	"github.com/hanshuebner/herold/internal/sasl"
+	"github.com/hanshuebner/herold/internal/sieve"
+	"github.com/hanshuebner/herold/internal/spam"
+	"github.com/hanshuebner/herold/internal/store"
+	heroldtls "github.com/hanshuebner/herold/internal/tls"
+)
+
+// ListenerMode distinguishes the three SMTP listener shapes the Server
+// accepts. It drives EHLO advertisement (STARTTLS only for RelayIn +
+// SubmissionSTARTTLS), whether AUTH is offered (submission only), and
+// whether the listener wraps the conn in TLS at accept time
+// (SubmissionImplicitTLS).
+type ListenerMode int
+
+const (
+	// RelayIn is a port-25 relay-in listener. No AUTH offered, STARTTLS
+	// advertised. Mail-auth (DKIM/SPF/DMARC/ARC) is evaluated after DATA.
+	RelayIn ListenerMode = iota
+	// SubmissionSTARTTLS is a port-587 submission listener. AUTH + STARTTLS
+	// advertised; AUTH plain-text mechanisms refuse to run until the
+	// session has upgraded to TLS.
+	SubmissionSTARTTLS
+	// SubmissionImplicitTLS is a port-465 submission listener. TLS is
+	// negotiated immediately on accept; AUTH is advertised with all SASL
+	// mechanisms enabled.
+	SubmissionImplicitTLS
+)
+
+// String returns the lower-case identifier used in logs / metrics
+// labels.
+func (m ListenerMode) String() string {
+	switch m {
+	case RelayIn:
+		return "relay_in"
+	case SubmissionSTARTTLS:
+		return "submission_starttls"
+	case SubmissionImplicitTLS:
+		return "submission_implicit_tls"
+	default:
+		return "unknown"
+	}
+}
+
+// Options controls per-listener limits and behaviour. Zero values are
+// replaced with the documented defaults below. The same Options value
+// is shared across all listener modes served by one Server; per-listener
+// overrides are not wired in Wave 2 (the struct is small and immutable,
+// so passing different Options to different listeners is a Phase 2+
+// addition).
+type Options struct {
+	// MaxConcurrentConnections bounds the per-Server goroutine count.
+	// Default 1024. Must be positive; zero is replaced with the default.
+	MaxConcurrentConnections int
+	// MaxConcurrentPerIP bounds the simultaneous active connections from
+	// one source IP. Default 16.
+	MaxConcurrentPerIP int
+	// MaxCommandsPerSession caps the total protocol commands one session
+	// may issue before the server closes it with 421. Default 1000.
+	MaxCommandsPerSession int
+	// MaxRecipientsPerMessage caps RCPT TO count. Default 100.
+	MaxRecipientsPerMessage int
+	// MaxMessageSize is the SIZE advertisement value and the byte budget
+	// the DATA / BDAT readers enforce before accepting. Default
+	// 50 * 1024 * 1024 (50 MiB), matching mailparse's default.
+	MaxMessageSize int64
+	// ReadTimeout is the per-command read deadline. Default 30s.
+	ReadTimeout time.Duration
+	// WriteTimeout is the per-reply write deadline. Default 30s.
+	WriteTimeout time.Duration
+	// DataTimeout is the deadline for DATA / BDAT body bytes, separate
+	// from ReadTimeout because bodies are potentially large. Default 5m.
+	DataTimeout time.Duration
+	// ShutdownGrace bounds how long Close waits for sessions to drain
+	// before force-closing. Default 10s.
+	ShutdownGrace time.Duration
+	// Hostname is the value the server announces in greetings and
+	// Received headers. Required; no default.
+	Hostname string
+	// AuthservID is the authserv-id emitted in Authentication-Results
+	// per RFC 8601 §2.2. Falls back to Hostname when empty.
+	AuthservID string
+	// Greylist toggles greylist handling at RCPT time (REQ-PROTO-14).
+	// Phase 1 exposes the toggle and defers the actual matcher to
+	// Phase 2: when true and no GreylistHook has been set, the flag is
+	// ignored. Default false.
+	Greylist bool
+	// GreylistHook is the per-envelope greylist matcher. Nil disables
+	// greylisting regardless of the Greylist toggle. Phase 1 ships nil
+	// by default; operators wire a real matcher in Phase 2.
+	GreylistHook func(ctx context.Context, remoteIP, mailFrom, rcpt string) (defer_ bool)
+	// RBLHook is the per-connection RBL lookup (REQ-PROTO-15). Nil
+	// disables RBL checks. Phase 1 ships no hook so no RBLs are
+	// configured out of the box; the seam keeps Phase 2 additive.
+	RBLHook func(ctx context.Context, remoteIP string) (reject bool, reason string)
+}
+
+// Defaults returns a copy of o with zero fields filled in. Callers
+// usually let the Server apply defaults internally by calling Fill.
+func (o Options) Defaults() Options {
+	if o.MaxConcurrentConnections <= 0 {
+		o.MaxConcurrentConnections = 1024
+	}
+	if o.MaxConcurrentPerIP <= 0 {
+		o.MaxConcurrentPerIP = 16
+	}
+	if o.MaxCommandsPerSession <= 0 {
+		o.MaxCommandsPerSession = 1000
+	}
+	if o.MaxRecipientsPerMessage <= 0 {
+		o.MaxRecipientsPerMessage = 100
+	}
+	if o.MaxMessageSize <= 0 {
+		o.MaxMessageSize = 50 * 1024 * 1024
+	}
+	if o.ReadTimeout <= 0 {
+		o.ReadTimeout = 30 * time.Second
+	}
+	if o.WriteTimeout <= 0 {
+		o.WriteTimeout = 30 * time.Second
+	}
+	if o.DataTimeout <= 0 {
+		o.DataTimeout = 5 * time.Minute
+	}
+	if o.ShutdownGrace <= 0 {
+		o.ShutdownGrace = 10 * time.Second
+	}
+	if o.AuthservID == "" {
+		o.AuthservID = o.Hostname
+	}
+	return o
+}
+
+// ScriptLoader loads a Sieve script body for a principal. We do not add
+// a store method for Sieve in Wave 2; ScriptLoader is the seam the
+// delivery pipeline consumes, with a default "no script" loader that
+// folds every recipient into ImplicitKeep (= fileinto INBOX).
+//
+// TODO(wave-3): promote this into a typed store surface
+// (store.Metadata.GetSieveScript) once the admin API + ManageSieve ship
+// persistence.
+type ScriptLoader interface {
+	// Load returns the script text for pid, or the empty string when no
+	// active script is on record. An error indicates an I/O failure; the
+	// delivery path falls back to ImplicitKeep on any error and logs.
+	Load(ctx context.Context, pid store.PrincipalID) (string, error)
+}
+
+// NoScriptLoader is the default loader used when the operator has not
+// wired a real one. It always returns "", nil.
+type NoScriptLoader struct{}
+
+// Load implements ScriptLoader.
+func (NoScriptLoader) Load(context.Context, store.PrincipalID) (string, error) {
+	return "", nil
+}
+
+// Server implements SMTP relay-in and submission on any of the three
+// listener modes. One Server is shared across all listeners; Serve is
+// called once per bound socket.
+type Server struct {
+	store    store.Store
+	dir      *directory.Directory
+	dkim     *maildkim.Verifier
+	spf      *mailspf.Verifier
+	dmarc    *maildmarc.Evaluator
+	arc      *mailarc.Verifier
+	spam     *spam.Classifier
+	sieve    *sieve.Interpreter
+	scripts  ScriptLoader
+	tls      *heroldtls.Store
+	resolver mailauth.Resolver
+	clk      clock.Clock
+	log      *slog.Logger
+	passLk   sasl.PasswordLookup
+	opts     Options
+	spamPlug string
+
+	// lifecycle
+	ctx       context.Context
+	cancel    context.CancelFunc
+	sessions  sync.WaitGroup
+	connSem   chan struct{}
+	mu        sync.Mutex
+	perIP     map[string]int
+	shutdown  atomic.Bool
+	connCount atomic.Int64
+	listeners []net.Listener
+}
+
+// Config bundles all dependencies required to construct a Server.
+type Config struct {
+	Store     store.Store
+	Directory *directory.Directory
+	DKIM      *maildkim.Verifier
+	SPF       *mailspf.Verifier
+	DMARC     *maildmarc.Evaluator
+	ARC       *mailarc.Verifier
+	Spam      *spam.Classifier
+	Sieve     *sieve.Interpreter
+	Scripts   ScriptLoader
+	TLS       *heroldtls.Store
+	Resolver  mailauth.Resolver
+	Clock     clock.Clock
+	Logger    *slog.Logger
+	// SCRAMLookup is the optional SCRAM credential source. When nil,
+	// SCRAM mechanisms are absent from the advertised AUTH list.
+	SCRAMLookup sasl.PasswordLookup
+	// SpamPluginName is the configured plugin name passed to
+	// Classifier.Classify. Defaults to "spam" when empty.
+	SpamPluginName string
+	Options        Options
+}
+
+// New constructs a Server. Logger and Clock default to slog.Default /
+// clock.NewReal when nil; Hostname must be set on Options.
+func New(cfg Config) (*Server, error) {
+	if cfg.Store == nil {
+		return nil, errors.New("protosmtp: nil Store")
+	}
+	if cfg.Directory == nil {
+		return nil, errors.New("protosmtp: nil Directory")
+	}
+	if cfg.Options.Hostname == "" {
+		return nil, errors.New("protosmtp: Options.Hostname required")
+	}
+	log := cfg.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.NewReal()
+	}
+	scripts := cfg.Scripts
+	if scripts == nil {
+		scripts = NoScriptLoader{}
+	}
+	plug := cfg.SpamPluginName
+	if plug == "" {
+		plug = "spam"
+	}
+	opts := cfg.Options.Defaults()
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &Server{
+		store:    cfg.Store,
+		dir:      cfg.Directory,
+		dkim:     cfg.DKIM,
+		spf:      cfg.SPF,
+		dmarc:    cfg.DMARC,
+		arc:      cfg.ARC,
+		spam:     cfg.Spam,
+		sieve:    cfg.Sieve,
+		scripts:  scripts,
+		tls:      cfg.TLS,
+		resolver: cfg.Resolver,
+		clk:      clk,
+		log:      log,
+		passLk:   cfg.SCRAMLookup,
+		spamPlug: plug,
+		opts:     opts,
+		ctx:      ctx,
+		cancel:   cancel,
+		connSem:  make(chan struct{}, opts.MaxConcurrentConnections),
+		perIP:    make(map[string]int),
+	}
+	return s, nil
+}
+
+// HandleConn drives one already-accepted connection through the SMTP
+// state machine under the given listener mode. The Server takes
+// ownership of conn: the caller must not read or write after calling.
+// Intended for harnesses that pre-accept a TCP connection (e.g. when
+// handing over from a shim accept loop to the real server). Subject
+// to the same concurrency / IP caps as Serve.
+func (s *Server) HandleConn(conn net.Conn, mode ListenerMode) {
+	if conn == nil {
+		return
+	}
+	remoteIP := remoteIPOf(conn)
+	if !s.admitIP(remoteIP) {
+		_ = writeGreetline(conn, "421 4.7.0 too many concurrent connections from your IP\r\n", s.opts.WriteTimeout)
+		_ = conn.Close()
+		return
+	}
+	select {
+	case s.connSem <- struct{}{}:
+	default:
+		s.releaseIP(remoteIP)
+		_ = writeGreetline(conn, "421 4.7.0 server too busy\r\n", s.opts.WriteTimeout)
+		_ = conn.Close()
+		return
+	}
+	s.sessions.Add(1)
+	s.connCount.Add(1)
+	go func() {
+		defer func() {
+			<-s.connSem
+			s.releaseIP(remoteIP)
+			s.sessions.Done()
+			s.connCount.Add(-1)
+		}()
+		var implicit *tls.Conn
+		if mode == SubmissionImplicitTLS && s.tls != nil {
+			tlsConn := tls.Server(conn, heroldtls.TLSConfig(s.tls, heroldtls.Intermediate, nil))
+			if err := tlsConn.HandshakeContext(s.ctx); err != nil {
+				_ = tlsConn.Close()
+				return
+			}
+			implicit = tlsConn
+		}
+		s.runSession(conn, mode, remoteIP, implicit)
+	}()
+}
+
+// Serve accepts connections on ln and dispatches each to a fresh
+// session goroutine. One Server.Serve call per listener; Serve blocks
+// until ln.Close or the Server's ctx cancel.
+//
+// Accepts are gated by the connSem (global cap) and the per-IP map
+// (per-source cap); when either is exhausted the conn is closed
+// immediately with a 421. Returns ln.Accept's terminal error (wrapped
+// as net.ErrClosed when the listener is intentionally closed).
+func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) error {
+	if ln == nil {
+		return errors.New("protosmtp: nil listener")
+	}
+	s.mu.Lock()
+	s.listeners = append(s.listeners, ln)
+	s.mu.Unlock()
+
+	if mode == SubmissionImplicitTLS && s.tls == nil {
+		return errors.New("protosmtp: SubmissionImplicitTLS requires TLS store")
+	}
+	// Accept loop.
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if s.shutdown.Load() || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
+			}
+			return fmt.Errorf("protosmtp: accept: %w", err)
+		}
+
+		remoteIP := remoteIPOf(conn)
+
+		// Per-IP cap check.
+		if !s.admitIP(remoteIP) {
+			s.log.InfoContext(ctx, "smtp connection refused (per-IP cap)",
+				slog.String("remote_ip", remoteIP),
+				slog.String("mode", mode.String()))
+			// Best-effort 421 emission before close.
+			_ = writeGreetline(conn, "421 4.7.0 too many concurrent connections from your IP\r\n", s.opts.WriteTimeout)
+			_ = conn.Close()
+			continue
+		}
+
+		// Global concurrency semaphore: non-blocking; reject if at cap.
+		select {
+		case s.connSem <- struct{}{}:
+		default:
+			s.releaseIP(remoteIP)
+			s.log.InfoContext(ctx, "smtp connection refused (server cap)",
+				slog.String("remote_ip", remoteIP),
+				slog.String("mode", mode.String()))
+			_ = writeGreetline(conn, "421 4.7.0 server too busy\r\n", s.opts.WriteTimeout)
+			_ = conn.Close()
+			continue
+		}
+
+		s.sessions.Add(1)
+		s.connCount.Add(1)
+		go func(c net.Conn, rip string) {
+			defer func() {
+				<-s.connSem
+				s.releaseIP(rip)
+				s.sessions.Done()
+				s.connCount.Add(-1)
+			}()
+			// Wrap implicit-TLS listeners now so the session's TLS
+			// bookkeeping is identical to a STARTTLS upgrade later.
+			var startTLS *tls.Conn
+			if mode == SubmissionImplicitTLS {
+				tlsConn := tls.Server(c, heroldtls.TLSConfig(s.tls, heroldtls.Intermediate, nil))
+				// Force handshake now so we know TLS state before greeting.
+				if err := tlsConn.HandshakeContext(s.ctx); err != nil {
+					s.log.InfoContext(s.ctx, "smtp implicit-tls handshake failed",
+						slog.String("remote_ip", rip),
+						slog.String("err", err.Error()))
+					_ = tlsConn.Close()
+					return
+				}
+				startTLS = tlsConn
+			}
+			s.runSession(c, mode, rip, startTLS)
+		}(conn, remoteIP)
+	}
+}
+
+// remoteIPOf returns the IP portion of conn.RemoteAddr, or "-" when
+// unknown. Used for per-IP bookkeeping + structured logging.
+func remoteIPOf(c net.Conn) string {
+	if c == nil {
+		return "-"
+	}
+	addr := c.RemoteAddr()
+	if addr == nil {
+		return "-"
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
+}
+
+// admitIP records a new connection from remoteIP when the per-IP cap
+// still has headroom. It returns false when the cap is exhausted and
+// the caller should reject the conn.
+func (s *Server) admitIP(remoteIP string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.perIP[remoteIP] >= s.opts.MaxConcurrentPerIP {
+		return false
+	}
+	s.perIP[remoteIP]++
+	return true
+}
+
+// releaseIP decrements the per-IP counter at session teardown.
+func (s *Server) releaseIP(remoteIP string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.perIP[remoteIP]--
+	if s.perIP[remoteIP] <= 0 {
+		delete(s.perIP, remoteIP)
+	}
+}
+
+// ActiveSessions reports the number of in-flight session goroutines.
+// Exposed for tests and operator dashboards; not load-bearing.
+func (s *Server) ActiveSessions() int64 {
+	return s.connCount.Load()
+}
+
+// Close cancels the server ctx, closes all tracked listeners, and waits
+// up to Options.ShutdownGrace for in-flight sessions to exit. Subsequent
+// calls are no-ops.
+func (s *Server) Close(ctx context.Context) error {
+	if !s.shutdown.CompareAndSwap(false, true) {
+		return nil
+	}
+	s.cancel()
+	s.mu.Lock()
+	for _, ln := range s.listeners {
+		_ = ln.Close()
+	}
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		s.sessions.Wait()
+		close(done)
+	}()
+	grace := s.opts.ShutdownGrace
+	timer := s.clk.After(grace)
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer:
+		return fmt.Errorf("protosmtp: %w: sessions did not drain in %s", context.DeadlineExceeded, grace)
+	}
+}
+
+// writeGreetline writes a single-line reply with a write deadline. Used
+// at accept-refusal time where we do not yet have a session to reach.
+func writeGreetline(c net.Conn, line string, deadline time.Duration) error {
+	_ = c.SetWriteDeadline(time.Now().Add(deadline))
+	_, err := c.Write([]byte(line))
+	_ = c.SetWriteDeadline(time.Time{})
+	return err
+}

@@ -114,6 +114,21 @@ type listenerState struct {
 	ln      net.Listener
 	addr    net.Addr
 	handler func(net.Conn) // nil in Wave 0
+	// stopDefault, when closed, tells the default acceptLoop to exit
+	// because an attach call is about to take the listener over.
+	stopDefault chan struct{}
+	// defaultDone is closed when the default accept loop has exited.
+	// AttachSMTP blocks on it before launching the managed server so
+	// the listener has exactly one accept caller at a time.
+	defaultDone chan struct{}
+	// managed is non-nil after AttachSMTP has wired a server; the
+	// harness waitgroup tracks the managed goroutine and uses this
+	// channel to join on shutdown.
+	managed chan struct{}
+	// handoff carries at most one connection the default accept loop
+	// happened to accept after stopDefault was signalled. The attach
+	// path drains it before starting the real server.
+	handoff chan net.Conn
 }
 
 // Start spins up an in-process herold server for tests. The returned
@@ -152,7 +167,14 @@ func Start(t testing.TB, opts Options) (*Server, func()) {
 			_ = s.closeLocked()
 			t.Fatalf("testharness: listen %s: %v", spec.Name, err)
 		}
-		st := &listenerState{spec: spec, ln: ln, addr: ln.Addr()}
+		st := &listenerState{
+			spec:        spec,
+			ln:          ln,
+			addr:        ln.Addr(),
+			stopDefault: make(chan struct{}),
+			defaultDone: make(chan struct{}),
+			handoff:     make(chan net.Conn, 1),
+		}
 		s.listeners[spec.Name] = st
 		// Accept loop: drain connections so the socket remains a valid
 		// bindable port and the port survives; with no handler, we
@@ -230,15 +252,46 @@ func (w *tLogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// acceptLoop runs the Wave 0 stand-in accept loop for a listener that has
-// no real handler attached. Each accepted conn is closed immediately; the
-// loop exits when the listener closes.
+// acceptLoop runs the Wave 0 stand-in accept loop for a listener that
+// has no real handler attached. Each accepted conn is closed
+// immediately. The loop exits when either the listener closes or
+// stopDefault is closed (the latter happens when an attach path is
+// about to take the listener over). When stopDefault fires with an
+// accepted-but-not-yet-handled connection in-flight, the connection is
+// handed off to the attach path via the handoff channel so no client
+// sees a silent close.
 func (s *Server) acceptLoop(st *listenerState) {
 	defer s.wg.Done()
+	defer close(st.defaultDone)
 	for {
+		// Non-blocking check for an attach-stop request.
+		select {
+		case <-st.stopDefault:
+			return
+		default:
+		}
+		// Short deadline so the loop notices stopDefault quickly.
+		if tcp, ok := st.ln.(*net.TCPListener); ok {
+			_ = tcp.SetDeadline(time.Now().Add(100 * time.Millisecond))
+		}
 		conn, err := st.ln.Accept()
 		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
+			}
 			return
+		}
+		// If an attach has been requested, route the conn to the
+		// handoff channel instead of closing it.
+		select {
+		case <-st.stopDefault:
+			select {
+			case st.handoff <- conn:
+			default:
+				_ = conn.Close()
+			}
+			return
+		default:
 		}
 		s.mu.Lock()
 		handler := st.handler
@@ -331,7 +384,7 @@ func (s *Server) dialByProtocol(ctx context.Context, protocol string) (net.Conn,
 	if st == nil {
 		return nil, fmt.Errorf("no %s listener: %w", protocol, ErrListenerHasNoHandler)
 	}
-	if st.handler == nil {
+	if st.handler == nil && st.managed == nil {
 		// Port is bound but accept loop just closes conns; surface a typed
 		// error so tests can assert this explicitly.
 		return nil, fmt.Errorf("%s listener has no handler: %w", protocol, ErrListenerHasNoHandler)
