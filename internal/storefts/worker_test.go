@@ -235,6 +235,107 @@ func TestWorker_Lag(t *testing.T) {
 	}
 }
 
+// TestWorker_CursorPersistsAcrossRestart seeds messages, drives one
+// worker through a flush, then stops that worker and starts a fresh
+// one against the same store. The new worker must begin at the
+// persisted cursor (no replay) — asserted by observing its initial
+// cursor value is non-zero and equals the first worker's.
+func TestWorker_CursorPersistsAcrossRestart(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fake, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("fakestore.New: %v", err)
+	}
+	t.Cleanup(func() { _ = fake.Close() })
+	idx, err := storefts.New(t.TempDir(), nil, clk)
+	if err != nil {
+		t.Fatalf("storefts.New: %v", err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+
+	// Seed principal/mailbox/messages.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p, err := fake.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "restart@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := fake.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "INBOX"})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		raw := fmt.Sprintf("Subject: msg-%d\r\n\r\nbody\r\n", i)
+		ref, err := fake.Blobs().Put(ctx, strings.NewReader(raw))
+		if err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if _, _, err := fake.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+			t.Fatalf("InsertMessage: %v", err)
+		}
+	}
+
+	// Run worker #1 until one flush completes.
+	w1 := storefts.NewWorker(idx, fake, stringExtractor{}, nil, clk, storefts.WorkerOptions{})
+	ctx1, cancel1 := context.WithCancel(ctx)
+	done1 := make(chan error, 1)
+	go func() { done1 <- w1.Run(ctx1) }()
+	clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if err := w1.WaitForFlush(waitCtx); err != nil {
+		waitCancel()
+		cancel1()
+		<-done1
+		t.Fatalf("wait flush 1: %v", err)
+	}
+	waitCancel()
+	firstCursor := w1.Cursor()
+	if firstCursor == 0 {
+		cancel1()
+		<-done1
+		t.Fatalf("first worker cursor did not advance")
+	}
+	cancel1()
+	<-done1
+
+	// Confirm the store now reports the cursor persisted.
+	persisted, err := fake.Meta().GetFTSCursor(ctx, storefts.DefaultCursorKey)
+	if err != nil {
+		t.Fatalf("GetFTSCursor: %v", err)
+	}
+	if persisted != firstCursor {
+		t.Fatalf("persisted cursor = %d, first-worker cursor = %d", persisted, firstCursor)
+	}
+
+	// Run worker #2. It must hydrate Cursor() from the store.
+	w2 := storefts.NewWorker(idx, fake, stringExtractor{}, nil, clk, storefts.WorkerOptions{})
+	ctx2, cancel2 := context.WithCancel(ctx)
+	defer cancel2()
+	done2 := make(chan error, 1)
+	go func() { done2 <- w2.Run(ctx2) }()
+	// A single advance lets the worker loop proceed far enough to
+	// populate Cursor() from the store. We wait briefly via Advance +
+	// a tiny poll (no sleeps): advance the clock and read the cursor.
+	// The hydration runs at the top of Run() synchronously before the
+	// first feed read, so even a zero-advance is enough, but we do
+	// one flush-interval advance to make sure the worker stays on
+	// its poll cycle.
+	clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for w2.Cursor() == 0 && time.Now().Before(deadline) {
+		clk.Advance(10 * time.Millisecond)
+	}
+	if w2.Cursor() != firstCursor {
+		cancel2()
+		<-done2
+		t.Fatalf("second worker cursor = %d, want %d", w2.Cursor(), firstCursor)
+	}
+	cancel2()
+	<-done2
+}
+
 // TestWorker_LagCharacteristics reports the observed p50/p99 indexing
 // lag across a small synthetic workload. Not a correctness gate; it
 // exists so future changes to the worker's scheduling are surfaced in

@@ -260,6 +260,15 @@ func TestListPrincipals(t *testing.T) {
 	if len(ps) != 5 {
 		t.Fatalf("expected 5, got %d", len(ps))
 	}
+	// Keyset pagination: second page starts after the first page's last
+	// ID and must return nothing (there are only 5 rows total).
+	rest, err := dir.ListPrincipals(ctx, 100, ps[len(ps)-1].ID)
+	if err != nil {
+		t.Fatalf("list after: %v", err)
+	}
+	if len(rest) != 0 {
+		t.Fatalf("expected 0 on second page, got %d", len(rest))
+	}
 }
 
 func mustGenerate(t *testing.T, secret string, at time.Time) string {

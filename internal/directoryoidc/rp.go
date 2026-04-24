@@ -118,14 +118,10 @@ func New(meta store.Metadata, logger *slog.Logger, httpClient *http.Client, clk 
 }
 
 // AddProvider registers an OIDC provider. Discovery validates the
-// issuer and caches the Provider handle for future exchanges.
-//
-// TODO(store): the current store.Metadata.InsertOIDCProvider persists
-// only the ClientSecretRef (opaque string). We pass ClientID here but
-// keep the cleartext ClientSecret in-process only. A proper secret
-// resolver (REQ-NFR-100: no inline secrets in system.toml) lands
-// alongside the admin-config wave; for Wave 1 we rely on the operator
-// pointing ClientSecretRef at an out-of-band source.
+// issuer and caches the Provider handle for future exchanges. The
+// cleartext ClientSecret stays in process memory only; operators who
+// want secret resolution (REQ-NFR-100) point ClientSecretRef at an
+// out-of-band source.
 func (r *RP) AddProvider(ctx context.Context, p ProviderConfig) (ProviderID, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -143,7 +139,7 @@ func (r *RP) AddProvider(ctx context.Context, p ProviderConfig) (ProviderID, err
 		Name:            p.Name,
 		IssuerURL:       p.IssuerURL,
 		ClientID:        p.ClientID,
-		ClientSecretRef: "inline:" + p.Name, // see TODO above.
+		ClientSecretRef: "inline:" + p.Name,
 		Scopes:          scopesWithOpenID(p.Scopes),
 	}); err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -163,48 +159,54 @@ func (r *RP) AddProvider(ctx context.Context, p ProviderConfig) (ProviderID, err
 	return id, nil
 }
 
-// ListProviders returns every registered provider.
-//
-// TODO(store): store.Metadata lacks a list method for OIDC providers.
-// We return the in-memory configs for Wave 1; this is lost on restart
-// unless AddProvider is called again (operator bootstrap always does).
+// ListProviders returns every registered provider, reading from the
+// persistent store. The in-memory RedirectURL / Scopes cache is
+// consulted for fields not persisted on the store row (RedirectURL
+// lives with the RP, not the provider record).
 func (r *RP) ListProviders(ctx context.Context) ([]Provider, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	rows, err := r.meta.ListOIDCProviders(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("directoryoidc: list providers: %w", err)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]Provider, 0, len(r.configs))
-	for id, cfg := range r.configs {
+	out := make([]Provider, 0, len(rows))
+	for _, row := range rows {
+		id := ProviderID(row.Name)
+		cfg := r.configs[id]
 		out = append(out, Provider{
 			ID:          id,
-			Name:        cfg.Name,
-			IssuerURL:   cfg.IssuerURL,
-			ClientID:    cfg.ClientID,
+			Name:        row.Name,
+			IssuerURL:   row.IssuerURL,
+			ClientID:    row.ClientID,
 			RedirectURL: cfg.RedirectURL,
-			Scopes:      scopesWithOpenID(cfg.Scopes),
+			Scopes:      scopesWithOpenID(row.Scopes),
 		})
 	}
 	return out, nil
 }
 
-// DeleteProvider removes a provider from the in-memory cache.
-//
-// TODO(store): store.Metadata has no DeleteOIDCProvider; the DB row
-// remains until the Wave 2 method lands. The in-memory handle is
-// cleared so subsequent Begin* calls return ErrNotFound.
+// DeleteProvider removes a provider from the store (cascading its
+// oidc_links rows) and clears the RP's in-memory handles so subsequent
+// Begin* calls return ErrNotFound.
 func (r *RP) DeleteProvider(ctx context.Context, id ProviderID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.discover[id]; !ok {
-		return fmt.Errorf("%w: provider %s", ErrNotFound, id)
+	if err := r.meta.DeleteOIDCProvider(ctx, store.OIDCProviderID(id)); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("%w: provider %s", ErrNotFound, id)
+		}
+		return fmt.Errorf("directoryoidc: delete provider: %w", err)
 	}
+	r.mu.Lock()
 	delete(r.discover, id)
 	delete(r.secrets, id)
 	delete(r.configs, id)
+	r.mu.Unlock()
 	return nil
 }
 
@@ -323,16 +325,22 @@ func (r *RP) CompleteSignIn(ctx context.Context, state, code string) (PrincipalI
 	return link.PrincipalID, nil
 }
 
-// Unlink removes a principal's OIDC association.
-//
-// TODO(store): there is no UnlinkOIDC / DeleteOIDCLink method on
-// store.Metadata. We cannot currently delete a link; the method
-// returns an explanatory error so callers can surface it.
+// Unlink removes a principal's OIDC association. Returns ErrNotFound
+// if no link existed for (pid, providerID).
 func (r *RP) Unlink(ctx context.Context, pid PrincipalID, providerID ProviderID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return errors.New("directoryoidc: Unlink not supported: store.Metadata lacks DeleteOIDCLink")
+	if err := r.meta.UnlinkOIDC(ctx, pid, store.OIDCProviderID(providerID)); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("%w: %s/%d", ErrNotFound, providerID, pid)
+		}
+		return fmt.Errorf("directoryoidc: unlink: %w", err)
+	}
+	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.unlink",
+		slog.String("provider", string(providerID)),
+		slog.Uint64("principal_id", uint64(pid)))
+	return nil
 }
 
 // VerifyAccessToken is the adaptor used by sasl.TokenVerifier: accept

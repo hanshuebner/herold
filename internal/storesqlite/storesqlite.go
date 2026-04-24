@@ -80,7 +80,90 @@ func Open(ctx context.Context, path string, logger *slog.Logger, c clock.Clock) 
 	}
 	s.meta = &metadata{s: s}
 	s.fts = &ftsStub{s: s}
+	if err := backfillTOTPFlags(ctx, s, logger); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
 	return s, nil
+}
+
+// backfillTOTPFlags lifts the legacy in-memory TOTPSecret prefix
+// convention into PrincipalFlagTOTPEnabled. Wave 1 directory code
+// wrapped confirmed secrets with a leading 0x01 byte (and pending
+// enrolments with 0x00) because store.PrincipalFlags had no TOTP bit.
+// Wave 2 adds the bit. For forward-compat we scan once on Open, flip
+// the flag where the prefix indicates confirmation, clear the prefix
+// (the stored secret becomes the raw base32 bytes), and write the row
+// back. Idempotent: principals whose secret has already been
+// normalised (no prefix byte) are skipped.
+func backfillTOTPFlags(ctx context.Context, s *Store, logger *slog.Logger) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, flags, totp_secret FROM principals
+		 WHERE length(totp_secret) > 0`)
+	if err != nil {
+		return fmt.Errorf("storesqlite: scan totp secrets: %w", err)
+	}
+	type candidate struct {
+		id       int64
+		flags    int64
+		newFlags int64
+		newTOTP  []byte
+	}
+	var todo []candidate
+	for rows.Next() {
+		var id, flags int64
+		var totp []byte
+		if err := rows.Scan(&id, &flags, &totp); err != nil {
+			rows.Close()
+			return fmt.Errorf("storesqlite: scan totp row: %w", err)
+		}
+		if len(totp) == 0 {
+			continue
+		}
+		prefix := totp[0]
+		if prefix != 0x00 && prefix != 0x01 {
+			// Already normalised, nothing to do.
+			continue
+		}
+		newFlags := flags
+		if prefix == 0x01 {
+			newFlags |= int64(store.PrincipalFlagTOTPEnabled)
+		} else {
+			newFlags &^= int64(store.PrincipalFlagTOTPEnabled)
+		}
+		todo = append(todo, candidate{
+			id:       id,
+			flags:    flags,
+			newFlags: newFlags,
+			newTOTP:  append([]byte(nil), totp[1:]...),
+		})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("storesqlite: iterate totp rows: %w", err)
+	}
+	if len(todo) == 0 {
+		return nil
+	}
+	logger.Info("storesqlite: backfilling TOTP flags", "rows", len(todo))
+	s.writerMu.Lock()
+	defer s.writerMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storesqlite: begin totp backfill: %w", err)
+	}
+	for _, c := range todo {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE principals SET flags = ?, totp_secret = ? WHERE id = ?`,
+			c.newFlags, c.newTOTP, c.id); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("storesqlite: totp backfill update id=%d: %w", c.id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storesqlite: commit totp backfill: %w", err)
+	}
+	return nil
 }
 
 // buildDSN composes the URI-form DSN consumed by modernc.org/sqlite. We

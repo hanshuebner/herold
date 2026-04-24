@@ -177,40 +177,23 @@ func (d *Directory) GetPrincipalByEmail(ctx context.Context, email string) (Prin
 	return principalFromStore(p), nil
 }
 
-// ListPrincipals returns up to limit principals starting at offset, in
-// canonical-email order. A non-positive limit applies the default of 100.
-//
-// TODO(store): store.Metadata lacks a ListPrincipals method. We fall back
-// to scanning via GetPrincipalByID over a contiguous ID range; this is
-// only adequate for the fake store and small Phase 1 deployments. A
-// proper paginated method is tracked for the real store wave.
-func (d *Directory) ListPrincipals(ctx context.Context, limit, offset int) ([]Principal, error) {
+// ListPrincipals returns up to limit principals starting after the
+// given cursor (zero for the first page), in ascending ID order.
+// Non-positive limits apply the default of 100; the store enforces a
+// hard cap of 1000.
+func (d *Directory) ListPrincipals(ctx context.Context, limit int, after PrincipalID) ([]Principal, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if limit <= 0 {
 		limit = 100
 	}
-	var out []Principal
-	seen := 0
-	for id := PrincipalID(1); len(out) < limit && seen < offset+limit+1024; id++ {
-		p, err := d.meta.GetPrincipalByID(ctx, id)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				// No more rows contiguous above this ID; stop after a
-				// small run of misses to tolerate deleted rows.
-				seen++
-				if seen-len(out)-offset > 64 {
-					break
-				}
-				continue
-			}
-			return nil, fmt.Errorf("directory: list principals: %w", err)
-		}
-		if offset > 0 {
-			offset--
-			continue
-		}
+	rows, err := d.meta.ListPrincipals(ctx, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("directory: list principals: %w", err)
+	}
+	out := make([]Principal, 0, len(rows))
+	for _, p := range rows {
 		out = append(out, principalFromStore(p))
 	}
 	return out, nil
@@ -247,31 +230,22 @@ func (d *Directory) UpdatePassword(ctx context.Context, pid PrincipalID, oldPass
 	return nil
 }
 
-// DeletePrincipal removes a principal. Cascade deletion of aliases,
-// OIDC links, and API keys is expected to be performed atomically by
-// the store backend when the Phase-2 store methods land.
-//
-// TODO(store): store.Metadata has no DeletePrincipal / cascade APIs.
-// We emulate by marking the principal as Disabled (PrincipalFlagDisabled)
-// and clearing credentials; the row itself is kept so that alias
-// resolution continues to report ErrNotFound via the missing principal.
-// A proper hard-delete arrives with the Wave 2 store surface.
+// DeletePrincipal hard-deletes the principal and cascades every row
+// that belongs to it (aliases, OIDC links, API keys, mailboxes,
+// messages-in-mailboxes, state-change and audit-log entries). The
+// underlying blobs are dereferenced; the blob GC sweep reclaims them
+// once the grace window elapses. The audit entry lands after the
+// cascade so the record itself survives the deletion (the row's
+// Subject refers to the now-gone pid by value, not by FK).
 func (d *Directory) DeletePrincipal(ctx context.Context, pid PrincipalID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	p, err := d.meta.GetPrincipalByID(ctx, pid)
-	if err != nil {
+	if err := d.meta.DeletePrincipal(ctx, pid); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return fmt.Errorf("%w: principal %d", ErrNotFound, pid)
 		}
-		return fmt.Errorf("directory: load principal: %w", err)
-	}
-	p.Flags |= store.PrincipalFlagDisabled
-	p.PasswordHash = ""
-	p.TOTPSecret = nil
-	if err := d.meta.UpdatePrincipal(ctx, p); err != nil {
-		return fmt.Errorf("directory: disable principal: %w", err)
+		return fmt.Errorf("directory: delete principal: %w", err)
 	}
 	d.audit(ctx, pid, "principal.delete")
 	return nil
@@ -385,12 +359,11 @@ func (d *Directory) ResolveAddress(ctx context.Context, local, domain string) (P
 	return 0, fmt.Errorf("%w: %s@%s", ErrNotFound, local, domain)
 }
 
-// audit records a mutation in the audit log when the metadata backend
-// exposes AppendAuditLog; otherwise it logs at INFO. The method probe is
-// dynamic so the directory compiles against the current store surface.
-//
-// TODO(store): add AppendAuditLog to store.Metadata so mutations land in
-// a durable audit trail (REQ-AUTH-62). Today we only log.
+// audit records a mutation to the durable audit log (REQ-AUTH-62) and
+// emits a matching INFO-level slog entry for real-time log collectors.
+// The slog attrs are captured as structured Metadata on the audit
+// entry so backend queries can filter on the same keys the logs
+// surface.
 func (d *Directory) audit(ctx context.Context, pid PrincipalID, action string, attrs ...slog.Attr) {
 	merged := make([]slog.Attr, 0, 2+len(attrs))
 	merged = append(merged,
@@ -399,10 +372,28 @@ func (d *Directory) audit(ctx context.Context, pid PrincipalID, action string, a
 	)
 	merged = append(merged, attrs...)
 	d.logger.LogAttrs(ctx, slog.LevelInfo, "directory.audit", merged...)
-	if appender, ok := d.meta.(interface {
-		AppendAuditLog(ctx context.Context, principalID PrincipalID, action string, detail string) error
-	}); ok {
-		_ = appender.AppendAuditLog(ctx, pid, action, "")
+
+	meta := make(map[string]string, len(attrs))
+	for _, a := range attrs {
+		meta[a.Key] = a.Value.String()
+	}
+	entry := store.AuditLogEntry{
+		At:         d.clk.Now(),
+		ActorKind:  store.ActorSystem,
+		ActorID:    "system",
+		Action:     action,
+		Subject:    fmt.Sprintf("principal:%d", pid),
+		RemoteAddr: authSource(ctx),
+		Outcome:    store.OutcomeSuccess,
+		Metadata:   meta,
+	}
+	if err := d.meta.AppendAuditLog(ctx, entry); err != nil {
+		// Audit failure must not break the caller's mutation; we log
+		// at WARN so the operator notices a silently-dropping audit
+		// pipeline.
+		d.logger.LogAttrs(ctx, slog.LevelWarn, "directory.audit.append_failed",
+			slog.String("action", action),
+			slog.String("err", err.Error()))
 	}
 }
 
@@ -437,15 +428,6 @@ func principalFromStore(p store.Principal) Principal {
 		CanonicalEmail: p.CanonicalEmail,
 		DisplayName:    p.DisplayName,
 		Flags:          p.Flags,
-		TOTPEnabled:    p.Flags&principalFlagTOTPEnabled != 0,
+		TOTPEnabled:    p.Flags.Has(store.PrincipalFlagTOTPEnabled),
 	}
 }
-
-// principalFlagTOTPEnabled is a directory-local alias for the store
-// PrincipalFlag that indicates TOTP is confirmed. The store's flag
-// vocabulary has no named constant for this yet; we use the next
-// unallocated bit above PrincipalFlagAdmin.
-//
-// TODO(store): promote this to a named PrincipalFlagTOTPEnabled in
-// store/types.go.
-const principalFlagTOTPEnabled store.PrincipalFlags = 1 << 3

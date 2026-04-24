@@ -71,7 +71,82 @@ func Open(ctx context.Context, dsn string, blobDir string, logger *slog.Logger, 
 	}
 	s.meta = &metadata{s: s}
 	s.fts = &ftsStub{s: s}
+	if err := backfillTOTPFlags(ctx, s, logger); err != nil {
+		s.Close()
+		return nil, err
+	}
 	return s, nil
+}
+
+// backfillTOTPFlags mirrors the SQLite variant: lift the legacy
+// 1-byte prefix on totp_secret (0x00 = pending, 0x01 = confirmed) into
+// PrincipalFlagTOTPEnabled and store the secret as raw base32 bytes.
+// Idempotent: rows that have already been normalised are skipped.
+func backfillTOTPFlags(ctx context.Context, s *Store, logger *slog.Logger) error {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, flags, totp_secret FROM principals
+		 WHERE octet_length(totp_secret) > 0`)
+	if err != nil {
+		return fmt.Errorf("storepg: scan totp secrets: %w", err)
+	}
+	type candidate struct {
+		id       int64
+		newFlags int64
+		newTOTP  []byte
+	}
+	var todo []candidate
+	for rows.Next() {
+		var id, flags int64
+		var totp []byte
+		if err := rows.Scan(&id, &flags, &totp); err != nil {
+			rows.Close()
+			return fmt.Errorf("storepg: scan totp row: %w", err)
+		}
+		if len(totp) == 0 {
+			continue
+		}
+		prefix := totp[0]
+		if prefix != 0x00 && prefix != 0x01 {
+			continue
+		}
+		newFlags := flags
+		if prefix == 0x01 {
+			newFlags |= int64(store.PrincipalFlagTOTPEnabled)
+		} else {
+			newFlags &^= int64(store.PrincipalFlagTOTPEnabled)
+		}
+		todo = append(todo, candidate{
+			id:       id,
+			newFlags: newFlags,
+			newTOTP:  append([]byte(nil), totp[1:]...),
+		})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("storepg: iterate totp rows: %w", err)
+	}
+	if len(todo) == 0 {
+		return nil
+	}
+	logger.Info("storepg: backfilling TOTP flags", "rows", len(todo))
+	s.writerMu.Lock()
+	defer s.writerMu.Unlock()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("storepg: begin totp backfill: %w", err)
+	}
+	for _, c := range todo {
+		if _, err := tx.Exec(ctx,
+			`UPDATE principals SET flags = $1, totp_secret = $2 WHERE id = $3`,
+			c.newFlags, c.newTOTP, c.id); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("storepg: totp backfill update id=%d: %w", c.id, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("storepg: commit totp backfill: %w", err)
+	}
+	return nil
 }
 
 // applyMigrations creates schema_migrations and applies embedded SQL

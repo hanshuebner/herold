@@ -60,6 +60,14 @@ type Store struct {
 	ftsChanges   []store.FTSChange
 	ftsSeq       uint64
 
+	// cursors: key -> seq. Phase 1 carries one slot ("fts"); the same
+	// table is forward-compatible with future change-feed consumers.
+	cursors map[string]uint64
+
+	// audit log: append-only, sorted by ID for deterministic iteration.
+	auditLog       []store.AuditLogEntry
+	nextAuditLogID store.AuditLogID
+
 	// FTS documents: MessageID -> indexed text.
 	ftsDocs map[store.MessageID]ftsDoc
 
@@ -122,6 +130,7 @@ func New(opts Options) (*Store, error) {
 		blobRefs:        make(map[string]int),
 		stateChanges:    make(map[store.PrincipalID][]store.StateChange),
 		changeSeq:       make(map[store.PrincipalID]store.ChangeSeq),
+		cursors:         make(map[string]uint64),
 		ftsDocs:         make(map[store.MessageID]ftsDoc),
 		nextPrincipalID: 1,
 		nextMailboxID:   1,
@@ -129,6 +138,7 @@ func New(opts Options) (*Store, error) {
 		nextAliasID:     1,
 		nextAPIKeyID:    1,
 		nextUIDValidity: 1,
+		nextAuditLogID:  1,
 	}, nil
 }
 
@@ -845,6 +855,299 @@ func (m *metaFace) TouchAPIKey(ctx context.Context, id store.APIKeyID, at time.T
 	k.LastUsedAt = at
 	s.apiKeys[id] = k
 	return nil
+}
+
+// ---------- Metadata: Wave 2 additions -------------------------------
+
+// ListPrincipals returns principals with ID > after, ordered by ID
+// ascending. Deterministic iteration is required by storetest; the map
+// iteration is therefore funneled through a sorted key slice.
+func (m *metaFace) ListPrincipals(ctx context.Context, after store.PrincipalID, limit int) ([]store.Principal, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := make([]store.PrincipalID, 0, len(s.principals))
+	for id := range s.principals {
+		if id > after {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	out := make([]store.Principal, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, s.principals[id])
+	}
+	return out, nil
+}
+
+// DeletePrincipal cascades every row belonging to pid in one pass.
+// The fakestore has no transactions so "atomic" here means "under the
+// single writer lock"; that is enough for test determinism.
+func (m *metaFace) DeletePrincipal(ctx context.Context, pid store.PrincipalID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.principals[pid]
+	if !ok {
+		return fmt.Errorf("principal %d: %w", pid, store.ErrNotFound)
+	}
+	// Messages -> decrement refcounts + drop FTS docs.
+	for mid, msg := range s.messages {
+		mb, ok := s.mailboxes[msg.MailboxID]
+		if !ok || mb.PrincipalID != pid {
+			continue
+		}
+		if msg.Blob.Hash != "" {
+			s.blobRefs[msg.Blob.Hash]--
+			if s.blobRefs[msg.Blob.Hash] < 0 {
+				s.blobRefs[msg.Blob.Hash] = 0
+			}
+		}
+		delete(s.messages, mid)
+		delete(s.ftsDocs, mid)
+	}
+	// Mailboxes.
+	for mbID, mb := range s.mailboxes {
+		if mb.PrincipalID == pid {
+			delete(s.mailboxes, mbID)
+		}
+	}
+	// Aliases.
+	for aid, a := range s.aliases {
+		if a.TargetPrincipal == pid {
+			delete(s.aliases, aid)
+			delete(s.aliasBy, aliasKey(a.LocalPart, a.Domain))
+		}
+	}
+	// OIDC links.
+	for k, link := range s.oidcLinks {
+		if link.PrincipalID == pid {
+			delete(s.oidcLinks, k)
+		}
+	}
+	// API keys.
+	for kid, key := range s.apiKeys {
+		if key.PrincipalID == pid {
+			delete(s.apiKeys, kid)
+			delete(s.keyByHash, key.Hash)
+		}
+	}
+	// State-change feed.
+	delete(s.stateChanges, pid)
+	delete(s.changeSeq, pid)
+	// Audit log: drop entries that target or originate from this
+	// principal. Iterate and rebuild; audit volumes are low in tests.
+	if len(s.auditLog) > 0 {
+		kept := s.auditLog[:0]
+		for _, e := range s.auditLog {
+			if auditEntryPrincipalID(e) == pid {
+				continue
+			}
+			kept = append(kept, e)
+		}
+		s.auditLog = kept
+	}
+	// Principal row + email index.
+	delete(s.byEmail, p.CanonicalEmail)
+	delete(s.principals, pid)
+	return nil
+}
+
+// ListOIDCProviders returns every configured provider, ordered by
+// Name for deterministic test iteration.
+func (m *metaFace) ListOIDCProviders(ctx context.Context) ([]store.OIDCProvider, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	names := make([]string, 0, len(s.providers))
+	for n := range s.providers {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]store.OIDCProvider, 0, len(names))
+	for _, n := range names {
+		out = append(out, s.providers[n])
+	}
+	return out, nil
+}
+
+// DeleteOIDCProvider cascades every link that points at the provider.
+func (m *metaFace) DeleteOIDCProvider(ctx context.Context, id store.OIDCProviderID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.providers[string(id)]; !ok {
+		return fmt.Errorf("oidc provider %q: %w", id, store.ErrNotFound)
+	}
+	delete(s.providers, string(id))
+	for k, link := range s.oidcLinks {
+		if link.ProviderName == string(id) {
+			delete(s.oidcLinks, k)
+		}
+	}
+	return nil
+}
+
+// UnlinkOIDC removes the single oidc_links row for (pid, providerID).
+func (m *metaFace) UnlinkOIDC(ctx context.Context, pid store.PrincipalID, providerID store.OIDCProviderID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, link := range s.oidcLinks {
+		if link.PrincipalID == pid && link.ProviderName == string(providerID) {
+			delete(s.oidcLinks, k)
+			return nil
+		}
+	}
+	return fmt.Errorf("oidc link %s/%d: %w", providerID, pid, store.ErrNotFound)
+}
+
+// GetFTSCursor returns the cursor for key, or (0, nil) if none.
+func (m *metaFace) GetFTSCursor(ctx context.Context, key string) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cursors[key], nil
+}
+
+// SetFTSCursor upserts the cursor for key.
+func (m *metaFace) SetFTSCursor(ctx context.Context, key string, seq uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cursors[key] = seq
+	return nil
+}
+
+// AppendAuditLog adds a row to the in-memory audit log.
+func (m *metaFace) AppendAuditLog(ctx context.Context, entry store.AuditLogEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry.ID = s.nextAuditLogID
+	s.nextAuditLogID++
+	if entry.At.IsZero() {
+		entry.At = s.clk.Now()
+	}
+	// Copy Metadata so callers cannot mutate stored state afterwards.
+	if len(entry.Metadata) > 0 {
+		cp := make(map[string]string, len(entry.Metadata))
+		for k, v := range entry.Metadata {
+			cp[k] = v
+		}
+		entry.Metadata = cp
+	}
+	s.auditLog = append(s.auditLog, entry)
+	return nil
+}
+
+// ListAuditLog applies the filter and returns a copy of matching rows.
+func (m *metaFace) ListAuditLog(ctx context.Context, filter store.AuditLogFilter) ([]store.AuditLogEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []store.AuditLogEntry
+	for _, e := range s.auditLog {
+		if e.ID <= filter.AfterID {
+			continue
+		}
+		if filter.PrincipalID != 0 && auditEntryPrincipalID(e) != filter.PrincipalID {
+			continue
+		}
+		if filter.Action != "" && e.Action != filter.Action {
+			continue
+		}
+		if !filter.Since.IsZero() && e.At.Before(filter.Since) {
+			continue
+		}
+		if !filter.Until.IsZero() && !e.At.Before(filter.Until) {
+			continue
+		}
+		// Copy the Metadata map so caller mutations do not bleed back.
+		cp := e
+		if len(e.Metadata) > 0 {
+			m := make(map[string]string, len(e.Metadata))
+			for k, v := range e.Metadata {
+				m[k] = v
+			}
+			cp.Metadata = m
+		}
+		out = append(out, cp)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+// auditEntryPrincipalID mirrors the logic used by the SQL backends so
+// filtering behaviour is identical across implementations.
+func auditEntryPrincipalID(e store.AuditLogEntry) store.PrincipalID {
+	if strings.HasPrefix(e.Subject, "principal:") {
+		if id, err := parseUint(e.Subject[len("principal:"):]); err == nil {
+			return store.PrincipalID(id)
+		}
+	}
+	if e.ActorKind == store.ActorPrincipal {
+		if id, err := parseUint(e.ActorID); err == nil {
+			return store.PrincipalID(id)
+		}
+	}
+	return 0
+}
+
+// parseUint is a tiny wrapper around strconv.ParseUint that avoids a
+// direct import in this section (keeps the imports block compact).
+func parseUint(s string) (uint64, error) {
+	var n uint64
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("parse uint: bad char %q", c)
+		}
+		n = n*10 + uint64(c-'0')
+	}
+	if len(s) == 0 {
+		return 0, fmt.Errorf("parse uint: empty")
+	}
+	return n, nil
 }
 
 // appendStateChangeLocked requires s.mu held exclusively. It assigns the

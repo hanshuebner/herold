@@ -8,9 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hanshuebner/herold/internal/store"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
+
+	"github.com/hanshuebner/herold/internal/store"
 )
 
 // TOTPIssuer is the label placed in the provisioning URI's issuer field.
@@ -27,19 +28,15 @@ var totpOpts = totp.ValidateOpts{
 	Algorithm: otp.AlgorithmSHA1,
 }
 
-// EnrollTOTP generates a new TOTP secret for the principal and persists
-// it in an unconfirmed state. The returned secret and otpauth URI are
-// shown to the user once; ConfirmTOTP flips the enrollment live once
-// the user has entered a valid code.
+// EnrollTOTP generates a new TOTP secret for the principal and
+// persists it in an unconfirmed state. The returned secret and
+// otpauth URI are shown to the user once; ConfirmTOTP flips the
+// enrollment live once the user has entered a valid code.
 //
-// The secret is stored on the Principal.TOTPSecret field as the raw
-// base32-encoded secret. A wrapper byte (0x00 = pending, 0x01 =
-// confirmed) prefixes the stored bytes so VerifyTOTP and ConfirmTOTP can
-// distinguish the two states without an additional column.
-//
-// TODO(store): the store currently treats TOTPSecret as opaque bytes;
-// once a dedicated "totp_enabled" flag or envelope exists, drop the
-// 1-byte prefix convention in favour of it.
+// Storage contract: Principal.TOTPSecret holds the raw base32-encoded
+// secret (no wrapper byte; that Wave 1 workaround is gone). Enrolment
+// state lives in PrincipalFlagTOTPEnabled: cleared during EnrollTOTP,
+// set by ConfirmTOTP, cleared again by DisableTOTP.
 func (d *Directory) EnrollTOTP(ctx context.Context, pid PrincipalID) (secret, provisioningURI string, err error) {
 	if err := ctx.Err(); err != nil {
 		return "", "", err
@@ -51,7 +48,7 @@ func (d *Directory) EnrollTOTP(ctx context.Context, pid PrincipalID) (secret, pr
 		}
 		return "", "", fmt.Errorf("directory: load principal: %w", err)
 	}
-	if isTOTPConfirmed(p.TOTPSecret) {
+	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
 		return "", "", ErrTOTPAlreadyEnabled
 	}
 	key, err := totp.Generate(totp.GenerateOpts{
@@ -62,8 +59,8 @@ func (d *Directory) EnrollTOTP(ctx context.Context, pid PrincipalID) (secret, pr
 	if err != nil {
 		return "", "", fmt.Errorf("directory: generate totp: %w", err)
 	}
-	p.TOTPSecret = wrapPendingSecret(key.Secret())
-	p.Flags &^= principalFlagTOTPEnabled
+	p.TOTPSecret = []byte(key.Secret())
+	p.Flags &^= store.PrincipalFlagTOTPEnabled
 	if err := d.meta.UpdatePrincipal(ctx, p); err != nil {
 		return "", "", fmt.Errorf("directory: persist totp secret: %w", err)
 	}
@@ -71,9 +68,9 @@ func (d *Directory) EnrollTOTP(ctx context.Context, pid PrincipalID) (secret, pr
 	return key.Secret(), key.URL(), nil
 }
 
-// ConfirmTOTP accepts the first valid code after enrollment and promotes
-// the principal's state to "TOTP enabled". Subsequent calls return
-// ErrTOTPAlreadyEnabled.
+// ConfirmTOTP accepts the first valid code after enrollment and
+// promotes the principal's state to "TOTP enabled". Subsequent calls
+// return ErrTOTPAlreadyEnabled.
 func (d *Directory) ConfirmTOTP(ctx context.Context, pid PrincipalID, code string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -88,15 +85,14 @@ func (d *Directory) ConfirmTOTP(ctx context.Context, pid PrincipalID, code strin
 	if len(p.TOTPSecret) == 0 {
 		return ErrTOTPNotEnrolled
 	}
-	if isTOTPConfirmed(p.TOTPSecret) {
+	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
 		return ErrTOTPAlreadyEnabled
 	}
-	secret := unwrapSecret(p.TOTPSecret)
+	secret := string(p.TOTPSecret)
 	if !validateCode(secret, code, d.clk.Now()) {
 		return ErrUnauthorized
 	}
-	p.TOTPSecret = wrapConfirmedSecret(secret)
-	p.Flags |= principalFlagTOTPEnabled
+	p.Flags |= store.PrincipalFlagTOTPEnabled
 	if err := d.meta.UpdatePrincipal(ctx, p); err != nil {
 		return fmt.Errorf("directory: confirm totp: %w", err)
 	}
@@ -118,14 +114,14 @@ func (d *Directory) VerifyTOTP(ctx context.Context, pid PrincipalID, code string
 		}
 		return fmt.Errorf("directory: load principal: %w", err)
 	}
-	if !isTOTPConfirmed(p.TOTPSecret) {
+	if !p.Flags.Has(store.PrincipalFlagTOTPEnabled) || len(p.TOTPSecret) == 0 {
 		return ErrTOTPNotEnrolled
 	}
 	key := rlKey{email: p.CanonicalEmail, source: authSource(ctx) + "|totp"}
 	if !d.rl.allow(key) {
 		return ErrRateLimited
 	}
-	secret := unwrapSecret(p.TOTPSecret)
+	secret := string(p.TOTPSecret)
 	if !validateCode(secret, code, d.clk.Now()) {
 		d.rl.record(key)
 		return ErrUnauthorized
@@ -152,7 +148,7 @@ func (d *Directory) DisableTOTP(ctx context.Context, pid PrincipalID, password s
 		return ErrUnauthorized
 	}
 	p.TOTPSecret = nil
-	p.Flags &^= principalFlagTOTPEnabled
+	p.Flags &^= store.PrincipalFlagTOTPEnabled
 	if err := d.meta.UpdatePrincipal(ctx, p); err != nil {
 		return fmt.Errorf("directory: disable totp: %w", err)
 	}
@@ -183,38 +179,4 @@ func validateCode(secret, code string, t time.Time) bool {
 		}
 	}
 	return false
-}
-
-// wrapPendingSecret prefixes 0x00 to indicate an unconfirmed secret.
-func wrapPendingSecret(b32 string) []byte {
-	out := make([]byte, 1+len(b32))
-	out[0] = 0x00
-	copy(out[1:], b32)
-	return out
-}
-
-// wrapConfirmedSecret prefixes 0x01 to indicate a confirmed secret.
-func wrapConfirmedSecret(b32 string) []byte {
-	out := make([]byte, 1+len(b32))
-	out[0] = 0x01
-	copy(out[1:], b32)
-	return out
-}
-
-// unwrapSecret returns the base32 secret string from stored bytes.
-func unwrapSecret(b []byte) string {
-	if len(b) == 0 {
-		return ""
-	}
-	if b[0] != 0x00 && b[0] != 0x01 {
-		// Legacy/raw secret: treat as-is.
-		return string(b)
-	}
-	return string(b[1:])
-}
-
-// isTOTPConfirmed reports whether stored TOTP bytes are in the confirmed
-// state.
-func isTOTPConfirmed(b []byte) bool {
-	return len(b) >= 1 && b[0] == 0x01
 }

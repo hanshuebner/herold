@@ -182,6 +182,16 @@ type Metadata interface {
 	// GetOIDCProvider returns the provider row, or ErrNotFound.
 	GetOIDCProvider(ctx context.Context, name string) (OIDCProvider, error)
 
+	// ListOIDCProviders returns every configured OIDC provider. v1
+	// deployments carry tens of providers at most; no pagination is
+	// offered or needed.
+	ListOIDCProviders(ctx context.Context) ([]OIDCProvider, error)
+
+	// DeleteOIDCProvider removes a provider and cascades its oidc_links
+	// rows in one transaction. Returns ErrNotFound if no provider with
+	// the given id exists.
+	DeleteOIDCProvider(ctx context.Context, id OIDCProviderID) error
+
 	// LinkOIDC associates a principal with an external OIDC identity.
 	// Returns ErrConflict if (provider, subject) is already linked.
 	LinkOIDC(ctx context.Context, link OIDCLink) error
@@ -189,6 +199,10 @@ type Metadata interface {
 	// LookupOIDCLink returns the principal associated with (provider,
 	// subject), or ErrNotFound.
 	LookupOIDCLink(ctx context.Context, provider, subject string) (OIDCLink, error)
+
+	// UnlinkOIDC removes the oidc_links row for (pid, providerID).
+	// Returns ErrNotFound if no such link exists.
+	UnlinkOIDC(ctx context.Context, pid PrincipalID, providerID OIDCProviderID) error
 
 	// InsertAPIKey stores an API key row and returns it with the
 	// assigned ID and CreatedAt filled.
@@ -203,6 +217,46 @@ type Metadata interface {
 	// TouchAPIKey updates the LastUsedAt timestamp of a key. Returns
 	// ErrNotFound if the key has been revoked since the caller loaded it.
 	TouchAPIKey(ctx context.Context, id APIKeyID, at time.Time) error
+
+	// DeletePrincipal removes a principal and every row that belongs to
+	// it — aliases, OIDC links, API keys, mailboxes, messages-in-mailboxes,
+	// per-principal state-change entries, and per-principal audit-log
+	// entries — in a single transaction. Returns ErrNotFound if pid does
+	// not exist. Blob refcounts are decremented for every removed
+	// message so the blob GC can reclaim bytes once the grace window
+	// elapses; the method does not itself call Blobs.Delete.
+	DeletePrincipal(ctx context.Context, pid PrincipalID) error
+
+	// ListPrincipals returns principals with ID > after, in ascending ID
+	// order, up to limit entries. Callers paginate by feeding the last
+	// returned ID back as after; a zero after starts at the first row.
+	// A non-positive limit applies the default cap of 1000; any value
+	// above 1000 is silently lowered to 1000 to bound memory.
+	ListPrincipals(ctx context.Context, after PrincipalID, limit int) ([]Principal, error)
+
+	// GetFTSCursor returns the persisted cursor value for key, or
+	// (0, nil) when no row exists (the consumer starts from the
+	// beginning). Used by the FTS indexer (key == "fts") and reserved
+	// for future change-feed consumers (DKIM report worker, external
+	// webhook relays) so one cursors table carries them all.
+	GetFTSCursor(ctx context.Context, key string) (uint64, error)
+
+	// SetFTSCursor upserts the cursor value for key. Idempotent: safe to
+	// call with the same (key, seq) twice. Returns an error on backend
+	// failures but not on a no-op repeat write.
+	SetFTSCursor(ctx context.Context, key string, seq uint64) error
+
+	// AppendAuditLog writes entry to the append-only audit log. The
+	// store fills entry.ID and persists the passed At timestamp
+	// verbatim. Message MUST be pre-redacted; the store does not inspect
+	// it. Returns an error on backend failure; otherwise nil.
+	AppendAuditLog(ctx context.Context, entry AuditLogEntry) error
+
+	// ListAuditLog returns audit entries matching filter, in ascending
+	// ID order, up to filter.Limit (capped at 1000 server-side). An
+	// empty filter returns the first page of all entries. Use
+	// filter.AfterID to paginate.
+	ListAuditLog(ctx context.Context, filter AuditLogFilter) ([]AuditLogEntry, error)
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

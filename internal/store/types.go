@@ -8,6 +8,18 @@ import (
 // It is assigned by the metadata store on insert and never reused.
 type PrincipalID uint64
 
+// OIDCProviderID uniquely identifies a configured OIDC provider within a
+// Herold deployment. The identity is the operator-chosen provider Name
+// (stable across restarts, single string column in the schema); it is
+// typed as its own alias so method signatures stay readable without a
+// schema-level change to the existing oidc_providers table.
+type OIDCProviderID string
+
+// AuditLogID is the primary key of an audit-log entry. Monotonically
+// increasing across the store; never reused after a row is deleted
+// (in practice rows are only pruned by retention, never UPDATEd).
+type AuditLogID uint64
+
 // MailboxID uniquely identifies a Mailbox owned by a Principal. Stable
 // for the life of the mailbox; not reused after the mailbox is deleted.
 type MailboxID uint64
@@ -70,7 +82,20 @@ const (
 	PrincipalFlagIgnoreDownloadLimits
 	// PrincipalFlagAdmin grants administrative privileges on the admin API.
 	PrincipalFlagAdmin
+	// PrincipalFlagTOTPEnabled indicates the principal has confirmed a
+	// TOTP enrolment (the directory promotes pending -> enabled on the
+	// first valid code). Stored separately from TOTPSecret so the secret
+	// can remain opaque to the store and so enrolment state is cheap to
+	// query without decoding the secret envelope.
+	PrincipalFlagTOTPEnabled
 )
+
+// Has reports whether f includes mask (every bit in mask is set in f).
+// The zero-bit case is a no-op true: a caller asking whether no flags
+// are set always succeeds.
+func (f PrincipalFlags) Has(mask PrincipalFlags) bool {
+	return f&mask == mask
+}
 
 // Principal is an authenticatable identity owning mailboxes, aliases, and
 // configuration. It maps to the principals table in the metadata store.
@@ -374,4 +399,106 @@ type APIKey struct {
 	// LastUsedAt is the most recent successful authentication instant
 	// using this key; zero value if never used.
 	LastUsedAt time.Time
+}
+
+// ActorKind classifies the source of an audited action. The vocabulary
+// is closed so forensic queries (`action by ActorSystem`) do not need to
+// string-match freeform labels.
+type ActorKind uint8
+
+const (
+	// ActorUnknown is the zero value. It must not be used by callers;
+	// it appears only when a row predates the audit wiring or when the
+	// code path neglected to classify — both are bugs.
+	ActorUnknown ActorKind = iota
+	// ActorPrincipal is a human user acting under their own principal.
+	ActorPrincipal
+	// ActorAPIKey is an automated client authenticated via an API key.
+	ActorAPIKey
+	// ActorSystem is an internal subsystem (scheduled jobs, migrations,
+	// startup backfills). ActorID is the fixed string "system".
+	ActorSystem
+)
+
+// AuditOutcome is the success/failure tag on an audit entry. Most
+// mutations care about both outcomes; authentication failures land here
+// the same way successes do (REQ-AUTH-62).
+type AuditOutcome uint8
+
+const (
+	// OutcomeUnknown is the zero value and must not be persisted.
+	OutcomeUnknown AuditOutcome = iota
+	// OutcomeSuccess is the default for successful actions.
+	OutcomeSuccess
+	// OutcomeFailure tags a rejected or errored action.
+	OutcomeFailure
+)
+
+// AuditLogEntry is one row in the append-only audit log (REQ-AUTH-62).
+// Callers build the struct and hand it to Metadata.AppendAuditLog; the
+// store fills ID and persists the value verbatim. Message MUST be
+// pre-redacted (no plaintext passwords, tokens, or TOTP codes); the
+// store treats it as opaque human-readable text.
+type AuditLogEntry struct {
+	// ID is the assigned primary key (populated by the store on append;
+	// callers may leave it zero).
+	ID AuditLogID
+	// At is the event instant supplied by the injected clock. The store
+	// uses this value verbatim so tests with a FakeClock are
+	// deterministic.
+	At time.Time
+	// ActorKind classifies the actor (principal / API key / system).
+	ActorKind ActorKind
+	// ActorID is the actor's stable identifier: "<principal_id>" or
+	// "<api_key_id>" or the literal "system". Freeform (string) rather
+	// than typed because actors of different kinds collide in one column
+	// and forensic reads need the raw token anyway.
+	ActorID string
+	// Action is the dotted action identifier, e.g. "principal.create",
+	// "principal.delete", "totp.enroll", "oidc.link". Keep callers
+	// namespaced per subsystem.
+	Action string
+	// Subject names the entity acted upon, formatted "kind:id" (e.g.
+	// "principal:42", "domain:example.test"). Empty for actions that
+	// target nothing in particular (admin login, system startup).
+	Subject string
+	// RemoteAddr is the originating IP for network actions; empty for
+	// ActorSystem entries.
+	RemoteAddr string
+	// Outcome tags success / failure; FAILURE rows carry the reason in
+	// Message.
+	Outcome AuditOutcome
+	// Message is the human-readable summary, already redacted. Secrets
+	// MUST NOT appear here.
+	Message string
+	// Metadata carries typed key/value tags per action. Canonical keys
+	// per subsystem live in the caller's package (e.g. directory's TOTP
+	// path sets "method=totp", admin emits "target_email=..."). The
+	// store serialises the map deterministically (sorted keys) to the
+	// underlying column.
+	Metadata map[string]string
+}
+
+// AuditLogFilter narrows a ListAuditLog read. Unset (zero) fields are
+// treated as "no constraint". Limit is capped at 1000 server-side
+// regardless of caller input.
+type AuditLogFilter struct {
+	// PrincipalID, when non-zero, restricts results to entries whose
+	// Subject is "principal:<id>" OR whose ActorKind == ActorPrincipal
+	// with ActorID == "<id>". This covers both "actions by this user"
+	// and "actions upon this user".
+	PrincipalID PrincipalID
+	// Action, when non-empty, matches the Action column exactly.
+	Action string
+	// Since, when non-zero, excludes rows with At < Since.
+	Since time.Time
+	// Until, when non-zero, excludes rows with At >= Until.
+	Until time.Time
+	// Limit caps the returned slice length. 0 means the default (1000).
+	// Values above 1000 are silently lowered to 1000.
+	Limit int
+	// AfterID is the keyset cursor: return rows with ID > AfterID.
+	// Callers paginate by setting AfterID to the ID of the last row
+	// from the previous page.
+	AfterID AuditLogID
 }

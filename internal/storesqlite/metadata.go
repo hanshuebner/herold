@@ -3,9 +3,12 @@ package storesqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -971,4 +974,357 @@ func sortStrings(s []string) {
 			s[j-1], s[j] = s[j], s[j-1]
 		}
 	}
+}
+
+// -- ListPrincipals ---------------------------------------------------
+
+func (m *metadata) ListPrincipals(ctx context.Context, after store.PrincipalID, limit int) ([]store.Principal, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	rows, err := m.s.db.QueryContext(ctx, `
+		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
+		       quota_bytes, flags, created_at_us, updated_at_us
+		  FROM principals WHERE id > ? ORDER BY id ASC LIMIT ?`,
+		int64(after), limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.Principal
+	for rows.Next() {
+		var p store.Principal
+		var kind int64
+		var flags int64
+		var createdUs, updatedUs int64
+		var totp []byte
+		var id int64
+		if err := rows.Scan(&id, &kind, &p.CanonicalEmail, &p.DisplayName, &p.PasswordHash,
+			&totp, &p.QuotaBytes, &flags, &createdUs, &updatedUs); err != nil {
+			return nil, mapErr(err)
+		}
+		p.ID = store.PrincipalID(id)
+		p.Kind = store.PrincipalKind(kind)
+		p.Flags = store.PrincipalFlags(flags)
+		p.CreatedAt = fromMicros(createdUs)
+		p.UpdatedAt = fromMicros(updatedUs)
+		if len(totp) > 0 {
+			p.TOTPSecret = totp
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// -- DeletePrincipal --------------------------------------------------
+
+func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		// Confirm existence up-front so the caller can distinguish
+		// "already gone" from "nothing to do".
+		var exists int64
+		err := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM principals WHERE id = ?`, int64(pid)).Scan(&exists)
+		if err != nil {
+			return mapErr(err)
+		}
+		// Decrement refcounts for every blob still owned by this
+		// principal's messages before the FK cascade wipes the rows.
+		hashRows, err := tx.QueryContext(ctx, `
+			SELECT blob_hash FROM messages
+			 WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE principal_id = ?)`,
+			int64(pid))
+		if err != nil {
+			return mapErr(err)
+		}
+		var hashes []string
+		for hashRows.Next() {
+			var h string
+			if err := hashRows.Scan(&h); err != nil {
+				hashRows.Close()
+				return mapErr(err)
+			}
+			hashes = append(hashes, h)
+		}
+		hashRows.Close()
+		for _, h := range hashes {
+			if err := decRef(ctx, tx, h, now); err != nil {
+				return err
+			}
+		}
+		// Per-principal tables that lack ON DELETE CASCADE to principals:
+		// state_changes and audit_log carry a principal_id column but are
+		// not FK-bound (so the cascade does not reach them). Wipe them
+		// explicitly within the same tx.
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM state_changes WHERE principal_id = ?`, int64(pid)); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM audit_log WHERE principal_id = ?`, int64(pid)); err != nil {
+			return mapErr(err)
+		}
+		// principals cascades to aliases, oidc_links, api_keys, mailboxes;
+		// mailboxes cascades to messages. Blob refs stay (GC sweeps later).
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM principals WHERE id = ?`, int64(pid))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// -- ListOIDCProviders / DeleteOIDCProvider / UnlinkOIDC --------------
+
+func (m *metadata) ListOIDCProviders(ctx context.Context) ([]store.OIDCProvider, error) {
+	rows, err := m.s.db.QueryContext(ctx, `
+		SELECT name, issuer_url, client_id, client_secret_ref, scopes_csv,
+		       auto_provision, created_at_us
+		  FROM oidc_providers ORDER BY name`)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.OIDCProvider
+	for rows.Next() {
+		var p store.OIDCProvider
+		var scopes string
+		var auto int64
+		var createdUs int64
+		if err := rows.Scan(&p.Name, &p.IssuerURL, &p.ClientID, &p.ClientSecretRef,
+			&scopes, &auto, &createdUs); err != nil {
+			return nil, mapErr(err)
+		}
+		if scopes != "" {
+			p.Scopes = strings.Split(scopes, ",")
+		}
+		p.AutoProvision = auto != 0
+		p.CreatedAt = fromMicros(createdUs)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) DeleteOIDCProvider(ctx context.Context, id store.OIDCProviderID) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		// oidc_links FK to oidc_providers cascades on delete — the two
+		// rows land together.
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM oidc_providers WHERE name = ?`, string(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (m *metadata) UnlinkOIDC(ctx context.Context, pid store.PrincipalID, providerID store.OIDCProviderID) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM oidc_links WHERE principal_id = ? AND provider_name = ?`,
+			int64(pid), string(providerID))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// -- cursors ----------------------------------------------------------
+
+func (m *metadata) GetFTSCursor(ctx context.Context, key string) (uint64, error) {
+	var seq int64
+	err := m.s.db.QueryRowContext(ctx,
+		`SELECT seq FROM cursors WHERE key = ?`, key).Scan(&seq)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, mapErr(err)
+	}
+	return uint64(seq), nil
+}
+
+func (m *metadata) SetFTSCursor(ctx context.Context, key string, seq uint64) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO cursors (key, seq) VALUES (?, ?)
+			ON CONFLICT(key) DO UPDATE SET seq = excluded.seq`,
+			key, int64(seq))
+		return mapErr(err)
+	})
+}
+
+// -- audit log --------------------------------------------------------
+
+// encodeAuditMetadata marshals the Metadata map to canonical JSON
+// (keys sorted) so backup diffs are stable. Empty or nil input yields
+// an empty string so the column stays compact for the common case.
+func encodeAuditMetadata(meta map[string]string) (string, error) {
+	if len(meta) == 0 {
+		return "", nil
+	}
+	keys := make([]string, 0, len(meta))
+	for k := range meta {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var buf strings.Builder
+	buf.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		kb, err := json.Marshal(k)
+		if err != nil {
+			return "", err
+		}
+		vb, err := json.Marshal(meta[k])
+		if err != nil {
+			return "", err
+		}
+		buf.Write(kb)
+		buf.WriteByte(':')
+		buf.Write(vb)
+	}
+	buf.WriteByte('}')
+	return buf.String(), nil
+}
+
+func decodeAuditMetadata(s string) (map[string]string, error) {
+	if s == "" {
+		return nil, nil
+	}
+	var out map[string]string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil, fmt.Errorf("storesqlite: decode audit metadata: %w", err)
+	}
+	return out, nil
+}
+
+// auditPrincipalID extracts the principal-id from a subject of the
+// form "principal:<id>" for indexing; 0 if the subject refers to
+// something else. Actions "upon" a principal and actions "by" a
+// principal (ActorKind == ActorPrincipal) are both indexed to the same
+// column so ListAuditLog(PrincipalID=...) returns either class.
+func auditPrincipalID(e store.AuditLogEntry) int64 {
+	if strings.HasPrefix(e.Subject, "principal:") {
+		if id, err := strconv.ParseUint(strings.TrimPrefix(e.Subject, "principal:"), 10, 64); err == nil {
+			return int64(id)
+		}
+	}
+	if e.ActorKind == store.ActorPrincipal {
+		if id, err := strconv.ParseUint(e.ActorID, 10, 64); err == nil {
+			return int64(id)
+		}
+	}
+	return 0
+}
+
+func (m *metadata) AppendAuditLog(ctx context.Context, entry store.AuditLogEntry) error {
+	metaJSON, err := encodeAuditMetadata(entry.Metadata)
+	if err != nil {
+		return err
+	}
+	at := entry.At
+	if at.IsZero() {
+		at = m.s.clock.Now().UTC()
+	}
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO audit_log (at_us, actor_kind, actor_id, action, subject,
+			  remote_addr, outcome, message, metadata_json, principal_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			usMicros(at), int64(entry.ActorKind), entry.ActorID, entry.Action, entry.Subject,
+			entry.RemoteAddr, int64(entry.Outcome), entry.Message, metaJSON,
+			auditPrincipalID(entry))
+		return mapErr(err)
+	})
+}
+
+func (m *metadata) ListAuditLog(ctx context.Context, filter store.AuditLogFilter) ([]store.AuditLogEntry, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	var where []string
+	var args []any
+	if filter.AfterID != 0 {
+		where = append(where, "id > ?")
+		args = append(args, int64(filter.AfterID))
+	}
+	if filter.PrincipalID != 0 {
+		where = append(where, "principal_id = ?")
+		args = append(args, int64(filter.PrincipalID))
+	}
+	if filter.Action != "" {
+		where = append(where, "action = ?")
+		args = append(args, filter.Action)
+	}
+	if !filter.Since.IsZero() {
+		where = append(where, "at_us >= ?")
+		args = append(args, usMicros(filter.Since))
+	}
+	if !filter.Until.IsZero() {
+		where = append(where, "at_us < ?")
+		args = append(args, usMicros(filter.Until))
+	}
+	q := `SELECT id, at_us, actor_kind, actor_id, action, subject,
+	             remote_addr, outcome, message, metadata_json
+	        FROM audit_log`
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	q += " ORDER BY id ASC LIMIT ?"
+	args = append(args, limit)
+	rows, err := m.s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.AuditLogEntry
+	for rows.Next() {
+		var e store.AuditLogEntry
+		var id, atUs int64
+		var actorKind, outcome int64
+		var metaJSON string
+		if err := rows.Scan(&id, &atUs, &actorKind, &e.ActorID, &e.Action, &e.Subject,
+			&e.RemoteAddr, &outcome, &e.Message, &metaJSON); err != nil {
+			return nil, mapErr(err)
+		}
+		e.ID = store.AuditLogID(id)
+		e.At = fromMicros(atUs)
+		e.ActorKind = store.ActorKind(actorKind)
+		e.Outcome = store.AuditOutcome(outcome)
+		md, err := decodeAuditMetadata(metaJSON)
+		if err != nil {
+			return nil, err
+		}
+		e.Metadata = md
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

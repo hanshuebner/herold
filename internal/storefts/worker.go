@@ -53,17 +53,11 @@ type Worker struct {
 	clock   clock.Clock
 	opts    WorkerOptions
 
-	// cursor is the last Seq successfully processed. Production builds
-	// will persist this in the metadata store (see TODO below); v1 uses
-	// an in-memory cursor which means the worker re-indexes everything
-	// on restart. That is safe because IndexMessage is idempotent
-	// (same MessageID overwrites the existing document).
-	//
-	// TODO(wave1-storage): persist the cursor through a store-level
-	// GetFTSCursor / SetFTSCursor pair so crash restarts resume from the
-	// last committed batch instead of replaying the whole feed. The
-	// parent agent may add the two methods to store.Metadata; this
-	// worker will switch to them without an API break for callers.
+	// cursor is the last Seq successfully processed. It is hydrated on
+	// Run() from Metadata.GetFTSCursor(opts.CursorKey) so crash
+	// restarts resume from the last committed batch; IndexMessage is
+	// idempotent, so a small replay window on cursor loss is safe but
+	// undesirable at scale.
 	cursor atomic.Uint64
 
 	// lastProcessed is the ProducedAt of the most recent change the
@@ -153,6 +147,19 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 	defer w.running.Store(false)
 
+	// Hydrate the durable cursor. A missing row returns (0, nil) from
+	// the store, which starts the feed from the beginning; that is the
+	// correct behaviour for a fresh deployment or a backend that has
+	// forgotten the cursor.
+	if seq, err := w.store.Meta().GetFTSCursor(ctx, w.opts.CursorKey); err != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("storefts: load cursor: %w", err)
+		}
+		return nil
+	} else {
+		w.cursor.Store(seq)
+	}
+
 	for {
 		if err := ctx.Err(); err != nil {
 			// Final flush on shutdown so in-flight changes land in the
@@ -235,6 +242,17 @@ func (w *Worker) processBatch(ctx context.Context, changes []store.FTSChange) er
 	}
 	if maxSeq > 0 {
 		w.cursor.Store(maxSeq)
+		// Persist the advance so a crash restart resumes from this
+		// batch rather than replaying the whole feed. Failure here
+		// does not abort the batch: the Bleve commit already
+		// succeeded; we log and press on, and the worst case is a
+		// replay after restart (IndexMessage is idempotent).
+		if err := w.store.Meta().SetFTSCursor(ctx, w.opts.CursorKey, maxSeq); err != nil {
+			w.logger.Warn("storefts: persist cursor",
+				"key", w.opts.CursorKey,
+				"seq", maxSeq,
+				"err", err.Error())
+		}
 	}
 	if !lastProduced.IsZero() {
 		w.lastProcessed.Store(lastProduced.UnixNano())

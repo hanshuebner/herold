@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,6 +47,16 @@ func Run(t *testing.T, f Factory) {
 		{"BlobDedup", testBlobDedup},
 		{"BlobNotFound", testBlobNotFound},
 		{"FTSSmoke", testFTSSmoke},
+		{"FTSCursor_GetSet_EmptyIsZero", testFTSCursorEmptyIsZero},
+		{"FTSCursor_Upsert_Roundtrip", testFTSCursorUpsertRoundtrip},
+		{"FTSCursor_Concurrent", testFTSCursorConcurrent},
+		{"DeletePrincipal_Cascade", testDeletePrincipalCascade},
+		{"ListPrincipals_Keyset", testListPrincipalsKeyset},
+		{"DeleteOIDCProvider_Cascade", testDeleteOIDCProviderCascade},
+		{"ListOIDCProviders", testListOIDCProviders},
+		{"UnlinkOIDC_NotFoundWhenAbsent", testUnlinkOIDCNotFound},
+		{"AuditLog_AppendAndList", testAuditLogAppendAndList},
+		{"PrincipalFlagTOTPEnabled", testPrincipalFlagTOTPEnabled},
 	}
 	for _, c := range cases {
 		tc := c
@@ -756,4 +768,412 @@ func containsAll(haystack, needles []string) bool {
 		}
 	}
 	return true
+}
+
+// -- Wave 2 compliance cases ------------------------------------------
+
+func testFTSCursorEmptyIsZero(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	seq, err := s.Meta().GetFTSCursor(ctx, "fts")
+	if err != nil {
+		t.Fatalf("GetFTSCursor(absent): %v", err)
+	}
+	if seq != 0 {
+		t.Fatalf("absent cursor = %d, want 0", seq)
+	}
+}
+
+func testFTSCursorUpsertRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if err := s.Meta().SetFTSCursor(ctx, "fts", 42); err != nil {
+		t.Fatalf("SetFTSCursor: %v", err)
+	}
+	got, err := s.Meta().GetFTSCursor(ctx, "fts")
+	if err != nil {
+		t.Fatalf("GetFTSCursor: %v", err)
+	}
+	if got != 42 {
+		t.Fatalf("cursor = %d, want 42", got)
+	}
+	// Upsert (advance).
+	if err := s.Meta().SetFTSCursor(ctx, "fts", 100); err != nil {
+		t.Fatalf("SetFTSCursor advance: %v", err)
+	}
+	got, err = s.Meta().GetFTSCursor(ctx, "fts")
+	if err != nil {
+		t.Fatalf("GetFTSCursor after advance: %v", err)
+	}
+	if got != 100 {
+		t.Fatalf("cursor after advance = %d, want 100", got)
+	}
+	// Idempotent re-apply.
+	if err := s.Meta().SetFTSCursor(ctx, "fts", 100); err != nil {
+		t.Fatalf("SetFTSCursor idempotent: %v", err)
+	}
+}
+
+// testFTSCursorConcurrent drives a handful of parallel SetFTSCursor
+// calls on different keys and asserts they all land without data race
+// or interleaving corruption. Run under -race in CI.
+func testFTSCursorConcurrent(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	keys := []string{"a", "b", "c", "d", "e"}
+	var wg sync.WaitGroup
+	for i, k := range keys {
+		wg.Add(1)
+		go func(k string, v uint64) {
+			defer wg.Done()
+			if err := s.Meta().SetFTSCursor(ctx, k, v); err != nil {
+				t.Errorf("SetFTSCursor(%s): %v", k, err)
+			}
+		}(k, uint64(i+1))
+	}
+	wg.Wait()
+	for i, k := range keys {
+		got, err := s.Meta().GetFTSCursor(ctx, k)
+		if err != nil {
+			t.Fatalf("GetFTSCursor(%s): %v", k, err)
+		}
+		if got != uint64(i+1) {
+			t.Fatalf("cursor[%s] = %d, want %d", k, got, i+1)
+		}
+	}
+}
+
+func testDeletePrincipalCascade(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cascade@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "cascade-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "cascade.alias", Domain: "example.com", TargetPrincipal: p.ID,
+	}); err != nil {
+		t.Fatalf("InsertAlias: %v", err)
+	}
+	if err := s.Meta().InsertOIDCProvider(ctx, store.OIDCProvider{
+		Name: "casc-provider", IssuerURL: "https://example.com", ClientID: "cid",
+		ClientSecretRef: "x",
+	}); err != nil {
+		t.Fatalf("InsertOIDCProvider: %v", err)
+	}
+	if err := s.Meta().LinkOIDC(ctx, store.OIDCLink{
+		PrincipalID: p.ID, ProviderName: "casc-provider", Subject: "sub-c",
+	}); err != nil {
+		t.Fatalf("LinkOIDC: %v", err)
+	}
+	if _, err := s.Meta().InsertAPIKey(ctx, store.APIKey{
+		PrincipalID: p.ID, Hash: "casc-h", Name: "t",
+	}); err != nil {
+		t.Fatalf("InsertAPIKey: %v", err)
+	}
+	if err := s.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+		At:        time.Now().UTC(),
+		ActorKind: store.ActorPrincipal,
+		ActorID:   "1",
+		Action:    "principal.login",
+		Subject:   subjectPrincipal(p.ID),
+		Outcome:   store.OutcomeSuccess,
+	}); err != nil {
+		t.Fatalf("AppendAuditLog: %v", err)
+	}
+
+	if err := s.Meta().DeletePrincipal(ctx, p.ID); err != nil {
+		t.Fatalf("DeletePrincipal: %v", err)
+	}
+
+	// Principal row gone.
+	if _, err := s.Meta().GetPrincipalByID(ctx, p.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetPrincipalByID after delete = %v, want ErrNotFound", err)
+	}
+	// Mailbox gone.
+	if _, err := s.Meta().GetMailboxByID(ctx, mb.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetMailboxByID after delete = %v", err)
+	}
+	// Alias gone.
+	if _, err := s.Meta().ResolveAlias(ctx, "cascade.alias", "example.com"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ResolveAlias after delete = %v", err)
+	}
+	// OIDC link gone.
+	if _, err := s.Meta().LookupOIDCLink(ctx, "casc-provider", "sub-c"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("LookupOIDCLink after delete = %v", err)
+	}
+	// API key gone.
+	if _, err := s.Meta().GetAPIKeyByHash(ctx, "casc-h"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetAPIKeyByHash after delete = %v", err)
+	}
+	// Audit entries for this principal gone.
+	entries, err := s.Meta().ListAuditLog(ctx, store.AuditLogFilter{PrincipalID: p.ID})
+	if err != nil {
+		t.Fatalf("ListAuditLog after delete: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("audit entries after delete = %d, want 0", len(entries))
+	}
+	// Second delete -> ErrNotFound.
+	if err := s.Meta().DeletePrincipal(ctx, p.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DeletePrincipal(gone) = %v", err)
+	}
+}
+
+func testListPrincipalsKeyset(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	const n = 50
+	ids := make([]store.PrincipalID, 0, n)
+	for i := 0; i < n; i++ {
+		p := mustInsertPrincipal(t, s, fmt.Sprintf("kp-%02d@example.com", i))
+		ids = append(ids, p.ID)
+	}
+	// Page through with limit=20; each principal must appear exactly
+	// once, in ascending ID order.
+	seen := make(map[store.PrincipalID]struct{}, n)
+	var after store.PrincipalID
+	var prev store.PrincipalID
+	for {
+		page, err := s.Meta().ListPrincipals(ctx, after, 20)
+		if err != nil {
+			t.Fatalf("ListPrincipals(after=%d): %v", after, err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, p := range page {
+			if p.ID <= prev {
+				t.Fatalf("ListPrincipals not sorted asc: prev=%d curr=%d", prev, p.ID)
+			}
+			prev = p.ID
+			if _, dup := seen[p.ID]; dup {
+				t.Fatalf("duplicate id %d", p.ID)
+			}
+			seen[p.ID] = struct{}{}
+		}
+		after = page[len(page)-1].ID
+	}
+	// Only our seeded principals should appear (the factory hands us a
+	// fresh store per sub-test).
+	if len(seen) < n {
+		t.Fatalf("saw %d principals, want >= %d", len(seen), n)
+	}
+	for _, id := range ids {
+		if _, ok := seen[id]; !ok {
+			t.Fatalf("missing principal id %d", id)
+		}
+	}
+}
+
+func testDeleteOIDCProviderCascade(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p1 := mustInsertPrincipal(t, s, "dp1@example.com")
+	p2 := mustInsertPrincipal(t, s, "dp2@example.com")
+	if err := s.Meta().InsertOIDCProvider(ctx, store.OIDCProvider{
+		Name: "todelete", IssuerURL: "https://i.test", ClientID: "c",
+		ClientSecretRef: "x",
+	}); err != nil {
+		t.Fatalf("InsertOIDCProvider: %v", err)
+	}
+	for i, pid := range []store.PrincipalID{p1.ID, p2.ID} {
+		if err := s.Meta().LinkOIDC(ctx, store.OIDCLink{
+			PrincipalID: pid, ProviderName: "todelete",
+			Subject: fmt.Sprintf("sub-%d", i),
+		}); err != nil {
+			t.Fatalf("LinkOIDC: %v", err)
+		}
+	}
+	if err := s.Meta().DeleteOIDCProvider(ctx, store.OIDCProviderID("todelete")); err != nil {
+		t.Fatalf("DeleteOIDCProvider: %v", err)
+	}
+	// Provider gone.
+	if _, err := s.Meta().GetOIDCProvider(ctx, "todelete"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetOIDCProvider after delete = %v", err)
+	}
+	// Links gone.
+	for i := 0; i < 2; i++ {
+		if _, err := s.Meta().LookupOIDCLink(ctx, "todelete", fmt.Sprintf("sub-%d", i)); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("link %d present after provider delete", i)
+		}
+	}
+	// Principals survive.
+	if _, err := s.Meta().GetPrincipalByID(ctx, p1.ID); err != nil {
+		t.Fatalf("principal 1 vanished: %v", err)
+	}
+	if _, err := s.Meta().GetPrincipalByID(ctx, p2.ID); err != nil {
+		t.Fatalf("principal 2 vanished: %v", err)
+	}
+	// Second delete -> ErrNotFound.
+	if err := s.Meta().DeleteOIDCProvider(ctx, store.OIDCProviderID("todelete")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DeleteOIDCProvider(gone) = %v", err)
+	}
+}
+
+func testListOIDCProviders(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	names := []string{"aaa", "bbb", "ccc"}
+	for _, n := range names {
+		if err := s.Meta().InsertOIDCProvider(ctx, store.OIDCProvider{
+			Name: n, IssuerURL: "https://" + n + ".test", ClientID: "c",
+			ClientSecretRef: "x",
+		}); err != nil {
+			t.Fatalf("InsertOIDCProvider(%s): %v", n, err)
+		}
+	}
+	out, err := s.Meta().ListOIDCProviders(ctx)
+	if err != nil {
+		t.Fatalf("ListOIDCProviders: %v", err)
+	}
+	if len(out) < len(names) {
+		t.Fatalf("len=%d, want >= %d", len(out), len(names))
+	}
+	// Every seeded name must appear.
+	for _, want := range names {
+		found := false
+		for _, got := range out {
+			if got.Name == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing provider %q in list", want)
+		}
+	}
+}
+
+func testUnlinkOIDCNotFound(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "unlink@example.com")
+	if err := s.Meta().InsertOIDCProvider(ctx, store.OIDCProvider{
+		Name: "pv-unlink", IssuerURL: "https://u.test", ClientID: "c",
+		ClientSecretRef: "x",
+	}); err != nil {
+		t.Fatalf("InsertOIDCProvider: %v", err)
+	}
+	// Absent -> ErrNotFound.
+	if err := s.Meta().UnlinkOIDC(ctx, p.ID, store.OIDCProviderID("pv-unlink")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("UnlinkOIDC(absent) = %v", err)
+	}
+	// Round-trip: link then unlink.
+	if err := s.Meta().LinkOIDC(ctx, store.OIDCLink{
+		PrincipalID: p.ID, ProviderName: "pv-unlink", Subject: "sub-u",
+	}); err != nil {
+		t.Fatalf("LinkOIDC: %v", err)
+	}
+	if err := s.Meta().UnlinkOIDC(ctx, p.ID, store.OIDCProviderID("pv-unlink")); err != nil {
+		t.Fatalf("UnlinkOIDC: %v", err)
+	}
+	// Now it's gone.
+	if _, err := s.Meta().LookupOIDCLink(ctx, "pv-unlink", "sub-u"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("link still present after unlink")
+	}
+}
+
+func testAuditLogAppendAndList(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p1 := mustInsertPrincipal(t, s, "al1@example.com")
+	p2 := mustInsertPrincipal(t, s, "al2@example.com")
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	actions := []string{"principal.login", "principal.password.change", "totp.enroll"}
+	for i := 0; i < 12; i++ {
+		pid := p1.ID
+		if i%2 == 1 {
+			pid = p2.ID
+		}
+		if err := s.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+			At:        base.Add(time.Duration(i) * time.Minute),
+			ActorKind: store.ActorPrincipal,
+			ActorID:   fmt.Sprintf("%d", pid),
+			Action:    actions[i%len(actions)],
+			Subject:   subjectPrincipal(pid),
+			Outcome:   store.OutcomeSuccess,
+			Metadata:  map[string]string{"idx": fmt.Sprintf("%d", i)},
+		}); err != nil {
+			t.Fatalf("AppendAuditLog %d: %v", i, err)
+		}
+	}
+
+	// All.
+	all, err := s.Meta().ListAuditLog(ctx, store.AuditLogFilter{})
+	if err != nil {
+		t.Fatalf("ListAuditLog(all): %v", err)
+	}
+	if len(all) < 12 {
+		t.Fatalf("audit all len = %d, want >= 12", len(all))
+	}
+	for i := 1; i < len(all); i++ {
+		if all[i].ID <= all[i-1].ID {
+			t.Fatalf("audit list not ordered: %d then %d", all[i-1].ID, all[i].ID)
+		}
+	}
+	// Filter by principal.
+	byP1, err := s.Meta().ListAuditLog(ctx, store.AuditLogFilter{PrincipalID: p1.ID})
+	if err != nil {
+		t.Fatalf("ListAuditLog(p1): %v", err)
+	}
+	if len(byP1) != 6 {
+		t.Fatalf("p1 entries = %d, want 6", len(byP1))
+	}
+	for _, e := range byP1 {
+		if e.Subject != subjectPrincipal(p1.ID) {
+			t.Fatalf("unexpected subject %q in p1 filter", e.Subject)
+		}
+	}
+	// Filter by action.
+	byAction, err := s.Meta().ListAuditLog(ctx, store.AuditLogFilter{Action: "totp.enroll"})
+	if err != nil {
+		t.Fatalf("ListAuditLog(action): %v", err)
+	}
+	if len(byAction) != 4 {
+		t.Fatalf("action entries = %d, want 4", len(byAction))
+	}
+	// Filter by time range: minutes [3, 6) -> minutes 3, 4, 5 = 3 rows.
+	byTime, err := s.Meta().ListAuditLog(ctx, store.AuditLogFilter{
+		Since: base.Add(3 * time.Minute),
+		Until: base.Add(6 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("ListAuditLog(time): %v", err)
+	}
+	if len(byTime) != 3 {
+		t.Fatalf("time entries = %d, want 3", len(byTime))
+	}
+	// Verify metadata round-trips.
+	first := byTime[0]
+	if first.Metadata["idx"] == "" {
+		t.Fatalf("metadata idx empty after roundtrip: %+v", first.Metadata)
+	}
+}
+
+func testPrincipalFlagTOTPEnabled(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "totp-flag@example.com")
+	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
+		t.Fatalf("new principal has TOTPEnabled flag set")
+	}
+	p.Flags |= store.PrincipalFlagTOTPEnabled
+	if err := s.Meta().UpdatePrincipal(ctx, p); err != nil {
+		t.Fatalf("UpdatePrincipal set: %v", err)
+	}
+	got, err := s.Meta().GetPrincipalByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("Get after set: %v", err)
+	}
+	if !got.Flags.Has(store.PrincipalFlagTOTPEnabled) {
+		t.Fatalf("flag did not persist: %b", got.Flags)
+	}
+	got.Flags &^= store.PrincipalFlagTOTPEnabled
+	if err := s.Meta().UpdatePrincipal(ctx, got); err != nil {
+		t.Fatalf("UpdatePrincipal clear: %v", err)
+	}
+	got2, err := s.Meta().GetPrincipalByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("Get after clear: %v", err)
+	}
+	if got2.Flags.Has(store.PrincipalFlagTOTPEnabled) {
+		t.Fatalf("flag did not clear: %b", got2.Flags)
+	}
+}
+
+func subjectPrincipal(pid store.PrincipalID) string {
+	return fmt.Sprintf("principal:%d", pid)
 }
