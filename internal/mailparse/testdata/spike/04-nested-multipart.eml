@@ -1,0 +1,41 @@
+From: Support <support@example.org>
+To: customer@example.com
+Subject: Ticket 8812 resolution
+Date: Thu, 16 Apr 2026 10:00:00 +0000
+Message-ID: <ticket-8812@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer-mixed"
+
+--outer-mixed
+Content-Type: multipart/alternative; boundary="inner-alt"
+
+--inner-alt
+Content-Type: text/plain; charset=utf-8
+
+Hello,
+
+Ticket 8812 has been resolved. A detailed change log is attached for your
+records.
+
+Support team
+
+--inner-alt
+Content-Type: text/html; charset=utf-8
+
+<p>Hello,</p>
+<p>Ticket <b>8812</b> has been resolved. A detailed change log is attached
+for your records.</p>
+<p>Support team</p>
+
+--inner-alt--
+
+--outer-mixed
+Content-Type: text/plain; charset=utf-8; name="changelog.txt"
+Content-Disposition: attachment; filename="changelog.txt"
+
+2026-04-16 09:55:12 state=open -> investigating
+2026-04-16 09:58:03 assigned=sarah
+2026-04-16 09:59:47 state=investigating -> fix-in-progress
+2026-04-16 10:00:04 state=fix-in-progress -> resolved
+
+--outer-mixed--

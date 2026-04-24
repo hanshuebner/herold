@@ -1,0 +1,28 @@
+From: Postmaster <postmaster@example.org>
+To: admin@example.org
+Subject: Delivery report
+Date: Thu, 16 Apr 2026 11:12:00 +0000
+Message-ID: <dsn-1@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="dsn-outer"
+
+--dsn-outer
+Content-Type: text/plain; charset=us-ascii
+
+The attached message could not be delivered.
+
+--dsn-outer
+Content-Type: message/rfc822
+
+From: Alice <alice@example.org>
+To: nonexistent@faraway.example
+Subject: Lunch on Friday?
+Date: Thu, 16 Apr 2026 11:08:00 +0000
+Message-ID: <lunch-invite@example.org>
+Content-Type: text/plain; charset=utf-8
+
+Want to grab lunch Friday? I know a great place near the office.
+
+Alice
+
+--dsn-outer--

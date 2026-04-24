@@ -1,0 +1,11 @@
+From: Buggy Sender <buggy@example.io>
+To: recipient@example.com
+Subject: Malformed Content-Type
+Date: Sun, 19 Apr 2026 09:30:00 +0000
+Message-ID: <malformed-ctype@example.io>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8; boundary=oops
+
+The Content-Type above has an unterminated quoted value and a bogus
+boundary parameter. Real world messages from broken clients look like
+this. A tolerant parser should still make sense of the body as text/plain.

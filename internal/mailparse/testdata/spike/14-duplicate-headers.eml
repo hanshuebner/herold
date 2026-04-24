@@ -1,0 +1,13 @@
+From: First Sender <first@example.org>
+From: Second Sender <second@example.org>
+To: recipient@example.com
+Subject: Duplicate From header
+Subject: (Second Subject copy)
+Date: Sun, 19 Apr 2026 10:00:00 +0000
+Date: Sun, 19 Apr 2026 10:01:00 +0000
+Message-ID: <dup-headers@example.org>
+Content-Type: text/plain; charset=us-ascii
+
+Two From, Subject and Date headers. RFC 5322 says at most one of each;
+real gateways sometimes add their own. A parser must pick a deterministic
+one and either flag or expose the duplicates for auditing.

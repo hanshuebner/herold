@@ -1,0 +1,9 @@
+From: Old Client <old@example.net>
+To: recipient@example.com
+Subject: No Content-Type header here
+Date: Sun, 19 Apr 2026 09:00:00 +0000
+Message-ID: <no-ctype@example.net>
+
+This message has no Content-Type and no MIME-Version header at all.
+RFC 2045 says in the absence of a Content-Type, treat it as
+text/plain; charset=us-ascii. A parser should handle that cleanly.

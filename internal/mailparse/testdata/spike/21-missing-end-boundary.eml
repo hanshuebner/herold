@@ -1,0 +1,17 @@
+From: Broken Sender <broken@example.org>
+To: recipient@example.com
+Subject: Missing closing boundary
+Date: Sun, 19 Apr 2026 13:30:00 +0000
+Message-ID: <no-close@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="noclose"
+
+--noclose
+Content-Type: text/plain; charset=us-ascii
+
+First part text.
+
+--noclose
+Content-Type: text/plain; charset=us-ascii
+
+Second part text. The message ends here with no closing --noclose-- marker.

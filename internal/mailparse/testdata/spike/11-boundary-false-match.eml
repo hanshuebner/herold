@@ -1,0 +1,33 @@
+From: Docs Bot <docs@example.org>
+To: writer@example.com
+Subject: Boundary trick in body
+Date: Sun, 19 Apr 2026 08:00:00 +0000
+Message-ID: <boundary-trick@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="BNDRY"
+
+--BNDRY
+Content-Type: text/plain; charset=us-ascii
+
+Dear writer,
+
+This message deliberately includes lines that look similar to the boundary.
+Here is an example paragraph that is fine:
+
+--BNDRY-LOOKALIKE
+Note that the line above starts with two dashes and resembles a boundary,
+but it has extra text after BNDRY so a correct parser must not treat it
+as the real boundary marker.
+
+Also note: --bndry (lowercase) and - -BNDRY (with space) are not boundaries.
+
+Regards,
+Docs bot
+
+--BNDRY
+Content-Type: text/plain; charset=us-ascii
+Content-Disposition: attachment; filename="note.txt"
+
+A short attached note.
+
+--BNDRY--

@@ -1,0 +1,22 @@
+From: Buggy Encoder <buggy@example.io>
+To: recipient@example.com
+Subject: Broken base64 attachment
+Date: Sun, 19 Apr 2026 12:00:00 +0000
+Message-ID: <broken-b64@example.io>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="brk-bndry"
+
+--brk-bndry
+Content-Type: text/plain; charset=us-ascii
+
+The attached file has truncated base64 with illegal characters inside.
+
+--brk-bndry
+Content-Type: application/octet-stream; name="broken.bin"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="broken.bin"
+
+VGhpcyBpcyBmaW5lIGJhc2U2NAo=!!!not-base64-here$$$
+aW5jb21wbGV0ZQ
+
+--brk-bndry--

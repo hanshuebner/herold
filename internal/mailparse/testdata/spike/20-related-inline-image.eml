@@ -1,0 +1,26 @@
+From: HTML Mailer <html@example.org>
+To: recipient@example.com
+Subject: HTML email with inline image
+Date: Sun, 19 Apr 2026 13:00:00 +0000
+Message-ID: <inline-img@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="rel-bndry"; type="text/html"
+
+--rel-bndry
+Content-Type: text/html; charset=utf-8
+
+<html><body>
+<p>See the logo below:</p>
+<img src="cid:logo@example.org" alt="logo"/>
+</body></html>
+
+--rel-bndry
+Content-Type: image/png; name="logo.png"
+Content-Transfer-Encoding: base64
+Content-ID: <logo@example.org>
+Content-Disposition: inline; filename="logo.png"
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8A
+AAAASUVORK5CYII=
+
+--rel-bndry--

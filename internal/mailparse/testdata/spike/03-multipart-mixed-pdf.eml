@@ -1,0 +1,41 @@
+From: Finance <finance@example.org>
+To: Board <board@example.com>
+Subject: Q1 report with PDF
+Date: Wed, 15 Apr 2026 14:22:00 +0000
+Message-ID: <q1-report@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mixed-boundary-42"
+
+--mixed-boundary-42
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+Board members,
+
+Please find attached the Q1 2026 financial report. Key points:
+
+ - Revenue: +4% YoY
+ - Headcount: 83 (up from 79)
+ - Runway: 22 months at current burn
+
+We will discuss at next week's meeting.
+
+Finance team
+
+--mixed-boundary-42
+Content-Type: application/pdf; name="Q1-2026-report.pdf"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="Q1-2026-report.pdf"
+
+JVBERi0xLjQKMSAwIG9iajw8L1R5cGUvQ2F0YWxvZy9QYWdlcyAyIDAgUj4+ZW5kb2JqCjIgMCBv
+Ymo8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PmVuZG9iagozIDAgb2JqPDwvVHlw
+ZS9QYWdlL1BhcmVudCAyIDAgUi9NZWRpYUJveFswIDAgMzAwIDE0NF0vQ29udGVudHMgNCAwIFIv
+UmVzb3VyY2VzPDwvRm9udDw8L0YxIDUgMCBSPj4+Pj4+ZW5kb2JqCjQgMCBvYmo8PC9MZW5ndGgg
+NTU+PnN0cmVhbQpCVCAvRjEgMTggVGYgMTAgMTAwIFRkIChRdWFydGVybHkgcmVwb3J0IGRyYWZ0
+KSBUaiBFVAplbmRzdHJlYW0gZW5kb2JqCjUgMCBvYmo8PC9UeXBlL0ZvbnQvU3VidHlwZS9UeXBl
+MS9CYXNlRm9udC9IZWx2ZXRpY2E+PmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYg
+CjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1MyAwMDAwMCBuIAowMDAwMDAwMDk4IDAwMDAw
+IG4gCjAwMDAwMDAxODMgMDAwMDAgbiAKMDAwMDAwMDI4OSAwMDAwMCBuIAp0cmFpbGVyPDwvU2l6
+ZSA2L1Jvb3QgMSAwIFI+PgpzdGFydHhyZWYKMzUwCiUlRU9GCg==
+
+--mixed-boundary-42--

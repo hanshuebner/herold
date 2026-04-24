@@ -1,0 +1,11 @@
+From: Misconfigured <misc@example.fr>
+To: recipient@example.com
+Subject: Charset lie
+Date: Sun, 19 Apr 2026 12:30:00 +0000
+Message-ID: <wrong-charset@example.fr>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Bonjour, voici un message avec des accents: יטא ח.
+The charset label claims utf-8 but bytes are iso-8859-1.

@@ -1,0 +1,11 @@
+From: Mixed Endings <mix@example.org>
+To: recipient@example.com
+Subject: Mixed line endings
+Date: Sun, 19 Apr 2026 14:00:00 +0000
+Message-ID: <mixed-eol@example.org>
+Content-Type: text/plain; charset=utf-8
+
+Line one ends with LF only
+Line two also LF
+Line three has bare CR heremiddle of same line then LF
+Done.

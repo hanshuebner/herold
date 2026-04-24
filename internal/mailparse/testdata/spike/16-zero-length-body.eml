@@ -1,0 +1,7 @@
+From: Ping Sender <ping@example.org>
+To: recipient@example.com
+Subject: No body
+Date: Sun, 19 Apr 2026 11:00:00 +0000
+Message-ID: <empty-body@example.org>
+Content-Type: text/plain; charset=us-ascii
+

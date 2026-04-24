@@ -1,0 +1,16 @@
+From: Pierre Bonnet <pierre@example.fr>
+To: team@example.fr
+Subject: Réunion Latin-1
+Date: Sat, 18 Apr 2026 11:22:00 +0000
+Message-ID: <latin1-body@example.fr>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=iso-8859-1
+Content-Transfer-Encoding: 8bit
+
+Bonjour a tous,
+
+La réunion de demain est confirmée: on se retrouve au café près de la gare.
+Quelques points à régler: budget, planning, et la question du stagiaire.
+
+À demain,
+Pierre

@@ -1,0 +1,38 @@
+From: Newsletter <news@example.org>
+To: subscriber@example.com
+Subject: Weekly digest
+Date: Mon, 13 Apr 2026 12:00:00 +0000
+Message-ID: <digest-2026-15@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="alt-boundary-xyz"
+
+--alt-boundary-xyz
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+Weekly digest - issue 15
+
+Top stories this week:
+ - Go 1.24 released
+ - Postgres 18 beta available
+ - New MTA-STS guidance from IETF
+
+Read online: https://news.example.org/15
+
+--alt-boundary-xyz
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+<!doctype html>
+<html><body>
+<h1>Weekly digest - issue 15</h1>
+<p>Top stories this week:</p>
+<ul>
+  <li>Go 1.24 released</li>
+  <li>Postgres 18 beta available</li>
+  <li>New MTA-STS guidance from IETF</li>
+</ul>
+<p><a href="https://news.example.org/15">Read online</a></p>
+</body></html>
+
+--alt-boundary-xyz--

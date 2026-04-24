@@ -1,0 +1,13 @@
+From: Taro Yamada <taro@example.jp>
+To: team@example.com
+Subject: Project update
+Date: Fri, 17 Apr 2026 09:00:00 +0000
+Message-ID: <update-2026-04-17@example.jp>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+R29vZCBtb3JuaW5nLAoKVGhpcyBpcyBhIGZhaXJseSB0eXBpY2FsIHByb2plY3QgdXBkYXRlLiBJ
+IGhhdmUgYXR0YWNoZWQgdGhlIHNsaWRlcyBmcm9tCnRoaXMgd2VlayBkZW1vIHRvIGEgZm9sbG93
+LXVwIGVtYWlsLiBQbGVhc2UgbGV0IG1lIGtub3cgaWYgeW91IGhhdmUgYW55CnF1ZXN0aW9ucyBi
+ZWZvcmUgVGh1cnNkYXkuCgpUaGFua3MsClRhcm8=
