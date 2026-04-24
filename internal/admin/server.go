@@ -1,0 +1,685 @@
+package admin
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/directoryoidc"
+	"github.com/hanshuebner/herold/internal/mailarc"
+	"github.com/hanshuebner/herold/internal/mailauth"
+	"github.com/hanshuebner/herold/internal/maildkim"
+	"github.com/hanshuebner/herold/internal/maildmarc"
+	"github.com/hanshuebner/herold/internal/mailspf"
+	"github.com/hanshuebner/herold/internal/observe"
+	"github.com/hanshuebner/herold/internal/plugin"
+	"github.com/hanshuebner/herold/internal/protoadmin"
+	"github.com/hanshuebner/herold/internal/protoimap"
+	"github.com/hanshuebner/herold/internal/protosmtp"
+	"github.com/hanshuebner/herold/internal/sieve"
+	"github.com/hanshuebner/herold/internal/spam"
+	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storefts"
+	"github.com/hanshuebner/herold/internal/storepg"
+	"github.com/hanshuebner/herold/internal/storesqlite"
+	"github.com/hanshuebner/herold/internal/sysconfig"
+	heroldtls "github.com/hanshuebner/herold/internal/tls"
+)
+
+// StartOpts bundles optional StartServer knobs that have no home in
+// sysconfig (test seams and runtime toggles).
+type StartOpts struct {
+	// Logger overrides the logger constructed from cfg.Observability. When
+	// nil, observe.NewLogger is called.
+	Logger *slog.Logger
+	// Clock overrides the wall clock. When nil, clock.NewReal is used.
+	Clock clock.Clock
+	// Ready is closed once all listeners are bound and the server is ready
+	// to accept traffic. Tests synchronise against it; production leaves it
+	// nil and relies on sd_notify.
+	Ready chan<- struct{}
+	// ListenerAddrs, when non-nil, is populated with the resolved
+	// net.Listener addresses keyed by listener name. Lets tests discover
+	// the ephemeral port allocated by "127.0.0.1:0" binds.
+	ListenerAddrs map[string]string
+	// ListenerAddrsMu, when non-nil, guards ListenerAddrs. When nil the
+	// caller must not read ListenerAddrs before Ready fires.
+	ListenerAddrsMu *sync.Mutex
+	// ExternalShutdown, when non-nil, replaces the default SIGTERM/SIGINT
+	// handler registration so tests can drive shutdown explicitly.
+	ExternalShutdown bool
+}
+
+// Runtime holds live handles so Reload and callers can inspect state.
+type Runtime struct {
+	mu     sync.Mutex
+	cfg    atomic.Pointer[sysconfig.Config]
+	level  *slog.LevelVar
+	logger *slog.Logger
+}
+
+// StartServer is the whole-system boot path. It returns after ctx is
+// cancelled and graceful shutdown has completed (or shutdown_grace has
+// elapsed).
+//
+// The sequence matches docs/architecture/01-system-overview.md §Lifecycle:
+// parse -> observability -> store -> auxiliary subsystems -> plugins ->
+// TLS -> protocol servers -> listeners bind -> mark ready -> serve ->
+// drain on cancel.
+func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) error {
+	if cfg == nil {
+		return errors.New("admin: nil Config")
+	}
+
+	// Observability.
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(parseSlogLevel(cfg.Observability.LogLevel))
+	logger := opts.Logger
+	if logger == nil {
+		logger = observe.NewLogger(observe.ObservabilityConfig{
+			LogFormat:    cfg.Observability.LogFormat,
+			LogLevel:     cfg.Observability.LogLevel,
+			MetricsBind:  cfg.Observability.MetricsBind,
+			OTLPEndpoint: cfg.Observability.OTLPEndpoint,
+		})
+	}
+	logger.LogAttrs(ctx, slog.LevelInfo, "herold: startup",
+		slog.String("hostname", cfg.Server.Hostname),
+		slog.String("data_dir", cfg.Server.DataDir),
+		slog.String("storage_backend", cfg.Server.Storage.Backend),
+	)
+
+	// Tracer (optional, off by default).
+	tracer, traceShutdown, err := observe.NewTracer(ctx, cfg.Observability.OTLPEndpoint)
+	if err != nil {
+		return fmt.Errorf("admin: tracer: %w", err)
+	}
+	_ = tracer
+	defer func() {
+		if traceShutdown != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = traceShutdown(shutdownCtx)
+		}
+	}()
+
+	clk := opts.Clock
+	if clk == nil {
+		clk = clock.NewReal()
+	}
+
+	// Store open + migrate.
+	st, err := openStore(ctx, cfg, logger, clk)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			logger.LogAttrs(context.Background(), slog.LevelWarn, "store close", slog.String("err", err.Error()))
+		}
+	}()
+
+	// Integrity check: trivial SELECT 1 equivalent via a cheap metadata read.
+	if _, err := st.Meta().ListLocalDomains(ctx); err != nil {
+		return fmt.Errorf("admin: store integrity check failed: %w", err)
+	}
+
+	// Plugin manager + plugins.
+	pluginMgr := plugin.NewManager(plugin.ManagerOptions{
+		Logger:        logger.With("subsystem", "plugin"),
+		Clock:         clk,
+		ServerVersion: "0.1.0",
+	})
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = pluginMgr.Shutdown(shutdownCtx)
+	}()
+	for _, pSpec := range cfg.Plugin {
+		spec := plugin.Spec{
+			Name:      pSpec.Name,
+			Path:      pSpec.Path,
+			Type:      plugin.PluginType(pSpec.Type),
+			Lifecycle: plugin.Lifecycle(pSpec.Lifecycle),
+		}
+		// Resolve secret-bearing options through sysconfig.ResolveSecret so
+		// $ENV and file:/path references expand before the plugin sees them.
+		resolved, err := resolvePluginOptions(pSpec.Options)
+		if err != nil {
+			return fmt.Errorf("admin: plugin %q options: %w", pSpec.Name, err)
+		}
+		spec.Options = resolved
+		if _, err := pluginMgr.Start(ctx, spec); err != nil {
+			return fmt.Errorf("admin: start plugin %q: %w", pSpec.Name, err)
+		}
+	}
+
+	// Directory + OIDC + mail-auth verifiers.
+	dir := directory.New(st.Meta(), logger.With("subsystem", "directory"), clk, nil)
+	oidc := directoryoidc.New(st.Meta(), logger.With("subsystem", "oidc"), http.DefaultClient, clk)
+	resolver := mailauth.NewSystemResolver()
+	dkim := maildkim.New(resolver, logger.With("subsystem", "dkim"), clk)
+	spf := mailspf.New(resolver, clk)
+	dmarc := maildmarc.New(resolver)
+	arc := mailarc.New(resolver)
+
+	// Spam classifier.
+	spamClassifier := spam.New(pluginInvoker{mgr: pluginMgr}, logger.With("subsystem", "spam"), clk)
+	spamPluginName := firstPluginOfType(cfg.Plugin, "spam")
+
+	// Sieve interpreter.
+	sieveInterp := sieve.NewInterpreter()
+
+	// TLS store.
+	tlsStore, err := buildTLSStore(cfg, logger)
+	if err != nil {
+		return err
+	}
+
+	// FTS worker: storefts.Index + TextExtractor + Worker.
+	ftsIndex, err := storefts.New(filepath.Join(cfg.Server.DataDir, "fts"), logger.With("subsystem", "fts"), clk)
+	if err != nil {
+		return fmt.Errorf("admin: fts index: %w", err)
+	}
+	defer ftsIndex.Close()
+	ftsWorker := storefts.NewWorker(
+		ftsIndex,
+		st,
+		storefts.NewMailparseExtractor(),
+		logger.With("subsystem", "fts"),
+		clk,
+		storefts.WorkerOptions{},
+	)
+
+	// Protocol servers.
+	smtpServer, err := protosmtp.New(protosmtp.Config{
+		Store:     st,
+		Directory: dir,
+		DKIM:      dkim,
+		SPF:       spf,
+		DMARC:     dmarc,
+		ARC:       arc,
+		Spam:      spamClassifier,
+		Sieve:     sieveInterp,
+		TLS:       tlsStore,
+		Resolver:  resolver,
+		Clock:     clk,
+		Logger:    logger.With("subsystem", "smtp"),
+		Options: protosmtp.Options{
+			Hostname:      cfg.Server.Hostname,
+			ShutdownGrace: cfg.Server.ShutdownGrace.AsDuration(),
+		},
+		SpamPluginName: spamPluginName,
+	})
+	if err != nil {
+		return fmt.Errorf("admin: protosmtp: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.AsDuration())
+		defer cancel()
+		_ = smtpServer.Close(shutdownCtx)
+	}()
+
+	imapServer := protoimap.NewServer(
+		st,
+		dir,
+		tlsStore,
+		clk,
+		logger.With("subsystem", "imap"),
+		nil, // PasswordLookup: SCRAM not in Phase 1 exit scope
+		nil, // TokenVerifier: OIDC SASL not in Phase 1 exit scope
+		protoimap.Options{
+			ServerName: cfg.Server.Hostname,
+		},
+	)
+	defer imapServer.Close()
+
+	// Admin HTTP handler: the real protoadmin server. Options defaults
+	// are applied inside NewServer; we pass only subsystem-level fields.
+	health := observe.NewHealth()
+	adminServer := protoadmin.NewServer(
+		st,
+		dir,
+		oidc,
+		logger.With("subsystem", "admin"),
+		clk,
+		protoadmin.Options{
+			ServerVersion: "0.1.0",
+			Health:        health,
+		},
+	)
+	adminHandler := adminServer.Handler()
+
+	// Bind listeners.
+	boundListeners, err := bindListeners(ctx, cfg, logger, tlsStore, smtpServer, imapServer, adminHandler, opts)
+	if err != nil {
+		return err
+	}
+	defer boundListeners.Close()
+
+	// Start FTS worker goroutine.
+	var ftsDone sync.WaitGroup
+	ftsDone.Add(1)
+	go func() {
+		defer ftsDone.Done()
+		if err := ftsWorker.Run(ctx); err != nil {
+			logger.LogAttrs(context.Background(), slog.LevelWarn, "fts worker exited", slog.String("err", err.Error()))
+		}
+	}()
+
+	// Metrics HTTP server (best-effort).
+	var metricsShutdown func() error
+	if cfg.Observability.MetricsBind != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", observe.MetricsHandler())
+		srv := &http.Server{
+			Addr:    cfg.Observability.MetricsBind,
+			Handler: mux,
+		}
+		ln, err := net.Listen("tcp", cfg.Observability.MetricsBind)
+		if err != nil {
+			logger.LogAttrs(ctx, slog.LevelWarn, "metrics listen failed",
+				slog.String("bind", cfg.Observability.MetricsBind),
+				slog.String("err", err.Error()))
+		} else {
+			go func() {
+				_ = srv.Serve(ln)
+			}()
+			metricsShutdown = func() error {
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				return srv.Shutdown(shutdownCtx)
+			}
+		}
+	}
+	defer func() {
+		if metricsShutdown != nil {
+			_ = metricsShutdown()
+		}
+	}()
+
+	// Runtime snapshot for Reload.
+	rt := &Runtime{level: levelVar, logger: logger}
+	rt.cfg.Store(cfg)
+
+	// Readiness.
+	health.MarkReady()
+	if opts.Ready != nil {
+		close(opts.Ready)
+	}
+	notifySystemdReady(logger)
+
+	logger.LogAttrs(ctx, slog.LevelInfo, "herold: ready")
+
+	// SIGHUP -> reload.
+	hupCh := make(chan os.Signal, 1)
+	if !opts.ExternalShutdown {
+		signal.Notify(hupCh, syscall.SIGHUP)
+		defer signal.Stop(hupCh)
+	}
+
+	// Serve until ctx cancels.
+	for {
+		select {
+		case <-ctx.Done():
+			logger.LogAttrs(context.Background(), slog.LevelInfo, "herold: shutdown signal received")
+			ftsDone.Wait()
+			return nil
+		case <-hupCh:
+			newCfg, err := sysconfig.Load(currentConfigPath())
+			if err != nil {
+				logger.LogAttrs(ctx, slog.LevelWarn, "reload: parse failed", slog.String("err", err.Error()))
+				continue
+			}
+			if err := ReloadConfig(ctx, rt, newCfg); err != nil {
+				logger.LogAttrs(ctx, slog.LevelWarn, "reload: apply failed", slog.String("err", err.Error()))
+				continue
+			}
+			logger.LogAttrs(ctx, slog.LevelInfo, "reload: applied")
+		}
+	}
+}
+
+// ReloadConfig diffs old vs new via sysconfig.Diff and applies the changes
+// that can be applied live. Reload of data_dir / run_as_user / run_as_group
+// is rejected with a clear error; the caller keeps running on the old cfg.
+func ReloadConfig(ctx context.Context, rt *Runtime, newCfg *sysconfig.Config) error {
+	if rt == nil {
+		return errors.New("admin: nil runtime")
+	}
+	oldCfg := rt.cfg.Load()
+	if oldCfg == nil {
+		return errors.New("admin: no previous config to diff against")
+	}
+	changes, err := sysconfig.Diff(oldCfg, newCfg)
+	if err != nil {
+		return err
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	for _, c := range changes {
+		switch c.Path {
+		case "observability":
+			if rt.level != nil {
+				rt.level.Set(parseSlogLevel(newCfg.Observability.LogLevel))
+			}
+		}
+	}
+	rt.cfg.Store(newCfg)
+	_ = ctx
+	return nil
+}
+
+// currentConfigPath is populated by cmd/herold at process start so SIGHUP
+// can re-read the same file. A package-local global is the simplest
+// plumbing; only the CLI writes it.
+var currentCfgPath atomic.Pointer[string]
+
+// SetConfigPath records the file path the root command parsed so SIGHUP
+// can reopen the same file.
+func SetConfigPath(path string) {
+	s := path
+	currentCfgPath.Store(&s)
+}
+
+func currentConfigPath() string {
+	if p := currentCfgPath.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+func openStore(ctx context.Context, cfg *sysconfig.Config, logger *slog.Logger, clk clock.Clock) (store.Store, error) {
+	switch cfg.Server.Storage.Backend {
+	case "sqlite":
+		if err := os.MkdirAll(filepath.Dir(cfg.Server.Storage.SQLite.Path), 0o750); err != nil {
+			return nil, fmt.Errorf("admin: create sqlite dir: %w", err)
+		}
+		return storesqlite.Open(ctx, cfg.Server.Storage.SQLite.Path, logger.With("subsystem", "store"), clk)
+	case "postgres":
+		blobDir := cfg.Server.Storage.Postgres.BlobDir
+		if blobDir == "" {
+			blobDir = filepath.Join(cfg.Server.DataDir, "blobs")
+		}
+		if err := os.MkdirAll(blobDir, 0o750); err != nil {
+			return nil, fmt.Errorf("admin: create blob dir: %w", err)
+		}
+		return storepg.Open(ctx, cfg.Server.Storage.Postgres.DSN, blobDir, logger.With("subsystem", "store"), clk)
+	default:
+		return nil, fmt.Errorf("admin: unknown storage backend %q", cfg.Server.Storage.Backend)
+	}
+}
+
+func buildTLSStore(cfg *sysconfig.Config, logger *slog.Logger) (*heroldtls.Store, error) {
+	store := heroldtls.NewStore()
+	var fallback *tls.Certificate
+	// Admin TLS: becomes the fallback cert.
+	if cfg.Server.AdminTLS.Source == "file" {
+		cert, err := heroldtls.LoadFromFile(cfg.Server.AdminTLS.CertFile, cfg.Server.AdminTLS.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("admin: admin_tls load: %w", err)
+		}
+		fallback = cert
+		store.SetDefault(cert)
+	}
+	// Per-listener file-backed certs.
+	for _, l := range cfg.Listener {
+		if l.CertFile == "" {
+			continue
+		}
+		cert, err := heroldtls.LoadFromFile(l.CertFile, l.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("admin: listener %q cert: %w", l.Name, err)
+		}
+		store.Add(cfg.Server.Hostname, cert)
+		if fallback == nil {
+			store.SetDefault(cert)
+			fallback = cert
+		}
+	}
+	_ = logger
+	return store, nil
+}
+
+// boundListeners tracks the net.Listener instances bound by StartServer
+// so a deferred Close can tear them down.
+type boundListenerSet struct {
+	listeners []net.Listener
+	logger    *slog.Logger
+}
+
+func (b *boundListenerSet) Close() {
+	for _, ln := range b.listeners {
+		_ = ln.Close()
+	}
+}
+
+func bindListeners(
+	ctx context.Context,
+	cfg *sysconfig.Config,
+	logger *slog.Logger,
+	tlsStore *heroldtls.Store,
+	smtpServer *protosmtp.Server,
+	imapServer *protoimap.Server,
+	adminHandler http.Handler,
+	opts StartOpts,
+) (*boundListenerSet, error) {
+	set := &boundListenerSet{logger: logger}
+	// Bind admin listener last per REQ-OPS lifecycle.
+	var adminBinds []sysconfig.ListenerConfig
+	for _, l := range cfg.Listener {
+		if l.Protocol == "admin" {
+			adminBinds = append(adminBinds, l)
+			continue
+		}
+		ln, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, adminHandler, opts)
+		if err != nil {
+			set.Close()
+			return nil, err
+		}
+		set.listeners = append(set.listeners, ln)
+	}
+	for _, l := range adminBinds {
+		ln, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, adminHandler, opts)
+		if err != nil {
+			set.Close()
+			return nil, err
+		}
+		set.listeners = append(set.listeners, ln)
+	}
+	return set, nil
+}
+
+func bindOne(
+	ctx context.Context,
+	cfg *sysconfig.Config,
+	logger *slog.Logger,
+	l sysconfig.ListenerConfig,
+	tlsStore *heroldtls.Store,
+	smtpServer *protosmtp.Server,
+	imapServer *protoimap.Server,
+	adminHandler http.Handler,
+	opts StartOpts,
+) (net.Listener, error) {
+	ln, err := net.Listen("tcp", l.Address)
+	if err != nil {
+		return nil, fmt.Errorf("admin: listen %s (%s): %w", l.Name, l.Address, err)
+	}
+	if opts.ListenerAddrs != nil {
+		addr := ln.Addr().String()
+		if opts.ListenerAddrsMu != nil {
+			opts.ListenerAddrsMu.Lock()
+			opts.ListenerAddrs[l.Name] = addr
+			opts.ListenerAddrsMu.Unlock()
+		} else {
+			opts.ListenerAddrs[l.Name] = addr
+		}
+	}
+	logger.LogAttrs(ctx, slog.LevelInfo, "listener bound",
+		slog.String("name", l.Name),
+		slog.String("protocol", l.Protocol),
+		slog.String("tls", l.TLS),
+		slog.String("addr", ln.Addr().String()),
+	)
+	switch l.Protocol {
+	case "smtp":
+		go func() {
+			_ = smtpServer.Serve(ctx, ln, protosmtp.RelayIn)
+		}()
+	case "smtp-submission":
+		mode := protosmtp.SubmissionSTARTTLS
+		if l.TLS == "implicit" {
+			mode = protosmtp.SubmissionImplicitTLS
+		}
+		go func() {
+			_ = smtpServer.Serve(ctx, ln, mode)
+		}()
+	case "imap":
+		mode := protoimap.ListenerModeSTARTTLS
+		if l.TLS == "implicit" {
+			mode = protoimap.ListenerModeImplicit993
+		}
+		go func() {
+			_ = imapServer.Serve(ctx, ln, mode)
+		}()
+	case "imaps":
+		go func() {
+			_ = imapServer.Serve(ctx, ln, protoimap.ListenerModeImplicit993)
+		}()
+	case "admin":
+		go serveAdmin(ctx, ln, l, tlsStore, adminHandler, logger)
+	default:
+		return nil, fmt.Errorf("admin: unknown listener protocol %q", l.Protocol)
+	}
+	_ = cfg
+	return ln, nil
+}
+
+func serveAdmin(
+	ctx context.Context,
+	ln net.Listener,
+	l sysconfig.ListenerConfig,
+	tlsStore *heroldtls.Store,
+	handler http.Handler,
+	logger *slog.Logger,
+) {
+	srv := &http.Server{
+		Handler:     handler,
+		BaseContext: func(net.Listener) context.Context { return ctx },
+	}
+	if l.TLS == "implicit" {
+		srv.TLSConfig = heroldtls.TLSConfig(tlsStore, heroldtls.Intermediate, nil)
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	var err error
+	if l.TLS == "implicit" {
+		err = srv.ServeTLS(ln, "", "")
+	} else {
+		err = srv.Serve(ln)
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		logger.LogAttrs(ctx, slog.LevelWarn, "admin listener exited", slog.String("err", err.Error()))
+	}
+}
+
+// pluginInvoker adapts *plugin.Manager to spam.PluginInvoker.
+type pluginInvoker struct {
+	mgr *plugin.Manager
+}
+
+// Call implements spam.PluginInvoker by dispatching to the named plugin.
+func (p pluginInvoker) Call(ctx context.Context, pluginName, method string, params any, result any) error {
+	pl := p.mgr.Get(pluginName)
+	if pl == nil {
+		return fmt.Errorf("admin: plugin %q not registered", pluginName)
+	}
+	return pl.Call(ctx, method, params, result)
+}
+
+func firstPluginOfType(plugins []sysconfig.PluginConfig, kind string) string {
+	for _, p := range plugins {
+		if p.Type == kind {
+			return p.Name
+		}
+	}
+	return ""
+}
+
+// resolvePluginOptions expands any options value that starts with "$" or
+// "file:" through sysconfig.ResolveSecret. Other values are passed through
+// unchanged so typical scalar options (endpoints, model names) survive.
+func resolvePluginOptions(in map[string]string) (map[string]any, error) {
+	if len(in) == 0 {
+		return map[string]any{}, nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		// api_key_env is the convention the spam-llm plugin uses: the value
+		// names the environment variable holding the key. We resolve "$VAR"
+		// forms here so plugins see the secret verbatim without the indirection.
+		if strings.HasPrefix(v, "$") || strings.HasPrefix(v, "file:") {
+			resolved, err := sysconfig.ResolveSecret(v)
+			if err != nil {
+				return nil, fmt.Errorf("option %q: %w", k, err)
+			}
+			out[k] = resolved
+			continue
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// parseSlogLevel translates a sysconfig log-level string to slog.Level.
+func parseSlogLevel(s string) slog.Level {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// notifySystemdReady implements a minimal sd_notify(READY=1) compatible
+// with systemd Type=notify without pulling in the coreos/go-systemd
+// dependency. If NOTIFY_SOCKET is unset (development, container without
+// systemd, tests) this is a no-op.
+func notifySystemdReady(logger *slog.Logger) {
+	sock := os.Getenv("NOTIFY_SOCKET")
+	if sock == "" {
+		return
+	}
+	addr := &net.UnixAddr{Name: sock, Net: "unixgram"}
+	conn, err := net.DialUnix("unixgram", nil, addr)
+	if err != nil {
+		logger.Warn("sd_notify: dial", "err", err.Error())
+		return
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("READY=1\n")); err != nil {
+		logger.Warn("sd_notify: write", "err", err.Error())
+	}
+}

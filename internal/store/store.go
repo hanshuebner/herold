@@ -165,6 +165,16 @@ type Metadata interface {
 	// ErrNotFound if no matching alias or canonical address exists.
 	ResolveAlias(ctx context.Context, localPart, domain string) (PrincipalID, error)
 
+	// ListAliases returns every alias row whose Domain matches, in
+	// ascending LocalPart order. An empty domain argument returns every
+	// alias. Expired rows are included so the admin surface can display
+	// them; callers filter by ExpiresAt where required.
+	ListAliases(ctx context.Context, domain string) ([]Alias, error)
+
+	// DeleteAlias removes the alias with the given ID. Returns
+	// ErrNotFound if no such row exists.
+	DeleteAlias(ctx context.Context, id AliasID) error
+
 	// InsertDomain records a local domain. Returns ErrConflict on
 	// duplicate Name.
 	InsertDomain(ctx context.Context, d Domain) error
@@ -174,6 +184,13 @@ type Metadata interface {
 
 	// ListLocalDomains returns every domain with IsLocal == true.
 	ListLocalDomains(ctx context.Context) ([]Domain, error)
+
+	// DeleteDomain removes a domain row. Returns ErrNotFound if no such
+	// row exists. Callers are responsible for refusing the delete when
+	// aliases still reference the domain; the store does not enforce
+	// that constraint so bootstrap tooling can tear down a half-built
+	// deployment.
+	DeleteDomain(ctx context.Context, name string) error
 
 	// InsertOIDCProvider records a new OIDC provider configuration.
 	// Returns ErrConflict on duplicate Name.
@@ -217,6 +234,20 @@ type Metadata interface {
 	// TouchAPIKey updates the LastUsedAt timestamp of a key. Returns
 	// ErrNotFound if the key has been revoked since the caller loaded it.
 	TouchAPIKey(ctx context.Context, id APIKeyID, at time.Time) error
+
+	// ListAPIKeysByPrincipal returns every API key belonging to pid, in
+	// ascending ID order. The Hash column is returned verbatim; the
+	// plaintext key is never recoverable from this call.
+	ListAPIKeysByPrincipal(ctx context.Context, pid PrincipalID) ([]APIKey, error)
+
+	// DeleteAPIKey removes a single API key row. Returns ErrNotFound if
+	// the key was already revoked.
+	DeleteAPIKey(ctx context.Context, id APIKeyID) error
+
+	// ListOIDCLinksByPrincipal returns every OIDC link owned by pid, in
+	// ascending ProviderName order. The returned slice is empty (nil)
+	// when the principal has no linked identities.
+	ListOIDCLinksByPrincipal(ctx context.Context, pid PrincipalID) ([]OIDCLink, error)
 
 	// DeletePrincipal removes a principal and every row that belongs to
 	// it — aliases, OIDC links, API keys, mailboxes, messages-in-mailboxes,

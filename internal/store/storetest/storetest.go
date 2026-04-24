@@ -65,6 +65,12 @@ func Run(t *testing.T, f Factory) {
 		{"SieveScript_SetGetRoundtrip", testSieveScriptRoundtrip},
 		{"SieveScript_Overwrite", testSieveScriptOverwrite},
 		{"SieveScript_CascadeOnDeletePrincipal", testSieveScriptCascade},
+		{"ListAliases_ByDomain", testListAliasesByDomain},
+		{"DeleteAlias_NotFoundWhenAbsent", testDeleteAliasNotFound},
+		{"DeleteDomain_NotFoundWhenAbsent", testDeleteDomainNotFound},
+		{"ListAPIKeysByPrincipal", testListAPIKeysByPrincipal},
+		{"DeleteAPIKey_NotFoundWhenAbsent", testDeleteAPIKeyNotFound},
+		{"ListOIDCLinksByPrincipal", testListOIDCLinksByPrincipal},
 	}
 	for _, c := range cases {
 		tc := c
@@ -1410,5 +1416,162 @@ func testSieveScriptCascade(t *testing.T, s store.Store) {
 	}
 	if got != "" {
 		t.Fatalf("script survived DeletePrincipal: %q", got)
+	}
+}
+
+// -- Wave 3 admin REST gap-closer methods -----------------------------
+
+func testListAliasesByDomain(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "aliaslist@example.com")
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "a", Domain: "example.com", TargetPrincipal: p.ID,
+	}); err != nil {
+		t.Fatalf("InsertAlias a: %v", err)
+	}
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "b", Domain: "example.com", TargetPrincipal: p.ID,
+	}); err != nil {
+		t.Fatalf("InsertAlias b: %v", err)
+	}
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "c", Domain: "other.test", TargetPrincipal: p.ID,
+	}); err != nil {
+		t.Fatalf("InsertAlias c: %v", err)
+	}
+	all, err := s.Meta().ListAliases(ctx, "")
+	if err != nil {
+		t.Fatalf("ListAliases all: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("ListAliases all = %d, want 3", len(all))
+	}
+	scoped, err := s.Meta().ListAliases(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("ListAliases example.com: %v", err)
+	}
+	if len(scoped) != 2 {
+		t.Fatalf("ListAliases example.com = %d, want 2", len(scoped))
+	}
+	for _, a := range scoped {
+		if a.Domain != "example.com" {
+			t.Fatalf("filter leaked: %+v", a)
+		}
+	}
+}
+
+func testDeleteAliasNotFound(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if err := s.Meta().DeleteAlias(ctx, 99999); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DeleteAlias(absent) = %v, want ErrNotFound", err)
+	}
+	p := mustInsertPrincipal(t, s, "aliasdel@example.com")
+	a, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "ad", Domain: "example.com", TargetPrincipal: p.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertAlias: %v", err)
+	}
+	if err := s.Meta().DeleteAlias(ctx, a.ID); err != nil {
+		t.Fatalf("DeleteAlias: %v", err)
+	}
+	if _, err := s.Meta().ResolveAlias(ctx, "ad", "example.com"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ResolveAlias after delete = %v, want ErrNotFound", err)
+	}
+}
+
+func testDeleteDomainNotFound(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if err := s.Meta().DeleteDomain(ctx, "absent.example"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DeleteDomain(absent) = %v, want ErrNotFound", err)
+	}
+	if err := s.Meta().InsertDomain(ctx, store.Domain{Name: "del.example", IsLocal: true}); err != nil {
+		t.Fatalf("InsertDomain: %v", err)
+	}
+	if err := s.Meta().DeleteDomain(ctx, "DEL.EXAMPLE"); err != nil {
+		t.Fatalf("DeleteDomain case: %v", err)
+	}
+	if _, err := s.Meta().GetDomain(ctx, "del.example"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetDomain after delete = %v", err)
+	}
+}
+
+func testListAPIKeysByPrincipal(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "keys@example.com")
+	p2 := mustInsertPrincipal(t, s, "keys2@example.com")
+	k1, err := s.Meta().InsertAPIKey(ctx, store.APIKey{PrincipalID: p.ID, Hash: "kh1", Name: "k1"})
+	if err != nil {
+		t.Fatalf("InsertAPIKey 1: %v", err)
+	}
+	k2, err := s.Meta().InsertAPIKey(ctx, store.APIKey{PrincipalID: p.ID, Hash: "kh2", Name: "k2"})
+	if err != nil {
+		t.Fatalf("InsertAPIKey 2: %v", err)
+	}
+	if _, err := s.Meta().InsertAPIKey(ctx, store.APIKey{PrincipalID: p2.ID, Hash: "kh3", Name: "k3"}); err != nil {
+		t.Fatalf("InsertAPIKey 3: %v", err)
+	}
+	list, err := s.Meta().ListAPIKeysByPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListAPIKeysByPrincipal: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ListAPIKeysByPrincipal = %d, want 2", len(list))
+	}
+	if list[0].ID != k1.ID || list[1].ID != k2.ID {
+		t.Fatalf("list order: %+v %+v", list[0], list[1])
+	}
+}
+
+func testDeleteAPIKeyNotFound(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if err := s.Meta().DeleteAPIKey(ctx, 99999); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DeleteAPIKey(absent) = %v, want ErrNotFound", err)
+	}
+	p := mustInsertPrincipal(t, s, "keydel@example.com")
+	k, err := s.Meta().InsertAPIKey(ctx, store.APIKey{PrincipalID: p.ID, Hash: "zz1", Name: "z"})
+	if err != nil {
+		t.Fatalf("InsertAPIKey: %v", err)
+	}
+	if err := s.Meta().DeleteAPIKey(ctx, k.ID); err != nil {
+		t.Fatalf("DeleteAPIKey: %v", err)
+	}
+	if _, err := s.Meta().GetAPIKeyByHash(ctx, "zz1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetAPIKeyByHash after delete = %v", err)
+	}
+}
+
+func testListOIDCLinksByPrincipal(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if err := s.Meta().InsertOIDCProvider(ctx, store.OIDCProvider{
+		Name: "prov1", IssuerURL: "https://issuer1", ClientID: "c1",
+	}); err != nil {
+		t.Fatalf("InsertOIDCProvider 1: %v", err)
+	}
+	if err := s.Meta().InsertOIDCProvider(ctx, store.OIDCProvider{
+		Name: "prov2", IssuerURL: "https://issuer2", ClientID: "c2",
+	}); err != nil {
+		t.Fatalf("InsertOIDCProvider 2: %v", err)
+	}
+	p := mustInsertPrincipal(t, s, "oidclist@example.com")
+	if err := s.Meta().LinkOIDC(ctx, store.OIDCLink{
+		PrincipalID: p.ID, ProviderName: "prov1", Subject: "sub-1",
+	}); err != nil {
+		t.Fatalf("LinkOIDC 1: %v", err)
+	}
+	if err := s.Meta().LinkOIDC(ctx, store.OIDCLink{
+		PrincipalID: p.ID, ProviderName: "prov2", Subject: "sub-2",
+	}); err != nil {
+		t.Fatalf("LinkOIDC 2: %v", err)
+	}
+	list, err := s.Meta().ListOIDCLinksByPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListOIDCLinksByPrincipal: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ListOIDCLinksByPrincipal = %d, want 2", len(list))
+	}
+	if list[0].ProviderName != "prov1" || list[1].ProviderName != "prov2" {
+		t.Fatalf("ordering: %+v", list)
 	}
 }

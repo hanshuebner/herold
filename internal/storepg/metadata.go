@@ -201,6 +201,20 @@ func (m *metadata) ListLocalDomains(ctx context.Context) ([]store.Domain, error)
 	return out, rows.Err()
 }
 
+func (m *metadata) DeleteDomain(ctx context.Context, name string) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		res, err := tx.Exec(ctx, `DELETE FROM domains WHERE name = $1`,
+			strings.ToLower(name))
+		if err != nil {
+			return mapErr(err)
+		}
+		if res.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
 // -- aliases ----------------------------------------------------------
 
 func (m *metadata) InsertAlias(ctx context.Context, a store.Alias) (store.Alias, error) {
@@ -251,6 +265,59 @@ func (m *metadata) ResolveAlias(ctx context.Context, localPart, domain string) (
 		return 0, mapErr(err)
 	}
 	return store.PrincipalID(pid), nil
+}
+
+func (m *metadata) ListAliases(ctx context.Context, domain string) ([]store.Alias, error) {
+	dom := strings.ToLower(strings.TrimSpace(domain))
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if dom == "" {
+		rows, err = m.s.pool.Query(ctx, `
+			SELECT id, local_part, domain, target_principal, expires_at_us, created_at_us
+			  FROM aliases ORDER BY domain, local_part`)
+	} else {
+		rows, err = m.s.pool.Query(ctx, `
+			SELECT id, local_part, domain, target_principal, expires_at_us, created_at_us
+			  FROM aliases WHERE domain = $1 ORDER BY local_part`, dom)
+	}
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make([]store.Alias, 0)
+	for rows.Next() {
+		var a store.Alias
+		var id, target int64
+		var expires *int64
+		var createdUs int64
+		if err := rows.Scan(&id, &a.LocalPart, &a.Domain, &target, &expires, &createdUs); err != nil {
+			return nil, mapErr(err)
+		}
+		a.ID = store.AliasID(id)
+		a.TargetPrincipal = store.PrincipalID(target)
+		if expires != nil && *expires != 0 {
+			t := fromMicros(*expires)
+			a.ExpiresAt = &t
+		}
+		a.CreatedAt = fromMicros(createdUs)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) DeleteAlias(ctx context.Context, id store.AliasID) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		res, err := tx.Exec(ctx, `DELETE FROM aliases WHERE id = $1`, int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		if res.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
 }
 
 // -- OIDC -------------------------------------------------------------
@@ -367,6 +434,67 @@ func (m *metadata) TouchAPIKey(ctx context.Context, id store.APIKeyID, at time.T
 		}
 		return nil
 	})
+}
+
+func (m *metadata) ListAPIKeysByPrincipal(ctx context.Context, pid store.PrincipalID) ([]store.APIKey, error) {
+	rows, err := m.s.pool.Query(ctx, `
+		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us
+		  FROM api_keys WHERE principal_id = $1 ORDER BY id`, int64(pid))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make([]store.APIKey, 0)
+	for rows.Next() {
+		var k store.APIKey
+		var id, ownerID int64
+		var createdUs, lastUs int64
+		if err := rows.Scan(&id, &ownerID, &k.Hash, &k.Name, &createdUs, &lastUs); err != nil {
+			return nil, mapErr(err)
+		}
+		k.ID = store.APIKeyID(id)
+		k.PrincipalID = store.PrincipalID(ownerID)
+		k.CreatedAt = fromMicros(createdUs)
+		k.LastUsedAt = fromMicros(lastUs)
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) DeleteAPIKey(ctx context.Context, id store.APIKeyID) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		res, err := tx.Exec(ctx, `DELETE FROM api_keys WHERE id = $1`, int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		if res.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (m *metadata) ListOIDCLinksByPrincipal(ctx context.Context, pid store.PrincipalID) ([]store.OIDCLink, error) {
+	rows, err := m.s.pool.Query(ctx, `
+		SELECT principal_id, provider_name, subject, email_at_provider, linked_at_us
+		  FROM oidc_links WHERE principal_id = $1 ORDER BY provider_name`, int64(pid))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make([]store.OIDCLink, 0)
+	for rows.Next() {
+		var l store.OIDCLink
+		var ownerID int64
+		var linkedUs int64
+		if err := rows.Scan(&ownerID, &l.ProviderName, &l.Subject, &l.EmailAtProvider, &linkedUs); err != nil {
+			return nil, mapErr(err)
+		}
+		l.PrincipalID = store.PrincipalID(ownerID)
+		l.LinkedAt = fromMicros(linkedUs)
+		out = append(out, l)
+	}
+	return out, rows.Err()
 }
 
 // -- mailboxes --------------------------------------------------------

@@ -749,6 +749,61 @@ func (m *metaFace) ListLocalDomains(ctx context.Context) ([]store.Domain, error)
 	return out, nil
 }
 
+func (m *metaFace) DeleteDomain(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := strings.ToLower(name)
+	if _, ok := s.domains[key]; !ok {
+		return fmt.Errorf("domain %q: %w", key, store.ErrNotFound)
+	}
+	delete(s.domains, key)
+	return nil
+}
+
+func (m *metaFace) ListAliases(ctx context.Context, domain string) ([]store.Alias, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	dom := strings.ToLower(strings.TrimSpace(domain))
+	out := make([]store.Alias, 0, len(s.aliases))
+	for _, a := range s.aliases {
+		if dom != "" && strings.ToLower(a.Domain) != dom {
+			continue
+		}
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Domain != out[j].Domain {
+			return out[i].Domain < out[j].Domain
+		}
+		return out[i].LocalPart < out[j].LocalPart
+	})
+	return out, nil
+}
+
+func (m *metaFace) DeleteAlias(ctx context.Context, id store.AliasID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.aliases[id]
+	if !ok {
+		return fmt.Errorf("alias %d: %w", id, store.ErrNotFound)
+	}
+	delete(s.aliases, id)
+	delete(s.aliasBy, aliasKey(a.LocalPart, a.Domain))
+	return nil
+}
+
 // ---------- Metadata: OIDC, API keys ----------
 
 func (m *metaFace) InsertOIDCProvider(ctx context.Context, p store.OIDCProvider) error {
@@ -860,6 +915,56 @@ func (m *metaFace) TouchAPIKey(ctx context.Context, id store.APIKeyID, at time.T
 	k.LastUsedAt = at
 	s.apiKeys[id] = k
 	return nil
+}
+
+func (m *metaFace) ListAPIKeysByPrincipal(ctx context.Context, pid store.PrincipalID) ([]store.APIKey, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]store.APIKey, 0)
+	for _, k := range s.apiKeys {
+		if k.PrincipalID == pid {
+			out = append(out, k)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (m *metaFace) DeleteAPIKey(ctx context.Context, id store.APIKeyID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k, ok := s.apiKeys[id]
+	if !ok {
+		return fmt.Errorf("api key %d: %w", id, store.ErrNotFound)
+	}
+	delete(s.apiKeys, id)
+	delete(s.keyByHash, k.Hash)
+	return nil
+}
+
+func (m *metaFace) ListOIDCLinksByPrincipal(ctx context.Context, pid store.PrincipalID) ([]store.OIDCLink, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]store.OIDCLink, 0)
+	for _, link := range s.oidcLinks {
+		if link.PrincipalID == pid {
+			out = append(out, link)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ProviderName < out[j].ProviderName })
+	return out, nil
 }
 
 // ---------- Metadata: Wave 2 additions -------------------------------

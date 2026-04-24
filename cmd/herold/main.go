@@ -1,20 +1,18 @@
 // Command herold is the single-binary entrypoint: it runs the server and
-// hosts the CLI subcommands. See cmd/herold/cli for subcommand wiring.
+// hosts the CLI subcommands. See internal/admin for the cobra command tree.
 package main
 
 import (
-	"fmt"
+	"context"
 	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/hanshuebner/herold/internal/admin"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "herold: a subcommand is required (try: herold --help)")
-		os.Exit(2)
-	}
-	// Actual command tree is wired up by ops-observability-implementor in
-	// internal/admin. Phase 0 keeps this entrypoint minimal so scaffolding
-	// can compile without dragging in subsystems that do not exist yet.
-	fmt.Fprintln(os.Stderr, "herold: command tree not yet implemented")
-	os.Exit(1)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+	os.Exit(admin.Execute(ctx))
 }

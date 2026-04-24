@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
 )
@@ -21,12 +22,66 @@ type Config struct {
 
 // ServerConfig carries process-wide settings.
 type ServerConfig struct {
-	Hostname   string         `toml:"hostname"`
-	DataDir    string         `toml:"data_dir"`
-	RunAsUser  string         `toml:"run_as_user"`
-	RunAsGroup string         `toml:"run_as_group"`
-	AdminTLS   AdminTLSConfig `toml:"admin_tls"`
+	Hostname      string         `toml:"hostname"`
+	DataDir       string         `toml:"data_dir"`
+	RunAsUser     string         `toml:"run_as_user"`
+	RunAsGroup    string         `toml:"run_as_group"`
+	ShutdownGrace Duration       `toml:"shutdown_grace,omitempty"`
+	AdminTLS      AdminTLSConfig `toml:"admin_tls"`
+	Storage       StorageConfig  `toml:"storage"`
 }
+
+// StorageConfig selects the metadata-store backend and configures it
+// (REQ-OPS-03 extension). The backend is "sqlite" (default) or "postgres".
+// SQLite and Postgres sub-blocks are parsed unconditionally but only the
+// block matching Backend is consulted; the other is validated for shape
+// only so operators can keep both during a migration.
+type StorageConfig struct {
+	Backend  string                `toml:"backend,omitempty"`
+	SQLite   StorageSQLiteConfig   `toml:"sqlite,omitempty"`
+	Postgres StoragePostgresConfig `toml:"postgres,omitempty"`
+}
+
+// StorageSQLiteConfig holds SQLite-specific knobs.
+type StorageSQLiteConfig struct {
+	Path string `toml:"path,omitempty"`
+}
+
+// StoragePostgresConfig holds Postgres-specific knobs.
+type StoragePostgresConfig struct {
+	DSN     string `toml:"dsn,omitempty"`
+	BlobDir string `toml:"blob_dir,omitempty"`
+}
+
+// Duration is a TOML-friendly wrapper around time.Duration: it parses
+// Go duration strings ("30s", "5m") from TOML strings. The zero value
+// marshals to an empty string so omitempty works.
+type Duration time.Duration
+
+// UnmarshalText implements encoding.TextUnmarshaler for go-toml strict decoding.
+func (d *Duration) UnmarshalText(text []byte) error {
+	if len(text) == 0 {
+		*d = 0
+		return nil
+	}
+	dur, err := time.ParseDuration(string(text))
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", string(text), err)
+	}
+	*d = Duration(dur)
+	return nil
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (d Duration) MarshalText() ([]byte, error) {
+	if d == 0 {
+		return []byte{}, nil
+	}
+	return []byte(time.Duration(d).String()), nil
+}
+
+// AsDuration returns the value as a time.Duration.
+func (d Duration) AsDuration() time.Duration { return time.Duration(d) }
 
 // AdminTLSConfig controls the cert used for the admin HTTPS surface.
 // Phase 1 accepts only source = "file"; "acme" is rejected at Validate.
@@ -80,6 +135,7 @@ var (
 	validPluginType = map[string]struct{}{"dns": {}, "spam": {}, "events": {}, "directory": {}, "delivery": {}}
 	validLogLevels  = map[string]struct{}{"debug": {}, "info": {}, "warn": {}, "error": {}}
 	validLogFormats = map[string]struct{}{"json": {}, "text": {}}
+	validBackends   = map[string]struct{}{"sqlite": {}, "postgres": {}}
 )
 
 // Load reads path, parses it strictly, applies defaults, and validates.
@@ -130,6 +186,15 @@ func applyDefaults(c *Config) {
 	}
 	if c.Observability.MetricsBind == "" {
 		c.Observability.MetricsBind = "127.0.0.1:9090"
+	}
+	if c.Server.Storage.Backend == "" {
+		c.Server.Storage.Backend = "sqlite"
+	}
+	if c.Server.Storage.Backend == "sqlite" && c.Server.Storage.SQLite.Path == "" && c.Server.DataDir != "" {
+		c.Server.Storage.SQLite.Path = c.Server.DataDir + "/herold.sqlite"
+	}
+	if c.Server.ShutdownGrace == 0 {
+		c.Server.ShutdownGrace = Duration(30 * time.Second)
 	}
 }
 
@@ -218,6 +283,20 @@ func Validate(c *Config) error {
 	}
 	if _, ok := validLogLevels[c.Observability.LogLevel]; !ok {
 		return fmt.Errorf("sysconfig: [observability] log_level %q not recognised", c.Observability.LogLevel)
+	}
+	// Storage.
+	if _, ok := validBackends[c.Server.Storage.Backend]; !ok {
+		return fmt.Errorf("sysconfig: [server.storage] backend %q not recognised (want \"sqlite\" or \"postgres\")", c.Server.Storage.Backend)
+	}
+	switch c.Server.Storage.Backend {
+	case "sqlite":
+		if c.Server.Storage.SQLite.Path == "" {
+			return errors.New("sysconfig: [server.storage.sqlite] path is required (or set server.data_dir)")
+		}
+	case "postgres":
+		if c.Server.Storage.Postgres.DSN == "" {
+			return errors.New("sysconfig: [server.storage.postgres] dsn is required")
+		}
 	}
 	return nil
 }
