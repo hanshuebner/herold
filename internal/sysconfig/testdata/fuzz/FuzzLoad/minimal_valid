@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[server]\nhostname = \"mail.example.com\"\ndata_dir = \"/var/lib/herold\"\n\n[server.admin_tls]\nsource = \"file\"\ncert_file = \"/a\"\nkey_file = \"/b\"\n\n[[listener]]\nname = \"l\"\naddress = \":25\"\nprotocol = \"smtp\"\ntls = \"starttls\"\n")

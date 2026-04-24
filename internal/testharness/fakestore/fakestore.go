@@ -1,0 +1,1094 @@
+// Package fakestore provides an in-memory implementation of store.Store for
+// use by the test harness. Blob bodies live under a caller-supplied tempdir
+// (typically t.TempDir); all other state lives in maps guarded by a single
+// RWMutex. The implementation favours clarity over performance: Phase 1
+// callers need round-trips to work, not a perf path.
+//
+// FTS is a trivial substring matcher over the indexed text. It honours the
+// Query structure (field lists AND-combined) but does not tokenize; that is
+// good enough for behaviour tests and deliberately weaker than the bleve
+// backend so tests cannot accidentally depend on ranking subtleties.
+package fakestore
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/store"
+)
+
+// Store is an in-memory store.Store backed by maps and a tempdir.
+type Store struct {
+	clk     clock.Clock
+	blobDir string
+
+	mu sync.RWMutex
+
+	// primary rows
+	principals map[store.PrincipalID]store.Principal
+	byEmail    map[string]store.PrincipalID
+	mailboxes  map[store.MailboxID]store.Mailbox
+	messages   map[store.MessageID]store.Message
+	aliases    map[store.AliasID]store.Alias
+	aliasBy    map[string]store.AliasID // "local@domain" -> alias
+	domains    map[string]store.Domain
+	providers  map[string]store.OIDCProvider
+	oidcLinks  map[string]store.OIDCLink // "provider|subject" -> link
+	apiKeys    map[store.APIKeyID]store.APIKey
+	keyByHash  map[string]store.APIKeyID
+
+	// content-addressed blobs: refcount lives here (not in Metadata) because
+	// the fake does not split the two surfaces; the test harness does not
+	// exercise the real refcount path.
+	blobSize map[string]int64
+	blobRefs map[string]int
+
+	// change feeds
+	stateChanges map[store.PrincipalID][]store.StateChange
+	changeSeq    map[store.PrincipalID]store.ChangeSeq
+	ftsChanges   []store.FTSChange
+	ftsSeq       uint64
+
+	// FTS documents: MessageID -> indexed text.
+	ftsDocs map[store.MessageID]ftsDoc
+
+	// monotonic ID counters
+	nextPrincipalID store.PrincipalID
+	nextMailboxID   store.MailboxID
+	nextMessageID   store.MessageID
+	nextAliasID     store.AliasID
+	nextAPIKeyID    store.APIKeyID
+	nextUIDValidity store.UIDValidity
+
+	closed bool
+}
+
+type ftsDoc struct {
+	msg  store.Message
+	text string
+}
+
+// Options configures a new in-memory Store.
+type Options struct {
+	// Clock supplies timestamps; defaults to a FakeClock anchored at
+	// 2026-01-01T00:00:00Z if nil.
+	Clock clock.Clock
+	// BlobDir is the filesystem root for blob bodies. Must already exist.
+	// When empty, a temporary directory is created with os.MkdirTemp and
+	// cleaned up in Close.
+	BlobDir string
+}
+
+// New returns an in-memory Store ready for use.
+func New(opts Options) (*Store, error) {
+	clk := opts.Clock
+	if clk == nil {
+		clk = clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	}
+	dir := opts.BlobDir
+	if dir == "" {
+		d, err := os.MkdirTemp("", "herold-fakestore-blobs-*")
+		if err != nil {
+			return nil, fmt.Errorf("fakestore: mkdir blobs: %w", err)
+		}
+		dir = d
+	}
+	return &Store{
+		clk:             clk,
+		blobDir:         dir,
+		principals:      make(map[store.PrincipalID]store.Principal),
+		byEmail:         make(map[string]store.PrincipalID),
+		mailboxes:       make(map[store.MailboxID]store.Mailbox),
+		messages:        make(map[store.MessageID]store.Message),
+		aliases:         make(map[store.AliasID]store.Alias),
+		aliasBy:         make(map[string]store.AliasID),
+		domains:         make(map[string]store.Domain),
+		providers:       make(map[string]store.OIDCProvider),
+		oidcLinks:       make(map[string]store.OIDCLink),
+		apiKeys:         make(map[store.APIKeyID]store.APIKey),
+		keyByHash:       make(map[string]store.APIKeyID),
+		blobSize:        make(map[string]int64),
+		blobRefs:        make(map[string]int),
+		stateChanges:    make(map[store.PrincipalID][]store.StateChange),
+		changeSeq:       make(map[store.PrincipalID]store.ChangeSeq),
+		ftsDocs:         make(map[store.MessageID]ftsDoc),
+		nextPrincipalID: 1,
+		nextMailboxID:   1,
+		nextMessageID:   1,
+		nextAliasID:     1,
+		nextAPIKeyID:    1,
+		nextUIDValidity: 1,
+	}, nil
+}
+
+// Meta returns the metadata repository surface.
+func (s *Store) Meta() store.Metadata { return (*metaFace)(s) }
+
+// Blobs returns the blob surface.
+func (s *Store) Blobs() store.Blobs { return (*blobsFace)(s) }
+
+// FTS returns the full-text search surface.
+func (s *Store) FTS() store.FTS { return (*ftsFace)(s) }
+
+// Close releases the blob directory. Subsequent calls are no-ops.
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	// Best-effort cleanup; the tempdir was ours to manage when BlobDir was
+	// empty. Caller-supplied dirs are not removed.
+	if s.blobDir != "" && strings.Contains(s.blobDir, "herold-fakestore-blobs-") {
+		_ = os.RemoveAll(s.blobDir)
+	}
+	return nil
+}
+
+// metaFace is a type alias that exposes the Metadata methods without letting
+// the Store struct's other methods satisfy the interface accidentally.
+type metaFace Store
+
+func (m *metaFace) s() *Store { return (*Store)(m) }
+
+// canonEmail lowercases and trims an email address for map-key use.
+func canonEmail(e string) string { return strings.TrimSpace(strings.ToLower(e)) }
+
+func aliasKey(local, domain string) string {
+	return strings.ToLower(local) + "@" + strings.ToLower(domain)
+}
+
+func oidcLinkKey(provider, subject string) string {
+	return provider + "|" + subject
+}
+
+// ---------- Metadata: principals ----------
+
+func (m *metaFace) GetPrincipalByID(ctx context.Context, id store.PrincipalID) (store.Principal, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Principal{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, ok := s.principals[id]
+	if !ok {
+		return store.Principal{}, fmt.Errorf("principal %d: %w", id, store.ErrNotFound)
+	}
+	return p, nil
+}
+
+func (m *metaFace) GetPrincipalByEmail(ctx context.Context, email string) (store.Principal, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Principal{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id, ok := s.byEmail[canonEmail(email)]
+	if !ok {
+		return store.Principal{}, fmt.Errorf("principal %q: %w", email, store.ErrNotFound)
+	}
+	return s.principals[id], nil
+}
+
+func (m *metaFace) InsertPrincipal(ctx context.Context, p store.Principal) (store.Principal, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Principal{}, err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	email := canonEmail(p.CanonicalEmail)
+	if _, exists := s.byEmail[email]; exists {
+		return store.Principal{}, fmt.Errorf("principal %q: %w", email, store.ErrConflict)
+	}
+	now := s.clk.Now()
+	p.ID = s.nextPrincipalID
+	s.nextPrincipalID++
+	p.CanonicalEmail = email
+	p.CreatedAt = now
+	p.UpdatedAt = now
+	s.principals[p.ID] = p
+	s.byEmail[email] = p.ID
+	return p, nil
+}
+
+func (m *metaFace) UpdatePrincipal(ctx context.Context, p store.Principal) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.principals[p.ID]
+	if !ok {
+		return fmt.Errorf("principal %d: %w", p.ID, store.ErrNotFound)
+	}
+	// If the email changed, remap byEmail.
+	newEmail := canonEmail(p.CanonicalEmail)
+	if newEmail != existing.CanonicalEmail {
+		if _, exists := s.byEmail[newEmail]; exists {
+			return fmt.Errorf("principal email %q: %w", newEmail, store.ErrConflict)
+		}
+		delete(s.byEmail, existing.CanonicalEmail)
+		s.byEmail[newEmail] = p.ID
+	}
+	p.CanonicalEmail = newEmail
+	p.CreatedAt = existing.CreatedAt
+	p.UpdatedAt = s.clk.Now()
+	s.principals[p.ID] = p
+	return nil
+}
+
+// ---------- Metadata: mailboxes ----------
+
+func (m *metaFace) GetMailboxByID(ctx context.Context, id store.MailboxID) (store.Mailbox, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Mailbox{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	mb, ok := s.mailboxes[id]
+	if !ok {
+		return store.Mailbox{}, fmt.Errorf("mailbox %d: %w", id, store.ErrNotFound)
+	}
+	return mb, nil
+}
+
+func (m *metaFace) ListMailboxes(ctx context.Context, principalID store.PrincipalID) ([]store.Mailbox, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []store.Mailbox
+	for _, mb := range s.mailboxes {
+		if mb.PrincipalID == principalID {
+			out = append(out, mb)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (m *metaFace) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.Mailbox, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Mailbox{}, err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.mailboxes {
+		if existing.PrincipalID == mb.PrincipalID && existing.Name == mb.Name {
+			return store.Mailbox{}, fmt.Errorf("mailbox %q: %w", mb.Name, store.ErrConflict)
+		}
+	}
+	now := s.clk.Now()
+	mb.ID = s.nextMailboxID
+	s.nextMailboxID++
+	mb.UIDValidity = s.nextUIDValidity
+	s.nextUIDValidity++
+	if mb.UIDNext == 0 {
+		mb.UIDNext = 1
+	}
+	mb.CreatedAt = now
+	mb.UpdatedAt = now
+	s.mailboxes[mb.ID] = mb
+
+	// Append mailbox-created state change.
+	s.appendStateChangeLocked(store.StateChange{
+		PrincipalID: mb.PrincipalID,
+		Kind:        store.ChangeKindMailboxCreated,
+		MailboxID:   mb.ID,
+		ProducedAt:  now,
+	})
+	return mb, nil
+}
+
+func (m *metaFace) DeleteMailbox(ctx context.Context, id store.MailboxID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mb, ok := s.mailboxes[id]
+	if !ok {
+		return fmt.Errorf("mailbox %d: %w", id, store.ErrNotFound)
+	}
+	now := s.clk.Now()
+	// Remove all messages in the mailbox, decrementing blob refcounts and
+	// appending destroyed entries.
+	for mid, msg := range s.messages {
+		if msg.MailboxID != id {
+			continue
+		}
+		if msg.Blob.Hash != "" {
+			s.blobRefs[msg.Blob.Hash]--
+			if s.blobRefs[msg.Blob.Hash] < 0 {
+				s.blobRefs[msg.Blob.Hash] = 0
+			}
+		}
+		delete(s.messages, mid)
+		delete(s.ftsDocs, mid)
+		s.appendStateChangeLocked(store.StateChange{
+			PrincipalID: mb.PrincipalID,
+			Kind:        store.ChangeKindMessageDestroyed,
+			MailboxID:   id,
+			MessageID:   mid,
+			MessageUID:  msg.UID,
+			ProducedAt:  now,
+		})
+		s.appendFTSChangeLocked(store.FTSChange{
+			PrincipalID: mb.PrincipalID,
+			MailboxID:   id,
+			MessageID:   mid,
+			Kind:        store.ChangeKindMessageDestroyed,
+			ProducedAt:  now,
+		})
+	}
+	delete(s.mailboxes, id)
+	s.appendStateChangeLocked(store.StateChange{
+		PrincipalID: mb.PrincipalID,
+		Kind:        store.ChangeKindMailboxDestroyed,
+		MailboxID:   id,
+		ProducedAt:  now,
+	})
+	return nil
+}
+
+// ---------- Metadata: messages ----------
+
+func (m *metaFace) GetMessage(ctx context.Context, id store.MessageID) (store.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Message{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	msg, ok := s.messages[id]
+	if !ok {
+		return store.Message{}, fmt.Errorf("message %d: %w", id, store.ErrNotFound)
+	}
+	return msg, nil
+}
+
+func (m *metaFace) InsertMessage(ctx context.Context, msg store.Message) (store.UID, store.ModSeq, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mb, ok := s.mailboxes[msg.MailboxID]
+	if !ok {
+		return 0, 0, fmt.Errorf("mailbox %d: %w", msg.MailboxID, store.ErrNotFound)
+	}
+	p, ok := s.principals[mb.PrincipalID]
+	if !ok {
+		return 0, 0, fmt.Errorf("principal %d: %w", mb.PrincipalID, store.ErrNotFound)
+	}
+	// Quota check: current total vs QuotaBytes (0 = unlimited).
+	if p.QuotaBytes > 0 {
+		var used int64
+		for _, m2 := range s.messages {
+			if existingMb, ok := s.mailboxes[m2.MailboxID]; ok && existingMb.PrincipalID == p.ID {
+				used += m2.Size
+			}
+		}
+		if used+msg.Size > p.QuotaBytes {
+			return 0, 0, fmt.Errorf("principal %d: %w", p.ID, store.ErrQuotaExceeded)
+		}
+	}
+	now := s.clk.Now()
+	msg.ID = s.nextMessageID
+	s.nextMessageID++
+	msg.UID = mb.UIDNext
+	mb.UIDNext++
+	mb.HighestModSeq++
+	msg.ModSeq = mb.HighestModSeq
+	if msg.InternalDate.IsZero() {
+		msg.InternalDate = now
+	}
+	if msg.ReceivedAt.IsZero() {
+		msg.ReceivedAt = now
+	}
+	mb.UpdatedAt = now
+	s.mailboxes[mb.ID] = mb
+	s.messages[msg.ID] = msg
+	if msg.Blob.Hash != "" {
+		s.blobRefs[msg.Blob.Hash]++
+	}
+	s.appendStateChangeLocked(store.StateChange{
+		PrincipalID: mb.PrincipalID,
+		Kind:        store.ChangeKindMessageCreated,
+		MailboxID:   mb.ID,
+		MessageID:   msg.ID,
+		MessageUID:  msg.UID,
+		ProducedAt:  now,
+	})
+	s.appendFTSChangeLocked(store.FTSChange{
+		PrincipalID: mb.PrincipalID,
+		MailboxID:   mb.ID,
+		MessageID:   msg.ID,
+		Kind:        store.ChangeKindMessageCreated,
+		ProducedAt:  now,
+	})
+	return msg.UID, msg.ModSeq, nil
+}
+
+func (m *metaFace) UpdateMessageFlags(
+	ctx context.Context,
+	id store.MessageID,
+	flagAdd, flagClear store.MessageFlags,
+	keywordAdd, keywordClear []string,
+	unchangedSince store.ModSeq,
+) (store.ModSeq, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msg, ok := s.messages[id]
+	if !ok {
+		return 0, fmt.Errorf("message %d: %w", id, store.ErrNotFound)
+	}
+	if unchangedSince != 0 && msg.ModSeq > unchangedSince {
+		return 0, fmt.Errorf("message %d unchangedsince: %w", id, store.ErrConflict)
+	}
+	mb, ok := s.mailboxes[msg.MailboxID]
+	if !ok {
+		return 0, fmt.Errorf("mailbox %d: %w", msg.MailboxID, store.ErrNotFound)
+	}
+	msg.Flags = (msg.Flags | flagAdd) &^ flagClear
+	// Keyword delta
+	if len(keywordAdd) > 0 || len(keywordClear) > 0 {
+		set := make(map[string]struct{}, len(msg.Keywords))
+		for _, k := range msg.Keywords {
+			set[strings.ToLower(k)] = struct{}{}
+		}
+		for _, k := range keywordAdd {
+			set[strings.ToLower(k)] = struct{}{}
+		}
+		for _, k := range keywordClear {
+			delete(set, strings.ToLower(k))
+		}
+		if len(set) == 0 {
+			msg.Keywords = nil
+		} else {
+			out := make([]string, 0, len(set))
+			for k := range set {
+				out = append(out, k)
+			}
+			sort.Strings(out)
+			msg.Keywords = out
+		}
+	}
+	mb.HighestModSeq++
+	msg.ModSeq = mb.HighestModSeq
+	now := s.clk.Now()
+	mb.UpdatedAt = now
+	s.mailboxes[mb.ID] = mb
+	s.messages[msg.ID] = msg
+	s.appendStateChangeLocked(store.StateChange{
+		PrincipalID: mb.PrincipalID,
+		Kind:        store.ChangeKindMessageUpdated,
+		MailboxID:   mb.ID,
+		MessageID:   msg.ID,
+		MessageUID:  msg.UID,
+		ProducedAt:  now,
+	})
+	s.appendFTSChangeLocked(store.FTSChange{
+		PrincipalID: mb.PrincipalID,
+		MailboxID:   mb.ID,
+		MessageID:   msg.ID,
+		Kind:        store.ChangeKindMessageUpdated,
+		ProducedAt:  now,
+	})
+	return msg.ModSeq, nil
+}
+
+func (m *metaFace) ExpungeMessages(ctx context.Context, mailboxID store.MailboxID, ids []store.MessageID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mb, ok := s.mailboxes[mailboxID]
+	if !ok {
+		return fmt.Errorf("mailbox %d: %w", mailboxID, store.ErrNotFound)
+	}
+	now := s.clk.Now()
+	var found int
+	for _, id := range ids {
+		msg, ok := s.messages[id]
+		if !ok || msg.MailboxID != mailboxID {
+			continue
+		}
+		found++
+		if msg.Blob.Hash != "" {
+			s.blobRefs[msg.Blob.Hash]--
+			if s.blobRefs[msg.Blob.Hash] < 0 {
+				s.blobRefs[msg.Blob.Hash] = 0
+			}
+		}
+		delete(s.messages, id)
+		delete(s.ftsDocs, id)
+		mb.HighestModSeq++
+		s.appendStateChangeLocked(store.StateChange{
+			PrincipalID: mb.PrincipalID,
+			Kind:        store.ChangeKindMessageDestroyed,
+			MailboxID:   mailboxID,
+			MessageID:   id,
+			MessageUID:  msg.UID,
+			ProducedAt:  now,
+		})
+		s.appendFTSChangeLocked(store.FTSChange{
+			PrincipalID: mb.PrincipalID,
+			MailboxID:   mailboxID,
+			MessageID:   id,
+			Kind:        store.ChangeKindMessageDestroyed,
+			ProducedAt:  now,
+		})
+	}
+	if found == 0 && len(ids) > 0 {
+		return fmt.Errorf("expunge: %w", store.ErrNotFound)
+	}
+	mb.UpdatedAt = now
+	s.mailboxes[mailboxID] = mb
+	return nil
+}
+
+func (m *metaFace) UpdateMailboxModseqAndAppendChange(
+	ctx context.Context,
+	mailboxID store.MailboxID,
+	change store.StateChange,
+) (store.ModSeq, store.ChangeSeq, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mb, ok := s.mailboxes[mailboxID]
+	if !ok {
+		return 0, 0, fmt.Errorf("mailbox %d: %w", mailboxID, store.ErrNotFound)
+	}
+	mb.HighestModSeq++
+	now := s.clk.Now()
+	mb.UpdatedAt = now
+	s.mailboxes[mailboxID] = mb
+	if change.ProducedAt.IsZero() {
+		change.ProducedAt = now
+	}
+	if change.PrincipalID == 0 {
+		change.PrincipalID = mb.PrincipalID
+	}
+	if change.MailboxID == 0 {
+		change.MailboxID = mailboxID
+	}
+	s.appendStateChangeLocked(change)
+	// The appended change now carries Seq; read it back.
+	feed := s.stateChanges[change.PrincipalID]
+	seq := feed[len(feed)-1].Seq
+	return mb.HighestModSeq, seq, nil
+}
+
+// ---------- Metadata: change feed ----------
+
+func (m *metaFace) ReadChangeFeed(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	fromSeq store.ChangeSeq,
+	max int,
+) ([]store.StateChange, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	feed := s.stateChanges[principalID]
+	var out []store.StateChange
+	for _, c := range feed {
+		if c.Seq <= fromSeq {
+			continue
+		}
+		out = append(out, c)
+		if max > 0 && len(out) >= max {
+			break
+		}
+	}
+	return out, nil
+}
+
+// ---------- Metadata: aliases, domains ----------
+
+func (m *metaFace) InsertAlias(ctx context.Context, a store.Alias) (store.Alias, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Alias{}, err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := aliasKey(a.LocalPart, a.Domain)
+	if _, exists := s.aliasBy[key]; exists {
+		return store.Alias{}, fmt.Errorf("alias %q: %w", key, store.ErrConflict)
+	}
+	a.ID = s.nextAliasID
+	s.nextAliasID++
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = s.clk.Now()
+	}
+	s.aliases[a.ID] = a
+	s.aliasBy[key] = a.ID
+	return a, nil
+}
+
+func (m *metaFace) ResolveAlias(ctx context.Context, localPart, domain string) (store.PrincipalID, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if id, ok := s.aliasBy[aliasKey(localPart, domain)]; ok {
+		a := s.aliases[id]
+		if a.ExpiresAt != nil && !a.ExpiresAt.After(s.clk.Now()) {
+			return 0, fmt.Errorf("alias %q expired: %w", aliasKey(localPart, domain), store.ErrNotFound)
+		}
+		return a.TargetPrincipal, nil
+	}
+	// Fall back to canonical principal address.
+	email := canonEmail(localPart + "@" + domain)
+	if id, ok := s.byEmail[email]; ok {
+		return id, nil
+	}
+	return 0, fmt.Errorf("alias %q: %w", email, store.ErrNotFound)
+}
+
+func (m *metaFace) InsertDomain(ctx context.Context, d store.Domain) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name := strings.ToLower(d.Name)
+	if _, exists := s.domains[name]; exists {
+		return fmt.Errorf("domain %q: %w", name, store.ErrConflict)
+	}
+	if d.CreatedAt.IsZero() {
+		d.CreatedAt = s.clk.Now()
+	}
+	d.Name = name
+	s.domains[name] = d
+	return nil
+}
+
+func (m *metaFace) GetDomain(ctx context.Context, name string) (store.Domain, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Domain{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	d, ok := s.domains[strings.ToLower(name)]
+	if !ok {
+		return store.Domain{}, fmt.Errorf("domain %q: %w", name, store.ErrNotFound)
+	}
+	return d, nil
+}
+
+func (m *metaFace) ListLocalDomains(ctx context.Context) ([]store.Domain, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []store.Domain
+	for _, d := range s.domains {
+		if d.IsLocal {
+			out = append(out, d)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// ---------- Metadata: OIDC, API keys ----------
+
+func (m *metaFace) InsertOIDCProvider(ctx context.Context, p store.OIDCProvider) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.providers[p.Name]; exists {
+		return fmt.Errorf("oidc provider %q: %w", p.Name, store.ErrConflict)
+	}
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = s.clk.Now()
+	}
+	s.providers[p.Name] = p
+	return nil
+}
+
+func (m *metaFace) GetOIDCProvider(ctx context.Context, name string) (store.OIDCProvider, error) {
+	if err := ctx.Err(); err != nil {
+		return store.OIDCProvider{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, ok := s.providers[name]
+	if !ok {
+		return store.OIDCProvider{}, fmt.Errorf("oidc provider %q: %w", name, store.ErrNotFound)
+	}
+	return p, nil
+}
+
+func (m *metaFace) LinkOIDC(ctx context.Context, link store.OIDCLink) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := oidcLinkKey(link.ProviderName, link.Subject)
+	if _, exists := s.oidcLinks[key]; exists {
+		return fmt.Errorf("oidc link %q: %w", key, store.ErrConflict)
+	}
+	if link.LinkedAt.IsZero() {
+		link.LinkedAt = s.clk.Now()
+	}
+	s.oidcLinks[key] = link
+	return nil
+}
+
+func (m *metaFace) LookupOIDCLink(ctx context.Context, provider, subject string) (store.OIDCLink, error) {
+	if err := ctx.Err(); err != nil {
+		return store.OIDCLink{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	link, ok := s.oidcLinks[oidcLinkKey(provider, subject)]
+	if !ok {
+		return store.OIDCLink{}, fmt.Errorf("oidc link %s/%s: %w", provider, subject, store.ErrNotFound)
+	}
+	return link, nil
+}
+
+func (m *metaFace) InsertAPIKey(ctx context.Context, k store.APIKey) (store.APIKey, error) {
+	if err := ctx.Err(); err != nil {
+		return store.APIKey{}, err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.keyByHash[k.Hash]; exists {
+		return store.APIKey{}, fmt.Errorf("api key: %w", store.ErrConflict)
+	}
+	k.ID = s.nextAPIKeyID
+	s.nextAPIKeyID++
+	k.CreatedAt = s.clk.Now()
+	s.apiKeys[k.ID] = k
+	s.keyByHash[k.Hash] = k.ID
+	return k, nil
+}
+
+func (m *metaFace) GetAPIKeyByHash(ctx context.Context, hash string) (store.APIKey, error) {
+	if err := ctx.Err(); err != nil {
+		return store.APIKey{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id, ok := s.keyByHash[hash]
+	if !ok {
+		return store.APIKey{}, fmt.Errorf("api key: %w", store.ErrNotFound)
+	}
+	return s.apiKeys[id], nil
+}
+
+func (m *metaFace) TouchAPIKey(ctx context.Context, id store.APIKeyID, at time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k, ok := s.apiKeys[id]
+	if !ok {
+		return fmt.Errorf("api key %d: %w", id, store.ErrNotFound)
+	}
+	k.LastUsedAt = at
+	s.apiKeys[id] = k
+	return nil
+}
+
+// appendStateChangeLocked requires s.mu held exclusively. It assigns the
+// principal-local Seq in the change before appending it.
+func (s *Store) appendStateChangeLocked(c store.StateChange) {
+	s.changeSeq[c.PrincipalID]++
+	c.Seq = s.changeSeq[c.PrincipalID]
+	s.stateChanges[c.PrincipalID] = append(s.stateChanges[c.PrincipalID], c)
+}
+
+// appendFTSChangeLocked requires s.mu held exclusively. It assigns the
+// global Seq before appending.
+func (s *Store) appendFTSChangeLocked(c store.FTSChange) {
+	s.ftsSeq++
+	c.Seq = s.ftsSeq
+	s.ftsChanges = append(s.ftsChanges, c)
+}
+
+// ---------- Blobs ----------
+
+type blobsFace Store
+
+func (b *blobsFace) s() *Store { return (*Store)(b) }
+
+// canonicalizeCRLF rewrites any bare LF (not preceded by CR) as CRLF, and any
+// bare CR (not followed by LF) as CRLF. That matches RFC 5322 message
+// canonicalization (REQ-STORE-10).
+func canonicalizeCRLF(in []byte) []byte {
+	out := make([]byte, 0, len(in))
+	for i := 0; i < len(in); i++ {
+		c := in[i]
+		switch c {
+		case '\r':
+			out = append(out, '\r')
+			if i+1 < len(in) && in[i+1] == '\n' {
+				out = append(out, '\n')
+				i++
+			} else {
+				out = append(out, '\n')
+			}
+		case '\n':
+			out = append(out, '\r', '\n')
+		default:
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (b *blobsFace) Put(ctx context.Context, r io.Reader) (store.BlobRef, error) {
+	if err := ctx.Err(); err != nil {
+		return store.BlobRef{}, err
+	}
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return store.BlobRef{}, fmt.Errorf("fakestore blob put: %w", err)
+	}
+	canon := canonicalizeCRLF(raw)
+	sum := sha256.Sum256(canon)
+	hash := hex.EncodeToString(sum[:])
+	s := b.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.blobSize[hash]; !exists {
+		path := filepath.Join(s.blobDir, hash)
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, canon, 0o600); err != nil {
+			return store.BlobRef{}, fmt.Errorf("fakestore blob write: %w", err)
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			return store.BlobRef{}, fmt.Errorf("fakestore blob rename: %w", err)
+		}
+		s.blobSize[hash] = int64(len(canon))
+	}
+	return store.BlobRef{Hash: hash, Size: int64(len(canon))}, nil
+}
+
+func (b *blobsFace) Get(ctx context.Context, hash string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := b.s()
+	s.mu.RLock()
+	_, ok := s.blobSize[hash]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("blob %s: %w", hash, store.ErrNotFound)
+	}
+	f, err := os.Open(filepath.Join(s.blobDir, hash))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("blob %s: %w", hash, store.ErrNotFound)
+		}
+		return nil, fmt.Errorf("fakestore blob open: %w", err)
+	}
+	return f, nil
+}
+
+func (b *blobsFace) Stat(ctx context.Context, hash string) (int64, int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	s := b.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	size, ok := s.blobSize[hash]
+	if !ok {
+		return 0, 0, fmt.Errorf("blob %s: %w", hash, store.ErrNotFound)
+	}
+	return size, s.blobRefs[hash], nil
+}
+
+func (b *blobsFace) Delete(ctx context.Context, hash string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := b.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.blobSize[hash]; !ok {
+		return fmt.Errorf("blob %s: %w", hash, store.ErrNotFound)
+	}
+	delete(s.blobSize, hash)
+	delete(s.blobRefs, hash)
+	path := filepath.Join(s.blobDir, hash)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("fakestore blob delete: %w", err)
+	}
+	return nil
+}
+
+// ---------- FTS ----------
+
+type ftsFace Store
+
+func (f *ftsFace) s() *Store { return (*Store)(f) }
+
+func (f *ftsFace) IndexMessage(ctx context.Context, msg store.Message, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := f.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ftsDocs[msg.ID] = ftsDoc{msg: msg, text: strings.ToLower(text)}
+	return nil
+}
+
+func (f *ftsFace) RemoveMessage(ctx context.Context, id store.MessageID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := f.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.ftsDocs, id)
+	return nil
+}
+
+func (f *ftsFace) Query(ctx context.Context, principalID store.PrincipalID, q store.Query) ([]store.MessageRef, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := f.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var terms []string
+	if q.Text != "" {
+		terms = append(terms, strings.ToLower(q.Text))
+	}
+	addLower := func(xs []string) {
+		for _, x := range xs {
+			if strings.TrimSpace(x) == "" {
+				continue
+			}
+			terms = append(terms, strings.ToLower(x))
+		}
+	}
+	addLower(q.Subject)
+	addLower(q.From)
+	addLower(q.To)
+	addLower(q.Body)
+	addLower(q.AttachmentName)
+
+	var out []store.MessageRef
+	for _, doc := range s.ftsDocs {
+		mb, ok := s.mailboxes[doc.msg.MailboxID]
+		if !ok || mb.PrincipalID != principalID {
+			continue
+		}
+		if q.MailboxID != 0 && mb.ID != q.MailboxID {
+			continue
+		}
+		// Empty query matches everything the principal owns.
+		matched := true
+		score := 1.0
+		for _, t := range terms {
+			if !strings.Contains(doc.text, t) {
+				matched = false
+				break
+			}
+			score += 1.0
+		}
+		if !matched {
+			continue
+		}
+		out = append(out, store.MessageRef{
+			MessageID: doc.msg.ID,
+			MailboxID: doc.msg.MailboxID,
+			Score:     score,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		return out[i].MessageID < out[j].MessageID
+	})
+	if q.Limit > 0 && len(out) > q.Limit {
+		out = out[:q.Limit]
+	}
+	return out, nil
+}
+
+func (f *ftsFace) ReadChangeFeedForFTS(ctx context.Context, cursor uint64, max int) ([]store.FTSChange, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := f.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []store.FTSChange
+	for _, c := range s.ftsChanges {
+		if c.Seq <= cursor {
+			continue
+		}
+		out = append(out, c)
+		if max > 0 && len(out) >= max {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *ftsFace) Commit(ctx context.Context) error {
+	return ctx.Err()
+}

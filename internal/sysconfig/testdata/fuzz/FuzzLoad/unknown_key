@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[server]\nhostname = \"a\"\ndata_dir = \"b\"\ntotally_unknown = true\n")

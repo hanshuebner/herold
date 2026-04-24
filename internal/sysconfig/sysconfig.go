@@ -1,0 +1,223 @@
+package sysconfig
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+
+	toml "github.com/pelletier/go-toml/v2"
+)
+
+// Config is the parsed representation of /etc/herold/system.toml (REQ-OPS-01..08).
+// Unknown keys at parse time are errors.
+type Config struct {
+	Server        ServerConfig        `toml:"server"`
+	Acme          *AcmeConfig         `toml:"acme,omitempty"`
+	Listener      []ListenerConfig    `toml:"listener"`
+	Plugin        []PluginConfig      `toml:"plugin"`
+	Observability ObservabilityConfig `toml:"observability"`
+}
+
+// ServerConfig carries process-wide settings.
+type ServerConfig struct {
+	Hostname   string         `toml:"hostname"`
+	DataDir    string         `toml:"data_dir"`
+	RunAsUser  string         `toml:"run_as_user"`
+	RunAsGroup string         `toml:"run_as_group"`
+	AdminTLS   AdminTLSConfig `toml:"admin_tls"`
+}
+
+// AdminTLSConfig controls the cert used for the admin HTTPS surface.
+// Phase 1 accepts only source = "file"; "acme" is rejected at Validate.
+type AdminTLSConfig struct {
+	Source      string `toml:"source"`
+	CertFile    string `toml:"cert_file,omitempty"`
+	KeyFile     string `toml:"key_file,omitempty"`
+	AcmeAccount string `toml:"acme_account,omitempty"`
+}
+
+// ListenerConfig describes a single bound listener (REQ-OPS-03).
+type ListenerConfig struct {
+	Name          string `toml:"name"`
+	Address       string `toml:"address"`
+	Protocol      string `toml:"protocol"`
+	TLS           string `toml:"tls"`
+	AuthRequired  bool   `toml:"auth_required,omitempty"`
+	ProxyProtocol bool   `toml:"proxy_protocol,omitempty"`
+	CertFile      string `toml:"cert_file,omitempty"`
+	KeyFile       string `toml:"key_file,omitempty"`
+}
+
+// AcmeConfig is parsed but explicitly rejected in Phase 1.
+type AcmeConfig struct {
+	Email        string `toml:"email,omitempty"`
+	DirectoryURL string `toml:"directory_url,omitempty"`
+}
+
+// PluginConfig describes an out-of-process plugin declaration.
+type PluginConfig struct {
+	Name      string            `toml:"name"`
+	Path      string            `toml:"path"`
+	Type      string            `toml:"type"`
+	Lifecycle string            `toml:"lifecycle"`
+	Options   map[string]string `toml:"options,omitempty"`
+}
+
+// ObservabilityConfig controls log format, level, metrics bind, and OTLP export.
+type ObservabilityConfig struct {
+	LogFormat    string `toml:"log_format,omitempty"`
+	LogLevel     string `toml:"log_level,omitempty"`
+	MetricsBind  string `toml:"metrics_bind,omitempty"`
+	OTLPEndpoint string `toml:"otlp_endpoint,omitempty"`
+}
+
+// Valid protocol / tls / lifecycle / plugin-type / log level sets.
+var (
+	validProtocols  = map[string]struct{}{"smtp": {}, "smtp-submission": {}, "imap": {}, "imaps": {}, "admin": {}}
+	validTLSModes   = map[string]struct{}{"none": {}, "starttls": {}, "implicit": {}}
+	validLifecycles = map[string]struct{}{"long-running": {}, "on-demand": {}}
+	validPluginType = map[string]struct{}{"dns": {}, "spam": {}, "events": {}, "directory": {}, "delivery": {}}
+	validLogLevels  = map[string]struct{}{"debug": {}, "info": {}, "warn": {}, "error": {}}
+	validLogFormats = map[string]struct{}{"json": {}, "text": {}}
+)
+
+// Load reads path, parses it strictly, applies defaults, and validates.
+func Load(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("sysconfig: read %q: %w", path, err)
+	}
+	return Parse(raw)
+}
+
+// Parse parses the given TOML bytes and validates them.
+func Parse(raw []byte) (*Config, error) {
+	var cfg Config
+	dec := toml.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("sysconfig: parse: %w", enrichDecodeError(err))
+	}
+	applyDefaults(&cfg)
+	if err := Validate(&cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// enrichDecodeError turns go-toml's generic "fields in the document are
+// missing in the target struct" into a message that names the offending keys.
+func enrichDecodeError(err error) error {
+	var strict *toml.StrictMissingError
+	if errors.As(err, &strict) {
+		keys := make([]string, 0, len(strict.Errors))
+		for i := range strict.Errors {
+			de := &strict.Errors[i]
+			keys = append(keys, strings.Join(de.Key(), "."))
+		}
+		return fmt.Errorf("unknown key(s): %s", strings.Join(keys, ", "))
+	}
+	return err
+}
+
+func applyDefaults(c *Config) {
+	if c.Observability.LogFormat == "" {
+		c.Observability.LogFormat = "json"
+	}
+	if c.Observability.LogLevel == "" {
+		c.Observability.LogLevel = "info"
+	}
+	if c.Observability.MetricsBind == "" {
+		c.Observability.MetricsBind = "127.0.0.1:9090"
+	}
+}
+
+// Validate performs cross-field and semantic checks that go-toml cannot express.
+func Validate(c *Config) error {
+	if c == nil {
+		return errors.New("sysconfig: nil config")
+	}
+	if c.Server.Hostname == "" {
+		return errors.New("sysconfig: [server] hostname is required")
+	}
+	if c.Server.DataDir == "" {
+		return errors.New("sysconfig: [server] data_dir is required")
+	}
+	// Admin TLS
+	switch c.Server.AdminTLS.Source {
+	case "":
+		return errors.New("sysconfig: [server.admin_tls] source is required (Phase 1: only \"file\" is supported)")
+	case "file":
+		if c.Server.AdminTLS.CertFile == "" || c.Server.AdminTLS.KeyFile == "" {
+			return errors.New("sysconfig: [server.admin_tls] source=\"file\" requires cert_file and key_file")
+		}
+	case "acme":
+		return errors.New("sysconfig: [server.admin_tls] source=\"acme\" not supported in Phase 1 (Phase 2: ACME lands in queue-delivery-implementor's surface)")
+	default:
+		return fmt.Errorf("sysconfig: [server.admin_tls] source %q not recognised (want \"file\" or \"acme\")", c.Server.AdminTLS.Source)
+	}
+	// [acme] block is parsed (so operators can follow future examples without
+	// hitting unknown-key errors) but rejected as a hard error in Phase 1.
+	if c.Acme != nil {
+		return errors.New("sysconfig: [acme] block not supported in Phase 1 (Phase 2: ACME lands in queue-delivery-implementor's surface)")
+	}
+	// Listeners.
+	if len(c.Listener) == 0 {
+		return errors.New("sysconfig: at least one [[listener]] is required")
+	}
+	seen := make(map[string]struct{}, len(c.Listener))
+	for i, l := range c.Listener {
+		if l.Name == "" {
+			return fmt.Errorf("sysconfig: [[listener]] #%d: name is required", i)
+		}
+		if _, dup := seen[l.Name]; dup {
+			return fmt.Errorf("sysconfig: [[listener]] %q: duplicate name", l.Name)
+		}
+		seen[l.Name] = struct{}{}
+		if l.Address == "" {
+			return fmt.Errorf("sysconfig: [[listener]] %q: address is required", l.Name)
+		}
+		if _, ok := validProtocols[l.Protocol]; !ok {
+			return fmt.Errorf("sysconfig: [[listener]] %q: protocol %q not recognised", l.Name, l.Protocol)
+		}
+		if _, ok := validTLSModes[l.TLS]; !ok {
+			return fmt.Errorf("sysconfig: [[listener]] %q: tls %q not recognised (want \"none\", \"starttls\", or \"implicit\")", l.Name, l.TLS)
+		}
+		// per-listener cert override: both or neither
+		if (l.CertFile == "") != (l.KeyFile == "") {
+			return fmt.Errorf("sysconfig: [[listener]] %q: cert_file and key_file must both be set or both empty", l.Name)
+		}
+		if l.TLS == "none" && (l.CertFile != "" || l.KeyFile != "") {
+			return fmt.Errorf("sysconfig: [[listener]] %q: cert_file/key_file set but tls=\"none\"", l.Name)
+		}
+	}
+	// Plugins.
+	pseen := make(map[string]struct{}, len(c.Plugin))
+	for i, p := range c.Plugin {
+		if p.Name == "" {
+			return fmt.Errorf("sysconfig: [[plugin]] #%d: name is required", i)
+		}
+		if _, dup := pseen[p.Name]; dup {
+			return fmt.Errorf("sysconfig: [[plugin]] %q: duplicate name", p.Name)
+		}
+		pseen[p.Name] = struct{}{}
+		if p.Path == "" {
+			return fmt.Errorf("sysconfig: [[plugin]] %q: path is required", p.Name)
+		}
+		if _, ok := validPluginType[p.Type]; !ok {
+			return fmt.Errorf("sysconfig: [[plugin]] %q: type %q not recognised", p.Name, p.Type)
+		}
+		if _, ok := validLifecycles[p.Lifecycle]; !ok {
+			return fmt.Errorf("sysconfig: [[plugin]] %q: lifecycle %q not recognised", p.Name, p.Lifecycle)
+		}
+	}
+	// Observability.
+	if _, ok := validLogFormats[c.Observability.LogFormat]; !ok {
+		return fmt.Errorf("sysconfig: [observability] log_format %q not recognised", c.Observability.LogFormat)
+	}
+	if _, ok := validLogLevels[c.Observability.LogLevel]; !ok {
+		return fmt.Errorf("sysconfig: [observability] log_level %q not recognised", c.Observability.LogLevel)
+	}
+	return nil
+}

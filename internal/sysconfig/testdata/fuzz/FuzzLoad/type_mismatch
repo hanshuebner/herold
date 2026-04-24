@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[server]\nhostname = 1234\n")
