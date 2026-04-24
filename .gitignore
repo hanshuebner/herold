@@ -1,0 +1,36 @@
+# Build artefacts
+/bin/
+/dist/
+/herold
+/herold-*
+*.exe
+*.test
+*.prof
+*.pprof
+coverage.out
+coverage.html
+
+# Editor / OS scratch
+*~
+.#*
+\#*#
+.DS_Store
+.vscode/
+.idea/
+
+# Go fuzz corpus caches (seed corpora under testdata/fuzz/ are checked in;
+# the auto-generated corpus cache is not)
+/cache/fuzz/
+/pkg/
+/go/
+
+# Local dev scratch
+/.envrc
+/.env
+/.env.local
+/data/
+/tmp/
+/plugins/**/plugins/
+
+# Container bind mounts
+/deploy/docker/data/

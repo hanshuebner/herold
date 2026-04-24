@@ -1,0 +1,62 @@
+# Dev-mode compose: herold + Postgres + NATS + a local Ollama for the spam
+# plugin + MailHog as a throwaway external SMTP target. Not for production.
+
+services:
+  herold:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    volumes:
+      - ./data:/var/lib/herold
+      - ./system.toml:/etc/herold/system.toml:ro
+    ports:
+      - "25:25"
+      - "587:587"
+      - "465:465"
+      - "143:143"
+      - "993:993"
+      - "4190:4190"
+      - "8080:8080"
+    environment:
+      HEROLD_SYSTEM_CONFIG: /etc/herold/system.toml
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: herold
+      POSTGRES_PASSWORD: herold
+      POSTGRES_DB: herold
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "herold"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  nats:
+    image: nats:2-alpine
+    command: ["-js"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./data/ollama:/root/.ollama
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"
+      - "8025:8025"

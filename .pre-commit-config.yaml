@@ -1,0 +1,64 @@
+# Pre-commit hooks. Install once with:
+#   pip install pre-commit && pre-commit install
+#
+# The Go-specific hooks use local wrappers so the versions match what CI uses
+# (they read $(go env GOPATH)/bin). Keep this file and .github/workflows/ci.yml
+# aligned — a contributor running pre-commit locally should see the same
+# failures that CI would report.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: trailing-whitespace
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -l -d
+        language: system
+        types: [go]
+        pass_filenames: true
+      - id: goimports
+        name: goimports
+        entry: bash -c 'command -v goimports >/dev/null 2>&1 || { echo "install: go install golang.org/x/tools/cmd/goimports@latest" >&2; exit 1; }; goimports -l -d -local github.com/hanshuebner/herold "$@"' --
+        language: system
+        types: [go]
+        pass_filenames: true
+      - id: go-vet
+        name: go vet
+        entry: bash -c 'go vet ./... || exit 1' --
+        language: system
+        types: [go]
+        pass_filenames: false
+      - id: go-mod-tidy
+        name: go mod tidy (check)
+        entry: bash -c 'go mod tidy && git diff --exit-code go.mod go.sum' --
+        language: system
+        pass_filenames: false
+        files: (^go\.mod$|^go\.sum$|\.go$)
+      - id: staticcheck
+        name: staticcheck
+        entry: bash -c 'command -v staticcheck >/dev/null 2>&1 || { echo "install: go install honnef.co/go/tools/cmd/staticcheck@latest" >&2; exit 1; }; staticcheck ./...' --
+        language: system
+        types: [go]
+        pass_filenames: false
+
+default_language_version:
+  python: python3

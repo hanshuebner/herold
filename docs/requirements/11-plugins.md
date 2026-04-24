@@ -1,0 +1,155 @@
+# 11 — Plugins
+
+Plugins extend Herold at defined points. First-class in v1. Out-of-process, JSON-RPC, language-agnostic.
+
+## What plugins are for (v1)
+
+Concrete use cases, ordered by priority:
+
+1. **DNS providers** — most important. One plugin per DNS provider. Used for:
+   - ACME DNS-01 challenges (`present`/`cleanup` a TXT record).
+   - Automatic publication of DKIM, MTA-STS, TLSRPT, DMARC, DANE TLSA, SPF records when a domain is added / keys rotated / certs renewed.
+2. **Spam classifier** — the default implementation is itself a plugin (OpenAI-compatible HTTP adapter). Operators can swap it for a different classifier.
+3. **Event publishers** — forward server events (mail.received, mail.sent, mail.bounced, auth events, queue events, …) to external brokers. **NATS plugin ships with v1** as the default. Operators can add Kafka, SQS, Redis Streams, Pulsar, custom webhook destinations.
+4. **Directory adapters** — auth / user stores beyond the built-in internal directory (e.g. LDAP, a proprietary HR system, a custom OAuth flow). LDAP is not built-in (out of scope v1); operators wanting LDAP write or install an LDAP directory-adapter plugin. External OIDC federation is *not* plugin-based — it's built-in.
+5. **Delivery hooks** — pre-delivery or post-delivery callbacks. Use cases: external archival, SIEM ingest, custom routing decisions, virus scan via external service.
+
+Out of v1 scope:
+
+- Plugins that add wire protocols (e.g. "add a Gemini listener"). Protocol handlers are in-tree.
+- Plugins that run inside the hot SMTP path as filters (performance-sensitive, stability-sensitive — delivery hooks cover the common need without sitting inline).
+- Plugins that modify message content at delivery. (Reconsider post-v1.)
+
+## Plugin types and contracts
+
+Each type has a fixed JSON-RPC method set. Plugins declare their type in their manifest.
+
+### DNS provider
+
+Methods:
+- `dns.present(zone, record_type, name, value, ttl) → {id}` — create the record; return opaque id for later cleanup.
+- `dns.cleanup(id)` — delete a previously-created record.
+- `dns.list(zone, record_type, name?) → [{id, value, ttl}]` — list records (for reconciliation).
+- `dns.replace(zone, record_type, name, value, ttl) → {id}` — idempotent upsert.
+
+Used by:
+- `acme` module (DNS-01 challenges).
+- Automatic DNS publication module (DKIM selector TXT, `_mta-sts` TXT, `_smtp._tls` TXT, `_dmarc` TXT, `_<mx>._tcp.<domain>` TLSA).
+
+### Spam classifier
+
+Methods:
+- `spam.classify(envelope, headers, body_excerpt, auth_results, context) → {verdict, confidence, reason}`
+- `spam.health() → {ok, latency_ms_p50}`
+
+The default shipped plugin is an OpenAI-compatible HTTP adapter. An operator-written plugin could be anything — a local classifier binary, a rules engine, a call to a proprietary service.
+
+### Directory
+
+Methods:
+- `directory.lookup(email) → {principal|null}`
+- `directory.authenticate(credential) → {principal_id|null, reason?}`
+- `directory.list_aliases(email) → [alias]`
+
+Called alongside or instead of built-in directory (plugin participation in the lookup chain is configured per REQ-AUTH-13 style ordering).
+
+### Delivery hooks
+
+Methods:
+- `delivery.pre(envelope, headers) → {action, reason?}` where `action` ∈ {`allow`, `reject`, `defer`, `tag`}
+- `delivery.post(envelope, headers, verdict, mailbox) → void` (fire-and-forget, for archival/SIEM)
+
+`pre` is synchronous; `post` is async (server doesn't wait).
+
+### Event publisher
+
+Methods:
+- `events.subscribe(types[], filter?) → {ack}` — called once at plugin configure; plugin declares desired event types (full list in `requirements/13-events.md`).
+- `events.publish(event) → {ack}` — one event delivered per call; `ack` is plugin-side receipt, not end-to-end.
+- `events.health() → {ok, backlog_ms?}` — optional backlog hint for observability.
+
+Delivery semantics: at-most-once (REQ-EVT-10). Event payload capped at 16 KiB (REQ-EVT-04). Events are fire-and-forget from the server's perspective — the bounded in-process event channel protects the hot path.
+
+## Requirements
+
+### Lifecycle
+
+- **REQ-PLUG-01** Plugins are executables (native binary or interpreted script with a shebang). Language-agnostic.
+- **REQ-PLUG-02** The server launches each plugin as a child process on startup (long-running plugins) or on-demand per invocation (short-lived plugins). Lifecycle mode declared in plugin manifest.
+- **REQ-PLUG-03** Long-running plugins communicate over JSON-RPC on stdin/stdout (newline-delimited, one message per line).
+- **REQ-PLUG-04** On-demand plugins are invoked per-call with arguments on stdin, response on stdout, exit 0 on success.
+- **REQ-PLUG-05** Server MUST restart crashed long-running plugins with exponential backoff. Repeated crashes (>5 in 5 min) put the plugin in `disabled` state; operator alerted via metric + log.
+- **REQ-PLUG-06** Plugin stderr captured into the server's log stream with the plugin name as a field.
+
+### Configuration
+
+- **REQ-PLUG-10** Plugins declared in **system config** (not application config). Each declaration: `name`, `path`, `type` (dns | spam | directory | delivery-hook | event-publisher), `lifecycle` (long-running | on-demand), plugin-specific `options`.
+- **REQ-PLUG-11** Multiple plugins of the same type allowed (e.g. DNS plugin for Cloudflare zones, another for Route53). Each is named and referenced by name.
+- **REQ-PLUG-12** Application config references plugins by name (e.g. domain `example.com` has `dns_plugin = "cloudflare"`).
+- **REQ-PLUG-13** SIGHUP reloads plugin manifests (starts new, stops removed, restarts changed).
+
+### Manifest
+
+Every plugin ships with a manifest (JSON, served via `manifest` JSON-RPC call at startup):
+
+```json
+{
+  "name": "herold-dns-cloudflare",
+  "version": "1.0.0",
+  "abi_version": 1,
+  "type": "dns",
+  "lifecycle": "long-running",
+  "capabilities": ["dns.present", "dns.cleanup", "dns.list", "dns.replace"],
+  "options_schema": {
+    "api_token": {"type": "string", "required": true, "secret": true}
+  }
+}
+```
+
+- **REQ-PLUG-20** Server MUST verify ABI version compatibility at startup. Incompatible plugin → plugin disabled, operator alerted.
+- **REQ-PLUG-21** `options_schema` is JSON-schema-ish; server validates operator config against it before starting the plugin.
+- **REQ-PLUG-22** Secrets in options are passed via env vars or a FIFO, never on command line (visible in `ps`).
+
+### JSON-RPC
+
+- **REQ-PLUG-30** JSON-RPC 2.0 over newline-delimited JSON on stdin/stdout. One message per line.
+- **REQ-PLUG-31** Server-to-plugin methods listed per type above. Plugin-to-server: `log` (emit a log line into server's stream), `metric` (emit a metric), `notify` (raise an event).
+- **REQ-PLUG-32** Timeouts: per-method defaults (DNS: 30s, spam: 5s, directory: 2s, delivery-hook pre: 2s, post: 10s), configurable per-plugin.
+- **REQ-PLUG-33** Request cancellation: server sends `cancel` for the given request id; plugin SHOULD stop work and respond with a `cancelled` error.
+- **REQ-PLUG-34** Concurrent requests to one long-running plugin: allowed. Plugin indicates max concurrency in manifest (`max_concurrent_requests`). Server queues beyond.
+
+### Security model
+
+- **REQ-PLUG-40** Plugins run as a **less-privileged user** than the main server (default: own `herold-plugin` user, or unprivileged nobody-equivalent). Process isolation is the security boundary.
+- **REQ-PLUG-41** Plugin filesystem access: by default, only its own directory (working dir) and `/tmp`. Server SHOULD use Linux namespaces / macOS sandbox-exec where available.
+- **REQ-PLUG-42** Plugin network access: allowed by default (DNS plugins need it, spam LLM plugins need it). Per-plugin deny-list in config if operator wants to restrict.
+- **REQ-PLUG-43** Plugins run under the same resource limits as the server's own workers (or tighter). Memory cap, CPU cap via cgroups / systemd slice when available.
+- **REQ-PLUG-44** Plugins MUST NOT be able to read the server's application config, data directory (except via server-mediated requests), or DB directly. All state access goes through JSON-RPC.
+
+### Observability
+
+- **REQ-PLUG-50** Per-plugin metrics: `herold_plugin_invocations_total{plugin,method,status}`, `herold_plugin_latency_seconds{plugin,method}` histogram, `herold_plugin_restarts_total{plugin}`, `herold_plugin_state{plugin}` (up/down gauge).
+- **REQ-PLUG-51** Plugin logs tagged with `plugin=<name>` in the structured log stream.
+- **REQ-PLUG-52** `herold admin plugin list` shows state, version, uptime, invocation counts, recent errors.
+- **REQ-PLUG-53** `herold admin plugin test <name>` runs a smoke test (plugin-type-specific: DNS test writes+reads+deletes a scratch record; spam plugin classifies a canned message; directory plugin does a test lookup).
+
+### Distribution and discovery
+
+- **REQ-PLUG-60** No central registry in v1. Operators install plugins by dropping executables into `<data_dir>/plugins/<name>/` and declaring them in system config.
+- **REQ-PLUG-61** First-party plugins (bundled with release): **Cloudflare DNS, Route53 DNS, Hetzner Cloud DNS, manual DNS** (operator confirms each record via API/CLI), OpenAI-compat LLM spam classifier, NATS event publisher.
+- **REQ-PLUG-62** Community plugins distributed out-of-tree. We publish a plugin developer guide (manifest format, JSON-RPC contract, examples).
+
+### Stability promise
+
+- **REQ-PLUG-70** The plugin ABI (method set, JSON-RPC schema per type) is stable across minor versions of Herold. Breaking changes bump a major ABI version; old plugins continue to work until deprecation period ends.
+- **REQ-PLUG-71** Between ABI versions, both versions supported for at least one major Herold release cycle.
+- **REQ-PLUG-72** Deprecation notices surfaced in `herold admin plugin list` when a loaded plugin uses a deprecated ABI.
+
+## Out of scope (v1)
+
+- Plugin signing / verification / enforced publisher identity.
+- A sandboxing story stronger than process-level (no seccomp filter bundled; no Wasmtime host; operators who want stronger isolation use systemd service hardening or containers).
+- A plugin marketplace or registry.
+- In-process plugins (cdylibs). Deliberate: the bug-containment benefit of process isolation outweighs the performance cost at our scale.
+- Plugin-declared REST endpoints or UI extensions. (Plugins can implement webhooks consumed by external services, but they don't get to register HTTP routes on our admin surface.)
+- Plugins that intercept or rewrite SMTP/IMAP/JMAP protocol traffic.
