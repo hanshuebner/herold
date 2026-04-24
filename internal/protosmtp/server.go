@@ -150,33 +150,14 @@ func (o Options) Defaults() Options {
 	return o
 }
 
-// ScriptLoader loads a Sieve script body for a principal. We do not add
-// a store method for Sieve in Wave 2; ScriptLoader is the seam the
-// delivery pipeline consumes, with a default "no script" loader that
-// folds every recipient into ImplicitKeep (= fileinto INBOX).
-//
-// TODO(wave-3): promote this into a typed store surface
-// (store.Metadata.GetSieveScript) once the admin API + ManageSieve ship
-// persistence.
-type ScriptLoader interface {
-	// Load returns the script text for pid, or the empty string when no
-	// active script is on record. An error indicates an I/O failure; the
-	// delivery path falls back to ImplicitKeep on any error and logs.
-	Load(ctx context.Context, pid store.PrincipalID) (string, error)
-}
-
-// NoScriptLoader is the default loader used when the operator has not
-// wired a real one. It always returns "", nil.
-type NoScriptLoader struct{}
-
-// Load implements ScriptLoader.
-func (NoScriptLoader) Load(context.Context, store.PrincipalID) (string, error) {
-	return "", nil
-}
-
 // Server implements SMTP relay-in and submission on any of the three
 // listener modes. One Server is shared across all listeners; Serve is
 // called once per bound socket.
+//
+// Sieve scripts are loaded through store.Metadata.GetSieveScript on
+// the Server's Store handle; the previous ScriptLoader seam was
+// promoted onto the store.Metadata interface in Wave 3 so admin REST
+// and ManageSieve converge on one storage surface.
 type Server struct {
 	store    store.Store
 	dir      *directory.Directory
@@ -186,7 +167,6 @@ type Server struct {
 	arc      *mailarc.Verifier
 	spam     *spam.Classifier
 	sieve    *sieve.Interpreter
-	scripts  ScriptLoader
 	tls      *heroldtls.Store
 	resolver mailauth.Resolver
 	clk      clock.Clock
@@ -217,7 +197,6 @@ type Config struct {
 	ARC       *mailarc.Verifier
 	Spam      *spam.Classifier
 	Sieve     *sieve.Interpreter
-	Scripts   ScriptLoader
 	TLS       *heroldtls.Store
 	Resolver  mailauth.Resolver
 	Clock     clock.Clock
@@ -251,10 +230,6 @@ func New(cfg Config) (*Server, error) {
 	if clk == nil {
 		clk = clock.NewReal()
 	}
-	scripts := cfg.Scripts
-	if scripts == nil {
-		scripts = NoScriptLoader{}
-	}
 	plug := cfg.SpamPluginName
 	if plug == "" {
 		plug = "spam"
@@ -270,7 +245,6 @@ func New(cfg Config) (*Server, error) {
 		arc:      cfg.ARC,
 		spam:     cfg.Spam,
 		sieve:    cfg.Sieve,
-		scripts:  scripts,
 		tls:      cfg.TLS,
 		resolver: cfg.Resolver,
 		clk:      clk,

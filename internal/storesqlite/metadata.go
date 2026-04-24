@@ -1265,6 +1265,150 @@ func (m *metadata) AppendAuditLog(ctx context.Context, entry store.AuditLogEntry
 	})
 }
 
+// -- GetMailboxByName / ListMessages / SetMailboxSubscribed / RenameMailbox --
+
+func (m *metadata) GetMailboxByName(ctx context.Context, pid store.PrincipalID, name string) (store.Mailbox, error) {
+	row := m.s.db.QueryRowContext(ctx, `
+		SELECT id, principal_id, parent_id, name, attributes, uidvalidity, uidnext,
+		       highest_modseq, created_at_us, updated_at_us
+		  FROM mailboxes WHERE principal_id = ? AND name = ?`,
+		int64(pid), name)
+	return scanMailbox(row)
+}
+
+func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, filter store.MessageFilter) ([]store.Message, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	rows, err := m.s.db.QueryContext(ctx, `
+		SELECT id, mailbox_id, uid, modseq, flags, keywords_csv, internal_date_us,
+		       received_at_us, size, blob_hash, blob_size, thread_id,
+		       env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
+		       env_message_id, env_in_reply_to, env_date_us
+		  FROM messages
+		 WHERE mailbox_id = ? AND uid > ?
+		 ORDER BY uid ASC LIMIT ?`,
+		int64(mailboxID), int64(filter.AfterUID), limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.Message
+	for rows.Next() {
+		msg, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		// filter.WithEnvelope is a permission-to-skip; we always
+		// populate the envelope because the SELECT list already
+		// carries the columns. The flag is honoured by backends that
+		// want a cheap-path query (Phase 2+).
+		out = append(out, msg)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) SetMailboxSubscribed(ctx context.Context, mailboxID store.MailboxID, subscribed bool) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		var attrs int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT attributes FROM mailboxes WHERE id = ?`, int64(mailboxID)).Scan(&attrs); err != nil {
+			return mapErr(err)
+		}
+		bit := int64(store.MailboxAttrSubscribed)
+		if subscribed {
+			attrs |= bit
+		} else {
+			attrs &^= bit
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE mailboxes SET attributes = ?, updated_at_us = ? WHERE id = ?`,
+			attrs, usMicros(now), int64(mailboxID))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (m *metadata) RenameMailbox(ctx context.Context, mailboxID store.MailboxID, newName string) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		// Fetch principal_id to scope the conflict check.
+		var pid int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT principal_id FROM mailboxes WHERE id = ?`, int64(mailboxID)).Scan(&pid); err != nil {
+			return mapErr(err)
+		}
+		// Collision check within the owning principal.
+		var other int64
+		err := tx.QueryRowContext(ctx,
+			`SELECT id FROM mailboxes WHERE principal_id = ? AND name = ? AND id != ?`,
+			pid, newName, int64(mailboxID)).Scan(&other)
+		if err == nil {
+			return fmt.Errorf("mailbox %q: %w", newName, store.ErrConflict)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return mapErr(err)
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE mailboxes SET name = ?, updated_at_us = ? WHERE id = ?`,
+			newName, usMicros(now), int64(mailboxID))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// -- Sieve scripts ----------------------------------------------------
+
+func (m *metadata) GetSieveScript(ctx context.Context, pid store.PrincipalID) (string, error) {
+	var script string
+	err := m.s.db.QueryRowContext(ctx,
+		`SELECT script FROM sieve_scripts WHERE principal_id = ?`, int64(pid)).Scan(&script)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", mapErr(err)
+	}
+	return script, nil
+}
+
+func (m *metadata) SetSieveScript(ctx context.Context, pid store.PrincipalID, text string) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		if text == "" {
+			_, err := tx.ExecContext(ctx,
+				`DELETE FROM sieve_scripts WHERE principal_id = ?`, int64(pid))
+			return mapErr(err)
+		}
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO sieve_scripts (principal_id, script, updated_at_us)
+			VALUES (?, ?, ?)
+			ON CONFLICT(principal_id) DO UPDATE SET script = excluded.script, updated_at_us = excluded.updated_at_us`,
+			int64(pid), text, usMicros(now))
+		return mapErr(err)
+	})
+}
+
 func (m *metadata) ListAuditLog(ctx context.Context, filter store.AuditLogFilter) ([]store.AuditLogEntry, error) {
 	limit := filter.Limit
 	if limit <= 0 || limit > 1000 {

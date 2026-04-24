@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
 )
 
@@ -125,12 +126,9 @@ func (c *Classifier) WithTimeout(d time.Duration) *Classifier {
 // never with a real verdict: the delivery path can therefore switch on
 // Verdict alone. Timeout / plugin-unavailable / parse failures are
 // reported as errors but not raised as panics.
-func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth AuthResultsReader, pluginName string) (Classification, error) {
+func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *mailauth.AuthResults, pluginName string) (Classification, error) {
 	if c.invoker == nil {
 		return Classification{Verdict: Unclassified, Score: -1}, errors.New("spam: no plugin invoker configured")
-	}
-	if auth == nil {
-		auth = nilAuthResults{}
 	}
 	ctx, cancel := c.deadline(ctx)
 	defer cancel()
@@ -198,27 +196,28 @@ type Request struct {
 // BuildRequest assembles the Request from a parsed message + auth
 // results. The excerpt is capped to DefaultBodyExcerptBytes and HTML is
 // stripped to text. URLs and email addresses are preserved because the
-// classifier prompt specifically wants them.
-func BuildRequest(msg mailparse.Message, auth AuthResultsReader) Request {
-	if auth == nil {
-		auth = nilAuthResults{}
-	}
+// classifier prompt specifically wants them. A nil auth argument
+// collapses every did-pass boolean to false and FromDomain to "".
+func BuildRequest(msg mailparse.Message, auth *mailauth.AuthResults) Request {
 	from := addrsToStrings(msg.Envelope.From)
 	to := addrsToStrings(msg.Envelope.To)
 	cc := addrsToStrings(msg.Envelope.Cc)
 	body := collectTextBody(msg.Body, DefaultBodyExcerptBytes)
-	return Request{
+	req := Request{
 		From:         from,
 		To:           to,
 		Cc:           cc,
 		Subject:      msg.Envelope.Subject,
 		ReceivedDate: msg.Envelope.Date,
-		DKIMPass:     auth.DKIM() == AuthPass,
-		SPFPass:      auth.SPF() == AuthPass,
-		DMARCPass:    auth.DMARC() == AuthPass,
-		FromDomain:   auth.FromDomain(),
 		BodyExcerpt:  body,
 	}
+	if auth != nil {
+		req.DKIMPass = auth.BestDKIMStatus() == mailauth.AuthPass
+		req.SPFPass = auth.SPF.Status == mailauth.AuthPass
+		req.DMARCPass = auth.DMARC.Status == mailauth.AuthPass
+		req.FromDomain = auth.FromDomain()
+	}
+	return req
 }
 
 // MarshalJSON on Request is default; this helper exists for tests that

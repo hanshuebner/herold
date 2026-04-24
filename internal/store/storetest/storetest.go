@@ -57,6 +57,14 @@ func Run(t *testing.T, f Factory) {
 		{"UnlinkOIDC_NotFoundWhenAbsent", testUnlinkOIDCNotFound},
 		{"AuditLog_AppendAndList", testAuditLogAppendAndList},
 		{"PrincipalFlagTOTPEnabled", testPrincipalFlagTOTPEnabled},
+		{"GetMailboxByName", testGetMailboxByName},
+		{"ListMessagesPagination", testListMessagesPagination},
+		{"SetMailboxSubscribed", testSetMailboxSubscribed},
+		{"RenameMailbox", testRenameMailbox},
+		{"SieveScript_EmptyReturnsEmpty", testSieveScriptEmpty},
+		{"SieveScript_SetGetRoundtrip", testSieveScriptRoundtrip},
+		{"SieveScript_Overwrite", testSieveScriptOverwrite},
+		{"SieveScript_CascadeOnDeletePrincipal", testSieveScriptCascade},
 	}
 	for _, c := range cases {
 		tc := c
@@ -1176,4 +1184,231 @@ func testPrincipalFlagTOTPEnabled(t *testing.T, s store.Store) {
 
 func subjectPrincipal(pid store.PrincipalID) string {
 	return fmt.Sprintf("principal:%d", pid)
+}
+
+// -- Wave 3 IMAP mailbox surface + Sieve scripts ---------------------
+
+func testGetMailboxByName(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "gmbn@example.com")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	_ = mustInsertMailbox(t, s, p.ID, "Archive")
+	got, err := s.Meta().GetMailboxByName(ctx, p.ID, "INBOX")
+	if err != nil {
+		t.Fatalf("GetMailboxByName: %v", err)
+	}
+	if got.ID != inbox.ID {
+		t.Fatalf("got id %d, want %d", got.ID, inbox.ID)
+	}
+	// Case-sensitive: "inbox" lowercase must not match INBOX.
+	if _, err := s.Meta().GetMailboxByName(ctx, p.ID, "inbox"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("case-sensitive lookup = %v, want ErrNotFound", err)
+	}
+	// Different principal isolation.
+	other := mustInsertPrincipal(t, s, "gmbn-other@example.com")
+	if _, err := s.Meta().GetMailboxByName(ctx, other.ID, "INBOX"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("cross-principal leak = %v, want ErrNotFound", err)
+	}
+}
+
+func testListMessagesPagination(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "lmp@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	const n = 5
+	for i := 0; i < n; i++ {
+		ref := putBlob(t, s, fmt.Sprintf("lmp-%d", i))
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			MailboxID: mb.ID, Blob: ref, Size: ref.Size,
+		}); err != nil {
+			t.Fatalf("InsertMessage %d: %v", i, err)
+		}
+	}
+	// Empty mailbox returns empty slice.
+	other := mustInsertMailbox(t, s, p.ID, "Empty")
+	empty, err := s.Meta().ListMessages(ctx, other.ID, store.MessageFilter{})
+	if err != nil {
+		t.Fatalf("ListMessages(empty): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("empty mailbox len = %d, want 0", len(empty))
+	}
+	// Full page, UID-ascending.
+	msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != n {
+		t.Fatalf("full list len = %d, want %d", len(msgs), n)
+	}
+	for i := 1; i < len(msgs); i++ {
+		if msgs[i-1].UID >= msgs[i].UID {
+			t.Fatalf("not UID-ascending at %d: %d then %d", i, msgs[i-1].UID, msgs[i].UID)
+		}
+	}
+	// AfterUID cursor skips earlier UIDs.
+	rest, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{AfterUID: msgs[1].UID})
+	if err != nil {
+		t.Fatalf("ListMessages(AfterUID): %v", err)
+	}
+	if len(rest) != n-2 {
+		t.Fatalf("after-UID len = %d, want %d", len(rest), n-2)
+	}
+	for _, m := range rest {
+		if m.UID <= msgs[1].UID {
+			t.Fatalf("page includes UID %d <= cursor %d", m.UID, msgs[1].UID)
+		}
+	}
+	// Limit caps the page.
+	capped, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 2})
+	if err != nil {
+		t.Fatalf("ListMessages(Limit): %v", err)
+	}
+	if len(capped) != 2 {
+		t.Fatalf("limited page len = %d, want 2", len(capped))
+	}
+}
+
+func testSetMailboxSubscribed(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "sub@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	// Initial mailbox has no subscribed bit.
+	if mb.Attributes&store.MailboxAttrSubscribed != 0 {
+		t.Fatalf("fresh mailbox already subscribed: %b", mb.Attributes)
+	}
+	if err := s.Meta().SetMailboxSubscribed(ctx, mb.ID, true); err != nil {
+		t.Fatalf("SetMailboxSubscribed(true): %v", err)
+	}
+	got, err := s.Meta().GetMailboxByID(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxByID: %v", err)
+	}
+	if got.Attributes&store.MailboxAttrSubscribed == 0 {
+		t.Fatalf("subscribed bit did not set: %b", got.Attributes)
+	}
+	if err := s.Meta().SetMailboxSubscribed(ctx, mb.ID, false); err != nil {
+		t.Fatalf("SetMailboxSubscribed(false): %v", err)
+	}
+	got, err = s.Meta().GetMailboxByID(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxByID after unsubscribe: %v", err)
+	}
+	if got.Attributes&store.MailboxAttrSubscribed != 0 {
+		t.Fatalf("subscribed bit did not clear: %b", got.Attributes)
+	}
+	// Absent mailbox -> ErrNotFound.
+	if err := s.Meta().SetMailboxSubscribed(ctx, store.MailboxID(99999), true); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetMailboxSubscribed(absent) = %v, want ErrNotFound", err)
+	}
+}
+
+func testRenameMailbox(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "rnm@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "OldName")
+	_ = mustInsertMailbox(t, s, p.ID, "TakenName")
+	if err := s.Meta().RenameMailbox(ctx, mb.ID, "NewName"); err != nil {
+		t.Fatalf("RenameMailbox: %v", err)
+	}
+	if _, err := s.Meta().GetMailboxByName(ctx, p.ID, "OldName"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("old name still present: %v", err)
+	}
+	got, err := s.Meta().GetMailboxByName(ctx, p.ID, "NewName")
+	if err != nil {
+		t.Fatalf("GetMailboxByName(NewName): %v", err)
+	}
+	if got.ID != mb.ID {
+		t.Fatalf("renamed id = %d, want %d", got.ID, mb.ID)
+	}
+	// Collision with existing name -> ErrConflict.
+	if err := s.Meta().RenameMailbox(ctx, mb.ID, "TakenName"); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("RenameMailbox(collision) = %v, want ErrConflict", err)
+	}
+	// Absent mailbox -> ErrNotFound.
+	if err := s.Meta().RenameMailbox(ctx, store.MailboxID(99999), "Whatever"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("RenameMailbox(absent) = %v, want ErrNotFound", err)
+	}
+}
+
+func testSieveScriptEmpty(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "sse@example.com")
+	got, err := s.Meta().GetSieveScript(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetSieveScript(empty): %v", err)
+	}
+	if got != "" {
+		t.Fatalf("empty script = %q, want \"\"", got)
+	}
+}
+
+func testSieveScriptRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ssr@example.com")
+	const script = `require "fileinto"; fileinto "INBOX.Hello";`
+	if err := s.Meta().SetSieveScript(ctx, p.ID, script); err != nil {
+		t.Fatalf("SetSieveScript: %v", err)
+	}
+	got, err := s.Meta().GetSieveScript(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetSieveScript: %v", err)
+	}
+	if got != script {
+		t.Fatalf("script = %q, want %q", got, script)
+	}
+	// Setting empty text removes the script.
+	if err := s.Meta().SetSieveScript(ctx, p.ID, ""); err != nil {
+		t.Fatalf("SetSieveScript(empty): %v", err)
+	}
+	after, err := s.Meta().GetSieveScript(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetSieveScript after delete: %v", err)
+	}
+	if after != "" {
+		t.Fatalf("after delete = %q, want empty", after)
+	}
+}
+
+func testSieveScriptOverwrite(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "sso@example.com")
+	const first = `keep;`
+	const second = `require "fileinto"; fileinto "Updated";`
+	if err := s.Meta().SetSieveScript(ctx, p.ID, first); err != nil {
+		t.Fatalf("Set first: %v", err)
+	}
+	if err := s.Meta().SetSieveScript(ctx, p.ID, second); err != nil {
+		t.Fatalf("Set second: %v", err)
+	}
+	got, err := s.Meta().GetSieveScript(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != second {
+		t.Fatalf("overwrite = %q, want %q", got, second)
+	}
+}
+
+func testSieveScriptCascade(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ssc@example.com")
+	if err := s.Meta().SetSieveScript(ctx, p.ID, `keep;`); err != nil {
+		t.Fatalf("SetSieveScript: %v", err)
+	}
+	// Give the principal at least one mailbox/message so DeletePrincipal
+	// exercises the full cascade path.
+	_ = mustInsertMailbox(t, s, p.ID, "INBOX")
+	if err := s.Meta().DeletePrincipal(ctx, p.ID); err != nil {
+		t.Fatalf("DeletePrincipal: %v", err)
+	}
+	// Recreate the principal; the script must not come back.
+	p2 := mustInsertPrincipal(t, s, "ssc@example.com")
+	got, err := s.Meta().GetSieveScript(ctx, p2.ID)
+	if err != nil {
+		t.Fatalf("GetSieveScript after recreate: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("script survived DeletePrincipal: %q", got)
+	}
 }

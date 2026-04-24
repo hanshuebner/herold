@@ -186,9 +186,10 @@ func (s *spawnedPlugin) classify(ctx context.Context, params map[string]any) (ma
 }
 
 // canonicalPayload returns the flat JSON object internal/spam's
-// BuildRequest produces on the wire. The plugin receives only the fields
-// that happen to line up with sdk.SpamClassifyParams (body_excerpt);
-// tests exercise that path.
+// BuildRequest produces on the wire. The sdk.SpamClassifyParams shape
+// mirrors spam.Request field-for-field after Wave 3, so every key
+// round-trips through the supervisor into the plugin and onto the
+// LLM prompt.
 func canonicalPayload(body string) map[string]any {
 	return map[string]any{
 		"from":          []string{"alice@example.com"},
@@ -237,6 +238,67 @@ func TestClassify_SpamVerdict(t *testing.T) {
 	}
 	if got, _ := res["reason"].(string); !strings.Contains(got, "urgency") {
 		t.Fatalf("reason = %q, want to contain 'urgency'", got)
+	}
+}
+
+// TestClassify_FullPayloadReachesLLM asserts that every field
+// produced by internal/spam.BuildRequest survives the sdk unmarshal
+// and lands in the LLM's user-turn JSON. Before Wave 3 the plugin
+// only received body_excerpt because sdk.SpamClassifyParams used
+// nested envelope/headers maps that the flat payload did not match.
+func TestClassify_FullPayloadReachesLLM(t *testing.T) {
+	var captured string
+	var mu sync.Mutex
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		captured = string(body)
+		mu.Unlock()
+		replyJSON(w, `{"verdict":"ham","score":0.1,"reason":"ok"}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":       llm.endpoint(),
+		"model":          "fake",
+		"spam_threshold": 0.5,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := p.classify(ctx, canonicalPayload("please review")); err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+
+	mu.Lock()
+	body := captured
+	mu.Unlock()
+	// The LLM request is a chat-completion envelope whose user turn
+	// carries the payload as a JSON-stringified object; the inner
+	// object's quote characters are therefore escaped. We scan for
+	// the escaped keys so we assert on the shape that actually
+	// reaches the model.
+	for _, want := range []string{
+		`\"from\"`, `alice@example.com`,
+		`\"to\"`, `bob@example.com`,
+		`\"subject\"`, `Hello`,
+		`\"dkim_pass\":true`,
+		`\"spf_pass\":true`,
+		`\"dmarc_pass\":true`,
+		`\"from_domain\"`, `example.com`,
+		`\"body_excerpt\"`, `please review`,
+		`\"received_date\"`, `2026-04-24T00:00:00Z`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("LLM body missing %s; got %s", want, body)
+		}
 	}
 }
 

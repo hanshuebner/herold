@@ -47,14 +47,14 @@ func (ses *session) handleSELECT(ctx context.Context, c *Command, readOnly bool)
 		return nil
 	}
 	name := canonicalMailboxName(c.Mailbox)
-	mb, err := ses.s.mailbox.GetMailboxByName(ctx, ses.pid, name)
+	mb, err := ses.s.store.Meta().GetMailboxByName(ctx, ses.pid, name)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return ses.resp.taggedNO(c.Tag, "NONEXISTENT", "mailbox not found")
 		}
 		return ses.resp.taggedNO(c.Tag, "", "select failed")
 	}
-	msgs, err := ses.s.mailbox.ListMessages(ctx, mb.ID)
+	msgs, err := ses.s.store.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{WithEnvelope: true})
 	if err != nil {
 		return ses.resp.taggedNO(c.Tag, "", "select failed")
 	}
@@ -118,7 +118,7 @@ func (ses *session) handleDELETE(ctx context.Context, c *Command) error {
 	if !ses.requireAuth(c.Tag) {
 		return nil
 	}
-	mb, err := ses.s.mailbox.GetMailboxByName(ctx, ses.pid, canonicalMailboxName(c.Mailbox))
+	mb, err := ses.s.store.Meta().GetMailboxByName(ctx, ses.pid, canonicalMailboxName(c.Mailbox))
 	if err != nil {
 		return ses.resp.taggedNO(c.Tag, "NONEXISTENT", "mailbox not found")
 	}
@@ -132,11 +132,11 @@ func (ses *session) handleRENAME(ctx context.Context, c *Command) error {
 	if !ses.requireAuth(c.Tag) {
 		return nil
 	}
-	mb, err := ses.s.mailbox.GetMailboxByName(ctx, ses.pid, canonicalMailboxName(c.RenameOldName))
+	mb, err := ses.s.store.Meta().GetMailboxByName(ctx, ses.pid, canonicalMailboxName(c.RenameOldName))
 	if err != nil {
 		return ses.resp.taggedNO(c.Tag, "NONEXISTENT", "mailbox not found")
 	}
-	if err := ses.s.mailbox.RenameMailbox(ctx, mb.ID, c.RenameNewName); err != nil {
+	if err := ses.s.store.Meta().RenameMailbox(ctx, mb.ID, c.RenameNewName); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return ses.resp.taggedNO(c.Tag, "ALREADYEXISTS", "destination exists")
 		}
@@ -149,11 +149,11 @@ func (ses *session) handleSUBSCRIBE(ctx context.Context, c *Command, subscribe b
 	if !ses.requireAuth(c.Tag) {
 		return nil
 	}
-	mb, err := ses.s.mailbox.GetMailboxByName(ctx, ses.pid, canonicalMailboxName(c.Mailbox))
+	mb, err := ses.s.store.Meta().GetMailboxByName(ctx, ses.pid, canonicalMailboxName(c.Mailbox))
 	if err != nil {
 		return ses.resp.taggedNO(c.Tag, "NONEXISTENT", "mailbox not found")
 	}
-	if err := ses.s.mailbox.SetMailboxSubscribed(ctx, mb.ID, subscribe); err != nil {
+	if err := ses.s.store.Meta().SetMailboxSubscribed(ctx, mb.ID, subscribe); err != nil {
 		return ses.resp.taggedNO(c.Tag, "", "subscribe failed")
 	}
 	op := "SUBSCRIBE"
@@ -277,11 +277,11 @@ func (ses *session) handleSTATUS(ctx context.Context, c *Command) error {
 	if !ses.requireAuth(c.Tag) {
 		return nil
 	}
-	mb, err := ses.s.mailbox.GetMailboxByName(ctx, ses.pid, canonicalMailboxName(c.Mailbox))
+	mb, err := ses.s.store.Meta().GetMailboxByName(ctx, ses.pid, canonicalMailboxName(c.Mailbox))
 	if err != nil {
 		return ses.resp.taggedNO(c.Tag, "NONEXISTENT", "mailbox not found")
 	}
-	msgs, err := ses.s.mailbox.ListMessages(ctx, mb.ID)
+	msgs, err := ses.s.store.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{WithEnvelope: true})
 	if err != nil {
 		return ses.resp.taggedNO(c.Tag, "", "status failed")
 	}
@@ -320,7 +320,7 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 	if !ses.requireAuth(c.Tag) {
 		return nil
 	}
-	mb, err := ses.s.mailbox.GetMailboxByName(ctx, ses.pid, canonicalMailboxName(c.Mailbox))
+	mb, err := ses.s.store.Meta().GetMailboxByName(ctx, ses.pid, canonicalMailboxName(c.Mailbox))
 	if err != nil {
 		return ses.resp.taggedNO(c.Tag, "TRYCREATE", "mailbox not found")
 	}

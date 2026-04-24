@@ -22,7 +22,6 @@ import (
 	"github.com/hanshuebner/herold/internal/protoimap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
 
@@ -84,10 +83,8 @@ func newFixture(t *testing.T, fo fxOpts) *fixture {
 	// TLS store + client config.
 	tlsStore, clientCfg := newTestTLSStore(t)
 
-	fs := ha.Store.(*fakestore.Store)
 	srv := protoimap.NewServer(
 		ha.Store,
-		fs,
 		dir,
 		tlsStore,
 		ha.Clock,

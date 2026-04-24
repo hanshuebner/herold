@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
 )
 
@@ -118,9 +119,9 @@ type Environment struct {
 	// Sender is the envelope MAIL FROM.
 	Sender string
 	// Auth is the mail authentication result (SPF/DKIM/DMARC/ARC).
-	// A nil value is replaced by nilAuthResults at run time so the
-	// interpreter never dereferences nil.
-	Auth AuthResultsReader
+	// A nil value is treated as "no authentication data" — the
+	// spamtest mapping folds to the unauthenticated path.
+	Auth *mailauth.AuthResults
 	// SpamScore is the normalised classifier score in the [0,10] range
 	// used by RFC 5235 §2. A value <0 means unclassified.
 	SpamScore float64
@@ -158,9 +159,6 @@ func NewInterpreter() *Interpreter { return &Interpreter{} }
 func (in *Interpreter) Evaluate(ctx context.Context, script *Script, msg mailparse.Message, env Environment) (Outcome, error) {
 	if script == nil {
 		return Outcome{}, errors.New("sieve: nil script")
-	}
-	if env.Auth == nil {
-		env.Auth = nilAuthResults{}
 	}
 	if env.Clock == nil {
 		env.Clock = clock.NewReal()
@@ -1663,7 +1661,7 @@ func (s *state) lookupVar(name string) string {
 // spamtest range per RFC 5235 §2. A negative score (unclassified) maps
 // to "0" (undefined). spamtestplus promises the value is an integer in
 // [0,10]; we rely on that to keep the comparator simple.
-func mapSpamScore(score float64, _ AuthResultsReader, _ bool) int {
+func mapSpamScore(score float64, _ *mailauth.AuthResults, _ bool) int {
 	if score < 0 {
 		return 0
 	}

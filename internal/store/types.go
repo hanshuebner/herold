@@ -289,6 +289,25 @@ type Message struct {
 	Envelope Envelope
 }
 
+// MessageFilter narrows a ListMessages read. Zero values mean "no
+// constraint"; Limit is capped at 1000 server-side regardless of
+// caller input.
+type MessageFilter struct {
+	// AfterUID is the keyset cursor: only messages with UID > AfterUID
+	// are returned. Callers paginate by setting AfterUID to the last
+	// UID seen in the previous page.
+	AfterUID UID
+	// Limit caps the number of returned rows. 0 applies the default
+	// cap of 1000. Values above 1000 are silently lowered to 1000.
+	Limit int
+	// WithEnvelope, when true, requests that the backend populate
+	// Message.Envelope. Callers that only need UID/Flags skip this to
+	// avoid the extra columns. Backends are free to ignore it and
+	// always populate the envelope; the flag is a permission to skip,
+	// not a requirement.
+	WithEnvelope bool
+}
+
 // BlobRef names a content-addressed blob in the blob store. A blob's
 // identity is its BLAKE3 hash of the canonicalized message bytes (RFC 5322
 // CRLF-normalized). Hash is lowercase hex.

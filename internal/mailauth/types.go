@@ -251,6 +251,29 @@ type ARCResult struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// BestDKIMStatus collapses the per-signature DKIM results to a single
+// status: a Pass on any signature wins; otherwise the first non-zero
+// status we see is returned; AuthUnknown if no signatures were
+// evaluated. Consumers that only need "did DKIM pass" use this helper
+// instead of iterating the slice themselves.
+func (r AuthResults) BestDKIMStatus() AuthStatus {
+	best := AuthUnknown
+	for _, d := range r.DKIM {
+		if d.Status == AuthPass {
+			return AuthPass
+		}
+		if best == AuthUnknown {
+			best = d.Status
+		}
+	}
+	return best
+}
+
+// FromDomain returns the DMARC-extracted RFC 5322.From domain, lower
+// case. Empty string when DMARC was not evaluated (the field is the
+// single canonical "sender-identity" label across the pipeline).
+func (r AuthResults) FromDomain() string { return r.DMARC.HeaderFrom }
+
 // AuthResults is the consolidated inbound authentication verdict for one
 // message. Every field is a typed enum; callers never parse the wire
 // Authentication-Results header.

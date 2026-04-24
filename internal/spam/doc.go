@@ -6,9 +6,10 @@
 //
 // Design:
 //
-//   - Classify builds a JSON payload from a mailparse.Message plus an
-//     AuthResultsReader (defined locally, see authresults.go for the
-//     "interface at the consumer" rationale).
+//   - Classify builds a JSON payload from a mailparse.Message plus a
+//     *mailauth.AuthResults (the canonical authentication-verdict type;
+//     Wave 3 retired the per-consumer AuthResultsReader in favour of
+//     the single data carrier).
 //   - The payload is sent via a PluginInvoker — a small interface that
 //     internal/plugin.*Manager satisfies naturally — under the method
 //     name "spam.classify".

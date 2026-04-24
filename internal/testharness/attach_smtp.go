@@ -1,5 +1,14 @@
 package testharness
 
+// AttachSMTP is the post-Start half of the harness's two-phase attach
+// pattern (the pre-Start half is Options.Listeners, which reserves
+// sockets). See the package comment on harness.go for the full
+// rationale; in short, a protosmtp.Server must be constructed against
+// the harness's Store / Clock / DNS / Plugins — values that exist
+// only after Start — so the handler cannot be supplied at Start()
+// time. The reserved socket returns ErrListenerHasNoHandler from
+// Dial* helpers until AttachSMTP runs.
+
 import (
 	"context"
 	"crypto/tls"

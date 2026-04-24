@@ -1131,6 +1131,136 @@ func (m *metadata) AppendAuditLog(ctx context.Context, entry store.AuditLogEntry
 	})
 }
 
+// -- GetMailboxByName / ListMessages / SetMailboxSubscribed / RenameMailbox --
+
+func (m *metadata) GetMailboxByName(ctx context.Context, pid store.PrincipalID, name string) (store.Mailbox, error) {
+	row := m.s.pool.QueryRow(ctx, `
+		SELECT id, principal_id, parent_id, name, attributes, uidvalidity, uidnext,
+		       highest_modseq, created_at_us, updated_at_us
+		  FROM mailboxes WHERE principal_id = $1 AND name = $2`,
+		int64(pid), name)
+	return scanMailbox(row)
+}
+
+func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, filter store.MessageFilter) ([]store.Message, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	rows, err := m.s.pool.Query(ctx, `
+		SELECT id, mailbox_id, uid, modseq, flags, keywords_csv, internal_date_us,
+		       received_at_us, size, blob_hash, blob_size, thread_id,
+		       env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
+		       env_message_id, env_in_reply_to, env_date_us
+		  FROM messages
+		 WHERE mailbox_id = $1 AND uid > $2
+		 ORDER BY uid ASC LIMIT $3`,
+		int64(mailboxID), int64(filter.AfterUID), limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.Message
+	for rows.Next() {
+		msg, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, msg)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) SetMailboxSubscribed(ctx context.Context, mailboxID store.MailboxID, subscribed bool) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var attrs int64
+		if err := tx.QueryRow(ctx,
+			`SELECT attributes FROM mailboxes WHERE id = $1`, int64(mailboxID)).Scan(&attrs); err != nil {
+			return mapErr(err)
+		}
+		bit := int64(store.MailboxAttrSubscribed)
+		if subscribed {
+			attrs |= bit
+		} else {
+			attrs &^= bit
+		}
+		res, err := tx.Exec(ctx,
+			`UPDATE mailboxes SET attributes = $1, updated_at_us = $2 WHERE id = $3`,
+			attrs, usMicros(now), int64(mailboxID))
+		if err != nil {
+			return mapErr(err)
+		}
+		if res.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (m *metadata) RenameMailbox(ctx context.Context, mailboxID store.MailboxID, newName string) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var pid int64
+		if err := tx.QueryRow(ctx,
+			`SELECT principal_id FROM mailboxes WHERE id = $1`, int64(mailboxID)).Scan(&pid); err != nil {
+			return mapErr(err)
+		}
+		var other int64
+		err := tx.QueryRow(ctx,
+			`SELECT id FROM mailboxes WHERE principal_id = $1 AND name = $2 AND id != $3`,
+			pid, newName, int64(mailboxID)).Scan(&other)
+		if err == nil {
+			return fmt.Errorf("mailbox %q: %w", newName, store.ErrConflict)
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return mapErr(err)
+		}
+		res, err := tx.Exec(ctx,
+			`UPDATE mailboxes SET name = $1, updated_at_us = $2 WHERE id = $3`,
+			newName, usMicros(now), int64(mailboxID))
+		if err != nil {
+			return mapErr(err)
+		}
+		if res.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// -- Sieve scripts ----------------------------------------------------
+
+func (m *metadata) GetSieveScript(ctx context.Context, pid store.PrincipalID) (string, error) {
+	var script string
+	err := m.s.pool.QueryRow(ctx,
+		`SELECT script FROM sieve_scripts WHERE principal_id = $1`, int64(pid)).Scan(&script)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", mapErr(err)
+	}
+	return script, nil
+}
+
+func (m *metadata) SetSieveScript(ctx context.Context, pid store.PrincipalID, text string) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		if text == "" {
+			_, err := tx.Exec(ctx,
+				`DELETE FROM sieve_scripts WHERE principal_id = $1`, int64(pid))
+			return mapErr(err)
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO sieve_scripts (principal_id, script, updated_at_us)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (principal_id) DO UPDATE SET script = EXCLUDED.script, updated_at_us = EXCLUDED.updated_at_us`,
+			int64(pid), text, usMicros(now))
+		return mapErr(err)
+	})
+}
+
 func (m *metadata) ListAuditLog(ctx context.Context, filter store.AuditLogFilter) ([]store.AuditLogEntry, error) {
 	limit := filter.Limit
 	if limit <= 0 || limit > 1000 {

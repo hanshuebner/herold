@@ -39,11 +39,12 @@
 // ManageSieve (RFC 5804) lives in internal/protomanagesieve; this package
 // is intentionally transport-agnostic.
 //
-// AuthResults seam: the Sieve spamtest/spamtestplus mapping reads a small
-// subset of the final mail authentication verdict. Because the concrete
-// mailauth.AuthResults type lands in a parallel wave, this package defines
-// the minimum interface it needs locally (authresults.go). The production
-// mailauth.AuthResults satisfies the interface by shape.
+// Authentication results: the Sieve spamtest/spamtestplus mapping
+// reads a small subset of the final mail authentication verdict.
+// Environment.Auth carries a *mailauth.AuthResults directly — Wave 3
+// retired the local AuthResultsReader interface once the producer
+// type stabilised. A nil Auth is equivalent to "no authentication
+// data".
 //
 // Ownership: sieve-implementor.
 package sieve

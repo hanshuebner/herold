@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
 )
 
@@ -67,16 +68,18 @@ const canonMsg = "From: Alice <alice@example.com>\r\n" +
 	"\r\n" +
 	"Buy cheap widgets at https://widgets.example.com\r\n"
 
-type stubAuth struct {
-	spf, dkim, dmarc, arc AuthStatus
-	domain                string
+// newAuth builds a mailauth.AuthResults literal with the supplied
+// per-method verdicts and DMARC header-from. Tests use this in place
+// of the old stubAuth reader now that spam + sieve consume
+// *mailauth.AuthResults directly.
+func newAuth(spf, dkim, dmarc, arc mailauth.AuthStatus, domain string) *mailauth.AuthResults {
+	return &mailauth.AuthResults{
+		SPF:   mailauth.SPFResult{Status: spf},
+		DKIM:  []mailauth.DKIMResult{{Status: dkim}},
+		DMARC: mailauth.DMARCResult{Status: dmarc, HeaderFrom: domain},
+		ARC:   mailauth.ARCResult{Status: arc},
+	}
 }
-
-func (s stubAuth) SPF() AuthStatus    { return s.spf }
-func (s stubAuth) DKIM() AuthStatus   { return s.dkim }
-func (s stubAuth) DMARC() AuthStatus  { return s.dmarc }
-func (s stubAuth) ARC() AuthStatus    { return s.arc }
-func (s stubAuth) FromDomain() string { return s.domain }
 
 func silentLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -89,7 +92,7 @@ func TestClassify_ReturnsSpamVerdict(t *testing.T) {
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
 	msg := buildMessage(t, canonMsg)
-	r, err := c.Classify(context.Background(), msg, stubAuth{dkim: AuthPass, spf: AuthPass, dmarc: AuthPass, domain: "example.com"}, "my-spam")
+	r, err := c.Classify(context.Background(), msg, newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "example.com"), "my-spam")
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -160,7 +163,7 @@ func TestClassify_UnparseableVerdict(t *testing.T) {
 
 func TestBuildRequest_Snapshot(t *testing.T) {
 	msg := buildMessage(t, canonMsg)
-	req := BuildRequest(msg, stubAuth{spf: AuthPass, dkim: AuthPass, dmarc: AuthFail, domain: "example.com"})
+	req := BuildRequest(msg, newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthFail, mailauth.AuthNone, "example.com"))
 	if len(req.From) != 1 || !strings.Contains(req.From[0], "alice@example.com") {
 		t.Fatalf("from: %+v", req.From)
 	}

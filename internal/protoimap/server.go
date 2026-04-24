@@ -59,7 +59,6 @@ type Options struct {
 // dependencies.
 type Server struct {
 	store     store.Store
-	mailbox   MailboxRepo
 	dir       *directory.Directory
 	tlsStore  *heroldtls.Store
 	clk       clock.Clock
@@ -76,12 +75,11 @@ type Server struct {
 }
 
 // NewServer constructs a Server. passwords / tokens may be nil, in which
-// case the matching AUTH mechanism is refused at runtime. The mailboxRepo
-// argument is the Phase 1 local seam described on MailboxRepo; Wave 3
-// folds it into store.Metadata.
+// case the matching AUTH mechanism is refused at runtime. The server
+// reaches the metadata layer through st.Meta() — Wave 3 promoted the
+// previous local MailboxRepo seam onto store.Metadata.
 func NewServer(
 	st store.Store,
-	mbRepo MailboxRepo,
 	dir *directory.Directory,
 	tlsStore *heroldtls.Store,
 	clk clock.Clock,
@@ -107,7 +105,6 @@ func NewServer(
 	}
 	return &Server{
 		store:     st,
-		mailbox:   mbRepo,
 		dir:       dir,
 		tlsStore:  tlsStore,
 		clk:       clk,

@@ -53,19 +53,6 @@ type fixture struct {
 	password  string
 	tlsClient *tls.Config
 	spamPlug  *fakeplugin.FakePlugin
-	scripts   *memoryScripts
-}
-
-// memoryScripts is a ScriptLoader backed by a per-principal map.
-type memoryScripts struct {
-	m map[store.PrincipalID]string
-}
-
-func (m *memoryScripts) Load(_ context.Context, pid store.PrincipalID) (string, error) {
-	if m == nil {
-		return "", nil
-	}
-	return m.m[pid], nil
 }
 
 type fixtureOpts struct {
@@ -98,7 +85,6 @@ func newFixture(t *testing.T, fo fixtureOpts) *fixture {
 	invoker := &fakePluginInvoker{reg: ha.Plugins}
 	spamCls := spam.New(invoker, ha.Logger, ha.Clock)
 
-	scripts := &memoryScripts{m: map[store.PrincipalID]string{}}
 	resolver := newResolverAdapter(ha.DNS)
 	dkimV := maildkim.New(resolver, ha.Logger, ha.Clock)
 	spfV := mailspf.New(resolver, ha.Clock)
@@ -117,7 +103,6 @@ func newFixture(t *testing.T, fo fixtureOpts) *fixture {
 		ARC:         arcV,
 		Spam:        spamCls,
 		Sieve:       interp,
-		Scripts:     scripts,
 		TLS:         tlsStore,
 		Resolver:    resolver,
 		Clock:       ha.Clock,
@@ -151,7 +136,6 @@ func newFixture(t *testing.T, fo fixtureOpts) *fixture {
 		password:  password,
 		tlsClient: clientCfg,
 		spamPlug:  spamPlug,
-		scripts:   scripts,
 	}
 }
 
@@ -637,7 +621,9 @@ if spamtest :value "ge" :comparator "i;ascii-numeric" "5" {
   stop;
 }
 `
-	f.scripts.m[f.principal] = script
+	if err := f.ha.Store.Meta().SetSieveScript(context.Background(), f.principal, script); err != nil {
+		t.Fatalf("SetSieveScript: %v", err)
+	}
 
 	cli, closeFn := f.dial(t)
 	defer closeFn()

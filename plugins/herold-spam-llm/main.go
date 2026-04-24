@@ -351,22 +351,27 @@ func (h *handler) SpamHealth(ctx context.Context) (sdk.SpamHealthResult, error) 
 	return sdk.SpamHealthResult{OK: true, LatencyMsP: latency}, nil
 }
 
-// trimPayload returns a sanitized copy of the inbound params, with the
-// body excerpt capped at maxBody. The map-typed fields are copied
-// shallowly — we do not mutate the server's payload.
+// trimPayload returns a sanitised copy of the inbound params, with
+// the body excerpt capped at maxBody. The flat shape mirrors
+// internal/spam.Request exactly: the LLM sees the envelope headers,
+// authentication booleans, and the body excerpt as a single object.
 func trimPayload(in sdk.SpamClassifyParams, maxBody int) map[string]any {
-	out := map[string]any{}
-	if len(in.Envelope) > 0 {
-		out["envelope"] = in.Envelope
+	out := map[string]any{
+		"from":       in.From,
+		"to":         in.To,
+		"subject":    in.Subject,
+		"dkim_pass":  in.DKIMPass,
+		"spf_pass":   in.SPFPass,
+		"dmarc_pass": in.DMARCPass,
 	}
-	if len(in.Headers) > 0 {
-		out["headers"] = in.Headers
+	if len(in.Cc) > 0 {
+		out["cc"] = in.Cc
 	}
-	if len(in.AuthResults) > 0 {
-		out["auth_results"] = in.AuthResults
+	if in.ReceivedDate != "" {
+		out["received_date"] = in.ReceivedDate
 	}
-	if len(in.Context) > 0 {
-		out["context"] = in.Context
+	if in.FromDomain != "" {
+		out["from_domain"] = in.FromDomain
 	}
 	body := in.BodyExcerpt
 	if maxBody > 0 && len(body) > maxBody {

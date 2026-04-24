@@ -257,6 +257,42 @@ type Metadata interface {
 	// empty filter returns the first page of all entries. Use
 	// filter.AfterID to paginate.
 	ListAuditLog(ctx context.Context, filter AuditLogFilter) ([]AuditLogEntry, error)
+
+	// GetMailboxByName returns the mailbox owned by pid whose Name
+	// matches name case-sensitively (INBOX normalisation is the
+	// caller's responsibility). Returns ErrNotFound when no such
+	// mailbox exists.
+	GetMailboxByName(ctx context.Context, pid PrincipalID, name string) (Mailbox, error)
+
+	// ListMessages returns the messages in mailboxID ordered by UID
+	// ascending, subject to the filter's cursor + limit. The returned
+	// slice is always a fresh copy safe for the caller to mutate.
+	ListMessages(ctx context.Context, mailboxID MailboxID, filter MessageFilter) ([]Message, error)
+
+	// SetMailboxSubscribed toggles the MailboxAttrSubscribed bit on the
+	// mailbox and bumps UpdatedAt. Returns ErrNotFound if the mailbox
+	// has been deleted.
+	SetMailboxSubscribed(ctx context.Context, mailboxID MailboxID, subscribed bool) error
+
+	// RenameMailbox changes the Name of a mailbox. Returns
+	// ErrNotFound if the mailbox does not exist and ErrConflict when
+	// the new name collides with an existing mailbox for the same
+	// principal.
+	RenameMailbox(ctx context.Context, mailboxID MailboxID, newName string) error
+
+	// GetSieveScript returns the active Sieve script text for pid, or
+	// ("", nil) when no script is on record (the interpreter then
+	// falls back to implicit keep). An I/O error on the backend is
+	// reported through the error channel; callers collapse any error
+	// to implicit-keep delivery.
+	GetSieveScript(ctx context.Context, pid PrincipalID) (string, error)
+
+	// SetSieveScript upserts the active Sieve script for pid. An empty
+	// text deletes the row so a subsequent GetSieveScript returns
+	// ("", nil). RFC 5804 SETACTIVE semantics (multiple named scripts)
+	// land in Phase 2 alongside ManageSieve; Phase 1 is one script per
+	// principal.
+	SetSieveScript(ctx context.Context, pid PrincipalID, text string) error
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

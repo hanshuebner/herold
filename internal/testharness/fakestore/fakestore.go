@@ -71,6 +71,10 @@ type Store struct {
 	// FTS documents: MessageID -> indexed text.
 	ftsDocs map[store.MessageID]ftsDoc
 
+	// sieveScripts holds the active Sieve script text per principal.
+	// Absence means "no script"; GetSieveScript returns ("", nil).
+	sieveScripts map[store.PrincipalID]string
+
 	// monotonic ID counters
 	nextPrincipalID store.PrincipalID
 	nextMailboxID   store.MailboxID
@@ -132,6 +136,7 @@ func New(opts Options) (*Store, error) {
 		changeSeq:       make(map[store.PrincipalID]store.ChangeSeq),
 		cursors:         make(map[string]uint64),
 		ftsDocs:         make(map[store.MessageID]ftsDoc),
+		sieveScripts:    make(map[store.PrincipalID]string),
 		nextPrincipalID: 1,
 		nextMailboxID:   1,
 		nextMessageID:   1,
@@ -947,6 +952,8 @@ func (m *metaFace) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 	// State-change feed.
 	delete(s.stateChanges, pid)
 	delete(s.changeSeq, pid)
+	// Sieve script (mirrors the ON DELETE CASCADE in the SQL backends).
+	delete(s.sieveScripts, pid)
 	// Audit log: drop entries that target or originate from this
 	// principal. Iterate and rebuild; audit volumes are low in tests.
 	if len(s.auditLog) > 0 {
@@ -1115,6 +1122,136 @@ func (m *metaFace) ListAuditLog(ctx context.Context, filter store.AuditLogFilter
 		}
 	}
 	return out, nil
+}
+
+// ---------- Metadata: IMAP mailbox surface -------------------------
+
+// GetMailboxByName returns the mailbox with the given name owned by
+// principalID. Returns store.ErrNotFound when no such mailbox exists.
+func (m *metaFace) GetMailboxByName(ctx context.Context, principalID store.PrincipalID, name string) (store.Mailbox, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Mailbox{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, mb := range s.mailboxes {
+		if mb.PrincipalID == principalID && mb.Name == name {
+			return mb, nil
+		}
+	}
+	return store.Mailbox{}, fmt.Errorf("mailbox %q: %w", name, store.ErrNotFound)
+}
+
+// ListMessages returns the messages in mailboxID in UID-ascending
+// order, honouring filter.AfterUID and filter.Limit.
+func (m *metaFace) ListMessages(ctx context.Context, mailboxID store.MailboxID, filter store.MessageFilter) ([]store.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []store.Message
+	for _, msg := range s.messages {
+		if msg.MailboxID != mailboxID {
+			continue
+		}
+		if msg.UID <= filter.AfterUID {
+			continue
+		}
+		out = append(out, msg)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UID < out[j].UID })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// SetMailboxSubscribed toggles the MailboxAttrSubscribed bit.
+func (m *metaFace) SetMailboxSubscribed(ctx context.Context, mailboxID store.MailboxID, subscribed bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mb, ok := s.mailboxes[mailboxID]
+	if !ok {
+		return fmt.Errorf("mailbox %d: %w", mailboxID, store.ErrNotFound)
+	}
+	if subscribed {
+		mb.Attributes |= store.MailboxAttrSubscribed
+	} else {
+		mb.Attributes &^= store.MailboxAttrSubscribed
+	}
+	mb.UpdatedAt = s.clk.Now()
+	s.mailboxes[mailboxID] = mb
+	return nil
+}
+
+// RenameMailbox updates the Name field, returning store.ErrConflict if
+// the destination collides with an existing mailbox for the same
+// principal.
+func (m *metaFace) RenameMailbox(ctx context.Context, mailboxID store.MailboxID, newName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mb, ok := s.mailboxes[mailboxID]
+	if !ok {
+		return fmt.Errorf("mailbox %d: %w", mailboxID, store.ErrNotFound)
+	}
+	for id, existing := range s.mailboxes {
+		if id == mailboxID {
+			continue
+		}
+		if existing.PrincipalID == mb.PrincipalID && existing.Name == newName {
+			return fmt.Errorf("mailbox %q: %w", newName, store.ErrConflict)
+		}
+	}
+	mb.Name = newName
+	mb.UpdatedAt = s.clk.Now()
+	s.mailboxes[mailboxID] = mb
+	return nil
+}
+
+// ---------- Metadata: Sieve scripts -------------------------------
+
+// GetSieveScript returns the active Sieve script text for pid, or
+// ("", nil) when no script is on record.
+func (m *metaFace) GetSieveScript(ctx context.Context, pid store.PrincipalID) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sieveScripts[pid], nil
+}
+
+// SetSieveScript upserts the script text for pid; an empty text
+// deletes the row (so a subsequent GetSieveScript returns "").
+func (m *metaFace) SetSieveScript(ctx context.Context, pid store.PrincipalID, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if text == "" {
+		delete(s.sieveScripts, pid)
+		return nil
+	}
+	s.sieveScripts[pid] = text
+	return nil
 }
 
 // auditEntryPrincipalID mirrors the logic used by the SQL backends so

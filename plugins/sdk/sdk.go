@@ -143,13 +143,22 @@ type DNSRecord struct {
 	TTL   int    `json:"ttl"`
 }
 
-// SpamClassifyParams is the payload for spam.classify.
+// SpamClassifyParams is the payload for spam.classify. The shape
+// mirrors internal/spam.Request field-for-field (flat keys, same JSON
+// tags) so the supervisor and plugin agree on the wire format without
+// a translation layer. Keeping it flat reads better in the LLM prompt
+// than a nested envelope/headers map would.
 type SpamClassifyParams struct {
-	Envelope    map[string]any `json:"envelope"`
-	Headers     map[string]any `json:"headers"`
-	BodyExcerpt string         `json:"body_excerpt"`
-	AuthResults map[string]any `json:"auth_results,omitempty"`
-	Context     map[string]any `json:"context,omitempty"`
+	From         []string `json:"from"`
+	To           []string `json:"to"`
+	Cc           []string `json:"cc,omitempty"`
+	Subject      string   `json:"subject"`
+	ReceivedDate string   `json:"received_date,omitempty"`
+	DKIMPass     bool     `json:"dkim_pass"`
+	SPFPass      bool     `json:"spf_pass"`
+	DMARCPass    bool     `json:"dmarc_pass"`
+	FromDomain   string   `json:"from_domain,omitempty"`
+	BodyExcerpt  string   `json:"body_excerpt"`
 }
 
 // SpamClassifyResult is the verdict for one message.

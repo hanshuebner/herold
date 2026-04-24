@@ -283,7 +283,7 @@ func (sess *session) classify(ctx context.Context, msg mailparse.Message, authRe
 	if sess.srv.spam == nil {
 		return spam.Classification{Verdict: spam.Unclassified, Score: -1}
 	}
-	cls, err := sess.srv.spam.Classify(ctx, msg, authResultsAdapter{authResults}, sess.srv.spamPlug)
+	cls, err := sess.srv.spam.Classify(ctx, msg, &authResults, sess.srv.spamPlug)
 	if err != nil {
 		sess.srv.log.InfoContext(ctx, "spam classification error",
 			slog.String("err", err.Error()))
@@ -292,9 +292,10 @@ func (sess *session) classify(ctx context.Context, msg mailparse.Message, authRe
 	return cls
 }
 
-// runSieve loads the recipient's script (via ScriptLoader) and
-// evaluates it. An absent / empty script falls back to the default
-// "keep to Inbox" outcome without executing the interpreter.
+// runSieve loads the recipient's script via
+// store.Metadata.GetSieveScript and evaluates it. An absent / empty
+// script falls back to the default "keep to Inbox" outcome without
+// executing the interpreter.
 func (sess *session) runSieve(
 	ctx context.Context,
 	rc rcptEntry,
@@ -302,10 +303,10 @@ func (sess *session) runSieve(
 	authResults mailauth.AuthResults,
 	classification spam.Classification,
 ) (sieve.Outcome, error) {
-	if sess.srv.sieve == nil || sess.srv.scripts == nil {
+	if sess.srv.sieve == nil {
 		return sieve.Outcome{ImplicitKeep: true}, nil
 	}
-	scriptText, err := sess.srv.scripts.Load(ctx, rc.principalID)
+	scriptText, err := sess.srv.store.Meta().GetSieveScript(ctx, rc.principalID)
 	if err != nil {
 		// Failure to load the script reverts to default delivery.
 		return sieve.Outcome{ImplicitKeep: true}, err
@@ -320,7 +321,7 @@ func (sess *session) runSieve(
 	env := sieve.Environment{
 		Recipient:   rc.addr,
 		Sender:      sess.envelope.mailFrom,
-		Auth:        sieveAuthAdapter{authResults},
+		Auth:        &authResults,
 		SpamScore:   classification.Score,
 		SpamVerdict: classification.Verdict.String(),
 		Clock:       sess.srv.clk,
@@ -574,86 +575,5 @@ func tlsVersionName(v uint16) string {
 		return "TLSv1.0"
 	default:
 		return "TLS"
-	}
-}
-
-// authResultsAdapter adapts mailauth.AuthResults to the
-// spam.AuthResultsReader shape. The two packages redeclare the status
-// enum to avoid a dependency cycle; we map by value name.
-type authResultsAdapter struct{ r mailauth.AuthResults }
-
-func (a authResultsAdapter) SPF() spam.AuthStatus   { return spamStatus(a.r.SPF.Status) }
-func (a authResultsAdapter) DKIM() spam.AuthStatus  { return spamStatus(bestDKIM(a.r.DKIM)) }
-func (a authResultsAdapter) DMARC() spam.AuthStatus { return spamStatus(a.r.DMARC.Status) }
-func (a authResultsAdapter) ARC() spam.AuthStatus   { return spamStatus(a.r.ARC.Status) }
-func (a authResultsAdapter) FromDomain() string     { return a.r.DMARC.HeaderFrom }
-
-// sieveAuthAdapter adapts mailauth.AuthResults to
-// sieve.AuthResultsReader — identical pattern.
-type sieveAuthAdapter struct{ r mailauth.AuthResults }
-
-func (a sieveAuthAdapter) SPF() sieve.AuthStatus   { return sieveStatus(a.r.SPF.Status) }
-func (a sieveAuthAdapter) DKIM() sieve.AuthStatus  { return sieveStatus(bestDKIM(a.r.DKIM)) }
-func (a sieveAuthAdapter) DMARC() sieve.AuthStatus { return sieveStatus(a.r.DMARC.Status) }
-func (a sieveAuthAdapter) ARC() sieve.AuthStatus   { return sieveStatus(a.r.ARC.Status) }
-func (a sieveAuthAdapter) FromDomain() string      { return a.r.DMARC.HeaderFrom }
-
-func bestDKIM(dkims []mailauth.DKIMResult) mailauth.AuthStatus {
-	// Return the best (Pass > others) status seen across signatures.
-	best := mailauth.AuthUnknown
-	for _, d := range dkims {
-		if d.Status == mailauth.AuthPass {
-			return d.Status
-		}
-		if best == mailauth.AuthUnknown {
-			best = d.Status
-		}
-	}
-	return best
-}
-
-func spamStatus(s mailauth.AuthStatus) spam.AuthStatus {
-	switch s {
-	case mailauth.AuthPass:
-		return spam.AuthPass
-	case mailauth.AuthFail:
-		return spam.AuthFail
-	case mailauth.AuthSoftFail:
-		return spam.AuthSoftFail
-	case mailauth.AuthNeutral:
-		return spam.AuthNeutral
-	case mailauth.AuthTempError:
-		return spam.AuthTempError
-	case mailauth.AuthPermError:
-		return spam.AuthPermError
-	case mailauth.AuthPolicy:
-		return spam.AuthPolicy
-	case mailauth.AuthNone:
-		return spam.AuthNone
-	default:
-		return spam.AuthNone
-	}
-}
-
-func sieveStatus(s mailauth.AuthStatus) sieve.AuthStatus {
-	switch s {
-	case mailauth.AuthPass:
-		return sieve.AuthPass
-	case mailauth.AuthFail:
-		return sieve.AuthFail
-	case mailauth.AuthSoftFail:
-		return sieve.AuthSoftFail
-	case mailauth.AuthNeutral:
-		return sieve.AuthNeutral
-	case mailauth.AuthTempError:
-		return sieve.AuthTempError
-	case mailauth.AuthPermError:
-		return sieve.AuthPermError
-	case mailauth.AuthPolicy:
-		return sieve.AuthPolicy
-	case mailauth.AuthNone:
-		return sieve.AuthNone
-	default:
-		return sieve.AuthNone
 	}
 }

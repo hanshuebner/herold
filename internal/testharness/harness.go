@@ -7,6 +7,33 @@
 // ErrListenerHasNoHandler until a later wave attaches the relevant
 // protocol code. That keeps the harness landable in Wave 0 without
 // depending on in-flight packages.
+//
+// Two-phase attach pattern (Options.Listeners + AttachX).
+//
+// The harness splits listener setup across two phases intentionally.
+// Phase 1 (pre-Start) is declarative: Options.Listeners reserves
+// each socket — the harness binds 127.0.0.1:0, records the allocated
+// port, and runs a trivial accept loop that closes any inbound
+// connection. Tests can assert the port is reachable at this stage,
+// and Dial* helpers return ErrListenerHasNoHandler.
+//
+// Phase 2 (post-Start) is imperative: AttachSMTP, AttachIMAP (and
+// future Attach* helpers) bind a real protocol handler to a reserved
+// listener. The handler's construction depends on the harness's
+// Store / Clock / DNS / Plugins — values that exist only after Start
+// has run — so the handler cannot be supplied at Start() time. The
+// alternative of an Options.XServer field would force callers to
+// build two Server instances (one to register, one to wire); the
+// attach-after-Start split keeps the construction linear.
+//
+// The attach step stops the default accept loop, drains any conn the
+// loop happened to accept while shutting down (handed off on
+// stopDefault via the handoff channel), and hands the bound listener
+// to the protocol server's own Serve loop — which the harness's
+// waitgroup then joins on Close. The result: one Accept caller per
+// listener at any moment, zero dropped connections across the
+// handoff, and a protocol handler wired against the same Store /
+// Clock / DNS the test is asserting against.
 
 package testharness
 
