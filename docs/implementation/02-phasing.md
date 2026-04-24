@@ -71,6 +71,7 @@ Estimated effort: ~14 person-weeks.
 - `protojmap`: Core + Mail. `Mailbox`, `Email`, `EmailSubmission`, `Identity`, `Thread`, `SearchSnippet`, `VacationResponse`. EventSource push. Upload/download.
 - CONDSTORE/QRESYNC in IMAP.
 - IMAP extended: MOVE, LIST-EXTENDED, LIST-STATUS, SPECIAL-USE, MULTIAPPEND, COMPRESS=DEFLATE, UTF8=ACCEPT.
+- **IMAP NOTIFY (RFC 5465)** — REQ-PROTO-34. Shares the per-principal change feed with IDLE and JMAP push; one event source, three consumers.
 - `protomanagesieve` listener.
 - **`protosend` HTTP send API** (REQ-SEND): send, send-raw, send-batch, quota, stats, idempotency.
 - **`protowebhook` mail-arrival webhooks** (REQ-HOOK): CRUD, delivery with inline/fetch-URL bodies, retry, HMAC signature.

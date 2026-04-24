@@ -99,6 +99,7 @@ Deferred: `LIST-MYRIGHTS`, `CONTEXT=SEARCH`, `URLAUTH`.
 - **REQ-PROTO-31** MUST handle `IDLE` for ≥2,000 concurrent sessions without per-session threads.
 - **REQ-PROTO-32** MUST implement `CONDSTORE`/`QRESYNC` correctly — this is a hard requirement for modern clients (Apple Mail) and tricky to get right. See architecture/05-sync-and-state.md.
 - **REQ-PROTO-33** Shared mailboxes and IMAP `ACL` (RFC 4314: `SETACL` / `GETACL` / `MYRIGHTS` / `LISTRIGHTS`) are **in scope for phase 2** (pre-v1.0). Schema carries per-mailbox ACL entries; SELECT / STATUS / fanout respect them; JMAP sharing surface aligned.
+- **REQ-PROTO-34** MUST implement IMAP `NOTIFY` (RFC 5465). Clients subscribe to state-change events across mailboxes without holding a SELECT + IDLE per mailbox, which is how modern clients stay efficient across large folder sets. NOTIFY draws from the same per-principal change feed that backs IDLE and JMAP push — one event source, three consumers. Phase 2 alongside CONDSTORE/QRESYNC and MOVE.
 
 ## JMAP (REQ-PROTO-JMAP)
 

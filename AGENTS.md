@@ -17,7 +17,7 @@ Each owns an area of the code tree. Ownership is where design and first-pass rev
 | Agent | Owns | Primary RFCs / specs |
 |---|---|---|
 | `smtp-implementor` | `internal/protosmtp` (inbound + outbound state machines, SASL) | 5321, 5322, 3207, 1870, 2920, 6152, 6531, 3030, 3461, 4954, 2034, 8689 |
-| `imap-implementor` | `internal/protoimap` | 9051, 3501, 2177, 4315, 4731, 5256, 5258, 5819, 6154, 5161, 6855, 7888, 7162, 6851, 3691, 2342, 9208, 3516, 4469, 3502, 4978, 2971, 5464, 8474 |
+| `imap-implementor` | `internal/protoimap` | 9051, 3501, 2177, 4315, 4731, 5256, 5258, 5819, 6154, 5161, 6855, 7888, 7162, 6851, 3691, 2342, 9208, 3516, 4469, 3502, 4978, 2971, 5464, 5465, 8474 |
 | `jmap-implementor` | `internal/protojmap` | 8620, 8621, 8887 (optional) |
 | `sieve-implementor` | `internal/sieve`, `internal/protomanagesieve` | 5228, 5804, 5232, 5173, 5230, 5231, 5233, 3894, 6609, 5229, 5260, 5490, 9042, 5293, 7352, 6131, 6134, 5703, 5235, 5429, 5435 |
 | `mail-auth-implementor` | `internal/maildkim`, `internal/mailspf`, `internal/maildmarc`, `internal/mailarc`, TLS-RPT / MTA-STS / DANE wiring | 6376, 7208, 7489, 8617, 8460, 8461, 8462, 7672 |

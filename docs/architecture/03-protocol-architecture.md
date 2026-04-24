@@ -163,5 +163,4 @@ Each protocol has a conformance test suite (see `implementation/03-testing-strat
 
 - Milter protocol (OpenMTPC / Sendmail milter) — complex and out of scope.
 - LMTP as ingress — delivery is in-process.
-- NOTIFY (RFC 5465) in IMAP — complex; IDLE is sufficient for v1.
 - JMAP over WebSocket — SSE push is enough; revisit.

@@ -49,7 +49,7 @@ Evidence rows refer to `emersion/go-imap/v2/imapserver` unless noted. "const onl
 | COMPRESS=DEFLATE | 4978 | missing | not in `capability.go`, no `compress.go`. |
 | CONDSTORE | 7162 | **missing** | **no `condstore.go`, no `SessionCondStore`, no `MODSEQ` on writer/session API, not in `capability.go`.** Const exists in top-level `v2` only. |
 | QRESYNC | 7162 | **missing** | **no QRESYNC handler, no `VANISHED` writer, no `SelectOptions.QResync`.** Const exists in top-level `v2` only. |
-| NOTIFY | 5465 | const only | we skip anyway per `docs/architecture/03-protocol-architecture.md` "What we don't build". |
+| NOTIFY | 5465 | **missing** | **no `notify.go`, no `SessionNotify`, no subscription or event filter implementation in `imapserver`.** Const exists in top-level `v2` only. In scope per REQ-PROTO-34 (Phase 2). |
 | ACL | 4314 | missing | no `acl.go`, no `SessionACL`; Phase 2 per `REQ-PROTO-33`. |
 | QUOTA / QUOTA=RES-STORAGE | 9208 | const only | no `quota.go`; bring our own. |
 | METADATA / METADATA-SERVER | 5464 | const only | no `metadata.go`. |
@@ -145,3 +145,8 @@ Comparative tail-risk:
 
 Concretely: depend on `github.com/emersion/go-imap/v2` (top-level types only — AST, encoder/decoder, capability tokens, NumSet, SearchCriteria). Do not depend on `v2/imapserver`. Implement our own `internal/protoimap` session loop, selected-mailbox state, IDLE broadcaster hook, and CONDSTORE/QRESYNC logic directly on top of the `store` interface. Revisit if the top-level `v2` types package churns disruptively across three consecutive betas — at which point we own the parser too.
 
+### Addendum: REQ-PROTO-34 (NOTIFY) — 2026-04-24
+
+NOTIFY (RFC 5465) was promoted into scope after the spike was written; the coverage matrix above is updated. The recommendation is unchanged and in fact reinforced: `emersion/go-imap/v2/imapserver` has no NOTIFY session handler, no subscription state, and no selector-expression parser, so Option A would have to write that from scratch whether or not we fork — Option C was already going to. The change affects the work plan, not the build-vs-fork direction.
+
+NOTIFY fan-out must share the per-principal change feed that backs IDLE and JMAP push (`docs/architecture/05-sync-and-state.md`). Do not introduce a second subscription mechanism. Selector-expression matching (`MESSAGES`, `FLAGS`, `MAILBOXES SUBTREE ...`, `PERSONAL`, ...) is pure session-local state; it filters events off a single feed. That places NOTIFY squarely in the session layer we already planned to own — no cross-subsystem seam that Option A would have helped with. Expect +1 to +2 person-weeks added to the Phase 2 IMAP slice for NOTIFY on top of CONDSTORE/QRESYNC/MOVE/ACL, not a re-evaluation.
