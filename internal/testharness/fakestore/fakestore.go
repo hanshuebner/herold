@@ -1742,6 +1742,24 @@ func (b *blobsFace) Stat(ctx context.Context, hash string) (int64, int, error) {
 	return size, s.blobRefs[hash], nil
 }
 
+// GetBlobRef mirrors the SQL backends' blob_refs row read. A row is
+// considered present once the metadata layer has run its first incRef
+// for the hash; a Blobs.Put alone (no Insert*Message yet) does not
+// satisfy the predicate. Returns ErrNotFound when no incRef has fired
+// for hash.
+func (m *metaFace) GetBlobRef(ctx context.Context, hash string) (int64, int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.blobRefs[hash]; !ok {
+		return 0, 0, fmt.Errorf("blob_refs %s: %w", hash, store.ErrNotFound)
+	}
+	return s.blobSize[hash], int64(s.blobRefs[hash]), nil
+}
+
 func (b *blobsFace) Delete(ctx context.Context, hash string) error {
 	if err := ctx.Err(); err != nil {
 		return err

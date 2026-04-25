@@ -411,6 +411,10 @@ func (m *metaFace) InsertChatMessage(ctx context.Context, msg store.ChatMessage)
 	if err := store.ChatValidateAttachments(msg.AttachmentsJSON); err != nil {
 		return 0, err
 	}
+	attHashes, err := store.ChatAttachmentHashes(msg.AttachmentsJSON)
+	if err != nil {
+		return 0, err
+	}
 	s := m.s()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -456,6 +460,17 @@ func (m *metaFace) InsertChatMessage(ctx context.Context, msg store.ChatMessage)
 		conv.UpdatedAt = now
 		conv.ModSeq++
 		s.phase2.chatConversations[msg.ConversationID] = conv
+	}
+	// Increment refcounts for each distinct attachment hash. The
+	// blob_refs row for chat attachments is created lazily on first
+	// reference (mirrors the SQL incRef path); blobSize is recorded for
+	// rows that did not already exist so a Stat read after the first
+	// incRef returns the declared size.
+	for _, a := range attHashes {
+		s.blobRefs[a.Hash]++
+		if _, ok := s.blobSize[a.Hash]; !ok {
+			s.blobSize[a.Hash] = a.Size
+		}
 	}
 	s.appendStateChangeLocked(store.StateChange{
 		PrincipalID:    conv.CreatedByPrincipalID,
@@ -954,11 +969,25 @@ func (m *metaFace) HardDeleteChatMessage(ctx context.Context, id store.ChatMessa
 	if !ok {
 		return fmt.Errorf("conversation %d: %w", cur.ConversationID, store.ErrNotFound)
 	}
+	// Resolve the attachments' distinct blob hashes so we can decrement
+	// refcounts atomically with the row delete.
+	attHashes, err := store.ChatAttachmentHashes(cur.AttachmentsJSON)
+	if err != nil {
+		return err
+	}
 	now := s.clk.Now()
 	delete(s.phase2.chatMessages, id)
-	// Recompute conversation denormalised counters (TODO(2.9.6-coord):
-	// blob refcount unref for chat attachments lands when the chat-side
-	// blob_refs writer ships).
+	// Decrement blob_refs for each distinct attachment hash; the
+	// blob-store sweeper evicts rows whose count drops to zero
+	// out-of-band (REQ-STORE-12 grace window). Mirrors the mail-side
+	// expunge / mailbox-delete path.
+	for _, a := range attHashes {
+		s.blobRefs[a.Hash]--
+		if s.blobRefs[a.Hash] < 0 {
+			s.blobRefs[a.Hash] = 0
+		}
+	}
+	// Recompute conversation denormalised counters.
 	var (
 		liveCount int
 		lastAt    *time.Time

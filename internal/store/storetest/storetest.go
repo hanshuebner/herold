@@ -157,6 +157,7 @@ func Run(t *testing.T, f Factory) {
 		{"ChatConversation_RetentionAndEditWindowRoundTrip", testChatConversationRetentionEditWindowRoundTrip},
 		{"ChatRetention_HardDeleteAndRecount", testChatRetentionHardDeleteAndRecount},
 		{"ChatRetention_ListConversationsForRetention", testChatRetentionListConversationsForRetention},
+		{"ChatAttachment_BlobRefcountOnHardDelete", testChatAttachmentBlobRefcountOnHardDelete},
 	}
 	for _, c := range cases {
 		tc := c
@@ -4833,4 +4834,92 @@ func testChatRetentionListConversationsForRetention(t *testing.T, s store.Store)
 	if !found {
 		t.Errorf("wantID %d not in retention list: %+v", wantID, out)
 	}
+}
+
+// testChatAttachmentBlobRefcountOnHardDelete exercises Track B of Wave
+// 2.9.7: chat attachments increment blob_refs.ref_count on insert and
+// decrement on hard-delete, atomically with the row mutation. Two
+// messages share one common attachment hash and each carry one unique
+// hash; hard-deleting a message drops the shared count by one and
+// drains the unique count to zero. Mirrors the mail-side
+// expunge / mailbox-delete refcount path.
+func testChatAttachmentBlobRefcountOnHardDelete(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-att-refcount@example.com")
+	cid, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, Name: "att",
+		CreatedByPrincipalID: p.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	// Three deterministic 64-char hashes; the wire layer produces
+	// hex-BLAKE3 here but the metadata layer treats blob_hash as opaque.
+	shared := strings.Repeat("a", 64)
+	uniq1 := strings.Repeat("b", 64)
+	uniq2 := strings.Repeat("c", 64)
+	pidArg := p.ID
+	mkAtts := func(hashes ...string) []byte {
+		var sb strings.Builder
+		sb.WriteByte('[')
+		for i, h := range hashes {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			fmt.Fprintf(&sb,
+				`{"blob_hash":%q,"content_type":"application/octet-stream","filename":"f%d.bin","size":%d}`,
+				h, i, 100+i)
+		}
+		sb.WriteByte(']')
+		return []byte(sb.String())
+	}
+	id1, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID:    cid,
+		SenderPrincipalID: &pidArg,
+		BodyText:          "msg1",
+		BodyFormat:        store.ChatBodyFormatText,
+		AttachmentsJSON:   mkAtts(shared, uniq1),
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMessage 1: %v", err)
+	}
+	id2, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID:    cid,
+		SenderPrincipalID: &pidArg,
+		BodyText:          "msg2",
+		BodyFormat:        store.ChatBodyFormatText,
+		AttachmentsJSON:   mkAtts(shared, uniq2),
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMessage 2: %v", err)
+	}
+	wantRef := func(label, hash string, want int64) {
+		t.Helper()
+		_, n, err := s.Meta().GetBlobRef(ctx, hash)
+		if err != nil {
+			t.Fatalf("GetBlobRef(%s) %s: %v", label, hash, err)
+		}
+		if n != want {
+			t.Errorf("GetBlobRef(%s) ref_count = %d, want %d", label, n, want)
+		}
+	}
+	// After both inserts: shared has two refs, each unique has one.
+	wantRef("after-both-inserts shared", shared, 2)
+	wantRef("after-both-inserts uniq1", uniq1, 1)
+	wantRef("after-both-inserts uniq2", uniq2, 1)
+	// Hard-delete msg1: shared drops to one ref, uniq1 drains to zero,
+	// uniq2 unaffected.
+	if err := s.Meta().HardDeleteChatMessage(ctx, id1); err != nil {
+		t.Fatalf("HardDeleteChatMessage(1): %v", err)
+	}
+	wantRef("after-delete-1 shared", shared, 1)
+	wantRef("after-delete-1 uniq1", uniq1, 0)
+	wantRef("after-delete-1 uniq2", uniq2, 1)
+	// Hard-delete msg2: shared drains to zero, uniq2 drains to zero.
+	if err := s.Meta().HardDeleteChatMessage(ctx, id2); err != nil {
+		t.Fatalf("HardDeleteChatMessage(2): %v", err)
+	}
+	wantRef("after-delete-2 shared", shared, 0)
+	wantRef("after-delete-2 uniq1", uniq1, 0)
+	wantRef("after-delete-2 uniq2", uniq2, 0)
 }

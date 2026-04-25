@@ -592,9 +592,13 @@ func (m *metadata) InsertChatMessage(ctx context.Context, msg store.ChatMessage)
 	if err := store.ChatValidateAttachments(msg.AttachmentsJSON); err != nil {
 		return 0, err
 	}
+	attHashes, err := store.ChatAttachmentHashes(msg.AttachmentsJSON)
+	if err != nil {
+		return 0, err
+	}
 	now := m.s.clock.Now().UTC()
 	var id int64
-	err := m.runTx(ctx, func(tx pgx.Tx) error {
+	err = m.runTx(ctx, func(tx pgx.Tx) error {
 		var owner int64
 		err := tx.QueryRow(ctx,
 			`SELECT created_by_principal_id FROM chat_conversations WHERE id = $1`,
@@ -656,6 +660,14 @@ func (m *metadata) InsertChatMessage(ctx context.Context, msg store.ChatMessage)
 				 WHERE id = $3`,
 				usMicros(now), usMicros(now), int64(msg.ConversationID)); err != nil {
 				return mapErr(err)
+			}
+		}
+		// Increment blob_refs.ref_count for each distinct attachment
+		// hash atomically with the chat_messages insert. Mirrors the
+		// mail-side InsertMessage path.
+		for _, a := range attHashes {
+			if err := incRef(ctx, tx, a.Hash, a.Size, now); err != nil {
+				return err
 			}
 		}
 		return appendStateChange(ctx, tx, store.PrincipalID(owner),
@@ -1136,19 +1148,23 @@ func (m *metadata) HardDeleteChatMessage(ctx context.Context, id store.ChatMessa
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		var convID, owner int64
+		var atts []byte
 		err := tx.QueryRow(ctx, `
-			SELECT cm.conversation_id, cc.created_by_principal_id
+			SELECT cm.conversation_id, cc.created_by_principal_id, cm.attachments_json
 			  FROM chat_messages cm
 			  JOIN chat_conversations cc ON cc.id = cm.conversation_id
-			 WHERE cm.id = $1`, int64(id)).Scan(&convID, &owner)
+			 WHERE cm.id = $1`, int64(id)).Scan(&convID, &owner, &atts)
 		if err != nil {
 			return mapErr(err)
 		}
-		// TODO(2.9.6-coord): chat-message attachments are referenced via
-		// chat_messages.attachments_json, not blob_refs.ref_count, so a
-		// pure DELETE here does not decrement the blob refcount. The
-		// existing storeblobfs / blob_refs path is wired for mail
-		// messages only; chat blob refcounting is a follow-up.
+		// Decrement blob_refs.ref_count for each distinct attachment
+		// hash atomically with the row delete. The blob-store sweeper
+		// evicts blob_refs rows whose ref_count <= 0 out-of-band
+		// (REQ-STORE-12 grace window).
+		hashes, err := store.ChatAttachmentHashes(atts)
+		if err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx,
 			`DELETE FROM chat_messages WHERE id = $1`, int64(id))
 		if err != nil {
@@ -1156,6 +1172,11 @@ func (m *metadata) HardDeleteChatMessage(ctx context.Context, id store.ChatMessa
 		}
 		if tag.RowsAffected() == 0 {
 			return store.ErrNotFound
+		}
+		for _, a := range hashes {
+			if err := decRef(ctx, tx, a.Hash, now); err != nil {
+				return err
+			}
 		}
 		// Recompute the conversation's denormalised counters from the
 		// surviving live rows.

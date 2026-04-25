@@ -416,6 +416,71 @@ func ChatValidateAttachments(raw []byte) error {
 	return chatValidateAttachments(raw)
 }
 
+// ChatAttachmentBlobRef names one attachment's identifying metadata as
+// stored in chat_messages.attachments_json: its content-addressed hash
+// and the attachment's declared size in bytes. The metadata backends
+// pair this with blob_refs.ref_count adjustments on insert / hard-delete
+// so an INSERT into blob_refs happens with a non-zero size when this is
+// the first reference to a given hash.
+type ChatAttachmentBlobRef struct {
+	Hash string
+	Size int64
+}
+
+// ChatAttachmentHashes parses raw (when non-empty) and returns the
+// distinct (blob_hash, size) entries referenced by the attachments JSON
+// in the order in which each hash first appears. A nil or empty raw
+// input returns (nil, nil). The shape rule mirrors
+// ChatValidateAttachments; callers that have already validated raw can
+// ignore the error path. Used by the metadata backends to drive
+// blob_refs.ref_count adjustments atomically with chat_messages row
+// inserts and hard-deletes. A duplicate blob_hash inside one message's
+// attachments array is collapsed to a single ref so a single message
+// referencing the same hash twice does not double-count the refcount;
+// the first occurrence's size is retained.
+func ChatAttachmentHashes(raw []byte) ([]ChatAttachmentBlobRef, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var arr []map[string]any
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return nil, fmt.Errorf("%w: attachments_json: %v", ErrInvalidArgument, err)
+	}
+	if len(arr) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(arr))
+	out := make([]ChatAttachmentBlobRef, 0, len(arr))
+	for i, entry := range arr {
+		hash, ok := entry["blob_hash"].(string)
+		if !ok || hash == "" {
+			return nil, fmt.Errorf("%w: attachment %d missing blob_hash", ErrInvalidArgument, i)
+		}
+		if _, dup := seen[hash]; dup {
+			continue
+		}
+		seen[hash] = struct{}{}
+		// size is optional from a validation perspective but the JMAP
+		// encoder always emits it; tolerate an absent / non-numeric value
+		// so a future caller serialising attachments by hand without size
+		// does not fail validation here. The stored value is only used as
+		// blob_refs.size on the first INSERT and is never authoritative.
+		var size int64
+		if v, ok := entry["size"]; ok {
+			switch t := v.(type) {
+			case float64:
+				size = int64(t)
+			case int64:
+				size = t
+			case int:
+				size = int64(t)
+			}
+		}
+		out = append(out, ChatAttachmentBlobRef{Hash: hash, Size: size})
+	}
+	return out, nil
+}
+
 // ChatApplyReaction adds or removes principalID from the reactor list
 // for emoji on the canonical reactions JSON. Returns the new JSON
 // (nil when the resulting map is empty so the caller can write SQL

@@ -1118,6 +1118,16 @@ func decRef(ctx context.Context, tx *sql.Tx, hash string, now time.Time) error {
 	return mapErr(err)
 }
 
+func (m *metadata) GetBlobRef(ctx context.Context, hash string) (int64, int64, error) {
+	var size, refs int64
+	err := m.s.db.QueryRowContext(ctx,
+		`SELECT size, ref_count FROM blob_refs WHERE hash = ?`, hash).Scan(&size, &refs)
+	if err != nil {
+		return 0, 0, mapErr(err)
+	}
+	return size, refs, nil
+}
+
 func boolToInt(b bool) int64 {
 	if b {
 		return 1

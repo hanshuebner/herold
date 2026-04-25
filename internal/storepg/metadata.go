@@ -1021,6 +1021,16 @@ func decRef(ctx context.Context, tx pgx.Tx, hash string, now time.Time) error {
 	return mapErr(err)
 }
 
+func (m *metadata) GetBlobRef(ctx context.Context, hash string) (int64, int64, error) {
+	var size, refs int64
+	err := m.s.pool.QueryRow(ctx,
+		`SELECT size, ref_count FROM blob_refs WHERE hash = $1`, hash).Scan(&size, &refs)
+	if err != nil {
+		return 0, 0, mapErr(err)
+	}
+	return size, refs, nil
+}
+
 // newUIDValidity returns a 32-bit UIDVALIDITY seeded from the given
 // time plus a one-byte salt drawn from rs. Production passes
 // crypto/rand.Reader (set on Store at Open time); tests inject a

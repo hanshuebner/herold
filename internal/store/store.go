@@ -943,6 +943,14 @@ type Metadata interface {
 	// retention sweeper to page through accounts that have opted into a
 	// global retention policy.
 	ListChatAccountSettingsForRetention(ctx context.Context, afterID PrincipalID, limit int) ([]ChatAccountSettings, error)
+
+	// GetBlobRef returns the metadata-side blob_refs row for hash:
+	// (size, ref_count). Returns ErrNotFound when no row exists for the
+	// hash. The blob-store sweeper is responsible for evicting rows
+	// whose ref_count has fallen to zero out-of-band; this method
+	// reports the persisted state and does not itself mutate it.
+	// Exposed primarily for test assertions and future GC tooling.
+	GetBlobRef(ctx context.Context, hash string) (size int64, refCount int64, err error)
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical
