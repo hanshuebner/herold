@@ -120,6 +120,10 @@ func (s *Store) defaultRecordLocked(p store.Principal) identityRecord {
 		if ovr.HTMLSignature != "" {
 			rec.HTMLSignature = ovr.HTMLSignature
 		}
+		if ovr.Signature != nil {
+			v := *ovr.Signature
+			rec.Signature = &v
+		}
 		if !ovr.UpdatedAt.IsZero() {
 			rec.UpdatedAt = ovr.UpdatedAt
 		}
@@ -265,6 +269,10 @@ func persistedToRecord(r store.JMAPIdentity) identityRecord {
 		MayDelete:     r.MayDelete,
 		UpdatedAt:     time.UnixMicro(r.UpdatedAtUs).UTC(),
 	}
+	if r.Signature != nil {
+		v := *r.Signature
+		rec.Signature = &v
+	}
 	if v, err := strconv.ParseUint(r.ID, 10, 64); err == nil {
 		rec.ID = v
 	}
@@ -295,6 +303,10 @@ func recordToPersisted(r identityRecord) store.JMAPIdentity {
 		TextSignature: r.TextSignature,
 		HTMLSignature: r.HTMLSignature,
 		MayDelete:     r.MayDelete,
+	}
+	if r.Signature != nil {
+		v := *r.Signature
+		row.Signature = &v
 	}
 	if len(r.ReplyTo) > 0 {
 		if b, err := json.Marshal(r.ReplyTo); err == nil {
@@ -360,6 +372,8 @@ type identityPatch struct {
 	textSignature    string
 	hasHTMLSignature bool
 	htmlSignature    string
+	hasSignature     bool
+	signature        *string
 }
 
 func (p identityPatch) applyTo(r *identityRecord) {
@@ -377,6 +391,14 @@ func (p identityPatch) applyTo(r *identityRecord) {
 	}
 	if p.hasHTMLSignature {
 		r.HTMLSignature = p.htmlSignature
+	}
+	if p.hasSignature {
+		if p.signature == nil {
+			r.Signature = nil
+		} else {
+			v := *p.signature
+			r.Signature = &v
+		}
 	}
 }
 

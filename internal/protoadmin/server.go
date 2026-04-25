@@ -96,6 +96,39 @@ type SpamPolicyStore interface {
 	SetSpamPolicy(SpamPolicy)
 }
 
+// CategoriseRecategoriser is the protoadmin-facing surface of the
+// categorise.Categoriser. The ticket lifts only the
+// RecategoriseRecent method through this seam so the admin server can
+// stay independent of the categorise package's higher-level wiring
+// (REQ-FILT-220). Nil leaves /api/v1/principals/{pid}/recategorise
+// returning 501.
+type CategoriseRecategoriser interface {
+	// RecategoriseRecent re-runs the classifier on principal's last
+	// limit messages in their inbox. Slow operation; the admin
+	// handler runs it in a goroutine and reports progress through the
+	// progress callback.
+	RecategoriseRecent(ctx context.Context, principal store.PrincipalID, limit int, progress func(done, total int)) (int, error)
+}
+
+// CategoriseJobRegistry is the in-memory job-status map exposed by
+// the categorise package. Decoupled here so protoadmin does not
+// import categorise directly.
+type CategoriseJobRegistry interface {
+	Get(id string) (CategoriseJobStatus, bool)
+	Put(now time.Time, s CategoriseJobStatus)
+}
+
+// CategoriseJobStatus is the wire-form snapshot of a recategorisation
+// job. Mirrors categorise.JobStatus to keep the admin response stable
+// even if the source struct grows fields.
+type CategoriseJobStatus struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+	Done  int    `json:"done"`
+	Total int    `json:"total"`
+	Err   string `json:"err,omitempty"`
+}
+
 // Options configures a Server.
 type Options struct {
 	// TLSStore holds certificates for Implicit-TLS listeners. Required
@@ -116,6 +149,13 @@ type Options struct {
 	// SpamPolicyStore drives /api/v1/spam/policy GET + PUT. Nil leaves
 	// the endpoints returning 501.
 	SpamPolicyStore SpamPolicyStore
+	// Categoriser drives the per-principal "recategorise inbox" admin
+	// action (REQ-FILT-220). Nil leaves the endpoints returning 501.
+	Categoriser CategoriseRecategoriser
+	// CategoriseJobs is the in-memory map the recategorise endpoints
+	// use to report progress. Defaults to a fresh JobRegistry on
+	// first use when Categoriser is set; supplied here for tests.
+	CategoriseJobs CategoriseJobRegistry
 	// Health tracks liveness / readiness for the /healthz endpoints.
 	// Defaults to a fresh observe.Health() marked ready on first Serve.
 	Health *observe.Health

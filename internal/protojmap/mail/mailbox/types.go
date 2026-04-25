@@ -78,7 +78,9 @@ func rightsFromACL(r store.ACLRights) myRights {
 	}
 }
 
-// jmapMailbox is the wire-form Mailbox object (RFC 8621 §2.1).
+// jmapMailbox is the wire-form Mailbox object (RFC 8621 §2.1) plus the
+// "color" extension property defined by REQ-PROTO-56 / REQ-STORE-34. The
+// color is null when unset; clients render their own default.
 type jmapMailbox struct {
 	ID            jmapID   `json:"id"`
 	Name          string   `json:"name"`
@@ -91,6 +93,7 @@ type jmapMailbox struct {
 	UnreadThreads int64    `json:"unreadThreads"`
 	MyRights      myRights `json:"myRights"`
 	IsSubscribed  bool     `json:"isSubscribed"`
+	Color         *string  `json:"color"`
 }
 
 // roleFromAttributes maps the SPECIAL-USE attribute bits to the JMAP

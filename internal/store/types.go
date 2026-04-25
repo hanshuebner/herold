@@ -203,6 +203,12 @@ type Mailbox struct {
 	// HighestModSeq is the maximum ModSeq of any message in the mailbox
 	// (RFC 7162 §3.1.1), advanced atomically with each mutation.
 	HighestModSeq ModSeq
+	// Color is the optional JMAP-only mailbox colour extension
+	// (REQ-PROTO-56 / REQ-STORE-34). When non-nil it is a hex literal
+	// of the form "#RRGGBB" (six hex digits, leading '#'); nil means
+	// unset and clients render their own default. Not advertised on
+	// the IMAP wire — IMAP has no keyword for mailbox colour.
+	Color *string
 	// CreatedAt is the insert instant.
 	CreatedAt time.Time
 	// UpdatedAt is the instant of the most recent mutation.

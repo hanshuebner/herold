@@ -22,15 +22,47 @@ type Config struct {
 
 // ServerConfig carries process-wide settings.
 type ServerConfig struct {
-	Hostname      string         `toml:"hostname"`
-	DataDir       string         `toml:"data_dir"`
-	RunAsUser     string         `toml:"run_as_user"`
-	RunAsGroup    string         `toml:"run_as_group"`
-	ShutdownGrace Duration       `toml:"shutdown_grace,omitempty"`
-	AdminTLS      AdminTLSConfig `toml:"admin_tls"`
-	Storage       StorageConfig  `toml:"storage"`
-	Snooze        SnoozeConfig   `toml:"snooze,omitempty"`
-	UI            UIConfig       `toml:"ui,omitempty"`
+	Hostname      string           `toml:"hostname"`
+	DataDir       string           `toml:"data_dir"`
+	RunAsUser     string           `toml:"run_as_user"`
+	RunAsGroup    string           `toml:"run_as_group"`
+	ShutdownGrace Duration         `toml:"shutdown_grace,omitempty"`
+	AdminTLS      AdminTLSConfig   `toml:"admin_tls"`
+	Storage       StorageConfig    `toml:"storage"`
+	Snooze        SnoozeConfig     `toml:"snooze,omitempty"`
+	UI            UIConfig         `toml:"ui,omitempty"`
+	ImageProxy    ImageProxyConfig `toml:"image_proxy,omitempty"`
+}
+
+// ImageProxyConfig configures the inbound HTML image proxy
+// (REQ-SEND-70..78). Defaults match the requirements; operators
+// override only to widen / narrow the byte cap or rate limits.
+type ImageProxyConfig struct {
+	// Enabled selects whether the /proxy/image handler is mounted.
+	// Defaults to true. Operators who want to disable the feature
+	// (e.g. behind an upstream proxy that owns image rewriting) set
+	// this false.
+	Enabled *bool `toml:"enabled,omitempty"`
+	// MaxBytes is the per-response upstream byte cap (REQ-SEND-74).
+	// Default 25 * 1024 * 1024 (25 MB).
+	MaxBytes int64 `toml:"max_bytes,omitempty"`
+	// CacheMaxBytes is the total in-memory cache footprint cap
+	// (REQ-SEND-75). Default 256 MiB.
+	CacheMaxBytes int64 `toml:"cache_max_bytes,omitempty"`
+	// CacheMaxEntries is the entry-count cache cap. Default 8192.
+	CacheMaxEntries int `toml:"cache_max_entries,omitempty"`
+	// CacheMaxAgeSeconds is the upstream-Cache-Control ceiling, in
+	// seconds. Default 86400 (24 h).
+	CacheMaxAgeSeconds int `toml:"cache_max_age_seconds,omitempty"`
+	// PerUserPerMinute caps fetches per principal per minute.
+	// Default 200 (REQ-SEND-77).
+	PerUserPerMinute int `toml:"per_user_per_minute,omitempty"`
+	// PerUserOriginPerMinute caps fetches per (principal,
+	// upstream-origin) per minute. Default 10.
+	PerUserOriginPerMinute int `toml:"per_user_origin_per_minute,omitempty"`
+	// PerUserConcurrent caps in-flight fetches per principal.
+	// Default 8.
+	PerUserConcurrent int `toml:"per_user_concurrent,omitempty"`
 }
 
 // UIConfig configures the operator-facing web UI (internal/protoui).
@@ -290,6 +322,35 @@ func applyDefaults(c *Config) {
 		t := true
 		c.Server.UI.SecureCookies = &t
 	}
+	// Image proxy defaults (REQ-SEND-70..78). Operators get a working
+	// proxy without any TOML; the constants here mirror protoimg's
+	// own defaults so a missing block and an empty block behave the
+	// same.
+	if c.Server.ImageProxy.Enabled == nil {
+		t := true
+		c.Server.ImageProxy.Enabled = &t
+	}
+	if c.Server.ImageProxy.MaxBytes == 0 {
+		c.Server.ImageProxy.MaxBytes = 25 * 1024 * 1024
+	}
+	if c.Server.ImageProxy.CacheMaxBytes == 0 {
+		c.Server.ImageProxy.CacheMaxBytes = 256 * 1024 * 1024
+	}
+	if c.Server.ImageProxy.CacheMaxEntries == 0 {
+		c.Server.ImageProxy.CacheMaxEntries = 8192
+	}
+	if c.Server.ImageProxy.CacheMaxAgeSeconds == 0 {
+		c.Server.ImageProxy.CacheMaxAgeSeconds = 86400
+	}
+	if c.Server.ImageProxy.PerUserPerMinute == 0 {
+		c.Server.ImageProxy.PerUserPerMinute = 200
+	}
+	if c.Server.ImageProxy.PerUserOriginPerMinute == 0 {
+		c.Server.ImageProxy.PerUserOriginPerMinute = 10
+	}
+	if c.Server.ImageProxy.PerUserConcurrent == 0 {
+		c.Server.ImageProxy.PerUserConcurrent = 8
+	}
 }
 
 // Validate performs cross-field and semantic checks that go-toml cannot express.
@@ -308,6 +369,25 @@ func Validate(c *Config) error {
 	// applyDefaults.
 	if c.Server.Snooze.PollInterval > 0 && c.Server.Snooze.PollInterval < Duration(5*time.Second) {
 		return fmt.Errorf("sysconfig: [server.snooze] poll_interval %s below 5s floor", c.Server.Snooze.PollInterval.AsDuration())
+	}
+	// Image proxy (REQ-SEND-70..78). Catch operator typos that would
+	// otherwise produce a silently-disabled feature: negative budgets
+	// are nonsense and would collapse to "no fetches" / "no cache".
+	ip := c.Server.ImageProxy
+	if ip.MaxBytes < 0 {
+		return fmt.Errorf("sysconfig: [server.image_proxy] max_bytes %d must be >= 0", ip.MaxBytes)
+	}
+	if ip.CacheMaxBytes < 0 {
+		return fmt.Errorf("sysconfig: [server.image_proxy] cache_max_bytes %d must be >= 0", ip.CacheMaxBytes)
+	}
+	if ip.CacheMaxEntries < 0 {
+		return fmt.Errorf("sysconfig: [server.image_proxy] cache_max_entries %d must be >= 0", ip.CacheMaxEntries)
+	}
+	if ip.CacheMaxAgeSeconds < 0 {
+		return fmt.Errorf("sysconfig: [server.image_proxy] cache_max_age_seconds %d must be >= 0", ip.CacheMaxAgeSeconds)
+	}
+	if ip.PerUserPerMinute < 0 || ip.PerUserOriginPerMinute < 0 || ip.PerUserConcurrent < 0 {
+		return errors.New("sysconfig: [server.image_proxy] rate-limit knobs must be >= 0")
 	}
 	// Admin TLS
 	switch c.Server.AdminTLS.Source {

@@ -359,3 +359,135 @@ func TestMailbox_Query_Filter_Role(t *testing.T) {
 		t.Fatalf("id %s != inbox %d", resp.IDs[0], inbox.ID)
 	}
 }
+
+// -- REQ-PROTO-56 / REQ-STORE-34 Mailbox.color extension ----------
+
+// TestMailbox_Get_IncludesColor exercises Mailbox/get reflecting the
+// color extension field for both unset (null) and set (#RRGGBB) cases.
+func TestMailbox_Get_IncludesColor(t *testing.T) {
+	f := setupFixture(t)
+	plain := mustInsertMailbox(t, f, "Plain", 0)
+	colour := "#5B8DEE"
+	colored, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid, Name: "Coloured", Color: &colour,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(coloured): %v", err)
+	}
+	_, raw := f.invoke(t, "Mailbox/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+	})
+	var resp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	byName := map[string]map[string]any{}
+	for _, m := range resp.List {
+		byName[m["name"].(string)] = m
+	}
+	if got := byName["Plain"]; got["color"] != nil {
+		t.Fatalf("Plain color = %v, want nil (id=%d)", got["color"], plain.ID)
+	}
+	if got := byName["Coloured"]; got["color"] != colour {
+		t.Fatalf("Coloured color = %v, want %q (id=%d)", got["color"], colour, colored.ID)
+	}
+}
+
+// TestMailbox_Set_AcceptsColor covers the create + update happy paths
+// for the color extension. Both new mailboxes and existing rows accept
+// well-formed hex literals.
+func TestMailbox_Set_AcceptsColor(t *testing.T) {
+	f := setupFixture(t)
+	// Create with color.
+	_, raw := f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"create": map[string]any{
+			"new": map[string]any{
+				"name":  "Custom",
+				"color": "#abcdef",
+			},
+		},
+	})
+	var cresp struct {
+		Created    map[string]map[string]any `json:"created"`
+		NotCreated map[string]any            `json:"notCreated"`
+	}
+	if err := json.Unmarshal(raw, &cresp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(cresp.Created) != 1 || len(cresp.NotCreated) != 0 {
+		t.Fatalf("create with color failed: %+v / %+v", cresp.Created, cresp.NotCreated)
+	}
+	if got := cresp.Created["new"]["color"]; got != "#abcdef" {
+		t.Fatalf("created color = %v, want #abcdef", got)
+	}
+	// Update an existing mailbox's color.
+	mb := mustInsertMailbox(t, f, "Existing", 0)
+	id := fmt.Sprintf("%d", mb.ID)
+	_, raw = f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			id: map[string]any{"color": "#123456"},
+		},
+	})
+	var uresp struct {
+		Updated    map[string]any `json:"updated"`
+		NotUpdated map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &uresp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(uresp.Updated) != 1 || len(uresp.NotUpdated) != 0 {
+		t.Fatalf("update color failed: %+v / %+v", uresp.Updated, uresp.NotUpdated)
+	}
+	got, _ := f.srv.Store.Meta().GetMailboxByID(context.Background(), mb.ID)
+	if got.Color == nil || *got.Color != "#123456" {
+		t.Fatalf("Color after update = %v, want #123456", got.Color)
+	}
+	// Clear via explicit null.
+	_, raw = f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			id: map[string]any{"color": nil},
+		},
+	})
+	got, _ = f.srv.Store.Meta().GetMailboxByID(context.Background(), mb.ID)
+	if got.Color != nil {
+		t.Fatalf("Color after null update = %v, want nil", *got.Color)
+	}
+}
+
+// TestMailbox_Set_RejectsInvalidColorFormat asserts the JMAP layer
+// rejects malformed hex literals on both create and update with a
+// SetError pointing at the "color" property.
+func TestMailbox_Set_RejectsInvalidColorFormat(t *testing.T) {
+	f := setupFixture(t)
+	_, raw := f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"create": map[string]any{
+			"bad": map[string]any{
+				"name":  "Folder",
+				"color": "red",
+			},
+		},
+	})
+	var resp struct {
+		Created    map[string]any            `json:"created"`
+		NotCreated map[string]map[string]any `json:"notCreated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.Created) != 0 {
+		t.Fatalf("bad color unexpectedly created: %v", resp.Created)
+	}
+	if resp.NotCreated["bad"]["type"] != "invalidProperties" {
+		t.Fatalf("notCreated[bad].type = %v, want invalidProperties: %v", resp.NotCreated["bad"]["type"], resp.NotCreated)
+	}
+	props, _ := resp.NotCreated["bad"]["properties"].([]any)
+	if len(props) == 0 || props[0] != "color" {
+		t.Fatalf("notCreated[bad].properties = %v, want [\"color\"]", props)
+	}
+}

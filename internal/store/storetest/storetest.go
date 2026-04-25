@@ -102,6 +102,11 @@ func Run(t *testing.T, f Factory) {
 		{"JMAPIdentity_List_ByPrincipal", testJMAPIdentityListByPrincipal},
 		{"JMAPIdentity_Update_RoundTrips", testJMAPIdentityUpdateRoundtrips},
 		{"JMAPIdentity_Delete_NotFoundAfter", testJMAPIdentityDeleteNotFoundAfter},
+		{"JMAPIdentity_Signature_RoundTrip", testJMAPIdentitySignatureRoundTrip},
+		// -- Wave 2.5 (REQ-PROTO-53/56/57; REQ-STORE-34/35) --------
+		{"Mailbox_Color_RoundTrip", testMailboxColorRoundTrip},
+		{"Mailbox_Color_RejectsInvalidFormat", testMailboxColorRejectsInvalid},
+		{"JMAPStates_SieveCounter", testJMAPStatesSieveCounter},
 		// -- REQ-PROTO-49 JMAP snooze ------------------------------
 		{"Snooze_SetGet_Roundtrip", testSnoozeSetGetRoundtrip},
 		{"Snooze_Clear", testSnoozeClear},
@@ -109,6 +114,9 @@ func Run(t *testing.T, f Factory) {
 		{"Snooze_ListDue_OnlyReturnsDue", testSnoozeListDueOnlyReturnsDue},
 		{"Snooze_ListDue_Limit", testSnoozeListDueLimit},
 		{"Snooze_ListDue_RequiresKeyword", testSnoozeListDueRequiresKeyword},
+		// -- REQ-FILT-200..221 LLM categorisation -----------------
+		{"CategorisationConfig_DefaultsSeededOnFirstRead", testCategorisationConfigDefaults},
+		{"CategorisationConfig_RoundTrip", testCategorisationConfigRoundtrip},
 	}
 	for _, c := range cases {
 		tc := c
@@ -2991,5 +2999,269 @@ func testSnoozeListDueRequiresKeyword(t *testing.T, s store.Store) {
 	}
 	if len(got2) != 0 {
 		t.Fatalf("ListDue after keyword-only clear: got %d, want 0", len(got2))
+	}
+}
+
+// -- REQ-FILT-200..221 LLM categorisation ----------------------------
+
+func testCategorisationConfigDefaults(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cat-defaults@example.com")
+	cfg, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig: %v", err)
+	}
+	if cfg.PrincipalID != p.ID {
+		t.Fatalf("PrincipalID = %d, want %d", cfg.PrincipalID, p.ID)
+	}
+	if !cfg.Enabled {
+		t.Fatalf("default Enabled = false, want true")
+	}
+	if cfg.Prompt == "" {
+		t.Fatalf("default Prompt is empty; expected seeded text")
+	}
+	if len(cfg.CategorySet) == 0 {
+		t.Fatalf("default CategorySet is empty; expected seeded categories")
+	}
+	// Default categories must include the documented Gmail-style set.
+	wanted := map[string]bool{
+		"primary": false, "social": false, "promotions": false,
+		"updates": false, "forums": false,
+	}
+	for _, c := range cfg.CategorySet {
+		if _, ok := wanted[c.Name]; ok {
+			wanted[c.Name] = true
+		}
+	}
+	for name, found := range wanted {
+		if !found {
+			t.Errorf("default seed missing category %q", name)
+		}
+	}
+	if cfg.TimeoutSec <= 0 {
+		t.Fatalf("default TimeoutSec = %d, want > 0", cfg.TimeoutSec)
+	}
+	// A second read returns the same row; the seed is stable.
+	cfg2, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (second): %v", err)
+	}
+	if cfg2.Prompt != cfg.Prompt {
+		t.Fatalf("second read Prompt diverged: %q vs %q", cfg2.Prompt, cfg.Prompt)
+	}
+	if len(cfg2.CategorySet) != len(cfg.CategorySet) {
+		t.Fatalf("second read CategorySet length = %d, want %d", len(cfg2.CategorySet), len(cfg.CategorySet))
+	}
+}
+
+func testCategorisationConfigRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cat-rt@example.com")
+	endpoint := "https://example.test/v1"
+	model := "custom-model"
+	keyEnv := "MY_API_KEY"
+	cfg := store.CategorisationConfig{
+		PrincipalID: p.ID,
+		Prompt:      "you are a custom classifier",
+		CategorySet: []store.CategoryDef{
+			{Name: "work", Description: "Work emails."},
+			{Name: "newsletters", Description: "Newsletters and digests."},
+		},
+		Endpoint:   &endpoint,
+		Model:      &model,
+		APIKeyEnv:  &keyEnv,
+		TimeoutSec: 12,
+		Enabled:    false,
+	}
+	if err := s.Meta().UpdateCategorisationConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateCategorisationConfig: %v", err)
+	}
+	got, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Prompt != cfg.Prompt {
+		t.Fatalf("Prompt = %q, want %q", got.Prompt, cfg.Prompt)
+	}
+	if len(got.CategorySet) != 2 || got.CategorySet[0].Name != "work" || got.CategorySet[1].Name != "newsletters" {
+		t.Fatalf("CategorySet round-trip = %+v, want 2 entries [work, newsletters]", got.CategorySet)
+	}
+	if got.CategorySet[0].Description != "Work emails." {
+		t.Fatalf("Description round-trip = %q, want %q", got.CategorySet[0].Description, "Work emails.")
+	}
+	if got.Endpoint == nil || *got.Endpoint != endpoint {
+		t.Fatalf("Endpoint round-trip = %v, want %q", got.Endpoint, endpoint)
+	}
+	if got.Model == nil || *got.Model != model {
+		t.Fatalf("Model round-trip = %v, want %q", got.Model, model)
+	}
+	if got.APIKeyEnv == nil || *got.APIKeyEnv != keyEnv {
+		t.Fatalf("APIKeyEnv round-trip = %v, want %q", got.APIKeyEnv, keyEnv)
+	}
+	if got.TimeoutSec != 12 {
+		t.Fatalf("TimeoutSec = %d, want 12", got.TimeoutSec)
+	}
+	if got.Enabled {
+		t.Fatalf("Enabled = true, want false")
+	}
+	// Update again clearing the optional overrides.
+	cfg2 := got
+	cfg2.Endpoint = nil
+	cfg2.Model = nil
+	cfg2.APIKeyEnv = nil
+	cfg2.Enabled = true
+	if err := s.Meta().UpdateCategorisationConfig(ctx, cfg2); err != nil {
+		t.Fatalf("UpdateCategorisationConfig (clear): %v", err)
+	}
+	got2, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("Get (post-clear): %v", err)
+	}
+	if got2.Endpoint != nil || got2.Model != nil || got2.APIKeyEnv != nil {
+		t.Fatalf("optional overrides did not clear: %+v", got2)
+	}
+	if !got2.Enabled {
+		t.Fatalf("Enabled = false, want true after re-enable")
+	}
+}
+
+// -- Wave 2.5 (REQ-PROTO-53/56/57; REQ-STORE-34/35) ----------------
+
+func testMailboxColorRoundTrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "mb-color@example.com")
+	colour := "#5B8DEE"
+	mb, err := s.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Coloured", Color: &colour,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	got, err := s.Meta().GetMailboxByID(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxByID: %v", err)
+	}
+	if got.Color == nil || *got.Color != colour {
+		t.Fatalf("Color after insert = %v, want %q", got.Color, colour)
+	}
+	other := "#abcdef"
+	if err := s.Meta().SetMailboxColor(ctx, mb.ID, &other); err != nil {
+		t.Fatalf("SetMailboxColor(set): %v", err)
+	}
+	got, _ = s.Meta().GetMailboxByID(ctx, mb.ID)
+	if got.Color == nil || *got.Color != other {
+		t.Fatalf("Color after Set = %v, want %q", got.Color, other)
+	}
+	if err := s.Meta().SetMailboxColor(ctx, mb.ID, nil); err != nil {
+		t.Fatalf("SetMailboxColor(clear): %v", err)
+	}
+	got, _ = s.Meta().GetMailboxByID(ctx, mb.ID)
+	if got.Color != nil {
+		t.Fatalf("Color after clear = %v, want nil", *got.Color)
+	}
+	plain, err := s.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Plain",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox plain: %v", err)
+	}
+	gotPlain, _ := s.Meta().GetMailboxByID(ctx, plain.ID)
+	if gotPlain.Color != nil {
+		t.Fatalf("plain mailbox Color = %v, want nil", *gotPlain.Color)
+	}
+	bad := "#000000"
+	if err := s.Meta().SetMailboxColor(ctx, store.MailboxID(99999), &bad); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetMailboxColor on missing = %v, want ErrNotFound", err)
+	}
+}
+
+func testMailboxColorRejectsInvalid(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "mb-color-bad@example.com")
+	mb, err := s.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Plain",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	for _, bad := range []string{"red", "#abc", "#GGGGGG", "#1234567", "5B8DEE", ""} {
+		v := bad
+		if err := s.Meta().SetMailboxColor(ctx, mb.ID, &v); !errors.Is(err, store.ErrInvalidArgument) {
+			t.Fatalf("SetMailboxColor(%q) = %v, want ErrInvalidArgument", bad, err)
+		}
+	}
+	badc := "not-hex"
+	if _, err := s.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Bad", Color: &badc,
+	}); !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("InsertMailbox(bad colour) = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func testJMAPIdentitySignatureRoundTrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ji-sig@example.com")
+	sig := "Cheers,\nAlice"
+	row := store.JMAPIdentity{
+		ID:          "500",
+		PrincipalID: p.ID,
+		Email:       "ji-sig@example.com",
+		MayDelete:   true,
+		Signature:   &sig,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	got, err := s.Meta().GetJMAPIdentity(ctx, "500")
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity: %v", err)
+	}
+	if got.Signature == nil || *got.Signature != sig {
+		t.Fatalf("Signature = %v, want %q", got.Signature, sig)
+	}
+	other := "Best,\nA."
+	row.Signature = &other
+	if err := s.Meta().UpdateJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("UpdateJMAPIdentity: %v", err)
+	}
+	got, _ = s.Meta().GetJMAPIdentity(ctx, "500")
+	if got.Signature == nil || *got.Signature != other {
+		t.Fatalf("Signature after update = %v, want %q", got.Signature, other)
+	}
+	row.Signature = nil
+	if err := s.Meta().UpdateJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("UpdateJMAPIdentity(clear): %v", err)
+	}
+	got, _ = s.Meta().GetJMAPIdentity(ctx, "500")
+	if got.Signature != nil {
+		t.Fatalf("Signature after clear = %v, want nil", *got.Signature)
+	}
+}
+
+func testJMAPStatesSieveCounter(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "sieve-state@example.com")
+	st, err := s.Meta().GetJMAPStates(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetJMAPStates: %v", err)
+	}
+	if st.Sieve != 0 {
+		t.Fatalf("initial Sieve = %d, want 0", st.Sieve)
+	}
+	for i := 0; i < 3; i++ {
+		v, err := s.Meta().IncrementJMAPState(ctx, p.ID, store.JMAPStateKindSieve)
+		if err != nil {
+			t.Fatalf("Increment Sieve: %v", err)
+		}
+		if v != int64(i+1) {
+			t.Fatalf("Sieve return = %d, want %d", v, i+1)
+		}
+	}
+	st, _ = s.Meta().GetJMAPStates(ctx, p.ID)
+	if st.Sieve != 3 {
+		t.Fatalf("Sieve = %d, want 3", st.Sieve)
+	}
+	if st.Mailbox != 0 || st.Email != 0 || st.Identity != 0 {
+		t.Fatalf("sibling counters drifted: %+v", st)
 	}
 }

@@ -23,6 +23,13 @@ var (
 	// ErrQuotaExceeded is returned when a write would push a principal
 	// past its configured quota (REQ-STORE-50/51).
 	ErrQuotaExceeded = errors.New("store: quota exceeded")
+
+	// ErrInvalidArgument is returned when an input argument fails the
+	// store's typed validation (e.g. a malformed Mailbox.Color hex
+	// literal). Distinct from ErrConflict (which is reserved for
+	// uniqueness or optimistic-concurrency collisions) so callers can
+	// surface the difference to clients.
+	ErrInvalidArgument = errors.New("store: invalid argument")
 )
 
 // Store is the composite handle every subsystem consumes to reach
@@ -311,6 +318,13 @@ type Metadata interface {
 	// the new name collides with an existing mailbox for the same
 	// principal.
 	RenameMailbox(ctx context.Context, mailboxID MailboxID, newName string) error
+
+	// SetMailboxColor updates the optional Mailbox.Color extension
+	// (REQ-PROTO-56 / REQ-STORE-34). A nil color clears the value;
+	// a non-nil color must match the form "#RRGGBB" (six hex digits,
+	// leading '#') or the call returns ErrInvalidArgument. Returns
+	// ErrNotFound when the mailbox has been deleted.
+	SetMailboxColor(ctx context.Context, mailboxID MailboxID, color *string) error
 
 	// GetSieveScript returns the active Sieve script text for pid, or
 	// ("", nil) when no script is on record (the interpreter then
@@ -606,6 +620,22 @@ type Metadata interface {
 	// NOTIFY consumers see the change. Returns the message's new
 	// ModSeq. Returns ErrNotFound when the message is gone.
 	SetSnooze(ctx context.Context, msgID MessageID, when *time.Time) (ModSeq, error)
+
+	// -- Phase 2 LLM categorisation (REQ-FILT-200..221) ---------------
+
+	// GetCategorisationConfig returns the per-account categoriser
+	// configuration row for pid, seeding a row with the documented
+	// defaults (REQ-FILT-201, 210, 211) when the principal has no row
+	// yet. The seed write is best-effort: a backend that cannot
+	// persist the seed row still returns the in-memory defaults so
+	// the caller can run the categoriser. Returns ErrNotFound only on
+	// a backend lookup failure; "row absent" is not an error.
+	GetCategorisationConfig(ctx context.Context, pid PrincipalID) (CategorisationConfig, error)
+
+	// UpdateCategorisationConfig upserts the per-account categoriser
+	// row. UpdatedAtUs on the supplied struct is ignored — the store
+	// stamps it with the current Clock instant.
+	UpdateCategorisationConfig(ctx context.Context, cfg CategorisationConfig) error
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

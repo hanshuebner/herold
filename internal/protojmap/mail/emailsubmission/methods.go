@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
@@ -552,9 +553,24 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 		IdentityID jmapID        `json:"identityId"`
 		EmailID    jmapID        `json:"emailId"`
 		Envelope   *jmapEnvelope `json:"envelope,omitempty"`
+		SendAt     *string       `json:"sendAt,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return jmapEmailSubmission{}, &setError{Type: "invalidProperties", Description: err.Error()}
+	}
+	// REQ-PROTO-58: sendAt (RFC 8621 §7.5) is an optional UTCDate;
+	// when present and parseable the queue holds the submission until
+	// that instant. A malformed value is rejected at the JMAP layer
+	// rather than silently coerced to "now".
+	var sendAt time.Time
+	if in.SendAt != nil && *in.SendAt != "" {
+		t, err := time.Parse(time.RFC3339, *in.SendAt)
+		if err != nil {
+			return jmapEmailSubmission{}, &setError{Type: "invalidProperties",
+				Properties:  []string{"sendAt"},
+				Description: "sendAt must be an RFC 3339 UTC date"}
+		}
+		sendAt = t.UTC()
 	}
 	if in.EmailID == "" {
 		return jmapEmailSubmission{}, &setError{Type: "invalidProperties", Properties: []string{"emailId"},
@@ -605,6 +621,7 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 		Body:          bytes.NewReader(body),
 		Sign:          true,
 		SigningDomain: signingDomain,
+		SendAt:        sendAt,
 	})
 	if err != nil {
 		return jmapEmailSubmission{}, &setError{Type: "serverFail",
@@ -612,6 +629,14 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 	}
 	threadID := strconv.FormatUint(msg.ThreadID, 10)
 	now := s.h.clk.Now().UTC()
+	// SendAtUs records the user-visible sendAt for /get rendering. When
+	// the request supplied a future sendAt we persist it verbatim so
+	// the UTCDate the client provided is what /get returns; otherwise
+	// the row was an "immediate" send and SendAtUs == CreatedAtUs.
+	sendAtUs := now.UnixMicro()
+	if !sendAt.IsZero() {
+		sendAtUs = sendAt.UnixMicro()
+	}
 	row := store.EmailSubmissionRow{
 		ID:          renderSubmissionID(envID),
 		EnvelopeID:  envID,
@@ -619,7 +644,7 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 		IdentityID:  in.IdentityID,
 		EmailID:     mid,
 		ThreadID:    threadID,
-		SendAtUs:    now.UnixMicro(),
+		SendAtUs:    sendAtUs,
 		CreatedAtUs: now.UnixMicro(),
 		UndoStatus:  string(undoStatusPending),
 	}
@@ -701,28 +726,53 @@ func (s setHandler) processDestroy(ctx context.Context, p store.Principal, id jm
 	if err != nil {
 		return &setError{Type: "serverFail", Description: err.Error()}
 	}
-	if len(rows) == 0 {
-		return &setError{Type: "notFound"}
+	// REQ-PROTO-58 / REQ-FLOW-63: destroy before sendAt MUST atomically
+	// remove the queue rows; destroy after delivery began is a
+	// no-op-with-diagnostic. The branch is selected by Cancel's
+	// inflight count: zero means every still-pending row was removed
+	// (including the all-rows-already-gone path that followed a prior
+	// in-flight delivery to completion); a non-zero count means at
+	// least one recipient is on the wire and we surface the
+	// "alreadyInflight" notDestroyed entry to the client. Rows that
+	// already reached done/failed do not block the destroy.
+	cancelled, inflight, cErr := s.h.queue.Cancel(ctx, env)
+	if cErr != nil {
+		return &setError{Type: "serverFail", Description: cErr.Error()}
 	}
-	allTerminal := true
-	for _, r := range rows {
-		if r.State != store.QueueStateDone && r.State != store.QueueStateFailed {
-			allTerminal = false
-			break
-		}
+	if inflight > 0 {
+		// Best-effort cancellation refused. RFC 8621 §5.4 permits the
+		// server to report a setError on destroy; we encode the
+		// in-flight count so the client can tell the user how many
+		// recipients may still receive the message.
+		return &setError{Type: "alreadyInflight",
+			Properties: []string{
+				fmt.Sprintf("deliveredCount=%d", inflight),
+			},
+			Description: "submission already handed off to remote SMTP for one or more recipients"}
 	}
-	if !allTerminal {
-		return &setError{Type: "forbidden",
-			Description: "only terminal-state submissions may be destroyed"}
-	}
-	for _, r := range rows {
-		if err := s.h.store.Meta().DeleteQueueItem(ctx, r.ID); err != nil {
-			return &setError{Type: "serverFail", Description: err.Error()}
+	// Sweep any rows the queue did not touch (terminal done/failed).
+	// These are normal post-delivery destroys: the queue rows linger
+	// for a short window so /get can still observe the deliveryStatus,
+	// and destroy is the operator-visible cleanup. ErrNotFound here is
+	// benign (a concurrent destroy raced us).
+	if cancelled == 0 {
+		for _, r := range rows {
+			if r.State == store.QueueStateDone || r.State == store.QueueStateFailed {
+				if dErr := s.h.store.Meta().DeleteQueueItem(ctx, r.ID); dErr != nil &&
+					!errors.Is(dErr, store.ErrNotFound) {
+					return &setError{Type: "serverFail", Description: dErr.Error()}
+				}
+			}
 		}
 	}
 	if err := s.h.store.Meta().DeleteEmailSubmission(ctx, id); err != nil &&
 		!errors.Is(err, store.ErrNotFound) {
 		return &setError{Type: "serverFail", Description: err.Error()}
+	}
+	// Both no rows existed and Cancel had nothing to report → the
+	// submission is unknown to the server. RFC 8621: notFound.
+	if len(rows) == 0 {
+		return &setError{Type: "notFound"}
 	}
 	return nil
 }

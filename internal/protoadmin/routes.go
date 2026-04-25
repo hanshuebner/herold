@@ -81,6 +81,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/spam/policy", s.requireAuth(s.handleGetSpamPolicy))
 	mux.HandleFunc("PUT /api/v1/spam/policy", s.requireAuth(s.handlePutSpamPolicy))
 
+	// LLM categorisation: per-principal recategorise + job poll
+	// (REQ-FILT-220).
+	mux.HandleFunc("POST /api/v1/principals/{pid}/recategorise", s.requireAuth(s.handleRecategorisePrincipal))
+	mux.HandleFunc("GET /api/v1/jobs/{id}", s.requireAuth(s.handleGetJob))
+
 	// Webhooks.
 	mux.HandleFunc("GET /api/v1/webhooks", s.requireAuth(s.handleListWebhooks))
 	mux.HandleFunc("POST /api/v1/webhooks", s.requireAuth(s.handleCreateWebhook))

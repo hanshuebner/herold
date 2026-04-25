@@ -47,14 +47,21 @@ type mailboxCreateInput struct {
 	Role         *string `json:"role"`
 	IsSubscribed *bool   `json:"isSubscribed"`
 	SortOrder    *int    `json:"sortOrder"`
+	// Color is the JMAP-only extension property (REQ-PROTO-56 /
+	// REQ-STORE-34). Hex literal "#RRGGBB"; null/absent means unset.
+	Color *string `json:"color,omitempty"`
 }
 
+// mailboxUpdateInput uses json.RawMessage for "color" so the patch
+// distinguishes "absent" (no change) from explicit null (clear) per
+// JMAP /set update semantics.
 type mailboxUpdateInput struct {
-	Name         *string `json:"name"`
-	ParentID     *jmapID `json:"parentId"`
-	Role         *string `json:"role"`
-	IsSubscribed *bool   `json:"isSubscribed"`
-	SortOrder    *int    `json:"sortOrder"`
+	Name         *string         `json:"name"`
+	ParentID     *jmapID         `json:"parentId"`
+	Role         *string         `json:"role"`
+	IsSubscribed *bool           `json:"isSubscribed"`
+	SortOrder    *int            `json:"sortOrder"`
+	Color        json.RawMessage `json:"color"`
 }
 
 // setHandler implements Mailbox/set.
@@ -249,11 +256,24 @@ func (h *handlerSet) createMailbox(
 		attrs |= store.MailboxAttrSubscribed
 	}
 
+	var color *string
+	if in.Color != nil {
+		v := *in.Color
+		if !validJMAPColor(v) {
+			return store.Mailbox{}, &setError{
+				Type: "invalidProperties", Properties: []string{"color"},
+				Description: "color must be the hex literal #RRGGBB",
+			}, nil
+		}
+		color = &v
+	}
+
 	mb, err := h.store.Meta().InsertMailbox(ctx, store.Mailbox{
 		PrincipalID: pid,
 		ParentID:    parentID,
 		Name:        in.Name,
 		Attributes:  attrs,
+		Color:       color,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -360,10 +380,69 @@ func (h *handlerSet) updateMailbox(
 		}
 	}
 
+	if len(in.Color) > 0 {
+		// JSON null clears; a string value sets after format validation.
+		// JMAP property absence = no change; the json.RawMessage decoder
+		// only populates this branch when the client sent the key.
+		var v *string
+		switch string(in.Color) {
+		case "null":
+			v = nil
+		default:
+			var s string
+			if err := json.Unmarshal(in.Color, &s); err != nil {
+				return &setError{
+					Type: "invalidProperties", Properties: []string{"color"},
+					Description: "color must be a string or null",
+				}, nil
+			}
+			if !validJMAPColor(s) {
+				return &setError{
+					Type: "invalidProperties", Properties: []string{"color"},
+					Description: "color must be the hex literal #RRGGBB",
+				}, nil
+			}
+			v = &s
+		}
+		if err := h.store.Meta().SetMailboxColor(ctx, mb.ID, v); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return &setError{Type: "notFound"}, nil
+			}
+			if errors.Is(err, store.ErrInvalidArgument) {
+				return &setError{
+					Type: "invalidProperties", Properties: []string{"color"},
+					Description: err.Error(),
+				}, nil
+			}
+			return nil, fmt.Errorf("mailbox: set color: %w", err)
+		}
+	}
+
 	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindMailbox); err != nil {
 		return nil, fmt.Errorf("mailbox: bump state: %w", err)
 	}
 	return nil, nil
+}
+
+// validJMAPColor reports whether s is the "#RRGGBB" hex literal accepted
+// by the JMAP Mailbox.color extension. Mirror of the store-side helper;
+// duplicated so the JMAP layer can reject malformed inputs with a
+// "invalidProperties" set-error before reaching SQL.
+func validJMAPColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for i := 1; i < 7; i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'f':
+		case c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (h *handlerSet) destroyMailbox(

@@ -49,6 +49,11 @@ type phase2Data struct {
 
 	emailSubmissions map[string]store.EmailSubmissionRow
 	jmapIdentities   map[string]store.JMAPIdentity
+
+	// catConfig is the LLM categoriser per-principal configuration
+	// (REQ-FILT-210). Lazily initialised on first read so the existing
+	// constructor does not need editing.
+	catConfig map[store.PrincipalID]store.CategorisationConfig
 }
 
 // ensurePhase2 lazily initialises the Phase 2 in-memory state. Called
@@ -83,6 +88,7 @@ func (s *Store) ensurePhase2() {
 		nextTLSRPT:       1,
 		emailSubmissions: make(map[string]store.EmailSubmissionRow),
 		jmapIdentities:   make(map[string]store.JMAPIdentity),
+		catConfig:        make(map[store.PrincipalID]store.CategorisationConfig),
 	}
 }
 
@@ -1139,6 +1145,9 @@ func (m *metaFace) IncrementJMAPState(ctx context.Context, pid store.PrincipalID
 	case store.JMAPStateKindVacationResponse:
 		st.VacationResponse++
 		ret = st.VacationResponse
+	case store.JMAPStateKindSieve:
+		st.Sieve++
+		ret = st.Sieve
 	default:
 		return 0, fmt.Errorf("fakestore: unknown JMAPStateKind %d", kind)
 	}
@@ -1366,6 +1375,10 @@ func cloneIdentity(r store.JMAPIdentity) store.JMAPIdentity {
 		copy(v, r.BccJSON)
 		r.BccJSON = v
 	}
+	if r.Signature != nil {
+		v := *r.Signature
+		r.Signature = &v
+	}
 	return r
 }
 
@@ -1453,6 +1466,12 @@ func (m *metaFace) UpdateJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 	existing.BccJSON = append([]byte(nil), row.BccJSON...)
 	existing.TextSignature = row.TextSignature
 	existing.HTMLSignature = row.HTMLSignature
+	if row.Signature != nil {
+		v := *row.Signature
+		existing.Signature = &v
+	} else {
+		existing.Signature = nil
+	}
 	existing.UpdatedAtUs = s.clk.Now().UnixMicro()
 	s.phase2.jmapIdentities[row.ID] = existing
 	return nil
@@ -1471,4 +1490,94 @@ func (m *metaFace) DeleteJMAPIdentity(ctx context.Context, id string) error {
 	}
 	delete(s.phase2.jmapIdentities, id)
 	return nil
+}
+
+// -- Categorisation (REQ-FILT-200..221) ------------------------------
+
+// fakestoreDefaultCategorySet is the seeded category set
+// (REQ-FILT-201/210). Kept here so the fakestore can mimic the
+// production behaviour of seeding defaults on first read without
+// depending on the categorise package.
+var fakestoreDefaultCategorySet = []store.CategoryDef{
+	{Name: "primary", Description: "Personal correspondence and important messages from people you know."},
+	{Name: "social", Description: "Messages from social networks and dating sites."},
+	{Name: "promotions", Description: "Marketing emails, offers, deals, newsletters."},
+	{Name: "updates", Description: "Receipts, confirmations, statements, account notices."},
+	{Name: "forums", Description: "Mailing-list digests, online community discussions."},
+}
+
+// fakestoreDefaultCategorisationPrompt is the seeded system prompt
+// (REQ-FILT-211).
+const fakestoreDefaultCategorisationPrompt = `You are an email-categorisation assistant. Given an email envelope and a short body excerpt, choose exactly one category from the supplied list whose description best fits the message, or return "none" if no category is a clear match. Respond ONLY with a single JSON object of the form {"category":"<name>"} where <name> is one of the listed category names or the literal "none". Do not include any other text.`
+
+// GetCategorisationConfig returns the per-account categoriser
+// configuration for pid; absent rows seed the documented defaults
+// in-memory.
+func (m *metaFace) GetCategorisationConfig(ctx context.Context, pid store.PrincipalID) (store.CategorisationConfig, error) {
+	if err := ctx.Err(); err != nil {
+		return store.CategorisationConfig{}, err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	if s.phase2.catConfig == nil {
+		s.phase2.catConfig = make(map[store.PrincipalID]store.CategorisationConfig)
+	}
+	if cfg, ok := s.phase2.catConfig[pid]; ok {
+		return cloneCategorisationConfig(cfg), nil
+	}
+	cfg := store.CategorisationConfig{
+		PrincipalID: pid,
+		Prompt:      fakestoreDefaultCategorisationPrompt,
+		CategorySet: append([]store.CategoryDef(nil), fakestoreDefaultCategorySet...),
+		TimeoutSec:  5,
+		Enabled:     true,
+		UpdatedAtUs: s.clk.Now().UnixMicro(),
+	}
+	s.phase2.catConfig[pid] = cloneCategorisationConfig(cfg)
+	return cfg, nil
+}
+
+// UpdateCategorisationConfig upserts the per-account categoriser row.
+func (m *metaFace) UpdateCategorisationConfig(ctx context.Context, cfg store.CategorisationConfig) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	if s.phase2.catConfig == nil {
+		s.phase2.catConfig = make(map[store.PrincipalID]store.CategorisationConfig)
+	}
+	if cfg.TimeoutSec <= 0 {
+		cfg.TimeoutSec = 5
+	}
+	cfg.UpdatedAtUs = s.clk.Now().UnixMicro()
+	s.phase2.catConfig[cfg.PrincipalID] = cloneCategorisationConfig(cfg)
+	return nil
+}
+
+// cloneCategorisationConfig returns a deep copy so callers cannot
+// mutate the in-memory row by holding the slice / pointer references
+// the read returned.
+func cloneCategorisationConfig(cfg store.CategorisationConfig) store.CategorisationConfig {
+	out := cfg
+	if cfg.CategorySet != nil {
+		out.CategorySet = append([]store.CategoryDef(nil), cfg.CategorySet...)
+	}
+	if cfg.Endpoint != nil {
+		v := *cfg.Endpoint
+		out.Endpoint = &v
+	}
+	if cfg.Model != nil {
+		v := *cfg.Model
+		out.Model = &v
+	}
+	if cfg.APIKeyEnv != nil {
+		v := *cfg.APIKeyEnv
+		out.APIKeyEnv = &v
+	}
+	return out
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/hanshuebner/herold/internal/plugin"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/protoimap"
+	"github.com/hanshuebner/herold/internal/protoimg"
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/protoui"
 	"github.com/hanshuebner/herold/internal/sieve"
@@ -819,16 +820,18 @@ func parseSlogLevel(s string) slog.Level {
 }
 
 // composeAdminAndUI returns an http.Handler that routes /api/v1/...
-// and /healthz/... to the protoadmin handler and the configured UI
-// path prefix to a freshly constructed protoui server. When the UI
-// is disabled (cfg.Server.UI.Enabled == false) the returned handler
-// is the protoadmin handler verbatim.
+// and /healthz/... to the protoadmin handler, the configured UI path
+// prefix to a freshly constructed protoui server, and (when image
+// proxy is enabled) /proxy/image to a protoimg.Server reusing the
+// UI's session for authentication. When the UI is disabled
+// (cfg.Server.UI.Enabled == false) the returned handler is the
+// protoadmin handler verbatim — the image proxy depends on the
+// suite session and so degrades with it.
 //
 // Mount mode (b) per the Wave 2.4 ticket: composition over a parent
 // mux. We deliberately avoid extending protoadmin with a Mount
-// method; the two surfaces stay independent and a future third
-// surface (REQ-HOOK Part B) can join without touching either of
-// them.
+// method; each surface stays independent and a future fourth surface
+// (REQ-HOOK Part B) can join without touching any of them.
 func composeAdminAndUI(
 	ctx context.Context,
 	cfg *sysconfig.Config,
@@ -878,6 +881,28 @@ func composeAdminAndUI(
 	parent := http.NewServeMux()
 	parent.Handle("/api/v1/", adminHandler)
 	parent.Handle(prefix+"/", uiSrv.Handler())
+
+	// Image proxy (REQ-SEND-70..78). Mounted only when enabled in
+	// sysconfig; uses the UI session for authentication so a browser
+	// already logged into /ui can render upstream-tracking-free
+	// images without a separate auth dance.
+	if cfg.Server.ImageProxy.Enabled == nil || *cfg.Server.ImageProxy.Enabled {
+		ipCfg := cfg.Server.ImageProxy
+		imgSrv := protoimg.New(protoimg.Options{
+			Logger:              logger.With("subsystem", "protoimg"),
+			Clock:               clk,
+			MaxBytes:            ipCfg.MaxBytes,
+			CacheMaxBytes:       ipCfg.CacheMaxBytes,
+			CacheMaxEntries:     ipCfg.CacheMaxEntries,
+			CacheMaxAge:         time.Duration(ipCfg.CacheMaxAgeSeconds) * time.Second,
+			PerUserPerMin:       ipCfg.PerUserPerMinute,
+			PerUserOriginPerMin: ipCfg.PerUserOriginPerMinute,
+			PerUserConcurrent:   ipCfg.PerUserConcurrent,
+			SessionResolver:     uiSrv.ResolveSession,
+		})
+		parent.Handle("/proxy/image", imgSrv.Handler())
+	}
+
 	// Bare `/` and unknown roots: send a browser hitting the admin
 	// host directly to the UI login. API consumers never request `/`,
 	// so this hop only affects operators using a browser.

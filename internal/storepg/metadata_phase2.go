@@ -1224,7 +1224,7 @@ func (m *metadata) ListMailboxesAccessibleBy(ctx context.Context, pid store.Prin
 	rows, err := m.s.pool.Query(ctx, `
 		SELECT mb.id, mb.principal_id, mb.parent_id, mb.name, mb.attributes,
 		       mb.uidvalidity, mb.uidnext, mb.highest_modseq, mb.created_at_us,
-		       mb.updated_at_us
+		       mb.updated_at_us, mb.color_hex
 		  FROM mailboxes mb
 		 WHERE mb.id IN (
 		   SELECT mailbox_id FROM mailbox_acl
@@ -1286,15 +1286,15 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			return mapErr(err)
 		}
 		var (
-			ppid, mb, em, th, ide, es, vr int64
-			updatedUs                     int64
+			ppid, mb, em, th, ide, es, vr, sv int64
+			updatedUs                         int64
 		)
 		err := tx.QueryRow(ctx, `
 			SELECT principal_id, mailbox_state, email_state, thread_state,
 			       identity_state, email_submission_state, vacation_response_state,
-			       updated_at_us
+			       sieve_state, updated_at_us
 			  FROM jmap_states WHERE principal_id = $1`, int64(pid)).Scan(
-			&ppid, &mb, &em, &th, &ide, &es, &vr, &updatedUs)
+			&ppid, &mb, &em, &th, &ide, &es, &vr, &sv, &updatedUs)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -1306,6 +1306,7 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			Identity:         ide,
 			EmailSubmission:  es,
 			VacationResponse: vr,
+			Sieve:            sv,
 			UpdatedAt:        fromMicros(updatedUs),
 		}
 		return nil
@@ -1358,6 +1359,8 @@ func jmapStateColumnPG(kind store.JMAPStateKind) (string, error) {
 		return "email_submission_state", nil
 	case store.JMAPStateKindVacationResponse:
 		return "vacation_response_state", nil
+	case store.JMAPStateKindSieve:
+		return "sieve_state", nil
 	default:
 		return "", fmt.Errorf("storepg: unknown JMAPStateKind %d", kind)
 	}
@@ -1604,13 +1607,14 @@ func scanJMAPIdentityPG(row pgx.Row) (store.JMAPIdentity, error) {
 		replyTo, bcc                      []byte
 		mayDelete                         bool
 		createdAtUs, updatedAtUs          int64
+		signature                         *string
 	)
 	err := row.Scan(&id, &principalID, &name, &email, &replyTo, &bcc,
-		&textSig, &htmlSig, &mayDelete, &createdAtUs, &updatedAtUs)
+		&textSig, &htmlSig, &mayDelete, &createdAtUs, &updatedAtUs, &signature)
 	if err != nil {
 		return store.JMAPIdentity{}, mapErr(err)
 	}
-	return store.JMAPIdentity{
+	out := store.JMAPIdentity{
 		ID:            id,
 		PrincipalID:   store.PrincipalID(principalID),
 		Name:          name,
@@ -1622,12 +1626,18 @@ func scanJMAPIdentityPG(row pgx.Row) (store.JMAPIdentity, error) {
 		MayDelete:     mayDelete,
 		CreatedAtUs:   createdAtUs,
 		UpdatedAtUs:   updatedAtUs,
-	}, nil
+	}
+	if signature != nil {
+		v := *signature
+		out.Signature = &v
+	}
+	return out, nil
 }
 
 const jmapIdentitySelectColumnsPG = `
 	id, principal_id, name, email, reply_to_json, bcc_json,
-	text_signature, html_signature, may_delete, created_at_us, updated_at_us`
+	text_signature, html_signature, may_delete, created_at_us, updated_at_us,
+	signature`
 
 func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
 	if row.ID == "" {
@@ -1648,15 +1658,20 @@ func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 	if bcc == nil {
 		bcc = []byte{}
 	}
+	var sig any
+	if row.Signature != nil {
+		sig = *row.Signature
+	}
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO jmap_identities
 			  (id, principal_id, name, email, reply_to_json, bcc_json,
-			   text_signature, html_signature, may_delete, created_at_us, updated_at_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			   text_signature, html_signature, may_delete, created_at_us, updated_at_us,
+			   signature)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 			row.ID, int64(row.PrincipalID), row.Name, row.Email,
 			replyTo, bcc, row.TextSignature, row.HTMLSignature,
-			row.MayDelete, row.CreatedAtUs, row.UpdatedAtUs)
+			row.MayDelete, row.CreatedAtUs, row.UpdatedAtUs, sig)
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -1705,14 +1720,19 @@ func (m *metadata) UpdateJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 	if bcc == nil {
 		bcc = []byte{}
 	}
+	var sig any
+	if row.Signature != nil {
+		sig = *row.Signature
+	}
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
 			UPDATE jmap_identities
 			   SET name = $1, reply_to_json = $2, bcc_json = $3,
-			       text_signature = $4, html_signature = $5, updated_at_us = $6
-			 WHERE id = $7`,
+			       text_signature = $4, html_signature = $5, signature = $6,
+			       updated_at_us = $7
+			 WHERE id = $8`,
 			row.Name, replyTo, bcc,
-			row.TextSignature, row.HTMLSignature, usMicros(now), row.ID)
+			row.TextSignature, row.HTMLSignature, sig, usMicros(now), row.ID)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -1734,5 +1754,121 @@ func (m *metadata) DeleteJMAPIdentity(ctx context.Context, id string) error {
 			return store.ErrNotFound
 		}
 		return nil
+	})
+}
+
+// -- LLM categorisation (REQ-FILT-200..221) --------------------------
+
+// defaultCategorySet matches the documented Gmail-style seed
+// (REQ-FILT-201/210); kept here so the pg backend can seed the row on
+// first read without importing higher-level packages.
+var defaultCategorySet = []store.CategoryDef{
+	{Name: "primary", Description: "Personal correspondence and important messages from people you know."},
+	{Name: "social", Description: "Messages from social networks and dating sites."},
+	{Name: "promotions", Description: "Marketing emails, offers, deals, newsletters."},
+	{Name: "updates", Description: "Receipts, confirmations, statements, account notices."},
+	{Name: "forums", Description: "Mailing-list digests, online community discussions."},
+}
+
+const defaultCategorisationPrompt = `You are an email-categorisation assistant. Given an email envelope and a short body excerpt, choose exactly one category from the supplied list whose description best fits the message, or return "none" if no category is a clear match. Respond ONLY with a single JSON object of the form {"category":"<name>"} where <name> is one of the listed category names or the literal "none". Do not include any other text.`
+
+func (m *metadata) GetCategorisationConfig(ctx context.Context, pid store.PrincipalID) (store.CategorisationConfig, error) {
+	cfg, found, err := m.readCategorisationRow(ctx, pid)
+	if err != nil {
+		return store.CategorisationConfig{}, err
+	}
+	if found {
+		return cfg, nil
+	}
+	seed := store.CategorisationConfig{
+		PrincipalID: pid,
+		Prompt:      defaultCategorisationPrompt,
+		CategorySet: append([]store.CategoryDef(nil), defaultCategorySet...),
+		TimeoutSec:  5,
+		Enabled:     true,
+	}
+	_ = m.UpdateCategorisationConfig(ctx, seed)
+	cfg2, found2, err := m.readCategorisationRow(ctx, pid)
+	if err != nil || !found2 {
+		seed.UpdatedAtUs = usMicros(m.s.clock.Now().UTC())
+		return seed, nil
+	}
+	return cfg2, nil
+}
+
+func (m *metadata) readCategorisationRow(ctx context.Context, pid store.PrincipalID) (store.CategorisationConfig, bool, error) {
+	var (
+		prompt          string
+		categorySetJSON []byte
+		endpointURL     *string
+		model           *string
+		apiKeyEnv       *string
+		timeoutSec      int32
+		enabled         bool
+		updatedAtUs     int64
+	)
+	err := m.s.pool.QueryRow(ctx, `
+		SELECT prompt, category_set_json, endpoint_url, model, api_key_env,
+		       timeout_sec, enabled, updated_at_us
+		  FROM jmap_categorisation_config
+		 WHERE principal_id = $1`, int64(pid)).Scan(
+		&prompt, &categorySetJSON, &endpointURL, &model, &apiKeyEnv,
+		&timeoutSec, &enabled, &updatedAtUs)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.CategorisationConfig{}, false, nil
+		}
+		return store.CategorisationConfig{}, false, mapErr(err)
+	}
+	cfg := store.CategorisationConfig{
+		PrincipalID: pid,
+		Prompt:      prompt,
+		Endpoint:    endpointURL,
+		Model:       model,
+		APIKeyEnv:   apiKeyEnv,
+		TimeoutSec:  int(timeoutSec),
+		Enabled:     enabled,
+		UpdatedAtUs: updatedAtUs,
+	}
+	if len(categorySetJSON) > 0 {
+		if err := json.Unmarshal(categorySetJSON, &cfg.CategorySet); err != nil {
+			return store.CategorisationConfig{}, false, fmt.Errorf("storepg: decode category_set_json: %w", err)
+		}
+	}
+	return cfg, true, nil
+}
+
+func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.CategorisationConfig) error {
+	now := m.s.clock.Now().UTC()
+	if cfg.CategorySet == nil {
+		cfg.CategorySet = []store.CategoryDef{}
+	}
+	js, err := json.Marshal(cfg.CategorySet)
+	if err != nil {
+		return fmt.Errorf("storepg: encode category_set_json: %w", err)
+	}
+	timeoutSec := cfg.TimeoutSec
+	if timeoutSec <= 0 {
+		timeoutSec = 5
+	}
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO jmap_categorisation_config
+			  (principal_id, prompt, category_set_json, endpoint_url, model,
+			   api_key_env, timeout_sec, enabled, updated_at_us)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (principal_id) DO UPDATE SET
+			  prompt = EXCLUDED.prompt,
+			  category_set_json = EXCLUDED.category_set_json,
+			  endpoint_url = EXCLUDED.endpoint_url,
+			  model = EXCLUDED.model,
+			  api_key_env = EXCLUDED.api_key_env,
+			  timeout_sec = EXCLUDED.timeout_sec,
+			  enabled = EXCLUDED.enabled,
+			  updated_at_us = EXCLUDED.updated_at_us`,
+			int64(cfg.PrincipalID), cfg.Prompt, js,
+			cfg.Endpoint, cfg.Model, cfg.APIKeyEnv,
+			int32(timeoutSec), cfg.Enabled, usMicros(now))
+		return mapErr(err)
 	})
 }

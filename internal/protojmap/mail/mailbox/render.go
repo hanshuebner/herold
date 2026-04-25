@@ -38,6 +38,11 @@ func renderMailbox(
 		parent = &s
 	}
 
+	var color *string
+	if mb.Color != nil {
+		v := *mb.Color
+		color = &v
+	}
 	return jmapMailbox{
 		ID:            jmapIDFromMailbox(mb.ID),
 		Name:          mb.Name,
@@ -50,6 +55,7 @@ func renderMailbox(
 		UnreadThreads: unreadEmails,
 		MyRights:      rights,
 		IsSubscribed:  mb.Attributes&store.MailboxAttrSubscribed != 0,
+		Color:         color,
 	}, nil
 }
 

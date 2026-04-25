@@ -1300,7 +1300,7 @@ func (m *metadata) ListMailboxesAccessibleBy(ctx context.Context, pid store.Prin
 	rows, err := m.s.db.QueryContext(ctx, `
 		SELECT mb.id, mb.principal_id, mb.parent_id, mb.name, mb.attributes,
 		       mb.uidvalidity, mb.uidnext, mb.highest_modseq, mb.created_at_us,
-		       mb.updated_at_us
+		       mb.updated_at_us, mb.color_hex
 		  FROM mailboxes mb
 		 WHERE mb.id IN (
 		   SELECT mailbox_id FROM mailbox_acl
@@ -1371,13 +1371,13 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 		row := tx.QueryRowContext(ctx, `
 			SELECT principal_id, mailbox_state, email_state, thread_state,
 			       identity_state, email_submission_state, vacation_response_state,
-			       updated_at_us
+			       sieve_state, updated_at_us
 			  FROM jmap_states WHERE principal_id = ?`, int64(pid))
 		var (
-			ppid, mb, em, th, ide, es, vr int64
-			updatedUs                     int64
+			ppid, mb, em, th, ide, es, vr, sv int64
+			updatedUs                         int64
 		)
-		if err := row.Scan(&ppid, &mb, &em, &th, &ide, &es, &vr, &updatedUs); err != nil {
+		if err := row.Scan(&ppid, &mb, &em, &th, &ide, &es, &vr, &sv, &updatedUs); err != nil {
 			return mapErr(err)
 		}
 		out = store.JMAPStates{
@@ -1388,6 +1388,7 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			Identity:         ide,
 			EmailSubmission:  es,
 			VacationResponse: vr,
+			Sieve:            sv,
 			UpdatedAt:        fromMicros(updatedUs),
 		}
 		return nil
@@ -1447,6 +1448,8 @@ func jmapStateColumn(kind store.JMAPStateKind) (string, error) {
 		return "email_submission_state", nil
 	case store.JMAPStateKindVacationResponse:
 		return "vacation_response_state", nil
+	case store.JMAPStateKindSieve:
+		return "sieve_state", nil
 	default:
 		return "", fmt.Errorf("storesqlite: unknown JMAPStateKind %d", kind)
 	}
@@ -1694,13 +1697,14 @@ func scanJMAPIdentity(row rowLike) (store.JMAPIdentity, error) {
 		replyTo, bcc                      []byte
 		mayDelete                         int64
 		createdAtUs, updatedAtUs          int64
+		signature                         sql.NullString
 	)
 	err := row.Scan(&id, &principalID, &name, &email, &replyTo, &bcc,
-		&textSig, &htmlSig, &mayDelete, &createdAtUs, &updatedAtUs)
+		&textSig, &htmlSig, &mayDelete, &createdAtUs, &updatedAtUs, &signature)
 	if err != nil {
 		return store.JMAPIdentity{}, mapErr(err)
 	}
-	return store.JMAPIdentity{
+	out := store.JMAPIdentity{
 		ID:            id,
 		PrincipalID:   store.PrincipalID(principalID),
 		Name:          name,
@@ -1712,12 +1716,18 @@ func scanJMAPIdentity(row rowLike) (store.JMAPIdentity, error) {
 		MayDelete:     mayDelete != 0,
 		CreatedAtUs:   createdAtUs,
 		UpdatedAtUs:   updatedAtUs,
-	}, nil
+	}
+	if signature.Valid {
+		v := signature.String
+		out.Signature = &v
+	}
+	return out, nil
 }
 
 const jmapIdentitySelectColumns = `
 	id, principal_id, name, email, reply_to_json, bcc_json,
-	text_signature, html_signature, may_delete, created_at_us, updated_at_us`
+	text_signature, html_signature, may_delete, created_at_us, updated_at_us,
+	signature`
 
 func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
 	if row.ID == "" {
@@ -1748,14 +1758,19 @@ func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 		if bcc == nil {
 			bcc = []byte{}
 		}
+		var sig any
+		if row.Signature != nil {
+			sig = *row.Signature
+		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO jmap_identities
 			  (id, principal_id, name, email, reply_to_json, bcc_json,
-			   text_signature, html_signature, may_delete, created_at_us, updated_at_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   text_signature, html_signature, may_delete, created_at_us, updated_at_us,
+			   signature)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			row.ID, int64(row.PrincipalID), row.Name, row.Email,
 			replyTo, bcc, row.TextSignature, row.HTMLSignature,
-			boolToInt(row.MayDelete), row.CreatedAtUs, row.UpdatedAtUs)
+			boolToInt(row.MayDelete), row.CreatedAtUs, row.UpdatedAtUs, sig)
 		return mapErr(err)
 	})
 }
@@ -1798,13 +1813,18 @@ func (m *metadata) UpdateJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 		if bcc == nil {
 			bcc = []byte{}
 		}
+		var sig any
+		if row.Signature != nil {
+			sig = *row.Signature
+		}
 		res, err := tx.ExecContext(ctx, `
 			UPDATE jmap_identities
 			   SET name = ?, reply_to_json = ?, bcc_json = ?,
-			       text_signature = ?, html_signature = ?, updated_at_us = ?
+			       text_signature = ?, html_signature = ?, signature = ?,
+			       updated_at_us = ?
 			 WHERE id = ?`,
 			row.Name, replyTo, bcc,
-			row.TextSignature, row.HTMLSignature, usMicros(now), row.ID)
+			row.TextSignature, row.HTMLSignature, sig, usMicros(now), row.ID)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -1835,4 +1855,148 @@ func (m *metadata) DeleteJMAPIdentity(ctx context.Context, id string) error {
 		}
 		return nil
 	})
+}
+
+// -- LLM categorisation (REQ-FILT-200..221) --------------------------
+
+// defaultCategorySet matches the documented Gmail-style seed
+// (REQ-FILT-201/210). Kept here instead of the categorise package so
+// the store can seed the row on first read without pulling a
+// higher-level dependency.
+var defaultCategorySet = []store.CategoryDef{
+	{Name: "primary", Description: "Personal correspondence and important messages from people you know."},
+	{Name: "social", Description: "Messages from social networks and dating sites."},
+	{Name: "promotions", Description: "Marketing emails, offers, deals, newsletters."},
+	{Name: "updates", Description: "Receipts, confirmations, statements, account notices."},
+	{Name: "forums", Description: "Mailing-list digests, online community discussions."},
+}
+
+// defaultCategorisationPrompt is the seeded system prompt
+// (REQ-FILT-211). Kept terse: small local models follow short prompts
+// better than long ones. Operators may override per-account.
+const defaultCategorisationPrompt = `You are an email-categorisation assistant. Given an email envelope and a short body excerpt, choose exactly one category from the supplied list whose description best fits the message, or return "none" if no category is a clear match. Respond ONLY with a single JSON object of the form {"category":"<name>"} where <name> is one of the listed category names or the literal "none". Do not include any other text.`
+
+func (m *metadata) GetCategorisationConfig(ctx context.Context, pid store.PrincipalID) (store.CategorisationConfig, error) {
+	cfg, found, err := m.readCategorisationRow(ctx, pid)
+	if err != nil {
+		return store.CategorisationConfig{}, err
+	}
+	if found {
+		return cfg, nil
+	}
+	// Seed the defaults. The seed write is best-effort: a backend
+	// error here returns the in-memory defaults so the pipeline can
+	// run on stock configuration.
+	seed := store.CategorisationConfig{
+		PrincipalID: pid,
+		Prompt:      defaultCategorisationPrompt,
+		CategorySet: append([]store.CategoryDef(nil), defaultCategorySet...),
+		TimeoutSec:  5,
+		Enabled:     true,
+	}
+	_ = m.UpdateCategorisationConfig(ctx, seed)
+	cfg2, found2, err := m.readCategorisationRow(ctx, pid)
+	if err != nil || !found2 {
+		seed.UpdatedAtUs = usMicros(m.s.clock.Now().UTC())
+		return seed, nil
+	}
+	return cfg2, nil
+}
+
+// readCategorisationRow returns the row for pid; the bool reports
+// whether a row was found. A backend error is reported separately;
+// "row absent" is not an error.
+func (m *metadata) readCategorisationRow(ctx context.Context, pid store.PrincipalID) (store.CategorisationConfig, bool, error) {
+	var (
+		prompt          string
+		categorySetJSON []byte
+		endpointURL     sql.NullString
+		model           sql.NullString
+		apiKeyEnv       sql.NullString
+		timeoutSec      int64
+		enabled         int64
+		updatedAtUs     int64
+	)
+	err := m.s.db.QueryRowContext(ctx, `
+		SELECT prompt, category_set_json, endpoint_url, model, api_key_env,
+		       timeout_sec, enabled, updated_at_us
+		  FROM jmap_categorisation_config
+		 WHERE principal_id = ?`, int64(pid)).Scan(
+		&prompt, &categorySetJSON, &endpointURL, &model, &apiKeyEnv,
+		&timeoutSec, &enabled, &updatedAtUs)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return store.CategorisationConfig{}, false, nil
+		}
+		return store.CategorisationConfig{}, false, mapErr(err)
+	}
+	cfg := store.CategorisationConfig{
+		PrincipalID: pid,
+		Prompt:      prompt,
+		TimeoutSec:  int(timeoutSec),
+		Enabled:     enabled != 0,
+		UpdatedAtUs: updatedAtUs,
+	}
+	if len(categorySetJSON) > 0 {
+		if err := json.Unmarshal(categorySetJSON, &cfg.CategorySet); err != nil {
+			return store.CategorisationConfig{}, false, fmt.Errorf("storesqlite: decode category_set_json: %w", err)
+		}
+	}
+	if endpointURL.Valid {
+		v := endpointURL.String
+		cfg.Endpoint = &v
+	}
+	if model.Valid {
+		v := model.String
+		cfg.Model = &v
+	}
+	if apiKeyEnv.Valid {
+		v := apiKeyEnv.String
+		cfg.APIKeyEnv = &v
+	}
+	return cfg, true, nil
+}
+
+func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.CategorisationConfig) error {
+	now := m.s.clock.Now().UTC()
+	if cfg.CategorySet == nil {
+		cfg.CategorySet = []store.CategoryDef{}
+	}
+	js, err := json.Marshal(cfg.CategorySet)
+	if err != nil {
+		return fmt.Errorf("storesqlite: encode category_set_json: %w", err)
+	}
+	timeoutSec := cfg.TimeoutSec
+	if timeoutSec <= 0 {
+		timeoutSec = 5
+	}
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO jmap_categorisation_config
+			  (principal_id, prompt, category_set_json, endpoint_url, model,
+			   api_key_env, timeout_sec, enabled, updated_at_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(principal_id) DO UPDATE SET
+			  prompt = excluded.prompt,
+			  category_set_json = excluded.category_set_json,
+			  endpoint_url = excluded.endpoint_url,
+			  model = excluded.model,
+			  api_key_env = excluded.api_key_env,
+			  timeout_sec = excluded.timeout_sec,
+			  enabled = excluded.enabled,
+			  updated_at_us = excluded.updated_at_us`,
+			int64(cfg.PrincipalID), cfg.Prompt, js,
+			nullStringPtr(cfg.Endpoint), nullStringPtr(cfg.Model), nullStringPtr(cfg.APIKeyEnv),
+			int64(timeoutSec), boolToInt(cfg.Enabled), usMicros(now))
+		return mapErr(err)
+	})
+}
+
+// nullStringPtr converts an optional string into a value suitable for
+// sql binding: nil pointer → SQL NULL, non-nil → the bare string.
+func nullStringPtr(s *string) any {
+	if s == nil {
+		return nil
+	}
+	return *s
 }

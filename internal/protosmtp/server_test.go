@@ -794,6 +794,44 @@ func TestDelivery_AuthenticationResults_Header_Prepended(t *testing.T) {
 	}
 }
 
+// TestDeliver_PreservesTextCalendarMIMEPart proves that an inbound
+// multipart/alternative message carrying a text/calendar part lands in
+// the recipient's mailbox with the calendar bytes byte-for-byte
+// preserved (REQ-PROTO-59). The delivery path only prepends Received +
+// Authentication-Results headers; nothing rewrites or strips the MIME
+// tree.
+func TestDeliver_PreservesTextCalendarMIMEPart(t *testing.T) {
+	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn})
+	cli, closeFn := f.dial(t)
+	defer closeFn()
+	mustOK(t, cli, 220)
+	cli.send(t, "EHLO client.example.test")
+	mustOK(t, cli, 250)
+	cli.send(t, "MAIL FROM:<organizer@sender.test>")
+	mustOK(t, cli, 250)
+	cli.send(t, "RCPT TO:<alice@example.test>")
+	mustOK(t, cli, 250)
+	cli.send(t, "DATA")
+	mustOK(t, cli, 354)
+	const calendarPart = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:invite-1@sender.test\r\nDTSTART:20260601T100000Z\r\nDTEND:20260601T110000Z\r\nSUMMARY:Phase 2 Wave 2.5 sync\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+	body := "From: organizer@sender.test\r\nTo: alice@example.test\r\nSubject: Invitation: Phase 2 Wave 2.5 sync\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"BOUND\"\r\n\r\n--BOUND\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nYou are invited.\r\n--BOUND\r\nContent-Type: text/calendar; method=REQUEST; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n" + calendarPart + "--BOUND--\r\n.\r\n"
+	cli.sendRaw(t, []byte(body))
+	mustOK(t, cli, 250)
+	cli.send(t, "QUIT")
+	mustOK(t, cli, 221)
+
+	raw := loadFirstMessageBytes(t, f, f.principal)
+	if !bytes.Contains(raw, []byte(calendarPart)) {
+		t.Fatalf("text/calendar body not preserved verbatim:\n%s", raw)
+	}
+	if !bytes.Contains(raw, []byte("Content-Type: text/calendar; method=REQUEST")) {
+		t.Fatalf("text/calendar Content-Type header was rewritten:\n%s", raw)
+	}
+	if !bytes.Contains(raw, []byte("BEGIN:VCALENDAR")) || !bytes.Contains(raw, []byte("END:VCALENDAR")) {
+		t.Fatalf("VCALENDAR envelope missing or rewritten:\n%s", raw)
+	}
+}
+
 func TestRateLimiting_Per_IP_ConnectionCap(t *testing.T) {
 	ha, _ := testharness.Start(t, testharness.Options{
 		Listeners: []testharness.ListenerSpec{{Name: "smtp", Protocol: "smtp"}},

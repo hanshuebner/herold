@@ -8,9 +8,9 @@ import "time"
 const CurrentBackupVersion = 1
 
 // CurrentSchemaVersion is the maximum migration number both backends
-// know about today (0007). Bumped whenever a new migration ships in
+// know about today. Bumped whenever a new migration ships in
 // internal/storesqlite/migrations or internal/storepg/migrations.
-const CurrentSchemaVersion = 7
+const CurrentSchemaVersion = 9
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

@@ -18,7 +18,11 @@ type emailAddress struct {
 	Email string `json:"email"`
 }
 
-// jmapIdentity is the wire-form Identity object (RFC 8621 §7.1).
+// jmapIdentity is the wire-form Identity object (RFC 8621 §7.1) plus
+// the "signature" extension property defined by REQ-PROTO-57 /
+// REQ-STORE-35. The extension carries a single nullable plain-text
+// signature body separate from textSignature/htmlSignature; clients
+// populate compose with this value when present. NULL means unset.
 type jmapIdentity struct {
 	ID            jmapID         `json:"id"`
 	Name          string         `json:"name"`
@@ -27,6 +31,7 @@ type jmapIdentity struct {
 	Bcc           []emailAddress `json:"bcc,omitempty"`
 	TextSignature string         `json:"textSignature,omitempty"`
 	HTMLSignature string         `json:"htmlSignature,omitempty"`
+	Signature     *string        `json:"signature"`
 	MayDelete     bool           `json:"mayDelete"`
 }
 
@@ -43,11 +48,19 @@ type identityRecord struct {
 	Bcc           []emailAddress
 	TextSignature string
 	HTMLSignature string
-	MayDelete     bool
-	UpdatedAt     time.Time
+	// Signature is the plain-text Identity.signature extension
+	// property (REQ-PROTO-57 / REQ-STORE-35). Nil means unset.
+	Signature *string
+	MayDelete bool
+	UpdatedAt time.Time
 }
 
 func (r identityRecord) toJMAP() jmapIdentity {
+	var sig *string
+	if r.Signature != nil {
+		v := *r.Signature
+		sig = &v
+	}
 	return jmapIdentity{
 		ID:            renderID(r.ID),
 		Name:          r.Name,
@@ -56,6 +69,7 @@ func (r identityRecord) toJMAP() jmapIdentity {
 		Bcc:           r.Bcc,
 		TextSignature: r.TextSignature,
 		HTMLSignature: r.HTMLSignature,
+		Signature:     sig,
 		MayDelete:     r.MayDelete,
 	}
 }

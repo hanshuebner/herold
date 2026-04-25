@@ -29,6 +29,12 @@ const (
 	// the dispatcher checks the descriptor for client capability
 	// detection.
 	CapabilityMailSnooze CapabilityID = "urn:ietf:params:jmap:mail:snooze"
+	// CapabilityJMAPSieve is the JMAP Sieve datatype capability
+	// (REQ-PROTO-53 / RFC 9007). Implemented under
+	// internal/protojmap/mail/sieve; wraps the existing Sieve parser
+	// + interpreter so JMAP clients can manage scripts without
+	// speaking ManageSieve.
+	CapabilityJMAPSieve CapabilityID = "urn:ietf:params:jmap:sieve"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

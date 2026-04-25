@@ -569,14 +569,23 @@ func (m *metadata) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.M
 	if mb.UIDValidity == 0 {
 		mb.UIDValidity = newUIDValidity(now, m.s.randReader)
 	}
+	if mb.Color != nil {
+		if !validMailboxColor(*mb.Color) {
+			return store.Mailbox{}, fmt.Errorf("color %q: %w", *mb.Color, store.ErrInvalidArgument)
+		}
+	}
 	var id int64
 	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		var color any
+		if mb.Color != nil {
+			color = *mb.Color
+		}
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO mailboxes (principal_id, parent_id, name, attributes, uidvalidity,
-			  uidnext, highest_modseq, created_at_us, updated_at_us)
-			VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+			  uidnext, highest_modseq, created_at_us, updated_at_us, color_hex)
+			VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?, ?)`,
 			int64(mb.PrincipalID), int64(mb.ParentID), mb.Name, int64(mb.Attributes),
-			int64(mb.UIDValidity), usMicros(now), usMicros(now))
+			int64(mb.UIDValidity), usMicros(now), usMicros(now), color)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -607,7 +616,7 @@ func (m *metadata) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.M
 func (m *metadata) GetMailboxByID(ctx context.Context, id store.MailboxID) (store.Mailbox, error) {
 	row := m.s.db.QueryRowContext(ctx, `
 		SELECT id, principal_id, parent_id, name, attributes, uidvalidity, uidnext,
-		       highest_modseq, created_at_us, updated_at_us
+		       highest_modseq, created_at_us, updated_at_us, color_hex
 		  FROM mailboxes WHERE id = ?`, int64(id))
 	return scanMailbox(row)
 }
@@ -621,7 +630,8 @@ func scanMailbox(row rowLike) (store.Mailbox, error) {
 	var id, pid, parent int64
 	var attrs, uidv, uidn, hm int64
 	var createdUs, updatedUs int64
-	err := row.Scan(&id, &pid, &parent, &mb.Name, &attrs, &uidv, &uidn, &hm, &createdUs, &updatedUs)
+	var color sql.NullString
+	err := row.Scan(&id, &pid, &parent, &mb.Name, &attrs, &uidv, &uidn, &hm, &createdUs, &updatedUs, &color)
 	if err != nil {
 		return store.Mailbox{}, mapErr(err)
 	}
@@ -634,13 +644,17 @@ func scanMailbox(row rowLike) (store.Mailbox, error) {
 	mb.HighestModSeq = store.ModSeq(hm)
 	mb.CreatedAt = fromMicros(createdUs)
 	mb.UpdatedAt = fromMicros(updatedUs)
+	if color.Valid {
+		v := color.String
+		mb.Color = &v
+	}
 	return mb, nil
 }
 
 func (m *metadata) ListMailboxes(ctx context.Context, principalID store.PrincipalID) ([]store.Mailbox, error) {
 	rows, err := m.s.db.QueryContext(ctx, `
 		SELECT id, principal_id, parent_id, name, attributes, uidvalidity, uidnext,
-		       highest_modseq, created_at_us, updated_at_us
+		       highest_modseq, created_at_us, updated_at_us, color_hex
 		  FROM mailboxes WHERE principal_id = ? ORDER BY name`, int64(principalID))
 	if err != nil {
 		return nil, mapErr(err)
@@ -1482,7 +1496,7 @@ func (m *metadata) AppendAuditLog(ctx context.Context, entry store.AuditLogEntry
 func (m *metadata) GetMailboxByName(ctx context.Context, pid store.PrincipalID, name string) (store.Mailbox, error) {
 	row := m.s.db.QueryRowContext(ctx, `
 		SELECT id, principal_id, parent_id, name, attributes, uidvalidity, uidnext,
-		       highest_modseq, created_at_us, updated_at_us
+		       highest_modseq, created_at_us, updated_at_us, color_hex
 		  FROM mailboxes WHERE principal_id = ? AND name = ?`,
 		int64(pid), name)
 	return scanMailbox(row)
@@ -1587,6 +1601,58 @@ func (m *metadata) RenameMailbox(ctx context.Context, mailboxID store.MailboxID,
 		}
 		return nil
 	})
+}
+
+// SetMailboxColor implements REQ-PROTO-56 / REQ-STORE-34. The colour is
+// validated against the "#RRGGBB" hex literal grammar before any SQL is
+// emitted; nil clears the column so the JMAP "color is unset" semantic
+// (clients render their own default) round-trips.
+func (m *metadata) SetMailboxColor(ctx context.Context, mailboxID store.MailboxID, color *string) error {
+	if color != nil && !validMailboxColor(*color) {
+		return fmt.Errorf("color %q: %w", *color, store.ErrInvalidArgument)
+	}
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		var v any
+		if color != nil {
+			v = *color
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE mailboxes SET color_hex = ?, updated_at_us = ? WHERE id = ?`,
+			v, usMicros(now), int64(mailboxID))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// validMailboxColor reports whether s matches the JMAP Mailbox.color
+// grammar "#RRGGBB" (six hex digits, leading '#'). Lowercase + uppercase
+// hex are both accepted; the value is stored verbatim so clients see
+// what they wrote.
+func validMailboxColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for i := 1; i < 7; i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'f':
+		case c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // -- Sieve scripts ----------------------------------------------------

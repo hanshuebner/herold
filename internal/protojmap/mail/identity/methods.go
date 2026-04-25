@@ -283,6 +283,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			Bcc           []emailAddress `json:"bcc,omitempty"`
 			TextSignature string         `json:"textSignature,omitempty"`
 			HTMLSignature string         `json:"htmlSignature,omitempty"`
+			Signature     *string        `json:"signature,omitempty"`
 		}
 		if err := json.Unmarshal(raw, &in); err != nil {
 			if resp.NotCreated == nil {
@@ -325,6 +326,10 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			Bcc:           in.Bcc,
 			TextSignature: in.TextSignature,
 			HTMLSignature: in.HTMLSignature,
+		}
+		if in.Signature != nil {
+			v := *in.Signature
+			rec.Signature = &v
 		}
 		created := s.h.identity.create(ctx, p, rec)
 		if resp.Created == nil {
@@ -447,6 +452,17 @@ func decodePatch(raw json.RawMessage) (identityPatch, error) {
 			if err := json.Unmarshal(v, &out.htmlSignature); err != nil {
 				return identityPatch{}, fmt.Errorf("htmlSignature: %w", err)
 			}
+		case "signature":
+			out.hasSignature = true
+			if string(v) == "null" {
+				out.signature = nil
+				continue
+			}
+			var s string
+			if err := json.Unmarshal(v, &s); err != nil {
+				return identityPatch{}, fmt.Errorf("signature: %w", err)
+			}
+			out.signature = &s
 		case "email":
 			// JMAP forbids changing the primary email of an Identity
 			// (RFC 8621 §7.4 server "MAY" reject).

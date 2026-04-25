@@ -311,6 +311,9 @@ func (m *metaFace) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.M
 	if err := ctx.Err(); err != nil {
 		return store.Mailbox{}, err
 	}
+	if mb.Color != nil && !validMailboxColor(*mb.Color) {
+		return store.Mailbox{}, fmt.Errorf("color %q: %w", *mb.Color, store.ErrInvalidArgument)
+	}
 	s := m.s()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1096,6 +1099,7 @@ func (m *metaFace) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 				delete(s.phase2.mailboxACL, aclID)
 			}
 		}
+		delete(s.phase2.catConfig, pid)
 	}
 	// Audit log: drop entries that target or originate from this
 	// principal. Iterate and rebuild; audit volumes are low in tests.
@@ -1364,6 +1368,52 @@ func (m *metaFace) RenameMailbox(ctx context.Context, mailboxID store.MailboxID,
 	mb.UpdatedAt = s.clk.Now()
 	s.mailboxes[mailboxID] = mb
 	return nil
+}
+
+// SetMailboxColor implements REQ-PROTO-56 / REQ-STORE-34. Validates the
+// hex literal and clears the value when color is nil.
+func (m *metaFace) SetMailboxColor(ctx context.Context, mailboxID store.MailboxID, color *string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if color != nil && !validMailboxColor(*color) {
+		return fmt.Errorf("color %q: %w", *color, store.ErrInvalidArgument)
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mb, ok := s.mailboxes[mailboxID]
+	if !ok {
+		return fmt.Errorf("mailbox %d: %w", mailboxID, store.ErrNotFound)
+	}
+	if color == nil {
+		mb.Color = nil
+	} else {
+		v := *color
+		mb.Color = &v
+	}
+	mb.UpdatedAt = s.clk.Now()
+	s.mailboxes[mailboxID] = mb
+	return nil
+}
+
+// validMailboxColor reports whether s matches "#RRGGBB" (six hex
+// digits, leading '#'). Mirrors the SQLite/Postgres helpers.
+func validMailboxColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for i := 1; i < 7; i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'f':
+		case c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ---------- Metadata: Sieve scripts -------------------------------

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/categorise"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/mailarc"
@@ -161,21 +162,22 @@ func (o Options) Defaults() Options {
 // promoted onto the store.Metadata interface in Wave 3 so admin REST
 // and ManageSieve converge on one storage surface.
 type Server struct {
-	store    store.Store
-	dir      *directory.Directory
-	dkim     *maildkim.Verifier
-	spf      *mailspf.Verifier
-	dmarc    *maildmarc.Evaluator
-	arc      *mailarc.Verifier
-	spam     *spam.Classifier
-	sieve    *sieve.Interpreter
-	tls      *heroldtls.Store
-	resolver mailauth.Resolver
-	clk      clock.Clock
-	log      *slog.Logger
-	passLk   sasl.PasswordLookup
-	opts     Options
-	spamPlug string
+	store      store.Store
+	dir        *directory.Directory
+	dkim       *maildkim.Verifier
+	spf        *mailspf.Verifier
+	dmarc      *maildmarc.Evaluator
+	arc        *mailarc.Verifier
+	spam       *spam.Classifier
+	sieve      *sieve.Interpreter
+	categorise *categorise.Categoriser
+	tls        *heroldtls.Store
+	resolver   mailauth.Resolver
+	clk        clock.Clock
+	log        *slog.Logger
+	passLk     sasl.PasswordLookup
+	opts       Options
+	spamPlug   string
 
 	// lifecycle
 	ctx       context.Context
@@ -191,18 +193,19 @@ type Server struct {
 
 // Config bundles all dependencies required to construct a Server.
 type Config struct {
-	Store     store.Store
-	Directory *directory.Directory
-	DKIM      *maildkim.Verifier
-	SPF       *mailspf.Verifier
-	DMARC     *maildmarc.Evaluator
-	ARC       *mailarc.Verifier
-	Spam      *spam.Classifier
-	Sieve     *sieve.Interpreter
-	TLS       *heroldtls.Store
-	Resolver  mailauth.Resolver
-	Clock     clock.Clock
-	Logger    *slog.Logger
+	Store      store.Store
+	Directory  *directory.Directory
+	DKIM       *maildkim.Verifier
+	SPF        *mailspf.Verifier
+	DMARC      *maildmarc.Evaluator
+	ARC        *mailarc.Verifier
+	Spam       *spam.Classifier
+	Sieve      *sieve.Interpreter
+	Categorise *categorise.Categoriser
+	TLS        *heroldtls.Store
+	Resolver   mailauth.Resolver
+	Clock      clock.Clock
+	Logger     *slog.Logger
 	// SCRAMLookup is the optional SCRAM credential source. When nil,
 	// SCRAM mechanisms are absent from the advertised AUTH list.
 	SCRAMLookup sasl.PasswordLookup
@@ -243,25 +246,26 @@ func New(cfg Config) (*Server, error) {
 	observe.RegisterStoreMetrics()
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
-		store:    cfg.Store,
-		dir:      cfg.Directory,
-		dkim:     cfg.DKIM,
-		spf:      cfg.SPF,
-		dmarc:    cfg.DMARC,
-		arc:      cfg.ARC,
-		spam:     cfg.Spam,
-		sieve:    cfg.Sieve,
-		tls:      cfg.TLS,
-		resolver: cfg.Resolver,
-		clk:      clk,
-		log:      log,
-		passLk:   cfg.SCRAMLookup,
-		spamPlug: plug,
-		opts:     opts,
-		ctx:      ctx,
-		cancel:   cancel,
-		connSem:  make(chan struct{}, opts.MaxConcurrentConnections),
-		perIP:    make(map[string]int),
+		store:      cfg.Store,
+		dir:        cfg.Directory,
+		dkim:       cfg.DKIM,
+		spf:        cfg.SPF,
+		dmarc:      cfg.DMARC,
+		arc:        cfg.ARC,
+		spam:       cfg.Spam,
+		sieve:      cfg.Sieve,
+		categorise: cfg.Categorise,
+		tls:        cfg.TLS,
+		resolver:   cfg.Resolver,
+		clk:        clk,
+		log:        log,
+		passLk:     cfg.SCRAMLookup,
+		spamPlug:   plug,
+		opts:       opts,
+		ctx:        ctx,
+		cancel:     cancel,
+		connSem:    make(chan struct{}, opts.MaxConcurrentConnections),
+		perIP:      make(map[string]int),
 	}
 	return s, nil
 }

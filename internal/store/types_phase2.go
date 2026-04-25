@@ -733,6 +733,9 @@ const (
 	JMAPStateKindEmailSubmission
 	// JMAPStateKindVacationResponse tracks JMAP VacationResponse changes.
 	JMAPStateKindVacationResponse
+	// JMAPStateKindSieve tracks JMAP Sieve datatype changes
+	// (REQ-PROTO-53 / RFC 9007). Bumped on every successful Sieve/set.
+	JMAPStateKindSieve
 )
 
 // JMAPStates is the per-principal row of JMAP object-scoped state
@@ -756,6 +759,8 @@ type JMAPStates struct {
 	EmailSubmission int64
 	// VacationResponse is the JMAP VacationResponse state.
 	VacationResponse int64
+	// Sieve is the JMAP Sieve datatype state (REQ-PROTO-53).
+	Sieve int64
 	// UpdatedAt is the instant of the most recent increment.
 	UpdatedAt time.Time
 }
@@ -926,6 +931,13 @@ type JMAPIdentity struct {
 	// blocks (RFC 8621 §7.1).
 	TextSignature string
 	HTMLSignature string
+	// Signature is the JMAP Identity.signature extension property
+	// (REQ-PROTO-57 / REQ-STORE-35): a single nullable plain-text
+	// signature body separate from TextSignature/HTMLSignature.
+	// nil means unset; clients populate compose with this value when
+	// present. The HTML signature variant is deferred to phase 2 as a
+	// separate column.
+	Signature *string
 	// MayDelete reflects the JMAP mayDelete flag (RFC 8621 §7.4). The
 	// synthesised default identity sets this to false; persisted rows
 	// default to true.
@@ -933,5 +945,56 @@ type JMAPIdentity struct {
 	// CreatedAtUs / UpdatedAtUs are unix-micros timestamps maintained
 	// by the store on insert / update.
 	CreatedAtUs int64
+	UpdatedAtUs int64
+}
+
+// -- LLM categorisation (REQ-FILT-200..231) --------------------------
+
+// CategoryDef is one entry in a CategorisationConfig.CategorySet.
+// Names are lowercase ASCII dash-separated tokens (REQ-FILT-201);
+// Description is a free-text gloss that lands in the LLM prompt to
+// help the model pick between sibling categories.
+type CategoryDef struct {
+	// Name is the bare category name (e.g. "primary"); the delivery
+	// pipeline emits it as the "$category-<Name>" keyword.
+	Name string `json:"name"`
+	// Description is a one-sentence gloss describing what kind of
+	// message belongs in this category. Fed into the system prompt
+	// alongside the category name.
+	Description string `json:"description"`
+}
+
+// CategorisationConfig is the per-account row driving the LLM
+// categoriser (REQ-FILT-210/211/213). Endpoint, Model, APIKeyEnv and
+// TimeoutSec are nullable so a per-account row can override only the
+// knobs the user cares about; nil falls back to the operator-supplied
+// default. Prompt and CategorySet are required and seeded with the
+// REQ-FILT-201/210 defaults on first read.
+type CategorisationConfig struct {
+	// PrincipalID is the owning principal.
+	PrincipalID PrincipalID
+	// Prompt is the system prompt fed to the LLM. Free text;
+	// REQ-FILT-211 default approximates Gmail's behaviour.
+	Prompt string
+	// CategorySet enumerates the categories the LLM may pick from.
+	// JSON-serialised in storage; the order is preserved so a "reset
+	// to default" control stays stable.
+	CategorySet []CategoryDef
+	// Endpoint, when non-nil, overrides the operator-default
+	// OpenAI-compatible endpoint URL for this account.
+	Endpoint *string
+	// Model, when non-nil, overrides the operator-default model name.
+	Model *string
+	// APIKeyEnv, when non-nil, names the environment variable the
+	// process reads to obtain a Bearer token; nil means "use the
+	// operator default".
+	APIKeyEnv *string
+	// TimeoutSec is the per-call HTTP timeout in seconds. 0 means
+	// "use the operator default" (typically 5).
+	TimeoutSec int
+	// Enabled gates the categoriser for this principal. The default
+	// row is seeded enabled = true (REQ-FILT-200).
+	Enabled bool
+	// UpdatedAtUs is the unix-micros instant of the most recent write.
 	UpdatedAtUs int64
 }

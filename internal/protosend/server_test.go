@@ -326,6 +326,55 @@ func TestSendRaw_HappyPath(t *testing.T) {
 	}
 }
 
+// TestQueue_PreservesTextCalendarOnDeliver covers REQ-PROTO-59 for the
+// outbound path. A multipart/alternative + text/calendar; method=REQUEST
+// message submitted through the send-raw endpoint must reach the queue
+// with the calendar part bytes intact (no rewrite, no strip). The
+// fakeQueue in the harness records the bytes handed to Submit; that is
+// the exact buffer the Deliverer would later stream.
+func TestQueue_PreservesTextCalendarOnDeliver(t *testing.T) {
+	h := newSendHarness(t)
+	const calendarPart = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:invite-out-1@example.test\r\nDTSTART:20260601T100000Z\r\nDTEND:20260601T110000Z\r\nSUMMARY:Phase 2 Wave 2.5 sync\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+	raw := "From: alice@example.test\r\n" +
+		"To: bob@dest.test\r\n" +
+		"Subject: Invitation\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/alternative; boundary=\"BOUND\"\r\n" +
+		"\r\n" +
+		"--BOUND\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"You are invited.\r\n" +
+		"--BOUND\r\n" +
+		"Content-Type: text/calendar; method=REQUEST; charset=utf-8\r\n" +
+		"Content-Transfer-Encoding: 7bit\r\n" +
+		"\r\n" +
+		calendarPart +
+		"--BOUND--\r\n"
+	body := map[string]any{
+		"destinations": []string{"bob@dest.test"},
+		"rawMessage":   base64.StdEncoding.EncodeToString([]byte(raw)),
+	}
+	res, buf := h.doRequest("POST", "/api/v1/mail/send-raw", h.apiKey, body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", res.StatusCode, buf)
+	}
+	bodies := h.q.Bodies()
+	if len(bodies) != 1 {
+		t.Fatalf("expected 1 queue body, got %d", len(bodies))
+	}
+	out := bodies[0]
+	if !bytes.Contains(out, []byte(calendarPart)) {
+		t.Fatalf("text/calendar body not preserved verbatim:\n%s", out)
+	}
+	if !bytes.Contains(out, []byte("Content-Type: text/calendar; method=REQUEST")) {
+		t.Fatalf("text/calendar Content-Type header was rewritten:\n%s", out)
+	}
+	if !bytes.Contains(out, []byte("BEGIN:VCALENDAR")) || !bytes.Contains(out, []byte("END:VCALENDAR")) {
+		t.Fatalf("VCALENDAR envelope missing or rewritten:\n%s", out)
+	}
+}
+
 func TestSendBatch_PartialSuccess(t *testing.T) {
 	h := newSendHarness(t)
 	// Item 1: ok. Item 2: bad source (unowned domain). Item 3: ok.

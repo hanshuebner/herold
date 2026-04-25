@@ -678,6 +678,203 @@ func TestRetryPolicyDefault(t *testing.T) {
 	}
 }
 
+// -- REQ-PROTO-58 / REQ-FLOW-63 sendAt + Cancel ----------------------
+
+func TestSubmit_SendAt_FutureTime_HoldsItem(t *testing.T) {
+	f := newFixture(t, fixtureOpts{
+		concurrency:  4,
+		perHost:      2,
+		pollInterval: 50 * time.Millisecond,
+	})
+	sendAt := f.clk.Now().Add(10 * time.Minute)
+	envID := f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test"},
+		Body:       strings.NewReader("Subject: scheduled\r\n\r\nbody\r\n"),
+		SendAt:     sendAt,
+	})
+	// Run a few scheduler ticks; the row must stay in queued state and
+	// the deliverer must not be called.
+	for i := 0; i < 5; i++ {
+		f.clk.Advance(60 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := f.deliv.callCount(); got != 0 {
+		t.Fatalf("deliverer called before sendAt: got %d", got)
+	}
+	rows, err := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 || rows[0].State != store.QueueStateQueued {
+		t.Fatalf("row state before sendAt: got %+v", rows)
+	}
+	if !rows[0].NextAttemptAt.Equal(sendAt) {
+		t.Fatalf("NextAttemptAt: got %v want %v", rows[0].NextAttemptAt, sendAt)
+	}
+	stats, _ := f.queue.Stats(f.ctx)
+	if stats.Queued != 1 || stats.Inflight != 0 {
+		t.Fatalf("stats before sendAt: %+v", stats)
+	}
+	// Advance past sendAt; delivery should fire.
+	f.clk.Advance(11 * time.Minute)
+	if !waitFor(t, 2*time.Second, func() bool {
+		return f.deliv.callCount() >= 1
+	}) {
+		t.Fatalf("deliverer not called after clock advance: stats %+v", mustStats(t, f))
+	}
+	if !waitFor(t, 2*time.Second, func() bool {
+		s, _ := f.queue.Stats(f.ctx)
+		return s.Done >= 1
+	}) {
+		t.Fatalf("row never reached done: %+v", mustStats(t, f))
+	}
+}
+
+func TestSubmit_SendAt_PastTime_DeliversImmediately(t *testing.T) {
+	f := newFixture(t, fixtureOpts{concurrency: 4, perHost: 2})
+	past := f.clk.Now().Add(-time.Hour)
+	envID := f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test"},
+		Body:       strings.NewReader("Subject: past\r\n\r\nbody\r\n"),
+		SendAt:     past,
+	})
+	if !waitFor(t, 2*time.Second, func() bool {
+		s, _ := f.queue.Stats(f.ctx)
+		return s.Done >= 1
+	}) {
+		t.Fatalf("past-sendAt row never delivered: %+v", mustStats(t, f))
+	}
+	rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+	if len(rows) != 1 || rows[0].State != store.QueueStateDone {
+		t.Fatalf("row: %+v", rows)
+	}
+}
+
+func TestSubmit_SendAt_ZeroTime_DeliversImmediately(t *testing.T) {
+	f := newFixture(t, fixtureOpts{concurrency: 4, perHost: 2})
+	envID := f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test"},
+		Body:       strings.NewReader("Subject: now\r\n\r\nbody\r\n"),
+		// SendAt left zero — must behave like "deliver now".
+	})
+	if !waitFor(t, 2*time.Second, func() bool {
+		s, _ := f.queue.Stats(f.ctx)
+		return s.Done >= 1
+	}) {
+		t.Fatalf("zero-sendAt row never delivered: %+v", mustStats(t, f))
+	}
+	rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+	if len(rows) != 1 || rows[0].State != store.QueueStateDone {
+		t.Fatalf("row: %+v", rows)
+	}
+}
+
+func TestCancel_BeforeDue_RemovesAllRows(t *testing.T) {
+	f := newFixture(t, fixtureOpts{
+		concurrency:  4,
+		perHost:      2,
+		pollInterval: 50 * time.Millisecond,
+	})
+	sendAt := f.clk.Now().Add(10 * time.Minute)
+	envID := f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test", "carol@dest.test"},
+		Body:       strings.NewReader("Subject: hold\r\n\r\nbody\r\n"),
+		SendAt:     sendAt,
+	})
+	// Confirm both rows are queued.
+	rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows pre-cancel, got %d", len(rows))
+	}
+	cancelled, inflight, err := f.queue.Cancel(f.ctx, envID)
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if cancelled != 2 || inflight != 0 {
+		t.Fatalf("cancel counts: got cancelled=%d inflight=%d want 2/0", cancelled, inflight)
+	}
+	rows, _ = f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+	if len(rows) != 0 {
+		t.Fatalf("expected 0 rows post-cancel, got %d", len(rows))
+	}
+	// Advance past the original sendAt; the deliverer must NOT fire.
+	f.clk.Advance(15 * time.Minute)
+	for i := 0; i < 5; i++ {
+		time.Sleep(20 * time.Millisecond)
+		f.clk.Advance(60 * time.Millisecond)
+	}
+	if got := f.deliv.callCount(); got != 0 {
+		t.Fatalf("deliverer called after cancel: got %d", got)
+	}
+}
+
+func TestCancel_AfterDelivery_NoOp(t *testing.T) {
+	f := newFixture(t, fixtureOpts{concurrency: 4, perHost: 2})
+	envID := f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test"},
+		Body:       strings.NewReader("Subject: now\r\n\r\nbody\r\n"),
+	})
+	if !waitFor(t, 2*time.Second, func() bool {
+		s, _ := f.queue.Stats(f.ctx)
+		return s.Done >= 1
+	}) {
+		t.Fatalf("row never delivered: %+v", mustStats(t, f))
+	}
+	cancelled, inflight, err := f.queue.Cancel(f.ctx, envID)
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if cancelled != 0 || inflight != 0 {
+		t.Fatalf("cancel after terminal: got cancelled=%d inflight=%d want 0/0",
+			cancelled, inflight)
+	}
+}
+
+func TestCancel_DuringInflight_ReportsInflight(t *testing.T) {
+	f := newFixture(t, fixtureOpts{concurrency: 4, perHost: 2})
+	gate := make(chan struct{})
+	released := atomic.Bool{}
+	f.deliv.hooks = func(req queue.DeliveryRequest, n int) (queue.DeliveryOutcome, error) {
+		<-gate
+		released.Store(true)
+		return queue.DeliveryOutcome{Status: queue.DeliveryStatusSuccess}, nil
+	}
+	envID := f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test"},
+		Body:       strings.NewReader("Subject: slow\r\n\r\nbody\r\n"),
+	})
+	// Wait for the worker to enter Deliver (gated).
+	if !waitFor(t, 2*time.Second, func() bool {
+		return f.deliv.callCount() >= 1
+	}) {
+		close(gate)
+		t.Fatal("deliver never called")
+	}
+	cancelled, inflight, err := f.queue.Cancel(f.ctx, envID)
+	if err != nil {
+		close(gate)
+		t.Fatalf("cancel: %v", err)
+	}
+	if cancelled != 0 || inflight < 1 {
+		close(gate)
+		t.Fatalf("cancel mid-inflight: got cancelled=%d inflight=%d want 0/>=1",
+			cancelled, inflight)
+	}
+	// Release the deliverer so the test does not leak the gated worker.
+	close(gate)
+	if !waitFor(t, 2*time.Second, func() bool {
+		return released.Load()
+	}) {
+		t.Fatal("worker did not complete after gate close")
+	}
+}
+
 // -- helpers ----------------------------------------------------------
 
 func waitFor(t *testing.T, timeout time.Duration, pred func() bool) bool {

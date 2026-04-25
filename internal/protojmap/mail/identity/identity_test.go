@@ -137,3 +137,88 @@ func TestIdentity_Changes_NoOpWhenSameState(t *testing.T) {
 		t.Fatalf("expected empty updated: %s", js)
 	}
 }
+
+// -- REQ-PROTO-57 / REQ-STORE-35 Identity.signature extension ------
+
+// TestIdentity_Get_IncludesSignature verifies that Identity/get reflects
+// the signature extension property both for the principal-default
+// (overlay) row and for a custom persisted identity.
+func TestIdentity_Get_IncludesSignature(t *testing.T) {
+	h, _, p := newHandlers(t)
+	// Set the signature on the default identity via the overlay path.
+	sig := "Cheers,\nAlice"
+	updateArgs, _ := json.Marshal(map[string]any{
+		"update": map[string]any{
+			"default": map[string]any{"signature": sig},
+		},
+	})
+	_, mErr := setHandler{h: h}.executeAs(p, updateArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/set update default: %v", mErr)
+	}
+	resp, mErr := getHandler{h: h}.executeAs(p, json.RawMessage(`{}`))
+	if mErr != nil {
+		t.Fatalf("Identity/get: %v", mErr)
+	}
+	js, _ := json.Marshal(resp)
+	if !strings.Contains(string(js), `"signature":"Cheers,\nAlice"`) {
+		t.Fatalf("default signature missing in response: %s", js)
+	}
+}
+
+// TestIdentity_Set_AcceptsSignature exercises the create + update
+// signature paths plus the explicit-null clear.
+func TestIdentity_Set_AcceptsSignature(t *testing.T) {
+	h, _, p := newHandlers(t)
+	createArgs, _ := json.Marshal(map[string]any{
+		"create": map[string]any{
+			"alt": map[string]any{
+				"name":      "Alice Personal",
+				"email":     "alice@example.test",
+				"signature": "Best,\nA.",
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, createArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/set create: %v", mErr)
+	}
+	js, _ := json.Marshal(resp)
+	if !strings.Contains(string(js), `"signature":"Best,\nA."`) {
+		t.Fatalf("created identity missing signature: %s", js)
+	}
+	// Find the created id so we can flip the signature.
+	sresp := resp.(setResponse)
+	created, ok := sresp.Created["alt"]
+	if !ok {
+		t.Fatalf("create response missing alt: %+v", sresp.Created)
+	}
+	updateArgs, _ := json.Marshal(map[string]any{
+		"update": map[string]any{
+			created.ID: map[string]any{"signature": "Updated"},
+		},
+	})
+	resp2, mErr := setHandler{h: h}.executeAs(p, updateArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/set update: %v", mErr)
+	}
+	js2, _ := json.Marshal(resp2)
+	if !strings.Contains(string(js2), `"signature":"Updated"`) {
+		t.Fatalf("updated signature missing: %s", js2)
+	}
+	// Clear via explicit null.
+	clearArgs, _ := json.Marshal(map[string]any{
+		"update": map[string]any{
+			created.ID: map[string]any{"signature": nil},
+		},
+	})
+	_, mErr3 := setHandler{h: h}.executeAs(p, clearArgs)
+	if mErr3 != nil {
+		t.Fatalf("Identity/set clear: %v", mErr3)
+	}
+	resp3, _ := getHandler{h: h}.executeAs(p, json.RawMessage(`{}`))
+	js3, _ := json.Marshal(resp3)
+	if strings.Contains(string(js3), `"signature":"Updated"`) {
+		t.Fatalf("signature did not clear: %s", js3)
+	}
+}

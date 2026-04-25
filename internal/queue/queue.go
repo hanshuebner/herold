@@ -108,6 +108,12 @@ type Submission struct {
 	// SigningDomain selects which DKIM key the Signer uses; required
 	// when Sign is true.
 	SigningDomain string
+	// SendAt, when non-zero, is the earliest UTC instant at which the
+	// scheduler may begin delivery (RFC 8621 §7.5 EmailSubmission.sendAt).
+	// On enqueue NextAttemptAt is set to max(now, SendAt); the row stays
+	// in QueueStateQueued and remains invisible to the deliverer until
+	// SendAt arrives. The zero value behaves like "deliver immediately".
+	SendAt time.Time
 }
 
 // Queue is the persistent outbound queue orchestrator: scheduler,
@@ -246,6 +252,15 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 	}
 
 	now := q.clk.Now()
+	// REQ-PROTO-58 / REQ-FLOW-63: when SendAt is set in the future the
+	// row's NextAttemptAt is bumped to that instant so the scheduler
+	// poll sees it as "not due" and leaves it in QueueStateQueued. A
+	// zero or past SendAt collapses to now and behaves identically to
+	// the pre-sendAt path.
+	nextAttemptAt := now
+	if !msg.SendAt.IsZero() && msg.SendAt.After(now) {
+		nextAttemptAt = msg.SendAt
+	}
 	var pid store.PrincipalID
 	if msg.PrincipalID != nil {
 		pid = *msg.PrincipalID
@@ -275,7 +290,7 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 			BodyBlobHash:    bodyRef.Hash,
 			HeadersBlobHash: headersHash,
 			State:           store.QueueStateQueued,
-			NextAttemptAt:   now,
+			NextAttemptAt:   nextAttemptAt,
 			DSNNotify:       msg.DSNNotify,
 			DSNRet:          msg.DSNRet,
 			DSNEnvID:        msg.DSNEnvelopeID,
@@ -346,6 +361,74 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 	})
 	q.wake()
 	return envID, nil
+}
+
+// Cancel removes every queue row belonging to envelope before its
+// in-flight delivery starts. The orchestrator identifies cancellable
+// rows by state — queued, deferred, and held are still reversible;
+// inflight is too late (the deliverer holds the wire and we cannot
+// rescind a MAIL/RCPT/DATA exchange in progress); done and failed are
+// already terminal and return zero counts.
+//
+// Returns:
+//   - cancelled: count of rows successfully removed (rows that were
+//     still queued/deferred/held).
+//   - inflightCount: rows that were already inflight; cancellation is a
+//     no-op for these and the caller surfaces a "best-effort
+//     cancellation" diagnostic to the JMAP client (REQ-FLOW-63).
+//   - err: only on store errors. ListQueueItems with an unknown
+//     EnvelopeID returns an empty slice, not an error; Cancel on a
+//     non-existent envelope returns (0, 0, nil).
+//
+// Wire contract: REQ-PROTO-58 / REQ-FLOW-63. The delete is performed
+// per-row via DeleteQueueItem, which decrements the body blob refcount
+// and is itself transactional in the store. Concurrent claim/cancel:
+// ListQueueItems → DeleteQueueItem races with the scheduler claim are
+// resolved by DeleteQueueItem returning ErrNotFound when the row has
+// transitioned out from under us; we treat that as "another path
+// already consumed the row" and add nothing to either counter.
+func (q *Queue) Cancel(ctx context.Context, envelope EnvelopeID) (cancelled, inflightCount int, err error) {
+	if q.opts.Store == nil {
+		return 0, 0, fmt.Errorf("queue: Cancel: Store is nil")
+	}
+	rows, err := q.opts.Store.Meta().ListQueueItems(ctx, store.QueueFilter{
+		EnvelopeID: envelope,
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("queue: cancel list: %w", err)
+	}
+	for _, r := range rows {
+		switch r.State {
+		case store.QueueStateQueued, store.QueueStateDeferred, store.QueueStateHeld:
+			if dErr := q.opts.Store.Meta().DeleteQueueItem(ctx, r.ID); dErr != nil {
+				if errors.Is(dErr, store.ErrNotFound) {
+					// Raced with the scheduler claim or another
+					// destroy; the row is already gone. Do not count
+					// either way.
+					continue
+				}
+				return cancelled, inflightCount, fmt.Errorf("queue: cancel delete %d: %w", r.ID, dErr)
+			}
+			cancelled++
+		case store.QueueStateInflight:
+			inflightCount++
+		case store.QueueStateDone, store.QueueStateFailed:
+			// Terminal: nothing to cancel; do not surface as
+			// inflight either. Caller treats "all terminal, none
+			// inflight" as a clean success.
+		default:
+			// Unknown / future state: be conservative and treat as
+			// inflight so callers do not silently lose visibility on
+			// a row that may still ship.
+			inflightCount++
+		}
+	}
+	q.opts.Logger.InfoContext(ctx, "queue: cancel envelope",
+		slog.String("envelope_id", string(envelope)),
+		slog.Int("cancelled", cancelled),
+		slog.Int("inflight", inflightCount),
+	)
+	return cancelled, inflightCount, nil
 }
 
 // wake pings the scheduler's wakeCh non-blockingly. A single pending

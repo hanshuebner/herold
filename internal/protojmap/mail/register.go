@@ -7,6 +7,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/email"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/mailbox"
+	jmapsieve "github.com/hanshuebner/herold/internal/protojmap/mail/sieve"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -38,6 +39,11 @@ func Register(reg *protojmap.CapabilityRegistry, st store.Store, logger *slog.Lo
 	// can detect support; the descriptor is the empty object per the
 	// IETF draft.
 	reg.RegisterCapabilityDescriptor(protojmap.CapabilityMailSnooze, struct{}{})
+
+	// JMAP Sieve datatype (REQ-PROTO-53 / RFC 9007). Sub-package
+	// owns the Sieve/get, Sieve/set, Sieve/validate handlers and
+	// registers its own capability descriptor.
+	jmapsieve.Register(reg, st, logger, clk)
 }
 
 // mailAccountCapability is the per-account capability provider. RFC 8621

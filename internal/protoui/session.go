@@ -168,6 +168,30 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 	}
 }
 
+// ResolveSession returns the principal id authenticated by the suite
+// session cookie on r, or zero + false if the request is anonymous,
+// the cookie is missing/invalid, or the principal has been disabled.
+//
+// Used by sibling handlers (e.g. internal/protoimg's image proxy) that
+// reuse the suite session as their auth surface without re-implementing
+// cookie validation. The check intentionally rejects disabled
+// principals so a flagged operator's lingering cookie cannot keep
+// authenticating side channels.
+func (s *Server) ResolveSession(r *http.Request) (store.PrincipalID, bool) {
+	sess, ok := s.readSession(r)
+	if !ok {
+		return 0, false
+	}
+	p, err := s.store.Meta().GetPrincipalByID(r.Context(), sess.PrincipalID)
+	if err != nil {
+		return 0, false
+	}
+	if p.Flags.Has(store.PrincipalFlagDisabled) {
+		return 0, false
+	}
+	return sess.PrincipalID, true
+}
+
 // readSession parses the session cookie from r. The returned bool is
 // true iff a valid, unexpired session was found.
 func (s *Server) readSession(r *http.Request) (session, bool) {
