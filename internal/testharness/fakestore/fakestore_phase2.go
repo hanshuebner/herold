@@ -60,6 +60,12 @@ type phase2Data struct {
 	nextAddressBook store.AddressBookID
 	contacts        map[store.ContactID]store.Contact
 	nextContact     store.ContactID
+
+	// Wave 2.7 JMAP for Calendars (REQ-PROTO-54).
+	calendars         map[store.CalendarID]store.Calendar
+	nextCalendar      store.CalendarID
+	calendarEvents    map[store.CalendarEventID]store.CalendarEvent
+	nextCalendarEvent store.CalendarEventID
 }
 
 // ensurePhase2 lazily initialises the Phase 2 in-memory state. Called
@@ -72,33 +78,37 @@ func (s *Store) ensurePhase2() {
 		return
 	}
 	s.phase2 = &phase2Data{
-		queue:            make(map[store.QueueItemID]store.QueueItem),
-		nextQueueID:      1,
-		dkimKeys:         make(map[store.DKIMKeyID]store.DKIMKey),
-		nextDKIMID:       1,
-		acmeAccts:        make(map[store.ACMEAccountID]store.ACMEAccount),
-		nextACMEAcc:      1,
-		acmeOrders:       make(map[store.ACMEOrderID]store.ACMEOrder),
-		nextACMEOrd:      1,
-		acmeCerts:        make(map[string]store.ACMECert),
-		webhooks:         make(map[store.WebhookID]store.Webhook),
-		nextWebhook:      1,
-		dmarcReports:     make(map[store.DMARCReportID]store.DMARCReport),
-		dmarcRows:        make(map[store.DMARCRowID]store.DMARCRow),
-		nextReportID:     1,
-		nextRowID:        1,
-		mailboxACL:       make(map[store.MailboxACLID]store.MailboxACL),
-		nextACLID:        1,
-		jmapStates:       make(map[store.PrincipalID]store.JMAPStates),
-		tlsrpt:           make(map[store.TLSRPTFailureID]store.TLSRPTFailure),
-		nextTLSRPT:       1,
-		emailSubmissions: make(map[string]store.EmailSubmissionRow),
-		jmapIdentities:   make(map[string]store.JMAPIdentity),
-		catConfig:        make(map[store.PrincipalID]store.CategorisationConfig),
-		addressBooks:     make(map[store.AddressBookID]store.AddressBook),
-		nextAddressBook:  1,
-		contacts:         make(map[store.ContactID]store.Contact),
-		nextContact:      1,
+		queue:             make(map[store.QueueItemID]store.QueueItem),
+		nextQueueID:       1,
+		dkimKeys:          make(map[store.DKIMKeyID]store.DKIMKey),
+		nextDKIMID:        1,
+		acmeAccts:         make(map[store.ACMEAccountID]store.ACMEAccount),
+		nextACMEAcc:       1,
+		acmeOrders:        make(map[store.ACMEOrderID]store.ACMEOrder),
+		nextACMEOrd:       1,
+		acmeCerts:         make(map[string]store.ACMECert),
+		webhooks:          make(map[store.WebhookID]store.Webhook),
+		nextWebhook:       1,
+		dmarcReports:      make(map[store.DMARCReportID]store.DMARCReport),
+		dmarcRows:         make(map[store.DMARCRowID]store.DMARCRow),
+		nextReportID:      1,
+		nextRowID:         1,
+		mailboxACL:        make(map[store.MailboxACLID]store.MailboxACL),
+		nextACLID:         1,
+		jmapStates:        make(map[store.PrincipalID]store.JMAPStates),
+		tlsrpt:            make(map[store.TLSRPTFailureID]store.TLSRPTFailure),
+		nextTLSRPT:        1,
+		emailSubmissions:  make(map[string]store.EmailSubmissionRow),
+		jmapIdentities:    make(map[string]store.JMAPIdentity),
+		catConfig:         make(map[store.PrincipalID]store.CategorisationConfig),
+		addressBooks:      make(map[store.AddressBookID]store.AddressBook),
+		nextAddressBook:   1,
+		contacts:          make(map[store.ContactID]store.Contact),
+		nextContact:       1,
+		calendars:         make(map[store.CalendarID]store.Calendar),
+		nextCalendar:      1,
+		calendarEvents:    make(map[store.CalendarEventID]store.CalendarEvent),
+		nextCalendarEvent: 1,
 	}
 }
 
@@ -1164,6 +1174,12 @@ func (m *metaFace) IncrementJMAPState(ctx context.Context, pid store.PrincipalID
 	case store.JMAPStateKindContact:
 		st.Contact++
 		ret = st.Contact
+	case store.JMAPStateKindCalendar:
+		st.Calendar++
+		ret = st.Calendar
+	case store.JMAPStateKindCalendarEvent:
+		st.CalendarEvent++
+		ret = st.CalendarEvent
 	default:
 		return 0, fmt.Errorf("fakestore: unknown JMAPStateKind %d", kind)
 	}

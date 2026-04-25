@@ -535,6 +535,55 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "calendars":
+		return enumerate(ctx, s.tx,
+			`SELECT id, principal_id, name, description, color_hex, sort_order,
+			        is_subscribed, is_default, is_visible, time_zone_id, rights_mask,
+			        created_at_us, updated_at_us, modseq
+			   FROM calendars ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r CalendarRow
+				var color sql.NullString
+				var subscribed, isDefault, isVisible int64
+				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.Name, &r.Description,
+					&color, &r.SortOrder, &subscribed, &isDefault, &isVisible,
+					&r.TimeZoneID, &r.RightsMask,
+					&r.CreatedAtUs, &r.UpdatedAtUs, &r.ModSeq); err != nil {
+					return nil, err
+				}
+				if color.Valid {
+					v := color.String
+					r.ColorHex = &v
+				}
+				r.IsSubscribed = subscribed != 0
+				r.IsDefault = isDefault != 0
+				r.IsVisible = isVisible != 0
+				return &r, nil
+			}, fn)
+	case "calendar_events":
+		return enumerate(ctx, s.tx,
+			`SELECT id, calendar_id, principal_id, uid, jscalendar_json,
+			        start_us, end_us, is_recurring, rrule_json,
+			        summary, organizer_email, status,
+			        created_at_us, updated_at_us, modseq
+			   FROM calendar_events ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r CalendarEventRow
+				var isRecurring int64
+				var organizer sql.NullString
+				if err := rs.Scan(&r.ID, &r.CalendarID, &r.PrincipalID, &r.UID,
+					&r.JSCalendarJSON, &r.StartUs, &r.EndUs, &isRecurring, &r.RRuleJSON,
+					&r.Summary, &organizer, &r.Status,
+					&r.CreatedAtUs, &r.UpdatedAtUs, &r.ModSeq); err != nil {
+					return nil, err
+				}
+				r.IsRecurring = isRecurring != 0
+				if organizer.Valid {
+					v := organizer.String
+					r.OrganizerEmail = &v
+				}
+				return &r, nil
+			}, fn)
 	case "blob_refs":
 		return enumerate(ctx, s.tx,
 			`SELECT hash, size, ref_count, last_change_us FROM blob_refs ORDER BY hash`,
@@ -832,6 +881,65 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.RecordedAtUs, r.PolicyDomain, r.ReceivingMTAHostname,
 			r.FailureType, r.FailureCode, r.FailureDetailJSON)
+		return err
+	case "address_books":
+		r := row.(*AddressBookRow)
+		var color any
+		if r.ColorHex != nil {
+			color = *r.ColorHex
+		}
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO address_books (id, principal_id, name, description, color_hex,
+			   sort_order, is_subscribed, is_default, rights_mask,
+			   created_at_us, updated_at_us, modseq)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.PrincipalID, r.Name, r.Description, color,
+			r.SortOrder, boolToInt(r.IsSubscribed), boolToInt(r.IsDefault),
+			r.RightsMask, r.CreatedAtUs, r.UpdatedAtUs, r.ModSeq)
+		return err
+	case "contacts":
+		r := row.(*ContactRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO contacts (id, address_book_id, principal_id, uid, jscontact_json,
+			   display_name, given_name, surname, org_name, primary_email, search_blob,
+			   created_at_us, updated_at_us, modseq)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.AddressBookID, r.PrincipalID, r.UID, r.JSContactJSON,
+			r.DisplayName, r.GivenName, r.Surname, r.OrgName, r.PrimaryEmail, r.SearchBlob,
+			r.CreatedAtUs, r.UpdatedAtUs, r.ModSeq)
+		return err
+	case "calendars":
+		r := row.(*CalendarRow)
+		var color any
+		if r.ColorHex != nil {
+			color = *r.ColorHex
+		}
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO calendars (id, principal_id, name, description, color_hex,
+			   sort_order, is_subscribed, is_default, is_visible, time_zone_id,
+			   rights_mask, created_at_us, updated_at_us, modseq)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.PrincipalID, r.Name, r.Description, color,
+			r.SortOrder, boolToInt(r.IsSubscribed), boolToInt(r.IsDefault),
+			boolToInt(r.IsVisible), r.TimeZoneID, r.RightsMask,
+			r.CreatedAtUs, r.UpdatedAtUs, r.ModSeq)
+		return err
+	case "calendar_events":
+		r := row.(*CalendarEventRow)
+		var organizer any
+		if r.OrganizerEmail != nil {
+			organizer = *r.OrganizerEmail
+		}
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO calendar_events (id, calendar_id, principal_id, uid, jscalendar_json,
+			   start_us, end_us, is_recurring, rrule_json,
+			   summary, organizer_email, status,
+			   created_at_us, updated_at_us, modseq)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.CalendarID, r.PrincipalID, r.UID, r.JSCalendarJSON,
+			r.StartUs, r.EndUs, boolToInt(r.IsRecurring), r.RRuleJSON,
+			r.Summary, organizer, r.Status,
+			r.CreatedAtUs, r.UpdatedAtUs, r.ModSeq)
 		return err
 	case "blob_refs":
 		r := row.(*BlobRefRow)

@@ -700,6 +700,76 @@ type Metadata interface {
 	// (EntityKindContact, ChangeOpDestroyed) state-change row in the
 	// same tx. Returns ErrNotFound when the row is missing.
 	DeleteContact(ctx context.Context, id ContactID) error
+
+	// -- Phase 2 Wave 2.7 JMAP for Calendars (REQ-PROTO-54) ----------
+
+	// InsertCalendar persists a new calendar and returns the assigned
+	// ID. When c.IsDefault is true, any prior default calendar for the
+	// same principal is flipped to false in the same tx. Appends a
+	// (EntityKindCalendar, ChangeOpCreated) state-change row.
+	InsertCalendar(ctx context.Context, c Calendar) (CalendarID, error)
+
+	// GetCalendar returns one row by id. Returns ErrNotFound when the
+	// row is missing.
+	GetCalendar(ctx context.Context, id CalendarID) (Calendar, error)
+
+	// ListCalendars applies filter and returns rows in ascending ID
+	// order. Caps at 1000 server-side.
+	ListCalendars(ctx context.Context, filter CalendarFilter) ([]Calendar, error)
+
+	// UpdateCalendar persists the mutable fields (Name, Description,
+	// Color, SortOrder, IsSubscribed, IsDefault, IsVisible, TimeZoneID,
+	// RightsMask) on the row identified by c.ID, bumps ModSeq and
+	// UpdatedAt, and appends a (EntityKindCalendar, ChangeOpUpdated)
+	// state-change row in the same tx. Flipping IsDefault to true
+	// unsets any prior default. Returns ErrNotFound when the row is
+	// missing.
+	UpdateCalendar(ctx context.Context, c Calendar) error
+
+	// DeleteCalendar removes the row identified by id (cascading to
+	// every event owned by the calendar) and appends a
+	// (EntityKindCalendar, ChangeOpDestroyed) row plus one
+	// (EntityKindCalendarEvent, ChangeOpDestroyed) row per event
+	// removed — all in one tx. Returns ErrNotFound when the row is
+	// missing.
+	DeleteCalendar(ctx context.Context, id CalendarID) error
+
+	// DefaultCalendar returns the default calendar for principalID, or
+	// ErrNotFound when the principal has no default (no row with
+	// is_default = true).
+	DefaultCalendar(ctx context.Context, principalID PrincipalID) (Calendar, error)
+
+	// InsertCalendarEvent persists a new calendar event row. The
+	// caller is responsible for populating the denormalised columns
+	// (Start, End, IsRecurring, RRuleJSON, Summary, OrganizerEmail,
+	// Status) from the JSCalendar JSON. Appends a
+	// (EntityKindCalendarEvent, ChangeOpCreated) state-change row.
+	// Returns ErrConflict on duplicate (calendar_id, uid).
+	InsertCalendarEvent(ctx context.Context, e CalendarEvent) (CalendarEventID, error)
+
+	// GetCalendarEvent returns one row by id, or ErrNotFound.
+	GetCalendarEvent(ctx context.Context, id CalendarEventID) (CalendarEvent, error)
+
+	// GetCalendarEventByUID returns the event identified by the
+	// (calendarID, uid) natural key — the iMIP RSVP-path lookup. Returns
+	// ErrNotFound when no such row exists.
+	GetCalendarEventByUID(ctx context.Context, calendarID CalendarID, uid string) (CalendarEvent, error)
+
+	// ListCalendarEvents applies filter and returns rows in ascending
+	// ID order. Caps at 1000 server-side.
+	ListCalendarEvents(ctx context.Context, filter CalendarEventFilter) ([]CalendarEvent, error)
+
+	// UpdateCalendarEvent persists the mutable fields (JSCalendarJSON +
+	// denormalised columns) on the row identified by e.ID, bumps
+	// ModSeq and UpdatedAt, and appends a (EntityKindCalendarEvent,
+	// ChangeOpUpdated) state-change row in the same tx. Returns
+	// ErrNotFound when the row is missing.
+	UpdateCalendarEvent(ctx context.Context, e CalendarEvent) error
+
+	// DeleteCalendarEvent removes the row identified by id and appends
+	// a (EntityKindCalendarEvent, ChangeOpDestroyed) state-change row
+	// in the same tx. Returns ErrNotFound when the row is missing.
+	DeleteCalendarEvent(ctx context.Context, id CalendarEventID) error
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

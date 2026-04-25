@@ -1112,6 +1112,18 @@ func (m *metaFace) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 				delete(s.phase2.addressBooks, abID)
 			}
 		}
+		// Wave 2.7 calendars cascade: calendars and their contained
+		// events. Mirrors the ON DELETE CASCADE in 0011_calendars.sql.
+		for eid, e := range s.phase2.calendarEvents {
+			if e.PrincipalID == pid {
+				delete(s.phase2.calendarEvents, eid)
+			}
+		}
+		for calID, cal := range s.phase2.calendars {
+			if cal.PrincipalID == pid {
+				delete(s.phase2.calendars, calID)
+			}
+		}
 	}
 	// Audit log: drop entries that target or originate from this
 	// principal. Iterate and rebuild; audit volumes are low in tests.

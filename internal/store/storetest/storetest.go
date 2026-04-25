@@ -117,6 +117,21 @@ func Run(t *testing.T, f Factory) {
 		// -- REQ-FILT-200..221 LLM categorisation -----------------
 		{"CategorisationConfig_DefaultsSeededOnFirstRead", testCategorisationConfigDefaults},
 		{"CategorisationConfig_RoundTrip", testCategorisationConfigRoundtrip},
+		// -- Wave 2.7 JMAP for Calendars (REQ-PROTO-54) -----------
+		{"Calendar_InsertGet_Roundtrip", testCalendarInsertGetRoundtrip},
+		{"Calendar_List_FilterAndPagination", testCalendarListFilterAndPagination},
+		{"Calendar_Update_BumpsModSeqAndAppendsStateChange", testCalendarUpdateBumpsModSeq},
+		{"Calendar_DefaultEnforcement_AutoFlipsPrior", testCalendarDefaultEnforcement},
+		{"Calendar_Delete_CascadesEvents", testCalendarDeleteCascadesEvents},
+		{"CalendarEvent_InsertGet_Roundtrip_IncludingJSON", testCalendarEventInsertGetRoundtrip},
+		{"CalendarEvent_List_FilterByStartWindow", testCalendarEventListFilterByStartWindow},
+		{"CalendarEvent_List_FilterByUID", testCalendarEventListFilterByUID},
+		{"CalendarEvent_List_FilterByTextOnSummary", testCalendarEventListFilterByText},
+		{"CalendarEvent_Update_BumpsModSeq", testCalendarEventUpdateBumpsModSeq},
+		{"CalendarEvent_Delete_AppendsStateChange", testCalendarEventDeleteAppendsStateChange},
+		{"CalendarEvent_GetByUID_NotFound_HappyPath", testCalendarEventGetByUID},
+		{"JMAPStates_CalendarCounters_RaceTested", testJMAPStatesCalendarCounters},
+		{"DeletePrincipal_CascadesCalendars", testDeletePrincipalCascadesCalendars},
 	}
 	for _, c := range cases {
 		tc := c
@@ -3263,5 +3278,619 @@ func testJMAPStatesSieveCounter(t *testing.T, s store.Store) {
 	}
 	if st.Mailbox != 0 || st.Email != 0 || st.Identity != 0 {
 		t.Fatalf("sibling counters drifted: %+v", st)
+	}
+}
+
+// -- Wave 2.7 JMAP for Calendars (REQ-PROTO-54) ---------------------
+
+// testCalendarInsertGetRoundtrip exercises InsertCalendar / GetCalendar
+// preserving every field, the assigned ID, monotonic ModSeq, and the
+// nullable Color pointer.
+func testCalendarInsertGetRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cal-rt@example.com")
+	color := "#5B8DEE"
+	id, err := s.Meta().InsertCalendar(ctx, store.Calendar{
+		PrincipalID:  p.ID,
+		Name:         "Personal",
+		Description:  "primary calendar",
+		Color:        &color,
+		SortOrder:    7,
+		IsSubscribed: true,
+		IsDefault:    true,
+		IsVisible:    true,
+		TimeZoneID:   "Europe/Berlin",
+		RightsMask:   store.ACLRights(0xff),
+	})
+	if err != nil {
+		t.Fatalf("InsertCalendar: %v", err)
+	}
+	got, err := s.Meta().GetCalendar(ctx, id)
+	if err != nil {
+		t.Fatalf("GetCalendar: %v", err)
+	}
+	if got.ID != id || got.PrincipalID != p.ID || got.Name != "Personal" ||
+		got.Description != "primary calendar" || got.SortOrder != 7 ||
+		!got.IsSubscribed || !got.IsDefault || !got.IsVisible ||
+		got.TimeZoneID != "Europe/Berlin" || got.RightsMask != store.ACLRights(0xff) {
+		t.Fatalf("Calendar mismatch: %+v", got)
+	}
+	if got.Color == nil || *got.Color != color {
+		t.Fatalf("Color = %v, want %q", got.Color, color)
+	}
+	if got.ModSeq != 1 {
+		t.Fatalf("initial ModSeq = %d, want 1", got.ModSeq)
+	}
+}
+
+// testCalendarListFilterAndPagination exercises principal filter,
+// keyset pagination via AfterID, and the AfterModSeq cursor.
+func testCalendarListFilterAndPagination(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p1 := mustInsertPrincipal(t, s, "cal-page-1@example.com")
+	p2 := mustInsertPrincipal(t, s, "cal-page-2@example.com")
+	const n = 5
+	var ids []store.CalendarID
+	for i := 0; i < n; i++ {
+		id, err := s.Meta().InsertCalendar(ctx, store.Calendar{
+			PrincipalID: p1.ID,
+			Name:        fmt.Sprintf("c-%02d", i),
+			IsVisible:   true,
+		})
+		if err != nil {
+			t.Fatalf("InsertCalendar: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	// Other principal's calendar must not leak in.
+	if _, err := s.Meta().InsertCalendar(ctx, store.Calendar{
+		PrincipalID: p2.ID, Name: "other",
+	}); err != nil {
+		t.Fatalf("InsertCalendar p2: %v", err)
+	}
+
+	page, err := s.Meta().ListCalendars(ctx, store.CalendarFilter{
+		PrincipalID: &p1.ID, Limit: 3,
+	})
+	if err != nil {
+		t.Fatalf("ListCalendars page1: %v", err)
+	}
+	if len(page) != 3 {
+		t.Fatalf("page1 len = %d, want 3", len(page))
+	}
+	for _, c := range page {
+		if c.PrincipalID != p1.ID {
+			t.Fatalf("leaked principal: %+v", c)
+		}
+	}
+	// Continue from the last ID.
+	rest, err := s.Meta().ListCalendars(ctx, store.CalendarFilter{
+		PrincipalID: &p1.ID, AfterID: page[2].ID,
+	})
+	if err != nil {
+		t.Fatalf("ListCalendars page2: %v", err)
+	}
+	if len(rest) != n-3 {
+		t.Fatalf("page2 len = %d, want %d", len(rest), n-3)
+	}
+
+	// AfterModSeq: bumping one row's modseq must surface only that row.
+	one, err := s.Meta().GetCalendar(ctx, ids[2])
+	if err != nil {
+		t.Fatalf("GetCalendar: %v", err)
+	}
+	one.Description = "touched"
+	if err := s.Meta().UpdateCalendar(ctx, one); err != nil {
+		t.Fatalf("UpdateCalendar: %v", err)
+	}
+	delta, err := s.Meta().ListCalendars(ctx, store.CalendarFilter{
+		PrincipalID: &p1.ID, AfterModSeq: 1,
+	})
+	if err != nil {
+		t.Fatalf("ListCalendars AfterModSeq: %v", err)
+	}
+	if len(delta) != 1 || delta[0].ID != ids[2] {
+		t.Fatalf("delta = %+v, want only id %d", delta, ids[2])
+	}
+}
+
+// testCalendarUpdateBumpsModSeq verifies UpdateCalendar increments
+// ModSeq, persists mutated fields, and emits a state-change row.
+func testCalendarUpdateBumpsModSeq(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cal-update@example.com")
+	id, err := s.Meta().InsertCalendar(ctx, store.Calendar{
+		PrincipalID: p.ID, Name: "Work", IsVisible: true,
+	})
+	if err != nil {
+		t.Fatalf("InsertCalendar: %v", err)
+	}
+	c, _ := s.Meta().GetCalendar(ctx, id)
+	priorSeq := c.ModSeq
+	c.Name = "Work (renamed)"
+	c.SortOrder = 99
+	if err := s.Meta().UpdateCalendar(ctx, c); err != nil {
+		t.Fatalf("UpdateCalendar: %v", err)
+	}
+	got, _ := s.Meta().GetCalendar(ctx, id)
+	if got.ModSeq <= priorSeq {
+		t.Fatalf("ModSeq did not advance: got %d, prior %d", got.ModSeq, priorSeq)
+	}
+	if got.Name != "Work (renamed)" || got.SortOrder != 99 {
+		t.Fatalf("Update did not persist: %+v", got)
+	}
+	// State-change feed: at least a (calendar, created) followed by
+	// (calendar, updated).
+	feed, err := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed: %v", err)
+	}
+	var sawCreated, sawUpdated bool
+	for _, e := range feed {
+		if e.Kind == store.EntityKindCalendar && uint64(id) == e.EntityID {
+			switch e.Op {
+			case store.ChangeOpCreated:
+				sawCreated = true
+			case store.ChangeOpUpdated:
+				sawUpdated = true
+			}
+		}
+	}
+	if !sawCreated || !sawUpdated {
+		t.Fatalf("feed missing calendar create/update: %+v", feed)
+	}
+}
+
+// testCalendarDefaultEnforcement verifies the auto-flip strategy: at
+// most one default calendar per principal at any time. Marking a new
+// default flips the previous default off in the same tx.
+func testCalendarDefaultEnforcement(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cal-default@example.com")
+	a, err := s.Meta().InsertCalendar(ctx, store.Calendar{
+		PrincipalID: p.ID, Name: "First", IsDefault: true, IsVisible: true,
+	})
+	if err != nil {
+		t.Fatalf("InsertCalendar a: %v", err)
+	}
+	// Inserting another with IsDefault=true must auto-flip a's default.
+	b, err := s.Meta().InsertCalendar(ctx, store.Calendar{
+		PrincipalID: p.ID, Name: "Second", IsDefault: true, IsVisible: true,
+	})
+	if err != nil {
+		t.Fatalf("InsertCalendar b: %v", err)
+	}
+	got, err := s.Meta().DefaultCalendar(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("DefaultCalendar: %v", err)
+	}
+	if got.ID != b {
+		t.Fatalf("DefaultCalendar = %d, want %d", got.ID, b)
+	}
+	prev, _ := s.Meta().GetCalendar(ctx, a)
+	if prev.IsDefault {
+		t.Fatalf("prior default not flipped off: %+v", prev)
+	}
+	// Promoting a back via Update must again flip b off.
+	prev.IsDefault = true
+	if err := s.Meta().UpdateCalendar(ctx, prev); err != nil {
+		t.Fatalf("UpdateCalendar promote: %v", err)
+	}
+	got2, _ := s.Meta().DefaultCalendar(ctx, p.ID)
+	if got2.ID != a {
+		t.Fatalf("DefaultCalendar after re-promote = %d, want %d", got2.ID, a)
+	}
+	bAfter, _ := s.Meta().GetCalendar(ctx, b)
+	if bAfter.IsDefault {
+		t.Fatalf("second default not flipped: %+v", bAfter)
+	}
+}
+
+// testCalendarDeleteCascadesEvents inserts events into a calendar,
+// deletes the calendar, and verifies events vanish + the feed carries
+// per-event destroyed rows plus the calendar destroyed row.
+func testCalendarDeleteCascadesEvents(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cal-cascade@example.com")
+	cal, err := s.Meta().InsertCalendar(ctx, store.Calendar{
+		PrincipalID: p.ID, Name: "ToDestroy",
+	})
+	if err != nil {
+		t.Fatalf("InsertCalendar: %v", err)
+	}
+	const n = 3
+	var evIDs []store.CalendarEventID
+	for i := 0; i < n; i++ {
+		eid, err := s.Meta().InsertCalendarEvent(ctx, store.CalendarEvent{
+			CalendarID:     cal,
+			PrincipalID:    p.ID,
+			UID:            fmt.Sprintf("uid-%d", i),
+			JSCalendarJSON: []byte(`{"@type":"Event"}`),
+			Start:          time.Unix(int64(i*3600), 0).UTC(),
+			End:            time.Unix(int64(i*3600+1800), 0).UTC(),
+			Summary:        fmt.Sprintf("event %d", i),
+			Status:         "confirmed",
+		})
+		if err != nil {
+			t.Fatalf("InsertCalendarEvent %d: %v", i, err)
+		}
+		evIDs = append(evIDs, eid)
+	}
+	if err := s.Meta().DeleteCalendar(ctx, cal); err != nil {
+		t.Fatalf("DeleteCalendar: %v", err)
+	}
+	for _, eid := range evIDs {
+		if _, err := s.Meta().GetCalendarEvent(ctx, eid); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("GetCalendarEvent(%d) = %v, want ErrNotFound", eid, err)
+		}
+	}
+	if _, err := s.Meta().GetCalendar(ctx, cal); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetCalendar after delete = %v, want ErrNotFound", err)
+	}
+	feed, err := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed: %v", err)
+	}
+	destroyedEvents := 0
+	var sawCalendarDestroyed bool
+	for _, e := range feed {
+		switch e.Kind {
+		case store.EntityKindCalendarEvent:
+			if e.Op == store.ChangeOpDestroyed && e.ParentEntityID == uint64(cal) {
+				destroyedEvents++
+			}
+		case store.EntityKindCalendar:
+			if e.Op == store.ChangeOpDestroyed && e.EntityID == uint64(cal) {
+				sawCalendarDestroyed = true
+			}
+		}
+	}
+	if destroyedEvents != n {
+		t.Fatalf("destroyed event rows = %d, want %d", destroyedEvents, n)
+	}
+	if !sawCalendarDestroyed {
+		t.Fatalf("missing calendar destroyed row in feed")
+	}
+}
+
+// testCalendarEventInsertGetRoundtrip preserves every field including
+// the JSCalendar JSON blob and denormalised columns.
+func testCalendarEventInsertGetRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ev-rt@example.com")
+	cal, err := s.Meta().InsertCalendar(ctx, store.Calendar{
+		PrincipalID: p.ID, Name: "ev-rt",
+	})
+	if err != nil {
+		t.Fatalf("InsertCalendar: %v", err)
+	}
+	js := []byte(`{"@type":"Event","title":"Standup"}`)
+	rrule := []byte(`{"@type":"RecurrenceRule","frequency":"weekly"}`)
+	start := time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC)
+	end := start.Add(30 * time.Minute)
+	id, err := s.Meta().InsertCalendarEvent(ctx, store.CalendarEvent{
+		CalendarID:     cal,
+		PrincipalID:    p.ID,
+		UID:            "rt-uid",
+		JSCalendarJSON: js,
+		Start:          start,
+		End:            end,
+		IsRecurring:    true,
+		RRuleJSON:      rrule,
+		Summary:        "Standup",
+		OrganizerEmail: "Alice@Example.Com",
+		Status:         "confirmed",
+	})
+	if err != nil {
+		t.Fatalf("InsertCalendarEvent: %v", err)
+	}
+	got, err := s.Meta().GetCalendarEvent(ctx, id)
+	if err != nil {
+		t.Fatalf("GetCalendarEvent: %v", err)
+	}
+	if got.UID != "rt-uid" || got.Summary != "Standup" ||
+		got.OrganizerEmail != "alice@example.com" || got.Status != "confirmed" ||
+		!got.IsRecurring {
+		t.Fatalf("event mismatch: %+v", got)
+	}
+	if !got.Start.Equal(start) || !got.End.Equal(end) {
+		t.Fatalf("times mismatch: start=%v end=%v", got.Start, got.End)
+	}
+	if !bytes.Equal(got.JSCalendarJSON, js) {
+		t.Fatalf("JSCalendarJSON: got %q want %q", got.JSCalendarJSON, js)
+	}
+	if !bytes.Equal(got.RRuleJSON, rrule) {
+		t.Fatalf("RRuleJSON: got %q want %q", got.RRuleJSON, rrule)
+	}
+	if got.ModSeq != 1 {
+		t.Fatalf("initial ModSeq = %d, want 1", got.ModSeq)
+	}
+}
+
+// testCalendarEventListFilterByStartWindow inserts events at known
+// instants and exercises the StartAfter / StartBefore window predicate.
+func testCalendarEventListFilterByStartWindow(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ev-window@example.com")
+	cal, err := s.Meta().InsertCalendar(ctx, store.Calendar{
+		PrincipalID: p.ID, Name: "win",
+	})
+	if err != nil {
+		t.Fatalf("InsertCalendar: %v", err)
+	}
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		_, err := s.Meta().InsertCalendarEvent(ctx, store.CalendarEvent{
+			CalendarID:     cal,
+			PrincipalID:    p.ID,
+			UID:            fmt.Sprintf("w-%d", i),
+			JSCalendarJSON: []byte("{}"),
+			Start:          base.Add(time.Duration(i) * time.Hour),
+			End:            base.Add(time.Duration(i)*time.Hour + 30*time.Minute),
+			Summary:        fmt.Sprintf("e%d", i),
+			Status:         "confirmed",
+		})
+		if err != nil {
+			t.Fatalf("InsertCalendarEvent %d: %v", i, err)
+		}
+	}
+	after := base.Add(1 * time.Hour)
+	before := base.Add(4 * time.Hour)
+	got, err := s.Meta().ListCalendarEvents(ctx, store.CalendarEventFilter{
+		CalendarID:  &cal,
+		StartAfter:  &after,
+		StartBefore: &before,
+	})
+	if err != nil {
+		t.Fatalf("ListCalendarEvents: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("window len = %d, want 3 (e1,e2,e3)", len(got))
+	}
+	for _, e := range got {
+		if e.Start.Before(after) || !e.Start.Before(before) {
+			t.Fatalf("event %s outside window: start=%v", e.UID, e.Start)
+		}
+	}
+}
+
+// testCalendarEventListFilterByUID checks the UID predicate selects
+// exactly one row.
+func testCalendarEventListFilterByUID(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ev-uid@example.com")
+	cal, _ := s.Meta().InsertCalendar(ctx, store.Calendar{PrincipalID: p.ID, Name: "u"})
+	for i := 0; i < 3; i++ {
+		if _, err := s.Meta().InsertCalendarEvent(ctx, store.CalendarEvent{
+			CalendarID: cal, PrincipalID: p.ID,
+			UID:            fmt.Sprintf("uid-%d", i),
+			JSCalendarJSON: []byte("{}"),
+			Start:          time.Unix(int64(i), 0).UTC(),
+			End:            time.Unix(int64(i+1), 0).UTC(),
+		}); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+	}
+	target := "uid-1"
+	got, err := s.Meta().ListCalendarEvents(ctx, store.CalendarEventFilter{
+		CalendarID: &cal, UID: &target,
+	})
+	if err != nil {
+		t.Fatalf("ListCalendarEvents: %v", err)
+	}
+	if len(got) != 1 || got[0].UID != target {
+		t.Fatalf("uid filter = %+v, want one row uid=%q", got, target)
+	}
+}
+
+// testCalendarEventListFilterByText exercises the case-insensitive
+// substring filter on Summary.
+func testCalendarEventListFilterByText(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ev-text@example.com")
+	cal, _ := s.Meta().InsertCalendar(ctx, store.Calendar{PrincipalID: p.ID, Name: "t"})
+	titles := []string{"Daily Standup", "Quarterly Review", "Lunch", "Standup retro"}
+	for i, title := range titles {
+		if _, err := s.Meta().InsertCalendarEvent(ctx, store.CalendarEvent{
+			CalendarID: cal, PrincipalID: p.ID,
+			UID:            fmt.Sprintf("t-%d", i),
+			JSCalendarJSON: []byte("{}"),
+			Start:          time.Unix(int64(i), 0).UTC(),
+			End:            time.Unix(int64(i+1), 0).UTC(),
+			Summary:        title,
+		}); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+	}
+	got, err := s.Meta().ListCalendarEvents(ctx, store.CalendarEventFilter{
+		CalendarID: &cal, Text: "stand",
+	})
+	if err != nil {
+		t.Fatalf("ListCalendarEvents text: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("text filter len = %d, want 2 (Daily Standup, Standup retro)", len(got))
+	}
+}
+
+// testCalendarEventUpdateBumpsModSeq verifies UpdateCalendarEvent
+// advances ModSeq, persists denormalised columns, and feeds an updated
+// state-change row.
+func testCalendarEventUpdateBumpsModSeq(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ev-update@example.com")
+	cal, _ := s.Meta().InsertCalendar(ctx, store.Calendar{PrincipalID: p.ID, Name: "u"})
+	id, err := s.Meta().InsertCalendarEvent(ctx, store.CalendarEvent{
+		CalendarID: cal, PrincipalID: p.ID,
+		UID:            "u1",
+		JSCalendarJSON: []byte(`{"v":1}`),
+		Start:          time.Unix(100, 0).UTC(),
+		End:            time.Unix(200, 0).UTC(),
+		Summary:        "old",
+		Status:         "confirmed",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	cur, _ := s.Meta().GetCalendarEvent(ctx, id)
+	prior := cur.ModSeq
+	cur.Summary = "new"
+	cur.JSCalendarJSON = []byte(`{"v":2}`)
+	cur.Status = "tentative"
+	if err := s.Meta().UpdateCalendarEvent(ctx, cur); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, _ := s.Meta().GetCalendarEvent(ctx, id)
+	if got.ModSeq <= prior {
+		t.Fatalf("ModSeq stuck: %d -> %d", prior, got.ModSeq)
+	}
+	if got.Summary != "new" || got.Status != "tentative" {
+		t.Fatalf("update not persisted: %+v", got)
+	}
+	if !bytes.Equal(got.JSCalendarJSON, []byte(`{"v":2}`)) {
+		t.Fatalf("json not persisted: %q", got.JSCalendarJSON)
+	}
+	feed, _ := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 100)
+	var sawUpdated bool
+	for _, e := range feed {
+		if e.Kind == store.EntityKindCalendarEvent && e.Op == store.ChangeOpUpdated &&
+			e.EntityID == uint64(id) && e.ParentEntityID == uint64(cal) {
+			sawUpdated = true
+		}
+	}
+	if !sawUpdated {
+		t.Fatalf("missing event-updated row")
+	}
+}
+
+// testCalendarEventDeleteAppendsStateChange verifies DeleteCalendarEvent
+// removes the row, returns ErrNotFound on the second call, and emits
+// the destroyed state-change row.
+func testCalendarEventDeleteAppendsStateChange(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ev-del@example.com")
+	cal, _ := s.Meta().InsertCalendar(ctx, store.Calendar{PrincipalID: p.ID, Name: "d"})
+	id, err := s.Meta().InsertCalendarEvent(ctx, store.CalendarEvent{
+		CalendarID: cal, PrincipalID: p.ID, UID: "del-uid",
+		JSCalendarJSON: []byte("{}"),
+		Start:          time.Unix(0, 0).UTC(), End: time.Unix(60, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := s.Meta().DeleteCalendarEvent(ctx, id); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := s.Meta().GetCalendarEvent(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetCalendarEvent after delete = %v", err)
+	}
+	if err := s.Meta().DeleteCalendarEvent(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Delete twice = %v, want ErrNotFound", err)
+	}
+	feed, _ := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 100)
+	var sawDestroyed bool
+	for _, e := range feed {
+		if e.Kind == store.EntityKindCalendarEvent && e.Op == store.ChangeOpDestroyed &&
+			e.EntityID == uint64(id) && e.ParentEntityID == uint64(cal) {
+			sawDestroyed = true
+		}
+	}
+	if !sawDestroyed {
+		t.Fatalf("missing destroyed row in feed: %+v", feed)
+	}
+}
+
+// testCalendarEventGetByUID covers the iMIP RSVP-path lookup: ErrNotFound
+// when absent; happy path returns the matching row.
+func testCalendarEventGetByUID(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ev-uid-lookup@example.com")
+	cal, _ := s.Meta().InsertCalendar(ctx, store.Calendar{PrincipalID: p.ID, Name: "k"})
+	if _, err := s.Meta().GetCalendarEventByUID(ctx, cal, "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetCalendarEventByUID(absent) = %v, want ErrNotFound", err)
+	}
+	id, err := s.Meta().InsertCalendarEvent(ctx, store.CalendarEvent{
+		CalendarID: cal, PrincipalID: p.ID, UID: "lookup-uid",
+		JSCalendarJSON: []byte("{}"),
+		Start:          time.Unix(0, 0).UTC(), End: time.Unix(60, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	got, err := s.Meta().GetCalendarEventByUID(ctx, cal, "lookup-uid")
+	if err != nil {
+		t.Fatalf("GetCalendarEventByUID: %v", err)
+	}
+	if got.ID != id {
+		t.Fatalf("by-uid id = %d, want %d", got.ID, id)
+	}
+}
+
+// testJMAPStatesCalendarCounters race-tests the calendar +
+// calendar_event JMAP state counters.
+func testJMAPStatesCalendarCounters(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cal-jmap@example.com")
+	const n = 25
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if _, err := s.Meta().IncrementJMAPState(ctx, p.ID, store.JMAPStateKindCalendar); err != nil {
+				t.Errorf("Increment Calendar: %v", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, err := s.Meta().IncrementJMAPState(ctx, p.ID, store.JMAPStateKindCalendarEvent); err != nil {
+				t.Errorf("Increment CalendarEvent: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	st, err := s.Meta().GetJMAPStates(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetJMAPStates: %v", err)
+	}
+	if st.Calendar != n {
+		t.Fatalf("Calendar = %d, want %d", st.Calendar, n)
+	}
+	if st.CalendarEvent != n {
+		t.Fatalf("CalendarEvent = %d, want %d", st.CalendarEvent, n)
+	}
+	// Sibling counters not touched.
+	if st.Mailbox != 0 || st.Email != 0 || st.AddressBook != 0 || st.Contact != 0 {
+		t.Fatalf("sibling counters drifted: %+v", st)
+	}
+}
+
+// testDeletePrincipalCascadesCalendars confirms DeletePrincipal sweeps
+// owned calendars + events via FK cascade.
+func testDeletePrincipalCascadesCalendars(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cal-del-principal@example.com")
+	cal, err := s.Meta().InsertCalendar(ctx, store.Calendar{
+		PrincipalID: p.ID, Name: "Owned",
+	})
+	if err != nil {
+		t.Fatalf("InsertCalendar: %v", err)
+	}
+	eid, err := s.Meta().InsertCalendarEvent(ctx, store.CalendarEvent{
+		CalendarID: cal, PrincipalID: p.ID, UID: "owned",
+		JSCalendarJSON: []byte("{}"),
+		Start:          time.Unix(0, 0).UTC(), End: time.Unix(1, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("InsertCalendarEvent: %v", err)
+	}
+	if err := s.Meta().DeletePrincipal(ctx, p.ID); err != nil {
+		t.Fatalf("DeletePrincipal: %v", err)
+	}
+	if _, err := s.Meta().GetCalendar(ctx, cal); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetCalendar after DeletePrincipal = %v", err)
+	}
+	if _, err := s.Meta().GetCalendarEvent(ctx, eid); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetCalendarEvent after DeletePrincipal = %v", err)
 	}
 }

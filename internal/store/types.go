@@ -367,6 +367,15 @@ const (
 	// AddressBookID, Op) so per-book IMAP-IDLE-style filters dispatch
 	// without a join.
 	EntityKindContact EntityKind = "contact"
+	// EntityKindCalendar is a JMAP `Calendar` row (REQ-PROTO-54,
+	// RFC 8984). The state-change feed carries (Kind, EntityID =
+	// CalendarID, ParentEntityID = 0, Op).
+	EntityKindCalendar EntityKind = "calendar"
+	// EntityKindCalendarEvent is a JMAP `CalendarEvent` row
+	// (RFC 8984 JSCalendar). The feed carries (Kind, EntityID =
+	// CalendarEventID, ParentEntityID = CalendarID, Op) so per-calendar
+	// CalDAV-style filters dispatch without a join.
+	EntityKindCalendarEvent EntityKind = "calendar_event"
 )
 
 // ChangeOp is the operation kind on a StateChange row. Distinct from

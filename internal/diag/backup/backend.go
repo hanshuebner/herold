@@ -195,6 +195,10 @@ func rowsForTable(table string) (any, bool) {
 		return &AddressBookRow{}, true
 	case "contacts":
 		return &ContactRow{}, true
+	case "calendars":
+		return &CalendarRow{}, true
+	case "calendar_events":
+		return &CalendarEventRow{}, true
 	case "blob_refs":
 		return &BlobRefRow{}, true
 	}

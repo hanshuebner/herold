@@ -351,3 +351,38 @@ type ContactRow struct {
 	UpdatedAtUs   int64  `json:"updated_at_us"`
 	ModSeq        int64  `json:"modseq"`
 }
+
+type CalendarRow struct {
+	ID           int64   `json:"id"`
+	PrincipalID  int64   `json:"principal_id"`
+	Name         string  `json:"name"`
+	Description  string  `json:"description"`
+	ColorHex     *string `json:"color_hex,omitempty"`
+	SortOrder    int64   `json:"sort_order"`
+	IsSubscribed bool    `json:"is_subscribed"`
+	IsDefault    bool    `json:"is_default"`
+	IsVisible    bool    `json:"is_visible"`
+	TimeZoneID   string  `json:"time_zone_id"`
+	RightsMask   int64   `json:"rights_mask"`
+	CreatedAtUs  int64   `json:"created_at_us"`
+	UpdatedAtUs  int64   `json:"updated_at_us"`
+	ModSeq       int64   `json:"modseq"`
+}
+
+type CalendarEventRow struct {
+	ID             int64   `json:"id"`
+	CalendarID     int64   `json:"calendar_id"`
+	PrincipalID    int64   `json:"principal_id"`
+	UID            string  `json:"uid"`
+	JSCalendarJSON []byte  `json:"jscalendar_json,omitempty"`
+	StartUs        int64   `json:"start_us"`
+	EndUs          int64   `json:"end_us"`
+	IsRecurring    bool    `json:"is_recurring"`
+	RRuleJSON      []byte  `json:"rrule_json,omitempty"`
+	Summary        string  `json:"summary"`
+	OrganizerEmail *string `json:"organizer_email,omitempty"`
+	Status         string  `json:"status"`
+	CreatedAtUs    int64   `json:"created_at_us"`
+	UpdatedAtUs    int64   `json:"updated_at_us"`
+	ModSeq         int64   `json:"modseq"`
+}

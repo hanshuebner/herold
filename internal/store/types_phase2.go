@@ -743,6 +743,13 @@ const (
 	// JMAPStateKindContact tracks JMAP Contact changes (REQ-PROTO-55 /
 	// RFC 9553). Bumped on every Contact/set mutation.
 	JMAPStateKindContact
+	// JMAPStateKindCalendar tracks JMAP Calendar changes (REQ-PROTO-54
+	// / RFC 8984). Bumped on every Calendar/set mutation.
+	JMAPStateKindCalendar
+	// JMAPStateKindCalendarEvent tracks JMAP CalendarEvent changes
+	// (REQ-PROTO-54 / RFC 8984 JSCalendar). Bumped on every
+	// CalendarEvent/set mutation.
+	JMAPStateKindCalendarEvent
 )
 
 // JMAPStates is the per-principal row of JMAP object-scoped state
@@ -772,6 +779,10 @@ type JMAPStates struct {
 	AddressBook int64
 	// Contact is the JMAP Contact state (REQ-PROTO-55).
 	Contact int64
+	// Calendar is the JMAP Calendar state (REQ-PROTO-54).
+	Calendar int64
+	// CalendarEvent is the JMAP CalendarEvent state (REQ-PROTO-54).
+	CalendarEvent int64
 	// UpdatedAt is the instant of the most recent increment.
 	UpdatedAt time.Time
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/protoimap"
 	"github.com/hanshuebner/herold/internal/protoimg"
+	"github.com/hanshuebner/herold/internal/protojmap/calendars/imip"
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/protoui"
 	"github.com/hanshuebner/herold/internal/sieve"
@@ -328,6 +329,25 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	g.Go(func() error {
 		if err := snoozeWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.LogAttrs(context.Background(), slog.LevelWarn, "snooze worker exited", slog.String("err", err.Error()))
+			return err
+		}
+		return nil
+	})
+
+	// iMIP intake worker (Phase 2 Wave 2.7 / REQ-PROTO-56). Reads the
+	// global change feed for new EntityKindEmail rows, walks each
+	// message's MIME tree for text/calendar parts, and applies the
+	// scheduling METHOD (REQUEST / CANCEL / REPLY / COUNTER) to the
+	// recipient's calendar. Bounded by the lifecycle errgroup so
+	// shutdown drains it.
+	imipWorker := imip.New(imip.Options{
+		Store:  st,
+		Logger: logger.With("subsystem", "imip"),
+		Clock:  clk,
+	})
+	g.Go(func() error {
+		if err := imipWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.LogAttrs(context.Background(), slog.LevelWarn, "imip worker exited", slog.String("err", err.Error()))
 			return err
 		}
 		return nil

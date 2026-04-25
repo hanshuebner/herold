@@ -1286,15 +1286,16 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			return mapErr(err)
 		}
 		var (
-			ppid, mb, em, th, ide, es, vr, sv, ab, ct int64
-			updatedUs                                 int64
+			ppid, mb, em, th, ide, es, vr, sv, ab, ct, cal, ce int64
+			updatedUs                                          int64
 		)
 		err := tx.QueryRow(ctx, `
 			SELECT principal_id, mailbox_state, email_state, thread_state,
 			       identity_state, email_submission_state, vacation_response_state,
-			       sieve_state, address_book_state, contact_state, updated_at_us
+			       sieve_state, address_book_state, contact_state,
+			       calendar_state, calendar_event_state, updated_at_us
 			  FROM jmap_states WHERE principal_id = $1`, int64(pid)).Scan(
-			&ppid, &mb, &em, &th, &ide, &es, &vr, &sv, &ab, &ct, &updatedUs)
+			&ppid, &mb, &em, &th, &ide, &es, &vr, &sv, &ab, &ct, &cal, &ce, &updatedUs)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -1309,6 +1310,8 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			Sieve:            sv,
 			AddressBook:      ab,
 			Contact:          ct,
+			Calendar:         cal,
+			CalendarEvent:    ce,
 			UpdatedAt:        fromMicros(updatedUs),
 		}
 		return nil
@@ -1367,6 +1370,10 @@ func jmapStateColumnPG(kind store.JMAPStateKind) (string, error) {
 		return "address_book_state", nil
 	case store.JMAPStateKindContact:
 		return "contact_state", nil
+	case store.JMAPStateKindCalendar:
+		return "calendar_state", nil
+	case store.JMAPStateKindCalendarEvent:
+		return "calendar_event_state", nil
 	default:
 		return "", fmt.Errorf("storepg: unknown JMAPStateKind %d", kind)
 	}
