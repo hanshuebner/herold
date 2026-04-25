@@ -229,6 +229,57 @@ See REQ-STORE-60..63 for data model. Operationally:
 - **REQ-OPS-162** systemd `LoadCredential=` and Docker/K8s secret files supported by `file:` references.
 - **REQ-OPS-163** Plugin secrets delivered via env var, stdin at configure, or FIFO (REQ-PLUG-22). Never via command-line arguments.
 
+## coturn (TURN relay for chat video calls)
+
+Phase 2 — see `requirements/15-video-calls.md` § Operations.
+
+For chat's 1:1 video calls (REQ-CALL-*), herold mints short-lived TURN credentials against a coturn deployment configured by the operator. coturn is NOT bundled with herold; it's a separate process the operator runs alongside (typical pattern for self-hosted WebRTC deployments).
+
+### Deployment shape
+
+- **REQ-OPS-170** Operator deploys coturn (or equivalent — Pion TURN, eturnal) at the same origin or a closely-coordinated origin (e.g. `turn.example.com` if `mail.example.com` hosts herold).
+- **REQ-OPS-171** Default ports: 3478/UDP and 5349/TCP (TLS). IPv4 and IPv6 both reachable.
+- **REQ-OPS-172** TLS certificate: same ACME flow as herold's other listeners (REQ-OPS-50..55) or operator-supplied. The cert covers the TURN host's CN.
+
+### Configuration
+
+coturn is configured with the long-term-credential mechanism:
+
+```
+# /etc/coturn/turnserver.conf (operator-side, illustrative)
+listening-port=3478
+tls-listening-port=5349
+fingerprint
+use-auth-secret
+static-auth-secret=<shared-secret>
+realm=mail.example.com
+total-quota=1000
+stale-nonce=600
+no-loopback-peers
+no-multicast-peers
+cert=/etc/letsencrypt/live/turn.example.com/fullchain.pem
+pkey=/etc/letsencrypt/live/turn.example.com/privkey.pem
+```
+
+The shared secret is also configured in herold:
+
+```
+# /etc/herold/system.toml
+[chat.turn]
+host = "turn.example.com"
+port = 3478
+tls_port = 5349
+shared_secret = "file:/etc/herold/secrets/coturn"
+```
+
+- **REQ-OPS-173** Shared secret is rotated by the operator: update both `/etc/coturn/turnserver.conf` and the herold `chat.turn.shared_secret` reference, SIGHUP both processes (or reload coturn per its own conventions). Rotation is rare; a credentialised call survives the rotation if the credential was minted before the change (the credential is HMAC of the username and the at-mint-time secret, validated by coturn against the at-validate-time secret — operators avoid mid-call rotation).
+- **REQ-OPS-174** `chat.turn.realm` defaults to the herold listener's primary hostname; operator can override.
+
+### Operating posture
+
+- coturn is the operator's responsibility to monitor and update. herold does not bundle coturn binaries, configurations, or systemd units in v1; the deploy/ docs include reference configurations.
+- Without coturn, video calls still work for ~85–90% of network configurations (STUN-only). The remaining ~10–15% (strict NAT, symmetric NAT, restrictive firewalls) require relay; absent TURN, those calls fail at ICE establishment.
+
 ## What we don't build
 
 - SNMP trap receiver or MIB.

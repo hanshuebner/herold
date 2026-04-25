@@ -175,6 +175,7 @@ All HTTPS, all on one port (default 443) with path-based routing unless the oper
 | `/api/v1/hooks/*` | Mail-arrival webhook subscriptions (register/list/delete) | REQ-HOOK-01..05 |
 | `/api/v1/mail/blobs/<id>/raw?sig=…` | Signed fetch URL served to webhook receivers fetching message bodies | REQ-HOOK-30..31 |
 | `/proxy/image?url=<encoded>` | Inbound HTML mail image proxy — fetches upstream, strips tracking headers, enforces caps, serves back. Same-origin so tabard's CSP can `img-src 'self'`. | REQ-SEND-70..75 |
+| `/chat/ws` (WebSocket upgrade) | Chat ephemeral channel — typing indicators, presence, WebRTC call signaling, TURN credential mint. Auth via suite session cookie. | REQ-CHAT-40..46 |
 | `/api/v1/principals/*`, `/domains/*`, `/queue/*`, `/spam/*`, `/sieve/*`, `/tls/*`, `/reports/*`, `/audit-log`, `/server/*` | Admin REST API | REQ-ADM-10..22 |
 | `/api/openapi.json` | OpenAPI 3.1 spec | REQ-ADM-05 |
 | `/admin/*` (phase 2) | Admin web UI (HTMX + Go templates) | REQ-ADM-200..202 |
@@ -194,7 +195,7 @@ HTTP is one of our primary surfaces (see the table above). What we *don't* serve
 - **No LDAP**, not even as client — out of scope.
 - **No SNMP.**
 - **No gRPC.**
-- **No WebSockets** except optional JMAP push (RFC 8887) in phase 3.
+- **No WebSockets except `/chat/ws`** (REQ-CHAT-40, phase 2 — chat ephemeral signals + WebRTC call signaling + TURN credential mint). JMAP-over-WebSocket (RFC 8887) remains out: tabard's design uses EventSource for JMAP push, and the WebSocket carries chat-only signals, not JMAP method calls.
 
 ## Open questions
 

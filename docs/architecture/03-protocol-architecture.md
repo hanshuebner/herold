@@ -93,6 +93,21 @@ Consequence: adding a JMAP datatype later (`urn:ietf:params:jmap:submission`, `:
 
 The `Account` abstraction (one Principal → N Accounts, each with its own capability subset) is also where shared-mailbox handling (phase 2) lives. Build it now even though v1 will only mint one Account per Principal — retrofitting an Account boundary into already-shipped JMAP state strings is migration-grade work.
 
+### Chat WebSocket (`/chat/ws`)
+
+Phase 2 — see `requirements/14-chat.md` and `architecture/08-chat.md`.
+
+Distinct from the JMAP HTTP and EventSource surfaces. Carries ephemeral signals (typing, presence) and WebRTC call signaling between herold users.
+
+- One per-user-session connection (multiple connections per user across tabs are tolerated).
+- WebSocket frames are JSON; one message per frame.
+- Authenticated by the suite session cookie. No separate token negotiation.
+- Server heartbeat: `{"op":"ping"}` every 30 s; client `{"op":"pong"}`. Missed pong (>90 s) closes the connection.
+- Per-session rate limits and bounded outbound buffer; violations close the connection (codes 1008 / 1009).
+- The internal broadcaster fans out chat-related events to subscribed connections; same broadcaster as IMAP IDLE / EventSource, with chat WS as a third subscriber type.
+
+The full frame schema and signaling state machine live in `architecture/08-chat.md`.
+
 ### ManageSieve
 
 Small state machine: `NotAuthenticated → Authenticated`. Commands are text-line-based with quoted strings + literals. Script content uploaded as literal; we run the parser and return errors inline.

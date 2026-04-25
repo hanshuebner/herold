@@ -95,8 +95,10 @@ herold/
     │   ├── 09-operations.md            TLS/ACME, observability, config split, backup
     │   ├── 10-nonfunctional.md         perf, scale, reliability, security
     │   ├── 11-plugins.md               plugin contract: DNS, spam, events, directory, delivery hooks
-    │   ├── 12-http-mail-api.md         HTTP send API + incoming-mail webhooks
-    │   └── 13-events.md                event publication (NATS default, Kafka/SQS/etc. via plugins)
+    │   ├── 12-http-mail-api.md         HTTP send API + incoming-mail webhooks + image proxy
+    │   ├── 13-events.md                event publication (NATS default, Kafka/SQS/etc. via plugins)
+    │   ├── 14-chat.md                  chat datatypes, ephemeral WebSocket, presence (phase 2)
+    │   └── 15-video-calls.md           1:1 video calls — WebRTC signaling + TURN mint (phase 2)
     ├── architecture/
     │   ├── 01-system-overview.md
     │   ├── 02-storage-architecture.md
@@ -104,7 +106,8 @@ herold/
     │   ├── 04-queue-and-delivery.md
     │   ├── 05-sync-and-state.md
     │   ├── 06-topology-and-clustering.md
-    │   └── 07-plugin-architecture.md   how plugins run: process model, JSON-RPC, sandboxing
+    │   ├── 07-plugin-architecture.md   how plugins run: process model, JSON-RPC, sandboxing
+    │   └── 08-chat.md                  chat protocol architecture (phase 2)
     ├── implementation/
     │   ├── 01-tech-stack.md
     │   ├── 02-phasing.md
@@ -130,6 +133,8 @@ herold/
 - `REQ-SEND-nn` — HTTP send API
 - `REQ-HOOK-nn` — incoming webhooks
 - `REQ-EVT-nn`  — events
+- `REQ-CHAT-nn` — chat (phase 2)
+- `REQ-CALL-nn` — 1:1 video calls (phase 2)
 
 When cutting or adding, reference by ID.
 
