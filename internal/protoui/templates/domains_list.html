@@ -1,0 +1,27 @@
+{{define "domains_list_body"}}
+{{$body := .Body}}
+<section class="card">
+  <h2>Local domains</h2>
+  <table class="rows">
+    <thead><tr><th>Name</th><th>Created</th><th></th></tr></thead>
+    <tbody>
+      {{range $body.Items}}
+        <tr>
+          <td>{{.Name}}</td>
+          <td>{{formatTime .CreatedAt}}</td>
+          <td><a href="{{$.PathBase}}/domains/{{.Name}}">Detail →</a></td>
+        </tr>
+      {{else}}
+        <tr><td colspan="3">No domains configured.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+
+  <h3>Add domain</h3>
+  <form method="post" action="{{$.PathBase}}/domains" class="inline-form">
+    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+    <input type="text" name="name" placeholder="example.com" required>
+    <button type="submit" class="primary">Add</button>
+  </form>
+</section>
+{{end}}

@@ -32,6 +32,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/protoimap"
 	"github.com/hanshuebner/herold/internal/protosmtp"
+	"github.com/hanshuebner/herold/internal/protoui"
 	"github.com/hanshuebner/herold/internal/sieve"
 	"github.com/hanshuebner/herold/internal/snooze"
 	"github.com/hanshuebner/herold/internal/spam"
@@ -269,7 +270,16 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			Health:        health,
 		},
 	)
-	adminHandler := adminServer.Handler()
+	// Parent mux composition (Phase 2 Wave 2.4): the admin HTTP
+	// listener serves both the REST surface (protoadmin under
+	// /api/v1) and the operator web UI (protoui under /ui). We
+	// chose composition over a protoadmin.Mount(prefix, h) method so
+	// protoadmin stays focused on its REST API and the UI's
+	// dependency on directory + store goes through its own
+	// constructor. The two handlers are otherwise independent —
+	// session cookies (UI) and Bearer keys (REST) live in disjoint
+	// header/cookie namespaces, and the URL prefixes do not overlap.
+	adminHandler := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, adminServer.Handler())
 
 	// Bind listeners.
 	boundListeners, err := bindListeners(ctx, cfg, logger, tlsStore, smtpServer, imapServer, adminHandler, opts)
@@ -806,6 +816,79 @@ func parseSlogLevel(s string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// composeAdminAndUI returns an http.Handler that routes /api/v1/...
+// and /healthz/... to the protoadmin handler and the configured UI
+// path prefix to a freshly constructed protoui server. When the UI
+// is disabled (cfg.Server.UI.Enabled == false) the returned handler
+// is the protoadmin handler verbatim.
+//
+// Mount mode (b) per the Wave 2.4 ticket: composition over a parent
+// mux. We deliberately avoid extending protoadmin with a Mount
+// method; the two surfaces stay independent and a future third
+// surface (REQ-HOOK Part B) can join without touching either of
+// them.
+func composeAdminAndUI(
+	ctx context.Context,
+	cfg *sysconfig.Config,
+	st store.Store,
+	dir *directory.Directory,
+	oidcRP *directoryoidc.RP,
+	clk clock.Clock,
+	logger *slog.Logger,
+	adminHandler http.Handler,
+) http.Handler {
+	if cfg.Server.UI.Enabled != nil && !*cfg.Server.UI.Enabled {
+		return adminHandler
+	}
+	prefix := cfg.Server.UI.PathPrefix
+	if prefix == "" {
+		prefix = "/ui"
+	}
+	signingKey := []byte{}
+	if env := cfg.Server.UI.SigningKeyEnv; env != "" {
+		if v := os.Getenv(env); v != "" {
+			signingKey = []byte(v)
+		}
+	}
+	secure := true
+	if cfg.Server.UI.SecureCookies != nil {
+		secure = *cfg.Server.UI.SecureCookies
+	}
+	uiSrv, err := protoui.NewServer(st, dir, oidcRP, clk, protoui.Options{
+		PathPrefix: prefix,
+		Logger:     logger.With("subsystem", "ui"),
+		Session: protoui.SessionConfig{
+			SigningKey:     signingKey,
+			CookieName:     cfg.Server.UI.CookieName,
+			CSRFCookieName: cfg.Server.UI.CSRFCookieName,
+			TTL:            cfg.Server.UI.SessionTTL.AsDuration(),
+			SecureCookies:  secure,
+		},
+	})
+	if err != nil {
+		// Falling back to admin-only is the least-surprising
+		// behaviour; we log loudly so the operator sees the
+		// degradation.
+		logger.LogAttrs(ctx, slog.LevelError, "protoui: construct failed; UI disabled",
+			slog.String("err", err.Error()))
+		return adminHandler
+	}
+	parent := http.NewServeMux()
+	parent.Handle("/api/v1/", adminHandler)
+	parent.Handle(prefix+"/", uiSrv.Handler())
+	// Bare `/` and unknown roots: send a browser hitting the admin
+	// host directly to the UI login. API consumers never request `/`,
+	// so this hop only affects operators using a browser.
+	parent.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	return parent
 }
 
 // notifySystemdReady implements a minimal sd_notify(READY=1) compatible

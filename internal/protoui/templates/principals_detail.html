@@ -1,0 +1,172 @@
+{{define "principals_detail_body"}}
+{{$body := .Body}}
+{{$p := $body.Principal}}
+<section class="card">
+  <header class="card-head">
+    <h2>{{$p.CanonicalEmail}}</h2>
+    <span class="muted">id {{$p.ID}}</span>
+  </header>
+  <ul class="kv">
+    <li><strong>Display name:</strong> {{$p.DisplayName}}</li>
+    <li><strong>Quota bytes:</strong> {{$p.QuotaBytes}}</li>
+    <li><strong>Flags:</strong> {{join (flagStrings $p.Flags) ", "}}</li>
+    <li><strong>TOTP:</strong> {{if hasTOTP $p}}enabled{{else}}not enrolled{{end}}</li>
+    <li><strong>Created:</strong> {{formatTime $p.CreatedAt}}</li>
+    <li><strong>Updated:</strong> {{formatTime $p.UpdatedAt}}</li>
+  </ul>
+</section>
+
+<section class="card">
+  <h3>Update profile</h3>
+  <form method="post" action="{{$.PathBase}}/principals/{{$p.ID}}" class="stack">
+    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+    <label>
+      <span>Display name</span>
+      <input type="text" name="display_name" value="{{$p.DisplayName}}">
+    </label>
+    {{if isAdmin $.Principal}}
+      <label>
+        <span>Quota bytes</span>
+        <input type="number" name="quota_bytes" min="0" value="{{$p.QuotaBytes}}">
+      </label>
+      <fieldset>
+        <legend>Flags</legend>
+        <label class="checkbox">
+          <input type="checkbox" name="flag_admin" {{if isAdmin $p}}checked{{end}}> Admin
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" name="flag_disabled" {{if isDisabled $p}}checked{{end}}> Disabled
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" name="flag_ignore_download_limits"> Ignore download limits
+        </label>
+      </fieldset>
+    {{end}}
+    <button type="submit" class="primary">Save</button>
+  </form>
+</section>
+
+<section class="card">
+  <h3>Change password</h3>
+  <form method="post" action="{{$.PathBase}}/principals/{{$p.ID}}/password" class="stack">
+    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+    {{if eq $.Principal.ID $p.ID}}
+      <label>
+        <span>Current password</span>
+        <input type="password" name="current_password" autocomplete="current-password" required>
+      </label>
+    {{end}}
+    <label>
+      <span>New password</span>
+      <input type="password" name="new_password" autocomplete="new-password" minlength="12" required>
+    </label>
+    <button type="submit">Set password</button>
+  </form>
+</section>
+
+<section class="card">
+  <h3>Two-factor authentication</h3>
+  {{if $body.TOTPProvision}}
+    <p>Scan this QR with your authenticator app, then enter the 6-digit code to confirm.</p>
+    <p><img alt="TOTP QR" src="{{$body.TOTPProvision.QRPNG}}" width="192" height="192"></p>
+    <p><code>{{$body.TOTPProvision.Secret}}</code></p>
+    <form method="post" action="{{$.PathBase}}/principals/{{$p.ID}}/totp/confirm" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+      <input type="text" name="code" pattern="[0-9]{6}" maxlength="6" required>
+      <button type="submit" class="primary">Confirm</button>
+    </form>
+  {{else if hasTOTP $p}}
+    <p>Two-factor authentication is enabled.</p>
+    <form method="post" action="{{$.PathBase}}/principals/{{$p.ID}}/totp/disable" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+      <input type="password" name="current_password" placeholder="Current password" required>
+      <button type="submit" class="danger">Disable</button>
+    </form>
+  {{else}}
+    <form method="post" action="{{$.PathBase}}/principals/{{$p.ID}}/totp/enroll" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+      <button type="submit">Start enrollment</button>
+    </form>
+  {{end}}
+</section>
+
+<section class="card">
+  <h3>API keys</h3>
+  {{if $body.NewAPIKey}}
+    <div class="flash flash-ok">
+      <p><strong>New key:</strong> <code>{{$body.NewAPIKey}}</code></p>
+      <p>Copy it now — it will not be shown again.</p>
+    </div>
+  {{end}}
+  <table class="rows">
+    <thead><tr><th>Label</th><th>ID</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+    <tbody>
+      {{range $body.APIKeys}}
+        <tr>
+          <td>{{.Name}}</td>
+          <td>{{.ID}}</td>
+          <td>{{formatTime .CreatedAt}}</td>
+          <td>{{if .LastUsedAt.IsZero}}never{{else}}{{formatTime .LastUsedAt}}{{end}}</td>
+          <td>
+            <form method="post" action="{{$.PathBase}}/principals/{{$p.ID}}/api-keys/{{.ID}}/revoke" class="inline">
+              <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+              <button type="submit" class="danger small">Revoke</button>
+            </form>
+          </td>
+        </tr>
+      {{else}}
+        <tr><td colspan="5">No API keys.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  <form method="post" action="{{$.PathBase}}/principals/{{$p.ID}}/api-keys/new" class="inline-form">
+    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+    <input type="text" name="label" placeholder="Label (optional)">
+    <button type="submit">New API key</button>
+  </form>
+</section>
+
+{{if $body.OIDCProviders}}
+<section class="card">
+  <h3>OIDC links</h3>
+  <table class="rows">
+    <thead><tr><th>Provider</th><th>Subject</th><th>Email</th><th>Linked</th><th></th></tr></thead>
+    <tbody>
+      {{range $body.OIDCLinks}}
+        <tr>
+          <td>{{.ProviderName}}</td>
+          <td>{{.Subject}}</td>
+          <td>{{.EmailAtProvider}}</td>
+          <td>{{formatTime .LinkedAt}}</td>
+          <td>
+            <form method="post" action="{{$.PathBase}}/principals/{{$p.ID}}/oidc/{{.ProviderName}}/unlink" class="inline">
+              <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+              <button type="submit" class="danger small">Unlink</button>
+            </form>
+          </td>
+        </tr>
+      {{else}}
+        <tr><td colspan="5">No links.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  <p>Add link:
+    {{range $body.OIDCProviders}}
+      <a class="button small" href="{{$.PathBase}}/principals/{{$p.ID}}/oidc/{{.Name}}/link">Link {{.Name}}</a>
+    {{end}}
+  </p>
+</section>
+{{end}}
+
+{{if isAdmin $.Principal}}
+<section class="card danger-zone">
+  <h3>Danger zone</h3>
+  <form method="post" action="{{$.PathBase}}/principals/{{$p.ID}}/delete" class="inline-form"
+        onsubmit="return confirm('Permanently delete this principal and ALL associated data?')">
+    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+    <input type="text" name="confirm" placeholder="Type DELETE to confirm" required>
+    <button type="submit" class="danger">Delete principal</button>
+  </form>
+</section>
+{{end}}
+{{end}}

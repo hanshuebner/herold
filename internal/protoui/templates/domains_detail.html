@@ -1,0 +1,63 @@
+{{define "domains_detail_body"}}
+{{$body := .Body}}
+{{$d := $body.Domain}}
+<section class="card">
+  <header class="card-head">
+    <h2>{{$d.Name}}</h2>
+    <span class="muted">created {{formatTime $d.CreatedAt}}</span>
+  </header>
+  <p><em>DNS publish-status verification (autodns) lands when the publisher is wired here.</em></p>
+</section>
+
+<section class="card">
+  <h3>Aliases</h3>
+  <table class="rows">
+    <thead><tr><th>Local</th><th>Target principal</th><th>Expires</th><th></th></tr></thead>
+    <tbody>
+      {{range $body.Aliases}}
+        <tr>
+          <td>{{.LocalPart}}@{{.Domain}}</td>
+          <td>{{.TargetPrincipal}}</td>
+          <td>{{if .ExpiresAt}}{{formatTime .ExpiresAt}}{{else}}—{{end}}</td>
+          <td>
+            <form method="post" action="{{$.PathBase}}/domains/{{$d.Name}}/aliases/{{.ID}}/delete" class="inline">
+              <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+              <button type="submit" class="danger small">Delete</button>
+            </form>
+          </td>
+        </tr>
+      {{else}}
+        <tr><td colspan="4">No aliases.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+
+  <h3>Add alias</h3>
+  <form method="post" action="{{$.PathBase}}/domains/{{$d.Name}}/aliases" class="stack">
+    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+    <label>
+      <span>Local part</span>
+      <input type="text" name="local" required>
+    </label>
+    <label>
+      <span>Target principal id</span>
+      <input type="number" name="target_principal_id" min="1" required>
+    </label>
+    <label>
+      <span>Expires at (RFC 3339, optional)</span>
+      <input type="text" name="expires_at" placeholder="2026-12-31T23:59:59Z">
+    </label>
+    <button type="submit" class="primary">Add alias</button>
+  </form>
+</section>
+
+<section class="card danger-zone">
+  <h3>Danger zone</h3>
+  <form method="post" action="{{$.PathBase}}/domains/{{$d.Name}}/delete" class="inline-form"
+        onsubmit="return confirm('Permanently delete this domain?')">
+    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+    <input type="text" name="confirm" placeholder="Type {{$d.Name}} to confirm" required>
+    <button type="submit" class="danger">Delete domain</button>
+  </form>
+</section>
+{{end}}

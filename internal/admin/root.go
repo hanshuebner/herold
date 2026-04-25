@@ -115,6 +115,11 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newOIDCCmd())
 	root.AddCommand(newAPIKeyCmd())
 	root.AddCommand(newAppConfigCmd())
+	root.AddCommand(newQueueCmd())
+	root.AddCommand(newCertCmd())
+	root.AddCommand(newSpamCmd())
+	root.AddCommand(newHookCmd())
+	root.AddCommand(newDiagCmd())
 	return root
 }
 

@@ -1,0 +1,35 @@
+{{define "principals_list_body"}}
+{{$body := .Body}}
+<section class="card">
+  <header class="card-head">
+    <h2>Principals</h2>
+    <a class="button primary" href="{{$.PathBase}}/principals/new">New principal</a>
+  </header>
+  <form method="get" action="{{$.PathBase}}/principals" class="inline-form">
+    <input type="search" name="q" placeholder="Search by email or display name" value="{{$body.Search}}">
+    <button type="submit">Search</button>
+  </form>
+  <table class="rows">
+    <thead>
+      <tr><th>ID</th><th>Email</th><th>Name</th><th>Flags</th><th>TOTP</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range $body.Items}}
+        <tr>
+          <td>{{.ID}}</td>
+          <td>{{.CanonicalEmail}}</td>
+          <td>{{.DisplayName}}</td>
+          <td>{{join (flagStrings .Flags) ", "}}</td>
+          <td>{{if hasTOTP .}}yes{{else}}no{{end}}</td>
+          <td><a href="{{$.PathBase}}/principals/{{.ID}}">Detail →</a></td>
+        </tr>
+      {{else}}
+        <tr><td colspan="6">No principals match.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{if $body.HasNext}}
+    <p><a href="{{$.PathBase}}/principals?after={{$body.NextCur}}{{if $body.Search}}&q={{$body.Search}}{{end}}">Next page →</a></p>
+  {{end}}
+</section>
+{{end}}

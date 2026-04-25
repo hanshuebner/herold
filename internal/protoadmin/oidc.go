@@ -93,6 +93,56 @@ func (s *Server) handleDeleteOIDCProvider(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleGetOIDCProvider returns the provider row for the given id-or-name.
+// Secret material is never serialised — the wire form omits both the
+// secret value and the secret reference.
+func (s *Server) handleGetOIDCProvider(w http.ResponseWriter, r *http.Request) {
+	caller, _ := principalFrom(r.Context())
+	if !requireAdmin(w, r, caller) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeProblem(w, r, http.StatusBadRequest, "invalid_id",
+			"id is required", "")
+		return
+	}
+	got, err := s.store.Meta().GetOIDCProvider(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toOIDCProviderDTO(got))
+}
+
+// handlePatchOIDCProvider accepts a partial-update body. The Phase 2
+// store does not expose UpdateOIDCProvider; the only mutating field
+// we can rotate without dropping links is the in-memory secret handle
+// on the RP, which is not yet exposed. The endpoint records the intent
+// in the audit log and returns 501 so operators see a deterministic
+// "not implemented" rather than a silent success.
+func (s *Server) handlePatchOIDCProvider(w http.ResponseWriter, r *http.Request) {
+	caller, _ := principalFrom(r.Context())
+	if !requireAdmin(w, r, caller) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeProblem(w, r, http.StatusBadRequest, "invalid_id",
+			"id is required", "")
+		return
+	}
+	// Confirm the provider exists so the operator gets a 404 in the
+	// natural case before the 501.
+	if _, err := s.store.Meta().GetOIDCProvider(r.Context(), id); err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeProblem(w, r, http.StatusNotImplemented, "oidc/update_not_implemented",
+		"provider rotation requires Metadata.UpdateOIDCProvider (Phase 3 schema extension); use 'remove' + 're-add' as a workaround if cascade-loss of links is acceptable",
+		"")
+}
+
 func (s *Server) handleListOIDCLinks(w http.ResponseWriter, r *http.Request) {
 	pid, ok := parsePID(w, r)
 	if !ok {

@@ -1,0 +1,39 @@
+{{define "login_body"}}
+{{$body := .Body}}
+<section class="card auth-card">
+  <h2>Sign in</h2>
+  {{if $body.Error}}
+    <div class="flash flash-error">{{$body.Error}}</div>
+  {{end}}
+  <form method="post" action="{{.PathBase}}/login" class="stack">
+    <input type="hidden" name="redirect" value="{{$body.Redirect}}">
+    <label>
+      <span>Email</span>
+      <input type="email" name="email" autocomplete="username" required value="{{$body.Email}}">
+    </label>
+    <label>
+      <span>Password</span>
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    {{if $body.NeedTOTP}}
+      <label>
+        <span>Two-factor code</span>
+        <input type="text" name="totp" autocomplete="one-time-code" inputmode="numeric"
+               pattern="[0-9]{6}" maxlength="6" required>
+      </label>
+    {{end}}
+    <button type="submit" class="primary">Sign in</button>
+  </form>
+  {{if $body.Providers}}
+    <hr>
+    <h3>Or sign in with</h3>
+    <ul class="oidc-list">
+      {{range $body.Providers}}
+        <li>
+          <a class="button" href="{{$.PathBase}}/oidc/{{.Name}}/begin">{{.Name}}</a>
+        </li>
+      {{end}}
+    </ul>
+  {{end}}
+</section>
+{{end}}

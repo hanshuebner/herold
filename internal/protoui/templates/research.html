@@ -1,0 +1,51 @@
+{{define "research_body"}}
+{{$body := .Body}}
+<section class="card">
+  <h2>Email research</h2>
+  <form method="get" action="{{$.PathBase}}/research" class="stack">
+    <label>
+      <span>Sender</span>
+      <input type="text" name="sender" value="{{$body.Sender}}">
+    </label>
+    <label>
+      <span>Recipient</span>
+      <input type="text" name="recipient" value="{{$body.Recipient}}">
+    </label>
+    <label>
+      <span>State</span>
+      <select name="state">
+        <option value="" {{if eq $body.State ""}}selected{{end}}>any</option>
+        <option value="queued" {{if eq $body.State "queued"}}selected{{end}}>queued</option>
+        <option value="deferred" {{if eq $body.State "deferred"}}selected{{end}}>deferred</option>
+        <option value="done" {{if eq $body.State "done"}}selected{{end}}>done</option>
+        <option value="failed" {{if eq $body.State "failed"}}selected{{end}}>failed</option>
+        <option value="held" {{if eq $body.State "held"}}selected{{end}}>held</option>
+      </select>
+    </label>
+    <button type="submit" class="primary">Search</button>
+  </form>
+</section>
+
+{{if $body.Searched}}
+<section class="card">
+  <h3>Results</h3>
+  <table class="rows">
+    <thead><tr><th>When</th><th>From</th><th>To</th><th>State</th><th>Last error</th><th></th></tr></thead>
+    <tbody>
+      {{range $body.Items}}
+        <tr>
+          <td>{{formatTime .CreatedAt}}</td>
+          <td>{{.MailFrom}}</td>
+          <td>{{.RcptTo}}</td>
+          <td>{{queueState .State}}</td>
+          <td>{{truncate 60 .LastError}}</td>
+          <td><a href="{{$.PathBase}}/queue/{{.ID}}">Detail →</a></td>
+        </tr>
+      {{else}}
+        <tr><td colspan="6">No matches.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+{{end}}

@@ -1,6 +1,12 @@
 package admin
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
 	"github.com/spf13/cobra"
 )
 
@@ -86,5 +92,130 @@ func newOIDCCmd() *cobra.Command {
 			return nil
 		},
 	})
+
+	prov.AddCommand(&cobra.Command{
+		Use:   "show <id-or-name>",
+		Short: "show one OIDC provider's configuration (secret omitted)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			var out map[string]any
+			err = client.do(cmd.Context(), "GET", "/api/v1/oidc/providers/"+args[0], nil, &out)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, out)
+		},
+	})
+
+	updCmd := &cobra.Command{
+		Use:   "update <id-or-name>",
+		Short: "update mutable provider fields (e.g. rotate the client secret env reference)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			body := map[string]any{}
+			if cmd.Flags().Changed("client-secret-env") {
+				v, _ := cmd.Flags().GetString("client-secret-env")
+				body["client_secret_env"] = v
+			}
+			if len(body) == 0 {
+				return errors.New("oidc provider update: --client-secret-env is required")
+			}
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			var out map[string]any
+			err = client.do(cmd.Context(), "PATCH", "/api/v1/oidc/providers/"+args[0], body, &out)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, out)
+		},
+	}
+	updCmd.Flags().String("client-secret-env", "", "name of the environment variable holding the new client secret")
+	prov.AddCommand(updCmd)
+
+	c.AddCommand(&cobra.Command{
+		Use:   "link-list <principal-email>",
+		Short: "list a principal's external OIDC link mappings",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			pid, err := resolvePrincipalID(cmd.Context(), client, args[0])
+			if err != nil {
+				return err
+			}
+			var out map[string]any
+			err = client.do(cmd.Context(), "GET", "/api/v1/principals/"+pid+"/oidc-links", nil, &out)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, out)
+		},
+	})
+
+	c.AddCommand(&cobra.Command{
+		Use:   "link-delete <principal-email> <provider-name>",
+		Short: "remove one external-sub link from a principal",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			pid, err := resolvePrincipalID(cmd.Context(), client, args[0])
+			if err != nil {
+				return err
+			}
+			err = client.do(cmd.Context(), "DELETE", "/api/v1/principals/"+pid+"/oidc-links/"+args[1], nil, nil)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			writeLine(cmd.OutOrStdout(), g, "oidc link removed: "+args[0]+" -> "+args[1])
+			return nil
+		},
+	})
 	return c
+}
+
+// resolvePrincipalID accepts either a numeric principal id or a canonical
+// email and resolves it to the numeric id by listing principals through
+// the admin REST API. Numeric ids are returned verbatim.
+func resolvePrincipalID(ctx context.Context, client *Client, ref string) (string, error) {
+	if ref == "" {
+		return "", errors.New("principal reference required")
+	}
+	if _, err := strconv.ParseUint(ref, 10, 64); err == nil {
+		return ref, nil
+	}
+	// List principals (the admin REST does not expose a by-email lookup
+	// endpoint in Phase 1; we scan the first page, which is enough for the
+	// 'list members of a small operator team' case the CLI is built for).
+	var out struct {
+		Items []struct {
+			ID             uint64 `json:"id"`
+			CanonicalEmail string `json:"canonical_email"`
+		} `json:"items"`
+	}
+	if err := client.do(ctx, "GET", "/api/v1/principals?limit=1000", nil, &out); err != nil {
+		return "", fmt.Errorf("resolve principal %q: %w", ref, err)
+	}
+	target := strings.ToLower(strings.TrimSpace(ref))
+	for _, p := range out.Items {
+		if strings.EqualFold(p.CanonicalEmail, target) {
+			return strconv.FormatUint(p.ID, 10), nil
+		}
+	}
+	return "", fmt.Errorf("principal %q not found", ref)
 }

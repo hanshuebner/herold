@@ -61,4 +61,38 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Audit log.
 	mux.HandleFunc("GET /api/v1/audit", s.requireAuth(s.handleAuditLog))
+
+	// Outbound queue.
+	mux.HandleFunc("GET /api/v1/queue", s.requireAuth(s.handleListQueue))
+	mux.HandleFunc("GET /api/v1/queue/stats", s.requireAuth(s.handleQueueStats))
+	mux.HandleFunc("POST /api/v1/queue/flush", s.requireAuth(s.handleQueueFlush))
+	mux.HandleFunc("GET /api/v1/queue/{id}", s.requireAuth(s.handleGetQueueItem))
+	mux.HandleFunc("POST /api/v1/queue/{id}/retry", s.requireAuth(s.handleRetryQueueItem))
+	mux.HandleFunc("POST /api/v1/queue/{id}/hold", s.requireAuth(s.handleHoldQueueItem))
+	mux.HandleFunc("POST /api/v1/queue/{id}/release", s.requireAuth(s.handleReleaseQueueItem))
+	mux.HandleFunc("DELETE /api/v1/queue/{id}", s.requireAuth(s.handleDeleteQueueItem))
+
+	// ACME certs.
+	mux.HandleFunc("GET /api/v1/certs", s.requireAuth(s.handleListACMECerts))
+	mux.HandleFunc("GET /api/v1/certs/{hostname}", s.requireAuth(s.handleGetACMECert))
+	mux.HandleFunc("POST /api/v1/certs/{hostname}/renew", s.requireAuth(s.handleRenewACMECert))
+
+	// Spam policy.
+	mux.HandleFunc("GET /api/v1/spam/policy", s.requireAuth(s.handleGetSpamPolicy))
+	mux.HandleFunc("PUT /api/v1/spam/policy", s.requireAuth(s.handlePutSpamPolicy))
+
+	// Webhooks.
+	mux.HandleFunc("GET /api/v1/webhooks", s.requireAuth(s.handleListWebhooks))
+	mux.HandleFunc("POST /api/v1/webhooks", s.requireAuth(s.handleCreateWebhook))
+	mux.HandleFunc("GET /api/v1/webhooks/{id}", s.requireAuth(s.handleGetWebhook))
+	mux.HandleFunc("PATCH /api/v1/webhooks/{id}", s.requireAuth(s.handlePatchWebhook))
+	mux.HandleFunc("DELETE /api/v1/webhooks/{id}", s.requireAuth(s.handleDeleteWebhook))
+
+	// OIDC provider extensions (show / update).
+	mux.HandleFunc("GET /api/v1/oidc/providers/{id}", s.requireAuth(s.handleGetOIDCProvider))
+	mux.HandleFunc("PATCH /api/v1/oidc/providers/{id}", s.requireAuth(s.handlePatchOIDCProvider))
+
+	// Diag (DNS check). Backup/restore/migrate live in a sibling file
+	// owned by the parallel agent.
+	mux.HandleFunc("GET /api/v1/diag/dns-check/{domain}", s.requireAuth(s.handleDiagDNSCheck))
 }

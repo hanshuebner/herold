@@ -1,0 +1,34 @@
+{{define "audit_body"}}
+{{$body := .Body}}
+<section class="card">
+  <h2>Audit log</h2>
+  <form method="get" action="{{$.PathBase}}/audit" class="inline-form">
+    <input type="text" name="action" placeholder="action substring" value="{{$body.Action}}">
+    <input type="number" name="actor" placeholder="actor (principal id)" min="1">
+    <input type="text" name="since" placeholder="since (RFC3339)">
+    <input type="text" name="until" placeholder="until (RFC3339)">
+    <button type="submit">Filter</button>
+  </form>
+  <table class="rows">
+    <thead><tr><th>ID</th><th>When</th><th>Actor</th><th>Action</th><th>Subject</th><th>Outcome</th><th>Message</th></tr></thead>
+    <tbody>
+      {{range $body.Items}}
+        <tr>
+          <td>{{.ID}}</td>
+          <td>{{formatTime .At}}</td>
+          <td>{{.ActorID}}</td>
+          <td>{{.Action}}</td>
+          <td>{{.Subject}}</td>
+          <td>{{.Outcome}}</td>
+          <td>{{truncate 80 .Message}}</td>
+        </tr>
+      {{else}}
+        <tr><td colspan="7">No entries.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{if $body.HasNext}}
+    <p><a href="{{$.PathBase}}/audit?after={{$body.NextCur}}{{if $body.Action}}&action={{$body.Action}}{{end}}">Next page →</a></p>
+  {{end}}
+</section>
+{{end}}

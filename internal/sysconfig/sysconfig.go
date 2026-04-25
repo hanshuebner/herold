@@ -30,6 +30,42 @@ type ServerConfig struct {
 	AdminTLS      AdminTLSConfig `toml:"admin_tls"`
 	Storage       StorageConfig  `toml:"storage"`
 	Snooze        SnoozeConfig   `toml:"snooze,omitempty"`
+	UI            UIConfig       `toml:"ui,omitempty"`
+}
+
+// UIConfig configures the operator-facing web UI (internal/protoui).
+// The UI mounts as a sibling handler on the existing admin HTTP
+// listener; operators may opt out (set Enabled = false) on a host
+// where only the API surface is wanted.
+//
+// SecureCookies defaults to true: cookies issued for sessions and
+// CSRF tokens carry the Secure attribute. Operators running behind a
+// trusted localhost reverse proxy during development can override
+// (set false), but production deployments MUST keep it true.
+type UIConfig struct {
+	// Enabled selects whether the UI is mounted. Defaults to true.
+	Enabled *bool `toml:"enabled,omitempty"`
+	// PathPrefix is the URL prefix every UI route lives under
+	// (default "/ui"). Leading slash required.
+	PathPrefix string `toml:"path_prefix,omitempty"`
+	// CookieName overrides the session cookie name (default
+	// "herold_ui_session").
+	CookieName string `toml:"cookie_name,omitempty"`
+	// CSRFCookieName overrides the CSRF cookie name (default
+	// "herold_ui_csrf").
+	CSRFCookieName string `toml:"csrf_cookie_name,omitempty"`
+	// SessionTTL bounds session lifetime; zero applies the default
+	// of 24 hours. Sliding renewal extends the deadline on each
+	// authenticated request.
+	SessionTTL Duration `toml:"session_ttl,omitempty"`
+	// SecureCookies, when nil, applies the secure-by-default policy
+	// (true). Set explicitly to false only for development.
+	SecureCookies *bool `toml:"secure_cookies,omitempty"`
+	// SigningKeyEnv names the environment variable holding the
+	// HMAC signing key for session cookies. Empty makes the server
+	// generate a random per-process key (operators tolerate
+	// re-login on restart).
+	SigningKeyEnv string `toml:"signing_key_env,omitempty"`
 }
 
 // SnoozeConfig tunes the JMAP snooze wake-up worker (REQ-PROTO-49).
@@ -230,6 +266,29 @@ func applyDefaults(c *Config) {
 	}
 	if c.Server.Snooze.PollInterval == 0 {
 		c.Server.Snooze.PollInterval = Duration(60 * time.Second)
+	}
+	// UI defaults: enabled, /ui prefix, 24-hour session TTL, secure
+	// cookies. Strict TOML parsing keeps unknown keys an error so
+	// operators see typos.
+	if c.Server.UI.Enabled == nil {
+		t := true
+		c.Server.UI.Enabled = &t
+	}
+	if c.Server.UI.PathPrefix == "" {
+		c.Server.UI.PathPrefix = "/ui"
+	}
+	if c.Server.UI.CookieName == "" {
+		c.Server.UI.CookieName = "herold_ui_session"
+	}
+	if c.Server.UI.CSRFCookieName == "" {
+		c.Server.UI.CSRFCookieName = "herold_ui_csrf"
+	}
+	if c.Server.UI.SessionTTL == 0 {
+		c.Server.UI.SessionTTL = Duration(24 * time.Hour)
+	}
+	if c.Server.UI.SecureCookies == nil {
+		t := true
+		c.Server.UI.SecureCookies = &t
 	}
 }
 

@@ -51,6 +51,51 @@ const (
 // override it to inject fakes.
 type APIKeyLookup func(ctx context.Context, hash string) (store.APIKey, error)
 
+// CertRenewer renews an ACME certificate for hostname synchronously.
+// Implementations typically call acme.Client.EnsureCert. Nil disables
+// the /api/v1/certs/{hostname}/renew endpoint (returns 501).
+type CertRenewer interface {
+	RenewCert(ctx context.Context, hostname string) error
+}
+
+// DNSVerifier reports drift between herold-published DNS records and
+// the live state for domain. Nil disables /api/v1/diag/dns-check/...
+// (returns 501).
+type DNSVerifier interface {
+	VerifyDomain(ctx context.Context, domain string) (DNSVerifyReport, error)
+}
+
+// DNSVerifyReport is the wire-form structured output of DNSVerifier.
+// Mirrors autodns.VerifyReport without importing autodns.
+type DNSVerifyReport struct {
+	Domain  string            `json:"domain"`
+	OK      bool              `json:"ok"`
+	Records []DNSVerifyRecord `json:"records"`
+}
+
+// DNSVerifyRecord is one reconciliation row in a DNSVerifyReport.
+type DNSVerifyRecord struct {
+	Name     string `json:"name"`
+	Expected string `json:"expected"`
+	Actual   string `json:"actual,omitempty"`
+	State    string `json:"state"` // "match" | "drift" | "missing"
+}
+
+// SpamPolicy is the active spam policy snapshot. The store holds it
+// in-memory (no schema yet); persistence lands in a later phase.
+type SpamPolicy struct {
+	PluginName           string  `json:"plugin_name"`
+	Threshold            float64 `json:"threshold"`
+	Model                string  `json:"model,omitempty"`
+	SystemPromptOverride string  `json:"system_prompt_override,omitempty"`
+}
+
+// SpamPolicyStore reads + writes the live spam policy.
+type SpamPolicyStore interface {
+	GetSpamPolicy() SpamPolicy
+	SetSpamPolicy(SpamPolicy)
+}
+
 // Options configures a Server.
 type Options struct {
 	// TLSStore holds certificates for Implicit-TLS listeners. Required
@@ -62,6 +107,15 @@ type Options struct {
 	BaseURL string
 	// APIKeyLookup overrides the default store-backed lookup. Optional.
 	APIKeyLookup APIKeyLookup
+	// CertRenewer drives the /api/v1/certs/{hostname}/renew endpoint.
+	// Nil leaves the endpoint returning 501 not_implemented.
+	CertRenewer CertRenewer
+	// DNSVerifier drives /api/v1/diag/dns-check/{domain}. Nil leaves the
+	// endpoint returning 501 not_implemented.
+	DNSVerifier DNSVerifier
+	// SpamPolicyStore drives /api/v1/spam/policy GET + PUT. Nil leaves
+	// the endpoints returning 501.
+	SpamPolicyStore SpamPolicyStore
 	// Health tracks liveness / readiness for the /healthz endpoints.
 	// Defaults to a fresh observe.Health() marked ready on first Serve.
 	Health *observe.Health

@@ -1,0 +1,41 @@
+{{define "dashboard_body"}}
+{{$body := .Body}}
+<section class="card">
+  <h2>Queue at-a-glance</h2>
+  <ul class="kv">
+    {{range $state, $count := $body.QueueCounts}}
+      <li><strong>{{$state}}</strong>: {{$count}}</li>
+    {{else}}
+      <li>No queue rows.</li>
+    {{end}}
+  </ul>
+  <p><a href="{{$.PathBase}}/queue">Open queue monitor →</a></p>
+</section>
+
+<section class="card">
+  <h2>Domains</h2>
+  <p>{{$body.DomainsCount}} local domains.</p>
+  <p><a href="{{$.PathBase}}/domains">Manage domains →</a></p>
+</section>
+
+<section class="card">
+  <h2>Recent audit log</h2>
+  <table class="rows">
+    <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Subject</th><th>Outcome</th></tr></thead>
+    <tbody>
+      {{range $body.RecentAudit}}
+        <tr>
+          <td>{{formatTime .At}}</td>
+          <td>{{.ActorID}}</td>
+          <td>{{.Action}}</td>
+          <td>{{.Subject}}</td>
+          <td>{{.Outcome}}</td>
+        </tr>
+      {{else}}
+        <tr><td colspan="5">No audit entries yet.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  <p><a href="{{$.PathBase}}/audit">Open audit log →</a></p>
+</section>
+{{end}}
