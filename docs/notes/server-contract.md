@@ -69,9 +69,48 @@ This is distinct from herold's spam classification (which produces `$junk` and t
 
 Tabard sets `Mailbox.color` (a hex string) on label create / edit. Herold persists and returns this property. See `../requirements/03-labels.md`.
 
-### Image proxy
+### Image proxy (resolved Q4)
 
-For inline `<img>` references in HTML mail, tabard renders the image via a server-side proxy URL of the shape `<origin>/proxy/image?url=<encoded-original>`. The proxy fetches the image, strips tracking-relevant request headers (Cookie, Referer, User-Agent → fixed string), enforces a size cap, and serves it back. Same origin as the JMAP API so the CSP can `img-src 'self'` (`../requirements/13-nonfunctional.md` REQ-SEC-07).
+For inline `<img>` references in HTML mail, tabard renders the image via a server-side proxy URL of the shape `<origin>/proxy/image?url=<encoded-original>`. The proxy fetches the image, strips tracking-relevant request headers, enforces caps, and serves the result back. Same origin as the JMAP API so the CSP can `img-src 'self'` (`../requirements/13-nonfunctional.md` REQ-SEC-07).
+
+**Where it runs (v1):** in-process inside herold. The simplest fit for the single-node target. May graduate to a herold plugin (sidecar) later if operators want pluggable replacement; not v1.
+
+**Request handling:**
+
+- **Auth:** the proxy endpoint requires the suite session cookie. No anonymous use.
+- **Scheme:** only `https://` upstreams accepted. `http://` upstreams return `400`. URL length cap: 2048 chars.
+- **Redirects:** at most 3 redirect hops followed; further redirects abort with a `502`.
+- **Outgoing request shape:**
+  - `Cookie`: not sent.
+  - `Referer`: not sent.
+  - `User-Agent`: a fixed generic string (e.g. `tabard-image-proxy/1`). Same value for every request — no per-user fingerprinting.
+  - No other identifying headers.
+- **Content-Type validation:** upstream `Content-Type` must start with `image/`; otherwise the proxy returns `415`. Prevents the proxy from being used as a generic content tunnel.
+- **Size cap:** 25 MB per response (configurable). Upstreams larger than the cap get `413` from the proxy.
+- **Timeouts:** 10s connect, 30s total.
+
+**Caching:**
+
+- Honour upstream `Cache-Control`. Cap retention at 24 hours regardless.
+- Shared cache keyed by URL hash. Cross-user sharing is acceptable: the URL is the cache key, and a cache hit for user B doesn't leak that user A opened the same image (the sender already got their open count from user A's first fetch).
+- Cache evicts on size pressure (LRU); operator-configurable max size.
+
+**Retries:**
+
+- One retry on transient upstream failure (5xx, network error) after 1 s.
+- No retries on 4xx.
+- After exhausted retries: return the upstream status (or `502` for network failures).
+
+**Abuse limits:**
+
+- 200 fetches per user per minute (a typical newsletter is ~30 images; this is generous but bounded).
+- 10 fetches per (user, upstream origin) per minute — prevents hammering a single CDN.
+- 8 concurrent fetches per user.
+- Operator-configurable; the values above are defaults.
+
+**Failure-mode UX:**
+
+The proxy returns accurate HTTP status codes (404, 502, 413, 415, 408, etc.). Tabard's HTML iframe renders the broken-image placeholder natively per browser. No tabard-side custom placeholder image and no transparent-PNG-on-failure substitution — accurate failure communication beats hidden failures.
 
 ### Per-Identity signature
 

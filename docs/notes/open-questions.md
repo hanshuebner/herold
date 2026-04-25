@@ -8,7 +8,6 @@ The Resolved log at the bottom records decisions (with date) so the trail is sea
 
 | # | Question | Affects | Status |
 |---|----------|---------|--------|
-| 4 | Image proxy: details of the proxy endpoint shape (caching, retries, abuse limits, whether the proxy serves a placeholder on fetch failure or 404) | `requirements/13-nonfunctional.md` REQ-SEC-07, `notes/server-contract.md` § Image proxy | Defer — needs more info, discuss with herold-side image-proxy implementation |
 | 5 | Push channel choice: EventSource (RFC 8620 §7) only for v1, or also WebSocket (RFC 8887)? | `architecture/03-sync-and-state.md` | Defer — default EventSource only; revisit if SSE proves inadequate under load |
 | 6 | What threshold makes an action a P0 keyboard shortcut? | `requirements/10-keyboard.md` | Open until first capture lands. Default in `notes/capture-integration.md`: count ≥ 10 AND ≥ 50% keyboard. |
 | 8 | Multi-account: confirmed out for v1 only, or out forever? | `00-scope.md` NG3 | Revisit later. Tentative: out for v1 only. |
@@ -28,3 +27,4 @@ The Resolved log at the bottom records decisions (with date) so the trail is sea
 - **R14 (was Q14) — tabard-calendar timing.** Herold finishes before tabard implements. Tabard's spec treats herold capabilities as available; gaps in herold's commitment are flagged in `notes/herold-coverage.md` for the herold side to address. Affects `notes/server-contract.md` framing and `notes/herold-coverage.md`.
 - **R15 (was Q15) — tabard-contacts timing.** Same as R14.
 - **R16 (was Q16) — Cross-app handoff.** Same-origin URLs. Cross-app navigation is plain `<a href>` links; no postMessage between iframes, no shared parent shell. Affects `architecture/01-system-overview.md`.
+- **R4 (was Q4) — Image proxy details.** Runs in-process inside herold for v1 (may graduate to a plugin/sidecar later). HTTPS upstreams only. Strips Cookie / Referer; sends a fixed generic User-Agent. Honours upstream Cache-Control capped at 24h, shared cache keyed by URL. One retry on 5xx / network error; no retry on 4xx. Limits: 25 MB per fetch, 200/minute per user, 10/minute per (user, upstream origin), 8 concurrent. Failures pass through accurate HTTP status codes; the browser renders broken-image natively. No custom placeholder. Affects `notes/server-contract.md` § Image proxy.
