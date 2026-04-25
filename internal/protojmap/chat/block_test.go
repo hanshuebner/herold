@@ -233,11 +233,11 @@ func TestCapabilityDescriptor_AdvertisesChatLimits(t *testing.T) {
 	if err := json.Unmarshal(body, &session); err != nil {
 		t.Fatalf("unmarshal session: %v: %s", err, body)
 	}
-	if _, ok := session.Capabilities["urn:herold:chat"]; !ok {
+	if _, ok := session.Capabilities["https://tabard.dev/jmap/chat"]; !ok {
 		t.Fatalf("chat capability not advertised: %+v", session.Capabilities)
 	}
 	for _, acct := range session.Accounts {
-		desc, ok := acct.AccountCapabilities["urn:herold:chat"].(map[string]any)
+		desc, ok := acct.AccountCapabilities["https://tabard.dev/jmap/chat"].(map[string]any)
 		if !ok {
 			t.Fatalf("chat accountCapability missing: %+v", acct.AccountCapabilities)
 		}

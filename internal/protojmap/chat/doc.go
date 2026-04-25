@@ -2,16 +2,20 @@
 // Message, Membership, Block) into the shared CapabilityRegistry owned
 // by the protojmap Core dispatcher (REQ-CHAT-01..06).
 //
-// Capability id is `urn:herold:chat` (protojmap.CapabilityJMAPChat).
+// Capability id is `https://tabard.dev/jmap/chat`
+// (protojmap.CapabilityJMAPChat).
 //
 // Standardisation deviation. Unlike the mail / contacts / calendars
-// datatypes — each anchored to a stable IETF spec or a published draft —
-// the chat datatypes are NOT standardised in any IETF JMAP RFC nor a
-// public IETF draft. Tabard and herold ship one paired suite; we use a
-// herold-namespaced URI (`urn:herold:` rather than
-// `urn:ietf:params:jmap:`) so the capability name is unambiguously
-// non-standard. Tabard's chat client knows how to consume this; future
-// IETF standardisation is out of scope.
+// datatypes -- each anchored to a stable IETF spec or a published draft
+// -- the chat datatypes are NOT standardised in any IETF JMAP RFC nor a
+// public IETF draft. Tabard and herold ship one paired suite; per JMAP
+// convention for vendor extensions (e.g. Fastmail's
+// `https://www.fastmail.com/dev/maskedemail`) the capability URI is an
+// http(s) URL in the vendor namespace that owns the consumer wire
+// contract. Per docs/00-scope.md, herold is the substrate beneath the
+// tabard suite, so the URI is `https://tabard.dev/jmap/chat`. Tabard's
+// chat client knows how to consume this; future IETF standardisation
+// is out of scope.
 //
 // Three transports model. Per architecture/08-chat.md, chat data flows
 // through three transports:

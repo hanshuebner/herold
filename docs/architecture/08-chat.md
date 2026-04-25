@@ -2,6 +2,10 @@
 
 How chat data flows from clients through herold's transports, storage, and fanout machinery. Companion to `requirements/14-chat.md` and `requirements/15-video-calls.md`.
 
+## Wire-shape decision (locked 2026-04-25)
+
+All chat WebSocket and call-signaling frames use the JMAP-style `{type, payload}` envelope. The previous `{op, ...}` shape from REQ-CHAT-/REQ-CALL- spec drafts is superseded; see waves 2.8-2.9.6 for the migration. The frame schema in this document is the authoritative wire contract.
+
 ## Three transports for chat
 
 Chat shares two of mail's existing transports and adds a third:
@@ -87,42 +91,51 @@ The split between mail-index and chat-index is operational: mail is the dominant
 
 ## Ephemeral channel protocol
 
-WebSocket at `/chat/ws`. Each frame is a single JSON object.
-
-### Client → server
+WebSocket at `/chat/ws`. Each frame is a single JSON object using the `{type, payload}` envelope -- the same shape as JMAP method-call entries on the durable surface, so a single frame dispatcher serves both.
 
 ```
-{ "op": "presence", "state": "online" | "away" }
-{ "op": "typing", "conversationId": "..." }
-{ "op": "typing-stopped", "conversationId": "..." }
-{ "op": "call.invite", "conversationId": "...", "callId": "...", "sdp": "..." }
-{ "op": "call.accept", "callId": "...", "sdp": "..." }
-{ "op": "call.decline", "callId": "..." }
-{ "op": "call.candidate", "callId": "...", "candidate": "..." }
-{ "op": "call.hangup", "callId": "..." }
-{ "op": "call.credentials", "callId": "..." }
-{ "op": "pong" }
+{ "type": "<frame-type>", "payload": { ... } }
 ```
 
-### Server → client
+The chat-side frame types are `typing.start`, `typing.stop`, `presence.set`, `subscribe`, `unsubscribe`. The call-side frame type is `call.signal`; its `payload.kind` discriminates the inner call-signaling vocabulary (`offer | answer | decline | ice-candidate | hangup | busy | timeout`).
 
-Mirrors of the above, fanned out to interested peers (the other members of the conversation), plus:
+### Client to server
 
 ```
-{ "op": "presence-update", "principalId": "...", "state": "online" | "away" | "offline" }
-{ "op": "call.timeout", "callId": "..." }
-{ "op": "call.credentials.response", "callId": "...", "config": { "urls": [...], "username": "...", "credential": "...", "ttl": 300 } }
-{ "op": "ping" }
+{ "type": "presence.set",   "payload": { "state": "online" | "away" } }
+{ "type": "typing.start",   "payload": { "conversationId": "..." } }
+{ "type": "typing.stop",    "payload": { "conversationId": "..." } }
+{ "type": "subscribe",      "payload": { "conversationId": "..." } }
+{ "type": "unsubscribe",    "payload": { "conversationId": "..." } }
+{ "type": "call.signal",    "payload": { "kind": "offer",         "conversationId": "...", "callId": "...", "sdp": "..." } }
+{ "type": "call.signal",    "payload": { "kind": "answer",        "callId": "...", "sdp": "..." } }
+{ "type": "call.signal",    "payload": { "kind": "decline",       "callId": "..." } }
+{ "type": "call.signal",    "payload": { "kind": "ice-candidate", "callId": "...", "candidate": "..." } }
+{ "type": "call.signal",    "payload": { "kind": "hangup",        "callId": "..." } }
+{ "type": "pong",           "payload": {} }
 ```
+
+### Server to client
+
+Mirrors of the above (call-signal kinds fanned out to the other peer; typing/presence frames fanned out to interested peers), plus server-originated frames:
+
+```
+{ "type": "presence.update", "payload": { "principalId": "...", "state": "online" | "away" | "offline" } }
+{ "type": "call.signal",     "payload": { "kind": "busy",    "callId": "..." } }
+{ "type": "call.signal",     "payload": { "kind": "timeout", "callId": "..." } }
+{ "type": "ping",            "payload": {} }
+```
+
+TURN credentials are NOT minted on this WebSocket. Clients call `POST /api/v1/call/credentials` on the admin HTTP surface (dual-authenticated by the suite session cookie or a `Bearer hk_...` API key) and receive `{ "urls": [...], "username": "...", "credential": "...", "ttl": 300 }`. See `requirements/15-video-calls.md` REQ-CALL-20..24.
 
 ### Connection lifecycle
 
 - Client opens the WebSocket after the JMAP session descriptor confirms `https://tabard.dev/jmap/chat`. The suite session cookie attaches automatically; no separate auth handshake.
 - Server accepts; assigns the connection a per-user-session id (multiple connections per user across tabs are tolerated).
-- Server sends `{"op":"ping"}` every 30 seconds.
-- Client responds `{"op":"pong"}`.
+- Server sends `{"type":"ping","payload":{}}` every 30 seconds.
+- Client responds `{"type":"pong","payload":{}}`.
 - A missed pong (>90 s) triggers server-side connection close; client reconnects with exponential backoff (1s, 2s, 4s, 8s, max 30s).
-- On reconnect: client re-emits its initial `presence` state. Server replays no missed ephemeral signals — durable state advances are picked up via `Foo/changes` on the JMAP path.
+- On reconnect: client re-emits its initial `presence.set` state. Server replays no missed ephemeral signals -- durable state advances are picked up via `Foo/changes` on the JMAP path.
 
 ### Backpressure
 
@@ -152,11 +165,13 @@ Internal in-process broadcaster (the same one that drives EventSource and IDLE f
                      fanout
 ```
 
-The chat WebSocket subscribers are a separate set from the EventSource subscribers but receive from the same broadcaster — chat WS receives chat-relevant ephemeral signals (typing, presence) plus call-signaling fanout; EventSource receives durable state changes (chat + mail).
+The chat WebSocket subscribers are a separate set from the EventSource subscribers but receive from the same broadcaster -- chat WS receives chat-relevant ephemeral signals (typing, presence) plus call-signaling fanout; EventSource receives durable state changes (chat + mail).
 
 ## Authentication
 
-The WebSocket and the TURN-credential mint authenticate via the suite session cookie (`requirements/02-identity-and-auth.md` cookie auth path). The cookie is `HttpOnly; Secure; SameSite=Strict`; tabard's WebSocket open uses the cookie automatically. There is no chat-specific token, no JWT, no second auth surface.
+The WebSocket authenticates via the suite session cookie (`requirements/02-identity-and-auth.md` cookie auth path). The cookie is `HttpOnly; Secure; SameSite=Strict`; tabard's WebSocket open uses the cookie automatically. There is no chat-specific token, no JWT, no second auth surface.
+
+The TURN-credential mint at `POST /api/v1/call/credentials` is dual-authenticated: the suite session cookie OR a `Bearer hk_...` API key (for non-browser / CLI clients). Per-principal rate limits apply. Mint is deliberately kept off the JMAP request envelope and off the chat WebSocket so the credential issuance side channel can be fuzzed and audited in isolation.
 
 ## TURN credential generation
 

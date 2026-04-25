@@ -27,23 +27,23 @@ Tabard's client surface for calls lives in `/Users/hans/tabard/docs/requirements
 
 ## Signaling (REQ-CALL-SIG)
 
-Signaling messages flow over the chat ephemeral WebSocket (`14-chat.md` REQ-CHAT-40). They are NOT persisted to chat history; only the call lifecycle (start time, end time, duration, participants) is recorded as a system message.
+Signaling messages flow over the chat ephemeral WebSocket (`14-chat.md` REQ-CHAT-40) using the JMAP-style `{type, payload}` envelope (REQ-CHAT-41). All call-signaling frames share a single frame type, `call.signal`; the inner `payload.kind` discriminates the call-signaling vocabulary: `offer | answer | decline | ice-candidate | hangup | busy | timeout`. Signaling frames are NOT persisted to chat history; only the call lifecycle (start time, end time, duration, participants, disposition) is recorded as a system message.
 
-- **REQ-CALL-01** Call invite: caller emits `{"op":"call.invite","conversationId":"...","callId":"...","sdp":"..."}`. The conversation MUST be a DM the caller is in. Server validates and fans out to the callee's WebSocket connection(s).
-- **REQ-CALL-02** Call accept: callee emits `{"op":"call.accept","callId":"...","sdp":"..."}`. Server fans out to the caller. Both peers begin ICE exchange.
-- **REQ-CALL-03** Call decline: callee emits `{"op":"call.decline","callId":"..."}`. Server fans out to caller. System message emitted in the DM: "Call declined".
-- **REQ-CALL-04** ICE candidates: either peer emits `{"op":"call.candidate","callId":"...","candidate":"..."}`. Server fans out to the other peer.
-- **REQ-CALL-05** Hangup: either peer emits `{"op":"call.hangup","callId":"..."}`. Server fans out to the other peer. System message: "Video call ended — <duration>".
-- **REQ-CALL-06** Ring timeout: if the callee doesn't accept or decline within 30 s of the invite, server emits a synthetic `call.timeout` to both peers and writes a "Missed call from <caller>" system message.
+- **REQ-CALL-01** Call invite: caller emits `{"type":"call.signal","payload":{"kind":"offer","conversationId":"...","callId":"...","sdp":"..."}}`. The conversation MUST be a DM the caller is in. Server validates and fans out to the callee's WebSocket connection(s).
+- **REQ-CALL-02** Call accept: callee emits `{"type":"call.signal","payload":{"kind":"answer","callId":"...","sdp":"..."}}`. Server fans out to the caller. Both peers begin ICE exchange.
+- **REQ-CALL-03** Call decline: callee emits `{"type":"call.signal","payload":{"kind":"decline","callId":"..."}}`. Server fans out to caller. System message emitted in the DM: "Call declined".
+- **REQ-CALL-04** ICE candidates: either peer emits `{"type":"call.signal","payload":{"kind":"ice-candidate","callId":"...","candidate":"..."}}`. Server fans out to the other peer.
+- **REQ-CALL-05** Hangup: either peer emits `{"type":"call.signal","payload":{"kind":"hangup","callId":"..."}}`. Server fans out to the other peer. System message: "Video call ended -- <duration>".
+- **REQ-CALL-06** Ring timeout: if the callee doesn't accept or decline within 30 s of the invite, server emits a synthetic `{"type":"call.signal","payload":{"kind":"timeout","callId":"..."}}` to both peers and writes a "Missed call from <caller>" system message.
 - **REQ-CALL-07** Stale call cleanup: a call with no signaling activity for 5 minutes (no candidates, no hangup) is auto-terminated server-side and a "Call ended (timeout)" system message is recorded.
 
 ## TURN credential mint (REQ-CALL-TURN)
 
-- **REQ-CALL-20** Server MUST mint short-lived TURN credentials on demand. Path: client emits `{"op":"call.credentials","callId":"..."}` over the WebSocket; server validates the requesting user is in the call's conversation and that the call is current (invite or in-progress, not declined or hung-up); server returns `{"op":"call.credentials.response","callId":"...","config":{"urls":[...],"username":"...","credential":"...","ttl":300}}`.
+- **REQ-CALL-20** Server MUST mint short-lived TURN credentials on demand. Path: client issues `POST /api/v1/call/credentials` with a JSON body `{"callId":"..."}`; server validates the requesting user is in the call's conversation and that the call is current (invite or in-progress, not declined or hung-up); server returns `{"urls":[...],"username":"...","credential":"...","ttl":300}`.
 - **REQ-CALL-21** Credentials use the long-term-credential mechanism (RFC 5389 / RFC 8489) against a coturn shared secret. The username encodes a UTC expiry timestamp; the credential is HMAC-SHA1(username, shared-secret), base64'd. coturn validates inline without per-credential server state.
-- **REQ-CALL-22** TTL default 300 seconds. If a call lasts longer, the client refreshes credentials 30 seconds before expiry (`call.credentials` again with the same callId). Server validates and re-mints.
+- **REQ-CALL-22** TTL default 300 seconds; maximum 12 hours (`Server.TURN.CredentialTTLSeconds` in system config caps the value). If a call lasts longer than the issued TTL, the client refreshes credentials approximately 30 seconds before expiry by re-posting `POST /api/v1/call/credentials` with the same `callId`. Server validates and re-mints.
 - **REQ-CALL-23** Shared secret with coturn: stored in system config (`/etc/herold/system.toml` § coturn or similar). Rotated by the operator; herold reads at startup and on SIGHUP.
-- **REQ-CALL-24** Credential mint is NOT available on the JMAP HTTP surface — only over the chat WebSocket. Avoids a stand-alone credential issuance endpoint that could be abused.
+- **REQ-CALL-24** TURN credentials are minted via `POST /api/v1/call/credentials` on the admin HTTP surface, dual-authenticated by the suite session cookie OR by a `Bearer hk_...` API key. The endpoint is rate-limited per-principal. Mint MUST NOT happen during JMAP method calls -- keep the credential-issuance side channel separate from the JMAP request envelope.
 
 ## Call records (REQ-CALL-RECORD)
 
@@ -56,7 +56,7 @@ Signaling messages flow over the chat ephemeral WebSocket (`14-chat.md` REQ-CHAT
 - **REQ-CALL-40** Operator deploys coturn (or equivalent) at the same origin or a closely-coordinated origin (e.g. `turn.example.com` if `mail.example.com` hosts herold). Default ports: 3478/UDP and 5349/TCP/TLS. IPv4 and IPv6 both reachable.
 - **REQ-CALL-41** coturn configuration: `use-auth-secret`, `static-auth-secret <secret>` matching herold's stored secret, `realm <origin>`, `fingerprint`. TLS certificate from the same ACME flow as herold's other listeners (REQ-OPS-50..) or operator-supplied. Detail in `09-operations.md` § coturn.
 - **REQ-CALL-42** TURN traffic is opt-in by reachability — not all calls relay (most use STUN+P2P). Herold doesn't need to know whether a given call relayed; coturn's stats are operator-side.
-- **REQ-CALL-43** Per-user concurrent call limit: 1 (you can't be in two calls at once). Attempted second call returns a synthetic `call.busy` to both peers; the new call is dropped.
+- **REQ-CALL-43** Per-user concurrent call limit: 1 (you can't be in two calls at once). Attempted second call returns a synthetic `{"type":"call.signal","payload":{"kind":"busy","callId":"..."}}` to both peers; the new call is dropped.
 
 ## Failure modes
 

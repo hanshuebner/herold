@@ -49,10 +49,13 @@ const (
 	CapabilityJMAPCalendars CapabilityID = "urn:ietf:params:jmap:calendars"
 	// CapabilityJMAPChat is the JMAP Chat datatype capability
 	// (REQ-CHAT-01..06). The chat datatypes (Conversation, Message,
-	// Membership, Block) are not standardised in any IETF JMAP RFC; we
-	// use a herold-namespaced URI documented as such in the chat
-	// package's doc.go. Implemented under internal/protojmap/chat.
-	CapabilityJMAPChat CapabilityID = "urn:herold:chat"
+	// Membership, Block) are not standardised in any IETF JMAP RFC; the
+	// capability URI follows the JMAP convention of an http(s) URL in
+	// the vendor namespace that owns the consumer wire contract. Per
+	// docs/00-scope.md, herold is the substrate beneath the tabard
+	// suite, so the URI lives under tabard.dev. Implemented under
+	// internal/protojmap/chat.
+	CapabilityJMAPChat CapabilityID = "https://tabard.dev/jmap/chat"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

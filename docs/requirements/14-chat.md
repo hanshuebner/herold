@@ -43,7 +43,7 @@ New JMAP entity kinds, registered with the capability registry per `architecture
 - **REQ-CHAT-10** A DM is created server-side on the first `Message/set { create }` between two principals where no DM yet exists. Subsequent DMs between the same two principals reuse the existing conversation. (No "new DM" UI distinct from "send DM".)
 - **REQ-CHAT-11** A Space is created via `Conversation/set { create, type: "space" }`. The creator becomes admin; initial members are added in the same call.
 - **REQ-CHAT-12** Member changes (add / remove / role change) emit a system message in the Space.
-- **REQ-CHAT-13** When a member leaves a Space (their `Membership` is destroyed), the user is removed from membership and a system message is emitted. The user retains read access to historical messages they were a member during, via their cached `Membership` record? **Decision pending — see Open questions.**
+- **REQ-CHAT-13** When a member leaves a Space (Membership/set destroy), they lose read access to all subsequent and historical messages in that Space. Existing client-side caches are not the substrate's responsibility; the server returns Forbidden on subsequent Message/get requests for that Space from a non-member.
 - **REQ-CHAT-14** Spaces require ≥1 admin. Removing the last admin is rejected; an admin must promote a member first.
 - **REQ-CHAT-15** Conversation deletion (admin-only for Spaces; both members for DMs) is destructive — messages, memberships, blobs (when refcount reaches zero) are GC'd per the standard retention path.
 
@@ -66,8 +66,8 @@ New JMAP entity kinds, registered with the capability registry per `architecture
 A separate WebSocket endpoint, distinct from the JMAP HTTP and EventSource surfaces. Carries signals that don't belong in durable state: typing, presence, WebRTC call setup.
 
 - **REQ-CHAT-40** MUST serve a WebSocket endpoint at `wss://<origin>/chat/ws`. Authenticated by the suite session cookie (REQ-AUTH integration); no separate token negotiation.
-- **REQ-CHAT-41** Message format: JSON, one message per WebSocket frame. Schema documented in `architecture/08-chat.md` § Ephemeral channel protocol.
-- **REQ-CHAT-42** Heartbeat: server sends `{"op":"ping"}` every 30 seconds; client responds `{"op":"pong"}`. Server drops the connection on a missed pong (>90 s); client reconnects on a missed ping (>90 s) with exponential backoff.
+- **REQ-CHAT-41** Message format: JSON, one frame per WebSocket message. Every frame uses the JMAP-style envelope `{"type":"<frame-type>","payload":{...}}`. The chat-side frame types are `typing.start`, `typing.stop`, `presence.set`, `subscribe`, `unsubscribe`; the call-side frame type is `call.signal` with an inner `payload.kind` discriminator. Authoritative schema in `architecture/08-chat.md` § Ephemeral channel protocol.
+- **REQ-CHAT-42** Heartbeat: server sends `{"type":"ping","payload":{}}` every 30 seconds; client responds `{"type":"pong","payload":{}}`. Server drops the connection on a missed pong (>90 s); client reconnects on a missed ping (>90 s) with exponential backoff.
 - **REQ-CHAT-43** Server-side rate limits per user-session: typing emit ≤1/sec, presence emit ≤1/sec, ICE candidate emit ≤30/call. Violations close the connection with code 1008 (policy violation).
 - **REQ-CHAT-44** Server-side outbound buffer per session is bounded; flooded buffer triggers a connection close. Client reconnects.
 - **REQ-CHAT-45** Multiple concurrent WebSocket connections per user (one per browser tab) are tolerated. Presence is "online if at least one connection is live".
@@ -75,17 +75,17 @@ A separate WebSocket endpoint, distinct from the JMAP HTTP and EventSource surfa
 
 ## Presence (REQ-CHAT-PRESENCE)
 
-- **REQ-CHAT-50** Server tracks a per-user presence state derived from WebSocket connection state and the user's "show as offline" preference: `online` (≥1 connection, document recently active), `away` (≥1 connection, no document activity for >5 min), `offline` (no connections OR show-as-offline mode).
-- **REQ-CHAT-51** Activity signal: client emits `{"op":"presence","state":"online"|"away"}` periodically (defaults: online while focused; away after 5 min idle). Server uses these signals plus connection state to compute the public presence value.
-- **REQ-CHAT-52** Presence updates fan out to interested peers — anyone in a conversation with the user — via `{"op":"presence-update", ...}` on those peers' WebSocket connections.
+- **REQ-CHAT-50** Server tracks a per-user presence state derived from WebSocket connection state and the user's "show as offline" preference: `online` (>=1 connection, document recently active), `away` (>=1 connection, no document activity for >5 min), `offline` (no connections OR show-as-offline mode).
+- **REQ-CHAT-51** Activity signal: client emits `{"type":"presence.set","payload":{"state":"online"|"away"}}` periodically (defaults: online while focused; away after 5 min idle). Server uses these signals plus connection state to compute the public presence value.
+- **REQ-CHAT-52** Presence updates fan out to interested peers -- anyone in a conversation with the user -- via `{"type":"presence.update","payload":{...}}` on those peers' WebSocket connections.
 - **REQ-CHAT-53** "Show as offline" mode (per-user setting) suppresses outbound presence updates; the user appears offline to others but still receives messages, presence updates from others, etc. normally.
 - **REQ-CHAT-54** Presence is NOT durable; it is not exposed via `Foo/get` JMAP methods. The only access path is the ephemeral channel.
 
 ## Typing indicators (REQ-CHAT-TYPING)
 
-- **REQ-CHAT-60** Client emits `{"op":"typing","conversationId":"..."}` while actively typing in a conversation; debounce ≤1 emit per 3 s. Emit `{"op":"typing-stopped","conversationId":"..."}` 5 s after the last keystroke.
+- **REQ-CHAT-60** Client emits `{"type":"typing.start","payload":{"conversationId":"..."}}` while actively typing in a conversation; debounce <=1 emit per 3 s. Emit `{"type":"typing.stop","payload":{"conversationId":"..."}}` 5 s after the last keystroke.
 - **REQ-CHAT-61** Server fans out the signal to other participants on the same conversation via their WebSocket connections.
-- **REQ-CHAT-62** Receiver auto-clears the indicator after 7 s of no further `typing` signal (covers the case where the sender's tab dies mid-typing).
+- **REQ-CHAT-62** Receiver auto-clears the indicator after 7 s of no further `typing.start` signal (covers the case where the sender's tab dies mid-typing).
 - **REQ-CHAT-63** Typing signals are NOT persisted, NEVER appear in scrollback, NEVER trigger `Message/changes`.
 
 ## Mute and block (REQ-CHAT-MUTE)
