@@ -151,6 +151,12 @@ func Run(t *testing.T, f Factory) {
 		{"ChatBlock_InsertListIsBlocked", testChatBlockInsertListIsBlocked},
 		{"ChatBlock_RejectsSelfBlock", testChatBlockRejectsSelf},
 		{"DeletePrincipal_CascadesChat", testDeletePrincipalCascadesChat},
+		// -- Wave 2.9.6 chat features (REQ-CHAT-20/32/92) ----------
+		{"ChatAccountSettings_DefaultsWhenAbsent", testChatAccountSettingsDefaults},
+		{"ChatAccountSettings_UpsertRoundTrip", testChatAccountSettingsUpsertRoundTrip},
+		{"ChatConversation_RetentionAndEditWindowRoundTrip", testChatConversationRetentionEditWindowRoundTrip},
+		{"ChatRetention_HardDeleteAndRecount", testChatRetentionHardDeleteAndRecount},
+		{"ChatRetention_ListConversationsForRetention", testChatRetentionListConversationsForRetention},
 	}
 	for _, c := range cases {
 		tc := c
@@ -4607,4 +4613,224 @@ func testDeletePrincipalCascadesChat(t *testing.T, s store.Store) {
 		t.Fatalf("SenderPrincipalID not nulled after DeletePrincipal: %v", *got.SenderPrincipalID)
 	}
 	_ = memID
+}
+
+// -- Wave 2.9.6 chat features (REQ-CHAT-20/32/92) --------------------
+
+// testChatAccountSettingsDefaults verifies that GetChatAccountSettings
+// for a principal with no persisted row returns the operator defaults
+// without a not-found error (REQ-CHAT-20: 15 min edit window;
+// REQ-CHAT-92: never expire).
+func testChatAccountSettingsDefaults(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "settings-default@example.com")
+	got, err := s.Meta().GetChatAccountSettings(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetChatAccountSettings: %v", err)
+	}
+	if got.PrincipalID != p.ID {
+		t.Errorf("PrincipalID = %d, want %d", got.PrincipalID, p.ID)
+	}
+	if got.DefaultRetentionSeconds != store.ChatDefaultRetentionSeconds {
+		t.Errorf("DefaultRetentionSeconds = %d, want %d",
+			got.DefaultRetentionSeconds, store.ChatDefaultRetentionSeconds)
+	}
+	if got.DefaultEditWindowSeconds != store.ChatDefaultEditWindowSeconds {
+		t.Errorf("DefaultEditWindowSeconds = %d, want %d",
+			got.DefaultEditWindowSeconds, store.ChatDefaultEditWindowSeconds)
+	}
+}
+
+// testChatAccountSettingsUpsertRoundTrip exercises the upsert path:
+// first insert seeds a row, second call updates it; both reads return
+// the latest values.
+func testChatAccountSettingsUpsertRoundTrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "settings-upsert@example.com")
+	if err := s.Meta().UpsertChatAccountSettings(ctx, store.ChatAccountSettings{
+		PrincipalID:              p.ID,
+		DefaultRetentionSeconds:  3600,
+		DefaultEditWindowSeconds: 60,
+	}); err != nil {
+		t.Fatalf("Upsert insert: %v", err)
+	}
+	got, err := s.Meta().GetChatAccountSettings(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("Get after insert: %v", err)
+	}
+	if got.DefaultRetentionSeconds != 3600 || got.DefaultEditWindowSeconds != 60 {
+		t.Errorf("after insert: %+v", got)
+	}
+	// Update.
+	if err := s.Meta().UpsertChatAccountSettings(ctx, store.ChatAccountSettings{
+		PrincipalID:              p.ID,
+		DefaultRetentionSeconds:  7200,
+		DefaultEditWindowSeconds: 0,
+	}); err != nil {
+		t.Fatalf("Upsert update: %v", err)
+	}
+	got, err = s.Meta().GetChatAccountSettings(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("Get after update: %v", err)
+	}
+	if got.DefaultRetentionSeconds != 7200 || got.DefaultEditWindowSeconds != 0 {
+		t.Errorf("after update: %+v", got)
+	}
+}
+
+// testChatConversationRetentionEditWindowRoundTrip verifies that
+// RetentionSeconds / EditWindowSeconds / ReadReceiptsEnabled survive
+// an Insert / Get pair and an Update / Get pair.
+func testChatConversationRetentionEditWindowRoundTrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "convopts@example.com")
+	retention := int64(3600)
+	editWin := int64(120)
+	cid, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind:                 store.ChatConversationKindSpace,
+		Name:                 "policy-space",
+		CreatedByPrincipalID: p.ID,
+		RetentionSeconds:     &retention,
+		EditWindowSeconds:    &editWin,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	got, err := s.Meta().GetChatConversation(ctx, cid)
+	if err != nil {
+		t.Fatalf("GetChatConversation: %v", err)
+	}
+	if got.RetentionSeconds == nil || *got.RetentionSeconds != retention {
+		t.Errorf("RetentionSeconds = %v, want %d", got.RetentionSeconds, retention)
+	}
+	if got.EditWindowSeconds == nil || *got.EditWindowSeconds != editWin {
+		t.Errorf("EditWindowSeconds = %v, want %d", got.EditWindowSeconds, editWin)
+	}
+	if !got.ReadReceiptsEnabled {
+		t.Errorf("ReadReceiptsEnabled defaulted to false; want true")
+	}
+	// Update: clear retention, change edit window, disable receipts.
+	got.RetentionSeconds = nil
+	newWin := int64(60)
+	got.EditWindowSeconds = &newWin
+	got.ReadReceiptsEnabled = false
+	if err := s.Meta().UpdateChatConversation(ctx, got); err != nil {
+		t.Fatalf("UpdateChatConversation: %v", err)
+	}
+	got2, err := s.Meta().GetChatConversation(ctx, cid)
+	if err != nil {
+		t.Fatalf("GetChatConversation post-update: %v", err)
+	}
+	if got2.RetentionSeconds != nil {
+		t.Errorf("RetentionSeconds after update = %v, want nil", got2.RetentionSeconds)
+	}
+	if got2.EditWindowSeconds == nil || *got2.EditWindowSeconds != newWin {
+		t.Errorf("EditWindowSeconds after update = %v, want %d", got2.EditWindowSeconds, newWin)
+	}
+	if got2.ReadReceiptsEnabled {
+		t.Errorf("ReadReceiptsEnabled after disable = true")
+	}
+}
+
+// testChatRetentionHardDeleteAndRecount inserts five messages, hard-
+// deletes the most recent two, and asserts the conversation's
+// MessageCount and LastMessageAt are recomputed against the surviving
+// rows.
+func testChatRetentionHardDeleteAndRecount(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "retention-recount@example.com")
+	cid, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, Name: "rec",
+		CreatedByPrincipalID: p.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	pidArg := p.ID
+	ids := make([]store.ChatMessageID, 0, 5)
+	for i := 0; i < 5; i++ {
+		id, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+			ConversationID:    cid,
+			SenderPrincipalID: &pidArg,
+			BodyText:          "msg",
+			BodyFormat:        store.ChatBodyFormatText,
+		})
+		if err != nil {
+			t.Fatalf("InsertChatMessage[%d]: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+	// Hard-delete the two most recent rows.
+	for _, id := range ids[3:] {
+		if err := s.Meta().HardDeleteChatMessage(ctx, id); err != nil {
+			t.Fatalf("HardDeleteChatMessage(%d): %v", id, err)
+		}
+	}
+	// Conversation now has 3 live rows; LastMessageAt = most recent
+	// surviving row's CreatedAt.
+	conv, err := s.Meta().GetChatConversation(ctx, cid)
+	if err != nil {
+		t.Fatalf("GetChatConversation: %v", err)
+	}
+	if conv.MessageCount != 3 {
+		t.Errorf("MessageCount = %d, want 3", conv.MessageCount)
+	}
+	if conv.LastMessageAt == nil {
+		t.Errorf("LastMessageAt = nil, want survivor's CreatedAt")
+	}
+	// HardDelete on an unknown id returns ErrNotFound.
+	if err := s.Meta().HardDeleteChatMessage(ctx, store.ChatMessageID(999999)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("HardDeleteChatMessage(missing) err = %v, want ErrNotFound", err)
+	}
+}
+
+// testChatRetentionListConversationsForRetention exercises the cursor
+// + filter on the retention sweeper's listing path. Conversations
+// without a positive RetentionSeconds must be excluded; with one,
+// included; ordering is by ID ascending.
+func testChatRetentionListConversationsForRetention(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "retention-list@example.com")
+	// One with no retention (NULL).
+	if _, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, Name: "no-retention",
+		CreatedByPrincipalID: p.ID,
+	}); err != nil {
+		t.Fatalf("Insert no-retention: %v", err)
+	}
+	// One with retention=0 (never expire — must be excluded).
+	zero := int64(0)
+	if _, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, Name: "zero-retention",
+		CreatedByPrincipalID: p.ID,
+		RetentionSeconds:     &zero,
+	}); err != nil {
+		t.Fatalf("Insert zero-retention: %v", err)
+	}
+	// One with retention=3600 (should be returned).
+	one := int64(3600)
+	wantID, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, Name: "with-retention",
+		CreatedByPrincipalID: p.ID,
+		RetentionSeconds:     &one,
+	})
+	if err != nil {
+		t.Fatalf("Insert with-retention: %v", err)
+	}
+	out, err := s.Meta().ListChatConversationsForRetention(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("ListChatConversationsForRetention: %v", err)
+	}
+	found := false
+	for _, c := range out {
+		if c.ID == wantID {
+			found = true
+			if c.RetentionSeconds == nil || *c.RetentionSeconds != 3600 {
+				t.Errorf("returned row RetentionSeconds = %v, want 3600", c.RetentionSeconds)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("wantID %d not in retention list: %+v", wantID, out)
+	}
 }

@@ -904,6 +904,45 @@ type Metadata interface {
 	// (EntityKindMembership, ChangeOpUpdated) state-change row. Returns
 	// ErrNotFound when the membership is missing.
 	SetLastRead(ctx context.Context, principalID PrincipalID, conversationID ConversationID, msgID ChatMessageID) error
+
+	// GetChatAccountSettings returns the per-principal chat defaults
+	// (Phase 2 Wave 2.9.6 REQ-CHAT-20 / REQ-CHAT-92). When no row has
+	// been persisted for principalID, returns a zero-value row carrying
+	// PrincipalID = principalID,
+	// DefaultRetentionSeconds = ChatDefaultRetentionSeconds (0; never
+	// expire), and DefaultEditWindowSeconds =
+	// ChatDefaultEditWindowSeconds (900s; 15 min). Never returns
+	// ErrNotFound — the absent row is the implicit default.
+	GetChatAccountSettings(ctx context.Context, principalID PrincipalID) (ChatAccountSettings, error)
+
+	// UpsertChatAccountSettings writes the account-defaults row for
+	// settings.PrincipalID, inserting on first call and updating on
+	// subsequent ones. Resolved CreatedAt and UpdatedAt are not echoed
+	// back to the caller; subsequent Get returns the persisted instants.
+	UpsertChatAccountSettings(ctx context.Context, settings ChatAccountSettings) error
+
+	// HardDeleteChatMessage removes the chat_messages row identified by
+	// id (Phase 2 Wave 2.9.6 REQ-CHAT-92 retention). Distinct from
+	// SoftDeleteChatMessage: the row is GONE from the table, the
+	// owning conversation's MessageCount and LastMessageAt are
+	// recomputed from the surviving rows, and a
+	// (EntityKindChatMessage, ChangeOpDestroyed) state-change row is
+	// appended. Returns ErrNotFound when the message has already been
+	// removed.
+	HardDeleteChatMessage(ctx context.Context, id ChatMessageID) error
+
+	// ListChatConversationsForRetention returns up to limit conversation
+	// rows whose RetentionSeconds is non-nil and positive, in ascending
+	// ID order starting after afterID. Used by the retention sweeper to
+	// page through the per-conversation override set.
+	ListChatConversationsForRetention(ctx context.Context, afterID ConversationID, limit int) ([]ChatConversation, error)
+
+	// ListChatAccountSettingsForRetention returns up to limit
+	// account-defaults rows whose DefaultRetentionSeconds > 0, in
+	// ascending principal-id order starting after afterID. Used by the
+	// retention sweeper to page through accounts that have opted into a
+	// global retention policy.
+	ListChatAccountSettingsForRetention(ctx context.Context, afterID PrincipalID, limit int) ([]ChatAccountSettings, error)
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

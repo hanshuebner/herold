@@ -23,21 +23,24 @@ import (
 const chatConversationSelectColumnsPG = `
 	id, kind, name, topic, created_by_principal_id,
 	created_at_us, updated_at_us, last_message_at_us,
-	message_count, is_archived, modseq`
+	message_count, is_archived, modseq,
+	read_receipts_enabled, retention_seconds, edit_window_seconds`
 
 func scanChatConversationPG(row pgx.Row) (store.ChatConversation, error) {
 	var (
-		id, createdBy        int64
-		createdUs, updatedUs int64
-		lastMsgUs            *int64
-		msgCount, modseq     int64
-		archived             bool
-		kind                 string
-		name, topic          *string
+		id, createdBy            int64
+		createdUs, updatedUs     int64
+		lastMsgUs                *int64
+		msgCount, modseq         int64
+		archived, readReceipts   bool
+		retentionSec, editWindow *int64
+		kind                     string
+		name, topic              *string
 	)
 	err := row.Scan(&id, &kind, &name, &topic, &createdBy,
 		&createdUs, &updatedUs, &lastMsgUs,
-		&msgCount, &archived, &modseq)
+		&msgCount, &archived, &modseq,
+		&readReceipts, &retentionSec, &editWindow)
 	if err != nil {
 		return store.ChatConversation{}, mapErr(err)
 	}
@@ -49,6 +52,7 @@ func scanChatConversationPG(row pgx.Row) (store.ChatConversation, error) {
 		UpdatedAt:            fromMicros(updatedUs),
 		MessageCount:         int(msgCount),
 		IsArchived:           archived,
+		ReadReceiptsEnabled:  readReceipts,
 		ModSeq:               store.ModSeq(modseq),
 	}
 	if name != nil {
@@ -60,6 +64,14 @@ func scanChatConversationPG(row pgx.Row) (store.ChatConversation, error) {
 	if lastMsgUs != nil {
 		t := fromMicros(*lastMsgUs)
 		c.LastMessageAt = &t
+	}
+	if retentionSec != nil {
+		v := *retentionSec
+		c.RetentionSeconds = &v
+	}
+	if editWindow != nil {
+		v := *editWindow
+		c.EditWindowSeconds = &v
 	}
 	return c, nil
 }
@@ -82,15 +94,29 @@ func (m *metadata) InsertChatConversation(ctx context.Context, c store.ChatConve
 			v := usMicros(c.LastMessageAt.UTC())
 			lastMsgArg = &v
 		}
+		// REQ-CHAT-32: new conversations default to read_receipts on.
+		// See storesqlite InsertChatConversation for the rationale (Go
+		// bool zero-value vs schema default TRUE).
+		var retentionArg, editWindowArg *int64
+		if c.RetentionSeconds != nil {
+			v := *c.RetentionSeconds
+			retentionArg = &v
+		}
+		if c.EditWindowSeconds != nil {
+			v := *c.EditWindowSeconds
+			editWindowArg = &v
+		}
 		err := tx.QueryRow(ctx, `
 			INSERT INTO chat_conversations (kind, name, topic,
 			  created_by_principal_id, created_at_us, updated_at_us,
-			  last_message_at_us, message_count, is_archived, modseq)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
+			  last_message_at_us, message_count, is_archived, modseq,
+			  read_receipts_enabled, retention_seconds, edit_window_seconds)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, TRUE, $10, $11)
 			RETURNING id`,
 			c.Kind, nameArg, topicArg, int64(c.CreatedByPrincipalID),
 			usMicros(now), usMicros(now), lastMsgArg,
-			int64(c.MessageCount), c.IsArchived).Scan(&id)
+			int64(c.MessageCount), c.IsArchived,
+			retentionArg, editWindowArg).Scan(&id)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -190,15 +216,27 @@ func (m *metadata) UpdateChatConversation(ctx context.Context, c store.ChatConve
 			v := usMicros(c.LastMessageAt.UTC())
 			lastMsgArg = &v
 		}
+		var retentionArg, editWindowArg *int64
+		if c.RetentionSeconds != nil {
+			v := *c.RetentionSeconds
+			retentionArg = &v
+		}
+		if c.EditWindowSeconds != nil {
+			v := *c.EditWindowSeconds
+			editWindowArg = &v
+		}
 		tag, err := tx.Exec(ctx, `
 			UPDATE chat_conversations SET
 			  name = $1, topic = $2, last_message_at_us = $3,
 			  message_count = $4, is_archived = $5, updated_at_us = $6,
-			  modseq = modseq + 1
-			 WHERE id = $7`,
+			  read_receipts_enabled = $7, retention_seconds = $8,
+			  edit_window_seconds = $9, modseq = modseq + 1
+			 WHERE id = $10`,
 			nameArg, topicArg, lastMsgArg,
 			int64(c.MessageCount), c.IsArchived,
-			usMicros(now), int64(c.ID))
+			usMicros(now),
+			c.ReadReceiptsEnabled, retentionArg, editWindowArg,
+			int64(c.ID))
 		if err != nil {
 			return mapErr(err)
 		}
@@ -973,6 +1011,176 @@ func (m *metadata) SetLastRead(ctx context.Context, principalID store.PrincipalI
 		return appendStateChange(ctx, tx, principalID,
 			store.EntityKindMembership, uint64(memID), uint64(conversationID),
 			store.ChangeOpUpdated, now)
+	})
+}
+
+// -- Account-default settings (Phase 2 Wave 2.9.6 REQ-CHAT-20/92) ---
+
+func (m *metadata) GetChatAccountSettings(ctx context.Context, principalID store.PrincipalID) (store.ChatAccountSettings, error) {
+	var (
+		pid                  int64
+		retention, editWin   int64
+		createdUs, updatedUs int64
+	)
+	err := m.s.pool.QueryRow(ctx, `
+		SELECT principal_id, default_retention_seconds, default_edit_window_seconds,
+		       created_at_us, updated_at_us
+		  FROM chat_account_settings WHERE principal_id = $1`, int64(principalID)).
+		Scan(&pid, &retention, &editWin, &createdUs, &updatedUs)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// REQ-CHAT-20 / REQ-CHAT-92: implicit defaults when no row
+			// has been persisted yet.
+			return store.ChatAccountSettings{
+				PrincipalID:              principalID,
+				DefaultRetentionSeconds:  store.ChatDefaultRetentionSeconds,
+				DefaultEditWindowSeconds: store.ChatDefaultEditWindowSeconds,
+			}, nil
+		}
+		return store.ChatAccountSettings{}, mapErr(err)
+	}
+	return store.ChatAccountSettings{
+		PrincipalID:              store.PrincipalID(pid),
+		DefaultRetentionSeconds:  retention,
+		DefaultEditWindowSeconds: editWin,
+		CreatedAt:                fromMicros(createdUs),
+		UpdatedAt:                fromMicros(updatedUs),
+	}, nil
+}
+
+func (m *metadata) UpsertChatAccountSettings(ctx context.Context, settings store.ChatAccountSettings) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO chat_account_settings (principal_id,
+			  default_retention_seconds, default_edit_window_seconds,
+			  created_at_us, updated_at_us)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (principal_id) DO UPDATE SET
+			  default_retention_seconds = EXCLUDED.default_retention_seconds,
+			  default_edit_window_seconds = EXCLUDED.default_edit_window_seconds,
+			  updated_at_us = EXCLUDED.updated_at_us`,
+			int64(settings.PrincipalID),
+			settings.DefaultRetentionSeconds,
+			settings.DefaultEditWindowSeconds,
+			usMicros(now), usMicros(now))
+		return mapErr(err)
+	})
+}
+
+func (m *metadata) ListChatAccountSettingsForRetention(ctx context.Context, afterID store.PrincipalID, limit int) ([]store.ChatAccountSettings, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	rows, err := m.s.pool.Query(ctx, `
+		SELECT principal_id, default_retention_seconds, default_edit_window_seconds,
+		       created_at_us, updated_at_us
+		  FROM chat_account_settings
+		 WHERE default_retention_seconds > 0 AND principal_id > $1
+		 ORDER BY principal_id ASC LIMIT $2`,
+		int64(afterID), limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.ChatAccountSettings
+	for rows.Next() {
+		var (
+			pid                  int64
+			retention, editWin   int64
+			createdUs, updatedUs int64
+		)
+		if err := rows.Scan(&pid, &retention, &editWin, &createdUs, &updatedUs); err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, store.ChatAccountSettings{
+			PrincipalID:              store.PrincipalID(pid),
+			DefaultRetentionSeconds:  retention,
+			DefaultEditWindowSeconds: editWin,
+			CreatedAt:                fromMicros(createdUs),
+			UpdatedAt:                fromMicros(updatedUs),
+		})
+	}
+	return out, rows.Err()
+}
+
+// -- Retention helpers (Phase 2 Wave 2.9.6 REQ-CHAT-92) -------------
+
+func (m *metadata) ListChatConversationsForRetention(ctx context.Context, afterID store.ConversationID, limit int) ([]store.ChatConversation, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	rows, err := m.s.pool.Query(ctx,
+		`SELECT `+chatConversationSelectColumnsPG+`
+		   FROM chat_conversations
+		  WHERE retention_seconds IS NOT NULL AND retention_seconds > 0
+		    AND id > $1
+		  ORDER BY id ASC LIMIT $2`,
+		int64(afterID), limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.ChatConversation
+	for rows.Next() {
+		c, err := scanChatConversationPG(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) HardDeleteChatMessage(ctx context.Context, id store.ChatMessageID) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var convID, owner int64
+		err := tx.QueryRow(ctx, `
+			SELECT cm.conversation_id, cc.created_by_principal_id
+			  FROM chat_messages cm
+			  JOIN chat_conversations cc ON cc.id = cm.conversation_id
+			 WHERE cm.id = $1`, int64(id)).Scan(&convID, &owner)
+		if err != nil {
+			return mapErr(err)
+		}
+		// TODO(2.9.6-coord): chat-message attachments are referenced via
+		// chat_messages.attachments_json, not blob_refs.ref_count, so a
+		// pure DELETE here does not decrement the blob refcount. The
+		// existing storeblobfs / blob_refs path is wired for mail
+		// messages only; chat blob refcounting is a follow-up.
+		tag, err := tx.Exec(ctx,
+			`DELETE FROM chat_messages WHERE id = $1`, int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		// Recompute the conversation's denormalised counters from the
+		// surviving live rows.
+		var (
+			liveCount int64
+			lastUs    *int64
+		)
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(*), MAX(created_at_us)
+			  FROM chat_messages
+			 WHERE conversation_id = $1 AND deleted_at_us IS NULL`,
+			convID).Scan(&liveCount, &lastUs); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE chat_conversations SET
+			  message_count = $1, last_message_at_us = $2,
+			  updated_at_us = $3, modseq = modseq + 1
+			 WHERE id = $4`,
+			liveCount, lastUs, usMicros(now), convID); err != nil {
+			return mapErr(err)
+		}
+		return appendStateChange(ctx, tx, store.PrincipalID(owner),
+			store.EntityKindChatMessage, uint64(id), uint64(convID),
+			store.ChangeOpDestroyed, now)
 	})
 }
 

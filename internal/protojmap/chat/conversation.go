@@ -114,15 +114,25 @@ func (h *convGetHandler) Execute(ctx context.Context, args json.RawMessage) (any
 // memberships into the wire-form jmapConversation, filling in the
 // requesting principal's myMembership row and unread count.
 func renderConversation(c store.ChatConversation, members []store.ChatMembership, self store.PrincipalID) jmapConversation {
+	// REQ-CHAT-31 / REQ-CHAT-32: DMs always advertise read receipts on,
+	// regardless of the underlying column. Spaces project the column
+	// value verbatim.
+	receipts := c.ReadReceiptsEnabled
+	if c.Kind == store.ChatConversationKindDM {
+		receipts = true
+	}
 	out := jmapConversation{
-		ID:            jmapIDFromConversation(c.ID),
-		Kind:          c.Kind,
-		Name:          c.Name,
-		Topic:         c.Topic,
-		LastMessageAt: rfc3339OrNilFromPtr(c.LastMessageAt),
-		MessageCount:  c.MessageCount,
-		IsArchived:    c.IsArchived,
-		Members:       make([]jmapConversationMember, 0, len(members)),
+		ID:                  jmapIDFromConversation(c.ID),
+		Kind:                c.Kind,
+		Name:                c.Name,
+		Topic:               c.Topic,
+		LastMessageAt:       rfc3339OrNilFromPtr(c.LastMessageAt),
+		MessageCount:        c.MessageCount,
+		IsArchived:          c.IsArchived,
+		ReadReceiptsEnabled: receipts,
+		RetentionSeconds:    int64PtrOrNil(c.RetentionSeconds),
+		EditWindowSeconds:   int64PtrOrNil(c.EditWindowSeconds),
+		Members:             make([]jmapConversationMember, 0, len(members)),
 	}
 	var unreadAnchor *store.ChatMessageID
 	for _, m := range members {
@@ -332,9 +342,12 @@ type convCreateInput struct {
 }
 
 type convUpdateInput struct {
-	Name       *string `json:"name"`
-	Topic      *string `json:"topic"`
-	IsArchived *bool   `json:"isArchived"`
+	Name                *string         `json:"name"`
+	Topic               *string         `json:"topic"`
+	IsArchived          *bool           `json:"isArchived"`
+	ReadReceiptsEnabled *bool           `json:"readReceiptsEnabled"`
+	RetentionSeconds    json.RawMessage `json:"retentionSeconds"`
+	EditWindowSeconds   json.RawMessage `json:"editWindowSeconds"`
 }
 
 type convSetHandler struct{ h *handlerSet }
@@ -631,6 +644,40 @@ func (h *handlerSet) updateConversation(
 	}
 	if in.IsArchived != nil {
 		c.IsArchived = *in.IsArchived
+	}
+	// REQ-CHAT-32: only Spaces honour readReceiptsEnabled. DMs always
+	// have receipts on (REQ-CHAT-31); rejecting an explicit false on a
+	// DM is the cleanest signal that the property is not configurable
+	// there. true on a DM is a no-op (already true on the wire) and is
+	// accepted silently for forward-compatible client convenience.
+	if in.ReadReceiptsEnabled != nil {
+		if c.Kind == store.ChatConversationKindDM {
+			if !*in.ReadReceiptsEnabled {
+				return &setError{
+					Type: "invalidProperties", Properties: []string{"readReceiptsEnabled"},
+					Description: "DMs always have read receipts on; cannot disable for a DM",
+				}, nil
+			}
+		} else {
+			c.ReadReceiptsEnabled = *in.ReadReceiptsEnabled
+		}
+	}
+	// REQ-CHAT-92: retentionSeconds is a nullable int64 — JSON null
+	// clears the override (use account default), 0 means "never expire",
+	// positive values are seconds since CreatedAt at which the sweeper
+	// hard-deletes a message.
+	if len(in.RetentionSeconds) > 0 {
+		serr := applyNullableInt64(in.RetentionSeconds, "retentionSeconds", &c.RetentionSeconds)
+		if serr != nil {
+			return serr, nil
+		}
+	}
+	// REQ-CHAT-20: editWindowSeconds — same null/0/positive semantics.
+	if len(in.EditWindowSeconds) > 0 {
+		serr := applyNullableInt64(in.EditWindowSeconds, "editWindowSeconds", &c.EditWindowSeconds)
+		if serr != nil {
+			return serr, nil
+		}
 	}
 	c.UpdatedAt = h.clk.Now()
 	if err := h.store.Meta().UpdateChatConversation(ctx, c); err != nil {

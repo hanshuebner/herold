@@ -122,6 +122,30 @@ type ChatConversation struct {
 	MessageCount int
 	// IsArchived suppresses the conversation from default views.
 	IsArchived bool
+	// ReadReceiptsEnabled toggles whether members of a Space see each
+	// other's read pointers via Membership/get (REQ-CHAT-32). DMs
+	// ignore the flag and always expose receipts (REQ-CHAT-31).
+	// Default: true.
+	ReadReceiptsEnabled bool
+	// RetentionSeconds, when non-nil, overrides the account-default
+	// retention for messages in this conversation (REQ-CHAT-92).
+	// Semantics:
+	//   nil      — use the owning principal's
+	//              ChatAccountSettings.DefaultRetentionSeconds.
+	//   *p == 0  — never expire (the per-conversation explicit
+	//              "keep forever" override of an account default).
+	//   *p > 0   — seconds since CreatedAt after which the retention
+	//              sweeper hard-deletes the message.
+	RetentionSeconds *int64
+	// EditWindowSeconds, when non-nil, overrides the account-default
+	// edit window for messages in this conversation (REQ-CHAT-20).
+	// Semantics:
+	//   nil      — use the owning principal's
+	//              ChatAccountSettings.DefaultEditWindowSeconds.
+	//   *p == 0  — no time limit; sender can edit at any time.
+	//   *p > 0   — seconds after CreatedAt after which a Message/set
+	//              update of the body fields is rejected.
+	EditWindowSeconds *int64
 	// ModSeq is the per-row monotonic counter used for /changes
 	// pagination at the JMAP layer.
 	ModSeq ModSeq
@@ -274,6 +298,44 @@ type ChatBlock struct {
 	// reference.
 	Reason string
 }
+
+// ChatAccountSettings is one row in the chat_account_settings table
+// (Phase 2 Wave 2.9.6). Carries the per-principal defaults consulted
+// when a chat_conversations row leaves RetentionSeconds /
+// EditWindowSeconds at NULL ("use account default"). When no row is
+// persisted for a principal, the metadata layer returns the implicit
+// defaults: DefaultRetentionSeconds=0 (never expire) and
+// DefaultEditWindowSeconds=900 (15 minutes; REQ-CHAT-20).
+type ChatAccountSettings struct {
+	// PrincipalID is the owning principal.
+	PrincipalID PrincipalID
+	// DefaultRetentionSeconds is the account-wide retention default for
+	// conversations whose RetentionSeconds is NULL (REQ-CHAT-92). 0
+	// means "never expire". Positive values are seconds since the
+	// message's CreatedAt at which the retention sweeper hard-deletes
+	// it.
+	DefaultRetentionSeconds int64
+	// DefaultEditWindowSeconds is the account-wide edit-window default
+	// for conversations whose EditWindowSeconds is NULL (REQ-CHAT-20).
+	// 0 means "no time limit". Positive values are seconds since the
+	// message's CreatedAt after which the body becomes immutable.
+	DefaultEditWindowSeconds int64
+	// CreatedAt is the row insert instant.
+	CreatedAt time.Time
+	// UpdatedAt is the most recent mutation instant.
+	UpdatedAt time.Time
+}
+
+// Default values returned by GetChatAccountSettings when no row has
+// been persisted for the requested principal.
+const (
+	// ChatDefaultRetentionSeconds is the implicit default retention
+	// window: 0 means "never expire" (REQ-CHAT-92).
+	ChatDefaultRetentionSeconds int64 = 0
+	// ChatDefaultEditWindowSeconds is the implicit default edit window:
+	// 15 minutes (REQ-CHAT-20).
+	ChatDefaultEditWindowSeconds int64 = 900
+)
 
 // EntityKind values for the chat subsystem. Mirrors the JMAP datatype
 // names in REQ-CHAT-DATA: Conversation, Message, Membership.

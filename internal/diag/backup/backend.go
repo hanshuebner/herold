@@ -201,6 +201,8 @@ func rowsForTable(table string) (any, bool) {
 		return &CalendarRow{}, true
 	case "calendar_events":
 		return &CalendarEventRow{}, true
+	case "chat_account_settings":
+		return &ChatAccountSettingsRow{}, true
 	case "chat_conversations":
 		return &ChatConversationRow{}, true
 	case "chat_memberships":

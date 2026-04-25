@@ -76,6 +76,9 @@ type phase2Data struct {
 	nextChatMessage      store.ChatMessageID
 	// chatBlocks is keyed by (blocker, blocked) pair.
 	chatBlocks map[chatBlockKey]store.ChatBlock
+
+	// Wave 2.9.6 chat account-default settings (REQ-CHAT-20/92).
+	chatAccountSettings map[store.PrincipalID]store.ChatAccountSettings
 }
 
 // chatBlockKey is the composite primary key for chat_blocks.
@@ -132,6 +135,7 @@ func (s *Store) ensurePhase2() {
 		chatMessages:         make(map[store.ChatMessageID]store.ChatMessage),
 		nextChatMessage:      1,
 		chatBlocks:           make(map[chatBlockKey]store.ChatBlock),
+		chatAccountSettings:  make(map[store.PrincipalID]store.ChatAccountSettings),
 	}
 }
 

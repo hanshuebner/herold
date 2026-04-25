@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/hanshuebner/herold/internal/chatretention"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
@@ -373,6 +374,23 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	g.Go(func() error {
 		if err := snoozeWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.LogAttrs(context.Background(), slog.LevelWarn, "snooze worker exited", slog.String("err", err.Error()))
+			return err
+		}
+		return nil
+	})
+
+	// Chat retention sweeper — Phase 2 Wave 2.9.6 REQ-CHAT-92. Hard-
+	// deletes chat_messages whose conversation override or owning
+	// account default has expired the per-message retention window.
+	// Bounded by the lifecycle errgroup so shutdown drains it.
+	chatRetentionWorker := chatretention.NewWorker(chatretention.Options{
+		Store:  st,
+		Logger: logger.With("subsystem", "chatretention"),
+		Clock:  clk,
+	})
+	g.Go(func() error {
+		if err := chatRetentionWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.LogAttrs(context.Background(), slog.LevelWarn, "chatretention worker exited", slog.String("err", err.Error()))
 			return err
 		}
 		return nil

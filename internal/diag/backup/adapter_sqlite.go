@@ -612,20 +612,36 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "chat_account_settings":
+		return enumerate(ctx, s.tx,
+			`SELECT principal_id, default_retention_seconds,
+			        default_edit_window_seconds, created_at_us, updated_at_us
+			   FROM chat_account_settings ORDER BY principal_id`,
+			func(rs *sql.Rows) (any, error) {
+				var r ChatAccountSettingsRow
+				if err := rs.Scan(&r.PrincipalID, &r.DefaultRetentionSeconds,
+					&r.DefaultEditWindowSeconds, &r.CreatedAtUs, &r.UpdatedAtUs); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
 	case "chat_conversations":
 		return enumerate(ctx, s.tx,
 			`SELECT id, kind, name, topic, created_by_principal_id,
 			        created_at_us, updated_at_us, last_message_at_us,
-			        message_count, is_archived, modseq
+			        message_count, is_archived, modseq,
+			        read_receipts_enabled, retention_seconds, edit_window_seconds
 			   FROM chat_conversations ORDER BY id`,
 			func(rs *sql.Rows) (any, error) {
 				var r ChatConversationRow
 				var name, topic sql.NullString
 				var lastMsg sql.NullInt64
-				var archived int64
+				var archived, readReceipts int64
+				var retention, editWindow sql.NullInt64
 				if err := rs.Scan(&r.ID, &r.Kind, &name, &topic, &r.CreatedByPrincipalID,
 					&r.CreatedAtUs, &r.UpdatedAtUs, &lastMsg,
-					&r.MessageCount, &archived, &r.ModSeq); err != nil {
+					&r.MessageCount, &archived, &r.ModSeq,
+					&readReceipts, &retention, &editWindow); err != nil {
 					return nil, err
 				}
 				if name.Valid {
@@ -641,6 +657,15 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 					r.LastMessageAtUs = &v
 				}
 				r.IsArchived = archived != 0
+				r.ReadReceiptsEnabled = readReceipts != 0
+				if retention.Valid {
+					v := retention.Int64
+					r.RetentionSeconds = &v
+				}
+				if editWindow.Valid {
+					v := editWindow.Int64
+					r.EditWindowSeconds = &v
+				}
 				return &r, nil
 			}, fn)
 	case "chat_memberships":
@@ -1109,6 +1134,16 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			r.Summary, organizer, r.Status,
 			r.CreatedAtUs, r.UpdatedAtUs, r.ModSeq)
 		return err
+	case "chat_account_settings":
+		r := row.(*ChatAccountSettingsRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO chat_account_settings (principal_id,
+			   default_retention_seconds, default_edit_window_seconds,
+			   created_at_us, updated_at_us)
+			 VALUES (?, ?, ?, ?, ?)`,
+			r.PrincipalID, r.DefaultRetentionSeconds, r.DefaultEditWindowSeconds,
+			r.CreatedAtUs, r.UpdatedAtUs)
+		return err
 	case "chat_conversations":
 		r := row.(*ChatConversationRow)
 		var name, topic, lastMsg any
@@ -1121,14 +1156,23 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		if r.LastMessageAtUs != nil {
 			lastMsg = *r.LastMessageAtUs
 		}
+		var retention, editWindow any
+		if r.RetentionSeconds != nil {
+			retention = *r.RetentionSeconds
+		}
+		if r.EditWindowSeconds != nil {
+			editWindow = *r.EditWindowSeconds
+		}
 		_, err := s.tx.ExecContext(ctx,
 			`INSERT INTO chat_conversations (id, kind, name, topic,
 			   created_by_principal_id, created_at_us, updated_at_us,
-			   last_message_at_us, message_count, is_archived, modseq)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   last_message_at_us, message_count, is_archived, modseq,
+			   read_receipts_enabled, retention_seconds, edit_window_seconds)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.Kind, name, topic, r.CreatedByPrincipalID,
 			r.CreatedAtUs, r.UpdatedAtUs, lastMsg,
-			r.MessageCount, boolToInt(r.IsArchived), r.ModSeq)
+			r.MessageCount, boolToInt(r.IsArchived), r.ModSeq,
+			boolToInt(r.ReadReceiptsEnabled), retention, editWindow)
 		return err
 	case "chat_memberships":
 		r := row.(*ChatMembershipRow)

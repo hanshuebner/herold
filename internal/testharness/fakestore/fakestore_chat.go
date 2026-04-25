@@ -32,9 +32,20 @@ func (m *metaFace) InsertChatConversation(ctx context.Context, c store.ChatConve
 	}
 	c.UpdatedAt = now
 	c.ModSeq = 1
+	// REQ-CHAT-32: new conversations default to read_receipts on. Mirror
+	// the SQL backends' schema default; callers opt out via Update.
+	c.ReadReceiptsEnabled = true
 	if c.LastMessageAt != nil {
 		t := c.LastMessageAt.UTC()
 		c.LastMessageAt = &t
+	}
+	if c.RetentionSeconds != nil {
+		v := *c.RetentionSeconds
+		c.RetentionSeconds = &v
+	}
+	if c.EditWindowSeconds != nil {
+		v := *c.EditWindowSeconds
+		c.EditWindowSeconds = &v
 	}
 	s.phase2.chatConversations[c.ID] = c
 	s.appendStateChangeLocked(store.StateChange{
@@ -127,6 +138,19 @@ func (m *metaFace) UpdateChatConversation(ctx context.Context, c store.ChatConve
 	}
 	cur.MessageCount = c.MessageCount
 	cur.IsArchived = c.IsArchived
+	cur.ReadReceiptsEnabled = c.ReadReceiptsEnabled
+	if c.RetentionSeconds != nil {
+		v := *c.RetentionSeconds
+		cur.RetentionSeconds = &v
+	} else {
+		cur.RetentionSeconds = nil
+	}
+	if c.EditWindowSeconds != nil {
+		v := *c.EditWindowSeconds
+		cur.EditWindowSeconds = &v
+	} else {
+		cur.EditWindowSeconds = nil
+	}
 	cur.UpdatedAt = now
 	cur.ModSeq++
 	s.phase2.chatConversations[c.ID] = cur
@@ -782,12 +806,179 @@ func (m *metaFace) SetLastRead(ctx context.Context, principalID store.PrincipalI
 	return fmt.Errorf("membership (%d, %d): %w", conversationID, principalID, store.ErrNotFound)
 }
 
+// -- Account-default settings (Phase 2 Wave 2.9.6 REQ-CHAT-20/92) ---
+
+func (m *metaFace) GetChatAccountSettings(ctx context.Context, principalID store.PrincipalID) (store.ChatAccountSettings, error) {
+	if err := ctx.Err(); err != nil {
+		return store.ChatAccountSettings{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return store.ChatAccountSettings{
+			PrincipalID:              principalID,
+			DefaultRetentionSeconds:  store.ChatDefaultRetentionSeconds,
+			DefaultEditWindowSeconds: store.ChatDefaultEditWindowSeconds,
+		}, nil
+	}
+	if cur, ok := s.phase2.chatAccountSettings[principalID]; ok {
+		return cur, nil
+	}
+	return store.ChatAccountSettings{
+		PrincipalID:              principalID,
+		DefaultRetentionSeconds:  store.ChatDefaultRetentionSeconds,
+		DefaultEditWindowSeconds: store.ChatDefaultEditWindowSeconds,
+	}, nil
+}
+
+func (m *metaFace) UpsertChatAccountSettings(ctx context.Context, settings store.ChatAccountSettings) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	now := s.clk.Now()
+	cur, ok := s.phase2.chatAccountSettings[settings.PrincipalID]
+	if !ok {
+		settings.CreatedAt = now
+	} else {
+		settings.CreatedAt = cur.CreatedAt
+	}
+	settings.UpdatedAt = now
+	s.phase2.chatAccountSettings[settings.PrincipalID] = settings
+	return nil
+}
+
+func (m *metaFace) ListChatAccountSettingsForRetention(ctx context.Context, afterID store.PrincipalID, limit int) ([]store.ChatAccountSettings, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return nil, nil
+	}
+	var out []store.ChatAccountSettings
+	for pid, settings := range s.phase2.chatAccountSettings {
+		if settings.DefaultRetentionSeconds <= 0 {
+			continue
+		}
+		if pid <= afterID {
+			continue
+		}
+		out = append(out, settings)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PrincipalID < out[j].PrincipalID })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// -- Retention helpers (Phase 2 Wave 2.9.6 REQ-CHAT-92) -------------
+
+func (m *metaFace) ListChatConversationsForRetention(ctx context.Context, afterID store.ConversationID, limit int) ([]store.ChatConversation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return nil, nil
+	}
+	var out []store.ChatConversation
+	for _, c := range s.phase2.chatConversations {
+		if c.RetentionSeconds == nil || *c.RetentionSeconds <= 0 {
+			continue
+		}
+		if c.ID <= afterID {
+			continue
+		}
+		out = append(out, cloneChatConversation(c))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *metaFace) HardDeleteChatMessage(ctx context.Context, id store.ChatMessageID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	cur, ok := s.phase2.chatMessages[id]
+	if !ok {
+		return fmt.Errorf("chat message %d: %w", id, store.ErrNotFound)
+	}
+	conv, ok := s.phase2.chatConversations[cur.ConversationID]
+	if !ok {
+		return fmt.Errorf("conversation %d: %w", cur.ConversationID, store.ErrNotFound)
+	}
+	now := s.clk.Now()
+	delete(s.phase2.chatMessages, id)
+	// Recompute conversation denormalised counters (TODO(2.9.6-coord):
+	// blob refcount unref for chat attachments lands when the chat-side
+	// blob_refs writer ships).
+	var (
+		liveCount int
+		lastAt    *time.Time
+	)
+	for _, msg := range s.phase2.chatMessages {
+		if msg.ConversationID != cur.ConversationID || msg.DeletedAt != nil {
+			continue
+		}
+		liveCount++
+		if lastAt == nil || msg.CreatedAt.After(*lastAt) {
+			t := msg.CreatedAt
+			lastAt = &t
+		}
+	}
+	conv.MessageCount = liveCount
+	conv.LastMessageAt = lastAt
+	conv.UpdatedAt = now
+	conv.ModSeq++
+	s.phase2.chatConversations[cur.ConversationID] = conv
+	s.appendStateChangeLocked(store.StateChange{
+		PrincipalID:    conv.CreatedByPrincipalID,
+		Kind:           store.EntityKindChatMessage,
+		EntityID:       uint64(id),
+		ParentEntityID: uint64(cur.ConversationID),
+		Op:             store.ChangeOpDestroyed,
+		ProducedAt:     now,
+	})
+	return nil
+}
+
 // -- clone helpers ----------------------------------------------------
 
 func cloneChatConversation(c store.ChatConversation) store.ChatConversation {
 	if c.LastMessageAt != nil {
 		t := *c.LastMessageAt
 		c.LastMessageAt = &t
+	}
+	if c.RetentionSeconds != nil {
+		v := *c.RetentionSeconds
+		c.RetentionSeconds = &v
+	}
+	if c.EditWindowSeconds != nil {
+		v := *c.EditWindowSeconds
+		c.EditWindowSeconds = &v
 	}
 	return c
 }

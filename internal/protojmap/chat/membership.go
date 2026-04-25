@@ -80,9 +80,25 @@ func (h *memGetHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 			byID[m.ID] = m
 		}
 	}
+	// Resolve the per-conversation read-receipt policy once so the
+	// REQ-CHAT-32 suppression below does not re-fetch on every row.
+	convCache := map[store.ConversationID]store.ChatConversation{}
+	getConv := func(cid store.ConversationID) (store.ChatConversation, error) {
+		if c, ok := convCache[cid]; ok {
+			return c, nil
+		}
+		c, err := h.h.store.Meta().GetChatConversation(ctx, cid)
+		if err != nil {
+			return store.ChatConversation{}, err
+		}
+		convCache[cid] = c
+		return c, nil
+	}
 
 	if req.IDs == nil {
-		// Default scope: only the caller's own membership rows.
+		// Default scope: only the caller's own membership rows. The
+		// caller always sees their own lastReadMessageId regardless of
+		// the Space's readReceiptsEnabled flag (REQ-CHAT-32).
 		for _, m := range mine {
 			resp.List = append(resp.List, renderMembership(m))
 		}
@@ -99,7 +115,20 @@ func (h *memGetHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 			resp.NotFound = append(resp.NotFound, raw)
 			continue
 		}
-		resp.List = append(resp.List, renderMembership(m))
+		// REQ-CHAT-32: when a Space has readReceiptsEnabled=false,
+		// suppress lastReadMessageId for OTHER members. The requester's
+		// own row is always rendered with the pointer intact.
+		conv, err := getConv(m.ConversationID)
+		if err != nil {
+			return nil, serverFail(err)
+		}
+		suppress := conv.Kind == store.ChatConversationKindSpace &&
+			!conv.ReadReceiptsEnabled && m.PrincipalID != pid
+		if suppress {
+			resp.List = append(resp.List, renderMembershipMasked(m))
+		} else {
+			resp.List = append(resp.List, renderMembership(m))
+		}
 	}
 	return resp, nil
 }
@@ -121,6 +150,18 @@ func renderMembership(m store.ChatMembership) jmapMembership {
 	} else {
 		out.LastReadMessageID = jmapIDFromMessage(*m.LastReadMessageID)
 	}
+	return out
+}
+
+// renderMembershipMasked is renderMembership with lastReadMessageId
+// elided. Used by Membership/get when REQ-CHAT-32 mandates that the
+// caller not see another member's read pointer (Space with
+// readReceiptsEnabled=false). The server still tracks readThrough
+// internally for unread-count maths; only the wire projection is
+// masked.
+func renderMembershipMasked(m store.ChatMembership) jmapMembership {
+	out := renderMembership(m)
+	out.LastReadMessageID = ""
 	return out
 }
 

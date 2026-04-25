@@ -97,6 +97,18 @@ func rfc3339OrNilFromPtr(t *time.Time) any {
 	return t.UTC().Format(rfc3339Layout)
 }
 
+// int64PtrOrNil returns *p as a JSON number when non-nil, or nil for a
+// JSON-null projection. Used by Conversation rendering for nullable
+// retentionSeconds / editWindowSeconds fields where null means "use
+// the account default" and 0 has its own distinct meaning per the
+// store.ChatConversation field docs.
+func int64PtrOrNil(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
 // jmapMessageBody is the body envelope on a wire-form Message.
 type jmapMessageBody struct {
 	Text   string `json:"text"`
@@ -125,17 +137,30 @@ type jmapConversationMember struct {
 // jmapConversation is the wire-form Conversation object. Per
 // REQ-CHAT-02: id, kind, name, topic, lastMessageAt, messageCount,
 // isArchived, members, myMembership, unreadCount.
+//
+// Wave 2.9.6 additive properties (REQ-CHAT-20/32/92):
+//   - readReceiptsEnabled (REQ-CHAT-32) — Spaces only; DMs always
+//     true on the wire. Server-side mutable on Spaces via
+//     Conversation/set { update }.
+//   - retentionSeconds (REQ-CHAT-92) — *int64 pointer in store form;
+//     wire form uses any so a JSON null distinguishes "use account
+//     default" from "never expire" (0).
+//   - editWindowSeconds (REQ-CHAT-20) — same nil-vs-0 distinction as
+//     retentionSeconds.
 type jmapConversation struct {
-	ID            jmapID                   `json:"id"`
-	Kind          string                   `json:"kind"`
-	Name          string                   `json:"name"`
-	Topic         string                   `json:"topic"`
-	LastMessageAt any                      `json:"lastMessageAt"`
-	MessageCount  int                      `json:"messageCount"`
-	IsArchived    bool                     `json:"isArchived"`
-	Members       []jmapConversationMember `json:"members"`
-	MyMembership  *jmapMembership          `json:"myMembership"`
-	UnreadCount   int                      `json:"unreadCount"`
+	ID                  jmapID                   `json:"id"`
+	Kind                string                   `json:"kind"`
+	Name                string                   `json:"name"`
+	Topic               string                   `json:"topic"`
+	LastMessageAt       any                      `json:"lastMessageAt"`
+	MessageCount        int                      `json:"messageCount"`
+	IsArchived          bool                     `json:"isArchived"`
+	ReadReceiptsEnabled bool                     `json:"readReceiptsEnabled"`
+	RetentionSeconds    any                      `json:"retentionSeconds"`
+	EditWindowSeconds   any                      `json:"editWindowSeconds"`
+	Members             []jmapConversationMember `json:"members"`
+	MyMembership        *jmapMembership          `json:"myMembership"`
+	UnreadCount         int                      `json:"unreadCount"`
 }
 
 // jmapMembership is the wire-form Membership object.

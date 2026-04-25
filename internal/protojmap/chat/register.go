@@ -34,6 +34,14 @@ type AccountLimits struct {
 	// MaxReactionsPerMessage caps the total reactions across all emojis
 	// on one Message.
 	MaxReactionsPerMessage int `json:"maxReactionsPerMessage"`
+	// DefaultRetentionSeconds advertises the operator's default chat
+	// retention window for this account (REQ-CHAT-92). 0 means
+	// "never expire".
+	DefaultRetentionSeconds int64 `json:"defaultRetentionSeconds"`
+	// DefaultEditWindowSeconds advertises the operator's default chat
+	// edit window for this account (REQ-CHAT-20). 0 means "no time
+	// limit".
+	DefaultEditWindowSeconds int64 `json:"defaultEditWindowSeconds"`
 }
 
 // DefaultLimits returns the conservative defaults from the REQ-CHAT
@@ -45,6 +53,8 @@ func DefaultLimits() AccountLimits {
 		MaxMessageBodyBytes:        64 * 1024,
 		MaxAttachmentsPerMessage:   10,
 		MaxReactionsPerMessage:     100,
+		DefaultRetentionSeconds:    store.ChatDefaultRetentionSeconds,
+		DefaultEditWindowSeconds:   store.ChatDefaultEditWindowSeconds,
 	}
 }
 

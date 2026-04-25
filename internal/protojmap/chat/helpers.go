@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -156,6 +157,41 @@ func parseRFC3339(ts string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("must be an RFC 3339 timestamp: %w", err)
 	}
 	return t, nil
+}
+
+// applyNullableInt64 decodes a tri-state JSON value (null / int) into
+// dst. Used by Conversation/set updates for retentionSeconds and
+// editWindowSeconds where:
+//
+//   - JSON null sets *dst to nil ("use account default").
+//   - JSON 0 sets *dst to a heap int64(0) ("never expire" /
+//     "no time limit").
+//   - JSON positive int sets *dst to a heap int64(n).
+//
+// Negative values are rejected as invalidProperties. Returns a non-nil
+// setError for malformed input; the caller surfaces it under its
+// notUpdated[id] entry.
+func applyNullableInt64(raw json.RawMessage, property string, dst **int64) *setError {
+	if string(raw) == "null" {
+		*dst = nil
+		return nil
+	}
+	var v int64
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return &setError{
+			Type: "invalidProperties", Properties: []string{property},
+			Description: property + " must be a non-negative integer or null",
+		}
+	}
+	if v < 0 {
+		return &setError{
+			Type: "invalidProperties", Properties: []string{property},
+			Description: property + " must be non-negative",
+		}
+	}
+	out := v
+	*dst = &out
+	return nil
 }
 
 // principalConversationIDs returns the set of conversation ids the

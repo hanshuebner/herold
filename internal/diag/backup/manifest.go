@@ -10,7 +10,7 @@ const CurrentBackupVersion = 1
 // CurrentSchemaVersion is the maximum migration number both backends
 // know about today. Bumped whenever a new migration ships in
 // internal/storesqlite/migrations or internal/storepg/migrations.
-const CurrentSchemaVersion = 12
+const CurrentSchemaVersion = 13
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -63,6 +63,10 @@ var TableNames = []string{
 	// Phase 2 LLM categorisation (REQ-FILT-200..221, migration 0009).
 	// Per-principal singleton row; principals already populated above.
 	"jmap_categorisation_config",
+	// Phase 2 Wave 2.9.6 chat per-account defaults (REQ-CHAT-20/92,
+	// migration 0013). FK to principals(id); inserted before the chat
+	// conversation tables which themselves reference principals.
+	"chat_account_settings",
 	"mailboxes",
 	"messages",
 	"mailbox_acl",

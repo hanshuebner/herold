@@ -560,6 +560,32 @@ func (h *handlerSet) updateMessage(
 			return &setError{Type: "invalidProperties", Description: err.Error()}, nil
 		}
 	}
+	// REQ-CHAT-20: enforce the per-account / per-conversation edit
+	// window before applying any body update. The window is consulted
+	// only for body edits; reaction toggles and read-receipt updates
+	// flow through other handlers and are not subject to this rule.
+	if in.Body != nil {
+		conv, err := h.store.Meta().GetChatConversation(ctx, m.ConversationID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return &setError{Type: "notFound"}, nil
+			}
+			return nil, err
+		}
+		windowSecs, err := h.effectiveEditWindow(ctx, conv, caller)
+		if err != nil {
+			return nil, err
+		}
+		if windowSecs > 0 {
+			elapsed := h.clk.Now().Sub(m.CreatedAt)
+			if elapsed > time.Duration(windowSecs)*time.Second {
+				return &setError{
+					Type:        "forbidden",
+					Description: "edit window has expired for this message",
+				}, nil
+			}
+		}
+	}
 	if in.Body != nil {
 		body := *in.Body
 		if body.Format == "" {
@@ -923,6 +949,26 @@ func (h *msgReactHandler) Execute(ctx context.Context, args json.RawMessage) (an
 		Reactions: rendered.Reactions,
 		State:     state,
 	}, nil
+}
+
+// effectiveEditWindow returns the edit-window duration in seconds that
+// applies to a message in conv when sent by sender (REQ-CHAT-20):
+//
+//   - if conv.EditWindowSeconds is non-nil, use it directly;
+//   - otherwise fall back to the sender's
+//     ChatAccountSettings.DefaultEditWindowSeconds.
+//
+// Returns 0 when the effective policy is "no time limit"; positive
+// when the caller must compare elapsed time against the value.
+func (h *handlerSet) effectiveEditWindow(ctx context.Context, conv store.ChatConversation, sender store.PrincipalID) (int64, error) {
+	if conv.EditWindowSeconds != nil {
+		return *conv.EditWindowSeconds, nil
+	}
+	settings, err := h.store.Meta().GetChatAccountSettings(ctx, sender)
+	if err != nil {
+		return 0, err
+	}
+	return settings.DefaultEditWindowSeconds, nil
 }
 
 // silence unused import warnings during in-flight rewrites.

@@ -416,6 +416,21 @@ type ChatConversationRow struct {
 	MessageCount         int64   `json:"message_count"`
 	IsArchived           bool    `json:"is_archived"`
 	ModSeq               int64   `json:"modseq"`
+	// Wave 2.9.6 additive columns (migration 0013).
+	ReadReceiptsEnabled bool   `json:"read_receipts_enabled"`
+	RetentionSeconds    *int64 `json:"retention_seconds,omitempty"`
+	EditWindowSeconds   *int64 `json:"edit_window_seconds,omitempty"`
+}
+
+// ChatAccountSettingsRow mirrors the chat_account_settings table
+// (Phase 2 Wave 2.9.6, migration 0013). Per-principal defaults for
+// chat retention (REQ-CHAT-92) and edit window (REQ-CHAT-20).
+type ChatAccountSettingsRow struct {
+	PrincipalID              int64 `json:"principal_id"`
+	DefaultRetentionSeconds  int64 `json:"default_retention_seconds"`
+	DefaultEditWindowSeconds int64 `json:"default_edit_window_seconds"`
+	CreatedAtUs              int64 `json:"created_at_us"`
+	UpdatedAtUs              int64 `json:"updated_at_us"`
 }
 
 type ChatMembershipRow struct {
