@@ -112,8 +112,18 @@ Deferred: `LIST-MYRIGHTS`, `CONTEXT=SEARCH`, `URLAUTH`.
 - **REQ-PROTO-46** `VacationResponse` object maps to a Sieve vacation rule (REQ-FILT-sieve).
 - **REQ-PROTO-47** `Email/query` + `Email/get` MUST back onto the same FTS index used for IMAP `SEARCH`. One index, two query paths.
 - **REQ-PROTO-48** `pushSubscription` deferred to phase 3 (Web Push with VAPID is complex; SSE covers clients that matter).
+- **REQ-PROTO-49** MUST implement the JMAP snooze extension. Modern mail clients (Apple Mail, Fastmail, etc.) expose "snooze until <time>" as a first-class user action; the de-facto JMAP shape is a `$snoozed` keyword on `Email` plus a `snoozedUntil` (UTCDate) extension property, with a server-side wake-up timer that clears the keyword + the property when `snoozedUntil <= now`. Phase 2.
 
-JMAP Calendars/Contacts/Tasks: out of scope. Groupware dropped entirely (scope non-goal NG3).
+  Concrete contract:
+  - `Email/get` exposes `keywords["$snoozed"] == true` while snoozed and `snoozedUntil: "<UTC ISO 8601>"`.
+  - `Email/set` may set `snoozedUntil` (with or without the matching keyword); the server normalises so the keyword + the property are atomic — setting one sets/clears the other.
+  - The store carries a nullable `snoozed_until_us BIGINT` column on the email row; an in-process scheduler tick (default every 60 s; floor 5 s, configurable) sweeps `WHERE snoozed_until_us <= now AND $snoozed`, clears the keyword + nulls the column, increments `JMAPStates.Email`, and appends a `state_changes` row so JMAP push / IMAP IDLE / NOTIFY clients see the wake.
+  - The IMAP keyword `$snoozed` is reserved as a system keyword: clients can SEARCH KEYWORD `$snoozed` and observe FLAGS containing `$snoozed`; setting or clearing it via STORE keeps the JMAP `snoozedUntil` in sync via the same atomicity invariant.
+  - Optional move-on-snooze: per-principal config, default off — when on, the server moves the message into a mailbox with role `\Snoozed` (creating it lazily if absent) at snooze time and back to its prior mailbox at wake. v1 ships move-off as the default; the move-on path is a Phase-3 candidate.
+  - The IMAP SNOOZE extension (draft-ietf-extra-imap-snooze) is **deferred to Phase 3**. The JMAP path covers Apple Mail and Fastmail; raw-IMAP clients can still set the keyword.
+  - References: draft-ietf-extra-jmap-snooze (the JMAP extension), Fastmail's published JMAP-snooze deployment notes (the de-facto reference implementation).
+
+JMAP Calendars/Contacts/Tasks: out of v1 per NG3; the protocol architecture (`docs/architecture/03-protocol-architecture.md` §JMAP §Capability and account registration) keeps them addable later as datatypes without dispatch-core edits.
 
 ## ManageSieve (REQ-PROTO-MGSV)
 

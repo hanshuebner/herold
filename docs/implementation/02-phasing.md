@@ -72,6 +72,7 @@ Estimated effort: ~14 person-weeks.
 - CONDSTORE/QRESYNC in IMAP.
 - IMAP extended: MOVE, LIST-EXTENDED, LIST-STATUS, SPECIAL-USE, MULTIAPPEND, COMPRESS=DEFLATE, UTF8=ACCEPT.
 - **IMAP NOTIFY (RFC 5465)** — REQ-PROTO-34. Shares the per-principal change feed with IDLE and JMAP push; one event source, three consumers.
+- **JMAP snooze** — REQ-PROTO-49. `$snoozed` keyword + `snoozedUntil` extension property on `Email`, with server-side wake-up sweeper. Migration adds `snoozed_until_us` column to the messages table on both backends; one new typed `store.Metadata` method (`ListDueSnoozedMessages(ctx, now, max)`) plus a tick worker in StartServer (60 s default cadence) that clears the keyword + nulls the column atomically and appends a `state_changes` row so push consumers wake. Move-on-snooze is off by default; reserve the `\Snoozed` mailbox role for Phase-3 promotion. IMAP SNOOZE extension (draft-ietf-extra-imap-snooze) is Phase-3 — JMAP covers the clients that matter today.
 - `protomanagesieve` listener.
 - **`protosend` HTTP send API** (REQ-SEND): send, send-raw, send-batch, quota, stats, idempotency.
 - **`protowebhook` mail-arrival webhooks** (REQ-HOOK): CRUD, delivery with inline/fetch-URL bodies, retry, HMAC signature.
