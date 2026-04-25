@@ -77,6 +77,8 @@ New in v1 scope. Prevents exfiltration and heavy-handed client behavior.
 - **REQ-STORE-31** Per-message-in-mailbox: blob ID, UID, MODSEQ, flags, internal-date, received-date, size, JMAP id, threadId, parsed header cache.
 - **REQ-STORE-32** MODSEQ strictly increasing per mailbox. JMAP state tracks per-type + per-account.
 - **REQ-STORE-33** Delete semantics: `\Deleted` + `EXPUNGE` or JMAP `Email/set destroy`. Blob refcount decremented; blob eventually GC'd.
+- **REQ-STORE-34** Mailbox row carries an optional `color` column (string, hex like `#5B8DEE`, NULL when unset). Read/write through JMAP per REQ-PROTO-56. Not advertised to IMAP clients (no IMAP keyword for mailbox colour).
+- **REQ-STORE-35** Identity row carries an optional `signature` column (plain-text body, NULL when unset; HTML signature deferred to phase 2 as a separate column). Read/write through JMAP per REQ-PROTO-57. Used by clients to populate compose; not embedded automatically by the server in outgoing messages — the client decides whether and how to insert it.
 
 ## Threading
 

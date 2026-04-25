@@ -81,7 +81,8 @@ Runs once the message is accepted in principle but before it's written to the re
 
 - **REQ-FLOW-60** Every accepted outbound message goes into the durable outbound queue. No synchronous delivery.
 - **REQ-FLOW-61** Each recipient of a multi-recipient message becomes an independent queue item keyed by destination host/IP (to allow per-destination scheduling and retries).
-- **REQ-FLOW-62** Queue item carries: message blob reference, sender, recipient, next-attempt time, attempt count, last error, optional priority, DSN NOTIFY flags, expiry time.
+- **REQ-FLOW-62** Queue item carries: message blob reference, sender, recipient, next-attempt time, attempt count, last error, optional priority, DSN NOTIFY flags, expiry time, **scheduled-not-before time (`send_at`)**.
+- **REQ-FLOW-63** Queue MUST honour the `EmailSubmission.sendAt` value on submission insertion (REQ-PROTO-58). The first delivery attempt is gated by `next_attempt_time = max(now, send_at)`; the submission is invisible to remote SMTP delivery until `send_at`. `EmailSubmission/set { destroy }` issued before `send_at` MUST atomically remove the queue items belonging to the submission — no message goes out. Cancellation after `send_at` is best-effort: if the message has already begun handoff to remote SMTP, destroy is a no-op. This pairs with tabard's send-undo and (later) user-facing scheduled send.
 
 ### Delivery
 

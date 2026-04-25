@@ -1,12 +1,14 @@
 # 00 — Scope and non-goals
 
-*(Revised 2026-04-24 — rescaled, LLM-default spam, multi-node dropped, plugin system in v1, config split, dual metadata-store backends (SQLite + Postgres), large-mailbox support, HTTP send API + receive webhooks, external-IdP federation.)*
+*(Revised 2026-04-25 — JMAP for Calendars/Contacts in scope (phase 2); chat + 1:1 video calls in scope (phase 2); coterminous with the tabard suite plan.)*
 
 ## Vision
 
-A self-hostable, single-node mail server: SMTP MTA + IMAP/JMAP mailbox + HTTP send API + receive webhooks + Sieve + LLM-based spam classification, with a clean operator experience and a first-class plugin system for DNS providers and pluggable integrations. Sized for small-to-medium self-hosters, including power users with 1 TB+ mailboxes — **not** hosting providers, **not** enterprise.
+A self-hostable, single-node communications server. The substrate beneath the **tabard** suite (mail, calendar, contacts, chat) plus full SMTP MTA / IMAP for traditional mail clients. SMTP MTA + IMAP / JMAP mailbox + JMAP for Calendars + JMAP for Contacts + chat (DMs, Spaces, 1:1 video calls) + HTTP send API + receive webhooks + Sieve + LLM-based spam classification + LLM-based message categorisation, with a clean operator experience and a first-class plugin system. Sized for small-to-medium self-hosters, including power users with 1 TB+ mailboxes — **not** hosting providers, **not** enterprise.
 
-Stalwart is the closest functional reference. Herold narrows the target in some dimensions (no multi-tenancy, no multi-node, no bundled rule-based spam) and widens it in others (HTTP send/receive APIs, large-mailbox support, plugin-first extensibility).
+Stalwart is the closest functional reference for the mail half. The chat / video-call half has no direct reference in the same product family — those are net-new herold scope, sized for the same single-node target.
+
+Herold narrows the target in some dimensions (no multi-tenancy, no multi-node, no bundled rule-based spam) and widens it in others (HTTP send/receive APIs, large-mailbox support, plugin-first extensibility, JMAP-native calendar/contacts, integrated chat).
 
 ## Goals
 
@@ -28,9 +30,9 @@ Stalwart is the closest functional reference. Herold narrows the target in some 
 
 - **NG1.** Hosting-provider / multi-tenancy features. No tenants, no per-tenant quotas, no per-tenant branding.
 - **NG2.** Multi-node deployment. Single node only. Operators needing HA use hypervisor-level tricks (ZFS snapshot + failover, shared block storage). v1 does not grow into multi-node.
-- **NG3.** Groupware (CalDAV/CardDAV/WebDAV). Out of v1. Users wanting calendar/contacts in v1 run a standalone CalDAV/CardDAV service alongside. The protocol architecture (`docs/architecture/03-protocol-architecture.md` §JMAP §Capability and account registration; `docs/architecture/05-sync-and-state.md` §Forward-compatibility constraint) deliberately keeps groupware addable as a JMAP datatype in a later release without schema migration or dispatch-core edits — the v1 decision is "not now," not "never."
+- **NG3.** CalDAV / CardDAV / WebDAV — out, ever. The DAV protocol family is not the substrate; operators wanting DAV run a separate service. **Updated 2026-04-25:** JMAP for Calendars (RFC 8984 + JMAP-Calendars binding) and JMAP for Contacts (RFC 9553 + JMAP-Contacts binding) are **in scope as phase-2 additions** of the herold + tabard suite, replacing the prior "out, but addable" framing. Both fit additively on the existing JMAP capability registry (`docs/architecture/03-protocol-architecture.md` §Capability and account registration) and the entity-kind-agnostic state-change feed (`docs/architecture/05-sync-and-state.md` §Forward-compatibility constraint) — no schema migrations of existing tables, no dispatch-core edits.
 - **NG4.** Traditional spam filtering. No bundled rule engine. No Bayesian. No RBLs by default. (Operators who want these can write a plugin or run an external filter; we don't ship them.)
-- **NG5.** Webmail.
+- **NG5.** Webmail. (Tabard is a *separate* project — a JMAP web client that herold serves; herold itself hosts only the static bundle plus its API.)
 - **NG6.** POP3 at launch.
 - **NG7.** Exchange-compatible protocols (MAPI/EWS/ActiveSync).
 - **NG8.** S3 blobs. Local filesystem only.
@@ -52,6 +54,9 @@ Stalwart is the closest functional reference. Herold narrows the target in some 
 | Config | Registry + TOML + hot reload + web edit | System config file (SIGHUP) + app state in DB (live via API/CLI/UI) |
 | HTTP send API | Basic JMAP submission | **First-class HTTP send API** + SES-portable shape |
 | Mail-arrival webhooks | via Sieve/delivery hook | **First-class webhooks** with easy body access (inline or signed fetch URL) |
+| Calendar / Contacts | CalDAV / CardDAV (legacy DAV) + draft JMAP | **JMAP for Calendars + JMAP for Contacts (phase 2)**; no DAV |
+| Chat / messaging | None | **Built-in chat (phase 2)**: DMs, Spaces, typing / presence / reactions, 1:1 video calls (WebRTC + self-hosted coturn) |
+| LLM categorisation | Spam-only | **Spam + automatic message categorisation** (Gmail-style Primary/Social/Promotions/Updates/Forums by default; user-configurable prompt) |
 | Multi-tenancy | Yes | No |
 | Multi-node | In progress | Never |
 | Plugin system | None | **Yes, v1.** Out-of-process JSON-RPC. DNS providers, spam, directory adapters, delivery hooks. |
@@ -126,7 +131,7 @@ This split gives us:
 - Rspamd-compatible rule engine.
 - Bayesian token training.
 - RBL/URIBL bundled.
-- Groupware as a first-class v1 feature (defer or drop).
+- DAV groupware (CalDAV/CardDAV/WebDAV) as a herold protocol surface, ever. JMAP for Calendars / Contacts is in scope (phase 2); DAV is not.
 - Web UI in phase 1.
 - Webmail.
 - SMIME/PGP at the server.

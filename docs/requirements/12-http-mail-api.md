@@ -178,6 +178,33 @@ Same as above, but `body` replaced with:
 - **REQ-HOOK-50** Webhooks fire for messages **after** Sieve runs. Messages discarded by Sieve don't fire webhooks. Messages redirected still fire against the original recipient.
 - **REQ-HOOK-51** Webhooks don't see headers added by Sieve `addheader` — hooks run against the final delivered state.
 
+## Part C: Inbound image proxy
+
+Distinct from the send API and webhooks. Tabard renders HTML mail in a sandboxed iframe; external `<img>` references go through this proxy so the user's browser doesn't directly contact the sender's image hosts (defeats tracking pixels, prevents IP exposure, allows server-side caching).
+
+Used by tabard's reading pane (`/Users/hans/tabard/docs/requirements/13-nonfunctional.md` REQ-SEC-07; full contract in tabard's `notes/server-contract.md` § Image proxy).
+
+### Endpoint
+
+- **REQ-SEND-70** MUST serve `GET /proxy/image?url=<urlencoded-https-url>` to authenticated users (suite session cookie). No anonymous access — the proxy is a per-user feature, not a generic content tunnel.
+- **REQ-SEND-71** Upstream URL constraints: `https://` only (`http://` returns 400). URL-encoded query parameter, max 2048 chars. Up to 3 redirect hops followed; further redirects abort with 502.
+
+### Outgoing request shape
+
+- **REQ-SEND-72** Request to upstream: NO `Cookie`, NO `Referer`, fixed generic `User-Agent` (e.g. `herold-image-proxy/1`) — same value for every request, no per-user fingerprinting. No other identifying headers.
+
+### Response handling
+
+- **REQ-SEND-73** Upstream `Content-Type` MUST start with `image/` — otherwise the proxy returns 415 to the client. Prevents the proxy from being used to tunnel arbitrary content.
+- **REQ-SEND-74** Size cap: 25 MB per response (configurable). Larger upstreams: the proxy returns 413. Connection timeouts: 10 s connect, 30 s total.
+- **REQ-SEND-75** Caching: honour upstream `Cache-Control`, capped at 24 h regardless. Shared cache keyed by URL hash (cross-user OK — the URL is the cache key; a hit for user B doesn't reveal that user A also opened it). LRU eviction on size pressure; operator-configurable max cache size.
+- **REQ-SEND-76** Retries: one retry on 5xx / network error after 1 s. No retries on 4xx. After exhaustion, return upstream status (or 502 for network failures) verbatim — the client renders the browser's native broken-image placeholder. No tabard-side custom placeholder image.
+- **REQ-SEND-77** Per-user rate limits: 200 fetches per minute, 10 per (user, upstream-origin) per minute, 8 concurrent. Rate-limit responses: 429 with a `Retry-After` header. Operator-configurable.
+
+### Where it runs
+
+- **REQ-SEND-78** v1: in-process inside herold (simplest fit for the single-node target). Future: may graduate to a herold plugin / sidecar so operators can swap in a third-party proxy if they want — out of scope for the initial implementation.
+
 ## What's NOT in v1
 
 - SES suppression lists as REST-managed entities.

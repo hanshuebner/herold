@@ -105,7 +105,7 @@ Deferred: `LIST-MYRIGHTS`, `CONTEXT=SEARCH`, `URLAUTH`.
 
 - **REQ-PROTO-40** MUST implement JMAP Core (RFC 8620): session, request/response envelope, error model, push.
 - **REQ-PROTO-41** MUST implement JMAP Mail (RFC 8621): `Mailbox`, `Email`, `EmailSubmission`, `Identity`, `Thread`, `SearchSnippet`, `VacationResponse`. Upload/download endpoints.
-- **REQ-PROTO-42** MUST implement `EmailSubmission` tied to the outbound SMTP queue (not a parallel submission path).
+- **REQ-PROTO-42** MUST implement `EmailSubmission` tied to the outbound SMTP queue (not a parallel submission path). Includes `sendAt` per RFC 8621 §7.5; see REQ-PROTO-58.
 - **REQ-PROTO-43** MUST serve the session endpoint at `/.well-known/jmap` per RFC 8620.
 - **REQ-PROTO-44** MUST support push via EventSource (SSE) at minimum; WebSocket push per RFC 8887 is optional.
 - **REQ-PROTO-45** MUST NOT require a separate authentication subsystem — JMAP auth shares the identity model with IMAP/SMTP.
@@ -123,7 +123,17 @@ Deferred: `LIST-MYRIGHTS`, `CONTEXT=SEARCH`, `URLAUTH`.
   - The IMAP SNOOZE extension (draft-ietf-extra-imap-snooze) is **deferred to Phase 3**. The JMAP path covers Apple Mail and Fastmail; raw-IMAP clients can still set the keyword.
   - References: draft-ietf-extra-jmap-snooze (the JMAP extension), Fastmail's published JMAP-snooze deployment notes (the de-facto reference implementation).
 
-JMAP Calendars/Contacts/Tasks: out of v1 per NG3; the protocol architecture (`docs/architecture/03-protocol-architecture.md` §JMAP §Capability and account registration) keeps them addable later as datatypes without dispatch-core edits.
+### JMAP — additional datatypes for the tabard suite
+
+These are additive over REQ-PROTO-41. Each is its own JMAP capability, registered at the session-descriptor level. Phasing per the rev-4 scope position.
+
+- **REQ-PROTO-53** MUST implement the `urn:ietf:params:jmap:sieve` JMAP datatype (RFC 9007). Methods: `Sieve/get`, `Sieve/set`, `Sieve/validate`. Wraps the existing Sieve interpreter and script storage already required by REQ-PROTO-50..52 (ManageSieve over port 4190); the JMAP datatype is the same store with a different access path. Required by tabard's filter UI (`/Users/hans/tabard/docs/requirements/04-filters.md`). Phase 1.
+- **REQ-PROTO-54** MUST implement the `urn:ietf:params:jmap:calendars` JMAP datatype (RFC 8984 JSCalendar object model + the JMAP-Calendars binding draft). Methods: `Calendar/*`, `CalendarEvent/*` per the binding. Object model: JSCalendar. Phase 2; pin to a specific binding-draft revision when work starts. Required by tabard-calendar (when that app starts) and by tabard-mail's iMIP RSVP path (`/Users/hans/tabard/docs/requirements/15-calendar-invites.md`).
+- **REQ-PROTO-55** MUST implement the `urn:ietf:params:jmap:contacts` JMAP datatype (RFC 9553 JSContact object model + the JMAP-Contacts binding draft). Methods: `AddressBook/*`, `Contact/*` per the binding. Object model: JSContact. Phase 2; pin to a specific binding-draft revision when work starts. Required by tabard-contacts and by tabard-mail's recipient autocomplete (`/Users/hans/tabard/docs/requirements/02-mail-basics.md` REQ-MAIL-11).
+- **REQ-PROTO-56** MUST persist a `color` extension property on `Mailbox` (string; hex like `#5B8DEE`). Read on `Mailbox/get`; mutated on `Mailbox/set`. Used by tabard's user-defined label colours (`/Users/hans/tabard/docs/requirements/03-labels.md` REQ-LBL-04). Phase 1.
+- **REQ-PROTO-57** MUST persist a `signature` extension property on `Identity` (plain-text body; HTML signature deferred). Read on `Identity/get`; mutated on `Identity/set`. Used by tabard's per-identity signatures (`/Users/hans/tabard/docs/requirements/02-mail-basics.md` REQ-MAIL-100..103, `/Users/hans/tabard/docs/requirements/20-settings.md` REQ-SET-03). Phase 1.
+- **REQ-PROTO-58** MUST honour `EmailSubmission.sendAt` (RFC 8621 §7.5) — when set, the outbound queue holds the submission until the indicated UTCDate and only then begins delivery. `EmailSubmission/set { destroy }` issued before `sendAt` MUST cancel delivery (the submission is removed from the queue and no message leaves). Pairs with REQ-FLOW-63. Used by tabard's send-undo (`/Users/hans/tabard/docs/requirements/02-mail-basics.md` REQ-MAIL-14, `/Users/hans/tabard/docs/requirements/11-optimistic-ui.md` REQ-OPT-11). Phase 1.
+- **REQ-PROTO-59** MUST pass `text/calendar` MIME parts through the outbound queue without stripping or rewriting. iMIP messages (`text/calendar; method=REQUEST/CANCEL/REPLY/COUNTER/REFRESH`) are ordinary multipart/alternative emails from the queue's perspective; no special handling required, but the path must not silently drop unknown MIME types. Used by tabard's iMIP RSVP path (`/Users/hans/tabard/docs/requirements/15-calendar-invites.md`). Phase 1.
 
 ## ManageSieve (REQ-PROTO-MGSV)
 
@@ -164,6 +174,7 @@ All HTTPS, all on one port (default 443) with path-based routing unless the oper
 | `/api/v1/mail/send`, `/send-raw`, `/send-batch`, `/send/quota`, `/send/stats` | **HTTP send API** (mail-submission for apps) | REQ-SEND-01..61 |
 | `/api/v1/hooks/*` | Mail-arrival webhook subscriptions (register/list/delete) | REQ-HOOK-01..05 |
 | `/api/v1/mail/blobs/<id>/raw?sig=…` | Signed fetch URL served to webhook receivers fetching message bodies | REQ-HOOK-30..31 |
+| `/proxy/image?url=<encoded>` | Inbound HTML mail image proxy — fetches upstream, strips tracking headers, enforces caps, serves back. Same-origin so tabard's CSP can `img-src 'self'`. | REQ-SEND-70..75 |
 | `/api/v1/principals/*`, `/domains/*`, `/queue/*`, `/spam/*`, `/sieve/*`, `/tls/*`, `/reports/*`, `/audit-log`, `/server/*` | Admin REST API | REQ-ADM-10..22 |
 | `/api/openapi.json` | OpenAPI 3.1 spec | REQ-ADM-05 |
 | `/admin/*` (phase 2) | Admin web UI (HTMX + Go templates) | REQ-ADM-200..202 |
