@@ -15,8 +15,8 @@ Many user actions update the screen before the server confirms. This file specif
 
 | ID | Requirement |
 |----|-------------|
-| REQ-OPT-10 | Undo is offered for: archive, delete, snooze, send. Undo window: 5 seconds. |
-| REQ-OPT-11 | Send-Undo holds the `EmailSubmission/set` and only fires it after the 5 s window elapses. Undo within the window cancels the planned submission. (Sieve-based delayed sends and herold's queue mean the message will not actually leave during the window.) |
+| REQ-OPT-10 | Undo is offered for: archive, delete, snooze, send. Undo window: configurable (default 5 s; per `20-settings.md` REQ-SET-06). |
+| REQ-OPT-11 | Send-Undo is server-side. Tabard issues `EmailSubmission/set` with `sendAt = now + <undo-window>` (RFC 8621 §7.5) at click time. Herold queues the submission and holds it until `sendAt`. Undo within the window issues `EmailSubmission/set { destroy: [<id>] }` to cancel. **This survives tab close, browser crash, and network drop** — the user's "Sent" truly committed server-side. The same mechanism unlocks user-facing scheduled send later. |
 | REQ-OPT-12 | Archive-Undo and delete-Undo replay the inverse `Email/set`. |
 | REQ-OPT-13 | Snooze-Undo replays the inverse: clear `$snoozed`, clear `snoozedUntil`, restore the inbox mailbox in `mailboxIds`. |
 | REQ-OPT-14 | Only one undo toast is visible at a time. A second optimistic action displaces the first toast (the first action is then unundoable). |

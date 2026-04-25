@@ -128,6 +128,14 @@ Per RFC 8620 §7. Tabard expects:
 
 `SearchSnippet/get` per RFC 8621 §7.1 — required to render the per-result snippet in search results.
 
+### Delayed send via `EmailSubmission.sendAt`
+
+Per RFC 8621 §7.5. `EmailSubmission` carries an optional `sendAt` UTCDate property; when set, herold's outbound queue MUST hold the submission and only deliver at or after the indicated time. When `sendAt` is `null` or absent, the submission is delivered immediately as today.
+
+Cancellation: `EmailSubmission/set { destroy: [<id>] }` issued before `sendAt` MUST cancel delivery — the submission is removed from the queue and no message leaves. After `sendAt` (or after the message has actually been handed off to remote SMTP), destroy is a best-effort no-op; the message has already left.
+
+Tabard uses this to back the send-undo feature (`../requirements/02-mail-basics.md` REQ-MAIL-14, `../requirements/11-optimistic-ui.md` REQ-OPT-11). The same mechanism is the substrate for user-facing scheduled send when that ships.
+
 ### iMIP REPLY pass-through
 
 Per `../requirements/15-calendar-invites.md`. When tabard sends an `EmailSubmission/set` containing an `Email` whose body has a `text/calendar; method=REPLY` MIME part, herold's outbound queue passes it through transparently — the REPLY is just a normal multipart email from herold's perspective. No special handling required, but the path must not strip the `text/calendar` part.

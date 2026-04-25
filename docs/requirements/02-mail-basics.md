@@ -21,8 +21,9 @@ This doc is a placeholder skeleton. Concrete requirements come from gmail-logger
 | REQ-MAIL-11 | Recipient fields autocomplete from JMAP for Contacts (`urn:ietf:params:jmap:contacts`) as the primary source, supplemented by a client-local seen-addresses history for addresses the user has corresponded with but not saved. The JMAP contacts data syncs across devices; the local supplement is per-browser. Resolved Q9. |
 | REQ-MAIL-12 | The From field defaults to the primary `Identity` and can be changed via dropdown. |
 | REQ-MAIL-13 | Compose autosaves to Drafts every N seconds while the body is dirty (N: TBD from capture). |
-| REQ-MAIL-14 | Send issues `Email/set` (create the final form, removing `$draft`) followed by `EmailSubmission/set` in one batched call with back-references. |
-| REQ-MAIL-15 | Send → toast "Message sent" with Undo for 5 seconds; Undo cancels via `EmailSubmission/set destroy` and re-opens the compose. See `11-optimistic-ui.md`. |
+| REQ-MAIL-14 | Send issues `Email/set` (create the final form, removing `$draft`) followed by `EmailSubmission/set` in one batched call with back-references. The `EmailSubmission` carries `sendAt = now + <undo-window>` (RFC 8621 §7.5); herold's outbound queue holds the message until that time. |
+| REQ-MAIL-15 | Send → toast "Message sent" with Undo for the configured undo window (default 5 s; user-configurable per `20-settings.md` REQ-SET-06). Undo within the window issues `EmailSubmission/set { destroy: [<id>] }` and re-opens the compose. After the window elapses, herold sends. |
+| REQ-MAIL-15a | If the user closes the tab during the undo window, the message still sends at `sendAt` because the submission is server-side. The user's "Sent" is the truth — tabard does not silently drop messages on tab close. |
 | REQ-MAIL-16 | Compose supports plain-text and HTML bodies. Default mode TBD from capture. |
 | REQ-MAIL-17 | File attachment is a `Blob/upload` followed by `Email/set` referencing the blob ID. |
 
