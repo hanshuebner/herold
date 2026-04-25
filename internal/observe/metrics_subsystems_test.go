@@ -29,6 +29,16 @@ func TestRegisterSubsystemMetrics_Idempotent(t *testing.T) {
 		RegisterPluginMetrics()
 		RegisterAuthMetrics()
 		RegisterRuntimeCollectors()
+		// Phase 2 Wave 2.9.7 sets:
+		RegisterProtocallMetrics()
+		RegisterProtochatMetrics()
+		RegisterProtoimgMetrics()
+		RegisterCategoriseMetrics()
+		RegisterSnoozeMetrics()
+		RegisterChatretentionMetrics()
+		RegisterProtojmapChatMetrics()
+		RegisterProtojmapCalendarsMetrics()
+		RegisterProtojmapContactsMetrics()
 	}
 }
 
@@ -45,6 +55,15 @@ func TestMetricsHandler_ExposesSubsystemMetrics(t *testing.T) {
 	RegisterPluginMetrics()
 	RegisterAuthMetrics()
 	RegisterRuntimeCollectors()
+	RegisterProtocallMetrics()
+	RegisterProtochatMetrics()
+	RegisterProtoimgMetrics()
+	RegisterCategoriseMetrics()
+	RegisterSnoozeMetrics()
+	RegisterChatretentionMetrics()
+	RegisterProtojmapChatMetrics()
+	RegisterProtojmapCalendarsMetrics()
+	RegisterProtojmapContactsMetrics()
 
 	// Drive at least one observation through each metric so it shows
 	// up in the registry's text output (counters with zero observations
@@ -59,6 +78,15 @@ func TestMetricsHandler_ExposesSubsystemMetrics(t *testing.T) {
 	FTSIndexedMessagesTotal.Inc()
 	PluginUp.WithLabelValues("p").Set(1)
 	AuthAttemptsTotal.WithLabelValues("password", "ok").Inc()
+	ProtocallCallsStartedTotal.Inc()
+	ProtochatConnectionsTotal.Inc()
+	ProtoimgRequestsTotal.WithLabelValues("hit").Inc()
+	CategoriseCallsTotal.WithLabelValues("categorised").Inc()
+	SnoozeSweepsTotal.Inc()
+	ChatretentionSweepsTotal.Inc()
+	ProtojmapChatMethodsTotal.WithLabelValues("Conversation/get").Inc()
+	ProtojmapCalendarsMethodsTotal.WithLabelValues("Calendar/get").Inc()
+	ProtojmapContactsMethodsTotal.WithLabelValues("Contact/get").Inc()
 
 	srv := httptest.NewServer(MetricsHandler())
 	defer srv.Close()
@@ -78,6 +106,16 @@ func TestMetricsHandler_ExposesSubsystemMetrics(t *testing.T) {
 		"herold_plugin_up",
 		"herold_auth_attempts_total",
 		"go_goroutines", // from collectors.NewGoCollector
+		// Phase 2 Wave 2.9.7 subsystems:
+		"herold_protocall_calls_started_total",
+		"herold_protochat_connections_total",
+		"herold_protoimg_requests_total",
+		"herold_categorise_calls_total",
+		"herold_snooze_sweeps_total",
+		"herold_chatretention_sweeps_total",
+		"herold_protojmap_chat_methods_total",
+		"herold_protojmap_calendars_methods_total",
+		"herold_protojmap_contacts_methods_total",
 	}
 	for _, m := range wantOneOf {
 		if !strings.Contains(out, m) {

@@ -2,10 +2,12 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"sync"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -126,6 +128,7 @@ func RegisterWithFTS(
 	clk clock.Clock,
 	limits AccountLimits,
 ) {
+	observe.RegisterProtojmapChatMetrics()
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -134,33 +137,82 @@ func RegisterWithFTS(
 	}
 	h := &handlerSet{store: st, logger: logger, clk: clk, limits: limits, fts: fts}
 
-	reg.Register(protojmap.CapabilityJMAPChat, &convGetHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, &convChangesHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, &convSetHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, &convQueryHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, convQueryChangesHandler{h: h})
+	register := func(handler protojmap.MethodHandler) {
+		reg.Register(protojmap.CapabilityJMAPChat, instrumentChatHandler(handler))
+	}
 
-	reg.Register(protojmap.CapabilityJMAPChat, &msgGetHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, &msgChangesHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, &msgSetHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, &msgQueryHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, msgQueryChangesHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, &msgReactHandler{h: h})
+	register(&convGetHandler{h: h})
+	register(&convChangesHandler{h: h})
+	register(&convSetHandler{h: h})
+	register(&convQueryHandler{h: h})
+	register(convQueryChangesHandler{h: h})
 
-	reg.Register(protojmap.CapabilityJMAPChat, &memGetHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, &memChangesHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, &memSetHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, &memQueryHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, memQueryChangesHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, &memSetLastReadHandler{h: h})
+	register(&msgGetHandler{h: h})
+	register(&msgChangesHandler{h: h})
+	register(&msgSetHandler{h: h})
+	register(&msgQueryHandler{h: h})
+	register(msgQueryChangesHandler{h: h})
+	register(&msgReactHandler{h: h})
 
-	reg.Register(protojmap.CapabilityJMAPChat, &blockGetHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPChat, &blockSetHandler{h: h})
+	register(&memGetHandler{h: h})
+	register(&memChangesHandler{h: h})
+	register(&memSetHandler{h: h})
+	register(&memQueryHandler{h: h})
+	register(memQueryChangesHandler{h: h})
+	register(&memSetLastReadHandler{h: h})
+
+	register(&blockGetHandler{h: h})
+	register(&blockSetHandler{h: h})
 
 	// Per-account capability descriptor advertises the capacity envelope
 	// the server enforces. The server-wide capability descriptor is the
 	// empty object — every tunable lives on the per-account axis.
 	reg.RegisterAccountCapability(protojmap.CapabilityJMAPChat, chatAccountCapability{limits: limits})
+}
+
+// instrumentChatHandler wraps a MethodHandler so every Execute call
+// increments the chat-JMAP method counter and (on *MethodError return)
+// the per-error-code counter. Names are bounded by the closed Register
+// set above; error codes collapse to "unknown" if outside the closed
+// JMAP error vocabulary.
+func instrumentChatHandler(inner protojmap.MethodHandler) protojmap.MethodHandler {
+	return &chatMetricHandler{inner: inner}
+}
+
+type chatMetricHandler struct {
+	inner protojmap.MethodHandler
+}
+
+func (h *chatMetricHandler) Method() string { return h.inner.Method() }
+
+func (h *chatMetricHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
+	method := h.inner.Method()
+	observe.ProtojmapChatMethodsTotal.WithLabelValues(method).Inc()
+	resp, mErr := h.inner.Execute(ctx, args)
+	if mErr != nil {
+		observe.ProtojmapChatMethodErrorsTotal.WithLabelValues(method, jmapErrorCodeLabel(mErr.Type)).Inc()
+	}
+	return resp, mErr
+}
+
+// jmapErrorCodeLabel maps a JMAP MethodError.Type to the closed-enum
+// label used by the protojmap error counters. The JMAP spec leaves the
+// type vocabulary open, but the herold handlers map onto a small known
+// subset; values outside that subset collapse to "unknown" so the
+// metric's cardinality stays bounded.
+func jmapErrorCodeLabel(typ string) string {
+	switch typ {
+	case "forbidden", "invalidArguments", "invalidProperties",
+		"notFound", "serverFail", "serverPartialFail",
+		"serverUnavailable", "tooLarge", "rateLimit",
+		"stateMismatch", "unsupportedFilter", "unsupportedSort",
+		"unknownMethod", "accountNotFound", "accountNotSupportedByMethod",
+		"accountReadOnly", "anchorNotFound", "cannotCalculateChanges",
+		"requestTooLarge", "willDestroy":
+		return typ
+	default:
+		return "unknown"
+	}
 }
 
 // chatAccountCapability is the per-account capability descriptor

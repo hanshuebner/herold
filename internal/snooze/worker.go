@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -68,6 +69,7 @@ type Worker struct {
 // are applied at construction time so the worker exposes a stable
 // PollInterval / BatchSize for tests.
 func NewWorker(opts Options) *Worker {
+	observe.RegisterSnoozeMetrics()
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -156,7 +158,12 @@ func (w *Worker) Run(ctx context.Context) error {
 
 // tick performs one sweep. Returns the number of messages released.
 func (w *Worker) tick(ctx context.Context) (int, error) {
-	now := w.clock.Now().UTC()
+	start := w.clock.Now()
+	defer func() {
+		observe.SnoozeSweepsTotal.Inc()
+		observe.SnoozeSweepDurationSeconds.Observe(w.clock.Now().Sub(start).Seconds())
+	}()
+	now := start.UTC()
 	due, err := w.store.Meta().ListDueSnoozedMessages(ctx, now, w.batch)
 	if err != nil {
 		return 0, fmt.Errorf("snooze: list due: %w", err)
@@ -176,6 +183,7 @@ func (w *Worker) tick(ctx context.Context) (int, error) {
 			return 0, fmt.Errorf("snooze: clear %d: %w", msg.ID, err)
 		}
 		w.released.Add(1)
+		observe.SnoozeMessagesWokenTotal.Inc()
 	}
 	w.logger.LogAttrs(ctx, slog.LevelInfo, "snooze: released batch",
 		slog.Int("count", len(due)),

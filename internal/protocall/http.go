@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -38,18 +39,21 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request) {
 	if s.authn == nil {
 		writeProblem(w, r, http.StatusServiceUnavailable,
 			"unconfigured", "credential mint not configured", "")
+		observe.ProtocallCredentialsMintedTotal.WithLabelValues("blocked").Inc()
 		return
 	}
 	principal, ok := s.authn(r)
 	if !ok {
 		writeProblem(w, r, http.StatusUnauthorized,
 			"unauthorized", "authentication required", "")
+		observe.ProtocallCredentialsMintedTotal.WithLabelValues("blocked").Inc()
 		return
 	}
 	if ok, retry := s.rl.allow(rateKey(principal)); !ok {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(retry.Seconds())))
 		writeProblem(w, r, http.StatusTooManyRequests,
 			"rate_limited", "credential mint rate limit exceeded", "")
+		observe.ProtocallCredentialsMintedTotal.WithLabelValues("ratelimited").Inc()
 		return
 	}
 	cred, err := s.MintCredential(r.Context(), principal)
@@ -69,8 +73,10 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request) {
 			writeProblem(w, r, http.StatusInternalServerError,
 				"internal_error", "credential mint failed", "")
 		}
+		observe.ProtocallCredentialsMintedTotal.WithLabelValues("blocked").Inc()
 		return
 	}
+	observe.ProtocallCredentialsMintedTotal.WithLabelValues("ok").Inc()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(cred)
 }

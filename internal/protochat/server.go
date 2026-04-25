@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -145,6 +146,7 @@ type FrameHandler func(ctx context.Context, fromPrincipal store.PrincipalID, fra
 // the presence tracker and the rate limiter so a FakeClock drives
 // every time-dependent path in tests.
 func New(opts Options) *Server {
+	observe.RegisterProtochatMetrics()
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -398,6 +400,8 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	s.connsMu.Lock()
 	s.conns[cc] = struct{}{}
 	s.connsMu.Unlock()
+	observe.ProtochatConnectionsTotal.Inc()
+	observe.ProtochatConnectionsCurrent.Inc()
 	cc.id = s.broadcaster.Register(pid, cc)
 	s.presence.CancelOffline(pid)
 
@@ -418,6 +422,7 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	s.connsMu.Lock()
 	delete(s.conns, cc)
 	s.connsMu.Unlock()
+	observe.ProtochatConnectionsCurrent.Dec()
 	s.releaseReservation(pid)
 
 	// Disconnect-grace: if this was the last connection for pid,
@@ -602,10 +607,12 @@ func (s *Server) newChatConn(pid store.PrincipalID, netConn net.Conn, reader *bu
 func (c *chatConn) Send(f ServerFrame) error {
 	select {
 	case c.writeQ <- f:
+		observe.ProtochatFramesOutTotal.WithLabelValues(metricFrameTypeOut(f.Type)).Inc()
 		return nil
 	default:
 		// Queue full — close the connection so the client
 		// reconnects rather than receiving a partial frame stream.
+		observe.ProtochatBackpressureDropsTotal.Inc()
 		c.shutdown(closeMessageTooBig, "send queue full")
 		return ErrFull
 	}
@@ -640,6 +647,7 @@ func (c *chatConn) run(ctx context.Context) {
 // to call from any goroutine; idempotent.
 func (c *chatConn) shutdown(code closeCode, reason string) {
 	c.closeOnce.Do(func() {
+		observe.ProtochatCloseTotal.WithLabelValues(metricCloseCode(code)).Inc()
 		// Best-effort close frame; if the peer is gone the write
 		// fails and we proceed. We deliberately don't queue this
 		// through writeQ — backpressure-driven shutdowns may have
@@ -809,8 +817,10 @@ func (c *chatConn) dispatchText(body []byte) {
 		c.send(makeError(ErrCodeBadFrame, "invalid JSON envelope", ""))
 		return
 	}
+	observe.ProtochatFramesInTotal.WithLabelValues(metricFrameTypeIn(inFrame.Type)).Inc()
 	if !c.srv.rateLimiter.allow(c.pid, frameWeight(inFrame.Type)) {
 		c.send(makeError(ErrCodeRateLimited, "rate limit exceeded", inFrame.ClientID))
+		observe.ProtochatRatelimitDropsTotal.WithLabelValues(metricFrameTypeIn(inFrame.Type)).Inc()
 		return
 	}
 	if h := c.srv.lookupHandler(inFrame.Type); h != nil {
@@ -1108,6 +1118,60 @@ func parseOrigin(origin string) (string, error) {
 		return "", errors.New("origin host is empty")
 	}
 	return host, nil
+}
+
+// metricFrameTypeIn maps a client frame Type to the closed-enum label
+// value used by the protochat metrics. Unknown types collapse to
+// "unknown" so the counter's cardinality stays bounded by the protocol's
+// vocabulary, not by hostile-client noise.
+func metricFrameTypeIn(t string) string {
+	switch t {
+	case clientTypeTypingStart, clientTypeTypingStop,
+		clientTypePresenceSet,
+		clientTypeSubscribe, clientTypeUnsubscribe,
+		clientTypeCallSignal, clientTypePing:
+		return t
+	default:
+		return "unknown"
+	}
+}
+
+// metricFrameTypeOut maps a server frame Type to the closed-enum label
+// value used by the protochat outbound-frame metrics.
+func metricFrameTypeOut(t string) string {
+	switch t {
+	case ServerTypeTyping, ServerTypePresence, ServerTypeRead,
+		ServerTypeCallSignal, ServerTypeError, ServerTypeAck,
+		ServerTypePong:
+		return t
+	default:
+		return "unknown"
+	}
+}
+
+// metricCloseCode renders an RFC 6455 close code as the closed-enum
+// label string used by the close-totals counter.
+func metricCloseCode(code closeCode) string {
+	switch code {
+	case closeNormalClosure:
+		return "1000"
+	case closeGoingAway:
+		return "1001"
+	case closeProtocolError:
+		return "1002"
+	case closeUnsupportedData:
+		return "1003"
+	case closeInvalidPayload:
+		return "1007"
+	case closePolicyViolation:
+		return "1008"
+	case closeMessageTooBig:
+		return "1009"
+	case closeInternalError:
+		return "1011"
+	default:
+		return "unknown"
+	}
 }
 
 // normaliseOrigins lowercases each entry and drops empties so the

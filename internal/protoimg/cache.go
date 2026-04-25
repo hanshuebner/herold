@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"sync"
 	"time"
+
+	"github.com/hanshuebner/herold/internal/observe"
 )
 
 // cacheEntry is the value stored under a URL hash. The bytes are owned
@@ -127,5 +129,8 @@ func (c *imageCache) evictLocked() {
 		c.order.Remove(back)
 		delete(c.entries, ce.key)
 		c.totalBytes -= int64(len(ce.bytes))
+		if observe.ProtoimgCacheEvictionsTotal != nil {
+			observe.ProtoimgCacheEvictionsTotal.Inc()
+		}
 	}
 }

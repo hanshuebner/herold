@@ -357,3 +357,381 @@ func (t *StoreOpTimer) Done() {
 	}
 	StoreMetadataOpDuration.WithLabelValues(t.op).Observe(time.Since(t.start).Seconds())
 }
+
+// Phase 2 Wave 2.9.7 metric taxonomy. The eight subsystems shipped in
+// Waves 2.5-2.9.6 (protocall, protochat, protoimg, categorise, snooze,
+// chatretention, and the protojmap chat / calendars / contacts JMAP
+// surfaces) all register here for the same reasons the Phase 1 sets do:
+// closed-vocabulary labels, sync.Once guard so test fixtures that build
+// many servers against the process Registry stay idempotent, and
+// collectors exposed as package vars so callers can increment / observe
+// directly without going through the registry.
+
+// protocall metrics. Label vocabulary:
+//   - result (credentials_minted_total): "ok" | "blocked" | "ratelimited".
+//   - disposition (calls_ended_total): "completed" | "missed" |
+//     "declined" | "timeout".
+//   - reason (busy_emitted_total): "offerer_in_call" | "recipient_in_call".
+var (
+	protocallMetricsOnce sync.Once
+
+	ProtocallCredentialsMintedTotal *prometheus.CounterVec
+	ProtocallCallsStartedTotal      prometheus.Counter
+	ProtocallCallsEndedTotal        *prometheus.CounterVec
+	ProtocallCallsInflight          prometheus.Gauge
+	ProtocallBusyEmittedTotal       *prometheus.CounterVec
+	ProtocallRingTimeoutsTotal      prometheus.Counter
+)
+
+// RegisterProtocallMetrics registers the protocall collector set;
+// idempotent.
+func RegisterProtocallMetrics() {
+	protocallMetricsOnce.Do(func() {
+		ProtocallCredentialsMintedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protocall_credentials_minted_total",
+			Help: "TURN credential mint attempts, by outcome.",
+		}, []string{"result"})
+		ProtocallCallsStartedTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_protocall_calls_started_total",
+			Help: "Total call sessions started (call.started system message written).",
+		})
+		ProtocallCallsEndedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protocall_calls_ended_total",
+			Help: "Total call sessions ended, by disposition.",
+		}, []string{"disposition"})
+		ProtocallCallsInflight = prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "herold_protocall_calls_inflight",
+			Help: "In-flight call sessions tracked by the lifecycle map.",
+		})
+		ProtocallBusyEmittedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protocall_busy_emitted_total",
+			Help: "Synthetic kind=\"busy\" call.signal emissions, by side already in a call.",
+		}, []string{"reason"})
+		ProtocallRingTimeoutsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_protocall_ring_timeouts_total",
+			Help: "Ring-timer expirations producing a synthetic kind=\"timeout\" signal.",
+		})
+		MustRegister(
+			ProtocallCredentialsMintedTotal,
+			ProtocallCallsStartedTotal,
+			ProtocallCallsEndedTotal,
+			ProtocallCallsInflight,
+			ProtocallBusyEmittedTotal,
+			ProtocallRingTimeoutsTotal,
+		)
+	})
+}
+
+// protochat metrics. Label vocabulary is closed by the wire protocol's
+// frame-type vocabulary (see internal/protochat/protocol.go) and the
+// RFC 6455 close-code subset herold emits.
+//   - frame_type (frames_in_total / frames_out_total /
+//     ratelimit_drops_total): the closed enum below; unknown / malformed
+//     types collapse to "unknown" so cardinality stays bounded.
+//   - code (close_total): the numeric RFC 6455 close code as a string.
+var (
+	protochatMetricsOnce sync.Once
+
+	ProtochatConnectionsCurrent     prometheus.Gauge
+	ProtochatConnectionsTotal       prometheus.Counter
+	ProtochatFramesInTotal          *prometheus.CounterVec
+	ProtochatFramesOutTotal         *prometheus.CounterVec
+	ProtochatRatelimitDropsTotal    *prometheus.CounterVec
+	ProtochatBackpressureDropsTotal prometheus.Counter
+	ProtochatCloseTotal             *prometheus.CounterVec
+)
+
+// RegisterProtochatMetrics registers the protochat collector set;
+// idempotent.
+func RegisterProtochatMetrics() {
+	protochatMetricsOnce.Do(func() {
+		ProtochatConnectionsCurrent = prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "herold_protochat_connections_current",
+			Help: "Current number of live /chat/ws WebSocket connections.",
+		})
+		ProtochatConnectionsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_protochat_connections_total",
+			Help: "Total accepted /chat/ws WebSocket upgrades.",
+		})
+		ProtochatFramesInTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protochat_frames_in_total",
+			Help: "Inbound chat frames dispatched, by client frame type.",
+		}, []string{"type"})
+		ProtochatFramesOutTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protochat_frames_out_total",
+			Help: "Outbound chat frames sent to clients, by server frame type.",
+		}, []string{"type"})
+		ProtochatRatelimitDropsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protochat_ratelimit_drops_total",
+			Help: "Inbound chat frames denied by the per-principal rate limiter, by frame type.",
+		}, []string{"type"})
+		ProtochatBackpressureDropsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_protochat_backpressure_drops_total",
+			Help: "Connections shut down because their write queue overflowed (slow client).",
+		})
+		ProtochatCloseTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protochat_close_total",
+			Help: "WebSocket connection closures, by close code emitted by the server.",
+		}, []string{"code"})
+		MustRegister(
+			ProtochatConnectionsCurrent,
+			ProtochatConnectionsTotal,
+			ProtochatFramesInTotal,
+			ProtochatFramesOutTotal,
+			ProtochatRatelimitDropsTotal,
+			ProtochatBackpressureDropsTotal,
+			ProtochatCloseTotal,
+		)
+	})
+}
+
+// protoimg metrics. Label vocabulary is closed by the proxy outcome set
+// the handler classifies, plus the netguard SSRF reason vocabulary.
+//   - outcome (requests_total): "hit" | "miss" | "blocked" |
+//     "upstream_error" | "ratelimited" | "oversize" | "badurl".
+//   - reason (ssrf_blocked_total): netguard.Reason values
+//     ("loopback" | "link_local" | "private" | "cgnat" | "multicast" |
+//     "unspecified" | "ipv6_ula").
+var (
+	protoimgMetricsOnce sync.Once
+
+	ProtoimgRequestsTotal       *prometheus.CounterVec
+	ProtoimgCacheHitsTotal      prometheus.Counter
+	ProtoimgCacheMissesTotal    prometheus.Counter
+	ProtoimgCacheEvictionsTotal prometheus.Counter
+	ProtoimgBytesProxiedTotal   prometheus.Counter
+	ProtoimgSSRFBlockedTotal    *prometheus.CounterVec
+)
+
+// RegisterProtoimgMetrics registers the protoimg collector set;
+// idempotent.
+func RegisterProtoimgMetrics() {
+	protoimgMetricsOnce.Do(func() {
+		ProtoimgRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protoimg_requests_total",
+			Help: "Image-proxy requests served, by outcome.",
+		}, []string{"outcome"})
+		ProtoimgCacheHitsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_protoimg_cache_hits_total",
+			Help: "In-process image-proxy cache hits.",
+		})
+		ProtoimgCacheMissesTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_protoimg_cache_misses_total",
+			Help: "In-process image-proxy cache misses.",
+		})
+		ProtoimgCacheEvictionsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_protoimg_cache_evictions_total",
+			Help: "Entries dropped by the image-proxy LRU cache (count or byte budget).",
+		})
+		ProtoimgBytesProxiedTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_protoimg_bytes_proxied_total",
+			Help: "Image bytes written to clients (cache hit or fresh upstream fetch).",
+		})
+		ProtoimgSSRFBlockedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protoimg_ssrf_blocked_total",
+			Help: "Upstream fetches refused by the SSRF guard, by netguard reason.",
+		}, []string{"reason"})
+		MustRegister(
+			ProtoimgRequestsTotal,
+			ProtoimgCacheHitsTotal,
+			ProtoimgCacheMissesTotal,
+			ProtoimgCacheEvictionsTotal,
+			ProtoimgBytesProxiedTotal,
+			ProtoimgSSRFBlockedTotal,
+		)
+	})
+}
+
+// categorise metrics. Label vocabulary:
+//   - outcome (calls_total): "categorised" | "none" | "unknown_category" |
+//     "endpoint_rejected" | "http_error" | "timeout".
+//   - category (categories_assigned_total): the bucketed category name.
+//     CategorySet is operator-configurable (REQ-FILT-200..215) so the
+//     metric labels every assigned category by name. Cardinality is
+//     bounded by the operator's CategorySet rows; any model output not
+//     in the configured set is rejected upstream and never reaches the
+//     metric. The set is small in practice (the spec lists the six
+//     gmail-style buckets as the canonical default) and operator-scoped,
+//     not user-controlled, so the cardinality risk is bounded.
+var (
+	categoriseMetricsOnce sync.Once
+
+	CategoriseCallsTotal              *prometheus.CounterVec
+	CategoriseCallDurationSeconds     prometheus.Histogram
+	CategoriseCategoriesAssignedTotal *prometheus.CounterVec
+)
+
+// RegisterCategoriseMetrics registers the categorise collector set;
+// idempotent.
+func RegisterCategoriseMetrics() {
+	categoriseMetricsOnce.Do(func() {
+		CategoriseCallsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_categorise_calls_total",
+			Help: "Categoriser invocations, by outcome.",
+		}, []string{"outcome"})
+		CategoriseCallDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "herold_categorise_call_duration_seconds",
+			Help:    "End-to-end categoriser invocation duration (LLM call included).",
+			Buckets: prometheus.DefBuckets,
+		})
+		CategoriseCategoriesAssignedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_categorise_categories_assigned_total",
+			Help: "Category names assigned to messages by the categoriser, bounded by operator-configured CategorySet.",
+		}, []string{"category"})
+		MustRegister(
+			CategoriseCallsTotal,
+			CategoriseCallDurationSeconds,
+			CategoriseCategoriesAssignedTotal,
+		)
+	})
+}
+
+// snooze metrics. Counters track sweep work; the histogram surfaces
+// per-sweep duration so backlogs are visible without log scraping.
+var (
+	snoozeMetricsOnce sync.Once
+
+	SnoozeSweepsTotal          prometheus.Counter
+	SnoozeMessagesWokenTotal   prometheus.Counter
+	SnoozeSweepDurationSeconds prometheus.Histogram
+)
+
+// RegisterSnoozeMetrics registers the snooze collector set; idempotent.
+func RegisterSnoozeMetrics() {
+	snoozeMetricsOnce.Do(func() {
+		SnoozeSweepsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_snooze_sweeps_total",
+			Help: "Total snooze worker sweep ticks executed.",
+		})
+		SnoozeMessagesWokenTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_snooze_messages_woken_total",
+			Help: "Total snoozed messages released by the snooze worker.",
+		})
+		SnoozeSweepDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "herold_snooze_sweep_duration_seconds",
+			Help:    "Snooze worker sweep duration.",
+			Buckets: prometheus.DefBuckets,
+		})
+		MustRegister(
+			SnoozeSweepsTotal,
+			SnoozeMessagesWokenTotal,
+			SnoozeSweepDurationSeconds,
+		)
+	})
+}
+
+// chatretention metrics. Same shape as snooze.
+var (
+	chatretentionMetricsOnce sync.Once
+
+	ChatretentionSweepsTotal          prometheus.Counter
+	ChatretentionMessagesDeletedTotal prometheus.Counter
+	ChatretentionSweepDurationSeconds prometheus.Histogram
+)
+
+// RegisterChatretentionMetrics registers the chatretention collector
+// set; idempotent.
+func RegisterChatretentionMetrics() {
+	chatretentionMetricsOnce.Do(func() {
+		ChatretentionSweepsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_chatretention_sweeps_total",
+			Help: "Total chat retention worker sweep ticks executed.",
+		})
+		ChatretentionMessagesDeletedTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_chatretention_messages_deleted_total",
+			Help: "Total chat messages hard-deleted by the chat retention worker.",
+		})
+		ChatretentionSweepDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "herold_chatretention_sweep_duration_seconds",
+			Help:    "Chat retention worker sweep duration.",
+			Buckets: prometheus.DefBuckets,
+		})
+		MustRegister(
+			ChatretentionSweepsTotal,
+			ChatretentionMessagesDeletedTotal,
+			ChatretentionSweepDurationSeconds,
+		)
+	})
+}
+
+// protojmap chat / calendars / contacts metrics. Label vocabulary is
+// closed by the registered method set in each datatype's Register*
+// constructor; methods not registered cannot be invoked, so cardinality
+// is bounded by code, not user input.
+//   - method: the JMAP method verb ("Conversation/get", ...).
+//   - code (method_errors_total): the JMAP error type token
+//     ("forbidden" | "invalidProperties" | "notFound" | "serverError" |
+//     "tooLarge" | ...). Open-ended in the JMAP spec but the per-package
+//     handlers map to a closed subset; unknown types collapse to
+//     "unknown" so the cardinality stays bounded.
+var (
+	protojmapChatMetricsOnce      sync.Once
+	protojmapCalendarsMetricsOnce sync.Once
+	protojmapContactsMetricsOnce  sync.Once
+
+	ProtojmapChatMethodsTotal      *prometheus.CounterVec
+	ProtojmapChatMethodErrorsTotal *prometheus.CounterVec
+
+	ProtojmapCalendarsMethodsTotal      *prometheus.CounterVec
+	ProtojmapCalendarsMethodErrorsTotal *prometheus.CounterVec
+
+	ProtojmapContactsMethodsTotal      *prometheus.CounterVec
+	ProtojmapContactsMethodErrorsTotal *prometheus.CounterVec
+)
+
+// RegisterProtojmapChatMetrics registers the chat-JMAP collector set;
+// idempotent.
+func RegisterProtojmapChatMetrics() {
+	protojmapChatMetricsOnce.Do(func() {
+		ProtojmapChatMethodsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protojmap_chat_methods_total",
+			Help: "JMAP Chat method invocations, by method.",
+		}, []string{"method"})
+		ProtojmapChatMethodErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protojmap_chat_method_errors_total",
+			Help: "JMAP Chat method failures, by method and error code.",
+		}, []string{"method", "code"})
+		MustRegister(
+			ProtojmapChatMethodsTotal,
+			ProtojmapChatMethodErrorsTotal,
+		)
+	})
+}
+
+// RegisterProtojmapCalendarsMetrics registers the calendars-JMAP
+// collector set; idempotent.
+func RegisterProtojmapCalendarsMetrics() {
+	protojmapCalendarsMetricsOnce.Do(func() {
+		ProtojmapCalendarsMethodsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protojmap_calendars_methods_total",
+			Help: "JMAP Calendars method invocations, by method.",
+		}, []string{"method"})
+		ProtojmapCalendarsMethodErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protojmap_calendars_method_errors_total",
+			Help: "JMAP Calendars method failures, by method and error code.",
+		}, []string{"method", "code"})
+		MustRegister(
+			ProtojmapCalendarsMethodsTotal,
+			ProtojmapCalendarsMethodErrorsTotal,
+		)
+	})
+}
+
+// RegisterProtojmapContactsMetrics registers the contacts-JMAP collector
+// set; idempotent.
+func RegisterProtojmapContactsMetrics() {
+	protojmapContactsMetricsOnce.Do(func() {
+		ProtojmapContactsMethodsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protojmap_contacts_methods_total",
+			Help: "JMAP Contacts method invocations, by method.",
+		}, []string{"method"})
+		ProtojmapContactsMethodErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_protojmap_contacts_method_errors_total",
+			Help: "JMAP Contacts method failures, by method and error code.",
+		}, []string{"method", "code"})
+		MustRegister(
+			ProtojmapContactsMethodsTotal,
+			ProtojmapContactsMethodErrorsTotal,
+		)
+	})
+}

@@ -19,6 +19,7 @@ import (
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/netguard"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -92,6 +93,7 @@ func New(opts Options) *Categoriser {
 	if opts.Store == nil {
 		return nil
 	}
+	observe.RegisterCategoriseMetrics()
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -177,6 +179,7 @@ func (c *Categoriser) Categorise(
 			slog.Uint64("principal_id", uint64(principal)),
 			slog.String("endpoint", endpoint),
 			slog.String("err", err.Error()))
+		observe.CategoriseCallsTotal.WithLabelValues("endpoint_rejected").Inc()
 		return "", nil
 	}
 	_ = host
@@ -187,6 +190,7 @@ func (c *Categoriser) Categorise(
 	if model == "" {
 		c.logger.WarnContext(ctx, "categorise: no model configured",
 			slog.Uint64("principal_id", uint64(principal)))
+		observe.CategoriseCallsTotal.WithLabelValues("endpoint_rejected").Inc()
 		return "", nil
 	}
 	apiKey := c.apiKey
@@ -219,24 +223,35 @@ func (c *Categoriser) Categorise(
 		// Ollama, in which case no Bearer token is appropriate either.
 		apiKey = ""
 	}
+	start := c.clock.Now()
 	cat, callErr := c.callLLM(callCtx, endpoint, model, apiKey, prompt, user)
+	observe.CategoriseCallDurationSeconds.Observe(c.clock.Now().Sub(start).Seconds())
 	if callErr != nil {
 		c.logger.WarnContext(ctx, "categorise: chat completion failed",
 			slog.Uint64("principal_id", uint64(principal)),
 			slog.String("endpoint", endpoint),
 			slog.String("model", model),
 			slog.String("err", callErr.Error()))
+		if errors.Is(callErr, context.DeadlineExceeded) {
+			observe.CategoriseCallsTotal.WithLabelValues("timeout").Inc()
+		} else {
+			observe.CategoriseCallsTotal.WithLabelValues("http_error").Inc()
+		}
 		return "", nil
 	}
 	if cat == "" || strings.EqualFold(cat, "none") {
+		observe.CategoriseCallsTotal.WithLabelValues("none").Inc()
 		return "", nil
 	}
 	if !categoryInSet(cat, cfg.CategorySet) {
 		c.logger.WarnContext(ctx, "categorise: model returned unknown category",
 			slog.Uint64("principal_id", uint64(principal)),
 			slog.String("category", cat))
+		observe.CategoriseCallsTotal.WithLabelValues("unknown_category").Inc()
 		return "", nil
 	}
+	observe.CategoriseCallsTotal.WithLabelValues("categorised").Inc()
+	observe.CategoriseCategoriesAssignedTotal.WithLabelValues(cat).Inc()
 	return cat, nil
 }
 

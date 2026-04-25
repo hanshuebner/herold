@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -192,6 +193,7 @@ type Server struct {
 //
 // New starts the reaper goroutine. Call Close to stop it.
 func New(opts Options) *Server {
+	observe.RegisterProtocallMetrics()
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -282,6 +284,7 @@ func (s *Server) reapOnce() {
 				sess.ringTimer = nil
 			}
 			delete(s.sessions, id)
+			observe.ProtocallCallsInflight.Dec()
 			if s.inflightByPrincipal[sess.Caller] == id {
 				delete(s.inflightByPrincipal, sess.Caller)
 			}
@@ -292,6 +295,9 @@ func (s *Server) reapOnce() {
 		}
 	}
 	s.sessionsMu.Unlock()
+	for range dropped {
+		observe.ProtocallCallsEndedTotal.WithLabelValues(DispositionTimeout).Inc()
+	}
 	for _, r := range dropped {
 		sess := r.sess
 		s.logger.LogAttrs(context.Background(), slog.LevelInfo,

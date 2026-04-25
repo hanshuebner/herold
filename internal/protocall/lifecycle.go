@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -285,15 +286,18 @@ func (s *Server) handleOffer(ctx context.Context, from store.PrincipalID, p Sign
 	if other, busy := s.principalInOtherCall(from, callID); busy {
 		s.emitBusy(ctx, from, callID, p.ConversationID,
 			fmt.Sprintf("caller already in call %q", other))
+		observe.ProtocallBusyEmittedTotal.WithLabelValues("offerer_in_call").Inc()
 		return
 	}
 	if other, busy := s.principalInOtherCall(recipient, callID); busy {
 		s.emitBusy(ctx, from, callID, p.ConversationID,
 			fmt.Sprintf("recipient already in call %q", other))
+		observe.ProtocallBusyEmittedTotal.WithLabelValues("recipient_in_call").Inc()
 		// Record this never-started call as missed in the
 		// conversation history so the offerer's UI can render it
 		// without a corresponding call.started.
 		s.writeMissedSysmsg(ctx, p.ConversationID, from, callID, now, "busy")
+		observe.ProtocallCallsEndedTotal.WithLabelValues(DispositionMissed).Inc()
 		return
 	}
 	sess := &CallSession{
@@ -312,6 +316,7 @@ func (s *Server) handleOffer(ctx context.Context, from store.PrincipalID, p Sign
 		// recording a duplicate call.started system message.
 		s.touchSession(callID, now)
 	} else {
+		observe.ProtocallCallsStartedTotal.Inc()
 		sysPayload := SystemMessagePayload{
 			Kind:            SystemMessageCallStarted,
 			CallID:          callID,
@@ -450,6 +455,7 @@ func (s *Server) onRingTimeout(callID string) {
 	convID := sess.ConversationID
 	startedAt := sess.StartedAt
 	delete(s.sessions, callID)
+	observe.ProtocallCallsInflight.Dec()
 	if s.inflightByPrincipal[sess.Caller] == callID {
 		delete(s.inflightByPrincipal, sess.Caller)
 	}
@@ -458,6 +464,8 @@ func (s *Server) onRingTimeout(callID string) {
 	}
 	sess.ringTimer = nil
 	s.sessionsMu.Unlock()
+	observe.ProtocallRingTimeoutsTotal.Inc()
+	observe.ProtocallCallsEndedTotal.WithLabelValues(DispositionMissed).Inc()
 
 	now := s.clk.Now()
 	// 1) Synthetic timeout signal to the offerer.
@@ -667,6 +675,7 @@ func (s *Server) handleHangup(ctx context.Context, from store.PrincipalID, p Sig
 				slog.String("err", err.Error()))
 		}
 	}
+	observe.ProtocallCallsEndedTotal.WithLabelValues(disposition).Inc()
 	s.forward(ctx, target, p)
 	s.dropSession(p.CallID)
 }
@@ -720,6 +729,7 @@ func (s *Server) handleDecline(ctx context.Context, from store.PrincipalID, p Si
 				slog.String("err", err.Error()))
 		}
 	}
+	observe.ProtocallCallsEndedTotal.WithLabelValues(DispositionDeclined).Inc()
 	s.forward(ctx, sess.Caller, p)
 	s.dropSession(p.CallID)
 }
@@ -775,6 +785,7 @@ func (s *Server) registerSession(sess *CallSession) bool {
 		return false
 	}
 	s.sessions[sess.CallID] = sess
+	observe.ProtocallCallsInflight.Inc()
 	return true
 }
 
@@ -816,6 +827,7 @@ func (s *Server) dropSession(callID string) {
 		sess.ringTimer = nil
 	}
 	delete(s.sessions, callID)
+	observe.ProtocallCallsInflight.Dec()
 	if s.inflightByPrincipal[sess.Caller] == callID {
 		delete(s.inflightByPrincipal, sess.Caller)
 	}

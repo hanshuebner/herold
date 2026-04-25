@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -74,6 +75,7 @@ type Worker struct {
 // are applied at construction time so the worker exposes a stable
 // SweepInterval / BatchSize for tests.
 func NewWorker(opts Options) *Worker {
+	observe.RegisterChatretentionMetrics()
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -164,7 +166,12 @@ func (w *Worker) Run(ctx context.Context) error {
 // hard-deleted. Exported so tests can drive the sweeper deterministically
 // without spinning Run in a goroutine.
 func (w *Worker) Tick(ctx context.Context) (int, error) {
-	now := w.clock.Now().UTC()
+	start := w.clock.Now()
+	defer func() {
+		observe.ChatretentionSweepsTotal.Inc()
+		observe.ChatretentionSweepDurationSeconds.Observe(w.clock.Now().Sub(start).Seconds())
+	}()
+	now := start.UTC()
 	deleted := 0
 	// Phase 1: per-conversation retention overrides.
 	if err := w.sweepPerConversation(ctx, now, &deleted); err != nil {
@@ -319,6 +326,7 @@ func (w *Worker) expireConversation(ctx context.Context, cid store.ConversationI
 			}
 			*deleted++
 			w.deleted.Add(1)
+			observe.ChatretentionMessagesDeletedTotal.Inc()
 			if *deleted >= w.batch {
 				return nil
 			}

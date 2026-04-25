@@ -15,6 +15,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/netguard"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -103,6 +104,7 @@ type Server struct {
 // misconfigured wiring safe-by-default rather than opening the
 // internet to anonymous fetches.
 func New(opts Options) *Server {
+	observe.RegisterProtoimgMetrics()
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -253,15 +255,18 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	rawURL := r.URL.Query().Get("url")
 	if rawURL == "" {
 		http.Error(w, "missing url query parameter", http.StatusBadRequest)
+		observe.ProtoimgRequestsTotal.WithLabelValues("badurl").Inc()
 		return
 	}
 	if len(rawURL) > MaxURLLength {
 		http.Error(w, "url query parameter too long", http.StatusBadRequest)
+		observe.ProtoimgRequestsTotal.WithLabelValues("badurl").Inc()
 		return
 	}
 	origin, err := validateImageProxyURL(rawURL)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		observe.ProtoimgRequestsTotal.WithLabelValues("badurl").Inc()
 		return
 	}
 	// Re-parse so we have the lowercased-scheme URL to forward; the
@@ -270,6 +275,7 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	u, perr := url.Parse(rawURL)
 	if perr != nil {
 		http.Error(w, "invalid url", http.StatusBadRequest)
+		observe.ProtoimgRequestsTotal.WithLabelValues("badurl").Inc()
 		return
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
@@ -284,6 +290,7 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 			slog.Int("reason", int(reason)),
 		)
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		observe.ProtoimgRequestsTotal.WithLabelValues("ratelimited").Inc()
 		return
 	}
 	defer release()
@@ -291,9 +298,12 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	// Cache hit?
 	key := hashURL(u.String())
 	if entry, hit := s.cache.get(key, s.clk.Now()); hit {
+		observe.ProtoimgCacheHitsTotal.Inc()
+		observe.ProtoimgRequestsTotal.WithLabelValues("hit").Inc()
 		s.writeImage(w, entry, r.Method)
 		return
 	}
+	observe.ProtoimgCacheMissesTotal.Inc()
 
 	// Bound the upstream call by the configured total deadline,
 	// derived from the request context so a client disconnect cancels
@@ -310,6 +320,14 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 			slog.String("origin", origin),
 			slog.String("err", fetchErr.Error()),
 		)
+		if errors.Is(fetchErr, netguard.ErrBlockedIP) {
+			observe.ProtoimgRequestsTotal.WithLabelValues("blocked").Inc()
+			observe.ProtoimgSSRFBlockedTotal.WithLabelValues(extractSSRFReason(fetchErr)).Inc()
+		} else if errors.Is(fetchErr, errBodyTooLarge) {
+			observe.ProtoimgRequestsTotal.WithLabelValues("oversize").Inc()
+		} else {
+			observe.ProtoimgRequestsTotal.WithLabelValues("upstream_error").Inc()
+		}
 		statusForErr(w, fetchErr)
 		return
 	}
@@ -321,11 +339,13 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.WriteString(w, http.StatusText(resp.StatusCode))
+		observe.ProtoimgRequestsTotal.WithLabelValues("upstream_error").Inc()
 		return
 	}
 	contentType := resp.Header.Get("Content-Type")
 	if !isImageContentType(contentType) {
 		http.Error(w, "upstream content-type is not image/*", http.StatusUnsupportedMediaType)
+		observe.ProtoimgRequestsTotal.WithLabelValues("upstream_error").Inc()
 		return
 	}
 
@@ -342,6 +362,7 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	if ttl > 0 {
 		s.cache.put(entry)
 	}
+	observe.ProtoimgRequestsTotal.WithLabelValues("miss").Inc()
 	s.writeImage(w, entry, r.Method)
 }
 
@@ -472,7 +493,10 @@ func (s *Server) writeImage(w http.ResponseWriter, e cacheEntry, method string) 
 	if method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write(e.bytes)
+	n, _ := w.Write(e.bytes)
+	if n > 0 {
+		observe.ProtoimgBytesProxiedTotal.Add(float64(n))
+	}
 }
 
 // isImageContentType returns true iff the content-type's primary type
@@ -529,6 +553,32 @@ func containsDirective(cc, want string) bool {
 		}
 	}
 	return false
+}
+
+// extractSSRFReason recovers the netguard.Reason token from an error
+// wrapping netguard.ErrBlockedIP. The wrapper format is
+// "netguard: ... (reason ip)"; we scan for the closed reason vocabulary
+// rather than parsing free-form text. Unknown shapes collapse to
+// "unspecified" so the metric label stays bounded.
+func extractSSRFReason(err error) string {
+	if err == nil {
+		return "unspecified"
+	}
+	msg := err.Error()
+	for _, r := range []netguard.Reason{
+		netguard.ReasonLoopback,
+		netguard.ReasonLinkLocal,
+		netguard.ReasonPrivate,
+		netguard.ReasonMulticast,
+		netguard.ReasonUnspecified,
+		netguard.ReasonULA,
+		netguard.ReasonCGNAT,
+	} {
+		if strings.Contains(msg, "("+string(r)+" ") {
+			return string(r)
+		}
+	}
+	return "unspecified"
 }
 
 // parseHTTPDate is a tolerant http.TimeFormat parser. Returns the

@@ -1,9 +1,12 @@
 package calendars
 
 import (
+	"context"
+	"encoding/json"
 	"log/slog"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -71,6 +74,7 @@ func RegisterWithLimits(
 	clk clock.Clock,
 	limits AccountLimits,
 ) {
+	observe.RegisterProtojmapCalendarsMetrics()
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -82,22 +86,70 @@ func RegisterWithLimits(
 	}
 	h := &handlerSet{store: st, logger: logger, clk: clk, limits: limits}
 
-	reg.Register(protojmap.CapabilityJMAPCalendars, &calGetHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPCalendars, &calChangesHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPCalendars, &calSetHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPCalendars, &calQueryHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPCalendars, calQueryChangesHandler{h: h})
+	register := func(handler protojmap.MethodHandler) {
+		reg.Register(protojmap.CapabilityJMAPCalendars, instrumentCalendarsHandler(handler))
+	}
 
-	reg.Register(protojmap.CapabilityJMAPCalendars, &evGetHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPCalendars, &evChangesHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPCalendars, &evSetHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPCalendars, &evQueryHandler{h: h})
-	reg.Register(protojmap.CapabilityJMAPCalendars, evQueryChangesHandler{h: h})
+	register(&calGetHandler{h: h})
+	register(&calChangesHandler{h: h})
+	register(&calSetHandler{h: h})
+	register(&calQueryHandler{h: h})
+	register(calQueryChangesHandler{h: h})
+
+	register(&evGetHandler{h: h})
+	register(&evChangesHandler{h: h})
+	register(&evSetHandler{h: h})
+	register(&evQueryHandler{h: h})
+	register(evQueryChangesHandler{h: h})
 
 	// Per the JMAP-Calendars binding draft, the per-account capability
 	// descriptor advertises the limits the server enforces. The
 	// server-wide capability descriptor is the empty object.
 	reg.RegisterAccountCapability(protojmap.CapabilityJMAPCalendars, calendarsAccountCapability{limits: limits})
+}
+
+// instrumentCalendarsHandler wraps a MethodHandler so every Execute
+// call increments the calendars-JMAP method counter and (on
+// *MethodError return) the per-error-code counter. Names are bounded by
+// the closed Register set above; error codes collapse to "unknown" if
+// outside the closed JMAP error vocabulary.
+func instrumentCalendarsHandler(inner protojmap.MethodHandler) protojmap.MethodHandler {
+	return &calendarsMetricHandler{inner: inner}
+}
+
+type calendarsMetricHandler struct {
+	inner protojmap.MethodHandler
+}
+
+func (h *calendarsMetricHandler) Method() string { return h.inner.Method() }
+
+func (h *calendarsMetricHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
+	method := h.inner.Method()
+	observe.ProtojmapCalendarsMethodsTotal.WithLabelValues(method).Inc()
+	resp, mErr := h.inner.Execute(ctx, args)
+	if mErr != nil {
+		observe.ProtojmapCalendarsMethodErrorsTotal.WithLabelValues(method, jmapErrorCodeLabel(mErr.Type)).Inc()
+	}
+	return resp, mErr
+}
+
+// jmapErrorCodeLabel maps a JMAP MethodError.Type to the closed-enum
+// label used by the protojmap error counters. Mirrors the chat
+// package's helper; values outside the closed subset collapse to
+// "unknown" so cardinality stays bounded.
+func jmapErrorCodeLabel(typ string) string {
+	switch typ {
+	case "forbidden", "invalidArguments", "invalidProperties",
+		"notFound", "serverFail", "serverPartialFail",
+		"serverUnavailable", "tooLarge", "rateLimit",
+		"stateMismatch", "unsupportedFilter", "unsupportedSort",
+		"unknownMethod", "accountNotFound", "accountNotSupportedByMethod",
+		"accountReadOnly", "anchorNotFound", "cannotCalculateChanges",
+		"requestTooLarge", "willDestroy":
+		return typ
+	default:
+		return "unknown"
+	}
 }
 
 // calendarsAccountCapability is the per-account capability descriptor
