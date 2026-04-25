@@ -1,6 +1,7 @@
 package protoimg
 
 import (
+	"container/list"
 	"strconv"
 	"sync"
 	"time"
@@ -18,6 +19,16 @@ import (
 // Concurrency uses a buffered channel as a counting semaphore — one
 // channel per principal, lazily allocated. Tokens are released on
 // release; a denied acquire returns immediately rather than blocking.
+//
+// Each of the three dimensional maps is bounded by a soft entry cap
+// (limitsSoftCap, default 4096). When admit pushes a map past the cap
+// we evict the least-recently-used entries in batches of
+// limitsEvictBatch (default 64) to keep the steady-state work O(1)
+// amortised. Evicting a per-user concurrency channel is only safe when
+// no slots are in flight, which we approximate by skipping channels
+// whose buffer length is non-zero — a pinned principal stays resident
+// even if older. The eviction is opportunistic, not scheduled, so we
+// do not need a sweeper goroutine bound to a server lifecycle.
 type limiter struct {
 	clk clock.Clock
 
@@ -27,10 +38,26 @@ type limiter struct {
 	window              time.Duration
 
 	mu          sync.Mutex
-	user        map[store.PrincipalID]*ringBuf
-	userOrigin  map[userOriginKey]*ringBuf
-	concurrency map[store.PrincipalID]chan struct{}
+	user        map[store.PrincipalID]*list.Element // value: *userEntry
+	userOrigin  map[userOriginKey]*list.Element     // value: *userOriginEntry
+	concurrency map[store.PrincipalID]*list.Element // value: *concurrencyEntry
+
+	userOrder        *list.List // most-recent at Front
+	userOriginOrder  *list.List
+	concurrencyOrder *list.List
 }
+
+// limitsSoftCap is the per-map entry ceiling above which admit evicts a
+// batch of LRU entries. 4096 keys x ~16 bytes/key + ringbuf overhead
+// stays well under a megabyte; the cap exists to keep memory bounded
+// for a hostile or buggy client population, not to enforce policy.
+const limitsSoftCap = 4096
+
+// limitsEvictBatch is the number of LRU entries dropped on each over-
+// cap admit. Larger than 1 so we don't pay map-walk overhead on every
+// admission once the cap is reached; small enough that one admit's
+// worst-case cost remains constant.
+const limitsEvictBatch = 64
 
 type userOriginKey struct {
 	pid    store.PrincipalID
@@ -40,6 +67,23 @@ type userOriginKey struct {
 type ringBuf struct {
 	stamps []time.Time
 	head   int
+}
+
+// userEntry / userOriginEntry / concurrencyEntry are the values we
+// store in each map's *list.Element so eviction can recover the key.
+type userEntry struct {
+	pid store.PrincipalID
+	rb  *ringBuf
+}
+
+type userOriginEntry struct {
+	key userOriginKey
+	rb  *ringBuf
+}
+
+type concurrencyEntry struct {
+	pid store.PrincipalID
+	sem chan struct{}
 }
 
 func newLimiter(clk clock.Clock, perUserPerMin, perUserOriginPerMin, perUserConcurrent int) *limiter {
@@ -58,9 +102,12 @@ func newLimiter(clk clock.Clock, perUserPerMin, perUserOriginPerMin, perUserConc
 		perUserOriginPerMin: perUserOriginPerMin,
 		perUserConcurrent:   perUserConcurrent,
 		window:              time.Minute,
-		user:                make(map[store.PrincipalID]*ringBuf),
-		userOrigin:          make(map[userOriginKey]*ringBuf),
-		concurrency:         make(map[store.PrincipalID]chan struct{}),
+		user:                make(map[store.PrincipalID]*list.Element),
+		userOrigin:          make(map[userOriginKey]*list.Element),
+		concurrency:         make(map[store.PrincipalID]*list.Element),
+		userOrder:           list.New(),
+		userOriginOrder:     list.New(),
+		concurrencyOrder:    list.New(),
 	}
 }
 
@@ -82,23 +129,24 @@ const (
 func (l *limiter) admit(pid store.PrincipalID, origin string) (release func(), reason admitReason, retryAfter time.Duration) {
 	l.mu.Lock()
 	now := l.clk.Now()
-	if ok, retry := admitRing(l.user, pid, l.perUserPerMin, l.window, now); !ok {
+	userRB := l.touchUser(pid)
+	if ok, retry := ringAdmit(userRB, l.perUserPerMin, l.window, now); !ok {
+		l.evictIfOver()
 		l.mu.Unlock()
 		return nil, admitDenyUser, retry
 	}
 	uok := userOriginKey{pid: pid, origin: origin}
-	if ok, retry := admitOriginRing(l.userOrigin, uok, l.perUserOriginPerMin, l.window, now); !ok {
-		l.mu.Unlock()
+	originRB := l.touchUserOrigin(uok)
+	if ok, retry := ringAdmit(originRB, l.perUserOriginPerMin, l.window, now); !ok {
 		// Roll back the per-user window: the request did not run, so
 		// counting it would silently shrink the per-user budget.
-		rollbackRing(l.user[pid])
+		rollbackRing(userRB)
+		l.evictIfOver()
+		l.mu.Unlock()
 		return nil, admitDenyOrigin, retry
 	}
-	sem, ok := l.concurrency[pid]
-	if !ok {
-		sem = make(chan struct{}, l.perUserConcurrent)
-		l.concurrency[pid] = sem
-	}
+	sem := l.touchConcurrency(pid)
+	l.evictIfOver()
 	l.mu.Unlock()
 	select {
 	case sem <- struct{}{}:
@@ -108,33 +156,119 @@ func (l *limiter) admit(pid store.PrincipalID, origin string) (release func(), r
 		// request still gets the full per-minute budget; otherwise the
 		// caller is doubly punished by a transient burst.
 		l.mu.Lock()
-		rollbackRing(l.user[pid])
-		rollbackRing(l.userOrigin[uok])
+		rollbackRing(userRB)
+		rollbackRing(originRB)
 		l.mu.Unlock()
 		return nil, admitDenyConcurrent, time.Second
 	}
 }
 
-// admitRing and admitOriginRing handle the two map shapes (principal-
-// keyed, (principal, origin)-keyed) without forcing the call site
-// through a generic. The signatures are deliberately specialised so
-// the caller does not invent a sentinel key value.
-func admitRing(m map[store.PrincipalID]*ringBuf, pid store.PrincipalID, limit int, window time.Duration, now time.Time) (bool, time.Duration) {
-	rb, ok := m[pid]
-	if !ok {
-		rb = &ringBuf{stamps: make([]time.Time, limit)}
-		m[pid] = rb
+// touchUser returns the per-user ring buffer for pid, creating one on
+// first use, and promotes the entry to the front of the LRU order.
+// Caller holds l.mu.
+func (l *limiter) touchUser(pid store.PrincipalID) *ringBuf {
+	if el, ok := l.user[pid]; ok {
+		l.userOrder.MoveToFront(el)
+		return el.Value.(*userEntry).rb
 	}
-	return ringAdmit(rb, limit, window, now)
+	rb := &ringBuf{stamps: make([]time.Time, l.perUserPerMin)}
+	el := l.userOrder.PushFront(&userEntry{pid: pid, rb: rb})
+	l.user[pid] = el
+	return rb
 }
 
-func admitOriginRing(m map[userOriginKey]*ringBuf, k userOriginKey, limit int, window time.Duration, now time.Time) (bool, time.Duration) {
-	rb, ok := m[k]
-	if !ok {
-		rb = &ringBuf{stamps: make([]time.Time, limit)}
-		m[k] = rb
+// touchUserOrigin mirrors touchUser for the (pid, origin) keyed map.
+func (l *limiter) touchUserOrigin(k userOriginKey) *ringBuf {
+	if el, ok := l.userOrigin[k]; ok {
+		l.userOriginOrder.MoveToFront(el)
+		return el.Value.(*userOriginEntry).rb
 	}
-	return ringAdmit(rb, limit, window, now)
+	rb := &ringBuf{stamps: make([]time.Time, l.perUserOriginPerMin)}
+	el := l.userOriginOrder.PushFront(&userOriginEntry{key: k, rb: rb})
+	l.userOrigin[k] = el
+	return rb
+}
+
+// touchConcurrency returns the per-user semaphore channel for pid,
+// creating one on first use, and promotes the entry to the front of
+// the LRU order.
+func (l *limiter) touchConcurrency(pid store.PrincipalID) chan struct{} {
+	if el, ok := l.concurrency[pid]; ok {
+		l.concurrencyOrder.MoveToFront(el)
+		return el.Value.(*concurrencyEntry).sem
+	}
+	sem := make(chan struct{}, l.perUserConcurrent)
+	el := l.concurrencyOrder.PushFront(&concurrencyEntry{pid: pid, sem: sem})
+	l.concurrency[pid] = el
+	return sem
+}
+
+// evictIfOver drops up to limitsEvictBatch LRU entries from each map
+// that is past limitsSoftCap. Caller holds l.mu.
+//
+// The concurrency map skips entries whose semaphore is currently held
+// (len(sem) > 0): forgetting an in-flight reservation would let the
+// owning principal's release() write to a freed channel. Skipped
+// entries are pulled to the front so they are not retried on every
+// over-cap admission; if every entry is held, the soft cap is the
+// effective floor (which is fine — concurrency is bounded by the
+// per-user limit anyway, so the worst case is still small).
+func (l *limiter) evictIfOver() {
+	if l.userOrder.Len() > limitsSoftCap {
+		evictRingLRU(l.userOrder, func(el *list.Element) {
+			delete(l.user, el.Value.(*userEntry).pid)
+		})
+	}
+	if l.userOriginOrder.Len() > limitsSoftCap {
+		evictRingLRU(l.userOriginOrder, func(el *list.Element) {
+			delete(l.userOrigin, el.Value.(*userOriginEntry).key)
+		})
+	}
+	if l.concurrencyOrder.Len() > limitsSoftCap {
+		evictConcurrencyLRU(l.concurrencyOrder, func(el *list.Element) {
+			delete(l.concurrency, el.Value.(*concurrencyEntry).pid)
+		})
+	}
+}
+
+// evictRingLRU drops up to limitsEvictBatch ring-buffer entries from
+// the back of order, calling delMap for each so the corresponding map
+// entry goes too.
+func evictRingLRU(order *list.List, delMap func(*list.Element)) {
+	for i := 0; i < limitsEvictBatch; i++ {
+		back := order.Back()
+		if back == nil {
+			return
+		}
+		order.Remove(back)
+		delMap(back)
+	}
+}
+
+// evictConcurrencyLRU mirrors evictRingLRU but skips entries whose
+// semaphore is currently in use; see evictIfOver for the rationale.
+func evictConcurrencyLRU(order *list.List, delMap func(*list.Element)) {
+	skipped := 0
+	for i := 0; i < limitsEvictBatch; i++ {
+		back := order.Back()
+		if back == nil {
+			return
+		}
+		ce := back.Value.(*concurrencyEntry)
+		if len(ce.sem) > 0 {
+			// Held: promote so we don't retry the same victim on the
+			// next admission. Bound the skip walk so a fully-held map
+			// returns instead of looping forever.
+			order.MoveToFront(back)
+			skipped++
+			if skipped >= order.Len() {
+				return
+			}
+			continue
+		}
+		order.Remove(back)
+		delMap(back)
+	}
 }
 
 // ringAdmit counts in-window stamps; if below limit, records the new

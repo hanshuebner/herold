@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/categorise"
+	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/mailarc"
 	"github.com/hanshuebner/herold/internal/maildkim"
@@ -77,10 +78,17 @@ func TestDelivery_Categoriser_AddsCategoryKeyword(t *testing.T) {
 	interp := sieve.NewInterpreter()
 	tlsStore, _ := newTestTLSStore(t)
 
+	// Categoriser deadlines are computed against the supplied Clock. The
+	// harness's FakeClock is anchored months behind real wall-clock so a
+	// fake-clock-driven deadline lands in the past and the upstream
+	// httptest call is cancelled before it begins. The categoriser's
+	// timeout discipline is exercised in internal/categorise/_test; here
+	// we use a real clock so the deadline lines up with the live
+	// httptest server.
 	cat := categorise.New(categorise.Options{
 		Store:           ha.Store,
 		Logger:          ha.Logger,
-		Clock:           ha.Clock,
+		Clock:           clock.NewReal(),
 		DefaultEndpoint: llm.URL,
 		DefaultModel:    "test-model",
 		DefaultTimeout:  3 * time.Second,

@@ -486,3 +486,26 @@ func TestSignal_OfferIdempotent_OnRetransmit(t *testing.T) {
 		t.Fatalf("sysmsgs = %d, want 1 (no duplicate call.started)", got)
 	}
 }
+
+// TestServer_Close_Idempotent pins that a second Close is a safe no-op
+// and that the call drains the reaper without blocking. The admin
+// errgroup wiring in composeAdminAndUI relies on this contract:
+// SIGTERM may run Close() concurrently with the test cleanup hook.
+func TestServer_Close_Idempotent(t *testing.T) {
+	s, _, _, _, _, _ := newFixture(t)
+	if err := s.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	// Second Close: must return without blocking and without panicking
+	// on a closed reaperStop channel.
+	done := make(chan error, 1)
+	go func() { done <- s.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("second Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("second Close blocked")
+	}
+}

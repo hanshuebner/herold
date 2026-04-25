@@ -113,6 +113,20 @@ type Server struct {
 
 	handlersMu sync.RWMutex
 	handlers   map[string]FrameHandler
+
+	// ctx is the server-level lifecycle context; Shutdown cancels it
+	// and every per-connection / per-presence-grace goroutine watches
+	// for it. The cancel is captured so Shutdown can fire it
+	// idempotently. STANDARDS §5: every async boundary observes a
+	// context.
+	ctx          context.Context
+	cancel       context.CancelFunc
+	shutdownMu   sync.Mutex
+	shuttingDown bool
+
+	// connWG tracks every in-flight chatConn.run() so Shutdown can
+	// wait for connection drain after cancelling ctx.
+	connWG sync.WaitGroup
 }
 
 // FrameHandler is the signature external packages register for a
@@ -166,6 +180,7 @@ func New(opts Options) *Server {
 	if opts.PresenceGrace <= 0 {
 		opts.PresenceGrace = 30 * time.Second
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
 		store:            opts.Store,
 		logger:           logger,
@@ -188,6 +203,54 @@ func New(opts Options) *Server {
 		peers:            opts.PeersResolver,
 		conns:            make(map[*chatConn]struct{}),
 		perPrinc:         make(map[store.PrincipalID]int),
+		ctx:              ctx,
+		cancel:           cancel,
+	}
+}
+
+// Shutdown drains the chat server: it cancels the server-level
+// context (so every in-flight connection's read/write pumps,
+// presence-grace timers, and typing-auto-stop goroutines unblock),
+// then waits up to the supplied ctx's deadline for the per-connection
+// run() goroutines and the presence-tracker's grace-period goroutines
+// to exit. Returns ctx.Err() if the deadline expires before drain.
+//
+// Idempotent: a second call returns immediately with nil.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.shutdownMu.Lock()
+	if s.shuttingDown {
+		s.shutdownMu.Unlock()
+		return nil
+	}
+	s.shuttingDown = true
+	s.shutdownMu.Unlock()
+
+	if s.cancel != nil {
+		s.cancel()
+	}
+	// Pull every connection's read/write pump down. shutdown() is
+	// idempotent so a connection already on its way out is unaffected.
+	s.connsMu.Lock()
+	conns := make([]*chatConn, 0, len(s.conns))
+	for c := range s.conns {
+		conns = append(conns, c)
+	}
+	s.connsMu.Unlock()
+	for _, c := range conns {
+		c.shutdown(closeGoingAway, "server shutdown")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.connWG.Wait()
+		s.presence.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -338,11 +401,18 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	cc.id = s.broadcaster.Register(pid, cc)
 	s.presence.CancelOffline(pid)
 
-	// Run the connection. r.Context() is the request context — it
-	// fires when the underlying http.Server is shutting down; we
-	// derive cc.ctx from it so a server shutdown drains every
-	// connection.
-	cc.run(r.Context())
+	// Track the connection's run() lifetime on the server-level
+	// WaitGroup so Shutdown can wait for it to drain. The Add must
+	// happen before run() to be observable by Shutdown's wait. We
+	// derive cc.ctx from the merged (server, request) context so a
+	// server-wide cancel drains every connection independently of the
+	// http.Server's own shutdown.
+	s.connWG.Add(1)
+	defer s.connWG.Done()
+
+	connCtx, connCancel := mergedContext(s.ctx, r.Context())
+	defer connCancel()
+	cc.run(connCtx)
 
 	s.broadcaster.Unregister(cc.id)
 	s.connsMu.Lock()
@@ -352,11 +422,33 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 
 	// Disconnect-grace: if this was the last connection for pid,
 	// schedule a transition to offline; a reconnect within the
-	// grace window cancels it via Set / CancelOffline above.
+	// grace window cancels it via Set / CancelOffline above. The
+	// server-level ctx scopes the grace goroutine so Shutdown drains
+	// it.
 	if !s.broadcaster.HasConnection(pid) {
-		s.presence.ScheduleOffline(pid, func(now time.Time) {
+		s.presence.ScheduleOffline(s.ctx, pid, func(now time.Time) {
 			s.emitPresence(pid, "offline", now)
 		})
+	}
+}
+
+// mergedContext returns a context that cancels when either parent
+// cancels. The returned cancel must be called to release the merging
+// goroutine. Used to fold the server-level shutdown ctx into the
+// per-request ctx without forcing run() to know about both.
+func mergedContext(a, b context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(a)
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-b.Done():
+			cancel()
+		case <-stop:
+		}
+	}()
+	return ctx, func() {
+		close(stop)
+		cancel()
 	}
 }
 

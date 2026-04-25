@@ -99,10 +99,14 @@ func TestCategorise_HappyPath_ReturnsCategory(t *testing.T) {
 		_, _ = io.WriteString(w, chatJSON(`{"category":"promotions"}`))
 	})
 	st, pid := makeStoreAndPrincipal(t)
+	// FakeClock anchored at time.Now() so withBoundedDeadline produces
+	// a deadline in the future of the real wall clock; the fake clock
+	// drives the categoriser's internal time math while net/http on the
+	// httptest upstream still runs against real time.
 	c := categorise.New(categorise.Options{
 		Store:           st,
 		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Clock:           clock.NewFake(time.Date(2026, 4, 24, 0, 0, 0, 0, time.UTC)),
+		Clock:           clock.NewFake(time.Now()),
 		DefaultEndpoint: fs.srv.URL,
 		DefaultModel:    "test-model",
 	})

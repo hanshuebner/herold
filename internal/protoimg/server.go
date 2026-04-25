@@ -457,7 +457,7 @@ func statusForErr(w http.ResponseWriter, err error) {
 // browser from re-classifying the content if upstream lied, and the
 // content-type is echoed verbatim from upstream.
 func (s *Server) writeImage(w http.ResponseWriter, e cacheEntry, method string) {
-	ttl := time.Until(e.expiresAt)
+	ttl := e.expiresAt.Sub(s.clk.Now())
 	if ttl < 0 {
 		ttl = 0
 	}

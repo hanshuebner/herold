@@ -207,7 +207,7 @@ func (c *Categoriser) Categorise(
 		timeout = c.timeout
 	}
 
-	callCtx, cancel := withBoundedDeadline(ctx, timeout)
+	callCtx, cancel := withBoundedDeadline(ctx, c.clock, timeout)
 	defer cancel()
 
 	prompt := renderSystemPrompt(cfg.Prompt, cfg.CategorySet)
@@ -542,13 +542,21 @@ func stripHTMLTags(in string) string {
 }
 
 // withBoundedDeadline returns a context whose deadline is the sooner
-// of the inherited deadline and now+timeout. The returned cancel must
-// always be called.
-func withBoundedDeadline(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+// of the inherited deadline and now+timeout, where now comes from the
+// supplied Clock. The returned cancel must always be called.
+//
+// The Clock parameter exists so categorise's deterministic-time
+// discipline (STANDARDS §5: no wall-clock reads in deterministic code)
+// extends to deadline computation; tests inject a FakeClock and the
+// derived deadline lines up with the rest of the package's time source.
+func withBoundedDeadline(parent context.Context, clk clock.Clock, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout <= 0 {
 		return context.WithCancel(parent)
 	}
-	deadline := time.Now().Add(timeout)
+	if clk == nil {
+		clk = clock.NewReal()
+	}
+	deadline := clk.Now().Add(timeout)
 	if dl, ok := parent.Deadline(); ok && dl.Before(deadline) {
 		// Parent deadline is tighter; let it win.
 		return context.WithCancel(parent)

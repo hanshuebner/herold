@@ -283,10 +283,18 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// constructor. The two handlers are otherwise independent —
 	// session cookies (UI) and Bearer keys (REST) live in disjoint
 	// header/cookie namespaces, and the URL prefixes do not overlap.
-	adminHandler, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, adminServer.Handler())
+	adminHandler, suiteSrvs, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, adminServer.Handler())
 	if err != nil {
 		return err
 	}
+	defer func() {
+		// Best-effort cleanup if StartServer returns before the lifecycle
+		// goroutines wire these into the errgroup; the errgroup-side
+		// shutdown below is the primary drain.
+		if suiteSrvs.callSrv != nil {
+			_ = suiteSrvs.callSrv.Close()
+		}
+	}()
 
 	// Bind listeners.
 	boundListeners, err := bindListeners(ctx, cfg, logger, tlsStore, smtpServer, imapServer, adminHandler, opts)
@@ -302,6 +310,37 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// surface. The group's ctx is derived from the StartServer ctx so
 	// any goroutine returning a non-nil error cancels its peers.
 	g, gctx := errgroup.WithContext(ctx)
+
+	// Suite-level server lifecycles (protocall reaper, protochat
+	// connection drain). Wave 2.9.5 Track B closed the gap where
+	// /chat/ws and /api/v1/call/credentials had unkillable background
+	// goroutines: register their shutdown hooks against the errgroup so
+	// gctx cancellation drains both before serveAdmin returns.
+	if suiteSrvs.callSrv != nil {
+		callSrv := suiteSrvs.callSrv
+		g.Go(func() error {
+			<-gctx.Done()
+			return callSrv.Close()
+		})
+	}
+	if suiteSrvs.chatSrv != nil {
+		chatSrv := suiteSrvs.chatSrv
+		g.Go(func() error {
+			<-gctx.Done()
+			grace := cfg.Server.ShutdownGrace.AsDuration()
+			if grace <= 0 {
+				grace = 10 * time.Second
+			}
+			shutCtx, cancel := context.WithTimeout(context.Background(), grace)
+			defer cancel()
+			if err := chatSrv.Shutdown(shutCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.LogAttrs(context.Background(), slog.LevelWarn,
+					"protochat shutdown",
+					slog.String("err", err.Error()))
+			}
+			return nil
+		})
+	}
 
 	// Register Go runtime + process collectors against observe.Registry
 	// so /metrics surfaces standard runtime metrics. Idempotent: a test
@@ -844,6 +883,14 @@ func parseSlogLevel(s string) slog.Level {
 	}
 }
 
+// suiteServers gathers the long-lived server objects composeAdminAndUI
+// constructs alongside the http handler. The caller owns their
+// lifecycle; the admin errgroup ties their shutdown to gctx.
+type suiteServers struct {
+	callSrv *protocall.Server
+	chatSrv *protochat.Server
+}
+
 // composeAdminAndUI returns an http.Handler that routes /api/v1/...
 // and /healthz/... to the protoadmin handler, the configured UI path
 // prefix to a freshly constructed protoui server, and (when image
@@ -857,6 +904,11 @@ func parseSlogLevel(s string) slog.Level {
 // mux. We deliberately avoid extending protoadmin with a Mount
 // method; each surface stays independent and a future fourth surface
 // (REQ-HOOK Part B) can join without touching any of them.
+//
+// The second return value carries the protocall and protochat
+// server handles so StartServer can register their shutdown hooks
+// against the lifecycle errgroup; both are nil when the corresponding
+// feature is disabled in cfg.
 func composeAdminAndUI(
 	ctx context.Context,
 	cfg *sysconfig.Config,
@@ -866,9 +918,10 @@ func composeAdminAndUI(
 	clk clock.Clock,
 	logger *slog.Logger,
 	adminHandler http.Handler,
-) (http.Handler, error) {
+) (http.Handler, suiteServers, error) {
+	var srvs suiteServers
 	if cfg.Server.UI.Enabled != nil && !*cfg.Server.UI.Enabled {
-		return adminHandler, nil
+		return adminHandler, srvs, nil
 	}
 	prefix := cfg.Server.UI.PathPrefix
 	if prefix == "" {
@@ -901,7 +954,7 @@ func composeAdminAndUI(
 		// degradation.
 		logger.LogAttrs(ctx, slog.LevelError, "protoui: construct failed; UI disabled",
 			slog.String("err", err.Error()))
-		return adminHandler, nil
+		return adminHandler, srvs, nil
 	}
 	parent := http.NewServeMux()
 	parent.Handle("/api/v1/", adminHandler)
@@ -925,7 +978,9 @@ func composeAdminAndUI(
 			PerUserConcurrent:   ipCfg.PerUserConcurrent,
 			SessionResolver:     uiSrv.ResolveSession,
 		})
-		parent.Handle("/proxy/image", imgSrv.Handler())
+		parent.Handle("/proxy/image",
+			withPanicRecover(logger.With("subsystem", "protoimg"),
+				"proxy.image", imgSrv.Handler()))
 	}
 
 	// Chat ephemeral channel (REQ-CHAT-40..46). The /chat/ws
@@ -953,7 +1008,10 @@ func composeAdminAndUI(
 			PongTimeout:     time.Duration(cfg.Server.Chat.PongTimeoutSeconds) * time.Second,
 			MaxFrameBytes:   cfg.Server.Chat.MaxFrameBytes,
 		})
-		parent.Handle("/chat/ws", chatSrv.Handler())
+		parent.Handle("/chat/ws",
+			withPanicRecover(logger.With("subsystem", "protochat"),
+				"chat.ws", chatSrv.Handler()))
+		srvs.chatSrv = chatSrv
 	}
 
 	// Video calls (REQ-CALL-*). Two surfaces:
@@ -969,7 +1027,7 @@ func composeAdminAndUI(
 		if cfg.Server.TURN.SharedSecretEnv != "" {
 			s, err := sysconfig.ResolveSecretStrict(cfg.Server.TURN.SharedSecretEnv)
 			if err != nil {
-				return nil, fmt.Errorf("admin: resolve TURN shared secret: %w", err)
+				return nil, srvs, fmt.Errorf("admin: resolve TURN shared secret: %w", err)
 			}
 			sharedSecret = []byte(s)
 		}
@@ -990,12 +1048,15 @@ func composeAdminAndUI(
 		// Mount on the parent mux directly; Go's ServeMux longest-
 		// prefix routing prefers the exact "/api/v1/call/credentials"
 		// over the catch-all "/api/v1/" registered by adminHandler.
-		parent.Handle("/api/v1/call/credentials", callSrv.HTTPHandler())
+		parent.Handle("/api/v1/call/credentials",
+			withPanicRecover(logger.With("subsystem", "protocall"),
+				"call.credentials", callSrv.HTTPHandler()))
 		if chatSrv != nil {
 			if err := chatSrv.RegisterHandler("call.signal", callSignalForwarder(callSrv)); err != nil {
-				return nil, fmt.Errorf("admin: register call.signal handler: %w", err)
+				return nil, srvs, fmt.Errorf("admin: register call.signal handler: %w", err)
 			}
 		}
+		srvs.callSrv = callSrv
 	}
 
 	// Bare `/` and unknown roots: send a browser hitting the admin
@@ -1008,7 +1069,7 @@ func composeAdminAndUI(
 		}
 		http.NotFound(w, r)
 	})
-	return parent, nil
+	return parent, srvs, nil
 }
 
 // notifySystemdReady implements a minimal sd_notify(READY=1) compatible

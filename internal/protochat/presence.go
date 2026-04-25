@@ -1,6 +1,7 @@
 package protochat
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -35,6 +36,10 @@ type PresenceTracker struct {
 	pending map[store.PrincipalID]chan struct{} // grace-period cancellation
 
 	graceWindow time.Duration
+
+	// wg tracks every in-flight ScheduleOffline goroutine so the
+	// owning Server.Shutdown can wait for them to drain.
+	wg sync.WaitGroup
 }
 
 // NewPresenceTracker returns a tracker with a 30-second
@@ -101,13 +106,17 @@ func (p *PresenceTracker) ListSubscribed(principals []store.PrincipalID) []Prese
 // ScheduleOffline starts the disconnect-grace window for pid. After
 // graceWindow has elapsed without a reconnect, onExpire is invoked
 // (typically: the broadcaster emits a presence-update with state
-// "offline"). reconnected reports whether onExpire fired (false) or
-// the grace was cancelled by a Set / further connect (true).
+// "offline"). The grace-period goroutine returns early when ctx is
+// cancelled (Server.Shutdown), preserving the in-memory state without
+// firing onExpire so a subsequent restart does not see a spurious
+// offline transition.
 //
-// The function spawns one goroutine per call. Callers MUST cancel
-// outstanding pending records via Set or Cancel; long-lived servers
-// are not affected because graceWindow is bounded.
-func (p *PresenceTracker) ScheduleOffline(pid store.PrincipalID, onExpire func(now time.Time)) {
+// The function spawns one goroutine per call; the tracker tracks the
+// goroutine on its WaitGroup so Server.Shutdown can wait for the set
+// to drain. Callers MUST cancel outstanding pending records via Set
+// or CancelOffline; long-lived servers are not affected because
+// graceWindow is bounded.
+func (p *PresenceTracker) ScheduleOffline(ctx context.Context, pid store.PrincipalID, onExpire func(now time.Time)) {
 	cancel := make(chan struct{})
 	p.mu.Lock()
 	if existing, ok := p.pending[pid]; ok {
@@ -116,7 +125,9 @@ func (p *PresenceTracker) ScheduleOffline(pid store.PrincipalID, onExpire func(n
 	p.pending[pid] = cancel
 	p.mu.Unlock()
 
+	p.wg.Add(1)
 	go func() {
+		defer p.wg.Done()
 		select {
 		case now := <-p.clk.After(p.graceWindow):
 			p.mu.Lock()
@@ -132,8 +143,26 @@ func (p *PresenceTracker) ScheduleOffline(pid store.PrincipalID, onExpire func(n
 			p.mu.Unlock()
 		case <-cancel:
 			// Reconnected within the grace window.
+		case <-ctx.Done():
+			// Server-level shutdown: drop the pending entry without
+			// firing onExpire. The tracker's in-memory state is lost
+			// across restarts (REQ-CHAT-54) so a fake offline
+			// transition would only confuse subscribers receiving
+			// stale frames during drain.
+			p.mu.Lock()
+			if cur, ok := p.pending[pid]; ok && cur == cancel {
+				delete(p.pending, pid)
+			}
+			p.mu.Unlock()
 		}
 	}()
+}
+
+// Wait blocks until every in-flight ScheduleOffline goroutine has
+// returned. Used by Server.Shutdown after the server-level ctx has
+// fired so callers can bound the drain by their own timeout.
+func (p *PresenceTracker) Wait() {
+	p.wg.Wait()
 }
 
 // CancelOffline cancels a pending offline transition for pid, if

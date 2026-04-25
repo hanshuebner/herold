@@ -42,6 +42,20 @@ type rateBucket struct {
 	last   time.Time
 }
 
+// rateLimiterIdleEvictAfter is the threshold past which a bucket whose
+// last update is older than this is considered abandoned and may be
+// dropped. One hour is well past any reasonable user think-time and far
+// past the reconnect grace window; a returning user simply re-enters at
+// burst capacity, which is the same admission profile they would have
+// received if their previous session had timed out.
+const rateLimiterIdleEvictAfter = time.Hour
+
+// rateLimiterEvictPerCall caps the per-allow() eviction work so the
+// hot path stays O(1) amortised even when an attacker creates millions
+// of bucket entries before going idle. The limiter walks at most this
+// many entries on any single allow().
+const rateLimiterEvictPerCall = 16
+
 // newRateLimiter constructs a limiter; rate and burst are in tokens
 // (frames). Zero or negative values fall through to the defaults.
 func newRateLimiter(clk clock.Clock, rate, burst float64) *rateLimiter {
@@ -65,6 +79,14 @@ func newRateLimiter(clk clock.Clock, rate, burst float64) *rateLimiter {
 // allow returns true if a frame of the given weight can be admitted
 // for pid. State mutates: a successful admission deducts the weight
 // from the bucket; a denial leaves the bucket alone.
+//
+// Each call also performs an opportunistic LRU-ish sweep: at most
+// rateLimiterEvictPerCall entries from the buckets map are inspected,
+// and any whose last update is older than rateLimiterIdleEvictAfter
+// are dropped. The walk uses Go's randomised map iteration order, so
+// over time every entry is visited; combined with the small batch
+// limit this keeps the buckets map bounded under churn without a
+// dedicated sweeper goroutine. STANDARDS §6 (bounded goroutines).
 func (r *rateLimiter) allow(pid store.PrincipalID, weight float64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -83,11 +105,38 @@ func (r *rateLimiter) allow(pid store.PrincipalID, weight float64) bool {
 			b.last = now
 		}
 	}
+	r.evictIdleLocked(pid, now)
 	if b.tokens < weight {
 		return false
 	}
 	b.tokens -= weight
 	return true
+}
+
+// evictIdleLocked walks at most rateLimiterEvictPerCall entries from
+// r.buckets and drops any whose last update is older than
+// rateLimiterIdleEvictAfter. The current pid is preserved unconditionally
+// so an admission never frees the bucket it is about to charge against.
+//
+// Caller holds r.mu.
+func (r *rateLimiter) evictIdleLocked(skip store.PrincipalID, now time.Time) {
+	if len(r.buckets) == 0 {
+		return
+	}
+	cutoff := now.Add(-rateLimiterIdleEvictAfter)
+	visited := 0
+	for pid, b := range r.buckets {
+		if visited >= rateLimiterEvictPerCall {
+			return
+		}
+		visited++
+		if pid == skip {
+			continue
+		}
+		if b.last.Before(cutoff) {
+			delete(r.buckets, pid)
+		}
+	}
 }
 
 // frameWeight maps a client frame Type to its rate-limit cost.

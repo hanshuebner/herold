@@ -25,6 +25,7 @@ type closeCode uint16
 
 const (
 	closeNormalClosure   closeCode = 1000
+	closeGoingAway       closeCode = 1001
 	closeProtocolError   closeCode = 1002
 	closeUnsupportedData closeCode = 1003
 	closeInvalidPayload  closeCode = 1007
