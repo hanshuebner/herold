@@ -28,3 +28,40 @@ Many user actions update the screen before the server confirms. This file specif
 | Action reverts after a beat | Server returned 4xx / 5xx for the JMAP method call | Toast: "Action failed — Retry" |
 | Action reverts after a long pause | Network timed out (configurable; default 10 s) | Toast: "No server response — Retry" |
 | Action vanishes silently after several seconds | EventSource push delivered a state that supersedes our optimistic write (rare; usually only on a conflict) | The cache reconciles to server truth; no toast — the user's action was preempted by a later one |
+
+## Connection state and reconciliation
+
+The connection states the UI reflects, and what happens to in-flight optimistic writes during transitions.
+
+### States
+
+| State | Trigger | UX |
+|-------|---------|-----|
+| Connected | EventSource push channel open and last heartbeat within `ping_interval × 2`. | No banner. |
+| Reconnecting | Push channel dropped, OR last heartbeat older than `ping_interval × 2`. Polling fallback active per `../requirements/13-nonfunctional.md` REQ-REL-02. | Subtle inline indicator next to the account name in the chrome: "Reconnecting…" with a spinner. Not a banner. |
+| Disconnected | Reconnect attempts have failed for > 60 s with no progress. | Banner above the thread list: "Connection lost. [Retry]". Non-modal — the cached UI continues to function. |
+
+### Optimistic writes during disconnect
+
+| ID | Requirement |
+|----|-------------|
+| REQ-OPT-30 | Optimistic actions taken during Reconnecting / Disconnected states still apply to the local cache and re-render the UI as if connected. The user does not feel the network status — the local cache is the source of truth from the user's perspective. |
+| REQ-OPT-31 | The JMAP calls backing those actions queue locally in a per-action queue. When connection returns to Connected, the queue drains in submission order. |
+| REQ-OPT-32 | Each queued call carries an `ifInState` matching the cache's state at the time of the optimistic write. On drain, a `stateMismatch` returned by herold means "the world moved while you were offline" — the queued write is treated as a conflict (next row). |
+| REQ-OPT-33 | The queue is in-memory only. A page reload during disconnect drops the queue (the user gets a "you had unsaved actions when this page reloaded" notice). The optimistic UI changes that hadn't been queued to the server are gone too — the cache rebuilds from scratch. |
+
+### Conflicts on reconnect
+
+| ID | Requirement |
+|----|-------------|
+| REQ-OPT-40 | When a queued action fails on drain due to `stateMismatch`, tabard does NOT silently retry. The failure surfaces as a per-action toast: "Could not <action> — the conversation was changed elsewhere. [View server version] [Retry as if new]". |
+| REQ-OPT-41 | "View server version" reverts the local cache to server truth (issuing `Foo/get` for the affected IDs), discarding the optimistic write. |
+| REQ-OPT-42 | "Retry as if new" reissues the action without `ifInState`, accepting whatever the server's current state is as the basis. (Useful for archive-of-an-email kind of actions where the conflict isn't substantive.) |
+
+### Reconnect reconciliation
+
+| ID | Requirement |
+|----|-------------|
+| REQ-OPT-50 | On EventSource reconnect with `Last-Event-ID`, the server resumes the change stream from the last delivered event. Tabard processes the resumed events as it would live ones. |
+| REQ-OPT-51 | If the server returns `cannotCalculateChanges` for a type during reconnect-replay (the disconnect was longer than retention), tabard does a full re-fetch of that type's currently-rendered IDs. The thread list briefly shows a loading indicator; cached rows render until replaced. |
+| REQ-OPT-52 | Reconnect does not blank the UI. The user sees their last cached view throughout the disconnect-and-reconnect cycle; only the freshness indicator changes. |

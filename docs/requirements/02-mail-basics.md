@@ -44,6 +44,69 @@ This doc is a placeholder skeleton. Concrete requirements come from gmail-logger
 | REQ-MAIL-52 | Delete moves the thread to Trash by setting `mailboxIds` to `{<trash-id>: true}` for all emails in the thread. |
 | REQ-MAIL-53 | Mark-read / mark-unread toggles `keywords/$seen`. Available on thread and on individual messages. |
 
+## Compose details
+
+The toolbar, paste handling, signatures, Cc/Bcc, and send variants — the parts of compose that turn a message into something the user actually wants to send.
+
+### Toolbar
+
+The compose body is a ProseMirror editor (`../implementation/01-tech-stack.md`). The toolbar exposes the schema's marks and node types:
+
+| Action | Shortcut |
+|--------|----------|
+| Bold | `Cmd/Ctrl+B` |
+| Italic | `Cmd/Ctrl+I` |
+| Underline | `Cmd/Ctrl+U` |
+| Strikethrough | `Cmd/Ctrl+Shift+X` |
+| Inline code | `Cmd/Ctrl+E` |
+| Bullet list | toolbar only |
+| Numbered list | toolbar only |
+| Blockquote | `Cmd/Ctrl+Shift+>` |
+| Link | `Cmd/Ctrl+K` (opens URL prompt; selection becomes link text) |
+| Heading 2 / 3 | toolbar only — h1 is conventionally not used in email bodies |
+| Horizontal rule | toolbar only |
+| Remove formatting | `Cmd/Ctrl+\` |
+
+| ID | Requirement |
+|----|-------------|
+| REQ-MAIL-80 | The toolbar appears at the bottom of the compose, beneath the body editor. (Top-of-body toolbars steal vertical real estate during typing; bottom keeps the body's start visible.) |
+| REQ-MAIL-81 | Toolbar buttons reflect the current selection's mark/node state — bold lights up when the cursor is in bold text. Implementation: ProseMirror state subscription bridged to Svelte `$state` (`../architecture/06-design-system.md` § Compose window). |
+| REQ-MAIL-82 | The compose schema rejects styles outside the supported set — pasting `<style>`, `<script>`, raw HTML, or arbitrary inline `style=` attributes drops the disallowed parts. The schema is defined once and shared between compose-output and inbound-sanitisation as the contract for "what tabard considers valid email HTML". |
+
+### Paste
+
+| ID | Requirement |
+|----|-------------|
+| REQ-MAIL-90 | Paste of plain text inserts at the cursor without formatting. |
+| REQ-MAIL-91 | Paste of formatted (HTML) content is mapped through the compose schema: supported marks/nodes are preserved; unsupported are dropped silently (no warning toast — the user is unlikely to know what was filtered). |
+| REQ-MAIL-92 | Paste of an image (clipboard image, screenshot) is uploaded via `Blob/upload` and inserted as inline content with a Content-ID reference. See `17-attachments.md` REQ-ATT-07. |
+| REQ-MAIL-93 | Paste of a URL onto a text selection wraps the selection as a link to the URL. Plain paste of a URL with no selection inserts it as a link with the URL as both href and visible text. |
+
+### Signatures
+
+| ID | Requirement |
+|----|-------------|
+| REQ-MAIL-100 | Each `Identity` has an optional signature, plain text in v1. HTML signatures cut to phase 2 (`../implementation/04-simplifications-and-cuts.md`). |
+| REQ-MAIL-101 | When a compose opens (new, reply, forward), the From identity's signature is appended to the body separated by the standard delimiter `\n-- \n`. The cursor is positioned above the delimiter. |
+| REQ-MAIL-102 | The user can edit the signature in the compose without affecting the saved signature on the `Identity`. Editing the saved signature lives in `20-settings.md`. |
+| REQ-MAIL-103 | If the From identity is changed mid-compose, the signature is replaced with the new identity's. If the user has edited the signature, a confirmation appears: "Replace your edited signature with <new identity>'s?". |
+
+### Cc / Bcc
+
+| ID | Requirement |
+|----|-------------|
+| REQ-MAIL-110 | Cc and Bcc rows are hidden by default. "Cc" / "Bcc" buttons next to the To field reveal each row. |
+| REQ-MAIL-111 | Once a Cc or Bcc row has any content, it stays visible for this compose (no re-collapse). |
+| REQ-MAIL-112 | "Remove yourself from this conversation" — a small affordance in the reading pane when the user is in a thread's Cc list. Adds the user's address to a per-thread "don't auto-include" set; future reply-all on this thread excludes the user from Cc. The set is `localStorage` per account, keyed by thread id. |
+
+### Send variants
+
+| ID | Requirement |
+|----|-------------|
+| REQ-MAIL-120 | Send: `Cmd/Ctrl+Enter`. The default action. |
+| REQ-MAIL-121 | Send + archive (the parent thread for replies, or the most recently focused thread otherwise): `Cmd/Ctrl+Shift+Enter`. Visible in the Send button's split menu. |
+| REQ-MAIL-122 | Cut for v1: send-later (scheduled send), send-and-snooze, send-with-confirmation-required. Server-side feature dependencies that we'd rather not pull in for v1. |
+
 ## Placeholders growing from capture
 
 > **⚠ PLACEHOLDER** — top-actions not already covered above will be added from `gmail-analysis-*.json` (`top_actions` ≥ 5 occurrences). Likely candidates: print, mute thread, report spam, mark important, snippet preview hover. Add as `REQ-MAIL-7n`+ and only re-prefix existing IDs if the area materially reorganises.

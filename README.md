@@ -51,13 +51,21 @@ tabard/
     │   ├── 10-keyboard.md          shortcut bindings and priorities
     │   ├── 11-optimistic-ui.md     optimistic actions, undo, error revert
     │   ├── 12-workflows.md         end-to-end user workflows
-    │   └── 13-nonfunctional.md     perf, security, reliability, a11y, browsers
+    │   ├── 13-nonfunctional.md     perf, security, reliability, a11y, browsers
+    │   ├── 14-unsubscribe.md       List-Unsubscribe (RFC 2369) + one-click (RFC 8058)
+    │   ├── 15-calendar-invites.md  iMIP rendering and RSVP (RFC 5545 / 6047)
+    │   ├── 16-mailing-lists.md     RFC 2369 List-* metadata and per-list affordances
+    │   ├── 17-attachments.md       upload, render, suspicious-extension warnings
+    │   ├── 18-authentication-results.md  SPF/DKIM/DMARC/ARC display (RFC 8601)
+    │   ├── 19-drafts.md            auto-save, recovery, multi-device conflict
+    │   └── 20-settings.md          settings panel scope and storage
     ├── architecture/
     │   ├── 01-system-overview.md
     │   ├── 02-jmap-client.md
     │   ├── 03-sync-and-state.md
     │   ├── 04-rendering.md
-    │   └── 05-keyboard-engine.md
+    │   ├── 05-keyboard-engine.md
+    │   └── 06-design-system.md     suite-wide design language and components
     ├── implementation/
     │   ├── 01-tech-stack.md
     │   ├── 02-phasing.md
@@ -89,6 +97,13 @@ tabard/
 - `REQ-REL-nn`   — reliability and sync
 - `REQ-A11Y-nn`  — accessibility
 - `REQ-BR-nn`    — browser support
+- `REQ-UNS-nn`   — unsubscribe (RFC 2369 / 8058)
+- `REQ-CAL-nn`   — calendar invites in mail (iMIP)
+- `REQ-LIST-nn`  — mailing lists
+- `REQ-ATT-nn`   — attachments
+- `REQ-AR-nn`    — authentication results (RFC 8601 display)
+- `REQ-DFT-nn`   — drafts
+- `REQ-SET-nn`   — settings
 
 When cutting or adding, reference by ID.
 
