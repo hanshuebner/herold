@@ -70,7 +70,11 @@ jobs:
           --health-retries 10
     env:
       HEROLD_TEST_STORE: ${{ matrix.store }}
-      HEROLD_TEST_PG_DSN: postgres://herold:herold@localhost:5432/herold?sslmode=disable
+      # HEROLD_PG_DSN is read by internal/storepg/storepg_test.go and the
+      # test/e2e fixtures. Aligning on this single name keeps the
+      # Postgres parity legs (storepg compliance + cross-backend e2e)
+      # actually exercised in CI per STANDARDS §1.8 / §8.4.
+      HEROLD_PG_DSN: postgres://herold:herold@localhost:5432/herold?sslmode=disable
       GOARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -83,6 +87,22 @@ jobs:
       # early (per docs/implementation/03-testing-strategy.md §CI matrix).
       - name: build
         run: go build -trimpath ./...
+      - name: wait for postgres
+        if: matrix.arch == 'amd64' && matrix.store == 'postgres'
+        run: |
+          # Poll until the service container is ready to accept
+          # connections. The service options block already runs
+          # pg_isready inside the container; this guard ensures the
+          # host-side test process does not race the bring-up.
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -p 5432 -U herold >/dev/null 2>&1; then
+              echo "postgres ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "postgres not ready after 30s" >&2
+          exit 1
       - name: test
         if: matrix.arch == 'amd64'
         run: go test -race -count=1 ./...

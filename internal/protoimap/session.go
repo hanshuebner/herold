@@ -15,6 +15,7 @@ import (
 
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/sasl"
 	"github.com/hanshuebner/herold/internal/store"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
@@ -45,6 +46,11 @@ type session struct {
 	bucket     *tokenBucket
 	startTLSFn func() error // nil for implicit TLS / plaintext-locked listeners
 	cmdCount   int
+
+	// serverEndpoint is the RFC 5929 tls-server-end-point binding bytes
+	// for the active TLS connection (zero-length when TLS is not up).
+	// SCRAM-SHA-256-PLUS reads this through the SASL ctx.
+	serverEndpoint []byte
 
 	// selected mailbox state
 	selMu sync.Mutex
@@ -144,6 +150,11 @@ func (ses *session) readLiteral(size int64, nonSync bool) ([]byte, error) {
 // "NO" / "BAD" results are written to the client as tagged responses and
 // the handler returns nil.
 func (ses *session) dispatch(ctx context.Context, c *Command) error {
+	// Record the command on a bounded label set: only the verbs the
+	// dispatch table understands are passed through; everything else
+	// rolls up to "unknown" so cardinality is fixed.
+	cmdLabel := imapCommandLabel(c.Op)
+	observe.IMAPCommandsTotal.WithLabelValues(cmdLabel).Inc()
 	switch c.Op {
 	case "CAPABILITY":
 		return ses.handleCAPABILITY(c)
@@ -248,12 +259,19 @@ func (ses *session) capabilityString() string {
 		caps = append(caps, string(imap.CapStartTLS))
 	}
 	// Auth mechanisms depend on TLS state: PLAIN / LOGIN over TLS only.
+	// SCRAM-SHA-256-PLUS is advertised only when TLS is up *and* a
+	// tls-server-end-point binding is available (RFC 5802 §6 forbids
+	// PLUS over cleartext, and STANDARDS rule 10 forbids advertising a
+	// wire extension we cannot honour).
 	if ses.tlsActive {
 		caps = append(caps,
 			"AUTH=PLAIN", "AUTH=LOGIN",
-			"AUTH=SCRAM-SHA-256", "AUTH=SCRAM-SHA-256-PLUS",
-			"AUTH=OAUTHBEARER", "AUTH=XOAUTH2",
+			"AUTH=SCRAM-SHA-256",
 		)
+		if ses.s.passwords != nil && len(ses.serverEndpoint) > 0 {
+			caps = append(caps, "AUTH=SCRAM-SHA-256-PLUS")
+		}
+		caps = append(caps, "AUTH=OAUTHBEARER", "AUTH=XOAUTH2")
 	} else {
 		// SCRAM does not require TLS; OAuth tokens arguably also refuse
 		// over cleartext but we advertise them under the same gate.
@@ -289,8 +307,8 @@ func (ses *session) handleSTARTTLS(ctx context.Context, c *Command) error {
 	if err := ses.resp.taggedOK(c.Tag, "", "Begin TLS negotiation now"); err != nil {
 		return err
 	}
-	cfg := heroldtls.TLSConfig(ses.s.tlsStore, heroldtls.Intermediate, nil)
-	tlsConn := tls.Server(ses.conn, cfg)
+	cap := sasl.NewCapturingTLSConfig(heroldtls.TLSConfig(ses.s.tlsStore, heroldtls.Intermediate, nil))
+	tlsConn := tls.Server(ses.conn, cap.Config())
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		ses.logger.Warn("protoimap: STARTTLS", "err", err)
 		return err
@@ -299,6 +317,11 @@ func (ses *session) handleSTARTTLS(ctx context.Context, c *Command) error {
 	ses.br = bufio.NewReaderSize(tlsConn, 16*1024)
 	ses.resp = newRespWriter(tlsConn)
 	ses.tlsActive = true
+	if leaf := cap.Leaf(); leaf != nil {
+		if cb, err := sasl.TLSServerEndpoint(leaf); err == nil {
+			ses.serverEndpoint = cb
+		}
+	}
 	return nil
 }
 
@@ -329,6 +352,9 @@ func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
 	}
 	if ses.tlsActive {
 		ctx = sasl.WithTLS(ctx, true)
+		if len(ses.serverEndpoint) > 0 {
+			ctx = sasl.WithTLSServerEndpoint(ctx, ses.serverEndpoint)
+		}
 	}
 	initial := c.AuthInitial
 	var (
@@ -394,6 +420,9 @@ func (ses *session) makeMechanism(name string) (sasl.Mechanism, error) {
 		if !ses.tlsActive {
 			return nil, errors.New("SCRAM-SHA-256-PLUS requires TLS")
 		}
+		if len(ses.serverEndpoint) == 0 {
+			return nil, errors.New("SCRAM-SHA-256-PLUS requires tls-server-end-point binding")
+		}
 		return sasl.NewSCRAMSHA256(ses.s.dir, ses.s.passwords, true), nil
 	case "OAUTHBEARER":
 		if ses.s.tokens == nil {
@@ -407,4 +436,22 @@ func (ses *session) makeMechanism(name string) (sasl.Mechanism, error) {
 		return sasl.NewXOAUTH2(ses.s.tokens), nil
 	}
 	return nil, fmt.Errorf("mechanism %q not supported", name)
+}
+
+// imapCommandLabel folds an arbitrary command opcode into the bounded
+// label set the herold_imap_commands_total metric expects. Unknown
+// verbs roll up to "unknown" so a malicious client cannot blow up
+// cardinality with random opcodes.
+func imapCommandLabel(op string) string {
+	switch op {
+	case "CAPABILITY", "NOOP", "LOGOUT", "ID", "ENABLE", "NAMESPACE",
+		"STARTTLS", "AUTHENTICATE", "LOGIN",
+		"SELECT", "EXAMINE", "UNSELECT", "CLOSE", "CHECK",
+		"CREATE", "DELETE", "RENAME", "SUBSCRIBE", "UNSUBSCRIBE",
+		"LIST", "LSUB", "STATUS", "APPEND",
+		"FETCH", "STORE", "SEARCH", "EXPUNGE", "IDLE":
+		return op
+	default:
+		return "unknown"
+	}
 }

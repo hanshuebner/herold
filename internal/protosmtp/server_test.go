@@ -30,6 +30,7 @@ import (
 	"github.com/hanshuebner/herold/internal/maildkim"
 	"github.com/hanshuebner/herold/internal/maildmarc"
 	"github.com/hanshuebner/herold/internal/mailspf"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/sasl"
 	"github.com/hanshuebner/herold/internal/sieve"
@@ -39,6 +40,7 @@ import (
 	"github.com/hanshuebner/herold/internal/testharness/fakedns"
 	"github.com/hanshuebner/herold/internal/testharness/fakeplugin"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // --- test fixtures ---------------------------------------------------
@@ -445,6 +447,38 @@ func TestDATA_ParsesAndDelivers(t *testing.T) {
 	assertMessageInMailbox(t, f, f.principal, "INBOX", "hello", "Hi there.")
 }
 
+// TestSMTPMetrics_AcceptedIncrementsCounter drives one full DATA accept
+// and asserts the herold_smtp_messages_accepted_total counter advanced
+// by at least one for the relay_in listener label. Proves the metric
+// wiring at the deliver-success path is live.
+func TestSMTPMetrics_AcceptedIncrementsCounter(t *testing.T) {
+	observe.RegisterSMTPMetrics()
+	before := testutil.ToFloat64(observe.SMTPMessagesAcceptedTotal.WithLabelValues("relay_in"))
+
+	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn})
+	cli, closeFn := f.dial(t)
+	defer closeFn()
+	mustOK(t, cli, 220)
+	cli.send(t, "EHLO client.example.test")
+	mustOK(t, cli, 250)
+	cli.send(t, "MAIL FROM:<bob@sender.test>")
+	mustOK(t, cli, 250)
+	cli.send(t, "RCPT TO:<alice@example.test>")
+	mustOK(t, cli, 250)
+	cli.send(t, "DATA")
+	mustOK(t, cli, 354)
+	body := "From: bob@sender.test\r\nTo: alice@example.test\r\nSubject: m\r\n\r\nbody\r\n.\r\n"
+	cli.sendRaw(t, []byte(body))
+	mustOK(t, cli, 250)
+	cli.send(t, "QUIT")
+	mustOK(t, cli, 221)
+
+	after := testutil.ToFloat64(observe.SMTPMessagesAcceptedTotal.WithLabelValues("relay_in"))
+	if after <= before {
+		t.Fatalf("herold_smtp_messages_accepted_total{listener=relay_in}: before=%v after=%v; want strict increase", before, after)
+	}
+}
+
 func TestBDAT_DATAEquivalence(t *testing.T) {
 	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn})
 	cli, closeFn := f.dial(t)
@@ -608,6 +642,88 @@ func TestAuth_SCRAM_SHA_256(t *testing.T) {
 	}
 	cli2.send(t, "")
 	mustOK(t, cli2, 235)
+}
+
+// TestAuth_SCRAM_SHA_256_PLUS exercises the tls-server-end-point
+// channel binding round trip on a real TLS connection. Before the fix
+// to Wave 4 finding 8 the server's endpointBinding stub returned nil so
+// every -PLUS attempt failed with ErrChannelBindingMismatch and the
+// mechanism was actually advertised in EHLO. This test fails on the
+// pre-fix code in two places: AUTH=SCRAM-SHA-256-PLUS missing from the
+// EHLO advertisement, and the proof exchange returning a non-235 reply.
+func TestAuth_SCRAM_SHA_256_PLUS(t *testing.T) {
+	f := newFixture(t, fixtureOpts{mode: protosmtp.SubmissionImplicitTLS})
+	cli, closeFn := f.dial(t)
+	defer closeFn()
+	mustOK(t, cli, 220)
+	cli.send(t, "EHLO client.example.test")
+	_, ehlo := cli.readReply(t)
+	if !strings.Contains(ehlo, "SCRAM-SHA-256-PLUS") {
+		t.Fatalf("EHLO did not advertise SCRAM-SHA-256-PLUS: %s", ehlo)
+	}
+	tlsConn := cli.conn.(*tls.Conn)
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		t.Fatalf("no peer certs in TLS state")
+	}
+	cb, err := sasl.TLSServerEndpoint(state.PeerCertificates[0])
+	if err != nil {
+		t.Fatalf("compute cb: %v", err)
+	}
+	user := "alice@example.test"
+	cNonce := "rOprNGfwEbeRWgbNEkqO"
+	gs2 := "p=tls-server-end-point,,"
+	clientFirst := gs2 + "n=" + user + ",r=" + cNonce
+	cli.send(t, "AUTH SCRAM-SHA-256-PLUS "+base64.StdEncoding.EncodeToString([]byte(clientFirst)))
+	code, text := cli.readReply(t)
+	if code != 334 {
+		t.Fatalf("SCRAM-PLUS start: %d %s", code, text)
+	}
+	sfB64 := strings.TrimSpace(strings.TrimPrefix(text, "334 "))
+	sfBytes, _ := base64.StdEncoding.DecodeString(sfB64)
+	sf := string(sfBytes)
+	attrs := parseSCRAMAttrs(sf)
+	combinedNonce := attrs["r"]
+	salt, _ := base64.StdEncoding.DecodeString(attrs["s"])
+	cbInput := append([]byte(gs2), cb...)
+	cbind := base64.StdEncoding.EncodeToString(cbInput)
+	cfWithoutProof := fmt.Sprintf("c=%s,r=%s", cbind, combinedNonce)
+	authMessage := "n=" + user + ",r=" + cNonce + "," + sf + "," + cfWithoutProof
+	clientKey := hmacSHA256(pbkdf2HMAC(f.password, salt, 4096, sha256.Size), []byte("Client Key"))
+	storedKey := sha256.Sum256(clientKey)
+	clientSig := hmacSHA256(storedKey[:], []byte(authMessage))
+	proof := make([]byte, len(clientKey))
+	for i := range proof {
+		proof[i] = clientKey[i] ^ clientSig[i]
+	}
+	clientFinal := cfWithoutProof + ",p=" + base64.StdEncoding.EncodeToString(proof)
+	cli.send(t, base64.StdEncoding.EncodeToString([]byte(clientFinal)))
+	code, text = cli.readReply(t)
+	if code != 334 {
+		t.Fatalf("SCRAM-PLUS server-final: %d %s", code, text)
+	}
+	cli.send(t, "")
+	mustOK(t, cli, 235)
+}
+
+// TestAuth_SCRAM_PLUS_NotAdvertisedWithoutTLS guards the RFC 5802 §6
+// rule that the -PLUS variant is TLS-only. STANDARDS rule 10 also
+// forbids advertising a wire extension we cannot honour, so the EHLO
+// list on a submission STARTTLS port pre-STARTTLS must omit -PLUS even
+// though the same listener offers it once TLS is up.
+func TestAuth_SCRAM_PLUS_NotAdvertisedWithoutTLS(t *testing.T) {
+	f := newFixture(t, fixtureOpts{mode: protosmtp.SubmissionSTARTTLS})
+	cli, closeFn := f.dial(t)
+	defer closeFn()
+	mustOK(t, cli, 220)
+	cli.send(t, "EHLO client.example.test")
+	_, ehlo := cli.readReply(t)
+	if strings.Contains(ehlo, "SCRAM-SHA-256-PLUS") {
+		t.Fatalf("SCRAM-SHA-256-PLUS must not be advertised over cleartext: %s", ehlo)
+	}
+	if !strings.Contains(ehlo, "SCRAM-SHA-256") {
+		t.Fatalf("SCRAM-SHA-256 should still be advertised over cleartext: %s", ehlo)
+	}
 }
 
 func TestDelivery_Pipeline_CallsSpamAndSieve(t *testing.T) {

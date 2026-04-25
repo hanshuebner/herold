@@ -10,6 +10,7 @@ import (
 	"time"
 
 	imap "github.com/emersion/go-imap/v2"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -346,7 +347,9 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 		Blob:         blobRef,
 		Envelope:     env,
 	}
+	insertTimer := observe.StartStoreOp("insert_message")
 	uid, _, err := ses.s.store.Meta().InsertMessage(ctx, msg)
+	insertTimer.Done()
 	if err != nil {
 		if errors.Is(err, store.ErrQuotaExceeded) {
 			return ses.resp.taggedNO(c.Tag, "OVERQUOTA", "quota exceeded")

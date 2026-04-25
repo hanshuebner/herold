@@ -17,6 +17,7 @@ import (
 	"github.com/blevesearch/bleve/v2/search/query"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -293,6 +294,12 @@ func (i *Index) Query(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	queryStart := time.Now()
+	defer func() {
+		if observe.FTSQueryDuration != nil {
+			observe.FTSQueryDuration.Observe(time.Since(queryStart).Seconds())
+		}
+	}()
 	// Principal scope: mandatory.
 	principalScope := bleve.NewTermQuery(strconv.FormatUint(uint64(principalID), 10))
 	principalScope.SetField(fieldPrincipalID)

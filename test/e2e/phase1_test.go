@@ -136,24 +136,16 @@ if spamtest :value "ge" :comparator "i;ascii-numeric" "5" { fileinto "Junk"; sto
 	})
 }
 
-// TestPhase1_LLMClassifier_HeaderStamped checks that the delivery
-// pipeline stamps an Authentication-Results: header before the body,
-// independently of the spam-verdict carriage. The current pipeline
-// renders DKIM/SPF/DMARC/ARC statuses in the Authentication-Results
-// header; it does NOT currently include an explicit spam-verdict
-// method token (see test/e2e/findings.md for the filed gap).
-//
-// The test asserts only what the pipeline documents today: the AR
-// header is prepended and reflects mail-auth results. The spam
-// verdict piece is marked as a skip-with-finding pointer so reviewers
-// see the gap without the suite going red.
+// TestPhase1_LLMClassifier_HeaderStamped asserts that the delivery
+// pipeline stamps an Authentication-Results header before the body and
+// includes the spam classifier verdict as an experimental
+// "x-herold-spam=<verdict>" method token (RFC 8601 §2.7 extensibility).
+// The header carries the score in parentheses so operators inspecting
+// the stored message can see what the classifier decided.
 func TestPhase1_LLMClassifier_HeaderStamped(t *testing.T) {
 	fixtures.Run(t, func(t *testing.T, newStore fixtures.BackendFactory) {
 		f := fixtures.Build(t, fixtures.Opts{Store: fixtures.Prepare(t, newStore)})
 
-		// Wire the classifier to return a spam verdict so the finding
-		// in test/e2e/findings.md is exercised: we still expect the AR
-		// header, but no spam-verdict method token is stamped today.
 		f.SpamPlugin.Handle("spam.classify", func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
 			return json.RawMessage(`{"verdict":"spam","score":0.9}`), nil
 		})
@@ -190,16 +182,12 @@ func TestPhase1_LLMClassifier_HeaderStamped(t *testing.T) {
 			t.Errorf("AR missing mail-auth method tokens:\n%s", raw)
 		}
 
-		// Spam-verdict surface: skip with a finding pointer. If the
-		// pipeline ever gains a spam-verdict method token, replace this
-		// skip with an assertion on the token.
-		if bytes.Contains(raw, []byte("x-herold-spam=")) ||
-			bytes.Contains(raw, []byte("x-spam-status=")) {
-			// Pipeline started stamping a spam method. Nothing to do
-			// here — the invariant still holds.
-			return
+		// Spam-verdict surface (Wave 4.5 / Finding 11): the classifier
+		// verdict MUST be visible in the stored Authentication-Results
+		// header as an "x-herold-spam=<verdict>" method token.
+		if !bytes.Contains(raw, []byte("x-herold-spam=spam")) {
+			t.Fatalf("expected x-herold-spam=spam method in AR; got:\n%s", raw)
 		}
-		t.Skip("pipeline does not stamp spam verdict; see test/e2e/findings.md")
 	})
 }
 

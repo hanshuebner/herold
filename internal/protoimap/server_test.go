@@ -19,10 +19,12 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protoimap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // -----------------------------------------------------------------------------
@@ -245,6 +247,25 @@ func TestCAPABILITY_BeforeLogin(t *testing.T) {
 	}
 	if strings.Contains(joined, "AUTH=PLAIN") {
 		t.Fatalf("PLAIN should not be advertised over cleartext: %v", lines)
+	}
+}
+
+// TestIMAPMetrics_CommandIncrementsCounter drives one CAPABILITY command
+// and asserts the herold_imap_commands_total{command="CAPABILITY"}
+// counter advanced by at least one. Proves the dispatch-level metric
+// wiring is live and the bounded-label vocabulary survives.
+func TestIMAPMetrics_CommandIncrementsCounter(t *testing.T) {
+	observe.RegisterIMAPMetrics()
+	before := testutil.ToFloat64(observe.IMAPCommandsTotal.WithLabelValues("CAPABILITY"))
+
+	f := newFixture(t, fxOpts{})
+	c := f.dial(t)
+	defer c.close()
+	_ = c.send("a1", "CAPABILITY")
+
+	after := testutil.ToFloat64(observe.IMAPCommandsTotal.WithLabelValues("CAPABILITY"))
+	if after <= before {
+		t.Fatalf("herold_imap_commands_total{command=CAPABILITY}: before=%v after=%v; want strict increase", before, after)
 	}
 }
 

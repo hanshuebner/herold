@@ -3,6 +3,7 @@ package protosmtp
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"github.com/hanshuebner/herold/internal/maildkim"
 	"github.com/hanshuebner/herold/internal/maildmarc"
 	"github.com/hanshuebner/herold/internal/mailspf"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/sasl"
 	"github.com/hanshuebner/herold/internal/sieve"
 	"github.com/hanshuebner/herold/internal/spam"
@@ -235,6 +237,10 @@ func New(cfg Config) (*Server, error) {
 		plug = "spam"
 	}
 	opts := cfg.Options.Defaults()
+	// Register the SMTP collector set on Server construction. Idempotent
+	// across many Server instances sharing one process Registry (tests).
+	observe.RegisterSMTPMetrics()
+	observe.RegisterStoreMetrics()
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		store:    cfg.Store,
@@ -286,23 +292,44 @@ func (s *Server) HandleConn(conn net.Conn, mode ListenerMode) {
 	}
 	s.sessions.Add(1)
 	s.connCount.Add(1)
+	listenerLabel := mode.String()
+	observe.SMTPSessionsActive.WithLabelValues(listenerLabel).Inc()
 	go func() {
+		outcome := "ok"
 		defer func() {
+			if rcv := recover(); rcv != nil {
+				outcome = "panic"
+				// Re-panic so the session-level recover (if any) sees it,
+				// or the goroutine terminates loud rather than silent.
+				observe.SMTPSessionsTotal.WithLabelValues(listenerLabel, outcome).Inc()
+				observe.SMTPSessionsActive.WithLabelValues(listenerLabel).Dec()
+				<-s.connSem
+				s.releaseIP(remoteIP)
+				s.sessions.Done()
+				s.connCount.Add(-1)
+				panic(rcv)
+			}
+			observe.SMTPSessionsTotal.WithLabelValues(listenerLabel, outcome).Inc()
+			observe.SMTPSessionsActive.WithLabelValues(listenerLabel).Dec()
 			<-s.connSem
 			s.releaseIP(remoteIP)
 			s.sessions.Done()
 			s.connCount.Add(-1)
 		}()
 		var implicit *tls.Conn
+		var implicitLeaf *x509.Certificate
 		if mode == SubmissionImplicitTLS && s.tls != nil {
-			tlsConn := tls.Server(conn, heroldtls.TLSConfig(s.tls, heroldtls.Intermediate, nil))
+			cap := sasl.NewCapturingTLSConfig(heroldtls.TLSConfig(s.tls, heroldtls.Intermediate, nil))
+			tlsConn := tls.Server(conn, cap.Config())
 			if err := tlsConn.HandshakeContext(s.ctx); err != nil {
+				outcome = "error"
 				_ = tlsConn.Close()
 				return
 			}
 			implicit = tlsConn
+			implicitLeaf = cap.Leaf()
 		}
-		s.runSession(conn, mode, remoteIP, implicit)
+		s.runSession(conn, mode, remoteIP, implicit, implicitLeaf)
 	}()
 }
 
@@ -366,8 +393,23 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) 
 
 		s.sessions.Add(1)
 		s.connCount.Add(1)
+		listenerLabel := mode.String()
+		observe.SMTPSessionsActive.WithLabelValues(listenerLabel).Inc()
 		go func(c net.Conn, rip string) {
+			outcome := "ok"
 			defer func() {
+				if rcv := recover(); rcv != nil {
+					outcome = "panic"
+					observe.SMTPSessionsTotal.WithLabelValues(listenerLabel, outcome).Inc()
+					observe.SMTPSessionsActive.WithLabelValues(listenerLabel).Dec()
+					<-s.connSem
+					s.releaseIP(rip)
+					s.sessions.Done()
+					s.connCount.Add(-1)
+					panic(rcv)
+				}
+				observe.SMTPSessionsTotal.WithLabelValues(listenerLabel, outcome).Inc()
+				observe.SMTPSessionsActive.WithLabelValues(listenerLabel).Dec()
 				<-s.connSem
 				s.releaseIP(rip)
 				s.sessions.Done()
@@ -376,10 +418,13 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) 
 			// Wrap implicit-TLS listeners now so the session's TLS
 			// bookkeeping is identical to a STARTTLS upgrade later.
 			var startTLS *tls.Conn
+			var startTLSLeaf *x509.Certificate
 			if mode == SubmissionImplicitTLS {
-				tlsConn := tls.Server(c, heroldtls.TLSConfig(s.tls, heroldtls.Intermediate, nil))
+				cap := sasl.NewCapturingTLSConfig(heroldtls.TLSConfig(s.tls, heroldtls.Intermediate, nil))
+				tlsConn := tls.Server(c, cap.Config())
 				// Force handshake now so we know TLS state before greeting.
 				if err := tlsConn.HandshakeContext(s.ctx); err != nil {
+					outcome = "error"
 					s.log.InfoContext(s.ctx, "smtp implicit-tls handshake failed",
 						slog.String("remote_ip", rip),
 						slog.String("err", err.Error()))
@@ -387,8 +432,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) 
 					return
 				}
 				startTLS = tlsConn
+				startTLSLeaf = cap.Leaf()
 			}
-			s.runSession(c, mode, rip, startTLS)
+			s.runSession(c, mode, rip, startTLS, startTLSLeaf)
 		}(conn, remoteIP)
 	}
 }

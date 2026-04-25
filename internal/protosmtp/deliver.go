@@ -13,6 +13,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/sieve"
 	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
@@ -28,7 +29,7 @@ func (sess *session) finishMessage(body []byte) {
 	// Authentication-Results. We delay AR computation until after the
 	// verifiers run below so it lands on the stored blob and is visible
 	// to the sieve pipeline.
-	authResults, authStr := sess.runMailAuth(ctx, body)
+	authResults, _ := sess.runMailAuth(ctx, body)
 	// Spam classification.
 	msg, perr := mailparse.Parse(bytes.NewReader(body), mailparse.NewParseOptions())
 	if perr != nil {
@@ -36,11 +37,36 @@ func (sess *session) finishMessage(body []byte) {
 			slog.String("session_id", sess.sessID),
 			slog.String("remote_ip", sess.remoteIP),
 			slog.String("err", perr.Error()))
+		observe.SMTPMessagesRejectedTotal.WithLabelValues(sess.mode.String(), "policy").Inc()
 		sess.writeReply("554 5.6.0 message parse failed: " + perr.Error())
 		sess.resetEnvelope()
 		return
 	}
 	classification := sess.classify(ctx, msg, authResults)
+	listenerLabel := sess.mode.String()
+	// Track inbound DATA bytes (best-effort; counts the body bytes the
+	// session received, not framing or commands).
+	observe.SMTPDataBytesTotal.WithLabelValues(listenerLabel, "in").Add(float64(len(body)))
+	// Stamp the spam verdict onto authResults so the renderer surfaces
+	// it as an "x-herold-spam=<verdict>" method on the
+	// Authentication-Results header (RFC 8601 §2.7 experimental method
+	// prefix). Operators inspecting the stored message can therefore see
+	// what the classifier decided. We only attach a SpamResult when the
+	// classifier was wired up — a Verdict of Unclassified with no engine
+	// name indicates "did not run" and is omitted.
+	if sess.mode == RelayIn && sess.srv.spam != nil {
+		authResults.Spam = &mailauth.SpamResult{
+			Verdict: classification.Verdict.String(),
+			Score:   classification.Score,
+			Engine:  sess.srv.spamPlug,
+		}
+	}
+	// Re-render with the spam method token included.
+	authStr := ""
+	if sess.mode == RelayIn {
+		authStr = renderAuthResults(sess.srv.opts.AuthservID, authResults)
+		authResults.Raw = authStr
+	}
 	// Assemble the raw message bytes we will store (prepend Received
 	// and Authentication-Results headers).
 	finalBytes := sess.assembleStoredBytes(body, authStr)
@@ -81,6 +107,7 @@ func (sess *session) finishMessage(body []byte) {
 		}
 	}
 	// Audit the accept (REQ-FLOW-03 durability).
+	auditTimer := observe.StartStoreOp("append_audit")
 	_ = sess.srv.store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
 		At:         sess.srv.clk.Now(),
 		ActorKind:  store.ActorSystem,
@@ -99,6 +126,7 @@ func (sess *session) finishMessage(body []byte) {
 			"mail_from": sess.envelope.mailFrom,
 		},
 	})
+	auditTimer.Done()
 	if !anyOK {
 		// Every recipient failed. Emit a transient error so the remote
 		// can retry; this is rare in practice (store crash) but keeps
@@ -111,6 +139,7 @@ func (sess *session) finishMessage(body []byte) {
 	if messageID != "" {
 		reply = fmt.Sprintf("250 2.6.0 %s accepted", messageID)
 	}
+	observe.SMTPMessagesAcceptedTotal.WithLabelValues(listenerLabel).Inc()
 	sess.writeReply(reply)
 	sess.resetEnvelope()
 }
@@ -176,16 +205,19 @@ func (sess *session) deliverOne(
 		}
 		// Propagate sieve-added flags onto system flags where possible.
 		storeMsg.Flags = sieveFlagsFromOutcome(outcome)
-		if _, _, err := sess.srv.store.Meta().InsertMessage(ctx, storeMsg); err != nil {
-			if errors.Is(err, store.ErrQuotaExceeded) {
+		insertTimer := observe.StartStoreOp("insert_message")
+		_, _, ierr := sess.srv.store.Meta().InsertMessage(ctx, storeMsg)
+		insertTimer.Done()
+		if ierr != nil {
+			if errors.Is(ierr, store.ErrQuotaExceeded) {
 				sess.srv.log.InfoContext(ctx, "delivery over quota",
 					slog.String("recipient", rc.addr))
 				// REQ-FLOW-11 default behaviour: defer (4.2.2). We
 				// already emitted 354; re-emit 452 for the whole
 				// message (simpler: return failure).
-				return false, err
+				return false, ierr
 			}
-			return false, err
+			return false, ierr
 		}
 	}
 	return true, nil
@@ -493,7 +525,43 @@ func renderAuthResults(authservID string, r mailauth.AuthResults) string {
 	if r.ARC.Status != mailauth.AuthUnknown && r.ARC.Status != mailauth.AuthNone {
 		parts = append(parts, fmt.Sprintf("arc=%s", r.ARC.Status.String()))
 	}
+	// Spam classifier verdict. Per RFC 8601 §2.7 the "x-" prefix marks
+	// this as an experimental method; the rendered header therefore
+	// looks like "...; x-herold-spam=spam (score=0.90)".
+	// Operators inspecting the stored message can read the verdict
+	// directly without reaching into the audit log. A nil Spam pointer
+	// or an empty verdict suppresses the token (the classifier did not
+	// run).
+	if r.Spam != nil && r.Spam.Verdict != "" {
+		p := fmt.Sprintf("x-herold-spam=%s", sanitizeAuthToken(r.Spam.Verdict))
+		if r.Spam.Score >= 0 {
+			p += fmt.Sprintf(" (score=%.2f)", r.Spam.Score)
+		}
+		if r.Spam.Engine != "" {
+			p += fmt.Sprintf(" x-herold-spam-engine=%s", sanitizeAuthToken(r.Spam.Engine))
+		}
+		parts = append(parts, p)
+	}
 	return strings.Join(parts, "; ")
+}
+
+// sanitizeAuthToken makes a value safe to embed in an
+// Authentication-Results method/value. We strip whitespace and any
+// character that would break the RFC 8601 grammar — semicolon, equals,
+// CR, LF, and parenthesis — replacing them with '_'. Unsanitised input
+// would let a malicious classifier name forge additional method tokens.
+func sanitizeAuthToken(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case ' ', '\t', '\r', '\n', ';', '=', '(', ')', ',', '"', '<', '>', '@', ':', '\\':
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // extractHeaderFrom returns the RFC 5322 From: header value from the

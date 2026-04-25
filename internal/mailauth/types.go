@@ -251,6 +251,26 @@ type ARCResult struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// SpamResult is the spam classifier verdict, carried alongside the
+// RFC 8601 mail-auth statuses so the Authentication-Results renderer can
+// surface it to operators inspecting stored messages. The verdict, score,
+// and engine name are exposed; the Engine field carries the plugin name
+// so different classifiers can be told apart in mixed deployments. The
+// rendered method token uses the experimental "x-herold-spam=" prefix
+// per RFC 8601 §2.7's extensibility rules.
+type SpamResult struct {
+	// Verdict is one of "ham", "spam", or "unclassified". The empty
+	// string indicates the classifier did not run (the renderer skips
+	// the method token in that case).
+	Verdict string `json:"verdict,omitempty"`
+	// Score is the [0,1] confidence reported by the classifier; a
+	// negative value indicates "no score reported".
+	Score float64 `json:"score,omitempty"`
+	// Engine is the plugin name (e.g. "herold-spam-llm") so operators
+	// can distinguish multiple classifiers in audit / debug headers.
+	Engine string `json:"engine,omitempty"`
+}
+
 // BestDKIMStatus collapses the per-signature DKIM results to a single
 // status: a Pass on any signature wins; otherwise the first non-zero
 // status we see is returned; AuthUnknown if no signatures were
@@ -286,6 +306,10 @@ type AuthResults struct {
 	DMARC DMARCResult `json:"dmarc"`
 	// ARC is the verified ARC chain, if any.
 	ARC ARCResult `json:"arc"`
+	// Spam is the spam classifier verdict (optional). When non-nil the
+	// renderer adds an "x-herold-spam=<verdict>" method to the
+	// Authentication-Results header per RFC 8601 §2.7 extensibility.
+	Spam *SpamResult `json:"spam,omitempty"`
 	// Raw preserves the original Authentication-Results header content
 	// verbatim so ARC sealing can rely on it on forward and so tools that
 	// need to re-parse can.

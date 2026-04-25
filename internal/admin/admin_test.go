@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -23,6 +24,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/directoryoidc"
+	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
@@ -191,7 +196,7 @@ func TestStartServer_BootsAndServesAdminStatus(t *testing.T) {
 }
 
 func TestBootstrap_CreatesAdmin_Idempotent(t *testing.T) {
-	cfgPath, _ := minimalConfigFixture(t)
+	cfgPath, cfg := minimalConfigFixture(t)
 	home := t.TempDir()
 	SetCredentialsPath(filepath.Join(home, "credentials.toml"))
 	t.Cleanup(func() { SetCredentialsPath("") })
@@ -217,6 +222,45 @@ func TestBootstrap_CreatesAdmin_Idempotent(t *testing.T) {
 	if !strings.Contains(out.String(), "api_key:") {
 		t.Fatalf("bootstrap did not print api_key: %s", out.String())
 	}
+	// Regression guard for Wave 4 finding 1: the printed plaintext API
+	// key must authenticate against the admin REST surface. Pre-fix the
+	// CLI stored plaintext in APIKey.Hash while protoadmin verified the
+	// SHA-256 digest, so every bootstrap key was a 401 and the row
+	// doubled as a plaintext credential at rest. Proving the round-trip
+	// without booting a full StartServer keeps this test focused on the
+	// fix and out of the parallel agent's lifecycle work.
+	apiKey := extractPrintedAPIKey(t, out.String())
+	if !strings.HasPrefix(apiKey, protoadmin.APIKeyPrefix) {
+		t.Fatalf("printed api key has unexpected shape: %q", apiKey)
+	}
+	clk := clock.NewReal()
+	st, err := openStore(ctx, cfg, discardLogger(), clk)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	dir := directory.New(st.Meta(), discardLogger(), clk, nil)
+	rp := directoryoidc.New(st.Meta(), discardLogger(), &http.Client{Timeout: 5 * time.Second}, clk)
+	srv := protoadmin.NewServer(st, dir, rp, discardLogger(), clk, protoadmin.Options{})
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/api-keys", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("api-keys: got %d, want 200 (auth round-trip failed; bootstrap key not accepted): %s", rec.Code, rec.Body.String())
+	}
+	// A tampered key must be rejected so we are confident the SHA-256
+	// hash actually gates the lookup (and not a coincidental match).
+	rec = httptest.NewRecorder()
+	req, _ = http.NewRequest("GET", "/api/v1/api-keys", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey+"x")
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("api-keys (bad): got %d, want 401", rec.Code)
+	}
+	// Close the store before re-running bootstrap so the second
+	// invocation can re-open it.
+	_ = st.Close()
 	// Second run should exit with ExitBootstrapAlreadyDone.
 	root = NewRootCmd()
 	out.Reset()
@@ -229,7 +273,7 @@ func TestBootstrap_CreatesAdmin_Idempotent(t *testing.T) {
 		"--email", "admin@test.local",
 		"--password", "hunter2hunter2hunter2",
 	})
-	err := root.ExecuteContext(ctx)
+	err = root.ExecuteContext(ctx)
 	if err == nil {
 		t.Fatalf("second bootstrap: want error, got nil")
 	}
@@ -240,6 +284,20 @@ func TestBootstrap_CreatesAdmin_Idempotent(t *testing.T) {
 	if ec.code != ExitBootstrapAlreadyDone {
 		t.Fatalf("second bootstrap: code=%d, want %d", ec.code, ExitBootstrapAlreadyDone)
 	}
+}
+
+// extractPrintedAPIKey scans the bootstrap CLI output for the
+// "  api_key: <value>" line and returns <value>.
+func extractPrintedAPIKey(t *testing.T, output string) string {
+	t.Helper()
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "api_key:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "api_key:"))
+		}
+	}
+	t.Fatalf("api_key not found in bootstrap output: %s", output)
+	return ""
 }
 
 func TestConfigCheck_Ok(t *testing.T) {

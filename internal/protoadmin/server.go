@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -155,6 +156,11 @@ func NewServer(
 	if opts.ServerVersion == "" {
 		opts.ServerVersion = "dev"
 	}
+	// Register the admin REST collector set on Server construction.
+	// Idempotent across multiple instances sharing a process Registry.
+	observe.RegisterAdminMetrics()
+	observe.RegisterStoreMetrics()
+	observe.RegisterAuthMetrics()
 	s := &Server{
 		store:       st,
 		dir:         dir,
@@ -183,12 +189,44 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 	// Outer chain: concurrency limit -> panic recover -> request id +
-	// slog -> mux. Concurrency limit is outermost so rejected requests
-	// never allocate a request-scoped slog group.
+	// slog -> metrics -> mux. Concurrency limit is outermost so rejected
+	// requests never allocate a request-scoped slog group. The metrics
+	// middleware sits closest to the mux so it can read the route
+	// pattern set by mux.findHandler on the request.
 	sem := make(chan struct{}, s.opts.MaxConcurrentRequests)
 	return s.withConcurrencyLimit(sem,
 		s.withPanicRecover(
-			s.withRequestLog(mux)))
+			s.withRequestLog(
+				s.withMetrics(mux))))
+}
+
+// withMetrics records every served admin request in the
+// herold_admin_requests_total counter and the
+// herold_admin_request_duration_seconds histogram, keyed on the route
+// template (NOT the resolved path) so the per-pid principal endpoints
+// stay at one cardinality bucket. Requests that did not match any route
+// (404) are bucketed under the empty pattern "".
+func (s *Server) withMetrics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := s.clk.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: 200}
+		next.ServeHTTP(rec, r)
+		// r.Pattern is populated by net/http.ServeMux on a successful
+		// match. For unmatched requests (404), the pattern is empty.
+		pattern := r.Pattern
+		if pattern == "" {
+			pattern = "unmatched"
+		} else {
+			// r.Pattern is "METHOD /path" — strip the leading method so
+			// the same /path under different methods bucketed by the
+			// dedicated method label.
+			if i := strings.IndexByte(pattern, ' '); i >= 0 {
+				pattern = pattern[i+1:]
+			}
+		}
+		observe.AdminRequestsTotal.WithLabelValues(pattern, r.Method, fmt.Sprintf("%d", rec.status)).Inc()
+		observe.AdminRequestDuration.WithLabelValues(pattern).Observe(s.clk.Now().Sub(start).Seconds())
+	})
 }
 
 // Serve accepts connections from ln until ctx is cancelled or ln is

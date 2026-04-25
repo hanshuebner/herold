@@ -94,6 +94,21 @@ type pendingAuth struct {
 	createdAt   time.Time
 }
 
+// FlowKind reports whether a pending state was opened by BeginLink or
+// BeginSignIn. Callers (e.g. the admin OIDC callback) read this from
+// PeekPending so they can dispatch to the correct completion without
+// consuming the state.
+type FlowKind int
+
+const (
+	// FlowKindUnknown is the zero value; returned for unknown states.
+	FlowKindUnknown FlowKind = iota
+	// FlowKindLink is a link-existing-principal flow.
+	FlowKindLink
+	// FlowKindSignIn is a sign-in flow (no prior principal).
+	FlowKindSignIn
+)
+
 // New returns an RP ready to serve requests.
 func New(meta store.Metadata, logger *slog.Logger, httpClient *http.Client, clk clock.Clock) *RP {
 	if logger == nil {
@@ -344,44 +359,72 @@ func (r *RP) Unlink(ctx context.Context, pid PrincipalID, providerID ProviderID)
 }
 
 // VerifyAccessToken is the adaptor used by sasl.TokenVerifier: accept
-// an opaque access token and map it to a local PrincipalID via the
-// configured providers. The current flow validates the token as a JWT
-// id_token against the provider's JWKS; operators who want opaque
+// an access token presented at SASL OAUTHBEARER / XOAUTH2 and map it to
+// a local PrincipalID. The flow validates the token as a JWT id_token
+// against the named provider's JWKS; operators who want opaque
 // access-token introspection (RFC 7662) should extend this method.
+//
+// providerID is mandatory and identifies which configured OIDC provider
+// the token came from (Wave 4 finding 9). Without it a token signed by
+// provider A whose `sub` happened to match a different principal's link
+// to provider B would unlock that principal — the previous
+// "try every verifier" loop made this an audience-confusion bug. The
+// caller in the SMTP/IMAP submission path takes the value from the
+// OAUTHBEARER gs2 host= advertisement (or an operator-configured
+// default for XOAUTH2 which has no equivalent field).
+//
+// The audience check happens both ways for defence in depth: the caller
+// names the provider, and the JWT verifier is built with that
+// provider's ClientID so go-oidc rejects tokens whose `aud` claim does
+// not match the provider's audience.
 //
 // TODO: add opaque-token introspection (RFC 7662) when the second
 // caller arrives.
-func (r *RP) VerifyAccessToken(ctx context.Context, token string) (PrincipalID, error) {
+func (r *RP) VerifyAccessToken(ctx context.Context, providerID, token string) (PrincipalID, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	r.mu.Lock()
-	providers := make([]*oidc.Provider, 0, len(r.discover))
-	names := make([]ProviderID, 0, len(r.discover))
-	clientIDs := make([]string, 0, len(r.discover))
-	for id, prov := range r.discover {
-		providers = append(providers, prov)
-		names = append(names, id)
-		cfg := r.configs[id]
-		clientIDs = append(clientIDs, cfg.ClientID)
+	if providerID == "" {
+		return 0, fmt.Errorf("%w: provider hint required", ErrInvalidState)
 	}
-	r.mu.Unlock()
-	for i, prov := range providers {
-		verifier := prov.Verifier(&oidc.Config{ClientID: clientIDs[i]})
-		idTok, err := verifier.Verify(oidc.ClientContext(ctx, r.http), token)
-		if err != nil {
-			continue
-		}
-		link, err := r.meta.LookupOIDCLink(ctx, string(names[i]), idTok.Subject)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				continue
-			}
-			return 0, err
-		}
-		return link.PrincipalID, nil
+	id := ProviderID(providerID)
+	prov, cfg, _, ok := r.lookupProvider(id)
+	if !ok {
+		return 0, fmt.Errorf("%w: provider %s", ErrNotFound, providerID)
 	}
-	return 0, fmt.Errorf("%w: no verifier accepted token", ErrNotFound)
+	verifier := prov.Verifier(&oidc.Config{ClientID: cfg.ClientID})
+	idTok, err := verifier.Verify(oidc.ClientContext(ctx, r.http), token)
+	if err != nil {
+		return 0, fmt.Errorf("%w: token rejected", ErrNotFound)
+	}
+	// Belt-and-braces audience check: oidc.Verifier already validates
+	// `aud` against ClientID, but the loop is documented as a defence
+	// against future code paths that loosen the verifier's audience
+	// rule (e.g. an operator-supplied additional ClientID). If `aud`
+	// names ClientID at any position, accept; otherwise reject.
+	if !audMatchesClientID(idTok.Audience, cfg.ClientID) {
+		return 0, fmt.Errorf("%w: aud mismatch", ErrNotFound)
+	}
+	link, err := r.meta.LookupOIDCLink(ctx, string(id), idTok.Subject)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return 0, fmt.Errorf("%w: no link for sub", ErrNotFound)
+		}
+		return 0, err
+	}
+	return link.PrincipalID, nil
+}
+
+// audMatchesClientID returns true when clientID appears in aud. The
+// `aud` claim is conventionally an array but JSON allows a single
+// string; oidc.IDToken normalises it to []string.
+func audMatchesClientID(aud []string, clientID string) bool {
+	for _, a := range aud {
+		if a == clientID {
+			return true
+		}
+	}
+	return false
 }
 
 // lookupProvider returns the go-oidc Provider, the registered config,
@@ -410,6 +453,26 @@ func (r *RP) takePending(state string) (pendingAuth, error) {
 	}
 	delete(r.pending, state)
 	return p, nil
+}
+
+// PeekPendingFlow reports the flow kind of the pending state without
+// consuming it. Returns FlowKindUnknown when the state is unknown or
+// has expired. The OIDC callback uses this to dispatch the correct
+// CompleteLink / CompleteSignIn before consuming the state — fixing the
+// finding-10 bug where the callback consumed the state pre-classification
+// and made the sign-in branch unreachable.
+func (r *RP) PeekPendingFlow(state string) FlowKind {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gcExpiredLocked()
+	p, ok := r.pending[state]
+	if !ok {
+		return FlowKindUnknown
+	}
+	if p.principalID != 0 {
+		return FlowKindLink
+	}
+	return FlowKindSignIn
 }
 
 func (r *RP) gcExpiredLocked() {

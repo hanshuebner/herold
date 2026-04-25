@@ -3,11 +3,18 @@ package protoadmin_test
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -15,9 +22,12 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protoadmin"
+	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 type harness struct {
@@ -144,6 +154,28 @@ func TestHealthz_Live_Ready(t *testing.T) {
 	res, _ = h.doRequest("GET", "/api/v1/healthz/ready", "", nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("ready = %d", res.StatusCode)
+	}
+}
+
+// TestAdminMetrics_RequestsTotalIncrements drives one health probe and
+// asserts the herold_admin_requests_total counter advanced for the
+// matched route template + method + 200. Proves the path-pattern
+// metrics middleware is wired correctly: the label is the route
+// template, never the resolved path.
+func TestAdminMetrics_RequestsTotalIncrements(t *testing.T) {
+	observe.RegisterAdminMetrics()
+	const pattern = "/api/v1/healthz/live"
+	before := testutil.ToFloat64(observe.AdminRequestsTotal.WithLabelValues(pattern, "GET", "200"))
+
+	h := newHarness(t)
+	res, _ := h.doRequest("GET", pattern, "", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("live = %d", res.StatusCode)
+	}
+
+	after := testutil.ToFloat64(observe.AdminRequestsTotal.WithLabelValues(pattern, "GET", "200"))
+	if after <= before {
+		t.Fatalf("herold_admin_requests_total{path_pattern=%q,method=GET,status=200}: before=%v after=%v; want strict increase", pattern, before, after)
 	}
 }
 
@@ -669,6 +701,77 @@ func TestPanic_InHandler_Returns500_NotCrash(t *testing.T) {
 	}
 }
 
+// TestOIDCCallback_DispatchesLinkAndSignIn covers Wave 4 finding 10:
+// the callback peeks the pending state's flow kind, then dispatches to
+// CompleteLink or CompleteSignIn before consuming the state. Pre-fix
+// the handler always tried CompleteLink first, which consumed state
+// (regardless of flow type) so the SignIn branch was unreachable.
+func TestOIDCCallback_DispatchesLinkAndSignIn(t *testing.T) {
+	stub := newOIDCStubWithSigner(t, "herold-client")
+	h := newHarness(t)
+	// Register the provider directly via the RP (bypassing the admin
+	// REST surface to keep this test focused on the callback dispatch).
+	ctx := context.Background()
+	if _, err := h.rp.AddProvider(ctx, directoryoidc.ProviderConfig{
+		Name:        "stub",
+		IssuerURL:   stub.issuer,
+		ClientID:    "herold-client",
+		RedirectURL: "http://localhost/cb",
+	}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	// Seed a local principal and pre-link "ext-sub-1" so SignIn resolves.
+	pid, err := h.h.Store.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+
+	// === Link flow ===
+	stub.subject = "ext-sub-1"
+	authURL, linkState, err := h.rp.BeginLink(ctx, pid.ID, "stub")
+	if err != nil {
+		t.Fatalf("BeginLink: %v", err)
+	}
+	code, gotState := followAuthForCallback(t, authURL)
+	if gotState != linkState {
+		t.Fatalf("state mismatch: %q vs %q", gotState, linkState)
+	}
+	res, body := h.doRequest("POST", fmt.Sprintf("/api/v1/oidc/callback?state=%s&code=%s", linkState, code), "", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("link callback: %d: %s", res.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"linked"`) {
+		t.Fatalf("link callback body lacks linked outcome: %s", body)
+	}
+
+	// === Sign-in flow ===
+	stub.subject = "ext-sub-1"
+	authURL, signinState, err := h.rp.BeginSignIn(ctx, "stub")
+	if err != nil {
+		t.Fatalf("BeginSignIn: %v", err)
+	}
+	code, gotState = followAuthForCallback(t, authURL)
+	if gotState != signinState {
+		t.Fatalf("signin state mismatch: %q vs %q", gotState, signinState)
+	}
+	res, body = h.doRequest("POST", fmt.Sprintf("/api/v1/oidc/callback?state=%s&code=%s", signinState, code), "", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("signin callback: %d: %s", res.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"signed_in"`) {
+		t.Fatalf("signin callback body lacks signed_in outcome: %s", body)
+	}
+
+	// === State reuse: a state used twice returns 400 invalid_state ===
+	res, _ = h.doRequest("POST", fmt.Sprintf("/api/v1/oidc/callback?state=%s&code=%s", signinState, code), "", nil)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("reused state: %d, want 400", res.StatusCode)
+	}
+}
+
 // -- helpers --------------------------------------------------------
 
 // totpGenerate returns a RFC 6238 TOTP code at instant at for the given
@@ -677,4 +780,142 @@ func TestPanic_InHandler_Returns500_NotCrash(t *testing.T) {
 // rather than reaching into directory's unexported helpers.
 func totpGenerate(secret string, at time.Time) (string, error) {
 	return otpGenerateCode(secret, at)
+}
+
+// oidcStubWithSigner is a minimal OIDC provider that signs RS256 ID
+// tokens against a private key generated for the test. Used by the
+// callback-dispatch test (TestOIDCCallback_DispatchesLinkAndSignIn) so
+// the RP's full token-exchange flow exercises the dispatcher.
+type oidcStubWithSigner struct {
+	t        *testing.T
+	srv      *httptest.Server
+	issuer   string
+	key      *rsa.PrivateKey
+	kid      string
+	clientID string
+	subject  string
+	nonce    string
+}
+
+func newOIDCStubWithSigner(t *testing.T, clientID string) *oidcStubWithSigner {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa: %v", err)
+	}
+	s := &oidcStubWithSigner{t: t, key: key, kid: "kid-1", clientID: clientID}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", s.handleDiscovery)
+	mux.HandleFunc("/jwks", s.handleJWKS)
+	mux.HandleFunc("/authorize", s.handleAuthorize)
+	mux.HandleFunc("/token", s.handleToken)
+	s.srv = httptest.NewServer(mux)
+	s.issuer = s.srv.URL
+	t.Cleanup(s.srv.Close)
+	return s
+}
+
+func (s *oidcStubWithSigner) handleDiscovery(w http.ResponseWriter, r *http.Request) {
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"issuer":                                s.issuer,
+		"authorization_endpoint":                s.issuer + "/authorize",
+		"token_endpoint":                        s.issuer + "/token",
+		"jwks_uri":                              s.issuer + "/jwks",
+		"response_types_supported":              []string{"code"},
+		"subject_types_supported":               []string{"public"},
+		"id_token_signing_alg_values_supported": []string{"RS256"},
+	})
+}
+
+func (s *oidcStubWithSigner) handleJWKS(w http.ResponseWriter, r *http.Request) {
+	n := s.key.PublicKey.N
+	e := big.NewInt(int64(s.key.PublicKey.E))
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"keys": []map[string]any{{
+			"kty": "RSA", "alg": "RS256", "use": "sig", "kid": s.kid,
+			"n": base64.RawURLEncoding.EncodeToString(n.Bytes()),
+			"e": base64.RawURLEncoding.EncodeToString(e.Bytes()),
+		}},
+	})
+}
+
+func (s *oidcStubWithSigner) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	redirect := r.URL.Query().Get("redirect_uri")
+	state := r.URL.Query().Get("state")
+	s.nonce = r.URL.Query().Get("nonce")
+	u, err := url.Parse(redirect)
+	if err != nil {
+		http.Error(w, "bad redirect", 400)
+		return
+	}
+	q := u.Query()
+	q.Set("code", "test-code")
+	q.Set("state", state)
+	u.RawQuery = q.Encode()
+	http.Redirect(w, r, u.String(), http.StatusFound)
+}
+
+func (s *oidcStubWithSigner) handleToken(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", 400)
+		return
+	}
+	if r.Form.Get("code") != "test-code" {
+		http.Error(w, "bad code", 400)
+		return
+	}
+	tok, err := s.signIDToken()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"access_token": tok,
+		"token_type":   "Bearer",
+		"id_token":     tok,
+		"expires_in":   3600,
+	})
+}
+
+func (s *oidcStubWithSigner) signIDToken() (string, error) {
+	header := map[string]any{"alg": "RS256", "kid": s.kid, "typ": "JWT"}
+	now := time.Now().Unix()
+	payload := map[string]any{
+		"iss": s.issuer, "sub": s.subject, "aud": s.clientID,
+		"iat": now, "exp": now + 3600, "nonce": s.nonce,
+	}
+	hb, _ := json.Marshal(header)
+	pb, _ := json.Marshal(payload)
+	enc := func(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+	signingInput := enc(hb) + "." + enc(pb)
+	hh := sha256.New()
+	hh.Write([]byte(signingInput))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, s.key, crypto.SHA256, hh.Sum(nil))
+	if err != nil {
+		return "", err
+	}
+	return signingInput + "." + enc(sig), nil
+}
+
+// followAuthForCallback walks the stub's auth URL one redirect deep and
+// returns the (code, state) the user-agent would receive.
+func followAuthForCallback(t *testing.T, authURL string) (code, state string) {
+	t.Helper()
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Get(authURL)
+	if err != nil {
+		t.Fatalf("follow auth: %v", err)
+	}
+	defer resp.Body.Close()
+	loc, err := resp.Location()
+	if err != nil {
+		t.Fatalf("no redirect (%d): %v", resp.StatusCode, err)
+	}
+	return loc.Query().Get("code"), loc.Query().Get("state")
 }

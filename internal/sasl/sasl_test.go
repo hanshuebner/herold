@@ -23,9 +23,20 @@ func (s *stubAuth) Authenticate(ctx context.Context, email, password string) (sa
 
 type stubTokenVerifier struct {
 	valid map[string]sasl.PrincipalID
+	// requiredHint, when non-empty, makes the stub reject tokens whose
+	// providerHint does not match. Tests pin this to ensure callers
+	// thread the gs2 host= through.
+	requiredHint string
+	// lastHint is set on each call; tests inspect it to assert the
+	// SMTP/IMAP submission paths are forwarding the hint.
+	lastHint string
 }
 
-func (s *stubTokenVerifier) VerifyAccessToken(ctx context.Context, token string) (sasl.PrincipalID, error) {
+func (s *stubTokenVerifier) VerifyAccessToken(ctx context.Context, providerHint, token string) (sasl.PrincipalID, error) {
+	s.lastHint = providerHint
+	if s.requiredHint != "" && providerHint != s.requiredHint {
+		return 0, errors.New("provider hint mismatch")
+	}
 	if p, ok := s.valid[token]; ok {
 		return p, nil
 	}

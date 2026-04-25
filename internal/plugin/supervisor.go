@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 )
 
 // State is the lifecycle state of a supervised plugin.
@@ -116,6 +117,9 @@ func NewManager(opts ManagerOptions) *Manager {
 	if opts.ServerVersion == "" {
 		opts.ServerVersion = "0.0.0"
 	}
+	// Register the plugin collector set on Manager construction.
+	// Idempotent across multiple managers in one process Registry.
+	observe.RegisterPluginMetrics()
 	return &Manager{
 		opts:    opts,
 		plugins: make(map[string]*Plugin),
@@ -237,6 +241,13 @@ func (p *Plugin) setState(s State) {
 	if prev != s {
 		p.logger.Info("plugin state changed", "from", prev.String(), "to", s.String())
 	}
+	if observe.PluginUp != nil {
+		if s == StateHealthy {
+			observe.PluginUp.WithLabelValues(p.spec.Name).Set(1)
+		} else {
+			observe.PluginUp.WithLabelValues(p.spec.Name).Set(0)
+		}
+	}
 }
 
 // startSupervise launches the goroutine that owns the plugin's lifecycle.
@@ -254,16 +265,48 @@ func (p *Plugin) startSupervise(ctx context.Context) {
 // StateHealthy for a long-running plugin; on-demand plugins route through
 // Invoke instead.
 func (p *Plugin) Call(ctx context.Context, method string, params, result any) error {
+	start := p.mgr.opts.Clock.Now()
 	if p.spec.Lifecycle == LifecycleOnDemand {
-		return p.invokeOnDemand(ctx, method, params, result)
+		err := p.invokeOnDemand(ctx, method, params, result)
+		recordPluginCall(p.spec.Name, method, start, p.mgr.opts.Clock.Now(), err)
+		return err
 	}
 	p.mu.Lock()
 	c := p.client
 	p.mu.Unlock()
 	if c == nil {
-		return &Error{Code: ErrCodeUnavailable, Message: "plugin client not running"}
+		err := &Error{Code: ErrCodeUnavailable, Message: "plugin client not running"}
+		recordPluginCall(p.spec.Name, method, start, p.mgr.opts.Clock.Now(), err)
+		return err
 	}
-	return c.Call(ctx, method, params, result)
+	err := c.Call(ctx, method, params, result)
+	recordPluginCall(p.spec.Name, method, start, p.mgr.opts.Clock.Now(), err)
+	return err
+}
+
+// recordPluginCall normalises an RPC outcome onto the bounded label
+// vocabulary {ok, error, timeout, unavailable} and records the metric
+// pair. nil collectors are tolerated for tests that bypass
+// RegisterPluginMetrics.
+func recordPluginCall(name, method string, start, end time.Time, err error) {
+	outcome := "ok"
+	if err != nil {
+		outcome = "error"
+		if pErr, ok := err.(*Error); ok {
+			switch pErr.Code {
+			case ErrCodeUnavailable:
+				outcome = "unavailable"
+			case ErrCodeTimeout:
+				outcome = "timeout"
+			}
+		}
+	}
+	if observe.PluginCallsTotal != nil {
+		observe.PluginCallsTotal.WithLabelValues(name, method, outcome).Inc()
+	}
+	if observe.PluginCallDuration != nil {
+		observe.PluginCallDuration.WithLabelValues(name, method).Observe(end.Sub(start).Seconds())
+	}
 }
 
 // Stop signals the supervise loop to exit. It blocks until the plugin is

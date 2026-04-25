@@ -81,8 +81,17 @@ type SCRAMCredentials struct {
 // XOAUTH2 consume it. The access token is the Bearer value the client
 // supplies in the SASL exchange; the verifier validates signature,
 // issuer, audience, and expiry and returns the linked local principal.
+//
+// providerHint identifies which configured OIDC provider the token came
+// from. The hint is mandatory in production (Phase 1 finding 9 fix:
+// without it, a token issued by provider A whose `sub` happens to match
+// a different principal's link to provider B would resolve to that
+// principal). For OAUTHBEARER the hint comes from the gs2 host=
+// advertisement; for XOAUTH2 the user= field can be paired with a
+// per-deployment provider mapping. Implementations that receive an
+// empty hint must reject the token.
 type TokenVerifier interface {
-	VerifyAccessToken(ctx context.Context, token string) (PrincipalID, error)
+	VerifyAccessToken(ctx context.Context, providerHint string, token string) (PrincipalID, error)
 }
 
 // Sentinel errors.

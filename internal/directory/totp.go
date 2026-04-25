@@ -11,6 +11,7 @@ import (
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -119,14 +120,17 @@ func (d *Directory) VerifyTOTP(ctx context.Context, pid PrincipalID, code string
 	}
 	key := rlKey{email: p.CanonicalEmail, source: authSource(ctx) + "|totp"}
 	if !d.rl.allow(key) {
+		observe.AuthAttemptsTotal.WithLabelValues("totp", "rate_limited").Inc()
 		return ErrRateLimited
 	}
 	secret := string(p.TOTPSecret)
 	if !validateCode(secret, code, d.clk.Now()) {
 		d.rl.record(key)
+		observe.AuthAttemptsTotal.WithLabelValues("totp", "fail").Inc()
 		return ErrUnauthorized
 	}
 	d.rl.clear(key)
+	observe.AuthAttemptsTotal.WithLabelValues("totp", "ok").Inc()
 	return nil
 }
 

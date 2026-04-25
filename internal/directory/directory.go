@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -97,6 +98,9 @@ func New(meta store.Metadata, logger *slog.Logger, clk clock.Clock, rnd io.Reade
 	if rnd == nil {
 		rnd = rand.Reader
 	}
+	// Register the auth collector set on Directory construction.
+	// Idempotent across multiple Directory instances in tests.
+	observe.RegisterAuthMetrics()
 	return &Directory{
 		meta:   meta,
 		logger: logger,
@@ -289,29 +293,35 @@ func (d *Directory) Authenticate(ctx context.Context, email, password string) (P
 		// Never reveal whether the address is malformed or unknown to
 		// the caller; treat it like any other auth failure.
 		d.rl.record(rlKey{email: strings.ToLower(strings.TrimSpace(email)), source: authSource(ctx)})
+		observe.AuthAttemptsTotal.WithLabelValues("password", "fail").Inc()
 		return 0, ErrUnauthorized
 	}
 	key := rlKey{email: canon, source: authSource(ctx)}
 	if !d.rl.allow(key) {
+		observe.AuthAttemptsTotal.WithLabelValues("password", "rate_limited").Inc()
 		return 0, ErrRateLimited
 	}
 	p, err := d.meta.GetPrincipalByEmail(ctx, canon)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			d.rl.record(key)
+			observe.AuthAttemptsTotal.WithLabelValues("password", "fail").Inc()
 			return 0, ErrUnauthorized
 		}
 		return 0, fmt.Errorf("directory: load principal: %w", err)
 	}
 	if p.Flags&store.PrincipalFlagDisabled != 0 {
 		d.rl.record(key)
+		observe.AuthAttemptsTotal.WithLabelValues("password", "fail").Inc()
 		return 0, ErrUnauthorized
 	}
 	if !verifyPassword(p.PasswordHash, password) {
 		d.rl.record(key)
+		observe.AuthAttemptsTotal.WithLabelValues("password", "fail").Inc()
 		return 0, ErrUnauthorized
 	}
 	d.rl.clear(key)
+	observe.AuthAttemptsTotal.WithLabelValues("password", "ok").Inc()
 	return p.ID, nil
 }
 

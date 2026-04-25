@@ -12,6 +12,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -110,20 +111,18 @@ func generateRandomPassword() (string, error) {
 }
 
 // generateAPIKey returns a plaintext API key and its stored-hash form.
-// Phase 1 hash is an HMAC-SHA256 over a fixed server secret placeholder;
-// until protoadmin lands the spec the CLI stores the plaintext directly
-// in the Hash column so the server can compare at auth time.
+// The hash uses the same SHA-256 encoding as protoadmin.HashAPIKey so a
+// key minted by `herold bootstrap` round-trips through the admin REST
+// API's Bearer authentication. STANDARDS §9 forbids storing
+// authentication material unhashed, so the plaintext is hashed before
+// being persisted.
 func generateAPIKey() (plain, hash string, err error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", "", err
 	}
-	plain = "hk_" + base64.RawURLEncoding.EncodeToString(b[:])
-	// Phase 1: the server verifies API keys via HMAC-SHA256 with a
-	// server-wide key; until that surface is specified by the parallel
-	// protoadmin agent we store the plaintext verbatim so the shape can
-	// be refreshed without a migration.
-	hash = plain
+	plain = protoadmin.APIKeyPrefix + base64.RawURLEncoding.EncodeToString(b[:])
+	hash = protoadmin.HashAPIKey(plain)
 	return plain, hash, nil
 }
 

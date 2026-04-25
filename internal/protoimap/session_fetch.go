@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	imap "github.com/emersion/go-imap/v2"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -159,16 +160,17 @@ func (ses *session) emitFetch(ctx context.Context, seq int, opts *imap.FetchOpti
 	}
 
 	// Rate limit across the total bytes we are about to emit.
-	if ses.bucket != nil {
-		total := int64(0)
-		for _, c := range bodyChunks {
-			total += int64(len(c.data))
+	totalBytes := int64(0)
+	for _, c := range bodyChunks {
+		totalBytes += int64(len(c.data))
+	}
+	if ses.bucket != nil && totalBytes > 0 {
+		if err := ses.bucket.consume(ctx, totalBytes); err != nil {
+			return err
 		}
-		if total > 0 {
-			if err := ses.bucket.consume(ctx, total); err != nil {
-				return err
-			}
-		}
+	}
+	if totalBytes > 0 {
+		observe.IMAPFetchBytesTotal.Add(float64(totalBytes))
 	}
 
 	// Build the final line: "* seq FETCH (part1 part2 ... bodySection[...] {N}\r\n<bytes>)"

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -62,14 +63,17 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, bool) {
 	h := r.Header.Get("Authorization")
 	if h == "" {
+		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
 		return store.Principal{}, false
 	}
 	const bearer = "Bearer "
 	if !strings.HasPrefix(h, bearer) {
+		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
 		return store.Principal{}, false
 	}
 	token := strings.TrimSpace(h[len(bearer):])
 	if !strings.HasPrefix(token, APIKeyPrefix) {
+		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
 		return store.Principal{}, false
 	}
 	hashed := HashAPIKey(token)
@@ -78,6 +82,7 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Princ
 		if !errors.Is(err, store.ErrNotFound) {
 			s.loggerFrom(ctx).Warn("protoadmin.auth.lookup_failed", "err", err)
 		}
+		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
 		return store.Principal{}, false
 	}
 	// Constant-time comparison against the stored hash to avoid a
@@ -86,18 +91,22 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Princ
 	// SQL "WHERE hash = ?" so the check is redundant; we keep it for
 	// defence-in-depth against future lookups that loosen that.
 	if subtle.ConstantTimeCompare([]byte(key.Hash), []byte(hashed)) != 1 {
+		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
 		return store.Principal{}, false
 	}
 	p, err := s.store.Meta().GetPrincipalByID(ctx, key.PrincipalID)
 	if err != nil {
 		s.loggerFrom(ctx).Warn("protoadmin.auth.principal_lookup_failed",
 			"err", err, "principal_id", key.PrincipalID)
+		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
 		return store.Principal{}, false
 	}
 	if p.Flags.Has(store.PrincipalFlagDisabled) {
+		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
 		return store.Principal{}, false
 	}
 	_ = s.store.Meta().TouchAPIKey(ctx, key.ID, s.clk.Now())
+	observe.AuthAttemptsTotal.WithLabelValues("apikey", "ok").Inc()
 	return p, true
 }
 
@@ -116,6 +125,7 @@ func (s *Server) checkRateLimit(w http.ResponseWriter, r *http.Request, key stri
 	if ok {
 		return true
 	}
+	observe.AdminRateLimitedTotal.WithLabelValues("api-key").Inc()
 	w.Header().Set("Retry-After", fmt.Sprintf("%d", int(retry.Seconds())))
 	writeProblem(w, r, http.StatusTooManyRequests,
 		"rate_limited", "rate limit exceeded", fmt.Sprintf("retry after %s", retry))

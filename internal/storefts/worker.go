@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -104,7 +105,7 @@ func NewWorker(
 	if opts.CursorKey == "" {
 		opts.CursorKey = DefaultCursorKey
 	}
-	return &Worker{
+	w := &Worker{
 		idx:            idx,
 		store:          st,
 		extract:        extract,
@@ -113,6 +114,13 @@ func NewWorker(
 		opts:           opts,
 		flushBroadcast: make(chan struct{}),
 	}
+	// Register the FTS collector set on Worker construction. The lag
+	// gauge reads w.Lag() on every scrape; first registration wins, so
+	// later workers replace the lag source via the helper inside
+	// RegisterFTSMetrics. Idempotent across multiple workers in a
+	// single process Registry.
+	observe.RegisterFTSMetrics(func() float64 { return w.Lag().Seconds() })
+	return w
 }
 
 // Cursor returns the worker's current durable cursor. Exposed for tests
@@ -207,6 +215,7 @@ func (w *Worker) processBatch(ctx context.Context, changes []store.FTSChange) er
 	deadline := w.clock.Now().Add(w.opts.FlushInterval)
 	var maxSeq uint64
 	var lastProduced time.Time
+	indexed := 0
 	for _, c := range changes {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -221,6 +230,8 @@ func (w *Worker) processBatch(ctx context.Context, changes []store.FTSChange) er
 				"kind", c.Kind,
 				"err", err.Error(),
 			)
+		} else {
+			indexed++
 		}
 		if c.Seq > maxSeq {
 			maxSeq = c.Seq
@@ -256,6 +267,9 @@ func (w *Worker) processBatch(ctx context.Context, changes []store.FTSChange) er
 	}
 	if !lastProduced.IsZero() {
 		w.lastProcessed.Store(lastProduced.UnixNano())
+	}
+	if indexed > 0 && observe.FTSIndexedMessagesTotal != nil {
+		observe.FTSIndexedMessagesTotal.Add(float64(indexed))
 	}
 	w.signalFlush(maxSeq)
 	return nil

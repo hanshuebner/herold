@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
@@ -170,7 +172,11 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 
 	// Directory + OIDC + mail-auth verifiers.
 	dir := directory.New(st.Meta(), logger.With("subsystem", "directory"), clk, nil)
-	oidc := directoryoidc.New(st.Meta(), logger.With("subsystem", "oidc"), http.DefaultClient, clk)
+	// Bound the OIDC HTTP client: discovery and JWKS fetches against a
+	// hung IdP must not stall the auth hot path. STANDARDS §5 "Deadlines
+	// on every network call". Matches directoryoidc/rp_test.go fixtures.
+	oidcHTTP := &http.Client{Timeout: 10 * time.Second}
+	oidc := directoryoidc.New(st.Meta(), logger.With("subsystem", "oidc"), oidcHTTP, clk)
 	resolver := mailauth.NewSystemResolver()
 	dkim := maildkim.New(resolver, logger.With("subsystem", "dkim"), clk)
 	spf := mailspf.New(resolver, clk)
@@ -271,17 +277,36 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	}
 	defer boundListeners.Close()
 
-	// Start FTS worker goroutine.
-	var ftsDone sync.WaitGroup
-	ftsDone.Add(1)
-	go func() {
-		defer ftsDone.Done()
-		if err := ftsWorker.Run(ctx); err != nil {
-			logger.LogAttrs(context.Background(), slog.LevelWarn, "fts worker exited", slog.String("err", err.Error()))
-		}
-	}()
+	// Lifecycle errgroup: every long-running goroutine (FTS worker,
+	// metrics serve, every protocol listener serve) is registered here
+	// so the StartServer ctx-cancel path waits for them on shutdown.
+	// STANDARDS §5: no fire-and-forget goroutines on the lifecycle
+	// surface. The group's ctx is derived from the StartServer ctx so
+	// any goroutine returning a non-nil error cancels its peers.
+	g, gctx := errgroup.WithContext(ctx)
 
-	// Metrics HTTP server (best-effort).
+	// Register Go runtime + process collectors against observe.Registry
+	// so /metrics surfaces standard runtime metrics. Idempotent: a test
+	// that bounces StartServer multiple times in one process keeps its
+	// single registration. Lives here (not metrics-bind-gated) so
+	// scrapes against an alternative endpoint (e.g. an admin sidecar)
+	// still see them.
+	observe.RegisterRuntimeCollectors()
+
+	// FTS worker goroutine — registered on the lifecycle group so
+	// shutdown drains it.
+	g.Go(func() error {
+		if err := ftsWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.LogAttrs(context.Background(), slog.LevelWarn, "fts worker exited", slog.String("err", err.Error()))
+			return err
+		}
+		return nil
+	})
+
+	// Metrics HTTP server. Bound here under the same errgroup so
+	// shutdown drains it; bind failures degrade to a warn log (not
+	// fatal — operators can run without a metrics endpoint) but a
+	// post-bind serve error propagates and triggers shutdown.
 	var metricsShutdown func() error
 	if cfg.Observability.MetricsBind != "" {
 		mux := http.NewServeMux()
@@ -290,15 +315,23 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			Addr:    cfg.Observability.MetricsBind,
 			Handler: mux,
 		}
-		ln, err := net.Listen("tcp", cfg.Observability.MetricsBind)
-		if err != nil {
+		ln, lerr := net.Listen("tcp", cfg.Observability.MetricsBind)
+		if lerr != nil {
 			logger.LogAttrs(ctx, slog.LevelWarn, "metrics listen failed",
 				slog.String("bind", cfg.Observability.MetricsBind),
-				slog.String("err", err.Error()))
+				slog.String("err", lerr.Error()))
 		} else {
-			go func() {
-				_ = srv.Serve(ln)
-			}()
+			g.Go(func() error {
+				if err := srv.Serve(ln); err != nil &&
+					!errors.Is(err, http.ErrServerClosed) &&
+					!errors.Is(err, net.ErrClosed) {
+					logger.LogAttrs(context.Background(), slog.LevelWarn,
+						"metrics listener exited",
+						slog.String("err", err.Error()))
+					return err
+				}
+				return nil
+			})
 			metricsShutdown = func() error {
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				defer cancel()
@@ -306,11 +339,27 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			}
 		}
 	}
-	defer func() {
-		if metricsShutdown != nil {
-			_ = metricsShutdown()
-		}
-	}()
+
+	// Protocol listener serve goroutines, all under the same lifecycle
+	// group. A bind failure on one listener cancels gctx and all peers
+	// drain.
+	for _, ns := range boundListeners.serveFns {
+		ns := ns
+		g.Go(func() error {
+			err := ns.fn(gctx)
+			if err == nil ||
+				errors.Is(err, http.ErrServerClosed) ||
+				errors.Is(err, net.ErrClosed) ||
+				errors.Is(err, context.Canceled) {
+				return nil
+			}
+			logger.LogAttrs(context.Background(), slog.LevelError,
+				"listener serve exited",
+				slog.String("name", ns.name),
+				slog.String("err", err.Error()))
+			return err
+		})
+	}
 
 	// Runtime snapshot for Reload.
 	rt := &Runtime{level: levelVar, logger: logger}
@@ -332,13 +381,62 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		defer signal.Stop(hupCh)
 	}
 
-	// Serve until ctx cancels.
+	// Serve until ctx cancels or any registered goroutine fails. The
+	// group's ctx (gctx) cancels in either case so all peers are
+	// notified.
+	groupErr := make(chan error, 1)
+	go func() { groupErr <- g.Wait() }()
+
+	drain := func() error {
+		// Tear down listeners so the SMTP / IMAP / admin Serve loops
+		// observe net.ErrClosed and unwind. The deferred
+		// boundListeners.Close runs again on return; double-close on a
+		// net.Listener is a no-op error that we already discard.
+		boundListeners.Close()
+		// Stop the protocol servers' inner accept loops — Server.Close
+		// cancels their ctx and waits up to ShutdownGrace for sessions
+		// to drain. We invoke these explicitly here (in addition to
+		// the deferred per-server Close at the top of StartServer) so
+		// the errgroup sees the Serve goroutines return before
+		// g.Wait() does.
+		grace := cfg.Server.ShutdownGrace.AsDuration()
+		if grace <= 0 {
+			grace = 10 * time.Second
+		}
+		shutCtx, cancelShut := context.WithTimeout(context.Background(), grace)
+		defer cancelShut()
+		_ = smtpServer.Close(shutCtx)
+		_ = imapServer.Close()
+		// Flip the metrics server into shutdown so its goroutine
+		// returns.
+		if metricsShutdown != nil {
+			_ = metricsShutdown()
+		}
+		select {
+		case err := <-groupErr:
+			return err
+		case <-time.After(grace):
+			logger.LogAttrs(context.Background(), slog.LevelWarn,
+				"shutdown drain window elapsed; some goroutines did not exit",
+				slog.Duration("grace", grace))
+			return nil
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			logger.LogAttrs(context.Background(), slog.LevelInfo, "herold: shutdown signal received")
-			ftsDone.Wait()
-			return nil
+			return drain()
+		case err := <-groupErr:
+			// A goroutine failed before the user-driven shutdown. Log
+			// and surface the error; defers handle the rest.
+			if err != nil {
+				logger.LogAttrs(context.Background(), slog.LevelError,
+					"herold: lifecycle goroutine failed",
+					slog.String("err", err.Error()))
+			}
+			return err
 		case <-hupCh:
 			newCfg, err := sysconfig.Load(currentConfigPath())
 			if err != nil {
@@ -455,11 +553,23 @@ func buildTLSStore(cfg *sysconfig.Config, logger *slog.Logger) (*heroldtls.Store
 	return store, nil
 }
 
+// listenerServeFn is the shape of one bound listener's serve loop. It
+// runs until the supplied ctx cancels or the listener fails; the
+// returned error is propagated through the StartServer errgroup.
+type listenerServeFn func(ctx context.Context) error
+
 // boundListeners tracks the net.Listener instances bound by StartServer
-// so a deferred Close can tear them down.
+// so a deferred Close can tear them down. The serveFns slice carries
+// one closure per listener; StartServer launches them under an errgroup.
 type boundListenerSet struct {
 	listeners []net.Listener
+	serveFns  []namedServe
 	logger    *slog.Logger
+}
+
+type namedServe struct {
+	name string
+	fn   listenerServeFn
 }
 
 func (b *boundListenerSet) Close() {
@@ -486,20 +596,22 @@ func bindListeners(
 			adminBinds = append(adminBinds, l)
 			continue
 		}
-		ln, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, adminHandler, opts)
+		ln, fn, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, adminHandler, opts)
 		if err != nil {
 			set.Close()
 			return nil, err
 		}
 		set.listeners = append(set.listeners, ln)
+		set.serveFns = append(set.serveFns, namedServe{name: l.Name, fn: fn})
 	}
 	for _, l := range adminBinds {
-		ln, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, adminHandler, opts)
+		ln, fn, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, adminHandler, opts)
 		if err != nil {
 			set.Close()
 			return nil, err
 		}
 		set.listeners = append(set.listeners, ln)
+		set.serveFns = append(set.serveFns, namedServe{name: l.Name, fn: fn})
 	}
 	return set, nil
 }
@@ -514,10 +626,10 @@ func bindOne(
 	imapServer *protoimap.Server,
 	adminHandler http.Handler,
 	opts StartOpts,
-) (net.Listener, error) {
+) (net.Listener, listenerServeFn, error) {
 	ln, err := net.Listen("tcp", l.Address)
 	if err != nil {
-		return nil, fmt.Errorf("admin: listen %s (%s): %w", l.Name, l.Address, err)
+		return nil, nil, fmt.Errorf("admin: listen %s (%s): %w", l.Name, l.Address, err)
 	}
 	if opts.ListenerAddrs != nil {
 		addr := ln.Addr().String()
@@ -537,38 +649,45 @@ func bindOne(
 	)
 	switch l.Protocol {
 	case "smtp":
-		go func() {
-			_ = smtpServer.Serve(ctx, ln, protosmtp.RelayIn)
-		}()
+		return ln, func(ctx context.Context) error {
+			return smtpServer.Serve(ctx, ln, protosmtp.RelayIn)
+		}, nil
 	case "smtp-submission":
 		mode := protosmtp.SubmissionSTARTTLS
 		if l.TLS == "implicit" {
 			mode = protosmtp.SubmissionImplicitTLS
 		}
-		go func() {
-			_ = smtpServer.Serve(ctx, ln, mode)
-		}()
+		return ln, func(ctx context.Context) error {
+			return smtpServer.Serve(ctx, ln, mode)
+		}, nil
 	case "imap":
 		mode := protoimap.ListenerModeSTARTTLS
 		if l.TLS == "implicit" {
 			mode = protoimap.ListenerModeImplicit993
 		}
-		go func() {
-			_ = imapServer.Serve(ctx, ln, mode)
-		}()
+		return ln, func(ctx context.Context) error {
+			return imapServer.Serve(ctx, ln, mode)
+		}, nil
 	case "imaps":
-		go func() {
-			_ = imapServer.Serve(ctx, ln, protoimap.ListenerModeImplicit993)
-		}()
+		return ln, func(ctx context.Context) error {
+			return imapServer.Serve(ctx, ln, protoimap.ListenerModeImplicit993)
+		}, nil
 	case "admin":
-		go serveAdmin(ctx, ln, l, tlsStore, adminHandler, logger)
+		spec := l
+		return ln, func(ctx context.Context) error {
+			return serveAdmin(ctx, ln, spec, tlsStore, adminHandler, logger)
+		}, nil
 	default:
-		return nil, fmt.Errorf("admin: unknown listener protocol %q", l.Protocol)
+		_ = ln.Close()
+		_ = cfg
+		return nil, nil, fmt.Errorf("admin: unknown listener protocol %q", l.Protocol)
 	}
-	_ = cfg
-	return ln, nil
 }
 
+// serveAdmin runs one admin HTTP server until ctx cancels or Serve
+// returns. Returns nil for the canonical http.ErrServerClosed and
+// net.ErrClosed conditions; any other error is propagated to the
+// errgroup so StartServer logs it and triggers shutdown.
 func serveAdmin(
 	ctx context.Context,
 	ln net.Listener,
@@ -576,7 +695,7 @@ func serveAdmin(
 	tlsStore *heroldtls.Store,
 	handler http.Handler,
 	logger *slog.Logger,
-) {
+) error {
 	srv := &http.Server{
 		Handler:     handler,
 		BaseContext: func(net.Listener) context.Context { return ctx },
@@ -584,7 +703,9 @@ func serveAdmin(
 	if l.TLS == "implicit" {
 		srv.TLSConfig = heroldtls.TLSConfig(tlsStore, heroldtls.Intermediate, nil)
 	}
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -596,9 +717,14 @@ func serveAdmin(
 	} else {
 		err = srv.Serve(ln)
 	}
-	if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+	<-shutdownDone
+	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	if err != nil {
 		logger.LogAttrs(ctx, slog.LevelWarn, "admin listener exited", slog.String("err", err.Error()))
 	}
+	return err
 }
 
 // pluginInvoker adapts *plugin.Manager to spam.PluginInvoker.

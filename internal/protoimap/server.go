@@ -3,6 +3,7 @@ package protoimap
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/sasl"
 	"github.com/hanshuebner/herold/internal/store"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
@@ -103,6 +105,10 @@ func NewServer(
 	if opts.ServerName == "" {
 		opts.ServerName = "herold"
 	}
+	// Register the IMAP collector set on Server construction. Idempotent
+	// across many Server instances sharing one process Registry (tests).
+	observe.RegisterIMAPMetrics()
+	observe.RegisterStoreMetrics()
 	return &Server{
 		store:     st,
 		dir:       dir,
@@ -196,22 +202,35 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) 
 }
 
 func (s *Server) handle(ctx context.Context, c net.Conn, mode ListenerMode) {
+	outcome := "ok"
+	observe.IMAPSessionsActive.Inc()
 	defer func() {
 		if r := recover(); r != nil {
+			outcome = "panic"
 			s.logger.Error("protoimap: session panic", "err", r)
 		}
+		observe.IMAPSessionsTotal.WithLabelValues(outcome).Inc()
+		observe.IMAPSessionsActive.Dec()
 		_ = c.Close()
 	}()
+	var implicitLeaf *x509.Certificate
 	if mode == ListenerModeImplicit993 {
-		cfg := heroldtls.TLSConfig(s.tlsStore, heroldtls.Intermediate, nil)
-		tlsConn := tls.Server(c, cfg)
+		cap := sasl.NewCapturingTLSConfig(heroldtls.TLSConfig(s.tlsStore, heroldtls.Intermediate, nil))
+		tlsConn := tls.Server(c, cap.Config())
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			outcome = "error"
 			s.logger.Warn("protoimap: TLS handshake", "err", err, "remote", c.RemoteAddr().String())
 			return
 		}
 		c = tlsConn
+		implicitLeaf = cap.Leaf()
 	}
 	ses := newSession(s, c, mode == ListenerModeImplicit993)
+	if implicitLeaf != nil {
+		if cb, err := sasl.TLSServerEndpoint(implicitLeaf); err == nil {
+			ses.serverEndpoint = cb
+		}
+	}
 	s.mu.Lock()
 	s.sessions[ses] = struct{}{}
 	s.mu.Unlock()

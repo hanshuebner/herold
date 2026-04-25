@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storefts"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // stringExtractor is a deterministic TextExtractor for tests: it reads
@@ -149,6 +151,9 @@ func TestWorker_IndexesMessages(t *testing.T) {
 	h := newWorkerHarness(t, storefts.WorkerOptions{})
 	_, mb := h.seedPrincipalAndMailbox(t, "alice@example.test")
 
+	observe.RegisterFTSMetrics(func() float64 { return 0 })
+	beforeIndexed := testutil.ToFloat64(observe.FTSIndexedMessagesTotal)
+
 	// Insert 50 messages with distinct subjects.
 	var lastID store.MessageID
 	for i := 0; i < 50; i++ {
@@ -165,6 +170,11 @@ func TestWorker_IndexesMessages(t *testing.T) {
 	// One flush interval is enough: the worker reads all 50 changes in
 	// a single ReadChangeFeedForFTS call (batch size default = 2000).
 	h.flushOnce(t)
+
+	afterIndexed := testutil.ToFloat64(observe.FTSIndexedMessagesTotal)
+	if afterIndexed <= beforeIndexed {
+		t.Fatalf("herold_fts_indexed_messages_total: before=%v after=%v; want strict increase", beforeIndexed, afterIndexed)
+	}
 
 	// The cursor should have advanced to at least the last FTS seq.
 	if h.worker.Cursor() == 0 {

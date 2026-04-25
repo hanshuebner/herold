@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"runtime/debug"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -165,7 +166,10 @@ func (s *Server) appendAudit(
 		Message:    message,
 		Metadata:   metadata,
 	}
-	if err := s.store.Meta().AppendAuditLog(ctx, entry); err != nil {
+	auditTimer := observe.StartStoreOp("append_audit")
+	err := s.store.Meta().AppendAuditLog(ctx, entry)
+	auditTimer.Done()
+	if err != nil {
 		s.loggerFrom(ctx).Warn("protoadmin.audit.append_failed",
 			"err", err, "action", action, "subject", subject)
 	}

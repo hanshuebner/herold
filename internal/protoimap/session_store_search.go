@@ -9,6 +9,7 @@ import (
 	"time"
 
 	imap "github.com/emersion/go-imap/v2"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -464,7 +465,10 @@ func (ses *session) handleEXPUNGE(ctx context.Context, c *Command) error {
 		seqs = append(seqs, i+1)
 	}
 	if len(ids) > 0 {
-		if err := ses.s.store.Meta().ExpungeMessages(ctx, ses.sel.id, ids); err != nil {
+		expungeTimer := observe.StartStoreOp("expunge")
+		err := ses.s.store.Meta().ExpungeMessages(ctx, ses.sel.id, ids)
+		expungeTimer.Done()
+		if err != nil {
 			return ses.resp.taggedNO(c.Tag, "", "expunge failed")
 		}
 	}
@@ -487,6 +491,8 @@ func (ses *session) handleIDLE(ctx context.Context, c *Command) error {
 	if err := ses.resp.continuation("idling"); err != nil {
 		return err
 	}
+	observe.IMAPIdleActive.Inc()
+	defer observe.IMAPIdleActive.Dec()
 	idleCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -518,7 +524,9 @@ func (ses *session) handleIDLE(ctx context.Context, c *Command) error {
 	var cursor store.ChangeSeq // start from current highest-observed
 
 	// Get the starting cursor so we only report new events.
+	rcfTimer := observe.StartStoreOp("read_change_feed")
 	changes, err := ses.s.store.Meta().ReadChangeFeed(idleCtx, ses.pid, 0, 10000)
+	rcfTimer.Done()
 	if err == nil && len(changes) > 0 {
 		cursor = changes[len(changes)-1].Seq
 	}
@@ -539,7 +547,9 @@ func (ses *session) handleIDLE(ctx context.Context, c *Command) error {
 			_ = ses.resp.writeLine("* BYE IDLE timeout")
 			return io.EOF
 		}
+		rcfTimer := observe.StartStoreOp("read_change_feed")
 		changes, err := ses.s.store.Meta().ReadChangeFeed(idleCtx, ses.pid, cursor, 1024)
+		rcfTimer.Done()
 		if err != nil {
 			continue
 		}

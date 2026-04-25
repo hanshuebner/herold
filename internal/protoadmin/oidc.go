@@ -178,6 +178,13 @@ func (s *Server) handleUnlinkOIDC(w http.ResponseWriter, r *http.Request) {
 // endpoint is unauthenticated because it is reached by the user's
 // browser after the OIDC provider redirects; identity comes from the
 // state token.
+//
+// Wave 4 finding 10: classify the flow before consuming the state.
+// Peek the pending record's flow kind, then dispatch to the matching
+// completion. The completion path is the only place that calls
+// takePending (which removes the row), so an unknown state returns 400
+// without ever touching the persistent map and a state used twice
+// surfaces as ErrInvalidState the second time around.
 func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
@@ -186,26 +193,32 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			"state and code are required", "")
 		return
 	}
-	// Phase 1 scope: we expose the callback but the two flows (link vs
-	// sign-in) are disambiguated by the RP's pending-state record. We
-	// try link first; if the RP reports it was a sign-in, fall through.
-	pid, err := s.rp.CompleteLink(r.Context(), state, code)
-	if err == nil {
+	switch s.rp.PeekPendingFlow(state) {
+	case directoryoidc.FlowKindLink:
+		pid, err := s.rp.CompleteLink(r.Context(), state, code)
+		if err != nil {
+			s.writeOIDCError(w, r, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"outcome":      "linked",
 			"principal_id": uint64(pid),
 		})
-		return
-	}
-	if errors.Is(err, directoryoidc.ErrInvalidState) {
-		// Retry as a sign-in (takePending consumed the state; the RP now
-		// has no record, so this will fail. Instead, call CompleteSignIn
-		// directly on a fresh state — which is what real clients do.)
+	case directoryoidc.FlowKindSignIn:
+		pid, err := s.rp.CompleteSignIn(r.Context(), state, code)
+		if err != nil {
+			s.writeOIDCError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"outcome":      "signed_in",
+			"principal_id": uint64(pid),
+		})
+	default:
+		// Unknown / expired state — do not touch the persistent map.
 		writeProblem(w, r, http.StatusBadRequest, "invalid_state",
 			"state not recognised or already consumed", "")
-		return
 	}
-	s.writeOIDCError(w, r, err)
 }
 
 // writeOIDCError maps a directoryoidc error to an HTTP problem.

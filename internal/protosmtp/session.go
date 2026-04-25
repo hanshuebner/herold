@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/sasl"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
@@ -104,7 +106,13 @@ type rcptEntry struct {
 // runSession is invoked by Server.Serve for each accepted connection.
 // It installs the top-level recover, derives a per-session ctx from the
 // server's, performs the greeting, and runs the command loop.
-func (s *Server) runSession(raw net.Conn, mode ListenerMode, remoteIP string, implicit *tls.Conn) {
+//
+// implicit / implicitLeaf are populated together for implicit-TLS
+// listeners (port 465); the leaf is the x509 certificate the handshake
+// served, captured by the GetCertificate wrapper in server.go so we can
+// derive the RFC 5929 channel binding without re-parsing the on-wire
+// state.
+func (s *Server) runSession(raw net.Conn, mode ListenerMode, remoteIP string, implicit *tls.Conn, implicitLeaf *x509.Certificate) {
 	sessCtx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 
@@ -125,7 +133,7 @@ func (s *Server) runSession(raw net.Conn, mode ListenerMode, remoteIP string, im
 		sess.tlsCipherSuite = state.CipherSuite
 		sess.tlsVersion = state.Version
 		sess.tlsServerName = state.ServerName
-		sess.serverEndpoint = endpointBinding(state)
+		sess.serverEndpoint = endpointBinding(implicitLeaf)
 	}
 	sess.reader = bufio.NewReaderSize(sess.conn, maxCmdLineBytes)
 	sess.writer = bufio.NewWriterSize(sess.conn, 4096)
@@ -330,7 +338,10 @@ func (sess *session) ehloExtensions() []string {
 
 // authMechanismList returns the SASL mechanisms currently offered on
 // this session. Plain-text mechanisms (PLAIN / LOGIN) are only offered
-// once TLS is established.
+// once TLS is established. SCRAM-SHA-256-PLUS is advertised only when
+// TLS is up *and* a tls-server-end-point binding is available — RFC 5802
+// §6 forbids -PLUS over cleartext, and STANDARDS rule 10 forbids
+// advertising a wire extension we cannot honour.
 func (sess *session) authMechanismList() []string {
 	var out []string
 	if sess.tlsEstablished {
@@ -338,7 +349,7 @@ func (sess *session) authMechanismList() []string {
 	}
 	if sess.srv.passLk != nil {
 		out = append(out, "SCRAM-SHA-256")
-		if sess.tlsEstablished {
+		if sess.tlsEstablished && len(sess.serverEndpoint) > 0 {
 			out = append(out, "SCRAM-SHA-256-PLUS")
 		}
 	}
@@ -368,7 +379,8 @@ func (sess *session) cmdSTARTTLS(rest string) bool {
 	if err := sess.writer.Flush(); err != nil {
 		return true
 	}
-	tlsConn := tls.Server(sess.conn, heroldtls.TLSConfig(sess.srv.tls, heroldtls.Intermediate, nil))
+	cap := sasl.NewCapturingTLSConfig(heroldtls.TLSConfig(sess.srv.tls, heroldtls.Intermediate, nil))
+	tlsConn := tls.Server(sess.conn, cap.Config())
 	if err := tlsConn.HandshakeContext(sess.ctx); err != nil {
 		sess.srv.log.InfoContext(sess.ctx, "starttls handshake failed",
 			slog.String("session_id", sess.sessID),
@@ -385,7 +397,7 @@ func (sess *session) cmdSTARTTLS(rest string) bool {
 	sess.tlsCipherSuite = cs.CipherSuite
 	sess.tlsVersion = cs.Version
 	sess.tlsServerName = cs.ServerName
-	sess.serverEndpoint = endpointBinding(cs)
+	sess.serverEndpoint = endpointBinding(cap.Leaf())
 	// Reset protocol state per RFC 3207 §4.2.
 	sess.helo = ""
 	sess.isEHLO = false
@@ -520,7 +532,7 @@ func (sess *session) buildMechanism(name string) (sasl.Mechanism, bool) {
 		}
 		return sasl.NewSCRAMSHA256(sess.srv.dir, sess.srv.passLk, false), true
 	case "SCRAM-SHA-256-PLUS":
-		if sess.srv.passLk == nil || !sess.tlsEstablished {
+		if sess.srv.passLk == nil || !sess.tlsEstablished || len(sess.serverEndpoint) == 0 {
 			return nil, false
 		}
 		return sasl.NewSCRAMSHA256(sess.srv.dir, sess.srv.passLk, true), true
@@ -554,10 +566,12 @@ func (sess *session) cmdMAIL(rest string) bool {
 		return false
 	}
 	if sess.mode == SubmissionSTARTTLS && !sess.tlsEstablished {
+		observe.SMTPMessagesRejectedTotal.WithLabelValues(sess.mode.String(), "policy").Inc()
 		sess.writeReply("530 5.7.0 must issue STARTTLS first")
 		return false
 	}
 	if (sess.mode == SubmissionSTARTTLS || sess.mode == SubmissionImplicitTLS) && !sess.authenticated {
+		observe.SMTPMessagesRejectedTotal.WithLabelValues(sess.mode.String(), "auth").Inc()
 		sess.writeReply("530 5.7.0 authentication required")
 		return false
 	}
@@ -580,6 +594,7 @@ func (sess *session) cmdMAIL(rest string) bool {
 		return false
 	}
 	if params.size > sess.srv.opts.MaxMessageSize {
+		observe.SMTPMessagesRejectedTotal.WithLabelValues(sess.mode.String(), "size").Inc()
 		sess.writeReply(fmt.Sprintf("552 5.3.4 message size %d exceeds limit %d", params.size, sess.srv.opts.MaxMessageSize))
 		return false
 	}
@@ -694,6 +709,7 @@ func (sess *session) cmdDATA() bool {
 	_ = sess.conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		if errors.Is(err, errMessageTooLarge) {
+			observe.SMTPMessagesRejectedTotal.WithLabelValues(sess.mode.String(), "size").Inc()
 			sess.writeReply("552 5.3.4 message too large")
 			sess.resetEnvelope()
 			return false
@@ -741,6 +757,7 @@ func (sess *session) cmdBDAT(rest string) bool {
 		_ = sess.conn.SetReadDeadline(time.Now().Add(sess.srv.opts.DataTimeout))
 		_, _ = io.CopyN(io.Discard, sess.reader, n)
 		_ = sess.conn.SetReadDeadline(time.Time{})
+		observe.SMTPMessagesRejectedTotal.WithLabelValues(sess.mode.String(), "size").Inc()
 		sess.writeReply("552 5.3.4 message too large")
 		sess.resetEnvelope()
 		return false
@@ -839,7 +856,14 @@ func extractAngleAddr(s string) (addr, rest string, err error) {
 		if end < 0 {
 			return "", "", errors.New("missing '>'")
 		}
-		return s[1:end], strings.TrimSpace(s[end+1:]), nil
+		inner := s[1:end]
+		// RFC 5321 path syntax does not permit nested '<' or '>' inside
+		// the address. Reject malformed input rather than silently
+		// returning an address that still contains angle brackets.
+		if strings.ContainsAny(inner, "<>") {
+			return "", "", errors.New("nested angle brackets in address")
+		}
+		return inner, strings.TrimSpace(s[end+1:]), nil
 	}
 	// Bare form: first token.
 	i := strings.IndexAny(s, " \t")
@@ -1023,16 +1047,19 @@ func replyMulti(sess *session, code int, enhanced, firstHeading string, lines []
 }
 
 // endpointBinding is the RFC 5929 tls-server-end-point binding value
-// for SCRAM-PLUS. Go's tls.ConnectionState does not surface the local
-// certificate on the server side, so the value is computed by the
-// SNI-resolution path at handshake time. Wave 2 returns nil here;
-// SCRAM-SHA-256-PLUS callers without a binding will refuse the
-// mechanism gracefully. A later wave plumbs the server certificate
-// into a session field populated from the tls.Config's GetCertificate
-// callback so this function can return the SHA-256 digest per
-// RFC 5929 §4.1.
-func endpointBinding(_ tls.ConnectionState) []byte {
-	return nil
+// for SCRAM-PLUS. Computed from the leaf certificate that the TLS
+// handshake actually served (captured via the GetCertificate wrapper
+// installed by serverTLSConfig); the digest is hashed per RFC 5929 §4.1
+// (SHA-256 family by default, SHA-384/512 for stronger cert signatures).
+//
+// Returns nil when no leaf certificate is available; SCRAM-SHA-256-PLUS
+// then refuses gracefully with ErrChannelBindingMismatch.
+func endpointBinding(leaf *x509.Certificate) []byte {
+	cb, err := sasl.TLSServerEndpoint(leaf)
+	if err != nil {
+		return nil
+	}
+	return cb
 }
 
 // newSessionID returns a short random-ish identifier usable for log

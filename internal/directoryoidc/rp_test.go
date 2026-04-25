@@ -331,5 +331,150 @@ func followAuth(t *testing.T, authURL string) (code, state string) {
 	return loc.Query().Get("code"), loc.Query().Get("state")
 }
 
+// TestVerifyAccessToken_RejectsCrossProviderToken is the regression
+// guard for Wave 4 finding 9 (audience confusion). It registers two
+// providers with disjoint audiences and a link under provider B for a
+// subject that also exists under provider A. A token issued by
+// provider A whose `sub` happens to collide must NOT unlock the
+// principal linked under provider B.
+//
+// Pre-fix VerifyAccessToken iterated every registered provider and
+// accepted the first verifier that succeeded; the loop would have
+// promoted A's token into a B-scoped link lookup. Post-fix the caller
+// names the provider and the audience check ensures `aud` matches that
+// provider's ClientID.
+func TestVerifyAccessToken_RejectsCrossProviderToken(t *testing.T) {
+	stubA := newOIDCStub(t, "client-A")
+	stubB := newOIDCStub(t, "client-B")
+	fs := newFakeStore(t)
+	ctx := context.Background()
+	pA, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("insert principal A: %v", err)
+	}
+	pB, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "bob@example.test",
+	})
+	if err != nil {
+		t.Fatalf("insert principal B: %v", err)
+	}
+	rp := directoryoidc.New(fs.Meta(), slog.New(slog.NewTextHandler(io.Discard, nil)), &http.Client{Timeout: 5 * time.Second}, clock.NewReal())
+	if _, err := rp.AddProvider(ctx, directoryoidc.ProviderConfig{
+		Name:        "provA",
+		IssuerURL:   stubA.issuer,
+		ClientID:    "client-A",
+		RedirectURL: "http://localhost/cb",
+	}); err != nil {
+		t.Fatalf("add A: %v", err)
+	}
+	if _, err := rp.AddProvider(ctx, directoryoidc.ProviderConfig{
+		Name:        "provB",
+		IssuerURL:   stubB.issuer,
+		ClientID:    "client-B",
+		RedirectURL: "http://localhost/cb",
+	}); err != nil {
+		t.Fatalf("add B: %v", err)
+	}
+	// Link the colliding subject "shared-sub" to A=alice and B=bob.
+	if err := fs.Meta().LinkOIDC(ctx, store.OIDCLink{
+		PrincipalID:  pA.ID,
+		ProviderName: "provA",
+		Subject:      "shared-sub",
+	}); err != nil {
+		t.Fatalf("link A: %v", err)
+	}
+	if err := fs.Meta().LinkOIDC(ctx, store.OIDCLink{
+		PrincipalID:  pB.ID,
+		ProviderName: "provB",
+		Subject:      "shared-sub",
+	}); err != nil {
+		t.Fatalf("link B: %v", err)
+	}
+	// Forge a token signed by provider A with the shared sub.
+	stubA.subject = "shared-sub"
+	stubA.nonce = "" // VerifyAccessToken does not enforce nonce on the access-token path
+	tokenA, err := stubA.signIDToken()
+	if err != nil {
+		t.Fatalf("sign token A: %v", err)
+	}
+	// Naming provA must resolve to alice (A's link).
+	pid, err := rp.VerifyAccessToken(ctx, "provA", tokenA)
+	if err != nil {
+		t.Fatalf("verify under provA: %v", err)
+	}
+	if pid != pA.ID {
+		t.Fatalf("provA: pid=%d want %d", pid, pA.ID)
+	}
+	// Naming provB must reject (`aud` is "client-A", not provB's
+	// "client-B"; pre-fix iterated and would have promoted to bob).
+	if _, err := rp.VerifyAccessToken(ctx, "provB", tokenA); err == nil {
+		t.Fatalf("verify under provB with provA-signed token must fail")
+	} else if !errors.Is(err, directoryoidc.ErrNotFound) {
+		t.Fatalf("verify under provB: want ErrNotFound, got %v", err)
+	}
+	// Empty provider hint must reject — the verifier cannot pick.
+	if _, err := rp.VerifyAccessToken(ctx, "", tokenA); err == nil {
+		t.Fatalf("verify with empty hint must fail")
+	}
+	// Unknown provider hint must reject.
+	if _, err := rp.VerifyAccessToken(ctx, "ghost", tokenA); err == nil {
+		t.Fatalf("verify with unknown hint must fail")
+	}
+}
+
+// TestPeekPendingFlow_ClassifiesWithoutConsuming covers the finding-10
+// fix: the OIDC callback peeks the pending row's flow kind before
+// consuming the state via takePending. Both kinds round-trip; an
+// unknown state returns FlowKindUnknown without mutating the map.
+func TestPeekPendingFlow_ClassifiesWithoutConsuming(t *testing.T) {
+	stub := newOIDCStub(t, "herold-client")
+	fs := newFakeStore(t)
+	ctx := context.Background()
+	p, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("insert principal: %v", err)
+	}
+	rp := directoryoidc.New(fs.Meta(), slog.New(slog.NewTextHandler(io.Discard, nil)), &http.Client{Timeout: 5 * time.Second}, clock.NewReal())
+	if _, err := rp.AddProvider(ctx, directoryoidc.ProviderConfig{
+		Name:        "test",
+		IssuerURL:   stub.issuer,
+		ClientID:    "herold-client",
+		RedirectURL: "http://localhost/cb",
+	}); err != nil {
+		t.Fatalf("add provider: %v", err)
+	}
+	// Link branch.
+	stub.subject = "ext-sub-1"
+	_, linkState, err := rp.BeginLink(ctx, p.ID, "test")
+	if err != nil {
+		t.Fatalf("begin link: %v", err)
+	}
+	if got := rp.PeekPendingFlow(linkState); got != directoryoidc.FlowKindLink {
+		t.Fatalf("link peek: got %v want FlowKindLink", got)
+	}
+	// Peek must not consume — calling twice still classifies.
+	if got := rp.PeekPendingFlow(linkState); got != directoryoidc.FlowKindLink {
+		t.Fatalf("link peek (2nd): got %v want FlowKindLink", got)
+	}
+	// Sign-in branch.
+	_, signinState, err := rp.BeginSignIn(ctx, "test")
+	if err != nil {
+		t.Fatalf("begin signin: %v", err)
+	}
+	if got := rp.PeekPendingFlow(signinState); got != directoryoidc.FlowKindSignIn {
+		t.Fatalf("signin peek: got %v want FlowKindSignIn", got)
+	}
+	if got := rp.PeekPendingFlow("nonsense"); got != directoryoidc.FlowKindUnknown {
+		t.Fatalf("unknown peek: got %v want FlowKindUnknown", got)
+	}
+}
+
 // ensure fmt import is used; Go will strip otherwise.
 var _ = fmt.Sprintf

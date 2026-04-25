@@ -86,11 +86,18 @@ func (m *oauthMech) Next(ctx context.Context, resp []byte) ([]byte, bool, error)
 }
 
 func (m *oauthMech) consume(ctx context.Context, msg []byte) ([]byte, bool, error) {
-	token, err := extractBearerToken(msg, m.flavor)
+	parsed, err := parseOAUTHMessage(msg, m.flavor)
 	if err != nil {
 		return nil, false, err
 	}
-	pid, verr := m.tv.VerifyAccessToken(ctx, token)
+	// providerHint sourcing per flavour:
+	//   OAUTHBEARER (RFC 7628 §3.1) advertises host=<hostname> alongside
+	//   auth=Bearer <token>; we use that as the provider hint.
+	//   XOAUTH2 has no host= field in the standard layout, so callers
+	//   that want strict provider routing should expose XOAUTH2 only
+	//   when a single provider is configured. We pass through whatever
+	//   the message carried (host=) if present, otherwise empty.
+	pid, verr := m.tv.VerifyAccessToken(ctx, parsed.host, parsed.token)
 	if verr != nil {
 		// Emit a JSON challenge per RFC 7628 §3.2.2 for OAUTHBEARER;
 		// XOAUTH2 servers typically emit a base64 JSON too but the
@@ -104,28 +111,45 @@ func (m *oauthMech) consume(ctx context.Context, msg []byte) ([]byte, bool, erro
 	return nil, true, nil
 }
 
-// extractBearerToken parses the client's message per the flavour and
-// returns the bearer token.
-func extractBearerToken(msg []byte, flavor oauthFlavor) (string, error) {
+// oauthMessage holds the parsed fields of an OAUTHBEARER / XOAUTH2
+// client message.
+type oauthMessage struct {
+	token string
+	host  string // RFC 7628 host= (provider hint); empty when absent
+}
+
+// parseOAUTHMessage parses the client's message per the flavour and
+// returns the bearer token plus the host advertisement (used as a
+// provider hint by the verifier).
+func parseOAUTHMessage(msg []byte, flavor oauthFlavor) (oauthMessage, error) {
 	if len(msg) > 16*1024 {
-		return "", fmt.Errorf("OAUTH: message too large: %w", ErrInvalidMessage)
+		return oauthMessage{}, fmt.Errorf("OAUTH: message too large: %w", ErrInvalidMessage)
 	}
 	// Fields are ^A-separated. Trailing empty fields are expected.
 	fields := bytes.Split(msg, []byte{0x01})
-	var authField string
+	var (
+		authField string
+		host      string
+	)
 	for _, f := range fields {
-		if bytes.HasPrefix(f, []byte("auth=")) {
+		switch {
+		case bytes.HasPrefix(f, []byte("auth=")):
 			authField = string(f[len("auth="):])
-			break
+		case bytes.HasPrefix(f, []byte("host=")):
+			host = string(f[len("host="):])
 		}
 	}
 	if authField == "" {
-		return "", fmt.Errorf("OAUTH: missing auth= field: %w", ErrInvalidMessage)
+		return oauthMessage{}, fmt.Errorf("OAUTH: missing auth= field: %w", ErrInvalidMessage)
 	}
 	// auth=Bearer <token> (case-insensitive scheme per RFC 6750 §2.1)
 	parts := strings.SplitN(authField, " ", 2)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		return "", fmt.Errorf("OAUTH: bad auth scheme: %w", ErrInvalidMessage)
+		return oauthMessage{}, fmt.Errorf("OAUTH: bad auth scheme: %w", ErrInvalidMessage)
 	}
-	return strings.TrimSpace(parts[1]), nil
+	_ = flavor
+	return oauthMessage{
+		token: strings.TrimSpace(parts[1]),
+		host:  host,
+	}, nil
 }

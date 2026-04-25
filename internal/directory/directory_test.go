@@ -11,8 +11,10 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // newDir builds a Directory wired to a fresh fakestore, a FakeClock
@@ -49,6 +51,10 @@ func (d *deterministicReader) Read(p []byte) (int, error) {
 }
 
 func TestCreateAndAuthenticate(t *testing.T) {
+	observe.RegisterAuthMetrics()
+	beforeOK := testutil.ToFloat64(observe.AuthAttemptsTotal.WithLabelValues("password", "ok"))
+	beforeFail := testutil.ToFloat64(observe.AuthAttemptsTotal.WithLabelValues("password", "fail"))
+
 	ctx := context.Background()
 	dir, _, _ := newDir(t)
 	pid, err := dir.CreatePrincipal(ctx, "Alice@Example.test", "correct-horse-staple")
@@ -72,6 +78,17 @@ func TestCreateAndAuthenticate(t *testing.T) {
 	// Unknown user -> ErrUnauthorized (no enumeration).
 	if _, err := dir.Authenticate(ctx, "bob@example.test", "pw"); !errors.Is(err, directory.ErrUnauthorized) {
 		t.Fatalf("want ErrUnauthorized for unknown user, got %v", err)
+	}
+
+	// Metrics: at least one ok and two fails landed on the password
+	// kind. The labels are bounded — no per-email cardinality.
+	afterOK := testutil.ToFloat64(observe.AuthAttemptsTotal.WithLabelValues("password", "ok"))
+	afterFail := testutil.ToFloat64(observe.AuthAttemptsTotal.WithLabelValues("password", "fail"))
+	if afterOK <= beforeOK {
+		t.Errorf("herold_auth_attempts_total{kind=password,outcome=ok}: before=%v after=%v; want strict increase", beforeOK, afterOK)
+	}
+	if afterFail-beforeFail < 2 {
+		t.Errorf("herold_auth_attempts_total{kind=password,outcome=fail}: delta=%v, want >=2", afterFail-beforeFail)
 	}
 }
 
