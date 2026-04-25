@@ -303,15 +303,3 @@ func TestMessage_Get_TombstoneRendersDeletedAt(t *testing.T) {
 		t.Errorf("deletedAt nil on tombstone: %+v", resp.List[0])
 	}
 }
-
-// parseMsgID parses a stringified message id.
-func parseMsgID(s string) store.ChatMessageID {
-	var n uint64
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			break
-		}
-		n = n*10 + uint64(c-'0')
-	}
-	return store.ChatMessageID(n)
-}

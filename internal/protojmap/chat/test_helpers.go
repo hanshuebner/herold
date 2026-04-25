@@ -8,7 +8,6 @@ package chat
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
@@ -35,10 +34,4 @@ func principalFor(ctx context.Context) (store.Principal, bool) {
 		return v, true
 	}
 	return protojmap.PrincipalFromContext(ctx)
-}
-
-// rawJSON is a tiny helper for tests building method args.
-func rawJSON(v any) json.RawMessage {
-	b, _ := json.Marshal(v)
-	return b
 }

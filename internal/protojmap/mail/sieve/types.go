@@ -1,7 +1,6 @@
 package sieve
 
 import (
-	"encoding/json"
 	"strconv"
 	"time"
 
@@ -50,21 +49,4 @@ type sieveValidationError struct {
 	Line    int    `json:"line"`
 	Column  int    `json:"column"`
 	Message string `json:"message"`
-}
-
-// validationErrorList wraps a slice of sieveValidationError so callers
-// marshal it under the field name JMAP clients expect ("errors").
-type validationErrorList struct {
-	Errors []sieveValidationError `json:"errors"`
-}
-
-// MarshalJSON keeps the encoded shape pinned even when the underlying
-// slice is empty (we still emit `"errors": []` rather than null).
-func (l validationErrorList) MarshalJSON() ([]byte, error) {
-	type alias validationErrorList
-	out := alias(l)
-	if out.Errors == nil {
-		out.Errors = []sieveValidationError{}
-	}
-	return json.Marshal(out)
 }

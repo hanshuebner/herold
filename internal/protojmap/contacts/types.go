@@ -80,18 +80,3 @@ type jmapAddressBook struct {
 	MyRights     abMyRights `json:"myRights"`
 	Color        *string    `json:"color"`
 }
-
-// jmapContact is the wire-form Contact object per the JMAP-Contacts
-// binding draft. The JSContact Card body is merged in at render time
-// (see contact.go renderContact) so the response carries the union of
-// JMAP-projected properties and the JSContact body.
-type jmapContact struct {
-	// ID, AddressBookID, MyRights are the JMAP-projected properties
-	// the binding draft requires alongside the JSContact body.
-	ID            jmapID     `json:"id"`
-	AddressBookID jmapID     `json:"addressBookId"`
-	MyRights      abMyRights `json:"myRights"`
-	// Card is the JSContact Card body inlined. We marshal the Card
-	// struct directly into the parent object via the merge in
-	// renderContact; this struct is here only for typed reads.
-}

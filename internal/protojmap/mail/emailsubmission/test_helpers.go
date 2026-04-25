@@ -25,18 +25,6 @@ func (g getHandler) executeAs(p store.Principal, args json.RawMessage) (any, *pr
 	return g.Execute(contextWithTestPrincipal(context.Background(), p), args)
 }
 
-func (c changesHandler) executeAs(p store.Principal, args json.RawMessage) (any, *protojmap.MethodError) {
-	return c.Execute(contextWithTestPrincipal(context.Background(), p), args)
-}
-
-func (q queryHandler) executeAs(p store.Principal, args json.RawMessage) (any, *protojmap.MethodError) {
-	return q.Execute(contextWithTestPrincipal(context.Background(), p), args)
-}
-
-func (q queryChangesHandler) executeAs(p store.Principal, args json.RawMessage) (any, *protojmap.MethodError) {
-	return q.Execute(contextWithTestPrincipal(context.Background(), p), args)
-}
-
 func (s setHandler) executeAs(p store.Principal, args json.RawMessage) (any, *protojmap.MethodError) {
 	return s.Execute(contextWithTestPrincipal(context.Background(), p), args)
 }

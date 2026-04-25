@@ -26,9 +26,8 @@ func Register(
 	logger *slog.Logger,
 	clk clock.Clock,
 ) {
-	if logger == nil {
-		logger = slog.Default()
-	}
+	_ = logger // EmailSubmission handlers do not log today; parameter kept
+	// for signature parity with sibling Register entry points.
 	if clk == nil {
 		clk = clock.NewReal()
 	}

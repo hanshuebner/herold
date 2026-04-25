@@ -88,16 +88,8 @@ func jmapIDFromPrincipal(id store.PrincipalID) jmapID {
 // datatype follows the convention.
 const rfc3339Layout = "2006-01-02T15:04:05Z07:00"
 
-// rfc3339OrNil returns t formatted as RFC 3339 when t is non-zero, or
-// nil for a JSON-null projection.
-func rfc3339OrNil(t time.Time) any {
-	if t.IsZero() {
-		return nil
-	}
-	return t.UTC().Format(rfc3339Layout)
-}
-
-// rfc3339OrNilFromPtr is the *time.Time companion of rfc3339OrNil.
+// rfc3339OrNilFromPtr returns *t formatted as RFC 3339 when t is
+// non-nil, or nil for a JSON-null projection.
 func rfc3339OrNilFromPtr(t *time.Time) any {
 	if t == nil {
 		return nil

@@ -21,9 +21,8 @@ func Register(
 	logger *slog.Logger,
 	clk clock.Clock,
 ) {
-	if logger == nil {
-		logger = slog.Default()
-	}
+	_ = logger // VacationResponse handlers do not log today; parameter
+	// kept for signature parity with sibling Register entry points.
 	_ = clk
 	_ = sieveInterp // Interpreter is consulted at delivery time, not at JMAP read time.
 	h := &handlerSet{store: st}

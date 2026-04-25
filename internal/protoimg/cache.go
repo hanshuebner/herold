@@ -129,11 +129,3 @@ func (c *imageCache) evictLocked() {
 		c.totalBytes -= int64(len(ce.bytes))
 	}
 }
-
-// len returns the entry count. Test-only; the production path never
-// inspects the cache size.
-func (c *imageCache) len() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.entries)
-}

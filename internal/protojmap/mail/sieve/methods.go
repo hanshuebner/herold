@@ -139,9 +139,7 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		// No script — empty list. If the client asked for specific ids,
 		// surface them as notFound.
 		if req.IDs != nil {
-			for _, id := range *req.IDs {
-				resp.NotFound = append(resp.NotFound, id)
-			}
+			resp.NotFound = append(resp.NotFound, (*req.IDs)...)
 		}
 		return resp, nil
 	}

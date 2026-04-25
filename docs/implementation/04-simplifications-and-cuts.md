@@ -88,8 +88,8 @@ Explicit list of what Herold does differently from Stalwart. Each entry: what, w
 
 ### C17. Groupware (CalDAV/CardDAV/WebDAV)
 - **Stalwart**: yes, first-class.
-- **Herold**: **out of v1.** Operators who want calendar/contacts in v1 run a standalone CalDAV/CardDAV service alongside.
-- **Reversal cost**: moderate, not "new project." `docs/architecture/03-protocol-architecture.md` §JMAP §Capability and account registration and `docs/architecture/05-sync-and-state.md` §Forward-compatibility constraint already commit us to a datatype-agnostic JMAP dispatch + an entity-kind-agnostic change feed — adding `urn:ietf:params:jmap:calendars` / `:contacts` is purely additive. Server-side CalDAV/CardDAV (HTTP wire) would still be net-new code; JMAP-native groupware is the cheaper path.
+- **Herold**: **out of v1; JMAP-native phase-2 only.** Per the rev-4 scope, JMAP for Calendars (REQ-PROTO-54) and JMAP for Contacts (REQ-PROTO-55) are in scope for phase 2 as JMAP datatypes layered on the existing dispatch + change-feed shape. CalDAV/CardDAV/WebDAV remain explicitly out forever per NG3.
+- **Reversal cost**: moderate, not "new project." `docs/architecture/03-protocol-architecture.md` §JMAP §Capability and account registration and `docs/architecture/05-sync-and-state.md` §Forward-compatibility constraint already commit us to a datatype-agnostic JMAP dispatch + an entity-kind-agnostic change feed — adding `urn:ietf:params:jmap:calendars` / `:contacts` is purely additive. Server-side CalDAV/CardDAV (HTTP wire) is not on any roadmap; JMAP-native groupware is the only path.
 
 ### C18. Language: Rust → Go
 - **Stalwart**: Rust.

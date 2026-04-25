@@ -568,7 +568,7 @@ func withBoundedDeadline(parent context.Context, clk clock.Clock, timeout time.D
 // do not surface unbounded model output back to the operator log.
 func truncateForError(s string) string {
 	if len(s) > 200 {
-		return s[:200] + "…"
+		return s[:200] + "..."
 	}
 	return s
 }

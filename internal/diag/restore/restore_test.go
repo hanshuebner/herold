@@ -283,6 +283,104 @@ func TestRestoreBundle_HashMismatch_Aborts(t *testing.T) {
 	}
 }
 
+// TestRestoreBundle_CategorisationConfig_RoundTrip seeds a per-account
+// jmap_categorisation_config row (REQ-FILT-200..221, migration 0009),
+// backs up the source, restores into a fresh target, and asserts the
+// row survives verbatim. Guards against the Wave 2.5 audit gap where
+// the categorisation table was missing from TableNames.
+func TestRestoreBundle_CategorisationConfig_RoundTrip(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src, err := storesqlite.Open(context.Background(), filepath.Join(dir, "src.db"), nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("Open src: %v", err)
+	}
+	defer src.Close()
+	ctx := context.Background()
+
+	if err := src.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("seed domain: %v", err)
+	}
+	p, err := src.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "cat@example.test",
+	})
+	if err != nil {
+		t.Fatalf("seed principal: %v", err)
+	}
+	endpoint := "https://llm.example.test/v1"
+	model := "categoriser-7b"
+	keyEnv := "CATEGORISE_API_KEY"
+	want := store.CategorisationConfig{
+		PrincipalID: p.ID,
+		Prompt:      "you are a custom email categoriser",
+		CategorySet: []store.CategoryDef{
+			{Name: "primary", Description: "Personal correspondence."},
+			{Name: "newsletters", Description: "Bulk newsletters and digests."},
+			{Name: "receipts", Description: "Order confirmations and receipts."},
+		},
+		Endpoint:   &endpoint,
+		Model:      &model,
+		APIKeyEnv:  &keyEnv,
+		TimeoutSec: 8,
+		Enabled:    false,
+	}
+	if err := src.Meta().UpdateCategorisationConfig(ctx, want); err != nil {
+		t.Fatalf("UpdateCategorisationConfig: %v", err)
+	}
+
+	bundle := t.TempDir()
+	m, err := backup.New(backup.Options{Store: src}).CreateBundle(ctx, bundle)
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if got := m.Tables["jmap_categorisation_config"]; got != 1 {
+		t.Fatalf("manifest jmap_categorisation_config = %d, want 1", got)
+	}
+
+	tgt, err := storesqlite.Open(ctx, filepath.Join(dir, "tgt.db"), nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("Open tgt: %v", err)
+	}
+	defer tgt.Close()
+	if _, err := restore.New(restore.Options{Store: tgt}).RestoreBundle(ctx, bundle, restore.ModeFresh); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, err := tgt.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig: %v", err)
+	}
+	if got.PrincipalID != want.PrincipalID {
+		t.Errorf("PrincipalID = %d, want %d", got.PrincipalID, want.PrincipalID)
+	}
+	if got.Prompt != want.Prompt {
+		t.Errorf("Prompt = %q, want %q", got.Prompt, want.Prompt)
+	}
+	if len(got.CategorySet) != len(want.CategorySet) {
+		t.Fatalf("CategorySet len = %d, want %d", len(got.CategorySet), len(want.CategorySet))
+	}
+	for i, c := range want.CategorySet {
+		if got.CategorySet[i] != c {
+			t.Errorf("CategorySet[%d] = %+v, want %+v", i, got.CategorySet[i], c)
+		}
+	}
+	if got.Endpoint == nil || *got.Endpoint != endpoint {
+		t.Errorf("Endpoint = %v, want %q", got.Endpoint, endpoint)
+	}
+	if got.Model == nil || *got.Model != model {
+		t.Errorf("Model = %v, want %q", got.Model, model)
+	}
+	if got.APIKeyEnv == nil || *got.APIKeyEnv != keyEnv {
+		t.Errorf("APIKeyEnv = %v, want %q", got.APIKeyEnv, keyEnv)
+	}
+	if got.TimeoutSec != want.TimeoutSec {
+		t.Errorf("TimeoutSec = %d, want %d", got.TimeoutSec, want.TimeoutSec)
+	}
+	if got.Enabled != want.Enabled {
+		t.Errorf("Enabled = %v, want %v", got.Enabled, want.Enabled)
+	}
+}
+
 // TestRestoreBundle_FakestoreFresh_Restores covers the fakestore
 // adapter path.
 func TestRestoreBundle_FakestoreFresh_Restores(t *testing.T) {

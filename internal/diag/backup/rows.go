@@ -81,6 +81,23 @@ type SieveScriptRow struct {
 	UpdatedAtUs int64  `json:"updated_at_us"`
 }
 
+// CategorisationConfigRow mirrors store.CategorisationConfig and the
+// jmap_categorisation_config table introduced in migration 0009
+// (REQ-FILT-200..221). Endpoint, Model, and APIKeyEnv are nullable in
+// SQL so each can be modelled with a pointer; the categoriser falls
+// back to operator defaults when these are unset.
+type CategorisationConfigRow struct {
+	PrincipalID     int64   `json:"principal_id"`
+	Prompt          string  `json:"prompt"`
+	CategorySetJSON []byte  `json:"category_set_json,omitempty"`
+	EndpointURL     *string `json:"endpoint_url,omitempty"`
+	Model           *string `json:"model,omitempty"`
+	APIKeyEnv       *string `json:"api_key_env,omitempty"`
+	TimeoutSec      int64   `json:"timeout_sec"`
+	Enabled         bool    `json:"enabled"`
+	UpdatedAtUs     int64   `json:"updated_at_us"`
+}
+
 type MailboxRow struct {
 	ID            int64  `json:"id"`
 	PrincipalID   int64  `json:"principal_id"`

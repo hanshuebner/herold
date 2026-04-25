@@ -155,6 +155,8 @@ func rowsForTable(table string) (any, bool) {
 		return &AliasRow{}, true
 	case "sieve_scripts":
 		return &SieveScriptRow{}, true
+	case "jmap_categorisation_config":
+		return &CategorisationConfigRow{}, true
 	case "mailboxes":
 		return &MailboxRow{}, true
 	case "messages":

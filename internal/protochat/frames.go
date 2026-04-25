@@ -3,7 +3,6 @@ package protochat
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 )
 
@@ -193,11 +192,4 @@ func decodeCloseFrame(payload []byte) (closeCode, string) {
 	}
 	code := closeCode(binary.BigEndian.Uint16(payload[:2]))
 	return code, string(payload[2:])
-}
-
-// formatFrameLen is a debug helper exposed for log fields and tests.
-// Keeps the read path free of fmt usage so the hot loop stays
-// allocation-free.
-func formatFrameLen(f frame) string {
-	return fmt.Sprintf("op=%x fin=%v len=%d", f.opcode, f.fin, len(f.payload))
 }

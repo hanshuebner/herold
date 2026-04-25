@@ -18,9 +18,8 @@ func Register(
 	logger *slog.Logger,
 	clk clock.Clock,
 ) *Store {
-	if logger == nil {
-		logger = slog.Default()
-	}
+	_ = logger // Identity handlers do not log today; parameter kept
+	// for signature parity with sibling Register entry points.
 	identityStore := NewStoreWith(st, clk)
 	h := &handlerSet{
 		store:    st,

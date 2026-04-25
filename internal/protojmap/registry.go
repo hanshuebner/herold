@@ -42,7 +42,7 @@ const (
 	// package.
 	CapabilityJMAPContacts CapabilityID = "urn:ietf:params:jmap:contacts"
 	// CapabilityJMAPCalendars is the JMAP Calendars datatype capability
-	// (REQ-PROTO-56 / RFC 8984 JSCalendar + the JMAP-Calendars binding
+	// (REQ-PROTO-54 / RFC 8984 JSCalendar + the JMAP-Calendars binding
 	// draft). Implemented under internal/protojmap/calendars; the
 	// Calendar/* and CalendarEvent/* method families plus the iMIP
 	// intake worker flow through that package.

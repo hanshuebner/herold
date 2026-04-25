@@ -447,7 +447,7 @@ func TestMailbox_Set_AcceptsColor(t *testing.T) {
 		t.Fatalf("Color after update = %v, want #123456", got.Color)
 	}
 	// Clear via explicit null.
-	_, raw = f.invoke(t, "Mailbox/set", map[string]any{
+	_, _ = f.invoke(t, "Mailbox/set", map[string]any{
 		"accountId": protojmap.AccountIDForPrincipal(f.pid),
 		"update": map[string]any{
 			id: map[string]any{"color": nil},

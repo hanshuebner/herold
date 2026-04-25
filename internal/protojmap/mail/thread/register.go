@@ -18,9 +18,8 @@ func Register(
 	logger *slog.Logger,
 	clk clock.Clock,
 ) {
-	if logger == nil {
-		logger = slog.Default()
-	}
+	_ = logger // Thread handlers do not log today; parameter kept for
+	// signature parity with sibling Register entry points.
 	_ = clk // unused; signature parity with sibling Registers
 	h := &handlerSet{store: st}
 	reg.Register(protojmap.CapabilityMail, getHandler{h: h})

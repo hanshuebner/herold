@@ -60,6 +60,9 @@ var TableNames = []string{
 	"api_keys",
 	"aliases",
 	"sieve_scripts",
+	// Phase 2 LLM categorisation (REQ-FILT-200..221, migration 0009).
+	// Per-principal singleton row; principals already populated above.
+	"jmap_categorisation_config",
 	"mailboxes",
 	"messages",
 	"mailbox_acl",

@@ -16,9 +16,8 @@ func Register(
 	logger *slog.Logger,
 	clk clock.Clock,
 ) {
-	if logger == nil {
-		logger = slog.Default()
-	}
+	_ = logger // SearchSnippet handler does not log today; parameter kept
+	// for signature parity with sibling Register entry points.
 	_ = clk
 	h := &handlerSet{store: st}
 	reg.Register(protojmap.CapabilityMail, getHandler{h: h})

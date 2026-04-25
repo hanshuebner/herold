@@ -214,6 +214,34 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "jmap_categorisation_config":
+		return enumerate(ctx, s.tx,
+			`SELECT principal_id, prompt, category_set_json, endpoint_url, model,
+			        api_key_env, timeout_sec, enabled, updated_at_us
+			   FROM jmap_categorisation_config ORDER BY principal_id`,
+			func(rs *sql.Rows) (any, error) {
+				var r CategorisationConfigRow
+				var endpoint, model, apiKey sql.NullString
+				var enabled int64
+				if err := rs.Scan(&r.PrincipalID, &r.Prompt, &r.CategorySetJSON,
+					&endpoint, &model, &apiKey, &r.TimeoutSec, &enabled, &r.UpdatedAtUs); err != nil {
+					return nil, err
+				}
+				if endpoint.Valid {
+					v := endpoint.String
+					r.EndpointURL = &v
+				}
+				if model.Valid {
+					v := model.String
+					r.Model = &v
+				}
+				if apiKey.Valid {
+					v := apiKey.String
+					r.APIKeyEnv = &v
+				}
+				r.Enabled = enabled != 0
+				return &r, nil
+			}, fn)
 	case "mailboxes":
 		return enumerate(ctx, s.tx,
 			`SELECT id, principal_id, parent_id, name, attributes, uidvalidity,
@@ -814,6 +842,25 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		_, err := s.tx.ExecContext(ctx,
 			`INSERT INTO sieve_scripts (principal_id, script, updated_at_us) VALUES (?, ?, ?)`,
 			r.PrincipalID, r.Script, r.UpdatedAtUs)
+		return err
+	case "jmap_categorisation_config":
+		r := row.(*CategorisationConfigRow)
+		var endpoint, model, apiKey any
+		if r.EndpointURL != nil {
+			endpoint = *r.EndpointURL
+		}
+		if r.Model != nil {
+			model = *r.Model
+		}
+		if r.APIKeyEnv != nil {
+			apiKey = *r.APIKeyEnv
+		}
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO jmap_categorisation_config (principal_id, prompt, category_set_json,
+			   endpoint_url, model, api_key_env, timeout_sec, enabled, updated_at_us)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.PrincipalID, r.Prompt, r.CategorySetJSON,
+			endpoint, model, apiKey, r.TimeoutSec, boolToInt(r.Enabled), r.UpdatedAtUs)
 		return err
 	case "mailboxes":
 		r := row.(*MailboxRow)

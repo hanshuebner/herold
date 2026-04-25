@@ -51,15 +51,6 @@ func newHandlers(t *testing.T) (*handlerSet, *fakestore.Store, store.Principal) 
 	}, st, p
 }
 
-// runWithPrincipal invokes f under a context whose Value lookup
-// returns p when asked through the handlerSet's helper. Each handler
-// calls h.principal(ctx) (defined in helpers.go) to obtain the
-// authenticated principal; the test seam intercepts that lookup
-// without depending on protojmap's private context key.
-func runWithPrincipal(p store.Principal, f func(ctx context.Context) (any, error)) (any, error) {
-	return f(contextWithTestPrincipal(context.Background(), p))
-}
-
 func TestIdentity_Get_DefaultIdentityIsSynthesized(t *testing.T) {
 	h, _, p := newHandlers(t)
 	args, _ := json.Marshal(map[string]any{})

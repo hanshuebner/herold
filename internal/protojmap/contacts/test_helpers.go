@@ -8,9 +8,7 @@ package contacts
 
 import (
 	"context"
-	"encoding/json"
 
-	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -23,22 +21,4 @@ type testPrincipalKey struct{}
 // own _test.go files.
 func ContextWithTestPrincipal(ctx context.Context, p store.Principal) context.Context {
 	return context.WithValue(ctx, testPrincipalKey{}, p)
-}
-
-// principalFor returns the principal attached to ctx, falling back to
-// the standard protojmap context lookup. Used by handlers when they
-// run under the test fixture; production traffic flows through the
-// dispatcher's auth middleware which uses
-// protojmap.PrincipalFromContext directly.
-func principalFor(ctx context.Context) (store.Principal, bool) {
-	if v, ok := ctx.Value(testPrincipalKey{}).(store.Principal); ok {
-		return v, true
-	}
-	return protojmap.PrincipalFromContext(ctx)
-}
-
-// rawJSON is a tiny helper for tests building method args.
-func rawJSON(v any) json.RawMessage {
-	b, _ := json.Marshal(v)
-	return b
 }
