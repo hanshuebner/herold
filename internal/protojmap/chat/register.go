@@ -1,12 +1,33 @@
 package chat
 
 import (
+	"context"
 	"log/slog"
+	"sync"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// FTS is the chat-side projection of the storefts.Index surface used by
+// Message/query (REQ-CHAT-80..82). The interface is narrow on purpose:
+// the chat handler only needs the membership-scoped chat-message
+// search; pulling in the full storefts.Index would couple the chat
+// JMAP package to the email-side mapping for no callable benefit.
+//
+// Production wires storefts.Index here; tests can pass a fake
+// implementation, and a nil value triggers the in-process substring
+// fallback in Message/query so test fixtures without an index keep
+// working (with a one-time warn log).
+type FTS interface {
+	SearchChatMessages(
+		ctx context.Context,
+		query string,
+		conversationIDs []store.ConversationID,
+		limit int,
+	) ([]store.ChatMessageID, error)
+}
 
 // handlerSet bundles the dependencies the per-method handlers reach
 // for. One instance is constructed by Register and wrapped by each
@@ -16,6 +37,15 @@ type handlerSet struct {
 	logger *slog.Logger
 	clk    clock.Clock
 	limits AccountLimits
+
+	// fts is the membership-scoped chat search backend. Nil when the
+	// caller did not wire a real index — the Message/query path then
+	// falls back to a substring scan and warn-logs once so the
+	// misconfiguration is visible in operator logs.
+	fts FTS
+	// ftsFallbackWarnOnce guards the one-time warn-log emitted when
+	// Message/query takes the substring fallback path.
+	ftsFallbackWarnOnce sync.Once
 }
 
 // AccountLimits is the per-account capability descriptor body. Defaults
@@ -63,6 +93,11 @@ func DefaultLimits() AccountLimits {
 // (REQ-CHAT-01..06). It also installs the per-account capability
 // descriptor advertising the chat capacity envelope. Called from the
 // StartServer boot path alongside the other JMAP datatype Registers.
+//
+// The FTS index is not wired here; callers that have one available
+// (admin/server.go on the production path) use RegisterWithFTS instead.
+// Without an FTS index the Message/query handler falls back to an
+// in-process substring scan and warn-logs once.
 func Register(reg *protojmap.CapabilityRegistry, st store.Store, logger *slog.Logger, clk clock.Clock) {
 	RegisterWithLimits(reg, st, logger, clk, DefaultLimits())
 }
@@ -76,13 +111,28 @@ func RegisterWithLimits(
 	clk clock.Clock,
 	limits AccountLimits,
 ) {
+	RegisterWithFTS(reg, st, nil, logger, clk, limits)
+}
+
+// RegisterWithFTS is RegisterWithLimits with an explicit FTS backend
+// (Wave 2.9.6 Track D). Pass a nil fts to fall back to the in-process
+// substring scan; the handler emits a one-time warn log so the
+// misconfiguration is visible to operators.
+func RegisterWithFTS(
+	reg *protojmap.CapabilityRegistry,
+	st store.Store,
+	fts FTS,
+	logger *slog.Logger,
+	clk clock.Clock,
+	limits AccountLimits,
+) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if clk == nil {
 		clk = clock.NewReal()
 	}
-	h := &handlerSet{store: st, logger: logger, clk: clk, limits: limits}
+	h := &handlerSet{store: st, logger: logger, clk: clk, limits: limits, fts: fts}
 
 	reg.Register(protojmap.CapabilityJMAPChat, &convGetHandler{h: h})
 	reg.Register(protojmap.CapabilityJMAPChat, &convChangesHandler{h: h})
@@ -121,14 +171,10 @@ type chatAccountCapability struct {
 
 func (c chatAccountCapability) AccountCapability() any { return c.limits }
 
-// FTS coordination note (REQ-CHAT-80..82): the existing FTS worker
-// drives off ReadChangeFeedForFTS and only acts on EntityKindEmail
-// today; chat-message indexing requires the worker to also recognise
-// EntityKindChatMessage and call FTS.IndexMessage with the chat row's
-// BodyText. Track A/parent reconcile that small extension at commit
-// time. See doc.go for the architecture spec link.
-//
-// TODO(2.8-coord): wire EntityKindChatMessage into the FTS worker so
-// Message/query's text search returns hits without a separate
-// in-process scan; until then, Message/query falls back to a plain
-// substring filter on BodyText (see message.go).
+// FTS wired in Wave 2.9.6 Track D (REQ-CHAT-80..82): the FTS worker
+// (internal/storefts/worker.go) recognises EntityKindChatMessage on
+// ReadChangeFeedForFTS and indexes Message.body.text under a
+// kind="chat_message" discriminator. Message/query routes free-text
+// filters through Index.SearchChatMessages (membership-scoped). The
+// in-process substring scan is retained as a fallback for fixtures
+// that construct the chat handler without an FTS backend.

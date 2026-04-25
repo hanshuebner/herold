@@ -284,7 +284,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// constructor. The two handlers are otherwise independent —
 	// session cookies (UI) and Bearer keys (REST) live in disjoint
 	// header/cookie namespaces, and the URL prefixes do not overlap.
-	adminHandler, suiteSrvs, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, adminServer.Handler())
+	adminHandler, suiteSrvs, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, adminServer.Handler())
 	if err != nil {
 		return err
 	}
@@ -935,8 +935,18 @@ func composeAdminAndUI(
 	oidcRP *directoryoidc.RP,
 	clk clock.Clock,
 	logger *slog.Logger,
+	ftsIndex *storefts.Index,
 	adminHandler http.Handler,
 ) (http.Handler, suiteServers, error) {
+	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
+	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
+	// FTS worker writes to; the chat JMAP handlers, when registered
+	// here, pass it to chat.RegisterWithFTS so Message/query routes
+	// free-text filters through SearchChatMessages. The chat JMAP
+	// surface is not yet mounted on the production HTTP listener
+	// (Phase 2 Wave 2.9 covers WebSocket only); when the JMAP wiring
+	// lands, ftsIndex is already in scope here.
+	_ = ftsIndex
 	var srvs suiteServers
 	if cfg.Server.UI.Enabled != nil && !*cfg.Server.UI.Enabled {
 		return adminHandler, srvs, nil

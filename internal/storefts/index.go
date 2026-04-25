@@ -39,6 +39,39 @@ const (
 	fieldSize           = "size"
 	fieldFlags          = "flags"
 	fieldHasAttachments = "has_attachments"
+
+	// fieldKind is the document-type discriminator (Wave 2.9.6 Track D).
+	// One Bleve index carries both mail emails and chat messages; the
+	// query path sets a hard term filter on this field so an email-side
+	// query never returns a chat document and vice versa.
+	fieldKind = "kind"
+	// fieldConversationID scopes a chat document to its conversation;
+	// SearchChatMessages restricts hits to the caller's memberships via
+	// a disjunction over this field.
+	fieldConversationID = "conversation_id"
+	// fieldSenderPrincipalID stores the chat-message author. Kept as a
+	// stored keyword so future per-author refinements (filter.from) can
+	// route through the index without a metadata round-trip.
+	fieldSenderPrincipalID = "sender_principal_id"
+	// fieldBodyText carries the chat-message plain-text body; mirrors
+	// fieldBody on the email side but kept distinct so the analyzer
+	// configuration can diverge later if needed (REQ-CHAT-81).
+	fieldBodyText = "body_text"
+	// fieldChatMessageID stores the chat-message id so SearchChatMessages
+	// returns ChatMessageIDs without a per-hit store round trip.
+	fieldChatMessageID = "chat_message_id"
+	// fieldCreatedAtUs stores the chat-message creation instant in
+	// microseconds-since-epoch. Reserved for future ordered scans; the
+	// current default sort is FTS relevance.
+	fieldCreatedAtUs = "created_at_us"
+)
+
+// docKind values used in fieldKind. "email" is the existing mail
+// document; "chat_message" is the chat document type added in Wave
+// 2.9.6 Track D.
+const (
+	docKindEmail       = "email"
+	docKindChatMessage = "chat_message"
 )
 
 // defaultQueryLimit caps a Query with q.Limit == 0 (REQ-STORE-64: backends
@@ -158,6 +191,17 @@ func buildMapping() mapping.IndexMapping {
 	doc.AddFieldMappingsAt(fieldFlags, keywordField)
 	doc.AddFieldMappingsAt(fieldHasAttachments, boolField)
 
+	// Wave 2.9.6 Track D: chat-message fields. One Bleve index carries
+	// both mail and chat documents; per-kind queries hard-filter on
+	// fieldKind so a mail SEARCH never sees a chat hit and a chat
+	// SearchChatMessages never sees a mail hit (REQ-CHAT-80..82).
+	doc.AddFieldMappingsAt(fieldKind, storedKeywordField)
+	doc.AddFieldMappingsAt(fieldConversationID, storedKeywordField)
+	doc.AddFieldMappingsAt(fieldSenderPrincipalID, storedKeywordField)
+	doc.AddFieldMappingsAt(fieldChatMessageID, storedKeywordField)
+	doc.AddFieldMappingsAt(fieldBodyText, textField)
+	doc.AddFieldMappingsAt(fieldCreatedAtUs, numField)
+
 	m.AddDocumentMapping("_default", doc)
 	m.DefaultAnalyzer = "standard"
 	return m
@@ -194,6 +238,7 @@ func (i *Index) IndexMessageFull(
 		return err
 	}
 	doc := map[string]interface{}{
+		fieldKind:           docKindEmail,
 		fieldPrincipalID:    strconv.FormatUint(uint64(principalID), 10),
 		fieldMailboxID:      strconv.FormatUint(uint64(msg.MailboxID), 10),
 		fieldUID:            strconv.FormatUint(uint64(msg.UID), 10),
@@ -250,6 +295,153 @@ func (i *Index) Delete(ctx context.Context, id store.MessageID) error {
 	return i.Commit(ctx)
 }
 
+// IndexChatMessage writes (or replaces) the FTS document for a chat
+// message (Wave 2.9.6 Track D, REQ-CHAT-80..82). The document carries
+// the conversation id (for membership-scoped retrieval), the sender
+// principal id, the plain-text body (REQ-CHAT-81 — HTML is too noisy),
+// and the creation instant. System messages and soft-deleted rows are
+// rejected here; the caller (typically the FTS worker) is expected to
+// hand them to RemoveChatMessage instead so a stale doc does not
+// linger.
+func (i *Index) IndexChatMessage(ctx context.Context, msg store.ChatMessage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if msg.IsSystem {
+		// System messages are audit metadata, not user content
+		// (REQ-CHAT-80). Make sure any earlier doc for this id is
+		// removed so a row that was once non-system but became one
+		// (impossible today, defensive) does not linger.
+		return i.RemoveChatMessage(ctx, msg.ID)
+	}
+	if msg.DeletedAt != nil {
+		// Soft-deleted: REQ-CHAT-21 keeps the row for thread offsets
+		// but the body must not be searchable.
+		return i.RemoveChatMessage(ctx, msg.ID)
+	}
+	doc := map[string]interface{}{
+		fieldKind:           docKindChatMessage,
+		fieldChatMessageID:  strconv.FormatUint(uint64(msg.ID), 10),
+		fieldConversationID: strconv.FormatUint(uint64(msg.ConversationID), 10),
+		fieldBodyText:       msg.BodyText,
+		fieldCreatedAtUs:    float64(msg.CreatedAt.UnixMicro()),
+	}
+	if msg.SenderPrincipalID != nil {
+		doc[fieldSenderPrincipalID] = strconv.FormatUint(uint64(*msg.SenderPrincipalID), 10)
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.pending == nil {
+		i.pending = i.idx.NewBatch()
+	}
+	if err := i.pending.Index(chatDocIDFor(msg.ID), doc); err != nil {
+		return fmt.Errorf("storefts: batch.Index chat: %w", err)
+	}
+	return nil
+}
+
+// RemoveChatMessage deletes the chat-message document identified by id.
+// The deletion is accumulated in the pending batch; Commit flushes it.
+// Idempotent: removing a doc that was never indexed (e.g. a system
+// message reaching the worker via the change feed) is a no-op.
+func (i *Index) RemoveChatMessage(ctx context.Context, id store.ChatMessageID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.pending == nil {
+		i.pending = i.idx.NewBatch()
+	}
+	i.pending.Delete(chatDocIDFor(id))
+	return nil
+}
+
+// SearchChatMessages returns chat-message ids whose plain-text body
+// matches q, scoped to the supplied conversation id set (REQ-CHAT-82
+// membership scope). The caller passes the conversations the requesting
+// principal is a member of; the index restricts hits to that set via a
+// disjunction on conversation_id so a non-member cannot search-hit a
+// conversation they are not in. An empty conversationIDs slice returns
+// no hits — the membership check happens in the caller.
+//
+// Hits are returned in descending relevance (Bleve Score) order, capped
+// at limit (defaultQueryLimit when limit <= 0, hardQueryLimit ceiling).
+func (i *Index) SearchChatMessages(
+	ctx context.Context,
+	q string,
+	conversationIDs []store.ConversationID,
+	limit int,
+) ([]store.ChatMessageID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(q) == "" {
+		return nil, nil
+	}
+	if len(conversationIDs) == 0 {
+		// No memberships -> no hits. Do not even build a search; an
+		// empty disjunction would match every chat doc which is the
+		// opposite of what membership scoping demands.
+		return nil, nil
+	}
+	queryStart := time.Now()
+	defer func() {
+		if observe.FTSQueryDuration != nil {
+			observe.FTSQueryDuration.Observe(time.Since(queryStart).Seconds())
+		}
+	}()
+
+	kindScope := bleve.NewTermQuery(docKindChatMessage)
+	kindScope.SetField(fieldKind)
+
+	convDisjuncts := make([]query.Query, 0, len(conversationIDs))
+	for _, cid := range conversationIDs {
+		tq := bleve.NewTermQuery(strconv.FormatUint(uint64(cid), 10))
+		tq.SetField(fieldConversationID)
+		convDisjuncts = append(convDisjuncts, tq)
+	}
+	convScope := bleve.NewDisjunctionQuery(convDisjuncts...)
+
+	// Free-text match against the body. We use a match query (not a
+	// query-string query) so the caller's input is treated as opaque
+	// terms rather than a Bleve mini-language; typing a `:` or `^` in a
+	// chat search must not silently change the search semantics.
+	bodyMatch := bleve.NewMatchQuery(q)
+	bodyMatch.SetField(fieldBodyText)
+
+	bq := bleve.NewConjunctionQuery(kindScope, convScope, bodyMatch)
+
+	if limit <= 0 {
+		limit = defaultQueryLimit
+	}
+	if limit > hardQueryLimit {
+		limit = hardQueryLimit
+	}
+
+	req := bleve.NewSearchRequest(bq)
+	req.Size = limit
+	req.Fields = []string{fieldChatMessageID}
+
+	if err := i.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	res, err := i.idx.SearchInContext(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("storefts: search chat: %w", err)
+	}
+	out := make([]store.ChatMessageID, 0, len(res.Hits))
+	for _, h := range res.Hits {
+		id, ok := parseStoredUint(h.Fields[fieldChatMessageID])
+		if !ok {
+			continue
+		}
+		out = append(out, store.ChatMessageID(id))
+	}
+	return out, nil
+}
+
 // Commit flushes the pending batch to the index backend. Safe to call on
 // an empty batch (returns nil). Callers trigger it on size OR time per
 // the spike recommendations.
@@ -300,11 +492,15 @@ func (i *Index) Query(
 			observe.FTSQueryDuration.Observe(time.Since(queryStart).Seconds())
 		}
 	}()
-	// Principal scope: mandatory.
+	// Principal scope: mandatory. Wave 2.9.6 Track D: also restrict
+	// the document kind to email so a mail SEARCH cannot accidentally
+	// match a chat document indexed in the same Bleve index.
 	principalScope := bleve.NewTermQuery(strconv.FormatUint(uint64(principalID), 10))
 	principalScope.SetField(fieldPrincipalID)
+	kindScope := bleve.NewTermQuery(docKindEmail)
+	kindScope.SetField(fieldKind)
 
-	conjuncts := []query.Query{principalScope}
+	conjuncts := []query.Query{kindScope, principalScope}
 	if q.MailboxID != 0 {
 		mb := bleve.NewTermQuery(strconv.FormatUint(uint64(q.MailboxID), 10))
 		mb.SetField(fieldMailboxID)
@@ -397,6 +593,16 @@ func (i *Index) Close() error {
 // diagnostics.
 func docIDFor(id store.MessageID) string {
 	return strconv.FormatUint(uint64(id), 10)
+}
+
+// chatDocIDFor renders a ChatMessageID into the Bleve document ID form
+// for chat-message documents. The "chat_message:" prefix keeps the chat
+// namespace disjoint from email IDs (which use bare decimal strings)
+// even though the integer values may overlap; without the prefix a
+// chat-message id 42 and an email id 42 would collide on the same doc
+// id (Wave 2.9.6 Track D).
+func chatDocIDFor(id store.ChatMessageID) string {
+	return "chat_message:" + strconv.FormatUint(uint64(id), 10)
 }
 
 // parseStoredUint extracts a stored keyword field's value as a uint64.

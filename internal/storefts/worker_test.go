@@ -400,3 +400,142 @@ func pct(xs []time.Duration, p float64) time.Duration {
 	idx := int(float64(len(sorted)-1) * p)
 	return sorted[idx]
 }
+
+// -- Chat-message worker tests (Wave 2.9.6 Track D) --------------------
+
+// seedChatConversation seeds the harness with a conversation owned by
+// the supplied principal and returns its id. The fakestore appends an
+// FTSChange row when InsertChatMessage runs, which is what the worker
+// reads through ReadChangeFeedForFTS.
+func (h *workerHarness) seedChatConversation(
+	t *testing.T,
+	owner store.PrincipalID,
+	name string,
+) store.ConversationID {
+	t.Helper()
+	cid, err := h.store.Meta().InsertChatConversation(h.ctx, store.ChatConversation{
+		Kind:                 store.ChatConversationKindSpace,
+		Name:                 name,
+		CreatedByPrincipalID: owner,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	if _, err := h.store.Meta().InsertChatMembership(h.ctx, store.ChatMembership{
+		ConversationID: cid,
+		PrincipalID:    owner,
+		Role:           store.ChatRoleOwner,
+	}); err != nil {
+		t.Fatalf("InsertChatMembership: %v", err)
+	}
+	return cid
+}
+
+func (h *workerHarness) sendChatMessage(
+	t *testing.T,
+	cid store.ConversationID,
+	sender store.PrincipalID,
+	text string,
+) store.ChatMessageID {
+	t.Helper()
+	id, err := h.store.Meta().InsertChatMessage(h.ctx, store.ChatMessage{
+		ConversationID:    cid,
+		SenderPrincipalID: &sender,
+		BodyText:          text,
+		BodyFormat:        store.ChatBodyFormatText,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMessage: %v", err)
+	}
+	return id
+}
+
+// TestWorker_IndexesChatMessages drives chat messages through the
+// FTS worker end-to-end and asserts that SearchChatMessages returns
+// the matching ids, that membership-scoping holds, and that
+// soft-deleted / hard-deleted rows drop out of the index.
+func TestWorker_IndexesChatMessages(t *testing.T) {
+	h := newWorkerHarness(t, storefts.WorkerOptions{})
+	alice, _ := h.seedPrincipalAndMailbox(t, "alice@example.test")
+	bob, _ := h.seedPrincipalAndMailbox(t, "bob@example.test")
+
+	convA := h.seedChatConversation(t, alice.ID, "team-A")
+	convB := h.seedChatConversation(t, bob.ID, "team-B")
+
+	mAlice := h.sendChatMessage(t, convA, alice.ID, "the quarterly report is overdue")
+	mBob := h.sendChatMessage(t, convA, alice.ID, "i will draft the report tonight")
+	_ = h.sendChatMessage(t, convB, bob.ID, "lunch tomorrow at noon")
+
+	// System message (in conv A): the worker must NOT index it.
+	sysID, err := h.store.Meta().InsertChatMessage(h.ctx, store.ChatMessage{
+		ConversationID: convA,
+		IsSystem:       true,
+		BodyText:       "system: alice joined the space",
+		BodyFormat:     store.ChatBodyFormatText,
+		MetadataJSON:   []byte(`{"event":"join"}`),
+	})
+	if err != nil {
+		t.Fatalf("system message insert: %v", err)
+	}
+
+	h.flushOnce(t)
+
+	// Searching as a member of conv A finds both A messages but not
+	// the conv B message and not the system row.
+	hits, err := h.idx.SearchChatMessages(h.ctx, "report",
+		[]store.ConversationID{convA}, 0)
+	if err != nil {
+		t.Fatalf("SearchChatMessages: %v", err)
+	}
+	got := map[store.ChatMessageID]bool{}
+	for _, id := range hits {
+		got[id] = true
+	}
+	if !got[mAlice] || !got[mBob] {
+		t.Fatalf("missing chat hits: want %d and %d, got %+v", mAlice, mBob, hits)
+	}
+	if got[sysID] {
+		t.Fatalf("system message must not be indexed: %+v", hits)
+	}
+
+	// Searching as a non-member of conv A (i.e. only conv B in the
+	// allowed set) sees no hits even when the term matches.
+	hits, err = h.idx.SearchChatMessages(h.ctx, "report",
+		[]store.ConversationID{convB}, 0)
+	if err != nil {
+		t.Fatalf("SearchChatMessages convB: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("non-member of A leaked chat hits: %+v", hits)
+	}
+
+	// Soft-delete one row and confirm it drops from the index.
+	if err := h.store.Meta().SoftDeleteChatMessage(h.ctx, mAlice); err != nil {
+		t.Fatalf("SoftDeleteChatMessage: %v", err)
+	}
+	h.flushOnce(t)
+	hits, err = h.idx.SearchChatMessages(h.ctx, "report",
+		[]store.ConversationID{convA}, 0)
+	if err != nil {
+		t.Fatalf("SearchChatMessages after soft-delete: %v", err)
+	}
+	for _, id := range hits {
+		if id == mAlice {
+			t.Fatalf("soft-deleted message %d still in hits: %+v", mAlice, hits)
+		}
+	}
+
+	// Hard-delete the second row (chat-retention sweeper path).
+	if err := h.store.Meta().HardDeleteChatMessage(h.ctx, mBob); err != nil {
+		t.Fatalf("HardDeleteChatMessage: %v", err)
+	}
+	h.flushOnce(t)
+	hits, err = h.idx.SearchChatMessages(h.ctx, "report",
+		[]store.ConversationID{convA}, 0)
+	if err != nil {
+		t.Fatalf("SearchChatMessages after hard-delete: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("hard-deleted hit still present: %+v", hits)
+	}
+}

@@ -465,6 +465,14 @@ func (m *metaFace) InsertChatMessage(ctx context.Context, msg store.ChatMessage)
 		Op:             store.ChangeOpCreated,
 		ProducedAt:     now,
 	})
+	s.appendFTSChangeLocked(store.FTSChange{
+		PrincipalID:    conv.CreatedByPrincipalID,
+		Kind:           store.EntityKindChatMessage,
+		EntityID:       uint64(msg.ID),
+		ParentEntityID: uint64(msg.ConversationID),
+		Op:             store.ChangeOpCreated,
+		ProducedAt:     now,
+	})
 	return msg.ID, nil
 }
 
@@ -586,6 +594,14 @@ func (m *metaFace) UpdateChatMessage(ctx context.Context, msg store.ChatMessage)
 		Op:             store.ChangeOpUpdated,
 		ProducedAt:     now,
 	})
+	s.appendFTSChangeLocked(store.FTSChange{
+		PrincipalID:    conv.CreatedByPrincipalID,
+		Kind:           store.EntityKindChatMessage,
+		EntityID:       uint64(cur.ID),
+		ParentEntityID: uint64(cur.ConversationID),
+		Op:             store.ChangeOpUpdated,
+		ProducedAt:     now,
+	})
 	return nil
 }
 
@@ -623,6 +639,14 @@ func (m *metaFace) SoftDeleteChatMessage(ctx context.Context, id store.ChatMessa
 	conv.ModSeq++
 	s.phase2.chatConversations[cur.ConversationID] = conv
 	s.appendStateChangeLocked(store.StateChange{
+		PrincipalID:    conv.CreatedByPrincipalID,
+		Kind:           store.EntityKindChatMessage,
+		EntityID:       uint64(id),
+		ParentEntityID: uint64(cur.ConversationID),
+		Op:             store.ChangeOpUpdated,
+		ProducedAt:     now,
+	})
+	s.appendFTSChangeLocked(store.FTSChange{
 		PrincipalID:    conv.CreatedByPrincipalID,
 		Kind:           store.EntityKindChatMessage,
 		EntityID:       uint64(id),
@@ -955,6 +979,14 @@ func (m *metaFace) HardDeleteChatMessage(ctx context.Context, id store.ChatMessa
 	conv.ModSeq++
 	s.phase2.chatConversations[cur.ConversationID] = conv
 	s.appendStateChangeLocked(store.StateChange{
+		PrincipalID:    conv.CreatedByPrincipalID,
+		Kind:           store.EntityKindChatMessage,
+		EntityID:       uint64(id),
+		ParentEntityID: uint64(cur.ConversationID),
+		Op:             store.ChangeOpDestroyed,
+		ProducedAt:     now,
+	})
+	s.appendFTSChangeLocked(store.FTSChange{
 		PrincipalID:    conv.CreatedByPrincipalID,
 		Kind:           store.EntityKindChatMessage,
 		EntityID:       uint64(id),

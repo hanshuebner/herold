@@ -284,11 +284,25 @@ func (w *Worker) processBatch(ctx context.Context, changes []store.FTSChange) er
 // EntityKind (not a typed column), so future kinds added per
 // docs/architecture/05-sync-and-state.md §Forward-compatibility flow
 // past this worker untouched.
+//
+// Wave 2.9.6 Track D adds an EntityKindChatMessage path: chat messages
+// are indexed alongside emails in the same Bleve index with a
+// kind="chat_message" discriminator, so SearchChatMessages stays
+// disjoint from the mail Query path while the worker keeps a single
+// cursor.
 func (w *Worker) handleChange(ctx context.Context, c store.FTSChange) error {
-	if c.Kind != store.EntityKindEmail {
+	switch c.Kind {
+	case store.EntityKindEmail:
+		return w.handleEmailChange(ctx, c)
+	case store.EntityKindChatMessage:
+		return w.handleChatMessageChange(ctx, c)
+	default:
 		// Mailbox- and other-kind events do not map to FTS docs.
 		return nil
 	}
+}
+
+func (w *Worker) handleEmailChange(ctx context.Context, c store.FTSChange) error {
 	messageID := store.MessageID(c.EntityID)
 	switch c.Op {
 	case store.ChangeOpCreated, store.ChangeOpUpdated:
@@ -311,6 +325,44 @@ func (w *Worker) handleChange(ctx context.Context, c store.FTSChange) error {
 		return w.idx.RemoveMessage(ctx, messageID)
 	default:
 		// Unknown op — leave the index unchanged.
+		return nil
+	}
+}
+
+// handleChatMessageChange routes a chat-message FTS change into the
+// chat-document side of the index (REQ-CHAT-80..82). On created/updated
+// the worker reads the chat row and indexes its plain-text body; on
+// destroyed (hard-delete via chat-retention sweeper) and on
+// soft-deleted-state-change-as-update the doc is removed. System
+// messages (IsSystem == true) are removed-not-indexed by IndexChatMessage
+// itself so audit metadata never enters the search corpus.
+//
+// Hard-delete: the per-backend HardDeleteChatMessage appends an
+// (EntityKindChatMessage, ChangeOpDestroyed) state-change row in the
+// same tx (see internal/storesqlite/metadata_chat.go and the pg
+// counterpart), which the FTS feed surfaces via state_changes; this
+// worker then removes the doc here. No follow-up reconciliation sweep
+// is required.
+func (w *Worker) handleChatMessageChange(ctx context.Context, c store.FTSChange) error {
+	id := store.ChatMessageID(c.EntityID)
+	switch c.Op {
+	case store.ChangeOpCreated, store.ChangeOpUpdated:
+		msg, err := w.store.Meta().GetChatMessage(ctx, id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				// Hard-deleted between the change append and this
+				// read; remove the doc to keep the index in sync.
+				return w.idx.RemoveChatMessage(ctx, id)
+			}
+			return fmt.Errorf("get chat message %d: %w", id, err)
+		}
+		// IndexChatMessage is responsible for routing IsSystem and
+		// soft-deleted rows to RemoveChatMessage, so the worker does
+		// not duplicate that policy here.
+		return w.idx.IndexChatMessage(ctx, msg)
+	case store.ChangeOpDestroyed:
+		return w.idx.RemoveChatMessage(ctx, id)
+	default:
 		return nil
 	}
 }

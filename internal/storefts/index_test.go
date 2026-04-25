@@ -365,3 +365,175 @@ func TestIndexCorpus(t *testing.T) {
 		t.Logf("no hits for 'report'; corpus may have shifted — not fatal")
 	}
 }
+
+// -- Chat-message tests (Wave 2.9.6 Track D) --------------------------
+
+// seedChatIndex inserts a deterministic mix of chat messages into idx
+// across two conversations and one principal-set so the search tests
+// can assert membership-scoped, kind-discriminated retrieval. Returns
+// the conversation ids and the indexed message ids in insertion order.
+func seedChatIndex(t *testing.T, idx *storefts.Index) (
+	store.ConversationID, store.ConversationID, []store.ChatMessageID,
+) {
+	t.Helper()
+	ctx := context.Background()
+
+	convA := store.ConversationID(101)
+	convB := store.ConversationID(202)
+	alice := store.PrincipalID(1)
+	bob := store.PrincipalID(2)
+
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+
+	rows := []store.ChatMessage{
+		{ID: 1, ConversationID: convA, SenderPrincipalID: &alice,
+			BodyText: "the quarterly report is overdue", BodyFormat: store.ChatBodyFormatText,
+			CreatedAt: now},
+		{ID: 2, ConversationID: convA, SenderPrincipalID: &bob,
+			BodyText: "i will read the report tonight", BodyFormat: store.ChatBodyFormatText,
+			CreatedAt: now.Add(time.Minute)},
+		{ID: 3, ConversationID: convB, SenderPrincipalID: &alice,
+			BodyText: "lunch tomorrow at noon", BodyFormat: store.ChatBodyFormatText,
+			CreatedAt: now.Add(2 * time.Minute)},
+		// System message: must NOT be indexed even when handed to
+		// IndexChatMessage (REQ-CHAT-80).
+		{ID: 4, ConversationID: convA, IsSystem: true,
+			BodyText:   "alice joined the space",
+			BodyFormat: store.ChatBodyFormatText,
+			CreatedAt:  now.Add(3 * time.Minute)},
+	}
+	ids := make([]store.ChatMessageID, 0, len(rows))
+	for _, m := range rows {
+		if err := idx.IndexChatMessage(ctx, m); err != nil {
+			t.Fatalf("index chat message %d: %v", m.ID, err)
+		}
+		ids = append(ids, m.ID)
+	}
+	if err := idx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	return convA, convB, ids
+}
+
+func TestIndexQuery_ChatMessage_BodyTerm(t *testing.T) {
+	idx := newIndex(t)
+	convA, _, _ := seedChatIndex(t, idx)
+
+	hits, err := idx.SearchChatMessages(context.Background(),
+		"report", []store.ConversationID{convA}, 0)
+	if err != nil {
+		t.Fatalf("SearchChatMessages: %v", err)
+	}
+	got := map[store.ChatMessageID]bool{}
+	for _, id := range hits {
+		got[id] = true
+	}
+	for _, want := range []store.ChatMessageID{1, 2} {
+		if !got[want] {
+			t.Errorf("missing chat message %d in hits: %+v", want, hits)
+		}
+	}
+	if got[3] {
+		t.Errorf("conversation B leaked into the result set: %+v", hits)
+	}
+	if got[4] {
+		t.Errorf("system message must not be indexed: %+v", hits)
+	}
+}
+
+func TestIndexQuery_ChatMessage_MembershipScope(t *testing.T) {
+	idx := newIndex(t)
+	convA, convB, _ := seedChatIndex(t, idx)
+
+	// Caller is a member of B only — they must not see hits in A
+	// even though A's text matches.
+	hits, err := idx.SearchChatMessages(context.Background(),
+		"report", []store.ConversationID{convB}, 0)
+	if err != nil {
+		t.Fatalf("SearchChatMessages: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("non-member of A should see zero hits, got %+v", hits)
+	}
+
+	// And a caller in conversation A finds the matches there.
+	hits, err = idx.SearchChatMessages(context.Background(),
+		"report", []store.ConversationID{convA}, 0)
+	if err != nil {
+		t.Fatalf("SearchChatMessages: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatalf("member of A should see hits for 'report', got %+v", hits)
+	}
+
+	// Empty conversation set short-circuits to no hits (REQ-CHAT-82).
+	hits, err = idx.SearchChatMessages(context.Background(), "report", nil, 0)
+	if err != nil {
+		t.Fatalf("SearchChatMessages: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("empty conversation set must return no hits, got %+v", hits)
+	}
+}
+
+func TestIndexQuery_ChatMessage_SoftDeletedExcluded(t *testing.T) {
+	idx := newIndex(t)
+	convA, _, _ := seedChatIndex(t, idx)
+	ctx := context.Background()
+
+	// Mark message 2 as soft-deleted and re-index it. The handler in
+	// production paths through IndexChatMessage on every update so a
+	// deleted_at transition removes the doc.
+	deletedAt := time.Date(2026, 4, 25, 13, 0, 0, 0, time.UTC)
+	bob := store.PrincipalID(2)
+	if err := idx.IndexChatMessage(ctx, store.ChatMessage{
+		ID: 2, ConversationID: convA, SenderPrincipalID: &bob,
+		BodyText: "i will read the report tonight", BodyFormat: store.ChatBodyFormatText,
+		DeletedAt: &deletedAt,
+	}); err != nil {
+		t.Fatalf("re-index soft-deleted: %v", err)
+	}
+	if err := idx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	hits, err := idx.SearchChatMessages(ctx, "report",
+		[]store.ConversationID{convA}, 0)
+	if err != nil {
+		t.Fatalf("SearchChatMessages: %v", err)
+	}
+	for _, id := range hits {
+		if id == 2 {
+			t.Fatalf("soft-deleted message 2 still in hits: %+v", hits)
+		}
+	}
+}
+
+// TestIndexQuery_ChatMessage_DoesNotPolluteMail asserts that a chat
+// document cannot appear in a mail-side Query result, even when the
+// chat body would have matched the term — the kind discriminator
+// keeps the two corpora disjoint.
+func TestIndexQuery_ChatMessage_DoesNotPolluteMail(t *testing.T) {
+	idx := newIndex(t)
+	convA := store.ConversationID(101)
+	alice := store.PrincipalID(1)
+	if err := idx.IndexChatMessage(context.Background(), store.ChatMessage{
+		ID: 999, ConversationID: convA, SenderPrincipalID: &alice,
+		BodyText:   "invoice for the consulting hours",
+		BodyFormat: store.ChatBodyFormatText,
+		CreatedAt:  time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("index chat: %v", err)
+	}
+	if err := idx.Commit(context.Background()); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	hits, err := idx.Query(context.Background(), alice,
+		store.Query{Text: "invoice"})
+	if err != nil {
+		t.Fatalf("mail Query: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("mail Query leaked a chat hit: %+v", hits)
+	}
+}

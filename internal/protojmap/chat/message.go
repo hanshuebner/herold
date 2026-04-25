@@ -694,6 +694,29 @@ type msgQueryHandler struct{ h *handlerSet }
 
 func (h *msgQueryHandler) Method() string { return "Message/query" }
 
+// Execute services Message/query.
+//
+// Sort and search behaviour (Wave 2.9.6 Track D):
+//
+//   - When filter.text is empty, the existing chronological path runs:
+//     ListChatMessages is filtered server-side by conversationId,
+//     senderPrincipalId, before, and after, and the default sort is
+//     createdAt asc (overrideable via the sort comparator list).
+//   - When filter.text is non-empty, the handler routes through the
+//     FTS index (REQ-CHAT-80..82): SearchChatMessages returns ids in
+//     descending relevance order scoped to the caller's memberships,
+//     each id is round-tripped through GetChatMessage to apply the
+//     remaining filters (before, after, senderPrincipalId), and the
+//     default sort becomes FTS relevance descending. An explicit
+//     comparator list still wins. If the handler was constructed
+//     without an FTS backend, a substring scan over ListChatMessages
+//     stands in and a one-time warn log is emitted; production wires a
+//     real index via RegisterWithFTS.
+//
+// Membership scoping (REQ-CHAT-82, REQ-CHAT-101) is enforced at both
+// layers: the FTS query restricts hits to the caller's conversation
+// ids, and the substring fallback drops rows in non-member
+// conversations before returning.
 func (h *msgQueryHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
 	pid, merr := requirePrincipal(ctx)
 	if merr != nil {
@@ -757,25 +780,74 @@ func (h *msgQueryHandler) Execute(ctx context.Context, args json.RawMessage) (an
 		}
 	}
 
-	rows, err := h.h.store.Meta().ListChatMessages(ctx, filter)
-	if err != nil {
-		return nil, serverFail(err)
-	}
+	hasText := req.Filter != nil && req.Filter.Text != nil && *req.Filter.Text != ""
+	useFTS := hasText && h.h.fts != nil
 
-	matched := make([]store.ChatMessage, 0, len(rows))
-	for _, m := range rows {
-		if _, ok := allowed[m.ConversationID]; !ok {
-			continue
+	var matched []store.ChatMessage
+	var ftsOrder map[store.ChatMessageID]int
+	if useFTS {
+		convIDs := conversationIDsToFilter(filter.ConversationID, allowed)
+		hits, err := h.h.fts.SearchChatMessages(ctx, *req.Filter.Text, convIDs, 0)
+		if err != nil {
+			return nil, serverFail(err)
 		}
-		if req.Filter != nil && req.Filter.Text != nil && *req.Filter.Text != "" {
-			needle := strings.ToLower(*req.Filter.Text)
-			if !strings.Contains(strings.ToLower(m.BodyText), needle) {
+		ftsOrder = make(map[store.ChatMessageID]int, len(hits))
+		matched = make([]store.ChatMessage, 0, len(hits))
+		for rank, id := range hits {
+			m, err := h.h.store.Meta().GetChatMessage(ctx, id)
+			if err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					continue
+				}
+				return nil, serverFail(err)
+			}
+			// Re-check membership: the FTS index is restricted to
+			// the caller's conversations at query time, but a
+			// race against a Membership/set destroy could still
+			// leak a stale hit. Defence in depth (REQ-CHAT-101).
+			if _, ok := allowed[m.ConversationID]; !ok {
 				continue
 			}
+			if m.IsSystem || m.DeletedAt != nil {
+				// IsSystem and soft-deleted rows are excluded from
+				// the index; this branch protects against an in-
+				// flight state change between the search and the
+				// load.
+				continue
+			}
+			if !chatMessageMatchesFilter(m, filter) {
+				continue
+			}
+			ftsOrder[m.ID] = rank
+			matched = append(matched, m)
 		}
-		matched = append(matched, m)
+	} else {
+		if hasText {
+			h.h.ftsFallbackWarnOnce.Do(func() {
+				h.h.logger.Warn("chat FTS not wired; substring fallback in use",
+					"req", "Message/query",
+				)
+			})
+		}
+		rows, err := h.h.store.Meta().ListChatMessages(ctx, filter)
+		if err != nil {
+			return nil, serverFail(err)
+		}
+		matched = make([]store.ChatMessage, 0, len(rows))
+		for _, m := range rows {
+			if _, ok := allowed[m.ConversationID]; !ok {
+				continue
+			}
+			if hasText {
+				needle := strings.ToLower(*req.Filter.Text)
+				if !strings.Contains(strings.ToLower(m.BodyText), needle) {
+					continue
+				}
+			}
+			matched = append(matched, m)
+		}
 	}
-	sortMessages(matched, req.Sort)
+	sortChatQueryResults(matched, req.Sort, useFTS, ftsOrder)
 
 	resp := msgQueryResponse{
 		AccountID:  string(protojmap.AccountIDForPrincipal(pid)),
@@ -830,6 +902,93 @@ func sortMessages(xs []store.ChatMessage, comps []comparator) {
 		}
 		return xs[i].ID < xs[j].ID
 	})
+}
+
+// sortChatQueryResults orders Message/query hits.
+//
+// When the caller supplies an explicit sort comparator list, that list
+// wins regardless of whether FTS produced the candidate set — the JMAP
+// contract is that the sort spec is authoritative.
+//
+// When the comparator list is empty and FTS produced the candidates,
+// the default sort is FTS relevance (descending) — ftsRank carries the
+// rank assigned by SearchChatMessages (lower rank = higher relevance).
+//
+// When the comparator list is empty and the path was the chronological
+// fallback, the default is createdAt asc, matching the pre-Wave-2.9.6
+// behaviour.
+func sortChatQueryResults(
+	xs []store.ChatMessage,
+	comps []comparator,
+	useFTS bool,
+	ftsRank map[store.ChatMessageID]int,
+) {
+	if len(comps) > 0 {
+		sortMessages(xs, comps)
+		return
+	}
+	if useFTS {
+		sort.SliceStable(xs, func(i, j int) bool {
+			ri, oi := ftsRank[xs[i].ID]
+			rj, oj := ftsRank[xs[j].ID]
+			switch {
+			case oi && oj:
+				return ri < rj
+			case oi:
+				return true
+			case oj:
+				return false
+			default:
+				return xs[i].ID < xs[j].ID
+			}
+		})
+		return
+	}
+	sortMessages(xs, comps)
+}
+
+// conversationIDsToFilter resolves the set of conversation ids the FTS
+// query should be scoped to. When the caller specified an explicit
+// filter.conversationId the search runs against just that one (the
+// membership check above already verified the caller is a member);
+// otherwise every conversation the caller is a member of is in scope.
+// Order is irrelevant for the disjunction the index builds, but
+// ranging over a map yields a non-deterministic slice — fine for the
+// query, intentionally not relied on by tests.
+func conversationIDsToFilter(
+	scoped *store.ConversationID,
+	allowed map[store.ConversationID]struct{},
+) []store.ConversationID {
+	if scoped != nil {
+		return []store.ConversationID{*scoped}
+	}
+	out := make([]store.ConversationID, 0, len(allowed))
+	for id := range allowed {
+		out = append(out, id)
+	}
+	return out
+}
+
+// chatMessageMatchesFilter applies the non-text predicates to a single
+// row. Used by the FTS path because the index does not enforce
+// senderPrincipalId / before / after — those are still in-process
+// after the relevance-sorted hit list comes back.
+func chatMessageMatchesFilter(m store.ChatMessage, f store.ChatMessageFilter) bool {
+	if f.ConversationID != nil && m.ConversationID != *f.ConversationID {
+		return false
+	}
+	if f.SenderPrincipalID != nil {
+		if m.SenderPrincipalID == nil || *m.SenderPrincipalID != *f.SenderPrincipalID {
+			return false
+		}
+	}
+	if f.CreatedAfter != nil && !m.CreatedAt.After(*f.CreatedAfter) {
+		return false
+	}
+	if f.CreatedBefore != nil && !m.CreatedAt.Before(*f.CreatedBefore) {
+		return false
+	}
+	return true
 }
 
 func compareMessage(a, b store.ChatMessage, property string) int {
