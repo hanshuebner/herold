@@ -86,6 +86,38 @@ tls = "starttls"
 	if cfg.Observability.MetricsBind != "127.0.0.1:9090" {
 		t.Errorf("default metrics_bind: got %q", cfg.Observability.MetricsBind)
 	}
+	if cfg.Server.Snooze.PollInterval == 0 {
+		t.Errorf("default snooze poll_interval: got 0, want 60s default")
+	}
+}
+
+func TestValidate_RejectsSubFiveSecondSnoozePoll(t *testing.T) {
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[server.snooze]
+poll_interval = "1s"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected error for poll_interval=1s, got nil")
+	}
+	if !strings.Contains(err.Error(), "snooze") {
+		t.Fatalf("error %q should mention snooze", err.Error())
+	}
 }
 
 func TestParse_UnknownKeyRejected(t *testing.T) {

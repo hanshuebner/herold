@@ -692,3 +692,147 @@ func TestFETCH_DownloadRateLimit_Throttles(t *testing.T) {
 		t.Fatalf("FETCH did not complete after clock advance")
 	}
 }
+
+// -----------------------------------------------------------------------------
+// REQ-PROTO-49 JMAP snooze (IMAP cross-cut)
+// -----------------------------------------------------------------------------
+
+// seedMessageID inserts a body into f.inbox via the store and returns
+// the message id. Used by the snooze cross-cut tests.
+func seedMessageID(t *testing.T, f *fixture, subject string) store.MessageID {
+	t.Helper()
+	ctx := context.Background()
+	body := buildMessage(subject, "body")
+	blob, err := f.ha.Store.Blobs().Put(ctx, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if _, _, err := f.ha.Store.Meta().InsertMessage(ctx, store.Message{
+		MailboxID:    f.inbox.ID,
+		Size:         int64(len(body)),
+		Blob:         blob,
+		InternalDate: time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC),
+		Envelope:     parseStoreEnvelope(body),
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	feed, err := f.ha.Store.Meta().ReadChangeFeed(ctx, f.pid, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed: %v", err)
+	}
+	var id store.MessageID
+	for _, e := range feed {
+		if e.Kind == store.EntityKindEmail && e.Op == store.ChangeOpCreated {
+			id = store.MessageID(e.EntityID)
+		}
+	}
+	if id == 0 {
+		t.Fatalf("no created entry")
+	}
+	return id
+}
+
+func TestSELECT_PERMANENTFLAGS_Includes_Snoozed(t *testing.T) {
+	// PERMANENTFLAGS includes the wildcard "\*", which advertises
+	// that arbitrary keywords (including "$snoozed") may be set on
+	// messages in the mailbox per RFC 3501 §6.3.1. We assert "\*" is
+	// present so the existing keyword machinery satisfies the snooze
+	// requirement without a per-keyword enumeration.
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	c := loggedInClient(t, f)
+	defer c.close()
+	resp := c.send("s1", "SELECT INBOX")
+	joined := strings.Join(resp, "\n")
+	if !strings.Contains(joined, "PERMANENTFLAGS") {
+		t.Fatalf("PERMANENTFLAGS missing: %v", resp)
+	}
+	if !strings.Contains(joined, `\*`) {
+		t.Fatalf(`PERMANENTFLAGS missing \* (keyword wildcard): %v`, resp)
+	}
+}
+
+func TestSTORE_AddSnoozedKeyword_RequiresDate(t *testing.T) {
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	id := seedMessageID(t, f, "snooze-add")
+	c := loggedInClient(t, f)
+	defer c.close()
+	c.send("s1", "SELECT INBOX")
+	resp := c.send("st1", `STORE 1 +FLAGS ($snoozed)`)
+	last := resp[len(resp)-1]
+	if !strings.Contains(last, "BAD") {
+		t.Fatalf("expected BAD for $snoozed without date: %v", resp)
+	}
+	if !strings.Contains(last, "SNOOZE-DATE-MISSING") {
+		t.Fatalf("expected SNOOZE-DATE-MISSING response code: %v", last)
+	}
+	// Message must be unchanged.
+	m, err := f.ha.Store.Meta().GetMessage(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	for _, k := range m.Keywords {
+		if k == "$snoozed" {
+			t.Fatalf("$snoozed keyword set despite BAD response")
+		}
+	}
+	if m.SnoozedUntil != nil {
+		t.Fatalf("SnoozedUntil set despite BAD response: %v", m.SnoozedUntil)
+	}
+}
+
+func TestSTORE_RemoveSnoozedKeyword_AlsoNullsColumn(t *testing.T) {
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	id := seedMessageID(t, f, "snooze-remove")
+	// Set snooze via the store (canonical JMAP path).
+	t1 := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := f.ha.Store.Meta().SetSnooze(context.Background(), id, &t1); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	c := loggedInClient(t, f)
+	defer c.close()
+	c.send("s1", "SELECT INBOX")
+	resp := c.send("st1", `STORE 1 -FLAGS ($snoozed)`)
+	last := resp[len(resp)-1]
+	if !strings.Contains(last, "OK") {
+		t.Fatalf("expected OK on -FLAGS $snoozed, got: %v", resp)
+	}
+	m, err := f.ha.Store.Meta().GetMessage(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if m.SnoozedUntil != nil {
+		t.Errorf("SnoozedUntil = %v, want nil after STORE -FLAGS $snoozed", m.SnoozedUntil)
+	}
+	for _, k := range m.Keywords {
+		if k == "$snoozed" {
+			t.Errorf("$snoozed keyword still present")
+		}
+	}
+}
+
+func TestSEARCH_Keyword_Snoozed_FindsSnoozedMessages(t *testing.T) {
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	id1 := seedMessageID(t, f, "msg-snoozed")
+	seedMessage(t, f, "msg-not-snoozed")
+	t1 := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := f.ha.Store.Meta().SetSnooze(context.Background(), id1, &t1); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	c := loggedInClient(t, f)
+	defer c.close()
+	c.send("s1", "SELECT INBOX")
+	resp := c.send("se1", `SEARCH KEYWORD $snoozed`)
+	joined := strings.Join(resp, "\n")
+	if !strings.Contains(joined, "* SEARCH") {
+		t.Fatalf("SEARCH response missing untagged: %v", resp)
+	}
+	// The snoozed message should appear; the unsnoozed should not.
+	// Sequence numbers (UIDs are 1 and 2 in INBOX); the snoozed id
+	// corresponds to seq 1.
+	if !strings.Contains(joined, "* SEARCH 1") {
+		t.Errorf("expected SEARCH 1 (snoozed message), got: %v", resp)
+	}
+	if strings.Contains(joined, "* SEARCH 1 2") || strings.Contains(joined, "* SEARCH 2") {
+		t.Errorf("unsnoozed message returned by SEARCH KEYWORD $snoozed: %v", resp)
+	}
+}

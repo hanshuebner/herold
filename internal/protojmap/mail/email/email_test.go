@@ -472,3 +472,211 @@ func TestEmail_Parse_HeadersWithoutImport(t *testing.T) {
 		}
 	}
 }
+
+// -- REQ-PROTO-49 JMAP snooze ----------------------------------------
+
+func messageHasSnoozeKeyword(t *testing.T, f *fixture, id store.MessageID) bool {
+	t.Helper()
+	m, err := f.srv.Store.Meta().GetMessage(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	for _, k := range m.Keywords {
+		if k == "$snoozed" {
+			return true
+		}
+	}
+	return false
+}
+
+func messageSnoozedUntil(t *testing.T, f *fixture, id store.MessageID) *time.Time {
+	t.Helper()
+	m, err := f.srv.Store.Meta().GetMessage(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	return m.SnoozedUntil
+}
+
+func TestSnoozeCapability_IsAdvertised(t *testing.T) {
+	f := setupFixture(t)
+	// The Mail register sets CapabilityMailSnooze; the test
+	// fixture only registers email + mailbox handlers, so we
+	// register the capability descriptor manually here to mirror
+	// what mail.Register does (the per-test fixture skips that
+	// helper to avoid a circular-package dep).
+	dir := directory.New(f.srv.Store.Meta(), f.srv.Logger, f.srv.Clock, nil)
+	js := protojmap.NewServer(f.srv.Store, dir, nil, f.srv.Logger, f.srv.Clock, protojmap.Options{})
+	mailbox.Register(js.Registry(), f.srv.Store, f.srv.Logger, f.srv.Clock)
+	email.Register(js.Registry(), f.srv.Store, f.srv.Logger, f.srv.Clock)
+	js.Registry().RegisterCapabilityDescriptor(protojmap.CapabilityMailSnooze, struct{}{})
+	if !js.Registry().HasCapability(protojmap.CapabilityMailSnooze) {
+		t.Fatalf("snooze capability not advertised")
+	}
+}
+
+func TestEmailGet_RendersSnoozedUntil(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: snoozed\r\n\r\nbody"
+	m := f.insertMessage(t, body, "snoozed", "a@example.test", "b@example.test", nil, "")
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, &t1); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{fmt.Sprintf("%d", m.ID)},
+	})
+	var resp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("got %d messages, want 1: %s", len(resp.List), raw)
+	}
+	got, ok := resp.List[0]["snoozedUntil"].(string)
+	if !ok {
+		t.Fatalf("snoozedUntil missing or not a string: %v", resp.List[0]["snoozedUntil"])
+	}
+	if got != "2030-01-02T03:04:05Z" {
+		t.Errorf("snoozedUntil = %q, want 2030-01-02T03:04:05Z", got)
+	}
+}
+
+func TestEmailSet_SetsSnoozedAtomically(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: hi\r\n\r\nhi"
+	m := f.insertMessage(t, body, "hi", "a@example.test", "b@example.test", nil, "")
+	wakeAt := "2030-06-01T12:00:00Z"
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"snoozedUntil": wakeAt,
+			},
+		},
+	})
+	var resp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.NotUpdated) != 0 {
+		t.Fatalf("notUpdated = %v", resp.NotUpdated)
+	}
+	if !messageHasSnoozeKeyword(t, f, m.ID) {
+		t.Errorf("$snoozed keyword not set after Email/set with snoozedUntil")
+	}
+	got := messageSnoozedUntil(t, f, m.ID)
+	if got == nil {
+		t.Fatalf("SnoozedUntil nil after set")
+	}
+	want, _ := time.Parse(time.RFC3339, wakeAt)
+	if !got.Equal(want) {
+		t.Errorf("SnoozedUntil = %v, want %v", got, want)
+	}
+}
+
+func TestEmailSet_ClearsSnoozedAtomically(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: clear\r\n\r\nbody"
+	m := f.insertMessage(t, body, "clear", "a@example.test", "b@example.test", nil, "")
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, &t1); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"snoozedUntil": nil,
+			},
+		},
+	})
+	var resp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.NotUpdated) != 0 {
+		t.Fatalf("notUpdated = %v", resp.NotUpdated)
+	}
+	if messageHasSnoozeKeyword(t, f, m.ID) {
+		t.Errorf("$snoozed keyword still set after clear")
+	}
+	if got := messageSnoozedUntil(t, f, m.ID); got != nil {
+		t.Errorf("SnoozedUntil = %v, want nil", got)
+	}
+}
+
+func TestEmailSet_RejectsKeywordOnlyWithoutDate(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: rej\r\n\r\nbody"
+	m := f.insertMessage(t, body, "rej", "a@example.test", "b@example.test", nil, "")
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"keywords/$snoozed": true,
+			},
+		},
+	})
+	var resp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	key := fmt.Sprintf("%d", m.ID)
+	if _, ok := resp.NotUpdated[key]; !ok {
+		t.Fatalf("expected NotUpdated entry for %s, got: %s", key, raw)
+	}
+	if got, _ := resp.NotUpdated[key]["type"].(string); got != "invalidProperties" {
+		t.Errorf("error type = %q, want invalidProperties", got)
+	}
+	// And no side-effects: keyword + column unchanged.
+	if messageHasSnoozeKeyword(t, f, m.ID) {
+		t.Errorf("$snoozed keyword set despite rejection")
+	}
+}
+
+func TestEmailSet_ClearKeywordAlsoClearsDate(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: kc\r\n\r\nbody"
+	m := f.insertMessage(t, body, "kc", "a@example.test", "b@example.test", nil, "")
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, &t1); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"keywords/$snoozed": false,
+			},
+		},
+	})
+	var resp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.NotUpdated) != 0 {
+		t.Fatalf("notUpdated = %v", resp.NotUpdated)
+	}
+	if messageHasSnoozeKeyword(t, f, m.ID) {
+		t.Errorf("$snoozed keyword still present after clear")
+	}
+	if got := messageSnoozedUntil(t, f, m.ID); got != nil {
+		t.Errorf("SnoozedUntil = %v, want nil after keyword clear", got)
+	}
+}

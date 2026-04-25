@@ -1397,6 +1397,115 @@ func (m *metaFace) SetSieveScript(ctx context.Context, pid store.PrincipalID, te
 	return nil
 }
 
+// -- JMAP snooze (REQ-PROTO-49) --------------------------------------
+
+func (m *metaFace) ListDueSnoozedMessages(ctx context.Context, now time.Time, limit int) ([]store.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cutoff := now.UTC()
+	var out []store.Message
+	for _, msg := range s.messages {
+		if msg.SnoozedUntil == nil {
+			continue
+		}
+		// Atomicity invariant: $snoozed must be present too.
+		hasKW := false
+		for _, k := range msg.Keywords {
+			if k == "$snoozed" {
+				hasKW = true
+				break
+			}
+		}
+		if !hasKW {
+			continue
+		}
+		if msg.SnoozedUntil.After(cutoff) {
+			continue
+		}
+		out = append(out, msg)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].SnoozedUntil.Before(*out[j].SnoozedUntil)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *metaFace) SetSnooze(ctx context.Context, msgID store.MessageID, when *time.Time) (store.ModSeq, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msg, ok := s.messages[msgID]
+	if !ok {
+		return 0, fmt.Errorf("message %d: %w", msgID, store.ErrNotFound)
+	}
+	mb, ok := s.mailboxes[msg.MailboxID]
+	if !ok {
+		return 0, fmt.Errorf("mailbox %d: %w", msg.MailboxID, store.ErrNotFound)
+	}
+	// Update keywords: force $snoozed on/off based on `when`.
+	set := map[string]struct{}{}
+	for _, k := range msg.Keywords {
+		set[k] = struct{}{}
+	}
+	if when != nil {
+		set["$snoozed"] = struct{}{}
+	} else {
+		delete(set, "$snoozed")
+	}
+	if len(set) == 0 {
+		msg.Keywords = nil
+	} else {
+		out := make([]string, 0, len(set))
+		for k := range set {
+			out = append(out, k)
+		}
+		sort.Strings(out)
+		msg.Keywords = out
+	}
+	if when != nil {
+		t := when.UTC()
+		msg.SnoozedUntil = &t
+	} else {
+		msg.SnoozedUntil = nil
+	}
+	mb.HighestModSeq++
+	msg.ModSeq = mb.HighestModSeq
+	now := s.clk.Now()
+	mb.UpdatedAt = now
+	s.mailboxes[mb.ID] = mb
+	s.messages[msg.ID] = msg
+	s.appendStateChangeLocked(store.StateChange{
+		PrincipalID:    mb.PrincipalID,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(msg.ID),
+		ParentEntityID: uint64(mb.ID),
+		Op:             store.ChangeOpUpdated,
+		ProducedAt:     now,
+	})
+	s.appendFTSChangeLocked(store.FTSChange{
+		PrincipalID:    mb.PrincipalID,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(msg.ID),
+		ParentEntityID: uint64(mb.ID),
+		Op:             store.ChangeOpUpdated,
+		ProducedAt:     now,
+	})
+	return msg.ModSeq, nil
+}
+
 // auditEntryPrincipalID mirrors the logic used by the SQL backends so
 // filtering behaviour is identical across implementations.
 func auditEntryPrincipalID(e store.AuditLogEntry) store.PrincipalID {

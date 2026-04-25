@@ -728,19 +728,24 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message) (store.
 		}
 		uid = store.UID(uidNext)
 		modseq = store.ModSeq(highestModSeq + 1)
+		var snoozedArg any
+		if msg.SnoozedUntil != nil {
+			snoozedArg = usMicros(*msg.SnoozedUntil)
+		}
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO messages (mailbox_id, uid, modseq, flags, keywords_csv,
 			  internal_date_us, received_at_us, size, blob_hash, blob_size, thread_id,
 			  env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
-			  env_message_id, env_in_reply_to, env_date_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			  env_message_id, env_in_reply_to, env_date_us, snoozed_until_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			int64(msg.MailboxID), int64(uid), int64(modseq), int64(msg.Flags),
 			strings.Join(msg.Keywords, ","),
 			usMicros(msg.InternalDate), usMicros(msg.ReceivedAt), msg.Size,
 			msg.Blob.Hash, msg.Blob.Size, int64(msg.ThreadID),
 			msg.Envelope.Subject, msg.Envelope.From, msg.Envelope.To,
 			msg.Envelope.Cc, msg.Envelope.Bcc, msg.Envelope.ReplyTo,
-			msg.Envelope.MessageID, msg.Envelope.InReplyTo, usMicros(msg.Envelope.Date))
+			msg.Envelope.MessageID, msg.Envelope.InReplyTo, usMicros(msg.Envelope.Date),
+			snoozedArg)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -775,7 +780,7 @@ func (m *metadata) GetMessage(ctx context.Context, id store.MessageID) (store.Me
 		SELECT id, mailbox_id, uid, modseq, flags, keywords_csv, internal_date_us,
 		       received_at_us, size, blob_hash, blob_size, thread_id,
 		       env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
-		       env_message_id, env_in_reply_to, env_date_us
+		       env_message_id, env_in_reply_to, env_date_us, snoozed_until_us
 		  FROM messages WHERE id = ?`, int64(id))
 	return scanMessage(row)
 }
@@ -788,11 +793,12 @@ func scanMessage(row rowLike) (store.Message, error) {
 	var blobSize int64
 	var thread int64
 	var envDateUs int64
+	var snoozedUs sql.NullInt64
 	err := row.Scan(&id, &mbox, &uid, &modseq, &flags, &keywords, &idUs, &rcvUs,
 		&msg.Size, &msg.Blob.Hash, &blobSize, &thread,
 		&msg.Envelope.Subject, &msg.Envelope.From, &msg.Envelope.To,
 		&msg.Envelope.Cc, &msg.Envelope.Bcc, &msg.Envelope.ReplyTo,
-		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &envDateUs)
+		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &envDateUs, &snoozedUs)
 	if err != nil {
 		return store.Message{}, mapErr(err)
 	}
@@ -809,6 +815,10 @@ func scanMessage(row rowLike) (store.Message, error) {
 	msg.Blob.Size = blobSize
 	msg.ThreadID = uint64(thread)
 	msg.Envelope.Date = fromMicros(envDateUs)
+	if snoozedUs.Valid {
+		t := fromMicros(snoozedUs.Int64)
+		msg.SnoozedUntil = &t
+	}
 	return msg, nil
 }
 
@@ -1487,7 +1497,7 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 		SELECT id, mailbox_id, uid, modseq, flags, keywords_csv, internal_date_us,
 		       received_at_us, size, blob_hash, blob_size, thread_id,
 		       env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
-		       env_message_id, env_in_reply_to, env_date_us
+		       env_message_id, env_in_reply_to, env_date_us, snoozed_until_us
 		  FROM messages
 		 WHERE mailbox_id = ? AND uid > ?
 		 ORDER BY uid ASC LIMIT ?`,
@@ -1609,6 +1619,110 @@ func (m *metadata) SetSieveScript(ctx context.Context, pid store.PrincipalID, te
 			int64(pid), text, usMicros(now))
 		return mapErr(err)
 	})
+}
+
+// -- JMAP snooze (REQ-PROTO-49) --------------------------------------
+
+func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, limit int) ([]store.Message, error) {
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+	// The partial index idx_messages_snoozed_until covers rows with
+	// snoozed_until_us NOT NULL; the predicate then filters to due
+	// rows. We additionally require ',$snoozed,' to appear inside the
+	// padded keywords_csv to enforce the atomicity invariant — a row
+	// whose snoozed_until_us was set without the keyword via direct
+	// UpdateMessageFlags is a programmer error and is excluded.
+	rows, err := m.s.db.QueryContext(ctx, `
+		SELECT id, mailbox_id, uid, modseq, flags, keywords_csv, internal_date_us,
+		       received_at_us, size, blob_hash, blob_size, thread_id,
+		       env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
+		       env_message_id, env_in_reply_to, env_date_us, snoozed_until_us
+		  FROM messages
+		 WHERE snoozed_until_us IS NOT NULL
+		   AND snoozed_until_us <= ?
+		   AND (',' || keywords_csv || ',') LIKE '%,$snoozed,%'
+		 ORDER BY snoozed_until_us ASC LIMIT ?`,
+		usMicros(now.UTC()), limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.Message
+	for rows.Next() {
+		msg, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, msg)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, when *time.Time) (store.ModSeq, error) {
+	now := m.s.clock.Now().UTC()
+	var modseq store.ModSeq
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		var mbox int64
+		var curFlags int64
+		var curKeywords string
+		err := tx.QueryRowContext(ctx, `
+			SELECT mailbox_id, flags, keywords_csv
+			  FROM messages WHERE id = ?`, int64(msgID)).Scan(&mbox, &curFlags, &curKeywords)
+		if err != nil {
+			return mapErr(err)
+		}
+		// Build the keyword set with $snoozed forced on/off per the
+		// new state, preserving every other keyword.
+		kwSet := map[string]struct{}{}
+		if curKeywords != "" {
+			for _, k := range strings.Split(curKeywords, ",") {
+				if k != "" {
+					kwSet[k] = struct{}{}
+				}
+			}
+		}
+		if when != nil {
+			kwSet["$snoozed"] = struct{}{}
+		} else {
+			delete(kwSet, "$snoozed")
+		}
+		kws := make([]string, 0, len(kwSet))
+		for k := range kwSet {
+			kws = append(kws, k)
+		}
+		sortStrings(kws)
+
+		var pid, highest int64
+		err = tx.QueryRowContext(ctx, `SELECT principal_id, highest_modseq FROM mailboxes WHERE id = ?`, mbox).Scan(&pid, &highest)
+		if err != nil {
+			return mapErr(err)
+		}
+		modseq = store.ModSeq(highest + 1)
+
+		var snoozedArg any
+		if when != nil {
+			snoozedArg = usMicros(when.UTC())
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE messages
+			   SET keywords_csv = ?, modseq = ?, snoozed_until_us = ?
+			 WHERE id = ?`,
+			strings.Join(kws, ","), int64(modseq), snoozedArg, int64(msgID)); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE mailboxes SET highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
+			int64(modseq), usMicros(now), mbox); err != nil {
+			return mapErr(err)
+		}
+		return appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindEmail, uint64(msgID), uint64(mbox), store.ChangeOpUpdated, now)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return modseq, nil
 }
 
 func (m *metadata) ListAuditLog(ctx context.Context, filter store.AuditLogFilter) ([]store.AuditLogEntry, error) {

@@ -31,6 +31,13 @@ func Register(reg *protojmap.CapabilityRegistry, st store.Store, logger *slog.Lo
 	// provider so the session endpoint reflects the actual operator
 	// posture.
 	reg.RegisterAccountCapability(protojmap.CapabilityMail, mailAccountCapability{})
+
+	// JMAP snooze capability (REQ-PROTO-49). Property-only; the
+	// snoozedUntil field and the "$snoozed" keyword piggyback on
+	// Email/get and Email/set. Advertise the capability so clients
+	// can detect support; the descriptor is the empty object per the
+	// IETF draft.
+	reg.RegisterCapabilityDescriptor(protojmap.CapabilityMailSnooze, struct{}{})
 }
 
 // mailAccountCapability is the per-account capability provider. RFC 8621

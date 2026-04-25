@@ -42,6 +42,10 @@ func renderEmailMetadata(m store.Message) jmapEmail {
 		Size:       m.Size,
 		ReceivedAt: rfc3339UTC(m.ReceivedAt),
 	}
+	if m.SnoozedUntil != nil {
+		s := rfc3339UTC(*m.SnoozedUntil)
+		out.SnoozedUntil = &s
+	}
 	if m.Envelope.Subject != "" {
 		out.Subject = m.Envelope.Subject
 	}

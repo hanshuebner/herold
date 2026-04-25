@@ -287,6 +287,18 @@ type Message struct {
 	// Envelope is the cached parsed envelope (for STATUS / FETCH without
 	// touching the blob).
 	Envelope Envelope
+	// SnoozedUntil is the wake-up deadline for the JMAP snooze
+	// extension (REQ-PROTO-49). nil means not snoozed; non-nil
+	// requires Keywords to contain "$snoozed". This atomicity
+	// invariant — SnoozedUntil != nil iff Keywords contains
+	// "$snoozed" — is enforced at the store boundary by
+	// Metadata.SetSnooze (which sets or clears both inside one
+	// transaction) and at the JMAP / IMAP handler boundaries; the
+	// wake-up sweeper relies on it when it consumes both halves to
+	// emit the "due now" view. Direct callers of UpdateMessageFlags
+	// MUST NOT add or remove "$snoozed" without the matching column
+	// update — go through SetSnooze instead.
+	SnoozedUntil *time.Time
 }
 
 // MessageFilter narrows a ListMessages read. Zero values mean "no

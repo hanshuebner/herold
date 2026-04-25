@@ -102,6 +102,13 @@ func Run(t *testing.T, f Factory) {
 		{"JMAPIdentity_List_ByPrincipal", testJMAPIdentityListByPrincipal},
 		{"JMAPIdentity_Update_RoundTrips", testJMAPIdentityUpdateRoundtrips},
 		{"JMAPIdentity_Delete_NotFoundAfter", testJMAPIdentityDeleteNotFoundAfter},
+		// -- REQ-PROTO-49 JMAP snooze ------------------------------
+		{"Snooze_SetGet_Roundtrip", testSnoozeSetGetRoundtrip},
+		{"Snooze_Clear", testSnoozeClear},
+		{"Snooze_StateChangeAppended", testSnoozeStateChangeAppended},
+		{"Snooze_ListDue_OnlyReturnsDue", testSnoozeListDueOnlyReturnsDue},
+		{"Snooze_ListDue_Limit", testSnoozeListDueLimit},
+		{"Snooze_ListDue_RequiresKeyword", testSnoozeListDueRequiresKeyword},
 	}
 	for _, c := range cases {
 		tc := c
@@ -2754,5 +2761,235 @@ func testJMAPIdentityDeleteNotFoundAfter(t *testing.T, s store.Store) {
 	}
 	if err := s.Meta().DeleteJMAPIdentity(ctx, "200"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Delete twice: err = %v, want ErrNotFound", err)
+	}
+}
+
+// -- REQ-PROTO-49 JMAP snooze ----------------------------------------
+
+// snoozeKeywordPresent reports whether m.Keywords contains "$snoozed".
+func snoozeKeywordPresent(m store.Message) bool {
+	for _, k := range m.Keywords {
+		if k == "$snoozed" {
+			return true
+		}
+	}
+	return false
+}
+
+func testSnoozeSetGetRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-rt@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "snooze-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, p.ID)
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, id, &t1); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	got, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.SnoozedUntil == nil || !got.SnoozedUntil.Equal(t1) {
+		t.Fatalf("SnoozedUntil = %v, want %v", got.SnoozedUntil, t1)
+	}
+	if !snoozeKeywordPresent(got) {
+		t.Fatalf("Keywords = %v, want $snoozed present", got.Keywords)
+	}
+}
+
+func testSnoozeClear(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-clear@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "snooze-clear-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, p.ID)
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, id, &t1); err != nil {
+		t.Fatalf("SetSnooze set: %v", err)
+	}
+	if _, err := s.Meta().SetSnooze(ctx, id, nil); err != nil {
+		t.Fatalf("SetSnooze clear: %v", err)
+	}
+	got, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.SnoozedUntil != nil {
+		t.Fatalf("SnoozedUntil = %v, want nil", got.SnoozedUntil)
+	}
+	if snoozeKeywordPresent(got) {
+		t.Fatalf("Keywords = %v, $snoozed should be cleared", got.Keywords)
+	}
+}
+
+func testSnoozeStateChangeAppended(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-sc@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "snooze-sc-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, p.ID)
+	// Capture the current change-feed cursor (post-create).
+	feed, err := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed pre: %v", err)
+	}
+	var cursor store.ChangeSeq
+	for _, e := range feed {
+		if e.Seq > cursor {
+			cursor = e.Seq
+		}
+	}
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, id, &t1); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	tail, err := s.Meta().ReadChangeFeed(ctx, p.ID, cursor, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed tail: %v", err)
+	}
+	if len(tail) == 0 {
+		t.Fatalf("expected state change appended, got 0")
+	}
+	last := tail[len(tail)-1]
+	if last.Kind != store.EntityKindEmail {
+		t.Fatalf("Kind = %v, want %v", last.Kind, store.EntityKindEmail)
+	}
+	if last.Op != store.ChangeOpUpdated {
+		t.Fatalf("Op = %v, want %v", last.Op, store.ChangeOpUpdated)
+	}
+	if last.EntityID != uint64(id) {
+		t.Fatalf("EntityID = %d, want %d", last.EntityID, id)
+	}
+}
+
+func testSnoozeListDueOnlyReturnsDue(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-due@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ids := make([]store.MessageID, 0, 3)
+	deadlines := []time.Time{
+		time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC),
+		time.Date(2030, 1, 3, 0, 0, 0, 0, time.UTC),
+	}
+	for i := range deadlines {
+		ref := putBlob(t, s, fmt.Sprintf("body-%d", i))
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+	}
+	feed, err := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed: %v", err)
+	}
+	for _, e := range feed {
+		if e.Kind == store.EntityKindEmail && e.Op == store.ChangeOpCreated {
+			ids = append(ids, store.MessageID(e.EntityID))
+		}
+	}
+	if len(ids) != 3 {
+		t.Fatalf("created %d messages, want 3", len(ids))
+	}
+	for i, id := range ids {
+		if _, err := s.Meta().SetSnooze(ctx, id, &deadlines[i]); err != nil {
+			t.Fatalf("SetSnooze[%d]: %v", i, err)
+		}
+	}
+	// now == t2 → t1 and t2 due, t3 not.
+	got, err := s.Meta().ListDueSnoozedMessages(ctx, deadlines[1], 100)
+	if err != nil {
+		t.Fatalf("ListDueSnoozedMessages: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d due, want 2: %v", len(got), got)
+	}
+	for _, m := range got {
+		if m.SnoozedUntil == nil || m.SnoozedUntil.After(deadlines[1]) {
+			t.Fatalf("returned non-due message: %v", m)
+		}
+	}
+}
+
+func testSnoozeListDueLimit(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-lim@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	due := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 10; i++ {
+		ref := putBlob(t, s, fmt.Sprintf("body-%d", i))
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+	}
+	feed, err := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed: %v", err)
+	}
+	for _, e := range feed {
+		if e.Kind == store.EntityKindEmail && e.Op == store.ChangeOpCreated {
+			if _, err := s.Meta().SetSnooze(ctx, store.MessageID(e.EntityID), &due); err != nil {
+				t.Fatalf("SetSnooze: %v", err)
+			}
+		}
+	}
+	now := due.Add(time.Hour)
+	got, err := s.Meta().ListDueSnoozedMessages(ctx, now, 3)
+	if err != nil {
+		t.Fatalf("ListDueSnoozedMessages: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d, want 3 (limit)", len(got))
+	}
+}
+
+func testSnoozeListDueRequiresKeyword(t *testing.T, s store.Store) {
+	// Programmer-error case: a row whose snoozed_until column is set
+	// but whose keywords do NOT contain "$snoozed" must be invisible
+	// to ListDueSnoozedMessages. This proves the AND condition is
+	// real. We cannot reach this state via SetSnooze (which sets
+	// both), so we use UpdateMessageFlags to remove the keyword
+	// after SetSnooze planted both — and assert the row drops out of
+	// the due list.
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-kw@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "snooze-kw-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, p.ID)
+	due := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, id, &due); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	// Sanity: due list returns the row right now.
+	got, err := s.Meta().ListDueSnoozedMessages(ctx, due.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatalf("ListDue (sanity): %v", err)
+	}
+	if len(got) != 1 || got[0].ID != id {
+		t.Fatalf("sanity: got %v, want exactly id=%d", got, id)
+	}
+	// Now remove the keyword via UpdateMessageFlags directly. The
+	// SnoozedUntil column remains set (programmer-error shape).
+	if _, err := s.Meta().UpdateMessageFlags(ctx, id, 0, 0, nil, []string{"$snoozed"}, 0); err != nil {
+		t.Fatalf("UpdateMessageFlags clear: %v", err)
+	}
+	got2, err := s.Meta().ListDueSnoozedMessages(ctx, due.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatalf("ListDue post-clear: %v", err)
+	}
+	if len(got2) != 0 {
+		t.Fatalf("ListDue after keyword-only clear: got %d, want 0", len(got2))
 	}
 }

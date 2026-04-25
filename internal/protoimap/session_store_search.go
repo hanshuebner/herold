@@ -64,6 +64,7 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 		m := ses.sel.msgs[seq-1]
 		ses.selMu.Unlock()
 		myClearKW := clearKW
+		myAddKW := addKW
 		if c.StoreFlags.Op == imap.StoreFlagsSet {
 			// Compute keywords to clear: existing minus new.
 			current := map[string]bool{}
@@ -78,7 +79,37 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 				myClearKW = append(myClearKW, k)
 			}
 		}
-		_, err := ses.s.store.Meta().UpdateMessageFlags(ctx, m.ID, addFlags, clearFlags, addKW, myClearKW, store.ModSeq(c.StoreOptions.UnchangedSince))
+		// Snooze interception (REQ-PROTO-49). The $snoozed keyword and
+		// the message's SnoozedUntil column are an atomic pair; raw
+		// IMAP STORE cannot supply a date, so we let clients only
+		// touch the keyword on already-snoozed messages.
+		//   * STORE +FLAGS $snoozed on a message without SnoozedUntil
+		//     → BAD [SNOOZE-DATE-MISSING]; JMAP is the canonical path.
+		//   * STORE -FLAGS $snoozed routes through SetSnooze so the
+		//     column clears alongside the keyword.
+		// SET semantics decompose into add/clear via the SET-path
+		// rebuild above, so this branch handles both forms uniformly.
+		addsSnoozed := containsCI(myAddKW, "$snoozed")
+		clearsSnoozed := containsCI(myClearKW, "$snoozed")
+		if addsSnoozed && m.SnoozedUntil == nil {
+			return ses.resp.taggedBAD(c.Tag, "SNOOZE-DATE-MISSING",
+				"$snoozed keyword requires a JMAP snoozedUntil; raw IMAP STORE cannot create a snooze")
+		}
+		// If the patch clears $snoozed (or implicitly via SET that
+		// drops the keyword) and the message currently has a
+		// SnoozedUntil, route through SetSnooze for the atomic clear.
+		if clearsSnoozed && m.SnoozedUntil != nil {
+			if _, err := ses.s.store.Meta().SetSnooze(ctx, m.ID, nil); err != nil {
+				return ses.resp.taggedNO(c.Tag, "", "store failed")
+			}
+			// Drop the keyword from the residual delta; SetSnooze
+			// already removed it.
+			myClearKW = removeStringCI(myClearKW, "$snoozed")
+		}
+		// addsSnoozed is permitted only when SnoozedUntil is already
+		// non-null (JMAP wrote the column first); the keyword
+		// addition is then a no-op flip in the kw set.
+		_, err := ses.s.store.Meta().UpdateMessageFlags(ctx, m.ID, addFlags, clearFlags, myAddKW, myClearKW, store.ModSeq(c.StoreOptions.UnchangedSince))
 		if err != nil {
 			if errors.Is(err, store.ErrConflict) {
 				rejectedSeqs = append(rejectedSeqs, seq)
@@ -203,6 +234,31 @@ func keywordsFromImapFlags(fs []imap.Flag) []string {
 		names[i] = string(f)
 	}
 	return keywordsFromNames(names)
+}
+
+// containsCI reports whether s contains v with a case-insensitive
+// match. Used by the STORE handler's snooze interception.
+func containsCI(s []string, v string) bool {
+	target := strings.ToLower(v)
+	for _, x := range s {
+		if strings.ToLower(x) == target {
+			return true
+		}
+	}
+	return false
+}
+
+// removeStringCI returns s with every case-insensitive match of v
+// removed. The returned slice may share backing storage with s.
+func removeStringCI(s []string, v string) []string {
+	target := strings.ToLower(v)
+	out := s[:0]
+	for _, x := range s {
+		if strings.ToLower(x) != target {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // ----- SEARCH -----

@@ -60,6 +60,11 @@ type jmapEmail struct {
 	Keywords   map[string]bool `json:"keywords"`
 	Size       int64           `json:"size"`
 	ReceivedAt string          `json:"receivedAt"`
+	// SnoozedUntil is the JMAP snooze extension wake-up deadline
+	// (REQ-PROTO-49 / IETF JMAP Snooze draft). Pointer + json:"snoozedUntil"
+	// so the field renders as `null` when the message is not snoozed
+	// and as a UTC ISO-8601 string (RFC 8620 UTCDate) otherwise.
+	SnoozedUntil *string `json:"snoozedUntil"`
 
 	// Header form (RFC 8621 §4.1.2 + §4.1.3).
 	From       []jmapAddress `json:"from,omitempty"`

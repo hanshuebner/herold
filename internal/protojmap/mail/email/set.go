@@ -48,11 +48,12 @@ type setResponse struct {
 // returns "invalidProperties" for unrecognised keys at strict-decode
 // time.
 type emailCreateInput struct {
-	BlobID     string          `json:"blobId"`
-	MailboxIDs map[jmapID]bool `json:"mailboxIds"`
-	Keywords   map[string]bool `json:"keywords"`
-	ReceivedAt *string         `json:"receivedAt"`
-	Subject    *string         `json:"subject"`
+	BlobID       string          `json:"blobId"`
+	MailboxIDs   map[jmapID]bool `json:"mailboxIds"`
+	Keywords     map[string]bool `json:"keywords"`
+	ReceivedAt   *string         `json:"receivedAt"`
+	Subject      *string         `json:"subject"`
+	SnoozedUntil *string         `json:"snoozedUntil"`
 }
 
 // setHandler implements Email/set.
@@ -267,6 +268,41 @@ func (h *handlerSet) createEmail(
 	}
 
 	flags, customKW := flagsAndKeywordsFromJMAP(in.Keywords)
+
+	// Snooze atomicity (REQ-PROTO-49): on create the same invariant
+	// holds. snoozedUntil non-null implies $snoozed; snoozedUntil
+	// nil/absent forbids the keyword.
+	var snoozedUntil *time.Time
+	if in.SnoozedUntil != nil {
+		t, perr := time.Parse(time.RFC3339, *in.SnoozedUntil)
+		if perr != nil {
+			return 0, jmapEmail{}, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"snoozedUntil"},
+				Description: "snoozedUntil: " + perr.Error(),
+			}, nil
+		}
+		tu := t.UTC()
+		snoozedUntil = &tu
+	}
+	hasSnoozeKW := false
+	for i, k := range customKW {
+		if k == "$snoozed" {
+			hasSnoozeKW = true
+			if snoozedUntil == nil {
+				return 0, jmapEmail{}, &setError{
+					Type:        "invalidProperties",
+					Properties:  []string{"keywords/$snoozed"},
+					Description: "$snoozed keyword requires a snoozedUntil value",
+				}, nil
+			}
+			_ = i
+		}
+	}
+	if snoozedUntil != nil && !hasSnoozeKW {
+		customKW = append(customKW, "$snoozed")
+	}
+
 	msg := store.Message{
 		MailboxID:    mailboxID,
 		Flags:        flags,
@@ -276,6 +312,7 @@ func (h *handlerSet) createEmail(
 		Size:         ref.Size,
 		Blob:         ref,
 		Envelope:     env,
+		SnoozedUntil: snoozedUntil,
 	}
 	uid, modseq, err := h.store.Meta().InsertMessage(ctx, msg)
 	if err != nil {
@@ -307,6 +344,20 @@ func (h *handlerSet) createEmail(
 // supports keyword and flag mutation through UpdateMessageFlags;
 // mailboxIds change requires re-insert + expunge which the simpler
 // store interface does not yet expose, so we reject it.
+//
+// Snooze (REQ-PROTO-49): the snoozedUntil property and the
+// "$snoozed" keyword form an atomic pair. The handler enforces:
+//   - patch sets snoozedUntil to a non-null value: server adds
+//     "$snoozed" (if not present in the patch)
+//   - patch sets snoozedUntil to null: server clears "$snoozed"
+//   - patch sets keywords/$snoozed=true without a matching
+//     snoozedUntil → invalidProperties
+//   - patch clears keywords/$snoozed while snoozedUntil is non-null
+//     → server also clears snoozedUntil
+//
+// SetSnooze runs before the residual flag-only update so the two
+// pieces commit through one atomic store call each, never leaving a
+// half-applied state visible to a concurrent JMAP/IMAP reader.
 func (h *handlerSet) updateEmail(
 	ctx context.Context,
 	pid store.PrincipalID,
@@ -331,11 +382,6 @@ func (h *handlerSet) updateEmail(
 		}
 	}
 
-	addFlags, clearFlags, addKW, clearKW, serr := decodeUpdate(obj, m)
-	if serr != nil {
-		return serr, nil
-	}
-
 	if newMailboxes, ok := obj["mailboxIds"]; ok {
 		// Reject mailbox moves in v1 — see comment above.
 		_ = newMailboxes
@@ -346,9 +392,75 @@ func (h *handlerSet) updateEmail(
 		}, nil
 	}
 
+	snoozeAct, serr := decodeSnoozeIntent(obj, m)
+	if serr != nil {
+		return serr, nil
+	}
+
+	addFlags, clearFlags, addKW, clearKW, serr := decodeUpdate(obj, m)
+	if serr != nil {
+		return serr, nil
+	}
+
+	// Snooze enforcement: $snoozed in keywords-add without a date is
+	// invalid; we reject early so the store never sees the keyword
+	// without the matching column. addKW already lower-cased the
+	// keyword.
+	for _, k := range addKW {
+		if k == "$snoozed" && snoozeAct.kind != snoozeSet {
+			return &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"keywords/$snoozed"},
+				Description: "$snoozed keyword requires a snoozedUntil value; pass both in the same patch",
+			}, nil
+		}
+	}
+	// If patch clears $snoozed and snoozedUntil isn't already in the
+	// patch, force a clear so the column tracks the keyword.
+	if snoozeAct.kind == snoozeUnchanged {
+		for _, k := range clearKW {
+			if k == "$snoozed" && m.SnoozedUntil != nil {
+				snoozeAct = snoozeAction{kind: snoozeClear}
+				break
+			}
+		}
+	}
+	// Drop the $snoozed keyword toggle from the residual delta — the
+	// SetSnooze call below owns it. addKW filtering: leave the
+	// keyword in the patch when SetSnooze is going to set it (the
+	// store dedupes), but for clearKW we drop it because SetSnooze
+	// nil already removes it.
+	addKW = removeString(addKW, "$snoozed")
+	clearKW = removeString(clearKW, "$snoozed")
+
+	switch snoozeAct.kind {
+	case snoozeSet:
+		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, &snoozeAct.when); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return &setError{Type: "notFound"}, nil
+			}
+			return nil, fmt.Errorf("email: set snooze: %w", err)
+		}
+	case snoozeClear:
+		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, nil); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return &setError{Type: "notFound"}, nil
+			}
+			return nil, fmt.Errorf("email: clear snooze: %w", err)
+		}
+	}
+
 	if addFlags == 0 && clearFlags == 0 && len(addKW) == 0 && len(clearKW) == 0 {
-		// No-op update — RFC 8620 §5.3 says "succeeds with empty
-		// change" so we report Updated=null.
+		if snoozeAct.kind == snoozeUnchanged {
+			// Truly empty patch — RFC 8620 §5.3 "succeeds with empty
+			// change" so we report Updated=null.
+			if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
+				return nil, fmt.Errorf("email: bump state: %w", err)
+			}
+			return nil, nil
+		}
+		// Snooze action already updated the message; bump state and
+		// return.
 		if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
 			return nil, fmt.Errorf("email: bump state: %w", err)
 		}
@@ -365,6 +477,66 @@ func (h *handlerSet) updateEmail(
 		return nil, fmt.Errorf("email: bump state: %w", err)
 	}
 	return nil, nil
+}
+
+// snoozeAction is the resolved snooze intent of a patch. snoozeSet
+// carries the wake-up deadline; snoozeClear has no payload;
+// snoozeUnchanged means the patch did not name snoozedUntil at all.
+type snoozeAction struct {
+	kind snoozeKind
+	when time.Time
+}
+
+type snoozeKind uint8
+
+const (
+	snoozeUnchanged snoozeKind = iota
+	snoozeSet
+	snoozeClear
+)
+
+// decodeSnoozeIntent inspects the raw patch object for snoozedUntil.
+// Returns a setError when the supplied value is a malformed date.
+func decodeSnoozeIntent(obj map[string]json.RawMessage, _ store.Message) (snoozeAction, *setError) {
+	raw, ok := obj["snoozedUntil"]
+	if !ok {
+		return snoozeAction{kind: snoozeUnchanged}, nil
+	}
+	// Try null first; json.RawMessage trims whitespace on
+	// Unmarshal, so a literal "null" matches verbatim.
+	if string(raw) == "null" {
+		return snoozeAction{kind: snoozeClear}, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return snoozeAction{}, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"snoozedUntil"},
+			Description: "snoozedUntil must be a UTC ISO-8601 date string or null",
+		}
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return snoozeAction{}, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"snoozedUntil"},
+			Description: "snoozedUntil: " + err.Error(),
+		}
+	}
+	return snoozeAction{kind: snoozeSet, when: t.UTC()}, nil
+}
+
+// removeString returns s with every occurrence of v removed. Used to
+// strip the snooze-owned "$snoozed" token from the residual flag
+// patch so SetSnooze can carry it instead.
+func removeString(s []string, v string) []string {
+	out := s[:0]
+	for _, x := range s {
+		if x != v {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // decodeUpdate translates the RFC 8620 §5.3 patch / structural

@@ -33,6 +33,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protoimap"
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/sieve"
+	"github.com/hanshuebner/herold/internal/snooze"
 	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storefts"
@@ -298,6 +299,24 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	g.Go(func() error {
 		if err := ftsWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.LogAttrs(context.Background(), slog.LevelWarn, "fts worker exited", slog.String("err", err.Error()))
+			return err
+		}
+		return nil
+	})
+
+	// Snooze wake-up worker — Phase 2 REQ-PROTO-49. Polls
+	// Metadata.ListDueSnoozedMessages and clears the per-message
+	// snooze pair atomically through Metadata.SetSnooze. Bounded by
+	// the lifecycle errgroup so shutdown drains it.
+	snoozeWorker := snooze.NewWorker(snooze.Options{
+		Store:        st,
+		Logger:       logger.With("subsystem", "snooze"),
+		Clock:        clk,
+		PollInterval: cfg.Server.Snooze.PollInterval.AsDuration(),
+	})
+	g.Go(func() error {
+		if err := snoozeWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.LogAttrs(context.Background(), slog.LevelWarn, "snooze worker exited", slog.String("err", err.Error()))
 			return err
 		}
 		return nil

@@ -29,6 +29,16 @@ type ServerConfig struct {
 	ShutdownGrace Duration       `toml:"shutdown_grace,omitempty"`
 	AdminTLS      AdminTLSConfig `toml:"admin_tls"`
 	Storage       StorageConfig  `toml:"storage"`
+	Snooze        SnoozeConfig   `toml:"snooze,omitempty"`
+}
+
+// SnoozeConfig tunes the JMAP snooze wake-up worker (REQ-PROTO-49).
+// Default poll cadence is 60 s; values below 5 s are rejected at
+// Validate so operators do not accidentally hammer the messages table
+// trying to gain sub-second snooze precision the protocol does not
+// promise.
+type SnoozeConfig struct {
+	PollInterval Duration `toml:"poll_interval,omitempty"`
 }
 
 // StorageConfig selects the metadata-store backend and configures it
@@ -218,6 +228,9 @@ func applyDefaults(c *Config) {
 	if c.Server.ShutdownGrace == 0 {
 		c.Server.ShutdownGrace = Duration(30 * time.Second)
 	}
+	if c.Server.Snooze.PollInterval == 0 {
+		c.Server.Snooze.PollInterval = Duration(60 * time.Second)
+	}
 }
 
 // Validate performs cross-field and semantic checks that go-toml cannot express.
@@ -230,6 +243,12 @@ func Validate(c *Config) error {
 	}
 	if c.Server.DataDir == "" {
 		return errors.New("sysconfig: [server] data_dir is required")
+	}
+	// Snooze worker (REQ-PROTO-49). PollInterval below 5 s is a
+	// configuration mistake; defaults already land at 60 s after
+	// applyDefaults.
+	if c.Server.Snooze.PollInterval > 0 && c.Server.Snooze.PollInterval < Duration(5*time.Second) {
+		return fmt.Errorf("sysconfig: [server.snooze] poll_interval %s below 5s floor", c.Server.Snooze.PollInterval.AsDuration())
 	}
 	// Admin TLS
 	switch c.Server.AdminTLS.Source {

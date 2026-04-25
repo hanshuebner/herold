@@ -22,6 +22,13 @@ const (
 	// register handlers for it. The Mail-implementor agent registers
 	// (capability, handlers) at server construction.
 	CapabilityMail CapabilityID = "urn:ietf:params:jmap:mail"
+	// CapabilityMailSnooze is the JMAP Mail snooze extension
+	// (REQ-PROTO-49 / IETF draft "JMAP Snooze"). The snooze surface
+	// is property-only — snoozedUntil on Email and the "$snoozed"
+	// keyword — so the capability advertises no methods of its own;
+	// the dispatcher checks the descriptor for client capability
+	// detection.
+	CapabilityMailSnooze CapabilityID = "urn:ietf:params:jmap:mail:snooze"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

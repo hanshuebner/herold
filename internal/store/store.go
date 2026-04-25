@@ -588,6 +588,24 @@ type Metadata interface {
 	// DeleteJMAPIdentity removes the row identified by id. Returns
 	// ErrNotFound when the row is missing.
 	DeleteJMAPIdentity(ctx context.Context, id string) error
+
+	// -- Phase 2 JMAP snooze (REQ-PROTO-49) ---------------------------
+
+	// ListDueSnoozedMessages returns messages whose SnoozedUntil <= now
+	// (UTC) AND whose Keywords contains "$snoozed", in ascending
+	// SnoozedUntil order. Used by the wake-up worker. limit caps the
+	// batch; callers loop until the slice is empty. A non-positive
+	// limit applies the default cap of 1000 server-side.
+	ListDueSnoozedMessages(ctx context.Context, now time.Time, limit int) ([]Message, error)
+
+	// SetSnooze sets or clears the snoozed-until / "$snoozed" keyword
+	// pair atomically inside one transaction. when==nil clears both;
+	// when non-nil sets both. The mailbox's HighestModSeq is bumped
+	// and a (EntityKindEmail, ChangeOpUpdated) row is appended to the
+	// state-change feed in the same tx so JMAP push, IMAP IDLE and
+	// NOTIFY consumers see the change. Returns the message's new
+	// ModSeq. Returns ErrNotFound when the message is gone.
+	SetSnooze(ctx context.Context, msgID MessageID, when *time.Time) (ModSeq, error)
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical
