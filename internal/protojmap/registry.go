@@ -47,6 +47,12 @@ const (
 	// Calendar/* and CalendarEvent/* method families plus the iMIP
 	// intake worker flow through that package.
 	CapabilityJMAPCalendars CapabilityID = "urn:ietf:params:jmap:calendars"
+	// CapabilityJMAPChat is the JMAP Chat datatype capability
+	// (REQ-CHAT-01..06). The chat datatypes (Conversation, Message,
+	// Membership, Block) are not standardised in any IETF JMAP RFC; we
+	// use a herold-namespaced URI documented as such in the chat
+	// package's doc.go. Implemented under internal/protojmap/chat.
+	CapabilityJMAPChat CapabilityID = "urn:herold:chat"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

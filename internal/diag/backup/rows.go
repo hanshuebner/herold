@@ -386,3 +386,55 @@ type CalendarEventRow struct {
 	UpdatedAtUs    int64   `json:"updated_at_us"`
 	ModSeq         int64   `json:"modseq"`
 }
+
+type ChatConversationRow struct {
+	ID                   int64   `json:"id"`
+	Kind                 string  `json:"kind"`
+	Name                 *string `json:"name,omitempty"`
+	Topic                *string `json:"topic,omitempty"`
+	CreatedByPrincipalID int64   `json:"created_by_principal_id"`
+	CreatedAtUs          int64   `json:"created_at_us"`
+	UpdatedAtUs          int64   `json:"updated_at_us"`
+	LastMessageAtUs      *int64  `json:"last_message_at_us,omitempty"`
+	MessageCount         int64   `json:"message_count"`
+	IsArchived           bool    `json:"is_archived"`
+	ModSeq               int64   `json:"modseq"`
+}
+
+type ChatMembershipRow struct {
+	ID                   int64  `json:"id"`
+	ConversationID       int64  `json:"conversation_id"`
+	PrincipalID          int64  `json:"principal_id"`
+	Role                 string `json:"role"`
+	JoinedAtUs           int64  `json:"joined_at_us"`
+	LastReadMessageID    *int64 `json:"last_read_message_id,omitempty"`
+	IsMuted              bool   `json:"is_muted"`
+	MuteUntilUs          *int64 `json:"mute_until_us,omitempty"`
+	NotificationsSetting string `json:"notifications_setting"`
+	ModSeq               int64  `json:"modseq"`
+}
+
+type ChatMessageRow struct {
+	ID                int64   `json:"id"`
+	ConversationID    int64   `json:"conversation_id"`
+	SenderPrincipalID *int64  `json:"sender_principal_id,omitempty"`
+	IsSystem          bool    `json:"is_system"`
+	BodyText          *string `json:"body_text,omitempty"`
+	BodyHTML          *string `json:"body_html,omitempty"`
+	BodyFormat        string  `json:"body_format"`
+	ReplyToMessageID  *int64  `json:"reply_to_message_id,omitempty"`
+	ReactionsJSON     []byte  `json:"reactions_json,omitempty"`
+	AttachmentsJSON   []byte  `json:"attachments_json,omitempty"`
+	MetadataJSON      []byte  `json:"metadata_json,omitempty"`
+	EditedAtUs        *int64  `json:"edited_at_us,omitempty"`
+	DeletedAtUs       *int64  `json:"deleted_at_us,omitempty"`
+	CreatedAtUs       int64   `json:"created_at_us"`
+	ModSeq            int64   `json:"modseq"`
+}
+
+type ChatBlockRow struct {
+	BlockerPrincipalID int64   `json:"blocker_principal_id"`
+	BlockedPrincipalID int64   `json:"blocked_principal_id"`
+	CreatedAtUs        int64   `json:"created_at_us"`
+	Reason             *string `json:"reason,omitempty"`
+}

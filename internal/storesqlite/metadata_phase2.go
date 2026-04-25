@@ -1372,13 +1372,17 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			SELECT principal_id, mailbox_state, email_state, thread_state,
 			       identity_state, email_submission_state, vacation_response_state,
 			       sieve_state, address_book_state, contact_state,
-			       calendar_state, calendar_event_state, updated_at_us
+			       calendar_state, calendar_event_state,
+			       conversation_state, message_chat_state, membership_state,
+			       updated_at_us
 			  FROM jmap_states WHERE principal_id = ?`, int64(pid))
 		var (
 			ppid, mb, em, th, ide, es, vr, sv, ab, ct, cal, ce int64
+			conv, msgChat, memb                                int64
 			updatedUs                                          int64
 		)
-		if err := row.Scan(&ppid, &mb, &em, &th, &ide, &es, &vr, &sv, &ab, &ct, &cal, &ce, &updatedUs); err != nil {
+		if err := row.Scan(&ppid, &mb, &em, &th, &ide, &es, &vr, &sv, &ab, &ct, &cal, &ce,
+			&conv, &msgChat, &memb, &updatedUs); err != nil {
 			return mapErr(err)
 		}
 		out = store.JMAPStates{
@@ -1394,6 +1398,9 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			Contact:          ct,
 			Calendar:         cal,
 			CalendarEvent:    ce,
+			Conversation:     conv,
+			ChatMessage:      msgChat,
+			Membership:       memb,
 			UpdatedAt:        fromMicros(updatedUs),
 		}
 		return nil
@@ -1463,6 +1470,12 @@ func jmapStateColumn(kind store.JMAPStateKind) (string, error) {
 		return "calendar_state", nil
 	case store.JMAPStateKindCalendarEvent:
 		return "calendar_event_state", nil
+	case store.JMAPStateKindConversation:
+		return "conversation_state", nil
+	case store.JMAPStateKindChatMessage:
+		return "message_chat_state", nil
+	case store.JMAPStateKindMembership:
+		return "membership_state", nil
 	default:
 		return "", fmt.Errorf("storesqlite: unknown JMAPStateKind %d", kind)
 	}

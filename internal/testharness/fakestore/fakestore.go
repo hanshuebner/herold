@@ -1124,6 +1124,25 @@ func (m *metaFace) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 				delete(s.phase2.calendars, calID)
 			}
 		}
+		// Wave 2.8 chat cascade: chat_memberships, chat_blocks, and
+		// chat_messages.sender_principal_id (the latter SET NULL).
+		// Mirrors the FK rules in 0012_chat.sql.
+		for memID, mb := range s.phase2.chatMemberships {
+			if mb.PrincipalID == pid {
+				delete(s.phase2.chatMemberships, memID)
+			}
+		}
+		for k := range s.phase2.chatBlocks {
+			if k.Blocker == pid || k.Blocked == pid {
+				delete(s.phase2.chatBlocks, k)
+			}
+		}
+		for mid, msg := range s.phase2.chatMessages {
+			if msg.SenderPrincipalID != nil && *msg.SenderPrincipalID == pid {
+				msg.SenderPrincipalID = nil
+				s.phase2.chatMessages[mid] = msg
+			}
+		}
 	}
 	// Audit log: drop entries that target or originate from this
 	// principal. Iterate and rebuild; audit volumes are low in tests.

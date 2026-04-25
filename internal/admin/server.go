@@ -30,6 +30,8 @@ import (
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/plugin"
 	"github.com/hanshuebner/herold/internal/protoadmin"
+	"github.com/hanshuebner/herold/internal/protocall"
+	"github.com/hanshuebner/herold/internal/protochat"
 	"github.com/hanshuebner/herold/internal/protoimap"
 	"github.com/hanshuebner/herold/internal/protoimg"
 	"github.com/hanshuebner/herold/internal/protojmap/calendars/imip"
@@ -281,7 +283,10 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// constructor. The two handlers are otherwise independent —
 	// session cookies (UI) and Bearer keys (REST) live in disjoint
 	// header/cookie namespaces, and the URL prefixes do not overlap.
-	adminHandler := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, adminServer.Handler())
+	adminHandler, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, adminServer.Handler())
+	if err != nil {
+		return err
+	}
 
 	// Bind listeners.
 	boundListeners, err := bindListeners(ctx, cfg, logger, tlsStore, smtpServer, imapServer, adminHandler, opts)
@@ -861,9 +866,9 @@ func composeAdminAndUI(
 	clk clock.Clock,
 	logger *slog.Logger,
 	adminHandler http.Handler,
-) http.Handler {
+) (http.Handler, error) {
 	if cfg.Server.UI.Enabled != nil && !*cfg.Server.UI.Enabled {
-		return adminHandler
+		return adminHandler, nil
 	}
 	prefix := cfg.Server.UI.PathPrefix
 	if prefix == "" {
@@ -896,7 +901,7 @@ func composeAdminAndUI(
 		// degradation.
 		logger.LogAttrs(ctx, slog.LevelError, "protoui: construct failed; UI disabled",
 			slog.String("err", err.Error()))
-		return adminHandler
+		return adminHandler, nil
 	}
 	parent := http.NewServeMux()
 	parent.Handle("/api/v1/", adminHandler)
@@ -923,6 +928,76 @@ func composeAdminAndUI(
 		parent.Handle("/proxy/image", imgSrv.Handler())
 	}
 
+	// Chat ephemeral channel (REQ-CHAT-40..46). The /chat/ws
+	// upgrade handler shares the suite session with the UI and the
+	// image proxy. Membership/members resolvers go through the chat
+	// store metadata surface that track A landed; the broadcaster's
+	// per-conversation fanout is therefore live as soon as a
+	// principal joins a conversation.
+	var chatBroadcaster *protochat.Broadcaster
+	var chatSrv *protochat.Server
+	if cfg.Server.Chat.Enabled == nil || *cfg.Server.Chat.Enabled {
+		chatBroadcaster = protochat.NewBroadcaster(
+			logger.With("subsystem", "protochat"),
+			callChatMembersResolver(st))
+		chatSrv = protochat.New(protochat.Options{
+			Store:           st,
+			Logger:          logger.With("subsystem", "protochat"),
+			Clock:           clk,
+			SessionResolver: uiSrv.ResolveSession,
+			Broadcaster:     chatBroadcaster,
+			Membership:      callChatMembershipResolver(st),
+			MaxConnections:  cfg.Server.Chat.MaxConnections,
+			PerPrincipalCap: cfg.Server.Chat.PerPrincipalCap,
+			PingInterval:    time.Duration(cfg.Server.Chat.PingIntervalSeconds) * time.Second,
+			PongTimeout:     time.Duration(cfg.Server.Chat.PongTimeoutSeconds) * time.Second,
+			MaxFrameBytes:   cfg.Server.Chat.MaxFrameBytes,
+		})
+		parent.Handle("/chat/ws", chatSrv.Handler())
+	}
+
+	// Video calls (REQ-CALL-*). Two surfaces:
+	//   - HTTP credential mint at /api/v1/call/credentials, sharing
+	//     the suite session cookie with the UI and image proxy and
+	//     additionally accepting protoadmin Bearer API keys.
+	//   - Chat call.signal handler, registered against the chat
+	//     protocol so call-lifecycle bookkeeping (call.started /
+	//     call.ended system messages) lives outside the chat
+	//     ephemeral surface.
+	if cfg.Server.Call.Enabled == nil || *cfg.Server.Call.Enabled {
+		var sharedSecret []byte
+		if cfg.Server.TURN.SharedSecretEnv != "" {
+			s, err := sysconfig.ResolveSecretStrict(cfg.Server.TURN.SharedSecretEnv)
+			if err != nil {
+				return nil, fmt.Errorf("admin: resolve TURN shared secret: %w", err)
+			}
+			sharedSecret = []byte(s)
+		}
+		callSrv := protocall.New(protocall.Options{
+			Logger:         logger.With("subsystem", "protocall"),
+			Clock:          clk,
+			Broadcaster:    newCallBroadcasterAdapter(chatBroadcaster),
+			Members:        newCallMembersAdapter(st),
+			SystemMessages: newCallSysmsgsAdapter(st),
+			Presence:       newCallPresenceAdapter(chatBroadcaster),
+			TURN: protocall.TURNConfig{
+				URIs:          cfg.Server.TURN.URIs,
+				SharedSecret:  sharedSecret,
+				CredentialTTL: time.Duration(cfg.Server.TURN.CredentialTTLSeconds) * time.Second,
+			},
+			Authn: newCallAuthn(st, uiSrv.ResolveSession),
+		})
+		// Mount on the parent mux directly; Go's ServeMux longest-
+		// prefix routing prefers the exact "/api/v1/call/credentials"
+		// over the catch-all "/api/v1/" registered by adminHandler.
+		parent.Handle("/api/v1/call/credentials", callSrv.HTTPHandler())
+		if chatSrv != nil {
+			if err := chatSrv.RegisterHandler("call.signal", callSignalForwarder(callSrv)); err != nil {
+				return nil, fmt.Errorf("admin: register call.signal handler: %w", err)
+			}
+		}
+	}
+
 	// Bare `/` and unknown roots: send a browser hitting the admin
 	// host directly to the UI login. API consumers never request `/`,
 	// so this hop only affects operators using a browser.
@@ -933,7 +1008,7 @@ func composeAdminAndUI(
 		}
 		http.NotFound(w, r)
 	})
-	return parent
+	return parent, nil
 }
 
 // notifySystemdReady implements a minimal sd_notify(READY=1) compatible

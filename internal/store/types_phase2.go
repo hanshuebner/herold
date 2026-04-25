@@ -783,6 +783,14 @@ type JMAPStates struct {
 	Calendar int64
 	// CalendarEvent is the JMAP CalendarEvent state (REQ-PROTO-54).
 	CalendarEvent int64
+	// Conversation is the JMAP chat-Conversation state (REQ-CHAT-02).
+	Conversation int64
+	// ChatMessage is the JMAP chat-Message state (REQ-CHAT-03). The
+	// underlying column is jmap_states.message_chat_state — see the
+	// dual-meaning split note in types_chat.go.
+	ChatMessage int64
+	// Membership is the JMAP Membership state (REQ-CHAT-04).
+	Membership int64
 	// UpdatedAt is the instant of the most recent increment.
 	UpdatedAt time.Time
 }

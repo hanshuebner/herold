@@ -89,6 +89,55 @@ tls = "starttls"
 	if cfg.Server.Snooze.PollInterval == 0 {
 		t.Errorf("default snooze poll_interval: got 0, want 60s default")
 	}
+	// Chat ephemeral channel defaults (REQ-CHAT-40..46).
+	if cfg.Server.Chat.Enabled == nil || !*cfg.Server.Chat.Enabled {
+		t.Errorf("default chat enabled: want true")
+	}
+	if cfg.Server.Chat.MaxConnections != 4096 {
+		t.Errorf("default chat max_connections: got %d", cfg.Server.Chat.MaxConnections)
+	}
+	if cfg.Server.Chat.PerPrincipalCap != 8 {
+		t.Errorf("default chat per_principal_cap: got %d", cfg.Server.Chat.PerPrincipalCap)
+	}
+	if cfg.Server.Chat.PingIntervalSeconds != 30 {
+		t.Errorf("default chat ping_interval_seconds: got %d", cfg.Server.Chat.PingIntervalSeconds)
+	}
+	if cfg.Server.Chat.PongTimeoutSeconds != 60 {
+		t.Errorf("default chat pong_timeout_seconds: got %d", cfg.Server.Chat.PongTimeoutSeconds)
+	}
+	if cfg.Server.Chat.MaxFrameBytes != 65536 {
+		t.Errorf("default chat max_frame_bytes: got %d", cfg.Server.Chat.MaxFrameBytes)
+	}
+}
+
+func TestValidate_RejectsChatPongBelowPing(t *testing.T) {
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[server.chat]
+ping_interval_seconds = 60
+pong_timeout_seconds = 30
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected error for pong < ping")
+	}
+	if !strings.Contains(err.Error(), "chat") {
+		t.Fatalf("error %q should mention chat", err.Error())
+	}
 }
 
 func TestValidate_RejectsSubFiveSecondSnoozePoll(t *testing.T) {

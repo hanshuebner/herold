@@ -32,6 +32,75 @@ type ServerConfig struct {
 	Snooze        SnoozeConfig     `toml:"snooze,omitempty"`
 	UI            UIConfig         `toml:"ui,omitempty"`
 	ImageProxy    ImageProxyConfig `toml:"image_proxy,omitempty"`
+	Chat          ChatConfig       `toml:"chat,omitempty"`
+	Call          CallConfig       `toml:"call,omitempty"`
+	TURN          TURNConfig       `toml:"turn,omitempty"`
+}
+
+// CallConfig configures the 1:1 video-call signaling surface
+// (REQ-CALL-*). The signaling itself rides the chat WebSocket; this
+// block toggles the credential-mint endpoint and reserves room for
+// future call-side knobs (e.g. per-principal concurrent-call caps).
+type CallConfig struct {
+	// Enabled selects whether the credential mint endpoint is
+	// mounted and the chat protocol's call.signal handler is
+	// registered. Defaults to true; set false to disable video
+	// calling entirely.
+	Enabled *bool `toml:"enabled,omitempty"`
+}
+
+// TURNConfig configures the operator-deployed coturn (or equivalent)
+// the call surface points clients at (REQ-CALL-OPS).
+//
+// Per STANDARDS §9 the shared secret MUST come from environment via
+// SharedSecretEnv ($VAR) or a file (file:/path); inline secrets are
+// rejected at config validate. The herold process reads the env once
+// at startup and again on SIGHUP; rotating the secret requires a
+// matching rotate of coturn's static-auth-secret.
+type TURNConfig struct {
+	// URIs is the operator-supplied list of "turn:" / "turns:" URIs
+	// herold advertises in mint responses. At least one entry is
+	// required when [server.call] is enabled.
+	URIs []string `toml:"uris,omitempty"`
+	// SharedSecretEnv names the environment variable carrying
+	// coturn's static-auth-secret (typed as "$HEROLD_TURN_SECRET"
+	// in the TOML). The server resolves it via sysconfig.ResolveSecret.
+	SharedSecretEnv string `toml:"shared_secret_env,omitempty"`
+	// CredentialTTLSeconds is the requested credential lifetime in
+	// seconds. Default 3600; clamped to MaxCredentialTTL inside
+	// internal/protocall.
+	CredentialTTLSeconds int `toml:"credential_ttl_seconds,omitempty"`
+}
+
+// ChatConfig configures the chat ephemeral channel
+// (REQ-CHAT-40..46), an optional WebSocket surface mounted on the
+// admin HTTP listener at /chat/ws. Defaults match the architecture
+// document and produce a working server out of the box; operators
+// override only to widen / narrow the connection caps or the
+// heartbeat schedule.
+type ChatConfig struct {
+	// Enabled selects whether the /chat/ws upgrade handler is
+	// mounted. Defaults to true; operators who haven't shipped a
+	// chat client yet keep the surface unreachable by setting
+	// false.
+	Enabled *bool `toml:"enabled,omitempty"`
+	// MaxConnections caps the number of concurrent WebSocket
+	// connections across all principals. Default 4096.
+	MaxConnections int `toml:"max_connections,omitempty"`
+	// PerPrincipalCap caps connections per principal (one tab per
+	// connection in the typical client). Default 8.
+	PerPrincipalCap int `toml:"per_principal_cap,omitempty"`
+	// PingIntervalSeconds is the server-to-client ping cadence in
+	// seconds (REQ-CHAT-42). Default 30.
+	PingIntervalSeconds int `toml:"ping_interval_seconds,omitempty"`
+	// PongTimeoutSeconds is the budget in seconds for a client to
+	// respond to a ping with a pong before the server closes the
+	// connection. Default 60.
+	PongTimeoutSeconds int `toml:"pong_timeout_seconds,omitempty"`
+	// MaxFrameBytes caps the size of a single inbound WebSocket
+	// frame; oversize frames close the connection with code 1009.
+	// Default 65536 (64 KiB).
+	MaxFrameBytes int `toml:"max_frame_bytes,omitempty"`
 }
 
 // ImageProxyConfig configures the inbound HTML image proxy
@@ -351,6 +420,40 @@ func applyDefaults(c *Config) {
 	if c.Server.ImageProxy.PerUserConcurrent == 0 {
 		c.Server.ImageProxy.PerUserConcurrent = 8
 	}
+	// Chat ephemeral channel (REQ-CHAT-40..46). Defaults match the
+	// architecture document; operators get a working server without
+	// any TOML. Toggling Enabled to false unmounts the upgrade
+	// handler — useful before a chat client has shipped.
+	if c.Server.Chat.Enabled == nil {
+		t := true
+		c.Server.Chat.Enabled = &t
+	}
+	if c.Server.Chat.MaxConnections == 0 {
+		c.Server.Chat.MaxConnections = 4096
+	}
+	if c.Server.Chat.PerPrincipalCap == 0 {
+		c.Server.Chat.PerPrincipalCap = 8
+	}
+	if c.Server.Chat.PingIntervalSeconds == 0 {
+		c.Server.Chat.PingIntervalSeconds = 30
+	}
+	if c.Server.Chat.PongTimeoutSeconds == 0 {
+		c.Server.Chat.PongTimeoutSeconds = 60
+	}
+	if c.Server.Chat.MaxFrameBytes == 0 {
+		c.Server.Chat.MaxFrameBytes = 65536
+	}
+	// Video calls (REQ-CALL-*). Defaults to enabled with a one-hour
+	// credential TTL; operators who haven't deployed coturn keep the
+	// surface unreachable simply by leaving uris empty (the mint
+	// endpoint then returns 503).
+	if c.Server.Call.Enabled == nil {
+		t := true
+		c.Server.Call.Enabled = &t
+	}
+	if c.Server.TURN.CredentialTTLSeconds == 0 {
+		c.Server.TURN.CredentialTTLSeconds = 3600
+	}
 }
 
 // Validate performs cross-field and semantic checks that go-toml cannot express.
@@ -388,6 +491,46 @@ func Validate(c *Config) error {
 	}
 	if ip.PerUserPerMinute < 0 || ip.PerUserOriginPerMinute < 0 || ip.PerUserConcurrent < 0 {
 		return errors.New("sysconfig: [server.image_proxy] rate-limit knobs must be >= 0")
+	}
+	// Chat ephemeral channel (REQ-CHAT-40..46). Sanity-bound the
+	// knobs so an operator typo doesn't produce a non-functional
+	// server.
+	ch := c.Server.Chat
+	if ch.MaxConnections < 0 || ch.PerPrincipalCap < 0 ||
+		ch.PingIntervalSeconds < 0 || ch.PongTimeoutSeconds < 0 ||
+		ch.MaxFrameBytes < 0 {
+		return errors.New("sysconfig: [server.chat] knobs must be >= 0")
+	}
+	if ch.PerPrincipalCap > 0 && ch.MaxConnections > 0 && ch.PerPrincipalCap > ch.MaxConnections {
+		return fmt.Errorf("sysconfig: [server.chat] per_principal_cap %d exceeds max_connections %d",
+			ch.PerPrincipalCap, ch.MaxConnections)
+	}
+	if ch.PongTimeoutSeconds > 0 && ch.PingIntervalSeconds > 0 && ch.PongTimeoutSeconds < ch.PingIntervalSeconds {
+		return fmt.Errorf("sysconfig: [server.chat] pong_timeout_seconds %d below ping_interval_seconds %d",
+			ch.PongTimeoutSeconds, ch.PingIntervalSeconds)
+	}
+	// Video calls (REQ-CALL-*). When the operator supplies TURN URIs
+	// they MUST also point us at the shared secret via env / file
+	// (STANDARDS §9: no inline secrets); the credential TTL must be
+	// in (0, 12h]. Empty URIs disables the credential mint endpoint
+	// entirely; the chat call.signal handler still runs (signaling
+	// works without TURN when STUN succeeds).
+	tu := c.Server.TURN
+	if c.Server.TURN.CredentialTTLSeconds < 0 {
+		return fmt.Errorf("sysconfig: [server.turn] credential_ttl_seconds %d must be >= 0", tu.CredentialTTLSeconds)
+	}
+	if c.Server.TURN.CredentialTTLSeconds > 12*3600 {
+		return fmt.Errorf("sysconfig: [server.turn] credential_ttl_seconds %d exceeds 12h ceiling",
+			tu.CredentialTTLSeconds)
+	}
+	if len(tu.URIs) > 0 {
+		if tu.SharedSecretEnv == "" {
+			return errors.New("sysconfig: [server.turn] shared_secret_env required when uris is set")
+		}
+		if !IsSecretReference(tu.SharedSecretEnv) {
+			return fmt.Errorf("sysconfig: [server.turn] shared_secret_env %q must be \"$VAR\" or \"file:/path\" (STANDARDS §9)",
+				tu.SharedSecretEnv)
+		}
 	}
 	// Admin TLS
 	switch c.Server.AdminTLS.Source {

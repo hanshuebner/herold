@@ -584,6 +584,127 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "chat_conversations":
+		return enumerate(ctx, s.tx,
+			`SELECT id, kind, name, topic, created_by_principal_id,
+			        created_at_us, updated_at_us, last_message_at_us,
+			        message_count, is_archived, modseq
+			   FROM chat_conversations ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r ChatConversationRow
+				var name, topic sql.NullString
+				var lastMsg sql.NullInt64
+				var archived int64
+				if err := rs.Scan(&r.ID, &r.Kind, &name, &topic, &r.CreatedByPrincipalID,
+					&r.CreatedAtUs, &r.UpdatedAtUs, &lastMsg,
+					&r.MessageCount, &archived, &r.ModSeq); err != nil {
+					return nil, err
+				}
+				if name.Valid {
+					v := name.String
+					r.Name = &v
+				}
+				if topic.Valid {
+					v := topic.String
+					r.Topic = &v
+				}
+				if lastMsg.Valid {
+					v := lastMsg.Int64
+					r.LastMessageAtUs = &v
+				}
+				r.IsArchived = archived != 0
+				return &r, nil
+			}, fn)
+	case "chat_memberships":
+		return enumerate(ctx, s.tx,
+			`SELECT id, conversation_id, principal_id, role, joined_at_us,
+			        last_read_message_id, is_muted, mute_until_us,
+			        notifications_setting, modseq
+			   FROM chat_memberships ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r ChatMembershipRow
+				var lastRead, muteUntil sql.NullInt64
+				var muted int64
+				if err := rs.Scan(&r.ID, &r.ConversationID, &r.PrincipalID, &r.Role,
+					&r.JoinedAtUs, &lastRead, &muted, &muteUntil,
+					&r.NotificationsSetting, &r.ModSeq); err != nil {
+					return nil, err
+				}
+				if lastRead.Valid {
+					v := lastRead.Int64
+					r.LastReadMessageID = &v
+				}
+				if muteUntil.Valid {
+					v := muteUntil.Int64
+					r.MuteUntilUs = &v
+				}
+				r.IsMuted = muted != 0
+				return &r, nil
+			}, fn)
+	case "chat_messages":
+		return enumerate(ctx, s.tx,
+			`SELECT id, conversation_id, sender_principal_id, is_system,
+			        body_text, body_html, body_format, reply_to_message_id,
+			        reactions_json, attachments_json, metadata_json,
+			        edited_at_us, deleted_at_us, created_at_us, modseq
+			   FROM chat_messages ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r ChatMessageRow
+				var sender sql.NullInt64
+				var isSystem int64
+				var bodyText, bodyHTML sql.NullString
+				var replyTo sql.NullInt64
+				var editedUs, deletedUs sql.NullInt64
+				if err := rs.Scan(&r.ID, &r.ConversationID, &sender, &isSystem,
+					&bodyText, &bodyHTML, &r.BodyFormat, &replyTo,
+					&r.ReactionsJSON, &r.AttachmentsJSON, &r.MetadataJSON,
+					&editedUs, &deletedUs, &r.CreatedAtUs, &r.ModSeq); err != nil {
+					return nil, err
+				}
+				r.IsSystem = isSystem != 0
+				if sender.Valid {
+					v := sender.Int64
+					r.SenderPrincipalID = &v
+				}
+				if bodyText.Valid {
+					v := bodyText.String
+					r.BodyText = &v
+				}
+				if bodyHTML.Valid {
+					v := bodyHTML.String
+					r.BodyHTML = &v
+				}
+				if replyTo.Valid {
+					v := replyTo.Int64
+					r.ReplyToMessageID = &v
+				}
+				if editedUs.Valid {
+					v := editedUs.Int64
+					r.EditedAtUs = &v
+				}
+				if deletedUs.Valid {
+					v := deletedUs.Int64
+					r.DeletedAtUs = &v
+				}
+				return &r, nil
+			}, fn)
+	case "chat_blocks":
+		return enumerate(ctx, s.tx,
+			`SELECT blocker_principal_id, blocked_principal_id, created_at_us, reason
+			   FROM chat_blocks ORDER BY blocker_principal_id, blocked_principal_id`,
+			func(rs *sql.Rows) (any, error) {
+				var r ChatBlockRow
+				var reason sql.NullString
+				if err := rs.Scan(&r.BlockerPrincipalID, &r.BlockedPrincipalID,
+					&r.CreatedAtUs, &reason); err != nil {
+					return nil, err
+				}
+				if reason.Valid {
+					v := reason.String
+					r.Reason = &v
+				}
+				return &r, nil
+			}, fn)
 	case "blob_refs":
 		return enumerate(ctx, s.tx,
 			`SELECT hash, size, ref_count, last_change_us FROM blob_refs ORDER BY hash`,
@@ -941,6 +1062,91 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			r.Summary, organizer, r.Status,
 			r.CreatedAtUs, r.UpdatedAtUs, r.ModSeq)
 		return err
+	case "chat_conversations":
+		r := row.(*ChatConversationRow)
+		var name, topic, lastMsg any
+		if r.Name != nil {
+			name = *r.Name
+		}
+		if r.Topic != nil {
+			topic = *r.Topic
+		}
+		if r.LastMessageAtUs != nil {
+			lastMsg = *r.LastMessageAtUs
+		}
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO chat_conversations (id, kind, name, topic,
+			   created_by_principal_id, created_at_us, updated_at_us,
+			   last_message_at_us, message_count, is_archived, modseq)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.Kind, name, topic, r.CreatedByPrincipalID,
+			r.CreatedAtUs, r.UpdatedAtUs, lastMsg,
+			r.MessageCount, boolToInt(r.IsArchived), r.ModSeq)
+		return err
+	case "chat_memberships":
+		r := row.(*ChatMembershipRow)
+		var lastRead, muteUntil any
+		if r.LastReadMessageID != nil {
+			lastRead = *r.LastReadMessageID
+		}
+		if r.MuteUntilUs != nil {
+			muteUntil = *r.MuteUntilUs
+		}
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO chat_memberships (id, conversation_id, principal_id, role,
+			   joined_at_us, last_read_message_id, is_muted, mute_until_us,
+			   notifications_setting, modseq)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.ConversationID, r.PrincipalID, r.Role,
+			r.JoinedAtUs, lastRead, boolToInt(r.IsMuted), muteUntil,
+			r.NotificationsSetting, r.ModSeq)
+		return err
+	case "chat_messages":
+		r := row.(*ChatMessageRow)
+		var sender, replyTo, editedUs, deletedUs any
+		var bodyText, bodyHTML any
+		if r.SenderPrincipalID != nil {
+			sender = *r.SenderPrincipalID
+		}
+		if r.ReplyToMessageID != nil {
+			replyTo = *r.ReplyToMessageID
+		}
+		if r.EditedAtUs != nil {
+			editedUs = *r.EditedAtUs
+		}
+		if r.DeletedAtUs != nil {
+			deletedUs = *r.DeletedAtUs
+		}
+		if r.BodyText != nil {
+			bodyText = *r.BodyText
+		}
+		if r.BodyHTML != nil {
+			bodyHTML = *r.BodyHTML
+		}
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO chat_messages (id, conversation_id, sender_principal_id,
+			   is_system, body_text, body_html, body_format, reply_to_message_id,
+			   reactions_json, attachments_json, metadata_json,
+			   edited_at_us, deleted_at_us, created_at_us, modseq)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.ConversationID, sender, boolToInt(r.IsSystem),
+			bodyText, bodyHTML, r.BodyFormat, replyTo,
+			nullableBytes(r.ReactionsJSON), nullableBytes(r.AttachmentsJSON),
+			nullableBytes(r.MetadataJSON), editedUs, deletedUs,
+			r.CreatedAtUs, r.ModSeq)
+		return err
+	case "chat_blocks":
+		r := row.(*ChatBlockRow)
+		var reason any
+		if r.Reason != nil {
+			reason = *r.Reason
+		}
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO chat_blocks (blocker_principal_id, blocked_principal_id,
+			   created_at_us, reason)
+			 VALUES (?, ?, ?, ?)`,
+			r.BlockerPrincipalID, r.BlockedPrincipalID, r.CreatedAtUs, reason)
+		return err
 	case "blob_refs":
 		r := row.(*BlobRefRow)
 		_, err := s.tx.ExecContext(ctx,
@@ -950,6 +1156,13 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		return err
 	}
 	return fmt.Errorf("sqlite sink: unknown table %q", table)
+}
+
+func nullableBytes(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }
 
 func (s *sqliteSink) Commit(ctx context.Context) error {

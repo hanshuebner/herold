@@ -770,6 +770,140 @@ type Metadata interface {
 	// a (EntityKindCalendarEvent, ChangeOpDestroyed) state-change row
 	// in the same tx. Returns ErrNotFound when the row is missing.
 	DeleteCalendarEvent(ctx context.Context, id CalendarEventID) error
+
+	// -- Phase 2 Wave 2.8 chat subsystem (REQ-CHAT-*) -----------------
+
+	// InsertChatConversation persists a new conversation row and
+	// appends a (EntityKindConversation, ChangeOpCreated) state-change
+	// row.
+	InsertChatConversation(ctx context.Context, c ChatConversation) (ConversationID, error)
+
+	// GetChatConversation returns one row by id, or ErrNotFound.
+	GetChatConversation(ctx context.Context, id ConversationID) (ChatConversation, error)
+
+	// ListChatConversations applies filter and returns rows in
+	// ascending ID order. Caps at 1000 server-side.
+	ListChatConversations(ctx context.Context, filter ChatConversationFilter) ([]ChatConversation, error)
+
+	// UpdateChatConversation persists the mutable fields (Name, Topic,
+	// LastMessageAt, MessageCount, IsArchived) on the row identified
+	// by c.ID, bumps ModSeq and UpdatedAt, and appends a
+	// (EntityKindConversation, ChangeOpUpdated) state-change row in
+	// the same tx. Returns ErrNotFound when the row is missing.
+	UpdateChatConversation(ctx context.Context, c ChatConversation) error
+
+	// DeleteChatConversation removes the row identified by id
+	// (cascading to every membership and message owned by the
+	// conversation via FK ON DELETE CASCADE) and appends per-row
+	// destroyed state-change entries plus the conversation destroyed
+	// row — all in one tx. Returns ErrNotFound when the row is missing.
+	DeleteChatConversation(ctx context.Context, id ConversationID) error
+
+	// InsertChatMembership persists a new membership row. The unique
+	// (conversation_id, principal_id) constraint surfaces as
+	// ErrConflict on duplicate. Appends a (EntityKindMembership,
+	// ChangeOpCreated) state-change row with ParentEntityID =
+	// conversation_id.
+	InsertChatMembership(ctx context.Context, m ChatMembership) (MembershipID, error)
+
+	// GetChatMembership returns the membership row for the given
+	// (conversationID, principalID) pair, or ErrNotFound.
+	GetChatMembership(ctx context.Context, conversationID ConversationID, principalID PrincipalID) (ChatMembership, error)
+
+	// ListChatMembershipsByConversation returns every membership for
+	// conversationID in ascending ID order.
+	ListChatMembershipsByConversation(ctx context.Context, conversationID ConversationID) ([]ChatMembership, error)
+
+	// ListChatMembershipsByPrincipal returns every membership owned by
+	// principalID in ascending ID order — the "what conversations am I
+	// in" projection.
+	ListChatMembershipsByPrincipal(ctx context.Context, principalID PrincipalID) ([]ChatMembership, error)
+
+	// UpdateChatMembership persists the mutable fields (Role,
+	// LastReadMessageID, IsMuted, MuteUntil, NotificationsSetting) on
+	// the row identified by m.ID, bumps ModSeq, and appends a
+	// (EntityKindMembership, ChangeOpUpdated) row in the same tx.
+	// Returns ErrNotFound when the row is missing.
+	UpdateChatMembership(ctx context.Context, m ChatMembership) error
+
+	// DeleteChatMembership removes the row identified by id and
+	// appends a (EntityKindMembership, ChangeOpDestroyed) state-change
+	// row in the same tx. Returns ErrNotFound when the row is missing.
+	DeleteChatMembership(ctx context.Context, id MembershipID) error
+
+	// InsertChatMessage persists a new chat message row, advances the
+	// owning conversation's denormalised LastMessageAt and
+	// MessageCount, and appends a (EntityKindChatMessage,
+	// ChangeOpCreated) state-change row with ParentEntityID =
+	// conversation_id — all in one tx. The reactions / attachments
+	// JSON caps are enforced server-side; oversized payloads return
+	// ErrInvalidArgument.
+	InsertChatMessage(ctx context.Context, m ChatMessage) (ChatMessageID, error)
+
+	// GetChatMessage returns one row by id, or ErrNotFound.
+	GetChatMessage(ctx context.Context, id ChatMessageID) (ChatMessage, error)
+
+	// ListChatMessages applies filter and returns rows in ascending ID
+	// order. Caps at 1000 server-side.
+	ListChatMessages(ctx context.Context, filter ChatMessageFilter) ([]ChatMessage, error)
+
+	// UpdateChatMessage persists the mutable fields (BodyText, BodyHTML,
+	// BodyFormat, ReactionsJSON, AttachmentsJSON, MetadataJSON,
+	// EditedAt) on the row identified by m.ID, bumps ModSeq, and
+	// appends a (EntityKindChatMessage, ChangeOpUpdated) state-change
+	// row in the same tx. Reaction-cap validation runs server-side;
+	// oversized payloads return ErrInvalidArgument. Returns
+	// ErrNotFound when the row is missing.
+	UpdateChatMessage(ctx context.Context, m ChatMessage) error
+
+	// SoftDeleteChatMessage flips the soft-delete bit on a chat
+	// message (REQ-CHAT-21): sets DeletedAt to the clock instant,
+	// clears BodyText / BodyHTML, leaves the row in place so threading
+	// and read-receipt offsets stay stable. Bumps ModSeq and appends a
+	// (EntityKindChatMessage, ChangeOpUpdated) state-change row.
+	// Returns ErrNotFound when the row is missing; idempotent on an
+	// already-deleted row.
+	SoftDeleteChatMessage(ctx context.Context, id ChatMessageID) error
+
+	// SetChatReaction atomically toggles one reactor's presence in the
+	// reactions JSON for emoji on the message identified by msgID:
+	// when present is true the principal is added; when false they
+	// are removed; toggling away from non-existent state is a no-op.
+	// Bumps ModSeq and appends a (EntityKindChatMessage,
+	// ChangeOpUpdated) state-change row when the JSON actually
+	// changes. Returns ErrNotFound when the message is missing,
+	// ErrInvalidArgument when emoji is malformed or would push the
+	// reaction caps over the documented limits.
+	SetChatReaction(ctx context.Context, msgID ChatMessageID, emoji string, principalID PrincipalID, present bool) error
+
+	// InsertChatBlock records a block. The composite primary key
+	// (blocker, blocked) makes a duplicate insert ErrConflict.
+	// Inserting a self-block (blocker == blocked) returns
+	// ErrInvalidArgument.
+	InsertChatBlock(ctx context.Context, b ChatBlock) error
+
+	// DeleteChatBlock removes the (blocker, blocked) row. Returns
+	// ErrNotFound when the row is already gone.
+	DeleteChatBlock(ctx context.Context, blocker, blocked PrincipalID) error
+
+	// ListChatBlocksBy returns every block row whose blocker_principal_id
+	// equals blocker, in ascending blocked_principal_id order.
+	ListChatBlocksBy(ctx context.Context, blocker PrincipalID) ([]ChatBlock, error)
+
+	// IsBlocked reports whether blocker has blocked blocked.
+	IsBlocked(ctx context.Context, blocker, blocked PrincipalID) (bool, error)
+
+	// LastReadAt returns the (LastReadMessageID, JoinedAt) pair from
+	// the membership row identifying principalID's read pointer in
+	// conversationID. Returns ErrNotFound when the principal is not a
+	// member of the conversation.
+	LastReadAt(ctx context.Context, principalID PrincipalID, conversationID ConversationID) (*ChatMessageID, time.Time, error)
+
+	// SetLastRead advances the per-membership LastReadMessageID
+	// pointer (REQ-CHAT-30) to msgID, bumps ModSeq, and appends a
+	// (EntityKindMembership, ChangeOpUpdated) state-change row. Returns
+	// ErrNotFound when the membership is missing.
+	SetLastRead(ctx context.Context, principalID PrincipalID, conversationID ConversationID, msgID ChatMessageID) error
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

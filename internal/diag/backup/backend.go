@@ -199,6 +199,14 @@ func rowsForTable(table string) (any, bool) {
 		return &CalendarRow{}, true
 	case "calendar_events":
 		return &CalendarEventRow{}, true
+	case "chat_conversations":
+		return &ChatConversationRow{}, true
+	case "chat_memberships":
+		return &ChatMembershipRow{}, true
+	case "chat_messages":
+		return &ChatMessageRow{}, true
+	case "chat_blocks":
+		return &ChatBlockRow{}, true
 	case "blob_refs":
 		return &BlobRefRow{}, true
 	}

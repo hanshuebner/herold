@@ -132,6 +132,25 @@ func Run(t *testing.T, f Factory) {
 		{"CalendarEvent_GetByUID_NotFound_HappyPath", testCalendarEventGetByUID},
 		{"JMAPStates_CalendarCounters_RaceTested", testJMAPStatesCalendarCounters},
 		{"DeletePrincipal_CascadesCalendars", testDeletePrincipalCascadesCalendars},
+		// -- Wave 2.8 chat (REQ-CHAT-*) ---------------------------
+		{"ChatConversation_InsertGet_Roundtrip", testChatConversationInsertGetRoundtrip},
+		{"ChatConversation_List_FilterByKind", testChatConversationListFilterByKind},
+		{"ChatConversation_Update_BumpsModSeq", testChatConversationUpdateBumpsModSeq},
+		{"ChatConversation_Delete_CascadesChildren", testChatConversationDeleteCascades},
+		{"ChatMembership_InsertUniquePerConversationPrincipal", testChatMembershipUnique},
+		{"ChatMembership_ListByConversation_ListByPrincipal", testChatMembershipList},
+		{"ChatMembership_MuteRoundTrip", testChatMembershipMute},
+		{"ChatMembership_LastReadRoundTrip", testChatMembershipLastRead},
+		{"ChatMessage_InsertGet_Roundtrip", testChatMessageInsertGet},
+		{"ChatMessage_List_TimeWindow", testChatMessageListTimeWindow},
+		{"ChatMessage_Update_Edit", testChatMessageUpdateEdit},
+		{"ChatMessage_SoftDelete_PreservesRow", testChatMessageSoftDelete},
+		{"ChatMessage_AttachmentsShape", testChatMessageAttachmentsShape},
+		{"ChatMessage_ReactionsShape", testChatMessageReactionsShape},
+		{"ChatReaction_AddAndRemoveAtomic", testChatReactionAddRemove},
+		{"ChatBlock_InsertListIsBlocked", testChatBlockInsertListIsBlocked},
+		{"ChatBlock_RejectsSelfBlock", testChatBlockRejectsSelf},
+		{"DeletePrincipal_CascadesChat", testDeletePrincipalCascadesChat},
 	}
 	for _, c := range cases {
 		tc := c
@@ -3893,4 +3912,699 @@ func testDeletePrincipalCascadesCalendars(t *testing.T, s store.Store) {
 	if _, err := s.Meta().GetCalendarEvent(ctx, eid); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetCalendarEvent after DeletePrincipal = %v", err)
 	}
+}
+
+// -- Wave 2.8 chat subsystem (REQ-CHAT-*) ----------------------------
+
+// testChatConversationInsertGetRoundtrip preserves every column on
+// the conversation row and assigns a monotonic ModSeq.
+func testChatConversationInsertGetRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-conv-rt@example.com")
+	id, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind:                 store.ChatConversationKindSpace,
+		Name:                 "Project Phoenix",
+		Topic:                "Phase 2 ship blockers",
+		CreatedByPrincipalID: p.ID,
+		MessageCount:         0,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	got, err := s.Meta().GetChatConversation(ctx, id)
+	if err != nil {
+		t.Fatalf("GetChatConversation: %v", err)
+	}
+	if got.ID != id || got.Kind != store.ChatConversationKindSpace ||
+		got.Name != "Project Phoenix" || got.Topic != "Phase 2 ship blockers" ||
+		got.CreatedByPrincipalID != p.ID || got.MessageCount != 0 ||
+		got.IsArchived || got.ModSeq != 1 {
+		t.Fatalf("conversation mismatch: %+v", got)
+	}
+	if got.LastMessageAt != nil {
+		t.Fatalf("LastMessageAt should be nil on freshly-created conversation: %v", got.LastMessageAt)
+	}
+}
+
+// testChatConversationListFilterByKind exercises the Kind +
+// principal-creator filters and verifies archived conversations are
+// excluded by default.
+func testChatConversationListFilterByKind(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-list-kind@example.com")
+	dm, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindDM, CreatedByPrincipalID: p.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation dm: %v", err)
+	}
+	sp, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, Name: "team",
+		CreatedByPrincipalID: p.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation space: %v", err)
+	}
+	dmKind := store.ChatConversationKindDM
+	got, err := s.Meta().ListChatConversations(ctx, store.ChatConversationFilter{
+		Kind: &dmKind, CreatedByPrincipalID: &p.ID,
+	})
+	if err != nil {
+		t.Fatalf("ListChatConversations dm: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != dm {
+		t.Fatalf("dm filter = %+v, want one row id=%d", got, dm)
+	}
+	spKind := store.ChatConversationKindSpace
+	got, err = s.Meta().ListChatConversations(ctx, store.ChatConversationFilter{Kind: &spKind})
+	if err != nil {
+		t.Fatalf("ListChatConversations space: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != sp {
+		t.Fatalf("space filter = %+v, want one row id=%d", got, sp)
+	}
+	// Archive the space and verify default-list excludes it.
+	cur, _ := s.Meta().GetChatConversation(ctx, sp)
+	cur.IsArchived = true
+	if err := s.Meta().UpdateChatConversation(ctx, cur); err != nil {
+		t.Fatalf("UpdateChatConversation archive: %v", err)
+	}
+	got, _ = s.Meta().ListChatConversations(ctx, store.ChatConversationFilter{Kind: &spKind})
+	if len(got) != 0 {
+		t.Fatalf("archived not excluded: %+v", got)
+	}
+	got, _ = s.Meta().ListChatConversations(ctx, store.ChatConversationFilter{
+		Kind: &spKind, IncludeArchived: true,
+	})
+	if len(got) != 1 {
+		t.Fatalf("IncludeArchived missed: %+v", got)
+	}
+}
+
+// testChatConversationUpdateBumpsModSeq verifies UpdateChatConversation
+// advances ModSeq, persists mutated fields, and emits an updated
+// state-change row.
+func testChatConversationUpdateBumpsModSeq(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-conv-upd@example.com")
+	id, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, Name: "old",
+		CreatedByPrincipalID: p.ID,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	cur, _ := s.Meta().GetChatConversation(ctx, id)
+	prior := cur.ModSeq
+	cur.Name = "new"
+	cur.MessageCount = 5
+	if err := s.Meta().UpdateChatConversation(ctx, cur); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, _ := s.Meta().GetChatConversation(ctx, id)
+	if got.ModSeq <= prior {
+		t.Fatalf("ModSeq stuck: %d -> %d", prior, got.ModSeq)
+	}
+	if got.Name != "new" || got.MessageCount != 5 {
+		t.Fatalf("update not persisted: %+v", got)
+	}
+	feed, _ := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 100)
+	var sawCreated, sawUpdated bool
+	for _, e := range feed {
+		if e.Kind == store.EntityKindConversation && uint64(id) == e.EntityID {
+			switch e.Op {
+			case store.ChangeOpCreated:
+				sawCreated = true
+			case store.ChangeOpUpdated:
+				sawUpdated = true
+			}
+		}
+	}
+	if !sawCreated || !sawUpdated {
+		t.Fatalf("feed missing conversation create/update: %+v", feed)
+	}
+}
+
+// testChatConversationDeleteCascades verifies DeleteChatConversation
+// drops the conversation, its memberships, and its messages, plus
+// emits per-row destroyed state-change entries.
+func testChatConversationDeleteCascades(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-conv-del@example.com")
+	cid, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, Name: "doomed",
+		CreatedByPrincipalID: p.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	memID, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: p.ID, Role: store.ChatRoleAdmin,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMembership: %v", err)
+	}
+	pidArg := p.ID
+	mid, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID:    cid,
+		SenderPrincipalID: &pidArg,
+		BodyText:          "hello",
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMessage: %v", err)
+	}
+	if err := s.Meta().DeleteChatConversation(ctx, cid); err != nil {
+		t.Fatalf("DeleteChatConversation: %v", err)
+	}
+	if _, err := s.Meta().GetChatConversation(ctx, cid); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetChatConversation after delete = %v", err)
+	}
+	if _, err := s.Meta().GetChatMembership(ctx, cid, p.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetChatMembership after delete = %v", err)
+	}
+	if _, err := s.Meta().GetChatMessage(ctx, mid); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetChatMessage after delete = %v", err)
+	}
+	feed, _ := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 1000)
+	var sawConvDestroyed, sawMsgDestroyed, sawMemDestroyed bool
+	for _, e := range feed {
+		if e.Op != store.ChangeOpDestroyed {
+			continue
+		}
+		switch e.Kind {
+		case store.EntityKindConversation:
+			if e.EntityID == uint64(cid) {
+				sawConvDestroyed = true
+			}
+		case store.EntityKindChatMessage:
+			if e.EntityID == uint64(mid) && e.ParentEntityID == uint64(cid) {
+				sawMsgDestroyed = true
+			}
+		case store.EntityKindMembership:
+			if e.EntityID == uint64(memID) && e.ParentEntityID == uint64(cid) {
+				sawMemDestroyed = true
+			}
+		}
+	}
+	if !sawConvDestroyed || !sawMsgDestroyed || !sawMemDestroyed {
+		t.Fatalf("missing destroyed rows: conv=%v msg=%v mem=%v feed=%+v",
+			sawConvDestroyed, sawMsgDestroyed, sawMemDestroyed, feed)
+	}
+}
+
+// testChatMembershipUnique verifies the (conversation_id, principal_id)
+// uniqueness constraint surfaces ErrConflict.
+func testChatMembershipUnique(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-mem-unique@example.com")
+	cid, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, CreatedByPrincipalID: p.ID, Name: "u",
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	if _, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: p.ID, Role: store.ChatRoleMember,
+	}); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	if _, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: p.ID, Role: store.ChatRoleAdmin,
+	}); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("second insert = %v, want ErrConflict", err)
+	}
+}
+
+// testChatMembershipList verifies ListChatMembershipsByConversation /
+// ByPrincipal both surface the same row.
+func testChatMembershipList(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	alice := mustInsertPrincipal(t, s, "chat-mem-alice@example.com")
+	bob := mustInsertPrincipal(t, s, "chat-mem-bob@example.com")
+	cid, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, CreatedByPrincipalID: alice.ID, Name: "team",
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	if _, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: alice.ID, Role: store.ChatRoleAdmin,
+	}); err != nil {
+		t.Fatalf("Insert alice membership: %v", err)
+	}
+	if _, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: bob.ID, Role: store.ChatRoleMember,
+	}); err != nil {
+		t.Fatalf("Insert bob membership: %v", err)
+	}
+	byConv, err := s.Meta().ListChatMembershipsByConversation(ctx, cid)
+	if err != nil {
+		t.Fatalf("ListChatMembershipsByConversation: %v", err)
+	}
+	if len(byConv) != 2 {
+		t.Fatalf("byConv = %d, want 2", len(byConv))
+	}
+	byBob, err := s.Meta().ListChatMembershipsByPrincipal(ctx, bob.ID)
+	if err != nil {
+		t.Fatalf("ListChatMembershipsByPrincipal: %v", err)
+	}
+	if len(byBob) != 1 || byBob[0].PrincipalID != bob.ID || byBob[0].ConversationID != cid {
+		t.Fatalf("byBob = %+v, want bob/conv %d", byBob, cid)
+	}
+}
+
+// testChatMembershipMute round-trips IsMuted / NotificationsSetting /
+// MuteUntil through the update path.
+func testChatMembershipMute(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-mute@example.com")
+	cid, _ := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, CreatedByPrincipalID: p.ID, Name: "mute",
+	})
+	mid, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: p.ID, Role: store.ChatRoleAdmin,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMembership: %v", err)
+	}
+	cur, err := s.Meta().GetChatMembership(ctx, cid, p.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	until := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	cur.IsMuted = true
+	cur.MuteUntil = &until
+	cur.NotificationsSetting = store.ChatNotificationsMentions
+	if err := s.Meta().UpdateChatMembership(ctx, cur); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, _ := s.Meta().GetChatMembership(ctx, cid, p.ID)
+	if !got.IsMuted || got.MuteUntil == nil || !got.MuteUntil.Equal(until) ||
+		got.NotificationsSetting != store.ChatNotificationsMentions {
+		t.Fatalf("mute round-trip: %+v", got)
+	}
+	// Unmute clears.
+	got.IsMuted = false
+	got.MuteUntil = nil
+	got.NotificationsSetting = store.ChatNotificationsAll
+	if err := s.Meta().UpdateChatMembership(ctx, got); err != nil {
+		t.Fatalf("Update unmute: %v", err)
+	}
+	final, _ := s.Meta().GetChatMembership(ctx, cid, p.ID)
+	if final.IsMuted || final.MuteUntil != nil ||
+		final.NotificationsSetting != store.ChatNotificationsAll {
+		t.Fatalf("unmute round-trip: %+v", final)
+	}
+	if final.ID != mid {
+		t.Fatalf("ID drift: got %d want %d", final.ID, mid)
+	}
+}
+
+// testChatMembershipLastRead verifies SetLastRead + LastReadAt round-trip
+// the per-membership read pointer.
+func testChatMembershipLastRead(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-lastread@example.com")
+	cid, _ := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, CreatedByPrincipalID: p.ID, Name: "lr",
+	})
+	if _, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: p.ID, Role: store.ChatRoleMember,
+	}); err != nil {
+		t.Fatalf("InsertChatMembership: %v", err)
+	}
+	pidArg := p.ID
+	mid, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID: cid, SenderPrincipalID: &pidArg, BodyText: "hi",
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMessage: %v", err)
+	}
+	got, joined, err := s.Meta().LastReadAt(ctx, p.ID, cid)
+	if err != nil {
+		t.Fatalf("LastReadAt: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("initial LastReadAt should be nil, got %v", *got)
+	}
+	if joined.IsZero() {
+		t.Fatalf("JoinedAt should not be zero")
+	}
+	if err := s.Meta().SetLastRead(ctx, p.ID, cid, mid); err != nil {
+		t.Fatalf("SetLastRead: %v", err)
+	}
+	got, _, err = s.Meta().LastReadAt(ctx, p.ID, cid)
+	if err != nil {
+		t.Fatalf("LastReadAt after set: %v", err)
+	}
+	if got == nil || *got != mid {
+		t.Fatalf("LastReadAt = %v, want %d", got, mid)
+	}
+}
+
+// testChatMessageInsertGet covers a basic round-trip of every
+// non-derived field plus the conversation's denormalised LastMessageAt
+// + MessageCount advance.
+func testChatMessageInsertGet(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-msg-rt@example.com")
+	cid, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, CreatedByPrincipalID: p.ID, Name: "rt",
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	pidArg := p.ID
+	mid, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID:    cid,
+		SenderPrincipalID: &pidArg,
+		BodyText:          "hello world",
+		BodyHTML:          "<p>hello world</p>",
+		BodyFormat:        store.ChatBodyFormatHTML,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMessage: %v", err)
+	}
+	got, err := s.Meta().GetChatMessage(ctx, mid)
+	if err != nil {
+		t.Fatalf("GetChatMessage: %v", err)
+	}
+	if got.BodyText != "hello world" || got.BodyHTML != "<p>hello world</p>" ||
+		got.BodyFormat != store.ChatBodyFormatHTML {
+		t.Fatalf("message body mismatch: %+v", got)
+	}
+	if got.SenderPrincipalID == nil || *got.SenderPrincipalID != p.ID {
+		t.Fatalf("sender principal not preserved: %+v", got.SenderPrincipalID)
+	}
+	if got.IsSystem || got.DeletedAt != nil || got.EditedAt != nil {
+		t.Fatalf("flag fields should be defaults: %+v", got)
+	}
+	if got.ModSeq != 1 {
+		t.Fatalf("initial ModSeq = %d, want 1", got.ModSeq)
+	}
+	conv, _ := s.Meta().GetChatConversation(ctx, cid)
+	if conv.MessageCount != 1 || conv.LastMessageAt == nil {
+		t.Fatalf("conversation not advanced: %+v", conv)
+	}
+}
+
+// testChatMessageListTimeWindow exercises the CreatedAfter /
+// CreatedBefore predicates plus the IncludeDeleted toggle.
+func testChatMessageListTimeWindow(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-msg-window@example.com")
+	cid, _ := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, CreatedByPrincipalID: p.ID, Name: "win",
+	})
+	pidArg := p.ID
+	for i := 0; i < 3; i++ {
+		if _, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+			ConversationID: cid, SenderPrincipalID: &pidArg,
+			BodyText: fmt.Sprintf("m%d", i),
+		}); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+	}
+	got, err := s.Meta().ListChatMessages(ctx, store.ChatMessageFilter{
+		ConversationID: &cid,
+	})
+	if err != nil {
+		t.Fatalf("ListChatMessages: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3", len(got))
+	}
+	// Soft-delete the middle message and verify the default filter
+	// hides it.
+	if err := s.Meta().SoftDeleteChatMessage(ctx, got[1].ID); err != nil {
+		t.Fatalf("SoftDelete: %v", err)
+	}
+	live, _ := s.Meta().ListChatMessages(ctx, store.ChatMessageFilter{ConversationID: &cid})
+	if len(live) != 2 {
+		t.Fatalf("live len = %d, want 2", len(live))
+	}
+	all, _ := s.Meta().ListChatMessages(ctx, store.ChatMessageFilter{
+		ConversationID: &cid, IncludeDeleted: true,
+	})
+	if len(all) != 3 {
+		t.Fatalf("with-deleted len = %d, want 3", len(all))
+	}
+}
+
+// testChatMessageUpdateEdit verifies UpdateChatMessage advances ModSeq
+// and persists EditedAt.
+func testChatMessageUpdateEdit(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-msg-edit@example.com")
+	cid, _ := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, CreatedByPrincipalID: p.ID, Name: "e",
+	})
+	pidArg := p.ID
+	mid, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID: cid, SenderPrincipalID: &pidArg, BodyText: "draft",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	cur, _ := s.Meta().GetChatMessage(ctx, mid)
+	prior := cur.ModSeq
+	cur.BodyText = "final"
+	editedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cur.EditedAt = &editedAt
+	if err := s.Meta().UpdateChatMessage(ctx, cur); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, _ := s.Meta().GetChatMessage(ctx, mid)
+	if got.ModSeq <= prior {
+		t.Fatalf("ModSeq stuck: %d -> %d", prior, got.ModSeq)
+	}
+	if got.BodyText != "final" || got.EditedAt == nil || !got.EditedAt.Equal(editedAt) {
+		t.Fatalf("edit not persisted: %+v", got)
+	}
+}
+
+// testChatMessageSoftDelete soft-deletes a message and verifies the
+// row stays visible under IncludeDeleted but with cleared bodies.
+func testChatMessageSoftDelete(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-msg-del@example.com")
+	cid, _ := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, CreatedByPrincipalID: p.ID, Name: "del",
+	})
+	pidArg := p.ID
+	mid, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID: cid, SenderPrincipalID: &pidArg,
+		BodyText: "secret", BodyHTML: "<i>secret</i>",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := s.Meta().SoftDeleteChatMessage(ctx, mid); err != nil {
+		t.Fatalf("SoftDelete: %v", err)
+	}
+	// Idempotent.
+	if err := s.Meta().SoftDeleteChatMessage(ctx, mid); err != nil {
+		t.Fatalf("SoftDelete twice: %v", err)
+	}
+	got, err := s.Meta().GetChatMessage(ctx, mid)
+	if err != nil {
+		t.Fatalf("GetChatMessage after soft-delete: %v", err)
+	}
+	if got.DeletedAt == nil {
+		t.Fatalf("DeletedAt not set: %+v", got)
+	}
+	if got.BodyText != "" || got.BodyHTML != "" {
+		t.Fatalf("body not cleared: %+v", got)
+	}
+}
+
+// testChatMessageAttachmentsShape rejects malformed attachments and
+// accepts a well-formed one.
+func testChatMessageAttachmentsShape(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-msg-att@example.com")
+	cid, _ := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, CreatedByPrincipalID: p.ID, Name: "a",
+	})
+	pidArg := p.ID
+	good := []byte(`[{"blob_hash":"abc","content_type":"image/png","filename":"a.png","size":42}]`)
+	if _, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID: cid, SenderPrincipalID: &pidArg,
+		BodyText: "x", AttachmentsJSON: good,
+	}); err != nil {
+		t.Fatalf("good attachment: %v", err)
+	}
+	bad := []byte(`[{"content_type":"image/png"}]`)
+	if _, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID: cid, SenderPrincipalID: &pidArg,
+		BodyText: "y", AttachmentsJSON: bad,
+	}); !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("bad attachment = %v, want ErrInvalidArgument", err)
+	}
+}
+
+// testChatMessageReactionsShape exercises the reaction-cap validators
+// at insert time.
+func testChatMessageReactionsShape(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-msg-react@example.com")
+	cid, _ := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, CreatedByPrincipalID: p.ID, Name: "r",
+	})
+	pidArg := p.ID
+	good := []byte(`{"👍":[42,17]}`)
+	if _, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID: cid, SenderPrincipalID: &pidArg,
+		BodyText: "x", ReactionsJSON: good,
+	}); err != nil {
+		t.Fatalf("good reactions: %v", err)
+	}
+	bad := []byte(`{"<script>x":[1]}`)
+	if _, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID: cid, SenderPrincipalID: &pidArg,
+		BodyText: "y", ReactionsJSON: bad,
+	}); !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("bad reactions = %v, want ErrInvalidArgument", err)
+	}
+}
+
+// testChatReactionAddRemove verifies SetChatReaction adds and removes
+// a principal atomically.
+func testChatReactionAddRemove(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-react-toggle@example.com")
+	cid, _ := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, CreatedByPrincipalID: p.ID, Name: "t",
+	})
+	pidArg := p.ID
+	mid, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID: cid, SenderPrincipalID: &pidArg, BodyText: "x",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	thumbs := "👍"
+	if err := s.Meta().SetChatReaction(ctx, mid, thumbs, p.ID, true); err != nil {
+		t.Fatalf("SetChatReaction add: %v", err)
+	}
+	got, _ := s.Meta().GetChatMessage(ctx, mid)
+	if !bytes.Contains(got.ReactionsJSON, []byte(thumbs)) ||
+		!bytes.Contains(got.ReactionsJSON, []byte(fmt.Sprintf("%d", p.ID))) {
+		t.Fatalf("after add reactions = %s", got.ReactionsJSON)
+	}
+	// Idempotent re-add.
+	if err := s.Meta().SetChatReaction(ctx, mid, thumbs, p.ID, true); err != nil {
+		t.Fatalf("SetChatReaction re-add: %v", err)
+	}
+	if err := s.Meta().SetChatReaction(ctx, mid, thumbs, p.ID, false); err != nil {
+		t.Fatalf("SetChatReaction remove: %v", err)
+	}
+	got, _ = s.Meta().GetChatMessage(ctx, mid)
+	if len(got.ReactionsJSON) != 0 {
+		t.Fatalf("after remove reactions should be empty, got %q", got.ReactionsJSON)
+	}
+}
+
+// testChatBlockInsertListIsBlocked exercises the basic block-list
+// surface: insert, list, IsBlocked, delete.
+func testChatBlockInsertListIsBlocked(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	alice := mustInsertPrincipal(t, s, "chat-block-alice@example.com")
+	bob := mustInsertPrincipal(t, s, "chat-block-bob@example.com")
+	if err := s.Meta().InsertChatBlock(ctx, store.ChatBlock{
+		BlockerPrincipalID: alice.ID, BlockedPrincipalID: bob.ID,
+		Reason: "spam",
+	}); err != nil {
+		t.Fatalf("InsertChatBlock: %v", err)
+	}
+	yes, err := s.Meta().IsBlocked(ctx, alice.ID, bob.ID)
+	if err != nil {
+		t.Fatalf("IsBlocked: %v", err)
+	}
+	if !yes {
+		t.Fatalf("IsBlocked = false, want true")
+	}
+	// Reverse direction does not auto-block.
+	rev, _ := s.Meta().IsBlocked(ctx, bob.ID, alice.ID)
+	if rev {
+		t.Fatalf("reverse IsBlocked = true, want false (block is one-way)")
+	}
+	got, err := s.Meta().ListChatBlocksBy(ctx, alice.ID)
+	if err != nil {
+		t.Fatalf("ListChatBlocksBy: %v", err)
+	}
+	if len(got) != 1 || got[0].BlockedPrincipalID != bob.ID || got[0].Reason != "spam" {
+		t.Fatalf("ListChatBlocksBy: %+v", got)
+	}
+	if err := s.Meta().DeleteChatBlock(ctx, alice.ID, bob.ID); err != nil {
+		t.Fatalf("DeleteChatBlock: %v", err)
+	}
+	if err := s.Meta().DeleteChatBlock(ctx, alice.ID, bob.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DeleteChatBlock twice = %v, want ErrNotFound", err)
+	}
+}
+
+// testChatBlockRejectsSelf rejects a block where blocker == blocked.
+func testChatBlockRejectsSelf(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-self-block@example.com")
+	if err := s.Meta().InsertChatBlock(ctx, store.ChatBlock{
+		BlockerPrincipalID: p.ID, BlockedPrincipalID: p.ID,
+	}); !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("self-block = %v, want ErrInvalidArgument", err)
+	}
+}
+
+// testDeletePrincipalCascadesChat confirms DeletePrincipal sweeps
+// memberships and blocks belonging to the principal, and nulls the
+// sender of messages they had authored.
+func testDeletePrincipalCascadesChat(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	alice := mustInsertPrincipal(t, s, "chat-del-alice@example.com")
+	bob := mustInsertPrincipal(t, s, "chat-del-bob@example.com")
+	cid, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, CreatedByPrincipalID: bob.ID, Name: "d",
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	memID, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: alice.ID, Role: store.ChatRoleMember,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMembership: %v", err)
+	}
+	pidArg := alice.ID
+	mid, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID: cid, SenderPrincipalID: &pidArg, BodyText: "from alice",
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMessage: %v", err)
+	}
+	if err := s.Meta().InsertChatBlock(ctx, store.ChatBlock{
+		BlockerPrincipalID: alice.ID, BlockedPrincipalID: bob.ID,
+	}); err != nil {
+		t.Fatalf("InsertChatBlock: %v", err)
+	}
+	if err := s.Meta().DeletePrincipal(ctx, alice.ID); err != nil {
+		t.Fatalf("DeletePrincipal: %v", err)
+	}
+	// Membership gone.
+	if _, err := s.Meta().GetChatMembership(ctx, cid, alice.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("membership survived: %v", err)
+	}
+	// Block gone.
+	yes, _ := s.Meta().IsBlocked(ctx, alice.ID, bob.ID)
+	if yes {
+		t.Fatalf("block survived DeletePrincipal")
+	}
+	// Message survives, sender nulled.
+	got, err := s.Meta().GetChatMessage(ctx, mid)
+	if err != nil {
+		t.Fatalf("GetChatMessage: %v", err)
+	}
+	if got.SenderPrincipalID != nil {
+		t.Fatalf("SenderPrincipalID not nulled after DeletePrincipal: %v", *got.SenderPrincipalID)
+	}
+	_ = memID
 }

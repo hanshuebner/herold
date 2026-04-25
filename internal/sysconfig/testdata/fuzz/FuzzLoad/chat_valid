@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[server]\nhostname = \"mail.example.com\"\ndata_dir = \"/var/lib/herold\"\n\n[server.admin_tls]\nsource = \"file\"\ncert_file = \"/a\"\nkey_file = \"/b\"\n\n[server.chat]\nenabled = true\nmax_connections = 4096\nper_principal_cap = 8\nping_interval_seconds = 30\npong_timeout_seconds = 60\nmax_frame_bytes = 65536\n\n[[listener]]\nname = \"l\"\naddress = \":25\"\nprotocol = \"smtp\"\ntls = \"starttls\"\n")

@@ -10,7 +10,7 @@ const CurrentBackupVersion = 1
 // CurrentSchemaVersion is the maximum migration number both backends
 // know about today. Bumped whenever a new migration ships in
 // internal/storesqlite/migrations or internal/storepg/migrations.
-const CurrentSchemaVersion = 11
+const CurrentSchemaVersion = 12
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -87,5 +87,12 @@ var TableNames = []string{
 	// holds.
 	"calendars",
 	"calendar_events",
+	// Phase 2 Wave 2.8 chat (REQ-CHAT-*). chat_conversations precedes
+	// chat_memberships and chat_messages (both FK back to it);
+	// chat_blocks references principals only.
+	"chat_conversations",
+	"chat_memberships",
+	"chat_messages",
+	"chat_blocks",
 	"blob_refs",
 }
