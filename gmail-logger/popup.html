@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gmail Logger</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #0f1117;
+    --surface: #1a1d27;
+    --border:  #2a2d3a;
+    --accent:  #5b8dee;
+    --green:   #4ade80;
+    --amber:   #fbbf24;
+    --red:     #f87171;
+    --text:    #e2e4f0;
+    --muted:   #6b7280;
+    --mono:    'IBM Plex Mono', monospace;
+    --sans:    'IBM Plex Sans', sans-serif;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    width: 360px;
+    min-height: 200px;
+    padding: 0;
+  }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    flex-shrink: 0;
+  }
+
+  header h1 {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    color: var(--text);
+    flex: 1;
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .stat {
+    background: var(--bg);
+    padding: 12px 16px;
+  }
+
+  .stat-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    font-family: var(--mono);
+    margin-bottom: 4px;
+  }
+
+  .stat-value {
+    font-family: var(--mono);
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  .top-actions {
+    padding: 12px 16px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .top-actions h2 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    font-family: var(--mono);
+    margin-bottom: 8px;
+  }
+
+  .action-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .action-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 8px;
+    background: var(--surface);
+    border-radius: 4px;
+    font-size: 12px;
+  }
+
+  .action-name {
+    font-family: var(--mono);
+    color: var(--text);
+  }
+
+  .action-count {
+    font-family: var(--mono);
+    font-weight: 600;
+    color: var(--accent);
+    font-size: 11px;
+  }
+
+  .bar-bg {
+    flex: 1;
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    margin: 0 10px;
+    overflow: hidden;
+  }
+
+  .bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+
+  .recent {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    max-height: 130px;
+    overflow-y: auto;
+  }
+
+  .recent h2 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    font-family: var(--mono);
+    margin-bottom: 6px;
+  }
+
+  .event-line {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--muted);
+    padding: 2px 0;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+  }
+
+  .event-line .ts {
+    color: var(--border);
+    flex-shrink: 0;
+    font-size: 9px;
+  }
+
+  .event-line .act {
+    color: var(--green);
+  }
+
+  .event-line .ctx {
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .actions-row {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px;
+  }
+
+  button {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.15s;
+    letter-spacing: 0.3px;
+  }
+
+  #btn-export {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  #btn-export:hover { opacity: 0.85; }
+
+  #btn-analyze {
+    background: transparent;
+    color: var(--green);
+    border-color: var(--green);
+  }
+  #btn-analyze:hover { background: rgba(74,222,128,0.08); }
+
+  #btn-clear {
+    background: transparent;
+    color: var(--red);
+    border-color: var(--border);
+    flex: 0 0 auto;
+    padding: 8px 10px;
+  }
+  #btn-clear:hover { border-color: var(--red); }
+
+  .empty {
+    padding: 24px 16px;
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  /* scrollbar */
+  .recent::-webkit-scrollbar { width: 4px; }
+  .recent::-webkit-scrollbar-track { background: var(--bg); }
+  .recent::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="dot" id="status-dot"></div>
+  <h1>GMAIL LOGGER</h1>
+  <span style="font-family:var(--mono);font-size:10px;color:var(--muted)" id="session-count"></span>
+</header>
+
+<div id="main">
+  <div class="empty">Loading…</div>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

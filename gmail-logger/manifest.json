@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Gmail Interaction Logger",
+  "version": "1.0.0",
+  "description": "Logs Gmail UI interactions to help build a JMAP client requirements spec.",
+  "permissions": ["storage", "tabs", "activeTab"],
+  "host_permissions": ["https://mail.google.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Gmail Logger"
+  }
+}
