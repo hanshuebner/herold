@@ -1,0 +1,535 @@
+package protomanagesieve
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/hanshuebner/herold/internal/sasl"
+	"github.com/hanshuebner/herold/internal/sieve"
+	"github.com/hanshuebner/herold/internal/store"
+)
+
+// Command is the parsed wire-form of a single ManageSieve command. The
+// shape varies by verb: Args carries the textual arguments (atom or
+// quoted string), and Literals carries any synchronising literals
+// consumed inline. Verbs that take a {N} script payload reach for
+// Literals[0].
+type Command struct {
+	Verb     string
+	Args     []string
+	Literals [][]byte
+}
+
+// readCommand consumes one ManageSieve command line plus its
+// literals. The grammar is line-oriented (RFC 5804 §1.6): tokens
+// separated by spaces, atoms unquoted, strings double-quoted with
+// backslash escaping, literals as "{N}" or "{N+}" placeholders that
+// the server replaces with the literal payload.
+func (ses *session) readCommand() (*Command, error) {
+	line, err := ses.readLineRaw()
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(line) == "" {
+		return &Command{}, nil
+	}
+	cmd := &Command{}
+	for {
+		tokens, finished, lit, err := tokeniseLine(line)
+		if err != nil {
+			return nil, err
+		}
+		if cmd.Verb == "" && len(tokens) > 0 {
+			cmd.Verb = strings.ToUpper(tokens[0])
+			cmd.Args = append(cmd.Args, tokens[1:]...)
+		} else {
+			cmd.Args = append(cmd.Args, tokens...)
+		}
+		if lit == nil {
+			if finished {
+				return cmd, nil
+			}
+			break
+		}
+		buf, lerr := ses.readScriptLiteral(lit.size, lit.sync)
+		if lerr != nil {
+			return nil, lerr
+		}
+		cmd.Literals = append(cmd.Literals, buf)
+		// After the literal there may be more arguments on the
+		// following line.
+		next, nerr := ses.readLineRaw()
+		if nerr != nil {
+			return nil, nerr
+		}
+		if next == "" {
+			return cmd, nil
+		}
+		line = next
+	}
+	return cmd, nil
+}
+
+// literalSpec is a small helper carrying parsed {N}/{N+} parameters.
+type literalSpec struct {
+	size int64
+	sync bool // true for {N}, false for {N+}
+}
+
+// tokeniseLine splits a single physical line into tokens, returning
+// "finished == true" when the line ends without a trailing literal.
+// When the line ends with a "{N}" / "{N+}" placeholder, lit carries
+// the parsed parameters and the caller must read the literal bytes
+// before continuing.
+func tokeniseLine(line string) (tokens []string, finished bool, lit *literalSpec, err error) {
+	i := 0
+	for i < len(line) {
+		// skip whitespace
+		for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+			i++
+		}
+		if i >= len(line) {
+			break
+		}
+		switch line[i] {
+		case '"':
+			// Quoted string.
+			j := i + 1
+			var sb strings.Builder
+			for j < len(line) {
+				c := line[j]
+				if c == '\\' && j+1 < len(line) {
+					sb.WriteByte(line[j+1])
+					j += 2
+					continue
+				}
+				if c == '"' {
+					j++
+					break
+				}
+				sb.WriteByte(c)
+				j++
+			}
+			tokens = append(tokens, sb.String())
+			i = j
+		case '{':
+			// Literal placeholder; must be the last thing on the
+			// line.
+			closeIdx := strings.IndexByte(line[i:], '}')
+			if closeIdx < 0 {
+				return nil, false, nil, fmt.Errorf("protomanagesieve: unterminated literal spec")
+			}
+			spec := line[i+1 : i+closeIdx]
+			ns := false
+			if strings.HasSuffix(spec, "+") {
+				ns = true
+				spec = strings.TrimSuffix(spec, "+")
+			}
+			n, perr := strconv.ParseInt(spec, 10, 64)
+			if perr != nil || n < 0 {
+				return nil, false, nil, fmt.Errorf("protomanagesieve: bad literal spec %q", spec)
+			}
+			rest := strings.TrimSpace(line[i+closeIdx+1:])
+			if rest != "" {
+				return nil, false, nil, fmt.Errorf("protomanagesieve: trailing data after literal spec")
+			}
+			return tokens, false, &literalSpec{size: n, sync: !ns}, nil
+		default:
+			// Atom: read until whitespace.
+			j := i
+			for j < len(line) && line[j] != ' ' && line[j] != '\t' {
+				j++
+			}
+			tokens = append(tokens, line[i:j])
+			i = j
+		}
+	}
+	return tokens, true, nil, nil
+}
+
+// -----------------------------------------------------------------------------
+// CAPABILITY
+// -----------------------------------------------------------------------------
+
+func (ses *session) handleCAPABILITY(c *Command) error {
+	for _, line := range ses.capabilityLines() {
+		if err := ses.writeLine(line); err != nil {
+			return err
+		}
+	}
+	return ses.writeOK("Capability completed")
+}
+
+// -----------------------------------------------------------------------------
+// STARTTLS
+// -----------------------------------------------------------------------------
+
+func (ses *session) handleSTARTTLS(ctx context.Context, c *Command) error {
+	if ses.tlsActive {
+		return ses.writeNO("", "TLS already active")
+	}
+	if ses.s.tlsStore == nil {
+		return ses.writeNO("", "TLS not available")
+	}
+	if err := ses.writeOK("Begin TLS negotiation now"); err != nil {
+		return err
+	}
+	tlsConn, leaf, err := ses.s.upgradeTLS(ctx, ses.conn)
+	if err != nil {
+		ses.logger.Warn("protomanagesieve: STARTTLS handshake", "err", err)
+		return err
+	}
+	ses.conn = tlsConn
+	ses.br = bufio.NewReaderSize(tlsConn, 16*1024)
+	ses.bw = bufio.NewWriter(tlsConn)
+	ses.tlsActive = true
+	if leaf != nil {
+		if cb, err := sasl.TLSServerEndpoint(leaf); err == nil {
+			ses.serverEndpoint = cb
+		}
+	}
+	// RFC 5804 §2.2: server MUST re-emit the capability list followed
+	// by OK so the client sees the post-TLS SASL set as a complete
+	// response.
+	for _, line := range ses.capabilityLines() {
+		if err := ses.writeLine(line); err != nil {
+			return err
+		}
+	}
+	return ses.writeOK("TLS negotiation successful")
+}
+
+// Compile-time guard so the unused import linter does not complain
+// when STARTTLS is the only consumer of crypto/tls in this file.
+var _ = tls.VersionTLS12
+
+// -----------------------------------------------------------------------------
+// AUTHENTICATE
+// -----------------------------------------------------------------------------
+
+func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
+	if ses.state == stateAuthed {
+		return ses.writeNO("", "Already authenticated")
+	}
+	// RFC 5804 §1.5: AUTHENTICATE requires TLS unless the operator
+	// turned off TLS entirely.
+	if err := ses.requireTLS(); err != nil {
+		return err
+	}
+	if len(c.Args) == 0 {
+		return ses.writeNO("", "AUTHENTICATE missing mechanism")
+	}
+	mechName := c.Args[0]
+	mech, err := ses.makeMechanism(mechName)
+	if err != nil {
+		return ses.writeNO("", err.Error())
+	}
+	if ses.tlsActive {
+		ctx = sasl.WithTLS(ctx, true)
+		if len(ses.serverEndpoint) > 0 {
+			ctx = sasl.WithTLSServerEndpoint(ctx, ses.serverEndpoint)
+		}
+	}
+	// Optional initial response: RFC 5804 §2.1 wraps SASL data in
+	// modified base64. Quoted string and literal forms both carry
+	// the base64 encoding; we decode to the raw bytes the SASL
+	// state machine expects.
+	var initial []byte
+	if len(c.Args) >= 2 {
+		decoded, derr := decodeSASLPayload(c.Args[1])
+		if derr != nil {
+			return ses.writeNO("", "bad SASL initial response")
+		}
+		initial = decoded
+	} else if len(c.Literals) > 0 {
+		decoded, derr := decodeSASLPayload(string(c.Literals[0]))
+		if derr != nil {
+			return ses.writeNO("", "bad SASL initial response")
+		}
+		initial = decoded
+	}
+	challenge, done, err := mech.Start(ctx, initial)
+	if err != nil {
+		return ses.writeNO("", "Authentication failed")
+	}
+	for !done {
+		// Server challenges are sent as base64-encoded quoted strings.
+		encoded := base64.StdEncoding.EncodeToString(challenge)
+		if err := ses.writeLine(quoteString(encoded)); err != nil {
+			return err
+		}
+		line, rerr := ses.readLineRaw()
+		if rerr != nil {
+			return rerr
+		}
+		if line == `"*"` || line == "*" {
+			return ses.writeNO("", "client aborted SASL")
+		}
+		decoded, derr := decodeSASLLine(line)
+		if derr != nil {
+			return ses.writeNO("", "bad SASL response")
+		}
+		challenge, done, err = mech.Next(ctx, decoded)
+		if err != nil {
+			return ses.writeNO("", "Authentication failed")
+		}
+	}
+	pid, perr := mech.Principal()
+	if perr != nil {
+		return ses.writeNO("", "Authentication failed")
+	}
+	ses.pid = pid
+	ses.state = stateAuthed
+	return ses.writeOK("Authenticated")
+}
+
+// decodeSASLLine unwraps the quoted/literal form on the wire and
+// base64-decodes the payload per RFC 5804 §2.1. Returns the raw bytes
+// the SASL state machine expects.
+func decodeSASLLine(line string) ([]byte, error) {
+	line = strings.TrimSpace(line)
+	if strings.HasPrefix(line, "\"") && strings.HasSuffix(line, "\"") && len(line) >= 2 {
+		line = line[1 : len(line)-1]
+	}
+	return decodeSASLPayload(line)
+}
+
+// decodeSASLPayload base64-decodes a SASL payload. Empty / "=" inputs
+// map to the zero-length byte slice (RFC 4422 sentinel).
+func decodeSASLPayload(s string) ([]byte, error) {
+	if s == "" || s == "=" {
+		return []byte{}, nil
+	}
+	return base64.StdEncoding.DecodeString(s)
+}
+
+// -----------------------------------------------------------------------------
+// HAVESPACE
+// -----------------------------------------------------------------------------
+
+func (ses *session) handleHAVESPACE(ctx context.Context, c *Command) error {
+	if err := ses.requireAuth(); err != nil {
+		return nil
+	}
+	if err := ses.requireTLS(); err != nil {
+		return nil
+	}
+	if len(c.Args) < 2 {
+		return ses.writeNO("", "HAVESPACE requires <name> <size>")
+	}
+	size, perr := strconv.ParseInt(c.Args[1], 10, 64)
+	if perr != nil || size < 0 {
+		return ses.writeNO("", "bad size")
+	}
+	if size > ses.s.opts.MaxScriptBytes {
+		return ses.writeNO("QUOTA/MAXSIZE", "script too large")
+	}
+	// Quota check against the principal's overall quota. The store
+	// does not yet expose per-Sieve quota, so we approximate by
+	// rejecting only oversize scripts; a per-script quota lands when
+	// multi-script support arrives.
+	return ses.writeOK("HAVESPACE completed")
+}
+
+// -----------------------------------------------------------------------------
+// PUTSCRIPT / CHECKSCRIPT
+// -----------------------------------------------------------------------------
+
+func (ses *session) handlePUTSCRIPT(ctx context.Context, c *Command) error {
+	if err := ses.requireAuth(); err != nil {
+		return nil
+	}
+	if err := ses.requireTLS(); err != nil {
+		return nil
+	}
+	if len(c.Args) < 1 || len(c.Literals) < 1 {
+		return ses.writeNO("", "PUTSCRIPT requires <name> <script>")
+	}
+	name := c.Args[0]
+	body := c.Literals[0]
+	// RFC 5804 §2.6 / REQ-PROTO-51: parse + validate using the
+	// runtime interpreter's own grammar.
+	script, perr := sieve.Parse(body)
+	if perr != nil {
+		return ses.writeNOQuotedScriptName(name, perr.Error())
+	}
+	if verr := sieve.Validate(script); verr != nil {
+		return ses.writeNOQuotedScriptName(name, verr.Error())
+	}
+	if err := ses.s.store.Meta().SetSieveScript(ctx, ses.pid, string(body)); err != nil {
+		return ses.writeNO("", "store write failed")
+	}
+	return ses.writeOK("PUTSCRIPT completed")
+}
+
+func (ses *session) handleCHECKSCRIPT(ctx context.Context, c *Command) error {
+	if err := ses.requireAuth(); err != nil {
+		return nil
+	}
+	if err := ses.requireTLS(); err != nil {
+		return nil
+	}
+	if len(c.Literals) < 1 {
+		return ses.writeNO("", "CHECKSCRIPT requires <script>")
+	}
+	body := c.Literals[0]
+	script, perr := sieve.Parse(body)
+	if perr != nil {
+		return ses.writeNO("", perr.Error())
+	}
+	if verr := sieve.Validate(script); verr != nil {
+		return ses.writeNO("", verr.Error())
+	}
+	return ses.writeOK("CHECKSCRIPT completed")
+}
+
+// -----------------------------------------------------------------------------
+// GETSCRIPT / DELETESCRIPT / LISTSCRIPTS / SETACTIVE / RENAMESCRIPT
+// -----------------------------------------------------------------------------
+
+// scriptSlotName is the implicit single-script slot name we expose
+// while the store models exactly one script per principal. The
+// Phase-2 follow-up that adds named scripts will retire this.
+const scriptSlotName = "active"
+
+func (ses *session) handleGETSCRIPT(ctx context.Context, c *Command) error {
+	if err := ses.requireAuth(); err != nil {
+		return nil
+	}
+	if err := ses.requireTLS(); err != nil {
+		return nil
+	}
+	if len(c.Args) < 1 {
+		return ses.writeNO("", "GETSCRIPT requires <name>")
+	}
+	body, err := ses.s.store.Meta().GetSieveScript(ctx, ses.pid)
+	if err != nil {
+		return ses.writeNO("", "GETSCRIPT failed")
+	}
+	if body == "" {
+		return ses.writeNO("NONEXISTENT", "no script for that name")
+	}
+	// Server response for a successful GETSCRIPT is the script
+	// literal followed by the OK terminator (RFC 5804 §2.5).
+	if err := ses.writeLine(fmt.Sprintf("{%d}", len(body))); err != nil {
+		return err
+	}
+	if _, err := ses.bw.WriteString(body); err != nil {
+		return err
+	}
+	if _, err := ses.bw.WriteString("\r\n"); err != nil {
+		return err
+	}
+	if err := ses.bw.Flush(); err != nil {
+		return err
+	}
+	return ses.writeOK("GETSCRIPT completed")
+}
+
+func (ses *session) handleDELETESCRIPT(ctx context.Context, c *Command) error {
+	if err := ses.requireAuth(); err != nil {
+		return nil
+	}
+	if err := ses.requireTLS(); err != nil {
+		return nil
+	}
+	if len(c.Args) < 1 {
+		return ses.writeNO("", "DELETESCRIPT requires <name>")
+	}
+	if err := ses.s.store.Meta().SetSieveScript(ctx, ses.pid, ""); err != nil {
+		return ses.writeNO("", "DELETESCRIPT failed")
+	}
+	return ses.writeOK("DELETESCRIPT completed")
+}
+
+func (ses *session) handleLISTSCRIPTS(ctx context.Context, c *Command) error {
+	if err := ses.requireAuth(); err != nil {
+		return nil
+	}
+	if err := ses.requireTLS(); err != nil {
+		return nil
+	}
+	body, err := ses.s.store.Meta().GetSieveScript(ctx, ses.pid)
+	if err != nil {
+		return ses.writeNO("", "LISTSCRIPTS failed")
+	}
+	if body != "" {
+		// One script per principal — emit it as the implicit
+		// "active" slot, marked ACTIVE per RFC 5804 §2.4.
+		if err := ses.writeLine(fmt.Sprintf("%s ACTIVE", quoteString(scriptSlotName))); err != nil {
+			return err
+		}
+	}
+	return ses.writeOK("LISTSCRIPTS completed")
+}
+
+// handleSETACTIVE: with a single-script slot, SETACTIVE on the slot
+// name is a no-op success. SETACTIVE "" deletes the active script
+// (RFC 5804 §2.8 explicitly allows this form).
+func (ses *session) handleSETACTIVE(ctx context.Context, c *Command) error {
+	if err := ses.requireAuth(); err != nil {
+		return nil
+	}
+	if err := ses.requireTLS(); err != nil {
+		return nil
+	}
+	if len(c.Args) < 1 {
+		return ses.writeNO("", "SETACTIVE requires <name>")
+	}
+	name := c.Args[0]
+	if name == "" {
+		// Disable the active script.
+		if err := ses.s.store.Meta().SetSieveScript(ctx, ses.pid, ""); err != nil {
+			return ses.writeNO("", "SETACTIVE failed")
+		}
+		return ses.writeOK("SETACTIVE completed")
+	}
+	body, err := ses.s.store.Meta().GetSieveScript(ctx, ses.pid)
+	if err != nil || body == "" {
+		return ses.writeNO("NONEXISTENT", "no such script")
+	}
+	if name != scriptSlotName {
+		return ses.writeNO("NONEXISTENT", "no such script")
+	}
+	return ses.writeOK("SETACTIVE completed")
+}
+
+// handleRENAMESCRIPT: with a single slot, rename is purely cosmetic —
+// the slot name is fixed to scriptSlotName. We accept any rename
+// targeting the active slot and short-circuit. A future multi-script
+// implementation will rewire this.
+func (ses *session) handleRENAMESCRIPT(ctx context.Context, c *Command) error {
+	if err := ses.requireAuth(); err != nil {
+		return nil
+	}
+	if err := ses.requireTLS(); err != nil {
+		return nil
+	}
+	if len(c.Args) < 2 {
+		return ses.writeNO("", "RENAMESCRIPT requires <old> <new>")
+	}
+	body, err := ses.s.store.Meta().GetSieveScript(ctx, ses.pid)
+	if err != nil || body == "" {
+		return ses.writeNO("NONEXISTENT", "no such script")
+	}
+	return ses.writeOK("RENAMESCRIPT completed")
+}
+
+// errAuthGate is the marker error commands return when they want to
+// abort early without writing a tagged response (the auth/TLS gate
+// already wrote one). It is never surfaced to callers.
+var errAuthGate = errors.New("protomanagesieve: gated")
+
+// Compile-time anchors so the unused-import detector does not flag
+// these packages on build paths that don't exercise them.
+var (
+	_ = bytes.NewReader
+	_ = store.PrincipalID(0)
+)

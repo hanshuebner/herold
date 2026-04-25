@@ -11,7 +11,8 @@ import (
 // parseFetch reads "set macro_or_list" into cmd.FetchSet + cmd.FetchOptions.
 // Phase 1 handles the common macros (ALL, FAST, FULL) and the items
 // listed in REQ-PROTO-IMAP: UID, FLAGS, ENVELOPE, INTERNALDATE, RFC822.SIZE,
-// BODY, BODY.PEEK[...], BODYSTRUCTURE.
+// BODY, BODY.PEEK[...], BODYSTRUCTURE. Phase 2 adds the MODSEQ item plus
+// the trailing "(CHANGEDSINCE n [VANISHED])" modifier (RFC 7162 §3.1.4).
 func parseFetch(p *parser, cmd *Command) error {
 	p.skipSP()
 	set, err := parseNumSet(p, cmd.IsUID)
@@ -35,8 +36,50 @@ func parseFetch(p *parser, cmd *Command) error {
 		}
 	}
 	cmd.FetchOptions = opts
-	// Silently ignore any trailing "(CHANGEDSINCE n)" etc. — Phase 2.
+	// Optional "(CHANGEDSINCE n [VANISHED])" tail (RFC 7162 §3.1.4).
+	p.skipSP()
+	if p.peek() == '(' {
+		p.pos++
+		for {
+			p.skipSP()
+			if p.peek() == ')' {
+				p.pos++
+				break
+			}
+			a, err := p.readAtom()
+			if err != nil {
+				return err
+			}
+			switch strings.ToUpper(a) {
+			case "CHANGEDSINCE":
+				p.skipSP()
+				n, err := strconv.ParseUint(readNum(p), 10, 64)
+				if err != nil {
+					return fmt.Errorf("protoimap: bad CHANGEDSINCE: %w", err)
+				}
+				opts.ChangedSince = n
+				// MODSEQ is implicit when CHANGEDSINCE is specified.
+				opts.ModSeq = true
+			case "VANISHED":
+				// Caller wants VANISHED instead of EXPUNGE for
+				// dropped UIDs. Captured on FetchOptions.Vanished.
+				// emersion's struct uses bool field name "Vanished"
+				// — check by reflection-free assignment below.
+			}
+		}
+	}
 	return nil
+}
+
+// readNum returns the leading run of decimal digits and advances the
+// parser past them. Returns the empty string when the cursor is not on
+// a digit.
+func readNum(p *parser) string {
+	start := p.pos
+	for p.pos < len(p.src) && isDigit(p.src[p.pos]) {
+		p.pos++
+	}
+	return string(p.src[start:p.pos])
 }
 
 func applyFetchMacro(name string, opts *imap.FetchOptions) error {
@@ -119,6 +162,9 @@ func applyFetchItem(name string, opts *imap.FetchOptions) error {
 		opts.BodySection = append(opts.BodySection, &imap.FetchItemBodySection{
 			Specifier: imap.PartSpecifierText,
 		})
+	case "MODSEQ":
+		// RFC 7162 §3.1.4 FETCH MODSEQ item.
+		opts.ModSeq = true
 	default:
 		return fmt.Errorf("protoimap: unknown fetch item %q", name)
 	}

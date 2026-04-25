@@ -70,8 +70,32 @@ func (ses *session) handleFETCH(ctx context.Context, c *Command) error {
 	if !ses.requireSelected(c.Tag) {
 		return nil
 	}
+	// CONDSTORE: any FETCH that asks for MODSEQ or carries CHANGEDSINCE
+	// implicitly promotes the session into CONDSTORE mode (RFC 7162
+	// §3.1.1). Always emit MODSEQ in the resulting FETCH responses
+	// once promoted so the client's caches stay coherent.
+	if c.FetchOptions != nil && (c.FetchOptions.ModSeq || c.FetchOptions.ChangedSince != 0) {
+		ses.enableCondstore()
+		c.FetchOptions.ModSeq = true
+	}
 	seqs := ses.expandSet(c.FetchSet, c.IsUID)
+	changedSince := store.ModSeq(0)
+	if c.FetchOptions != nil {
+		changedSince = store.ModSeq(c.FetchOptions.ChangedSince)
+	}
 	for _, seq := range seqs {
+		if changedSince > 0 {
+			ses.selMu.Lock()
+			if seq <= 0 || seq > len(ses.sel.msgs) {
+				ses.selMu.Unlock()
+				continue
+			}
+			m := ses.sel.msgs[seq-1]
+			ses.selMu.Unlock()
+			if m.ModSeq <= changedSince {
+				continue
+			}
+		}
 		if err := ses.emitFetch(ctx, seq, c.FetchOptions, c.IsUID); err != nil {
 			return ses.resp.taggedNO(c.Tag, "", fmt.Sprintf("fetch: %v", err))
 		}

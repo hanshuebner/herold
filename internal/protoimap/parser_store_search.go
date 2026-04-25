@@ -343,6 +343,31 @@ func parseSearchTerm(p *parser) (*imap.SearchCriteria, error) {
 			crit.UID = []imap.UIDSet{u}
 		}
 
+	case "MODSEQ":
+		// RFC 7162 §3.1.5 SEARCH MODSEQ predicate. Optional
+		// `<entry-name> <entry-type>` modifier is accepted and ignored
+		// (the metadata-extension annotation surface is deferred);
+		// the bare-modseq form is the common one.
+		p.skipSP()
+		// Optional quoted entry-name like "/flags/\\Seen".
+		if p.peek() == '"' {
+			_, err := p.readQuoted()
+			if err != nil {
+				return nil, err
+			}
+			p.skipSP()
+			// entry-type atom ("priv" / "shared" / "all").
+			if !p.eof() && p.peek() != ' ' {
+				_, _ = p.readAtom()
+				p.skipSP()
+			}
+		}
+		n, err := strconv.ParseUint(mustReadNum(p), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("protoimap: bad MODSEQ: %w", err)
+		}
+		crit.ModSeq = &imap.SearchCriteriaModSeq{ModSeq: n}
+
 	case "NOT":
 		p.skipSP()
 		inner, err := parseSearchTerm(p)

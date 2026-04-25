@@ -56,9 +56,50 @@ type Command struct {
 
 	StatusItems []string
 
+	// SelectOptions carries the parenthesised SELECT/EXAMINE option
+	// list (RFC 7162 + RFC 5258). Recognised options: CONDSTORE flips
+	// condstore mode on the session; QRESYNC carries (uidvalidity
+	// modseq known-uids seq-match-data) per RFC 7162 §3.1.
+	SelectOptions map[string]string
+
+	// CopyMoveSet / CopyMoveDest carry the source set and destination
+	// mailbox for COPY / MOVE / UID COPY / UID MOVE.
+	CopyMoveSet  imap.NumSet
+	CopyMoveDest string
+
+	// AppendItems carries a MULTIAPPEND payload: each entry is one
+	// (flags, internal-date, data) tuple. For non-multiappend commands
+	// AppendItems is empty and AppendFlags / AppendInternal /
+	// AppendData hold the single-message form.
+	AppendItems []AppendItem
+
 	AppendFlags    []string
 	AppendInternal time.Time
 	AppendData     []byte
+
+	// CreateSpecialUse is the parenthesised "(USE (\Drafts \Sent))"
+	// suffix on a CREATE command per RFC 6154 §5.2. Names are kept as
+	// they appeared on the wire (case preserved); the dispatcher folds
+	// them to canonical attribute bits.
+	CreateSpecialUse []string
+
+	// ListSelectOpts / ListReturnOpts carry the LIST-EXTENDED RFC 5258
+	// "(SELECT-OPTS) ref pat (RETURN (RET-OPTS))" extras. Empty when
+	// the client used the legacy LIST form.
+	ListSelectOpts []string
+	ListReturnOpts []string
+	// ListPatterns is the multi-pattern variant of LIST-EXTENDED:
+	// LIST "" (pat1 pat2 ...). When non-empty, ListMailbox is unused.
+	ListPatterns []string
+
+	// EnableTokens carries the upper-cased argument tokens for ENABLE.
+	EnableTokens []string
+
+	// NotifyRaw is the post-NOTIFY remainder of the command line, kept
+	// verbatim. The handler parses it via parseNotifyArgs; the nested
+	// paren shape of NOTIFY SET is awkward to express through the
+	// general-purpose tokeniser.
+	NotifyRaw string
 
 	IDParams map[string]string
 
@@ -75,8 +116,26 @@ type Command struct {
 
 	ExpungeSet imap.NumSet
 
+	// ACLMailbox / ACLIdentifier / ACLRights carry the parsed arguments
+	// of the RFC 4314 SETACL/DELETEACL/GETACL/MYRIGHTS/LISTRIGHTS
+	// commands. ACLRights is the raw modifyrights string (with any
+	// leading '+'/'-' prefix preserved); the handler decodes it.
+	ACLMailbox    string
+	ACLIdentifier string
+	ACLRights     string
+
 	// IsUID flags the UID-prefixed variants.
 	IsUID bool
+}
+
+// AppendItem is one (flags, internal-date, data) tuple in a MULTIAPPEND
+// payload (RFC 3502). Plain APPEND populates the legacy
+// Command.AppendFlags / AppendInternal / AppendData fields; MULTIAPPEND
+// populates Command.AppendItems with one entry per literal.
+type AppendItem struct {
+	Flags    []string
+	Internal time.Time
+	Data     []byte
 }
 
 // parser walks a flattened command string, expanding literal placeholders
@@ -319,6 +378,59 @@ func parseCommand(p *parser, cmd *Command) error {
 	switch verbUpper {
 	case "CAPABILITY", "NOOP", "LOGOUT", "STARTTLS", "CHECK", "CLOSE", "IDLE", "DONE", "UNSELECT":
 		return nil
+	case "COMPRESS":
+		// "COMPRESS DEFLATE" — the only mechanism we accept. Any other
+		// argument falls through as an unknown-mechanism error so the
+		// dispatcher emits NO instead of BAD; we treat unknown atoms
+		// as parse-success so the handler can report the spec-friendly
+		// reason.
+		p.skipSP()
+		mech, err := p.readAtom()
+		if err != nil {
+			return err
+		}
+		cmd.AuthMechanism = strings.ToUpper(mech)
+		return nil
+	case "ENABLE":
+		// Capture every space-separated token after ENABLE as an
+		// upper-case capability name. The handler decides which it
+		// recognises.
+		for {
+			p.skipSP()
+			if p.eof() {
+				break
+			}
+			a, err := p.readAtom()
+			if err != nil {
+				return err
+			}
+			cmd.EnableTokens = append(cmd.EnableTokens, strings.ToUpper(a))
+		}
+		return nil
+	case "NOTIFY":
+		// NOTIFY's grammar is awkward (nested parens, optional STATUS
+		// modifier, optional MAILBOXES/SUBTREE name lists). Capture
+		// the post-verb remainder verbatim and parse it in
+		// parseNotifyArgs from notify.go.
+		cmd.NotifyRaw = cmd.Raw
+		// Consume the rest of the buffer so parseCommand returns
+		// cleanly; the parser slot pointer doesn't matter past here.
+		p.pos = len(p.src)
+		return nil
+	case "MOVE", "COPY":
+		p.skipSP()
+		set, err := parseNumSet(p, cmd.IsUID)
+		if err != nil {
+			return err
+		}
+		cmd.CopyMoveSet = set
+		p.skipSP()
+		dest, err := p.readAstring()
+		if err != nil {
+			return err
+		}
+		cmd.CopyMoveDest = dest
+		return nil
 	case "LOGIN":
 		p.skipSP()
 		user, err := p.readAstring()
@@ -356,13 +468,47 @@ func parseCommand(p *parser, cmd *Command) error {
 			}
 		}
 		return nil
-	case "SELECT", "EXAMINE", "CREATE", "DELETE", "SUBSCRIBE", "UNSUBSCRIBE":
+	case "SELECT", "EXAMINE":
 		p.skipSP()
 		name, err := p.readAstring()
 		if err != nil {
 			return err
 		}
 		cmd.Mailbox = name
+		// Optional "(option1 option2 (...))" tail — RFC 7162 / RFC 5258.
+		p.skipSP()
+		if p.peek() == '(' {
+			opts, err := parseSelectOptionList(p)
+			if err != nil {
+				return err
+			}
+			cmd.SelectOptions = opts
+		}
+		return nil
+	case "DELETE", "SUBSCRIBE", "UNSUBSCRIBE":
+		p.skipSP()
+		name, err := p.readAstring()
+		if err != nil {
+			return err
+		}
+		cmd.Mailbox = name
+		return nil
+	case "CREATE":
+		p.skipSP()
+		name, err := p.readAstring()
+		if err != nil {
+			return err
+		}
+		cmd.Mailbox = name
+		// Optional "(USE (\Drafts \Sent))" suffix — RFC 6154 §5.2.
+		p.skipSP()
+		if p.peek() == '(' {
+			uses, err := parseCreateSpecialUse(p)
+			if err != nil {
+				return err
+			}
+			cmd.CreateSpecialUse = uses
+		}
 		return nil
 	case "RENAME":
 		p.skipSP()
@@ -380,17 +526,53 @@ func parseCommand(p *parser, cmd *Command) error {
 		return nil
 	case "LIST", "LSUB":
 		p.skipSP()
+		// LIST-EXTENDED (RFC 5258): optional "(SELECT-OPTS)" before
+		// the reference name.
+		if p.peek() == '(' {
+			opts, err := parseAtomParenList(p)
+			if err != nil {
+				return err
+			}
+			cmd.ListSelectOpts = opts
+			p.skipSP()
+		}
 		ref, err := p.readAstring()
 		if err != nil {
 			return err
 		}
-		p.skipSP()
-		mb, err := p.readAstring()
-		if err != nil {
-			return err
-		}
 		cmd.ListReference = ref
-		cmd.ListMailbox = mb
+		p.skipSP()
+		// LIST-EXTENDED: pattern may be "(pat1 pat2 ...)" instead of
+		// a single astring.
+		if p.peek() == '(' {
+			pats, err := parseStringParenList(p)
+			if err != nil {
+				return err
+			}
+			cmd.ListPatterns = pats
+		} else {
+			mb, err := p.readAstring()
+			if err != nil {
+				return err
+			}
+			cmd.ListMailbox = mb
+		}
+		// LIST-EXTENDED RETURN options.
+		p.skipSP()
+		if p.peek() == 'R' || p.peek() == 'r' {
+			save := p.pos
+			a, _ := p.readAtom()
+			if strings.EqualFold(a, "RETURN") {
+				p.skipSP()
+				opts, err := parseListReturnOpts(p)
+				if err != nil {
+					return err
+				}
+				cmd.ListReturnOpts = opts
+			} else {
+				p.pos = save
+			}
+		}
 		return nil
 	case "STATUS":
 		p.skipSP()
@@ -439,17 +621,75 @@ func parseCommand(p *parser, cmd *Command) error {
 			cmd.ExpungeSet = set
 		}
 		return nil
-	case "ENABLE":
-		// Accept but ignore contents for Phase 1.
-		return nil
 	case "NAMESPACE":
+		return nil
+	case "SETACL":
+		p.skipSP()
+		mb, err := p.readAstring()
+		if err != nil {
+			return err
+		}
+		p.skipSP()
+		id, err := p.readAstring()
+		if err != nil {
+			return err
+		}
+		p.skipSP()
+		rights, err := p.readAstring()
+		if err != nil {
+			return err
+		}
+		cmd.ACLMailbox = mb
+		cmd.ACLIdentifier = id
+		cmd.ACLRights = rights
+		return nil
+	case "DELETEACL":
+		p.skipSP()
+		mb, err := p.readAstring()
+		if err != nil {
+			return err
+		}
+		p.skipSP()
+		id, err := p.readAstring()
+		if err != nil {
+			return err
+		}
+		cmd.ACLMailbox = mb
+		cmd.ACLIdentifier = id
+		return nil
+	case "GETACL", "MYRIGHTS":
+		p.skipSP()
+		mb, err := p.readAstring()
+		if err != nil {
+			return err
+		}
+		cmd.ACLMailbox = mb
+		return nil
+	case "LISTRIGHTS":
+		p.skipSP()
+		mb, err := p.readAstring()
+		if err != nil {
+			return err
+		}
+		p.skipSP()
+		id, err := p.readAstring()
+		if err != nil {
+			return err
+		}
+		cmd.ACLMailbox = mb
+		cmd.ACLIdentifier = id
 		return nil
 	default:
 		return fmt.Errorf("protoimap: unknown command %q", verbUpper)
 	}
 }
 
-// parseAppend reads "mailbox [(flags)] [internaldate] literal".
+// parseAppend reads "mailbox [(flags)] [internaldate] literal" plus the
+// MULTIAPPEND (RFC 3502) repetition: any number of additional
+// "[(flags)] [internaldate] literal" tuples after the first. Each tuple
+// becomes one AppendItem; the legacy AppendFlags / AppendInternal /
+// AppendData fields hold the first tuple too so single-message APPEND
+// callers see the existing shape.
 func parseAppend(p *parser, cmd *Command) error {
 	p.skipSP()
 	mb, err := p.readAstring()
@@ -457,39 +697,228 @@ func parseAppend(p *parser, cmd *Command) error {
 		return err
 	}
 	cmd.Mailbox = mb
-	p.skipSP()
-	if p.peek() == '(' {
-		flags, err := parseFlagList(p)
+	first := true
+	for {
+		p.skipSP()
+		if p.eof() {
+			break
+		}
+		item := AppendItem{}
+		if p.peek() == '(' {
+			flags, err := parseFlagList(p)
+			if err != nil {
+				return err
+			}
+			item.Flags = flags
+			p.skipSP()
+		}
+		if p.peek() == '"' {
+			ds, err := p.readQuoted()
+			if err != nil {
+				return err
+			}
+			t, terr := time.Parse(`2-Jan-2006 15:04:05 -0700`, ds)
+			if terr != nil {
+				t, terr = time.Parse(`_2-Jan-2006 15:04:05 -0700`, ds)
+			}
+			if terr == nil {
+				item.Internal = t
+			}
+			p.skipSP()
+		}
+		if p.peek() != 0 {
+			if first {
+				return fmt.Errorf("protoimap: APPEND requires literal payload")
+			}
+			break
+		}
+		data, err := p.takeLiteral()
 		if err != nil {
 			return err
 		}
-		cmd.AppendFlags = flags
-		p.skipSP()
-	}
-	if p.peek() == '"' {
-		ds, err := p.readQuoted()
-		if err != nil {
-			return err
+		item.Data = []byte(data)
+		cmd.AppendItems = append(cmd.AppendItems, item)
+		if first {
+			cmd.AppendFlags = item.Flags
+			cmd.AppendInternal = item.Internal
+			cmd.AppendData = item.Data
+			first = false
 		}
-		t, terr := time.Parse(`2-Jan-2006 15:04:05 -0700`, ds)
-		if terr != nil {
-			t, terr = time.Parse(`_2-Jan-2006 15:04:05 -0700`, ds)
-		}
-		if terr == nil {
-			cmd.AppendInternal = t
-		}
-		p.skipSP()
 	}
-	// Literal payload: must be at current position as NUL marker.
-	if p.peek() != 0 {
-		return fmt.Errorf("protoimap: APPEND requires literal payload")
-	}
-	data, err := p.takeLiteral()
-	if err != nil {
-		return err
-	}
-	cmd.AppendData = []byte(data)
 	return nil
+}
+
+// parseSelectOptionList parses "(opt opt(args) ...)". Each option is a
+// case-insensitive atom; some options carry a parenthesised argument
+// (QRESYNC). Returns a map of upper-case option name → raw argument
+// (empty string when the option has no args).
+func parseSelectOptionList(p *parser) (map[string]string, error) {
+	if err := p.expect('('); err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for {
+		p.skipSP()
+		if p.peek() == ')' {
+			p.pos++
+			return out, nil
+		}
+		a, err := p.readAtom()
+		if err != nil {
+			return nil, err
+		}
+		key := strings.ToUpper(a)
+		// Optional "(args)" follows the atom.
+		val := ""
+		p.skipSP()
+		if p.peek() == '(' {
+			depth := 0
+			start := p.pos
+			for p.pos < len(p.src) {
+				c := p.src[p.pos]
+				if c == '(' {
+					depth++
+				} else if c == ')' {
+					depth--
+					if depth == 0 {
+						p.pos++
+						break
+					}
+				}
+				p.pos++
+			}
+			val = string(p.src[start:p.pos])
+		}
+		out[key] = val
+	}
+}
+
+// parseCreateSpecialUse parses the RFC 6154 §5.2 "(USE (\Drafts
+// \Sent))" suffix. Returns the use-attribute names with their leading
+// backslashes preserved.
+func parseCreateSpecialUse(p *parser) ([]string, error) {
+	if err := p.expect('('); err != nil {
+		return nil, err
+	}
+	for {
+		p.skipSP()
+		if p.peek() == ')' {
+			p.pos++
+			return nil, nil
+		}
+		a, err := p.readAtom()
+		if err != nil {
+			return nil, err
+		}
+		if strings.EqualFold(a, "USE") {
+			p.skipSP()
+			return parseAtomParenList(p)
+		}
+		// Unknown CREATE option — consume optional "(...)" argument.
+		p.skipSP()
+		if p.peek() == '(' {
+			depth := 0
+			for p.pos < len(p.src) {
+				c := p.src[p.pos]
+				if c == '(' {
+					depth++
+				} else if c == ')' {
+					depth--
+					if depth == 0 {
+						p.pos++
+						break
+					}
+				}
+				p.pos++
+			}
+		}
+	}
+}
+
+// parseListReturnOpts parses the LIST-EXTENDED RETURN option list:
+// "(opt opt(args) ...)" where args may themselves be a parenthesised
+// atom list (notably "STATUS (MESSAGES UIDNEXT)"). Each option is
+// returned as either the bare atom or "ATOM(args)" with the
+// parenthesised body preserved verbatim.
+func parseListReturnOpts(p *parser) ([]string, error) {
+	if err := p.expect('('); err != nil {
+		return nil, err
+	}
+	var out []string
+	for {
+		p.skipSP()
+		if p.peek() == ')' {
+			p.pos++
+			return out, nil
+		}
+		a, err := p.readAtom()
+		if err != nil {
+			return nil, err
+		}
+		// Optional parenthesised argument body.
+		p.skipSP()
+		if p.peek() == '(' {
+			depth := 0
+			start := p.pos
+			for p.pos < len(p.src) {
+				c := p.src[p.pos]
+				if c == '(' {
+					depth++
+				} else if c == ')' {
+					depth--
+					if depth == 0 {
+						p.pos++
+						break
+					}
+				}
+				p.pos++
+			}
+			a = a + string(p.src[start:p.pos])
+		}
+		out = append(out, a)
+	}
+}
+
+// parseAtomParenList parses "(atom atom ...)" returning the atoms
+// verbatim (case preserved).
+func parseAtomParenList(p *parser) ([]string, error) {
+	if err := p.expect('('); err != nil {
+		return nil, err
+	}
+	var out []string
+	for {
+		p.skipSP()
+		if p.peek() == ')' {
+			p.pos++
+			return out, nil
+		}
+		a, err := p.readAtom()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+}
+
+// parseStringParenList parses "(astring astring ...)" — used by
+// LIST-EXTENDED for multi-pattern lists.
+func parseStringParenList(p *parser) ([]string, error) {
+	if err := p.expect('('); err != nil {
+		return nil, err
+	}
+	var out []string
+	for {
+		p.skipSP()
+		if p.peek() == ')' {
+			p.pos++
+			return out, nil
+		}
+		a, err := p.readAstring()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
 }
 
 func parseID(p *parser, cmd *Command) error {

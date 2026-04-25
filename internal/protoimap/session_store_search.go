@@ -17,6 +17,16 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 	if !ses.requireSelected(c.Tag) {
 		return nil
 	}
+	// RFC 4314 §4 / §6.4: STORE rights are flag-specific.
+	//   \Seen     → "s" (seen flag)
+	//   \Deleted  → "t" (delete-message)
+	//   anything else (\Answered, \Flagged, \Draft, keywords) → "w" (write)
+	// The owner short-circuits; non-owners need the right that
+	// matches every flag the STORE touches. We compute the union of
+	// required bits before mutating.
+	if err := ses.requireStoreRights(ctx, c.StoreFlags.Flags); err != nil {
+		return ses.resp.taggedNO(c.Tag, "NOPERM", "insufficient rights to STORE flags")
+	}
 	seqs := ses.expandSet(c.StoreSet, c.IsUID)
 	addFlags := flagMaskFromImapFlags(c.StoreFlags.Flags)
 	addKW := keywordsFromImapFlags(c.StoreFlags.Flags)
@@ -36,6 +46,15 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 		addFlags = 0
 		addKW = nil
 	}
+	// CONDSTORE/QRESYNC: a non-zero UNCHANGEDSINCE implicitly promotes
+	// the session into CONDSTORE mode (RFC 7162 §3.1.1) and shapes the
+	// response as MODIFIED [uid-set | seq-set] for the rejected items.
+	if c.StoreOptions.UnchangedSince != 0 {
+		ses.enableCondstore()
+	}
+	includeModSeq := ses.condstoreActive()
+	var rejectedSeqs []int
+	var rejectedUIDs []store.UID
 	for _, seq := range seqs {
 		ses.selMu.Lock()
 		if seq <= 0 || seq > len(ses.sel.msgs) {
@@ -59,14 +78,15 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 				myClearKW = append(myClearKW, k)
 			}
 		}
-		newSeq, err := ses.s.store.Meta().UpdateMessageFlags(ctx, m.ID, addFlags, clearFlags, addKW, myClearKW, store.ModSeq(c.StoreOptions.UnchangedSince))
+		_, err := ses.s.store.Meta().UpdateMessageFlags(ctx, m.ID, addFlags, clearFlags, addKW, myClearKW, store.ModSeq(c.StoreOptions.UnchangedSince))
 		if err != nil {
 			if errors.Is(err, store.ErrConflict) {
-				return ses.resp.taggedOK(c.Tag, "MODIFIED", "STORE condstore conflict")
+				rejectedSeqs = append(rejectedSeqs, seq)
+				rejectedUIDs = append(rejectedUIDs, m.UID)
+				continue
 			}
 			return ses.resp.taggedNO(c.Tag, "", "store failed")
 		}
-		_ = newSeq
 		// Re-read to get updated flags.
 		updated, err := ses.s.store.Meta().GetMessage(ctx, m.ID)
 		if err == nil && !c.StoreFlags.Silent {
@@ -77,6 +97,9 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 			if c.IsUID {
 				parts = append([]string{fmt.Sprintf("UID %d", updated.UID)}, parts...)
 			}
+			if includeModSeq {
+				parts = append(parts, fmt.Sprintf("MODSEQ (%d)", updated.ModSeq))
+			}
 			_ = ses.resp.untagged(fmt.Sprintf("%d FETCH (%s)", seq, strings.Join(parts, " ")))
 		} else if err == nil {
 			ses.selMu.Lock()
@@ -84,7 +107,81 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 			ses.selMu.Unlock()
 		}
 	}
+	if len(rejectedSeqs) > 0 {
+		// RFC 7162 §3.1.3: emit OK [MODIFIED <set>] with the UID-set
+		// for UID STORE and the seq-set for plain STORE. We collapse
+		// to ranges via formatUIDList for UIDs; sequence numbers
+		// follow the same canonical comma-list shape.
+		var setStr string
+		if c.IsUID {
+			setStr = formatUIDList(rejectedUIDs)
+		} else {
+			setStr = formatSeqNumberList(rejectedSeqs)
+		}
+		return ses.resp.taggedOK(c.Tag, "MODIFIED "+setStr, "STORE conditional update partial")
+	}
 	return ses.resp.taggedOK(c.Tag, "", c.Op+" completed")
+}
+
+// formatSeqNumberList renders 1-based sequence numbers in IMAP seq-set
+// shape, collapsing runs into ranges. Mirrors formatUIDList for the
+// non-UID STORE path.
+func formatSeqNumberList(seqs []int) string {
+	if len(seqs) == 0 {
+		return ""
+	}
+	var parts []string
+	start := seqs[0]
+	prev := start
+	for _, s := range seqs[1:] {
+		if s == prev+1 {
+			prev = s
+			continue
+		}
+		if start == prev {
+			parts = append(parts, fmt.Sprintf("%d", start))
+		} else {
+			parts = append(parts, fmt.Sprintf("%d:%d", start, prev))
+		}
+		start = s
+		prev = s
+	}
+	if start == prev {
+		parts = append(parts, fmt.Sprintf("%d", start))
+	} else {
+		parts = append(parts, fmt.Sprintf("%d:%d", start, prev))
+	}
+	return strings.Join(parts, ",")
+}
+
+// requireStoreRights computes the union of ACL rights required to touch
+// the supplied flag set and verifies ses.pid holds them on the
+// currently-selected mailbox. Owner short-circuits via requireRights.
+func (ses *session) requireStoreRights(ctx context.Context, flags []imap.Flag) error {
+	ses.selMu.Lock()
+	mailboxID := ses.sel.id
+	ses.selMu.Unlock()
+	mb, err := ses.s.store.Meta().GetMailboxByID(ctx, mailboxID)
+	if err != nil {
+		return errInsufficientRights
+	}
+	var need store.ACLRights
+	for _, f := range flags {
+		switch strings.ToLower(string(f)) {
+		case "\\seen":
+			need |= store.ACLRightSeen
+		case "\\deleted":
+			need |= store.ACLRightDeleteMessage
+		default:
+			// Other system flags (\Answered, \Flagged, \Draft) and
+			// every keyword fall under the "w" write right.
+			need |= store.ACLRightWrite
+		}
+	}
+	if need == 0 {
+		return nil
+	}
+	return ses.requireRights(ctx, mb, need)
 }
 
 func allKnownFlags() store.MessageFlags {
@@ -136,6 +233,7 @@ func (ses *session) handleSEARCH(ctx context.Context, c *Command) error {
 	}
 
 	matching := []int{} // sequence numbers (1-based)
+	var maxModSeq store.ModSeq
 	for i, m := range msgs {
 		if ftsUsed && !ftsHits[m.ID] {
 			continue
@@ -144,6 +242,21 @@ func (ses *session) handleSEARCH(ctx context.Context, c *Command) error {
 			continue
 		}
 		matching = append(matching, i+1)
+		if m.ModSeq > maxModSeq {
+			maxModSeq = m.ModSeq
+		}
+	}
+	// CONDSTORE: when the criteria carry a MODSEQ predicate or the
+	// session has been promoted to CONDSTORE mode, the SEARCH response
+	// includes the highest MODSEQ among matched messages (RFC 7162
+	// §3.1.5).
+	includeModSeq := false
+	if c.SearchCriteria != nil && c.SearchCriteria.ModSeq != nil {
+		ses.enableCondstore()
+		includeModSeq = true
+	}
+	if ses.condstoreActive() {
+		includeModSeq = true
 	}
 
 	opts := c.SearchOptions
@@ -171,6 +284,9 @@ func (ses *session) handleSEARCH(ctx context.Context, c *Command) error {
 		if opts.ReturnCount {
 			sb.WriteString(fmt.Sprintf(" COUNT %d", len(matching)))
 		}
+		if includeModSeq && maxModSeq > 0 {
+			sb.WriteString(fmt.Sprintf(" MODSEQ %d", maxModSeq))
+		}
 		_ = ses.resp.untagged(sb.String())
 	} else {
 		var sb strings.Builder
@@ -178,6 +294,9 @@ func (ses *session) handleSEARCH(ctx context.Context, c *Command) error {
 		for _, seq := range matching {
 			sb.WriteByte(' ')
 			sb.WriteString(fmt.Sprintf("%d", seqToOut(seq, msgs, c.IsUID)))
+		}
+		if includeModSeq && maxModSeq > 0 {
+			sb.WriteString(fmt.Sprintf(" (MODSEQ %d)", maxModSeq))
 		}
 		_ = ses.resp.untagged(sb.String())
 	}
@@ -322,6 +441,15 @@ func evalSearch(c *imap.SearchCriteria, m *store.Message, seq int) bool {
 	if c.Smaller > 0 && m.Size >= c.Smaller {
 		return false
 	}
+	// MODSEQ predicate (RFC 7162 §3.1.5): the message's ModSeq must be
+	// strictly greater than the supplied value. Phase 2 ignores the
+	// metadata-name modifier — the bare-modseq form is the only one
+	// IMAP clients in the wild emit.
+	if c.ModSeq != nil {
+		if uint64(m.ModSeq) < c.ModSeq.ModSeq {
+			return false
+		}
+	}
 	for _, h := range c.Header {
 		val := envelopeField(m.Envelope, h.Key)
 		if h.Value == "" {
@@ -429,9 +557,18 @@ func (ses *session) handleEXPUNGE(ctx context.Context, c *Command) error {
 	if !ses.requireSelected(c.Tag) {
 		return nil
 	}
+	// RFC 4314 §4: EXPUNGE / UID EXPUNGE require the "e" right.
 	ses.selMu.Lock()
+	mailboxID := ses.sel.id
 	msgs := append([]store.Message(nil), ses.sel.msgs...)
 	ses.selMu.Unlock()
+	mb, err := ses.s.store.Meta().GetMailboxByID(ctx, mailboxID)
+	if err != nil {
+		return ses.resp.taggedNO(c.Tag, "", "expunge failed")
+	}
+	if err := ses.requireRights(ctx, mb, store.ACLRightExpunge); err != nil {
+		return ses.resp.taggedNO(c.Tag, "NOPERM", "insufficient rights to EXPUNGE")
+	}
 
 	uidFilter := map[store.UID]bool{}
 	if c.IsUID && c.ExpungeSet != nil {
@@ -454,6 +591,7 @@ func (ses *session) handleEXPUNGE(ctx context.Context, c *Command) error {
 	// Collect messages to expunge (\Deleted set) and their seq numbers.
 	var ids []store.MessageID
 	var seqs []int
+	var uids []store.UID
 	for i, m := range msgs {
 		if m.Flags&store.MessageFlagDeleted == 0 {
 			continue
@@ -463,6 +601,7 @@ func (ses *session) handleEXPUNGE(ctx context.Context, c *Command) error {
 		}
 		ids = append(ids, m.ID)
 		seqs = append(seqs, i+1)
+		uids = append(uids, m.UID)
 	}
 	if len(ids) > 0 {
 		expungeTimer := observe.StartStoreOp("expunge")
@@ -472,9 +611,18 @@ func (ses *session) handleEXPUNGE(ctx context.Context, c *Command) error {
 			return ses.resp.taggedNO(c.Tag, "", "expunge failed")
 		}
 	}
-	// Emit untagged EXPUNGEs in descending seq order (RFC 3501 §6.4.3).
-	for i := len(seqs) - 1; i >= 0; i-- {
-		_ = ses.resp.untagged(fmt.Sprintf("%d EXPUNGE", seqs[i]))
+	// Emit untagged EXPUNGE / VANISHED responses. RFC 7162 §3.2.10:
+	// QRESYNC-enabled sessions get a single "* VANISHED <uid-set>"
+	// instead of one "* N EXPUNGE" per message; the uid-set is
+	// canonical (range-collapsed).
+	if ses.qresyncActive() {
+		_ = ses.emitVanishedFromExpunge(uids)
+	} else {
+		// Plain EXPUNGE: descending seq order keeps the client's
+		// per-seq cache consistent (RFC 3501 §6.4.3).
+		for i := len(seqs) - 1; i >= 0; i-- {
+			_ = ses.resp.untagged(fmt.Sprintf("%d EXPUNGE", seqs[i]))
+		}
 	}
 	_ = ses.reloadSelected(ctx)
 	return ses.resp.taggedOK(c.Tag, "", c.Op+" completed")

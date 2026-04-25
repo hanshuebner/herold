@@ -55,6 +55,25 @@ type session struct {
 	// selected mailbox state
 	selMu sync.Mutex
 	sel   selectedMailbox
+
+	// cs is the CONDSTORE / QRESYNC per-session state; the type is
+	// declared in condstore.go (the parallel imap-advanced agent's
+	// surface). We embed the struct here so the build is coherent
+	// across the two agents' parallel files.
+	// TODO(2.2-coord): when the imap-advanced agent finalises
+	// condstore.go, confirm the field name + type still match.
+	cs condstoreState
+
+	// compressed is set by the COMPRESS=DEFLATE wire upgrade; the
+	// parallel imap-advanced agent's compress.go owns the toggle.
+	// TODO(2.2-coord): coordinate with imap-advanced on whether this
+	// stays a flag or becomes a richer state record.
+	compressed bool
+
+	// notify holds the active NOTIFY subscription set (RFC 5465). The
+	// type lives in notify.go (Phase 2 Wave 2.2). Guarded by selMu so
+	// the IDLE / dispatcher loops reload it atomically.
+	notify notifyState
 }
 
 type selectedMailbox struct {
@@ -174,8 +193,7 @@ func (ses *session) dispatch(ctx context.Context, c *Command) error {
 		}
 		return ses.resp.taggedOK(c.Tag, "", "ID completed")
 	case "ENABLE":
-		// Accept silently for Phase 1.
-		return ses.resp.taggedOK(c.Tag, "", "ENABLE completed")
+		return ses.handleENABLE(ctx, c)
 	case "NAMESPACE":
 		if err := ses.resp.untagged(`NAMESPACE (("" "/")) NIL NIL`); err != nil {
 			return err
@@ -227,6 +245,24 @@ func (ses *session) dispatch(ctx context.Context, c *Command) error {
 		return ses.handleEXPUNGE(ctx, c)
 	case "IDLE":
 		return ses.handleIDLE(ctx, c)
+	case "MOVE":
+		return ses.handleMOVE(ctx, c)
+	case "COPY":
+		return ses.handleCOPY(ctx, c)
+	case "NOTIFY":
+		return ses.handleNOTIFY(ctx, c)
+	case "COMPRESS":
+		return ses.handleCOMPRESS(ctx, c)
+	case "SETACL":
+		return ses.handleSETACL(ctx, c)
+	case "DELETEACL":
+		return ses.handleDELETEACL(ctx, c)
+	case "GETACL":
+		return ses.handleGETACL(ctx, c)
+	case "MYRIGHTS":
+		return ses.handleMYRIGHTS(ctx, c)
+	case "LISTRIGHTS":
+		return ses.handleLISTRIGHTS(ctx, c)
 	default:
 		return ses.resp.taggedBAD(c.Tag, "", "unknown command "+c.Op)
 	}
@@ -254,6 +290,18 @@ func (ses *session) capabilityString() string {
 		string(imap.CapUTF8Accept),
 		string(imap.CapQuota),
 		string(imap.CapSASLIR),
+		// RFC 4314 ACL — wired in Wave 2.2.
+		"ACL",
+		// Phase 2 Wave 2.2: advanced capabilities. Each token is
+		// advertised only because the matching command path is
+		// implemented in this package; STANDARDS rule 10 forbids
+		// advertising a wire extension we cannot honour.
+		string(imap.CapCondStore),
+		string(imap.CapQResync),
+		string(imap.CapMove),
+		string(imap.CapMultiAppend),
+		string(imap.CapNotify),
+		"COMPRESS=DEFLATE",
 	}
 	if !ses.tlsActive && ses.startTLSAllowed() {
 		caps = append(caps, string(imap.CapStartTLS))
@@ -449,7 +497,9 @@ func imapCommandLabel(op string) string {
 		"SELECT", "EXAMINE", "UNSELECT", "CLOSE", "CHECK",
 		"CREATE", "DELETE", "RENAME", "SUBSCRIBE", "UNSUBSCRIBE",
 		"LIST", "LSUB", "STATUS", "APPEND",
-		"FETCH", "STORE", "SEARCH", "EXPUNGE", "IDLE":
+		"FETCH", "STORE", "SEARCH", "EXPUNGE", "IDLE",
+		"SETACL", "DELETEACL", "GETACL", "MYRIGHTS", "LISTRIGHTS",
+		"MOVE", "COPY", "NOTIFY", "COMPRESS":
 		return op
 	default:
 		return "unknown"
