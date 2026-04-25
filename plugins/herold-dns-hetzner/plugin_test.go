@@ -1,0 +1,534 @@
+package main_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	plug "github.com/hanshuebner/herold/internal/plugin"
+	"github.com/hanshuebner/herold/plugins/sdk"
+)
+
+// fakeHetzner stubs the Hetzner DNS Console API. It mirrors
+// fakeCloudflare's shape but emits Hetzner's `{"record":...}` /
+// `{"records":[...]}` envelopes instead of the {success,errors,result}
+// wrapper Cloudflare uses.
+type fakeHetzner struct {
+	t      *testing.T
+	server *httptest.Server
+
+	mu       sync.Mutex
+	requests []capturedRequest
+	handler  func(req capturedRequest) (status int, body any)
+
+	calls int64
+}
+
+type capturedRequest struct {
+	Method string
+	Path   string
+	Query  url.Values
+	Header http.Header
+	Body   []byte
+}
+
+func newFakeHetzner(t *testing.T) *fakeHetzner {
+	t.Helper()
+	f := &fakeHetzner{t: t}
+	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&f.calls, 1)
+		body, _ := io.ReadAll(r.Body)
+		cap := capturedRequest{
+			Method: r.Method,
+			Path:   r.URL.Path,
+			Query:  r.URL.Query(),
+			Header: r.Header.Clone(),
+			Body:   body,
+		}
+		f.mu.Lock()
+		f.requests = append(f.requests, cap)
+		h := f.handler
+		f.mu.Unlock()
+		if h == nil {
+			http.Error(w, `{"error":"no handler"}`, http.StatusInternalServerError)
+			return
+		}
+		status, payload := h(cap)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		if payload != nil {
+			_ = json.NewEncoder(w).Encode(payload)
+		}
+	}))
+	t.Cleanup(f.server.Close)
+	return f
+}
+
+func (f *fakeHetzner) setHandler(h func(req capturedRequest) (int, any)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.handler = h
+}
+
+func (f *fakeHetzner) reset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requests = nil
+	atomic.StoreInt64(&f.calls, 0)
+}
+
+func (f *fakeHetzner) snapshot() []capturedRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]capturedRequest, len(f.requests))
+	copy(out, f.requests)
+	return out
+}
+
+type spawnedPlugin struct {
+	t      *testing.T
+	cmd    *exec.Cmd
+	client *plug.Client
+	done   chan error
+}
+
+var (
+	binOnce sync.Once
+	binPath string
+	binErr  error
+)
+
+func buildPluginBinary(t *testing.T) string {
+	t.Helper()
+	binOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "herold-dns-hetzner-bin-")
+		if err != nil {
+			binErr = err
+			return
+		}
+		bin := filepath.Join(dir, "herold-dns-hetzner")
+		if runtime.GOOS == "windows" {
+			bin += ".exe"
+		}
+		cmd := exec.Command("go", "build", "-o", bin, "github.com/hanshuebner/herold/plugins/herold-dns-hetzner")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			binErr = fmt.Errorf("go build: %v\n%s", err, out)
+			return
+		}
+		binPath = bin
+	})
+	if binErr != nil {
+		t.Fatalf("build plugin: %v", binErr)
+	}
+	return binPath
+}
+
+func spawnPlugin(t *testing.T, configureOpts map[string]any) *spawnedPlugin {
+	t.Helper()
+	bin := buildPluginBinary(t)
+
+	cmd := exec.Command(bin)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, stderr) }()
+
+	client := plug.NewClient(stdout, stdin, plug.ClientOptions{
+		Name:          "herold-dns-hetzner",
+		MaxConcurrent: 8,
+	})
+	done := make(chan error, 1)
+	go func() { done <- client.Run(context.Background()) }()
+
+	sp := &spawnedPlugin{t: t, cmd: cmd, client: client, done: done}
+
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var res plug.InitializeResult
+		if err := client.Call(ctx, plug.MethodInitialize, plug.InitializeParams{
+			ServerVersion: "test",
+			ABIVersion:    plug.ABIVersion,
+		}, &res); err != nil {
+			sp.close()
+			t.Fatalf("initialize: %v", err)
+		}
+	}
+	if configureOpts != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var res plug.ConfigureResult
+		if err := client.Call(ctx, plug.MethodConfigure, plug.ConfigureParams{Options: configureOpts}, &res); err != nil {
+			sp.close()
+			t.Fatalf("configure: %v", err)
+		}
+	}
+	t.Cleanup(sp.close)
+	return sp
+}
+
+func (s *spawnedPlugin) close() {
+	if p, ok := s.cmd.Stdin.(io.Closer); ok {
+		_ = p.Close()
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- s.cmd.Wait() }()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		_ = s.cmd.Process.Kill()
+		<-waited
+	}
+}
+
+func (s *spawnedPlugin) present(t *testing.T, in sdk.DNSPresentParams) (sdk.DNSPresentResult, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var res sdk.DNSPresentResult
+	err := s.client.Call(ctx, sdk.MethodDNSPresent, in, &res)
+	return res, err
+}
+
+func (s *spawnedPlugin) cleanup(t *testing.T, id string) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var res map[string]any
+	return s.client.Call(ctx, sdk.MethodDNSCleanup, sdk.DNSCleanupParams{ID: id}, &res)
+}
+
+func (s *spawnedPlugin) list(t *testing.T, in sdk.DNSListParams) ([]sdk.DNSRecord, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var res []sdk.DNSRecord
+	err := s.client.Call(ctx, sdk.MethodDNSList, in, &res)
+	return res, err
+}
+
+func configuredOpts(envVar, baseURL string) map[string]any {
+	return map[string]any{
+		"api_token_env":            envVar,
+		"zone_id":                  "zone-abc",
+		"base_url":                 baseURL,
+		"propagation_wait_seconds": 0,
+		"request_timeout_seconds":  5,
+		"retry_attempts":           2,
+	}
+}
+
+func setEnv(t *testing.T, envVar, value string) {
+	t.Helper()
+	old, hadOld := os.LookupEnv(envVar)
+	if err := os.Setenv(envVar, value); err != nil {
+		t.Fatalf("setenv %s: %v", envVar, err)
+	}
+	t.Cleanup(func() {
+		if hadOld {
+			_ = os.Setenv(envVar, old)
+		} else {
+			_ = os.Unsetenv(envVar)
+		}
+	})
+}
+
+func TestPresent_RecordTypes(t *testing.T) {
+	const env = "HEROLD_DNS_HETZNER_TEST_TOKEN_RECORDS"
+	setEnv(t, env, "tok-records")
+
+	fake := newFakeHetzner(t)
+	fake.setHandler(func(req capturedRequest) (int, any) {
+		if req.Method != http.MethodPost || req.Path != "/records" {
+			return http.StatusBadRequest, map[string]any{"error": "bad"}
+		}
+		var body map[string]any
+		_ = json.Unmarshal(req.Body, &body)
+		body["id"] = "rec-" + body["type"].(string)
+		return http.StatusOK, map[string]any{"record": body}
+	})
+
+	p := spawnPlugin(t, configuredOpts(env, fake.server.URL))
+
+	cases := []struct {
+		recordType string
+		name       string
+		value      string
+	}{
+		{"TXT", "_acme-challenge.example.com", "abc123"},
+		{"A", "host.example.com", "192.0.2.1"},
+		{"AAAA", "host.example.com", "2001:db8::1"},
+		{"MX", "example.com", "10 mail.example.com"},
+		{"TLSA", "_25._tcp.mail.example.com", "3 1 1 abcd"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.recordType, func(t *testing.T) {
+			fake.reset()
+			res, err := p.present(t, sdk.DNSPresentParams{
+				Zone:       "example.com",
+				RecordType: tc.recordType,
+				Name:       tc.name,
+				Value:      tc.value,
+				TTL:        300,
+			})
+			if err != nil {
+				t.Fatalf("present(%s): %v", tc.recordType, err)
+			}
+			if res.ID != "rec-"+tc.recordType {
+				t.Fatalf("id = %q", res.ID)
+			}
+			reqs := fake.snapshot()
+			if len(reqs) != 1 {
+				t.Fatalf("got %d requests, want 1", len(reqs))
+			}
+			r := reqs[0]
+			if got := r.Header.Get("Auth-API-Token"); got != "tok-records" {
+				t.Fatalf("Auth-API-Token = %q", got)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(r.Body, &body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if body["type"] != tc.recordType {
+				t.Fatalf("body.type = %v", body["type"])
+			}
+			if body["zone_id"] != "zone-abc" {
+				t.Fatalf("body.zone_id = %v, want zone-abc", body["zone_id"])
+			}
+			if body["value"] != tc.value {
+				t.Fatalf("body.value = %v", body["value"])
+			}
+		})
+	}
+}
+
+func TestCleanup_DeletesRecord(t *testing.T) {
+	const env = "HEROLD_DNS_HETZNER_TEST_TOKEN_CLEANUP"
+	setEnv(t, env, "tok-cleanup")
+
+	fake := newFakeHetzner(t)
+	fake.setHandler(func(req capturedRequest) (int, any) {
+		if req.Method == http.MethodDelete && strings.HasPrefix(req.Path, "/records/") {
+			return http.StatusOK, map[string]any{}
+		}
+		return http.StatusBadRequest, map[string]any{"error": "unexpected"}
+	})
+
+	p := spawnPlugin(t, configuredOpts(env, fake.server.URL))
+
+	if err := p.cleanup(t, "rec-1"); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	reqs := fake.snapshot()
+	if len(reqs) != 1 {
+		t.Fatalf("got %d requests, want 1", len(reqs))
+	}
+	if reqs[0].Method != http.MethodDelete {
+		t.Fatalf("method = %s", reqs[0].Method)
+	}
+	if reqs[0].Path != "/records/rec-1" {
+		t.Fatalf("path = %s", reqs[0].Path)
+	}
+}
+
+func TestList_EnumeratesRecords(t *testing.T) {
+	const env = "HEROLD_DNS_HETZNER_TEST_TOKEN_LIST"
+	setEnv(t, env, "tok-list")
+
+	fake := newFakeHetzner(t)
+	fake.setHandler(func(req capturedRequest) (int, any) {
+		if req.Method != http.MethodGet || req.Path != "/records" {
+			return http.StatusBadRequest, map[string]any{"error": "bad"}
+		}
+		return http.StatusOK, map[string]any{
+			"records": []map[string]any{
+				{"id": "rec-a", "type": "A", "name": "host", "value": "192.0.2.1", "ttl": 300, "zone_id": "zone-abc"},
+				{"id": "rec-b", "type": "A", "name": "host", "value": "192.0.2.2", "ttl": 300, "zone_id": "zone-abc"},
+			},
+		}
+	})
+
+	p := spawnPlugin(t, configuredOpts(env, fake.server.URL))
+
+	recs, err := p.list(t, sdk.DNSListParams{Zone: "example.com", RecordType: "A", Name: "host.example.com"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2", len(recs))
+	}
+	got := map[string]string{recs[0].ID: recs[0].Value, recs[1].ID: recs[1].Value}
+	if got["rec-a"] != "192.0.2.1" || got["rec-b"] != "192.0.2.2" {
+		t.Fatalf("records = %+v", recs)
+	}
+}
+
+func TestPresent_AuthFailure(t *testing.T) {
+	const env = "HEROLD_DNS_HETZNER_TEST_TOKEN_AUTH"
+	setEnv(t, env, "tok-bad")
+
+	fake := newFakeHetzner(t)
+	fake.setHandler(func(req capturedRequest) (int, any) {
+		return http.StatusUnauthorized, map[string]any{"error": "unauthorized"}
+	})
+
+	p := spawnPlugin(t, configuredOpts(env, fake.server.URL))
+
+	_, err := p.present(t, sdk.DNSPresentParams{
+		Zone: "example.com", RecordType: "TXT", Name: "_acme-challenge.example.com", Value: "x", TTL: 60,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var rpcErr *plug.Error
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("err type = %T", err)
+	}
+	if !strings.Contains(strings.ToLower(rpcErr.Message), "auth") && !strings.Contains(rpcErr.Message, "401") {
+		t.Fatalf("msg = %q", rpcErr.Message)
+	}
+	if n := atomic.LoadInt64(&fake.calls); n != 1 {
+		t.Fatalf("got %d calls, want 1", n)
+	}
+}
+
+func TestPresent_RetryOn5xx(t *testing.T) {
+	const env = "HEROLD_DNS_HETZNER_TEST_TOKEN_RETRY"
+	setEnv(t, env, "tok-retry")
+
+	var step int64
+	fake := newFakeHetzner(t)
+	fake.setHandler(func(req capturedRequest) (int, any) {
+		n := atomic.AddInt64(&step, 1)
+		if n == 1 {
+			return http.StatusServiceUnavailable, map[string]any{"error": "boom"}
+		}
+		var body map[string]any
+		_ = json.Unmarshal(req.Body, &body)
+		body["id"] = "rec-after-retry"
+		return http.StatusOK, map[string]any{"record": body}
+	})
+
+	p := spawnPlugin(t, configuredOpts(env, fake.server.URL))
+
+	res, err := p.present(t, sdk.DNSPresentParams{
+		Zone: "example.com", RecordType: "TXT", Name: "_acme-challenge.example.com", Value: "x", TTL: 60,
+	})
+	if err != nil {
+		t.Fatalf("present: %v", err)
+	}
+	if res.ID != "rec-after-retry" {
+		t.Fatalf("id = %q", res.ID)
+	}
+	if n := atomic.LoadInt64(&fake.calls); n != 2 {
+		t.Fatalf("got %d calls, want 2 (retry once)", n)
+	}
+}
+
+func TestPresent_UnknownRecordType(t *testing.T) {
+	const env = "HEROLD_DNS_HETZNER_TEST_TOKEN_UNKNOWN"
+	setEnv(t, env, "tok-unknown")
+
+	fake := newFakeHetzner(t)
+	fake.setHandler(func(req capturedRequest) (int, any) {
+		t.Errorf("unexpected provider call: %s %s", req.Method, req.Path)
+		return http.StatusOK, map[string]any{}
+	})
+
+	p := spawnPlugin(t, configuredOpts(env, fake.server.URL))
+
+	_, err := p.present(t, sdk.DNSPresentParams{
+		Zone: "example.com", RecordType: "PTR", Name: "x.example.com", Value: "v", TTL: 60,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var rpcErr *plug.Error
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("err type = %T", err)
+	}
+	if !strings.Contains(rpcErr.Message, "PTR") && !strings.Contains(rpcErr.Message, "unsupported") {
+		t.Fatalf("msg = %q", rpcErr.Message)
+	}
+	if n := atomic.LoadInt64(&fake.calls); n != 0 {
+		t.Fatalf("provider got %d calls, want 0", n)
+	}
+}
+
+// TestZone_AutoDiscovery asserts dns.present without zone_id resolves
+// the zone via GET /zones?name=<domain> and uses the returned id.
+func TestZone_AutoDiscovery(t *testing.T) {
+	const env = "HEROLD_DNS_HETZNER_TEST_TOKEN_AUTODISCO"
+	setEnv(t, env, "tok-autodisco")
+
+	fake := newFakeHetzner(t)
+	fake.setHandler(func(req capturedRequest) (int, any) {
+		switch {
+		case req.Method == http.MethodGet && req.Path == "/zones":
+			if got := req.Query.Get("name"); got != "example.com" {
+				t.Errorf("zone lookup name=%q, want example.com", got)
+			}
+			return http.StatusOK, map[string]any{
+				"zones": []map[string]any{{"id": "discovered-zone", "name": "example.com"}},
+			}
+		case req.Method == http.MethodPost && req.Path == "/records":
+			var body map[string]any
+			_ = json.Unmarshal(req.Body, &body)
+			if body["zone_id"] != "discovered-zone" {
+				t.Errorf("create body zone_id=%v, want discovered-zone", body["zone_id"])
+			}
+			body["id"] = "rec-disco"
+			return http.StatusOK, map[string]any{"record": body}
+		}
+		return http.StatusBadRequest, map[string]any{"error": "unexpected"}
+	})
+
+	opts := map[string]any{
+		"api_token_env":            env,
+		"base_url":                 fake.server.URL,
+		"propagation_wait_seconds": 0,
+		"request_timeout_seconds":  5,
+		"retry_attempts":           1,
+	}
+	p := spawnPlugin(t, opts)
+
+	res, err := p.present(t, sdk.DNSPresentParams{
+		Zone: "example.com", RecordType: "TXT", Name: "_acme-challenge.example.com", Value: "x", TTL: 60,
+	})
+	if err != nil {
+		t.Fatalf("present: %v", err)
+	}
+	if res.ID != "rec-disco" {
+		t.Fatalf("id = %q", res.ID)
+	}
+	reqs := fake.snapshot()
+	if len(reqs) != 2 {
+		t.Fatalf("got %d requests, want 2", len(reqs))
+	}
+}
