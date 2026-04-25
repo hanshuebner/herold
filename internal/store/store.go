@@ -103,20 +103,21 @@ type Metadata interface {
 
 	// InsertMessage inserts a message into its mailbox (msg.MailboxID),
 	// allocating a fresh UID and ModSeq, advancing Mailbox.UIDNext and
-	// Mailbox.HighestModSeq, appending a ChangeKindMessageCreated entry
-	// to the principal's state-change feed, and incrementing the blob
-	// refcount — all in a single transaction. Returns the allocated UID
-	// and ModSeq. Returns ErrQuotaExceeded if the insert would exceed
-	// the owning principal's quota.
+	// Mailbox.HighestModSeq, appending an (EntityKindEmail,
+	// ChangeOpCreated) entry to the principal's state-change feed, and
+	// incrementing the blob refcount — all in a single transaction.
+	// Returns the allocated UID and ModSeq. Returns ErrQuotaExceeded if
+	// the insert would exceed the owning principal's quota.
 	InsertMessage(ctx context.Context, msg Message) (UID, ModSeq, error)
 
 	// UpdateMessageFlags applies flagAdd and flagClear (bitfield deltas)
 	// plus keyword additions and removals to the message, bumps its
-	// ModSeq and the mailbox's HighestModSeq, and appends a
-	// ChangeKindMessageUpdated entry — atomically. unchangedSince, when
-	// non-zero, implements IMAP STORE UNCHANGEDSINCE (RFC 7162 §3.1.3):
-	// the update is rejected with ErrConflict if the message's current
-	// ModSeq exceeds it. Returns the new ModSeq on success.
+	// ModSeq and the mailbox's HighestModSeq, and appends an
+	// (EntityKindEmail, ChangeOpUpdated) entry — atomically.
+	// unchangedSince, when non-zero, implements IMAP STORE UNCHANGEDSINCE
+	// (RFC 7162 §3.1.3): the update is rejected with ErrConflict if the
+	// message's current ModSeq exceeds it. Returns the new ModSeq on
+	// success.
 	UpdateMessageFlags(
 		ctx context.Context,
 		id MessageID,
@@ -127,9 +128,9 @@ type Metadata interface {
 
 	// ExpungeMessages removes the named messages from their mailbox,
 	// decrements blob refcounts, bumps HighestModSeq, and appends
-	// ChangeKindMessageDestroyed entries — atomically. Silently skips
-	// IDs that are already gone; returns ErrNotFound only if every ID is
-	// absent.
+	// (EntityKindEmail, ChangeOpDestroyed) entries — atomically.
+	// Silently skips IDs that are already gone; returns ErrNotFound only
+	// if every ID is absent.
 	ExpungeMessages(ctx context.Context, mailboxID MailboxID, ids []MessageID) error
 
 	// UpdateMailboxModseqAndAppendChange is the low-level escape hatch
@@ -574,21 +575,30 @@ type Blobs interface {
 
 // FTSChange is the cross-principal change record delivered to the
 // background FTS indexing worker. Unlike StateChange, which is
-// per-principal for sync consumers, FTSChange carries the minimal fields
-// the indexer needs and is strictly ordered by Seq across the whole
-// store (so one cursor tracks all FTS work).
+// per-principal for sync consumers, FTSChange is strictly ordered by Seq
+// across the whole store (so one cursor tracks all FTS work). It mirrors
+// the StateChange row's datatype-agnostic shape: the worker filters on
+// (Kind, Op) and treats EntityID / ParentEntityID as opaque ids that it
+// interprets per its datatype of interest (currently only
+// EntityKindEmail).
 type FTSChange struct {
 	// Seq is the store-global monotonic sequence used as the indexer's
 	// durable cursor.
 	Seq uint64
 	// PrincipalID is the owning principal.
 	PrincipalID PrincipalID
-	// MailboxID is the affected mailbox.
-	MailboxID MailboxID
-	// MessageID is the affected message.
-	MessageID MessageID
-	// Kind classifies the change (same vocabulary as StateChange).
-	Kind ChangeKind
+	// Kind names the JMAP datatype of the affected entity. The worker
+	// only acts on EntityKindEmail; other kinds flow through harmlessly
+	// so the cursor advances and unknown future kinds do not stall it.
+	Kind EntityKind
+	// EntityID is the opaque entity id within Kind's namespace. For
+	// EntityKindEmail this is a MessageID.
+	EntityID uint64
+	// ParentEntityID is the optional containing-entity id. For
+	// EntityKindEmail this is a MailboxID.
+	ParentEntityID uint64
+	// Op classifies the mutation (created / updated / destroyed).
+	Op ChangeOp
 	// ProducedAt is the transaction commit instant from the injected
 	// Clock.
 	ProducedAt time.Time

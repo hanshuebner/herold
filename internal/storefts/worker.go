@@ -226,8 +226,9 @@ func (w *Worker) processBatch(ctx context.Context, changes []store.FTSChange) er
 			// re-reading will hit the same failure.
 			w.logger.Warn("storefts: index message",
 				"seq", c.Seq,
-				"message_id", c.MessageID,
-				"kind", c.Kind,
+				"entity_kind", string(c.Kind),
+				"entity_id", c.EntityID,
+				"op", c.Op,
 				"err", err.Error(),
 			)
 		} else {
@@ -275,32 +276,41 @@ func (w *Worker) processBatch(ctx context.Context, changes []store.FTSChange) er
 	return nil
 }
 
-// handleChange dispatches a single FTSChange: a create/update fetches
-// the message, extracts text, and writes to the pending batch; a destroy
-// issues a delete. Mailbox-level events are ignored — their messages
-// arrive as individual message-destroyed entries.
+// handleChange dispatches a single FTSChange: an email-create/update
+// fetches the message, extracts text, and writes to the pending batch;
+// an email-destroy issues a delete. Mailbox- and other-kind events are
+// ignored — their messages arrive as individual email-destroyed
+// entries. Datatype dispatch is intentionally a string-match on
+// EntityKind (not a typed column), so future kinds added per
+// docs/architecture/05-sync-and-state.md §Forward-compatibility flow
+// past this worker untouched.
 func (w *Worker) handleChange(ctx context.Context, c store.FTSChange) error {
-	switch c.Kind {
-	case store.ChangeKindMessageCreated, store.ChangeKindMessageUpdated:
-		msg, err := w.store.Meta().GetMessage(ctx, c.MessageID)
+	if c.Kind != store.EntityKindEmail {
+		// Mailbox- and other-kind events do not map to FTS docs.
+		return nil
+	}
+	messageID := store.MessageID(c.EntityID)
+	switch c.Op {
+	case store.ChangeOpCreated, store.ChangeOpUpdated:
+		msg, err := w.store.Meta().GetMessage(ctx, messageID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				// The message was deleted between the change's
 				// append and this read. Treat as a delete so a stale
 				// doc does not linger.
-				return w.idx.RemoveMessage(ctx, c.MessageID)
+				return w.idx.RemoveMessage(ctx, messageID)
 			}
-			return fmt.Errorf("get message %d: %w", c.MessageID, err)
+			return fmt.Errorf("get message %d: %w", messageID, err)
 		}
 		text, err := w.extractText(ctx, msg)
 		if err != nil {
-			return fmt.Errorf("extract text for message %d: %w", c.MessageID, err)
+			return fmt.Errorf("extract text for message %d: %w", messageID, err)
 		}
 		return w.idx.IndexMessageFull(ctx, c.PrincipalID, msg, text)
-	case store.ChangeKindMessageDestroyed:
-		return w.idx.RemoveMessage(ctx, c.MessageID)
+	case store.ChangeOpDestroyed:
+		return w.idx.RemoveMessage(ctx, messageID)
 	default:
-		// Mailbox- and principal-scoped events do not map to FTS docs.
+		// Unknown op — leave the index unchanged.
 		return nil
 	}
 }

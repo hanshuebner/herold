@@ -578,8 +578,8 @@ func testExpungeMessages(t *testing.T, s store.Store) {
 		t.Fatalf("ReadChangeFeed: %v", err)
 	}
 	for _, c := range feed {
-		if c.Kind == store.ChangeKindMessageCreated && c.MessageID != 0 {
-			ids = append(ids, c.MessageID)
+		if c.Kind == store.EntityKindEmail && c.Op == store.ChangeOpCreated && c.EntityID != 0 {
+			ids = append(ids, store.MessageID(c.EntityID))
 		}
 	}
 	if len(ids) != 3 {
@@ -770,11 +770,11 @@ func testFTSSmoke(t *testing.T, s store.Store) {
 	}
 }
 
-// firstMessageIDFromFeed finds the MessageID of the first
-// ChangeKindMessageCreated entry in the principal's change feed. Helper
-// used by tests that need a MessageID but InsertMessage does not return
-// one (the interface returns UID + ModSeq; id discovery is via the feed
-// or a later ListMessages method).
+// firstMessageIDFromFeed finds the MessageID of the first email-created
+// entry (Kind == EntityKindEmail, Op == ChangeOpCreated) in the
+// principal's change feed. Helper used by tests that need a MessageID
+// but InsertMessage does not return one (the interface returns UID +
+// ModSeq; id discovery is via the feed or a later ListMessages method).
 func firstMessageIDFromFeed(t *testing.T, s store.Store, principalID store.PrincipalID) store.MessageID {
 	t.Helper()
 	feed, err := s.Meta().ReadChangeFeed(ctxT(t), principalID, 0, 100)
@@ -782,11 +782,11 @@ func firstMessageIDFromFeed(t *testing.T, s store.Store, principalID store.Princ
 		t.Fatalf("ReadChangeFeed: %v", err)
 	}
 	for _, c := range feed {
-		if c.Kind == store.ChangeKindMessageCreated && c.MessageID != 0 {
-			return c.MessageID
+		if c.Kind == store.EntityKindEmail && c.Op == store.ChangeOpCreated && c.EntityID != 0 {
+			return store.MessageID(c.EntityID)
 		}
 	}
-	t.Fatalf("no MessageCreated entry in feed")
+	t.Fatalf("no email-created entry in feed")
 	return 0
 }
 

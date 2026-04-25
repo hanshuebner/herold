@@ -10,16 +10,22 @@ One append-only stream of state changes per principal, persisted in the metadata
 
 ```
 state_changes(
-  id          u64 primary,      -- monotonic per principal
-  principal   u64,
-  entity      enum(mailbox, email, email_submission, identity, vacation,
-                  addressbook, card, calendar, event, ...),
-  entity_id   u64,              -- id of the affected entity
-  op          enum(created, updated, destroyed),
-  seq         u64,              -- global monotonic per principal; same as id
-  created_at  timestamp
+  id                u64 primary,    -- store-global monotonic
+  principal_id      u64,
+  seq               u64,            -- per-principal monotonic
+  entity_kind       text,           -- open enum: mailbox, email,
+                                    --   email_submission, identity,
+                                    --   vacation_response, …
+  entity_id         u64,            -- id of the affected entity in
+                                    --   entity_kind's namespace
+  parent_entity_id  u64,            -- optional containing-entity id
+                                    --   (e.g. mailbox-id for an email)
+  op                smallint,       -- 1=created, 2=updated, 3=destroyed
+  produced_at       timestamp
 )
 ```
+
+Implementation lives in `internal/store/types.go` `StateChange` plus the SQL migration `0005_state_change_generic.sql` on both the SQLite and Postgres backends.
 
 Properties:
 - Per-principal strictly monotonic `seq`.
@@ -30,13 +36,14 @@ Every mutation that affects a user-observable entity appends to this feed in the
 
 ### Forward-compatibility constraint
 
-The schema's `entity` column is intentionally an open enum. v1 emits only mail kinds (`mailbox`, `email`, plus the JMAP-Mail submission/identity/vacation kinds), but the column already accepts `addressbook`, `card`, `calendar`, `event`. Per the v1 scope position (`docs/00-scope.md` NG3), groupware is not in v1 and there is no plan to ship it; this constraint exists only to keep retrofit cheap if that position is ever revisited.
+The schema's `entity_kind` column is intentionally an open enum stored as `TEXT` (the resolved Q5 — see `docs/notes/open-questions.md` Resolved log R40). v1 emits only mail kinds (`mailbox`, `email`, plus the JMAP-Mail `email_submission` / `identity` / `vacation_response` kinds), but the column already accepts `addressbook`, `card`, `calendar`, `event`. Per the v1 scope position (`docs/00-scope.md` NG3), groupware is not in v1 and there is no plan to ship it; this constraint exists only to keep retrofit cheap if that position is ever revisited.
 
 What this means for the implementation:
 
-- `StateChange` in `internal/store/types.go` MUST mirror the doc's `(entity_kind, entity_id, op)` shape. Do not add type-specific columns (`MailboxID`, `MessageID`, `MessageUID`, …) to the change row — the JMAP `Foo/changes` consumer is uniform across types and must stay that way. Per-type sync auxiliaries (IMAP UID/MODSEQ for mail) live on the type's own tables, not on the change row.
-- Adding a new entity kind is additive: extend the enum, add the kind's tables, register a JMAP datatype handler. No migration of `state_changes` rows.
-- Consumers (broadcaster, JMAP push filter, IDLE filter) must dispatch on `entity_kind`, not on schema-typed columns, so unknown future kinds flow through without code changes in the dispatch path.
+- `StateChange` in `internal/store/types.go` mirrors the table's `(entity_kind, entity_id, parent_entity_id, op)` shape. Type-specific columns (`MailboxID`, `MessageID`, `MessageUID`, …) MUST NOT live on the change row — the JMAP `Foo/changes` consumer is uniform across types and must stay that way. Per-type sync auxiliaries (IMAP UID/MODSEQ for mail) live on the type's own tables; consumers join when they need them.
+- `EntityKind` values (Go `EntityKind` aka SQL `entity_kind`) are the canonical JMAP datatype names: `mailbox`, `email`, `email_submission`, `identity`, `vacation_response`. The `parent_entity_id` column carries an optional containing-entity id — for `email` rows it carries the mailbox so per-mailbox IMAP IDLE filters can dispatch without a join; mailbox-scope rows leave it zero.
+- Adding a new entity kind is additive: extend the open enum (no SQL change; it is a `TEXT` column), add the kind's tables, register a JMAP datatype handler. No migration of `state_changes` rows.
+- Consumers (broadcaster, JMAP push filter, IDLE filter) MUST dispatch on `entity_kind` (string match) and on `(kind, op)` pairs, not on schema-typed columns, so unknown future kinds flow through without code changes in the dispatch path. Concretely: the FTS worker filters `change.Kind == EntityKindEmail`; the IMAP IDLE broadcaster filters `change.Kind == EntityKindEmail || EntityKindMailbox` with `change.ParentEntityID == selected mailbox`.
 
 ## Producers: who writes to the feed
 

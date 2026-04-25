@@ -515,7 +515,7 @@ func (m *metadata) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.M
 			return mapErr(err)
 		}
 		return appendStateChange(ctx, tx, mb.PrincipalID,
-			store.ChangeKindMailboxCreated, store.MailboxID(id), 0, 0, now)
+			store.EntityKindMailbox, uint64(id), 0, store.ChangeOpCreated, now)
 	})
 	if err != nil {
 		return store.Mailbox{}, err
@@ -615,7 +615,7 @@ func (m *metadata) DeleteMailbox(ctx context.Context, id store.MailboxID) error 
 			return store.ErrNotFound
 		}
 		return appendStateChange(ctx, tx, store.PrincipalID(pid),
-			store.ChangeKindMailboxDestroyed, id, 0, 0, m.s.clock.Now())
+			store.EntityKindMailbox, uint64(id), 0, store.ChangeOpDestroyed, m.s.clock.Now())
 	})
 }
 
@@ -674,7 +674,7 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message) (store.
 			return err
 		}
 		return appendStateChange(ctx, tx, store.PrincipalID(pid),
-			store.ChangeKindMessageCreated, msg.MailboxID, store.MessageID(mid), uid, now)
+			store.EntityKindEmail, uint64(mid), uint64(msg.MailboxID), store.ChangeOpCreated, now)
 	})
 	if err != nil {
 		return 0, 0, err
@@ -738,10 +738,9 @@ func (m *metadata) UpdateMessageFlags(
 		var curFlags int64
 		var curKeywords string
 		var curModSeq int64
-		var uid int64
 		err := tx.QueryRow(ctx, `
-			SELECT mailbox_id, flags, keywords_csv, modseq, uid
-			  FROM messages WHERE id = $1`, int64(id)).Scan(&mbox, &curFlags, &curKeywords, &curModSeq, &uid)
+			SELECT mailbox_id, flags, keywords_csv, modseq
+			  FROM messages WHERE id = $1`, int64(id)).Scan(&mbox, &curFlags, &curKeywords, &curModSeq)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -785,7 +784,7 @@ func (m *metadata) UpdateMessageFlags(
 			return mapErr(err)
 		}
 		return appendStateChange(ctx, tx, store.PrincipalID(pid),
-			store.ChangeKindMessageUpdated, store.MailboxID(mbox), id, store.UID(uid), now)
+			store.EntityKindEmail, uint64(id), uint64(mbox), store.ChangeOpUpdated, now)
 	})
 	if err != nil {
 		return 0, err
@@ -807,11 +806,14 @@ func (m *metadata) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 		}
 		var removed int
 		for _, id := range ids {
-			var uid, size int64
+			// UID is not needed here — it is no longer carried on the
+			// change row (consumers join the messages table when they
+			// need it).
+			var size int64
 			var hash string
 			err := tx.QueryRow(ctx, `
-				SELECT uid, size, blob_hash FROM messages WHERE id = $1 AND mailbox_id = $2`,
-				int64(id), int64(mailboxID)).Scan(&uid, &size, &hash)
+				SELECT size, blob_hash FROM messages WHERE id = $1 AND mailbox_id = $2`,
+				int64(id), int64(mailboxID)).Scan(&size, &hash)
 			if errors.Is(err, pgx.ErrNoRows) {
 				continue
 			}
@@ -840,7 +842,7 @@ func (m *metadata) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 				return mapErr(err)
 			}
 			if err := appendStateChange(ctx, tx, store.PrincipalID(pid),
-				store.ChangeKindMessageDestroyed, mailboxID, id, store.UID(uid), now); err != nil {
+				store.EntityKindEmail, uint64(id), uint64(mailboxID), store.ChangeOpDestroyed, now); err != nil {
 				return err
 			}
 			removed++
@@ -873,8 +875,17 @@ func (m *metadata) UpdateMailboxModseqAndAppendChange(
 			int64(newModseq), usMicros(now), int64(mailboxID)); err != nil {
 			return mapErr(err)
 		}
+		// The caller's StateChange.PrincipalID is ignored — the per-mailbox
+		// owner authoritatively scopes the seq. Caller-supplied EntityID and
+		// ParentEntityID are honoured verbatim; ParentEntityID falls back to
+		// the mailbox itself when the caller leaves it zero (the common case
+		// where the change is a child entity of mailboxID).
+		parentEntityID := change.ParentEntityID
+		if parentEntityID == 0 {
+			parentEntityID = uint64(mailboxID)
+		}
 		seq, err := appendStateChangeSeq(ctx, tx, store.PrincipalID(pid), change.Kind,
-			mailboxID, change.MessageID, change.MessageUID, now)
+			change.EntityID, parentEntityID, change.Op, now)
 		if err != nil {
 			return err
 		}
@@ -899,7 +910,7 @@ func (m *metadata) ReadChangeFeed(
 		max = 1000
 	}
 	rows, err := m.s.pool.Query(ctx, `
-		SELECT seq, principal_id, kind, mailbox_id, message_id, message_uid, produced_at_us
+		SELECT seq, principal_id, entity_kind, entity_id, parent_entity_id, op, produced_at_us
 		  FROM state_changes
 		 WHERE principal_id = $1 AND seq > $2
 		 ORDER BY seq ASC LIMIT $3`, int64(principalID), int64(fromSeq), max)
@@ -910,19 +921,20 @@ func (m *metadata) ReadChangeFeed(
 	var out []store.StateChange
 	for rows.Next() {
 		var seq, pid int64
-		var kind int32
-		var mbox, mid, uid, prodUs int64
-		if err := rows.Scan(&seq, &pid, &kind, &mbox, &mid, &uid, &prodUs); err != nil {
+		var kind string
+		var op int16
+		var eid, peid, prodUs int64
+		if err := rows.Scan(&seq, &pid, &kind, &eid, &peid, &op, &prodUs); err != nil {
 			return nil, mapErr(err)
 		}
 		out = append(out, store.StateChange{
-			Seq:         store.ChangeSeq(seq),
-			PrincipalID: store.PrincipalID(pid),
-			Kind:        store.ChangeKind(kind),
-			MailboxID:   store.MailboxID(mbox),
-			MessageID:   store.MessageID(mid),
-			MessageUID:  store.UID(uid),
-			ProducedAt:  fromMicros(prodUs),
+			Seq:            store.ChangeSeq(seq),
+			PrincipalID:    store.PrincipalID(pid),
+			Kind:           store.EntityKind(kind),
+			EntityID:       uint64(eid),
+			ParentEntityID: uint64(peid),
+			Op:             store.ChangeOp(op),
+			ProducedAt:     fromMicros(prodUs),
 		})
 	}
 	return out, rows.Err()
@@ -932,17 +944,17 @@ func (m *metadata) ReadChangeFeed(
 
 func appendStateChange(
 	ctx context.Context, tx pgx.Tx, principalID store.PrincipalID,
-	kind store.ChangeKind, mailboxID store.MailboxID, messageID store.MessageID,
-	messageUID store.UID, now time.Time,
+	kind store.EntityKind, entityID uint64, parentEntityID uint64,
+	op store.ChangeOp, now time.Time,
 ) error {
-	_, err := appendStateChangeSeq(ctx, tx, principalID, kind, mailboxID, messageID, messageUID, now)
+	_, err := appendStateChangeSeq(ctx, tx, principalID, kind, entityID, parentEntityID, op, now)
 	return err
 }
 
 func appendStateChangeSeq(
 	ctx context.Context, tx pgx.Tx, principalID store.PrincipalID,
-	kind store.ChangeKind, mailboxID store.MailboxID, messageID store.MessageID,
-	messageUID store.UID, now time.Time,
+	kind store.EntityKind, entityID uint64, parentEntityID uint64,
+	op store.ChangeOp, now time.Time,
 ) (store.ChangeSeq, error) {
 	var next int64
 	err := tx.QueryRow(ctx,
@@ -952,10 +964,10 @@ func appendStateChangeSeq(
 		return 0, mapErr(err)
 	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO state_changes (principal_id, seq, kind, mailbox_id, message_id,
-		  message_uid, produced_at_us) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		int64(principalID), next, int32(kind), int64(mailboxID),
-		int64(messageID), int64(messageUID), usMicros(now))
+		INSERT INTO state_changes (principal_id, seq, entity_kind, entity_id,
+		  parent_entity_id, op, produced_at_us) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		int64(principalID), next, string(kind), int64(entityID),
+		int64(parentEntityID), int16(op), usMicros(now))
 	if err != nil {
 		return 0, mapErr(err)
 	}

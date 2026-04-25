@@ -318,47 +318,82 @@ type BlobRef struct {
 	Size int64
 }
 
-// ChangeKind classifies an entry in the per-principal state-change feed.
-// See docs/architecture/05-sync-and-state.md.
-type ChangeKind uint8
+// EntityKind names a JMAP-style datatype on the change feed. The set is
+// open — v1 emits only the email/mailbox kinds; future kinds (e.g.
+// addressbook, card, calendar, event) extend additively per
+// docs/architecture/05-sync-and-state.md §Forward-compatibility.
+//
+// Consumers MUST dispatch on the string value (e.g.
+// `change.Kind == EntityKindEmail`) and ignore unknown kinds, so a
+// later wave can add a new datatype without touching the dispatch
+// core in protoimap, protojmap, or the FTS worker.
+type EntityKind string
 
 const (
-	// ChangeKindUnknown is the zero value and must not be persisted.
-	ChangeKindUnknown ChangeKind = iota
-	// ChangeKindMessageCreated signals a new message row (delivery,
-	// APPEND, JMAP Email/set create).
-	ChangeKindMessageCreated
-	// ChangeKindMessageUpdated signals a mutation to flags, keywords, or
-	// mailbox placement (STORE, COPY/MOVE target).
-	ChangeKindMessageUpdated
-	// ChangeKindMessageDestroyed signals an EXPUNGE or JMAP destroy.
-	ChangeKindMessageDestroyed
-	// ChangeKindMailboxCreated signals a new mailbox.
-	ChangeKindMailboxCreated
-	// ChangeKindMailboxUpdated signals a mailbox rename or attribute change.
-	ChangeKindMailboxUpdated
-	// ChangeKindMailboxDestroyed signals mailbox deletion.
-	ChangeKindMailboxDestroyed
+	// EntityKindMailbox is a JMAP `Mailbox` (also IMAP folder).
+	EntityKindMailbox EntityKind = "mailbox"
+	// EntityKindEmail is a JMAP `Email` (an IMAP message row).
+	EntityKindEmail EntityKind = "email"
+	// EntityKindEmailSubmission is a JMAP `EmailSubmission` row.
+	EntityKindEmailSubmission EntityKind = "email_submission"
+	// EntityKindIdentity is a JMAP `Identity` row.
+	EntityKindIdentity EntityKind = "identity"
+	// EntityKindVacationResponse is a JMAP `VacationResponse` row.
+	EntityKindVacationResponse EntityKind = "vacation_response"
+)
+
+// ChangeOp is the operation kind on a StateChange row. Distinct from
+// EntityKind so consumers can dispatch on (kind, op) pairs (e.g. only
+// the email-created case warrants an FTS index pass).
+type ChangeOp uint8
+
+const (
+	// ChangeOpUnknown is the zero value; it must never be persisted and
+	// is returned only by uninitialized decoders.
+	ChangeOpUnknown ChangeOp = iota
+	// ChangeOpCreated signals a new entity (delivery, APPEND, JMAP set
+	// create, mailbox create).
+	ChangeOpCreated
+	// ChangeOpUpdated signals a mutation to an existing entity (STORE,
+	// rename, JMAP set update).
+	ChangeOpUpdated
+	// ChangeOpDestroyed signals deletion (EXPUNGE, JMAP destroy,
+	// mailbox delete).
+	ChangeOpDestroyed
 )
 
 // StateChange is one entry in a principal's monotonic state-change feed.
 // Consumers (IMAP IDLE, JMAP push, FTS worker) read ranges of this feed
 // with ReadChangeFeed to observe committed mutations.
+//
+// The row is intentionally datatype-agnostic. The triple (Kind,
+// EntityID, ParentEntityID) names the affected entity; per-type sync
+// auxiliaries (IMAP UID, MODSEQ for emails) live on the type's own
+// tables and are joined in by the consumer when needed. This keeps the
+// JMAP `Foo/changes` dispatch path uniform across types and lets new
+// datatypes be added additively per
+// docs/architecture/05-sync-and-state.md §Forward-compatibility.
 type StateChange struct {
 	// Seq is the principal-local monotonic sequence number. Strictly
 	// increasing for a given PrincipalID; never reused after compaction.
 	Seq ChangeSeq
 	// PrincipalID is the owning principal.
 	PrincipalID PrincipalID
-	// Kind classifies the change (see ChangeKind*).
-	Kind ChangeKind
-	// MailboxID is the affected mailbox, or 0 for principal-scoped events.
-	MailboxID MailboxID
-	// MessageID is the affected message, or 0 for mailbox-scoped events.
-	MessageID MessageID
-	// MessageUID is the IMAP UID of the affected message within its
-	// mailbox, or 0 for non-message events.
-	MessageUID UID
+	// Kind names the JMAP datatype of the affected entity (e.g.
+	// EntityKindEmail). Consumers MUST dispatch on this string and
+	// ignore kinds they do not handle.
+	Kind EntityKind
+	// EntityID is the opaque id of the affected entity within Kind's
+	// namespace (e.g. a MessageID when Kind == EntityKindEmail, a
+	// MailboxID when Kind == EntityKindMailbox).
+	EntityID uint64
+	// ParentEntityID is an optional containing-entity id used by some
+	// kinds — for EntityKindEmail it carries the MailboxID so per-
+	// mailbox IMAP IDLE filters can dispatch without a join. Zero when
+	// the kind has no natural parent.
+	ParentEntityID uint64
+	// Op classifies the mutation (created / updated / destroyed).
+	Op ChangeOp
 	// ProducedAt is the instant the mutation's transaction committed,
 	// captured from the injected Clock (not the wall clock).
 	ProducedAt time.Time

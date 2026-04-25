@@ -2,6 +2,18 @@ package storepg
 
 import "context"
 
+// Migration0005SQL is the verbatim 0005_state_change_generic.sql body,
+// re-exported for the migration-mapping test in storepg_test.go so the
+// test exercises the production migration text and never drifts from
+// it.
+var Migration0005SQL = func() string {
+	body, err := migrationsFS.ReadFile("migrations/0005_state_change_generic.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
+}()
+
 // TruncateAll wipes state between compliance test runs against a
 // single shared database. Application tables are truncated; the
 // schema_migrations table is left alone so the migration idempotency

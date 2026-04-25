@@ -554,20 +554,45 @@ func (ses *session) handleIDLE(ctx context.Context, c *Command) error {
 			continue
 		}
 		newMessages := false
-		expunged := []store.UID{}
+		expungedIDs := []store.MessageID{}
 		flagsChanged := []store.MessageID{}
+		// Per-protocol dispatch: IMAP IDLE only reacts to email + mailbox
+		// kinds scoped to the selected mailbox. Filtering on EntityKind
+		// (string-match) rather than typed columns is the
+		// forward-compat invariant from
+		// docs/architecture/05-sync-and-state.md §Forward-compatibility
+		// — unknown future kinds (jmap addressbook/calendar/event,
+		// etc.) flow through this loop without touching IMAP. For the
+		// email kind, ParentEntityID carries the MailboxID; we filter
+		// on it before dispatching the (Kind, Op) pair. Per-message UID
+		// is no longer carried on the change row, so the EXPUNGE path
+		// joins the messages table via GetMessage when emitting
+		// untagged FETCH responses; the destroyed branch instead falls
+		// back to a fresh EXISTS so the client resyncs.
 		for _, ch := range changes {
 			cursor = ch.Seq
-			if ch.MailboxID != 0 && ch.MailboxID != mailboxID {
-				continue
-			}
 			switch ch.Kind {
-			case store.ChangeKindMessageCreated:
-				newMessages = true
-			case store.ChangeKindMessageDestroyed:
-				expunged = append(expunged, ch.MessageUID)
-			case store.ChangeKindMessageUpdated:
-				flagsChanged = append(flagsChanged, ch.MessageID)
+			case store.EntityKindEmail:
+				if ch.ParentEntityID != 0 && store.MailboxID(ch.ParentEntityID) != mailboxID {
+					continue
+				}
+				switch ch.Op {
+				case store.ChangeOpCreated:
+					newMessages = true
+				case store.ChangeOpDestroyed:
+					expungedIDs = append(expungedIDs, store.MessageID(ch.EntityID))
+				case store.ChangeOpUpdated:
+					flagsChanged = append(flagsChanged, store.MessageID(ch.EntityID))
+				}
+			case store.EntityKindMailbox:
+				// Mailbox-level events for other mailboxes have no IDLE
+				// surface in the currently-selected mailbox. Mailbox-
+				// destroyed for the selected mailbox is handled by the
+				// session lifecycle, not here.
+				continue
+			default:
+				// Unknown kinds flow through (forward-compat).
+				continue
 			}
 		}
 		if newMessages {
@@ -578,7 +603,7 @@ func (ses *session) handleIDLE(ctx context.Context, c *Command) error {
 				_ = ses.resp.untagged(fmt.Sprintf("%d EXISTS", n))
 			}
 		}
-		if len(expunged) > 0 {
+		if len(expungedIDs) > 0 {
 			if err := ses.reloadSelected(idleCtx); err == nil {
 				// After reload, the expunged UIDs are gone; seq numbers
 				// for remaining messages may have shifted. We emit one

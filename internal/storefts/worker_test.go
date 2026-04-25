@@ -121,14 +121,19 @@ func (h *workerHarness) insertMessage(t *testing.T, mb store.Mailbox, subject, b
 	msg.UID = uid
 	msg.ModSeq = modseq
 	// Resolve the assigned MessageID via the per-principal state-change
-	// feed (the store does not return the ID directly from InsertMessage).
+	// feed (the store does not return the ID directly from
+	// InsertMessage). The change row only carries (Kind, EntityID,
+	// ParentEntityID, Op) — we match the most recent Email/Created
+	// entry under this mailbox; that is unique per call because the
+	// helper holds the principal/mailbox to itself.
 	changes, err := h.store.Meta().ReadChangeFeed(h.ctx, mb.PrincipalID, 0, 10000)
 	if err != nil {
 		t.Fatalf("read change feed: %v", err)
 	}
 	for _, c := range changes {
-		if c.Kind == store.ChangeKindMessageCreated && c.MessageUID == uid && c.MailboxID == mb.ID {
-			msg.ID = c.MessageID
+		if c.Kind == store.EntityKindEmail && c.Op == store.ChangeOpCreated &&
+			store.MailboxID(c.ParentEntityID) == mb.ID {
+			msg.ID = store.MessageID(c.EntityID)
 		}
 	}
 	return msg

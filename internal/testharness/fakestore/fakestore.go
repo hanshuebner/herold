@@ -334,8 +334,9 @@ func (m *metaFace) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.M
 	// Append mailbox-created state change.
 	s.appendStateChangeLocked(store.StateChange{
 		PrincipalID: mb.PrincipalID,
-		Kind:        store.ChangeKindMailboxCreated,
-		MailboxID:   mb.ID,
+		Kind:        store.EntityKindMailbox,
+		EntityID:    uint64(mb.ID),
+		Op:          store.ChangeOpCreated,
 		ProducedAt:  now,
 	})
 	return mb, nil
@@ -368,26 +369,30 @@ func (m *metaFace) DeleteMailbox(ctx context.Context, id store.MailboxID) error 
 		delete(s.messages, mid)
 		delete(s.ftsDocs, mid)
 		s.appendStateChangeLocked(store.StateChange{
-			PrincipalID: mb.PrincipalID,
-			Kind:        store.ChangeKindMessageDestroyed,
-			MailboxID:   id,
-			MessageID:   mid,
-			MessageUID:  msg.UID,
-			ProducedAt:  now,
+			PrincipalID:    mb.PrincipalID,
+			Kind:           store.EntityKindEmail,
+			EntityID:       uint64(mid),
+			ParentEntityID: uint64(id),
+			Op:             store.ChangeOpDestroyed,
+			ProducedAt:     now,
 		})
 		s.appendFTSChangeLocked(store.FTSChange{
-			PrincipalID: mb.PrincipalID,
-			MailboxID:   id,
-			MessageID:   mid,
-			Kind:        store.ChangeKindMessageDestroyed,
-			ProducedAt:  now,
+			PrincipalID:    mb.PrincipalID,
+			Kind:           store.EntityKindEmail,
+			EntityID:       uint64(mid),
+			ParentEntityID: uint64(id),
+			Op:             store.ChangeOpDestroyed,
+			ProducedAt:     now,
 		})
+		_ = msg.UID // UID not carried on the change row; FTS / IDLE consumers
+		// join the messages table when they need it.
 	}
 	delete(s.mailboxes, id)
 	s.appendStateChangeLocked(store.StateChange{
 		PrincipalID: mb.PrincipalID,
-		Kind:        store.ChangeKindMailboxDestroyed,
-		MailboxID:   id,
+		Kind:        store.EntityKindMailbox,
+		EntityID:    uint64(id),
+		Op:          store.ChangeOpDestroyed,
 		ProducedAt:  now,
 	})
 	return nil
@@ -456,19 +461,20 @@ func (m *metaFace) InsertMessage(ctx context.Context, msg store.Message) (store.
 		s.blobRefs[msg.Blob.Hash]++
 	}
 	s.appendStateChangeLocked(store.StateChange{
-		PrincipalID: mb.PrincipalID,
-		Kind:        store.ChangeKindMessageCreated,
-		MailboxID:   mb.ID,
-		MessageID:   msg.ID,
-		MessageUID:  msg.UID,
-		ProducedAt:  now,
+		PrincipalID:    mb.PrincipalID,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(msg.ID),
+		ParentEntityID: uint64(mb.ID),
+		Op:             store.ChangeOpCreated,
+		ProducedAt:     now,
 	})
 	s.appendFTSChangeLocked(store.FTSChange{
-		PrincipalID: mb.PrincipalID,
-		MailboxID:   mb.ID,
-		MessageID:   msg.ID,
-		Kind:        store.ChangeKindMessageCreated,
-		ProducedAt:  now,
+		PrincipalID:    mb.PrincipalID,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(msg.ID),
+		ParentEntityID: uint64(mb.ID),
+		Op:             store.ChangeOpCreated,
+		ProducedAt:     now,
 	})
 	return msg.UID, msg.ModSeq, nil
 }
@@ -528,19 +534,20 @@ func (m *metaFace) UpdateMessageFlags(
 	s.mailboxes[mb.ID] = mb
 	s.messages[msg.ID] = msg
 	s.appendStateChangeLocked(store.StateChange{
-		PrincipalID: mb.PrincipalID,
-		Kind:        store.ChangeKindMessageUpdated,
-		MailboxID:   mb.ID,
-		MessageID:   msg.ID,
-		MessageUID:  msg.UID,
-		ProducedAt:  now,
+		PrincipalID:    mb.PrincipalID,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(msg.ID),
+		ParentEntityID: uint64(mb.ID),
+		Op:             store.ChangeOpUpdated,
+		ProducedAt:     now,
 	})
 	s.appendFTSChangeLocked(store.FTSChange{
-		PrincipalID: mb.PrincipalID,
-		MailboxID:   mb.ID,
-		MessageID:   msg.ID,
-		Kind:        store.ChangeKindMessageUpdated,
-		ProducedAt:  now,
+		PrincipalID:    mb.PrincipalID,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(msg.ID),
+		ParentEntityID: uint64(mb.ID),
+		Op:             store.ChangeOpUpdated,
+		ProducedAt:     now,
 	})
 	return msg.ModSeq, nil
 }
@@ -574,20 +581,22 @@ func (m *metaFace) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 		delete(s.ftsDocs, id)
 		mb.HighestModSeq++
 		s.appendStateChangeLocked(store.StateChange{
-			PrincipalID: mb.PrincipalID,
-			Kind:        store.ChangeKindMessageDestroyed,
-			MailboxID:   mailboxID,
-			MessageID:   id,
-			MessageUID:  msg.UID,
-			ProducedAt:  now,
+			PrincipalID:    mb.PrincipalID,
+			Kind:           store.EntityKindEmail,
+			EntityID:       uint64(id),
+			ParentEntityID: uint64(mailboxID),
+			Op:             store.ChangeOpDestroyed,
+			ProducedAt:     now,
 		})
 		s.appendFTSChangeLocked(store.FTSChange{
-			PrincipalID: mb.PrincipalID,
-			MailboxID:   mailboxID,
-			MessageID:   id,
-			Kind:        store.ChangeKindMessageDestroyed,
-			ProducedAt:  now,
+			PrincipalID:    mb.PrincipalID,
+			Kind:           store.EntityKindEmail,
+			EntityID:       uint64(id),
+			ParentEntityID: uint64(mailboxID),
+			Op:             store.ChangeOpDestroyed,
+			ProducedAt:     now,
 		})
+		_ = msg.UID // UID is no longer carried on the change row.
 	}
 	if found == 0 && len(ids) > 0 {
 		return fmt.Errorf("expunge: %w", store.ErrNotFound)
@@ -622,8 +631,8 @@ func (m *metaFace) UpdateMailboxModseqAndAppendChange(
 	if change.PrincipalID == 0 {
 		change.PrincipalID = mb.PrincipalID
 	}
-	if change.MailboxID == 0 {
-		change.MailboxID = mailboxID
+	if change.ParentEntityID == 0 {
+		change.ParentEntityID = uint64(mailboxID)
 	}
 	s.appendStateChangeLocked(change)
 	// The appended change now carries Seq; read it back.

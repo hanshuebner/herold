@@ -78,7 +78,7 @@ func (f *ftsStub) ReadChangeFeedForFTS(ctx context.Context, cursor uint64, max i
 		max = 1000
 	}
 	rows, err := f.s.pool.Query(ctx, `
-		SELECT id, principal_id, kind, mailbox_id, message_id, produced_at_us
+		SELECT id, principal_id, entity_kind, entity_id, parent_entity_id, op, produced_at_us
 		  FROM state_changes
 		 WHERE id > $1 ORDER BY id ASC LIMIT $2`, int64(cursor), max)
 	if err != nil {
@@ -89,18 +89,20 @@ func (f *ftsStub) ReadChangeFeedForFTS(ctx context.Context, cursor uint64, max i
 	for rows.Next() {
 		var id int64
 		var pid int64
-		var kind int32
-		var mbox, mid, prodUs int64
-		if err := rows.Scan(&id, &pid, &kind, &mbox, &mid, &prodUs); err != nil {
+		var kind string
+		var op int16
+		var eid, peid, prodUs int64
+		if err := rows.Scan(&id, &pid, &kind, &eid, &peid, &op, &prodUs); err != nil {
 			return nil, err
 		}
 		out = append(out, store.FTSChange{
-			Seq:         uint64(id),
-			PrincipalID: store.PrincipalID(pid),
-			MailboxID:   store.MailboxID(mbox),
-			MessageID:   store.MessageID(mid),
-			Kind:        store.ChangeKind(kind),
-			ProducedAt:  fromMicros(prodUs),
+			Seq:            uint64(id),
+			PrincipalID:    store.PrincipalID(pid),
+			Kind:           store.EntityKind(kind),
+			EntityID:       uint64(eid),
+			ParentEntityID: uint64(peid),
+			Op:             store.ChangeOp(op),
+			ProducedAt:     fromMicros(prodUs),
 		})
 	}
 	return out, rows.Err()
