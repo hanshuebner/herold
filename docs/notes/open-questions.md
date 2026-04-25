@@ -4,6 +4,22 @@ Only live questions — everything resolved moved to the **Resolved log** at the
 
 ## Active — needs a decision
 
+### Q5. StateChange row shape vs. JMAP datatype forward-compat
+
+`docs/architecture/03-protocol-architecture.md` §JMAP §Capability and account registration commits us to keeping the JMAP session, push, and batch handlers datatype-agnostic so adding a future datatype (e.g. `urn:ietf:params:jmap:submission`, `:vacationresponse`, or — should NG3 ever be revisited — `:calendars`) is purely additive: register a handler, declare a capability, no edits to the dispatch core.
+
+The change-feed row in `internal/store/types.go` `StateChange` does not match that posture. Today it carries typed `MailboxID`, `MessageID`, and `MessageUID` columns — mail-only — backed by SQL columns of the same shape on both backends. A non-mail JMAP datatype cannot reuse this feed without either a schema migration or a parallel feed.
+
+Two paths:
+
+(a) **Reshape now.** Replace the typed fields with a generic `(EntityType string, EntityID uint64, ParentEntityID uint64)` triple. SQL migration on both backends; update the FTS worker, future IDLE/NOTIFY/JMAP-push readers, the storetest compliance matrix, and `fakestore`. Roughly migration-grade work; doable in one focused agent pass.
+
+(b) **Defer and migrate when needed.** Land the second JMAP datatype (Phase 3 candidate at earliest) AND its schema migration in the same wave. Risk: state-string semantics for the new datatype have to coexist with the existing per-principal seq, which is awkward — JMAP wants per-Account-per-datatype state strings, not one principal-wide seq.
+
+Recommendation: lean toward (a) before Phase 3 lands a non-mail JMAP datatype, since the JMAP state strings (six monotonic counters per principal in `jmap_states`, added in Wave 2.0) already encode per-datatype scoping; aligning the change feed to the same shape eliminates a coupling that would otherwise need a runtime translation layer.
+
+Resolve before any non-mail JMAP datatype is added (no firm deadline; not blocking Phase 2).
+
 ## Active — pre-release admin
 
 ### Q2. Governance model

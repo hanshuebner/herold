@@ -85,6 +85,14 @@ Stateless HTTP requests (with optional push via SSE/WebSocket):
 
 Auth: `Authorization: Bearer <token>` or basic with username+password (app password or primary). Rate-limited per token.
 
+#### Capability and account registration (forward-compat)
+
+The session descriptor's `capabilities` map and each `Account`'s `accountCapabilities` are assembled from a registry of installed JMAP datatype handlers. v1 registers `urn:ietf:params:jmap:core` and `urn:ietf:params:jmap:mail`. The session, push (SSE), and batch handlers dispatch by capability/type name and do not enumerate concrete types in their code paths.
+
+Consequence: adding a JMAP datatype later (`urn:ietf:params:jmap:submission`, `:vacationresponse`, or — should the v1 scope position on groupware (`docs/00-scope.md` NG3) ever be revisited — `:calendars` / `:contacts`) is purely additive: register the handler, add the type's storage, declare its capability. The session descriptor, push channel, and batch processor need no edits.
+
+The `Account` abstraction (one Principal → N Accounts, each with its own capability subset) is also where shared-mailbox handling (phase 2) lives. Build it now even though v1 will only mint one Account per Principal — retrofitting an Account boundary into already-shipped JMAP state strings is migration-grade work.
+
 ### ManageSieve
 
 Small state machine: `NotAuthenticated → Authenticated`. Commands are text-line-based with quoted strings + literals. Script content uploaded as literal; we run the parser and return errors inline.

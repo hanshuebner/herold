@@ -28,6 +28,16 @@ Properties:
 
 Every mutation that affects a user-observable entity appends to this feed in the same transaction.
 
+### Forward-compatibility constraint
+
+The schema's `entity` column is intentionally an open enum. v1 emits only mail kinds (`mailbox`, `email`, plus the JMAP-Mail submission/identity/vacation kinds), but the column already accepts `addressbook`, `card`, `calendar`, `event`. Per the v1 scope position (`docs/00-scope.md` NG3), groupware is not in v1 and there is no plan to ship it; this constraint exists only to keep retrofit cheap if that position is ever revisited.
+
+What this means for the implementation:
+
+- `StateChange` in `internal/store/types.go` MUST mirror the doc's `(entity_kind, entity_id, op)` shape. Do not add type-specific columns (`MailboxID`, `MessageID`, `MessageUID`, …) to the change row — the JMAP `Foo/changes` consumer is uniform across types and must stay that way. Per-type sync auxiliaries (IMAP UID/MODSEQ for mail) live on the type's own tables, not on the change row.
+- Adding a new entity kind is additive: extend the enum, add the kind's tables, register a JMAP datatype handler. No migration of `state_changes` rows.
+- Consumers (broadcaster, JMAP push filter, IDLE filter) must dispatch on `entity_kind`, not on schema-typed columns, so unknown future kinds flow through without code changes in the dispatch path.
+
 ## Producers: who writes to the feed
 
 - Mailbox delivery (new message, flag change, expunge): writes one or more `email` changes + `mailbox` changes.
