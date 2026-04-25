@@ -80,6 +80,31 @@ func (f *fakeMembership) ListMembers(_ context.Context, conv string) ([]store.Pr
 	return out, nil
 }
 
+// ListPeers returns every principal that shares at least one
+// conversation with publisher. Used as a deterministic PeersResolver
+// in the protocol tests; production wiring uses the chat-store path.
+func (f *fakeMembership) ListPeers(_ context.Context, publisher store.PrincipalID) ([]store.PrincipalID, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	seen := make(map[store.PrincipalID]struct{})
+	for _, members := range f.members {
+		if _, has := members[publisher]; !has {
+			continue
+		}
+		for pid := range members {
+			if pid == publisher {
+				continue
+			}
+			seen[pid] = struct{}{}
+		}
+	}
+	out := make([]store.PrincipalID, 0, len(seen))
+	for pid := range seen {
+		out = append(out, pid)
+	}
+	return out, nil
+}
+
 // harness wires a Server up against a real httptest listener so the
 // tests speak the actual TCP/upgrade path. Each test gets its own
 // FakeClock anchored at a deterministic instant.
@@ -105,14 +130,17 @@ func newHarness(t *testing.T, opts ...harnessOpt) *harness {
 		SessionResolver: testResolver,
 		Broadcaster:     bcast,
 		Membership:      mem.IsMember,
+		PeersResolver:   mem.ListPeers,
 		PingInterval:    24 * time.Hour,
 		PongTimeout:     48 * time.Hour,
+		WriteTimeout:    24 * time.Hour, // tests do not exercise write-deadline timeouts
 		MaxFrameBytes:   4096,
 		PerPrincipalCap: 4,
 		MaxConnections:  64,
 		WriteQueueSize:  16,
 		TypingAutoStop:  10 * time.Second,
 		PresenceGrace:   30 * time.Second,
+		AllowedOrigins:  nil, // same-origin only; httptest binds 127.0.0.1
 	}
 	for _, fn := range opts {
 		fn(&o)
@@ -710,4 +738,181 @@ func mustJSON(t *testing.T, v any) []byte {
 func deadlineUnblock(t *testing.T, c *testClient) {
 	t.Helper()
 	_ = c.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+}
+
+// ----- origin / CSWSH tests (Wave 2.9.5 Track A #2) -----
+
+func TestUpgrade_HostileOrigin_Rejected_403(t *testing.T) {
+	h := newHarness(t)
+	c, resp, err := dialTestClient(h.addr(), map[string]string{
+		pidHeader: "1",
+		"Origin":  "https://evil.example.test",
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if c != nil {
+		t.Fatalf("hostile origin: got accepted handshake, want 403")
+	}
+	if resp == nil {
+		t.Fatalf("hostile origin: nil response")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/problem+json" {
+		t.Errorf("content-type: got %q, want application/problem+json", got)
+	}
+}
+
+func TestUpgrade_EmptyOrigin_DefaultRejected(t *testing.T) {
+	h := newHarness(t)
+	// Force an empty Origin header. dialTestClient by default sends a
+	// same-origin Origin; we override with empty here.
+	c, resp, err := dialTestClient(h.addr(), map[string]string{
+		pidHeader: "1",
+		"Origin":  "",
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	// Note: empty header value is filtered by net/http's parsing on
+	// the server side — we want to see the same behaviour either way.
+	// Either the handshake succeeds (header dropped) or 403; check
+	// for 403.
+	if c != nil {
+		t.Fatalf("empty origin: got accepted handshake, want 403")
+	}
+	if resp == nil {
+		t.Fatalf("empty origin: nil response")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestUpgrade_AllowedOriginMatch_Accepted(t *testing.T) {
+	h := newHarness(t, func(o *Options) {
+		o.AllowedOrigins = []string{"https://mail.example.test"}
+	})
+	// Same-origin (mismatch on Host) is now also rejected because the
+	// allowlist took effect; an explicit allowlisted Origin is accepted.
+	c, resp, err := dialTestClient(h.addr(), map[string]string{
+		pidHeader: "1",
+		"Origin":  "https://mail.example.test",
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if c == nil {
+		if resp != nil {
+			defer resp.Body.Close()
+			t.Fatalf("expected switch protocols, got %d", resp.StatusCode)
+		}
+		t.Fatal("expected accepted handshake")
+	}
+	c.Close()
+}
+
+// ----- UTF-8 validation (Wave 2.9.5 Track A #8) -----
+
+func TestFrames_InvalidUTF8_TextFrame_Closes1007(t *testing.T) {
+	h := newHarness(t)
+	c := h.connect(1)
+	// 0xC0 0x80 is an overlong-encoded NUL (forbidden by UTF-8) —
+	// valid in the older spec, rejected by RFC 3629 / 6455.
+	bad := []byte{'{', '"', 't', '"', ':', '"', 0xC0, 0x80, '"', '}'}
+	if err := c.writeText(bad); err != nil {
+		t.Fatalf("writeText: %v", err)
+	}
+	deadlineUnblock(t, c)
+	code, err := c.readUntilClose()
+	if err != nil {
+		t.Fatalf("readUntilClose: %v", err)
+	}
+	if code != closeInvalidPayload {
+		t.Fatalf("close code: got %d, want %d (1007)", code, closeInvalidPayload)
+	}
+}
+
+// ----- write deadline (Wave 2.9.5 Track A #5) -----
+
+func TestSocketDeadline_ReadDeadline_FiresOnSilentPeer(t *testing.T) {
+	// PongTimeout=100ms wall-clock: a peer that sends nothing must be
+	// closed within ~ that interval. We use the FakeClock for the
+	// other paths but the SetReadDeadline call uses real time, so
+	// the test consumes wall time bounded by pongTimeout.
+	h := newHarness(t, func(o *Options) {
+		// Disable the heartbeat ping so the writePump's own pong-timeout
+		// path does not race with the readPump's deadline.
+		o.PingInterval = 1 * time.Hour
+		o.PongTimeout = 100 * time.Millisecond
+		o.WriteTimeout = 1 * time.Hour
+	})
+	c := h.connect(1)
+	gotClose := make(chan closeCode, 1)
+	go func() {
+		for {
+			op, payload, err := c.readNext()
+			if err != nil {
+				return
+			}
+			if op == opClose {
+				code, _ := decodeCloseFrame(payload)
+				gotClose <- code
+				return
+			}
+		}
+	}()
+	select {
+	case code := <-gotClose:
+		if code != closePolicyViolation {
+			t.Fatalf("close code: got %d, want %d (1008)", code, closePolicyViolation)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not close silent peer within 2s")
+	}
+}
+
+// ----- presence-fanout privacy (Wave 2.9.5 Track A #10) -----
+
+func TestPresence_NoFanoutToNonPeer(t *testing.T) {
+	h := newHarness(t)
+	// alice (1) and bob (2) share c1; carol (3) does not.
+	h.mem.addMember("c1", 1)
+	h.mem.addMember("c1", 2)
+	// Carol is a member of an unrelated conversation she's the only
+	// occupant of — so she has no shared membership with alice.
+	h.mem.addMember("c-carol", 3)
+
+	a := h.connect(1)
+	b := h.connect(2)
+	c := h.connect(3)
+
+	if err := a.writeText(mustJSON(t, ClientFrame{
+		Type:    clientTypePresenceSet,
+		Payload: mustJSON(t, presencePayload{State: "online"}),
+	})); err != nil {
+		t.Fatalf("writeText: %v", err)
+	}
+	// Bob (peer) MUST receive the presence frame.
+	deadlineUnblock(t, b)
+	sf, err := b.readServerFrame()
+	if err != nil {
+		t.Fatalf("bob readServerFrame: %v", err)
+	}
+	if sf.Type != ServerTypePresence {
+		t.Fatalf("bob frame type: got %q, want %q", sf.Type, ServerTypePresence)
+	}
+
+	// Carol (non-peer) MUST NOT receive any presence frame within a
+	// short window. We bound the read with a 250ms deadline; on
+	// timeout we expect an i/o-error from readServerFrame, which is
+	// the "carol got nothing" condition.
+	_ = c.conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+	if sf, err := c.readServerFrame(); err == nil {
+		t.Fatalf("non-peer carol received presence: %+v", sf)
+	}
 }

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
@@ -42,6 +43,7 @@ type Options struct {
 	WriteQueueSize  int           // default 256
 	PingInterval    time.Duration // default 30s
 	PongTimeout     time.Duration // default 60s
+	WriteTimeout    time.Duration // default 10s
 	MaxFrameBytes   int           // default 65536 (64 KiB)
 
 	// TypingAutoStop is how long a typing.start lasts before the
@@ -52,6 +54,29 @@ type Options struct {
 	// PresenceGrace is the disconnect-grace window before a
 	// principal's presence transitions to offline. Default 30s.
 	PresenceGrace time.Duration
+
+	// AllowedOrigins is the closed set of Origin header values the
+	// /chat/ws upgrade accepts. Each entry MUST be a full origin
+	// including scheme (e.g. "https://mail.example.com"). An empty
+	// list (the default) is interpreted as "same-origin only": the
+	// server compares the Origin header's host (case-insensitively)
+	// against the Request.Host. Mismatches return 403 + RFC 7807
+	// problem detail before the WebSocket hijack.
+	AllowedOrigins []string
+
+	// AllowEmptyOrigin lets non-browser clients connect without an
+	// Origin header. Default false: every Origin-less request is
+	// rejected with 403 to mirror browser fetch policy.
+	AllowEmptyOrigin bool
+
+	// PeersResolver returns the set of principal ids that share at
+	// least one Conversation membership with the publishing
+	// principal. Used to scope presence.set fanout so a user's
+	// presence is only delivered to people they actually chat with.
+	// Nil resolver makes every fanout target the empty set, which
+	// effectively disables presence broadcast — fail-closed if the
+	// chat-store path is not wired.
+	PeersResolver PeersResolver
 }
 
 // Server is the GET /chat/ws upgrade handler plus its inner
@@ -73,8 +98,13 @@ type Server struct {
 	writeQueueSize  int
 	pingInterval    time.Duration
 	pongTimeout     time.Duration
+	writeTimeout    time.Duration
 	maxFrameBytes   int
 	typingAutoStop  time.Duration
+
+	allowedOrigins   []string
+	allowEmptyOrigin bool
+	peers            PeersResolver
 
 	connsMu     sync.Mutex
 	conns       map[*chatConn]struct{}
@@ -124,6 +154,9 @@ func New(opts Options) *Server {
 	if opts.PongTimeout <= 0 {
 		opts.PongTimeout = 60 * time.Second
 	}
+	if opts.WriteTimeout <= 0 {
+		opts.WriteTimeout = 10 * time.Second
+	}
 	if opts.MaxFrameBytes <= 0 {
 		opts.MaxFrameBytes = 64 * 1024
 	}
@@ -134,23 +167,27 @@ func New(opts Options) *Server {
 		opts.PresenceGrace = 30 * time.Second
 	}
 	return &Server{
-		store:           opts.Store,
-		logger:          logger,
-		clk:             clk,
-		resolve:         opts.SessionResolver,
-		broadcaster:     opts.Broadcaster,
-		membership:      opts.Membership,
-		presence:        NewPresenceTracker(clk, opts.PresenceGrace),
-		rateLimiter:     newRateLimiter(clk, 60, 120),
-		maxConnections:  opts.MaxConnections,
-		perPrincipalCap: opts.PerPrincipalCap,
-		writeQueueSize:  opts.WriteQueueSize,
-		pingInterval:    opts.PingInterval,
-		pongTimeout:     opts.PongTimeout,
-		maxFrameBytes:   opts.MaxFrameBytes,
-		typingAutoStop:  opts.TypingAutoStop,
-		conns:           make(map[*chatConn]struct{}),
-		perPrinc:        make(map[store.PrincipalID]int),
+		store:            opts.Store,
+		logger:           logger,
+		clk:              clk,
+		resolve:          opts.SessionResolver,
+		broadcaster:      opts.Broadcaster,
+		membership:       opts.Membership,
+		presence:         NewPresenceTracker(clk, opts.PresenceGrace),
+		rateLimiter:      newRateLimiter(clk, 60, 120),
+		maxConnections:   opts.MaxConnections,
+		perPrincipalCap:  opts.PerPrincipalCap,
+		writeQueueSize:   opts.WriteQueueSize,
+		pingInterval:     opts.PingInterval,
+		pongTimeout:      opts.PongTimeout,
+		writeTimeout:     opts.WriteTimeout,
+		maxFrameBytes:    opts.MaxFrameBytes,
+		typingAutoStop:   opts.TypingAutoStop,
+		allowedOrigins:   normaliseOrigins(opts.AllowedOrigins),
+		allowEmptyOrigin: opts.AllowEmptyOrigin,
+		peers:            opts.PeersResolver,
+		conns:            make(map[*chatConn]struct{}),
+		perPrinc:         make(map[store.PrincipalID]int),
 	}
 }
 
@@ -237,6 +274,14 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 
 	if !validateUpgradeHeaders(r) {
 		http.Error(w, "bad websocket upgrade", http.StatusBadRequest)
+		return
+	}
+	// Origin check (CSWSH defence). Runs after the upgrade-header
+	// shape check so a client that issued a plain GET is rejected
+	// with 400 first; an actual upgrade with a hostile Origin gets
+	// 403 + RFC 7807 problem detail before we hijack.
+	if reason, ok := s.checkOrigin(r); !ok {
+		writeOriginProblem(w, reason)
 		return
 	}
 	key := r.Header.Get("Sec-WebSocket-Key")
@@ -375,9 +420,10 @@ func (s *Server) releaseReservation(pid store.PrincipalID) {
 	s.totalActive.Add(-1)
 }
 
-// emitPresence fans out a presence-update frame to every connection
-// subscribed to a conversation containing pid. Also stamps the
-// internal presence tracker.
+// emitPresence fans out a presence-update frame to the set of
+// principals that share at least one Conversation membership with the
+// publisher. A nil PeersResolver collapses the target set to empty —
+// fail-closed when the chat-store path is not wired.
 func (s *Server) emitPresence(pid store.PrincipalID, state string, now time.Time) {
 	s.presence.Set(pid, state, now)
 	payload, err := json.Marshal(outboundPresence{
@@ -393,32 +439,26 @@ func (s *Server) emitPresence(pid store.PrincipalID, state string, now time.Time
 		Type:    ServerTypePresence,
 		Payload: payload,
 	}
-	// Presence fans out to every connection that has registered
-	// interest. Subscribers are the lightweight routing primitive
-	// here — clients explicitly subscribe to peers' conversations
-	// and so see presence transitions for the people they chat
-	// with.
-	s.broadcaster.mu.RLock()
-	out := make([]Sender, 0)
-	for _, sub := range s.broadcaster.byID {
-		// A connection is interested in pid's presence if it is
-		// itself a subscriber to any conversation that pid is in.
-		// Without a membership lookup we cannot resolve that here;
-		// instead we deliver to every connection that has at least
-		// one active subscription, and rely on the client to filter
-		// on principal id. This is a simplification; track B can
-		// tighten it when the chat-store ListConversationsForPair
-		// path is available.
-		sub.subsMu.RLock()
-		hasAny := len(sub.subs) > 0
-		sub.subsMu.RUnlock()
-		if hasAny {
-			out = append(out, sub.sender)
-		}
+	if s.peers == nil {
+		// No PeersResolver: refuse to broadcast rather than leaking
+		// presence to every connected principal.
+		return
 	}
-	s.broadcaster.mu.RUnlock()
-	for _, sndr := range out {
-		_ = sndr.Send(frame)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	peers, perr := s.peers(ctx, pid)
+	if perr != nil {
+		s.logger.Warn("protochat.presence.peers_lookup_failed",
+			"pid", uint64(pid),
+			"err", perr.Error())
+		return
+	}
+	for _, peer := range peers {
+		if peer == pid {
+			// Don't bounce the publisher's own presence back at them.
+			continue
+		}
+		s.broadcaster.Emit(peer, frame)
 	}
 }
 
@@ -539,12 +579,19 @@ func (c *chatConn) writePump() {
 					"type", f.Type)
 				continue
 			}
+			// Write deadline policed via SetWriteDeadline: a slow
+			// peer that stops draining its TCP receive buffer must
+			// not pin the writer indefinitely. Deadline derives from
+			// the (real wall-clock) time.Now because SetDeadline on a
+			// net.Conn rides the system clock; the FakeClock only
+			// drives the application-layer ping/pong cadence.
+			_ = c.netConn.SetWriteDeadline(time.Now().Add(c.srv.writeTimeout))
 			if err := writeFrame(c.netConn, frame{
 				fin:     true,
 				opcode:  opText,
 				payload: body,
 			}); err != nil {
-				c.shutdown(closeInternalError, "write failed")
+				c.shutdown(closePolicyViolation, "write failed")
 				return
 			}
 		case <-pingTimer:
@@ -560,12 +607,13 @@ func (c *chatConn) writePump() {
 					return
 				}
 			}
+			_ = c.netConn.SetWriteDeadline(time.Now().Add(c.srv.writeTimeout))
 			if err := writeFrame(c.netConn, frame{
 				fin:     true,
 				opcode:  opPing,
 				payload: nil,
 			}); err != nil {
-				c.shutdown(closeInternalError, "ping write failed")
+				c.shutdown(closePolicyViolation, "ping write failed")
 				return
 			}
 		}
@@ -579,6 +627,11 @@ func (c *chatConn) readPump() {
 	defer c.shutdown(closeNormalClosure, "")
 	var fragBuf []byte
 	var fragOp byte
+	// Read deadline policed via SetReadDeadline: a silent peer that
+	// stops sending pongs must be evicted within pongTimeout regardless
+	// of TCP keepalive. The deadline is reset on every successful frame
+	// read AND inside the pong handler when the heartbeat extends.
+	_ = c.netConn.SetReadDeadline(time.Now().Add(c.srv.pongTimeout))
 	for {
 		f, err := readFrame(c.reader, true, c.srv.maxFrameBytes)
 		if err != nil {
@@ -593,15 +646,28 @@ func (c *chatConn) readPump() {
 				c.shutdown(closeMessageTooBig, "frame too large")
 				return
 			}
+			// Read-deadline timeout: classify as a policy violation
+			// (RFC 6455 §7.4 1008) so the client knows to back off
+			// rather than reconnecting tight.
+			var nerr net.Error
+			if errors.As(err, &nerr) && nerr.Timeout() {
+				c.shutdown(closePolicyViolation, "read deadline exceeded")
+				return
+			}
 			// Network error or peer closed; just exit.
 			return
 		}
+		// Successful frame read: extend the read deadline so a slow
+		// but live peer is not killed mid-stream.
+		_ = c.netConn.SetReadDeadline(time.Now().Add(c.srv.pongTimeout))
 		switch f.opcode {
 		case opPing:
 			// Reply with a pong carrying the same payload (RFC 6455 §5.5.3).
+			_ = c.netConn.SetWriteDeadline(time.Now().Add(c.srv.writeTimeout))
 			_ = writeFrame(c.netConn, frame{fin: true, opcode: opPong, payload: f.payload})
 		case opPong:
 			c.lastPong.Store(c.srv.clk.Now().UnixNano())
+			_ = c.netConn.SetReadDeadline(time.Now().Add(c.srv.pongTimeout))
 		case opClose:
 			code, reason := decodeCloseFrame(f.payload)
 			c.srv.logger.Debug("protochat.close",
@@ -640,6 +706,12 @@ func (c *chatConn) readPump() {
 // handler. Errors from the handler turn into "error" frames sent
 // back to the client; the connection survives.
 func (c *chatConn) dispatchText(body []byte) {
+	// RFC 6455 §8.1: text-frame payload MUST be valid UTF-8. The
+	// server MUST close with code 1007 on receipt of invalid bytes.
+	if !utf8.Valid(body) {
+		c.shutdown(closeInvalidPayload, "invalid utf-8 in text frame")
+		return
+	}
 	var inFrame ClientFrame
 	if err := json.Unmarshal(body, &inFrame); err != nil {
 		c.send(makeError(ErrCodeBadFrame, "invalid JSON envelope", ""))
@@ -877,4 +949,100 @@ func (c *chatConn) checkMembership(conv string) bool {
 		return false
 	}
 	return ok
+}
+
+// checkOrigin validates the inbound Origin header against the
+// operator-configured allowlist. Returns (reason, true) on accept and
+// (reason, false) on reject; the reason string lands in the RFC 7807
+// problem detail.
+//
+// Empty AllowedOrigins is "same-origin only": the Origin's host must
+// match Request.Host (case-insensitively, port-sensitive). An empty
+// Origin header is rejected unless AllowEmptyOrigin is true.
+func (s *Server) checkOrigin(r *http.Request) (string, bool) {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		if s.allowEmptyOrigin {
+			return "", true
+		}
+		return "missing Origin header", false
+	}
+	// Origin syntax per RFC 6454 §6.1: scheme "://" host [":" port].
+	// We accept any URL parseable target; lowercasing host gives us
+	// the case-insensitive comparison the spec requires.
+	parsed, err := parseOrigin(origin)
+	if err != nil {
+		return "malformed Origin header", false
+	}
+	if len(s.allowedOrigins) == 0 {
+		// Same-origin policy: Origin host must match Request.Host.
+		want := strings.ToLower(strings.TrimSpace(r.Host))
+		if want == "" {
+			return "request missing Host header", false
+		}
+		if !strings.EqualFold(parsed, want) {
+			return fmt.Sprintf("Origin %q does not match Host %q", origin, r.Host), false
+		}
+		return "", true
+	}
+	want := strings.ToLower(origin)
+	for _, allow := range s.allowedOrigins {
+		if allow == want {
+			return "", true
+		}
+	}
+	return fmt.Sprintf("Origin %q is not in the allowed list", origin), false
+}
+
+// parseOrigin extracts the host[:port] component of an Origin header
+// for the same-origin comparison. Returns an error for malformed
+// values; the spec requires the value carry a scheme and a host.
+func parseOrigin(origin string) (string, error) {
+	idx := strings.Index(origin, "://")
+	if idx < 0 {
+		return "", errors.New("origin missing scheme separator")
+	}
+	host := strings.ToLower(origin[idx+3:])
+	if host == "" {
+		return "", errors.New("origin missing host")
+	}
+	// Strip an optional path component; some clients send the page URL
+	// instead of the bare origin (the spec allows it but we are strict
+	// on the host part).
+	if i := strings.IndexByte(host, '/'); i >= 0 {
+		host = host[:i]
+	}
+	if host == "" {
+		return "", errors.New("origin host is empty")
+	}
+	return host, nil
+}
+
+// normaliseOrigins lowercases each entry and drops empties so the
+// allowlist comparison in checkOrigin is a straight string equality.
+func normaliseOrigins(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		s := strings.ToLower(strings.TrimSpace(raw))
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// writeOriginProblem emits an RFC 7807 problem detail describing the
+// Origin rejection. We use a dedicated writer (not http.Error) so the
+// content-type is application/problem+json per RFC 7807 §3.
+func writeOriginProblem(w http.ResponseWriter, reason string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(http.StatusForbidden)
+	body, _ := json.Marshal(map[string]any{
+		"type":   "https://errors.herold.example/chat/origin",
+		"title":  "Forbidden Origin",
+		"status": http.StatusForbidden,
+		"detail": reason,
+	})
+	_, _ = w.Write(body)
 }

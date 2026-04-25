@@ -50,6 +50,12 @@ func dialTestClient(addr string, headers map[string]string) (*testClient, *http.
 	fmt.Fprintf(&b, "Connection: Upgrade\r\n")
 	fmt.Fprintf(&b, "Sec-WebSocket-Key: %s\r\n", key)
 	fmt.Fprintf(&b, "Sec-WebSocket-Version: 13\r\n")
+	// Emit a same-origin Origin header by default so the server's
+	// CSWSH check accepts the handshake. Tests that exercise the
+	// origin-rejection path override this via the headers map.
+	if _, ok := headers["Origin"]; !ok {
+		fmt.Fprintf(&b, "Origin: http://%s\r\n", addr)
+	}
 	for k, v := range headers {
 		fmt.Fprintf(&b, "%s: %s\r\n", k, v)
 	}

@@ -370,6 +370,14 @@ func (h *handlerSet) createContact(
 	if len(raw) == 0 {
 		return store.Contact{}, &setError{Type: "invalidProperties", Description: "empty body"}, nil
 	}
+	// Wave 2.9 sec audit #4: enforce maxSizePerContactBlob on the raw
+	// inbound JSON before any further parsing. Mirrors the calendars
+	// event-blob check in internal/protojmap/calendars/event.go:368.
+	if h.limits.MaxSizePerContactBlob > 0 && len(raw) > h.limits.MaxSizePerContactBlob {
+		return store.Contact{}, &setError{
+			Type: "tooLarge", Description: "contact blob exceeds maxSizePerContactBlob",
+		}, nil
+	}
 	// Two passes: extract addressBookId (a JMAP-projected wrapper
 	// property), then strip it before re-serialising the JSContact body.
 	var probe map[string]json.RawMessage
@@ -557,6 +565,11 @@ func (h *handlerSet) updateContact(
 	body, err := json.Marshal(stored)
 	if err != nil {
 		return nil, fmt.Errorf("contacts: marshal merged body: %w", err)
+	}
+	// Wave 2.9 sec audit #4: enforce maxSizePerContactBlob on the
+	// merged body. Mirrors the calendar-event update path.
+	if h.limits.MaxSizePerContactBlob > 0 && len(body) > h.limits.MaxSizePerContactBlob {
+		return &setError{Type: "tooLarge", Description: "merged contact blob exceeds maxSizePerContactBlob"}, nil
 	}
 	var card Card
 	if err := card.UnmarshalJSON(body); err != nil {

@@ -12,6 +12,16 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
+// Wave 2.9 sec audit #9: byte-oriented caps on Conversation.Name /
+// .Topic. JMAP server-side limits are byte-counted (the spec allows
+// servers to express maxSizeForeignKey-style caps in bytes; we follow
+// the same convention here). Names land in headers and small UI
+// chrome; topics land in the conversation banner.
+const (
+	maxConversationNameBytes  = 256
+	maxConversationTopicBytes = 4096
+)
+
 // -- Conversation/get -------------------------------------------------
 
 type convGetRequest struct {
@@ -495,12 +505,28 @@ func (h *handlerSet) createConversation(
 		// allows omission for DMs).
 		name = resolvePrincipalEmail(ctx, h.store.Meta(), memberIDs[0])
 	}
+	// JMAP server-side caps are byte-oriented per the spec (clients
+	// using non-ASCII names see fewer "characters" but the wire-form
+	// limit is bytes). Wave 2.9 sec audit #9.
+	if len(name) > maxConversationNameBytes {
+		return store.ChatConversation{}, nil, &setError{
+			Type: "invalidProperties", Properties: []string{"name"},
+			Description: "name exceeds 256 bytes",
+		}, nil
+	}
+	topic := strings.TrimSpace(in.Topic)
+	if len(topic) > maxConversationTopicBytes {
+		return store.ChatConversation{}, nil, &setError{
+			Type: "invalidProperties", Properties: []string{"topic"},
+			Description: "topic exceeds 4096 bytes",
+		}, nil
+	}
 
 	now := h.clk.Now()
 	cid, err := h.store.Meta().InsertChatConversation(ctx, store.ChatConversation{
 		Kind:                 kind,
 		Name:                 name,
-		Topic:                strings.TrimSpace(in.Topic),
+		Topic:                topic,
 		CreatedByPrincipalID: creator,
 		CreatedAt:            now,
 		UpdatedAt:            now,
@@ -584,10 +610,24 @@ func (h *handlerSet) updateConversation(
 		}
 	}
 	if in.Name != nil {
-		c.Name = strings.TrimSpace(*in.Name)
+		newName := strings.TrimSpace(*in.Name)
+		if len(newName) > maxConversationNameBytes {
+			return &setError{
+				Type: "invalidProperties", Properties: []string{"name"},
+				Description: "name exceeds 256 bytes",
+			}, nil
+		}
+		c.Name = newName
 	}
 	if in.Topic != nil {
-		c.Topic = strings.TrimSpace(*in.Topic)
+		newTopic := strings.TrimSpace(*in.Topic)
+		if len(newTopic) > maxConversationTopicBytes {
+			return &setError{
+				Type: "invalidProperties", Properties: []string{"topic"},
+				Description: "topic exceeds 4096 bytes",
+			}, nil
+		}
+		c.Topic = newTopic
 	}
 	if in.IsArchived != nil {
 		c.IsArchived = *in.IsArchived

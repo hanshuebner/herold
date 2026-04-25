@@ -40,6 +40,15 @@ type MembershipResolver func(ctx context.Context, conv string, pid store.Princip
 // every member's connections.
 type MembersResolver func(ctx context.Context, conv string) ([]store.PrincipalID, error)
 
+// PeersResolver returns the deduplicated set of principal ids that
+// share at least one Conversation membership with the publishing
+// principal. Used by Server.emitPresence to scope presence.set fanout
+// so a user's presence is only delivered to people they actually
+// chat with. Production wiring builds this from
+// ListChatMembershipsByPrincipal + ListChatMembershipsByConversation;
+// tests substitute a closure.
+type PeersResolver func(ctx context.Context, publisher store.PrincipalID) ([]store.PrincipalID, error)
+
 // Broadcaster is the in-process pub-sub for ephemeral chat events.
 // One instance lives in the parent server and is shared by the
 // protochat HTTP handler and (later) track D's video-call package.

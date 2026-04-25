@@ -14,9 +14,15 @@ import (
 // weighting models cheap and expensive frames in a single budget).
 //
 // Frame weights:
-//   - typing.start / typing.stop / presence.set / ping: 1
-//   - subscribe / unsubscribe                         : 2
+//   - typing.start / typing.stop / ping               : 1
+//   - presence.set / subscribe / unsubscribe          : 2
 //   - call.signal                                     : 5
+//
+// presence.set carries weight 2 because the broadcaster fans the
+// frame out to every peer the publisher shares a conversation with;
+// charging a higher weight than typing/ping reins in a hostile client
+// that would otherwise spam presence transitions to amplify outbound
+// traffic.
 //
 // A frame whose admission would push tokens negative is dropped
 // (the read pump emits an "error{rate_limited}" frame to the client
@@ -92,7 +98,7 @@ func frameWeight(typ string) float64 {
 	switch typ {
 	case clientTypeCallSignal:
 		return 5
-	case clientTypeSubscribe, clientTypeUnsubscribe:
+	case clientTypeSubscribe, clientTypeUnsubscribe, clientTypePresenceSet:
 		return 2
 	default:
 		return 1

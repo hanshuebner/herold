@@ -101,6 +101,19 @@ type ChatConfig struct {
 	// frame; oversize frames close the connection with code 1009.
 	// Default 65536 (64 KiB).
 	MaxFrameBytes int `toml:"max_frame_bytes,omitempty"`
+	// AllowedOrigins is the operator-supplied set of allowed Origin
+	// header values for the /chat/ws upgrade. An empty list is
+	// interpreted as "same-origin only": the server matches the
+	// Request.Host against the Origin's host. Wildcards are not
+	// supported; entries must be the full origin including scheme,
+	// e.g. "https://mail.example.com". Mismatched origins yield 403
+	// + RFC 7807 problem detail before the upgrade hijack.
+	AllowedOrigins []string `toml:"allowed_origins,omitempty"`
+	// AllowEmptyOrigin lets non-browser clients (e.g. native chat
+	// app over a session cookie) connect without an Origin header.
+	// Default false: every connection without an Origin header is
+	// rejected with 403, matching browser fetch policy.
+	AllowEmptyOrigin bool `toml:"allow_empty_origin,omitempty"`
 }
 
 // ImageProxyConfig configures the inbound HTML image proxy

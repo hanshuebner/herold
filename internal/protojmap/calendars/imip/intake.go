@@ -497,16 +497,48 @@ func extractCalendarParts(raw []byte) ([][]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse content-type: %w", err)
 	}
-	body, err := io.ReadAll(io.LimitReader(msg.Body, MaxBlobBytes))
+	budget := newByteBudget(MaxBlobBytes)
+	body, err := io.ReadAll(io.LimitReader(msg.Body, budget.remaining()))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
-	return collectCalendar(mt, params, body, 0)
+	budget.consume(int64(len(body)))
+	return collectCalendar(mt, params, body, 0, budget)
+}
+
+// byteBudget tracks the running total of bytes a single intake pass is
+// permitted to read across all nested multipart parts. The outer body
+// is bounded by MaxBlobBytes; deeper parts share that budget so a
+// hostile sender cannot amplify a 1 MiB outer cap into many MiB of
+// inner reads via multipart fan-out.
+type byteBudget struct {
+	left int64
+}
+
+func newByteBudget(limit int64) *byteBudget { return &byteBudget{left: limit} }
+
+func (b *byteBudget) remaining() int64 {
+	if b == nil || b.left < 0 {
+		return 0
+	}
+	return b.left
+}
+
+func (b *byteBudget) consume(n int64) {
+	if b == nil {
+		return
+	}
+	b.left -= n
+	if b.left < 0 {
+		b.left = 0
+	}
 }
 
 // collectCalendar walks one MIME node. depth caps recursion at 4 so a
 // hostile sender cannot blow the stack with deeply-nested multiparts.
-func collectCalendar(mt string, params map[string]string, body []byte, depth int) ([][]byte, error) {
+// budget caps total bytes read across the whole walk so deeply-nested
+// multipart fan-outs cannot amplify the outer MaxBlobBytes cap.
+func collectCalendar(mt string, params map[string]string, body []byte, depth int, budget *byteBudget) ([][]byte, error) {
 	if depth > 4 {
 		return nil, nil
 	}
@@ -521,6 +553,9 @@ func collectCalendar(mt string, params map[string]string, body []byte, depth int
 		mr := multipart.NewReader(bytes.NewReader(body), bound)
 		var out [][]byte
 		for {
+			if budget.remaining() <= 0 {
+				return out, nil
+			}
 			p, err := mr.NextPart()
 			if err != nil {
 				if errors.Is(err, io.EOF) {
@@ -538,12 +573,13 @@ func collectCalendar(mt string, params map[string]string, body []byte, depth int
 				_ = p.Close()
 				continue
 			}
-			pb, rerr := io.ReadAll(io.LimitReader(p, MaxBlobBytes))
+			pb, rerr := io.ReadAll(io.LimitReader(p, budget.remaining()))
 			_ = p.Close()
+			budget.consume(int64(len(pb)))
 			if rerr != nil {
 				continue
 			}
-			sub, _ := collectCalendar(pmt, pparams, pb, depth+1)
+			sub, _ := collectCalendar(pmt, pparams, pb, depth+1, budget)
 			out = append(out, sub...)
 		}
 	}

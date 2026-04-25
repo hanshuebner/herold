@@ -27,6 +27,7 @@ const (
 	closeNormalClosure   closeCode = 1000
 	closeProtocolError   closeCode = 1002
 	closeUnsupportedData closeCode = 1003
+	closeInvalidPayload  closeCode = 1007
 	closePolicyViolation closeCode = 1008
 	closeMessageTooBig   closeCode = 1009
 	closeInternalError   closeCode = 1011

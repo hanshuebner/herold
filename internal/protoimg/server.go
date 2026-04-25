@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/netguard"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -167,7 +168,15 @@ func New(opts Options) *Server {
 		c.CheckRedirect = s.checkRedirect
 		s.httpClient = &c
 	} else {
-		dialer := &net.Dialer{Timeout: opts.ConnectTimeout}
+		// Production transport: ControlContext fires after Go has
+		// resolved the target's IP but before the connect(2) syscall,
+		// giving us an SSRF-time veto over private / loopback / link-
+		// local destinations on every dial — including dials issued
+		// by Transport while following redirects.
+		dialer := &net.Dialer{
+			Timeout:        opts.ConnectTimeout,
+			ControlContext: netguard.ControlContext(),
+		}
 		tr := &http.Transport{
 			DialContext:           dialer.DialContext,
 			TLSHandshakeTimeout:   opts.ConnectTimeout,
@@ -250,20 +259,20 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "url query parameter too long", http.StatusBadRequest)
 		return
 	}
-	u, err := url.Parse(rawURL)
+	origin, err := validateImageProxyURL(rawURL)
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Re-parse so we have the lowercased-scheme URL to forward; the
+	// validator already normalised in place but returns only the
+	// origin, so re-parse for canonical .String() output.
+	u, perr := url.Parse(rawURL)
+	if perr != nil {
 		http.Error(w, "invalid url", http.StatusBadRequest)
 		return
 	}
-	if u.Scheme != "https" {
-		http.Error(w, "https:// urls only", http.StatusBadRequest)
-		return
-	}
-	if u.Host == "" {
-		http.Error(w, "url missing host", http.StatusBadRequest)
-		return
-	}
-	origin := strings.ToLower(u.Host)
+	u.Scheme = strings.ToLower(u.Scheme)
 
 	// Rate-limit.
 	release, reason, retry := s.lim.admit(pid, origin)

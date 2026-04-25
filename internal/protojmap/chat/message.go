@@ -541,6 +541,13 @@ func (h *handlerSet) updateMessage(
 		}
 		return nil, err
 	}
+	// REQ-CHAT-21 / Wave 2.9 sec audit: system messages (call.started,
+	// call.ended, membership join/leave) are server-emitted and must
+	// not be mutable through Message/set, regardless of caller — even
+	// the nominal "sender" of a system row cannot edit it.
+	if m.IsSystem {
+		return &setError{Type: "forbidden", Description: "system messages are immutable"}, nil
+	}
 	if m.DeletedAt != nil {
 		return &setError{Type: "forbidden", Description: "message has been deleted"}, nil
 	}
@@ -599,6 +606,12 @@ func (h *handlerSet) destroyMessage(
 			return &setError{Type: "notFound"}, nil
 		}
 		return nil, err
+	}
+	// REQ-CHAT-21 / Wave 2.9 sec audit: system messages cannot be
+	// destroyed through Message/set; clients that want to hide a
+	// call.started row do so client-side.
+	if m.IsSystem {
+		return &setError{Type: "forbidden", Description: "system messages are immutable"}, nil
 	}
 	convMembers, err := h.store.Meta().ListChatMembershipsByConversation(ctx, m.ConversationID)
 	if err != nil {

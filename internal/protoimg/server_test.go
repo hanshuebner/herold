@@ -186,6 +186,8 @@ func TestProxy_BadURL_400(t *testing.T) {
 		{"http_scheme", "http://example.com/x.png", false},
 		{"too_long", "https://example.com/" + strings.Repeat("a", protoimg.MaxURLLength), false},
 		{"missing_host", "https:///x.png", false},
+		{"userinfo", "https://user:pass@example.com/x.png", false},
+		{"upper_scheme", "HTTP://example.com/x.png", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -630,6 +632,72 @@ func TestProxy_5xxExhausted_502_AfterRetry(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
 		t.Fatalf("calls: got %d, want 2 (one retry)", got)
+	}
+}
+
+// TestProxy_SSRF_DefaultClient_BlocksPrivateIP verifies that when
+// callers do NOT supply an HTTPClient (the production path), the
+// internally-constructed transport refuses to dial loopback /
+// link-local / private targets. We deliberately do not provide an
+// HTTPClient so the New() constructor installs the netguard.ControlContext
+// hook on the default transport.
+func TestProxy_SSRF_DefaultClient_BlocksPrivateIP(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	srv := protoimg.New(protoimg.Options{
+		Clock:           clk,
+		MaxBytes:        1024,
+		ConnectTimeout:  500 * time.Millisecond,
+		TotalTimeout:    1 * time.Second,
+		MaxRedirects:    3,
+		SessionResolver: testResolver,
+	})
+	cases := []string{
+		"https://127.0.0.1/img.png",
+		"https://10.0.0.1/img.png",
+		"https://169.254.169.254/latest/meta-data/",
+		"https://192.168.1.1/x",
+		"https://[::1]/x",
+		"https://[fe80::1]/x",
+		"https://[fc00::1]/x",
+		"https://0.0.0.0/x",
+	}
+	for _, target := range cases {
+		t.Run(target, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet,
+				"/proxy/image?url="+url.QueryEscape(target), nil)
+			req.Header.Set(pidHeader, "1")
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status: got %d, want 502 (body=%q)", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestProxy_URL_Validate_RejectionMatrix exercises validateImageProxyURL
+// via the public handler: each row trips a 400 with the matching
+// reason class. Mirrors the production "rejected before dial" path.
+func TestProxy_URL_Validate_RejectionMatrix(t *testing.T) {
+	h := newProxyHarness(t, func(w http.ResponseWriter, r *http.Request) { writePNG(w) })
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"http", "http://example.com/x.png"},
+		{"ftp", "ftp://example.com/x.png"},
+		{"userinfo", "https://user:pass@example.com/x.png"},
+		{"userinfo_no_pass", "https://user@example.com/x.png"},
+		{"empty_host", "https:///x.png"},
+		{"upper_scheme_http", "HTTP://example.com/x.png"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := h.do(1, tc.url)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status: got %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
+	"github.com/hanshuebner/herold/internal/netguard"
 	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -58,20 +60,29 @@ type Options struct {
 	// per-account TimeoutSec is zero. Zero applies DefaultTimeout
 	// (5s).
 	DefaultTimeout time.Duration
+	// AllowedEndpointHosts is the closed set of hostnames a per-account
+	// endpoint override is permitted to use. Empty means "only the
+	// operator-default endpoint is allowed" — every per-account override
+	// then falls back to DefaultEndpoint and the override row is logged
+	// at warn. The match is exact and case-insensitive on the host
+	// component of the URL; localhost variants are always permitted in
+	// addition to whatever the operator lists.
+	AllowedEndpointHosts []string
 }
 
 // Categoriser orchestrates the per-message LLM categorisation call.
 // One *Categoriser is constructed at server startup and reused across
 // deliveries; every method is safe for concurrent use.
 type Categoriser struct {
-	store      store.Store
-	logger     *slog.Logger
-	clock      clock.Clock
-	httpClient *http.Client
-	endpoint   string
-	model      string
-	apiKey     string
-	timeout    time.Duration
+	store        store.Store
+	logger       *slog.Logger
+	clock        clock.Clock
+	httpClient   *http.Client
+	endpoint     string
+	model        string
+	apiKey       string
+	timeout      time.Duration
+	allowedHosts map[string]struct{}
 }
 
 // New returns a Categoriser configured against opts. A nil Store is a
@@ -97,15 +108,23 @@ func New(opts Options) *Categoriser {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	allowed := make(map[string]struct{}, len(opts.AllowedEndpointHosts))
+	for _, h := range opts.AllowedEndpointHosts {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h != "" {
+			allowed[h] = struct{}{}
+		}
+	}
 	return &Categoriser{
-		store:      opts.Store,
-		logger:     logger,
-		clock:      clk,
-		httpClient: httpClient,
-		endpoint:   strings.TrimRight(opts.DefaultEndpoint, "/"),
-		model:      opts.DefaultModel,
-		apiKey:     opts.DefaultAPIKey,
-		timeout:    timeout,
+		store:        opts.Store,
+		logger:       logger,
+		clock:        clk,
+		httpClient:   httpClient,
+		endpoint:     strings.TrimRight(opts.DefaultEndpoint, "/"),
+		model:        opts.DefaultModel,
+		apiKey:       opts.DefaultAPIKey,
+		timeout:      timeout,
+		allowedHosts: allowed,
 	}
 }
 
@@ -139,8 +158,10 @@ func (c *Categoriser) Categorise(
 		return "", nil
 	}
 	endpoint := c.endpoint
+	overrideEndpoint := false
 	if cfg.Endpoint != nil && *cfg.Endpoint != "" {
 		endpoint = strings.TrimRight(*cfg.Endpoint, "/")
+		overrideEndpoint = true
 	}
 	if endpoint == "" {
 		// No endpoint configured at any level — leave the message
@@ -150,6 +171,15 @@ func (c *Categoriser) Categorise(
 			slog.Uint64("principal_id", uint64(principal)))
 		return "", nil
 	}
+	host, attachOperatorKey, err := c.validateEndpoint(ctx, endpoint, overrideEndpoint)
+	if err != nil {
+		c.logger.WarnContext(ctx, "categorise: endpoint rejected",
+			slog.Uint64("principal_id", uint64(principal)),
+			slog.String("endpoint", endpoint),
+			slog.String("err", err.Error()))
+		return "", nil
+	}
+	_ = host
 	model := c.model
 	if cfg.Model != nil && *cfg.Model != "" {
 		model = *cfg.Model
@@ -182,6 +212,13 @@ func (c *Categoriser) Categorise(
 
 	prompt := renderSystemPrompt(cfg.Prompt, cfg.CategorySet)
 	user := buildUserPayload(msg, auth, spamVerdict)
+	if !attachOperatorKey {
+		// Per-account override pointing at a host the operator did not
+		// allowlist: never attach the operator-default API key. The
+		// account row could be operator-set to point at a localhost
+		// Ollama, in which case no Bearer token is appropriate either.
+		apiKey = ""
+	}
 	cat, callErr := c.callLLM(callCtx, endpoint, model, apiKey, prompt, user)
 	if callErr != nil {
 		c.logger.WarnContext(ctx, "categorise: chat completion failed",
@@ -201,6 +238,62 @@ func (c *Categoriser) Categorise(
 		return "", nil
 	}
 	return cat, nil
+}
+
+// validateEndpoint enforces the categoriser's outbound-call policy:
+// (a) https only, except http://localhost / 127.0.0.1 / [::1] which is
+// permitted for the developer-Ollama loopback case; (b) the host must
+// not resolve to a private/loopback/link-local/CGNAT/multicast IP UNLESS
+// it is the operator-allowlisted set OR a localhost literal; (c) when
+// the endpoint is a per-account override pointing at a host the
+// operator did NOT allowlist, return attachOperatorKey=false so the
+// caller does not leak the operator-default API key to that endpoint.
+//
+// The operator-default endpoint (overrideEndpoint==false) is trusted
+// unconditionally — it is configured in the system.toml or via the
+// admin REST surface, both of which are operator-controlled.
+func (c *Categoriser) validateEndpoint(ctx context.Context, endpoint string, overrideEndpoint bool) (host string, attachOperatorKey bool, err error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", false, fmt.Errorf("parse endpoint: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host = strings.ToLower(u.Hostname())
+	if host == "" {
+		return "", false, errors.New("endpoint has no host")
+	}
+	if u.User != nil {
+		return "", false, errors.New("endpoint must not embed credentials")
+	}
+	switch scheme {
+	case "https":
+		// fine
+	case "http":
+		if !netguard.IsLocalhost(host) {
+			return "", false, fmt.Errorf("http scheme not permitted for non-localhost host %q", host)
+		}
+	default:
+		return "", false, fmt.Errorf("unsupported scheme %q", scheme)
+	}
+	allowed := false
+	if !overrideEndpoint {
+		allowed = true
+	} else if _, ok := c.allowedHosts[host]; ok {
+		allowed = true
+	} else if netguard.IsLocalhost(host) {
+		// Localhost is acceptable as a destination but is not the
+		// operator-default; do NOT attach the operator API key in that
+		// case (caller drops it via attachOperatorKey=false).
+		allowed = false
+	}
+	if !netguard.IsLocalhost(host) {
+		// Resolve and refuse private ranges. Localhost short-circuits
+		// because IsLoopback covers it without a DNS round-trip.
+		if err := netguard.CheckHost(ctx, nil, host); err != nil {
+			return "", false, err
+		}
+	}
+	return host, allowed, nil
 }
 
 // userPayload is the JSON body the LLM sees as the "user" turn.
