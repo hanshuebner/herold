@@ -39,14 +39,19 @@ type ServerConfig struct {
 
 // CallConfig configures the 1:1 video-call signaling surface
 // (REQ-CALL-*). The signaling itself rides the chat WebSocket; this
-// block toggles the credential-mint endpoint and reserves room for
-// future call-side knobs (e.g. per-principal concurrent-call caps).
+// block toggles the credential-mint endpoint and exposes the
+// per-call ring-window knob (REQ-CALL-06).
 type CallConfig struct {
 	// Enabled selects whether the credential mint endpoint is
 	// mounted and the chat protocol's call.signal handler is
 	// registered. Defaults to true; set false to disable video
 	// calling entirely.
 	Enabled *bool `toml:"enabled,omitempty"`
+	// RingTimeoutSeconds is the per-call window the offerer waits
+	// for an answer before the server emits a synthetic
+	// kind="timeout" signal and writes a missed-call sysmsg
+	// (REQ-CALL-06). Default 30; capped at 300 (5 min).
+	RingTimeoutSeconds int `toml:"ring_timeout_seconds,omitempty"`
 }
 
 // TURNConfig configures the operator-deployed coturn (or equivalent)
@@ -67,8 +72,8 @@ type TURNConfig struct {
 	// in the TOML). The server resolves it via sysconfig.ResolveSecret.
 	SharedSecretEnv string `toml:"shared_secret_env,omitempty"`
 	// CredentialTTLSeconds is the requested credential lifetime in
-	// seconds. Default 3600; clamped to MaxCredentialTTL inside
-	// internal/protocall.
+	// seconds. Default 300 (REQ-CALL-22); clamped to MaxCredentialTTL
+	// inside internal/protocall.
 	CredentialTTLSeconds int `toml:"credential_ttl_seconds,omitempty"`
 }
 
@@ -456,16 +461,20 @@ func applyDefaults(c *Config) {
 	if c.Server.Chat.MaxFrameBytes == 0 {
 		c.Server.Chat.MaxFrameBytes = 65536
 	}
-	// Video calls (REQ-CALL-*). Defaults to enabled with a one-hour
-	// credential TTL; operators who haven't deployed coturn keep the
-	// surface unreachable simply by leaving uris empty (the mint
-	// endpoint then returns 503).
+	// Video calls (REQ-CALL-*). Defaults to enabled with a five-
+	// minute credential TTL (REQ-CALL-22) and a 30-second ring
+	// timeout (REQ-CALL-06); operators who haven't deployed coturn
+	// keep the surface unreachable simply by leaving uris empty (the
+	// mint endpoint then returns 503).
 	if c.Server.Call.Enabled == nil {
 		t := true
 		c.Server.Call.Enabled = &t
 	}
+	if c.Server.Call.RingTimeoutSeconds == 0 {
+		c.Server.Call.RingTimeoutSeconds = 30
+	}
 	if c.Server.TURN.CredentialTTLSeconds == 0 {
-		c.Server.TURN.CredentialTTLSeconds = 3600
+		c.Server.TURN.CredentialTTLSeconds = 300
 	}
 }
 
@@ -535,6 +544,16 @@ func Validate(c *Config) error {
 	if c.Server.TURN.CredentialTTLSeconds > 12*3600 {
 		return fmt.Errorf("sysconfig: [server.turn] credential_ttl_seconds %d exceeds 12h ceiling",
 			tu.CredentialTTLSeconds)
+	}
+	// Ring window cap (REQ-CALL-06): negative is a typo, anything
+	// over 5 min defeats the purpose of the timeout.
+	if c.Server.Call.RingTimeoutSeconds < 0 {
+		return fmt.Errorf("sysconfig: [server.call] ring_timeout_seconds %d must be >= 0",
+			c.Server.Call.RingTimeoutSeconds)
+	}
+	if c.Server.Call.RingTimeoutSeconds > 300 {
+		return fmt.Errorf("sysconfig: [server.call] ring_timeout_seconds %d exceeds 5min ceiling",
+			c.Server.Call.RingTimeoutSeconds)
 	}
 	if len(tu.URIs) > 0 {
 		if tu.SharedSecretEnv == "" {

@@ -24,6 +24,22 @@ type Clock interface {
 	// Production implementations delegate to time.After; FakeClock fires
 	// only when Advance crosses the waiter's deadline.
 	After(d time.Duration) <-chan time.Time
+	// AfterFunc schedules f to run in its own goroutine after d has
+	// elapsed on this clock. The returned Timer can be used to cancel
+	// the firing before f has run; Stop returns true if it stopped the
+	// timer before it could fire. Production implementations delegate to
+	// time.AfterFunc; FakeClock fires only when Advance / SetNow crosses
+	// the deadline. Implementations MUST run f outside any internal
+	// lock so f can call back into the clock without deadlocking.
+	AfterFunc(d time.Duration, f func()) Timer
+}
+
+// Timer is the cancel handle returned by Clock.AfterFunc. Stop returns
+// true if the call stopped the timer before f ran; false if f has
+// already fired (or has been scheduled to fire imminently). A Stop on
+// an already-stopped timer is a no-op and returns false.
+type Timer interface {
+	Stop() bool
 }
 
 // Real is the production Clock implementation. It delegates to time.Now.
@@ -39,6 +55,20 @@ func (Real) Now() time.Time { return time.Now() }
 // After delegates to time.After.
 func (Real) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
+// AfterFunc delegates to time.AfterFunc, wrapping the *time.Timer so it
+// satisfies the Clock-package Timer contract.
+func (Real) AfterFunc(d time.Duration, f func()) Timer {
+	return realTimer{t: time.AfterFunc(d, f)}
+}
+
+// realTimer adapts *time.Timer to Timer. Stop matches time.Timer.Stop:
+// true when the call stopped the timer before f ran.
+type realTimer struct {
+	t *time.Timer
+}
+
+func (r realTimer) Stop() bool { return r.t.Stop() }
+
 // FakeClock is a deterministic Clock for tests. Its time advances only when
 // Advance or SetNow is called. All operations are safe for concurrent use;
 // Now never decreases. Construct one with NewFake.
@@ -46,11 +76,44 @@ type FakeClock struct {
 	mu      sync.RWMutex
 	now     time.Time
 	waiters []fakeWaiter
+	// timers holds outstanding AfterFunc registrations. A timer is
+	// removed when it fires or is Stop'd. The order is preserved so a
+	// single Advance fires timers in registration order, deterministic
+	// regardless of map iteration.
+	timers []*fakeTimer
 }
 
 type fakeWaiter struct {
 	deadline time.Time
 	ch       chan time.Time
+}
+
+// fakeTimer is FakeClock's Timer implementation. Deadline is the wall
+// instant the timer should fire at; fired guards against double-fire
+// across a Stop / Advance race; f is the user-supplied callback.
+type fakeTimer struct {
+	parent   *FakeClock
+	deadline time.Time
+	f        func()
+	fired    bool
+}
+
+// Stop removes t from the parent's timer list if it has not fired yet.
+// Returns true if the call stopped the timer before f could run.
+func (t *fakeTimer) Stop() bool {
+	t.parent.mu.Lock()
+	defer t.parent.mu.Unlock()
+	if t.fired {
+		return false
+	}
+	for i, x := range t.parent.timers {
+		if x == t {
+			t.parent.timers = append(t.parent.timers[:i], t.parent.timers[i+1:]...)
+			t.fired = true // prevent any later Advance from firing it
+			return true
+		}
+	}
+	return false
 }
 
 // NewFake returns a FakeClock anchored at start. Callers advance time
@@ -85,6 +148,26 @@ func (f *FakeClock) After(d time.Duration) <-chan time.Time {
 	return ch
 }
 
+// AfterFunc registers a one-shot timer that calls f after d has elapsed
+// on this fake clock. f runs synchronously inside Advance / SetNow when
+// the deadline is crossed; that mirrors how production code behaves
+// from the caller's perspective (a timer fires at most once and the
+// callback runs in its own goroutine in production), and keeps tests
+// fully deterministic without extra synchronisation. f is invoked
+// without holding FakeClock's mutex so the callback can read or
+// reschedule against the clock without deadlocking.
+//
+// Zero or negative durations fire on the next Advance / SetNow that
+// touches the clock.
+func (f *FakeClock) AfterFunc(d time.Duration, fn func()) Timer {
+	f.mu.Lock()
+	deadline := f.now.Add(d)
+	t := &fakeTimer{parent: f, deadline: deadline, f: fn}
+	f.timers = append(f.timers, t)
+	f.mu.Unlock()
+	return t
+}
+
 // Advance moves the fake clock forward by d. Negative durations are
 // rejected (the clock is monotonic): callers must use SetNow to rewind,
 // which is intentionally verbose because rewinding time in tests usually
@@ -98,10 +181,15 @@ func (f *FakeClock) Advance(d time.Duration) {
 	f.now = f.now.Add(d)
 	fired, kept := partitionWaiters(f.waiters, f.now)
 	f.waiters = kept
+	firedTimers, keptTimers := partitionTimers(f.timers, f.now)
+	f.timers = keptTimers
 	now := f.now
 	f.mu.Unlock()
 	for _, w := range fired {
 		w.ch <- now
+	}
+	for _, t := range firedTimers {
+		t.f()
 	}
 }
 
@@ -113,10 +201,15 @@ func (f *FakeClock) SetNow(t time.Time) {
 	f.now = t
 	fired, kept := partitionWaiters(f.waiters, f.now)
 	f.waiters = kept
+	firedTimers, keptTimers := partitionTimers(f.timers, f.now)
+	f.timers = keptTimers
 	now := f.now
 	f.mu.Unlock()
 	for _, w := range fired {
 		w.ch <- now
+	}
+	for _, ti := range firedTimers {
+		ti.f()
 	}
 }
 
@@ -126,6 +219,21 @@ func partitionWaiters(ws []fakeWaiter, now time.Time) (fired, kept []fakeWaiter)
 			fired = append(fired, w)
 		} else {
 			kept = append(kept, w)
+		}
+	}
+	return fired, kept
+}
+
+// partitionTimers splits ts into the timers whose deadline has been
+// reached at now (fired) and those still pending (kept). Fired timers
+// have their fired flag set so a subsequent Stop returns false.
+func partitionTimers(ts []*fakeTimer, now time.Time) (fired, kept []*fakeTimer) {
+	for _, t := range ts {
+		if !now.Before(t.deadline) {
+			t.fired = true
+			fired = append(fired, t)
+		} else {
+			kept = append(kept, t)
 		}
 	}
 	return fired, kept

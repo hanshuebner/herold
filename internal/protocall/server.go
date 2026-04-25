@@ -2,6 +2,7 @@ package protocall
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -18,9 +19,10 @@ import (
 const MaxCredentialTTL = 12 * time.Hour
 
 // DefaultCredentialTTL is applied when TURNConfig.CredentialTTL is
-// zero. One hour balances refresh load on the credential endpoint
-// against coturn's interest in short-lived secrets.
-const DefaultCredentialTTL = time.Hour
+// zero. Five minutes (REQ-CALL-22) keeps the credential-leak window
+// short while staying comfortably above the worst-case round-trip
+// time for a refresh; clients refresh ~30s before expiry.
+const DefaultCredentialTTL = 5 * time.Minute
 
 // callRateLimitWindow / callRateLimitBurst bound the credential mint
 // endpoint. Clients are expected to reuse the credential across an
@@ -32,16 +34,31 @@ const (
 )
 
 // callSessionTTL bounds an in-flight call session in the in-process
-// map. A session that has not received a hangup within this window is
-// reaped on the next sweep and treated as terminated. coturn-relayed
-// calls in the wild rarely exceed this; we err on the side of letting
-// long calls keep state alive without leaking forever.
-const callSessionTTL = 4 * time.Hour
+// map (REQ-CALL-07). A session whose last activity is older than this
+// window is reaped, with the corresponding call.ended system message
+// written under disposition="timeout". Five minutes matches the
+// upper-bound the requirements ask for: longer than any signaling
+// hand-off needs (an answered call's last activity refreshes on every
+// ICE-candidate frame) but short enough that a stuck session does not
+// leak state for hours.
+const callSessionTTL = 5 * time.Minute
 
 // callReapInterval is how often the reaper sweep runs against the
-// in-flight session map. Five minutes is a coarse-but-cheap cadence
-// matched to callSessionTTL.
-const callReapInterval = 5 * time.Minute
+// in-flight session map. One minute is a coarse-but-cheap cadence
+// matched to the 5 min callSessionTTL: a stale session is observed by
+// the reaper within at most one minute past its TTL.
+const callReapInterval = time.Minute
+
+// DefaultRingTimeout is the per-call window the offerer waits for an
+// answer before the server emits a synthetic kind="timeout" signal
+// and writes a missed-call sysmsg (REQ-CALL-06). Thirty seconds is
+// the operator default; cancellable via Server.Call.RingTimeoutSeconds.
+const DefaultRingTimeout = 30 * time.Second
+
+// MaxRingTimeout caps how long the operator can configure the ring
+// window for. Five minutes mirrors callSessionTTL and prevents a
+// misconfigured deployment from leaving a "ringing" state up forever.
+const MaxRingTimeout = 5 * time.Minute
 
 // Broadcaster is the outbound side-channel protocall uses to forward
 // signaling frames to the recipient principal. The chat WebSocket
@@ -119,6 +136,10 @@ type Options struct {
 	// of which surface here as a single resolver: returning ok=false
 	// triggers a 401.
 	Authn func(r *http.Request) (store.PrincipalID, bool)
+	// RingTimeout overrides the per-call ring window (REQ-CALL-06).
+	// Zero falls back to DefaultRingTimeout; values above
+	// MaxRingTimeout are clamped.
+	RingTimeout time.Duration
 }
 
 // Server is the protocall surface. Construct with New and either
@@ -135,14 +156,25 @@ type Server struct {
 	presence    PresenceLookup
 	turn        TURNConfig
 	authn       func(r *http.Request) (store.PrincipalID, bool)
+	ringTimeout time.Duration
 
 	// rl gates the credential mint endpoint per principal.
 	rl *rateLimiter
 
-	// sessions tracks in-flight calls keyed by CallID. The reaper
-	// goroutine drops sessions older than callSessionTTL.
+	// sessionsMu guards both sessions and inflightByPrincipal. Holding
+	// the mutex while invoking Broadcaster.Emit is permitted because
+	// production broadcasters are non-blocking (REQ-CALL-OPS); tests
+	// inject fakes that complete synchronously.
 	sessionsMu sync.Mutex
-	sessions   map[string]*CallSession
+	// sessions tracks in-flight calls keyed by CallID. The reaper
+	// goroutine drops sessions older than callSessionTTL and writes a
+	// disposition="timeout" call.ended sysmsg as it goes.
+	sessions map[string]*CallSession
+	// inflightByPrincipal maps a principal to the CallID of the one
+	// active call they are participating in (REQ-CALL-43). The map is
+	// populated for both caller and recipient on a successful offer
+	// and pruned on hangup / decline / reaper / ring-timeout.
+	inflightByPrincipal map[store.PrincipalID]string
 
 	// reaperStop closes when Close is called; the reaper goroutine
 	// observes it and returns.
@@ -168,19 +200,28 @@ func New(opts Options) *Server {
 	if clk == nil {
 		clk = clock.NewReal()
 	}
+	ring := opts.RingTimeout
+	if ring <= 0 {
+		ring = DefaultRingTimeout
+	}
+	if ring > MaxRingTimeout {
+		ring = MaxRingTimeout
+	}
 	s := &Server{
-		logger:      logger.With("subsystem", "protocall"),
-		clk:         clk,
-		broadcaster: opts.Broadcaster,
-		members:     opts.Members,
-		sysmsgs:     opts.SystemMessages,
-		presence:    opts.Presence,
-		turn:        opts.TURN,
-		authn:       opts.Authn,
-		rl:          newRateLimiter(clk, callRateLimitBurst, callRateLimitWindow),
-		sessions:    make(map[string]*CallSession),
-		reaperStop:  make(chan struct{}),
-		reaperDone:  make(chan struct{}),
+		logger:              logger.With("subsystem", "protocall"),
+		clk:                 clk,
+		broadcaster:         opts.Broadcaster,
+		members:             opts.Members,
+		sysmsgs:             opts.SystemMessages,
+		presence:            opts.Presence,
+		turn:                opts.TURN,
+		authn:               opts.Authn,
+		ringTimeout:         ring,
+		rl:                  newRateLimiter(clk, callRateLimitBurst, callRateLimitWindow),
+		sessions:            make(map[string]*CallSession),
+		inflightByPrincipal: make(map[store.PrincipalID]string),
+		reaperStop:          make(chan struct{}),
+		reaperDone:          make(chan struct{}),
 	}
 	go s.reapLoop()
 	return s
@@ -215,19 +256,75 @@ func (s *Server) reapLoop() {
 }
 
 // reapOnce performs a single sweep. Exposed (lower-case) so tests can
-// drive a deterministic reap without waiting on the clock.
+// drive a deterministic reap without waiting on the clock. For each
+// session whose last activity precedes the TTL cutoff the reaper:
+//
+//   - removes it from the in-flight maps,
+//   - cancels its (now-irrelevant) ring timer if still pending,
+//   - writes a call.ended system message with disposition="timeout"
+//     and reason="stale" so the conversation history reflects the
+//     dropped session (REQ-CALL-07).
+//
+// Sysmsg writes happen outside the mutex so a slow inserter does not
+// stall concurrent signaling.
 func (s *Server) reapOnce() {
-	cutoff := s.clk.Now().Add(-callSessionTTL)
+	now := s.clk.Now()
+	cutoff := now.Add(-callSessionTTL)
+	type reaped struct {
+		sess *CallSession
+	}
+	var dropped []reaped
 	s.sessionsMu.Lock()
-	defer s.sessionsMu.Unlock()
 	for id, sess := range s.sessions {
 		if sess.LastActivity.Before(cutoff) {
+			if sess.ringTimer != nil {
+				sess.ringTimer.Stop()
+				sess.ringTimer = nil
+			}
 			delete(s.sessions, id)
-			s.logger.LogAttrs(context.Background(), slog.LevelInfo,
-				"protocall: reaped stale call session",
-				slog.String("call_id", id),
-				slog.Time("last_activity", sess.LastActivity),
-			)
+			if s.inflightByPrincipal[sess.Caller] == id {
+				delete(s.inflightByPrincipal, sess.Caller)
+			}
+			if s.inflightByPrincipal[sess.Recipient] == id {
+				delete(s.inflightByPrincipal, sess.Recipient)
+			}
+			dropped = append(dropped, reaped{sess: sess})
+		}
+	}
+	s.sessionsMu.Unlock()
+	for _, r := range dropped {
+		sess := r.sess
+		s.logger.LogAttrs(context.Background(), slog.LevelInfo,
+			"protocall: reaped stale call session",
+			slog.String("call_id", sess.CallID),
+			slog.Time("last_activity", sess.LastActivity),
+		)
+		if s.sysmsgs == nil {
+			continue
+		}
+		duration := int64(now.Sub(sess.StartedAt) / time.Second)
+		if duration < 0 {
+			duration = 0
+		}
+		ended := SystemMessagePayload{
+			Kind:            SystemMessageCallEnded,
+			CallID:          sess.CallID,
+			CallerPrincipal: uint64(sess.Caller),
+			StartedAt:       sess.StartedAt.UTC().Format(time.RFC3339Nano),
+			EndedAt:         now.UTC().Format(time.RFC3339Nano),
+			DurationSeconds: duration,
+			HangupReason:    "stale",
+			Disposition:     DispositionTimeout,
+		}
+		buf, err := json.Marshal(ended)
+		if err != nil {
+			continue
+		}
+		if err := s.sysmsgs.InsertChatSystemMessage(context.Background(), sess.ConversationID, sess.Caller, buf); err != nil {
+			s.logger.LogAttrs(context.Background(), slog.LevelWarn,
+				"protocall: insert reaped call.ended system message failed",
+				slog.String("call_id", sess.CallID),
+				slog.String("err", err.Error()))
 		}
 	}
 }

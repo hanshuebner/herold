@@ -1043,7 +1043,8 @@ func composeAdminAndUI(
 				SharedSecret:  sharedSecret,
 				CredentialTTL: time.Duration(cfg.Server.TURN.CredentialTTLSeconds) * time.Second,
 			},
-			Authn: newCallAuthn(st, uiSrv.ResolveSession),
+			Authn:       newCallAuthn(st, uiSrv.ResolveSession),
+			RingTimeout: time.Duration(cfg.Server.Call.RingTimeoutSeconds) * time.Second,
 		})
 		// Mount on the parent mux directly; Go's ServeMux longest-
 		// prefix routing prefers the exact "/api/v1/call/credentials"
