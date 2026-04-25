@@ -16,8 +16,8 @@ Performance, security, reliability, accessibility, browser support.
 
 | ID | Requirement |
 |----|-------------|
-| REQ-SEC-01 | The JMAP session token is stored in `sessionStorage` by default; cleared on tab close. |
-| REQ-SEC-02 | The user can opt-in to `localStorage` persistence with an explicit warning ("stays on this device, available to anyone with access"). |
+| REQ-SEC-01 | Tabard authenticates via an HTTP-only session cookie set by herold's login surface. The cookie is scoped to the suite origin (the same origin that serves both the static assets and the JMAP API). Tabard does not store, read, or transmit any auth token in JS-accessible storage. See `../architecture/01-system-overview.md` § Bootstrap. |
+| REQ-SEC-02 | Logout clears the cookie via herold's logout endpoint. Tabard does not maintain its own auth state. The user-facing logout is a single click; no "remember me" toggle (the cookie's lifetime is herold's policy). |
 | REQ-SEC-03 | All JMAP requests are HTTPS. Tabard refuses to operate against an `http://` JMAP URL. |
 | REQ-SEC-04 | HTML message bodies render inside a sandboxed iframe with `sandbox="allow-same-origin"` and no `allow-scripts`. See `../architecture/04-rendering.md`. |
 | REQ-SEC-05 | External images in messages are NOT loaded by default. The user clicks "Load images" per message, with optional per-sender opt-in. |

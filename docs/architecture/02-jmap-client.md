@@ -34,7 +34,7 @@ Back-references are first-class: any subsequent call in the same batch can refer
 
 ## Auth
 
-`Authorization: Bearer <token>` on every request. The token comes from `sessionStorage` (default) or `localStorage` (opt-in). 401 from any JMAP response invalidates the token, clears storage, and redirects to login.
+All JMAP requests use `credentials: 'include'` so the suite-origin session cookie attaches automatically. There is no `Authorization` header and no token in JS-accessible storage. A 401 response invalidates the session; tabard redirects to herold's `/login?return=<current-url>` (resolved Q1). See `01-system-overview.md` § Bootstrap.
 
 ## Error handling
 

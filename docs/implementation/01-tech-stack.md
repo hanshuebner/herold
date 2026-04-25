@@ -21,6 +21,16 @@ Why, given the constraints in `../00-scope.md` and `../requirements/`:
 
 esbuild + Rollup under the hood. ESM output, no legacy targets, single bundle in v1 (code-splitting deferred per `04-simplifications-and-cuts.md`).
 
+## Package manager: pnpm
+
+**Decision: pnpm** with workspaces (resolved Q13).
+
+The eventual monorepo layout is `apps/mail`, `apps/calendar`, `apps/contacts` plus shared `packages/design-system`, `packages/jmap-client`, `packages/jmap-types`. pnpm's content-addressed `node_modules` and strict workspace resolution suit the suite: shared deps are installed once; each app's lockfile correctness is enforced; per-package install-time hooks don't bleed across the workspace.
+
+Workspace root files (planned, not yet present): `pnpm-workspace.yaml`, root `package.json` with shared scripts (`pnpm -r build`, `pnpm -r test`), single root `tsconfig.json` with project references for IDE.
+
+Until the second app exists, the layout stays flat at the root; the workspace structure lands when the split happens.
+
 ## Rich-text editor: ProseMirror (direct)
 
 **Decision: ProseMirror** (not TipTap, not Lexical, not Quill).

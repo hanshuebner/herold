@@ -74,7 +74,8 @@ tabard/
     └── notes/
         ├── gmail-feature-map.md    inventory of Gmail features (in/out of scope)
         ├── capture-integration.md  feeding logger output into requirements
-        ├── server-contract.md      JMAP capabilities tabard expects herold to expose
+        ├── server-contract.md      what tabard expects herold to deliver
+        ├── herold-coverage.md      herold's commitment status against the contract
         └── open-questions.md
 ```
 

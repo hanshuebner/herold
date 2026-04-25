@@ -18,7 +18,7 @@ This doc is a placeholder skeleton. Concrete requirements come from gmail-logger
 | ID | Requirement |
 |----|-------------|
 | REQ-MAIL-10 | Compose opens as a modal window in the bottom-right corner. Multiple compose windows stack (cap: 3). |
-| REQ-MAIL-11 | Recipient fields support autocompletion. Source TBD — see `../notes/open-questions.md`. |
+| REQ-MAIL-11 | Recipient fields autocomplete from JMAP for Contacts (`urn:ietf:params:jmap:contacts`) as the primary source, supplemented by a client-local seen-addresses history for addresses the user has corresponded with but not saved. The JMAP contacts data syncs across devices; the local supplement is per-browser. Resolved Q9. |
 | REQ-MAIL-12 | The From field defaults to the primary `Identity` and can be changed via dropdown. |
 | REQ-MAIL-13 | Compose autosaves to Drafts every N seconds while the body is dirty (N: TBD from capture). |
 | REQ-MAIL-14 | Send issues `Email/set` (create the final form, removing `$draft`) followed by `EmailSubmission/set` in one batched call with back-references. |

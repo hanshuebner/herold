@@ -1,8 +1,8 @@
 # 04 — Filters
 
-Filters are user-authored rules that act on incoming mail: apply a label, archive, mark read, delete, forward. Stored server-side as Sieve scripts (RFC 9007).
+Filters are user-authored rules that act on incoming mail: apply a label, archive, mark read, delete, forward. Stored server-side as Sieve scripts (RFC 9007); herold supports `urn:ietf:params:jmap:sieve` per resolved Q2.
 
-> **⚠ PLACEHOLDER** — full requirement set awaits two inputs: (a) confirmation that herold exposes RFC 9007 (`urn:ietf:params:jmap:sieve`); (b) capture data showing how often the user manages filters. Until then, the rules below cover the structural minimum.
+> **⚠ PLACEHOLDER** — capture data will inform some details (how often the user manages filters, the depth of the test-against-existing-mail flow). The structural rules are concrete.
 
 ## Conditions (minimum viable set)
 
@@ -29,7 +29,7 @@ Filters are user-authored rules that act on incoming mail: apply a label, archiv
 |----|-------------|
 | REQ-FLT-20 | User can create, edit, reorder, enable/disable, and delete filters. |
 | REQ-FLT-21 | User can test a filter against existing mail ("apply to matching conversations"). |
-| REQ-FLT-22 | Filters are stored as Sieve scripts via `Sieve/set` if the server advertises `urn:ietf:params:jmap:sieve`; otherwise tabard surfaces a clear "filters unavailable on this server" state. No client-side fallback — silent client-side filtering would diverge from server-side enforcement and confuse the user. |
+| REQ-FLT-22 | Filters are stored as Sieve scripts via `Sieve/set` (RFC 9007). Required server capability: `urn:ietf:params:jmap:sieve` — committed by herold. Tabard does not implement a client-side filtering fallback. |
 
 ## UI
 

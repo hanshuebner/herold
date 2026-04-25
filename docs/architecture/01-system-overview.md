@@ -49,13 +49,16 @@ The principle: anything that has to survive a closed laptop, a second device, or
 
 ## Bootstrap
 
-1. Static assets load (HTML / JS / CSS / fonts).
-2. Tabard reads token from `sessionStorage` (or `localStorage` if the user opted in).
-3. Tabard issues `GET /.well-known/jmap` to fetch the session descriptor.
-4. Tabard checks the descriptor's `capabilities` and `accountCapabilities` against `../notes/server-contract.md`. Missing capabilities feature-degrade the UI (see that file's "What happens when the contract is unmet" section).
-5. Tabard issues a single batched JMAP call for the initial view: mailboxes, identities, the inbox's first thread page, the inbox state strings, the user's filters list (if `:sieve` is advertised).
-6. Tabard opens the EventSource push channel.
-7. The first paint shows the inbox.
+Tabard and herold are deployed at the same origin (resolved Q1). Herold serves both tabard's static assets and the JMAP API; the suite shares one auth surface.
+
+1. Static assets load from the suite origin (served by herold).
+2. Tabard issues `GET /.well-known/jmap` with `credentials: 'include'`. The browser attaches the suite-origin session cookie if one is present.
+3. If herold returns 401 (no cookie or expired session), tabard redirects to `/login?return=<current-url>`. Herold's login surface authenticates the user (password+TOTP locally, or OIDC redirect through an external IdP — herold is not an IdP itself, only a relying party). On success herold sets a fresh session cookie and redirects back to tabard's URL.
+4. With a valid session, `.well-known/jmap` returns the session descriptor.
+5. Tabard checks the descriptor's `capabilities` and `accountCapabilities` against `../notes/server-contract.md`. Per resolved Q14/Q15, herold ships before tabard implements; capabilities are treated as available, not feature-detected with fallbacks. A missing capability is a deployment configuration error and surfaces in the About settings panel as such.
+6. Tabard issues a single batched JMAP call for the initial view: mailboxes, identities, the inbox's first thread page, the inbox state strings, the user's filters list, the user's category configuration.
+7. Tabard opens the EventSource push channel (also `credentials: 'include'`).
+8. The first paint shows the inbox.
 
 ## Concurrency
 
@@ -65,7 +68,7 @@ Single-threaded JS event loop. Long work (search snippet rendering, large HTML m
 
 | What | Where | Lifetime |
 |------|-------|----------|
-| Auth token | `sessionStorage` (default) or `localStorage` (opt-in) | Tab close, or explicit logout |
+| Auth | HTTP-only session cookie (set by herold) | Cookie's own expiry; cleared by herold logout endpoint |
 | Sidebar collapsed/expanded | `localStorage` per account | Persistent |
 | Pane split ratio | `localStorage` per account | Persistent |
 | Recent search queries | `localStorage` per account | Bounded ring buffer (default 10) |
@@ -73,3 +76,15 @@ Single-threaded JS event loop. Long work (search snippet rendering, large HTML m
 | Composed-but-unsaved compose state | `sessionStorage` | Tab close (drafts that auto-saved are server-side) |
 
 Nothing else persists client-side. No IndexedDB, no service worker storage.
+
+## Suite shape and cross-app handoff
+
+Tabard is a suite (`../00-scope.md` § "Tabard is a suite"). All three apps — tabard-mail, tabard-calendar, tabard-contacts — are served from the same origin as herold, share the same session cookie, and use the same JMAP server. Cross-app navigation is plain `<a href>` links between same-origin URLs (resolved Q16):
+
+- `/mail/...` — tabard-mail routes (default landing page).
+- `/calendar/...` — tabard-calendar routes (when the app exists).
+- `/contacts/...` — tabard-contacts routes (when the app exists).
+
+There is no shared parent shell, no postMessage between iframes, no per-app sub-domain. An app linking to another opens it in the same tab; the destination app's bundle loads, picks up the existing JMAP session cookie, and hydrates from cache (each app maintains its own cache; no cross-app cache sharing in v1).
+
+Until the second app exists, only `/mail/...` is in service. Routes for siblings 404 with a "this app isn't deployed yet" page.
