@@ -245,21 +245,3 @@ func senderDomainOf(addr string) string {
 	}
 	return strings.ToLower(addr[i+1:])
 }
-
-// Aggregator is the stub for DMARC aggregate-report ingestion. Phase 2
-// implements it; Phase 1 exposes the type so downstream consumers that
-// construct the whole mail-auth stack can already reference it without a
-// compile-time shim when Phase 2 lands.
-type Aggregator struct{}
-
-// NewAggregator is the Phase 1 stub constructor for Aggregator. The
-// returned value does nothing; a future wave implements the aggregate
-// report parser and storage per REQ-SEC-36 / REQ-SEC-37.
-func NewAggregator() *Aggregator { return &Aggregator{} }
-
-// Ingest accepts an aggregate report; the Phase 1 stub returns an error
-// indicating the feature is not yet implemented so callers do not
-// silently treat a missing pipeline as success.
-func (*Aggregator) Ingest(_ context.Context, _ []byte) error {
-	return errors.New("maildmarc: aggregate report ingestion is Phase 2")
-}
