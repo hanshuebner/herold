@@ -21,7 +21,7 @@ func Register(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	identityStore := NewStore(clk)
+	identityStore := NewStoreWith(st, clk)
 	h := &handlerSet{
 		store:    st,
 		identity: identityStore,

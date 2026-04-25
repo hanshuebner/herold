@@ -25,6 +25,8 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 	// would handle ordering but enumerating keeps the test predictable
 	// when the schema grows.
 	tables := []string{
+		"jmap_email_submissions",
+		"jmap_identities",
 		"tlsrpt_failures",
 		"jmap_states",
 		"mailbox_acl",

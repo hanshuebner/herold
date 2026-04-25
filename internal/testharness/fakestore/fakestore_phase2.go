@@ -46,6 +46,9 @@ type phase2Data struct {
 	jmapStates map[store.PrincipalID]store.JMAPStates
 	tlsrpt     map[store.TLSRPTFailureID]store.TLSRPTFailure
 	nextTLSRPT store.TLSRPTFailureID
+
+	emailSubmissions map[string]store.EmailSubmissionRow
+	jmapIdentities   map[string]store.JMAPIdentity
 }
 
 // ensurePhase2 lazily initialises the Phase 2 in-memory state. Called
@@ -58,26 +61,28 @@ func (s *Store) ensurePhase2() {
 		return
 	}
 	s.phase2 = &phase2Data{
-		queue:        make(map[store.QueueItemID]store.QueueItem),
-		nextQueueID:  1,
-		dkimKeys:     make(map[store.DKIMKeyID]store.DKIMKey),
-		nextDKIMID:   1,
-		acmeAccts:    make(map[store.ACMEAccountID]store.ACMEAccount),
-		nextACMEAcc:  1,
-		acmeOrders:   make(map[store.ACMEOrderID]store.ACMEOrder),
-		nextACMEOrd:  1,
-		acmeCerts:    make(map[string]store.ACMECert),
-		webhooks:     make(map[store.WebhookID]store.Webhook),
-		nextWebhook:  1,
-		dmarcReports: make(map[store.DMARCReportID]store.DMARCReport),
-		dmarcRows:    make(map[store.DMARCRowID]store.DMARCRow),
-		nextReportID: 1,
-		nextRowID:    1,
-		mailboxACL:   make(map[store.MailboxACLID]store.MailboxACL),
-		nextACLID:    1,
-		jmapStates:   make(map[store.PrincipalID]store.JMAPStates),
-		tlsrpt:       make(map[store.TLSRPTFailureID]store.TLSRPTFailure),
-		nextTLSRPT:   1,
+		queue:            make(map[store.QueueItemID]store.QueueItem),
+		nextQueueID:      1,
+		dkimKeys:         make(map[store.DKIMKeyID]store.DKIMKey),
+		nextDKIMID:       1,
+		acmeAccts:        make(map[store.ACMEAccountID]store.ACMEAccount),
+		nextACMEAcc:      1,
+		acmeOrders:       make(map[store.ACMEOrderID]store.ACMEOrder),
+		nextACMEOrd:      1,
+		acmeCerts:        make(map[string]store.ACMECert),
+		webhooks:         make(map[store.WebhookID]store.Webhook),
+		nextWebhook:      1,
+		dmarcReports:     make(map[store.DMARCReportID]store.DMARCReport),
+		dmarcRows:        make(map[store.DMARCRowID]store.DMARCRow),
+		nextReportID:     1,
+		nextRowID:        1,
+		mailboxACL:       make(map[store.MailboxACLID]store.MailboxACL),
+		nextACLID:        1,
+		jmapStates:       make(map[store.PrincipalID]store.JMAPStates),
+		tlsrpt:           make(map[store.TLSRPTFailureID]store.TLSRPTFailure),
+		nextTLSRPT:       1,
+		emailSubmissions: make(map[string]store.EmailSubmissionRow),
+		jmapIdentities:   make(map[string]store.JMAPIdentity),
 	}
 }
 
@@ -1193,4 +1198,277 @@ func (m *metaFace) ListTLSRPTFailures(ctx context.Context, policyDomain string, 
 		return out[i].ID < out[j].ID
 	})
 	return out, nil
+}
+
+// -- JMAP EmailSubmission --------------------------------------------
+
+func (m *metaFace) InsertEmailSubmission(ctx context.Context, row store.EmailSubmissionRow) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if row.ID == "" {
+		return fmt.Errorf("fakestore: InsertEmailSubmission: empty id")
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	now := s.clk.Now()
+	if row.CreatedAtUs == 0 {
+		row.CreatedAtUs = now.UnixMicro()
+	}
+	if row.SendAtUs == 0 {
+		row.SendAtUs = row.CreatedAtUs
+	}
+	if _, ok := s.phase2.emailSubmissions[row.ID]; ok {
+		return fmt.Errorf("email submission %q: %w", row.ID, store.ErrConflict)
+	}
+	if len(row.Properties) > 0 {
+		props := make([]byte, len(row.Properties))
+		copy(props, row.Properties)
+		row.Properties = props
+	}
+	s.phase2.emailSubmissions[row.ID] = row
+	return nil
+}
+
+func (m *metaFace) GetEmailSubmission(ctx context.Context, id string) (store.EmailSubmissionRow, error) {
+	if err := ctx.Err(); err != nil {
+		return store.EmailSubmissionRow{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return store.EmailSubmissionRow{}, fmt.Errorf("email submission %q: %w", id, store.ErrNotFound)
+	}
+	r, ok := s.phase2.emailSubmissions[id]
+	if !ok {
+		return store.EmailSubmissionRow{}, fmt.Errorf("email submission %q: %w", id, store.ErrNotFound)
+	}
+	return r, nil
+}
+
+func (m *metaFace) ListEmailSubmissions(ctx context.Context, principal store.PrincipalID, filter store.EmailSubmissionFilter) ([]store.EmailSubmissionRow, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return nil, nil
+	}
+	identitySet := make(map[string]struct{}, len(filter.IdentityIDs))
+	for _, v := range filter.IdentityIDs {
+		identitySet[v] = struct{}{}
+	}
+	emailSet := make(map[store.MessageID]struct{}, len(filter.EmailIDs))
+	for _, v := range filter.EmailIDs {
+		emailSet[v] = struct{}{}
+	}
+	threadSet := make(map[string]struct{}, len(filter.ThreadIDs))
+	for _, v := range filter.ThreadIDs {
+		threadSet[v] = struct{}{}
+	}
+	var out []store.EmailSubmissionRow
+	for _, r := range s.phase2.emailSubmissions {
+		if r.PrincipalID != principal {
+			continue
+		}
+		if filter.AfterID != "" && r.ID <= filter.AfterID {
+			continue
+		}
+		if len(identitySet) > 0 {
+			if _, ok := identitySet[r.IdentityID]; !ok {
+				continue
+			}
+		}
+		if len(emailSet) > 0 {
+			if _, ok := emailSet[r.EmailID]; !ok {
+				continue
+			}
+		}
+		if len(threadSet) > 0 {
+			if _, ok := threadSet[r.ThreadID]; !ok {
+				continue
+			}
+		}
+		if filter.UndoStatus != "" && r.UndoStatus != filter.UndoStatus {
+			continue
+		}
+		if filter.AfterUs != 0 && r.SendAtUs <= filter.AfterUs {
+			continue
+		}
+		if filter.BeforeUs != 0 && r.SendAtUs >= filter.BeforeUs {
+			continue
+		}
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SendAtUs != out[j].SendAtUs {
+			return out[i].SendAtUs < out[j].SendAtUs
+		}
+		return out[i].ID < out[j].ID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *metaFace) UpdateEmailSubmissionUndoStatus(ctx context.Context, id, undoStatus string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	r, ok := s.phase2.emailSubmissions[id]
+	if !ok {
+		return fmt.Errorf("email submission %q: %w", id, store.ErrNotFound)
+	}
+	r.UndoStatus = undoStatus
+	s.phase2.emailSubmissions[id] = r
+	return nil
+}
+
+func (m *metaFace) DeleteEmailSubmission(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	if _, ok := s.phase2.emailSubmissions[id]; !ok {
+		return fmt.Errorf("email submission %q: %w", id, store.ErrNotFound)
+	}
+	delete(s.phase2.emailSubmissions, id)
+	return nil
+}
+
+// -- JMAP Identity overlay -------------------------------------------
+
+func cloneIdentity(r store.JMAPIdentity) store.JMAPIdentity {
+	if len(r.ReplyToJSON) > 0 {
+		v := make([]byte, len(r.ReplyToJSON))
+		copy(v, r.ReplyToJSON)
+		r.ReplyToJSON = v
+	}
+	if len(r.BccJSON) > 0 {
+		v := make([]byte, len(r.BccJSON))
+		copy(v, r.BccJSON)
+		r.BccJSON = v
+	}
+	return r
+}
+
+func (m *metaFace) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if row.ID == "" {
+		return fmt.Errorf("fakestore: InsertJMAPIdentity: empty id")
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	now := s.clk.Now()
+	if row.CreatedAtUs == 0 {
+		row.CreatedAtUs = now.UnixMicro()
+	}
+	if row.UpdatedAtUs == 0 {
+		row.UpdatedAtUs = row.CreatedAtUs
+	}
+	if _, ok := s.phase2.jmapIdentities[row.ID]; ok {
+		return fmt.Errorf("jmap identity %q: %w", row.ID, store.ErrConflict)
+	}
+	s.phase2.jmapIdentities[row.ID] = cloneIdentity(row)
+	return nil
+}
+
+func (m *metaFace) GetJMAPIdentity(ctx context.Context, id string) (store.JMAPIdentity, error) {
+	if err := ctx.Err(); err != nil {
+		return store.JMAPIdentity{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return store.JMAPIdentity{}, fmt.Errorf("jmap identity %q: %w", id, store.ErrNotFound)
+	}
+	r, ok := s.phase2.jmapIdentities[id]
+	if !ok {
+		return store.JMAPIdentity{}, fmt.Errorf("jmap identity %q: %w", id, store.ErrNotFound)
+	}
+	return cloneIdentity(r), nil
+}
+
+func (m *metaFace) ListJMAPIdentities(ctx context.Context, principal store.PrincipalID) ([]store.JMAPIdentity, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return nil, nil
+	}
+	var out []store.JMAPIdentity
+	for _, r := range s.phase2.jmapIdentities {
+		if r.PrincipalID == principal {
+			out = append(out, cloneIdentity(r))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAtUs != out[j].CreatedAtUs {
+			return out[i].CreatedAtUs < out[j].CreatedAtUs
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (m *metaFace) UpdateJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	existing, ok := s.phase2.jmapIdentities[row.ID]
+	if !ok {
+		return fmt.Errorf("jmap identity %q: %w", row.ID, store.ErrNotFound)
+	}
+	existing.Name = row.Name
+	existing.ReplyToJSON = append([]byte(nil), row.ReplyToJSON...)
+	existing.BccJSON = append([]byte(nil), row.BccJSON...)
+	existing.TextSignature = row.TextSignature
+	existing.HTMLSignature = row.HTMLSignature
+	existing.UpdatedAtUs = s.clk.Now().UnixMicro()
+	s.phase2.jmapIdentities[row.ID] = existing
+	return nil
+}
+
+func (m *metaFace) DeleteJMAPIdentity(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	if _, ok := s.phase2.jmapIdentities[id]; !ok {
+		return fmt.Errorf("jmap identity %q: %w", id, store.ErrNotFound)
+	}
+	delete(s.phase2.jmapIdentities, id)
+	return nil
 }

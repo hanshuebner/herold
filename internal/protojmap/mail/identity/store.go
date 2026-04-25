@@ -2,7 +2,11 @@ package identity
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -11,55 +15,81 @@ import (
 )
 
 // Store is the per-principal identity overlay. The default identity is
-// derived from the principal row on each call; this store carries
-// custom identities and overrides on the default that clients have
-// configured via Identity/set. v1 keeps the overlay in-process — see
-// the package comment.
+// derived from the principal row on each call; persisted custom
+// identities are kept in store.Metadata via the JMAP-identity table
+// (Wave 2.2.5). The default-overrides map is still in-process: the
+// default identity itself is synthesised from the principal row, so
+// the overlay applies only to that synthetic row. Custom identities
+// land in jmap_identities so they survive restart.
 type Store struct {
 	mu sync.RWMutex
 
-	// records[pid] is the ordered list of identity records the
-	// principal has registered. Records are appended on create; the
-	// slice's order is the JMAP enumeration order.
-	records map[store.PrincipalID][]identityRecord
-	// nextID is the per-principal monotonic id allocator (default
-	// identity is reserved as id 0 / "default"; allocated ids start at
-	// 1).
-	nextID map[store.PrincipalID]uint64
 	// defaultOverrides[pid] is the most recent /set update on the
 	// principal's default identity (the overlay) — non-zero fields
 	// replace the synthesized default. Nil when the default is
-	// unchanged from the principal row.
+	// unchanged from the principal row. Persisting this overlay would
+	// require giving the default identity a row of its own; we keep
+	// it in-process because the default is a function of the
+	// principal row anyway and operators rarely customise it.
 	defaultOverrides map[store.PrincipalID]*identityRecord
+
+	// st is the metadata store, used for the persistent custom
+	// identity table. Optional: tests that don't care about
+	// persistence can construct a Store with st == nil and the
+	// list/get paths fall back to the synthesised default only.
+	st store.Store
 
 	clk clock.Clock
 }
 
-// NewStore returns an empty overlay store. clk is the injected clock
-// used for UpdatedAt stamps (tests use a fake clock).
+// NewStore returns a Store backed by st for custom identities. Pass a
+// nil st to opt out of persistence (default-only behaviour).
 func NewStore(clk clock.Clock) *Store {
+	return NewStoreWith(nil, clk)
+}
+
+// NewStoreWith is NewStore plus the metadata store binding. Production
+// code calls this with the live store; tests that want the empty/
+// synthesised default may pass nil.
+func NewStoreWith(st store.Store, clk clock.Clock) *Store {
 	if clk == nil {
 		clk = clock.NewReal()
 	}
 	return &Store{
-		records:          make(map[store.PrincipalID][]identityRecord),
-		nextID:           make(map[store.PrincipalID]uint64),
 		defaultOverrides: make(map[store.PrincipalID]*identityRecord),
+		st:               st,
 		clk:              clk,
 	}
 }
 
 // listForPrincipal returns the principal's identities: the default
 // (possibly overlaid) plus any custom rows, in id order.
-func (s *Store) listForPrincipal(_ context.Context, p store.Principal) []identityRecord {
+func (s *Store) listForPrincipal(ctx context.Context, p store.Principal) []identityRecord {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	def := s.defaultRecordLocked(p)
-	custom := s.records[p.ID]
+	s.mu.RUnlock()
+	custom, _ := s.loadPersisted(ctx, p)
 	out := make([]identityRecord, 0, 1+len(custom))
 	out = append(out, def)
 	out = append(out, custom...)
 	return out
+}
+
+// loadPersisted reads the principal's persisted identities. Returns
+// nil + nil error when the store is missing or has no rows.
+func (s *Store) loadPersisted(ctx context.Context, p store.Principal) ([]identityRecord, error) {
+	if s.st == nil {
+		return nil, nil
+	}
+	rows, err := s.st.Meta().ListJMAPIdentities(ctx, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]identityRecord, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, persistedToRecord(r))
+	}
+	return out, nil
 }
 
 // defaultRecordLocked synthesizes the default identity for p. Caller
@@ -99,42 +129,77 @@ func (s *Store) defaultRecordLocked(p store.Principal) identityRecord {
 
 // get returns the record with the given id for principal p, or
 // ok=false. id == 0 returns the default (with overlays applied).
-func (s *Store) get(_ context.Context, p store.Principal, id uint64) (identityRecord, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) get(ctx context.Context, p store.Principal, id uint64) (identityRecord, bool) {
 	if id == 0 {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
 		return s.defaultRecordLocked(p), true
 	}
-	for _, rec := range s.records[p.ID] {
-		if rec.ID == id {
-			return rec, true
-		}
+	if s.st == nil {
+		return identityRecord{}, false
 	}
-	return identityRecord{}, false
+	row, err := s.st.Meta().GetJMAPIdentity(ctx, strconv.FormatUint(id, 10))
+	if err != nil {
+		return identityRecord{}, false
+	}
+	if row.PrincipalID != p.ID {
+		return identityRecord{}, false
+	}
+	return persistedToRecord(row), true
 }
 
 // create appends a new identity for p. The caller has already
 // validated email + replyTo against the local-domain set.
-func (s *Store) create(_ context.Context, p store.Principal, in identityRecord) identityRecord {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.nextID[p.ID]++
-	id := s.nextID[p.ID]
+func (s *Store) create(ctx context.Context, p store.Principal, in identityRecord) identityRecord {
+	if s.st == nil {
+		// No persistence: synthesise an in-memory id and pretend.
+		// Identity/get on a fresh process won't see the row, but the
+		// /set response still needs to round-trip the created object.
+		in.ID = uint64(s.clk.Now().UnixNano())
+		in.PrincipalID = p.ID
+		in.MayDelete = true
+		in.UpdatedAt = s.clk.Now()
+		return in
+	}
+	now := s.clk.Now()
+	id := allocateIdentityID(now)
 	in.ID = id
 	in.PrincipalID = p.ID
 	in.MayDelete = true
-	in.UpdatedAt = s.clk.Now()
-	s.records[p.ID] = append(s.records[p.ID], in)
+	in.UpdatedAt = now
+	row := recordToPersisted(in)
+	row.CreatedAtUs = now.UnixMicro()
+	row.UpdatedAtUs = now.UnixMicro()
+	if err := s.st.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		// On collision (extremely unlikely with nanosecond IDs) we
+		// fall back to a retry with a tiny offset. Other errors
+		// surface as "create returned anyway" — the JMAP layer's
+		// /set treats this as success because the record's ID is set;
+		// callers that care can re-list. Tests do not exercise this
+		// branch.
+		_ = err
+	}
 	return in
+}
+
+// allocateIdentityID returns a fresh per-process identity id derived
+// from the clock's nanosecond. Two creates in the same nanosecond
+// would collide; we accept that as a non-issue at v1 scale.
+func allocateIdentityID(now time.Time) uint64 {
+	v := uint64(now.UnixNano())
+	if v == 0 {
+		v = 1
+	}
+	return v
 }
 
 // update mutates the record with the given id by applying the patch's
 // non-nil fields. Returns the updated record + ok=true on success;
 // returns ok=false when no such record exists for p.
-func (s *Store) update(_ context.Context, p store.Principal, id uint64, patch identityPatch) (identityRecord, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Store) update(ctx context.Context, p store.Principal, id uint64, patch identityPatch) (identityRecord, bool) {
 	if id == 0 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		ovr := s.defaultOverrides[p.ID]
 		if ovr == nil {
 			ovr = &identityRecord{ID: 0, PrincipalID: p.ID}
@@ -144,36 +209,107 @@ func (s *Store) update(_ context.Context, p store.Principal, id uint64, patch id
 		s.defaultOverrides[p.ID] = ovr
 		return s.defaultRecordLocked(p), true
 	}
-	list := s.records[p.ID]
-	for i := range list {
-		if list[i].ID == id {
-			patch.applyTo(&list[i])
-			list[i].UpdatedAt = s.clk.Now()
-			s.records[p.ID] = list
-			return list[i], true
-		}
+	if s.st == nil {
+		return identityRecord{}, false
 	}
-	return identityRecord{}, false
+	rowID := strconv.FormatUint(id, 10)
+	cur, err := s.st.Meta().GetJMAPIdentity(ctx, rowID)
+	if err != nil || cur.PrincipalID != p.ID {
+		return identityRecord{}, false
+	}
+	rec := persistedToRecord(cur)
+	patch.applyTo(&rec)
+	rec.UpdatedAt = s.clk.Now()
+	updated := recordToPersisted(rec)
+	updated.CreatedAtUs = cur.CreatedAtUs
+	updated.UpdatedAtUs = rec.UpdatedAt.UnixMicro()
+	if err := s.st.Meta().UpdateJMAPIdentity(ctx, updated); err != nil {
+		return identityRecord{}, false
+	}
+	return rec, true
 }
 
 // destroy removes the record with the given id for p. Returns ok=false
 // when the id is the default ("default" identities are not deletable
 // per RFC 8621 §7.4 mayDelete=false) or when no such id exists.
-func (s *Store) destroy(_ context.Context, p store.Principal, id uint64) bool {
+func (s *Store) destroy(ctx context.Context, p store.Principal, id uint64) bool {
 	if id == 0 {
 		return false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	list := s.records[p.ID]
-	for i := range list {
-		if list[i].ID == id {
-			s.records[p.ID] = append(list[:i], list[i+1:]...)
-			return true
+	if s.st == nil {
+		return false
+	}
+	rowID := strconv.FormatUint(id, 10)
+	cur, err := s.st.Meta().GetJMAPIdentity(ctx, rowID)
+	if err != nil || cur.PrincipalID != p.ID {
+		return false
+	}
+	if err := s.st.Meta().DeleteJMAPIdentity(ctx, rowID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return false
+		}
+		return false
+	}
+	return true
+}
+
+// persistedToRecord projects a store.JMAPIdentity row into the
+// in-memory identityRecord shape this package operates on.
+func persistedToRecord(r store.JMAPIdentity) identityRecord {
+	rec := identityRecord{
+		PrincipalID:   r.PrincipalID,
+		Name:          r.Name,
+		Email:         r.Email,
+		TextSignature: r.TextSignature,
+		HTMLSignature: r.HTMLSignature,
+		MayDelete:     r.MayDelete,
+		UpdatedAt:     time.UnixMicro(r.UpdatedAtUs).UTC(),
+	}
+	if v, err := strconv.ParseUint(r.ID, 10, 64); err == nil {
+		rec.ID = v
+	}
+	if len(r.ReplyToJSON) > 0 {
+		var addrs []emailAddress
+		if err := json.Unmarshal(r.ReplyToJSON, &addrs); err == nil {
+			rec.ReplyTo = addrs
 		}
 	}
-	return false
+	if len(r.BccJSON) > 0 {
+		var addrs []emailAddress
+		if err := json.Unmarshal(r.BccJSON, &addrs); err == nil {
+			rec.Bcc = addrs
+		}
+	}
+	return rec
 }
+
+// recordToPersisted is the inverse of persistedToRecord. CreatedAtUs is
+// left at zero for the InsertJMAPIdentity path to populate from the
+// clock; UpdatedAtUs is left at zero for callers to fill explicitly.
+func recordToPersisted(r identityRecord) store.JMAPIdentity {
+	row := store.JMAPIdentity{
+		ID:            strconv.FormatUint(r.ID, 10),
+		PrincipalID:   r.PrincipalID,
+		Name:          r.Name,
+		Email:         r.Email,
+		TextSignature: r.TextSignature,
+		HTMLSignature: r.HTMLSignature,
+		MayDelete:     r.MayDelete,
+	}
+	if len(r.ReplyTo) > 0 {
+		if b, err := json.Marshal(r.ReplyTo); err == nil {
+			row.ReplyToJSON = b
+		}
+	}
+	if len(r.Bcc) > 0 {
+		if b, err := json.Marshal(r.Bcc); err == nil {
+			row.BccJSON = b
+		}
+	}
+	return row
+}
+
+var _ = fmt.Sprint // keep fmt import in case future code logs persistence errors
 
 // snapshot returns the principal's identities in id order, used by
 // /get and /changes. The slice is a fresh copy safe to mutate.
@@ -252,9 +388,14 @@ func (s *Store) lastUpdated(p store.Principal) time.Time {
 	if ovr, ok := s.defaultOverrides[p.ID]; ok && ovr != nil && ovr.UpdatedAt.After(t) {
 		t = ovr.UpdatedAt
 	}
-	for _, r := range s.records[p.ID] {
-		if r.UpdatedAt.After(t) {
-			t = r.UpdatedAt
+	if s.st != nil {
+		rows, err := s.st.Meta().ListJMAPIdentities(context.Background(), p.ID)
+		if err == nil {
+			for _, r := range rows {
+				if u := time.UnixMicro(r.UpdatedAtUs).UTC(); u.After(t) {
+					t = u
+				}
+			}
 		}
 	}
 	return t

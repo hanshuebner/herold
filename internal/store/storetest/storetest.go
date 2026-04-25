@@ -93,6 +93,15 @@ func Run(t *testing.T, f Factory) {
 		{"MailboxACLAnyoneRow", testMailboxACLAnyoneRow},
 		{"JMAPStatesIncrementAtomic", testJMAPStatesIncrementAtomic},
 		{"TLSRPTAppendAndRange", testTLSRPTAppendAndRange},
+		// -- Wave 2.2.5 JMAP persistence ---------------------------
+		{"EmailSubmission_InsertGet_Roundtrip", testEmailSubmissionInsertGetRoundtrip},
+		{"EmailSubmission_List_FilterByIdentity_FilterByUndoStatus_FilterByTimeRange", testEmailSubmissionListFilters},
+		{"EmailSubmission_UpdateUndoStatus_Reflected_OnGet", testEmailSubmissionUpdateUndoStatus},
+		{"EmailSubmission_Delete_NotFoundAfter", testEmailSubmissionDeleteNotFoundAfter},
+		{"JMAPIdentity_InsertGet_Roundtrip", testJMAPIdentityInsertGetRoundtrip},
+		{"JMAPIdentity_List_ByPrincipal", testJMAPIdentityListByPrincipal},
+		{"JMAPIdentity_Update_RoundTrips", testJMAPIdentityUpdateRoundtrips},
+		{"JMAPIdentity_Delete_NotFoundAfter", testJMAPIdentityDeleteNotFoundAfter},
 	}
 	for _, c := range cases {
 		tc := c
@@ -2418,5 +2427,332 @@ func testTLSRPTAppendAndRange(t *testing.T, s store.Store) {
 	}
 	if len(all) != 1 {
 		t.Fatalf("other domain len = %d, want 1", len(all))
+	}
+}
+
+// -- Wave 2.2.5 JMAP persistence ------------------------------------
+
+func testEmailSubmissionInsertGetRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "esa@example.com")
+	row := store.EmailSubmissionRow{
+		ID:          "env-001",
+		EnvelopeID:  store.EnvelopeID("env-001"),
+		PrincipalID: p.ID,
+		IdentityID:  "default",
+		EmailID:     store.MessageID(42),
+		ThreadID:    "T1",
+		SendAtUs:    time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC).UnixMicro(),
+		CreatedAtUs: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC).UnixMicro(),
+		UndoStatus:  "pending",
+		Properties:  []byte(`{"x":1}`),
+	}
+	if err := s.Meta().InsertEmailSubmission(ctx, row); err != nil {
+		t.Fatalf("InsertEmailSubmission: %v", err)
+	}
+	got, err := s.Meta().GetEmailSubmission(ctx, "env-001")
+	if err != nil {
+		t.Fatalf("GetEmailSubmission: %v", err)
+	}
+	if got.ID != row.ID || got.EnvelopeID != row.EnvelopeID || got.PrincipalID != row.PrincipalID {
+		t.Fatalf("identity mismatch: got %+v want %+v", got, row)
+	}
+	if got.IdentityID != "default" || got.EmailID != 42 || got.ThreadID != "T1" {
+		t.Fatalf("metadata mismatch: %+v", got)
+	}
+	if got.UndoStatus != "pending" {
+		t.Fatalf("undoStatus = %q, want pending", got.UndoStatus)
+	}
+	if string(got.Properties) != `{"x":1}` {
+		t.Fatalf("properties = %q, want {\"x\":1}", got.Properties)
+	}
+	// Duplicate insert.
+	if err := s.Meta().InsertEmailSubmission(ctx, row); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("duplicate Insert: err = %v, want ErrConflict", err)
+	}
+	// Missing.
+	if _, err := s.Meta().GetEmailSubmission(ctx, "nope"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Get missing: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testEmailSubmissionListFilters(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "esl@example.com")
+	q := mustInsertPrincipal(t, s, "other@example.com")
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	mk := func(id, identity, thread string, eid store.MessageID, send time.Time, undo string, owner store.PrincipalID) {
+		err := s.Meta().InsertEmailSubmission(ctx, store.EmailSubmissionRow{
+			ID:          id,
+			EnvelopeID:  store.EnvelopeID(id),
+			PrincipalID: owner,
+			IdentityID:  identity,
+			EmailID:     eid,
+			ThreadID:    thread,
+			SendAtUs:    send.UnixMicro(),
+			CreatedAtUs: send.UnixMicro(),
+			UndoStatus:  undo,
+		})
+		if err != nil {
+			t.Fatalf("Insert %s: %v", id, err)
+		}
+	}
+	mk("a", "default", "T1", 1, base, "pending", p.ID)
+	mk("b", "alt", "T1", 2, base.Add(time.Hour), "final", p.ID)
+	mk("c", "default", "T2", 3, base.Add(2*time.Hour), "pending", p.ID)
+	mk("d", "default", "T1", 4, base.Add(3*time.Hour), "canceled", p.ID)
+	mk("e", "default", "T1", 5, base.Add(4*time.Hour), "pending", q.ID)
+	// Principal isolation: e is q's, must never appear in p's list.
+	all, err := s.Meta().ListEmailSubmissions(ctx, p.ID, store.EmailSubmissionFilter{})
+	if err != nil {
+		t.Fatalf("ListEmailSubmissions: %v", err)
+	}
+	if len(all) != 4 {
+		t.Fatalf("all len = %d, want 4", len(all))
+	}
+	// Default sort is SendAtUs ASC.
+	for i := 1; i < len(all); i++ {
+		if all[i].SendAtUs < all[i-1].SendAtUs {
+			t.Fatalf("not ascending: %v then %v", all[i-1].SendAtUs, all[i].SendAtUs)
+		}
+	}
+	// IdentityIDs.
+	got, err := s.Meta().ListEmailSubmissions(ctx, p.ID, store.EmailSubmissionFilter{IdentityIDs: []string{"alt"}})
+	if err != nil {
+		t.Fatalf("List(IdentityIDs): %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "b" {
+		t.Fatalf("IdentityIDs filter: %+v", got)
+	}
+	// EmailIDs.
+	got, err = s.Meta().ListEmailSubmissions(ctx, p.ID, store.EmailSubmissionFilter{EmailIDs: []store.MessageID{1, 4}})
+	if err != nil {
+		t.Fatalf("List(EmailIDs): %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("EmailIDs filter len = %d, want 2", len(got))
+	}
+	// ThreadIDs.
+	got, err = s.Meta().ListEmailSubmissions(ctx, p.ID, store.EmailSubmissionFilter{ThreadIDs: []string{"T2"}})
+	if err != nil {
+		t.Fatalf("List(ThreadIDs): %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "c" {
+		t.Fatalf("ThreadIDs filter: %+v", got)
+	}
+	// UndoStatus.
+	got, err = s.Meta().ListEmailSubmissions(ctx, p.ID, store.EmailSubmissionFilter{UndoStatus: "pending"})
+	if err != nil {
+		t.Fatalf("List(UndoStatus): %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("UndoStatus pending len = %d, want 2", len(got))
+	}
+	// Time range: After base.Add(30m) and Before base.Add(2h30m).
+	got, err = s.Meta().ListEmailSubmissions(ctx, p.ID, store.EmailSubmissionFilter{
+		AfterUs:  base.Add(30 * time.Minute).UnixMicro(),
+		BeforeUs: base.Add(2*time.Hour + 30*time.Minute).UnixMicro(),
+	})
+	if err != nil {
+		t.Fatalf("List(time range): %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("time range len = %d, want 2", len(got))
+	}
+}
+
+func testEmailSubmissionUpdateUndoStatus(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "esuus@example.com")
+	row := store.EmailSubmissionRow{
+		ID:          "env-u1",
+		EnvelopeID:  store.EnvelopeID("env-u1"),
+		PrincipalID: p.ID,
+		IdentityID:  "default",
+		EmailID:     1,
+		SendAtUs:    time.Now().UnixMicro(),
+		CreatedAtUs: time.Now().UnixMicro(),
+		UndoStatus:  "pending",
+	}
+	if err := s.Meta().InsertEmailSubmission(ctx, row); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := s.Meta().UpdateEmailSubmissionUndoStatus(ctx, "env-u1", "canceled"); err != nil {
+		t.Fatalf("UpdateEmailSubmissionUndoStatus: %v", err)
+	}
+	got, err := s.Meta().GetEmailSubmission(ctx, "env-u1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.UndoStatus != "canceled" {
+		t.Fatalf("undoStatus = %q, want canceled", got.UndoStatus)
+	}
+	// Missing row → ErrNotFound.
+	if err := s.Meta().UpdateEmailSubmissionUndoStatus(ctx, "nope", "x"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Update missing: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testEmailSubmissionDeleteNotFoundAfter(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "esdel@example.com")
+	row := store.EmailSubmissionRow{
+		ID:          "env-d1",
+		EnvelopeID:  store.EnvelopeID("env-d1"),
+		PrincipalID: p.ID,
+		IdentityID:  "default",
+		EmailID:     1,
+		SendAtUs:    time.Now().UnixMicro(),
+		CreatedAtUs: time.Now().UnixMicro(),
+	}
+	if err := s.Meta().InsertEmailSubmission(ctx, row); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := s.Meta().DeleteEmailSubmission(ctx, "env-d1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := s.Meta().GetEmailSubmission(ctx, "env-d1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Get after Delete: err = %v, want ErrNotFound", err)
+	}
+	// Second delete returns ErrNotFound.
+	if err := s.Meta().DeleteEmailSubmission(ctx, "env-d1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Delete twice: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testJMAPIdentityInsertGetRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ji-rt@example.com")
+	row := store.JMAPIdentity{
+		ID:            "1",
+		PrincipalID:   p.ID,
+		Name:          "Display",
+		Email:         "ji-rt@example.com",
+		ReplyToJSON:   []byte(`[{"email":"reply@example.com"}]`),
+		BccJSON:       []byte(`[{"email":"bcc@example.com"}]`),
+		TextSignature: "sig",
+		HTMLSignature: "<p>sig</p>",
+		MayDelete:     true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	got, err := s.Meta().GetJMAPIdentity(ctx, "1")
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity: %v", err)
+	}
+	if got.PrincipalID != p.ID || got.Name != "Display" || got.Email != "ji-rt@example.com" {
+		t.Fatalf("scalar mismatch: %+v", got)
+	}
+	if string(got.ReplyToJSON) != `[{"email":"reply@example.com"}]` {
+		t.Fatalf("ReplyToJSON = %q", got.ReplyToJSON)
+	}
+	if string(got.BccJSON) != `[{"email":"bcc@example.com"}]` {
+		t.Fatalf("BccJSON = %q", got.BccJSON)
+	}
+	if got.TextSignature != "sig" || got.HTMLSignature != "<p>sig</p>" {
+		t.Fatalf("signatures: %+v", got)
+	}
+	if !got.MayDelete {
+		t.Fatalf("MayDelete = false, want true")
+	}
+	if got.CreatedAtUs == 0 || got.UpdatedAtUs == 0 {
+		t.Fatalf("timestamps not populated: %+v", got)
+	}
+	// Conflict.
+	if err := s.Meta().InsertJMAPIdentity(ctx, row); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("duplicate Insert: err = %v, want ErrConflict", err)
+	}
+	if _, err := s.Meta().GetJMAPIdentity(ctx, "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Get missing: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testJMAPIdentityListByPrincipal(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ji-l@example.com")
+	q := mustInsertPrincipal(t, s, "ji-l-other@example.com")
+	for _, row := range []store.JMAPIdentity{
+		{ID: "10", PrincipalID: p.ID, Email: "a@example.com", MayDelete: true},
+		{ID: "11", PrincipalID: p.ID, Email: "b@example.com", MayDelete: true},
+		{ID: "20", PrincipalID: q.ID, Email: "c@example.com", MayDelete: true},
+	} {
+		if err := s.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+			t.Fatalf("Insert %s: %v", row.ID, err)
+		}
+	}
+	got, err := s.Meta().ListJMAPIdentities(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("List p: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("p list len = %d, want 2", len(got))
+	}
+	for _, r := range got {
+		if r.PrincipalID != p.ID {
+			t.Fatalf("foreign principal leaked: %+v", r)
+		}
+	}
+	got, err = s.Meta().ListJMAPIdentities(ctx, q.ID)
+	if err != nil {
+		t.Fatalf("List q: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "20" {
+		t.Fatalf("q list = %+v", got)
+	}
+}
+
+func testJMAPIdentityUpdateRoundtrips(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ji-up@example.com")
+	row := store.JMAPIdentity{
+		ID: "100", PrincipalID: p.ID, Email: "ji-up@example.com",
+		Name: "Old", TextSignature: "old", MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	row.Name = "New"
+	row.TextSignature = "new"
+	row.HTMLSignature = "<b>new</b>"
+	row.ReplyToJSON = []byte(`[{"email":"r@x"}]`)
+	row.BccJSON = []byte(`[{"email":"b@x"}]`)
+	if err := s.Meta().UpdateJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("UpdateJMAPIdentity: %v", err)
+	}
+	got, err := s.Meta().GetJMAPIdentity(ctx, "100")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Name != "New" || got.TextSignature != "new" || got.HTMLSignature != "<b>new</b>" {
+		t.Fatalf("update did not stick: %+v", got)
+	}
+	if string(got.ReplyToJSON) != `[{"email":"r@x"}]` || string(got.BccJSON) != `[{"email":"b@x"}]` {
+		t.Fatalf("json fields: %+v", got)
+	}
+	// Update of missing row.
+	row.ID = "missing"
+	if err := s.Meta().UpdateJMAPIdentity(ctx, row); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Update missing: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testJMAPIdentityDeleteNotFoundAfter(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ji-del@example.com")
+	row := store.JMAPIdentity{
+		ID: "200", PrincipalID: p.ID, Email: "ji-del@example.com", MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := s.Meta().DeleteJMAPIdentity(ctx, "200"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := s.Meta().GetJMAPIdentity(ctx, "200"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Get after Delete: err = %v, want ErrNotFound", err)
+	}
+	if err := s.Meta().DeleteJMAPIdentity(ctx, "200"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Delete twice: err = %v, want ErrNotFound", err)
 	}
 }

@@ -1417,3 +1417,322 @@ func (m *metadata) ListTLSRPTFailures(ctx context.Context, policyDomain string, 
 	}
 	return out, rows.Err()
 }
+
+// -- JMAP EmailSubmission --------------------------------------------
+
+func scanEmailSubmissionPG(row pgx.Row) (store.EmailSubmissionRow, error) {
+	var (
+		id, envID, identityID, threadID, undoStatus string
+		principalID, emailID                        int64
+		sendAtUs, createdAtUs                       int64
+		props                                       []byte
+	)
+	err := row.Scan(&id, &envID, &principalID, &identityID, &emailID,
+		&threadID, &sendAtUs, &createdAtUs, &undoStatus, &props)
+	if err != nil {
+		return store.EmailSubmissionRow{}, mapErr(err)
+	}
+	return store.EmailSubmissionRow{
+		ID:          id,
+		EnvelopeID:  store.EnvelopeID(envID),
+		PrincipalID: store.PrincipalID(principalID),
+		IdentityID:  identityID,
+		EmailID:     store.MessageID(emailID),
+		ThreadID:    threadID,
+		SendAtUs:    sendAtUs,
+		CreatedAtUs: createdAtUs,
+		UndoStatus:  undoStatus,
+		Properties:  props,
+	}, nil
+}
+
+const emailSubmissionSelectColumnsPG = `
+	id, envelope_id, principal_id, identity_id, email_id, thread_id,
+	send_at_us, created_at_us, undo_status, properties`
+
+func (m *metadata) InsertEmailSubmission(ctx context.Context, row store.EmailSubmissionRow) error {
+	if row.ID == "" {
+		return fmt.Errorf("storepg: InsertEmailSubmission: empty id")
+	}
+	now := m.s.clock.Now().UTC()
+	if row.CreatedAtUs == 0 {
+		row.CreatedAtUs = usMicros(now)
+	}
+	if row.SendAtUs == 0 {
+		row.SendAtUs = row.CreatedAtUs
+	}
+	props := row.Properties
+	if props == nil {
+		props = []byte{}
+	}
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO jmap_email_submissions
+			  (id, envelope_id, principal_id, identity_id, email_id, thread_id,
+			   send_at_us, created_at_us, undo_status, properties)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			row.ID, string(row.EnvelopeID), int64(row.PrincipalID),
+			row.IdentityID, int64(row.EmailID), row.ThreadID,
+			row.SendAtUs, row.CreatedAtUs, row.UndoStatus, props)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return fmt.Errorf("email submission %q: %w", row.ID, store.ErrConflict)
+			}
+			return mapErr(err)
+		}
+		return nil
+	})
+}
+
+func (m *metadata) GetEmailSubmission(ctx context.Context, id string) (store.EmailSubmissionRow, error) {
+	row := m.s.pool.QueryRow(ctx,
+		`SELECT `+emailSubmissionSelectColumnsPG+` FROM jmap_email_submissions WHERE id = $1`, id)
+	return scanEmailSubmissionPG(row)
+}
+
+func (m *metadata) ListEmailSubmissions(ctx context.Context, principal store.PrincipalID, filter store.EmailSubmissionFilter) ([]store.EmailSubmissionRow, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	where := []string{"principal_id = $1"}
+	args := []any{int64(principal)}
+	idx := 2
+	if filter.AfterID != "" {
+		where = append(where, fmt.Sprintf("id > $%d", idx))
+		args = append(args, filter.AfterID)
+		idx++
+	}
+	if len(filter.IdentityIDs) > 0 {
+		ph := make([]string, len(filter.IdentityIDs))
+		for i, v := range filter.IdentityIDs {
+			ph[i] = fmt.Sprintf("$%d", idx)
+			args = append(args, v)
+			idx++
+		}
+		where = append(where, "identity_id IN ("+strings.Join(ph, ",")+")")
+	}
+	if len(filter.EmailIDs) > 0 {
+		ph := make([]string, len(filter.EmailIDs))
+		for i, v := range filter.EmailIDs {
+			ph[i] = fmt.Sprintf("$%d", idx)
+			args = append(args, int64(v))
+			idx++
+		}
+		where = append(where, "email_id IN ("+strings.Join(ph, ",")+")")
+	}
+	if len(filter.ThreadIDs) > 0 {
+		ph := make([]string, len(filter.ThreadIDs))
+		for i, v := range filter.ThreadIDs {
+			ph[i] = fmt.Sprintf("$%d", idx)
+			args = append(args, v)
+			idx++
+		}
+		where = append(where, "thread_id IN ("+strings.Join(ph, ",")+")")
+	}
+	if filter.UndoStatus != "" {
+		where = append(where, fmt.Sprintf("undo_status = $%d", idx))
+		args = append(args, filter.UndoStatus)
+		idx++
+	}
+	if filter.AfterUs != 0 {
+		where = append(where, fmt.Sprintf("send_at_us > $%d", idx))
+		args = append(args, filter.AfterUs)
+		idx++
+	}
+	if filter.BeforeUs != 0 {
+		where = append(where, fmt.Sprintf("send_at_us < $%d", idx))
+		args = append(args, filter.BeforeUs)
+		idx++
+	}
+	q := `SELECT ` + emailSubmissionSelectColumnsPG + ` FROM jmap_email_submissions WHERE `
+	q += strings.Join(where, " AND ")
+	q += fmt.Sprintf(" ORDER BY send_at_us ASC, id ASC LIMIT $%d", idx)
+	args = append(args, limit)
+	rows, err := m.s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.EmailSubmissionRow
+	for rows.Next() {
+		r, err := scanEmailSubmissionPG(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) UpdateEmailSubmissionUndoStatus(ctx context.Context, id, undoStatus string) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE jmap_email_submissions SET undo_status = $1 WHERE id = $2`,
+			undoStatus, id)
+		if err != nil {
+			return mapErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (m *metadata) DeleteEmailSubmission(ctx context.Context, id string) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`DELETE FROM jmap_email_submissions WHERE id = $1`, id)
+		if err != nil {
+			return mapErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// -- JMAP Identity overlay -------------------------------------------
+
+func scanJMAPIdentityPG(row pgx.Row) (store.JMAPIdentity, error) {
+	var (
+		id, name, email, textSig, htmlSig string
+		principalID                       int64
+		replyTo, bcc                      []byte
+		mayDelete                         bool
+		createdAtUs, updatedAtUs          int64
+	)
+	err := row.Scan(&id, &principalID, &name, &email, &replyTo, &bcc,
+		&textSig, &htmlSig, &mayDelete, &createdAtUs, &updatedAtUs)
+	if err != nil {
+		return store.JMAPIdentity{}, mapErr(err)
+	}
+	return store.JMAPIdentity{
+		ID:            id,
+		PrincipalID:   store.PrincipalID(principalID),
+		Name:          name,
+		Email:         email,
+		ReplyToJSON:   replyTo,
+		BccJSON:       bcc,
+		TextSignature: textSig,
+		HTMLSignature: htmlSig,
+		MayDelete:     mayDelete,
+		CreatedAtUs:   createdAtUs,
+		UpdatedAtUs:   updatedAtUs,
+	}, nil
+}
+
+const jmapIdentitySelectColumnsPG = `
+	id, principal_id, name, email, reply_to_json, bcc_json,
+	text_signature, html_signature, may_delete, created_at_us, updated_at_us`
+
+func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
+	if row.ID == "" {
+		return fmt.Errorf("storepg: InsertJMAPIdentity: empty id")
+	}
+	now := m.s.clock.Now().UTC()
+	if row.CreatedAtUs == 0 {
+		row.CreatedAtUs = usMicros(now)
+	}
+	if row.UpdatedAtUs == 0 {
+		row.UpdatedAtUs = row.CreatedAtUs
+	}
+	replyTo := row.ReplyToJSON
+	if replyTo == nil {
+		replyTo = []byte{}
+	}
+	bcc := row.BccJSON
+	if bcc == nil {
+		bcc = []byte{}
+	}
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO jmap_identities
+			  (id, principal_id, name, email, reply_to_json, bcc_json,
+			   text_signature, html_signature, may_delete, created_at_us, updated_at_us)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			row.ID, int64(row.PrincipalID), row.Name, row.Email,
+			replyTo, bcc, row.TextSignature, row.HTMLSignature,
+			row.MayDelete, row.CreatedAtUs, row.UpdatedAtUs)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return fmt.Errorf("jmap identity %q: %w", row.ID, store.ErrConflict)
+			}
+			return mapErr(err)
+		}
+		return nil
+	})
+}
+
+func (m *metadata) GetJMAPIdentity(ctx context.Context, id string) (store.JMAPIdentity, error) {
+	row := m.s.pool.QueryRow(ctx,
+		`SELECT `+jmapIdentitySelectColumnsPG+` FROM jmap_identities WHERE id = $1`, id)
+	return scanJMAPIdentityPG(row)
+}
+
+func (m *metadata) ListJMAPIdentities(ctx context.Context, principal store.PrincipalID) ([]store.JMAPIdentity, error) {
+	rows, err := m.s.pool.Query(ctx,
+		`SELECT `+jmapIdentitySelectColumnsPG+`
+		   FROM jmap_identities WHERE principal_id = $1
+		  ORDER BY created_at_us ASC, id ASC`,
+		int64(principal))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.JMAPIdentity
+	for rows.Next() {
+		r, err := scanJMAPIdentityPG(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) UpdateJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
+	now := m.s.clock.Now().UTC()
+	replyTo := row.ReplyToJSON
+	if replyTo == nil {
+		replyTo = []byte{}
+	}
+	bcc := row.BccJSON
+	if bcc == nil {
+		bcc = []byte{}
+	}
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE jmap_identities
+			   SET name = $1, reply_to_json = $2, bcc_json = $3,
+			       text_signature = $4, html_signature = $5, updated_at_us = $6
+			 WHERE id = $7`,
+			row.Name, replyTo, bcc,
+			row.TextSignature, row.HTMLSignature, usMicros(now), row.ID)
+		if err != nil {
+			return mapErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (m *metadata) DeleteJMAPIdentity(ctx context.Context, id string) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`DELETE FROM jmap_identities WHERE id = $1`, id)
+		if err != nil {
+			return mapErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}

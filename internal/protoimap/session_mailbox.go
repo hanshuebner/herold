@@ -236,11 +236,13 @@ func (ses *session) handleCREATE(ctx context.Context, c *Command) error {
 	// owned by ses.pid, the principal is implicitly authorised. When
 	// creating "Foo/Bar" against a parent that someone else owns
 	// (shared-namespace child), ses.pid must hold "k" on the parent.
-	// TODO(2.2-coord): hierarchical mailbox parent resolution is
-	// approximated here by stripping the trailing path segment and
-	// looking the parent up under ses.pid; a deeper namespace model
-	// (e.g. a shared "#shared/<owner>/..." namespace prefix) is the
-	// JMAP-mail agent's surface and lands in a follow-up.
+	//
+	// Limitation: Phase-2 v1 parent lookup uses ses.pid only —
+	// shared-namespace child paths under another principal's owned
+	// mailbox require explicit ACL grants on the parent and are
+	// looked up under the parent's owner. A deeper namespace model
+	// (e.g. a "#shared/<owner>/..." prefix) is out of v2 scope; JMAP
+	// Mailbox handlers do not drive IMAP namespace shapes.
 	if i := strings.LastIndex(name, "/"); i > 0 {
 		parentName := name[:i]
 		if parent, perr := ses.s.store.Meta().GetMailboxByName(ctx, ses.pid, parentName); perr == nil {

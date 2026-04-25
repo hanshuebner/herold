@@ -834,3 +834,104 @@ type TLSRPTFailure struct {
 	// as JSON (small, schema-shape lives in the reporter).
 	FailureDetailJSON string
 }
+
+// -- JMAP EmailSubmission ---------------------------------------------
+
+// EmailSubmissionRow is one persisted JMAP EmailSubmission record. The
+// queue rows under EnvelopeID carry the per-recipient delivery state;
+// this row carries the JMAP-side metadata (identity, email, thread) plus
+// the cached undoStatus the most recent /set update committed. Together
+// they let EmailSubmission/get reconstruct the wire object across server
+// restarts.
+type EmailSubmissionRow struct {
+	// ID is the wire-form JMAP id. We store the EnvelopeID stringified
+	// so callers can round-trip ids without a separate counter.
+	ID string
+	// EnvelopeID is the queue submission group this row belongs to.
+	// One EmailSubmission ↔ one EnvelopeID by construction.
+	EnvelopeID EnvelopeID
+	// PrincipalID is the submitting principal.
+	PrincipalID PrincipalID
+	// IdentityID is the JMAP Identity id the submission was sent under
+	// (the wire form, e.g. "default" or a numeric overlay id).
+	IdentityID string
+	// EmailID is the source Email row.
+	EmailID MessageID
+	// ThreadID is the JMAP Thread id (the wire form). Empty for
+	// orphaned drafts.
+	ThreadID string
+	// SendAtUs is the scheduled or actual send instant in unix-micros.
+	SendAtUs int64
+	// CreatedAtUs is the row insert instant in unix-micros.
+	CreatedAtUs int64
+	// UndoStatus is the JMAP undoStatus token: "pending" / "final" /
+	// "canceled". Updated by /set update; rendered straight onto the
+	// wire by /get when the queue rows are still in flight.
+	UndoStatus string
+	// Properties carries any additional RFC 8621 fields the row needs
+	// to round-trip across restart but which we do not model with their
+	// own column. Small JSON object; opaque to the store.
+	Properties []byte
+}
+
+// EmailSubmissionFilter narrows a ListEmailSubmissions read per RFC 8621
+// §5.4 (EmailSubmission/query). All fields are optional; zero values
+// mean "no constraint". IdentityIDs / EmailIDs / ThreadIDs are
+// disjunctive within each list and AND-combined across lists.
+type EmailSubmissionFilter struct {
+	// IdentityIDs restricts to rows whose IdentityID is in this list.
+	IdentityIDs []string
+	// EmailIDs restricts to rows whose EmailID stringifies to one of
+	// these values. The string form lets the JMAP layer pass through
+	// its wire representation without re-typing.
+	EmailIDs []MessageID
+	// ThreadIDs restricts to rows whose ThreadID is in this list.
+	ThreadIDs []string
+	// UndoStatus, when non-empty, restricts to rows whose UndoStatus
+	// matches verbatim.
+	UndoStatus string
+	// Before / After are unix-micros bounds on SendAtUs (RFC 8621 §5.4).
+	// Zero means "no bound".
+	BeforeUs int64
+	AfterUs  int64
+	// Limit caps the result set (default 1000, max 1000).
+	Limit int
+	// AfterID is the keyset cursor; rows whose ID compares strictly
+	// greater than AfterID. Empty starts at the first row.
+	AfterID string
+}
+
+// -- JMAP Identity ----------------------------------------------------
+
+// JMAPIdentity is one persisted JMAP Identity overlay row. The default
+// identity is synthesised from the Principal canonical email at read
+// time and is NOT stored here; only operator- or user-explicitly-created
+// identities land in this table.
+type JMAPIdentity struct {
+	// ID is the wire-form JMAP id (decimal string for overlay rows).
+	ID string
+	// PrincipalID is the owning principal.
+	PrincipalID PrincipalID
+	// Name is the display name shown in the From: header.
+	Name string
+	// Email is the addr-spec the identity sends from.
+	Email string
+	// ReplyToJSON is the JMAP "replyTo" array serialised as JSON; nil
+	// or empty when the identity has no replyTo override.
+	ReplyToJSON []byte
+	// BccJSON is the JMAP "bcc" array serialised as JSON; nil or empty
+	// when the identity has no bcc override.
+	BccJSON []byte
+	// TextSignature / HTMLSignature carry the optional signature
+	// blocks (RFC 8621 §7.1).
+	TextSignature string
+	HTMLSignature string
+	// MayDelete reflects the JMAP mayDelete flag (RFC 8621 §7.4). The
+	// synthesised default identity sets this to false; persisted rows
+	// default to true.
+	MayDelete bool
+	// CreatedAtUs / UpdatedAtUs are unix-micros timestamps maintained
+	// by the store on insert / update.
+	CreatedAtUs int64
+	UpdatedAtUs int64
+}

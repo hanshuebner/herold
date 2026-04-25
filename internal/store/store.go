@@ -539,6 +539,55 @@ type Metadata interface {
 	// ListTLSRPTFailures returns every failure for policyDomain in
 	// [since, until], in ascending RecordedAt order.
 	ListTLSRPTFailures(ctx context.Context, policyDomain string, since, until time.Time) ([]TLSRPTFailure, error)
+
+	// -- Phase 2 JMAP EmailSubmission ---------------------------------
+
+	// InsertEmailSubmission persists row. The caller MUST set ID
+	// (typically the EnvelopeID stringified). Returns ErrConflict on a
+	// duplicate ID.
+	InsertEmailSubmission(ctx context.Context, row EmailSubmissionRow) error
+
+	// GetEmailSubmission returns one row by id, or ErrNotFound.
+	GetEmailSubmission(ctx context.Context, id string) (EmailSubmissionRow, error)
+
+	// ListEmailSubmissions returns rows owned by principal, filtered
+	// per filter. Default sort is SendAtUs ascending. Caps at 1000;
+	// callers paginate via filter.AfterID.
+	ListEmailSubmissions(ctx context.Context, principal PrincipalID, filter EmailSubmissionFilter) ([]EmailSubmissionRow, error)
+
+	// UpdateEmailSubmissionUndoStatus replaces UndoStatus on the row
+	// identified by id. Returns ErrNotFound when the row is missing.
+	UpdateEmailSubmissionUndoStatus(ctx context.Context, id, undoStatus string) error
+
+	// DeleteEmailSubmission removes the row. Returns ErrNotFound when
+	// the row is already gone. The caller is responsible for ensuring
+	// terminal-state semantics (RFC 8621 §5.5); the store does not
+	// gate destroys on UndoStatus.
+	DeleteEmailSubmission(ctx context.Context, id string) error
+
+	// -- Phase 2 JMAP Identity overlay -------------------------------
+
+	// InsertJMAPIdentity persists a new identity overlay row. The
+	// caller assigns ID; ErrConflict on duplicate (id) or
+	// (principal_id, email) collisions, depending on backend rules.
+	InsertJMAPIdentity(ctx context.Context, row JMAPIdentity) error
+
+	// GetJMAPIdentity returns one row by id, or ErrNotFound.
+	GetJMAPIdentity(ctx context.Context, id string) (JMAPIdentity, error)
+
+	// ListJMAPIdentities returns the principal's overlay rows in
+	// ascending CreatedAtUs / ID order. Default identities are NOT
+	// returned — they are synthesised by the JMAP layer.
+	ListJMAPIdentities(ctx context.Context, principal PrincipalID) ([]JMAPIdentity, error)
+
+	// UpdateJMAPIdentity replaces the mutable fields (Name, ReplyToJSON,
+	// BccJSON, TextSignature, HTMLSignature) on the row identified by
+	// row.ID. Returns ErrNotFound when the row is missing.
+	UpdateJMAPIdentity(ctx context.Context, row JMAPIdentity) error
+
+	// DeleteJMAPIdentity removes the row identified by id. Returns
+	// ErrNotFound when the row is missing.
+	DeleteJMAPIdentity(ctx context.Context, id string) error
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

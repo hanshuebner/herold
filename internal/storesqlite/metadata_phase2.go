@@ -1505,3 +1505,334 @@ func (m *metadata) ListTLSRPTFailures(ctx context.Context, policyDomain string, 
 	}
 	return out, rows.Err()
 }
+
+// -- JMAP EmailSubmission --------------------------------------------
+
+func scanEmailSubmission(row rowLike) (store.EmailSubmissionRow, error) {
+	var (
+		id, envID, identityID, threadID, undoStatus string
+		principalID, emailID                        int64
+		sendAtUs, createdAtUs                       int64
+		props                                       []byte
+	)
+	err := row.Scan(&id, &envID, &principalID, &identityID, &emailID,
+		&threadID, &sendAtUs, &createdAtUs, &undoStatus, &props)
+	if err != nil {
+		return store.EmailSubmissionRow{}, mapErr(err)
+	}
+	return store.EmailSubmissionRow{
+		ID:          id,
+		EnvelopeID:  store.EnvelopeID(envID),
+		PrincipalID: store.PrincipalID(principalID),
+		IdentityID:  identityID,
+		EmailID:     store.MessageID(emailID),
+		ThreadID:    threadID,
+		SendAtUs:    sendAtUs,
+		CreatedAtUs: createdAtUs,
+		UndoStatus:  undoStatus,
+		Properties:  props,
+	}, nil
+}
+
+const emailSubmissionSelectColumns = `
+	id, envelope_id, principal_id, identity_id, email_id, thread_id,
+	send_at_us, created_at_us, undo_status, properties`
+
+func (m *metadata) InsertEmailSubmission(ctx context.Context, row store.EmailSubmissionRow) error {
+	if row.ID == "" {
+		return fmt.Errorf("storesqlite: InsertEmailSubmission: empty id")
+	}
+	now := m.s.clock.Now().UTC()
+	if row.CreatedAtUs == 0 {
+		row.CreatedAtUs = usMicros(now)
+	}
+	if row.SendAtUs == 0 {
+		row.SendAtUs = row.CreatedAtUs
+	}
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		var existing string
+		err := tx.QueryRowContext(ctx,
+			`SELECT id FROM jmap_email_submissions WHERE id = ?`, row.ID).Scan(&existing)
+		if err == nil {
+			return fmt.Errorf("email submission %q: %w", row.ID, store.ErrConflict)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return mapErr(err)
+		}
+		props := row.Properties
+		if props == nil {
+			props = []byte{}
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO jmap_email_submissions
+			  (id, envelope_id, principal_id, identity_id, email_id, thread_id,
+			   send_at_us, created_at_us, undo_status, properties)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			row.ID, string(row.EnvelopeID), int64(row.PrincipalID),
+			row.IdentityID, int64(row.EmailID), row.ThreadID,
+			row.SendAtUs, row.CreatedAtUs, row.UndoStatus, props)
+		return mapErr(err)
+	})
+}
+
+func (m *metadata) GetEmailSubmission(ctx context.Context, id string) (store.EmailSubmissionRow, error) {
+	row := m.s.db.QueryRowContext(ctx,
+		`SELECT `+emailSubmissionSelectColumns+` FROM jmap_email_submissions WHERE id = ?`, id)
+	return scanEmailSubmission(row)
+}
+
+func (m *metadata) ListEmailSubmissions(ctx context.Context, principal store.PrincipalID, filter store.EmailSubmissionFilter) ([]store.EmailSubmissionRow, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	where := []string{"principal_id = ?"}
+	args := []any{int64(principal)}
+	if filter.AfterID != "" {
+		where = append(where, "id > ?")
+		args = append(args, filter.AfterID)
+	}
+	if len(filter.IdentityIDs) > 0 {
+		ph := make([]string, len(filter.IdentityIDs))
+		for i, v := range filter.IdentityIDs {
+			ph[i] = "?"
+			args = append(args, v)
+		}
+		where = append(where, "identity_id IN ("+strings.Join(ph, ",")+")")
+	}
+	if len(filter.EmailIDs) > 0 {
+		ph := make([]string, len(filter.EmailIDs))
+		for i, v := range filter.EmailIDs {
+			ph[i] = "?"
+			args = append(args, int64(v))
+		}
+		where = append(where, "email_id IN ("+strings.Join(ph, ",")+")")
+	}
+	if len(filter.ThreadIDs) > 0 {
+		ph := make([]string, len(filter.ThreadIDs))
+		for i, v := range filter.ThreadIDs {
+			ph[i] = "?"
+			args = append(args, v)
+		}
+		where = append(where, "thread_id IN ("+strings.Join(ph, ",")+")")
+	}
+	if filter.UndoStatus != "" {
+		where = append(where, "undo_status = ?")
+		args = append(args, filter.UndoStatus)
+	}
+	if filter.AfterUs != 0 {
+		where = append(where, "send_at_us > ?")
+		args = append(args, filter.AfterUs)
+	}
+	if filter.BeforeUs != 0 {
+		where = append(where, "send_at_us < ?")
+		args = append(args, filter.BeforeUs)
+	}
+	q := `SELECT ` + emailSubmissionSelectColumns + ` FROM jmap_email_submissions`
+	q += " WHERE " + strings.Join(where, " AND ")
+	q += " ORDER BY send_at_us ASC, id ASC LIMIT ?"
+	args = append(args, limit)
+	rows, err := m.s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.EmailSubmissionRow
+	for rows.Next() {
+		r, err := scanEmailSubmission(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) UpdateEmailSubmissionUndoStatus(ctx context.Context, id, undoStatus string) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE jmap_email_submissions SET undo_status = ? WHERE id = ?`,
+			undoStatus, id)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (m *metadata) DeleteEmailSubmission(ctx context.Context, id string) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM jmap_email_submissions WHERE id = ?`, id)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// -- JMAP Identity overlay -------------------------------------------
+
+func scanJMAPIdentity(row rowLike) (store.JMAPIdentity, error) {
+	var (
+		id, name, email, textSig, htmlSig string
+		principalID                       int64
+		replyTo, bcc                      []byte
+		mayDelete                         int64
+		createdAtUs, updatedAtUs          int64
+	)
+	err := row.Scan(&id, &principalID, &name, &email, &replyTo, &bcc,
+		&textSig, &htmlSig, &mayDelete, &createdAtUs, &updatedAtUs)
+	if err != nil {
+		return store.JMAPIdentity{}, mapErr(err)
+	}
+	return store.JMAPIdentity{
+		ID:            id,
+		PrincipalID:   store.PrincipalID(principalID),
+		Name:          name,
+		Email:         email,
+		ReplyToJSON:   replyTo,
+		BccJSON:       bcc,
+		TextSignature: textSig,
+		HTMLSignature: htmlSig,
+		MayDelete:     mayDelete != 0,
+		CreatedAtUs:   createdAtUs,
+		UpdatedAtUs:   updatedAtUs,
+	}, nil
+}
+
+const jmapIdentitySelectColumns = `
+	id, principal_id, name, email, reply_to_json, bcc_json,
+	text_signature, html_signature, may_delete, created_at_us, updated_at_us`
+
+func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
+	if row.ID == "" {
+		return fmt.Errorf("storesqlite: InsertJMAPIdentity: empty id")
+	}
+	now := m.s.clock.Now().UTC()
+	if row.CreatedAtUs == 0 {
+		row.CreatedAtUs = usMicros(now)
+	}
+	if row.UpdatedAtUs == 0 {
+		row.UpdatedAtUs = row.CreatedAtUs
+	}
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		var existing string
+		err := tx.QueryRowContext(ctx,
+			`SELECT id FROM jmap_identities WHERE id = ?`, row.ID).Scan(&existing)
+		if err == nil {
+			return fmt.Errorf("jmap identity %q: %w", row.ID, store.ErrConflict)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return mapErr(err)
+		}
+		replyTo := row.ReplyToJSON
+		if replyTo == nil {
+			replyTo = []byte{}
+		}
+		bcc := row.BccJSON
+		if bcc == nil {
+			bcc = []byte{}
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO jmap_identities
+			  (id, principal_id, name, email, reply_to_json, bcc_json,
+			   text_signature, html_signature, may_delete, created_at_us, updated_at_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			row.ID, int64(row.PrincipalID), row.Name, row.Email,
+			replyTo, bcc, row.TextSignature, row.HTMLSignature,
+			boolToInt(row.MayDelete), row.CreatedAtUs, row.UpdatedAtUs)
+		return mapErr(err)
+	})
+}
+
+func (m *metadata) GetJMAPIdentity(ctx context.Context, id string) (store.JMAPIdentity, error) {
+	row := m.s.db.QueryRowContext(ctx,
+		`SELECT `+jmapIdentitySelectColumns+` FROM jmap_identities WHERE id = ?`, id)
+	return scanJMAPIdentity(row)
+}
+
+func (m *metadata) ListJMAPIdentities(ctx context.Context, principal store.PrincipalID) ([]store.JMAPIdentity, error) {
+	rows, err := m.s.db.QueryContext(ctx,
+		`SELECT `+jmapIdentitySelectColumns+`
+		   FROM jmap_identities WHERE principal_id = ?
+		  ORDER BY created_at_us ASC, id ASC`,
+		int64(principal))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.JMAPIdentity
+	for rows.Next() {
+		r, err := scanJMAPIdentity(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) UpdateJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		replyTo := row.ReplyToJSON
+		if replyTo == nil {
+			replyTo = []byte{}
+		}
+		bcc := row.BccJSON
+		if bcc == nil {
+			bcc = []byte{}
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE jmap_identities
+			   SET name = ?, reply_to_json = ?, bcc_json = ?,
+			       text_signature = ?, html_signature = ?, updated_at_us = ?
+			 WHERE id = ?`,
+			row.Name, replyTo, bcc,
+			row.TextSignature, row.HTMLSignature, usMicros(now), row.ID)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (m *metadata) DeleteJMAPIdentity(ctx context.Context, id string) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM jmap_identities WHERE id = ?`, id)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}

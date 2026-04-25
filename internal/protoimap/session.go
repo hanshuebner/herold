@@ -57,17 +57,11 @@ type session struct {
 	sel   selectedMailbox
 
 	// cs is the CONDSTORE / QRESYNC per-session state; the type is
-	// declared in condstore.go (the parallel imap-advanced agent's
-	// surface). We embed the struct here so the build is coherent
-	// across the two agents' parallel files.
-	// TODO(2.2-coord): when the imap-advanced agent finalises
-	// condstore.go, confirm the field name + type still match.
+	// declared in condstore.go.
 	cs condstoreState
 
 	// compressed is set by the COMPRESS=DEFLATE wire upgrade; the
-	// parallel imap-advanced agent's compress.go owns the toggle.
-	// TODO(2.2-coord): coordinate with imap-advanced on whether this
-	// stays a flag or becomes a richer state record.
+	// toggle lives in compress.go (installDeflate sets it true).
 	compressed bool
 
 	// notify holds the active NOTIFY subscription set (RFC 5465). The

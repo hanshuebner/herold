@@ -214,10 +214,6 @@ func parseNotifyArgs(raw string) (cleared bool, subs []notifySubscription, err e
 	case strings.HasPrefix(strings.ToUpper(rest), "SET"):
 		body := strings.TrimSpace(rest[3:])
 		// Optional "STATUS" modifier per selector group.
-		// TODO(2.2-coord): the parallel imap-advanced agent's NOTIFY
-		// helper returned a 2-tuple; threaded through here so the
-		// package builds while their wire grammar lands. Original
-		// signature returns ([]notifySubscription, error).
 		s, perr := parseNotifySetBody(body)
 		return false, s, perr
 	}

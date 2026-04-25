@@ -114,7 +114,6 @@ func newSetup(t *testing.T) (*handlerSet, *fakestore.Store, store.Principal, sto
 		queue:    sub,
 		clk:      clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 		identity: stubResolver{email: "alice@example.test"},
-		meta:     newMetaTable(),
 	}
 	return h, st, p, mb, mid, sub
 }

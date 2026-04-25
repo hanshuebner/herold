@@ -46,7 +46,7 @@ func newHandlers(t *testing.T) (*handlerSet, *fakestore.Store, store.Principal) 
 	}
 	return &handlerSet{
 		store:    st,
-		identity: NewStore(clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))),
+		identity: NewStoreWith(st, clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))),
 		domains:  makeDomainsFn(st),
 	}, st, p
 }

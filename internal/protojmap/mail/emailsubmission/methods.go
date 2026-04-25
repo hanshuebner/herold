@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -31,7 +32,6 @@ type handlerSet struct {
 	queue    Submitter
 	clk      clock.Clock
 	identity IdentityResolver
-	meta     *metaTable
 }
 
 func stateString(seq int64) string { return strconv.FormatInt(seq, 10) }
@@ -51,63 +51,39 @@ func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodErr
 	return nil
 }
 
-// submissionGroup is a per-EnvelopeID grouping the handlers compute
-// from store.QueueItem rows. It carries the IdentityID + EmailID +
-// ThreadID metadata that EmailSubmission/get renders alongside the
-// queue state. The queue schema does not store these directly; we
-// keep an in-process side table keyed by EnvelopeID. The map lives
-// for the life of the process — restarts lose it, and the rendered
-// EmailSubmission falls back to the empty IdentityID/EmailID until a
-// follow-up store extension adds proper persistence.
-type submissionGroup struct {
-	IdentityID jmapID
-	EmailID    jmapID
-	ThreadID   jmapID
-}
-
-// metaTable is the in-process map.
-type metaTable struct {
-	groups map[store.EnvelopeID]submissionGroup
-}
-
-func newMetaTable() *metaTable { return &metaTable{groups: make(map[store.EnvelopeID]submissionGroup)} }
-
-func (t *metaTable) record(env store.EnvelopeID, g submissionGroup) {
-	t.groups[env] = g
-}
-
-func (t *metaTable) get(env store.EnvelopeID) submissionGroup {
-	return t.groups[env]
-}
-
 // listSubmissions returns every EmailSubmission row for the principal
-// ordered by SendAt ascending. Reads the queue store grouped by
-// EnvelopeID.
+// ordered by SendAt ascending. Joins the persisted EmailSubmission rows
+// to the queue rows that share their EnvelopeID for live undoStatus /
+// deliveryStatus rendering.
 func (h *handlerSet) listSubmissions(ctx context.Context, p store.Principal) ([]jmapEmailSubmission, error) {
-	rows, err := h.store.Meta().ListQueueItems(ctx, store.QueueFilter{
-		PrincipalID: p.ID,
-		Limit:       1000,
-	})
+	rows, err := h.store.Meta().ListEmailSubmissions(ctx, p.ID, store.EmailSubmissionFilter{Limit: 1000})
 	if err != nil {
 		return nil, err
 	}
-	byEnv := make(map[store.EnvelopeID][]store.QueueItem)
+	out := make([]jmapEmailSubmission, 0, len(rows))
 	for _, r := range rows {
-		byEnv[r.EnvelopeID] = append(byEnv[r.EnvelopeID], r)
-	}
-	var out []jmapEmailSubmission
-	for env, list := range byEnv {
-		g := h.metaTable().get(env)
-		out = append(out, rowToJMAP(list, g.IdentityID, g.EmailID, g.ThreadID))
+		j, err := h.renderSubmission(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].SendAt < out[j].SendAt })
 	return out, nil
 }
 
-// metaTable returns the per-handlerSet metadata side table. The table
-// is owned by the handlerSet so a single Server has one table for the
-// lifetime of the process.
-func (h *handlerSet) metaTable() *metaTable { return h.meta }
+// renderSubmission joins an EmailSubmissionRow to its queue rows and
+// projects the result into the wire-form jmapEmailSubmission. When the
+// queue rows have already been GC'd (terminal-state destroy path),
+// rowToJMAP receives an empty slice — the submission renders with no
+// recipients and a synthesised "final" undoStatus.
+func (h *handlerSet) renderSubmission(ctx context.Context, r store.EmailSubmissionRow) (jmapEmailSubmission, error) {
+	qrows, err := h.store.Meta().ListQueueItems(ctx, store.QueueFilter{EnvelopeID: r.EnvelopeID})
+	if err != nil {
+		return jmapEmailSubmission{}, err
+	}
+	return rowToJMAP(qrows, r.IdentityID, renderEmailID(r.EmailID), r.ThreadID), nil
+}
 
 // -- EmailSubmission/get ---------------------------------------------
 
@@ -635,11 +611,22 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 			Description: fmt.Sprintf("queue submit: %s", err)}
 	}
 	threadID := strconv.FormatUint(msg.ThreadID, 10)
-	s.h.metaTable().record(envID, submissionGroup{
-		IdentityID: in.IdentityID,
-		EmailID:    in.EmailID,
-		ThreadID:   threadID,
-	})
+	now := s.h.clk.Now().UTC()
+	row := store.EmailSubmissionRow{
+		ID:          renderSubmissionID(envID),
+		EnvelopeID:  envID,
+		PrincipalID: p.ID,
+		IdentityID:  in.IdentityID,
+		EmailID:     mid,
+		ThreadID:    threadID,
+		SendAtUs:    now.UnixMicro(),
+		CreatedAtUs: now.UnixMicro(),
+		UndoStatus:  string(undoStatusPending),
+	}
+	if err := s.h.store.Meta().InsertEmailSubmission(ctx, row); err != nil {
+		return jmapEmailSubmission{}, &setError{Type: "serverFail",
+			Description: fmt.Sprintf("persist submission: %s", err)}
+	}
 	rows, _ := s.h.store.Meta().ListQueueItems(ctx, store.QueueFilter{EnvelopeID: envID})
 	return rowToJMAP(rows, in.IdentityID, in.EmailID, threadID), nil
 }
@@ -693,6 +680,12 @@ func (s setHandler) processUpdate(ctx context.Context, p store.Principal, id jma
 				Description: "submission is already being delivered"}
 		}
 	}
+	// Reflect the canceled status onto the persisted row so /get and
+	// /query observe the transition after restart.
+	if err := s.h.store.Meta().UpdateEmailSubmissionUndoStatus(ctx, id, string(undoStatusCanceled)); err != nil &&
+		!errors.Is(err, store.ErrNotFound) {
+		return &setError{Type: "serverFail", Description: err.Error()}
+	}
 	return nil
 }
 
@@ -726,6 +719,10 @@ func (s setHandler) processDestroy(ctx context.Context, p store.Principal, id jm
 		if err := s.h.store.Meta().DeleteQueueItem(ctx, r.ID); err != nil {
 			return &setError{Type: "serverFail", Description: err.Error()}
 		}
+	}
+	if err := s.h.store.Meta().DeleteEmailSubmission(ctx, id); err != nil &&
+		!errors.Is(err, store.ErrNotFound) {
+		return &setError{Type: "serverFail", Description: err.Error()}
 	}
 	return nil
 }

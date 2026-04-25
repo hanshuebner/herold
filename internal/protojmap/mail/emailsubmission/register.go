@@ -56,7 +56,6 @@ func registerWith(reg *protojmap.CapabilityRegistry, st store.Store, sub Submitt
 		queue:    sub,
 		clk:      clk,
 		identity: idr,
-		meta:     newMetaTable(),
 	}
 	reg.Register(capabilitySubmission, getHandler{h: h})
 	reg.Register(capabilitySubmission, changesHandler{h: h})
