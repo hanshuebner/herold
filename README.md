@@ -1,6 +1,12 @@
 # Tabard — design baseline
 
-A web mail client for the JMAP protocol (RFC 8620, RFC 8621), targeting the Gmail subset its single user actually uses. Runs in a desktop browser, talks to a herold backend.
+A planned web suite over JMAP, comprising three sibling apps sharing one backend (herold), one design system, and one auth flow:
+
+- **tabard-mail** — email client. v1 in flight; this docs/ tree currently describes it.
+- **tabard-calendar** — calendar (future; over JMAP for Calendars, RFC 8984 + binding draft).
+- **tabard-contacts** — contacts (future; over JMAP for Contacts, RFC 9553 + binding draft).
+
+Repository layout will be a monorepo (`apps/`, `packages/`); the split lands when the second app starts. Until then, the existing `docs/` tree at root is tabard-mail's spec.
 
 ## How to read this
 

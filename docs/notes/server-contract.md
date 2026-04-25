@@ -14,11 +14,18 @@ Herold is the only target server in v1 (`../00-scope.md`). The contract is split
 | `urn:ietf:params:jmap:sieve` (RFC 9007) | Filter management — `Sieve/get`, `Sieve/set`, `Sieve/validate`. Without this, tabard hides the Filters UI entirely (see `../requirements/04-filters.md` REQ-FLT-22). |
 | `https://tabard.dev/jmap/snooze` (proposed) | Snooze contract — see below. Tabard requires a stable URI even though the underlying mechanism is server-internal. |
 
-## Capabilities tabard does NOT require
+## Capabilities tabard-mail does NOT require
 
-`urn:ietf:params:jmap:websocket` (RFC 8887) — tabard uses EventSource. WebSocket support is fine for the server to advertise; tabard ignores it in v1.
+`urn:ietf:params:jmap:websocket` (RFC 8887) — tabard-mail uses EventSource. WebSocket support is fine for the server to advertise; tabard ignores it in v1.
 
-`urn:ietf:params:jmap:calendars`, `urn:ietf:params:jmap:contacts` — not in scope (`../00-scope.md` NG6).
+## Capabilities the broader suite WILL require
+
+These are not blockers for tabard-mail, but the herold roadmap needs to plan for them since the planned sibling apps (`../00-scope.md` § "Tabard is a suite") depend on them:
+
+- `urn:ietf:params:jmap:calendars` — for tabard-calendar. Object model: JSCalendar (RFC 8984). Binding is currently a draft; pin to a specific revision when the work starts.
+- `urn:ietf:params:jmap:contacts` — for tabard-contacts. Object model: JSContact (RFC 9553). Same draft caveat.
+
+The forward-compat work in herold (`internal/store/types.go`'s `StateChange` shape and the JMAP capability registry described in herold's `docs/architecture/03-protocol-architecture.md` and `docs/architecture/05-sync-and-state.md`) was sized for this — it now has actual customers, not hypothetical ones.
 
 ## Behaviours
 
