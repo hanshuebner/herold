@@ -496,6 +496,45 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "address_books":
+		return enumerate(ctx, s.tx,
+			`SELECT id, principal_id, name, description, color_hex, sort_order,
+			        is_subscribed, is_default, rights_mask,
+			        created_at_us, updated_at_us, modseq
+			   FROM address_books ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r AddressBookRow
+				var color sql.NullString
+				var subscribed, isDefault int64
+				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.Name, &r.Description,
+					&color, &r.SortOrder, &subscribed, &isDefault, &r.RightsMask,
+					&r.CreatedAtUs, &r.UpdatedAtUs, &r.ModSeq); err != nil {
+					return nil, err
+				}
+				if color.Valid {
+					v := color.String
+					r.ColorHex = &v
+				}
+				r.IsSubscribed = subscribed != 0
+				r.IsDefault = isDefault != 0
+				return &r, nil
+			}, fn)
+	case "contacts":
+		return enumerate(ctx, s.tx,
+			`SELECT id, address_book_id, principal_id, uid, jscontact_json,
+			        display_name, given_name, surname, org_name, primary_email,
+			        search_blob, created_at_us, updated_at_us, modseq
+			   FROM contacts ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r ContactRow
+				if err := rs.Scan(&r.ID, &r.AddressBookID, &r.PrincipalID, &r.UID,
+					&r.JSContactJSON, &r.DisplayName, &r.GivenName, &r.Surname,
+					&r.OrgName, &r.PrimaryEmail, &r.SearchBlob,
+					&r.CreatedAtUs, &r.UpdatedAtUs, &r.ModSeq); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
 	case "blob_refs":
 		return enumerate(ctx, s.tx,
 			`SELECT hash, size, ref_count, last_change_us FROM blob_refs ORDER BY hash`,

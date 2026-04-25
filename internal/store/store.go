@@ -636,6 +636,70 @@ type Metadata interface {
 	// row. UpdatedAtUs on the supplied struct is ignored — the store
 	// stamps it with the current Clock instant.
 	UpdateCategorisationConfig(ctx context.Context, cfg CategorisationConfig) error
+
+	// -- Phase 2 Wave 2.6 JMAP for Contacts (REQ-PROTO-55) -----------
+
+	// InsertAddressBook persists a new address book and returns the
+	// assigned ID. When ab.IsDefault is true, any prior default address
+	// book for the same principal is flipped to false in the same tx.
+	// Appends a (EntityKindAddressBook, ChangeOpCreated) state-change
+	// row. Returns ErrConflict on duplicate (principal_id, name).
+	InsertAddressBook(ctx context.Context, ab AddressBook) (AddressBookID, error)
+
+	// GetAddressBook returns one row by id. Returns ErrNotFound when
+	// the row is missing.
+	GetAddressBook(ctx context.Context, id AddressBookID) (AddressBook, error)
+
+	// ListAddressBooks applies filter and returns rows in ascending ID
+	// order. Caps at 1000 server-side.
+	ListAddressBooks(ctx context.Context, filter AddressBookFilter) ([]AddressBook, error)
+
+	// UpdateAddressBook persists the mutable fields (Name, Description,
+	// Color, SortOrder, IsSubscribed, IsDefault, RightsMask) on the row
+	// identified by ab.ID, bumps ModSeq and UpdatedAt, and appends a
+	// (EntityKindAddressBook, ChangeOpUpdated) state-change row in the
+	// same tx. Flipping IsDefault to true unsets any prior default.
+	// Returns ErrNotFound when the row is missing.
+	UpdateAddressBook(ctx context.Context, ab AddressBook) error
+
+	// DeleteAddressBook removes the row identified by id (cascading to
+	// every contact owned by the book) and appends a
+	// (EntityKindAddressBook, ChangeOpDestroyed) row plus one
+	// (EntityKindContact, ChangeOpDestroyed) row per contact removed —
+	// all in one tx. Returns ErrNotFound when the row is missing.
+	DeleteAddressBook(ctx context.Context, id AddressBookID) error
+
+	// DefaultAddressBook returns the default address book for
+	// principalID, or ErrNotFound when the principal has no default
+	// (no row with is_default = true).
+	DefaultAddressBook(ctx context.Context, principalID PrincipalID) (AddressBook, error)
+
+	// InsertContact persists a new contact row. The caller is
+	// responsible for populating the denormalised columns (DisplayName,
+	// GivenName, Surname, OrgName, PrimaryEmail, SearchBlob) from the
+	// JSContact JSON. Appends a (EntityKindContact, ChangeOpCreated)
+	// state-change row. Returns ErrConflict on duplicate (address_book_id,
+	// uid).
+	InsertContact(ctx context.Context, c Contact) (ContactID, error)
+
+	// GetContact returns one row by id, or ErrNotFound.
+	GetContact(ctx context.Context, id ContactID) (Contact, error)
+
+	// ListContacts applies filter and returns rows in ascending ID
+	// order. Caps at 1000 server-side.
+	ListContacts(ctx context.Context, filter ContactFilter) ([]Contact, error)
+
+	// UpdateContact persists the mutable fields (JSContactJSON +
+	// denormalised columns) on the row identified by c.ID, bumps
+	// ModSeq and UpdatedAt, and appends a (EntityKindContact,
+	// ChangeOpUpdated) state-change row in the same tx. Returns
+	// ErrNotFound when the row is missing.
+	UpdateContact(ctx context.Context, c Contact) error
+
+	// DeleteContact removes the row identified by id and appends a
+	// (EntityKindContact, ChangeOpDestroyed) state-change row in the
+	// same tx. Returns ErrNotFound when the row is missing.
+	DeleteContact(ctx context.Context, id ContactID) error
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

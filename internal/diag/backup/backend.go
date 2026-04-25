@@ -191,6 +191,10 @@ func rowsForTable(table string) (any, bool) {
 		return &JMAPIdentityRow{}, true
 	case "tlsrpt_failures":
 		return &TLSRPTFailureRow{}, true
+	case "address_books":
+		return &AddressBookRow{}, true
+	case "contacts":
+		return &ContactRow{}, true
 	case "blob_refs":
 		return &BlobRefRow{}, true
 	}

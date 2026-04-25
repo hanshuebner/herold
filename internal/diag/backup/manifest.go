@@ -10,7 +10,7 @@ const CurrentBackupVersion = 1
 // CurrentSchemaVersion is the maximum migration number both backends
 // know about today. Bumped whenever a new migration ships in
 // internal/storesqlite/migrations or internal/storepg/migrations.
-const CurrentSchemaVersion = 9
+const CurrentSchemaVersion = 10
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -78,5 +78,9 @@ var TableNames = []string{
 	"jmap_email_submissions",
 	"jmap_identities",
 	"tlsrpt_failures",
+	// Phase 2 Wave 2.6 JMAP for Contacts (REQ-PROTO-55). address_books
+	// must precede contacts so the FK-respecting restore order holds.
+	"address_books",
+	"contacts",
 	"blob_refs",
 }

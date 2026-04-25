@@ -736,6 +736,13 @@ const (
 	// JMAPStateKindSieve tracks JMAP Sieve datatype changes
 	// (REQ-PROTO-53 / RFC 9007). Bumped on every successful Sieve/set.
 	JMAPStateKindSieve
+	// JMAPStateKindAddressBook tracks JMAP AddressBook changes
+	// (REQ-PROTO-55 / RFC 9553). Bumped on every AddressBook/set
+	// mutation.
+	JMAPStateKindAddressBook
+	// JMAPStateKindContact tracks JMAP Contact changes (REQ-PROTO-55 /
+	// RFC 9553). Bumped on every Contact/set mutation.
+	JMAPStateKindContact
 )
 
 // JMAPStates is the per-principal row of JMAP object-scoped state
@@ -761,6 +768,10 @@ type JMAPStates struct {
 	VacationResponse int64
 	// Sieve is the JMAP Sieve datatype state (REQ-PROTO-53).
 	Sieve int64
+	// AddressBook is the JMAP AddressBook state (REQ-PROTO-55).
+	AddressBook int64
+	// Contact is the JMAP Contact state (REQ-PROTO-55).
+	Contact int64
 	// UpdatedAt is the instant of the most recent increment.
 	UpdatedAt time.Time
 }

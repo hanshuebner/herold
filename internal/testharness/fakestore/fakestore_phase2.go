@@ -54,6 +54,12 @@ type phase2Data struct {
 	// (REQ-FILT-210). Lazily initialised on first read so the existing
 	// constructor does not need editing.
 	catConfig map[store.PrincipalID]store.CategorisationConfig
+
+	// Wave 2.6 JMAP for Contacts (REQ-PROTO-55).
+	addressBooks    map[store.AddressBookID]store.AddressBook
+	nextAddressBook store.AddressBookID
+	contacts        map[store.ContactID]store.Contact
+	nextContact     store.ContactID
 }
 
 // ensurePhase2 lazily initialises the Phase 2 in-memory state. Called
@@ -89,6 +95,10 @@ func (s *Store) ensurePhase2() {
 		emailSubmissions: make(map[string]store.EmailSubmissionRow),
 		jmapIdentities:   make(map[string]store.JMAPIdentity),
 		catConfig:        make(map[store.PrincipalID]store.CategorisationConfig),
+		addressBooks:     make(map[store.AddressBookID]store.AddressBook),
+		nextAddressBook:  1,
+		contacts:         make(map[store.ContactID]store.Contact),
+		nextContact:      1,
 	}
 }
 
@@ -1148,6 +1158,12 @@ func (m *metaFace) IncrementJMAPState(ctx context.Context, pid store.PrincipalID
 	case store.JMAPStateKindSieve:
 		st.Sieve++
 		ret = st.Sieve
+	case store.JMAPStateKindAddressBook:
+		st.AddressBook++
+		ret = st.AddressBook
+	case store.JMAPStateKindContact:
+		st.Contact++
+		ret = st.Contact
 	default:
 		return 0, fmt.Errorf("fakestore: unknown JMAPStateKind %d", kind)
 	}

@@ -358,6 +358,15 @@ const (
 	EntityKindIdentity EntityKind = "identity"
 	// EntityKindVacationResponse is a JMAP `VacationResponse` row.
 	EntityKindVacationResponse EntityKind = "vacation_response"
+	// EntityKindAddressBook is a JMAP `AddressBook` row (REQ-PROTO-55,
+	// RFC 9553). The state-change feed carries (Kind, EntityID =
+	// AddressBookID, ParentEntityID = 0, Op).
+	EntityKindAddressBook EntityKind = "address_book"
+	// EntityKindContact is a JMAP `Contact` row (RFC 9553 JSContact).
+	// The feed carries (Kind, EntityID = ContactID, ParentEntityID =
+	// AddressBookID, Op) so per-book IMAP-IDLE-style filters dispatch
+	// without a join.
+	EntityKindContact EntityKind = "contact"
 )
 
 // ChangeOp is the operation kind on a StateChange row. Distinct from

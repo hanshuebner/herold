@@ -1100,6 +1100,18 @@ func (m *metaFace) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 			}
 		}
 		delete(s.phase2.catConfig, pid)
+		// Wave 2.6 contacts cascade: address books and their contained
+		// contacts. Mirrors the ON DELETE CASCADE in 0010_contacts.sql.
+		for cid, c := range s.phase2.contacts {
+			if c.PrincipalID == pid {
+				delete(s.phase2.contacts, cid)
+			}
+		}
+		for abID, ab := range s.phase2.addressBooks {
+			if ab.PrincipalID == pid {
+				delete(s.phase2.addressBooks, abID)
+			}
+		}
 	}
 	// Audit log: drop entries that target or originate from this
 	// principal. Iterate and rebuild; audit volumes are low in tests.

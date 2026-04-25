@@ -35,6 +35,12 @@ const (
 	// + interpreter so JMAP clients can manage scripts without
 	// speaking ManageSieve.
 	CapabilityJMAPSieve CapabilityID = "urn:ietf:params:jmap:sieve"
+	// CapabilityJMAPContacts is the JMAP Contacts datatype capability
+	// (REQ-PROTO-55 / RFC 9553 JSContact + the JMAP-Contacts binding
+	// draft). Implemented under internal/protojmap/contacts; the
+	// AddressBook/* and Contact/* method families flow through that
+	// package.
+	CapabilityJMAPContacts CapabilityID = "urn:ietf:params:jmap:contacts"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

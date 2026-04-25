@@ -319,3 +319,35 @@ type BlobRefRow struct {
 	RefCount     int64  `json:"ref_count"`
 	LastChangeUs int64  `json:"last_change_us"`
 }
+
+type AddressBookRow struct {
+	ID           int64   `json:"id"`
+	PrincipalID  int64   `json:"principal_id"`
+	Name         string  `json:"name"`
+	Description  string  `json:"description"`
+	ColorHex     *string `json:"color_hex,omitempty"`
+	SortOrder    int64   `json:"sort_order"`
+	IsSubscribed bool    `json:"is_subscribed"`
+	IsDefault    bool    `json:"is_default"`
+	RightsMask   int64   `json:"rights_mask"`
+	CreatedAtUs  int64   `json:"created_at_us"`
+	UpdatedAtUs  int64   `json:"updated_at_us"`
+	ModSeq       int64   `json:"modseq"`
+}
+
+type ContactRow struct {
+	ID            int64  `json:"id"`
+	AddressBookID int64  `json:"address_book_id"`
+	PrincipalID   int64  `json:"principal_id"`
+	UID           string `json:"uid"`
+	JSContactJSON []byte `json:"jscontact_json,omitempty"`
+	DisplayName   string `json:"display_name"`
+	GivenName     string `json:"given_name"`
+	Surname       string `json:"surname"`
+	OrgName       string `json:"org_name"`
+	PrimaryEmail  string `json:"primary_email"`
+	SearchBlob    string `json:"search_blob"`
+	CreatedAtUs   int64  `json:"created_at_us"`
+	UpdatedAtUs   int64  `json:"updated_at_us"`
+	ModSeq        int64  `json:"modseq"`
+}
