@@ -28,7 +28,7 @@ Stalwart is the closest functional reference. Herold narrows the target in some 
 
 - **NG1.** Hosting-provider / multi-tenancy features. No tenants, no per-tenant quotas, no per-tenant branding.
 - **NG2.** Multi-node deployment. Single node only. Operators needing HA use hypervisor-level tricks (ZFS snapshot + failover, shared block storage). v1 does not grow into multi-node.
-- **NG3.** Groupware (CalDAV/CardDAV/WebDAV). Dropped entirely. Users wanting calendar/contacts run Radicale / Baikal alongside.
+- **NG3.** Groupware (CalDAV/CardDAV/WebDAV). Out of v1. Users wanting calendar/contacts in v1 run a standalone CalDAV/CardDAV service alongside. The protocol architecture (`docs/architecture/03-protocol-architecture.md` §JMAP §Capability and account registration; `docs/architecture/05-sync-and-state.md` §Forward-compatibility constraint) deliberately keeps groupware addable as a JMAP datatype in a later release without schema migration or dispatch-core edits — the v1 decision is "not now," not "never."
 - **NG4.** Traditional spam filtering. No bundled rule engine. No Bayesian. No RBLs by default. (Operators who want these can write a plugin or run an external filter; we don't ship them.)
 - **NG5.** Webmail.
 - **NG6.** POP3 at launch.

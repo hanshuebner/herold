@@ -88,8 +88,8 @@ Explicit list of what Herold does differently from Stalwart. Each entry: what, w
 
 ### C17. Groupware (CalDAV/CardDAV/WebDAV)
 - **Stalwart**: yes, first-class.
-- **Herold**: **dropped entirely.** Not a phase-3 candidate. Operators who want calendar/contacts run Radicale / Baikal.
-- **Reversal cost**: significant — effectively a new project.
+- **Herold**: **out of v1.** Operators who want calendar/contacts in v1 run a standalone CalDAV/CardDAV service alongside.
+- **Reversal cost**: moderate, not "new project." `docs/architecture/03-protocol-architecture.md` §JMAP §Capability and account registration and `docs/architecture/05-sync-and-state.md` §Forward-compatibility constraint already commit us to a datatype-agnostic JMAP dispatch + an entity-kind-agnostic change feed — adding `urn:ietf:params:jmap:calendars` / `:contacts` is purely additive. Server-side CalDAV/CardDAV (HTTP wire) would still be net-new code; JMAP-native groupware is the cheaper path.
 
 ### C18. Language: Rust → Go
 - **Stalwart**: Rust.

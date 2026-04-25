@@ -12,6 +12,8 @@ A greenfield mail server project. Stalwart-adjacent scope (SMTP MTA + IMAP/JMAP 
 
 ## Latest scope revision
 
+**2026-04-25** (rev 3): groupware NG3 wording softened from "dropped entirely" to "out of v1." The protocol architecture (`docs/architecture/03-protocol-architecture.md` §JMAP capability and account registration; `docs/architecture/05-sync-and-state.md` forward-compat constraint, plus the resolved Q5/R40 entity-kind-agnostic StateChange reshape) deliberately keeps groupware addable as a JMAP datatype in a later release without schema migration or dispatch-core edits. v1 still ships email only; v1 operators wanting calendar/contacts run a standalone CalDAV/CardDAV service alongside.
+
 **2026-04-24** (rev 2): license → MIT (permissive, final); groupware dropped entirely; shared mailboxes + IMAP ACL in phase 2 (pre-1.0); minimal web UI in phase 2 (HTMX + Go templates + Alpine.js / vanilla JS for client-side validators and autocompletion); Hetzner Cloud DNS added to first-party DNS plugins; no binary-size target.
 
 **2026-04-24** (rev 1): rescaled to 1k mailboxes / 100 domains / 10k+10k msg/day / 1 TB+ individual mailboxes / ~10 TB per node / 100 msg/s peak; switched language from Rust to Go; promoted Postgres to first-class alongside SQLite; LLM spam default via plugin (no rule engine, no Bayes, no RBLs); plugins first-class in v1 (DNS + spam + events + directory + delivery); added HTTP send API + incoming webhooks + typed event publication; added per-user external OIDC federation; split system config (file) from application config (DB); dropped multi-node; dropped encryption at rest; dropped SES bit-compat and OIDC-issuer role.
@@ -21,7 +23,7 @@ A greenfield mail server project. Stalwart-adjacent scope (SMTP MTA + IMAP/JMAP 
 Working assumptions. Override by editing `docs/00-scope.md`; affected docs will be revised.
 
 - Language: **Go** (goroutines, stdlib-first, small dependency tree). Compile-time was the decisive factor.
-- Scope: **email-first**. Groupware (CalDAV/CardDAV/WebDAV) dropped entirely.
+- Scope: **email-first**. Groupware (CalDAV/CardDAV/WebDAV) out of v1; the JMAP dispatch + change-feed shape keep it addable later as a JMAP datatype without schema migration. v1 operators wanting calendar/contacts run a standalone CalDAV/CardDAV service alongside.
 - Topology: **single node, period.** No multi-node path in v1 or beyond.
 - Scale target: **1k mailboxes, 100 domains, 10k+10k msg/day, 100 msg/s peak, large mailboxes up to 1 TB+, ~10 TB per node, 1k concurrent IMAP/JMAP.**
 - Storage: **SQLite or PostgreSQL** (both first-class, chosen at install). Filesystem blobs. Bleve FTS.
