@@ -66,6 +66,19 @@ Exits 10 if a principal already exists.`,
 			if err != nil {
 				return fmt.Errorf("bootstrap: create admin principal: %w", err)
 			}
+			// First principal is the operator-admin: set PrincipalFlagAdmin so
+			// the printed API key can run admin-gated REST mutations
+			// (domain add, principal create, etc.). Every later principal
+			// is non-admin by default; the admin flag is granted via
+			// PATCH /api/v1/principals/{pid}.
+			p, err := st.Meta().GetPrincipalByID(ctx, pid)
+			if err != nil {
+				return fmt.Errorf("bootstrap: load admin principal: %w", err)
+			}
+			p.Flags |= store.PrincipalFlagAdmin
+			if err := st.Meta().UpdatePrincipal(ctx, p); err != nil {
+				return fmt.Errorf("bootstrap: grant admin flag: %w", err)
+			}
 			keyPlain, keyHash, err := generateAPIKey()
 			if err != nil {
 				return fmt.Errorf("bootstrap: generate api key: %w", err)
