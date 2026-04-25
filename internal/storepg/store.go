@@ -1,6 +1,7 @@
 package storepg
 
 import (
+	"io"
 	"log/slog"
 	"sync"
 
@@ -20,13 +21,14 @@ import (
 // serialise writers here to mirror the SQLite backend's single-writer
 // discipline.
 type Store struct {
-	pool     *pgxpool.Pool
-	writerMu *sync.Mutex
-	logger   *slog.Logger
-	clock    clock.Clock
-	blobs    *storeblobfs.Store
-	meta     *metadata
-	fts      *ftsStub
+	pool       *pgxpool.Pool
+	writerMu   *sync.Mutex
+	logger     *slog.Logger
+	clock      clock.Clock
+	blobs      *storeblobfs.Store
+	meta       *metadata
+	fts        *ftsStub
+	randReader io.Reader
 
 	closeOnce sync.Once
 }

@@ -514,9 +514,7 @@ func (p *parser) readMultilineString() (string, error) {
 		}
 		line := string(p.src[lineStart:p.pos])
 		// Strip trailing CR.
-		if strings.HasSuffix(line, "\r") {
-			line = line[:len(line)-1]
-		}
+		line = strings.TrimSuffix(line, "\r")
 		if line == "." {
 			if !p.eof() {
 				p.advance()

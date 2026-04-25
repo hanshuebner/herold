@@ -143,14 +143,14 @@ func (s *Server) appendAudit(
 		actorID = fmt.Sprintf("%d", p.ID)
 	}
 	remote := ""
-	if v, ok := ctx.Value(ctxKeyRequestID).(string); ok {
+	if rid := requestID(ctx); rid != "" {
 		// request_id is not remote_addr; put the remote on the entry via
 		// metadata instead. The request_id is recorded for cross-ref with
 		// slog.
 		if metadata == nil {
 			metadata = make(map[string]string, 1)
 		}
-		metadata["request_id"] = v
+		metadata["request_id"] = rid
 	}
 	if v, ok := ctx.Value(ctxKeyRemoteAddr).(string); ok {
 		remote = v

@@ -178,6 +178,15 @@ func Export(ctx context.Context, s store.Store, w io.Writer) error {
 // In Phase 1 merge mode: domains, principals (with blank passwords),
 // OIDC providers, and Sieve scripts are inserted when absent. Conflicts
 // are logged via the returned error; partial progress is preserved.
+//
+// Every successful mutation emits a `appconfig.<kind>.<verb>` audit
+// row via store.Metadata.AppendAuditLog with ActorKind=ActorSystem
+// and ActorID="appconfig-import" so an operator running
+// `herold app-config load` leaves a trail. STANDARDS §9: every
+// config mutation is auditable. Audit-append failures are logged-via-
+// error-return-only on the first occurrence so a misconfigured store
+// does not silently swallow forensic trail bits while the import
+// rolls forward.
 func Import(ctx context.Context, s store.Store, r io.Reader, opts ImportOptions) error {
 	if s == nil {
 		return errors.New("appconfig: nil store")
@@ -190,11 +199,31 @@ func Import(ctx context.Context, s store.Store, r io.Reader, opts ImportOptions)
 	if err := toml.Unmarshal(raw, &snap); err != nil {
 		return fmt.Errorf("appconfig: parse: %w", err)
 	}
+	now := time.Now().UTC()
+	audit := func(action, subject string, meta map[string]string) error {
+		return s.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+			At:        now,
+			ActorKind: store.ActorSystem,
+			ActorID:   "appconfig-import",
+			Action:    action,
+			Subject:   subject,
+			Outcome:   store.OutcomeSuccess,
+			Metadata:  meta,
+		})
+	}
 	// Domains.
 	for _, d := range snap.Domains {
 		err := s.Meta().InsertDomain(ctx, store.Domain{Name: d.Name, IsLocal: d.IsLocal})
-		if err != nil && !errors.Is(err, store.ErrConflict) {
+		if err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				continue
+			}
 			return fmt.Errorf("appconfig: insert domain %q: %w", d.Name, err)
+		}
+		if err := audit("appconfig.domain.upsert", "domain:"+d.Name, map[string]string{
+			"is_local": boolStr(d.IsLocal),
+		}); err != nil {
+			return fmt.Errorf("appconfig: audit domain %q: %w", d.Name, err)
 		}
 	}
 	// Principals. We insert without the original ID; the store assigns
@@ -222,6 +251,17 @@ func Import(ctx context.Context, s store.Store, r io.Reader, opts ImportOptions)
 			return fmt.Errorf("appconfig: insert principal %q: %w", p.CanonicalEmail, err)
 		}
 		idMap[p.ID] = inserted.ID
+		if err := audit(
+			"appconfig.principal.upsert",
+			fmt.Sprintf("principal:%d", inserted.ID),
+			map[string]string{
+				"email":        inserted.CanonicalEmail,
+				"display_name": inserted.DisplayName,
+				"flags":        fmt.Sprintf("%d", uint32(inserted.Flags)),
+				"kind":         fmt.Sprintf("%d", uint8(inserted.Kind)),
+			}); err != nil {
+			return fmt.Errorf("appconfig: audit principal %q: %w", p.CanonicalEmail, err)
+		}
 	}
 	// Sieve scripts by mapped principal id.
 	for _, sc := range snap.SieveScripts {
@@ -231,6 +271,14 @@ func Import(ctx context.Context, s store.Store, r io.Reader, opts ImportOptions)
 		}
 		if err := s.Meta().SetSieveScript(ctx, pid, sc.Script); err != nil {
 			return fmt.Errorf("appconfig: set sieve for %d: %w", pid, err)
+		}
+		if err := audit(
+			"appconfig.sieve.upsert",
+			fmt.Sprintf("principal:%d", pid),
+			map[string]string{
+				"script_bytes": fmt.Sprintf("%d", len(sc.Script)),
+			}); err != nil {
+			return fmt.Errorf("appconfig: audit sieve %d: %w", pid, err)
 		}
 	}
 	// OIDC providers.
@@ -243,10 +291,27 @@ func Import(ctx context.Context, s store.Store, r io.Reader, opts ImportOptions)
 			Scopes:          prov.Scopes,
 			AutoProvision:   prov.AutoProvision,
 		})
-		if err != nil && !errors.Is(err, store.ErrConflict) {
+		if err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				continue
+			}
 			return fmt.Errorf("appconfig: insert oidc provider %q: %w", prov.Name, err)
+		}
+		if err := audit("appconfig.oidc.upsert", "oidc:"+prov.Name, map[string]string{
+			"issuer_url": prov.IssuerURL,
+			"client_id":  prov.ClientID,
+		}); err != nil {
+			return fmt.Errorf("appconfig: audit oidc %q: %w", prov.Name, err)
 		}
 	}
 	_ = opts
 	return nil
+}
+
+// boolStr renders a bool as "true"/"false" for audit metadata maps.
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -502,7 +502,7 @@ func (m *metadata) ListOIDCLinksByPrincipal(ctx context.Context, pid store.Princ
 func (m *metadata) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.Mailbox, error) {
 	now := m.s.clock.Now().UTC()
 	if mb.UIDValidity == 0 {
-		mb.UIDValidity = newUIDValidity(now)
+		mb.UIDValidity = newUIDValidity(now, m.s.randReader)
 	}
 	var id int64
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
@@ -985,12 +985,22 @@ func decRef(ctx context.Context, tx pgx.Tx, hash string, now time.Time) error {
 	return mapErr(err)
 }
 
-func newUIDValidity(t time.Time) store.UIDValidity {
+// newUIDValidity returns a 32-bit UIDVALIDITY seeded from the given
+// time plus a one-byte salt drawn from rs. Production passes
+// crypto/rand.Reader (set on Store at Open time); tests inject a
+// deterministic reader for byte-exact reproducibility. UIDVALIDITY
+// is opaque to clients but externally visible, so the better posture
+// (unguessable salt) costs nothing and matches the SQLite backend.
+func newUIDValidity(t time.Time, rs io.Reader) store.UIDValidity {
 	sec := t.Unix()
 	if sec <= 0 {
 		sec = 1
 	}
-	return store.UIDValidity(uint32(sec)) + store.UIDValidity(rand.Uint32()&0xFF)
+	var b [1]byte
+	if rs != nil {
+		_, _ = io.ReadFull(rs, b[:])
+	}
+	return store.UIDValidity(uint32(sec)) + store.UIDValidity(uint32(b[0]))
 }
 
 func sortStrings(s []string) {

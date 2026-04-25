@@ -2,6 +2,7 @@ package storesqlite
 
 import (
 	"database/sql"
+	"io"
 	"log/slog"
 	"sync"
 
@@ -15,14 +16,21 @@ import (
 // single-writer at the engine level, but the driver's BUSY retry
 // cascades under contention; holding writerMu is cheap insurance), a
 // filesystem blob store, and an FTS stub. Returned by Open.
+//
+// randReader is the entropy source used for non-secret-but-opaque
+// IMAP UIDVALIDITY low-byte salting. Production paths get
+// crypto/rand.Reader; tests inject a deterministic reader (via the
+// rs argument to Open) so UIDVALIDITY values are reproducible across
+// runs.
 type Store struct {
-	db       *sql.DB
-	writerMu *sync.Mutex
-	logger   *slog.Logger
-	clock    clock.Clock
-	blobs    *storeblobfs.Store
-	meta     *metadata
-	fts      *ftsStub
+	db         *sql.DB
+	writerMu   *sync.Mutex
+	logger     *slog.Logger
+	clock      clock.Clock
+	blobs      *storeblobfs.Store
+	meta       *metadata
+	fts        *ftsStub
+	randReader io.Reader
 
 	closeOnce sync.Once
 	closeErr  error

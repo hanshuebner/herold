@@ -3,6 +3,8 @@ package plugin
 import (
 	"math/rand"
 	"time"
+
+	"github.com/hanshuebner/herold/internal/clock"
 )
 
 // backoff produces a capped exponential-with-jitter delay sequence used by
@@ -17,20 +19,35 @@ type backoff struct {
 // newBackoff constructs a backoff anchored at base and capped at maxDelay.
 // The first call to next returns roughly base; subsequent calls double up
 // to maxDelay, with +/-25% jitter applied.
-func newBackoff(base, maxDelay time.Duration) *backoff {
+//
+// src seeds the jitter PRNG. Production callers pass nil; that path
+// derives a per-backoff seed from clk.Now() so the jitter source is
+// reproducible across replays of a fixed clock and never reads the
+// real wall clock (STANDARDS §5: no wall-clock injection in
+// deterministic code). Tests pass an explicit rand.Source for byte-
+// exact determinism. clk may be nil; nil falls back to clock.NewReal.
+//
+// The jitter is a non-cryptographic delay smear; using math/rand here
+// is intentional. Cryptographic RNG would only obscure the schedule
+// without affecting the security posture of plugin restart timing.
+func newBackoff(base, maxDelay time.Duration, clk clock.Clock, src rand.Source) *backoff {
 	if base <= 0 {
 		base = time.Second
 	}
 	if maxDelay <= 0 || maxDelay < base {
 		maxDelay = 60 * time.Second
 	}
+	if src == nil {
+		if clk == nil {
+			clk = clock.NewReal()
+		}
+		src = rand.NewSource(clk.Now().UnixNano())
+	}
 	return &backoff{
 		base:    base,
 		cap:     maxDelay,
 		current: 0,
-		// A per-backoff source keeps jitter deterministic for unit tests
-		// that inject a seeded variant via Reset.
-		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
+		rng:     rand.New(src),
 	}
 }
 

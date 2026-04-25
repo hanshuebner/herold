@@ -346,7 +346,7 @@ func (p *Plugin) superviseLoop(ctx context.Context) {
 		return
 	}
 
-	backoff := newBackoff(time.Second, 60*time.Second)
+	backoff := newBackoff(time.Second, 60*time.Second, p.mgr.opts.Clock, nil)
 	for {
 		select {
 		case <-ctx.Done():

@@ -9,6 +9,10 @@ require (
 	github.com/emersion/go-msgauth v0.7.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/jhillyerd/enmime v1.3.0
+	// mattn/go-sqlite3: benchmark-only, gated by
+	// //go:build spike && sqlite_mattn in
+	// internal/storesqlite/bench_driver_mattn_test.go. Default build is
+	// CGO-free per STANDARDS §1.12.
 	github.com/mattn/go-sqlite3 v1.14.42
 	github.com/pelletier/go-toml/v2 v2.3.0
 	github.com/pquerna/otp v1.5.0

@@ -2,9 +2,11 @@ package storepg
 
 import (
 	"context"
+	"crypto/rand"
 	"embed"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"sort"
@@ -31,12 +33,27 @@ var migrationsFS embed.FS
 // pgx's defaults for query timeout (the caller's ctx is the source of
 // truth). Migrations are applied forward-only; schemas newer than the
 // binary are rejected (REQ-OPS-100).
+//
+// Production callers route through Open, which uses crypto/rand for
+// the IMAP UIDVALIDITY salt. Tests inject a deterministic source via
+// OpenWithRand.
 func Open(ctx context.Context, dsn string, blobDir string, logger *slog.Logger, c clock.Clock) (store.Store, error) {
+	return OpenWithRand(ctx, dsn, blobDir, logger, c, nil)
+}
+
+// OpenWithRand is Open with an explicit entropy source for the
+// non-secret IMAP UIDVALIDITY salt. A nil rs falls back to
+// crypto/rand.Reader. STANDARDS §8.5: tests inject a deterministic
+// reader for byte-exact reproducibility.
+func OpenWithRand(ctx context.Context, dsn string, blobDir string, logger *slog.Logger, c clock.Clock, rs io.Reader) (store.Store, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if c == nil {
 		c = clock.NewReal()
+	}
+	if rs == nil {
+		rs = rand.Reader
 	}
 	if blobDir == "" {
 		blobDir = "./data/blobs"
@@ -63,11 +80,12 @@ func Open(ctx context.Context, dsn string, blobDir string, logger *slog.Logger, 
 	}
 	blobs := storeblobfs.New(blobDir, c)
 	s := &Store{
-		pool:     pool,
-		writerMu: &sync.Mutex{},
-		logger:   logger,
-		clock:    c,
-		blobs:    blobs,
+		pool:       pool,
+		writerMu:   &sync.Mutex{},
+		logger:     logger,
+		clock:      c,
+		blobs:      blobs,
+		randReader: rs,
 	}
 	s.meta = &metadata{s: s}
 	s.fts = &ftsStub{s: s}

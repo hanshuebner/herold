@@ -286,6 +286,14 @@ func (sess *session) assembleStoredBytes(body []byte, authResults string) []byte
 // It follows REQ-FLOW-20: protocol, encryption status, EHLO, client IP,
 // message ID. The line is emitted without the trailing CRLF (caller
 // adds one).
+//
+// Every field that originates from the wire — HELO, remote IP, TLS
+// version/cipher, and our own hostname/AuthservID echoed back into
+// headers — is run through sanitizeHeaderValue so a malicious peer
+// cannot inject CR/LF or other header-shape bytes into the stored
+// message. The hostname and TLS labels come from operator config but
+// the helper is cheap and applying it uniformly removes the chance of
+// a future caller forgetting.
 func (sess *session) renderReceived() string {
 	proto := "SMTP"
 	if sess.isEHLO {
@@ -296,15 +304,57 @@ func (sess *session) renderReceived() string {
 		enc = "S" // ESMTPS
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Received: from %s", sess.helo)
+	fmt.Fprintf(&b, "Received: from %s", sanitizeHeaderValue(sess.helo))
 	if sess.remoteIP != "" && sess.remoteIP != "-" {
-		fmt.Fprintf(&b, " ([%s])", sess.remoteIP)
+		fmt.Fprintf(&b, " ([%s])", sanitizeHeaderValue(sess.remoteIP))
 	}
-	fmt.Fprintf(&b, " by %s with %s%s", sess.srv.opts.Hostname, proto, enc)
+	fmt.Fprintf(&b, " by %s with %s%s",
+		sanitizeHeaderValue(sess.srv.opts.Hostname),
+		sanitizeHeaderValue(proto),
+		sanitizeHeaderValue(enc))
 	if sess.tlsEstablished {
-		fmt.Fprintf(&b, " (%s:%s)", tlsVersionName(sess.tlsVersion), tls.CipherSuiteName(sess.tlsCipherSuite))
+		fmt.Fprintf(&b, " (%s:%s)",
+			sanitizeHeaderValue(tlsVersionName(sess.tlsVersion)),
+			sanitizeHeaderValue(tls.CipherSuiteName(sess.tlsCipherSuite)))
 	}
 	fmt.Fprintf(&b, "; %s", sess.srv.clk.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 -0700"))
+	return b.String()
+}
+
+// maxHeaderFieldLen caps any single sanitized field at a sensible
+// upper bound. RFC 5322 has no per-field maximum but real-world MUAs
+// choke past a few KiB; we cap at 1 KiB which is well clear of the
+// longest legitimate HELO domain (255 octets per RFC 5321) and the
+// longest reasonable TLS cipher name.
+const maxHeaderFieldLen = 1024
+
+// sanitizeHeaderValue makes s safe to embed into a structured header
+// (Received:, Authentication-Results:, etc.). Any byte outside the
+// printable ASCII safe set [0x20..0x7E] minus the structural bytes
+// CR / LF / NUL is replaced with '_'. Output is capped at
+// maxHeaderFieldLen so an attacker cannot pad a stored message with a
+// gigabyte of HELO bytes.
+//
+// Policy: this is intentionally aggressive. Mail headers are 7-bit
+// US-ASCII per RFC 5322 §2.2; non-ASCII or control bytes in
+// operator-rendered fields are either an attacker forging header
+// shape or a misconfiguration we surface by mangling the byte. We do
+// not attempt RFC 2047 encoded-word emission — this header is
+// machine-read by downstream MTAs/log pipelines, not a UI string.
+func sanitizeHeaderValue(s string) string {
+	if len(s) > maxHeaderFieldLen {
+		s = s[:maxHeaderFieldLen]
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c > 0x7E {
+			b.WriteByte('_')
+			continue
+		}
+		b.WriteByte(c)
+	}
 	return b.String()
 }
 
@@ -489,16 +539,21 @@ func envelopeFromParsed(msg mailparse.Message) store.Envelope {
 // renderAuthResults emits the value portion of the
 // Authentication-Results header per RFC 8601. authserv-id is the
 // server's advertised identity (REQ-FLOW-21).
+//
+// Every value field that flows from the wire (SPF mailfrom/HELO,
+// DKIM header.d / header.s, DMARC header.from) is run through
+// sanitizeAuthToken so an attacker-controlled domain cannot inject
+// new method tokens or close the header with a CRLF.
 func renderAuthResults(authservID string, r mailauth.AuthResults) string {
 	var parts []string
-	parts = append(parts, authservID)
+	parts = append(parts, sanitizeAuthToken(authservID))
 	// SPF.
 	if r.SPF.Status != mailauth.AuthUnknown {
 		p := fmt.Sprintf("spf=%s", r.SPF.Status.String())
 		if r.SPF.From != "" {
-			p += fmt.Sprintf(" smtp.mailfrom=%s", r.SPF.From)
+			p += fmt.Sprintf(" smtp.mailfrom=%s", sanitizeAuthToken(r.SPF.From))
 		} else if r.SPF.HELO != "" {
-			p += fmt.Sprintf(" smtp.helo=%s", r.SPF.HELO)
+			p += fmt.Sprintf(" smtp.helo=%s", sanitizeAuthToken(r.SPF.HELO))
 		}
 		parts = append(parts, p)
 	}
@@ -506,10 +561,10 @@ func renderAuthResults(authservID string, r mailauth.AuthResults) string {
 	for _, d := range r.DKIM {
 		p := fmt.Sprintf("dkim=%s", d.Status.String())
 		if d.Domain != "" {
-			p += fmt.Sprintf(" header.d=%s", d.Domain)
+			p += fmt.Sprintf(" header.d=%s", sanitizeAuthToken(d.Domain))
 		}
 		if d.Selector != "" {
-			p += fmt.Sprintf(" header.s=%s", d.Selector)
+			p += fmt.Sprintf(" header.s=%s", sanitizeAuthToken(d.Selector))
 		}
 		parts = append(parts, p)
 	}
@@ -517,7 +572,7 @@ func renderAuthResults(authservID string, r mailauth.AuthResults) string {
 	if r.DMARC.Status != mailauth.AuthUnknown {
 		p := fmt.Sprintf("dmarc=%s", r.DMARC.Status.String())
 		if r.DMARC.HeaderFrom != "" {
-			p += fmt.Sprintf(" header.from=%s", r.DMARC.HeaderFrom)
+			p += fmt.Sprintf(" header.from=%s", sanitizeAuthToken(r.DMARC.HeaderFrom))
 		}
 		parts = append(parts, p)
 	}

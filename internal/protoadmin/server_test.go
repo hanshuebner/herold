@@ -599,6 +599,71 @@ func TestAuditLog_Filters(t *testing.T) {
 	}
 }
 
+// TestAuditLog_RequestIDPropagated asserts that the request ID set by the
+// withRequestLog middleware (whether echoed from the X-Request-ID header
+// or generated server-side) lands in the audit entry's metadata so that
+// log lines and audit rows can be cross-referenced. Covers the contract
+// between middleware.requestID() and Server.appendAudit().
+func TestAuditLog_RequestIDPropagated(t *testing.T) {
+	h := newHarness(t)
+	_, adminKey := h.bootstrap("admin@example.com")
+	// Send a mutating request with a caller-supplied X-Request-ID; the
+	// middleware echoes it back and threads it through ctx so appendAudit
+	// records it in metadata.
+	const wantRID = "rid-test-0123456789abcdef"
+	body, err := json.Marshal(map[string]any{
+		"email":    "rid@example.com",
+		"password": "correct-horse-battery-staple",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, err := http.NewRequest("POST", h.baseURL+"/api/v1/principals", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+adminKey)
+	req.Header.Set("X-Request-ID", wantRID)
+	res, err := h.client.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create = %d", res.StatusCode)
+	}
+	if got := res.Header.Get("X-Request-ID"); got != wantRID {
+		t.Fatalf("X-Request-ID echoed = %q, want %q", got, wantRID)
+	}
+	// Now scan audit for the matching row.
+	res2, buf := h.doRequest("GET", "/api/v1/audit?action=principal.create&limit=50", adminKey, nil)
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("audit = %d: %s", res2.StatusCode, buf)
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &page); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	found := false
+	for _, it := range page.Items {
+		md, _ := it["metadata"].(map[string]any)
+		if md == nil {
+			continue
+		}
+		if md["request_id"] == wantRID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no audit row carried request_id=%q; rows=%s", wantRID, buf)
+	}
+}
+
 func TestAuthentication_Bearer_APIKey_Required(t *testing.T) {
 	h := newHarness(t)
 	_, _ = h.bootstrap("admin@example.com")

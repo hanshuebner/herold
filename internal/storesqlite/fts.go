@@ -118,21 +118,11 @@ func collectTerms(q store.Query) []string {
 	if q.Text != "" {
 		out = append(out, q.Text)
 	}
-	for _, s := range q.Subject {
-		out = append(out, s)
-	}
-	for _, s := range q.From {
-		out = append(out, s)
-	}
-	for _, s := range q.To {
-		out = append(out, s)
-	}
-	for _, s := range q.Body {
-		out = append(out, s)
-	}
-	for _, s := range q.AttachmentName {
-		out = append(out, s)
-	}
+	out = append(out, q.Subject...)
+	out = append(out, q.From...)
+	out = append(out, q.To...)
+	out = append(out, q.Body...)
+	out = append(out, q.AttachmentName...)
 	// Deduplicate to keep WHERE clauses short.
 	seen := map[string]struct{}{}
 	uniq := out[:0]

@@ -469,12 +469,153 @@ key_file = "/b"
 }
 
 func TestResolveSecret_Inline(t *testing.T) {
+	// Legacy ResolveSecret keeps inline values working for
+	// backwards compatibility with callers that intentionally hold
+	// non-secret literal strings (model names, endpoints).
 	got, err := ResolveSecret("hunter2")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != "hunter2" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestResolveSecretStrict_RefusesInline(t *testing.T) {
+	// STANDARDS §9: ResolveSecretStrict refuses bare literal values.
+	// Operators must wrap secrets in $ENV or file:/path references.
+	if _, err := ResolveSecretStrict("literal_value"); err == nil {
+		t.Fatal("expected ErrInlineSecretRefused, got nil")
+	} else if !errors.Is(err, ErrInlineSecretRefused) {
+		t.Errorf("wrong error: %v", err)
+	}
+
+	t.Setenv("HEROLD_TEST_STRICT", "ok")
+	if got, err := ResolveSecretStrict("$HEROLD_TEST_STRICT"); err != nil || got != "ok" {
+		t.Errorf("env path: got=%q err=%v", got, err)
+	}
+}
+
+func TestIsSecretReference(t *testing.T) {
+	cases := map[string]bool{
+		"":            false,
+		"literal":     false,
+		"$ENV":        true,
+		"$":           false,
+		"file:/path":  true,
+		"file:":       false,
+		"file:/etc/x": true,
+		"$HEROLD_X_Y": true,
+	}
+	for in, want := range cases {
+		if got := IsSecretReference(in); got != want {
+			t.Errorf("IsSecretReference(%q): got %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestValidate_RejectsInlinePluginSecret(t *testing.T) {
+	// STANDARDS §9 + Wave-4 review: a plugin option whose key looks
+	// like a secret but whose value is a bare literal MUST fail
+	// Load. The error message must name the offending key so the
+	// operator can find it.
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+
+[[plugin]]
+name = "spam-llm"
+path = "/usr/lib/herold/plugins/herold-spam-llm"
+type = "spam"
+lifecycle = "long-running"
+options.endpoint = "http://localhost:11434/v1"
+options.api_token = "literal_value"
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal("expected inline-secret rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "api_token") {
+		t.Errorf("error should name api_token, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "STANDARDS") {
+		t.Errorf("error should cite STANDARDS, got: %v", err)
+	}
+}
+
+func TestValidate_AcceptsReferencedPluginSecret(t *testing.T) {
+	// Symmetric positive: the same shape with a "$ENV" reference
+	// passes validation. (We do not require the env to be set at
+	// Load — that resolves at plugin-start time.)
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+
+[[plugin]]
+name = "spam-llm"
+path = "/usr/lib/herold/plugins/herold-spam-llm"
+type = "spam"
+lifecycle = "long-running"
+options.api_token = "$HEROLD_API_TOKEN"
+`
+	if _, err := Parse([]byte(cfg)); err != nil {
+		t.Fatalf("expected pass, got %v", err)
+	}
+}
+
+func TestValidate_NonSecretKeyAllowsLiteral(t *testing.T) {
+	// Non-secret-shaped keys (endpoints, model names) keep working
+	// as bare literals so operators don't have to wrap public values.
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+
+[[plugin]]
+name = "spam-llm"
+path = "/usr/lib/herold/plugins/herold-spam-llm"
+type = "spam"
+lifecycle = "long-running"
+options.endpoint = "http://localhost:11434/v1"
+options.model = "llama3.2"
+`
+	if _, err := Parse([]byte(cfg)); err != nil {
+		t.Fatalf("expected pass for non-secret-keyed options, got %v", err)
 	}
 }
 

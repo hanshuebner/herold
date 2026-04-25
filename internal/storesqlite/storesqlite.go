@@ -2,10 +2,12 @@ package storesqlite
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"path/filepath"
@@ -33,12 +35,29 @@ var migrationsFS embed.FS
 // forward-only; a DB whose schema_migrations table already contains a
 // version newer than the binary recognises is rejected (REQ-OPS-130 /
 // REQ-OPS-100: no downgrades).
+//
+// Production callers route through this entrypoint, which uses
+// crypto/rand for the IMAP UIDVALIDITY salt. Tests inject a
+// deterministic source via OpenWithRand. The two-entrypoint shape
+// keeps the public Open signature stable across the Wave-3 codebase.
 func Open(ctx context.Context, path string, logger *slog.Logger, c clock.Clock) (store.Store, error) {
+	return OpenWithRand(ctx, path, logger, c, nil)
+}
+
+// OpenWithRand is Open with an explicit entropy source for the
+// non-secret IMAP UIDVALIDITY salt. A nil rs falls back to
+// crypto/rand.Reader. STANDARDS §8.5: tests inject a deterministic
+// reader (e.g. bytes.NewReader of a fixed corpus) so UIDVALIDITY
+// values are reproducible across runs.
+func OpenWithRand(ctx context.Context, path string, logger *slog.Logger, c clock.Clock, rs io.Reader) (store.Store, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if c == nil {
 		c = clock.NewReal()
+	}
+	if rs == nil {
+		rs = rand.Reader
 	}
 
 	dsn := buildDSN(path)
@@ -72,11 +91,12 @@ func Open(ctx context.Context, path string, logger *slog.Logger, c clock.Clock) 
 	blobs := storeblobfs.New(blobDir, c)
 
 	s := &Store{
-		db:       db,
-		writerMu: &sync.Mutex{},
-		logger:   logger,
-		clock:    c,
-		blobs:    blobs,
+		db:         db,
+		writerMu:   &sync.Mutex{},
+		logger:     logger,
+		clock:      c,
+		blobs:      blobs,
+		randReader: rs,
 	}
 	s.meta = &metadata{s: s}
 	s.fts = &ftsStub{s: s}

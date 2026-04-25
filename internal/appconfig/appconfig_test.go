@@ -115,3 +115,79 @@ fileinto "Folder";`); err != nil {
 		t.Fatalf("sieve script empty after import")
 	}
 }
+
+// TestImport_EmitsAuditEntries pins the contract from STANDARDS §9
+// and the Wave-4 security review: every Import mutation
+// (domain/principal/sieve/oidc) lands an entry in the audit log so an
+// operator running `herold app-config load` cannot silently flip
+// admin flags or add OIDC providers. Closes the "appconfig.Import
+// unaudited mutations" finding.
+func TestImport_EmitsAuditEntries(t *testing.T) {
+	ctx := context.Background()
+	dst := newStore(t)
+
+	// Minimal snapshot exercising every mutation kind: a local domain,
+	// one principal, an OIDC provider, and a Sieve script for the
+	// imported principal (keyed by the snapshot's principal_id).
+	snap := []byte(`format_version = 1
+exported_at = 2026-04-24T12:00:00Z
+
+[[domains]]
+name = "example.test"
+is_local = true
+
+[[principals]]
+id = 7
+kind = 1
+canonical_email = "alice@example.test"
+display_name = "Alice"
+quota_bytes = 1073741824
+flags = 0
+
+[[oidc_providers]]
+name = "google"
+issuer_url = "https://accounts.google.com"
+client_id = "cid"
+scopes = ["openid", "email"]
+
+[[sieve_scripts]]
+principal_id = 7
+script = "require [\"fileinto\"]; fileinto \"Folder\";"
+`)
+	if err := appconfig.Import(ctx, dst, bytes.NewReader(snap), appconfig.ImportOptions{Mode: appconfig.ImportMerge}); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	entries, err := dst.Meta().ListAuditLog(ctx, store.AuditLogFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("ListAuditLog: %v", err)
+	}
+	wantActions := map[string]bool{
+		"appconfig.domain.upsert":    false,
+		"appconfig.principal.upsert": false,
+		"appconfig.oidc.upsert":      false,
+		"appconfig.sieve.upsert":     false,
+	}
+	for _, e := range entries {
+		if _, ok := wantActions[e.Action]; ok {
+			wantActions[e.Action] = true
+			if e.ActorKind != store.ActorSystem {
+				t.Errorf("audit %q: ActorKind = %v, want ActorSystem", e.Action, e.ActorKind)
+			}
+			if e.ActorID != "appconfig-import" {
+				t.Errorf("audit %q: ActorID = %q, want appconfig-import", e.Action, e.ActorID)
+			}
+			if e.Subject == "" {
+				t.Errorf("audit %q: Subject empty", e.Action)
+			}
+			if e.Outcome != store.OutcomeSuccess {
+				t.Errorf("audit %q: Outcome = %v, want OutcomeSuccess", e.Action, e.Outcome)
+			}
+		}
+	}
+	for action, found := range wantActions {
+		if !found {
+			t.Errorf("expected audit entry for action %q; got entries=%+v", action, entries)
+		}
+	}
+}

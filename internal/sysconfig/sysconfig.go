@@ -127,6 +127,28 @@ type ObservabilityConfig struct {
 	OTLPEndpoint string `toml:"otlp_endpoint,omitempty"`
 }
 
+// secretKeySubstrings is the closed-vocabulary list of substrings the
+// strict secret-validation pass treats as secret-bearing in plugin
+// option keys. Matched case-insensitively. Operators who genuinely
+// have a non-secret value whose key contains one of these tokens
+// (e.g. a public "api_key_url") can prefix-rename or use the
+// reference form to satisfy the check.
+var secretKeySubstrings = []string{
+	"secret", "token", "password", "passwd", "api_key", "apikey", "credential",
+}
+
+// looksLikeSecretKey reports whether k matches any well-known secret-
+// bearing key convention. Used by Validate to enforce STANDARDS §9.
+func looksLikeSecretKey(k string) bool {
+	lk := strings.ToLower(k)
+	for _, sub := range secretKeySubstrings {
+		if strings.Contains(lk, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // Valid protocol / tls / lifecycle / plugin-type / log level sets.
 var (
 	validProtocols  = map[string]struct{}{"smtp": {}, "smtp-submission": {}, "imap": {}, "imaps": {}, "admin": {}}
@@ -275,6 +297,19 @@ func Validate(c *Config) error {
 		}
 		if _, ok := validLifecycles[p.Lifecycle]; !ok {
 			return fmt.Errorf("sysconfig: [[plugin]] %q: lifecycle %q not recognised", p.Name, p.Lifecycle)
+		}
+		// STANDARDS §9: no inline secrets in system.toml. Reject any
+		// plugin option whose key looks like a secret unless its value
+		// is "$ENV" or "file:/path". This catches the common
+		// `api_token = "literal"`, `client_secret = "shhh"` shapes
+		// without forcing operators to wrap every value in a reference.
+		for k, v := range p.Options {
+			if !looksLikeSecretKey(k) {
+				continue
+			}
+			if !IsSecretReference(v) {
+				return fmt.Errorf("sysconfig: [[plugin]] %q: option %q must be \"$ENV\" or \"file:/path\" (no inline secrets; STANDARDS §9)", p.Name, k)
+			}
 		}
 	}
 	// Observability.

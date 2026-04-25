@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -567,7 +567,7 @@ func (m *metadata) ListOIDCLinksByPrincipal(ctx context.Context, pid store.Princ
 func (m *metadata) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.Mailbox, error) {
 	now := m.s.clock.Now().UTC()
 	if mb.UIDValidity == 0 {
-		mb.UIDValidity = newUIDValidity(now)
+		mb.UIDValidity = newUIDValidity(now, m.s.randReader)
 	}
 	var id int64
 	err := m.runTx(ctx, func(tx *sql.Tx) error {
@@ -1101,12 +1101,24 @@ func nullable(v *int64) any {
 // mailbox re-creations; using the clock's seconds-since-epoch satisfies
 // that for any non-pathological clock, and adds a small random low bias
 // so same-second creations still differ.
-func newUIDValidity(t time.Time) store.UIDValidity {
+//
+// rs is the entropy source for the low-byte salt. Production passes
+// crypto/rand.Reader (set on the Store at Open time); tests pass a
+// deterministic reader. UIDVALIDITY is opaque to clients but
+// externally visible, so we prefer a non-guessable salt over math/rand
+// — even though the security risk is low, the better posture costs
+// nothing. On a Read failure we fall back to a zero salt so the
+// timestamp alone remains usable.
+func newUIDValidity(t time.Time, rs io.Reader) store.UIDValidity {
 	sec := t.Unix()
 	if sec <= 0 {
 		sec = 1
 	}
-	return store.UIDValidity(uint32(sec)) + store.UIDValidity(rand.Uint32()&0xFF)
+	var b [1]byte
+	if rs != nil {
+		_, _ = io.ReadFull(rs, b[:])
+	}
+	return store.UIDValidity(uint32(sec)) + store.UIDValidity(uint32(b[0]))
 }
 
 func sortStrings(s []string) {

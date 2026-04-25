@@ -14,7 +14,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.23.x"
+  # Aligned with go.mod's `go 1.25.0` directive. Several direct deps
+  # (golang.org/x/sync v0.20.0, golang.org/x/crypto v0.49.0,
+  # golang.org/x/oauth2 v0.36.0, github.com/coreos/go-oidc/v3 v3.18.0,
+  # github.com/jackc/pgx/v5 v5.9.2, the otel/otlptrace exporters, etc.)
+  # already require Go 1.25 at module level, so the CI floor must match.
+  # Per STANDARDS §2 the floor moves with the current stable; the Phase 1
+  # planning floor of 1.23 was lifted at Phase 1.5 kickoff to track this.
+  GO_VERSION: "1.25.x"
 
 jobs:
   lint:

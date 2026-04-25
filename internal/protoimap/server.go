@@ -33,9 +33,16 @@ const (
 
 // Options is the server's runtime configuration.
 type Options struct {
-	// MaxConnections caps simultaneous sessions per listener. Zero means
-	// unlimited.
+	// MaxConnections caps simultaneous sessions per listener. Zero
+	// resolves to the default (1024). Negative explicitly disables
+	// the cap; operators choosing this MUST front the listener with
+	// an external limiter (REQ-PROTO-13/14, STANDARDS §9).
 	MaxConnections int
+	// MaxConnectionsPerIP caps simultaneous sessions from a single
+	// remote IP. Zero resolves to the default (32). Negative
+	// disables the per-IP cap; operators choosing this MUST front
+	// the listener with an external limiter.
+	MaxConnectionsPerIP int
 	// MaxCommandsPerSession is the per-session command budget; once
 	// exhausted the session is closed with BYE. Zero disables the cap.
 	MaxCommandsPerSession int
@@ -56,6 +63,13 @@ type Options struct {
 	ServerName string
 }
 
+// IMAP server caps. Defaults are chosen to match the REQ-PROTO-31
+// 2k IDLE budget plus headroom for short-lived FETCH/STORE clients.
+const (
+	defaultMaxConnections      = 1024
+	defaultMaxConnectionsPerIP = 32
+)
+
 // Server is the protoimap listener + session factory. One *Server handles
 // any number of listeners (Serve) but carries a single set of Options and
 // dependencies.
@@ -73,7 +87,63 @@ type Server struct {
 	closed    bool
 	listeners []net.Listener
 	sessions  map[*session]struct{}
+	perIP     map[string]int
 	wg        sync.WaitGroup
+}
+
+// admitIP atomically reserves a slot for remoteIP under the per-IP
+// cap. Returns false when the cap is exhausted; the caller must
+// reject the connection.
+func (s *Server) admitIP(remoteIP string) bool {
+	if s.opts.MaxConnectionsPerIP < 0 {
+		// Operator opted out; per-IP gating disabled.
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.perIP == nil {
+		s.perIP = make(map[string]int)
+	}
+	if s.perIP[remoteIP] >= s.opts.MaxConnectionsPerIP {
+		return false
+	}
+	s.perIP[remoteIP]++
+	return true
+}
+
+// releaseIP decrements the per-IP counter at session teardown. The
+// map entry is deleted at zero so a long-lived listener does not
+// accumulate dead-IP entries.
+func (s *Server) releaseIP(remoteIP string) {
+	if s.opts.MaxConnectionsPerIP < 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.perIP == nil {
+		return
+	}
+	s.perIP[remoteIP]--
+	if s.perIP[remoteIP] <= 0 {
+		delete(s.perIP, remoteIP)
+	}
+}
+
+// remoteIPOf returns the IP portion of conn.RemoteAddr, or "-" when
+// unknown. Used for per-IP bookkeeping and structured logging.
+func remoteIPOf(c net.Conn) string {
+	if c == nil {
+		return "-"
+	}
+	addr := c.RemoteAddr()
+	if addr == nil {
+		return "-"
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
 }
 
 // NewServer constructs a Server. passwords / tokens may be nil, in which
@@ -105,6 +175,17 @@ func NewServer(
 	if opts.ServerName == "" {
 		opts.ServerName = "herold"
 	}
+	// REQ-PROTO-13/14, STANDARDS §9: bound MaxConnections by default.
+	// A zero value means the operator did not configure the cap, so
+	// fall back to a safe default. A negative value is the operator
+	// explicitly opting out (front the listener with an external
+	// limiter); leave it untouched.
+	if opts.MaxConnections == 0 {
+		opts.MaxConnections = defaultMaxConnections
+	}
+	if opts.MaxConnectionsPerIP == 0 {
+		opts.MaxConnectionsPerIP = defaultMaxConnectionsPerIP
+	}
 	// Register the IMAP collector set on Server construction. Idempotent
 	// across many Server instances sharing one process Registry (tests).
 	observe.RegisterIMAPMetrics()
@@ -119,6 +200,7 @@ func NewServer(
 		passwords: passwords,
 		tokens:    tokens,
 		sessions:  make(map[*session]struct{}),
+		perIP:     make(map[string]int),
 	}
 }
 
@@ -157,8 +239,11 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) 
 		}
 	}()
 
-	sem := make(chan struct{}, s.opts.MaxConnections)
 	useSem := s.opts.MaxConnections > 0
+	var sem chan struct{}
+	if useSem {
+		sem = make(chan struct{}, s.opts.MaxConnections)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -173,30 +258,46 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) 
 			if !ok {
 				return net.ErrClosed
 			}
+			remoteIP := remoteIPOf(c)
+			// Per-IP cap. STANDARDS §9 + REQ-PROTO-13/14. Refuse
+			// before reserving the global slot so a single attacker
+			// cannot starve the global semaphore. IMAP has no
+			// dedicated rate-limited greeting; a "* BYE" is the
+			// closest spec-friendly close response.
+			if !s.admitIP(remoteIP) {
+				s.logger.Info("protoimap: refusing connection (per-IP cap)",
+					"remote_ip", remoteIP)
+				_, _ = c.Write([]byte("* BYE Too many connections from your IP\r\n"))
+				_ = c.Close()
+				continue
+			}
 			if useSem {
 				select {
 				case sem <- struct{}{}:
 				case <-ctx.Done():
+					s.releaseIP(remoteIP)
 					_ = c.Close()
 					_ = ln.Close()
 					return ctx.Err()
 				default:
-					// Over cap; reject politely.
+					// Over global cap; reject politely.
+					s.releaseIP(remoteIP)
 					_, _ = c.Write([]byte("* BYE Too many connections\r\n"))
 					_ = c.Close()
 					continue
 				}
 			}
 			s.wg.Add(1)
-			go func(c net.Conn) {
+			go func(c net.Conn, rip string) {
 				defer s.wg.Done()
+				defer s.releaseIP(rip)
 				defer func() {
 					if useSem {
 						<-sem
 					}
 				}()
 				s.handle(ctx, c, mode)
-			}(c)
+			}(c, remoteIP)
 		}
 	}
 }
