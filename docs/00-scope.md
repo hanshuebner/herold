@@ -9,10 +9,18 @@ What tabard is, what it isn't, the defaults that hold unless this file is edited
 - **tabard-mail** — the email client. v1 is in flight; this docs/ tree currently describes it.
 - **tabard-calendar** — calendar UI over JMAP for Calendars (RFC 8984 + the JMAP-Calendars binding). Future; not started.
 - **tabard-contacts** — contacts UI over JMAP for Contacts (RFC 9553 + the JMAP-Contacts binding). Future; not started.
+- **chat (built into the suite shell)** — DMs, Spaces, 1:1 video calls. Not a separate app — a persistent panel rendered by the suite shell, plus a `/chat/*` fullscreen route. See `requirements/08-chat.md`, `requirements/21-video-calls.md`, `architecture/07-chat-protocol.md`.
 
-Repository layout will be a monorepo (`apps/mail`, `apps/calendar`, `apps/contacts`, plus shared `packages/` for the design system, JMAP client substrate, and generated JMAP types). The split happens when the second app starts; until then, the existing `docs/` tree at root is tabard-mail's spec.
+The suite ships as **one SPA shell** with client-side routing (`architecture/01-system-overview.md` § Suite shape). Per-app code organises into `apps/{suite,mail,calendar,contacts,chat}` packages but builds into a single bundle. The persistent chat panel forces this shape: it must outlive route changes, so the apps cannot be separately-bundled SPAs.
 
 This file describes scope for **tabard-mail**. When tabard-calendar and tabard-contacts get their own scope docs, they will live alongside tabard-mail's under each app's tree, and a small suite-level scope doc will name the cross-cutting decisions (auth, design system, JMAP server target).
+
+## Chat scope at a glance
+
+- **In:** DMs (1:1), Spaces (group), text + emoji + inline images, reactions, read receipts, typing indicators, presence, mute / block, search-within-conversation, 1:1 video calls.
+- **Out (v1):** group video calls (require an SFU), threaded replies, federation / bridges to other networks, end-to-end encryption, screen sharing, recording, voice messages, custom emoji, browser-level push notifications when the tab is closed (NG2).
+
+Detail: `requirements/08-chat.md`, `requirements/21-video-calls.md`.
 
 ## Cross-app integration points
 

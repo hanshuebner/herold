@@ -5,24 +5,32 @@ How tabard is shaped at the highest level.
 ## Shape
 
 ```
-                              ┌──────────────────────┐
-                              │       browser        │
-                              │  ┌───────────────┐   │
-                              │  │   tabard SPA  │   │
-                              │  └───────┬───────┘   │
-                              │          │           │
-                              └──────────┼───────────┘
-                                         │
-                          HTTPS / JMAP   │   text/event-stream
-                                         │   (push)
-                                         ▼
-                              ┌──────────────────────┐
-                              │       herold         │
-                              │  (JMAP + EventSource)│
-                              └──────────────────────┘
+                              ┌────────────────────────────────────┐
+                              │              browser               │
+                              │  ┌──────────────────────────────┐  │
+                              │  │       tabard suite shell     │  │
+                              │  │  ┌────────┐ ┌─────────────┐  │  │
+                              │  │  │  app   │ │ chat panel  │  │  │
+                              │  │  │ route  │ │(persistent) │  │  │
+                              │  │  └────────┘ └─────────────┘  │  │
+                              │  └──────────────┬───────────────┘  │
+                              └─────────────────┼──────────────────┘
+                                                │
+                  HTTPS / JMAP    EventSource    │    WebSocket
+                                  (mail+chat     │    (chat ephemeral
+                                   state)        │     + WebRTC signal)
+                                                ▼
+                              ┌────────────────────────────────────┐
+                              │              herold                │
+                              │  JMAP   |  EventSource  |  WS+TURN │
+                              └────────────────────────────────────┘
 ```
 
-Tabard is a single-page application served as static assets. After bootstrap it speaks JMAP to herold over HTTPS for everything: reads, writes, search, attachments, push.
+Tabard is **one** single-page application — the suite shell. It client-side routes between mail / calendar / contacts (each is a lazy-loaded module within the shell). The chat panel mounts once in the shell and persists across route changes. Three concurrent transports talk to herold:
+
+- **HTTPS (JMAP)** for batched reads and writes.
+- **EventSource** for durable state-change push (mail, chat conversations, chat messages, etc.).
+- **WebSocket at `/chat/ws`** for chat ephemeral signals (typing, presence) and WebRTC call signaling.
 
 ## Layers (logical)
 
@@ -77,14 +85,21 @@ Single-threaded JS event loop. Long work (search snippet rendering, large HTML m
 
 Nothing else persists client-side. No IndexedDB, no service worker storage.
 
-## Suite shape and cross-app handoff
+## Suite shape
 
-Tabard is a suite (`../00-scope.md` § "Tabard is a suite"). All three apps — tabard-mail, tabard-calendar, tabard-contacts — are served from the same origin as herold, share the same session cookie, and use the same JMAP server. Cross-app navigation is plain `<a href>` links between same-origin URLs (resolved Q16):
+The suite is **one SPA shell** with client-side routing. The shell hosts:
 
-- `/mail/...` — tabard-mail routes (default landing page).
-- `/calendar/...` — tabard-calendar routes (when the app exists).
-- `/contacts/...` — tabard-contacts routes (when the app exists).
+- `/mail/*` — tabard-mail routes (default landing page).
+- `/calendar/*` — tabard-calendar routes (future).
+- `/contacts/*` — tabard-contacts routes (future).
+- `/chat/*` — full-screen chat routes (a route used when the user wants chat to take the whole window — distinct from the persistent panel which is always present).
+- The persistent **chat panel** is mounted once in the shell, persists across route changes.
+- One JMAP client, one EventSource, one chat WebSocket — all owned by the shell, lifecycles span routes.
 
-There is no shared parent shell, no postMessage between iframes, no per-app sub-domain. An app linking to another opens it in the same tab; the destination app's bundle loads, picks up the existing JMAP session cookie, and hydrates from cache (each app maintains its own cache; no cross-app cache sharing in v1).
+Cross-app navigation within the suite is **client-side routing**, not full-page reload (resolved R16-amended). The chat panel's connection state, JMAP session, and in-memory cache survive route changes.
 
-Until the second app exists, only `/mail/...` is in service. Routes for siblings 404 with a "this app isn't deployed yet" page.
+Code organisation (eventual monorepo): `apps/suite` builds the shell. Per-app code lives in `apps/{mail,calendar,contacts,chat}` as packages the shell imports and lazy-loads. The package boundary is for code organisation, not for separate deployment — the suite ships as one bundle (with route-based code-splitting for the lazy-loaded app modules).
+
+Per-app caches are isolated within the shell — mail's cache and chat's cache are separate JMAP-typed normalised stores, but both live in the same memory space. No cross-app cache sharing semantics; just don't trip over each other's namespaces.
+
+Until tabard-calendar and tabard-contacts exist, their routes 404 with a "this app isn't deployed yet" page. The chat panel and `/chat/*` routes work as long as the chat capability is advertised by herold.

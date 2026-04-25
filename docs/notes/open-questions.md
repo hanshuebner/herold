@@ -27,4 +27,15 @@ The Resolved log at the bottom records decisions (with date) so the trail is sea
 - **R15 (was Q15) — tabard-contacts timing.** Same as R14.
 - **R16 (was Q16) — Cross-app handoff.** Same-origin URLs. Cross-app navigation is plain `<a href>` links; no postMessage between iframes, no shared parent shell. Affects `architecture/01-system-overview.md`.
 - **R4 (was Q4) — Image proxy details.** Runs in-process inside herold for v1 (may graduate to a plugin/sidecar later). HTTPS upstreams only. Strips Cookie / Referer; sends a fixed generic User-Agent. Honours upstream Cache-Control capped at 24h, shared cache keyed by URL. One retry on 5xx / network error; no retry on 4xx. Limits: 25 MB per fetch, 200/minute per user, 10/minute per (user, upstream origin), 8 concurrent. Failures pass through accurate HTTP status codes; the browser renders broken-image natively. No custom placeholder. Affects `notes/server-contract.md` § Image proxy.
-- **R5 (was Q5) — Push channel.** EventSource (RFC 8620 §7) only, indefinitely. WebSocket (RFC 8887) not adopted — at herold's planned scale (1,000 concurrent sessions, 100 msg/s peak, single-node ceiling per herold's NG2), the bidirectional advantage doesn't apply (tabard is read-heavy with occasional user-driven writes; HTTP POST for writes is fine), and per-session push traffic is bounded by user activity rather than server load. WebSocket adoption would be a contained future change behind tabard's `connectPush()` abstraction if a specific need emerges. Affects `architecture/03-sync-and-state.md`.
+- **R5 (was Q5) — Push channel.** EventSource (RFC 8620 §7) only for JMAP state changes, indefinitely. WebSocket as a JMAP transport (RFC 8887) not adopted — bidirectional method-call doesn't help a read-heavy mail client. **However:** chat (`requirements/08-chat.md`) introduces a separate WebSocket at `/chat/ws` for ephemeral signals (typing, presence, WebRTC call signaling) only. Two transports per session. Affects `architecture/03-sync-and-state.md`, `architecture/07-chat-protocol.md`.
+- **R16-amended (was R16) — Suite shell.** The persistent chat panel forces the suite to be **one SPA with client-side routing**, not three separate-bundle apps connected by `<a href>`. The shell hosts `/mail/*`, `/calendar/*`, `/contacts/*`, `/chat/*` routes; the chat panel and the JMAP / EventSource / chat-WebSocket connections persist across route changes. Affects `00-scope.md` § "Tabard is a suite" and `architecture/01-system-overview.md` § Suite shape.
+- **R-chat-1..8 (chat scope) — 2026-04-25.**
+  1. Chat lives as a persistent panel embedded in the suite shell (not a separate app).
+  2. Typing indicators required; carried over the chat WebSocket.
+  3. Spaces (group conversations) supported, single linear timeline (no threaded replies).
+  4. 1:1 video calls only; group calls cut for v1 (require SFU).
+  5. coturn self-hosted for TURN.
+  6. Chat data lives in herold (new datatypes; additive on the existing JMAP capability registry and state-change feed).
+  7. Emoji reactions on messages, in scope.
+  8. Read receipts: DMs always-on, Spaces configurable per-Space.
+  Affects `requirements/08-chat.md` (substantial rewrite), new `requirements/21-video-calls.md`, new `architecture/07-chat-protocol.md`, `notes/server-contract.md` (new chat capability), `notes/herold-coverage.md` (new gaps for herold).

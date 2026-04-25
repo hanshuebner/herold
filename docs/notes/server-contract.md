@@ -26,6 +26,7 @@ This is the "deployed together, no separate IdP" stance. Herold authenticates us
 | `urn:ietf:params:jmap:calendars` (RFC 8984 + binding draft) | Required by iMIP RSVP (`../requirements/15-calendar-invites.md`) and by tabard-calendar. |
 | `https://tabard.dev/jmap/snooze` | Snooze contract — see Behaviours. |
 | `https://tabard.dev/jmap/categorise` | LLM-driven categorisation — see Behaviours. |
+| `https://tabard.dev/jmap/chat` | Chat datatypes (`Conversation`, `Message`, `Membership`) plus the ephemeral WebSocket and call-signaling endpoints — see Behaviours. |
 
 ## Capabilities tabard does NOT require
 
@@ -135,6 +136,17 @@ Per RFC 8621 §7.5. `EmailSubmission` carries an optional `sendAt` UTCDate prope
 Cancellation: `EmailSubmission/set { destroy: [<id>] }` issued before `sendAt` MUST cancel delivery — the submission is removed from the queue and no message leaves. After `sendAt` (or after the message has actually been handed off to remote SMTP), destroy is a best-effort no-op; the message has already left.
 
 Tabard uses this to back the send-undo feature (`../requirements/02-mail-basics.md` REQ-MAIL-14, `../requirements/11-optimistic-ui.md` REQ-OPT-11). The same mechanism is the substrate for user-facing scheduled send when that ships.
+
+### Chat (`https://tabard.dev/jmap/chat`)
+
+Per `../requirements/08-chat.md` and `../architecture/07-chat-protocol.md`. Herold's responsibilities:
+
+- **Datatypes.** New JMAP entity kinds: `Conversation` (DMs and Spaces), `Message` (per-conversation messages), `Membership` (per-conversation participation incl. role and read-through). Each gets standard JMAP methods: `Foo/get`, `/query`, `/changes`, `/set`. State strings advance per the standard rules; push fans out via the EventSource channel that already serves mail.
+- **Ephemeral channel.** WebSocket endpoint at `wss://<origin>/chat/ws`. Authenticated by the suite session cookie. Carries typing indicators, presence, and WebRTC call signaling per `../architecture/07-chat-protocol.md` § Ephemeral channel. Server-side rate limits and heartbeat (30s ping / 90s timeout).
+- **Presence.** Server tracks per-user presence (online / away / offline) derived from WebSocket connection state and the user's "show me as offline" setting. Presence pushed to interested peers (anyone in a conversation with the user) over the ephemeral channel.
+- **TURN credentials.** Herold mints short-lived (~5 min TTL) TURN credentials on demand for each call, scoped to the requesting user. Credentials authenticate against a coturn (or equivalent) deployment configured by the operator. The mint endpoint is over the chat WebSocket: `{"op": "call.credentials", "callId": "..."}`.
+- **Inline image attachments.** Reuse the JMAP `Blob/upload` path; chat messages reference uploaded blobs by id. No separate chat-blob storage.
+- **Retention.** Operator-configurable per Space (and globally for DMs). Default: forever. Tabard surfaces the active retention via the chat capability metadata if herold reports it.
 
 ### iMIP REPLY pass-through
 

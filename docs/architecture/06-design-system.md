@@ -239,6 +239,75 @@ A pure component (no Bits UI primitive needed):
 - Owns the scroll container, an IntersectionObserver to trigger the next-page fetch when within ~10 rows of the end (`requirements/13-nonfunctional.md` REQ-PERF-05).
 - DOM stays bounded at ~200 rows regardless of total count.
 
+### Chat panel
+
+```
+┌─[chat] ──────── [search] ─[+ DM] ─[+ Space] ─[─ collapse]┐
+│ ┌─ Pinned ────────────────────────────────────────────┐ │
+│ │ 🟢 Charlotte                       12:04   • • •    │ │
+│ │ Hans, Alice (Space "Project X")    11:48   2        │ │
+│ ├─ Direct messages ──────────────────────────────────┤ │
+│ │ 🟢 Bob                              09:30           │ │
+│ │ ⚪ Eve                              yesterday       │ │
+│ ├─ Spaces ────────────────────────────────────────────┤ │
+│ │ Engineering                         Tue             │ │
+│ │ Volunteers                          Mon             │ │
+│ └────────────────────────────────────────────────────┘ │
+│ ──── (active conversation when one is open) ────       │
+└──────────────────────────────────────────────────────── ┘
+```
+
+- Mounted by the suite shell, anchored to the right edge of the viewport. Collapsible to a 48px-wide notification rail (just unread badges + presence dots); expanded width ~340px.
+- Two stacked regions: the conversation list (top, scrollable), and the active conversation (bottom, when one is open). The list collapses to make room for the active conversation; both regions scroll independently.
+- Persists across the shell's route changes (`requirements/08-chat.md`). The user navigates from `/mail/inbox` to `/calendar/today` and the panel keeps its state and connection.
+- States: collapsed / expanded-no-conversation / expanded-with-conversation / fullscreen (`/chat/conversation/<id>`, used when the user wants chat to dominate). Transitions at `duration-moderate-01`.
+- Built on Bits UI Dialog (for fullscreen), plain Svelte components otherwise. The active-conversation region embeds a ProseMirror editor with the chat schema (`requirements/08-chat.md` REQ-CHAT-21).
+- Tokens: list at `body-compact-01`, conversation messages at `body-01`, padding `spacing-03` per row.
+
+### Conversation message
+
+```
+┌─[avatar] Charlotte ─────────── 12:04 ─[edited]──┐
+│ Hey, can you take a look at the proposal?       │
+│                                                  │
+│ [inline image thumbnail]                         │
+│                                                  │
+│ 🎉 3   👀 1                  └─ replied via 📞 ─┘│
+└──────────────────────────────────────────────────┘
+                     [Charlotte read at 12:05]
+```
+
+- Avatar + sender name + timestamp + (optional) edited indicator on header.
+- Body is the rendered ProseMirror output of the chat schema. Inline images render lazily with click-to-expand.
+- Reaction chips below the body, each clickable to toggle the user's reaction.
+- Read-receipt indicator (DMs only; in Spaces, available via "Read by" affordance).
+- Hover reveals the per-message action menu: react, reply, edit (within window), delete (own messages only).
+
+### Call modal
+
+Full-screen modal triggered by REQ-CALL-20:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                                                          │
+│   ┌─────────────────────────────────────────┐            │
+│   │                                         │            │
+│   │                                         │  ┌──────┐  │
+│   │           remote video                  │  │local │  │
+│   │           (Charlotte)                   │  │video │  │
+│   │                                         │  └──────┘  │
+│   │                                         │            │
+│   └─────────────────────────────────────────┘            │
+│                                                          │
+│       [🎤 mute]  [📷 camera]  [⛶ fullscreen]  [📞 hang]  │
+└──────────────────────────────────────────────────────────┘
+```
+
+- Full-window modal, focus trapped, Escape does NOT dismiss (REQ-CALL-20).
+- Local video tile is a draggable PIP overlay (default bottom-right of remote video). Mutable / movable; resets on next call.
+- Controls dock at the bottom; auto-hide after 3s of no mouse movement, reveal on movement.
+- Bits UI: this one wraps Dialog with custom focus-trap configuration (no escape-to-dismiss).
+
 ### Sidebar entry
 
 ```

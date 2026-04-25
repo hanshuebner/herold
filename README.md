@@ -58,14 +58,16 @@ tabard/
     │   ├── 17-attachments.md       upload, render, suspicious-extension warnings
     │   ├── 18-authentication-results.md  SPF/DKIM/DMARC/ARC display (RFC 8601)
     │   ├── 19-drafts.md            auto-save, recovery, multi-device conflict
-    │   └── 20-settings.md          settings panel scope and storage
+    │   ├── 20-settings.md          settings panel scope and storage
+    │   └── 21-video-calls.md       1:1 video calls (WebRTC, signaling, TURN)
     ├── architecture/
     │   ├── 01-system-overview.md
     │   ├── 02-jmap-client.md
     │   ├── 03-sync-and-state.md
     │   ├── 04-rendering.md
     │   ├── 05-keyboard-engine.md
-    │   └── 06-design-system.md     suite-wide design language and components
+    │   ├── 06-design-system.md     suite-wide design language and components
+    │   └── 07-chat-protocol.md     chat data model, ephemeral WebSocket, TURN
     ├── implementation/
     │   ├── 01-tech-stack.md
     │   ├── 02-phasing.md
@@ -105,6 +107,7 @@ tabard/
 - `REQ-AR-nn`    — authentication results (RFC 8601 display)
 - `REQ-DFT-nn`   — drafts
 - `REQ-SET-nn`   — settings
+- `REQ-CALL-nn`  — video calls (1:1)
 
 When cutting or adding, reference by ID.
 
