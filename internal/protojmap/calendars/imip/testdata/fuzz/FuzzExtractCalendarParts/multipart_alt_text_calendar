@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"BND\"\r\n\r\n--BND\r\nContent-Type: text/plain\r\n\r\nSee invite.\r\n--BND\r\nContent-Type: text/calendar; method=REQUEST\r\n\r\nBEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:alt@example.com\r\nDTSTAMP:20260101T000000Z\r\nDTSTART:20260101T120000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n--BND--\r\n")

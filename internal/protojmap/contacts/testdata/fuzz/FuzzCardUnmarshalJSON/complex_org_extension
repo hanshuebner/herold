@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"version\":\"1.0\",\"kind\":\"org\",\"uid\":\"u2\",\"name\":{\"full\":\"Acme Inc\",\"components\":[{\"kind\":\"given\",\"value\":\"Acme\"},{\"kind\":\"surname\",\"value\":\"Inc\"}]},\"emails\":{\"work\":{\"address\":\"info@acme.example\",\"contexts\":{\"work\":true},\"pref\":1}},\"phones\":{\"main\":{\"number\":\"+1-555-0100\"}},\"organizations\":{\"o1\":{\"name\":\"Acme\",\"units\":[\"R&D\",\"Sales\"]}},\"titles\":{\"t1\":{\"name\":\"CEO\"}},\"x.example/foo\":{\"customField\":42,\"nested\":{\"a\":[1,2,3]}}}")

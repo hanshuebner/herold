@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"@type\":\"Event\",\"uid\":\"u3\",\"start\":\"not-a-date\",\"duration\":\"PNotADuration\",\"timeZone\":\"Imaginary/Zone\",\"recurrenceRules\":[{\"frequency\":\"banana\",\"count\":\"abc\"}],\"recurrenceOverrides\":{\"badkey\":{\"@removed\":true}}}")

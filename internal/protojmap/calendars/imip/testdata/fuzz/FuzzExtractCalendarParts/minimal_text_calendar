@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("Content-Type: text/calendar; method=REQUEST\r\n\r\nBEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:m1@example.com\r\nDTSTAMP:20260101T000000Z\r\nDTSTART:20260101T120000Z\r\nSUMMARY:S\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")

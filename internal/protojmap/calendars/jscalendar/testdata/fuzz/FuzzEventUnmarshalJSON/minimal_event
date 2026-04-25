@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"@type\":\"Event\",\"uid\":\"u1\",\"title\":\"Minimal\",\"start\":\"2026-01-01T12:00:00\"}")
