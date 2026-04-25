@@ -1219,8 +1219,44 @@ func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 			`DELETE FROM audit_log WHERE principal_id = ?`, int64(pid)); err != nil {
 			return mapErr(err)
 		}
-		// principals cascades to aliases, oidc_links, api_keys, mailboxes;
-		// mailboxes cascades to messages. Blob refs stay (GC sweeps later).
+		// Phase 2 queue rows belonging to this principal: drop them and
+		// decrement their body-blob refcounts so the GC reclaims bytes.
+		// queue.principal_id has ON DELETE SET NULL so a forwarded row
+		// (originally tied to this principal) survives, but we do want
+		// to drop rows whose submitter is being removed. The migration
+		// makes the FK SET NULL deliberately so Sieve-redirected rows
+		// without a clear submitter context are not accidentally
+		// orphaned by ON DELETE CASCADE on principal removal.
+		queueRows, err := tx.QueryContext(ctx,
+			`SELECT body_blob_hash FROM queue WHERE principal_id = ?`, int64(pid))
+		if err != nil {
+			return mapErr(err)
+		}
+		var queueHashes []string
+		for queueRows.Next() {
+			var h string
+			if err := queueRows.Scan(&h); err != nil {
+				queueRows.Close()
+				return mapErr(err)
+			}
+			queueHashes = append(queueHashes, h)
+		}
+		queueRows.Close()
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM queue WHERE principal_id = ?`, int64(pid)); err != nil {
+			return mapErr(err)
+		}
+		for _, h := range queueHashes {
+			if h == "" {
+				continue
+			}
+			if err := decRef(ctx, tx, h, now); err != nil {
+				return err
+			}
+		}
+		// principals cascades to aliases, oidc_links, api_keys, mailboxes,
+		// mailbox_acl, jmap_states; mailboxes cascades to messages and
+		// further mailbox_acl rows. Blob refs stay (GC sweeps later).
 		res, err := tx.ExecContext(ctx,
 			`DELETE FROM principals WHERE id = ?`, int64(pid))
 		if err != nil {

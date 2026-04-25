@@ -1092,6 +1092,38 @@ func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 			`DELETE FROM audit_log WHERE principal_id = $1`, int64(pid)); err != nil {
 			return mapErr(err)
 		}
+		// Phase 2 queue rows: drop and decrement body-blob refcounts.
+		// queue.principal_id is ON DELETE SET NULL so we explicitly
+		// remove rows where this principal was the submitter; rows
+		// arising from a Sieve redirect under a different principal
+		// stay alive.
+		queueRows, err := tx.Query(ctx,
+			`SELECT body_blob_hash FROM queue WHERE principal_id = $1`, int64(pid))
+		if err != nil {
+			return mapErr(err)
+		}
+		var queueHashes []string
+		for queueRows.Next() {
+			var h string
+			if err := queueRows.Scan(&h); err != nil {
+				queueRows.Close()
+				return mapErr(err)
+			}
+			queueHashes = append(queueHashes, h)
+		}
+		queueRows.Close()
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM queue WHERE principal_id = $1`, int64(pid)); err != nil {
+			return mapErr(err)
+		}
+		for _, h := range queueHashes {
+			if h == "" {
+				continue
+			}
+			if err := decRef(ctx, tx, h, now); err != nil {
+				return err
+			}
+		}
 		res, err := tx.Exec(ctx,
 			`DELETE FROM principals WHERE id = $1`, int64(pid))
 		if err != nil {

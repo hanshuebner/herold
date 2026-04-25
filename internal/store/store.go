@@ -324,6 +324,220 @@ type Metadata interface {
 	// land in Phase 2 alongside ManageSieve; Phase 1 is one script per
 	// principal.
 	SetSieveScript(ctx context.Context, pid PrincipalID, text string) error
+
+	// -- Phase 2 outbound queue ---------------------------------------
+
+	// EnqueueMessage inserts one queue row and increments the body
+	// blob's refcount in the same transaction. When item.IdempotencyKey
+	// is non-empty and a row with that key already exists, the existing
+	// row's ID is returned together with ErrConflict; the caller treats
+	// that as "already enqueued, here's the prior id".
+	EnqueueMessage(ctx context.Context, item QueueItem) (QueueItemID, error)
+
+	// ClaimDueQueueItems atomically transitions up to max queued or
+	// deferred rows whose NextAttemptAt <= now to QueueStateInflight,
+	// stamps LastAttemptAt = now, and returns them. The returned slice
+	// length is at most max and may be empty when nothing is due. The
+	// scheduler MUST be exactly one goroutine; the store does not
+	// fence concurrent claimers.
+	ClaimDueQueueItems(ctx context.Context, now time.Time, max int) ([]QueueItem, error)
+
+	// CompleteQueueItem transitions an inflight row to its terminal
+	// state — done on success, failed on permanent failure — and
+	// decrements the body blob refcount. errMsg is persisted into the
+	// last_error column when success is false. Returns ErrNotFound if
+	// the row is missing.
+	CompleteQueueItem(ctx context.Context, id QueueItemID, success bool, errMsg string) error
+
+	// RescheduleQueueItem transitions an inflight row to deferred,
+	// bumps Attempts, sets NextAttemptAt = nextAttempt, and stores
+	// errMsg as last_error. Returns ErrNotFound if the row is gone.
+	RescheduleQueueItem(ctx context.Context, id QueueItemID, nextAttempt time.Time, errMsg string) error
+
+	// HoldQueueItem moves a row to QueueStateHeld. Returns ErrNotFound
+	// when missing. Idempotent: holding an already-held row is a no-op.
+	HoldQueueItem(ctx context.Context, id QueueItemID) error
+
+	// ReleaseQueueItem moves a held row back to QueueStateQueued and
+	// resets NextAttemptAt to the clock's now.
+	ReleaseQueueItem(ctx context.Context, id QueueItemID) error
+
+	// DeleteQueueItem removes a row, decrementing the body blob's
+	// refcount. Operator force-delete; not used by normal lifecycle.
+	DeleteQueueItem(ctx context.Context, id QueueItemID) error
+
+	// GetQueueItem returns one row, or ErrNotFound.
+	GetQueueItem(ctx context.Context, id QueueItemID) (QueueItem, error)
+
+	// ListQueueItems applies the filter and returns matching rows in
+	// ascending ID order. Caps at 1000 rows; callers paginate via
+	// filter.AfterID.
+	ListQueueItems(ctx context.Context, filter QueueFilter) ([]QueueItem, error)
+
+	// CountQueueByState returns a per-state population map suitable
+	// for an admin dashboard. States not present in the table appear
+	// in the map with value 0.
+	CountQueueByState(ctx context.Context) (map[QueueState]int, error)
+
+	// -- Phase 2 DKIM keys --------------------------------------------
+
+	// UpsertDKIMKey inserts or updates a (Domain, Selector) row. On
+	// duplicate the Status, RotatedAt, PrivateKeyPEM, PublicKeyB64,
+	// and Algorithm columns are overwritten; CreatedAt is preserved.
+	UpsertDKIMKey(ctx context.Context, key DKIMKey) error
+
+	// GetActiveDKIMKey returns the active key for domain. The
+	// selector is opaque to the caller (the signer reads it from the
+	// returned row). Returns ErrNotFound when no active key exists.
+	GetActiveDKIMKey(ctx context.Context, domain string) (DKIMKey, error)
+
+	// ListDKIMKeys returns every key for domain (any status), in
+	// ascending Selector order.
+	ListDKIMKeys(ctx context.Context, domain string) ([]DKIMKey, error)
+
+	// RotateDKIMKey atomically retires (Domain, oldSelector) and
+	// upserts newKey as Active. Both rows land in one tx so the signer
+	// never observes a window with no active key.
+	RotateDKIMKey(ctx context.Context, domain, oldSelector string, newKey DKIMKey) error
+
+	// -- Phase 2 ACME -------------------------------------------------
+
+	// UpsertACMEAccount inserts or updates an ACME account row keyed
+	// by (DirectoryURL, ContactEmail).
+	UpsertACMEAccount(ctx context.Context, acc ACMEAccount) (ACMEAccount, error)
+
+	// GetACMEAccount returns the account row for (directoryURL,
+	// contactEmail) or ErrNotFound.
+	GetACMEAccount(ctx context.Context, directoryURL, contactEmail string) (ACMEAccount, error)
+
+	// ListACMEAccounts returns every account row in ascending ID
+	// order.
+	ListACMEAccounts(ctx context.Context) ([]ACMEAccount, error)
+
+	// InsertACMEOrder inserts a new in-flight order row and returns
+	// it with the assigned ID.
+	InsertACMEOrder(ctx context.Context, order ACMEOrder) (ACMEOrder, error)
+
+	// UpdateACMEOrder writes the mutable fields of order back. The ID
+	// must identify an existing row. Returns ErrNotFound when missing.
+	UpdateACMEOrder(ctx context.Context, order ACMEOrder) error
+
+	// GetACMEOrder returns one order, or ErrNotFound.
+	GetACMEOrder(ctx context.Context, id ACMEOrderID) (ACMEOrder, error)
+
+	// ListACMEOrdersByStatus returns orders with the given status in
+	// ascending UpdatedAt order; the renewer worker reads the
+	// "pending" / "ready" / "processing" sets.
+	ListACMEOrdersByStatus(ctx context.Context, status ACMEOrderStatus) ([]ACMEOrder, error)
+
+	// UpsertACMECert inserts or replaces the cert row keyed by
+	// Hostname.
+	UpsertACMECert(ctx context.Context, cert ACMECert) error
+
+	// GetACMECert returns the cert for hostname, or ErrNotFound.
+	GetACMECert(ctx context.Context, hostname string) (ACMECert, error)
+
+	// ListACMECertsExpiringBefore returns every cert whose NotAfter
+	// is strictly before t. The renewer schedules rolls from this
+	// list.
+	ListACMECertsExpiringBefore(ctx context.Context, t time.Time) ([]ACMECert, error)
+
+	// -- Phase 2 webhooks ---------------------------------------------
+
+	// InsertWebhook stores a new subscription and returns it with
+	// assigned ID and timestamps.
+	InsertWebhook(ctx context.Context, w Webhook) (Webhook, error)
+
+	// UpdateWebhook persists the mutable fields (target URL, mode,
+	// secret, retry policy, active flag). Returns ErrNotFound on
+	// missing ID.
+	UpdateWebhook(ctx context.Context, w Webhook) error
+
+	// DeleteWebhook removes a subscription. Returns ErrNotFound when
+	// already gone.
+	DeleteWebhook(ctx context.Context, id WebhookID) error
+
+	// GetWebhook returns one subscription by ID, or ErrNotFound.
+	GetWebhook(ctx context.Context, id WebhookID) (Webhook, error)
+
+	// ListWebhooks returns every subscription with the given owner.
+	// Pass an empty kind/id to list all subscriptions.
+	ListWebhooks(ctx context.Context, kind WebhookOwnerKind, ownerID string) ([]Webhook, error)
+
+	// ListActiveWebhooksForDomain returns every active webhook whose
+	// owner is the given domain (WebhookOwnerDomain) plus every
+	// active webhook whose owner is a principal with a canonical
+	// address in that domain (WebhookOwnerPrincipal). Used by the
+	// mail-arrival dispatcher.
+	ListActiveWebhooksForDomain(ctx context.Context, domain string) ([]Webhook, error)
+
+	// -- Phase 2 DMARC -------------------------------------------------
+
+	// InsertDMARCReport writes the report header row and rows in one
+	// transaction; report-level dedup uses the unique
+	// (ReporterOrg, ReportID) pair and returns ErrConflict on a
+	// repeat. The caller supplies the parsed DMARCReport (with
+	// XMLBlobHash already pointing at the stored XML); rows is
+	// written as-is.
+	InsertDMARCReport(ctx context.Context, report DMARCReport, rows []DMARCRow) (DMARCReportID, error)
+
+	// GetDMARCReport returns the report header and its rows.
+	GetDMARCReport(ctx context.Context, id DMARCReportID) (DMARCReport, []DMARCRow, error)
+
+	// ListDMARCReports returns reports matching filter, in ascending
+	// ID order, capped at 1000.
+	ListDMARCReports(ctx context.Context, filter DMARCReportFilter) ([]DMARCReport, error)
+
+	// DMARCAggregate returns a pre-cannedaggregate of every row whose
+	// owning report covers domain and falls within [since, until].
+	// One row per (HeaderFrom, Disposition); admin REST renders
+	// directly from this surface.
+	DMARCAggregate(ctx context.Context, domain string, since, until time.Time) ([]DMARCAggregateRow, error)
+
+	// -- Phase 2 mailbox ACL ------------------------------------------
+
+	// SetMailboxACL upserts one ACL row for (mailboxID, principalID).
+	// principalID == nil encodes the RFC 4314 "anyone" pseudo-row.
+	// rights replaces any prior mask wholesale (RFC 4314 SETACL
+	// semantics, not an additive merge).
+	SetMailboxACL(ctx context.Context, mailboxID MailboxID, principalID *PrincipalID, rights ACLRights, grantedBy PrincipalID) error
+
+	// GetMailboxACL returns every ACL row for mailboxID. Anyone rows
+	// (PrincipalID nil) come first.
+	GetMailboxACL(ctx context.Context, mailboxID MailboxID) ([]MailboxACL, error)
+
+	// ListMailboxesAccessibleBy returns every mailbox whose ACL grants
+	// pid the lookup right (or has an "anyone" row with lookup). The
+	// owning principal's mailboxes are NOT auto-included; the caller
+	// composes them with ListMailboxes when "all" semantics are
+	// needed.
+	ListMailboxesAccessibleBy(ctx context.Context, pid PrincipalID) ([]Mailbox, error)
+
+	// RemoveMailboxACL deletes the ACL row for (mailboxID, principalID).
+	// principalID == nil targets the "anyone" row. Returns ErrNotFound
+	// when the row is missing.
+	RemoveMailboxACL(ctx context.Context, mailboxID MailboxID, principalID *PrincipalID) error
+
+	// -- Phase 2 JMAP states ------------------------------------------
+
+	// GetJMAPStates returns the per-principal counter row, creating a
+	// zero-valued row on first access.
+	GetJMAPStates(ctx context.Context, pid PrincipalID) (JMAPStates, error)
+
+	// IncrementJMAPState atomically bumps one of the per-principal
+	// counters (mailbox/email/thread/...) and returns the new value.
+	// The store creates the row on first access.
+	IncrementJMAPState(ctx context.Context, pid PrincipalID, kind JMAPStateKind) (int64, error)
+
+	// -- Phase 2 TLS-RPT ----------------------------------------------
+
+	// AppendTLSRPTFailure stores one failure row for the reporter to
+	// roll up later.
+	AppendTLSRPTFailure(ctx context.Context, f TLSRPTFailure) error
+
+	// ListTLSRPTFailures returns every failure for policyDomain in
+	// [since, until], in ascending RecordedAt order.
+	ListTLSRPTFailures(ctx context.Context, policyDomain string, since, until time.Time) ([]TLSRPTFailure, error)
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

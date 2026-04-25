@@ -8,7 +8,25 @@ import "context"
 // tests can observe its persistence across open/close cycles. Exposed
 // only to tests that import this package under a _test.go file.
 func (s *Store) TruncateAll(ctx context.Context) error {
+	// Phase 2 tables come first; their FKs reference principals /
+	// mailboxes which we tear down at the end. CASCADE on TRUNCATE
+	// would handle ordering but enumerating keeps the test predictable
+	// when the schema grows.
 	tables := []string{
+		"tlsrpt_failures",
+		"jmap_states",
+		"mailbox_acl",
+		"dmarc_rows",
+		"dmarc_reports_raw",
+		"webhooks",
+		"acme_certs",
+		"acme_orders",
+		"acme_accounts",
+		"dkim_keys",
+		"queue",
+		"audit_log",
+		"cursors",
+		"sieve_scripts",
 		"state_changes",
 		"messages",
 		"mailboxes",

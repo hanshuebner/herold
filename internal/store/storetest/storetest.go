@@ -71,6 +71,28 @@ func Run(t *testing.T, f Factory) {
 		{"ListAPIKeysByPrincipal", testListAPIKeysByPrincipal},
 		{"DeleteAPIKey_NotFoundWhenAbsent", testDeleteAPIKeyNotFound},
 		{"ListOIDCLinksByPrincipal", testListOIDCLinksByPrincipal},
+		// -- Phase 2 Wave 2.0 --------------------------------------
+		{"QueueEnqueueAndList", testQueueEnqueueAndList},
+		{"QueueIdempotency", testQueueIdempotency},
+		{"QueueClaimDueTransitionsState", testQueueClaimDueTransitionsState},
+		{"QueueCompleteSuccessVsFailure", testQueueCompleteSuccessVsFailure},
+		{"QueueRescheduleBumpsAttempts", testQueueRescheduleBumpsAttempts},
+		{"QueueHoldRelease", testQueueHoldRelease},
+		{"QueueDeleteCascadeOnPrincipalDelete", testQueueDeleteCascadeOnPrincipalDelete},
+		{"QueueCountByState", testQueueCountByState},
+		{"DKIMUpsertAndList", testDKIMUpsertAndList},
+		{"DKIMRotateOneTx", testDKIMRotateOneTx},
+		{"DKIMActiveLookup", testDKIMActiveLookup},
+		{"ACMEAccountOrderCertLifecycle", testACMEAccountOrderCertLifecycle},
+		{"ACMECertExpiringList", testACMECertExpiringList},
+		{"WebhookCRUD", testWebhookCRUD},
+		{"WebhookActiveForDomain", testWebhookActiveForDomain},
+		{"DMARCInsertAndAggregate", testDMARCInsertAndAggregate},
+		{"DMARCDeduplicates", testDMARCDeduplicates},
+		{"MailboxACLGrantListRevoke", testMailboxACLGrantListRevoke},
+		{"MailboxACLAnyoneRow", testMailboxACLAnyoneRow},
+		{"JMAPStatesIncrementAtomic", testJMAPStatesIncrementAtomic},
+		{"TLSRPTAppendAndRange", testTLSRPTAppendAndRange},
 	}
 	for _, c := range cases {
 		tc := c
@@ -1573,5 +1595,828 @@ func testListOIDCLinksByPrincipal(t *testing.T, s store.Store) {
 	}
 	if list[0].ProviderName != "prov1" || list[1].ProviderName != "prov2" {
 		t.Fatalf("ordering: %+v", list)
+	}
+}
+
+// -- Phase 2 Wave 2.0 compliance cases -------------------------------
+
+func mustEnqueue(t *testing.T, s store.Store, item store.QueueItem) store.QueueItemID {
+	t.Helper()
+	if item.BodyBlobHash == "" {
+		ref := putBlob(t, s, "queue-body-"+item.RcptTo)
+		item.BodyBlobHash = ref.Hash
+	}
+	id, err := s.Meta().EnqueueMessage(ctxT(t), item)
+	if err != nil {
+		t.Fatalf("EnqueueMessage(%s): %v", item.RcptTo, err)
+	}
+	return id
+}
+
+func testQueueEnqueueAndList(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "queue-list@example.com")
+	id1 := mustEnqueue(t, s, store.QueueItem{
+		PrincipalID: p.ID,
+		MailFrom:    "alice@example.com",
+		RcptTo:      "bob@dest.test",
+		EnvelopeID:  "env-1",
+	})
+	id2 := mustEnqueue(t, s, store.QueueItem{
+		PrincipalID: p.ID,
+		MailFrom:    "alice@example.com",
+		RcptTo:      "carol@dest.test",
+		EnvelopeID:  "env-1",
+	})
+	if id1 == 0 || id2 == 0 || id1 == id2 {
+		t.Fatalf("EnqueueMessage ids: %d %d", id1, id2)
+	}
+	got, err := s.Meta().GetQueueItem(ctx, id1)
+	if err != nil {
+		t.Fatalf("GetQueueItem: %v", err)
+	}
+	if got.RcptTo != "bob@dest.test" || got.State != store.QueueStateQueued {
+		t.Fatalf("queue row mismatch: %+v", got)
+	}
+	all, err := s.Meta().ListQueueItems(ctx, store.QueueFilter{})
+	if err != nil {
+		t.Fatalf("ListQueueItems: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("queue len = %d, want 2", len(all))
+	}
+	byEnv, err := s.Meta().ListQueueItems(ctx, store.QueueFilter{EnvelopeID: "env-1"})
+	if err != nil {
+		t.Fatalf("ListQueueItems(env): %v", err)
+	}
+	if len(byEnv) != 2 {
+		t.Fatalf("byEnv len = %d, want 2", len(byEnv))
+	}
+	byDom, err := s.Meta().ListQueueItems(ctx, store.QueueFilter{RecipientDomain: "dest.test"})
+	if err != nil {
+		t.Fatalf("ListQueueItems(domain): %v", err)
+	}
+	if len(byDom) != 2 {
+		t.Fatalf("byDom len = %d, want 2", len(byDom))
+	}
+	byOther, err := s.Meta().ListQueueItems(ctx, store.QueueFilter{RecipientDomain: "absent.test"})
+	if err != nil {
+		t.Fatalf("ListQueueItems(domain absent): %v", err)
+	}
+	if len(byOther) != 0 {
+		t.Fatalf("byOther len = %d, want 0", len(byOther))
+	}
+}
+
+func testQueueIdempotency(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "queue-idem@example.com")
+	ref := putBlob(t, s, "idem-body")
+	id1, err := s.Meta().EnqueueMessage(ctx, store.QueueItem{
+		PrincipalID:    p.ID,
+		MailFrom:       "alice@example.com",
+		RcptTo:         "x@dest.test",
+		EnvelopeID:     "env-idem",
+		BodyBlobHash:   ref.Hash,
+		IdempotencyKey: "submit-7",
+	})
+	if err != nil {
+		t.Fatalf("first enqueue: %v", err)
+	}
+	id2, err := s.Meta().EnqueueMessage(ctx, store.QueueItem{
+		PrincipalID:    p.ID,
+		MailFrom:       "alice@example.com",
+		RcptTo:         "x@dest.test",
+		EnvelopeID:     "env-idem",
+		BodyBlobHash:   ref.Hash,
+		IdempotencyKey: "submit-7",
+	})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("second enqueue err = %v, want ErrConflict", err)
+	}
+	if id2 != id1 {
+		t.Fatalf("idempotent dedupe returned id=%d, want %d", id2, id1)
+	}
+}
+
+func testQueueClaimDueTransitionsState(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "queue-claim@example.com")
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	id1 := mustEnqueue(t, s, store.QueueItem{
+		PrincipalID:   p.ID,
+		MailFrom:      "alice@example.com",
+		RcptTo:        "due@dest.test",
+		EnvelopeID:    "env-due",
+		NextAttemptAt: now.Add(-time.Minute),
+	})
+	_ = mustEnqueue(t, s, store.QueueItem{
+		PrincipalID:   p.ID,
+		MailFrom:      "alice@example.com",
+		RcptTo:        "future@dest.test",
+		EnvelopeID:    "env-future",
+		NextAttemptAt: now.Add(time.Hour),
+	})
+	due, err := s.Meta().ClaimDueQueueItems(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("ClaimDueQueueItems: %v", err)
+	}
+	if len(due) != 1 || due[0].ID != id1 {
+		t.Fatalf("claim returned %+v, want only id=%d", due, id1)
+	}
+	if due[0].State != store.QueueStateInflight {
+		t.Fatalf("claimed row state = %v, want inflight", due[0].State)
+	}
+	got, err := s.Meta().GetQueueItem(ctx, id1)
+	if err != nil {
+		t.Fatalf("GetQueueItem: %v", err)
+	}
+	if got.State != store.QueueStateInflight {
+		t.Fatalf("row state after claim = %v", got.State)
+	}
+	if got.LastAttemptAt.IsZero() {
+		t.Fatalf("LastAttemptAt was not stamped")
+	}
+}
+
+func testQueueCompleteSuccessVsFailure(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "queue-complete@example.com")
+	idOK := mustEnqueue(t, s, store.QueueItem{
+		PrincipalID: p.ID, MailFrom: "a@example.com", RcptTo: "ok@d.test", EnvelopeID: "ok",
+	})
+	idFail := mustEnqueue(t, s, store.QueueItem{
+		PrincipalID: p.ID, MailFrom: "a@example.com", RcptTo: "fail@d.test", EnvelopeID: "fail",
+	})
+	if err := s.Meta().CompleteQueueItem(ctx, idOK, true, ""); err != nil {
+		t.Fatalf("Complete OK: %v", err)
+	}
+	if err := s.Meta().CompleteQueueItem(ctx, idFail, false, "550 nope"); err != nil {
+		t.Fatalf("Complete FAIL: %v", err)
+	}
+	gotOK, err := s.Meta().GetQueueItem(ctx, idOK)
+	if err != nil {
+		t.Fatalf("Get OK: %v", err)
+	}
+	if gotOK.State != store.QueueStateDone {
+		t.Fatalf("ok state = %v, want done", gotOK.State)
+	}
+	gotFail, err := s.Meta().GetQueueItem(ctx, idFail)
+	if err != nil {
+		t.Fatalf("Get FAIL: %v", err)
+	}
+	if gotFail.State != store.QueueStateFailed {
+		t.Fatalf("fail state = %v, want failed", gotFail.State)
+	}
+	if gotFail.LastError == "" {
+		t.Fatalf("LastError empty")
+	}
+	if err := s.Meta().CompleteQueueItem(ctx, store.QueueItemID(99999), true, ""); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Complete absent = %v, want ErrNotFound", err)
+	}
+}
+
+func testQueueRescheduleBumpsAttempts(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "queue-resch@example.com")
+	id := mustEnqueue(t, s, store.QueueItem{
+		PrincipalID: p.ID, MailFrom: "a@example.com", RcptTo: "x@d.test", EnvelopeID: "r",
+	})
+	next := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	if err := s.Meta().RescheduleQueueItem(ctx, id, next, "451 try later"); err != nil {
+		t.Fatalf("Reschedule: %v", err)
+	}
+	got, err := s.Meta().GetQueueItem(ctx, id)
+	if err != nil {
+		t.Fatalf("GetQueueItem: %v", err)
+	}
+	if got.State != store.QueueStateDeferred {
+		t.Fatalf("state = %v, want deferred", got.State)
+	}
+	if got.Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", got.Attempts)
+	}
+	if !got.NextAttemptAt.Equal(next) {
+		t.Fatalf("NextAttemptAt = %v, want %v", got.NextAttemptAt, next)
+	}
+	if got.LastError == "" {
+		t.Fatalf("LastError empty after reschedule")
+	}
+	// Reschedule again should bump attempts.
+	if err := s.Meta().RescheduleQueueItem(ctx, id, next.Add(time.Hour), "451 still later"); err != nil {
+		t.Fatalf("Reschedule 2: %v", err)
+	}
+	got, err = s.Meta().GetQueueItem(ctx, id)
+	if err != nil {
+		t.Fatalf("Get 2: %v", err)
+	}
+	if got.Attempts != 2 {
+		t.Fatalf("attempts after 2nd reschedule = %d, want 2", got.Attempts)
+	}
+}
+
+func testQueueHoldRelease(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "queue-hold@example.com")
+	id := mustEnqueue(t, s, store.QueueItem{
+		PrincipalID: p.ID, MailFrom: "a@example.com", RcptTo: "h@d.test", EnvelopeID: "h",
+	})
+	if err := s.Meta().HoldQueueItem(ctx, id); err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	got, _ := s.Meta().GetQueueItem(ctx, id)
+	if got.State != store.QueueStateHeld {
+		t.Fatalf("state = %v, want held", got.State)
+	}
+	if err := s.Meta().ReleaseQueueItem(ctx, id); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	got, _ = s.Meta().GetQueueItem(ctx, id)
+	if got.State != store.QueueStateQueued {
+		t.Fatalf("state after release = %v, want queued", got.State)
+	}
+	if err := s.Meta().HoldQueueItem(ctx, store.QueueItemID(99999)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Hold absent = %v, want ErrNotFound", err)
+	}
+}
+
+func testQueueDeleteCascadeOnPrincipalDelete(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "queue-cascade@example.com")
+	id := mustEnqueue(t, s, store.QueueItem{
+		PrincipalID: p.ID, MailFrom: "a@example.com", RcptTo: "c@d.test", EnvelopeID: "c",
+	})
+	if err := s.Meta().DeletePrincipal(ctx, p.ID); err != nil {
+		t.Fatalf("DeletePrincipal: %v", err)
+	}
+	if _, err := s.Meta().GetQueueItem(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("queue row still present after principal delete: %v", err)
+	}
+}
+
+func testQueueCountByState(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "queue-count@example.com")
+	id1 := mustEnqueue(t, s, store.QueueItem{PrincipalID: p.ID, MailFrom: "a@example.com", RcptTo: "1@d.test", EnvelopeID: "c1"})
+	id2 := mustEnqueue(t, s, store.QueueItem{PrincipalID: p.ID, MailFrom: "a@example.com", RcptTo: "2@d.test", EnvelopeID: "c2"})
+	if err := s.Meta().HoldQueueItem(ctx, id2); err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	counts, err := s.Meta().CountQueueByState(ctx)
+	if err != nil {
+		t.Fatalf("CountQueueByState: %v", err)
+	}
+	if counts[store.QueueStateQueued] != 1 {
+		t.Fatalf("queued count = %d, want 1", counts[store.QueueStateQueued])
+	}
+	if counts[store.QueueStateHeld] != 1 {
+		t.Fatalf("held count = %d, want 1", counts[store.QueueStateHeld])
+	}
+	_ = id1
+}
+
+func testDKIMUpsertAndList(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	keyA := store.DKIMKey{
+		Domain: "ex.test", Selector: "sel-a", Algorithm: store.DKIMAlgorithmRSASHA256,
+		PrivateKeyPEM: "PRIV-A", PublicKeyB64: "PUB-A", Status: store.DKIMKeyStatusActive,
+	}
+	keyB := store.DKIMKey{
+		Domain: "ex.test", Selector: "sel-b", Algorithm: store.DKIMAlgorithmEd25519SHA256,
+		PrivateKeyPEM: "PRIV-B", PublicKeyB64: "PUB-B", Status: store.DKIMKeyStatusRetiring,
+	}
+	if err := s.Meta().UpsertDKIMKey(ctx, keyA); err != nil {
+		t.Fatalf("Upsert A: %v", err)
+	}
+	if err := s.Meta().UpsertDKIMKey(ctx, keyB); err != nil {
+		t.Fatalf("Upsert B: %v", err)
+	}
+	// Idempotent re-upsert with status change.
+	keyA.Status = store.DKIMKeyStatusRetiring
+	if err := s.Meta().UpsertDKIMKey(ctx, keyA); err != nil {
+		t.Fatalf("Upsert A (retire): %v", err)
+	}
+	list, err := s.Meta().ListDKIMKeys(ctx, "ex.test")
+	if err != nil {
+		t.Fatalf("ListDKIMKeys: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("len = %d, want 2", len(list))
+	}
+	for _, k := range list {
+		if k.Status != store.DKIMKeyStatusRetiring {
+			t.Fatalf("after upsert, %q status = %v", k.Selector, k.Status)
+		}
+	}
+}
+
+func testDKIMRotateOneTx(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if err := s.Meta().UpsertDKIMKey(ctx, store.DKIMKey{
+		Domain: "rot.test", Selector: "old", Algorithm: store.DKIMAlgorithmRSASHA256,
+		PrivateKeyPEM: "OLD", PublicKeyB64: "OLDPUB", Status: store.DKIMKeyStatusActive,
+	}); err != nil {
+		t.Fatalf("Upsert old: %v", err)
+	}
+	if err := s.Meta().RotateDKIMKey(ctx, "rot.test", "old", store.DKIMKey{
+		Domain: "rot.test", Selector: "new", Algorithm: store.DKIMAlgorithmEd25519SHA256,
+		PrivateKeyPEM: "NEW", PublicKeyB64: "NEWPUB",
+	}); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	list, err := s.Meta().ListDKIMKeys(ctx, "rot.test")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var oldStatus, newStatus store.DKIMKeyStatus
+	for _, k := range list {
+		switch k.Selector {
+		case "old":
+			oldStatus = k.Status
+		case "new":
+			newStatus = k.Status
+		}
+	}
+	if oldStatus != store.DKIMKeyStatusRetiring {
+		t.Fatalf("old status = %v, want retiring", oldStatus)
+	}
+	if newStatus != store.DKIMKeyStatusActive {
+		t.Fatalf("new status = %v, want active", newStatus)
+	}
+	// Rotating an absent selector returns NotFound.
+	err = s.Meta().RotateDKIMKey(ctx, "rot.test", "ghost", store.DKIMKey{
+		Domain: "rot.test", Selector: "n2", Algorithm: store.DKIMAlgorithmRSASHA256,
+		PrivateKeyPEM: "P", PublicKeyB64: "P",
+	})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Rotate ghost = %v, want ErrNotFound", err)
+	}
+}
+
+func testDKIMActiveLookup(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if _, err := s.Meta().GetActiveDKIMKey(ctx, "absent.test"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetActiveDKIMKey(absent) = %v", err)
+	}
+	if err := s.Meta().UpsertDKIMKey(ctx, store.DKIMKey{
+		Domain: "act.test", Selector: "s1", Algorithm: store.DKIMAlgorithmRSASHA256,
+		PrivateKeyPEM: "P", PublicKeyB64: "B", Status: store.DKIMKeyStatusActive,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	got, err := s.Meta().GetActiveDKIMKey(ctx, "act.test")
+	if err != nil {
+		t.Fatalf("GetActiveDKIMKey: %v", err)
+	}
+	if got.Selector != "s1" {
+		t.Fatalf("selector = %q, want s1", got.Selector)
+	}
+}
+
+func testACMEAccountOrderCertLifecycle(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	acc, err := s.Meta().UpsertACMEAccount(ctx, store.ACMEAccount{
+		DirectoryURL:  "https://acme.test/dir",
+		ContactEmail:  "ops@example.com",
+		AccountKeyPEM: "ACCT-PEM",
+	})
+	if err != nil {
+		t.Fatalf("UpsertACMEAccount: %v", err)
+	}
+	if acc.ID == 0 {
+		t.Fatalf("account id unset")
+	}
+	// Idempotent re-upsert: same (directory_url, contact) returns same id.
+	acc2, err := s.Meta().UpsertACMEAccount(ctx, store.ACMEAccount{
+		DirectoryURL:  "https://acme.test/dir",
+		ContactEmail:  "ops@example.com",
+		AccountKeyPEM: "ACCT-PEM-V2",
+		KID:           "kid-1",
+	})
+	if err != nil {
+		t.Fatalf("UpsertACMEAccount v2: %v", err)
+	}
+	if acc2.ID != acc.ID {
+		t.Fatalf("upsert id = %d, want %d", acc2.ID, acc.ID)
+	}
+	got, err := s.Meta().GetACMEAccount(ctx, "https://acme.test/dir", "ops@example.com")
+	if err != nil {
+		t.Fatalf("GetACMEAccount: %v", err)
+	}
+	if got.KID != "kid-1" {
+		t.Fatalf("kid = %q after upsert", got.KID)
+	}
+
+	// Order.
+	order, err := s.Meta().InsertACMEOrder(ctx, store.ACMEOrder{
+		AccountID:     acc.ID,
+		Hostnames:     []string{"a.example.com", "b.example.com"},
+		Status:        store.ACMEOrderStatusPending,
+		OrderURL:      "https://acme.test/order/1",
+		FinalizeURL:   "https://acme.test/order/1/finalize",
+		ChallengeType: store.ChallengeTypeHTTP01,
+	})
+	if err != nil {
+		t.Fatalf("InsertACMEOrder: %v", err)
+	}
+	order.Status = store.ACMEOrderStatusValid
+	order.CertificateURL = "https://acme.test/cert/1"
+	if err := s.Meta().UpdateACMEOrder(ctx, order); err != nil {
+		t.Fatalf("UpdateACMEOrder: %v", err)
+	}
+	gotOrder, err := s.Meta().GetACMEOrder(ctx, order.ID)
+	if err != nil {
+		t.Fatalf("GetACMEOrder: %v", err)
+	}
+	if gotOrder.Status != store.ACMEOrderStatusValid {
+		t.Fatalf("status = %v", gotOrder.Status)
+	}
+	if len(gotOrder.Hostnames) != 2 {
+		t.Fatalf("hostnames = %v", gotOrder.Hostnames)
+	}
+	byStatus, err := s.Meta().ListACMEOrdersByStatus(ctx, store.ACMEOrderStatusValid)
+	if err != nil {
+		t.Fatalf("ListACMEOrdersByStatus: %v", err)
+	}
+	if len(byStatus) != 1 {
+		t.Fatalf("byStatus len = %d, want 1", len(byStatus))
+	}
+
+	// Cert.
+	notAfter := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := s.Meta().UpsertACMECert(ctx, store.ACMECert{
+		Hostname:      "a.example.com",
+		ChainPEM:      "CHAIN",
+		PrivateKeyPEM: "KEY",
+		NotBefore:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		NotAfter:      notAfter,
+		Issuer:        "Test CA",
+		OrderID:       order.ID,
+	}); err != nil {
+		t.Fatalf("UpsertACMECert: %v", err)
+	}
+	cert, err := s.Meta().GetACMECert(ctx, "a.example.com")
+	if err != nil {
+		t.Fatalf("GetACMECert: %v", err)
+	}
+	if !cert.NotAfter.Equal(notAfter) {
+		t.Fatalf("NotAfter = %v", cert.NotAfter)
+	}
+}
+
+func testACMECertExpiringList(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	soon := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	far := time.Date(2027, 6, 1, 0, 0, 0, 0, time.UTC)
+	if err := s.Meta().UpsertACMECert(ctx, store.ACMECert{
+		Hostname: "soon.test", ChainPEM: "C", PrivateKeyPEM: "K",
+		NotBefore: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), NotAfter: soon,
+	}); err != nil {
+		t.Fatalf("Upsert soon: %v", err)
+	}
+	if err := s.Meta().UpsertACMECert(ctx, store.ACMECert{
+		Hostname: "far.test", ChainPEM: "C", PrivateKeyPEM: "K",
+		NotBefore: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), NotAfter: far,
+	}); err != nil {
+		t.Fatalf("Upsert far: %v", err)
+	}
+	expiring, err := s.Meta().ListACMECertsExpiringBefore(ctx, time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("ListACMECertsExpiringBefore: %v", err)
+	}
+	if len(expiring) != 1 || expiring[0].Hostname != "soon.test" {
+		t.Fatalf("expiring = %+v", expiring)
+	}
+}
+
+func testWebhookCRUD(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	w, err := s.Meta().InsertWebhook(ctx, store.Webhook{
+		OwnerKind:    store.WebhookOwnerDomain,
+		OwnerID:      "example.com",
+		TargetURL:    "https://hook.example.com/incoming",
+		HMACSecret:   []byte("secret"),
+		DeliveryMode: store.DeliveryModeInline,
+		RetryPolicy:  store.RetryPolicy{MaxAttempts: 5, InitialBackoffMS: 1000},
+		Active:       true,
+	})
+	if err != nil {
+		t.Fatalf("InsertWebhook: %v", err)
+	}
+	if w.ID == 0 || w.CreatedAt.IsZero() {
+		t.Fatalf("webhook = %+v", w)
+	}
+	got, err := s.Meta().GetWebhook(ctx, w.ID)
+	if err != nil {
+		t.Fatalf("GetWebhook: %v", err)
+	}
+	if got.RetryPolicy.MaxAttempts != 5 {
+		t.Fatalf("RetryPolicy roundtrip = %+v", got.RetryPolicy)
+	}
+	got.Active = false
+	got.TargetURL = "https://hook.example.com/v2"
+	if err := s.Meta().UpdateWebhook(ctx, got); err != nil {
+		t.Fatalf("UpdateWebhook: %v", err)
+	}
+	got2, err := s.Meta().GetWebhook(ctx, w.ID)
+	if err != nil {
+		t.Fatalf("Get after update: %v", err)
+	}
+	if got2.Active || got2.TargetURL != "https://hook.example.com/v2" {
+		t.Fatalf("update did not persist: %+v", got2)
+	}
+	listed, err := s.Meta().ListWebhooks(ctx, store.WebhookOwnerDomain, "example.com")
+	if err != nil {
+		t.Fatalf("ListWebhooks: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("ListWebhooks = %d, want 1", len(listed))
+	}
+	if err := s.Meta().DeleteWebhook(ctx, w.ID); err != nil {
+		t.Fatalf("DeleteWebhook: %v", err)
+	}
+	if err := s.Meta().DeleteWebhook(ctx, w.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DeleteWebhook absent = %v", err)
+	}
+}
+
+func testWebhookActiveForDomain(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "wh-user@example.com")
+	if _, err := s.Meta().InsertWebhook(ctx, store.Webhook{
+		OwnerKind: store.WebhookOwnerDomain, OwnerID: "example.com",
+		TargetURL: "https://x.test/d", HMACSecret: []byte("s"),
+		DeliveryMode: store.DeliveryModeInline, Active: true,
+	}); err != nil {
+		t.Fatalf("Insert domain: %v", err)
+	}
+	if _, err := s.Meta().InsertWebhook(ctx, store.Webhook{
+		OwnerKind: store.WebhookOwnerPrincipal, OwnerID: fmt.Sprintf("%d", p.ID),
+		TargetURL: "https://x.test/p", HMACSecret: []byte("s"),
+		DeliveryMode: store.DeliveryModeInline, Active: true,
+	}); err != nil {
+		t.Fatalf("Insert principal: %v", err)
+	}
+	if _, err := s.Meta().InsertWebhook(ctx, store.Webhook{
+		OwnerKind: store.WebhookOwnerDomain, OwnerID: "other.test",
+		TargetURL: "https://x.test/o", HMACSecret: []byte("s"),
+		DeliveryMode: store.DeliveryModeInline, Active: true,
+	}); err != nil {
+		t.Fatalf("Insert other: %v", err)
+	}
+	if _, err := s.Meta().InsertWebhook(ctx, store.Webhook{
+		OwnerKind: store.WebhookOwnerDomain, OwnerID: "example.com",
+		TargetURL: "https://x.test/inactive", HMACSecret: []byte("s"),
+		DeliveryMode: store.DeliveryModeInline, Active: false,
+	}); err != nil {
+		t.Fatalf("Insert inactive: %v", err)
+	}
+	hooks, err := s.Meta().ListActiveWebhooksForDomain(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("ListActiveWebhooksForDomain: %v", err)
+	}
+	if len(hooks) != 2 {
+		t.Fatalf("active hooks = %d, want 2 (one domain, one principal): %+v", len(hooks), hooks)
+	}
+}
+
+func testDMARCInsertAndAggregate(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	begin := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
+	report := store.DMARCReport{
+		ReceivedAt:    time.Date(2026, 5, 2, 1, 0, 0, 0, time.UTC),
+		ReporterEmail: "noreply@reporter.test",
+		ReporterOrg:   "Reporter Org",
+		ReportID:      "rpt-001",
+		Domain:        "ex.test",
+		DateBegin:     begin,
+		DateEnd:       end,
+		XMLBlobHash:   strings.Repeat("a", 64),
+		ParsedOK:      true,
+	}
+	rows := []store.DMARCRow{
+		{SourceIP: "1.1.1.1", Count: 10, Disposition: 0, SPFAligned: true, DKIMAligned: true, HeaderFrom: "ex.test"},
+		{SourceIP: "2.2.2.2", Count: 5, Disposition: 1, SPFAligned: false, DKIMAligned: false, HeaderFrom: "ex.test"},
+	}
+	id, err := s.Meta().InsertDMARCReport(ctx, report, rows)
+	if err != nil {
+		t.Fatalf("InsertDMARCReport: %v", err)
+	}
+	if id == 0 {
+		t.Fatalf("id = 0")
+	}
+	gotRep, gotRows, err := s.Meta().GetDMARCReport(ctx, id)
+	if err != nil {
+		t.Fatalf("GetDMARCReport: %v", err)
+	}
+	if gotRep.ReporterOrg != "Reporter Org" {
+		t.Fatalf("reporter = %q", gotRep.ReporterOrg)
+	}
+	if len(gotRows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(gotRows))
+	}
+	listed, err := s.Meta().ListDMARCReports(ctx, store.DMARCReportFilter{Domain: "ex.test"})
+	if err != nil {
+		t.Fatalf("ListDMARCReports: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("listed = %d, want 1", len(listed))
+	}
+	agg, err := s.Meta().DMARCAggregate(ctx, "ex.test", begin, end.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("DMARCAggregate: %v", err)
+	}
+	if len(agg) != 2 {
+		t.Fatalf("agg = %d, want 2", len(agg))
+	}
+	var totalCount int64
+	for _, a := range agg {
+		totalCount += a.Count
+	}
+	if totalCount != 15 {
+		t.Fatalf("total count = %d, want 15", totalCount)
+	}
+}
+
+func testDMARCDeduplicates(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	report := store.DMARCReport{
+		ReceivedAt:    time.Now().UTC(),
+		ReporterEmail: "n@r.test", ReporterOrg: "Org", ReportID: "dup-1",
+		Domain: "d.test", DateBegin: time.Now().UTC(), DateEnd: time.Now().UTC(),
+		XMLBlobHash: "hash", ParsedOK: true,
+	}
+	if _, err := s.Meta().InsertDMARCReport(ctx, report, nil); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	if _, err := s.Meta().InsertDMARCReport(ctx, report, nil); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("dup insert = %v, want ErrConflict", err)
+	}
+}
+
+func testMailboxACLGrantListRevoke(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "acl-owner@example.com")
+	other := mustInsertPrincipal(t, s, "acl-other@example.com")
+	mb := mustInsertMailbox(t, s, owner.ID, "Shared")
+	pid := other.ID
+	if err := s.Meta().SetMailboxACL(ctx, mb.ID, &pid,
+		store.ACLRightLookup|store.ACLRightRead, owner.ID); err != nil {
+		t.Fatalf("SetMailboxACL: %v", err)
+	}
+	got, err := s.Meta().GetMailboxACL(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACL: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("acl rows = %d, want 1", len(got))
+	}
+	if !got[0].Rights.CanRead() {
+		t.Fatalf("Rights.CanRead = false, want true")
+	}
+	accessible, err := s.Meta().ListMailboxesAccessibleBy(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("ListMailboxesAccessibleBy: %v", err)
+	}
+	if len(accessible) != 1 || accessible[0].ID != mb.ID {
+		t.Fatalf("accessible = %+v", accessible)
+	}
+	// Update rights on existing row.
+	if err := s.Meta().SetMailboxACL(ctx, mb.ID, &pid,
+		store.ACLRightLookup|store.ACLRightRead|store.ACLRightWrite, owner.ID); err != nil {
+		t.Fatalf("SetMailboxACL update: %v", err)
+	}
+	got, _ = s.Meta().GetMailboxACL(ctx, mb.ID)
+	if len(got) != 1 {
+		t.Fatalf("after update rows = %d", len(got))
+	}
+	if !got[0].Rights.CanWrite() {
+		t.Fatalf("CanWrite false after update")
+	}
+	if err := s.Meta().RemoveMailboxACL(ctx, mb.ID, &pid); err != nil {
+		t.Fatalf("RemoveMailboxACL: %v", err)
+	}
+	if err := s.Meta().RemoveMailboxACL(ctx, mb.ID, &pid); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("RemoveMailboxACL absent = %v", err)
+	}
+	accessible, _ = s.Meta().ListMailboxesAccessibleBy(ctx, other.ID)
+	if len(accessible) != 0 {
+		t.Fatalf("accessible after revoke = %+v", accessible)
+	}
+}
+
+func testMailboxACLAnyoneRow(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "acl-anyone-owner@example.com")
+	other := mustInsertPrincipal(t, s, "acl-anyone-other@example.com")
+	mb := mustInsertMailbox(t, s, owner.ID, "Public")
+	if err := s.Meta().SetMailboxACL(ctx, mb.ID, nil,
+		store.ACLRightLookup|store.ACLRightRead, owner.ID); err != nil {
+		t.Fatalf("SetMailboxACL anyone: %v", err)
+	}
+	rows, err := s.Meta().GetMailboxACL(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACL: %v", err)
+	}
+	if len(rows) != 1 || rows[0].PrincipalID != nil {
+		t.Fatalf("anyone row = %+v", rows)
+	}
+	// Anyone row grants other principals access.
+	accessible, err := s.Meta().ListMailboxesAccessibleBy(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("ListMailboxesAccessibleBy: %v", err)
+	}
+	if len(accessible) != 1 {
+		t.Fatalf("anyone access = %+v", accessible)
+	}
+	// Remove anyone row.
+	if err := s.Meta().RemoveMailboxACL(ctx, mb.ID, nil); err != nil {
+		t.Fatalf("Remove anyone: %v", err)
+	}
+}
+
+func testJMAPStatesIncrementAtomic(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "jmap@example.com")
+	st, err := s.Meta().GetJMAPStates(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetJMAPStates: %v", err)
+	}
+	if st.Mailbox != 0 || st.Email != 0 {
+		t.Fatalf("initial state = %+v", st)
+	}
+	const n = 50
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := s.Meta().IncrementJMAPState(ctx, p.ID, store.JMAPStateKindEmail); err != nil {
+				t.Errorf("IncrementJMAPState: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	st, err = s.Meta().GetJMAPStates(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetJMAPStates after increments: %v", err)
+	}
+	if st.Email != n {
+		t.Fatalf("Email state = %d, want %d", st.Email, n)
+	}
+	// Independent kinds must not interfere.
+	for i := 0; i < 3; i++ {
+		if _, err := s.Meta().IncrementJMAPState(ctx, p.ID, store.JMAPStateKindMailbox); err != nil {
+			t.Fatalf("Increment Mailbox: %v", err)
+		}
+	}
+	st, _ = s.Meta().GetJMAPStates(ctx, p.ID)
+	if st.Mailbox != 3 {
+		t.Fatalf("Mailbox state = %d, want 3", st.Mailbox)
+	}
+	if st.Email != n {
+		t.Fatalf("Email state = %d, want %d (mailbox bumps must not affect email)", st.Email, n)
+	}
+}
+
+func testTLSRPTAppendAndRange(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		if err := s.Meta().AppendTLSRPTFailure(ctx, store.TLSRPTFailure{
+			RecordedAt:           base.Add(time.Duration(i) * time.Hour),
+			PolicyDomain:         "ex.test",
+			ReceivingMTAHostname: "mx.peer.test",
+			FailureType:          store.TLSRPTFailureMTASTS,
+			FailureCode:          fmt.Sprintf("F%d", i),
+			FailureDetailJSON:    `{"detail":"x"}`,
+		}); err != nil {
+			t.Fatalf("AppendTLSRPTFailure %d: %v", i, err)
+		}
+	}
+	if err := s.Meta().AppendTLSRPTFailure(ctx, store.TLSRPTFailure{
+		RecordedAt: base, PolicyDomain: "other.test", FailureType: store.TLSRPTFailureDANE,
+	}); err != nil {
+		t.Fatalf("AppendTLSRPTFailure other: %v", err)
+	}
+	rng, err := s.Meta().ListTLSRPTFailures(ctx, "ex.test", base.Add(time.Hour), base.Add(4*time.Hour))
+	if err != nil {
+		t.Fatalf("ListTLSRPTFailures: %v", err)
+	}
+	if len(rng) != 3 {
+		t.Fatalf("range len = %d, want 3", len(rng))
+	}
+	for i := 1; i < len(rng); i++ {
+		if rng[i].RecordedAt.Before(rng[i-1].RecordedAt) {
+			t.Fatalf("not ordered: %v then %v", rng[i-1].RecordedAt, rng[i].RecordedAt)
+		}
+	}
+	all, err := s.Meta().ListTLSRPTFailures(ctx, "other.test", base, base.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ListTLSRPTFailures other: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("other domain len = %d, want 1", len(all))
 	}
 }

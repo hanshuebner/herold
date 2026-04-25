@@ -75,6 +75,12 @@ type Store struct {
 	// Absence means "no script"; GetSieveScript returns ("", nil).
 	sieveScripts map[store.PrincipalID]string
 
+	// phase2 holds Phase 2 in-memory tables (queue, DKIM, ACME,
+	// webhooks, DMARC, mailbox ACL, JMAP states, TLS-RPT). Lazily
+	// initialised on first Phase 2 method call so existing tests do
+	// not pay the allocation cost.
+	phase2 *phase2Data
+
 	// monotonic ID counters
 	nextPrincipalID store.PrincipalID
 	nextMailboxID   store.MailboxID
@@ -1059,6 +1065,29 @@ func (m *metaFace) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 	delete(s.changeSeq, pid)
 	// Sieve script (mirrors the ON DELETE CASCADE in the SQL backends).
 	delete(s.sieveScripts, pid)
+	// Phase 2 cascades: queue rows submitted by this principal,
+	// jmap_states row, mailbox ACL grants whose grantee or grantor was
+	// this principal. Mirrors the SQL ON DELETE CASCADE in
+	// migrations/0004_phase2.sql.
+	if s.phase2 != nil {
+		for qid, q := range s.phase2.queue {
+			if q.PrincipalID == pid {
+				if q.BodyBlobHash != "" {
+					s.blobRefs[q.BodyBlobHash]--
+					if s.blobRefs[q.BodyBlobHash] < 0 {
+						s.blobRefs[q.BodyBlobHash] = 0
+					}
+				}
+				delete(s.phase2.queue, qid)
+			}
+		}
+		delete(s.phase2.jmapStates, pid)
+		for aclID, a := range s.phase2.mailboxACL {
+			if (a.PrincipalID != nil && *a.PrincipalID == pid) || a.GrantedBy == pid {
+				delete(s.phase2.mailboxACL, aclID)
+			}
+		}
+	}
 	// Audit log: drop entries that target or originate from this
 	// principal. Iterate and rebuild; audit volumes are low in tests.
 	if len(s.auditLog) > 0 {
