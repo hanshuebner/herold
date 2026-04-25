@@ -86,6 +86,46 @@ func (s *SystemResolver) IPLookup(ctx context.Context, host string) ([]net.IP, e
 	return out, nil
 }
 
+// TLSARecord is a single TLSA record (RFC 6698 §2.1) returned by a
+// TLSAResolver. The fields mirror the on-wire encoding: Usage (PKIX-TA /
+// PKIX-EE / DANE-TA / DANE-EE), Selector (full cert / SubjectPublicKeyInfo),
+// and MatchingType (exact / SHA-256 / SHA-512). Data is the certificate
+// association data — its length and meaning depend on Selector and
+// MatchingType.
+type TLSARecord struct {
+	Usage        uint8
+	Selector     uint8
+	MatchingType uint8
+	Data         []byte
+}
+
+// TLSAResolver is the optional DANE extension to Resolver. Implementations
+// resolve TLSA records and report whether the answer was DNSSEC-validated
+// (Authentic Data); both signals are required for RFC 7672 to apply. We
+// keep this as a sibling interface rather than folding it into Resolver
+// because most subsystems do not need it and the stdlib net.Resolver
+// cannot honour the DNSSEC AD bit at all — only operators running a
+// validating resolver beneath the stub library will see Authentic=true.
+type TLSAResolver interface {
+	// LookupTLSA returns TLSA records for name and reports whether the
+	// answer was DNSSEC-validated. ErrNoRecords indicates no TLSA RRset
+	// is published; non-nil error otherwise is a transport / temp error.
+	LookupTLSA(ctx context.Context, name string) (records []TLSARecord, authentic bool, err error)
+}
+
+// LookupTLSA implements TLSAResolver. The stdlib net.Resolver does not
+// surface TLSA records; SystemResolver therefore returns ErrNoRecords
+// unconditionally and authentic=false. Operators wanting DANE outbound
+// must inject a Resolver implementation backed by a DNSSEC-validating
+// library; the server falls back to MTA-STS and opportunistic TLS in the
+// meantime per the precedence rules in docs/architecture/04.
+func (s *SystemResolver) LookupTLSA(ctx context.Context, name string) ([]TLSARecord, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	return nil, false, fmt.Errorf("%w: TLSA %s (stdlib resolver does not support TLSA)", ErrNoRecords, name)
+}
+
 // canonicalise lowercases name and strips a single trailing dot.
 func canonicalise(name string) string {
 	name = strings.ToLower(name)

@@ -131,13 +131,22 @@ func (v *Verifier) Verify(ctx context.Context, raw []byte) (mailauth.ARCResult, 
 }
 
 // arcSet is one logical ARC set: the ARC-Seal, ARC-Message-Signature,
-// and ARC-Authentication-Results sharing an i= instance.
+// and ARC-Authentication-Results sharing an i= instance. The verifier
+// keeps the raw folded header lines so the crypto-verify pass can
+// canonicalise them without re-walking the message.
 type arcSet struct {
 	instance  int
 	cv        string
 	hasSeal   bool
 	hasMsgSig bool
 	hasAAR    bool
+
+	sealLine   string
+	msgSigLine string
+	aarLine    string
+
+	sealParams   map[string]string
+	msgSigParams map[string]string
 }
 
 // extractARCSets walks the header block of raw and returns one arcSet
@@ -161,18 +170,25 @@ func extractARCSets(raw []byte) ([]arcSet, error) {
 			s := getOrCreate(sets, i)
 			s.hasSeal = true
 			s.cv = cv
+			s.sealLine = line
+			s.sealParams = parseAllTags(value)
 		case strings.EqualFold(strings.TrimSpace(name), HeaderARCMessageSignature):
 			i, err := parseInstanceTag(value)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", HeaderARCMessageSignature, err)
 			}
-			getOrCreate(sets, i).hasMsgSig = true
+			s := getOrCreate(sets, i)
+			s.hasMsgSig = true
+			s.msgSigLine = line
+			s.msgSigParams = parseAllTags(value)
 		case strings.EqualFold(strings.TrimSpace(name), HeaderARCAuthenticationResults):
 			i, err := parseInstanceTag(value)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", HeaderARCAuthenticationResults, err)
 			}
-			getOrCreate(sets, i).hasAAR = true
+			s := getOrCreate(sets, i)
+			s.hasAAR = true
+			s.aarLine = line
 		}
 	}
 	out := make([]arcSet, 0, len(sets))
@@ -180,6 +196,20 @@ func extractARCSets(raw []byte) ([]arcSet, error) {
 		out = append(out, *s)
 	}
 	return out, nil
+}
+
+// parseAllTags returns every "k=v" pair in v as a map. Whitespace inside
+// values is preserved (callers may strip explicitly per-tag).
+func parseAllTags(v string) map[string]string {
+	out := map[string]string{}
+	for _, part := range strings.Split(v, ";") {
+		k, val, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		out[strings.TrimSpace(strings.ToLower(k))] = strings.TrimSpace(val)
+	}
+	return out
 }
 
 func getOrCreate(m map[int]*arcSet, i int) *arcSet {
