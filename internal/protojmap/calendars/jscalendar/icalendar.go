@@ -87,7 +87,10 @@ func ParseICS(r io.Reader) (Calendar, error) {
 		if line == "" {
 			continue
 		}
-		name, params, value := splitContentLine(line)
+		name, params, value, splitErr := splitContentLine(line)
+		if splitErr != nil {
+			return Calendar{}, splitErr
+		}
 		switch strings.ToUpper(name) {
 		case "BEGIN":
 			stack = append(stack, strings.ToUpper(value))
@@ -268,16 +271,27 @@ func readUnfoldedLines(r io.Reader) ([]string, error) {
 // parser is permissive about quoting — RFC 5545 §3.1.1 says quoted
 // strings only need quoting when the value contains "," ";" or ":";
 // we strip a single set of surrounding double quotes if present.
-func splitContentLine(line string) (name string, params map[string]string, value string) {
+//
+// Embedded CR (0x0D) or LF (0x0A) bytes inside a parameter value are
+// rejected: RFC 5545 §3.1 forbids raw control characters in parameter
+// text, and accepting them lets a malicious sender smuggle iCalendar
+// header injection through outbound iMIP re-emission. The whole-line
+// CR/LF check is performed by the caller; we additionally guard each
+// parameter value here so the rule is applied even if a future caller
+// hands us a line that already had trailing folds stripped.
+func splitContentLine(line string) (name string, params map[string]string, value string, err error) {
+	if strings.ContainsAny(line, "\r\n") {
+		return "", nil, "", fmt.Errorf("icalendar: embedded CR or LF in content line")
+	}
 	colon := indexUnquoted(line, ':')
 	if colon < 0 {
-		return strings.ToUpper(line), nil, ""
+		return strings.ToUpper(line), nil, "", nil
 	}
 	left := line[:colon]
 	value = line[colon+1:]
 	semicolon := strings.IndexByte(left, ';')
 	if semicolon < 0 {
-		return strings.ToUpper(strings.TrimSpace(left)), nil, value
+		return strings.ToUpper(strings.TrimSpace(left)), nil, value, nil
 	}
 	name = strings.ToUpper(strings.TrimSpace(left[:semicolon]))
 	params = map[string]string{}
@@ -292,9 +306,12 @@ func splitContentLine(line string) (name string, params map[string]string, value
 		if len(pval) >= 2 && pval[0] == '"' && pval[len(pval)-1] == '"' {
 			pval = pval[1 : len(pval)-1]
 		}
+		if strings.ContainsAny(pval, "\r\n") {
+			return "", nil, "", fmt.Errorf("icalendar: embedded CR or LF in parameter %q value", pname)
+		}
 		params[pname] = pval
 	}
-	return name, params, value
+	return name, params, value, nil
 }
 
 // indexUnquoted finds the first occurrence of c outside a double-quoted

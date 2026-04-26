@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -1111,11 +1112,33 @@ func incRef(ctx context.Context, tx *sql.Tx, hash string, size int64, now time.T
 	return mapErr(err)
 }
 
+// decRef decrements blob_refs.ref_count for hash, refusing to drive
+// it below zero. Wave 2.9.9 audit (Track A): the WHERE ref_count > 0
+// guard is the SQL-level enforcement of the same invariant the
+// fakestore clamps in memory; without it a duplicate hard-delete or a
+// retention pass that races a concurrent unref could underflow the
+// column on SQLite (signed INTEGER, so wrap-around to a negative
+// value) and confuse the orphan-blob sweeper into garbage-collecting
+// a still-referenced blob. The rows-affected==0 path is graceful: the
+// hash either was never registered, or was already at zero, both of
+// which the caller treats as a no-op. Logged at WARN so an operator
+// can spot a runaway double-unref without it surfacing as a hard
+// error during a hard-delete batch.
 func decRef(ctx context.Context, tx *sql.Tx, hash string, now time.Time) error {
-	_, err := tx.ExecContext(ctx,
-		`UPDATE blob_refs SET ref_count = ref_count - 1, last_change_us = ? WHERE hash = ?`,
+	res, err := tx.ExecContext(ctx,
+		`UPDATE blob_refs SET ref_count = ref_count - 1, last_change_us = ? WHERE hash = ? AND ref_count > 0`,
 		usMicros(now), hash)
-	return mapErr(err)
+	if err != nil {
+		return mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("storesqlite: decRef rows affected: %w", err)
+	}
+	if n == 0 {
+		slog.Warn("storesqlite: decRef no-op (already zero or unknown hash)", "hash", hash)
+	}
+	return nil
 }
 
 func (m *metadata) GetBlobRef(ctx context.Context, hash string) (int64, int64, error) {

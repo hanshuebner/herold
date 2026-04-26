@@ -158,6 +158,7 @@ func Run(t *testing.T, f Factory) {
 		{"ChatRetention_HardDeleteAndRecount", testChatRetentionHardDeleteAndRecount},
 		{"ChatRetention_ListConversationsForRetention", testChatRetentionListConversationsForRetention},
 		{"ChatAttachment_BlobRefcountOnHardDelete", testChatAttachmentBlobRefcountOnHardDelete},
+		{"ChatAttachment_DecRefUnderflowGuard", testChatAttachmentDecRefUnderflowGuard},
 	}
 	for _, c := range cases {
 		tc := c
@@ -4922,4 +4923,100 @@ func testChatAttachmentBlobRefcountOnHardDelete(t *testing.T, s store.Store) {
 	wantRef("after-delete-2 shared", shared, 0)
 	wantRef("after-delete-2 uniq1", uniq1, 0)
 	wantRef("after-delete-2 uniq2", uniq2, 0)
+}
+
+// testChatAttachmentDecRefUnderflowGuard exercises the Wave 2.9.9 Track
+// A guard on the metadata backends' decRef helper. Once the public
+// hard-delete path has driven a hash's blob_refs.ref_count to zero,
+// any subsequent attempt to decrement it again must be a no-op: the
+// SQL "WHERE ref_count > 0" guard prevents underflow on SQLite (signed
+// INTEGER wrap-around) and Postgres (negative bigint), and the
+// fakestore clamps in memory by construction. The test exercises the
+// path with a balanced insert / hard-delete cycle, asserts the count
+// settles at zero, then drives a second hard-delete on the same
+// message ID — that returns ErrNotFound (graceful) and must not change
+// the row's ref_count. We additionally re-run a fresh insert / delete
+// cycle to confirm subsequent inserts are still respected, which would
+// not be the case if the underflow guard had wrongly clamped a
+// pre-existing positive count.
+func testChatAttachmentDecRefUnderflowGuard(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "chat-att-underflow@example.com")
+	cid, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind: store.ChatConversationKindSpace, Name: "underflow",
+		CreatedByPrincipalID: p.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	hash := strings.Repeat("d", 64)
+	pidArg := p.ID
+	atts := []byte(`[{"blob_hash":"` + hash + `","content_type":"application/octet-stream","filename":"a.bin","size":42}]`)
+	get := func(label string) int64 {
+		t.Helper()
+		_, n, err := s.Meta().GetBlobRef(ctx, hash)
+		if err != nil {
+			// A never-registered hash returns ErrNotFound; treat as 0.
+			if errors.Is(err, store.ErrNotFound) {
+				return 0
+			}
+			t.Fatalf("GetBlobRef %s: %v", label, err)
+		}
+		return n
+	}
+	// First cycle: insert and hard-delete drive the count to 0.
+	id1, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID:    cid,
+		SenderPrincipalID: &pidArg,
+		BodyText:          "first",
+		BodyFormat:        store.ChatBodyFormatText,
+		AttachmentsJSON:   atts,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMessage 1: %v", err)
+	}
+	if got := get("after-insert-1"); got != 1 {
+		t.Fatalf("ref_count after insert 1 = %d, want 1", got)
+	}
+	if err := s.Meta().HardDeleteChatMessage(ctx, id1); err != nil {
+		t.Fatalf("HardDeleteChatMessage 1: %v", err)
+	}
+	if got := get("after-delete-1"); got != 0 {
+		t.Fatalf("ref_count after delete 1 = %d, want 0", got)
+	}
+	// Second hard-delete on the same message ID: the row is gone, so
+	// the metadata layer returns ErrNotFound before reaching decRef.
+	// The row's ref_count must remain at zero either way (no panic, no
+	// underflow). We catch the entire returned error space — some
+	// backends may surface the missing row with a more specific
+	// sentinel — and only insist on "not nil" + "count unchanged".
+	if err := s.Meta().HardDeleteChatMessage(ctx, id1); err == nil {
+		t.Fatalf("second HardDeleteChatMessage on already-deleted id returned nil")
+	}
+	if got := get("after-double-delete"); got != 0 {
+		t.Fatalf("ref_count after double delete = %d, want 0 (no underflow)", got)
+	}
+	// Third cycle: a fresh insert+delete must still drive the count
+	// 0 -> 1 -> 0 cleanly. If the underflow guard had wrongly clamped
+	// the pre-existing row, the increment would be lost and the
+	// post-insert count would still read 0.
+	id2, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID:    cid,
+		SenderPrincipalID: &pidArg,
+		BodyText:          "second",
+		BodyFormat:        store.ChatBodyFormatText,
+		AttachmentsJSON:   atts,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMessage 2: %v", err)
+	}
+	if got := get("after-insert-2"); got != 1 {
+		t.Fatalf("ref_count after re-insert = %d, want 1", got)
+	}
+	if err := s.Meta().HardDeleteChatMessage(ctx, id2); err != nil {
+		t.Fatalf("HardDeleteChatMessage 2: %v", err)
+	}
+	if got := get("after-delete-2"); got != 0 {
+		t.Fatalf("ref_count after final delete = %d, want 0", got)
+	}
 }

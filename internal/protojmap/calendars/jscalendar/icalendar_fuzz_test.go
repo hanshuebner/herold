@@ -27,6 +27,12 @@ import (
 //  2. On a successful parse, every contained VEVENT carries a non-zero
 //     DTStart only when the source had a parsable DTSTART value, and
 //     Method is upper-case (the dispatcher relies on that).
+//  3. No parsed string field (TZID, UID, etc.) contains a raw CR or LF
+//     byte: ParseICS rejects content lines whose unfolded form holds
+//     embedded CR / LF (RFC 5545 §3.1; wave 2.9.8 surfaced the seed at
+//     testdata/fuzz/FuzzParseICS/481fd31f4df828e3 where a malformed
+//     "DTEND;TZID=0\r0:" smuggled CR into TZID and would have corrupted
+//     outbound iMIP re-emission).
 func FuzzParseICS(f *testing.F) {
 	// Seed 1: minimal valid VCALENDAR with one VEVENT.
 	f.Add([]byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n" +

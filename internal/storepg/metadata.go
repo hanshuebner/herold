@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -1014,11 +1015,27 @@ func incRef(ctx context.Context, tx pgx.Tx, hash string, size int64, now time.Ti
 	return mapErr(err)
 }
 
+// decRef decrements blob_refs.ref_count for hash, refusing to drive
+// it below zero. Wave 2.9.9 audit (Track A): the WHERE ref_count > 0
+// guard mirrors the fakestore in-memory clamp and the storesqlite
+// SQL-level guard. Postgres' bigint would otherwise underflow into
+// negative territory on a duplicate hard-delete or a retention pass
+// racing a concurrent unref, which would in turn confuse the orphan-
+// blob sweeper into garbage-collecting a still-referenced blob. The
+// rows-affected==0 path is graceful (already at zero or unknown
+// hash); logged WARN so operators can spot pathological double-unref
+// patterns without erroring a legitimate batch hard-delete.
 func decRef(ctx context.Context, tx pgx.Tx, hash string, now time.Time) error {
-	_, err := tx.Exec(ctx,
-		`UPDATE blob_refs SET ref_count = ref_count - 1, last_change_us = $1 WHERE hash = $2`,
+	res, err := tx.Exec(ctx,
+		`UPDATE blob_refs SET ref_count = ref_count - 1, last_change_us = $1 WHERE hash = $2 AND ref_count > 0`,
 		usMicros(now), hash)
-	return mapErr(err)
+	if err != nil {
+		return mapErr(err)
+	}
+	if res.RowsAffected() == 0 {
+		slog.Warn("storepg: decRef no-op (already zero or unknown hash)", "hash", hash)
+	}
+	return nil
 }
 
 func (m *metadata) GetBlobRef(ctx context.Context, hash string) (int64, int64, error) {

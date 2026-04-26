@@ -261,6 +261,41 @@ END:VCALENDAR
 	}
 }
 
+// TestParseICS_RejectsEmbeddedCRLFInParameter confirms that ParseICS
+// refuses content lines that smuggle a raw CR or LF byte into a
+// parameter value. RFC 5545 §3.1 forbids it; allowing it lets a
+// malicious sender corrupt the iCalendar object the bridge re-emits
+// in outbound iMIP and would, in the worst case, enable header
+// injection. The crash seed at
+// testdata/fuzz/FuzzParseICS/481fd31f4df828e3 reproduces the original
+// failure ("DTEND;TZID=0\r0:") and is retained as a regression seed.
+func TestParseICS_RejectsEmbeddedCRLFInParameter(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "regression seed (TZID with embedded CR)",
+			body: "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTEND;TZID=0\r0:\nEND:VEVENT\nEND:VCALENDAR",
+		},
+		{
+			name: "embedded CR inside quoted parameter",
+			body: "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID;X=\"a\rb\":id\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := jscalendar.ParseICS(strings.NewReader(tc.body))
+			if err == nil {
+				t.Fatalf("ParseICS accepted embedded CR/LF in parameter value")
+			}
+			if !strings.Contains(err.Error(), "CR or LF") {
+				t.Fatalf("error %q does not mention CR/LF rejection", err)
+			}
+		})
+	}
+}
+
 func TestResolveTZID(t *testing.T) {
 	cases := []struct {
 		in   string
