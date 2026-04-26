@@ -101,7 +101,7 @@ Unchanged from prior version:
 
 ### Storage and edit flow
 
-- **REQ-FILT-120** Sieve scripts stored per-principal in the DB: one active, N inactive. Edits via ManageSieve or admin API. Atomic active-swap.
+- **REQ-FILT-120** Sieve scripts stored per-principal in the DB: one active script per principal. Edits via ManageSieve (RFC 5804) or the JMAP Sieve datatype (RFC 9007); no admin REST surface (REQ-ADM-15). Multi-script-per-principal ("one active, N inactive") is not implemented; ManageSieve clients that maintain drafts do so client-side.
 - **REQ-FILT-121** Validation on upload uses the exact interpreter we run at delivery — no divergence.
 
 ### Extensions explicitly out

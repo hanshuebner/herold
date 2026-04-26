@@ -22,7 +22,7 @@ Grouped by resource. Every resource supports `GET list`, `GET /<id>`, `POST crea
 - **REQ-ADM-12** `/api/v1/queue/messages` — queue inspection. Endpoints: list (with filters), get one, retry, hold, release, delete, bounce-now.
 - **REQ-ADM-13** `/api/v1/mail/{principal}/messages/{id}` — inspect a specific mailbox message (admin read; rarely needed). Body not exposed by default.
 - **REQ-ADM-14** `/api/v1/spam/train` — POST a message blob + label (ham/spam). `/api/v1/spam/rules` — read-only rule list with current weights.
-- **REQ-ADM-15** `/api/v1/sieve/scripts` — read/write global script. Per-user scripts only via ManageSieve for the user.
+- **REQ-ADM-15** No admin REST surface for Sieve scripts. Sieve is a per-user filter language; users edit their own scripts via ManageSieve (RFC 5804, port 4190) or the JMAP Sieve datatype (RFC 9007). Operators wanting site-wide policy use spam classification, the LLM categoriser, alias/transport rules, or DKIM/DMARC/Sieve-adjacent surfaces — not a global Sieve script. The originally-imagined `/api/v1/sieve/scripts` endpoint is intentionally not implemented.
 - **REQ-ADM-16** `/api/v1/tls/certificates` — list, inspect, force-renew. `/api/v1/tls/acme/accounts`.
 - **REQ-ADM-17** `/api/v1/reports/dmarc` — list received DMARC aggregate reports, per-domain + per-source.
 - **REQ-ADM-18** `/api/v1/reports/tlsrpt` — TLS-RPT reports received.

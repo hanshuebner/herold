@@ -217,7 +217,7 @@ All HTTPS, all on one port (default 443) with path-based routing unless the oper
 | `/api/v1/mail/blobs/<id>/raw?sig=…` | Signed fetch URL served to webhook receivers fetching message bodies | REQ-HOOK-30..31 |
 | `/proxy/image?url=<encoded>` | Inbound HTML mail image proxy — fetches upstream, strips tracking headers, enforces caps, serves back. Same-origin so tabard's CSP can `img-src 'self'`. | REQ-SEND-70..75 |
 | `/chat/ws` (WebSocket upgrade) | Chat ephemeral channel — typing indicators, presence, WebRTC call signaling, TURN credential mint. Auth via suite session cookie. | REQ-CHAT-40..46 |
-| `/api/v1/principals/*`, `/domains/*`, `/queue/*`, `/spam/*`, `/sieve/*`, `/tls/*`, `/reports/*`, `/audit-log`, `/server/*` | Admin REST API | REQ-ADM-10..22 |
+| `/api/v1/principals/*`, `/domains/*`, `/queue/*`, `/spam/*`, `/tls/*`, `/reports/*`, `/audit-log`, `/server/*` | Admin REST API | REQ-ADM-10..22 |
 | `/api/openapi.json` | OpenAPI 3.1 spec | REQ-ADM-05 |
 | `/admin/*` (phase 2) | Admin web UI (HTMX + Go templates) | REQ-ADM-200..202 |
 | `/settings/*` (phase 3) | User self-service panel | REQ-ADM-203 |

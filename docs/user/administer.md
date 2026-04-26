@@ -348,28 +348,32 @@ existed in the response of `create`) is now useless.
 
 Sieve scripts (RFC 5228) run in the delivery pipeline; they
 implement vacation autoresponders, folder routing, server-side
-labels, and reject rules. Each principal has a set of scripts; one
-is `active` at a time.
+labels, and reject rules. Sieve in herold is a per-user filter
+language: each principal has one active script, edited by the user
+through their own client.
 
-### CLI surface (planned)
+There is no admin CLI or REST surface for Sieve (REQ-ADM-15). Users
+edit their own scripts via:
 
-```bash
-# Planned, Wave X.Y:
-herold sieve put user@example.com active < script.sieve
-herold sieve validate < script.sieve
-herold sieve list user@example.com
-herold sieve deactivate user@example.com
-```
+- **ManageSieve** (RFC 5804, port 4190). Standalone clients include
+  `sieveshell`; mail clients with built-in support include
+  Thunderbird (Sieve add-on), Apple Mail (Sieve plugin), and
+  Roundcube.
+- **JMAP Sieve** datatype (RFC 9007), used by tabard and any other
+  JMAP client that implements the datatype.
 
-TODO(operator-doc): sieve-cli-not-yet-wired. The user-facing
-ManageSieve listener (RFC 5804) is the supported path today; clients
-that speak ManageSieve (Roundcube, Thunderbird with the Sieve add-on,
-Apple Mail with the Sieve plugin, the standalone `sieveshell`) edit
-scripts directly.
+If you need site-wide policy ("reject anything with `Subject: virus`",
+"tag mail to `support@` with a header"), the right tool is not a
+global Sieve script but one of:
 
-The REST surface for global scripts (REQ-ADM-15:
-`/api/v1/sieve/scripts`) is planned. Per-user scripts are
-ManageSieve-only by REQ-ADM-15.
+- Spam classification (REQ-FILT-100..); the classifier sees every
+  inbound message before delivery.
+- The LLM categoriser (REQ-FILT-200..); per-principal but configurable
+  via the admin REST/CLI introduced in Wave 3.4-CAT.
+- Aliases / transport rules at the SMTP layer.
+
+These are pre-delivery hooks; Sieve runs *after* acceptance and is
+the wrong layer for site-wide policy.
 
 ## Categorisation prompts
 
