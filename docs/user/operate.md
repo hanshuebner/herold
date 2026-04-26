@@ -755,6 +755,27 @@ No built-in trace storage - ship to Jaeger / Tempo / Datadog / etc.
 Both are unauthenticated (REQ-OPS-112) and exposed on the admin
 listener.
 
+## Queue configuration
+
+The outbound queue ships with conservative defaults. Busy deployments can
+tune concurrency in `[server.queue]`:
+
+```toml
+[server.queue]
+# Maximum in-flight outbound SMTP connections across all recipients.
+# Default 32. Range: 0 (use default) .. 1024.
+concurrency = 64
+
+# Maximum in-flight connections to a single MX host. 0 uses the
+# queue-built-in default (4). Must be <= concurrency when both are
+# non-zero.
+per_host_max = 8
+```
+
+Both values default to 0, meaning "use the queue's built-in defaults"
+(32 and 4 respectively). Set `concurrency` higher on a dedicated relay
+host; lower it if you want to back-pressure delivery on a small VPS.
+
 ## Queue triage
 
 The outbound queue carries every message en route to delivery.

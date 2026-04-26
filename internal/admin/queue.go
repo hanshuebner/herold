@@ -136,6 +136,9 @@ func buildOutboundQueue(
 		Hostname:       cfg.Server.Hostname,
 		DSNFromAddress: dsnFrom,
 		ShutdownGrace:  cfg.Server.ShutdownGrace.AsDuration(),
+		// Operator-supplied concurrency knobs (0 = queue built-in default).
+		Concurrency: cfg.Server.Queue.Concurrency,
+		PerHostMax:  cfg.Server.Queue.PerHostMax,
 	})
 	return q, nil
 }

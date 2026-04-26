@@ -145,6 +145,7 @@ type ServerConfig struct {
 	SmartHost  SmartHostConfig  `toml:"smart_host,omitempty"`
 	Tabard     TabardConfig     `toml:"tabard,omitempty"`
 	Push       PushConfig       `toml:"push,omitempty"`
+	Queue      QueueConfig      `toml:"queue,omitempty"`
 }
 
 // PushConfig configures the deployment-level VAPID key pair the Web
@@ -492,6 +493,28 @@ type UIConfig struct {
 	// generate a random per-process key (operators tolerate
 	// re-login on restart).
 	SigningKeyEnv string `toml:"signing_key_env,omitempty"`
+}
+
+// QueueConfig exposes operator-facing knobs for the outbound delivery queue.
+// Zero values fall back to the queue package's built-in defaults
+// (Concurrency = 32, PerHostMax = 4). Setting non-zero values overrides
+// the defaults; Validate rejects negative values and a Concurrency above
+// the 1024 sanity cap so a config typo cannot OOM the box.
+//
+// Example:
+//
+//	[server.queue]
+//	concurrency = 64
+//	per_host_max = 8
+type QueueConfig struct {
+	// Concurrency is the maximum number of in-flight outbound SMTP
+	// connections. 0 uses the queue default (32). Capped at 1024 at
+	// Validate to prevent OOM on misconfiguration.
+	Concurrency int `toml:"concurrency,omitempty"`
+	// PerHostMax caps per-MX-hostname in-flight connections. 0 uses the
+	// queue default (derived from Concurrency). Must be >= 0 and <=
+	// Concurrency when both are non-zero.
+	PerHostMax int `toml:"per_host_max,omitempty"`
 }
 
 // SnoozeConfig tunes the JMAP snooze wake-up worker (REQ-PROTO-49).
@@ -1124,6 +1147,23 @@ func Validate(c *Config) error {
 		if err := validateSmartHost(fmt.Sprintf("smart_host.per_domain.%s", domain), &ovCopy, false); err != nil {
 			return err
 		}
+	}
+	// Outbound queue concurrency (REQ-OPS). Negative is always a typo;
+	// cap Concurrency at 1024 so a misconfigured value cannot exhaust
+	// file descriptors or OOM the box.
+	const queueConcurrencyMax = 1024
+	qc := c.Server.Queue
+	if qc.Concurrency < 0 {
+		return fmt.Errorf("sysconfig: [server.queue] concurrency %d must be >= 0", qc.Concurrency)
+	}
+	if qc.Concurrency > queueConcurrencyMax {
+		return fmt.Errorf("sysconfig: [server.queue] concurrency %d exceeds %d ceiling", qc.Concurrency, queueConcurrencyMax)
+	}
+	if qc.PerHostMax < 0 {
+		return fmt.Errorf("sysconfig: [server.queue] per_host_max %d must be >= 0", qc.PerHostMax)
+	}
+	if qc.Concurrency > 0 && qc.PerHostMax > qc.Concurrency {
+		return fmt.Errorf("sysconfig: [server.queue] per_host_max %d exceeds concurrency %d", qc.PerHostMax, qc.Concurrency)
 	}
 	// Admin TLS
 	switch c.Server.AdminTLS.Source {

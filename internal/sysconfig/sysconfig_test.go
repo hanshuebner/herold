@@ -1469,3 +1469,84 @@ plugin_first_for_domains = ["App.Example.com"]
 		t.Fatal("expected error: uppercase domain")
 	}
 }
+
+// TestValidate_QueueConfig_RejectsNegativeConcurrency asserts that a
+// negative concurrency value is rejected at parse time.
+func TestValidate_QueueConfig_RejectsNegativeConcurrency(t *testing.T) {
+	src := minimalValid + `
+[server.queue]
+concurrency = -1
+`
+	_, err := Parse([]byte(src))
+	if err == nil {
+		t.Fatal("expected error for concurrency = -1, got nil")
+	}
+	if !strings.Contains(err.Error(), "concurrency") {
+		t.Errorf("error should mention concurrency: %v", err)
+	}
+}
+
+// TestValidate_QueueConfig_AcceptsZeroConcurrency verifies that concurrency
+// = 0 is valid (means "use built-in default").
+func TestValidate_QueueConfig_AcceptsZeroConcurrency(t *testing.T) {
+	src := minimalValid + `
+[server.queue]
+concurrency = 0
+`
+	if _, err := Parse([]byte(src)); err != nil {
+		t.Fatalf("expected concurrency = 0 to parse cleanly, got: %v", err)
+	}
+}
+
+// TestValidate_QueueConfig_AcceptsNonZeroConcurrency verifies that a valid
+// concurrency value is accepted and reflected in the parsed config.
+func TestValidate_QueueConfig_AcceptsNonZeroConcurrency(t *testing.T) {
+	src := minimalValid + `
+[server.queue]
+concurrency = 64
+per_host_max = 8
+`
+	cfg, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server.Queue.Concurrency != 64 {
+		t.Errorf("concurrency: got %d, want 64", cfg.Server.Queue.Concurrency)
+	}
+	if cfg.Server.Queue.PerHostMax != 8 {
+		t.Errorf("per_host_max: got %d, want 8", cfg.Server.Queue.PerHostMax)
+	}
+}
+
+// TestValidate_QueueConfig_RejectsExcessiveConcurrency verifies that a
+// concurrency above the 1024 sanity cap is rejected.
+func TestValidate_QueueConfig_RejectsExcessiveConcurrency(t *testing.T) {
+	src := minimalValid + `
+[server.queue]
+concurrency = 2048
+`
+	_, err := Parse([]byte(src))
+	if err == nil {
+		t.Fatal("expected error for concurrency = 2048, got nil")
+	}
+	if !strings.Contains(err.Error(), "ceiling") {
+		t.Errorf("error should mention ceiling: %v", err)
+	}
+}
+
+// TestValidate_QueueConfig_RejectsPerHostMaxExceedingConcurrency verifies
+// that per_host_max > concurrency is rejected when both are non-zero.
+func TestValidate_QueueConfig_RejectsPerHostMaxExceedingConcurrency(t *testing.T) {
+	src := minimalValid + `
+[server.queue]
+concurrency = 16
+per_host_max = 32
+`
+	_, err := Parse([]byte(src))
+	if err == nil {
+		t.Fatal("expected error for per_host_max > concurrency, got nil")
+	}
+	if !strings.Contains(err.Error(), "per_host_max") {
+		t.Errorf("error should mention per_host_max: %v", err)
+	}
+}
