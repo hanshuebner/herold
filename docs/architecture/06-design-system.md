@@ -415,6 +415,26 @@ Full-screen modal triggered by REQ-CALL-20:
 - Controls dock at the bottom; auto-hide after 3s of no mouse movement, reveal on movement.
 - Bits UI: this one wraps Dialog with custom focus-trap configuration (no escape-to-dismiss).
 
+### Coach hint chip
+
+The single hint chip rendered in the coach strip (`requirements/09-ui-layout.md` REQ-UI-06e, `requirements/23-shortcut-coach.md` REQ-COACH-50..56).
+
+```
+┌─[ Try ⌘⏎ to send       ×]─┐  ← when state = learning
+└─────────────────────────────┘
+
+┌─[ ↩ Welcome back — try e to archive       ×]─┐  ← when state = forgotten
+└────────────────────────────────────────────────┘
+```
+
+- One chip at a time, anchored centre-bottom of the suite-shell strip.
+- Chip background `--layer-02`; subtle border `--border-subtle-01`; radius 9999 (pill).
+- Action label in `body-compact-01`; key glyphs in `code-01` mono with `--layer-03` background, padding `spacing-01` horizontal, `spacing-02` minimum width per glyph.
+- Optional "Welcome back" prefix in `--text-secondary`, weight 400, when the action's state is `forgotten` (REQ-COACH-35).
+- Dismiss × button on the right; 12px icon; tap target padded to `spacing-04`.
+- Slide-up + fade-in `duration-moderate-01`; auto-dismiss fade-out `duration-fast-02` after 6 s (paused on hover); replace cross-fade `duration-fast-02` when a new hint pre-empts.
+- `role="status"` `aria-live="polite"` on the strip so screen readers announce as hints appear.
+
 ### Sidebar entry
 
 ```

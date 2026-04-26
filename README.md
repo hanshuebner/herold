@@ -60,7 +60,8 @@ tabard/
     │   ├── 19-drafts.md            auto-save, recovery, multi-device conflict
     │   ├── 20-settings.md          settings panel scope and storage
     │   ├── 21-video-calls.md       1:1 video calls (WebRTC, signaling, TURN)
-    │   └── 22-internationalization.md  en/de/fr + regional variants; ICU; Intl
+    │   ├── 22-internationalization.md  en/de/fr + regional variants; ICU; Intl
+    │   └── 23-shortcut-coach.md    behaviour-driven keyboard-shortcut nudges
     ├── architecture/
     │   ├── 01-system-overview.md
     │   ├── 02-jmap-client.md
@@ -110,6 +111,7 @@ tabard/
 - `REQ-SET-nn`   — settings
 - `REQ-CALL-nn`  — video calls (1:1)
 - `REQ-I18N-nn`  — internationalization
+- `REQ-COACH-nn` — shortcut coach (behavioural keyboard nudges)
 
 When cutting or adding, reference by ID.
 

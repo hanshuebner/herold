@@ -28,6 +28,7 @@ This is the "deployed together, no separate IdP" stance. Herold authenticates us
 | `https://tabard.dev/jmap/categorise` | LLM-driven categorisation — see Behaviours. |
 | `https://tabard.dev/jmap/chat` | Chat datatypes (`Conversation`, `Message`, `Membership`) plus the ephemeral WebSocket and call-signaling endpoints — see Behaviours. |
 | `https://tabard.dev/jmap/email-reactions` | `Email.reactions` extension property + cross-server reaction email propagation — see Behaviours. |
+| `https://tabard.dev/jmap/shortcut-coach` | `ShortcutCoachStat` per-principal datatype backing the shortcut coach — see Behaviours. |
 
 ## Capabilities tabard does NOT require
 
@@ -198,6 +199,37 @@ A herold-aware inbound pipeline detects the `X-Tabard-Reaction-*` headers, looks
 A non-herold receiver sees the email as plain mail. Threading via `In-Reply-To` puts it in the same thread as the original.
 
 **Removal does not propagate cross-server.** When a user removes a reaction, the change is applied locally and to other herolds *that originally received the reaction email*; there is no follow-up "un-react" email to non-herold receivers. Reactions are ephemeral signals; the asymmetry is acceptable.
+
+### Shortcut coach (`https://tabard.dev/jmap/shortcut-coach`)
+
+Per `../requirements/23-shortcut-coach.md`. Per-principal stats backing the always-on shortcut coach.
+
+Datatype: `ShortcutCoachStat`. One row per (principal, action) pair.
+
+**Properties:**
+
+```
+{
+  id:                  String,                // server-assigned
+  action:              String,                // action name, e.g. "archive", "reply", "nav_inbox"
+  keyboardCount14d:    Number,                // server-rolled count over the trailing 14 days
+  mouseCount14d:       Number,
+  keyboardCount90d:    Number,                // trailing 90 days
+  mouseCount90d:       Number,
+  lastKeyboardAt:      UTCDate?,
+  lastMouseAt:         UTCDate?,
+  dismissCount:        Number,                // hint-dismiss events; never decremented
+  dismissUntil:        UTCDate?               // suppression deadline per REQ-COACH-33..34
+}
+```
+
+**Behaviour:**
+
+- `ShortcutCoachStat/get`, `/query`, `/changes`, `/set` per standard JMAP. State string advances per the standard rules but tabard does not subscribe (REQ-COACH-64).
+- `ShortcutCoachStat/set { update }` accepts incremental patches — typically a flush of recent invocations: `{ "<action>": { keyboard: +N, mouse: +M, lastKeyboardAt: <ts>, lastMouseAt: <ts>, dismissCount: +K } }`. Herold rolls them into the 14d/90d counters using a per-row timestamp ring (or equivalent windowed-counter machinery — implementation choice).
+- `ShortcutCoachStat/set { destroy }` deletes a single stat row; destroying everything for a principal is the "Reset coach data" path.
+- Authorisation: a principal can only read/write their own ShortcutCoachStat rows. Admin reads are out (the data is private to the user — `../requirements/23-shortcut-coach.md` REQ-COACH-04).
+- Storage shape on herold: a small per-principal table. The 14d/90d counters can be derived from a per-row activity log or maintained as decaying counters; either is fine. Volume is small (~30 actions × ~1k principals = trivial).
 
 ### iMIP REPLY pass-through
 

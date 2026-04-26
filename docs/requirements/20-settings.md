@@ -17,6 +17,7 @@ The principle: settings are the place users go to *change* defaults. They are no
 | REQ-SET-07 | Token persistence: session-only (default) vs persisted across browser restarts. The opt-in here is the inverse of `13-nonfunctional.md` REQ-SEC-01. Toggle warns explicitly: "the token stays on this device until you log out". | `localStorage` for the toggle; the token follows. |
 | REQ-SET-08 | Mailing-list mute list (read-only display, with per-list "Unmute" buttons). Source: `16-mailing-lists.md` REQ-LIST-40. | `localStorage` per account |
 | REQ-SET-09 | Vacation responder. Status (on/off), date range, message body. Backed by JMAP `VacationResponse` (RFC 8621 §8). Hidden if the server doesn't advertise the relevant capability. | Server-side via `VacationResponse/set` |
+| REQ-SET-12 | Shortcut coach: enable / disable. Default: enabled. Disabling suppresses observation, hint generation, and server-side flushes (`23-shortcut-coach.md` REQ-COACH-71). Companion control: "Reset coach data" (REQ-COACH-72). | `localStorage` per account for the toggle; coach data itself is server-side. |
 
 ## Layout
 

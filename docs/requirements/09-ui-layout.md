@@ -54,6 +54,12 @@ A persistent bar at the top of every route in the suite. Owned by the suite shel
 | REQ-UI-06c | Settings button: navigates to `/settings` (`20-settings.md`). |
 | REQ-UI-06d | The global bar is hidden in the compose modal and in the call modal — both take focus and shouldn't share top-of-window real estate. |
 
+### Coach strip
+
+| ID | Requirement |
+|----|-------------|
+| REQ-UI-06e | The shortcut coach (`23-shortcut-coach.md`) renders in a 24px-tall strip docked at the bottom of the suite shell. Always present; empty when no hint is active. Hidden in compose / call modals and while the keyboard help overlay (`?`) is open. |
+
 ## Sidebar
 
 Two regions: an outer **rail** with suite-app navigation, and an **inner sidebar** with the active app's navigation tree. Mail's inner sidebar is what most of this section describes.
