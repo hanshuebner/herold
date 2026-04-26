@@ -463,6 +463,52 @@ func (w WebhookOwnerKind) String() string {
 	}
 }
 
+// WebhookTargetKind classifies the recipient surface a webhook
+// subscription matches against (REQ-HOOK-02).  The legacy OwnerKind
+// column on a Webhook row covers the {domain, principal} pair; the
+// target_kind column extends that vocabulary with {address, synthetic}
+// without disturbing existing rows.  When target_kind == Unspecified
+// the dispatcher falls back to owner_kind.
+type WebhookTargetKind uint8
+
+// WebhookTargetKind values.
+const (
+	// WebhookTargetUnspecified is the zero value.  Persisted rows that
+	// pre-date REQ-HOOK-02 carry this value; the dispatcher resolves it
+	// against the row's OwnerKind for backwards compat.
+	WebhookTargetUnspecified WebhookTargetKind = iota
+	// WebhookTargetAddress — match deliveries whose RCPT TO equals the
+	// canonical address in target.value (the legacy "address" hook).
+	WebhookTargetAddress
+	// WebhookTargetDomain — match deliveries whose recipient domain
+	// equals target.value.
+	WebhookTargetDomain
+	// WebhookTargetPrincipal — match deliveries to a specific principal
+	// id stored in target.value.
+	WebhookTargetPrincipal
+	// WebhookTargetSynthetic — match deliveries accepted by
+	// directory.resolve_rcpt with no principal_id (REQ-DIR-RCPT-07);
+	// target.value carries the domain whose synthetic recipients the
+	// hook subscribes to.
+	WebhookTargetSynthetic
+)
+
+// String returns the canonical lowercase token.
+func (k WebhookTargetKind) String() string {
+	switch k {
+	case WebhookTargetAddress:
+		return "address"
+	case WebhookTargetDomain:
+		return "domain"
+	case WebhookTargetPrincipal:
+		return "principal"
+	case WebhookTargetSynthetic:
+		return "synthetic"
+	default:
+		return "unspecified"
+	}
+}
+
 // DeliveryMode selects whether the webhook payload contains the
 // message body inline or just an admin URL the receiver fetches.
 type DeliveryMode uint8
@@ -490,6 +536,53 @@ func (d DeliveryMode) String() string {
 	}
 }
 
+// WebhookBodyMode selects the JSON payload body shape (REQ-HOOK-03,
+// REQ-HOOK-EXTRACTED-01).  Inline and URL preserve the legacy
+// DeliveryMode contract; Extracted is new in Phase 3 Wave 3.5c.
+type WebhookBodyMode uint8
+
+// WebhookBodyMode values.
+const (
+	// WebhookBodyModeUnspecified is the zero value.  Persisted rows
+	// from before REQ-HOOK-EXTRACTED-01 carry this value; the
+	// dispatcher resolves it against the row's DeliveryMode for
+	// backwards compat.
+	WebhookBodyModeUnspecified WebhookBodyMode = iota
+	// WebhookBodyModeInline embeds the body bytes in the POST.
+	WebhookBodyModeInline
+	// WebhookBodyModeURL replaces the body with a signed fetch URL.
+	WebhookBodyModeURL
+	// WebhookBodyModeExtracted embeds server-rendered plain text
+	// (REQ-HOOK-EXTRACTED-01) and references attachments by fetch URL.
+	WebhookBodyModeExtracted
+)
+
+// String returns the canonical lowercase token.
+func (m WebhookBodyMode) String() string {
+	switch m {
+	case WebhookBodyModeInline:
+		return "inline"
+	case WebhookBodyModeURL:
+		return "url"
+	case WebhookBodyModeExtracted:
+		return "extracted"
+	default:
+		return "unspecified"
+	}
+}
+
+// Default and ceiling for the per-subscription extracted-text cap.
+// The defaults are documented in the operator-facing recipe at
+// docs/user/examples/text-only-app-integration.md.
+const (
+	// DefaultExtractedTextMaxBytes is the per-hook cap when the
+	// subscription does not specify one.  REQ-HOOK-EXTRACTED-01.
+	DefaultExtractedTextMaxBytes int64 = 5 * 1024 * 1024
+	// MaxExtractedTextMaxBytes is the operator-set ceiling enforced at
+	// REST / CLI boundary; values above it are rejected.
+	MaxExtractedTextMaxBytes int64 = 32 * 1024 * 1024
+)
+
 // RetryPolicy is the per-webhook retry configuration. JSON-marshaled
 // into the retry_policy_json column so future fields are additive
 // without a migration.
@@ -509,18 +602,40 @@ type RetryPolicy struct {
 type Webhook struct {
 	// ID is the assigned primary key.
 	ID WebhookID
-	// OwnerKind classifies the owner (domain or principal).
+	// OwnerKind classifies the owner (domain or principal).  Phase-2
+	// rows used this column as the only routing predicate.  Phase 3
+	// Wave 3.5c (REQ-HOOK-02) extends the vocabulary via TargetKind;
+	// the dispatcher prefers TargetKind when set and falls back to
+	// OwnerKind otherwise.
 	OwnerKind WebhookOwnerKind
 	// OwnerID is the owner's natural identifier — the domain name when
 	// OwnerKind is Domain, the stringified PrincipalID when Principal.
 	OwnerID string
+	// TargetKind extends OwnerKind with {address, synthetic}.  Zero
+	// (Unspecified) means "fall back to OwnerKind".
+	TargetKind WebhookTargetKind
 	// TargetURL is the receiving HTTPS endpoint.
 	TargetURL string
 	// HMACSecret is the shared secret the dispatcher uses to sign each
 	// payload. Stored verbatim.
 	HMACSecret []byte
-	// DeliveryMode selects inline vs fetch-url payload shape.
+	// DeliveryMode selects inline vs fetch-url payload shape.  Retained
+	// for backwards compat with Phase 2; new code reads BodyMode.
 	DeliveryMode DeliveryMode
+	// BodyMode selects the JSON payload shape; supersedes
+	// DeliveryMode and adds the "extracted" mode introduced by
+	// REQ-HOOK-EXTRACTED-01.  Zero (Unspecified) means "fall back to
+	// DeliveryMode".
+	BodyMode WebhookBodyMode
+	// ExtractedTextMaxBytes is the per-subscription cap on
+	// body.text in extracted mode (REQ-HOOK-EXTRACTED-01).  Zero falls
+	// back to DefaultExtractedTextMaxBytes.  Values are clamped at
+	// MaxExtractedTextMaxBytes by the REST / CLI boundary.
+	ExtractedTextMaxBytes int64
+	// TextRequired enables the drop policy of REQ-HOOK-EXTRACTED-03:
+	// when true the dispatcher drops messages whose extractor result
+	// has origin=none rather than POSTing them.
+	TextRequired bool
 	// RetryPolicy controls retry behaviour.
 	RetryPolicy RetryPolicy
 	// Active gates dispatching; inactive rows survive for audit.
@@ -528,6 +643,54 @@ type Webhook struct {
 	// CreatedAt / UpdatedAt are the row lifecycle timestamps.
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// EffectiveTargetKind returns the row's resolved TargetKind, mapping
+// the zero (Unspecified) value to the legacy OwnerKind so dispatcher
+// code paths can read one field uniformly.
+func (w Webhook) EffectiveTargetKind() WebhookTargetKind {
+	if w.TargetKind != WebhookTargetUnspecified {
+		return w.TargetKind
+	}
+	switch w.OwnerKind {
+	case WebhookOwnerDomain:
+		return WebhookTargetDomain
+	case WebhookOwnerPrincipal:
+		return WebhookTargetPrincipal
+	default:
+		return WebhookTargetUnspecified
+	}
+}
+
+// EffectiveBodyMode returns the row's resolved BodyMode, mapping the
+// zero (Unspecified) value to the legacy DeliveryMode.  Used by the
+// dispatcher's payload builder.
+func (w Webhook) EffectiveBodyMode() WebhookBodyMode {
+	if w.BodyMode != WebhookBodyModeUnspecified {
+		return w.BodyMode
+	}
+	switch w.DeliveryMode {
+	case DeliveryModeInline:
+		return WebhookBodyModeInline
+	case DeliveryModeFetchURL:
+		return WebhookBodyModeURL
+	default:
+		return WebhookBodyModeUnspecified
+	}
+}
+
+// EffectiveExtractedTextMaxBytes returns the resolved per-subscription
+// cap on body.text in extracted mode, mapping zero to the package
+// default and capping at the package max.
+func (w Webhook) EffectiveExtractedTextMaxBytes() int64 {
+	v := w.ExtractedTextMaxBytes
+	if v <= 0 {
+		v = DefaultExtractedTextMaxBytes
+	}
+	if v > MaxExtractedTextMaxBytes {
+		v = MaxExtractedTextMaxBytes
+	}
+	return v
 }
 
 // -- DMARC reports ----------------------------------------------------

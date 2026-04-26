@@ -789,11 +789,15 @@ func (m *metadata) InsertWebhook(ctx context.Context, w store.Webhook) (store.We
 	err = m.runTx(ctx, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
 			INSERT INTO webhooks (owner_kind, owner_id, target_url, hmac_secret,
-			  delivery_mode, retry_policy_json, active, created_at_us, updated_at_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+			  delivery_mode, retry_policy_json, active, created_at_us, updated_at_us,
+			  target_kind, body_mode, extracted_text_max_bytes, text_required)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			RETURNING id`,
 			int32(w.OwnerKind), w.OwnerID, w.TargetURL, w.HMACSecret,
 			int32(w.DeliveryMode), rpJSON, w.Active,
-			usMicros(now), usMicros(now)).Scan(&id)
+			usMicros(now), usMicros(now),
+			int32(w.TargetKind), int32(w.BodyMode), w.ExtractedTextMaxBytes,
+			w.TextRequired).Scan(&id)
 	})
 	if err != nil {
 		return store.Webhook{}, err
@@ -812,11 +816,16 @@ func (m *metadata) UpdateWebhook(ctx context.Context, w store.Webhook) error {
 		res, err := tx.Exec(ctx, `
 			UPDATE webhooks
 			   SET owner_kind = $1, owner_id = $2, target_url = $3, hmac_secret = $4,
-			       delivery_mode = $5, retry_policy_json = $6, active = $7, updated_at_us = $8
-			 WHERE id = $9`,
+			       delivery_mode = $5, retry_policy_json = $6, active = $7, updated_at_us = $8,
+			       target_kind = $9, body_mode = $10, extracted_text_max_bytes = $11,
+			       text_required = $12
+			 WHERE id = $13`,
 			int32(w.OwnerKind), w.OwnerID, w.TargetURL, w.HMACSecret,
 			int32(w.DeliveryMode), rpJSON, w.Active,
-			usMicros(now), int64(w.ID))
+			usMicros(now),
+			int32(w.TargetKind), int32(w.BodyMode), w.ExtractedTextMaxBytes,
+			w.TextRequired,
+			int64(w.ID))
 		if err != nil {
 			return mapErr(err)
 		}
@@ -848,9 +857,13 @@ func scanWebhookPG(row pgx.Row) (store.Webhook, error) {
 		hmac                       []byte
 		active                     bool
 		createdUs, updatedUs       int64
+		targetKind, bodyMode       int32
+		txtMax                     int64
+		textRequired               bool
 	)
 	err := row.Scan(&id, &ownerKind, &ownerID, &targetURL, &hmac,
-		&deliveryMode, &rpJSON, &active, &createdUs, &updatedUs)
+		&deliveryMode, &rpJSON, &active, &createdUs, &updatedUs,
+		&targetKind, &bodyMode, &txtMax, &textRequired)
 	if err != nil {
 		return store.Webhook{}, mapErr(err)
 	}
@@ -859,23 +872,30 @@ func scanWebhookPG(row pgx.Row) (store.Webhook, error) {
 		return store.Webhook{}, err
 	}
 	return store.Webhook{
-		ID:           store.WebhookID(id),
-		OwnerKind:    store.WebhookOwnerKind(ownerKind),
-		OwnerID:      ownerID,
-		TargetURL:    targetURL,
-		HMACSecret:   hmac,
-		DeliveryMode: store.DeliveryMode(deliveryMode),
-		RetryPolicy:  rp,
-		Active:       active,
-		CreatedAt:    fromMicros(createdUs),
-		UpdatedAt:    fromMicros(updatedUs),
+		ID:                    store.WebhookID(id),
+		OwnerKind:             store.WebhookOwnerKind(ownerKind),
+		OwnerID:               ownerID,
+		TargetKind:            store.WebhookTargetKind(targetKind),
+		TargetURL:             targetURL,
+		HMACSecret:            hmac,
+		DeliveryMode:          store.DeliveryMode(deliveryMode),
+		BodyMode:              store.WebhookBodyMode(bodyMode),
+		ExtractedTextMaxBytes: txtMax,
+		TextRequired:          textRequired,
+		RetryPolicy:           rp,
+		Active:                active,
+		CreatedAt:             fromMicros(createdUs),
+		UpdatedAt:             fromMicros(updatedUs),
 	}, nil
 }
 
+const webhookSelectColumnsPG = `id, owner_kind, owner_id, target_url, hmac_secret, delivery_mode,
+		retry_policy_json, active, created_at_us, updated_at_us,
+		target_kind, body_mode, extracted_text_max_bytes, text_required`
+
 func (m *metadata) GetWebhook(ctx context.Context, id store.WebhookID) (store.Webhook, error) {
 	row := m.s.pool.QueryRow(ctx, `
-		SELECT id, owner_kind, owner_id, target_url, hmac_secret, delivery_mode,
-		       retry_policy_json, active, created_at_us, updated_at_us
+		SELECT `+webhookSelectColumnsPG+`
 		  FROM webhooks WHERE id = $1`, int64(id))
 	return scanWebhookPG(row)
 }
@@ -887,13 +907,11 @@ func (m *metadata) ListWebhooks(ctx context.Context, kind store.WebhookOwnerKind
 	)
 	if kind == store.WebhookOwnerUnknown {
 		rows, err = m.s.pool.Query(ctx, `
-			SELECT id, owner_kind, owner_id, target_url, hmac_secret, delivery_mode,
-			       retry_policy_json, active, created_at_us, updated_at_us
+			SELECT `+webhookSelectColumnsPG+`
 			  FROM webhooks ORDER BY id ASC`)
 	} else {
 		rows, err = m.s.pool.Query(ctx, `
-			SELECT id, owner_kind, owner_id, target_url, hmac_secret, delivery_mode,
-			       retry_policy_json, active, created_at_us, updated_at_us
+			SELECT `+webhookSelectColumnsPG+`
 			  FROM webhooks WHERE owner_kind = $1 AND owner_id = $2 ORDER BY id ASC`,
 			int32(kind), ownerID)
 	}
@@ -914,19 +932,22 @@ func (m *metadata) ListWebhooks(ctx context.Context, kind store.WebhookOwnerKind
 
 func (m *metadata) ListActiveWebhooksForDomain(ctx context.Context, domain string) ([]store.Webhook, error) {
 	dom := strings.ToLower(domain)
+	// See storesqlite.ListActiveWebhooksForDomain for the union shape;
+	// kept identical here so SQLite and Postgres surface the same row
+	// set for a given input.
 	rows, err := m.s.pool.Query(ctx, `
-		SELECT w.id, w.owner_kind, w.owner_id, w.target_url, w.hmac_secret,
-		       w.delivery_mode, w.retry_policy_json, w.active, w.created_at_us,
-		       w.updated_at_us
+		SELECT `+webhookSelectColumnsPG+`
 		  FROM webhooks w
 		 WHERE w.active = TRUE AND (
 		   (w.owner_kind = $1 AND lower(w.owner_id) = $2)
-		   OR (w.owner_kind = $3 AND w.owner_id IN (
+		   OR (w.target_kind = $3 AND lower(w.owner_id) = $4)
+		   OR (w.owner_kind = $5 AND w.owner_id IN (
 		     SELECT CAST(p.id AS TEXT) FROM principals p
-		      WHERE substring(p.canonical_email FROM position('@' IN p.canonical_email) + 1) = $4))
+		      WHERE substring(p.canonical_email FROM position('@' IN p.canonical_email) + 1) = $6))
 		 )
 		 ORDER BY w.id ASC`,
 		int32(store.WebhookOwnerDomain), dom,
+		int32(store.WebhookTargetSynthetic), dom,
 		int32(store.WebhookOwnerPrincipal), dom)
 	if err != nil {
 		return nil, mapErr(err)

@@ -304,6 +304,53 @@ func TestCreateBundle_ConsistentSnapshot_UnderConcurrentWrites(t *testing.T) {
 	}
 }
 
+// TestCreateBundle_WebhookExtractedFields_RoundTrip seeds a webhook
+// row with the Phase 3 Wave 3.5c columns (REQ-HOOK-02 + REQ-HOOK-
+// EXTRACTED-01..03), creates a bundle, and re-reads the JSONL to
+// confirm every field made it through.
+func TestCreateBundle_WebhookExtractedFields_RoundTrip(t *testing.T) {
+	t.Parallel()
+	fs, err := fakestore.New(fakestore.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+	if _, err := fs.Meta().InsertWebhook(context.Background(), store.Webhook{
+		OwnerKind:             store.WebhookOwnerDomain,
+		OwnerID:               "app.example.com",
+		TargetKind:            store.WebhookTargetSynthetic,
+		TargetURL:             "https://app.internal/v1/mail/inbound",
+		HMACSecret:            []byte("k"),
+		DeliveryMode:          store.DeliveryModeInline,
+		BodyMode:              store.WebhookBodyModeExtracted,
+		ExtractedTextMaxBytes: 5 * 1024 * 1024,
+		TextRequired:          true,
+		Active:                true,
+	}); err != nil {
+		t.Fatalf("InsertWebhook: %v", err)
+	}
+	dst := t.TempDir()
+	b := backup.New(backup.Options{Store: fs})
+	if _, err := b.CreateBundle(context.Background(), dst); err != nil {
+		t.Fatalf("CreateBundle: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dst, "metadata", "webhooks.jsonl"))
+	if err != nil {
+		t.Fatalf("read webhooks.jsonl: %v", err)
+	}
+	got := string(raw)
+	for _, want := range []string{
+		`"target_kind":4`, // WebhookTargetSynthetic == 4
+		`"body_mode":3`,   // WebhookBodyModeExtracted == 3
+		`"extracted_text_max_bytes":5242880`,
+		`"text_required":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in webhooks.jsonl: %s", want, got)
+		}
+	}
+}
+
 // TestVerifyBundle_BadCount_FailsCleanly tampers with a JSONL and
 // expects VerifyBundle to surface the mismatch.
 func TestVerifyBundle_BadCount_FailsCleanly(t *testing.T) {

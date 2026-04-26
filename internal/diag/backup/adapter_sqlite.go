@@ -420,17 +420,21 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 	case "webhooks":
 		return enumerate(ctx, s.tx,
 			`SELECT id, owner_kind, owner_id, target_url, hmac_secret, delivery_mode,
-			        retry_policy_json, active, created_at_us, updated_at_us
+			        retry_policy_json, active, created_at_us, updated_at_us,
+			        target_kind, body_mode, extracted_text_max_bytes, text_required
 			   FROM webhooks ORDER BY id`,
 			func(rs *sql.Rows) (any, error) {
 				var r WebhookRow
-				var active int64
+				var active, textReq int64
 				if err := rs.Scan(&r.ID, &r.OwnerKind, &r.OwnerID, &r.TargetURL,
 					&r.HMACSecret, &r.DeliveryMode, &r.RetryPolicyJSON,
-					&active, &r.CreatedAtUs, &r.UpdatedAtUs); err != nil {
+					&active, &r.CreatedAtUs, &r.UpdatedAtUs,
+					&r.TargetKind, &r.BodyMode, &r.ExtractedTextMaxBytes,
+					&textReq); err != nil {
 					return nil, err
 				}
 				r.Active = active != 0
+				r.TextRequired = textReq != 0
 				return &r, nil
 			}, fn)
 	case "dmarc_reports_raw":
@@ -1011,11 +1015,14 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		r := row.(*WebhookRow)
 		_, err := s.tx.ExecContext(ctx,
 			`INSERT INTO webhooks (id, owner_kind, owner_id, target_url, hmac_secret,
-			   delivery_mode, retry_policy_json, active, created_at_us, updated_at_us)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   delivery_mode, retry_policy_json, active, created_at_us, updated_at_us,
+			   target_kind, body_mode, extracted_text_max_bytes, text_required)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.OwnerKind, r.OwnerID, r.TargetURL, r.HMACSecret,
 			r.DeliveryMode, r.RetryPolicyJSON, boolToInt(r.Active),
-			r.CreatedAtUs, r.UpdatedAtUs)
+			r.CreatedAtUs, r.UpdatedAtUs,
+			r.TargetKind, r.BodyMode, r.ExtractedTextMaxBytes,
+			boolToInt(r.TextRequired))
 		return err
 	case "dmarc_reports_raw":
 		r := row.(*DMARCReportRow)

@@ -855,6 +855,16 @@ func (m *metaFace) ListActiveWebhooksForDomain(ctx context.Context, domain strin
 		if !w.Active {
 			continue
 		}
+		// Phase 3 (REQ-HOOK-02): synthetic-target hooks live under
+		// target_kind=synthetic with the recipient domain in
+		// owner_id; match them in addition to the legacy
+		// owner_kind={domain,principal} paths.
+		if w.TargetKind == store.WebhookTargetSynthetic {
+			if strings.EqualFold(w.OwnerID, dom) {
+				out = append(out, w)
+				continue
+			}
+		}
 		switch w.OwnerKind {
 		case store.WebhookOwnerDomain:
 			if strings.EqualFold(w.OwnerID, dom) {

@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -42,12 +44,25 @@ func (d *Dispatcher) deliver(ctx context.Context, hook store.Webhook, p store.Pr
 		d.logger.Warn("protowebhook: generate delivery id", "err", err.Error())
 		return
 	}
-	payload, err := d.buildPayload(ctx, hook, deliveryID, p, mb, msg)
+	payload, dropped, err := d.buildPayload(ctx, hook, deliveryID, p, mb, msg)
 	if err != nil {
 		d.logger.Warn("protowebhook: build payload",
 			"webhook_id", uint64(hook.ID),
 			"message_id", uint64(msg.ID),
 			"err", err.Error())
+		return
+	}
+	if dropped {
+		// REQ-HOOK-EXTRACTED-03: text_required + origin=none drops the
+		// delivery without retry.  No HTTP POST is issued; the audit
+		// log + metric + admin hook log carry the operator-visible
+		// signal.
+		d.recordOutcome(hook, "dropped_no_text")
+		d.recordDropAudit(ctx, hook, deliveryID, msg)
+		d.logger.Info("protowebhook: dropped no_text",
+			"webhook_id", uint64(hook.ID),
+			"delivery_id", deliveryID,
+			"message_id", uint64(msg.ID))
 		return
 	}
 	body, err := json.Marshal(payload)
@@ -66,8 +81,9 @@ func (d *Dispatcher) deliver(ctx context.Context, hook store.Webhook, p store.Pr
 	attempt := 0
 	for {
 		attempt++
-		ok, transient := d.postOnce(ctx, hook, deliveryID, body)
+		status, ok, transient := d.postOnce(ctx, hook, deliveryID, body)
 		if ok {
+			d.recordOutcome(hook, status)
 			d.logger.Info("protowebhook: delivered",
 				"webhook_id", uint64(hook.ID),
 				"delivery_id", deliveryID,
@@ -76,6 +92,7 @@ func (d *Dispatcher) deliver(ctx context.Context, hook store.Webhook, p store.Pr
 			return
 		}
 		if !transient {
+			d.recordOutcome(hook, status)
 			d.logger.Warn("protowebhook: permanent failure",
 				"webhook_id", uint64(hook.ID),
 				"delivery_id", deliveryID,
@@ -84,6 +101,7 @@ func (d *Dispatcher) deliver(ctx context.Context, hook store.Webhook, p store.Pr
 			return
 		}
 		if attempt > len(schedule) {
+			d.recordOutcome(hook, status)
 			d.logger.Warn("protowebhook: retries exhausted",
 				"webhook_id", uint64(hook.ID),
 				"delivery_id", deliveryID,
@@ -101,18 +119,73 @@ func (d *Dispatcher) deliver(ctx context.Context, hook store.Webhook, p store.Pr
 	}
 }
 
-// postOnce executes a single HTTP attempt. Returns (ok, transient) where
-// ok==true on 2xx, transient==true on 5xx / 429 / network or context
-// errors that warrant a retry, transient==false on any other 4xx that
-// should be treated as permanent (REQ-HOOK-11).
-func (d *Dispatcher) postOnce(ctx context.Context, hook store.Webhook, deliveryID string, body []byte) (ok, transient bool) {
+// recordOutcome bumps the dispatcher metric.  The metric collector is
+// only registered when observe.RegisterHookMetrics has been called by
+// the server lifecycle; tests that do not register skip the bump.
+func (d *Dispatcher) recordOutcome(hook store.Webhook, status string) {
+	if observe.HookDeliveriesTotal == nil {
+		return
+	}
+	observe.HookDeliveriesTotal.WithLabelValues(hookMetricName(hook), status).Inc()
+}
+
+// recordTruncated bumps the truncation metric for extracted-mode
+// deliveries that hit the per-subscription cap.
+func (d *Dispatcher) recordTruncated(hook store.Webhook) {
+	if observe.HookExtractedTruncatedTotal == nil {
+		return
+	}
+	observe.HookExtractedTruncatedTotal.WithLabelValues(hookMetricName(hook)).Inc()
+}
+
+// hookMetricName returns the operator-visible label used by the
+// dispatcher metrics.  The webhook row does not yet carry a `name`
+// column; we derive a stable id-based label until that field lands.
+func hookMetricName(hook store.Webhook) string {
+	return strconv.FormatUint(uint64(hook.ID), 10)
+}
+
+// recordDropAudit appends the REQ-HOOK-EXTRACTED-03 audit row.  The
+// audit message is intentionally short and machine-grep-friendly; the
+// hook id and message id appear in Metadata for filterable replay.
+func (d *Dispatcher) recordDropAudit(ctx context.Context, hook store.Webhook, deliveryID string, msg store.Message) {
+	entry := store.AuditLogEntry{
+		At:        d.clock.Now().UTC(),
+		ActorKind: store.ActorSystem,
+		ActorID:   "system",
+		Action:    "hook.dispatch.dropped_no_text",
+		Subject:   fmt.Sprintf("webhook:%d", hook.ID),
+		Outcome:   store.OutcomeSuccess,
+		Message:   "extracted-mode webhook delivery dropped: text_required and body.text_origin=none",
+		Metadata: map[string]string{
+			"delivery_id":      deliveryID,
+			"message_id":       strconv.FormatUint(uint64(msg.ID), 10),
+			"message_id_email": msg.Envelope.MessageID,
+			"reason":           "dropped_no_text",
+		},
+	}
+	if err := d.store.Meta().AppendAuditLog(ctx, entry); err != nil {
+		// Never blocks delivery; the log warn surfaces store-side
+		// problems for the operator.
+		d.logger.Warn("protowebhook: append audit log",
+			"webhook_id", uint64(hook.ID),
+			"err", err.Error())
+	}
+}
+
+// postOnce executes a single HTTP attempt. Returns (status, ok, transient)
+// where status is the metric label ("2xx" | "4xx" | "5xx" | "timeout" |
+// "network"), ok==true on 2xx, transient==true on 5xx / 429 / network or
+// context errors that warrant a retry, transient==false on any other 4xx
+// that should be treated as permanent (REQ-HOOK-11).
+func (d *Dispatcher) postOnce(ctx context.Context, hook store.Webhook, deliveryID string, body []byte) (status string, ok, transient bool) {
 	now := d.clock.Now().UTC()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hook.TargetURL, bytes.NewReader(body))
 	if err != nil {
 		d.logger.Warn("protowebhook: build request",
 			"webhook_id", uint64(hook.ID),
 			"err", err.Error())
-		return false, false
+		return "network", false, false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(HeaderEvent, EventMailArrived)
@@ -126,9 +199,9 @@ func (d *Dispatcher) postOnce(ctx context.Context, hook store.Webhook, deliveryI
 		// Network or context error: transient unless ctx has been
 		// cancelled in which case we should not loop further.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return false, false
+			return "timeout", false, false
 		}
-		return false, true
+		return "network", false, true
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)
@@ -136,11 +209,11 @@ func (d *Dispatcher) postOnce(ctx context.Context, hook store.Webhook, deliveryI
 	}()
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		return true, false
+		return "2xx", true, false
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
-		return false, true
+		return "5xx", false, true
 	default:
-		return false, false
+		return "4xx", false, false
 	}
 }
 
@@ -181,12 +254,23 @@ func newDeliveryID() (string, error) {
 	return hex.EncodeToString(buf[:]), nil
 }
 
-// buildPayload assembles the JSON wire shape per REQ-HOOK-10/20/30.
-// When the message body is below InlineBodyMaxSize we embed it
-// base64-encoded; otherwise we substitute a signed fetch URL valid for
-// FetchURLTTL. The hook's DeliveryMode preference is honoured but
-// "inline" is overridden to fetch_url when the size threshold is
-// exceeded (REQ-HOOK-20).
+// buildPayload assembles the JSON wire shape per
+// REQ-HOOK-10/20/30 + REQ-HOOK-EXTRACTED-01..03.
+//
+// Returns (payload, dropped, err).  When dropped == true the dispatcher
+// suppresses the HTTP POST per REQ-HOOK-EXTRACTED-03; the caller still
+// records metrics + audit log.
+//
+// Body-mode selection:
+//
+//   - extracted: parse the message, run mailparse.ExtractBodyText, cap
+//     by hook.EffectiveExtractedTextMaxBytes(); when text_required is
+//     set and origin == "none", return dropped=true.
+//   - inline / url: existing Phase-2 contract preserved verbatim.
+//
+// Attachments are emitted with fetch URLs in extracted mode (REQ-HOOK-21).
+// A raw_rfc822_url accompanies the extracted-mode payload so receivers
+// that want the full message can still get to it.
 func (d *Dispatcher) buildPayload(
 	ctx context.Context,
 	hook store.Webhook,
@@ -194,7 +278,7 @@ func (d *Dispatcher) buildPayload(
 	p store.Principal,
 	mb store.Mailbox,
 	msg store.Message,
-) (Payload, error) {
+) (Payload, bool, error) {
 	pl := Payload{
 		ID:          deliveryID,
 		Event:       EventMailArrived,
@@ -213,6 +297,34 @@ func (d *Dispatcher) buildPayload(
 		pl.Envelope.To = to
 	}
 
+	switch hook.EffectiveBodyMode() {
+	case store.WebhookBodyModeExtracted:
+		dropped, err := d.fillExtractedBody(ctx, hook, deliveryID, &pl, msg)
+		if err != nil {
+			return Payload{}, false, err
+		}
+		if dropped {
+			return Payload{}, true, nil
+		}
+		return pl, false, nil
+	default:
+		// inline / url / unspecified: Phase-2 contract.
+		if err := d.fillLegacyBody(ctx, hook, deliveryID, &pl, msg); err != nil {
+			return Payload{}, false, err
+		}
+		return pl, false, nil
+	}
+}
+
+// fillLegacyBody implements the Phase-2 inline / fetch_url body shape.
+// Pulled out of buildPayload for readability.
+func (d *Dispatcher) fillLegacyBody(
+	ctx context.Context,
+	hook store.Webhook,
+	deliveryID string,
+	pl *Payload,
+	msg store.Message,
+) error {
 	wantInline := hook.DeliveryMode == store.DeliveryModeInline
 	tooBig := msg.Size > d.inlineMaxSize
 	useFetch := !wantInline || tooBig
@@ -239,7 +351,7 @@ func (d *Dispatcher) buildPayload(
 	}
 	if useFetch {
 		if d.fetchBase == "" || len(d.signingKey) == 0 {
-			return Payload{}, errors.New("protowebhook: fetch URL requested but FetchURLBaseURL/SigningKey not configured")
+			return errors.New("protowebhook: fetch URL requested but FetchURLBaseURL/SigningKey not configured")
 		}
 		expires := d.clock.Now().Add(d.fetchTTL).UTC()
 		fu := buildFetchURL(d.fetchBase, deliveryID, msg.Blob.Hash, expires.Unix(), d.signingKey)
@@ -251,7 +363,92 @@ func (d *Dispatcher) buildPayload(
 			},
 		}
 	}
-	return pl, nil
+	return nil
+}
+
+// fillExtractedBody implements REQ-HOOK-EXTRACTED-01..03.  Returns
+// dropped == true when text_required is set on the subscription and
+// the extractor produced origin == "none".
+func (d *Dispatcher) fillExtractedBody(
+	ctx context.Context,
+	hook store.Webhook,
+	deliveryID string,
+	pl *Payload,
+	msg store.Message,
+) (dropped bool, err error) {
+	if d.fetchBase == "" || len(d.signingKey) == 0 {
+		return false, errors.New("protowebhook: extracted mode requires FetchURLBaseURL/SigningKey")
+	}
+	raw, err := readBlob(ctx, d.store, msg.Blob.Hash)
+	if err != nil {
+		return false, fmt.Errorf("protowebhook: read blob: %w", err)
+	}
+	parsed, perr := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
+	var (
+		text   string
+		origin mailparse.BodyTextOrigin
+	)
+	if perr != nil {
+		// On parse failure, the only safe origin claim is "none";
+		// log and fall through so text_required still drops.
+		d.logger.Warn("protowebhook: parse for extraction",
+			"webhook_id", uint64(hook.ID),
+			"message_id", uint64(msg.ID),
+			"err", perr.Error())
+		origin = mailparse.BodyTextOriginNone
+	} else {
+		text, origin = mailparse.ExtractBodyText(parsed)
+	}
+	if origin == mailparse.BodyTextOriginNone && hook.TextRequired {
+		return true, nil
+	}
+
+	maxBytes := hook.EffectiveExtractedTextMaxBytes()
+	truncated := false
+	if int64(len(text)) > maxBytes {
+		text = text[:maxBytes]
+		truncated = true
+		d.recordTruncated(hook)
+	}
+
+	expires := d.clock.Now().Add(d.fetchTTL).UTC()
+	rawURL := buildFetchURL(d.fetchBase, deliveryID, msg.Blob.Hash, expires.Unix(), d.signingKey)
+	pl.Body = Body{
+		Mode:          "extracted",
+		Text:          text,
+		TextOrigin:    string(origin),
+		TextTruncated: truncated,
+	}
+	pl.RawRFC822URL = rawURL
+	if perr == nil {
+		pl.Attachments = buildAttachments(parsed, d.fetchBase, deliveryID, msg.Blob.Hash, expires.Unix(), d.signingKey)
+	}
+	return false, nil
+}
+
+// buildAttachments turns every non-text non-multipart leaf into an
+// Attachment carrying a signed fetch URL.  The fetch URL points at the
+// raw rfc822 message blob — Phase-3 v1 does not split each attachment
+// into its own blob; receivers fetch the whole message and pull the
+// part out themselves.  When a future wave stores per-attachment blobs
+// the FetchURL can swap to a per-part signed token without breaking
+// the receiver-side wire shape.
+func buildAttachments(m mailparse.Message, base, deliveryID, blobHash string, expUnix int64, key []byte) []Attachment {
+	parts := mailparse.Attachments(m)
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]Attachment, 0, len(parts))
+	url := buildFetchURL(base, deliveryID, blobHash, expUnix, key)
+	for _, p := range parts {
+		out = append(out, Attachment{
+			Filename:    p.Filename,
+			ContentType: p.ContentType,
+			Size:        int64(len(p.Bytes)),
+			FetchURL:    url,
+		})
+	}
+	return out
 }
 
 // readBlob slurps a blob into memory. Used only when the message is

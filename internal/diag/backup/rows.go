@@ -251,6 +251,13 @@ type WebhookRow struct {
 	Active          bool   `json:"active"`
 	CreatedAtUs     int64  `json:"created_at_us"`
 	UpdatedAtUs     int64  `json:"updated_at_us"`
+	// Phase 3 Wave 3.5c Track C (REQ-HOOK-02 + REQ-HOOK-EXTRACTED-*).
+	// All four fields default to zero / false for legacy rows so a
+	// pre-Wave-3.5c bundle restores cleanly.
+	TargetKind            int64 `json:"target_kind,omitempty"`
+	BodyMode              int64 `json:"body_mode,omitempty"`
+	ExtractedTextMaxBytes int64 `json:"extracted_text_max_bytes,omitempty"`
+	TextRequired          bool  `json:"text_required,omitempty"`
 }
 
 type DMARCReportRow struct {

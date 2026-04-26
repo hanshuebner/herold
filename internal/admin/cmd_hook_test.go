@@ -110,6 +110,72 @@ func TestCLIHookDelete(t *testing.T) {
 	}
 }
 
+// TestCLIHookCreate_SyntheticExtracted exercises the REQ-HOOK-02 +
+// REQ-HOOK-EXTRACTED-01..03 surface end-to-end through the CLI.
+func TestCLIHookCreate_SyntheticExtracted(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	out, _, err := env.run("hook", "create",
+		"--target-kind=synthetic",
+		"--target-value=app.example.com",
+		"--target-url=https://app.internal/v1/mail/inbound",
+		"--body-mode=extracted",
+		"--extracted-text-max-bytes=5242880",
+		"--text-required",
+		"--json")
+	if err != nil {
+		t.Fatalf("hook create: %v", err)
+	}
+	// JSON output may be pretty-printed; match value-bearing tokens
+	// rather than tight-packed JSON.
+	if !strings.Contains(out, `"target_kind"`) || !strings.Contains(out, `"synthetic"`) {
+		t.Fatalf("target_kind not surfaced: %s", out)
+	}
+	if !strings.Contains(out, `"body_mode"`) || !strings.Contains(out, `"extracted"`) {
+		t.Fatalf("body_mode not surfaced: %s", out)
+	}
+	if !strings.Contains(out, `"text_required"`) || !strings.Contains(out, "true") {
+		t.Fatalf("text_required not surfaced: %s", out)
+	}
+	if !strings.Contains(out, `"extracted_text_max_bytes"`) || !strings.Contains(out, "5242880") {
+		t.Fatalf("extracted_text_max_bytes not surfaced: %s", out)
+	}
+}
+
+// TestCLIHookCreate_RejectsTextRequiredWithoutExtracted: the
+// REQ-HOOK-EXTRACTED-03 drop policy only applies in extracted mode;
+// any other body_mode + text_required is a validation failure.
+func TestCLIHookCreate_RejectsTextRequiredWithoutExtracted(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	_, _, err := env.run("hook", "create",
+		"--target-kind=domain",
+		"--target-value=example.com",
+		"--target-url=https://recv/",
+		"--body-mode=inline",
+		"--text-required")
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "text_required") {
+		t.Fatalf("err = %v, want text_required mention", err)
+	}
+}
+
+// TestCLIHookCreate_RejectsExtractedTextMaxOverCeiling: the
+// REQ-HOOK-EXTRACTED-01 cap of 32 MiB is enforced at the REST/CLI
+// boundary.
+func TestCLIHookCreate_RejectsExtractedTextMaxOverCeiling(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	_, _, err := env.run("hook", "create",
+		"--target-kind=synthetic",
+		"--target-value=app.example.com",
+		"--target-url=https://recv/",
+		"--body-mode=extracted",
+		"--extracted-text-max-bytes=999999999")
+	if err == nil {
+		t.Fatalf("expected ceiling error")
+	}
+}
+
 // extractFirstJSONNumber pulls the first numeric value matching the prefix
 // out of raw. Tolerant to whitespace; sufficient for "id" extraction in
 // the small JSON bodies our tests inspect.

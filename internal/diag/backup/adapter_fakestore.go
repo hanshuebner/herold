@@ -290,6 +290,10 @@ func convertFakeToRow(table string, raw any) (any, error) {
 			TargetURL: w.TargetURL, HMACSecret: w.HMACSecret,
 			DeliveryMode: int64(w.DeliveryMode), RetryPolicyJSON: policy,
 			Active: w.Active, CreatedAtUs: micros(w.CreatedAt), UpdatedAtUs: micros(w.UpdatedAt),
+			TargetKind:            int64(w.TargetKind),
+			BodyMode:              int64(w.BodyMode),
+			ExtractedTextMaxBytes: w.ExtractedTextMaxBytes,
+			TextRequired:          w.TextRequired,
 		}, nil
 	case "dmarc_reports_raw":
 		d := raw.(store.DMARCReport)
@@ -545,6 +549,10 @@ func convertRowToFake(table string, row any) (any, error) {
 			DeliveryMode: store.DeliveryMode(r.DeliveryMode),
 			Active:       r.Active,
 			CreatedAt:    fromMicros(r.CreatedAtUs), UpdatedAt: fromMicros(r.UpdatedAtUs),
+			TargetKind:            store.WebhookTargetKind(r.TargetKind),
+			BodyMode:              store.WebhookBodyMode(r.BodyMode),
+			ExtractedTextMaxBytes: r.ExtractedTextMaxBytes,
+			TextRequired:          r.TextRequired,
 		}
 		if r.RetryPolicyJSON != "" {
 			_ = decodeJSON(r.RetryPolicyJSON, &w.RetryPolicy)

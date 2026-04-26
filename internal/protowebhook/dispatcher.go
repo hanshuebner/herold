@@ -316,8 +316,21 @@ func (d *Dispatcher) processChange(ctx context.Context, c store.FTSChange) {
 }
 
 // matchingWebhooks returns the union of:
-//   - active webhooks owned by the principal's domain,
+//   - active webhooks owned by the principal's domain (legacy
+//     owner_kind=domain),
+//   - active synthetic-target webhooks for that domain
+//     (target_kind=synthetic, REQ-HOOK-02), surfaced by the same
+//     ListActiveWebhooksForDomain call in the storesqlite/storepg
+//     adapters,
 //   - active webhooks owned by the principal directly.
+//
+// TODO(3.5c-coord): synthetic recipients accepted with no principal_id
+// (REQ-DIR-RCPT-07 fall-through case) do not currently flow through
+// the change feed because they lack a mailbox row.  Track A will
+// surface those via a session-time hook into the dispatcher; until
+// that lands the synthetic-target path here only fires for synthetic
+// recipients that DO have a binding principal (the operator-recipe
+// `accept` + `principal_id` shape).
 //
 // Duplicates (a hook listed under both ownership paths, which the schema
 // permits but conventional usage avoids) are coalesced by ID.

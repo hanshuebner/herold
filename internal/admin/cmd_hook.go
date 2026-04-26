@@ -86,20 +86,43 @@ func newHookCreateCmd() *cobra.Command {
 			g := globals(cmd.Context())
 			ownerKind, _ := cmd.Flags().GetString("owner-kind")
 			ownerID, _ := cmd.Flags().GetString("owner-id")
+			targetKind, _ := cmd.Flags().GetString("target-kind")
+			targetValue, _ := cmd.Flags().GetString("target-value")
 			targetURL, _ := cmd.Flags().GetString("target-url")
 			mode, _ := cmd.Flags().GetString("mode")
+			bodyMode, _ := cmd.Flags().GetString("body-mode")
+			extractedMax, _ := cmd.Flags().GetInt64("extracted-text-max-bytes")
+			textRequired, _ := cmd.Flags().GetBool("text-required")
 			active, _ := cmd.Flags().GetBool("active")
-			if ownerKind == "" || ownerID == "" || targetURL == "" {
-				return errors.New("hook create: --owner-kind, --owner-id, --target-url are required")
+			usingTarget := targetKind != "" || targetValue != ""
+			if !usingTarget && (ownerKind == "" || ownerID == "") {
+				return errors.New("hook create: --owner-kind+--owner-id OR --target-kind+--target-value is required")
+			}
+			if targetURL == "" {
+				return errors.New("hook create: --target-url is required")
 			}
 			body := map[string]any{
-				"owner_kind": ownerKind,
-				"owner_id":   ownerID,
 				"target_url": targetURL,
 				"active":     active,
 			}
+			if usingTarget {
+				body["target_kind"] = targetKind
+				body["target_value"] = targetValue
+			} else {
+				body["owner_kind"] = ownerKind
+				body["owner_id"] = ownerID
+			}
 			if mode != "" {
 				body["delivery_mode"] = mode
+			}
+			if bodyMode != "" {
+				body["body_mode"] = bodyMode
+			}
+			if extractedMax > 0 {
+				body["extracted_text_max_bytes"] = extractedMax
+			}
+			if textRequired {
+				body["text_required"] = true
 			}
 			client, err := clientFromGlobals(g)
 			if err != nil {
@@ -121,10 +144,17 @@ func newHookCreateCmd() *cobra.Command {
 			return writeResult(cmd.OutOrStdout(), g, out)
 		},
 	}
-	cmd.Flags().String("owner-kind", "", "owner kind: domain | principal")
-	cmd.Flags().String("owner-id", "", "owner id (domain name or principal id)")
+	cmd.Flags().String("owner-kind", "", "owner kind: domain | principal (legacy)")
+	cmd.Flags().String("owner-id", "", "owner id (domain name or principal id) (legacy)")
+	cmd.Flags().String("target-kind", "", "target kind: address | domain | principal | synthetic (REQ-HOOK-02)")
+	cmd.Flags().String("target-value", "", "target value: address, domain, or principal id")
 	cmd.Flags().String("target-url", "", "receiver URL (https:// recommended)")
-	cmd.Flags().String("mode", "inline", "delivery mode: inline | fetch_url")
+	cmd.Flags().String("mode", "inline", "delivery mode (legacy): inline | fetch_url")
+	cmd.Flags().String("body-mode", "", "body mode (REQ-HOOK-03): inline | url | extracted")
+	cmd.Flags().Int64("extracted-text-max-bytes", 0,
+		"per-subscription cap on body.text in extracted mode; 0 uses the package default (5 MiB), max 32 MiB")
+	cmd.Flags().Bool("text-required", false,
+		"drop deliveries whose extractor result has body.text_origin=none (REQ-HOOK-EXTRACTED-03)")
 	cmd.Flags().Bool("active", true, "whether the subscription dispatches on creation")
 	cmd.Flags().String("label", "", "operator-visible label (currently informational)")
 	cmd.Flags().Bool("rotate-secret", false, "force the server to mint a fresh secret")
@@ -147,6 +177,18 @@ func newHookUpdateCmd() *cobra.Command {
 				v, _ := cmd.Flags().GetString("mode")
 				body["delivery_mode"] = v
 			}
+			if cmd.Flags().Changed("body-mode") {
+				v, _ := cmd.Flags().GetString("body-mode")
+				body["body_mode"] = v
+			}
+			if cmd.Flags().Changed("extracted-text-max-bytes") {
+				v, _ := cmd.Flags().GetInt64("extracted-text-max-bytes")
+				body["extracted_text_max_bytes"] = v
+			}
+			if cmd.Flags().Changed("text-required") {
+				v, _ := cmd.Flags().GetBool("text-required")
+				body["text_required"] = v
+			}
 			if cmd.Flags().Changed("active") {
 				v, _ := cmd.Flags().GetBool("active")
 				body["active"] = v
@@ -156,7 +198,7 @@ func newHookUpdateCmd() *cobra.Command {
 				body["rotate_secret"] = v
 			}
 			if len(body) == 0 {
-				return errors.New("hook update: at least one of --target-url|--mode|--active|--rotate-secret is required")
+				return errors.New("hook update: at least one of --target-url|--mode|--body-mode|--extracted-text-max-bytes|--text-required|--active|--rotate-secret is required")
 			}
 			client, err := clientFromGlobals(g)
 			if err != nil {
@@ -170,7 +212,10 @@ func newHookUpdateCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().String("target-url", "", "new receiver URL")
-	cmd.Flags().String("mode", "", "delivery mode: inline | fetch_url")
+	cmd.Flags().String("mode", "", "delivery mode (legacy): inline | fetch_url")
+	cmd.Flags().String("body-mode", "", "body mode: inline | url | extracted")
+	cmd.Flags().Int64("extracted-text-max-bytes", 0, "per-subscription cap on body.text (max 32 MiB)")
+	cmd.Flags().Bool("text-required", false, "REQ-HOOK-EXTRACTED-03 drop policy")
 	cmd.Flags().Bool("active", false, "set the active flag")
 	cmd.Flags().Bool("rotate-secret", false, "rotate the HMAC secret (returned once in the response)")
 	return cmd

@@ -10,7 +10,17 @@ const CurrentBackupVersion = 1
 // CurrentSchemaVersion is the maximum migration number both backends
 // know about today. Bumped whenever a new migration ships in
 // internal/storesqlite/migrations or internal/storepg/migrations.
-const CurrentSchemaVersion = 13
+//
+// 14 — 0014_inbound_attachment_policy.sql (Phase 3 Wave 3.5c Track B,
+//
+//	REQ-FLOW-ATTPOL-01).  Track B owns its rows; this constant only
+//	tracks the migration ceiling.
+//
+// 15 — 0015_webhook_extracted.sql (Phase 3 Wave 3.5c Track C,
+//
+//	REQ-HOOK-02 + REQ-HOOK-EXTRACTED-01..03).  Adds target_kind,
+//	body_mode, extracted_text_max_bytes, text_required to webhooks.
+const CurrentSchemaVersion = 15
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

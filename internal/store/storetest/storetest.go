@@ -87,6 +87,7 @@ func Run(t *testing.T, f Factory) {
 		{"ACMECertExpiringList", testACMECertExpiringList},
 		{"WebhookCRUD", testWebhookCRUD},
 		{"WebhookActiveForDomain", testWebhookActiveForDomain},
+		{"WebhookSyntheticAndExtractedRoundTrip", testWebhookSyntheticAndExtractedRoundTrip},
 		{"DMARCInsertAndAggregate", testDMARCInsertAndAggregate},
 		{"DMARCDeduplicates", testDMARCDeduplicates},
 		{"MailboxACLGrantListRevoke", testMailboxACLGrantListRevoke},
@@ -2243,6 +2244,59 @@ func testWebhookActiveForDomain(t *testing.T, s store.Store) {
 	}
 	if len(hooks) != 2 {
 		t.Fatalf("active hooks = %d, want 2 (one domain, one principal): %+v", len(hooks), hooks)
+	}
+}
+
+// testWebhookSyntheticAndExtractedRoundTrip exercises the Phase 3
+// Wave 3.5c additions (REQ-HOOK-02 + REQ-HOOK-EXTRACTED-01..03):
+// target_kind=synthetic surfaces in ListActiveWebhooksForDomain
+// alongside legacy domain hooks, and the body-mode / cap / drop-flag
+// columns round-trip across both backends.
+func testWebhookSyntheticAndExtractedRoundTrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	w, err := s.Meta().InsertWebhook(ctx, store.Webhook{
+		OwnerKind:             store.WebhookOwnerDomain,
+		OwnerID:               "app.example.com",
+		TargetKind:            store.WebhookTargetSynthetic,
+		TargetURL:             "https://app.internal/v1/mail/inbound",
+		HMACSecret:            []byte("synth-secret"),
+		DeliveryMode:          store.DeliveryModeInline,
+		BodyMode:              store.WebhookBodyModeExtracted,
+		ExtractedTextMaxBytes: 5 * 1024 * 1024,
+		TextRequired:          true,
+		Active:                true,
+	})
+	if err != nil {
+		t.Fatalf("InsertWebhook: %v", err)
+	}
+	got, err := s.Meta().GetWebhook(ctx, w.ID)
+	if err != nil {
+		t.Fatalf("GetWebhook: %v", err)
+	}
+	if got.TargetKind != store.WebhookTargetSynthetic {
+		t.Fatalf("TargetKind round-trip: %v", got.TargetKind)
+	}
+	if got.BodyMode != store.WebhookBodyModeExtracted {
+		t.Fatalf("BodyMode round-trip: %v", got.BodyMode)
+	}
+	if got.ExtractedTextMaxBytes != 5*1024*1024 {
+		t.Fatalf("ExtractedTextMaxBytes round-trip: %d", got.ExtractedTextMaxBytes)
+	}
+	if !got.TextRequired {
+		t.Fatalf("TextRequired round-trip: %v", got.TextRequired)
+	}
+	hooks, err := s.Meta().ListActiveWebhooksForDomain(ctx, "app.example.com")
+	if err != nil {
+		t.Fatalf("ListActiveWebhooksForDomain: %v", err)
+	}
+	var found bool
+	for _, h := range hooks {
+		if h.ID == w.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("synthetic hook not surfaced by ListActiveWebhooksForDomain: %+v", hooks)
 	}
 }
 
