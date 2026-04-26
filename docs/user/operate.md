@@ -1006,8 +1006,17 @@ msg/day) are:
 
 3. **Queue concurrency.** Outbound delivery is bounded by a worker
    semaphore. Defaults are sensible for the v1 target; tune if your
-   message rate exceeds 100 msg/s peak. Knob:
-   TODO(operator-doc): queue-concurrency-config-shape.
+   message rate exceeds 100 msg/s peak. In `system.toml`:
+
+   ```toml
+   [server.queue]
+   concurrency  = 64    # default 32; max 1024
+   per_host_max = 8     # default derived from concurrency; must be <= concurrency
+   ```
+
+   `concurrency` caps total in-flight deliveries; `per_host_max`
+   prevents a single misbehaving destination from monopolising
+   workers.
 
 4. **Plugin RPC latency.** Each spam classification is a JSON-RPC
    round-trip plus the LLM call. At 15 msg/min peak this is trivial;

@@ -147,11 +147,23 @@ With a DNS-provider plugin (Cloudflare, Route53, Hetzner, manual /
 webhook generic), herold publishes the record via the plugin
 (REQ-OPS-60).
 
-A standalone `herold domain dkim show example.com` subcommand to
-re-emit the DKIM TXT for a domain already on the books is planned per
-REQ-ADM-11 - TODO(operator-doc): dkim-show-cli-not-yet-wired. Until
-it lands, the DKIM record is printed once on `domain add`; capture it
-or query the REST surface (`GET /api/v1/domains/{name}/dkim`).
+To re-emit the DKIM TXT for a domain already on the books:
+
+```bash
+herold dkim show example.com
+```
+
+prints the active selector, the algorithm, and the DNS TXT body
+ready to copy into a zone file (or already published, if a DNS
+plugin is configured). To rotate to a new selector:
+
+```bash
+herold dkim generate example.com
+```
+
+The same surface is available over REST at
+`POST /api/v1/domains/{name}/dkim` (rotate) and
+`GET /api/v1/domains/{name}/dkim` (list).
 
 Verify DKIM publication by querying DNS from a third-party resolver:
 
