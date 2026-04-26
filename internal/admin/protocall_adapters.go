@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -161,6 +162,46 @@ func callChatMembersResolver(st store.Store) protochat.MembersResolver {
 		out := make([]store.PrincipalID, 0, len(rows))
 		for _, m := range rows {
 			out = append(out, m.PrincipalID)
+		}
+		return out, nil
+	}
+}
+
+// callChatPeersResolver bridges protochat's PeersResolver to the
+// chat-store path: list every conversation the publisher belongs to,
+// then for each conversation gather its members. The publisher
+// themself is excluded from the result; principals who share more
+// than one conversation with the publisher are deduped. An empty
+// publisher membership set returns an empty (non-nil) slice so the
+// caller can distinguish "no peers" from a transient error.
+//
+// Wired into protochat.Options.PeersResolver by composeAdminAndUI so
+// presence broadcast is no longer a silent no-op in production.
+func callChatPeersResolver(st store.Store) protochat.PeersResolver {
+	return func(ctx context.Context, publisher store.PrincipalID) ([]store.PrincipalID, error) {
+		mine, err := st.Meta().ListChatMembershipsByPrincipal(ctx, publisher)
+		if err != nil {
+			return nil, fmt.Errorf("admin: list publisher memberships: %w", err)
+		}
+		if len(mine) == 0 {
+			return []store.PrincipalID{}, nil
+		}
+		seen := make(map[store.PrincipalID]struct{})
+		for _, mb := range mine {
+			rows, err := st.Meta().ListChatMembershipsByConversation(ctx, mb.ConversationID)
+			if err != nil {
+				return nil, fmt.Errorf("admin: list conversation members: %w", err)
+			}
+			for _, peer := range rows {
+				if peer.PrincipalID == publisher {
+					continue
+				}
+				seen[peer.PrincipalID] = struct{}{}
+			}
+		}
+		out := make([]store.PrincipalID, 0, len(seen))
+		for pid := range seen {
+			out = append(out, pid)
 		}
 		return out, nil
 	}

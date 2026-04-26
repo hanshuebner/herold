@@ -384,9 +384,11 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// account default has expired the per-message retention window.
 	// Bounded by the lifecycle errgroup so shutdown drains it.
 	chatRetentionWorker := chatretention.NewWorker(chatretention.Options{
-		Store:  st,
-		Logger: logger.With("subsystem", "chatretention"),
-		Clock:  clk,
+		Store:         st,
+		Logger:        logger.With("subsystem", "chatretention"),
+		Clock:         clk,
+		SweepInterval: time.Duration(cfg.Server.Chat.Retention.SweepIntervalSeconds) * time.Second,
+		BatchSize:     cfg.Server.Chat.Retention.BatchSize,
 	})
 	g.Go(func() error {
 		if err := chatRetentionWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -1024,17 +1026,21 @@ func composeAdminAndUI(
 			logger.With("subsystem", "protochat"),
 			callChatMembersResolver(st))
 		chatSrv = protochat.New(protochat.Options{
-			Store:           st,
-			Logger:          logger.With("subsystem", "protochat"),
-			Clock:           clk,
-			SessionResolver: uiSrv.ResolveSession,
-			Broadcaster:     chatBroadcaster,
-			Membership:      callChatMembershipResolver(st),
-			MaxConnections:  cfg.Server.Chat.MaxConnections,
-			PerPrincipalCap: cfg.Server.Chat.PerPrincipalCap,
-			PingInterval:    time.Duration(cfg.Server.Chat.PingIntervalSeconds) * time.Second,
-			PongTimeout:     time.Duration(cfg.Server.Chat.PongTimeoutSeconds) * time.Second,
-			MaxFrameBytes:   cfg.Server.Chat.MaxFrameBytes,
+			Store:            st,
+			Logger:           logger.With("subsystem", "protochat"),
+			Clock:            clk,
+			SessionResolver:  uiSrv.ResolveSession,
+			Broadcaster:      chatBroadcaster,
+			Membership:       callChatMembershipResolver(st),
+			PeersResolver:    callChatPeersResolver(st),
+			MaxConnections:   cfg.Server.Chat.MaxConnections,
+			PerPrincipalCap:  cfg.Server.Chat.PerPrincipalCap,
+			PingInterval:     time.Duration(cfg.Server.Chat.PingIntervalSeconds) * time.Second,
+			PongTimeout:      time.Duration(cfg.Server.Chat.PongTimeoutSeconds) * time.Second,
+			WriteTimeout:     time.Duration(cfg.Server.Chat.WriteTimeoutSeconds) * time.Second,
+			MaxFrameBytes:    cfg.Server.Chat.MaxFrameBytes,
+			AllowedOrigins:   cfg.Server.Chat.AllowedOrigins,
+			AllowEmptyOrigin: cfg.Server.Chat.AllowEmptyOrigin,
 		})
 		parent.Handle("/chat/ws",
 			withPanicRecover(logger.With("subsystem", "protochat"),

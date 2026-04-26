@@ -86,6 +86,7 @@ deploy/                  debian, rpm, docker, k8s
 - Prometheus metrics via `prometheus/client_golang`. Metric names `herold_<subsystem>_<what>_<unit>` (e.g., `herold_smtp_sessions_active`). Cardinality reviewed in PRs; no unbounded label values.
 - OTLP tracing optional; spans on every wire request, queue operation, plugin invocation.
 - A single event emits exactly one log line, zero or more metric updates, at most one span. Log fields and span attributes agree on names and values.
+- `MetricsBind` defaults to loopback (`127.0.0.1:9090`). The `/metrics` handler does not perform authentication. If exposed publicly, operators MUST front it with TLS + auth at a reverse proxy. `sysconfig.Validate` emits a `slog` warning when `metrics_bind` resolves to a non-loopback address; the warning is informational (some operators deliberately publish behind a trusted proxy) and does not block startup.
 
 ## 8. Testing — full coverage is the standard
 

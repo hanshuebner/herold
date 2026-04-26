@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -127,5 +128,170 @@ func TestCallSysmsgsAdapter_BumpsLastMessageAtAndMessageCount(t *testing.T) {
 	}
 	if msgs[0].SenderPrincipalID == nil || *msgs[0].SenderPrincipalID != caller.ID {
 		t.Fatalf("sender = %v, want %d", msgs[0].SenderPrincipalID, caller.ID)
+	}
+}
+
+// TestCallChatPeersResolver_UnionExcludesSelfDedupes pins the
+// production wiring composeAdminAndUI hands to protochat.Options
+// PeersResolver. The resolver MUST:
+//   - Return the union of peers across every conversation the
+//     publisher belongs to.
+//   - Exclude the publisher themselves.
+//   - Dedupe principals who share more than one conversation with
+//     the publisher.
+//   - Return an empty (non-nil) slice when the publisher has no
+//     conversations.
+//
+// The fakestore drives the same store metadata interface SQLite and
+// Postgres back, so a passing test here covers all three.
+func TestCallChatPeersResolver_UnionExcludesSelfDedupes(t *testing.T) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("fakestore: %v", err)
+	}
+
+	// Seed four principals: publisher + three peers (alice, bob,
+	// carol). Publisher shares two conversations with alice (the
+	// dedupe surface), one with bob, and zero with carol.
+	publisher, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "publisher@test.local",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal publisher: %v", err)
+	}
+	alice, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "alice@test.local",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal alice: %v", err)
+	}
+	bob, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "bob@test.local",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal bob: %v", err)
+	}
+	carol, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "carol@test.local",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal carol: %v", err)
+	}
+
+	// Conversation 1: publisher + alice (DM).
+	conv1, err := fs.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind:                 "dm",
+		CreatedByPrincipalID: publisher.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation conv1: %v", err)
+	}
+	for _, pid := range []store.PrincipalID{publisher.ID, alice.ID} {
+		if _, err := fs.Meta().InsertChatMembership(ctx, store.ChatMembership{
+			ConversationID:       conv1,
+			PrincipalID:          pid,
+			Role:                 "member",
+			NotificationsSetting: "all",
+		}); err != nil {
+			t.Fatalf("InsertChatMembership conv1/%d: %v", pid, err)
+		}
+	}
+
+	// Conversation 2: publisher + alice + bob (group). Shares
+	// alice with conv1 to exercise the dedupe path.
+	conv2, err := fs.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind:                 "group",
+		CreatedByPrincipalID: publisher.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation conv2: %v", err)
+	}
+	for _, pid := range []store.PrincipalID{publisher.ID, alice.ID, bob.ID} {
+		if _, err := fs.Meta().InsertChatMembership(ctx, store.ChatMembership{
+			ConversationID:       conv2,
+			PrincipalID:          pid,
+			Role:                 "member",
+			NotificationsSetting: "all",
+		}); err != nil {
+			t.Fatalf("InsertChatMembership conv2/%d: %v", pid, err)
+		}
+	}
+
+	// Conversation 3: alice + carol — does NOT include publisher.
+	// Carol must NOT appear in publisher's peer set.
+	conv3, err := fs.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind:                 "dm",
+		CreatedByPrincipalID: alice.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation conv3: %v", err)
+	}
+	for _, pid := range []store.PrincipalID{alice.ID, carol.ID} {
+		if _, err := fs.Meta().InsertChatMembership(ctx, store.ChatMembership{
+			ConversationID:       conv3,
+			PrincipalID:          pid,
+			Role:                 "member",
+			NotificationsSetting: "all",
+		}); err != nil {
+			t.Fatalf("InsertChatMembership conv3/%d: %v", pid, err)
+		}
+	}
+
+	resolver := callChatPeersResolver(fs)
+
+	// Union path: alice + bob, excluding publisher and carol.
+	got, err := resolver(ctx, publisher.ID)
+	if err != nil {
+		t.Fatalf("resolver(publisher): %v", err)
+	}
+	sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+	want := []store.PrincipalID{alice.ID, bob.ID}
+	sort.Slice(want, func(i, j int) bool { return want[i] < want[j] })
+	if len(got) != len(want) {
+		t.Fatalf("peers: got %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("peers[%d]: got %d, want %d", i, got[i], want[i])
+		}
+	}
+	// Self-exclusion: publisher MUST NOT appear in its own peer set.
+	for _, pid := range got {
+		if pid == publisher.ID {
+			t.Fatalf("publisher %d appeared in own peer set", publisher.ID)
+		}
+	}
+	// Carol is not connected: MUST NOT appear.
+	for _, pid := range got {
+		if pid == carol.ID {
+			t.Fatalf("carol %d leaked into peer set despite no shared conversation", carol.ID)
+		}
+	}
+
+	// Empty path: a principal with no conversations gets an empty,
+	// non-nil slice (so callers can distinguish "no peers" from a
+	// transient lookup error which surfaces as err != nil).
+	stranger, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "stranger@test.local",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal stranger: %v", err)
+	}
+	empty, err := resolver(ctx, stranger.ID)
+	if err != nil {
+		t.Fatalf("resolver(stranger): %v", err)
+	}
+	if empty == nil {
+		t.Fatalf("resolver(stranger): nil slice, want empty non-nil slice")
+	}
+	if len(empty) != 0 {
+		t.Fatalf("resolver(stranger): %v, want []", empty)
 	}
 }

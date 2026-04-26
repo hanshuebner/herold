@@ -140,6 +140,148 @@ tls = "starttls"
 	}
 }
 
+func TestParse_ChatRetentionDefaults(t *testing.T) {
+	const bare = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	cfg, err := Parse([]byte(bare))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.Chat.WriteTimeoutSeconds != 10 {
+		t.Errorf("default chat write_timeout_seconds: got %d, want 10",
+			cfg.Server.Chat.WriteTimeoutSeconds)
+	}
+	if cfg.Server.Chat.Retention.SweepIntervalSeconds != 60 {
+		t.Errorf("default chat retention sweep_interval_seconds: got %d, want 60",
+			cfg.Server.Chat.Retention.SweepIntervalSeconds)
+	}
+	if cfg.Server.Chat.Retention.BatchSize != 1000 {
+		t.Errorf("default chat retention batch_size: got %d, want 1000",
+			cfg.Server.Chat.Retention.BatchSize)
+	}
+}
+
+func TestValidate_ChatRetentionRejectsLowSweep(t *testing.T) {
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[server.chat.retention]
+sweep_interval_seconds = 5
+batch_size = 1000
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected sweep_interval_seconds floor error")
+	}
+	if !strings.Contains(err.Error(), "sweep_interval_seconds") {
+		t.Errorf("error should name sweep_interval_seconds, got: %v", err)
+	}
+}
+
+func TestValidate_ChatRetentionRejectsHighSweep(t *testing.T) {
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[server.chat.retention]
+sweep_interval_seconds = 90000
+batch_size = 1000
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected sweep_interval_seconds ceiling error")
+	}
+	if !strings.Contains(err.Error(), "sweep_interval_seconds") {
+		t.Errorf("error should name sweep_interval_seconds, got: %v", err)
+	}
+}
+
+func TestValidate_ChatRetentionRejectsOversizedBatch(t *testing.T) {
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[server.chat.retention]
+sweep_interval_seconds = 60
+batch_size = 100000
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected batch_size ceiling error")
+	}
+	if !strings.Contains(err.Error(), "batch_size") {
+		t.Errorf("error should name batch_size, got: %v", err)
+	}
+}
+
+func TestIsLoopbackBindAddr(t *testing.T) {
+	cases := map[string]bool{
+		"":              true,
+		"127.0.0.1:9090": true,
+		"localhost:9090": true,
+		"[::1]:9090":     true,
+		"0.0.0.0:9090":   false,
+		"192.168.1.10:9": false,
+		"not_a_bind":     true, // unparseable: don't warn
+	}
+	for in, want := range cases {
+		if got := isLoopbackBindAddr(in); got != want {
+			t.Errorf("isLoopbackBindAddr(%q): got %v, want %v", in, got, want)
+		}
+	}
+}
+
 func TestValidate_RejectsSubFiveSecondSnoozePoll(t *testing.T) {
 	const bad = `
 [server]

@@ -1,8 +1,11 @@
 package sysconfig
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -106,6 +109,12 @@ type ChatConfig struct {
 	// frame; oversize frames close the connection with code 1009.
 	// Default 65536 (64 KiB).
 	MaxFrameBytes int `toml:"max_frame_bytes,omitempty"`
+	// WriteTimeoutSeconds is the per-frame write deadline, in
+	// seconds, applied via net.Conn.SetWriteDeadline before each
+	// outbound frame write. A slow consumer that stops draining its
+	// TCP receive buffer must not pin the writer indefinitely.
+	// Default 10.
+	WriteTimeoutSeconds int `toml:"write_timeout_seconds,omitempty"`
 	// AllowedOrigins is the operator-supplied set of allowed Origin
 	// header values for the /chat/ws upgrade. An empty list is
 	// interpreted as "same-origin only": the server matches the
@@ -119,6 +128,26 @@ type ChatConfig struct {
 	// Default false: every connection without an Origin header is
 	// rejected with 403, matching browser fetch policy.
 	AllowEmptyOrigin bool `toml:"allow_empty_origin,omitempty"`
+	// Retention configures the chat retention sweeper
+	// (REQ-CHAT-92). Defaults match chatretention package
+	// constants; operators rarely override either.
+	Retention ChatRetentionConfig `toml:"retention,omitempty"`
+}
+
+// ChatRetentionConfig tunes the chat retention sweeper
+// (REQ-CHAT-92): how often it scans and how many rows it deletes per
+// sweep. The defaults applied at applyDefaults match the package
+// constants in internal/chatretention.
+type ChatRetentionConfig struct {
+	// SweepIntervalSeconds is the cadence at which the sweeper
+	// scans for retention-expired chat messages. Default 60 (1
+	// minute). Validate rejects values below 10 to avoid pinning a
+	// writer transaction; values above 86400 (1 day) are typos.
+	SweepIntervalSeconds int `toml:"sweep_interval_seconds,omitempty"`
+	// BatchSize is the per-sweep hard-delete ceiling. Default
+	// 1000. Validate rejects values below 1 or above 10000 so a
+	// typo cannot deadlock the writer or starve other workers.
+	BatchSize int `toml:"batch_size,omitempty"`
 }
 
 // ImageProxyConfig configures the inbound HTML image proxy
@@ -461,6 +490,18 @@ func applyDefaults(c *Config) {
 	if c.Server.Chat.MaxFrameBytes == 0 {
 		c.Server.Chat.MaxFrameBytes = 65536
 	}
+	if c.Server.Chat.WriteTimeoutSeconds == 0 {
+		c.Server.Chat.WriteTimeoutSeconds = 10
+	}
+	// Chat retention sweeper (REQ-CHAT-92). Defaults mirror the
+	// chatretention package constants so a missing block and an
+	// empty block behave the same.
+	if c.Server.Chat.Retention.SweepIntervalSeconds == 0 {
+		c.Server.Chat.Retention.SweepIntervalSeconds = 60
+	}
+	if c.Server.Chat.Retention.BatchSize == 0 {
+		c.Server.Chat.Retention.BatchSize = 1000
+	}
 	// Video calls (REQ-CALL-*). Defaults to enabled with a five-
 	// minute credential TTL (REQ-CALL-22) and a 30-second ring
 	// timeout (REQ-CALL-06); operators who haven't deployed coturn
@@ -520,7 +561,7 @@ func Validate(c *Config) error {
 	ch := c.Server.Chat
 	if ch.MaxConnections < 0 || ch.PerPrincipalCap < 0 ||
 		ch.PingIntervalSeconds < 0 || ch.PongTimeoutSeconds < 0 ||
-		ch.MaxFrameBytes < 0 {
+		ch.MaxFrameBytes < 0 || ch.WriteTimeoutSeconds < 0 {
 		return errors.New("sysconfig: [server.chat] knobs must be >= 0")
 	}
 	if ch.PerPrincipalCap > 0 && ch.MaxConnections > 0 && ch.PerPrincipalCap > ch.MaxConnections {
@@ -530,6 +571,26 @@ func Validate(c *Config) error {
 	if ch.PongTimeoutSeconds > 0 && ch.PingIntervalSeconds > 0 && ch.PongTimeoutSeconds < ch.PingIntervalSeconds {
 		return fmt.Errorf("sysconfig: [server.chat] pong_timeout_seconds %d below ping_interval_seconds %d",
 			ch.PongTimeoutSeconds, ch.PingIntervalSeconds)
+	}
+	// Chat retention sweeper (REQ-CHAT-92). sweep_interval_seconds
+	// floor of 10 avoids pinning a writer; ceiling of 1 day catches
+	// typos that would silently disable the sweeper. batch_size is
+	// bounded [1, 10000] to match the chatretention worker's
+	// MaxBatchSize ceiling.
+	cr := c.Server.Chat.Retention
+	if cr.SweepIntervalSeconds < 10 {
+		return fmt.Errorf("sysconfig: [server.chat.retention] sweep_interval_seconds %d below 10s floor",
+			cr.SweepIntervalSeconds)
+	}
+	if cr.SweepIntervalSeconds > 86400 {
+		return fmt.Errorf("sysconfig: [server.chat.retention] sweep_interval_seconds %d exceeds 1d ceiling",
+			cr.SweepIntervalSeconds)
+	}
+	if cr.BatchSize < 1 {
+		return fmt.Errorf("sysconfig: [server.chat.retention] batch_size %d must be >= 1", cr.BatchSize)
+	}
+	if cr.BatchSize > 10000 {
+		return fmt.Errorf("sysconfig: [server.chat.retention] batch_size %d exceeds 10000 ceiling", cr.BatchSize)
 	}
 	// Video calls (REQ-CALL-*). When the operator supplies TURN URIs
 	// they MUST also point us at the shared secret via env / file
@@ -666,5 +727,44 @@ func Validate(c *Config) error {
 			return errors.New("sysconfig: [server.storage.postgres] dsn is required")
 		}
 	}
+	// Non-loopback metrics_bind: warn rather than error. STANDARDS §7
+	// documents the operator obligation to front a public /metrics
+	// with TLS + auth at a reverse proxy; this is a deliberate choice
+	// some operators make, so we surface it loudly without breaking
+	// startup. The warn fires at parse / Load time; SIGHUP-driven
+	// reloads see it again.
+	if !isLoopbackBindAddr(c.Observability.MetricsBind) {
+		slog.Default().LogAttrs(context.Background(), slog.LevelWarn,
+			"sysconfig: metrics_bind is non-loopback; front /metrics with TLS + auth (STANDARDS §7)",
+			slog.String("metrics_bind", c.Observability.MetricsBind),
+		)
+	}
 	return nil
+}
+
+// isLoopbackBindAddr reports whether bind is a host:port style address
+// whose host resolves to a loopback IP. An empty bind (the default
+// after applyDefaults is "127.0.0.1:9090") and any unparseable shape
+// is treated as loopback so we do not log a misleading warning while
+// the operator is still typing.
+func isLoopbackBindAddr(bind string) bool {
+	if bind == "" {
+		return true
+	}
+	host, _, err := net.SplitHostPort(bind)
+	if err != nil {
+		// Unparseable; the listener will fail later. Don't warn here.
+		return true
+	}
+	if host == "" || host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// A hostname we can't resolve at validate time. Be
+		// conservative: treat as non-loopback so the operator sees
+		// the warning if they typed an external DNS name.
+		return false
+	}
+	return ip.IsLoopback()
 }
