@@ -118,7 +118,7 @@ type TLSAResolver interface {
 // unconditionally and authentic=false. Operators wanting DANE outbound
 // must inject a Resolver implementation backed by a DNSSEC-validating
 // library; the server falls back to MTA-STS and opportunistic TLS in the
-// meantime per the precedence rules in docs/architecture/04.
+// meantime per the precedence rules in docs/design/architecture/04.
 func (s *SystemResolver) LookupTLSA(ctx context.Context, name string) ([]TLSARecord, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err

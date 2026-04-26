@@ -11,7 +11,7 @@ import "embed"
 var templatesFS embed.FS
 
 // staticFS holds the vendored HTMX + Alpine assets and any small UI
-// stylesheet. Served verbatim under /ui/static/. Per docs/notes/
+// stylesheet. Served verbatim under /ui/static/. Per docs/design/notes/
 // open-questions.md R35 we pin specific versions of HTMX and Alpine and
 // document them in static/VERSIONS.md; no CDN.
 //

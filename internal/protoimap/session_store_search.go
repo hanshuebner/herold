@@ -764,7 +764,7 @@ func (ses *session) handleIDLE(ctx context.Context, c *Command) error {
 		// kinds scoped to the selected mailbox. Filtering on EntityKind
 		// (string-match) rather than typed columns is the
 		// forward-compat invariant from
-		// docs/architecture/05-sync-and-state.md §Forward-compatibility
+		// docs/design/architecture/05-sync-and-state.md §Forward-compatibility
 		// — unknown future kinds (jmap addressbook/calendar/event,
 		// etc.) flow through this loop without touching IMAP. For the
 		// email kind, ParentEntityID carries the MailboxID; we filter

@@ -9,7 +9,7 @@ import (
 
 // currentState returns the JMAP state string for the principal's
 // Mailbox datatype: the decimal of JMAPStates.Mailbox per
-// docs/architecture/05-sync-and-state.md. The store creates a
+// docs/design/architecture/05-sync-and-state.md. The store creates a
 // zero-valued row on first access, so an unmutated principal returns
 // "0".
 func currentState(ctx context.Context, meta store.Metadata, pid store.PrincipalID) (string, error) {

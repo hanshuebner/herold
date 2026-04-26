@@ -30,7 +30,7 @@ type PluginInvoker interface {
 }
 
 // dnsPresentParams is the wire shape for dns.present per
-// docs/requirements/11-plugins.md §DNS provider.
+// docs/design/requirements/11-plugins.md §DNS provider.
 type dnsPresentParams struct {
 	Zone       string `json:"zone"`
 	RecordType string `json:"record_type"`
@@ -180,7 +180,7 @@ func dns01TXTValue(keyAuth string) string {
 // name; production DNS plugins handle apex / subdomain composition
 // internally because the plugin alone knows which zone the domain
 // belongs to. The contract documented in
-// docs/requirements/11-plugins.md is opaque: the plugin treats (zone,
+// docs/design/requirements/11-plugins.md is opaque: the plugin treats (zone,
 // name) as the operator-visible coordinates.
 func splitZone(domain string) (string, string) {
 	return domain, "_acme-challenge"

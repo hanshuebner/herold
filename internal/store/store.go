@@ -35,7 +35,7 @@ var (
 // Store is the composite handle every subsystem consumes to reach
 // persistent state. Backends compose the three sub-interfaces
 // (Metadata, Blobs, FTS) that cover the three logical stores described
-// in docs/architecture/02-storage-architecture.md §Three stores.
+// in docs/design/architecture/02-storage-architecture.md §Three stores.
 //
 // Implementations are constructed once at server startup and shared
 // across all goroutines; every method is safe for concurrent use.
@@ -957,7 +957,7 @@ type Metadata interface {
 // message body, identified by BLAKE3 hex hash (REQ-STORE-10..16).
 //
 // Writes are atomic at the filesystem level (temp + fsync + rename, see
-// docs/architecture/02-storage-architecture.md §Writes). Reads are
+// docs/design/architecture/02-storage-architecture.md §Writes). Reads are
 // streamed; Get returns an io.ReadCloser the caller must Close.
 type Blobs interface {
 	// Put writes the bytes read from r as a new blob, canonicalizing
@@ -1062,7 +1062,7 @@ type Query struct {
 // background indexing worker), read path (called from IMAP SEARCH and
 // JMAP Email/query), and a change-feed hook the worker polls.
 //
-// Indexing is asynchronous by design (REQ-STORE-66, docs/notes/
+// Indexing is asynchronous by design (REQ-STORE-66, docs/design/notes/
 // spike-fts-cadence.md). The recommended cadence is batch=2000 with a
 // 500 ms ceiling; see the spike note for supporting measurements.
 type FTS interface {

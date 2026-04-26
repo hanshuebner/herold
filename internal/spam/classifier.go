@@ -179,7 +179,7 @@ func parseClassification(raw map[string]any) (Classification, error) {
 }
 
 // Request is the JSON shape sent to the plugin. Fields follow
-// docs/requirements/06-filtering.md §Prompt shape.
+// docs/design/requirements/06-filtering.md §Prompt shape.
 type Request struct {
 	From         []string `json:"from"`
 	To           []string `json:"to"`

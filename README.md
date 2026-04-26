@@ -4,17 +4,17 @@ A greenfield mail server project. Stalwart-adjacent scope (SMTP MTA + IMAP/JMAP 
 
 ## How to read this
 
-1. **[docs/00-scope.md](docs/00-scope.md)** — goals, non-goals, simplification themes. Read this first.
-2. **docs/requirements/** — what the system must do, grouped by area. Numbered requirements (`REQ-XXX-nn`) so we can reference them in discussion.
-3. **docs/architecture/** — how the system is shaped. Decisions, not code.
-4. **docs/implementation/** — language/runtime choices, phasing, testing, deliberate cuts.
-5. **docs/notes/** — reference material and unresolved questions.
+1. **[docs/design/00-scope.md](docs/design/00-scope.md)** — goals, non-goals, simplification themes. Read this first.
+2. **docs/design/requirements/** — what the system must do, grouped by area. Numbered requirements (`REQ-XXX-nn`) so we can reference them in discussion.
+3. **docs/design/architecture/** — how the system is shaped. Decisions, not code.
+4. **docs/design/implementation/** — language/runtime choices, phasing, testing, deliberate cuts.
+5. **docs/design/notes/** — reference material and unresolved questions.
 
 ## Latest scope revision
 
-**2026-04-25** (rev 4): herold becomes the substrate beneath the **tabard** suite (mail, calendar, contacts, chat). NG3 strengthened: CalDAV/CardDAV/WebDAV out forever; **JMAP for Calendars (RFC 8984 + binding) and JMAP for Contacts (RFC 9553 + binding) move into scope as phase-2 additions**. **Chat** (DMs, Spaces, typing indicators, presence, reactions, read receipts, 1:1 video calls via WebRTC + self-hosted coturn) added as phase-2 scope (`docs/requirements/14-chat.md`, `docs/architecture/08-chat.md`). Several smaller mail-side commitments made explicit to close gaps surfaced during tabard requirements work: `EmailSubmission.sendAt` honoured by the outbound queue (REQ-PROTO-58, REQ-FLOW-63), `Mailbox.color` extension property persisted (REQ-PROTO-56, REQ-STORE-34), per-`Identity` signature (REQ-PROTO-57, REQ-STORE-35), `urn:ietf:params:jmap:sieve` JMAP datatype alongside the existing ManageSieve protocol (REQ-PROTO-53), `urn:ietf:params:jmap:calendars` / `:contacts` capability advertisements (REQ-PROTO-54/55, phase 2), iMIP REPLY pass-through in the outbound queue (REQ-PROTO-59), inbound HTML image proxy at `/proxy/image` (REQ-SEND-70..75), LLM-driven message categorisation distinct from spam (REQ-FILT-200..220).
+**2026-04-25** (rev 4): herold becomes the substrate beneath the **tabard** suite (mail, calendar, contacts, chat). NG3 strengthened: CalDAV/CardDAV/WebDAV out forever; **JMAP for Calendars (RFC 8984 + binding) and JMAP for Contacts (RFC 9553 + binding) move into scope as phase-2 additions**. **Chat** (DMs, Spaces, typing indicators, presence, reactions, read receipts, 1:1 video calls via WebRTC + self-hosted coturn) added as phase-2 scope (`docs/design/requirements/14-chat.md`, `docs/design/architecture/08-chat.md`). Several smaller mail-side commitments made explicit to close gaps surfaced during tabard requirements work: `EmailSubmission.sendAt` honoured by the outbound queue (REQ-PROTO-58, REQ-FLOW-63), `Mailbox.color` extension property persisted (REQ-PROTO-56, REQ-STORE-34), per-`Identity` signature (REQ-PROTO-57, REQ-STORE-35), `urn:ietf:params:jmap:sieve` JMAP datatype alongside the existing ManageSieve protocol (REQ-PROTO-53), `urn:ietf:params:jmap:calendars` / `:contacts` capability advertisements (REQ-PROTO-54/55, phase 2), iMIP REPLY pass-through in the outbound queue (REQ-PROTO-59), inbound HTML image proxy at `/proxy/image` (REQ-SEND-70..75), LLM-driven message categorisation distinct from spam (REQ-FILT-200..220).
 
-**2026-04-25** (rev 3): groupware NG3 wording softened from "dropped entirely" to "out of v1." The protocol architecture (`docs/architecture/03-protocol-architecture.md` §JMAP capability and account registration; `docs/architecture/05-sync-and-state.md` forward-compat constraint, plus the resolved Q5/R40 entity-kind-agnostic StateChange reshape) deliberately keeps groupware addable as a JMAP datatype in a later release without schema migration or dispatch-core edits. v1 ships email only; JMAP for Calendars (REQ-PROTO-54) and JMAP for Contacts (REQ-PROTO-55) are in scope for phase 2. CalDAV/CardDAV/WebDAV remain explicitly out forever per NG3.
+**2026-04-25** (rev 3): groupware NG3 wording softened from "dropped entirely" to "out of v1." The protocol architecture (`docs/design/architecture/03-protocol-architecture.md` §JMAP capability and account registration; `docs/design/architecture/05-sync-and-state.md` forward-compat constraint, plus the resolved Q5/R40 entity-kind-agnostic StateChange reshape) deliberately keeps groupware addable as a JMAP datatype in a later release without schema migration or dispatch-core edits. v1 ships email only; JMAP for Calendars (REQ-PROTO-54) and JMAP for Contacts (REQ-PROTO-55) are in scope for phase 2. CalDAV/CardDAV/WebDAV remain explicitly out forever per NG3.
 
 **2026-04-24** (rev 2): license → MIT (permissive, final); groupware dropped entirely; shared mailboxes + IMAP ACL in phase 2 (pre-1.0); minimal web UI in phase 2 (HTMX + Go templates + Alpine.js / vanilla JS for client-side validators and autocompletion); Hetzner Cloud DNS added to first-party DNS plugins; no binary-size target.
 
@@ -22,7 +22,7 @@ A greenfield mail server project. Stalwart-adjacent scope (SMTP MTA + IMAP/JMAP 
 
 ## Defaults in force
 
-Working assumptions. Override by editing `docs/00-scope.md`; affected docs will be revised.
+Working assumptions. Override by editing `docs/design/00-scope.md`; affected docs will be revised.
 
 - Language: **Go** (goroutines, stdlib-first, small dependency tree). Compile-time was the decisive factor.
 - Scope: **email-first** in v1. JMAP for Calendars (REQ-PROTO-54) and JMAP for Contacts (REQ-PROTO-55) are in scope for phase 2 as JMAP datatypes layered on the existing dispatch + change-feed shape. CalDAV/CardDAV/WebDAV are out forever per NG3.

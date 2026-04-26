@@ -20,7 +20,7 @@ import (
 // Default sizing constants applied when Options leaves a field zero.
 // The chosen values mirror the JMAP-Core advisory limits in RFC 8620
 // §2 ("server limits") plus REQ-PROTO-40..48 from
-// docs/requirements/01-protocols.md.
+// docs/design/requirements/01-protocols.md.
 const (
 	defaultMaxSizeUpload         int64 = 50 * 1024 * 1024
 	defaultMaxSizeRequest        int64 = 10 * 1024 * 1024

@@ -1,5 +1,5 @@
 // Package sieve parses, interprets, and sandboxes Sieve scripts per
-// RFC 5228 plus the extension set listed in docs/requirements/01-protocols.md
+// RFC 5228 plus the extension set listed in docs/design/requirements/01-protocols.md
 // §Sieve (REQ-PROTO-60..68).
 //
 // The package is organised as three passes over a script:

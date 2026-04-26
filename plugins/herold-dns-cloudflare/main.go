@@ -1,6 +1,6 @@
 // Command herold-dns-cloudflare is the first-party Cloudflare DNS plugin.
 // It implements the dns.* RPC surface described in
-// docs/requirements/11-plugins.md against the Cloudflare API v4.
+// docs/design/requirements/11-plugins.md against the Cloudflare API v4.
 //
 // Authentication uses an API token resolved from an operator-named
 // environment variable at configure time. The plugin holds a single

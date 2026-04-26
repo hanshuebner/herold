@@ -16,7 +16,7 @@ import (
 )
 
 // TestSupervisorIntegration_EchoPlugin drives the real herold-echo binary
-// through the complete lifecycle declared in docs/requirements/11-plugins.md:
+// through the complete lifecycle declared in docs/design/requirements/11-plugins.md:
 // initialize, configure, health, custom RPC, crash + restart, timeout, and
 // graceful shutdown.
 //

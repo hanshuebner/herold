@@ -52,7 +52,7 @@ const (
 	// Membership, Block) are not standardised in any IETF JMAP RFC; the
 	// capability URI follows the JMAP convention of an http(s) URL in
 	// the vendor namespace that owns the consumer wire contract. Per
-	// docs/00-scope.md, herold is the substrate beneath the tabard
+	// docs/design/00-scope.md, herold is the substrate beneath the tabard
 	// suite, so the URI lives under tabard.dev. Implemented under
 	// internal/protojmap/chat.
 	CapabilityJMAPChat CapabilityID = "https://tabard.dev/jmap/chat"
@@ -93,7 +93,7 @@ type AccountCapabilityProvider interface {
 // CapabilityRegistry tracks installed JMAP datatype handlers. The
 // session descriptor and method dispatcher consult it; concrete types
 // are not named in dispatch code paths. Per
-// docs/architecture/03-protocol-architecture.md §JMAP "Capability and
+// docs/design/architecture/03-protocol-architecture.md §JMAP "Capability and
 // account registration" this is the forward-compat surface that future
 // datatypes plug into.
 //

@@ -14,7 +14,7 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
-// Default WorkerOptions values. Derived from docs/notes/spike-fts-cadence.md
+// Default WorkerOptions values. Derived from docs/design/notes/spike-fts-cadence.md
 // — peak throughput at batch=2000, sub-second visibility at 500 ms commit
 // ceiling. Exported so tests and operator diag can use the same defaults
 // without a second source of truth.
@@ -282,7 +282,7 @@ func (w *Worker) processBatch(ctx context.Context, changes []store.FTSChange) er
 // ignored — their messages arrive as individual email-destroyed
 // entries. Datatype dispatch is intentionally a string-match on
 // EntityKind (not a typed column), so future kinds added per
-// docs/architecture/05-sync-and-state.md §Forward-compatibility flow
+// docs/design/architecture/05-sync-and-state.md §Forward-compatibility flow
 // past this worker untouched.
 //
 // Wave 2.9.6 Track D adds an EntityKindChatMessage path: chat messages

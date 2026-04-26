@@ -62,7 +62,7 @@ type Handler interface {
 	OnShutdown(ctx context.Context) error
 }
 
-// DNSHandler corresponds to the dns.* methods in docs/requirements/11-plugins.md.
+// DNSHandler corresponds to the dns.* methods in docs/design/requirements/11-plugins.md.
 type DNSHandler interface {
 	DNSPresent(ctx context.Context, in DNSPresentParams) (DNSPresentResult, error)
 	DNSCleanup(ctx context.Context, in DNSCleanupParams) error

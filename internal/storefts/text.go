@@ -36,7 +36,7 @@ type TextExtractor interface {
 // TODO(phase-1.5-fts): add AttachmentExtractor composition so PDF/DOCX/
 // XLSX/PPTX/HTML text lands in the same indexed string. Gate extraction
 // behind per-attachment and per-message caps from
-// docs/architecture/02-storage-architecture.md §FTS.
+// docs/design/architecture/02-storage-architecture.md §FTS.
 type MailparseExtractor struct {
 	// Options controls the mailparse strictness caps. Zero value uses
 	// NewParseOptions defaults; operators may tighten or relax

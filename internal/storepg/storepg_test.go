@@ -115,7 +115,7 @@ func TestMigrationIdempotency(t *testing.T) {
 // TestMigration0005StateChangeGeneric seeds the pre-0005 (mail-typed)
 // state_changes shape and verifies that the 0005 migration SQL converts
 // every row into the (entity_kind, entity_id, parent_entity_id, op)
-// shape per docs/architecture/05-sync-and-state.md §Forward-
+// shape per docs/design/architecture/05-sync-and-state.md §Forward-
 // compatibility. Forward-only check: existing dev databases at version
 // 4 migrate cleanly on next start.
 func TestMigration0005StateChangeGeneric(t *testing.T) {

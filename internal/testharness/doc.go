@@ -10,7 +10,7 @@
 // return a func(). The redundant return value (present in earlier drafts)
 // encouraged callers to forget t.Cleanup; requiring t.Cleanup is simpler
 // and cannot be bypassed by a caller who forgets to defer. See
-// docs/implementation/03-testing-strategy.md.
+// docs/design/implementation/03-testing-strategy.md.
 //
 // Rules enforced by this package:
 //

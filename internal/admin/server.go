@@ -85,7 +85,7 @@ type Runtime struct {
 // cancelled and graceful shutdown has completed (or shutdown_grace has
 // elapsed).
 //
-// The sequence matches docs/architecture/01-system-overview.md §Lifecycle:
+// The sequence matches docs/design/architecture/01-system-overview.md §Lifecycle:
 // parse -> observability -> store -> auxiliary subsystems -> plugins ->
 // TLS -> protocol servers -> listeners bind -> mark ready -> serve ->
 // drain on cancel.

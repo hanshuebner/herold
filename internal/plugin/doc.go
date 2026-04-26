@@ -3,7 +3,7 @@
 //
 // The supervisor spawns each declared plugin as a child process and speaks
 // newline-delimited JSON-RPC 2.0 on stdin/stdout, per
-// docs/architecture/07-plugin-architecture.md. Long-running plugins stay
+// docs/design/architecture/07-plugin-architecture.md. Long-running plugins stay
 // resident; on-demand plugins run per-invocation. Plugin stderr is piped into
 // the server's slog logger with the plugin name attached as a field.
 //

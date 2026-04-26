@@ -2,24 +2,24 @@
 
 Global rules every contributor (human or agent) follows. Authoritative over agent-level prompts; where an agent's instructions conflict with this file, this file wins.
 
-Source of architectural intent: `docs/00-scope.md`, `docs/requirements/`, `docs/architecture/`, `docs/implementation/`. This document distills the rules that apply everywhere; it does not duplicate the rationale — read the source docs for that.
+Source of architectural intent: `docs/design/00-scope.md`, `docs/design/requirements/`, `docs/design/architecture/`, `docs/design/implementation/`. This document distills the rules that apply everywhere; it does not duplicate the rationale — read the source docs for that.
 
 ## 1. Non-negotiable architectural invariants
 
 These are load-bearing decisions from the requirements and architecture documents. Code that violates them is rejected regardless of other merits.
 
-1. **Single process, single binary.** All server subsystems link into `cmd/herold`. No microservices, no sidecars. (docs/architecture/01 §Design values 1)
-2. **Out-of-process plugins over JSON-RPC 2.0 on stdio.** No in-process plugin loader, no `dlopen`, no Wasm, no cgo-loaded shared libraries. Process boundary is the security boundary. (docs/architecture/07)
-3. **Storage-centric.** Every state change goes through the `store` transaction layer. Protocol handlers compute intents; the store commits them. No bypass paths. (docs/architecture/01 §Design values 3)
-4. **No in-process pub/sub framework.** Cross-subsystem notification is either a direct function call or a durable store change-feed read. Do not introduce `chan interface{}` event buses or reflection dispatchers. External event fanout is the `protoevents` dispatcher talking to event-publisher plugins — that is the only event bus. (docs/architecture/01 §Design values 4)
+1. **Single process, single binary.** All server subsystems link into `cmd/herold`. No microservices, no sidecars. (docs/design/architecture/01 §Design values 1)
+2. **Out-of-process plugins over JSON-RPC 2.0 on stdio.** No in-process plugin loader, no `dlopen`, no Wasm, no cgo-loaded shared libraries. Process boundary is the security boundary. (docs/design/architecture/07)
+3. **Storage-centric.** Every state change goes through the `store` transaction layer. Protocol handlers compute intents; the store commits them. No bypass paths. (docs/design/architecture/01 §Design values 3)
+4. **No in-process pub/sub framework.** Cross-subsystem notification is either a direct function call or a durable store change-feed read. Do not introduce `chan interface{}` event buses or reflection dispatchers. External event fanout is the `protoevents` dispatcher talking to event-publisher plugins — that is the only event bus. (docs/design/architecture/01 §Design values 4)
 5. **`context.Context` on every async boundary.** Every function that performs I/O, blocks, or spawns a goroutine takes `ctx context.Context` as the first parameter. Deadlines and cancellation propagate end-to-end.
 6. **Bounded goroutines.** Never spawn unbounded goroutines. Use `golang.org/x/sync/errgroup` and `golang.org/x/sync/semaphore`. Every per-session goroutine has a hard budget (CPU, memory, time) enforceable from the session's `ctx`.
-7. **Metadata store is a typed repository, not a raw KV.** Backends (SQLite, Postgres) implement a Go interface of typed methods (`GetPrincipalByEmail`, `InsertMessage`, ...). Do not reintroduce `Get/Put/Scan(key)` in the public surface. (docs/architecture/01 §Storage)
+7. **Metadata store is a typed repository, not a raw KV.** Backends (SQLite, Postgres) implement a Go interface of typed methods (`GetPrincipalByEmail`, `InsertMessage`, ...). Do not reintroduce `Get/Put/Scan(key)` in the public surface. (docs/design/architecture/01 §Storage)
 8. **Both SQLite and Postgres are first-class.** CI runs the full integration suite against both. Code that works on only one is not mergeable.
-9. **System config is a TOML file, application config lives in the DB.** `/etc/herold/system.toml` is small, infra-owned, SIGHUP-reloaded. Domains, principals, aliases, Sieve scripts, DKIM keys, spam policy, webhooks, API keys live in the DB and are mutated via admin API/CLI. Never add a feature that writes to `system.toml` at runtime. (docs/requirements/09 §Config)
+9. **System config is a TOML file, application config lives in the DB.** `/etc/herold/system.toml` is small, infra-owned, SIGHUP-reloaded. Domains, principals, aliases, Sieve scripts, DKIM keys, spam policy, webhooks, API keys live in the DB and are mutated via admin API/CLI. Never add a feature that writes to `system.toml` at runtime. (docs/design/requirements/09 §Config)
 10. **Wire extensions are advertised only if implemented.** No stubs, no "feature-flag-off" capabilities. (REQ-PROTO-04 and equivalents.)
 11. **No encryption at rest.** Operators use volume-level encryption. Do not introduce SQLCipher, envelope encryption, or per-blob crypto. (NG10, C14)
-12. **No CGO in the default build.** Pure-Go SQLite driver (`modernc.org/sqlite`), pure-Go Postgres (`pgx`), pure-Go Bleve, pure-Go NATS. (docs/implementation/01 §Out of stack)
+12. **No CGO in the default build.** Pure-Go SQLite driver (`modernc.org/sqlite`), pure-Go Postgres (`pgx`), pure-Go Bleve, pure-Go NATS. (docs/design/implementation/01 §Out of stack)
 
 ## 2. Language and toolchain
 
@@ -32,7 +32,7 @@ These are load-bearing decisions from the requirements and architecture document
 
 ## 3. Dependency discipline
 
-- **≤ 50 direct non-stdlib dependencies** in `go.mod` for the default build (docs/implementation/01 §Dependency budget).
+- **≤ 50 direct non-stdlib dependencies** in `go.mod` for the default build (docs/design/implementation/01 §Dependency budget).
 - Each new direct dependency justified in the PR description: license, activity, author trust, vendored diff size. License must be MIT / BSD-2/3 / Apache-2.0 / ISC.
 - Prefer `stdlib > emersion/go-* > other third-party > fork` in that order.
 - Forks live under `internal/third_party/<upstream>/` with an upstream-pin comment. Do not vendor without recording provenance.
@@ -41,7 +41,7 @@ These are load-bearing decisions from the requirements and architecture document
 
 ## 4. Project layout
 
-Follow `docs/implementation/01-tech-stack.md` §Project layout verbatim. Summary:
+Follow `docs/design/implementation/01-tech-stack.md` §Project layout verbatim. Summary:
 
 ```
 cmd/herold/              single binary entrypoint (server + CLI merged)
@@ -90,7 +90,7 @@ deploy/                  debian, rpm, docker, k8s
 
 ## 8. Testing — full coverage is the standard
 
-The testing strategy in `docs/implementation/03-testing-strategy.md` is the authoritative rubric. Summary of enforceable rules:
+The testing strategy in `docs/design/implementation/03-testing-strategy.md` is the authoritative rubric. Summary of enforceable rules:
 
 1. **Every non-trivial pure function has unit tests.** "Non-trivial" excludes one-line passthroughs and gofmt-shaped accessors.
 2. **Every wire parser has a fuzz target.** Seed corpus under `testdata/fuzz/`. `go test -fuzz -fuzztime=30s` must run clean on CI per PR.
@@ -116,10 +116,10 @@ The testing strategy in `docs/implementation/03-testing-strategy.md` is the auth
 
 ## 10. Backwards compatibility and versioning
 
-- Plugin ABI version is a hard contract; bump major for breaking changes. Server refuses to load incompatible plugins. (docs/requirements/11)
+- Plugin ABI version is a hard contract; bump major for breaking changes. Server refuses to load incompatible plugins. (docs/design/requirements/11)
 - Database schema migrations are forward-only; downgrade is explicitly rejected (REQ-OPS-100).
 - Admin REST API versioned in the URL path (`/api/v1/...`). Once v1 ships, v1 is frozen; new behavior is v2.
-- Wire protocols conform to the RFCs cited in `docs/requirements/01-protocols.md`. Deviations are documented with a rationale comment next to the code and a changelog entry.
+- Wire protocols conform to the RFCs cited in `docs/design/requirements/01-protocols.md`. Deviations are documented with a rationale comment next to the code and a changelog entry.
 
 ## 11. Review discipline
 

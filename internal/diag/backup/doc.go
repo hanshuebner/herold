@@ -8,7 +8,7 @@
 // hand-edit. BackupVersion in the manifest tags the format so a future
 // incompatible bump can be detected at restore time.
 //
-// See docs/requirements/09-operations.md §Backup and Phase 2 of
-// docs/implementation/02-phasing.md for the operator-facing
+// See docs/design/requirements/09-operations.md §Backup and Phase 2 of
+// docs/design/implementation/02-phasing.md for the operator-facing
 // requirements driving this package.
 package backup

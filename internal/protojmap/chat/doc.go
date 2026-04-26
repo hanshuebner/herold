@@ -12,7 +12,7 @@
 // convention for vendor extensions (e.g. Fastmail's
 // `https://www.fastmail.com/dev/maskedemail`) the capability URI is an
 // http(s) URL in the vendor namespace that owns the consumer wire
-// contract. Per docs/00-scope.md, herold is the substrate beneath the
+// contract. Per docs/design/00-scope.md, herold is the substrate beneath the
 // tabard suite, so the URI is `https://tabard.dev/jmap/chat`. Tabard's
 // chat client knows how to consume this; future IETF standardisation
 // is out of scope.
