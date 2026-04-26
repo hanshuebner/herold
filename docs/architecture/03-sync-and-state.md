@@ -69,4 +69,4 @@ On reload, tabard's in-memory cache is gone. The bootstrap flow (`01-system-over
 
 ## Cross-reference to herold
 
-Herold owns the producer side: every mutation appends a row to its per-principal state-change feed (see `../../herold/docs/architecture/05-sync-and-state.md`). The EventSource events and the `Foo/changes` results both come from that feed. Tabard's only job is the consumer pattern documented above.
+Herold owns the producer side: every mutation appends a row to its per-principal state-change feed (see `../../herold/docs/design/architecture/05-sync-and-state.md`). The EventSource events and the `Foo/changes` results both come from that feed. Tabard's only job is the consumer pattern documented above.

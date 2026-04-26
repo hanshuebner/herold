@@ -1,6 +1,6 @@
 # Herold coverage
 
-What tabard requires of herold (per `server-contract.md`) and what herold's spec commits to. Last refreshed 2026-04-25 against `/Users/hans/herold/docs/`.
+What tabard requires of herold (per `server-contract.md`) and what herold's spec commits to. Last refreshed 2026-04-26 against `/Users/hans/herold/docs/design/`.
 
 Per resolved Q14: herold ships before tabard implements. With the herold scope rev 4 commit (2026-04-25), the gaps surfaced by the prior audit are closed at the *requirements* level — implementation lands in herold's phase plan.
 
@@ -47,5 +47,5 @@ Per resolved Q14: herold ships before tabard implements. With the herold scope r
 ## Notes
 
 - "Committed" here means *the requirements doc commits to it*. Implementation lands in herold's phase plan; tabard's pre-implementation prep should track herold's implementation phase progress to schedule its own work.
-- The implementation work in herold for phase 2 is non-trivial — chat alone is a substantial new feature surface (new datatypes, WebSocket endpoint, presence machinery, TURN credential mint, fanout integration). Herold's phasing doc (`/Users/hans/herold/docs/implementation/02-phasing.md`) is the source of truth for sequencing.
+- The implementation work in herold for phase 2 is non-trivial — chat alone is a substantial new feature surface (new datatypes, WebSocket endpoint, presence machinery, TURN credential mint, fanout integration). Herold's phasing doc (`/Users/hans/herold/docs/design/implementation/02-phasing.md`) is the source of truth for sequencing.
 - coturn is operator-deployed, not bundled. Herold's deploy/ docs include a reference configuration; production deployments require operator-supplied TLS certificates and shared-secret rotation policy.
