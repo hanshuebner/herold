@@ -2,6 +2,7 @@
   import { router } from '../lib/router/router.svelte';
   import { mail } from '../lib/mail/store.svelte';
   import { keyboard } from '../lib/keyboard/engine.svelte';
+  import { compose } from '../lib/compose/compose.svelte';
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import type { Email } from '../lib/mail/types';
 
@@ -99,11 +100,32 @@
   // Thread-view bindings.
   $effect(() => {
     if (!threadId) return;
+    const tid = threadId;
+    const replyTarget = (): Email | null => {
+      const emails = mail.threadEmails(tid);
+      return emails[emails.length - 1] ?? null;
+    };
     const pop = keyboard.pushLayer([
       {
         key: 'Escape',
         description: 'Back to inbox',
         action: () => router.navigate('/mail'),
+      },
+      {
+        key: 'r',
+        description: 'Reply',
+        action: () => {
+          const e = replyTarget();
+          if (e) compose.openReply(e);
+        },
+      },
+      {
+        key: 'f',
+        description: 'Forward',
+        action: () => {
+          const e = replyTarget();
+          if (e) compose.openForward(e);
+        },
       },
       {
         key: 'u',

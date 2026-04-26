@@ -25,13 +25,20 @@
     return pop;
   });
 
-  // Focus the first field when the compose opens.
+  // Focus the right field when compose opens — for reply / forward, the
+  // body (cursor at top, above the quoted block); otherwise the To field.
   let toInput = $state<HTMLInputElement | null>(null);
+  let bodyTextarea = $state<HTMLTextAreaElement | null>(null);
   $effect(() => {
-    if (compose.status === 'editing' && toInput) {
-      // Defer to the next frame so the modal is mounted before we focus.
-      requestAnimationFrame(() => toInput?.focus());
-    }
+    if (compose.status !== 'editing') return;
+    requestAnimationFrame(() => {
+      if (compose.replyContext.parentId && bodyTextarea) {
+        bodyTextarea.focus();
+        bodyTextarea.setSelectionRange(0, 0);
+      } else if (toInput) {
+        toInput.focus();
+      }
+    });
   });
 
   let identity = $derived(mail.primaryIdentity);
@@ -47,7 +54,15 @@
     tabindex="-1"
   >
     <header class="modal-header">
-      <h2 id="compose-title">New message</h2>
+      <h2 id="compose-title">
+        {#if compose.replyContext.parentKeyword === '$answered'}
+          Reply
+        {:else if compose.replyContext.parentKeyword === '$forwarded'}
+          Forward
+        {:else}
+          New message
+        {/if}
+      </h2>
       <button
         type="button"
         class="close"
@@ -96,6 +111,7 @@
       <label class="row body-row">
         <span class="label">Body</span>
         <textarea
+          bind:this={bodyTextarea}
           bind:value={compose.body}
           rows="14"
           placeholder="Write your message…"

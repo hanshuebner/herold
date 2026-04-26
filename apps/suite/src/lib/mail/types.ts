@@ -101,6 +101,10 @@ export interface Email {
   bodyValues?: Record<string, EmailBodyValue>;
   htmlBody?: EmailBodyPart[];
   textBody?: EmailBodyPart[];
+  // Threading-relevant headers for reply / forward.
+  messageId?: string[] | null;
+  inReplyTo?: string[] | null;
+  references?: string[] | null;
 }
 
 /** The properties projection tabard requests for list rendering. */
@@ -137,6 +141,9 @@ export const EMAIL_BODY_PROPERTIES = [
   'bodyValues',
   'htmlBody',
   'textBody',
+  'messageId',
+  'inReplyTo',
+  'references',
 ] as const;
 
 /**

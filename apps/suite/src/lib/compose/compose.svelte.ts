@@ -26,10 +26,34 @@ import { auth } from '../auth/auth.svelte';
 import { Capability, type Invocation } from '../jmap/types';
 import { mail } from '../mail/store.svelte';
 import { toast } from '../toast/toast.svelte';
+import {
+  emailHtmlBody,
+  emailTextBody,
+  type Address,
+  type Email,
+} from '../mail/types';
 
 const DEFAULT_UNDO_WINDOW_SEC = 5;
 
 type ComposeStatus = 'idle' | 'editing' | 'sending';
+
+interface ReplyContext {
+  /** Parent email id — used to flip $answered / $forwarded after send. */
+  parentId: string | null;
+  /** Which keyword to set on the parent. null = none. */
+  parentKeyword: '$answered' | '$forwarded' | null;
+  /** RFC 5322 `In-Reply-To` value(s) to write on the new email. */
+  inReplyTo: string[] | null;
+  /** RFC 5322 `References` chain (parent's references + parent's messageId). */
+  references: string[] | null;
+}
+
+const EMPTY_REPLY: ReplyContext = {
+  parentId: null,
+  parentKeyword: null,
+  inReplyTo: null,
+  references: null,
+};
 
 class ComposeStore {
   status = $state<ComposeStatus>('idle');
@@ -38,26 +62,68 @@ class ComposeStore {
   body = $state('');
   errorMessage = $state<string | null>(null);
 
+  /** Reply / forward context — null fields mean "this is a fresh compose". */
+  replyContext = $state<ReplyContext>({ ...EMPTY_REPLY });
+
   /** Open a fresh compose. */
   openBlank(): void {
     this.to = '';
     this.subject = '';
     this.body = '';
     this.errorMessage = null;
+    this.replyContext = { ...EMPTY_REPLY };
     this.status = 'editing';
-    // Identity / mailbox prerequisites — kick off the load if not warm.
     if (!mail.primaryIdentity || !mail.drafts) {
       void this.#warmupAccount();
     }
   }
 
-  /** Open compose pre-populated (e.g. after Undo). */
-  openWith(args: { to: string; subject: string; body: string }): void {
+  /**
+   * Open compose pre-populated (e.g. after Undo). Caller is responsible
+   * for resetting / setting the reply context.
+   */
+  openWith(args: {
+    to: string;
+    subject: string;
+    body: string;
+    replyContext?: ReplyContext;
+  }): void {
     this.to = args.to;
     this.subject = args.subject;
     this.body = args.body;
+    this.replyContext = args.replyContext ?? { ...EMPTY_REPLY };
     this.errorMessage = null;
     this.status = 'editing';
+  }
+
+  /** Open compose as a reply to the given email. */
+  openReply(parent: Email): void {
+    this.openWith({
+      to: addressToString(parent.from?.[0]),
+      subject: replySubject(parent.subject),
+      body: formatReplyQuote(parent),
+      replyContext: {
+        parentId: parent.id,
+        parentKeyword: '$answered',
+        inReplyTo: parent.messageId ?? null,
+        references: mergeReferences(parent),
+      },
+    });
+  }
+
+  /** Open compose as a forward of the given email. */
+  openForward(parent: Email): void {
+    this.openWith({
+      to: '',
+      subject: forwardSubject(parent.subject),
+      body: formatForwardQuote(parent),
+      replyContext: {
+        parentId: parent.id,
+        parentKeyword: '$forwarded',
+        inReplyTo: parent.messageId ?? null,
+        references: mergeReferences(parent),
+      },
+    });
   }
 
   /** Close and clear. */
@@ -67,6 +133,7 @@ class ComposeStore {
     this.subject = '';
     this.body = '';
     this.errorMessage = null;
+    this.replyContext = { ...EMPTY_REPLY };
   }
 
   get isOpen(): boolean {
@@ -99,11 +166,13 @@ class ComposeStore {
     }
     const subject = this.subject;
     const body = this.body;
+    const replyContext = this.replyContext;
 
-    // Snapshot for Undo.
+    // Snapshot for Undo (full state, including reply context).
     const savedTo = this.to;
     const savedSubject = subject;
     const savedBody = body;
+    const savedReplyContext: ReplyContext = { ...replyContext };
 
     this.errorMessage = null;
     this.status = 'sending';
@@ -117,34 +186,44 @@ class ComposeStore {
     onSuccessUpdate['keywords/$draft'] = null;
     onSuccessUpdate['keywords/$seen'] = true;
 
+    // Build the new email — include In-Reply-To / References when this is
+    // a reply or forward. Mark the parent $answered / $forwarded in the
+    // same batch (REQ-MAIL-33) so the UI reflects the change immediately.
+    const draftEmail: Record<string, unknown> = {
+      mailboxIds: { [drafts.id]: true },
+      keywords: { $draft: true, $seen: true },
+      from: [{ name: identity.name, email: identity.email }],
+      to: recipients.map((email) => ({ email, name: null })),
+      subject,
+      bodyValues: {
+        '1': { value: body, isTruncated: false, isEncodingProblem: false },
+      },
+      textBody: [{ partId: '1', type: 'text/plain', charset: 'utf-8' }],
+      bodyStructure: { partId: '1', type: 'text/plain', charset: 'utf-8' },
+    };
+    if (replyContext.inReplyTo && replyContext.inReplyTo.length > 0) {
+      draftEmail.inReplyTo = replyContext.inReplyTo;
+    }
+    if (replyContext.references && replyContext.references.length > 0) {
+      draftEmail.references = replyContext.references;
+    }
+
     try {
       const { responses } = await jmap.batch((b) => {
         b.call(
           'Email/set',
           {
             accountId,
-            create: {
-              draft1: {
-                mailboxIds: { [drafts.id]: true },
-                keywords: { $draft: true, $seen: true },
-                from: [{ name: identity.name, email: identity.email }],
-                to: recipients.map((email) => ({ email, name: null })),
-                subject,
-                bodyValues: {
-                  '1': {
-                    value: body,
-                    isTruncated: false,
-                    isEncodingProblem: false,
+            create: { draft1: draftEmail },
+            ...(replyContext.parentId && replyContext.parentKeyword
+              ? {
+                  update: {
+                    [replyContext.parentId]: {
+                      [`keywords/${replyContext.parentKeyword}`]: true,
+                    },
                   },
-                },
-                textBody: [{ partId: '1', type: 'text/plain', charset: 'utf-8' }],
-                bodyStructure: {
-                  partId: '1',
-                  type: 'text/plain',
-                  charset: 'utf-8',
-                },
-              },
-            },
+                }
+              : {}),
           },
           [Capability.Mail],
         );
@@ -209,8 +288,13 @@ class ComposeStore {
               );
             });
             strict(result.responses);
-            // Re-open compose with the saved content.
-            this.openWith({ to: savedTo, subject: savedSubject, body: savedBody });
+            // Re-open compose with the full saved state (including reply context).
+            this.openWith({
+              to: savedTo,
+              subject: savedSubject,
+              body: savedBody,
+              replyContext: savedReplyContext,
+            });
           } catch (err) {
             toast.show({
               message:
@@ -262,6 +346,103 @@ function parseAddressList(raw: string): string[] {
 function invocationArgs<T>(inv: Invocation | undefined): T {
   if (!inv) throw new Error('Expected method invocation, got undefined');
   return inv[1] as T;
+}
+
+// ── Reply / forward formatters ────────────────────────────────────────
+
+function addressToString(a: Address | undefined): string {
+  if (!a) return '';
+  return a.name?.trim() ? `${a.name} <${a.email}>` : a.email;
+}
+
+function addressListToString(list: Address[] | null | undefined): string {
+  if (!list || list.length === 0) return '';
+  return list.map(addressToString).join(', ');
+}
+
+function replySubject(orig: string | null): string {
+  const s = orig ?? '';
+  if (/^re:\s*/i.test(s)) return s;
+  return `Re: ${s}`;
+}
+
+function forwardSubject(orig: string | null): string {
+  const s = orig ?? '';
+  if (/^fwd?:\s*/i.test(s)) return s;
+  return `Fwd: ${s}`;
+}
+
+function mergeReferences(parent: Email): string[] {
+  const refs: string[] = [];
+  if (parent.references) refs.push(...parent.references);
+  if (parent.messageId) refs.push(...parent.messageId);
+  return refs;
+}
+
+/**
+ * Get the parent email's plain-text body for quoting. Prefers the textBody
+ * if present; falls back to a tag-stripped version of htmlBody.
+ */
+function parentBodyText(parent: Email): string {
+  const text = emailTextBody(parent);
+  if (text) return text;
+  const html = emailHtmlBody(parent);
+  if (!html) return '';
+  return htmlToText(html);
+}
+
+function htmlToText(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const out = doc.body?.textContent ?? '';
+  // Collapse runs of >2 blank lines that result from block elements.
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function formatDateForQuote(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function quoteBlock(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => `> ${line}`)
+    .join('\n');
+}
+
+function formatReplyQuote(parent: Email): string {
+  const senderLabel = addressToString(parent.from?.[0]) || '(unknown sender)';
+  const dateStr = formatDateForQuote(parent.sentAt ?? parent.receivedAt);
+  const body = parentBodyText(parent);
+  const header = dateStr
+    ? `On ${dateStr}, ${senderLabel} wrote:`
+    : `${senderLabel} wrote:`;
+  const quoted = body ? quoteBlock(body) : '> (no quoted body)';
+  return `\n\n${header}\n${quoted}\n`;
+}
+
+function formatForwardQuote(parent: Email): string {
+  const fromStr = addressListToString(parent.from);
+  const toStr = addressListToString(parent.to);
+  const dateStr = formatDateForQuote(parent.sentAt ?? parent.receivedAt);
+  const subject = parent.subject ?? '';
+  const body = parentBodyText(parent);
+  const header = [
+    '---------- Forwarded message ----------',
+    `From: ${fromStr}`,
+    `Date: ${dateStr}`,
+    `Subject: ${subject}`,
+    `To: ${toStr}`,
+  ].join('\n');
+  return `\n\n${header}\n\n${body}\n`;
 }
 
 export const compose = new ComposeStore();

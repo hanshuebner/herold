@@ -2,6 +2,7 @@
   import HtmlBody from './HtmlBody.svelte';
   import { htmlHasExternalImages } from './sanitize';
   import { emailHtmlBody, emailTextBody, type Email } from './types';
+  import { compose } from '../compose/compose.svelte';
 
   interface Props {
     email: Email;
@@ -89,6 +90,15 @@
       {:else}
         <p class="empty">(no body)</p>
       {/if}
+
+      <div class="actions">
+        <button type="button" class="pill" onclick={() => compose.openReply(email)}>
+          ↩ Reply
+        </button>
+        <button type="button" class="pill" onclick={() => compose.openForward(email)}>
+          ↪ Forward
+        </button>
+      </div>
     </div>
   {/if}
 </article>
@@ -195,6 +205,29 @@
     transition: background var(--duration-fast-02) var(--easing-productive-enter);
   }
   .image-banner button:hover {
+    background: var(--layer-02);
+  }
+
+  .actions {
+    display: flex;
+    gap: var(--spacing-03);
+    padding: var(--spacing-04) 0 0;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-02);
+    padding: var(--spacing-02) var(--spacing-04);
+    background: var(--layer-01);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-pill);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
+    min-height: 32px;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .pill:hover {
     background: var(--layer-02);
   }
   .text-body {
