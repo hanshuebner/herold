@@ -94,5 +94,38 @@ func newAPIKeyCmd() *cobra.Command {
 			return nil
 		},
 	})
+
+	// list: GET /api/v1/api-keys (caller's own keys) when --principal is
+	// absent, or GET /api/v1/principals/{pid}/api-keys (admin-only)
+	// when --principal resolves to a specific principal.
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "list API keys (own keys by default; admin-only --principal scopes to another)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			path := "/api/v1/api-keys"
+			if ref, _ := cmd.Flags().GetString("principal"); ref != "" {
+				pid, err := resolvePrincipalID(cmd.Context(), client, ref)
+				if err != nil {
+					return err
+				}
+				path = "/api/v1/principals/" + pid + "/api-keys"
+			}
+			var out map[string]any
+			err = client.do(cmd.Context(), "GET", path, nil, &out)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, out)
+		},
+	}
+	listCmd.Flags().String("principal", "",
+		"principal email or numeric id (admin-only; defaults to listing the caller's own keys)")
+	c.AddCommand(listCmd)
 	return c
 }

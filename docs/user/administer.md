@@ -131,21 +131,29 @@ herold principal list --after <cursor>     # keyset pagination.
 ### Show
 
 ```bash
-herold principal list --limit 1000 | grep user@example.com
+herold principal show user@example.com
+herold principal show 7                  # numeric principal id also accepted.
+herold principal show user@example.com --json
 ```
 
-(A dedicated `show` subcommand is on the CLI map per REQ-ADM-101 but
-TODO(operator-doc): principal-show-not-yet-wired. The REST endpoint
-`GET /api/v1/principals/{id}` exists; CLI surfacing pending.)
+The CLI accepts an email or a numeric principal id; emails are resolved
+to a pid client-side. The REST surface backing this is
+`GET /api/v1/principals/{id}` (REQ-ADM-101).
 
 ### Disable / enable
 
 Disable a principal without deleting (lock-out for vacation, off-boarding,
-or compromise response). The CLI surface for this is planned per
-REQ-ADM-101 (`disable` / `enable` verbs). TODO(operator-doc):
-principal-disable-cli-not-yet-wired. Until the CLI lands, use the
-REST surface: `PATCH /api/v1/principals/{id}` with `{"disabled":
-true}`.
+or compromise response). The flag is a soft lock-out; the principal's
+mailbox content survives.
+
+```bash
+herold principal disable user@example.com
+herold principal enable user@example.com
+```
+
+Both verbs are read-modify-write wrappers around
+`PATCH /api/v1/principals/{id}` with the `flags` array.
+REQ-ADM-101 lists `disable` and `enable` as distinct verbs.
 
 ### Delete (with cascade)
 
@@ -167,16 +175,37 @@ herold principal set-password user@example.com         # interactive prompt.
 
 ### Set quota
 
-CLI flag planned per REQ-ADM-10 sub-resource `/quota`.
-TODO(operator-doc): principal-quota-cli-not-yet-wired. REST:
-`PUT /api/v1/principals/{id}/quota`.
+```bash
+herold principal quota user@example.com 5G
+herold principal quota user@example.com 200M
+herold principal quota user@example.com 1073741824     # plain bytes.
+```
+
+Suffixes K, M, G, T (case-insensitive; binary multipliers - 1K = 1024)
+are recognised. The REST surface today is
+`PATCH /api/v1/principals/{id}` with `{"quota_bytes": N}`. REQ-ADM-10
+hints at a dedicated `PUT /api/v1/principals/{id}/quota` subresource;
+that has not landed yet, but the CLI verb is forward-compatible.
 
 ### Set TOTP
 
 User-driven via the Web UI / `/settings` self-service surface
-(REQ-ADM-203). Operator override: REST
-`POST /api/v1/principals/{id}/2fa/totp`. TODO(operator-doc):
-totp-cli-not-yet-wired.
+(REQ-ADM-203). Operator override:
+
+```bash
+herold principal totp enroll user@example.com --json
+herold principal totp disable user@example.com --current-password '...'
+```
+
+`enroll` returns a one-shot provisioning URI (the `otpauth://...` URL
+suitable for QR-rendering on the user's authenticator). The user then
+confirms enrolment via the self-service `/settings` flow; that step is
+not exposed as an operator verb because the operator cannot read the
+code off the user's authenticator.
+
+`disable` removes the TOTP secret. The REST surface
+(`DELETE /api/v1/principals/{id}/totp`) requires the principal's current
+password as a deliberate footgun guard - admins included.
 
 ### Link OIDC provider
 
@@ -194,13 +223,18 @@ herold oidc link-delete user@example.com google
 The link-create path is the user-facing OIDC sign-in flow per
 `docs/design/requirements/02-identity-and-auth.md`.
 
-### Grant admin
+### Grant / revoke admin
 
 The first principal created by `herold bootstrap` carries
 `PrincipalFlagAdmin`. Subsequent principals are non-admin by default.
-Granting admin is `PATCH /api/v1/principals/{id}` with
-`{"flags": ["admin"]}`. TODO(operator-doc):
-principal-grant-admin-cli-not-yet-wired.
+
+```bash
+herold principal grant-admin user@example.com
+herold principal revoke-admin user@example.com
+```
+
+Both verbs are read-modify-write wrappers around
+`PATCH /api/v1/principals/{id}` with the `flags` array.
 
 ## Mailboxes
 
@@ -230,22 +264,20 @@ exposed.
 ## Aliases
 
 An alias rewrites the recipient address before delivery
-(REQ-FLOW-* / REQ-ADM-10 sub-resource `/aliases`). Single-target and
-multi-target aliases are both supported; multi-target aliases fan out
-to multiple principals.
+(REQ-FLOW-* / REQ-ADM-10 sub-resource `/aliases`).
 
-### CLI surface (planned)
+### CLI surface
 
 ```bash
-# Planned, Wave X.Y:
 herold alias add postmaster@example.com user@example.com
-herold alias add support@example.com a@example.com,b@example.com
 herold alias list
-herold alias delete postmaster@example.com
+herold alias list --domain example.com
+herold alias delete 42                         # numeric id from `alias list`.
 ```
 
-TODO(operator-doc): alias-cli-not-yet-wired in `internal/admin/`. The
-REST shape (`/api/v1/principals/{id}/aliases`) is in REQ-ADM-10.
+The REST surface (`/api/v1/aliases`) accepts one target per alias.
+Multi-target fan-out is achieved by creating multiple alias rows with
+the same `<addr>`; a wire-level multi-target DTO is not yet shipped.
 
 ## API keys
 
@@ -273,13 +305,16 @@ same shape and is labeled `bootstrap` in the DB.
 ### List
 
 ```bash
-# Planned, Wave X.Y:
-herold api-key list
-herold api-key list --principal user@example.com
+herold api-key list                                  # caller's own keys.
+herold api-key list --principal user@example.com     # admin-only.
 ```
 
-TODO(operator-doc): api-key-list-cli-not-yet-wired. REST: `GET
-/api/v1/api-keys`.
+Without `--principal` the CLI calls the self-service endpoint
+(`GET /api/v1/api-keys`) and returns the caller's keys. With
+`--principal`, it resolves the email to a numeric id and calls the
+admin-only path (`GET /api/v1/principals/{id}/api-keys`). Plaintext
+key material is **never** returned by `list` - only `create` exposes
+it (once).
 
 ### Revoke
 
@@ -323,16 +358,29 @@ LLM-driven message categorisation distinct from spam - Gmail-style
 Primary / Social / Promotions / Updates / Forums labels by default,
 user-configurable prompt (REQ-FILT-200..220).
 
+### Recategorise
+
 ```bash
-# Planned, Wave 3.x:
-herold categorise prompt set user@example.com < prompt.txt
-herold categorise list-categories user@example.com
-herold categorise recategorise user@example.com --mailbox INBOX
+herold categorise recategorise user@example.com
+herold categorise recategorise user@example.com --limit 500
+herold categorise recategorise user@example.com --async        # return jobId immediately.
+herold categorise recategorise user@example.com --poll-interval 1s
 ```
 
-TODO(operator-doc): categorise-cli-not-yet-wired. The categorise
-config block in `system.toml` (`[server.categorise]`) lands with the
-feature in Wave 3.x.
+The CLI POSTs to `/api/v1/principals/{id}/recategorise`, then polls
+`/api/v1/jobs/{id}` until the job reaches state `done` or `failed`.
+Progress lines are printed as `recategorise: done/total`. With
+`--async`, the CLI prints the job id and exits; the caller is
+expected to drive their own poll.
+
+### Prompt management (planned)
+
+`herold categorise prompt set <email> < prompt.txt` and
+`herold categorise list-categories <email>` are still pending: the
+store layer (`GetCategorisationConfig` / `UpdateCategorisationConfig`)
+exists, but the REST surface for those mutations has not landed yet.
+TODO(operator-doc): categorise-prompt-cli-not-yet-wired (bucket 2 in
+the admin-cli triage).
 
 ## Outbound submission queue
 
@@ -388,16 +436,27 @@ Every admin mutation (and significant read) lands in the
 `audit_log` table - an append-only ledger of who did what and when
 (REQ-ADM-300, REQ-ADM-301).
 
-### Query (planned)
+### Query
 
 ```bash
-# Planned, Wave X.Y:
 herold audit list --since 1h
 herold audit list --actor admin@example.com --action principal.delete
-herold audit list --resource user@example.com
+herold audit list --limit 200
+herold audit list --since 2026-04-01T00:00:00Z --action alias.delete
 ```
 
-TODO(operator-doc): audit-list-cli-not-yet-wired. Today's path:
+`--since` accepts either an RFC3339 timestamp or a relative duration
+(`1h`, `30m`, `24h`). `--actor` accepts an email or a numeric
+principal id; emails are resolved client-side to a `principal_id`
+filter on the REST surface. `--action` matches the `Action` column
+exactly.
+
+`--resource` is named in REQ-ADM-19 but the REST surface does not yet
+expose a resource filter; the CLI accepts the flag and emits a
+warning rather than silently dropping it. Tracked in the
+admin-cli-triage doc.
+
+Other paths:
 
 - The REST endpoint `GET /api/v1/audit?limit=1000` (also exposed via
   `herold diag collect` which dumps the recent audit log into the
