@@ -229,6 +229,23 @@ See REQ-STORE-60..63 for data model. Operationally:
 - **REQ-OPS-162** systemd `LoadCredential=` and Docker/K8s secret files supported by `file:` references.
 - **REQ-OPS-163** Plugin secrets delivered via env var, stdin at configure, or FIFO (REQ-PLUG-22). Never via command-line arguments.
 
+## VAPID keys (Web Push)
+
+Per `requirements/01-protocols.md` REQ-PROTO-122. Phase 1.
+
+- **REQ-OPS-180** Herold maintains a single deployment-level VAPID key pair (P-256 ECDSA per RFC 8292). Generated at first start (or via `herold push generate-vapid-keys`) and persisted to the data dir under `secrets/vapid/`.
+- **REQ-OPS-181** Configuration:
+  ```
+  # /etc/herold/system.toml
+  [push.vapid]
+  public_key  = "file:/var/lib/herold/secrets/vapid/public.key"
+  private_key = "file:/var/lib/herold/secrets/vapid/private.key"
+  contact     = "mailto:operator@example.com"   # used as the VAPID JWT 'sub' claim
+  ```
+- **REQ-OPS-182** Public key surfaced in the JMAP session descriptor for clients to pass to `pushManager.subscribe`. Private key never leaves the herold process.
+- **REQ-OPS-183** Rotation: manual operator process. New keys generated; subscriptions registered against the old key fail on next push attempt with 410-equivalent (the subscription's `vapidKeyAtRegistration` doesn't match); herold destroys those subscriptions and clients re-subscribe on next launch. Rotation cadence is operator policy; not automated in v1.
+- **REQ-OPS-184** Without VAPID configured, herold does NOT advertise the `https://tabard.dev/jmap/push` capability and tabard's push features degrade per `/Users/hans/tabard/docs/requirements/25-push-notifications.md` (no push delivery; in-app indicators only).
+
 ## coturn (TURN relay for chat video calls)
 
 Phase 2 — see `requirements/15-video-calls.md` § Operations.

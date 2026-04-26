@@ -111,7 +111,7 @@ Deferred: `LIST-MYRIGHTS`, `CONTEXT=SEARCH`, `URLAUTH`.
 - **REQ-PROTO-45** MUST NOT require a separate authentication subsystem — JMAP auth shares the identity model with IMAP/SMTP.
 - **REQ-PROTO-46** `VacationResponse` object maps to a Sieve vacation rule (REQ-FILT-sieve).
 - **REQ-PROTO-47** `Email/query` + `Email/get` MUST back onto the same FTS index used for IMAP `SEARCH`. One index, two query paths.
-- **REQ-PROTO-48** `pushSubscription` deferred to phase 3 (Web Push with VAPID is complex; SSE covers clients that matter).
+- **REQ-PROTO-48** **Web Push** (RFC 8030 + RFC 8620 §7.2 `PushSubscription` + RFC 8291 encryption + RFC 8292 VAPID auth). Advanced from "phase 3" to **phase 1** per the tabard suite plan: tabard-mail v1 ships browser push notifications and depends on herold delivering them. Detail in REQ-PROTO-120..127 (the JMAP datatype shape, the tabard-specific notification rules extension, the outbound push gateway, VAPID key management).
 - **REQ-PROTO-49** MUST implement the JMAP snooze extension. Modern mail clients (Apple Mail, Fastmail, etc.) expose "snooze until <time>" as a first-class user action; the de-facto JMAP shape is a `$snoozed` keyword on `Email` plus a `snoozedUntil` (UTCDate) extension property, with a server-side wake-up timer that clears the keyword + the property when `snoozedUntil <= now`. Phase 2.
 
   Concrete contract:
@@ -155,6 +155,26 @@ Backs tabard's always-on keyboard-shortcut coach: a per-principal store of (acti
 - **REQ-PROTO-112** Authorisation: a principal can only `get` / `set` / `destroy` their own `ShortcutCoachStat` rows. Admin / operator reads of coach data are out — the data is private to the user (`/Users/hans/tabard/docs/requirements/23-shortcut-coach.md` REQ-COACH-04).
 - **REQ-PROTO-113** State-change-feed integration is OPTIONAL. The state string advances per the standard rules but tabard does not subscribe to changes (the client-writes-only-its-own pattern; no echoes needed). Implementations MAY skip emitting state-change feed rows for coach mutations to save broadcaster work — this is a deliberate exemption from the otherwise-uniform rule that every mutation appends to the feed.
 - **REQ-PROTO-114** Storage volume is small: ~30 actions × ~1k principals = trivial. A single SQLite/Postgres table with `(principal_id, action)` PRIMARY KEY and the counter columns suffices.
+
+### Web Push delivery
+
+Per `/Users/hans/tabard/docs/requirements/25-push-notifications.md` and `/Users/hans/tabard/docs/notes/server-contract.md` § Web Push. Capability `https://tabard.dev/jmap/push` (advertised when the deployment has VAPID configured). Phase 1 — herold ships push delivery as part of v1 because tabard-mail v1 depends on it.
+
+- **REQ-PROTO-120** MUST implement the JMAP `PushSubscription` datatype per RFC 8620 §7.2 with standard methods (`get`, `set`). Standard properties: `id`, `deviceClientId`, `url` (the push endpoint), `expires`, `types` (subscribed JMAP types), `keys: { p256dh, auth }`, plus `verificationCode` per the verification handshake.
+- **REQ-PROTO-121** MUST persist tabard-specific extension properties on `PushSubscription`: `notificationRules` (JSON blob; tabard's per-event-type preference set), `quietHours` (`{ startHourLocal, endHourLocal, tz }` or null), and `vapidKeyAtRegistration` (the VAPID public key the client registered against, so herold can pick the right key pair when rotating). Validation: rules must be a known JSON shape; quiet hours' tz must be a valid IANA timezone or null.
+- **REQ-PROTO-122** MUST maintain a deployment-level VAPID key pair. Public key exposed in the JMAP session descriptor's capabilities data (under `urn:ietf:params:jmap:core` an extension field, OR under `https://tabard.dev/jmap/push`'s capability data — pick one and document; tabard reads from wherever herold puts it). Private key stored in herold's secrets store (per REQ-OPS-160..163). Operator may rotate the key pair manually; rotation invalidates existing subscriptions on next push attempt (clients re-subscribe).
+- **REQ-PROTO-123** Outbound push dispatcher: for each state-change-feed event affecting a principal, the dispatcher iterates that principal's `PushSubscription` rows. Per subscription:
+  1. Evaluate `notificationRules` against the event type and content. Result: `enriched` (build a tabard payload with title / body / actions per `/Users/hans/tabard/docs/requirements/25-push-notifications.md` REQ-PUSH-40..47), `minimal` (RFC 8620 §7.2 state-change envelope only), or `suppress` (rule says no push).
+  2. If `quietHours` is set and the event is in-window: downgrade `enriched` to `suppress` unless the event is high-priority (incoming video call; calendar invite for an event starting within 60 min).
+  3. Build the payload (JSON), check size ≤ 2.5 KB plaintext.
+  4. Encrypt per RFC 8291 using the subscription's `p256dh` and `auth` keys.
+  5. Build the `Authorization` header per RFC 8292 (VAPID JWT signed with the deployment's VAPID private key; `aud` claim from the endpoint URL's origin; `sub` claim from operator config).
+  6. POST the encrypted body + headers to the subscription's `url`.
+  7. Outcome: 201 / 200 / 204 = success; 410 / 404 = subscription gone, destroy via `PushSubscription/set { destroy }`; 4xx other = log and retry once with exponential backoff; persistent failure logs and destroys after 3 attempts; 5xx = retry with backoff up to 5 attempts then give up (the push is lost; future events will re-push as they happen).
+- **REQ-PROTO-124** Coalescing: when multiple push-eligible events affect the same `(subscription, conversation-or-thread)` pair within 30 seconds, herold MUST combine them into a single push using the same `tag` so the browser replaces rather than stacks notifications. The replacement payload reflects the latest aggregated state (e.g. "3 new messages on Re: Project X", not three separate notifications).
+- **REQ-PROTO-125** Payload privacy: payloads MUST NOT contain full message bodies. Mail: subject + ≤ 80 chars of preview. Chat: ≤ 80 chars of message text or `[image]` / `[reaction]` markers. Calendar: structured fields only (sender, event title, time, location). Reactions: emoji + sender display name. The cap is enforced at payload-build time.
+- **REQ-PROTO-126** Rate limiting: per (principal, subscription), MUST cap pushes at 60 per minute and 1000 per day. Sustained excess (e.g. a runaway notification scenario from a malformed Sieve filter) triggers a per-subscription cooldown — the dispatcher logs and stops pushing for 5 minutes — preventing user wake-up storms.
+- **REQ-PROTO-127** Rules engine for `notificationRules`: herold parses and stores the JSON blob; the rules grammar matches tabard's `25-push-notifications.md` REQ-PUSH-80..83 (per-event-type toggles, mail-by-category, mail-by-sender-VIP, chat DM-vs-Space, calendar invites, calls, reactions). Unknown fields in the blob are preserved verbatim so future tabard versions can extend the rules without herold needing schema changes.
 
 ## ManageSieve (REQ-PROTO-MGSV)
 
@@ -220,4 +240,4 @@ HTTP is one of our primary surfaces (see the table above). What we *don't* serve
 
 ## Open questions
 
-- Sieve `notify` via Web Push: worth it, or mailto-only forever? (Web Push itself is phase 3 per REQ-PROTO-48.)
+- Sieve `notify` via Web Push: worth it, or mailto-only forever? (Web Push itself is now phase 1 per the rev-7 advancement of REQ-PROTO-48; revisit whether Sieve scripts should be able to trigger push directly.)

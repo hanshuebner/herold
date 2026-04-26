@@ -1,5 +1,16 @@
 # 00 — Scope and non-goals
 
+**2026-04-26** (rev 8): Web Push (RFC 8030 + RFC 8620 §7.2 PushSubscription
++ tabard's enriched payload) advanced from "phase 3, deferred" to **phase 1**
+(REQ-PROTO-48 amended; REQ-PROTO-120..127 added; REQ-OPS-180..184 added).
+Driven by tabard's `requirements/25-push-notifications.md` — push is essential
+for the mail experience (a user who can't be told about new mail isn't really
+using a mail client). Outbound push gateway: per-subscription rule evaluation
+→ enriched-or-minimal payload → RFC 8291 encryption → RFC 8292 VAPID-authed
+POST. Per-(subscription, thread/conversation) coalescing within 30 s windows.
+Bodies never pushed beyond 80-char previews. Deployment-level VAPID key pair
+managed under herold's secrets-handling rules.
+
 **2026-04-26** (rev 7): shortcut coach datatype added (REQ-PROTO-110..114,
 phase 2). New per-principal `ShortcutCoachStat` JMAP datatype backing
 tabard's behaviour-driven keyboard-shortcut coach — small windowed
