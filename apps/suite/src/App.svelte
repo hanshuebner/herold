@@ -2,6 +2,7 @@
   import Shell from './lib/shell/Shell.svelte';
   import AuthGate from './lib/auth/AuthGate.svelte';
   import { router } from './lib/router/router.svelte';
+  import { keyboard } from './lib/keyboard/engine.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
   import SettingsView from './views/SettingsView.svelte';
@@ -14,6 +15,28 @@
   function selectApp(app: 'mail' | 'chat'): void {
     router.navigate(app === 'chat' ? '/chat' : '/mail');
   }
+
+  // Suite-global bindings — always active.
+  keyboard.registerGlobal({
+    key: 'c',
+    description: 'Compose',
+    action: () => {
+      // TODO compose flow not yet implemented; surface as toast / log.
+      console.info('compose: not yet implemented');
+    },
+  });
+  keyboard.registerGlobal({
+    key: '?',
+    description: 'Show keyboard shortcuts',
+    action: () => {
+      console.info('help overlay: not yet implemented');
+    },
+  });
+  keyboard.registerGlobal({
+    key: 'g i',
+    description: 'Go to Inbox',
+    action: () => router.navigate('/mail'),
+  });
 </script>
 
 <AuthGate>

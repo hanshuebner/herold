@@ -37,6 +37,36 @@ class MailStore {
   threadLoadStatus = $state(new Map<string, LoadStatus>());
   threadLoadError = $state(new Map<string, string>());
 
+  /** Index into inboxEmailIds of the keyboard-focused row; -1 = none. */
+  inboxFocusedIndex = $state<number>(-1);
+
+  /** Move focus to the next row, clamped. Returns the new focused id, if any. */
+  focusInboxNext(): string | null {
+    if (this.inboxEmailIds.length === 0) return null;
+    const next =
+      this.inboxFocusedIndex < 0
+        ? 0
+        : Math.min(this.inboxFocusedIndex + 1, this.inboxEmailIds.length - 1);
+    this.inboxFocusedIndex = next;
+    return this.inboxEmailIds[next] ?? null;
+  }
+
+  /** Move focus to the previous row, clamped. */
+  focusInboxPrev(): string | null {
+    if (this.inboxEmailIds.length === 0) return null;
+    const next =
+      this.inboxFocusedIndex < 0 ? 0 : Math.max(this.inboxFocusedIndex - 1, 0);
+    this.inboxFocusedIndex = next;
+    return this.inboxEmailIds[next] ?? null;
+  }
+
+  /** The threadId of the currently-focused inbox row, or null. */
+  focusedInboxThreadId(): string | null {
+    const emailId = this.inboxEmailIds[this.inboxFocusedIndex];
+    if (!emailId) return null;
+    return this.emails.get(emailId)?.threadId ?? null;
+  }
+
   /** The id of the JMAP Mail account this principal uses. */
   get mailAccountId(): string | null {
     return auth.session?.primaryAccounts[Capability.Mail] ?? null;

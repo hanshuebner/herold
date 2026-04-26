@@ -1,6 +1,7 @@
 <script lang="ts">
   import { router } from '../lib/router/router.svelte';
   import { mail } from '../lib/mail/store.svelte';
+  import { keyboard } from '../lib/keyboard/engine.svelte';
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import type { Email } from '../lib/mail/types';
 
@@ -13,6 +14,67 @@
     if (isInboxRoute) {
       void mail.loadInbox();
     }
+  });
+
+  // Inbox-view keyboard bindings are pushed only while the inbox is showing.
+  $effect(() => {
+    if (!isInboxRoute) return;
+    const pop = keyboard.pushLayer([
+      {
+        key: 'j',
+        description: 'Next thread',
+        action: () => mail.focusInboxNext(),
+      },
+      {
+        key: 'k',
+        description: 'Previous thread',
+        action: () => mail.focusInboxPrev(),
+      },
+      {
+        key: 'Enter',
+        description: 'Open focused thread',
+        action: () => {
+          const tid = mail.focusedInboxThreadId();
+          if (tid) router.navigate(`/mail/thread/${encodeURIComponent(tid)}`);
+        },
+      },
+      {
+        key: 'Escape',
+        description: 'Clear focus',
+        action: () => {
+          mail.inboxFocusedIndex = -1;
+        },
+      },
+    ]);
+    return pop;
+  });
+
+  // Thread-view bindings.
+  $effect(() => {
+    if (!threadId) return;
+    const pop = keyboard.pushLayer([
+      {
+        key: 'Escape',
+        description: 'Back to inbox',
+        action: () => router.navigate('/mail'),
+      },
+      {
+        key: 'u',
+        description: 'Back to inbox',
+        action: () => router.navigate('/mail'),
+      },
+    ]);
+    return pop;
+  });
+
+  // Scroll the focused row into view whenever the index changes.
+  let listEl = $state<HTMLUListElement | null>(null);
+  $effect(() => {
+    if (!isInboxRoute) return;
+    const idx = mail.inboxFocusedIndex;
+    if (idx < 0 || !listEl) return;
+    const row = listEl.querySelector<HTMLElement>(`[data-row-index="${idx}"]`);
+    row?.scrollIntoView({ block: 'nearest' });
   });
 
   function senderLabel(email: Email): string {
@@ -84,14 +146,27 @@
     {:else if mail.inboxEmails.length === 0}
       <div class="state">Inbox is empty.</div>
     {:else}
-      <ul class="thread-list" role="listbox" aria-label="Inbox threads">
-        {#each mail.inboxEmails as email (email.id)}
-          <li class="thread-row" class:unread={isUnread(email)}>
+      <ul
+        class="thread-list"
+        role="listbox"
+        aria-label="Inbox threads"
+        bind:this={listEl}
+      >
+        {#each mail.inboxEmails as email, i (email.id)}
+          <li
+            class="thread-row"
+            class:unread={isUnread(email)}
+            class:focused={mail.inboxFocusedIndex === i}
+            data-row-index={i}
+          >
             <button
               type="button"
               role="option"
-              aria-selected="false"
-              onclick={() => openThread(email)}
+              aria-selected={mail.inboxFocusedIndex === i}
+              onclick={() => {
+                mail.inboxFocusedIndex = i;
+                openThread(email);
+              }}
             >
               <span class="star" class:flagged={isFlagged(email)} aria-hidden="true">★</span>
               <span class="from">{senderLabel(email)}</span>
@@ -211,6 +286,12 @@
   }
   .thread-row {
     border-bottom: 1px solid var(--border-subtle-01);
+    border-left: 3px solid transparent;
+    transition: border-color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .thread-row.focused {
+    border-left-color: var(--interactive);
+    background: var(--layer-01);
   }
   .thread-row button {
     display: grid;
