@@ -39,6 +39,18 @@ Server-generated text (vacation responder default, chat system messages, bounce 
 
 The same coverage table applies: rev 6 (email reactions REQ-PROTO-100..103 + REQ-FLOW-100..108), rev 7 (shortcut coach REQ-PROTO-110..114), rev 8 (Web Push REQ-PROTO-48 advanced + REQ-PROTO-120..127 + REQ-OPS-180..184). All committed.
 
+## Co-deployment shape (herold rev 9)
+
+Locked in 2026-04-26 on the herold side:
+
+- Herold ships tabard's SPA as embedded static assets — `REQ-DEPLOY-COLOC-01..05`. Operator runs one binary; tabard arrives with herold.
+- **Public listener** (default `0.0.0.0:443`) carries everything tabard touches: the SPA bundle, JMAP, chat WS, send API, image proxy, login surface.
+- **Admin listener** (default `127.0.0.1:9443`) is operator-only and loopback by default — `REQ-OPS-ADMIN-LISTENER-01..03`. Tabard never touches it.
+- **Auth scopes** (`REQ-AUTH-SCOPE-01..04`): closed-enum scope set on session cookies and API keys; admin step-up requires TOTP; cross-scope rejection at every handler boundary. Tabard's session cookie is `user`-scoped only.
+- Target scale: 5–50 users, single VPS — not enterprise.
+
+This shape is reflected in tabard's `notes/server-contract.md` § Deployment and in `apps/suite/README.md`. The Vite dev proxy points at the public listener (default `http://localhost:8080`; override via `HEROLD_URL`).
+
 ## Notes
 
 - This doc is a reference index — the implementation can assume herold provides all of the listed capabilities. Specific details live in herold's own requirement docs (linked in the table) or in tabard's `notes/server-contract.md`.

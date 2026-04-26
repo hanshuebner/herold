@@ -6,13 +6,32 @@ Herold is operationally ready for tabard development; tabard treats every capabi
 
 ## Deployment
 
-Tabard and herold are deployed at the same origin (resolved Q1). Herold serves both:
+Tabard and herold are deployed at the same origin (resolved Q1). Herold ships tabard's SPA as embedded static assets in the herold binary — `REQ-DEPLOY-COLOC-01..05` in herold's spec rev 9. The deployment topology splits into two listeners:
 
-- The JMAP API at `/jmap`, `/jmap/eventsource`, `/jmap/upload/*`, `/jmap/download/*`, plus `/.well-known/jmap` for the session descriptor.
-- Tabard's static bundle (HTML / JS / CSS / fonts) at the suite's root and per-app paths (`/mail/`, eventually `/calendar/`, `/contacts/`).
-- The login surface at `/login` and the logout endpoint at `/logout`.
+- **Public listener** (default `0.0.0.0:443`). What tabard talks to. Serves:
+  - Tabard's static bundle (HTML / JS / CSS / fonts) at the suite root and per-app paths (`/mail/`, `/chat/`, eventually `/calendar/`, `/contacts/`).
+  - The JMAP API: `/.well-known/jmap`, `/jmap`, `/jmap/eventsource`, `/jmap/upload/*`, `/jmap/download/*`.
+  - The chat ephemeral WebSocket: `/chat/ws`.
+  - The HTTP send API + incoming-mail webhooks: `/api/v1/mail/*`, `/api/v1/hooks/*`.
+  - The image proxy: `/proxy/image`.
+  - The login + logout surface: `/login`, `/logout`, `/auth/oidc/*`.
+- **Admin listener** (default `127.0.0.1:9443`, loopback by default). What the operator talks to via CLI / curl / a dedicated admin browser session. Serves admin REST (`/api/v1/principals/*`, `/api/v1/domains/*`, `/api/v1/queue/*`, etc.), the future admin web UI, `/healthz/*`, `/metrics`. **Tabard never touches the admin listener.** Per `REQ-OPS-ADMIN-LISTENER-01..03` in herold's spec.
 
-This is the "deployed together, no separate IdP" stance. Herold authenticates users (password+TOTP locally, or OIDC redirect through an external provider as a relying party — herold is not itself an OIDC issuer). On successful authentication herold sets a session cookie scoped to the suite origin; tabard's JMAP requests carry the cookie automatically (`credentials: 'include'`).
+The operator can publish the admin listener if they need remote admin access — but the default is loopback, with TLS, and the explicit framing is "end-user compromise of the public surface cannot escalate to operator-level damage".
+
+### Auth scopes
+
+Herold's session cookies and API keys carry a closed-enum scope set (`REQ-AUTH-SCOPE-01..04` in herold's spec rev 9). Tabard's session cookies are issued under the **user** scope; admin operations require an **admin** scope obtained via TOTP step-up at the admin listener. Cross-scope rejection runs at every handler boundary, so a user-scope cookie cannot reach admin endpoints even if a path collision tried to expose them.
+
+Tabard's only relevant scope is `user`. Tabard never asks for the admin scope, never reads admin endpoints, and never carries admin tokens. If a tabard-side need emerged for an admin operation (it doesn't currently), that operation would happen via the operator's own tooling, not via tabard.
+
+### Authentication flow
+
+Herold authenticates users (password+TOTP locally, or OIDC redirect through an external provider as a relying party — herold is not itself an OIDC issuer). On successful authentication herold sets a session cookie scoped to the suite origin; tabard's JMAP requests carry the cookie automatically (`credentials: 'include'`).
+
+### Target scale
+
+The suite (herold + tabard) is sized for "small family / association / group" — 5–50 users on a single VPS — not enterprise scale. Tabard's bundle target (~200 KB) and the assumption of one JMAP server per deployment both reflect this. Multi-tenant deployments are out of scope on both sides.
 
 ## JMAP capabilities required
 
