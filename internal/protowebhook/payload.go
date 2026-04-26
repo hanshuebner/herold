@@ -21,11 +21,11 @@ type Payload struct {
 	// RouteTag carries the value the directory.resolve_rcpt plugin
 	// returned at RCPT TO time when the recipient was synthetic
 	// (REQ-DIR-RCPT-07, REQ-HOOK-02 synthetic match).  Empty when the
-	// recipient was a real principal or no plugin set the field.
-	//
-	// TODO(3.5c-coord): the dispatcher reads this from the change-feed
-	// entry once Track A surfaces synthetic-recipient session state on
-	// the message row; until then this stays empty.
+	// recipient was a real principal or no plugin set the field. The
+	// SMTP DATA-phase synthetic dispatch path (Wave 3.5c-Z) plumbs the
+	// session-time route_tag through directly via DispatchSynthetic;
+	// principal-bound deliveries on the change-feed path leave this
+	// empty (the change feed has no slot for it today).
 	RouteTag string `json:"route_tag,omitempty"`
 	// Attachments is the list of attachment metadata; populated when
 	// the message has any non-text non-multipart parts.  Each entry

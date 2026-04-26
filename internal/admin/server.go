@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -42,6 +43,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protosend"
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/protoui"
+	"github.com/hanshuebner/herold/internal/protowebhook"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/sieve"
 	"github.com/hanshuebner/herold/internal/snooze"
@@ -309,6 +311,34 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// DSN to the original sender. The setter is called pre-listener-
 	// bind below, so no in-flight session can race the assignment.
 	smtpServer.SetBouncePoster(queueBouncePosterAdapter{q: outboundQ})
+	// Wire the outbound queue as the SMTP submission-listener path
+	// (Wave 3.1.6, REQ-FLOW-* + REQ-PROTO-42). Authenticated MUA-clients
+	// on port 587 / 465 hand non-local recipients off to the same
+	// queue.Submit shape JMAP EmailSubmission/set and the HTTP send API
+	// already use post-3.1.5.
+	smtpServer.SetSubmissionQueue(outboundQ)
+
+	// Webhook dispatcher (Phase 3 Wave 3.5c-Z + Track A/C). Constructs
+	// a process-local signing key for fetch URLs; persistent rotation
+	// is a future-wave operator knob. The dispatcher's change-feed Run
+	// loop and the synthetic-recipient direct-dispatch path share the
+	// same instance; both are bounded by the lifecycle errgroup gctx
+	// below.
+	hookSigningKey := make([]byte, 32)
+	if _, krErr := rand.Read(hookSigningKey); krErr != nil {
+		return fmt.Errorf("admin: webhook signing key: %w", krErr)
+	}
+	webhookDispatcher := protowebhook.New(protowebhook.Options{
+		Store:           st,
+		Logger:          logger.With("subsystem", "protowebhook"),
+		Clock:           clk,
+		FetchURLBaseURL: "", // empty = inline-only deliveries; operators wire the admin URL when
+		// the FetchHandler mounting lands. Until then extracted-mode + fetch_url-mode
+		// subscriptions emit a build-payload error and the dispatcher logs at warn;
+		// inline-mode subscriptions still POST.
+		SigningKey: hookSigningKey,
+	})
+	smtpServer.SetWebhookDispatcher(syntheticDispatcherAdapter{d: webhookDispatcher})
 
 	// Admin HTTP handler: the real protoadmin server. Options defaults
 	// are applied inside NewServer; we pass only subsystem-level fields.
@@ -428,6 +458,21 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	g.Go(func() error {
 		if err := outboundQ.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 			queueLogger.LogAttrs(context.Background(), slog.LevelWarn, "queue run exited",
+				slog.String("err", err.Error()))
+			return err
+		}
+		return nil
+	})
+
+	// Webhook dispatcher scheduler (Phase 3 Wave 3.5c). The change-
+	// feed-driven Run loop services principal-bound deliveries (the
+	// existing Phase 2 path); the synthetic-recipient direct-dispatch
+	// path shares the same Dispatcher's bounded goroutine pool and is
+	// drained by the same gctx cancellation.
+	hookLogger := logger.With("subsystem", "protowebhook")
+	g.Go(func() error {
+		if err := webhookDispatcher.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+			hookLogger.LogAttrs(context.Background(), slog.LevelWarn, "webhook dispatcher run exited",
 				slog.String("err", err.Error()))
 			return err
 		}
@@ -1224,6 +1269,39 @@ func composeAdminAndUI(
 		http.NotFound(w, r)
 	})
 	return parent, srvs, nil
+}
+
+// syntheticDispatcherAdapter adapts *protowebhook.Dispatcher to the
+// protosmtp.WebhookDispatcher seam. The adapter translates between the
+// SMTP-side and webhook-side SyntheticDispatch struct shapes (they
+// carry the same fields but live in different packages so neither
+// package has to import the other directly).
+type syntheticDispatcherAdapter struct {
+	d *protowebhook.Dispatcher
+}
+
+// MatchingSyntheticHooks implements protosmtp.WebhookDispatcher.
+func (a syntheticDispatcherAdapter) MatchingSyntheticHooks(ctx context.Context, domain string) []store.Webhook {
+	if a.d == nil {
+		return nil
+	}
+	return a.d.MatchingSyntheticHooks(ctx, domain)
+}
+
+// DispatchSynthetic implements protosmtp.WebhookDispatcher.
+func (a syntheticDispatcherAdapter) DispatchSynthetic(ctx context.Context, in protosmtp.SyntheticDispatch, hooks []store.Webhook) error {
+	if a.d == nil {
+		return errors.New("admin: nil webhook dispatcher")
+	}
+	return a.d.DispatchSynthetic(ctx, protowebhook.SyntheticDispatch{
+		Domain:    in.Domain,
+		Recipient: in.Recipient,
+		MailFrom:  in.MailFrom,
+		RouteTag:  in.RouteTag,
+		BlobHash:  in.BlobHash,
+		Size:      in.Size,
+		Parsed:    in.Parsed,
+	}, hooks)
 }
 
 // queueBouncePosterAdapter adapts *queue.Queue to the

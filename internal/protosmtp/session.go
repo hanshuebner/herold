@@ -683,14 +683,22 @@ func (sess *session) cmdRCPT(rest string) bool {
 	case SubmissionSTARTTLS, SubmissionImplicitTLS:
 		// First attempt local resolution; if the address is local,
 		// behave exactly like RelayIn so "send-to-self" works. Otherwise
-		// refuse: the Phase 2 queue is not wired yet (see ticket scope).
+		// (Wave 3.1.6): accept the recipient with principalID=0 so the
+		// DATA-finish loop hands it off to the outbound queue. The
+		// session must already be authenticated (cmdMAIL enforces this
+		// on submission listeners); reaching here without auth is a
+		// defensive bug.
 		pid, err := sess.srv.dir.ResolveAddress(sess.ctx, local, domain)
 		if err == nil {
 			entry.principalID = pid
 			entry.decisionSource = "internal"
 		} else if errors.Is(err, directory.ErrNotFound) {
-			sess.writeReply("550 5.7.1 relaying to remote addresses is not yet enabled (Phase 2)")
-			return false
+			// Non-local recipient on submission listener -> outbound
+			// queue path. principalID stays 0; the DATA loop reads
+			// sess.mode and routes to queue.Submit (REQ-PROTO-42 /
+			// REQ-FLOW-* parity with JMAP EmailSubmission and the
+			// HTTP send API).
+			entry.decisionSource = "submission_outbound"
 		} else {
 			sess.writeReply("451 4.3.0 directory lookup failed")
 			return false

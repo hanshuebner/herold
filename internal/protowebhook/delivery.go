@@ -58,13 +58,30 @@ func (d *Dispatcher) deliver(ctx context.Context, hook store.Webhook, p store.Pr
 		// log + metric + admin hook log carry the operator-visible
 		// signal.
 		d.recordOutcome(hook, "dropped_no_text")
-		d.recordDropAudit(ctx, hook, deliveryID, msg)
+		d.recordDropAudit(ctx, hook, deliveryID, msg.ID, msg.Envelope.MessageID)
 		d.logger.Info("protowebhook: dropped no_text",
 			"webhook_id", uint64(hook.ID),
 			"delivery_id", deliveryID,
 			"message_id", uint64(msg.ID))
 		return
 	}
+	d.dispatchPayload(ctx, hook, deliveryID, payload, uint64(msg.ID))
+}
+
+// dispatchPayload runs the per-attempt POST + retry loop for an
+// already-built payload. It is the shared pipeline behind both the
+// change-feed-driven principal-bound deliver path and the synthetic-
+// recipient direct dispatch path (REQ-DIR-RCPT-07 / REQ-HOOK-02).
+//
+// messageID is logged for correlation; pass 0 for synthetic dispatches
+// where no store.MessageID exists.
+func (d *Dispatcher) dispatchPayload(
+	ctx context.Context,
+	hook store.Webhook,
+	deliveryID string,
+	payload Payload,
+	messageID uint64,
+) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		d.logger.Warn("protowebhook: marshal payload",
@@ -87,7 +104,7 @@ func (d *Dispatcher) deliver(ctx context.Context, hook store.Webhook, p store.Pr
 			d.logger.Info("protowebhook: delivered",
 				"webhook_id", uint64(hook.ID),
 				"delivery_id", deliveryID,
-				"message_id", uint64(msg.ID),
+				"message_id", messageID,
 				"attempt", attempt)
 			return
 		}
@@ -96,7 +113,7 @@ func (d *Dispatcher) deliver(ctx context.Context, hook store.Webhook, p store.Pr
 			d.logger.Warn("protowebhook: permanent failure",
 				"webhook_id", uint64(hook.ID),
 				"delivery_id", deliveryID,
-				"message_id", uint64(msg.ID),
+				"message_id", messageID,
 				"attempt", attempt)
 			return
 		}
@@ -105,7 +122,7 @@ func (d *Dispatcher) deliver(ctx context.Context, hook store.Webhook, p store.Pr
 			d.logger.Warn("protowebhook: retries exhausted",
 				"webhook_id", uint64(hook.ID),
 				"delivery_id", deliveryID,
-				"message_id", uint64(msg.ID),
+				"message_id", messageID,
 				"attempts", attempt)
 			return
 		}
@@ -148,7 +165,21 @@ func hookMetricName(hook store.Webhook) string {
 // recordDropAudit appends the REQ-HOOK-EXTRACTED-03 audit row.  The
 // audit message is intentionally short and machine-grep-friendly; the
 // hook id and message id appear in Metadata for filterable replay.
-func (d *Dispatcher) recordDropAudit(ctx context.Context, hook store.Webhook, deliveryID string, msg store.Message) {
+//
+// messageID is the store-side row id (0 for synthetic dispatches with no
+// messages-row); messageIDHeader is the RFC 5322 Message-ID header. Both
+// are recorded for correlation.
+func (d *Dispatcher) recordDropAudit(ctx context.Context, hook store.Webhook, deliveryID string, messageID store.MessageID, messageIDHeader string) {
+	md := map[string]string{
+		"delivery_id": deliveryID,
+		"reason":      "dropped_no_text",
+	}
+	if messageID != 0 {
+		md["message_id"] = strconv.FormatUint(uint64(messageID), 10)
+	}
+	if messageIDHeader != "" {
+		md["message_id_email"] = messageIDHeader
+	}
 	entry := store.AuditLogEntry{
 		At:        d.clock.Now().UTC(),
 		ActorKind: store.ActorSystem,
@@ -157,12 +188,7 @@ func (d *Dispatcher) recordDropAudit(ctx context.Context, hook store.Webhook, de
 		Subject:   fmt.Sprintf("webhook:%d", hook.ID),
 		Outcome:   store.OutcomeSuccess,
 		Message:   "extracted-mode webhook delivery dropped: text_required and body.text_origin=none",
-		Metadata: map[string]string{
-			"delivery_id":      deliveryID,
-			"message_id":       strconv.FormatUint(uint64(msg.ID), 10),
-			"message_id_email": msg.Envelope.MessageID,
-			"reason":           "dropped_no_text",
-		},
+		Metadata:  md,
 	}
 	if err := d.store.Meta().AppendAuditLog(ctx, entry); err != nil {
 		// Never blocks delivery; the log warn surfaces store-side
@@ -364,6 +390,144 @@ func (d *Dispatcher) fillLegacyBody(
 		}
 	}
 	return nil
+}
+
+// buildSyntheticPayload assembles the JSON wire shape for a synthetic-
+// recipient delivery (REQ-DIR-RCPT-07, REQ-HOOK-02). Mirrors
+// buildPayload but sources its inputs from the SyntheticDispatch struct
+// rather than store.Principal / store.Mailbox / store.Message: there is
+// no mailbox-side row to look up.
+//
+// Returns (payload, dropped, err) with the same semantics as
+// buildPayload.
+func (d *Dispatcher) buildSyntheticPayload(
+	ctx context.Context,
+	hook store.Webhook,
+	deliveryID string,
+	in SyntheticDispatch,
+) (Payload, bool, error) {
+	pl := Payload{
+		ID:         deliveryID,
+		Event:      EventMailArrived,
+		WebhookID:  strconv.FormatUint(uint64(hook.ID), 10),
+		OccurredAt: d.clock.Now().UTC().Format(time.RFC3339Nano),
+		// PrincipalID / MailboxID / MessageID are intentionally empty:
+		// synthetic deliveries have no mailbox-side identity. Receivers
+		// rely on RouteTag + envelope.to for correlation.
+		Envelope: Envelope{
+			Subject: in.Parsed.Envelope.Subject,
+		},
+		RouteTag: in.RouteTag,
+	}
+	if in.MailFrom != "" {
+		pl.Envelope.From = in.MailFrom
+	} else if len(in.Parsed.Envelope.From) > 0 {
+		pl.Envelope.From = in.Parsed.Envelope.From[0].String()
+	}
+	if in.Recipient != "" {
+		pl.Envelope.To = []string{in.Recipient}
+	}
+
+	switch hook.EffectiveBodyMode() {
+	case store.WebhookBodyModeExtracted:
+		dropped, err := d.fillExtractedBodySynthetic(ctx, hook, deliveryID, &pl, in)
+		if err != nil {
+			return Payload{}, false, err
+		}
+		if dropped {
+			return Payload{}, true, nil
+		}
+		return pl, false, nil
+	default:
+		if err := d.fillLegacyBodySynthetic(ctx, hook, deliveryID, &pl, in); err != nil {
+			return Payload{}, false, err
+		}
+		return pl, false, nil
+	}
+}
+
+// fillLegacyBodySynthetic mirrors fillLegacyBody for the synthetic path.
+func (d *Dispatcher) fillLegacyBodySynthetic(
+	ctx context.Context,
+	hook store.Webhook,
+	deliveryID string,
+	pl *Payload,
+	in SyntheticDispatch,
+) error {
+	wantInline := hook.DeliveryMode == store.DeliveryModeInline
+	tooBig := in.Size > d.inlineMaxSize
+	useFetch := !wantInline || tooBig
+
+	if !useFetch {
+		raw, err := readBlob(ctx, d.store, in.BlobHash)
+		if err != nil {
+			d.logger.Warn("protowebhook: synthetic inline body read",
+				"webhook_id", uint64(hook.ID),
+				"recipient", in.Recipient,
+				"err", err.Error())
+			useFetch = true
+		} else {
+			pl.Body = Body{
+				Mode: "inline",
+				Inline: &InlineBody{
+					RawBase64: encodeBase64(raw),
+					Size:      int64(len(raw)),
+				},
+			}
+		}
+	}
+	if useFetch {
+		if d.fetchBase == "" || len(d.signingKey) == 0 {
+			return errors.New("protowebhook: fetch URL requested but FetchURLBaseURL/SigningKey not configured")
+		}
+		expires := d.clock.Now().Add(d.fetchTTL).UTC()
+		fu := buildFetchURL(d.fetchBase, deliveryID, in.BlobHash, expires.Unix(), d.signingKey)
+		pl.Body = Body{
+			Mode: "fetch_url",
+			FetchURL: &FetchURL{
+				URL:       fu,
+				ExpiresAt: expires.Format(time.RFC3339),
+			},
+		}
+	}
+	return nil
+}
+
+// fillExtractedBodySynthetic mirrors fillExtractedBody for the synthetic
+// path. The parsed message is supplied verbatim (no re-parse).
+func (d *Dispatcher) fillExtractedBodySynthetic(
+	_ context.Context,
+	hook store.Webhook,
+	deliveryID string,
+	pl *Payload,
+	in SyntheticDispatch,
+) (dropped bool, err error) {
+	if d.fetchBase == "" || len(d.signingKey) == 0 {
+		return false, errors.New("protowebhook: extracted mode requires FetchURLBaseURL/SigningKey")
+	}
+	text, origin := mailparse.ExtractBodyText(in.Parsed)
+	if origin == mailparse.BodyTextOriginNone && hook.TextRequired {
+		return true, nil
+	}
+	maxBytes := hook.EffectiveExtractedTextMaxBytes()
+	truncated := false
+	if int64(len(text)) > maxBytes {
+		text = text[:maxBytes]
+		truncated = true
+		d.recordTruncated(hook)
+	}
+
+	expires := d.clock.Now().Add(d.fetchTTL).UTC()
+	rawURL := buildFetchURL(d.fetchBase, deliveryID, in.BlobHash, expires.Unix(), d.signingKey)
+	pl.Body = Body{
+		Mode:          "extracted",
+		Text:          text,
+		TextOrigin:    string(origin),
+		TextTruncated: truncated,
+	}
+	pl.RawRFC822URL = rawURL
+	pl.Attachments = buildAttachments(in.Parsed, d.fetchBase, deliveryID, in.BlobHash, expires.Unix(), d.signingKey)
+	return false, nil
 }
 
 // fillExtractedBody implements REQ-HOOK-EXTRACTED-01..03.  Returns

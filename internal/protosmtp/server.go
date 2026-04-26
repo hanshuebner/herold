@@ -183,6 +183,8 @@ type Server struct {
 	rcptPluginNm  string
 	rcptPluginFor map[string]struct{} // domains where plugin runs first
 	bouncePoster  BouncePoster
+	subQueue      SubmissionQueue
+	webhookDisp   WebhookDispatcher
 
 	// lifecycle
 	ctx       context.Context
@@ -323,6 +325,35 @@ func New(cfg Config) (*Server, error) {
 // connection.
 func (s *Server) SetBouncePoster(b BouncePoster) {
 	s.bouncePoster = b
+}
+
+// SetSubmissionQueue installs the outbound queue handle for the
+// submission-listener path (Wave 3.1.6). When set, a non-local RCPT TO
+// accepted on a SubmissionSTARTTLS / SubmissionImplicitTLS listener is
+// enqueued via Submit at DATA-finish time so the outbound queue worker
+// dials the smart-host / MX. nil is permitted and collapses the
+// submission listener to "accept then drop" (the wave-3.1.6 pre-fix
+// behaviour) — operators should set the queue before binding listeners.
+//
+// Concurrency: the handle is read once per session after DATA accept,
+// never inside a hot loop. Setting it post-construction is safe under
+// the same memory-model rules as SetBouncePoster.
+func (s *Server) SetSubmissionQueue(q SubmissionQueue) {
+	s.subQueue = q
+}
+
+// SetWebhookDispatcher installs the webhook dispatcher for synthetic-
+// recipient deliveries (Wave 3.5c-Z, REQ-DIR-RCPT-07 + REQ-HOOK-02).
+// When set, a synthetic RCPT accepted by the directory.resolve_rcpt
+// plugin dispatches the parsed message to every matching subscription
+// directly from the SMTP DATA-phase loop, bypassing the change-feed-
+// driven principal-bound path. nil is permitted and collapses
+// synthetic recipients to "accept and log" (the pre-3.5c-Z behaviour).
+//
+// Concurrency: same shape as SetBouncePoster; operators set this
+// before listeners bind.
+func (s *Server) SetWebhookDispatcher(d WebhookDispatcher) {
+	s.webhookDisp = d
 }
 
 // HandleConn drives one already-accepted connection through the SMTP

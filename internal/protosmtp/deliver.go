@@ -14,6 +14,7 @@ import (
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
+	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/sieve"
 	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
@@ -109,44 +110,56 @@ func (sess *session) finishMessage(body []byte) {
 			// classification. The message lands on the inbound webhook
 			// path only.
 			//
-			// TODO(3.5c-coord): Track C exports the webhook subsystem's
-			// synthetic-recipient dispatch entry point; once it lands,
-			// invoke it here with rc.routeTag, finalBytes, blobRef, and
-			// the parsed message. For now we treat the recipient as
-			// "accepted" so the SMTP layer reports 250 OK; the body is
-			// already persisted as a refcounted blob. The webhook
-			// subsystem will pick the blob up via the synthetic
-			// hand-off table when its dispatcher is wired.
-			//
 			// REQ-FLOW-ATTPOL-02: synthetic recipients still get the
 			// post-acceptance walker so a webhook intake configured
 			// for reject_at_data refuses nested attachments before
 			// the dispatcher would otherwise hand them off. Synthetic
 			// recipients' policy resolves through the recipient's
 			// domain row (the matched webhook target's configured
-			// domain); when Track C lands, it can override per-
-			// synthetic-target by writing a per-recipient row keyed
-			// on rc.addr.
-			//
-			// TODO(3.5c-coord): Track C may want a separate per-
-			// webhook-target attpol field that overrides the
-			// recipient-domain fallback used here. Until that lands
-			// the per-domain row is the operator-visible knob.
+			// domain); a future per-webhook-target attpol field
+			// (REQ-HOOK-02 follow-up) can override per-synthetic-
+			// target by writing a per-recipient row keyed on rc.addr.
 			if sess.applyAttPolPostAcceptance(ctx, rc, msg, finalBytes) {
 				anyOK = true
 				continue
 			}
 			sess.auditAttPolPassed(ctx, rc, msg)
-			sess.srv.log.InfoContext(ctx, "synthetic recipient accepted (webhook dispatch deferred to track C)",
-				slog.String("session_id", sess.sessID),
-				slog.String("recipient", rc.addr),
-				slog.String("route_tag", rc.routeTag))
+			sess.dispatchSynthetic(ctx, rc, msg, finalBytes, blobRef)
 			anyOK = true
 			continue
 		}
 		if rc.principalID == 0 {
-			// Non-local recipient on submission — Phase 2 queues
-			// outbound. Phase 1 already rejected at RCPT time; defensive.
+			// Submission listener: non-local recipient is the normal
+			// outbound case (Wave 3.1.6). Authenticated MUA-clients
+			// hand off to the outbound queue here; the queue worker
+			// dials the smart-host / MX. Inbound listener: non-local
+			// recipient should have been refused at RCPT TO time, so
+			// reaching this branch is a defensive log + continue.
+			switch sess.mode {
+			case SubmissionSTARTTLS, SubmissionImplicitTLS:
+				if ok := sess.queueOutboundFromSubmission(ctx, rc, msg, finalBytes); ok {
+					anyOK = true
+				}
+			default:
+				sess.srv.log.WarnContext(ctx, "phase1_rcpt_leak: non-local recipient on inbound listener slipped past RCPT TO",
+					slog.String("session_id", sess.sessID),
+					slog.String("recipient", rc.addr),
+					slog.String("mode", sess.mode.String()))
+				_ = sess.srv.store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+					At:         sess.srv.clk.Now(),
+					ActorKind:  store.ActorSystem,
+					ActorID:    "smtp",
+					Action:     "smtp.phase1_rcpt_leak",
+					Subject:    "recipient:" + rc.addr,
+					RemoteAddr: sess.remoteIP,
+					Outcome:    store.OutcomeFailure,
+					Message:    "non-local recipient on inbound listener slipped past RCPT TO",
+					Metadata: map[string]string{
+						"session_id": sess.sessID,
+						"mode":       sess.mode.String(),
+					},
+				})
+			}
 			continue
 		}
 		// REQ-FLOW-ATTPOL-02: post-acceptance MIME walker. If the
@@ -764,6 +777,237 @@ func boolStr(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// dispatchSynthetic hands a synthetic-recipient delivery off to the
+// configured WebhookDispatcher (Wave 3.5c-Z, REQ-DIR-RCPT-07 +
+// REQ-HOOK-02). When no dispatcher is wired or no subscription matches,
+// the recipient is still treated as accepted at the SMTP layer (the
+// 250 reply already accommodates partial misconfiguration); the audit
+// log carries the operator-visible signal.
+func (sess *session) dispatchSynthetic(
+	ctx context.Context,
+	rc rcptEntry,
+	msg mailparse.Message,
+	finalBytes []byte,
+	blobRef store.BlobRef,
+) {
+	disp := sess.srv.webhookDisp
+	if disp == nil {
+		sess.srv.log.WarnContext(ctx, "synthetic recipient accepted but no webhook dispatcher wired",
+			slog.String("session_id", sess.sessID),
+			slog.String("recipient", rc.addr),
+			slog.String("route_tag", rc.routeTag))
+		sess.auditSyntheticAccepted(ctx, rc, msg, 0, "no_dispatcher_wired")
+		return
+	}
+	domain := strings.ToLower(strings.TrimSpace(rc.domain))
+	hooks := disp.MatchingSyntheticHooks(ctx, domain)
+	if len(hooks) == 0 {
+		sess.srv.log.InfoContext(ctx, "synthetic recipient accepted but no webhook subscriber",
+			slog.String("session_id", sess.sessID),
+			slog.String("recipient", rc.addr),
+			slog.String("route_tag", rc.routeTag))
+		sess.auditSyntheticAccepted(ctx, rc, msg, 0, "no_subscription")
+		return
+	}
+	in := SyntheticDispatch{
+		Domain:    domain,
+		Recipient: rc.addr,
+		MailFrom:  sess.envelope.mailFrom,
+		RouteTag:  rc.routeTag,
+		BlobHash:  blobRef.Hash,
+		Size:      int64(len(finalBytes)),
+		Parsed:    msg,
+	}
+	if err := disp.DispatchSynthetic(ctx, in, hooks); err != nil {
+		sess.srv.log.WarnContext(ctx, "synthetic dispatch enqueue failed",
+			slog.String("session_id", sess.sessID),
+			slog.String("recipient", rc.addr),
+			slog.String("err", err.Error()))
+		sess.auditSyntheticAccepted(ctx, rc, msg, len(hooks), "dispatch_error")
+		return
+	}
+	sess.srv.log.InfoContext(ctx, "synthetic recipient dispatched to webhooks",
+		slog.String("session_id", sess.sessID),
+		slog.String("recipient", rc.addr),
+		slog.String("route_tag", rc.routeTag),
+		slog.Int("subscribers", len(hooks)))
+	sess.auditSyntheticAccepted(ctx, rc, msg, len(hooks), "dispatched")
+}
+
+// auditSyntheticAccepted writes the REQ-DIR-RCPT-09 audit row for a
+// synthetic-recipient acceptance: action=smtp.synthetic_accept, with
+// recipient, route_tag, dispatched-to-webhooks count, and the per-
+// session decision-source label so an operator can correlate
+// connection-time and DATA-time outcomes.
+func (sess *session) auditSyntheticAccepted(
+	ctx context.Context,
+	rc rcptEntry,
+	msg mailparse.Message,
+	dispatched int,
+	outcome string,
+) {
+	md := map[string]string{
+		"recipient":        rc.addr,
+		"recipient_domain": strings.ToLower(rc.domain),
+		"sender":           sess.envelope.mailFrom,
+		"route_tag":        rc.routeTag,
+		"decision_source":  rc.decisionSource,
+		"dispatched_hooks": fmt.Sprintf("%d", dispatched),
+		"dispatch_outcome": outcome,
+		"plugin_name":      sess.srv.rcptPluginNm,
+		"top_content_type": msg.Body.ContentType,
+	}
+	if msg.Envelope.MessageID != "" {
+		md["message_id"] = msg.Envelope.MessageID
+	}
+	auditOutcome := store.OutcomeSuccess
+	if outcome == "no_dispatcher_wired" || outcome == "dispatch_error" {
+		auditOutcome = store.OutcomeFailure
+	}
+	if err := sess.srv.store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+		At:         sess.srv.clk.Now(),
+		ActorKind:  store.ActorSystem,
+		ActorID:    "smtp",
+		Action:     "smtp.synthetic_accept",
+		Subject:    "recipient:" + rc.addr,
+		RemoteAddr: sess.remoteIP,
+		Outcome:    auditOutcome,
+		Message:    "session=" + sess.sessID,
+		Metadata:   md,
+	}); err != nil {
+		sess.srv.log.WarnContext(ctx, "synthetic audit append failed",
+			slog.String("session_id", sess.sessID),
+			slog.String("err", err.Error()))
+	}
+}
+
+// queueOutboundFromSubmission enqueues one outbound queue row for an
+// authenticated submission-listener RCPT TO that resolved to a non-
+// local recipient (Wave 3.1.6). Returns true when the queue accepted
+// the row so the per-recipient outcome counts as "ok" for the SMTP
+// transaction; false on a queue failure (the SMTP layer surfaces the
+// error to other recipients via the loop's `anyOK == false` path).
+//
+// The submission path mirrors the JMAP EmailSubmission and the HTTP
+// send-API queue.Submit shapes (REQ-PROTO-42, REQ-FLOW-63): identical
+// fields, identical idempotency-key composition. The DKIM-signing
+// domain is derived from MAIL FROM's domain; if the principal lacks a
+// signing key for that domain the queue worker logs and sends unsigned
+// (the existing queue.Run behaviour).
+func (sess *session) queueOutboundFromSubmission(
+	ctx context.Context,
+	rc rcptEntry,
+	msg mailparse.Message,
+	finalBytes []byte,
+) bool {
+	q := sess.srv.subQueue
+	if q == nil {
+		sess.srv.log.WarnContext(ctx, "submission listener: outbound queue not wired; recipient dropped",
+			slog.String("session_id", sess.sessID),
+			slog.String("recipient", rc.addr))
+		return false
+	}
+	if !sess.authenticated {
+		// Defensive: the cmdMAIL handler already required AUTH on
+		// submission listeners. Reaching this branch unauthenticated
+		// is a bug.
+		sess.srv.log.ErrorContext(ctx, "submission listener: unauthenticated session reached outbound queue path",
+			slog.String("session_id", sess.sessID),
+			slog.String("recipient", rc.addr))
+		return false
+	}
+	pid := sess.authPrincipal
+	signingDomain, _ := domainOfAddress(sess.envelope.mailFrom)
+	idemKey := ""
+	if mid := msg.Envelope.MessageID; mid != "" {
+		idemKey = mid + ":" + rc.addr
+	}
+	requireTLS := sess.envelope.mailFromParams.requireTLS
+	envID, err := q.Submit(ctx, queue.Submission{
+		PrincipalID:    &pid,
+		MailFrom:       sess.envelope.mailFrom,
+		Recipients:     []string{rc.addr},
+		Body:           bytes.NewReader(finalBytes),
+		Sign:           true,
+		SigningDomain:  signingDomain,
+		DSNNotify:      parseDSNNotifyFlags(rc.notify),
+		DSNRet:         parseDSNRet(sess.envelope.mailFromParams.ret),
+		DSNEnvelopeID:  sess.envelope.mailFromParams.envid,
+		IdempotencyKey: idemKey,
+		REQUIRETLS:     requireTLS,
+	})
+	if err != nil {
+		sess.srv.log.WarnContext(ctx, "submission listener: queue.Submit failed",
+			slog.String("session_id", sess.sessID),
+			slog.String("recipient", rc.addr),
+			slog.String("err", err.Error()))
+		return false
+	}
+	sess.srv.log.InfoContext(ctx, "submission listener: outbound queued",
+		slog.String("session_id", sess.sessID),
+		slog.String("recipient", rc.addr),
+		slog.String("envelope_id", string(envID)),
+		slog.String("signing_domain", signingDomain))
+	_ = sess.srv.store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+		At:         sess.srv.clk.Now(),
+		ActorKind:  store.ActorPrincipal,
+		ActorID:    fmt.Sprintf("%d", uint64(pid)),
+		Action:     "smtp.inbound_submission_queued",
+		Subject:    "envelope:" + string(envID),
+		RemoteAddr: sess.remoteIP,
+		Outcome:    store.OutcomeSuccess,
+		Message:    "session=" + sess.sessID,
+		Metadata: map[string]string{
+			"recipient":      rc.addr,
+			"mail_from":      sess.envelope.mailFrom,
+			"signing_domain": signingDomain,
+			"mode":           sess.mode.String(),
+		},
+	})
+	return true
+}
+
+// parseDSNNotifyFlags maps the RCPT NOTIFY parameter token list onto
+// the typed store.DSNNotifyFlags bitfield. The token vocabulary is
+// RFC 3461 §4.1: NEVER | SUCCESS,FAILURE,DELAY (any subset, comma-sep).
+func parseDSNNotifyFlags(notify string) store.DSNNotifyFlags {
+	notify = strings.ToUpper(strings.TrimSpace(notify))
+	if notify == "" {
+		return store.DSNNotifyNone
+	}
+	if notify == "NEVER" {
+		return store.DSNNotifyNever
+	}
+	var f store.DSNNotifyFlags
+	for _, tok := range strings.Split(notify, ",") {
+		switch strings.TrimSpace(tok) {
+		case "SUCCESS":
+			f |= store.DSNNotifySuccess
+		case "FAILURE":
+			f |= store.DSNNotifyFailure
+		case "DELAY":
+			f |= store.DSNNotifyDelay
+		}
+	}
+	if f == 0 {
+		return store.DSNNotifyNone
+	}
+	return f
+}
+
+// parseDSNRet maps the MAIL FROM RET parameter ("FULL" | "HDRS" | "")
+// onto the typed store.DSNRet enumeration.
+func parseDSNRet(ret string) store.DSNRet {
+	switch strings.ToUpper(strings.TrimSpace(ret)) {
+	case "FULL":
+		return store.DSNRetFull
+	case "HDRS":
+		return store.DSNRetHeaders
+	default:
+		return store.DSNRetUnspecified
+	}
 }
 
 // tlsVersionName returns a readable name for a tls.Version constant.

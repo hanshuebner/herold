@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -324,13 +325,10 @@ func (d *Dispatcher) processChange(ctx context.Context, c store.FTSChange) {
 //     adapters,
 //   - active webhooks owned by the principal directly.
 //
-// TODO(3.5c-coord): synthetic recipients accepted with no principal_id
-// (REQ-DIR-RCPT-07 fall-through case) do not currently flow through
-// the change feed because they lack a mailbox row.  Track A will
-// surface those via a session-time hook into the dispatcher; until
-// that lands the synthetic-target path here only fires for synthetic
-// recipients that DO have a binding principal (the operator-recipe
-// `accept` + `principal_id` shape).
+// Synthetic recipients accepted with no principal_id (REQ-DIR-RCPT-07
+// fall-through case) flow through DispatchSynthetic — they do not enter
+// the change feed because they lack a mailbox row.  This function only
+// fires for principal-bound deliveries (the change-feed path).
 //
 // Duplicates (a hook listed under both ownership paths, which the schema
 // permits but conventional usage avoids) are coalesced by ID.
@@ -380,4 +378,136 @@ func principalDomain(p store.Principal) string {
 		return ""
 	}
 	return strings.ToLower(p.CanonicalEmail[idx+1:])
+}
+
+// SyntheticDispatch carries the per-message inputs for a synthetic-
+// recipient webhook delivery (REQ-DIR-RCPT-07, REQ-HOOK-02). The
+// dispatcher uses BlobHash to render fetch URLs and reads the parsed
+// MIME tree out of Parsed when extracted-mode is in play.
+type SyntheticDispatch struct {
+	// Domain is the recipient's domain (lowercased). Used to filter
+	// matching subscriptions (target_kind=synthetic + value=Domain plus
+	// owner_kind=domain + owner_id=Domain).
+	Domain string
+	// Recipient is the synthetic RCPT TO address (full local@domain).
+	// Echoed into the payload's envelope.to.
+	Recipient string
+	// MailFrom is the SMTP MAIL FROM (reverse-path).
+	MailFrom string
+	// RouteTag is the directory.resolve_rcpt plugin's correlation token
+	// (REQ-DIR-RCPT-07). Echoed into payload.route_tag.
+	RouteTag string
+	// BlobHash is the canonical content hash of the persisted message
+	// body. Used to mint signed fetch URLs (REQ-HOOK-30/31).
+	BlobHash string
+	// Size is the persisted body byte count.
+	Size int64
+	// Parsed is the mailparse.Message produced from the stored bytes.
+	// Reused so the dispatcher does not re-parse for every subscription.
+	Parsed mailparse.Message
+}
+
+// MatchingSyntheticHooks returns the active webhook subscriptions that
+// match a synthetic recipient on the supplied domain (REQ-HOOK-02).
+// A subscription matches when EITHER:
+//   - target_kind == synthetic AND target.value == domain, or
+//   - the legacy owner_kind == domain AND owner_id == domain (so an
+//     operator who has not migrated to target.kind still receives
+//     synthetic-recipient deliveries).
+//
+// Inactive rows are filtered out; duplicates are coalesced by ID.
+func (d *Dispatcher) MatchingSyntheticHooks(ctx context.Context, domain string) []store.Webhook {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" {
+		return nil
+	}
+	hooks, err := d.store.Meta().ListActiveWebhooksForDomain(ctx, domain)
+	if err != nil {
+		d.logger.Warn("protowebhook: list synthetic webhooks",
+			"domain", domain,
+			"err", err.Error())
+		return nil
+	}
+	out := make([]store.Webhook, 0, len(hooks))
+	seen := make(map[store.WebhookID]struct{}, len(hooks))
+	for _, h := range hooks {
+		if !h.Active {
+			continue
+		}
+		if _, dup := seen[h.ID]; dup {
+			continue
+		}
+		switch h.EffectiveTargetKind() {
+		case store.WebhookTargetSynthetic, store.WebhookTargetDomain:
+			seen[h.ID] = struct{}{}
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// DispatchSynthetic enqueues one webhook delivery per matching
+// subscription for a synthetic recipient (REQ-DIR-RCPT-07, REQ-HOOK-02).
+// Unlike the change-feed-driven path, no messages-row lookup is required:
+// the caller passes the parsed message + envelope + blob hash directly.
+//
+// Deliveries run as bounded goroutines under the dispatcher's parent
+// ctx (the same shape as the change-feed path) so SIGTERM drains them.
+// Errors that prevent any delivery from starting are returned; per-
+// delivery failures are logged inside the goroutine and surfaced via
+// the existing dispatcher metrics.
+//
+// The supplied subscriptions slice is the operator's pre-filtered hook
+// list (typically MatchingSyntheticHooks output); passing an empty
+// slice is a no-op.
+func (d *Dispatcher) DispatchSynthetic(ctx context.Context, in SyntheticDispatch, hooks []store.Webhook) error {
+	if len(hooks) == 0 {
+		return nil
+	}
+	if in.BlobHash == "" {
+		return errors.New("protowebhook: DispatchSynthetic: empty BlobHash")
+	}
+	for _, h := range hooks {
+		hook := h
+		if err := d.sem.Acquire(ctx, 1); err != nil {
+			return fmt.Errorf("protowebhook: acquire semaphore: %w", err)
+		}
+		d.wg.Add(1)
+		go func() {
+			defer d.sem.Release(1)
+			defer d.wg.Done()
+			d.deliverSynthetic(ctx, hook, in)
+		}()
+	}
+	return nil
+}
+
+// deliverSynthetic runs the per-job lifecycle for one synthetic
+// dispatch: build payload, dispatch with retries.
+func (d *Dispatcher) deliverSynthetic(ctx context.Context, hook store.Webhook, in SyntheticDispatch) {
+	deliveryID, err := newDeliveryID()
+	if err != nil {
+		d.logger.Warn("protowebhook: synthetic generate delivery id", "err", err.Error())
+		return
+	}
+	payload, dropped, err := d.buildSyntheticPayload(ctx, hook, deliveryID, in)
+	if err != nil {
+		d.logger.Warn("protowebhook: build synthetic payload",
+			"webhook_id", uint64(hook.ID),
+			"recipient", in.Recipient,
+			"err", err.Error())
+		return
+	}
+	if dropped {
+		// REQ-HOOK-EXTRACTED-03: text_required + origin=none drops the
+		// delivery without retry.
+		d.recordOutcome(hook, "dropped_no_text")
+		d.recordDropAudit(ctx, hook, deliveryID, 0, in.Parsed.Envelope.MessageID)
+		d.logger.Info("protowebhook: synthetic dropped no_text",
+			"webhook_id", uint64(hook.ID),
+			"delivery_id", deliveryID,
+			"recipient", in.Recipient)
+		return
+	}
+	d.dispatchPayload(ctx, hook, deliveryID, payload, 0)
 }
