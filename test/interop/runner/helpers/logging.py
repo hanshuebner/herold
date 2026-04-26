@@ -18,7 +18,7 @@ def log(context: str, event: str, detail: str = "") -> None:
     Example:
         log("smtp_send", "connected", "host=postfix port=25")
     """
-    ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    ts = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     line = f"{ts} context={context} event={event}"
     if detail:
         line = f"{line} {detail}"
