@@ -1926,3 +1926,18 @@ func (f *ftsFace) ReadChangeFeedForFTS(ctx context.Context, cursor uint64, max i
 func (f *ftsFace) Commit(ctx context.Context) error {
 	return ctx.Err()
 }
+
+// IsSESSeen returns false; the fakestore does not track SES deduplication.
+func (m *metaFace) IsSESSeen(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
+// InsertSESSeen is a no-op in the fakestore.
+func (m *metaFace) InsertSESSeen(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+
+// GCOldSESSeen is a no-op in the fakestore.
+func (m *metaFace) GCOldSESSeen(_ context.Context, _ time.Time) error {
+	return nil
+}

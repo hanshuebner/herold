@@ -852,6 +852,35 @@ func RegisterProtojmapContactsMetrics() {
 	})
 }
 
+// TLS cert expiry metrics (REQ-OPS-91). The hostname label is bounded
+// by the operator-configured cert list (not user input), so cardinality
+// is finite and operator-scoped per STANDARDS §7.
+var (
+	tlsCertMetricsOnce sync.Once
+
+	TLSCertExpirySeconds *prometheus.GaugeVec
+	TLSCertRenewalErrors prometheus.Counter
+)
+
+// RegisterTLSCertMetrics registers the TLS cert expiry collector set;
+// idempotent.
+func RegisterTLSCertMetrics() {
+	tlsCertMetricsOnce.Do(func() {
+		TLSCertExpirySeconds = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "herold_tls_cert_expiry_seconds",
+			Help: "Unix timestamp of TLS certificate NotAfter, by hostname (REQ-OPS-91). Updated on load, renewal, and housekeeping tick.",
+		}, []string{"hostname"})
+		TLSCertRenewalErrors = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_tls_cert_renewal_errors_total",
+			Help: "Total ACME renewal attempts that ended with a persistent error after consecutive failures (REQ-NFR-50).",
+		})
+		MustRegister(
+			TLSCertExpirySeconds,
+			TLSCertRenewalErrors,
+		)
+	})
+}
+
 // Web Push dispatcher metrics (Phase 3 Wave 3.8b, REQ-PROTO-123 +
 // REQ-PROTO-126). Label vocabulary is closed:
 //

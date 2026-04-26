@@ -124,12 +124,10 @@ forward:
    herold ACME listener on `tcp/8080` and have iptables redirect
    `tcp/80` and `tcp/443` to it.
 
-Note: ACME currently lands in the queue-delivery-implementor's
-surface and is **rejected at config validate in Phase 1**. Until ACME
-ships in Wave 3.1+, use file-based certs (e.g. issued by an external
-`certbot` process) and reload herold on rotation. The DNS records
-described above are still the right shape; the ACME mechanism
-arrives shortly.
+With the `[acme]` block in place and the challenge method configured
+above, herold will provision the cert at startup and renew automatically.
+Use `herold cert list` to verify the issued cert and its remaining
+lifetime once the server starts.
 
 ## Step 3 - DKIM key
 

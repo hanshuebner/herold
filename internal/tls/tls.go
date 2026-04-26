@@ -27,13 +27,31 @@ func LoadFromFile(certFile, keyFile string) (*tls.Certificate, error) {
 	return &cert, nil
 }
 
+// ALPNChallengeProvider is the minimal interface the Store needs to
+// dispatch tls-alpn-01 challenges during ACME validation (RFC 8737).
+// The production implementation is *acme.TLSALPNChallenger; tests may
+// substitute a stub.
+type ALPNChallengeProvider interface {
+	// Get returns the challenge cert for hello when the peer offered the
+	// "acme-tls/1" ALPN token, or (nil, nil) if no challenge is active
+	// for the host. A non-nil error is surfaced as a handshake failure.
+	Get(hello *tls.ClientHelloInfo) (*tls.Certificate, error)
+}
+
 // Store is a goroutine-safe SNI-indexed certificate registry (REQ-PROTO-72,
 // REQ-OPS-41). Certificates are keyed by hostname (case-insensitive). A
 // per-store default certificate is returned when no SNI entry matches.
+//
+// An optional ALPNChallengeProvider is checked first when the client
+// handshake includes the "acme-tls/1" ALPN token; when the provider
+// returns (nil, nil) the normal SNI lookup proceeds.
 type Store struct {
 	mu       sync.RWMutex
 	byHost   map[string]*tls.Certificate
 	fallback *tls.Certificate
+
+	alpnMu       sync.RWMutex
+	alpnProvider ALPNChallengeProvider
 }
 
 // NewStore returns an empty certificate store.
@@ -62,10 +80,41 @@ func (s *Store) SetDefault(cert *tls.Certificate) {
 	s.fallback = cert
 }
 
+// SetALPNChallenger registers the provider consulted for tls-alpn-01
+// challenges (RFC 8737). When set, Get checks the provider first for any
+// ClientHello that includes "acme-tls/1" in SupportedProtos; if the
+// provider returns (nil, nil) the normal SNI path is used. Safe to call
+// concurrently with Get.
+func (s *Store) SetALPNChallenger(p ALPNChallengeProvider) {
+	s.alpnMu.Lock()
+	defer s.alpnMu.Unlock()
+	s.alpnProvider = p
+}
+
 // Get implements tls.Config.GetCertificate: it returns the certificate whose
 // hostname matches hello.ServerName (case-insensitive), falling back to the
 // store default. Returns an error when neither is available.
+//
+// If an ALPNChallenger is registered and the ClientHello includes the
+// "acme-tls/1" protocol, the challenger is checked first (RFC 8737).
 func (s *Store) Get(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	// ACME tls-alpn-01 side-channel: check before production cert lookup.
+	if hello != nil {
+		s.alpnMu.RLock()
+		p := s.alpnProvider
+		s.alpnMu.RUnlock()
+		if p != nil {
+			for _, proto := range hello.SupportedProtos {
+				if proto == "acme-tls/1" {
+					if cert, err := p.Get(hello); cert != nil || err != nil {
+						return cert, err
+					}
+					break
+				}
+			}
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if hello != nil && hello.ServerName != "" {

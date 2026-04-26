@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/hanshuebner/herold/internal/acme"
 	"github.com/hanshuebner/herold/internal/chatretention"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
@@ -47,6 +48,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protoui"
 	"github.com/hanshuebner/herold/internal/protowebhook"
 	"github.com/hanshuebner/herold/internal/queue"
+	"github.com/hanshuebner/herold/internal/sesinbound"
 	"github.com/hanshuebner/herold/internal/sieve"
 	"github.com/hanshuebner/herold/internal/snooze"
 	"github.com/hanshuebner/herold/internal/spam"
@@ -215,6 +217,63 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		return err
 	}
 
+	// Health tracker: created early so the ACME wiring and protoadmin
+	// server both share the same instance (REQ-OPS-111).
+	health := observe.NewHealth()
+
+	// ACME cert manager (REQ-OPS-40..55, REQ-OPS-111). Build client when
+	// [acme] block is configured; gate health readiness on account load.
+	var acmeClient *acme.Client
+	var acmeHTTPChallenger *acme.HTTPChallenger
+	var acmeTLSALPNChallenger *acme.TLSALPNChallenger
+	observe.RegisterTLSCertMetrics()
+	if cfg.Acme != nil {
+		health.MarkACMERequired()
+		acmeHTTPChallenger = acme.NewHTTPChallenger()
+		acmeTLSALPNChallenger = acme.NewTLSALPNChallenger()
+		// Wire the TLS-ALPN-01 challenger into the TLS store so the
+		// production listener serves challenge certs during ACME validation
+		// without a separate port (RFC 8737, REQ-OPS-50).
+		tlsStore.SetALPNChallenger(acmeTLSALPNChallenger)
+
+		directoryURL := cfg.Acme.DirectoryURL
+		if directoryURL == "" {
+			directoryURL = "https://acme-v02.api.letsencrypt.org/directory"
+		}
+
+		// pluginInvokerAdapter adapts *plugin.Manager to acme.PluginInvoker.
+		acmeInvoker := acmePluginAdapter{mgr: pluginMgr}
+
+		acmeClient = acme.New(acme.Options{
+			DirectoryURL:      directoryURL,
+			ContactEmail:      cfg.Acme.Email,
+			Store:             st,
+			TLSStore:          tlsStore,
+			PluginInvoker:     acmeInvoker,
+			Logger:            logger.With("subsystem", "acme"),
+			Clock:             clk,
+			HTTPChallenger:    acmeHTTPChallenger,
+			TLSALPNChallenger: acmeTLSALPNChallenger,
+		})
+
+		// Initial cert provisioning for server.hostname (REQ-OPS-50).
+		// Run in-line at startup so the server does not mark ready until
+		// at least one cert is available (REQ-OPS-111).
+		challengeType := parseChallengeType(cfg.Acme.ChallengeType)
+		initCtx, initCancel := context.WithTimeout(ctx, 2*time.Minute)
+		initErr := acmeClient.EnsureCert(initCtx, []string{cfg.Server.Hostname}, challengeType, cfg.Acme.DNSPlugin)
+		initCancel()
+		if initErr != nil {
+			logger.LogAttrs(ctx, slog.LevelWarn, "acme: initial cert provisioning failed; will retry in renewal loop",
+				slog.String("hostname", cfg.Server.Hostname),
+				slog.String("err", initErr.Error()))
+		} else {
+			health.MarkACMEReady()
+		}
+	} else {
+		health.MarkACMENotRequired()
+	}
+
 	// FTS worker: storefts.Index + TextExtractor + Worker.
 	ftsIndex, err := storefts.New(filepath.Join(cfg.Server.DataDir, "fts"), logger.With("subsystem", "fts"), clk)
 	if err != nil {
@@ -347,7 +406,8 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 
 	// Admin HTTP handler: the real protoadmin server. Options defaults
 	// are applied inside NewServer; we pass only subsystem-level fields.
-	health := observe.NewHealth()
+	// health was constructed before the ACME block above so the ACME gate
+	// and protoadmin share the same instance (REQ-OPS-111).
 	adminServer := protoadmin.NewServer(
 		st,
 		dir,
@@ -455,6 +515,73 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		}
 		return nil
 	})
+
+	// ACME lifecycle goroutines: HTTP-01 challenge listener + renewal loop.
+	if acmeClient != nil {
+		// HTTP-01 challenge listener on :80 (REQ-OPS-50). Serve ONLY the
+		// ACME challenge path; all other paths return 404. The listener is
+		// started only when challenge_type is http-01 (default).
+		if cfg.Acme.ChallengeType == "" || cfg.Acme.ChallengeType == "http-01" {
+			acmeLogger := logger.With("subsystem", "acme")
+			http01Mux := http.NewServeMux()
+			http01Mux.Handle("/.well-known/acme-challenge/", acmeHTTPChallenger.Handler())
+			http01Srv := &http.Server{
+				Addr:        ":80",
+				Handler:     http01Mux,
+				ReadTimeout: 15 * time.Second,
+			}
+			http01Ln, http01Err := net.Listen("tcp", ":80")
+			if http01Err != nil {
+				acmeLogger.LogAttrs(ctx, slog.LevelWarn,
+					"acme: HTTP-01 listener bind failed; http-01 challenges will not be served",
+					slog.String("err", http01Err.Error()))
+			} else {
+				g.Go(func() error {
+					if err := http01Srv.Serve(http01Ln); err != nil &&
+						!errors.Is(err, http.ErrServerClosed) &&
+						!errors.Is(err, net.ErrClosed) {
+						acmeLogger.LogAttrs(context.Background(), slog.LevelWarn,
+							"acme http-01 listener exited", slog.String("err", err.Error()))
+					}
+					return nil
+				})
+				g.Go(func() error {
+					<-gctx.Done()
+					shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					return http01Srv.Shutdown(shutCtx)
+				})
+			}
+		}
+
+		// Renewal loop (REQ-OPS-53). Ticks every hour; renews certs at
+		// 1/3 remaining lifetime. A failed renewal is logged but does not
+		// crash the server; the current cert stays in use until expiry.
+		acmeLogger := logger.With("subsystem", "acme")
+		g.Go(func() error {
+			if err := acmeClient.RunRenewalLoop(gctx, time.Hour); err != nil &&
+				!errors.Is(err, context.Canceled) {
+				acmeLogger.LogAttrs(context.Background(), slog.LevelWarn,
+					"acme renewal loop exited", slog.String("err", err.Error()))
+			}
+			return nil
+		})
+
+		// Cert-expiry metric housekeeping: update herold_tls_cert_expiry_seconds
+		// on a 1-minute tick (REQ-OPS-91).
+		g.Go(func() error {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-gctx.Done():
+					return nil
+				case <-ticker.C:
+					updateCertExpiryMetrics(gctx, st, acmeLogger)
+				}
+			}
+		})
+	}
 
 	// Outbound queue scheduler goroutine (Phase 3 Wave 3.1.5). The
 	// queue.Run loop blocks until gctx cancels; ShutdownGrace bounds
@@ -789,14 +916,21 @@ func openStore(ctx context.Context, cfg *sysconfig.Config, logger *slog.Logger, 
 func buildTLSStore(cfg *sysconfig.Config, logger *slog.Logger) (*heroldtls.Store, error) {
 	store := heroldtls.NewStore()
 	var fallback *tls.Certificate
-	// Admin TLS: becomes the fallback cert.
-	if cfg.Server.AdminTLS.Source == "file" {
+	// Admin TLS: file source loads immediately; acme source defers to the
+	// ACME client which populates the store after account registration.
+	switch cfg.Server.AdminTLS.Source {
+	case "file":
 		cert, err := heroldtls.LoadFromFile(cfg.Server.AdminTLS.CertFile, cfg.Server.AdminTLS.KeyFile)
 		if err != nil {
 			return nil, fmt.Errorf("admin: admin_tls load: %w", err)
 		}
 		fallback = cert
 		store.SetDefault(cert)
+	case "acme":
+		// Populated later by the ACME client. Log so the operator
+		// knows the store starts empty and will be filled on first
+		// cert issue.
+		_ = logger // logger may be used for future trace; keep the reference.
 	}
 	// Per-listener file-backed certs.
 	for _, l := range cfg.Listener {
@@ -1633,6 +1767,52 @@ func (a queueBouncePosterAdapter) PostBounce(ctx context.Context, in protosmtp.B
 		DiagnosticCode:  in.DiagnosticCode,
 		StatusCode:      in.StatusCode,
 	})
+}
+
+// acmePluginAdapter adapts *plugin.Manager to acme.PluginInvoker.
+// The DNS-01 challenger calls dns.present / dns.cleanup on the named
+// DNS plugin via this adapter.
+type acmePluginAdapter struct {
+	mgr *plugin.Manager
+}
+
+func (a acmePluginAdapter) Call(ctx context.Context, pluginName, method string, params any, result any) error {
+	pl := a.mgr.Get(pluginName)
+	if pl == nil {
+		return fmt.Errorf("acme: dns plugin %q not registered", pluginName)
+	}
+	return pl.Call(ctx, method, params, result)
+}
+
+// parseChallengeType maps the sysconfig string to a store.ChallengeType.
+// Empty string defaults to http-01 (REQ-OPS-50).
+func parseChallengeType(s string) store.ChallengeType {
+	switch s {
+	case "tls-alpn-01":
+		return store.ChallengeTypeTLSALPN01
+	case "dns-01":
+		return store.ChallengeTypeDNS01
+	default:
+		return store.ChallengeTypeHTTP01
+	}
+}
+
+// updateCertExpiryMetrics queries all stored ACME certs and updates the
+// herold_tls_cert_expiry_seconds gauge family (REQ-OPS-91). Called on a
+// 1-minute housekeeping tick; also called after each renewal.
+func updateCertExpiryMetrics(ctx context.Context, st store.Store, logger *slog.Logger) {
+	if observe.TLSCertExpirySeconds == nil {
+		return
+	}
+	cutoff := time.Now().Add(100 * 365 * 24 * time.Hour)
+	certs, err := st.Meta().ListACMECertsExpiringBefore(ctx, cutoff)
+	if err != nil {
+		logger.LogAttrs(ctx, slog.LevelWarn, "acme: list certs for metric update", slog.String("err", err.Error()))
+		return
+	}
+	for _, c := range certs {
+		observe.TLSCertExpirySeconds.WithLabelValues(c.Hostname).Set(float64(c.NotAfter.Unix()))
+	}
 }
 
 // notifySystemdReady implements a minimal sd_notify(READY=1) compatible

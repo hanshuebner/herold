@@ -7,9 +7,17 @@ import (
 
 // Health tracks liveness and readiness for the /healthz endpoints
 // (REQ-OPS-110, REQ-OPS-111). Liveness is always true for a running process;
-// readiness flips to true only once MarkReady is called.
+// readiness is gated on all registered conditions being satisfied.
+//
+// REQ-OPS-111: readiness reports not-ready until (a) ACME is not configured,
+// or (b) the ACME account is loaded and at least one usable cert is in the
+// TLS store. The acmeReady gate is set via MarkACMEReady; when ACME is not
+// configured the gate is pre-cleared by MarkACMENotRequired so it never
+// blocks readiness.
 type Health struct {
-	ready atomic.Bool
+	ready    atomic.Bool
+	acmeOK   atomic.Bool // true when ACME is ready or not required
+	acmeReqd atomic.Bool // true when [acme] is configured (gate is active)
 }
 
 // NewHealth returns a fresh Health with readiness set to false.
@@ -17,7 +25,26 @@ func NewHealth() *Health {
 	return &Health{}
 }
 
-// MarkReady flips readiness to true. Safe for concurrent use.
+// MarkACMENotRequired signals that ACME is not configured, so the ACME
+// readiness gate is permanently satisfied. Call this before MarkReady when
+// no [acme] block is present in system.toml.
+func (h *Health) MarkACMENotRequired() {
+	h.acmeOK.Store(true)
+}
+
+// MarkACMERequired records that [acme] is configured; the gate is NOT yet
+// satisfied. Call this before MarkReady when [acme] is present.
+func (h *Health) MarkACMERequired() {
+	h.acmeReqd.Store(true)
+}
+
+// MarkACMEReady signals that the ACME account is loaded and at least one
+// usable cert is present (REQ-OPS-111). Safe for concurrent use.
+func (h *Health) MarkACMEReady() {
+	h.acmeOK.Store(true)
+}
+
+// MarkReady flips overall readiness to true. Safe for concurrent use.
 func (h *Health) MarkReady() {
 	h.ready.Store(true)
 }
@@ -27,9 +54,16 @@ func (h *Health) MarkNotReady() {
 	h.ready.Store(false)
 }
 
-// Ready reports the current readiness state.
+// Ready reports the current readiness state: true when MarkReady has been
+// called AND (ACME is not required OR ACME is ready).
 func (h *Health) Ready() bool {
-	return h.ready.Load()
+	if !h.ready.Load() {
+		return false
+	}
+	if h.acmeReqd.Load() && !h.acmeOK.Load() {
+		return false
+	}
+	return true
 }
 
 // LivenessHandler returns an http.Handler that always responds 200 OK.

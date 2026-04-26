@@ -21,7 +21,67 @@ type Config struct {
 	Listener      []ListenerConfig    `toml:"listener"`
 	Plugin        []PluginConfig      `toml:"plugin"`
 	SMTP          SMTPConfig          `toml:"smtp,omitempty"`
+	Hooks         HooksConfig         `toml:"hooks,omitempty"`
 	Observability ObservabilityConfig `toml:"observability"`
+}
+
+// HooksConfig groups ingress-hook subsystems (SES inbound, future
+// webhook ingress shapes).
+type HooksConfig struct {
+	// SESInbound configures the AWS SES inbound path
+	// (REQ-HOOK-SES-01..07). Disabled by default.
+	SESInbound SESInboundConfig `toml:"ses_inbound,omitempty"`
+}
+
+// SESInboundConfig is the operator-facing configuration block for the
+// SES inbound HTTP handler (REQ-HOOK-SES-03).
+//
+// Secrets MUST be supplied as secret references ($VAR or file:/path)
+// per STANDARDS §9 / REQ-OPS-04 / REQ-OPS-161.  Inline credentials are
+// rejected at Validate.
+//
+// Example:
+//
+//	[hooks.ses_inbound]
+//	enabled = true
+//	aws_region = "us-east-1"
+//	s3_bucket_allowlist = ["my-ses-mail-bucket"]
+//	sns_topic_arn_allowlist = ["arn:aws:sns:us-east-1:123456789012:herold-inbound"]
+//	signature_cert_host_allowlist = ["sns.us-east-1.amazonaws.com"]
+//	aws_access_key_id_env = "$AWS_ACCESS_KEY_ID"
+//	aws_secret_access_key_env = "$AWS_SECRET_ACCESS_KEY"
+type SESInboundConfig struct {
+	// Enabled activates the handler. When false (default) no handler
+	// is mounted and no goroutines are started.
+	Enabled bool `toml:"enabled,omitempty"`
+	// AWSRegion is the AWS region where the S3 bucket and SNS topic
+	// live (e.g. "us-east-1").
+	AWSRegion string `toml:"aws_region,omitempty"`
+	// S3BucketAllowlist lists the S3 buckets herold is allowed to
+	// fetch messages from.  References to any other bucket in an
+	// incoming SNS notification are rejected (REQ-HOOK-SES-03).
+	S3BucketAllowlist []string `toml:"s3_bucket_allowlist,omitempty"`
+	// SNSTopicARNAllowlist lists the SNS topic ARNs from which
+	// SubscriptionConfirmation requests are auto-confirmed
+	// (REQ-HOOK-SES-03).  Confirmations from other topic ARNs are
+	// silently dropped.
+	SNSTopicARNAllowlist []string `toml:"sns_topic_arn_allowlist,omitempty"`
+	// SignatureCertHostAllowlist lists the hostnames that
+	// SigningCertURL may resolve to (REQ-HOOK-SES-06).  Typically
+	// ["sns.<region>.amazonaws.com"].  A request whose SigningCertURL
+	// hostname is not in this list is rejected before any network
+	// activity.
+	SignatureCertHostAllowlist []string `toml:"signature_cert_host_allowlist,omitempty"`
+	// AWSAccessKeyIDEnv is a secret reference ("$VAR" or
+	// "file:/path") for the AWS access key ID.  Required when
+	// Enabled is true.
+	AWSAccessKeyIDEnv string `toml:"aws_access_key_id_env,omitempty"`
+	// AWSSecretAccessKeyEnv is a secret reference for the AWS secret
+	// access key.  Required when Enabled is true.
+	AWSSecretAccessKeyEnv string `toml:"aws_secret_access_key_env,omitempty"`
+	// AWSSessionTokenEnv is an optional secret reference for a
+	// temporary session token (for STS-vended credentials).
+	AWSSessionTokenEnv string `toml:"aws_session_token_env,omitempty"`
 }
 
 // SMTPConfig groups SMTP-listener-side knobs that span both the
@@ -496,7 +556,8 @@ func (d Duration) MarshalText() ([]byte, error) {
 func (d Duration) AsDuration() time.Duration { return time.Duration(d) }
 
 // AdminTLSConfig controls the cert used for the admin HTTPS surface.
-// Phase 1 accepts only source = "file"; "acme" is rejected at Validate.
+// source may be "file" (cert_file + key_file required) or "acme"
+// (uses the deployment-level [acme] account).
 type AdminTLSConfig struct {
 	Source      string `toml:"source"`
 	CertFile    string `toml:"cert_file,omitempty"`
@@ -531,10 +592,22 @@ type ListenerConfig struct {
 	KeyFile       string `toml:"key_file,omitempty"`
 }
 
-// AcmeConfig is parsed but explicitly rejected in Phase 1.
+// AcmeConfig configures the ACME client (REQ-OPS-50..55).
+// One account per deployment; the account key is stored at
+// data_dir/acme/account.key with mode 0600 (REQ-OPS-52).
 type AcmeConfig struct {
-	Email        string `toml:"email,omitempty"`
+	// Email is the operator contact address registered with the ACME CA.
+	// Required when [acme] is present.
+	Email string `toml:"email,omitempty"`
+	// DirectoryURL is the ACME directory endpoint. Defaults to Let's
+	// Encrypt production when empty.
 	DirectoryURL string `toml:"directory_url,omitempty"`
+	// ChallengeType selects the validation method: "http-01" (default),
+	// "tls-alpn-01", or "dns-01".
+	ChallengeType string `toml:"challenge_type,omitempty"`
+	// DNSPlugin names the [[plugin]] to use for dns-01 challenge publication.
+	// Required when challenge_type = "dns-01".
+	DNSPlugin string `toml:"dns_plugin,omitempty"`
 }
 
 // PluginConfig describes an out-of-process plugin declaration.
@@ -1055,20 +1128,33 @@ func Validate(c *Config) error {
 	// Admin TLS
 	switch c.Server.AdminTLS.Source {
 	case "":
-		return errors.New("sysconfig: [server.admin_tls] source is required (Phase 1: only \"file\" is supported)")
+		return errors.New("sysconfig: [server.admin_tls] source is required (use \"file\" or \"acme\")")
 	case "file":
 		if c.Server.AdminTLS.CertFile == "" || c.Server.AdminTLS.KeyFile == "" {
 			return errors.New("sysconfig: [server.admin_tls] source=\"file\" requires cert_file and key_file")
 		}
 	case "acme":
-		return errors.New("sysconfig: [server.admin_tls] source=\"acme\" not supported in Phase 1 (Phase 2: ACME lands in queue-delivery-implementor's surface)")
+		if c.Acme == nil {
+			return errors.New("sysconfig: [server.admin_tls] source=\"acme\" requires an [acme] block")
+		}
 	default:
 		return fmt.Errorf("sysconfig: [server.admin_tls] source %q not recognised (want \"file\" or \"acme\")", c.Server.AdminTLS.Source)
 	}
-	// [acme] block is parsed (so operators can follow future examples without
-	// hitting unknown-key errors) but rejected as a hard error in Phase 1.
+	// [acme] block validation.
 	if c.Acme != nil {
-		return errors.New("sysconfig: [acme] block not supported in Phase 1 (Phase 2: ACME lands in queue-delivery-implementor's surface)")
+		if c.Acme.Email == "" {
+			return errors.New("sysconfig: [acme] email is required")
+		}
+		switch c.Acme.ChallengeType {
+		case "", "http-01", "tls-alpn-01":
+			// ok
+		case "dns-01":
+			if c.Acme.DNSPlugin == "" {
+				return errors.New("sysconfig: [acme] challenge_type=\"dns-01\" requires dns_plugin")
+			}
+		default:
+			return fmt.Errorf("sysconfig: [acme] challenge_type %q not recognised (want \"http-01\", \"tls-alpn-01\", or \"dns-01\")", c.Acme.ChallengeType)
+		}
 	}
 	// Listeners.
 	if len(c.Listener) == 0 {
@@ -1220,6 +1306,48 @@ func Validate(c *Config) error {
 			"sysconfig: metrics_bind is non-loopback; front /metrics with TLS + auth (STANDARDS §7)",
 			slog.String("metrics_bind", c.Observability.MetricsBind),
 		)
+	}
+	// SES inbound (REQ-HOOK-SES-03).
+	if err := validateSESInbound(&c.Hooks.SESInbound); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateSESInbound checks the [hooks.ses_inbound] block.
+// When enabled is false, we only verify that no partial / conflicting
+// configuration is present. When enabled is true, all required fields
+// must be set and credential references must be secret references.
+func validateSESInbound(ses *SESInboundConfig) error {
+	if !ses.Enabled {
+		return nil
+	}
+	if ses.AWSRegion == "" {
+		return errors.New("sysconfig: [hooks.ses_inbound] aws_region is required when enabled")
+	}
+	if len(ses.S3BucketAllowlist) == 0 {
+		return errors.New("sysconfig: [hooks.ses_inbound] s3_bucket_allowlist must not be empty when enabled")
+	}
+	if len(ses.SNSTopicARNAllowlist) == 0 {
+		return errors.New("sysconfig: [hooks.ses_inbound] sns_topic_arn_allowlist must not be empty when enabled")
+	}
+	if len(ses.SignatureCertHostAllowlist) == 0 {
+		return errors.New("sysconfig: [hooks.ses_inbound] signature_cert_host_allowlist must not be empty when enabled")
+	}
+	if ses.AWSAccessKeyIDEnv == "" {
+		return errors.New("sysconfig: [hooks.ses_inbound] aws_access_key_id_env is required when enabled")
+	}
+	if !IsSecretReference(ses.AWSAccessKeyIDEnv) {
+		return fmt.Errorf("sysconfig: [hooks.ses_inbound] aws_access_key_id_env %q must be \"$VAR\" or \"file:/path\" (STANDARDS §9)", ses.AWSAccessKeyIDEnv)
+	}
+	if ses.AWSSecretAccessKeyEnv == "" {
+		return errors.New("sysconfig: [hooks.ses_inbound] aws_secret_access_key_env is required when enabled")
+	}
+	if !IsSecretReference(ses.AWSSecretAccessKeyEnv) {
+		return fmt.Errorf("sysconfig: [hooks.ses_inbound] aws_secret_access_key_env %q must be \"$VAR\" or \"file:/path\" (STANDARDS §9)", ses.AWSSecretAccessKeyEnv)
+	}
+	if ses.AWSSessionTokenEnv != "" && !IsSecretReference(ses.AWSSessionTokenEnv) {
+		return fmt.Errorf("sysconfig: [hooks.ses_inbound] aws_session_token_env %q must be \"$VAR\" or \"file:/path\" (STANDARDS §9)", ses.AWSSessionTokenEnv)
 	}
 	return nil
 }

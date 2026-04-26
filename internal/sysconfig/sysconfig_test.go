@@ -348,7 +348,8 @@ tls = "starttls"
 	}
 }
 
-func TestValidate_AcmeRejected(t *testing.T) {
+func TestValidate_AcmeAdminTLS_AcceptedWithAcmeBlock(t *testing.T) {
+	// REQ-OPS-40: source="acme" is accepted when [acme] block is present.
 	const acmeAdmin = `
 [server]
 hostname = "mail.example.com"
@@ -356,7 +357,10 @@ data_dir = "/var/lib/herold"
 
 [server.admin_tls]
 source = "acme"
-acme_account = "default"
+
+[acme]
+email = "ops@example.com"
+directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 
 [[listener]]
 name = "l"
@@ -364,16 +368,42 @@ address = ":25"
 protocol = "smtp"
 tls = "starttls"
 `
-	_, err := Parse([]byte(acmeAdmin))
-	if err == nil {
-		t.Fatal("expected ACME-rejected error")
+	cfg, err := Parse([]byte(acmeAdmin))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Phase") {
-		t.Errorf("error should mention Phase, got: %v", err)
+	if cfg.Server.AdminTLS.Source != "acme" {
+		t.Errorf("expected source=acme, got %q", cfg.Server.AdminTLS.Source)
 	}
 }
 
-func TestValidate_AcmeBlockRejected(t *testing.T) {
+func TestValidate_AcmeAdminTLS_RequiresAcmeBlock(t *testing.T) {
+	// source="acme" without an [acme] block must be rejected.
+	const noAcme = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "acme"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(noAcme))
+	if err == nil {
+		t.Fatal("expected error for acme source without [acme] block")
+	}
+	if !strings.Contains(err.Error(), "[acme]") {
+		t.Errorf("error should mention [acme], got: %v", err)
+	}
+}
+
+func TestValidate_AcmeBlock_Accepted(t *testing.T) {
+	// REQ-OPS-50: [acme] block with email is accepted.
 	const acmeBlock = `
 [server]
 hostname = "mail.example.com"
@@ -394,12 +424,71 @@ address = ":25"
 protocol = "smtp"
 tls = "starttls"
 `
-	_, err := Parse([]byte(acmeBlock))
-	if err == nil {
-		t.Fatal("expected [acme] block rejected")
+	cfg, err := Parse([]byte(acmeBlock))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "[acme]") {
-		t.Errorf("error should name [acme], got: %v", err)
+	if cfg.Acme == nil || cfg.Acme.Email != "ops@example.com" {
+		t.Errorf("expected acme.email = ops@example.com, got %v", cfg.Acme)
+	}
+}
+
+func TestValidate_AcmeBlock_MissingEmail(t *testing.T) {
+	const noEmail = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[acme]
+directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(noEmail))
+	if err == nil {
+		t.Fatal("expected error for missing email")
+	}
+	if !strings.Contains(err.Error(), "email") {
+		t.Errorf("error should mention email, got: %v", err)
+	}
+}
+
+func TestValidate_AcmeBlock_DNS01RequiresPlugin(t *testing.T) {
+	const dns01 = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[acme]
+email = "ops@example.com"
+challenge_type = "dns-01"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(dns01))
+	if err == nil {
+		t.Fatal("expected error for dns-01 without dns_plugin")
+	}
+	if !strings.Contains(err.Error(), "dns_plugin") {
+		t.Errorf("error should mention dns_plugin, got: %v", err)
 	}
 }
 

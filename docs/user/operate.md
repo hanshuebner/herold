@@ -69,10 +69,10 @@ cert_file = "/etc/herold/admin.crt"
 key_file  = "/etc/herold/admin.key"
 ```
 
-Phase 1 supports only `source = "file"`. The `acme` source is parsed
-(so configs with future ACME blocks do not hit unknown-key errors)
-but rejected at validate with a clear message - ACME lands in
-queue-delivery-implementor's surface in Wave 3.1+.
+Both `source = "file"` and `source = "acme"` are supported. The `acme`
+source requires an `[acme]` block in the same config file and uses the
+deployment-level ACME account to provision and renew the cert for
+`server.hostname` automatically.
 
 For the development / loopback quickstart, the admin listener can be
 declared with `tls = "none"` and this block can point at any pair of
@@ -370,15 +370,20 @@ signing_key_env = "$HEROLD_UI_KEY"   # empty = random per-process key.
 `secure_cookies = true` is the production policy; only override
 during local development behind a trusted localhost reverse proxy.
 
-### `[acme]` - ACME account (Phase 2)
+### `[acme]` - ACME account
 
 ```toml
 [acme]
 email = "ops@example.com"
 directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+# challenge_type = "http-01"   # "http-01" (default), "tls-alpn-01", or "dns-01"
+# dns_plugin = "cloudflare"    # required when challenge_type = "dns-01"
 ```
 
-Parsed but rejected at validate in Phase 1. Wave 3.1+ lights this up.
+When present, herold registers an ACME account at first start (key
+stored at `data_dir/acme/account.key`, mode 0600), provisions a cert
+for `server.hostname`, and schedules automatic renewal at 1/3 remaining
+lifetime (REQ-OPS-53). Use `herold cert list` to inspect issued certs.
 
 ### `[observability]` - log + metrics + traces
 

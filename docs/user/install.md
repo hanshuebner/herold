@@ -276,11 +276,10 @@ surface, and the MTA-STS vhost. Two cert sources (REQ-OPS-40):
    listener. For environments with cert-manager, an internal PKI, or
    a wildcard cert from elsewhere.
 
-ACME currently lands in queue-delivery-implementor's surface and is
-**rejected at config validate in Phase 1** (`sysconfig: [acme] block
-not supported in Phase 1`). For now, use file-based certs; ACME is
-expected in Wave 3.1+. See [./operate.md](./operate.md) for the full
-TLS / ACME runbook.
+ACME is live as of Wave 3.3. Configure `[acme]` in `system.toml` with
+`email` and optionally `directory_url` (defaults to Let's Encrypt
+production). See [./operate.md](./operate.md) for the full TLS / ACME
+runbook and `herold cert list` to inspect issued certificates.
 
 For the development quickstart on loopback only, `tls = "none"` on the
 admin listener is acceptable and the example compose file uses that

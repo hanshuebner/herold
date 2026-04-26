@@ -70,3 +70,34 @@ func TestHealth_ReadyReflectsState(t *testing.T) {
 		t.Fatalf("after MarkNotReady should report not ready")
 	}
 }
+
+func TestHealth_ACMEGate_NotRequired(t *testing.T) {
+	// When ACME is not configured, readiness must not be blocked.
+	h := NewHealth()
+	h.MarkACMENotRequired()
+	h.MarkReady()
+	if !h.Ready() {
+		t.Fatalf("ready with ACME not required, want ready=true")
+	}
+}
+
+func TestHealth_ACMEGate_RequiredButNotReady(t *testing.T) {
+	// When [acme] is configured but account not yet loaded, server is not ready.
+	h := NewHealth()
+	h.MarkACMERequired()
+	h.MarkReady()
+	if h.Ready() {
+		t.Fatalf("ACME required but not ready: want ready=false, got true")
+	}
+}
+
+func TestHealth_ACMEGate_RequiredAndReady(t *testing.T) {
+	// Once ACME account is loaded, the gate clears.
+	h := NewHealth()
+	h.MarkACMERequired()
+	h.MarkReady()
+	h.MarkACMEReady()
+	if !h.Ready() {
+		t.Fatalf("ACME required and ready: want ready=true, got false")
+	}
+}
