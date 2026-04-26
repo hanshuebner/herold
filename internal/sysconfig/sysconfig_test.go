@@ -267,7 +267,7 @@ tls = "starttls"
 
 func TestIsLoopbackBindAddr(t *testing.T) {
 	cases := map[string]bool{
-		"":              true,
+		"":               true,
 		"127.0.0.1:9090": true,
 		"localhost:9090": true,
 		"[::1]:9090":     true,
