@@ -113,6 +113,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newPrincipalCmd())
 	root.AddCommand(newMailboxCmd())
 	root.AddCommand(newDomainCmd())
+	root.AddCommand(newDKIMCmd())
 	root.AddCommand(newOIDCCmd())
 	root.AddCommand(newAPIKeyCmd())
 	root.AddCommand(newAliasCmd())

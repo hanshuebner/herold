@@ -182,6 +182,30 @@ func toAPIKeyDTO(k store.APIKey) apiKeyDTO {
 	return dto
 }
 
+// dkimKeyDTO is the wire representation of a DKIM key row. The private key
+// material is never serialised; the TXTRecord field carries the public DNS
+// payload that belongs at <selector>._domainkey.<domain>.
+// REQ-ADM-310: the DKIM TXT record body is operator-visible.
+type dkimKeyDTO struct {
+	Selector  string    `json:"selector"`
+	Algorithm string    `json:"algorithm"`
+	IsActive  bool      `json:"is_active"`
+	CreatedAt time.Time `json:"created_at"`
+	RotatedAt time.Time `json:"rotated_at,omitempty"`
+	TXTRecord string    `json:"txt_record"`
+}
+
+func toDKIMKeyDTO(k store.DKIMKey, txt string) dkimKeyDTO {
+	return dkimKeyDTO{
+		Selector:  k.Selector,
+		Algorithm: k.Algorithm.String(),
+		IsActive:  k.Status == store.DKIMKeyStatusActive,
+		CreatedAt: k.CreatedAt,
+		RotatedAt: k.RotatedAt,
+		TXTRecord: txt,
+	}
+}
+
 // pageDTO is the envelope used by keyset-paginated list endpoints.
 // We keep it minimal: items + next (as a string cursor, or null when
 // the caller has reached the end).
