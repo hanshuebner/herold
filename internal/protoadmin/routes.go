@@ -100,4 +100,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Diag (DNS check). Backup/restore/migrate live in a sibling file
 	// owned by the parallel agent.
 	mux.HandleFunc("GET /api/v1/diag/dns-check/{domain}", s.requireAuth(s.handleDiagDNSCheck))
+
+	// Inbound attachment policy (REQ-FLOW-ATTPOL-01..02).
+	mux.HandleFunc("GET /api/v1/mailboxes/{addr}/attachment-policy", s.requireAuth(s.handleGetMailboxAttPol))
+	mux.HandleFunc("PUT /api/v1/mailboxes/{addr}/attachment-policy", s.requireAuth(s.handlePutMailboxAttPol))
+	mux.HandleFunc("GET /api/v1/domains/{name}/attachment-policy", s.requireAuth(s.handleGetDomainAttPol))
+	mux.HandleFunc("PUT /api/v1/domains/{name}/attachment-policy", s.requireAuth(s.handlePutDomainAttPol))
 }

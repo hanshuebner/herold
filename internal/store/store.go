@@ -951,6 +951,30 @@ type Metadata interface {
 	// reports the persisted state and does not itself mutate it.
 	// Exposed primarily for test assertions and future GC tooling.
 	GetBlobRef(ctx context.Context, hash string) (size int64, refCount int64, err error)
+
+	// -- Phase 3 Wave 3.5c inbound attachment policy (REQ-FLOW-ATTPOL-01) -
+
+	// GetInboundAttachmentPolicy returns the effective inbound
+	// attachment policy for the lowercased "local@domain" address. The
+	// lookup tries the per-recipient row first and falls back to the
+	// recipient's domain row; an absent row at both levels returns the
+	// implicit default {AttPolicyAccept, ""}. Never returns ErrNotFound
+	// — the absent row is the implicit default. address must be
+	// lowercased and contain exactly one '@'; malformed input yields
+	// the implicit default rather than an error so callers do not have
+	// to guard the SMTP path.
+	GetInboundAttachmentPolicy(ctx context.Context, address string) (InboundAttachmentPolicyRow, error)
+
+	// SetInboundAttachmentPolicyRecipient upserts the per-recipient
+	// policy row for the lowercased address. Passing AttPolicyUnset
+	// deletes the row so a subsequent GetInboundAttachmentPolicy falls
+	// back to the domain row.
+	SetInboundAttachmentPolicyRecipient(ctx context.Context, address string, row InboundAttachmentPolicyRow) error
+
+	// SetInboundAttachmentPolicyDomain upserts the per-domain policy
+	// row for the lowercased domain (no leading dot). Passing
+	// AttPolicyUnset deletes the row.
+	SetInboundAttachmentPolicyDomain(ctx context.Context, domain string, row InboundAttachmentPolicyRow) error
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

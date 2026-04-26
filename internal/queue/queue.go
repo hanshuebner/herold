@@ -835,6 +835,113 @@ func (q *Queue) emitDSN(ctx context.Context, item store.QueueItem, outcome Deliv
 	queueDSNEmittedTotal.WithLabelValues(kind.String()).Inc()
 }
 
+// BounceInput is the inbound-side shape for PostBounce: a synthetic
+// DSN bounce generated at SMTP DATA / post-acceptance time
+// (REQ-FLOW-ATTPOL-02). The Queue renders the DSN message and enqueues
+// it to MailFrom with a null reverse-path so the outbound deliverer
+// treats it as an ordinary outbound message.
+type BounceInput struct {
+	// MailFrom is the recipient of the DSN — the original sender's
+	// MAIL FROM. Empty triggers a null-sender suppression (no
+	// DSN-of-DSN); the Queue logs and returns nil in that case.
+	MailFrom string
+	// FinalRcpt is the recipient that triggered the refusal; surfaces
+	// in the DSN's Final-Recipient field.
+	FinalRcpt string
+	// OriginalRcpt mirrors FinalRcpt unless the operator has aliased
+	// the recipient; both fields are echoed into the DSN per
+	// RFC 3464 §2.3.
+	OriginalRcpt string
+	// OriginalEnvID is the RFC 3461 ENVID parameter to echo into the
+	// generated DSN. Empty when the original MAIL FROM did not carry
+	// one.
+	OriginalEnvID string
+	// OriginalHeaders is the parsed header section of the refused
+	// message; it lands in the DSN's message/rfc822-headers part.
+	OriginalHeaders []byte
+	// MessageID is the original RFC 5322 Message-ID; logged for
+	// correlation, NOT echoed into the DSN body (the Message-ID on
+	// the DSN is freshly minted).
+	MessageID string
+	// DiagnosticCode is the RFC 3464 §2.3.6 Diagnostic-Code value
+	// (e.g. "smtp; 552 5.3.4 attachments not accepted on this address").
+	DiagnosticCode string
+	// StatusCode is the RFC 3463 enhanced-status string (e.g. "5.3.4").
+	StatusCode string
+}
+
+// PostBounce builds a 5xx DSN to in.MailFrom describing the refusal of
+// in.FinalRcpt and enqueues it as a fresh outbound row. The bounce uses
+// a null reverse-path so the outbound deliverer routes it without a
+// DSN-of-DSN loop. A nil-sender suppression returns nil without
+// enqueueing. A blob-store or enqueue error is wrapped and returned;
+// the caller logs it but still completes the inbound refusal so the
+// audit trail and metrics are emitted.
+//
+// The Queue's hostname / DSN-from / clock fields drive the rendered
+// headers; the function is safe to call before Run starts (PostBounce
+// touches no in-process queue state).
+func (q *Queue) PostBounce(ctx context.Context, in BounceInput) error {
+	if q.opts.Store == nil {
+		return fmt.Errorf("queue: PostBounce: Store is nil")
+	}
+	if in.MailFrom == "" {
+		// RFC 3464: never bounce a bounce. Suppress and return.
+		q.opts.Logger.InfoContext(ctx, "queue: skip attpol bounce (null sender)",
+			slog.String("final_rcpt", in.FinalRcpt))
+		return nil
+	}
+	if in.StatusCode == "" {
+		in.StatusCode = "5.0.0"
+	}
+	dsn, err := buildDSN(dsnInput{
+		Kind:            DSNKindFailure,
+		ReportingMTA:    "dns; " + q.hostname,
+		From:            q.dsnFrom,
+		To:              in.MailFrom,
+		OriginalRcpt:    in.OriginalRcpt,
+		FinalRcpt:       in.FinalRcpt,
+		OriginalEnvID:   in.OriginalEnvID,
+		DiagnosticCode:  in.DiagnosticCode,
+		StatusCode:      in.StatusCode,
+		OriginalHeaders: in.OriginalHeaders,
+		Now:             q.clk.Now(),
+	})
+	if err != nil {
+		return fmt.Errorf("queue: build attpol bounce: %w", err)
+	}
+	bodyRef, err := q.opts.Store.Blobs().Put(ctx, bytes.NewReader(dsn))
+	if err != nil {
+		return fmt.Errorf("queue: persist attpol bounce body: %w", err)
+	}
+	envID, err := newEnvelopeID()
+	if err != nil {
+		return fmt.Errorf("queue: attpol bounce envelope id: %w", err)
+	}
+	now := q.clk.Now()
+	dsnItem := store.QueueItem{
+		MailFrom:       "",
+		RcptTo:         in.MailFrom,
+		EnvelopeID:     envID,
+		BodyBlobHash:   bodyRef.Hash,
+		State:          store.QueueStateQueued,
+		NextAttemptAt:  now,
+		DSNNotify:      store.DSNNotifyNever,
+		CreatedAt:      now,
+		IdempotencyKey: fmt.Sprintf("attpol:%s:%s:%s", in.StatusCode, in.MailFrom, in.FinalRcpt),
+	}
+	if _, err := q.opts.Store.Meta().EnqueueMessage(ctx, dsnItem); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			// Duplicate emission for the same recipient pair — harmless.
+			return nil
+		}
+		return fmt.Errorf("queue: enqueue attpol bounce: %w", err)
+	}
+	queueDSNEmittedTotal.WithLabelValues(DSNKindFailure.String()).Inc()
+	q.wake()
+	return nil
+}
+
 // readBody reads the queue row's body blob fully into memory. The
 // outbound SMTP path streams the body into the wire so for huge
 // messages this is suboptimal; v1 ships full-buffering and revisits

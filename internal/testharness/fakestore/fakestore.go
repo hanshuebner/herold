@@ -75,6 +75,11 @@ type Store struct {
 	// Absence means "no script"; GetSieveScript returns ("", nil).
 	sieveScripts map[store.PrincipalID]string
 
+	// inbound attachment policy rows (REQ-FLOW-ATTPOL-01); absence
+	// means the implicit default ("accept").
+	attpolRecipient map[string]store.InboundAttachmentPolicyRow
+	attpolDomain    map[string]store.InboundAttachmentPolicyRow
+
 	// phase2 holds Phase 2 in-memory tables (queue, DKIM, ACME,
 	// webhooks, DMARC, mailbox ACL, JMAP states, TLS-RPT). Lazily
 	// initialised on first Phase 2 method call so existing tests do
@@ -143,6 +148,8 @@ func New(opts Options) (*Store, error) {
 		cursors:         make(map[string]uint64),
 		ftsDocs:         make(map[store.MessageID]ftsDoc),
 		sieveScripts:    make(map[store.PrincipalID]string),
+		attpolRecipient: make(map[string]store.InboundAttachmentPolicyRow),
+		attpolDomain:    make(map[string]store.InboundAttachmentPolicyRow),
 		nextPrincipalID: 1,
 		nextMailboxID:   1,
 		nextMessageID:   1,
