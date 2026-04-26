@@ -19,6 +19,13 @@
   // Inbox-view keyboard bindings are pushed only while the inbox is showing.
   $effect(() => {
     if (!isInboxRoute) return;
+
+    const focusedEmailId = (): string | null => {
+      const idx = mail.inboxFocusedIndex;
+      if (idx < 0) return null;
+      return mail.inboxEmailIds[idx] ?? null;
+    };
+
     const pop = keyboard.pushLayer([
       {
         key: 'j',
@@ -43,6 +50,46 @@
         description: 'Clear focus',
         action: () => {
           mail.inboxFocusedIndex = -1;
+        },
+      },
+      {
+        key: 'e',
+        description: 'Archive',
+        action: () => {
+          const id = focusedEmailId();
+          if (id) void mail.archiveEmail(id);
+        },
+      },
+      {
+        key: '#',
+        description: 'Delete',
+        action: () => {
+          const id = focusedEmailId();
+          if (id) void mail.deleteEmail(id);
+        },
+      },
+      {
+        key: 's',
+        description: 'Star / unstar',
+        action: () => {
+          const id = focusedEmailId();
+          if (id) void mail.toggleFlagged(id);
+        },
+      },
+      {
+        key: 'I',
+        description: 'Mark as read',
+        action: () => {
+          const id = focusedEmailId();
+          if (id) void mail.setSeen(id, true);
+        },
+      },
+      {
+        key: 'U',
+        description: 'Mark as unread',
+        action: () => {
+          const id = focusedEmailId();
+          if (id) void mail.setSeen(id, false);
         },
       },
     ]);

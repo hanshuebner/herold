@@ -2,6 +2,7 @@
   import Rail from './Rail.svelte';
   import GlobalBar from './GlobalBar.svelte';
   import CoachStrip from './CoachStrip.svelte';
+  import ToastHost from '../toast/ToastHost.svelte';
 
   interface Props {
     activeApp?: 'mail' | 'chat';
@@ -39,6 +40,7 @@
   </div>
 
   <CoachStrip />
+  <ToastHost />
 </div>
 
 <style>

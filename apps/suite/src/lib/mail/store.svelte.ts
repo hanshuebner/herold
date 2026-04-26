@@ -13,6 +13,7 @@
 import { jmap, strict } from '../jmap/client';
 import { auth } from '../auth/auth.svelte';
 import { sync } from '../jmap/sync.svelte';
+import { toast } from '../toast/toast.svelte';
 import { Capability, type Invocation } from '../jmap/types';
 import {
   EMAIL_BODY_PROPERTIES,
@@ -118,8 +119,17 @@ class MailStore {
 
   /** The Mailbox row whose `role` is `'inbox'`, if any. */
   get inbox(): Mailbox | null {
+    return this.#mailboxByRole('inbox');
+  }
+
+  /** The Mailbox row whose `role` is `'trash'`, if any. */
+  get trash(): Mailbox | null {
+    return this.#mailboxByRole('trash');
+  }
+
+  #mailboxByRole(role: string): Mailbox | null {
     for (const m of this.mailboxes.values()) {
-      if (m.role === 'inbox') return m;
+      if (m.role === role) return m;
     }
     return null;
   }
@@ -298,6 +308,232 @@ class MailStore {
     return out;
   }
 
+  // ── Optimistic actions ────────────────────────────────────────────────
+  //
+  // Pattern per docs/requirements/11-optimistic-ui.md REQ-OPT-01..04:
+  //   1. Snapshot the relevant cache state
+  //   2. Apply the change locally and remove from inbox if needed
+  //   3. Fire Email/set
+  //   4. On failure, restore the snapshot and toast an error
+  //   5. For archive / delete, show an Undo toast (REQ-OPT-10..12)
+
+  /** Archive: remove the inbox mailbox from this email's mailboxIds. */
+  async archiveEmail(emailId: string): Promise<void> {
+    const email = this.emails.get(emailId);
+    const inbox = this.inbox;
+    if (!email || !inbox) return;
+    if (!email.mailboxIds[inbox.id]) return; // already not in inbox
+
+    const prevMailboxIds = { ...email.mailboxIds };
+    const prevInboxIds = [...this.inboxEmailIds];
+    const prevFocused = this.inboxFocusedIndex;
+
+    // Optimistic apply
+    const nextMailboxIds = { ...prevMailboxIds };
+    delete nextMailboxIds[inbox.id];
+    this.#patchEmail(emailId, { mailboxIds: nextMailboxIds });
+    this.#removeFromInbox(emailId);
+
+    const revert = (): void => {
+      this.#patchEmail(emailId, { mailboxIds: prevMailboxIds });
+      this.inboxEmailIds = prevInboxIds;
+      this.inboxFocusedIndex = prevFocused;
+    };
+
+    try {
+      await this.#emailSetUpdate(emailId, {
+        [`mailboxIds/${inbox.id}`]: null,
+      });
+    } catch (err) {
+      revert();
+      toast.show({
+        message: errMessage(err, 'Archive failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return;
+    }
+
+    toast.show({
+      message: 'Message archived',
+      undo: async () => {
+        // Replay the inverse — REQ-OPT-12.
+        try {
+          await this.#emailSetUpdate(emailId, {
+            [`mailboxIds/${inbox.id}`]: true,
+          });
+          // Server state will refresh via sync; meanwhile keep our local
+          // "back in inbox" state visible.
+          this.#patchEmail(emailId, { mailboxIds: prevMailboxIds });
+          this.inboxEmailIds = prevInboxIds;
+        } catch (err) {
+          toast.show({
+            message: errMessage(err, 'Undo failed'),
+            kind: 'error',
+            timeoutMs: 6000,
+          });
+        }
+      },
+    });
+  }
+
+  /** Delete: replace mailboxIds with `{<trashId>: true}`. */
+  async deleteEmail(emailId: string): Promise<void> {
+    const email = this.emails.get(emailId);
+    const trash = this.trash;
+    if (!email || !trash) return;
+    if (email.mailboxIds[trash.id] && Object.keys(email.mailboxIds).length === 1) {
+      return; // already only-in-trash
+    }
+
+    const prevMailboxIds = { ...email.mailboxIds };
+    const prevInboxIds = [...this.inboxEmailIds];
+    const prevFocused = this.inboxFocusedIndex;
+
+    this.#patchEmail(emailId, { mailboxIds: { [trash.id]: true } });
+    this.#removeFromInbox(emailId);
+
+    const revert = (): void => {
+      this.#patchEmail(emailId, { mailboxIds: prevMailboxIds });
+      this.inboxEmailIds = prevInboxIds;
+      this.inboxFocusedIndex = prevFocused;
+    };
+
+    try {
+      await this.#emailSetUpdate(emailId, {
+        mailboxIds: { [trash.id]: true },
+      });
+    } catch (err) {
+      revert();
+      toast.show({
+        message: errMessage(err, 'Delete failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return;
+    }
+
+    toast.show({
+      message: 'Message deleted',
+      undo: async () => {
+        try {
+          await this.#emailSetUpdate(emailId, { mailboxIds: prevMailboxIds });
+          this.#patchEmail(emailId, { mailboxIds: prevMailboxIds });
+          this.inboxEmailIds = prevInboxIds;
+        } catch (err) {
+          toast.show({
+            message: errMessage(err, 'Undo failed'),
+            kind: 'error',
+            timeoutMs: 6000,
+          });
+        }
+      },
+    });
+  }
+
+  /** Toggle the $flagged keyword. No toast / no undo (toggle is itself the undo). */
+  async toggleFlagged(emailId: string): Promise<void> {
+    const email = this.emails.get(emailId);
+    if (!email) return;
+    const wasFlagged = Boolean(email.keywords.$flagged);
+    const nextKeywords = { ...email.keywords };
+    if (wasFlagged) delete nextKeywords.$flagged;
+    else nextKeywords.$flagged = true;
+
+    this.#patchEmail(emailId, { keywords: nextKeywords });
+    try {
+      await this.#emailSetUpdate(emailId, {
+        'keywords/$flagged': wasFlagged ? null : true,
+      });
+    } catch (err) {
+      this.#patchEmail(emailId, { keywords: email.keywords });
+      toast.show({
+        message: errMessage(err, 'Star failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
+  async setSeen(emailId: string, seen: boolean): Promise<void> {
+    const email = this.emails.get(emailId);
+    if (!email) return;
+    const wasSeen = Boolean(email.keywords.$seen);
+    if (wasSeen === seen) return;
+
+    const nextKeywords = { ...email.keywords };
+    if (seen) nextKeywords.$seen = true;
+    else delete nextKeywords.$seen;
+
+    this.#patchEmail(emailId, { keywords: nextKeywords });
+    try {
+      await this.#emailSetUpdate(emailId, {
+        'keywords/$seen': seen ? true : null,
+      });
+    } catch (err) {
+      this.#patchEmail(emailId, { keywords: email.keywords });
+      toast.show({
+        message: errMessage(err, 'Mark read failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
+  // ── Internals ─────────────────────────────────────────────────────────
+
+  #patchEmail(id: string, patch: Partial<Email>): void {
+    const cur = this.emails.get(id);
+    if (!cur) return;
+    const next = new Map(this.emails);
+    next.set(id, { ...cur, ...patch });
+    this.emails = next;
+  }
+
+  #removeFromInbox(emailId: string): void {
+    const idx = this.inboxEmailIds.indexOf(emailId);
+    if (idx < 0) return;
+    this.inboxEmailIds = [
+      ...this.inboxEmailIds.slice(0, idx),
+      ...this.inboxEmailIds.slice(idx + 1),
+    ];
+    // Clamp focus to the new bounds.
+    if (this.inboxFocusedIndex >= this.inboxEmailIds.length) {
+      this.inboxFocusedIndex = this.inboxEmailIds.length - 1;
+    }
+  }
+
+  /**
+   * Issue an `Email/set { update }` for one email and surface per-id
+   * errors as throws. Caller is responsible for revert on failure.
+   */
+  async #emailSetUpdate(
+    emailId: string,
+    patches: Record<string, unknown>,
+  ): Promise<void> {
+    const accountId = this.mailAccountId;
+    if (!accountId) throw new Error('No Mail account on this session');
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Email/set',
+        {
+          accountId,
+          update: { [emailId]: patches },
+        },
+        [Capability.Mail],
+      );
+    });
+    strict(responses);
+    const result = invocationArgs<{
+      updated?: Record<string, unknown> | null;
+      notUpdated?: Record<string, { type: string; description?: string }>;
+    }>(responses[0]);
+    const failure = result.notUpdated?.[emailId];
+    if (failure) {
+      throw new Error(failure.description ?? failure.type);
+    }
+  }
+
   #setThreadStatus(id: string, status: LoadStatus): void {
     const next = new Map(this.threadLoadStatus);
     next.set(id, status);
@@ -321,6 +557,11 @@ class MailStore {
 function invocationArgs<T>(inv: Invocation | undefined): T {
   if (!inv) throw new Error('Expected method invocation, got undefined');
   return inv[1] as T;
+}
+
+function errMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error) return err.message || fallback;
+  return fallback;
 }
 
 export const mail = new MailStore();
