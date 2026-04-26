@@ -63,7 +63,7 @@ Tabard and herold are deployed at the same origin (resolved Q1). Herold serves b
 2. Tabard issues `GET /.well-known/jmap` with `credentials: 'include'`. The browser attaches the suite-origin session cookie if one is present.
 3. If herold returns 401 (no cookie or expired session), tabard redirects to `/login?return=<current-url>`. Herold's login surface authenticates the user (password+TOTP locally, or OIDC redirect through an external IdP — herold is not an IdP itself, only a relying party). On success herold sets a fresh session cookie and redirects back to tabard's URL.
 4. With a valid session, `.well-known/jmap` returns the session descriptor.
-5. Tabard checks the descriptor's `capabilities` and `accountCapabilities` against `../notes/server-contract.md`. Per resolved Q14/Q15, herold ships before tabard implements; capabilities are treated as available, not feature-detected with fallbacks. A missing capability is a deployment configuration error and surfaces in the About settings panel as such.
+5. Tabard checks the descriptor's `capabilities` and `accountCapabilities` against `../notes/server-contract.md`. Herold is treated as a fully-provisioned peer; capabilities are assumed present, not feature-detected with fallbacks. A missing capability is a deployment configuration error and surfaces in the About settings panel as such.
 6. Tabard issues a single batched JMAP call for the initial view: mailboxes, identities, the inbox's first thread page, the inbox state strings, the user's filters list, the user's category configuration.
 7. Tabard opens the EventSource push channel (also `credentials: 'include'`).
 8. The first paint shows the inbox.

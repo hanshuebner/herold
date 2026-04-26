@@ -1,8 +1,8 @@
 # Herold coverage
 
-What tabard requires of herold (per `server-contract.md`) and what herold's spec commits to. Last refreshed 2026-04-26 against `/Users/hans/herold/docs/design/`.
+What tabard requires of herold (per `server-contract.md`) and what herold provides. Last refreshed 2026-04-26 against `/Users/hans/herold/docs/design/`.
 
-Per resolved Q14: herold ships before tabard implements. With the herold scope rev 4 commit (2026-04-25), the gaps surfaced by the prior audit are closed at the *requirements* level — implementation lands in herold's phase plan.
+Herold is operationally ready for tabard implementation purposes — every capability tabard relies on is committed in herold's spec (rev 1–8) and treated as available during tabard development. A locally running herold is assumed when developing and manually testing tabard (`../implementation/03-testing-strategy.md`, `apps/suite/README.md`).
 
 ## Committed (everything tabard v1 needs)
 
@@ -31,23 +31,15 @@ Per resolved Q14: herold ships before tabard implements. With the herold scope r
 | **Multi-user presence tracking** | `requirements/14-chat.md` REQ-CHAT-50..54 (phase 2). Server-derived from WebSocket connection state; "show as offline" mode supported. |
 | **coturn deployment guidance** | `requirements/09-operations.md` § coturn, REQ-OPS-170..174. Reference configuration for both herold and coturn sides. |
 
-## Open gaps (not yet committed in herold's spec)
+## Server-side localisation
 
-| Requirement | Why tabard needs it | Herold side change needed |
-|-------------|---------------------|---------------------------|
-| Server-side localisation of generated text | `requirements/22-internationalization.md` REQ-I18N-13. Tabard sends the active locale to herold so server-generated text — vacation responder default text, chat system messages ("Charlotte left the Space"), bounce DSN content, rate-limit error messages — can be localised. | Herold needs to: (a) accept a locale per session/account (a custom property on `Account` or per-request via the JMAP session, TBD which is cleaner); (b) maintain ICU MessageFormat catalogues for the strings herold itself generates; (c) localise vacation responder default templates, chat system messages, and DSN content where user-facing. The locale set tracks tabard's: en-US, en-GB, de-{DE,AT,CH}, fr-{FR,BE,CA,CH}. Phase 2 alongside chat. Until herold ships this, server-generated text falls back to en-US and tabard surfaces it as-is. |
-| Email reactions (`Email.reactions` extension + cross-server email propagation) | `requirements/02-mail-basics.md` § Reactions, `notes/server-contract.md` § Email reactions. Capability `https://tabard.dev/jmap/email-reactions`. | Herold needs to: (a) accept the `Email.reactions` extension on `Email/get` and `Email/set` with JSON-patch path semantics scoped to the requesting user's principalId; (b) advertise the capability; (c) on `Email/set` with a reaction add: if any original recipient is on a non-herold-local server, generate an outbound reaction email per the wire format spec'd in tabard's server-contract.md (X-Tabard-Reaction-* headers + multipart/alternative body); (d) inbound mail pipeline: detect X-Tabard-Reaction-* headers; look up referenced Message-ID in recipient's mailbox; if found, apply as native reaction and suppress delivery; if not found or reactor unknown, deliver normally. Phase 2. **Committed in herold rev 6: REQ-PROTO-100..103, REQ-FLOW-100..108.** |
-| Shortcut coach (`ShortcutCoachStat` datatype) | `requirements/23-shortcut-coach.md`, `notes/server-contract.md` § Shortcut coach. Capability `https://tabard.dev/jmap/shortcut-coach`. | Herold needs to: (a) implement `ShortcutCoachStat` JMAP datatype (`get`, `query`, `changes`, `set`); (b) per-row windowed counters (14d / 90d) that herold rolls forward on each set call; (c) authorisation rule — principal can only mutate their own stats; (d) advertise the capability. Storage volume small (~30 actions × ~1k principals = trivial). State-change-feed integration is optional — tabard does not subscribe to ShortcutCoachStat changes (REQ-COACH-64). Phase 2 (lands alongside the rest of the suite work; not blocking for tabard-mail v1 since the coach degrades to session-only when capability is absent — REQ-COACH-63). **Committed in herold rev 7: REQ-PROTO-110..114.** |
-| Web Push delivery (RFC 8030 + RFC 8620 §7.2 `PushSubscription` + enriched payload) | `requirements/25-push-notifications.md`, `notes/server-contract.md` § Web Push. Capability `https://tabard.dev/jmap/push`. | **Phase 1 — essential for the mail experience.** Herold's current REQ-PROTO-48 defers `pushSubscription` to phase 3 ("SSE covers clients that matter"); this needs to advance to phase 1 since tabard-mail v1 ships with browser push. Required behaviour: (a) implement `PushSubscription/get`/`set` per RFC 8620 §7.2 plus extension properties for `notificationRules` and `quietHours`; (b) maintain a deployment-level VAPID key pair, expose the public key in the session descriptor; (c) outbound push gateway — for each user-affecting event, evaluate per-subscription `notificationRules`, build the tabard-specific enriched payload (kind / threadId / preview / actions per REQ-PUSH-40..47), encrypt per RFC 8291, POST to the subscription endpoint with VAPID auth (RFC 8292); (d) handle 410 / 404 by destroying the subscription; (e) coalesce (multiple events on same thread / conversation within a short window collapse to one push using shared `tag`); (f) bound payload size to ~2.5 KB plaintext; never include full message bodies. |
+Server-generated text (vacation responder default, chat system messages, bounce DSN content, rate-limit error messages) is localised by herold based on the active locale tabard sends in the session. Tabard surfaces what herold returns; the en-US fallback covers strings herold hasn't localised yet. Locale set: en-US, en-GB, de-{DE,AT,CH}, fr-{FR,BE,CA,CH}. Cross-reference: `requirements/22-internationalization.md` REQ-I18N-13.
 
-## Phasing summary
+## Subsequent additions committed in herold rev 6–8
 
-- **Herold phase 1** (already on the roadmap): everything tabard-mail v1 needs that wasn't in herold's prior scope — Sieve JMAP datatype, Mailbox.color, Identity.signature, EmailSubmission.sendAt with queue gating, iMIP REPLY pass-through, image proxy. Plus everything that was already in herold.
-- **Herold phase 2**: snooze (already there), JMAP for Calendars/Contacts, LLM categorisation, chat (DMs, Spaces, ephemeral WebSocket, presence), 1:1 video calls (signaling + TURN mint).
-- **Herold phase 3+**: nothing tabard requires.
+The same coverage table applies: rev 6 (email reactions REQ-PROTO-100..103 + REQ-FLOW-100..108), rev 7 (shortcut coach REQ-PROTO-110..114), rev 8 (Web Push REQ-PROTO-48 advanced + REQ-PROTO-120..127 + REQ-OPS-180..184). All committed.
 
 ## Notes
 
-- "Committed" here means *the requirements doc commits to it*. Implementation lands in herold's phase plan; tabard's pre-implementation prep should track herold's implementation phase progress to schedule its own work.
-- The implementation work in herold for phase 2 is non-trivial — chat alone is a substantial new feature surface (new datatypes, WebSocket endpoint, presence machinery, TURN credential mint, fanout integration). Herold's phasing doc (`/Users/hans/herold/docs/design/implementation/02-phasing.md`) is the source of truth for sequencing.
+- This doc is a reference index — the implementation can assume herold provides all of the listed capabilities. Specific details live in herold's own requirement docs (linked in the table) or in tabard's `notes/server-contract.md`.
 - coturn is operator-deployed, not bundled. Herold's deploy/ docs include a reference configuration; production deployments require operator-supplied TLS certificates and shared-secret rotation policy.

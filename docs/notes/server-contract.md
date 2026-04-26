@@ -2,7 +2,7 @@
 
 What tabard expects herold to deliver — capabilities, behaviours, and integration points beyond bare RFC 8621 conformance. This file is the single place where "this is herold's job" claims live.
 
-Per resolved Q14/Q15: herold ships before tabard implements, and tabard's spec treats herold capabilities as available. Where herold's current requirements don't yet commit to something tabard requires, the gap is recorded in `herold-coverage.md` so it can be addressed on the herold side.
+Herold is operationally ready for tabard development; tabard treats every capability listed below as available. Coverage status against herold's spec lives in `herold-coverage.md`. For local development, a running herold instance is assumed (`apps/suite/README.md`).
 
 ## Deployment
 

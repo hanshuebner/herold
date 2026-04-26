@@ -38,7 +38,7 @@ Right-to-left scripts (Arabic, Hebrew) are out for v1 — all target locales are
 | REQ-I18N-10 | The active locale is decided in priority order: (1) explicit user choice in settings; (2) the user's `Accept-Language` header sent by the browser, mapped to the closest supported locale; (3) `en-US` fallback. |
 | REQ-I18N-11 | The user's chosen locale persists in `localStorage` per account. A logged-out reload uses Accept-Language until login. |
 | REQ-I18N-12 | Locale switching is live: changing the locale in settings re-renders the UI without reload. |
-| REQ-I18N-13 | The active locale is also sent to herold via the JMAP session (or a custom property on the account) so server-generated text — vacation responder default, system messages in chat (e.g. "Charlotte left the Space"), bounce DSN tabs — can be localised when herold supports it. Herold-side localisation lands on herold's roadmap; tabard surfaces what herold returns and falls back to English for anything herold doesn't localise. |
+| REQ-I18N-13 | The active locale is also sent to herold via the JMAP session (or a custom property on the account) so server-generated text — vacation responder default, system messages in chat ("Charlotte left the Space"), bounce DSN content — is localised. Tabard surfaces herold's localised output verbatim; if a particular string isn't yet localised on the herold side, the en-US fallback is shown. |
 
 ### Date / time / number formatting
 
