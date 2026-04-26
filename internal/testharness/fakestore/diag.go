@@ -3,6 +3,7 @@ package fakestore
 import (
 	"context"
 	"sort"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -240,6 +241,83 @@ func (s *Store) DiagSnapshot() *DiagDump {
 	// we always emit an empty slice to satisfy the TableNames iteration.
 	dd.Tables["ses_seen_messages"] = []any{}
 
+	// email_reactions: fakestore stores reactions in an in-memory map
+	// keyed by (emailID, emoji, principalID). Emit them in deterministic
+	// order for the diag round-trip.
+	if s.reactions != nil {
+		type rkey struct {
+			emailID     store.MessageID
+			emoji       string
+			principalID store.PrincipalID
+		}
+		keys := make([]rkey, 0, len(s.reactions.rows))
+		for k := range s.reactions.rows {
+			keys = append(keys, rkey{k.emailID, k.emoji, k.principalID})
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i].emailID != keys[j].emailID {
+				return keys[i].emailID < keys[j].emailID
+			}
+			if keys[i].emoji != keys[j].emoji {
+				return keys[i].emoji < keys[j].emoji
+			}
+			return keys[i].principalID < keys[j].principalID
+		})
+		for _, k := range keys {
+			dd.Tables["email_reactions"] = append(dd.Tables["email_reactions"],
+				ReactionDiagRow{
+					EmailID:     k.emailID,
+					Emoji:       k.emoji,
+					PrincipalID: k.principalID,
+					CreatedAt:   s.reactions.rows[reactionKey{k.emailID, k.emoji, k.principalID}],
+				})
+		}
+	}
+	if dd.Tables["email_reactions"] == nil {
+		dd.Tables["email_reactions"] = []any{}
+	}
+
+	// coach_events and coach_dismiss: fakestore stores these in the
+	// coachData struct. Emit them sorted for determinism.
+	if s.coach != nil {
+		// Collect all events sorted by ID (already monotone from
+		// nextID).
+		var evs []store.CoachEvent
+		for _, evList := range s.coach.events {
+			evs = append(evs, evList...)
+		}
+		sort.Slice(evs, func(i, j int) bool { return evs[i].ID < evs[j].ID })
+		for _, ev := range evs {
+			dd.Tables["coach_events"] = append(dd.Tables["coach_events"], ev)
+		}
+
+		// Collect all dismiss rows sorted by (principal_id, action).
+		type dkey struct {
+			pid    store.PrincipalID
+			action string
+		}
+		dkeys := make([]dkey, 0, len(s.coach.dismiss))
+		for k := range s.coach.dismiss {
+			dkeys = append(dkeys, dkey{k.Principal, k.Action})
+		}
+		sort.Slice(dkeys, func(i, j int) bool {
+			if dkeys[i].pid != dkeys[j].pid {
+				return dkeys[i].pid < dkeys[j].pid
+			}
+			return dkeys[i].action < dkeys[j].action
+		})
+		for _, dk := range dkeys {
+			dd.Tables["coach_dismiss"] = append(dd.Tables["coach_dismiss"],
+				s.coach.dismiss[coachKey{dk.pid, dk.action}])
+		}
+	}
+	if dd.Tables["coach_events"] == nil {
+		dd.Tables["coach_events"] = []any{}
+	}
+	if dd.Tables["coach_dismiss"] == nil {
+		dd.Tables["coach_dismiss"] = []any{}
+	}
+
 	// Blobs: include refcount=1 for every present blob; the caller's
 	// consumer treats this as the "blob_refs" table input.
 	bhashes := make([]string, 0, len(s.blobSize))
@@ -288,6 +366,16 @@ type BlobRefEntry struct {
 	RefCount int64
 }
 
+// ReactionDiagRow is the fakestore-native representation of one row
+// from the email_reactions table. Exported for the diag adapter in
+// internal/diag/backup which converts between this and EmailReactionRow.
+type ReactionDiagRow struct {
+	EmailID     store.MessageID
+	Emoji       string
+	PrincipalID store.PrincipalID
+	CreatedAt   time.Time
+}
+
 // DiagReset wipes every row from the in-memory store and resets the
 // monotonic counters. Used by the diag/restore ModeReplace path.
 func (s *Store) DiagReset() {
@@ -316,6 +404,8 @@ func (s *Store) DiagReset() {
 	s.ftsDocs = map[store.MessageID]ftsDoc{}
 	s.sieveScripts = map[store.PrincipalID]string{}
 	s.phase2 = nil
+	s.reactions = nil
+	s.coach = nil
 	s.nextPrincipalID = 1
 	s.nextMailboxID = 1
 	s.nextMessageID = 1
@@ -476,6 +566,31 @@ func (s *Store) DiagInsert(table string, row any) error {
 		if ps.ID >= s.phase2.nextPushSubscription {
 			s.phase2.nextPushSubscription = ps.ID + 1
 		}
+	case "email_reactions":
+		rdr := row.(ReactionDiagRow)
+		s.reactionStore().rows[reactionKey{
+			emailID:     rdr.EmailID,
+			emoji:       rdr.Emoji,
+			principalID: rdr.PrincipalID,
+		}] = rdr.CreatedAt
+	case "coach_events":
+		ev := row.(store.CoachEvent)
+		s.ensureCoach()
+		k := coachKey{Principal: ev.PrincipalID, Action: ev.Action}
+		s.coach.events[k] = append(s.coach.events[k], ev)
+		if ev.ID >= s.coach.nextID {
+			s.coach.nextID = ev.ID + 1
+		}
+	case "coach_dismiss":
+		d := row.(store.CoachDismiss)
+		s.ensureCoach()
+		var dup store.CoachDismiss
+		dup = d
+		if d.DismissUntil != nil {
+			t := *d.DismissUntil
+			dup.DismissUntil = &t
+		}
+		s.coach.dismiss[coachKey{Principal: d.PrincipalID, Action: d.Action}] = dup
 	case "blob_refs":
 		b := row.(BlobRefEntry)
 		s.blobSize[b.Hash] = b.Size

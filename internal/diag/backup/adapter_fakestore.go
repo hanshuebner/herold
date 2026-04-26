@@ -152,11 +152,21 @@ func convertFakeToRow(table string, raw any) (any, error) {
 		}, nil
 	case "api_keys":
 		k := raw.(store.APIKey)
+		addrJSON := encodeJSON(k.AllowedFromAddresses)
+		domJSON := encodeJSON(k.AllowedFromDomains)
+		if addrJSON == "null" {
+			addrJSON = "[]"
+		}
+		if domJSON == "null" {
+			domJSON = "[]"
+		}
 		return &APIKeyRow{
 			ID: int64(k.ID), PrincipalID: int64(k.PrincipalID),
 			Hash: k.Hash, Name: k.Name,
 			CreatedAtUs: micros(k.CreatedAt), LastUsedAtUs: micros(k.LastUsedAt),
-			ScopeJSON: k.ScopeJSON,
+			ScopeJSON:                k.ScopeJSON,
+			AllowedFromAddressesJSON: addrJSON,
+			AllowedFromDomainsJSON:   domJSON,
 		}, nil
 	case "aliases":
 		a := raw.(store.Alias)
@@ -333,6 +343,7 @@ func convertFakeToRow(table string, raw any) (any, error) {
 			MailboxState: j.Mailbox, EmailState: j.Email, ThreadState: j.Thread,
 			IdentityState: j.Identity, EmailSubmissionState: j.EmailSubmission,
 			VacationResponseState: j.VacationResponse, UpdatedAtUs: micros(j.UpdatedAt),
+			ShortcutCoachState: j.ShortcutCoach,
 		}, nil
 	case "jmap_email_submissions":
 		e := raw.(store.EmailSubmissionRow)
@@ -391,6 +402,38 @@ func convertFakeToRow(table string, raw any) (any, error) {
 			r.QuietHoursEndLocal = &v
 		}
 		return r, nil
+	case "email_reactions":
+		rdr := raw.(fakestore.ReactionDiagRow)
+		return &EmailReactionRow{
+			EmailID:     int64(rdr.EmailID),
+			Emoji:       rdr.Emoji,
+			PrincipalID: int64(rdr.PrincipalID),
+			CreatedAtUs: micros(rdr.CreatedAt),
+		}, nil
+	case "coach_events":
+		ev := raw.(store.CoachEvent)
+		return &CoachEventRow{
+			ID:          ev.ID,
+			PrincipalID: int64(ev.PrincipalID),
+			Action:      ev.Action,
+			InputMethod: string(ev.Method),
+			EventCount:  int64(ev.Count),
+			OccurredAt:  micros(ev.OccurredAt),
+			RecordedAt:  micros(ev.RecordedAt),
+		}, nil
+	case "coach_dismiss":
+		d := raw.(store.CoachDismiss)
+		r := &CoachDismissRow{
+			PrincipalID:  int64(d.PrincipalID),
+			Action:       d.Action,
+			DismissCount: int64(d.DismissCount),
+			UpdatedAt:    micros(d.UpdatedAt),
+		}
+		if d.DismissUntil != nil {
+			us := d.DismissUntil.UnixMicro()
+			r.DismissUntil = &us
+		}
+		return r, nil
 	case "ses_seen_messages":
 		// The fakestore emits an empty slice for this table; this branch
 		// is only reached during tests that populate a SQLite source and
@@ -436,11 +479,20 @@ func convertRowToFake(table string, row any) (any, error) {
 		}, nil
 	case "api_keys":
 		r := row.(*APIKeyRow)
+		var addrs, domains []string
+		if r.AllowedFromAddressesJSON != "" && r.AllowedFromAddressesJSON != "[]" {
+			_ = decodeJSON(r.AllowedFromAddressesJSON, &addrs)
+		}
+		if r.AllowedFromDomainsJSON != "" && r.AllowedFromDomainsJSON != "[]" {
+			_ = decodeJSON(r.AllowedFromDomainsJSON, &domains)
+		}
 		return store.APIKey{
 			ID: store.APIKeyID(r.ID), PrincipalID: store.PrincipalID(r.PrincipalID),
 			Hash: r.Hash, Name: r.Name,
 			CreatedAt: fromMicros(r.CreatedAtUs), LastUsedAt: fromMicros(r.LastUsedAtUs),
-			ScopeJSON: r.ScopeJSON,
+			ScopeJSON:            r.ScopeJSON,
+			AllowedFromAddresses: addrs,
+			AllowedFromDomains:   domains,
 		}, nil
 	case "aliases":
 		r := row.(*AliasRow)
@@ -633,6 +685,7 @@ func convertRowToFake(table string, row any) (any, error) {
 			Mailbox:     r.MailboxState, Email: r.EmailState, Thread: r.ThreadState,
 			Identity: r.IdentityState, EmailSubmission: r.EmailSubmissionState,
 			VacationResponse: r.VacationResponseState, UpdatedAt: fromMicros(r.UpdatedAtUs),
+			ShortcutCoach: r.ShortcutCoachState,
 		}, nil
 	case "jmap_email_submissions":
 		r := row.(*JMAPEmailSubmissionRow)
@@ -692,6 +745,38 @@ func convertRowToFake(table string, row any) (any, error) {
 			ps.QuietHoursEndLocal = &v
 		}
 		return ps, nil
+	case "email_reactions":
+		r := row.(*EmailReactionRow)
+		return fakestore.ReactionDiagRow{
+			EmailID:     store.MessageID(r.EmailID),
+			Emoji:       r.Emoji,
+			PrincipalID: store.PrincipalID(r.PrincipalID),
+			CreatedAt:   fromMicros(r.CreatedAtUs),
+		}, nil
+	case "coach_events":
+		r := row.(*CoachEventRow)
+		return store.CoachEvent{
+			ID:          r.ID,
+			PrincipalID: store.PrincipalID(r.PrincipalID),
+			Action:      r.Action,
+			Method:      store.CoachInputMethod(r.InputMethod),
+			Count:       int(r.EventCount),
+			OccurredAt:  fromMicros(r.OccurredAt),
+			RecordedAt:  fromMicros(r.RecordedAt),
+		}, nil
+	case "coach_dismiss":
+		r := row.(*CoachDismissRow)
+		d := store.CoachDismiss{
+			PrincipalID:  store.PrincipalID(r.PrincipalID),
+			Action:       r.Action,
+			DismissCount: int(r.DismissCount),
+			UpdatedAt:    fromMicros(r.UpdatedAt),
+		}
+		if r.DismissUntil != nil {
+			t := fromMicros(*r.DismissUntil)
+			d.DismissUntil = &t
+		}
+		return d, nil
 	case "ses_seen_messages":
 		// The fakestore DiagInsert default branch ignores unknown tables,
 		// so we simply return the SESSeenMessageRow and the fakestore

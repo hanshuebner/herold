@@ -41,7 +41,24 @@ const CurrentBackupVersion = 1
 //
 //	REQ-HOOK-SES-01..07). Adds ses_seen_messages table for SES
 //	inbound MessageId replay deduplication (24-hour TTL).
-const CurrentSchemaVersion = 18
+//
+// 19 — 0019_email_reactions.sql (Phase 3 Wave 3.9,
+//
+//	REQ-PROTO-100..103, REQ-FLOW-100..108). Adds email_reactions
+//	table with composite PK (email_id, emoji, principal_id).
+//
+// 20 — 0020_coach.sql (Phase 3 Wave 3.10,
+//
+//	REQ-PROTO-110..112). Adds coach_events and coach_dismiss tables
+//	for ShortcutCoachStat JMAP datatype; adds
+//	jmap_states.shortcut_coach_state column.
+//
+// 21 — 0021_apikey_from_constraints.sql (REQ-SEND-12 / REQ-FLOW-41,
+//
+//	REQ-SEND-30). Column-only migration: adds
+//	api_keys.allowed_from_addresses_json and
+//	api_keys.allowed_from_domains_json (no new tables).
+const CurrentSchemaVersion = 21
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -103,8 +120,17 @@ var TableNames = []string{
 	// migration 0013). FK to principals(id); inserted before the chat
 	// conversation tables which themselves reference principals.
 	"chat_account_settings",
+	// Phase 3 Wave 3.10 ShortcutCoachStat (REQ-PROTO-110..112,
+	// migration 0020). FK to principals(id); coach_dismiss also FKs
+	// principals. Restored after principals are in place.
+	"coach_events",
+	"coach_dismiss",
 	"mailboxes",
 	"messages",
+	// Phase 3 Wave 3.9 email reactions (REQ-PROTO-100..103,
+	// REQ-FLOW-100..108, migration 0019). FK to messages(id); restored
+	// after messages are in place.
+	"email_reactions",
 	"mailbox_acl",
 	"state_changes",
 	"audit_log",

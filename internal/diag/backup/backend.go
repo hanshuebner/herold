@@ -217,6 +217,12 @@ func rowsForTable(table string) (any, bool) {
 		return &PushSubscriptionRow{}, true
 	case "ses_seen_messages":
 		return &SESSeenMessageRow{}, true
+	case "email_reactions":
+		return &EmailReactionRow{}, true
+	case "coach_events":
+		return &CoachEventRow{}, true
+	case "coach_dismiss":
+		return &CoachDismissRow{}, true
 	}
 	return nil, false
 }

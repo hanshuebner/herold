@@ -219,12 +219,14 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 			}, fn)
 	case "api_keys":
 		return enumerate(ctx, s.tx,
-			`SELECT id, principal_id, hash, name, created_at_us, last_used_at_us, scope_json
+			`SELECT id, principal_id, hash, name, created_at_us, last_used_at_us, scope_json,
+			        allowed_from_addresses_json, allowed_from_domains_json
 			   FROM api_keys ORDER BY id`,
 			func(rs *sql.Rows) (any, error) {
 				var r APIKeyRow
 				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.Hash, &r.Name,
-					&r.CreatedAtUs, &r.LastUsedAtUs, &r.ScopeJSON); err != nil {
+					&r.CreatedAtUs, &r.LastUsedAtUs, &r.ScopeJSON,
+					&r.AllowedFromAddressesJSON, &r.AllowedFromDomainsJSON); err != nil {
 					return nil, err
 				}
 				return &r, nil
@@ -516,12 +518,12 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 		return enumerate(ctx, s.tx,
 			`SELECT principal_id, mailbox_state, email_state, thread_state,
 			        identity_state, email_submission_state, vacation_response_state,
-			        updated_at_us FROM jmap_states ORDER BY principal_id`,
+			        updated_at_us, shortcut_coach_state FROM jmap_states ORDER BY principal_id`,
 			func(rs *sql.Rows) (any, error) {
 				var r JMAPStateRow
 				if err := rs.Scan(&r.PrincipalID, &r.MailboxState, &r.EmailState,
 					&r.ThreadState, &r.IdentityState, &r.EmailSubmissionState,
-					&r.VacationResponseState, &r.UpdatedAtUs); err != nil {
+					&r.VacationResponseState, &r.UpdatedAtUs, &r.ShortcutCoachState); err != nil {
 					return nil, err
 				}
 				return &r, nil
@@ -804,6 +806,46 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "email_reactions":
+		return enumerate(ctx, s.tx,
+			`SELECT email_id, emoji, principal_id, created_at_us
+			   FROM email_reactions ORDER BY email_id, emoji, principal_id`,
+			func(rs *sql.Rows) (any, error) {
+				var r EmailReactionRow
+				if err := rs.Scan(&r.EmailID, &r.Emoji, &r.PrincipalID, &r.CreatedAtUs); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
+	case "coach_events":
+		return enumerate(ctx, s.tx,
+			`SELECT id, principal_id, action, input_method, event_count, occurred_at, recorded_at
+			   FROM coach_events ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r CoachEventRow
+				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.Action, &r.InputMethod,
+					&r.EventCount, &r.OccurredAt, &r.RecordedAt); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
+	case "coach_dismiss":
+		return enumerate(ctx, s.tx,
+			`SELECT principal_id, action, dismiss_count, dismiss_until, updated_at
+			   FROM coach_dismiss ORDER BY principal_id, action`,
+			func(rs *sql.Rows) (any, error) {
+				var r CoachDismissRow
+				var dismissUntil sql.NullInt64
+				if err := rs.Scan(&r.PrincipalID, &r.Action, &r.DismissCount,
+					&dismissUntil, &r.UpdatedAt); err != nil {
+					return nil, err
+				}
+				if dismissUntil.Valid {
+					v := dismissUntil.Int64
+					r.DismissUntil = &v
+				}
+				return &r, nil
+			}, fn)
 	case "ses_seen_messages":
 		return enumerate(ctx, s.tx,
 			`SELECT message_id, seen_at_us FROM ses_seen_messages ORDER BY message_id`,
@@ -937,10 +979,20 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			// admin sentinel so the legacy capability is preserved.
 			scope = `["admin"]`
 		}
+		addrJSON := r.AllowedFromAddressesJSON
+		if addrJSON == "" {
+			addrJSON = "[]"
+		}
+		domJSON := r.AllowedFromDomainsJSON
+		if domJSON == "" {
+			domJSON = "[]"
+		}
 		_, err := s.tx.ExecContext(ctx,
-			`INSERT INTO api_keys (id, principal_id, hash, name, created_at_us, last_used_at_us, scope_json)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, r.PrincipalID, r.Hash, r.Name, r.CreatedAtUs, r.LastUsedAtUs, scope)
+			`INSERT INTO api_keys (id, principal_id, hash, name, created_at_us, last_used_at_us,
+			   scope_json, allowed_from_addresses_json, allowed_from_domains_json)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.PrincipalID, r.Hash, r.Name, r.CreatedAtUs, r.LastUsedAtUs,
+			scope, addrJSON, domJSON)
 		return err
 	case "aliases":
 		r := row.(*AliasRow)
@@ -1136,10 +1188,12 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		r := row.(*JMAPStateRow)
 		_, err := s.tx.ExecContext(ctx,
 			`INSERT INTO jmap_states (principal_id, mailbox_state, email_state, thread_state,
-			   identity_state, email_submission_state, vacation_response_state, updated_at_us)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			   identity_state, email_submission_state, vacation_response_state, updated_at_us,
+			   shortcut_coach_state)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.PrincipalID, r.MailboxState, r.EmailState, r.ThreadState,
-			r.IdentityState, r.EmailSubmissionState, r.VacationResponseState, r.UpdatedAtUs)
+			r.IdentityState, r.EmailSubmissionState, r.VacationResponseState, r.UpdatedAtUs,
+			r.ShortcutCoachState)
 		return err
 	case "jmap_email_submissions":
 		r := row.(*JMAPEmailSubmissionRow)
@@ -1331,6 +1385,33 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			   created_at_us, reason)
 			 VALUES (?, ?, ?, ?)`,
 			r.BlockerPrincipalID, r.BlockedPrincipalID, r.CreatedAtUs, reason)
+		return err
+	case "email_reactions":
+		r := row.(*EmailReactionRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO email_reactions (email_id, emoji, principal_id, created_at_us)
+			 VALUES (?, ?, ?, ?)`,
+			r.EmailID, r.Emoji, r.PrincipalID, r.CreatedAtUs)
+		return err
+	case "coach_events":
+		r := row.(*CoachEventRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO coach_events (id, principal_id, action, input_method,
+			   event_count, occurred_at, recorded_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.PrincipalID, r.Action, r.InputMethod,
+			r.EventCount, r.OccurredAt, r.RecordedAt)
+		return err
+	case "coach_dismiss":
+		r := row.(*CoachDismissRow)
+		var dismissUntil any
+		if r.DismissUntil != nil {
+			dismissUntil = *r.DismissUntil
+		}
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO coach_dismiss (principal_id, action, dismiss_count, dismiss_until, updated_at)
+			 VALUES (?, ?, ?, ?, ?)`,
+			r.PrincipalID, r.Action, r.DismissCount, dismissUntil, r.UpdatedAt)
 		return err
 	case "ses_seen_messages":
 		r := row.(*SESSeenMessageRow)

@@ -69,6 +69,12 @@ type APIKeyRow struct {
 	// the operator-set capability so a restored key keeps the same
 	// scope it had at backup time.
 	ScopeJSON string `json:"scope_json,omitempty"`
+	// AllowedFromAddressesJSON and AllowedFromDomainsJSON are the
+	// migration-0021 per-key sender allowlists (REQ-SEND-12 /
+	// REQ-SEND-30). Stored as JSON text arrays. Empty string is
+	// equivalent to '[]' (no constraint).
+	AllowedFromAddressesJSON string `json:"allowed_from_addresses_json,omitempty"`
+	AllowedFromDomainsJSON   string `json:"allowed_from_domains_json,omitempty"`
 }
 
 type AliasRow struct {
@@ -303,6 +309,10 @@ type JMAPStateRow struct {
 	EmailSubmissionState  int64 `json:"email_submission_state"`
 	VacationResponseState int64 `json:"vacation_response_state"`
 	UpdatedAtUs           int64 `json:"updated_at_us"`
+	// ShortcutCoachState is the migration-0020 JMAP state counter for
+	// the ShortcutCoachStat datatype (REQ-PROTO-110..112). Zero for
+	// rows written before migration 0020.
+	ShortcutCoachState int64 `json:"shortcut_coach_state,omitempty"`
 }
 
 type JMAPEmailSubmissionRow struct {
@@ -489,6 +499,41 @@ type ChatBlockRow struct {
 type SESSeenMessageRow struct {
 	MessageID string `json:"message_id"`
 	SeenAtUs  int64  `json:"seen_at_us"`
+}
+
+// EmailReactionRow mirrors the email_reactions table introduced in
+// migration 0019 (Phase 3 Wave 3.9, REQ-PROTO-100..103,
+// REQ-FLOW-100..108). One row per (email, emoji, principal); presence
+// means the reaction exists.
+type EmailReactionRow struct {
+	EmailID     int64  `json:"email_id"`
+	Emoji       string `json:"emoji"`
+	PrincipalID int64  `json:"principal_id"`
+	CreatedAtUs int64  `json:"created_at_us"`
+}
+
+// CoachEventRow mirrors the coach_events table introduced in migration
+// 0020 (Phase 3 Wave 3.10, REQ-PROTO-110..112). One row per invocation
+// batch flushed by tabard.
+type CoachEventRow struct {
+	ID          int64  `json:"id"`
+	PrincipalID int64  `json:"principal_id"`
+	Action      string `json:"action"`
+	InputMethod string `json:"input_method"`
+	EventCount  int64  `json:"event_count"`
+	OccurredAt  int64  `json:"occurred_at"`
+	RecordedAt  int64  `json:"recorded_at"`
+}
+
+// CoachDismissRow mirrors the coach_dismiss table introduced in
+// migration 0020 (Phase 3 Wave 3.10, REQ-PROTO-110..112). Per-principal,
+// per-action dismissal bookkeeping; DismissUntil is nullable.
+type CoachDismissRow struct {
+	PrincipalID  int64  `json:"principal_id"`
+	Action       string `json:"action"`
+	DismissCount int64  `json:"dismiss_count"`
+	DismissUntil *int64 `json:"dismiss_until,omitempty"`
+	UpdatedAt    int64  `json:"updated_at"`
 }
 
 // PushSubscriptionRow mirrors the push_subscription table introduced
