@@ -958,6 +958,10 @@ type JMAPStates struct {
 	// (REQ-PROTO-120 / RFC 8620 §7.2). Bumped on every
 	// PushSubscription/set mutation.
 	PushSubscription int64
+	// ShortcutCoach is the JMAP ShortcutCoachStat state
+	// (REQ-PROTO-110..112). Bumped on every ShortcutCoachStat/set
+	// mutation.
+	ShortcutCoach int64
 	// UpdatedAt is the instant of the most recent increment.
 	UpdatedAt time.Time
 }

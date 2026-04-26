@@ -1022,6 +1022,76 @@ type Metadata interface {
 	// strictly before cutoff.  Intended to be called periodically by
 	// the SES inbound handler.
 	GCOldSESSeen(ctx context.Context, cutoff time.Time) error
+
+	// -- Phase 3 Wave 3.9 Email reactions (REQ-PROTO-100..103) ---------
+
+	// AddEmailReaction inserts a (emailID, emoji, principalID) row at
+	// createdAt. Duplicate inserts (same triple) are silently ignored —
+	// the reaction is already present so the call is a no-op.
+	AddEmailReaction(ctx context.Context, emailID MessageID, emoji string, principalID PrincipalID, createdAt time.Time) error
+
+	// RemoveEmailReaction deletes the (emailID, emoji, principalID) row.
+	// Returns nil when the row is absent (idempotent).
+	RemoveEmailReaction(ctx context.Context, emailID MessageID, emoji string, principalID PrincipalID) error
+
+	// ListEmailReactions returns all reactions on emailID as a two-level
+	// map: emoji → set of reacting principal ids. Returns an empty map
+	// (never nil) when no reactions exist.
+	ListEmailReactions(ctx context.Context, emailID MessageID) (map[string]map[PrincipalID]struct{}, error)
+
+	// BatchListEmailReactions returns reactions for every id in emailIDs.
+	// The outer map key is the MessageID; absent entries mean no reactions.
+	// Used by Email/get to batch-load reactions without N+1 round-trips.
+	BatchListEmailReactions(ctx context.Context, emailIDs []MessageID) (map[MessageID]map[string]map[PrincipalID]struct{}, error)
+
+	// GetMessageByMessageIDHeader looks up a message in the mailbox of
+	// principalID whose cached Envelope.MessageID equals msgIDHeader (the
+	// RFC 5322 Message-ID header value, without angle brackets). Returns
+	// the first matching message, or ErrNotFound. Used by the inbound
+	// reaction handler to locate the original email by its Message-ID.
+	GetMessageByMessageIDHeader(ctx context.Context, principalID PrincipalID, msgIDHeader string) (Message, error)
+
+	// -- Phase 3 Wave 3.10 ShortcutCoachStat (REQ-PROTO-110..112) --------
+
+	// AppendCoachEvents inserts one or more CoachEvent rows for
+	// principalID. Each event records a batch of invocations at
+	// occurredAt. Implementations MUST set RecordedAt to the server
+	// clock; callers supply OccurredAt from the client-reported
+	// timestamp. Non-empty slices are inserted atomically.
+	AppendCoachEvents(ctx context.Context, events []CoachEvent) error
+
+	// GetCoachStat returns the aggregated CoachStat for one
+	// (principalID, action) pair, using now as the reference point for
+	// the 14d / 90d sliding windows. Returns a zero CoachStat (not
+	// ErrNotFound) when no events or dismissal rows exist — the absence
+	// of data is a valid stat with all counters zero.
+	GetCoachStat(ctx context.Context, principalID PrincipalID, action string, now time.Time) (CoachStat, error)
+
+	// ListCoachStats returns CoachStat rows for every action that has
+	// at least one event or a dismissal row for principalID. The result
+	// is sorted by action lexicographically. now is the window reference
+	// point.
+	ListCoachStats(ctx context.Context, principalID PrincipalID, now time.Time) ([]CoachStat, error)
+
+	// UpsertCoachDismiss sets (or updates) the coach_dismiss row for
+	// (principalID, action). dismissCount replaces the stored value;
+	// dismissUntil replaces the stored value (nil clears it).
+	UpsertCoachDismiss(ctx context.Context, d CoachDismiss) error
+
+	// DestroyCoachStat removes all coach_events and the coach_dismiss
+	// row for (principalID, action). Idempotent: no error when the rows
+	// are already absent.
+	DestroyCoachStat(ctx context.Context, principalID PrincipalID, action string) error
+
+	// DestroyAllCoachStats removes every coach_events row and every
+	// coach_dismiss row for principalID. Used by the "Reset coach data"
+	// path (REQ-COACH-72).
+	DestroyAllCoachStats(ctx context.Context, principalID PrincipalID) error
+
+	// GCCoachEvents deletes coach_events rows whose occurred_at is
+	// strictly before cutoff. Intended to be called periodically (90-day
+	// retention window in production). Returns the number of rows deleted.
+	GCCoachEvents(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

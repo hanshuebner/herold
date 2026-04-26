@@ -69,6 +69,14 @@ const (
 	// pushManager.subscribe(). Implemented under
 	// internal/protojmap/push.
 	CapabilityPush CapabilityID = "https://tabard.dev/jmap/push"
+	// CapabilityShortcutCoach is the tabard-specific ShortcutCoachStat
+	// JMAP datatype capability (REQ-PROTO-110..112). Per-principal
+	// storage of keyboard/mouse invocation counts in sliding 14d / 90d
+	// windows, used by tabard's always-on shortcut coach
+	// (tabard/docs/requirements/23-shortcut-coach.md). Capability URI
+	// per tabard's server-contract.md. Implemented under
+	// internal/protojmap/coach.
+	CapabilityShortcutCoach CapabilityID = "https://tabard.dev/jmap/shortcut-coach"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

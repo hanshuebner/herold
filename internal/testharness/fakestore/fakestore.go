@@ -87,11 +87,18 @@ type Store struct {
 	attpolRecipient map[string]store.InboundAttachmentPolicyRow
 	attpolDomain    map[string]store.InboundAttachmentPolicyRow
 
+	// email reactions (REQ-PROTO-100..103); lazily initialised.
+	reactions *reactionsData
+
 	// phase2 holds Phase 2 in-memory tables (queue, DKIM, ACME,
 	// webhooks, DMARC, mailbox ACL, JMAP states, TLS-RPT). Lazily
 	// initialised on first Phase 2 method call so existing tests do
 	// not pay the allocation cost.
 	phase2 *phase2Data
+
+	// coach holds Phase 3 Wave 3.10 ShortcutCoachStat in-memory state.
+	// Lazily initialised on first coach method call.
+	coach *coachData
 
 	// monotonic ID counters
 	nextPrincipalID store.PrincipalID

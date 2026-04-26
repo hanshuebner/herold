@@ -381,6 +381,13 @@ const (
 	// so the iota chain stays contiguous: chat occupies iota+12 ..
 	// iota+14, push the next slot.
 	JMAPStateKindPushSubscription
+	// JMAPStateKindShortcutCoach tracks JMAP ShortcutCoachStat changes
+	// (REQ-PROTO-110..112). Bumped on every successful
+	// ShortcutCoachStat/set mutation. Per REQ-PROTO-113, state-change
+	// feed rows are optional for coach mutations; the state counter is
+	// still advanced so clients can detect their own writes via the
+	// standard /changes pattern.
+	JMAPStateKindShortcutCoach
 )
 
 // Chat-side server-enforced caps. CHECK constraints in SQL would
