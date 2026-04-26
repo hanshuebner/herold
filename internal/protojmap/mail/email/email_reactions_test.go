@@ -80,8 +80,8 @@ func TestEmail_Reactions_GetEmpty(t *testing.T) {
 		"no reactions", "a@example.test", "b@example.test", nil, "")
 
 	_, raw := f.invoke(t, "Email/get", map[string]any{
-		"accountId": protojmap.AccountIDForPrincipal(f.pid),
-		"ids":       []string{fmt.Sprintf("%d", m.ID)},
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{fmt.Sprintf("%d", m.ID)},
 		"properties": []string{"id", "reactions"},
 	})
 	var resp struct {

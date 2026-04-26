@@ -31,12 +31,12 @@ import (
 // reactionFixture sets up a complete SMTP server with one local principal
 // "alice@example.test" who has an INBOX with one pre-existing message.
 type reactionFixture struct {
-	ha      *testharness.Server
-	srv     *protosmtp.Server
-	pid     store.PrincipalID
-	msgID   store.MessageID
-	origID  string // Message-ID header without angle brackets
-	inbox   store.Mailbox
+	ha       *testharness.Server
+	srv      *protosmtp.Server
+	pid      store.PrincipalID
+	msgID    store.MessageID
+	origID   string // Message-ID header without angle brackets
+	inbox    store.Mailbox
 	spamPlug *fakeplugin.FakePlugin
 }
 
