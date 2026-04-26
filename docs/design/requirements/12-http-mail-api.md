@@ -109,7 +109,7 @@ Fires when mail is delivered to a watched target. Target = (address | domain | p
 }
 ```
 
-- **REQ-HOOK-02** `target.kind` ∈ {`address`, `domain`, `principal`}. Multiple hooks per target allowed.
+- **REQ-HOOK-02** `target.kind` ∈ {`address`, `domain`, `principal`, `synthetic`}. Multiple hooks per target allowed. The `synthetic` kind matches synthetic-recipient deliveries — messages accepted by `directory.resolve_rcpt` with no `principal_id` (REQ-DIR-RCPT-07); `target.value` is the domain whose synthetic recipients the hook subscribes to.
 - **REQ-HOOK-03** `body_mode` ∈ {`inline`, `url`}. `inline` embeds the message body in the POST (up to configurable size, default 1 MB). `url` provides a **signed fetch URL** valid for 24h that the receiver calls to retrieve the raw RFC 5322 body.
 - **REQ-HOOK-04** `filter` narrows deliveries: by spam verdict, by subject regex (bounded), by header match, by attachment presence.
 - **REQ-HOOK-05** `secret` used to HMAC-sign each delivery (`X-Herold-Signature: t=<ts>,v1=<hmac-sha256>`) so the receiver can verify authenticity.
@@ -167,6 +167,14 @@ Same as above, but `body` replaced with:
 - **REQ-HOOK-30** Signed fetch URL embeds `{message_id, exp, scope, hmac(secret, ...)}` — opaque to the receiver, validated on fetch.
 - **REQ-HOOK-31** Fetch URL returns the raw `message/rfc822` body (the full original message). Receiver parses MIME themselves.
 
+### Payload (extracted body mode)
+
+For application intakes that consume only the textual content of inbound mail and never want to parse MIME or render HTML, the `extracted` body mode delivers pre-extracted, server-rendered plain text in the JSON payload regardless of message size. The 1 MB total-payload cap of REQ-HOOK-20 (which switches `inline` mode to a raw-rfc822 fetch URL once exceeded) does not apply here: the cap moves to the extracted text length, not the total message size, and attachments live behind fetch URLs without forcing the body itself out of the payload.
+
+- **REQ-HOOK-EXTRACTED-01** `body_mode = "extracted"` on a webhook subscription causes the server to ALWAYS deliver pre-extracted text in the JSON payload, regardless of total message size. The text body is capped at `extracted_text_max_bytes` (default 5 MB, configurable per subscription up to 32 MB); when the cap is hit the payload includes `body.text_truncated: true` and the full body remains accessible via the raw-rfc822 fetch URL for receivers that want it. Attachments are NEVER inlined in this mode (REQ-HOOK-21 still applies); each attachment is referenced by `fetch_url`. The total JSON payload is bounded by `extracted_text_max_bytes` plus a small header / metadata overhead, not by REQ-HOOK-20.
+- **REQ-HOOK-EXTRACTED-02** When the source message has no `text/plain` part, `body.text` in the webhook payload is populated with a server-side HTML-to-plain-text rendering of the `text/html` part, produced by the same extractor the FTS pipeline uses for indexing. A new field `body.text_origin` ∈ `{native, derived_from_html, none}` lets the application distinguish: `native` means the message carried `text/plain` and that text was returned verbatim; `derived_from_html` means the server rendered the HTML part and the result carries no formatting commitments beyond "readable plain text, links preserved as `text (url)`"; `none` means neither a `text/plain` part nor a renderable `text/html` part was present (for example a message whose only body part is `application/pdf`). `body.text_origin` is REQUIRED in `extracted` mode and OPTIONAL in `inline` / `url` modes.
+- **REQ-HOOK-EXTRACTED-03** `text_required = true` on a webhook subscription causes the server to drop (and not retry) messages where `body.text_origin == "none"` after extraction. The drop is recorded as `outcome = "dropped_no_text"` in `herold_hook_deliveries_total{name,status}` (REQ-HOOK-40) and as a distinct entry in `herold admin hook log` (REQ-HOOK-42). The audit log (REQ-ADM-300) records the drop. This is operator opt-in only — silently dropping mail is the kind of behavior the audit log needs to make obvious.
+
 ### Observability
 
 - **REQ-HOOK-40** Per-hook metrics: `herold_hook_deliveries_total{name,status}`, `herold_hook_latency_seconds`, `herold_hook_retries_total`, `herold_hook_in_flight`.
@@ -177,6 +185,10 @@ Same as above, but `body` replaced with:
 
 - **REQ-HOOK-50** Webhooks fire for messages **after** Sieve runs. Messages discarded by Sieve don't fire webhooks. Messages redirected still fire against the original recipient.
 - **REQ-HOOK-51** Webhooks don't see headers added by Sieve `addheader` — hooks run against the final delivered state.
+
+### Application integration recipes
+
+- **REQ-DOC-TXTAPP-01** A user-facing recipe document `docs/user/examples/text-only-app-integration.md` MUST exist alongside the smart-host recipe (`docs/user/examples/system.toml.smarthost`, which also carries the SES inbound recipe per REQ-HOOK-SES-01) and MUST cover the end-to-end shape of integrating a server-side application that uses Herold purely as a transactional mail substrate — sending through the HTTP send API and receiving through inbound webhooks with no MIME or HTML processing on the application side. The recipe MUST include, as a minimum: (a) sending-side configuration (API key with `mail.send` scope and `allowed_from_domains` constraint, optional smart-host pass-through for deliverability per REQ-FLOW-SMARTHOST-*); (b) inbound side — declaring a `directory.resolve_rcpt` plugin in `system.toml` (REQ-DIR-RCPT-01..04) with a worked example of an HTTP validator the operator's application implements, including the `accept` / `reject` / `defer` / `fallthrough` decision shape and the `route_tag` correlation pattern; (c) `inbound_attachment_policy = reject_at_data` per recipient domain (REQ-FLOW-ATTPOL-01) with the resulting 5.3.4 SMTP reply quoted; (d) a webhook subscription with `target.kind = "synthetic"` (REQ-HOOK-02), `body_mode = "extracted"` and `text_required = true` (REQ-HOOK-EXTRACTED-01..03), with a sample JSON payload showing `body.text_origin` values; and (e) the audit log lines and metric series an operator should see when each piece is working. The recipe MUST be runnable end-to-end by an operator on a fresh install without further reading of the design docs.
 
 ## Part C: Inbound image proxy
 

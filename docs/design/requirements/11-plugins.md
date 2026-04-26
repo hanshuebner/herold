@@ -50,8 +50,17 @@ Methods:
 - `directory.lookup(email) → {principal|null}`
 - `directory.authenticate(credential) → {principal_id|null, reason?}`
 - `directory.list_aliases(email) → [alias]`
+- `directory.resolve_rcpt(envelope, recipient, context) → {action, reason?, code?, principal_id?, route_tag?}` — RCPT-time recipient validation, see REQ-DIR-RCPT-*. Optional method; the manifest must declare `supports: ["resolve_rcpt"]` for the server to invoke it.
 
 Called alongside or instead of built-in directory (plugin participation in the lookup chain is configured per REQ-AUTH-13 style ordering).
+
+The `resolve_rcpt` method exists for application-driven inbound where addresses are dynamic (e.g. `reply+ticket-12345@app.example.com`) and cannot be pre-provisioned as principals. The plugin returns one of:
+- `accept` — the address is valid; the SMTP RCPT phase replies 250 and DATA proceeds. `principal_id` MAY be supplied to bind the message to an existing mailbox; if absent, the recipient is **synthetic** — the message is dispatched only to inbound webhooks (REQ-HOOK-02 `kind: "synthetic"`) and to `delivery.post`, never stored in a mailbox.
+- `reject` — the SMTP RCPT phase replies 5xx; default code 5.1.1, override allowed within the 5.x.x family, `reason` becomes the SMTP text.
+- `defer` — the SMTP RCPT phase replies 4xx; default code 4.5.1.
+- `fallthrough` — plugin declines; the server falls back to internal-directory and catch-all rules (REQ-FLOW-10).
+
+`route_tag` is opaque, echoed into the inbound webhook payload and the `delivery.post` event, so the application can correlate the RCPT decision with the eventual message body.
 
 ### Delivery hooks
 
@@ -114,7 +123,7 @@ Every plugin ships with a manifest (JSON, served via `manifest` JSON-RPC call at
 
 - **REQ-PLUG-30** JSON-RPC 2.0 over newline-delimited JSON on stdin/stdout. One message per line.
 - **REQ-PLUG-31** Server-to-plugin methods listed per type above. Plugin-to-server: `log` (emit a log line into server's stream), `metric` (emit a metric), `notify` (raise an event).
-- **REQ-PLUG-32** Timeouts: per-method defaults (DNS: 30s, spam: 5s, directory: 2s, delivery-hook pre: 2s, post: 10s), configurable per-plugin.
+- **REQ-PLUG-32** Timeouts: per-method defaults (DNS: 30s, spam: 5s, directory: 2s, `directory.resolve_rcpt`: 2s with a hard cap of 5s — the SMTP RCPT phase cannot wait longer, delivery-hook pre: 2s, post: 10s), configurable per-plugin.
 - **REQ-PLUG-33** Request cancellation: server sends `cancel` for the given request id; plugin SHOULD stop work and respond with a `cancelled` error.
 - **REQ-PLUG-34** Concurrent requests to one long-running plugin: allowed. Plugin indicates max concurrency in manifest (`max_concurrent_requests`). Server queues beyond.
 
@@ -144,6 +153,28 @@ Every plugin ships with a manifest (JSON, served via `manifest` JSON-RPC call at
 - **REQ-PLUG-70** The plugin ABI (method set, JSON-RPC schema per type) is stable across minor versions of Herold. Breaking changes bump a major ABI version; old plugins continue to work until deprecation period ends.
 - **REQ-PLUG-71** Between ABI versions, both versions supported for at least one major Herold release cycle.
 - **REQ-PLUG-72** Deprecation notices surfaced in `herold admin plugin list` when a loaded plugin uses a deprecated ABI.
+
+### RCPT-time directory validation (REQ-DIR-RCPT-*)
+
+Application-driven inbound mail (ticket systems, transactional reply intake, per-request reply-by-email correlation) routinely uses dynamic addresses that cannot be pre-provisioned as principals. The `directory.resolve_rcpt` method (above) lets a directory plugin own a whole subdomain of the address space and answer per-RCPT TO whether the address is valid, without polluting the principal model and without forcing the application to accept-then-bounce.
+
+- **REQ-DIR-RCPT-01** A directory plugin MAY implement `directory.resolve_rcpt`. The server discovers support via the plugin manifest (`supports: ["resolve_rcpt"]`); a plugin without it is treated as `fallthrough` for every RCPT. The method coexists with the existing `directory.lookup` / `directory.authenticate` / `directory.list_aliases` methods.
+- **REQ-DIR-RCPT-02** When `[smtp.inbound]` declares `directory_resolve_rcpt_plugin = "<name>"`, the inbound SMTP state machine (REQ-FLOW-10) MUST call the plugin **at RCPT TO time**, before the 250 / 4xx / 5xx reply, with the envelope and recipient. The plugin response governs the SMTP reply for that RCPT only; multi-recipient sessions invoke the plugin once per RCPT (no batching in v1).
+- **REQ-DIR-RCPT-03** Resolution order at RCPT TO is:
+  1. Internal directory exact match. If found → `accept` and the plugin is not called.
+  2. Plugin (if configured). `accept` / `reject` / `defer` short-circuits.
+  3. Plugin returns `fallthrough` (or no plugin configured) → catch-all (REQ-FLOW-10).
+  4. No catch-all → 5.1.1.
+  Operators MAY invert (1) and (2) per address pattern via `[smtp.inbound.plugin_first_for_domains = ["app.example.com"]]` so the plugin owns whole subdomains without per-address provisioning friction.
+- **REQ-DIR-RCPT-04** Plugin call timeout is the `directory.resolve_rcpt` value of REQ-PLUG-32 (default 2s, hard cap 5s). Timeout, plugin crash, plugin `disabled` state (REQ-PLUG-05), or transport error MUST be treated as `defer` with 4.4.3 (`directory unreachable`) — NEVER as `accept`. Fail-closed is the security invariant: an outage of the application's validation service must not turn the substrate into an open relay for synthetic addresses.
+- **REQ-DIR-RCPT-05** A circuit breaker MUST be applied per plugin: when error / timeout rate exceeds the configured threshold within a sliding window (default 50% over 30s with at least 20 calls), the server switches to `defer` for all subsequent RCPTs without invoking the plugin until the breaker recovers (default 60s half-open probe). State is observable as `herold_directory_plugin_breaker_state{plugin}`.
+- **REQ-DIR-RCPT-06** Per-listener and per-source-IP rate limit on plugin invocations (default 50/sec/source-IP, configurable). Excess RCPTs receive 4.7.1 `try again later`. Prevents a flood of synthetic RCPTs from being amplified into a flood of HTTP calls to the application.
+- **REQ-DIR-RCPT-07** An `accept` response with no `principal_id` declares the recipient **synthetic**: the message bypasses mailbox storage entirely and is dispatched only to (a) inbound webhooks whose `target` matches by domain or by an explicit `kind: "synthetic"` (REQ-HOOK-02), and (b) `delivery.post` plugins. Synthetic recipients still pass through SPF/DKIM/DMARC verification (REQ-FLOW-20..21) and the global Sieve script; they skip per-recipient Sieve (no recipient mailbox to act on), spam classification (operator may opt in via `[smtp.inbound.spam_for_synthetic = true]`), and quota accounting. The blob is reference-counted by the webhook delivery record and garbage-collected when no hook subscription remains.
+- **REQ-DIR-RCPT-08** `accept` with `principal_id` MUST resolve to an existing principal; an unknown id is logged and downgraded to `defer 4.3.0`. The plugin MAY use this to route every dynamic address into a single shared service-account mailbox (a transactional intake account), in which case the message lands in IMAP/JMAP and is also visible to webhooks subscribed to that principal.
+- **REQ-DIR-RCPT-09** The audit log (REQ-ADM-300) MUST record every plugin RCPT decision: timestamp, remote IP, recipient, action, code, plugin name, latency, and `route_tag` if returned. The connection-level SMTP log line includes `rcpt_decision_source = "internal" | "plugin:<name>" | "catchall"` for fast triage.
+- **REQ-DIR-RCPT-10** Metrics (extending REQ-PLUG-50 and REQ-OPS-91): `herold_directory_resolve_rcpt_total{plugin,action}`, `herold_directory_resolve_rcpt_latency_seconds{plugin}` (histogram), `herold_directory_resolve_rcpt_timeouts_total{plugin}`, `herold_directory_synthetic_accepted_total{plugin}`, `herold_directory_plugin_breaker_state{plugin}` (gauge: 0=closed, 1=half-open, 2=open).
+- **REQ-DIR-RCPT-11** `herold admin plugin test <name>` (REQ-PLUG-53) for a directory plugin MUST exercise `resolve_rcpt` with a canned envelope and an operator-supplied test recipient, printing the action, code, `route_tag`, and round-trip latency.
+- **REQ-DIR-RCPT-12** `directory.resolve_rcpt` is an inbound-only hook. Outbound `MAIL FROM` policing remains REQ-FLOW-41 / REQ-SEND-12 (principal `allowed_from_*` lists). Submission-listener RCPT TO is **not** routed through the plugin — to do so would let one tenant's plugin observe another tenant's outbound recipients.
 
 ## Out of scope (v1)
 

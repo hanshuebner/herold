@@ -34,7 +34,7 @@ For each local recipient:
 2. **Defer** (4xx): temporary failure (storage error, directory unreachable, greylist match).
 3. **Accept**: proceeds to the filter pipeline.
 
-- **REQ-FLOW-10** Unknown recipients MUST be rejected at RCPT time (5.1.1) unless a catch-all exists.
+- **REQ-FLOW-10** Unknown recipients MUST be rejected at RCPT time (5.1.1) unless a catch-all exists. If a directory-resolve-rcpt plugin is configured (REQ-DIR-RCPT-01..04), unknown recipients are first offered to the plugin; the plugin's response governs the SMTP reply for that RCPT, and only `fallthrough` falls back to catch-all.
 - **REQ-FLOW-11** Over-quota behavior: if principal `quota_policy=reject`, return 5.2.2. If `quota_policy=defer`, return 4.2.2 (default). No silent drop.
 - **REQ-FLOW-12** Disabled principal (admin-set flag): 5.2.1 "mailbox disabled".
 - **REQ-FLOW-13** Greylisting (if enabled): 4.5.1 on first-seen triplet (IP/24, MAIL FROM, RCPT), accept after configurable delay (default 5 min) on retry.
@@ -54,6 +54,15 @@ Runs once the message is accepted in principle but before it's written to the re
 - **REQ-FLOW-21** The `Authentication-Results` header MUST use the authserv-id from config (per RFC 8601).
 - **REQ-FLOW-22** A fatal Sieve error (parse error mid-script, runtime error) on the *user* script MUST NOT lose the message — fall back to "keep to Inbox" and log the error to the admin audit log.
 - **REQ-FLOW-23** A fatal Sieve error on the *global* script MUST defer the message (4.x.x) — operator must see and fix.
+
+### Inbound content policy
+
+Some recipients (notably application intakes consuming inbound mail through webhooks for ticketing, transactional reply parsing, or notification correlation) want to refuse messages with attachments outright, before mailbox storage and before any DSN amplification. Sieve `reject` runs post-acceptance and produces a bounce; for application intakes the cheaper, more honest answer is a 5xx in the SMTP DATA phase so the sending MTA never queues the message and generates its own bounce. The hook point already exists — REQ-FLOW-02 mandates header parsing before 250 OK — and this section adds a built-in policy surface so operators do not have to write a `delivery.pre` plugin for the common case.
+
+- **REQ-FLOW-ATTPOL-01** Per-recipient (with per-domain inheritance) inbound policy field `inbound_attachment_policy` ∈ `{accept, reject_at_data}` in application config; default `accept`. When set to `reject_at_data`, the inbound state machine inspects the parsed top-level MIME structure after DATA and before 250 OK; the message is refused with `552 5.3.4 attachments not accepted on this address` (operator-overridable text within the 5.x.x family) when ANY of the following holds: the top-level Content-Type is `multipart/mixed`, any direct child part declares `Content-Disposition: attachment`, or any part has a non-`text/*`, non-`multipart/*` Content-Type. Synthetic recipients (REQ-DIR-RCPT-07) inherit the policy from the matched webhook target's configured domain. Header-only inspection — no full-body MIME walk before 250 OK; nested multiparts that hide an attachment under `multipart/alternative` are caught by the post-acceptance fallback below.
+- **REQ-FLOW-ATTPOL-02** As a defense-in-depth fallback, when `inbound_attachment_policy = reject_at_data` is set on a recipient, the post-acceptance content scanner (the same MIME walker the FTS pipeline uses) walks the full body after acceptance; if it finds an attachment that the header-only check missed, it generates a bounce DSN to the sender with the same 5.3.4 reason and discards the message rather than delivering it. The audit log (REQ-ADM-300) records `attpol_outcome = "refused_at_data" | "refused_post_acceptance" | "passed"` for every message against a `reject_at_data` recipient. Metrics: `herold_inbound_attachment_policy_total{recipient_domain, outcome}` (extends REQ-OPS-91).
+
+`strip_then_deliver` (server-side MIME surgery to remove attachment parts and resign) is deliberately out of scope for v1 — it would require re-DKIM-signing on inbound, which is a much larger surface than the plain `accept` / `reject_at_data` toggle this REQ adds.
 
 ### Fan-out
 
