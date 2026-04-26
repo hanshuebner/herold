@@ -35,9 +35,14 @@ import (
 	"github.com/hanshuebner/herold/internal/protochat"
 	"github.com/hanshuebner/herold/internal/protoimap"
 	"github.com/hanshuebner/herold/internal/protoimg"
+	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/protojmap/calendars/imip"
+	"github.com/hanshuebner/herold/internal/protojmap/mail/emailsubmission"
+	jmapidentity "github.com/hanshuebner/herold/internal/protojmap/mail/identity"
+	"github.com/hanshuebner/herold/internal/protosend"
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/protoui"
+	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/sieve"
 	"github.com/hanshuebner/herold/internal/snooze"
 	"github.com/hanshuebner/herold/internal/spam"
@@ -261,6 +266,25 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	)
 	defer imapServer.Close()
 
+	// Outbound queue construction (Phase 3 Wave 3.1.5). The queue
+	// owns its scheduler / worker pool and is registered against the
+	// lifecycle errgroup below so SIGTERM drains in-flight deliveries.
+	// composeAdminAndUI receives the handle so JMAP EmailSubmission/set
+	// and the HTTP send API enqueue through the same instance.
+	//
+	// TODO(3.1.5-coord): autodns.Reporter (TLS-RPT mailto emission
+	// path) is not constructed in production today; when the reporter
+	// is wired, pass outboundQ via ReporterOptions.Queue and start
+	// RunDailyEmission on the lifecycle errgroup. Tracked in the
+	// queue-delivery-implementor backlog; defer because constructing
+	// the reporter also needs a RuaResolver, an HTTPDoer, and a
+	// sysconfig knob for the operator's reporter contact / domain
+	// — all out of scope for the wiring-only Wave 3.1.5.
+	outboundQ, err := buildOutboundQueue(cfg, st, resolver, logger, clk)
+	if err != nil {
+		return fmt.Errorf("admin: outbound queue: %w", err)
+	}
+
 	// Admin HTTP handler: the real protoadmin server. Options defaults
 	// are applied inside NewServer; we pass only subsystem-level fields.
 	health := observe.NewHealth()
@@ -284,7 +308,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// constructor. The two handlers are otherwise independent —
 	// session cookies (UI) and Bearer keys (REST) live in disjoint
 	// header/cookie namespaces, and the URL prefixes do not overlap.
-	adminHandler, suiteSrvs, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, adminServer.Handler())
+	adminHandler, suiteSrvs, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler())
 	if err != nil {
 		return err
 	}
@@ -294,6 +318,9 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		// shutdown below is the primary drain.
 		if suiteSrvs.callSrv != nil {
 			_ = suiteSrvs.callSrv.Close()
+		}
+		if suiteSrvs.sendSrv != nil {
+			_ = suiteSrvs.sendSrv.Close()
 		}
 	}()
 
@@ -322,6 +349,13 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		g.Go(func() error {
 			<-gctx.Done()
 			return callSrv.Close()
+		})
+	}
+	if suiteSrvs.sendSrv != nil {
+		sendSrv := suiteSrvs.sendSrv
+		g.Go(func() error {
+			<-gctx.Done()
+			return sendSrv.Close()
 		})
 	}
 	if suiteSrvs.chatSrv != nil {
@@ -356,6 +390,20 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	g.Go(func() error {
 		if err := ftsWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.LogAttrs(context.Background(), slog.LevelWarn, "fts worker exited", slog.String("err", err.Error()))
+			return err
+		}
+		return nil
+	})
+
+	// Outbound queue scheduler goroutine (Phase 3 Wave 3.1.5). The
+	// queue.Run loop blocks until gctx cancels; ShutdownGrace bounds
+	// the drain inside Run itself. STANDARDS §5: registered on the
+	// lifecycle errgroup so SIGTERM waits for in-flight deliveries.
+	queueLogger := logger.With("subsystem", "queue")
+	g.Go(func() error {
+		if err := outboundQ.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+			queueLogger.LogAttrs(context.Background(), slog.LevelWarn, "queue run exited",
+				slog.String("err", err.Error()))
 			return err
 		}
 		return nil
@@ -909,6 +957,7 @@ func parseSlogLevel(s string) slog.Level {
 type suiteServers struct {
 	callSrv *protocall.Server
 	chatSrv *protochat.Server
+	sendSrv *protosend.Server
 }
 
 // composeAdminAndUI returns an http.Handler that routes /api/v1/...
@@ -938,6 +987,8 @@ func composeAdminAndUI(
 	clk clock.Clock,
 	logger *slog.Logger,
 	ftsIndex *storefts.Index,
+	tlsStore *heroldtls.Store,
+	outboundQ *queue.Queue,
 	adminHandler http.Handler,
 ) (http.Handler, suiteServers, error) {
 	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
@@ -1093,6 +1144,49 @@ func composeAdminAndUI(
 		}
 		srvs.callSrv = callSrv
 	}
+
+	// JMAP Core (RFC 8620) + Mail / Identity / EmailSubmission
+	// (RFC 8621). Phase 3 Wave 3.1.5 wires the production JMAP
+	// server alongside the existing protoadmin / protoui / protocall
+	// surfaces; the parallel test harness (internal/testharness)
+	// mounts the same protojmap.Server via AttachJMAP. The handler is
+	// mounted on /jmap and /.well-known/jmap, which do not overlap
+	// with /api/v1 or /ui. EmailSubmission/set submits to the
+	// production outbound queue handle (outboundQ).
+	jmapSrv := protojmap.NewServer(st, dir, tlsStore, logger.With("subsystem", "jmap"), clk, protojmap.Options{})
+	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk),
+		logger.With("subsystem", "jmap-emailsubmission"), clk)
+	jmapHandler := jmapSrv.Handler()
+	parent.Handle("/.well-known/jmap",
+		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.session", jmapHandler))
+	parent.Handle("/jmap",
+		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.api", jmapHandler))
+	parent.Handle("/jmap/",
+		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.api", jmapHandler))
+
+	// HTTP send API (REQ-SEND-*). Phase 3 Wave 3.1.5 mounts the
+	// protosend.Server's /api/v1/mail/* routes on the parent mux.
+	// Go's ServeMux longest-prefix wins so the more specific
+	// "/api/v1/mail/" registration overrides the "/api/v1/" catch-all
+	// claimed by adminHandler. Auth is via the protoadmin-shape
+	// Bearer API key (hk_<...>); the suite session cookie is not
+	// honoured here today — operators issue an API key for non-browser
+	// SDK callers (REQ-SEND-22). When a browser-cookie path lands
+	// (REQ-SEND-26), wire it through Options.APIKeyLookup.
+	sendSrv := protosend.NewServer(
+		st,
+		dir,
+		outboundQ,
+		tlsStore,
+		logger.With("subsystem", "protosend"),
+		clk,
+		protosend.Options{
+			Hostname: cfg.Server.Hostname,
+		},
+	)
+	parent.Handle("/api/v1/mail/",
+		withPanicRecover(logger.With("subsystem", "protosend"), "mail.send", sendSrv.Handler()))
+	srvs.sendSrv = sendSrv
 
 	// Bare `/` and unknown roots: send a browser hitting the admin
 	// host directly to the UI login. API consumers never request `/`,
