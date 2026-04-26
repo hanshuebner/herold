@@ -423,23 +423,30 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 
 	// Webhook dispatcher (Phase 3 Wave 3.5c-Z + Track A/C). Constructs
 	// a process-local signing key for fetch URLs; persistent rotation
-	// is a future-wave operator knob. The dispatcher's change-feed Run
-	// loop and the synthetic-recipient direct-dispatch path share the
-	// same instance; both are bounded by the lifecycle errgroup gctx
-	// below.
-	hookSigningKey := make([]byte, 32)
-	if _, krErr := rand.Read(hookSigningKey); krErr != nil {
-		return fmt.Errorf("admin: webhook signing key: %w", krErr)
+	// is persisted across restarts so signed fetch URLs remain valid
+	// (REQ-HOOK-30..31). The dispatcher's change-feed Run loop and the
+	// synthetic-recipient direct-dispatch path share the same instance;
+	// both are bounded by the lifecycle errgroup gctx below.
+	hookSigningKey, err := loadOrGenerateWebhookSigningKey(
+		filepath.Join(cfg.Server.DataDir, "secrets", "webhook", "sign.key"),
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("admin: webhook signing key: %w", err)
+	}
+	// Build the public base URL for fetch URLs (REQ-HOOK-30..31).
+	// The fetch handler is mounted on the public listener; the URL
+	// must match the externally-reachable address of that listener.
+	publicBaseURL := cfg.Server.PublicBaseURL
+	if publicBaseURL == "" {
+		publicBaseURL = "https://" + cfg.Server.Hostname
 	}
 	webhookDispatcher := protowebhook.New(protowebhook.Options{
 		Store:           st,
 		Logger:          logger.With("subsystem", "protowebhook"),
 		Clock:           clk,
-		FetchURLBaseURL: "", // empty = inline-only deliveries; operators wire the admin URL when
-		// the FetchHandler mounting lands. Until then extracted-mode + fetch_url-mode
-		// subscriptions emit a build-payload error and the dispatcher logs at warn;
-		// inline-mode subscriptions still POST.
-		SigningKey: hookSigningKey,
+		FetchURLBaseURL: publicBaseURL,
+		SigningKey:      hookSigningKey,
 	})
 	smtpServer.SetWebhookDispatcher(syntheticDispatcherAdapter{d: webhookDispatcher})
 
@@ -467,7 +474,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// constructor. The two handlers are otherwise independent —
 	// session cookies (UI) and Bearer keys (REST) live in disjoint
 	// header/cookie namespaces, and the URL prefixes do not overlap.
-	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer)
+	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey)
 	if err != nil {
 		return err
 	}
@@ -1377,6 +1384,7 @@ func composeAdminAndUI(
 	outboundQ *queue.Queue,
 	adminHandler http.Handler,
 	smtpSrv *protosmtp.Server,
+	webhookSigningKey []byte,
 ) (composedHandlers, error) {
 	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
 	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
@@ -1688,6 +1696,21 @@ func composeAdminAndUI(
 		withPanicRecover(logger.With("subsystem", "protosend"), "mail.send", sendSrv.Handler()))
 	bundle.srvs.sendSrv = sendSrv
 
+	// Webhook fetch handler (REQ-HOOK-30..31). Mounted on the public
+	// listener so external webhook receivers can GET signed blob URLs
+	// delivered in webhook payloads. The signing key MUST match the
+	// Dispatcher's SigningKey so token verification succeeds.
+	// protowebhook.FetchPath = "/webhook-fetch/".
+	fetchSrv := protowebhook.NewFetchServer(protowebhook.FetchOptions{
+		Store:      st,
+		Logger:     logger.With("subsystem", "protowebhook-fetch"),
+		Clock:      clk,
+		SigningKey: webhookSigningKey,
+	})
+	publicMux.Handle(protowebhook.FetchPath,
+		withPanicRecover(logger.With("subsystem", "protowebhook-fetch"),
+			"webhook.fetch", fetchSrv.FetchHandler()))
+
 	// SES inbound webhook (REQ-HOOK-SES-01..07). Mounted on the public
 	// listener only when [hooks.ses_inbound.enabled] is true.
 	// sysconfig.Validate guarantees all required fields are set and
@@ -1941,6 +1964,52 @@ func updateCertExpiryMetrics(ctx context.Context, st store.Store, logger *slog.L
 	for _, c := range certs {
 		observe.TLSCertExpirySeconds.WithLabelValues(c.Hostname).Set(float64(c.NotAfter.Unix()))
 	}
+}
+
+// loadOrGenerateWebhookSigningKey loads the 32-byte HMAC signing key from
+// keyPath if it exists, or generates a fresh one and persists it. Mode 0600
+// is enforced on creation. The key is never logged; callers audit-log
+// the load action if needed (this function is pure I/O).
+//
+// If the parent directory does not exist it is created with mode 0700.
+// An error is returned if the existing file is not exactly 32 bytes (corrupt).
+func loadOrGenerateWebhookSigningKey(keyPath string, logger *slog.Logger) ([]byte, error) {
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		return nil, fmt.Errorf("webhook signing key: create dir: %w", err)
+	}
+	raw, err := os.ReadFile(keyPath)
+	if err == nil {
+		if len(raw) != 32 {
+			return nil, fmt.Errorf("webhook signing key: %q has %d bytes; want 32 (corrupt?)", keyPath, len(raw))
+		}
+		logger.LogAttrs(context.Background(), slog.LevelInfo,
+			"webhook.signing_key_loaded",
+			slog.String("action", "webhook.signing_key_loaded"),
+			slog.String("path", keyPath))
+		return raw, nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("webhook signing key: read %q: %w", keyPath, err)
+	}
+	// Generate a new key.
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("webhook signing key: generate: %w", err)
+	}
+	// Write atomically: write to a temp file then rename.
+	tmpPath := keyPath + ".tmp"
+	if err := os.WriteFile(tmpPath, key, 0o600); err != nil {
+		return nil, fmt.Errorf("webhook signing key: write %q: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, keyPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, fmt.Errorf("webhook signing key: rename: %w", err)
+	}
+	logger.LogAttrs(context.Background(), slog.LevelInfo,
+		"webhook.signing_key_generated",
+		slog.String("action", "webhook.signing_key_generated"),
+		slog.String("path", keyPath))
+	return key, nil
 }
 
 // queueTLSRPTAdapter adapts *queue.Queue to autodns.QueueSubmitter so

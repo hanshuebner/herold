@@ -146,6 +146,14 @@ type ServerConfig struct {
 	Tabard     TabardConfig     `toml:"tabard,omitempty"`
 	Push       PushConfig       `toml:"push,omitempty"`
 	Queue      QueueConfig      `toml:"queue,omitempty"`
+	// PublicBaseURL is the externally-reachable base URL of the public
+	// HTTP listener (e.g. "https://mail.example.com"). It is used to
+	// build signed webhook fetch URLs (REQ-HOOK-30..31) delivered to
+	// webhook receivers who then GET the blob back. The default
+	// "https://<hostname>" is suitable for single-domain deployments;
+	// operators running behind a reverse proxy or split-horizon DNS
+	// set this explicitly.
+	PublicBaseURL string `toml:"public_base_url,omitempty"`
 }
 
 // PushConfig configures the deployment-level VAPID key pair the Web
