@@ -1,6 +1,7 @@
 <script lang="ts">
   import { router } from '../lib/router/router.svelte';
   import { mail } from '../lib/mail/store.svelte';
+  import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import type { Email } from '../lib/mail/types';
 
   let threadId = $derived(router.parts[1] === 'thread' ? router.parts[2] : undefined);
@@ -45,13 +46,14 @@
 
 <div class="mail">
   {#if threadId}
-    <header class="thread-header">
-      <button type="button" class="back" onclick={() => router.navigate('/mail')}>
-        ← Back to inbox
-      </button>
-      <h1>Thread {threadId}</h1>
-      <p class="lead">Reading-pane rendering arrives in the next slice.</p>
-    </header>
+    <div class="thread-frame">
+      <header class="thread-frame-bar">
+        <button type="button" class="back" onclick={() => router.navigate('/mail')}>
+          ← Back to inbox
+        </button>
+      </header>
+      <ThreadReader {threadId} />
+    </div>
   {:else if label}
     <header>
       <h1>Label: {label}</h1>
@@ -114,6 +116,22 @@
     height: 100%;
     overflow: auto;
     background: var(--background);
+  }
+
+  .thread-frame {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+  .thread-frame-bar {
+    flex: 0 0 auto;
+    padding: var(--spacing-03) var(--spacing-05);
+    border-bottom: 1px solid var(--border-subtle-01);
+    background: var(--layer-01);
+  }
+  .thread-frame :global(.thread-reader) {
+    flex: 1;
+    min-height: 0;
   }
 
   header {

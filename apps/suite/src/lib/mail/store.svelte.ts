@@ -13,18 +13,29 @@
 import { jmap, strict } from '../jmap/client';
 import { auth } from '../auth/auth.svelte';
 import { Capability, type Invocation } from '../jmap/types';
-import { EMAIL_LIST_PROPERTIES, type Email, type Mailbox } from './types';
+import {
+  EMAIL_BODY_PROPERTIES,
+  EMAIL_LIST_PROPERTIES,
+  type Email,
+  type Mailbox,
+  type Thread,
+} from './types';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 class MailStore {
   mailboxes = $state(new Map<string, Mailbox>());
   emails = $state(new Map<string, Email>());
+  threads = $state(new Map<string, Thread>());
 
   /** Ordered (most-recent first) email ids visible in the current inbox view. */
   inboxEmailIds = $state<string[]>([]);
   inboxLoadStatus = $state<LoadStatus>('idle');
   inboxError = $state<string | null>(null);
+
+  /** Per-thread load status keyed by threadId. */
+  threadLoadStatus = $state(new Map<string, LoadStatus>());
+  threadLoadError = $state(new Map<string, string>());
 
   /** The id of the JMAP Mail account this principal uses. */
   get mailAccountId(): string | null {
@@ -129,6 +140,100 @@ class MailStore {
     this.inboxLoadStatus = 'idle';
     this.inboxEmailIds = [];
     await this.loadInbox();
+  }
+
+  threadStatus(threadId: string): LoadStatus {
+    return this.threadLoadStatus.get(threadId) ?? 'idle';
+  }
+
+  threadError(threadId: string): string | null {
+    return this.threadLoadError.get(threadId) ?? null;
+  }
+
+  /**
+   * Load a thread's emails with body content. Idempotent — already-loaded
+   * threads are no-ops.
+   */
+  async loadThread(threadId: string): Promise<void> {
+    const status = this.threadStatus(threadId);
+    if (status === 'loading' || status === 'ready') return;
+    this.#setThreadStatus(threadId, 'loading');
+    this.#clearThreadError(threadId);
+    try {
+      const accountId = this.mailAccountId;
+      if (!accountId) throw new Error('No Mail account on this session');
+
+      const { responses } = await jmap.batch((b) => {
+        const t = b.call(
+          'Thread/get',
+          { accountId, ids: [threadId] },
+          [Capability.Mail],
+        );
+        b.call(
+          'Email/get',
+          {
+            accountId,
+            '#ids': t.ref('/list/0/emailIds'),
+            properties: EMAIL_BODY_PROPERTIES,
+            fetchHTMLBodyValues: true,
+            fetchTextBodyValues: true,
+            maxBodyValueBytes: 256 * 1024,
+          },
+          [Capability.Mail],
+        );
+      });
+      strict(responses);
+
+      const threadResult = invocationArgs<{ list: Thread[] }>(responses[0]);
+      const emailResult = invocationArgs<{ list: Email[] }>(responses[1]);
+
+      const thread = threadResult.list.find((t) => t.id === threadId);
+      if (!thread) throw new Error('Thread not found');
+
+      const nextThreads = new Map(this.threads);
+      nextThreads.set(thread.id, thread);
+      this.threads = nextThreads;
+
+      const nextEmails = new Map(this.emails);
+      for (const e of emailResult.list) nextEmails.set(e.id, e);
+      this.emails = nextEmails;
+
+      this.#setThreadStatus(threadId, 'ready');
+    } catch (err) {
+      this.#setThreadStatus(threadId, 'error');
+      this.#setThreadError(threadId, err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Resolved thread emails in display order (per Thread.emailIds). */
+  threadEmails(threadId: string): Email[] {
+    const thread = this.threads.get(threadId);
+    if (!thread) return [];
+    const out: Email[] = [];
+    for (const id of thread.emailIds) {
+      const e = this.emails.get(id);
+      if (e) out.push(e);
+    }
+    return out;
+  }
+
+  #setThreadStatus(id: string, status: LoadStatus): void {
+    const next = new Map(this.threadLoadStatus);
+    next.set(id, status);
+    this.threadLoadStatus = next;
+  }
+
+  #setThreadError(id: string, msg: string): void {
+    const next = new Map(this.threadLoadError);
+    next.set(id, msg);
+    this.threadLoadError = next;
+  }
+
+  #clearThreadError(id: string): void {
+    if (!this.threadLoadError.has(id)) return;
+    const next = new Map(this.threadLoadError);
+    next.delete(id);
+    this.threadLoadError = next;
   }
 }
 
