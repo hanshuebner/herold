@@ -12,13 +12,11 @@
 #   - Outbound traffic should funnel through a corporate egress for
 #     audit and DLP.
 #
-# IMPORTANT: smart-host implementation lands in Wave 3.1. The
-# [smart_host] block shape below matches the proposed REQ-FLOW-SMARTHOST
-# spec; today's queue-delivery code path talks plain SMTP to MX
-# records directly. This file documents the *target* config shape.
-#
-# Pick exactly ONE of the three [smart_host] sections below.
-# Uncomment + fill in the credentials.
+# Pick exactly ONE of the [smart_host] sections below. Uncomment +
+# fill in the credentials. The PerDomain block at the bottom shows
+# how to route specific recipient domains through a different relay
+# (e.g. corp mail through a corporate MTA, everything else through
+# SES).
 
 # -----------------------------------------------------------------
 # Base config: identical to system.toml.quickstart. Edit hostname,
@@ -102,13 +100,14 @@ metrics_bind = "127.0.0.1:9090"
 # -----------------------------------------------------------------
 
 # [smart_host]
+# enabled = true
 # host = "smtp.gmail.com"
 # port = 587
+# tls_mode = "starttls"
 # auth_method = "plain"
 # username = "you@gmail.com"
 # password_env = "$GMAIL_APP_PASSWORD"
-# tls_mode = "starttls"
-# fallback_policy = "queue"
+# fallback_policy = "smart_host_only"
 
 # -----------------------------------------------------------------
 # OPTION 2 - AWS SES SMTP endpoint.
@@ -124,13 +123,14 @@ metrics_bind = "127.0.0.1:9090"
 # -----------------------------------------------------------------
 
 # [smart_host]
+# enabled = true
 # host = "email-smtp.us-east-1.amazonaws.com"
 # port = 587
+# tls_mode = "starttls"
 # auth_method = "login"
 # username = "AKIAIOSFODNN7SES_USER"
 # password_env = "$SES_SMTP_PASSWORD"
-# tls_mode = "starttls"
-# fallback_policy = "queue"
+# fallback_policy = "smart_host_only"
 
 # -----------------------------------------------------------------
 # OPTION 3 - SendGrid.
@@ -142,30 +142,102 @@ metrics_bind = "127.0.0.1:9090"
 # -----------------------------------------------------------------
 
 # [smart_host]
+# enabled = true
 # host = "smtp.sendgrid.net"
 # port = 587
+# tls_mode = "starttls"
 # auth_method = "plain"
 # username = "apikey"
 # password_env = "$SENDGRID_API_KEY"
-# tls_mode = "starttls"
-# fallback_policy = "queue"
+# fallback_policy = "smart_host_only"
 
 # -----------------------------------------------------------------
-# Field reference (per the proposed REQ-FLOW-SMARTHOST spec landing
-# in Wave 3.1):
+# OPTION 4 - Corporate relay with TLS pinning.
 #
-#   host             - the relay's SMTP server hostname.
-#   port             - 587 (submission with STARTTLS) or 465
-#                      (implicit TLS submission). Avoid 25.
-#   auth_method      - "plain" | "login" | "xoauth2".
-#   username         - SASL username.
-#   password_env     - env var or file: reference for the password.
-#                      Inline secrets are forbidden by STANDARDS
-#                      section 9; the validator rejects them.
-#   tls_mode         - "starttls" (with port 587) or "implicit"
-#                      (with port 465).
-#   fallback_policy  - "queue" (deferred retry; default) or "fail"
-#                      (bounce the message). "queue" gives the
-#                      operator time to fix a temporarily-broken
-#                      relay without losing mail.
+# Some operators pin the corporate relay's certificate so a CA
+# compromise cannot redirect outbound mail. The pinned PEM goes at
+# the path named by pinned_cert_path; the file MUST contain the
+# expected leaf or chain in PEM form.
+# -----------------------------------------------------------------
+
+# [smart_host]
+# enabled = true
+# host = "corp-relay.internal"
+# port = 465
+# tls_mode = "implicit_tls"
+# auth_method = "scram-sha-256"
+# username = "herold-relay"
+# password_file = "/etc/herold/secrets/corp_relay_password"
+# tls_verify_mode = "pinned"
+# pinned_cert_path = "/etc/herold/secrets/corp_relay.pem"
+# fallback_policy = "smart_host_then_mx"
+# fallback_after_failure_seconds = 300
+
+# -----------------------------------------------------------------
+# Per-domain overrides (REQ-FLOW-SMARTHOST-02).
+#
+# Route specific recipient domains through a different relay. Match
+# is exact on the lowercase RCPT TO domain — no wildcards in v1. An
+# override implicitly applies even when the global [smart_host]
+# block is disabled (operator intent: "this domain ALWAYS rides the
+# override relay"). PerDomain on the override is ignored (no nested
+# overrides).
+# -----------------------------------------------------------------
+
+# [smart_host.per_domain."corp.example.com"]
+# host = "corp-relay.internal"
+# port = 465
+# tls_mode = "implicit_tls"
+# auth_method = "login"
+# username = "corp-user"
+# password_file = "/etc/herold/secrets/corp_relay_password"
+# tls_verify_mode = "system_roots"
+
+# -----------------------------------------------------------------
+# Field reference (matches sysconfig.SmartHostConfig — see
+# REQ-FLOW-SMARTHOST-01..08):
+#
+#   enabled         - master switch. Defaults to false; when false
+#                     herold uses direct-MX delivery (REQ-FLOW-70..76).
+#   host            - relay's SMTP server hostname. Required when
+#                     enabled.
+#   port            - 587 (STARTTLS submission, default) or 465
+#                     (implicit TLS submission). 25 is permitted for
+#                     dev mode only.
+#   tls_mode        - "starttls" | "implicit_tls" | "none". Defaults
+#                     to starttls when port=587 and implicit_tls
+#                     when port=465. "none" is refused when
+#                     auth_method != none (no plaintext credentials).
+#   auth_method     - "plain" | "login" | "scram-sha-256" |
+#                     "xoauth2" | "none".
+#   username        - SASL username; required when auth_method is
+#                     not "none".
+#   password_env    - env var: $VAR. Mutually exclusive with
+#                     password_file.
+#   password_file   - file: /etc/herold/secrets/... Mutually
+#                     exclusive with password_env.
+#   fallback_policy - "smart_host_only" (default; no fallback) |
+#                     "smart_host_then_mx" (try smart host, fall
+#                     back to direct MX after sustained outage or
+#                     5xx) | "mx_then_smart_host" (try direct MX,
+#                     fall back to smart host on persistent failure).
+#   tls_verify_mode - "system_roots" (default; PKIX validation
+#                     against the host's trust roots) | "pinned"
+#                     (validate against pinned_cert_path) |
+#                     "insecure_skip_verify" (dev only; required
+#                     when targeting a loopback / private address).
+#   pinned_cert_path - PEM path; required when tls_verify_mode =
+#                      "pinned".
+#   connect_timeout_seconds - TCP dial deadline. Default 10.
+#   read_timeout_seconds    - SMTP exchange deadline. Default 30.
+#   fallback_after_failure_seconds
+#                   - smart_host_then_mx threshold for sustained
+#                     outage. Default 300 (5 min).
+#   per_domain      - sub-table. Keys are lowercase recipient
+#                     domains; each value is a SmartHostConfig
+#                     except the inner per_domain map, which is
+#                     ignored.
+#
+# Inline secrets (e.g. password_env = "literal-secret") are rejected
+# at config-load time per STANDARDS §9.
 # -----------------------------------------------------------------

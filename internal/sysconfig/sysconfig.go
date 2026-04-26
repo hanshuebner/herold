@@ -38,6 +38,72 @@ type ServerConfig struct {
 	Chat          ChatConfig       `toml:"chat,omitempty"`
 	Call          CallConfig       `toml:"call,omitempty"`
 	TURN          TURNConfig       `toml:"turn,omitempty"`
+	SmartHost     SmartHostConfig  `toml:"smart_host,omitempty"`
+}
+
+// SmartHostConfig drives the optional outbound smart-host relay
+// (REQ-FLOW-SMARTHOST-01..08). When Enabled is false the queue worker
+// uses the direct-MX path (REQ-FLOW-70..76); otherwise outbound mail
+// flows through the configured submission endpoint with TLS, optional
+// SASL, and a fallback policy.
+//
+// Per-domain overrides live under PerDomain keyed by lowercase ASCII
+// recipient domain (REQ-FLOW-SMARTHOST-02). Overrides reuse the same
+// shape as the top-level block but the inner PerDomain map is ignored
+// (no nested overrides) so operators cannot accidentally fan out a
+// hierarchy of relays.
+//
+// Secrets MUST come from PasswordEnv ("$VAR") or PasswordFile
+// ("file:/path") per STANDARDS §9 / REQ-OPS-04 / REQ-OPS-161; inline
+// passwords are rejected at Validate.
+type SmartHostConfig struct {
+	// Enabled selects whether the queue worker uses the smart-host
+	// path for outbound delivery. Defaults to false.
+	Enabled bool `toml:"enabled,omitempty"`
+	// Host is the relay's SMTP server hostname. Required when Enabled.
+	Host string `toml:"host,omitempty"`
+	// Port is the TCP port; 587 (STARTTLS submission) or 465 (implicit
+	// TLS submission) are the canonical values; 25 is permitted only
+	// for dev-mode relays.
+	Port int `toml:"port,omitempty"`
+	// TLSMode selects the TLS posture: "starttls", "implicit_tls", or
+	// "none". When Port is 587 the default is "starttls"; when 465 the
+	// default is "implicit_tls". "none" is refused by Validate when
+	// AuthMethod is non-none (never send credentials in plaintext).
+	TLSMode string `toml:"tls_mode,omitempty"`
+	// AuthMethod selects the SASL mechanism: "plain", "login",
+	// "scram-sha-256", "xoauth2", or "none".
+	AuthMethod string `toml:"auth_method,omitempty"`
+	// Username is the SASL authcid; required when AuthMethod != "none".
+	Username string `toml:"username,omitempty"`
+	// PasswordEnv names the environment variable carrying the SASL
+	// password ("$VAR"). Mutually exclusive with PasswordFile.
+	PasswordEnv string `toml:"password_env,omitempty"`
+	// PasswordFile names the file holding the SASL password. The file
+	// content is trimmed of trailing newlines on read.
+	PasswordFile string `toml:"password_file,omitempty"`
+	// FallbackPolicy controls direct-MX fallback. Defaults to
+	// "smart_host_only" (no fallback).
+	FallbackPolicy string `toml:"fallback_policy,omitempty"`
+	// ConnectTimeoutSeconds bounds the TCP dial. Default 10.
+	ConnectTimeoutSeconds int `toml:"connect_timeout_seconds,omitempty"`
+	// ReadTimeoutSeconds bounds the SMTP exchange after dial. Default 30.
+	ReadTimeoutSeconds int `toml:"read_timeout_seconds,omitempty"`
+	// TLSVerifyMode chooses the upstream cert verification posture:
+	// "system_roots" (default), "pinned" (PinnedCertPath required), or
+	// "insecure_skip_verify" (dev-only).
+	TLSVerifyMode string `toml:"tls_verify_mode,omitempty"`
+	// PinnedCertPath is the path to a PEM file containing the trusted
+	// upstream certificate when TLSVerifyMode == "pinned".
+	PinnedCertPath string `toml:"pinned_cert_path,omitempty"`
+	// FallbackAfterFailureSeconds is the sustained-outage threshold
+	// for "smart_host_then_mx" before the worker falls back to direct
+	// MX. Default 300 (5 min).
+	FallbackAfterFailureSeconds int `toml:"fallback_after_failure_seconds,omitempty"`
+	// PerDomain maps lowercase recipient-domain keys to overrides.
+	// Overrides reuse the same struct shape; the inner PerDomain map
+	// is ignored (no nested overrides).
+	PerDomain map[string]SmartHostConfig `toml:"per_domain,omitempty"`
 }
 
 // CallConfig configures the 1:1 video-call signaling surface
@@ -352,6 +418,30 @@ var (
 	validLogLevels  = map[string]struct{}{"debug": {}, "info": {}, "warn": {}, "error": {}}
 	validLogFormats = map[string]struct{}{"json": {}, "text": {}}
 	validBackends   = map[string]struct{}{"sqlite": {}, "postgres": {}}
+
+	// Smart-host enums (REQ-FLOW-SMARTHOST-01..06).
+	validSmartHostTLSModes = map[string]struct{}{
+		"starttls":     {},
+		"implicit_tls": {},
+		"none":         {},
+	}
+	validSmartHostAuthMethods = map[string]struct{}{
+		"plain":         {},
+		"login":         {},
+		"scram-sha-256": {},
+		"xoauth2":       {},
+		"none":          {},
+	}
+	validSmartHostFallback = map[string]struct{}{
+		"smart_host_only":    {},
+		"smart_host_then_mx": {},
+		"mx_then_smart_host": {},
+	}
+	validSmartHostTLSVerify = map[string]struct{}{
+		"system_roots":         {},
+		"pinned":               {},
+		"insecure_skip_verify": {},
+	}
 )
 
 // Load reads path, parses it strictly, applies defaults, and validates.
@@ -517,6 +607,47 @@ func applyDefaults(c *Config) {
 	if c.Server.TURN.CredentialTTLSeconds == 0 {
 		c.Server.TURN.CredentialTTLSeconds = 300
 	}
+	// Smart host (REQ-FLOW-SMARTHOST-01..08). Defaults are applied to
+	// the top-level block AND every per-domain override so a sparsely-
+	// keyed override picks up the same timeout / fallback floor as the
+	// global block.
+	applySmartHostDefaults(&c.Server.SmartHost)
+	for k, ov := range c.Server.SmartHost.PerDomain {
+		applySmartHostDefaults(&ov)
+		c.Server.SmartHost.PerDomain[k] = ov
+	}
+}
+
+// applySmartHostDefaults populates the smart-host knobs that have a
+// canonical default. Called once for the top-level block and once per
+// PerDomain override.
+func applySmartHostDefaults(sh *SmartHostConfig) {
+	if sh.FallbackPolicy == "" {
+		sh.FallbackPolicy = "smart_host_only"
+	}
+	if sh.TLSVerifyMode == "" {
+		sh.TLSVerifyMode = "system_roots"
+	}
+	if sh.ConnectTimeoutSeconds == 0 {
+		sh.ConnectTimeoutSeconds = 10
+	}
+	if sh.ReadTimeoutSeconds == 0 {
+		sh.ReadTimeoutSeconds = 30
+	}
+	if sh.FallbackAfterFailureSeconds == 0 {
+		sh.FallbackAfterFailureSeconds = 300
+	}
+	// TLSMode auto-default: 587 -> starttls, 465 -> implicit_tls.
+	if sh.TLSMode == "" {
+		switch sh.Port {
+		case 465:
+			sh.TLSMode = "implicit_tls"
+		case 587, 25:
+			sh.TLSMode = "starttls"
+		default:
+			sh.TLSMode = "starttls"
+		}
+	}
 }
 
 // Validate performs cross-field and semantic checks that go-toml cannot express.
@@ -623,6 +754,30 @@ func Validate(c *Config) error {
 		if !IsSecretReference(tu.SharedSecretEnv) {
 			return fmt.Errorf("sysconfig: [server.turn] shared_secret_env %q must be \"$VAR\" or \"file:/path\" (STANDARDS §9)",
 				tu.SharedSecretEnv)
+		}
+	}
+	// Smart host (REQ-FLOW-SMARTHOST-01..08).
+	if err := validateSmartHost("smart_host", &c.Server.SmartHost, true); err != nil {
+		return err
+	}
+	for domain, ov := range c.Server.SmartHost.PerDomain {
+		if domain != strings.ToLower(domain) {
+			return fmt.Errorf("sysconfig: [smart_host.per_domain.%s]: domain key must be lowercase ASCII", domain)
+		}
+		if domain == "" || strings.ContainsAny(domain, " \t\r\n") {
+			return fmt.Errorf("sysconfig: [smart_host.per_domain.%s]: domain key invalid", domain)
+		}
+		if len(ov.PerDomain) > 0 {
+			return fmt.Errorf("sysconfig: [smart_host.per_domain.%s]: nested per_domain not allowed", domain)
+		}
+		ovCopy := ov
+		// PerDomain overrides force Enabled to true at validate-time:
+		// the operator wrote a per-domain block to route specific
+		// traffic, so the smart-host posture must apply for those
+		// recipients regardless of the global Enabled flag.
+		ovCopy.Enabled = true
+		if err := validateSmartHost(fmt.Sprintf("smart_host.per_domain.%s", domain), &ovCopy, false); err != nil {
+			return err
 		}
 	}
 	// Admin TLS
@@ -738,6 +893,77 @@ func Validate(c *Config) error {
 			"sysconfig: metrics_bind is non-loopback; front /metrics with TLS + auth (STANDARDS §7)",
 			slog.String("metrics_bind", c.Observability.MetricsBind),
 		)
+	}
+	return nil
+}
+
+// validateSmartHost enforces REQ-FLOW-SMARTHOST-01..08 on a single
+// SmartHostConfig (the top-level block or a PerDomain override). label
+// is the TOML path used in error messages. global is true for the
+// top-level block; per-domain overrides skip the "Enabled gates the
+// rest" rule because their presence already implies operator intent.
+func validateSmartHost(label string, sh *SmartHostConfig, global bool) error {
+	// When the global block is disabled and there are no per-domain
+	// overrides we accept the zero shape outright. Per-domain
+	// overrides come through with global=false and Enabled forced to
+	// true at the call site, so this branch only fires for the
+	// top-level block.
+	if global && !sh.Enabled {
+		return nil
+	}
+	if sh.Host == "" {
+		return fmt.Errorf("sysconfig: [%s] host is required", label)
+	}
+	if sh.Port < 1 || sh.Port > 65535 {
+		return fmt.Errorf("sysconfig: [%s] port %d out of range [1,65535]", label, sh.Port)
+	}
+	if _, ok := validSmartHostTLSModes[sh.TLSMode]; !ok {
+		return fmt.Errorf("sysconfig: [%s] tls_mode %q not recognised (want \"starttls\", \"implicit_tls\", or \"none\")", label, sh.TLSMode)
+	}
+	if _, ok := validSmartHostAuthMethods[sh.AuthMethod]; !ok {
+		return fmt.Errorf("sysconfig: [%s] auth_method %q not recognised (want \"plain\", \"login\", \"scram-sha-256\", \"xoauth2\", or \"none\")", label, sh.AuthMethod)
+	}
+	if _, ok := validSmartHostFallback[sh.FallbackPolicy]; !ok {
+		return fmt.Errorf("sysconfig: [%s] fallback_policy %q not recognised (want \"smart_host_only\", \"smart_host_then_mx\", or \"mx_then_smart_host\")", label, sh.FallbackPolicy)
+	}
+	if _, ok := validSmartHostTLSVerify[sh.TLSVerifyMode]; !ok {
+		return fmt.Errorf("sysconfig: [%s] tls_verify_mode %q not recognised (want \"system_roots\", \"pinned\", or \"insecure_skip_verify\")", label, sh.TLSVerifyMode)
+	}
+	if sh.TLSVerifyMode == "pinned" && sh.PinnedCertPath == "" {
+		return fmt.Errorf("sysconfig: [%s] pinned_cert_path required when tls_verify_mode = \"pinned\"", label)
+	}
+	if sh.TLSVerifyMode == "insecure_skip_verify" {
+		slog.Default().LogAttrs(context.Background(), slog.LevelWarn,
+			"sysconfig: smart-host tls_verify_mode = \"insecure_skip_verify\" — dev only",
+			slog.String("label", label),
+			slog.String("host", sh.Host),
+		)
+	}
+	if sh.ConnectTimeoutSeconds < 0 || sh.ReadTimeoutSeconds < 0 || sh.FallbackAfterFailureSeconds < 0 {
+		return fmt.Errorf("sysconfig: [%s] timeout knobs must be >= 0", label)
+	}
+	if sh.AuthMethod == "none" {
+		// Username and credentials must be empty when auth is off.
+		if sh.Username != "" || sh.PasswordEnv != "" || sh.PasswordFile != "" {
+			return fmt.Errorf("sysconfig: [%s] username/password_env/password_file set but auth_method = \"none\"", label)
+		}
+	} else {
+		if sh.Username == "" {
+			return fmt.Errorf("sysconfig: [%s] username required when auth_method != \"none\"", label)
+		}
+		if (sh.PasswordEnv == "") == (sh.PasswordFile == "") {
+			return fmt.Errorf("sysconfig: [%s] exactly one of password_env / password_file required", label)
+		}
+		if sh.PasswordEnv != "" && !IsSecretReference(sh.PasswordEnv) {
+			return fmt.Errorf("sysconfig: [%s] password_env %q must be \"$VAR\" (no inline secrets; STANDARDS §9)", label, sh.PasswordEnv)
+		}
+		if sh.PasswordFile != "" && !strings.HasPrefix(sh.PasswordFile, "/") {
+			return fmt.Errorf("sysconfig: [%s] password_file must be an absolute path", label)
+		}
+		// Refuse plaintext credentials over plaintext transport.
+		if sh.TLSMode == "none" {
+			return fmt.Errorf("sysconfig: [%s] tls_mode = \"none\" with auth_method = %q would send credentials in plaintext (refused)", label, sh.AuthMethod)
+		}
 	}
 	return nil
 }

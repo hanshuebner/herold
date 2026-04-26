@@ -12,7 +12,9 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailauth"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
 // Client is the outbound SMTP client — Phase 2's queue.Deliverer. One
@@ -38,6 +40,22 @@ type Client struct {
 	dialer         *net.Dialer
 	// dialFunc is overridable for tests; nil means use dialer.DialContext.
 	dialFunc func(ctx context.Context, network, address string) (net.Conn, error)
+
+	// smartHost carries the operator's [smart_host] block. When
+	// smartHost.Enabled is false (the default) Deliver uses the
+	// direct-MX path unchanged. Per-domain overrides ride on
+	// smartHost.PerDomain.
+	smartHost sysconfig.SmartHostConfig
+	// passwordResolver is invoked at delivery time to materialise the
+	// SASL secret from env / file. Nil when smartHost.AuthMethod is
+	// "none" or smart-host is disabled.
+	passwordResolver func() (string, error)
+	// smartHostFailureMu / smartHostFailureSince guard the in-process
+	// sustained-outage timer used by FallbackPolicy =
+	// "smart_host_then_mx". Keyed by upstream "host:port" so different
+	// per-domain relays do not steal each other's outage budget.
+	smartHostFailureMu    sync.Mutex
+	smartHostFailureSince map[string]time.Time
 }
 
 // ClientOptions configures a Client. Required fields: HostName, Resolver.
@@ -84,6 +102,19 @@ type ClientOptions struct {
 	// Production callers leave this nil; tests inject a router that
 	// maps MX hostnames to in-process listeners.
 	DialFunc func(ctx context.Context, network, address string) (net.Conn, error)
+	// SmartHost is the operator's [smart_host] block (REQ-FLOW-
+	// SMARTHOST-01..08). Defaults to the disabled zero shape, in
+	// which case Deliver uses the direct-MX path unchanged. When
+	// SmartHost.Enabled is true (or when a per-domain override
+	// applies for the recipient), Deliver routes through the
+	// configured submission endpoint.
+	SmartHost sysconfig.SmartHostConfig
+	// PasswordResolver, when non-nil, is invoked at delivery time to
+	// materialise the smart-host SASL secret. Production callers
+	// build this from sysconfig.ResolveSecret over SmartHost.PasswordEnv
+	// / SmartHost.PasswordFile so that secrets do not live on the
+	// Client struct. Required when SmartHost.AuthMethod != "none".
+	PasswordResolver func() (string, error)
 }
 
 // NewClient constructs a Client with the supplied options applied.
@@ -121,19 +152,23 @@ func NewClient(opts ClientOptions) *Client {
 			tlsaR = r
 		}
 	}
+	observe.RegisterSMTPOutboundMetrics()
 	return &Client{
-		hostName:       opts.HostName,
-		resolver:       opts.Resolver,
-		tlsaResolver:   tlsaR,
-		log:            log,
-		clk:            clk,
-		dialTimeout:    dialT,
-		sessionTimeout: sessT,
-		stsCache:       opts.MTASTSCache,
-		dane:           opts.DANE,
-		tlsRPT:         opts.TLSRPTReporter,
-		dialer:         &net.Dialer{Timeout: dialT},
-		dialFunc:       opts.DialFunc,
+		hostName:              opts.HostName,
+		resolver:              opts.Resolver,
+		tlsaResolver:          tlsaR,
+		log:                   log,
+		clk:                   clk,
+		dialTimeout:           dialT,
+		sessionTimeout:        sessT,
+		stsCache:              opts.MTASTSCache,
+		dane:                  opts.DANE,
+		tlsRPT:                opts.TLSRPTReporter,
+		dialer:                &net.Dialer{Timeout: dialT},
+		dialFunc:              opts.DialFunc,
+		smartHost:             opts.SmartHost,
+		passwordResolver:      opts.PasswordResolver,
+		smartHostFailureSince: make(map[string]time.Time),
 	}
 }
 
@@ -170,6 +205,18 @@ func (c *Client) Deliver(ctx context.Context, req DeliveryRequest) (DeliveryOutc
 			Diagnostic:  fmt.Sprintf("invalid recipient address %q", req.RcptTo),
 			AttemptedAt: startedAt,
 		}, nil
+	}
+
+	// REQ-FLOW-SMARTHOST-01..06: route through the smart host when
+	// the operator has wired one and the recipient domain matches.
+	// Per-domain overrides take precedence over the global block; an
+	// override is treated as Enabled=true even if the global block is
+	// disabled (operator intent: "this domain ALWAYS rides the
+	// override relay").
+	if effective, override, hasSmartHost := c.effectiveSmartHost(domain); hasSmartHost {
+		_ = override
+		out := c.dispatchSmartHost(ctx, req, domain, effective, startedAt)
+		return out, nil
 	}
 
 	// MTA-STS lookup is per-domain, not per-MX, so we resolve it once.
@@ -239,6 +286,7 @@ func (c *Client) Deliver(ctx context.Context, req DeliveryRequest) (DeliveryOutc
 		}
 
 		outcome := c.deliverToMX(ctx, req, domain, cand, policy, startedAt)
+		observe.SMTPOutboundTotal.WithLabelValues("direct_mx", outboundOutcomeLabel(outcome)).Inc()
 		switch outcome.Status {
 		case DeliverySuccess, DeliveryPermanent:
 			return outcome, nil

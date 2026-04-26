@@ -876,3 +876,282 @@ func TestResolveSecret_Empty(t *testing.T) {
 		t.Fatal("expected error for empty secret")
 	}
 }
+
+// smartHostBaseTOML is the minimum-viable TOML used as a base for the
+// smart-host validation matrix. Tests append a [server.smart_host]
+// block to it via fmt.Sprintf or string concatenation.
+const smartHostBaseTOML = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+
+func TestSmartHost_DisabledIsAccepted(t *testing.T) {
+	cfg, err := Parse([]byte(smartHostBaseTOML))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.SmartHost.Enabled {
+		t.Errorf("expected disabled by default")
+	}
+}
+
+func TestSmartHost_HappyPath_PLAINEnv(t *testing.T) {
+	const tomlSrc = smartHostBaseTOML + `
+[server.smart_host]
+enabled = true
+host = "smtp.example.com"
+port = 587
+auth_method = "plain"
+username = "user@example.com"
+password_env = "$SMARTHOST_PW"
+`
+	cfg, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	sh := cfg.Server.SmartHost
+	if sh.TLSMode != "starttls" {
+		t.Errorf("default tls_mode for 587: got %q want starttls", sh.TLSMode)
+	}
+	if sh.FallbackPolicy != "smart_host_only" {
+		t.Errorf("default fallback_policy: got %q", sh.FallbackPolicy)
+	}
+	if sh.TLSVerifyMode != "system_roots" {
+		t.Errorf("default tls_verify_mode: got %q", sh.TLSVerifyMode)
+	}
+	if sh.ConnectTimeoutSeconds != 10 || sh.ReadTimeoutSeconds != 30 || sh.FallbackAfterFailureSeconds != 300 {
+		t.Errorf("timeouts: %+v", sh)
+	}
+}
+
+func TestSmartHost_DefaultTLSModeFor465(t *testing.T) {
+	const tomlSrc = smartHostBaseTOML + `
+[server.smart_host]
+enabled = true
+host = "smtp.example.com"
+port = 465
+auth_method = "login"
+username = "u"
+password_env = "$SH"
+`
+	cfg, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.SmartHost.TLSMode != "implicit_tls" {
+		t.Errorf("default tls_mode for 465: got %q want implicit_tls", cfg.Server.SmartHost.TLSMode)
+	}
+}
+
+func TestSmartHost_RejectsInlinePassword(t *testing.T) {
+	// Cannot be expressed via the TOML field name (no `password`
+	// field exists). The check fires when an operator misuses
+	// password_env with a literal: it is not a "$VAR" reference, so
+	// IsSecretReference returns false and validate refuses.
+	const tomlSrc = smartHostBaseTOML + `
+[server.smart_host]
+enabled = true
+host = "smtp.example.com"
+port = 587
+auth_method = "plain"
+username = "u"
+password_env = "literal-secret"
+`
+	if _, err := Parse([]byte(tomlSrc)); err == nil {
+		t.Fatal("expected validate error for inline secret")
+	}
+}
+
+func TestSmartHost_RequiresUsername_WhenAuth(t *testing.T) {
+	const tomlSrc = smartHostBaseTOML + `
+[server.smart_host]
+enabled = true
+host = "smtp.example.com"
+port = 587
+auth_method = "plain"
+password_env = "$SH"
+`
+	if _, err := Parse([]byte(tomlSrc)); err == nil {
+		t.Fatal("expected error: username required")
+	}
+}
+
+func TestSmartHost_RequiresExactlyOnePasswordSlot(t *testing.T) {
+	const tomlSrc = smartHostBaseTOML + `
+[server.smart_host]
+enabled = true
+host = "smtp.example.com"
+port = 587
+auth_method = "plain"
+username = "u"
+password_env = "$SH"
+password_file = "/etc/herold/sh_pw"
+`
+	if _, err := Parse([]byte(tomlSrc)); err == nil {
+		t.Fatal("expected error: both password_env and password_file set")
+	}
+}
+
+func TestSmartHost_TLSNoneRefusesAuth(t *testing.T) {
+	const tomlSrc = smartHostBaseTOML + `
+[server.smart_host]
+enabled = true
+host = "smtp.example.com"
+port = 25
+tls_mode = "none"
+auth_method = "plain"
+username = "u"
+password_env = "$SH"
+`
+	if _, err := Parse([]byte(tomlSrc)); err == nil {
+		t.Fatal("expected error: tls_mode=none with auth")
+	}
+}
+
+func TestSmartHost_TLSNoneAuthNoneAccepted(t *testing.T) {
+	const tomlSrc = smartHostBaseTOML + `
+[server.smart_host]
+enabled = true
+host = "smtp.example.com"
+port = 25
+tls_mode = "none"
+auth_method = "none"
+`
+	if _, err := Parse([]byte(tomlSrc)); err != nil {
+		t.Fatalf("expected validate to accept tls=none auth=none, got %v", err)
+	}
+}
+
+func TestSmartHost_PinnedRequiresPath(t *testing.T) {
+	const tomlSrc = smartHostBaseTOML + `
+[server.smart_host]
+enabled = true
+host = "smtp.example.com"
+port = 587
+auth_method = "none"
+tls_verify_mode = "pinned"
+`
+	if _, err := Parse([]byte(tomlSrc)); err == nil {
+		t.Fatal("expected error: pinned without pinned_cert_path")
+	}
+}
+
+func TestSmartHost_BadEnums(t *testing.T) {
+	cases := []string{
+		`[server.smart_host]
+enabled = true
+host = "h"
+port = 587
+auth_method = "none"
+tls_mode = "wat"
+`,
+		`[server.smart_host]
+enabled = true
+host = "h"
+port = 587
+auth_method = "wat"
+`,
+		`[server.smart_host]
+enabled = true
+host = "h"
+port = 587
+auth_method = "none"
+fallback_policy = "wat"
+`,
+		`[server.smart_host]
+enabled = true
+host = "h"
+port = 587
+auth_method = "none"
+tls_verify_mode = "wat"
+`,
+	}
+	for i, frag := range cases {
+		if _, err := Parse([]byte(smartHostBaseTOML + frag)); err == nil {
+			t.Errorf("case %d: expected validate failure", i)
+		}
+	}
+}
+
+func TestSmartHost_PerDomainOverride(t *testing.T) {
+	const tomlSrc = smartHostBaseTOML + `
+[server.smart_host]
+enabled = true
+host = "smtp.example.com"
+port = 587
+auth_method = "plain"
+username = "u"
+password_env = "$SH"
+
+[server.smart_host.per_domain."corp.example.com"]
+host = "corp-relay.internal"
+port = 465
+auth_method = "login"
+username = "corp-user"
+password_file = "/etc/herold/corp_password"
+`
+	cfg, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	ov, ok := cfg.Server.SmartHost.PerDomain["corp.example.com"]
+	if !ok {
+		t.Fatalf("override not parsed: %+v", cfg.Server.SmartHost.PerDomain)
+	}
+	if ov.Host != "corp-relay.internal" || ov.Port != 465 || ov.TLSMode != "implicit_tls" {
+		t.Errorf("override: %+v", ov)
+	}
+}
+
+func TestSmartHost_PerDomainNestedRejected(t *testing.T) {
+	const tomlSrc = smartHostBaseTOML + `
+[server.smart_host]
+enabled = true
+host = "smtp.example.com"
+port = 587
+auth_method = "none"
+
+[server.smart_host.per_domain."corp.example.com"]
+host = "corp-relay.internal"
+port = 587
+auth_method = "none"
+
+[server.smart_host.per_domain."corp.example.com".per_domain."deep.example.com"]
+host = "deeper"
+port = 587
+auth_method = "none"
+`
+	if _, err := Parse([]byte(tomlSrc)); err == nil {
+		t.Fatal("expected error: nested per_domain rejected")
+	}
+}
+
+func TestSmartHost_PerDomainCaseSensitive(t *testing.T) {
+	const tomlSrc = smartHostBaseTOML + `
+[server.smart_host]
+enabled = true
+host = "smtp.example.com"
+port = 587
+auth_method = "none"
+
+[server.smart_host.per_domain."CORP.example.com"]
+host = "corp-relay.internal"
+port = 587
+auth_method = "none"
+`
+	if _, err := Parse([]byte(tomlSrc)); err == nil {
+		t.Fatal("expected error: uppercase domain key rejected")
+	}
+}

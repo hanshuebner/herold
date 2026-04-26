@@ -72,6 +72,48 @@ func RegisterSMTPMetrics() {
 	})
 }
 
+// SMTP outbound (queue worker → remote MX or smart host) metrics.
+// REQ-FLOW-SMARTHOST-08 enumerates the closed label vocabulary:
+//
+//   - path: "smart_host" | "direct_mx".
+//   - outcome: "success" | "transient" | "permanent" |
+//     "connection_refused" | "tls_failed" | "auth_failed".
+//   - from / to (fallback_total): the configured fallback policy and
+//     the path the worker actually took on a fallback fire.
+var (
+	smtpOutboundMetricsOnce sync.Once
+
+	SMTPOutboundTotal          *prometheus.CounterVec
+	SMTPOutboundConnectSeconds *prometheus.HistogramVec
+	SMTPSmartHostFallbackTotal *prometheus.CounterVec
+)
+
+// RegisterSMTPOutboundMetrics registers the smart-host / outbound
+// collector set; idempotent so test fixtures that build many Clients
+// against the process Registry stay race- and panic-free.
+func RegisterSMTPOutboundMetrics() {
+	smtpOutboundMetricsOnce.Do(func() {
+		SMTPOutboundTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_smtp_outbound_total",
+			Help: "Total outbound delivery attempts, by path and outcome.",
+		}, []string{"path", "outcome"})
+		SMTPOutboundConnectSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "herold_smtp_outbound_connect_seconds",
+			Help:    "TCP / TLS connect latency for outbound delivery, by path.",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"path"})
+		SMTPSmartHostFallbackTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_smtp_smarthost_fallback_total",
+			Help: "Smart-host fallback fires, by configured policy and the path actually taken.",
+		}, []string{"from", "to"})
+		MustRegister(
+			SMTPOutboundTotal,
+			SMTPOutboundConnectSeconds,
+			SMTPSmartHostFallbackTotal,
+		)
+	})
+}
+
 // IMAP session-scoped metrics. Label vocabulary:
 //   - outcome (sessions_total): "ok" | "error" | "panic".
 //   - command (commands_total): the IMAP command verb (CAPABILITY,
