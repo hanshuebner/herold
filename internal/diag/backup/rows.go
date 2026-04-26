@@ -483,6 +483,14 @@ type ChatBlockRow struct {
 	Reason             *string `json:"reason,omitempty"`
 }
 
+// SESSeenMessageRow mirrors the ses_seen_messages table introduced in
+// migration 0018 (Phase 3 Wave 3.2, REQ-HOOK-SES-01..07). Used for
+// SNS MessageId replay deduplication.
+type SESSeenMessageRow struct {
+	MessageID string `json:"message_id"`
+	SeenAtUs  int64  `json:"seen_at_us"`
+}
+
 // PushSubscriptionRow mirrors the push_subscription table introduced
 // in migration 0017 (Phase 3 Wave 3.8a, REQ-PROTO-120..122). The
 // JMAP keys.p256dh / keys.auth byte slices are persisted verbatim;

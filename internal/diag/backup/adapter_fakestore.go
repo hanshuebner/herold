@@ -391,6 +391,11 @@ func convertFakeToRow(table string, raw any) (any, error) {
 			r.QuietHoursEndLocal = &v
 		}
 		return r, nil
+	case "ses_seen_messages":
+		// The fakestore emits an empty slice for this table; this branch
+		// is only reached during tests that populate a SQLite source and
+		// restore to a fakestore destination.
+		return nil, fmt.Errorf("fakestore: ses_seen_messages: unexpected call to convertFakeToRow with %T", raw)
 	case "blob_refs":
 		b := raw.(fakestore.BlobRefEntry)
 		return &BlobRefRow{Hash: b.Hash, Size: b.Size, RefCount: b.RefCount}, nil
@@ -687,6 +692,12 @@ func convertRowToFake(table string, row any) (any, error) {
 			ps.QuietHoursEndLocal = &v
 		}
 		return ps, nil
+	case "ses_seen_messages":
+		// The fakestore DiagInsert default branch ignores unknown tables,
+		// so we simply return the SESSeenMessageRow and the fakestore
+		// will silently discard it (SES dedupe is a best-effort cache).
+		r := row.(*SESSeenMessageRow)
+		return r, nil
 	case "blob_refs":
 		r := row.(*BlobRefRow)
 		return fakestore.BlobRefEntry{Hash: r.Hash, Size: r.Size, RefCount: r.RefCount}, nil

@@ -804,6 +804,16 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "ses_seen_messages":
+		return enumerate(ctx, s.tx,
+			`SELECT message_id, seen_at_us FROM ses_seen_messages ORDER BY message_id`,
+			func(rs *sql.Rows) (any, error) {
+				var r SESSeenMessageRow
+				if err := rs.Scan(&r.MessageID, &r.SeenAtUs); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
 	case "blob_refs":
 		return enumerate(ctx, s.tx,
 			`SELECT hash, size, ref_count, last_change_us FROM blob_refs ORDER BY hash`,
@@ -1321,6 +1331,14 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			   created_at_us, reason)
 			 VALUES (?, ?, ?, ?)`,
 			r.BlockerPrincipalID, r.BlockedPrincipalID, r.CreatedAtUs, reason)
+		return err
+	case "ses_seen_messages":
+		r := row.(*SESSeenMessageRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO ses_seen_messages (message_id, seen_at_us)
+			 VALUES (?, ?)
+			 ON CONFLICT(message_id) DO NOTHING`,
+			r.MessageID, r.SeenAtUs)
 		return err
 	case "blob_refs":
 		r := row.(*BlobRefRow)

@@ -236,6 +236,10 @@ func (s *Store) DiagSnapshot() *DiagDump {
 		}
 	}
 
+	// ses_seen_messages: fakestore never persists SES dedupe rows, so
+	// we always emit an empty slice to satisfy the TableNames iteration.
+	dd.Tables["ses_seen_messages"] = []any{}
+
 	// Blobs: include refcount=1 for every present blob; the caller's
 	// consumer treats this as the "blob_refs" table input.
 	bhashes := make([]string, 0, len(s.blobSize))

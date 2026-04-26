@@ -36,7 +36,12 @@ const CurrentBackupVersion = 1
 //	push delivery (REQ-PROTO-123..126) and the notificationRules
 //	engine (REQ-PROTO-127) ride this row in 3.8b/3.8c without
 //	further migration.
-const CurrentSchemaVersion = 17
+//
+// 18 — 0018_ses_seen_messages.sql (Phase 3 Wave 3.2,
+//
+//	REQ-HOOK-SES-01..07). Adds ses_seen_messages table for SES
+//	inbound MessageId replay deduplication (24-hour TTL).
+const CurrentSchemaVersion = 18
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -132,5 +137,8 @@ var TableNames = []string{
 	"chat_memberships",
 	"chat_messages",
 	"chat_blocks",
+	// Phase 3 Wave 3.2 SES inbound replay deduplication
+	// (REQ-HOOK-SES-01..07, migration 0018). No FK dependencies.
+	"ses_seen_messages",
 	"blob_refs",
 }

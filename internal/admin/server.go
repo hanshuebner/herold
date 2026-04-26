@@ -428,7 +428,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// constructor. The two handlers are otherwise independent —
 	// session cookies (UI) and Bearer keys (REST) live in disjoint
 	// header/cookie namespaces, and the URL prefixes do not overlap.
-	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler())
+	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer)
 	if err != nil {
 		return err
 	}
@@ -1319,6 +1319,7 @@ func composeAdminAndUI(
 	tlsStore *heroldtls.Store,
 	outboundQ *queue.Queue,
 	adminHandler http.Handler,
+	smtpSrv *protosmtp.Server,
 ) (composedHandlers, error) {
 	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
 	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
@@ -1604,6 +1605,51 @@ func composeAdminAndUI(
 	publicMux.Handle("/api/v1/mail/",
 		withPanicRecover(logger.With("subsystem", "protosend"), "mail.send", sendSrv.Handler()))
 	bundle.srvs.sendSrv = sendSrv
+
+	// SES inbound webhook (REQ-HOOK-SES-01..07). Mounted on the public
+	// listener only when [hooks.ses_inbound.enabled] is true.
+	// sysconfig.Validate guarantees all required fields are set and
+	// credentials are secret references; resolution failures here are
+	// hard errors (operator misconfiguration detected at startup).
+	if cfg.Hooks.SESInbound.Enabled {
+		sesCfg := cfg.Hooks.SESInbound
+		accessKeyID, err := sysconfig.ResolveSecretStrict(sesCfg.AWSAccessKeyIDEnv)
+		if err != nil {
+			return composedHandlers{}, fmt.Errorf("admin: ses_inbound: resolve access key id: %w", err)
+		}
+		secretAccessKey, err := sysconfig.ResolveSecretStrict(sesCfg.AWSSecretAccessKeyEnv)
+		if err != nil {
+			return composedHandlers{}, fmt.Errorf("admin: ses_inbound: resolve secret access key: %w", err)
+		}
+		sessionToken := ""
+		if sesCfg.AWSSessionTokenEnv != "" {
+			sessionToken, err = sysconfig.ResolveSecretStrict(sesCfg.AWSSessionTokenEnv)
+			if err != nil {
+				return composedHandlers{}, fmt.Errorf("admin: ses_inbound: resolve session token: %w", err)
+			}
+		}
+		sesH := sesinbound.New(
+			sesinbound.Config{
+				AWSRegion:                  sesCfg.AWSRegion,
+				S3BucketAllowlist:          sesCfg.S3BucketAllowlist,
+				SNSTopicARNAllowlist:       sesCfg.SNSTopicARNAllowlist,
+				SignatureCertHostAllowlist: sesCfg.SignatureCertHostAllowlist,
+				AWSAccessKeyID:             accessKeyID,
+				AWSSecretAccessKey:         secretAccessKey,
+				AWSSessionToken:            sessionToken,
+			},
+			&sesPipelineAdapter{smtp: smtpSrv, meta: st.Meta()},
+			&sesSeenStore{meta: st.Meta()},
+			st.Meta(), // satisfies sesinbound.AuditLogger
+			logger.With("subsystem", "ses_inbound"),
+		)
+		publicMux.Handle("/hooks/ses/inbound",
+			withPanicRecover(logger.With("subsystem", "ses_inbound"),
+				"hooks.ses.inbound", sesH))
+		logger.InfoContext(ctx, "ses_inbound: handler mounted",
+			slog.String("region", sesCfg.AWSRegion),
+			slog.Int("buckets", len(sesCfg.S3BucketAllowlist)))
+	}
 
 	// Tabard SPA mount (REQ-DEPLOY-COLOC-01..05). When the operator
 	// has not opted out (Tabard.Enabled defaults true), the SPA

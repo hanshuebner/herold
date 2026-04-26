@@ -215,6 +215,8 @@ func rowsForTable(table string) (any, bool) {
 		return &BlobRefRow{}, true
 	case "push_subscription":
 		return &PushSubscriptionRow{}, true
+	case "ses_seen_messages":
+		return &SESSeenMessageRow{}, true
 	}
 	return nil, false
 }

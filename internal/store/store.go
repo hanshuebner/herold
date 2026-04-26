@@ -1007,6 +1007,21 @@ type Metadata interface {
 	// change row in the same tx. Returns ErrNotFound when the row is
 	// missing.
 	DeletePushSubscription(ctx context.Context, id PushSubscriptionID) error
+
+	// -- Phase 3 Wave 3.2 SES inbound dedupe (REQ-HOOK-SES-02) --------
+
+	// IsSESSeen returns true when messageID is present in the
+	// ses_seen_messages table within the configured retention window.
+	IsSESSeen(ctx context.Context, messageID string) (bool, error)
+
+	// InsertSESSeen records messageID as seen at seenAt.  Duplicate
+	// inserts are silently ignored (UPSERT ON CONFLICT DO NOTHING).
+	InsertSESSeen(ctx context.Context, messageID string, seenAt time.Time) error
+
+	// GCOldSESSeen deletes ses_seen_messages rows whose seen_at is
+	// strictly before cutoff.  Intended to be called periodically by
+	// the SES inbound handler.
+	GCOldSESSeen(ctx context.Context, cutoff time.Time) error
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical
