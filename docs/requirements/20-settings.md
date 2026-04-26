@@ -8,7 +8,7 @@ The principle: settings are the place users go to *change* defaults. They are no
 
 | ID | Requirement | Storage |
 |----|-------------|---------|
-| REQ-SET-01 | Theme: dark / light / follow-system. Default: follow-system. | `localStorage` per account |
+| REQ-SET-01 | Theme: `dark` / `light` / `system`. Default: `system` — tabard follows the OS-level `prefers-color-scheme` and tracks live changes when the user toggles their OS theme. The setting is exposed via the `data-theme` attribute on `<html>` and read by the design system's token variants per `../architecture/06-design-system.md`. | `localStorage` per account |
 | REQ-SET-02 | Default From identity. Selected from the user's `Identity` objects. | Server-side (`Identity` list ordering — a tabard convention; the first Identity is the default) |
 | REQ-SET-03 | Per-identity signature. Plain text in v1; HTML signatures cut to phase 2. | Server-side via a tabard custom property on `Identity` (`signature`); see `../notes/server-contract.md` § Future suite-level capabilities — pending herold support |
 | REQ-SET-04 | External-image loading default: never / per-sender / always. Default: never. | `localStorage` per account |

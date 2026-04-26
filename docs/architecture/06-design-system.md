@@ -34,7 +34,7 @@ Six rules that override conventions.
 2. **Focus is always visible.** Every interactive element has a visible focus ring. The ring is a single token (`--focus`); the same ring on every element. Ring colour is high-contrast (Carbon `focus`).
 3. **Motion is functional.** Animation exists only to communicate causality (this came from there) or state (this is loading). Motion does not exist to be admired. All transitions complete inside Carbon's `productive` durations: 70ms / 110ms / 150ms / 240ms.
 4. **Errors are sentence-shaped.** No truncated codes. No "something went wrong." Tell the user what happened, where, and what to do — at minimum: "Action failed: <reason>. Retry."
-5. **Dark first; light is parity, not afterthought.** Both themes are first-class. We test every component in both. Colour token switches; the design language doesn't bifurcate.
+5. **Light and dark are equal peers; the system decides.** The suite defaults to following the user's OS `prefers-color-scheme` (`requirements/20-settings.md` REQ-SET-01). Both themes are first-class — we test every component in both. Colour token switches via `[data-theme]` on `<html>`; the design language doesn't bifurcate. The user can override the system default to a fixed theme via settings, but no theme is "primary".
 6. **Keyboard equivalence.** Every action that has a button has a keyboard binding (`requirements/10-keyboard.md`). Conversely, keyboard-only actions are surfaced visually somewhere — `?` lists every binding (REQ-KEY-01) so they're discoverable.
 
 ## Colour tokens
