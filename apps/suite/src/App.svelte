@@ -1,5 +1,6 @@
 <script lang="ts">
   import Shell from './lib/shell/Shell.svelte';
+  import AuthGate from './lib/auth/AuthGate.svelte';
   import { router } from './lib/router/router.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
@@ -15,6 +16,7 @@
   }
 </script>
 
+<AuthGate>
 <Shell {activeApp} mailUnread={14} chatUnread={3} onAppSelect={selectApp}>
   {#snippet sidebar()}
     {#if activeApp === 'mail'}
@@ -81,6 +83,7 @@
     <NotFoundView />
   {/if}
 </Shell>
+</AuthGate>
 
 <style>
   .sidebar-inner {
