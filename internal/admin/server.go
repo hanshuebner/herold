@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hanshuebner/herold/internal/acme"
+	"github.com/hanshuebner/herold/internal/autodns"
 	"github.com/hanshuebner/herold/internal/chatretention"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
@@ -352,24 +353,62 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	)
 	defer imapServer.Close()
 
+	// autodns.Reporter (TLS-RPT aggregate reports, REQ-OPS-60..65).
+	// Constructed before the outbound queue so the queue's SMTP client
+	// can receive a non-nil reporter for per-failure Append calls.
+	// The reporter itself is idle until RunDailyEmission fires; it does
+	// not allocate goroutines on construction. The HTTP client uses a
+	// 30-second timeout and no netguard restriction because rua= HTTPS
+	// targets are operator-controlled (mail receivers, not user-supplied
+	// URLs). The RuaResolver reads the `_smtp._tls.<domain>` TXT record
+	// via the same mailauth.Resolver the rest of the server uses.
+	tlsRPTHTTPClient := &http.Client{Timeout: 30 * time.Second}
+	tlsRPTReporter := autodns.NewReporter(autodns.ReporterOptions{
+		Store:           st,
+		Logger:          logger.With("subsystem", "autodns-reporter"),
+		Clock:           clk,
+		HTTPClient:      tlsRPTHTTPClient,
+		ReporterDomain:  cfg.Server.Hostname,
+		ReporterContact: "tlsrpt-noreply@" + cfg.Server.Hostname,
+		Hostname:        cfg.Server.Hostname,
+	})
+	// Queue is wired after outboundQ is constructed below (see
+	// tlsRPTReporter.opts.Queue assignment — reporter has no setter;
+	// we must pass nil here and start with nil Queue, logging warns
+	// for any mailto: rua until the queue is available). Since the
+	// queue is also not started until the errgroup fires, and no
+	// emission tick fires until 24h from start, the nil Queue window
+	// is zero in practice: the RuaResolver is called from the
+	// emission loop, long after the queue is running. We construct a
+	// second reporter below with the real queue once it exists.
+
 	// Outbound queue construction (Phase 3 Wave 3.1.5). The queue
 	// owns its scheduler / worker pool and is registered against the
 	// lifecycle errgroup below so SIGTERM drains in-flight deliveries.
 	// composeAdminAndUI receives the handle so JMAP EmailSubmission/set
 	// and the HTTP send API enqueue through the same instance.
-	//
-	// TODO(3.1.5-coord): autodns.Reporter (TLS-RPT mailto emission
-	// path) is not constructed in production today; when the reporter
-	// is wired, pass outboundQ via ReporterOptions.Queue and start
-	// RunDailyEmission on the lifecycle errgroup. Tracked in the
-	// queue-delivery-implementor backlog; defer because constructing
-	// the reporter also needs a RuaResolver, an HTTPDoer, and a
-	// sysconfig knob for the operator's reporter contact / domain
-	// — all out of scope for the wiring-only Wave 3.1.5.
-	outboundQ, err := buildOutboundQueue(cfg, st, resolver, logger, clk)
+	outboundQ, err := buildOutboundQueue(cfg, st, resolver, tlsRPTReporter, logger, clk)
 	if err != nil {
 		return fmt.Errorf("admin: outbound queue: %w", err)
 	}
+	// Now that outboundQ exists, rebuild the reporter with the real
+	// queue so mailto: rua deliveries work. The SMTP client already
+	// holds a pointer to tlsRPTReporter for Append calls; we replace
+	// the reporter variable to get the queue-wired version for the
+	// emission loop. The SMTP client's reference is the first
+	// reporter; we need a second one with Queue set for emission.
+	// Since Reporter is a struct (not an interface), we build a new one
+	// and start its RunDailyEmission on the lifecycle errgroup below.
+	tlsRPTEmitter := autodns.NewReporter(autodns.ReporterOptions{
+		Store:           st,
+		Logger:          logger.With("subsystem", "autodns-reporter"),
+		Clock:           clk,
+		HTTPClient:      tlsRPTHTTPClient,
+		Queue:           queueTLSRPTAdapter{q: outboundQ},
+		ReporterDomain:  cfg.Server.Hostname,
+		ReporterContact: "tlsrpt-noreply@" + cfg.Server.Hostname,
+		Hostname:        cfg.Server.Hostname,
+	})
 	// Wire the queue as the SMTP server's BouncePoster so the
 	// REQ-FLOW-ATTPOL-02 post-acceptance walker can enqueue a 5.3.4
 	// DSN to the original sender. The setter is called pre-listener-
@@ -593,6 +632,21 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			queueLogger.LogAttrs(context.Background(), slog.LevelWarn, "queue run exited",
 				slog.String("err", err.Error()))
 			return err
+		}
+		return nil
+	})
+
+	// TLS-RPT daily emission goroutine (REQ-OPS-60..65). Runs on a
+	// 24-hour cadence; the RuaResolver adapts mailauth.Resolver.TXTLookup
+	// to the autodns.RuaResolver shape (reads `_smtp._tls.<domain>` TXT).
+	// RunDailyEmission returns nil on ctx cancellation so this goroutine
+	// never fails the errgroup on graceful shutdown.
+	tlsRPTRuaResolver := buildTLSRPTRuaResolver(resolver)
+	g.Go(func() error {
+		if err := tlsRPTEmitter.RunDailyEmission(gctx, tlsRPTRuaResolver); err != nil &&
+			!errors.Is(err, context.Canceled) {
+			logger.LogAttrs(context.Background(), slog.LevelWarn, "tls-rpt emitter exited",
+				slog.String("err", err.Error()))
 		}
 		return nil
 	})
@@ -1858,6 +1912,54 @@ func updateCertExpiryMetrics(ctx context.Context, st store.Store, logger *slog.L
 	}
 	for _, c := range certs {
 		observe.TLSCertExpirySeconds.WithLabelValues(c.Hostname).Set(float64(c.NotAfter.Unix()))
+	}
+}
+
+// queueTLSRPTAdapter adapts *queue.Queue to autodns.QueueSubmitter so
+// the TLS-RPT emitter can enqueue mailto: reports without the autodns
+// package importing the queue package.
+type queueTLSRPTAdapter struct{ q *queue.Queue }
+
+// Submit implements autodns.QueueSubmitter.
+func (a queueTLSRPTAdapter) Submit(ctx context.Context, msg autodns.ReportSubmission) (string, error) {
+	if a.q == nil {
+		return "", errors.New("admin: queueTLSRPTAdapter has nil Queue")
+	}
+	envID, err := a.q.Submit(ctx, queue.Submission{
+		MailFrom:   msg.MailFrom,
+		Recipients: msg.Recipients,
+		Body:       strings.NewReader(string(msg.Body)),
+		Sign:       msg.Sign,
+	})
+	return string(envID), err
+}
+
+// buildTLSRPTRuaResolver builds an autodns.RuaResolver from a
+// mailauth.Resolver. RFC 8460 §3 specifies that rua= URIs are published
+// in `_smtp._tls.<domain>` TXT records; the resolver reads them and
+// splits the comma-separated "rua=..." value into individual URIs.
+func buildTLSRPTRuaResolver(r mailauth.Resolver) autodns.RuaResolver {
+	return func(ctx context.Context, domain string) []string {
+		txts, err := r.TXTLookup(ctx, "_smtp._tls."+domain)
+		if err != nil {
+			return nil
+		}
+		var out []string
+		for _, txt := range txts {
+			// RFC 8460 §3: TXT record format is "v=TLSRPTv1; rua=<uri>[,<uri>...]"
+			for _, field := range strings.Fields(txt) {
+				field = strings.TrimRight(field, ";")
+				if strings.HasPrefix(field, "rua=") {
+					for _, u := range strings.Split(strings.TrimPrefix(field, "rua="), ",") {
+						u = strings.TrimSpace(u)
+						if u != "" {
+							out = append(out, u)
+						}
+					}
+				}
+			}
+		}
+		return out
 	}
 }
 

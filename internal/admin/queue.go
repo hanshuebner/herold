@@ -91,10 +91,16 @@ func (d outboundDeliverer) Deliver(ctx context.Context, req queue.DeliveryReques
 //
 // The queue does not start its scheduler on New; the caller registers
 // q.Run against the lifecycle errgroup.
+//
+// reporter is the autodns.Reporter wired for TLS-RPT failure ingestion;
+// nil means no TLS-RPT reporting. When non-nil the reporter's Append
+// method is called on every outbound TLS failure recorded by the SMTP
+// client.
 func buildOutboundQueue(
 	cfg *sysconfig.Config,
 	st store.Store,
 	resolver mailauth.Resolver,
+	reporter protosmtp.TLSRPTReporter,
 	logger *slog.Logger,
 	clk clock.Clock,
 ) (*queue.Queue, error) {
@@ -112,8 +118,8 @@ func buildOutboundQueue(
 		cfg.Server.Hostname,
 		cfg,
 		resolver,
-		nil, // MTASTSCache: optional, none wired in production today
-		nil, // TLSRPTReporter: optional, autodns reporter wired separately
+		nil,      // MTASTSCache: optional, none wired in production today
+		reporter, // TLSRPTReporter: wired by the caller
 		clk,
 		logger.With("subsystem", "smtp-outbound"),
 	)
