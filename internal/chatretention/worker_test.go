@@ -256,6 +256,133 @@ func TestWorker_ZeroRetentionMeansNeverExpire(t *testing.T) {
 	}
 }
 
+// TestWorker_Retention_BoundaryAtExactly pins the sweep predicate's
+// behaviour at the exact retention horizon (Wave 2.9.9 Track C
+// gap-fill). Insert a message at t0; configure retention=3600s; advance
+// the clock to t0+3600s exactly; sweep.
+//
+// Contract (locked here so a future refactor cannot quietly flip it):
+//
+// The sweeper computes cutoff = now - retention and hard-deletes every
+// non-system row whose CreatedAt is at-or-before cutoff. The predicate
+// inside expireConversation is `if m.CreatedAt.After(cutoff) { skip }`,
+// so a row whose CreatedAt equals cutoff is NOT After cutoff and is
+// therefore swept. The accompanying SQL ListChatMessages filter widens
+// CreatedBefore by one microsecond (cutoffPlus = cutoff + 1us) so the
+// boundary CreatedAt == cutoff is included by ListChatMessages too;
+// the in-memory predicate would otherwise be unreachable on real
+// backends. In short: the retention horizon is at-or-equal, not
+// strictly older. A message inserted at t0 with retention=3600s is
+// gone the moment the clock reaches t0+3600s.
+func TestWorker_Retention_BoundaryAtExactly(t *testing.T) {
+	retention := int64(3600)
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	f := newBoundaryFixture(t, clk, &retention)
+	id := f.insertMsg(t, "boundary")
+	// Capture the message's CreatedAt for sanity: under the FakeClock
+	// the row is stamped with clk.Now() at insert time.
+	msg, err := f.store.Meta().GetChatMessage(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetChatMessage: %v", err)
+	}
+	want := clk.Now()
+	if !msg.CreatedAt.Equal(want) {
+		t.Fatalf("CreatedAt = %v, want %v (FakeClock-stamped)", msg.CreatedAt, want)
+	}
+	// Advance to exactly t0+retention (NOT past it).
+	clk.Advance(time.Duration(retention) * time.Second)
+	if got := clk.Now().Sub(msg.CreatedAt); got != time.Duration(retention)*time.Second {
+		t.Fatalf("clock delta = %v, want exactly %v", got, time.Duration(retention)*time.Second)
+	}
+	w := chatretention.NewWorker(chatretention.Options{
+		Store:         f.store,
+		Clock:         clk,
+		SweepInterval: 30 * time.Second,
+		BatchSize:     1000,
+	})
+	deleted, err := w.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("Tick deleted = %d, want 1 (boundary CreatedAt == cutoff is at-or-equal)", deleted)
+	}
+	if _, err := f.store.Meta().GetChatMessage(context.Background(), id); err == nil {
+		t.Fatalf("message %d unexpectedly survived sweep at exact boundary", id)
+	}
+}
+
+// TestWorker_Retention_BoundaryAtPlusOne pins the sweep predicate one
+// second past the horizon. With retention=3600s and clock at t0+3601s,
+// CreatedAt < cutoff strictly, so the row is unambiguously swept. This
+// guards against a refactor that flipped the predicate to strictly-
+// less-than (`Before` instead of `After`-or-equal): the boundary test
+// above would catch the equality flip; this test catches a broader
+// inversion.
+func TestWorker_Retention_BoundaryAtPlusOne(t *testing.T) {
+	retention := int64(3600)
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	f := newBoundaryFixture(t, clk, &retention)
+	id := f.insertMsg(t, "past-boundary")
+	clk.Advance(time.Duration(retention)*time.Second + time.Second)
+	w := chatretention.NewWorker(chatretention.Options{
+		Store:         f.store,
+		Clock:         clk,
+		SweepInterval: 30 * time.Second,
+		BatchSize:     1000,
+	})
+	deleted, err := w.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("Tick deleted = %d, want 1", deleted)
+	}
+	if _, err := f.store.Meta().GetChatMessage(context.Background(), id); err == nil {
+		t.Fatalf("message %d unexpectedly survived sweep at t0+retention+1s", id)
+	}
+}
+
+// newBoundaryFixture mirrors newFixture but accepts a caller-supplied
+// FakeClock so the boundary tests can use the Wave 2.9.9 standard clock
+// origin (2026-01-01) without coupling to the package-level helper.
+func newBoundaryFixture(t *testing.T, clk *clock.FakeClock, retentionSeconds *int64) *fixture {
+	t.Helper()
+	s, err := fakestore.New(fakestore.Options{
+		Clock:   clk,
+		BlobDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("fakestore.New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx := context.Background()
+	p, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "boundary@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	cid, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind:                 store.ChatConversationKindSpace,
+		Name:                 "boundary",
+		CreatedByPrincipalID: p.ID,
+		RetentionSeconds:     retentionSeconds,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	if _, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid,
+		PrincipalID:    p.ID,
+		Role:           store.ChatRoleOwner,
+	}); err != nil {
+		t.Fatalf("InsertChatMembership: %v", err)
+	}
+	return &fixture{store: s, clk: clk, pid: p.ID, cid: cid}
+}
+
 // TestWorker_SystemMessagesAreRetained inserts a mixed batch of user
 // messages and an in-band system message, advances past the retention
 // window, and asserts the system row survives the sweep while the
