@@ -1,0 +1,171 @@
+# Herold - smart-host system.toml example.
+#
+# Variant of system.toml.quickstart with a [smart_host] block that
+# funnels every outbound message through a relay (Gmail SMTP, AWS
+# SES, SendGrid, or a corporate MTA) instead of opening direct SMTP
+# connections to the public internet.
+#
+# Why use a smart host?
+#   - Your ISP / cloud provider blocks tcp/25 outbound (very common
+#     on AWS, GCP, Azure, residential ISPs).
+#   - You already pay for SES / SendGrid deliverability + reputation.
+#   - Outbound traffic should funnel through a corporate egress for
+#     audit and DLP.
+#
+# IMPORTANT: smart-host implementation lands in Wave 3.1. The
+# [smart_host] block shape below matches the proposed REQ-FLOW-SMARTHOST
+# spec; today's queue-delivery code path talks plain SMTP to MX
+# records directly. This file documents the *target* config shape.
+#
+# Pick exactly ONE of the three [smart_host] sections below.
+# Uncomment + fill in the credentials.
+
+# -----------------------------------------------------------------
+# Base config: identical to system.toml.quickstart. Edit hostname,
+# admin TLS cert paths, and listener bind addrs to taste before
+# enabling a smart host.
+# -----------------------------------------------------------------
+
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+run_as_user = "herold"
+run_as_group = "herold"
+shutdown_grace = "30s"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+[server.storage]
+backend = "sqlite"
+
+[server.storage.sqlite]
+path = "/var/lib/herold/herold.sqlite"
+
+[[listener]]
+name = "smtp-relay"
+address = "0.0.0.0:25"
+protocol = "smtp"
+tls = "starttls"
+
+[[listener]]
+name = "smtp-submission"
+address = "0.0.0.0:587"
+protocol = "smtp-submission"
+tls = "starttls"
+auth_required = true
+
+[[listener]]
+name = "imap"
+address = "0.0.0.0:143"
+protocol = "imap"
+tls = "starttls"
+
+[[listener]]
+name = "imaps"
+address = "0.0.0.0:993"
+protocol = "imaps"
+tls = "implicit"
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:8080"
+protocol = "admin"
+tls = "implicit"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+[observability]
+log_format = "json"
+log_level = "info"
+metrics_bind = "127.0.0.1:9090"
+
+# -----------------------------------------------------------------
+# OPTION 1 - Gmail SMTP relay with a Google Workspace app password.
+#
+# Requires:
+#   - A Google Workspace account (or a personal Gmail account with
+#     2-step verification enabled).
+#   - An app password generated at
+#     https://myaccount.google.com/apppasswords
+#   - Set the password in the env var the [smart_host] block
+#     references; e.g. systemd LoadCredential or a docker-compose
+#     environment file:
+#
+#       export GMAIL_APP_PASSWORD="abcdwxyz1234efgh"
+#
+# Gmail enforces a 2,000 recipients/day limit on Workspace accounts
+# and 500/day on personal Gmail. Above that, switch to SES or
+# SendGrid.
+# -----------------------------------------------------------------
+
+# [smart_host]
+# host = "smtp.gmail.com"
+# port = 587
+# auth_method = "plain"
+# username = "you@gmail.com"
+# password_env = "$GMAIL_APP_PASSWORD"
+# tls_mode = "starttls"
+# fallback_policy = "queue"
+
+# -----------------------------------------------------------------
+# OPTION 2 - AWS SES SMTP endpoint.
+#
+# Requires:
+#   - An SES verified sending identity for your hosted domain (or
+#     the SES sandbox lifted, then verified addresses for inbound
+#     test).
+#   - SMTP credentials generated at the SES console (these are NOT
+#     your AWS access key / secret; the SES SMTP creds are derived
+#     from an IAM user via SigV4).
+#   - The endpoint host depends on your AWS region; substitute below.
+# -----------------------------------------------------------------
+
+# [smart_host]
+# host = "email-smtp.us-east-1.amazonaws.com"
+# port = 587
+# auth_method = "login"
+# username = "AKIAIOSFODNN7SES_USER"
+# password_env = "$SES_SMTP_PASSWORD"
+# tls_mode = "starttls"
+# fallback_policy = "queue"
+
+# -----------------------------------------------------------------
+# OPTION 3 - SendGrid.
+#
+# Requires:
+#   - A SendGrid account with a domain authentication record set up.
+#   - An API key with "Mail Send" permission. The SMTP username is
+#     literally the string "apikey"; the password is the API key.
+# -----------------------------------------------------------------
+
+# [smart_host]
+# host = "smtp.sendgrid.net"
+# port = 587
+# auth_method = "plain"
+# username = "apikey"
+# password_env = "$SENDGRID_API_KEY"
+# tls_mode = "starttls"
+# fallback_policy = "queue"
+
+# -----------------------------------------------------------------
+# Field reference (per the proposed REQ-FLOW-SMARTHOST spec landing
+# in Wave 3.1):
+#
+#   host             - the relay's SMTP server hostname.
+#   port             - 587 (submission with STARTTLS) or 465
+#                      (implicit TLS submission). Avoid 25.
+#   auth_method      - "plain" | "login" | "xoauth2".
+#   username         - SASL username.
+#   password_env     - env var or file: reference for the password.
+#                      Inline secrets are forbidden by STANDARDS
+#                      section 9; the validator rejects them.
+#   tls_mode         - "starttls" (with port 587) or "implicit"
+#                      (with port 465).
+#   fallback_policy  - "queue" (deferred retry; default) or "fail"
+#                      (bounce the message). "queue" gives the
+#                      operator time to fix a temporarily-broken
+#                      relay without losing mail.
+# -----------------------------------------------------------------

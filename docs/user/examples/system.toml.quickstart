@@ -1,0 +1,117 @@
+# Herold - minimal quickstart system.toml.
+#
+# Loopback-only, SQLite, no TLS, no ACME, no smart host, no plugins.
+# Runs every listener on localhost so an operator can stand up a
+# herold instance for the README quickstart in under five minutes.
+#
+# Two values to edit before starting:
+#   1. [server] hostname - set to whatever FQDN you want the server
+#      to identify as on outbound SMTP HELO. For loopback testing the
+#      default "mail.example.local" is fine.
+#   2. [server.admin_tls] cert_file / key_file - the admin listener
+#      below uses tls = "none" so these are not consulted at runtime,
+#      but the validator still requires the keys to be present and
+#      both populated. Generate a throwaway pair if you do not have
+#      one to hand:
+#
+#        openssl req -x509 -newkey rsa:2048 -nodes \
+#          -keyout ./data/admin.key \
+#          -out ./data/admin.crt \
+#          -subj "/CN=mail.example.local" \
+#          -days 365
+#
+# For the real-domain shape (public MX, ACME, DKIM, DMARC, MTA-STS),
+# follow docs/user/quickstart-extended.md.
+
+[server]
+# Primary FQDN - used as the HELO name on outbound SMTP and the
+# server name on the admin / JMAP virtual host.
+hostname = "mail.example.local"
+
+# Where the SQLite DB, blob tree, FTS index, queue state, and ACME
+# account material live. Created on first start if missing. Use an
+# absolute path in production; a relative path is fine for the
+# quickstart.
+data_dir = "./data"
+
+# Drop privileges to this user/group after binding listeners. For
+# the quickstart against ./data, leaving these as the running user
+# is fine; commenting these lines out makes herold run as the
+# invoking user.
+# run_as_user = "herold"
+# run_as_group = "herold"
+
+# Graceful-shutdown deadline. SIGTERM stops accepting new
+# connections, drains in-flight requests up to this deadline, then
+# force-closes.
+shutdown_grace = "30s"
+
+[server.admin_tls]
+# Phase 1 only supports source = "file". The admin listener below
+# uses tls = "none" so these files are not consulted at runtime, but
+# the validator still requires both fields to be set.
+source = "file"
+cert_file = "./data/admin.crt"
+key_file  = "./data/admin.key"
+
+[server.storage]
+# SQLite is the default; for the quickstart it is the right choice.
+backend = "sqlite"
+
+[server.storage.sqlite]
+# Defaults to <data_dir>/herold.sqlite when empty. Set explicitly so
+# operators can find the file without consulting the code.
+path = "./data/herold.sqlite"
+
+# Listeners - each [[listener]] is a separately-bound endpoint. For
+# the loopback quickstart, every listener binds 127.0.0.1 and uses
+# non-privileged ports (1025 / 1143 / 1993 / 8080) so the operator
+# does not need root or setcap. Adjust to the standard ports
+# (25 / 143 / 993 / 8080) for production.
+
+[[listener]]
+name = "smtp-relay"
+address = "127.0.0.1:1025"
+protocol = "smtp"
+tls = "none"
+
+[[listener]]
+name = "smtp-submission"
+address = "127.0.0.1:1587"
+protocol = "smtp-submission"
+tls = "starttls"
+auth_required = true
+cert_file = "./data/admin.crt"
+key_file  = "./data/admin.key"
+
+[[listener]]
+name = "imap"
+address = "127.0.0.1:1143"
+protocol = "imap"
+tls = "starttls"
+cert_file = "./data/admin.crt"
+key_file  = "./data/admin.key"
+
+[[listener]]
+name = "imaps"
+address = "127.0.0.1:1993"
+protocol = "imaps"
+tls = "implicit"
+cert_file = "./data/admin.crt"
+key_file  = "./data/admin.key"
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:8080"
+protocol = "admin"
+tls = "none"
+
+# Observability. Logs go to stderr in JSON; metrics on the loopback
+# default. Do NOT publish a non-loopback metrics_bind without
+# fronting it with TLS + auth at a reverse proxy (STANDARDS section
+# 7).
+[observability]
+log_format = "json"
+log_level = "info"
+metrics_bind = "127.0.0.1:9090"
+# otlp_endpoint = "http://otelcol:4318"   # off by default.

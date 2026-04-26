@@ -1,0 +1,47 @@
+# Herold - minimal one-service docker compose for the quickstart.
+#
+# Mounts ./data and ./system.toml from the host so the operator can
+# inspect state and edit config without rebuilding the image. Binds
+# every published port to 127.0.0.1 - the quickstart runs on
+# loopback only.
+#
+# For the real-domain shape (public MX, ACME, DKIM, DMARC, MTA-STS),
+# adjust port mappings to bind 0.0.0.0 and use the standard ports
+# (25 / 587 / 465 / 143 / 993 / 4190 / 8080); see
+# docs/user/quickstart-extended.md.
+#
+# Usage:
+#   docker compose -f docs/user/examples/docker-compose.yml up -d
+#   docker compose -f docs/user/examples/docker-compose.yml logs -f
+#   docker compose -f docs/user/examples/docker-compose.yml down
+#
+# Prereqs:
+#   - The image herold:dev exists locally. Build with:
+#       docker build -f deploy/docker/Dockerfile -t herold:dev .
+#   - ./system.toml exists alongside this file (copy from
+#     ./system.toml.quickstart and edit the two values noted there).
+#   - ./data/ will be created on first start.
+
+services:
+  herold:
+    image: herold:dev
+    container_name: herold
+    restart: unless-stopped
+    volumes:
+      - ./data:/var/lib/herold
+      - ./system.toml:/etc/herold/system.toml:ro
+    ports:
+      - "127.0.0.1:1025:1025"   # smtp-relay
+      - "127.0.0.1:1587:1587"   # smtp-submission
+      - "127.0.0.1:1143:1143"   # imap+starttls
+      - "127.0.0.1:1993:1993"   # imaps
+      - "127.0.0.1:8080:8080"   # admin REST + JMAP
+      - "127.0.0.1:9090:9090"   # /metrics (loopback by default)
+    environment:
+      HEROLD_SYSTEM_CONFIG: /etc/herold/system.toml
+    command: ["server", "start"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/herold", "server", "config-check", "/etc/herold/system.toml"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

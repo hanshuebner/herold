@@ -1,143 +1,229 @@
-# Herold — design baseline
+# Herold
 
-A greenfield mail server project. Stalwart-adjacent scope (SMTP MTA + IMAP/JMAP + Sieve + DKIM/SPF/DMARC/ARC) with deliberate divergences: Go instead of Rust, SQLite/Postgres instead of six backends, LLM-only spam, first-class plugins (DNS, spam, events, directory, delivery hooks), HTTP send API + incoming webhooks, per-user external OIDC federation, single-node only. Source of truth while we iterate.
+Herold is a single-node mail server in Go. Substrate beneath the tabard
+suite (mail, calendar, contacts, chat).
 
-## How to read this
+One binary. One system config file. One data directory. SQLite by
+default; Postgres for larger deployments. No CGO. No multi-node. No
+phone-home.
 
-1. **[docs/design/00-scope.md](docs/design/00-scope.md)** — goals, non-goals, simplification themes. Read this first.
-2. **docs/design/requirements/** — what the system must do, grouped by area. Numbered requirements (`REQ-XXX-nn`) so we can reference them in discussion.
-3. **docs/design/architecture/** — how the system is shaped. Decisions, not code.
-4. **docs/design/implementation/** — language/runtime choices, phasing, testing, deliberate cuts.
-5. **docs/design/notes/** — reference material and unresolved questions.
+## What it is
 
-## Latest scope revision
+Herold is a self-hostable, single-node communications server. Phase 1
+ships an SMTP MTA plus IMAP / JMAP mailbox server with Sieve filtering,
+DKIM / SPF / DMARC / ARC, a first-class HTTP send API, incoming
+webhooks, LLM-based spam classification, and per-user external OIDC
+federation. Phase 2 layers JMAP for Calendars, JMAP for Contacts, and a
+chat surface (DMs, Spaces, presence, reactions, 1:1 video calls) on top
+of the same store and dispatch core.
 
-**2026-04-25** (rev 4): herold becomes the substrate beneath the **tabard** suite (mail, calendar, contacts, chat). NG3 strengthened: CalDAV/CardDAV/WebDAV out forever; **JMAP for Calendars (RFC 8984 + binding) and JMAP for Contacts (RFC 9553 + binding) move into scope as phase-2 additions**. **Chat** (DMs, Spaces, typing indicators, presence, reactions, read receipts, 1:1 video calls via WebRTC + self-hosted coturn) added as phase-2 scope (`docs/design/requirements/14-chat.md`, `docs/design/architecture/08-chat.md`). Several smaller mail-side commitments made explicit to close gaps surfaced during tabard requirements work: `EmailSubmission.sendAt` honoured by the outbound queue (REQ-PROTO-58, REQ-FLOW-63), `Mailbox.color` extension property persisted (REQ-PROTO-56, REQ-STORE-34), per-`Identity` signature (REQ-PROTO-57, REQ-STORE-35), `urn:ietf:params:jmap:sieve` JMAP datatype alongside the existing ManageSieve protocol (REQ-PROTO-53), `urn:ietf:params:jmap:calendars` / `:contacts` capability advertisements (REQ-PROTO-54/55, phase 2), iMIP REPLY pass-through in the outbound queue (REQ-PROTO-59), inbound HTML image proxy at `/proxy/image` (REQ-SEND-70..75), LLM-driven message categorisation distinct from spam (REQ-FILT-200..220).
+It is sized for small-to-medium self-hosters, including power users
+with 1 TB+ mailboxes. Target scale per node: roughly 1,000 mailboxes,
+100 hosted domains, 10,000 inbound + 10,000 outbound messages per day,
+1,000 concurrent IMAP / JMAP sessions, ~10 TB total storage. See
+`docs/design/00-scope.md` for the canonical scope statement and the
+non-goals that frame what herold is not.
 
-**2026-04-25** (rev 3): groupware NG3 wording softened from "dropped entirely" to "out of v1." The protocol architecture (`docs/design/architecture/03-protocol-architecture.md` §JMAP capability and account registration; `docs/design/architecture/05-sync-and-state.md` forward-compat constraint, plus the resolved Q5/R40 entity-kind-agnostic StateChange reshape) deliberately keeps groupware addable as a JMAP datatype in a later release without schema migration or dispatch-core edits. v1 ships email only; JMAP for Calendars (REQ-PROTO-54) and JMAP for Contacts (REQ-PROTO-55) are in scope for phase 2. CalDAV/CardDAV/WebDAV remain explicitly out forever per NG3.
-
-**2026-04-24** (rev 2): license → MIT (permissive, final); groupware dropped entirely; shared mailboxes + IMAP ACL in phase 2 (pre-1.0); minimal web UI in phase 2 (HTMX + Go templates + Alpine.js / vanilla JS for client-side validators and autocompletion); Hetzner Cloud DNS added to first-party DNS plugins; no binary-size target.
-
-**2026-04-24** (rev 1): rescaled to 1k mailboxes / 100 domains / 10k+10k msg/day / 1 TB+ individual mailboxes / ~10 TB per node / 100 msg/s peak; switched language from Rust to Go; promoted Postgres to first-class alongside SQLite; LLM spam default via plugin (no rule engine, no Bayes, no RBLs); plugins first-class in v1 (DNS + spam + events + directory + delivery); added HTTP send API + incoming webhooks + typed event publication; added per-user external OIDC federation; split system config (file) from application config (DB); dropped multi-node; dropped encryption at rest; dropped SES bit-compat and OIDC-issuer role.
-
-## Defaults in force
-
-Working assumptions. Override by editing `docs/design/00-scope.md`; affected docs will be revised.
-
-- Language: **Go** (goroutines, stdlib-first, small dependency tree). Compile-time was the decisive factor.
-- Scope: **email-first** in v1. JMAP for Calendars (REQ-PROTO-54) and JMAP for Contacts (REQ-PROTO-55) are in scope for phase 2 as JMAP datatypes layered on the existing dispatch + change-feed shape. CalDAV/CardDAV/WebDAV are out forever per NG3.
-- Topology: **single node, period.** No multi-node path in v1 or beyond.
-- Scale target: **1k mailboxes, 100 domains, 10k+10k msg/day, 100 msg/s peak, large mailboxes up to 1 TB+, ~10 TB per node, 1k concurrent IMAP/JMAP.**
-- Storage: **SQLite or PostgreSQL** (both first-class, chosen at install). Filesystem blobs. Bleve FTS.
-- Encryption at rest: **not implemented.** Operators run on encrypted volumes (LUKS/ZFS/FileVault).
-- Spam: **LLM classification only** via the spam plugin (default: OpenAI-compatible HTTP, pointed at local Ollama).
-- Identity: **local (password + TOTP) + per-user external OIDC federation.** We are a relying party only, not an OIDC issuer.
-- HTTP mail APIs: **first-class.** Send API + incoming webhooks with inline or signed-fetch-URL body access. SES-portable, not SES-verbatim.
-- Plugins: **first-class in v1.** Out-of-process, JSON-RPC. Types: DNS providers, spam classifier, event publishers, directory adapters, delivery hooks.
-- Events: **first-class.** Server emits typed events; plugins publish to NATS (default, shipped) / Kafka / SQS / etc.
-- Config: **split.** System config (file, SIGHUP) + application config (DB, live API/CLI).
-- Admin surface: **CLI + REST + minimal Web UI** (user mgmt / domain+alias / queue monitor / email research). UI lands in phase 2.
-- Shared mailboxes + IMAP ACL: **yes, phase 2.**
-- License: **MIT**.
-
-## Directory
-
-```
-herold/
-├── README.md                           this file
-├── CLAUDE.md                           working agreement for Claude Code agents
-├── STANDARDS.md                        global coding and development standards
-├── AGENTS.md                           specialist agent partitioning + delegation guide
-├── LICENSE                             MIT
-├── go.mod                              Go module: github.com/hanshuebner/herold
-├── Makefile                            build, test, lint, fuzz-short, ci-local, docker
-├── .github/workflows/                  CI: ci.yml, nightly.yml, release.yml
-├── .claude/agents/                     specialist subagent definitions
-├── .pre-commit-config.yaml             pre-commit hooks (gofmt, goimports, vet, staticcheck, gitleaks)
-├── cmd/herold/                         single binary entrypoint (server + CLI merged)
-├── internal/                           non-plugin code; not importable externally
-│   ├── store, storesqlite, storepg     metadata store interface + backends
-│   ├── storeblobfs, storefts           blob store (FS, content-addressed) + Bleve FTS
-│   ├── protosmtp, protoimap, protojmap wire protocol servers
-│   ├── protomanagesieve, protoadmin    ManageSieve + admin REST
-│   ├── protosend, protowebhook         HTTP send API + incoming mail webhooks
-│   ├── protoevents                     typed event dispatcher → event-publisher plugins
-│   ├── directory, directoryoidc        internal directory + per-user external OIDC (RP)
-│   ├── mailparse                       RFC 5322 / MIME parser
-│   ├── maildkim, mailspf, maildmarc    DKIM / SPF / DMARC
-│   ├── mailarc                         ARC
-│   ├── sieve, spam                     Sieve interpreter + sandbox, spam classifier shim
-│   ├── queue, tls, acme, autodns       outbound queue, TLS load, ACME, auto-DNS publish
-│   ├── plugin                          plugin supervisor + JSON-RPC 2.0 stdio client
-│   ├── observe, clock                  slog + Prometheus + OTLP; clock / rand injection
-│   ├── sysconfig, appconfig            TOML system config + DB-backed app config
-│   └── admin, testharness              cobra CLI + in-process test harness
-├── plugins/                            first-party plugins, each its own main package
-│   ├── sdk                             plugin Go SDK (JSON-RPC 2.0 on stdio)
-│   ├── herold-dns-cloudflare/route53/  ACME DNS-01 + record publisher plugins
-│   │   hetzner/manual
-│   ├── herold-spam-llm                 OpenAI-compatible HTTP spam classifier
-│   ├── herold-events-nats              default event publisher (NATS)
-│   └── herold-echo                     SDK demo used in the plugin test suite
-├── test/interop, test/e2e              cross-package scenarios + conformance wiring
-├── deploy/docker, deploy/debian,       packaging
-│   deploy/rpm, deploy/k8s
-└── docs/
-    ├── 00-scope.md                     vision / non-goals / simplification themes
-    ├── requirements/
-    │   ├── 01-protocols.md             SMTP, IMAP, JMAP, POP3, ManageSieve, Sieve
-    │   ├── 02-identity-and-auth.md     directory, SASL, OAuth/OIDC, 2FA, permissions
-    │   ├── 03-mail-flow.md             ingress → queue → delivery → DSN
-    │   ├── 04-email-security.md        DKIM, SPF, DMARC, ARC, TLS-RPT, MTA-STS, DANE
-    │   ├── 05-storage.md               mailbox data model, blob store, FTS
-    │   ├── 06-filtering.md             spam (LLM plugin) + Sieve execution
-    │   ├── 08-admin-and-management.md  REST API, CLI, web UI
-    │   ├── 09-operations.md            TLS/ACME, observability, config split, backup
-    │   ├── 10-nonfunctional.md         perf, scale, reliability, security
-    │   ├── 11-plugins.md               plugin contract: DNS, spam, events, directory, delivery hooks
-    │   ├── 12-http-mail-api.md         HTTP send API + incoming-mail webhooks + image proxy
-    │   ├── 13-events.md                event publication (NATS default, Kafka/SQS/etc. via plugins)
-    │   ├── 14-chat.md                  chat datatypes, ephemeral WebSocket, presence (phase 2)
-    │   └── 15-video-calls.md           1:1 video calls — WebRTC signaling + TURN mint (phase 2)
-    ├── architecture/
-    │   ├── 01-system-overview.md
-    │   ├── 02-storage-architecture.md
-    │   ├── 03-protocol-architecture.md
-    │   ├── 04-queue-and-delivery.md
-    │   ├── 05-sync-and-state.md
-    │   ├── 06-topology-and-clustering.md
-    │   ├── 07-plugin-architecture.md   how plugins run: process model, JSON-RPC, sandboxing
-    │   └── 08-chat.md                  chat protocol architecture (phase 2)
-    ├── implementation/
-    │   ├── 01-tech-stack.md
-    │   ├── 02-phasing.md
-    │   ├── 03-testing-strategy.md
-    │   └── 04-simplifications-and-cuts.md
-    └── notes/
-        ├── stalwart-feature-map.md     reference inventory from the Stalwart codebase
-        └── open-questions.md           to resolve before / while building
-```
-
-## Requirement ID convention
-
-- `REQ-PROTO-nn` — protocols
-- `REQ-AUTH-nn` — identity and auth
-- `REQ-FLOW-nn` — mail flow
-- `REQ-SEC-nn`  — email security
-- `REQ-STORE-nn` — storage
-- `REQ-FILT-nn` — filtering
-- `REQ-ADM-nn`  — admin/management
-- `REQ-OPS-nn`  — operations
-- `REQ-NFR-nn`  — nonfunctional
-- `REQ-PLUG-nn` — plugins
-- `REQ-SEND-nn` — HTTP send API
-- `REQ-HOOK-nn` — incoming webhooks
-- `REQ-EVT-nn`  — events
-- `REQ-CHAT-nn` — chat (phase 2)
-- `REQ-CALL-nn` — 1:1 video calls (phase 2)
-
-When cutting or adding, reference by ID.
+Explicit non-goals: no multi-tenancy, no multi-node, no clustering, no
+hosting-provider features, no encryption at rest (operators run on
+LUKS / ZFS / FileVault), no CalDAV / CardDAV / WebDAV, no bit-exact
+AWS SES API compatibility, no LDAP. The list is short, deliberate, and
+load-bearing.
 
 ## Status
 
-Baseline. Not reviewed. Not frozen. Expect edits.
+Pre-1.0. Phase 2 work in progress; the codebase is not yet
+feature-frozen. The operator-facing wire surface (SMTP / IMAP / JMAP
+defaults, system.toml schema, admin REST under `/api/v1/`) is
+stabilising but may still shift before 1.0.
+
+The canonical revision history lives at `docs/design/00-scope.md` -
+read its top section ("Latest scope revision") for the most recent
+scope decisions.
+
+## Quickstart
+
+The 3-5 minute path. You will need:
+
+- Docker, or Go 1.23+ for a source build.
+- An IMAP client (Thunderbird, Apple Mail, mutt, etc.).
+
+The quickstart binds herold to loopback ports only and uses SQLite for
+storage. No public DNS, no ACME, no smart host. For the real-domain
+walkthrough (DNS records, ACME, DKIM publication, MTA-STS) see
+[docs/user/quickstart-extended.md](./docs/user/quickstart-extended.md).
+
+### 1. Clone
+
+```bash
+git clone https://github.com/hanshuebner/herold.git
+cd herold
+```
+
+### 2. Copy the quickstart config
+
+```bash
+cp docs/user/examples/system.toml.quickstart system.toml
+```
+
+Open `system.toml` in an editor. The template ships with
+`hostname = "mail.example.local"` and a placeholder admin TLS cert
+path; for the local-only quickstart the hostname does not need to
+resolve. Adjust paths if you want the data directory somewhere other
+than `./data`.
+
+### 3. Build and start the server
+
+Source build:
+
+```bash
+go build ./cmd/herold
+./herold server start --system-config system.toml
+```
+
+Or with Docker:
+
+```bash
+docker compose -f docs/user/examples/docker-compose.yml up -d
+```
+
+### 4. Bootstrap the first admin principal
+
+In a second terminal:
+
+```bash
+./herold bootstrap --email admin@example.local --password 'changeme123'
+```
+
+The command prints the admin email, the password, and a `hk_...` API
+key. The API key is also written to `~/.herold/credentials.toml`. Keep
+the printed values; the password is stored hashed and the API key is
+stored as a SHA-256 hash, so neither is recoverable from the server
+after this point.
+
+### 5. Add the local domain
+
+```bash
+./herold domain add example.local
+```
+
+### 6. Connect an IMAP client
+
+Point your IMAP client at:
+
+- Server: `localhost`
+- IMAP+STARTTLS port: `1143`
+- IMAPS port: `1993`
+- Username: `admin@example.local`
+- Password: the one you set in step 4
+
+Send mail to `admin@example.local` from another local mailbox or via
+the HTTP send API and verify it arrives in the INBOX.
+
+### 7. (Optional) Outbound through a smart host
+
+To deliver outbound mail through Gmail / SES / SendGrid rather than
+talk SMTP to the public internet, copy the smart-host example:
+
+```bash
+cp docs/user/examples/system.toml.smarthost system.toml
+```
+
+Edit the active `[smart_host]` block, restart the server, send a
+message to an external address, and verify it arrives. (Note: smart
+host implementation lands in Wave 3.1 - the example documents the
+target config shape per the REQ-FLOW-SMARTHOST spec.)
+
+For a real domain with public inbound, MX records, ACME-issued certs,
+and DKIM publication, follow
+[docs/user/quickstart-extended.md](./docs/user/quickstart-extended.md).
+
+## Documentation
+
+User documentation (operator + admin facing):
+
+- [docs/user/install.md](./docs/user/install.md) - install paths
+  (source, Docker, Debian/RPM, Kubernetes), system resources, storage
+  backend choice, first-run bootstrap.
+- [docs/user/operate.md](./docs/user/operate.md) - system.toml
+  reference, TLS / ACME, DNS records, smart host, backup / restore,
+  upgrades, observability, queue triage, plugin lifecycle, OIDC RP,
+  common operational issues, signals, performance tuning.
+- [docs/user/administer.md](./docs/user/administer.md) - domains,
+  principals, mailboxes, aliases, API keys, Sieve, categorisation
+  prompts, audit log, OIDC linkage.
+- [docs/user/quickstart-extended.md](./docs/user/quickstart-extended.md)
+  - real-domain walkthrough with DNS, ACME, DKIM, DMARC, MTA-STS,
+  TLS-RPT.
+
+Design and specification (the historical record; not user-facing):
+
+- [docs/design/00-scope.md](./docs/design/00-scope.md) - canonical
+  scope, goals, non-goals.
+- [docs/design/requirements/](./docs/design/requirements/) - numbered
+  requirements (`REQ-XXX-nn`) per subsystem.
+- [docs/design/architecture/](./docs/design/architecture/) - how the
+  system is shaped: storage, protocols, queue, plugins, sync.
+- [docs/design/implementation/](./docs/design/implementation/) - tech
+  stack, phasing, testing strategy, simplifications and cuts.
+- [docs/design/notes/](./docs/design/notes/) - reference material.
+
+Contributor and agent context:
+
+- [CLAUDE.md](./CLAUDE.md) - working agreement for Claude Code agents.
+- [STANDARDS.md](./STANDARDS.md) - global coding and development
+  standards. Authoritative.
+- [AGENTS.md](./AGENTS.md) - specialist subagent partitioning.
+
+## Project layout
+
+Trimmed view; the full layout (and rationale) lives in
+`docs/design/00-scope.md` and
+`docs/design/implementation/01-tech-stack.md`.
+
+```
+herold/
+  README.md                  this file
+  CLAUDE.md                  agent working agreement
+  STANDARDS.md               coding and development standards
+  AGENTS.md                  specialist agent roster
+  LICENSE                    MIT
+  go.mod                     module: github.com/hanshuebner/herold
+  Makefile                   build, test, lint, ci-local, docker
+
+  cmd/herold/                single binary entrypoint (server + CLI)
+  internal/                  non-plugin code
+    store, storesqlite, storepg, storeblobfs, storefts
+    protosmtp, protoimap, protojmap, protomanagesieve, protoadmin
+    protosend, protowebhook, protoevents
+    directory, directoryoidc
+    mailparse, maildkim, mailspf, maildmarc, mailarc
+    sieve, spam, queue, tls, acme, autodns
+    plugin, observe, sysconfig, appconfig, admin
+  plugins/                   first-party plugins, each its own main
+  test/interop, test/e2e     cross-package scenarios
+
+  deploy/
+    docker, debian, rpm, k8s
+
+  docs/
+    user/                    operator + admin documentation
+      install.md
+      operate.md
+      administer.md
+      quickstart-extended.md
+      examples/
+        system.toml.quickstart
+        system.toml.smarthost
+        docker-compose.yml
+    design/                  design baseline (frozen requirements)
+      00-scope.md
+      requirements/
+      architecture/
+      implementation/
+      notes/
+```
+
+## License
+
+MIT. See [LICENSE](./LICENSE).
