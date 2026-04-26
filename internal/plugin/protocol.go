@@ -87,18 +87,38 @@ func IsHeroldCode(code int) bool {
 // Manifest is the plugin self-description returned by the initialize RPC.
 // Fields match docs/design/requirements/11-plugins.md §Manifest.
 type Manifest struct {
-	Name                  string                     `json:"name"`
-	Version               string                     `json:"version"`
-	ABIVersion            int                        `json:"abi_version"`
-	Type                  PluginType                 `json:"type"`
-	Lifecycle             Lifecycle                  `json:"lifecycle"`
-	Capabilities          []string                   `json:"capabilities,omitempty"`
-	OptionsSchema         map[string]OptionSchema    `json:"options_schema,omitempty"`
-	MaxConcurrentRequests int                        `json:"max_concurrent_requests,omitempty"`
-	ShutdownGraceSec      int                        `json:"shutdown_grace_sec,omitempty"`
-	HealthIntervalSec     int                        `json:"health_interval_sec,omitempty"`
-	Extra                 map[string]json.RawMessage `json:"-"`
+	Name                  string                  `json:"name"`
+	Version               string                  `json:"version"`
+	ABIVersion            int                     `json:"abi_version"`
+	Type                  PluginType              `json:"type"`
+	Lifecycle             Lifecycle               `json:"lifecycle"`
+	Capabilities          []string                `json:"capabilities,omitempty"`
+	OptionsSchema         map[string]OptionSchema `json:"options_schema,omitempty"`
+	MaxConcurrentRequests int                     `json:"max_concurrent_requests,omitempty"`
+	ShutdownGraceSec      int                     `json:"shutdown_grace_sec,omitempty"`
+	HealthIntervalSec     int                     `json:"health_interval_sec,omitempty"`
+	// Supports advertises optional method-set extensions the plugin
+	// implements beyond the type's mandatory contract. Currently the
+	// only recognised token is "resolve_rcpt" for directory plugins
+	// (REQ-DIR-RCPT-01).
+	Supports []string                   `json:"supports,omitempty"`
+	Extra    map[string]json.RawMessage `json:"-"`
 }
+
+// HasSupport reports whether m advertises the given optional capability
+// token in its supports[] list.
+func (m Manifest) HasSupport(token string) bool {
+	for _, s := range m.Supports {
+		if s == token {
+			return true
+		}
+	}
+	return false
+}
+
+// SupportsResolveRcpt is the manifest token a directory plugin lists
+// in supports[] to advertise the RCPT-time hook (REQ-DIR-RCPT-01).
+const SupportsResolveRcpt = "resolve_rcpt"
 
 // OptionSchema is one entry in a Manifest's options_schema map. It is
 // intentionally small: JSON-schema-ish per REQ-PLUG-21.

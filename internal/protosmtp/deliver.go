@@ -42,6 +42,19 @@ func (sess *session) finishMessage(body []byte) {
 		sess.resetEnvelope()
 		return
 	}
+
+	// REQ-FLOW-ATTPOL-01: header-only inbound attachment policy check.
+	// Inspects the parsed top-level MIME structure between DATA accept
+	// and 250 OK; refuses with 552 5.3.4 when ANY recipient has
+	// inbound_attachment_policy = reject_at_data AND the top-level
+	// shape carries an attachment.
+	if sess.applyAttPolHeaderCheck(ctx, msg, body) {
+		// All recipients refused at the message-wide level: reply
+		// 552, drop, and return.
+		sess.resetEnvelope()
+		return
+	}
+
 	classification := sess.classify(ctx, msg, authResults)
 	listenerLabel := sess.mode.String()
 	// Track inbound DATA bytes (best-effort; counts the body bytes the
@@ -90,9 +103,60 @@ func (sess *session) finishMessage(body []byte) {
 		messageID = id
 	}
 	for _, rc := range sess.envelope.rcpts {
+		if rc.synthetic {
+			// REQ-DIR-RCPT-07: synthetic recipient. Skip mailbox insert,
+			// per-recipient Sieve, and (unless opted in) spam
+			// classification. The message lands on the inbound webhook
+			// path only.
+			//
+			// TODO(3.5c-coord): Track C exports the webhook subsystem's
+			// synthetic-recipient dispatch entry point; once it lands,
+			// invoke it here with rc.routeTag, finalBytes, blobRef, and
+			// the parsed message. For now we treat the recipient as
+			// "accepted" so the SMTP layer reports 250 OK; the body is
+			// already persisted as a refcounted blob. The webhook
+			// subsystem will pick the blob up via the synthetic
+			// hand-off table when its dispatcher is wired.
+			//
+			// REQ-FLOW-ATTPOL-02: synthetic recipients still get the
+			// post-acceptance walker so a webhook intake configured
+			// for reject_at_data refuses nested attachments before
+			// the dispatcher would otherwise hand them off. Synthetic
+			// recipients' policy resolves through the recipient's
+			// domain row (the matched webhook target's configured
+			// domain); when Track C lands, it can override per-
+			// synthetic-target by writing a per-recipient row keyed
+			// on rc.addr.
+			//
+			// TODO(3.5c-coord): Track C may want a separate per-
+			// webhook-target attpol field that overrides the
+			// recipient-domain fallback used here. Until that lands
+			// the per-domain row is the operator-visible knob.
+			if sess.applyAttPolPostAcceptance(ctx, rc, msg, finalBytes) {
+				anyOK = true
+				continue
+			}
+			sess.auditAttPolPassed(ctx, rc, msg)
+			sess.srv.log.InfoContext(ctx, "synthetic recipient accepted (webhook dispatch deferred to track C)",
+				slog.String("session_id", sess.sessID),
+				slog.String("recipient", rc.addr),
+				slog.String("route_tag", rc.routeTag))
+			anyOK = true
+			continue
+		}
 		if rc.principalID == 0 {
 			// Non-local recipient on submission — Phase 2 queues
 			// outbound. Phase 1 already rejected at RCPT time; defensive.
+			continue
+		}
+		// REQ-FLOW-ATTPOL-02: post-acceptance MIME walker. If the
+		// recipient's policy is reject_at_data and the deep walker
+		// catches an attachment that the header-only check missed
+		// (e.g. nested under multipart/alternative), enqueue a
+		// bounce DSN to the original sender and skip delivery for
+		// this recipient. The message-wide DATA accept stands.
+		if sess.applyAttPolPostAcceptance(ctx, rc, msg, finalBytes) {
+			anyOK = true
 			continue
 		}
 		ok, derr := sess.deliverOne(ctx, rc, finalBytes, blobRef, msg, authResults, classification)
@@ -103,6 +167,10 @@ func (sess *session) finishMessage(body []byte) {
 				slog.String("err", derr.Error()))
 		}
 		if ok {
+			// Audit "passed" outcome for recipients with
+			// reject_at_data set whose message survived both the
+			// header-only check and the deep walker.
+			sess.auditAttPolPassed(ctx, rc, msg)
 			anyOK = true
 		}
 	}

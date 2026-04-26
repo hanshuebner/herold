@@ -30,6 +30,10 @@ type Manifest struct {
 	OptionsSchema         map[string]plug.OptionSchema
 	ShutdownGraceSec      int
 	HealthIntervalSec     int
+	// Supports advertises optional method-set extensions the plugin
+	// implements beyond the type's mandatory contract. The only token
+	// recognised today is "resolve_rcpt" (REQ-DIR-RCPT-01).
+	Supports []string
 }
 
 func (m Manifest) toProtocol() plug.Manifest {
@@ -48,6 +52,7 @@ func (m Manifest) toProtocol() plug.Manifest {
 		MaxConcurrentRequests: m.MaxConcurrentRequests,
 		ShutdownGraceSec:      m.ShutdownGraceSec,
 		HealthIntervalSec:     m.HealthIntervalSec,
+		Supports:              m.Supports,
 	}
 }
 
@@ -89,6 +94,57 @@ type DirectoryHandler interface {
 	DirectoryAuthenticate(ctx context.Context, in DirectoryAuthenticateParams) (DirectoryAuthenticateResult, error)
 	DirectoryListAliases(ctx context.Context, in DirectoryListAliasesParams) ([]string, error)
 }
+
+// ResolveRcptHandler is the optional RCPT-time directory hook
+// (REQ-DIR-RCPT-01..12). Plugins that implement it MUST also list
+// "resolve_rcpt" in the manifest's supports[] field; the supervisor
+// invokes the method only when the manifest declares it.
+type ResolveRcptHandler interface {
+	ResolveRcpt(ctx context.Context, in ResolveRcptRequest) (ResolveRcptResponse, error)
+}
+
+// ResolveRcptRequest is the payload sent by the supervisor at SMTP
+// RCPT TO time. Per REQ-DIR-RCPT-12 the hook is inbound-only; the
+// supervisor never calls it for submission RCPTs.
+type ResolveRcptRequest struct {
+	Envelope  ResolveRcptEnvelope `json:"envelope"`
+	Recipient string              `json:"recipient"`
+	Context   ResolveRcptContext  `json:"context"`
+}
+
+// ResolveRcptEnvelope carries the in-flight envelope state available
+// pre-DATA. AuthResults summarises SPF/DKIM/DMARC where they are
+// already known (typically only SPF survives pre-DATA; DKIM/DMARC
+// land after the body); plugins should not assume any field is set.
+type ResolveRcptEnvelope struct {
+	MailFrom    string `json:"mail_from"`
+	HeloDomain  string `json:"helo_domain,omitempty"`
+	SourceIP    string `json:"source_ip"`
+	Listener    string `json:"listener"`
+	AuthResults string `json:"auth_results,omitempty"`
+}
+
+// ResolveRcptContext carries supervisor-provided correlation IDs the
+// plugin may include in metric / log emissions.
+type ResolveRcptContext struct {
+	PluginName string `json:"plugin_name"`
+	RequestID  string `json:"request_id"`
+}
+
+// ResolveRcptResponse is the plugin's per-RCPT verdict. Action is one
+// of "accept", "reject", "defer", "fallthrough"; codes default per
+// REQ-DIR-RCPT-07 (5.1.1 for reject, 4.5.1 for defer) when omitted.
+type ResolveRcptResponse struct {
+	Action      string  `json:"action"`
+	Reason      string  `json:"reason,omitempty"`
+	Code        string  `json:"code,omitempty"`
+	PrincipalID *uint64 `json:"principal_id,omitempty"`
+	RouteTag    string  `json:"route_tag,omitempty"`
+}
+
+// SupportsResolveRcpt is the manifest token a directory plugin lists
+// in supports[] to advertise the RCPT-time hook.
+const SupportsResolveRcpt = "resolve_rcpt"
 
 // DeliveryHandler corresponds to the delivery.* methods.
 type DeliveryHandler interface {
@@ -264,6 +320,7 @@ const (
 	MethodDirectoryLookup       = "directory.lookup"
 	MethodDirectoryAuthenticate = "directory.authenticate"
 	MethodDirectoryListAliases  = "directory.list_aliases"
+	MethodDirectoryResolveRcpt  = "directory.resolve_rcpt"
 
 	MethodDeliveryPre  = "delivery.pre"
 	MethodDeliveryPost = "delivery.post"
@@ -655,6 +712,23 @@ func dispatchTypeSpecific(ctx context.Context, req plug.Request, handler Handler
 			return
 		}
 		res, err := h.DirectoryListAliases(ctx, p)
+		if err != nil {
+			writeErr(req.ID, plug.ErrCodeInternalError, err.Error())
+			return
+		}
+		writeResult(req.ID, res)
+	case MethodDirectoryResolveRcpt:
+		h, ok := handler.(ResolveRcptHandler)
+		if !ok {
+			writeErr(req.ID, plug.ErrCodeMethodNotFound, "plugin does not implement resolve_rcpt handler")
+			return
+		}
+		var p ResolveRcptRequest
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeErr(req.ID, plug.ErrCodeInvalidParams, err.Error())
+			return
+		}
+		res, err := h.ResolveRcpt(ctx, p)
 		if err != nil {
 			writeErr(req.ID, plug.ErrCodeInternalError, err.Error())
 			return

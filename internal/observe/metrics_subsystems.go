@@ -114,6 +114,30 @@ func RegisterSMTPOutboundMetrics() {
 	})
 }
 
+// Inbound attachment-policy metrics (REQ-FLOW-ATTPOL-02). Label
+// vocabulary is closed:
+//   - recipient_domain: lowercased domain part of the local recipient.
+//     Bounded by the operator's local-domain set, which is itself
+//     finite and admin-managed.
+//   - outcome: "passed" | "refused_at_data" | "refused_post_acceptance".
+var (
+	smtpAttPolMetricsOnce sync.Once
+
+	SMTPInboundAttachmentPolicyTotal *prometheus.CounterVec
+)
+
+// RegisterSMTPAttachmentPolicyMetrics registers the inbound
+// attachment-policy collector set; idempotent.
+func RegisterSMTPAttachmentPolicyMetrics() {
+	smtpAttPolMetricsOnce.Do(func() {
+		SMTPInboundAttachmentPolicyTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_inbound_attachment_policy_total",
+			Help: "Inbound attachment-policy outcomes, by recipient domain and outcome (REQ-FLOW-ATTPOL-02).",
+		}, []string{"recipient_domain", "outcome"})
+		MustRegister(SMTPInboundAttachmentPolicyTotal)
+	})
+}
+
 // IMAP session-scoped metrics. Label vocabulary:
 //   - outcome (sessions_total): "ok" | "error" | "panic".
 //   - command (commands_total): the IMAP command verb (CAPABILITY,
@@ -345,6 +369,56 @@ func RegisterAuthMetrics() {
 			Help: "Total authentication attempts, by credential kind and outcome.",
 		}, []string{"kind", "outcome"})
 		MustRegister(AuthAttemptsTotal)
+	})
+}
+
+// Directory RCPT-time hook metrics (REQ-DIR-RCPT-10). Label vocabulary
+// is closed by the plugin name (operator-supplied, bounded by
+// system.toml) and the action enum:
+//   - action (resolve_rcpt_total): "accept" | "reject" | "defer" |
+//     "fallthrough" | "ratelimited" | "breaker_open".
+var (
+	directoryRcptMetricsOnce sync.Once
+
+	DirectoryResolveRcptTotal          *prometheus.CounterVec
+	DirectoryResolveRcptLatencySeconds *prometheus.HistogramVec
+	DirectoryResolveRcptTimeoutsTotal  *prometheus.CounterVec
+	DirectorySyntheticAcceptedTotal    *prometheus.CounterVec
+	DirectoryPluginBreakerState        *prometheus.GaugeVec
+)
+
+// RegisterDirectoryRcptMetrics registers the directory.resolve_rcpt
+// collector set; idempotent.
+func RegisterDirectoryRcptMetrics() {
+	directoryRcptMetricsOnce.Do(func() {
+		DirectoryResolveRcptTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_directory_resolve_rcpt_total",
+			Help: "Total directory.resolve_rcpt outcomes, by plugin and action.",
+		}, []string{"plugin", "action"})
+		DirectoryResolveRcptLatencySeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "herold_directory_resolve_rcpt_latency_seconds",
+			Help:    "directory.resolve_rcpt round-trip latency, by plugin.",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"plugin"})
+		DirectoryResolveRcptTimeoutsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_directory_resolve_rcpt_timeouts_total",
+			Help: "directory.resolve_rcpt invocations that exceeded the per-call deadline, by plugin.",
+		}, []string{"plugin"})
+		DirectorySyntheticAcceptedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_directory_synthetic_accepted_total",
+			Help: "Synthetic recipients accepted via directory.resolve_rcpt (no principal_id), by plugin.",
+		}, []string{"plugin"})
+		DirectoryPluginBreakerState = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "herold_directory_plugin_breaker_state",
+			Help: "directory.resolve_rcpt circuit breaker state per plugin (0=closed, 1=half-open, 2=open).",
+		}, []string{"plugin"})
+		MustRegister(
+			DirectoryResolveRcptTotal,
+			DirectoryResolveRcptLatencySeconds,
+			DirectoryResolveRcptTimeoutsTotal,
+			DirectorySyntheticAcceptedTotal,
+			DirectoryPluginBreakerState,
+		)
 	})
 }
 
@@ -755,6 +829,40 @@ func RegisterProtojmapCalendarsMetrics() {
 		MustRegister(
 			ProtojmapCalendarsMethodsTotal,
 			ProtojmapCalendarsMethodErrorsTotal,
+		)
+	})
+}
+
+// Webhook (mail-arrival) dispatcher metrics. REQ-HOOK-40 enumerates
+// the closed label vocabulary:
+//
+//   - name:   the operator-visible webhook name; bounded by the row
+//     count in `webhooks` so we surface it as a label rather
+//     than embedding it in the metric name.
+//   - status: "2xx" | "4xx" | "5xx" | "timeout" | "network" |
+//     "dropped_no_text"  (REQ-HOOK-EXTRACTED-03).
+var (
+	hookMetricsOnce sync.Once
+
+	HookDeliveriesTotal         *prometheus.CounterVec
+	HookExtractedTruncatedTotal *prometheus.CounterVec
+)
+
+// RegisterHookMetrics registers the webhook-dispatcher collector set;
+// idempotent.
+func RegisterHookMetrics() {
+	hookMetricsOnce.Do(func() {
+		HookDeliveriesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_hook_deliveries_total",
+			Help: "Webhook delivery outcomes, by hook name and status (2xx | 4xx | 5xx | timeout | network | dropped_no_text).",
+		}, []string{"name", "status"})
+		HookExtractedTruncatedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_hook_extracted_truncated_total",
+			Help: "Extracted-mode webhook deliveries whose body.text hit the per-subscription cap.",
+		}, []string{"name"})
+		MustRegister(
+			HookDeliveriesTotal,
+			HookExtractedTruncatedTotal,
 		)
 	})
 }

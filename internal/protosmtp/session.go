@@ -94,6 +94,13 @@ type mailFromParams struct {
 
 // rcptEntry holds one accepted RCPT TO: the raw address, its resolved
 // principal (0 for relay acceptance), and the DSN NOTIFY / ORCPT tags.
+//
+// REQ-DIR-RCPT-07 synthetic recipient: when a plugin returned
+// accept-without-principal, synthetic is true, principalID is 0, and
+// routeTag carries the plugin's correlation token. The DATA-phase
+// delivery path skips mailbox insert / per-recipient Sieve / spam
+// classification (unless [smtp.inbound.spam_for_synthetic] is set)
+// and dispatches to webhooks-only via the webhook subsystem (Track C).
 type rcptEntry struct {
 	addr        string
 	localPart   string
@@ -101,6 +108,15 @@ type rcptEntry struct {
 	principalID directory.PrincipalID
 	notify      string
 	orcpt       string
+	// synthetic flags an accept-without-principal RCPT (REQ-DIR-RCPT-07).
+	synthetic bool
+	// routeTag is the opaque correlation token returned by the
+	// resolve_rcpt plugin; echoed into webhook payloads and audit log.
+	routeTag string
+	// decisionSource records the path that produced the verdict for
+	// the connection-level SMTP log line: "internal" | "plugin:<name>" |
+	// "catchall" (REQ-DIR-RCPT-09).
+	decisionSource string
 }
 
 // runSession is invoked by Server.Serve for each accepted connection.
@@ -656,22 +672,14 @@ func (sess *session) cmdRCPT(rest string) bool {
 		orcpt:     rp.orcpt,
 	}
 
-	// Relay-in listener: recipient must resolve to a local principal.
-	// Submission listeners accept non-local recipients only when
-	// authenticated (Wave 2 treats these as "would relay" but refuses
-	// with 5.7.1 because outbound queue lands in Phase 2).
+	// REQ-DIR-RCPT-12: the resolve_rcpt hook is inbound-only. Submission
+	// listeners follow the existing Phase 2 rule (local-only).
 	switch sess.mode {
 	case RelayIn:
-		pid, err := sess.srv.dir.ResolveAddress(sess.ctx, local, domain)
-		if err != nil {
-			if errors.Is(err, directory.ErrNotFound) || errors.Is(err, directory.ErrInvalidEmail) {
-				sess.writeReply("550 5.1.1 mailbox does not exist")
-				return false
-			}
-			sess.writeReply("451 4.3.0 directory lookup failed")
+		accept := sess.resolveInboundRcpt(&entry)
+		if !accept {
 			return false
 		}
-		entry.principalID = pid
 	case SubmissionSTARTTLS, SubmissionImplicitTLS:
 		// First attempt local resolution; if the address is local,
 		// behave exactly like RelayIn so "send-to-self" works. Otherwise
@@ -679,6 +687,7 @@ func (sess *session) cmdRCPT(rest string) bool {
 		pid, err := sess.srv.dir.ResolveAddress(sess.ctx, local, domain)
 		if err == nil {
 			entry.principalID = pid
+			entry.decisionSource = "internal"
 		} else if errors.Is(err, directory.ErrNotFound) {
 			sess.writeReply("550 5.7.1 relaying to remote addresses is not yet enabled (Phase 2)")
 			return false
@@ -691,6 +700,168 @@ func (sess *session) cmdRCPT(rest string) bool {
 	sess.st = stateRecipients
 	sess.writeReply("250 2.1.5 recipient ok")
 	return false
+}
+
+// rcptResolveOutcome enumerates the three terminal states the
+// resolve_rcpt resolution chain can land in for one RCPT TO.
+type rcptResolveOutcome int
+
+const (
+	// rcptOutcomeAccept signals the caller that entry is fully
+	// populated and should be appended to the envelope. The caller
+	// writes the 250 reply.
+	rcptOutcomeAccept rcptResolveOutcome = iota
+	// rcptOutcomeRefused signals that a 4xx / 5xx reply has already
+	// been written; the caller must NOT also emit a success reply.
+	rcptOutcomeRefused
+)
+
+// resolveInboundRcpt drives the REQ-DIR-RCPT-03 resolution order for
+// one RCPT TO on the relay-in listener. It mutates entry in-place
+// when a verdict is reached and writes the appropriate SMTP reply on
+// any non-accept outcome. The outcome tells the caller whether to
+// append entry and emit 250.
+func (sess *session) resolveInboundRcpt(entry *rcptEntry) bool {
+	out := sess.runRcptResolutionChain(entry)
+	return out == rcptOutcomeAccept
+}
+
+func (sess *session) runRcptResolutionChain(entry *rcptEntry) rcptResolveOutcome {
+	dir := sess.srv.dir
+	resolver := sess.srv.rcptResolver
+	pluginName := sess.srv.rcptPluginNm
+	domain := strings.ToLower(entry.domain)
+	_, pluginFirst := sess.srv.rcptPluginFor[domain]
+	pluginConfigured := resolver != nil && pluginName != ""
+
+	// Step 1: when plugin_first_for_domains contains the recipient
+	// domain, the plugin owns the address space — call it first
+	// (REQ-DIR-RCPT-03 inversion).
+	if pluginConfigured && pluginFirst {
+		out, fallthroughChain := sess.applyResolveRcpt(entry)
+		if !fallthroughChain {
+			return out
+		}
+		// fallthrough action — fall through to internal resolution.
+	}
+
+	// Step 2: internal directory lookup.
+	pid, err := dir.ResolveAddress(sess.ctx, entry.localPart, entry.domain)
+	if err == nil {
+		entry.principalID = pid
+		entry.decisionSource = "internal"
+		return rcptOutcomeAccept
+	}
+	if !errors.Is(err, directory.ErrNotFound) && !errors.Is(err, directory.ErrInvalidEmail) {
+		sess.writeReply("451 4.3.0 directory lookup failed")
+		return rcptOutcomeRefused
+	}
+
+	// Step 3: plugin (when not already consulted plugin-first).
+	if pluginConfigured && !pluginFirst {
+		out, fallthroughChain := sess.applyResolveRcpt(entry)
+		if !fallthroughChain {
+			return out
+		}
+	}
+
+	// Step 4: no match.
+	sess.writeReply("550 5.1.1 mailbox does not exist")
+	return rcptOutcomeRefused
+}
+
+// applyResolveRcpt invokes the directory.resolve_rcpt plugin and
+// translates the verdict into SMTP replies / entry state.
+//
+// Returns:
+//   - outcome: rcptOutcomeAccept when the plugin returned accept
+//     (the caller should append entry and write 250); rcptOutcomeRefused
+//     when reject / defer / rate-limit / unknown-principal — the reply
+//     line is already written.
+//   - fallthroughChain: true only when the plugin returned
+//     "fallthrough" so the caller continues the resolution chain. When
+//     true, outcome is unspecified.
+//
+// On accept-with-principal the principal is verified against the
+// store; an unknown id is downgraded to defer 4.3.0 per REQ-DIR-RCPT-08.
+func (sess *session) applyResolveRcpt(entry *rcptEntry) (rcptResolveOutcome, bool) {
+	resolver := sess.srv.rcptResolver
+	pluginName := sess.srv.rcptPluginNm
+	req := directory.ResolveRcptRequest{
+		Recipient: entry.addr,
+		Envelope: directory.ResolveRcptEnvelope{
+			MailFrom:   sess.envelope.mailFrom,
+			HeloDomain: sess.helo,
+			SourceIP:   sess.remoteIP,
+			Listener:   "inbound",
+		},
+		Context: directory.ResolveRcptContext{
+			PluginName: pluginName,
+			RequestID:  sess.sessID,
+		},
+	}
+	dec := resolver.Resolve(sess.ctx, pluginName, req)
+	src := "plugin:" + pluginName
+	switch dec.Action {
+	case directory.ResolveRcptAccept:
+		if dec.PrincipalID != nil {
+			pid := directory.PrincipalID(*dec.PrincipalID)
+			if _, err := sess.srv.store.Meta().GetPrincipalByID(sess.ctx, pid); err != nil {
+				sess.srv.log.WarnContext(sess.ctx, "resolve_rcpt accept references unknown principal",
+					slog.String("plugin", pluginName),
+					slog.String("recipient", entry.addr),
+					slog.Uint64("principal_id", *dec.PrincipalID),
+					slog.String("err", err.Error()))
+				sess.writeReply("450 4.3.0 directory state error")
+				entry.decisionSource = src
+				return rcptOutcomeRefused, false
+			}
+			entry.principalID = pid
+		} else {
+			entry.synthetic = true
+		}
+		entry.routeTag = dec.RouteTag
+		entry.decisionSource = src
+		return rcptOutcomeAccept, false
+	case directory.ResolveRcptReject:
+		code := dec.Code
+		if code == "" {
+			code = "5.1.1"
+		}
+		reason := dec.Reason
+		if reason == "" {
+			reason = "no such recipient"
+		}
+		sess.writeReply(fmt.Sprintf("550 %s %s", code, reason))
+		entry.decisionSource = src
+		return rcptOutcomeRefused, false
+	case directory.ResolveRcptDefer:
+		code := dec.Code
+		if code == "" {
+			code = "4.5.1"
+		}
+		reason := dec.Reason
+		if reason == "" {
+			reason = "try again later"
+		}
+		sess.writeReply(fmt.Sprintf("450 %s %s", code, reason))
+		entry.decisionSource = src
+		return rcptOutcomeRefused, false
+	case directory.ResolveRcptRateLimited:
+		code := dec.Code
+		if code == "" {
+			code = "4.7.1"
+		}
+		sess.writeReply(fmt.Sprintf("450 %s try again later", code))
+		entry.decisionSource = src
+		return rcptOutcomeRefused, false
+	case directory.ResolveRcptFallthrough:
+		// Continue with the rest of the resolution chain.
+		return rcptOutcomeRefused, true
+	default:
+		// Should never happen; treat as fallthrough.
+		return rcptOutcomeRefused, true
+	}
 }
 
 // --- DATA -------------------------------------------------------------

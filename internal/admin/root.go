@@ -111,6 +111,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newServerCmd())
 	root.AddCommand(newBootstrapCmd())
 	root.AddCommand(newPrincipalCmd())
+	root.AddCommand(newMailboxCmd())
 	root.AddCommand(newDomainCmd())
 	root.AddCommand(newOIDCCmd())
 	root.AddCommand(newAPIKeyCmd())
@@ -120,6 +121,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newSpamCmd())
 	root.AddCommand(newHookCmd())
 	root.AddCommand(newDiagCmd())
+	root.AddCommand(newPluginCmd())
 	return root
 }
 

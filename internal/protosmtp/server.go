@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -162,22 +163,26 @@ func (o Options) Defaults() Options {
 // promoted onto the store.Metadata interface in Wave 3 so admin REST
 // and ManageSieve converge on one storage surface.
 type Server struct {
-	store      store.Store
-	dir        *directory.Directory
-	dkim       *maildkim.Verifier
-	spf        *mailspf.Verifier
-	dmarc      *maildmarc.Evaluator
-	arc        *mailarc.Verifier
-	spam       *spam.Classifier
-	sieve      *sieve.Interpreter
-	categorise *categorise.Categoriser
-	tls        *heroldtls.Store
-	resolver   mailauth.Resolver
-	clk        clock.Clock
-	log        *slog.Logger
-	passLk     sasl.PasswordLookup
-	opts       Options
-	spamPlug   string
+	store         store.Store
+	dir           *directory.Directory
+	dkim          *maildkim.Verifier
+	spf           *mailspf.Verifier
+	dmarc         *maildmarc.Evaluator
+	arc           *mailarc.Verifier
+	spam          *spam.Classifier
+	sieve         *sieve.Interpreter
+	categorise    *categorise.Categoriser
+	tls           *heroldtls.Store
+	resolver      mailauth.Resolver
+	clk           clock.Clock
+	log           *slog.Logger
+	passLk        sasl.PasswordLookup
+	opts          Options
+	spamPlug      string
+	rcptResolver  *directory.RcptResolver
+	rcptPluginNm  string
+	rcptPluginFor map[string]struct{} // domains where plugin runs first
+	bouncePoster  BouncePoster
 
 	// lifecycle
 	ctx       context.Context
@@ -212,7 +217,26 @@ type Config struct {
 	// SpamPluginName is the configured plugin name passed to
 	// Classifier.Classify. Defaults to "spam" when empty.
 	SpamPluginName string
-	Options        Options
+	// RcptResolver is the per-server RCPT-time directory resolver
+	// (REQ-DIR-RCPT-01..12). Nil disables the path; the SMTP layer
+	// then falls through to the in-process directory + catch-all
+	// chain unchanged.
+	RcptResolver *directory.RcptResolver
+	// RcptPluginName is the configured plugin name. When empty the
+	// resolve_rcpt path is disabled even if RcptResolver is non-nil.
+	RcptPluginName string
+	// RcptPluginFirstDomains is the lowercased set of recipient
+	// domains for which the plugin is consulted BEFORE internal
+	// directory lookup (REQ-DIR-RCPT-03 inversion). Domains outside
+	// this set fall through to the standard "internal first, plugin
+	// for non-local" flow.
+	RcptPluginFirstDomains []string
+	// BouncePoster enqueues a DSN bounce when the post-acceptance
+	// attachment-policy walker (REQ-FLOW-ATTPOL-02) refuses a
+	// recipient. Optional; nil collapses the post-acceptance refusal
+	// to "drop, audit, no DSN" with a warn-level log line.
+	BouncePoster BouncePoster
+	Options      Options
 }
 
 // New constructs a Server. Logger and Clock default to slog.Default /
@@ -245,29 +269,60 @@ func New(cfg Config) (*Server, error) {
 	observe.RegisterSMTPMetrics()
 	observe.RegisterStoreMetrics()
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Server{
-		store:      cfg.Store,
-		dir:        cfg.Directory,
-		dkim:       cfg.DKIM,
-		spf:        cfg.SPF,
-		dmarc:      cfg.DMARC,
-		arc:        cfg.ARC,
-		spam:       cfg.Spam,
-		sieve:      cfg.Sieve,
-		categorise: cfg.Categorise,
-		tls:        cfg.TLS,
-		resolver:   cfg.Resolver,
-		clk:        clk,
-		log:        log,
-		passLk:     cfg.SCRAMLookup,
-		spamPlug:   plug,
-		opts:       opts,
-		ctx:        ctx,
-		cancel:     cancel,
-		connSem:    make(chan struct{}, opts.MaxConcurrentConnections),
-		perIP:      make(map[string]int),
+	rcptFirst := make(map[string]struct{}, len(cfg.RcptPluginFirstDomains))
+	for _, d := range cfg.RcptPluginFirstDomains {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if d == "" {
+			continue
+		}
+		rcptFirst[d] = struct{}{}
 	}
+	s := &Server{
+		store:         cfg.Store,
+		dir:           cfg.Directory,
+		dkim:          cfg.DKIM,
+		spf:           cfg.SPF,
+		dmarc:         cfg.DMARC,
+		arc:           cfg.ARC,
+		spam:          cfg.Spam,
+		sieve:         cfg.Sieve,
+		categorise:    cfg.Categorise,
+		tls:           cfg.TLS,
+		resolver:      cfg.Resolver,
+		clk:           clk,
+		log:           log,
+		passLk:        cfg.SCRAMLookup,
+		spamPlug:      plug,
+		opts:          opts,
+		ctx:           ctx,
+		cancel:        cancel,
+		connSem:       make(chan struct{}, opts.MaxConcurrentConnections),
+		perIP:         make(map[string]int),
+		rcptResolver:  cfg.RcptResolver,
+		rcptPluginNm:  cfg.RcptPluginName,
+		rcptPluginFor: rcptFirst,
+		bouncePoster:  cfg.BouncePoster,
+	}
+	// Register the inbound attachment-policy collector set; idempotent.
+	observe.RegisterSMTPAttachmentPolicyMetrics()
 	return s, nil
+}
+
+// SetBouncePoster installs the BouncePoster late, after Server
+// construction. Used by the cmd/herold wiring where the outbound
+// queue is built after the SMTP server (the queue depends on the
+// store + resolver, the SMTP server only on the store, so the
+// natural construction order is SMTP first). nil is permitted and
+// clears any prior value.
+//
+// Concurrency: the BouncePoster pointer is read once per session
+// after DATA accept, never inside a hot loop. Setting it post-
+// construction is therefore safe under the standard Go memory model
+// when no in-flight session is mid-DATA at the time of the call;
+// production wiring sets it before the listener accepts its first
+// connection.
+func (s *Server) SetBouncePoster(b BouncePoster) {
+	s.bouncePoster = b
 }
 
 // HandleConn drives one already-accepted connection through the SMTP

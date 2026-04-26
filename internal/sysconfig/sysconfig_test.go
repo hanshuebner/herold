@@ -1155,3 +1155,89 @@ auth_method = "none"
 		t.Fatal("expected error: uppercase domain key rejected")
 	}
 }
+
+func TestValidate_SMTPInbound_AcceptsDirectoryPlugin(t *testing.T) {
+	src := minimalValid + `
+[[plugin]]
+name = "app-rcpt"
+path = "/var/lib/herold/plugins/app-rcpt/app-rcpt"
+type = "directory"
+lifecycle = "long-running"
+
+[smtp.inbound]
+directory_resolve_rcpt_plugin = "app-rcpt"
+plugin_first_for_domains = ["app.example.com"]
+rcpt_rate_limit_per_ip_per_sec = 100
+spam_for_synthetic = false
+`
+	cfg, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.SMTP.Inbound.DirectoryResolveRcptPlugin != "app-rcpt" {
+		t.Fatalf("plugin name: %q", cfg.SMTP.Inbound.DirectoryResolveRcptPlugin)
+	}
+	if cfg.SMTP.Inbound.RcptRateLimitPerIPPerSec != 100 {
+		t.Fatalf("rate limit: %d", cfg.SMTP.Inbound.RcptRateLimitPerIPPerSec)
+	}
+}
+
+func TestValidate_SMTPInbound_RejectsUnknownPlugin(t *testing.T) {
+	src := minimalValid + `
+[smtp.inbound]
+directory_resolve_rcpt_plugin = "missing"
+`
+	if _, err := Parse([]byte(src)); err == nil {
+		t.Fatal("expected error: unknown plugin name")
+	} else if !strings.Contains(err.Error(), "directory_resolve_rcpt_plugin") {
+		t.Fatalf("error should mention directory_resolve_rcpt_plugin: %v", err)
+	}
+}
+
+func TestValidate_SMTPInbound_RejectsWrongPluginType(t *testing.T) {
+	src := minimalValid + `
+[[plugin]]
+name = "spammer"
+path = "/p"
+type = "spam"
+lifecycle = "long-running"
+
+[smtp.inbound]
+directory_resolve_rcpt_plugin = "spammer"
+`
+	if _, err := Parse([]byte(src)); err == nil {
+		t.Fatal("expected error: wrong plugin type")
+	}
+}
+
+func TestValidate_SMTPInbound_RejectsTimeoutAboveCap(t *testing.T) {
+	src := minimalValid + `
+[smtp.inbound]
+resolve_rcpt_timeout = "10s"
+`
+	if _, err := Parse([]byte(src)); err == nil {
+		t.Fatal("expected error: 10s exceeds 5s hard cap")
+	} else if !strings.Contains(err.Error(), "hard cap") {
+		t.Fatalf("error should mention hard cap: %v", err)
+	}
+}
+
+func TestValidate_SMTPInbound_RejectsNegativeRateLimit(t *testing.T) {
+	src := minimalValid + `
+[smtp.inbound]
+rcpt_rate_limit_per_ip_per_sec = -1
+`
+	if _, err := Parse([]byte(src)); err == nil {
+		t.Fatal("expected error: negative rate limit")
+	}
+}
+
+func TestValidate_SMTPInbound_RejectsUppercaseDomain(t *testing.T) {
+	src := minimalValid + `
+[smtp.inbound]
+plugin_first_for_domains = ["App.Example.com"]
+`
+	if _, err := Parse([]byte(src)); err == nil {
+		t.Fatal("expected error: uppercase domain")
+	}
+}

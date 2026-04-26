@@ -20,7 +20,40 @@ type Config struct {
 	Acme          *AcmeConfig         `toml:"acme,omitempty"`
 	Listener      []ListenerConfig    `toml:"listener"`
 	Plugin        []PluginConfig      `toml:"plugin"`
+	SMTP          SMTPConfig          `toml:"smtp,omitempty"`
 	Observability ObservabilityConfig `toml:"observability"`
+}
+
+// SMTPConfig groups SMTP-listener-side knobs that span both the
+// inbound (port-25) and submission flows (REQ-DIR-RCPT-* and the
+// in-flight Track B / Track C work).
+type SMTPConfig struct {
+	Inbound SMTPInboundConfig `toml:"inbound,omitempty"`
+}
+
+// SMTPInboundConfig carries the per-server inbound SMTP knobs
+// configured on the relay-in listener.
+type SMTPInboundConfig struct {
+	// DirectoryResolveRcptPlugin names the plugin invoked at SMTP
+	// RCPT TO time (REQ-DIR-RCPT-02). Empty disables the path.
+	DirectoryResolveRcptPlugin string `toml:"directory_resolve_rcpt_plugin,omitempty"`
+	// PluginFirstForDomains is the lowercased ASCII recipient-domain
+	// set for which the plugin is consulted BEFORE the internal
+	// directory (REQ-DIR-RCPT-03 inversion).
+	PluginFirstForDomains []string `toml:"plugin_first_for_domains,omitempty"`
+	// RcptRateLimitPerIPPerSec is the per-source-IP RCPT cap
+	// (REQ-DIR-RCPT-06). Zero applies the directory.DefaultRcptRateLimit
+	// default of 50/sec.
+	RcptRateLimitPerIPPerSec int `toml:"rcpt_rate_limit_per_ip_per_sec,omitempty"`
+	// SpamForSynthetic toggles spam classification on synthetic
+	// recipients (REQ-DIR-RCPT-07). Default false: synthetic mail
+	// skips the classifier; operators who want classification on
+	// transactional intake set this true.
+	SpamForSynthetic bool `toml:"spam_for_synthetic,omitempty"`
+	// ResolveRcptTimeout overrides the per-method timeout for
+	// directory.resolve_rcpt (REQ-PLUG-32). Zero applies the 2s
+	// default; values above the 5s hard cap are rejected at Validate.
+	ResolveRcptTimeout Duration `toml:"resolve_rcpt_timeout,omitempty"`
 }
 
 // ServerConfig carries process-wide settings.
@@ -828,6 +861,10 @@ func Validate(c *Config) error {
 			return fmt.Errorf("sysconfig: [[listener]] %q: cert_file/key_file set but tls=\"none\"", l.Name)
 		}
 	}
+	// SMTP inbound (REQ-DIR-RCPT-*).
+	if err := validateSMTPInbound(c); err != nil {
+		return err
+	}
 	// Plugins.
 	pseen := make(map[string]struct{}, len(c.Plugin))
 	for i, p := range c.Plugin {
@@ -895,6 +932,56 @@ func Validate(c *Config) error {
 		)
 	}
 	return nil
+}
+
+// resolveRcptHardCap is the upper bound the SMTP RCPT phase can wait
+// for the directory.resolve_rcpt plugin (REQ-PLUG-32 / REQ-DIR-RCPT-04).
+// Mirrored by internal/plugin.ResolveRcptHardCapTimeout; kept as a
+// duplicate constant here so sysconfig has no inbound dependency on
+// the plugin package.
+const resolveRcptHardCap = 5 * time.Second
+
+// validateSMTPInbound enforces REQ-DIR-RCPT-* configuration rules on
+// the [smtp.inbound] block. It runs against the parsed config after
+// applyDefaults; structural / TOML errors are caught upstream.
+func validateSMTPInbound(c *Config) error {
+	in := c.SMTP.Inbound
+	if in.RcptRateLimitPerIPPerSec < 0 {
+		return fmt.Errorf("sysconfig: [smtp.inbound] rcpt_rate_limit_per_ip_per_sec %d must be >= 0", in.RcptRateLimitPerIPPerSec)
+	}
+	if in.ResolveRcptTimeout < 0 {
+		return fmt.Errorf("sysconfig: [smtp.inbound] resolve_rcpt_timeout %s must be >= 0", in.ResolveRcptTimeout.AsDuration())
+	}
+	if in.ResolveRcptTimeout.AsDuration() > resolveRcptHardCap {
+		return fmt.Errorf("sysconfig: [smtp.inbound] resolve_rcpt_timeout %s exceeds hard cap %s (REQ-PLUG-32)",
+			in.ResolveRcptTimeout.AsDuration(), resolveRcptHardCap)
+	}
+	for _, d := range in.PluginFirstForDomains {
+		if d == "" {
+			return errors.New("sysconfig: [smtp.inbound] plugin_first_for_domains contains empty entry")
+		}
+		if d != strings.ToLower(d) {
+			return fmt.Errorf("sysconfig: [smtp.inbound] plugin_first_for_domains entry %q must be lowercase ASCII", d)
+		}
+	}
+	if in.DirectoryResolveRcptPlugin == "" {
+		return nil
+	}
+	// Refuse-to-start: the named plugin must exist in [[plugin]] blocks
+	// AND declare type = "directory". The supports[] check happens at
+	// plugin-start time (the manifest is a runtime artefact).
+	for _, p := range c.Plugin {
+		if p.Name != in.DirectoryResolveRcptPlugin {
+			continue
+		}
+		if p.Type != "directory" {
+			return fmt.Errorf("sysconfig: [smtp.inbound] directory_resolve_rcpt_plugin %q must be type=\"directory\" (got %q)",
+				p.Name, p.Type)
+		}
+		return nil
+	}
+	return fmt.Errorf("sysconfig: [smtp.inbound] directory_resolve_rcpt_plugin %q not declared in any [[plugin]] block",
+		in.DirectoryResolveRcptPlugin)
 }
 
 // validateSmartHost enforces REQ-FLOW-SMARTHOST-01..08 on a single

@@ -223,6 +223,23 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		storefts.WorkerOptions{},
 	)
 
+	// REQ-DIR-RCPT-01..12: directory.resolve_rcpt RCPT-time hook. When
+	// [smtp.inbound.directory_resolve_rcpt_plugin] is non-empty, the
+	// SMTP server consults the named plugin at RCPT TO time before
+	// emitting 250 / 4xx / 5xx. The breaker + rate limit are owned by
+	// the resolver; the plugin manager satisfies the invoker
+	// interface.
+	rcptResolverInst, err := directory.NewRcptResolver(directory.RcptResolverConfig{
+		Invoker:  pluginMgr,
+		Clock:    clk,
+		Logger:   logger.With("subsystem", "directory.resolve_rcpt"),
+		Metadata: st.Meta(),
+		Limiter:  directory.NewResolveRcptRateLimiter(clk, cfg.SMTP.Inbound.RcptRateLimitPerIPPerSec),
+	})
+	if err != nil {
+		return fmt.Errorf("admin: directory.resolve_rcpt resolver: %w", err)
+	}
+
 	// Protocol servers.
 	smtpServer, err := protosmtp.New(protosmtp.Config{
 		Store:     st,
@@ -241,7 +258,10 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			Hostname:      cfg.Server.Hostname,
 			ShutdownGrace: cfg.Server.ShutdownGrace.AsDuration(),
 		},
-		SpamPluginName: spamPluginName,
+		SpamPluginName:         spamPluginName,
+		RcptResolver:           rcptResolverInst,
+		RcptPluginName:         cfg.SMTP.Inbound.DirectoryResolveRcptPlugin,
+		RcptPluginFirstDomains: cfg.SMTP.Inbound.PluginFirstForDomains,
 	})
 	if err != nil {
 		return fmt.Errorf("admin: protosmtp: %w", err)
@@ -284,6 +304,11 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	if err != nil {
 		return fmt.Errorf("admin: outbound queue: %w", err)
 	}
+	// Wire the queue as the SMTP server's BouncePoster so the
+	// REQ-FLOW-ATTPOL-02 post-acceptance walker can enqueue a 5.3.4
+	// DSN to the original sender. The setter is called pre-listener-
+	// bind below, so no in-flight session can race the assignment.
+	smtpServer.SetBouncePoster(queueBouncePosterAdapter{q: outboundQ})
 
 	// Admin HTTP handler: the real protoadmin server. Options defaults
 	// are applied inside NewServer; we pass only subsystem-level fields.
@@ -1199,6 +1224,29 @@ func composeAdminAndUI(
 		http.NotFound(w, r)
 	})
 	return parent, srvs, nil
+}
+
+// queueBouncePosterAdapter adapts *queue.Queue to the
+// protosmtp.BouncePoster interface so the SMTP DATA-phase
+// REQ-FLOW-ATTPOL-02 post-acceptance walker can enqueue a 5.3.4 DSN
+// without protosmtp importing the queue package.
+type queueBouncePosterAdapter struct{ q *queue.Queue }
+
+// PostBounce implements protosmtp.BouncePoster.
+func (a queueBouncePosterAdapter) PostBounce(ctx context.Context, in protosmtp.BounceInput) error {
+	if a.q == nil {
+		return errors.New("admin: queueBouncePosterAdapter has nil Queue")
+	}
+	return a.q.PostBounce(ctx, queue.BounceInput{
+		MailFrom:        in.MailFrom,
+		FinalRcpt:       in.FinalRcpt,
+		OriginalRcpt:    in.OriginalRcpt,
+		OriginalEnvID:   in.OriginalEnvID,
+		OriginalHeaders: in.OriginalHeaders,
+		MessageID:       in.MessageID,
+		DiagnosticCode:  in.DiagnosticCode,
+		StatusCode:      in.StatusCode,
+	})
 }
 
 // notifySystemdReady implements a minimal sd_notify(READY=1) compatible

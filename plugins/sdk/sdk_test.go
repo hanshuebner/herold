@@ -236,3 +236,102 @@ func TestSDK_NotificationsWriteToStdout(t *testing.T) {
 		}
 	}
 }
+
+// directoryHandler is a minimum-viable Directory + ResolveRcpt handler
+// for the round-trip test below. The Lookup / Authenticate /
+// ListAliases calls are no-ops; the test exercises ResolveRcpt only.
+type directoryHandler struct {
+	handler
+	captured sdk.ResolveRcptRequest
+	resp     sdk.ResolveRcptResponse
+}
+
+func (d *directoryHandler) DirectoryLookup(_ context.Context, _ sdk.DirectoryLookupParams) (sdk.DirectoryLookupResult, error) {
+	return sdk.DirectoryLookupResult{}, nil
+}
+func (d *directoryHandler) DirectoryAuthenticate(_ context.Context, _ sdk.DirectoryAuthenticateParams) (sdk.DirectoryAuthenticateResult, error) {
+	return sdk.DirectoryAuthenticateResult{}, nil
+}
+func (d *directoryHandler) DirectoryListAliases(_ context.Context, _ sdk.DirectoryListAliasesParams) ([]string, error) {
+	return nil, nil
+}
+func (d *directoryHandler) ResolveRcpt(_ context.Context, in sdk.ResolveRcptRequest) (sdk.ResolveRcptResponse, error) {
+	d.captured = in
+	return d.resp, nil
+}
+
+func TestSDK_ResolveRcpt_RoundTrip(t *testing.T) {
+	m := sdk.Manifest{
+		Name: "dirplug", Version: "v",
+		Type:       plug.TypeDirectory,
+		Lifecycle:  plug.LifecycleLongRunning,
+		ABIVersion: plug.ABIVersion,
+		Supports:   []string{sdk.SupportsResolveRcpt},
+	}
+	pid := uint64(7)
+	h := &directoryHandler{resp: sdk.ResolveRcptResponse{
+		Action:      "accept",
+		PrincipalID: &pid,
+		RouteTag:    "ticket:7",
+	}}
+	frames := []string{
+		`{"jsonrpc":"2.0","id":1,"method":"directory.resolve_rcpt","params":{"recipient":"reply+7@app.example.com","envelope":{"mail_from":"a@b","source_ip":"1.1.1.1","listener":"inbound"},"context":{"plugin_name":"dirplug","request_id":"r1"}}}`,
+	}
+	resps := runHarness(t, m, h, frames)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	if resps[0].Error != nil {
+		t.Fatalf("rpc error: %v", resps[0].Error)
+	}
+	var got sdk.ResolveRcptResponse
+	if err := json.Unmarshal(resps[0].Result, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Action != "accept" || got.RouteTag != "ticket:7" || got.PrincipalID == nil || *got.PrincipalID != pid {
+		t.Fatalf("response shape mismatch: %+v", got)
+	}
+	if h.captured.Recipient != "reply+7@app.example.com" {
+		t.Fatalf("plugin did not see recipient: %+v", h.captured)
+	}
+	if h.captured.Envelope.SourceIP != "1.1.1.1" {
+		t.Fatalf("plugin did not see source_ip: %+v", h.captured.Envelope)
+	}
+}
+
+// TestSDK_ResolveRcpt_HandlerMissing verifies the SDK rejects a
+// resolve_rcpt request when the plugin does not implement
+// ResolveRcptHandler — even though it's a directory plugin.
+func TestSDK_ResolveRcpt_HandlerMissing(t *testing.T) {
+	m := sdk.Manifest{
+		Name: "dirplug-no-resolve", Version: "v",
+		Type: plug.TypeDirectory, Lifecycle: plug.LifecycleLongRunning, ABIVersion: plug.ABIVersion,
+	}
+	// directoryNoResolve only implements DirectoryHandler.
+	h := &directoryNoResolveHandler{}
+	frames := []string{
+		`{"jsonrpc":"2.0","id":1,"method":"directory.resolve_rcpt","params":{"recipient":"x@y","envelope":{"source_ip":"1.1.1.1","listener":"inbound"}}}`,
+	}
+	resps := runHarness(t, m, h, frames)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	if resps[0].Error == nil {
+		t.Fatalf("expected method-not-found error, got result %s", string(resps[0].Result))
+	}
+	if resps[0].Error.Code != plug.ErrCodeMethodNotFound {
+		t.Fatalf("err code: %d (want %d)", resps[0].Error.Code, plug.ErrCodeMethodNotFound)
+	}
+}
+
+type directoryNoResolveHandler struct{ handler }
+
+func (d *directoryNoResolveHandler) DirectoryLookup(_ context.Context, _ sdk.DirectoryLookupParams) (sdk.DirectoryLookupResult, error) {
+	return sdk.DirectoryLookupResult{}, nil
+}
+func (d *directoryNoResolveHandler) DirectoryAuthenticate(_ context.Context, _ sdk.DirectoryAuthenticateParams) (sdk.DirectoryAuthenticateResult, error) {
+	return sdk.DirectoryAuthenticateResult{}, nil
+}
+func (d *directoryNoResolveHandler) DirectoryListAliases(_ context.Context, _ sdk.DirectoryListAliasesParams) ([]string, error) {
+	return nil, nil
+}
