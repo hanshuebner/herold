@@ -12,6 +12,7 @@ Labels are JMAP `Mailbox` objects (per `01-data-model.md`). A message belongs to
 | REQ-LBL-04 | User can assign a colour to a label from a fixed palette of ≥ 12 colours. |
 | REQ-LBL-05 | User can nest a label under a parent label, at least 3 levels deep. |
 | REQ-LBL-06 | The label list in the sidebar is sorted: system labels first (fixed order), then user labels alphabetically within each parent. |
+| REQ-LBL-06a | System mailbox order in the sidebar (`09-ui-layout.md` REQ-UI-13b): Inbox → Snoozed → Important → Sent → Drafts → All Mail. Spam, Trash, and any further system folders sit under a "More" expander, default collapsed. |
 | REQ-LBL-07 | Each label shows an unread count badge when unread threads exist in it. |
 
 ## Applying / removing labels

@@ -108,6 +108,46 @@ The compose body is a ProseMirror editor (`../implementation/01-tech-stack.md`).
 | REQ-MAIL-121 | Send + archive (the parent thread for replies, or the most recently focused thread otherwise): `Cmd/Ctrl+Shift+Enter`. Visible in the Send button's split menu. |
 | REQ-MAIL-122 | Cut for v1: send-later (scheduled send), send-and-snooze, send-with-confirmation-required. Server-side feature dependencies that we'd rather not pull in for v1. |
 
+## Per-message context menu
+
+The three-dot menu surfaced from each message header in the reading-pane accordion (`09-ui-layout.md` REQ-UI-21b). Items grouped by purpose; separators in the table indicate grouping.
+
+| ID | Action | Behaviour |
+|----|--------|-----------|
+| REQ-MAIL-130 | Reply | Opens compose pre-populated as `30-32` describe; per-message scope (just this message, not the whole thread). |
+| REQ-MAIL-131 | Forward | Opens compose populated with the message body and headers per REQ-MAIL-32. |
+| REQ-MAIL-132 | Delete | Moves the **message** to Trash via `Email/set` (`mailboxIds: { <trash>: true }`). Does NOT delete the rest of the thread. Optimistic with Undo. |
+| REQ-MAIL-133 | Mark as unread | Sets `keywords/$seen: null` on this message only. The thread shows unread again if any of its messages is unread. |
+| REQ-MAIL-134 | Block sender | Adds the message's `From` address to the user's block list. Future messages from that address are filtered (Sieve rule auto-generated; see `04-filters.md`). Confirmation dialog before applying. |
+| REQ-MAIL-135 | Report spam | Marks the message `$junk` and moves to the Spam mailbox. Sends a feedback signal to herold's spam classifier (REQ-FILT-220-style mechanism). The message's sender is NOT auto-blocked (the user can do that explicitly via REQ-MAIL-134). |
+| REQ-MAIL-136 | Report phishing | Same as report-spam, plus an additional flag indicating phishing rather than generic spam. Herold may forward the report to upstream (operator policy). |
+| REQ-MAIL-137 | Report illegal content | Surfaces a confirmation modal explaining the operator-side handling, then sends a report payload to herold's admin queue. Operator policy governs further escalation. Hidden if the operator hasn't enabled illegal-content reporting in herold's policy. |
+| REQ-MAIL-138 | Filter messages like this | Opens the filter editor (`04-filters.md`) pre-populated with conditions derived from the message: From address (or domain), subject prefix, list-id (if present). User picks the action. |
+| REQ-MAIL-139 | Translate | Cut for v1. The action is hidden until tabard ships translation. (Hidden, not greyed-out — invisible.) |
+| REQ-MAIL-140 | Print | Opens the browser print dialog scoped to this message's rendered body (with sender / date / subject header). |
+| REQ-MAIL-141 | Download message | Downloads the raw RFC 5322 source as `<subject>.eml` via `Blob/download` of the email's blob. |
+| REQ-MAIL-142 | Show original | Opens a modal showing the raw RFC 5322 source (headers + body). Read-only, monospace, copy-to-clipboard affordance. Useful for debugging delivery and authentication. |
+
+## Below-message actions
+
+Pill-shaped action buttons rendered below each expanded message (`09-ui-layout.md` REQ-UI-25a), mirroring the most-used items from the per-message header.
+
+| ID | Action | Behaviour |
+|----|--------|-----------|
+| REQ-MAIL-150 | Reply | Same as REQ-MAIL-130. |
+| REQ-MAIL-151 | Forward | Same as REQ-MAIL-131. |
+| REQ-MAIL-152 | React | Opens an emoji picker; selecting an emoji applies it as a reaction to the message. Reactions are a server-side concept stored as `$reaction-<emoji>` keywords (or via a richer extension; see `notes/server-contract.md` and `notes/open-questions.md` if shape isn't pinned). |
+
+The pill buttons are the second time these actions surface for the message — once in the per-message header (REQ-UI-21b), once below the body. Both invoke the same handlers. Redundancy is intentional: the user reaches the bottom of a long message and wants to reply without scrolling back up.
+
+## Mute thread
+
+| ID | Action | Behaviour |
+|----|--------|-----------|
+| REQ-MAIL-160 | Mute thread | Adds the thread's id to a per-account mute set. Future replies on the thread skip the inbox (auto-archive on arrival; the thread keeps growing in All Mail / labels). The mute is reversible via the same menu — "Unmute thread" — when the thread is open. |
+
+Mute set storage: server-side via Sieve rule (`04-filters.md`) auto-generated from the mute action, OR client-local `localStorage` if Sieve is unavailable. Default: server-side via Sieve. The user-facing affordance is one click; the rule generation is internal.
+
 ## Placeholders growing from capture
 
 > **⚠ PLACEHOLDER** — top-actions not already covered above will be added from `gmail-analysis-*.json` (`top_actions` ≥ 5 occurrences). Likely candidates: print, mute thread, report spam, mark important, snippet preview hover. Add as `REQ-MAIL-7n`+ and only re-prefix existing IDs if the area materially reorganises.

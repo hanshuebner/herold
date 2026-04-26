@@ -141,15 +141,122 @@ The components tabard owns and Carbon doesn't give us. Each is a Svelte componen
 ### Thread row
 
 ```
-┌─[checkbox] ─[star] ─[sender]──── ─[subject + snippet]─── ─[label chips]─ ─[date]─┐
-└────────────────────────────────────────────────────────────────────────────────┘
+┌─[chk] ─[★] ─[▶] ─[sender summary  3] ─[subject — snippet]─ ─[chips]─ ─[📎]─ ─[date]─┐
+└──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+- `[chk]`: checkbox. Hidden when no rows selected; shown on hover or when any row is selected.
+- `[★]`: star (toggles `$flagged`). Filled when starred; outlined otherwise.
+- `[▶]`: importance chevron (toggles `$important`). Filled (yellow) when important; outlined otherwise.
+- Sender summary: collapsed multi-sender ("Olaf, Ich, Olaf") with the user shown as "Ich" (or locale equivalent). Trailing small numeral indicates the message count in the thread; absent for single-message threads.
+- Subject + snippet: subject in `--text-primary`; snippet in `--text-secondary` after a separator. Single line, ellipsised.
+- Label chips render between the subject snippet and the right-side icons; truncate with overflow chip if more than ~2 fit.
+- `[📎]`: attachment indicator when the thread has any attachment.
+- Date: relative within the year; year-prefixed older. Locale-aware (`requirements/22-internationalization.md` REQ-I18N-21).
 - Built on a plain `<div role="option">` inside a `role="listbox"` parent (`requirements/13-nonfunctional.md` REQ-A11Y-02).
-- Hover reveals checkbox; focus shows it permanently.
 - Unread state: `--text-primary` weight 600 on sender + subject; read state: weight 400 + `--text-secondary` on snippet.
+- Selected state: `--layer-02` background, optional `--interactive` left-border accent.
 - Hit target: full row click → opens thread.
 - Tokens: `body-compact-01`, padding `spacing-03` vertical / `spacing-05` horizontal, divider `--border-subtle-01`.
+
+### Global bar
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│         [🔍 search input ........................] [×] [⚙ filter]   [● Aktiv ▾] [?] [⚙] │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+- Mounted by the suite shell at the top of every route.
+- Search input is the dominant element, ~50% of the bar's width on desktop. Placeholder reflects the active context (mail / chat / calendar).
+- Right-aligned controls: presence dropdown, help button, settings button.
+- Tokens: `body-compact-01`, height `spacing-08` (40px), padding `spacing-05` horizontal, background `--layer-01`, bottom border `--border-subtle-01`.
+- Hidden in compose modal and call modal.
+
+### Inner sidebar (mail)
+
+```
+┌─[ 📝 Compose ]──────────────────────────────┐
+├──────────────────────────────────────────────┤
+│ 📥 Inbox                                14   │
+│ 🕒 Snoozed                                   │
+│ Σ Important                                  │
+│ ▶ Sent                                       │
+│ 📄 Drafts                                 1  │
+│ 📨 All Mail                                  │
+│ ▼ More                                       │
+├──────────────────────────────────────────────┤
+│ Labels                                    +  │
+│ ▶ work                                       │
+│ ▶ family                                     │
+│ ▼ More                                       │
+└──────────────────────────────────────────────┘
+```
+
+- Compose button at top, full-width, prominent (`--interactive` background, light variant `--layer-02`).
+- System mailboxes in fixed order (`requirements/03-labels.md` REQ-LBL-06a).
+- "More" expander reveals Spam, Trash, etc.
+- Labels section: a heading row with "+" affordance (creates label) followed by the label tree. Top-level labels with children render an expand triangle.
+- Built on plain Svelte components; no Bits UI primitive needed (the picker pattern doesn't apply here — these are persistent navigation entries).
+- Tokens: `body-compact-01` on rows, `heading-compact-01` on section headings ("Labels"), padding `spacing-03` vertical per row.
+
+### List header
+
+```
+┌─[☑ ▾] ─[⟳ refresh] ─[⋮ more]─────────────────────[ 1–50 von 1247  < > ]─┐
+├──────────────────────────────────────────────────────────────────────────┤
+│ [Allgemein]   [Werbung]   [Soziale Netzwerke]   [Benachrichtigungen]    │  ← category tabs
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+- Bulk-select control: checkbox + dropdown (Bits UI Combobox). Subset filters per `requirements/09-ui-layout.md` REQ-UI-44a.
+- Refresh button: spinner while in flight.
+- Three-dot more-menu: view-scope actions per REQ-UI-09c.
+- Right side: page-range counter + prev/next page navigation (both arrow buttons disable when at first/last page).
+- Below the header: category-tab strip in views that show categories. Active tab has an accent underline (`--interactive`).
+- Tokens: `body-compact-01`, height `spacing-08` for the header row + `spacing-08` for the tab strip when present, sticky to the top of the list.
+
+### Reading pane toolbar
+
+```
+┌─[←] ─[📥 archive] ─[! spam] ─[🗑 delete] ─[✉ mark unread] ─[🕒 snooze] ─[✓ tasks] ─[📂 move] ─[🏷 label] ─[⋮]─┐
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+- Sits at the top of the reading pane when a thread is open.
+- All buttons are icon-only with tooltips; the reading-pane toolbar is dense by default. A user setting toggles to a labelled "simple toolbar" mode (REQ-UI-19c).
+- Add-to-tasks is hidden in v1 (no tasks app).
+- Three-dot menu opens via Bits UI Menu (Popover with Listbox semantics).
+- Tokens: icon size 20px, `spacing-04` between groups (back arrow, mail-action group, classification group, organisation group, more), `spacing-08` height.
+
+### Message header (per-message in the accordion)
+
+```
+┌─[🟣 avatar]   Sender Name <sender@example.com>      📎  Fr., 20. Okt. 2023, 21:45  ⭐ 😀 ↩ ⋮─┐
+│            🔓 to me ▼                                        [rscsupdt.zip]                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+- Avatar: initial-circle when no avatar image; coloured-by-hash when no avatar source.
+- Sender display name + email; encryption / authentication indicator below (`requirements/18-authentication-results.md` REQ-AR-30..33 surfaced visibility).
+- Recipient summary ("an mich" / "to me", "an Hans und 4 weitere") clickable to expand the To/Cc/Bcc list.
+- Right-side controls (in row order): attachment indicator (paperclip), date+time (locale formatted), star, react (emoji picker), reply (when expanded), per-message context menu (three-dot).
+- Attachment chips render under the date when collapsed; under the body when expanded (handled by `17-attachments.md`).
+- Tokens: `body-compact-01` on header text; avatar 32px circle; right-side icons 18px; padding `spacing-04`.
+
+### Category tabs
+
+```
+┌─[📥 Allgemein] [🏷 Werbung] [👥 Soziale Netzwerke] [ⓘ Benachrichtigungen]─┐
+└──[─────────]──────────────────────────────────────────────────────────────┘
+   ↑ accent underline on active tab
+```
+
+- Above the thread list when categorisation is active (`requirements/05-categorisation.md` REQ-CAT-10).
+- Each tab: icon + label + (optional) unread count badge when the category has unreads.
+- Active tab: `--interactive` accent underline, `--text-primary` weight 600.
+- Inactive tabs: `--text-secondary`, no underline.
+- Built on Bits UI Tabs.
 
 ### Message accordion
 

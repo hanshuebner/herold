@@ -63,6 +63,7 @@ These are spec-only for now — implementation lands when the sibling app does.
 - **Auth:** Bearer token over HTTPS. Token sourcing TBD (interactive form vs OIDC redirect via herold) — see `notes/open-questions.md`.
 - **Capture-driven requirements:** sections covering mail basics, keyboard priorities, workflows, and performance budgets are populated from gmail-logger output per `notes/capture-integration.md`. Until that data lands, those sections carry placeholders rather than guesses.
 - **Visual style:** dark default, light theme switchable. IBM Plex Sans / IBM Plex Mono so we stay visually consistent with the gmail-logger popup during prototyping.
+- **Localisation:** English (US/GB), German (DE/AT/CH), French (FR/BE/CA/CH) at v1 (`requirements/22-internationalization.md`). ICU MessageFormat resource bundles; `Intl` APIs for date/time/number formatting. RTL and CJK out for v1.
 
 ## Open scope items
 

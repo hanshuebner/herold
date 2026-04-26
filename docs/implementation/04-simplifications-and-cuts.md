@@ -37,7 +37,7 @@ This file is the inverse of `../00-scope.md`'s non-goals: those are *categories*
 | Multi-account | Account switcher | Single account | NG3 |
 | State management | Time-travel debugging, undo history beyond Undo toast | Just enough to support optimistic revert | YAGNI |
 | Build | Multi-bundle code splitting, route-based lazy loading | Single bundle in v1 | Bundle stays small (`01-tech-stack.md` < 200 KB target); revisit if it grows |
-| i18n | Multi-language strings | English-only at v1 | One user, one language (German UI text is the open option — see `../notes/open-questions.md` if it surfaces) |
+| i18n | Many languages | en-US, en-GB, de-DE, de-AT, de-CH, fr-FR, fr-BE, fr-CA, fr-CH at v1; ICU MessageFormat plus `Intl` formatters per `requirements/22-internationalization.md` | The user's languages, plus close regional variants. RTL and CJK out for v1. |
 | Telemetry | Usage analytics | None | NG9 + we have gmail-logger for behavioural data, in development only |
 
 ## Things that look like cuts but aren't

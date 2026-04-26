@@ -59,7 +59,8 @@ tabard/
     │   ├── 18-authentication-results.md  SPF/DKIM/DMARC/ARC display (RFC 8601)
     │   ├── 19-drafts.md            auto-save, recovery, multi-device conflict
     │   ├── 20-settings.md          settings panel scope and storage
-    │   └── 21-video-calls.md       1:1 video calls (WebRTC, signaling, TURN)
+    │   ├── 21-video-calls.md       1:1 video calls (WebRTC, signaling, TURN)
+    │   └── 22-internationalization.md  en/de/fr + regional variants; ICU; Intl
     ├── architecture/
     │   ├── 01-system-overview.md
     │   ├── 02-jmap-client.md
@@ -108,6 +109,7 @@ tabard/
 - `REQ-DFT-nn`   — drafts
 - `REQ-SET-nn`   — settings
 - `REQ-CALL-nn`  — video calls (1:1)
+- `REQ-I18N-nn`  — internationalization
 
 When cutting or adding, reference by ID.
 
