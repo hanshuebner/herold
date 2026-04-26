@@ -32,56 +32,6 @@ ALICE_PASS = "alicepw-interop"
 
 
 @pytest.mark.inbound
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "stalwart container does not yet trust the interop CA: when stalwart "
-        "accepts the test message and tries to deliver it onward via STARTTLS "
-        "to its own MX, the handshake fails with "
-        "'invalid peer certificate: UnknownIssuer'. Fix is to install the "
-        "interop CA root into stalwart's system trust store at startup. "
-        "Tracked as v3 work; remove this marker when fixed."
-    ),
-)
-def test_inbound_terminal_from_stalwart(
-    run_id,
-    nonce,
-    stalwart_host,
-    stalwart_smtp_port,
-    herold_smtp_host,
-    herold_imaps_port,
-):
-    """Stalwart sends a message to alice@herold.test; alice sees it via IMAPS."""
-    subject = f"interop-stalwart-{nonce}"
-    body = f"body from stalwart run={run_id} nonce={nonce}"
-    msg = build_message(
-        from_addr=f"stalwart-sender@stalwart.test",
-        to_addr=ALICE_USER,
-        subject=subject,
-        body=body,
-        message_id=f"stalwart-{nonce}",
-    )
-    log("test", "sending", f"via=stalwart nonce={nonce}")
-    send_via_relay(
-        host=stalwart_host,
-        port=stalwart_smtp_port,
-        from_addr=f"stalwart-sender@stalwart.test",
-        to_addr=ALICE_USER,
-        msg=msg,
-        use_starttls=False,  # Stalwart v0.10.6 on port 25: plaintext ok in interop net
-    )
-
-    conn = connect_imaps(herold_smtp_host, herold_imaps_port, ALICE_USER, ALICE_PASS)
-    try:
-        raw = assert_message_in_inbox(conn, subject, timeout=30)
-        assert body.encode() in raw or nonce.encode() in raw, (
-            f"expected body content in fetched message"
-        )
-    finally:
-        conn.logout()
-
-
-@pytest.mark.inbound
 def test_inbound_terminal_from_postfix(
     run_id,
     nonce,

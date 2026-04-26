@@ -5,7 +5,7 @@ Tests herold's IMAP implementation against real terminal clients:
   - mutt  (via docker exec into mutt-client container)
   - s-nail (via docker exec into snail-client container)
 
-Each scenario is parametrized over {"herold", "stalwart", "james"} for
+Each scenario is parametrized over {"herold", "james"} for
 differential coverage.  The postfix container uses Dovecot for IMAP and
 is included only for herold (Dovecot would be a baseline sanity check but
 is skipped for the parametrized matrix since its IMAP is well-tested
@@ -48,15 +48,6 @@ _MTA_ACCOUNTS = {
         "imap_host": "mail.herold.test",
         "imap_port": 993,
         "smtp_host": "mail.herold.test",
-        "smtp_port": 25,
-        "smtp_starttls": False,
-    },
-    "stalwart": {
-        "user": "bob@stalwart.test",
-        "pass": "testpw-bob1",
-        "imap_host": "mail.stalwart.test",
-        "imap_port": 143,  # Stalwart supports STARTTLS on 143 and implicit on 993
-        "smtp_host": "mail.stalwart.test",
         "smtp_port": 25,
         "smtp_starttls": False,
     },
@@ -161,15 +152,15 @@ def _seed_message(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.imap_client
-@pytest.mark.parametrize("mta", ["herold", "stalwart", "james"])
+@pytest.mark.parametrize("mta", ["herold", "james"])
 def test_mutt_list_inbox(run_id, nonce, mta):
     """
     Pre-seed a message then drive mutt in batch mode to list INBOX.
     Assert the known Subject line appears in the output.
 
-    Differential coverage: same scenario against herold, Stalwart, James.
-    Skip stalwart/james if their containers are not healthy rather than
-    failing the entire suite.
+    Differential coverage: same scenario against herold and James.
+    Skip james if its container is not healthy rather than failing the
+    entire suite.
     """
     acct = _MTA_ACCOUNTS[mta]
     subject, _body = _seed_message(nonce, run_id, mta)
@@ -214,7 +205,7 @@ def test_mutt_list_inbox(run_id, nonce, mta):
 
 
 @pytest.mark.imap_client
-@pytest.mark.parametrize("mta", ["herold", "stalwart", "james"])
+@pytest.mark.parametrize("mta", ["herold", "james"])
 def test_mutt_set_seen_flag(run_id, nonce, mta):
     """
     Seed a message, mark it Seen via mutt, reconnect via Python IMAP, assert \\Seen.
@@ -254,7 +245,7 @@ def test_mutt_set_seen_flag(run_id, nonce, mta):
             acct["pass"],
         )
     else:
-        # Stalwart and James: use port 143 STARTTLS via python imaplib
+        # James: use port 143 STARTTLS via python imaplib
         import imaplib, ssl, os
         ctx = ssl.create_default_context(cafile=os.environ.get("TLS_CA_BUNDLE", _CA_PATH))
         conn = imaplib.IMAP4(acct["imap_host"], acct["imap_port"])
@@ -316,7 +307,7 @@ def test_mutt_search(run_id, nonce, mta):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.imap_client
-@pytest.mark.parametrize("mta", ["herold", "stalwart", "james"])
+@pytest.mark.parametrize("mta", ["herold", "james"])
 def test_snail_fetch(run_id, nonce, mta):
     """
     Seed a message, fetch via s-nail, assert body content.

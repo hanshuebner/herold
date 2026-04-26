@@ -16,7 +16,7 @@ def log(context: str, event: str, detail: str = "") -> None:
     Format: timestamp context=<ctx> event=<event> [<detail>]
 
     Example:
-        log("smtp_send", "connected", "host=stalwart port=25")
+        log("smtp_send", "connected", "host=postfix port=25")
     """
     ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     line = f"{ts} context={context} event={event}"

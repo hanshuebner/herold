@@ -8,12 +8,6 @@ herold.test.:53 {
     errors
 }
 
-stalwart.test.:53 {
-    file /etc/coredns/zones/stalwart.test.zone
-    log
-    errors
-}
-
 postfix.test.:53 {
     file /etc/coredns/zones/postfix.test.zone
     log

@@ -80,7 +80,7 @@ compose_up() {
 
 # Build / pull images.
 docker compose build --quiet herold runner 2>&1 | tee "${LOGS_DIR}/build.log"
-docker compose pull --quiet coredns stalwart postfix 2>&1 | tee -a "${LOGS_DIR}/build.log" || true
+docker compose pull --quiet coredns postfix 2>&1 | tee -a "${LOGS_DIR}/build.log" || true
 
 # Start core services (no runner profile yet).
 # Phase 1: start infrastructure + certgen.
@@ -91,17 +91,11 @@ compose_up coredns certgen \
 echo "interop: waiting for certgen to complete"
 docker compose wait certgen 2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
 
-# Phase 1b: start stalwart-config-init (seeds config into writable volume).
-compose_up stalwart-config-init \
-    2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
-echo "interop: waiting for stalwart-config-init to complete"
-docker compose wait stalwart-config-init 2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
-
 # Phase 2: start MTAs sequentially.  Bringing them up in parallel hits a
 # Docker Desktop IPAM race on macOS that surfaces as
 # "failed to set up container networking: Address already in use" on a
 # subset of services.  A 2-second gap between starts is enough to dodge it.
-for svc in herold stalwart postfix james mutt-client snail-client; do
+for svc in herold postfix james mutt-client snail-client; do
     compose_up "${svc}" 2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
     sleep 2
 done
@@ -112,12 +106,12 @@ compose_up --wait herold \
     2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
 
 # Phase 3: run setup services (user/domain creation).
-compose_up stalwart-setup james-setup \
+compose_up james-setup \
     2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
 
 # Wait for setup services to complete.
 echo "interop: waiting for setup services to complete"
-docker compose wait stalwart-setup james-setup 2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
+docker compose wait james-setup 2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
 
 # Wait for each MTA to accept connections on port 25.  Polls up to 90s per
 # service via a one-shot alpine container attached to the interop network.
@@ -139,7 +133,6 @@ wait_port() {
     echo "interop: WARNING ${label} did not start listening on ${target_host}:${target_port} within $((max_attempts * 2))s"
     return 1
 }
-wait_port stalwart 25 "stalwart" 60 || true
 wait_port postfix 25 "postfix" 180 || true
 wait_port james 25 "james" 90 || true
 
@@ -152,9 +145,6 @@ collect_all_logs() {
     collect_log coredns
     collect_log certgen
     collect_log herold
-    collect_log stalwart-config-init
-    collect_log stalwart
-    collect_log stalwart-setup
     collect_log postfix
     collect_log james
     collect_log james-setup

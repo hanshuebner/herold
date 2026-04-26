@@ -67,23 +67,6 @@ def herold_metrics_url() -> str:
     return os.environ.get("HEROLD_METRICS_URL", "http://herold:9090/metrics")
 
 
-# ---------- Stalwart endpoint fixtures ----------
-
-@pytest.fixture(scope="session")
-def stalwart_host() -> str:
-    return os.environ.get("STALWART_HOST", "mail.stalwart.test")
-
-
-@pytest.fixture(scope="session")
-def stalwart_smtp_port() -> int:
-    return int(os.environ.get("STALWART_SMTP_PORT", "25"))
-
-
-@pytest.fixture(scope="session")
-def stalwart_imap_port() -> int:
-    return int(os.environ.get("STALWART_IMAP_PORT", "143"))
-
-
 # ---------- docker-mailserver (Postfix) endpoint fixtures ----------
 
 @pytest.fixture(scope="session")

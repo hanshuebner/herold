@@ -94,55 +94,7 @@ services:
       retries: 24
 
   # -----------------------------------------------------------------------
-  # stalwart-config-init - copies config.toml into a writable volume.
-  # Stalwart v0.10.6 tries to write its merged "local config" back to the
-  # config file path at startup; if the file is bind-mounted :ro it logs a
-  # non-fatal write error.  To keep Stalwart happy we seed the config into
-  # a named volume (stalwart_etc) via this one-shot init container, then
-  # Stalwart mounts that volume read-write.
-  # -----------------------------------------------------------------------
-  stalwart-config-init:
-    image: alpine:3.20
-    command:
-      - /bin/sh
-      - -c
-      - |
-        cp /src/config.toml /dest/config.toml
-        echo "stalwart-config-init: copied config.toml to volume"
-    volumes:
-      - ./config/stalwart/config.toml:/src/config.toml:ro
-      - stalwart_etc:/dest
-    networks:
-      - interop
-    restart: "no"
-
-  # -----------------------------------------------------------------------
-  # Stalwart - third-party MTA #1 (task #2: TLS).
-  # -----------------------------------------------------------------------
-  stalwart:
-    image: stalwartlabs/mail-server:v0.10.6
-    hostname: stalwart.stalwart.test
-    volumes:
-      - stalwart_etc:/opt/stalwart-mail/etc
-      - tls-data:/etc/stalwart/tls:ro
-      - stalwart_data:/opt/stalwart-mail/data
-      - stalwart_logs:/opt/stalwart-mail/logs
-    networks:
-      interop:
-        ipv4_address: 10.77.0.11
-    dns:
-      - 10.77.0.2
-    restart: "no"
-    depends_on:
-      coredns:
-        condition: service_healthy
-      certgen:
-        condition: service_completed_successfully
-      stalwart-config-init:
-        condition: service_completed_successfully
-
-  # -----------------------------------------------------------------------
-  # docker-mailserver (Postfix + Dovecot) - third-party MTA #2 (task #2: TLS).
+  # docker-mailserver (Postfix + Dovecot) - third-party MTA #1 (task #2: TLS).
   # SSL_TYPE=manual points at the interop leaf cert.
   # -----------------------------------------------------------------------
   postfix:
@@ -206,27 +158,6 @@ services:
         condition: service_healthy
       certgen:
         condition: service_completed_successfully
-
-  # -----------------------------------------------------------------------
-  # stalwart-setup - one-shot init service.
-  # Waits for Stalwart's management API and creates bob@stalwart.test.
-  # -----------------------------------------------------------------------
-  stalwart-setup:
-    image: alpine:3.20
-    command:
-      - /bin/sh
-      - /scripts/stalwart-setup.sh
-    volumes:
-      - ./config/stalwart/stalwart-setup.sh:/scripts/stalwart-setup.sh:ro
-    networks:
-      interop:
-        ipv4_address: 10.77.0.18
-    dns:
-      - 10.77.0.2
-    restart: "no"
-    depends_on:
-      stalwart:
-        condition: service_started
 
   # -----------------------------------------------------------------------
   # james-setup - one-shot init service.
@@ -335,10 +266,6 @@ services:
       HEROLD_IMAP_PORT: "143"
       HEROLD_IMAPS_PORT: "993"
       HEROLD_METRICS_URL: "http://mail.herold.test:9090/metrics"
-      # Stalwart
-      STALWART_HOST: mail.stalwart.test
-      STALWART_SMTP_PORT: "25"
-      STALWART_IMAP_PORT: "993"
       # docker-mailserver (Postfix + Dovecot)
       POSTFIX_HOST: mail.postfix.test
       POSTFIX_SMTP_PORT: "25"
@@ -368,7 +295,6 @@ services:
       - 10.77.0.2
     extra_hosts:
       - "mail.herold.test:10.77.0.10"
-      - "mail.stalwart.test:10.77.0.11"
       - "mail.postfix.test:10.77.0.12"
       - "mail.james.test:10.77.0.13"
     restart: "no"
@@ -387,9 +313,6 @@ volumes:
   # tls-data: written by certgen, read-only in all other containers.
   tls-data:
   herold_data:
-  stalwart_etc:
-  stalwart_data:
-  stalwart_logs:
   postfix_mail:
   postfix_state:
   postfix_logs:

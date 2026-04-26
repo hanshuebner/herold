@@ -86,7 +86,6 @@ EOF
 # the faketime workaround documented in README.md instead.
 
 leaf_cert "herold"   "mail.herold.test"   "DNS:mail.herold.test,DNS:herold,DNS:herold.interop,IP:10.77.0.10"
-leaf_cert "stalwart" "mail.stalwart.test" "DNS:mail.stalwart.test,DNS:stalwart,IP:10.77.0.11"
 leaf_cert "postfix"  "mail.postfix.test"  "DNS:mail.postfix.test,DNS:postfix,IP:10.77.0.12"
 leaf_cert "james"    "mail.james.test"    "DNS:mail.james.test,DNS:james,IP:10.77.0.13"
 
