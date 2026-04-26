@@ -306,4 +306,3 @@ func TestRCPT_AcceptUnknownPrincipalDowngradesToDefer43(t *testing.T) {
 		t.Fatalf("unknown principal_id must defer 4.3.0, got %d", code)
 	}
 }
-

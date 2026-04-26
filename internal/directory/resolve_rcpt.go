@@ -379,4 +379,3 @@ func (r *RcptResolver) audit(ctx context.Context, plugin string, req ResolveRcpt
 			slog.String("err", err.Error()))
 	}
 }
-
