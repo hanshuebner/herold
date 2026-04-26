@@ -1414,6 +1414,12 @@ func composeAdminAndUI(
 	// ----- Admin handler -----
 	adminMux := http.NewServeMux()
 	adminMux.Handle("/api/v1/", adminHandler)
+	// /metrics is always mounted on the admin listener
+	// (REQ-OPS-ADMIN-LISTENER-01). The dedicated MetricsBind listener
+	// remains for operators who want a separate scrape endpoint; this
+	// mount ensures scrapes also work when MetricsBind is empty or the
+	// admin listener is the only HTTP surface.
+	adminMux.Handle("/metrics", observe.MetricsHandler())
 	if uiSrvAdmin != nil {
 		adminMux.Handle(prefix+"/", uiSrvAdmin.Handler())
 		// Bare `/` on the admin listener: redirect a browser to the
@@ -1431,6 +1437,16 @@ func composeAdminAndUI(
 
 	// ----- Public handler -----
 	publicMux := http.NewServeMux()
+
+	// /metrics must NOT be served by the public listener
+	// (REQ-OPS-ADMIN-LISTENER-01). Register an explicit 404 handler
+	// before the tabard SPA catch-all so the route is unambiguous.
+	// The SPA catch-all would otherwise absorb the request and return
+	// 200 with the SPA shell, leaking the metrics surface path to
+	// browser clients.
+	publicMux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
 
 	// Public /login flow (suite-login per REQ-AUTH-SCOPE-01) lives at
 	// the same /ui path prefix on the public listener with end-user
