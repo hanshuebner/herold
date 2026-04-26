@@ -504,6 +504,15 @@ type APIKey struct {
 	// existing rows with '["admin"]' so legacy keys retain their
 	// implicit pre-3.6 capability.
 	ScopeJSON string
+	// AllowedFromAddresses is the optional per-key allowlist of
+	// sender addresses (REQ-SEND-30 / REQ-SEND-12).  When non-empty
+	// the key may only send as one of these addresses.  The store
+	// persists them as a JSON array; nil / empty means "no constraint".
+	AllowedFromAddresses []string
+	// AllowedFromDomains is the optional per-key allowlist of sender
+	// domains (REQ-SEND-30).  When non-empty the from address must
+	// belong to one of these domains.  Applied after AllowedFromAddresses.
+	AllowedFromDomains []string
 }
 
 // ActorKind classifies the source of an audited action. The vocabulary

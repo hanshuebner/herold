@@ -33,6 +33,7 @@ const (
 	ctxKeyPrincipal ctxKey = iota + 1
 	ctxKeyRemoteAddr
 	ctxKeyRequestID
+	ctxKeyAPIKey
 )
 
 // PrincipalFromContext returns the authenticated principal attached to
@@ -43,6 +44,16 @@ func PrincipalFromContext(ctx context.Context) (store.Principal, bool) {
 		return v, true
 	}
 	return store.Principal{}, false
+}
+
+// APIKeyFromContext returns the API key attached to ctx by Bearer
+// authentication, or zero-value APIKey + false when the session was
+// authenticated via Basic or when no auth context is present.
+func APIKeyFromContext(ctx context.Context) (store.APIKey, bool) {
+	if v, ok := ctx.Value(ctxKeyAPIKey).(store.APIKey); ok {
+		return v, true
+	}
+	return store.APIKey{}, false
 }
 
 // requireAuth is middleware that enforces authentication. It supports
@@ -61,7 +72,7 @@ func PrincipalFromContext(ctx context.Context) (store.Principal, bool) {
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		principal, ok := s.authenticate(ctx, r)
+		principal, key, ok := s.authenticate(ctx, r)
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="jmap", Basic realm="jmap"`)
 			WriteJMAPError(w, http.StatusUnauthorized,
@@ -70,31 +81,37 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		ctx = context.WithValue(ctx, ctxKeyPrincipal, principal)
 		ctx = context.WithValue(ctx, ctxKeyRemoteAddr, r.RemoteAddr)
+		if key != nil {
+			ctx = context.WithValue(ctx, ctxKeyAPIKey, *key)
+		}
 		next(w, r.WithContext(ctx))
 	}
 }
 
 // authenticate parses the Authorization header and resolves the
-// requesting principal. Returns the zero Principal + false on any
+// requesting principal.  On success it returns the principal and,
+// when the session was Bearer-authenticated, the matching API key
+// (nil for Basic-authenticated sessions).  Returns false on any
 // failure (no information leak through differentiated reasons).
-func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, bool) {
+func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, *store.APIKey, bool) {
 	h := r.Header.Get("Authorization")
 	if h == "" {
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	switch {
 	case strings.HasPrefix(h, "Bearer "):
 		return s.authenticateBearer(ctx, strings.TrimSpace(h[len("Bearer "):]))
 	case strings.HasPrefix(h, "Basic "):
-		return s.authenticateBasic(ctx, strings.TrimSpace(h[len("Basic "):]))
+		p, ok := s.authenticateBasic(ctx, strings.TrimSpace(h[len("Basic "):]))
+		return p, nil, ok
 	default:
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 }
 
-func (s *Server) authenticateBearer(ctx context.Context, token string) (store.Principal, bool) {
+func (s *Server) authenticateBearer(ctx context.Context, token string) (store.Principal, *store.APIKey, bool) {
 	if !strings.HasPrefix(token, APIKeyPrefix) {
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	hashed := hashAPIKey(token)
 	key, err := s.apikeyLookup(ctx, hashed)
@@ -102,22 +119,22 @@ func (s *Server) authenticateBearer(ctx context.Context, token string) (store.Pr
 		if !errors.Is(err, store.ErrNotFound) {
 			s.log.Warn("protojmap.auth.lookup_failed", "err", err)
 		}
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	if subtle.ConstantTimeCompare([]byte(key.Hash), []byte(hashed)) != 1 {
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	p, err := s.store.Meta().GetPrincipalByID(ctx, key.PrincipalID)
 	if err != nil {
 		s.log.Warn("protojmap.auth.principal_lookup_failed",
 			"err", err, "principal_id", key.PrincipalID)
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	if p.Flags.Has(store.PrincipalFlagDisabled) {
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	_ = s.store.Meta().TouchAPIKey(ctx, key.ID, s.clk.Now())
-	return p, true
+	return p, &key, true
 }
 
 func (s *Server) authenticateBasic(ctx context.Context, encoded string) (store.Principal, bool) {

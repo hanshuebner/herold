@@ -39,6 +39,8 @@ func TestRegisterSubsystemMetrics_Idempotent(t *testing.T) {
 		RegisterProtojmapChatMetrics()
 		RegisterProtojmapCalendarsMetrics()
 		RegisterProtojmapContactsMetrics()
+		// Phase 3 REQ-SEND-12 send policy:
+		RegisterSendPolicyMetrics()
 	}
 }
 
@@ -64,6 +66,7 @@ func TestMetricsHandler_ExposesSubsystemMetrics(t *testing.T) {
 	RegisterProtojmapChatMetrics()
 	RegisterProtojmapCalendarsMetrics()
 	RegisterProtojmapContactsMetrics()
+	RegisterSendPolicyMetrics()
 
 	// Drive at least one observation through each metric so it shows
 	// up in the registry's text output (counters with zero observations
@@ -87,6 +90,7 @@ func TestMetricsHandler_ExposesSubsystemMetrics(t *testing.T) {
 	ProtojmapChatMethodsTotal.WithLabelValues("Conversation/get").Inc()
 	ProtojmapCalendarsMethodsTotal.WithLabelValues("Calendar/get").Inc()
 	ProtojmapContactsMethodsTotal.WithLabelValues("Contact/get").Inc()
+	SendForbiddenFromTotal.WithLabelValues("smtp").Inc()
 
 	srv := httptest.NewServer(MetricsHandler())
 	defer srv.Close()
@@ -116,6 +120,7 @@ func TestMetricsHandler_ExposesSubsystemMetrics(t *testing.T) {
 		"herold_protojmap_chat_methods_total",
 		"herold_protojmap_calendars_methods_total",
 		"herold_protojmap_contacts_methods_total",
+		"herold_send_forbidden_from_total",
 	}
 	for _, m := range wantOneOf {
 		if !strings.Contains(out, m) {

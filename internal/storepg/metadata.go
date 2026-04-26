@@ -394,11 +394,14 @@ func (m *metadata) InsertAPIKey(ctx context.Context, k store.APIKey) (store.APIK
 	if scope == "" {
 		scope = `["admin"]`
 	}
+	addrJSON := encodeStringSliceJSON(k.AllowedFromAddresses)
+	domJSON := encodeStringSliceJSON(k.AllowedFromDomains)
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
-			INSERT INTO api_keys (principal_id, hash, name, created_at_us, last_used_at_us, scope_json)
-			VALUES ($1, $2, $3, $4, 0, $5) RETURNING id`,
-			int64(k.PrincipalID), k.Hash, k.Name, usMicros(now), scope).Scan(&id)
+			INSERT INTO api_keys (principal_id, hash, name, created_at_us, last_used_at_us,
+			                      scope_json, allowed_from_addresses_json, allowed_from_domains_json)
+			VALUES ($1, $2, $3, $4, 0, $5, $6, $7) RETURNING id`,
+			int64(k.PrincipalID), k.Hash, k.Name, usMicros(now), scope, addrJSON, domJSON).Scan(&id)
 	})
 	if err != nil {
 		return store.APIKey{}, mapErr(err)
@@ -411,12 +414,15 @@ func (m *metadata) InsertAPIKey(ctx context.Context, k store.APIKey) (store.APIK
 
 func (m *metadata) GetAPIKeyByHash(ctx context.Context, hash string) (store.APIKey, error) {
 	row := m.s.pool.QueryRow(ctx, `
-		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us, scope_json
+		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us,
+		       scope_json, allowed_from_addresses_json, allowed_from_domains_json
 		  FROM api_keys WHERE hash = $1`, hash)
 	var k store.APIKey
 	var id, pid int64
 	var createdUs, lastUs int64
-	err := row.Scan(&id, &pid, &k.Hash, &k.Name, &createdUs, &lastUs, &k.ScopeJSON)
+	var addrJSON, domJSON string
+	err := row.Scan(&id, &pid, &k.Hash, &k.Name, &createdUs, &lastUs,
+		&k.ScopeJSON, &addrJSON, &domJSON)
 	if err != nil {
 		return store.APIKey{}, mapErr(err)
 	}
@@ -424,6 +430,8 @@ func (m *metadata) GetAPIKeyByHash(ctx context.Context, hash string) (store.APIK
 	k.PrincipalID = store.PrincipalID(pid)
 	k.CreatedAt = fromMicros(createdUs)
 	k.LastUsedAt = fromMicros(lastUs)
+	k.AllowedFromAddresses = decodeStringSliceJSON(addrJSON)
+	k.AllowedFromDomains = decodeStringSliceJSON(domJSON)
 	return k, nil
 }
 
@@ -444,7 +452,8 @@ func (m *metadata) TouchAPIKey(ctx context.Context, id store.APIKeyID, at time.T
 
 func (m *metadata) ListAPIKeysByPrincipal(ctx context.Context, pid store.PrincipalID) ([]store.APIKey, error) {
 	rows, err := m.s.pool.Query(ctx, `
-		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us, scope_json
+		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us,
+		       scope_json, allowed_from_addresses_json, allowed_from_domains_json
 		  FROM api_keys WHERE principal_id = $1 ORDER BY id`, int64(pid))
 	if err != nil {
 		return nil, mapErr(err)
@@ -455,13 +464,17 @@ func (m *metadata) ListAPIKeysByPrincipal(ctx context.Context, pid store.Princip
 		var k store.APIKey
 		var id, ownerID int64
 		var createdUs, lastUs int64
-		if err := rows.Scan(&id, &ownerID, &k.Hash, &k.Name, &createdUs, &lastUs, &k.ScopeJSON); err != nil {
+		var addrJSON, domJSON string
+		if err := rows.Scan(&id, &ownerID, &k.Hash, &k.Name, &createdUs, &lastUs,
+			&k.ScopeJSON, &addrJSON, &domJSON); err != nil {
 			return nil, mapErr(err)
 		}
 		k.ID = store.APIKeyID(id)
 		k.PrincipalID = store.PrincipalID(ownerID)
 		k.CreatedAt = fromMicros(createdUs)
 		k.LastUsedAt = fromMicros(lastUs)
+		k.AllowedFromAddresses = decodeStringSliceJSON(addrJSON)
+		k.AllowedFromDomains = decodeStringSliceJSON(domJSON)
 		out = append(out, k)
 	}
 	return out, rows.Err()
@@ -1332,6 +1345,29 @@ func decodeAuditMetadata(s string) (map[string]string, error) {
 		return nil, fmt.Errorf("storepg: decode audit metadata: %w", err)
 	}
 	return out, nil
+}
+
+// encodeStringSliceJSON serialises a (possibly nil) slice to a compact
+// JSON array string for storage. nil and empty both produce "[]".
+func encodeStringSliceJSON(v []string) string {
+	if len(v) == 0 {
+		return "[]"
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+// decodeStringSliceJSON deserialises a JSON array from the database.
+// Empty / invalid strings return nil (no constraint).
+func decodeStringSliceJSON(s string) []string {
+	if s == "" || s == "[]" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func auditPrincipalID(e store.AuditLogEntry) int64 {

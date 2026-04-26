@@ -483,11 +483,135 @@ func TestForbiddenSource_NonOwnedDomain(t *testing.T) {
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("status=%d body=%s", res.StatusCode, buf)
 	}
-	if !bytes.Contains(buf, []byte("forbidden-source")) {
-		t.Errorf("body should reference forbidden-source: %s", buf)
+	if !bytes.Contains(buf, []byte("forbidden-from")) {
+		t.Errorf("body should reference forbidden-from: %s", buf)
 	}
 	if len(h.q.Calls()) != 0 {
 		t.Errorf("queue should not have been called: %d calls", len(h.q.Calls()))
+	}
+}
+
+// TestForbiddenFrom_OtherPrincipalAddress confirms that a principal
+// cannot send as an address owned by a different principal (REQ-SEND-12).
+func TestForbiddenFrom_OtherPrincipalAddress(t *testing.T) {
+	h := newSendHarness(t)
+	ctx := context.Background()
+	// Seed a second principal on the same domain.
+	_, err := h.store.Meta().InsertPrincipal(ctx, store.Principal{
+		CanonicalEmail: "bob@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal bob: %v", err)
+	}
+	body := map[string]any{
+		"source": "bob@example.test",
+		"destination": map[string]any{
+			"toAddresses": []string{"charlie@dest.test"},
+		},
+		"message": map[string]any{
+			"subject": "Impersonation",
+			"body":    map[string]any{"text": "hi"},
+		},
+	}
+	res, buf := h.doRequest("POST", "/api/v1/mail/send", h.apiKey, body)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", res.StatusCode, buf)
+	}
+	if !bytes.Contains(buf, []byte("forbidden-from")) {
+		t.Errorf("body should reference forbidden-from: %s", buf)
+	}
+	if len(h.q.Calls()) != 0 {
+		t.Errorf("queue must not have been called: %d calls", len(h.q.Calls()))
+	}
+}
+
+// TestForbiddenFrom_Alias_Allowed confirms that a principal can send as
+// an alias address that resolves to their own principal.
+func TestForbiddenFrom_Alias_Allowed(t *testing.T) {
+	h := newSendHarness(t)
+	ctx := context.Background()
+	// Create an alias for alice.
+	_, err := h.store.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart:       "alice-alias",
+		Domain:          "example.test",
+		TargetPrincipal: h.principalID,
+	})
+	if err != nil {
+		t.Fatalf("InsertAlias: %v", err)
+	}
+	body := map[string]any{
+		"source": "alice-alias@example.test",
+		"destination": map[string]any{
+			"toAddresses": []string{"bob@dest.test"},
+		},
+		"message": map[string]any{
+			"subject": "Via alias",
+			"body":    map[string]any{"text": "hi"},
+		},
+	}
+	res, buf := h.doRequest("POST", "/api/v1/mail/send", h.apiKey, body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for alias send, status=%d body=%s", res.StatusCode, buf)
+	}
+	if len(h.q.Calls()) != 1 {
+		t.Errorf("expected 1 queue submit, got %d", len(h.q.Calls()))
+	}
+}
+
+// TestForbiddenFrom_KeyAddressConstraint confirms that an API key with an
+// allowed_from_addresses list blocks addresses outside that list (REQ-SEND-30).
+func TestForbiddenFrom_KeyAddressConstraint(t *testing.T) {
+	h := newSendHarness(t)
+	ctx := context.Background()
+	// Reissue the API key with an AllowedFromAddresses constraint.
+	// First delete the old key and issue a new one.
+	if err := h.store.Meta().DeleteAPIKey(ctx, h.apiKeyID); err != nil {
+		t.Fatalf("DeleteAPIKey: %v", err)
+	}
+	plain, hash := mintKey(t)
+	_, err := h.store.Meta().InsertAPIKey(ctx, store.APIKey{
+		PrincipalID:          h.principalID,
+		Hash:                 hash,
+		Name:                 "constrained",
+		ScopeJSON:            `["mail.send"]`,
+		AllowedFromAddresses: []string{"allowed@example.test"},
+	})
+	if err != nil {
+		t.Fatalf("InsertAPIKey constrained: %v", err)
+	}
+	// Seed the allowed address as an alias of alice.
+	if _, err := h.store.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "allowed", Domain: "example.test",
+		TargetPrincipal: h.principalID,
+	}); err != nil {
+		t.Fatalf("InsertAlias allowed: %v", err)
+	}
+	// alice@example.test is owned but blocked by the key constraint.
+	body := map[string]any{
+		"source": "alice@example.test",
+		"destination": map[string]any{
+			"toAddresses": []string{"bob@dest.test"},
+		},
+		"message": map[string]any{"subject": "X", "body": map[string]any{"text": "hi"}},
+	}
+	res, buf := h.doRequest("POST", "/api/v1/mail/send", plain, body)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got status=%d body=%s", res.StatusCode, buf)
+	}
+	if !bytes.Contains(buf, []byte("forbidden-from")) {
+		t.Errorf("body should reference forbidden-from: %s", buf)
+	}
+	// allowed@example.test is in the allowlist — must succeed.
+	body2 := map[string]any{
+		"source": "allowed@example.test",
+		"destination": map[string]any{
+			"toAddresses": []string{"bob@dest.test"},
+		},
+		"message": map[string]any{"subject": "Y", "body": map[string]any{"text": "hi"}},
+	}
+	res2, buf2 := h.doRequest("POST", "/api/v1/mail/send", plain, body2)
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for allowed address, status=%d body=%s", res2.StatusCode, buf2)
 	}
 }
 

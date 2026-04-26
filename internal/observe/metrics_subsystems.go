@@ -422,6 +422,28 @@ func RegisterDirectoryRcptMetrics() {
 	})
 }
 
+// Send from-address policy metrics (REQ-SEND-12 / REQ-FLOW-41).
+// Label vocabulary:
+//   - source: "smtp" | "http" | "jmap"  (closed enum, one value per send surface).
+var (
+	sendPolicyMetricsOnce sync.Once
+
+	// SendForbiddenFromTotal counts every rejected send attempt where the
+	// caller's from address was not owned by the authenticated principal.
+	SendForbiddenFromTotal *prometheus.CounterVec
+)
+
+// RegisterSendPolicyMetrics registers the send-policy collector set; idempotent.
+func RegisterSendPolicyMetrics() {
+	sendPolicyMetricsOnce.Do(func() {
+		SendForbiddenFromTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_send_forbidden_from_total",
+			Help: "Total send attempts rejected because the from address was not owned by the principal (REQ-SEND-12), by source surface.",
+		}, []string{"source"})
+		MustRegister(SendForbiddenFromTotal)
+	})
+}
+
 // Runtime + process collectors. Registered against Registry so /metrics
 // surfaces Go runtime memory / GC / goroutine counts and the standard
 // process collector (RSS, CPU). Idempotent on repeated calls.

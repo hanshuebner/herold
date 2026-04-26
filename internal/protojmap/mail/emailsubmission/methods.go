@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/auth/sendpolicy"
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
@@ -599,6 +601,37 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 	mailFrom, recipients, perr := buildEnvelope(in.Envelope, identityEmail, msg)
 	if perr != nil {
 		return jmapEmailSubmission{}, perr
+	}
+	// REQ-SEND-12 / REQ-FLOW-41: verify the principal owns the from address.
+	observe.RegisterSendPolicyMetrics()
+	{
+		chk := sendpolicy.StoreChecker{Meta: s.h.store.Meta()}
+		var keyPtr *store.APIKey
+		if k, ok := protojmap.APIKeyFromContext(ctx); ok {
+			keyPtr = &k
+		}
+		dec, decErr := sendpolicy.CheckFrom(ctx, chk, p, keyPtr, strings.ToLower(mailFrom))
+		if decErr != nil {
+			return jmapEmailSubmission{}, &setError{Type: "serverFail",
+				Description: fmt.Sprintf("from-address ownership check: %s", decErr)}
+		}
+		if !dec.Allowed {
+			observe.SendForbiddenFromTotal.WithLabelValues(string(sendpolicy.SourceJMAP)).Inc()
+			_ = s.h.store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+				ActorKind: store.ActorPrincipal,
+				ActorID:   strconv.FormatUint(uint64(p.ID), 10),
+				Action:    "mail.send.forbidden_from",
+				Subject:   mailFrom,
+				Outcome:   store.OutcomeFailure,
+				Message:   "from address not owned by principal",
+				Metadata:  map[string]string{"from": mailFrom, "source": string(sendpolicy.SourceJMAP), "reason": string(dec.Reason)},
+			})
+			return jmapEmailSubmission{}, &setError{
+				Type:        "forbiddenFrom",
+				Description: fmt.Sprintf("from address %q is not owned by the authenticated principal", mailFrom),
+				Properties:  []string{"envelope.mailFrom"},
+			}
+		}
 	}
 	// Read the body blob for handing to the queue.
 	rc, err := s.h.store.Blobs().Get(ctx, msg.Blob.Hash)

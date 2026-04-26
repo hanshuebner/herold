@@ -400,3 +400,55 @@ func TestSet_Destroy_AlreadyInflight_ReturnsNotDestroyedWithReason(t *testing.T)
 		t.Fatalf("EmailSubmissionRow vanished after refused destroy: %v", err)
 	}
 }
+
+// TestEmailSubmission_Set_ForbiddenFrom confirms that EmailSubmission/set
+// returns a "forbiddenFrom" SetError when the from address resolved by the
+// identity is not owned by the submitting principal (REQ-SEND-12 /
+// REQ-FLOW-41).
+func TestEmailSubmission_Set_ForbiddenFrom(t *testing.T) {
+	h, _, p, _, mid, _ := newSetup(t)
+	// Swap the identity resolver to return someone else's address.
+	h.identity = stubResolver{email: "eve@other.test"}
+
+	args, _ := json.Marshal(map[string]any{
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("unexpected method error: %v", mErr)
+	}
+	js, _ := json.Marshal(resp)
+	if !strings.Contains(string(js), `"notCreated"`) {
+		t.Fatalf("expected notCreated: %s", js)
+	}
+	if !strings.Contains(string(js), `"forbiddenFrom"`) {
+		t.Fatalf("expected forbiddenFrom type: %s", js)
+	}
+}
+
+// TestEmailSubmission_Set_AllowedFrom_CanonicalAddress confirms that the
+// principal's canonical address is accepted without needing an alias entry.
+func TestEmailSubmission_Set_AllowedFrom_CanonicalAddress(t *testing.T) {
+	h, _, p, _, mid, sub := newSetup(t)
+	// Default resolver returns alice@example.test which is p's canonical.
+	args, _ := json.Marshal(map[string]any{
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+			},
+		},
+	})
+	_, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("unexpected error for canonical address: %v", mErr)
+	}
+	if len(sub.calls) != 1 {
+		t.Fatalf("expected 1 submit, got %d", len(sub.calls))
+	}
+}

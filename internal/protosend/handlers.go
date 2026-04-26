@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/auth/sendpolicy"
 	"github.com/hanshuebner/herold/internal/mailparse"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -174,11 +176,8 @@ func (s *Server) processSend(ctx context.Context, r *http.Request, req sendReque
 	}
 	p, _ := principalFrom(ctx)
 	key, _ := apiKeyFrom(ctx)
-	if !s.principalOwnsSourceDomain(ctx, p, req.Source) {
-		s.appendAudit(ctx, "send.api.reject", req.Source, store.OutcomeFailure,
-			"forbidden source", map[string]string{"reason": "forbidden-source"})
-		return nil, newProblem(r, http.StatusForbidden, "forbidden-source",
-			"source address domain not owned by principal", req.Source)
+	if problem := s.checkFromPolicy(ctx, r, p, &key, req.Source); problem != nil {
+		return nil, problem
 	}
 	built, err := buildStructuredMessage(req, s.opts.Hostname, s.clk.Now())
 	if err != nil {
@@ -262,11 +261,8 @@ func (s *Server) processSendRaw(ctx context.Context, r *http.Request, req sendRa
 	}
 	p, _ := principalFrom(ctx)
 	key, _ := apiKeyFrom(ctx)
-	if !s.principalOwnsSourceDomain(ctx, p, source) {
-		s.appendAudit(ctx, "send.api.reject", source, store.OutcomeFailure,
-			"forbidden source", map[string]string{"reason": "forbidden-source"})
-		return nil, newProblem(r, http.StatusForbidden, "forbidden-source",
-			"From: address domain not owned by principal", source)
+	if problem := s.checkFromPolicy(ctx, r, p, &key, source); problem != nil {
+		return nil, problem
 	}
 	final, msgID, err := inspectRawMessage(raw, s.opts.Hostname, source, s.clk.Now())
 	if err != nil {
@@ -341,42 +337,28 @@ func (s *Server) validateSendRequest(r *http.Request, req sendRequest) *problemD
 	return nil
 }
 
-// principalOwnsSourceDomain returns true when source's domain is one of
-// the principal's owned local domains. v1 enforces "the source domain
-// is local AND owned by the principal" via the alias table reach; for
-// the bootstrap admin path we accept any local domain. Per-key
-// allowedSources filtering is a future wave.
-func (s *Server) principalOwnsSourceDomain(ctx context.Context, p store.Principal, source string) bool {
-	dom := domainOf(source)
-	if dom == "" {
-		return false
-	}
-	// Admins can send as any local domain.
-	domains, err := s.store.Meta().ListLocalDomains(ctx)
+// checkFromPolicy enforces REQ-SEND-12 / REQ-FLOW-41: the from address
+// must be owned by the authenticated principal.  On denial it writes the
+// audit log, increments the metric, and returns a 403 problem document.
+// key may be nil when the session was not authenticated via an API key.
+func (s *Server) checkFromPolicy(ctx context.Context, r *http.Request, p store.Principal, key *store.APIKey, from string) *problemDoc {
+	observe.RegisterSendPolicyMetrics()
+	chk := sendpolicy.StoreChecker{Meta: s.store.Meta()}
+	dec, err := sendpolicy.CheckFrom(ctx, chk, p, key, strings.ToLower(from))
 	if err != nil {
-		s.loggerFrom(ctx).Warn("protosend.list_local_domains", "err", err)
-		return false
+		s.loggerFrom(ctx).Error("protosend.checkfrom.store_error", "err", err, "from", from)
+		return newProblem(r, http.StatusInternalServerError, "internal-error",
+			"from-address ownership check failed", err.Error())
 	}
-	local := false
-	for _, d := range domains {
-		if strings.EqualFold(d.Name, dom) {
-			local = true
-			break
-		}
+	if !dec.Allowed {
+		observe.SendForbiddenFromTotal.WithLabelValues(string(sendpolicy.SourceHTTP)).Inc()
+		s.appendAudit(ctx, "mail.send.forbidden_from", from, store.OutcomeFailure,
+			"from address not owned by principal",
+			map[string]string{"from": from, "source": string(sendpolicy.SourceHTTP), "reason": string(dec.Reason)})
+		return newProblem(r, http.StatusForbidden, "forbidden-from",
+			"from address is not owned by the authenticated principal", from)
 	}
-	if !local {
-		return false
-	}
-	if p.Flags.Has(store.PrincipalFlagAdmin) {
-		return true
-	}
-	// Non-admin: require the source domain to match the principal's
-	// canonical email domain. (A richer per-principal "owned domains"
-	// model lands when the schema grows it.)
-	if strings.EqualFold(domainOf(p.CanonicalEmail), dom) {
-		return true
-	}
-	return false
+	return nil
 }
 
 // composeIdempotencyKey ties the client-supplied key to the API key id
