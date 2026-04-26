@@ -135,6 +135,15 @@ These are additive over REQ-PROTO-41. Each is its own JMAP capability, registere
 - **REQ-PROTO-58** MUST honour `EmailSubmission.sendAt` (RFC 8621 §7.5) — when set, the outbound queue holds the submission until the indicated UTCDate and only then begins delivery. `EmailSubmission/set { destroy }` issued before `sendAt` MUST cancel delivery (the submission is removed from the queue and no message leaves). Pairs with REQ-FLOW-63. Used by tabard's send-undo (`/Users/hans/tabard/docs/requirements/02-mail-basics.md` REQ-MAIL-14, `/Users/hans/tabard/docs/requirements/11-optimistic-ui.md` REQ-OPT-11). Phase 1.
 - **REQ-PROTO-59** MUST pass `text/calendar` MIME parts through the outbound queue without stripping or rewriting. iMIP messages (`text/calendar; method=REQUEST/CANCEL/REPLY/COUNTER/REFRESH`) are ordinary multipart/alternative emails from the queue's perspective; no special handling required, but the path must not silently drop unknown MIME types. Used by tabard's iMIP RSVP path (`/Users/hans/tabard/docs/requirements/15-calendar-invites.md`). Phase 1.
 
+### Email reactions extension
+
+Per `/Users/hans/tabard/docs/notes/server-contract.md` § Email reactions. Capability `https://tabard.dev/jmap/email-reactions`. Phase 2.
+
+- **REQ-PROTO-100** MUST persist a `reactions` extension property on `Email`. Shape: `{ "<emoji>": ["<principal-id>", ...] }`. Sparse — emojis with no current reactors are absent rather than empty arrays. Stored as a JSON column or normalised table (implementation choice; the JMAP shape is the contract).
+- **REQ-PROTO-101** `Email/set` MUST accept JSON-patch paths under `reactions/`. Specifically: `reactions/<emoji>/<principal-id>: true` to add, `: null` to remove. Paths MUST validate that the requesting principal is `<principal-id>` — a user can only add or remove their own reaction. Other paths return `forbidden`.
+- **REQ-PROTO-102** Reactions advance the `Email` state string per the standard JMAP rules; pushed via the EventSource channel like other Email mutations.
+- **REQ-PROTO-103** Outbound emission of reactions to non-local recipients is herold's responsibility — see REQ-FLOW-100..108. Tabard does not see the cross-server-vs-local-only distinction; it just calls `Email/set` and herold dispatches.
+
 ## ManageSieve (REQ-PROTO-MGSV)
 
 - **REQ-PROTO-50** MUST listen on **4190/tcp** (STARTTLS) with the capabilities from RFC 5804.

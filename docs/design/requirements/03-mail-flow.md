@@ -99,6 +99,44 @@ Runs once the message is accepted in principle but before it's written to the re
 - **REQ-FLOW-80** MUST NOT be an open relay. Unauthenticated SMTP may only accept mail for local domains.
 - **REQ-FLOW-81** Authenticated relay MAY be further restricted (e.g. certain users may only submit to internal domains). Policy enforced in the MTA, not via Sieve.
 
+## Email reactions — cross-server propagation
+
+Per `requirements/01-protocols.md` REQ-PROTO-100..103 (the JMAP extension) and `/Users/hans/tabard/docs/notes/server-contract.md` § Email reactions (the wire format and end-to-end behaviour).
+
+When a user adds a reaction to a message that has recipients on another server, the reaction is propagated as an outbound email carrying structured reaction headers plus a human-readable body fallback. Herold-aware receivers consume the headers and apply as a native reaction; non-herold receivers see a normal short email threaded with the original.
+
+Phase 2 — alongside the rest of the chat / suite work.
+
+### Outbound
+
+- **REQ-FLOW-100** When `Email/set` adds a reaction (`reactions/<emoji>/<principal-id>: true`), herold MUST examine the original message's recipient set. For each recipient address whose domain is NOT a local domain, herold queues an outbound reaction email per the wire format below. Recipients on local domains see the reaction natively via `Email.reactions` state push; no email goes out for them.
+- **REQ-FLOW-101** Wire format of the outbound reaction email:
+  - `From`: the reactor's primary identity address.
+  - `To`: each external recipient (one outbound queue item per recipient, per REQ-FLOW-61 fanout rules).
+  - `Subject`: `Re: ` + original subject (matching standard reply convention so receiving clients thread it correctly).
+  - `In-Reply-To`: original `Message-ID`.
+  - `References`: original `References` + original `Message-ID`.
+  - `Date`: now.
+  - `Message-ID`: a fresh id for this reaction email.
+  - `X-Tabard-Reaction-To`: original `Message-ID` (verbatim, including angle brackets).
+  - `X-Tabard-Reaction-Emoji`: the UTF-8 emoji (no encoding wrapping).
+  - `X-Tabard-Reaction-Action`: `add` (only `add` propagates; see REQ-FLOW-103).
+  - `Content-Type`: `multipart/alternative` with two parts: a `text/plain` body "<reactor display name> reacted with <emoji> to your message." and a `text/html` body with the same text and the emoji rendered larger.
+- **REQ-FLOW-102** Reaction emails follow the normal outbound queue path (REQ-FLOW-50..76) — DKIM-signed, retried, DSN-on-failure. They are NOT distinguished by the queue; the headers are the only chat-aware signal. (DSNs on failed reaction emails are noisy but acceptable; reaction emails are short so failure is rare.)
+- **REQ-FLOW-103** Removing a reaction does NOT emit a reaction email. The remove is local to the reactor's server and any local-domain recipients on the same herold. Rationale: an "X removed their reaction" email to non-tabard receivers is awkward UX; reactions are ephemeral signals and the asymmetry is acceptable. (Confirmed by tabard product decision; see `/Users/hans/tabard/docs/requirements/02-mail-basics.md` REQ-MAIL-183.)
+
+### Inbound
+
+- **REQ-FLOW-104** On inbound mail, herold MUST detect the reaction-header set: `X-Tabard-Reaction-To`, `X-Tabard-Reaction-Emoji`, `X-Tabard-Reaction-Action`. Presence of all three triggers the reaction-handling path; absence delivers normally.
+- **REQ-FLOW-105** Reaction-handling path:
+  1. Look up the recipient's local mailbox copy of the original `Message-ID` (`X-Tabard-Reaction-To` value). The lookup is per-principal (the principal whose mailbox is the inbound destination).
+  2. If found, identify the reactor by their `From` address. The reactor must be either the original sender or a recipient (To/Cc/Bcc) of the original message — to prevent third-party spoofing of reactions.
+  3. If the reactor is recognised: apply as a native reaction by patching `Email.reactions/<emoji>/<reactor-principal-id>: true` on the local message copy. The reaction email is consumed — NOT delivered to the recipient's inbox. The Email's state string advances; the JMAP push notifies any active client.
+  4. If the original message is NOT found in the recipient's mailbox, OR the reactor is NOT a recognised participant: deliver the email normally. The recipient sees a regular short email with the reaction text body, threaded by `In-Reply-To`.
+- **REQ-FLOW-106** The reactor-recognition step in REQ-FLOW-105.2 uses the reactor's `From` address to look up a principal id. For external reactors (not on this herold), the principal id is allocated as a synthetic external-principal record (the same machinery that backs `From` display in mail UI). Reactor-principal ids are stable per address; the same external sender reacting twice yields the same id.
+- **REQ-FLOW-107** If REQ-FLOW-105.3 succeeds (native reaction applied), the inbound queue records a metric `reaction_consumed_total` per recipient principal. The email body is not stored in the blob store; the action is purely metadata mutation. (This is the only case where inbound mail does NOT result in a stored Email — surfacing it explicitly so the storage GC and retention paths don't trip.)
+- **REQ-FLOW-108** Spam classification (`requirements/06-filtering.md`) runs BEFORE the reaction-detection check. A reaction email scored as spam is delivered to junk normally — the operator's spam policy wins over reaction handling. (Edge case; spam-flagged reactions are unlikely but not protected against.)
+
 ## Loop and delivery-status protection
 
 - **REQ-FLOW-90** MUST honor `Auto-Submitted:` headers: do not auto-reply to messages with `Auto-Submitted: auto-replied` or `auto-generated` (vacation responder, DSN generator).
