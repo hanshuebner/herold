@@ -12,6 +12,7 @@
 
 import { jmap, strict } from '../jmap/client';
 import { auth } from '../auth/auth.svelte';
+import { sync } from '../jmap/sync.svelte';
 import { Capability, type Invocation } from '../jmap/types';
 import {
   EMAIL_BODY_PROPERTIES,
@@ -39,6 +40,49 @@ class MailStore {
 
   /** Index into inboxEmailIds of the keyboard-focused row; -1 = none. */
   inboxFocusedIndex = $state<number>(-1);
+
+  /**
+   * Most recent state strings per JMAP type. Updated from `Foo/get`
+   * responses and from sync handlers. Used to dedupe redundant refreshes.
+   */
+  emailState = $state<string | null>(null);
+  mailboxState = $state<string | null>(null);
+
+  constructor() {
+    // Register sync handlers at module init so we don't miss events that
+    // arrive between app mount and the first store call.
+    sync.on('Email', (newState) => {
+      void this.#onEmailStateChange(newState);
+    });
+    sync.on('Mailbox', (newState) => {
+      void this.#onMailboxStateChange(newState);
+    });
+  }
+
+  async #onEmailStateChange(newState: string): Promise<void> {
+    if (newState === this.emailState) return;
+    // First-iteration sync: the cheapest correct thing is to refresh the
+    // active inbox view. Email/changes-driven incremental update lands
+    // when other views (labels / search / threads) start needing it.
+    if (this.inboxLoadStatus === 'ready') {
+      try {
+        await this.refreshInbox();
+      } catch (err) {
+        console.error('inbox refresh after state change failed', err);
+      }
+    }
+    this.emailState = newState;
+  }
+
+  async #onMailboxStateChange(newState: string): Promise<void> {
+    if (newState === this.mailboxState) return;
+    try {
+      await this.loadMailboxes();
+    } catch (err) {
+      console.error('mailbox reload after state change failed', err);
+    }
+    this.mailboxState = newState;
+  }
 
   /** Move focus to the next row, clamped. Returns the new focused id, if any. */
   focusInboxNext(): string | null {
@@ -99,10 +143,11 @@ class MailStore {
     });
     strict(responses);
 
-    const args = invocationArgs<{ list: Mailbox[] }>(responses[0]);
+    const args = invocationArgs<{ list: Mailbox[]; state: string }>(responses[0]);
     const next = new Map<string, Mailbox>();
     for (const m of args.list) next.set(m.id, m);
     this.mailboxes = next;
+    if (typeof args.state === 'string') this.mailboxState = args.state;
   }
 
   /**
@@ -152,12 +197,15 @@ class MailStore {
       strict(responses);
 
       const queryResult = invocationArgs<{ ids: string[] }>(responses[0]);
-      const getResult = invocationArgs<{ list: Email[] }>(responses[1]);
+      const getResult = invocationArgs<{ list: Email[]; state: string }>(
+        responses[1],
+      );
 
       const next = new Map(this.emails);
       for (const e of getResult.list) next.set(e.id, e);
       this.emails = next;
       this.inboxEmailIds = queryResult.ids;
+      if (typeof getResult.state === 'string') this.emailState = getResult.state;
       this.inboxLoadStatus = 'ready';
     } catch (err) {
       this.inboxLoadStatus = 'error';
@@ -215,7 +263,10 @@ class MailStore {
       strict(responses);
 
       const threadResult = invocationArgs<{ list: Thread[] }>(responses[0]);
-      const emailResult = invocationArgs<{ list: Email[] }>(responses[1]);
+      const emailResult = invocationArgs<{ list: Email[]; state: string }>(
+        responses[1],
+      );
+      if (typeof emailResult.state === 'string') this.emailState = emailResult.state;
 
       const thread = threadResult.list.find((t) => t.id === threadId);
       if (!thread) throw new Error('Thread not found');

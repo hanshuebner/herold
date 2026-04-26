@@ -3,6 +3,8 @@
   import AuthGate from './lib/auth/AuthGate.svelte';
   import { router } from './lib/router/router.svelte';
   import { keyboard } from './lib/keyboard/engine.svelte';
+  import { auth } from './lib/auth/auth.svelte';
+  import { sync } from './lib/jmap/sync.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
   import SettingsView from './views/SettingsView.svelte';
@@ -11,6 +13,15 @@
   let activeApp = $derived<'mail' | 'chat'>(
     router.matches('chat') ? 'chat' : 'mail',
   );
+
+  // Open the EventSource subscription once auth is ready. Sync handlers
+  // were registered at module init by the mail store, so they're already
+  // listening when the connection comes up.
+  $effect(() => {
+    if (auth.status === 'ready') {
+      sync.start(['Email', 'Mailbox', 'Thread']);
+    }
+  });
 
   function selectApp(app: 'mail' | 'chat'): void {
     router.navigate(app === 'chat' ? '/chat' : '/mail');
