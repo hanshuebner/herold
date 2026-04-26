@@ -136,9 +136,41 @@ Pill-shaped action buttons rendered below each expanded message (`09-ui-layout.m
 |----|--------|-----------|
 | REQ-MAIL-150 | Reply | Same as REQ-MAIL-130. |
 | REQ-MAIL-151 | Forward | Same as REQ-MAIL-131. |
-| REQ-MAIL-152 | React | Opens an emoji picker; selecting an emoji applies it as a reaction to the message. Reactions are a server-side concept stored as `$reaction-<emoji>` keywords (or via a richer extension; see `notes/server-contract.md` and `notes/open-questions.md` if shape isn't pinned). |
+| REQ-MAIL-152 | React | Opens an emoji picker; selecting an emoji applies it as a reaction to the message. Stored server-side as an `Email.reactions` extension property — see § Reactions below and `notes/server-contract.md` § Email reactions. |
 
 The pill buttons are the second time these actions surface for the message — once in the per-message header (REQ-UI-21b), once below the body. Both invoke the same handlers. Redundancy is intentional: the user reaches the bottom of a long message and wants to reply without scrolling back up.
+
+## Reactions
+
+Tabard supports emoji reactions on email messages. Reactions mirror the chat reaction shape (`08-chat.md` REQ-CHAT-30..33): per-emoji lists of reactor PrincipalIds.
+
+For users on the same herold (sender and reactor share a server), reactions are native — stored on `Email.reactions`, synced via JMAP state. For cross-server recipients, the reactor's herold sends an additional email carrying structured reaction headers; if the receiving server is herold (or another reaction-aware server), it consumes the headers and applies a native reaction; otherwise the email lands as a normal short message ("Alice reacted with 🎉 to your message") that threads with the original.
+
+### Storage
+
+| ID | Requirement |
+|----|-------------|
+| REQ-MAIL-170 | `Email.reactions` is an extension property (not standard RFC 8621). Shape: `{ "<emoji>": ["<principal-id>", ...] }`. Sparse — emojis with no current reactors are absent rather than empty arrays. |
+| REQ-MAIL-171 | Adding a reaction: tabard issues `Email/set { update: { "<id>": { "reactions/<emoji>/<my-principal-id>": true } } }`. The JSON-patch path appends the user's id to the emoji's reactor list (or creates the emoji entry if absent). Removing: `... null` on the same path. |
+| REQ-MAIL-172 | Reactions are **per-Email, not per-thread.** Reacting to message 3 in a thread does not propagate to message 1. The reading-pane UI shows reactions inline beneath each message. |
+| REQ-MAIL-173 | Authorisation: a user can only add/remove their own principalId in any reactor list. Attempting to mutate someone else's reaction returns `forbidden` from herold. |
+
+### Cross-server propagation
+
+| ID | Requirement |
+|----|-------------|
+| REQ-MAIL-180 | When a user adds a reaction to a message whose recipients include addresses on other servers (i.e., recipients of the original email outside the reactor's herold), the reactor's herold sends an outbound reaction email to those external recipients. The reactor sees the same UX whether the original was local-only or cross-server — the propagation is an internal herold concern. |
+| REQ-MAIL-181 | Reaction emails carry both structured headers (so a herold-aware receiver can apply as a native reaction) and a human-readable body fallback (so a non-herold receiver sees "Alice reacted with 🎉 to your message"). Wire format defined in `notes/server-contract.md` § Email reactions. |
+| REQ-MAIL-182 | Reaction emails follow standard threading (`In-Reply-To`, `References` matching the original message). On non-herold receivers they appear as short messages in the same thread; on herold receivers the reaction is consumed and the email is suppressed from delivery. |
+| REQ-MAIL-183 | Removing a reaction does NOT propagate to non-herold receivers. The remove is local to the reactor's server (and any herold receivers within the original recipient set). Rationale: a "Alice un-reacted" email to someone on a non-tabard server is awkward; reactions are ephemeral signals, the asymmetry is acceptable. |
+| REQ-MAIL-184 | Tabard does not surface the local-vs-cross-server distinction in the UI. The user sees one "react" button; herold decides what happens internally. |
+
+### What's reacted to
+
+| ID | Requirement |
+|----|-------------|
+| REQ-MAIL-190 | Tabard exposes the React affordance on every message in the reading pane. Reactions are equally available on inbound and outbound messages — the user can react to their own sent mail. |
+| REQ-MAIL-191 | Mailing-list messages (`16-mailing-lists.md`) are reactable, but the cross-server propagation can fan out to many recipients. Tabard surfaces a one-time confirmation when reacting to a message with `List-ID` header AND > 5 recipients: "This will send a reaction email to N people. Continue?". |
 
 ## Mute thread
 

@@ -77,6 +77,6 @@ The properties requested in `Email/get` calls. Listed for clarity since they're 
 - **Envelope-ish**: `from`, `to`, `cc`, `bcc`, `replyTo`, `subject`, `sentAt`, `receivedAt`, `inReplyTo`, `references`.
 - **Content**: `preview` (snippet fallback), `bodyValues` (plain-text body and HTML body content), `bodyStructure` (MIME tree), `textBody`, `htmlBody`, `attachments`, `hasAttachment`.
 - **Headers tabard parses by name**: `header:List-ID:asText`, `header:List-Unsubscribe:asAddresses`, `header:List-Unsubscribe-Post:asText`, `header:List-Post:asText`, `header:List-Archive:asText`, `header:Authentication-Results:asText`, `header:Reply-To:asAddresses`.
-- **Custom**: `keywords/$snoozed`, the snoozedUntil extension property (`06-snooze.md` REQ-SNZ-13), the `signature` extension on `Identity` (`20-settings.md` REQ-SET-03).
+- **Custom**: `keywords/$snoozed`, the snoozedUntil extension property (`06-snooze.md` REQ-SNZ-13), the `signature` extension on `Identity` (`20-settings.md` REQ-SET-03), the `reactions` extension on `Email` (`02-mail-basics.md` § Reactions).
 
 A typical view-load batch fetches a stable subset; per-message extras (full bodyValues, full attachments) come on demand when the user opens the message.

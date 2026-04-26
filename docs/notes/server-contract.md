@@ -27,6 +27,7 @@ This is the "deployed together, no separate IdP" stance. Herold authenticates us
 | `https://tabard.dev/jmap/snooze` | Snooze contract — see Behaviours. |
 | `https://tabard.dev/jmap/categorise` | LLM-driven categorisation — see Behaviours. |
 | `https://tabard.dev/jmap/chat` | Chat datatypes (`Conversation`, `Message`, `Membership`) plus the ephemeral WebSocket and call-signaling endpoints — see Behaviours. |
+| `https://tabard.dev/jmap/email-reactions` | `Email.reactions` extension property + cross-server reaction email propagation — see Behaviours. |
 
 ## Capabilities tabard does NOT require
 
@@ -147,6 +148,56 @@ Per `../requirements/08-chat.md` and `../architecture/07-chat-protocol.md`. Hero
 - **TURN credentials.** Herold mints short-lived (~5 min TTL) TURN credentials on demand for each call, scoped to the requesting user. Credentials authenticate against a coturn (or equivalent) deployment configured by the operator. The mint endpoint is over the chat WebSocket: `{"op": "call.credentials", "callId": "..."}`.
 - **Inline image attachments.** Reuse the JMAP `Blob/upload` path; chat messages reference uploaded blobs by id. No separate chat-blob storage.
 - **Retention.** Operator-configurable per Space (and globally for DMs). Default: forever. Tabard surfaces the active retention via the chat capability metadata if herold reports it.
+
+### Email reactions (`https://tabard.dev/jmap/email-reactions`)
+
+Per `../requirements/02-mail-basics.md` § Reactions. Shape mirrors chat's `Message.reactions` (`08-chat.md` REQ-CHAT-30..33).
+
+**Local-only (same-server) path:**
+
+- `Email.reactions` is an extension property: `{ "<emoji>": ["<principal-id>", ...] }`. Sparse.
+- Mutated via `Email/set { update: { "<email-id>": { "reactions/<emoji>/<my-principal-id>": true | null } } }`. Add or remove the requesting user's reaction. JSON-patch path semantics.
+- Authorisation: a user can only patch their own principalId in any reactor list. Attempts to patch another user's reaction return `forbidden`.
+- State string for `Email` advances on reaction changes; pushed via the standard EventSource channel.
+
+**Cross-server (recipient on another herold or third-party server) path:**
+
+When a reactor's `Email/set` adds a reaction to a message whose other recipients are on different servers, herold's outbound queue MUST emit a reaction email to each external recipient. Wire format:
+
+```
+From: <reactor address>
+To: <each recipient of the original>
+Subject: Re: <original subject>
+In-Reply-To: <original Message-ID>
+References: <original References + original Message-ID>
+Date: <now>
+Message-ID: <new id>
+X-Tabard-Reaction-To: <original Message-ID>
+X-Tabard-Reaction-Emoji: <utf-8 emoji>
+X-Tabard-Reaction-Action: add
+Content-Type: multipart/alternative; boundary="..."
+
+--bound
+Content-Type: text/plain; charset=utf-8
+
+<reactor display name> reacted with <emoji> to your message.
+
+--bound
+Content-Type: text/html; charset=utf-8
+
+<p><reactor display name> reacted with <span style="font-size:1.5em"><emoji></span> to your message.</p>
+
+--bound--
+```
+
+A herold-aware inbound pipeline detects the `X-Tabard-Reaction-*` headers, looks up the referenced original `Message-ID` in the recipient's mailbox, and:
+
+- If found AND the reactor (`From` address) corresponds to a known correspondent (sender or recipient of the original): apply as a native `Email.reactions` mutation; suppress the reaction email from inbox delivery.
+- If not found OR reactor isn't recognised: deliver as a normal email (the human-readable body shows it correctly to the recipient).
+
+A non-herold receiver sees the email as plain mail. Threading via `In-Reply-To` puts it in the same thread as the original.
+
+**Removal does not propagate cross-server.** When a user removes a reaction, the change is applied locally and to other herolds *that originally received the reaction email*; there is no follow-up "un-react" email to non-herold receivers. Reactions are ephemeral signals; the asymmetry is acceptable.
 
 ### iMIP REPLY pass-through
 
