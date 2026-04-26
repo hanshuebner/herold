@@ -11,7 +11,7 @@
   let query = $state('');
 </script>
 
-<header class="global-bar" role="banner">
+<header class="global-bar">
   <div class="search">
     <SearchIcon size={18} />
     <input
