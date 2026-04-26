@@ -1,5 +1,18 @@
 # 00 — Scope and non-goals
 
+**2026-04-26** (rev 5): explicit substrate-side support for two
+operator-deployment shapes that were ambiguous in earlier revisions:
+SMTP smart host for outbound (REQ-FLOW-SMARTHOST-01..08) and AWS SES
+inbound via S3+SNS (REQ-HOOK-SES-01..07). Smart host covers the
+"port-25 blocked by ISP / cloud" reality and the "relay through a
+deliverability provider" pattern (SES, SendGrid, Mailgun, corp
+SMTP). SES inbound covers the inverse: the operator runs SES as the
+public-facing receiver and herold processes the mail via the
+existing inbound-webhook contract, specialised to the SES + S3 + SNS
+shape. NOT bit-compat with the SES API (the rev-1 "dropped SES
+bit-compat" non-goal still holds -- herold *uses* SES, herold doesn't
+*expose an SES-shaped API*).
+
 *(Revised 2026-04-25 — JMAP for Calendars/Contacts in scope (phase 2); chat + 1:1 video calls in scope (phase 2); coterminous with the tabard suite plan.)*
 
 ## Vision
