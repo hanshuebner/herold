@@ -115,6 +115,40 @@ type PushConfig struct {
 	// dispatch time. Used in 3.8b; carried here so the operator
 	// configures it once.
 	VAPIDSubject string `toml:"vapid_subject,omitempty"`
+
+	// DispatcherEnabled toggles the outbound dispatcher. Defaults
+	// to true; set false to disable Web Push delivery without
+	// dropping the VAPID key (the JMAP capability still advertises
+	// applicationServerKey so clients can register, but no pushes
+	// fan out — useful for staged migrations or operator
+	// debugging). When true and VAPID is unconfigured the
+	// dispatcher stays alive but idle (logs "dispatcher idle" once
+	// at startup).
+	DispatcherEnabled *bool `toml:"dispatcher_enabled,omitempty"`
+
+	// DispatcherPollIntervalSeconds is the change-feed poll cadence
+	// when no work is available. Defaults to 5; below 1 is
+	// rejected at Validate.
+	DispatcherPollIntervalSeconds int `toml:"dispatcher_poll_interval_seconds,omitempty"`
+
+	// HTTPTimeoutSeconds bounds a single outbound POST. Default 30.
+	HTTPTimeoutSeconds int `toml:"http_timeout_seconds,omitempty"`
+
+	// JWTExpirySeconds bounds the VAPID JWT exp - iat. Default
+	// 43200 (12 h); hard-capped at 86400 (24 h) per push-gateway
+	// practice.
+	JWTExpirySeconds int `toml:"jwt_expiry_seconds,omitempty"`
+
+	// RateLimitPerMinute caps sustained pushes per subscription
+	// (REQ-PROTO-126). Default 60.
+	RateLimitPerMinute int `toml:"rate_limit_per_minute,omitempty"`
+
+	// RateLimitPerDay caps daily pushes per subscription. Default 1000.
+	RateLimitPerDay int `toml:"rate_limit_per_day,omitempty"`
+
+	// CooldownSeconds is the per-subscription cooldown applied on
+	// sustained excess. Default 300 (5 min).
+	CooldownSeconds int `toml:"cooldown_seconds,omitempty"`
 }
 
 // VAPIDPrivateKeyRef returns the operator-supplied secret reference
@@ -932,6 +966,37 @@ func Validate(c *Config) error {
 			return fmt.Errorf("sysconfig: [server.push] vapid_private_key_file %q must be an absolute path",
 				push.VAPIDPrivateKeyFile)
 		}
+	}
+	// Dispatcher knobs (Wave 3.8b). Negative or zero values mean
+	// "use default" at dispatcher construction; only out-of-range
+	// positives are rejected here.
+	if push.DispatcherPollIntervalSeconds < 0 {
+		return fmt.Errorf("sysconfig: [server.push] dispatcher_poll_interval_seconds %d must be >= 0",
+			push.DispatcherPollIntervalSeconds)
+	}
+	if push.DispatcherPollIntervalSeconds > 3600 {
+		return fmt.Errorf("sysconfig: [server.push] dispatcher_poll_interval_seconds %d exceeds 1h ceiling",
+			push.DispatcherPollIntervalSeconds)
+	}
+	if push.HTTPTimeoutSeconds < 0 || push.HTTPTimeoutSeconds > 600 {
+		return fmt.Errorf("sysconfig: [server.push] http_timeout_seconds %d out of range (0..600)",
+			push.HTTPTimeoutSeconds)
+	}
+	if push.JWTExpirySeconds < 0 || push.JWTExpirySeconds > 86400 {
+		return fmt.Errorf("sysconfig: [server.push] jwt_expiry_seconds %d out of range (0..86400)",
+			push.JWTExpirySeconds)
+	}
+	if push.RateLimitPerMinute < 0 || push.RateLimitPerMinute > 10000 {
+		return fmt.Errorf("sysconfig: [server.push] rate_limit_per_minute %d out of range (0..10000)",
+			push.RateLimitPerMinute)
+	}
+	if push.RateLimitPerDay < 0 || push.RateLimitPerDay > 1_000_000 {
+		return fmt.Errorf("sysconfig: [server.push] rate_limit_per_day %d out of range (0..1000000)",
+			push.RateLimitPerDay)
+	}
+	if push.CooldownSeconds < 0 || push.CooldownSeconds > 86400 {
+		return fmt.Errorf("sysconfig: [server.push] cooldown_seconds %d out of range (0..86400)",
+			push.CooldownSeconds)
 	}
 	// Tabard SPA (REQ-DEPLOY-COLOC-01..05). The asset_dir override is
 	// validated at parse time so a missing or relative path fails the

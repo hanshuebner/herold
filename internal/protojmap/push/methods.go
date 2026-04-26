@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -443,10 +444,24 @@ func (h *handlerSet) createSubscription(ctx context.Context, pid store.Principal
 	if err != nil {
 		return store.PushSubscription{}, nil, fmt.Errorf("push: reload after insert: %w", err)
 	}
-	// TODO(3.8b-coord): send verification ping via outbound push
-	// dispatcher. For 3.8a the row is created with Verified=false and
-	// stays that way until the client echoes the verificationCode via
-	// /set update.
+	// Fire the RFC 8620 §7.2 verification ping asynchronously so the
+	// JMAP response is not blocked on the gateway round-trip. The
+	// dispatcher handles outcome accounting (delete on 410/404,
+	// metric increment on success, log otherwise) and the row stays
+	// Verified=false until the client echoes verificationCode via
+	// /set update on the next JMAP request.
+	if h.verifier != nil {
+		go func(sub store.PushSubscription) {
+			pingCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if err := h.verifier.SendVerificationPing(pingCtx, sub); err != nil {
+				h.logger.LogAttrs(pingCtx, slog.LevelInfo,
+					"push: verification ping failed",
+					slog.Uint64("subscription_id", uint64(sub.ID)),
+					slog.String("err", err.Error()))
+			}
+		}(persisted)
+	}
 	return persisted, nil, nil
 }
 

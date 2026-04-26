@@ -29,6 +29,7 @@ import (
 	"github.com/hanshuebner/herold/internal/maildkim"
 	"github.com/hanshuebner/herold/internal/maildmarc"
 	"github.com/hanshuebner/herold/internal/mailspf"
+	"github.com/hanshuebner/herold/internal/netguard"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/plugin"
 	"github.com/hanshuebner/herold/internal/protoadmin"
@@ -57,6 +58,7 @@ import (
 	"github.com/hanshuebner/herold/internal/tabardspa"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 	"github.com/hanshuebner/herold/internal/vapid"
+	"github.com/hanshuebner/herold/internal/webpush"
 )
 
 // StartOpts bundles optional StartServer knobs that have no home in
@@ -500,6 +502,32 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		}
 		return nil
 	})
+
+	// Outbound Web Push dispatcher — Phase 3 Wave 3.8b
+	// (REQ-PROTO-123 + 125 + 126). Drives the change-feed-driven
+	// fan-out to PushSubscription rows. The dispatcher's Run loop
+	// also handles RFC 8620 §7.2 verification ping outcomes (the
+	// JMAP push handler fires the ping in a short-lived goroutine
+	// off the JMAP request, but the destroy-on-410 path lives in
+	// the dispatcher). Bounded by the lifecycle errgroup so
+	// shutdown drains it.
+	if disp := bundle.srvs.webpushDispatch; disp != nil {
+		dispLogger := logger.With("subsystem", "webpush")
+		enabled := cfg.Server.Push.DispatcherEnabled == nil || *cfg.Server.Push.DispatcherEnabled
+		if enabled {
+			g.Go(func() error {
+				if err := disp.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+					dispLogger.LogAttrs(context.Background(), slog.LevelWarn,
+						"webpush dispatcher exited",
+						slog.String("err", err.Error()))
+					return err
+				}
+				return nil
+			})
+		} else {
+			dispLogger.Info("webpush: dispatcher disabled by config; verification ping path still active")
+		}
+	}
 
 	// Chat retention sweeper — Phase 2 Wave 2.9.6 REQ-CHAT-92. Hard-
 	// deletes chat_messages whose conversation override or owning
@@ -1110,9 +1138,10 @@ func parseSlogLevel(s string) slog.Level {
 // constructs alongside the http handler. The caller owns their
 // lifecycle; the admin errgroup ties their shutdown to gctx.
 type suiteServers struct {
-	callSrv *protocall.Server
-	chatSrv *protochat.Server
-	sendSrv *protosend.Server
+	callSrv         *protocall.Server
+	chatSrv         *protochat.Server
+	sendSrv         *protosend.Server
+	webpushDispatch *webpush.Dispatcher
 }
 
 // composedHandlers is the bundle of HTTP handlers the bind path
@@ -1357,7 +1386,46 @@ func composeAdminAndUI(
 	} else {
 		logger.Info("vapid: no VAPID key pair configured; Web Push disabled")
 	}
-	jmappush.Register(jmapSrv.Registry(), st, vapidMgr, logger.With("subsystem", "jmap-push"), clk)
+	// Outbound Web Push dispatcher (Wave 3.8b, REQ-PROTO-123 + 125 +
+	// 126). Constructed unconditionally so the JMAP handler can call
+	// SendVerificationPing — the dispatcher's Run loop short-circuits
+	// when VAPID is unconfigured. The HTTP client uses
+	// netguard.ControlContext so a misconfigured push endpoint that
+	// resolves to a private IP is refused before connect.
+	pushTimeoutSecs := cfg.Server.Push.HTTPTimeoutSeconds
+	if pushTimeoutSecs <= 0 {
+		pushTimeoutSecs = int(webpush.DefaultHTTPTimeout / time.Second)
+	}
+	pushDialer := &net.Dialer{
+		Timeout:        time.Duration(pushTimeoutSecs) * time.Second,
+		ControlContext: netguard.ControlContext(),
+	}
+	pushHTTPClient := &http.Client{
+		Timeout: time.Duration(pushTimeoutSecs) * time.Second,
+		Transport: &http.Transport{
+			DialContext: pushDialer.DialContext,
+		},
+	}
+	pushDispatcher, err := webpush.New(webpush.Options{
+		Store:              st,
+		VAPID:              vapidMgr,
+		Clock:              clk,
+		Logger:             logger.With("subsystem", "webpush"),
+		HTTPDoer:           pushHTTPClient,
+		Hostname:           cfg.Server.Hostname,
+		Subject:            cfg.Server.Push.VAPIDSubject,
+		PollInterval:       time.Duration(cfg.Server.Push.DispatcherPollIntervalSeconds) * time.Second,
+		HTTPTimeout:        time.Duration(cfg.Server.Push.HTTPTimeoutSeconds) * time.Second,
+		JWTExpiry:          time.Duration(cfg.Server.Push.JWTExpirySeconds) * time.Second,
+		RateLimitPerMinute: cfg.Server.Push.RateLimitPerMinute,
+		RateLimitPerDay:    cfg.Server.Push.RateLimitPerDay,
+		CooldownDuration:   time.Duration(cfg.Server.Push.CooldownSeconds) * time.Second,
+	})
+	if err != nil {
+		return composedHandlers{}, fmt.Errorf("admin: webpush dispatcher: %w", err)
+	}
+	bundle.srvs.webpushDispatch = pushDispatcher
+	jmappush.Register(jmapSrv.Registry(), st, vapidMgr, pushDispatcher, logger.With("subsystem", "jmap-push"), clk)
 	jmapHandler := jmapSrv.Handler()
 	publicMux.Handle("/.well-known/jmap",
 		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.session", jmapHandler))

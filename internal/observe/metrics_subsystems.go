@@ -851,3 +851,82 @@ func RegisterProtojmapContactsMetrics() {
 		)
 	})
 }
+
+// Web Push dispatcher metrics (Phase 3 Wave 3.8b, REQ-PROTO-123 +
+// REQ-PROTO-126). Label vocabulary is closed:
+//
+//   - outcome (deliveries_total): "success" | "retry" | "gone" |
+//     "rejected" | "rate_limited" | "cooldown".
+//
+// The two GaugeFunc collectors read live state owned by the
+// Dispatcher (subscription count cached after each tick; cooldown
+// count derived from the in-memory rateLimiter map).
+var (
+	webpushMetricsOnce sync.Once
+
+	WebPushDeliveriesTotal     *prometheus.CounterVec
+	WebPushDeliverySeconds     prometheus.Histogram
+	WebPushSubscriptionsActive prometheus.GaugeFunc
+	WebPushCooldownsActive     prometheus.GaugeFunc
+
+	webpushSubsMu     sync.RWMutex
+	webpushSubsSource func() float64
+	webpushCDSource   func() float64
+)
+
+// RegisterWebPushMetrics registers the dispatcher collector set;
+// idempotent. The two source closures are read on every scrape;
+// repeated calls update the sources so a server restart that
+// reconstructs the dispatcher hands its live counters through
+// without re-registering collectors.
+func RegisterWebPushMetrics(subsSource, cooldownSource func() float64) {
+	webpushSubsMu.Lock()
+	if subsSource != nil {
+		webpushSubsSource = subsSource
+	}
+	if cooldownSource != nil {
+		webpushCDSource = cooldownSource
+	}
+	webpushSubsMu.Unlock()
+	webpushMetricsOnce.Do(func() {
+		WebPushDeliveriesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_webpush_deliveries_total",
+			Help: "Total Web Push deliveries dispatched, by outcome.",
+		}, []string{"outcome"})
+		WebPushDeliverySeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "herold_webpush_delivery_seconds",
+			Help:    "Push-endpoint round-trip time for Web Push deliveries.",
+			Buckets: prometheus.DefBuckets,
+		})
+		WebPushSubscriptionsActive = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "herold_webpush_subscriptions_active",
+			Help: "Most recently observed total Web Push subscription count across all principals.",
+		}, func() float64 {
+			webpushSubsMu.RLock()
+			f := webpushSubsSource
+			webpushSubsMu.RUnlock()
+			if f == nil {
+				return 0
+			}
+			return f()
+		})
+		WebPushCooldownsActive = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "herold_webpush_cooldowns_active",
+			Help: "Number of Web Push subscriptions currently in REQ-PROTO-126 cooldown.",
+		}, func() float64 {
+			webpushSubsMu.RLock()
+			f := webpushCDSource
+			webpushSubsMu.RUnlock()
+			if f == nil {
+				return 0
+			}
+			return f()
+		})
+		MustRegister(
+			WebPushDeliveriesTotal,
+			WebPushDeliverySeconds,
+			WebPushSubscriptionsActive,
+			WebPushCooldownsActive,
+		)
+	})
+}

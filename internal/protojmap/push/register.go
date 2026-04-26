@@ -1,6 +1,7 @@
 package push
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/hanshuebner/herold/internal/clock"
@@ -9,14 +10,27 @@ import (
 	"github.com/hanshuebner/herold/internal/vapid"
 )
 
+// VerificationPinger is the narrow interface the JMAP push handlers
+// consume to fire the RFC 8620 §7.2 verification ping after a
+// successful PushSubscription/set { create }. The real implementation
+// is *webpush.Dispatcher; tests pass a stub.
+//
+// The interface lives here (not in webpush) so the JMAP handler
+// package does not import webpush directly — that would create a
+// dependency cycle when admin/server.go wires both together.
+type VerificationPinger interface {
+	SendVerificationPing(ctx context.Context, sub store.PushSubscription) error
+}
+
 // handlerSet bundles the dependencies the per-method handlers reach
 // for. One instance is constructed by Register and wrapped by each
 // method-handler struct.
 type handlerSet struct {
-	store  store.Store
-	logger *slog.Logger
-	clk    clock.Clock
-	vapid  *vapid.Manager
+	store    store.Store
+	logger   *slog.Logger
+	clk      clock.Clock
+	vapid    *vapid.Manager
+	verifier VerificationPinger
 }
 
 // Register installs the JMAP PushSubscription handlers under
@@ -30,14 +44,14 @@ type handlerSet struct {
 // Idempotent on the per-method axis: re-registering a method panics
 // because that is a programmer bug per protojmap.CapabilityRegistry's
 // contract.
-func Register(reg *protojmap.CapabilityRegistry, st store.Store, vm *vapid.Manager, logger *slog.Logger, clk clock.Clock) {
+func Register(reg *protojmap.CapabilityRegistry, st store.Store, vm *vapid.Manager, verifier VerificationPinger, logger *slog.Logger, clk clock.Clock) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if clk == nil {
 		clk = clock.NewReal()
 	}
-	h := &handlerSet{store: st, logger: logger, clk: clk, vapid: vm}
+	h := &handlerSet{store: st, logger: logger, clk: clk, vapid: vm, verifier: verifier}
 	reg.Register(protojmap.CapabilityPush, &getHandler{h: h})
 	reg.Register(protojmap.CapabilityPush, &setHandler{h: h})
 	reg.RegisterCapabilityDescriptor(protojmap.CapabilityPush, buildCapabilityDescriptor(vm))
