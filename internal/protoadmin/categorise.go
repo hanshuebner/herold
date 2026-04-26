@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -184,6 +186,149 @@ func newJobID() string {
 		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// categorisationConfigDTO is the wire shape for GET/PUT
+// /api/v1/principals/{pid}/categorisation (REQ-FILT-210..212).
+// Field names mirror store.CategorisationConfig exactly so JSON
+// round-trips are lossless. APIKeyEnv is a $VAR or file:/path
+// reference — never a raw secret (STANDARDS §9).
+type categorisationConfigDTO struct {
+	Prompt      string              `json:"prompt"`
+	CategorySet []store.CategoryDef `json:"category_set"`
+	Endpoint    *string             `json:"endpoint,omitempty"`
+	Model       *string             `json:"model,omitempty"`
+	APIKeyEnv   *string             `json:"api_key_env,omitempty"`
+	TimeoutSec  int                 `json:"timeout_sec,omitempty"`
+	Enabled     bool                `json:"enabled"`
+}
+
+func toCategorisationDTO(cfg store.CategorisationConfig) categorisationConfigDTO {
+	return categorisationConfigDTO{
+		Prompt:      cfg.Prompt,
+		CategorySet: cfg.CategorySet,
+		Endpoint:    cfg.Endpoint,
+		Model:       cfg.Model,
+		APIKeyEnv:   cfg.APIKeyEnv,
+		TimeoutSec:  cfg.TimeoutSec,
+		Enabled:     cfg.Enabled,
+	}
+}
+
+// handleGetCategorisationConfig handles
+// GET /api/v1/principals/{pid}/categorisation (REQ-FILT-210, 212).
+// Admin-only. Returns the per-principal categoriser config; APIKeyEnv
+// is returned verbatim as the $VAR or file:/path reference — never
+// decrypted (STANDARDS §9).
+func (s *Server) handleGetCategorisationConfig(w http.ResponseWriter, r *http.Request) {
+	pid, ok := parsePID(w, r)
+	if !ok {
+		return
+	}
+	caller, _ := principalFrom(r.Context())
+	if !requireAdmin(w, r, caller) {
+		return
+	}
+	cfg, err := s.store.Meta().GetCategorisationConfig(r.Context(), pid)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toCategorisationDTO(cfg))
+}
+
+// handlePutCategorisationConfig handles
+// PUT /api/v1/principals/{pid}/categorisation (REQ-FILT-211).
+// Admin-only. Validates and upserts the per-principal categoriser
+// config. APIKeyEnv, when present, must be a $VAR or file:/path
+// reference (STANDARDS §9). TimeoutSec must be positive. Endpoint,
+// when set, must parse as a URL. Model must be non-empty when
+// Enabled=true.
+func (s *Server) handlePutCategorisationConfig(w http.ResponseWriter, r *http.Request) {
+	pid, ok := parsePID(w, r)
+	if !ok {
+		return
+	}
+	caller, _ := principalFrom(r.Context())
+	if !requireAdmin(w, r, caller) {
+		return
+	}
+	var req categorisationConfigDTO
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+
+	// Validate APIKeyEnv: must be a reference form when present.
+	if req.APIKeyEnv != nil {
+		v := *req.APIKeyEnv
+		if v != "" && !strings.HasPrefix(v, "$") && !strings.HasPrefix(v, "file:") {
+			writeProblem(w, r, http.StatusBadRequest, "categorise/validation_failed",
+				"api_key_env must be a $VAR or file:/path reference",
+				"inline secret values are not permitted (STANDARDS §9)")
+			return
+		}
+	}
+
+	// Validate TimeoutSec when provided.
+	if req.TimeoutSec < 0 {
+		writeProblem(w, r, http.StatusBadRequest, "categorise/validation_failed",
+			"timeout_sec must be non-negative", "")
+		return
+	}
+
+	// Validate Endpoint parses as URL when set.
+	if req.Endpoint != nil && *req.Endpoint != "" {
+		if _, err := url.ParseRequestURI(*req.Endpoint); err != nil {
+			writeProblem(w, r, http.StatusBadRequest, "categorise/validation_failed",
+				"endpoint must be a valid URL", err.Error())
+			return
+		}
+	}
+
+	// When Enabled, Model must be non-empty.
+	if req.Enabled && req.Model != nil && *req.Model == "" {
+		writeProblem(w, r, http.StatusBadRequest, "categorise/validation_failed",
+			"model must be non-empty when enabled is true", "")
+		return
+	}
+
+	cfg := store.CategorisationConfig{
+		PrincipalID: pid,
+		Prompt:      req.Prompt,
+		CategorySet: req.CategorySet,
+		Endpoint:    req.Endpoint,
+		Model:       req.Model,
+		APIKeyEnv:   req.APIKeyEnv,
+		TimeoutSec:  req.TimeoutSec,
+		Enabled:     req.Enabled,
+	}
+	if err := s.store.Meta().UpdateCategorisationConfig(r.Context(), cfg); err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+
+	// Audit log: record which high-level fields changed; prompt body is
+	// intentionally omitted (can be large and contains PII hints).
+	meta := map[string]string{
+		"enabled": strconv.FormatBool(req.Enabled),
+	}
+	if req.Model != nil {
+		meta["model"] = *req.Model
+	}
+	if req.Endpoint != nil {
+		meta["endpoint"] = *req.Endpoint
+	}
+	if req.APIKeyEnv != nil {
+		meta["api_key_env_set"] = "true"
+	}
+	if req.TimeoutSec != 0 {
+		meta["timeout_sec"] = strconv.Itoa(req.TimeoutSec)
+	}
+	s.appendAudit(r.Context(), "categorise_config_update",
+		fmt.Sprintf("principal:%d", pid),
+		store.OutcomeSuccess, "", meta)
+
+	writeJSON(w, http.StatusOK, toCategorisationDTO(cfg))
 }
 
 // _ keeps the encoding/json import alive for ergonomics: future

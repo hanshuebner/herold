@@ -91,13 +91,40 @@ Take a backup first.
 
 ### DKIM key generation and rotation
 
-DKIM keys are generated automatically on `domain add`. Per-domain
-DKIM rotation (`herold domain dkim rotate`, `herold domain dkim
-show`) is planned per REQ-ADM-11 and REQ-ADM-310 - TODO(operator-doc):
-dkim-cli-not-yet-wired in `internal/admin/cmd_domain.go`. Until then,
-the REST surface (`/api/v1/domains/{name}/dkim`) is the path; check
-`docs/design/requirements/08-admin-and-management.md` for the full
-shape.
+DKIM keys are generated automatically on `domain add`. The explicit
+rotation knob (REQ-ADM-11, REQ-OPS-60) uses the `herold dkim` subcommand
+tree, not a sub-noun of `herold domain`.
+
+Generate (or rotate) the signing key for a domain:
+
+```bash
+herold dkim generate example.com
+```
+
+Output includes the selector, algorithm, and the full DNS TXT record body
+ready to paste into your zone file at `<selector>._domainkey.example.com`.
+Use `--json` to get machine-readable output.
+
+Show all keys (active, retiring, retired) for a domain:
+
+```bash
+herold dkim show example.com
+```
+
+Each entry prints selector, algorithm, status, and the TXT body
+(REQ-ADM-310).
+
+Rotation flow:
+
+1. Run `herold dkim generate example.com` — the old active key moves to
+   retiring status; the new key becomes active.
+2. Publish the new TXT record at `<selector>._domainkey.example.com`.
+3. Wait for the DNS grace period (72 h recommended) before removing the
+   old TXT record. Old mail in transit can still be verified during this
+   window (REQ-OPS-62).
+4. Remove the old selector TXT from DNS, then optionally retire it via
+   `DELETE /api/v1/domains/<name>/dkim/<selector>` (REST only for now;
+   a CLI verb lands in a follow-up wave).
 
 ## Principals (users)
 
@@ -373,14 +400,32 @@ Progress lines are printed as `recategorise: done/total`. With
 `--async`, the CLI prints the job id and exits; the caller is
 expected to drive their own poll.
 
-### Prompt management (planned)
+### Prompt management
 
-`herold categorise prompt set <email> < prompt.txt` and
-`herold categorise list-categories <email>` are still pending: the
-store layer (`GetCategorisationConfig` / `UpdateCategorisationConfig`)
-exists, but the REST surface for those mutations has not landed yet.
-TODO(operator-doc): categorise-prompt-cli-not-yet-wired (bucket 2 in
-the admin-cli triage).
+Replace a principal's LLM prompt from a file or stdin (REQ-FILT-211):
+
+```bash
+herold categorise prompt set user@example.com < prompt.txt
+herold categorise prompt set user@example.com --file /etc/herold/prompt.txt
+herold categorise prompt show user@example.com
+herold categorise list-categories user@example.com
+```
+
+`prompt set` does a read-modify-write so only the `prompt` field is
+replaced; all other config fields (endpoint, model, api_key_env,
+timeout_sec, enabled) are preserved from the existing row.
+
+`list-categories` prints the active category names, one per line.
+The default set is: primary, social, promotions, updates, forums
+(REQ-FILT-201).
+
+The underlying REST endpoints are:
+- `GET  /api/v1/principals/{pid}/categorisation`
+- `PUT  /api/v1/principals/{pid}/categorisation`
+
+Both are admin-only. The `api_key_env` field on PUT must be a `$VAR`
+or `file:/path` reference; inline secret values are rejected
+(STANDARDS §9).
 
 ## Outbound submission queue
 

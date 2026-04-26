@@ -61,6 +61,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/domains", authAdmin(s.handleCreateDomain))
 	mux.HandleFunc("DELETE /api/v1/domains/{name}", authAdmin(s.handleDeleteDomain))
 
+	// Domain-scoped DKIM keys (REQ-ADM-11, REQ-ADM-310, REQ-OPS-60, REQ-OPS-62).
+	mux.HandleFunc("POST /api/v1/domains/{name}/dkim", authAdmin(s.handleGenerateDKIMKey))
+	mux.HandleFunc("GET /api/v1/domains/{name}/dkim", authAdmin(s.handleListDKIMKeys))
+	mux.HandleFunc("DELETE /api/v1/domains/{name}/dkim/{selector}", authAdmin(s.handleDeleteDKIMKey))
+
 	// Aliases.
 	mux.HandleFunc("GET /api/v1/aliases", authAdmin(s.handleListAliases))
 	mux.HandleFunc("POST /api/v1/aliases", authAdmin(s.handleCreateAlias))
@@ -103,9 +108,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/spam/policy", authAdmin(s.handlePutSpamPolicy))
 
 	// LLM categorisation: per-principal recategorise + job poll
-	// (REQ-FILT-220).
+	// (REQ-FILT-220). Config GET/PUT (REQ-FILT-210..212).
 	mux.HandleFunc("POST /api/v1/principals/{pid}/recategorise", auth1(s.handleRecategorisePrincipal))
 	mux.HandleFunc("GET /api/v1/jobs/{id}", auth1(s.handleGetJob))
+	mux.HandleFunc("GET /api/v1/principals/{pid}/categorisation", authAdmin(s.handleGetCategorisationConfig))
+	mux.HandleFunc("PUT /api/v1/principals/{pid}/categorisation", authAdmin(s.handlePutCategorisationConfig))
 
 	// Webhooks.
 	mux.HandleFunc("GET /api/v1/webhooks", authAdmin(s.handleListWebhooks))

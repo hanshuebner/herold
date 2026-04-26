@@ -3,6 +3,8 @@ package admin
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +98,101 @@ func TestCLICategoriseRecategorise_NoCategoriser(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "501") && !strings.Contains(err.Error(), "not_implemented") {
 		t.Fatalf("expected 501; got %v", err)
+	}
+}
+
+// TestCLICategorisePromptSet_Stdin tests "categorise prompt set" reading from
+// stdin (REQ-FILT-211).
+func TestCLICategorisePromptSet_Stdin(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	seedPrincipal(t, env, "prompt-stdin@test.local")
+
+	// Run with the prompt body on stdin.
+	out, _, err := env.runWithStdin(
+		"You are a mail sorter. Use your best judgement.",
+		"categorise", "prompt", "set", "prompt-stdin@test.local", "--json",
+	)
+	if err != nil {
+		t.Fatalf("prompt set (stdin): %v", err)
+	}
+	if !strings.Contains(out, "prompt") {
+		t.Fatalf("expected prompt field in output: %s", out)
+	}
+}
+
+// TestCLICategorisePromptSet_File tests "categorise prompt set --file".
+func TestCLICategorisePromptSet_File(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	seedPrincipal(t, env, "prompt-file@test.local")
+
+	// Write prompt to a temp file.
+	dir := t.TempDir()
+	f := filepath.Join(dir, "prompt.txt")
+	if err := os.WriteFile(f, []byte("Sort this mail carefully."), 0600); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	out, _, err := env.run("categorise", "prompt", "set",
+		"prompt-file@test.local", "--file", f, "--json")
+	if err != nil {
+		t.Fatalf("prompt set (file): %v", err)
+	}
+	if !strings.Contains(out, "prompt") {
+		t.Fatalf("expected prompt field in output: %s", out)
+	}
+}
+
+// TestCLICategorisePromptShow tests "categorise prompt show".
+func TestCLICategorisePromptShow(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	seedPrincipal(t, env, "show-prompt@test.local")
+
+	// Set a known prompt first.
+	const wantPrompt = "My custom LLM prompt."
+	if _, _, err := env.runWithStdin(wantPrompt,
+		"categorise", "prompt", "set", "show-prompt@test.local"); err != nil {
+		t.Fatalf("prompt set: %v", err)
+	}
+
+	// Show it back.
+	out, _, err := env.run("categorise", "prompt", "show", "show-prompt@test.local")
+	if err != nil {
+		t.Fatalf("prompt show: %v", err)
+	}
+	if !strings.Contains(out, wantPrompt) {
+		t.Fatalf("expected prompt %q in output; got %s", wantPrompt, out)
+	}
+}
+
+// TestCLICategoriseListCategories tests "categorise list-categories".
+func TestCLICategoriseListCategories(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	seedPrincipal(t, env, "listcat@test.local")
+
+	// The default config seeds a category set; just verify the output is non-empty.
+	out, _, err := env.run("categorise", "list-categories", "listcat@test.local")
+	if err != nil {
+		t.Fatalf("list-categories: %v", err)
+	}
+	// The default category set contains "primary" (REQ-FILT-201).
+	if !strings.Contains(out, "primary") {
+		t.Fatalf("expected 'primary' in list-categories output; got %s", out)
+	}
+}
+
+// TestCLICategorisePromptSet_EmptyBodyRejected verifies that an empty prompt
+// body is rejected before making any REST call.
+func TestCLICategorisePromptSet_EmptyBodyRejected(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	seedPrincipal(t, env, "empty-prompt@test.local")
+
+	_, _, err := env.runWithStdin("",
+		"categorise", "prompt", "set", "empty-prompt@test.local")
+	if err == nil {
+		t.Fatalf("expected error for empty prompt body")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("expected 'empty' in error message; got %v", err)
 	}
 }
 

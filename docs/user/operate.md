@@ -263,9 +263,16 @@ upstream proxy that owns image rewriting can disable.
 ### `[server.categorise]`
 
 LLM-driven message categorisation (REQ-FILT-200..220) lives in the
-spam-plugin family but is operationally distinct.
-TODO(operator-doc): categorise-config-block - the config shape lands
-with the categorise feature in Wave 3.x.
+spam-plugin family but is operationally distinct. Per-principal
+categoriser configuration is managed through the admin REST API
+(`GET /PUT /api/v1/principals/{pid}/categorisation`) and the CLI
+(`herold categorise prompt set` / `herold categorise list-categories`).
+See `docs/user/administer.md` for worked examples.
+
+The deployment-wide defaults (endpoint, model, api_key_env) are
+configured in `system.toml` under `[categorise]`; the exact shape
+of that block is documented alongside the categorise feature in
+the relevant architecture document.
 
 ### `[server.chat]` - chat ephemeral channel (Phase 2)
 

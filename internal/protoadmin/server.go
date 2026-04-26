@@ -146,6 +146,12 @@ type Options struct {
 	// DNSVerifier drives /api/v1/diag/dns-check/{domain}. Nil leaves the
 	// endpoint returning 501 not_implemented.
 	DNSVerifier DNSVerifier
+	// DKIMKeyManager drives POST /api/v1/domains/{name}/dkim and
+	// GET /api/v1/domains/{name}/dkim. Nil leaves those endpoints
+	// returning 501 not_implemented. The concrete implementation is
+	// keymgmt.Manager; tests supply a stub via this field.
+	// REQ-ADM-11, REQ-OPS-60.
+	DKIMKeyManager DKIMKeyManager
 	// SpamPolicyStore drives /api/v1/spam/policy GET + PUT. Nil leaves
 	// the endpoints returning 501.
 	SpamPolicyStore SpamPolicyStore
