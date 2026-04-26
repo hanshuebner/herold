@@ -1250,6 +1250,26 @@ func composeAdminAndUI(
 	// presented here is silently ignored at the parser level.
 	if uiSrvPublic != nil {
 		publicMux.Handle(prefix+"/", uiSrvPublic.Handler())
+
+		// Root-path adapters for the login flow (REQ-AUTH-SCOPE-01).
+		// The protoui server registers its routes under prefix+"/login"
+		// etc., so a browser directed to /login?return=%2F%23%2Fmail
+		// would 404 because only prefix+"/login" is mounted. These
+		// adapters rewrite the inbound path to the prefix-based
+		// equivalent and delegate to the same protoui handler without
+		// mutating the original request. Go's longest-prefix routing
+		// ensures these registrations take priority over the SPA
+		// catch-all at "/", so the tabard SPA's defensive 404 for
+		// /login never fires for these paths in practice.
+		uiHandler := uiSrvPublic.Handler()
+		for _, root := range []string{"/login", "/logout", "/oidc/"} {
+			root := root // pin for closure
+			publicMux.HandleFunc(root, func(w http.ResponseWriter, r *http.Request) {
+				r2 := r.Clone(r.Context())
+				r2.URL.Path = prefix + r.URL.Path
+				uiHandler.ServeHTTP(w, r2)
+			})
+		}
 	}
 
 	// Image proxy (REQ-SEND-70..78). Public-listener-only: the

@@ -1019,13 +1019,13 @@ func Validate(c *Config) error {
 		}
 		info, err := os.Stat(dir)
 		if err != nil {
-			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q: %w", dir, err)
+			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q: %v", dir, err)
 		}
 		if !info.IsDir() {
 			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q is not a directory", dir)
 		}
 		if _, err := os.Stat(dir + "/index.html"); err != nil {
-			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q missing index.html: %w", dir, err)
+			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q missing index.html: %v", dir, err)
 		}
 	}
 	// Smart host (REQ-FLOW-SMARTHOST-01..08).

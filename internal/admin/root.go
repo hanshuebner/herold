@@ -146,16 +146,24 @@ func Execute(ctx context.Context) int {
 }
 
 // requireConfig loads the system config referenced by --system-config. A
-// missing file is turned into a clear operator-facing message.
+// missing file is turned into a clear operator-facing message. Validation
+// errors from sysconfig.Load are returned verbatim so the operator sees
+// the exact problem (e.g. a missing asset_dir index.html) instead of the
+// misleading "config file not found" message that a re-classified
+// os.ErrNotExist would produce.
 func requireConfig(g *globalOptions) (*sysconfig.Config, error) {
 	if g.configPath == "" {
 		return nil, errors.New("no --system-config path (override with --system-config or $HEROLD_SYSTEM_CONFIG)")
 	}
+	// Check for a missing config file explicitly before loading so that
+	// validation-time os.ErrNotExist errors (e.g. a missing tabard
+	// asset_dir/index.html) are never re-classified as "config file not
+	// found".
+	if _, err := os.Stat(g.configPath); errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("config file not found at %s (override with --system-config or $HEROLD_SYSTEM_CONFIG)", g.configPath)
+	}
 	cfg, err := sysconfig.Load(g.configPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("config file not found at %s (override with --system-config or $HEROLD_SYSTEM_CONFIG)", g.configPath)
-		}
 		return nil, err
 	}
 	return cfg, nil
