@@ -1,5 +1,19 @@
 # 00 — Scope and non-goals
 
+**2026-04-26** (rev 9): co-deployment shape locked. Herold ships
+the tabard SPA as embedded static assets (REQ-DEPLOY-COLOC-01..05);
+the deployment topology splits into a public listener (default
+`0.0.0.0:443`, serves SPA + JMAP + chat WS + send/call APIs +
+webhooks) and an admin listener (default `127.0.0.1:9443`, serves
+admin REST + admin UI + /metrics) per REQ-OPS-ADMIN-LISTENER-01..03.
+Auth scopes (REQ-AUTH-SCOPE-01..04) carry a closed-enum scope set
+on session cookies and API keys, with admin step-up via TOTP and
+cross-scope rejection at every handler boundary. The deployment
+target remains "small family/association/group" -- 5-50 users on
+a single VPS -- not enterprise scale; the design optimises for
+operator simplicity (one binary, two ports, one config file) and
+"end-user compromise cannot escalate to operator-level damage".
+
 **2026-04-26** (rev 8): Web Push (RFC 8030 + RFC 8620 §7.2 PushSubscription
 + tabard's enriched payload) advanced from "phase 3, deferred" to **phase 1**
 (REQ-PROTO-48 amended; REQ-PROTO-120..127 added; REQ-OPS-180..184 added).
