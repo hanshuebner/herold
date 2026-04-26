@@ -32,7 +32,7 @@ This file is the inverse of `../00-scope.md`'s non-goals: those are *categories*
 
 | Concern | Full version | Tabard | Why |
 |---------|--------------|--------|-----|
-| Persistence | Service worker + IndexedDB cache (offline mode) | None | NG2 |
+| Persistence | Service worker + IndexedDB cache (full offline mode) | Minimal service worker for PWA installability only — network-first, no-cache, no offline mode | NG2; PWA shell is shipped per `../requirements/24-mobile-and-touch.md` REQ-MOB-70..75 |
 | Push | EventSource + WebSocket + Web Push | EventSource only | One channel is enough; multi-device push is herold's problem |
 | Multi-account | Account switcher | Single account | NG3 |
 | State management | Time-travel debugging, undo history beyond Undo toast | Just enough to support optimistic revert | YAGNI |

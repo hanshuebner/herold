@@ -86,6 +86,38 @@ Type scale follows Carbon's productive scale:
 
 Letter spacing is per Carbon's defaults; we don't override.
 
+## Touch targets
+
+Per `requirements/24-mobile-and-touch.md` REQ-MOB-20: minimum 44 × 44 CSS pixel hit area on phone and tablet. On desktop the same component renders at smaller visual size (~32 px button height) but with hover-only affordances; on touch breakpoints, padding extends the hit area to 44 × 44 even when the visual element stays small.
+
+Implementation: a `--touch-min` token (44 px) drives `min-height` and `min-width` on interactive elements when `(pointer: coarse)` is the active media query. Bits UI primitives accept this token and propagate it to their roots.
+
+## Bottom sheet
+
+Phone-only component (`24-mobile-and-touch.md` REQ-MOB-37). Picker-shaped overlay anchored to the bottom edge.
+
+```
+┌────────────────────────────────────────┐
+│            ─── (drag handle)           │
+├────────────────────────────────────────┤
+│  Picker title                          │
+│                                        │
+│  □ Option one                          │
+│  □ Option two                          │
+│  ☑ Option three                        │
+│                                        │
+├────────────────────────────────────────┤
+│      [Cancel]            [Apply]       │
+└────────────────────────────────────────┘
+```
+
+- Slides up from the bottom edge on open (`duration-moderate-02`).
+- Drag handle at top is a touch-grab affordance; dragging down past 30% of the sheet's height dismisses (snap to dismiss; release before 30% snaps back to open).
+- Tap outside the sheet (on the dim scrim) dismisses.
+- Internal scrollable region for option lists.
+- Built on Bits UI Dialog with custom anchor / animation; same focus-trap semantics as a modal.
+- Tokens: `--layer-02` background, top corners radius `spacing-04`, scrim `rgba(0,0,0,0.5)`, padding `spacing-05`.
+
 ## Spacing
 
 Carbon's 8-pt grid plus half-step:

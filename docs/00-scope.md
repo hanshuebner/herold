@@ -44,7 +44,7 @@ These are spec-only for now — implementation lands when the sibling app does.
 
 ## Non-goals
 
-- **NG1.** Mobile-native clients (iOS / Android apps). Mobile web below 1280 px is best-effort, not a target.
+- **NG1.** Native iOS / Android applications. **Mobile and tablet web is in scope as a first-class experience** (`requirements/24-mobile-and-touch.md`) — installable as a PWA, full responsive layout, full touch interaction model. Native apps remain out: the PWA delivers app-icon + standalone-window UX without a native build pipeline.
 - **NG2.** Offline mode. No service-worker cache, no IndexedDB outbox, no operating-while-disconnected. Reconnect-and-resync is the resilience model.
 - **NG3.** Multi-account UI. v1 binds to one JMAP Account; account switching is not a feature.
 - **NG4.** Delegation, shared mailboxes, admin / multi-user views.
@@ -58,8 +58,8 @@ These are spec-only for now — implementation lands when the sibling app does.
 
 - **Server:** herold. v1 does not target other JMAP servers. The capability-driven approach in `notes/server-contract.md` keeps "support another server" tractable but not free.
 - **Protocol surface:** RFC 8620 (Core), RFC 8621 (Mail), RFC 9007 (Sieve scripts for filters), EventSource push from RFC 8620 §7. WebSocket subprotocol (RFC 8887) is **not** v1; revisit if SSE proves inadequate under load.
-- **Browser support:** Chromium 120+, Firefox 120+, Safari 17+. Older browsers explicitly unsupported.
-- **Viewport target:** ≥1280 px primary; layout below 768 px is best-effort.
+- **Browser support:** Chromium 120+ (desktop and Android), Firefox 120+ (desktop), Safari 17+ (desktop and iOS). Older browsers explicitly unsupported.
+- **Viewport target:** Three first-class breakpoints — phone (< 768 px), tablet (768–1279 px), desktop (≥ 1280 px). All three are designed and tested. See `requirements/24-mobile-and-touch.md`.
 - **Auth:** Bearer token over HTTPS. Token sourcing TBD (interactive form vs OIDC redirect via herold) — see `notes/open-questions.md`.
 - **Capture-driven requirements:** sections covering mail basics, keyboard priorities, workflows, and performance budgets are populated from gmail-logger output per `notes/capture-integration.md`. Until that data lands, those sections carry placeholders rather than guesses.
 - **Visual style:** dark default, light theme switchable. IBM Plex Sans / IBM Plex Mono so we stay visually consistent with the gmail-logger popup during prototyping.

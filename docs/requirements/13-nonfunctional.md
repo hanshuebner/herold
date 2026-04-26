@@ -44,11 +44,14 @@ Performance, security, reliability, accessibility, browser support.
 
 ## Browser support
 
-| Browser | Minimum version |
-|---------|-----------------|
-| Chrome / Chromium | 120+ |
-| Firefox | 120+ |
-| Safari | 17+ |
+| Browser | Minimum version | Platforms |
+|---------|-----------------|-----------|
+| Chrome / Chromium | 120+ | Desktop (Windows, Linux, macOS), Android |
+| Firefox | 120+ | Desktop |
+| Safari | 17+ | macOS, iOS, iPadOS |
+| Samsung Internet | 23+ | Android (best-effort; Chrome-based) |
+
+Phone and tablet use the same browser engines as desktop (no native shells). Mobile-specific behaviour lives in `24-mobile-and-touch.md`.
 
 | ID | Requirement |
 |----|-------------|

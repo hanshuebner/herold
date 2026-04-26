@@ -18,6 +18,7 @@ The principle: settings are the place users go to *change* defaults. They are no
 | REQ-SET-08 | Mailing-list mute list (read-only display, with per-list "Unmute" buttons). Source: `16-mailing-lists.md` REQ-LIST-40. | `localStorage` per account |
 | REQ-SET-09 | Vacation responder. Status (on/off), date range, message body. Backed by JMAP `VacationResponse` (RFC 8621 §8). Hidden if the server doesn't advertise the relevant capability. | Server-side via `VacationResponse/set` |
 | REQ-SET-12 | Shortcut coach: enable / disable. Default: enabled. Disabling suppresses observation, hint generation, and server-side flushes (`23-shortcut-coach.md` REQ-COACH-71). Companion control: "Reset coach data" (REQ-COACH-72). | `localStorage` per account for the toggle; coach data itself is server-side. |
+| REQ-SET-13 | Swipe action mapping (mobile / touch only). Two settings — left-swipe action (default: archive) and right-swipe action (default: snooze) — chosen from `{archive, snooze, delete, mark_read, label, none}`. See `24-mobile-and-touch.md` REQ-MOB-23..24. | `localStorage` per account |
 
 ## Layout
 
