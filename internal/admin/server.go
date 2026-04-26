@@ -1202,7 +1202,10 @@ func coMountHandler(public, admin http.Handler) http.Handler {
 			r.URL.Path == "/api/v1/certs" || strings.HasPrefix(r.URL.Path, "/api/v1/certs/"),
 			r.URL.Path == "/api/v1/spam/policy",
 			r.URL.Path == "/api/v1/oidc/providers" || strings.HasPrefix(r.URL.Path, "/api/v1/oidc/providers/"),
-			r.URL.Path == "/api/v1/oidc/callback",
+			// /api/v1/oidc/callback is intentionally omitted: it is a
+			// user-facing route (external IdP redirect) routed to public
+			// per REQ-AUTH-51; the public handler forwards it to the
+			// admin handler via an explicit mount in composeAdminAndUI.
 			r.URL.Path == "/api/v1/server/status" || r.URL.Path == "/api/v1/server/config-check",
 			r.URL.Path == "/api/v1/healthz/live" || r.URL.Path == "/api/v1/healthz/ready",
 			r.URL.Path == "/api/v1/bootstrap",
@@ -1447,6 +1450,15 @@ func composeAdminAndUI(
 	publicMux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
+
+	// OIDC callback: the external IdP redirects the user's browser to the
+	// callback URL after authentication. Since the user arrives on the
+	// public listener, POST /api/v1/oidc/callback must also be reachable
+	// there (REQ-AUTH-51). The route is forwarded to the same admin
+	// handler so the directoryoidc state-machine logic is shared.
+	// The link initiator (GET /api/v1/oidc/providers/...) is admin-REST
+	// only; only the callback completion needs to be public.
+	publicMux.Handle("/api/v1/oidc/callback", adminHandler)
 
 	// Public /login flow (suite-login per REQ-AUTH-SCOPE-01) lives at
 	// the same /ui path prefix on the public listener with end-user
