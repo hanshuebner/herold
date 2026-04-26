@@ -3,13 +3,36 @@
   import HelpIcon from '../icons/HelpIcon.svelte';
   import SettingsIcon from '../icons/SettingsIcon.svelte';
   import { sync } from '../../lib/jmap/sync.svelte';
+  import { router } from '../../lib/router/router.svelte';
 
   interface Props {
     placeholder?: string;
   }
   let { placeholder = 'Search mail' }: Props = $props();
 
+  // Local state mirrors the active search query in the URL when present.
   let query = $state('');
+
+  $effect(() => {
+    if (router.matches('mail', 'search')) {
+      query = decodeURIComponent(router.parts[2] ?? '');
+    } else if (!router.matches('mail', 'thread')) {
+      // Navigating away from /mail/search clears the input. (Thread routes
+      // come from a search result — keep the query around so the user
+      // can return to it.)
+      query = '';
+    }
+  });
+
+  function onSubmit(e: Event): void {
+    e.preventDefault();
+    const trimmed = query.trim();
+    if (trimmed) {
+      router.navigate(`/mail/search/${encodeURIComponent(trimmed)}`);
+    } else {
+      router.navigate('/mail');
+    }
+  }
 
   // Hide the indicator when connected; show it during reconnecting /
   // disconnected so the user knows live updates aren't flowing.
@@ -23,7 +46,7 @@
 </script>
 
 <header class="global-bar">
-  <div class="search">
+  <form class="search" onsubmit={onSubmit} role="search">
     <SearchIcon size={18} />
     <input
       type="search"
@@ -32,7 +55,7 @@
       aria-label={placeholder}
       spellcheck="false"
     />
-  </div>
+  </form>
 
   {#if indicatorVisible}
     <span class="conn" role="status" aria-live="polite">

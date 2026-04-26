@@ -8,13 +8,78 @@
 
   let threadId = $derived(router.parts[1] === 'thread' ? router.parts[2] : undefined);
   let label = $derived(router.parts[1] === 'label' ? router.parts[2] : undefined);
+  let searchQuery = $derived(
+    router.parts[1] === 'search' ? decodeURIComponent(router.parts[2] ?? '') : undefined,
+  );
   let isInboxRoute = $derived(router.matches('mail') && !router.parts[1]);
+  let isSearchRoute = $derived(router.matches('mail', 'search'));
 
   // Kick off the inbox load when the inbox route is shown.
   $effect(() => {
     if (isInboxRoute) {
       void mail.loadInbox();
     }
+  });
+
+  // Run the search whenever the search route's query changes.
+  $effect(() => {
+    if (isSearchRoute && searchQuery !== undefined) {
+      void mail.runSearch(searchQuery);
+    }
+  });
+
+  // Search-view keyboard layer.
+  $effect(() => {
+    if (!isSearchRoute) return;
+
+    const focusedSearchId = (): string | null => {
+      const idx = mail.searchFocusedIndex;
+      if (idx < 0) return null;
+      return mail.searchEmailIds[idx] ?? null;
+    };
+
+    const pop = keyboard.pushLayer([
+      {
+        key: 'j',
+        description: 'Next result',
+        action: () => mail.focusSearchNext(),
+      },
+      {
+        key: 'k',
+        description: 'Previous result',
+        action: () => mail.focusSearchPrev(),
+      },
+      {
+        key: 'Enter',
+        description: 'Open focused thread',
+        action: () => {
+          const tid = mail.focusedSearchThreadId();
+          if (tid) router.navigate(`/mail/thread/${encodeURIComponent(tid)}`);
+        },
+      },
+      {
+        key: 'Escape',
+        description: 'Clear search',
+        action: () => router.navigate('/mail'),
+      },
+      {
+        key: 'e',
+        description: 'Archive',
+        action: () => {
+          const id = focusedSearchId();
+          if (id) void mail.archiveEmail(id);
+        },
+      },
+      {
+        key: 's',
+        description: 'Star / unstar',
+        action: () => {
+          const id = focusedSearchId();
+          if (id) void mail.toggleFlagged(id);
+        },
+      },
+    ]);
+    return pop;
   });
 
   // Inbox-view keyboard bindings are pushed only while the inbox is showing.
@@ -185,6 +250,61 @@
       </header>
       <ThreadReader {threadId} />
     </div>
+  {:else if isSearchRoute}
+    <header class="list-header">
+      <h1>
+        Search: <span class="query-echo">{searchQuery || '(empty)'}</span>
+      </h1>
+      <button type="button" class="back" onclick={() => router.navigate('/mail')}>
+        ← Back to inbox
+      </button>
+    </header>
+
+    {#if mail.searchLoadStatus === 'idle' || mail.searchLoadStatus === 'loading'}
+      <div class="state">Searching…</div>
+    {:else if mail.searchLoadStatus === 'error'}
+      <div class="state error">
+        <p>Search failed.</p>
+        {#if mail.searchError}<p class="detail">{mail.searchError}</p>{/if}
+        <button type="button" onclick={() => mail.runSearch(mail.searchQuery)}>
+          Retry
+        </button>
+      </div>
+    {:else if mail.searchEmails.length === 0}
+      <div class="state">No matches.</div>
+    {:else}
+      <ul class="thread-list" role="listbox" aria-label="Search results">
+        {#each mail.searchEmails as email, i (email.id)}
+          <li
+            class="thread-row"
+            class:unread={isUnread(email)}
+            class:focused={mail.searchFocusedIndex === i}
+            data-row-index={i}
+          >
+            <button
+              type="button"
+              role="option"
+              aria-selected={mail.searchFocusedIndex === i}
+              onclick={() => {
+                mail.searchFocusedIndex = i;
+                openThread(email);
+              }}
+            >
+              <span class="star" class:flagged={isFlagged(email)} aria-hidden="true">★</span>
+              <span class="from">{senderLabel(email)}</span>
+              <span class="subject-and-preview">
+                <span class="subject">{email.subject || '(no subject)'}</span>
+                <span class="preview"> — {email.preview}</span>
+              </span>
+              {#if email.hasAttachment}
+                <span class="attachment" aria-label="Has attachment">📎</span>
+              {/if}
+              <span class="date">{formatDate(email.receivedAt)}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
   {:else if label}
     <header>
       <h1>Label: {label}</h1>
@@ -299,6 +419,15 @@
     margin: var(--spacing-02) 0 0;
     color: var(--text-secondary);
     font-size: var(--type-body-compact-01-size);
+  }
+  .query-echo {
+    font-family: var(--font-mono);
+    font-size: var(--type-code-02-size);
+    color: var(--text-primary);
+    background: var(--layer-02);
+    padding: var(--spacing-01) var(--spacing-03);
+    border-radius: var(--radius-md);
+    font-weight: 500;
   }
 
   .refresh,

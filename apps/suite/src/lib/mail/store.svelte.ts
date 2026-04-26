@@ -23,6 +23,7 @@ import {
   type Mailbox,
   type Thread,
 } from './types';
+import { parseQuery } from './search-query';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -43,6 +44,13 @@ class MailStore {
 
   /** Index into inboxEmailIds of the keyboard-focused row; -1 = none. */
   inboxFocusedIndex = $state<number>(-1);
+
+  /** Most recent search query string (raw, user-typed). */
+  searchQuery = $state('');
+  searchEmailIds = $state<string[]>([]);
+  searchLoadStatus = $state<LoadStatus>('idle');
+  searchError = $state<string | null>(null);
+  searchFocusedIndex = $state<number>(-1);
 
   /**
    * Most recent state strings per JMAP type. Updated from `Foo/get`
@@ -112,6 +120,103 @@ class MailStore {
     const emailId = this.inboxEmailIds[this.inboxFocusedIndex];
     if (!emailId) return null;
     return this.emails.get(emailId)?.threadId ?? null;
+  }
+
+  /** Resolved search-result emails in result order. */
+  searchEmails = $derived(
+    this.searchEmailIds
+      .map((id) => this.emails.get(id))
+      .filter((e): e is Email => e !== undefined),
+  );
+
+  focusSearchNext(): string | null {
+    if (this.searchEmailIds.length === 0) return null;
+    const next =
+      this.searchFocusedIndex < 0
+        ? 0
+        : Math.min(this.searchFocusedIndex + 1, this.searchEmailIds.length - 1);
+    this.searchFocusedIndex = next;
+    return this.searchEmailIds[next] ?? null;
+  }
+
+  focusSearchPrev(): string | null {
+    if (this.searchEmailIds.length === 0) return null;
+    const next =
+      this.searchFocusedIndex < 0 ? 0 : Math.max(this.searchFocusedIndex - 1, 0);
+    this.searchFocusedIndex = next;
+    return this.searchEmailIds[next] ?? null;
+  }
+
+  focusedSearchThreadId(): string | null {
+    const emailId = this.searchEmailIds[this.searchFocusedIndex];
+    if (!emailId) return null;
+    return this.emails.get(emailId)?.threadId ?? null;
+  }
+
+  /**
+   * Run a search. Idempotent for the same query — if the most recent
+   * search produced ready results for the same query, no-op.
+   */
+  async runSearch(query: string): Promise<void> {
+    if (this.searchLoadStatus === 'ready' && this.searchQuery === query) return;
+    this.searchQuery = query;
+    this.searchLoadStatus = 'loading';
+    this.searchError = null;
+    this.searchFocusedIndex = -1;
+
+    try {
+      // Make sure mailboxes are warm so `label:` resolves.
+      if (this.mailboxes.size === 0) await this.loadMailboxes();
+      const accountId = this.mailAccountId;
+      if (!accountId) throw new Error('No Mail account on this session');
+
+      const { filter } = parseQuery(query, { mailboxes: this.mailboxes });
+
+      const { responses } = await jmap.batch((b) => {
+        const q = b.call(
+          'Email/query',
+          {
+            accountId,
+            filter,
+            sort: [{ property: 'receivedAt', isAscending: false }],
+            collapseThreads: true,
+            limit: 50,
+            calculateTotal: false,
+          },
+          [Capability.Mail],
+        );
+        b.call(
+          'Email/get',
+          {
+            accountId,
+            '#ids': q.ref('/ids'),
+            properties: EMAIL_LIST_PROPERTIES,
+          },
+          [Capability.Mail],
+        );
+      });
+      strict(responses);
+
+      const queryResult = invocationArgs<{ ids: string[] }>(responses[0]);
+      const getResult = invocationArgs<{ list: Email[] }>(responses[1]);
+
+      const next = new Map(this.emails);
+      for (const e of getResult.list) next.set(e.id, e);
+      this.emails = next;
+      this.searchEmailIds = queryResult.ids;
+      this.searchLoadStatus = 'ready';
+    } catch (err) {
+      this.searchLoadStatus = 'error';
+      this.searchError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  clearSearch(): void {
+    this.searchQuery = '';
+    this.searchEmailIds = [];
+    this.searchLoadStatus = 'idle';
+    this.searchError = null;
+    this.searchFocusedIndex = -1;
   }
 
   /** The id of the JMAP Mail account this principal uses. */
