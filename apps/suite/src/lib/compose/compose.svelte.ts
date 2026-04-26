@@ -165,13 +165,14 @@ class ComposeStore {
       return;
     }
     const subject = this.subject;
-    const body = this.body;
+    const bodyHtml = this.body;
+    const bodyText = htmlToPlainText(bodyHtml);
     const replyContext = this.replyContext;
 
     // Snapshot for Undo (full state, including reply context).
     const savedTo = this.to;
     const savedSubject = subject;
-    const savedBody = body;
+    const savedBody = bodyHtml;
     const savedReplyContext: ReplyContext = { ...replyContext };
 
     this.errorMessage = null;
@@ -186,9 +187,10 @@ class ComposeStore {
     onSuccessUpdate['keywords/$draft'] = null;
     onSuccessUpdate['keywords/$seen'] = true;
 
-    // Build the new email — include In-Reply-To / References when this is
-    // a reply or forward. Mark the parent $answered / $forwarded in the
-    // same batch (REQ-MAIL-33) so the UI reflects the change immediately.
+    // Build the new email — multipart/alternative with text/plain + text/html.
+    // Include In-Reply-To / References when this is a reply or forward.
+    // Mark the parent $answered / $forwarded in the same batch
+    // (REQ-MAIL-33) so the UI reflects the change immediately.
     const draftEmail: Record<string, unknown> = {
       mailboxIds: { [drafts.id]: true },
       keywords: { $draft: true, $seen: true },
@@ -196,10 +198,18 @@ class ComposeStore {
       to: recipients.map((email) => ({ email, name: null })),
       subject,
       bodyValues: {
-        '1': { value: body, isTruncated: false, isEncodingProblem: false },
+        '1': { value: bodyText, isTruncated: false, isEncodingProblem: false },
+        '2': { value: bodyHtml, isTruncated: false, isEncodingProblem: false },
       },
       textBody: [{ partId: '1', type: 'text/plain', charset: 'utf-8' }],
-      bodyStructure: { partId: '1', type: 'text/plain', charset: 'utf-8' },
+      htmlBody: [{ partId: '2', type: 'text/html', charset: 'utf-8' }],
+      bodyStructure: {
+        type: 'multipart/alternative',
+        subParts: [
+          { partId: '1', type: 'text/plain', charset: 'utf-8' },
+          { partId: '2', type: 'text/html', charset: 'utf-8' },
+        ],
+      },
     };
     if (replyContext.inReplyTo && replyContext.inReplyTo.length > 0) {
       draftEmail.inReplyTo = replyContext.inReplyTo;
@@ -398,6 +408,75 @@ function htmlToText(html: string): string {
   return out.replace(/\n{3,}/g, '\n\n').trim();
 }
 
+/**
+ * Convert the editor's HTML to a plain-text projection for the
+ * text/plain body part. We can't just strip tags — we need block-level
+ * separations to survive (paragraph → newline, list-item → "- ", etc.).
+ */
+function htmlToPlainText(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  if (!doc.body) return '';
+  const out: string[] = [];
+  walk(doc.body, out);
+  return out.join('').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function walk(node: Node, out: string[]): void {
+  if (node.nodeType === Node.TEXT_NODE) {
+    out.push(node.textContent ?? '');
+    return;
+  }
+  if (!(node instanceof Element)) return;
+  const tag = node.tagName.toLowerCase();
+  switch (tag) {
+    case 'br':
+      out.push('\n');
+      return;
+    case 'li': {
+      out.push('- ');
+      for (const c of Array.from(node.childNodes)) walk(c, out);
+      out.push('\n');
+      return;
+    }
+    case 'blockquote': {
+      const inner: string[] = [];
+      for (const c of Array.from(node.childNodes)) walk(c, inner);
+      const quoted = inner
+        .join('')
+        .split('\n')
+        .map((l) => (l ? `> ${l}` : '>'))
+        .join('\n');
+      out.push(quoted);
+      out.push('\n');
+      return;
+    }
+    case 'p':
+    case 'div':
+    case 'h1':
+    case 'h2':
+    case 'h3':
+    case 'h4':
+    case 'h5':
+    case 'h6':
+    case 'ul':
+    case 'ol':
+    case 'pre':
+    case 'hr':
+      for (const c of Array.from(node.childNodes)) walk(c, out);
+      out.push('\n');
+      return;
+    case 'a': {
+      const href = node.getAttribute('href');
+      const text = node.textContent ?? '';
+      if (href && href !== text) out.push(`${text} (${href})`);
+      else out.push(text);
+      return;
+    }
+    default:
+      for (const c of Array.from(node.childNodes)) walk(c, out);
+  }
+}
+
 function formatDateForQuote(iso: string | null | undefined): string {
   if (!iso) return '';
   const d = new Date(iso);
@@ -418,6 +497,30 @@ function quoteBlock(text: string): string {
     .join('\n');
 }
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Convert plain-text body content to a paragraph-broken HTML block. Used
+ * when quoting parent bodies in reply / forward — ProseMirror parses the
+ * resulting HTML cleanly.
+ */
+function plainTextToHtml(text: string): string {
+  if (!text) return '';
+  const paragraphs = text.split(/\n{2,}/);
+  return paragraphs
+    .map((p) => {
+      const escaped = escapeHtml(p).replace(/\n/g, '<br>');
+      return `<p>${escaped}</p>`;
+    })
+    .join('');
+}
+
 function formatReplyQuote(parent: Email): string {
   const senderLabel = addressToString(parent.from?.[0]) || '(unknown sender)';
   const dateStr = formatDateForQuote(parent.sentAt ?? parent.receivedAt);
@@ -425,8 +528,8 @@ function formatReplyQuote(parent: Email): string {
   const header = dateStr
     ? `On ${dateStr}, ${senderLabel} wrote:`
     : `${senderLabel} wrote:`;
-  const quoted = body ? quoteBlock(body) : '> (no quoted body)';
-  return `\n\n${header}\n${quoted}\n`;
+  const quotedHtml = body ? plainTextToHtml(body) : '<p>(no quoted body)</p>';
+  return `<p></p><p></p><p>${escapeHtml(header)}</p><blockquote>${quotedHtml}</blockquote><p></p>`;
 }
 
 function formatForwardQuote(parent: Email): string {
@@ -435,14 +538,17 @@ function formatForwardQuote(parent: Email): string {
   const dateStr = formatDateForQuote(parent.sentAt ?? parent.receivedAt);
   const subject = parent.subject ?? '';
   const body = parentBodyText(parent);
-  const header = [
+  const headerLines = [
     '---------- Forwarded message ----------',
     `From: ${fromStr}`,
     `Date: ${dateStr}`,
     `Subject: ${subject}`,
     `To: ${toStr}`,
-  ].join('\n');
-  return `\n\n${header}\n\n${body}\n`;
+  ]
+    .map((l) => `<p>${escapeHtml(l)}</p>`)
+    .join('');
+  const quotedHtml = body ? plainTextToHtml(body) : '<p>(no quoted body)</p>';
+  return `<p></p><p></p>${headerLines}<p></p>${quotedHtml}<p></p>`;
 }
 
 export const compose = new ComposeStore();

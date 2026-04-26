@@ -2,6 +2,10 @@
   import { compose } from './compose.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
   import { mail } from '../mail/store.svelte';
+  import RichEditor from './RichEditor.svelte';
+  import ComposeToolbar from './ComposeToolbar.svelte';
+  import { EMPTY_ACTIVE, type ActiveState } from './editor';
+  import type { EditorView } from 'prosemirror-view';
 
   // Per-compose keyboard layer: Mod+Enter sends, Escape closes.
   // Both pass through input-focus carve-outs (see keyboard engine
@@ -26,22 +30,36 @@
   });
 
   // Focus the right field when compose opens — for reply / forward, the
-  // body (cursor at top, above the quoted block); otherwise the To field.
+  // ProseMirror editor; otherwise the To field. (The editor's own
+  // autofocus handles cursor placement; replies pre-populate the body
+  // such that the empty leading paragraphs put the caret at the top.)
   let toInput = $state<HTMLInputElement | null>(null);
-  let bodyTextarea = $state<HTMLTextAreaElement | null>(null);
   $effect(() => {
     if (compose.status !== 'editing') return;
     requestAnimationFrame(() => {
-      if (compose.replyContext.parentId && bodyTextarea) {
-        bodyTextarea.focus();
-        bodyTextarea.setSelectionRange(0, 0);
-      } else if (toInput) {
+      if (!compose.replyContext.parentId && toInput) {
         toInput.focus();
       }
     });
   });
 
   let identity = $derived(mail.primaryIdentity);
+
+  // Editor view bridge for the toolbar.
+  let editorView = $state<EditorView | null>(null);
+  let active = $state<ActiveState>(EMPTY_ACTIVE);
+
+  function onEditorUpdate(html: string, _text: string): void {
+    compose.body = html;
+  }
+
+  // Snapshot the initial body once per open so the editor doesn't
+  // re-mount as the user types (which would write into compose.body and
+  // re-trigger the prop). The key on RichEditor below ensures it remounts
+  // only when compose transitions from idle → editing.
+  let initialHtml = $derived.by(() => {
+    return compose.status === 'editing' ? compose.body : '';
+  });
 </script>
 
 {#if compose.isOpen}
@@ -108,17 +126,21 @@
         />
       </label>
 
-      <label class="row body-row">
+      <div class="row body-row">
         <span class="label">Body</span>
-        <textarea
-          bind:this={bodyTextarea}
-          bind:value={compose.body}
-          rows="14"
-          placeholder="Write your message…"
-          spellcheck="true"
-          disabled={compose.status === 'sending'}
-        ></textarea>
-      </label>
+        <div class="body-stack">
+          {#key compose.replyContext.parentId ?? '__blank__'}
+            <RichEditor
+              {initialHtml}
+              autofocus={Boolean(compose.replyContext.parentId)}
+              onUpdate={onEditorUpdate}
+              onActiveChange={(a) => (active = a)}
+              onView={(v) => (editorView = v)}
+            />
+          {/key}
+          <ComposeToolbar view={editorView} {active} />
+        </div>
+      </div>
     </div>
 
     {#if compose.errorMessage}
@@ -245,20 +267,13 @@
     align-items: flex-start;
     border-bottom: none;
   }
-  textarea {
+  .body-stack {
     flex: 1;
-    background: var(--layer-01);
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-md);
-    outline: none;
-    color: var(--text-primary);
-    font-family: var(--font-sans);
-    font-size: var(--type-body-01-size);
-    line-height: var(--type-body-01-line);
-    padding: var(--spacing-03);
-    resize: vertical;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+    min-width: 0;
   }
-  textarea:focus,
   input[type='text']:focus {
     box-shadow: 0 0 0 2px var(--focus);
     border-radius: var(--radius-sm);
