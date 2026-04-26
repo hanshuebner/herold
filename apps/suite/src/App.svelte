@@ -6,6 +6,7 @@
   import { auth } from './lib/auth/auth.svelte';
   import { sync } from './lib/jmap/sync.svelte';
   import { compose } from './lib/compose/compose.svelte';
+  import { help } from './lib/help/help.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
   import SettingsView from './views/SettingsView.svelte';
@@ -37,9 +38,7 @@
   keyboard.registerGlobal({
     key: '?',
     description: 'Show keyboard shortcuts',
-    action: () => {
-      console.info('help overlay: not yet implemented');
-    },
+    action: () => help.toggle(),
   });
   keyboard.registerGlobal({
     key: 'g i',

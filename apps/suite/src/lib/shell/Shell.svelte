@@ -4,6 +4,7 @@
   import CoachStrip from './CoachStrip.svelte';
   import ToastHost from '../toast/ToastHost.svelte';
   import ComposeWindow from '../compose/ComposeWindow.svelte';
+  import HelpOverlay from '../help/HelpOverlay.svelte';
 
   interface Props {
     activeApp?: 'mail' | 'chat';
@@ -43,6 +44,7 @@
   <CoachStrip />
   <ToastHost />
   <ComposeWindow />
+  <HelpOverlay />
 </div>
 
 <style>
