@@ -1,0 +1,94 @@
+<script lang="ts">
+  import SearchIcon from '../icons/SearchIcon.svelte';
+  import HelpIcon from '../icons/HelpIcon.svelte';
+  import SettingsIcon from '../icons/SettingsIcon.svelte';
+
+  interface Props {
+    placeholder?: string;
+  }
+  let { placeholder = 'Search mail' }: Props = $props();
+
+  let query = $state('');
+</script>
+
+<header class="global-bar" role="banner">
+  <div class="search">
+    <SearchIcon size={18} />
+    <input
+      type="search"
+      {placeholder}
+      bind:value={query}
+      aria-label={placeholder}
+      spellcheck="false"
+    />
+  </div>
+
+  <div class="controls">
+    <button type="button" class="icon-btn" aria-label="Help">
+      <HelpIcon size={20} />
+    </button>
+    <button type="button" class="icon-btn" aria-label="Settings">
+      <SettingsIcon size={20} />
+    </button>
+  </div>
+</header>
+
+<style>
+  .global-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-04);
+    padding: var(--spacing-03) var(--spacing-05);
+    height: var(--spacing-08);
+    background: var(--layer-01);
+    border-bottom: 1px solid var(--border-subtle-01);
+  }
+  .search {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+    padding: var(--spacing-02) var(--spacing-04);
+    background: var(--layer-02);
+    border-radius: var(--radius-pill);
+    color: var(--text-helper);
+    max-width: 720px;
+  }
+  .search input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-size: var(--type-body-compact-01-size);
+    line-height: var(--type-body-compact-01-line);
+    min-width: 0;
+  }
+  .search input::placeholder {
+    color: var(--text-helper);
+  }
+  .search:focus-within {
+    color: var(--text-secondary);
+    box-shadow: 0 0 0 2px var(--focus);
+  }
+  .controls {
+    display: flex;
+    gap: var(--spacing-01);
+  }
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    transition:
+      background var(--duration-fast-02) var(--easing-productive-enter),
+      color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .icon-btn:hover {
+    background: var(--layer-02);
+    color: var(--text-primary);
+  }
+</style>
