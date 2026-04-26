@@ -320,6 +320,40 @@ When `uris` is non-empty, `shared_secret_env` must be a `$VAR` or
 back to STUN-only ICE - that works for ~85-90% of network shapes; the
 remaining 10-15% need TURN.
 
+### `[server.tabard]` - tabard SPA mount on the public listener
+
+```toml
+[server.tabard]
+enabled = true                    # default true; set false for admin-only deployments.
+# asset_dir = "/abs/path/to/tabard/dist"   # dev-mode override; default unset.
+```
+
+Herold embeds the tabard SPA build artefacts into the binary and
+serves them at `/` on the public listener (REQ-DEPLOY-COLOC-01..05).
+
+- `enabled` toggles the SPA mount. `enabled = false` leaves the
+  catch-all on the public mux empty so `/` returns the default 404;
+  use this for admin-only deployments where the public listener
+  exists only to terminate JMAP / send / chat / image-proxy traffic.
+- `asset_dir`, when set, makes the server read SPA assets from disk
+  on every request rather than from the embedded FS. Use this in
+  development to avoid rebuilding the binary on every tabard change.
+  The path MUST be absolute AND contain `index.html` at startup; the
+  validator refuses the config otherwise.
+
+The handler emits a strict `Content-Security-Policy` (no operator
+override in v1; see REQ-DEPLOY-COLOC-04 for the directive set),
+content-addressed asset caching with `Cache-Control: public,
+max-age=31536000, immutable` for hashed assets, `max-age=3600` for
+stable non-hashed assets, and `no-cache` for `index.html`. Unknown
+non-API paths fall through to `index.html` so the SPA's client-side
+router takes over.
+
+The pinned tabard release the current herold binary embeds is
+recorded in `deploy/tabard.version`. Operators who want a different
+tabard version use the `asset_dir` override; see
+`docs/user/install.md` for the embed-tabard workflow.
+
 ### `[server.ui]` - operator-facing web UI
 
 ```toml

@@ -120,6 +120,10 @@ Point your IMAP client at:
 Send mail to `admin@example.local` from another local mailbox or via
 the HTTP send API and verify it arrives in the INBOX.
 
+The public HTTP listener (default `127.0.0.1:8080` per the quickstart
+config) serves the tabard consumer SPA at `/` alongside the JMAP, send,
+chat, and image-proxy endpoints.
+
 ### 7. (Optional) Outbound through a smart host
 
 To deliver outbound mail through Gmail / SES / SendGrid rather than

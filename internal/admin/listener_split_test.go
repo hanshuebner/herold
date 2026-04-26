@@ -68,11 +68,14 @@ func TestListenerSplit_PublicPathReturns404OnAdmin(t *testing.T) {
 	}
 }
 
-// TestListenerSplit_PublicPlaceholderRoot asserts that the public
-// listener's bare `/` returns the SPA-mount-pending placeholder body.
-// Wave 3.7 lands the actual SPA; until then this body keeps API
-// consumers and curl from confusing the dev experience.
-func TestListenerSplit_PublicPlaceholderRoot(t *testing.T) {
+// TestListenerSplit_PublicRootServesSPA asserts that the public
+// listener's bare `/` returns the tabard SPA shell (Wave 3.7,
+// REQ-DEPLOY-COLOC-01..02). The default test fixture leaves
+// Tabard.AssetDir empty so the embedded placeholder is served; the
+// placeholder carries a <title>Herold</title> we assert on rather
+// than the full body so a future tabard build swap does not break
+// the test.
+func TestListenerSplit_PublicRootServesSPA(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
 		cancel()
@@ -95,8 +98,14 @@ func TestListenerSplit_PublicPlaceholderRoot(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("/: status=%d body=%s; want 200", resp.StatusCode, string(body))
 	}
-	if want := "tabard SPA mount lands"; !contains(string(body), want) {
+	if want := "<title>Herold</title>"; !contains(string(body), want) {
 		t.Errorf("/: body=%q; want substring %q", string(body), want)
+	}
+	if got := resp.Header.Get("Cache-Control"); !contains(got, "no-cache") {
+		t.Errorf("/: Cache-Control=%q; want no-cache", got)
+	}
+	if got := resp.Header.Get("Content-Security-Policy"); !contains(got, "default-src 'self'") {
+		t.Errorf("/: missing CSP header; got %q", got)
 	}
 }
 

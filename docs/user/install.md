@@ -69,6 +69,46 @@ tests against both SQLite and Postgres):
 make ci-local
 ```
 
+### Tabard SPA
+
+Herold embeds the tabard consumer SPA (HTML/JS/CSS) and serves it on
+the public HTTP listener at `/` (REQ-DEPLOY-COLOC-01..05). The default
+source build embeds a placeholder index.html that documents the embed
+step; release builds bake the matching tabard build into the binary
+via:
+
+```bash
+TABARD_DIST=/path/to/tabard/apps/suite/dist make embed-tabard
+make build
+```
+
+Or directly:
+
+```bash
+TABARD_DIST=/path/to/tabard/apps/suite/dist scripts/embed-tabard.sh
+go build -trimpath -buildvcs=true -o ./herold ./cmd/herold
+```
+
+The default `TABARD_DIST` is `/Users/hans/tabard/apps/suite/dist` (the
+sibling-repo layout used during development); override the env var to
+point at any tabard build output.
+
+For development hot-reload, leave the binary alone and point the
+running server at a freshly built tabard dist via system.toml:
+
+```toml
+[server.tabard]
+asset_dir = "/abs/path/to/tabard/dist"
+```
+
+The override reads from disk on every request, so a `pnpm build` in
+the tabard tree appears at the next browser refresh without
+rebuilding herold. The path MUST be absolute and contain `index.html`
+at startup; otherwise the server refuses to start with a clear error.
+
+The pinned tabard SHA the current herold release expects lives in
+`deploy/tabard.version`; see `deploy/tabard.version.README`.
+
 ### Where the binary expects things
 
 By default:

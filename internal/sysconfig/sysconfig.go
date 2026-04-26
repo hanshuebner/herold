@@ -83,6 +83,27 @@ type ServerConfig struct {
 	Call       CallConfig       `toml:"call,omitempty"`
 	TURN       TURNConfig       `toml:"turn,omitempty"`
 	SmartHost  SmartHostConfig  `toml:"smart_host,omitempty"`
+	Tabard     TabardConfig     `toml:"tabard,omitempty"`
+}
+
+// TabardConfig configures the embedded tabard SPA mount on the public
+// HTTP listener (REQ-DEPLOY-COLOC-01..05). The default packaging
+// embeds the tabard build artefacts into the herold binary at release
+// time; an explicit AssetDir overrides the embedded FS for development
+// hot-reload.
+type TabardConfig struct {
+	// Enabled selects whether the SPA is mounted on the public
+	// listener's catch-all (`/`). Defaults to true. Operators
+	// running an admin-only deployment with no consumer suite set
+	// this false explicitly; the bare `/` then returns the public
+	// listener's default 404.
+	Enabled *bool `toml:"enabled,omitempty"`
+	// AssetDir, when non-empty, makes the SPA handler serve from
+	// this directory instead of the embedded FS. The directory MUST
+	// be an absolute path AND contain index.html at startup; the
+	// validator refuses to start the server otherwise so a typo is
+	// loud at boot rather than at first 404.
+	AssetDir string `toml:"asset_dir,omitempty"`
 }
 
 // SmartHostConfig drives the optional outbound smart-host relay
@@ -683,6 +704,13 @@ func applyDefaults(c *Config) {
 	if c.Server.TURN.CredentialTTLSeconds == 0 {
 		c.Server.TURN.CredentialTTLSeconds = 300
 	}
+	// Tabard SPA (REQ-DEPLOY-COLOC-01..05). Default-enabled so a
+	// fresh install boots with the consumer suite mounted on the
+	// public listener; admin-only deployments set Enabled=false.
+	if c.Server.Tabard.Enabled == nil {
+		t := true
+		c.Server.Tabard.Enabled = &t
+	}
 	// Smart host (REQ-FLOW-SMARTHOST-01..08). Defaults are applied to
 	// the top-level block AND every per-domain override so a sparsely-
 	// keyed override picks up the same timeout / fallback floor as the
@@ -830,6 +858,26 @@ func Validate(c *Config) error {
 		if !IsSecretReference(tu.SharedSecretEnv) {
 			return fmt.Errorf("sysconfig: [server.turn] shared_secret_env %q must be \"$VAR\" or \"file:/path\" (STANDARDS §9)",
 				tu.SharedSecretEnv)
+		}
+	}
+	// Tabard SPA (REQ-DEPLOY-COLOC-01..05). The asset_dir override is
+	// validated at parse time so a missing or relative path fails the
+	// load rather than at first 404; the actual content (index.html
+	// presence) is re-checked by tabardspa.New at server boot for the
+	// embedded path too.
+	if dir := c.Server.Tabard.AssetDir; dir != "" {
+		if !strings.HasPrefix(dir, "/") {
+			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q must be an absolute path", dir)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q: %w", dir, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q is not a directory", dir)
+		}
+		if _, err := os.Stat(dir + "/index.html"); err != nil {
+			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q missing index.html: %w", dir, err)
 		}
 	}
 	// Smart host (REQ-FLOW-SMARTHOST-01..08).

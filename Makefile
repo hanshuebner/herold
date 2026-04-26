@@ -11,12 +11,20 @@ PKGS := ./...
 FUZZTIME ?= 30s
 
 .PHONY: all build build-plugins test test-short lint vet staticcheck vulncheck \
-        fmt fmt-check fuzz-short tidy ci-local clean docker
+        fmt fmt-check fuzz-short tidy ci-local clean docker embed-tabard
 
 all: build
 
 build:
 	$(GO) build $(BUILDFLAGS) -o bin/herold ./cmd/herold
+
+# embed-tabard copies the upstream tabard SPA dist into the herold
+# module's internal/tabardspa/dist directory so the next `make build`
+# bakes the SPA into the binary (REQ-DEPLOY-COLOC-01..03).
+# Override the source path via TABARD_DIST=/path/to/tabard/dist.
+embed-tabard:
+	TABARD_DIST="$${TABARD_DIST:-/Users/hans/tabard/apps/suite/dist}" \
+	  ./scripts/embed-tabard.sh
 
 build-plugins:
 	@for p in plugins/herold-*; do \

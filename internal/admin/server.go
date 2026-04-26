@@ -53,6 +53,7 @@ import (
 	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/sysconfig"
+	"github.com/hanshuebner/herold/internal/tabardspa"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
 
@@ -1358,18 +1359,30 @@ func composeAdminAndUI(
 		withPanicRecover(logger.With("subsystem", "protosend"), "mail.send", sendSrv.Handler()))
 	bundle.srvs.sendSrv = sendSrv
 
-	// Bare `/` on the public listener returns a placeholder index
-	// that names the SPA mount target (Wave 3.7). Today the SPA is
-	// not embedded; operators see a small "tabard SPA mount lands
-	// in Wave 3.7" body. Unknown paths return 404.
-	publicMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			_, _ = w.Write([]byte("herold public listener\n\nThe tabard SPA mount lands in Wave 3.7.\nUntil then sign in at " + prefix + "/login.\n"))
-			return
+	// Tabard SPA mount (REQ-DEPLOY-COLOC-01..05). When the operator
+	// has not opted out (Tabard.Enabled defaults true), the SPA
+	// handler registers as the catch-all `/` on the public mux.
+	// Go's longest-prefix routing means the more-specific API
+	// mounts above (jmap, send, chat, image proxy, /ui/, ...)
+	// retain priority; the SPA handler only sees requests that
+	// did not match any other mount.
+	//
+	// When Tabard.Enabled is explicitly false the catch-all is left
+	// to the default 404 path so admin-only deployments do not
+	// silently respond at /.
+	if cfg.Server.Tabard.Enabled == nil || *cfg.Server.Tabard.Enabled {
+		spaSrv, err := tabardspa.New(tabardspa.Options{
+			Logger:     logger.With("subsystem", "tabardspa"),
+			AssetDir:   cfg.Server.Tabard.AssetDir,
+			PublicHost: cfg.Server.Hostname,
+		})
+		if err != nil {
+			return composedHandlers{}, fmt.Errorf("admin: tabard SPA: %w", err)
 		}
-		http.NotFound(w, r)
-	})
+		publicMux.Handle("/",
+			withPanicRecover(logger.With("subsystem", "tabardspa"),
+				"tabardspa", spaSrv.Handler()))
+	}
 
 	bundle.public = withPanicRecover(logger.With("subsystem", "public-mux"),
 		"public.mux", publicMux)

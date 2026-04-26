@@ -125,6 +125,15 @@ protocol = "admin"
 kind = "admin"
 tls = "none"
 
+# Tabard SPA mount on the public listener (REQ-DEPLOY-COLOC-01..05).
+# The release build embeds the tabard assets into the binary and the
+# default mounts the SPA at `/` on the public listener above.
+# Uncomment the asset_dir override during tabard development to read
+# from a freshly-built dist directory instead of the embedded copy.
+# [server.tabard]
+# enabled = true
+# asset_dir = "/abs/path/to/tabard/apps/suite/dist"
+
 # Observability. Logs go to stderr in JSON; metrics on the loopback
 # default. Do NOT publish a non-loopback metrics_bind without
 # fronting it with TLS + auth at a reverse proxy (STANDARDS section
