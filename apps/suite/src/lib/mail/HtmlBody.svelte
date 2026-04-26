@@ -1,32 +1,40 @@
 <script lang="ts">
   /**
    * Renders an HTML email body inside a sandboxed iframe per
-   * docs/architecture/04-rendering.md.
+   * docs/architecture/04-rendering.md and 13-nonfunctional.md
+   * REQ-SEC-04..07.
    *
-   * sandbox="allow-same-origin": no `allow-scripts`, so script tags in the
-   * email body are inert. The `allow-same-origin` token lets the parent
-   * (this Svelte component) read the iframe's contentDocument so we can
-   * measure the body height and resize the iframe to fit.
-   *
-   * Sanitisation (DOMPurify, link rewriting, image-proxy rewriting) lands
-   * in a follow-up commit. Sandbox is the primary defence; the rewriting
-   * layer adds tracking-pixel suppression and outbound-link safety.
+   * Layered defence:
+   *   - DOMPurify strips dangerous tags / attrs / URL schemes (sanitize.ts).
+   *   - <a> rewritten to target="_blank" rel="noopener noreferrer".
+   *   - <img>: cid: blocked; http(s) blocked unless loadImages=true; when
+   *     loaded, src rewritten through /proxy/image so the recipient's
+   *     IP / cookies don't reach the sender.
+   *   - srcdoc carries an inline CSP (default-src 'none'; img-src 'self'
+   *     data:; style-src 'unsafe-inline').
+   *   - sandbox="allow-same-origin" with NO allow-scripts: scripts in
+   *     mail are inert; the parent can still read contentDocument to
+   *     auto-size the iframe.
    */
+  import { sanitizeHtml } from './sanitize';
+
   interface Props {
     html: string;
+    loadImages?: boolean;
   }
-  let { html }: Props = $props();
+  let { html, loadImages = false }: Props = $props();
 
   let frameEl = $state<HTMLIFrameElement | null>(null);
   let height = $state(120);
 
+  // Re-sanitise whenever inputs change (e.g. user clicks "Load images").
+  let srcdoc = $derived(sanitizeHtml(html, { loadImages }));
+
   function onLoad(): void {
     const doc = frameEl?.contentDocument;
     if (!doc?.body) return;
-    // One animation frame so layout has settled.
     requestAnimationFrame(() => {
       if (!doc.body) return;
-      // scrollHeight measures the rendered body; clamp to a sane minimum.
       height = Math.max(doc.body.scrollHeight + 8, 120);
     });
   }
@@ -35,7 +43,7 @@
 <iframe
   bind:this={frameEl}
   sandbox="allow-same-origin"
-  srcdoc={html}
+  {srcdoc}
   referrerpolicy="no-referrer"
   loading="lazy"
   title="Message body"

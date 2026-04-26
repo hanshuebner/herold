@@ -1,5 +1,6 @@
 <script lang="ts">
   import HtmlBody from './HtmlBody.svelte';
+  import { htmlHasExternalImages } from './sanitize';
   import { emailHtmlBody, emailTextBody, type Email } from './types';
 
   interface Props {
@@ -11,6 +12,10 @@
 
   let html = $derived(emailHtmlBody(email));
   let text = $derived(emailTextBody(email));
+
+  // Per REQ-SEC-05: external images blocked by default; user opts in per-message.
+  let loadImages = $state(false);
+  let hasExternalImages = $derived(html ? htmlHasExternalImages(html) : false);
 
   let senderName = $derived(
     email.from?.[0]?.name?.trim() || email.from?.[0]?.email || '(no sender)',
@@ -70,7 +75,15 @@
   {#if expanded}
     <div class="body">
       {#if html}
-        <HtmlBody {html} />
+        {#if hasExternalImages && !loadImages}
+          <div class="image-banner" role="status">
+            <span>External images are blocked.</span>
+            <button type="button" onclick={() => (loadImages = true)}>
+              Load images
+            </button>
+          </div>
+        {/if}
+        <HtmlBody {html} {loadImages} />
       {:else if text}
         <pre class="text-body">{text}</pre>
       {:else}
@@ -159,6 +172,30 @@
 
   .body {
     padding: 0 var(--spacing-05) var(--spacing-05);
+  }
+
+  .image-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-04);
+    padding: var(--spacing-03) var(--spacing-04);
+    margin-bottom: var(--spacing-03);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    font-size: var(--type-body-compact-01-size);
+  }
+  .image-banner button {
+    color: var(--interactive);
+    font-weight: 600;
+    padding: var(--spacing-01) var(--spacing-03);
+    border-radius: var(--radius-md);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .image-banner button:hover {
+    background: var(--layer-02);
   }
   .text-body {
     margin: 0;
