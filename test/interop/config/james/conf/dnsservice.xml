@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<!-- Interop test suite: use CoreDNS (10.77.0.2) for *.test zones. -->
+
+<dnsservice>
+  <servers>
+    <server>10.77.0.2</server>
+  </servers>
+  <autodiscover>false</autodiscover>
+  <authoritative>false</authoritative>
+  <maxcachesize>100</maxcachesize>
+</dnsservice>

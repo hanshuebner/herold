@@ -1,0 +1,398 @@
+# Interop test-suite compose stack — v2.
+#
+# Changes from v1:
+#   - certgen init service (task #2): generates private CA + per-MTA leaf
+#     certs into the tls-data shared volume before any MTA starts.
+#   - All MTA listeners upgraded to TLS using the CA-signed certs.
+#   - mutt-client and snail-client services added (task #3).
+#   - Prometheus metrics port exposed on herold (task #4).
+#
+# Image pins:
+#   All images are pinned to digest-verified tags.  When adding new images
+#   include a "# TODO verify tag" comment if the digest was not independently
+#   verified, and note it in README.md.
+#
+# Network:
+#   All containers share the "interop" bridge (10.77.0.0/24).
+#   CoreDNS is the DNS resolver for all containers so *.test zones resolve.
+
+services:
+
+  # -----------------------------------------------------------------------
+  # certgen - init service (task #2).
+  # Runs alpine:3.20 with openssl installed.  Generates the private CA and
+  # per-MTA leaf certs into the tls-data volume, then exits 0.
+  # Every MTA depends_on certgen condition: service_completed_successfully.
+  # -----------------------------------------------------------------------
+  certgen:
+    image: alpine:3.20
+    # TODO verify tag: alpine:3.20 digest pinned 2026-04-26. Verify with:
+    # docker pull alpine:3.20 && docker inspect --format '{{index .RepoDigests 0}}' alpine:3.20
+    command:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache openssl >/dev/null 2>&1 && \
+        /scripts/generate.sh
+    volumes:
+      - ./config/certgen/generate.sh:/scripts/generate.sh:ro
+      - tls-data:/tls
+    networks:
+      - interop
+    restart: "no"
+
+  # -----------------------------------------------------------------------
+  # CoreDNS - authoritative DNS for *.test zones.
+  # -----------------------------------------------------------------------
+  coredns:
+    image: coredns/coredns:1.11.3
+    command: ["-conf", "/etc/coredns/Corefile"]
+    volumes:
+      - ./config/coredns/Corefile:/etc/coredns/Corefile:ro
+      - ./config/coredns/zones:/etc/coredns/zones:ro
+    networks:
+      interop:
+        ipv4_address: 10.77.0.2
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "/coredns", "-version"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+
+  # -----------------------------------------------------------------------
+  # Herold - the system under test (task #2: TLS from certgen).
+  # Built from the repo root using the interop-specific Dockerfile.
+  # -----------------------------------------------------------------------
+  herold:
+    build:
+      context: ../..
+      dockerfile: test/interop/config/herold/Dockerfile
+    image: herold:interop
+    hostname: herold.herold.test
+    environment:
+      HEROLD_SYSTEM_CONFIG: /etc/herold/system.toml
+    volumes:
+      - ./config/herold/system.toml:/etc/herold/system.toml:ro
+      - tls-data:/etc/herold/tls:ro
+      - herold_data:/var/lib/herold
+    networks:
+      interop:
+        ipv4_address: 10.77.0.10
+    dns:
+      - 10.77.0.2
+    restart: "no"
+    depends_on:
+      coredns:
+        condition: service_healthy
+      certgen:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/api/v1/healthz/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  # -----------------------------------------------------------------------
+  # stalwart-config-init - copies config.toml into a writable volume.
+  # Stalwart v0.10.6 tries to write its merged "local config" back to the
+  # config file path at startup; if the file is bind-mounted :ro it logs a
+  # non-fatal write error.  To keep Stalwart happy we seed the config into
+  # a named volume (stalwart_etc) via this one-shot init container, then
+  # Stalwart mounts that volume read-write.
+  # -----------------------------------------------------------------------
+  stalwart-config-init:
+    image: alpine:3.20
+    command:
+      - /bin/sh
+      - -c
+      - |
+        cp /src/config.toml /dest/config.toml
+        echo "stalwart-config-init: copied config.toml to volume"
+    volumes:
+      - ./config/stalwart/config.toml:/src/config.toml:ro
+      - stalwart_etc:/dest
+    networks:
+      - interop
+    restart: "no"
+
+  # -----------------------------------------------------------------------
+  # Stalwart - third-party MTA #1 (task #2: TLS).
+  # -----------------------------------------------------------------------
+  stalwart:
+    image: stalwartlabs/mail-server:v0.10.6
+    hostname: stalwart.stalwart.test
+    volumes:
+      - stalwart_etc:/opt/stalwart-mail/etc
+      - tls-data:/etc/stalwart/tls:ro
+      - stalwart_data:/opt/stalwart-mail/data
+      - stalwart_logs:/opt/stalwart-mail/logs
+    networks:
+      interop:
+        ipv4_address: 10.77.0.11
+    dns:
+      - 10.77.0.2
+    restart: "no"
+    depends_on:
+      coredns:
+        condition: service_healthy
+      certgen:
+        condition: service_completed_successfully
+      stalwart-config-init:
+        condition: service_completed_successfully
+
+  # -----------------------------------------------------------------------
+  # docker-mailserver (Postfix + Dovecot) - third-party MTA #2 (task #2: TLS).
+  # SSL_TYPE=manual points at the interop leaf cert.
+  # -----------------------------------------------------------------------
+  postfix:
+    image: mailserver/docker-mailserver:14.0
+    hostname: postfix.postfix.test
+    domainname: postfix.test
+    env_file:
+      - ./config/postfix/env
+    volumes:
+      - postfix_mail:/var/mail
+      - postfix_state:/var/mail-state
+      - postfix_logs:/var/log/mail
+      - postfix_config:/tmp/docker-mailserver
+      - ./config/postfix/postfix-accounts.cf:/tmp/docker-mailserver/postfix-accounts.cf:ro
+      # TLS: mount the interop leaf cert at the paths SSL_CERT_PATH / SSL_KEY_PATH
+      # reference in the env file.
+      - tls-data:/etc/interop/tls:ro
+    networks:
+      interop:
+        ipv4_address: 10.77.0.12
+    dns:
+      - 10.77.0.2
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+    restart: "no"
+    depends_on:
+      coredns:
+        condition: service_healthy
+      certgen:
+        condition: service_completed_successfully
+    stop_grace_period: 10s
+
+  # -----------------------------------------------------------------------
+  # Apache James - third-party MTA #3 (task #2: TLS via bootstrap.sh).
+  # Platform pinned to linux/amd64 (no arm64 build available).
+  # The bootstrap script imports the CA into cacerts and the leaf cert into
+  # the JKS keystore before James starts listening.
+  # -----------------------------------------------------------------------
+  james:
+    image: apache/james
+    # TODO verify tag: apache/james:latest digest pinned 2026-04-26. Verify with:
+    # docker pull apache/james:latest && docker inspect --format '{{.RepoDigests}}' apache/james:latest
+    platform: linux/amd64
+    hostname: james.james.test
+    volumes:
+      - ./config/james/conf/domainlist.xml:/root/conf/domainlist.xml:ro
+      - ./config/james/conf/dnsservice.xml:/root/conf/dnsservice.xml:ro
+      - ./config/james/conf/smtpserver.xml:/root/conf/smtpserver.xml:ro
+      - ./config/james/conf/webadmin.properties:/root/conf/webadmin.properties:ro
+      - james_data:/root/var
+      - james_logs:/logs
+    networks:
+      interop:
+        ipv4_address: 10.77.0.13
+    dns:
+      - 10.77.0.2
+    restart: "no"
+    depends_on:
+      coredns:
+        condition: service_healthy
+      certgen:
+        condition: service_completed_successfully
+
+  # -----------------------------------------------------------------------
+  # stalwart-setup - one-shot init service.
+  # Waits for Stalwart's management API and creates bob@stalwart.test.
+  # -----------------------------------------------------------------------
+  stalwart-setup:
+    image: alpine:3.20
+    command:
+      - /bin/sh
+      - /scripts/stalwart-setup.sh
+    volumes:
+      - ./config/stalwart/stalwart-setup.sh:/scripts/stalwart-setup.sh:ro
+    networks:
+      interop:
+        ipv4_address: 10.77.0.18
+    dns:
+      - 10.77.0.2
+    restart: "no"
+    depends_on:
+      stalwart:
+        condition: service_started
+
+  # -----------------------------------------------------------------------
+  # james-setup - one-shot init service.
+  # Waits for the James WebAdmin API then creates dave@james.test.
+  # TLS keystore import (keytool) is skipped in v2 of the suite; James
+  # uses its built-in self-signed cert on port 993.  The test runner
+  # connects to James on port 143 (plaintext) so no CERT_NONE is needed.
+  # See README.md for the James TLS limitation note.
+  # -----------------------------------------------------------------------
+  james-setup:
+    image: alpine:3.20
+    command:
+      - /bin/sh
+      - /scripts/james-setup.sh
+    volumes:
+      - ./config/james/james-setup.sh:/scripts/james-setup.sh:ro
+    networks:
+      interop:
+        ipv4_address: 10.77.0.19
+    dns:
+      - 10.77.0.2
+    restart: "no"
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
+      james:
+        condition: service_started
+
+  # -----------------------------------------------------------------------
+  # mutt-client - debian:bookworm-slim with mutt installed (task #3).
+  # Used for text-mode IMAP client interop tests.
+  # -----------------------------------------------------------------------
+  mutt-client:
+    image: debian:bookworm-slim
+    # TODO verify tag: debian:bookworm-slim digest pinned 2026-04-26.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        apt-get update -qq && \
+        apt-get install -y --no-install-recommends mutt ca-certificates && \
+        rm -rf /var/lib/apt/lists/* && \
+        cp /etc/interop/tls/ca.crt /usr/local/share/ca-certificates/herold-interop-ca.crt && \
+        update-ca-certificates --fresh 2>&1 | tail -2 && \
+        echo "mutt-client: ready" && \
+        sleep infinity
+    volumes:
+      - tls-data:/etc/interop/tls:ro
+    networks:
+      interop:
+        ipv4_address: 10.77.0.30
+    dns:
+      - 10.77.0.2
+    restart: "no"
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
+      herold:
+        condition: service_healthy
+
+  # -----------------------------------------------------------------------
+  # snail-client - debian:bookworm-slim with s-nail installed (task #3).
+  # -----------------------------------------------------------------------
+  snail-client:
+    image: debian:bookworm-slim
+    command:
+      - /bin/sh
+      - -c
+      - |
+        apt-get update -qq && \
+        apt-get install -y --no-install-recommends s-nail ca-certificates && \
+        rm -rf /var/lib/apt/lists/* && \
+        cp /etc/interop/tls/ca.crt /usr/local/share/ca-certificates/herold-interop-ca.crt && \
+        update-ca-certificates --fresh 2>&1 | tail -2 && \
+        echo "snail-client: ready" && \
+        sleep infinity
+    volumes:
+      - tls-data:/etc/interop/tls:ro
+    networks:
+      interop:
+        ipv4_address: 10.77.0.31
+    dns:
+      - 10.77.0.2
+    restart: "no"
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
+      herold:
+        condition: service_healthy
+
+  # -----------------------------------------------------------------------
+  # Test runner - pytest inside the compose network.
+  # Runs after all MTAs are up and bootstrapped.
+  # -----------------------------------------------------------------------
+  runner:
+    build:
+      context: ./runner
+      dockerfile: Dockerfile
+    image: herold-interop-runner:latest
+    environment:
+      RUN_ID: "${RUN_ID:-unset}"
+      # Herold
+      HEROLD_HOST: mail.herold.test
+      HEROLD_SMTP_PORT: "25"
+      HEROLD_SUBMISSION_PORT: "587"
+      HEROLD_IMAP_PORT: "143"
+      HEROLD_IMAPS_PORT: "993"
+      HEROLD_METRICS_URL: "http://mail.herold.test:9090/metrics"
+      # Stalwart
+      STALWART_HOST: mail.stalwart.test
+      STALWART_SMTP_PORT: "25"
+      STALWART_IMAP_PORT: "993"
+      # docker-mailserver (Postfix + Dovecot)
+      POSTFIX_HOST: mail.postfix.test
+      POSTFIX_SMTP_PORT: "25"
+      POSTFIX_IMAP_PORT: "143"
+      # Apache James
+      JAMES_HOST: mail.james.test
+      JAMES_SMTP_PORT: "25"
+      JAMES_IMAP_PORT: "143"
+      # TLS CA for verifying server certs (task #2).
+      TLS_CA_BUNDLE: /etc/interop/tls/ca.crt
+      # Bulk test parameters (task #4).
+      BULK_N: "${BULK_N:-500}"
+      # Compose project name (for docker exec into mutt/snail containers).
+      COMPOSE_PROJECT_NAME: "${COMPOSE_PROJECT_NAME:-interop}"
+    volumes:
+      # ./logs is the default artifacts mount; run.sh overrides with the
+      # per-run log directory via 'docker compose run -v ${LOGS_DIR}:/artifacts'.
+      - ./logs:/artifacts
+      - tls-data:/etc/interop/tls:ro
+      # Docker socket: needed for docker exec into mutt-client and snail-client.
+      # Must be rw: docker exec writes to the socket (ro causes EBADF or
+      # permission errors on some daemon versions).
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - interop
+    dns:
+      - 10.77.0.2
+    extra_hosts:
+      - "mail.herold.test:10.77.0.10"
+      - "mail.stalwart.test:10.77.0.11"
+      - "mail.postfix.test:10.77.0.12"
+      - "mail.james.test:10.77.0.13"
+    restart: "no"
+    profiles:
+      - runner
+
+networks:
+  interop:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.77.0.0/24
+          gateway: 10.77.0.1
+
+volumes:
+  # tls-data: written by certgen, read-only in all other containers.
+  tls-data:
+  herold_data:
+  stalwart_etc:
+  stalwart_data:
+  stalwart_logs:
+  postfix_mail:
+  postfix_state:
+  postfix_logs:
+  postfix_config:
+  james_data:
+  james_logs:

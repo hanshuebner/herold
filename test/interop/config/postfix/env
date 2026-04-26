@@ -1,0 +1,33 @@
+# docker-mailserver (Postfix + Dovecot) environment for interop tests.
+# See: https://docker-mailserver.github.io/docker-mailserver/latest/config/environment/
+
+OVERRIDE_HOSTNAME=postfix.postfix.test
+DOMAINNAME=postfix.test
+POSTMASTER_ADDRESS=postmaster@postfix.test
+
+# TLS: manual mode using the interop CA leaf cert.
+SSL_TYPE=manual
+SSL_CERT_PATH=/etc/interop/tls/postfix.crt
+SSL_KEY_PATH=/etc/interop/tls/postfix.key
+
+# Permit relay from all connected Docker networks (includes the interop
+# 10.77.0.0/24 subnet).  PERMIT_DOCKER=network only covers 172.16.0.0/12;
+# connected-networks adds every veth interface, which is what we need.
+PERMIT_DOCKER=connected-networks
+
+# Log to stdout.
+LOG_LEVEL=info
+
+# Enable SMTP AUTH for submission.
+SMTP_ONLY=0
+
+# DMARC / SPF (informational only in interop; do not reject).
+ENABLE_OPENDMARC=0
+ENABLE_OPENDKIM=0
+ENABLE_SPAMASSASSIN=0
+ENABLE_CLAMAV=0
+ENABLE_AMAVIS=0
+ENABLE_FAIL2BAN=0
+
+# Dovecot auth: plaintext in the interop network is acceptable (no real data).
+DOVECOT_AUTH_MECHANISMS=plain login

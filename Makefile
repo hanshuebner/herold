@@ -11,7 +11,8 @@ PKGS := ./...
 FUZZTIME ?= 30s
 
 .PHONY: all build build-plugins test test-short lint vet staticcheck vulncheck \
-        fmt fmt-check fuzz-short tidy ci-local clean docker embed-tabard
+        fmt fmt-check fuzz-short tidy ci-local clean docker embed-tabard \
+        interop interop-bulk interop-clean
 
 all: build
 
@@ -87,3 +88,16 @@ docker:
 
 clean:
 	rm -rf bin dist coverage.out coverage.html
+
+# Black-box interop suite. Brings up herold + Stalwart + docker-mailserver +
+# Apache James + CoreDNS via docker compose, runs pytest scenarios against
+# the wire surfaces. Heavy; not part of ci-local. See test/interop/README.md.
+interop:
+	./test/interop/run.sh
+
+interop-bulk:
+	./test/interop/run.sh --bulk
+
+interop-clean:
+	cd test/interop && docker compose down --remove-orphans --volumes 2>/dev/null || true
+	rm -rf test/interop/logs/[0-9]* test/interop/logs/latest

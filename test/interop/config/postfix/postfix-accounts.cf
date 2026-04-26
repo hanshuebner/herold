@@ -1,0 +1,11 @@
+# Dovecot password file for docker-mailserver.
+# Format: user@domain|{SHA512-CRYPT}hash
+#
+# Password for carol@postfix.test: testpw-carol1
+#
+# To regenerate this hash:
+#   docker run --rm mailserver/docker-mailserver:14.0 \
+#     doveadm pw -s SHA512-CRYPT -p testpw-carol1
+#
+# The hash below was generated with the above command.
+carol@postfix.test|{SHA512-CRYPT}$6$PTF5p5A4TtQn8IxA$dclgyT1hpo3dTKk.R8LoK2uv8m0Q8wqAJz57DLu0MjxTy95JD0cj7LX/Z46sU0eUdLVHIZ6I2e/A11hhZ.Kms0

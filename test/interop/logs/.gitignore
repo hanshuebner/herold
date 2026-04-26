@@ -1,0 +1,3 @@
+# Ignore all per-run log directories; keep this .gitignore and .gitkeep.
+*/
+latest

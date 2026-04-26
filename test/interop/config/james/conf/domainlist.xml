@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<!-- Interop test suite: use james.test as the default domain. -->
+
+<domainlist>
+    <autodetect>false</autodetect>
+    <autodetectIP>false</autodetectIP>
+    <defaultDomain>james.test</defaultDomain>
+</domainlist>

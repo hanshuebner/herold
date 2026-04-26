@@ -1,0 +1,75 @@
+# system.toml for the interop test suite.
+# This is the file HEROLD_SYSTEM_CONFIG points at inside the container.
+# It is read-only; never mutated at runtime.
+
+[server]
+hostname = "mail.herold.test"
+data_dir = "/var/lib/herold/data"
+# dev_mode = true bypasses the REQ-OPS-ADMIN-LISTENER-01 requirement
+# that a production config must declare separate kind="public" and
+# kind="admin" listeners.  Interop tests only need the admin REST API
+# on the same listener; they do not exercise the SPA / JMAP routes.
+dev_mode = true
+
+[server.admin_tls]
+source   = "file"
+cert_file = "/etc/herold/tls/herold.crt"
+key_file  = "/etc/herold/tls/herold.key"
+
+[server.storage]
+backend = "sqlite"
+
+[server.storage.sqlite]
+path = "/var/lib/herold/data/herold.sqlite"
+
+[observability]
+log_format  = "json"
+log_level   = "info"
+# Bind on all interfaces so the test runner can reach /metrics.
+metrics_bind = "0.0.0.0:9090"
+
+# SMTP relay listener (port 25) - STARTTLS with the CA-signed cert.
+[[listener]]
+name     = "smtp-relay"
+address  = "[::]:25"
+protocol = "smtp"
+tls      = "starttls"
+cert_file = "/etc/herold/tls/herold.crt"
+key_file  = "/etc/herold/tls/herold.key"
+
+# SMTP submission listener (port 587) - STARTTLS with auth required.
+[[listener]]
+name          = "smtp-submission"
+address       = "[::]:587"
+protocol      = "smtp-submission"
+tls           = "starttls"
+auth_required = true
+cert_file = "/etc/herold/tls/herold.crt"
+key_file  = "/etc/herold/tls/herold.key"
+
+# IMAP listener (port 143) - STARTTLS.
+[[listener]]
+name     = "imap"
+address  = "[::]:143"
+protocol = "imap"
+tls      = "starttls"
+cert_file = "/etc/herold/tls/herold.crt"
+key_file  = "/etc/herold/tls/herold.key"
+
+# IMAPS listener (port 993) - implicit TLS.
+[[listener]]
+name     = "imaps"
+address  = "[::]:993"
+protocol = "imaps"
+tls      = "implicit"
+cert_file = "/etc/herold/tls/herold.crt"
+key_file  = "/etc/herold/tls/herold.key"
+
+# Admin / REST API listener (port 8080) - no TLS (internal only).
+# dev_mode=true (above) allows this listener without kind= specified,
+# serving both public and admin handlers on the same port.
+[[listener]]
+name     = "admin"
+address  = "[::]:8080"
+protocol = "admin"
+tls      = "none"

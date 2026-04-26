@@ -1,0 +1,21 @@
+$ORIGIN james.test.
+$TTL 60
+
+@   IN SOA  ns1.james.test. hostmaster.james.test. (
+            2026042601 ; serial
+            3600       ; refresh
+            900        ; retry
+            604800     ; expire
+            60 )       ; minimum TTL
+
+@   IN NS   ns1.james.test.
+ns1 IN A    10.77.0.2
+
+mail  IN A    10.77.0.13
+james IN A    10.77.0.13
+@     IN A    10.77.0.13
+
+@   IN MX   10 mail.james.test.
+
+@   IN TXT  "v=spf1 ip4:10.77.0.0/24 ~all"
+_dmarc  IN TXT  "v=DMARC1; p=none; rua=mailto:dmarc@james.test"

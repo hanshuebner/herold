@@ -1,0 +1,33 @@
+# CoreDNS configuration for the interop test suite.
+# Authoritative for *.test zones; forward everything else to 8.8.8.8.
+# The {zone} placeholder warning in logs is harmless — see README.
+
+herold.test.:53 {
+    file /etc/coredns/zones/herold.test.zone
+    log
+    errors
+}
+
+stalwart.test.:53 {
+    file /etc/coredns/zones/stalwart.test.zone
+    log
+    errors
+}
+
+postfix.test.:53 {
+    file /etc/coredns/zones/postfix.test.zone
+    log
+    errors
+}
+
+james.test.:53 {
+    file /etc/coredns/zones/james.test.zone
+    log
+    errors
+}
+
+.:53 {
+    forward . 8.8.8.8
+    cache 30
+    errors
+}

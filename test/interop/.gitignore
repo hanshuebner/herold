@@ -1,0 +1,3 @@
+# Per-run log directories (excluded via logs/.gitignore as well).
+logs/*/
+logs/latest

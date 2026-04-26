@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<!-- Interop test suite: allow relay from the interop network 10.77.0.0/24. -->
+
+<smtpservers>
+    <smtpserver enabled="true">
+        <jmxName>smtpserver-global</jmxName>
+        <bind>0.0.0.0:25</bind>
+        <connectionBacklog>200</connectionBacklog>
+        <tls socketTLS="false" startTLS="false">
+            <keystore>file://conf/keystore</keystore>
+            <secret>james72laBalle</secret>
+            <provider>org.bouncycastle.jce.provider.BouncyCastleProvider</provider>
+            <algorithm>SunX509</algorithm>
+        </tls>
+        <connectiontimeout>360</connectiontimeout>
+        <connectionLimit>0</connectionLimit>
+        <connectionLimitPerIP>0</connectionLimitPerIP>
+        <authRequired>false</authRequired>
+        <!-- Allow relay from loopback and the interop private network. -->
+        <authorizedAddresses>127.0.0.0/8,10.77.0.0/24</authorizedAddresses>
+        <verifyIdentity>false</verifyIdentity>
+        <maxmessagesize>0</maxmessagesize>
+        <addressBracketsEnforcement>true</addressBracketsEnforcement>
+        <smtpGreeting>James SMTP (interop)</smtpGreeting>
+        <handlerchain>
+            <handler class="org.apache.james.smtpserver.fastfail.ValidRcptHandler"/>
+            <handler class="org.apache.james.smtpserver.CoreCmdHandlerLoader"/>
+        </handlerchain>
+    </smtpserver>
+</smtpservers>

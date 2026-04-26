@@ -1,0 +1,26 @@
+$ORIGIN herold.test.
+$TTL 60
+
+@   IN SOA  ns1.herold.test. hostmaster.herold.test. (
+            2026042601 ; serial
+            3600       ; refresh
+            900        ; retry
+            604800     ; expire
+            60 )       ; minimum TTL
+
+@   IN NS   ns1.herold.test.
+ns1 IN A    10.77.0.2
+
+; MTA A record
+mail    IN A    10.77.0.10
+herold  IN A    10.77.0.10
+@       IN A    10.77.0.10
+
+; MX record - external MTAs deliver to mail.herold.test
+@   IN MX   10 mail.herold.test.
+
+; SPF - accept from the interop subnet
+@   IN TXT  "v=spf1 ip4:10.77.0.0/24 ~all"
+
+; DMARC - monitor mode for interop tests
+_dmarc  IN TXT  "v=DMARC1; p=none; rua=mailto:dmarc@herold.test"
