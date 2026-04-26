@@ -3,6 +3,8 @@ package webpush
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +29,7 @@ const (
 	DefaultBatchSize        = 256
 	DefaultMaxAttempts4xx   = 3
 	DefaultMaxAttempts5xx   = 5
+	DefaultCoalesceWindow   = 30 * time.Second // REQ-PROTO-124
 	defaultEventChannelSize = 1024
 )
 
@@ -70,6 +73,12 @@ type Options struct {
 	MaxAttempts4xx int
 	MaxAttempts5xx int
 
+	// CoalesceWindow is the per-(subscription, tag) replacement window
+	// (REQ-PROTO-124). Defaults to 30 s; zero falls back to default,
+	// negative is treated as zero. Sysconfig caps the operator-supplied
+	// value at 5 min.
+	CoalesceWindow time.Duration
+
 	// CursorKey is the durable change-feed cursor slot. Defaults to
 	// "webpush". Tests can override to keep parallel runs isolated.
 	CursorKey string
@@ -100,6 +109,7 @@ type Dispatcher struct {
 	jwtExpiry      time.Duration
 	maxAttempts4xx int
 	maxAttempts5xx int
+	coalesceWindow time.Duration
 	cursorKey      string
 
 	rl *rateLimiter
@@ -113,6 +123,14 @@ type Dispatcher struct {
 	// successful delivery likewise.
 	retryMu sync.Mutex
 	attempt map[store.PushSubscriptionID]*subAttempt
+
+	// coalesceMu guards the per-(subscription, tag) replacement state
+	// map. REQ-PROTO-124: when an event arrives for a (sub, tag) whose
+	// last push was within coalesceWindow ago, we defer the new push
+	// and let it replace any earlier deferred push for the same tag.
+	// On timer fire the latest pending payload goes out.
+	coalesceMu sync.Mutex
+	coalesce   map[store.PushSubscriptionID]map[string]*coalesceState
 
 	// subsActive holds the most recently observed total subscription
 	// count, exported via the herold_webpush_subscriptions_active
@@ -132,6 +150,28 @@ type subAttempt struct {
 	count        int
 	nextAttempt  time.Time
 	last5xxClass bool
+}
+
+// coalesceState is the per-(subscription, tag) replacement tracker.
+// REQ-PROTO-124: within a coalesceWindow, the latest event's payload
+// replaces any pending deferred push for the same tag (latest-wins);
+// once the window elapses the deferred push fires with that latest
+// payload. lastSentAt records the most recent successful (or attempted
+// — see deliver) outbound POST so the next event can decide whether to
+// send immediately or defer.
+//
+// Note on aggregation: the spec example "3 new messages on Re: Project X"
+// hints at a per-thread unread-count summary. As a v1 simplification we
+// take the latest-wins shape here — the deferred push reflects the most
+// recent event's payload, not an aggregate. Tabard SPAs render the
+// newest message in place of "3 messages"; aggregated counts wait for a
+// follow-up wave that adds a per-thread unread-count source on the
+// store side.
+type coalesceState struct {
+	lastSentAt     time.Time
+	pendingPayload []byte
+	pendingURGency string
+	pendingTimer   clock.Timer
 }
 
 // New constructs a Dispatcher with the supplied options. The
@@ -176,6 +216,10 @@ func New(opts Options) (*Dispatcher, error) {
 	if cursorKey == "" {
 		cursorKey = "webpush"
 	}
+	coalesceWin := opts.CoalesceWindow
+	if coalesceWin <= 0 {
+		coalesceWin = DefaultCoalesceWindow
+	}
 	d := &Dispatcher{
 		store:          opts.Store,
 		vapid:          opts.VAPID,
@@ -189,11 +233,13 @@ func New(opts Options) (*Dispatcher, error) {
 		jwtExpiry:      jwtExp,
 		maxAttempts4xx: max4xx,
 		maxAttempts5xx: max5xx,
+		coalesceWindow: coalesceWin,
 		cursorKey:      cursorKey,
 		rl: newRateLimiter(opts.Clock,
 			opts.RateLimitPerMinute, opts.RateLimitPerDay, opts.CooldownDuration),
-		attempt: make(map[store.PushSubscriptionID]*subAttempt),
-		kickCh:  make(chan struct{}, 1),
+		attempt:  make(map[store.PushSubscriptionID]*subAttempt),
+		coalesce: make(map[store.PushSubscriptionID]map[string]*coalesceState),
+		kickCh:   make(chan struct{}, 1),
 	}
 	observe.RegisterWebPushMetrics(
 		func() float64 { return float64(d.subsActive.Load()) },
@@ -258,10 +304,12 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 // Close is provided for symmetry with other lifecycle workers and so
 // the JMAP push handler can call it on shutdown. The dispatcher's
-// Run path drains on ctx cancellation; Close is a no-op stub today
-// but keeps the lifecycle interface stable.
+// Run path drains on ctx cancellation; Close additionally cancels any
+// pending coalesce timers so a fake- or real-clock fire does not run
+// after the lifecycle errgroup has returned.
 func (d *Dispatcher) Close(ctx context.Context) error {
 	_ = ctx
+	d.stopAllCoalesce()
 	return nil
 }
 
@@ -350,6 +398,10 @@ func (d *Dispatcher) processChange(ctx context.Context, ch store.FTSChange) {
 		return
 	}
 
+	// VAPID public key for rotation filtering. PublicKeyB64URL is
+	// cheap (cached on the manager); we read it once per change.
+	vapidPub, _ := d.vapid.PublicKeyB64URL()
+
 	for _, sub := range subs {
 		if !sub.Verified {
 			continue
@@ -358,6 +410,53 @@ func (d *Dispatcher) processChange(ctx context.Context, ch store.FTSChange) {
 			continue
 		}
 		if sub.Expires != nil && d.clock.Now().After(*sub.Expires) {
+			continue
+		}
+		// REQ-PROTO-127: evaluate the per-subscription rules. The
+		// dispatcher parses NotificationRulesJSON lazily so the
+		// JMAP /set path does not pay a parse cost for every push
+		// subscription update. Bad JSON is logged-and-skipped: we
+		// fall back to DefaultRules so a corrupt blob does not mute
+		// the user entirely.
+		rules, parseErr := ParseRules(sub.NotificationRulesJSON)
+		if parseErr != nil {
+			d.logger.LogAttrs(ctx, slog.LevelWarn,
+				"webpush: notificationRules parse failed; using defaults",
+				slog.Uint64("subscription", uint64(sub.ID)),
+				slog.String("err", parseErr.Error()))
+			rules = DefaultRules()
+		} else if len(rules.WarnUnknownEventTypes) > 0 {
+			d.logger.LogAttrs(ctx, slog.LevelWarn,
+				"webpush: notificationRules contained unknown event-type keys",
+				slog.Uint64("subscription", uint64(sub.ID)),
+				slog.Any("keys", rules.WarnUnknownEventTypes))
+		}
+		decision := Evaluate(ctx, rules, d.store, ev, d.clock.Now())
+		if !decision.Allow {
+			observe.WebPushDeliveriesTotal.WithLabelValues("dropped_by_rule").Inc()
+			d.logger.LogAttrs(ctx, slog.LevelDebug,
+				"webpush: dropped by rule",
+				slog.Uint64("subscription", uint64(sub.ID)),
+				slog.String("reason", decision.Reason),
+				slog.String("event_type", decision.EventType),
+			)
+			continue
+		}
+		// VAPID rotation filter (REQ-PROTO-122 / 3.8c spec
+		// resolution): when the subscription's recorded VAPID public
+		// key does not match the dispatcher's current key, the
+		// browser would refuse the push (it was registered against a
+		// different applicationServerKey). Skip + warn-log; tabard
+		// SPAs reconcile via the next JMAP session response. Do NOT
+		// auto-prune the row.
+		if vapidPub != "" && sub.VAPIDKeyAtRegistration != "" &&
+			sub.VAPIDKeyAtRegistration != vapidPub {
+			observe.WebPushDeliveriesTotal.WithLabelValues("dropped_no_match_vapid").Inc()
+			d.logger.LogAttrs(ctx, slog.LevelWarn,
+				"webpush: subscription stale; client must re-register",
+				slog.Uint64("subscription", uint64(sub.ID)),
+				slog.String("registered_vapid_b64url", sub.VAPIDKeyAtRegistration),
+			)
 			continue
 		}
 		d.sendOne(ctx, sub, payload, ch.Kind)
@@ -453,7 +552,173 @@ func (d *Dispatcher) sendOne(
 		return
 	}
 
-	d.deliver(ctx, sub, payload.JSON, payload.CoalesceTag, urgencyForKind(kind))
+	urgency := urgencyForKind(kind)
+	if payload.CoalesceTag == "" {
+		// No tag => no coalescing window applies. Push immediately.
+		d.deliver(ctx, sub, payload.JSON, payload.CoalesceTag, urgency)
+		return
+	}
+	if d.tryCoalesce(ctx, sub, payload.JSON, payload.CoalesceTag, urgency) {
+		// Deferred: a pending timer will fire the push when the
+		// window elapses. Nothing more to do on this code path.
+		return
+	}
+	// Window elapsed (or first event for this tag): emit now and
+	// record lastSentAt so subsequent events within the window
+	// defer.
+	d.deliver(ctx, sub, payload.JSON, payload.CoalesceTag, urgency)
+}
+
+// tryCoalesce inspects the per-(sub, tag) state and either defers the
+// push (returning true) or returns false to let the caller emit
+// immediately. Side effect: when returning false the caller is expected
+// to call deliver, which records lastSentAt via markSentAt. When
+// returning true tryCoalesce has already cancelled any prior pending
+// timer and scheduled a fresh one with the supplied payload.
+//
+// Replacement semantics: a second event arriving within the window
+// REPLACES the first event's payload — not a sum. The deferred push
+// reflects the most recent event only. Rationale + future-aggregation
+// note in coalesceState's doc comment.
+func (d *Dispatcher) tryCoalesce(
+	ctx context.Context,
+	sub store.PushSubscription,
+	payload []byte,
+	tag, urgency string,
+) bool {
+	d.coalesceMu.Lock()
+	subStates, ok := d.coalesce[sub.ID]
+	if !ok {
+		subStates = make(map[string]*coalesceState)
+		d.coalesce[sub.ID] = subStates
+	}
+	st := subStates[tag]
+	now := d.clock.Now()
+	if st == nil {
+		// First event for this (sub, tag): no deferral; the caller
+		// emits now. We record the slot so the next event can decide.
+		subStates[tag] = &coalesceState{}
+		d.coalesceMu.Unlock()
+		return false
+	}
+	if st.lastSentAt.IsZero() || now.Sub(st.lastSentAt) >= d.coalesceWindow {
+		// Window elapsed since the last successful send. Drop any
+		// pending state (a timer that has not yet fired is cancelled
+		// before we let the caller emit fresh). Caller emits now.
+		if st.pendingTimer != nil {
+			st.pendingTimer.Stop()
+		}
+		st.pendingTimer = nil
+		st.pendingPayload = nil
+		st.pendingURGency = ""
+		d.coalesceMu.Unlock()
+		return false
+	}
+	// Within window: defer, replacing any prior pending payload.
+	if st.pendingTimer != nil {
+		st.pendingTimer.Stop()
+	}
+	st.pendingPayload = append([]byte(nil), payload...)
+	st.pendingURGency = urgency
+	delay := d.coalesceWindow - now.Sub(st.lastSentAt)
+	if delay < 0 {
+		delay = 0
+	}
+	subID := sub.ID
+	st.pendingTimer = d.clock.AfterFunc(delay, func() {
+		d.flushCoalesced(ctx, sub, tag, subID)
+	})
+	d.coalesceMu.Unlock()
+	return true
+}
+
+// flushCoalesced fires the deferred push for (subID, tag). Reads the
+// pending payload + urgency under the mutex, clears the pending slot,
+// and updates lastSentAt to now so the NEXT event starts a fresh
+// window. The send itself happens outside the mutex so deliver's HTTP
+// path does not block other coalesce decisions.
+func (d *Dispatcher) flushCoalesced(
+	ctx context.Context,
+	sub store.PushSubscription,
+	tag string,
+	subID store.PushSubscriptionID,
+) {
+	d.coalesceMu.Lock()
+	subStates, ok := d.coalesce[subID]
+	if !ok {
+		d.coalesceMu.Unlock()
+		return
+	}
+	st := subStates[tag]
+	if st == nil || st.pendingPayload == nil {
+		d.coalesceMu.Unlock()
+		return
+	}
+	payload := st.pendingPayload
+	urgency := st.pendingURGency
+	st.pendingPayload = nil
+	st.pendingURGency = ""
+	st.pendingTimer = nil
+	st.lastSentAt = d.clock.Now()
+	d.coalesceMu.Unlock()
+	d.deliver(ctx, sub, payload, tag, urgency)
+}
+
+// markCoalesceSent records a successful (or attempted) send for
+// (sub.ID, tag) so the next event in the window defers. Called from
+// deliver's success / 5xx-retry paths; on 410/404 we drop the slot
+// instead via dropCoalesce.
+func (d *Dispatcher) markCoalesceSent(id store.PushSubscriptionID, tag string) {
+	if tag == "" {
+		return
+	}
+	d.coalesceMu.Lock()
+	defer d.coalesceMu.Unlock()
+	subStates, ok := d.coalesce[id]
+	if !ok {
+		subStates = make(map[string]*coalesceState)
+		d.coalesce[id] = subStates
+	}
+	st := subStates[tag]
+	if st == nil {
+		st = &coalesceState{}
+		subStates[tag] = st
+	}
+	st.lastSentAt = d.clock.Now()
+}
+
+// dropCoalesce removes all coalesce state for sub.ID, cancelling any
+// pending timers. Called when the subscription is destroyed (410/404).
+func (d *Dispatcher) dropCoalesce(id store.PushSubscriptionID) {
+	d.coalesceMu.Lock()
+	defer d.coalesceMu.Unlock()
+	subStates, ok := d.coalesce[id]
+	if !ok {
+		return
+	}
+	for _, st := range subStates {
+		if st.pendingTimer != nil {
+			st.pendingTimer.Stop()
+		}
+	}
+	delete(d.coalesce, id)
+}
+
+// stopAllCoalesce cancels every pending coalesce timer. Called from
+// Close on dispatcher shutdown so no fake-/real-clock timers fire after
+// the lifecycle errgroup has returned.
+func (d *Dispatcher) stopAllCoalesce() {
+	d.coalesceMu.Lock()
+	defer d.coalesceMu.Unlock()
+	for _, subStates := range d.coalesce {
+		for _, st := range subStates {
+			if st.pendingTimer != nil {
+				st.pendingTimer.Stop()
+				st.pendingTimer = nil
+				st.pendingPayload = nil
+			}
+		}
+	}
 }
 
 // urgencyForKind picks the RFC 8030 §5.3 Urgency header value per
@@ -553,6 +818,7 @@ func (d *Dispatcher) deliver(
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		observe.WebPushDeliveriesTotal.WithLabelValues("success").Inc()
 		d.clearRetry(sub.ID)
+		d.markCoalesceSent(sub.ID, coalesceTag)
 		// Best-effort touch of UpdatedAt by a no-op update; the
 		// store does not yet expose a dedicated "touch" method, so
 		// we call UpdatePushSubscription with the current row to
@@ -563,6 +829,7 @@ func (d *Dispatcher) deliver(
 		observe.WebPushDeliveriesTotal.WithLabelValues("gone").Inc()
 		_ = d.store.Meta().DeletePushSubscription(ctx, sub.ID)
 		d.clearRetry(sub.ID)
+		d.dropCoalesce(sub.ID)
 		d.rl.Forget(sub.ID)
 	case resp.StatusCode >= 500:
 		observe.WebPushDeliveriesTotal.WithLabelValues("retry").Inc()
@@ -574,6 +841,7 @@ func (d *Dispatcher) deliver(
 			observe.WebPushDeliveriesTotal.WithLabelValues("rejected").Inc()
 			_ = d.store.Meta().DeletePushSubscription(ctx, sub.ID)
 			d.clearRetry(sub.ID)
+			d.dropCoalesce(sub.ID)
 			d.rl.Forget(sub.ID)
 		} else {
 			observe.WebPushDeliveriesTotal.WithLabelValues("retry").Inc()
@@ -618,17 +886,49 @@ func (d *Dispatcher) post(
 	req.Header.Set("Urgency", urgency)
 	req.Header.Set("Authorization", fmt.Sprintf("vapid t=%s, k=%s", jwt, pub))
 	if coalesceTag != "" {
-		// REQ-PROTO-124 (3.8c): coalesce-tag becomes the Topic header
-		// so the gateway / browser replaces a prior notification with
-		// the same tag rather than stacking. 3.8b leaves the field
-		// empty by default; the BuildPayload return value carries the
-		// candidate tag through unchanged so 3.8c can flip the wire
-		// header on without any further plumbing.
-		// TODO(3.8c-coord): set req.Header.Set("Topic", coalesceTag)
-		// once the coalescing window logic is in place.
-		_ = coalesceTag
+		// REQ-PROTO-124: the coalesce-tag rides on the RFC 8030 §5.4
+		// Topic header so the gateway / browser replaces a prior
+		// notification with the same tag instead of stacking. RFC
+		// 8030 requires the value to be URL-safe base64; tags built
+		// by BuildPayload (e.g. "email/<thread_id>") may contain
+		// "/" or other characters outside that set, so sanitiseTopic
+		// hashes when needed.
+		req.Header.Set("Topic", sanitiseTopic(coalesceTag))
 	}
 	return d.doer.Do(req)
+}
+
+// sanitiseTopic returns tag if it is already URL-safe base64 (RFC 8030
+// §5.4 requirement), else returns a sha256 + base64url digest of tag.
+// The digest is stable across deliveries so two events sharing a tag
+// also share the sanitised Topic value, preserving REQ-PROTO-124's
+// replacement semantics.
+func sanitiseTopic(tag string) string {
+	if isURLSafeBase64(tag) && len(tag) <= 32 {
+		return tag
+	}
+	sum := sha256.Sum256([]byte(tag))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// isURLSafeBase64 reports whether s consists exclusively of URL-safe
+// base64 characters (A-Z, a-z, 0-9, '-', '_'). The function is the
+// fast-path check sanitiseTopic consults before falling through to a
+// hash; an empty string is reported as URL-safe (the caller has
+// already dropped empty tags before reaching here).
+func isURLSafeBase64(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '-' || c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // scheduleRetry records a retry attempt for sub and returns true when

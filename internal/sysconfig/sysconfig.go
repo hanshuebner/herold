@@ -149,6 +149,12 @@ type PushConfig struct {
 	// CooldownSeconds is the per-subscription cooldown applied on
 	// sustained excess. Default 300 (5 min).
 	CooldownSeconds int `toml:"cooldown_seconds,omitempty"`
+
+	// CoalesceWindowSeconds is the per-(subscription, tag) replacement
+	// window per REQ-PROTO-124. Default 30; capped at 300 (5 min) at
+	// Validate so a misconfigured ceiling cannot defer pushes
+	// indefinitely.
+	CoalesceWindowSeconds int `toml:"coalesce_window_seconds,omitempty"`
 }
 
 // VAPIDPrivateKeyRef returns the operator-supplied secret reference
@@ -997,6 +1003,10 @@ func Validate(c *Config) error {
 	if push.CooldownSeconds < 0 || push.CooldownSeconds > 86400 {
 		return fmt.Errorf("sysconfig: [server.push] cooldown_seconds %d out of range (0..86400)",
 			push.CooldownSeconds)
+	}
+	if push.CoalesceWindowSeconds < 0 || push.CoalesceWindowSeconds > 300 {
+		return fmt.Errorf("sysconfig: [server.push] coalesce_window_seconds %d out of range (0..300)",
+			push.CoalesceWindowSeconds)
 	}
 	// Tabard SPA (REQ-DEPLOY-COLOC-01..05). The asset_dir override is
 	// validated at parse time so a missing or relative path fails the

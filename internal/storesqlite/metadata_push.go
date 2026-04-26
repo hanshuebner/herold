@@ -29,13 +29,13 @@ const pushSubscriptionSelectColumns = `
 
 func scanPushSubscription(row rowLike) (store.PushSubscription, error) {
 	var (
-		id, pid                                                  int64
-		device, url, typesCSV, verCode, vapidKey, qhTZ           string
-		p256dh, authKey, rulesJSON                               []byte
-		verified                                                 int64
-		expiresAtUs                                              sql.NullInt64
-		quietStart, quietEnd                                     sql.NullInt64
-		createdUs, updatedUs                                     int64
+		id, pid                                        int64
+		device, url, typesCSV, verCode, vapidKey, qhTZ string
+		p256dh, authKey, rulesJSON                     []byte
+		verified                                       int64
+		expiresAtUs                                    sql.NullInt64
+		quietStart, quietEnd                           sql.NullInt64
+		createdUs, updatedUs                           int64
 	)
 	err := row.Scan(&id, &pid, &device, &url, &p256dh, &authKey,
 		&expiresAtUs, &typesCSV, &verCode, &verified,

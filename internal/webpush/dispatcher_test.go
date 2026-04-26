@@ -170,6 +170,23 @@ func newDispatcherFixture(t *testing.T, status int, opts ...func(*Options)) *dis
 	}
 }
 
+// makeSubscription builds a fresh PushSubscription bound to the
+// fixture's principal + recipient key material. Used by tests that need
+// multiple subscriptions or need to swap VAPIDKeyAtRegistration (which
+// the fakestore treats as immutable post-insert).
+func (f *dispatcherFixture) makeSubscription(deviceID, vapidPub string) store.PushSubscription {
+	return store.PushSubscription{
+		PrincipalID:            f.pid,
+		DeviceClientID:         deviceID,
+		URL:                    f.gateway.URL(),
+		P256DH:                 f.priv.PublicKey().Bytes(),
+		Auth:                   f.auth,
+		Verified:               true,
+		Types:                  []string{"Email"},
+		VAPIDKeyAtRegistration: vapidPub,
+	}
+}
+
 // triggerEmailChange inserts a message and synchronously runs a tick so
 // the dispatcher fans out the resulting change-feed entry.
 func (f *dispatcherFixture) triggerEmailChange(t *testing.T) {

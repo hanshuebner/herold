@@ -1420,6 +1420,7 @@ func composeAdminAndUI(
 		RateLimitPerMinute: cfg.Server.Push.RateLimitPerMinute,
 		RateLimitPerDay:    cfg.Server.Push.RateLimitPerDay,
 		CooldownDuration:   time.Duration(cfg.Server.Push.CooldownSeconds) * time.Second,
+		CoalesceWindow:     time.Duration(cfg.Server.Push.CoalesceWindowSeconds) * time.Second,
 	})
 	if err != nil {
 		return composedHandlers{}, fmt.Errorf("admin: webpush dispatcher: %w", err)

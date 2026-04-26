@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -30,22 +33,15 @@ type buildPayloadResult struct {
 
 // BuildPayload constructs the privacy-capped JSON payload the
 // dispatcher will encrypt and POST to the push endpoint, plus a
-// coalesce-tag the 3.8c work will use to replace stacked
-// notifications. Per REQ-PROTO-125 the payload never carries full
+// coalesce-tag the dispatcher uses to replace stacked notifications
+// per REQ-PROTO-124. Per REQ-PROTO-125 the payload never carries full
 // message bodies — subjects + 80-char previews for mail, 80-char
 // excerpts (or [image] / [reaction] markers) for chat, structured
 // fields only for calendar.
 //
-// The function is the single integration point Wave 3.8c will hook
-// the rules engine in front of: a future caller in dispatcher.go will
-// consult notificationRules first and skip BuildPayload entirely when
-// the rule says "do not deliver this event for this subscription".
+// The dispatcher consults notificationRules (rules.go) before calling
+// BuildPayload; events the rule denies never reach this path.
 func BuildPayload(ctx context.Context, st store.Store, ev store.StateChange) (buildPayloadResult, error) {
-	// TODO(3.8c-coord): consult notificationRules before falling into
-	// the per-kind builders below. Today we always build the minimal
-	// envelope; 3.8c will route the (sub.NotificationRulesJSON, ev)
-	// pair through a rules.Evaluate call and return early when the
-	// rule says "drop".
 	switch ev.Kind {
 	case store.EntityKindEmail:
 		return buildEmailPayload(ctx, st, ev)
@@ -96,16 +92,16 @@ func buildEmailPayload(ctx context.Context, st store.Store, ev store.StateChange
 		Mailbox: mbox.Name,
 		MsgID:   fmt.Sprintf("%d", msg.ID),
 	}
-	// REQ-PROTO-125: preview is the first 80 bytes of body text. We
-	// do NOT walk the blob here — that would force a body-fetch on
-	// every push, which is expensive and would defeat the privacy
-	// cap (the unredacted bytes briefly live in the dispatcher
-	// goroutine). Stage 3.8b takes the cheap path: subject + envelope
-	// fields. A future wave can plug in a per-message preview cache
-	// (the FTS extractor already produces text); leave the field as
-	// a TODO marker so reviewers see the deliberate gap.
-	// TODO(3.8c-coord): wire BuildPayload to the FTS preview cache
-	// for an 80-byte body excerpt.
+	// REQ-PROTO-125 / Wave 3.8c spec resolution: build the 80-byte
+	// preview by re-walking the blob inline via mailparse. This is the
+	// cheap path now that the FTS extractor doubles as the preview
+	// source. We tolerate every error class (blob fetch miss, parse
+	// failure, no plain-text origin) by silently omitting `preview`
+	// from the payload — push delivery never blocks on preview
+	// extraction.
+	if preview := emailPreview(ctx, st, msg); preview != "" {
+		out.Preview = truncateUTF8(preview, PayloadCapBytes)
+	}
 
 	js, err := json.Marshal(out)
 	if err != nil {
@@ -245,6 +241,80 @@ func extractCalendarLocation(blob []byte) string {
 		}
 	}
 	return ""
+}
+
+// emailPreview re-walks msg.Blob through mailparse and returns the
+// best-effort plain-text body (REQ-PROTO-125 + Wave 3.8c). Failures —
+// blob miss, parse error, no plain-text origin — are debug-logged and
+// collapse to "" so the push payload omits the field entirely; we never
+// fail a push because the preview could not be built.
+//
+// The walk is inline (no cache) per the 3.8b reconcile decision; the FTS
+// indexer already exercises the same parser on the same bytes, so the
+// cost is bounded by message size. The cap on push payloads (REQ-PROTO-125)
+// keeps the bytes that actually leave herold to <=80 plus subject /
+// envelope chrome.
+func emailPreview(ctx context.Context, st store.Store, msg store.Message) string {
+	if msg.Blob.Hash == "" {
+		return ""
+	}
+	rc, err := st.Blobs().Get(ctx, msg.Blob.Hash)
+	if err != nil {
+		slog.Default().LogAttrs(ctx, slog.LevelDebug,
+			"webpush: preview blob fetch failed",
+			slog.Uint64("message", uint64(msg.ID)),
+			slog.String("err", err.Error()))
+		return ""
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		slog.Default().LogAttrs(ctx, slog.LevelDebug,
+			"webpush: preview blob read failed",
+			slog.Uint64("message", uint64(msg.ID)),
+			slog.String("err", err.Error()))
+		return ""
+	}
+	parsed, err := mailparse.Parse(strings.NewReader(string(body)),
+		mailparse.ParseOptions{StrictBoundary: false})
+	if err != nil {
+		slog.Default().LogAttrs(ctx, slog.LevelDebug,
+			"webpush: preview parse failed",
+			slog.Uint64("message", uint64(msg.ID)),
+			slog.String("err", err.Error()))
+		return ""
+	}
+	text, origin := mailparse.ExtractBodyText(parsed)
+	if origin == mailparse.BodyTextOriginNone || text == "" {
+		return ""
+	}
+	// Collapse runs of whitespace so the 80-byte preview is dense
+	// readable text rather than CRLF-padded headers. ExtractBodyText
+	// already strips HTML; here we just normalise whitespace so the
+	// truncation cap maximises information density.
+	return previewCollapseWhitespace(text)
+}
+
+// previewCollapseWhitespace folds runs of whitespace (including
+// newlines) into a single space and trims leading/trailing whitespace.
+// Mirrors the mail/searchsnippet helper — duplicated here to avoid an
+// upward webpush -> protojmap import dependency.
+func previewCollapseWhitespace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prevSpace := true
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f' || r == '\v' {
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		prevSpace = false
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // truncateUTF8 returns s truncated to at most maxBytes bytes, never
