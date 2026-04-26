@@ -64,6 +64,11 @@ type APIKeyRow struct {
 	Name         string `json:"name"`
 	CreatedAtUs  int64  `json:"created_at_us"`
 	LastUsedAtUs int64  `json:"last_used_at_us"`
+	// ScopeJSON is the migration-0016 closed-enum scope set the key
+	// grants (REQ-AUTH-SCOPE-04). Backup/restore round-trip preserves
+	// the operator-set capability so a restored key keeps the same
+	// scope it had at backup time.
+	ScopeJSON string `json:"scope_json,omitempty"`
 }
 
 type AliasRow struct {

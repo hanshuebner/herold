@@ -363,10 +363,11 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// constructor. The two handlers are otherwise independent —
 	// session cookies (UI) and Bearer keys (REST) live in disjoint
 	// header/cookie namespaces, and the URL prefixes do not overlap.
-	adminHandler, suiteSrvs, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler())
+	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler())
 	if err != nil {
 		return err
 	}
+	suiteSrvs := bundle.srvs
 	defer func() {
 		// Best-effort cleanup if StartServer returns before the lifecycle
 		// goroutines wire these into the errgroup; the errgroup-side
@@ -380,7 +381,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	}()
 
 	// Bind listeners.
-	boundListeners, err := bindListeners(ctx, cfg, logger, tlsStore, smtpServer, imapServer, adminHandler, opts)
+	boundListeners, err := bindListeners(ctx, cfg, logger, tlsStore, smtpServer, imapServer, bundle, opts)
 	if err != nil {
 		return err
 	}
@@ -817,18 +818,18 @@ func bindListeners(
 	tlsStore *heroldtls.Store,
 	smtpServer *protosmtp.Server,
 	imapServer *protoimap.Server,
-	adminHandler http.Handler,
+	bundle composedHandlers,
 	opts StartOpts,
 ) (*boundListenerSet, error) {
 	set := &boundListenerSet{logger: logger}
-	// Bind admin listener last per REQ-OPS lifecycle.
+	// Bind HTTP listeners last per REQ-OPS lifecycle.
 	var adminBinds []sysconfig.ListenerConfig
 	for _, l := range cfg.Listener {
 		if l.Protocol == "admin" {
 			adminBinds = append(adminBinds, l)
 			continue
 		}
-		ln, fn, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, adminHandler, opts)
+		ln, fn, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, bundle, opts)
 		if err != nil {
 			set.Close()
 			return nil, err
@@ -837,7 +838,7 @@ func bindListeners(
 		set.serveFns = append(set.serveFns, namedServe{name: l.Name, fn: fn})
 	}
 	for _, l := range adminBinds {
-		ln, fn, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, adminHandler, opts)
+		ln, fn, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, bundle, opts)
 		if err != nil {
 			set.Close()
 			return nil, err
@@ -856,7 +857,7 @@ func bindOne(
 	tlsStore *heroldtls.Store,
 	smtpServer *protosmtp.Server,
 	imapServer *protoimap.Server,
-	adminHandler http.Handler,
+	bundle composedHandlers,
 	opts StartOpts,
 ) (net.Listener, listenerServeFn, error) {
 	ln, err := net.Listen("tcp", l.Address)
@@ -906,14 +907,95 @@ func bindOne(
 		}, nil
 	case "admin":
 		spec := l
+		// Pick the handler matching the listener kind. Production
+		// configs declare both kinds (validate enforces); dev_mode
+		// allows a single un-kinded HTTP listener that co-mounts
+		// public + admin behind a small composing mux per
+		// REQ-OPS-ADMIN-LISTENER-01 dev escape.
+		handler := pickHTTPHandler(cfg, l, bundle)
 		return ln, func(ctx context.Context) error {
-			return serveAdmin(ctx, ln, spec, tlsStore, adminHandler, logger)
+			return serveAdmin(ctx, ln, spec, tlsStore, handler, logger)
 		}, nil
 	default:
 		_ = ln.Close()
 		_ = cfg
 		return nil, nil, fmt.Errorf("admin: unknown listener protocol %q", l.Protocol)
 	}
+}
+
+// pickHTTPHandler returns the http.Handler appropriate to a single
+// listener entry. Production configs (DevMode == false) declare an
+// explicit Kind on every HTTP listener; the bundle's public handler
+// is wired to the kind="public" listener and the admin handler to
+// kind="admin". A listener that lands here without a Kind is
+// dev_mode-only territory and gets a co-mount mux that dispatches
+// admin paths to bundle.admin and everything else to bundle.public;
+// the inner auth.RequireScope check is the security boundary in that
+// shape.
+func pickHTTPHandler(cfg *sysconfig.Config, l sysconfig.ListenerConfig, bundle composedHandlers) http.Handler {
+	switch l.Kind {
+	case sysconfig.ListenerKindPublic:
+		if bundle.public != nil {
+			return bundle.public
+		}
+		return bundle.admin
+	case sysconfig.ListenerKindAdmin:
+		if bundle.admin != nil {
+			return bundle.admin
+		}
+		return bundle.public
+	default:
+		// Dev-mode co-mount: admin paths go to admin handler, every
+		// other path goes to public handler. The split is along the
+		// well-known admin namespaces so a /api/v1/admin REST hit
+		// reaches the protoadmin server while a /jmap hit reaches
+		// the JMAP server. This shape is documented as dev-only;
+		// production deployments declare both Kinds.
+		if bundle.admin == nil {
+			return bundle.public
+		}
+		if bundle.public == nil {
+			return bundle.admin
+		}
+		_ = cfg
+		return coMountHandler(bundle.public, bundle.admin)
+	}
+}
+
+// coMountHandler is the dev-mode-only fallback. Routes /api/v1/, /admin/,
+// /metrics, and /ui/ to the admin handler; everything else to public.
+// The auth.RequireScope check on the admin paths still enforces the
+// scope boundary; coMountHandler is a routing convenience, not a
+// security boundary.
+func coMountHandler(public, admin http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/admin/"),
+			strings.HasPrefix(r.URL.Path, "/admin/"),
+			strings.HasPrefix(r.URL.Path, "/metrics"),
+			strings.HasPrefix(r.URL.Path, "/ui/"),
+			r.URL.Path == "/api/v1/principals" || strings.HasPrefix(r.URL.Path, "/api/v1/principals/"),
+			r.URL.Path == "/api/v1/domains" || strings.HasPrefix(r.URL.Path, "/api/v1/domains/"),
+			r.URL.Path == "/api/v1/aliases" || strings.HasPrefix(r.URL.Path, "/api/v1/aliases/"),
+			r.URL.Path == "/api/v1/api-keys" || strings.HasPrefix(r.URL.Path, "/api/v1/api-keys/"),
+			r.URL.Path == "/api/v1/audit",
+			r.URL.Path == "/api/v1/queue" || strings.HasPrefix(r.URL.Path, "/api/v1/queue/"),
+			r.URL.Path == "/api/v1/certs" || strings.HasPrefix(r.URL.Path, "/api/v1/certs/"),
+			r.URL.Path == "/api/v1/spam/policy",
+			r.URL.Path == "/api/v1/oidc/providers" || strings.HasPrefix(r.URL.Path, "/api/v1/oidc/providers/"),
+			r.URL.Path == "/api/v1/oidc/callback",
+			r.URL.Path == "/api/v1/server/status" || r.URL.Path == "/api/v1/server/config-check",
+			r.URL.Path == "/api/v1/healthz/live" || r.URL.Path == "/api/v1/healthz/ready",
+			r.URL.Path == "/api/v1/bootstrap",
+			strings.HasPrefix(r.URL.Path, "/api/v1/webhooks"),
+			strings.HasPrefix(r.URL.Path, "/api/v1/diag/"),
+			strings.HasPrefix(r.URL.Path, "/api/v1/jobs/"),
+			strings.HasPrefix(r.URL.Path, "/api/v1/mailboxes/"):
+			admin.ServeHTTP(w, r)
+		default:
+			public.ServeHTTP(w, r)
+		}
+	})
 }
 
 // serveAdmin runs one admin HTTP server until ctx cancels or Serve
@@ -1030,19 +1112,30 @@ type suiteServers struct {
 	sendSrv *protosend.Server
 }
 
-// composeAdminAndUI returns an http.Handler that routes /api/v1/...
-// and /healthz/... to the protoadmin handler, the configured UI path
-// prefix to a freshly constructed protoui server, and (when image
-// proxy is enabled) /proxy/image to a protoimg.Server reusing the
-// UI's session for authentication. When the UI is disabled
-// (cfg.Server.UI.Enabled == false) the returned handler is the
-// protoadmin handler verbatim — the image proxy depends on the
-// suite session and so degrades with it.
+// composedHandlers is the bundle of HTTP handlers the bind path
+// installs on each listener. When DevMode co-mounts public + admin on
+// a single HTTP listener (Wave 3.6 dev escape) the binding code
+// chains both via a single mux; production deployments install the
+// public and admin handlers on disjoint listeners per
+// REQ-OPS-ADMIN-LISTENER-01.
+type composedHandlers struct {
+	public http.Handler
+	admin  http.Handler
+	srvs   suiteServers
+}
+
+// composeAdminAndUI returns the listener-split bundle described in
+// REQ-OPS-ADMIN-LISTENER-01..03 (Wave 3.6). The bundle's public
+// handler serves JMAP, the HTTP send API, call credentials, image
+// proxy, chat WS, webhook ingress, and the public /login flow; the
+// admin handler serves protoadmin REST, the admin UI, /metrics, and
+// the admin /login flow with TOTP step-up. The two handlers do NOT
+// share routes: an admin path on the public listener returns 404,
+// and a public path on the admin listener returns 404.
 //
-// Mount mode (b) per the Wave 2.4 ticket: composition over a parent
-// mux. We deliberately avoid extending protoadmin with a Mount
-// method; each surface stays independent and a future fourth surface
-// (REQ-HOOK Part B) can join without touching any of them.
+// In DevMode the binding code may install both handlers on a single
+// listener via a small composing mux; the scope check in
+// auth.RequireScope is the inner guard.
 //
 // The second return value carries the protocall and protochat
 // server handles so StartServer can register their shutdown hooks
@@ -1060,7 +1153,7 @@ func composeAdminAndUI(
 	tlsStore *heroldtls.Store,
 	outboundQ *queue.Queue,
 	adminHandler http.Handler,
-) (http.Handler, suiteServers, error) {
+) (composedHandlers, error) {
 	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
 	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
 	// FTS worker writes to; the chat JMAP handlers, when registered
@@ -1070,9 +1163,240 @@ func composeAdminAndUI(
 	// (Phase 2 Wave 2.9 covers WebSocket only); when the JMAP wiring
 	// lands, ftsIndex is already in scope here.
 	_ = ftsIndex
-	var srvs suiteServers
+	var bundle composedHandlers
+	prefix := cfg.Server.UI.PathPrefix
+	if prefix == "" {
+		prefix = "/ui"
+	}
+
+	// Build admin-listener UI server. The admin /login flow issues
+	// cookies carrying [admin] scope after TOTP step-up
+	// (REQ-AUTH-SCOPE-03). Cookie name is herold_admin_session so
+	// cross-listener cookie reuse is mechanically impossible at the
+	// parser level (REQ-OPS-ADMIN-LISTENER-03 + REQ-AUTH-SCOPE-01).
+	uiSrvAdmin, err := newProtoUIServer(cfg, st, dir, oidcRP, clk, logger, "admin")
+	if err != nil {
+		logger.LogAttrs(ctx, slog.LevelError, "protoui: admin server failed; UI disabled",
+			slog.String("err", err.Error()))
+		uiSrvAdmin = nil
+	}
+	// Public-listener UI server (TODO(3.7): the SPA login page lands
+	// then; for now the public /login is the same template flow and
+	// issues end-user-scoped cookies).
+	uiSrvPublic, err := newProtoUIServer(cfg, st, dir, oidcRP, clk, logger, "public")
+	if err != nil {
+		logger.LogAttrs(ctx, slog.LevelError, "protoui: public server failed",
+			slog.String("err", err.Error()))
+		uiSrvPublic = nil
+	}
+
+	// ----- Admin handler -----
+	adminMux := http.NewServeMux()
+	adminMux.Handle("/api/v1/", adminHandler)
+	if uiSrvAdmin != nil {
+		adminMux.Handle(prefix+"/", uiSrvAdmin.Handler())
+		// Bare `/` on the admin listener: redirect a browser to the
+		// admin login page. API consumers never hit `/`.
+		adminMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/" {
+				http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
+				return
+			}
+			http.NotFound(w, r)
+		})
+	}
+	bundle.admin = withPanicRecover(logger.With("subsystem", "admin-mux"),
+		"admin.mux", adminMux)
+
+	// ----- Public handler -----
+	publicMux := http.NewServeMux()
+
+	// Public /login flow (suite-login per REQ-AUTH-SCOPE-01) lives at
+	// the same /ui path prefix on the public listener with end-user
+	// scope issuance. The public protoui server uses a distinct
+	// cookie name (herold_public_session) so an admin cookie
+	// presented here is silently ignored at the parser level.
+	if uiSrvPublic != nil {
+		publicMux.Handle(prefix+"/", uiSrvPublic.Handler())
+	}
+
+	// Image proxy (REQ-SEND-70..78). Public-listener-only: the
+	// browser presenting an end-user cookie loads upstream-tracking-
+	// free images without a separate auth dance.
+	if cfg.Server.ImageProxy.Enabled == nil || *cfg.Server.ImageProxy.Enabled {
+		ipCfg := cfg.Server.ImageProxy
+		var imgResolver func(*http.Request) (store.PrincipalID, bool)
+		if uiSrvPublic != nil {
+			imgResolver = uiSrvPublic.ResolveSession
+		}
+		imgSrv := protoimg.New(protoimg.Options{
+			Logger:              logger.With("subsystem", "protoimg"),
+			Clock:               clk,
+			MaxBytes:            ipCfg.MaxBytes,
+			CacheMaxBytes:       ipCfg.CacheMaxBytes,
+			CacheMaxEntries:     ipCfg.CacheMaxEntries,
+			CacheMaxAge:         time.Duration(ipCfg.CacheMaxAgeSeconds) * time.Second,
+			PerUserPerMin:       ipCfg.PerUserPerMinute,
+			PerUserOriginPerMin: ipCfg.PerUserOriginPerMinute,
+			PerUserConcurrent:   ipCfg.PerUserConcurrent,
+			SessionResolver:     imgResolver,
+		})
+		publicMux.Handle("/proxy/image",
+			withPanicRecover(logger.With("subsystem", "protoimg"),
+				"proxy.image", imgSrv.Handler()))
+	}
+
+	// Chat ephemeral channel (REQ-CHAT-40..46). Public-listener-only.
+	var chatBroadcaster *protochat.Broadcaster
+	var chatSrv *protochat.Server
+	if cfg.Server.Chat.Enabled == nil || *cfg.Server.Chat.Enabled {
+		chatBroadcaster = protochat.NewBroadcaster(
+			logger.With("subsystem", "protochat"),
+			callChatMembersResolver(st))
+		var chatResolver func(*http.Request) (store.PrincipalID, bool)
+		if uiSrvPublic != nil {
+			chatResolver = uiSrvPublic.ResolveSession
+		}
+		chatSrv = protochat.New(protochat.Options{
+			Store:            st,
+			Logger:           logger.With("subsystem", "protochat"),
+			Clock:            clk,
+			SessionResolver:  chatResolver,
+			Broadcaster:      chatBroadcaster,
+			Membership:       callChatMembershipResolver(st),
+			PeersResolver:    callChatPeersResolver(st),
+			MaxConnections:   cfg.Server.Chat.MaxConnections,
+			PerPrincipalCap:  cfg.Server.Chat.PerPrincipalCap,
+			PingInterval:     time.Duration(cfg.Server.Chat.PingIntervalSeconds) * time.Second,
+			PongTimeout:      time.Duration(cfg.Server.Chat.PongTimeoutSeconds) * time.Second,
+			WriteTimeout:     time.Duration(cfg.Server.Chat.WriteTimeoutSeconds) * time.Second,
+			MaxFrameBytes:    cfg.Server.Chat.MaxFrameBytes,
+			AllowedOrigins:   cfg.Server.Chat.AllowedOrigins,
+			AllowEmptyOrigin: cfg.Server.Chat.AllowEmptyOrigin,
+		})
+		publicMux.Handle("/chat/ws",
+			withPanicRecover(logger.With("subsystem", "protochat"),
+				"chat.ws", chatSrv.Handler()))
+		bundle.srvs.chatSrv = chatSrv
+	}
+
+	// Video calls (REQ-CALL-*). Public-listener-only. Two surfaces:
+	//   - HTTP credential mint at /api/v1/call/credentials, sharing
+	//     the suite session cookie with the UI and additionally
+	//     accepting protoadmin Bearer API keys (kept on the public
+	//     listener for browser-driven calling; an API key with
+	//     ScopeEndUser hits this same endpoint).
+	//   - Chat call.signal handler, registered against the chat
+	//     protocol so call-lifecycle bookkeeping (call.started /
+	//     call.ended system messages) lives outside the chat
+	//     ephemeral surface.
+	if cfg.Server.Call.Enabled == nil || *cfg.Server.Call.Enabled {
+		var sharedSecret []byte
+		if cfg.Server.TURN.SharedSecretEnv != "" {
+			s, err := sysconfig.ResolveSecretStrict(cfg.Server.TURN.SharedSecretEnv)
+			if err != nil {
+				return composedHandlers{}, fmt.Errorf("admin: resolve TURN shared secret: %w", err)
+			}
+			sharedSecret = []byte(s)
+		}
+		var callResolver func(*http.Request) (store.PrincipalID, bool)
+		if uiSrvPublic != nil {
+			callResolver = uiSrvPublic.ResolveSession
+		}
+		callSrv := protocall.New(protocall.Options{
+			Logger:         logger.With("subsystem", "protocall"),
+			Clock:          clk,
+			Broadcaster:    newCallBroadcasterAdapter(chatBroadcaster),
+			Members:        newCallMembersAdapter(st),
+			SystemMessages: newCallSysmsgsAdapter(st),
+			Presence:       newCallPresenceAdapter(chatBroadcaster),
+			TURN: protocall.TURNConfig{
+				URIs:          cfg.Server.TURN.URIs,
+				SharedSecret:  sharedSecret,
+				CredentialTTL: time.Duration(cfg.Server.TURN.CredentialTTLSeconds) * time.Second,
+			},
+			Authn:       newCallAuthn(st, callResolver),
+			RingTimeout: time.Duration(cfg.Server.Call.RingTimeoutSeconds) * time.Second,
+		})
+		publicMux.Handle("/api/v1/call/credentials",
+			withPanicRecover(logger.With("subsystem", "protocall"),
+				"call.credentials", callSrv.HTTPHandler()))
+		if chatSrv != nil {
+			if err := chatSrv.RegisterHandler("call.signal", callSignalForwarder(callSrv)); err != nil {
+				return composedHandlers{}, fmt.Errorf("admin: register call.signal handler: %w", err)
+			}
+		}
+		bundle.srvs.callSrv = callSrv
+	}
+
+	// JMAP Core (RFC 8620) + Mail / Identity / EmailSubmission
+	// (RFC 8621). Public-listener-only.
+	jmapSrv := protojmap.NewServer(st, dir, tlsStore, logger.With("subsystem", "jmap"), clk, protojmap.Options{})
+	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk),
+		logger.With("subsystem", "jmap-emailsubmission"), clk)
+	jmapHandler := jmapSrv.Handler()
+	publicMux.Handle("/.well-known/jmap",
+		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.session", jmapHandler))
+	publicMux.Handle("/jmap",
+		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.api", jmapHandler))
+	publicMux.Handle("/jmap/",
+		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.api", jmapHandler))
+
+	// HTTP send API (REQ-SEND-*). Public-listener-only.
+	sendSrv := protosend.NewServer(
+		st,
+		dir,
+		outboundQ,
+		tlsStore,
+		logger.With("subsystem", "protosend"),
+		clk,
+		protosend.Options{
+			Hostname: cfg.Server.Hostname,
+		},
+	)
+	publicMux.Handle("/api/v1/mail/",
+		withPanicRecover(logger.With("subsystem", "protosend"), "mail.send", sendSrv.Handler()))
+	bundle.srvs.sendSrv = sendSrv
+
+	// Bare `/` on the public listener returns a placeholder index
+	// that names the SPA mount target (Wave 3.7). Today the SPA is
+	// not embedded; operators see a small "tabard SPA mount lands
+	// in Wave 3.7" body. Unknown paths return 404.
+	publicMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("herold public listener\n\nThe tabard SPA mount lands in Wave 3.7.\nUntil then sign in at " + prefix + "/login.\n"))
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	bundle.public = withPanicRecover(logger.With("subsystem", "public-mux"),
+		"public.mux", publicMux)
+	return bundle, nil
+}
+
+// newProtoUIServer constructs a protoui.Server for the named listener
+// kind. The cookie name is forked per REQ-AUTH-SCOPE-01 +
+// REQ-OPS-ADMIN-LISTENER-03 so cross-listener cookie reuse is
+// mechanically impossible: a public-listener cookie presented to the
+// admin listener fails the cookie-name lookup and conversely. Both
+// servers share the same templates and signing key (the latter so a
+// dev-mode co-mount that uses a single signing key still produces
+// stable cookies; in production they're independent listener
+// instances and the signing key environment variable is the same
+// process-wide).
+func newProtoUIServer(
+	cfg *sysconfig.Config,
+	st store.Store,
+	dir *directory.Directory,
+	oidcRP *directoryoidc.RP,
+	clk clock.Clock,
+	logger *slog.Logger,
+	listenerKind string,
+) (*protoui.Server, error) {
 	if cfg.Server.UI.Enabled != nil && !*cfg.Server.UI.Enabled {
-		return adminHandler, srvs, nil
+		return nil, errors.New("ui disabled")
 	}
 	prefix := cfg.Server.UI.PathPrefix
 	if prefix == "" {
@@ -1088,187 +1412,46 @@ func composeAdminAndUI(
 	if cfg.Server.UI.SecureCookies != nil {
 		secure = *cfg.Server.UI.SecureCookies
 	}
-	uiSrv, err := protoui.NewServer(st, dir, oidcRP, clk, protoui.Options{
-		PathPrefix: prefix,
-		Logger:     logger.With("subsystem", "ui"),
+	cookieName := cfg.Server.UI.CookieName
+	csrfName := cfg.Server.UI.CSRFCookieName
+	switch listenerKind {
+	case "admin":
+		// Admin-listener cookie. Distinct name per REQ-AUTH-SCOPE-01
+		// so cross-listener cookie reuse is mechanically impossible
+		// at the parser level. Operator-supplied CookieName is used
+		// only for the public listener (the admin listener is
+		// loopback-by-default and rarely renamed).
+		if cookieName == "" || cookieName == "herold_ui_session" {
+			cookieName = "herold_admin_session"
+		} else {
+			cookieName = cookieName + "_admin"
+		}
+		if csrfName == "" || csrfName == "herold_ui_csrf" {
+			csrfName = "herold_admin_csrf"
+		} else {
+			csrfName = csrfName + "_admin"
+		}
+	default:
+		// Public listener.
+		if cookieName == "" {
+			cookieName = "herold_public_session"
+		}
+		if csrfName == "" {
+			csrfName = "herold_public_csrf"
+		}
+	}
+	return protoui.NewServer(st, dir, oidcRP, clk, protoui.Options{
+		PathPrefix:   prefix,
+		Logger:       logger.With("subsystem", "ui", "listener", listenerKind),
+		ListenerKind: listenerKind,
 		Session: protoui.SessionConfig{
 			SigningKey:     signingKey,
-			CookieName:     cfg.Server.UI.CookieName,
-			CSRFCookieName: cfg.Server.UI.CSRFCookieName,
+			CookieName:     cookieName,
+			CSRFCookieName: csrfName,
 			TTL:            cfg.Server.UI.SessionTTL.AsDuration(),
 			SecureCookies:  secure,
 		},
 	})
-	if err != nil {
-		// Falling back to admin-only is the least-surprising
-		// behaviour; we log loudly so the operator sees the
-		// degradation.
-		logger.LogAttrs(ctx, slog.LevelError, "protoui: construct failed; UI disabled",
-			slog.String("err", err.Error()))
-		return adminHandler, srvs, nil
-	}
-	parent := http.NewServeMux()
-	parent.Handle("/api/v1/", adminHandler)
-	parent.Handle(prefix+"/", uiSrv.Handler())
-
-	// Image proxy (REQ-SEND-70..78). Mounted only when enabled in
-	// sysconfig; uses the UI session for authentication so a browser
-	// already logged into /ui can render upstream-tracking-free
-	// images without a separate auth dance.
-	if cfg.Server.ImageProxy.Enabled == nil || *cfg.Server.ImageProxy.Enabled {
-		ipCfg := cfg.Server.ImageProxy
-		imgSrv := protoimg.New(protoimg.Options{
-			Logger:              logger.With("subsystem", "protoimg"),
-			Clock:               clk,
-			MaxBytes:            ipCfg.MaxBytes,
-			CacheMaxBytes:       ipCfg.CacheMaxBytes,
-			CacheMaxEntries:     ipCfg.CacheMaxEntries,
-			CacheMaxAge:         time.Duration(ipCfg.CacheMaxAgeSeconds) * time.Second,
-			PerUserPerMin:       ipCfg.PerUserPerMinute,
-			PerUserOriginPerMin: ipCfg.PerUserOriginPerMinute,
-			PerUserConcurrent:   ipCfg.PerUserConcurrent,
-			SessionResolver:     uiSrv.ResolveSession,
-		})
-		parent.Handle("/proxy/image",
-			withPanicRecover(logger.With("subsystem", "protoimg"),
-				"proxy.image", imgSrv.Handler()))
-	}
-
-	// Chat ephemeral channel (REQ-CHAT-40..46). The /chat/ws
-	// upgrade handler shares the suite session with the UI and the
-	// image proxy. Membership/members resolvers go through the chat
-	// store metadata surface that track A landed; the broadcaster's
-	// per-conversation fanout is therefore live as soon as a
-	// principal joins a conversation.
-	var chatBroadcaster *protochat.Broadcaster
-	var chatSrv *protochat.Server
-	if cfg.Server.Chat.Enabled == nil || *cfg.Server.Chat.Enabled {
-		chatBroadcaster = protochat.NewBroadcaster(
-			logger.With("subsystem", "protochat"),
-			callChatMembersResolver(st))
-		chatSrv = protochat.New(protochat.Options{
-			Store:            st,
-			Logger:           logger.With("subsystem", "protochat"),
-			Clock:            clk,
-			SessionResolver:  uiSrv.ResolveSession,
-			Broadcaster:      chatBroadcaster,
-			Membership:       callChatMembershipResolver(st),
-			PeersResolver:    callChatPeersResolver(st),
-			MaxConnections:   cfg.Server.Chat.MaxConnections,
-			PerPrincipalCap:  cfg.Server.Chat.PerPrincipalCap,
-			PingInterval:     time.Duration(cfg.Server.Chat.PingIntervalSeconds) * time.Second,
-			PongTimeout:      time.Duration(cfg.Server.Chat.PongTimeoutSeconds) * time.Second,
-			WriteTimeout:     time.Duration(cfg.Server.Chat.WriteTimeoutSeconds) * time.Second,
-			MaxFrameBytes:    cfg.Server.Chat.MaxFrameBytes,
-			AllowedOrigins:   cfg.Server.Chat.AllowedOrigins,
-			AllowEmptyOrigin: cfg.Server.Chat.AllowEmptyOrigin,
-		})
-		parent.Handle("/chat/ws",
-			withPanicRecover(logger.With("subsystem", "protochat"),
-				"chat.ws", chatSrv.Handler()))
-		srvs.chatSrv = chatSrv
-	}
-
-	// Video calls (REQ-CALL-*). Two surfaces:
-	//   - HTTP credential mint at /api/v1/call/credentials, sharing
-	//     the suite session cookie with the UI and image proxy and
-	//     additionally accepting protoadmin Bearer API keys.
-	//   - Chat call.signal handler, registered against the chat
-	//     protocol so call-lifecycle bookkeeping (call.started /
-	//     call.ended system messages) lives outside the chat
-	//     ephemeral surface.
-	if cfg.Server.Call.Enabled == nil || *cfg.Server.Call.Enabled {
-		var sharedSecret []byte
-		if cfg.Server.TURN.SharedSecretEnv != "" {
-			s, err := sysconfig.ResolveSecretStrict(cfg.Server.TURN.SharedSecretEnv)
-			if err != nil {
-				return nil, srvs, fmt.Errorf("admin: resolve TURN shared secret: %w", err)
-			}
-			sharedSecret = []byte(s)
-		}
-		callSrv := protocall.New(protocall.Options{
-			Logger:         logger.With("subsystem", "protocall"),
-			Clock:          clk,
-			Broadcaster:    newCallBroadcasterAdapter(chatBroadcaster),
-			Members:        newCallMembersAdapter(st),
-			SystemMessages: newCallSysmsgsAdapter(st),
-			Presence:       newCallPresenceAdapter(chatBroadcaster),
-			TURN: protocall.TURNConfig{
-				URIs:          cfg.Server.TURN.URIs,
-				SharedSecret:  sharedSecret,
-				CredentialTTL: time.Duration(cfg.Server.TURN.CredentialTTLSeconds) * time.Second,
-			},
-			Authn:       newCallAuthn(st, uiSrv.ResolveSession),
-			RingTimeout: time.Duration(cfg.Server.Call.RingTimeoutSeconds) * time.Second,
-		})
-		// Mount on the parent mux directly; Go's ServeMux longest-
-		// prefix routing prefers the exact "/api/v1/call/credentials"
-		// over the catch-all "/api/v1/" registered by adminHandler.
-		parent.Handle("/api/v1/call/credentials",
-			withPanicRecover(logger.With("subsystem", "protocall"),
-				"call.credentials", callSrv.HTTPHandler()))
-		if chatSrv != nil {
-			if err := chatSrv.RegisterHandler("call.signal", callSignalForwarder(callSrv)); err != nil {
-				return nil, srvs, fmt.Errorf("admin: register call.signal handler: %w", err)
-			}
-		}
-		srvs.callSrv = callSrv
-	}
-
-	// JMAP Core (RFC 8620) + Mail / Identity / EmailSubmission
-	// (RFC 8621). Phase 3 Wave 3.1.5 wires the production JMAP
-	// server alongside the existing protoadmin / protoui / protocall
-	// surfaces; the parallel test harness (internal/testharness)
-	// mounts the same protojmap.Server via AttachJMAP. The handler is
-	// mounted on /jmap and /.well-known/jmap, which do not overlap
-	// with /api/v1 or /ui. EmailSubmission/set submits to the
-	// production outbound queue handle (outboundQ).
-	jmapSrv := protojmap.NewServer(st, dir, tlsStore, logger.With("subsystem", "jmap"), clk, protojmap.Options{})
-	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk),
-		logger.With("subsystem", "jmap-emailsubmission"), clk)
-	jmapHandler := jmapSrv.Handler()
-	parent.Handle("/.well-known/jmap",
-		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.session", jmapHandler))
-	parent.Handle("/jmap",
-		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.api", jmapHandler))
-	parent.Handle("/jmap/",
-		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.api", jmapHandler))
-
-	// HTTP send API (REQ-SEND-*). Phase 3 Wave 3.1.5 mounts the
-	// protosend.Server's /api/v1/mail/* routes on the parent mux.
-	// Go's ServeMux longest-prefix wins so the more specific
-	// "/api/v1/mail/" registration overrides the "/api/v1/" catch-all
-	// claimed by adminHandler. Auth is via the protoadmin-shape
-	// Bearer API key (hk_<...>); the suite session cookie is not
-	// honoured here today — operators issue an API key for non-browser
-	// SDK callers (REQ-SEND-22). When a browser-cookie path lands
-	// (REQ-SEND-26), wire it through Options.APIKeyLookup.
-	sendSrv := protosend.NewServer(
-		st,
-		dir,
-		outboundQ,
-		tlsStore,
-		logger.With("subsystem", "protosend"),
-		clk,
-		protosend.Options{
-			Hostname: cfg.Server.Hostname,
-		},
-	)
-	parent.Handle("/api/v1/mail/",
-		withPanicRecover(logger.With("subsystem", "protosend"), "mail.send", sendSrv.Handler()))
-	srvs.sendSrv = sendSrv
-
-	// Bare `/` and unknown roots: send a browser hitting the admin
-	// host directly to the UI login. API consumers never request `/`,
-	// so this hop only affects operators using a browser.
-	parent.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
-			return
-		}
-		http.NotFound(w, r)
-	})
-	return parent, srvs, nil
 }
 
 // syntheticDispatcherAdapter adapts *protowebhook.Dispatcher to the

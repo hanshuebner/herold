@@ -58,20 +58,31 @@ type SMTPInboundConfig struct {
 
 // ServerConfig carries process-wide settings.
 type ServerConfig struct {
-	Hostname      string           `toml:"hostname"`
-	DataDir       string           `toml:"data_dir"`
-	RunAsUser     string           `toml:"run_as_user"`
-	RunAsGroup    string           `toml:"run_as_group"`
-	ShutdownGrace Duration         `toml:"shutdown_grace,omitempty"`
-	AdminTLS      AdminTLSConfig   `toml:"admin_tls"`
-	Storage       StorageConfig    `toml:"storage"`
-	Snooze        SnoozeConfig     `toml:"snooze,omitempty"`
-	UI            UIConfig         `toml:"ui,omitempty"`
-	ImageProxy    ImageProxyConfig `toml:"image_proxy,omitempty"`
-	Chat          ChatConfig       `toml:"chat,omitempty"`
-	Call          CallConfig       `toml:"call,omitempty"`
-	TURN          TURNConfig       `toml:"turn,omitempty"`
-	SmartHost     SmartHostConfig  `toml:"smart_host,omitempty"`
+	Hostname      string   `toml:"hostname"`
+	DataDir       string   `toml:"data_dir"`
+	RunAsUser     string   `toml:"run_as_user"`
+	RunAsGroup    string   `toml:"run_as_group"`
+	ShutdownGrace Duration `toml:"shutdown_grace,omitempty"`
+	// DevMode relaxes the production-only validate rules so a single
+	// developer config can run the whole suite on one HTTP listener
+	// (Wave 3.6). Specifically: when DevMode is true, configs without
+	// any kind="admin" listener get a co-mount warn-log instead of a
+	// hard validate failure, and a single "admin" listener is allowed
+	// to serve both public and admin handlers (the
+	// admin handler returns 403 from a public-listener cookie via
+	// the scope check; this is the dev-only "trust the operator"
+	// posture). Production deployments MUST leave DevMode off and
+	// configure both listeners explicitly.
+	DevMode    bool             `toml:"dev_mode,omitempty"`
+	AdminTLS   AdminTLSConfig   `toml:"admin_tls"`
+	Storage    StorageConfig    `toml:"storage"`
+	Snooze     SnoozeConfig     `toml:"snooze,omitempty"`
+	UI         UIConfig         `toml:"ui,omitempty"`
+	ImageProxy ImageProxyConfig `toml:"image_proxy,omitempty"`
+	Chat       ChatConfig       `toml:"chat,omitempty"`
+	Call       CallConfig       `toml:"call,omitempty"`
+	TURN       TURNConfig       `toml:"turn,omitempty"`
+	SmartHost  SmartHostConfig  `toml:"smart_host,omitempty"`
 }
 
 // SmartHostConfig drives the optional outbound smart-host relay
@@ -386,10 +397,25 @@ type AdminTLSConfig struct {
 }
 
 // ListenerConfig describes a single bound listener (REQ-OPS-03).
+//
+// Kind partitions HTTP listeners into two roles per
+// REQ-OPS-ADMIN-LISTENER-01:
+//   - "public": serves the SPA mount point, JMAP, chat WS, send API,
+//     call credentials, image proxy, public webhook ingress, and the
+//     public /login flow. Default bind 0.0.0.0:443 in production.
+//   - "admin": serves the protoadmin REST surface, admin UI, /metrics,
+//     and the admin /login flow with TOTP step-up. Default bind
+//     127.0.0.1:9443; the loopback-by-default makes the surface
+//     invisible to internet scanners (REQ-OPS-ADMIN-LISTENER-02).
+//
+// For non-HTTP protocols (smtp, imap, etc.) Kind is left empty; the
+// validator only reads Kind when Protocol == "admin" (which is the
+// legacy single-HTTP-listener shape) or when DevMode is on.
 type ListenerConfig struct {
 	Name          string `toml:"name"`
 	Address       string `toml:"address"`
 	Protocol      string `toml:"protocol"`
+	Kind          string `toml:"kind,omitempty"`
 	TLS           string `toml:"tls"`
 	AuthRequired  bool   `toml:"auth_required,omitempty"`
 	ProxyProtocol bool   `toml:"proxy_protocol,omitempty"`
@@ -442,9 +468,26 @@ func looksLikeSecretKey(k string) bool {
 	return false
 }
 
+// Listener kinds (REQ-OPS-ADMIN-LISTENER-01..03). Only HTTP listeners
+// (Protocol == "admin") carry a Kind; non-HTTP listeners (smtp / imap
+// etc.) leave Kind empty.
+const (
+	// ListenerKindPublic serves the SPA mount + JMAP + chat WS + send
+	// API + call credentials + image proxy + public webhook ingress +
+	// public /login (suite-login flow).
+	ListenerKindPublic = "public"
+	// ListenerKindAdmin serves protoadmin REST + admin UI + /metrics +
+	// admin /login (TOTP step-up flow). Default bind loopback.
+	ListenerKindAdmin = "admin"
+)
+
 // Valid protocol / tls / lifecycle / plugin-type / log level sets.
 var (
-	validProtocols  = map[string]struct{}{"smtp": {}, "smtp-submission": {}, "imap": {}, "imaps": {}, "admin": {}}
+	validProtocols     = map[string]struct{}{"smtp": {}, "smtp-submission": {}, "imap": {}, "imaps": {}, "admin": {}}
+	validListenerKinds = map[string]struct{}{
+		ListenerKindPublic: {},
+		ListenerKindAdmin:  {},
+	}
 	validTLSModes   = map[string]struct{}{"none": {}, "starttls": {}, "implicit": {}}
 	validLifecycles = map[string]struct{}{"long-running": {}, "on-demand": {}}
 	validPluginType = map[string]struct{}{"dns": {}, "spam": {}, "events": {}, "directory": {}, "delivery": {}}
@@ -836,6 +879,7 @@ func Validate(c *Config) error {
 		return errors.New("sysconfig: at least one [[listener]] is required")
 	}
 	seen := make(map[string]struct{}, len(c.Listener))
+	var sawPublic, sawAdmin bool
 	for i, l := range c.Listener {
 		if l.Name == "" {
 			return fmt.Errorf("sysconfig: [[listener]] #%d: name is required", i)
@@ -859,6 +903,56 @@ func Validate(c *Config) error {
 		}
 		if l.TLS == "none" && (l.CertFile != "" || l.KeyFile != "") {
 			return fmt.Errorf("sysconfig: [[listener]] %q: cert_file/key_file set but tls=\"none\"", l.Name)
+		}
+		// REQ-OPS-ADMIN-LISTENER-01: HTTP listeners (Protocol=="admin")
+		// carry a Kind in {public, admin}. Non-HTTP listeners must
+		// leave Kind empty.
+		if l.Protocol == "admin" {
+			if l.Kind == "" {
+				// Wave 3.6 compatibility: an HTTP listener without an
+				// explicit kind is treated as the legacy single-mount
+				// shape; we accept it ONLY when DevMode is on or when
+				// no other HTTP listener carries a kind. Otherwise the
+				// validate rejects with a migration message.
+				if !c.Server.DevMode {
+					return fmt.Errorf(
+						"sysconfig: [[listener]] %q: HTTP listener requires kind = \"public\" or \"admin\" (REQ-OPS-ADMIN-LISTENER-01); set [server.dev_mode] = true to co-mount in development",
+						l.Name)
+				}
+				// Dev-mode co-mount: serve both handlers on this
+				// single listener. Treat as both public+admin so
+				// downstream binding code wires both routers.
+				continue
+			}
+			if _, ok := validListenerKinds[l.Kind]; !ok {
+				return fmt.Errorf("sysconfig: [[listener]] %q: kind %q not recognised (want \"public\" or \"admin\")", l.Name, l.Kind)
+			}
+			switch l.Kind {
+			case ListenerKindPublic:
+				sawPublic = true
+			case ListenerKindAdmin:
+				sawAdmin = true
+			}
+		} else if l.Kind != "" {
+			return fmt.Errorf("sysconfig: [[listener]] %q: kind=%q only valid on protocol=\"admin\" listeners", l.Name, l.Kind)
+		}
+	}
+	// REQ-OPS-ADMIN-LISTENER-01..03: a production config MUST declare
+	// at least one admin-kind listener so admin surfaces are not
+	// co-mounted with public surfaces. DevMode bypasses this rule for
+	// developer convenience.
+	if !c.Server.DevMode {
+		// At least one HTTP listener must exist. If any HTTP listener
+		// carries a kind we require both kinds to be present (no
+		// silent admin co-mount on the public listener). If no HTTP
+		// listener carries a kind we already errored above.
+		if sawPublic && !sawAdmin {
+			return errors.New(
+				"sysconfig: at least one HTTP listener with kind=\"admin\" is required (REQ-OPS-ADMIN-LISTENER-01); set [server.dev_mode] = true to co-mount in development")
+		}
+		if sawAdmin && !sawPublic {
+			return errors.New(
+				"sysconfig: at least one HTTP listener with kind=\"public\" is required (REQ-OPS-ADMIN-LISTENER-01); set [server.dev_mode] = true to co-mount in development")
 		}
 	}
 	// SMTP inbound (REQ-DIR-RCPT-*).

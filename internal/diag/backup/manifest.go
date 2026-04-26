@@ -20,7 +20,14 @@ const CurrentBackupVersion = 1
 //
 //	REQ-HOOK-02 + REQ-HOOK-EXTRACTED-01..03).  Adds target_kind,
 //	body_mode, extracted_text_max_bytes, text_required to webhooks.
-const CurrentSchemaVersion = 15
+//
+// 16 — 0016_apikey_scope.sql (Phase 3 Wave 3.6, REQ-AUTH-SCOPE-04).
+//
+//	Adds api_keys.scope_json (closed-enum scope set; immutable).
+//	Backfills existing rows to '["admin"]' so legacy keys retain
+//	their pre-3.6 capability while operators rotate to least-priv
+//	scopes.
+const CurrentSchemaVersion = 16
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

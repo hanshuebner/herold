@@ -177,12 +177,12 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 			}, fn)
 	case "api_keys":
 		return enumerate(ctx, s.tx,
-			`SELECT id, principal_id, hash, name, created_at_us, last_used_at_us
+			`SELECT id, principal_id, hash, name, created_at_us, last_used_at_us, scope_json
 			   FROM api_keys ORDER BY id`,
 			func(rs *sql.Rows) (any, error) {
 				var r APIKeyRow
 				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.Hash, &r.Name,
-					&r.CreatedAtUs, &r.LastUsedAtUs); err != nil {
+					&r.CreatedAtUs, &r.LastUsedAtUs, &r.ScopeJSON); err != nil {
 					return nil, err
 				}
 				return &r, nil
@@ -850,10 +850,17 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		return err
 	case "api_keys":
 		r := row.(*APIKeyRow)
+		scope := r.ScopeJSON
+		if scope == "" {
+			// Wave-3.6 backward-compat: a backup taken before the
+			// migration carries no scope_json; restore inserts the
+			// admin sentinel so the legacy capability is preserved.
+			scope = `["admin"]`
+		}
 		_, err := s.tx.ExecContext(ctx,
-			`INSERT INTO api_keys (id, principal_id, hash, name, created_at_us, last_used_at_us)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-			r.ID, r.PrincipalID, r.Hash, r.Name, r.CreatedAtUs, r.LastUsedAtUs)
+			`INSERT INTO api_keys (id, principal_id, hash, name, created_at_us, last_used_at_us, scope_json)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.PrincipalID, r.Hash, r.Name, r.CreatedAtUs, r.LastUsedAtUs, scope)
 		return err
 	case "aliases":
 		r := row.(*AliasRow)

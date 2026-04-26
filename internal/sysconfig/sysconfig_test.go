@@ -27,9 +27,19 @@ protocol = "smtp"
 tls = "starttls"
 
 [[listener]]
-name = "admin"
-address = "127.0.0.1:8080"
+name = "public"
+address = "0.0.0.0:443"
 protocol = "admin"
+kind = "public"
+tls = "implicit"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:9443"
+protocol = "admin"
+kind = "admin"
 tls = "implicit"
 cert_file = "/etc/herold/admin.crt"
 key_file  = "/etc/herold/admin.key"
@@ -48,8 +58,8 @@ func TestParse_Minimal(t *testing.T) {
 	if cfg.Server.Hostname != "mail.example.com" {
 		t.Errorf("hostname: got %q", cfg.Server.Hostname)
 	}
-	if len(cfg.Listener) != 2 {
-		t.Fatalf("listeners: got %d, want 2", len(cfg.Listener))
+	if len(cfg.Listener) != 3 {
+		t.Fatalf("listeners: got %d, want 3", len(cfg.Listener))
 	}
 	if cfg.Observability.MetricsBind != "127.0.0.1:9090" {
 		t.Errorf("metrics bind: got %q", cfg.Observability.MetricsBind)
@@ -667,9 +677,19 @@ protocol = "smtp"
 tls = "starttls"
 
 [[listener]]
+name = "public"
+address = "0.0.0.0:443"
+protocol = "admin"
+kind = "public"
+tls = "implicit"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
 name = "new-one"
 address = ":4190"
 protocol = "admin"
+kind = "admin"
 tls = "implicit"
 cert_file = "/a"
 key_file = "/b"
@@ -686,8 +706,127 @@ key_file = "/b"
 	for _, c := range changes {
 		kinds[c.Kind]++
 	}
-	if kinds[ChangeListenerUpdate] != 1 || kinds[ChangeListenerAdd] != 1 || kinds[ChangeListenerRemove] != 1 {
+	// minimalValid carries smtp-relay + public + admin; the new
+	// fixture replaces public/admin with public+new-one and changes
+	// smtp-relay's address. So we expect: 2 updates (smtp-relay,
+	// public) + 1 add (new-one) + 1 remove (admin).
+	if kinds[ChangeListenerUpdate] != 2 || kinds[ChangeListenerAdd] != 1 || kinds[ChangeListenerRemove] != 1 {
 		t.Errorf("unexpected change set: %+v", changes)
+	}
+}
+
+// TestValidate_AdminListenerKindRequired verifies REQ-OPS-ADMIN-LISTENER-01:
+// a config that mounts an HTTP listener without an explicit kind is
+// rejected with a clear migration message, unless [server.dev_mode] is on.
+func TestValidate_AdminListenerKindRequired(t *testing.T) {
+	const noKind = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "admin"
+address = ":443"
+protocol = "admin"
+tls = "implicit"
+cert_file = "/a"
+key_file = "/b"
+`
+	if _, err := Parse([]byte(noKind)); err == nil {
+		t.Fatalf("expected error when admin listener lacks kind")
+	} else if !strings.Contains(err.Error(), "REQ-OPS-ADMIN-LISTENER-01") {
+		t.Errorf("error should reference REQ-OPS-ADMIN-LISTENER-01: %v", err)
+	}
+}
+
+// TestValidate_DevModeAllowsCoMount verifies that [server.dev_mode] = true
+// permits a single HTTP listener that co-mounts public + admin handlers.
+func TestValidate_DevModeAllowsCoMount(t *testing.T) {
+	const dev = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+dev_mode = true
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:8080"
+protocol = "admin"
+tls = "none"
+`
+	cfg, err := Parse([]byte(dev))
+	if err != nil {
+		t.Fatalf("dev_mode co-mount: %v", err)
+	}
+	if !cfg.Server.DevMode {
+		t.Errorf("DevMode lost in parse")
+	}
+}
+
+// TestValidate_MissingAdminKindWithPublicSet rejects a config that only
+// declares a public-kind listener (admin would be co-mounted, which is
+// the bug we're guarding against).
+func TestValidate_MissingAdminKindWithPublicSet(t *testing.T) {
+	const onlyPublic = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "public"
+address = "0.0.0.0:443"
+protocol = "admin"
+kind = "public"
+tls = "implicit"
+cert_file = "/a"
+key_file = "/b"
+`
+	if _, err := Parse([]byte(onlyPublic)); err == nil {
+		t.Fatalf("expected error when admin-kind listener missing")
+	} else if !strings.Contains(err.Error(), "kind=\"admin\"") {
+		t.Errorf("error should mention required admin kind: %v", err)
+	}
+}
+
+// TestValidate_RejectsKindOnNonAdmin checks that kind="..." on an SMTP
+// listener fails (kind only applies to HTTP listeners).
+func TestValidate_RejectsKindOnNonAdmin(t *testing.T) {
+	const smtpKind = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "smtp"
+address = ":25"
+protocol = "smtp"
+kind = "public"
+tls = "starttls"
+`
+	if _, err := Parse([]byte(smtpKind)); err == nil {
+		t.Fatalf("expected error when kind set on smtp listener")
+	} else if !strings.Contains(err.Error(), "kind") {
+		t.Errorf("error should mention kind: %v", err)
 	}
 }
 

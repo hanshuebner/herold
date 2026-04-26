@@ -13,11 +13,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/netguard"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// scopeEndUser aliases auth.ScopeEndUser so the scope check at the
+// handler entry stays a one-line call without dragging the scope
+// vocabulary across the whole package.
+const scopeEndUser = auth.ScopeEndUser
+
+// authFromCtx is the package-local accessor for auth.FromContext.
+func authFromCtx(r *http.Request) *auth.AuthContext { return auth.FromContext(r.Context()) }
+
+// authRequireScope is the package-local wrapper for auth.RequireScope.
+func authRequireScope(r *http.Request, sc auth.Scope) error {
+	return auth.RequireScope(r.Context(), sc)
+}
 
 // DefaultUserAgent is the fixed UA REQ-SEND-72 mandates for every
 // upstream request. Same value for every fetch — no per-user
@@ -250,6 +264,17 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	if !ok || pid == 0 {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
+	}
+	// REQ-AUTH-SCOPE-02: image proxy requires end-user scope. The
+	// AuthContext is attached by the public-listener protoui session
+	// resolver; tests that drive the proxy without protoui (the
+	// legacy resolver-only fixtures) skip the check.
+	if actx := authFromCtx(r); actx != nil {
+		if err := authRequireScope(r, scopeEndUser); err != nil {
+			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+			observe.ProtoimgRequestsTotal.WithLabelValues("forbidden").Inc()
+			return
+		}
 	}
 
 	rawURL := r.URL.Query().Get("url")

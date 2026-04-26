@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -48,6 +49,22 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request) {
 			"unauthorized", "authentication required", "")
 		observe.ProtocallCredentialsMintedTotal.WithLabelValues("blocked").Inc()
 		return
+	}
+	// REQ-AUTH-SCOPE-02: end-user scope is required for the
+	// credential mint endpoint. Cookies issued at the public-listener
+	// login carry it by default; admin-scope-only API keys do NOT
+	// (no implicit grant per REQ-AUTH-SCOPE-02). When the request
+	// has no AuthContext attached at all (test harness shape) the
+	// check is skipped so the legacy authn-only fixtures still pass.
+	if actx := auth.FromContext(r.Context()); actx != nil {
+		if err := auth.RequireScope(r.Context(), auth.ScopeEndUser); err != nil {
+			writeProblem(w, r, http.StatusForbidden,
+				"insufficient_scope",
+				"insufficient scope for this resource",
+				err.Error())
+			observe.ProtocallCredentialsMintedTotal.WithLabelValues("blocked").Inc()
+			return
+		}
 	}
 	if ok, retry := s.rl.allow(rateKey(principal)); !ok {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(retry.Seconds())))

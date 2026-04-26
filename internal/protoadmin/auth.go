@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -43,7 +45,7 @@ func HashAPIKey(plaintext string) string {
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		principal, ok := s.authenticate(ctx, r)
+		principal, scope, ok := s.authenticate(ctx, r)
 		if !ok {
 			writeProblem(w, r, http.StatusUnauthorized,
 				"unauthorized", "authentication required", "")
@@ -54,27 +56,42 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		ctx = context.WithValue(ctx, ctxKeyPrincipal, principal)
 		ctx = context.WithValue(ctx, ctxKeyRemoteAddr, r.RemoteAddr)
+		// Attach the closed-enum scope set so downstream handlers'
+		// auth.RequireScope checks see what the API key granted
+		// (REQ-AUTH-SCOPE-02). Listener label is "admin" because
+		// protoadmin REST is mounted on the admin listener
+		// (REQ-OPS-ADMIN-LISTENER-01); the public-listener handler
+		// chain attaches "public".
+		ctx = auth.WithContext(ctx, &auth.AuthContext{
+			PrincipalID: uint64(principal.ID),
+			Scopes:      scope,
+			Listener:    "admin",
+		})
 		next(w, r.WithContext(ctx))
 	}
 }
 
 // authenticate inspects the Authorization header and returns the
-// associated principal if the Bearer token is a valid API key.
-func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, bool) {
+// associated principal if the Bearer token is a valid API key. The
+// returned scope set is parsed from the API key row's ScopeJSON column
+// and is empty for legacy rows that predate the migration backfill
+// (in practice the migration's UPDATE backfills every row with
+// '["admin"]', so this branch only fires for fresh test fixtures).
+func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, bool) {
 	h := r.Header.Get("Authorization")
 	if h == "" {
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	const bearer = "Bearer "
 	if !strings.HasPrefix(h, bearer) {
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	token := strings.TrimSpace(h[len(bearer):])
 	if !strings.HasPrefix(token, APIKeyPrefix) {
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	hashed := HashAPIKey(token)
 	key, err := s.apikeyLookup(ctx, hashed)
@@ -83,7 +100,7 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Princ
 			s.loggerFrom(ctx).Warn("protoadmin.auth.lookup_failed", "err", err)
 		}
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	// Constant-time comparison against the stored hash to avoid a
 	// hypothetical timing channel in a backend that returns keys by
@@ -92,22 +109,38 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Princ
 	// defence-in-depth against future lookups that loosen that.
 	if subtle.ConstantTimeCompare([]byte(key.Hash), []byte(hashed)) != 1 {
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	p, err := s.store.Meta().GetPrincipalByID(ctx, key.PrincipalID)
 	if err != nil {
 		s.loggerFrom(ctx).Warn("protoadmin.auth.principal_lookup_failed",
 			"err", err, "principal_id", key.PrincipalID)
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	if p.Flags.Has(store.PrincipalFlagDisabled) {
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, false
+		return store.Principal{}, nil, false
 	}
 	_ = s.store.Meta().TouchAPIKey(ctx, key.ID, s.clk.Now())
 	observe.AuthAttemptsTotal.WithLabelValues("apikey", "ok").Inc()
-	return p, true
+	return p, parseAPIKeyScope(key.ScopeJSON), true
+}
+
+// parseAPIKeyScope decodes the JSON-encoded scope list stored on an
+// APIKey row. Empty / malformed values fall back to the legacy admin
+// scope so a bug in the storage layer can't silently drop access; the
+// migration body has already backfilled every row, so the fallback is
+// only triggered by fresh test fixtures.
+func parseAPIKeyScope(raw string) auth.ScopeSet {
+	if raw == "" {
+		return auth.NewScopeSet(auth.ScopeAdmin)
+	}
+	var s auth.ScopeSet
+	if err := json.Unmarshal([]byte(raw), &s); err != nil || len(s) == 0 {
+		return auth.NewScopeSet(auth.ScopeAdmin)
+	}
+	return s
 }
 
 // authCacheKey returns the rate-limit bucket key for an authenticated
@@ -152,4 +185,28 @@ func requireAdmin(w http.ResponseWriter, r *http.Request, caller store.Principal
 	writeProblem(w, r, http.StatusForbidden, "forbidden",
 		"admin privileges required", "")
 	return false
+}
+
+// requireScope is the auth-scope (REQ-AUTH-SCOPE-02) middleware
+// counterpart to requireAuth: it asserts the auth.AuthContext attached
+// to r holds every scope in scs and writes a 403 RFC 7807 problem
+// detail otherwise. Callers chain it after requireAuth in routes.go.
+func (s *Server) requireScope(scs ...auth.Scope) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if err := auth.RequireScope(r.Context(), scs...); err != nil {
+				if errors.Is(err, auth.ErrUnauthenticated) {
+					writeProblem(w, r, http.StatusUnauthorized,
+						"unauthorized", "authentication required", "")
+					return
+				}
+				writeProblem(w, r, http.StatusForbidden,
+					"insufficient_scope",
+					"insufficient scope for this resource",
+					err.Error())
+				return
+			}
+			next(w, r)
+		}
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/hanshuebner/herold/internal/directoryoidc"
+	"github.com/hanshuebner/herold/internal/store"
 )
 
 // handleOIDCBegin starts an OIDC sign-in flow against the named
@@ -43,10 +44,24 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			s.renderError(w, r, http.StatusBadRequest, "OIDC sign-in failed: "+err.Error())
 			return
 		}
+		// OIDC sign-in inherits the per-listener scope policy
+		// (REQ-AUTH-SCOPE-01). For the public listener that means
+		// AllEndUserScopes; for the admin listener the OIDC path is
+		// not the recommended issuance flow (admin scope wants TOTP
+		// step-up per REQ-AUTH-SCOPE-03), so we still issue admin-
+		// scope here and let the listener's loopback bind be the
+		// outermost guard. TODO(3.6-followup): when external IdPs
+		// land for the admin path, require an MFA assurance claim
+		// on the OIDC token before issuing admin scope.
+		var pp store.Principal
+		if loaded, err := s.store.Meta().GetPrincipalByID(r.Context(), pid); err == nil {
+			pp = loaded
+		}
 		sess := session{
 			PrincipalID: pid,
 			ExpiresAt:   s.clk.Now().Add(s.cfg.TTL),
 			CSRFToken:   newCSRFToken(),
+			Scopes:      s.scopeForLogin(pp),
 		}
 		s.setSessionCookie(w, sess)
 		http.Redirect(w, r, s.pathPrefix+"/dashboard", http.StatusSeeOther)

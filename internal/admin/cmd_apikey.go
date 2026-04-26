@@ -1,7 +1,12 @@
 package admin
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/spf13/cobra"
+
+	"github.com/hanshuebner/herold/internal/auth"
 )
 
 func newAPIKeyCmd() *cobra.Command {
@@ -20,9 +25,39 @@ func newAPIKeyCmd() *cobra.Command {
 				return err
 			}
 			label, _ := cmd.Flags().GetString("label")
-			body := map[string]string{
-				"principal": args[0],
-				"label":     label,
+			scopeRaw, _ := cmd.Flags().GetString("scope")
+			allowAdmin, _ := cmd.Flags().GetBool("allow-admin-scope")
+
+			// REQ-AUTH-SCOPE-04: validate the scope list client-side
+			// so a typo surfaces before the round-trip and the
+			// operator gets a deterministic error message; the
+			// server validates again as defence-in-depth.
+			scopes, err := auth.ParseScopeList(scopeRaw)
+			if err != nil {
+				return fmt.Errorf("apikey: --scope: %w", err)
+			}
+			if len(scopes) == 0 {
+				scopes = []auth.Scope{auth.ScopeMailSend}
+			}
+			hasAdmin := false
+			for _, s := range scopes {
+				if s == auth.ScopeAdmin {
+					hasAdmin = true
+				}
+			}
+			if hasAdmin && !allowAdmin {
+				return errors.New("apikey: --scope contains admin; pass --allow-admin-scope to acknowledge (cookies recommended for human admin access)")
+			}
+
+			scopeStrs := make([]string, 0, len(scopes))
+			for _, s := range scopes {
+				scopeStrs = append(scopeStrs, string(s))
+			}
+			body := map[string]any{
+				"principal":         args[0],
+				"label":             label,
+				"scope":             scopeStrs,
+				"allow_admin_scope": allowAdmin,
 			}
 			var out map[string]any
 			err = client.do(cmd.Context(), "POST", "/api/v1/api-keys", body, &out)
@@ -33,6 +68,13 @@ func newAPIKeyCmd() *cobra.Command {
 		},
 	}
 	createCmd.Flags().String("label", "", "operator-visible key label")
+	createCmd.Flags().String("scope", "mail.send",
+		"comma-separated scope list (one or more of "+
+			"end-user, admin, mail.send, mail.receive, "+
+			"chat.read, chat.write, cal.read, cal.write, "+
+			"contacts.read, contacts.write, webhook.publish)")
+	createCmd.Flags().Bool("allow-admin-scope", false,
+		"required when --scope contains admin (REQ-AUTH-SCOPE-04)")
 	c.AddCommand(createCmd)
 	c.AddCommand(&cobra.Command{
 		Use:   "revoke <key-id>",

@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -30,8 +32,9 @@ func HashAPIKey(plaintext string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// requireAuth enforces Bearer-token authentication and per-key rate
-// limiting. On success it attaches the principal + API key to the
+// requireAuth enforces Bearer-token authentication, per-key rate
+// limiting, and the mail.send scope check (REQ-AUTH-SCOPE-02).
+// On success it attaches the principal + API key + AuthContext to the
 // request context.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -48,8 +51,39 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		ctx = context.WithValue(ctx, ctxKeyPrincipal, principal)
 		ctx = context.WithValue(ctx, ctxKeyAPIKey, key)
+		// Attach the auth.AuthContext so the scope check below sees
+		// the API key's stored scope set (REQ-AUTH-SCOPE-04). The
+		// listener label is "public" because the HTTP send API is
+		// mounted on the public listener (REQ-OPS-ADMIN-LISTENER-01).
+		ctx = auth.WithContext(ctx, &auth.AuthContext{
+			PrincipalID: uint64(principal.ID),
+			Scopes:      parseAPIKeyScope(key.ScopeJSON),
+			Listener:    "public",
+		})
+		// REQ-AUTH-SCOPE-02: mail.send scope is required for /api/v1/mail/*.
+		if err := auth.RequireScope(ctx, auth.ScopeMailSend); err != nil {
+			writeProblem(w, r, http.StatusForbidden, "insufficient_scope",
+				"insufficient scope for this resource", err.Error())
+			return
+		}
 		next(w, r.WithContext(ctx))
 	}
+}
+
+// parseAPIKeyScope decodes the JSON-encoded scope list stored on an
+// APIKey row. Empty / malformed values fall back to the legacy admin
+// scope so a bug in the storage layer can't silently drop access; the
+// migration body has already backfilled every row, so the fallback is
+// only triggered by fresh test fixtures that haven't set the field.
+func parseAPIKeyScope(raw string) auth.ScopeSet {
+	if raw == "" {
+		return auth.NewScopeSet(auth.ScopeAdmin, auth.ScopeMailSend)
+	}
+	var s auth.ScopeSet
+	if err := json.Unmarshal([]byte(raw), &s); err != nil || len(s) == 0 {
+		return auth.NewScopeSet(auth.ScopeAdmin, auth.ScopeMailSend)
+	}
+	return s
 }
 
 // authenticate inspects the Authorization header.

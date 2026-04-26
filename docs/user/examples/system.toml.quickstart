@@ -100,10 +100,29 @@ tls = "implicit"
 cert_file = "./data/admin.crt"
 key_file  = "./data/admin.key"
 
+# Public HTTP listener (REQ-OPS-ADMIN-LISTENER-01).  Serves the SPA
+# mount point (Wave 3.7), JMAP, chat WS, send API, call credentials,
+# image proxy, public webhook ingress, and the public /login flow.
+# In production this is bound 0.0.0.0:443 and fronted with ACME-issued
+# certs; the quickstart binds loopback for one-keypair-no-fuss boot.
 [[listener]]
-name = "admin"
+name = "public"
 address = "127.0.0.1:8080"
 protocol = "admin"
+kind = "public"
+tls = "none"
+
+# Admin HTTP listener (REQ-OPS-ADMIN-LISTENER-01..03).  Serves the
+# protoadmin REST surface, admin UI, /metrics, and the admin /login
+# flow (TOTP step-up per REQ-AUTH-SCOPE-03).  Default bind is loopback
+# so the surface is invisible to internet scanners; operators with a
+# VPN flip to 0.0.0.0:9443 (or whatever interface), operators without
+# tunnel via ssh -L 9443:127.0.0.1:9443.
+[[listener]]
+name = "admin"
+address = "127.0.0.1:9443"
+protocol = "admin"
+kind = "admin"
 tls = "none"
 
 # Observability. Logs go to stderr in JSON; metrics on the loopback

@@ -555,14 +555,20 @@ func TestAPIKeys_Create_Returns_Plaintext_Once(t *testing.T) {
 		t.Fatalf("create = %d: %s", res.StatusCode, buf)
 	}
 	var created struct {
-		ID  uint64 `json:"id"`
-		Key string `json:"key"`
+		ID    uint64   `json:"id"`
+		Key   string   `json:"key"`
+		Scope []string `json:"scope"`
 	}
 	if err := json.Unmarshal(buf, &created); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if created.Key == "" {
 		t.Fatalf("no plaintext key returned")
+	}
+	// REQ-AUTH-SCOPE-04: default scope is [mail.send] when the
+	// request omits the scope field.
+	if len(created.Scope) != 1 || created.Scope[0] != "mail.send" {
+		t.Errorf("default scope = %v, want [mail.send]", created.Scope)
 	}
 	// GET on listing does NOT include the plaintext.
 	res, buf = h.doRequest("GET", "/api/v1/api-keys", adminKey, nil)
@@ -571,6 +577,83 @@ func TestAPIKeys_Create_Returns_Plaintext_Once(t *testing.T) {
 	}
 	if strings.Contains(string(buf), created.Key) {
 		t.Fatalf("listing leaked plaintext key: %s", buf)
+	}
+}
+
+// TestAPIKeys_Create_AdminScope_RequiresAcknowledgement covers
+// REQ-AUTH-SCOPE-04: requesting admin scope without
+// allow_admin_scope=true is rejected with 400.
+func TestAPIKeys_Create_AdminScope_RequiresAcknowledgement(t *testing.T) {
+	h := newHarness(t)
+	pid, adminKey := h.bootstrap("admin@example.com")
+	res, buf := h.doRequest("POST", fmt.Sprintf("/api/v1/principals/%d/api-keys", pid), adminKey, map[string]any{
+		"label": "ops-key",
+		"scope": []string{"admin"},
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("admin scope w/o allow flag: status=%d body=%s; want 400", res.StatusCode, buf)
+	}
+	// Now retry with the explicit acknowledgement.
+	res, buf = h.doRequest("POST", fmt.Sprintf("/api/v1/principals/%d/api-keys", pid), adminKey, map[string]any{
+		"label":             "ops-key",
+		"scope":             []string{"admin"},
+		"allow_admin_scope": true,
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("admin scope w/ allow flag: status=%d body=%s; want 201", res.StatusCode, buf)
+	}
+	var created struct {
+		Scope []string `json:"scope"`
+	}
+	_ = json.Unmarshal(buf, &created)
+	if len(created.Scope) != 1 || created.Scope[0] != "admin" {
+		t.Errorf("scope = %v, want [admin]", created.Scope)
+	}
+}
+
+// TestAPIKeys_Create_RejectsUnknownScope covers REQ-AUTH-SCOPE-01:
+// scope values outside the closed enum are rejected at create time.
+func TestAPIKeys_Create_RejectsUnknownScope(t *testing.T) {
+	h := newHarness(t)
+	pid, adminKey := h.bootstrap("admin@example.com")
+	res, buf := h.doRequest("POST", fmt.Sprintf("/api/v1/principals/%d/api-keys", pid), adminKey, map[string]any{
+		"label": "bogus",
+		"scope": []string{"unknown-scope"},
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown scope: status=%d body=%s; want 400", res.StatusCode, buf)
+	}
+}
+
+// TestScopeEnforcement_AdminEndpointRejectsMailSendOnly covers
+// REQ-AUTH-SCOPE-02: an API key with scope [mail.send] hitting an
+// admin-only endpoint receives 403 + insufficient_scope problem.
+func TestScopeEnforcement_AdminEndpointRejectsMailSendOnly(t *testing.T) {
+	h := newHarness(t)
+	pid, adminKey := h.bootstrap("admin@example.com")
+
+	// Create a mail.send-only API key for the admin principal.
+	res, buf := h.doRequest("POST", fmt.Sprintf("/api/v1/principals/%d/api-keys", pid), adminKey, map[string]any{
+		"label": "transactional-app",
+		"scope": []string{"mail.send"},
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: status=%d body=%s", res.StatusCode, buf)
+	}
+	var created struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(buf, &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Hit GET /api/v1/principals (admin-only) with the new key.
+	res, buf = h.doRequest("GET", "/api/v1/principals", created.Key, nil)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("mail.send key on admin endpoint: status=%d body=%s; want 403", res.StatusCode, buf)
+	}
+	if !strings.Contains(string(buf), "insufficient_scope") {
+		t.Errorf("body should reference insufficient_scope: %s", buf)
 	}
 }
 

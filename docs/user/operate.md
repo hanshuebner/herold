@@ -107,7 +107,38 @@ Every listener is a separate `[[listener]]` table. Required fields:
 Optional fields: `auth_required` (forces SASL on submission listeners),
 `proxy_protocol` (accepts the HAProxy PROXY protocol header),
 `cert_file` and `key_file` (per-listener cert override; both or
-neither).
+neither), `kind` (`public` or `admin` for HTTP listeners; required in
+production -- see below).
+
+#### Listener kinds: public vs admin (REQ-OPS-ADMIN-LISTENER-01..03)
+
+HTTP listeners (`protocol = "admin"`) carry a `kind` field that
+partitions the suite's HTTP surface into two roles:
+
+- **`kind = "public"`** -- internet-facing. Serves the SPA mount
+  point (Wave 3.7), JMAP, chat WebSocket, the HTTP send API, the call
+  credential mint, the image proxy, public webhook ingress, and the
+  public `/login` flow that issues end-user-scoped cookies. Default
+  bind `0.0.0.0:443`.
+- **`kind = "admin"`** -- operator-only. Serves the protoadmin REST
+  surface, the admin UI, `/metrics`, and the admin `/login` flow that
+  issues admin-scoped cookies after a TOTP step-up
+  (REQ-AUTH-SCOPE-03). Default bind `127.0.0.1:9443` so the surface
+  is invisible to internet scanners. Operators with a VPN flip the
+  bind to a routable interface; operators without one tunnel via
+  `ssh -L 9443:127.0.0.1:9443 admin@host`.
+
+Cookies are mechanically distinct: the public listener issues
+`herold_public_session`, the admin listener issues
+`herold_admin_session`. Cross-listener cookie reuse is impossible at
+the parser level; the in-handler `auth.RequireScope` check is
+defence-in-depth.
+
+A production config without an explicit `kind="admin"` listener is
+**rejected at validate** with a migration message. Set
+`[server.dev_mode] = true` to bypass the check during development;
+`dev_mode` co-mounts both handlers on a single listener (the in-
+handler scope check is the boundary in that shape).
 
 ```toml
 [[listener]]
@@ -135,10 +166,25 @@ address = "0.0.0.0:993"
 protocol = "imaps"
 tls = "implicit"
 
+# Public HTTP listener: SPA + JMAP + chat WS + send API + call creds +
+# image proxy + public webhook ingress + public /login.
+[[listener]]
+name = "public"
+address = "0.0.0.0:443"
+protocol = "admin"
+kind = "public"
+tls = "implicit"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+# Admin HTTP listener: protoadmin REST + admin UI + /metrics + admin
+# /login (TOTP step-up).  Loopback by default; tunnel via ssh -L from
+# operator workstations or flip the bind to a VPN interface.
 [[listener]]
 name = "admin"
-address = "127.0.0.1:8080"
+address = "127.0.0.1:9443"
 protocol = "admin"
+kind = "admin"
 tls = "implicit"
 cert_file = "/etc/herold/admin.crt"
 key_file  = "/etc/herold/admin.key"

@@ -32,19 +32,28 @@ type Options struct {
 	Session SessionConfig
 	// Logger overrides the package's default slog.Logger.
 	Logger *slog.Logger
+	// ListenerKind tags this server as serving the public or admin
+	// HTTP listener (REQ-OPS-ADMIN-LISTENER-01..03). The kind drives
+	// scope-set issuance on /login and is propagated into the
+	// auth.AuthContext attached to authenticated requests so handlers
+	// can refuse cross-listener traffic. Empty defaults to
+	// sysconfig.ListenerKindPublic for backwards compatibility with
+	// the legacy single-mount shape.
+	ListenerKind string
 }
 
 // Server is the protoui handle. One *Server backs the whole UI; tests
 // construct one against a testharness server, production constructs
 // one in internal/admin/server.go and mounts it onto the parent mux.
 type Server struct {
-	store      store.Store
-	dir        *directory.Directory
-	rp         *directoryoidc.RP
-	clk        clock.Clock
-	logger     *slog.Logger
-	cfg        SessionConfig
-	pathPrefix string
+	store        store.Store
+	dir          *directory.Directory
+	rp           *directoryoidc.RP
+	clk          clock.Clock
+	logger       *slog.Logger
+	cfg          SessionConfig
+	pathPrefix   string
+	listenerKind string
 
 	tmpl *template.Template
 
@@ -104,15 +113,20 @@ func NewServer(
 		return nil, fmt.Errorf("protoui: load templates: %w", err)
 	}
 
+	listenerKind := opts.ListenerKind
+	if listenerKind == "" {
+		listenerKind = "public"
+	}
 	s := &Server{
-		store:      st,
-		dir:        dir,
-		rp:         rp,
-		clk:        clk,
-		logger:     logger,
-		cfg:        cfg,
-		pathPrefix: prefix,
-		tmpl:       tmpl,
+		store:        st,
+		dir:          dir,
+		rp:           rp,
+		clk:          clk,
+		logger:       logger,
+		cfg:          cfg,
+		pathPrefix:   prefix,
+		listenerKind: listenerKind,
+		tmpl:         tmpl,
 	}
 
 	mux := http.NewServeMux()

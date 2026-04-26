@@ -156,6 +156,7 @@ func convertFakeToRow(table string, raw any) (any, error) {
 			ID: int64(k.ID), PrincipalID: int64(k.PrincipalID),
 			Hash: k.Hash, Name: k.Name,
 			CreatedAtUs: micros(k.CreatedAt), LastUsedAtUs: micros(k.LastUsedAt),
+			ScopeJSON: k.ScopeJSON,
 		}, nil
 	case "aliases":
 		a := raw.(store.Alias)
@@ -403,6 +404,7 @@ func convertRowToFake(table string, row any) (any, error) {
 			ID: store.APIKeyID(r.ID), PrincipalID: store.PrincipalID(r.PrincipalID),
 			Hash: r.Hash, Name: r.Name,
 			CreatedAt: fromMicros(r.CreatedAtUs), LastUsedAt: fromMicros(r.LastUsedAtUs),
+			ScopeJSON: r.ScopeJSON,
 		}, nil
 	case "aliases":
 		r := row.(*AliasRow)

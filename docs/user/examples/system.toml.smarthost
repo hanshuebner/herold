@@ -67,10 +67,24 @@ address = "0.0.0.0:993"
 protocol = "imaps"
 tls = "implicit"
 
+# Public HTTP listener (REQ-OPS-ADMIN-LISTENER-01).  JMAP, chat WS,
+# send API, call credentials, image proxy, public /login.
+[[listener]]
+name = "public"
+address = "0.0.0.0:443"
+protocol = "admin"
+kind = "public"
+tls = "implicit"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+# Admin HTTP listener (REQ-OPS-ADMIN-LISTENER-01..03).  Loopback by
+# default; protoadmin REST + admin UI + /metrics + admin /login.
 [[listener]]
 name = "admin"
-address = "127.0.0.1:8080"
+address = "127.0.0.1:9443"
 protocol = "admin"
+kind = "admin"
 tls = "implicit"
 cert_file = "/etc/herold/admin.crt"
 key_file  = "/etc/herold/admin.key"

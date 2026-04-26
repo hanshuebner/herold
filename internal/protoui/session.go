@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -42,10 +44,15 @@ type SessionConfig struct {
 }
 
 // session is the decoded form of a session cookie. The wire form is
-// `<principalID>.<expiresAtUnix>.<base64url(hmacSig)>`. Three dot-
-// separated fields keep the parser obvious; the comparator is constant-
-// time on the signature so a forged cookie cannot side-channel the
-// guess loop.
+// `<principalID>.<expiresAtUnix>.<csrfToken>.<base64url(scopeJSON)>.<base64url(hmacSig)>`.
+// Five dot-separated fields; the signature covers the first four so a
+// forged cookie can't tamper with scope. Constant-time comparison on
+// the sig keeps the guess loop side-channel-free.
+//
+// Per REQ-AUTH-SCOPE-01 the scope set is part of the cookie payload so
+// the handler-side auth.RequireScope check can run without a DB
+// round-trip; rotating the signing key invalidates all outstanding
+// cookies (operators tolerate re-login on restart -- see SessionConfig).
 type session struct {
 	PrincipalID store.PrincipalID
 	ExpiresAt   time.Time
@@ -54,11 +61,17 @@ type session struct {
 	// also embedded in HTML forms; the double-submit middleware
 	// requires the two match.
 	CSRFToken string
+	// Scopes is the closed-enum scope set granted to the holder
+	// (REQ-AUTH-SCOPE-01). The set is fixed at issuance time;
+	// changing scope means logging out and back in.
+	Scopes auth.ScopeSet
 }
 
 // encodeSession produces the wire form for a session.
 func encodeSession(s session, key []byte) string {
-	payload := fmt.Sprintf("%d.%d.%s", uint64(s.PrincipalID), s.ExpiresAt.Unix(), s.CSRFToken)
+	scopeBytes, _ := json.Marshal(s.Scopes)
+	scopeEnc := base64.RawURLEncoding.EncodeToString(scopeBytes)
+	payload := fmt.Sprintf("%d.%d.%s.%s", uint64(s.PrincipalID), s.ExpiresAt.Unix(), s.CSRFToken, scopeEnc)
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(payload))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
@@ -71,13 +84,13 @@ func encodeSession(s session, key []byte) string {
 // passed. The two are distinct so the caller can differentiate "log
 // in" from "your session expired" in the redirect target.
 func decodeSession(raw string, key []byte, now time.Time) (session, error) {
-	// Split into <pid>.<exp>.<csrf>.<sig>
+	// Split into <pid>.<exp>.<csrf>.<scope>.<sig>
 	parts := strings.Split(raw, ".")
-	if len(parts) != 4 {
+	if len(parts) != 5 {
 		return session{}, errSessionInvalid
 	}
-	pidStr, expStr, csrfTok, sig := parts[0], parts[1], parts[2], parts[3]
-	payload := pidStr + "." + expStr + "." + csrfTok
+	pidStr, expStr, csrfTok, scopeEnc, sig := parts[0], parts[1], parts[2], parts[3], parts[4]
+	payload := pidStr + "." + expStr + "." + csrfTok + "." + scopeEnc
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(payload))
 	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
@@ -96,10 +109,21 @@ func decodeSession(raw string, key []byte, now time.Time) (session, error) {
 	if !now.Before(exp) {
 		return session{}, errSessionExpired
 	}
+	scopeBytes, err := base64.RawURLEncoding.DecodeString(scopeEnc)
+	if err != nil {
+		return session{}, errSessionInvalid
+	}
+	var scopes auth.ScopeSet
+	if len(scopeBytes) > 0 {
+		if err := json.Unmarshal(scopeBytes, &scopes); err != nil {
+			return session{}, errSessionInvalid
+		}
+	}
 	return session{
 		PrincipalID: store.PrincipalID(pid),
 		ExpiresAt:   exp,
 		CSRFToken:   csrfTok,
+		Scopes:      scopes,
 	}, nil
 }
 
@@ -178,18 +202,29 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 // principals so a flagged operator's lingering cookie cannot keep
 // authenticating side channels.
 func (s *Server) ResolveSession(r *http.Request) (store.PrincipalID, bool) {
+	pid, _, ok := s.ResolveSessionWithScope(r)
+	return pid, ok
+}
+
+// ResolveSessionWithScope is the scope-aware sibling of ResolveSession
+// (REQ-AUTH-SCOPE-01). Returns (principal, scope, true) if a valid
+// session cookie is on r and the principal is not disabled; (0, nil,
+// false) otherwise. The scope set is the value the issuing /login
+// flow stamped on the cookie; it is immutable for the cookie's
+// lifetime (rotate by logging out + back in).
+func (s *Server) ResolveSessionWithScope(r *http.Request) (store.PrincipalID, auth.ScopeSet, bool) {
 	sess, ok := s.readSession(r)
 	if !ok {
-		return 0, false
+		return 0, nil, false
 	}
 	p, err := s.store.Meta().GetPrincipalByID(r.Context(), sess.PrincipalID)
 	if err != nil {
-		return 0, false
+		return 0, nil, false
 	}
 	if p.Flags.Has(store.PrincipalFlagDisabled) {
-		return 0, false
+		return 0, nil, false
 	}
-	return sess.PrincipalID, true
+	return sess.PrincipalID, sess.Scopes, true
 }
 
 // readSession parses the session cookie from r. The returned bool is
@@ -238,6 +273,13 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 		}
 		ctx := context.WithValue(r.Context(), ctxKeyPrincipal, p)
 		ctx = context.WithValue(ctx, ctxKeySession, sess)
+		// Attach the closed-enum auth.AuthContext so handlers can
+		// run RequireScope(...) without re-parsing the cookie.
+		ctx = auth.WithContext(ctx, &auth.AuthContext{
+			PrincipalID: uint64(sess.PrincipalID),
+			Scopes:      sess.Scopes,
+			Listener:    s.listenerKind,
+		})
 		next(w, r.WithContext(ctx))
 	}
 }

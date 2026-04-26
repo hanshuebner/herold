@@ -3,25 +3,38 @@ package protoadmin
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
 type createAPIKeyRequest struct {
 	Label string `json:"label"`
+	// Scope is the closed-enum scope set the key grants
+	// (REQ-AUTH-SCOPE-04). Defaults to ["mail.send"] when omitted.
+	// Admin scope requires AllowAdminScope == true on the request.
+	Scope []string `json:"scope,omitempty"`
+	// AllowAdminScope is the explicit acknowledgement required when
+	// Scope contains "admin"; the CLI mirror is --allow-admin-scope
+	// (REQ-AUTH-SCOPE-04). Cookies are the recommended path for
+	// human admin access.
+	AllowAdminScope bool `json:"allow_admin_scope,omitempty"`
 }
 
 // createAPIKeyResponse is returned exactly once on creation. Future GETs
 // against this key do NOT expose the plaintext.
 type createAPIKeyResponse struct {
-	ID          uint64 `json:"id"`
-	PrincipalID uint64 `json:"principal_id"`
-	Label       string `json:"label"`
-	Key         string `json:"key"`
-	CreatedAt   string `json:"created_at"`
+	ID          uint64   `json:"id"`
+	PrincipalID uint64   `json:"principal_id"`
+	Label       string   `json:"label"`
+	Key         string   `json:"key"`
+	CreatedAt   string   `json:"created_at"`
+	Scope       []string `json:"scope"`
 }
 
 // generateAPIKey returns a new plaintext key and its SHA-256 hash.
@@ -91,6 +104,16 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 			"label is required", "")
 		return
 	}
+	scopes, err := resolveAPIKeyScope(req.Scope, req.AllowAdminScope)
+	if err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "validation_failed", err.Error(), "")
+		return
+	}
+	scopeJSON, err := json.Marshal(scopes)
+	if err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "internal_error", "failed to encode scope", "")
+		return
+	}
 	plaintext, hash, err := generateAPIKey()
 	if err != nil {
 		s.loggerFrom(r.Context()).Error("protoadmin.api_key.generate", "err", err)
@@ -102,6 +125,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		PrincipalID: pid,
 		Hash:        hash,
 		Name:        req.Label,
+		ScopeJSON:   string(scopeJSON),
 	})
 	if err != nil {
 		s.writeStoreError(w, r, err)
@@ -112,15 +136,59 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		store.OutcomeSuccess, "", map[string]string{
 			"label":        req.Label,
 			"principal_id": strconv.FormatUint(uint64(pid), 10),
+			"scope":        string(scopeJSON),
 		})
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/api-keys/%d", inserted.ID))
+	scopeStrs := make([]string, 0, len(scopes))
+	for _, sc := range scopes {
+		scopeStrs = append(scopeStrs, string(sc))
+	}
 	writeJSON(w, http.StatusCreated, createAPIKeyResponse{
 		ID:          uint64(inserted.ID),
 		PrincipalID: uint64(pid),
 		Label:       req.Label,
 		Key:         plaintext,
 		CreatedAt:   inserted.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		Scope:       scopeStrs,
 	})
+}
+
+// resolveAPIKeyScope validates the operator-supplied scope list per
+// REQ-AUTH-SCOPE-04: empty scope falls back to [mail.send]; admin scope
+// requires the AllowAdminScope acknowledgement; unknown values are
+// rejected.
+func resolveAPIKeyScope(raw []string, allowAdmin bool) ([]auth.Scope, error) {
+	if len(raw) == 0 {
+		return []auth.Scope{auth.ScopeMailSend}, nil
+	}
+	out := make([]auth.Scope, 0, len(raw))
+	seen := make(map[auth.Scope]struct{}, len(raw))
+	hasAdmin := false
+	for _, r := range raw {
+		sc, err := auth.ParseScope(r)
+		if err != nil {
+			return nil, fmt.Errorf("scope %q: %w", r, err)
+		}
+		if _, dup := seen[sc]; dup {
+			continue
+		}
+		seen[sc] = struct{}{}
+		if sc == auth.ScopeAdmin {
+			hasAdmin = true
+		}
+		out = append(out, sc)
+	}
+	if hasAdmin && !allowAdmin {
+		return nil, errors.New("scope contains admin; set allow_admin_scope=true to acknowledge (cookies recommended for human admin access)")
+	}
+	// Canonical ordering for deterministic JSON.
+	canonical := make([]auth.Scope, 0, len(out))
+	for _, c := range auth.AllScopes {
+		if _, ok := seen[c]; ok {
+			canonical = append(canonical, c)
+		}
+	}
+	return canonical, nil
 }
 
 func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {

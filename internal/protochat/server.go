@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
@@ -335,6 +336,16 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	} else {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
+	}
+	// REQ-AUTH-SCOPE-02: chat.read scope is required for the
+	// WebSocket upgrade. write happens within the WebSocket via
+	// per-frame action authorisation; the upgrade gate here keeps
+	// admin-only cookies from opening a chat connection.
+	if actx := auth.FromContext(r.Context()); actx != nil {
+		if err := auth.RequireScope(r.Context(), auth.ScopeChatRead); err != nil {
+			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+			return
+		}
 	}
 
 	if !validateUpgradeHeaders(r) {

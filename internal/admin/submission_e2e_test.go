@@ -92,9 +92,17 @@ cert_file = %q
 key_file = %q
 
 [[listener]]
+name = "public"
+address = "127.0.0.1:0"
+protocol = "admin"
+kind = "public"
+tls = "none"
+
+[[listener]]
 name = "admin"
 address = "127.0.0.1:0"
 protocol = "admin"
+kind = "admin"
 tls = "none"
 
 [observability]

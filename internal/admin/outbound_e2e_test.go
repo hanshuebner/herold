@@ -99,9 +99,17 @@ cert_file = %q
 key_file = %q
 
 [[listener]]
+name = "public"
+address = "127.0.0.1:0"
+protocol = "admin"
+kind = "public"
+tls = "none"
+
+[[listener]]
 name = "admin"
 address = "127.0.0.1:0"
 protocol = "admin"
+kind = "admin"
 tls = "none"
 
 [observability]
@@ -158,6 +166,11 @@ metrics_bind = ""
 		Hash:        apiKeyHash,
 		Name:        "e2e",
 		CreatedAt:   clk.Now(),
+		// REQ-AUTH-SCOPE-04: API key carries explicit scope. The
+		// e2e test exercises the HTTP send-raw path so mail.send
+		// is required; admin is included for parity with the
+		// pre-3.6 implicit posture.
+		ScopeJSON: `["admin","mail.send"]`,
 	}); err != nil {
 		t.Fatalf("insert api key: %v", err)
 	}
@@ -197,12 +210,18 @@ metrics_bind = ""
 	}
 	addrsMu.Lock()
 	adminAddr := addrs["admin"]
+	publicAddr := addrs["public"]
 	addrsMu.Unlock()
 	if adminAddr == "" {
 		t.Fatalf("admin listener not bound; addrs=%+v", addrs)
 	}
+	if publicAddr == "" {
+		t.Fatalf("public listener not bound; addrs=%+v", addrs)
+	}
 
-	// 5. POST a raw message to /api/v1/mail/send-raw.
+	// 5. POST a raw message to /api/v1/mail/send-raw on the
+	//    public listener (REQ-OPS-ADMIN-LISTENER-01: send API
+	//    is a public-listener mount, not admin).
 	rawMsg := "From: alice@" + sourceDomain + "\r\n" +
 		"To: bob@destination.test\r\n" +
 		"Subject: e2e wave 3.1.5\r\n" +
@@ -215,7 +234,7 @@ metrics_bind = ""
 		"rawMessage":   base64.StdEncoding.EncodeToString([]byte(rawMsg)),
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"http://"+adminAddr+"/api/v1/mail/send-raw",
+		"http://"+publicAddr+"/api/v1/mail/send-raw",
 		bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("build request: %v", err)

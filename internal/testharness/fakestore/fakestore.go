@@ -28,6 +28,13 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
+// fakestoreDefaultScopeJSON is the canonical "all scopes" JSON string
+// applied to APIKey rows that don't set ScopeJSON explicitly. Cheap
+// to keep as a literal -- the closed enum changes infrequently and
+// the alternative (json-marshal auth.AllScopes at init time) drags
+// auth into the fakestore's import surface.
+const fakestoreDefaultScopeJSON = `["end-user","admin","mail.send","mail.receive","chat.read","chat.write","cal.read","cal.write","contacts.read","contacts.write","webhook.publish"]`
+
 // Store is an in-memory store.Store backed by maps and a tempdir.
 type Store struct {
 	clk     clock.Clock
@@ -907,6 +914,16 @@ func (m *metaFace) InsertAPIKey(ctx context.Context, k store.APIKey) (store.APIK
 	k.ID = s.nextAPIKeyID
 	s.nextAPIKeyID++
 	k.CreatedAt = s.clk.Now()
+	if k.ScopeJSON == "" {
+		// Test convenience: a fresh API key with no explicit scope
+		// gets every scope in the closed enum so legacy test fixtures
+		// pass without needing per-test scope wiring. Production
+		// inserts (storesqlite / storepg) backfill with ["admin"]
+		// only and the protoadmin REST handler validates the scope
+		// list at create time. Tests that exercise the scope check
+		// itself MUST set ScopeJSON explicitly.
+		k.ScopeJSON = fakestoreDefaultScopeJSON
+	}
 	s.apiKeys[k.ID] = k
 	s.keyByHash[k.Hash] = k.ID
 	return k, nil

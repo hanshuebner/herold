@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -74,7 +75,12 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, http.StatusInternalServerError, "principal load failed")
 		return
 	}
-	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
+	// REQ-AUTH-SCOPE-03: the admin listener requires TOTP for
+	// principals with 2FA enabled before issuing an admin-scoped
+	// cookie. The public listener follows the same TOTP gating but
+	// the issued cookie carries end-user scopes only.
+	totpRequired := p.Flags.Has(store.PrincipalFlagTOTPEnabled)
+	if totpRequired {
 		if totpCode == "" {
 			body.NeedTOTP = true
 			s.renderPage(w, r, http.StatusOK, &pageData{
@@ -96,11 +102,19 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Mint the session.
+	// Mint the session with the listener-appropriate scope set
+	// (REQ-AUTH-SCOPE-01..03). admin-listener login issues
+	// [admin] scope ONLY (no implicit end-user grant per
+	// REQ-AUTH-SCOPE-02); public-listener login issues
+	// AllEndUserScopes. An operator who wants both must log in on
+	// both listeners separately -- different ports, different
+	// cookies (REQ-OPS-ADMIN-LISTENER-03).
+	sessScopes := s.scopeForLogin(p)
 	sess := session{
 		PrincipalID: pid,
 		ExpiresAt:   s.clk.Now().Add(s.cfg.TTL),
 		CSRFToken:   newCSRFToken(),
+		Scopes:      sessScopes,
 	}
 	s.setSessionCookie(w, sess)
 
@@ -109,6 +123,23 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		target = redirect
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+// scopeForLogin returns the scope set to attach to a freshly issued
+// cookie. REQ-AUTH-SCOPE-01..03:
+//   - admin listener -> [admin]
+//   - public listener -> AllEndUserScopes
+//
+// Admin scope on a non-TOTP principal is permitted (REQ-AUTH-SCOPE-03's
+// "operator's call" branch), but the admin login flow only fires on
+// the admin listener and the listener bind itself is loopback by
+// default so an internet attacker cannot reach the issuance path
+// (REQ-OPS-ADMIN-LISTENER-02).
+func (s *Server) scopeForLogin(p store.Principal) auth.ScopeSet {
+	if s.listenerKind == "admin" {
+		return auth.NewScopeSet(auth.ScopeAdmin)
+	}
+	return auth.NewScopeSet(auth.AllEndUserScopes...)
 }
 
 // safeRedirect rejects redirects that escape the UI or aim at a

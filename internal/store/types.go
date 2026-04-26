@@ -489,6 +489,13 @@ type APIKey struct {
 	// LastUsedAt is the most recent successful authentication instant
 	// using this key; zero value if never used.
 	LastUsedAt time.Time
+	// ScopeJSON is the JSON-encoded list of auth.Scope values the key
+	// grants (REQ-AUTH-SCOPE-04). The store layer treats it as opaque
+	// text; callers in internal/protoadmin and internal/admin parse +
+	// validate the contents. The schema migration (0016) backfills
+	// existing rows with '["admin"]' so legacy keys retain their
+	// implicit pre-3.6 capability.
+	ScopeJSON string
 }
 
 // ActorKind classifies the source of an audited action. The vocabulary

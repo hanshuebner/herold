@@ -390,28 +390,33 @@ func (m *metadata) LookupOIDCLink(ctx context.Context, provider, subject string)
 func (m *metadata) InsertAPIKey(ctx context.Context, k store.APIKey) (store.APIKey, error) {
 	now := m.s.clock.Now().UTC()
 	var id int64
+	scope := k.ScopeJSON
+	if scope == "" {
+		scope = `["admin"]`
+	}
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
-			INSERT INTO api_keys (principal_id, hash, name, created_at_us, last_used_at_us)
-			VALUES ($1, $2, $3, $4, 0) RETURNING id`,
-			int64(k.PrincipalID), k.Hash, k.Name, usMicros(now)).Scan(&id)
+			INSERT INTO api_keys (principal_id, hash, name, created_at_us, last_used_at_us, scope_json)
+			VALUES ($1, $2, $3, $4, 0, $5) RETURNING id`,
+			int64(k.PrincipalID), k.Hash, k.Name, usMicros(now), scope).Scan(&id)
 	})
 	if err != nil {
 		return store.APIKey{}, mapErr(err)
 	}
 	k.ID = store.APIKeyID(id)
 	k.CreatedAt = now
+	k.ScopeJSON = scope
 	return k, nil
 }
 
 func (m *metadata) GetAPIKeyByHash(ctx context.Context, hash string) (store.APIKey, error) {
 	row := m.s.pool.QueryRow(ctx, `
-		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us
+		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us, scope_json
 		  FROM api_keys WHERE hash = $1`, hash)
 	var k store.APIKey
 	var id, pid int64
 	var createdUs, lastUs int64
-	err := row.Scan(&id, &pid, &k.Hash, &k.Name, &createdUs, &lastUs)
+	err := row.Scan(&id, &pid, &k.Hash, &k.Name, &createdUs, &lastUs, &k.ScopeJSON)
 	if err != nil {
 		return store.APIKey{}, mapErr(err)
 	}
@@ -439,7 +444,7 @@ func (m *metadata) TouchAPIKey(ctx context.Context, id store.APIKeyID, at time.T
 
 func (m *metadata) ListAPIKeysByPrincipal(ctx context.Context, pid store.PrincipalID) ([]store.APIKey, error) {
 	rows, err := m.s.pool.Query(ctx, `
-		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us
+		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us, scope_json
 		  FROM api_keys WHERE principal_id = $1 ORDER BY id`, int64(pid))
 	if err != nil {
 		return nil, mapErr(err)
@@ -450,7 +455,7 @@ func (m *metadata) ListAPIKeysByPrincipal(ctx context.Context, pid store.Princip
 		var k store.APIKey
 		var id, ownerID int64
 		var createdUs, lastUs int64
-		if err := rows.Scan(&id, &ownerID, &k.Hash, &k.Name, &createdUs, &lastUs); err != nil {
+		if err := rows.Scan(&id, &ownerID, &k.Hash, &k.Name, &createdUs, &lastUs, &k.ScopeJSON); err != nil {
 			return nil, mapErr(err)
 		}
 		k.ID = store.APIKeyID(id)
