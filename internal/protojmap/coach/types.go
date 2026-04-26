@@ -1,8 +1,16 @@
 package coach
 
 import (
+	"time"
+
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// GCWindow is the retention window for coach_events rows. Rows older than
+// this are eligible for deletion by the nightly GC tick in admin/server.go.
+// The 90-day window matches the longest counter window the JMAP layer
+// surfaces (keyboardCount90d / mouseCount90d per REQ-PROTO-110).
+const GCWindow = 90 * 24 * time.Hour
 
 // jmapID is the wire form of a JMAP id. ShortcutCoachStat ids are the
 // action string itself (unique per principal; actions are free-form

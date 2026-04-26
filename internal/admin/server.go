@@ -41,6 +41,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protoimg"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/protojmap/calendars/imip"
+	jmapcoach "github.com/hanshuebner/herold/internal/protojmap/coach"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/emailsubmission"
 	jmapidentity "github.com/hanshuebner/herold/internal/protojmap/mail/identity"
 	jmappush "github.com/hanshuebner/herold/internal/protojmap/push"
@@ -734,6 +735,45 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			return err
 		}
 		return nil
+	})
+
+	// ShortcutCoachStat GC tick (Phase 3 Wave 3.10 fixup, REQ-PROTO-110).
+	// Deletes coach_events rows older than jmapcoach.GCWindow (90 days) on
+	// a daily cadence with a 1-hour jitter to avoid thundering-herd on
+	// multi-instance deployments. The tick runs 24 h after startup so
+	// the server is fully warmed before the first GC pass; the jitter
+	// is the modulo of the current Unix timestamp to spread instances
+	// across the hour window.
+	observe.RegisterCoachMetrics()
+	g.Go(func() error {
+		// Initial delay: 24h + jitter in [0, 1h) so multiple instances
+		// do not all GC at exactly the same second.
+		jitter := time.Duration(clk.Now().UnixNano()%int64(time.Hour)) / 10
+		t := clk.After(24*time.Hour + jitter)
+		for {
+			select {
+			case <-gctx.Done():
+				return nil
+			case <-t:
+			}
+			cutoff := clk.Now().Add(-jmapcoach.GCWindow)
+			n, err := st.Meta().GCCoachEvents(gctx, cutoff)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				logger.LogAttrs(context.Background(), slog.LevelWarn,
+					"coach gc: GCCoachEvents",
+					slog.String("err", err.Error()))
+			} else if n > 0 {
+				if observe.CoachGCDeletedTotal != nil {
+					observe.CoachGCDeletedTotal.Add(float64(n))
+				}
+				logger.LogAttrs(context.Background(), slog.LevelInfo,
+					"coach gc: deleted expired events",
+					slog.Int64("rows", n))
+			}
+			// Schedule next tick in 24h + same jitter so the schedule
+			// stays predictable without pinning to wall-clock midnight.
+			t = clk.After(24*time.Hour + jitter)
+		}
 	})
 
 	// iMIP intake worker (Phase 2 Wave 2.7 / REQ-PROTO-56). Reads the
