@@ -270,6 +270,17 @@ func (sess *session) deliverOne(
 		targets = []string{"INBOX"}
 	}
 
+	// REQ-FLOW-104..107: try to consume the message as an inbound
+	// reaction email.  Runs AFTER spam classification (already in
+	// classification) and AFTER sieve (so the junk target is already
+	// resolved before this check).  REQ-FLOW-108: spam falls through.
+	// The check only runs for local principals (principalID != 0).
+	if rc.principalID != 0 {
+		if sess.tryConsumeReaction(ctx, rc.principalID, msg, classification) {
+			return true, nil
+		}
+	}
+
 	// Resolve / create each target mailbox and insert the message.
 	for _, mbName := range targets {
 		mb, err := sess.ensureMailbox(ctx, rc.principalID, mbName)

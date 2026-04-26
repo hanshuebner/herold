@@ -1,11 +1,13 @@
 package email
 
 import (
+	"context"
 	"io"
 	"log/slog"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailparse"
+	"github.com/hanshuebner/herold/internal/mailreact"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -16,12 +18,33 @@ type handlerSet struct {
 	logger  *slog.Logger
 	clk     clock.Clock
 	parseFn parseFn
+	// reactionMailer sends outbound cross-server reaction emails
+	// (REQ-FLOW-100..103). Nil disables cross-server propagation
+	// (e.g. tests that only exercise local-path behaviour).
+	reactionMailer *mailreact.Mailer
+}
+
+// RegisterOptions carries optional configuration for the Email/* handler
+// registration. Zero-value is safe for tests that do not exercise
+// reaction propagation.
+type RegisterOptions struct {
+	// ReactionMailer enables cross-server reaction email dispatch
+	// (REQ-FLOW-100..103). When nil, reactions are local-only.
+	ReactionMailer *mailreact.Mailer
+	// LocalDomainFn is required when ReactionMailer is non-nil. Returns
+	// true when domain is locally served.
+	LocalDomainFn func(ctx context.Context, domain string) bool
 }
 
 // Register installs the Email/* handlers under the JMAP Mail
 // capability. Called from internal/admin/server.go's StartServer
 // alongside the parallel agent's Core registration.
 func Register(reg *protojmap.CapabilityRegistry, st store.Store, logger *slog.Logger, clk clock.Clock) {
+	RegisterWithOptions(reg, st, logger, clk, RegisterOptions{})
+}
+
+// RegisterWithOptions is Register with additional optional configuration.
+func RegisterWithOptions(reg *protojmap.CapabilityRegistry, st store.Store, logger *slog.Logger, clk clock.Clock, ropts RegisterOptions) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -29,10 +52,11 @@ func Register(reg *protojmap.CapabilityRegistry, st store.Store, logger *slog.Lo
 		clk = clock.NewReal()
 	}
 	h := &handlerSet{
-		store:   st,
-		logger:  logger,
-		clk:     clk,
-		parseFn: defaultParseFn,
+		store:          st,
+		logger:         logger,
+		clk:            clk,
+		parseFn:        defaultParseFn,
+		reactionMailer: ropts.ReactionMailer,
 	}
 	reg.Register(protojmap.CapabilityMail, &getHandler{h: h})
 	reg.Register(protojmap.CapabilityMail, &changesHandler{h: h})

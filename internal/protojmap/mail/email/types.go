@@ -65,6 +65,12 @@ type jmapEmail struct {
 	// so the field renders as `null` when the message is not snoozed
 	// and as a UTC ISO-8601 string (RFC 8620 UTCDate) otherwise.
 	SnoozedUntil *string `json:"snoozedUntil"`
+	// Reactions is the email reactions extension property
+	// (REQ-PROTO-100, capability https://tabard.dev/jmap/email-reactions).
+	// Shape: {"<emoji>": ["<principal-id>", ...], ...}. Sparse — emojis
+	// with no current reactors are absent. Nil means "not loaded";
+	// callers that set this non-nil but empty will render as {}.
+	Reactions map[string][]string `json:"reactions,omitempty"`
 
 	// Header form (RFC 8621 §4.1.2 + §4.1.3).
 	From       []jmapAddress `json:"from,omitempty"`

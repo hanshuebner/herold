@@ -166,6 +166,11 @@ func Run(t *testing.T, f Factory) {
 		{"PushSubscription_Update_AppliesMutableFields", testPushSubscriptionUpdate},
 		{"PushSubscription_Delete_NotFoundAfter", testPushSubscriptionDeleteNotFoundAfter},
 		{"PushSubscription_CascadeOnPrincipalDelete", testPushSubscriptionCascadeOnPrincipalDelete},
+		// -- Phase 3 Wave 3.9 Email reactions (REQ-PROTO-100..103) ---------
+		{"EmailReaction_AddRemoveIdempotent", testEmailReactionAddRemoveIdempotent},
+		{"EmailReaction_ListEmpty", testEmailReactionListEmpty},
+		{"EmailReaction_BatchList", testEmailReactionBatchList},
+		{"EmailReaction_GetMessageByMessageIDHeader", testGetMessageByMessageIDHeader},
 	}
 	for _, c := range cases {
 		tc := c
@@ -5294,5 +5299,155 @@ func testPushSubscriptionCascadeOnPrincipalDelete(t *testing.T, s store.Store) {
 	}
 	if _, err := s.Meta().GetPushSubscription(ctx, id); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Get after principal delete: err = %v, want ErrNotFound", err)
+	}
+}
+
+// -- Phase 3 Wave 3.9 Email reactions tests ----------------------------
+
+func mustInsertMessage(t *testing.T, s store.Store, mailboxID store.MailboxID, msgID string) store.Message {
+	t.Helper()
+	ref := putBlob(t, s, "From: sender@example.com\r\nMessage-ID: <"+msgID+">\r\n\r\nBody\r\n")
+	uid, _, err := s.Meta().InsertMessage(ctxT(t), store.Message{
+		MailboxID:    mailboxID,
+		Size:         ref.Size,
+		Blob:         ref,
+		ReceivedAt:   time.Now().UTC(),
+		InternalDate: time.Now().UTC(),
+		Envelope: store.Envelope{
+			MessageID: msgID,
+			From:      "sender@example.com",
+		},
+	})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, err := s.Meta().ListMessages(ctxT(t), mailboxID, store.MessageFilter{Limit: 1000, WithEnvelope: true})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	for _, m := range msgs {
+		if m.UID == uid {
+			return m
+		}
+	}
+	t.Fatalf("InsertMessage: UID %d not found in ListMessages", uid)
+	return store.Message{}
+}
+
+func testEmailReactionAddRemoveIdempotent(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "reactor@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg := mustInsertMessage(t, s, mb.ID, "msg001@host")
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Add a reaction.
+	if err := s.Meta().AddEmailReaction(ctx, msg.ID, "heart", p.ID, now); err != nil {
+		t.Fatalf("AddEmailReaction: %v", err)
+	}
+	// Duplicate add is idempotent.
+	if err := s.Meta().AddEmailReaction(ctx, msg.ID, "heart", p.ID, now); err != nil {
+		t.Fatalf("AddEmailReaction duplicate: %v", err)
+	}
+	got, err := s.Meta().ListEmailReactions(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("ListEmailReactions: %v", err)
+	}
+	if _, ok := got["heart"][p.ID]; !ok {
+		t.Fatalf("reaction missing after add: got %v", got)
+	}
+	if len(got["heart"]) != 1 {
+		t.Fatalf("expected 1 reactor, got %d", len(got["heart"]))
+	}
+
+	// Remove the reaction.
+	if err := s.Meta().RemoveEmailReaction(ctx, msg.ID, "heart", p.ID); err != nil {
+		t.Fatalf("RemoveEmailReaction: %v", err)
+	}
+	// Second remove is idempotent.
+	if err := s.Meta().RemoveEmailReaction(ctx, msg.ID, "heart", p.ID); err != nil {
+		t.Fatalf("RemoveEmailReaction idempotent: %v", err)
+	}
+	got2, err := s.Meta().ListEmailReactions(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("ListEmailReactions after remove: %v", err)
+	}
+	if len(got2) != 0 {
+		t.Fatalf("expected empty reactions, got %v", got2)
+	}
+}
+
+func testEmailReactionListEmpty(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "empty-react@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg := mustInsertMessage(t, s, mb.ID, "msg-empty@host")
+
+	got, err := s.Meta().ListEmailReactions(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("ListEmailReactions empty: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty map, got %v", got)
+	}
+}
+
+func testEmailReactionBatchList(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "batch-react@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	m1 := mustInsertMessage(t, s, mb.ID, "batch-msg1@host")
+	m2 := mustInsertMessage(t, s, mb.ID, "batch-msg2@host")
+	m3 := mustInsertMessage(t, s, mb.ID, "batch-msg3@host")
+
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := s.Meta().AddEmailReaction(ctx, m1.ID, "thumbsup", p.ID, now); err != nil {
+		t.Fatalf("AddEmailReaction m1: %v", err)
+	}
+	if err := s.Meta().AddEmailReaction(ctx, m2.ID, "heart", p.ID, now); err != nil {
+		t.Fatalf("AddEmailReaction m2: %v", err)
+	}
+	// m3 has no reactions.
+
+	batch, err := s.Meta().BatchListEmailReactions(ctx, []store.MessageID{m1.ID, m2.ID, m3.ID})
+	if err != nil {
+		t.Fatalf("BatchListEmailReactions: %v", err)
+	}
+	if _, ok := batch[m1.ID]["thumbsup"][p.ID]; !ok {
+		t.Fatalf("m1 thumbsup missing: %v", batch)
+	}
+	if _, ok := batch[m2.ID]["heart"][p.ID]; !ok {
+		t.Fatalf("m2 heart missing: %v", batch)
+	}
+	if _, ok := batch[m3.ID]; ok {
+		t.Fatalf("m3 should not appear in batch: %v", batch)
+	}
+	// Empty slice returns empty map.
+	empty, err := s.Meta().BatchListEmailReactions(ctx, nil)
+	if err != nil {
+		t.Fatalf("BatchListEmailReactions nil: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("empty slice: expected empty map, got %v", empty)
+	}
+}
+
+func testGetMessageByMessageIDHeader(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "msgid-lookup@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	want := mustInsertMessage(t, s, mb.ID, "lookup-001@host")
+
+	got, err := s.Meta().GetMessageByMessageIDHeader(ctx, p.ID, "lookup-001@host")
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader: %v", err)
+	}
+	if got.ID != want.ID {
+		t.Fatalf("GetMessageByMessageIDHeader: got ID %d, want %d", got.ID, want.ID)
+	}
+	// Not found case.
+	_, err = s.Meta().GetMessageByMessageIDHeader(ctx, p.ID, "not-here@host")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing msgid: err = %v, want ErrNotFound", err)
 	}
 }

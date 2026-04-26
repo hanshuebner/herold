@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/mailreact"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -392,6 +394,26 @@ func (h *handlerSet) updateEmail(
 		}, nil
 	}
 
+	// REQ-PROTO-101: handle reactions/<emoji>/<principalId> patch keys.
+	reactionAdds, reactionRemoves, serr := decodeReactionPatches(obj, pid)
+	if serr != nil {
+		return serr, nil
+	}
+	if len(reactionAdds) > 0 || len(reactionRemoves) > 0 {
+		if serr, err := h.applyReactionPatches(ctx, pid, m, reactionAdds, reactionRemoves); err != nil {
+			return nil, fmt.Errorf("email: reaction patch: %w", err)
+		} else if serr != nil {
+			return serr, nil
+		}
+		if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
+			return nil, fmt.Errorf("email: bump state after reaction: %w", err)
+		}
+		// Only reaction keys in the patch — nothing more to do.
+		if !hasNonReactionKeys(obj) {
+			return nil, nil
+		}
+	}
+
 	snoozeAct, serr := decodeSnoozeIntent(obj, m)
 	if serr != nil {
 		return serr, nil
@@ -706,4 +728,213 @@ func mostRecentEmailCreatedID(
 		return 0, fmt.Errorf("email: no email-created entry in feed")
 	}
 	return last, nil
+}
+
+// reactionPatch is a decoded reactions/<emoji>/<principalId> patch.
+type reactionPatch struct {
+	emoji       string
+	principalID store.PrincipalID
+}
+
+// decodeReactionPatches scans obj for "reactions/<emoji>/<pid>" keys.
+// Returns the add set (value true) and remove set (value false/null).
+// Returns forbidden when the patch principal does not match the
+// authenticated principal (REQ-PROTO-101).
+func decodeReactionPatches(
+	obj map[string]json.RawMessage,
+	authedPID store.PrincipalID,
+) (adds []reactionPatch, removes []reactionPatch, serr *setError) {
+	const prefix = "reactions/"
+	for k, v := range obj {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(k, prefix)
+		// rest should be "<emoji>/<principalId>"
+		slash := strings.LastIndex(rest, "/")
+		if slash < 0 {
+			return nil, nil, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{k},
+				Description: "reactions patch key must be reactions/<emoji>/<principalId>",
+			}
+		}
+		emoji := rest[:slash]
+		pidStr := rest[slash+1:]
+		if emoji == "" || pidStr == "" {
+			return nil, nil, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{k},
+				Description: "reactions patch key: emoji and principalId must be non-empty",
+			}
+		}
+		// Parse the principal id from the wire string.
+		pidUint, err := parseUintPrincipalID(pidStr)
+		if err != nil {
+			return nil, nil, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{k},
+				Description: "reactions patch key: principalId is not a valid id",
+			}
+		}
+		if store.PrincipalID(pidUint) != authedPID {
+			return nil, nil, &setError{
+				Type:        "forbidden",
+				Description: "reactions patch: principalId must match the authenticated principal",
+			}
+		}
+		p := reactionPatch{emoji: emoji, principalID: store.PrincipalID(pidUint)}
+		// value: true = add; null / false = remove.
+		isAdd := false
+		if string(v) == "true" {
+			isAdd = true
+		} else if string(v) != "null" && string(v) != "false" {
+			// Try JSON bool decode for robustness.
+			var b bool
+			if json.Unmarshal(v, &b) == nil {
+				isAdd = b
+			}
+		}
+		if isAdd {
+			adds = append(adds, p)
+		} else {
+			removes = append(removes, p)
+		}
+	}
+	return adds, removes, nil
+}
+
+// parseUintPrincipalID parses a decimal string into a uint64 principal id.
+func parseUintPrincipalID(s string) (uint64, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty principal id")
+	}
+	v := uint64(0)
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("non-digit in principal id: %c", c)
+		}
+		v = v*10 + uint64(c-'0')
+	}
+	if v == 0 {
+		return 0, fmt.Errorf("principal id must be > 0")
+	}
+	return v, nil
+}
+
+// hasNonReactionKeys reports whether obj has any key that is NOT a
+// "reactions/<emoji>/<pid>" patch key. Used to detect a purely-reaction
+// patch that can return early after reacting.
+func hasNonReactionKeys(obj map[string]json.RawMessage) bool {
+	for k := range obj {
+		if !strings.HasPrefix(k, "reactions/") {
+			return true
+		}
+	}
+	return false
+}
+
+// applyReactionPatches writes add/remove rows to the email_reactions
+// table and, for adds, triggers outbound cross-server dispatch.
+func (h *handlerSet) applyReactionPatches(
+	ctx context.Context,
+	pid store.PrincipalID,
+	m store.Message,
+	adds []reactionPatch,
+	removes []reactionPatch,
+) (*setError, error) {
+	now := h.clk.Now()
+	for _, p := range adds {
+		if err := h.store.Meta().AddEmailReaction(ctx, m.ID, p.emoji, p.principalID, now); err != nil {
+			return nil, fmt.Errorf("add reaction: %w", err)
+		}
+		// Fire-and-forget outbound dispatch (REQ-FLOW-100..103).
+		if h.reactionMailer != nil {
+			go h.dispatchOutboundReaction(context.WithoutCancel(ctx), pid, m, p.emoji)
+		}
+	}
+	for _, p := range removes {
+		if err := h.store.Meta().RemoveEmailReaction(ctx, m.ID, p.emoji, p.principalID); err != nil {
+			return nil, fmt.Errorf("remove reaction: %w", err)
+		}
+		// REQ-FLOW-103: removal does NOT propagate cross-server.
+	}
+	return nil, nil
+}
+
+// dispatchOutboundReaction looks up the reactor's principal info and
+// the original message metadata, then delegates to the reactionMailer.
+// Runs in a goroutine; logs errors but does not surface them.
+func (h *handlerSet) dispatchOutboundReaction(
+	ctx context.Context,
+	pid store.PrincipalID,
+	m store.Message,
+	emoji string,
+) {
+	p, err := h.store.Meta().GetPrincipalByID(ctx, pid)
+	if err != nil {
+		h.logger.WarnContext(ctx, "email: reaction dispatch: principal lookup failed",
+			slog.String("err", err.Error()))
+		return
+	}
+	orig := mailreact.OriginalEmailInfo{
+		MessageID:  m.Envelope.MessageID,
+		Subject:    m.Envelope.Subject,
+		References: "", // not cached — fine, References falls back to In-Reply-To only
+	}
+	// Build the flat recipient list from the cached envelope.
+	for _, list := range []string{m.Envelope.To, m.Envelope.Cc, m.Envelope.Bcc} {
+		for _, addr := range splitAddressList(list) {
+			if addr != "" {
+				orig.AllRecipients = append(orig.AllRecipients, addr)
+			}
+		}
+	}
+	reactor := mailreact.ReactorInfo{
+		PrincipalID: pid,
+		Address:     p.CanonicalEmail,
+		DisplayName: p.DisplayName,
+		Domain:      domainOf(p.CanonicalEmail),
+	}
+	if _, err := h.reactionMailer.BuildAndEnqueue(ctx, reactor, emoji, orig); err != nil {
+		h.logger.WarnContext(ctx, "email: reaction dispatch: enqueue failed",
+			slog.String("err", err.Error()))
+	}
+}
+
+// domainOf returns the lowercased domain portion of an email address.
+func domainOf(addr string) string {
+	if i := strings.LastIndex(addr, "@"); i >= 0 {
+		return strings.ToLower(addr[i+1:])
+	}
+	return ""
+}
+
+// splitAddressList splits a comma-separated address list into a flat
+// slice of raw addresses, stripping display names and angle brackets.
+func splitAddressList(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	// Use a simple heuristic: each comma-separated segment; trim whitespace
+	// and angle brackets.
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		// Strip "Display Name <addr>" down to addr.
+		if lt := strings.Index(p, "<"); lt >= 0 {
+			if gt := strings.LastIndex(p, ">"); gt > lt {
+				p = p[lt+1 : gt]
+			}
+		}
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

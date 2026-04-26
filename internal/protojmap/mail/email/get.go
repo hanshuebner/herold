@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
+	"strconv"
 
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
@@ -71,37 +74,89 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 		if err != nil {
 			return nil, serverFail(err)
 		}
+		ids := make([]store.MessageID, len(all))
+		for i, m := range all {
+			ids[i] = m.ID
+		}
+		batchReactions, err := g.h.store.Meta().BatchListEmailReactions(ctx, ids)
+		if err != nil {
+			return nil, serverFail(fmt.Errorf("email: load reactions: %w", err))
+		}
 		for _, m := range all {
 			rendered, err := g.renderOne(ctx, m, wantBodies, req.MaxBodyValueBytes)
 			if err != nil {
 				return nil, serverFail(err)
 			}
+			rendered.Reactions = reactionsToWire(batchReactions[m.ID])
 			resp.List = append(resp.List, rendered)
 		}
 		return resp, nil
 	}
 
+	// Collect valid MessageIDs first so we can batch-fetch reactions.
+	type entry struct {
+		raw string
+		mid store.MessageID
+		msg store.Message
+		ok  bool
+	}
+	entries := make([]entry, 0, len(*req.IDs))
+	var validIDs []store.MessageID
 	for _, raw := range *req.IDs {
 		mid, ok := emailIDFromJMAP(raw)
 		if !ok {
-			resp.NotFound = append(resp.NotFound, raw)
+			entries = append(entries, entry{raw: raw})
 			continue
 		}
 		m, err := loadMessageForPrincipal(ctx, g.h.store.Meta(), pid, mid)
 		if err != nil {
 			if errors.Is(err, errMessageMissing) {
-				resp.NotFound = append(resp.NotFound, raw)
+				entries = append(entries, entry{raw: raw})
 				continue
 			}
 			return nil, serverFail(err)
 		}
-		rendered, err := g.renderOne(ctx, m, wantBodies, req.MaxBodyValueBytes)
+		entries = append(entries, entry{raw: raw, mid: mid, msg: m, ok: true})
+		validIDs = append(validIDs, mid)
+	}
+
+	batchReactions, err := g.h.store.Meta().BatchListEmailReactions(ctx, validIDs)
+	if err != nil {
+		return nil, serverFail(fmt.Errorf("email: load reactions: %w", err))
+	}
+
+	for _, e := range entries {
+		if !e.ok {
+			resp.NotFound = append(resp.NotFound, e.raw)
+			continue
+		}
+		rendered, err := g.renderOne(ctx, e.msg, wantBodies, req.MaxBodyValueBytes)
 		if err != nil {
 			return nil, serverFail(err)
 		}
+		rendered.Reactions = reactionsToWire(batchReactions[e.mid])
 		resp.List = append(resp.List, rendered)
 	}
 	return resp, nil
+}
+
+// reactionsToWire converts the store's map[emoji]map[PrincipalID]struct{}
+// into the JMAP wire form map[emoji][]principalID. Returns nil when the
+// input is empty so the field is omitted from JSON (sparse by design).
+func reactionsToWire(r map[string]map[store.PrincipalID]struct{}) map[string][]string {
+	if len(r) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(r))
+	for emoji, pids := range r {
+		list := make([]string, 0, len(pids))
+		for pid := range pids {
+			list = append(list, strconv.FormatUint(uint64(pid), 10))
+		}
+		sort.Strings(list) // deterministic order for tests
+		out[emoji] = list
+	}
+	return out
 }
 
 // renderOne produces the wire-form Email object. When the request asks
