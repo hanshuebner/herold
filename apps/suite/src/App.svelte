@@ -5,6 +5,7 @@
   import { keyboard } from './lib/keyboard/engine.svelte';
   import { auth } from './lib/auth/auth.svelte';
   import { sync } from './lib/jmap/sync.svelte';
+  import { compose } from './lib/compose/compose.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
   import SettingsView from './views/SettingsView.svelte';
@@ -31,10 +32,7 @@
   keyboard.registerGlobal({
     key: 'c',
     description: 'Compose',
-    action: () => {
-      // TODO compose flow not yet implemented; surface as toast / log.
-      console.info('compose: not yet implemented');
-    },
+    action: () => compose.openBlank(),
   });
   keyboard.registerGlobal({
     key: '?',

@@ -5,6 +5,21 @@
  * Cross-reference: docs/requirements/01-data-model.md.
  */
 
+/**
+ * RFC 8621 §6 — Identity. The set of From / Reply-To / Bcc / signatures
+ * the user may legitimately send as.
+ */
+export interface Identity {
+  id: string;
+  name: string;
+  email: string;
+  replyTo: Address[] | null;
+  bcc: Address[] | null;
+  textSignature: string;
+  htmlSignature: string;
+  mayDelete: boolean;
+}
+
 export interface Mailbox {
   id: string;
   name: string;

@@ -19,6 +19,7 @@ import {
   EMAIL_BODY_PROPERTIES,
   EMAIL_LIST_PROPERTIES,
   type Email,
+  type Identity,
   type Mailbox,
   type Thread,
 } from './types';
@@ -29,6 +30,7 @@ class MailStore {
   mailboxes = $state(new Map<string, Mailbox>());
   emails = $state(new Map<string, Email>());
   threads = $state(new Map<string, Thread>());
+  identities = $state(new Map<string, Identity>());
 
   /** Ordered (most-recent first) email ids visible in the current inbox view. */
   inboxEmailIds = $state<string[]>([]);
@@ -127,6 +129,22 @@ class MailStore {
     return this.#mailboxByRole('trash');
   }
 
+  /** The Mailbox row whose `role` is `'drafts'`, if any. */
+  get drafts(): Mailbox | null {
+    return this.#mailboxByRole('drafts');
+  }
+
+  /** The Mailbox row whose `role` is `'sent'`, if any. */
+  get sent(): Mailbox | null {
+    return this.#mailboxByRole('sent');
+  }
+
+  /** The first available Identity — used as the default From for compose. */
+  get primaryIdentity(): Identity | null {
+    for (const id of this.identities.values()) return id;
+    return null;
+  }
+
   #mailboxByRole(role: string): Mailbox | null {
     for (const m of this.mailboxes.values()) {
       if (m.role === role) return m;
@@ -160,6 +178,21 @@ class MailStore {
     if (typeof args.state === 'string') this.mailboxState = args.state;
   }
 
+  async loadIdentities(): Promise<void> {
+    const accountId = this.mailAccountId;
+    if (!accountId) throw new Error('No Mail account on this session');
+
+    const { responses } = await jmap.batch((b) => {
+      b.call('Identity/get', { accountId, ids: null }, [Capability.Submission]);
+    });
+    strict(responses);
+
+    const args = invocationArgs<{ list: Identity[] }>(responses[0]);
+    const next = new Map<string, Identity>();
+    for (const id of args.list) next.set(id.id, id);
+    this.identities = next;
+  }
+
   /**
    * Initial inbox load: fetch mailboxes if needed, then run a batched
    * Email/query + Email/get for the inbox's most recent threads (collapsed,
@@ -171,9 +204,12 @@ class MailStore {
     this.inboxLoadStatus = 'loading';
     this.inboxError = null;
     try {
-      if (this.mailboxes.size === 0) {
-        await this.loadMailboxes();
-      }
+      // Mailboxes + identities both feed compose / list-rendering paths;
+      // load them in parallel on first use.
+      const setup: Promise<unknown>[] = [];
+      if (this.mailboxes.size === 0) setup.push(this.loadMailboxes());
+      if (this.identities.size === 0) setup.push(this.loadIdentities());
+      if (setup.length > 0) await Promise.all(setup);
       const inbox = this.inbox;
       if (!inbox) {
         throw new Error('No inbox mailbox in this account');

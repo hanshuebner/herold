@@ -3,6 +3,7 @@
   import GlobalBar from './GlobalBar.svelte';
   import CoachStrip from './CoachStrip.svelte';
   import ToastHost from '../toast/ToastHost.svelte';
+  import ComposeWindow from '../compose/ComposeWindow.svelte';
 
   interface Props {
     activeApp?: 'mail' | 'chat';
@@ -41,6 +42,7 @@
 
   <CoachStrip />
   <ToastHost />
+  <ComposeWindow />
 </div>
 
 <style>
