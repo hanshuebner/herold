@@ -1,7 +1,15 @@
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const heroldURL = process.env.HEROLD_URL ?? 'http://localhost:8080';
+
+// Read the suite's own package.json to surface the version in the
+// settings panel's About section.
+const pkg = JSON.parse(
+  readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8'),
+) as { version: string };
 
 // Proxy paths that must reach herold during development. The browser sees
 // tabard at localhost:5173; the proxy makes herold appear at the same
@@ -43,6 +51,9 @@ proxy['/chat/ws'] = {
 
 export default defineConfig({
   plugins: [svelte()],
+  define: {
+    __TABARD_VERSION__: JSON.stringify(pkg.version),
+  },
   server: {
     port: 5173,
     strictPort: true,

@@ -7,6 +7,7 @@
   import { sync } from './lib/jmap/sync.svelte';
   import { compose } from './lib/compose/compose.svelte';
   import { help } from './lib/help/help.svelte';
+  import { settings, applyTheme } from './lib/settings/settings.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
   import SettingsView from './views/SettingsView.svelte';
@@ -21,8 +22,15 @@
   // listening when the connection comes up.
   $effect(() => {
     if (auth.status === 'ready') {
+      settings.hydrate();
       sync.start(['Email', 'Mailbox', 'Thread']);
     }
+  });
+
+  // Apply theme reactively. settings.theme is read inside the effect, so
+  // the user toggling theme in the panel re-runs this and updates <html>.
+  $effect(() => {
+    applyTheme(settings.theme);
   });
 
   function selectApp(app: 'mail' | 'chat'): void {
@@ -44,6 +52,11 @@
     key: 'g i',
     description: 'Go to Inbox',
     action: () => router.navigate('/mail'),
+  });
+  keyboard.registerGlobal({
+    key: 'g s',
+    description: 'Go to Settings',
+    action: () => router.navigate('/settings'),
   });
 </script>
 

@@ -68,7 +68,12 @@
     <button type="button" class="icon-btn" aria-label="Help">
       <HelpIcon size={20} />
     </button>
-    <button type="button" class="icon-btn" aria-label="Settings">
+    <button
+      type="button"
+      class="icon-btn"
+      aria-label="Settings"
+      onclick={() => router.navigate('/settings')}
+    >
       <SettingsIcon size={20} />
     </button>
   </div>

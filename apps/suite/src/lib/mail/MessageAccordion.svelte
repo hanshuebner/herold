@@ -3,6 +3,7 @@
   import { htmlHasExternalImages } from './sanitize';
   import { emailHtmlBody, emailTextBody, type Email } from './types';
   import { compose } from '../compose/compose.svelte';
+  import { settings } from '../settings/settings.svelte';
 
   interface Props {
     email: Email;
@@ -14,8 +15,13 @@
   let html = $derived(emailHtmlBody(email));
   let text = $derived(emailTextBody(email));
 
-  // Per REQ-SEC-05: external images blocked by default; user opts in per-message.
-  let loadImages = $state(false);
+  // Per REQ-SEC-05 / REQ-SET-04..05: external images blocked by default;
+  // user can flip the per-message toggle, or pre-allow at the per-sender
+  // / always level via the settings panel.
+  let perMessageOverride = $state(false);
+  let loadImages = $derived(
+    perMessageOverride || settings.isImageAllowed(email.from?.[0]?.email),
+  );
   let hasExternalImages = $derived(html ? htmlHasExternalImages(html) : false);
 
   let senderName = $derived(
@@ -79,9 +85,21 @@
         {#if hasExternalImages && !loadImages}
           <div class="image-banner" role="status">
             <span>External images are blocked.</span>
-            <button type="button" onclick={() => (loadImages = true)}>
+            <button type="button" onclick={() => (perMessageOverride = true)}>
               Load images
             </button>
+            {#if email.from?.[0]?.email}
+              <button
+                type="button"
+                onclick={() => {
+                  const sender = email.from?.[0]?.email;
+                  if (sender) settings.addImageAllowedSender(sender);
+                  perMessageOverride = true;
+                }}
+              >
+                Always from {email.from?.[0]?.email}
+              </button>
+            {/if}
           </div>
         {/if}
         <HtmlBody {html} {loadImages} />

@@ -22,9 +22,9 @@
  */
 
 import { jmap, strict } from '../jmap/client';
-import { auth } from '../auth/auth.svelte';
 import { Capability, type Invocation } from '../jmap/types';
 import { mail } from '../mail/store.svelte';
+import { settings } from '../settings/settings.svelte';
 import { toast } from '../toast/toast.svelte';
 import {
   emailHtmlBody,
@@ -32,8 +32,6 @@ import {
   type Address,
   type Email,
 } from '../mail/types';
-
-const DEFAULT_UNDO_WINDOW_SEC = 5;
 
 type ComposeStatus = 'idle' | 'editing' | 'sending';
 
@@ -178,8 +176,13 @@ class ComposeStore {
     this.errorMessage = null;
     this.status = 'sending';
 
-    const sendAt = new Date(Date.now() + DEFAULT_UNDO_WINDOW_SEC * 1000)
-      .toISOString();
+    // Per REQ-SET-06 / REQ-MAIL-14: configurable undo window. 0 disables
+    // the hold and sends immediately (sendAt = null).
+    const undoWindowSec = settings.undoWindowSec;
+    const sendAt =
+      undoWindowSec > 0
+        ? new Date(Date.now() + undoWindowSec * 1000).toISOString()
+        : null;
 
     const onSuccessUpdate: Record<string, true | null> = {};
     onSuccessUpdate[`mailboxIds/${drafts.id}`] = null;
@@ -282,41 +285,45 @@ class ComposeStore {
 
       this.close();
 
-      toast.show({
-        message: 'Message sent',
-        timeoutMs: DEFAULT_UNDO_WINDOW_SEC * 1000,
-        undo: async () => {
-          try {
-            const result = await jmap.batch((b) => {
-              b.call(
-                'EmailSubmission/set',
-                {
-                  accountId,
-                  destroy: [submissionId],
-                },
-                [Capability.Submission],
-              );
-            });
-            strict(result.responses);
-            // Re-open compose with the full saved state (including reply context).
-            this.openWith({
-              to: savedTo,
-              subject: savedSubject,
-              body: savedBody,
-              replyContext: savedReplyContext,
-            });
-          } catch (err) {
-            toast.show({
-              message:
-                err instanceof Error
-                  ? `Could not cancel send: ${err.message}`
-                  : 'Could not cancel send',
-              kind: 'error',
-              timeoutMs: 6000,
-            });
-          }
-        },
-      });
+      if (undoWindowSec > 0) {
+        toast.show({
+          message: 'Message sent',
+          timeoutMs: undoWindowSec * 1000,
+          undo: async () => {
+            try {
+              const result = await jmap.batch((b) => {
+                b.call(
+                  'EmailSubmission/set',
+                  {
+                    accountId,
+                    destroy: [submissionId],
+                  },
+                  [Capability.Submission],
+                );
+              });
+              strict(result.responses);
+              // Re-open compose with the full saved state (including reply context).
+              this.openWith({
+                to: savedTo,
+                subject: savedSubject,
+                body: savedBody,
+                replyContext: savedReplyContext,
+              });
+            } catch (err) {
+              toast.show({
+                message:
+                  err instanceof Error
+                    ? `Could not cancel send: ${err.message}`
+                    : 'Could not cancel send',
+                kind: 'error',
+                timeoutMs: 6000,
+              });
+            }
+          },
+        });
+      } else {
+        toast.show({ message: 'Message sent', timeoutMs: 4000 });
+      }
     } catch (err) {
       this.status = 'editing';
       this.errorMessage = err instanceof Error ? err.message : String(err);
