@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -215,8 +216,10 @@ func startScopedUIHarness(t *testing.T, listenerKind string) (*http.Client, stri
 }
 
 // Per-test dir + store, keyed off *testing.T so subtests don't trample.
+// Guarded by scopedDepsMu because tests run with t.Parallel.
 var (
-	scopedDeps = make(map[*testing.T]scopedDepBundle)
+	scopedDepsMu sync.Mutex
+	scopedDeps   = make(map[*testing.T]scopedDepBundle)
 )
 
 type scopedDepBundle struct {
@@ -225,12 +228,20 @@ type scopedDepBundle struct {
 }
 
 func scopedHarnessRegister(t *testing.T, dir *directory.Directory, st *fakestore.Store) {
+	scopedDepsMu.Lock()
 	scopedDeps[t] = scopedDepBundle{dir: dir, store: st}
-	t.Cleanup(func() { delete(scopedDeps, t) })
+	scopedDepsMu.Unlock()
+	t.Cleanup(func() {
+		scopedDepsMu.Lock()
+		delete(scopedDeps, t)
+		scopedDepsMu.Unlock()
+	})
 }
 
 func scopedHarnessDeps(t *testing.T) (*directory.Directory, *fakestore.Store) {
+	scopedDepsMu.Lock()
 	dep, ok := scopedDeps[t]
+	scopedDepsMu.Unlock()
 	if !ok {
 		t.Fatalf("scopedHarnessDeps called before startScopedUIHarness")
 	}
