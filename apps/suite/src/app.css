@@ -1,0 +1,25 @@
+/* Suite-wide base styles. Real design tokens land in packages/design-system. */
+:root {
+  color-scheme: dark light;
+  --background: #0f1117;
+  --text-primary: #e2e4f0;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: var(--background);
+  color: var(--text-primary);
+}
