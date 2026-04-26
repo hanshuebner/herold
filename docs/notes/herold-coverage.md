@@ -31,6 +31,12 @@ Per resolved Q14: herold ships before tabard implements. With the herold scope r
 | **Multi-user presence tracking** | `requirements/14-chat.md` REQ-CHAT-50..54 (phase 2). Server-derived from WebSocket connection state; "show as offline" mode supported. |
 | **coturn deployment guidance** | `requirements/09-operations.md` § coturn, REQ-OPS-170..174. Reference configuration for both herold and coturn sides. |
 
+## Open gaps (not yet committed in herold's spec)
+
+| Requirement | Why tabard needs it | Herold side change needed |
+|-------------|---------------------|---------------------------|
+| Server-side localisation of generated text | `requirements/22-internationalization.md` REQ-I18N-13. Tabard sends the active locale to herold so server-generated text — vacation responder default text, chat system messages ("Charlotte left the Space"), bounce DSN content, rate-limit error messages — can be localised. | Herold needs to: (a) accept a locale per session/account (a custom property on `Account` or per-request via the JMAP session, TBD which is cleaner); (b) maintain ICU MessageFormat catalogues for the strings herold itself generates; (c) localise vacation responder default templates, chat system messages, and DSN content where user-facing. The locale set tracks tabard's: en-US, en-GB, de-{DE,AT,CH}, fr-{FR,BE,CA,CH}. Phase 2 alongside chat. Until herold ships this, server-generated text falls back to en-US and tabard surfaces it as-is. |
+
 ## Phasing summary
 
 - **Herold phase 1** (already on the roadmap): everything tabard-mail v1 needs that wasn't in herold's prior scope — Sieve JMAP datatype, Mailbox.color, Identity.signature, EmailSubmission.sendAt with queue gating, iMIP REPLY pass-through, image proxy. Plus everything that was already in herold.
