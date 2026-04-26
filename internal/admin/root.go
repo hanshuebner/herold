@@ -122,6 +122,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newHookCmd())
 	root.AddCommand(newDiagCmd())
 	root.AddCommand(newPluginCmd())
+	root.AddCommand(newVAPIDCmd())
 	return root
 }
 

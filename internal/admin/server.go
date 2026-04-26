@@ -40,6 +40,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap/calendars/imip"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/emailsubmission"
 	jmapidentity "github.com/hanshuebner/herold/internal/protojmap/mail/identity"
+	jmappush "github.com/hanshuebner/herold/internal/protojmap/push"
 	"github.com/hanshuebner/herold/internal/protosend"
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/protoui"
@@ -55,6 +56,7 @@ import (
 	"github.com/hanshuebner/herold/internal/sysconfig"
 	"github.com/hanshuebner/herold/internal/tabardspa"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
+	"github.com/hanshuebner/herold/internal/vapid"
 )
 
 // StartOpts bundles optional StartServer knobs that have no home in
@@ -1335,6 +1337,27 @@ func composeAdminAndUI(
 	jmapSrv := protojmap.NewServer(st, dir, tlsStore, logger.With("subsystem", "jmap"), clk, protojmap.Options{})
 	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk),
 		logger.With("subsystem", "jmap-emailsubmission"), clk)
+	// JMAP PushSubscription (REQ-PROTO-120..122). The VAPID key
+	// reference is operator-supplied; an unconfigured deployment
+	// still advertises the capability but omits applicationServerKey
+	// so the tabard SPA surfaces "push unavailable" rather than
+	// trying to register against a missing key.
+	vapidMgr := vapid.New()
+	if ref := cfg.Server.Push.VAPIDPrivateKeyRef(); ref != "" {
+		raw, err := sysconfig.ResolveSecretStrict(ref)
+		if err != nil {
+			logger.Warn("vapid: failed to resolve VAPID private key; Web Push disabled",
+				slog.String("err", err.Error()))
+		} else if err := vapidMgr.Load([]byte(raw)); err != nil {
+			logger.Warn("vapid: failed to load VAPID private key; Web Push disabled",
+				slog.String("err", err.Error()))
+		} else {
+			logger.Info("vapid: loaded VAPID key pair; Web Push enabled")
+		}
+	} else {
+		logger.Info("vapid: no VAPID key pair configured; Web Push disabled")
+	}
+	jmappush.Register(jmapSrv.Registry(), st, vapidMgr, logger.With("subsystem", "jmap-push"), clk)
 	jmapHandler := jmapSrv.Handler()
 	publicMux.Handle("/.well-known/jmap",
 		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.session", jmapHandler))

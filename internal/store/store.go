@@ -975,6 +975,38 @@ type Metadata interface {
 	// row for the lowercased domain (no leading dot). Passing
 	// AttPolicyUnset deletes the row.
 	SetInboundAttachmentPolicyDomain(ctx context.Context, domain string, row InboundAttachmentPolicyRow) error
+
+	// -- Phase 3 Wave 3.8a JMAP PushSubscription (REQ-PROTO-120..122) -
+
+	// InsertPushSubscription persists a new push-subscription row and
+	// returns the assigned ID. Appends a (EntityKindPushSubscription,
+	// ChangeOpCreated) state-change row in the same tx so JMAP
+	// EventSource consumers see the subscription churn for clients
+	// that watch the type.
+	InsertPushSubscription(ctx context.Context, ps PushSubscription) (PushSubscriptionID, error)
+
+	// GetPushSubscription returns the row by id, or ErrNotFound when
+	// the row is missing.
+	GetPushSubscription(ctx context.Context, id PushSubscriptionID) (PushSubscription, error)
+
+	// ListPushSubscriptionsByPrincipal returns every subscription
+	// owned by pid, in ascending ID order. Empty slice (nil) when the
+	// principal has no subscriptions.
+	ListPushSubscriptionsByPrincipal(ctx context.Context, pid PrincipalID) ([]PushSubscription, error)
+
+	// UpdatePushSubscription persists the mutable fields (Verified,
+	// VerificationCode, Expires, Types, NotificationRulesJSON,
+	// QuietHoursStartLocal, QuietHoursEndLocal, QuietHoursTZ) on the
+	// row identified by ps.ID and bumps UpdatedAt. Appends a
+	// (EntityKindPushSubscription, ChangeOpUpdated) state-change row
+	// in the same tx. Returns ErrNotFound when the row is missing.
+	UpdatePushSubscription(ctx context.Context, ps PushSubscription) error
+
+	// DeletePushSubscription removes the row identified by id and
+	// appends a (EntityKindPushSubscription, ChangeOpDestroyed) state-
+	// change row in the same tx. Returns ErrNotFound when the row is
+	// missing.
+	DeletePushSubscription(ctx context.Context, id PushSubscriptionID) error
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

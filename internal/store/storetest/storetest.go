@@ -160,6 +160,12 @@ func Run(t *testing.T, f Factory) {
 		{"ChatRetention_ListConversationsForRetention", testChatRetentionListConversationsForRetention},
 		{"ChatAttachment_BlobRefcountOnHardDelete", testChatAttachmentBlobRefcountOnHardDelete},
 		{"ChatAttachment_DecRefUnderflowGuard", testChatAttachmentDecRefUnderflowGuard},
+		// -- Wave 3.8a JMAP PushSubscription (REQ-PROTO-120..122) --
+		{"PushSubscription_InsertGet_Roundtrip", testPushSubscriptionInsertGetRoundtrip},
+		{"PushSubscription_ListByPrincipal", testPushSubscriptionListByPrincipal},
+		{"PushSubscription_Update_AppliesMutableFields", testPushSubscriptionUpdate},
+		{"PushSubscription_Delete_NotFoundAfter", testPushSubscriptionDeleteNotFoundAfter},
+		{"PushSubscription_CascadeOnPrincipalDelete", testPushSubscriptionCascadeOnPrincipalDelete},
 	}
 	for _, c := range cases {
 		tc := c
@@ -5072,5 +5078,221 @@ func testChatAttachmentDecRefUnderflowGuard(t *testing.T, s store.Store) {
 	}
 	if got := get("after-delete-2"); got != 0 {
 		t.Fatalf("ref_count after final delete = %d, want 0", got)
+	}
+}
+
+// -- Phase 3 Wave 3.8a JMAP PushSubscription (REQ-PROTO-120..122) ----
+
+func testPushSubscriptionInsertGetRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ps-rt@example.com")
+	expires := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	startHour := 22
+	endHour := 7
+	row := store.PushSubscription{
+		PrincipalID:            p.ID,
+		DeviceClientID:         "browser-1",
+		URL:                    "https://fcm.googleapis.com/fcm/send/abc",
+		P256DH:                 []byte("\x04abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ12"),
+		Auth:                   []byte("0123456789abcdef"),
+		Expires:                &expires,
+		Types:                  []string{"Mailbox", "Email"},
+		VerificationCode:       "vc-abc",
+		Verified:               false,
+		VAPIDKeyAtRegistration: "BAS-base64url-public-key",
+		NotificationRulesJSON:  []byte(`{"mail":{"categories":["primary"]},"chat":{"dmsAlways":true}}`),
+		QuietHoursStartLocal:   &startHour,
+		QuietHoursEndLocal:     &endHour,
+		QuietHoursTZ:           "Europe/Berlin",
+	}
+	id, err := s.Meta().InsertPushSubscription(ctx, row)
+	if err != nil {
+		t.Fatalf("InsertPushSubscription: %v", err)
+	}
+	if id == 0 {
+		t.Fatalf("InsertPushSubscription returned zero id")
+	}
+	got, err := s.Meta().GetPushSubscription(ctx, id)
+	if err != nil {
+		t.Fatalf("GetPushSubscription: %v", err)
+	}
+	if got.PrincipalID != p.ID {
+		t.Fatalf("PrincipalID = %d, want %d", got.PrincipalID, p.ID)
+	}
+	if got.DeviceClientID != "browser-1" || got.URL != "https://fcm.googleapis.com/fcm/send/abc" {
+		t.Fatalf("scalar mismatch: %+v", got)
+	}
+	if string(got.P256DH) != string(row.P256DH) || string(got.Auth) != string(row.Auth) {
+		t.Fatalf("key bytes mismatch: %x / %x", got.P256DH, got.Auth)
+	}
+	if got.Expires == nil || !got.Expires.Equal(expires) {
+		t.Fatalf("Expires = %v, want %v", got.Expires, expires)
+	}
+	if len(got.Types) != 2 || got.Types[0] != "Mailbox" || got.Types[1] != "Email" {
+		t.Fatalf("Types = %v", got.Types)
+	}
+	if got.VerificationCode != "vc-abc" || got.Verified {
+		t.Fatalf("verification: code=%q verified=%v", got.VerificationCode, got.Verified)
+	}
+	if got.VAPIDKeyAtRegistration != "BAS-base64url-public-key" {
+		t.Fatalf("vapid key = %q", got.VAPIDKeyAtRegistration)
+	}
+	if string(got.NotificationRulesJSON) != string(row.NotificationRulesJSON) {
+		t.Fatalf("rules JSON = %q", got.NotificationRulesJSON)
+	}
+	if got.QuietHoursStartLocal == nil || *got.QuietHoursStartLocal != 22 {
+		t.Fatalf("qh start = %v", got.QuietHoursStartLocal)
+	}
+	if got.QuietHoursEndLocal == nil || *got.QuietHoursEndLocal != 7 {
+		t.Fatalf("qh end = %v", got.QuietHoursEndLocal)
+	}
+	if got.QuietHoursTZ != "Europe/Berlin" {
+		t.Fatalf("qh tz = %q", got.QuietHoursTZ)
+	}
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Fatalf("timestamps unset: %+v", got)
+	}
+	if _, err := s.Meta().GetPushSubscription(ctx, id+9999); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Get missing: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testPushSubscriptionListByPrincipal(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ps-list@example.com")
+	q := mustInsertPrincipal(t, s, "ps-list-other@example.com")
+	for i, pid := range []store.PrincipalID{p.ID, p.ID, q.ID} {
+		_, err := s.Meta().InsertPushSubscription(ctx, store.PushSubscription{
+			PrincipalID:    pid,
+			DeviceClientID: fmt.Sprintf("dev-%d", i),
+			URL:            fmt.Sprintf("https://push.example.test/%d", i),
+			P256DH:         []byte("p256dh-bytes-65-................................................"),
+			Auth:           []byte("0123456789abcdef"),
+		})
+		if err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+	}
+	got, err := s.Meta().ListPushSubscriptionsByPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("List p: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("List p len = %d, want 2", len(got))
+	}
+	for _, r := range got {
+		if r.PrincipalID != p.ID {
+			t.Fatalf("foreign principal leaked: %+v", r)
+		}
+	}
+	if got[0].ID >= got[1].ID {
+		t.Fatalf("List not ascending by ID: %d, %d", got[0].ID, got[1].ID)
+	}
+	got, err = s.Meta().ListPushSubscriptionsByPrincipal(ctx, q.ID)
+	if err != nil {
+		t.Fatalf("List q: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("List q len = %d, want 1", len(got))
+	}
+}
+
+func testPushSubscriptionUpdate(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ps-up@example.com")
+	id, err := s.Meta().InsertPushSubscription(ctx, store.PushSubscription{
+		PrincipalID:      p.ID,
+		DeviceClientID:   "d",
+		URL:              "https://push.example.test/u",
+		P256DH:           []byte("65bytes" + strings.Repeat("x", 58)),
+		Auth:             []byte("0123456789abcdef"),
+		VerificationCode: "vc-1",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	cur, err := s.Meta().GetPushSubscription(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	cur.Verified = true
+	cur.VerificationCode = "vc-1"
+	cur.Types = []string{"Mailbox"}
+	cur.NotificationRulesJSON = []byte(`{"mail":{"categories":["primary"]}}`)
+	startHour := 23
+	cur.QuietHoursStartLocal = &startHour
+	cur.QuietHoursTZ = "UTC"
+	if err := s.Meta().UpdatePushSubscription(ctx, cur); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err := s.Meta().GetPushSubscription(ctx, id)
+	if err != nil {
+		t.Fatalf("Get after update: %v", err)
+	}
+	if !got.Verified {
+		t.Fatalf("Verified not set")
+	}
+	if len(got.Types) != 1 || got.Types[0] != "Mailbox" {
+		t.Fatalf("Types = %v", got.Types)
+	}
+	if string(got.NotificationRulesJSON) != string(cur.NotificationRulesJSON) {
+		t.Fatalf("rules JSON not persisted: %q", got.NotificationRulesJSON)
+	}
+	if got.QuietHoursStartLocal == nil || *got.QuietHoursStartLocal != 23 {
+		t.Fatalf("qh start = %v", got.QuietHoursStartLocal)
+	}
+	if got.QuietHoursTZ != "UTC" {
+		t.Fatalf("qh tz = %q", got.QuietHoursTZ)
+	}
+	// Update on a missing row.
+	missing := cur
+	missing.ID = id + 9999
+	if err := s.Meta().UpdatePushSubscription(ctx, missing); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Update missing: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testPushSubscriptionDeleteNotFoundAfter(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ps-del@example.com")
+	id, err := s.Meta().InsertPushSubscription(ctx, store.PushSubscription{
+		PrincipalID:    p.ID,
+		DeviceClientID: "d",
+		URL:            "https://push.example.test/d",
+		P256DH:         []byte("65bytes" + strings.Repeat("y", 58)),
+		Auth:           []byte("0123456789abcdef"),
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := s.Meta().DeletePushSubscription(ctx, id); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := s.Meta().GetPushSubscription(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Get after delete: err = %v, want ErrNotFound", err)
+	}
+	if err := s.Meta().DeletePushSubscription(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Delete twice: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testPushSubscriptionCascadeOnPrincipalDelete(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ps-casc@example.com")
+	id, err := s.Meta().InsertPushSubscription(ctx, store.PushSubscription{
+		PrincipalID:    p.ID,
+		DeviceClientID: "d",
+		URL:            "https://push.example.test/c",
+		P256DH:         []byte("65bytes" + strings.Repeat("z", 58)),
+		Auth:           []byte("0123456789abcdef"),
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := s.Meta().DeletePrincipal(ctx, p.ID); err != nil {
+		t.Fatalf("DeletePrincipal: %v", err)
+	}
+	if _, err := s.Meta().GetPushSubscription(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Get after principal delete: err = %v, want ErrNotFound", err)
 	}
 }

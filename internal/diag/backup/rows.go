@@ -482,3 +482,27 @@ type ChatBlockRow struct {
 	CreatedAtUs        int64   `json:"created_at_us"`
 	Reason             *string `json:"reason,omitempty"`
 }
+
+// PushSubscriptionRow mirrors the push_subscription table introduced
+// in migration 0017 (Phase 3 Wave 3.8a, REQ-PROTO-120..122). The
+// JMAP keys.p256dh / keys.auth byte slices are persisted verbatim;
+// JSON serialisation handles []byte as base64 automatically.
+type PushSubscriptionRow struct {
+	ID                     int64  `json:"id"`
+	PrincipalID            int64  `json:"principal_id"`
+	DeviceClientID         string `json:"device_client_id"`
+	URL                    string `json:"url"`
+	P256DH                 []byte `json:"p256dh"`
+	Auth                   []byte `json:"auth"`
+	ExpiresAtUs            *int64 `json:"expires_at_us,omitempty"`
+	TypesCSV               string `json:"types_csv"`
+	VerificationCode       string `json:"verification_code"`
+	Verified               bool   `json:"verified"`
+	VAPIDKeyAtRegistration string `json:"vapid_key_at_registration"`
+	NotificationRulesJSON  []byte `json:"notification_rules_json,omitempty"`
+	QuietHoursStartLocal   *int64 `json:"quiet_hours_start_local,omitempty"`
+	QuietHoursEndLocal     *int64 `json:"quiet_hours_end_local,omitempty"`
+	QuietHoursTZ           string `json:"quiet_hours_tz"`
+	CreatedAtUs            int64  `json:"created_at_us"`
+	UpdatedAtUs            int64  `json:"updated_at_us"`
+}

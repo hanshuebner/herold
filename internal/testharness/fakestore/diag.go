@@ -225,6 +225,15 @@ func (s *Store) DiagSnapshot() *DiagDump {
 		for _, id := range tlsIDs {
 			dd.Tables["tlsrpt_failures"] = append(dd.Tables["tlsrpt_failures"], s.phase2.tlsrpt[id])
 		}
+		psIDs := make([]store.PushSubscriptionID, 0, len(s.phase2.pushSubscriptions))
+		for id := range s.phase2.pushSubscriptions {
+			psIDs = append(psIDs, id)
+		}
+		sort.Slice(psIDs, func(i, j int) bool { return psIDs[i] < psIDs[j] })
+		for _, id := range psIDs {
+			dd.Tables["push_subscription"] = append(dd.Tables["push_subscription"],
+				s.phase2.pushSubscriptions[id])
+		}
 	}
 
 	// Blobs: include refcount=1 for every present blob; the caller's
@@ -456,6 +465,12 @@ func (s *Store) DiagInsert(table string, row any) error {
 		s.phase2.tlsrpt[t.ID] = t
 		if t.ID >= s.phase2.nextTLSRPT {
 			s.phase2.nextTLSRPT = t.ID + 1
+		}
+	case "push_subscription":
+		ps := row.(store.PushSubscription)
+		s.phase2.pushSubscriptions[ps.ID] = ps
+		if ps.ID >= s.phase2.nextPushSubscription {
+			s.phase2.nextPushSubscription = ps.ID + 1
 		}
 	case "blob_refs":
 		b := row.(BlobRefEntry)

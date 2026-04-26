@@ -954,6 +954,10 @@ type JMAPStates struct {
 	ChatMessage int64
 	// Membership is the JMAP Membership state (REQ-CHAT-04).
 	Membership int64
+	// PushSubscription is the JMAP PushSubscription state
+	// (REQ-PROTO-120 / RFC 8620 §7.2). Bumped on every
+	// PushSubscription/set mutation.
+	PushSubscription int64
 	// UpdatedAt is the instant of the most recent increment.
 	UpdatedAt time.Time
 }

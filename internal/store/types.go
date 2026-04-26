@@ -376,6 +376,14 @@ const (
 	// CalendarEventID, ParentEntityID = CalendarID, Op) so per-calendar
 	// CalDAV-style filters dispatch without a join.
 	EntityKindCalendarEvent EntityKind = "calendar_event"
+	// EntityKindPushSubscription is a JMAP `PushSubscription` row
+	// (REQ-PROTO-120 / RFC 8620 §7.2). The feed carries (Kind,
+	// EntityID = PushSubscriptionID, ParentEntityID = 0, Op) so per-
+	// principal subscription churn flows through the same change-feed
+	// shape every other datatype uses; clients that subscribe to
+	// "PushSubscription" via EventSource see their own administrative
+	// changes (other devices that the same user logged in from).
+	EntityKindPushSubscription EntityKind = "push_subscription"
 )
 
 // ChangeOp is the operation kind on a StateChange row. Distinct from

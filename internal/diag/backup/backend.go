@@ -213,6 +213,8 @@ func rowsForTable(table string) (any, bool) {
 		return &ChatBlockRow{}, true
 	case "blob_refs":
 		return &BlobRefRow{}, true
+	case "push_subscription":
+		return &PushSubscriptionRow{}, true
 	}
 	return nil, false
 }

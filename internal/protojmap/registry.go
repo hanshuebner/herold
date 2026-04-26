@@ -56,6 +56,19 @@ const (
 	// suite, so the URI lives under tabard.dev. Implemented under
 	// internal/protojmap/chat.
 	CapabilityJMAPChat CapabilityID = "https://tabard.dev/jmap/chat"
+	// CapabilityPush is the JMAP PushSubscription + tabard-extension
+	// capability (REQ-PROTO-120..127, RFC 8620 §7.2). The standard
+	// PushSubscription datatype is part of the Core capability per
+	// RFC 8620, but tabard layers extension properties
+	// (notificationRules, quietHours, vapidKeyAtRegistration) and the
+	// outbound push gateway lives under a vendor capability. The URI
+	// is "https://tabard.dev/jmap/push" — same vendor-URL convention
+	// as CapabilityJMAPChat. The capability descriptor carries the
+	// deployment's VAPID applicationServerKey so the tabard SPA can
+	// read it from the session response and pass it to
+	// pushManager.subscribe(). Implemented under
+	// internal/protojmap/push.
+	CapabilityPush CapabilityID = "https://tabard.dev/jmap/push"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

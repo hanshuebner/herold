@@ -149,6 +149,48 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "push_subscription":
+		return enumerate(ctx, s.tx,
+			`SELECT id, principal_id, device_client_id, url, p256dh, auth,
+			        expires_at_us, types_csv, verification_code, verified,
+			        vapid_key_at_registration, notification_rules_json,
+			        quiet_hours_start_local, quiet_hours_end_local, quiet_hours_tz,
+			        created_at_us, updated_at_us
+			   FROM push_subscription ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r PushSubscriptionRow
+				var (
+					expiresUs            sql.NullInt64
+					quietStart, quietEnd sql.NullInt64
+					verified             int64
+					rules                []byte
+				)
+				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.DeviceClientID, &r.URL,
+					&r.P256DH, &r.Auth, &expiresUs, &r.TypesCSV,
+					&r.VerificationCode, &verified,
+					&r.VAPIDKeyAtRegistration, &rules,
+					&quietStart, &quietEnd, &r.QuietHoursTZ,
+					&r.CreatedAtUs, &r.UpdatedAtUs); err != nil {
+					return nil, err
+				}
+				if expiresUs.Valid {
+					v := expiresUs.Int64
+					r.ExpiresAtUs = &v
+				}
+				if quietStart.Valid {
+					v := quietStart.Int64
+					r.QuietHoursStartLocal = &v
+				}
+				if quietEnd.Valid {
+					v := quietEnd.Int64
+					r.QuietHoursEndLocal = &v
+				}
+				r.Verified = verified != 0
+				if len(rules) > 0 {
+					r.NotificationRulesJSON = rules
+				}
+				return &r, nil
+			}, fn)
 	case "oidc_providers":
 		return enumerate(ctx, s.tx,
 			`SELECT name, issuer_url, client_id, client_secret_ref, scopes_csv,
@@ -831,6 +873,34 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.Kind, r.CanonicalEmail, r.DisplayName, r.PasswordHash,
 			r.TOTPSecret, r.QuotaBytes, r.Flags, r.UsedBytes, r.CreatedAtUs, r.UpdatedAtUs)
+		return err
+	case "push_subscription":
+		r := row.(*PushSubscriptionRow)
+		var expires, qhStart, qhEnd, rules any
+		if r.ExpiresAtUs != nil {
+			expires = *r.ExpiresAtUs
+		}
+		if r.QuietHoursStartLocal != nil {
+			qhStart = *r.QuietHoursStartLocal
+		}
+		if r.QuietHoursEndLocal != nil {
+			qhEnd = *r.QuietHoursEndLocal
+		}
+		if len(r.NotificationRulesJSON) > 0 {
+			rules = r.NotificationRulesJSON
+		}
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO push_subscription (id, principal_id, device_client_id, url, p256dh, auth,
+			   expires_at_us, types_csv, verification_code, verified,
+			   vapid_key_at_registration, notification_rules_json,
+			   quiet_hours_start_local, quiet_hours_end_local, quiet_hours_tz,
+			   created_at_us, updated_at_us)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.PrincipalID, r.DeviceClientID, r.URL, r.P256DH, r.Auth,
+			expires, r.TypesCSV, r.VerificationCode, boolToInt(r.Verified),
+			r.VAPIDKeyAtRegistration, rules,
+			qhStart, qhEnd, r.QuietHoursTZ,
+			r.CreatedAtUs, r.UpdatedAtUs)
 		return err
 	case "oidc_providers":
 		r := row.(*OIDCProviderRow)

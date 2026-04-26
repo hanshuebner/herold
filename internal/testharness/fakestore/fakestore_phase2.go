@@ -79,6 +79,10 @@ type phase2Data struct {
 
 	// Wave 2.9.6 chat account-default settings (REQ-CHAT-20/92).
 	chatAccountSettings map[store.PrincipalID]store.ChatAccountSettings
+
+	// Wave 3.8a JMAP PushSubscription (REQ-PROTO-120..122).
+	pushSubscriptions    map[store.PushSubscriptionID]store.PushSubscription
+	nextPushSubscription store.PushSubscriptionID
 }
 
 // chatBlockKey is the composite primary key for chat_blocks.
@@ -136,6 +140,8 @@ func (s *Store) ensurePhase2() {
 		nextChatMessage:      1,
 		chatBlocks:           make(map[chatBlockKey]store.ChatBlock),
 		chatAccountSettings:  make(map[store.PrincipalID]store.ChatAccountSettings),
+		pushSubscriptions:    make(map[store.PushSubscriptionID]store.PushSubscription),
+		nextPushSubscription: 1,
 	}
 }
 
@@ -1226,6 +1232,9 @@ func (m *metaFace) IncrementJMAPState(ctx context.Context, pid store.PrincipalID
 	case store.JMAPStateKindMembership:
 		st.Membership++
 		ret = st.Membership
+	case store.JMAPStateKindPushSubscription:
+		st.PushSubscription++
+		ret = st.PushSubscription
 	default:
 		return 0, fmt.Errorf("fakestore: unknown JMAPStateKind %d", kind)
 	}

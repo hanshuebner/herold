@@ -27,7 +27,16 @@ const CurrentBackupVersion = 1
 //	Backfills existing rows to '["admin"]' so legacy keys retain
 //	their pre-3.6 capability while operators rotate to least-priv
 //	scopes.
-const CurrentSchemaVersion = 16
+//
+// 17 — 0017_push_subscription.sql (Phase 3 Wave 3.8a,
+//
+//	REQ-PROTO-120..122). Adds push_subscription table + the
+//	jmap_states.push_subscription_state column so the JMAP
+//	PushSubscription datatype has a /changes-able state. Outbound
+//	push delivery (REQ-PROTO-123..126) and the notificationRules
+//	engine (REQ-PROTO-127) ride this row in 3.8b/3.8c without
+//	further migration.
+const CurrentSchemaVersion = 17
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -72,6 +81,11 @@ type BlobSummary struct {
 var TableNames = []string{
 	"domains",
 	"principals",
+	// Phase 3 Wave 3.8a JMAP PushSubscription (REQ-PROTO-120..122,
+	// migration 0017). FK to principals(id); restored after the
+	// principals row is in place. No child tables of its own — the
+	// outbound push dispatcher is stateless w.r.t. herold's store.
+	"push_subscription",
 	"oidc_providers",
 	"oidc_links",
 	"api_keys",

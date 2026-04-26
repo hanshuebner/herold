@@ -360,6 +360,37 @@ func convertFakeToRow(table string, raw any) (any, error) {
 			FailureType: int64(t.FailureType), FailureCode: t.FailureCode,
 			FailureDetailJSON: t.FailureDetailJSON,
 		}, nil
+	case "push_subscription":
+		ps := raw.(store.PushSubscription)
+		r := &PushSubscriptionRow{
+			ID:                     int64(ps.ID),
+			PrincipalID:            int64(ps.PrincipalID),
+			DeviceClientID:         ps.DeviceClientID,
+			URL:                    ps.URL,
+			P256DH:                 ps.P256DH,
+			Auth:                   ps.Auth,
+			TypesCSV:               strings.Join(ps.Types, ","),
+			VerificationCode:       ps.VerificationCode,
+			Verified:               ps.Verified,
+			VAPIDKeyAtRegistration: ps.VAPIDKeyAtRegistration,
+			NotificationRulesJSON:  ps.NotificationRulesJSON,
+			QuietHoursTZ:           ps.QuietHoursTZ,
+			CreatedAtUs:            micros(ps.CreatedAt),
+			UpdatedAtUs:            micros(ps.UpdatedAt),
+		}
+		if ps.Expires != nil {
+			us := ps.Expires.UnixMicro()
+			r.ExpiresAtUs = &us
+		}
+		if ps.QuietHoursStartLocal != nil {
+			v := int64(*ps.QuietHoursStartLocal)
+			r.QuietHoursStartLocal = &v
+		}
+		if ps.QuietHoursEndLocal != nil {
+			v := int64(*ps.QuietHoursEndLocal)
+			r.QuietHoursEndLocal = &v
+		}
+		return r, nil
 	case "blob_refs":
 		b := raw.(fakestore.BlobRefEntry)
 		return &BlobRefRow{Hash: b.Hash, Size: b.Size, RefCount: b.RefCount}, nil
@@ -625,6 +656,37 @@ func convertRowToFake(table string, row any) (any, error) {
 			FailureType: store.TLSRPTFailureType(r.FailureType),
 			FailureCode: r.FailureCode, FailureDetailJSON: r.FailureDetailJSON,
 		}, nil
+	case "push_subscription":
+		r := row.(*PushSubscriptionRow)
+		ps := store.PushSubscription{
+			ID:                     store.PushSubscriptionID(r.ID),
+			PrincipalID:            store.PrincipalID(r.PrincipalID),
+			DeviceClientID:         r.DeviceClientID,
+			URL:                    r.URL,
+			P256DH:                 r.P256DH,
+			Auth:                   r.Auth,
+			Types:                  splitCSV(r.TypesCSV),
+			VerificationCode:       r.VerificationCode,
+			Verified:               r.Verified,
+			VAPIDKeyAtRegistration: r.VAPIDKeyAtRegistration,
+			NotificationRulesJSON:  r.NotificationRulesJSON,
+			QuietHoursTZ:           r.QuietHoursTZ,
+			CreatedAt:              fromMicros(r.CreatedAtUs),
+			UpdatedAt:              fromMicros(r.UpdatedAtUs),
+		}
+		if r.ExpiresAtUs != nil {
+			t := fromMicros(*r.ExpiresAtUs)
+			ps.Expires = &t
+		}
+		if r.QuietHoursStartLocal != nil {
+			v := int(*r.QuietHoursStartLocal)
+			ps.QuietHoursStartLocal = &v
+		}
+		if r.QuietHoursEndLocal != nil {
+			v := int(*r.QuietHoursEndLocal)
+			ps.QuietHoursEndLocal = &v
+		}
+		return ps, nil
 	case "blob_refs":
 		r := row.(*BlobRefRow)
 		return fakestore.BlobRefEntry{Hash: r.Hash, Size: r.Size, RefCount: r.RefCount}, nil

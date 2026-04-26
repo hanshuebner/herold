@@ -84,6 +84,53 @@ type ServerConfig struct {
 	TURN       TURNConfig       `toml:"turn,omitempty"`
 	SmartHost  SmartHostConfig  `toml:"smart_host,omitempty"`
 	Tabard     TabardConfig     `toml:"tabard,omitempty"`
+	Push       PushConfig       `toml:"push,omitempty"`
+}
+
+// PushConfig configures the deployment-level VAPID key pair the Web
+// Push outbound dispatcher uses (REQ-PROTO-122). The private key is
+// referenced via a $VAR or file:/path secret reference per
+// STANDARDS §9 / REQ-OPS-04 / REQ-OPS-161; inline values are
+// rejected at Validate. When neither field is set the deployment
+// has no VAPID configured: the JMAP push capability is still
+// advertised but applicationServerKey is omitted, signalling
+// clients that Web Push is unavailable.
+//
+// Operator key generation: see `herold vapid generate`. The
+// resulting PEM private key plumbs in via VAPIDPrivateKeyEnv /
+// VAPIDPrivateKeyFile.
+type PushConfig struct {
+	// VAPIDPrivateKeyEnv names the environment variable carrying the
+	// PEM-encoded P-256 ECDSA private key (typed as
+	// "$HEROLD_VAPID_PRIVATE_KEY"). Mutually exclusive with
+	// VAPIDPrivateKeyFile.
+	VAPIDPrivateKeyEnv string `toml:"vapid_private_key_env,omitempty"`
+	// VAPIDPrivateKeyFile names the file holding the PEM-encoded
+	// private key. The file is read once at startup and again on
+	// SIGHUP.
+	VAPIDPrivateKeyFile string `toml:"vapid_private_key_file,omitempty"`
+	// VAPIDSubject is the operator's contact URL or mailto: that the
+	// dispatcher embeds in the VAPID JWT's "sub" claim per RFC 8292
+	// §2. Empty defaults to "mailto:postmaster@<server.hostname>" at
+	// dispatch time. Used in 3.8b; carried here so the operator
+	// configures it once.
+	VAPIDSubject string `toml:"vapid_subject,omitempty"`
+}
+
+// VAPIDPrivateKeyRef returns the operator-supplied secret reference
+// for the VAPID private key in the form ResolveSecret accepts:
+// "$VAR" when VAPIDPrivateKeyEnv is set, "file:/path" when
+// VAPIDPrivateKeyFile is set, and "" when neither — i.e. when Web
+// Push is disabled. The two fields are mutually exclusive at
+// Validate time so this lookup is deterministic.
+func (p PushConfig) VAPIDPrivateKeyRef() string {
+	if p.VAPIDPrivateKeyEnv != "" {
+		return p.VAPIDPrivateKeyEnv
+	}
+	if p.VAPIDPrivateKeyFile != "" {
+		return "file:" + p.VAPIDPrivateKeyFile
+	}
+	return ""
 }
 
 // TabardConfig configures the embedded tabard SPA mount on the public
@@ -858,6 +905,32 @@ func Validate(c *Config) error {
 		if !IsSecretReference(tu.SharedSecretEnv) {
 			return fmt.Errorf("sysconfig: [server.turn] shared_secret_env %q must be \"$VAR\" or \"file:/path\" (STANDARDS §9)",
 				tu.SharedSecretEnv)
+		}
+	}
+	// Web Push VAPID (REQ-PROTO-122). Both fields optional; when one
+	// is set, exactly one must be set (env XOR file) and it must be a
+	// secret reference (no inline PEM in system.toml). When neither
+	// is set the deployment has no VAPID and Web Push is disabled —
+	// that's a valid posture; the capability handler omits
+	// applicationServerKey at runtime.
+	push := c.Server.Push
+	envSet := push.VAPIDPrivateKeyEnv != ""
+	fileSet := push.VAPIDPrivateKeyFile != ""
+	if envSet && fileSet {
+		return errors.New("sysconfig: [server.push] vapid_private_key_env and vapid_private_key_file are mutually exclusive")
+	}
+	if envSet {
+		// Env values are typed as "$VAR" — IsSecretReference is the
+		// canonical check used elsewhere in the file.
+		if !strings.HasPrefix(push.VAPIDPrivateKeyEnv, "$") {
+			return fmt.Errorf("sysconfig: [server.push] vapid_private_key_env %q must start with \"$\" (STANDARDS §9)",
+				push.VAPIDPrivateKeyEnv)
+		}
+	}
+	if fileSet {
+		if !strings.HasPrefix(push.VAPIDPrivateKeyFile, "/") {
+			return fmt.Errorf("sysconfig: [server.push] vapid_private_key_file %q must be an absolute path",
+				push.VAPIDPrivateKeyFile)
 		}
 	}
 	// Tabard SPA (REQ-DEPLOY-COLOC-01..05). The asset_dir override is

@@ -1309,6 +1309,7 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 		var (
 			ppid, mb, em, th, ide, es, vr, sv, ab, ct, cal, ce int64
 			conv, msgChat, memb                                int64
+			pushSub                                            int64
 			updatedUs                                          int64
 		)
 		err := tx.QueryRow(ctx, `
@@ -1317,10 +1318,11 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			       sieve_state, address_book_state, contact_state,
 			       calendar_state, calendar_event_state,
 			       conversation_state, message_chat_state, membership_state,
+			       push_subscription_state,
 			       updated_at_us
 			  FROM jmap_states WHERE principal_id = $1`, int64(pid)).Scan(
 			&ppid, &mb, &em, &th, &ide, &es, &vr, &sv, &ab, &ct, &cal, &ce,
-			&conv, &msgChat, &memb, &updatedUs)
+			&conv, &msgChat, &memb, &pushSub, &updatedUs)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -1340,6 +1342,7 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			Conversation:     conv,
 			ChatMessage:      msgChat,
 			Membership:       memb,
+			PushSubscription: pushSub,
 			UpdatedAt:        fromMicros(updatedUs),
 		}
 		return nil
@@ -1408,6 +1411,8 @@ func jmapStateColumnPG(kind store.JMAPStateKind) (string, error) {
 		return "message_chat_state", nil
 	case store.JMAPStateKindMembership:
 		return "membership_state", nil
+	case store.JMAPStateKindPushSubscription:
+		return "push_subscription_state", nil
 	default:
 		return "", fmt.Errorf("storepg: unknown JMAPStateKind %d", kind)
 	}

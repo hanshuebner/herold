@@ -374,6 +374,13 @@ const (
 	// JMAPStateKindMembership tracks JMAP Membership changes
 	// (REQ-CHAT-04).
 	JMAPStateKindMembership
+	// JMAPStateKindPushSubscription tracks JMAP PushSubscription
+	// changes (REQ-PROTO-120 / RFC 8620 §7.2). Bumped on every
+	// successful PushSubscription/set mutation. Defined in this file
+	// (rather than alongside the Wave-2 mail kinds in types_phase2.go)
+	// so the iota chain stays contiguous: chat occupies iota+12 ..
+	// iota+14, push the next slot.
+	JMAPStateKindPushSubscription
 )
 
 // Chat-side server-enforced caps. CHECK constraints in SQL would

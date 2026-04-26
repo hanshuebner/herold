@@ -1167,6 +1167,13 @@ func (m *metaFace) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 				s.phase2.chatMessages[mid] = msg
 			}
 		}
+		// Wave 3.8a push subscriptions cascade: mirrors the ON DELETE
+		// CASCADE on push_subscription.principal_id in 0017.
+		for psid, ps := range s.phase2.pushSubscriptions {
+			if ps.PrincipalID == pid {
+				delete(s.phase2.pushSubscriptions, psid)
+			}
+		}
 	}
 	// Audit log: drop entries that target or originate from this
 	// principal. Iterate and rebuild; audit volumes are low in tests.
