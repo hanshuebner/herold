@@ -29,6 +29,7 @@ This is the "deployed together, no separate IdP" stance. Herold authenticates us
 | `https://tabard.dev/jmap/chat` | Chat datatypes (`Conversation`, `Message`, `Membership`) plus the ephemeral WebSocket and call-signaling endpoints — see Behaviours. |
 | `https://tabard.dev/jmap/email-reactions` | `Email.reactions` extension property + cross-server reaction email propagation — see Behaviours. |
 | `https://tabard.dev/jmap/shortcut-coach` | `ShortcutCoachStat` per-principal datatype backing the shortcut coach — see Behaviours. |
+| `https://tabard.dev/jmap/push` | Web Push delivery (RFC 8030 + RFC 8620 §7.2 `PushSubscription` + tabard's enriched-content payload contract) — see Behaviours. |
 
 ## Capabilities tabard does NOT require
 
@@ -199,6 +200,41 @@ A herold-aware inbound pipeline detects the `X-Tabard-Reaction-*` headers, looks
 A non-herold receiver sees the email as plain mail. Threading via `In-Reply-To` puts it in the same thread as the original.
 
 **Removal does not propagate cross-server.** When a user removes a reaction, the change is applied locally and to other herolds *that originally received the reaction email*; there is no follow-up "un-react" email to non-herold receivers. Reactions are ephemeral signals; the asymmetry is acceptable.
+
+### Web Push (`https://tabard.dev/jmap/push`)
+
+Per `../requirements/25-push-notifications.md`. Browser-level push notifications for new mail / chat / calendar invites / video calls / reactions. RFC 8030 transport + RFC 8620 §7.2 PushSubscription datatype + a tabard-specific enriched payload shape.
+
+**Subscription:**
+
+- Tabard registers a Web Push subscription via the standard `PushSubscription/set { create }` (RFC 8620 §7.2). Properties: `endpoint`, `keys: { p256dh, auth }`, `expires`, `types` (the JMAP types whose state changes should be pushed — for tabard typically `["Email", "Message", "EmailSubmission", "Conversation", "Membership"]`), plus the tabard-specific properties below.
+- Tabard adds extension properties on the subscription:
+  - `notificationRules`: a JSON blob expressing the user's preferences (`{ mail: { categories: ["primary"], vipSenders: [...], inboxOnly: true }, chat: { dmsAlways: true, spacesOnMention: true }, calendar: true, calls: true, reactions: true }`). Herold uses this to decide whether to enrich the push or fall through to a minimal state-change push.
+  - `quietHours`: `{ startHourLocal: 22, endHourLocal: 7, tz: "Europe/Berlin" }` — herold suppresses non-critical pushes during this window.
+  - `vapidKeyAtRegistration`: the VAPID public key the client used at subscription time, so herold knows which key pair to encrypt against (key rotation is a herold concern; see § VAPID).
+
+**Outbound push gateway:**
+
+- When state changes affect a user with active subscriptions, herold's push dispatcher decides whether to push and what payload to use:
+  1. Look up the principal's subscriptions (`PushSubscription/query`).
+  2. For each subscription, evaluate `notificationRules` against the event. If the rule says "no", deliver only the minimal RFC 8620 §7.2 state-change envelope (so the client wakes its caches if open).
+  3. If the rule says "yes" and the event qualifies for enriched content, build the tabard payload (`{ kind, threadId, emailId, ... }` per `../requirements/25-push-notifications.md` REQ-PUSH-40..47).
+  4. Encrypt the payload per RFC 8291 using the subscription's `p256dh` and `auth` keys.
+  5. POST to the subscription's `endpoint` with the VAPID `Authorization` header per RFC 8292.
+  6. On 410 (Gone) or 404 from the push service: destroy the subscription (`PushSubscription/set { destroy }`).
+  7. On other 4xx: log and retry once with backoff; persistent failure destroys the subscription.
+
+**VAPID:**
+
+- Herold maintains a VAPID key pair at the deployment level (one per server, not per user). Public key is exposed in the JMAP session descriptor under `urn:ietf:params:jmap:core` capability data so tabard can include it in the browser's `pushManager.subscribe` call.
+- VAPID key rotation: not a v1 feature; manual operator process if needed. The key is long-lived in normal operation.
+- VAPID `sub` claim: `mailto:<operator-admin-address>` from herold's deployment config.
+
+**Privacy and safety:**
+
+- Per-subscription delivery of one push event MUST NOT leak data about other principals to the push service. Each subscription is independently encrypted; the push service never sees plaintext content.
+- The push payload is bounded to ~2.5 KB plaintext to leave headroom for RFC 8291 encryption overhead.
+- Body content sent in the payload follows the per-event-type contract (subject + 80-char preview for mail; first 80 chars of body for chat). Full message bodies are NEVER pushed.
 
 ### Shortcut coach (`https://tabard.dev/jmap/shortcut-coach`)
 

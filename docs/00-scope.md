@@ -44,7 +44,7 @@ These are spec-only for now — implementation lands when the sibling app does.
 
 ## Non-goals
 
-- **NG1.** Native iOS / Android applications. **Mobile and tablet web is in scope as a first-class experience** (`requirements/24-mobile-and-touch.md`) — installable as a PWA, full responsive layout, full touch interaction model. Native apps remain out: the PWA delivers app-icon + standalone-window UX without a native build pipeline.
+- **NG1.** Native iOS / Android applications. **Mobile and tablet web is in scope as a first-class experience** (`requirements/24-mobile-and-touch.md`) — installable as a PWA, full responsive layout, full touch interaction model, browser-level push notifications (`requirements/25-push-notifications.md`). Native apps remain out: the PWA + Web Push delivers app-icon, standalone-window, and notification UX without a native build pipeline.
 - **NG2.** Offline mode. No service-worker cache, no IndexedDB outbox, no operating-while-disconnected. Reconnect-and-resync is the resilience model.
 - **NG3.** Multi-account UI. v1 binds to one JMAP Account; account switching is not a feature.
 - **NG4.** Delegation, shared mailboxes, admin / multi-user views.

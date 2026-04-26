@@ -113,7 +113,7 @@ When the on-screen keyboard appears, the viewport effectively shrinks. Layout mu
 | REQ-MOB-71 | App icons follow the design-system colour palette and use a tabard mark — design TBD; placeholder geometric icon ships with v1. |
 | REQ-MOB-72 | Tabard does NOT prompt the user to install. The install affordance is the platform's own (Safari "Add to Home Screen"; Chrome "Install app"). Tabard does NOT show a custom install banner. |
 | REQ-MOB-73 | Once installed, the PWA opens in standalone display mode (no browser chrome). The suite-shell global bar takes over the role of "title / app chrome". |
-| REQ-MOB-74 | A minimal service worker is registered for PWA installability — its only job is to satisfy the install criterion (modern browsers require at least one fetch handler for PWA install). The worker uses **network-first, no-cache** semantics — every request goes through to the network; nothing is cached for offline use. The network-first stance preserves NG2 (no offline mode); we ship the worker only to enable installability, not to mediate request behaviour. |
+| REQ-MOB-74 | A service worker is registered for PWA installability AND push notifications (`25-push-notifications.md` REQ-PUSH-70..73). Its scope is bounded: **network-first, no-cache** for fetches (preserves NG2 — no offline mode); plus `push` / `notificationclick` / `notificationclose` event handlers for push delivery; plus the new-version-available prompt (REQ-MOB-75). It does NOT cache responses, does NOT intercept navigation, does NOT do background sync. |
 | REQ-MOB-75 | The service worker handles app updates: when a new version of tabard ships, the worker prompts a soft refresh ("A new version is available — Reload"). Same as a desktop browser tab; mobile users just see the prompt in-app. |
 
 ## Connectivity
@@ -161,7 +161,6 @@ When the on-screen keyboard appears, the viewport effectively shrinks. Layout mu
 - Native iOS / Android applications. NG1 stays.
 - Full offline mode (read mail / queue actions while disconnected for hours). Reconnect-and-resync is the resilience model. NG2 stays. Worth revisiting if user feedback on cellular usability indicates need.
 - Background sync (a service worker performing periodic JMAP fetches while the app is closed). NG2-adjacent.
-- Web push notifications when the tab is closed. Requires Push API + service worker + VAPID + herold-side push integration. Worth revisiting in a future phase; not v1.
 - Native widgets (iOS home-screen widgets, Android app widgets) — depend on native apps. NG1.
 - Watch / wearable companions. NG1.
 - Tablet split-screen multitasking with another app sharing tabard's data. The browser sandbox doesn't enable that anyway; if the user runs tabard alongside another app via OS-level split-screen, both windows of tabard run independently as separate sessions.

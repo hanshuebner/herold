@@ -62,7 +62,8 @@ tabard/
     │   ├── 21-video-calls.md       1:1 video calls (WebRTC, signaling, TURN)
     │   ├── 22-internationalization.md  en/de/fr + regional variants; ICU; Intl
     │   ├── 23-shortcut-coach.md    behaviour-driven keyboard-shortcut nudges
-    │   └── 24-mobile-and-touch.md  phone / tablet web; touch gestures; PWA install
+    │   ├── 24-mobile-and-touch.md  phone / tablet web; touch gestures; PWA install
+    │   └── 25-push-notifications.md  Web Push; SW handlers; actions from notification
     ├── architecture/
     │   ├── 01-system-overview.md
     │   ├── 02-jmap-client.md
@@ -114,6 +115,7 @@ tabard/
 - `REQ-I18N-nn`  — internationalization
 - `REQ-COACH-nn` — shortcut coach (behavioural keyboard nudges)
 - `REQ-MOB-nn`   — mobile / touch / PWA
+- `REQ-PUSH-nn`  — Web Push notifications
 
 When cutting or adding, reference by ID.
 

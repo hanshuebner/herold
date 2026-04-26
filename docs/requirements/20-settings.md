@@ -19,6 +19,7 @@ The principle: settings are the place users go to *change* defaults. They are no
 | REQ-SET-09 | Vacation responder. Status (on/off), date range, message body. Backed by JMAP `VacationResponse` (RFC 8621 §8). Hidden if the server doesn't advertise the relevant capability. | Server-side via `VacationResponse/set` |
 | REQ-SET-12 | Shortcut coach: enable / disable. Default: enabled. Disabling suppresses observation, hint generation, and server-side flushes (`23-shortcut-coach.md` REQ-COACH-71). Companion control: "Reset coach data" (REQ-COACH-72). | `localStorage` per account for the toggle; coach data itself is server-side. |
 | REQ-SET-13 | Swipe action mapping (mobile / touch only). Two settings — left-swipe action (default: archive) and right-swipe action (default: snooze) — chosen from `{archive, snooze, delete, mark_read, label, none}`. See `24-mobile-and-touch.md` REQ-MOB-23..24. | `localStorage` per account |
+| REQ-SET-14 | Push notification preferences (`25-push-notifications.md` REQ-PUSH-80..84): master enable/disable + per-event-type rules (mail by category / mail by sender VIP / chat DMs vs Spaces / calendar invites / incoming calls / missed calls / reactions) + quiet-hours range + sender-VIP allow-list. Defaults per REQ-PUSH-81. | Master toggle + quiet hours: server-side via `PushSubscription/set` (per device); per-event-type rules and VIP list: client-local `localStorage`. |
 
 ## Layout
 
