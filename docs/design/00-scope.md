@@ -1,5 +1,14 @@
 # 00 — Scope and non-goals
 
+**2026-04-26** (rev 7): shortcut coach datatype added (REQ-PROTO-110..114,
+phase 2). New per-principal `ShortcutCoachStat` JMAP datatype backing
+tabard's behaviour-driven keyboard-shortcut coach — small windowed
+counters (14d / 90d) per (principal, action) recording mouse vs
+keyboard invocation history. Private to the principal; not subject to
+admin reads. Optional state-change-feed integration (clients don't
+subscribe to their own writes). Storage trivial (~30k rows for 1k
+principals). Driven by tabard's `requirements/23-shortcut-coach.md`.
+
 **2026-04-26** (rev 6): email reactions extension added (REQ-PROTO-100..103,
 REQ-FLOW-100..108, phase 2). Same-server reactions stored as the
 `Email.reactions` extension property; cross-server reactions propagate as

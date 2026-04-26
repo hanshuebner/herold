@@ -144,6 +144,18 @@ Per `/Users/hans/tabard/docs/notes/server-contract.md` § Email reactions. Capab
 - **REQ-PROTO-102** Reactions advance the `Email` state string per the standard JMAP rules; pushed via the EventSource channel like other Email mutations.
 - **REQ-PROTO-103** Outbound emission of reactions to non-local recipients is herold's responsibility — see REQ-FLOW-100..108. Tabard does not see the cross-server-vs-local-only distinction; it just calls `Email/set` and herold dispatches.
 
+### Shortcut coach datatype
+
+Per `/Users/hans/tabard/docs/requirements/23-shortcut-coach.md` and `/Users/hans/tabard/docs/notes/server-contract.md` § Shortcut coach. Capability `https://tabard.dev/jmap/shortcut-coach`. Phase 2.
+
+Backs tabard's always-on keyboard-shortcut coach: a per-principal store of (action, keyboard-vs-mouse counters in 14d / 90d sliding windows, last-used timestamps, dismiss state) used to decide which shortcut hints to surface and when.
+
+- **REQ-PROTO-110** MUST implement the `ShortcutCoachStat` JMAP datatype. Methods: `ShortcutCoachStat/get`, `/query`, `/changes`, `/set`. Shape per tabard's server-contract — one row per `(principal, action)` pair.
+- **REQ-PROTO-111** MUST roll forward windowed counters on `ShortcutCoachStat/set { update }`. Tabard sends incremental patches (e.g. `+3 keyboard, +1 mouse, lastKeyboardAt: <ts>`); herold integrates them into the rolling 14d / 90d counters. Implementation choice between a per-row activity log with windowed aggregation at read time, or eagerly-decaying counters; either is acceptable as long as the read-side numbers reflect the window correctly.
+- **REQ-PROTO-112** Authorisation: a principal can only `get` / `set` / `destroy` their own `ShortcutCoachStat` rows. Admin / operator reads of coach data are out — the data is private to the user (`/Users/hans/tabard/docs/requirements/23-shortcut-coach.md` REQ-COACH-04).
+- **REQ-PROTO-113** State-change-feed integration is OPTIONAL. The state string advances per the standard rules but tabard does not subscribe to changes (the client-writes-only-its-own pattern; no echoes needed). Implementations MAY skip emitting state-change feed rows for coach mutations to save broadcaster work — this is a deliberate exemption from the otherwise-uniform rule that every mutation appends to the feed.
+- **REQ-PROTO-114** Storage volume is small: ~30 actions × ~1k principals = trivial. A single SQLite/Postgres table with `(principal_id, action)` PRIMARY KEY and the counter columns suffices.
+
 ## ManageSieve (REQ-PROTO-MGSV)
 
 - **REQ-PROTO-50** MUST listen on **4190/tcp** (STARTTLS) with the capabilities from RFC 5804.
