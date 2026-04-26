@@ -266,21 +266,13 @@ Both verbs are read-modify-write wrappers around
 ## Mailboxes
 
 A mailbox is a folder inside a principal's account: INBOX, Sent,
-Trash, plus arbitrary user folders. The admin's involvement is
-typically minimal - clients (IMAP, JMAP) create and rename mailboxes
-on their own. Operator-driven mailbox CRUD is planned for two reasons:
-
-- Provisioning a fresh principal with a non-default folder layout
-  (Archive subfolders, project folders).
-- Setting ACLs on shared mailboxes (REQ-PROTO-37, Phase 2).
-
-### CLI surface (planned)
-
-`herold mailbox add user@example.com INBOX/Archive` and friends are
-planned per REQ-ADM-101's `principal mailbox` subresource shape.
-TODO(operator-doc): mailbox-cli-not-yet-wired in
-`internal/admin/`. Today: clients create mailboxes themselves over
-IMAP / JMAP.
+Trash, plus arbitrary user folders. There is no operator-side
+mailbox CRUD CLI: REQ-ADM-101's enumeration of admin nouns does not
+include `mailbox`, and clients (IMAP, JMAP) create and rename
+mailboxes on their own. If you need to provision a fresh principal
+with a non-default folder layout, drive `Mailbox/set` through the
+JMAP session as the principal (or as an admin acting on their
+behalf via the JMAP `accountId` parameter).
 
 ### Shared mailboxes and ACL (Phase 2)
 
