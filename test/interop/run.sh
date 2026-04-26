@@ -136,6 +136,28 @@ wait_port() {
 wait_port postfix 25 "postfix" 180 || true
 wait_port james 25 "james" 90 || true
 
+# Wait for the text-mode IMAP client containers to finish their apt-get
+# install of mutt / s-nail. We poll for the binary inside each container.
+wait_client_ready() {
+    local svc="$1"
+    local bin="$2"
+    local max_attempts="${3:-90}"
+    local container="interop-${svc}-1"
+    echo "interop: waiting for ${svc} to install ${bin}"
+    for i in $(seq 1 "${max_attempts}"); do
+        if docker exec "${container}" sh -c "command -v ${bin}" >/dev/null 2>&1; then
+            echo "interop: ${svc} ready (attempt ${i})"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "interop: WARNING ${svc} did not install ${bin} within $((max_attempts * 2))s"
+    docker logs "${container}" 2>&1 | tail -20 || true
+    return 1
+}
+wait_client_ready mutt-client mutt 90 || true
+wait_client_ready snail-client s-nail 90 || true
+
 # Define collector now; we will run it in the trap to catch runtime logs.
 collect_log() {
     local svc="$1"

@@ -86,7 +86,7 @@ The CA root is installed into every container's system trust store:
 
 ### Standard suite (make interop)
 
-A passing standard run reports `4 passed, deselected/skipped, 0 failures`.
+A passing standard run reports `9 passed, 0 failed, 0 skipped`.
 
 | Test                                            | Status   | Notes                                                  |
 |-------------------------------------------------|----------|--------------------------------------------------------|
@@ -94,7 +94,11 @@ A passing standard run reports `4 passed, deselected/skipped, 0 failures`.
 | test_inbound_terminal_from_james                | PASS     | Apache James -> herold via direct MX                   |
 | test_outbound_relay_to_postfix                  | PASS     | herold submission -> postfix via MX, verify via STARTTLS IMAP |
 | test_outbound_relay_to_james                    | PASS     | herold submission -> james via MX, verify via plaintext IMAP (143). James serves a self-signed cert on 993; replacing its JKS keystore is v3 work |
-| scenarios/test_imap_clients.py (multiple)       | skipped  | text-mode IMAP-client coverage deferred to v3 (mutt batch-mode + curses + non-interactive PTY interaction is finicky and slow) |
+| test_mutt_index_shows_seeded_subject            | PASS     | mutt opens INBOX over IMAPS+PLAIN, asserts seeded subject in rendered index |
+| test_mutt_search_by_subject                     | PASS     | mutt `<limit>~s NONCE` filters index to the matching message |
+| test_mutt_clears_new_flag                       | PASS     | mutt `<clear-flag>N` writes \\Seen via IMAP STORE; verified by Python imaplib |
+| test_snail_print_matches_seeded_subject         | PASS     | s-nail `print "(subject NONCE)"` returns headers + body |
+| test_snail_seen_after_print                     | PASS     | s-nail `print` implicitly stores \\Seen; verified by Python imaplib |
 
 ### Bulk suite (make interop-bulk / pytest -m bulk)
 
@@ -138,11 +142,15 @@ resource-constrained set BULK_N=50.
   outbound test connects to james:143 plaintext (acceptable on the
   private docker network).
 
-- **Text-mode IMAP clients (deferred to v3)**: `test_imap_clients.py` is
-  skipped at module level. mutt's batch mode + curses + non-interactive
-  PTY interaction was finicky and slow (30s/test). The mutt-client and
-  snail-client compose services and CA-trusting Dockerfiles remain in
-  place for v3 pickup.
+- **Text-mode IMAP clients**: now in scope. mutt is driven through
+  `script(1)` inside an `xterm`-typed `docker exec`, the curses output
+  is ANSI-stripped, and the assertion runs against the visible
+  characters. s-nail uses its native batch mode (`-#`). Both clients
+  use SASL PLAIN over IMAPS with the interop CA in their system trust
+  store. Note that mutt sends authzid==authcid with PLAIN (per its
+  libgsasl integration); herold's IMAP AUTHENTICATE handler now
+  base64-decodes the SASL-IR initial response per RFC 4959 to support
+  this and other clients that pipeline AUTH on the AUTHENTICATE line.
 
 - **Bulk via postfix-as-sender**: not viable because postfix's default
   `smtp_destination_concurrency_limit=20` exceeds herold's

@@ -192,17 +192,32 @@ services:
   # -----------------------------------------------------------------------
   mutt-client:
     image: debian:bookworm-slim
-    # TODO verify tag: debian:bookworm-slim digest pinned 2026-04-26.
+    # apt-get is run with --allow-unauthenticated and
+    # AllowInsecureRepositories=true because the host system clock can
+    # be set to a future date (the herold development environment runs
+    # at 2026-04-26+) which puts us past the GPG signature freshness
+    # window on Debian's repo InRelease files. These are throwaway test
+    # containers on a private bridge network — accepting unauthenticated
+    # packages here only affects the test fixture.
     command:
       - /bin/sh
       - -c
       - |
-        apt-get update -qq && \
-        apt-get install -y --no-install-recommends mutt ca-certificates && \
-        rm -rf /var/lib/apt/lists/* && \
-        cp /etc/interop/tls/ca.crt /usr/local/share/ca-certificates/herold-interop-ca.crt && \
-        update-ca-certificates --fresh 2>&1 | tail -2 && \
-        echo "mutt-client: ready" && \
+        set -e
+        apt-get -o Acquire::Check-Valid-Until=false \
+                -o Acquire::AllowInsecureRepositories=true \
+                update -qq 2>/dev/null || \
+            apt-get -o Acquire::Check-Valid-Until=false \
+                    -o Acquire::AllowInsecureRepositories=true \
+                    update
+        apt-get -o Acquire::AllowInsecureRepositories=true \
+                install -y --no-install-recommends \
+                --allow-unauthenticated \
+                mutt ca-certificates util-linux ncurses-bin
+        rm -rf /var/lib/apt/lists/*
+        cp /etc/interop/tls/ca.crt /usr/local/share/ca-certificates/herold-interop-ca.crt
+        update-ca-certificates --fresh 2>&1 | tail -2
+        echo "mutt-client: ready"
         sleep infinity
     volumes:
       - tls-data:/etc/interop/tls:ro
@@ -223,16 +238,26 @@ services:
   # -----------------------------------------------------------------------
   snail-client:
     image: debian:bookworm-slim
+    # See mutt-client for why apt is run with insecure-repo flags.
     command:
       - /bin/sh
       - -c
       - |
-        apt-get update -qq && \
-        apt-get install -y --no-install-recommends s-nail ca-certificates && \
-        rm -rf /var/lib/apt/lists/* && \
-        cp /etc/interop/tls/ca.crt /usr/local/share/ca-certificates/herold-interop-ca.crt && \
-        update-ca-certificates --fresh 2>&1 | tail -2 && \
-        echo "snail-client: ready" && \
+        set -e
+        apt-get -o Acquire::Check-Valid-Until=false \
+                -o Acquire::AllowInsecureRepositories=true \
+                update -qq 2>/dev/null || \
+            apt-get -o Acquire::Check-Valid-Until=false \
+                    -o Acquire::AllowInsecureRepositories=true \
+                    update
+        apt-get -o Acquire::AllowInsecureRepositories=true \
+                install -y --no-install-recommends \
+                --allow-unauthenticated \
+                s-nail ca-certificates
+        rm -rf /var/lib/apt/lists/*
+        cp /etc/interop/tls/ca.crt /usr/local/share/ca-certificates/herold-interop-ca.crt
+        update-ca-certificates --fresh 2>&1 | tail -2
+        echo "snail-client: ready"
         sleep infinity
     volumes:
       - tls-data:/etc/interop/tls:ro

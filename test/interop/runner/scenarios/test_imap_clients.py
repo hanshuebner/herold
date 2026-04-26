@@ -1,349 +1,336 @@
 """
-Text-mode IMAP client interop scenarios (task #3).
+Text-mode IMAP client interop scenarios.
 
-Tests herold's IMAP implementation against real terminal clients:
-  - mutt  (via docker exec into mutt-client container)
-  - s-nail (via docker exec into snail-client container)
+Drives real terminal mail clients (mutt, s-nail) against herold's IMAP
+listener and asserts the wire round-trip succeeds. The intent is
+end-to-end coverage of how a non-Python client negotiates TLS,
+authenticates with PLAIN over SASL-IR (RFC 4959), opens a mailbox,
+fetches headers, searches by Subject, and stores flags.
 
-Each scenario is parametrized over {"herold", "james"} for
-differential coverage.  The postfix container uses Dovecot for IMAP and
-is included only for herold (Dovecot would be a baseline sanity check but
-is skipped for the parametrized matrix since its IMAP is well-tested
-externally).
+The clients run in dedicated compose containers (mutt-client,
+snail-client). Both have the interop CA installed in their system trust
+store; both reach herold by its hostname (mail.herold.test) over the
+private interop docker network.
 
-TLS: mutt uses ssl_ca_certificates_file=/etc/interop/tls/ca.crt (no
---insecure-ssl).  s-nail uses ssl-ca-file= in its account config.
+Mutt is curses-only and refuses to start without a usable terminfo
+entry, so we wrap it in script(1) inside an xterm-typed exec. The wrap
+captures the curses output (with ANSI escapes) which we strip before
+asserting on the visible characters. s-nail has a true non-interactive
+batch mode (-#) and is driven via -Y commands.
 
-Markers: imap_client
+These scenarios are parametrised over MTAs in principle, but in v2 only
+herold is exercised — the third-party MTAs in the suite (docker-
+mailserver, James) already have decades of coverage from their own
+upstream test suites; what we want here is signal on herold's IMAP.
 """
 
 import os
+import re
 import subprocess
-import textwrap
 import time
 
 import pytest
 
-from helpers.imap_assert import connect_imaps, assert_message_in_inbox, search_by_subject, assert_flag_set
+from helpers.imap_assert import connect_imaps, search_by_subject, assert_flag_set
 from helpers.logging import log
 from helpers.smtp_send import build_message, send_via_relay
 
-# v2 scope: text-mode IMAP client tests are deferred to v3.  mutt's batch
-# mode + curses + non-interactive PTY interaction has been finicky to
-# stabilise (see test/interop/README.md "v3 follow-ups").  Skip the whole
-# module so the standard suite stays fast and deterministic.  Remove this
-# skip when the v3 hardening lands.
-pytestmark = pytest.mark.skip(
-    reason="text-mode IMAP client scenarios deferred to v3 (see README v3 follow-ups)"
-)
-
 # ---------------------------------------------------------------------------
-# Account table: (user, password, imap-host, imaps-port)
-# The mutt-client and snail-client containers resolve DNS via CoreDNS.
+# Configuration
 # ---------------------------------------------------------------------------
-_MTA_ACCOUNTS = {
-    "herold": {
-        "user": "alice@herold.test",
-        "pass": "alicepw-interop",
-        "imap_host": "mail.herold.test",
-        "imap_port": 993,
-        "smtp_host": "mail.herold.test",
-        "smtp_port": 25,
-        "smtp_starttls": False,
-    },
-    "james": {
-        "user": "dave@james.test",
-        "pass": "testpw-dave1",
-        "imap_host": "mail.james.test",
-        "imap_port": 143,
-        "smtp_host": "mail.james.test",
-        "smtp_port": 25,
-        "smtp_starttls": False,
-    },
-}
 
+ALICE_USER = "alice@herold.test"
+ALICE_PASS = "alicepw-interop"
+HEROLD_HOST = "mail.herold.test"
+HEROLD_IMAPS_PORT = 993
+HEROLD_SMTP_PORT = 25
+
+# CA bundle path inside the client containers (mounted from the tls-data
+# volume populated by the certgen init service).
 _CA_PATH = "/etc/interop/tls/ca.crt"
 
-# Service name in compose for each client container.
 _MUTT_CONTAINER = "mutt-client"
 _SNAIL_CONTAINER = "snail-client"
 
+# Strip CSI / SS2 / SS3 / charset designators / single-shift escapes that
+# mutt emits as part of its curses output. We do NOT collapse spaces or
+# normalise whitespace — the assertions use substring containment so
+# residual whitespace is harmless.
+_ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][AB012]|\x1b[78=>]|\x0f|\r")
 
-def _docker_exec(service: str, cmd: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
+
+def _strip_ansi(b: bytes) -> str:
+    return _ANSI_RE.sub(b"", b).decode("utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# docker exec helper
+# ---------------------------------------------------------------------------
+
+
+def _container_name(service: str) -> str | None:
     """
-    Run a command inside the named compose service container via docker exec.
-
-    The container name is derived from COMPOSE_PROJECT_NAME (default: interop).
-    The function tries two naming conventions:
-      - docker compose v2: {project}-{service}-1
-      - docker-compose v1: {project}_{service}_1
+    Return the running container name for the given compose service, or
+    None if no matching container is up.
     """
     project = os.environ.get("COMPOSE_PROJECT_NAME", "interop")
-    # Try v2 naming first (hyphen separator), then v1 (underscore).
     for sep in ("-", "_"):
-        container = f"{project}{sep}{service}{sep}1"
+        name = f"{project}{sep}{service}{sep}1"
         probe = subprocess.run(
-            ["docker", "inspect", "--format", "{{.State.Running}}", container],
+            ["docker", "inspect", "--format", "{{.State.Running}}", name],
             capture_output=True,
             text=True,
             timeout=5,
         )
         if probe.returncode == 0 and probe.stdout.strip() == "true":
-            break
-    else:
-        # Neither found running; return a fake result that triggers the skip path.
-        log("docker_exec", "container_not_found", f"service={service} project={project}")
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout="",
-            stderr=f"No such container: {project}-{service}-1",
-        )
-
-    # Pass -t to allocate a pseudo-TTY so curses-based clients (mutt, s-nail)
-    # can initialise their terminal interface.  Without -t, mutt exits
-    # immediately with no output because curses requires a real terminal.
-    # capture_output=True still works: docker-cli relays the PTY output
-    # over the exec stream even when the host side is a pipe.
-    full_cmd = ["docker", "exec", "-t", container] + cmd
-    log("docker_exec", "run", f"container={container} cmd={' '.join(str(c) for c in cmd[:3])}")
-    result = subprocess.run(
-        full_cmd,
-        capture_output=True,
-        timeout=timeout,
-        text=True,
-    )
-    return result
+            return name
+    return None
 
 
-def _seed_message(
-    nonce: str,
-    run_id: str,
-    mta: str,
-) -> tuple[str, str]:
+def _docker_exec(
+    service: str,
+    cmd: list[str],
+    env: dict[str, str] | None = None,
+    timeout: int = 20,
+) -> subprocess.CompletedProcess:
     """
-    Inject a test message into the MTA's account directly via SMTP relay.
+    Run cmd inside the named compose service container. env entries are
+    passed via -e flags. Returns the CompletedProcess (stdout/stderr in
+    bytes).
+    """
+    name = _container_name(service)
+    if name is None:
+        return subprocess.CompletedProcess(
+            args=[], returncode=127, stdout=b"", stderr=b"container-not-running"
+        )
+    full = ["docker", "exec"]
+    for k, v in (env or {}).items():
+        full += ["-e", f"{k}={v}"]
+    full += [name, *cmd]
+    log("docker_exec", "run", f"container={name} cmd={' '.join(cmd[:2])}")
+    return subprocess.run(full, capture_output=True, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# Seeding
+# ---------------------------------------------------------------------------
+
+
+def _seed_message(nonce: str, run_id: str) -> tuple[str, str]:
+    """
+    Inject a test message via SMTP into alice@herold.test.
     Returns (subject, body).
     """
-    acct = _MTA_ACCOUNTS[mta]
     subject = f"imap-client-test-{nonce}"
-    body = f"text body run={run_id} nonce={nonce} mta={mta}"
+    body = f"text body run={run_id} nonce={nonce}"
     msg = build_message(
-        from_addr="seed@herold.interop",
-        to_addr=acct["user"],
+        from_addr="seed@external.test",
+        to_addr=ALICE_USER,
         subject=subject,
         body=body,
-        message_id=f"seed-{mta}-{nonce}",
+        message_id=f"seed-{nonce}",
     )
-    log("seed", "sending", f"mta={mta} nonce={nonce}")
+    log("seed", "sending", f"nonce={nonce}")
     send_via_relay(
-        host=acct["smtp_host"],
-        port=acct["smtp_port"],
-        from_addr="seed@herold.interop",
-        to_addr=acct["user"],
+        host=HEROLD_HOST,
+        port=HEROLD_SMTP_PORT,
+        from_addr="seed@external.test",
+        to_addr=ALICE_USER,
         msg=msg,
-        use_starttls=acct["smtp_starttls"],
+        use_starttls=False,
     )
+    # Give herold a moment to deliver the message into alice's mailbox.
+    time.sleep(2)
     return subject, body
 
 
 # ---------------------------------------------------------------------------
-# mutt tests
+# mutt invocations
 # ---------------------------------------------------------------------------
 
-@pytest.mark.imap_client
-@pytest.mark.parametrize("mta", ["herold", "james"])
-def test_mutt_list_inbox(run_id, nonce, mta):
+
+_MUTTRC = f"""\
+set ssl_ca_certificates_file={_CA_PATH}
+set ssl_verify_host=yes
+set ssl_force_tls=yes
+set imap_user="{ALICE_USER}"
+set imap_pass="{ALICE_PASS}"
+set imap_authenticators="plain"
+set quit=yes
+"""
+
+
+def _ensure_muttrc() -> None:
     """
-    Pre-seed a message then drive mutt in batch mode to list INBOX.
-    Assert the known Subject line appears in the output.
-
-    Differential coverage: same scenario against herold and James.
-    Skip james if its container is not healthy rather than failing the
-    entire suite.
+    Write the muttrc into the mutt-client container. Idempotent;
+    rewrites every test so a stale file from a previous run cannot
+    affect us.
     """
-    acct = _MTA_ACCOUNTS[mta]
-    subject, _body = _seed_message(nonce, run_id, mta)
+    cmd = ["sh", "-c", f"cat > /tmp/interop-muttrc <<'EOF'\n{_MUTTRC}EOF"]
+    r = _docker_exec(_MUTT_CONTAINER, cmd, timeout=10)
+    if r.returncode != 0:
+        pytest.skip(f"mutt-client not available (rc={r.returncode}): {r.stderr!r}")
 
-    # Wait for the message to land (give the MTA time to accept + deliver).
-    time.sleep(3)
 
-    # mutt muttrc config (written to a temp file inside the container by
-    # using sh -c with a heredoc).
-    imap_url = f"imaps://{acct['user']}:{acct['pass']}@{acct['imap_host']}:{acct['imap_port']}/INBOX"
+def _run_mutt(push: str, *, read_only: bool, timeout: int = 20) -> str:
+    """
+    Run mutt batch-mode against alice's INBOX over IMAPS, pushing the
+    given keystroke macro. Returns the ANSI-stripped curses output.
 
-    # mutt batch-mode: open the mailbox, dump the index, quit.
-    # -e sets muttrc commands; we use 'push <limit>~s {subject}<enter>q'
-    # to search for the subject in the index.
-    muttrc_commands = textwrap.dedent(f"""\
-        set ssl_ca_certificates_file={_CA_PATH}
-        set ssl_verify_host=yes
-        set imap_pass="{acct['pass']}"
-    """)
+    push is the mutt key-macro string (e.g. "<limit>~s NONCE<enter>q").
+    read_only=True opens with -R (no flag updates). read_only=False
+    opens normally so flag changes are written back.
+    """
+    flags = "-R" if read_only else ""
+    folder = f"imaps://{HEROLD_HOST}:{HEROLD_IMAPS_PORT}/INBOX"
+    # The push string is wrapped in escaped double-quotes inside a
+    # shell-double-quoted -e argument, which is itself inside a sh -c
+    # argument. The triple-escaping here is intentional and brittle, but
+    # keeps the control surface in this one helper.
+    inner = (
+        f'mutt -F /tmp/interop-muttrc {flags} -f {folder} '
+        f'-e "push \\"{push}\\""'
+    )
+    sh_cmd = f"timeout {timeout - 2} script -qc '{inner}' /tmp/mutt.log >/dev/null 2>&1; cat /tmp/mutt.log"
+    r = _docker_exec(
+        _MUTT_CONTAINER,
+        ["sh", "-c", sh_cmd],
+        env={"TERM": "xterm", "LINES": "200", "COLUMNS": "200"},
+        timeout=timeout,
+    )
+    out = _strip_ansi(r.stdout) + _strip_ansi(r.stderr)
+    log("mutt", "output", f"chars={len(out)}")
+    return out
 
-    mutt_cmd = [
-        "sh", "-c",
-        f"echo '{muttrc_commands}' > /tmp/interop-muttrc && "
-        f"timeout 20 mutt -F /tmp/interop-muttrc "
-        f"-R -f '{imap_url}' "
-        f"-e 'set quit=yes' "
-        f"-e 'push <limit>~s {nonce}<enter>q' 2>/dev/null; true",
+
+# ---------------------------------------------------------------------------
+# s-nail invocations
+# ---------------------------------------------------------------------------
+
+
+def _run_snail(commands: list[str], *, timeout: int = 15) -> str:
+    """
+    Run s-nail in batch mode (-#) with the rcfile suppressed (-:/) and
+    a series of -Y commands. The first command must open the IMAP
+    folder. Returns combined stdout+stderr.
+
+    s-nail is much friendlier than mutt to non-interactive use: no
+    curses, no terminfo dependency, and -# is a documented batch flag.
+    """
+    folder = (
+        f"imaps://{ALICE_USER.replace('@', '%40')}:{ALICE_PASS}"
+        f"@{HEROLD_HOST}:{HEROLD_IMAPS_PORT}/INBOX"
+    )
+    args = [
+        "s-nail", "-:/", "-#",
+        "-S", "v15-compat",
+        "-S", f"tls-ca-file={_CA_PATH}",
+        "-Y", f"File {folder}",
     ]
-    result = _docker_exec(_MUTT_CONTAINER, mutt_cmd, timeout=30)
-    output = result.stdout + result.stderr
-    log("mutt", "output", f"mta={mta} rc={result.returncode} chars={len(output)}")
+    for c in commands:
+        args += ["-Y", c]
+    args += ["-Y", "quit"]
+    r = _docker_exec(_SNAIL_CONTAINER, args, timeout=timeout)
+    out = r.stdout.decode("utf-8", errors="replace")
+    err = r.stderr.decode("utf-8", errors="replace")
+    log("snail", "output", f"rc={r.returncode} chars={len(out) + len(err)}")
+    # s-nail emits routine TLS warnings on stderr that aren't failures.
+    # Concatenate so callers can grep either stream uniformly.
+    return out + err
 
-    # mutt batch mode can be finicky; if the container is not set up or
-    # the MTA is unavailable, skip rather than fail the suite.
-    if result.returncode not in (0, 1) and "No such container" in result.stderr:
-        pytest.skip(f"mutt-client container not available: {result.stderr[:100]}")
 
-    assert subject in output or nonce in output, (
-        f"expected nonce {nonce!r} or subject {subject!r} in mutt output; "
-        f"got: {output[:400]!r}"
+# ---------------------------------------------------------------------------
+# Tests: mutt
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.imap_client
+def test_mutt_index_shows_seeded_subject(run_id, nonce):
+    """
+    Open INBOX in mutt batch mode and assert the seeded Subject line
+    appears in the rendered index.
+    """
+    _ensure_muttrc()
+    subject, _ = _seed_message(nonce, run_id)
+    out = _run_mutt(push="<enter>q", read_only=True)
+    assert nonce in out, (
+        f"expected nonce {nonce!r} in mutt index output; got: {out[:600]!r}"
     )
 
 
 @pytest.mark.imap_client
-@pytest.mark.parametrize("mta", ["herold", "james"])
-def test_mutt_set_seen_flag(run_id, nonce, mta):
+def test_mutt_search_by_subject(run_id, nonce):
     """
-    Seed a message, mark it Seen via mutt, reconnect via Python IMAP, assert \\Seen.
-
-    This confirms STORE FLAGS round-trips through the MTA's IMAP correctly.
+    Use mutt's <limit> command (interactive SEARCH) with a unique
+    subject and assert the visible header row contains the nonce.
     """
-    acct = _MTA_ACCOUNTS[mta]
-    subject, _body = _seed_message(nonce, run_id, mta)
-    time.sleep(3)
+    _ensure_muttrc()
+    subject, _ = _seed_message(nonce, run_id)
+    out = _run_mutt(push=f"<limit>~s {nonce}<enter>q", read_only=True)
+    assert nonce in out, (
+        f"expected nonce {nonce!r} in mutt limited index; got: {out[:600]!r}"
+    )
+    # The status line should report a filtered count of 1.
+    assert "Msgs:1/" in out, (
+        f"expected mutt status to show Msgs:1/N (filtered to one match); got: {out[-300:]!r}"
+    )
 
-    imap_url = f"imaps://{acct['user']}:{acct['pass']}@{acct['imap_host']}:{acct['imap_port']}/INBOX"
-    muttrc_commands = textwrap.dedent(f"""\
-        set ssl_ca_certificates_file={_CA_PATH}
-        set ssl_verify_host=yes
-        set imap_pass="{acct['pass']}"
-    """)
-    # Open the mailbox, search for the message, mark it read, quit.
-    mutt_cmd = [
-        "sh", "-c",
-        f"echo '{muttrc_commands}' > /tmp/interop-muttrc && "
-        f"timeout 20 mutt -F /tmp/interop-muttrc "
-        f"-R -f '{imap_url}' "
-        f"-e 'push <limit>~s {nonce}<enter><read-thread>q' 2>/dev/null; true",
-    ]
-    result = _docker_exec(_MUTT_CONTAINER, mutt_cmd, timeout=30)
-    if "No such container" in result.stderr:
-        pytest.skip(f"mutt-client container not available")
 
-    time.sleep(2)
-
-    # Verify via Python IMAP client.
-    if mta == "herold":
-        conn = connect_imaps(
-            acct["imap_host"],
-            acct["imap_port"],
-            acct["user"],
-            acct["pass"],
-        )
-    else:
-        # James: use port 143 STARTTLS via python imaplib
-        import imaplib, ssl, os
-        ctx = ssl.create_default_context(cafile=os.environ.get("TLS_CA_BUNDLE", _CA_PATH))
-        conn = imaplib.IMAP4(acct["imap_host"], acct["imap_port"])
-        try:
-            conn.starttls(ssl_context=ctx)
-        except Exception:
-            pass  # Server may not support STARTTLS; continue on plaintext
-        conn.login(acct["user"], acct["pass"])
-
+@pytest.mark.imap_client
+def test_mutt_clears_new_flag(run_id, nonce):
+    """
+    Open INBOX read-write, limit to the seeded message, clear the
+    \"new\" flag (which translates to \\Seen on IMAP), sync the mailbox,
+    and verify via Python imaplib that \\Seen is now set.
+    """
+    _ensure_muttrc()
+    _, _ = _seed_message(nonce, run_id)
+    push = f"<limit>~s {nonce}<enter><clear-flag>N<sync-mailbox>q"
+    _run_mutt(push=push, read_only=False)
+    # Round-trip via Python.
+    conn = connect_imaps(HEROLD_HOST, HEROLD_IMAPS_PORT, ALICE_USER, ALICE_PASS)
     try:
         uids = search_by_subject(conn, nonce)
-        if uids:
-            assert_flag_set(conn, uids[-1], r"\Seen")
-        else:
-            pytest.xfail(f"mutt did not mark the message seen (or message not found) for mta={mta}")
+        assert uids, f"no message with nonce {nonce!r} found"
+        assert_flag_set(conn, uids[-1], r"\Seen")
     finally:
         conn.logout()
 
 
+# ---------------------------------------------------------------------------
+# Tests: s-nail
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.imap_client
-@pytest.mark.parametrize("mta", ["herold"])
-def test_mutt_search(run_id, nonce, mta):
+def test_snail_print_matches_seeded_subject(run_id, nonce):
     """
-    Issue a SEARCH for a unique header nonce from mutt; assert exactly one hit.
-    Parametrized to herold only (the search assertion depends on exact mutt
-    output formatting, which varies across MTAs' IMAP implementations).
+    Use s-nail's print command with an IMAP search criterion to fetch
+    the message body. Assert the nonce appears in the printed output
+    (which contains both headers and body).
     """
-    acct = _MTA_ACCOUNTS[mta]
-    subject, _body = _seed_message(nonce, run_id, mta)
-    time.sleep(3)
-
-    imap_url = f"imaps://{acct['user']}:{acct['pass']}@{acct['imap_host']}:{acct['imap_port']}/INBOX"
-    muttrc_commands = textwrap.dedent(f"""\
-        set ssl_ca_certificates_file={_CA_PATH}
-        set ssl_verify_host=yes
-        set imap_pass="{acct['pass']}"
-    """)
-    mutt_cmd = [
-        "sh", "-c",
-        f"echo '{muttrc_commands}' > /tmp/interop-muttrc && "
-        f"timeout 20 mutt -F /tmp/interop-muttrc "
-        f"-R -f '{imap_url}' "
-        f"-e 'push <limit>~s {nonce}<enter>q' 2>/dev/null; true",
-    ]
-    result = _docker_exec(_MUTT_CONTAINER, mutt_cmd, timeout=30)
-    if "No such container" in result.stderr:
-        pytest.skip(f"mutt-client container not available")
-
-    output = result.stdout + result.stderr
-    occurrences = output.count(nonce)
-    assert occurrences >= 1, (
-        f"expected at least 1 occurrence of nonce {nonce!r} in mutt output; "
-        f"got {occurrences}. output[:400]={output[:400]!r}"
+    subject, body = _seed_message(nonce, run_id)
+    out = _run_snail([f'print "(subject {nonce})"'])
+    assert nonce in out, (
+        f"expected nonce {nonce!r} in s-nail print output; got: {out[:600]!r}"
+    )
+    assert subject in out, (
+        f"expected subject {subject!r} in s-nail print output; got: {out[:600]!r}"
     )
 
 
-# ---------------------------------------------------------------------------
-# s-nail tests
-# ---------------------------------------------------------------------------
-
 @pytest.mark.imap_client
-@pytest.mark.parametrize("mta", ["herold", "james"])
-def test_snail_fetch(run_id, nonce, mta):
+def test_snail_seen_after_print(run_id, nonce):
     """
-    Seed a message, fetch via s-nail, assert body content.
-    s-nail is scripted via -e flag with NAIL_EXTRA env var.
+    s-nail's print command implicitly marks messages as seen (since the
+    user has read them). Verify via Python imaplib.
     """
-    acct = _MTA_ACCOUNTS[mta]
-    subject, body = _seed_message(nonce, run_id, mta)
-    time.sleep(3)
-
-    # s-nail account config written to a temp file.
-    # Format: account <name> { set ... }
-    # We use imaps:// for herold; imap:// for others (they may not serve 993).
-    if mta == "herold":
-        folder = f"imaps://{acct['user']}:{acct['pass']}@{acct['imap_host']}:{acct['imap_port']}/INBOX"
-    else:
-        folder = f"imap://{acct['user']}:{acct['pass']}@{acct['imap_host']}:{acct['imap_port']}/INBOX"
-
-    snail_cmd = [
-        "sh", "-c",
-        f"timeout 20 s-nail "
-        f"-S ssl-ca-file={_CA_PATH} "
-        f"-S ssl-verify=strict "
-        f"-f '{folder}' "
-        f"-e 'set quit' "
-        f"-e 'From ~s {nonce}' "
-        f"2>/dev/null; true",
-    ]
-    result = _docker_exec(_SNAIL_CONTAINER, snail_cmd, timeout=30)
-    if "No such container" in result.stderr:
-        pytest.skip(f"snail-client container not available")
-
-    output = result.stdout + result.stderr
-    log("snail", "output", f"mta={mta} rc={result.returncode} chars={len(output)}")
-
-    # s-nail prints message headers then body; look for the nonce.
-    assert nonce in output, (
-        f"expected nonce {nonce!r} in s-nail output for mta={mta}; "
-        f"got: {output[:400]!r}"
-    )
+    _, _ = _seed_message(nonce, run_id)
+    _run_snail([f'print "(subject {nonce})"'])
+    conn = connect_imaps(HEROLD_HOST, HEROLD_IMAPS_PORT, ALICE_USER, ALICE_PASS)
+    try:
+        uids = search_by_subject(conn, nonce)
+        assert uids, f"no message with nonce {nonce!r} found"
+        assert_flag_set(conn, uids[-1], r"\Seen")
+    finally:
+        conn.logout()
