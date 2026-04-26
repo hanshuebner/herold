@@ -398,7 +398,23 @@ func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
 			ctx = sasl.WithTLSServerEndpoint(ctx, ses.serverEndpoint)
 		}
 	}
-	initial := c.AuthInitial
+	// SASL-IR (RFC 4959): the initial response, when present, is the
+	// base64 encoding of the mechanism-specific initial response bytes.
+	// AuthInitial is nil if no IR was sent, []byte{} for the "=" zero-
+	// length sentinel, or the raw base64 token otherwise.
+	var initial []byte
+	switch {
+	case c.AuthInitial == nil:
+		initial = nil
+	case len(c.AuthInitial) == 0:
+		initial = []byte{}
+	default:
+		decoded, derr := decodeB64(string(c.AuthInitial))
+		if derr != nil {
+			return ses.resp.taggedBAD(c.Tag, "", "invalid base64 in initial response")
+		}
+		initial = decoded
+	}
 	var (
 		challenge []byte
 		done      bool

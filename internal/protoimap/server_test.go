@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"math/big"
@@ -324,6 +325,25 @@ func TestLOGIN_AllowedWithoutTLS_WhenConfigured(t *testing.T) {
 	last := resp[len(resp)-1]
 	if !strings.Contains(last, "OK") {
 		t.Fatalf("expected OK with AllowPlainLoginWithoutTLS, got: %v", last)
+	}
+}
+
+// TestAUTHENTICATE_PLAIN_SASLIR exercises RFC 4959 SASL-IR: the initial
+// response is base64-encoded on the AUTHENTICATE line. Mutt and many
+// other IMAP clients use SASL-IR by default, so a regression here breaks
+// real-world interop.
+func TestAUTHENTICATE_PLAIN_SASLIR(t *testing.T) {
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	c := f.dialImplicitTLS(t)
+	defer c.close()
+	// authzid = authcid, both equal to the email; per RFC 4616 this is
+	// equivalent to an empty authzid and must be accepted.
+	cred := []byte("alice@example.test\x00alice@example.test\x00" + f.password)
+	ir := base64.StdEncoding.EncodeToString(cred)
+	resp := c.send("a1", "AUTHENTICATE PLAIN "+ir)
+	last := resp[len(resp)-1]
+	if !strings.Contains(last, "OK") {
+		t.Fatalf("expected OK from AUTHENTICATE PLAIN with SASL-IR, got: %v", resp)
 	}
 }
 
