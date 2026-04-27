@@ -86,7 +86,7 @@ The CA root is installed into every container's system trust store:
 
 ### Standard suite (make interop)
 
-A passing standard run reports `9 passed, 0 failed, 0 skipped`.
+A passing standard run reports `10 passed, 0 failed, 0 skipped`.
 
 | Test                                            | Status   | Notes                                                  |
 |-------------------------------------------------|----------|--------------------------------------------------------|
@@ -96,6 +96,7 @@ A passing standard run reports `9 passed, 0 failed, 0 skipped`.
 | test_outbound_relay_to_james                    | PASS     | herold submission -> james via MX, verify via plaintext IMAP (143). James serves a self-signed cert on 993; replacing its JKS keystore is v3 work |
 | test_mutt_index_shows_seeded_subject            | PASS     | mutt opens INBOX over IMAPS+PLAIN, asserts seeded subject in rendered index |
 | test_mutt_search_by_subject                     | PASS     | mutt `<limit>~s NONCE` filters index to the matching message |
+| test_mutt_pager_renders_body                    | PASS     | mutt `<enter>` opens message in pager; asserts a body-only marker (not the Subject) reaches the rendered output. Catches single-item `FETCH n BODY.PEEK[]` / `BODY[]` regressions that the index-only tests miss |
 | test_mutt_clears_new_flag                       | PASS     | mutt `<clear-flag>N` writes \\Seen via IMAP STORE; verified by Python imaplib |
 | test_snail_print_matches_seeded_subject         | PASS     | s-nail `print "(subject NONCE)"` returns headers + body |
 | test_snail_seen_after_print                     | PASS     | s-nail `print` implicitly stores \\Seen; verified by Python imaplib |

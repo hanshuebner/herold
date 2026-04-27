@@ -116,13 +116,22 @@ def _docker_exec(
 # ---------------------------------------------------------------------------
 
 
-def _seed_message(nonce: str, run_id: str) -> tuple[str, str]:
+def _seed_message(
+    nonce: str,
+    run_id: str,
+    body: str | None = None,
+) -> tuple[str, str]:
     """
     Inject a test message via SMTP into alice@herold.test.
     Returns (subject, body).
+
+    Pass an explicit body when the test needs a marker that does NOT
+    appear in the Subject line (e.g. to distinguish "the index drew the
+    Subject" from "the pager fetched and rendered the body").
     """
     subject = f"imap-client-test-{nonce}"
-    body = f"text body run={run_id} nonce={nonce}"
+    if body is None:
+        body = f"text body run={run_id} nonce={nonce}"
     msg = build_message(
         from_addr="seed@external.test",
         to_addr=ALICE_USER,
@@ -273,6 +282,41 @@ def test_mutt_search_by_subject(run_id, nonce):
     # The status line should report a filtered count of 1.
     assert "Msgs:1/" in out, (
         f"expected mutt status to show Msgs:1/N (filtered to one match); got: {out[-300:]!r}"
+    )
+
+
+@pytest.mark.imap_client
+def test_mutt_pager_renders_body(run_id, nonce):
+    """
+    Open the seeded message in mutt's pager and assert that body
+    content (not the Subject) appears in the rendered output.
+
+    test_mutt_index_shows_seeded_subject only sees the Subject line,
+    which the index draws before mutt issues any body FETCH; a
+    parser-rejected `FETCH n BODY.PEEK[...]` is therefore invisible
+    to it. This test seeds a body marker that does not appear in the
+    Subject line, opens the message in the pager, and asserts the
+    marker reaches the operator-visible output. Regressions on the
+    single-item BODY.PEEK[] / BODY[] FETCH path will fail here even
+    though they would slip past the index-only assertions.
+    """
+    _ensure_muttrc()
+    body_marker = f"BODYMARK-{nonce}"
+    _seed_message(
+        nonce,
+        run_id,
+        body=f"{body_marker}\n\nrun={run_id}\n",
+    )
+    # <enter> in the index dispatches <display-message>, opening the
+    # pager and triggering the body FETCH. First q closes the pager;
+    # second q quits mutt. We do not constrain the FETCH wire form here
+    # — the parser is required to accept whatever this mutt emits.
+    out = _run_mutt(push="<enter>qq", read_only=True)
+    assert body_marker in out, (
+        f"expected body marker {body_marker!r} in mutt pager output "
+        f"(this catches single-item BODY.PEEK[] / BODY[] FETCH "
+        f"regressions that the index-only tests miss); "
+        f"got: {out[:1500]!r}"
     )
 
 
