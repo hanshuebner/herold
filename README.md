@@ -204,28 +204,29 @@ to land you on the right screen.
 | Surface | URL | Sign-in flow | Working today? |
 |---------|-----|--------------|----------------|
 | Suite web client (mail, calendar, contacts, chat) | `http://localhost:8080/` | the SPA's own login form (against `/.well-known/jmap`) | yes |
-| Herold operator UI (domains, principals, queue, audit) | `http://localhost:8080/ui/dashboard` (public listener) or `http://localhost:9443/ui/dashboard` (admin listener) | the protoui sign-in form at `/ui/login`, then `/ui/dashboard` | yes |
+| Herold operator UI (domains, principals, queue, audit) | `http://localhost:9443/admin/` (admin listener) | the SPA's JSON login form posts to `/api/v1/auth/login` | yes |
 | IMAP / SMTP submission (Apple Mail, Thunderbird, mutt, ...) | `imap://localhost:1143`, `imaps://localhost:1993`, `smtp+starttls://localhost:1587` | direct AUTH against the listener with email + password | yes |
 
 The credentials are the same across all three surfaces: the email
 and password from step 6 (`admin@example.local` /
 `change-me-now` if you copied the README literally).
 
-#### Operator UI (`/ui/`)
+#### Operator UI (`/admin/`)
 
-The fully working web surface. Visit
-`http://localhost:8080/ui/dashboard`; you will be redirected to
-`/ui/login`, sign in with the bootstrap credentials, and land back
-on the dashboard. The public-listener session cookie
-(`herold_public_session`) is scoped to `Path=/` and accompanies
-JMAP, chat, and send-API requests made by the browser.
+The Svelte admin SPA. Visit `http://localhost:9443/admin/` on the
+admin listener; the SPA renders its login form, you sign in with the
+bootstrap credentials, and the SPA posts JSON to
+`/api/v1/auth/login`. On success the server sets the
+`herold_admin_session` cookie (HttpOnly, `Path=/`, scoped to the
+admin listener via the cookie name; `herold_admin_csrf` is set
+non-HttpOnly so the SPA's JS reads it and sends `X-CSRF-Token` on
+every mutating request).
 
-The admin listener at `localhost:9443` mounts the same UI but
-issues a separate cookie scoped to the admin listener
-(`herold_admin_session`, `Path=/ui/`) so cookie reuse across the
-two listeners is mechanically impossible
-(REQ-OPS-ADMIN-LISTENER-03). On the quickstart loopback shape both
-ports speak plain HTTP; in production the admin listener is
+Legacy `/ui/*` URLs from before the SPA cutover (Phase 3b of the
+merge plan documented at `docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md`)
+308-redirect to `/admin/`; bookmarks pointing at the old HTMX UI
+land on the SPA without breaking. On the quickstart loopback shape
+the admin listener speaks plain HTTP; in production it is
 loopback-only or fronted by ssh tunnel (see `docs/user/operate.md`).
 
 #### Suite web client (`/`)

@@ -240,11 +240,16 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 	}
 	scopes := sess.Scopes
 	if len(scopes) == 0 {
-		// Sessions minted before scope was embedded in the cookie carry
-		// no scope field; treat as the principal's full admin scope set
-		// (backward-compat with cookies issued by the HTML /login before
-		// this change landed -- REQ-AUTH-SESSION-REST).
-		scopes = auth.NewScopeSet(auth.ScopeAdmin)
+		// A scope-less cookie shouldn't reach here -- the JSON login
+		// flow at /api/v1/auth/login stamps the scope set explicitly,
+		// and the HTML /login flow on the admin listener is retired
+		// (Phase 3b of the merge plan; the admin listener now 308-
+		// redirects /ui/* to /admin/*). An empty scope is therefore
+		// either a forged cookie (HMAC must have been broken) or a
+		// genuine pre-3b artefact that should also be rejected so a
+		// crafted empty-scope cookie cannot escalate. Reject.
+		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
+		return store.Principal{}, nil, false
 	}
 	observe.AuthAttemptsTotal.WithLabelValues("session", "ok").Inc()
 	return p, scopes, true

@@ -265,23 +265,11 @@ type SuiteConfig struct {
 }
 
 // AdminSPAConfig configures the embedded admin Svelte SPA mount on
-// the admin HTTP listener at /admin/. Phase 2 of the merge plan
-// (docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md)
-// builds this SPA to parity with the HTMX UI in internal/protoui;
-// Phase 3 makes it the only admin UI. Until Phase 3 lands the mount
-// is OFF by default so existing operators keep getting the protoui
-// HTMX surface at /ui/ unchanged.
-//
-// Operators opting in for Phase 2 testing set `enabled = true`. When
-// the flag is on the admin listener serves the SPA at /admin/* in
-// addition to the existing /ui/* HTMX UI; both sit on the same
-// admin listener and share the same session cookie scope (Path=/).
+// the admin HTTP listener at /admin/. The SPA is the only admin UI
+// from Phase 3b of the merge plan onwards; the legacy HTMX UI at
+// /ui/ has been retired (REQ-ADM-204; the admin listener now 308-
+// redirects every /ui/* request to /admin/*).
 type AdminSPAConfig struct {
-	// Enabled selects whether the admin SPA is mounted at /admin/
-	// on the admin listener. Defaults to false; flip to true to
-	// preview the Svelte admin UI alongside the still-default
-	// HTMX UI at /ui/ during the Phase 2 dual-mount window.
-	Enabled bool `toml:"enabled,omitempty"`
 	// AssetDir, when non-empty, makes the admin handler serve from
 	// this directory instead of the embedded FS. The directory MUST
 	// be an absolute path AND contain index.html at startup; the

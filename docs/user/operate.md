@@ -41,18 +41,19 @@ URL they bookmark.
 
 | Surface | Listener | URL (loopback quickstart shape) | Sign-in form | Cookie | Today |
 |---------|----------|---------------------------------|--------------|--------|-------|
-| The suite consumer SPA (mail / calendar / contacts / chat) | public | `http://localhost:8080/` | `/login` redirects to the protoui sign-in form; after login the SPA's JMAP handshake completes | `herold_public_session` (`Path=/`, end-user scope) | yes |
-| Operator UI (domains, principals, queue, audit) | public | `http://localhost:8080/ui/dashboard` | protoui template at `/ui/login` | `herold_public_session` (`Path=/`, end-user scope) | yes |
-| Operator UI (TOTP-stepped admin scope) | admin | `http://localhost:9443/ui/dashboard` | protoui template at `/ui/login` | `herold_admin_session` (`Path=/ui/`, `[admin]` scope) | yes |
+| The Suite consumer SPA (mail / calendar / contacts / chat) | public | `http://localhost:8080/` | `/login` redirects to the protoui sign-in form; after login the SPA's JMAP handshake completes | `herold_public_session` (`Path=/`, end-user scope) | yes |
+| Operator UI (domains, principals, queue, audit) | admin | `http://localhost:9443/admin/` | Svelte admin SPA login form posts JSON to `/api/v1/auth/login` | `herold_admin_session` (`Path=/`, `[admin]` scope after TOTP step-up) | yes |
 
 Which one to point an operator vs an end user at:
 
-- **Operators** use `/ui/dashboard` on the admin listener whenever
-  the admin port is reachable; the public-listener `/ui/` mount
-  exists for environments where the admin port is not available
-  (e.g. when SSH-tunnelling is impractical) but the issued cookie
-  carries end-user scope only and admin-gated REST endpoints will
-  refuse it.
+- **Operators** use `/admin/` on the admin listener. The Svelte
+  admin SPA mounts at `/admin/` and consumes the `/api/v1/...` REST
+  surface via the `herold_admin_session` cookie + `X-CSRF-Token`
+  double-submit (REQ-AUTH-CSRF). Legacy `/ui/*` paths from before
+  Phase 3b of the merge plan
+  (`docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md`)
+  308-redirect to `/admin/` so older bookmarks still land on the
+  admin SPA.
 - **End users** open `http://localhost:8080/` in a browser. The
   suite SPA redirects to `/login?return=%2F%23%2Fmail`. After
   signing in, herold issues a `herold_public_session` cookie with

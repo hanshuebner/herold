@@ -100,9 +100,12 @@ func TestPublicListener_Login_PrefixPath_StillWorks(t *testing.T) {
 	}
 }
 
-// TestAdminListener_Login_StillWorks checks that the admin listener's /ui/login
-// is unaffected by the public-listener adapter changes.
-func TestAdminListener_Login_StillWorks(t *testing.T) {
+// TestAdminListener_Login_RedirectsToAdminSPA checks that the admin
+// listener's legacy /ui/login 308-redirects to /admin/. As of Phase 3b
+// of the merge plan the HTMX UI mount on the admin listener is gone;
+// /ui/* exists only as a redirect breadcrumb for stale bookmarks.
+// (See docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md.)
+func TestAdminListener_Login_RedirectsToAdminSPA(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
 		cancel()
@@ -128,9 +131,12 @@ func TestAdminListener_Login_StillWorks(t *testing.T) {
 		t.Fatalf("GET /ui/login on admin: %v", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode == http.StatusNotFound {
-		t.Errorf("admin /ui/login returned 404; want 200. body=%s", string(body))
+	if resp.StatusCode != http.StatusPermanentRedirect {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("admin /ui/login: status=%d, want 308; body=%s",
+			resp.StatusCode, string(body))
+	}
+	if loc := resp.Header.Get("Location"); loc != "/admin/" {
+		t.Errorf("admin /ui/login Location=%q, want /admin/", loc)
 	}
 }

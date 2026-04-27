@@ -1518,21 +1518,18 @@ func composeAdminAndUI(
 		prefix = "/ui"
 	}
 
-	// Build admin-listener UI server. The admin /login flow issues
-	// cookies carrying [admin] scope after TOTP step-up
-	// (REQ-AUTH-SCOPE-03). Cookie name is herold_admin_session so
-	// cross-listener cookie reuse is mechanically impossible at the
-	// parser level (REQ-OPS-ADMIN-LISTENER-03 + REQ-AUTH-SCOPE-01).
-	uiSrvAdmin, err := newProtoUIServer(cfg, st, dir, oidcRP, clk, logger, "admin")
-	if err != nil {
-		logger.LogAttrs(ctx, slog.LevelError, "protoui: admin server failed; UI disabled",
-			slog.String("err", err.Error()))
-		uiSrvAdmin = nil
-	}
 	// Public-listener UI server. Issues end-user-scoped cookies with
 	// Path=/ so the suite session accompanies all public-listener
 	// endpoints (JMAP, chat, send API). Cookie-based JMAP auth is
 	// wired below via jmapSessionResolver (Wave 3.7-A).
+	//
+	// The admin-listener UI server retired in Phase 3b of the merge
+	// plan -- the admin Svelte SPA at /admin/ replaces it. Legacy
+	// /ui/* paths on the admin listener now 308-redirect to /admin/.
+	// The public-listener UI server stays mounted because the Suite
+	// SPA at / still redirects to /login when its session expires
+	// (Wave 3.7-A). Phase 3c retires the public protoui /login flow
+	// once the Suite SPA migrates to a JSON login endpoint.
 	uiSrvPublic, err := newProtoUIServer(cfg, st, dir, oidcRP, clk, logger, "public")
 	if err != nil {
 		logger.LogAttrs(ctx, slog.LevelError, "protoui: public server failed",
@@ -1549,36 +1546,41 @@ func composeAdminAndUI(
 	// mount ensures scrapes also work when MetricsBind is empty or the
 	// admin listener is the only HTTP surface.
 	adminMux.Handle("/metrics", observe.MetricsHandler())
-	// Admin Svelte SPA at /admin/ (Phase 2 of the merge plan). Off by
-	// default; operators flip [server.admin_spa].enabled = true to
-	// preview the new UI alongside the still-default protoui HTMX
-	// surface at /ui/. Phase 3 makes this the only admin UI and 308-
-	// redirects /ui/* to /admin/*.
-	if cfg.Server.AdminSPA.Enabled {
-		adminSPA, err := webspa.NewAdmin(webspa.AdminOptions{
-			Logger:        logger.With("subsystem", "webspa.admin"),
-			AdminAssetDir: cfg.Server.AdminSPA.AssetDir,
-		})
-		if err != nil {
-			return composedHandlers{}, fmt.Errorf("admin: admin SPA: %w", err)
+	// Admin Svelte SPA at /admin/ (Phase 3b of the merge plan -- the
+	// only admin UI; the AdminSPA.Enabled flag was retired). Always
+	// mounted on the admin listener.
+	adminSPA, err := webspa.NewAdmin(webspa.AdminOptions{
+		Logger:        logger.With("subsystem", "webspa.admin"),
+		AdminAssetDir: cfg.Server.AdminSPA.AssetDir,
+	})
+	if err != nil {
+		return composedHandlers{}, fmt.Errorf("admin: admin SPA: %w", err)
+	}
+	adminMux.Handle("/admin/",
+		http.StripPrefix("/admin",
+			withPanicRecover(logger.With("subsystem", "webspa.admin"),
+				"webspa.admin", adminSPA.Handler())))
+	// Legacy /ui/* paths on the admin listener -> 308 to /admin/* so
+	// older bookmarks, fail2ban regexes, and habitually-typed URLs
+	// land on the new SPA without breaking. 308 (Permanent Redirect)
+	// preserves request method on retry, which is intentional: a
+	// stale POST to /ui/login lands on /admin/ where the SPA serves
+	// its login page; the operator notices the URL change.
+	adminMux.HandleFunc(prefix+"/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin/", http.StatusPermanentRedirect)
+	})
+	adminMux.HandleFunc(prefix, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin/", http.StatusPermanentRedirect)
+	})
+	// Bare `/` on the admin listener: redirect a browser to the
+	// admin SPA. API consumers never hit `/`.
+	adminMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+			return
 		}
-		adminMux.Handle("/admin/",
-			http.StripPrefix("/admin",
-				withPanicRecover(logger.With("subsystem", "webspa.admin"),
-					"webspa.admin", adminSPA.Handler())))
-	}
-	if uiSrvAdmin != nil {
-		adminMux.Handle(prefix+"/", uiSrvAdmin.Handler())
-		// Bare `/` on the admin listener: redirect a browser to the
-		// admin login page. API consumers never hit `/`.
-		adminMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/" {
-				http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
-				return
-			}
-			http.NotFound(w, r)
-		})
-	}
+		http.NotFound(w, r)
+	})
 	bundle.admin = withPanicRecover(logger.With("subsystem", "admin-mux"),
 		"admin.mux", adminMux)
 

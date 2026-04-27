@@ -419,11 +419,13 @@ available; route end users and operators to different URLs:
   handshake then completes and the mailbox loads. See
   [./operate.md](./operate.md) "The web URLs herold exposes" for
   details.
-- **Operator UI** (protoui): `http(s)://<public host>/ui/dashboard`
-  on the public listener (end-user scope) or
-  `http(s)://<admin host>/ui/dashboard` on the admin listener
-  (`[admin]` scope after TOTP step-up). This is the working
-  browser surface today.
+- **Operator UI** (Svelte admin SPA): `http(s)://<admin host>/admin/`
+  on the admin listener. The SPA's login form posts to
+  `POST /api/v1/auth/login` and receives the `herold_admin_session`
+  cookie (`[admin]` scope after TOTP step-up). Legacy `/ui/*` URLs
+  308-redirect to `/admin/`; that shim covers any operator
+  bookmarks left over from before the Phase 3b cutover documented
+  at `docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md`.
 - **IMAP / SMTP / JMAP**: standard ports 143 (IMAP+STARTTLS), 993
   (IMAPS), 587 (submission STARTTLS), 465 (submission implicit
   TLS), and 8080 (admin REST + JMAP) -- or the loopback quickstart
