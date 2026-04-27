@@ -13,7 +13,7 @@ die () {
 [ -f $KEYFILE ] && die "key file $KEYFILE exists, not overwriting"
 [ -f $CERTFILE ] && die "cert file $CERTFILE exists, not overwriting"
 
-mkdir -p data
+mkdir -p "$DATADIR"
 openssl req -x509 -newkey rsa:2048 -nodes \
   -keyout $KEYFILE \
   -out $CERTFILE \
