@@ -22,6 +22,12 @@ env:
   # Per STANDARDS §2 the floor moves with the current stable; the Phase 1
   # planning floor of 1.23 was lifted at Phase 1.5 kickoff to track this.
   GO_VERSION: "1.25.x"
+  # Node + pnpm versions for the web/ workspace. Floor-tracked: pnpm 10
+  # is the lockfile generator on disk and the workspace package.json
+  # `engines` block requires pnpm >= 9. Node 20 LTS is the floor; vite 6
+  # supports Node 18+, but 20 is what package.json declares.
+  NODE_VERSION: "20"
+  PNPM_VERSION: "10"
 
 jobs:
   lint:
@@ -52,6 +58,33 @@ jobs:
         with:
           go-version-input: ${{ env.GO_VERSION }}
           go-package: ./...
+
+  web:
+    name: web (build + check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: pnpm install (workspace)
+        run: pnpm --dir web install --frozen-lockfile
+      - name: build (suite SPA)
+        run: pnpm --dir web run build
+      - name: check (svelte-check etc)
+        run: pnpm --dir web run check
+      # `test` and `lint` are no-ops today (no package defines them);
+      # `pnpm --recursive --if-present` keeps that future-proof.
+      - name: test
+        run: pnpm --dir web run test
+      - name: lint
+        run: pnpm --dir web run lint
 
   test:
     name: test (${{ matrix.arch }} / ${{ matrix.store }})
@@ -92,8 +125,14 @@ jobs:
       # Cross-arch builds run under emulation only for build/vet; tests run
       # native on amd64. We still build on arm64 to catch portability issues
       # early (per docs/design/server/implementation/03-testing-strategy.md §CI matrix).
-      - name: build
+      # Build with the default tag (which embeds the SPA placeholders
+      # via go:embed) and then a second pass with -tags nofrontend so
+      # the build-tag split (internal/webspa/embed_default.go vs
+      # embed_stub.go) cannot regress without CI catching it.
+      - name: build (embedded)
         run: go build -trimpath ./...
+      - name: build (nofrontend)
+        run: go build -trimpath -tags nofrontend ./...
       - name: wait for postgres
         if: matrix.arch == 'amd64' && matrix.store == 'postgres'
         run: |

@@ -10,7 +10,9 @@ permissions:
   id-token: write
 
 env:
-  GO_VERSION: "1.23.x"
+  GO_VERSION: "1.25.x"
+  NODE_VERSION: "20"
+  PNPM_VERSION: "10"
 
 jobs:
   release:
@@ -27,6 +29,20 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      # Build the Suite SPA once and reuse the artefacts across the
+      # GOOS/GOARCH cross-builds. The dist tree is byte-identical
+      # regardless of target platform; only the Go binary is platform-
+      # specific.
+      - name: build-web
+        run: ./scripts/build-web.sh
       - name: build
         env:
           GOOS: ${{ matrix.os }}

@@ -10,22 +10,32 @@ BUILDFLAGS := -buildvcs=true $(LDFLAGS)
 PKGS := ./...
 FUZZTIME ?= 30s
 
-.PHONY: all build build-plugins test test-short lint vet staticcheck vulncheck \
-        fmt fmt-check fuzz-short tidy ci-local clean docker embed-tabard \
+.PHONY: all build build-server build-web build-plugins test test-server test-web \
+        test-short lint vet staticcheck vulncheck \
+        fmt fmt-check fuzz-short tidy ci-local clean docker \
         interop interop-bulk interop-imaptest interop-clean
 
 all: build
 
-build:
+# `build` produces a herold binary with the consumer Suite SPA baked
+# in (REQ-DEPLOY-COLOC-01..03). The pnpm build runs first and copies
+# the suite dist into internal/webspa/dist/suite/ where the //go:embed
+# directive in internal/webspa/embed_default.go picks it up; the Go
+# build then links everything into a single binary.
+build: build-web build-server
+
+# build-server compiles the herold binary from the current state of
+# internal/webspa/dist/. It does NOT invoke the pnpm build first, so
+# `make build-server` after `make build-web` is the iteration loop
+# when only Go code has changed.
+build-server:
 	$(GO) build $(BUILDFLAGS) -o bin/herold ./cmd/herold
 
-# embed-tabard copies the upstream tabard SPA dist into the herold
-# module's internal/tabardspa/dist directory so the next `make build`
-# bakes the SPA into the binary (REQ-DEPLOY-COLOC-01..03).
-# Override the source path via TABARD_DIST=/path/to/tabard/dist.
-embed-tabard:
-	TABARD_DIST="$${TABARD_DIST:-/Users/hans/tabard/apps/suite/dist}" \
-	  ./scripts/embed-tabard.sh
+# build-web runs scripts/build-web.sh which calls pnpm install
+# --frozen-lockfile and pnpm --filter @herold/suite build, then
+# copies the artefacts into internal/webspa/dist/suite/.
+build-web:
+	./scripts/build-web.sh
 
 build-plugins:
 	@for p in plugins/herold-*; do \
@@ -34,8 +44,26 @@ build-plugins:
 	  $(GO) build $(BUILDFLAGS) -o bin/$$name ./$$p || exit 1; \
 	done
 
-test:
+test: test-server
+
+# test-server runs the Go test suite. It does NOT depend on a freshly
+# built web/ tree because the embedded FS in internal/webspa/dist/
+# always contains a placeholder index.html that satisfies the //go:embed
+# directive. The placeholder is enough for any test that exercises the
+# webspa package; tests that need the real suite assets bring up their
+# own asset_dir override.
+test-server:
 	$(GO) test -race -count=1 $(GOFLAGS) $(PKGS)
+
+# test-web runs the workspace-side checks (svelte-check today; vitest
+# / playwright are added incrementally per-app via the package.json
+# `check` / `test` / `lint` scripts).  pnpm --recursive --if-present
+# silently skips packages that haven't defined a given script yet.
+test-web:
+	pnpm --dir web install --frozen-lockfile
+	pnpm --dir web run check
+	pnpm --dir web run test
+	pnpm --dir web run lint
 
 test-short:
 	$(GO) test -race -count=1 -short $(GOFLAGS) $(PKGS)
