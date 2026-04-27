@@ -202,45 +202,54 @@ func loadCredentials() (string, bool) {
 }
 
 // saveCredentials writes apiKey (and optionally serverURL) to the default
-// credentials path, chmod 0600. Returns the resolved path.
+// credentials path, chmod 0600. Returns the resolved path and the
+// server_url that was actually written.
 //
-// Don't-clobber rule: if the file already contains a non-empty server_url
-// that value is preserved even when a new serverURL is supplied — the
-// operator may have customised it. Conversely, an existing empty or absent
-// server_url is filled in when serverURL is non-empty. The api_key is
-// always written/overwritten.
+// Server-URL precedence: a non-empty incoming serverURL always wins. When
+// it differs from the value already in the file a warning is emitted so the
+// operator notices that an earlier customisation was overwritten. If the
+// incoming serverURL is empty the existing value (if any) is preserved.
+// The api_key is always written/overwritten.
+//
+// Rationale for the inversion: bootstrap is the realistic source of a
+// stale credentials.toml — wiping the data dir does not wipe $HOME, so a
+// previous install's server_url will silently override the URL derived
+// from the new system.toml unless the new one wins. The warning surfaces
+// the divergence; operators who customised the URL re-apply after
+// bootstrap.
 //
 // warnW receives operator warnings (non-fatal). Pass cmd.ErrOrStderr() from
 // the CLI or any io.Writer in tests.
-func saveCredentials(apiKey, serverURL string, warnW io.Writer) (string, error) {
+func saveCredentials(apiKey, serverURL string, warnW io.Writer) (string, string, error) {
 	p := DefaultCredentialsPath()
 	if p == "" {
-		return "", errors.New("admin-client: cannot resolve home directory for credentials file")
+		return "", "", errors.New("admin-client: cannot resolve home directory for credentials file")
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return "", fmt.Errorf("admin-client: create credentials dir: %w", err)
+		return "", "", fmt.Errorf("admin-client: create credentials dir: %w", err)
 	}
-	// Load any existing file so we can honour the don't-clobber rule.
+	// Load any existing file so we can warn on divergence and preserve an
+	// existing server_url when the caller has nothing to supply.
 	existing := credentialsFile{}
 	if raw, err := os.ReadFile(p); err == nil {
 		// Ignore parse errors on a corrupt file — we'll just overwrite.
 		_ = toml.Unmarshal(raw, &existing)
 	}
-	// Preserve an existing non-empty server_url.
 	effectiveURL := serverURL
-	if existing.ServerURL != "" {
-		if existing.ServerURL != serverURL && serverURL != "" {
-			fmt.Fprintf(warnW,
-				"saveCredentials: preserved existing server_url=%s (incoming=%s); "+
-					"verify it matches this installation\n",
-				existing.ServerURL, serverURL,
-			)
-		}
+	switch {
+	case serverURL == "" && existing.ServerURL != "":
 		effectiveURL = existing.ServerURL
+	case serverURL != "" && existing.ServerURL != "" && existing.ServerURL != serverURL:
+		fmt.Fprintf(warnW,
+			"saveCredentials: overwriting existing server_url=%s with %s; "+
+				"if the previous value was an intentional customisation "+
+				"(e.g. a reverse-proxy URL), edit %s after bootstrap.\n",
+			existing.ServerURL, serverURL, p,
+		)
 	}
 	raw, err := toml.Marshal(credentialsFile{APIKey: apiKey, ServerURL: effectiveURL})
 	if err != nil {
-		return "", fmt.Errorf("admin-client: marshal credentials: %w", err)
+		return "", "", fmt.Errorf("admin-client: marshal credentials: %w", err)
 	}
 	// Write atomically: temp file in the same directory, then rename.
 	// This ensures the final inode has 0600 permissions even if the
@@ -248,15 +257,15 @@ func saveCredentials(apiKey, serverURL string, warnW io.Writer) (string, error) 
 	// existing file does not reset mode bits).
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return "", fmt.Errorf("admin-client: write credentials tmp: %w", err)
+		return "", "", fmt.Errorf("admin-client: write credentials tmp: %w", err)
 	}
 	if err := os.Chmod(tmp, 0o600); err != nil {
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("admin-client: chmod credentials tmp: %w", err)
+		return "", "", fmt.Errorf("admin-client: chmod credentials tmp: %w", err)
 	}
 	if err := os.Rename(tmp, p); err != nil {
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("admin-client: rename credentials: %w", err)
+		return "", "", fmt.Errorf("admin-client: rename credentials: %w", err)
 	}
-	return p, nil
+	return p, effectiveURL, nil
 }

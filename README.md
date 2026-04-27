@@ -118,10 +118,20 @@ In a second terminal:
 Passing `--password` on the command line is acceptable for this loopback-only quickstart, but for any non-throwaway installation you should omit `--password` (a random password is then generated and printed once) or supply it via stdin or the `HEROLD_BOOTSTRAP_PASSWORD` environment variable, to avoid the value appearing in shell history and process listings.
 
 The command prints the admin email, the password, and a `hk_...` API
-key. The API key is also written to `~/.herold/credentials.toml`. Keep
-the printed values; the password is stored hashed and the API key is
-stored as a SHA-256 hash, so neither is recoverable from the server
-after this point.
+key. The API key is also written to `~/.herold/credentials.toml`
+together with a `server_url` derived from the `kind = "admin"`
+listener (here `http://127.0.0.1:9443`). Subsequent CLI calls
+(`herold domain add`, `principal create`, etc.) read both values from
+that file. Keep the printed credentials; the password is stored
+hashed and the API key is stored as a SHA-256 hash, so neither is
+recoverable from the server after this point.
+
+If a previous bootstrap left a stale `server_url` in
+`~/.herold/credentials.toml`, this run overwrites it with a warning.
+If the saved URL is wrong (you will see admin commands return
+`405 Method Not Allowed` because they hit the public listener instead
+of the admin one), edit `server_url` in `~/.herold/credentials.toml`
+to point at the `kind = "admin"` listener.
 
 ### 6. Add the local domain
 

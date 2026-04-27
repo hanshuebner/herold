@@ -115,13 +115,13 @@ Exits 10 if a principal already exists.`,
 			fmt.Fprintf(w, "  api_key: %s\n", keyPlain)
 			fmt.Fprintln(w, "keep these values; they are not recoverable from the server after this point.")
 			if saveCredentialsFlag {
-				path, err := saveCredentials(keyPlain, effectiveServerURL, cmd.ErrOrStderr())
+				path, savedURL, err := saveCredentials(keyPlain, effectiveServerURL, cmd.ErrOrStderr())
 				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "bootstrap: warn: could not save credentials: %v\n", err)
 				} else {
 					fmt.Fprintf(w, "credentials saved to %s\n", path)
-					if effectiveServerURL != "" {
-						fmt.Fprintf(w, "  server_url: %s\n", effectiveServerURL)
+					if savedURL != "" {
+						fmt.Fprintf(w, "  server_url: %s\n", savedURL)
 					}
 				}
 			}

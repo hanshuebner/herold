@@ -426,7 +426,7 @@ func TestSaveCredentials_AtomicChmod(t *testing.T) {
 	t.Cleanup(func() { SetCredentialsPath("") })
 
 	var warnBuf bytes.Buffer
-	got, err := saveCredentials("newkey", "https://127.0.0.1:9443", &warnBuf)
+	got, _, err := saveCredentials("newkey", "https://127.0.0.1:9443", &warnBuf)
 	if err != nil {
 		t.Fatalf("saveCredentials: %v", err)
 	}
@@ -449,9 +449,10 @@ func TestSaveCredentials_AtomicChmod(t *testing.T) {
 	}
 }
 
-// TestSaveCredentials_DivergingURLWarns verifies that the don't-clobber
-// preservation of an existing server_url emits a warning when the supplied
-// URL differs, and stays silent when they match (REQ-OPS-01 security obs O2).
+// TestSaveCredentials_DivergingURLWarns verifies that the inverted
+// don't-clobber rule overwrites an existing server_url with the incoming
+// value and emits a warning so the operator notices the divergence; when
+// the URLs match no warning is produced (REQ-OPS-01 security obs O2).
 func TestSaveCredentials_DivergingURLWarns(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "credentials.toml")
@@ -463,13 +464,17 @@ func TestSaveCredentials_DivergingURLWarns(t *testing.T) {
 	SetCredentialsPath(p)
 	t.Cleanup(func() { SetCredentialsPath("") })
 
-	t.Run("diverging_url_warns", func(t *testing.T) {
+	t.Run("diverging_url_warns_and_overwrites", func(t *testing.T) {
 		var warnBuf bytes.Buffer
-		if _, err := saveCredentials("newkey", "https://127.0.0.1:9443", &warnBuf); err != nil {
+		_, savedURL, err := saveCredentials("newkey", "https://127.0.0.1:9443", &warnBuf)
+		if err != nil {
 			t.Fatalf("saveCredentials: %v", err)
 		}
-		if !strings.Contains(warnBuf.String(), "preserved existing server_url") {
-			t.Errorf("expected diverging-URL warning, got: %q", warnBuf.String())
+		if savedURL != "https://127.0.0.1:9443" {
+			t.Errorf("savedURL: got %q, want incoming-URL to win", savedURL)
+		}
+		if !strings.Contains(warnBuf.String(), "overwriting existing server_url") {
+			t.Errorf("expected overwriting warning, got: %q", warnBuf.String())
 		}
 		if !strings.Contains(warnBuf.String(), "https://mail.example.com:9443") {
 			t.Errorf("warning should include existing url, got: %q", warnBuf.String())
@@ -481,8 +486,8 @@ func TestSaveCredentials_DivergingURLWarns(t *testing.T) {
 
 	t.Run("same_url_silent", func(t *testing.T) {
 		var warnBuf bytes.Buffer
-		// Use the existing (preserved) URL as the incoming URL — no warning expected.
-		if _, err := saveCredentials("newkey2", "https://mail.example.com:9443", &warnBuf); err != nil {
+		// Use the previous (now-overwritten) URL as the incoming URL — no warning expected.
+		if _, _, err := saveCredentials("newkey2", "https://127.0.0.1:9443", &warnBuf); err != nil {
 			t.Fatalf("saveCredentials: %v", err)
 		}
 		if warnBuf.Len() != 0 {

@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -91,7 +90,7 @@ func newCLITestEnv(t *testing.T, optsMutator func(*protoadmin.Options)) *cliTest
 	}
 	SetCredentialsPath(credPath)
 	t.Cleanup(func() { SetCredentialsPath(prevPath) })
-	if _, err := saveCredentials(plain, httpSrv.URL, &bytes.Buffer{}); err != nil {
+	if _, _, err := saveCredentials(plain, httpSrv.URL, &bytes.Buffer{}); err != nil {
 		t.Fatalf("saveCredentials: %v", err)
 	}
 
@@ -174,12 +173,10 @@ func rebuildAdminServer(t *testing.T, env *cliTestEnv, optsMutator func(*protoad
 	t.Cleanup(httpSrv.Close)
 	env.srv = srv
 	env.httpSrv = httpSrv
-	// Remove the existing credentials file so saveCredentials writes a
-	// fresh one with the new server URL. The don't-clobber rule preserves
-	// an existing server_url, which would still point at the now-closed
-	// httptest.Server; wiping it before re-save avoids the stale address.
-	_ = os.Remove(env.credPath)
-	if _, err := saveCredentials(env.apiKey, httpSrv.URL, &bytes.Buffer{}); err != nil {
+	// The inverted don't-clobber rule overwrites an existing server_url
+	// with the incoming URL (and warns); a fresh httptest.Server URL is
+	// always the correct value here, so let saveCredentials overwrite.
+	if _, _, err := saveCredentials(env.apiKey, httpSrv.URL, &bytes.Buffer{}); err != nil {
 		t.Fatalf("saveCredentials: %v", err)
 	}
 }
