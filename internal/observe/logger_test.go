@@ -2,6 +2,7 @@ package observe
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -139,7 +140,7 @@ func TestModuleLogLevel_WithAttrsPreScoped(t *testing.T) {
 func TestTraceLevel(t *testing.T) {
 	var buf bytes.Buffer
 	l := NewLoggerTo(&buf, ObservabilityConfig{LogLevel: "trace"})
-	l.Log(nil, LevelTrace, "trace-msg") //nolint:staticcheck // nil ctx is fine for tests
+	l.Log(context.TODO(), LevelTrace, "trace-msg")
 	if !strings.Contains(buf.String(), "trace-msg") {
 		t.Fatalf("trace level: expected trace-msg; got: %q", buf.String())
 	}
@@ -150,7 +151,7 @@ func TestTraceLevel(t *testing.T) {
 func TestTraceLevel_SuppressedAtDebug(t *testing.T) {
 	var buf bytes.Buffer
 	l := NewLoggerTo(&buf, ObservabilityConfig{LogLevel: "debug"})
-	l.Log(nil, LevelTrace, "trace-should-not-appear") //nolint:staticcheck
+	l.Log(context.TODO(), LevelTrace, "trace-should-not-appear")
 	if strings.Contains(buf.String(), "trace-should-not-appear") {
 		t.Fatalf("trace suppressed at debug: unexpected output: %q", buf.String())
 	}

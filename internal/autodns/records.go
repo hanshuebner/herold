@@ -300,7 +300,7 @@ func BuildTLSRPTRecord(rua []string) (string, error) {
 	}
 	for _, u := range rua {
 		if !strings.HasPrefix(u, "mailto:") && !strings.HasPrefix(u, "https:") {
-			return "", fmt.Errorf("autodns: TLSRPT rua %q must be mailto: or https:", u)
+			return "", fmt.Errorf("autodns: TLSRPT rua %q must use scheme mailto or https", u)
 		}
 	}
 	return "v=TLSRPTv1; rua=" + strings.Join(rua, ","), nil

@@ -252,7 +252,7 @@ func (s *Store) DiagSnapshot() *DiagDump {
 		}
 		keys := make([]rkey, 0, len(s.reactions.rows))
 		for k := range s.reactions.rows {
-			keys = append(keys, rkey{k.emailID, k.emoji, k.principalID})
+			keys = append(keys, rkey(k))
 		}
 		sort.Slice(keys, func(i, j int) bool {
 			if keys[i].emailID != keys[j].emailID {
@@ -269,7 +269,7 @@ func (s *Store) DiagSnapshot() *DiagDump {
 					EmailID:     k.emailID,
 					Emoji:       k.emoji,
 					PrincipalID: k.principalID,
-					CreatedAt:   s.reactions.rows[reactionKey{k.emailID, k.emoji, k.principalID}],
+					CreatedAt:   s.reactions.rows[reactionKey(k)],
 				})
 		}
 	}

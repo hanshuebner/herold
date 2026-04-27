@@ -60,7 +60,7 @@ func (h *HTTPChallenger) Handler() http.Handler {
 		token := r.URL.Path
 		if i := strings.Index(token, prefix); i >= 0 {
 			token = token[i+len(prefix):]
-		} else if strings.HasPrefix(token, "/") {
+		} else {
 			token = strings.TrimPrefix(token, "/")
 		}
 		if token == "" {

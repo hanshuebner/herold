@@ -10,10 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// notImplementedPendingProtoadmin is the shared sentinel returned by
+// errNotImplementedPendingProtoadmin is the shared sentinel returned by
 // admin subcommands whose REST surface has not yet landed. It keeps the
 // CLI self-describing — operators see one message they can grep for.
-var notImplementedPendingProtoadmin = errors.New("admin CLI command not yet implemented in Wave 3 (waiting on protoadmin merge)")
+var errNotImplementedPendingProtoadmin = errors.New("admin CLI command not yet implemented in Wave 3 (waiting on protoadmin merge)")
 
 func newPrincipalCmd() *cobra.Command {
 	c := &cobra.Command{
@@ -443,7 +443,7 @@ func wrapPendingRESTError(err error) error {
 	}
 	var pd *ProblemDetails
 	if errors.As(err, &pd) && pd.Status == 501 {
-		return fmt.Errorf("%s: %w", notImplementedPendingProtoadmin.Error(), err)
+		return fmt.Errorf("%s: %w", errNotImplementedPendingProtoadmin.Error(), err)
 	}
 	return err
 }

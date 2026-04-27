@@ -189,8 +189,7 @@ func (m *metaFace) UpsertCoachDismiss(ctx context.Context, d store.CoachDismiss)
 	now := s.clk.Now()
 	k := coachKey{Principal: d.PrincipalID, Action: d.Action}
 	d.UpdatedAt = now
-	var dup store.CoachDismiss
-	dup = d
+	dup := d
 	if d.DismissUntil != nil {
 		t := *d.DismissUntil
 		dup.DismissUntil = &t

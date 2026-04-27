@@ -199,10 +199,7 @@ func collapseWhitespace(s string) string {
 		prevSpace = false
 		b.WriteRune(r)
 	}
-	out := b.String()
-	if strings.HasSuffix(out, " ") {
-		out = out[:len(out)-1]
-	}
+	out := strings.TrimSuffix(b.String(), " ")
 	return out
 }
 

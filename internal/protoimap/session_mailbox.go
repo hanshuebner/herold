@@ -93,7 +93,7 @@ func (ses *session) handleSELECT(ctx context.Context, c *Command, readOnly bool)
 			break
 		}
 	}
-	_ = ses.resp.untagged(fmt.Sprintf("FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)"))
+	_ = ses.resp.untagged("FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)")
 	_ = ses.resp.untagged(fmt.Sprintf("%d EXISTS", existing))
 	_ = ses.resp.untagged("0 RECENT")
 	if unseen > 0 {
