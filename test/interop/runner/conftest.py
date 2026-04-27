@@ -25,6 +25,11 @@ def pytest_configure(config):
         "markers",
         "bulk: load / bulk-send scenarios; NOT collected by default",
     )
+    config.addinivalue_line(
+        "markers",
+        "imaptest: Dovecot imaptest IMAP wire-protocol conformance; "
+        "requires --profile imaptest compose stack; NOT collected by default",
+    )
 
 
 @pytest.fixture(scope="session")

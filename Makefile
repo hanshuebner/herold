@@ -12,7 +12,7 @@ FUZZTIME ?= 30s
 
 .PHONY: all build build-plugins test test-short lint vet staticcheck vulncheck \
         fmt fmt-check fuzz-short tidy ci-local clean docker embed-tabard \
-        interop interop-bulk interop-clean
+        interop interop-bulk interop-imaptest interop-clean
 
 all: build
 
@@ -97,6 +97,13 @@ interop:
 
 interop-bulk:
 	./test/interop/run.sh --bulk
+
+# imaptest IMAP wire-protocol conformance suite.
+# Brings up the standard compose stack plus the "imaptest" profile, then
+# runs only the @pytest.mark.imaptest scenario.
+# IMAPTEST_SECS controls the run duration (default 30; use 300+ for soak runs).
+interop-imaptest:
+	PYTEST_MARKER=imaptest COMPOSE_PROFILES=imaptest ./test/interop/run-imaptest.sh
 
 interop-clean:
 	cd test/interop && docker compose down --remove-orphans --volumes 2>/dev/null || true

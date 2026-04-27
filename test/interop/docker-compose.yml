@@ -274,6 +274,48 @@ services:
         condition: service_healthy
 
   # -----------------------------------------------------------------------
+  # imaptest - Dovecot's IMAP compliance tester.
+  # Built from upstream Dovecot release binary (pinned SHA-256).
+  # Used only when the "imaptest" compose profile is active; does NOT
+  # start during normal run.sh / make interop flows.
+  #
+  # The container idles (sleep infinity) after the CA is installed.
+  # The pytest runner docker-execs imaptest on demand, passing the CA
+  # path and herold connection coordinates as arguments.
+  # -----------------------------------------------------------------------
+  imaptest:
+    build:
+      context: ./config/imaptest
+      dockerfile: Dockerfile
+    image: herold-imaptest:latest
+    # Override the ENTRYPOINT so we can run a shell to install the CA
+    # root before idling.  The pytest runner docker-execs imaptest on
+    # demand; the container just needs to keep running.
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        cp /etc/interop/tls/ca.crt /usr/local/share/ca-certificates/herold-interop-ca.crt
+        update-ca-certificates --fresh 2>&1 | tail -2
+        echo "imaptest: ready"
+        sleep infinity
+    volumes:
+      - tls-data:/etc/interop/tls:ro
+    networks:
+      interop:
+        ipv4_address: 10.77.0.32
+    dns:
+      - 10.77.0.2
+    restart: "no"
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
+      herold:
+        condition: service_healthy
+    profiles:
+      - imaptest
+
+  # -----------------------------------------------------------------------
   # Test runner - pytest inside the compose network.
   # Runs after all MTAs are up and bootstrapped.
   # -----------------------------------------------------------------------
