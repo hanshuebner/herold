@@ -25,11 +25,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/protoadmin"
-	"github.com/hanshuebner/herold/internal/protoui"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
@@ -66,7 +66,7 @@ func newSessionHarness(t *testing.T) *sessionHarness {
 		BootstrapPerWindow:      1,
 		BootstrapWindow:         5 * time.Minute,
 		RequestsPerMinutePerKey: 100,
-		Session: protoui.SessionConfig{
+		Session: authsession.SessionConfig{
 			SigningKey:      testSigningKey,
 			CookieName:     "herold_admin_session",
 			CSRFCookieName: "herold_admin_csrf",

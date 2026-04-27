@@ -23,8 +23,8 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/auth"
+	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/directory"
-	"github.com/hanshuebner/herold/internal/protoui"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -61,7 +61,7 @@ type loginResponse struct {
 //
 // On success it issues herold_admin_session (HttpOnly) and
 // herold_admin_csrf (non-HttpOnly, readable by the SPA's JS) cookies
-// via protoui.WriteSessionCookie and returns 200 with {principal_id,
+// via authsession.WriteSessionCookie and returns 200 with {principal_id,
 // email, scopes}. See REQ-AUTH-SESSION-REST and REQ-AUTH-CSRF.
 //
 // TOTP step-up (REQ-AUTH-SCOPE-03): if the principal has TOTP enrolled
@@ -146,15 +146,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
-	sess := protoui.Session{
+	sess := authsession.Session{
 		PrincipalID: pid,
 		ExpiresAt:   s.clk.Now().Add(ttl),
-		CSRFToken:   protoui.NewCSRFToken(),
+		CSRFToken:   authsession.NewCSRFToken(),
 		Scopes:      sessScopes,
 	}
 
 	cfg := s.sessionConfig()
-	protoui.WriteSessionCookie(w, cfg, sess)
+	authsession.WriteSessionCookie(w, cfg, sess)
 
 	// Attach the just-authenticated principal to the audit context so
 	// the success record carries actor=principal/<id> rather than the
@@ -193,7 +193,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // expire when the cookie's TTL elapses.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	cfg := s.sessionConfig()
-	protoui.ClearSessionCookies(w, cfg)
+	authsession.ClearSessionCookies(w, cfg)
 	subject := ""
 	if p, ok := principalFrom(r.Context()); ok {
 		subject = "principal:" + p.CanonicalEmail
@@ -232,10 +232,10 @@ func (s *Server) auditLoginFailure(r *http.Request, attemptedEmail string, princ
 	)
 }
 
-// sessionConfig builds the protoui.SessionConfig from the server's
+// sessionConfig builds the authsession.SessionConfig from the server's
 // Options.Session, applying defaults for empty fields so callers don't
 // have to worry about them.
-func (s *Server) sessionConfig() protoui.SessionConfig {
+func (s *Server) sessionConfig() authsession.SessionConfig {
 	cfg := s.opts.Session
 	if cfg.CookieName == "" {
 		cfg.CookieName = "herold_admin_session"

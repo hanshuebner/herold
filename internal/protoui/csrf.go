@@ -2,22 +2,21 @@ package protoui
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
-	"encoding/base64"
 	"net/http"
+
+	"github.com/hanshuebner/herold/internal/authsession"
 )
 
 // CSRFFormField is the hidden form input name used by every UI form
 // that POSTs.
 const CSRFFormField = "_csrf"
 
-// newCSRFToken returns a 24-byte random URL-safe token. 24 bytes ->
-// 192 bits — comfortably above the recommended 128-bit minimum and
-// short enough to land in a cookie without trimming.
+// newCSRFToken delegates to authsession.NewCSRFToken. Internal callers
+// in auth_handlers.go and oidc_handlers.go use this unexported form;
+// the exported NewCSRFToken var alias in session.go exposes it to
+// cross-package consumers (REQ-AUTH-SESSION-REST).
 func newCSRFToken() string {
-	var b [24]byte
-	_, _ = rand.Read(b[:])
-	return base64.RawURLEncoding.EncodeToString(b[:])
+	return authsession.NewCSRFToken()
 }
 
 // requireCSRF wraps a state-changing handler with the double-submit

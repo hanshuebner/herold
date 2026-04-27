@@ -1,233 +1,64 @@
 package protoui
 
+// session.go -- adapter shim left behind after Phase 3a extracted the
+// core session/cookie/CSRF logic into internal/authsession.
+//
+// All encoding, decoding, cookie-writing, and CSRF-token primitives now
+// live in internal/authsession. This file re-exports them via type
+// aliases and function/var aliases so the rest of internal/protoui keeps
+// compiling without changing every call site. These aliases are a
+// one-release adapter; Phase 3b deletes internal/protoui entirely and
+// the aliases go with it.
+
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/hanshuebner/herold/internal/auth"
+	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
-// SessionConfig configures cookie-backed sessions.
-//
-// The signing key is process-local: rotating it (on restart or by
-// rebooting the process) invalidates every outstanding session. We do
-// not persist sessions across restarts; the audit-trail is in the store
-// and operators tolerate a re-login after a deploy. Storing session
-// state in a server-signed cookie keeps the protoui package free of any
-// cross-process state coordination.
-type SessionConfig struct {
-	// SigningKey is the HMAC-SHA256 key used to sign session cookies.
-	// Must be at least 32 bytes; shorter values fall through to a
-	// freshly-generated random key on Server construction.
-	SigningKey []byte
-	// CookieName is the HTTP cookie name. Defaults to "herold_ui_session".
-	CookieName string
-	// CSRFCookieName is the HTTP cookie name carrying the CSRF token
-	// for the double-submit pattern. Defaults to "herold_ui_csrf".
-	CSRFCookieName string
-	// TTL bounds session lifetime. Defaults to 24 h.
-	TTL time.Duration
-	// SecureCookies, when true, sets the Secure flag on all UI cookies.
-	// Production deployments MUST set this true; the dev knob is the
-	// only way to disable it.
-	SecureCookies bool
-}
+// Type aliases -- consumers continue to use protoui.SessionConfig and
+// protoui.Session without any source change.
 
-// Session is the decoded form of a session cookie. The wire form is
-// `<principalID>.<expiresAtUnix>.<csrfToken>.<base64url(scopeJSON)>.<base64url(hmacSig)>`.
-// Five dot-separated fields; the signature covers the first four so a
-// forged cookie can't tamper with scope. Constant-time comparison on
-// the sig keeps the guess loop side-channel-free.
-//
-// Per REQ-AUTH-SCOPE-01 the scope set is part of the cookie payload so
-// the handler-side auth.RequireScope check can run without a DB
-// round-trip; rotating the signing key invalidates all outstanding
-// cookies (operators tolerate re-login on restart -- see SessionConfig).
-//
-// Session is exported so protoadmin's JSON login endpoint can mint
-// sessions without duplicating the encoding logic (REQ-AUTH-SESSION-REST).
-type Session struct {
-	PrincipalID store.PrincipalID
-	ExpiresAt   time.Time
-	// CSRFToken is the server-issued CSRF token associated with this
-	// session. Returned to the user via the CSRFCookieName cookie and
-	// also embedded in HTML forms; the double-submit middleware
-	// requires the two match. For the SPA (REQ-AUTH-CSRF) it is also
-	// returned via the non-HttpOnly herold_admin_csrf cookie so JS
-	// can read it and attach it as X-CSRF-Token on mutating requests.
-	CSRFToken string
-	// Scopes is the closed-enum scope set granted to the holder
-	// (REQ-AUTH-SCOPE-01). The set is fixed at issuance time;
-	// changing scope means logging out and back in.
-	Scopes auth.ScopeSet
-}
+// SessionConfig is an alias for authsession.SessionConfig.
+type SessionConfig = authsession.SessionConfig
+
+// Session is the decoded form of a session cookie. Alias for
+// authsession.Session. See authsession.Session for the wire format and
+// scope semantics (REQ-AUTH-SCOPE-01, REQ-AUTH-SESSION-REST).
+type Session = authsession.Session
 
 // session is the internal alias kept for backwards compatibility within
 // the protoui package. All internal code continues using 'session'; the
 // exported Session type is for cross-package consumers.
 type session = Session
 
-// EncodeSession produces the wire form for a session. Exported so
-// cross-package consumers (protoadmin's JSON login) can issue cookies
-// without re-implementing the encoding (REQ-AUTH-SESSION-REST).
+// Function and var aliases so in-package call sites compile unchanged.
+
+// WriteSessionCookie delegates to authsession.WriteSessionCookie.
+// The session cookie Path is "/" per REQ-AUTH-COOKIE-PATH.
+var WriteSessionCookie = authsession.WriteSessionCookie
+
+// ClearSessionCookies delegates to authsession.ClearSessionCookies.
+// Path must match the issuance path ("/") per REQ-AUTH-COOKIE-PATH.
+var ClearSessionCookies = authsession.ClearSessionCookies
+
+// DecodeSession delegates to authsession.DecodeSession.
+// Exported for cross-package cookie verification (REQ-AUTH-SESSION-REST).
+var DecodeSession = authsession.DecodeSession
+
+// NewCSRFToken delegates to authsession.NewCSRFToken.
+// Exported so protoadmin's JSON login endpoint can mint a CSRF token.
+var NewCSRFToken = authsession.NewCSRFToken
+
+// EncodeSession delegates to authsession.EncodeSession.
+// Exported so cross-package consumers can issue cookies without
+// re-implementing the encoding (REQ-AUTH-SESSION-REST).
 func EncodeSession(s Session, key []byte) string {
-	return encodeSession(s, key)
+	return authsession.EncodeSession(s, key)
 }
-
-// DecodeSession parses and verifies a session cookie value. It returns
-// errSessionInvalid for any malformed or unsigned cookie and
-// errSessionExpired when the signature checks out but the deadline has
-// passed. Exported for cross-package cookie verification
-// (REQ-AUTH-SESSION-REST).
-func DecodeSession(raw string, key []byte, now time.Time) (Session, error) {
-	return decodeSession(raw, key, now)
-}
-
-// NewCSRFToken returns a 24-byte random URL-safe token for use in the
-// double-submit CSRF pattern. Exported so protoadmin's JSON login
-// endpoint can mint a matching CSRF token without duplicating the
-// random-generation logic.
-func NewCSRFToken() string {
-	return newCSRFToken()
-}
-
-// WriteSessionCookie writes both the session cookie and the matching
-// CSRF cookie to w using the supplied SessionConfig. The CSRF cookie
-// is intentionally NOT HttpOnly so the SPA's JS can read it and attach
-// it as X-CSRF-Token on mutating requests (REQ-AUTH-CSRF).
-//
-// This is the standalone (config-driven) form of the session-cookie
-// writer shared by protoui.Server.setSessionCookie and protoadmin's
-// JSON login endpoint (REQ-AUTH-SESSION-REST). The session cookie Path
-// is "/" so the same cookie accompanies /api/v1/*, /admin/*, and /ui/*
-// on the same listener.
-func WriteSessionCookie(w http.ResponseWriter, cfg SessionConfig, sess Session) {
-	encoded := encodeSession(sess, cfg.SigningKey)
-	maxAge := int(cfg.TTL.Seconds())
-	if maxAge <= 0 {
-		maxAge = 1
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     cfg.CookieName,
-		Value:    encoded,
-		Path:     "/",
-		MaxAge:   maxAge,
-		Secure:   cfg.SecureCookies,
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name:     cfg.CSRFCookieName,
-		Value:    sess.CSRFToken,
-		Path:     "/",
-		MaxAge:   maxAge,
-		Secure:   cfg.SecureCookies,
-		HttpOnly: false,
-		SameSite: http.SameSiteStrictMode,
-	})
-}
-
-// ClearSessionCookies writes Set-Cookie headers that expire both the
-// session cookie and the CSRF cookie immediately. The cookie path MUST
-// match the path used at issuance (WriteSessionCookie uses "/") so the
-// browser drops the right cookies.
-func ClearSessionCookies(w http.ResponseWriter, cfg SessionConfig) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     cfg.CookieName,
-		Value:    "",
-		Path:     "/",
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-		Secure:   cfg.SecureCookies,
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name:     cfg.CSRFCookieName,
-		Value:    "",
-		Path:     "/",
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-		Secure:   cfg.SecureCookies,
-		HttpOnly: false,
-		SameSite: http.SameSiteStrictMode,
-	})
-}
-
-// encodeSession produces the wire form for a session.
-func encodeSession(s session, key []byte) string {
-	scopeBytes, _ := json.Marshal(s.Scopes)
-	scopeEnc := base64.RawURLEncoding.EncodeToString(scopeBytes)
-	payload := fmt.Sprintf("%d.%d.%s.%s", uint64(s.PrincipalID), s.ExpiresAt.Unix(), s.CSRFToken, scopeEnc)
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(payload))
-	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return payload + "." + sig
-}
-
-// decodeSession parses and verifies a session cookie. Returns
-// errSessionInvalid for any malformed or unsigned cookie and
-// errSessionExpired when the signature checks out but the deadline has
-// passed. The two are distinct so the caller can differentiate "log
-// in" from "your session expired" in the redirect target.
-func decodeSession(raw string, key []byte, now time.Time) (session, error) {
-	// Split into <pid>.<exp>.<csrf>.<scope>.<sig>
-	parts := strings.Split(raw, ".")
-	if len(parts) != 5 {
-		return session{}, errSessionInvalid
-	}
-	pidStr, expStr, csrfTok, scopeEnc, sig := parts[0], parts[1], parts[2], parts[3], parts[4]
-	payload := pidStr + "." + expStr + "." + csrfTok + "." + scopeEnc
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(payload))
-	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(want), []byte(sig)) {
-		return session{}, errSessionInvalid
-	}
-	pid, err := strconv.ParseUint(pidStr, 10, 64)
-	if err != nil || pid == 0 {
-		return session{}, errSessionInvalid
-	}
-	expUnix, err := strconv.ParseInt(expStr, 10, 64)
-	if err != nil {
-		return session{}, errSessionInvalid
-	}
-	exp := time.Unix(expUnix, 0).UTC()
-	if !now.Before(exp) {
-		return session{}, errSessionExpired
-	}
-	scopeBytes, err := base64.RawURLEncoding.DecodeString(scopeEnc)
-	if err != nil {
-		return session{}, errSessionInvalid
-	}
-	var scopes auth.ScopeSet
-	if len(scopeBytes) > 0 {
-		if err := json.Unmarshal(scopeBytes, &scopes); err != nil {
-			return session{}, errSessionInvalid
-		}
-	}
-	return session{
-		PrincipalID: store.PrincipalID(pid),
-		ExpiresAt:   exp,
-		CSRFToken:   csrfTok,
-		Scopes:      scopes,
-	}, nil
-}
-
-var (
-	errSessionInvalid = errors.New("protoui: session cookie invalid or unsigned")
-	errSessionExpired = errors.New("protoui: session cookie expired")
-)
 
 // sessionCookiePath returns the Path attribute for the session cookie.
 // Both public and admin listener cookies use Path="/" so the same
@@ -304,7 +135,7 @@ func (s *Server) readSession(r *http.Request) (session, bool) {
 	if err != nil || c.Value == "" {
 		return session{}, false
 	}
-	sess, err := decodeSession(c.Value, s.cfg.SigningKey, s.clk.Now())
+	sess, err := authsession.DecodeSession(c.Value, s.cfg.SigningKey, s.clk.Now())
 	if err != nil {
 		return session{}, false
 	}

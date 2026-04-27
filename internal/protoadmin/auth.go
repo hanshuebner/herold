@@ -12,8 +12,8 @@ import (
 	"strings"
 
 	"github.com/hanshuebner/herold/internal/auth"
+	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/observe"
-	"github.com/hanshuebner/herold/internal/protoui"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -222,7 +222,7 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
 		return store.Principal{}, nil, false
 	}
-	sess, err := protoui.DecodeSession(c.Value, s.opts.Session.SigningKey, s.clk.Now())
+	sess, err := authsession.DecodeSession(c.Value, s.opts.Session.SigningKey, s.clk.Now())
 	if err != nil {
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
 		return store.Principal{}, nil, false

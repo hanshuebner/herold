@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/observe"
-	"github.com/hanshuebner/herold/internal/protoui"
 	"github.com/hanshuebner/herold/internal/store"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
@@ -196,7 +196,7 @@ type Options struct {
 	// X-CSRF-Token header that matches the CSRF cookie value
 	// (REQ-AUTH-CSRF). Nil / unset signing key disables cookie auth so
 	// existing deployments that wire only Bearer keys are unaffected.
-	Session protoui.SessionConfig
+	Session authsession.SessionConfig
 }
 
 // Server is the protoadmin REST handle. One *Server serves any number

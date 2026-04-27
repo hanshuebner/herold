@@ -22,6 +22,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/acme"
 	"github.com/hanshuebner/herold/internal/autodns"
+	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/chatretention"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
@@ -2009,12 +2010,13 @@ func newProtoUIServer(
 }
 
 // adminSessionCookieConfig extracts the admin-listener cookie parameters
-// from sysconfig and returns a protoui.SessionConfig suitable for passing
-// to protoadmin.Options.Session. The returned config uses the same signing
-// key and cookie names that newProtoUIServer uses for the "admin" kind so
-// cookies minted by the protoui HTML /login flow and by protoadmin's JSON
-// /api/v1/auth/login endpoint are mutually verifiable (REQ-AUTH-SESSION-REST).
-func adminSessionCookieConfig(cfg *sysconfig.Config) protoui.SessionConfig {
+// from sysconfig and returns an authsession.SessionConfig suitable for
+// passing to protoadmin.Options.Session. The returned config uses the same
+// signing key and cookie names that newProtoUIServer uses for the "admin"
+// kind so cookies minted by the protoui HTML /login flow and by
+// protoadmin's JSON /api/v1/auth/login endpoint are mutually verifiable
+// (REQ-AUTH-SESSION-REST).
+func adminSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
 	signingKey := []byte{}
 	if env := cfg.Server.UI.SigningKeyEnv; env != "" {
 		if v := os.Getenv(env); v != "" {
@@ -2037,7 +2039,7 @@ func adminSessionCookieConfig(cfg *sysconfig.Config) protoui.SessionConfig {
 	} else {
 		csrfName = csrfName + "_admin"
 	}
-	return protoui.SessionConfig{
+	return authsession.SessionConfig{
 		SigningKey:     signingKey,
 		CookieName:     cookieName,
 		CSRFCookieName: csrfName,
