@@ -1576,6 +1576,70 @@ func validateSmartHost(label string, sh *SmartHostConfig, global bool) error {
 	return nil
 }
 
+// AdminRESTURL derives the admin REST base URL from cfg by inspecting the
+// first [[listener]] with kind = "admin". The returned string is suitable for
+// writing to ~/.herold/credentials.toml as server_url.
+//
+// Scheme selection:
+//   - "https" when the listener's tls field is "starttls" or "implicit" (any
+//     TLS-producing value). The caller should still trust the cert via the
+//     normal OS trust store or an explicit --tls-ca flag.
+//   - "http" when tls = "none" (the quickstart default).
+//
+// Bind-address translation:
+//   - "0.0.0.0" -> "127.0.0.1"  (wildcard IPv4 -> loopback)
+//   - "::"      -> "[::1]"       (wildcard IPv6 -> loopback)
+//   - Any other address is written through verbatim.
+//
+// The second return value carries operator warnings (non-fatal). Currently
+// the only warning is emitted when tls="none" and the bind address is not
+// loopback, which means the API key flows in cleartext to a non-local
+// endpoint.
+//
+// If no admin-kind listener exists AdminRESTURL returns ("", nil, false). The
+// caller decides whether to warn; Bootstrap treats this as a non-fatal
+// condition that still allows the key to be written.
+func AdminRESTURL(cfg *Config) (string, []string, bool) {
+	for _, l := range cfg.Listener {
+		if l.Kind != "admin" {
+			continue
+		}
+		scheme := "http"
+		if l.TLS == "starttls" || l.TLS == "implicit" {
+			scheme = "https"
+		}
+		host, port, err := net.SplitHostPort(l.Address)
+		if err != nil {
+			// Malformed address; skip rather than panic — validation
+			// would have caught this already in a real startup path.
+			return "", nil, false
+		}
+		originalBind := l.Address
+		switch host {
+		case "0.0.0.0":
+			host = "127.0.0.1"
+		case "::":
+			host = "[::1]"
+		}
+		// If the host contains a colon (bare IPv6 literal) wrap it in
+		// brackets so the URL is well-formed.
+		if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+			host = "[" + host + "]"
+		}
+		var warnings []string
+		if scheme == "http" && !isLoopbackBindAddr(originalBind) {
+			warnings = append(warnings, fmt.Sprintf(
+				"admin listener has tls=none and a non-loopback bind (%s); "+
+					"the API key will flow in cleartext to that endpoint — "+
+					"only use this for local development",
+				originalBind,
+			))
+		}
+		return fmt.Sprintf("%s://%s:%s", scheme, host, port), warnings, true
+	}
+	return "", nil, false
+}
+
 // isLoopbackBindAddr reports whether bind is a host:port style address
 // whose host resolves to a loopback IP. An empty bind (the default
 // after applyDefaults is "127.0.0.1:9090") and any unparseable shape

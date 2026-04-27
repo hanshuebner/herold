@@ -412,6 +412,85 @@ func TestReloadConfig_DataDirChange_Rejected(t *testing.T) {
 	}
 }
 
+// TestSaveCredentials_AtomicChmod verifies that saveCredentials tightens an
+// existing file from 0644 to 0600 and leaves no .tmp residue on the success
+// path (REQ-OPS-01 security fix B2).
+func TestSaveCredentials_AtomicChmod(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "credentials.toml")
+	// Pre-create the file with loose permissions to confirm chmod is applied.
+	if err := os.WriteFile(p, []byte("api_key = \"old\"\n"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	SetCredentialsPath(p)
+	t.Cleanup(func() { SetCredentialsPath("") })
+
+	var warnBuf bytes.Buffer
+	got, err := saveCredentials("newkey", "https://127.0.0.1:9443", &warnBuf)
+	if err != nil {
+		t.Fatalf("saveCredentials: %v", err)
+	}
+	if got != p {
+		t.Errorf("path: got %q, want %q", got, p)
+	}
+
+	// (a) File permissions must be 0600.
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("permissions: got %04o, want 0600", info.Mode().Perm())
+	}
+
+	// (b) No .tmp residue.
+	if _, err := os.Stat(p + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf(".tmp file should not exist after successful save, stat err=%v", err)
+	}
+}
+
+// TestSaveCredentials_DivergingURLWarns verifies that the don't-clobber
+// preservation of an existing server_url emits a warning when the supplied
+// URL differs, and stays silent when they match (REQ-OPS-01 security obs O2).
+func TestSaveCredentials_DivergingURLWarns(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "credentials.toml")
+	// Seed the file with a customised server_url.
+	initial := "api_key = \"old\"\nserver_url = \"https://mail.example.com:9443\"\n"
+	if err := os.WriteFile(p, []byte(initial), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	SetCredentialsPath(p)
+	t.Cleanup(func() { SetCredentialsPath("") })
+
+	t.Run("diverging_url_warns", func(t *testing.T) {
+		var warnBuf bytes.Buffer
+		if _, err := saveCredentials("newkey", "https://127.0.0.1:9443", &warnBuf); err != nil {
+			t.Fatalf("saveCredentials: %v", err)
+		}
+		if !strings.Contains(warnBuf.String(), "preserved existing server_url") {
+			t.Errorf("expected diverging-URL warning, got: %q", warnBuf.String())
+		}
+		if !strings.Contains(warnBuf.String(), "https://mail.example.com:9443") {
+			t.Errorf("warning should include existing url, got: %q", warnBuf.String())
+		}
+		if !strings.Contains(warnBuf.String(), "https://127.0.0.1:9443") {
+			t.Errorf("warning should include incoming url, got: %q", warnBuf.String())
+		}
+	})
+
+	t.Run("same_url_silent", func(t *testing.T) {
+		var warnBuf bytes.Buffer
+		// Use the existing (preserved) URL as the incoming URL — no warning expected.
+		if _, err := saveCredentials("newkey2", "https://mail.example.com:9443", &warnBuf); err != nil {
+			t.Fatalf("saveCredentials: %v", err)
+		}
+		if warnBuf.Len() != 0 {
+			t.Errorf("expected no warning when URLs match, got: %q", warnBuf.String())
+		}
+	})
+}
+
 // generateSelfSignedCert writes a cert+key pair under dir for dnsNames and
 // returns their paths. Mirrors the helper in internal/tls/tls_test.go.
 func generateSelfSignedCert(t *testing.T, dir string, dnsNames []string) (certPath, keyPath string) {

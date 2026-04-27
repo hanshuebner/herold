@@ -14,6 +14,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
 func newBootstrapCmd() *cobra.Command {
@@ -90,6 +91,23 @@ Exits 10 if a principal already exists.`,
 			}); err != nil {
 				return fmt.Errorf("bootstrap: insert api key: %w", err)
 			}
+			// Derive the admin REST URL from the system config when the
+			// operator has not supplied one explicitly via --server-url.
+			effectiveServerURL := serverURL
+			if effectiveServerURL == "" {
+				if derived, warns, ok := sysconfig.AdminRESTURL(cfg); ok {
+					effectiveServerURL = derived
+					for _, w := range warns {
+						fmt.Fprintf(cmd.ErrOrStderr(), "bootstrap: warn: %s\n", w)
+					}
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"bootstrap: warn: no [[listener]] with kind=\"admin\" found in system config; "+
+							"set server_url manually in ~/.herold/credentials.toml or pass "+
+							"--server-url to subsequent CLI calls\n",
+					)
+				}
+			}
 			w := cmd.OutOrStdout()
 			fmt.Fprintln(w, "bootstrap: first admin principal created")
 			fmt.Fprintf(w, "  email:   %s\n", adminEmail)
@@ -97,11 +115,14 @@ Exits 10 if a principal already exists.`,
 			fmt.Fprintf(w, "  api_key: %s\n", keyPlain)
 			fmt.Fprintln(w, "keep these values; they are not recoverable from the server after this point.")
 			if saveCredentialsFlag {
-				path, err := saveCredentials(keyPlain, serverURL)
+				path, err := saveCredentials(keyPlain, effectiveServerURL, cmd.ErrOrStderr())
 				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "bootstrap: warn: could not save credentials: %v\n", err)
 				} else {
 					fmt.Fprintf(w, "credentials saved to %s\n", path)
+					if effectiveServerURL != "" {
+						fmt.Fprintf(w, "  server_url: %s\n", effectiveServerURL)
+					}
 				}
 			}
 			return nil

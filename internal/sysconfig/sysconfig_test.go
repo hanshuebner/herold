@@ -1550,3 +1550,131 @@ per_host_max = 32
 		t.Errorf("error should mention per_host_max: %v", err)
 	}
 }
+
+// TestAdminRESTURL covers the derivation helper that bootstrap uses to
+// write server_url into ~/.herold/credentials.toml.
+func TestAdminRESTURL(t *testing.T) {
+	tests := []struct {
+		name         string
+		listeners    []ListenerConfig
+		wantURL      string
+		wantOK       bool
+		wantWarnings bool // true when the warnings slice must be non-empty
+	}{
+		{
+			name: "tls_none_produces_http",
+			listeners: []ListenerConfig{
+				{Kind: "admin", Address: "127.0.0.1:9080", Protocol: "admin", TLS: "none"},
+			},
+			wantURL: "http://127.0.0.1:9080",
+			wantOK:  true,
+		},
+		{
+			name: "tls_starttls_produces_https",
+			listeners: []ListenerConfig{
+				{Kind: "admin", Address: "127.0.0.1:9443", Protocol: "admin", TLS: "starttls"},
+			},
+			wantURL: "https://127.0.0.1:9443",
+			wantOK:  true,
+		},
+		{
+			name: "tls_implicit_produces_https",
+			listeners: []ListenerConfig{
+				{Kind: "admin", Address: "127.0.0.1:9443", Protocol: "admin", TLS: "implicit"},
+			},
+			wantURL: "https://127.0.0.1:9443",
+			wantOK:  true,
+		},
+		{
+			// 0.0.0.0 is not loopback, so tls=none triggers the cleartext warning.
+			name: "wildcard_ipv4_translates_to_loopback",
+			listeners: []ListenerConfig{
+				{Kind: "admin", Address: "0.0.0.0:9080", Protocol: "admin", TLS: "none"},
+			},
+			wantURL:      "http://127.0.0.1:9080",
+			wantOK:       true,
+			wantWarnings: true,
+		},
+		{
+			// [::] is not loopback, so tls=none triggers the cleartext warning.
+			name: "wildcard_ipv6_translates_to_loopback",
+			listeners: []ListenerConfig{
+				{Kind: "admin", Address: "[::]:9080", Protocol: "admin", TLS: "none"},
+			},
+			wantURL:      "http://[::1]:9080",
+			wantOK:       true,
+			wantWarnings: true,
+		},
+		{
+			name: "explicit_hostname_passed_through",
+			listeners: []ListenerConfig{
+				{Kind: "admin", Address: "mail.example.com:9443", Protocol: "admin", TLS: "implicit"},
+			},
+			wantURL: "https://mail.example.com:9443",
+			wantOK:  true,
+		},
+		{
+			name:      "no_admin_listener_returns_false",
+			listeners: []ListenerConfig{
+				{Kind: "public", Address: "0.0.0.0:443", Protocol: "admin", TLS: "implicit"},
+			},
+			wantURL: "",
+			wantOK:  false,
+		},
+		{
+			name:      "empty_listeners_returns_false",
+			listeners: nil,
+			wantURL:   "",
+			wantOK:    false,
+		},
+		{
+			name: "first_admin_listener_wins",
+			listeners: []ListenerConfig{
+				{Kind: "public", Address: "0.0.0.0:443", Protocol: "admin", TLS: "implicit"},
+				{Kind: "admin", Address: "127.0.0.1:9080", Protocol: "admin", TLS: "none"},
+				{Kind: "admin", Address: "127.0.0.1:9443", Protocol: "admin", TLS: "implicit"},
+			},
+			wantURL: "http://127.0.0.1:9080",
+			wantOK:  true,
+		},
+		{
+			// REQ-OPS-01 security: tls=none on a non-loopback bind should
+			// produce a warning so the operator knows the API key flows
+			// in cleartext.
+			name: "tls_none_non_loopback_warns",
+			listeners: []ListenerConfig{
+				{Kind: "admin", Address: "0.0.0.0:9080", Protocol: "admin", TLS: "none"},
+			},
+			wantURL:      "http://127.0.0.1:9080",
+			wantOK:       true,
+			wantWarnings: true,
+		},
+		{
+			// Malformed address must not panic; returns ("", nil, false).
+			name: "malformed_address_returns_false",
+			listeners: []ListenerConfig{
+				{Kind: "admin", Address: "notanaddress", Protocol: "admin", TLS: "none"},
+			},
+			wantURL: "",
+			wantOK:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{Listener: tt.listeners}
+			got, warns, ok := AdminRESTURL(cfg)
+			if ok != tt.wantOK {
+				t.Fatalf("AdminRESTURL ok=%v, want %v (url=%q)", ok, tt.wantOK, got)
+			}
+			if got != tt.wantURL {
+				t.Errorf("AdminRESTURL url=%q, want %q", got, tt.wantURL)
+			}
+			if tt.wantWarnings && len(warns) == 0 {
+				t.Errorf("AdminRESTURL: expected non-empty warnings for non-loopback http bind")
+			}
+			if !tt.wantWarnings && len(warns) != 0 {
+				t.Errorf("AdminRESTURL: unexpected warnings: %v", warns)
+			}
+		})
+	}
+}

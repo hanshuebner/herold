@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,8 +18,6 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
-	"net/http"
-
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
@@ -85,10 +85,13 @@ func newCLITestEnv(t *testing.T, optsMutator func(*protoadmin.Options)) *cliTest
 	// Write credentials so the CLI client picks the key + URL up.
 	home := t.TempDir()
 	credPath := filepath.Join(home, "credentials.toml")
-	prevPath := credentialsPath.v
+	var prevPath string
+	if ptr := credentialsPath.Load(); ptr != nil {
+		prevPath = *ptr
+	}
 	SetCredentialsPath(credPath)
 	t.Cleanup(func() { SetCredentialsPath(prevPath) })
-	if _, err := saveCredentials(plain, httpSrv.URL); err != nil {
+	if _, err := saveCredentials(plain, httpSrv.URL, &bytes.Buffer{}); err != nil {
 		t.Fatalf("saveCredentials: %v", err)
 	}
 
@@ -171,7 +174,12 @@ func rebuildAdminServer(t *testing.T, env *cliTestEnv, optsMutator func(*protoad
 	t.Cleanup(httpSrv.Close)
 	env.srv = srv
 	env.httpSrv = httpSrv
-	if _, err := saveCredentials(env.apiKey, httpSrv.URL); err != nil {
+	// Remove the existing credentials file so saveCredentials writes a
+	// fresh one with the new server URL. The don't-clobber rule preserves
+	// an existing server_url, which would still point at the now-closed
+	// httptest.Server; wiping it before re-save avoids the stale address.
+	_ = os.Remove(env.credPath)
+	if _, err := saveCredentials(env.apiKey, httpSrv.URL, &bytes.Buffer{}); err != nil {
 		t.Fatalf("saveCredentials: %v", err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -153,24 +154,24 @@ func (c *Client) do(ctx context.Context, method, path string, body any, into any
 // credentialsFile is the CLI's on-disk store of the API key. It lives
 // under the user's $HOME/.herold/ by default; tests override via
 // SetCredentialsPath.
-var credentialsPath atomic_string
-
-type atomic_string struct {
-	v string
-}
+var credentialsPath atomic.Pointer[string]
 
 // SetCredentialsPath overrides the location the admin client uses for
 // ~/.herold/credentials.toml. Pass an empty string to revert to the
 // default. Test seam; not for production callers.
 func SetCredentialsPath(p string) {
-	credentialsPath.v = p
+	if p == "" {
+		credentialsPath.Store(nil)
+		return
+	}
+	credentialsPath.Store(&p)
 }
 
 // DefaultCredentialsPath returns the resolved path used by
 // loadCredentials / saveCredentials.
 func DefaultCredentialsPath() string {
-	if credentialsPath.v != "" {
-		return credentialsPath.v
+	if ptr := credentialsPath.Load(); ptr != nil && *ptr != "" {
+		return *ptr
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -200,9 +201,18 @@ func loadCredentials() (string, bool) {
 	return f.APIKey, f.APIKey != ""
 }
 
-// saveCredentials writes the API key (and optional server URL) to the
-// default credentials path, chmod 0600. Returns the resolved path.
-func saveCredentials(apiKey, serverURL string) (string, error) {
+// saveCredentials writes apiKey (and optionally serverURL) to the default
+// credentials path, chmod 0600. Returns the resolved path.
+//
+// Don't-clobber rule: if the file already contains a non-empty server_url
+// that value is preserved even when a new serverURL is supplied — the
+// operator may have customised it. Conversely, an existing empty or absent
+// server_url is filled in when serverURL is non-empty. The api_key is
+// always written/overwritten.
+//
+// warnW receives operator warnings (non-fatal). Pass cmd.ErrOrStderr() from
+// the CLI or any io.Writer in tests.
+func saveCredentials(apiKey, serverURL string, warnW io.Writer) (string, error) {
 	p := DefaultCredentialsPath()
 	if p == "" {
 		return "", errors.New("admin-client: cannot resolve home directory for credentials file")
@@ -210,12 +220,43 @@ func saveCredentials(apiKey, serverURL string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return "", fmt.Errorf("admin-client: create credentials dir: %w", err)
 	}
-	raw, err := toml.Marshal(credentialsFile{APIKey: apiKey, ServerURL: serverURL})
+	// Load any existing file so we can honour the don't-clobber rule.
+	existing := credentialsFile{}
+	if raw, err := os.ReadFile(p); err == nil {
+		// Ignore parse errors on a corrupt file — we'll just overwrite.
+		_ = toml.Unmarshal(raw, &existing)
+	}
+	// Preserve an existing non-empty server_url.
+	effectiveURL := serverURL
+	if existing.ServerURL != "" {
+		if existing.ServerURL != serverURL && serverURL != "" {
+			fmt.Fprintf(warnW,
+				"saveCredentials: preserved existing server_url=%s (incoming=%s); "+
+					"verify it matches this installation\n",
+				existing.ServerURL, serverURL,
+			)
+		}
+		effectiveURL = existing.ServerURL
+	}
+	raw, err := toml.Marshal(credentialsFile{APIKey: apiKey, ServerURL: effectiveURL})
 	if err != nil {
 		return "", fmt.Errorf("admin-client: marshal credentials: %w", err)
 	}
-	if err := os.WriteFile(p, raw, 0o600); err != nil {
-		return "", fmt.Errorf("admin-client: write credentials: %w", err)
+	// Write atomically: temp file in the same directory, then rename.
+	// This ensures the final inode has 0600 permissions even if the
+	// file already existed with looser permissions (O_TRUNC on an
+	// existing file does not reset mode bits).
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return "", fmt.Errorf("admin-client: write credentials tmp: %w", err)
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("admin-client: chmod credentials tmp: %w", err)
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("admin-client: rename credentials: %w", err)
 	}
 	return p, nil
 }
