@@ -8,7 +8,7 @@
 // internal/sysconfig.PushConfig via a $VAR or file:/path secret
 // reference (STANDARDS §9). When the reference is empty the deployment
 // has no VAPID configured and Web Push is disabled — the JMAP session
-// descriptor advertises the https://herold.dev/jmap/push capability
+// descriptor advertises the https://netzhansa.com/jmap/push capability
 // without an applicationServerKey field, signalling clients that push
 // is unavailable.
 //

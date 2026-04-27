@@ -9,7 +9,7 @@ import (
 // types. Stable across releases; consumers that recognise the type
 // string can rely on it for classification. Distinct from the protoadmin
 // base so HTTP error consumers can route by package boundary.
-const problemTypeBase = "https://herold.dev/problems/send/"
+const problemTypeBase = "https://netzhansa.com/problems/send/"
 
 // problemDoc is the RFC 7807 "application/problem+json" body.
 //

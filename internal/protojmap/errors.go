@@ -39,7 +39,7 @@ func NewMethodError(typ, description string) *MethodError {
 // problemBase is the URI prefix for JMAP transport-level error type
 // slugs, shared with protoadmin's RFC 7807 response envelope so log
 // tailers see one consistent vocabulary across protocols.
-const problemBase = "https://herold.dev/problems/jmap-"
+const problemBase = "https://netzhansa.com/problems/jmap-"
 
 // problemDoc is the RFC 7807 "application/problem+json" body emitted
 // at the HTTP transport layer. Method-level errors use MethodError

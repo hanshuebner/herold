@@ -2,7 +2,7 @@
 // Message, Membership, Block) into the shared CapabilityRegistry owned
 // by the protojmap Core dispatcher (REQ-CHAT-01..06).
 //
-// Capability id is `https://herold.dev/jmap/chat`
+// Capability id is `https://netzhansa.com/jmap/chat`
 // (protojmap.CapabilityJMAPChat).
 //
 // Standardisation deviation. Unlike the mail / contacts / calendars
@@ -13,7 +13,7 @@
 // `https://www.fastmail.com/dev/maskedemail`) the capability URI is an
 // http(s) URL in the vendor namespace that owns the consumer wire
 // contract. Per docs/design/00-scope.md, herold is the substrate beneath the
-// the suite, so the URI is `https://herold.dev/jmap/chat`. The suite's
+// the suite, so the URI is `https://netzhansa.com/jmap/chat`. The suite's
 // chat client knows how to consume this; future IETF standardisation
 // is out of scope.
 //

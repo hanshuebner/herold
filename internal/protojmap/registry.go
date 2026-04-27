@@ -51,26 +51,25 @@ const (
 	// (REQ-CHAT-01..06). The chat datatypes (Conversation, Message,
 	// Membership, Block) are not standardised in any IETF JMAP RFC; the
 	// capability URI follows the JMAP convention of an http(s) URL in
-	// the vendor namespace that owns the consumer wire contract. Per
-	// docs/design/00-scope.md, herold is the substrate beneath the
-	// suite, so the URI lives under herold.dev. The herold.dev domain
+	// the vendor namespace that owns the consumer wire contract. The
+	// URI lives under netzhansa.com (the operator domain). The choice
 	// is provisional and flagged for revision before launch -- see Q5
 	// in docs/design/server/notes/open-questions.md. Implemented under
 	// internal/protojmap/chat.
-	CapabilityJMAPChat CapabilityID = "https://herold.dev/jmap/chat"
+	CapabilityJMAPChat CapabilityID = "https://netzhansa.com/jmap/chat"
 	// CapabilityPush is the JMAP PushSubscription + suite-extension
 	// capability (REQ-PROTO-120..127, RFC 8620 §7.2). The standard
 	// PushSubscription datatype is part of the Core capability per
 	// RFC 8620, but the suite layers extension properties
 	// (notificationRules, quietHours, vapidKeyAtRegistration) and the
 	// outbound push gateway lives under a vendor capability. The URI
-	// is "https://herold.dev/jmap/push" — same vendor-URL convention
+	// is "https://netzhansa.com/jmap/push" — same vendor-URL convention
 	// as CapabilityJMAPChat. The capability descriptor carries the
 	// deployment's VAPID applicationServerKey so the suite SPA can
 	// read it from the session response and pass it to
 	// pushManager.subscribe(). Implemented under
 	// internal/protojmap/push.
-	CapabilityPush CapabilityID = "https://herold.dev/jmap/push"
+	CapabilityPush CapabilityID = "https://netzhansa.com/jmap/push"
 	// CapabilityShortcutCoach is the Suite-specific ShortcutCoachStat
 	// JMAP datatype capability (REQ-PROTO-110..112). Per-principal
 	// storage of keyboard/mouse invocation counts in sliding 14d / 90d
@@ -78,7 +77,7 @@ const (
 	// (docs/design/web/requirements/23-shortcut-coach.md). Capability URI
 	// per the suite's server-contract.md. Implemented under
 	// internal/protojmap/coach.
-	CapabilityShortcutCoach CapabilityID = "https://herold.dev/jmap/shortcut-coach"
+	CapabilityShortcutCoach CapabilityID = "https://netzhansa.com/jmap/shortcut-coach"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

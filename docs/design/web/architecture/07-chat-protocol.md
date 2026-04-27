@@ -113,7 +113,7 @@ Mirrors of the above where applicable, fanned out to other participants of the r
 
 ### Connection lifecycle
 
-- The suite opens the WebSocket at suite bootstrap (after the JMAP session descriptor confirms `https://herold.dev/jmap/chat` capability). The cookie attaches automatically; no separate auth handshake.
+- The suite opens the WebSocket at suite bootstrap (after the JMAP session descriptor confirms `https://netzhansa.com/jmap/chat` capability). The cookie attaches automatically; no separate auth handshake.
 - Heartbeats: server sends a `{ "op": "ping" }` every 30 seconds; the suite responds `{ "op": "pong" }`. Missed pong > 90 s → server drops; missed ping > 90 s → client reconnects.
 - Reconnect: exponential backoff (1s, 2s, 4s, 8s, max 30s). On reconnect, the suite re-issues `presence` and resubscribes; the server replays no missed messages (ephemeral signals are not retained).
 - The presence state defaults to `online` on connect.
@@ -148,7 +148,7 @@ If the user opens a second suite tab, that tab opens its own EventSource and Web
 
 ## Capability negotiation
 
-The suite sees the chat capability in the JMAP session descriptor (`https://herold.dev/jmap/chat`). If absent, the chat panel renders a single line: "Chat is not configured on this server" — no panel UI. Per resolved R14, this should never happen in production; the empty state exists for development environments and misconfigurations.
+The suite sees the chat capability in the JMAP session descriptor (`https://netzhansa.com/jmap/chat`). If absent, the chat panel renders a single line: "Chat is not configured on this server" — no panel UI. Per resolved R14, this should never happen in production; the empty state exists for development environments and misconfigurations.
 
 ## Out of scope
 

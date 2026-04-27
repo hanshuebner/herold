@@ -67,7 +67,7 @@ The user can edit both the category set and the prompt that classifies into them
 | ID | Requirement |
 |----|-------------|
 | REQ-CAT-50 | The category set and the classifier prompt are stored server-side, per account. They sync across devices automatically (a fresh the suite tab reads them on bootstrap). |
-| REQ-CAT-51 | The server contract for categorisation is `https://herold.dev/jmap/categorise` (proposed URN — see `../notes/server-contract.md`). It declares: per-account category set, per-account prompt, per-Email `$category-*` keyword application by the classifier on delivery, and the re-classification API. |
+| REQ-CAT-51 | The server contract for categorisation is `https://netzhansa.com/jmap/categorise` (proposed URN — see `../notes/server-contract.md`). It declares: per-account category set, per-account prompt, per-Email `$category-*` keyword application by the classifier on delivery, and the re-classification API. |
 
 ## Cross-references
 

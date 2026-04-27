@@ -8,7 +8,7 @@ import (
 // problemTypeBase is the URI-reference namespace for protoadmin problem
 // types. Stable across releases; a consumer that recognises a type
 // string can rely on it to classify errors.
-const problemTypeBase = "https://herold.dev/problems/"
+const problemTypeBase = "https://netzhansa.com/problems/"
 
 // problemDoc is the RFC 7807 "application/problem+json" body.
 type problemDoc struct {

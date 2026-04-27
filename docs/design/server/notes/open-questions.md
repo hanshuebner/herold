@@ -16,17 +16,18 @@ Matrix / Discord / GitHub Discussions / Zulip. Not urgent; revisit before first 
 
 We sign release artifacts (REQ-NFR-131). Open: who holds the key, how rotated, hardware-backed (YubiKey), backup. Resolve before first signed release.
 
-### Q5. JMAP capability vendor URI scheme — `herold.dev` is provisional *(opened 2026-04-27)*
+### Q5. JMAP capability vendor URI scheme — `netzhansa.com` is provisional *(opened 2026-04-27, redirected 2026-04-27 from herold.dev)*
 
 The Phase 1c-3c rename (tabard merge plan) replaced the historical
 `https://tabard.dev/jmap/*` capability URIs with
-`https://herold.dev/jmap/*` across server, client, tests, and docs.
-The `herold.dev` domain is registered (Cloudflare NS) but currently
-parked — no A/MX/TXT records — and the project has not yet decided
-whether the production capability URI should live under that domain,
-under a `urn:herold:` scheme, or under an
-`urn:ietf:params:jmap:vendor:herold:` IANA registration. The rename
-is a placeholder so the wire surface is internally self-consistent;
+`https://netzhansa.com/jmap/*` across server, client, tests, and docs.
+(An interim `herold.dev` placeholder was used during 3c and then
+swept to `netzhansa.com` in the same Phase 1 cycle once the operator
+domain was settled.) The project has not yet decided whether the
+production capability URI should keep `netzhansa.com`, move to a
+`urn:netzhansa:` scheme, or move to an
+`urn:ietf:params:jmap:vendor:herold:` IANA registration. The current
+URI is a placeholder so the wire surface is internally self-consistent;
 the URI scheme MUST be revisited and finalized before the first
 public release. If the domain decision changes, every URI listed in
 `docs/design/web/notes/server-contract.md` § Vendor capabilities and

@@ -9,7 +9,7 @@ import (
 // problem types. Stable across releases; consumers that match on the
 // trailing slug ("rate_limited", "unauthorized", "turn_disabled",
 // ...) can rely on it.
-const problemTypeBase = "https://herold.dev/problems/"
+const problemTypeBase = "https://netzhansa.com/problems/"
 
 // problemDoc is the RFC 7807 "application/problem+json" body. The
 // shape is identical to internal/protoadmin's; we duplicate the

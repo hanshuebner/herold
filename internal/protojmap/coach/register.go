@@ -16,7 +16,7 @@ type handlerSet struct {
 }
 
 // Register installs the JMAP ShortcutCoachStat handlers under
-// CapabilityShortcutCoach ("https://herold.dev/jmap/shortcut-coach")
+// CapabilityShortcutCoach ("https://netzhansa.com/jmap/shortcut-coach")
 // and registers the per-server capability descriptor.
 //
 // Idempotent on the per-method axis: re-registering a method panics

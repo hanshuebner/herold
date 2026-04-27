@@ -34,7 +34,7 @@ type handlerSet struct {
 }
 
 // Register installs the JMAP PushSubscription handlers under
-// CapabilityPush ("https://herold.dev/jmap/push") and registers the
+// CapabilityPush ("https://netzhansa.com/jmap/push") and registers the
 // per-server capability descriptor that carries the deployment's
 // VAPID applicationServerKey. When vm is nil or unconfigured the
 // capability is still advertised (so clients can detect that herold
@@ -71,7 +71,7 @@ type pushCapability struct {
 }
 
 // buildCapabilityDescriptor returns the immutable descriptor object
-// installed under capabilities["https://herold.dev/jmap/push"]. The
+// installed under capabilities["https://netzhansa.com/jmap/push"]. The
 // session endpoint marshals it verbatim. We snapshot the public key
 // at server-construction time; rotation requires a server restart so
 // the descriptor surfaces the new key.

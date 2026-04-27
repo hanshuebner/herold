@@ -83,12 +83,12 @@ export const Capability = {
   Contacts: 'urn:ietf:params:jmap:contacts',
   WebSocket: 'urn:ietf:params:jmap:websocket',
   // Herold suite-specific capabilities
-  HeroldSnooze: 'https://herold.dev/jmap/snooze',
-  HeroldCategorise: 'https://herold.dev/jmap/categorise',
-  HeroldChat: 'https://herold.dev/jmap/chat',
-  HeroldEmailReactions: 'https://herold.dev/jmap/email-reactions',
-  HeroldShortcutCoach: 'https://herold.dev/jmap/shortcut-coach',
-  HeroldPush: 'https://herold.dev/jmap/push',
+  HeroldSnooze: 'https://netzhansa.com/jmap/snooze',
+  HeroldCategorise: 'https://netzhansa.com/jmap/categorise',
+  HeroldChat: 'https://netzhansa.com/jmap/chat',
+  HeroldEmailReactions: 'https://netzhansa.com/jmap/email-reactions',
+  HeroldShortcutCoach: 'https://netzhansa.com/jmap/shortcut-coach',
+  HeroldPush: 'https://netzhansa.com/jmap/push',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];
