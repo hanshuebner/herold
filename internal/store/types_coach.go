@@ -24,7 +24,7 @@ const (
 )
 
 // CoachEvent is one row in the coach_events table: a batch of
-// invocations of action by method at occurred_at. tabard typically
+// invocations of action by method at occurred_at. The suite typically
 // batches multiple invocations from its 60-second ring-buffer flush
 // into a single event_count > 1 record.
 type CoachEvent struct {

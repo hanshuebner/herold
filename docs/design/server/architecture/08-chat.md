@@ -169,7 +169,7 @@ The chat WebSocket subscribers are a separate set from the EventSource subscribe
 
 ## Authentication
 
-The WebSocket authenticates via the suite session cookie (`requirements/02-identity-and-auth.md` cookie auth path). The cookie is `HttpOnly; Secure; SameSite=Strict`; tabard's WebSocket open uses the cookie automatically. There is no chat-specific token, no JWT, no second auth surface.
+The WebSocket authenticates via the suite session cookie (`requirements/02-identity-and-auth.md` cookie auth path). The cookie is `HttpOnly; Secure; SameSite=Strict`; the suite's WebSocket open uses the cookie automatically. There is no chat-specific token, no JWT, no second auth surface.
 
 The TURN-credential mint at `POST /api/v1/call/credentials` is dual-authenticated: the suite session cookie OR a `Bearer hk_...` API key (for non-browser / CLI clients). Per-principal rate limits apply. Mint is deliberately kept off the JMAP request envelope and off the chat WebSocket so the credential issuance side channel can be fuzzed and audited in isolation.
 

@@ -8,12 +8,12 @@
 // Standardisation deviation. Unlike the mail / contacts / calendars
 // datatypes -- each anchored to a stable IETF spec or a published draft
 // -- the chat datatypes are NOT standardised in any IETF JMAP RFC nor a
-// public IETF draft. Tabard and herold ship one paired suite; per JMAP
+// public IETF draft. The herold suite ships one paired suite; per JMAP
 // convention for vendor extensions (e.g. Fastmail's
 // `https://www.fastmail.com/dev/maskedemail`) the capability URI is an
 // http(s) URL in the vendor namespace that owns the consumer wire
 // contract. Per docs/design/00-scope.md, herold is the substrate beneath the
-// tabard suite, so the URI is `https://tabard.dev/jmap/chat`. Tabard's
+// the suite, so the URI is `https://tabard.dev/jmap/chat`. The suite's
 // chat client knows how to consume this; future IETF standardisation
 // is out of scope.
 //

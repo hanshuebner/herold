@@ -23,7 +23,7 @@ This doc is a placeholder skeleton. Concrete requirements come from gmail-logger
 | REQ-MAIL-13 | Compose autosaves to Drafts every N seconds while the body is dirty (N: TBD from capture). |
 | REQ-MAIL-14 | Send issues `Email/set` (create the final form, removing `$draft`) followed by `EmailSubmission/set` in one batched call with back-references. The `EmailSubmission` carries `sendAt = now + <undo-window>` (RFC 8621 §7.5); herold's outbound queue holds the message until that time. |
 | REQ-MAIL-15 | Send → toast "Message sent" with Undo for the configured undo window (default 5 s; user-configurable per `20-settings.md` REQ-SET-06). Undo within the window issues `EmailSubmission/set { destroy: [<id>] }` and re-opens the compose. After the window elapses, herold sends. |
-| REQ-MAIL-15a | If the user closes the tab during the undo window, the message still sends at `sendAt` because the submission is server-side. The user's "Sent" is the truth — tabard does not silently drop messages on tab close. |
+| REQ-MAIL-15a | If the user closes the tab during the undo window, the message still sends at `sendAt` because the submission is server-side. The user's "Sent" is the truth — the suite does not silently drop messages on tab close. |
 | REQ-MAIL-16 | Compose supports plain-text and HTML bodies. Default mode TBD from capture. |
 | REQ-MAIL-17 | File attachment is a `Blob/upload` followed by `Email/set` referencing the blob ID. |
 
@@ -72,7 +72,7 @@ The compose body is a ProseMirror editor (`../implementation/01-tech-stack.md`).
 |----|-------------|
 | REQ-MAIL-80 | The toolbar appears at the bottom of the compose, beneath the body editor. (Top-of-body toolbars steal vertical real estate during typing; bottom keeps the body's start visible.) |
 | REQ-MAIL-81 | Toolbar buttons reflect the current selection's mark/node state — bold lights up when the cursor is in bold text. Implementation: ProseMirror state subscription bridged to Svelte `$state` (`../architecture/06-design-system.md` § Compose window). |
-| REQ-MAIL-82 | The compose schema rejects styles outside the supported set — pasting `<style>`, `<script>`, raw HTML, or arbitrary inline `style=` attributes drops the disallowed parts. The schema is defined once and shared between compose-output and inbound-sanitisation as the contract for "what tabard considers valid email HTML". |
+| REQ-MAIL-82 | The compose schema rejects styles outside the supported set — pasting `<style>`, `<script>`, raw HTML, or arbitrary inline `style=` attributes drops the disallowed parts. The schema is defined once and shared between compose-output and inbound-sanitisation as the contract for "what the suite considers valid email HTML". |
 
 ### Paste
 
@@ -123,7 +123,7 @@ The three-dot menu surfaced from each message header in the reading-pane accordi
 | REQ-MAIL-136 | Report phishing | Same as report-spam, plus an additional flag indicating phishing rather than generic spam. Herold may forward the report to upstream (operator policy). |
 | REQ-MAIL-137 | Report illegal content | Surfaces a confirmation modal explaining the operator-side handling, then sends a report payload to herold's admin queue. Operator policy governs further escalation. Hidden if the operator hasn't enabled illegal-content reporting in herold's policy. |
 | REQ-MAIL-138 | Filter messages like this | Opens the filter editor (`04-filters.md`) pre-populated with conditions derived from the message: From address (or domain), subject prefix, list-id (if present). User picks the action. |
-| REQ-MAIL-139 | Translate | Cut for v1. The action is hidden until tabard ships translation. (Hidden, not greyed-out — invisible.) |
+| REQ-MAIL-139 | Translate | Cut for v1. The action is hidden until the suite ships translation. (Hidden, not greyed-out — invisible.) |
 | REQ-MAIL-140 | Print | Opens the browser print dialog scoped to this message's rendered body (with sender / date / subject header). |
 | REQ-MAIL-141 | Download message | Downloads the raw RFC 5322 source as `<subject>.eml` via `Blob/download` of the email's blob. |
 | REQ-MAIL-142 | Show original | Opens a modal showing the raw RFC 5322 source (headers + body). Read-only, monospace, copy-to-clipboard affordance. Useful for debugging delivery and authentication. |
@@ -142,7 +142,7 @@ The pill buttons are the second time these actions surface for the message — o
 
 ## Reactions
 
-Tabard supports emoji reactions on email messages. Reactions mirror the chat reaction shape (`08-chat.md` REQ-CHAT-30..33): per-emoji lists of reactor PrincipalIds.
+The suite supports emoji reactions on email messages. Reactions mirror the chat reaction shape (`08-chat.md` REQ-CHAT-30..33): per-emoji lists of reactor PrincipalIds.
 
 For users on the same herold (sender and reactor share a server), reactions are native — stored on `Email.reactions`, synced via JMAP state. For cross-server recipients, the reactor's herold sends an additional email carrying structured reaction headers; if the receiving server is herold (or another reaction-aware server), it consumes the headers and applies a native reaction; otherwise the email lands as a normal short message ("Alice reacted with 🎉 to your message") that threads with the original.
 
@@ -151,7 +151,7 @@ For users on the same herold (sender and reactor share a server), reactions are 
 | ID | Requirement |
 |----|-------------|
 | REQ-MAIL-170 | `Email.reactions` is an extension property (not standard RFC 8621). Shape: `{ "<emoji>": ["<principal-id>", ...] }`. Sparse — emojis with no current reactors are absent rather than empty arrays. |
-| REQ-MAIL-171 | Adding a reaction: tabard issues `Email/set { update: { "<id>": { "reactions/<emoji>/<my-principal-id>": true } } }`. The JSON-patch path appends the user's id to the emoji's reactor list (or creates the emoji entry if absent). Removing: `... null` on the same path. |
+| REQ-MAIL-171 | Adding a reaction: the suite issues `Email/set { update: { "<id>": { "reactions/<emoji>/<my-principal-id>": true } } }`. The JSON-patch path appends the user's id to the emoji's reactor list (or creates the emoji entry if absent). Removing: `... null` on the same path. |
 | REQ-MAIL-172 | Reactions are **per-Email, not per-thread.** Reacting to message 3 in a thread does not propagate to message 1. The reading-pane UI shows reactions inline beneath each message. |
 | REQ-MAIL-173 | Authorisation: a user can only add/remove their own principalId in any reactor list. Attempting to mutate someone else's reaction returns `forbidden` from herold. |
 
@@ -162,15 +162,15 @@ For users on the same herold (sender and reactor share a server), reactions are 
 | REQ-MAIL-180 | When a user adds a reaction to a message whose recipients include addresses on other servers (i.e., recipients of the original email outside the reactor's herold), the reactor's herold sends an outbound reaction email to those external recipients. The reactor sees the same UX whether the original was local-only or cross-server — the propagation is an internal herold concern. |
 | REQ-MAIL-181 | Reaction emails carry both structured headers (so a herold-aware receiver can apply as a native reaction) and a human-readable body fallback (so a non-herold receiver sees "Alice reacted with 🎉 to your message"). Wire format defined in `notes/server-contract.md` § Email reactions. |
 | REQ-MAIL-182 | Reaction emails follow standard threading (`In-Reply-To`, `References` matching the original message). On non-herold receivers they appear as short messages in the same thread; on herold receivers the reaction is consumed and the email is suppressed from delivery. |
-| REQ-MAIL-183 | Removing a reaction does NOT propagate to non-herold receivers. The remove is local to the reactor's server (and any herold receivers within the original recipient set). Rationale: a "Alice un-reacted" email to someone on a non-tabard server is awkward; reactions are ephemeral signals, the asymmetry is acceptable. |
-| REQ-MAIL-184 | Tabard does not surface the local-vs-cross-server distinction in the UI. The user sees one "react" button; herold decides what happens internally. |
+| REQ-MAIL-183 | Removing a reaction does NOT propagate to non-herold receivers. The remove is local to the reactor's server (and any herold receivers within the original recipient set). Rationale: a "Alice un-reacted" email to someone on a non-herold server is awkward; reactions are ephemeral signals, the asymmetry is acceptable. |
+| REQ-MAIL-184 | The suite does not surface the local-vs-cross-server distinction in the UI. The user sees one "react" button; herold decides what happens internally. |
 
 ### What's reacted to
 
 | ID | Requirement |
 |----|-------------|
-| REQ-MAIL-190 | Tabard exposes the React affordance on every message in the reading pane. Reactions are equally available on inbound and outbound messages — the user can react to their own sent mail. |
-| REQ-MAIL-191 | Mailing-list messages (`16-mailing-lists.md`) are reactable, but the cross-server propagation can fan out to many recipients. Tabard surfaces a one-time confirmation when reacting to a message with `List-ID` header AND > 5 recipients: "This will send a reaction email to N people. Continue?". |
+| REQ-MAIL-190 | The suite exposes the React affordance on every message in the reading pane. Reactions are equally available on inbound and outbound messages — the user can react to their own sent mail. |
+| REQ-MAIL-191 | Mailing-list messages (`16-mailing-lists.md`) are reactable, but the cross-server propagation can fan out to many recipients. The suite surfaces a one-time confirmation when reacting to a message with `List-ID` header AND > 5 recipients: "This will send a reaction email to N people. Continue?". |
 
 ## Mute thread
 

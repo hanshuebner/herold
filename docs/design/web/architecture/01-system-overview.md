@@ -1,6 +1,6 @@
 # 01 — System overview
 
-How tabard is shaped at the highest level.
+How the suite is shaped at the highest level.
 
 ## Shape
 
@@ -8,7 +8,7 @@ How tabard is shaped at the highest level.
                               ┌────────────────────────────────────┐
                               │              browser               │
                               │  ┌──────────────────────────────┐  │
-                              │  │       tabard suite shell     │  │
+                              │  │       the suite shell     │  │
                               │  │  ┌────────┐ ┌─────────────┐  │  │
                               │  │  │  app   │ │ chat panel  │  │  │
                               │  │  │ route  │ │(persistent) │  │  │
@@ -26,7 +26,7 @@ How tabard is shaped at the highest level.
                               └────────────────────────────────────┘
 ```
 
-Tabard is **one** single-page application — the suite shell. It client-side routes between mail / calendar / contacts (each is a lazy-loaded module within the shell). The chat panel mounts once in the shell and persists across route changes. Three concurrent transports talk to herold:
+The suite is **one** single-page application — the suite shell. It client-side routes between mail / calendar / contacts (each is a lazy-loaded module within the shell). The chat panel mounts once in the shell and persists across route changes. Three concurrent transports talk to herold:
 
 - **HTTPS (JMAP)** for batched reads and writes.
 - **EventSource** for durable state-change push (mail, chat conversations, chat messages, etc.).
@@ -44,28 +44,28 @@ Tabard is **one** single-page application — the suite shell. It client-side ro
 
 | Concern | Where |
 |---------|-------|
-| RFC 5322 / MIME parsing | Server (herold). Tabard reads parsed JMAP `Email` properties. |
-| Search index | Server (herold's Bleve). Tabard issues `Email/query` and renders results. |
+| RFC 5322 / MIME parsing | Server (herold). The suite reads parsed JMAP `Email` properties. |
+| Search index | Server (herold's Bleve). The suite issues `Email/query` and renders results. |
 | Filter execution | Server (Sieve via RFC 9007). |
 | Snooze wake-up | Server. (Reasoned in `../requirements/06-snooze.md`.) |
 | Image proxying | Server. (`../notes/server-contract.md` § Image proxy.) |
 | Optimistic UI state | Client. Reverts on server failure. |
 | Keyboard handling | Client. |
-| Drafts | Both. Tabard composes locally with autosave to JMAP `Email` in the Drafts mailbox; the server persists. |
+| Drafts | Both. The suite composes locally with autosave to JMAP `Email` in the Drafts mailbox; the server persists. |
 
 The principle: anything that has to survive a closed laptop, a second device, or a logged-out session goes to the server. Anything that's purely about how the active tab feels stays in the client.
 
 ## Bootstrap
 
-Tabard and herold are deployed at the same origin (resolved Q1). Herold serves both tabard's static assets and the JMAP API; the suite shares one auth surface.
+The suite and herold are deployed at the same origin (resolved Q1). Herold serves both the suite's static assets and the JMAP API; the suite shares one auth surface.
 
 1. Static assets load from the suite origin (served by herold).
-2. Tabard issues `GET /.well-known/jmap` with `credentials: 'include'`. The browser attaches the suite-origin session cookie if one is present.
-3. If herold returns 401 (no cookie or expired session), tabard redirects to `/login?return=<current-url>`. Herold's login surface authenticates the user (password+TOTP locally, or OIDC redirect through an external IdP — herold is not an IdP itself, only a relying party). On success herold sets a fresh session cookie and redirects back to tabard's URL.
+2. The suite issues `GET /.well-known/jmap` with `credentials: 'include'`. The browser attaches suite-origin session cookie if one is present.
+3. If herold returns 401 (no cookie or expired session), the suite redirects to `/login?return=<current-url>`. Herold's login surface authenticates the user (password+TOTP locally, or OIDC redirect through an external IdP — herold is not an IdP itself, only a relying party). On success herold sets a fresh session cookie and redirects back to the suite's URL.
 4. With a valid session, `.well-known/jmap` returns the session descriptor.
-5. Tabard checks the descriptor's `capabilities` and `accountCapabilities` against `../notes/server-contract.md`. Herold is treated as a fully-provisioned peer; capabilities are assumed present, not feature-detected with fallbacks. A missing capability is a deployment configuration error and surfaces in the About settings panel as such.
-6. Tabard issues a single batched JMAP call for the initial view: mailboxes, identities, the inbox's first thread page, the inbox state strings, the user's filters list, the user's category configuration.
-7. Tabard opens the EventSource push channel (also `credentials: 'include'`).
+5. The suite checks the descriptor's `capabilities` and `accountCapabilities` against `../notes/server-contract.md`. Herold is treated as a fully-provisioned peer; capabilities are assumed present, not feature-detected with fallbacks. A missing capability is a deployment configuration error and surfaces in the About settings panel as such.
+6. The suite issues a single batched JMAP call for the initial view: mailboxes, identities, the inbox's first thread page, the inbox state strings, the user's filters list, the user's category configuration.
+7. The suite opens the EventSource push channel (also `credentials: 'include'`).
 8. The first paint shows the inbox.
 
 ## Concurrency
@@ -89,9 +89,9 @@ Nothing else persists client-side. No IndexedDB, no service worker storage.
 
 The suite is **one SPA shell** with client-side routing. The shell hosts:
 
-- `/mail/*` — tabard-mail routes (default landing page).
-- `/calendar/*` — tabard-calendar routes (future).
-- `/contacts/*` — tabard-contacts routes (future).
+- `/mail/*` — the suite routes (default landing page).
+- `/calendar/*` — the calendar app routes (future).
+- `/contacts/*` — the contacts app routes (future).
 - `/chat/*` — full-screen chat routes (a route used when the user wants chat to take the whole window — distinct from the persistent panel which is always present).
 - The persistent **chat panel** is mounted once in the shell, persists across route changes.
 - One JMAP client, one EventSource, one chat WebSocket — all owned by the shell, lifecycles span routes.
@@ -102,4 +102,4 @@ Code organisation (eventual monorepo): `apps/suite` builds the shell. Per-app co
 
 Per-app caches are isolated within the shell — mail's cache and chat's cache are separate JMAP-typed normalised stores, but both live in the same memory space. No cross-app cache sharing semantics; just don't trip over each other's namespaces.
 
-Until tabard-calendar and tabard-contacts exist, their routes 404 with a "this app isn't deployed yet" page. The chat panel and `/chat/*` routes work as long as the chat capability is advertised by herold.
+Until the calendar app and the contacts app exist, their routes 404 with a "this app isn't deployed yet" page. The chat panel and `/chat/*` routes work as long as the chat capability is advertised by herold.

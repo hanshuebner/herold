@@ -49,7 +49,7 @@ func newVAPIDGenerateCmd() *cobra.Command {
 			fmt.Fprintln(out, "#   vapid_private_key_file = \"/etc/herold/secrets/vapid.pem\"")
 			fmt.Fprint(out, pemStr)
 			fmt.Fprintln(out)
-			fmt.Fprintln(out, "# VAPID public key (base64url, uncompressed P-256). Tabard reads this")
+			fmt.Fprintln(out, "# VAPID public key (base64url, uncompressed P-256). The suite reads this")
 			fmt.Fprintln(out, "# from the JMAP session capability descriptor and passes it to")
 			fmt.Fprintln(out, "# pushManager.subscribe({applicationServerKey: ...}).")
 			fmt.Fprintln(out, kp.PublicKeyB64URL)

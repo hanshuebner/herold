@@ -1,6 +1,6 @@
 # 14 — Unsubscribe
 
-When a message comes from a mailing list or commercial sender that has declared an unsubscribe mechanism per RFC 2369 / RFC 8058, tabard surfaces a clear "Unsubscribe" affordance and runs the unsubscribe with as little friction as the protocol allows.
+When a message comes from a mailing list or commercial sender that has declared an unsubscribe mechanism per RFC 2369 / RFC 8058, the suite surfaces a clear "Unsubscribe" affordance and runs the unsubscribe with as little friction as the protocol allows.
 
 Why a dedicated doc: this is the most common single-action workflow that distinguishes "an email client a normal person can use" from "raw mail UI". Doing it well requires understanding the header forms, the one-click variant's security implications, and the failure modes.
 
@@ -8,10 +8,10 @@ Why a dedicated doc: this is the most common single-action workflow that disting
 
 | ID | Requirement |
 |----|-------------|
-| REQ-UNS-01 | Tabard parses the `List-Unsubscribe` header (RFC 2369). The header may carry one or more `<URL>` values, where `URL` is `mailto:`, `https:`, or (legacy) `http:`. |
-| REQ-UNS-02 | Tabard parses `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (RFC 8058). When present alongside an HTTPS `List-Unsubscribe` URL, the one-click flow applies. |
+| REQ-UNS-01 | The suite parses the `List-Unsubscribe` header (RFC 2369). The header may carry one or more `<URL>` values, where `URL` is `mailto:`, `https:`, or (legacy) `http:`. |
+| REQ-UNS-02 | The suite parses `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (RFC 8058). When present alongside an HTTPS `List-Unsubscribe` URL, the one-click flow applies. |
 | REQ-UNS-03 | The Unsubscribe affordance is shown only when at least one of these mechanisms is present. Absent headers → no affordance, no fallback to body-text scraping. |
-| REQ-UNS-04 | `http://` (cleartext) URLs in `List-Unsubscribe` are NOT honoured. Tabard surfaces "the sender's unsubscribe link is unencrypted; use the link in the message body if you trust it" and does not click it for the user. |
+| REQ-UNS-04 | `http://` (cleartext) URLs in `List-Unsubscribe` are NOT honoured. The suite surfaces "the sender's unsubscribe link is unencrypted; use the link in the message body if you trust it" and does not click it for the user. |
 
 ## Surface
 
@@ -23,18 +23,18 @@ Why a dedicated doc: this is the most common single-action workflow that disting
 
 ## Action: choose mechanism
 
-When multiple mechanisms are advertised, tabard prefers in this order:
+When multiple mechanisms are advertised, the suite prefers in this order:
 
 1. RFC 8058 one-click (`List-Unsubscribe-Post: List-Unsubscribe=One-Click` + HTTPS URL). No user data leaves the client beyond the empty POST body the RFC mandates.
-2. Plain HTTPS URL (open in a new tab; tabard does not auto-click).
+2. Plain HTTPS URL (open in a new tab; the suite does not auto-click).
 3. `mailto:` (compose a message to the unsubscribe address).
 
 | ID | Requirement |
 |----|-------------|
-| REQ-UNS-20 | One-click: tabard issues `POST <url>` with body `List-Unsubscribe=One-Click` and `Content-Type: application/x-www-form-urlencoded`. No user-agent, no cookies, no referrer. |
-| REQ-UNS-21 | Plain HTTPS URL: tabard opens the URL in a new tab with `rel="noopener noreferrer"`. The unsubscribe state is the user's responsibility from that point. |
-| REQ-UNS-22 | `mailto:`: tabard opens a compose window with `to`, `subject`, and `body` populated from the URI parameters. The user must hit Send to actually unsubscribe; tabard does not auto-send. |
-| REQ-UNS-23 | If both one-click and a `mailto:` are present, tabard uses one-click silently. The fallback is opaque to the user. |
+| REQ-UNS-20 | One-click: the suite issues `POST <url>` with body `List-Unsubscribe=One-Click` and `Content-Type: application/x-www-form-urlencoded`. No user-agent, no cookies, no referrer. |
+| REQ-UNS-21 | Plain HTTPS URL: the suite opens the URL in a new tab with `rel="noopener noreferrer"`. The unsubscribe state is the user's responsibility from that point. |
+| REQ-UNS-22 | `mailto:`: the suite opens a compose window with `to`, `subject`, and `body` populated from the URI parameters. The user must hit Send to actually unsubscribe; the suite does not auto-send. |
+| REQ-UNS-23 | If both one-click and a `mailto:` are present, the suite uses one-click silently. The fallback is opaque to the user. |
 
 ## Confirmation
 
@@ -57,16 +57,16 @@ When multiple mechanisms are advertised, tabard prefers in this order:
 
 | ID | Requirement |
 |----|-------------|
-| REQ-UNS-50 | After a successful one-click unsubscribe, tabard records the sender's `From` address in a client-local "unsubscribed-from" set, stored in `localStorage` per account. The set has no v1 UI. |
+| REQ-UNS-50 | After a successful one-click unsubscribe, the suite records the sender's `From` address in a client-local "unsubscribed-from" set, stored in `localStorage` per account. The set has no v1 UI. |
 | REQ-UNS-51 | Future messages from senders in the unsubscribed-from set get a small "previously unsubscribed" badge in the thread list. (Suggests a filter; doesn't auto-archive.) |
 | REQ-UNS-52 | The unsubscribed-from set survives across sessions but is not synced across devices in v1. |
 
 ## Threats considered
 
-- **Auto-clicked tracking.** A naive client that GETs the `List-Unsubscribe` URL on display defeats the user's privacy. Tabard never fetches the URL until the user clicks the button.
-- **Confirmation-page tracking.** A `https://` URL that wants the user's identity ("click here to confirm unsubscribe from foo@example.com") is the sender's choice, not ours; tabard delivers the user to it and steps back.
+- **Auto-clicked tracking.** A naive client that GETs the `List-Unsubscribe` URL on display defeats the user's privacy. The suite never fetches the URL until the user clicks the button.
+- **Confirmation-page tracking.** A `https://` URL that wants the user's identity ("click here to confirm unsubscribe from foo@example.com") is the sender's choice, not ours; the suite delivers the user to it and steps back.
 - **Phishing the button.** A spammer can advertise a `List-Unsubscribe` header pointing anywhere. The button only triggers either a POST (no user data) or a tab open (user sees the destination); it never auto-submits a form with user data.
-- **Cross-site cookies on the POST.** RFC 8058 §3 requires the POST without credentials. Tabard sets `credentials: "omit"` on the fetch.
+- **Cross-site cookies on the POST.** RFC 8058 §3 requires the POST without credentials. The suite sets `credentials: "omit"` on the fetch.
 
 ## Out of scope
 

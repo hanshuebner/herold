@@ -31,7 +31,7 @@ type KeyPair struct {
 	// in 3.8b uses Private.Sign to mint the VAPID JWT.
 	Private *ecdsa.PrivateKey
 	// PublicKeyB64URL is the RFC 8292-required base64url (no padding)
-	// encoding of the uncompressed SEC1 public key. tabard reads this
+	// encoding of the uncompressed SEC1 public key. the suite reads this
 	// from the JMAP session capability descriptor and passes it to
 	// pushManager.subscribe({applicationServerKey: ...}).
 	PublicKeyB64URL string

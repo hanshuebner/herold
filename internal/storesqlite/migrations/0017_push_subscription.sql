@@ -13,7 +13,7 @@
 --     server-minted nonce echoed by the client to confirm receipt)
 --     and verified (bool, flips true on successful echo).
 --
---   * tabard's REQ-PROTO-121 extensions: notification_rules_json
+--   * the suite's REQ-PROTO-121 extensions: notification_rules_json
 --     (opaque blob; parsed by the 3.8c rules engine), quiet_hours_*
 --     columns, and vapid_key_at_registration (the VAPID public key
 --     the client used at subscribe time so a key rotation that

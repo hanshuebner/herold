@@ -36,24 +36,24 @@ Sanitisation library: TBD (see `../implementation/01-tech-stack.md`). DOMPurify 
 
 ## Image loading
 
-Default: blocked. Tabard renders a "Load images" pill at the top of the message. Clicking it:
+Default: blocked. The suite renders a "Load images" pill at the top of the message. Clicking it:
 
 1. Removes the block.
 2. Optionally remembers the choice for this sender (per-`Identity` of the From header) — surfaced as "Always load images from foo@bar". Stored in `localStorage` keyed by the sender's email + identity.
 
-The proxy origin is the same origin as the JMAP API. Tabard's `<meta http-equiv="Content-Security-Policy" content="img-src 'self'; ...">` enforces this — direct image loads from arbitrary origins are not possible.
+The proxy origin is the same origin as the JMAP API. The suite's `<meta http-equiv="Content-Security-Policy" content="img-src 'self'; ...">` enforces this — direct image loads from arbitrary origins are not possible.
 
 ## Plain-text bodies
 
-Plain text doesn't go through the iframe path. Tabard wraps it in a `<pre>` with whitespace-normal wrapping plus a URL-linkifier: anything matching a URL regex becomes a `<a target="_blank" rel="noopener noreferrer">`. No `<style>`, no DOM injection.
+Plain text doesn't go through the iframe path. The suite wraps it in a `<pre>` with whitespace-normal wrapping plus a URL-linkifier: anything matching a URL regex becomes a `<a target="_blank" rel="noopener noreferrer">`. No `<style>`, no DOM injection.
 
 ## Compose body
 
-The compose textarea is the user's own input; no sanitisation barrier needed. On send, tabard converts the user's HTML (if rich-text mode) into the body of the outgoing `Email`. Quoted history (for replies) is included as-is from the parent email's already-sanitised body, then re-sanitised on receive at the recipient's end.
+The compose textarea is the user's own input; no sanitisation barrier needed. On send, the suite converts the user's HTML (if rich-text mode) into the body of the outgoing `Email`. Quoted history (for replies) is included as-is from the parent email's already-sanitised body, then re-sanitised on receive at the recipient's end.
 
 ## CSP
 
-Tabard ships with a strict Content-Security-Policy:
+The suite ships with a strict Content-Security-Policy:
 
 ```
 default-src 'self';

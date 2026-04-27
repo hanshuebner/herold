@@ -1,5 +1,5 @@
 /**
- * Auth state machine for the suite-shell bootstrap.
+ * Auth state machine for suite-shell bootstrap.
  *
  * States flow:
  *   idle → bootstrapping → ready (success path)

@@ -1,7 +1,7 @@
 # 00 — Scope and non-goals
 
 **2026-04-26** (rev 9): co-deployment shape locked. Herold ships
-the tabard SPA as embedded static assets (REQ-DEPLOY-COLOC-01..05);
+the suite SPA as embedded static assets (REQ-DEPLOY-COLOC-01..05);
 the deployment topology splits into a public listener (default
 `0.0.0.0:443`, serves SPA + JMAP + chat WS + send/call APIs +
 webhooks) and an admin listener (default `127.0.0.1:9443`, serves
@@ -15,9 +15,9 @@ operator simplicity (one binary, two ports, one config file) and
 "end-user compromise cannot escalate to operator-level damage".
 
 **2026-04-26** (rev 8): Web Push (RFC 8030 + RFC 8620 §7.2 PushSubscription
-+ tabard's enriched payload) advanced from "phase 3, deferred" to **phase 1**
++ the suite's enriched payload) advanced from "phase 3, deferred" to **phase 1**
 (REQ-PROTO-48 amended; REQ-PROTO-120..127 added; REQ-OPS-180..184 added).
-Driven by tabard's `requirements/25-push-notifications.md` — push is essential
+Driven by the suite's `requirements/25-push-notifications.md` — push is essential
 for the mail experience (a user who can't be told about new mail isn't really
 using a mail client). Outbound push gateway: per-subscription rule evaluation
 → enriched-or-minimal payload → RFC 8291 encryption → RFC 8292 VAPID-authed
@@ -27,12 +27,12 @@ managed under herold's secrets-handling rules.
 
 **2026-04-26** (rev 7): shortcut coach datatype added (REQ-PROTO-110..114,
 phase 2). New per-principal `ShortcutCoachStat` JMAP datatype backing
-tabard's behaviour-driven keyboard-shortcut coach — small windowed
+the suite's behaviour-driven keyboard-shortcut coach — small windowed
 counters (14d / 90d) per (principal, action) recording mouse vs
 keyboard invocation history. Private to the principal; not subject to
 admin reads. Optional state-change-feed integration (clients don't
 subscribe to their own writes). Storage trivial (~30k rows for 1k
-principals). Driven by tabard's `requirements/23-shortcut-coach.md`.
+principals). Driven by the suite's `requirements/23-shortcut-coach.md`.
 
 **2026-04-26** (rev 6): email reactions extension added (REQ-PROTO-100..103,
 REQ-FLOW-100..108, phase 2). Same-server reactions stored as the
@@ -40,8 +40,8 @@ REQ-FLOW-100..108, phase 2). Same-server reactions stored as the
 outbound emails with `X-Tabard-Reaction-*` headers + readable body
 fallback. Inbound pipeline detects the headers and applies as native
 reactions when the referenced original is in the recipient's mailbox;
-falls through to normal delivery otherwise. Driven by tabard's emoji-react
-UI (`/Users/hans/tabard/docs/requirements/02-mail-basics.md` § Reactions).
+falls through to normal delivery otherwise. Driven by the suite's emoji-react
+UI (`docs/design/web/requirements/02-mail-basics.md` § Reactions).
 
 **2026-04-26** (rev 5): explicit substrate-side support for two
 operator-deployment shapes that were ambiguous in earlier revisions:
@@ -56,11 +56,11 @@ shape. NOT bit-compat with the SES API (the rev-1 "dropped SES
 bit-compat" non-goal still holds -- herold *uses* SES, herold doesn't
 *expose an SES-shaped API*).
 
-*(Revised 2026-04-25 — JMAP for Calendars/Contacts in scope (phase 2); chat + 1:1 video calls in scope (phase 2); coterminous with the tabard suite plan.)*
+*(Revised 2026-04-25 — JMAP for Calendars/Contacts in scope (phase 2); chat + 1:1 video calls in scope (phase 2); coterminous with the suite plan.)*
 
 ## Vision
 
-A self-hostable, single-node communications server. The substrate beneath the **tabard** suite (mail, calendar, contacts, chat) plus full SMTP MTA / IMAP for traditional mail clients. SMTP MTA + IMAP / JMAP mailbox + JMAP for Calendars + JMAP for Contacts + chat (DMs, Spaces, 1:1 video calls) + HTTP send API + receive webhooks + Sieve + LLM-based spam classification + LLM-based message categorisation, with a clean operator experience and a first-class plugin system. Sized for small-to-medium self-hosters, including power users with 1 TB+ mailboxes — **not** hosting providers, **not** enterprise.
+A self-hostable, single-node communications server. The substrate beneath the herold suite (mail, calendar, contacts, chat) plus full SMTP MTA / IMAP for traditional mail clients. SMTP MTA + IMAP / JMAP mailbox + JMAP for Calendars + JMAP for Contacts + chat (DMs, Spaces, 1:1 video calls) + HTTP send API + receive webhooks + Sieve + LLM-based spam classification + LLM-based message categorisation, with a clean operator experience and a first-class plugin system. Sized for small-to-medium self-hosters, including power users with 1 TB+ mailboxes — **not** hosting providers, **not** enterprise.
 
 Stalwart is the closest functional reference for the mail half. The chat / video-call half has no direct reference in the same product family — those are net-new herold scope, sized for the same single-node target.
 
@@ -86,9 +86,9 @@ Herold narrows the target in some dimensions (no multi-tenancy, no multi-node, n
 
 - **NG1.** Hosting-provider / multi-tenancy features. No tenants, no per-tenant quotas, no per-tenant branding.
 - **NG2.** Multi-node deployment. Single node only. Operators needing HA use hypervisor-level tricks (ZFS snapshot + failover, shared block storage). v1 does not grow into multi-node.
-- **NG3.** CalDAV / CardDAV / WebDAV — out, ever. The DAV protocol family is not the substrate; operators wanting DAV run a separate service. **Updated 2026-04-25:** JMAP for Calendars (RFC 8984 + JMAP-Calendars binding) and JMAP for Contacts (RFC 9553 + JMAP-Contacts binding) are **in scope as phase-2 additions** of the herold + tabard suite, replacing the prior "out, but addable" framing. Both fit additively on the existing JMAP capability registry (`server/architecture/03-protocol-architecture.md` §Capability and account registration) and the entity-kind-agnostic state-change feed (`server/architecture/05-sync-and-state.md` §Forward-compatibility constraint) — no schema migrations of existing tables, no dispatch-core edits.
+- **NG3.** CalDAV / CardDAV / WebDAV — out, ever. The DAV protocol family is not the substrate; operators wanting DAV run a separate service. **Updated 2026-04-25:** JMAP for Calendars (RFC 8984 + JMAP-Calendars binding) and JMAP for Contacts (RFC 9553 + JMAP-Contacts binding) are **in scope as phase-2 additions** of the herold + the suite, replacing the prior "out, but addable" framing. Both fit additively on the existing JMAP capability registry (`server/architecture/03-protocol-architecture.md` §Capability and account registration) and the entity-kind-agnostic state-change feed (`server/architecture/05-sync-and-state.md` §Forward-compatibility constraint) — no schema migrations of existing tables, no dispatch-core edits.
 - **NG4.** Traditional spam filtering. No bundled rule engine. No Bayesian. No RBLs by default. (Operators who want these can write a plugin or run an external filter; we don't ship them.)
-- **NG5.** Webmail. (Tabard is a *separate* project — a JMAP web client that herold serves; herold itself hosts only the static bundle plus its API.)
+- **NG5.** Webmail. (The suite is a *separate* project — a JMAP web client that herold serves; herold itself hosts only the static bundle plus its API.)
 - **NG6.** POP3 at launch.
 - **NG7.** Exchange-compatible protocols (MAPI/EWS/ActiveSync).
 - **NG8.** S3 blobs. Local filesystem only.

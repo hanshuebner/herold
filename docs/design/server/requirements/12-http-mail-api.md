@@ -192,9 +192,9 @@ For application intakes that consume only the textual content of inbound mail an
 
 ## Part C: Inbound image proxy
 
-Distinct from the send API and webhooks. Tabard renders HTML mail in a sandboxed iframe; external `<img>` references go through this proxy so the user's browser doesn't directly contact the sender's image hosts (defeats tracking pixels, prevents IP exposure, allows server-side caching).
+Distinct from the send API and webhooks. The suite renders HTML mail in a sandboxed iframe; external `<img>` references go through this proxy so the user's browser doesn't directly contact the sender's image hosts (defeats tracking pixels, prevents IP exposure, allows server-side caching).
 
-Used by tabard's reading pane (`/Users/hans/tabard/docs/requirements/13-nonfunctional.md` REQ-SEC-07; full contract in tabard's `notes/server-contract.md` § Image proxy).
+Used by the suite's reading pane (`docs/design/web/requirements/13-nonfunctional.md` REQ-SEC-07; full contract in the suite's `notes/server-contract.md` § Image proxy).
 
 ### Endpoint
 
@@ -210,7 +210,7 @@ Used by tabard's reading pane (`/Users/hans/tabard/docs/requirements/13-nonfunct
 - **REQ-SEND-73** Upstream `Content-Type` MUST start with `image/` — otherwise the proxy returns 415 to the client. Prevents the proxy from being used to tunnel arbitrary content.
 - **REQ-SEND-74** Size cap: 25 MB per response (configurable). Larger upstreams: the proxy returns 413. Connection timeouts: 10 s connect, 30 s total.
 - **REQ-SEND-75** Caching: honour upstream `Cache-Control`, capped at 24 h regardless. Shared cache keyed by URL hash (cross-user OK — the URL is the cache key; a hit for user B doesn't reveal that user A also opened it). LRU eviction on size pressure; operator-configurable max cache size.
-- **REQ-SEND-76** Retries: one retry on 5xx / network error after 1 s. No retries on 4xx. After exhaustion, return upstream status (or 502 for network failures) verbatim — the client renders the browser's native broken-image placeholder. No tabard-side custom placeholder image.
+- **REQ-SEND-76** Retries: one retry on 5xx / network error after 1 s. No retries on 4xx. After exhaustion, return upstream status (or 502 for network failures) verbatim — the client renders the browser's native broken-image placeholder. No suite-side custom placeholder image.
 - **REQ-SEND-77** Per-user rate limits: 200 fetches per minute, 10 per (user, upstream-origin) per minute, 8 concurrent. Rate-limit responses: 429 with a `Retry-After` header. Operator-configurable.
 
 ### Where it runs

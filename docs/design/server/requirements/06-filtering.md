@@ -113,18 +113,18 @@ Unchanged from prior version:
 
 Distinct from spam classification. Spam decides "deliver / spam / quarantine"; categorisation decides "Primary / Social / Promotions / Updates / Forums" (or whatever the user has configured). Both run on inbound mail; categorisation runs *after* spam (only mail that lands in inbox gets categorised — no point categorising spam).
 
-Used by tabard's category tabs (`/Users/hans/tabard/docs/requirements/05-categorisation.md`). Phase 2 — runs alongside the JMAP-suite work.
+Used by the suite's category tabs (`docs/design/web/requirements/05-categorisation.md`). Phase 2 — runs alongside the JMAP-suite work.
 
 ### Pipeline placement
 
 - **REQ-FILT-200** Categorisation runs after Sieve `fileinto` decisions and after spam classification. Only messages whose final destination is the user's inbox (no Sieve fileinto, not classified spam, not auto-archived by user filter) are categorised. Mail that ends up in `\Junk`, `\Trash`, or a non-inbox label is NOT categorised.
 - **REQ-FILT-201** The classifier output is at most one `$category-<name>` keyword applied to the `Email`. Names are lowercase ASCII, dash-separated. Default set: `$category-primary`, `$category-social`, `$category-promotions`, `$category-updates`, `$category-forums`.
-- **REQ-FILT-202** Messages that don't match any category fall through with no `$category-*` keyword set. Tabard's UI treats absence as "Primary".
+- **REQ-FILT-202** Messages that don't match any category fall through with no `$category-*` keyword set. The suite's UI treats absence as "Primary".
 - **REQ-FILT-203** Categorisation runs once at delivery; subsequent edits to the message do not re-trigger it. Re-classification is explicit (REQ-FILT-220).
 
 ### Configuration
 
-- **REQ-FILT-210** Per-account category set: list of category names + per-category descriptions (used in the prompt). Default set as in REQ-FILT-201 with descriptions matching Gmail's behaviour. Mutable via admin REST + (eventually) tabard's settings panel.
+- **REQ-FILT-210** Per-account category set: list of category names + per-category descriptions (used in the prompt). Default set as in REQ-FILT-201 with descriptions matching Gmail's behaviour. Mutable via admin REST + (eventually) the suite's settings panel.
 - **REQ-FILT-211** Per-account classifier prompt: free text. Default prompt approximates Gmail's. Mutable.
 - **REQ-FILT-212** A "reset to default" control on both the category set and the prompt.
 
@@ -136,8 +136,8 @@ Used by tabard's category tabs (`/Users/hans/tabard/docs/requirements/05-categor
 
 ### Re-classification
 
-- **REQ-FILT-220** Operator + tabard expose "re-categorise inbox" as an admin action: re-run the classifier on the user's recent inbox (last N messages, configurable; default 1000) under the current prompt and category set. Slow operation; runs as a background job with progress reporting.
-- **REQ-FILT-221** When the user manually changes the `$category-*` keyword on an `Email/set` (e.g. moves a message from Promotions to Primary), the change is persisted and the action is recorded for prompt-tuning feedback. Mechanism for using that feedback to refine the prompt is operator-side (out of scope here; a future "feedback-driven prompt update" workflow lives in tabard's settings or admin tooling).
+- **REQ-FILT-220** Operator + the suite expose "re-categorise inbox" as an admin action: re-run the classifier on the user's recent inbox (last N messages, configurable; default 1000) under the current prompt and category set. Slow operation; runs as a background job with progress reporting.
+- **REQ-FILT-221** When the user manually changes the `$category-*` keyword on an `Email/set` (e.g. moves a message from Promotions to Primary), the change is persisted and the action is recorded for prompt-tuning feedback. Mechanism for using that feedback to refine the prompt is operator-side (out of scope here; a future "feedback-driven prompt update" workflow lives in the suite's settings or admin tooling).
 
 ### Failure isolation
 

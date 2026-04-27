@@ -226,7 +226,7 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 	if err != nil {
 		return nil, serverFail(err)
 	}
-	// Per REQ-PROTO-113 tabard does not subscribe to coach changes. We
+	// Per REQ-PROTO-113 the suite does not subscribe to coach changes. We
 	// honour the method (RFC 8620 §5.6) but return cannotCalculateChanges
 	// when sinceState != currentState to keep the implementation simple
 	// and correct without building a full change log.
@@ -280,7 +280,7 @@ type coachCreateInput struct {
 }
 
 // coachUpdateInput is the wire-form per-update incremental patch.
-// tabard sends positive integer deltas; herold accumulates events.
+// the suite sends positive integer deltas; herold accumulates events.
 type coachUpdateInput struct {
 	Keyboard       *int            `json:"keyboard"`
 	Mouse          *int            `json:"mouse"`

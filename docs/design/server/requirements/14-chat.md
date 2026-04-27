@@ -1,6 +1,6 @@
 # 14 — Chat
 
-Real-time conversation between herold users. DMs (1:1) and Spaces (group rooms) plus 1:1 video calls. Closed system — no federation, no XMPP/Matrix bridges. Driven by the tabard suite plan; the client surface lives in tabard's `docs/requirements/08-chat.md` and `docs/requirements/21-video-calls.md`.
+Real-time conversation between herold users. DMs (1:1) and Spaces (group rooms) plus 1:1 video calls. Closed system — no federation, no XMPP/Matrix bridges. Driven by the suite plan; the client surface lives in the suite's `docs/requirements/08-chat.md` and `docs/requirements/21-video-calls.md`.
 
 Phase 2 — runs after the JMAP-suite work for calendars/contacts is in flight. Chat shares the JMAP capability registry, the entity-kind-agnostic state-change feed, and the suite session cookie with mail.
 
@@ -117,4 +117,4 @@ A separate WebSocket endpoint, distinct from the JMAP HTTP and EventSource surfa
 
 - `architecture/08-chat.md` — chat protocol architecture, including the WebSocket frame schema and the WebRTC signaling shape.
 - `requirements/15-video-calls.md` — 1:1 video calls (continues from chat datatypes).
-- Tabard side: `/Users/hans/tabard/docs/requirements/08-chat.md`, `/Users/hans/tabard/docs/architecture/07-chat-protocol.md`.
+- The suite side: `docs/design/web/requirements/08-chat.md`, `docs/design/web/architecture/07-chat-protocol.md`.

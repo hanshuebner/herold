@@ -111,7 +111,7 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Princ
 			return store.Principal{}, nil, false
 		}
 	}
-	// No Authorization header: try the suite-session cookie if the
+	// No Authorization header: try the Suite session cookie if the
 	// server is configured with a resolver (public listener only).
 	if s.sessionResolver != nil {
 		pid, _, ok := s.sessionResolver(r)

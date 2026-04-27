@@ -91,7 +91,7 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
   if (src.startsWith('cid:')) {
     img.removeAttribute('src');
     img.setAttribute('alt', alt || '[inline image]');
-    img.setAttribute('data-tabard-blocked', 'cid');
+    img.setAttribute('data-herold-blocked', 'cid');
     return;
   }
   if (!/^https?:/i.test(src)) {
@@ -103,7 +103,7 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
   if (!options.loadImages) {
     img.removeAttribute('src');
     img.setAttribute('alt', alt || '[image blocked]');
-    img.setAttribute('data-tabard-blocked', 'external');
+    img.setAttribute('data-herold-blocked', 'external');
     return;
   }
   // External + loading enabled — proxy.

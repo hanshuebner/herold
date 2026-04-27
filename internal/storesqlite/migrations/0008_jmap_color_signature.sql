@@ -12,7 +12,7 @@
 -- signature is the optional plain-text Identity.signature extension
 -- (the existing text_signature / html_signature columns are the
 -- RFC 8621 §7.1 standard properties; signature is the orthogonal
--- "extension" property tabard's compose UI consumes per
+-- "extension" property the suite's compose UI consumes per
 -- REQ-PROTO-57). NULL when unset.
 --
 -- sieve_state is the JMAPStates row's per-principal Sieve counter,

@@ -29,7 +29,7 @@ Filters are user-authored rules that act on incoming mail: apply a label, archiv
 |----|-------------|
 | REQ-FLT-20 | User can create, edit, reorder, enable/disable, and delete filters. |
 | REQ-FLT-21 | User can test a filter against existing mail ("apply to matching conversations"). |
-| REQ-FLT-22 | Filters are stored as Sieve scripts via `Sieve/set` (RFC 9007). Required server capability: `urn:ietf:params:jmap:sieve` — committed by herold. Tabard does not implement a client-side filtering fallback. |
+| REQ-FLT-22 | Filters are stored as Sieve scripts via `Sieve/set` (RFC 9007). Required server capability: `urn:ietf:params:jmap:sieve` — committed by herold. The suite does not implement a client-side filtering fallback. |
 
 ## UI
 

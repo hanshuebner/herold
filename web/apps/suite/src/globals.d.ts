@@ -1,1 +1,1 @@
-declare const __TABARD_VERSION__: string;
+declare const __HEROLD_VERSION__: string;

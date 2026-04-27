@@ -14,13 +14,15 @@ const pkg = JSON.parse(
 const sha = process.env.GITHUB_SHA?.slice(0, 7);
 const versionString = sha ? `${pkg.version} (${sha})` : pkg.version;
 
-// Proxy paths that must reach herold during development. The browser sees
-// tabard at localhost:5173; the proxy makes herold appear at the same
-// origin so cookies attach to JMAP / chat-WS / login requests.
+// Proxy paths that must reach the herold backend during development.
+// The browser sees the suite SPA at localhost:5173; the proxy makes
+// herold appear at the same origin so cookies attach to JMAP /
+// chat-WS / login requests.
 //
-// Same-origin deployment is the production posture (`docs/00-scope.md` defaults,
-// `docs/architecture/01-system-overview.md` § Bootstrap). The dev proxy
-// emulates that.
+// Same-origin deployment is the production posture
+// (`docs/design/web/00-scope.md` defaults,
+// `docs/design/web/architecture/01-system-overview.md` § Bootstrap).
+// The dev proxy emulates that.
 const heroldPaths = [
   '/.well-known/jmap',
   '/jmap',
@@ -55,7 +57,7 @@ proxy['/chat/ws'] = {
 export default defineConfig({
   plugins: [svelte()],
   define: {
-    __TABARD_VERSION__: JSON.stringify(versionString),
+    __HEROLD_VERSION__: JSON.stringify(versionString),
   },
   server: {
     port: 5173,

@@ -14,7 +14,7 @@ importers:
 
   apps/suite:
     dependencies:
-      '@tabard/design-system':
+      '@herold/design-system':
         specifier: workspace:*
         version: link:../../packages/design-system
       dompurify:

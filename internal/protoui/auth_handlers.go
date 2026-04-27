@@ -26,7 +26,7 @@ func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, s.pathPrefix+"/dashboard", http.StatusSeeOther)
 		return
 	}
-	// Accept both ?redirect= (canonical) and ?return= (tabard's form)
+	// Accept both ?redirect= (canonical) and ?return= (the suite's form)
 	// with redirect taking precedence when both are present.
 	redirectTarget := r.URL.Query().Get("redirect")
 	if redirectTarget == "" {
@@ -58,7 +58,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	email := strings.TrimSpace(r.PostForm.Get("email"))
 	password := r.PostForm.Get("password")
 	totpCode := strings.TrimSpace(r.PostForm.Get("totp"))
-	// Accept both redirect= (canonical) and return= (tabard's param)
+	// Accept both redirect= (canonical) and return= (the suite's param)
 	// with redirect taking precedence when both are present.
 	redirect := r.PostForm.Get("redirect")
 	if redirect == "" {
@@ -166,7 +166,7 @@ func (s *Server) scopeForLogin(p store.Principal) auth.ScopeSet {
 // For "public": the target may be "/", any hash-route starting with
 // "/#", or any path beginning with the UI prefix. Other paths are
 // rejected to prevent open-redirect abuse while still covering the
-// full set of in-app destinations tabard can supply via ?return=.
+// full set of in-app destinations the suite can supply via ?return=.
 func safeRedirect(target, prefix, listenerKind string) bool {
 	if strings.HasPrefix(target, "//") {
 		return false

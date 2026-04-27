@@ -17,7 +17,7 @@
 // uses a single static pair: the VAPID public key acts like a stable
 // "this is herold X" identifier across all subscriptions, and rotating
 // per-principal keys would invalidate every existing subscription.
-// REQ-PROTO-122 frames this as a deployment-level concern; tabard
+// REQ-PROTO-122 frames this as a deployment-level concern; the suite
 // reads the active public key from the session descriptor and supplies
 // it to ServiceWorker.pushManager.subscribe() at registration time.
 //

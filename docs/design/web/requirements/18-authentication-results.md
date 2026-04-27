@@ -1,6 +1,6 @@
 # 18 — Authentication results
 
-What tabard tells the user about whether a message's claimed sender actually authenticated. Sourced from the RFC 8601 `Authentication-Results` header that herold writes during inbound mail processing.
+What the suite tells the user about whether a message's claimed sender actually authenticated. Sourced from the RFC 8601 `Authentication-Results` header that herold writes during inbound mail processing.
 
 The principle: silent on pass, prominent on fail or none-where-expected, never false-precision. A lock icon next to a sender we can't actually verify is a worse user experience than an honest "could not verify".
 
@@ -8,8 +8,8 @@ The principle: silent on pass, prominent on fail or none-where-expected, never f
 
 | ID | Requirement |
 |----|-------------|
-| REQ-AR-01 | Tabard parses the topmost (most recent / our own) `Authentication-Results` header per RFC 8601. Multiple Authentication-Results headers exist on relayed mail; only the one written by our own server (the `authserv-id` matches the configured server identity) is authoritative. |
-| REQ-AR-02 | If no `Authentication-Results` header from our own server is present, tabard displays "Authentication status not available" in the verbose tooltip and applies no soft cues. The card layout does not change. |
+| REQ-AR-01 | The suite parses the topmost (most recent / our own) `Authentication-Results` header per RFC 8601. Multiple Authentication-Results headers exist on relayed mail; only the one written by our own server (the `authserv-id` matches the configured server identity) is authoritative. |
+| REQ-AR-02 | If no `Authentication-Results` header from our own server is present, the suite displays "Authentication status not available" in the verbose tooltip and applies no soft cues. The card layout does not change. |
 | REQ-AR-03 | The header is parsed for SPF (`spf=...`), DKIM (`dkim=... d=...`), DMARC (`dmarc=...`), and ARC (`arc=...`) results, plus the signing/asserted domain for each. |
 
 ## Display levels
@@ -49,9 +49,9 @@ Three states, in increasing prominence:
 
 - A green-lock icon on every signed message. False precision: most users don't know what a green lock means in mail context, and "DKIM=pass" doesn't mean "this message is from Alice", only "this message's body wasn't tampered with after example.com signed it".
 - A red banner on every "DMARC=none" message. Many legitimate senders have no DMARC policy. Banners reserved for cases where the domain *says* it should pass and didn't.
-- Auto-quarantine in the client. That's herold's job (filter / Sieve / mail-spam-llm). Tabard surfaces what's there.
+- Auto-quarantine in the client. That's herold's job (filter / Sieve / mail-spam-llm). The suite surfaces what's there.
 - Phishing detection by URL inspection inside the body. Out of scope; defer to browser safe-browsing on click.
 
 ## Cross-reference to herold
 
-The `Authentication-Results` header tabard reads is herold's output (its `internal/mailauth/` and `internal/maildkim/`/`internal/mailspf/`/`internal/maildmarc/`/`internal/mailarc/` packages produce it). The `authserv-id` tabard matches against is herold's configured server identity. If herold's auth pipeline regresses, tabard's banners regress with it; the source of truth is the server.
+The `Authentication-Results` header the suite reads is herold's output (its `internal/mailauth/` and `internal/maildkim/`/`internal/mailspf/`/`internal/maildmarc/`/`internal/mailarc/` packages produce it). The `authserv-id` the suite matches against is herold's configured server identity. If herold's auth pipeline regresses, the suite's banners regress with it; the source of truth is the server.

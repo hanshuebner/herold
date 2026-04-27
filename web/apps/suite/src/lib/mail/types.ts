@@ -1,5 +1,5 @@
 /**
- * RFC 8621 (JMAP for Mail) datatypes — only the properties tabard's
+ * RFC 8621 (JMAP for Mail) datatypes — only the properties the suite's
  * inbox / thread / compose flows actually read or write.
  *
  * Cross-reference: docs/requirements/01-data-model.md.
@@ -30,7 +30,7 @@ export interface Mailbox {
   unreadEmails: number;
   totalThreads: number;
   unreadThreads: number;
-  /** Tabard custom property per `notes/server-contract.md` § Mailbox colour. Optional. */
+  /** Suite custom property per `docs/design/web/notes/server-contract.md` § Mailbox colour. Optional. */
   color?: string | null;
 }
 
@@ -50,7 +50,7 @@ export interface Thread {
 }
 
 /**
- * RFC 8621 §4.1.4 — body part metadata. Tabard reads partId, type, charset,
+ * RFC 8621 §4.1.4 — body part metadata. The suite reads partId, type, charset,
  * disposition, name; the rest of RFC 8621 §4.1.4 is kept on the wire but
  * not surfaced.
  */
@@ -77,7 +77,7 @@ export interface EmailBodyValue {
 }
 
 /**
- * `Email` properties tabard reads. Sparse — populated incrementally:
+ * `Email` properties the suite reads. Sparse — populated incrementally:
  * the inbox list fetch sets the list-rendering subset, the thread
  * reader fetch adds bodyValues / htmlBody / textBody / to / cc / etc.
  */
@@ -107,7 +107,7 @@ export interface Email {
   references?: string[] | null;
 }
 
-/** The properties projection tabard requests for list rendering. */
+/** The properties projection the suite requests for list rendering. */
 export const EMAIL_LIST_PROPERTIES = [
   'id',
   'threadId',
@@ -121,7 +121,7 @@ export const EMAIL_LIST_PROPERTIES = [
   'hasAttachment',
 ] as const;
 
-/** The properties projection tabard requests for thread / reading-pane rendering. */
+/** The properties projection the suite requests for thread / reading-pane rendering. */
 export const EMAIL_BODY_PROPERTIES = [
   'id',
   'threadId',
@@ -158,7 +158,7 @@ export function emailTextBody(email: Email): string | null {
 }
 
 /**
- * The HTML body of an email, if any. Tabard prefers HTML when both are
+ * The HTML body of an email, if any. The suite prefers HTML when both are
  * present (`docs/requirements/02-mail-basics.md` REQ-MAIL-02).
  */
 export function emailHtmlBody(email: Email): string | null {

@@ -57,7 +57,7 @@ function storageKey(name: string): string {
   // each other. The pre-auth namespace uses 'anon' so we can read /
   // write defaults before the session resolves.
   const username = auth.session?.username ?? 'anon';
-  return `tabard.settings.${username}.${name}`;
+  return `herold.suite.settings.${username}.${name}`;
 }
 
 function readJson<T>(name: string, fallback: T): T {

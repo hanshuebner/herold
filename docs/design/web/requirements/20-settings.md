@@ -8,9 +8,9 @@ The principle: settings are the place users go to *change* defaults. They are no
 
 | ID | Requirement | Storage |
 |----|-------------|---------|
-| REQ-SET-01 | Theme: `dark` / `light` / `system`. Default: `system` — tabard follows the OS-level `prefers-color-scheme` and tracks live changes when the user toggles their OS theme. The setting is exposed via the `data-theme` attribute on `<html>` and read by the design system's token variants per `../architecture/06-design-system.md`. | `localStorage` per account |
-| REQ-SET-02 | Default From identity. Selected from the user's `Identity` objects. | Server-side (`Identity` list ordering — a tabard convention; the first Identity is the default) |
-| REQ-SET-03 | Per-identity signature. Plain text in v1; HTML signatures cut to phase 2. | Server-side via a tabard custom property on `Identity` (`signature`); see `../notes/server-contract.md` § Future suite-level capabilities — pending herold support |
+| REQ-SET-01 | Theme: `dark` / `light` / `system`. Default: `system` — the suite follows the OS-level `prefers-color-scheme` and tracks live changes when the user toggles their OS theme. The setting is exposed via the `data-theme` attribute on `<html>` and read by the design system's token variants per `../architecture/06-design-system.md`. | `localStorage` per account |
+| REQ-SET-02 | Default From identity. Selected from the user's `Identity` objects. | Server-side (`Identity` list ordering — a Suite-defined convention; the first Identity is the default) |
+| REQ-SET-03 | Per-identity signature. Plain text in v1; HTML signatures cut to phase 2. | Server-side via a Suite-defined custom property on `Identity` (`signature`); see `../notes/server-contract.md` § Future suite-level capabilities — pending herold support |
 | REQ-SET-04 | External-image loading default: never / per-sender / always. Default: never. | `localStorage` per account |
 | REQ-SET-05 | Per-sender allow-list for external images. Maintained from the "Always load images from <sender>" affordance in the reading pane. | `localStorage` per account |
 | REQ-SET-06 | Undo window duration in seconds. User-configurable. Default: 5. Range: 0–30. 0 disables Undo (sends are immediate; `EmailSubmission` is created with `sendAt: null`). For non-zero values, `EmailSubmission` is created with `sendAt = now + <window>` per `02-mail-basics.md` REQ-MAIL-14. | `localStorage` per account |
@@ -27,7 +27,7 @@ The principle: settings are the place users go to *change* defaults. They are no
 |----|-------------|
 | REQ-SET-20 | The settings panel is a route, not a modal. Entered from the user-avatar menu in the top-right of the chrome. URL: `/#settings`. |
 | REQ-SET-21 | The panel is split into sections (left-side nav): Account / Appearance / Mail / Privacy / Vacation / About. |
-| REQ-SET-22 | Section "About" shows tabard version, the connected JMAP server URL and version, the active capability set (with a footnote showing which features are gated by which capability), and a link to the source. |
+| REQ-SET-22 | Section "About" shows the suite version, the connected JMAP server URL and version, the active capability set (with a footnote showing which features are gated by which capability), and a link to the source. |
 
 ## Cut for v1
 
@@ -39,7 +39,7 @@ The following are intentionally cut. Each is a defensible decision; the cut keep
 | Custom keyboard shortcuts | The shortcut engine supports remapping (`requirements/10-keyboard.md` REQ-KEY-04); the settings UI for it is phase 4. The engine reads overrides from `localStorage` if they exist; v1 settings panel exposes no editor for them. |
 | Filters management | Lives in `04-filters.md`'s own UI; not duplicated in settings. (The settings panel can carry a "Manage filters →" link.) |
 | Labels management | Same — inline in the sidebar plus a dedicated label-management dialog from `03-labels.md`. |
-| Notifications | Browser-push notifications cut entirely for v1 (NG2-adjacent: tabard-mail is online-only; push notifications require service worker). Tab-title unread count is on always; cannot be disabled. |
+| Notifications | Browser-push notifications cut entirely for v1 (NG2-adjacent: the suite is online-only; push notifications require service worker). Tab-title unread count is on always; cannot be disabled. |
 | Per-account preferences (multi-account) | Single account in v1 (NG3). |
 | Reading-pane location toggle (right / below / off) | One layout in v1: three-pane with reading on right (`09-ui-layout.md`). Revisit if capture data shows users want it. |
 | Compose default mode (plain / HTML) | Determined per-message by what the user types; if the body has no formatting on send, plain is sent; otherwise HTML. No global toggle. |

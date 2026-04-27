@@ -2,7 +2,7 @@
 
 Snooze defers a thread: it disappears from the inbox immediately and re-appears at a user-specified future time.
 
-Snooze is a server-owned feature in tabard's design. The client picks a wake time and tells the server; the server is responsible for the wake-up. This requires herold to support a snooze contract (`../notes/server-contract.md`); a client-side fallback (timer + `localStorage`) is explicitly rejected because it fails the moment another device or web session is involved, and because a closed laptop should not delay snoozes.
+Snooze is a server-owned feature in the suite's design. The client picks a wake time and tells the server; the server is responsible for the wake-up. This requires herold to support a snooze contract (`../notes/server-contract.md`); a client-side fallback (timer + `localStorage`) is explicitly rejected because it fails the moment another device or web session is involved, and because a closed laptop should not delay snoozes.
 
 ## Snooze options
 
@@ -26,7 +26,7 @@ Snooze is a server-owned feature in tabard's design. The client picks a wake tim
 
 ## Server contract
 
-Tabard requires herold to:
+The suite requires herold to:
 
 - Accept `keywords/$snoozed: true` and a `snoozedUntil` extension property on `Email/set`.
 - At `snoozedUntil` time, atomically: clear `$snoozed`, clear `snoozedUntil`, and re-add the inbox mailbox to `mailboxIds`.

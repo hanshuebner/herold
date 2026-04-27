@@ -1,9 +1,9 @@
 {
-  "name": "@tabard/design-system",
+  "name": "@herold/design-system",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Tabard suite design tokens (colour / typography / spacing / motion) and base styles.",
+  "description": "Herold web design tokens (colour / typography / spacing / motion) and base styles, shared by the suite and admin SPAs.",
   "exports": {
     "./index.css": "./src/index.css",
     "./tokens.css": "./src/tokens/tokens.css",

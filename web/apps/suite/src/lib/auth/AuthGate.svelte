@@ -25,7 +25,7 @@
 {:else}
   <div class="splash" role="status" aria-live="polite">
     <div class="card">
-      <h1 class="wordmark">Tabard</h1>
+      <h1 class="wordmark">Herold</h1>
 
       {#if auth.status === 'idle' || auth.status === 'bootstrapping'}
         <p class="message">Connecting…</p>

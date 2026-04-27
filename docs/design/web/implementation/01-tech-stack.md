@@ -15,7 +15,7 @@ Why, given the constraints in `../00-scope.md` and `../requirements/`:
 - Doesn't fight a `document`-level keydown listener. The keyboard engine in `../architecture/05-keyboard-engine.md` owns global key dispatch outright; React's synthetic-event system would make that subtly harder.
 - The `srcdoc` iframe-per-message pattern in `../architecture/04-rendering.md` is just a host element with an attribute; no framework wrapping required.
 
-**Plain Svelte + Vite, not SvelteKit.** SvelteKit's value is SSR / edge / file-system routing — none of which tabard needs (`../00-scope.md` NG2 already excludes service workers and offline; SSR for an authenticated client serves no purpose). Static SPA build is what we ship.
+**Plain Svelte + Vite, not SvelteKit.** SvelteKit's value is SSR / edge / file-system routing — none of which the suite needs (`../00-scope.md` NG2 already excludes service workers and offline; SSR for an authenticated client serves no purpose). Static SPA build is what we ship.
 
 ## Build: Vite
 
@@ -37,7 +37,7 @@ Until the second app exists, the layout stays flat at the root; the workspace st
 
 The compose body is rich text (formatting marks, lists, links, blockquotes, inline images, signatures). ProseMirror is the right substrate because:
 
-- The schema is enforceable. We declare which marks and node types are valid in an email body — no nested blockquotes-of-blockquotes, no arbitrary inline styles, no script, no embedded objects. The schema doubles as the contract for what tabard sends and what tabard accepts on inbound HTML before sanitisation. See `../architecture/04-rendering.md` for the rendering contract.
+- The schema is enforceable. We declare which marks and node types are valid in an email body — no nested blockquotes-of-blockquotes, no arbitrary inline styles, no script, no embedded objects. The schema doubles as the contract for what the suite sends and what the suite accepts on inbound HTML before sanitisation. See `../architecture/04-rendering.md` for the rendering contract.
 - Framework-agnostic. The Svelte integration is a thin layer: a host element, an `EditorState`/`EditorView` lifecycle, and a Svelte `$state` bridge that reflects editor state into the toolbar (is-bold-active, current-block-type) without re-rendering the editor itself.
 - TipTap is "ProseMirror with a friendlier React API"; with Svelte you'd write the bridge once and own it. Going one layer lower to ProseMirror is the same integration effort with more control. We don't need TipTap's plugin ecosystem (slash menus, embedded blocks, collaborative editing) for an email composer.
 
@@ -53,7 +53,7 @@ No external state library. The cache is a typed object keyed by `(jmapType, id)`
 
 ## Routing: small SPA router
 
-Tabard needs bookmarkable URLs for label and search views (`../requirements/03-labels.md` REQ-LBL-21, `../requirements/07-search.md` REQ-SRC-20). A small router (svelte-spa-router or hand-rolled hash + History API) is sufficient; we don't need a full file-system router.
+The suite needs bookmarkable URLs for label and search views (`../requirements/03-labels.md` REQ-LBL-21, `../requirements/07-search.md` REQ-SRC-20). A small router (svelte-spa-router or hand-rolled hash + History API) is sufficient; we don't need a full file-system router.
 
 Decision: hand-rolled. The route table is small (inbox, label/`<id>`, search/`<query>`, thread/`<id>`, settings) and hash-based routing keeps the static-SPA hosting story simple.
 

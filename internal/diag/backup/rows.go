@@ -514,7 +514,7 @@ type EmailReactionRow struct {
 
 // CoachEventRow mirrors the coach_events table introduced in migration
 // 0020 (Phase 3 Wave 3.10, REQ-PROTO-110..112). One row per invocation
-// batch flushed by tabard.
+// batch flushed by the suite.
 type CoachEventRow struct {
 	ID          int64  `json:"id"`
 	PrincipalID int64  `json:"principal_id"`

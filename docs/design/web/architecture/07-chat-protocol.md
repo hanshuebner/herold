@@ -1,6 +1,6 @@
 # 07 — Chat protocol
 
-How chat data flows between tabard's panel and herold. Companion to `requirements/08-chat.md` and `requirements/21-video-calls.md`.
+How chat data flows between the suite's panel and herold. Companion to `requirements/08-chat.md` and `requirements/21-video-calls.md`.
 
 ## Two transports
 
@@ -113,26 +113,26 @@ Mirrors of the above where applicable, fanned out to other participants of the r
 
 ### Connection lifecycle
 
-- Tabard opens the WebSocket at suite bootstrap (after the JMAP session descriptor confirms `https://tabard.dev/jmap/chat` capability). The cookie attaches automatically; no separate auth handshake.
-- Heartbeats: server sends a `{ "op": "ping" }` every 30 seconds; tabard responds `{ "op": "pong" }`. Missed pong > 90 s → server drops; missed ping > 90 s → client reconnects.
-- Reconnect: exponential backoff (1s, 2s, 4s, 8s, max 30s). On reconnect, tabard re-issues `presence` and resubscribes; the server replays no missed messages (ephemeral signals are not retained).
+- The suite opens the WebSocket at suite bootstrap (after the JMAP session descriptor confirms `https://tabard.dev/jmap/chat` capability). The cookie attaches automatically; no separate auth handshake.
+- Heartbeats: server sends a `{ "op": "ping" }` every 30 seconds; the suite responds `{ "op": "pong" }`. Missed pong > 90 s → server drops; missed ping > 90 s → client reconnects.
+- Reconnect: exponential backoff (1s, 2s, 4s, 8s, max 30s). On reconnect, the suite re-issues `presence` and resubscribes; the server replays no missed messages (ephemeral signals are not retained).
 - The presence state defaults to `online` on connect.
 
 ### Backpressure
 
 - The server applies per-user rate limits on outbound: typing-stopped/typing once per second, ICE candidates 30 per call, etc. Violations close the connection with a 1008 (policy violation).
-- A flooded server-side outbound buffer per session triggers a connection close; tabard reconnects.
+- A flooded server-side outbound buffer per session triggers a connection close; the suite reconnects.
 
 ## TURN credentials
 
-Per `21-video-calls.md` REQ-CALL-32, tabard fetches TURN credentials per call. Mechanism:
+Per `21-video-calls.md` REQ-CALL-32, the suite fetches TURN credentials per call. Mechanism:
 
-1. Tabard sends `{"op": "call.credentials", "callId": "..."}` over the WebSocket.
+1. The suite sends `{"op": "call.credentials", "callId": "..."}` over the WebSocket.
 2. Herold validates that the user is in the conversation and that the call is real (or pending).
 3. Herold mints a TURN credential against coturn's shared secret, scoped to the user, valid ~300 seconds.
 4. Returns `{"op": "call.credentials.response", ...}`.
 
-If the call lasts longer than the credential TTL, tabard refreshes 30 seconds before expiry.
+If the call lasts longer than the credential TTL, the suite refreshes 30 seconds before expiry.
 
 ## Storage in herold
 
@@ -148,12 +148,12 @@ If the user opens a second suite tab, that tab opens its own EventSource and Web
 
 ## Capability negotiation
 
-Tabard sees the chat capability in the JMAP session descriptor (`https://tabard.dev/jmap/chat`). If absent, the chat panel renders a single line: "Chat is not configured on this server" — no panel UI. Per resolved R14, this should never happen in production; the empty state exists for development environments and misconfigurations.
+The suite sees the chat capability in the JMAP session descriptor (`https://tabard.dev/jmap/chat`). If absent, the chat panel renders a single line: "Chat is not configured on this server" — no panel UI. Per resolved R14, this should never happen in production; the empty state exists for development environments and misconfigurations.
 
 ## Out of scope
 
 - Federation between herold instances. Single-server.
-- Bridges to external chat networks (Matrix, XMPP, Slack, Telegram). Tabard users only.
+- Bridges to external chat networks (Matrix, XMPP, Slack, Telegram). The suite users only.
 - End-to-end encryption. Same trust posture as mail.
 - Voice messages, GIF picker, polls, file uploads beyond images.
 - Threaded replies (replies-to-a-message that fork the thread). Single linear timeline per conversation in v1.

@@ -129,18 +129,21 @@ protocol = "admin"
 kind = "admin"
 tls = "none"
 
-# Tabard SPA mount on the public listener (REQ-DEPLOY-COLOC-01..05).
-# The quickstart serves the consumer SPA from a pre-extracted tabard
-# release tarball under ./data/tabard so users can log in to a real
-# web client at http://localhost:8080/ without a tabard source build.
-# Run scripts/install-tabard.sh once before starting the server to
-# populate that directory; the validator refuses to start the server
-# if the directory does not exist or lacks index.html. Comment the
-# block out (or remove asset_dir) to fall back to the binary's
-# embedded placeholder index.
+# Suite SPA mount on the public listener (REQ-DEPLOY-COLOC-01..05).
+# The default source build embeds a placeholder index.html. To serve
+# the real consumer SPA, build the in-tree workspace under web/ with
+#
+#   pnpm install
+#   pnpm --filter @herold/suite build
+#
+# and either rebuild herold (the produced web/apps/suite/dist is
+# picked up by go:embed in internal/webspa) or point the listener at
+# the freshly built dist via the asset_dir override below. Comment
+# the block out (or remove asset_dir) to fall back to the binary's
+# embedded assets.
 [server.tabard]
 enabled = true
-asset_dir = "./data/tabard"
+asset_dir = "./web/apps/suite/dist"
 
 # Observability. Logs go to stderr in JSON; metrics on the loopback
 # default. Do NOT publish a non-loopback metrics_bind without

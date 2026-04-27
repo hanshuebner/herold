@@ -243,11 +243,16 @@ func (p PushConfig) VAPIDPrivateKeyRef() string {
 	return ""
 }
 
-// TabardConfig configures the embedded tabard SPA mount on the public
+// TabardConfig configures the embedded suite SPA mount on the public
 // HTTP listener (REQ-DEPLOY-COLOC-01..05). The default packaging
-// embeds the tabard build artefacts into the herold binary at release
+// embeds the suite build artefacts into the herold binary at release
 // time; an explicit AssetDir overrides the embedded FS for development
 // hot-reload.
+//
+// The struct name and TOML key keep the legacy "tabard" identifier
+// for one release window so existing system.toml files keep parsing;
+// they are renamed to SuiteConfig / [server.suite] in a follow-up
+// commit (Phase 1c-3c of the merge plan).
 type TabardConfig struct {
 	// Enabled selects whether the SPA is mounted on the public
 	// listener's catch-all (`/`). Defaults to true. Operators
@@ -932,7 +937,7 @@ func applyDefaults(c *Config) {
 	if c.Server.TURN.CredentialTTLSeconds == 0 {
 		c.Server.TURN.CredentialTTLSeconds = 300
 	}
-	// Tabard SPA (REQ-DEPLOY-COLOC-01..05). Default-enabled so a
+	// Suite SPA (REQ-DEPLOY-COLOC-01..05). Default-enabled so a
 	// fresh install boots with the consumer suite mounted on the
 	// public listener; admin-only deployments set Enabled=false.
 	if c.Server.Tabard.Enabled == nil {
@@ -1149,16 +1154,16 @@ func Validate(c *Config) error {
 		return fmt.Errorf("sysconfig: [server.push] coalesce_window_seconds %d out of range (0..300)",
 			push.CoalesceWindowSeconds)
 	}
-	// Tabard SPA (REQ-DEPLOY-COLOC-01..05). The asset_dir override is
+	// Suite SPA (REQ-DEPLOY-COLOC-01..05). The asset_dir override is
 	// validated at parse time so a missing path fails the load rather
 	// than at first 404; the actual content (index.html presence) is
 	// re-checked by webspa.New at server boot for the embedded path
 	// too. Relative paths are accepted and resolved against the current
 	// working directory at server start, matching the convention used
 	// by data_dir, cert_file, and the SQLite path -- the quickstart
-	// system.toml ships with asset_dir = "./data/tabard" and relies on
-	// scripts/install-tabard.sh having extracted the release tarball
-	// there.
+	// system.toml may set asset_dir to a developer-built dist tree
+	// (e.g. web/apps/suite/dist) for hot-reload during frontend
+	// development.
 	if dir := c.Server.Tabard.AssetDir; dir != "" {
 		info, err := os.Stat(dir)
 		if err != nil {

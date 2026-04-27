@@ -1,5 +1,5 @@
 // Package coach implements the JMAP ShortcutCoachStat datatype
-// (REQ-PROTO-110..112 / tabard 23-shortcut-coach.md).
+// (REQ-PROTO-110..112 / docs/design/web/requirements/23-shortcut-coach.md).
 //
 // Capability URI: https://tabard.dev/jmap/shortcut-coach
 //

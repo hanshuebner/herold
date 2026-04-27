@@ -1,5 +1,5 @@
 /**
- * Tabard's search query language → JMAP `FilterCondition` / `FilterOperator`.
+ * The suite's search query language → JMAP `FilterCondition` / `FilterOperator`.
  *
  * Per docs/requirements/07-search.md REQ-SRC-40..45. v1 supports the
  * dominant operator set: from / to / cc / bcc / subject / body / has /
@@ -28,7 +28,7 @@ export interface ParseContext {
   mailboxes: Map<string, Mailbox>;
 }
 
-/** Parse a tabard search-query string into a JMAP filter shape. */
+/** Parse a suite search-query string into a JMAP filter shape. */
 export function parseQuery(input: string, ctx: ParseContext): ParsedQuery {
   const trimmed = input.trim();
   if (!trimmed) return { filter: { text: '' } };

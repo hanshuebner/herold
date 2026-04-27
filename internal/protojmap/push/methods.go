@@ -468,7 +468,7 @@ func (h *handlerSet) createSubscription(ctx context.Context, pid store.Principal
 // updateSubscription applies the wire-form patch to the row owned by
 // pid. Per RFC 8620 §7.2 most fields are immutable post-create; the
 // permitted mutables are expires, types, verificationCode (the
-// handshake), notificationRules, and quietHours (tabard extension).
+// handshake), notificationRules, and quietHours (suite extension).
 func (h *handlerSet) updateSubscription(ctx context.Context, pid store.PrincipalID, id store.PushSubscriptionID, raw json.RawMessage) (*setError, error) {
 	cur, err := h.store.Meta().GetPushSubscription(ctx, id)
 	if err != nil {

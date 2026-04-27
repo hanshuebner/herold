@@ -14,7 +14,7 @@ const GCWindow = 90 * 24 * time.Hour
 
 // jmapID is the wire form of a JMAP id. ShortcutCoachStat ids are the
 // action string itself (unique per principal; actions are free-form
-// identifiers tabard chooses such as "archive" or "reply").
+// identifiers the suite chooses such as "archive" or "reply").
 type jmapID = string
 
 // coachIDFromJMAP returns the action string unchanged; the JMAP id IS
@@ -26,8 +26,8 @@ func coachIDFromJMAP(id jmapID) (string, bool) {
 	return id, true
 }
 
-// jmapCoachStat is the wire-form ShortcutCoachStat object (tabard
-// server-contract.md § Shortcut coach). Field names match the tabard
+// jmapCoachStat is the wire-form ShortcutCoachStat object (the suite
+// server-contract.md § Shortcut coach). Field names match the suite
 // contract verbatim.
 type jmapCoachStat struct {
 	ID               jmapID  `json:"id"`

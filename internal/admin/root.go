@@ -157,7 +157,7 @@ func requireConfig(g *globalOptions) (*sysconfig.Config, error) {
 		return nil, errors.New("no --system-config path (override with --system-config or $HEROLD_SYSTEM_CONFIG)")
 	}
 	// Check for a missing config file explicitly before loading so that
-	// validation-time os.ErrNotExist errors (e.g. a missing tabard
+	// validation-time os.ErrNotExist errors (e.g. a missing webspa
 	// asset_dir/index.html) are never re-classified as "config file not
 	// found".
 	if _, err := os.Stat(g.configPath); errors.Is(err, os.ErrNotExist) {

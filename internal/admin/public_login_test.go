@@ -12,8 +12,8 @@ import (
 //
 // Before the Bug B fix, /login was only reachable as /ui/login on the public
 // listener because protoui registers its routes under the /ui prefix. The
-// tabard SPA handler's reserved-API-prefix list defensively 404-d /login when
-// it fell through to the catch-all, so the suite-login redirect target broke.
+// suite SPA handler's reserved-API-prefix list defensively 404-d /login when
+// it fell through to the catch-all, so suite-login redirect target broke.
 //
 // The fix registers adapter handlers at /login, /logout, and /oidc/ on the
 // public mux that rewrite the path to the prefix-based equivalent and delegate
@@ -53,7 +53,7 @@ func TestPublicListener_Login_ReturnsOK(t *testing.T) {
 		t.Errorf("public /login returned 404; want 200 or 3xx. body=%s", string(body))
 	}
 	// The adapter must NOT serve the SPA shell for /login: the SPA shell
-	// would indicate that the request fell through to the tabard catch-all
+	// would indicate that the request fell through to the suite catch-all
 	// (i.e. the adapter is not registered, or the SPA's reserved-prefix
 	// list is not triggering as expected).
 	if contains(string(body), "<title>Herold</title>") && resp.StatusCode == http.StatusOK {

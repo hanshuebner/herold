@@ -14,7 +14,7 @@ import (
 // Closed-enum event-type vocabulary used by the rules engine. The dispatcher
 // maps each store.StateChange to one of these tokens before consulting the
 // per-type allow/deny map. Adding a new value here is a closed-set extension
-// and requires a coordinated tabard change (REQ-PROTO-127 + REQ-PUSH-81).
+// and requires a coordinated suite change (REQ-PROTO-127 + REQ-PUSH-81).
 const (
 	EventTypeMail             = "mail"
 	EventTypeChatDM           = "chat_dm"
@@ -55,8 +55,8 @@ func isKnownEventType(t string) bool {
 }
 
 // Rules is the parsed shape of a PushSubscription.notificationRules JSON
-// blob. The wire grammar mirrors tabard's REQ-PUSH-80..83 surface; unknown
-// top-level fields are preserved verbatim in Unknown so future tabard
+// blob. The wire grammar mirrors the suite's REQ-PUSH-80..83 surface; unknown
+// top-level fields are preserved verbatim in Unknown so future suite
 // versions can extend the rules without herold needing schema changes
 // (REQ-PROTO-127).
 type Rules struct {
@@ -124,8 +124,8 @@ func DefaultRules() Rules {
 	}
 }
 
-// rulesWire is the JSON wire grammar; it mirrors the loose tabard shape
-// described in tabard/docs/notes/server-contract.md plus the per-event-type
+// rulesWire is the JSON wire grammar; it mirrors the loose suite shape
+// described in the suite/docs/notes/server-contract.md plus the per-event-type
 // toggle map and quiet-hours fields settings exposes (REQ-PUSH-80..83).
 //
 // Top-level keys we recognise:

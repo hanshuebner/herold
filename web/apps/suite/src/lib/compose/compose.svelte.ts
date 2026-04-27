@@ -16,7 +16,7 @@
  *      re-open compose with the saved content per REQ-MAIL-15 /
  *      REQ-DFT-60.
  *
- * The actual SMTP delivery happens server-side at sendAt; tabard's
+ * The actual SMTP delivery happens server-side at sendAt; the suite's
  * Undo is purely a JMAP-destroy-before-the-deadline. After the toast
  * times out, herold sends.
  */

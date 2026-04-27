@@ -1,5 +1,5 @@
 /*
- * Tabard design tokens.
+ * Herold web design tokens.
  *
  * Colour tokens follow IBM Carbon's role-token model (Gray 100 dark theme,
  * White light theme). Typography is Carbon's productive scale. Spacing is
@@ -9,7 +9,7 @@
  * Dark is the default; light kicks in when [data-theme="light"] is set on
  * <html>. data-theme="system" respects prefers-color-scheme.
  *
- * Source of truth: docs/architecture/06-design-system.md.
+ * Source of truth: docs/design/web/architecture/06-design-system.md.
  */
 
 :root {

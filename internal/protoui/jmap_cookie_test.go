@@ -290,7 +290,7 @@ func TestJMAP_BearerWinsOverCookie(t *testing.T) {
 	}
 }
 
-// TestJMAP_LoginWithReturnParam tests the full tabard-initiated login
+// TestJMAP_LoginWithReturnParam tests the full suite-initiated login
 // flow: GET /login?return=/#/mail -> form has redirect=/#/mail ->
 // POST /ui/login with redirect=/#/mail -> 303 to /#/mail -> JMAP
 // request with cookie returns 200.

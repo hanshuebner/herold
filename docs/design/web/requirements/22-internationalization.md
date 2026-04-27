@@ -1,6 +1,6 @@
 # 22 — Internationalization
 
-Tabard ships with translations and locale-aware formatting from v1, replacing the prior English-only stance.
+The suite ships with translations and locale-aware formatting from v1, replacing the prior English-only stance.
 
 ## Locales
 
@@ -38,14 +38,14 @@ Right-to-left scripts (Arabic, Hebrew) are out for v1 — all target locales are
 | REQ-I18N-10 | The active locale is decided in priority order: (1) explicit user choice in settings; (2) the user's `Accept-Language` header sent by the browser, mapped to the closest supported locale; (3) `en-US` fallback. |
 | REQ-I18N-11 | The user's chosen locale persists in `localStorage` per account. A logged-out reload uses Accept-Language until login. |
 | REQ-I18N-12 | Locale switching is live: changing the locale in settings re-renders the UI without reload. |
-| REQ-I18N-13 | The active locale is also sent to herold via the JMAP session (or a custom property on the account) so server-generated text — vacation responder default, system messages in chat ("Charlotte left the Space"), bounce DSN content — is localised. Tabard surfaces herold's localised output verbatim; if a particular string isn't yet localised on the herold side, the en-US fallback is shown. |
+| REQ-I18N-13 | The active locale is also sent to herold via the JMAP session (or a custom property on the account) so server-generated text — vacation responder default, system messages in chat ("Charlotte left the Space"), bounce DSN content — is localised. The suite surfaces herold's localised output verbatim; if a particular string isn't yet localised on the herold side, the en-US fallback is shown. |
 
 ### Date / time / number formatting
 
 | ID | Requirement |
 |----|-------------|
 | REQ-I18N-20 | All date / time / number / currency formatting uses the browser's `Intl` APIs with the active locale. No hand-rolled formatters. |
-| REQ-I18N-21 | Relative dates ("yesterday", "last Tuesday", "20. Apr.") use `Intl.RelativeTimeFormat` and the locale's typical conventions. The "in this year" / "older year shown" cutoff (REQ-UI-10e) is tabard logic; the *rendering* of the resulting date is locale-aware. |
+| REQ-I18N-21 | Relative dates ("yesterday", "last Tuesday", "20. Apr.") use `Intl.RelativeTimeFormat` and the locale's typical conventions. The "in this year" / "older year shown" cutoff (REQ-UI-10e) is the suite logic; the *rendering* of the resulting date is locale-aware. |
 | REQ-I18N-22 | Time-of-day uses 12-hour or 24-hour format per locale convention (en-US: 12-hour by default; de-*, fr-*: 24-hour). User can override in settings. |
 | REQ-I18N-23 | Numerals in counts (e.g. unread count, attendee count) use the locale's grouping separator: `1,247` in en, `1.247` in de, `1 247` in fr. |
 
@@ -75,7 +75,7 @@ Right-to-left scripts (Arabic, Hebrew) are out for v1 — all target locales are
 
 | ID | Requirement |
 |----|-------------|
-| REQ-I18N-60 | Each locale's resource bundle includes the appropriate `<html lang>` value; tabard sets it dynamically on locale change so screen readers pronounce content correctly. |
+| REQ-I18N-60 | Each locale's resource bundle includes the appropriate `<html lang>` value; the suite sets it dynamically on locale change so screen readers pronounce content correctly. |
 | REQ-I18N-61 | Locale-specific quotation marks („Beispiel" in de; «exemple» in fr; "example" in en) are produced by ICU MessageFormat or by the source content, not hand-rolled in templates. |
 
 ## Out of scope

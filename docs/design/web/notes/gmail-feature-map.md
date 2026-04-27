@@ -40,7 +40,7 @@ This is not a requirement doc; it is a single-page index of "did we think about 
 | Print thread | TBD | Add only if capture shows real use |
 | Report spam / not spam | TBD | Likely in if capture shows ≥ 5 occurrences |
 | Saved searches | TBD | Possibly worth `REQ-SRC-30` |
-| Vacation responder | TBD | Server-side feature; tabard would only need a settings UI |
+| Vacation responder | TBD | Server-side feature; the suite would only need a settings UI |
 | Signature (per-Identity) | TBD | Settings-panel candidate |
 | Send as / send-on-behalf-of | TBD | Depends on per-`Identity` capabilities herold exposes |
 

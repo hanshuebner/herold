@@ -6,8 +6,8 @@
  * to the descriptor's `apiUrl`.
  *
  * Auth is via the suite session cookie (resolved Q1). Every fetch sets
- * `credentials: 'include'` so the cookie attaches automatically; tabard
- * never reads or stores any auth token.
+ * `credentials: 'include'` so the cookie attaches automatically; the
+ * suite never reads or stores any auth token.
  */
 
 import type {

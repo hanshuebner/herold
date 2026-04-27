@@ -1,8 +1,8 @@
 /**
- * ProseMirror schema for tabard's compose body.
+ * ProseMirror schema for the suite's compose body.
  *
- * The schema is the contract for what tabard sends and (eventually) what
- * tabard accepts inbound after sanitisation — see
+ * The schema is the contract for what the suite sends and (eventually) what
+ * the suite accepts inbound after sanitisation — see
  * docs/architecture/04-rendering.md and docs/implementation/01-tech-stack.md.
  *
  * Starts from prosemirror-schema-basic + prosemirror-schema-list and adds

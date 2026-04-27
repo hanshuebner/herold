@@ -381,7 +381,7 @@ edit their own scripts via:
   `sieveshell`; mail clients with built-in support include
   Thunderbird (Sieve add-on), Apple Mail (Sieve plugin), and
   Roundcube.
-- **JMAP Sieve** datatype (RFC 9007), used by tabard and any other
+- **JMAP Sieve** datatype (RFC 9007), used by the suite and any other
   JMAP client that implements the datatype.
 
 If you need site-wide policy ("reject anything with `Subject: virus`",

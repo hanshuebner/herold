@@ -1,7 +1,7 @@
 /**
  * JMAP Core types per RFC 8620.
  *
- * Just the wire shapes tabard cares about for bootstrap and method-call
+ * Just the wire shapes the suite cares about for bootstrap and method-call
  * dispatch. Full RFC 8621 (Mail) datatypes layer on top in feature-specific
  * modules.
  */
@@ -82,7 +82,7 @@ export const Capability = {
   Calendars: 'urn:ietf:params:jmap:calendars',
   Contacts: 'urn:ietf:params:jmap:contacts',
   WebSocket: 'urn:ietf:params:jmap:websocket',
-  // Tabard suite-specific capabilities
+  // Herold suite-specific capabilities
   TabardSnooze: 'https://tabard.dev/jmap/snooze',
   TabardCategorise: 'https://tabard.dev/jmap/categorise',
   TabardChat: 'https://tabard.dev/jmap/chat',

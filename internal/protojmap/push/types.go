@@ -39,7 +39,7 @@ type jmapKeys struct {
 	Auth   string `json:"auth"`
 }
 
-// jmapQuietHours is the tabard extension shape for the per-account
+// jmapQuietHours is the suite extension shape for the per-account
 // quiet-hours pair (REQ-PROTO-121). null on the wire when the
 // principal has not configured quiet hours.
 type jmapQuietHours struct {
@@ -50,7 +50,7 @@ type jmapQuietHours struct {
 
 // jmapPushSubscription is the wire-form PushSubscription object
 // (RFC 8620 §7.2 + REQ-PROTO-121 extensions). Every field is named
-// per the spec / tabard contract; the omitempty handling for the
+// per the spec / suite contract; the omitempty handling for the
 // extension fields keeps responses small for clients that did not
 // register them.
 type jmapPushSubscription struct {

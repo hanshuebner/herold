@@ -59,7 +59,7 @@
   );
 
   const APP_VERSION: string =
-    typeof __TABARD_VERSION__ !== 'undefined' ? __TABARD_VERSION__ : 'dev';
+    typeof __HEROLD_VERSION__ !== 'undefined' ? __HEROLD_VERSION__ : 'dev';
 </script>
 
 <div class="settings-shell">
@@ -260,7 +260,7 @@
     {:else if activeSection === 'about'}
       <h2>About</h2>
       <div class="row">
-        <span class="label">Tabard version</span>
+        <span class="label">Herold version</span>
         <span class="value mono">{APP_VERSION}</span>
       </div>
       <div class="row">

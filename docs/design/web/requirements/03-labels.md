@@ -33,4 +33,4 @@ Labels are JMAP `Mailbox` objects (per `01-data-model.md`). A message belongs to
 
 ## Colour storage
 
-`Mailbox.role` is standard JMAP; `Mailbox.color` is not. Tabard requires herold to support a `color` property on `Mailbox` per the server contract (`../notes/server-contract.md`). If absent, tabard falls back to a deterministic colour derived from the mailbox ID and surfaces a one-time notice that colours are not persisted.
+`Mailbox.role` is standard JMAP; `Mailbox.color` is not. The suite requires herold to support a `color` property on `Mailbox` per the server contract (`../notes/server-contract.md`). If absent, the suite falls back to a deterministic colour derived from the mailbox ID and surfaces a one-time notice that colours are not persisted.

@@ -7,13 +7,13 @@ import (
 	"time"
 )
 
-// TestPublicListener_Root_ServesTabard asserts that the public listener
-// serves the embedded tabard SPA shell at `/` (REQ-DEPLOY-COLOC-01..02
+// TestPublicListener_Root_ServesSuite asserts that the public listener
+// serves the embedded suite SPA shell at `/` (REQ-DEPLOY-COLOC-01..02
 // per Wave 3.7). The test fixture leaves Tabard.AssetDir empty so the
 // embedded placeholder is exercised; production builds replace the
-// placeholder via scripts/embed-tabard.sh but the contract is the
+// embedded placeholder but the contract is the
 // same: <title>Herold</title>, no-cache, CSP set.
-func TestPublicListener_Root_ServesTabard(t *testing.T) {
+func TestPublicListener_Root_ServesSuite(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
 		cancel()
@@ -86,12 +86,12 @@ func TestPublicListener_API_TakesPriority(t *testing.T) {
 	}
 }
 
-// TestAdminListener_Root_DoesNotServeTabard asserts that hitting `/`
+// TestAdminListener_Root_DoesNotServeSuite asserts that hitting `/`
 // on the admin listener does NOT return the SPA shell. The admin
 // listener's root either redirects to the admin login or 404s; in
 // either case the SPA must not appear there (REQ-OPS-ADMIN-LISTENER-01
 // + REQ-DEPLOY-COLOC-02: the SPA is public-listener-only).
-func TestAdminListener_Root_DoesNotServeTabard(t *testing.T) {
+func TestAdminListener_Root_DoesNotServeSuite(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
 		cancel()

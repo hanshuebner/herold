@@ -9,7 +9,7 @@ import "time"
 // file is the Go-side companion.
 //
 // Storage strategy. RFC 8620 §7.2 specifies the standard PushSubscription
-// shape. Tabard (the consumer suite) layers three extension properties
+// shape. The suite layers three extension properties
 // on top per REQ-PROTO-121: notificationRules (a JSON blob with an
 // open future-extensible schema), quietHours (a small struct), and
 // vapidKeyAtRegistration (the VAPID public key the client used at
@@ -70,10 +70,10 @@ type PushSubscription struct {
 	Verified bool
 	// VAPIDKeyAtRegistration is the base64url-encoded VAPID public key
 	// the client sent at subscribe time (REQ-PROTO-121). Empty when
-	// the client did not supply one (older tabard builds).
+	// the client did not supply one (older suite builds).
 	VAPIDKeyAtRegistration string
-	// NotificationRulesJSON carries tabard's per-event-type
-	// preference set verbatim (REQ-PROTO-121 / tabard
+	// NotificationRulesJSON carries the suite's per-event-type
+	// preference set verbatim (REQ-PROTO-121 / the suite
 	// 25-push-notifications.md). nil when the client did not supply
 	// rules; the dispatcher falls back to the implicit "deliver
 	// minimal state-change envelope" path. The 3.8c engine parses
@@ -81,7 +81,7 @@ type PushSubscription struct {
 	NotificationRulesJSON []byte
 	// QuietHoursStartLocal / QuietHoursEndLocal are 0..23 wall-clock
 	// hour-of-day in QuietHoursTZ. nil/nil means "no quiet hours
-	// configured". REQ-PROTO-121 / tabard REQ-PUSH-82.
+	// configured". REQ-PROTO-121 / the suite REQ-PUSH-82.
 	QuietHoursStartLocal *int
 	QuietHoursEndLocal   *int
 	// QuietHoursTZ is the IANA timezone name (e.g. "Europe/Berlin").

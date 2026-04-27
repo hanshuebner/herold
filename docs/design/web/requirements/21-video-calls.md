@@ -1,6 +1,6 @@
 # 21 — Video calls
 
-1:1 video calls between tabard users, initiated from a chat DM (`08-chat.md` REQ-CHAT-100). WebRTC peer-to-peer with herold acting as the signaling channel and as the TURN-credential issuer.
+1:1 video calls between the suite users, initiated from a chat DM (`08-chat.md` REQ-CHAT-100). WebRTC peer-to-peer with herold acting as the signaling channel and as the TURN-credential issuer.
 
 Group calls are out of scope for v1 — they require an SFU (Selective Forwarding Unit), which is a substantial new operational surface. See § Out of scope.
 
@@ -22,16 +22,16 @@ Group calls are out of scope for v1 — they require an SFU (Selective Forwardin
 | REQ-CALL-20 | The in-call UI is a full-window modal (not the chat panel) showing both video tiles (local in a small overlay, remote large) plus controls. The modal traps focus; Escape does NOT dismiss (would be a foot-gun mid-call). Hangup is the only way out. |
 | REQ-CALL-21 | Controls: mute microphone, mute camera, hangup, fullscreen toggle, switch camera (if multiple cameras). Each is a keyboard binding visible in the help overlay (`?` while in-call): `m` mic, `v` video, `h` hangup, `f` fullscreen. |
 | REQ-CALL-22 | Hangup either side → both peers tear down the peer connection. System message in the DM: "Video call ended — 12:34" with duration. |
-| REQ-CALL-23 | If the network drops during a call: the peer connection enters `disconnected` state. After 10 seconds in that state, tabard auto-hangs up and shows "Call dropped due to connection loss" toast. |
+| REQ-CALL-23 | If the network drops during a call: the peer connection enters `disconnected` state. After 10 seconds in that state, the suite auto-hangs up and shows "Call dropped due to connection loss" toast. |
 | REQ-CALL-24 | Window/tab close while in a call: same as hangup — peer connection torn down, system message logged. |
 
 ## WebRTC details
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CALL-30 | Tabard uses the browser's native `RTCPeerConnection` API. No third-party WebRTC library on the client. |
+| REQ-CALL-30 | The suite uses the browser's native `RTCPeerConnection` API. No third-party WebRTC library on the client. |
 | REQ-CALL-31 | Codec preferences: VP8 / VP9 for video (let the browser pick), Opus for audio. No H.264 negotiation in v1. |
-| REQ-CALL-32 | Tabard requests TURN credentials from herold per call via the chat WebSocket (`../architecture/07-chat-protocol.md` § TURN credentials). Credentials are short-lived (~5 minute TTL) — long-lived creds in the client are a leak vector. |
+| REQ-CALL-32 | The suite requests TURN credentials from herold per call via the chat WebSocket (`../architecture/07-chat-protocol.md` § TURN credentials). Credentials are short-lived (~5 minute TTL) — long-lived creds in the client are a leak vector. |
 | REQ-CALL-33 | ICE configuration uses STUN (a public server, e.g. `stun:stun.l.google.com:19302`) plus the call-scoped TURN credentials. STUN handles ~90% of NAT traversal; TURN relays the rest. |
 | REQ-CALL-34 | The signaling messages (`call.invite`, `call.accept`, `call.decline`, `call.candidate`, `call.hangup`) are JSON over the chat ephemeral WebSocket. They are not stored in chat history beyond the system messages. |
 
@@ -39,7 +39,7 @@ Group calls are out of scope for v1 — they require an SFU (Selective Forwardin
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CALL-40 | Tabard does NOT record video calls in v1. Neither side. The browser's native MediaRecorder is not invoked. |
+| REQ-CALL-40 | The suite does NOT record video calls in v1. Neither side. The browser's native MediaRecorder is not invoked. |
 
 ## Failure modes
 
@@ -66,4 +66,4 @@ Group calls are out of scope for v1 — they require an SFU (Selective Forwardin
 
 For production, the operator runs **coturn** (or equivalent) at the same origin or a closely-coordinated origin, configured with a shared secret that herold uses to mint per-call credentials. Defaults: ports 3478/UDP and 5349/TCP, fingerprinted, both IPv4 and IPv6.
 
-Configuration shape and operational guidance live in herold's deploy / operations docs (resolution Q-call-5 — coturn). Tabard's contract is: herold returns a TURN config payload `{ urls, username, credential, ttl }` from the call-credential mint endpoint; tabard plugs it into the `RTCPeerConnection` configuration unchanged.
+Configuration shape and operational guidance live in herold's deploy / operations docs (resolution Q-call-5 — coturn). The suite's contract is: herold returns a TURN config payload `{ urls, username, credential, ttl }` from the call-credential mint endpoint; the suite plugs it into the `RTCPeerConnection` configuration unchanged.

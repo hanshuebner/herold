@@ -91,7 +91,7 @@ Some recipients (notably application intakes consuming inbound mail through webh
 - **REQ-FLOW-60** Every accepted outbound message goes into the durable outbound queue. No synchronous delivery.
 - **REQ-FLOW-61** Each recipient of a multi-recipient message becomes an independent queue item keyed by destination host/IP (to allow per-destination scheduling and retries).
 - **REQ-FLOW-62** Queue item carries: message blob reference, sender, recipient, next-attempt time, attempt count, last error, optional priority, DSN NOTIFY flags, expiry time, **scheduled-not-before time (`send_at`)**.
-- **REQ-FLOW-63** Queue MUST honour the `EmailSubmission.sendAt` value on submission insertion (REQ-PROTO-58). The first delivery attempt is gated by `next_attempt_time = max(now, send_at)`; the submission is invisible to remote SMTP delivery until `send_at`. `EmailSubmission/set { destroy }` issued before `send_at` MUST atomically remove the queue items belonging to the submission — no message goes out. Cancellation after `send_at` is best-effort: if the message has already begun handoff to remote SMTP, destroy is a no-op. This pairs with tabard's send-undo and (later) user-facing scheduled send.
+- **REQ-FLOW-63** Queue MUST honour the `EmailSubmission.sendAt` value on submission insertion (REQ-PROTO-58). The first delivery attempt is gated by `next_attempt_time = max(now, send_at)`; the submission is invisible to remote SMTP delivery until `send_at`. `EmailSubmission/set { destroy }` issued before `send_at` MUST atomically remove the queue items belonging to the submission — no message goes out. Cancellation after `send_at` is best-effort: if the message has already begun handoff to remote SMTP, destroy is a no-op. This pairs with the suite's send-undo and (later) user-facing scheduled send.
 
 ### Delivery
 
@@ -110,7 +110,7 @@ Some recipients (notably application intakes consuming inbound mail through webh
 
 ## Email reactions — cross-server propagation
 
-Per `requirements/01-protocols.md` REQ-PROTO-100..103 (the JMAP extension) and `/Users/hans/tabard/docs/notes/server-contract.md` § Email reactions (the wire format and end-to-end behaviour).
+Per `requirements/01-protocols.md` REQ-PROTO-100..103 (the JMAP extension) and `docs/design/web/notes/server-contract.md` § Email reactions (the wire format and end-to-end behaviour).
 
 When a user adds a reaction to a message that has recipients on another server, the reaction is propagated as an outbound email carrying structured reaction headers plus a human-readable body fallback. Herold-aware receivers consume the headers and apply as a native reaction; non-herold receivers see a normal short email threaded with the original.
 
@@ -132,7 +132,7 @@ Phase 2 — alongside the rest of the chat / suite work.
   - `X-Tabard-Reaction-Action`: `add` (only `add` propagates; see REQ-FLOW-103).
   - `Content-Type`: `multipart/alternative` with two parts: a `text/plain` body "<reactor display name> reacted with <emoji> to your message." and a `text/html` body with the same text and the emoji rendered larger.
 - **REQ-FLOW-102** Reaction emails follow the normal outbound queue path (REQ-FLOW-50..76) — DKIM-signed, retried, DSN-on-failure. They are NOT distinguished by the queue; the headers are the only chat-aware signal. (DSNs on failed reaction emails are noisy but acceptable; reaction emails are short so failure is rare.)
-- **REQ-FLOW-103** Removing a reaction does NOT emit a reaction email. The remove is local to the reactor's server and any local-domain recipients on the same herold. Rationale: an "X removed their reaction" email to non-tabard receivers is awkward UX; reactions are ephemeral signals and the asymmetry is acceptable. (Confirmed by tabard product decision; see `/Users/hans/tabard/docs/requirements/02-mail-basics.md` REQ-MAIL-183.)
+- **REQ-FLOW-103** Removing a reaction does NOT emit a reaction email. The remove is local to the reactor's server and any local-domain recipients on the same herold. Rationale: an "X removed their reaction" email to non-non-suite receivers is awkward UX; reactions are ephemeral signals and the asymmetry is acceptable. (Confirmed by the suite product decision; see `docs/design/web/requirements/02-mail-basics.md` REQ-MAIL-183.)
 
 ### Inbound
 

@@ -1,5 +1,5 @@
 // Package push implements the JMAP PushSubscription datatype handlers
-// (REQ-PROTO-120..122 / RFC 8620 §7.2) plus the tabard-flavoured
+// (REQ-PROTO-120..122 / RFC 8620 §7.2) plus the Suite-flavoured
 // extension properties (REQ-PROTO-121: notificationRules, quietHours,
 // vapidKeyAtRegistration).
 //
@@ -14,7 +14,7 @@
 // follow the standard RFC 8620 §5.1 / §5.3 shape; the set handler
 // supports create / update / destroy. Per RFC 8620 §7.2 most fields
 // are immutable post-create — clients update only expires, types,
-// the verification handshake's verificationCode, plus the tabard
+// the verification handshake's verificationCode, plus the suite
 // extension fields (notificationRules, quietHours).
 //
 // Authorisation. Subscriptions are private to their owning principal:

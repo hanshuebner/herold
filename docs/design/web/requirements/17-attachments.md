@@ -1,6 +1,6 @@
 # 17 — Attachments
 
-How files attach to outgoing messages, how received attachments render and download, and what tabard does about hostile attachments.
+How files attach to outgoing messages, how received attachments render and download, and what the suite does about hostile attachments.
 
 ## Outbound: attaching files
 
@@ -24,7 +24,7 @@ How files attach to outgoing messages, how received attachments render and downl
 | REQ-ATT-22 | Inline (CID-referenced) images embedded in HTML body content are blocked by default and become loadable via the same "Load images" affordance that controls external images. |
 | REQ-ATT-23 | PDF attachments get an "Open" link that fetches the blob and opens it in a new tab via `<a target="_blank" rel="noopener noreferrer">`. No in-page PDF render in v1 (out of scope; PDF.js is a 1 MB dependency). |
 | REQ-ATT-24 | All other attachment types: "Download" link only. |
-| REQ-ATT-25 | Tabard fetches attachment content via `Blob/get` or `GET /jmap/download/<account-id>/<blob-id>/<filename>` per RFC 8620 §6.2. Authentication header is the bearer token. |
+| REQ-ATT-25 | The suite fetches attachment content via `Blob/get` or `GET /jmap/download/<account-id>/<blob-id>/<filename>` per RFC 8620 §6.2. Authentication header is the bearer token. |
 
 ## Suspicious attachments
 
@@ -33,7 +33,7 @@ How files attach to outgoing messages, how received attachments render and downl
 | REQ-ATT-30 | Filenames ending in any of `.exe .bat .cmd .com .scr .pif .vbs .vbe .js .jse .ws .wsf .wsh .msi .msp .reg .lnk .scf .ps1 .ps1xml .ps2 .ps2xml .psc1 .psc2 .jar .dll` get a warning chip and an "Open Download" button that requires explicit click — no single-action download. The warning text: "this file type can run programs on your computer". |
 | REQ-ATT-31 | The warning is purely about the filename; we do NOT inspect content. (Mismatched extensions — a `.txt` that's actually an executable — would require sniffing, which is the operating system's job.) |
 | REQ-ATT-32 | Macro-bearing office formats (`.docm`, `.xlsm`, `.pptm`, etc.) get a softer warning ("this file may contain macros that can run programs"); same explicit-click flow. |
-| REQ-ATT-33 | Tabard never auto-opens attachments. There is no "preview" path that runs untrusted content. |
+| REQ-ATT-33 | The suite never auto-opens attachments. There is no "preview" path that runs untrusted content. |
 
 ## Bulk download
 
@@ -53,6 +53,6 @@ How files attach to outgoing messages, how received attachments render and downl
 ## Out of scope
 
 - Drive-style cloud-attachment links (`Send a Drive link instead of the file`). This is a Drive integration; Drive is out (`../00-scope.md`).
-- Server-side virus scanning. That's herold's job; tabard surfaces the result if herold sets a per-attachment flag (TBD on the server contract — file in `../notes/server-contract.md` if/when herold ships this).
+- Server-side virus scanning. That's herold's job; the suite surfaces the result if herold sets a per-attachment flag (TBD on the server contract — file in `../notes/server-contract.md` if/when herold ships this).
 - Encrypted attachments via PGP/MIME, S/MIME. NG5.
 - Editing an attachment in-place (rich-text or office formats). Out forever.

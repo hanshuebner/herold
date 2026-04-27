@@ -4,7 +4,7 @@ A continuous, behaviour-driven nudge system that helps the user move from mouse 
 
 The coach observes the user's invocation patterns, identifies actions with shortcuts the user isn't using, and surfaces a single hint in a fixed strip when a teachable moment arises (typically: the user just did action X via mouse, and X has a shortcut they don't yet use). Over time, as the user internalises shortcuts, the coach stops hinting about them; if usage regresses, the coach re-surfaces.
 
-This is a tabard-mail-centric feature in v1. Chat and (future) calendar / contacts get their own coach state once those apps mature, sharing the same machinery.
+This is a suite-centric feature in v1. Chat and (future) calendar / contacts get their own coach state once those apps mature, sharing the same machinery.
 
 ## Concept
 
@@ -21,7 +21,7 @@ Each user action is logged with the method used to invoke it.
 
 | ID | Requirement |
 |----|-------------|
-| REQ-COACH-10 | Tabard logs every "trackable action" — actions that map to a documented keyboard shortcut (`10-keyboard.md`). The full list is the union of single-key bindings and two-key sequences from REQ-KEY tables, plus chord shortcuts (`Cmd/Ctrl+Enter` for send, `Cmd/Ctrl+B` etc. for compose marks). |
+| REQ-COACH-10 | The suite logs every "trackable action" — actions that map to a documented keyboard shortcut (`10-keyboard.md`). The full list is the union of single-key bindings and two-key sequences from REQ-KEY tables, plus chord shortcuts (`Cmd/Ctrl+Enter` for send, `Cmd/Ctrl+B` etc. for compose marks). |
 | REQ-COACH-11 | Each invocation records: action name (e.g. `archive`, `reply`, `nav_inbox`), method (`keyboard` or `mouse`), timestamp, and (for keyboard) the actual key sequence pressed. |
 | REQ-COACH-12 | Mouse method covers: clicks on toolbar buttons, clicks on context-menu items, clicks on action-bearing affordances (the per-message "react" button, the sidebar "compose" button, etc.). It does NOT cover navigation by clicking a thread row (because there's no shortcut for "open this specific row" — `Enter` opens the focused row, but the user clicked a different row). |
 | REQ-COACH-13 | Keyboard method covers: shortcut-driven invocations through the global keyboard dispatcher (`../architecture/05-keyboard-engine.md`). Two-key sequences are tracked as one invocation of their resolved action (`g i` → one `nav_inbox` entry). |
@@ -81,9 +81,9 @@ The "what shortcut to surface next" decision uses recent action bigrams, modelle
 |----|-------------|
 | REQ-COACH-60 | Per-action stats live server-side via a new JMAP datatype: `ShortcutCoachStat`. Capability `https://tabard.dev/jmap/shortcut-coach`. See `notes/server-contract.md`. |
 | REQ-COACH-61 | Stat shape: `{ action: String, keyboardCount14d: Number, mouseCount14d: Number, keyboardCount90d: Number, mouseCount90d: Number, lastKeyboardAt: UTCDate, lastMouseAt: UTCDate, dismissCount: Number, dismissUntil: UTCDate? }`. The 14- and 90-day windows are computed server-side at access time (not stored as flat rolled-up counters that drift). |
-| REQ-COACH-62 | Tabard issues `ShortcutCoachStat/get` at bootstrap to load the user's coach state, then patches it via `ShortcutCoachStat/set` on the periodic flush (REQ-COACH-15). The flush carries the session's ring-buffer entries; herold updates the rolling counters. |
+| REQ-COACH-62 | The suite issues `ShortcutCoachStat/get` at bootstrap to load the user's coach state, then patches it via `ShortcutCoachStat/set` on the periodic flush (REQ-COACH-15). The flush carries the session's ring-buffer entries; herold updates the rolling counters. |
 | REQ-COACH-63 | If the capability is not advertised, the coach degrades to session-only state (in-memory ring buffer + bigram store; no cross-session learning). The hint logic still works, but every fresh tab starts the user as a beginner. |
-| REQ-COACH-64 | Stats are NOT synced via the standard JMAP state-string mechanism. They are mutated by tabard frequently and read rarely; per-Email-style change broadcasting would be wasteful. The state advances per call, but tabard does not subscribe to changes (we wrote them; we don't need pushed echoes). |
+| REQ-COACH-64 | Stats are NOT synced via the standard JMAP state-string mechanism. They are mutated by the suite frequently and read rarely; per-Email-style change broadcasting would be wasteful. The state advances per call, but the suite does not subscribe to changes (we wrote them; we don't need pushed echoes). |
 
 ## Privacy and opt-out
 
@@ -91,7 +91,7 @@ The "what shortcut to surface next" decision uses recent action bigrams, modelle
 |----|-------------|
 | REQ-COACH-70 | The coach data is per-principal and accessible only to the principal. Admin / multi-user views are out (NG3 / NG4 in `00-scope.md`). |
 | REQ-COACH-71 | The "Disable shortcut coach" preference (`20-settings.md` REQ-SET-12) suppresses observation, hint generation, and server-side flushes. When disabled, no new stats accrue; existing stats are NOT deleted (turning the coach back on resumes from where it left off). |
-| REQ-COACH-72 | A "Reset coach data" action in settings allows the user to wipe their stats — fires `ShortcutCoachStat/set { destroy: <all> }`. Useful if the user wants to start fresh, has shared a tabard tab with someone else briefly, etc. |
+| REQ-COACH-72 | A "Reset coach data" action in settings allows the user to wipe their stats — fires `ShortcutCoachStat/set { destroy: <all> }`. Useful if the user wants to start fresh, has shared a fresh Suite tab with someone else briefly, etc. |
 | REQ-COACH-73 | Coach data is included in any account export the user requests (a future operator feature; not in v1). |
 
 ## Compose-mark hints
@@ -118,7 +118,7 @@ A small special case worth pinning since it's the one place coach overlaps focus
 - Cross-suite coach (chat shortcuts, calendar shortcuts) for v1. Same machinery extends naturally; chat and calendar gain their own action sets when those apps land.
 - Heuristic / ML-based prediction beyond simple bigrams. Bigrams cover the dominant patterns ("after open-thread, you usually reply"); deeper sequence models add complexity for marginal benefit.
 - Showing more than one hint at a time. Two simultaneous hints compete for attention; the coach is a teacher, not a billboard.
-- Gamification (streaks, "you used 5 shortcuts today!"). Tabard is a tool, not a habit-builder.
-- Coaching in the chat panel itself (typing-shortcut hints inside chat compose). Coaching is a mail-app feature surfaced in the suite-shell strip.
+- Gamification (streaks, "you used 5 shortcuts today!"). The suite is a tool, not a habit-builder.
+- Coaching in the chat panel itself (typing-shortcut hints inside chat compose). Coaching is a mail-app feature surfaced in suite-shell strip.
 - Coaching for actions without shortcuts. If an action has no shortcut, the coach can't help — and we don't add shortcuts purely so the coach has something to teach.
 - Telemetry of coach effectiveness ("did the user adopt the shortcut after we hinted?"). Per REQ-COACH-04, coach data is the user's; we don't measure ourselves on their behaviour.

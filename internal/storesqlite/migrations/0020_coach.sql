@@ -3,7 +3,7 @@
 -- Mirrors storepg 0020. Forward-only.
 --
 -- Backing table: coach_events. One row per invocation event that
--- tabard flushes to herold.  The stat aggregates (keyboardCount14d,
+-- the suite flushes to herold.  The stat aggregates (keyboardCount14d,
 -- mouseCount14d, keyboardCount90d, mouseCount90d, lastKeyboardAt,
 -- lastMouseAt) are computed at read time by aggregating events within
 -- the relevant sliding window — no rolled-up counters that drift.

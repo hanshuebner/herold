@@ -15,7 +15,7 @@ const DefaultPrompt = `You are an email-categorisation assistant. Given an email
 
 // DefaultCategorySet is the seeded per-account category set
 // (REQ-FILT-201/210). The order is preserved when surfaced to clients
-// (admin REST + tabard) so a "reset to default" toggle stays stable.
+// (admin REST + suite) so a "reset to default" toggle stays stable.
 var DefaultCategorySet = []store.CategoryDef{
 	{Name: "primary", Description: "Personal correspondence and important messages from people you know."},
 	{Name: "social", Description: "Messages from social networks and dating sites."},

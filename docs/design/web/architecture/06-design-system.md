@@ -1,12 +1,12 @@
 # 06 — Design system
 
-Tabard's UI design language. Used by tabard-mail today, by tabard-calendar and tabard-contacts when they exist.
+The suite's UI design language. Used by the suite today, by the calendar app and the contacts app when they exist.
 
-This doc currently lives in tabard-mail's tree because there's no other tree yet; when the repo splits into a monorepo, it moves to `packages/design-system/docs/` and the apps reference it from there. The decisions below apply suite-wide.
+This doc currently lives in the suite's tree because there's no other tree yet; when the repo splits into a monorepo, it moves to `packages/design-system/docs/` and the apps reference it from there. The decisions below apply suite-wide.
 
 ## Approach
 
-We adopt **IBM Carbon Design System's design language** by reference (carbondesignsystem.com) — its principles, color tokens, type scale, spacing scale, motion curves — and build components ourselves on top of headless Svelte primitives. We do NOT use `carbon-components-svelte`'s component library: the components tabard actually needs (thread row, message accordion, label picker, compose stack, picker overlay) aren't in Carbon, and the Carbon components we'd skip make the bundle heavier than the language is worth.
+We adopt **IBM Carbon Design System's design language** by reference (carbondesignsystem.com) — its principles, color tokens, type scale, spacing scale, motion curves — and build components ourselves on top of headless Svelte primitives. We do NOT use `carbon-components-svelte`'s component library: the components the suite actually needs (thread row, message accordion, label picker, compose stack, picker overlay) aren't in Carbon, and the Carbon components we'd skip make the bundle heavier than the language is worth.
 
 This is the "shadcn approach" applied to Carbon: borrow the documented rules, own the components.
 
@@ -168,7 +168,7 @@ Elevation is communicated by `--layer-N` background tokens plus a single token s
 
 ## Component anatomy — bespoke
 
-The components tabard owns and Carbon doesn't give us. Each is a Svelte component built on Bits UI primitives where one applies; pure-CSS where no behaviour is needed.
+The components the suite owns and Carbon doesn't give us. Each is a Svelte component built on Bits UI primitives where one applies; pure-CSS where no behaviour is needed.
 
 ### Thread row
 
@@ -459,7 +459,7 @@ The single hint chip rendered in the coach strip (`requirements/09-ui-layout.md`
 └────────────────────────────────────────────────┘
 ```
 
-- One chip at a time, anchored centre-bottom of the suite-shell strip.
+- One chip at a time, anchored centre-bottom of suite-shell strip.
 - Chip background `--layer-02`; subtle border `--border-subtle-01`; radius 9999 (pill).
 - Action label in `body-compact-01`; key glyphs in `code-01` mono with `--layer-03` background, padding `spacing-01` horizontal, `spacing-02` minimum width per glyph.
 - Optional "Welcome back" prefix in `--text-secondary`, weight 400, when the action's state is `forgotten` (REQ-COACH-35).
@@ -481,7 +481,7 @@ The single hint chip rendered in the coach strip (`requirements/09-ui-layout.md`
 
 ## Cross-suite consistency
 
-When tabard-calendar and tabard-contacts arrive, the constraints they inherit:
+When the calendar app and the contacts app arrive, the constraints they inherit:
 
 - All tokens (color, type, spacing, motion) are shared verbatim. No app re-defines a token.
 - Bits UI is the primitives layer for all three apps.
@@ -491,5 +491,5 @@ When tabard-calendar and tabard-contacts arrive, the constraints they inherit:
 ## What's deliberately not specified here
 
 - Specific component code. This doc is the constraint set; components are written in the app(s) and reviewed against it.
-- Marketing-grade illustration, brand identity, logo work. Tabard is a tool, not a brand experience.
+- Marketing-grade illustration, brand identity, logo work. The suite is a tool, not a brand experience.
 - Density variants (comfortable / cosy / compact). Single density in v1 (`implementation/04-simplifications-and-cuts.md`).

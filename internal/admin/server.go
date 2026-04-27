@@ -1547,7 +1547,7 @@ func composeAdminAndUI(
 
 	// /metrics must NOT be served by the public listener
 	// (REQ-OPS-ADMIN-LISTENER-01). Register an explicit 404 handler
-	// before the tabard SPA catch-all so the route is unambiguous.
+	// before the suite SPA catch-all so the route is unambiguous.
 	// The SPA catch-all would otherwise absorb the request and return
 	// 200 with the SPA shell, leaking the metrics surface path to
 	// browser clients.
@@ -1580,7 +1580,7 @@ func composeAdminAndUI(
 		// equivalent and delegate to the same protoui handler without
 		// mutating the original request. Go's longest-prefix routing
 		// ensures these registrations take priority over the SPA
-		// catch-all at "/", so the tabard SPA's defensive 404 for
+		// catch-all at "/", so the suite SPA's defensive 404 for
 		// /login never fires for these paths in practice.
 		uiHandler := uiSrvPublic.Handler()
 		for _, root := range []string{"/login", "/logout", "/oidc/"} {
@@ -1719,7 +1719,7 @@ func composeAdminAndUI(
 	// JMAP PushSubscription (REQ-PROTO-120..122). The VAPID key
 	// reference is operator-supplied; an unconfigured deployment
 	// still advertises the capability but omits applicationServerKey
-	// so the tabard SPA surfaces "push unavailable" rather than
+	// so the suite SPA surfaces "push unavailable" rather than
 	// trying to register against a missing key.
 	vapidMgr := vapid.New()
 	if ref := cfg.Server.Push.VAPIDPrivateKeyRef(); ref != "" {
@@ -1861,7 +1861,7 @@ func composeAdminAndUI(
 			slog.Int("buckets", len(sesCfg.S3BucketAllowlist)))
 	}
 
-	// Tabard SPA mount (REQ-DEPLOY-COLOC-01..05). When the operator
+	// Suite SPA mount (REQ-DEPLOY-COLOC-01..05). When the operator
 	// has not opted out (Tabard.Enabled defaults true), the SPA
 	// handler registers as the catch-all `/` on the public mux.
 	// Go's longest-prefix routing means the more-specific API

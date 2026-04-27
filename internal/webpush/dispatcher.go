@@ -163,7 +163,7 @@ type subAttempt struct {
 // Note on aggregation: the spec example "3 new messages on Re: Project X"
 // hints at a per-thread unread-count summary. As a v1 simplification we
 // take the latest-wins shape here — the deferred push reflects the most
-// recent event's payload, not an aggregate. Tabard SPAs render the
+// recent event's payload, not an aggregate. Suite SPAs render the
 // newest message in place of "3 messages"; aggregated counts wait for a
 // follow-up wave that adds a per-thread unread-count source on the
 // store side.
@@ -446,7 +446,7 @@ func (d *Dispatcher) processChange(ctx context.Context, ch store.FTSChange) {
 		// resolution): when the subscription's recorded VAPID public
 		// key does not match the dispatcher's current key, the
 		// browser would refuse the push (it was registered against a
-		// different applicationServerKey). Skip + warn-log; tabard
+		// different applicationServerKey). Skip + warn-log; the suite
 		// SPAs reconcile via the next JMAP session response. Do NOT
 		// auto-prune the row.
 		if vapidPub != "" && sub.VAPIDKeyAtRegistration != "" &&

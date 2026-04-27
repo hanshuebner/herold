@@ -151,7 +151,7 @@ func TestSafeRedirect_PublicListener(t *testing.T) {
 }
 
 // TestParamParity_ReturnParam verifies that ?return= is accepted as a
-// fallback when ?redirect= is absent (tabard sends ?return=).
+// fallback when ?redirect= is absent (the suite sends ?return=).
 func TestParamParity_ReturnParam(t *testing.T) {
 	t.Parallel()
 	cl, baseURL := startScopedUIHarness(t, "public")

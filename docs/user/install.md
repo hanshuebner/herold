@@ -77,65 +77,46 @@ make ci-local
 (`make staticcheck`, `make interop-test`) or are run via the workflows
 in `.github/workflows/`.
 
-### Tabard SPA
+### Suite SPA
 
-Herold embeds the tabard consumer SPA (HTML/JS/CSS) and serves it on
+Herold embeds the consumer Suite SPA (HTML/JS/CSS) and serves it on
 the public HTTP listener at `/` (REQ-DEPLOY-COLOC-01..05). The default
 source build embeds a placeholder index.html that documents the
-install step; release builds bake the matching tabard build into the
+install step; release builds bake the matching Suite build into the
 binary.
 
-There are three operator paths:
+The Suite source lives in-tree under `web/` (Svelte 5 + Vite + pnpm
+workspace). The build pipeline that produces the embedded `dist`
+output and the operator paths for replacing it at runtime are
+documented in the build & operate guide; the historical
+`install-tabard.sh` / `embed-tabard.sh` scripts and the
+`[server.tabard]` config block were retired when the Suite source was
+folded into this repo. See
+`docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md` for
+the migration record.
 
-1. **Quickstart / try-it path** (recommended for the README
-   walkthrough). Run the helper script to download the latest tabard
-   release tarball into the data directory:
+For now, three operator paths exist:
 
-   ```bash
-   scripts/install-tabard.sh                # extracts to ./data/tabard
-   scripts/install-tabard.sh /var/lib/herold # any DATADIR works
-   ```
+1. **Embedded path** (default). `pnpm --filter @herold/suite build`
+   produces `web/apps/suite/dist`, which `internal/webspa/embed_default.go`
+   embeds via `go:embed` at compile time. A plain `go build` against a
+   freshly built workspace yields a single binary with the SPA inside.
 
-   The quickstart `system.toml` already sets
-   `[server.tabard].asset_dir = "./data/tabard"`, so no further
-   config changes are required. Re-run the script to pick up a
-   newer tabard release; it stages into `.tabard.new` and renames
-   atomically so a partial download cannot replace a working
-   install. Override `TABARD_URL` to install from a non-default
-   release or a `file://` tarball.
-
-2. **Release-build path** (used by CI). Bake a pinned tabard build
-   into the herold binary at compile time:
-
-   ```bash
-   TABARD_DIST=/path/to/tabard/apps/suite/dist make embed-tabard
-   make build
-   ```
-
-   Or directly:
-
-   ```bash
-   TABARD_DIST=/path/to/tabard/apps/suite/dist scripts/embed-tabard.sh
-   go build -trimpath -buildvcs=true -o ./herold ./cmd/herold
-   ```
-
-   The default `TABARD_DIST` is `/Users/hans/tabard/apps/suite/dist`
-   (the sibling-repo layout used during development); override the
-   env var to point at any tabard build output. The pinned tabard
-   SHA the current herold release expects lives in
-   `deploy/tabard.version`; see `deploy/tabard.version.README`.
+2. **Backend-only path** (CI for the Go-only lane). Pass
+   `-tags nofrontend` to `go build` to swap in a placeholder embed
+   that contains a stub `index.html` only. Useful when the Node
+   toolchain is not available in the build environment.
 
 3. **Development hot-reload path**. Leave the binary alone and point
-   the running server at a freshly built tabard dist via
-   `system.toml`:
+   the running server at a freshly built Suite dist via `system.toml`:
 
    ```toml
    [server.tabard]
-   asset_dir = "/abs/path/to/tabard/dist"
+   asset_dir = "/abs/path/to/web/apps/suite/dist"
    ```
 
    The override reads from disk on every request, so a `pnpm build`
-   in the tabard tree appears at the next browser refresh without
+   in the workspace appears at the next browser refresh without
    rebuilding herold. The path is resolved at server start
    (relative paths are taken from the working directory, the same
    convention as `data_dir` and `cert_file`); the directory MUST
@@ -428,7 +409,7 @@ herold principal create user1@example.com --password 'change-me-now'
 With a domain and a principal in place, three client surfaces are
 available; route end users and operators to different URLs:
 
-- **Tabard consumer SPA**: `http(s)://<public host>/`. Loads the
+- **The suite consumer SPA**: `http(s)://<public host>/`. Loads the
   assets installed via `scripts/install-tabard.sh` (or baked in by
   `scripts/embed-tabard.sh`). The SPA redirects to `/login`, the
   user signs in with their email and password, and herold issues a

@@ -52,29 +52,29 @@ const (
 	// Membership, Block) are not standardised in any IETF JMAP RFC; the
 	// capability URI follows the JMAP convention of an http(s) URL in
 	// the vendor namespace that owns the consumer wire contract. Per
-	// docs/design/00-scope.md, herold is the substrate beneath the tabard
+	// docs/design/00-scope.md, herold is the substrate beneath the suite
 	// suite, so the URI lives under tabard.dev. Implemented under
 	// internal/protojmap/chat.
 	CapabilityJMAPChat CapabilityID = "https://tabard.dev/jmap/chat"
-	// CapabilityPush is the JMAP PushSubscription + tabard-extension
+	// CapabilityPush is the JMAP PushSubscription + suite-extension
 	// capability (REQ-PROTO-120..127, RFC 8620 §7.2). The standard
 	// PushSubscription datatype is part of the Core capability per
-	// RFC 8620, but tabard layers extension properties
+	// RFC 8620, but the suite layers extension properties
 	// (notificationRules, quietHours, vapidKeyAtRegistration) and the
 	// outbound push gateway lives under a vendor capability. The URI
 	// is "https://tabard.dev/jmap/push" — same vendor-URL convention
 	// as CapabilityJMAPChat. The capability descriptor carries the
-	// deployment's VAPID applicationServerKey so the tabard SPA can
+	// deployment's VAPID applicationServerKey so the suite SPA can
 	// read it from the session response and pass it to
 	// pushManager.subscribe(). Implemented under
 	// internal/protojmap/push.
 	CapabilityPush CapabilityID = "https://tabard.dev/jmap/push"
-	// CapabilityShortcutCoach is the tabard-specific ShortcutCoachStat
+	// CapabilityShortcutCoach is the Suite-specific ShortcutCoachStat
 	// JMAP datatype capability (REQ-PROTO-110..112). Per-principal
 	// storage of keyboard/mouse invocation counts in sliding 14d / 90d
-	// windows, used by tabard's always-on shortcut coach
-	// (tabard/docs/requirements/23-shortcut-coach.md). Capability URI
-	// per tabard's server-contract.md. Implemented under
+	// windows, used by the suite's always-on shortcut coach
+	// (docs/design/web/requirements/23-shortcut-coach.md). Capability URI
+	// per the suite's server-contract.md. Implemented under
 	// internal/protojmap/coach.
 	CapabilityShortcutCoach CapabilityID = "https://tabard.dev/jmap/shortcut-coach"
 )

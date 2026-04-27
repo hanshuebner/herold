@@ -4,7 +4,7 @@
 
 Phase 2 — runs alongside the chat (`14-chat.md`) work. Group calls are NOT in scope: they require an SFU (mediasoup, Pion, LiveKit, Janus), which is a substantial new operational surface.
 
-Tabard's client surface for calls lives in `/Users/hans/tabard/docs/requirements/21-video-calls.md`.
+The suite's client surface for calls lives in `docs/design/web/requirements/21-video-calls.md`.
 
 ## In scope
 
@@ -73,4 +73,4 @@ Signaling messages flow over the chat ephemeral WebSocket (`14-chat.md` REQ-CHAT
 - `requirements/14-chat.md` — chat data model and ephemeral channel.
 - `architecture/08-chat.md` — chat / call protocol architecture (WebSocket frame schema, signaling state machine).
 - `requirements/09-operations.md` § coturn — operator deployment guidance.
-- Tabard side: `/Users/hans/tabard/docs/requirements/21-video-calls.md`.
+- The suite side: `docs/design/web/requirements/21-video-calls.md`.

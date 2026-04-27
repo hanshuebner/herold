@@ -1,16 +1,16 @@
 # 15 — Calendar invites in mail (iMIP)
 
-A message containing a `text/calendar` MIME part with a `METHOD` parameter (REQUEST, CANCEL, REPLY, COUNTER, REFRESH) is an iMIP message (RFC 6047) carrying iCalendar (RFC 5545). Tabard renders the meeting details inline and exposes RSVP actions.
+A message containing a `text/calendar` MIME part with a `METHOD` parameter (REQUEST, CANCEL, REPLY, COUNTER, REFRESH) is an iMIP message (RFC 6047) carrying iCalendar (RFC 5545). The suite renders the meeting details inline and exposes RSVP actions.
 
-This is **mail rendering**, not calendar management. Calendar management lives in tabard-calendar (`../00-scope.md` § "Tabard is a suite"). When tabard-calendar exists, the actions here hand off to it; until then, tabard-mail talks directly to herold's JMAP for Calendars to apply the user's RSVP and add the event to their calendar.
+This is **mail rendering**, not calendar management. Calendar management lives in the calendar app (`../00-scope.md` § "The suite"). When the calendar app exists, the actions here hand off to it; until then, the suite talks directly to herold's JMAP for Calendars to apply the user's RSVP and add the event to their calendar.
 
 ## Detection
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CAL-01 | Tabard recognises an iMIP message by the presence of a MIME part with content type `text/calendar` and a `method` parameter. The method values supported: `REQUEST`, `CANCEL`, `REPLY`, `COUNTER`, `REFRESH`. |
+| REQ-CAL-01 | The suite recognises an iMIP message by the presence of a MIME part with content type `text/calendar` and a `method` parameter. The method values supported: `REQUEST`, `CANCEL`, `REPLY`, `COUNTER`, `REFRESH`. |
 | REQ-CAL-02 | The iCalendar part is parsed (RFC 5545). At minimum the following properties are extracted from the first `VEVENT`: `UID`, `SEQUENCE`, `DTSTAMP`, `DTSTART`, `DTEND` (or `DURATION`), `SUMMARY`, `LOCATION`, `DESCRIPTION`, `ORGANIZER`, `ATTENDEE` (multiple), `RRULE`, `STATUS`. |
-| REQ-CAL-03 | If parsing fails, tabard renders a single error chip: "This message contains a calendar invitation that couldn't be read" and shows the raw `text/calendar` part as a download. The message continues to render normally. |
+| REQ-CAL-03 | If parsing fails, the suite renders a single error chip: "This message contains a calendar invitation that couldn't be read" and shows the raw `text/calendar` part as a download. The message continues to render normally. |
 
 ## Render
 
@@ -50,15 +50,15 @@ The iMIP card appears inline at the top of the message body, above the prose.
 | ID | Requirement |
 |----|-------------|
 | REQ-CAL-30 | When the user accepts (or accepts-tentative) a REQUEST, the event is also added to their calendar. |
-| REQ-CAL-31 | While tabard-calendar does not exist (`../00-scope.md` § "Tabard is a suite"), tabard-mail talks to herold's JMAP for Calendars directly to add the event. The capability `urn:ietf:params:jmap:calendars` must be advertised by herold; without it, RSVP buttons send the REPLY but do not write to a calendar (a footer note explains). |
-| REQ-CAL-32 | When tabard-calendar exists, tabard-mail hands the event off via the suite's cross-app mechanism (`../notes/open-questions.md` Q16). The mail app does not directly call calendar JMAP methods. |
-| REQ-CAL-33 | A CANCEL processed against an event on the user's calendar removes the event (via tabard-calendar when it exists, directly via JMAP for Calendars while it doesn't). |
+| REQ-CAL-31 | While the calendar app does not exist (`../00-scope.md` § "The suite"), the suite talks to herold's JMAP for Calendars directly to add the event. The capability `urn:ietf:params:jmap:calendars` must be advertised by herold; without it, RSVP buttons send the REPLY but do not write to a calendar (a footer note explains). |
+| REQ-CAL-32 | When the calendar app exists, the suite hands the event off via the Suite's cross-app mechanism (`../notes/open-questions.md` Q16). The mail app does not directly call calendar JMAP methods. |
+| REQ-CAL-33 | A CANCEL processed against an event on the user's calendar removes the event (via the calendar app when it exists, directly via JMAP for Calendars while it doesn't). |
 
 ## Conflict awareness
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CAL-40 | Before showing the action buttons, tabard checks for conflicts with existing events overlapping `DTSTART`–`DTEND` on the user's calendar. If a conflict exists, the card shows "Conflicts with: <other event title>" between the time and the buttons. |
+| REQ-CAL-40 | Before showing the action buttons, the suite checks for conflicts with existing events overlapping `DTSTART`–`DTEND` on the user's calendar. If a conflict exists, the card shows "Conflicts with: <other event title>" between the time and the buttons. |
 | REQ-CAL-41 | A conflict does not block Accept; it informs the decision. |
 | REQ-CAL-42 | Conflict checking depends on `urn:ietf:params:jmap:calendars`; without it, no conflict detection. |
 
@@ -66,12 +66,12 @@ The iMIP card appears inline at the top of the message body, above the prose.
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CAL-50 | When the iMIP REQUEST refers to a single occurrence of a recurring event (uses `RECURRENCE-ID`), tabard's RSVP buttons act on that occurrence only; the rest of the series remains untouched. |
+| REQ-CAL-50 | When the iMIP REQUEST refers to a single occurrence of a recurring event (uses `RECURRENCE-ID`), the suite's RSVP buttons act on that occurrence only; the rest of the series remains untouched. |
 | REQ-CAL-51 | When the iMIP REQUEST is for the whole series (no `RECURRENCE-ID`), the RSVP applies to every occurrence; the card explicitly says "RSVP applies to the entire series". |
 
-## Out of scope (in tabard-mail)
+## Out of scope (in the suite)
 
-- Creating new events from scratch. That's tabard-calendar.
-- Managing existing events the user organised (rescheduling, sending updates, cancelling). That's tabard-calendar.
-- Free/busy queries beyond the basic conflict check. That's tabard-calendar.
-- Inviting attendees to a new event from compose. Could be added as a small "Insert calendar invite" affordance in compose; cut for v1 — tabard-calendar will own the create-and-invite flow when it exists.
+- Creating new events from scratch. That's the calendar app.
+- Managing existing events the user organised (rescheduling, sending updates, cancelling). That's the calendar app.
+- Free/busy queries beyond the basic conflict check. That's the calendar app.
+- Inviting attendees to a new event from compose. Could be added as a small "Insert calendar invite" affordance in compose; cut for v1 — the calendar app will own the create-and-invite flow when it exists.

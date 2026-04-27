@@ -1,15 +1,15 @@
 {
-  "name": "tabard",
+  "name": "herold-web",
   "version": "0.0.0",
   "private": true,
-  "description": "Tabard — JMAP suite (mail, calendar, contacts, chat) over herold",
+  "description": "Herold web workspace: the suite (mail / calendar / contacts / chat) and admin SPAs that ship inside the herold binary.",
   "license": "MIT",
   "engines": {
     "node": ">=20",
     "pnpm": ">=9"
   },
   "scripts": {
-    "dev": "pnpm --filter @tabard/suite dev",
+    "dev": "pnpm --filter @herold/suite dev",
     "build": "pnpm -r --if-present build",
     "check": "pnpm -r --if-present check",
     "test": "pnpm -r --if-present test",

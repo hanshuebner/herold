@@ -16,13 +16,13 @@ Performance, security, reliability, accessibility, browser support.
 
 | ID | Requirement |
 |----|-------------|
-| REQ-SEC-01 | Tabard authenticates via an HTTP-only session cookie set by herold's login surface. The cookie is scoped to the suite origin (the same origin that serves both the static assets and the JMAP API). Tabard does not store, read, or transmit any auth token in JS-accessible storage. See `../architecture/01-system-overview.md` § Bootstrap. |
-| REQ-SEC-02 | Logout clears the cookie via herold's logout endpoint. Tabard does not maintain its own auth state. The user-facing logout is a single click; no "remember me" toggle (the cookie's lifetime is herold's policy). |
-| REQ-SEC-03 | All JMAP requests are HTTPS. Tabard refuses to operate against an `http://` JMAP URL. |
+| REQ-SEC-01 | The suite authenticates via an HTTP-only session cookie set by herold's login surface. The cookie is scoped to the suite origin (the same origin that serves both the static assets and the JMAP API). The suite does not store, read, or transmit any auth token in JS-accessible storage. See `../architecture/01-system-overview.md` § Bootstrap. |
+| REQ-SEC-02 | Logout clears the cookie via herold's logout endpoint. The suite does not maintain its own auth state. The user-facing logout is a single click; no "remember me" toggle (the cookie's lifetime is herold's policy). |
+| REQ-SEC-03 | All JMAP requests are HTTPS. The suite refuses to operate against an `http://` JMAP URL. |
 | REQ-SEC-04 | HTML message bodies render inside a sandboxed iframe with `sandbox="allow-same-origin"` and no `allow-scripts`. See `../architecture/04-rendering.md`. |
 | REQ-SEC-05 | External images in messages are NOT loaded by default. The user clicks "Load images" per message, with optional per-sender opt-in. |
-| REQ-SEC-06 | No third-party analytics, tracking, or ad scripts ship with tabard. |
-| REQ-SEC-07 | Content-Security-Policy is set such that the message iframe can only load images from the configured proxy origin (image proxying is the server's job; tabard requires a proxy to be configured — see `../notes/server-contract.md`). |
+| REQ-SEC-06 | No third-party analytics, tracking, or ad scripts ship with the suite. |
+| REQ-SEC-07 | Content-Security-Policy is set such that the message iframe can only load images from the configured proxy origin (image proxying is the server's job; the suite requires a proxy to be configured — see `../notes/server-contract.md`). |
 
 ## Reliability and sync
 
@@ -31,7 +31,7 @@ Performance, security, reliability, accessibility, browser support.
 | REQ-REL-01 | The client uses JMAP `state` strings and `Foo/changes` methods for incremental sync. Full re-fetch is a fallback on `cannotCalculateChanges`. |
 | REQ-REL-02 | If the EventSource push channel disconnects, the client falls back to polling at a 30 s interval with a subtle "connecting…" indicator. The push channel is retried with exponential back-off in parallel. |
 | REQ-REL-03 | Failed JMAP requests retry with exponential back-off, max 3 retries, max 30 s delay. After exhaustion the action surfaces as failed (`11-optimistic-ui.md` REQ-OPT-02). |
-| REQ-REL-04 | Tabard reconciles its in-memory cache to the server's `state` on every push event and after every batch reply, ensuring optimistic writes don't drift from server truth. |
+| REQ-REL-04 | The suite reconciles its in-memory cache to the server's `state` on every push event and after every batch reply, ensuring optimistic writes don't drift from server truth. |
 
 ## Accessibility
 
@@ -55,5 +55,5 @@ Phone and tablet use the same browser engines as desktop (no native shells). Mob
 
 | ID | Requirement |
 |----|-------------|
-| REQ-BR-01 | Below the supported versions tabard shows an "unsupported browser" page with an upgrade link. It does not attempt graceful degradation. |
-| REQ-BR-02 | Tabard does not ship JavaScript polyfills for features available in all supported versions. |
+| REQ-BR-01 | Below the supported versions the suite shows an "unsupported browser" page with an upgrade link. It does not attempt graceful degradation. |
+| REQ-BR-02 | The suite does not ship JavaScript polyfills for features available in all supported versions. |

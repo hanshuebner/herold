@@ -22,6 +22,6 @@
 // JMAPStateKindSieve counter.
 //
 // Sieve/validate is the parse-only sibling: it runs the same parser
-// + validator pass without persisting anything. Tabard's compose UI
+// + validator pass without persisting anything. The suite's compose UI
 // uses /validate for syntax-check-as-you-type.
 package sieve

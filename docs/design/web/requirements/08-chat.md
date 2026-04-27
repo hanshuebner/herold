@@ -1,8 +1,8 @@
 # 08 — Chat
 
-Real-time conversation between tabard users. DMs (1:1) and Spaces (group rooms). Lives as a persistent panel in the suite shell, not a separate app — see `../architecture/01-system-overview.md` § Suite shape.
+Real-time conversation between the suite users. DMs (1:1) and Spaces (group rooms). Lives as a persistent panel in the suite shell, not a separate app — see `../architecture/01-system-overview.md` § Suite shape.
 
-Closed system: no federation, no XMPP/Matrix bridges. Tabard users only.
+Closed system: no federation, no XMPP/Matrix bridges. The suite users only.
 
 ## Conversations
 
@@ -91,7 +91,7 @@ Two types: direct (DM, 1:1) and space (group, 2+ members).
 |----|-------------|
 | REQ-CHAT-90 | The panel shows an unread count badge per conversation; the panel header shows total unread across all unmuted conversations. |
 | REQ-CHAT-91 | A new message in a conversation that is not currently open triggers a one-shot toast in the corner ("New message in <conversation>") unless the conversation is muted. Click → opens the conversation. |
-| REQ-CHAT-92 | The browser tab title shows the total unread count when there are unread messages: `(3) Tabard — Mail`. |
+| REQ-CHAT-92 | The browser tab title shows the total unread count when there are unread messages: `(3) The suite — Mail`. |
 | REQ-CHAT-93 | Browser-level push notifications (when the tab is closed) are out for v1 — they require a service worker (NG2). Revisit if NG2 changes. |
 
 ## Calls
@@ -108,6 +108,6 @@ Video calls live in their own doc: `21-video-calls.md`. From the chat panel's pe
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CHAT-110 | All chat data lives in herold (resolved Q-chat-6). Tabard never persists chat content client-side beyond the in-memory cache. |
+| REQ-CHAT-110 | All chat data lives in herold (resolved Q-chat-6). The suite never persists chat content client-side beyond the in-memory cache. |
 | REQ-CHAT-111 | Chat content is not encrypted end-to-end. Same trust posture as mail: the operator running herold has access. The threat model is "external attacker on the wire", which TLS handles, not "compromised server". |
-| REQ-CHAT-112 | Conversation, message, membership, and presence retention is herold's policy. Tabard surfaces "this Space's retention is N days" if herold reports it. |
+| REQ-CHAT-112 | Conversation, message, membership, and presence retention is herold's policy. The suite surfaces "this Space's retention is N days" if herold reports it. |

@@ -41,7 +41,7 @@ URL they bookmark.
 
 | Surface | Listener | URL (loopback quickstart shape) | Sign-in form | Cookie | Today |
 |---------|----------|---------------------------------|--------------|--------|-------|
-| Tabard consumer SPA (mail / calendar / contacts / chat) | public | `http://localhost:8080/` | `/login` redirects to the protoui sign-in form; after login the SPA's JMAP handshake completes | `herold_public_session` (`Path=/`, end-user scope) | yes |
+| The suite consumer SPA (mail / calendar / contacts / chat) | public | `http://localhost:8080/` | `/login` redirects to the protoui sign-in form; after login the SPA's JMAP handshake completes | `herold_public_session` (`Path=/`, end-user scope) | yes |
 | Operator UI (domains, principals, queue, audit) | public | `http://localhost:8080/ui/dashboard` | protoui template at `/ui/login` | `herold_public_session` (`Path=/`, end-user scope) | yes |
 | Operator UI (TOTP-stepped admin scope) | admin | `http://localhost:9443/ui/dashboard` | protoui template at `/ui/login` | `herold_admin_session` (`Path=/ui/`, `[admin]` scope) | yes |
 
@@ -54,7 +54,7 @@ Which one to point an operator vs an end user at:
   carries end-user scope only and admin-gated REST endpoints will
   refuse it.
 - **End users** open `http://localhost:8080/` in a browser. The
-  tabard SPA redirects to `/login?return=%2F%23%2Fmail`. After
+  suite SPA redirects to `/login?return=%2F%23%2Fmail`. After
   signing in, herold issues a `herold_public_session` cookie with
   `Path=/` and redirects back to `/#/mail`. The SPA's JMAP
   handshake completes successfully using the cookie.
@@ -368,15 +368,15 @@ When `uris` is non-empty, `shared_secret_env` must be a `$VAR` or
 back to STUN-only ICE - that works for ~85-90% of network shapes; the
 remaining 10-15% need TURN.
 
-### `[server.tabard]` - tabard SPA mount on the public listener
+### `[server.the suite]` - suite SPA mount on the public listener
 
 ```toml
-[server.tabard]
+[server.the suite]
 enabled = true                    # default true; set false for admin-only deployments.
-# asset_dir = "/abs/path/to/tabard/dist"   # dev-mode override; default unset.
+# asset_dir = "/abs/path/to/the suite/dist"   # dev-mode override; default unset.
 ```
 
-Herold embeds the tabard SPA build artefacts into the binary and
+Herold embeds the suite SPA build artefacts into the binary and
 serves them at `/` on the public listener (REQ-DEPLOY-COLOC-01..05).
 
 - `enabled` toggles the SPA mount. `enabled = false` leaves the
@@ -385,9 +385,9 @@ serves them at `/` on the public listener (REQ-DEPLOY-COLOC-01..05).
   exists only to terminate JMAP / send / chat / image-proxy traffic.
 - `asset_dir`, when set, makes the server read SPA assets from disk
   on every request rather than from the embedded FS. Use this in
-  development to avoid rebuilding the binary on every tabard change,
+  development to avoid rebuilding the binary on every the suite change,
   or in the README quickstart together with
-  `scripts/install-tabard.sh`, which extracts the latest tabard
+  `scripts/install-tabard.sh`, which extracts the latest the suite
   release tarball into the data directory. Relative paths are
   resolved against the server's working directory at startup (same
   convention as `data_dir` and `cert_file`); the directory MUST
@@ -402,9 +402,9 @@ stable non-hashed assets, and `no-cache` for `index.html`. Unknown
 non-API paths fall through to `index.html` so the SPA's client-side
 router takes over.
 
-The pinned tabard release the current herold binary embeds is
+The pinned the suite release the current herold binary embeds is
 recorded in `deploy/tabard.version`. Operators who want a different
-tabard version use the `asset_dir` override; see
+the suite version use the `asset_dir` override; see
 `docs/user/install.md` for the embed-tabard workflow.
 
 ### `[server.ui]` - operator-facing web UI

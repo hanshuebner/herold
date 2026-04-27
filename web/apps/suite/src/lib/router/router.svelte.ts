@@ -6,7 +6,7 @@
  * (herold serves index.html for `/` and that's all it needs to know about
  * the SPA's routes).
  *
- * URL shape: `https://tabard.example.com/#/mail/thread/abc-123`
+ * URL shape: `https://herold.example.com/#/mail/thread/abc-123`
  *
  * Match by inspecting `router.parts` (the path split on `/`). Views
  * compare the first segment(s) with the app they implement.

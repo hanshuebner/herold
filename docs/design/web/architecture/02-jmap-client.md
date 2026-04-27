@@ -14,7 +14,7 @@ It does NOT manage state strings or the change feed — that's `03-sync-and-stat
 
 ## Method-call shape
 
-Tabard calls JMAP through a typed wrapper:
+The suite calls JMAP through a typed wrapper:
 
 ```
 const [emails] = await jmap.batch(b => {
@@ -34,7 +34,7 @@ Back-references are first-class: any subsequent call in the same batch can refer
 
 ## Auth
 
-All JMAP requests use `credentials: 'include'` so the suite-origin session cookie attaches automatically. There is no `Authorization` header and no token in JS-accessible storage. A 401 response invalidates the session; tabard redirects to herold's `/login?return=<current-url>` (resolved Q1). See `01-system-overview.md` § Bootstrap.
+All JMAP requests use `credentials: 'include'` so suite-origin session cookie attaches automatically. There is no `Authorization` header and no token in JS-accessible storage. A 401 response invalidates the session; the suite redirects to herold's `/login?return=<current-url>` (resolved Q1). See `01-system-overview.md` § Bootstrap.
 
 ## Error handling
 
@@ -55,4 +55,4 @@ Method-call batches do not cancel mid-flight. If the user navigates away from a 
 
 ## Capability negotiation
 
-On bootstrap, the session descriptor's `capabilities` is read once and pinned for the session. Each batched call's `using` is computed from the methods it contains plus the pinned capability set. Capabilities the server doesn't advertise (e.g. `urn:ietf:params:jmap:sieve` if filters aren't supported) cause the corresponding feature paths to be removed from the UI; tabard never issues a method whose capability isn't advertised.
+On bootstrap, the session descriptor's `capabilities` is read once and pinned for the session. Each batched call's `using` is computed from the methods it contains plus the pinned capability set. Capabilities the server doesn't advertise (e.g. `urn:ietf:params:jmap:sieve` if filters aren't supported) cause the corresponding feature paths to be removed from the UI; the suite never issues a method whose capability isn't advertised.

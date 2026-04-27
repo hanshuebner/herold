@@ -38,7 +38,7 @@ type handlerSet struct {
 // per-server capability descriptor that carries the deployment's
 // VAPID applicationServerKey. When vm is nil or unconfigured the
 // capability is still advertised (so clients can detect that herold
-// supports the surface) but applicationServerKey is omitted; tabard
+// supports the surface) but applicationServerKey is omitted; the suite
 // then surfaces a "push not available on this deployment" UI.
 //
 // Idempotent on the per-method axis: re-registering a method panics
@@ -60,7 +60,7 @@ func Register(reg *protojmap.CapabilityRegistry, st store.Store, vm *vapid.Manag
 // pushCapability is the JSON-marshalable body of the JMAP push
 // capability descriptor. RFC 8292 names the field
 // "applicationServerKey" — the same name pushManager.subscribe()
-// uses on the browser side, so a tabard-shaped client can read it
+// uses on the browser side, so a suite-shaped client can read it
 // directly without translation.
 //
 // The field is omitted (omitempty) when no VAPID key is configured;

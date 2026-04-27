@@ -16,9 +16,9 @@ Find threads by free text, by structured criteria, or by both.
 
 | ID | Requirement |
 |----|-------------|
-| REQ-SRC-10 | Tabard parses Gmail-compatible operators: `from:`, `to:`, `subject:`, `label:`, `has:attachment`, `is:unread`, `is:starred`, `is:snoozed`, `before:`, `after:`. |
+| REQ-SRC-10 | The suite parses Gmail-compatible operators: `from:`, `to:`, `subject:`, `label:`, `has:attachment`, `is:unread`, `is:starred`, `is:snoozed`, `before:`, `after:`. |
 | REQ-SRC-11 | Operator suggestions appear as the user types (autocomplete). |
-| REQ-SRC-12 | Tabard translates the parsed query into a structured `Email/query` filter. The user-visible syntax stays Gmail-compatible to preserve muscle memory; the wire-level filter is JMAP. |
+| REQ-SRC-12 | The suite translates the parsed query into a structured `Email/query` filter. The user-visible syntax stays Gmail-compatible to preserve muscle memory; the wire-level filter is JMAP. |
 
 ## Search state
 
@@ -33,13 +33,13 @@ Find threads by free text, by structured criteria, or by both.
 | ID | Requirement |
 |----|-------------|
 | REQ-SRC-30 | Each visible search result row's snippet is fetched via `SearchSnippet/get` (RFC 8621 §7.1), passing the active filter so the server can highlight the matched terms. |
-| REQ-SRC-31 | Snippet truncation length is server-controlled (whatever herold returns); tabard renders verbatim. Highlighted terms come back wrapped in `<mark>` tags or as offsets — tabard renders them with a `--support-info` background per `../architecture/06-design-system.md`. |
+| REQ-SRC-31 | Snippet truncation length is server-controlled (whatever herold returns); the suite renders verbatim. Highlighted terms come back wrapped in `<mark>` tags or as offsets — the suite renders them with a `--support-info` background per `../architecture/06-design-system.md`. |
 | REQ-SRC-32 | If `SearchSnippet` capability is not advertised, the row falls back to `Email.preview` with no highlighting. |
 | REQ-SRC-33 | Snippets are not cached — they are tied to the search query; re-running a different query for the same Email yields different snippets. |
 
 ## Query parser
 
-The user-facing query syntax is a small grammar that tabard parses into a JMAP `FilterCondition` / `FilterOperator` tree.
+The user-facing query syntax is a small grammar that the suite parses into a JMAP `FilterCondition` / `FilterOperator` tree.
 
 ```
 query       := term (whitespace term)*
@@ -60,7 +60,7 @@ value       := quoted | bareword
 | REQ-SRC-42 | Free-text barewords map to `text: <value>` in the filter. Quoted barewords map to phrase search (`text: <phrase>` exactly). |
 | REQ-SRC-43 | Date operators (`before:`, `after:`, `newer_than:`, `older_than:`) accept ISO 8601 dates and short relative forms (`1d`, `2w`, `3m`). |
 | REQ-SRC-44 | Unknown operators are syntax errors surfaced inline ("Unknown operator: `xyz:`"). The user fixes the query before search runs. |
-| REQ-SRC-45 | Tabard does not support OR or parenthesised expressions in v1. (Most search needs are AND-shaped; OR adds parser and UI complexity for marginal gain.) |
+| REQ-SRC-45 | The suite does not support OR or parenthesised expressions in v1. (Most search needs are AND-shaped; OR adds parser and UI complexity for marginal gain.) |
 
 ## Search within thread
 
@@ -76,4 +76,4 @@ value       := quoted | bareword
 | ID | Requirement |
 |----|-------------|
 | REQ-SRC-60 | Verdict deferred to capture data. If gmail-logger reveals the user repeats the same search ≥ 5 times in a 5-day window, saved searches ship in v1; otherwise cut. The decision lives in `../notes/capture-integration.md`. |
-| REQ-SRC-61 | If saved searches ship: a "Save this search" affordance appears on a result page. Saved searches surface as sidebar entries (under their own section). Storage: server-side via a tabard custom property on the account, OR `localStorage` per account if no server contract is available — pending the verdict. |
+| REQ-SRC-61 | If saved searches ship: a "Save this search" affordance appears on a result page. Saved searches surface as sidebar entries (under their own section). Storage: server-side via a Suite-defined custom property on the account, OR `localStorage` per account if no server contract is available — pending the verdict. |
