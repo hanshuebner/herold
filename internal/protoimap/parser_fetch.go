@@ -27,12 +27,31 @@ func parseFetch(p *parser, cmd *Command) error {
 			return err
 		}
 	} else {
+		// RFC 9051 §6.4.6: an unparenthesised FETCH attribute can be
+		// either one of the macros (ALL / FAST / FULL) or a single
+		// fetch-att — including the bracket-bearing forms BODY[...]
+		// and BODY.PEEK[...]. The earlier readAtom/applyFetchMacro
+		// path missed the bracket-bearing case, which made plain
+		// `FETCH 1 BODY.PEEK[]` (mutt's single-message body fetch)
+		// fail with "unknown fetch item BODY.PEEK".
 		a, err := p.readAtom()
 		if err != nil {
 			return err
 		}
-		if err := applyFetchMacro(strings.ToUpper(a), opts); err != nil {
-			return err
+		name := strings.ToUpper(a)
+		switch name {
+		case "ALL", "FAST", "FULL":
+			if err := applyFetchMacro(name, opts); err != nil {
+				return err
+			}
+		default:
+			if p.peek() == '[' {
+				if err := parseBodySection(p, name, opts); err != nil {
+					return err
+				}
+			} else if err := applyFetchItem(name, opts); err != nil {
+				return err
+			}
 		}
 	}
 	cmd.FetchOptions = opts

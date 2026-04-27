@@ -188,7 +188,11 @@ func readCommand(br *bufio.Reader, readLit literalReader) (*Command, error) {
 	p := &parser{src: []byte(sb.String()), lits: lits}
 	cmd := &Command{Raw: sb.String()}
 	if err := parseCommand(p, cmd); err != nil {
-		return nil, err
+		// Return the partially-parsed command so the caller can log
+		// cmd.Raw alongside the error — without that surface a parser
+		// rejection ("unknown fetch item BODY.PEEK") tells the
+		// operator nothing about what the client actually sent.
+		return cmd, err
 	}
 	return cmd, nil
 }

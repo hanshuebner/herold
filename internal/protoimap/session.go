@@ -118,7 +118,14 @@ func (ses *session) run(ctx context.Context) {
 		cmd, err := readCommand(ses.br, ses.readLiteral)
 		if err != nil {
 			if !isClose(err) {
-				ses.logger.Debug("protoimap: read command", "err", err)
+				rawLine := ""
+				if cmd != nil {
+					rawLine = cmd.Raw
+				}
+				ses.logger.Debug("protoimap: read command",
+					"err", err,
+					"raw", rawLine,
+				)
 			}
 			return
 		}

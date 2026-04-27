@@ -472,8 +472,10 @@ func (sess *session) classify(ctx context.Context, msg mailparse.Message, authRe
 	}
 	cls, err := sess.srv.spam.Classify(ctx, msg, &authResults, sess.srv.spamPlug)
 	if err != nil {
-		sess.srv.log.InfoContext(ctx, "spam classification error",
-			slog.String("err", err.Error()))
+		// Classifier.Classify already emits a warn-level
+		// "spam classifier error" with the plugin name and err
+		// before returning. Logging again here would duplicate the
+		// same record at INFO; let the classifier own that line.
 		return spam.Classification{Verdict: spam.Unclassified, Score: -1}
 	}
 	return cls
