@@ -1056,6 +1056,11 @@ func stripCRLF(s string) string {
 // after the closing '>', and an error for malformed input. Accepts a
 // bare address when there are no angle brackets (tolerant).
 func extractAngleAddr(s string) (addr, rest string, err error) {
+	// Callers strip CRLF before invoking us; reject defensively so any
+	// stray byte cannot leak into a reply line.
+	if strings.ContainsAny(s, "\r\n") {
+		return "", "", errors.New("CR/LF in path")
+	}
 	if strings.HasPrefix(s, "<") {
 		end := strings.IndexByte(s, '>')
 		if end < 0 {
@@ -1070,12 +1075,20 @@ func extractAngleAddr(s string) (addr, rest string, err error) {
 		}
 		return inner, strings.TrimSpace(s[end+1:]), nil
 	}
-	// Bare form: first token.
+	// Bare form: first token. A stray '<' or '>' here is malformed
+	// (the leading-'<' branch above is the only legal way for an angle
+	// bracket to appear in a path).
 	i := strings.IndexAny(s, " \t")
+	var addrTok, restTok string
 	if i < 0 {
-		return s, "", nil
+		addrTok, restTok = s, ""
+	} else {
+		addrTok, restTok = s[:i], strings.TrimSpace(s[i+1:])
 	}
-	return s[:i], strings.TrimSpace(s[i+1:]), nil
+	if strings.ContainsAny(addrTok, "<>") {
+		return "", "", errors.New("stray angle bracket in bare address")
+	}
+	return addrTok, restTok, nil
 }
 
 // splitAddress returns local/domain for local@domain. Null addresses
