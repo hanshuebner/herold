@@ -545,21 +545,25 @@ func TestHeartbeat_NoPongWithinTimeout_ClosesConnection(t *testing.T) {
 func TestPresence_DisconnectGracePeriod_Offline_After30s(t *testing.T) {
 	h := newHarness(t)
 	c := h.connect(1)
-	// Set presence online so the tracker has something to record.
+	// Set presence online so the tracker has something to record. Use a
+	// ClientID and read the ack synchronously: closing the conn before
+	// the server has processed the presence.set frame races the kernel
+	// (unread bytes in the recv buffer turn the close into RST and the
+	// frame is lost), so we must observe the ack before Close.
 	if err := c.writeText(mustJSON(t, ClientFrame{
-		Type:    clientTypePresenceSet,
-		Payload: mustJSON(t, presencePayload{State: "online"}),
+		Type:     clientTypePresenceSet,
+		Payload:  mustJSON(t, presencePayload{State: "online"}),
+		ClientID: "p1",
 	})); err != nil {
 		t.Fatalf("writeText: %v", err)
 	}
-	// Drain whatever frames arrive (we don't care about order).
-	go func() {
-		for {
-			if _, _, err := c.readNext(); err != nil {
-				return
-			}
-		}
-	}()
+	sf, err := c.readServerFrame()
+	if err != nil {
+		t.Fatalf("readServerFrame: %v", err)
+	}
+	if sf.Type != ServerTypeAck || sf.Ack != "p1" {
+		t.Fatalf("ack: got type=%q ack=%q want type=%q ack=%q", sf.Type, sf.Ack, ServerTypeAck, "p1")
+	}
 	// Disconnect.
 	c.Close()
 	// Wait for the disconnect to register on the broadcaster.
