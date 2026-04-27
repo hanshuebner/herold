@@ -29,6 +29,38 @@ func (stringExtractor) Extract(ctx context.Context, _ store.Message, body io.Rea
 	return string(b), nil
 }
 
+// drainFTS calls FlushForTest in a loop until the feed is empty, then
+// asserts that SearchChatMessages returns exactly want hits. It is
+// deterministic: no wall-clock reads, no time.Sleep, no time.After.
+// The worker must NOT be running concurrently (no Run goroutine).
+func drainFTS(
+	t *testing.T,
+	ctx context.Context,
+	w *storefts.Worker,
+	idx *storefts.Index,
+	term string,
+	convIDs []store.ConversationID,
+	want int,
+) {
+	t.Helper()
+	for {
+		changed, err := w.FlushForTest(ctx)
+		if err != nil {
+			t.Fatalf("FlushForTest: %v", err)
+		}
+		if !changed {
+			break
+		}
+	}
+	ids, err := idx.SearchChatMessages(ctx, term, convIDs, 0)
+	if err != nil {
+		t.Fatalf("SearchChatMessages: %v", err)
+	}
+	if len(ids) != want {
+		t.Fatalf("FTS hit count = %d, want %d (ids: %v)", len(ids), want, ids)
+	}
+}
+
 // TestWorker_HardDelete_RemovesFromFTSIndex pins the end-to-end chain:
 // the chat retention sweep hard-deletes a message via
 // Metadata.HardDeleteChatMessage, which appends an
@@ -39,12 +71,16 @@ func (stringExtractor) Extract(ctx context.Context, _ store.Message, body io.Rea
 // (Wave 2.9.6 Track D + Wave 2.9.9 Track C verification).
 //
 // This is an integration test, not a unit test: it wires a real
-// storefts.Index, runs the worker goroutine end-to-end, and drives
-// retention + FTS through their normal cadences. The fakestore
-// faithfully reproduces the per-backend hard-delete path's FTS-change
-// emit (see fakestore_chat.go HardDeleteChatMessage); SQLite and
-// Postgres reproduce it in production storage layers (Wave 2.9.6
-// Track D's per-backend implementation).
+// storefts.Index, runs FlushForTest end-to-end, and drives retention +
+// FTS through their normal cadences. The fakestore faithfully
+// reproduces the per-backend hard-delete path's FTS-change emit (see
+// fakestore_chat.go HardDeleteChatMessage); SQLite and Postgres
+// reproduce it in production storage layers (Wave 2.9.6 Track D's
+// per-backend implementation).
+//
+// Determinism note: the worker is NOT started as a goroutine here.
+// FlushForTest drives indexing synchronously in the test goroutine,
+// which eliminates all timing races without wall-clock polling.
 func TestWorker_HardDelete_RemovesFromFTSIndex(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	st, err := fakestore.New(fakestore.Options{
@@ -82,7 +118,9 @@ func TestWorker_HardDelete_RemovesFromFTSIndex(t *testing.T) {
 		t.Fatalf("InsertChatMembership: %v", err)
 	}
 
-	// Bleve index + worker.
+	// Bleve index + worker. The worker is NOT started as a goroutine;
+	// FlushForTest drives it synchronously so there are no scheduling
+	// races.
 	idx, err := storefts.New(t.TempDir(), nil, clk)
 	if err != nil {
 		t.Fatalf("storefts.New: %v", err)
@@ -91,21 +129,16 @@ func TestWorker_HardDelete_RemovesFromFTSIndex(t *testing.T) {
 
 	wopts := storefts.WorkerOptions{}
 	w := storefts.NewWorker(idx, st, stringExtractor{}, nil, clk, wopts)
-	wctx, cancelWorker := context.WithCancel(ctx)
-	wdone := make(chan error, 1)
-	go func() { wdone <- w.Run(wctx) }()
-	t.Cleanup(func() {
-		cancelWorker()
-		<-wdone
-	})
 
-	// Insert 3 chat messages with searchable bodies. Each insert
-	// appends an (EntityKindChatMessage, ChangeOpCreated) FTS change.
+	// Insert 3 chat messages with searchable bodies. Advance the clock
+	// by 1 ms between inserts to give distinct timestamps without crossing
+	// the flush interval (500 ms), which would otherwise wake a running
+	// worker goroutine mid-loop and fragment the change feed.
 	pid := p.ID
 	body := "indelible-token-zebra"
 	ids := make([]store.ChatMessageID, 0, 3)
 	for i := 0; i < 3; i++ {
-		clk.Advance(time.Second)
+		clk.Advance(time.Millisecond)
 		id, err := st.Meta().InsertChatMessage(ctx, store.ChatMessage{
 			ConversationID:    cid,
 			SenderPrincipalID: &pid,
@@ -118,43 +151,9 @@ func TestWorker_HardDelete_RemovesFromFTSIndex(t *testing.T) {
 		ids = append(ids, id)
 	}
 
-	// Drive the worker until the FTS index reaches the expected hit
-	// count. The previous single-shot flushOnce was racy: under heavy
-	// parallel CPU load the inter-insert clk.Advance(1 s) calls can
-	// wake the worker mid-loop, fragmenting the inserts across multiple
-	// flushes; by the time the test captures CurrentFlushSignal() the
-	// worker has already drained the feed and the next nudge produces
-	// no flush, leaving the test waiting on a broadcast that never
-	// closes (or, if the worker happened to coalesce one batch with
-	// only some of the inserts, asserting against an undercount).
-	//
-	// expectHits polls: nudge the worker, check the index, repeat until
-	// the expected count is observed or a 2 s wall-clock deadline fires.
-	// Robust against any flush-fragmentation timing.
-	expectHits := func(t *testing.T, want int) {
-		t.Helper()
-		deadline := time.Now().Add(2 * time.Second)
-		var got []store.ChatMessageID
-		for time.Now().Before(deadline) {
-			flushSig := w.CurrentFlushSignal()
-			clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
-			select {
-			case <-flushSig:
-			case <-time.After(50 * time.Millisecond):
-			}
-			ids, err := idx.SearchChatMessages(ctx, body, []store.ConversationID{cid}, 0)
-			if err != nil {
-				t.Fatalf("SearchChatMessages: %v", err)
-			}
-			got = ids
-			if len(got) == want {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		t.Fatalf("FTS hits never reached %d within 2 s (final: %d, %v)", want, len(got), got)
-	}
-	expectHits(t, 3)
+	// Drain the worker synchronously and assert all 3 messages are
+	// indexed before the retention sweep runs.
+	drainFTS(t, ctx, w, idx, body, []store.ConversationID{cid}, 3)
 
 	// Advance well past the retention window so the sweep can
 	// hard-delete every row. The retention-sweep predicate is
@@ -178,8 +177,9 @@ func TestWorker_HardDelete_RemovesFromFTSIndex(t *testing.T) {
 		t.Fatalf("retention deleted = %d, want 3", deleted)
 	}
 
-	// Poll until the destroy rows have been applied to the FTS index.
-	expectHits(t, 0)
+	// Drain the worker synchronously and assert the destroy rows have
+	// been applied: the index must now return zero hits.
+	drainFTS(t, ctx, w, idx, body, []store.ConversationID{cid}, 0)
 
 	// Sanity: every metadata row is gone too. Guards against a future
 	// refactor where the FTS-index removal lands but the metadata

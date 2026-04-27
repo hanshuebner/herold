@@ -22,6 +22,11 @@ import (
 // composes the same alice/bob/carol principals but routes Message/query
 // through a real storefts.Index + Worker so the FTS path
 // (Wave 2.9.6 Track D, REQ-CHAT-80..82) is exercised end-to-end.
+//
+// Determinism note: the worker is NOT started as a goroutine. All
+// indexing is driven by flushFTS, which calls FlushForTest
+// synchronously in the test goroutine. This eliminates all timing
+// races without wall-clock polling.
 type ftsFixture struct {
 	*fixture
 	idx    *storefts.Index
@@ -79,14 +84,9 @@ func setupFTSFixture(t *testing.T) *ftsFixture {
 	}
 	t.Cleanup(func() { _ = idx.Close() })
 
+	// Worker is NOT started as a goroutine. flushFTS drives it
+	// synchronously via FlushForTest so there are no scheduling races.
 	w := storefts.NewWorker(idx, srv.Store, stringExtractor{}, nil, clk, storefts.WorkerOptions{})
-	wctx, cancel := context.WithCancel(ctx)
-	done := make(chan error, 1)
-	go func() { done <- w.Run(wctx) }()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
 
 	dir := directory.New(srv.Store.Meta(), srv.Logger, srv.Clock, nil)
 	jmapServ := protojmap.NewServer(srv.Store, dir, nil, srv.Logger, srv.Clock, protojmap.Options{})
@@ -120,40 +120,26 @@ func (stringExtractor) Extract(ctx context.Context, _ store.Message, body io.Rea
 	return string(b), nil
 }
 
-// flushFTS drives the worker until its cursor has settled (no advance
-// across two consecutive nudge cycles), so freshly inserted chat
-// messages have all landed in the index. The single-shot pattern was
-// racy under heavy parallel CPU load: the worker could fragment the
-// queued changes across multiple flushes, leaving callers waiting on
-// a broadcast that never closes (or asserting against an undercount).
-// The poll-until-cursor-stable strategy is robust to fragmentation
-// and produces deterministic ordering with respect to subsequent JMAP
-// queries.
+// flushFTS drains the worker's FTS change feed synchronously until the
+// feed is empty. It calls FlushForTest in a loop; each call processes
+// one batch and commits it to the Bleve index. When the feed is empty
+// FlushForTest returns (false, nil) and the loop exits.
+//
+// This is deterministic: no wall-clock reads, no time.Sleep, no
+// time.After. The worker must NOT be running concurrently (no Run
+// goroutine is started by setupFTSFixture).
 func (f *ftsFixture) flushFTS(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	var prev uint64
-	settled := 0
-	for time.Now().Before(deadline) {
-		flushSig := f.worker.CurrentFlushSignal()
-		f.clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
-		select {
-		case <-flushSig:
-		case <-time.After(50 * time.Millisecond):
+	ctx := context.Background()
+	for {
+		changed, err := f.worker.FlushForTest(ctx)
+		if err != nil {
+			t.Fatalf("flushFTS: FlushForTest: %v", err)
 		}
-		cur := f.worker.Cursor()
-		if cur == prev {
-			settled++
-			if settled >= 2 {
-				return
-			}
-		} else {
-			settled = 0
-			prev = cur
+		if !changed {
+			return
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("flushFTS: worker cursor never settled within 2 s (final: %d)", prev)
 }
 
 func TestMessage_Query_FTS_TextFilter(t *testing.T) {
@@ -281,7 +267,7 @@ func TestMessage_Query_FTS_RelevanceSort_DefaultsToScore(t *testing.T) {
 		t.Fatalf("unmarshal: %v: %s", err, raw)
 	}
 	if len(resp.IDs) < 2 {
-		t.Fatalf("expected ≥2 hits, got %+v", resp.IDs)
+		t.Fatalf("expected >=2 hits, got %+v", resp.IDs)
 	}
 	// Higher-score message must lead.
 	if resp.IDs[0] != second["id"].(string) {
@@ -293,7 +279,7 @@ func TestMessage_Query_FTS_RelevanceSort_DefaultsToScore(t *testing.T) {
 }
 
 // TestMessage_Query_NoText_KeepsChronologicalPath confirms the
-// non-text path still works under the FTS-wired handler — empty
+// non-text path still works under the FTS-wired handler -- empty
 // filter.text must NOT route through SearchChatMessages, so the
 // fallback comparator (createdAt asc) wins.
 func TestMessage_Query_NoText_KeepsChronologicalPath(t *testing.T) {
@@ -315,7 +301,7 @@ func TestMessage_Query_NoText_KeepsChronologicalPath(t *testing.T) {
 		t.Fatalf("unmarshal: %v: %s", err, raw)
 	}
 	if len(resp.IDs) < 2 {
-		t.Fatalf("expected ≥2 hits, got %+v", resp.IDs)
+		t.Fatalf("expected >=2 hits, got %+v", resp.IDs)
 	}
 	if resp.IDs[0] != first["id"].(string) || resp.IDs[1] != second["id"].(string) {
 		t.Errorf("chronological order wrong: %+v want [%s, %s]", resp.IDs, first["id"], second["id"])

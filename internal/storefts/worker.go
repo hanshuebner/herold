@@ -436,3 +436,33 @@ func waitForSignal(ctx context.Context, ch <-chan struct{}) error {
 		return ctx.Err()
 	}
 }
+
+// FlushForTest reads one batch of FTS changes from the feed, processes them,
+// and commits. It returns true if any changes were found and indexed, false if
+// the feed was empty (worker is idle).
+//
+// TEST SEAM — do not call from production paths. Tests that need a
+// deterministic, wall-clock-free way to drain the index use this method in a
+// loop rather than driving the async Run goroutine via clock advances:
+//
+//	for {
+//	    changed, err := w.FlushForTest(ctx)
+//	    if err != nil { t.Fatal(err) }
+//	    if !changed { break }
+//	}
+//
+// Callers must NOT start Run concurrently on the same worker, as processBatch
+// is not safe to call from multiple goroutines simultaneously.
+func (w *Worker) FlushForTest(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	changes, err := w.store.FTS().ReadChangeFeedForFTS(ctx, w.cursor.Load(), w.opts.BatchSize)
+	if err != nil {
+		return false, err
+	}
+	if len(changes) == 0 {
+		return false, nil
+	}
+	return true, w.processBatch(ctx, changes)
+}
