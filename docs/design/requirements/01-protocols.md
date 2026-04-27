@@ -93,7 +93,7 @@ Baseline (IMAP4rev2 / rev1 interop):
 - `WEBPUSH` (not standardized yet) — skip
 - `NOTIFY` (5465)
 
-Deferred: `LIST-MYRIGHTS`, `CONTEXT=SEARCH`, `URLAUTH`.
+Deferred: `LIST-MYRIGHTS`, `CONTEXT=SEARCH`, `URLAUTH`, `PREVIEW` (RFC 9051 §6.4.5 FETCH `PREVIEW` data item — herold advertises `IMAP4rev2` but does not yet generate previews; until implemented, FETCH `PREVIEW` returns `BAD`. Surfacing the gap is the imaptest `imap4rev2=1` profile in `test/interop/`).
 
 - **REQ-PROTO-30** MUST pass the `imapserver-tests` public interop matrix for all listed capabilities.
 - **REQ-PROTO-31** MUST handle `IDLE` for ≥2,000 concurrent sessions without per-session threads.

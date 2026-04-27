@@ -76,6 +76,13 @@ type selectedMailbox struct {
 	uidNext     store.UID
 	msgs        []store.Message // ordered by UID ascending; sequence number is index+1
 	readOnly    bool
+	// knownKeywords is the set of user-defined keyword flags that have been
+	// advertised to the client via a "* FLAGS" untagged response for this
+	// selected mailbox.  Guarded by ses.selMu.  RFC 3501 §7.2.6 requires that
+	// any keyword appearing in a FETCH FLAGS response was previously named in
+	// "* FLAGS"; we emit a fresh "* FLAGS" (and matching PERMANENTFLAGS)
+	// whenever the set grows.
+	knownKeywords map[string]struct{}
 }
 
 func newSession(s *Server, c net.Conn, tlsActive bool) *session {

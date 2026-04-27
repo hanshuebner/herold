@@ -845,3 +845,257 @@ func TestSEARCH_Keyword_Snoozed_FindsSnoozedMessages(t *testing.T) {
 		t.Errorf("unsnoozed message returned by SEARCH KEYWORD $snoozed: %v", resp)
 	}
 }
+
+// -----------------------------------------------------------------------------
+// RFC 3501 §7.2.6 / RFC 9051 §7.3.5 keyword advertisement in * FLAGS
+// -----------------------------------------------------------------------------
+
+// TestSELECT_FLAGS_IncludesExistingKeywords verifies that when a mailbox
+// already contains messages with keyword flags, SELECT reports those keywords
+// in the "* FLAGS" untagged response — not just the five system flags.
+func TestSELECT_FLAGS_IncludesExistingKeywords(t *testing.T) {
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	ctx := context.Background()
+	msg := buildMessage("kw-seed", "body")
+	blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
+	_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
+		MailboxID: f.inbox.ID,
+		Size:      int64(len(msg)),
+		Blob:      blob,
+		Keywords:  []string{"$label1"},
+		Envelope:  parseStoreEnvelope(msg),
+	})
+
+	c := loggedInClient(t, f)
+	defer c.close()
+	resp := c.send("s1", "SELECT INBOX")
+	joined := strings.Join(resp, "\n")
+	// "$label1" must appear in the * FLAGS line.
+	if !strings.Contains(joined, "$label1") {
+		t.Fatalf("SELECT FLAGS did not include pre-existing keyword $label1: %v", resp)
+	}
+	// PERMANENTFLAGS must also carry it and \*.
+	if !strings.Contains(joined, "PERMANENTFLAGS") {
+		t.Fatalf("PERMANENTFLAGS missing: %v", resp)
+	}
+	if !strings.Contains(joined, `\*`) {
+		t.Fatalf(`PERMANENTFLAGS missing \*: %v`, resp)
+	}
+}
+
+// TestSELECT_FLAGS_EmptyMailbox verifies that SELECT on a mailbox with no
+// messages returns only the five system flags (no keyword noise).
+func TestSELECT_FLAGS_EmptyMailbox(t *testing.T) {
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	c := loggedInClient(t, f)
+	defer c.close()
+	resp := c.send("s1", "SELECT INBOX")
+	joined := strings.Join(resp, "\n")
+	// The FLAGS line must contain the five system flags …
+	for _, sf := range []string{`\Answered`, `\Flagged`, `\Deleted`, `\Seen`, `\Draft`} {
+		if !strings.Contains(joined, sf) {
+			t.Fatalf("system flag %s missing from FLAGS: %v", sf, resp)
+		}
+	}
+	// … and nothing that looks like a user keyword (starts with '$' or a
+	// lowercase letter without backslash that is not "Limited" etc.).
+	for _, line := range resp {
+		if !strings.HasPrefix(line, "* FLAGS") {
+			continue
+		}
+		// "$" or a bare lowercase atom in the FLAGS list would be a keyword.
+		if strings.Contains(line, "$") {
+			t.Fatalf("unexpected keyword in FLAGS on empty mailbox: %q", line)
+		}
+	}
+}
+
+// TestSTORE_NewKeyword_EmitsFLAGSBeforeFETCH verifies that STORE +FLAGS
+// ($foo) on a message that does not yet carry $foo emits a fresh "* FLAGS"
+// untagged response before the "* N FETCH (FLAGS ...)" response, and that the
+// * FLAGS line includes the new keyword.
+func TestSTORE_NewKeyword_EmitsFLAGSBeforeFETCH(t *testing.T) {
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	ctx := context.Background()
+	msg := buildMessage("kw-new", "body")
+	blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
+	_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
+		MailboxID: f.inbox.ID,
+		Size:      int64(len(msg)),
+		Blob:      blob,
+		Envelope:  parseStoreEnvelope(msg),
+	})
+
+	c := loggedInClient(t, f)
+	defer c.close()
+	c.send("s1", "SELECT INBOX")
+	resp := c.send("st1", `STORE 1 +FLAGS ($testlabel)`)
+
+	// Collect the positions (indices) of * FLAGS and * 1 FETCH lines.
+	flagsIdx := -1
+	fetchIdx := -1
+	for i, line := range resp {
+		if strings.HasPrefix(line, "* FLAGS") {
+			flagsIdx = i
+		}
+		if strings.Contains(line, "FETCH") && strings.Contains(line, "FLAGS") {
+			fetchIdx = i
+		}
+	}
+	if flagsIdx < 0 {
+		t.Fatalf("no updated * FLAGS untagged response in STORE reply: %v", resp)
+	}
+	if fetchIdx < 0 {
+		t.Fatalf("no * FETCH FLAGS response in STORE reply: %v", resp)
+	}
+	if flagsIdx > fetchIdx {
+		t.Fatalf("* FLAGS (idx=%d) must precede * FETCH (idx=%d): %v", flagsIdx, fetchIdx, resp)
+	}
+	// The FLAGS line must include the new keyword.
+	joined := strings.Join(resp, "\n")
+	if !strings.Contains(joined, "$testlabel") {
+		t.Fatalf("$testlabel not found in updated * FLAGS: %v", resp)
+	}
+
+	// A subsequent SELECT must still advertise the keyword.
+	resp2 := c.send("s2", "SELECT INBOX")
+	if !strings.Contains(strings.Join(resp2, "\n"), "$testlabel") {
+		t.Fatalf("$testlabel missing from FLAGS on re-SELECT: %v", resp2)
+	}
+}
+
+// TestSTORE_ExistingKeyword_NoExtraFLAGS verifies that when the same keyword
+// is STOREd a second time (it is already in the advertised set), no new
+// "* FLAGS" untagged response is emitted.
+func TestSTORE_ExistingKeyword_NoExtraFLAGS(t *testing.T) {
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	ctx := context.Background()
+	msg := buildMessage("kw-repeat", "body")
+	blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
+	_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
+		MailboxID: f.inbox.ID,
+		Size:      int64(len(msg)),
+		Blob:      blob,
+		Envelope:  parseStoreEnvelope(msg),
+	})
+
+	c := loggedInClient(t, f)
+	defer c.close()
+	c.send("s1", "SELECT INBOX")
+	// First STORE introduces the keyword — expect one FLAGS update.
+	resp1 := c.send("st1", `STORE 1 +FLAGS ($known)`)
+	flagsCount1 := 0
+	for _, line := range resp1 {
+		if strings.HasPrefix(line, "* FLAGS") {
+			flagsCount1++
+		}
+	}
+	if flagsCount1 == 0 {
+		t.Fatalf("first STORE expected * FLAGS update, got none: %v", resp1)
+	}
+	// Second STORE with the same keyword — expect no extra FLAGS untagged.
+	resp2 := c.send("st2", `STORE 1 +FLAGS ($known)`)
+	for _, line := range resp2 {
+		if strings.HasPrefix(line, "* FLAGS") {
+			t.Fatalf("second STORE of existing keyword emitted unexpected * FLAGS: %v", resp2)
+		}
+	}
+}
+
+// TestAPPEND_NewKeyword_EmitsFLAGS verifies that APPENDing a message with a
+// brand-new keyword into the currently-selected mailbox emits an updated
+// "* FLAGS" before the tagged OK.
+func TestAPPEND_NewKeyword_EmitsFLAGS(t *testing.T) {
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	c := loggedInClient(t, f)
+	defer c.close()
+	c.send("s1", "SELECT INBOX")
+
+	msg := buildMessage("kw-append", "appended body")
+	// APPEND with a keyword flag.
+	c.write(fmt.Sprintf("a1 APPEND INBOX ($appendkw) {%d}\r\n", len(msg)))
+	line := c.readLine()
+	if !strings.HasPrefix(line, "+") {
+		t.Fatalf("expected continuation, got: %q", line)
+	}
+	c.write(msg + "\r\n")
+	resp := c.readUntilTag("a1")
+
+	joined := strings.Join(resp, "\n")
+	// The * FLAGS update must be present before the tagged OK.
+	if !strings.Contains(joined, "$appendkw") {
+		t.Fatalf("APPEND did not emit * FLAGS with $appendkw: %v", resp)
+	}
+	if !strings.Contains(resp[len(resp)-1], "OK") {
+		t.Fatalf("APPEND expected OK, got: %v", resp)
+	}
+}
+
+// TestIDLE_NewKeyword_StreamsFLAGSUpdate verifies that when session A stores
+// a brand-new keyword while session B is IDLEing on the same mailbox, session
+// B receives an updated "* FLAGS" untagged response (RFC 3501 §7.2.6 /
+// REQ-PROTO-30).
+func TestIDLE_NewKeyword_StreamsFLAGSUpdate(t *testing.T) {
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	ctx := context.Background()
+
+	// Seed one message.
+	msg := buildMessage("idle-kw", "idle keyword body")
+	blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
+	_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
+		MailboxID: f.inbox.ID,
+		Size:      int64(len(msg)),
+		Blob:      blob,
+		Envelope:  parseStoreEnvelope(msg),
+	})
+
+	// Session B enters IDLE.
+	cB := loggedInClient(t, f)
+	defer cB.close()
+	cB.send("s1", "SELECT INBOX")
+	cB.write("i1 IDLE\r\n")
+	contLine := cB.readLine()
+	if !strings.HasPrefix(contLine, "+") {
+		t.Fatalf("session B: expected continuation, got %q", contLine)
+	}
+
+	// Session A stores a new keyword.
+	cA := loggedInClient(t, f)
+	defer cA.close()
+	cA.send("sA", "SELECT INBOX")
+	resp := cA.send("stA", `STORE 1 +FLAGS ($idlekw)`)
+	if !strings.Contains(resp[len(resp)-1], "OK") {
+		t.Fatalf("session A STORE failed: %v", resp)
+	}
+
+	// Advance fake clock to trigger the IDLE poll tick on session B.
+	if fc, ok := f.ha.Clock.(*clock.FakeClock); ok {
+		fc.Advance(300 * time.Millisecond)
+	}
+
+	// Session B should receive an updated * FLAGS carrying $idlekw.
+	deadline := time.Now().Add(3 * time.Second)
+	sawFlagsUpdate := false
+	for time.Now().Before(deadline) {
+		_ = cB.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		line, err := cB.br.ReadString('\n')
+		if err != nil {
+			if fc, ok := f.ha.Clock.(*clock.FakeClock); ok {
+				fc.Advance(300 * time.Millisecond)
+			}
+			continue
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if strings.HasPrefix(line, "* FLAGS") && strings.Contains(line, "$idlekw") {
+			sawFlagsUpdate = true
+			break
+		}
+	}
+	// Terminate IDLE cleanly.
+	_ = cB.conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+	cB.write("DONE\r\n")
+
+	if !sawFlagsUpdate {
+		t.Fatalf("session B did not receive * FLAGS update with $idlekw during IDLE")
+	}
+}

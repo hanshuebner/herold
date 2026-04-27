@@ -120,22 +120,24 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 		}
 		// Re-read to get updated flags.
 		updated, err := ses.s.store.Meta().GetMessage(ctx, m.ID)
-		if err == nil && !c.StoreFlags.Silent {
+		if err == nil {
 			ses.selMu.Lock()
 			ses.sel.msgs[seq-1] = updated
 			ses.selMu.Unlock()
-			parts := []string{"FLAGS " + flagListString(flagNamesFromMask(updated.Flags, updated.Keywords))}
-			if c.IsUID {
-				parts = append([]string{fmt.Sprintf("UID %d", updated.UID)}, parts...)
+			// RFC 3501 §7.2.6 / RFC 9051 §7.3.5: emit an updated "* FLAGS"
+			// before the FETCH response that would first expose the new
+			// keyword to the client.
+			ses.emitUpdatedFlagsIfNeeded(updated.Keywords)
+			if !c.StoreFlags.Silent {
+				parts := []string{"FLAGS " + flagListString(flagNamesFromMask(updated.Flags, updated.Keywords))}
+				if c.IsUID {
+					parts = append([]string{fmt.Sprintf("UID %d", updated.UID)}, parts...)
+				}
+				if includeModSeq {
+					parts = append(parts, fmt.Sprintf("MODSEQ (%d)", updated.ModSeq))
+				}
+				_ = ses.resp.untagged(fmt.Sprintf("%d FETCH (%s)", seq, strings.Join(parts, " ")))
 			}
-			if includeModSeq {
-				parts = append(parts, fmt.Sprintf("MODSEQ (%d)", updated.ModSeq))
-			}
-			_ = ses.resp.untagged(fmt.Sprintf("%d FETCH (%s)", seq, strings.Join(parts, " ")))
-		} else if err == nil {
-			ses.selMu.Lock()
-			ses.sel.msgs[seq-1] = updated
-			ses.selMu.Unlock()
 		}
 	}
 	if len(rejectedSeqs) > 0 {
@@ -838,6 +840,11 @@ func (ses *session) handleIDLE(ctx context.Context, c *Command) error {
 				}
 			}
 			ses.selMu.Unlock()
+			// RFC 3501 §7.2.6: if the updated message carries keywords that
+			// this session has not yet advertised, emit a fresh "* FLAGS"
+			// before the FETCH response so the client always sees a keyword
+			// in FLAGS before seeing it in a FETCH.
+			ses.emitUpdatedFlagsIfNeeded(m.Keywords)
 			if seq > 0 {
 				_ = ses.resp.untagged(fmt.Sprintf("%d FETCH (UID %d FLAGS %s)",
 					seq, m.UID, flagListString(flagNamesFromMask(m.Flags, m.Keywords))))

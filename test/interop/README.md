@@ -200,30 +200,17 @@ so the gaps are tracked for the imap-implementor:
    The imap-implementor should implement RFC 9051 PREVIEW (or respond with a
    NO [CANNOT] per RFC 9051 §8.4) so that `imap4rev2=1` can be re-enabled.
 
-3. **Keyword flags not reflected in `* FLAGS` after STORE (active error)**
-
-   After a client STOREs a new keyword flag (e.g. `$label1`) onto a message,
-   herold accepts the STORE and returns the flag in subsequent FETCH responses.
-   However, herold does not emit an updated `* FLAGS (...)` untagged response
-   to reflect the new keyword.  RFC 3501 §7.2.6 requires that any flag seen
-   in a FETCH response was previously advertised in `* FLAGS`.
-
-   imaptest reports these as `Error: Keyword used without being in FLAGS:
-   $label1: * N FETCH (FLAGS (... $label1 ...))`.
-
-   The test classifies these errors as known divergences; they are counted and
-   logged but do not fail the test.  The fix: in `handleSELECT` (or when STORE
-   creates a new keyword), emit `* FLAGS (... <all_known_keywords>)`.  Tracked
-   in `internal/protoimap/session_mailbox.go`.
-
-   Note: `\*` IS advertised in `PERMANENTFLAGS` (so herold correctly signals
-   that new keywords may be created); the missing piece is the per-keyword
-   feedback in `* FLAGS` after creation.
-
 These are implementation gaps in herold, not test harness bugs.  They are
-not suppressed with `no_tracking`.  Divergences in category 3 are counted and
-logged by the test; divergences in categories 1 and 2 are prevented by not
+not suppressed with `no_tracking`.  Divergences are prevented by not
 passing the corresponding imaptest flags.
+
+All previously-known keyword-flag divergences (`Keyword used without being in
+FLAGS`) have been resolved: herold now emits an updated `* FLAGS` (and
+`* OK [PERMANENTFLAGS ...]`) whenever STORE or APPEND introduces a new keyword
+into the selected mailbox, and SELECT enumerates all pre-existing keywords from
+the loaded message set.  The `_KNOWN_DIVERGENCES` list in
+`test/interop/runner/scenarios/test_imap_compliance.py` is now empty; the test
+will fail if the behaviour regresses.
 
 #### Extending the run duration for soak testing
 

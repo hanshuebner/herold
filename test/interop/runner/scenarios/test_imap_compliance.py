@@ -131,18 +131,11 @@ _ERROR_HEADER_RE = re.compile(
 #
 # Each entry is a (pattern, issue_description) tuple.  The pattern is matched
 # against the full Error: line.
-_KNOWN_DIVERGENCES: list[tuple[re.Pattern, str]] = [
-    (
-        re.compile(r"Keyword used without being in FLAGS"),
-        "herold does not emit an updated '* FLAGS' untagged response after "
-        "STORE creates a new keyword flag (e.g. $label1).  RFC 3501 requires "
-        "that keyword flags visible in FETCH responses were previously "
-        "advertised in '* FLAGS'.  herold accepts keyword STORE and returns "
-        "the keyword in FETCH, but does not update the advertised FLAGS list.  "
-        "Gap: internal/protoimap/session_mailbox.go handleSELECT and STORE "
-        "path need to emit '* FLAGS' after a new keyword is created.",
-    ),
-]
+#
+# As of 2026-04-27 all previously-known divergences have been resolved:
+#   - "Keyword used without being in FLAGS": fixed by emitting updated * FLAGS
+#     after STORE / APPEND introduce a new keyword (RFC 3501 §7.2.6).
+_KNOWN_DIVERGENCES: list[tuple[re.Pattern, str]] = []
 
 
 # ---------------------------------------------------------------------------

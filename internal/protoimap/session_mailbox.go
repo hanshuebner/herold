@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,86 @@ import (
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// keywordsFromMsgs collects all unique keyword flags seen across msgs into a
+// set.  The set is used to track which keywords have already been advertised
+// to the client in a "* FLAGS" untagged response.
+func keywordsFromMsgs(msgs []store.Message) map[string]struct{} {
+	set := make(map[string]struct{})
+	for _, m := range msgs {
+		for _, k := range m.Keywords {
+			set[strings.ToLower(k)] = struct{}{}
+		}
+	}
+	return set
+}
+
+// sortedKeywords returns the keys of kws as a sorted slice.
+func sortedKeywords(kws map[string]struct{}) []string {
+	out := make([]string, 0, len(kws))
+	for k := range kws {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// mailboxFlagsLine builds the "* FLAGS (...)" untagged response body that
+// includes the five system flags plus any currently-known keywords for the
+// mailbox.
+func mailboxFlagsLine(kws map[string]struct{}) string {
+	parts := []string{`\Answered`, `\Flagged`, `\Deleted`, `\Seen`, `\Draft`}
+	parts = append(parts, sortedKeywords(kws)...)
+	return "FLAGS (" + strings.Join(parts, " ") + ")"
+}
+
+// permanentFlagsLine builds the "* OK [PERMANENTFLAGS (...)]" untagged
+// response body.  The trailing \* is always included to signal that clients
+// may create additional keywords.
+func permanentFlagsLine(kws map[string]struct{}) string {
+	parts := []string{`\Answered`, `\Flagged`, `\Deleted`, `\Seen`, `\Draft`}
+	parts = append(parts, sortedKeywords(kws)...)
+	parts = append(parts, `\*`)
+	return "OK [PERMANENTFLAGS (" + strings.Join(parts, " ") + ")] Limited"
+}
+
+// emitUpdatedFlagsIfNeeded checks whether newKws introduces any keyword not
+// already in ses.sel.knownKeywords.  If so it emits a fresh "* FLAGS" and
+// "* OK [PERMANENTFLAGS ...]" untagged response and updates the stored set.
+// Must be called with selMu NOT held; acquires it internally for the set
+// comparison and update.
+func (ses *session) emitUpdatedFlagsIfNeeded(newKws []string) bool {
+	if len(newKws) == 0 {
+		return false
+	}
+	ses.selMu.Lock()
+	added := false
+	for _, k := range newKws {
+		lk := strings.ToLower(k)
+		if _, ok := ses.sel.knownKeywords[lk]; !ok {
+			if ses.sel.knownKeywords == nil {
+				ses.sel.knownKeywords = make(map[string]struct{})
+			}
+			ses.sel.knownKeywords[lk] = struct{}{}
+			added = true
+		}
+	}
+	// Snapshot the updated set under the lock so the emit below is consistent.
+	var kwsSnapshot map[string]struct{}
+	if added {
+		kwsSnapshot = make(map[string]struct{}, len(ses.sel.knownKeywords))
+		for k := range ses.sel.knownKeywords {
+			kwsSnapshot[k] = struct{}{}
+		}
+	}
+	ses.selMu.Unlock()
+	if !added {
+		return false
+	}
+	_ = ses.resp.untagged(mailboxFlagsLine(kwsSnapshot))
+	_ = ses.resp.untagged(permanentFlagsLine(kwsSnapshot))
+	return true
+}
 
 // requireAuth returns true if the session is at least authenticated.
 func (ses *session) requireAuth(tag string) bool {
@@ -93,7 +174,11 @@ func (ses *session) handleSELECT(ctx context.Context, c *Command, readOnly bool)
 			break
 		}
 	}
-	_ = ses.resp.untagged("FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)")
+	// Build the keyword universe from the already-loaded message set so that
+	// previously-created keywords are advertised immediately on SELECT (RFC 3501
+	// §7.2.6 / RFC 9051 §7.3.5).
+	kws := keywordsFromMsgs(msgs)
+	_ = ses.resp.untagged(mailboxFlagsLine(kws))
 	_ = ses.resp.untagged(fmt.Sprintf("%d EXISTS", existing))
 	_ = ses.resp.untagged("0 RECENT")
 	if unseen > 0 {
@@ -101,7 +186,7 @@ func (ses *session) handleSELECT(ctx context.Context, c *Command, readOnly bool)
 	}
 	_ = ses.resp.untagged(fmt.Sprintf("OK [UIDVALIDITY %d] UIDVALIDITY", mb.UIDValidity))
 	_ = ses.resp.untagged(fmt.Sprintf("OK [UIDNEXT %d] Predicted next UID", mb.UIDNext))
-	_ = ses.resp.untagged("OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft \\*)] Limited")
+	_ = ses.resp.untagged(permanentFlagsLine(kws))
 
 	// CONDSTORE / QRESYNC SELECT options (RFC 7162 §3.1). The
 	// CONDSTORE option promotes the session into MODSEQ-aware mode and
@@ -125,12 +210,13 @@ func (ses *session) handleSELECT(ctx context.Context, c *Command, readOnly bool)
 
 	ses.selMu.Lock()
 	ses.sel = selectedMailbox{
-		id:          mb.ID,
-		name:        mb.Name,
-		uidValidity: mb.UIDValidity,
-		uidNext:     mb.UIDNext,
-		msgs:        msgs,
-		readOnly:    readOnly,
+		id:            mb.ID,
+		name:          mb.Name,
+		uidValidity:   mb.UIDValidity,
+		uidNext:       mb.UIDNext,
+		msgs:          msgs,
+		readOnly:      readOnly,
+		knownKeywords: kws,
 	}
 	ses.cs.selectedHighestModSeq = mb.HighestModSeq
 	ses.selMu.Unlock()
@@ -708,6 +794,18 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 			return ses.resp.taggedNO(c.Tag, "OVERQUOTA", "quota exceeded")
 		}
 		return ses.resp.taggedNO(c.Tag, "", "append failed")
+	}
+	// RFC 3501 §7.2.6: if this session has the target mailbox selected and
+	// the appended message carries keywords unknown to the session, emit an
+	// updated "* FLAGS" before the tagged OK so subsequent FETCH responses
+	// from this session will already see the keyword advertised.
+	if len(kw) > 0 {
+		ses.selMu.Lock()
+		selectedSameMailbox := ses.state == stateSelected && ses.sel.id == mb.ID
+		ses.selMu.Unlock()
+		if selectedSameMailbox {
+			ses.emitUpdatedFlagsIfNeeded(kw)
+		}
 	}
 	code := fmt.Sprintf("APPENDUID %d %d", mb.UIDValidity, uid)
 	return ses.resp.taggedOK(c.Tag, code, "APPEND completed")
