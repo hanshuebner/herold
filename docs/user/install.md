@@ -34,8 +34,10 @@ no preference.
 
 ### Prerequisites
 
-- Go 1.23 or newer (the floor at planning time; bumped to current
+- Go 1.25 or newer (the floor at planning time; bumped to current
   stable at each phase kickoff per `STANDARDS.md` section 2).
+- git. Required to clone the repository and invoked by `go build`
+  for VCS stamping when building from a checkout.
 - A POSIX system. Linux is the primary target; macOS works for
   development. Windows is build-only - it is not a supported runtime
   target (REQ-OPS-153).
@@ -50,7 +52,7 @@ no preference.
 ```bash
 git clone https://github.com/hanshuebner/herold.git
 cd herold
-go build -trimpath -buildvcs=true -o ./herold ./cmd/herold
+go build -trimpath -o ./herold ./cmd/herold
 ```
 
 The release build flags match what CI ships:

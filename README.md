@@ -45,13 +45,20 @@ scope decisions.
 
 The 3-5 minute path. You will need:
 
-- Docker, or Go 1.23+ for a source build.
+- Docker, or Go 1.25+ for a source build.
 - An IMAP client (Thunderbird, Apple Mail, mutt, etc.).
 
 The quickstart binds herold to loopback ports only and uses SQLite for
 storage. No public DNS, no ACME, no smart host. For the real-domain
 walkthrough (DNS records, ACME, DKIM publication, MTA-STS) see
 [docs/user/quickstart-extended.md](./docs/user/quickstart-extended.md).
+
+Every `herold` CLI command looks for the system config at
+`/etc/herold/system.toml` unless told otherwise. You can override the
+path with the `--system-config` flag or by setting the
+`HEROLD_SYSTEM_CONFIG` environment variable. The steps below pass
+`--system-config system.toml` on every CLI call so they work from the
+repo root regardless of your shell environment.
 
 ### 1. Clone
 
@@ -72,7 +79,20 @@ path; for the local-only quickstart the hostname does not need to
 resolve. Adjust paths if you want the data directory somewhere other
 than `./data`.
 
-### 3. Build and start the server
+### 3. Generate the TLS cert/key pair
+
+The IMAP, IMAPS, and SMTP submission listeners reference
+`./data/admin.crt` and `./data/admin.key`. Generate them before
+starting the server:
+
+```bash
+./scripts/make-self-signed-cert.sh data mail.example.local
+```
+
+This writes `data/admin.key` and `data/admin.crt`. These are suitable
+for the loopback quickstart only.
+
+### 4. Build and start the server
 
 Source build:
 
@@ -87,13 +107,15 @@ Or with Docker:
 docker compose -f docs/user/examples/docker-compose.yml up -d
 ```
 
-### 4. Bootstrap the first admin principal
+### 5. Bootstrap the first admin principal
 
 In a second terminal:
 
 ```bash
-./herold bootstrap --email admin@example.local --password 'changeme123'
+./herold bootstrap --system-config system.toml --email admin@example.local --password 'change-me-now'
 ```
+
+Passing `--password` on the command line is acceptable for this loopback-only quickstart, but for any non-throwaway installation you should omit `--password` (a random password is then generated and printed once) or supply it via stdin or the `HEROLD_BOOTSTRAP_PASSWORD` environment variable, to avoid the value appearing in shell history and process listings.
 
 The command prints the admin email, the password, and a `hk_...` API
 key. The API key is also written to `~/.herold/credentials.toml`. Keep
@@ -101,13 +123,13 @@ the printed values; the password is stored hashed and the API key is
 stored as a SHA-256 hash, so neither is recoverable from the server
 after this point.
 
-### 5. Add the local domain
+### 6. Add the local domain
 
 ```bash
-./herold domain add example.local
+./herold domain add --system-config system.toml example.local
 ```
 
-### 6. Connect an IMAP client
+### 7. Connect an IMAP client
 
 Point your IMAP client at:
 
@@ -115,7 +137,7 @@ Point your IMAP client at:
 - IMAP+STARTTLS port: `1143`
 - IMAPS port: `1993`
 - Username: `admin@example.local`
-- Password: the one you set in step 4
+- Password: the one you set in step 5
 
 Send mail to `admin@example.local` from another local mailbox or via
 the HTTP send API and verify it arrives in the INBOX.
@@ -124,7 +146,7 @@ The public HTTP listener (default `127.0.0.1:8080` per the quickstart
 config) serves the tabard consumer SPA at `/` alongside the JMAP, send,
 chat, and image-proxy endpoints.
 
-### 7. (Optional) Outbound through a smart host
+### 8. (Optional) Outbound through a smart host
 
 To deliver outbound mail through Gmail / SES / SendGrid rather than
 talk SMTP to the public internet, copy the smart-host example:
@@ -207,8 +229,7 @@ herold/
   plugins/                   first-party plugins, each its own main
   test/interop, test/e2e     cross-package scenarios
 
-  deploy/
-    docker, debian, rpm, k8s
+  deploy/docker              container image build
 
   docs/
     user/                    operator + admin documentation
