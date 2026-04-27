@@ -1017,13 +1017,39 @@ func (sess *session) readCommandLine() (string, error) {
 
 // splitVerb extracts the first whitespace-delimited token (upper-cased)
 // and the remainder. Used by dispatch.
+//
+// SMTP command lines are CRLF-terminated (RFC 5321 §2.4). The reader
+// already strips the trailing CRLF before invoking the parser, but
+// fuzz seeds and malformed clients can still inject embedded \r or
+// \n inside the line body. We treat ANY whitespace byte (space, tab,
+// CR, or LF) as a verb terminator and strip any further CR/LF from
+// the trailing remainder so neither return value can carry a control
+// byte into a subsequent reply line.
 func splitVerb(line string) (verb, rest string) {
 	line = strings.TrimSpace(line)
-	i := strings.IndexAny(line, " \t")
+	i := strings.IndexAny(line, " \t\r\n")
 	if i < 0 {
-		return strings.ToUpper(line), ""
+		return strings.ToUpper(stripCRLF(line)), ""
 	}
-	return strings.ToUpper(line[:i]), strings.TrimSpace(line[i+1:])
+	rest = strings.TrimSpace(line[i+1:])
+	return strings.ToUpper(stripCRLF(line[:i])), stripCRLF(rest)
+}
+
+// stripCRLF removes any CR or LF byte from s. Used by splitVerb to
+// guarantee that no embedded control byte from a malformed input
+// survives into protocol output.
+func stripCRLF(s string) string {
+	if !strings.ContainsAny(s, "\r\n") {
+		return s
+	}
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\r' || s[i] == '\n' {
+			continue
+		}
+		b = append(b, s[i])
+	}
+	return string(b)
 }
 
 // extractAngleAddr returns the address inside <...>, the remainder
