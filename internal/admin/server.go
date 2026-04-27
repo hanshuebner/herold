@@ -118,6 +118,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		logger = observe.NewLogger(observe.ObservabilityConfig{
 			LogFormat:    cfg.Observability.LogFormat,
 			LogLevel:     cfg.Observability.LogLevel,
+			LogModules:   cfg.Observability.LogModules,
 			MetricsBind:  cfg.Observability.MetricsBind,
 			OTLPEndpoint: cfg.Observability.OTLPEndpoint,
 		})

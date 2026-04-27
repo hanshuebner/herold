@@ -89,3 +89,69 @@ func TestNewLogger_WritesToStderr(t *testing.T) {
 		t.Fatalf("NewLogger returned nil")
 	}
 }
+
+// TestModuleLogLevel_OverrideEnabled asserts that a subsystem=smtp record is
+// enabled at debug when LogModules has smtp="debug" and global level is info.
+func TestModuleLogLevel_OverrideEnabled(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := ObservabilityConfig{
+		LogLevel:   "info",
+		LogModules: map[string]string{"smtp": "debug"},
+	}
+	l := NewLoggerTo(&buf, cfg)
+	// Log at debug with subsystem=smtp; should appear.
+	l.Debug("smtp-debug-msg", "subsystem", "smtp")
+	// Log at debug with subsystem=imap; should NOT appear (imap has no override).
+	l.Debug("imap-debug-msg", "subsystem", "imap")
+	// Log at info with no subsystem; should appear (passes global level).
+	l.Info("plain-info-msg")
+
+	out := buf.String()
+	if !strings.Contains(out, "smtp-debug-msg") {
+		t.Fatalf("smtp debug override: expected smtp-debug-msg in output; got: %q", out)
+	}
+	if strings.Contains(out, "imap-debug-msg") {
+		t.Fatalf("imap has no debug override: imap-debug-msg should be suppressed; got: %q", out)
+	}
+	if !strings.Contains(out, "plain-info-msg") {
+		t.Fatalf("info line should always appear; got: %q", out)
+	}
+}
+
+// TestModuleLogLevel_WithAttrsPreScoped asserts that a logger pre-scoped via
+// WithAttrs("subsystem","smtp") inherits the smtp override for all records.
+func TestModuleLogLevel_WithAttrsPreScoped(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := ObservabilityConfig{
+		LogLevel:   "info",
+		LogModules: map[string]string{"smtp": "debug"},
+	}
+	l := NewLoggerTo(&buf, cfg).With("subsystem", "smtp")
+	l.Debug("smtp-pre-scoped-debug")
+	out := buf.String()
+	if !strings.Contains(out, "smtp-pre-scoped-debug") {
+		t.Fatalf("pre-scoped smtp logger: expected debug line; got: %q", out)
+	}
+}
+
+// TestTraceLevel asserts that "trace" is a recognised log level and that
+// a record logged at LevelTrace appears when the level is set to "trace".
+func TestTraceLevel(t *testing.T) {
+	var buf bytes.Buffer
+	l := NewLoggerTo(&buf, ObservabilityConfig{LogLevel: "trace"})
+	l.Log(nil, LevelTrace, "trace-msg") //nolint:staticcheck // nil ctx is fine for tests
+	if !strings.Contains(buf.String(), "trace-msg") {
+		t.Fatalf("trace level: expected trace-msg; got: %q", buf.String())
+	}
+}
+
+// TestTraceLevel_SuppressedAtDebug asserts that a "trace" record is suppressed
+// when the configured level is "debug".
+func TestTraceLevel_SuppressedAtDebug(t *testing.T) {
+	var buf bytes.Buffer
+	l := NewLoggerTo(&buf, ObservabilityConfig{LogLevel: "debug"})
+	l.Log(nil, LevelTrace, "trace-should-not-appear") //nolint:staticcheck
+	if strings.Contains(buf.String(), "trace-should-not-appear") {
+		t.Fatalf("trace suppressed at debug: unexpected output: %q", buf.String())
+	}
+}

@@ -652,10 +652,21 @@ type PluginConfig struct {
 
 // ObservabilityConfig controls log format, level, metrics bind, and OTLP export.
 type ObservabilityConfig struct {
-	LogFormat    string `toml:"log_format,omitempty"`
-	LogLevel     string `toml:"log_level,omitempty"`
-	MetricsBind  string `toml:"metrics_bind,omitempty"`
-	OTLPEndpoint string `toml:"otlp_endpoint,omitempty"`
+	LogFormat string `toml:"log_format,omitempty"`
+	LogLevel  string `toml:"log_level,omitempty"`
+	// LogModules allows per-subsystem level overrides (REQ-OPS-82).
+	// Keys are lowercase ASCII subsystem identifiers matching the
+	// "subsystem" or "module" attribute written by logger.With. Values
+	// are log level strings from the same closed enum as LogLevel
+	// ("trace", "debug", "info", "warn", "error").
+	//
+	// Example:
+	//   [observability]
+	//   log_level = "info"
+	//   log_modules = { smtp = "debug", queue = "warn" }
+	LogModules   map[string]string `toml:"log_modules,omitempty"`
+	MetricsBind  string            `toml:"metrics_bind,omitempty"`
+	OTLPEndpoint string            `toml:"otlp_endpoint,omitempty"`
 }
 
 // secretKeySubstrings is the closed-vocabulary list of substrings the
@@ -666,6 +677,21 @@ type ObservabilityConfig struct {
 // reference form to satisfy the check.
 var secretKeySubstrings = []string{
 	"secret", "token", "password", "passwd", "api_key", "apikey", "credential",
+}
+
+// isValidModuleIdent reports whether s is a non-empty lowercase ASCII
+// identifier (letters, digits, underscore, hyphen). Used to validate
+// log_modules keys (REQ-OPS-82).
+func isValidModuleIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // looksLikeSecretKey reports whether k matches any well-known secret-
@@ -703,7 +729,7 @@ var (
 	validTLSModes   = map[string]struct{}{"none": {}, "starttls": {}, "implicit": {}}
 	validLifecycles = map[string]struct{}{"long-running": {}, "on-demand": {}}
 	validPluginType = map[string]struct{}{"dns": {}, "spam": {}, "events": {}, "directory": {}, "delivery": {}}
-	validLogLevels  = map[string]struct{}{"debug": {}, "info": {}, "warn": {}, "error": {}}
+	validLogLevels  = map[string]struct{}{"trace": {}, "debug": {}, "info": {}, "warn": {}, "error": {}}
 	validLogFormats = map[string]struct{}{"json": {}, "text": {}}
 	validBackends   = map[string]struct{}{"sqlite": {}, "postgres": {}}
 
@@ -1328,6 +1354,14 @@ func Validate(c *Config) error {
 	}
 	if _, ok := validLogLevels[c.Observability.LogLevel]; !ok {
 		return fmt.Errorf("sysconfig: [observability] log_level %q not recognised", c.Observability.LogLevel)
+	}
+	for mod, lvl := range c.Observability.LogModules {
+		if !isValidModuleIdent(mod) {
+			return fmt.Errorf("sysconfig: [observability] log_modules key %q must be a non-empty lowercase ASCII identifier", mod)
+		}
+		if _, ok := validLogLevels[lvl]; !ok {
+			return fmt.Errorf("sysconfig: [observability] log_modules[%q] level %q not recognised", mod, lvl)
+		}
 	}
 	// Storage.
 	if _, ok := validBackends[c.Server.Storage.Backend]; !ok {

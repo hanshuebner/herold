@@ -692,10 +692,22 @@ Docker). For non-supervised installs, redirect via shell or use
 API keys, bearer tokens, session cookies (REQ-OPS-84). DKIM private
 keys are never logged.
 
-Per-module level overrides
-(`logging.modules.smtp = "debug"` shape) are planned per REQ-OPS-82
-but TODO(operator-doc): module-log-level-config-shape - not yet
-exposed in the system.toml schema.
+Per-module level overrides are configured under the
+`[observability]` block with the `log_modules` inline table
+(REQ-OPS-82). Keys are subsystem identifiers (matching the
+`subsystem` or `module` attribute written to each log line); values
+are log level strings from the same closed enum as `log_level`:
+`trace`, `debug`, `info`, `warn`, `error`.
+
+```toml
+[observability]
+log_level   = "info"
+log_modules = { smtp = "debug", queue = "warn" }
+```
+
+The `trace` level (-8, below `debug`) emits every internal protocol
+event and is intended for short-window debugging only; it produces
+significant output volume.
 
 ### Metrics
 
