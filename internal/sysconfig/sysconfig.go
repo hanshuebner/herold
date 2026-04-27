@@ -145,6 +145,7 @@ type ServerConfig struct {
 	TURN       TURNConfig       `toml:"turn,omitempty"`
 	SmartHost  SmartHostConfig  `toml:"smart_host,omitempty"`
 	Suite      SuiteConfig      `toml:"suite,omitempty"`
+	AdminSPA   AdminSPAConfig   `toml:"admin_spa,omitempty"`
 	Push       PushConfig       `toml:"push,omitempty"`
 	Queue      QueueConfig      `toml:"queue,omitempty"`
 	// PublicBaseURL is the externally-reachable base URL of the public
@@ -260,6 +261,33 @@ type SuiteConfig struct {
 	// be an absolute path AND contain index.html at startup; the
 	// validator refuses to start the server otherwise so a typo is
 	// loud at boot rather than at first 404.
+	AssetDir string `toml:"asset_dir,omitempty"`
+}
+
+// AdminSPAConfig configures the embedded admin Svelte SPA mount on
+// the admin HTTP listener at /admin/. Phase 2 of the merge plan
+// (docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md)
+// builds this SPA to parity with the HTMX UI in internal/protoui;
+// Phase 3 makes it the only admin UI. Until Phase 3 lands the mount
+// is OFF by default so existing operators keep getting the protoui
+// HTMX surface at /ui/ unchanged.
+//
+// Operators opting in for Phase 2 testing set `enabled = true`. When
+// the flag is on the admin listener serves the SPA at /admin/* in
+// addition to the existing /ui/* HTMX UI; both sit on the same
+// admin listener and share the same session cookie scope (Path=/).
+type AdminSPAConfig struct {
+	// Enabled selects whether the admin SPA is mounted at /admin/
+	// on the admin listener. Defaults to false; flip to true to
+	// preview the Svelte admin UI alongside the still-default
+	// HTMX UI at /ui/ during the Phase 2 dual-mount window.
+	Enabled bool `toml:"enabled,omitempty"`
+	// AssetDir, when non-empty, makes the admin handler serve from
+	// this directory instead of the embedded FS. The directory MUST
+	// be an absolute path AND contain index.html at startup; the
+	// validator refuses to start the server otherwise so a typo is
+	// loud at boot rather than at first 404. Used in development to
+	// hot-reload admin builds without rebuilding herold.
 	AssetDir string `toml:"asset_dir,omitempty"`
 }
 
@@ -1169,6 +1197,18 @@ func Validate(c *Config) error {
 		}
 		if _, err := os.Stat(filepath.Join(dir, "index.html")); err != nil {
 			return fmt.Errorf("sysconfig: [server.suite] asset_dir %q missing index.html: %v", dir, err)
+		}
+	}
+	if dir := c.Server.AdminSPA.AssetDir; dir != "" {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return fmt.Errorf("sysconfig: [server.admin_spa] asset_dir %q: %v", dir, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("sysconfig: [server.admin_spa] asset_dir %q is not a directory", dir)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "index.html")); err != nil {
+			return fmt.Errorf("sysconfig: [server.admin_spa] asset_dir %q missing index.html: %v", dir, err)
 		}
 	}
 	// Smart host (REQ-FLOW-SMARTHOST-01..08).

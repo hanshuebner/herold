@@ -1548,6 +1548,24 @@ func composeAdminAndUI(
 	// mount ensures scrapes also work when MetricsBind is empty or the
 	// admin listener is the only HTTP surface.
 	adminMux.Handle("/metrics", observe.MetricsHandler())
+	// Admin Svelte SPA at /admin/ (Phase 2 of the merge plan). Off by
+	// default; operators flip [server.admin_spa].enabled = true to
+	// preview the new UI alongside the still-default protoui HTMX
+	// surface at /ui/. Phase 3 makes this the only admin UI and 308-
+	// redirects /ui/* to /admin/*.
+	if cfg.Server.AdminSPA.Enabled {
+		adminSPA, err := webspa.NewAdmin(webspa.AdminOptions{
+			Logger:        logger.With("subsystem", "webspa.admin"),
+			AdminAssetDir: cfg.Server.AdminSPA.AssetDir,
+		})
+		if err != nil {
+			return composedHandlers{}, fmt.Errorf("admin: admin SPA: %w", err)
+		}
+		adminMux.Handle("/admin/",
+			http.StripPrefix("/admin",
+				withPanicRecover(logger.With("subsystem", "webspa.admin"),
+					"webspa.admin", adminSPA.Handler())))
+	}
 	if uiSrvAdmin != nil {
 		adminMux.Handle(prefix+"/", uiSrvAdmin.Handler())
 		// Bare `/` on the admin listener: redirect a browser to the
