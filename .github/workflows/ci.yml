@@ -125,7 +125,9 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
       - name: run short fuzz on every fuzz target touched in this PR
-        run: make fuzz-short FUZZTIME=30s
+        # 32 fuzz targets must finish inside the 15-minute job timeout.
+        # 5s/target leaves headroom for per-target Go-compile overhead.
+        run: make fuzz-short FUZZTIME=5s
 
   conformance:
     name: conformance (imaptest + scripted-smtp + pigeonhole + mail-auth vectors)
