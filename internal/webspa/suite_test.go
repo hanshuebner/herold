@@ -1,4 +1,4 @@
-package tabardspa
+package webspa
 
 import (
 	"io"
@@ -32,7 +32,7 @@ func newAssetDirServer(t *testing.T, files map[string]string, publicHost string)
 	for name, body := range files {
 		writeFile(t, dir, name, body)
 	}
-	s, err := New(Options{AssetDir: dir, PublicHost: publicHost})
+	s, err := New(Options{SuiteAssetDir: dir, PublicHost: publicHost})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -249,9 +249,9 @@ func TestSpa_CSP_Header_NoPublicHost(t *testing.T) {
 }
 
 func TestSpa_EmbeddedFS_Default(t *testing.T) {
-	// No AssetDir -> embedded placeholder. The placeholder has a
-	// <title>Herold</title> and references the embed-tabard.sh
-	// build step; we assert on those substrings rather than the
+	// No SuiteAssetDir -> embedded suite placeholder. The placeholder
+	// has a <title>Herold</title> and references the make build-web
+	// build step; we assert on the title substring rather than the
 	// whole body so a future placeholder rewrite doesn't break the
 	// test as long as the contract holds.
 	s, err := New(Options{})
@@ -292,21 +292,21 @@ func TestSpa_AssetDir_AcceptsRelative(t *testing.T) {
 	if err := os.Chdir(parent); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
-	if _, err := New(Options{AssetDir: base}); err != nil {
+	if _, err := New(Options{SuiteAssetDir: base}); err != nil {
 		t.Fatalf("relative asset_dir should be accepted: %v", err)
 	}
 }
 
 func TestSpa_AssetDir_RejectsMissingIndex(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := New(Options{AssetDir: dir}); err == nil {
+	if _, err := New(Options{SuiteAssetDir: dir}); err == nil {
 		t.Fatal("expected error when asset_dir lacks index.html")
 	}
 }
 
 func TestSpa_AssetDir_RejectsMissingDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "does-not-exist")
-	if _, err := New(Options{AssetDir: dir}); err == nil {
+	if _, err := New(Options{SuiteAssetDir: dir}); err == nil {
 		t.Fatal("expected error for missing asset_dir")
 	}
 }
@@ -317,7 +317,7 @@ func TestSpa_AssetDir_RejectsFile(t *testing.T) {
 	if err := os.WriteFile(f, []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(Options{AssetDir: f}); err == nil {
+	if _, err := New(Options{SuiteAssetDir: f}); err == nil {
 		t.Fatal("expected error when asset_dir is a file")
 	}
 }

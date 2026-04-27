@@ -59,7 +59,7 @@ import (
 	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/sysconfig"
-	"github.com/hanshuebner/herold/internal/tabardspa"
+	"github.com/hanshuebner/herold/internal/webspa"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 	"github.com/hanshuebner/herold/internal/vapid"
 	"github.com/hanshuebner/herold/internal/webpush"
@@ -1873,17 +1873,17 @@ func composeAdminAndUI(
 	// to the default 404 path so admin-only deployments do not
 	// silently respond at /.
 	if cfg.Server.Tabard.Enabled == nil || *cfg.Server.Tabard.Enabled {
-		spaSrv, err := tabardspa.New(tabardspa.Options{
-			Logger:     logger.With("subsystem", "tabardspa"),
-			AssetDir:   cfg.Server.Tabard.AssetDir,
-			PublicHost: cfg.Server.Hostname,
+		spaSrv, err := webspa.New(webspa.Options{
+			Logger:        logger.With("subsystem", "webspa.suite"),
+			SuiteAssetDir: cfg.Server.Tabard.AssetDir,
+			PublicHost:    cfg.Server.Hostname,
 		})
 		if err != nil {
-			return composedHandlers{}, fmt.Errorf("admin: tabard SPA: %w", err)
+			return composedHandlers{}, fmt.Errorf("admin: suite SPA: %w", err)
 		}
 		publicMux.Handle("/",
-			withPanicRecover(logger.With("subsystem", "tabardspa"),
-				"tabardspa", spaSrv.Handler()))
+			withPanicRecover(logger.With("subsystem", "webspa.suite"),
+				"webspa.suite", spaSrv.Handler()))
 	}
 
 	bundle.public = withPanicRecover(logger.With("subsystem", "public-mux"),

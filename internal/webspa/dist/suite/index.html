@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Herold</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<h1>Herold</h1>
+<p>Suite SPA not yet built. From a clean checkout:</p>
+<pre><code>make build-web
+make build</code></pre>
+<p>This runs <code>pnpm -C web install --frozen-lockfile</code>,
+<code>pnpm -C web build</code>, and copies the resulting
+<code>web/apps/suite/dist/</code> into this binary's embedded FS.
+For development hot-reload without rebuilding the binary, set
+<code>[server.webspa].suite_asset_dir</code> in system.toml to a
+directory containing the freshly built suite assets.</p>
+</body>
+</html>

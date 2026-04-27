@@ -1,8 +1,7 @@
-package tabardspa
+package webspa
 
 import (
 	"bytes"
-	"embed"
 	"errors"
 	"fmt"
 	"io"
@@ -16,30 +15,20 @@ import (
 	"strings"
 )
 
-// embeddedDist holds the tabard SPA build artefacts copied into this
-// module by scripts/embed-tabard.sh. The placeholder shipped in source
-// control is overwritten at release-build time; the directory is kept
-// alive in git via a .gitkeep marker so the embed directive always
-// resolves.
-//
-//go:embed dist
-var embeddedDist embed.FS
-
 // Options configures a Server. Zero values apply documented defaults.
 type Options struct {
 	// Logger overrides the default slog.Default.
 	Logger *slog.Logger
-	// AssetDir, when non-empty, makes the server read every asset
-	// from disk rather than the embedded FS. The directory MUST
-	// contain index.html at the root; absence is a configuration
-	// error. Relative paths are accepted and resolved against the
-	// current working directory at construction time (the quickstart
-	// uses "./data/tabard"); the resolved absolute path is then used
-	// for every request, so changing cwd later does not relocate the
-	// asset root. Used in development to hot-reload tabard builds
-	// without rebuilding herold and by the operator install path
-	// (scripts/install-tabard.sh) for the README quickstart.
-	AssetDir string
+	// SuiteAssetDir, when non-empty, makes the suite handler read
+	// every asset from disk rather than the embedded FS. The
+	// directory MUST contain index.html at the root; absence is a
+	// configuration error. Relative paths are accepted and resolved
+	// against the current working directory at construction time;
+	// the resolved absolute path is then used for every request, so
+	// changing cwd later does not relocate the asset root. Used in
+	// development to hot-reload suite builds without rebuilding
+	// herold.
+	SuiteAssetDir string
 	// PublicHost is the externally-visible hostname (without scheme
 	// or port) used to populate the connect-src wss:// directive in
 	// the Content-Security-Policy header (REQ-DEPLOY-COLOC-04). When
@@ -48,7 +37,7 @@ type Options struct {
 	PublicHost string
 }
 
-// Server is the tabard SPA HTTP handler. Construct via New; serve via
+// Server is the suite SPA HTTP handler. Construct via New; serve via
 // Handler. The server is safe for concurrent use.
 type Server struct {
 	logger   *slog.Logger
@@ -75,18 +64,19 @@ var reservedAPIPrefixes = []string{
 	"/oidc/",
 }
 
-// New constructs a Server.
+// New constructs a Server for the suite SPA.
 //
-// When opts.AssetDir is non-empty New verifies the directory exists
-// and contains index.html; the constructor refuses to start the
-// server otherwise so the operator sees the misconfiguration at boot
-// rather than at the first 404. Relative AssetDir paths are resolved
-// to absolute via filepath.Abs at construction time so a later cwd
-// change does not relocate the asset root.
+// When opts.SuiteAssetDir is non-empty New verifies the directory
+// exists and contains index.html; the constructor refuses to start
+// the server otherwise so the operator sees the misconfiguration at
+// boot rather than at the first 404. Relative SuiteAssetDir paths
+// are resolved to absolute via filepath.Abs at construction time so
+// a later cwd change does not relocate the asset root.
 //
-// When opts.AssetDir is empty New serves from the embedded dist FS
-// (the release-build artefact, or the placeholder index in a fresh
-// checkout).
+// When opts.SuiteAssetDir is empty New serves from the embedded
+// dist/suite/ FS (the release-build artefact, or the placeholder
+// index in a fresh checkout). Under -tags nofrontend the embedded
+// FS is a tiny in-memory placeholder; see embed_stub.go.
 func New(opts Options) (*Server, error) {
 	logger := opts.Logger
 	if logger == nil {
@@ -95,31 +85,31 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		logger: logger,
 	}
-	if opts.AssetDir != "" {
-		dir, err := filepath.Abs(opts.AssetDir)
+	if opts.SuiteAssetDir != "" {
+		dir, err := filepath.Abs(opts.SuiteAssetDir)
 		if err != nil {
-			return nil, fmt.Errorf("tabardspa: resolve asset_dir %q: %w", opts.AssetDir, err)
+			return nil, fmt.Errorf("webspa: resolve suite_asset_dir %q: %w", opts.SuiteAssetDir, err)
 		}
 		s.assetDir = dir
 		info, err := os.Stat(dir)
 		if err != nil {
-			return nil, fmt.Errorf("tabardspa: stat asset_dir %q: %w", dir, err)
+			return nil, fmt.Errorf("webspa: stat suite_asset_dir %q: %w", dir, err)
 		}
 		if !info.IsDir() {
-			return nil, fmt.Errorf("tabardspa: asset_dir %q is not a directory", dir)
+			return nil, fmt.Errorf("webspa: suite_asset_dir %q is not a directory", dir)
 		}
 		idx := filepath.Join(dir, "index.html")
 		if _, err := os.Stat(idx); err != nil {
-			return nil, fmt.Errorf("tabardspa: asset_dir %q missing index.html: %w", dir, err)
+			return nil, fmt.Errorf("webspa: suite_asset_dir %q missing index.html: %w", dir, err)
 		}
 		s.root = os.DirFS(dir)
 	} else {
-		sub, err := fs.Sub(embeddedDist, "dist")
+		sub, err := suiteEmbeddedFS()
 		if err != nil {
-			return nil, fmt.Errorf("tabardspa: open embedded dist: %w", err)
+			return nil, fmt.Errorf("webspa: open embedded suite dist: %w", err)
 		}
 		if _, err := fs.Stat(sub, "index.html"); err != nil {
-			return nil, fmt.Errorf("tabardspa: embedded dist missing index.html: %w", err)
+			return nil, fmt.Errorf("webspa: embedded suite dist missing index.html: %w", err)
 		}
 		s.root = sub
 	}
@@ -215,7 +205,7 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(w, f); err != nil {
-		s.logger.LogAttrs(r.Context(), slog.LevelDebug, "tabardspa: copy",
+		s.logger.LogAttrs(r.Context(), slog.LevelDebug, "webspa.suite: copy",
 			slog.String("path", urlPath), slog.String("err", err.Error()))
 	}
 }
@@ -235,7 +225,7 @@ func (s *Server) handleMiss(w http.ResponseWriter, r *http.Request, urlPath stri
 func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request, status int) {
 	body, err := fs.ReadFile(s.root, "index.html")
 	if err != nil {
-		s.logger.LogAttrs(r.Context(), slog.LevelError, "tabardspa: read index.html",
+		s.logger.LogAttrs(r.Context(), slog.LevelError, "webspa.suite: read index.html",
 			slog.String("err", err.Error()))
 		http.Error(w, "index.html unavailable", http.StatusInternalServerError)
 		return
