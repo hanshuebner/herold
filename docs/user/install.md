@@ -234,7 +234,14 @@ Helm chart. Expected shape:
 
 A real cluster operator should treat this as a starting point and
 adapt to their ingress, cert-manager, and storage class conventions.
-TODO(operator-doc): cluster-template-and-tested-walkthrough.
+
+Cluster topology is explicitly out of scope for herold v1, which is
+a single-node design (see `docs/design/00-scope.md`, non-goal NG2).
+There is no supported clustering mode. Operators requiring horizontal
+scale should run multiple independent herold instances with disjoint
+domain assignments rather than a shared clustered topology. The
+`StatefulSet` replica count above is intentionally 1 and should not
+be increased.
 
 ## Required system resources
 
