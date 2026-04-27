@@ -368,15 +368,15 @@ When `uris` is non-empty, `shared_secret_env` must be a `$VAR` or
 back to STUN-only ICE - that works for ~85-90% of network shapes; the
 remaining 10-15% need TURN.
 
-### `[server.the suite]` - suite SPA mount on the public listener
+### `[server.suite]` - Suite SPA mount on the public listener
 
 ```toml
-[server.the suite]
-enabled = true                    # default true; set false for admin-only deployments.
-# asset_dir = "/abs/path/to/the suite/dist"   # dev-mode override; default unset.
+[server.suite]
+enabled = true                                # default true; set false for admin-only deployments.
+# asset_dir = "/abs/path/to/web/apps/suite/dist"   # dev-mode override; default unset.
 ```
 
-Herold embeds the suite SPA build artefacts into the binary and
+Herold embeds the Suite SPA build artefacts into the binary and
 serves them at `/` on the public listener (REQ-DEPLOY-COLOC-01..05).
 
 - `enabled` toggles the SPA mount. `enabled = false` leaves the
@@ -385,14 +385,12 @@ serves them at `/` on the public listener (REQ-DEPLOY-COLOC-01..05).
   exists only to terminate JMAP / send / chat / image-proxy traffic.
 - `asset_dir`, when set, makes the server read SPA assets from disk
   on every request rather than from the embedded FS. Use this in
-  development to avoid rebuilding the binary on every the suite change,
-  or in the README quickstart together with
-  `scripts/install-tabard.sh`, which extracts the latest the suite
-  release tarball into the data directory. Relative paths are
-  resolved against the server's working directory at startup (same
-  convention as `data_dir` and `cert_file`); the directory MUST
-  contain `index.html` at startup or the validator refuses the
-  config.
+  development to avoid rebuilding the binary on every Suite change,
+  pointed at the Vite output under `web/apps/suite/dist`. Relative
+  paths are resolved against the server's working directory at
+  startup (same convention as `data_dir` and `cert_file`); the
+  directory MUST contain `index.html` at startup or the validator
+  refuses the config.
 
 The handler emits a strict `Content-Security-Policy` (no operator
 override in v1; see REQ-DEPLOY-COLOC-04 for the directive set),
@@ -402,10 +400,11 @@ stable non-hashed assets, and `no-cache` for `index.html`. Unknown
 non-API paths fall through to `index.html` so the SPA's client-side
 router takes over.
 
-The pinned the suite release the current herold binary embeds is
-recorded in `deploy/tabard.version`. Operators who want a different
-the suite version use the `asset_dir` override; see
-`docs/user/install.md` for the embed-tabard workflow.
+A herold release pins one Suite revision: the in-tree `web/`
+workspace at the same git commit as the binary. Operators who want
+to ship a different Suite revision rebuild from a checkout pointed
+at that revision (or use the `asset_dir` override at runtime); see
+`docs/user/install.md` for the build pipeline.
 
 ### `[server.ui]` - operator-facing web UI
 

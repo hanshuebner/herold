@@ -53,7 +53,12 @@ internal/                all non-plugin code; not importable externally
   mailparse, maildkim, mailspf, maildmarc, mailarc
   sieve, spam, queue, tls, acme, autodns
   plugin, observe, sysconfig, appconfig, admin
+  webspa                 Go-side embedder for the Suite + admin SPAs
 plugins/                 first-party plugins, each its own main package
+web/                     pnpm workspace; in-tree Svelte SPAs
+  apps/suite             consumer Suite SPA (mail / chat / cal / contacts)
+  apps/admin             operator admin SPA (Phase 2)
+  packages/design-system shared tokens + base CSS
 test/interop, test/e2e   cross-package scenarios
 deploy/                  debian, rpm, docker, k8s
 ```
@@ -62,6 +67,16 @@ deploy/                  debian, rpm, docker, k8s
 - Packages map one-to-one with responsibility areas; do not create `util`, `common`, or `helpers` grab-bags.
 - Every package has a `doc.go` with a one-paragraph package comment.
 - Public identifiers have doc comments in the Go style (start with the identifier name).
+
+### 4.1 Web workspace (`web/`)
+
+- Stack is locked: Svelte 5 (runes), Vite 6, pnpm 10, Bits UI, Carbon-derived design tokens, IBM Plex. Anything outside this stack is a STANDARDS.md change, not a local choice.
+- TypeScript everywhere; no JS-only files.
+- npm package namespace is `@herold/*`. Internal workspace deps use the `workspace:*` protocol — never floating versions.
+- pnpm install always runs with `--frozen-lockfile` in CI; lockfile bumps are explicit PR commits.
+- The `nofrontend` build tag is a hard contract: every Go change to `internal/webspa` MUST compile under both `go build ./...` and `go build -tags nofrontend ./...`. The build-tag split (`embed_default.go` vs `embed_stub.go`) is exercised by the `web` and `test` jobs in `.github/workflows/ci.yml`.
+- The committed `internal/webspa/dist/{suite,admin}/index.html` placeholders satisfy `//go:embed` for source-only builds. Real SPA artefacts are produced by `make build-web` and are not committed; `web/apps/*/dist/` and `internal/webspa/dist/*/assets/` are in `.gitignore`.
+- Frontend code is content-blind on the wire: it never sends or stores message bodies, addresses, or search queries unencrypted to anything other than the same-origin herold backend.
 
 ## 5. Concurrency and I/O
 

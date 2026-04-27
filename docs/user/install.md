@@ -409,9 +409,11 @@ herold principal create user1@example.com --password 'change-me-now'
 With a domain and a principal in place, three client surfaces are
 available; route end users and operators to different URLs:
 
-- **The suite consumer SPA**: `http(s)://<public host>/`. Loads the
-  assets installed via `scripts/install-tabard.sh` (or baked in by
-  `scripts/embed-tabard.sh`). The SPA redirects to `/login`, the
+- **The Suite consumer SPA**: `http(s)://<public host>/`. Loads the
+  assets baked into the binary via `//go:embed` (built by
+  `make build-web` from the in-tree `web/apps/suite` workspace), or
+  served from a developer dist tree pointed at by `[server.suite].asset_dir`.
+  The SPA redirects to `/login`, the
   user signs in with their email and password, and herold issues a
   `herold_public_session` cookie with `Path=/`. The SPA's JMAP
   handshake then completes and the mailbox loads. See

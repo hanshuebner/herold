@@ -9,7 +9,7 @@ import (
 
 // TestPublicListener_Root_ServesSuite asserts that the public listener
 // serves the embedded suite SPA shell at `/` (REQ-DEPLOY-COLOC-01..02
-// per Wave 3.7). The test fixture leaves Tabard.AssetDir empty so the
+// per Wave 3.7). The test fixture leaves Suite.AssetDir empty so the
 // embedded placeholder is exercised; production builds replace the
 // embedded placeholder but the contract is the
 // same: <title>Herold</title>, no-cache, CSP set.

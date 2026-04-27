@@ -1,7 +1,7 @@
 # Herold
 
-Herold is a single-node mail server in Go. Substrate beneath the tabard
-suite (mail, calendar, contacts, chat).
+Herold is a single-node mail server in Go. Substrate beneath the
+in-tree Suite SPA (mail, calendar, contacts, chat) under `web/apps/suite`.
 
 One binary. One system config file. One data directory. SQLite by
 default; Postgres for larger deployments. No CGO. No multi-node. No
@@ -92,28 +92,31 @@ starting the server:
 This writes `data/admin.key` and `data/admin.crt`. These are suitable
 for the loopback quickstart only.
 
-### 4. Install the tabard web client
+### 4. Build the Suite web client
 
-The quickstart `system.toml` mounts the tabard consumer SPA on the
+The quickstart `system.toml` mounts the consumer Suite SPA on the
 public HTTP listener at `/` so you can log in via a web client in
-addition to (or instead of) connecting an IMAP client. The release
-tarball is published as a GitHub release asset; the helper script
-downloads and extracts it into `./data/tabard/`:
+addition to (or instead of) connecting an IMAP client. The Suite
+source lives in-tree under `web/apps/suite`. Build it with pnpm:
 
 ```bash
-./scripts/install-tabard.sh
+make build-web
 ```
 
-`./scripts/install-tabard.sh data` is the same thing made explicit;
-pass a different argument to extract somewhere else and adjust the
-`asset_dir` line in `system.toml` to match. Re-run the script any
-time you want to refresh to the latest tabard release; it wipes the
-target directory first so older assets do not bleed through.
+This runs `pnpm --dir web install --frozen-lockfile`, builds the SPA
+into `web/apps/suite/dist`, and copies the artefacts into
+`internal/webspa/dist/suite/` where the next `make build-server` (or
+`make build`) bakes them into the herold binary via `//go:embed`.
 
-If you do not want the web client, comment out the `[server.tabard]`
-block in `system.toml` (or set `enabled = false`) before starting the
-server. The default block expects `./data/tabard/index.html` and the
-server refuses to start without it.
+The default `[server.suite].asset_dir` in the quickstart points at
+`./web/apps/suite/dist` for hot-reload during frontend development;
+remove that line (or comment out the `[server.suite]` block, or set
+`enabled = false`) to fall back to the binary-embedded artefacts.
+
+If pnpm is not installed locally, you can still run the server: a
+`go build -tags nofrontend ./cmd/herold` produces a backend-only
+binary that serves a placeholder index.html at `/`. The IMAP / SMTP
+client surfaces work identically either way.
 
 ### 5. Build and start the server
 
@@ -200,7 +203,7 @@ to land you on the right screen.
 
 | Surface | URL | Sign-in flow | Working today? |
 |---------|-----|--------------|----------------|
-| Tabard web suite (mail, calendar, contacts, chat) | `http://localhost:8080/` | the SPA's own login form (against `/.well-known/jmap`) | yes |
+| Suite web client (mail, calendar, contacts, chat) | `http://localhost:8080/` | the SPA's own login form (against `/.well-known/jmap`) | yes |
 | Herold operator UI (domains, principals, queue, audit) | `http://localhost:8080/ui/dashboard` (public listener) or `http://localhost:9443/ui/dashboard` (admin listener) | the protoui sign-in form at `/ui/login`, then `/ui/dashboard` | yes |
 | IMAP / SMTP submission (Apple Mail, Thunderbird, mutt, ...) | `imap://localhost:1143`, `imaps://localhost:1993`, `smtp+starttls://localhost:1587` | direct AUTH against the listener with email + password | yes |
 
@@ -225,9 +228,9 @@ two listeners is mechanically impossible
 ports speak plain HTTP; in production the admin listener is
 loopback-only or fronted by ssh tunnel (see `docs/user/operate.md`).
 
-#### Tabard web suite (`/`)
+#### Suite web client (`/`)
 
-Open `http://localhost:8080/` in a browser. The tabard SPA loads
+Open `http://localhost:8080/` in a browser. The Suite SPA loads
 and immediately tries to fetch `/.well-known/jmap`. With no session
 cookie present it redirects the browser to
 `/login?return=%2F%23%2Fmail`.

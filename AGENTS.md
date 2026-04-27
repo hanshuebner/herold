@@ -27,6 +27,7 @@ Each owns an area of the code tree. Ownership is where design and first-pass rev
 | `plugin-platform-implementor` | `internal/plugin`, plugin SDK, first-party plugins under `plugins/` | JSON-RPC 2.0, own ABI |
 | `http-api-implementor` | `internal/protoadmin`, `internal/protosend`, `internal/protowebhook`, `internal/protoevents` | own REST shapes; HMAC for webhooks; NATS for default event publisher |
 | `ops-observability-implementor` | `internal/sysconfig`, `internal/appconfig`, `internal/observe`, `internal/tls` (loader), `internal/admin` CLI glue, boot / reload / shutdown | n/a |
+| `web-frontend-implementor` | `web/` (suite + admin SPAs + design-system), `internal/webspa`, `scripts/build-web.sh`, the web CI lane | Svelte 5, Vite 6, pnpm 10, Bits UI, Carbon-derived tokens; Web Push (RFC 8030 + 8291 + 8292) on the client side |
 
 ## Cross-cutting roster
 
@@ -46,7 +47,7 @@ Pulls directly from `docs/design/server/implementation/02-phasing.md`.
 
 **Phase 1 — Inbound email works.** `smtp-implementor` (relay-in), `mail-auth-implementor` (verify-side), `sieve-implementor`, `imap-implementor` (baseline), `directory-auth-implementor` (internal + OIDC RP), `plugin-platform-implementor` (first-party LLM spam plugin), `storage-implementor` (FTS worker), `ops-observability-implementor` (`protoadmin` scaffolding + CLI).
 
-**Phase 2 — Outbound + ACME + auto-DNS + JMAP + HTTP APIs + events + shared mailboxes + web UI.** `queue-delivery-implementor` (queue + outbound + ACME + autodns), `mail-auth-implementor` (signing + MTA-STS + DANE + DMARC reports + TLS-RPT), `plugin-platform-implementor` (Cloudflare + Route53 + Hetzner + manual DNS plugins + NATS event publisher), `jmap-implementor`, `imap-implementor` (CONDSTORE/QRESYNC + MOVE + ACL), `http-api-implementor` (send + webhooks + events dispatcher), `ops-observability-implementor` (web UI scaffolding, SQLite↔Postgres migration tool).
+**Phase 2 — Outbound + ACME + auto-DNS + JMAP + HTTP APIs + events + shared mailboxes + web UI.** `queue-delivery-implementor` (queue + outbound + ACME + autodns), `mail-auth-implementor` (signing + MTA-STS + DANE + DMARC reports + TLS-RPT), `plugin-platform-implementor` (Cloudflare + Route53 + Hetzner + manual DNS plugins + NATS event publisher), `jmap-implementor`, `imap-implementor` (CONDSTORE/QRESYNC + MOVE + ACL), `http-api-implementor` (send + webhooks + events dispatcher), `ops-observability-implementor` (SQLite↔Postgres migration tool), `web-frontend-implementor` (Suite SPA hardening + admin SPA replacing the protoui HTMX surface, Phase 2 of the merge plan).
 
 **Phase 2.5 — Hardening.** `conformance-fuzz-engineer` leads; `reviewer` + `security-reviewer` close the remaining items; `docs-writer` writes operator + plugin-SDK docs; `release-ci-engineer` ships packaging and SBOM pipeline.
 

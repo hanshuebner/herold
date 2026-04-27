@@ -1862,7 +1862,7 @@ func composeAdminAndUI(
 	}
 
 	// Suite SPA mount (REQ-DEPLOY-COLOC-01..05). When the operator
-	// has not opted out (Tabard.Enabled defaults true), the SPA
+	// has not opted out (Suite.Enabled defaults true), the SPA
 	// handler registers as the catch-all `/` on the public mux.
 	// Go's longest-prefix routing means the more-specific API
 	// mounts above (jmap, send, chat, image proxy, /ui/, ...)

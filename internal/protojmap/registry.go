@@ -52,8 +52,10 @@ const (
 	// Membership, Block) are not standardised in any IETF JMAP RFC; the
 	// capability URI follows the JMAP convention of an http(s) URL in
 	// the vendor namespace that owns the consumer wire contract. Per
-	// docs/design/00-scope.md, herold is the substrate beneath the suite
-	// suite, so the URI lives under tabard.dev. Implemented under
+	// docs/design/00-scope.md, herold is the substrate beneath the
+	// suite, so the URI lives under herold.dev. The herold.dev domain
+	// is provisional and flagged for revision before launch -- see Q5
+	// in docs/design/server/notes/open-questions.md. Implemented under
 	// internal/protojmap/chat.
 	CapabilityJMAPChat CapabilityID = "https://herold.dev/jmap/chat"
 	// CapabilityPush is the JMAP PushSubscription + suite-extension

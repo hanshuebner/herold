@@ -7,8 +7,9 @@ This file is the operating context the root agent reads first.
 1. `docs/design/00-scope.md` — goals, non-goals, simplification themes.
 2. `STANDARDS.md` — global coding and development rules. Authoritative.
 3. `AGENTS.md` — the specialist subagent roster and when to delegate.
-4. The requirements file(s) for the subsystem you are about to touch, under `docs/design/server/requirements/`.
-5. The matching architecture file under `docs/design/server/architecture/`.
+4. The requirements file(s) for the subsystem you are about to touch, under `docs/design/server/requirements/` (server-side) or `docs/design/web/requirements/` (frontend).
+5. The matching architecture file under `docs/design/server/architecture/` or `docs/design/web/architecture/`.
+6. For frontend work: `web/CLAUDE.md` — workspace-specific rules for the in-tree Svelte SPAs.
 
 ## Delegation posture
 
