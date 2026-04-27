@@ -3,7 +3,7 @@
 # Multi-stage build. Default build has no CGO (modernc.org/sqlite, pgx, bleve,
 # nats are all pure Go) so the runtime image can be distroless/static.
 
-ARG GO_VERSION=1.23
+ARG GO_VERSION=1.25
 
 FROM golang:${GO_VERSION}-bookworm AS build
 WORKDIR /src
