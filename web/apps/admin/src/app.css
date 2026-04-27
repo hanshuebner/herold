@@ -1,0 +1,14 @@
+/* The design system handles fonts, reset, and tokens. Admin-specific
+   overrides (if any) go below. */
+@import '@herold/design-system/index.css';
+
+/* Admin shell body baseline */
+body {
+  background: var(--background);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--type-body-01-size);
+  line-height: var(--type-body-01-line);
+  margin: 0;
+  padding: 0;
+}

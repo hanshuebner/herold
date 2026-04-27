@@ -7,10 +7,15 @@
 </head>
 <body>
 <h1>Herold admin</h1>
-<p>Admin SPA placeholder. The Svelte admin app will land here in
-Phase 2 of the merge plan
-(see <code>docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md</code>).
-Until then the operator UI lives at <code>/ui/</code>
-(server-rendered HTMX templates in <code>internal/protoui</code>).</p>
+<p>Admin SPA not yet built. From a clean checkout:</p>
+<pre><code>make build-web
+make build</code></pre>
+<p>This runs <code>pnpm -C web install --frozen-lockfile</code>,
+<code>pnpm -C web build</code>, and copies the resulting
+<code>web/apps/admin/dist/</code> into this binary's embedded FS.
+The Svelte admin app source lives at <code>web/apps/admin/</code>.
+For development hot-reload without rebuilding the binary, run
+<code>pnpm --dir web --filter @herold/admin dev</code> which starts
+a Vite dev server on port 5174 proxying the herold admin listener.</p>
 </body>
 </html>

@@ -7,11 +7,10 @@
 #
 # Layout produced inside internal/webspa/dist/:
 #   suite/   <- web/apps/suite/dist/* (Svelte consumer SPA)
-#   admin/   <- web/apps/admin/dist/* once Phase 2 lands; for now a
-#               placeholder index.html shipped in source control.
+#   admin/   <- web/apps/admin/dist/* (Svelte operator admin SPA)
 #
 # This script intentionally fails loudly if pnpm is not installed and
-# if the suite build does not produce an index.html. The build is
+# if either build does not produce an index.html. The build is
 # deterministic given the lockfile: it runs `pnpm install
 # --frozen-lockfile` and rejects lockfile drift. There is no fallback
 # to npm / yarn.
@@ -38,7 +37,7 @@ pnpm --dir web install --frozen-lockfile
 echo ">>> pnpm --filter @herold/suite build"
 pnpm --dir web --filter @herold/suite build
 
-# 3. Mirror the build artefact into internal/webspa/dist/suite/.
+# 3. Mirror the suite build artefact into internal/webspa/dist/suite/.
 #    Drop the placeholder index.html from source control before the
 #    copy so a stale placeholder cannot survive the build. The
 #    .gitkeep in dist/ stays untouched.
@@ -58,3 +57,23 @@ mkdir -p "${SUITE_DST}"
 cp -R "${SUITE_SRC}/." "${SUITE_DST}/"
 
 echo "build-web.sh: suite SPA installed at ${SUITE_DST}/"
+
+# 4. Build the admin SPA. Vite emits to web/apps/admin/dist/.
+echo ">>> pnpm --filter @herold/admin build"
+pnpm --dir web --filter @herold/admin build
+
+# 5. Mirror the admin build artefact into internal/webspa/dist/admin/.
+ADMIN_SRC="web/apps/admin/dist"
+ADMIN_DST="internal/webspa/dist/admin"
+
+if [ ! -f "${ADMIN_SRC}/index.html" ]; then
+  echo "build-web.sh: ${ADMIN_SRC}/index.html missing after build" >&2
+  exit 1
+fi
+
+echo ">>> copy ${ADMIN_SRC}/ -> ${ADMIN_DST}/"
+rm -rf "${ADMIN_DST}"
+mkdir -p "${ADMIN_DST}"
+cp -R "${ADMIN_SRC}/." "${ADMIN_DST}/"
+
+echo "build-web.sh: admin SPA installed at ${ADMIN_DST}/"
