@@ -139,23 +139,40 @@ func (h *workerHarness) insertMessage(t *testing.T, mb store.Mailbox, subject, b
 	return msg
 }
 
-// flushOnce advances the fake clock past the flush interval and waits for
-// the worker to commit. The worker's poll loop sleeps on `clock.After`
-// when there are no pending changes; Advance unblocks it. Capture the
-// flush signal BEFORE advancing the clock so a fast worker (under heavy
-// parallel CPU load) cannot flush between Advance and the wait and leave
-// the caller blocked on a fresh post-flush channel.
+// flushOnce advances the fake clock past the flush interval and waits
+// for the worker to drain every pending FTS change. A single Advance is
+// not enough on its own: when the worker happens to be mid-iteration as
+// the test inserts rows, the read can split the rows across multiple
+// processBatch calls and the first signalFlush fires before the later
+// rows have been indexed. Capturing one flush channel and returning on
+// its close would let the test query a partial index. Instead, this
+// method loops — capture signal, Advance, wait, then re-check the
+// change feed against the worker cursor — until ReadChangeFeedForFTS
+// returns empty. That is the deterministic "worker has caught up"
+// indicator: the cursor is atomic and updated inside processBatch
+// before signalFlush, so a feed read that sees no rows past the cursor
+// means every batch including the current one has committed.
 func (h *workerHarness) flushOnce(t *testing.T) {
 	t.Helper()
-	flushSig := h.worker.CurrentFlushSignal()
-	h.clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
-	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	select {
-	case <-flushSig:
-	case <-waitCtx.Done():
-		t.Fatalf("wait for flush: %v", waitCtx.Err())
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		changes, err := h.store.FTS().ReadChangeFeedForFTS(h.ctx, h.worker.Cursor(), 1)
+		if err != nil {
+			t.Fatalf("read fts feed: %v", err)
+		}
+		if len(changes) == 0 {
+			return
+		}
+		flushSig := h.worker.CurrentFlushSignal()
+		h.clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
+		waitCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		select {
+		case <-flushSig:
+		case <-waitCtx.Done():
+		}
+		cancel()
 	}
+	t.Fatalf("flushOnce: worker did not drain within 2s; cursor=%d", h.worker.Cursor())
 }
 
 func TestWorker_IndexesMessages(t *testing.T) {
