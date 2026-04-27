@@ -1,0 +1,3 @@
+/* The design system handles fonts, reset, and tokens. Suite-specific
+   overrides (if any) go below. */
+@import '@tabard/design-system/index.css';

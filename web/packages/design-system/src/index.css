@@ -1,0 +1,4 @@
+/* Aggregate entry point — import this once from the suite shell. */
+@import './fonts.css';
+@import './reset.css';
+@import './tokens/tokens.css';

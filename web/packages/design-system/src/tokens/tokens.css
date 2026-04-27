@@ -1,0 +1,163 @@
+/*
+ * Tabard design tokens.
+ *
+ * Colour tokens follow IBM Carbon's role-token model (Gray 100 dark theme,
+ * White light theme). Typography is Carbon's productive scale. Spacing is
+ * Carbon's 8-pt grid plus half-step. Motion durations are Carbon's
+ * productive set.
+ *
+ * Dark is the default; light kicks in when [data-theme="light"] is set on
+ * <html>. data-theme="system" respects prefers-color-scheme.
+ *
+ * Source of truth: docs/architecture/06-design-system.md.
+ */
+
+:root {
+  /* Typography family */
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* Productive type scale: <font-size>/<line-height>/<weight> */
+  --type-body-compact-01-size: 14px;
+  --type-body-compact-01-line: 18px;
+  --type-body-compact-01-weight: 400;
+
+  --type-body-01-size: 14px;
+  --type-body-01-line: 20px;
+  --type-body-01-weight: 400;
+
+  --type-body-02-size: 16px;
+  --type-body-02-line: 22px;
+  --type-body-02-weight: 400;
+
+  --type-heading-compact-01-size: 14px;
+  --type-heading-compact-01-line: 18px;
+  --type-heading-compact-01-weight: 600;
+
+  --type-heading-01-size: 16px;
+  --type-heading-01-line: 22px;
+  --type-heading-01-weight: 600;
+
+  --type-heading-02-size: 16px;
+  --type-heading-02-line: 22px;
+  --type-heading-02-weight: 600;
+
+  --type-heading-03-size: 20px;
+  --type-heading-03-line: 28px;
+  --type-heading-03-weight: 400;
+
+  --type-code-01-size: 12px;
+  --type-code-01-line: 16px;
+  --type-code-01-weight: 400;
+
+  --type-code-02-size: 14px;
+  --type-code-02-line: 20px;
+  --type-code-02-weight: 400;
+
+  /* Spacing — Carbon 8pt grid + half-step */
+  --spacing-01: 2px;
+  --spacing-02: 4px;
+  --spacing-03: 8px;
+  --spacing-04: 12px;
+  --spacing-05: 16px;
+  --spacing-06: 24px;
+  --spacing-07: 32px;
+  --spacing-08: 40px;
+  --spacing-09: 48px;
+  --spacing-10: 64px;
+
+  /* Touch target minimum (mobile / coarse pointer) */
+  --touch-min: 44px;
+
+  /* Motion — productive durations + curves */
+  --duration-fast-01: 70ms;
+  --duration-fast-02: 110ms;
+  --duration-moderate-01: 150ms;
+  --duration-moderate-02: 240ms;
+  --easing-productive-enter: cubic-bezier(0.2, 0, 0.38, 0.9);
+  --easing-productive-exit: cubic-bezier(0.2, 0, 1, 0.9);
+
+  /* Radius */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+  --radius-pill: 9999px;
+}
+
+/* ── Dark theme (default) ──────────────────────────────────────────────── */
+:root,
+:root[data-theme='dark'] {
+  --background: #161616;
+  --layer-01: #262626;
+  --layer-02: #393939;
+  --layer-03: #525252;
+
+  --border-subtle-01: #393939;
+  --border-strong-01: #6f6f6f;
+
+  --text-primary: #f4f4f4;
+  --text-secondary: #c6c6c6;
+  --text-helper: #8d8d8d;
+  --text-on-color: #ffffff;
+  --text-disabled: #6f6f6f;
+
+  --interactive: #4589ff;
+  --focus: #ffffff;
+
+  --support-error: #fa4d56;
+  --support-success: #42be65;
+  --support-warning: #f1c21b;
+  --support-info: #4589ff;
+}
+
+/* ── Light theme ───────────────────────────────────────────────────────── */
+:root[data-theme='light'] {
+  --background: #ffffff;
+  --layer-01: #f4f4f4;
+  --layer-02: #ffffff;
+  --layer-03: #f4f4f4;
+
+  --border-subtle-01: #e0e0e0;
+  --border-strong-01: #8d8d8d;
+
+  --text-primary: #161616;
+  --text-secondary: #525252;
+  --text-helper: #6f6f6f;
+  --text-on-color: #ffffff;
+  --text-disabled: #c6c6c6;
+
+  --interactive: #0f62fe;
+  --focus: #0f62fe;
+
+  --support-error: #da1e28;
+  --support-success: #198038;
+  --support-warning: #f1c21b;
+  --support-info: #0043ce;
+}
+
+/* ── System theme — follow prefers-color-scheme ────────────────────────── */
+@media (prefers-color-scheme: light) {
+  :root[data-theme='system'] {
+    --background: #ffffff;
+    --layer-01: #f4f4f4;
+    --layer-02: #ffffff;
+    --layer-03: #f4f4f4;
+
+    --border-subtle-01: #e0e0e0;
+    --border-strong-01: #8d8d8d;
+
+    --text-primary: #161616;
+    --text-secondary: #525252;
+    --text-helper: #6f6f6f;
+    --text-on-color: #ffffff;
+    --text-disabled: #c6c6c6;
+
+    --interactive: #0f62fe;
+    --focus: #0f62fe;
+
+    --support-error: #da1e28;
+    --support-success: #198038;
+    --support-warning: #f1c21b;
+    --support-info: #0043ce;
+  }
+}

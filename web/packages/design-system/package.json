@@ -1,0 +1,17 @@
+{
+  "name": "@tabard/design-system",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Tabard suite design tokens (colour / typography / spacing / motion) and base styles.",
+  "exports": {
+    "./index.css": "./src/index.css",
+    "./tokens.css": "./src/tokens/tokens.css",
+    "./reset.css": "./src/reset.css",
+    "./fonts.css": "./src/fonts.css"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.0.0",
+    "@fontsource/ibm-plex-sans": "^5.0.0"
+  }
+}

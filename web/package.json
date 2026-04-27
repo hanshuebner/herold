@@ -1,0 +1,21 @@
+{
+  "name": "tabard",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tabard — JMAP suite (mail, calendar, contacts, chat) over herold",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @tabard/suite dev",
+    "build": "pnpm -r --if-present build",
+    "check": "pnpm -r --if-present check",
+    "test": "pnpm -r --if-present test",
+    "lint": "pnpm -r --if-present lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
