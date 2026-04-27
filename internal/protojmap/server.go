@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/store"
@@ -53,6 +54,14 @@ const (
 // too.
 type APIKeyLookup func(ctx context.Context, hash string) (store.APIKey, error)
 
+// SessionResolver resolves a suite-session cookie on an inbound HTTP
+// request into the authenticated principal ID and its scope set.
+// Implementations are provided by protoui.Server.ResolveSessionWithScope.
+// A nil resolver disables cookie-based auth (Bearer + Basic only).
+// When non-nil it is called only when no Authorization header is
+// present; Bearer / Basic always take precedence.
+type SessionResolver func(r *http.Request) (store.PrincipalID, auth.ScopeSet, bool)
+
 // Options configures a Server. Zero values pick conservative defaults
 // per RFC 8620 §2 (server limits).
 type Options struct {
@@ -84,6 +93,16 @@ type Options struct {
 	// APIKeyLookup overrides the default store-backed lookup. Tests
 	// inject a fake; production wiring leaves it nil.
 	APIKeyLookup APIKeyLookup
+	// SessionResolver, when non-nil, enables cookie-based authentication
+	// on the public listener. The JMAP auth middleware calls it when no
+	// Authorization header is present on the request. Production wiring
+	// supplies protoui.Server.ResolveSessionWithScope here so a browser
+	// with a valid suite-session cookie can call JMAP endpoints without
+	// a separate Bearer credential. The resolver must return false for
+	// expired or invalid sessions; a true result is trusted without
+	// additional store round-trips (the protoui layer already validates
+	// the cookie signature and checks the disabled flag).
+	SessionResolver SessionResolver
 	// PushPingInterval is the interval at which idle EventSource
 	// streams emit a ": ping" comment. Default 5 minutes; clients
 	// supply a smaller value with the ?ping= query parameter.
@@ -122,7 +141,8 @@ type Server struct {
 	reg   *CapabilityRegistry
 	opts  Options
 
-	apikeyLookup APIKeyLookup
+	apikeyLookup    APIKeyLookup
+	sessionResolver SessionResolver
 
 	// dlBuckets holds per-principal download token buckets. Bounded by
 	// the registered principal count; entries persist for the life of
@@ -213,6 +233,7 @@ func NewServer(
 			return st.Meta().GetAPIKeyByHash(ctx, hash)
 		}
 	}
+	s.sessionResolver = opts.SessionResolver
 	// Register the JMAP Core capability + the canonical Core/echo
 	// method (RFC 8620 §4). Parallel agents register the Mail
 	// capability + its handlers via Registry().

@@ -52,31 +52,44 @@ func TestScope_PublicLogin_IssuesEndUserScope(t *testing.T) {
 	if res.StatusCode != http.StatusSeeOther {
 		t.Fatalf("login: status=%d, want 303", res.StatusCode)
 	}
-	// Inspect the cookie name. Public listener issues
-	// herold_public_session per REQ-AUTH-SCOPE-01. Cookie path is
-	// /ui/ so the jar lookup must use a URL under /ui/.
-	u, _ := url.Parse(baseURL + "/ui/dashboard")
-	jar := cl.Jar.Cookies(u)
-	var sess, csrf *http.Cookie
-	for _, c := range jar {
+	// Inspect the cookie name and path. Public listener issues
+	// herold_public_session with Path=/ (Wave 3.7-A) so the suite
+	// session accompanies JMAP, chat-WS, and send-API requests.
+	// The jar lookup at the root URL verifies the broad scope.
+	uRoot, _ := url.Parse(baseURL + "/")
+	uUI, _ := url.Parse(baseURL + "/ui/dashboard")
+	jarRoot := cl.Jar.Cookies(uRoot)
+	jarUI := cl.Jar.Cookies(uUI)
+
+	var sessFromRoot, sessFromUI, csrf *http.Cookie
+	for _, c := range jarRoot {
+		if c.Name == "herold_public_session" {
+			sessFromRoot = c
+		}
+	}
+	for _, c := range jarUI {
 		switch c.Name {
 		case "herold_public_session":
-			sess = c
+			sessFromUI = c
 		case "herold_public_csrf":
 			csrf = c
 		}
 	}
-	if sess == nil {
-		t.Fatalf("public session cookie not issued; jar=%+v", jar)
+	// Session cookie must appear at both / and /ui/ because Path=/.
+	if sessFromRoot == nil {
+		t.Fatalf("public session cookie not visible at /; jar=%+v", jarRoot)
+	}
+	if sessFromUI == nil {
+		t.Fatalf("public session cookie not visible at /ui/; jar=%+v", jarUI)
 	}
 	if csrf == nil {
-		t.Fatalf("public CSRF cookie not issued; jar=%+v", jar)
+		t.Fatalf("public CSRF cookie not issued; jar=%+v", jarUI)
 	}
 	// The cookie value embeds the scope set as a base64-encoded JSON
 	// blob; the encoding is internal to protoui but the absence of
 	// 'admin' in the slice we'd parse is the contract we test.
-	if strings.Contains(sess.Value, scopeAdminEnc()) {
-		t.Errorf("public session cookie carries admin-encoded scope: %s", sess.Value)
+	if strings.Contains(sessFromRoot.Value, scopeAdminEnc()) {
+		t.Errorf("public session cookie carries admin-encoded scope: %s", sessFromRoot.Value)
 	}
 }
 
@@ -106,7 +119,9 @@ func TestScope_AdminLogin_IssuesAdminScope(t *testing.T) {
 		t.Fatalf("login: status=%d, want 303", res.StatusCode)
 	}
 	u, _ := url.Parse(baseURL + "/ui/dashboard")
+	uRoot, _ := url.Parse(baseURL + "/")
 	jar := cl.Jar.Cookies(u)
+	jarRoot := cl.Jar.Cookies(uRoot)
 	var sess *http.Cookie
 	for _, c := range jar {
 		if c.Name == "herold_admin_session" {
@@ -118,6 +133,12 @@ func TestScope_AdminLogin_IssuesAdminScope(t *testing.T) {
 	}
 	if sess == nil {
 		t.Fatalf("admin session cookie not issued; jar=%+v", jar)
+	}
+	// Admin cookie must NOT be visible at the root because Path=/ui/.
+	for _, c := range jarRoot {
+		if c.Name == "herold_admin_session" {
+			t.Errorf("admin session cookie (Path=/ui/) incorrectly visible at /: %+v", c)
+		}
 	}
 }
 

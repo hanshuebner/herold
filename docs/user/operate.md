@@ -32,6 +32,47 @@ operational levers (TLS, DNS, observability, queue, plugins, OIDC
 federation). Day-to-day application administration is covered in
 [./administer.md](./administer.md).
 
+## The web URLs herold exposes
+
+Herold serves two web surfaces on the public HTTP listener and a
+third on the admin listener. They live at distinct URLs and have
+distinct sign-in flows; tell operators apart from end users by the
+URL they bookmark.
+
+| Surface | Listener | URL (loopback quickstart shape) | Sign-in form | Cookie | Today |
+|---------|----------|---------------------------------|--------------|--------|-------|
+| Tabard consumer SPA (mail / calendar / contacts / chat) | public | `http://localhost:8080/` | `/login` redirects to the protoui sign-in form; after login the SPA's JMAP handshake completes | `herold_public_session` (`Path=/`, end-user scope) | yes |
+| Operator UI (domains, principals, queue, audit) | public | `http://localhost:8080/ui/dashboard` | protoui template at `/ui/login` | `herold_public_session` (`Path=/`, end-user scope) | yes |
+| Operator UI (TOTP-stepped admin scope) | admin | `http://localhost:9443/ui/dashboard` | protoui template at `/ui/login` | `herold_admin_session` (`Path=/ui/`, `[admin]` scope) | yes |
+
+Which one to point an operator vs an end user at:
+
+- **Operators** use `/ui/dashboard` on the admin listener whenever
+  the admin port is reachable; the public-listener `/ui/` mount
+  exists for environments where the admin port is not available
+  (e.g. when SSH-tunnelling is impractical) but the issued cookie
+  carries end-user scope only and admin-gated REST endpoints will
+  refuse it.
+- **End users** open `http://localhost:8080/` in a browser. The
+  tabard SPA redirects to `/login?return=%2F%23%2Fmail`. After
+  signing in, herold issues a `herold_public_session` cookie with
+  `Path=/` and redirects back to `/#/mail`. The SPA's JMAP
+  handshake completes successfully using the cookie.
+
+Cross-listener cookies are mechanically isolated: a
+`herold_public_session` cookie issued by the public listener is
+ignored by the admin listener (different cookie name;
+`herold_admin_session` on the admin side), and vice versa
+(REQ-OPS-ADMIN-LISTENER-03). To hold both you sign in twice,
+once per listener.
+
+When upgrading from a pre-wave-3.7 deployment, existing browser
+cookies scoped to `Path=/ui/` remain in the browser jar until they
+expire or the user clears them. The browser will send both the old
+and new cookies; the server validates only the cookie it issued and
+ignores the other. Clear browser cookies for the herold origin once
+after the upgrade to avoid stale-cookie confusion.
+
 ## system.toml reference
 
 The complete TOML schema is defined in
@@ -116,10 +157,10 @@ HTTP listeners (`protocol = "admin"`) carry a `kind` field that
 partitions the suite's HTTP surface into two roles:
 
 - **`kind = "public"`** -- internet-facing. Serves the SPA mount
-  point (Wave 3.7), JMAP, chat WebSocket, the HTTP send API, the call
+  point, JMAP, chat WebSocket, the HTTP send API, the call
   credential mint, the image proxy, public webhook ingress, and the
-  public `/login` flow that issues end-user-scoped cookies. Default
-  bind `0.0.0.0:443`.
+  public `/login` flow that issues end-user-scoped cookies with
+  `Path=/`. Default bind `0.0.0.0:443`.
 - **`kind = "admin"`** -- operator-only. Serves the protoadmin REST
   surface, the admin UI, `/metrics`, and the admin `/login` flow that
   issues admin-scoped cookies after a TOTP step-up

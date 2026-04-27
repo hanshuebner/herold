@@ -132,6 +132,20 @@ var (
 	errSessionExpired = errors.New("protoui: session cookie expired")
 )
 
+// sessionCookiePath returns the Path attribute for the session cookie.
+// The public-listener cookie must be scoped to "/" so it accompanies
+// requests to /.well-known/jmap, /jmap, /chat/ws, /api/v1/mail/send,
+// etc. The admin-listener cookie stays scoped to the UI prefix so it
+// never leaks to non-UI paths on a shared admin listener.
+// The CSRF cookie always stays at the UI prefix because CSRF gating
+// only applies to template-rendered form POSTs under /ui/.
+func (s *Server) sessionCookiePath() string {
+	if s.listenerKind == "public" {
+		return "/"
+	}
+	return s.pathPrefix + "/"
+}
+
 // setSessionCookie writes both the session cookie and the matching
 // CSRF cookie to w. The CSRF cookie is intentionally NOT HttpOnly so
 // the future client-side fetch helpers (the small Alpine bits we ship)
@@ -158,7 +172,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, sess session) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     s.cfg.CookieName,
 		Value:    encoded,
-		Path:     s.pathPrefix + "/",
+		Path:     s.sessionCookiePath(),
 		MaxAge:   maxAge,
 		Secure:   s.cfg.SecureCookies,
 		HttpOnly: true,
@@ -177,19 +191,30 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, sess session) {
 
 // clearSessionCookie writes Set-Cookie headers that expire immediately,
 // so a logged-out browser drops both the session and CSRF cookies.
+// The session cookie path must match the path used at issuance
+// (sessionCookiePath) or the browser won't clear the right cookie.
+// The CSRF cookie always lives at the UI-prefix path.
 func (s *Server) clearSessionCookie(w http.ResponseWriter) {
-	for _, name := range []string{s.cfg.CookieName, s.cfg.CSRFCookieName} {
-		http.SetCookie(w, &http.Cookie{
-			Name:     name,
-			Value:    "",
-			Path:     s.pathPrefix + "/",
-			Expires:  time.Unix(0, 0),
-			MaxAge:   -1,
-			Secure:   s.cfg.SecureCookies,
-			HttpOnly: name == s.cfg.CookieName,
-			SameSite: http.SameSiteStrictMode,
-		})
-	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     s.cfg.CookieName,
+		Value:    "",
+		Path:     s.sessionCookiePath(),
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		Secure:   s.cfg.SecureCookies,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     s.cfg.CSRFCookieName,
+		Value:    "",
+		Path:     s.pathPrefix + "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		Secure:   s.cfg.SecureCookies,
+		HttpOnly: false,
+		SameSite: http.SameSiteStrictMode,
+	})
 }
 
 // ResolveSession returns the principal id authenticated by the suite

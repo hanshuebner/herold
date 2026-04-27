@@ -26,8 +26,14 @@ func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, s.pathPrefix+"/dashboard", http.StatusSeeOther)
 		return
 	}
+	// Accept both ?redirect= (canonical) and ?return= (tabard's form)
+	// with redirect taking precedence when both are present.
+	redirectTarget := r.URL.Query().Get("redirect")
+	if redirectTarget == "" {
+		redirectTarget = r.URL.Query().Get("return")
+	}
 	body := loginPageData{
-		Redirect: r.URL.Query().Get("redirect"),
+		Redirect: redirectTarget,
 	}
 	if s.rp != nil {
 		providers, _ := s.store.Meta().ListOIDCProviders(r.Context())
@@ -52,7 +58,12 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	email := strings.TrimSpace(r.PostForm.Get("email"))
 	password := r.PostForm.Get("password")
 	totpCode := strings.TrimSpace(r.PostForm.Get("totp"))
+	// Accept both redirect= (canonical) and return= (tabard's param)
+	// with redirect taking precedence when both are present.
 	redirect := r.PostForm.Get("redirect")
+	if redirect == "" {
+		redirect = r.PostForm.Get("return")
+	}
 
 	body := loginPageData{Email: email, Redirect: redirect}
 
@@ -119,7 +130,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	s.setSessionCookie(w, sess)
 
 	target := s.pathPrefix + "/dashboard"
-	if redirect != "" && safeRedirect(redirect, s.pathPrefix) {
+	if redirect != "" && safeRedirect(redirect, s.pathPrefix, s.listenerKind) {
 		target = redirect
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
@@ -142,10 +153,24 @@ func (s *Server) scopeForLogin(p store.Principal) auth.ScopeSet {
 	return auth.NewScopeSet(auth.AllEndUserScopes...)
 }
 
-// safeRedirect rejects redirects that escape the UI or aim at a
-// different host. The check is intentionally conservative: any URL
-// that does not begin with the configured PathPrefix is rejected.
-func safeRedirect(target, prefix string) bool {
+// safeRedirect reports whether target is a safe post-login redirect
+// destination for the given listenerKind.
+//
+// For both kinds: absolute URLs, URLs with a Host component, and
+// protocol-relative URLs starting with "//" are always rejected.
+//
+// For "admin": the target must begin with the UI prefix (e.g. "/ui/")
+// or exactly equal it. This prevents a login on the admin listener
+// from bouncing the browser outside the admin UI surface.
+//
+// For "public": the target may be "/", any hash-route starting with
+// "/#", or any path beginning with the UI prefix. Other paths are
+// rejected to prevent open-redirect abuse while still covering the
+// full set of in-app destinations tabard can supply via ?return=.
+func safeRedirect(target, prefix, listenerKind string) bool {
+	if strings.HasPrefix(target, "//") {
+		return false
+	}
 	u, err := url.Parse(target)
 	if err != nil {
 		return false
@@ -153,6 +178,16 @@ func safeRedirect(target, prefix string) bool {
 	if u.IsAbs() || u.Host != "" {
 		return false
 	}
+	if listenerKind == "public" {
+		// Allow root, SPA hash routes, and /ui/... paths on the
+		// public listener. Reject all other server-side paths so
+		// an attacker can't embed an arbitrary /foo redirect.
+		return u.Path == "/" ||
+			u.Path == "" ||
+			strings.HasPrefix(u.Path, prefix+"/") ||
+			u.Path == prefix
+	}
+	// Admin listener: must stay within the UI prefix.
 	return strings.HasPrefix(u.Path, prefix+"/") || u.Path == prefix
 }
 

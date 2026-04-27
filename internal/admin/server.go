@@ -1507,9 +1507,10 @@ func composeAdminAndUI(
 			slog.String("err", err.Error()))
 		uiSrvAdmin = nil
 	}
-	// Public-listener UI server (TODO(3.7): the SPA login page lands
-	// then; for now the public /login is the same template flow and
-	// issues end-user-scoped cookies).
+	// Public-listener UI server. Issues end-user-scoped cookies with
+	// Path=/ so the suite session accompanies all public-listener
+	// endpoints (JMAP, chat, send API). Cookie-based JMAP auth is
+	// wired below via jmapSessionResolver (Wave 3.7-A).
 	uiSrvPublic, err := newProtoUIServer(cfg, st, dir, oidcRP, clk, logger, "public")
 	if err != nil {
 		logger.LogAttrs(ctx, slog.LevelError, "protoui: public server failed",
@@ -1702,8 +1703,17 @@ func composeAdminAndUI(
 	}
 
 	// JMAP Core (RFC 8620) + Mail / Identity / EmailSubmission
-	// (RFC 8621). Public-listener-only.
-	jmapSrv := protojmap.NewServer(st, dir, tlsStore, logger.With("subsystem", "jmap"), clk, protojmap.Options{})
+	// (RFC 8621). Public-listener-only. Cookie-based auth is wired
+	// here via the public-listener protoui session resolver so a
+	// browser logged in via /login can call JMAP without a separate
+	// Bearer credential (Wave 3.7-A, REQ-AUTH-SCOPE-01).
+	var jmapSessionResolver protojmap.SessionResolver
+	if uiSrvPublic != nil {
+		jmapSessionResolver = uiSrvPublic.ResolveSessionWithScope
+	}
+	jmapSrv := protojmap.NewServer(st, dir, tlsStore, logger.With("subsystem", "jmap"), clk, protojmap.Options{
+		SessionResolver: jmapSessionResolver,
+	})
 	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk),
 		logger.With("subsystem", "jmap-emailsubmission"), clk)
 	// JMAP PushSubscription (REQ-PROTO-120..122). The VAPID key

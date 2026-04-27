@@ -93,20 +93,42 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 // when the session was Bearer-authenticated, the matching API key
 // (nil for Basic-authenticated sessions).  Returns false on any
 // failure (no information leak through differentiated reasons).
+//
+// When no Authorization header is present and a SessionResolver is
+// configured, cookie-based authentication is attempted (suite-session
+// cookie from the public-listener login flow). Bearer / Basic always
+// take precedence over the cookie when both are present.
 func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, *store.APIKey, bool) {
 	h := r.Header.Get("Authorization")
-	if h == "" {
-		return store.Principal{}, nil, false
+	if h != "" {
+		switch {
+		case strings.HasPrefix(h, "Bearer "):
+			return s.authenticateBearer(ctx, strings.TrimSpace(h[len("Bearer "):]))
+		case strings.HasPrefix(h, "Basic "):
+			p, ok := s.authenticateBasic(ctx, strings.TrimSpace(h[len("Basic "):]))
+			return p, nil, ok
+		default:
+			return store.Principal{}, nil, false
+		}
 	}
-	switch {
-	case strings.HasPrefix(h, "Bearer "):
-		return s.authenticateBearer(ctx, strings.TrimSpace(h[len("Bearer "):]))
-	case strings.HasPrefix(h, "Basic "):
-		p, ok := s.authenticateBasic(ctx, strings.TrimSpace(h[len("Basic "):]))
-		return p, nil, ok
-	default:
-		return store.Principal{}, nil, false
+	// No Authorization header: try the suite-session cookie if the
+	// server is configured with a resolver (public listener only).
+	if s.sessionResolver != nil {
+		pid, _, ok := s.sessionResolver(r)
+		if ok {
+			p, err := s.store.Meta().GetPrincipalByID(ctx, pid)
+			if err != nil {
+				s.log.Warn("protojmap.auth.cookie_principal_lookup_failed",
+					"err", err, "principal_id", pid)
+				return store.Principal{}, nil, false
+			}
+			if p.Flags.Has(store.PrincipalFlagDisabled) {
+				return store.Principal{}, nil, false
+			}
+			return p, nil, true
+		}
 	}
+	return store.Principal{}, nil, false
 }
 
 func (s *Server) authenticateBearer(ctx context.Context, token string) (store.Principal, *store.APIKey, bool) {

@@ -191,10 +191,54 @@ Each line should come back with a `2xx` status. The HTTP send API
 internet and is not the right path for loopback testing — it would
 queue an SMTP-out attempt and fail to resolve `example.local`.
 
-### 9. Connect an IMAP client (or the web client)
+### 9. Connect a client
 
-Apple Mail, Thunderbird, mutt, and any IMAP4rev1 / rev2 client work.
-Point yours at:
+Herold exposes three independent client surfaces on the loopback
+quickstart. They live at distinct URLs and have distinct sign-in
+flows; pick the one you want to use rather than expecting one URL
+to land you on the right screen.
+
+| Surface | URL | Sign-in flow | Working today? |
+|---------|-----|--------------|----------------|
+| Tabard web suite (mail, calendar, contacts, chat) | `http://localhost:8080/` | the SPA's own login form (against `/.well-known/jmap`) | yes |
+| Herold operator UI (domains, principals, queue, audit) | `http://localhost:8080/ui/dashboard` (public listener) or `http://localhost:9443/ui/dashboard` (admin listener) | the protoui sign-in form at `/ui/login`, then `/ui/dashboard` | yes |
+| IMAP / SMTP submission (Apple Mail, Thunderbird, mutt, ...) | `imap://localhost:1143`, `imaps://localhost:1993`, `smtp+starttls://localhost:1587` | direct AUTH against the listener with email + password | yes |
+
+The credentials are the same across all three surfaces: the email
+and password from step 6 (`admin@example.local` /
+`change-me-now` if you copied the README literally).
+
+#### Operator UI (`/ui/`)
+
+The fully working web surface. Visit
+`http://localhost:8080/ui/dashboard`; you will be redirected to
+`/ui/login`, sign in with the bootstrap credentials, and land back
+on the dashboard. The public-listener session cookie
+(`herold_public_session`) is scoped to `Path=/` and accompanies
+JMAP, chat, and send-API requests made by the browser.
+
+The admin listener at `localhost:9443` mounts the same UI but
+issues a separate cookie scoped to the admin listener
+(`herold_admin_session`, `Path=/ui/`) so cookie reuse across the
+two listeners is mechanically impossible
+(REQ-OPS-ADMIN-LISTENER-03). On the quickstart loopback shape both
+ports speak plain HTTP; in production the admin listener is
+loopback-only or fronted by ssh tunnel (see `docs/user/operate.md`).
+
+#### Tabard web suite (`/`)
+
+Open `http://localhost:8080/` in a browser. The tabard SPA loads
+and immediately tries to fetch `/.well-known/jmap`. With no session
+cookie present it redirects the browser to
+`/login?return=%2F%23%2Fmail`.
+
+Sign in at the login form with the bootstrap credentials. Herold
+redirects back to `/#/mail` and the SPA's JMAP handshake succeeds
+using the `herold_public_session` cookie now in the browser's jar.
+The cookie is scoped to `Path=/` so it accompanies all subsequent
+JMAP, chat, and send-API calls from the SPA.
+
+#### IMAP / SMTP desktop client
 
 - Server: `localhost`
 - IMAP+STARTTLS port: `1143`  (or IMAPS port `1993` for implicit TLS)
@@ -219,12 +263,6 @@ clients (Apple Mail) do not always Happy-Eyeballs back to IPv4. The
 quickstart `system.toml` therefore binds every listener as
 `localhost:PORT`, which expands at startup into one socket on
 `127.0.0.1` and one on `[::1]`; either name works in the client.
-
-The public HTTP listener (default `localhost:8080` per the quickstart
-config) serves the tabard consumer SPA at `/` alongside the JMAP,
-send, chat, and image-proxy endpoints. Open
-`http://localhost:8080/` in a browser and log in with the same
-`admin@example.local` credentials to use the web client.
 
 ### 10. (Optional) Outbound through a smart host
 

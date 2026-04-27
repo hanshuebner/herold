@@ -425,11 +425,28 @@ herold principal create user1@example.com --password 'change-me-now'
 
 ### Connect a client
 
-With a domain and a principal in place, point an IMAP client at the
-configured listener. For the quickstart shape (loopback ports
-1143 / 1993 / 8080), see the README. For production, the standard
-ports are 143 (IMAP+STARTTLS), 993 (IMAPS), 587 (submission), 465
-(submission+implicit TLS), 8080 (admin REST + JMAP).
+With a domain and a principal in place, three client surfaces are
+available; route end users and operators to different URLs:
+
+- **Tabard consumer SPA**: `http(s)://<public host>/`. Loads the
+  assets installed via `scripts/install-tabard.sh` (or baked in by
+  `scripts/embed-tabard.sh`). The SPA redirects to `/login`, the
+  user signs in with their email and password, and herold issues a
+  `herold_public_session` cookie with `Path=/`. The SPA's JMAP
+  handshake then completes and the mailbox loads. See
+  [./operate.md](./operate.md) "The web URLs herold exposes" for
+  details.
+- **Operator UI** (protoui): `http(s)://<public host>/ui/dashboard`
+  on the public listener (end-user scope) or
+  `http(s)://<admin host>/ui/dashboard` on the admin listener
+  (`[admin]` scope after TOTP step-up). This is the working
+  browser surface today.
+- **IMAP / SMTP / JMAP**: standard ports 143 (IMAP+STARTTLS), 993
+  (IMAPS), 587 (submission STARTTLS), 465 (submission implicit
+  TLS), and 8080 (admin REST + JMAP) -- or the loopback quickstart
+  ports 1143 / 1993 / 1587 / 1025 / 8080. See the README quickstart
+  for the desktop-client walkthrough and
+  [./operate.md](./operate.md) for the production listener layout.
 
 ## Where to next
 
