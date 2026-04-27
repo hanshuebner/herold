@@ -403,10 +403,32 @@ func (w *Worker) signalFlush(seq uint64) {
 // after the call. Tests use it to synchronise deterministically with the
 // worker's single goroutine; it returns ctx.Err() if the context is
 // cancelled first. Not part of the store.FTS surface.
+//
+// Race note: WaitForFlush captures the current flush broadcast at call
+// time, so a flush that races ahead of the call (worker scheduled
+// between the test's trigger and this call) is missed. For race-correct
+// usage, capture CurrentFlushSignal() BEFORE the trigger and select on
+// that channel directly. This entry point is retained for backward
+// compatibility and the simple "WaitForFlush BEFORE trigger" pattern
+// where the worker has not yet been awakened.
 func (w *Worker) WaitForFlush(ctx context.Context) error {
+	return waitForSignal(ctx, w.CurrentFlushSignal())
+}
+
+// CurrentFlushSignal returns the channel that will be closed by the
+// next signalFlush. Capture this BEFORE the action that should trigger
+// the flush (e.g. clock.Advance, a new change-feed insert) and then
+// receive from it; this guarantees the channel observed by the caller
+// is the same one the worker will close on its next commit, closing
+// the race window WaitForFlush has when the worker outpaces the
+// caller.
+func (w *Worker) CurrentFlushSignal() <-chan struct{} {
 	w.flushMu.Lock()
-	ch := w.flushBroadcast
-	w.flushMu.Unlock()
+	defer w.flushMu.Unlock()
+	return w.flushBroadcast
+}
+
+func waitForSignal(ctx context.Context, ch <-chan struct{}) error {
 	select {
 	case <-ch:
 		return nil

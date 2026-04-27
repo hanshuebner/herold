@@ -119,16 +119,21 @@ func TestWorker_HardDelete_RemovesFromFTSIndex(t *testing.T) {
 	}
 
 	// Drive the worker through its first flush so all 3 CREATE rows
-	// land in the index. flushOnce mirrors the storefts test helper:
-	// advance the FakeClock past the flush interval to wake the
-	// worker's clock.After-bound poll loop, then wait for a commit.
+	// land in the index. Capture the flush signal BEFORE advancing the
+	// clock so a fast worker (under heavy parallel CPU load) cannot
+	// flush between the Advance and the channel capture and leave the
+	// caller waiting on a fresh post-flush channel that nothing will
+	// close.
 	flushOnce := func() {
 		t.Helper()
+		flushSig := w.CurrentFlushSignal()
 		clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
 		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
-		if err := w.WaitForFlush(waitCtx); err != nil {
-			t.Fatalf("WaitForFlush: %v", err)
+		select {
+		case <-flushSig:
+		case <-waitCtx.Done():
+			t.Fatalf("WaitForFlush: %v", waitCtx.Err())
 		}
 	}
 	flushOnce()

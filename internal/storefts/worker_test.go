@@ -141,14 +141,20 @@ func (h *workerHarness) insertMessage(t *testing.T, mb store.Mailbox, subject, b
 
 // flushOnce advances the fake clock past the flush interval and waits for
 // the worker to commit. The worker's poll loop sleeps on `clock.After`
-// when there are no pending changes; Advance unblocks it.
+// when there are no pending changes; Advance unblocks it. Capture the
+// flush signal BEFORE advancing the clock so a fast worker (under heavy
+// parallel CPU load) cannot flush between Advance and the wait and leave
+// the caller blocked on a fresh post-flush channel.
 func (h *workerHarness) flushOnce(t *testing.T) {
 	t.Helper()
+	flushSig := h.worker.CurrentFlushSignal()
 	h.clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
 	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := h.worker.WaitForFlush(waitCtx); err != nil {
-		t.Fatalf("wait for flush: %v", err)
+	select {
+	case <-flushSig:
+	case <-waitCtx.Done():
+		t.Fatalf("wait for flush: %v", waitCtx.Err())
 	}
 }
 
@@ -297,13 +303,16 @@ func TestWorker_CursorPersistsAcrossRestart(t *testing.T) {
 	ctx1, cancel1 := context.WithCancel(ctx)
 	done1 := make(chan error, 1)
 	go func() { done1 <- w1.Run(ctx1) }()
+	flushSig := w1.CurrentFlushSignal()
 	clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	if err := w1.WaitForFlush(waitCtx); err != nil {
+	select {
+	case <-flushSig:
+	case <-waitCtx.Done():
 		waitCancel()
 		cancel1()
 		<-done1
-		t.Fatalf("wait flush 1: %v", err)
+		t.Fatalf("wait flush 1: %v", waitCtx.Err())
 	}
 	waitCancel()
 	firstCursor := w1.Cursor()

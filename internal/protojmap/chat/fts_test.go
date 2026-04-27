@@ -121,14 +121,20 @@ func (stringExtractor) Extract(ctx context.Context, _ store.Message, body io.Rea
 }
 
 // flushFTS drives the worker through one flush cycle so freshly
-// inserted chat messages become searchable.
+// inserted chat messages become searchable. Capture the flush signal
+// BEFORE advancing the clock to close the race window where a fast
+// worker (under heavy parallel CPU load) can flush between the Advance
+// and the wait.
 func (f *ftsFixture) flushFTS(t *testing.T) {
 	t.Helper()
+	flushSig := f.worker.CurrentFlushSignal()
 	f.clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
 	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := f.worker.WaitForFlush(waitCtx); err != nil {
-		t.Fatalf("wait for flush: %v", err)
+	select {
+	case <-flushSig:
+	case <-waitCtx.Done():
+		t.Fatalf("wait for flush: %v", waitCtx.Err())
 	}
 }
 
