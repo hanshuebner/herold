@@ -37,9 +37,11 @@ German for "herald." 6 letters. GitHub-checked against German/Nordic candidates 
 
 Permissive, widely understood in the Go ecosystem. Copyleft dropped earlier; BSD-3-Clause was working decision; finalized to MIT.
 
-### R35. Web UI framework → HTMX + Go templates + Alpine.js / vanilla JS *(prior Q2)*
+### R35. Web UI framework → Svelte 5 SPA *(prior Q2; superseded 2026-04-27)*
 
-No SPA framework. Client-side validators in vanilla JS or Alpine. Autocompletion via HTMX's `hx-get` + server-rendered dropdowns. No build pipeline. Total JS load < 30 KB expected.
+Superseded by `docs/design/web/notes/adr-0001-merge-tabard-and-rewrite-admin-ui.md`. The HTMX implementation in `internal/protoui` is replaced wholesale by a Svelte 5 + Vite + pnpm SPA at `/admin/`, sharing the design system imported from the former tabard repo. This question is closed; the prior text below is preserved for historical context.
+
+> *Prior text:* No SPA framework. Client-side validators in vanilla JS or Alpine. Autocompletion via HTMX's `hx-get` + server-rendered dropdowns. No build pipeline. Total JS load < 30 KB expected.
 
 ### R36. Large-mailbox FTS rebuild budget → deferred to phase-2 perf tests *(prior Q4)*
 

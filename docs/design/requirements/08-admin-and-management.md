@@ -92,7 +92,7 @@ Phase 3. Design placeholders here so later work doesn't demand redesign.
   - Audit log viewer.
   - Stats dashboard (queued, accepted, rejected, rate of delivery).
 - **REQ-ADM-203** Self-service panel for users (separate URL `/settings`): change password, set up 2FA, app passwords, forwarding, Sieve vacation, identity management.
-- **REQ-ADM-204** UI framework TBD; prefer something small and long-lived (Svelte, SolidJS, or plain JS) over React-SPA default.
+- **REQ-ADM-204** UI framework: Svelte 5 + Vite + pnpm, sharing the design system imported from the former tabard repo (Bits UI + Carbon-inspired tokens + IBM Plex). See `docs/design/web/notes/adr-0001-merge-tabard-and-rewrite-admin-ui.md`. Built via the workspace under `web/`; embedded into the herold binary via `internal/webspa/` with a `-tags nofrontend` opt-out for backend-only builds.
 
 ## Audit log
 
