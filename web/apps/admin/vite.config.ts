@@ -3,7 +3,11 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+// HEROLD_API_BASE overrides the proxy target for /api/v1/* specifically.
+// Used by the Playwright e2e suite to point the proxy at a stub server.
+// Falls back to HEROLD_URL (the full herold backend URL) if not set.
 const heroldURL = process.env.HEROLD_URL ?? 'http://localhost:8080';
+const apiBase = process.env.HEROLD_API_BASE ?? heroldURL;
 
 // Read the admin package.json to surface the version at runtime.
 const pkg = JSON.parse(
@@ -20,23 +24,35 @@ const versionString = sha ? `${pkg.version} (${sha})` : pkg.version;
 //
 // Same-origin deployment is the production posture
 // (docs/design/web/00-scope.md). The dev proxy emulates that.
-const heroldPaths = [
-  '/api',
-  '/login',
-  '/logout',
-  '/oidc',
-];
-
-const proxy = Object.fromEntries(
-  heroldPaths.map((path) => [
-    path,
-    {
-      target: heroldURL,
-      changeOrigin: false,
-      ws: false,
-    },
-  ]),
-);
+// Proxy /api/v1/* to apiBase (stub server in tests, real backend in dev).
+// Other paths (/login, /logout, /oidc) proxy to the full herold backend.
+const proxy: Record<string, { target: string; changeOrigin: boolean; ws: boolean }> = {
+  '/api/v1': {
+    target: apiBase,
+    changeOrigin: false,
+    ws: false,
+  },
+  '/api': {
+    target: heroldURL,
+    changeOrigin: false,
+    ws: false,
+  },
+  '/login': {
+    target: heroldURL,
+    changeOrigin: false,
+    ws: false,
+  },
+  '/logout': {
+    target: heroldURL,
+    changeOrigin: false,
+    ws: false,
+  },
+  '/oidc': {
+    target: heroldURL,
+    changeOrigin: false,
+    ws: false,
+  },
+};
 
 export default defineConfig({
   plugins: [svelte()],

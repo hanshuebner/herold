@@ -43,6 +43,39 @@ Dev loop, web-only:
 pnpm -C web dev --filter @herold/suite   # or --filter @herold/admin
 ```
 
+## Admin SPA e2e tests
+
+The admin SPA has a Playwright e2e suite under
+`web/apps/admin/tests/e2e/`. It uses `page.route()` for browser-level
+request interception (no stub server needed; no Vite proxy restarts
+between tests).
+
+Run the full suite (chromium, the default CI lane):
+
+```bash
+pnpm --filter @herold/admin test:e2e
+```
+
+Install browsers if not present:
+
+```bash
+pnpm --filter @herold/admin test:e2e:install
+```
+
+Run a single spec file during development:
+
+```bash
+pnpm --filter @herold/admin exec playwright test tests/e2e/auth.spec.ts
+```
+
+Firefox and WebKit are on-demand only (they are not installed by
+`test:e2e:install`). To run them:
+
+```bash
+pnpm --filter @herold/admin exec playwright install firefox webkit
+pnpm --filter @herold/admin test:e2e:all
+```
+
 The suite Vite config (`web/apps/suite/vite.config.ts`) proxies the
 herold backend paths (`/api`, `/jmap`, `/.well-known/jmap`,
 `/chat/ws`, `/login`, `/oidc`, `/proxy`) at `http://localhost:5173`
