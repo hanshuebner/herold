@@ -28,18 +28,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/hanshuebner/herold/internal/store"
 )
-
-// qresyncRetention is the maximum lookback window for VANISHED (EARLIER)
-// emission while the persistent expunged_messages table is deferred. A
-// client whose checkpoint ModSeq predates now-qresyncRetention cannot be
-// served a precise VANISHED list; we hand them a UIDVALIDITY bump so they
-// resync from scratch.
-const qresyncRetention = 24 * time.Hour
 
 // qresyncSelectArgs is the parsed (uidvalidity modseq known-uids
 // seq-match-data) tuple the client passes after SELECT mbox (QRESYNC
@@ -72,7 +64,6 @@ func (ses *session) emitQresyncSelectResponses(ctx context.Context, mb store.Mai
 		// untagged UIDVALIDITY we already emitted is the signal.
 		return nil
 	}
-	now := ses.s.clk.Now()
 	if !validModSeq(args.clientModSeq) {
 		return nil
 	}
@@ -81,12 +72,10 @@ func (ses *session) emitQresyncSelectResponses(ctx context.Context, mb store.Mai
 	// without the persistent table, so we omit VANISHED EARLIER. The
 	// client sees no FETCH/VANISHED responses and falls back to a full
 	// resync because the EXISTS count and UIDNEXT in the SELECT body
-	// already shifted.
-	if mb.UpdatedAt.Before(now.Add(-qresyncRetention)) {
-		// Mailbox itself is older than the retention window — fine,
-		// most ModSeq history would be in retention anyway. Continue
-		// best-effort.
-	}
+	// already shifted. The mailbox's own UpdatedAt is informational
+	// here and intentionally not gated against the retention window:
+	// even an old mailbox may have recent ModSeq history within the
+	// window, so we proceed best-effort.
 	ses.selMu.Lock()
 	msgs := append([]store.Message(nil), ses.sel.msgs...)
 	ses.selMu.Unlock()
