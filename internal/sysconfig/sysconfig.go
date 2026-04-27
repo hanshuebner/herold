@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -1149,14 +1150,16 @@ func Validate(c *Config) error {
 			push.CoalesceWindowSeconds)
 	}
 	// Tabard SPA (REQ-DEPLOY-COLOC-01..05). The asset_dir override is
-	// validated at parse time so a missing or relative path fails the
-	// load rather than at first 404; the actual content (index.html
-	// presence) is re-checked by tabardspa.New at server boot for the
-	// embedded path too.
+	// validated at parse time so a missing path fails the load rather
+	// than at first 404; the actual content (index.html presence) is
+	// re-checked by tabardspa.New at server boot for the embedded path
+	// too. Relative paths are accepted and resolved against the current
+	// working directory at server start, matching the convention used
+	// by data_dir, cert_file, and the SQLite path -- the quickstart
+	// system.toml ships with asset_dir = "./data/tabard" and relies on
+	// scripts/install-tabard.sh having extracted the release tarball
+	// there.
 	if dir := c.Server.Tabard.AssetDir; dir != "" {
-		if !strings.HasPrefix(dir, "/") {
-			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q must be an absolute path", dir)
-		}
 		info, err := os.Stat(dir)
 		if err != nil {
 			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q: %v", dir, err)
@@ -1164,7 +1167,7 @@ func Validate(c *Config) error {
 		if !info.IsDir() {
 			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q is not a directory", dir)
 		}
-		if _, err := os.Stat(dir + "/index.html"); err != nil {
+		if _, err := os.Stat(filepath.Join(dir, "index.html")); err != nil {
 			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q missing index.html: %v", dir, err)
 		}
 	}

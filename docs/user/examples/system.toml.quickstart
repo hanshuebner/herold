@@ -130,13 +130,17 @@ kind = "admin"
 tls = "none"
 
 # Tabard SPA mount on the public listener (REQ-DEPLOY-COLOC-01..05).
-# The release build embeds the tabard assets into the binary and the
-# default mounts the SPA at `/` on the public listener above.
-# Uncomment the asset_dir override during tabard development to read
-# from a freshly-built dist directory instead of the embedded copy.
-# [server.tabard]
-# enabled = true
-# asset_dir = "/abs/path/to/tabard/apps/suite/dist"
+# The quickstart serves the consumer SPA from a pre-extracted tabard
+# release tarball under ./data/tabard so users can log in to a real
+# web client at http://localhost:8080/ without a tabard source build.
+# Run scripts/install-tabard.sh once before starting the server to
+# populate that directory; the validator refuses to start the server
+# if the directory does not exist or lacks index.html. Comment the
+# block out (or remove asset_dir) to fall back to the binary's
+# embedded placeholder index.
+[server.tabard]
+enabled = true
+asset_dir = "./data/tabard"
 
 # Observability. Logs go to stderr in JSON; metrics on the loopback
 # default. Do NOT publish a non-loopback metrics_bind without

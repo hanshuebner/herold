@@ -32,8 +32,13 @@ type Options struct {
 	// AssetDir, when non-empty, makes the server read every asset
 	// from disk rather than the embedded FS. The directory MUST
 	// contain index.html at the root; absence is a configuration
-	// error. Used in development to hot-reload tabard builds without
-	// rebuilding herold.
+	// error. Relative paths are accepted and resolved against the
+	// current working directory at construction time (the quickstart
+	// uses "./data/tabard"); the resolved absolute path is then used
+	// for every request, so changing cwd later does not relocate the
+	// asset root. Used in development to hot-reload tabard builds
+	// without rebuilding herold and by the operator install path
+	// (scripts/install-tabard.sh) for the README quickstart.
 	AssetDir string
 	// PublicHost is the externally-visible hostname (without scheme
 	// or port) used to populate the connect-src wss:// directive in
@@ -75,7 +80,9 @@ var reservedAPIPrefixes = []string{
 // When opts.AssetDir is non-empty New verifies the directory exists
 // and contains index.html; the constructor refuses to start the
 // server otherwise so the operator sees the misconfiguration at boot
-// rather than at the first 404.
+// rather than at the first 404. Relative AssetDir paths are resolved
+// to absolute via filepath.Abs at construction time so a later cwd
+// change does not relocate the asset root.
 //
 // When opts.AssetDir is empty New serves from the embedded dist FS
 // (the release-build artefact, or the placeholder index in a fresh
@@ -86,25 +93,26 @@ func New(opts Options) (*Server, error) {
 		logger = slog.Default()
 	}
 	s := &Server{
-		logger:   logger,
-		assetDir: opts.AssetDir,
+		logger: logger,
 	}
 	if opts.AssetDir != "" {
-		if !filepath.IsAbs(opts.AssetDir) {
-			return nil, fmt.Errorf("tabardspa: asset_dir %q must be absolute", opts.AssetDir)
-		}
-		info, err := os.Stat(opts.AssetDir)
+		dir, err := filepath.Abs(opts.AssetDir)
 		if err != nil {
-			return nil, fmt.Errorf("tabardspa: stat asset_dir %q: %w", opts.AssetDir, err)
+			return nil, fmt.Errorf("tabardspa: resolve asset_dir %q: %w", opts.AssetDir, err)
+		}
+		s.assetDir = dir
+		info, err := os.Stat(dir)
+		if err != nil {
+			return nil, fmt.Errorf("tabardspa: stat asset_dir %q: %w", dir, err)
 		}
 		if !info.IsDir() {
-			return nil, fmt.Errorf("tabardspa: asset_dir %q is not a directory", opts.AssetDir)
+			return nil, fmt.Errorf("tabardspa: asset_dir %q is not a directory", dir)
 		}
-		idx := filepath.Join(opts.AssetDir, "index.html")
+		idx := filepath.Join(dir, "index.html")
 		if _, err := os.Stat(idx); err != nil {
-			return nil, fmt.Errorf("tabardspa: asset_dir %q missing index.html: %w", opts.AssetDir, err)
+			return nil, fmt.Errorf("tabardspa: asset_dir %q missing index.html: %w", dir, err)
 		}
-		s.root = os.DirFS(opts.AssetDir)
+		s.root = os.DirFS(dir)
 	} else {
 		sub, err := fs.Sub(embeddedDist, "dist")
 		if err != nil {

@@ -81,41 +81,66 @@ in `.github/workflows/`.
 
 Herold embeds the tabard consumer SPA (HTML/JS/CSS) and serves it on
 the public HTTP listener at `/` (REQ-DEPLOY-COLOC-01..05). The default
-source build embeds a placeholder index.html that documents the embed
-step; release builds bake the matching tabard build into the binary
-via:
+source build embeds a placeholder index.html that documents the
+install step; release builds bake the matching tabard build into the
+binary.
 
-```bash
-TABARD_DIST=/path/to/tabard/apps/suite/dist make embed-tabard
-make build
-```
+There are three operator paths:
 
-Or directly:
+1. **Quickstart / try-it path** (recommended for the README
+   walkthrough). Run the helper script to download the latest tabard
+   release tarball into the data directory:
 
-```bash
-TABARD_DIST=/path/to/tabard/apps/suite/dist scripts/embed-tabard.sh
-go build -trimpath -buildvcs=true -o ./herold ./cmd/herold
-```
+   ```bash
+   scripts/install-tabard.sh                # extracts to ./data/tabard
+   scripts/install-tabard.sh /var/lib/herold # any DATADIR works
+   ```
 
-The default `TABARD_DIST` is `/Users/hans/tabard/apps/suite/dist` (the
-sibling-repo layout used during development); override the env var to
-point at any tabard build output.
+   The quickstart `system.toml` already sets
+   `[server.tabard].asset_dir = "./data/tabard"`, so no further
+   config changes are required. Re-run the script to pick up a
+   newer tabard release; it stages into `.tabard.new` and renames
+   atomically so a partial download cannot replace a working
+   install. Override `TABARD_URL` to install from a non-default
+   release or a `file://` tarball.
 
-For development hot-reload, leave the binary alone and point the
-running server at a freshly built tabard dist via system.toml:
+2. **Release-build path** (used by CI). Bake a pinned tabard build
+   into the herold binary at compile time:
 
-```toml
-[server.tabard]
-asset_dir = "/abs/path/to/tabard/dist"
-```
+   ```bash
+   TABARD_DIST=/path/to/tabard/apps/suite/dist make embed-tabard
+   make build
+   ```
 
-The override reads from disk on every request, so a `pnpm build` in
-the tabard tree appears at the next browser refresh without
-rebuilding herold. The path MUST be absolute and contain `index.html`
-at startup; otherwise the server refuses to start with a clear error.
+   Or directly:
 
-The pinned tabard SHA the current herold release expects lives in
-`deploy/tabard.version`; see `deploy/tabard.version.README`.
+   ```bash
+   TABARD_DIST=/path/to/tabard/apps/suite/dist scripts/embed-tabard.sh
+   go build -trimpath -buildvcs=true -o ./herold ./cmd/herold
+   ```
+
+   The default `TABARD_DIST` is `/Users/hans/tabard/apps/suite/dist`
+   (the sibling-repo layout used during development); override the
+   env var to point at any tabard build output. The pinned tabard
+   SHA the current herold release expects lives in
+   `deploy/tabard.version`; see `deploy/tabard.version.README`.
+
+3. **Development hot-reload path**. Leave the binary alone and point
+   the running server at a freshly built tabard dist via
+   `system.toml`:
+
+   ```toml
+   [server.tabard]
+   asset_dir = "/abs/path/to/tabard/dist"
+   ```
+
+   The override reads from disk on every request, so a `pnpm build`
+   in the tabard tree appears at the next browser refresh without
+   rebuilding herold. The path is resolved at server start
+   (relative paths are taken from the working directory, the same
+   convention as `data_dir` and `cert_file`); the directory MUST
+   contain `index.html` at startup or the server refuses to start
+   with a clear error.
 
 ### Where the binary expects things
 

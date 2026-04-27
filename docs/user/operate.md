@@ -344,9 +344,14 @@ serves them at `/` on the public listener (REQ-DEPLOY-COLOC-01..05).
   exists only to terminate JMAP / send / chat / image-proxy traffic.
 - `asset_dir`, when set, makes the server read SPA assets from disk
   on every request rather than from the embedded FS. Use this in
-  development to avoid rebuilding the binary on every tabard change.
-  The path MUST be absolute AND contain `index.html` at startup; the
-  validator refuses the config otherwise.
+  development to avoid rebuilding the binary on every tabard change,
+  or in the README quickstart together with
+  `scripts/install-tabard.sh`, which extracts the latest tabard
+  release tarball into the data directory. Relative paths are
+  resolved against the server's working directory at startup (same
+  convention as `data_dir` and `cert_file`); the directory MUST
+  contain `index.html` at startup or the validator refuses the
+  config.
 
 The handler emits a strict `Content-Security-Policy` (no operator
 override in v1; see REQ-DEPLOY-COLOC-04 for the directive set),

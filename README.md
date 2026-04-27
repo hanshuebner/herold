@@ -92,7 +92,30 @@ starting the server:
 This writes `data/admin.key` and `data/admin.crt`. These are suitable
 for the loopback quickstart only.
 
-### 4. Build and start the server
+### 4. Install the tabard web client
+
+The quickstart `system.toml` mounts the tabard consumer SPA on the
+public HTTP listener at `/` so you can log in via a web client in
+addition to (or instead of) connecting an IMAP client. The release
+tarball is published as a GitHub release asset; the helper script
+downloads and extracts it into `./data/tabard/`:
+
+```bash
+./scripts/install-tabard.sh
+```
+
+`./scripts/install-tabard.sh data` is the same thing made explicit;
+pass a different argument to extract somewhere else and adjust the
+`asset_dir` line in `system.toml` to match. Re-run the script any
+time you want to refresh to the latest tabard release; it wipes the
+target directory first so older assets do not bleed through.
+
+If you do not want the web client, comment out the `[server.tabard]`
+block in `system.toml` (or set `enabled = false`) before starting the
+server. The default block expects `./data/tabard/index.html` and the
+server refuses to start without it.
+
+### 5. Build and start the server
 
 Source build:
 
@@ -107,7 +130,7 @@ Or with Docker:
 docker compose -f docs/user/examples/docker-compose.yml up -d
 ```
 
-### 5. Bootstrap the first admin principal
+### 6. Bootstrap the first admin principal
 
 In a second terminal:
 
@@ -133,13 +156,13 @@ If the saved URL is wrong (you will see admin commands return
 of the admin one), edit `server_url` in `~/.herold/credentials.toml`
 to point at the `kind = "admin"` listener.
 
-### 6. Add the local domain
+### 7. Add the local domain
 
 ```bash
 ./herold domain add --system-config system.toml example.local
 ```
 
-### 7. Drop a test message into the inbox
+### 8. Drop a test message into the inbox
 
 Before connecting a client it helps to have something to read. The
 SMTP relay listener at `127.0.0.1:1025` accepts mail for local
@@ -168,7 +191,7 @@ Each line should come back with a `2xx` status. The HTTP send API
 internet and is not the right path for loopback testing — it would
 queue an SMTP-out attempt and fail to resolve `example.local`.
 
-### 8. Connect an IMAP client
+### 9. Connect an IMAP client (or the web client)
 
 Apple Mail, Thunderbird, mutt, and any IMAP4rev1 / rev2 client work.
 Point yours at:
@@ -180,7 +203,7 @@ Point yours at:
   client - that listener is the inbound relay and does not require
   AUTH.
 - Username: `admin@example.local`
-- Password: the one you set in step 5
+- Password: the one you set in step 6
 
 The cert generated in step 3 is self-signed. Apple Mail and
 Thunderbird will prompt to accept it the first time you connect;
@@ -198,10 +221,12 @@ quickstart `system.toml` therefore binds every listener as
 `127.0.0.1` and one on `[::1]`; either name works in the client.
 
 The public HTTP listener (default `localhost:8080` per the quickstart
-config) serves the tabard consumer SPA at `/` alongside the JMAP, send,
-chat, and image-proxy endpoints.
+config) serves the tabard consumer SPA at `/` alongside the JMAP,
+send, chat, and image-proxy endpoints. Open
+`http://localhost:8080/` in a browser and log in with the same
+`admin@example.local` credentials to use the web client.
 
-### 9. (Optional) Outbound through a smart host
+### 10. (Optional) Outbound through a smart host
 
 To deliver outbound mail through Gmail / SES / SendGrid rather than
 talk SMTP to the public internet, copy the smart-host example:

@@ -7,9 +7,16 @@
 </head>
 <body>
 <h1>Herold</h1>
-<p>Tabard SPA not yet built. Run scripts/embed-tabard.sh to copy the
-upstream tabard dist into this binary, or set
-<code>[server.tabard].asset_dir</code> at runtime to point at a
-locally-built dist directory.</p>
+<p>Tabard SPA not yet installed. Pick one:</p>
+<ul>
+<li>Run <code>scripts/install-tabard.sh</code> to download the latest
+tabard release tarball into <code>./data/tabard</code> and set
+<code>[server.tabard].asset_dir = "./data/tabard"</code> in
+system.toml (the quickstart template already does this).</li>
+<li>Run <code>scripts/embed-tabard.sh</code> against a tabard checkout
+to bake the assets into the binary at build time.</li>
+<li>Set <code>[server.tabard].asset_dir</code> to any directory
+holding a tabard <code>dist/</code> tree.</li>
+</ul>
 </body>
 </html>

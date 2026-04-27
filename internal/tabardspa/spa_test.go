@@ -270,9 +270,30 @@ func TestSpa_EmbeddedFS_Default(t *testing.T) {
 	}
 }
 
-func TestSpa_AssetDir_RejectsRelative(t *testing.T) {
-	if _, err := New(Options{AssetDir: "relative/path"}); err == nil {
-		t.Fatal("expected error for relative asset_dir")
+// TestSpa_AssetDir_AcceptsRelative documents the deliberate relaxation
+// of the absolute-path requirement: the quickstart system.toml ships
+// asset_dir = "./data/tabard" and scripts/install-tabard.sh extracts the
+// tabard release tarball there, so relative paths must round-trip.
+// Relative paths are resolved via filepath.Abs at construction time so
+// later cwd changes do not move the asset root.
+func TestSpa_AssetDir_AcceptsRelative(t *testing.T) {
+	abs := t.TempDir()
+	if err := os.WriteFile(filepath.Join(abs, "index.html"),
+		[]byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	parent := filepath.Dir(abs)
+	base := filepath.Base(abs)
+	if err := os.Chdir(parent); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if _, err := New(Options{AssetDir: base}); err != nil {
+		t.Fatalf("relative asset_dir should be accepted: %v", err)
 	}
 }
 
