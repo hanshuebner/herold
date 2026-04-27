@@ -11,6 +11,9 @@ const pkg = JSON.parse(
   readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8'),
 ) as { version: string };
 
+const sha = process.env.GITHUB_SHA?.slice(0, 7);
+const versionString = sha ? `${pkg.version} (${sha})` : pkg.version;
+
 // Proxy paths that must reach herold during development. The browser sees
 // tabard at localhost:5173; the proxy makes herold appear at the same
 // origin so cookies attach to JMAP / chat-WS / login requests.
@@ -52,7 +55,7 @@ proxy['/chat/ws'] = {
 export default defineConfig({
   plugins: [svelte()],
   define: {
-    __TABARD_VERSION__: JSON.stringify(pkg.version),
+    __TABARD_VERSION__: JSON.stringify(versionString),
   },
   server: {
     port: 5173,
