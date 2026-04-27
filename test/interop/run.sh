@@ -43,12 +43,14 @@ if [[ -n "${PYTEST_MARKER:-}" ]]; then
     echo "interop: pytest marker override: ${PYTEST_MARKER}"
 fi
 
-# Clean up previous compose state.  Docker Desktop on macOS sometimes leaves
-# the interop bridge in a stale state after compose down, causing
-# "Address already in use" when the next run tries to attach a container.
-# Recovery requires removing every container that was on the network, then
-# the network itself, then giving the daemon a few seconds to garbage-
-# collect the bridge interface.
+# Clean up previous compose state. Docker Desktop on macOS sometimes
+# leaves the interop bridge in a stale state after compose down, which
+# causes "Address already in use" when the next run tries to attach a
+# container. Recovery requires:
+#   1. compose down (volumes + orphans)
+#   2. forcibly removing any container still attached to the bridge
+#   3. removing the network itself
+#   4. waiting long enough for the daemon to release the bridge veth
 clean_compose_state() {
     docker compose down --remove-orphans --volumes 2>/dev/null || true
     docker ps -a --filter network=interop_interop -q 2>/dev/null \
@@ -59,22 +61,35 @@ clean_compose_state() {
 clean_compose_state
 sleep 5
 
-# Wrapper around `docker compose up -d <services>` that retries once on
-# the "Address already in use" failure mode.
-compose_up() {
-    local out
-    if out=$(docker compose up -d "$@" 2>&1); then
-        echo "${out}"
-        return 0
-    fi
-    echo "${out}"
-    if echo "${out}" | grep -q "Address already in use"; then
-        echo "interop: 'Address already in use' on first attempt; cleaning and retrying"
-        clean_compose_state
-        sleep 10
-        docker compose up -d "$@" 2>&1
-        return $?
-    fi
+# Bring services up one at a time. Docker Desktop on macOS has a
+# documented IPAM race where parallel container starts hit
+# "failed to set up container networking: Address already in use".
+# Sequential starts with a settling gap dodge it; on transient
+# failures we retry the SAME service without tearing the whole stack
+# down (the partial state is fine — compose will start whatever is
+# still in Created).
+MAX_SVC_RETRIES=6
+SVC_RETRY_GAP=4
+
+compose_up_one() {
+    local svc="$1"
+    local attempt out rc
+    for attempt in $(seq 1 "${MAX_SVC_RETRIES}"); do
+        out=$(docker compose up -d --no-recreate "${svc}" 2>&1)
+        rc=$?
+        echo "${out}" | tee -a "${LOGS_DIR}/compose.log"
+        # docker compose up returns 0 even when one container fails to
+        # start, so we have to inspect both rc and the output for the
+        # bridge race. A clean run has no error lines.
+        if [ "${rc}" -eq 0 ] && ! echo "${out}" | grep -q "failed to set up container networking"; then
+            return 0
+        fi
+        echo "interop: ${svc} hit bridge race on attempt ${attempt}; sleeping ${SVC_RETRY_GAP}s"
+        sleep "${SVC_RETRY_GAP}"
+    done
+    echo "interop: FATAL ${svc} failed to start after ${MAX_SVC_RETRIES} attempts"
+    docker compose ps "${svc}" 2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
+    docker compose logs --tail 40 "${svc}" 2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
     return 1
 }
 
@@ -82,34 +97,33 @@ compose_up() {
 docker compose build --quiet herold runner 2>&1 | tee "${LOGS_DIR}/build.log"
 docker compose pull --quiet coredns postfix 2>&1 | tee -a "${LOGS_DIR}/build.log" || true
 
-# Start core services (no runner profile yet).
-# Phase 1: start infrastructure + certgen.
-compose_up coredns certgen \
-    2>&1 | tee "${LOGS_DIR}/compose.log" || true
+# Phase 1: DNS first. Everything else needs it.
+compose_up_one coredns
 
-# Wait for certgen to complete (it's an init container; exits 0 when done).
+# Phase 2: certgen (one-shot, exits 0). The MTAs gate on its successful
+# exit via `condition: service_completed_successfully` so we have to
+# wait for it explicitly before we expect any of them to actually start.
+compose_up_one certgen
 echo "interop: waiting for certgen to complete"
 docker compose wait certgen 2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
 
-# Phase 2: start MTAs sequentially.  Bringing them up in parallel hits a
-# Docker Desktop IPAM race on macOS that surfaces as
-# "failed to set up container networking: Address already in use" on a
-# subset of services.  A 2-second gap between starts is enough to dodge it.
+# Phase 3: long-running services. Sequential to dodge the IPAM race.
+# herold first so the wait_port checks below have something to talk to;
+# postfix/james are slow to bring up (postfix's docker-mailserver image
+# does its own setup before opening port 25, James's JVM start is
+# multi-second).
 for svc in herold postfix james mutt-client snail-client; do
-    compose_up "${svc}" 2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
+    compose_up_one "${svc}" || true
     sleep 2
 done
 
-# Wait for herold's health check (up to 120s via retries=24 * interval=5s).
+# Phase 4: wait for herold's health check (max ~120s, retries=24 * 5s).
 echo "interop: waiting for herold health check"
-compose_up --wait herold \
+docker compose up -d --wait herold \
     2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
 
-# Phase 3: run setup services (user/domain creation).
-compose_up james-setup \
-    2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
-
-# Wait for setup services to complete.
+# Phase 5: james-setup (one-shot user/domain creation).
+compose_up_one james-setup
 echo "interop: waiting for setup services to complete"
 docker compose wait james-setup 2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
 
@@ -131,6 +145,14 @@ wait_port() {
         sleep 2
     done
     echo "interop: WARNING ${label} did not start listening on ${target_host}:${target_port} within $((max_attempts * 2))s"
+    # Dump a snapshot of the container's recent logs and ps state so
+    # whoever reads the run.log can see why the service refused to come
+    # up — ports unbound usually mean a config error or a startup
+    # crash, both of which are visible in the container's stderr.
+    docker compose ps "${label}" 2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
+    docker compose logs --tail 80 "${label}" 2>&1 \
+        | tee -a "${LOGS_DIR}/${label}-startup.log" \
+        | sed -n '1,40p' || true
     return 1
 }
 wait_port postfix 25 "postfix" 180 || true
