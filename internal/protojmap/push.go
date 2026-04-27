@@ -104,11 +104,10 @@ func (s *Server) runEventSource(
 
 	var cursor store.ChangeSeq
 	pendingChanged := false
-	flushTimer := s.clk.After(s.opts.PushCoalesceWindow)
-	// Reset flushTimer to a never-firing channel until we have a
-	// pending change. Using a nil channel makes select skip it; a
-	// real timer is created on the first matched change.
-	flushTimer = nil
+	// flushTimer starts as a nil channel so select skips it; a real
+	// timer is created on the first matched change via s.clk.After
+	// with PushCoalesceWindow.
+	var flushTimer <-chan time.Time
 
 	pollTimer := s.clk.After(pollInterval)
 	pingTimer := s.clk.After(ping)
