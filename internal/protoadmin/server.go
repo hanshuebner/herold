@@ -16,6 +16,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/observe"
+	"github.com/hanshuebner/herold/internal/protoui"
 	"github.com/hanshuebner/herold/internal/store"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
@@ -187,6 +188,15 @@ type Options struct {
 	// ServerVersion is returned by /api/v1/server/status. Defaults to
 	// "dev" when empty.
 	ServerVersion string
+	// Session configures cookie-based authentication for the admin REST
+	// surface (REQ-AUTH-SESSION-REST). When Session.SigningKey is non-nil
+	// and at least 32 bytes long, authenticate() falls back to reading
+	// the named session cookie if no Authorization: Bearer header is
+	// present. Mutating requests authenticated via cookie also require an
+	// X-CSRF-Token header that matches the CSRF cookie value
+	// (REQ-AUTH-CSRF). Nil / unset signing key disables cookie auth so
+	// existing deployments that wire only Bearer keys are unaffected.
+	Session protoui.SessionConfig
 }
 
 // Server is the protoadmin REST handle. One *Server serves any number

@@ -456,6 +456,11 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// are applied inside NewServer; we pass only subsystem-level fields.
 	// health was constructed before the ACME block above so the ACME gate
 	// and protoadmin share the same instance (REQ-OPS-111).
+	//
+	// The Session config threads the same cookie name + signing key that
+	// the protoui admin server uses into protoadmin so the JSON login
+	// endpoint at POST /api/v1/auth/login issues a cookie that requireAuth
+	// can subsequently verify (REQ-AUTH-SESSION-REST, REQ-AUTH-CSRF).
 	adminServer := protoadmin.NewServer(
 		st,
 		dir,
@@ -465,6 +470,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		protoadmin.Options{
 			ServerVersion: "0.1.0",
 			Health:        health,
+			Session:       adminSessionCookieConfig(cfg),
 		},
 	)
 	// Parent mux composition (Phase 2 Wave 2.4): the admin HTTP
@@ -1967,6 +1973,44 @@ func newProtoUIServer(
 			SecureCookies:  secure,
 		},
 	})
+}
+
+// adminSessionCookieConfig extracts the admin-listener cookie parameters
+// from sysconfig and returns a protoui.SessionConfig suitable for passing
+// to protoadmin.Options.Session. The returned config uses the same signing
+// key and cookie names that newProtoUIServer uses for the "admin" kind so
+// cookies minted by the protoui HTML /login flow and by protoadmin's JSON
+// /api/v1/auth/login endpoint are mutually verifiable (REQ-AUTH-SESSION-REST).
+func adminSessionCookieConfig(cfg *sysconfig.Config) protoui.SessionConfig {
+	signingKey := []byte{}
+	if env := cfg.Server.UI.SigningKeyEnv; env != "" {
+		if v := os.Getenv(env); v != "" {
+			signingKey = []byte(v)
+		}
+	}
+	secure := true
+	if cfg.Server.UI.SecureCookies != nil {
+		secure = *cfg.Server.UI.SecureCookies
+	}
+	cookieName := cfg.Server.UI.CookieName
+	csrfName := cfg.Server.UI.CSRFCookieName
+	if cookieName == "" || cookieName == "herold_ui_session" {
+		cookieName = "herold_admin_session"
+	} else {
+		cookieName = cookieName + "_admin"
+	}
+	if csrfName == "" || csrfName == "herold_ui_csrf" {
+		csrfName = "herold_admin_csrf"
+	} else {
+		csrfName = csrfName + "_admin"
+	}
+	return protoui.SessionConfig{
+		SigningKey:     signingKey,
+		CookieName:     cookieName,
+		CSRFCookieName: csrfName,
+		TTL:            cfg.Server.UI.SessionTTL.AsDuration(),
+		SecureCookies:  secure,
+	}
 }
 
 // syntheticDispatcherAdapter adapts *protowebhook.Dispatcher to the

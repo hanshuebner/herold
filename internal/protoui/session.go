@@ -43,7 +43,7 @@ type SessionConfig struct {
 	SecureCookies bool
 }
 
-// session is the decoded form of a session cookie. The wire form is
+// Session is the decoded form of a session cookie. The wire form is
 // `<principalID>.<expiresAtUnix>.<csrfToken>.<base64url(scopeJSON)>.<base64url(hmacSig)>`.
 // Five dot-separated fields; the signature covers the first four so a
 // forged cookie can't tamper with scope. Constant-time comparison on
@@ -53,18 +53,115 @@ type SessionConfig struct {
 // the handler-side auth.RequireScope check can run without a DB
 // round-trip; rotating the signing key invalidates all outstanding
 // cookies (operators tolerate re-login on restart -- see SessionConfig).
-type session struct {
+//
+// Session is exported so protoadmin's JSON login endpoint can mint
+// sessions without duplicating the encoding logic (REQ-AUTH-SESSION-REST).
+type Session struct {
 	PrincipalID store.PrincipalID
 	ExpiresAt   time.Time
 	// CSRFToken is the server-issued CSRF token associated with this
 	// session. Returned to the user via the CSRFCookieName cookie and
 	// also embedded in HTML forms; the double-submit middleware
-	// requires the two match.
+	// requires the two match. For the SPA (REQ-AUTH-CSRF) it is also
+	// returned via the non-HttpOnly herold_admin_csrf cookie so JS
+	// can read it and attach it as X-CSRF-Token on mutating requests.
 	CSRFToken string
 	// Scopes is the closed-enum scope set granted to the holder
 	// (REQ-AUTH-SCOPE-01). The set is fixed at issuance time;
 	// changing scope means logging out and back in.
 	Scopes auth.ScopeSet
+}
+
+// session is the internal alias kept for backwards compatibility within
+// the protoui package. All internal code continues using 'session'; the
+// exported Session type is for cross-package consumers.
+type session = Session
+
+// EncodeSession produces the wire form for a session. Exported so
+// cross-package consumers (protoadmin's JSON login) can issue cookies
+// without re-implementing the encoding (REQ-AUTH-SESSION-REST).
+func EncodeSession(s Session, key []byte) string {
+	return encodeSession(s, key)
+}
+
+// DecodeSession parses and verifies a session cookie value. It returns
+// errSessionInvalid for any malformed or unsigned cookie and
+// errSessionExpired when the signature checks out but the deadline has
+// passed. Exported for cross-package cookie verification
+// (REQ-AUTH-SESSION-REST).
+func DecodeSession(raw string, key []byte, now time.Time) (Session, error) {
+	return decodeSession(raw, key, now)
+}
+
+// NewCSRFToken returns a 24-byte random URL-safe token for use in the
+// double-submit CSRF pattern. Exported so protoadmin's JSON login
+// endpoint can mint a matching CSRF token without duplicating the
+// random-generation logic.
+func NewCSRFToken() string {
+	return newCSRFToken()
+}
+
+// WriteSessionCookie writes both the session cookie and the matching
+// CSRF cookie to w using the supplied SessionConfig. The CSRF cookie
+// is intentionally NOT HttpOnly so the SPA's JS can read it and attach
+// it as X-CSRF-Token on mutating requests (REQ-AUTH-CSRF).
+//
+// This is the standalone (config-driven) form of the session-cookie
+// writer shared by protoui.Server.setSessionCookie and protoadmin's
+// JSON login endpoint (REQ-AUTH-SESSION-REST). The session cookie Path
+// is "/" so the same cookie accompanies /api/v1/*, /admin/*, and /ui/*
+// on the same listener.
+func WriteSessionCookie(w http.ResponseWriter, cfg SessionConfig, sess Session) {
+	encoded := encodeSession(sess, cfg.SigningKey)
+	maxAge := int(cfg.TTL.Seconds())
+	if maxAge <= 0 {
+		maxAge = 1
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     cfg.CookieName,
+		Value:    encoded,
+		Path:     "/",
+		MaxAge:   maxAge,
+		Secure:   cfg.SecureCookies,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     cfg.CSRFCookieName,
+		Value:    sess.CSRFToken,
+		Path:     "/",
+		MaxAge:   maxAge,
+		Secure:   cfg.SecureCookies,
+		HttpOnly: false,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// ClearSessionCookies writes Set-Cookie headers that expire both the
+// session cookie and the CSRF cookie immediately. The cookie path MUST
+// match the path used at issuance (WriteSessionCookie uses "/") so the
+// browser drops the right cookies.
+func ClearSessionCookies(w http.ResponseWriter, cfg SessionConfig) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     cfg.CookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		Secure:   cfg.SecureCookies,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     cfg.CSRFCookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		Secure:   cfg.SecureCookies,
+		HttpOnly: false,
+		SameSite: http.SameSiteStrictMode,
+	})
 }
 
 // encodeSession produces the wire form for a session.
@@ -133,88 +230,36 @@ var (
 )
 
 // sessionCookiePath returns the Path attribute for the session cookie.
-// The public-listener cookie must be scoped to "/" so it accompanies
-// requests to /.well-known/jmap, /jmap, /chat/ws, /api/v1/mail/send,
-// etc. The admin-listener cookie stays scoped to the UI prefix so it
-// never leaks to non-UI paths on a shared admin listener.
-// The CSRF cookie always stays at the UI prefix because CSRF gating
-// only applies to template-rendered form POSTs under /ui/.
+// Both public and admin listener cookies use Path="/" so the same
+// browser session covers /api/v1/*, /admin/*, and /ui/* mounts on the
+// same listener. The cookie name difference (herold_admin_session vs
+// herold_public_session) prevents cross-listener reuse at the parser
+// level (REQ-OPS-ADMIN-LISTENER-03). The CSRF cookie also uses Path="/"
+// so the SPA at /admin/* can read it and present it as X-CSRF-Token on
+// mutating requests (REQ-AUTH-CSRF; see WriteSessionCookie).
 func (s *Server) sessionCookiePath() string {
-	if s.listenerKind == "public" {
-		return "/"
-	}
-	return s.pathPrefix + "/"
+	return "/"
 }
 
-// setSessionCookie writes both the session cookie and the matching
-// CSRF cookie to w. The CSRF cookie is intentionally NOT HttpOnly so
-// the future client-side fetch helpers (the small Alpine bits we ship)
-// can read it; the session cookie IS HttpOnly so JS cannot exfiltrate
-// it.
+// setSessionCookie writes both the session cookie and the matching CSRF
+// cookie to w by delegating to WriteSessionCookie. See WriteSessionCookie
+// for the cookie attribute contract (Path="/", HttpOnly on session,
+// non-HttpOnly on CSRF so the SPA can read it per REQ-AUTH-CSRF).
 //
-// MaxAge is computed against the injected clock — using time.Until
-// here would mix the real wall clock with the FakeClock-driven
-// session deadlines and produce negative MaxAge values in tests,
-// causing the test cookie jar to drop the cookie immediately.
+// MaxAge is derived from the configured TTL, not time.Until(sess.ExpiresAt),
+// to avoid mixing the FakeClock-derived deadline with the real-clock
+// cookie jar in tests (which would silently drop cookies with negative
+// MaxAge). Server-side validation still uses the signed ExpiresAt.
 func (s *Server) setSessionCookie(w http.ResponseWriter, sess session) {
-	encoded := encodeSession(sess, s.cfg.SigningKey)
-	// Compute MaxAge from the session's TTL knob, not from the
-	// injected clock's view of ExpiresAt. The cookie jar enforces
-	// expiry against the real wall clock; mixing the FakeClock-
-	// derived deadline with the real-clock jar caused tests to
-	// silently drop the cookie when the FakeClock anchor differed
-	// from the real wall time. Server-side session validation still
-	// uses the signed ExpiresAt for its source of truth.
-	maxAge := int(s.cfg.TTL.Seconds())
-	if maxAge <= 0 {
-		maxAge = 1
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     s.cfg.CookieName,
-		Value:    encoded,
-		Path:     s.sessionCookiePath(),
-		MaxAge:   maxAge,
-		Secure:   s.cfg.SecureCookies,
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name:     s.cfg.CSRFCookieName,
-		Value:    sess.CSRFToken,
-		Path:     s.pathPrefix + "/",
-		MaxAge:   maxAge,
-		Secure:   s.cfg.SecureCookies,
-		HttpOnly: false,
-		SameSite: http.SameSiteStrictMode,
-	})
+	WriteSessionCookie(w, s.cfg, sess)
 }
 
-// clearSessionCookie writes Set-Cookie headers that expire immediately,
-// so a logged-out browser drops both the session and CSRF cookies.
-// The session cookie path must match the path used at issuance
-// (sessionCookiePath) or the browser won't clear the right cookie.
-// The CSRF cookie always lives at the UI-prefix path.
+// clearSessionCookie writes Set-Cookie headers that expire both the
+// session and CSRF cookies immediately by delegating to
+// ClearSessionCookies. Path must match the issuance path ("/") so the
+// browser removes the correct cookies.
 func (s *Server) clearSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     s.cfg.CookieName,
-		Value:    "",
-		Path:     s.sessionCookiePath(),
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-		Secure:   s.cfg.SecureCookies,
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name:     s.cfg.CSRFCookieName,
-		Value:    "",
-		Path:     s.pathPrefix + "/",
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-		Secure:   s.cfg.SecureCookies,
-		HttpOnly: false,
-		SameSite: http.SameSiteStrictMode,
-	})
+	ClearSessionCookies(w, s.cfg)
 }
 
 // ResolveSession returns the principal id authenticated by the suite

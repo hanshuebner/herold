@@ -121,6 +121,20 @@ Stalwart has a fine-grained permission matrix with ~80 permissions and role inhe
 - **REQ-AUTH-SCOPE-03** Admin scope step-up: when a principal has 2FA enabled (REQ-AUTH-40), the admin listener `/login` flow MUST require a TOTP code in addition to password before issuing a cookie carrying `admin` scope. Principals without 2FA enabled MAY receive admin scope on password alone (operator's call -- discouraged for any deployment exposing the admin listener publicly; see REQ-OPS-ADMIN-LISTENER-01..03 for the network-layer mitigation).
 - **REQ-AUTH-SCOPE-04** API key scope is set at creation time and immutable (rotate to change). The `herold apikey create` command (REQ-ADM-03) takes `--scope` as a comma-separated list of allowed values; default is `[mail.send]` (the most common transactional-app shape per REQ-SEND-30). Admin scope on an API key requires `--allow-admin-scope` to acknowledge the operator-side risk; cookies are the recommended path for human admin access.
 
+## REST session and CSRF (phase 2 additions)
+
+*(Added 2026-04-27: JSON login/logout endpoints and cookie-based auth for the admin REST surface, enabling the Svelte admin SPA at /admin/. See docs/design/server/notes/phase-2-protoui-protoadmin-coverage-audit-2026-04-27.md.)*
+
+- **REQ-AUTH-SESSION-REST**: `internal/protoadmin` MUST accept both `Authorization: Bearer hk_...` API keys and the admin listener session cookie (`herold_admin_session` by default) as valid credentials for `/api/v1/...` endpoints. The session cookie is verified against the same HMAC-SHA256 signing key used by the `protoui` admin login flow so cookies minted by the HTML `/login` and by `POST /api/v1/auth/login` are mutually valid. When the signing key is not configured (zero or fewer than 32 bytes), cookie auth is disabled and the endpoint accepts only Bearer keys (backward-compatible with Phase 1 deployments).
+
+- **REQ-AUTH-CSRF**: All mutating `/api/v1/...` requests authenticated by session cookie MUST present an `X-CSRF-Token` header whose value matches the `herold_admin_csrf` cookie value verified by `crypto/subtle.ConstantTimeCompare`. Bearer-authenticated requests are exempt (no ambient credential). GET/HEAD/OPTIONS (RFC 7231 safe methods) are exempt. On mismatch the endpoint returns 403 with an RFC 7807 `application/problem+json` body with type `csrf_mismatch`.
+
+- **REQ-AUTH-JSON-LOGIN**: `POST /api/v1/auth/login` accepts `{email, password, totp_code?}` (unauthenticated, rate-limited per source IP). On success it issues `herold_admin_session` (HttpOnly, Secure, SameSite=Strict, Path=/) and `herold_admin_csrf` (non-HttpOnly, Secure, SameSite=Strict, Path=/) cookies and returns `{principal_id, email, scopes:[...]}`. On bad credentials it returns 401. On a TOTP-enabled principal with missing or wrong `totp_code` it returns 401 with `{step_up_required: true}` in the problem detail extension fields.
+
+- **REQ-AUTH-JSON-LOGOUT**: `POST /api/v1/auth/logout` (authenticated by cookie or Bearer) clears both cookies by issuing `MaxAge=-1` Set-Cookie headers and returns 204 No Content. Bearer-authenticated callers receive the cookie-clear headers harmlessly (their session was not cookie-based).
+
+- **REQ-AUTH-COOKIE-PATH**: Session cookies on both the admin and public listeners use `Path=/` so the same browser session accompanies `/api/v1/...`, `/admin/...`, and `/ui/...` requests on the same listener. Cross-listener isolation is enforced by the distinct cookie name (`herold_admin_session` vs `herold_public_session`), not by path scoping. CSRF cookies also use `Path=/`.
+
 ## Out of scope
 
 - Fine-grained permissions beyond the three roles.

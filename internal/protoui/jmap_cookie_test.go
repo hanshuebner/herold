@@ -349,13 +349,20 @@ func TestJMAP_LoginWithReturnParam(t *testing.T) {
 }
 
 // TestJMAP_AdminCookieDoesNotAuthJMAP verifies the negative case:
-// a cookie issued on the admin listener (Path=/ui/) is not sent to
-// /.well-known/jmap by the cookie jar, so the JMAP endpoint returns
-// 401 for an admin cookie with no Bearer credential.
+// a cookie issued on the admin listener does NOT authenticate JMAP,
+// even though the cookie now has Path=/ and IS sent to /.well-known/jmap.
 //
-// Note: this test uses a two-server setup on the same test process but
-// with the admin-listener harness to simulate the isolation. The admin
-// cookie's Path=/ui/ means cookiejar won't attach it to /.well-known/jmap.
+// Isolation is no longer path-based (that was the Phase 1 model). It
+// is now name-based (REQ-AUTH-SESSION-REST): the admin listener issues
+// herold_admin_session; the JMAP session resolver only looks for
+// herold_public_session. The distinct cookie names make cross-listener
+// reuse mechanically impossible at the resolver level
+// (REQ-OPS-ADMIN-LISTENER-03 + REQ-AUTH-SCOPE-01).
+//
+// The harness uses listenerKind="admin", so the protojmap SessionResolver
+// is nil (wired only for "public" in newJMAPCookieHarness). The
+// herold_admin_session cookie arrives at /.well-known/jmap but the
+// JMAP server cannot decode it without the resolver, so 401 is returned.
 func TestJMAP_AdminCookieDoesNotAuthJMAP(t *testing.T) {
 	t.Parallel()
 
@@ -363,11 +370,11 @@ func TestJMAP_AdminCookieDoesNotAuthJMAP(t *testing.T) {
 	h := newJMAPCookieHarness(t, "admin")
 	_ = h.createPrincipal("admin@example.test", "hunter2hunter2hunter2")
 
-	// Log in on the admin listener -> cookie has Path=/ui/.
+	// Log in on the admin listener -> cookie has Path=/ (REQ-AUTH-SESSION-REST).
 	h.login("admin@example.test", "hunter2hunter2hunter2")
 
-	// Verify cookie was issued (visible at /ui/).
-	u, _ := url.Parse(h.httpSrv.URL + "/ui/")
+	// Verify cookie was issued and is now visible at / (Path widened).
+	u, _ := url.Parse(h.httpSrv.URL + "/")
 	jar := h.cookieJar.Cookies(u)
 	var adminCookie *http.Cookie
 	for _, c := range jar {
@@ -377,11 +384,12 @@ func TestJMAP_AdminCookieDoesNotAuthJMAP(t *testing.T) {
 		}
 	}
 	if adminCookie == nil {
-		t.Fatalf("admin cookie not issued; jar=%+v", jar)
+		t.Fatalf("admin cookie not issued; jar at /=%+v", jar)
 	}
 
-	// GET /.well-known/jmap: the jar should NOT attach the admin cookie
-	// (Path=/ui/ does not match /.well-known/jmap).
+	// GET /.well-known/jmap: the jar attaches the admin cookie (Path=/),
+	// but the JMAP server has no session resolver for the admin cookie
+	// name, so it returns 401 (no valid credential).
 	req, _ := http.NewRequest("GET", h.httpSrv.URL+"/.well-known/jmap", nil)
 	res, err := h.client.Do(req)
 	if err != nil {
@@ -389,7 +397,7 @@ func TestJMAP_AdminCookieDoesNotAuthJMAP(t *testing.T) {
 	}
 	res.Body.Close()
 	if res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status=%d, want 401 (admin cookie must not reach JMAP)", res.StatusCode)
+		t.Fatalf("status=%d, want 401 (admin cookie name not recognized by JMAP resolver)", res.StatusCode)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/observe"
+	"github.com/hanshuebner/herold/internal/protoui"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -30,26 +31,38 @@ func HashAPIKey(plaintext string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// requireAuth is middleware that enforces Bearer-token authentication.
-// On success it attaches the authenticated principal to the request
-// context; on failure it writes a 401 problem and returns.
+// requireAuth is middleware that enforces authentication for all
+// /api/v1/... routes. It accepts two credential forms:
 //
-// Phase 1 admin auth is API-key only. Session tokens are Phase 2 work;
-// the parser below rejects tokens missing the "hk_" prefix with a
-// structured error, which also protects against forgetting to add the
-// Phase 2 code path later (a missing-prefix bearer is definitely not
-// a valid Phase 1 key). See REQ-ADM-03.
+//  1. Authorization: Bearer hk_... — protoadmin API key. The Bearer
+//     form is exempt from CSRF checks because it carries no ambient
+//     browser credential (REQ-AUTH-CSRF).
+//  2. Session cookie (herold_admin_session by default) — issued by the
+//     protoui /login flow or POST /api/v1/auth/login. Enabled only
+//     when Options.Session.SigningKey is set (REQ-AUTH-SESSION-REST).
+//     Mutating requests (POST/PUT/PATCH/DELETE) authenticated this way
+//     MUST also present an X-CSRF-Token header whose value matches the
+//     herold_admin_csrf cookie (constant-time compare, REQ-AUTH-CSRF).
+//     Safe methods (GET/HEAD/OPTIONS) are exempt from CSRF.
 //
-// TODO(phase2): accept session-cookie tokens here once protoadmin
-// ships the UI. Ticket ref: docs/design/server/implementation/02-phasing.md §Phase 2.
+// On success the auth.AuthContext is attached to the request context.
+// On failure a 401 problem is written and the chain aborts.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		principal, scope, ok := s.authenticate(ctx, r)
+		principal, scope, viaCookie, ok := s.authenticateWithMode(ctx, r)
 		if !ok {
 			writeProblem(w, r, http.StatusUnauthorized,
 				"unauthorized", "authentication required", "")
 			return
+		}
+		// CSRF gate: cookie-authenticated mutating requests must carry
+		// X-CSRF-Token matching the CSRF cookie (REQ-AUTH-CSRF).
+		// Bearer-authenticated requests are exempt (no ambient credential).
+		if viaCookie && isMutatingMethod(r.Method) {
+			if !s.validateCSRF(w, r) {
+				return
+			}
 		}
 		if !s.checkRateLimit(w, r, authCacheKey(r, principal)) {
 			return
@@ -57,7 +70,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		ctx = context.WithValue(ctx, ctxKeyPrincipal, principal)
 		ctx = context.WithValue(ctx, ctxKeyRemoteAddr, r.RemoteAddr)
 		// Attach the closed-enum scope set so downstream handlers'
-		// auth.RequireScope checks see what the API key granted
+		// auth.RequireScope checks see what the credential granted
 		// (REQ-AUTH-SCOPE-02). Listener label is "admin" because
 		// protoadmin REST is mounted on the admin listener
 		// (REQ-OPS-ADMIN-LISTENER-01); the public-listener handler
@@ -71,18 +84,85 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// authenticate inspects the Authorization header and returns the
-// associated principal if the Bearer token is a valid API key. The
-// returned scope set is parsed from the API key row's ScopeJSON column
-// and is empty for legacy rows that predate the migration backfill
-// (in practice the migration's UPDATE backfills every row with
-// '["admin"]', so this branch only fires for fresh test fixtures).
-func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, bool) {
-	h := r.Header.Get("Authorization")
-	if h == "" {
-		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, nil, false
+// isMutatingMethod reports whether the HTTP method has side effects and
+// therefore requires CSRF protection when the request is cookie-authenticated.
+// GET/HEAD/OPTIONS are safe per RFC 7231 §4.2.1.
+func isMutatingMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	default:
+		return true
 	}
+}
+
+// validateCSRF compares the X-CSRF-Token request header against the
+// CSRF cookie value using constant-time comparison (REQ-AUTH-CSRF).
+// On mismatch it writes a 403 RFC 7807 problem and returns false.
+func (s *Server) validateCSRF(w http.ResponseWriter, r *http.Request) bool {
+	csrfHeader := r.Header.Get("X-CSRF-Token")
+	if csrfHeader == "" {
+		writeProblem(w, r, http.StatusForbidden,
+			"csrf_required",
+			"X-CSRF-Token header required for cookie-authenticated mutating requests",
+			"")
+		return false
+	}
+	csrfCookieName := s.opts.Session.CSRFCookieName
+	if csrfCookieName == "" {
+		csrfCookieName = "herold_admin_csrf"
+	}
+	c, err := r.Cookie(csrfCookieName)
+	if err != nil || c.Value == "" {
+		writeProblem(w, r, http.StatusForbidden,
+			"csrf_required",
+			"CSRF cookie missing; re-authenticate to obtain a new CSRF token",
+			"")
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(c.Value), []byte(csrfHeader)) != 1 {
+		writeProblem(w, r, http.StatusForbidden,
+			"csrf_mismatch",
+			"X-CSRF-Token does not match CSRF cookie",
+			"")
+		return false
+	}
+	return true
+}
+
+// authenticateWithMode inspects the request and returns the principal
+// plus a bool indicating whether authentication succeeded via session
+// cookie (true) or Bearer API key (false). The viaCookie flag drives
+// the CSRF gate in requireAuth.
+//
+// Priority: Bearer hk_... > session cookie. This matches the protojmap
+// pattern (Bearer / Basic win over cookie when both are present).
+// Bearer-authenticated requests are NOT subject to CSRF (no ambient
+// credential, REQ-AUTH-CSRF).
+//
+// Cookie-based auth is enabled only when Options.Session.SigningKey is
+// set and at least 32 bytes long (REQ-AUTH-SESSION-REST). When the key
+// is absent all cookie-bearing requests fall through to 401.
+func (s *Server) authenticateWithMode(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, bool, bool) {
+	h := r.Header.Get("Authorization")
+	if h != "" {
+		p, scope, ok := s.authenticateBearer(ctx, h)
+		return p, scope, false, ok
+	}
+	// No Authorization header: try the admin session cookie if the
+	// server was configured with a signing key (REQ-AUTH-SESSION-REST).
+	if len(s.opts.Session.SigningKey) >= 32 {
+		p, scope, ok := s.authenticateCookie(ctx, r)
+		return p, scope, ok, ok
+	}
+	observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
+	return store.Principal{}, nil, false, false
+}
+
+// authenticateBearer validates an Authorization header value that starts
+// with "Bearer ". Only hk_... tokens are accepted; anything else is an
+// immediate fail so a wrong-prefix bearer is a definitive rejection.
+func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Principal, auth.ScopeSet, bool) {
 	const bearer = "Bearer "
 	if !strings.HasPrefix(h, bearer) {
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
@@ -125,6 +205,57 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Princ
 	_ = s.store.Meta().TouchAPIKey(ctx, key.ID, s.clk.Now())
 	observe.AuthAttemptsTotal.WithLabelValues("apikey", "ok").Inc()
 	return p, parseAPIKeyScope(key.ScopeJSON), true
+}
+
+// authenticateCookie validates the admin session cookie on r. It uses
+// the signing key from Options.Session to verify the HMAC-signed cookie
+// value and then looks up the principal in the store. The scope set is
+// decoded from the cookie envelope (REQ-AUTH-SCOPE-01). Disabled
+// principals are rejected.
+func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, bool) {
+	cookieName := s.opts.Session.CookieName
+	if cookieName == "" {
+		cookieName = "herold_admin_session"
+	}
+	c, err := r.Cookie(cookieName)
+	if err != nil || c.Value == "" {
+		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
+		return store.Principal{}, nil, false
+	}
+	sess, err := protoui.DecodeSession(c.Value, s.opts.Session.SigningKey, s.clk.Now())
+	if err != nil {
+		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
+		return store.Principal{}, nil, false
+	}
+	p, err := s.store.Meta().GetPrincipalByID(ctx, sess.PrincipalID)
+	if err != nil {
+		s.loggerFrom(ctx).Warn("protoadmin.auth.cookie_principal_lookup_failed",
+			"err", err, "principal_id", sess.PrincipalID)
+		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
+		return store.Principal{}, nil, false
+	}
+	if p.Flags.Has(store.PrincipalFlagDisabled) {
+		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
+		return store.Principal{}, nil, false
+	}
+	scopes := sess.Scopes
+	if len(scopes) == 0 {
+		// Sessions minted before scope was embedded in the cookie carry
+		// no scope field; treat as the principal's full admin scope set
+		// (backward-compat with cookies issued by the HTML /login before
+		// this change landed -- REQ-AUTH-SESSION-REST).
+		scopes = auth.NewScopeSet(auth.ScopeAdmin)
+	}
+	observe.AuthAttemptsTotal.WithLabelValues("session", "ok").Inc()
+	return p, scopes, true
+}
+
+// authenticate is kept for any internal callers that don't need the
+// viaCookie discriminator. It calls authenticateWithMode and discards
+// the flag. New code should call authenticateWithMode directly.
+func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, bool) {
+	p, scope, _, ok := s.authenticateWithMode(ctx, r)
+	return p, scope, ok
 }
 
 // parseAPIKeyScope decodes the JSON-encoded scope list stored on an

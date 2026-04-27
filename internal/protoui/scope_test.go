@@ -134,11 +134,23 @@ func TestScope_AdminLogin_IssuesAdminScope(t *testing.T) {
 	if sess == nil {
 		t.Fatalf("admin session cookie not issued; jar=%+v", jar)
 	}
-	// Admin cookie must NOT be visible at the root because Path=/ui/.
+	// Admin cookie MUST be visible at the root (Path="/") so it
+	// accompanies /api/v1/* and /admin/* requests on the same listener
+	// (REQ-AUTH-SESSION-REST). Cross-listener isolation is enforced by
+	// the distinct cookie name (herold_admin_session vs
+	// herold_public_session), not by Path scoping.
+	var sessFromRoot *http.Cookie
 	for _, c := range jarRoot {
 		if c.Name == "herold_admin_session" {
-			t.Errorf("admin session cookie (Path=/ui/) incorrectly visible at /: %+v", c)
+			sessFromRoot = c
 		}
+	}
+	if sessFromRoot == nil {
+		t.Fatalf("admin session cookie (Path=/) not visible at /; jar=%+v", jarRoot)
+	}
+	// Confirm the cookie carries admin scope and not end-user scope.
+	if strings.Contains(sess.Value, "end-user") {
+		t.Errorf("admin session cookie carries end-user scope; value=%s", sess.Value)
 	}
 }
 
