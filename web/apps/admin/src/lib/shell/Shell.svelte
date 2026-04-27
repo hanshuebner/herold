@@ -6,14 +6,15 @@
     label: string;
     path: string;
     segment: string;
+    soon?: boolean;
   }
 
   const navItems: NavItem[] = [
     { label: 'Dashboard', path: '/dashboard', segment: 'dashboard' },
     { label: 'Principals', path: '/principals', segment: 'principals' },
-    { label: 'Domains', path: '/domains', segment: 'domains' },
-    { label: 'Queue', path: '/queue', segment: 'queue' },
-    { label: 'Audit', path: '/audit', segment: 'audit' },
+    { label: 'Domains', path: '/domains', segment: 'domains', soon: true },
+    { label: 'Queue', path: '/queue', segment: 'queue', soon: true },
+    { label: 'Audit', path: '/audit', segment: 'audit', soon: true },
   ];
 
   interface Props {
@@ -46,10 +47,17 @@
           <li class:active={router.matches(item.segment)}>
             <button
               type="button"
-              onclick={() => router.navigate(item.path)}
+              onclick={() => {
+                if (!item.soon) router.navigate(item.path);
+              }}
               aria-current={router.matches(item.segment) ? 'page' : undefined}
+              class:nav-soon={item.soon}
+              title={item.soon ? 'Coming soon' : undefined}
             >
               {item.label}
+              {#if item.soon}
+                <span class="soon-badge" aria-hidden="true">soon</span>
+              {/if}
             </button>
           </li>
         {/each}
@@ -102,6 +110,9 @@
     color: var(--text-secondary);
     padding: var(--spacing-02) var(--spacing-03);
     border-radius: var(--radius-md);
+    background: none;
+    border: none;
+    cursor: pointer;
     transition: background var(--duration-fast-02) var(--easing-productive-enter),
       color var(--duration-fast-02) var(--easing-productive-enter);
     min-height: var(--touch-min);
@@ -148,8 +159,14 @@
     min-height: var(--touch-min);
     transition: background var(--duration-fast-02) var(--easing-productive-enter),
       color var(--duration-fast-02) var(--easing-productive-enter);
+    background: none;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
-  .nav-list li button:hover {
+  .nav-list li button:hover:not(.nav-soon) {
     background: var(--layer-02);
     color: var(--text-primary);
   }
@@ -157,6 +174,24 @@
     background: var(--layer-02);
     color: var(--text-primary);
     font-weight: 600;
+  }
+  .nav-soon {
+    opacity: 0.5;
+    cursor: default !important;
+  }
+  .soon-badge {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-helper);
+    background: var(--layer-02);
+    border-radius: var(--radius-pill);
+    padding: 1px 6px;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    display: none;
+  }
+  .nav-list li button.nav-soon:hover .soon-badge {
+    display: inline-block;
   }
 
   /* ---- Main content ---- */

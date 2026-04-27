@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@herold/design-system": "workspace:*",
-    "bits-ui": "^2.18.0"
+    "bits-ui": "^2.18.0",
+    "qrcode-svg": "^1.1.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
