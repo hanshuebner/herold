@@ -141,7 +141,7 @@ tls = "none"
 # the freshly built dist via the asset_dir override below. Comment
 # the block out (or remove asset_dir) to fall back to the binary's
 # embedded assets.
-[server.tabard]
+[server.suite]
 enabled = true
 asset_dir = "./web/apps/suite/dist"
 

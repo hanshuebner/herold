@@ -89,9 +89,9 @@ The Suite source lives in-tree under `web/` (Svelte 5 + Vite + pnpm
 workspace). The build pipeline that produces the embedded `dist`
 output and the operator paths for replacing it at runtime are
 documented in the build & operate guide; the historical
-`install-tabard.sh` / `embed-tabard.sh` scripts and the
-`[server.tabard]` config block were retired when the Suite source was
-folded into this repo. See
+`install-tabard.sh` / `embed-tabard.sh` scripts were retired and the
+config block was renamed from `[server.tabard]` to `[server.suite]`
+when the Suite source was folded into this repo. See
 `docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md` for
 the migration record.
 
@@ -111,7 +111,7 @@ For now, three operator paths exist:
    the running server at a freshly built Suite dist via `system.toml`:
 
    ```toml
-   [server.tabard]
+   [server.suite]
    asset_dir = "/abs/path/to/web/apps/suite/dist"
    ```
 

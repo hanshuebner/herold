@@ -37,7 +37,7 @@ principals). Driven by the suite's `requirements/23-shortcut-coach.md`.
 **2026-04-26** (rev 6): email reactions extension added (REQ-PROTO-100..103,
 REQ-FLOW-100..108, phase 2). Same-server reactions stored as the
 `Email.reactions` extension property; cross-server reactions propagate as
-outbound emails with `X-Tabard-Reaction-*` headers + readable body
+outbound emails with `X-Herold-Reaction-*` headers + readable body
 fallback. Inbound pipeline detects the headers and applies as native
 reactions when the referenced original is in the recipient's mailbox;
 falls through to normal delivery otherwise. Driven by the suite's emoji-react

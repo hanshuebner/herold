@@ -31,7 +31,7 @@ Phase 2 — runs after the JMAP-suite work for calendars/contacts is in flight. 
 
 New JMAP entity kinds, registered with the capability registry per `architecture/03-protocol-architecture.md` § Capability and account registration. Storage tables additive over the existing schema; per the entity-kind-agnostic state-change feed (`architecture/05-sync-and-state.md`) the change rows for these types flow through the dispatch path without core edits.
 
-- **REQ-CHAT-01** MUST advertise `https://tabard.dev/jmap/chat` as a JMAP capability when chat is enabled. Per-account capability when the account has chat access.
+- **REQ-CHAT-01** MUST advertise `https://herold.dev/jmap/chat` as a JMAP capability when chat is enabled. Per-account capability when the account has chat access.
 - **REQ-CHAT-02** MUST implement `Conversation` JMAP datatype. Properties: `id`, `type` (`dm` | `space`), `name`, `description?`, `members: [Membership]`, `createdAt`, `lastMessageAt?`, `lastMessagePreview?`, `pinned`, `muted`, `unreadCount`. Methods: `Conversation/get`, `/query`, `/changes`, `/set`.
 - **REQ-CHAT-03** MUST implement `Message` JMAP datatype. Properties: `id`, `conversationId`, `senderId`, `type` (`text` | `image` | `system`), `body: { html, text }`, `inlineImages: [BlobId]`, `inReplyTo?`, `reactions: { "<emoji>": [PrincipalId, ...] }`, `createdAt`, `editedAt?`, `deleted`. Methods: `Message/get`, `/query`, `/changes`, `/set`.
 - **REQ-CHAT-04** MUST implement `Membership` JMAP datatype. Properties: `id`, `conversationId`, `principalId`, `role` (`member` | `admin`), `joinedAt`, `readThrough?`, `notificationsMuted`. Methods: `Membership/get`, `/query`, `/changes`, `/set`.

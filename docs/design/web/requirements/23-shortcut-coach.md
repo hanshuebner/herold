@@ -79,7 +79,7 @@ The "what shortcut to surface next" decision uses recent action bigrams, modelle
 
 | ID | Requirement |
 |----|-------------|
-| REQ-COACH-60 | Per-action stats live server-side via a new JMAP datatype: `ShortcutCoachStat`. Capability `https://tabard.dev/jmap/shortcut-coach`. See `notes/server-contract.md`. |
+| REQ-COACH-60 | Per-action stats live server-side via a new JMAP datatype: `ShortcutCoachStat`. Capability `https://herold.dev/jmap/shortcut-coach`. See `notes/server-contract.md`. |
 | REQ-COACH-61 | Stat shape: `{ action: String, keyboardCount14d: Number, mouseCount14d: Number, keyboardCount90d: Number, mouseCount90d: Number, lastKeyboardAt: UTCDate, lastMouseAt: UTCDate, dismissCount: Number, dismissUntil: UTCDate? }`. The 14- and 90-day windows are computed server-side at access time (not stored as flat rolled-up counters that drift). |
 | REQ-COACH-62 | The suite issues `ShortcutCoachStat/get` at bootstrap to load the user's coach state, then patches it via `ShortcutCoachStat/set` on the periodic flush (REQ-COACH-15). The flush carries the session's ring-buffer entries; herold updates the rolling counters. |
 | REQ-COACH-63 | If the capability is not advertised, the coach degrades to session-only state (in-memory ring buffer + bigram store; no cross-session learning). The hint logic still works, but every fresh tab starts the user as a beginner. |

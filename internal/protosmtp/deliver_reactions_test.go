@@ -169,7 +169,7 @@ func newReactionFixture(t *testing.T) *reactionFixture {
 
 // deliverReactionEmail drives an SMTP session delivering a reaction email to
 // alice@example.test.  fromAddr is used as MAIL FROM and From: header.
-// actionValue is the X-Tabard-Reaction-Action header value.
+// actionValue is the X-Herold-Reaction-Action header value.
 func (rf *reactionFixture) deliverReactionEmail(t *testing.T, fromAddr, emoji, actionValue string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -194,9 +194,9 @@ func (rf *reactionFixture) deliverReactionEmail(t *testing.T, fromAddr, emoji, a
 		"From: %s\r\n"+
 			"To: alice@example.test\r\n"+
 			"Subject: Re: Original\r\n"+
-			"X-Tabard-Reaction-To: <%s>\r\n"+
-			"X-Tabard-Reaction-Emoji: %s\r\n"+
-			"X-Tabard-Reaction-Action: %s\r\n"+
+			"X-Herold-Reaction-To: <%s>\r\n"+
+			"X-Herold-Reaction-Emoji: %s\r\n"+
+			"X-Herold-Reaction-Action: %s\r\n"+
 			"\r\n"+
 			"%s reacted with %s.\r\n"+
 			".\r\n",
@@ -312,9 +312,9 @@ func TestReaction_InboundConsumed(t *testing.T) {
 			"From: charlie@example.test\r\n"+
 				"To: alice@example.test\r\n"+
 				"Subject: Re: With CC\r\n"+
-				"X-Tabard-Reaction-To: <%s>\r\n"+
-				"X-Tabard-Reaction-Emoji: thumbs-up\r\n"+
-				"X-Tabard-Reaction-Action: add\r\n"+
+				"X-Herold-Reaction-To: <%s>\r\n"+
+				"X-Herold-Reaction-Emoji: thumbs-up\r\n"+
+				"X-Herold-Reaction-Action: add\r\n"+
 				"\r\n"+
 				"charlie reacted with thumbs-up.\r\n"+
 				".\r\n",

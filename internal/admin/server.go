@@ -1869,13 +1869,13 @@ func composeAdminAndUI(
 	// retain priority; the SPA handler only sees requests that
 	// did not match any other mount.
 	//
-	// When Tabard.Enabled is explicitly false the catch-all is left
+	// When Suite.Enabled is explicitly false the catch-all is left
 	// to the default 404 path so admin-only deployments do not
 	// silently respond at /.
-	if cfg.Server.Tabard.Enabled == nil || *cfg.Server.Tabard.Enabled {
+	if cfg.Server.Suite.Enabled == nil || *cfg.Server.Suite.Enabled {
 		spaSrv, err := webspa.New(webspa.Options{
 			Logger:        logger.With("subsystem", "webspa.suite"),
-			SuiteAssetDir: cfg.Server.Tabard.AssetDir,
+			SuiteAssetDir: cfg.Server.Suite.AssetDir,
 			PublicHost:    cfg.Server.Hostname,
 		})
 		if err != nil {

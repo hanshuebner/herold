@@ -12,7 +12,7 @@ import (
 )
 
 // TestRequireConfig_BadAssetDir verifies that when a config file exists but
-// references a [server.tabard] asset_dir that is missing index.html, the
+// references a [server.suite] asset_dir that is missing index.html, the
 // error returned by requireConfig contains the asset_dir diagnostic
 // ("asset_dir" and "missing index.html") and does NOT contain the
 // misleading "config file not found" message.
@@ -43,7 +43,7 @@ source = "file"
 cert_file = %q
 key_file = %q
 
-[server.tabard]
+[server.suite]
 asset_dir = %q
 
 [server.storage]

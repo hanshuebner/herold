@@ -137,7 +137,7 @@ These are additive over REQ-PROTO-41. Each is its own JMAP capability, registere
 
 ### Email reactions extension
 
-Per `docs/design/web/notes/server-contract.md` § Email reactions. Capability `https://tabard.dev/jmap/email-reactions`. Phase 2.
+Per `docs/design/web/notes/server-contract.md` § Email reactions. Capability `https://herold.dev/jmap/email-reactions`. Phase 2.
 
 - **REQ-PROTO-100** MUST persist a `reactions` extension property on `Email`. Shape: `{ "<emoji>": ["<principal-id>", ...] }`. Sparse — emojis with no current reactors are absent rather than empty arrays. Stored as a JSON column or normalised table (implementation choice; the JMAP shape is the contract).
 - **REQ-PROTO-101** `Email/set` MUST accept JSON-patch paths under `reactions/`. Specifically: `reactions/<emoji>/<principal-id>: true` to add, `: null` to remove. Paths MUST validate that the requesting principal is `<principal-id>` — a user can only add or remove their own reaction. Other paths return `forbidden`.
@@ -146,7 +146,7 @@ Per `docs/design/web/notes/server-contract.md` § Email reactions. Capability `h
 
 ### Shortcut coach datatype
 
-Per `docs/design/web/requirements/23-shortcut-coach.md` and `docs/design/web/notes/server-contract.md` § Shortcut coach. Capability `https://tabard.dev/jmap/shortcut-coach`. Phase 2.
+Per `docs/design/web/requirements/23-shortcut-coach.md` and `docs/design/web/notes/server-contract.md` § Shortcut coach. Capability `https://herold.dev/jmap/shortcut-coach`. Phase 2.
 
 Backs the suite's always-on keyboard-shortcut coach: a per-principal store of (action, keyboard-vs-mouse counters in 14d / 90d sliding windows, last-used timestamps, dismiss state) used to decide which shortcut hints to surface and when.
 
@@ -158,11 +158,11 @@ Backs the suite's always-on keyboard-shortcut coach: a per-principal store of (a
 
 ### Web Push delivery
 
-Per `docs/design/web/requirements/25-push-notifications.md` and `docs/design/web/notes/server-contract.md` § Web Push. Capability `https://tabard.dev/jmap/push` (advertised when the deployment has VAPID configured). Phase 1 — herold ships push delivery as part of v1 because the suite v1 depends on it.
+Per `docs/design/web/requirements/25-push-notifications.md` and `docs/design/web/notes/server-contract.md` § Web Push. Capability `https://herold.dev/jmap/push` (advertised when the deployment has VAPID configured). Phase 1 — herold ships push delivery as part of v1 because the suite v1 depends on it.
 
 - **REQ-PROTO-120** MUST implement the JMAP `PushSubscription` datatype per RFC 8620 §7.2 with standard methods (`get`, `set`). Standard properties: `id`, `deviceClientId`, `url` (the push endpoint), `expires`, `types` (subscribed JMAP types), `keys: { p256dh, auth }`, plus `verificationCode` per the verification handshake.
 - **REQ-PROTO-121** MUST persist suite-specific extension properties on `PushSubscription`: `notificationRules` (JSON blob; the suite's per-event-type preference set), `quietHours` (`{ startHourLocal, endHourLocal, tz }` or null), and `vapidKeyAtRegistration` (the VAPID public key the client registered against, so herold can pick the right key pair when rotating). Validation: rules must be a known JSON shape; quiet hours' tz must be a valid IANA timezone or null.
-- **REQ-PROTO-122** MUST maintain a deployment-level VAPID key pair. Public key exposed in the JMAP session descriptor's capabilities data (under `urn:ietf:params:jmap:core` an extension field, OR under `https://tabard.dev/jmap/push`'s capability data — pick one and document; the suite reads from wherever herold puts it). Private key stored in herold's secrets store (per REQ-OPS-160..163). Operator may rotate the key pair manually; rotation invalidates existing subscriptions on next push attempt (clients re-subscribe).
+- **REQ-PROTO-122** MUST maintain a deployment-level VAPID key pair. Public key exposed in the JMAP session descriptor's capabilities data (under `urn:ietf:params:jmap:core` an extension field, OR under `https://herold.dev/jmap/push`'s capability data — pick one and document; the suite reads from wherever herold puts it). Private key stored in herold's secrets store (per REQ-OPS-160..163). Operator may rotate the key pair manually; rotation invalidates existing subscriptions on next push attempt (clients re-subscribe).
 - **REQ-PROTO-123** Outbound push dispatcher: for each state-change-feed event affecting a principal, the dispatcher iterates that principal's `PushSubscription` rows. Per subscription:
   1. Evaluate `notificationRules` against the event type and content. Result: `enriched` (build a suite payload with title / body / actions per `docs/design/web/requirements/25-push-notifications.md` REQ-PUSH-40..47), `minimal` (RFC 8620 §7.2 state-change envelope only), or `suppress` (rule says no push).
   2. If `quietHours` is set and the event is in-window: downgrade `enriched` to `suppress` unless the event is high-priority (incoming video call; calendar invite for an event starting within 60 min).

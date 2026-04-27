@@ -25,19 +25,19 @@ import (
 // reactionHeaders holds the three structured header values from an
 // inbound reaction email.
 type reactionHeaders struct {
-	reactionTo     string // X-Tabard-Reaction-To (orig Message-ID with angle brackets)
-	reactionEmoji  string // X-Tabard-Reaction-Emoji
-	reactionAction string // X-Tabard-Reaction-Action
+	reactionTo     string // X-Herold-Reaction-To (orig Message-ID with angle brackets)
+	reactionEmoji  string // X-Herold-Reaction-Emoji
+	reactionAction string // X-Herold-Reaction-Action
 }
 
 // extractReactionHeaders checks whether the parsed message carries all
-// three X-Tabard-Reaction-* headers.  Returns (headers, true) when all
+// three X-Herold-Reaction-* headers.  Returns (headers, true) when all
 // three are present; (zero, false) otherwise.
 func extractReactionHeaders(msg mailparse.Message) (reactionHeaders, bool) {
 	h := msg.Headers
-	to := strings.TrimSpace(h.Get("X-Tabard-Reaction-To"))
-	emoji := strings.TrimSpace(h.Get("X-Tabard-Reaction-Emoji"))
-	action := strings.TrimSpace(h.Get("X-Tabard-Reaction-Action"))
+	to := strings.TrimSpace(h.Get("X-Herold-Reaction-To"))
+	emoji := strings.TrimSpace(h.Get("X-Herold-Reaction-Emoji"))
+	action := strings.TrimSpace(h.Get("X-Herold-Reaction-Action"))
 	if to == "" || emoji == "" || action == "" {
 		return reactionHeaders{}, false
 	}

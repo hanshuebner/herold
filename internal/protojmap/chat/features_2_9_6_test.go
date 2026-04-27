@@ -361,7 +361,7 @@ func fetchChatCapability(t *testing.T, f *fixture) map[string]any {
 		t.Fatalf("decode session: %v", err)
 	}
 	for _, acct := range session.Accounts {
-		if desc, ok := acct.AccountCapabilities["https://tabard.dev/jmap/chat"].(map[string]any); ok {
+		if desc, ok := acct.AccountCapabilities["https://herold.dev/jmap/chat"].(map[string]any); ok {
 			return desc
 		}
 	}

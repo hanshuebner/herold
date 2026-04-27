@@ -43,12 +43,12 @@ The suite (herold + the suite) is sized for "small family / association / group"
 | `urn:ietf:params:jmap:sieve` (RFC 9007) | Filter management — `Sieve/get`, `Sieve/set`, `Sieve/validate`. Required by `../requirements/04-filters.md`. |
 | `urn:ietf:params:jmap:contacts` (RFC 9553 + binding draft) | Required by the suite's compose autocomplete (`../requirements/02-mail-basics.md` REQ-MAIL-11) and by the contacts app. |
 | `urn:ietf:params:jmap:calendars` (RFC 8984 + binding draft) | Required by iMIP RSVP (`../requirements/15-calendar-invites.md`) and by the calendar app. |
-| `https://tabard.dev/jmap/snooze` | Snooze contract — see Behaviours. |
-| `https://tabard.dev/jmap/categorise` | LLM-driven categorisation — see Behaviours. |
-| `https://tabard.dev/jmap/chat` | Chat datatypes (`Conversation`, `Message`, `Membership`) plus the ephemeral WebSocket and call-signaling endpoints — see Behaviours. |
-| `https://tabard.dev/jmap/email-reactions` | `Email.reactions` extension property + cross-server reaction email propagation — see Behaviours. |
-| `https://tabard.dev/jmap/shortcut-coach` | `ShortcutCoachStat` per-principal datatype backing the shortcut coach — see Behaviours. |
-| `https://tabard.dev/jmap/push` | Web Push delivery (RFC 8030 + RFC 8620 §7.2 `PushSubscription` + the suite's enriched-content payload contract) — see Behaviours. |
+| `https://herold.dev/jmap/snooze` | Snooze contract — see Behaviours. |
+| `https://herold.dev/jmap/categorise` | LLM-driven categorisation — see Behaviours. |
+| `https://herold.dev/jmap/chat` | Chat datatypes (`Conversation`, `Message`, `Membership`) plus the ephemeral WebSocket and call-signaling endpoints — see Behaviours. |
+| `https://herold.dev/jmap/email-reactions` | `Email.reactions` extension property + cross-server reaction email propagation — see Behaviours. |
+| `https://herold.dev/jmap/shortcut-coach` | `ShortcutCoachStat` per-principal datatype backing the shortcut coach — see Behaviours. |
+| `https://herold.dev/jmap/push` | Web Push delivery (RFC 8030 + RFC 8620 §7.2 `PushSubscription` + the suite's enriched-content payload contract) — see Behaviours. |
 
 ## Capabilities the suite does NOT require
 
@@ -65,7 +65,7 @@ The suite (herold + the suite) is sized for "small family / association / group"
 - Cookie lifetime, idle timeout, refresh policy: herold's responsibility. The suite does not implement client-side timeout logic.
 - Bearer-token auth on JMAP endpoints stays available for non-browser clients (CLI, tests). The suite does not use it.
 
-### Snooze (`https://tabard.dev/jmap/snooze`)
+### Snooze (`https://herold.dev/jmap/snooze`)
 
 Herold advertises this capability when it implements all of:
 
@@ -77,7 +77,7 @@ Herold advertises this capability when it implements all of:
   3. Re-adds the principal's inbox mailbox to `Email.mailboxIds`.
   4. Emits a state-change event on the affected types (`Email`, `Mailbox`).
 
-### LLM categorisation (`https://tabard.dev/jmap/categorise`)
+### LLM categorisation (`https://herold.dev/jmap/categorise`)
 
 Per `../requirements/05-categorisation.md`. Herold's responsibilities:
 
@@ -159,7 +159,7 @@ Cancellation: `EmailSubmission/set { destroy: [<id>] }` issued before `sendAt` M
 
 The suite uses this to back the send-undo feature (`../requirements/02-mail-basics.md` REQ-MAIL-14, `../requirements/11-optimistic-ui.md` REQ-OPT-11). The same mechanism is the substrate for user-facing scheduled send when that ships.
 
-### Chat (`https://tabard.dev/jmap/chat`)
+### Chat (`https://herold.dev/jmap/chat`)
 
 Per `../requirements/08-chat.md` and `../architecture/07-chat-protocol.md`. Herold's responsibilities:
 
@@ -170,7 +170,7 @@ Per `../requirements/08-chat.md` and `../architecture/07-chat-protocol.md`. Hero
 - **Inline image attachments.** Reuse the JMAP `Blob/upload` path; chat messages reference uploaded blobs by id. No separate chat-blob storage.
 - **Retention.** Operator-configurable per Space (and globally for DMs). Default: forever. The suite surfaces the active retention via the chat capability metadata if herold reports it.
 
-### Email reactions (`https://tabard.dev/jmap/email-reactions`)
+### Email reactions (`https://herold.dev/jmap/email-reactions`)
 
 Per `../requirements/02-mail-basics.md` § Reactions. Shape mirrors chat's `Message.reactions` (`08-chat.md` REQ-CHAT-30..33).
 
@@ -193,9 +193,9 @@ In-Reply-To: <original Message-ID>
 References: <original References + original Message-ID>
 Date: <now>
 Message-ID: <new id>
-X-Tabard-Reaction-To: <original Message-ID>
-X-Tabard-Reaction-Emoji: <utf-8 emoji>
-X-Tabard-Reaction-Action: add
+X-Herold-Reaction-To: <original Message-ID>
+X-Herold-Reaction-Emoji: <utf-8 emoji>
+X-Herold-Reaction-Action: add
 Content-Type: multipart/alternative; boundary="..."
 
 --bound
@@ -211,7 +211,7 @@ Content-Type: text/html; charset=utf-8
 --bound--
 ```
 
-A herold-aware inbound pipeline detects the `X-Tabard-Reaction-*` headers, looks up the referenced original `Message-ID` in the recipient's mailbox, and:
+A herold-aware inbound pipeline detects the `X-Herold-Reaction-*` headers, looks up the referenced original `Message-ID` in the recipient's mailbox, and:
 
 - If found AND the reactor (`From` address) corresponds to a known correspondent (sender or recipient of the original): apply as a native `Email.reactions` mutation; suppress the reaction email from inbox delivery.
 - If not found OR reactor isn't recognised: deliver as a normal email (the human-readable body shows it correctly to the recipient).
@@ -220,7 +220,7 @@ A non-herold receiver sees the email as plain mail. Threading via `In-Reply-To` 
 
 **Removal does not propagate cross-server.** When a user removes a reaction, the change is applied locally and to other herolds *that originally received the reaction email*; there is no follow-up "un-react" email to non-herold receivers. Reactions are ephemeral signals; the asymmetry is acceptable.
 
-### Web Push (`https://tabard.dev/jmap/push`)
+### Web Push (`https://herold.dev/jmap/push`)
 
 Per `../requirements/25-push-notifications.md`. Browser-level push notifications for new mail / chat / calendar invites / video calls / reactions. RFC 8030 transport + RFC 8620 §7.2 PushSubscription datatype + a suite-specific enriched payload shape.
 
@@ -255,7 +255,7 @@ Per `../requirements/25-push-notifications.md`. Browser-level push notifications
 - The push payload is bounded to ~2.5 KB plaintext to leave headroom for RFC 8291 encryption overhead.
 - Body content sent in the payload follows the per-event-type contract (subject + 80-char preview for mail; first 80 chars of body for chat). Full message bodies are NEVER pushed.
 
-### Shortcut coach (`https://tabard.dev/jmap/shortcut-coach`)
+### Shortcut coach (`https://herold.dev/jmap/shortcut-coach`)
 
 Per `../requirements/23-shortcut-coach.md`. Per-principal stats backing the always-on shortcut coach.
 

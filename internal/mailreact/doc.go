@@ -4,7 +4,7 @@
 //
 // When a JMAP Email/set adds a reaction to a message that has recipients on
 // non-local domains, BuildAndEnqueue constructs the RFC 5322 reaction email
-// (multipart/alternative text+html body, X-Tabard-Reaction-* headers,
+// (multipart/alternative text+html body, X-Herold-Reaction-* headers,
 // threading via In-Reply-To/References) and drops one queue item per
 // external recipient via store.Metadata.EnqueueMessage.  Local recipients
 // are skipped — they see the reaction natively through the Email.reactions

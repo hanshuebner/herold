@@ -212,9 +212,9 @@ func buildReactionBody(
 	fmt.Fprintf(&buf, "Subject: %s\r\n", subject)
 	fmt.Fprintf(&buf, "In-Reply-To: %s\r\n", origMsgID)
 	fmt.Fprintf(&buf, "References: %s\r\n", refs)
-	fmt.Fprintf(&buf, "X-Tabard-Reaction-To: %s\r\n", origMsgID)
-	fmt.Fprintf(&buf, "X-Tabard-Reaction-Emoji: %s\r\n", emoji)
-	fmt.Fprintf(&buf, "X-Tabard-Reaction-Action: add\r\n")
+	fmt.Fprintf(&buf, "X-Herold-Reaction-To: %s\r\n", origMsgID)
+	fmt.Fprintf(&buf, "X-Herold-Reaction-Emoji: %s\r\n", emoji)
+	fmt.Fprintf(&buf, "X-Herold-Reaction-Action: add\r\n")
 	fmt.Fprintf(&buf, "Content-Type: multipart/alternative; boundary=%q\r\n", boundary)
 	fmt.Fprintf(&buf, "\r\n")
 	if _, err := io.Copy(&buf, &bodyBuf); err != nil {

@@ -144,7 +144,7 @@ type ServerConfig struct {
 	Call       CallConfig       `toml:"call,omitempty"`
 	TURN       TURNConfig       `toml:"turn,omitempty"`
 	SmartHost  SmartHostConfig  `toml:"smart_host,omitempty"`
-	Tabard     TabardConfig     `toml:"tabard,omitempty"`
+	Suite      SuiteConfig      `toml:"suite,omitempty"`
 	Push       PushConfig       `toml:"push,omitempty"`
 	Queue      QueueConfig      `toml:"queue,omitempty"`
 	// PublicBaseURL is the externally-reachable base URL of the public
@@ -243,17 +243,12 @@ func (p PushConfig) VAPIDPrivateKeyRef() string {
 	return ""
 }
 
-// TabardConfig configures the embedded suite SPA mount on the public
+// SuiteConfig configures the embedded Suite SPA mount on the public
 // HTTP listener (REQ-DEPLOY-COLOC-01..05). The default packaging
 // embeds the suite build artefacts into the herold binary at release
 // time; an explicit AssetDir overrides the embedded FS for development
 // hot-reload.
-//
-// The struct name and TOML key keep the legacy "tabard" identifier
-// for one release window so existing system.toml files keep parsing;
-// they are renamed to SuiteConfig / [server.suite] in a follow-up
-// commit (Phase 1c-3c of the merge plan).
-type TabardConfig struct {
+type SuiteConfig struct {
 	// Enabled selects whether the SPA is mounted on the public
 	// listener's catch-all (`/`). Defaults to true. Operators
 	// running an admin-only deployment with no consumer suite set
@@ -940,9 +935,9 @@ func applyDefaults(c *Config) {
 	// Suite SPA (REQ-DEPLOY-COLOC-01..05). Default-enabled so a
 	// fresh install boots with the consumer suite mounted on the
 	// public listener; admin-only deployments set Enabled=false.
-	if c.Server.Tabard.Enabled == nil {
+	if c.Server.Suite.Enabled == nil {
 		t := true
-		c.Server.Tabard.Enabled = &t
+		c.Server.Suite.Enabled = &t
 	}
 	// Smart host (REQ-FLOW-SMARTHOST-01..08). Defaults are applied to
 	// the top-level block AND every per-domain override so a sparsely-
@@ -1164,16 +1159,16 @@ func Validate(c *Config) error {
 	// system.toml may set asset_dir to a developer-built dist tree
 	// (e.g. web/apps/suite/dist) for hot-reload during frontend
 	// development.
-	if dir := c.Server.Tabard.AssetDir; dir != "" {
+	if dir := c.Server.Suite.AssetDir; dir != "" {
 		info, err := os.Stat(dir)
 		if err != nil {
-			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q: %v", dir, err)
+			return fmt.Errorf("sysconfig: [server.suite] asset_dir %q: %v", dir, err)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q is not a directory", dir)
+			return fmt.Errorf("sysconfig: [server.suite] asset_dir %q is not a directory", dir)
 		}
 		if _, err := os.Stat(filepath.Join(dir, "index.html")); err != nil {
-			return fmt.Errorf("sysconfig: [server.tabard] asset_dir %q missing index.html: %v", dir, err)
+			return fmt.Errorf("sysconfig: [server.suite] asset_dir %q missing index.html: %v", dir, err)
 		}
 	}
 	// Smart host (REQ-FLOW-SMARTHOST-01..08).

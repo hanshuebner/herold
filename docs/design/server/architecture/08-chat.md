@@ -130,7 +130,7 @@ TURN credentials are NOT minted on this WebSocket. Clients call `POST /api/v1/ca
 
 ### Connection lifecycle
 
-- Client opens the WebSocket after the JMAP session descriptor confirms `https://tabard.dev/jmap/chat`. The suite session cookie attaches automatically; no separate auth handshake.
+- Client opens the WebSocket after the JMAP session descriptor confirms `https://herold.dev/jmap/chat`. The suite session cookie attaches automatically; no separate auth handshake.
 - Server accepts; assigns the connection a per-user-session id (multiple connections per user across tabs are tolerated).
 - Server sends `{"type":"ping","payload":{}}` every 30 seconds.
 - Client responds `{"type":"pong","payload":{}}`.

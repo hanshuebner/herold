@@ -137,15 +137,15 @@ func TestMailreact_AllExternalRecipients(t *testing.T) {
 		t.Errorf("SigningDomain = %q, want local.test", sub.SigningDomain)
 	}
 
-	// Body must contain the X-Tabard-Reaction-* headers.
-	if !strings.Contains(body, "X-Tabard-Reaction-To: <orig-id@local.test>") {
-		t.Errorf("body missing X-Tabard-Reaction-To: %s", body)
+	// Body must contain the X-Herold-Reaction-* headers.
+	if !strings.Contains(body, "X-Herold-Reaction-To: <orig-id@local.test>") {
+		t.Errorf("body missing X-Herold-Reaction-To: %s", body)
 	}
-	if !strings.Contains(body, "X-Tabard-Reaction-Emoji: heart") {
-		t.Errorf("body missing X-Tabard-Reaction-Emoji: %s", body)
+	if !strings.Contains(body, "X-Herold-Reaction-Emoji: heart") {
+		t.Errorf("body missing X-Herold-Reaction-Emoji: %s", body)
 	}
-	if !strings.Contains(body, "X-Tabard-Reaction-Action: add") {
-		t.Errorf("body missing X-Tabard-Reaction-Action: %s", body)
+	if !strings.Contains(body, "X-Herold-Reaction-Action: add") {
+		t.Errorf("body missing X-Herold-Reaction-Action: %s", body)
 	}
 }
 

@@ -127,18 +127,18 @@ Phase 2 — alongside the rest of the chat / suite work.
   - `References`: original `References` + original `Message-ID`.
   - `Date`: now.
   - `Message-ID`: a fresh id for this reaction email.
-  - `X-Tabard-Reaction-To`: original `Message-ID` (verbatim, including angle brackets).
-  - `X-Tabard-Reaction-Emoji`: the UTF-8 emoji (no encoding wrapping).
-  - `X-Tabard-Reaction-Action`: `add` (only `add` propagates; see REQ-FLOW-103).
+  - `X-Herold-Reaction-To`: original `Message-ID` (verbatim, including angle brackets).
+  - `X-Herold-Reaction-Emoji`: the UTF-8 emoji (no encoding wrapping).
+  - `X-Herold-Reaction-Action`: `add` (only `add` propagates; see REQ-FLOW-103).
   - `Content-Type`: `multipart/alternative` with two parts: a `text/plain` body "<reactor display name> reacted with <emoji> to your message." and a `text/html` body with the same text and the emoji rendered larger.
 - **REQ-FLOW-102** Reaction emails follow the normal outbound queue path (REQ-FLOW-50..76) — DKIM-signed, retried, DSN-on-failure. They are NOT distinguished by the queue; the headers are the only chat-aware signal. (DSNs on failed reaction emails are noisy but acceptable; reaction emails are short so failure is rare.)
 - **REQ-FLOW-103** Removing a reaction does NOT emit a reaction email. The remove is local to the reactor's server and any local-domain recipients on the same herold. Rationale: an "X removed their reaction" email to non-non-suite receivers is awkward UX; reactions are ephemeral signals and the asymmetry is acceptable. (Confirmed by the suite product decision; see `docs/design/web/requirements/02-mail-basics.md` REQ-MAIL-183.)
 
 ### Inbound
 
-- **REQ-FLOW-104** On inbound mail, herold MUST detect the reaction-header set: `X-Tabard-Reaction-To`, `X-Tabard-Reaction-Emoji`, `X-Tabard-Reaction-Action`. Presence of all three triggers the reaction-handling path; absence delivers normally.
+- **REQ-FLOW-104** On inbound mail, herold MUST detect the reaction-header set: `X-Herold-Reaction-To`, `X-Herold-Reaction-Emoji`, `X-Herold-Reaction-Action`. Presence of all three triggers the reaction-handling path; absence delivers normally.
 - **REQ-FLOW-105** Reaction-handling path:
-  1. Look up the recipient's local mailbox copy of the original `Message-ID` (`X-Tabard-Reaction-To` value). The lookup is per-principal (the principal whose mailbox is the inbound destination).
+  1. Look up the recipient's local mailbox copy of the original `Message-ID` (`X-Herold-Reaction-To` value). The lookup is per-principal (the principal whose mailbox is the inbound destination).
   2. If found, identify the reactor by their `From` address. The reactor must be either the original sender or a recipient (To/Cc/Bcc) of the original message — to prevent third-party spoofing of reactions.
   3. If the reactor is recognised: apply as a native reaction by patching `Email.reactions/<emoji>/<reactor-principal-id>: true` on the local message copy. The reaction email is consumed — NOT delivered to the recipient's inbox. The Email's state string advances; the JMAP push notifies any active client.
   4. If the original message is NOT found in the recipient's mailbox, OR the reactor is NOT a recognised participant: deliver the email normally. The recipient sees a regular short email with the reaction text body, threaded by `In-Reply-To`.

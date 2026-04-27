@@ -83,12 +83,12 @@ export const Capability = {
   Contacts: 'urn:ietf:params:jmap:contacts',
   WebSocket: 'urn:ietf:params:jmap:websocket',
   // Herold suite-specific capabilities
-  TabardSnooze: 'https://tabard.dev/jmap/snooze',
-  TabardCategorise: 'https://tabard.dev/jmap/categorise',
-  TabardChat: 'https://tabard.dev/jmap/chat',
-  TabardEmailReactions: 'https://tabard.dev/jmap/email-reactions',
-  TabardShortcutCoach: 'https://tabard.dev/jmap/shortcut-coach',
-  TabardPush: 'https://tabard.dev/jmap/push',
+  HeroldSnooze: 'https://herold.dev/jmap/snooze',
+  HeroldCategorise: 'https://herold.dev/jmap/categorise',
+  HeroldChat: 'https://herold.dev/jmap/chat',
+  HeroldEmailReactions: 'https://herold.dev/jmap/email-reactions',
+  HeroldShortcutCoach: 'https://herold.dev/jmap/shortcut-coach',
+  HeroldPush: 'https://herold.dev/jmap/push',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

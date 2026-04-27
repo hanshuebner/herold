@@ -1,7 +1,7 @@
 // Package coach implements the JMAP ShortcutCoachStat datatype
 // (REQ-PROTO-110..112 / docs/design/web/requirements/23-shortcut-coach.md).
 //
-// Capability URI: https://tabard.dev/jmap/shortcut-coach
+// Capability URI: https://herold.dev/jmap/shortcut-coach
 //
 // One stat row per (principal, action) pair; counters are derived at
 // read time from a per-row event log (coach_events). Privacy:

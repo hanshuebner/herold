@@ -244,7 +244,7 @@ Per `requirements/01-protocols.md` REQ-PROTO-122. Phase 1.
   ```
 - **REQ-OPS-182** Public key surfaced in the JMAP session descriptor for clients to pass to `pushManager.subscribe`. Private key never leaves the herold process.
 - **REQ-OPS-183** Rotation: manual operator process. New keys generated; subscriptions registered against the old key fail on next push attempt with 410-equivalent (the subscription's `vapidKeyAtRegistration` doesn't match); herold destroys those subscriptions and clients re-subscribe on next launch. Rotation cadence is operator policy; not automated in v1.
-- **REQ-OPS-184** Without VAPID configured, herold does NOT advertise the `https://tabard.dev/jmap/push` capability and the suite's push features degrade per `docs/design/web/requirements/25-push-notifications.md` (no push delivery; in-app indicators only).
+- **REQ-OPS-184** Without VAPID configured, herold does NOT advertise the `https://herold.dev/jmap/push` capability and the suite's push features degrade per `docs/design/web/requirements/25-push-notifications.md` (no push delivery; in-app indicators only).
 
 ## coturn (TURN relay for chat video calls)
 

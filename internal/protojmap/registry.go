@@ -55,20 +55,20 @@ const (
 	// docs/design/00-scope.md, herold is the substrate beneath the suite
 	// suite, so the URI lives under tabard.dev. Implemented under
 	// internal/protojmap/chat.
-	CapabilityJMAPChat CapabilityID = "https://tabard.dev/jmap/chat"
+	CapabilityJMAPChat CapabilityID = "https://herold.dev/jmap/chat"
 	// CapabilityPush is the JMAP PushSubscription + suite-extension
 	// capability (REQ-PROTO-120..127, RFC 8620 §7.2). The standard
 	// PushSubscription datatype is part of the Core capability per
 	// RFC 8620, but the suite layers extension properties
 	// (notificationRules, quietHours, vapidKeyAtRegistration) and the
 	// outbound push gateway lives under a vendor capability. The URI
-	// is "https://tabard.dev/jmap/push" — same vendor-URL convention
+	// is "https://herold.dev/jmap/push" — same vendor-URL convention
 	// as CapabilityJMAPChat. The capability descriptor carries the
 	// deployment's VAPID applicationServerKey so the suite SPA can
 	// read it from the session response and pass it to
 	// pushManager.subscribe(). Implemented under
 	// internal/protojmap/push.
-	CapabilityPush CapabilityID = "https://tabard.dev/jmap/push"
+	CapabilityPush CapabilityID = "https://herold.dev/jmap/push"
 	// CapabilityShortcutCoach is the Suite-specific ShortcutCoachStat
 	// JMAP datatype capability (REQ-PROTO-110..112). Per-principal
 	// storage of keyboard/mouse invocation counts in sliding 14d / 90d
@@ -76,7 +76,7 @@ const (
 	// (docs/design/web/requirements/23-shortcut-coach.md). Capability URI
 	// per the suite's server-contract.md. Implemented under
 	// internal/protojmap/coach.
-	CapabilityShortcutCoach CapabilityID = "https://tabard.dev/jmap/shortcut-coach"
+	CapabilityShortcutCoach CapabilityID = "https://herold.dev/jmap/shortcut-coach"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP
