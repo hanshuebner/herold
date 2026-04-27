@@ -27,6 +27,18 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// Options carries optional operator-supplied SQLite pragma overrides.
+// Zero values mean "use the built-in defaults hardcoded in buildDSN /
+// applyPragmas".
+type Options struct {
+	// CacheSize overrides PRAGMA cache_size. Negative = KiB; positive =
+	// pages; zero = leave the default (-65536 = 64 MiB).
+	CacheSize int
+	// WALAutocheckpoint overrides PRAGMA wal_autocheckpoint. Zero = leave
+	// the SQLite default (1000 pages).
+	WALAutocheckpoint int
+}
+
 // Open opens (or creates) a SQLite-backed store at path. The blob
 // directory is a sibling of the DB file by default: <path>.blobs/. The
 // modernc.org/sqlite driver is registered under "sqlite"; the DSN turns
@@ -41,7 +53,14 @@ var migrationsFS embed.FS
 // deterministic source via OpenWithRand. The two-entrypoint shape
 // keeps the public Open signature stable across the Wave-3 codebase.
 func Open(ctx context.Context, path string, logger *slog.Logger, c clock.Clock) (store.Store, error) {
-	return OpenWithRand(ctx, path, logger, c, nil)
+	return OpenWithOptions(ctx, path, logger, c, Options{}, nil)
+}
+
+// OpenWithOpts is Open with explicit pragma Options (operator knobs from
+// sysconfig). Tests or callers that only need rand injection and do not
+// care about pragma overrides should use Open or OpenWithRand.
+func OpenWithOpts(ctx context.Context, path string, logger *slog.Logger, c clock.Clock, opts Options) (store.Store, error) {
+	return OpenWithOptions(ctx, path, logger, c, opts, nil)
 }
 
 // OpenWithRand is Open with an explicit entropy source for the
@@ -50,6 +69,12 @@ func Open(ctx context.Context, path string, logger *slog.Logger, c clock.Clock) 
 // reader (e.g. bytes.NewReader of a fixed corpus) so UIDVALIDITY
 // values are reproducible across runs.
 func OpenWithRand(ctx context.Context, path string, logger *slog.Logger, c clock.Clock, rs io.Reader) (store.Store, error) {
+	return OpenWithOptions(ctx, path, logger, c, Options{}, rs)
+}
+
+// OpenWithOptions is the canonical implementation shared by Open,
+// OpenWithOpts, and OpenWithRand.
+func OpenWithOptions(ctx context.Context, path string, logger *slog.Logger, c clock.Clock, opts Options, rs io.Reader) (store.Store, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -78,7 +103,7 @@ func OpenWithRand(ctx context.Context, path string, logger *slog.Logger, c clock
 		_ = db.Close()
 		return nil, fmt.Errorf("storesqlite: ping: %w", err)
 	}
-	if err := applyPragmas(ctx, db); err != nil {
+	if err := applyPragmas(ctx, db, opts); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -205,14 +230,22 @@ func buildDSN(path string) string {
 // applyPragmas double-enforces the PRAGMAs at the session level in case
 // the URL parsing dropped one (some modernc versions ignore unknown
 // keys silently). Read the resulting mode back to confirm WAL.
-func applyPragmas(ctx context.Context, db *sql.DB) error {
+// opts overrides cache_size and wal_autocheckpoint when non-zero.
+func applyPragmas(ctx context.Context, db *sql.DB, opts Options) error {
+	cacheSize := -65536
+	if opts.CacheSize != 0 {
+		cacheSize = opts.CacheSize
+	}
 	pragmas := []string{
 		"PRAGMA journal_mode = WAL",
 		"PRAGMA synchronous = NORMAL",
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA busy_timeout = 30000",
-		"PRAGMA cache_size = -65536",
+		fmt.Sprintf("PRAGMA cache_size = %d", cacheSize),
 		"PRAGMA temp_store = MEMORY",
+	}
+	if opts.WALAutocheckpoint != 0 {
+		pragmas = append(pragmas, fmt.Sprintf("PRAGMA wal_autocheckpoint = %d", opts.WALAutocheckpoint))
 	}
 	for _, p := range pragmas {
 		if _, err := db.ExecContext(ctx, p); err != nil {

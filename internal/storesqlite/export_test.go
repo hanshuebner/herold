@@ -11,6 +11,11 @@ func OpenRaw(path string) (*sql.DB, error) {
 	return sql.Open("sqlite", buildDSN(path))
 }
 
+// DB exposes the underlying *sql.DB of a Store for white-box tests that
+// need to query PRAGMAs or inspect schema state without going through the
+// store.Store interface.
+func (s *Store) DB() *sql.DB { return s.db }
+
 // Migration0005SQL is the verbatim 0005_state_change_generic.sql body,
 // re-exported for the migration mapping test in storesqlite_test.go so
 // that the test exercises the production migration text and never

@@ -1000,7 +1000,12 @@ func openStore(ctx context.Context, cfg *sysconfig.Config, logger *slog.Logger, 
 		if err := os.MkdirAll(filepath.Dir(cfg.Server.Storage.SQLite.Path), 0o750); err != nil {
 			return nil, fmt.Errorf("admin: create sqlite dir: %w", err)
 		}
-		return storesqlite.Open(ctx, cfg.Server.Storage.SQLite.Path, logger.With("subsystem", "store"), clk)
+		return storesqlite.OpenWithOpts(ctx, cfg.Server.Storage.SQLite.Path,
+			logger.With("subsystem", "store"), clk,
+			storesqlite.Options{
+				CacheSize:         cfg.Server.Storage.SQLite.CacheSize,
+				WALAutocheckpoint: cfg.Server.Storage.SQLite.WALAutocheckpoint,
+			})
 	case "postgres":
 		blobDir := cfg.Server.Storage.Postgres.BlobDir
 		if blobDir == "" {

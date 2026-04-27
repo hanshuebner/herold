@@ -548,6 +548,16 @@ type StorageConfig struct {
 // StorageSQLiteConfig holds SQLite-specific knobs.
 type StorageSQLiteConfig struct {
 	Path string `toml:"path,omitempty"`
+	// CacheSize maps to PRAGMA cache_size. Negative values are KiB;
+	// positive values are page counts (SQLite semantics). Zero means
+	// "use the built-in default" (-65536 = 64 MiB applied at Open).
+	// Accepted range: [-1<<20, 1<<20]. Values outside that range are
+	// rejected at Validate as likely typos.
+	CacheSize int `toml:"cache_size,omitempty"`
+	// WALAutocheckpoint maps to PRAGMA wal_autocheckpoint (default 1000
+	// pages in SQLite). Zero leaves the SQLite built-in default.
+	// Accepted range: [0, 1<<20].
+	WALAutocheckpoint int `toml:"wal_autocheckpoint,omitempty"`
 }
 
 // StoragePostgresConfig holds Postgres-specific knobs.
@@ -1371,6 +1381,17 @@ func Validate(c *Config) error {
 	case "sqlite":
 		if c.Server.Storage.SQLite.Path == "" {
 			return errors.New("sysconfig: [server.storage.sqlite] path is required (or set server.data_dir)")
+		}
+		sc := c.Server.Storage.SQLite
+		const cacheSizeLimit = 1 << 20
+		if sc.CacheSize < -cacheSizeLimit || sc.CacheSize > cacheSizeLimit {
+			return fmt.Errorf("sysconfig: [server.storage.sqlite] cache_size %d out of range [-%d, %d]",
+				sc.CacheSize, cacheSizeLimit, cacheSizeLimit)
+		}
+		const walACPLimit = 1 << 20
+		if sc.WALAutocheckpoint < 0 || sc.WALAutocheckpoint > walACPLimit {
+			return fmt.Errorf("sysconfig: [server.storage.sqlite] wal_autocheckpoint %d out of range [0, %d]",
+				sc.WALAutocheckpoint, walACPLimit)
 		}
 	case "postgres":
 		if c.Server.Storage.Postgres.DSN == "" {

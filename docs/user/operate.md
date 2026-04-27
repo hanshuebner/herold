@@ -1011,10 +1011,22 @@ msg/day) are:
    right answer is usually Postgres. Knobs (ordered by leverage):
 
    - `PRAGMA wal_autocheckpoint` (default 1000 pages). Lower for
-     less peak latency, higher for less I/O. TODO(operator-doc):
-     sqlite-pragma-config-block.
-   - `PRAGMA cache_size`. Default is small; raising helps repeated
-     queries.
+     less peak latency, higher for less I/O.
+   - `PRAGMA cache_size` (default -65536 = 64 MiB). Raising helps
+     repeated queries at the cost of RSS.
+
+   Both knobs are configurable in `system.toml`:
+
+   ```toml
+   [server.storage.sqlite]
+   cache_size         = -65536   # default; negative = KiB, positive = pages
+   wal_autocheckpoint = 1000     # SQLite default
+   ```
+
+   Valid range for `cache_size`: [-1048576, 1048576]. Valid range for
+   `wal_autocheckpoint`: [0, 1048576]. Zero means "leave the SQLite
+   built-in default" for `wal_autocheckpoint`; for `cache_size` zero
+   also means default (-65536 applied at Open).
 
 3. **Queue concurrency.** Outbound delivery is bounded by a worker
    semaphore. Defaults are sensible for the v1 target; tune if your
