@@ -189,12 +189,10 @@ func (s *natsStub) handleConn(c net.Conn) {
 			if err := s.handleHPUB(c, br, strings.TrimPrefix(line, "HPUB ")); err != nil {
 				return
 			}
-		case strings.HasPrefix(line, "SUB "), strings.HasPrefix(line, "UNSUB "):
-			// Acknowledge silently; we do not implement delivery.
-		case strings.HasPrefix(line, "PONG"):
-			// Client pong reply; no-op.
 		default:
-			// Unknown command; ignore.
+			// SUB / UNSUB: acknowledge silently; we do not implement
+			// delivery. PONG: client pong reply; no-op. Anything else
+			// is an unknown command we also ignore.
 		}
 	}
 }
