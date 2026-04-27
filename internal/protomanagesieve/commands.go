@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -521,11 +520,6 @@ func (ses *session) handleRENAMESCRIPT(ctx context.Context, c *Command) error {
 	}
 	return ses.writeOK("RENAMESCRIPT completed")
 }
-
-// errAuthGate is the marker error commands return when they want to
-// abort early without writing a tagged response (the auth/TLS gate
-// already wrote one). It is never surfaced to callers.
-var errAuthGate = errors.New("protomanagesieve: gated")
 
 // Compile-time anchors so the unused-import detector does not flag
 // these packages on build paths that don't exercise them.

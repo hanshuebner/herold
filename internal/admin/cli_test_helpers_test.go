@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
-	"fmt"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -138,22 +136,6 @@ func (e *cliTestEnv) runWithStdin(stdin string, args ...string) (string, string,
 	defer cancel()
 	err := root.ExecuteContext(ctx)
 	return out.String(), errBuf.String(), err
-}
-
-// jsonRun runs the given args with --json and decodes the stdout into a
-// map. Returns the decode error.
-func (e *cliTestEnv) jsonRun(args ...string) (map[string]any, string, error) {
-	e.t.Helper()
-	full := append([]string{"--json"}, args...)
-	stdout, stderr, err := e.run(full...)
-	if err != nil {
-		return nil, stderr, err
-	}
-	var v map[string]any
-	if jerr := json.Unmarshal([]byte(stdout), &v); jerr != nil {
-		return nil, stderr, fmt.Errorf("decode json: %w; raw=%s", jerr, stdout)
-	}
-	return v, stderr, nil
 }
 
 // mustGenAPIKey produces a fresh plaintext + sha256 hash, the same way

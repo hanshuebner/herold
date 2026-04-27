@@ -24,8 +24,6 @@
 package protoimap
 
 import (
-	"strings"
-
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -83,28 +81,4 @@ func (ses *session) qresyncActive() bool {
 	ses.selMu.Lock()
 	defer ses.selMu.Unlock()
 	return ses.cs.qresyncEnabled
-}
-
-// parseEnableTokens reads the "ENABLE token1 token2 ..." argument list
-// out of the raw command line and returns the upper-cased capability
-// tokens. The parser proper does not split ENABLE arguments because Phase
-// 1 accepted ENABLE as a no-op; we pull the suffix out of cmd.Raw here
-// rather than reshape the parser's command struct.
-func parseEnableTokens(raw string) []string {
-	// raw looks like "<tag> ENABLE TOK1 TOK2 ...". Split on whitespace
-	// after the verb; the tokens are atom-shaped (no quoting / literals
-	// per RFC 5161 §3.1).
-	fields := strings.Fields(raw)
-	out := make([]string, 0, len(fields))
-	enableSeen := false
-	for _, f := range fields {
-		if !enableSeen {
-			if strings.EqualFold(f, "ENABLE") {
-				enableSeen = true
-			}
-			continue
-		}
-		out = append(out, strings.ToUpper(f))
-	}
-	return out
 }

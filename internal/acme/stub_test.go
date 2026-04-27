@@ -1,17 +1,13 @@
 package acme
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -45,7 +41,6 @@ type stubServer struct {
 	orderByID   int
 	authzs      map[string]*stubAuthz
 	authzByID   int
-	jwsErrors   int
 	httpFetcher func(token string) (string, error) // optional HTTP-01 validator
 	failOrder   bool                               // injects 500 on newOrder
 }
@@ -434,30 +429,6 @@ func (s *stubServer) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// httpFetchChallenge is a tiny helper: builds a synthetic GET against
-// the operator's HTTP-01 mux and returns the response body.
-func httpFetchChallenge(t *testing.T, h http.Handler, token string) (string, error) {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/acme-challenge/"+token, nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		return "", fmt.Errorf("http-01 fetch: status %d", rec.Code)
-	}
-	return rec.Body.String(), nil
-}
-
-// signKeyAuth recomputes the JWS thumbprint for a given signer; used
-// by the stub's HTTP-01 validator to check the served key
-// authorisation matches the request.
-func signKeyAuth(s *ecdsaSigner, token string) (string, error) {
-	thumb, err := jwsThumbprint(s)
-	if err != nil {
-		return "", err
-	}
-	return token + "." + thumb, nil
-}
-
 // helper that mints an ECDSA key + CSR self-check; used to assert the
 // stub-issued cert parses cleanly.
 func parsePEMCert(t *testing.T, pemStr string) *x509.Certificate {
@@ -472,21 +443,3 @@ func parsePEMCert(t *testing.T, pemStr string) *x509.Certificate {
 	}
 	return c
 }
-
-// asn1KeyAuthHash digests keyAuth per RFC 8737 §3 — used to verify a
-// presented TLS-ALPN-01 cert carries the right extension value.
-func asn1KeyAuthHash(keyAuth string) []byte {
-	sum := sha256.Sum256([]byte(keyAuth))
-	return sum[:]
-}
-
-// errExpected is a sentinel used by tests to mean "we wanted this to
-// fail" — kept here so individual tests do not redefine it.
-var errExpected = errors.New("test: expected failure")
-
-// curveBytes/sumStub exist only to silence unused-warnings when adding
-// new helpers; not used in production.
-var (
-	_ = elliptic.P256
-	_ = ecdsa.GenerateKey
-)

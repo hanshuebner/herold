@@ -26,7 +26,6 @@ type natsStub struct {
 	pubs     []stubPub
 	connects []map[string]string // CONNECT JSON-as-map for each session
 	tlsCfg   *tls.Config
-	verbose  bool
 	stop     chan struct{}
 	wg       sync.WaitGroup
 }

@@ -131,27 +131,6 @@ func (s *Store) defaultRecordLocked(p store.Principal) identityRecord {
 	return rec
 }
 
-// get returns the record with the given id for principal p, or
-// ok=false. id == 0 returns the default (with overlays applied).
-func (s *Store) get(ctx context.Context, p store.Principal, id uint64) (identityRecord, bool) {
-	if id == 0 {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		return s.defaultRecordLocked(p), true
-	}
-	if s.st == nil {
-		return identityRecord{}, false
-	}
-	row, err := s.st.Meta().GetJMAPIdentity(ctx, strconv.FormatUint(id, 10))
-	if err != nil {
-		return identityRecord{}, false
-	}
-	if row.PrincipalID != p.ID {
-		return identityRecord{}, false
-	}
-	return persistedToRecord(row), true
-}
-
 // create appends a new identity for p. The caller has already
 // validated email + replyTo against the local-domain set.
 func (s *Store) create(ctx context.Context, p store.Principal, in identityRecord) identityRecord {
@@ -400,25 +379,4 @@ func (p identityPatch) applyTo(r *identityRecord) {
 			r.Signature = &v
 		}
 	}
-}
-
-// since UpdatedAt isn't a JMAP-visible field, expose it for tests.
-func (s *Store) lastUpdated(p store.Principal) time.Time {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	t := p.UpdatedAt
-	if ovr, ok := s.defaultOverrides[p.ID]; ok && ovr != nil && ovr.UpdatedAt.After(t) {
-		t = ovr.UpdatedAt
-	}
-	if s.st != nil {
-		rows, err := s.st.Meta().ListJMAPIdentities(context.Background(), p.ID)
-		if err == nil {
-			for _, r := range rows {
-				if u := time.UnixMicro(r.UpdatedAtUs).UTC(); u.After(t) {
-					t = u
-				}
-			}
-		}
-	}
-	return t
 }

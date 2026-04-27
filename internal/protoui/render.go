@@ -72,20 +72,6 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, status int, 
 	_, _ = w.Write(buf.Bytes())
 }
 
-// renderFragment writes an HTMX-friendly partial: just the named
-// fragment template, no layout. Used by hx-get / hx-post handlers
-// that swap a single piece of the page in place.
-func (s *Server) renderFragment(w http.ResponseWriter, name string, data any) {
-	var buf bytes.Buffer
-	if err := s.tmpl.ExecuteTemplate(&buf, name, data); err != nil {
-		s.logger.Error("protoui.render_fragment", "err", err, "tmpl", name)
-		http.Error(w, "render failed", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(buf.Bytes())
-}
-
 // funcMap is the set of helper functions templates call. Kept narrow
 // so the templating language stays predictable; new helpers land here
 // only when a template would otherwise duplicate logic.

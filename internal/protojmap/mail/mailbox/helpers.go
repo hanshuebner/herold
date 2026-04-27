@@ -2,7 +2,6 @@ package mailbox
 
 import (
 	"context"
-	"strconv"
 
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
@@ -49,14 +48,3 @@ func serverFail(err error) *protojmap.MethodError {
 	}
 	return protojmap.NewMethodError("serverFail", err.Error())
 }
-
-// formatBool renders a boolean as the lowercase JMAP string.
-func formatBool(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
-}
-
-// itoa renders a uint64 as decimal.
-func itoa(v uint64) string { return strconv.FormatUint(v, 10) }

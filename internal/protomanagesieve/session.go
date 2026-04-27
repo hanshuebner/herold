@@ -257,14 +257,11 @@ func (ses *session) writeLine(line string) error {
 	return ses.bw.Flush()
 }
 
-// writeOK / writeNO / writeBYE encode the standard ManageSieve status
-// responses with optional response codes and quoted human text.
+// writeOK / writeNO encode the standard ManageSieve status responses
+// with optional response codes and quoted human text.
 func (ses *session) writeOK(text string) error { return ses.writeStatus("OK", "", text) }
 func (ses *session) writeNO(code, text string) error {
 	return ses.writeStatus("NO", code, text)
-}
-func (ses *session) writeBYE(code, text string) error {
-	return ses.writeStatus("BYE", code, text)
 }
 
 func (ses *session) writeStatus(verb, code, text string) error {

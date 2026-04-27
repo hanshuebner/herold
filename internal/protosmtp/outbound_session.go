@@ -24,12 +24,11 @@ type outboundSession struct {
 	conn          net.Conn
 	reader        *bufio.Reader
 	writer        *bufio.Writer
-	deadline      time.Time
 	clk           timeSource
 	policyDomain  string
 	mxHost        string
 	greetingLine  string
-	extensions    map[string]string // upper-case extension name → params
+	extensions    map[string]string // upper-case extension name -> params
 	enhancedCodes bool              // remote advertises ENHANCEDSTATUSCODES
 	pipelining    bool              // remote advertises PIPELINING
 }
@@ -61,12 +60,6 @@ func newOutboundSession(conn net.Conn, mxHost, policyDomain string, clk timeSour
 func (s *outboundSession) hasExtension(name string) bool {
 	_, ok := s.extensions[strings.ToUpper(name)]
 	return ok
-}
-
-// extensionParams returns the parameter string of name, or "" when the
-// extension was not advertised or has no params.
-func (s *outboundSession) extensionParams(name string) string {
-	return s.extensions[strings.ToUpper(name)]
 }
 
 // command writes one CRLF-terminated SMTP command line. It does not read

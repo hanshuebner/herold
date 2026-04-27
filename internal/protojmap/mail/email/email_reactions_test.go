@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/hanshuebner/herold/internal/protojmap"
-	"github.com/hanshuebner/herold/internal/store"
 )
 
 // reactionsFromRaw extracts the "reactions" field from a raw Email/get
@@ -40,36 +39,6 @@ func reactionsFromRaw(raw map[string]any) map[string][]string {
 		out[emoji] = pids
 	}
 	return out
-}
-
-// insertMessageWithMsgID stores a message with a specific Message-ID header
-// value so inbound reaction tests can look it up.
-func (f *fixture) insertMessageWithMsgID(t *testing.T, body, subject, from, to, msgID string) store.Message {
-	t.Helper()
-	ref := f.putBlob(t, body)
-	now := f.srv.Clock.Now()
-	msg := store.Message{
-		MailboxID:    f.inbox.ID,
-		InternalDate: now,
-		ReceivedAt:   now,
-		Size:         ref.Size,
-		Blob:         ref,
-		Envelope: store.Envelope{
-			Subject:   subject,
-			From:      from,
-			To:        to,
-			Date:      now,
-			MessageID: msgID,
-		},
-	}
-	uid, modseq, err := f.srv.Store.Meta().InsertMessage(context.Background(), msg)
-	if err != nil {
-		t.Fatalf("InsertMessage: %v", err)
-	}
-	msg.UID = uid
-	msg.ModSeq = modseq
-	msg.ID = mostRecentMessageID(t, f)
-	return msg
 }
 
 // TestEmail_Reactions_GetEmpty verifies that Email/get returns an absent

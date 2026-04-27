@@ -205,18 +205,6 @@ func (c *client) authenticatePLAIN(t *testing.T, user, pass string) {
 	}
 }
 
-func escapeQuoted(s string) string {
-	var sb strings.Builder
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '"' || c == '\\' {
-			sb.WriteByte('\\')
-		}
-		sb.WriteByte(c)
-	}
-	return sb.String()
-}
-
 // -----------------------------------------------------------------------------
 // CAPABILITY
 // -----------------------------------------------------------------------------

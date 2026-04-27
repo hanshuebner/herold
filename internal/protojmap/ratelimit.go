@@ -1,7 +1,6 @@
 package protojmap
 
 import (
-	"context"
 	"sync"
 	"time"
 
@@ -34,43 +33,6 @@ func newTokenBucket(clk clock.Clock, ratePerSecond, burst int64) *tokenBucket {
 		tokens:     burst,
 		lastRefill: clk.Now(),
 	}
-}
-
-// consume blocks until n tokens are available, then deducts them. The
-// bucket is goroutine-safe via mu; long-running download streams take
-// the lock once per chunk so concurrent downloads from the same
-// principal share the budget.
-func (b *tokenBucket) consume(ctx context.Context, n int64) error {
-	if b == nil || b.ratePS <= 0 {
-		return nil
-	}
-	remaining := n
-	for remaining > 0 {
-		b.mu.Lock()
-		b.refill()
-		step := remaining
-		if step > b.burst {
-			step = b.burst
-		}
-		if b.tokens >= step {
-			b.tokens -= step
-			b.mu.Unlock()
-			remaining -= step
-			continue
-		}
-		need := step - b.tokens
-		wait := time.Duration(need) * time.Second / time.Duration(b.ratePS)
-		if wait <= 0 {
-			wait = time.Millisecond
-		}
-		b.mu.Unlock()
-		select {
-		case <-b.clk.After(wait):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return nil
 }
 
 // tryConsume attempts to consume n tokens without blocking. Returns

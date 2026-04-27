@@ -417,15 +417,4 @@ func VerifyBundleHashes(ctx context.Context, dst string) error {
 	})
 }
 
-// ensureContextActive is a small ctx guard reused by call sites that
-// need to short-circuit early.
-func ensureContextActive(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		return nil
-	}
-}
-
 var _ = time.Time{} // keep time import for future manifest fields

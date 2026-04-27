@@ -120,7 +120,3 @@ var (
 	ErrMalformed       = sentinel(ReasonMalformed)
 	ErrReader          = sentinel(ReasonReaderError)
 )
-
-func newError(r Reason, partIndex int, msg string, cause error) *ParseError {
-	return &ParseError{Reason: r, Message: msg, PartIndex: partIndex, Cause: cause}
-}

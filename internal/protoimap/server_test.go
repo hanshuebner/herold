@@ -11,7 +11,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"math/big"
 	"net"
 	"strings"
@@ -190,16 +189,6 @@ func (c *client) readLine() string {
 		c.t.Fatalf("read: %v (partial=%q)", err, line)
 	}
 	return strings.TrimRight(line, "\r\n")
-}
-
-func (c *client) readN(n int) []byte {
-	c.t.Helper()
-	_ = c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	buf := make([]byte, n)
-	if _, err := io.ReadFull(c.br, buf); err != nil {
-		c.t.Fatalf("read n=%d: %v", n, err)
-	}
-	return buf
 }
 
 func (c *client) write(s string) {

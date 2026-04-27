@@ -1,16 +1,13 @@
 package acme
 
 import (
-	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"math/big"
 )
 
 // jwsSigner abstracts the asymmetric signing key used to authenticate
@@ -68,10 +65,6 @@ func (s *ecdsaSigner) sign(signingInput []byte) ([]byte, error) {
 	copy(out[64-len(sb):], sb)
 	return out, nil
 }
-
-// publicKey returns the underlying public key for callers that need it
-// to compute a JWK thumbprint or for x509 client cert generation.
-func (s *ecdsaSigner) publicKey() crypto.PublicKey { return &s.key.PublicKey }
 
 // jwsThumbprint returns the RFC 7638 JWK thumbprint of pub, base64url
 // encoded. Used for HTTP-01, TLS-ALPN-01 and DNS-01 key authorisation
@@ -183,10 +176,3 @@ func signRequest(s jwsSigner, kid, url, nonce string, payload []byte) (*signedRe
 func generateECDSA() (*ecdsa.PrivateKey, error) {
 	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 }
-
-// errEmptyKey is returned by parseECDSAFromPEM if the input is empty.
-var errEmptyKey = errors.New("acme: empty key PEM")
-
-// bytesToBigInt is a tiny helper that masks a fmt.Errorf wrap when the
-// caller's input is not a valid base64 component. Returned for tests.
-func bytesToBigInt(b []byte) *big.Int { return new(big.Int).SetBytes(b) }

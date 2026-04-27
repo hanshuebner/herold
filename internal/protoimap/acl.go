@@ -181,19 +181,6 @@ func (ses *session) effectiveRights(ctx context.Context, mailboxID store.Mailbox
 	return have, nil
 }
 
-// canLookup reports whether ses.pid has the lookup right on mb. Used
-// by LIST/LSUB to filter shared mailboxes.
-func (ses *session) canLookup(ctx context.Context, mb store.Mailbox) bool {
-	if mb.PrincipalID == ses.pid {
-		return true
-	}
-	have, err := ses.effectiveRights(ctx, mb.ID)
-	if err != nil {
-		return false
-	}
-	return have&store.ACLRightLookup != 0
-}
-
 // -----------------------------------------------------------------------------
 // SETACL <mailbox> <identifier> [+|-]<rights>
 // -----------------------------------------------------------------------------

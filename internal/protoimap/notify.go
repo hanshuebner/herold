@@ -31,8 +31,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/hanshuebner/herold/internal/store"
 )
 
 // notifySelectorKind enumerates the RFC 5465 §6 selector forms the
@@ -75,9 +73,6 @@ const (
 	notifyEventSubscriptionChange
 )
 
-// notifyHasEvent tests one bit; returns true when set.
-func notifyHasEvent(mask, want notifyEventKind) bool { return mask&want == want }
-
 // notifySubscription is one (selector, event-set) pair from a NOTIFY SET
 // command. A session carries zero or more subscriptions; the dispatcher
 // emits an event when any subscription matches.
@@ -105,92 +100,6 @@ type notifyState struct {
 	// subs is the parsed subscription list from the most recent
 	// NOTIFY SET. Replaces wholesale on each SET.
 	subs []notifySubscription
-}
-
-// matchesChange returns the first subscription that matches the given
-// change feed entry, plus the event kind that triggered the match. Used
-// by the dispatcher in IDLE / NOTIFY background loops to decide whether
-// to emit an untagged response.
-func (ns *notifyState) matchesChange(ch store.StateChange, mb *store.Mailbox, selectedID store.MailboxID) (sub *notifySubscription, ev notifyEventKind, ok bool) {
-	if !ns.active {
-		return nil, 0, false
-	}
-	for i := range ns.subs {
-		s := &ns.subs[i]
-		ev := classifyChange(ch)
-		if ev == 0 || !notifyHasEvent(s.events, ev) {
-			continue
-		}
-		if !ns.selectorMatches(s, ch, mb, selectedID) {
-			continue
-		}
-		return s, ev, true
-	}
-	return nil, 0, false
-}
-
-// classifyChange maps a (Kind, Op) pair from the change feed into the
-// NOTIFY event-bit vocabulary. Returns 0 when the change has no NOTIFY
-// surface.
-func classifyChange(ch store.StateChange) notifyEventKind {
-	switch ch.Kind {
-	case store.EntityKindEmail:
-		switch ch.Op {
-		case store.ChangeOpCreated:
-			return notifyEventMessageNew
-		case store.ChangeOpDestroyed:
-			return notifyEventMessageExpunge
-		case store.ChangeOpUpdated:
-			return notifyEventFlagChange
-		}
-	case store.EntityKindMailbox:
-		switch ch.Op {
-		case store.ChangeOpCreated, store.ChangeOpDestroyed:
-			return notifyEventMailboxName
-		case store.ChangeOpUpdated:
-			// We cannot tell rename vs subscribe-flip from the change
-			// row alone; emit both bits and let the per-event mask
-			// filter decide. The dispatcher reads the mailbox row to
-			// disambiguate before formatting the response.
-			return notifyEventMailboxName | notifyEventSubscriptionChange
-		}
-	}
-	return 0
-}
-
-// selectorMatches reports whether sub's selector covers the affected
-// mailbox. mb is the mailbox row for ch (already loaded by the
-// dispatcher). selectedID is the session's currently-SELECTed mailbox
-// (zero when no SELECT is active).
-func (ns *notifyState) selectorMatches(sub *notifySubscription, ch store.StateChange, mb *store.Mailbox, selectedID store.MailboxID) bool {
-	if mb == nil {
-		return false
-	}
-	switch sub.kind {
-	case notifySelectorSelected, notifySelectorSelectedDelayed:
-		return selectedID != 0 && mb.ID == selectedID
-	case notifySelectorInbox:
-		return strings.EqualFold(mb.Name, "INBOX")
-	case notifySelectorPersonal:
-		return true // only one principal scope per session — every owned mailbox qualifies
-	case notifySelectorSubscribed:
-		return mb.Attributes&store.MailboxAttrSubscribed != 0
-	case notifySelectorMailboxes:
-		for _, n := range sub.names {
-			if n == mb.Name || strings.EqualFold(n, mb.Name) {
-				return true
-			}
-		}
-		return false
-	case notifySelectorSubtree:
-		for _, n := range sub.names {
-			if n == mb.Name || strings.HasPrefix(mb.Name, n+"/") || strings.EqualFold(n, mb.Name) {
-				return true
-			}
-		}
-		return false
-	}
-	return false
 }
 
 // parseNotifyArgs parses the NOTIFY command arguments out of a raw

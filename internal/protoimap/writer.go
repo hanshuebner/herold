@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,12 +27,6 @@ func newRespWriter(w io.Writer) *respWriter {
 		bw = bufio.NewWriter(w)
 	}
 	return &respWriter{bw: bw, raw: w}
-}
-
-func (w *respWriter) flush() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.bw.Flush()
 }
 
 // writeLine writes a CRLF-terminated line.
@@ -189,14 +182,6 @@ func formatAddrList(addrs []imap.Address) string {
 	return sb.String()
 }
 
-// formatNumSet renders a SeqSet or UIDSet canonically.
-func formatNumSet(ns imap.NumSet) string {
-	if ns == nil {
-		return ""
-	}
-	return ns.String()
-}
-
 // formatInternalDate renders t in IMAP internal-date form.
 func formatInternalDate(t time.Time) string {
 	if t.IsZero() {
@@ -204,5 +189,3 @@ func formatInternalDate(t time.Time) string {
 	}
 	return `"` + t.Format("02-Jan-2006 15:04:05 -0700") + `"`
 }
-
-func uintString(n uint64) string { return strconv.FormatUint(n, 10) }

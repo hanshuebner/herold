@@ -32,7 +32,6 @@ type fakeDeliverer struct {
 	concurrentByHost map[string]int
 	maxByHost        map[string]int
 	delay            time.Duration
-	clk              clock.Clock
 }
 
 func newFakeDeliverer() *fakeDeliverer {

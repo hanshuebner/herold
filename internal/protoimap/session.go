@@ -34,18 +34,17 @@ const (
 // session is one IMAP connection. All per-connection state lives here; the
 // server keeps a set of pointers for shutdown fan-out.
 type session struct {
-	s          *Server
-	conn       net.Conn
-	br         *bufio.Reader
-	resp       *respWriter
-	remote     string
-	tlsActive  bool
-	state      sessionState
-	logger     *slog.Logger
-	pid        store.PrincipalID
-	bucket     *tokenBucket
-	startTLSFn func() error // nil for implicit TLS / plaintext-locked listeners
-	cmdCount   int
+	s         *Server
+	conn      net.Conn
+	br        *bufio.Reader
+	resp      *respWriter
+	remote    string
+	tlsActive bool
+	state     sessionState
+	logger    *slog.Logger
+	pid       store.PrincipalID
+	bucket    *tokenBucket
+	cmdCount  int
 
 	// serverEndpoint is the RFC 5929 tls-server-end-point binding bytes
 	// for the active TLS connection (zero-length when TLS is not up).
@@ -71,14 +70,12 @@ type session struct {
 }
 
 type selectedMailbox struct {
-	id                     store.MailboxID
-	name                   string
-	uidValidity            store.UIDValidity
-	uidNext                store.UID
-	msgs                   []store.Message // ordered by UID ascending; sequence number is index+1
-	readOnly               bool
-	lastSeenSeq            store.ChangeSeq
-	subscribedToChangeFeed bool
+	id          store.MailboxID
+	name        string
+	uidValidity store.UIDValidity
+	uidNext     store.UID
+	msgs        []store.Message // ordered by UID ascending; sequence number is index+1
+	readOnly    bool
 }
 
 func newSession(s *Server, c net.Conn, tlsActive bool) *session {

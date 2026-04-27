@@ -49,24 +49,6 @@ func (p *problem) Error() string {
 	return fmt.Sprintf("acme problem %s (status %d)", p.Type, p.Status)
 }
 
-// retryable reports whether the problem is one of the ACME error types
-// that RFC 8555 §6 lists as eligible for client-side retry. The three we
-// honour are serverInternal, rateLimited, and badNonce; the rest are
-// terminal.
-func (p *problem) retryable() bool {
-	if p == nil {
-		return false
-	}
-	switch p.Type {
-	case "urn:ietf:params:acme:error:serverInternal",
-		"urn:ietf:params:acme:error:rateLimited",
-		"urn:ietf:params:acme:error:badNonce":
-		return true
-	}
-	// 5xx responses without a typed problem are also worth retrying.
-	return p.Status >= 500
-}
-
 // nonceCache is the supervisor's pool of fresh Replay-Nonce values. The
 // ACME server returns a fresh nonce on every response (RFC 8555 §6.5);
 // we cache them so an authenticated POST does not have to round-trip to

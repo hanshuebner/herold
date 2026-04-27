@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -225,14 +224,4 @@ func rowsForTable(table string) (any, bool) {
 		return &CoachDismissRow{}, true
 	}
 	return nil, false
-}
-
-// closeWithErr closes c and returns its error preferring the
-// caller-supplied existing error.
-func closeWithErr(c io.Closer, prev error) error {
-	cerr := c.Close()
-	if prev != nil {
-		return prev
-	}
-	return cerr
 }

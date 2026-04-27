@@ -64,5 +64,3 @@ func (b *backoff) next() time.Duration {
 	delta := time.Duration(b.rng.Int63n(int64(b.current/2))) - b.current/4
 	return b.current + delta
 }
-
-func (b *backoff) reset() { b.current = 0 }

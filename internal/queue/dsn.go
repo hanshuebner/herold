@@ -308,16 +308,3 @@ func shouldEmitSuccessDSN(notify store.DSNNotifyFlags) bool {
 	}
 	return notify&store.DSNNotifySuccess != 0
 }
-
-// shouldEmitDelayDSN reports whether a delay DSN should be emitted.
-// The receiver default is delay-deliver: emit when NEVER is unset and
-// either DELAY is set or NOTIFY is DSNNotifyNone.
-func shouldEmitDelayDSN(notify store.DSNNotifyFlags) bool {
-	if notify&store.DSNNotifyNever != 0 {
-		return false
-	}
-	if notify == store.DSNNotifyNone {
-		return true
-	}
-	return notify&store.DSNNotifyDelay != 0
-}
