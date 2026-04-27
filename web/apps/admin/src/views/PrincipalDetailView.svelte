@@ -261,6 +261,42 @@
   // --- OIDC tab ---
   let oidcLinkError = $state<string | null>(null);
 
+  interface OIDCProvider {
+    id: string;
+    name: string;
+    issuer: string;
+  }
+  let oidcProviders = $state<OIDCProvider[]>([]);
+  let oidcProvidersLoading = $state(false);
+
+  // Fetch available OIDC providers when the OIDC tab becomes active.
+  $effect(() => {
+    if (activeTab === 'oidc' && oidcProviders.length === 0 && !oidcProvidersLoading) {
+      void loadOIDCProviders();
+    }
+  });
+
+  async function loadOIDCProviders(): Promise<void> {
+    oidcProvidersLoading = true;
+    try {
+      const result = await import('../lib/api/client').then(({ apiGet }) =>
+        apiGet<{ items: OIDCProvider[]; next: string | null }>('/api/v1/oidc/providers'),
+      );
+      if (result.ok && result.data) {
+        oidcProviders = result.data.items ?? [];
+      }
+    } finally {
+      oidcProvidersLoading = false;
+    }
+  }
+
+  /** Providers not yet linked to this principal. */
+  const unlinkedProviders = $derived(
+    oidcProviders.filter(
+      (prov) => !principalDetail.oidcLinks.some((l) => l.provider_id === prov.id),
+    ),
+  );
+
   async function linkOIDC(providerId: string): Promise<void> {
     oidcLinkError = null;
     const result = await principalDetail.beginOIDCLink(id, providerId);
@@ -629,20 +665,14 @@
       <!-- OIDC -->
       {#if activeTab === 'oidc'}
         <div class="tab-section">
-          <div class="section-header">
-            <h3 class="section-title">Linked providers</h3>
-            <button
-              type="button"
-              class="btn-secondary"
-              onclick={() => void linkOIDC('default')}
-            >
-              Link provider
-            </button>
-          </div>
-
           {#if oidcLinkError}
             <p class="form-error" role="alert">{oidcLinkError}</p>
           {/if}
+
+          <!-- Linked providers -->
+          <div class="section-header">
+            <h3 class="section-title">Linked providers</h3>
+          </div>
 
           {#if principalDetail.oidcLinks.length > 0}
             <div class="oidc-list">
@@ -665,6 +695,36 @@
             </div>
           {:else}
             <p class="empty-state">No linked OIDC providers.</p>
+          {/if}
+
+          <!-- Available (unlinked) providers -->
+          {#if oidcProvidersLoading}
+            <div class="spinner" role="status" aria-label="Loading providers" style="margin-top: var(--spacing-05)"></div>
+          {:else if unlinkedProviders.length > 0}
+            <div class="section-header" style="margin-top: var(--spacing-06)">
+              <h3 class="section-title">Link a provider</h3>
+            </div>
+            <div class="oidc-list">
+              {#each unlinkedProviders as prov (prov.id)}
+                <div class="oidc-row">
+                  <div class="oidc-info">
+                    <span class="oidc-provider">{prov.name}</span>
+                    <span class="key-meta">{prov.issuer}</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn-secondary"
+                    onclick={() => void linkOIDC(prov.id)}
+                  >
+                    Link
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {:else if oidcProviders.length > 0}
+            <p class="empty-state" style="margin-top: var(--spacing-05)">All configured providers are already linked.</p>
+          {:else}
+            <p class="empty-state" style="margin-top: var(--spacing-05)">No OIDC providers are configured on this server.</p>
           {/if}
         </div>
       {/if}

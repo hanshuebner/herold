@@ -12,9 +12,10 @@
   const navItems: NavItem[] = [
     { label: 'Dashboard', path: '/dashboard', segment: 'dashboard' },
     { label: 'Principals', path: '/principals', segment: 'principals' },
-    { label: 'Domains', path: '/domains', segment: 'domains', soon: true },
-    { label: 'Queue', path: '/queue', segment: 'queue', soon: true },
-    { label: 'Audit', path: '/audit', segment: 'audit', soon: true },
+    { label: 'Domains', path: '/domains', segment: 'domains' },
+    { label: 'Queue', path: '/queue', segment: 'queue' },
+    { label: 'Audit', path: '/audit', segment: 'audit' },
+    { label: 'Research', path: '/research', segment: 'research' },
   ];
 
   interface Props {
