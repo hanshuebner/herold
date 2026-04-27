@@ -120,22 +120,40 @@ func (stringExtractor) Extract(ctx context.Context, _ store.Message, body io.Rea
 	return string(b), nil
 }
 
-// flushFTS drives the worker through one flush cycle so freshly
-// inserted chat messages become searchable. Capture the flush signal
-// BEFORE advancing the clock to close the race window where a fast
-// worker (under heavy parallel CPU load) can flush between the Advance
-// and the wait.
+// flushFTS drives the worker until its cursor has settled (no advance
+// across two consecutive nudge cycles), so freshly inserted chat
+// messages have all landed in the index. The single-shot pattern was
+// racy under heavy parallel CPU load: the worker could fragment the
+// queued changes across multiple flushes, leaving callers waiting on
+// a broadcast that never closes (or asserting against an undercount).
+// The poll-until-cursor-stable strategy is robust to fragmentation
+// and produces deterministic ordering with respect to subsequent JMAP
+// queries.
 func (f *ftsFixture) flushFTS(t *testing.T) {
 	t.Helper()
-	flushSig := f.worker.CurrentFlushSignal()
-	f.clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
-	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	select {
-	case <-flushSig:
-	case <-waitCtx.Done():
-		t.Fatalf("wait for flush: %v", waitCtx.Err())
+	deadline := time.Now().Add(2 * time.Second)
+	var prev uint64
+	settled := 0
+	for time.Now().Before(deadline) {
+		flushSig := f.worker.CurrentFlushSignal()
+		f.clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
+		select {
+		case <-flushSig:
+		case <-time.After(50 * time.Millisecond):
+		}
+		cur := f.worker.Cursor()
+		if cur == prev {
+			settled++
+			if settled >= 2 {
+				return
+			}
+		} else {
+			settled = 0
+			prev = cur
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	t.Fatalf("flushFTS: worker cursor never settled within 2 s (final: %d)", prev)
 }
 
 func TestMessage_Query_FTS_TextFilter(t *testing.T) {

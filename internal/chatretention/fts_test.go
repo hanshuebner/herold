@@ -118,34 +118,43 @@ func TestWorker_HardDelete_RemovesFromFTSIndex(t *testing.T) {
 		ids = append(ids, id)
 	}
 
-	// Drive the worker through its first flush so all 3 CREATE rows
-	// land in the index. Capture the flush signal BEFORE advancing the
-	// clock so a fast worker (under heavy parallel CPU load) cannot
-	// flush between the Advance and the channel capture and leave the
-	// caller waiting on a fresh post-flush channel that nothing will
-	// close.
-	flushOnce := func() {
+	// Drive the worker until the FTS index reaches the expected hit
+	// count. The previous single-shot flushOnce was racy: under heavy
+	// parallel CPU load the inter-insert clk.Advance(1 s) calls can
+	// wake the worker mid-loop, fragmenting the inserts across multiple
+	// flushes; by the time the test captures CurrentFlushSignal() the
+	// worker has already drained the feed and the next nudge produces
+	// no flush, leaving the test waiting on a broadcast that never
+	// closes (or, if the worker happened to coalesce one batch with
+	// only some of the inserts, asserting against an undercount).
+	//
+	// expectHits polls: nudge the worker, check the index, repeat until
+	// the expected count is observed or a 2 s wall-clock deadline fires.
+	// Robust against any flush-fragmentation timing.
+	expectHits := func(t *testing.T, want int) {
 		t.Helper()
-		flushSig := w.CurrentFlushSignal()
-		clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
-		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		select {
-		case <-flushSig:
-		case <-waitCtx.Done():
-			t.Fatalf("WaitForFlush: %v", waitCtx.Err())
+		deadline := time.Now().Add(2 * time.Second)
+		var got []store.ChatMessageID
+		for time.Now().Before(deadline) {
+			flushSig := w.CurrentFlushSignal()
+			clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
+			select {
+			case <-flushSig:
+			case <-time.After(50 * time.Millisecond):
+			}
+			ids, err := idx.SearchChatMessages(ctx, body, []store.ConversationID{cid}, 0)
+			if err != nil {
+				t.Fatalf("SearchChatMessages: %v", err)
+			}
+			got = ids
+			if len(got) == want {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
+		t.Fatalf("FTS hits never reached %d within 2 s (final: %d, %v)", want, len(got), got)
 	}
-	flushOnce()
-
-	// Confirm SearchChatMessages returns all 3 hits.
-	gotIDs, err := idx.SearchChatMessages(ctx, body, []store.ConversationID{cid}, 0)
-	if err != nil {
-		t.Fatalf("SearchChatMessages (pre-sweep): %v", err)
-	}
-	if len(gotIDs) != 3 {
-		t.Fatalf("pre-sweep hits = %d, want 3 (got %v)", len(gotIDs), gotIDs)
-	}
+	expectHits(t, 3)
 
 	// Advance well past the retention window so the sweep can
 	// hard-delete every row. The retention-sweep predicate is
@@ -169,21 +178,8 @@ func TestWorker_HardDelete_RemovesFromFTSIndex(t *testing.T) {
 		t.Fatalf("retention deleted = %d, want 3", deleted)
 	}
 
-	// Drive the FTS worker through one more flush so the destroy rows
-	// are processed. The worker's loop-without-sleep branch fires when
-	// a batch is full; otherwise it sleeps on clock.After. We
-	// unconditionally Advance past the flush interval to guarantee a
-	// wake.
-	flushOnce()
-
-	// Confirm SearchChatMessages now returns zero hits.
-	gotIDs, err = idx.SearchChatMessages(ctx, body, []store.ConversationID{cid}, 0)
-	if err != nil {
-		t.Fatalf("SearchChatMessages (post-sweep): %v", err)
-	}
-	if len(gotIDs) != 0 {
-		t.Fatalf("post-sweep hits = %d, want 0 (FTS index leaked: %v)", len(gotIDs), gotIDs)
-	}
+	// Poll until the destroy rows have been applied to the FTS index.
+	expectHits(t, 0)
 
 	// Sanity: every metadata row is gone too. Guards against a future
 	// refactor where the FTS-index removal lands but the metadata
