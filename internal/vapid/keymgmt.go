@@ -1,6 +1,7 @@
 package vapid
 
 import (
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -176,9 +177,24 @@ func EncodePrivatePEM(priv *ecdsa.PrivateKey) (string, error) {
 // applicationServerKey delivered to the browser; the encryption layer
 // (RFC 8291) also uses it as ECDH input in 3.8b.
 //
-// Note: elliptic.Marshal is the documented producer of this byte
-// shape; we wrap it so the few call sites do not need to import
-// crypto/elliptic for the one-line operation.
+// Internally we cross over from crypto/ecdsa to crypto/ecdh and call
+// PublicKey.Bytes — the byte shape (0x04 || X || Y) is identical to
+// the now-deprecated elliptic.Marshal.
 func MarshalUncompressed(pub *ecdsa.PublicKey) []byte {
-	return elliptic.Marshal(elliptic.P256(), pub.X, pub.Y)
+	if pub == nil || pub.Curve != elliptic.P256() || pub.X == nil || pub.Y == nil {
+		return nil
+	}
+	// Reconstruct the 65-byte SEC1 uncompressed encoding so the
+	// crypto/ecdh public-key parser accepts it. ecdh's PublicKey.Bytes
+	// then re-emits the same shape.
+	byteLen := (elliptic.P256().Params().BitSize + 7) / 8
+	buf := make([]byte, 1+2*byteLen)
+	buf[0] = 0x04
+	pub.X.FillBytes(buf[1 : 1+byteLen])
+	pub.Y.FillBytes(buf[1+byteLen:])
+	ek, err := ecdh.P256().NewPublicKey(buf)
+	if err != nil {
+		return nil
+	}
+	return ek.Bytes()
 }
