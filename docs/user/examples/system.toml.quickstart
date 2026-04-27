@@ -12,13 +12,10 @@
 #      below uses tls = "none" so these are not consulted at runtime,
 #      but the validator still requires the keys to be present and
 #      both populated. Generate a throwaway pair if you do not have
-#      one to hand:
+#      one to hand, replacing the defaults by whatever you chose in
+#      your system.toml file.
 #
-#        openssl req -x509 -newkey rsa:2048 -nodes \
-#          -keyout ./data/admin.key \
-#          -out ./data/admin.crt \
-#          -subj "/CN=mail.example.local" \
-#          -days 365
+#        ./scripts/make-self-signed-cert data mail.example.com
 #
 # For the real-domain shape (public MX, ACME, DKIM, DMARC, MTA-STS),
 # follow docs/user/quickstart-extended.md.
