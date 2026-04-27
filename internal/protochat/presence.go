@@ -33,13 +33,22 @@ type PresenceTracker struct {
 
 	mu      sync.RWMutex
 	state   map[store.PrincipalID]Presence
-	pending map[store.PrincipalID]chan struct{} // grace-period cancellation
+	pending map[store.PrincipalID]*pendingOffline
 
 	graceWindow time.Duration
 
-	// wg tracks every in-flight ScheduleOffline goroutine so the
-	// owning Server.Shutdown can wait for them to drain.
+	// wg tracks every pending grace-period timer so the owning
+	// Server.Shutdown can wait for in-flight onExpire callbacks to
+	// drain. wg.Add(1) lands when ScheduleOffline schedules a timer;
+	// wg.Done lands when the timer fires (whether the callback runs or
+	// is short-circuited by ctx) or is Stop'd before firing.
 	wg sync.WaitGroup
+}
+
+// pendingOffline tracks a single in-flight grace-period timer.
+type pendingOffline struct {
+	timer clock.Timer
+	ctx   context.Context
 }
 
 // NewPresenceTracker returns a tracker with a 30-second
@@ -56,7 +65,7 @@ func NewPresenceTracker(clk clock.Clock, graceWindow time.Duration) *PresenceTra
 	return &PresenceTracker{
 		clk:         clk,
 		state:       make(map[store.PrincipalID]Presence),
-		pending:     make(map[store.PrincipalID]chan struct{}),
+		pending:     make(map[store.PrincipalID]*pendingOffline),
 		graceWindow: graceWindow,
 	}
 }
@@ -67,11 +76,14 @@ func NewPresenceTracker(clk clock.Clock, graceWindow time.Duration) *PresenceTra
 // pending offline transition.
 func (p *PresenceTracker) Set(pid store.PrincipalID, state string, now time.Time) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.state[pid] = Presence{State: state, LastSeenAt: now}
-	if cancel, ok := p.pending[pid]; ok {
-		close(cancel)
+	po, ok := p.pending[pid]
+	if ok {
 		delete(p.pending, pid)
+	}
+	p.mu.Unlock()
+	if ok {
+		p.stopAndAccount(po)
 	}
 }
 
@@ -106,61 +118,93 @@ func (p *PresenceTracker) ListSubscribed(principals []store.PrincipalID) []Prese
 // ScheduleOffline starts the disconnect-grace window for pid. After
 // graceWindow has elapsed without a reconnect, onExpire is invoked
 // (typically: the broadcaster emits a presence-update with state
-// "offline"). The grace-period goroutine returns early when ctx is
-// cancelled (Server.Shutdown), preserving the in-memory state without
-// firing onExpire so a subsequent restart does not see a spurious
-// offline transition.
+// "offline"). The callback short-circuits when ctx is already
+// cancelled at fire time (Server.Shutdown), preserving the in-memory
+// state without firing onExpire so a subsequent restart does not see
+// a spurious offline transition.
 //
-// The function spawns one goroutine per call; the tracker tracks the
-// goroutine on its WaitGroup so Server.Shutdown can wait for the set
-// to drain. Callers MUST cancel outstanding pending records via Set
-// or CancelOffline; long-lived servers are not affected because
-// graceWindow is bounded.
+// Registration with the clock is synchronous: by the time
+// ScheduleOffline returns, the timer is observable to Clock.Advance
+// in tests. Callers MUST cancel outstanding pending records via Set,
+// CancelOffline, or Drain so long-lived servers do not accumulate
+// timers; graceWindow is bounded so a self-fire eventually clears
+// each entry.
 func (p *PresenceTracker) ScheduleOffline(ctx context.Context, pid store.PrincipalID, onExpire func(now time.Time)) {
-	cancel := make(chan struct{})
+	po := &pendingOffline{ctx: ctx}
 	p.mu.Lock()
 	if existing, ok := p.pending[pid]; ok {
-		close(existing)
+		delete(p.pending, pid)
+		go p.stopAndAccount(existing)
 	}
-	p.pending[pid] = cancel
-	p.mu.Unlock()
-
 	p.wg.Add(1)
-	go func() {
+	po.timer = p.clk.AfterFunc(p.graceWindow, func() {
 		defer p.wg.Done()
-		select {
-		case now := <-p.clk.After(p.graceWindow):
-			p.mu.Lock()
-			if cur, ok := p.pending[pid]; ok && cur == cancel {
-				delete(p.pending, pid)
-				p.state[pid] = Presence{State: "offline", LastSeenAt: now}
-				p.mu.Unlock()
-				if onExpire != nil {
-					onExpire(now)
-				}
-				return
-			}
+		// Acquire the tracker mutex once: we must validate that this
+		// timer is still the live pending entry for pid before it can
+		// safely emit an offline transition. A superseding Set /
+		// ScheduleOffline / CancelOffline either wins the lock and
+		// removes us first (we observe ok=false / cur != po) or loses
+		// it and proceeds against a fresh schedule.
+		p.mu.Lock()
+		cur, ok := p.pending[pid]
+		if !ok || cur != po {
 			p.mu.Unlock()
-		case <-cancel:
-			// Reconnected within the grace window.
-		case <-ctx.Done():
-			// Server-level shutdown: drop the pending entry without
-			// firing onExpire. The tracker's in-memory state is lost
-			// across restarts (REQ-CHAT-54) so a fake offline
-			// transition would only confuse subscribers receiving
-			// stale frames during drain.
-			p.mu.Lock()
-			if cur, ok := p.pending[pid]; ok && cur == cancel {
-				delete(p.pending, pid)
-			}
-			p.mu.Unlock()
+			return
 		}
-	}()
+		// If the supplied ctx has already been cancelled (server
+		// shutdown), drop the pending entry without firing onExpire.
+		// The tracker's in-memory state is non-durable so a synthetic
+		// offline transition during drain would only confuse
+		// subscribers.
+		if ctx.Err() != nil {
+			delete(p.pending, pid)
+			p.mu.Unlock()
+			return
+		}
+		delete(p.pending, pid)
+		now := p.clk.Now()
+		p.state[pid] = Presence{State: "offline", LastSeenAt: now}
+		p.mu.Unlock()
+		if onExpire != nil {
+			onExpire(now)
+		}
+	})
+	p.pending[pid] = po
+	p.mu.Unlock()
 }
 
-// Wait blocks until every in-flight ScheduleOffline goroutine has
-// returned. Used by Server.Shutdown after the server-level ctx has
-// fired so callers can bound the drain by their own timeout.
+// stopAndAccount stops a pending timer and decrements the wg if the
+// stop happened before the timer's callback could run. The callback
+// owns its own wg.Done in the fire path; double-counting is avoided
+// by inspecting Stop's return value.
+func (p *PresenceTracker) stopAndAccount(po *pendingOffline) {
+	if po.timer.Stop() {
+		p.wg.Done()
+	}
+}
+
+// Drain stops every pending grace-period timer. Used by
+// Server.Shutdown to bound the drain: without it, real-clock pending
+// timers would only fire when their graceWindow elapsed, and Wait
+// would block on them. Drain is safe to call concurrently with
+// ScheduleOffline, but new schedules after Drain may still leak.
+func (p *PresenceTracker) Drain() {
+	p.mu.Lock()
+	pending := make([]*pendingOffline, 0, len(p.pending))
+	for _, po := range p.pending {
+		pending = append(pending, po)
+	}
+	p.pending = make(map[store.PrincipalID]*pendingOffline)
+	p.mu.Unlock()
+	for _, po := range pending {
+		p.stopAndAccount(po)
+	}
+}
+
+// Wait blocks until every in-flight ScheduleOffline timer has either
+// fired (and its callback has returned) or been Stop'd. Used by
+// Server.Shutdown after Drain so callers can bound the drain by their
+// own timeout.
 func (p *PresenceTracker) Wait() {
 	p.wg.Wait()
 }
@@ -169,9 +213,12 @@ func (p *PresenceTracker) Wait() {
 // any. Used when a fresh connection lands within the grace window.
 func (p *PresenceTracker) CancelOffline(pid store.PrincipalID) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if cancel, ok := p.pending[pid]; ok {
-		close(cancel)
+	po, ok := p.pending[pid]
+	if ok {
 		delete(p.pending, pid)
+	}
+	p.mu.Unlock()
+	if ok {
+		p.stopAndAccount(po)
 	}
 }

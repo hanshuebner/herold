@@ -243,6 +243,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		c.shutdown(closeGoingAway, "server shutdown")
 	}
 
+	// Stop every pending presence-grace timer so Wait() doesn't block
+	// on real-clock waiters that would otherwise only fire at graceWindow.
+	s.presence.Drain()
+
 	done := make(chan struct{})
 	go func() {
 		s.connWG.Wait()
@@ -388,25 +392,14 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Write the 101 handshake. brw is the buffered writer the http
-	// server handed us; we flush after writing to ensure the
-	// response lands before the codec starts.
-	accept := computeAcceptKey(strings.TrimSpace(key))
-	resp := "HTTP/1.1 101 Switching Protocols\r\n" +
-		"Upgrade: websocket\r\n" +
-		"Connection: Upgrade\r\n" +
-		"Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
-	if _, err := brw.WriteString(resp); err != nil {
-		s.releaseReservation(pid)
-		_ = netConn.Close()
-		return
-	}
-	if err := brw.Flush(); err != nil {
-		s.releaseReservation(pid)
-		_ = netConn.Close()
-		return
-	}
-
+	// Register the connection with the broadcaster BEFORE flushing the
+	// 101 handshake. A client that observes the handshake response and
+	// immediately starts sending frames (or whose peer expects to
+	// receive a fanout to it the instant it connects) must not race
+	// with broadcaster registration: any frame addressed to pid that
+	// arrives between the client unblocking and Register completing
+	// would be silently dropped because byPrinc[pid] would still be
+	// empty. Registering first makes h.connect synchronization tight.
 	cc := s.newChatConn(pid, netConn, brw.Reader)
 	s.connsMu.Lock()
 	s.conns[cc] = struct{}{}
@@ -415,6 +408,29 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	observe.ProtochatConnectionsCurrent.Inc()
 	cc.id = s.broadcaster.Register(pid, cc)
 	s.presence.CancelOffline(pid)
+
+	// Write the 101 handshake. brw is the buffered writer the http
+	// server handed us; we flush after writing to ensure the
+	// response lands before the codec starts. If the handshake fails
+	// to flush, undo the broadcaster registration so a half-open
+	// connection does not appear active.
+	accept := computeAcceptKey(strings.TrimSpace(key))
+	resp := "HTTP/1.1 101 Switching Protocols\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
+	if _, err := brw.WriteString(resp); err != nil {
+		s.unregisterChatConn(cc)
+		s.releaseReservation(pid)
+		_ = netConn.Close()
+		return
+	}
+	if err := brw.Flush(); err != nil {
+		s.unregisterChatConn(cc)
+		s.releaseReservation(pid)
+		_ = netConn.Close()
+		return
+	}
 
 	// Track the connection's run() lifetime on the server-level
 	// WaitGroup so Shutdown can wait for it to drain. The Add must
@@ -429,11 +445,7 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	defer connCancel()
 	cc.run(connCtx)
 
-	s.broadcaster.Unregister(cc.id)
-	s.connsMu.Lock()
-	delete(s.conns, cc)
-	s.connsMu.Unlock()
-	observe.ProtochatConnectionsCurrent.Dec()
+	s.unregisterChatConn(cc)
 	s.releaseReservation(pid)
 
 	// Disconnect-grace: if this was the last connection for pid,
@@ -446,6 +458,18 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 			s.emitPresence(pid, "offline", now)
 		})
 	}
+}
+
+// unregisterChatConn rolls back the broadcaster + connection-tracking
+// state set up in handleUpgrade. Used both on the failure path before
+// run() starts (handshake flush failure) and in the normal teardown
+// after run() returns. Idempotent because broadcaster.Unregister is.
+func (s *Server) unregisterChatConn(cc *chatConn) {
+	s.broadcaster.Unregister(cc.id)
+	s.connsMu.Lock()
+	delete(s.conns, cc)
+	s.connsMu.Unlock()
+	observe.ProtochatConnectionsCurrent.Dec()
 }
 
 // mergedContext returns a context that cancels when either parent
@@ -593,9 +617,13 @@ type chatConn struct {
 	lastPong atomic.Int64
 
 	// per-conversation typing-stop timers. Cancelled and replaced
-	// on a fresh typing.start; deleted on typing.stop.
+	// on a fresh typing.start; deleted on typing.stop. The timers
+	// are scheduled via Clock.AfterFunc so the registration is
+	// synchronous with handleTyping — a test that drives the
+	// FakeClock can rely on the timer being known to the clock the
+	// instant the typing.start fanout becomes observable.
 	typingMu    sync.Mutex
-	typingStops map[string]chan struct{}
+	typingStops map[string]clock.Timer
 }
 
 // newChatConn constructs a chatConn. The returned conn is not yet
@@ -608,7 +636,7 @@ func (s *Server) newChatConn(pid store.PrincipalID, netConn net.Conn, reader *bu
 		reader:      reader,
 		writeQ:      make(chan ServerFrame, s.writeQueueSize),
 		closeCh:     make(chan struct{}),
-		typingStops: make(map[string]chan struct{}),
+		typingStops: make(map[string]clock.Timer),
 	}
 }
 
@@ -893,15 +921,20 @@ func (c *chatConn) handleTyping(in ClientFrame, start bool) {
 		c.send(makeError(ErrCodeInvalid, "marshal", in.ClientID))
 		return
 	}
-	c.srv.broadcaster.EmitToConversation(c.ctx, p.ConversationID, c.pid, ServerFrame{
-		Type:    ServerTypeTyping,
-		Payload: body,
-	})
+	// Schedule the auto-stop BEFORE fanning the typing.start out so
+	// the timer is registered with the clock by the time observers can
+	// see the start frame. Tests that drive the FakeClock can then
+	// Advance past the auto-stop window without racing against an
+	// unregistered waiter.
 	if start {
 		c.scheduleTypingAutoStop(p.ConversationID)
 	} else {
 		c.cancelTypingAutoStop(p.ConversationID)
 	}
+	c.srv.broadcaster.EmitToConversation(c.ctx, p.ConversationID, c.pid, ServerFrame{
+		Type:    ServerTypeTyping,
+		Payload: body,
+	})
 	if in.ClientID != "" {
 		c.send(makeAck(in.ClientID))
 	}
@@ -910,49 +943,62 @@ func (c *chatConn) handleTyping(in ClientFrame, start bool) {
 // scheduleTypingAutoStop replaces any existing auto-stop timer for
 // conv with a fresh one. If the timer fires before another
 // typing.start lands, the server emits a server-generated
-// typing.stop on behalf of the connection.
+// typing.stop on behalf of the connection. Registration is
+// synchronous (Clock.AfterFunc) so the timer is observable by the
+// clock the instant this returns.
 func (c *chatConn) scheduleTypingAutoStop(conv string) {
 	c.typingMu.Lock()
-	if cancel, ok := c.typingStops[conv]; ok {
-		close(cancel)
+	if existing, ok := c.typingStops[conv]; ok {
+		existing.Stop()
 	}
-	cancel := make(chan struct{})
-	c.typingStops[conv] = cancel
-	c.typingMu.Unlock()
-
-	go func() {
-		select {
-		case <-c.srv.clk.After(c.srv.typingAutoStop):
-			body, err := json.Marshal(outboundTyping{
-				ConversationID:    conv,
-				SenderPrincipalID: c.pid,
-				State:             "stop",
-			})
-			if err != nil {
-				return
-			}
-			c.srv.broadcaster.EmitToConversation(c.ctx, conv, c.pid, ServerFrame{
-				Type:    ServerTypeTyping,
-				Payload: body,
-			})
+	pid := c.pid
+	clk := c.srv.clk
+	bcast := c.srv.broadcaster
+	connCtx := c.ctx
+	var thisTimer clock.Timer
+	thisTimer = clk.AfterFunc(c.srv.typingAutoStop, func() {
+		// If the connection has shut down, drop the fanout; the
+		// peer has already seen typing stop via the close.
+		if connCtx != nil && connCtx.Err() != nil {
 			c.typingMu.Lock()
-			if cur, ok := c.typingStops[conv]; ok && cur == cancel {
+			if cur, ok := c.typingStops[conv]; ok && cur == thisTimer {
 				delete(c.typingStops, conv)
 			}
 			c.typingMu.Unlock()
-		case <-cancel:
-		case <-c.ctx.Done():
+			return
 		}
-	}()
+		body, err := json.Marshal(outboundTyping{
+			ConversationID:    conv,
+			SenderPrincipalID: pid,
+			State:             "stop",
+		})
+		if err != nil {
+			return
+		}
+		bcast.EmitToConversation(connCtx, conv, pid, ServerFrame{
+			Type:    ServerTypeTyping,
+			Payload: body,
+		})
+		c.typingMu.Lock()
+		if cur, ok := c.typingStops[conv]; ok && cur == thisTimer {
+			delete(c.typingStops, conv)
+		}
+		c.typingMu.Unlock()
+	})
+	c.typingStops[conv] = thisTimer
+	c.typingMu.Unlock()
 }
 
 // cancelTypingAutoStop drops a pending auto-stop for conv, if any.
 func (c *chatConn) cancelTypingAutoStop(conv string) {
 	c.typingMu.Lock()
-	defer c.typingMu.Unlock()
-	if cancel, ok := c.typingStops[conv]; ok {
-		close(cancel)
+	timer, ok := c.typingStops[conv]
+	if ok {
 		delete(c.typingStops, conv)
+	}
+	c.typingMu.Unlock()
+	if ok {
+		timer.Stop()
 	}
 }
 
