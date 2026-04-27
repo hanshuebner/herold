@@ -1,0 +1,603 @@
+# Manual test runbook
+
+This runbook covers the herold user-documentation validation steps that
+cannot be automated inside a clean Debian container — anything that
+needs a real domain, public DNS, public IP, port 25 reachability, an
+external IdP, an LLM endpoint, or a smart-host SMTP relay with real
+credentials.
+
+The README quickstart is fully covered by automated end-to-end
+validation; do not re-run it from this runbook. This runbook
+complements that work by walking the parts the automation skipped.
+
+Each section names:
+
+- the source doc and its section heading,
+- the pre-conditions you must arrange first,
+- the exact commands to run (substituting `example.com` for your domain
+  throughout),
+- the verification method,
+- the pass criteria.
+
+Work top-to-bottom. Stop at the first concrete failure and capture it
+in the same structured-report format used by the automated validator
+(`DOC / STEP / RAN / EXPECTED / OBSERVED / CATEGORY`).
+
+---
+
+## 0. Required infrastructure (do this before anything below)
+
+Before starting the DNS-bound walkthroughs, arrange:
+
+- [ ] **A domain you control** with DNS edit access at the registrar or
+  DNS provider. The runbook uses `example.com`; substitute your real
+  domain everywhere.
+- [ ] **A server with a public IPv4** (and ideally IPv6). A cloud VM, a
+  bare-metal host, or a home server with port-forward configured.
+- [ ] **TCP/25 outbound reachable.** Many residential ISPs and major
+  cloud providers (AWS, GCP, Azure on default plans) block port 25
+  outbound. Verify before starting:
+  ```
+  nc -vz mx.gmail.com 25
+  ```
+  If the connection is refused or times out, request an unblock from
+  the ISP/cloud provider, or plan to test outbound delivery via a
+  smart host instead (smart-host implementation lands in Wave 3.1, so
+  this is a deferred path until that wave merges).
+- [ ] **Reverse DNS** for the host's public IP, configured at the ISP /
+  cloud provider so `<public-ip>` resolves to `mail.example.com`.
+  Verify with `dig -x <public-ip>`.
+- [ ] **An IMAP client** for inbound verification (Thunderbird, Apple
+  Mail, mutt).
+- [ ] **A second mailbox** outside `example.com` (Gmail, iCloud, your
+  mobile carrier) for end-to-end mail-loop testing.
+
+---
+
+## 1. docs/user/install.md — deferred install paths
+
+### 1.1 Docker image build and run
+
+**Source:** `docs/user/install.md` "From Docker" section.
+
+**Pre-conditions:** Docker daemon, network access to Docker Hub.
+
+**Commands:**
+
+```bash
+docker build -f deploy/docker/Dockerfile -t herold:dev .
+mkdir -p ./test-run
+cp docs/user/examples/system.toml.quickstart ./test-run/system.toml
+docker compose -f docs/user/examples/docker-compose.yml up -d
+docker compose -f docs/user/examples/docker-compose.yml logs herold
+```
+
+**Verification:** the compose stack's `herold` container reaches the
+`herold: ready` log line and binds the listeners declared in
+`./test-run/system.toml`. `docker compose ps` shows the container as
+`Up (healthy)` once the healthcheck has had one cycle.
+
+**Pass criteria:** ready log emitted; container stays up for at least
+60 seconds; no panics in the log.
+
+### 1.2 Standard-port `server start` (production ports)
+
+**Source:** `docs/user/install.md` "First-run bootstrap / Start the
+server" section.
+
+**Pre-conditions:** running as root (or the binary has
+`cap_net_bind_service+ep` set), `/etc/herold/system.toml` configured to
+bind ports 25 / 143 / 993 / 80 / 443. A writable `data_dir`. The
+quickstart config is loopback-only; either copy and edit it or use the
+real-domain config from `quickstart-extended.md`.
+
+**Commands:**
+
+```bash
+sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/herold
+herold server start --system-config /etc/herold/system.toml
+```
+
+**Verification:** `ss -tlnp | grep -E ':(25|143|993|80|443)\b'`
+confirms all five privileged ports are bound by herold.
+
+**Pass criteria:** binary stays up; no `permission denied` errors in
+log; all required listeners bound on the documented ports.
+
+### 1.3 Postgres backend
+
+**Source:** `docs/user/install.md` "Storage backend" section.
+
+**Pre-conditions:** a reachable Postgres instance (recent stable
+version), an empty database the herold user can `CREATE TABLE` in.
+
+**Commands:**
+
+```toml
+# system.toml
+[server.storage]
+backend = "postgres"
+
+[server.storage.postgres]
+dsn = "postgres://herold:secret@db.example.local:5432/herold?sslmode=require"
+```
+
+```bash
+herold server start --system-config /path/to/system.toml
+```
+
+**Verification:** the boot log line records
+`storage_backend=postgres`; on first start herold runs migrations and
+the database contains the herold schema (`\dt` in psql). `herold
+diag migrate --help` shows the SQLite→Postgres migration flags.
+
+**Pass criteria:** server reaches `ready`; subsequent
+`herold domain add example.com` succeeds and creates rows visible in
+the Postgres database.
+
+### 1.4 SQLite → Postgres backend migration
+
+**Source:** `docs/user/operate.md` "Backend migration" section.
+
+**Pre-conditions:** a herold instance with an existing SQLite store
+(populated via the quickstart, with at least one domain and one
+principal) plus a reachable empty Postgres instance.
+
+**Commands:**
+
+```bash
+herold server stop
+herold diag migrate --to-backend postgres --to-dsn 'postgres://...' --to-blob-dir /var/lib/herold/blobs
+# update system.toml to point at postgres
+herold server start --system-config /etc/herold/system.toml
+herold principal list  # should match the pre-migration list
+```
+
+**Verification:** the post-migration `principal list`, `domain list`,
+and `apikey list` outputs match the pre-migration baseline. The
+SQLite file is left intact for rollback.
+
+**Pass criteria:** zero data loss; server boots cleanly on Postgres.
+
+---
+
+## 2. docs/user/operate.md — deferred operator runbook items
+
+### 2.1 ACME issuance against the public Let's Encrypt directory
+
+**Source:** `docs/user/operate.md` "TLS / ACME" section.
+
+**Pre-conditions:** a public IP, DNS A/AAAA for `mail.example.com` and
+`mta-sts.example.com` published and propagated (TTL 300 while
+iterating), inbound TCP/80 reachable for HTTP-01 (or TCP/443 for
+TLS-ALPN-01).
+
+**Commands:** First, switch to the **staging** ACME directory while
+iterating to avoid Let's Encrypt's production rate limits:
+
+```toml
+[acme]
+email = "ops@example.com"
+directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
+```
+
+```bash
+herold server start --system-config /etc/herold/system.toml
+herold cert status
+```
+
+Once the staging issuance succeeds, switch to production:
+
+```toml
+[acme]
+directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+```
+
+**Verification:** `herold cert status` shows the cert with a non-empty
+`not_after` ~90 days out; `openssl s_client -connect mail.example.com:993`
+reports a chain that ends at the Let's Encrypt root.
+
+**Pass criteria:** cert issued without operator intervention; auto-renew
+log line fires on the documented schedule (REQ-OPS-94).
+
+### 2.2 File-based cert live reload
+
+**Source:** `docs/user/operate.md` "TLS / file source" section.
+
+**Pre-conditions:** `[server.admin_tls]` (or another TLS-enabled
+listener) is configured with `source = "file"` pointing at a key/cert
+pair on disk. A second key/cert pair (e.g. issued for a renewal) is
+ready to swap in.
+
+**Commands:**
+
+```bash
+# capture the original fingerprint
+openssl x509 -in /etc/herold/admin.crt -noout -fingerprint -sha256
+
+# atomically replace
+cp new-admin.crt new-admin.key /etc/herold/
+mv -f new-admin.crt /etc/herold/admin.crt
+mv -f new-admin.key /etc/herold/admin.key
+
+# trigger reload
+herold server reload  # or: pkill -HUP herold
+openssl s_client -connect 127.0.0.1:9443 -showcerts < /dev/null \
+    | openssl x509 -noout -fingerprint -sha256
+```
+
+**Verification:** the post-reload fingerprint matches the new cert,
+not the original. Existing in-flight connections are not torn down.
+
+**Pass criteria:** new cert serves on next handshake; no log error
+about the swap; live connections preserved.
+
+### 2.3 OTLP trace export
+
+**Source:** `docs/user/operate.md` "Observability / OTLP" section.
+
+**Pre-conditions:** an OTLP collector reachable from the herold host
+(local Jaeger / Grafana Tempo / OpenTelemetry Collector all work).
+
+**Commands:**
+
+```toml
+[observability]
+otlp_endpoint = "http://otelcol.example.local:4318"
+```
+
+```bash
+herold server start --system-config /etc/herold/system.toml
+# generate a span
+curl -s http://127.0.0.1:8080/api/v1/healthz/ready
+```
+
+**Verification:** the collector receives spans named after the herold
+HTTP / SMTP / IMAP request handlers within seconds of the request.
+
+**Pass criteria:** at least one span per request reaches the collector.
+
+### 2.4 OIDC RP flow (per-user external federation)
+
+**Source:** `docs/user/operate.md` "OIDC RP" section and
+`docs/user/administer.md` "OIDC RP federation" section.
+
+**Pre-conditions:** an external IdP (Google, Okta, Auth0, or any
+OIDC-conformant provider) with a registered client whose redirect URI
+matches `https://mail.example.com/api/v1/oidc/callback/<provider>`.
+The provider's client id and client secret are on hand.
+
+**Commands:**
+
+```bash
+herold oidc provider add google \
+    --issuer https://accounts.google.com \
+    --client-id <id> \
+    --client-secret <secret>
+herold oidc provider list
+```
+
+The user-side flow then runs through the SPA at
+`https://mail.example.com/login`: pick the provider, complete the IdP
+challenge, return to the SPA, confirm the principal is logged in.
+
+```bash
+herold oidc link-list user@example.com
+```
+
+**Verification:** the `link-list` output shows the bound provider
+identity for `user@example.com`. A subsequent IMAP / JMAP login as
+that principal succeeds without a password.
+
+**Pass criteria:** end-to-end IdP login flow returns the user to the
+SPA logged in; the linkage is durable across restarts.
+
+### 2.5 Smart-host outbound delivery — DEFERRED to Wave 3.1
+
+The smart-host config shape lives in
+`docs/user/examples/system.toml.smarthost` but the implementation
+lands in Wave 3.1. Skip this section until Wave 3.1 has merged.
+
+---
+
+## 3. docs/user/administer.md — deferred admin flows
+
+### 3.1 LLM-backed categorisation
+
+**Source:** `docs/user/administer.md` "Categorise" section.
+
+**Pre-conditions:** an LLM endpoint configured for the `spam-llm`
+plugin — either a local Ollama instance, an OpenAI-compatible API, or
+the LLM your operator standard prescribes. The plugin must be loaded
+under `[[plugin]]` in `system.toml` with the relevant endpoint /
+credentials.
+
+**Commands:**
+
+```bash
+herold categorise prompt set user@example.com < ./prompts/sales.txt
+herold categorise list-categories user@example.com
+herold categorise recategorise user@example.com --since 7d
+```
+
+**Verification:** `recategorise` produces non-empty output; INBOX
+categories on the user's mailbox change to reflect the new prompt.
+
+**Pass criteria:** at least one message is recategorised within 30s of
+issuing the command.
+
+### 3.2 TOTP enrol → confirm → disable
+
+**Source:** `docs/user/administer.md` "TOTP" section.
+
+**Pre-conditions:** a working herold instance with the public listener
+reachable from a browser. An authenticator app (Authy, Google
+Authenticator, Aegis) on a phone or laptop.
+
+**Commands:**
+
+```bash
+herold principal totp enroll user@example.com --json
+# scan the printed otpauth:// URI into the authenticator
+# user signs in to /settings (the SPA self-service surface) and
+# enters the current 6-digit code to confirm
+herold principal totp disable user@example.com --current-password '<pw>'
+```
+
+**Verification:** `herold principal show user@example.com` reports
+`totp_enabled: true` after confirmation, then `totp_enabled: false`
+after disable.
+
+**Pass criteria:** enrol → confirm → disable round-trips with no error;
+TOTP step-up is enforced on admin login between confirm and disable.
+
+### 3.3 ManageSieve / JMAP Sieve client flows
+
+**Source:** `docs/user/administer.md` "Sieve" section.
+
+**Pre-conditions:** a ManageSieve client (sieve-connect from
+sieve-connect or Pigeonhole, the Roundcube ManageSieve plugin,
+Thunderbird with the Sieve add-on) or a JMAP-Sieve-aware client.
+
+**Commands:**
+
+```bash
+sieve-connect -s mail.example.com -p 4190 -u user@example.com
+> putscript test.sieve <<'EOF'
+require ["fileinto"];
+if header :contains "subject" "newsletter" {
+    fileinto "Newsletters";
+}
+EOF
+> activate test.sieve
+> listscripts
+> logout
+```
+
+**Verification:** `herold principal show user@example.com --json |
+jq .sieve` confirms the script is active. Send a test message with
+`Subject: newsletter` from the second mailbox; the message lands in
+the `Newsletters` folder, not INBOX.
+
+**Pass criteria:** script uploaded; activate succeeded; subsequent
+mail is filtered correctly.
+
+---
+
+## 4. docs/user/quickstart-extended.md — real-domain end-to-end
+
+### 4.1 DNS records
+
+**Source:** `docs/user/quickstart-extended.md` Step 1.
+
+Publish the four-record minimum at the registrar:
+
+```
+mail.example.com.    300 IN A     <public-ipv4>
+mail.example.com.    300 IN AAAA  <public-ipv6>
+example.com.         300 IN MX    10 mail.example.com.
+example.com.         300 IN TXT   "v=spf1 mx -all"
+```
+
+(Use `~all` instead of `-all` while iterating for the first few
+weeks.)
+
+**Verification (run from a third-party resolver):**
+
+```bash
+dig A    mail.example.com @1.1.1.1
+dig AAAA mail.example.com @1.1.1.1
+dig MX   example.com      @1.1.1.1
+dig TXT  example.com      @1.1.1.1
+```
+
+**Pass criteria:** every record returns at the published value; TTL is
+respected.
+
+### 4.2 DKIM key generation and publication
+
+**Source:** `docs/user/quickstart-extended.md` Step 3.
+
+**Note:** the inline `herold dkim show / generate` CLI is not yet
+wired in Wave 3 (returns 501 today). Until it lands, exercise the
+keypair indirectly:
+
+```bash
+herold domain add example.com
+# Inspect the SQLite or Postgres store for the generated key body
+# (alternative: query the planned REST endpoint
+#   GET /api/v1/domains/example.com/dkim
+# once the protoadmin merge ships it.)
+```
+
+Publish the printed DKIM TXT (or the body fetched from the store) at:
+
+```
+default._domainkey.example.com. 300 IN TXT "v=DKIM1; k=rsa; p=..."
+```
+
+Some DNS providers split long TXT records on whitespace; herold's
+keys are 2048-bit, so the TXT body is long enough that this matters.
+Use the provider's "long TXT" mode or concatenate quoted strings per
+RFC 6376.
+
+**Verification:**
+
+```bash
+dig TXT default._domainkey.example.com @1.1.1.1
+```
+
+**Pass criteria:** the published TXT body is byte-identical to what
+herold generated; subsequent outbound mail to a DKIM-verifying
+receiver (Gmail, Microsoft) shows `dkim=pass` in the headers.
+
+### 4.3 ACME-issued cert for `mail.example.com` and `mta-sts.example.com`
+
+Covered in 2.1 above; the SAN must include both names so MTA-STS can
+serve over HTTPS on the same account.
+
+### 4.4 First inbound test
+
+**Source:** `docs/user/quickstart-extended.md` Step 5.
+
+**Pre-conditions:** A/AAAA + MX + SPF + DKIM published; cert issued;
+herold bound to standard ports; at least one principal (e.g.
+`herold principal create user@example.com`).
+
+**Commands:**
+
+```bash
+# from the second mailbox (Gmail, iCloud, mobile carrier), send:
+echo "Test inbound delivery" | mail -s "test" user@example.com
+
+# on the herold host
+herold queue list           # should be empty / draining
+tail -f /var/log/herold.log # watch the SMTP session
+```
+
+Connect IMAP client to `mail.example.com:993` (IMAPS) with the user's
+credentials.
+
+**Verification:** the message lands in INBOX within ~30 seconds. The
+log shows an inbound SMTP session with a correlation id, then a
+delivery line.
+
+**Pass criteria:** message received; not bounced; SMTP session uses
+TLS; the SPF + DKIM verification recorded in the
+`Authentication-Results` header is `pass`.
+
+### 4.5 DMARC publication and report monitoring
+
+**Source:** `docs/user/quickstart-extended.md` Step 6.
+
+Publish:
+
+```
+_dmarc.example.com. 300 IN TXT "v=DMARC1; p=quarantine; rua=mailto:dmarc-reports@example.com; pct=100"
+```
+
+Add the alias:
+
+```bash
+herold alias add dmarc-reports@example.com admin@example.com
+```
+
+The `herold reports dmarc list` CLI is not yet wired (Wave 3.x); the
+REST surface `/api/v1/reports/dmarc` is also pending. For now, the
+reports themselves arrive as ordinary mail to the alias address; you
+can read the XML attachment manually from INBOX in your IMAP client
+to confirm receivers (Google, Microsoft, Yahoo) are reporting on
+your domain.
+
+**Verification:** within 24 hours of publication, at least one
+aggregate report XML attachment appears in INBOX of `admin@example.com`.
+
+**Pass criteria:** at least one report received; the `<source_ip>` in
+the report matches the herold host's public IP; `disposition` is
+`none` (or `quarantine`/`reject` per the published policy).
+
+### 4.6 MTA-STS policy publication
+
+**Source:** `docs/user/quickstart-extended.md` Step 7.
+
+Publish the TXT:
+
+```
+_mta-sts.example.com. 300 IN TXT "v=STSv1; id=20260427000000Z;"
+```
+
+Confirm herold serves the policy file (it is hosted out of the admin
+vhost when MTA-STS is enabled for the domain):
+
+```bash
+curl -i https://mta-sts.example.com/.well-known/mta-sts.txt
+```
+
+The body should be:
+
+```
+version: STSv1
+mode: enforce
+mx: mail.example.com
+max_age: 86400
+```
+
+**Verification:**
+
+```bash
+dig TXT _mta-sts.example.com @1.1.1.1
+curl https://mta-sts.example.com/.well-known/mta-sts.txt
+```
+
+**Pass criteria:** TXT and policy file both serve correctly; the
+HTTPS cert chain validates; senders that honour MTA-STS (Gmail does)
+log the policy fetch and refuse to fall back to plaintext.
+
+### 4.7 TLS-RPT
+
+**Source:** `docs/user/quickstart-extended.md` Step 7 / TLS-RPT.
+
+Publish:
+
+```
+_smtp._tls.example.com. 300 IN TXT "v=TLSRPTv1; rua=mailto:tlsrpt-reports@example.com"
+```
+
+```bash
+herold alias add tlsrpt-reports@example.com admin@example.com
+```
+
+**Verification:** within 24 hours, daily TLS report JSON attachments
+arrive at `tlsrpt-reports@example.com`.
+
+**Pass criteria:** at least one TLS report received; reports show
+no downgrade attempts unless an actual MITM is in play.
+
+---
+
+## 5. Sign-off checklist
+
+Tick once you have confirmed each section pass / N/A. Capture
+failures with the structured-report format and feed them back into
+the next docs validation cycle.
+
+- [ ] 0. Required infrastructure provisioned
+- [ ] 1.1 Docker image build and run
+- [ ] 1.2 Standard-port `server start`
+- [ ] 1.3 Postgres backend
+- [ ] 1.4 SQLite → Postgres migration
+- [ ] 2.1 ACME issuance (staging then production)
+- [ ] 2.2 File-based cert live reload
+- [ ] 2.3 OTLP trace export
+- [ ] 2.4 OIDC RP flow
+- [ ] 2.5 Smart host — N/A until Wave 3.1
+- [ ] 3.1 LLM-backed categorisation
+- [ ] 3.2 TOTP enrol → confirm → disable
+- [ ] 3.3 ManageSieve / JMAP Sieve client flows
+- [ ] 4.1 DNS records published and resolving
+- [ ] 4.2 DKIM key published; outbound DKIM-pass
+- [ ] 4.3 ACME cert covers both `mail` and `mta-sts` SANs
+- [ ] 4.4 First inbound test (external sender → INBOX)
+- [ ] 4.5 DMARC report received
+- [ ] 4.6 MTA-STS TXT and policy file serve correctly
+- [ ] 4.7 TLS-RPT report received
