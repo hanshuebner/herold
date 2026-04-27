@@ -136,9 +136,9 @@ defence-in-depth.
 
 A production config without an explicit `kind="admin"` listener is
 **rejected at validate** with a migration message. Set
-`[server.dev_mode] = true` to bypass the check during development;
-`dev_mode` co-mounts both handlers on a single listener (the in-
-handler scope check is the boundary in that shape).
+`server.dev_mode = true` in `system.toml` to bypass the check during
+development; `dev_mode` co-mounts both handlers on a single listener
+(the in-handler scope check is the boundary in that shape).
 
 ```toml
 [[listener]]
@@ -390,7 +390,7 @@ directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 When present, herold registers an ACME account at first start (key
 stored at `data_dir/acme/account.key`, mode 0600), provisions a cert
 for `server.hostname`, and schedules automatic renewal at 1/3 remaining
-lifetime (REQ-OPS-53). Use `herold cert list` to inspect issued certs.
+lifetime (REQ-OPS-53). Use `herold cert status` to inspect issued certs.
 
 ### `[observability]` - log + metrics + traces
 
@@ -469,8 +469,6 @@ listener regardless of `[server.admin_tls]`. Both `cert_file` and
 `key_file` must be set or both empty.
 
 ### Cert lifecycle visibility
-
-Once protoadmin lands:
 
 ```bash
 herold cert status                  # list each cert: hostname, issuer, NotBefore/NotAfter, SAN list, source.
@@ -598,7 +596,8 @@ The bundle directory contains:
 
 - `manifest.json` - schema_version, backup_version, created_at,
   backend, per-table row counts, blob count and bytes, total bytes.
-- `<table>.jsonl` - one JSONL file per metadata table.
+- `metadata/<table>.jsonl` - one JSONL file per metadata table,
+  under a `metadata/` subdirectory.
 - `blobs/<sha256-prefix>/<sha256>` - content-addressed message
   blobs.
 
@@ -632,7 +631,7 @@ herold diag restore --from /var/backups/herold/2026-04-25 --mode fresh
 - `replace` - truncates each target table before re-inserting.
 
 Restart the server. Verify with `herold server status` and
-`/healthz/ready`.
+`/api/v1/healthz/ready`.
 
 ### Off-site backup
 
@@ -712,28 +711,69 @@ significant output volume.
 ### Metrics
 
 Prometheus-format on `/metrics`. Default bind is `127.0.0.1:9090`.
-The handler does not perform authentication. The minimum metric
-families (REQ-OPS-91):
+The handler does not perform authentication.
 
-- `herold_smtp_connections_total{listener,status}`
-- `herold_smtp_messages_total{direction,status}`
-- `herold_imap_sessions_active`
-- `herold_jmap_requests_total{method,status}`
-- `herold_queue_size{stage}`, `herold_queue_oldest_seconds`
-- `herold_delivery_attempts_total{status}`,
-  `herold_delivery_duration_seconds` (histogram)
-- `herold_spam_verdict_total{verdict}`,
-  `herold_spam_confidence` (histogram),
-  `herold_spam_classifier_latency_seconds`,
-  `herold_spam_classifier_failures_total`
-- `herold_plugin_invocations_total{plugin,method,status}`,
-  `herold_plugin_latency_seconds{plugin,method}`,
-  `herold_plugin_state{plugin}`,
-  `herold_plugin_restarts_total{plugin}`
-- `herold_storage_bytes{type}`, `herold_storage_messages_total{type}`
-- `herold_tls_cert_expiry_seconds{hostname}`
-- `herold_auth_attempts_total{protocol,result}`
+#### Always-emitted metric families
+
+These families appear on every running instance (registered at server
+startup, not gated on optional subsystems) (REQ-OPS-91):
+
+- `herold_admin_requests_total{path_pattern,method,status}` - counter.
+- `herold_admin_request_duration_seconds{path_pattern}` - histogram.
+- `herold_admin_rate_limited_total{key}` - counter.
+- `herold_store_metadata_op_duration_seconds{op}` - histogram.
+- `herold_store_blobs_bytes`, `herold_store_blobs_count` - gauges.
+- `herold_queue_items{state}` - gauge; rows per lifecycle state
+  (`queued`, `deferred`, `inflight`, `done`, `failed`, `held`).
+- `herold_queue_deliveries_total{outcome}` - counter.
+- `herold_queue_delivery_duration_seconds{outcome}` - histogram.
+- `herold_tls_cert_expiry_seconds{hostname}` - gauge (Unix NotAfter).
+- `herold_tls_cert_renewal_errors_total` - counter.
+- `herold_auth_attempts_total{kind,outcome}` - counter; `kind` is
+  `password|totp|oauth|apikey`; `outcome` is `ok|fail|rate_limited`.
+- `herold_plugin_calls_total{name,method,outcome}` - counter.
+- `herold_plugin_call_duration_seconds{name,method}` - histogram.
+- `herold_plugin_up{name}` - gauge; 1 when the plugin is healthy.
 - Go runtime (`go_goroutines`, `go_memstats_*`, `go_gc_*`).
+
+#### Conditionally emitted metrics
+
+These families appear only when the corresponding subsystem is loaded
+or active:
+
+- **IMAP** (when an IMAP listener is configured):
+  `herold_imap_sessions_active`,
+  `herold_imap_sessions_total{outcome}`,
+  `herold_imap_idle_active`,
+  `herold_imap_commands_total{command}`.
+- **SMTP inbound** (when an SMTP listener is bound):
+  `herold_smtp_sessions_active{listener}`,
+  `herold_smtp_sessions_total{listener,outcome}`,
+  `herold_smtp_messages_accepted_total{listener}`,
+  `herold_smtp_messages_rejected_total{listener,reason}`,
+  `herold_smtp_data_bytes_total{listener,direction}`.
+- **SMTP outbound / smart-host** (when the outbound worker is active):
+  `herold_smtp_outbound_total{path,outcome}`,
+  `herold_smtp_outbound_connect_seconds{path}` (histogram),
+  `herold_smtp_smarthost_fallback_total{from,to}`.
+- **FTS** (when the Bleve index is active):
+  `herold_fts_indexing_lag_seconds`,
+  `herold_fts_indexed_messages_total`,
+  `herold_fts_query_duration_seconds`.
+- **Chat** (when `[server.chat] enabled = true`):
+  `herold_protochat_connections_current`,
+  `herold_protochat_frames_in_total{type}`,
+  and related chat metrics.
+- **Video calls** (when `[server.call] enabled = true`):
+  `herold_protocall_calls_started_total` and related call metrics.
+- **Image proxy** (when `[server.image_proxy] enabled = true`):
+  `herold_protoimg_requests_total{outcome}` and related proxy metrics.
+- **LLM categoriser** (when a categoriser is configured):
+  `herold_categorise_calls_total{outcome}`,
+  `herold_categorise_call_duration_seconds`.
+- **Directory plugin** (when a directory plugin is bound):
+  `herold_directory_resolve_rcpt_total{plugin,action}` and related
+  directory metrics.
 
 Operator obligation per STANDARDS section 7: if `metrics_bind` is
 non-loopback, front `/metrics` with TLS + auth at a reverse proxy.
@@ -758,11 +798,11 @@ No built-in trace storage - ship to Jaeger / Tempo / Datadog / etc.
 
 ### Health endpoints
 
-- `GET /healthz/live` - liveness. 200 if the process is running.
-- `GET /healthz/ready` - readiness. 200 only if the store is open,
-  listeners are bound, the ACME account loaded (when applicable),
-  every critical plugin is up, and no critical errors fired in the
-  last N seconds. 503 otherwise.
+- `GET /api/v1/healthz/live` - liveness. 200 if the process is running.
+- `GET /api/v1/healthz/ready` - readiness. 200 only if the store is
+  open, listeners are bound, the ACME account loaded (when
+  applicable), every critical plugin is up, and no critical errors
+  fired in the last N seconds. 503 otherwise.
 
 Both are unauthenticated (REQ-OPS-112) and exposed on the admin
 listener.
@@ -845,15 +885,15 @@ first invoked and idle out.
 
 ### Inspect plugin state
 
-`herold_plugin_state{plugin}` and `herold_plugin_restarts_total{plugin}`
-on `/metrics` give the live state.
+`herold_plugin_up{name}` on `/metrics` gives the live state: 1 when
+the plugin is healthy, 0 otherwise.
 
 ### Debug a hung plugin
 
 A plugin that wedges (deadlocked, GC pause loop, awaiting a remote
 that never replies) shows up as elevated
-`herold_plugin_latency_seconds{plugin,method}` and rising
-`herold_plugin_invocations_total{plugin,method,status="error"}`. The
+`herold_plugin_call_duration_seconds{name,method}` and rising
+`herold_plugin_calls_total{name,method,outcome="error"}`. The
 operator's options:
 
 - **Restart the plugin only:** the supervisor watches the subprocess

@@ -17,15 +17,12 @@ The supported deployment shapes are:
 - **Docker.** A multi-stage `Dockerfile` under `deploy/docker/`
   produces a distroless `nonroot` runtime image. Suitable for
   Compose, Nomad, plain `docker run`.
-- **Debian / RPM packages.** Skeletons under `deploy/debian/` and
-  `deploy/rpm/`. The packages install the binary, a systemd unit, and
-  a placeholder `/etc/herold/system.toml`. Plugins are bundled.
-  (Status: package skeletons are present in-tree but the publish
-  pipeline is not yet wired - operators currently build their own
-  packages or use the source / Docker paths.)
-- **Kubernetes.** Manifests under `deploy/k8s/` (StatefulSet plus
-  ConfigMap / Secret). Not a Helm chart in v1; document with plain
-  manifests. (Status: sketch only.)
+- **Debian / RPM packages.** Not yet available. Debian `.deb` and
+  RPM packaging are roadmap items tracked under REQ-OPS-150. Until
+  then, use the source build or the Docker image.
+- **Kubernetes.** Kubernetes manifests are a roadmap item tracked
+  under REQ-OPS-152. Until then, use the Docker image with a
+  bind-mounted volume and a manually managed config file.
 
 Pick whichever matches your existing platform discipline. Herold has
 no preference.
@@ -35,7 +32,13 @@ no preference.
 ### Prerequisites
 
 - Go 1.25 or newer (the floor at planning time; bumped to current
-  stable at each phase kickoff per `STANDARDS.md` section 2).
+  stable at each phase kickoff per `STANDARDS.md` section 2). On
+  Debian, `apt-get install golang-go` ships Go 1.24, which is one
+  minor below the floor. The `go.mod` file pins the toolchain
+  (`go 1.25.0`), so a build invoked with Go 1.24 will transparently
+  fetch the right version from `proxy.golang.org` on first use.
+  Operators on air-gapped hosts must install Go 1.25+ directly from
+  `go.dev/dl/`.
 - git. Required to clone the repository and invoked by `go build`
   for VCS stamping when building from a checkout.
 - A POSIX system. Linux is the primary target; macOS works for
@@ -64,12 +67,15 @@ CGO_ENABLED=0 go build \
   -o ./herold ./cmd/herold
 ```
 
-For the local CI lane (vet, staticcheck, race-tested unit + integration
-tests against both SQLite and Postgres):
+For the local CI lane (`fmt-check`, `vet`, `test`, `vulncheck`):
 
 ```bash
 make ci-local
 ```
+
+`staticcheck` and dual-backend integration tests are separate targets
+(`make staticcheck`, `make interop-test`) or are run via the workflows
+in `.github/workflows/`.
 
 ### Tabard SPA
 
@@ -204,46 +210,21 @@ with TLS + auth at a reverse proxy.
 
 ## Debian / RPM packages
 
-Skeletons live under `deploy/debian/` and `deploy/rpm/`. When wired
-they will provide:
-
-- `/usr/local/bin/herold` - the binary.
-- `/etc/herold/system.toml` - placeholder config; operator edits in
-  place.
-- `/var/lib/herold/` - data directory (owned by `herold:herold`).
-- `/usr/lib/herold/plugins/` - first-party plugins.
-- `/etc/systemd/system/herold.service` - `Type=notify` unit calling
-  `herold server start`.
-- `/etc/logrotate.d/herold` - log rotation when not running under a
-  manager.
-
-Status: package files are checked in but the build / publish pipeline
-is `TODO(operator-doc): packaging-publish-wave`. For now operators
-build the binary from source and install it manually, or use the
-Docker image.
+Debian `.deb` and RPM packaging are roadmap items tracked under
+REQ-OPS-150. No package artifacts exist today. Install from source
+or use the Docker image.
 
 ## Kubernetes
 
-Manifests under `deploy/k8s/` (REQ-OPS-152). Sketch only in v1; not a
-Helm chart. Expected shape:
-
-- A `StatefulSet` with a single replica (single-node only - herold
-  does not cluster, ever; see NG2 in `docs/design/00-scope.md`).
-- A `PersistentVolumeClaim` for the data directory.
-- A `ConfigMap` for `system.toml`.
-- `Secret`s referenced as `file:/run/secrets/...` in the config.
-- A `Service` exposing the admin / IMAP / SMTP listeners as needed.
-
-A real cluster operator should treat this as a starting point and
-adapt to their ingress, cert-manager, and storage class conventions.
+Kubernetes manifests are a roadmap item tracked under REQ-OPS-152.
+No manifests exist today. Use the Docker image with a bind-mounted
+volume and a manually managed `system.toml`.
 
 Cluster topology is explicitly out of scope for herold v1, which is
 a single-node design (see `docs/design/00-scope.md`, non-goal NG2).
 There is no supported clustering mode. Operators requiring horizontal
 scale should run multiple independent herold instances with disjoint
-domain assignments rather than a shared clustered topology. The
-`StatefulSet` replica count above is intentionally 1 and should not
-be increased.
+domain assignments rather than a shared clustered topology.
 
 ## Required system resources
 
@@ -288,7 +269,7 @@ surface, and the MTA-STS vhost. Two cert sources (REQ-OPS-40):
 ACME is live as of Wave 3.3. Configure `[acme]` in `system.toml` with
 `email` and optionally `directory_url` (defaults to Let's Encrypt
 production). See [./operate.md](./operate.md) for the full TLS / ACME
-runbook and `herold cert list` to inspect issued certificates.
+runbook and `herold cert status` to inspect issued certificates.
 
 For the development quickstart on loopback only, `tls = "none"` on the
 admin listener is acceptable and the example compose file uses that
@@ -346,8 +327,10 @@ systemctl start herold
 
 The server binds every listener declared in `system.toml`, opens the
 store, applies pending schema migrations, starts every declared
-plugin, and reports `ok` on `/healthz/ready` once everything is up
-(REQ-OPS-110, REQ-OPS-111).
+plugin, and reports `ok` on `GET /api/v1/healthz/ready` once
+everything is up (REQ-OPS-110, REQ-OPS-111). This endpoint is served
+on both the public listener (default port 8080) and the admin
+listener (default port 9443).
 
 ### Validate the config without starting
 
@@ -364,7 +347,7 @@ The bootstrap command creates the very first principal and prints a
 one-time API key the operator stores.
 
 ```bash
-herold bootstrap --email admin@example.com --password 'changeme123'
+herold bootstrap --email admin@example.com --password 'change-me-now'
 ```
 
 Flags:
@@ -412,7 +395,7 @@ User principal management lives in
 [./administer.md](./administer.md). The minimum:
 
 ```bash
-herold principal create user1@example.com --password 'pw1'
+herold principal create user1@example.com --password 'change-me-now'
 ```
 
 ### Connect a client

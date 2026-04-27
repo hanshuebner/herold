@@ -71,18 +71,15 @@ tighten to `-all`.
 
 ### DKIM
 
-DKIM TXT records are generated when you run `herold domain add
-example.com`. The selector and key body are emitted by herold; you
-copy them into the zone (or, with a DNS-provider plugin, herold
-publishes them itself - see step 4).
-
-```
-default._domainkey.example.com.   300  IN  TXT  "v=DKIM1; k=rsa; p=MIIBIjANBgkqhki..."
-```
-
-(The selector defaults to `default`; herold supports per-domain
-per-selector keys - you can rotate selectors without breaking
-in-flight mail.)
+`herold domain add example.com` generates a DKIM keypair for the
+domain. The selector defaults to `default`; herold supports
+per-domain per-selector keys so you can rotate without breaking
+in-flight mail. The TXT body is not printed inline by the command
+today; read it via `GET /api/v1/domains/{name}/dkim` (see Step 3
+for details and the caveat on `herold dkim show`). You must publish
+the TXT record in your zone manually unless a DNS-provider plugin is
+configured, in which case herold publishes it automatically
+(REQ-OPS-60).
 
 ## Step 2 - TLS via ACME
 
@@ -126,7 +123,7 @@ forward:
 
 With the `[acme]` block in place and the challenge method configured
 above, herold will provision the cert at startup and renew automatically.
-Use `herold cert list` to verify the issued cert and its remaining
+Use `herold cert status` to verify the issued cert and its remaining
 lifetime once the server starts.
 
 ## Step 3 - DKIM key
@@ -135,17 +132,17 @@ lifetime once the server starts.
 herold domain add example.com
 ```
 
-Herold generates a DKIM keypair for the domain and emits the
-DNS-publishable TXT record. With no DNS plugin configured, the
-record is printed for the operator to paste into the zone:
-
-```
-default._domainkey.example.com.  300  IN  TXT  "v=DKIM1; k=rsa; p=MIIBIjANBgkqhki..."
-```
+Herold generates a DKIM keypair for the domain. Today the DKIM TXT
+body is not printed inline by `herold domain add`; the command emits
+`domain added: <name>`. The keypair is generated and used for signing
+but the operator-facing print is not yet wired. Read the body via
+REST at `GET /api/v1/domains/{name}/dkim`, or via `herold dkim show`
+once that CLI surface lands (not yet wired -- returns 501; tracked
+under REQ-ADM-310).
 
 With a DNS-provider plugin (Cloudflare, Route53, Hetzner, manual /
-webhook generic), herold publishes the record via the plugin
-(REQ-OPS-60).
+webhook generic), herold publishes the DKIM record via the plugin
+automatically (REQ-OPS-60).
 
 To re-emit the DKIM TXT for a domain already on the books:
 
@@ -153,9 +150,7 @@ To re-emit the DKIM TXT for a domain already on the books:
 herold dkim show example.com
 ```
 
-prints the active selector, the algorithm, and the DNS TXT body
-ready to copy into a zone file (or already published, if a DNS
-plugin is configured). To rotate to a new selector:
+Not yet wired; see caveat above. To rotate to a new selector:
 
 ```bash
 herold dkim generate example.com
@@ -197,9 +192,11 @@ herold cert status                # check TLS cert state.
 herold domain list                # confirm example.com is registered.
 ```
 
-`/healthz/ready` should return 200 once every listener is bound, the
-store is open, ACME (when enabled) has issued certs, and every
-critical plugin is up.
+`GET /api/v1/healthz/ready` should return 200 once every listener is
+bound, the store is open, ACME (when enabled) has issued certs, and
+every critical plugin is up. This endpoint is served on both the
+public listener (default port 8080) and the admin listener (default
+port 9443).
 
 ## Step 5 - First inbound test
 
@@ -247,9 +244,11 @@ herold alias add dmarc-reports@example.com admin@example.com
 
 Receivers (Google, Microsoft, Yahoo, etc.) send daily aggregate XML
 reports to the address in `rua`. Herold parses and stores aggregate
-reports per REQ-ADM-17; query them with the REST surface
-(`/api/v1/reports/dmarc`) or, when the CLI lands,
-`herold reports dmarc list --since 7d`.
+reports per REQ-ADM-17. Neither the REST surface (`/api/v1/reports/dmarc`)
+nor the CLI (`herold reports dmarc list --since 7d`) is wired yet;
+both are pending. Until then, query the raw `audit_log` via
+`herold audit list` or inspect the mailbox receiving the `rua` address
+directly.
 
 Iterate from `p=none` (monitor only) to `p=quarantine` (suspect mail
 goes to spam) to `p=reject` (suspect mail is refused) over the course
@@ -372,8 +371,9 @@ Symptom: senders log `unable to fetch mta-sts policy`. Causes:
 Symptom: receivers' DMARC reports show `dkim=fail`. Causes:
 
 - DKIM TXT record body is wrong - copy-paste truncation is the
-  classic. Re-emit with `herold domain dkim show <domain>` (planned;
-  until then, the REST surface) and re-publish.
+  classic. Re-emit with `herold dkim show <domain>` (not yet wired;
+  the server returns 501 today -- see the DKIM section in
+  `administer.md` for status) and re-publish.
 - DNS provider mangled the TXT body. Some providers split long TXT
   records on whitespace; herold's DKIM keys are 2048-bit and the TXT
   record is long. Concatenate quoted strings per RFC 6376.
