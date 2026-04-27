@@ -35,7 +35,6 @@ Use `TaskCreate` / `TaskUpdate` / `TaskList` to coordinate. Agents claim unowned
 
 - One logical change per commit.
 - Commit message `subsystem: short imperative subject` on the first line, body explaining the *why*, affected REQ IDs, and the test plan run locally.
-- No commits to `main` directly — PRs only, with CI green.
 
 ## When in doubt
 
