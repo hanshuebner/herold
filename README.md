@@ -139,24 +139,62 @@ to point at the `kind = "admin"` listener.
 ./herold domain add --system-config system.toml example.local
 ```
 
-### 7. Connect an IMAP client
+### 7. Drop a test message into the inbox
 
-Point your IMAP client at:
+Before connecting a client it helps to have something to read. The
+SMTP relay listener at `127.0.0.1:1025` accepts mail for local
+domains and delivers it directly into the recipient's INBOX. The
+following one-liner uses only `nc` and ships a plain-text message:
+
+```bash
+{
+  printf 'EHLO localhost\r\n'
+  printf 'MAIL FROM:<sender@example.org>\r\n'
+  printf 'RCPT TO:<admin@example.local>\r\n'
+  printf 'DATA\r\n'
+  printf 'From: Test Sender <sender@example.org>\r\n'
+  printf 'To: admin@example.local\r\n'
+  printf 'Subject: herold quickstart test\r\n'
+  printf 'Date: %s\r\n' "$(date -u +'%a, %d %b %Y %H:%M:%S +0000')"
+  printf '\r\n'
+  printf 'Hello from the quickstart smoke test.\r\n'
+  printf '.\r\n'
+  printf 'QUIT\r\n'
+} | nc -w 2 127.0.0.1 1025
+```
+
+Each line should come back with a `2xx` status. The HTTP send API
+(`POST /api/v1/mail/send`) is for outbound delivery to the public
+internet and is not the right path for loopback testing — it would
+queue an SMTP-out attempt and fail to resolve `example.local`.
+
+### 8. Connect an IMAP client
+
+Apple Mail, Thunderbird, mutt, and any IMAP4rev1 / rev2 client work.
+Point yours at:
 
 - Server: `localhost`
-- IMAP+STARTTLS port: `1143`
-- IMAPS port: `1993`
+- IMAP+STARTTLS port: `1143`  (or IMAPS port `1993` for implicit TLS)
+- SMTP submission port: `1587` (with STARTTLS and the same
+  username/password). Do not use port 1025 for outgoing mail in a
+  client - that listener is the inbound relay and does not require
+  AUTH.
 - Username: `admin@example.local`
 - Password: the one you set in step 5
 
-Send mail to `admin@example.local` from another local mailbox or via
-the HTTP send API and verify it arrives in the INBOX.
+The cert generated in step 3 is self-signed. Apple Mail and
+Thunderbird will prompt to accept it the first time you connect;
+click through and check "always trust" so the prompt does not
+reappear. If the client returns a generic "Unable to verify account
+name or password" without prompting, regenerate the cert with the
+helper in step 3 (the SAN block must include `localhost` and
+`127.0.0.1` for clients that connect via `localhost`).
 
 The public HTTP listener (default `127.0.0.1:8080` per the quickstart
 config) serves the tabard consumer SPA at `/` alongside the JMAP, send,
 chat, and image-proxy endpoints.
 
-### 8. (Optional) Outbound through a smart host
+### 9. (Optional) Outbound through a smart host
 
 To deliver outbound mail through Gmail / SES / SendGrid rather than
 talk SMTP to the public internet, copy the smart-host example:
