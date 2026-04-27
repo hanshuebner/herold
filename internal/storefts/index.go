@@ -88,7 +88,7 @@ const hardQueryLimit = 10000
 //
 // Writes use a pending batch that is flushed on Commit, on Delete, or when
 // size ceiling is reached. The worker drives the cadence (size OR 500 ms)
-// per docs/design/notes/spike-fts-cadence.md.
+// per docs/design/server/notes/spike-fts-cadence.md.
 type Index struct {
 	logger *slog.Logger
 	clock  clock.Clock

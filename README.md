@@ -304,13 +304,13 @@ Design and specification (the historical record; not user-facing):
 
 - [docs/design/00-scope.md](./docs/design/00-scope.md) - canonical
   scope, goals, non-goals.
-- [docs/design/requirements/](./docs/design/requirements/) - numbered
+- [docs/design/server/requirements/](./docs/design/server/requirements/) - numbered
   requirements (`REQ-XXX-nn`) per subsystem.
-- [docs/design/architecture/](./docs/design/architecture/) - how the
+- [docs/design/server/architecture/](./docs/design/server/architecture/) - how the
   system is shaped: storage, protocols, queue, plugins, sync.
-- [docs/design/implementation/](./docs/design/implementation/) - tech
+- [docs/design/server/implementation/](./docs/design/server/implementation/) - tech
   stack, phasing, testing strategy, simplifications and cuts.
-- [docs/design/notes/](./docs/design/notes/) - reference material.
+- [docs/design/server/notes/](./docs/design/server/notes/) - reference material.
 
 Contributor and agent context:
 
@@ -323,7 +323,7 @@ Contributor and agent context:
 
 Trimmed view; the full layout (and rationale) lives in
 `docs/design/00-scope.md` and
-`docs/design/implementation/01-tech-stack.md`.
+`docs/design/server/implementation/01-tech-stack.md`.
 
 ```
 herold/

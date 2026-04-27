@@ -2,7 +2,7 @@
 
 // Package storesqlite spike: compare modernc.org/sqlite (pure Go) vs.
 // mattn/go-sqlite3 (CGO) across three workloads informing the tech-stack
-// decision in docs/design/implementation/01-tech-stack.md.
+// decision in docs/design/server/implementation/01-tech-stack.md.
 //
 // Run per driver:
 //
@@ -43,7 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_mbox_uid
 `
 
 // pragmas match the SQLite settings documented in
-// docs/design/architecture/02-storage-architecture.md.
+// docs/design/server/architecture/02-storage-architecture.md.
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",
 	"PRAGMA synchronous=NORMAL",

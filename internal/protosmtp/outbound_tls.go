@@ -28,7 +28,7 @@ type tlsDecision struct {
 // On success it returns the upgraded *tls.Conn and the tlsDecision;
 // the caller (deliverToMX) must EHLO again on the upgraded connection.
 //
-// Policy precedence (docs/design/architecture/04 §MTA-STS / DANE):
+// Policy precedence (docs/design/server/architecture/04 §MTA-STS / DANE):
 //
 //  1. DANE: TLSA records present + DNSSEC-validated → require TLS,
 //     verify the leaf cert against the TLSA RRset. Mismatch ⇒ permanent.
@@ -173,7 +173,7 @@ func (c *Client) lookupDANE(ctx context.Context, mxHost string) ([]mailauth.TLSA
 
 // matchTLSA returns true when at least one TLSA record matches at least
 // one peer certificate. We support the two common usages the operator
-// guidance in docs/design/requirements/04 names: PKIX-EE (3) and DANE-EE (3).
+// guidance in docs/design/server/requirements/04 names: PKIX-EE (3) and DANE-EE (3).
 // Other usages fall through to no-match — operators publishing CA-anchor
 // usages (0/2) get a clear "tlsa-mismatch" diagnostic rather than a
 // silent pass.

@@ -432,7 +432,7 @@ func TestEnsureCert_5xx_Retries_ThenSucceeds(t *testing.T) {
 	// error; a second call (after the stub has been flipped back by the
 	// transport's first attempt-side-effect) succeeds. This is the
 	// "retry by re-invocation" semantic described in
-	// docs/design/requirements/05-tls-acme.md §retry budget.
+	// docs/design/server/requirements/05-tls-acme.md §retry budget.
 	firstErr := c.EnsureCert(ctx, []string{"mail.example.test"}, store.ChallengeTypeHTTP01, "")
 	if firstErr == nil {
 		t.Fatalf("first EnsureCert: expected 5xx error, got nil")

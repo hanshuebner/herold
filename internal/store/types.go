@@ -50,7 +50,7 @@ type ModSeq uint64
 type UIDValidity uint32
 
 // ChangeSeq is the per-principal monotonic sequence in the state-change
-// feed. See docs/design/architecture/05-sync-and-state.md.
+// feed. See docs/design/server/architecture/05-sync-and-state.md.
 type ChangeSeq uint64
 
 // PrincipalKind labels a Principal as an individual user, a group, or a
@@ -128,7 +128,7 @@ type Principal struct {
 }
 
 // Alias maps an email address to a target Principal. See REQ-STORE
-// (aliases table in docs/design/architecture/02-storage-architecture.md §Schema).
+// (aliases table in docs/design/server/architecture/02-storage-architecture.md §Schema).
 type Alias struct {
 	// ID is the stable primary key.
 	ID AliasID
@@ -339,7 +339,7 @@ type BlobRef struct {
 // EntityKind names a JMAP-style datatype on the change feed. The set is
 // open — v1 emits only the email/mailbox kinds; future kinds (e.g.
 // addressbook, card, calendar, event) extend additively per
-// docs/design/architecture/05-sync-and-state.md §Forward-compatibility.
+// docs/design/server/architecture/05-sync-and-state.md §Forward-compatibility.
 //
 // Consumers MUST dispatch on the string value (e.g.
 // `change.Kind == EntityKindEmail`) and ignore unknown kinds, so a
@@ -416,7 +416,7 @@ const (
 // tables and are joined in by the consumer when needed. This keeps the
 // JMAP `Foo/changes` dispatch path uniform across types and lets new
 // datatypes be added additively per
-// docs/design/architecture/05-sync-and-state.md §Forward-compatibility.
+// docs/design/server/architecture/05-sync-and-state.md §Forward-compatibility.
 type StateChange struct {
 	// Seq is the principal-local monotonic sequence number. Strictly
 	// increasing for a given PrincipalID; never reused after compaction.

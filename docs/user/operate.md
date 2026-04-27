@@ -270,8 +270,8 @@ case-insensitive; rename a public field if it collides (e.g.
 
 Plugin protocol is JSON-RPC 2.0 on stdio; lifecycle, restart policy,
 and the type-specific RPC schemas live in
-`docs/design/architecture/07-plugin-architecture.md` and
-`docs/design/requirements/11-plugins.md`.
+`docs/design/server/architecture/07-plugin-architecture.md` and
+`docs/design/server/requirements/11-plugins.md`.
 
 ### `[server.snooze]` - JMAP snooze worker (REQ-PROTO-49)
 
@@ -1002,7 +1002,7 @@ herold oidc link-delete user@example.com google
 
 The link-*creation* path (a user signs in via Google, herold matches
 or claims the account) is a Phase-2 user-flow, not an operator CLI
-command. See `docs/design/requirements/02-identity-and-auth.md`
+command. See `docs/design/server/requirements/02-identity-and-auth.md`
 for the registered-user OIDC sign-in flow.
 
 ## Common operational issues

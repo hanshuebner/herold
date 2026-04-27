@@ -1,7 +1,7 @@
 # Vendored UI library versions
 
 These libraries are checked in verbatim so the Herold binary self-contains
-the entire UI surface. No CDN. No build pipeline. Per docs/design/notes/
+the entire UI surface. No CDN. No build pipeline. Per docs/design/server/notes/
 open-questions.md R35 the JS budget is < 30 KB; the actual measured load
 is documented in the surrounding ticket.
 

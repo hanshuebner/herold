@@ -4,7 +4,7 @@
 // Go templates, HTMX for partial swaps, and a sliver of vanilla JS / Alpine.js
 // where vanilla forms cannot express the interaction. There is no SPA
 // framework, no build pipeline, and no client-side routing. Total JS budget
-// per docs/design/notes/open-questions.md R35 is < 30 KB; the vendored copies of
+// per docs/design/server/notes/open-questions.md R35 is < 30 KB; the vendored copies of
 // HTMX and Alpine sit under static/ and are documented in static/VERSIONS.md.
 //
 // Mounting. The UI handler is mounted onto the existing admin HTTP listener

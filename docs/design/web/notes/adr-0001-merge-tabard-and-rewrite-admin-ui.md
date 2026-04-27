@@ -2,8 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-04-27
-- Supersedes: R35 in `docs/design/notes/open-questions.md`
-- Source plan: `docs/design/notes/plan-tabard-merge-and-admin-rewrite.md`
+- Supersedes: R35 in `docs/design/server/notes/open-questions.md`
+- Source plan: `docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md`
 - Reviewers: hans (operator)
 
 ## Context
@@ -185,7 +185,7 @@ gate that precedes Phase 1 merge.
 
 ## Supersession of R35
 
-R35 in `docs/design/notes/open-questions.md` previously read:
+R35 in `docs/design/server/notes/open-questions.md` previously read:
 
 > **R35.** Web UI framework -> HTMX + Go templates + Alpine.js /
 > vanilla JS
@@ -196,7 +196,7 @@ delete it; the resolved log preserves history).
 
 ## REQ-ADM-204 update
 
-REQ-ADM-204 in `docs/design/requirements/08-admin-and-management.md`
+REQ-ADM-204 in `docs/design/server/requirements/08-admin-and-management.md`
 previously said the framework was TBD with a preference for "Svelte,
 SolidJS, or plain JS over React-SPA default". This ADR resolves it
 to Svelte 5 + Vite + pnpm. REQ-ADM-204 is updated in the same PR.

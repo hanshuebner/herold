@@ -116,7 +116,7 @@ type DKIMKeyRotatedPayload struct {
 
 // PluginLifecyclePayload accompanies EventPluginLifecycle. Phase string
 // captures supervisor transitions {"started", "restarted", "disabled",
-// "stopped"} per docs/design/architecture/07-plugin-architecture.md.
+// "stopped"} per docs/design/server/architecture/07-plugin-architecture.md.
 type PluginLifecyclePayload struct {
 	PluginName string `json:"plugin_name"`
 	Phase      string `json:"phase"`

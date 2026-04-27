@@ -114,7 +114,7 @@ type AccountCapabilityProvider interface {
 // CapabilityRegistry tracks installed JMAP datatype handlers. The
 // session descriptor and method dispatcher consult it; concrete types
 // are not named in dispatch code paths. Per
-// docs/design/architecture/03-protocol-architecture.md §JMAP "Capability and
+// docs/design/server/architecture/03-protocol-architecture.md §JMAP "Capability and
 // account registration" this is the forward-compat surface that future
 // datatypes plug into.
 //

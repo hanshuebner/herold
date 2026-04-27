@@ -6,7 +6,7 @@
 //
 // The surface is split into three sub-interfaces — Metadata, Blobs,
 // FTS — composed under a single Store handle. See
-// docs/design/architecture/02-storage-architecture.md for the architectural
+// docs/design/server/architecture/02-storage-architecture.md for the architectural
 // context, and STANDARDS.md §1 rule 7 for the rule that keeps the
 // metadata repository typed (no Get/Put/Scan(key) surface).
 //

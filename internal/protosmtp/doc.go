@@ -1,6 +1,6 @@
 // Package protosmtp implements the SMTP inbound (relay + submission)
 // state machine and the associated ESMTP extension surface listed in
-// docs/design/requirements/01-protocols.md §SMTP.
+// docs/design/server/requirements/01-protocols.md §SMTP.
 //
 // One Server covers all three listener shapes (relay-in on 25,
 // submission STARTTLS on 587, submission implicit TLS on 465). The

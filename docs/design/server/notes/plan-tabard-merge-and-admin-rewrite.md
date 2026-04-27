@@ -2,7 +2,7 @@
 
 Date: 2026-04-27. Author: root agent + hans. Status: approved, awaiting execution in a future session.
 
-This plan supersedes R35 in `docs/design/notes/open-questions.md` ("Web UI framework -> HTMX + Go templates + Alpine.js / vanilla JS"). Ratify the supersession by editing R35 in the Phase 1 PR; do not delete it.
+This plan supersedes R35 in `docs/design/server/notes/open-questions.md` ("Web UI framework -> HTMX + Go templates + Alpine.js / vanilla JS"). Ratify the supersession by editing R35 in the Phase 1 PR; do not delete it.
 
 ## 1. Motivation
 
@@ -144,7 +144,7 @@ Scope of the brand-removal sweep performed in Phase 1 step 4 (see section 6). Th
 
 - `internal/tabardspa/` -- already deleted in Phase 1 step 5; replaced by `internal/webspa/`. Confirms no remaining `tabardspa` import path.
 - Comments, log messages, error strings: grep `tabard` across `internal/`, `cmd/`, `plugins/`, `test/` and rewrite. Expected hits: any comment in `internal/webspa/` carried over from `internal/tabardspa/`, anything in `internal/protoadmin` or boot wiring that mentions tabard by name, any operator-facing log line.
-- TOML config keys (`internal/sysconfig`, `docs/design/requirements/09-operations.md`): if any `[server.tabard]` or `tabard_*` key exists, rename to `[server.suite]` / `suite_*` (or fold into `[server.ui]` if there is no parameter divergence). Keep configuration backward compatibility off -- pre-launch.
+- TOML config keys (`internal/sysconfig`, `docs/design/server/requirements/09-operations.md`): if any `[server.tabard]` or `tabard_*` key exists, rename to `[server.suite]` / `suite_*` (or fold into `[server.ui]` if there is no parameter divergence). Keep configuration backward compatibility off -- pre-launch.
 - Metric names (`herold_tabard_*` if any) renamed; Prometheus naming uses a generic noun (e.g. `herold_suite_sessions_active`).
 
 **Build and tooling:**
@@ -196,9 +196,9 @@ Each phase is one PR. PRs do not overlap; later phases assume earlier phases hav
 Goal: lock the decision in the repo before any code moves.
 
 - Add `docs/design/web/notes/adr-0001-merge-tabard-and-rewrite-admin-ui.md` capturing the decisions in section 2, the rejected alternative (parallel migration), and the supersession of R35.
-- Edit `docs/design/notes/open-questions.md` R35 to read "Web UI framework -> Svelte 5 SPA, see ADR-0001 in `docs/design/web/notes/`. The HTMX implementation in `internal/protoui` is replaced; this question is closed." Do not delete the entry.
-- Edit `docs/design/requirements/08-admin-and-management.md` REQ-ADM-204 to name the stack instead of saying "TBD". REQ-ADM-200 ("at /admin") and REQ-ADM-201 ("UI is a SPA that consumes the REST API") already match the target and need no edit.
-- This plan file (`docs/design/notes/plan-tabard-merge-and-admin-rewrite.md`) stays where it is.
+- Edit `docs/design/server/notes/open-questions.md` R35 to read "Web UI framework -> Svelte 5 SPA, see ADR-0001 in `docs/design/web/notes/`. The HTMX implementation in `internal/protoui` is replaced; this question is closed." Do not delete the entry.
+- Edit `docs/design/server/requirements/08-admin-and-management.md` REQ-ADM-204 to name the stack instead of saying "TBD". REQ-ADM-200 ("at /admin") and REQ-ADM-201 ("UI is a SPA that consumes the REST API") already match the target and need no edit.
+- This plan file (`docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md`) stays where it is.
 
 Exit criteria: ADR merged. R35 superseded. REQ-ADM-204 names Svelte. No code changes.
 
@@ -285,8 +285,8 @@ Created:
 - `scripts/build-web.sh`
 
 Edited:
-- `docs/design/notes/open-questions.md` (supersede R35)
-- `docs/design/requirements/08-admin-and-management.md` (REQ-ADM-204 names stack)
+- `docs/design/server/notes/open-questions.md` (supersede R35)
+- `docs/design/server/requirements/08-admin-and-management.md` (REQ-ADM-204 names stack)
 - `docs/design/00-scope.md` (reference docs/design/web/)
 - `Makefile`
 - `.github/workflows/*.yml`
@@ -329,8 +329,8 @@ Deleted:
 Read in order:
 
 1. This file. Pay particular attention to section 2 (decisions, including decision 11 on brand removal) and section 4.2 (rename catalogue).
-2. `docs/design/notes/open-questions.md` -- confirm R35 still says HTMX (which means Phase 0 has not run yet) or now references the ADR (which means it has).
-3. `docs/design/requirements/08-admin-and-management.md` lines 78-95 -- confirm REQ-ADM-200/201/204 still match section 2 of this plan.
+2. `docs/design/server/notes/open-questions.md` -- confirm R35 still says HTMX (which means Phase 0 has not run yet) or now references the ADR (which means it has).
+3. `docs/design/server/requirements/08-admin-and-management.md` lines 78-95 -- confirm REQ-ADM-200/201/204 still match section 2 of this plan.
 4. `internal/protoui/` directory listing -- confirm scope estimate (8 pages, ~36 routes) still holds.
 5. `internal/tabardspa/` and `scripts/embed-tabard.sh` -- confirm they still exist and how they wire together.
 6. `/Users/hans/tabard/` (external) -- confirm it still exists and is the source of truth for the import. If it is gone, recover from git history before proceeding.

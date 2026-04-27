@@ -17,7 +17,7 @@ package sieve
 // mapSpamScore normalises the classifier's [0,1] confidence into this
 // range. Auth-layer overrides (for example DMARC p=reject alignment
 // failure forcing a 10) are applied by the caller before invoking the
-// interpreter; see docs/design/requirements/06-filtering.md §REQ-FILT-80..83.
+// interpreter; see docs/design/server/requirements/06-filtering.md §REQ-FILT-80..83.
 type SpamTestRange int
 
 // Named spam-test levels provided for callers that want to express

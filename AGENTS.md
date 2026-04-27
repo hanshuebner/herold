@@ -40,7 +40,7 @@ Each owns an area of the code tree. Ownership is where design and first-pass rev
 
 ## Phase-to-agent map
 
-Pulls directly from `docs/design/implementation/02-phasing.md`.
+Pulls directly from `docs/design/server/implementation/02-phasing.md`.
 
 **Phase 0 — Foundations.** `release-ci-engineer` (scaffolding + CI), `storage-implementor` (store interface + SQLite + Postgres), `plugin-platform-implementor` (SDK + JSON-RPC + echo plugin), `ops-observability-implementor` (sysconfig/appconfig split + slog + Prometheus + OTLP wiring).
 

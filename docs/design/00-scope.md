@@ -86,7 +86,7 @@ Herold narrows the target in some dimensions (no multi-tenancy, no multi-node, n
 
 - **NG1.** Hosting-provider / multi-tenancy features. No tenants, no per-tenant quotas, no per-tenant branding.
 - **NG2.** Multi-node deployment. Single node only. Operators needing HA use hypervisor-level tricks (ZFS snapshot + failover, shared block storage). v1 does not grow into multi-node.
-- **NG3.** CalDAV / CardDAV / WebDAV — out, ever. The DAV protocol family is not the substrate; operators wanting DAV run a separate service. **Updated 2026-04-25:** JMAP for Calendars (RFC 8984 + JMAP-Calendars binding) and JMAP for Contacts (RFC 9553 + JMAP-Contacts binding) are **in scope as phase-2 additions** of the herold + tabard suite, replacing the prior "out, but addable" framing. Both fit additively on the existing JMAP capability registry (`docs/architecture/03-protocol-architecture.md` §Capability and account registration) and the entity-kind-agnostic state-change feed (`docs/architecture/05-sync-and-state.md` §Forward-compatibility constraint) — no schema migrations of existing tables, no dispatch-core edits.
+- **NG3.** CalDAV / CardDAV / WebDAV — out, ever. The DAV protocol family is not the substrate; operators wanting DAV run a separate service. **Updated 2026-04-25:** JMAP for Calendars (RFC 8984 + JMAP-Calendars binding) and JMAP for Contacts (RFC 9553 + JMAP-Contacts binding) are **in scope as phase-2 additions** of the herold + tabard suite, replacing the prior "out, but addable" framing. Both fit additively on the existing JMAP capability registry (`server/architecture/03-protocol-architecture.md` §Capability and account registration) and the entity-kind-agnostic state-change feed (`server/architecture/05-sync-and-state.md` §Forward-compatibility constraint) — no schema migrations of existing tables, no dispatch-core edits.
 - **NG4.** Traditional spam filtering. No bundled rule engine. No Bayesian. No RBLs by default. (Operators who want these can write a plugin or run an external filter; we don't ship them.)
 - **NG5.** Webmail. (Tabard is a *separate* project — a JMAP web client that herold serves; herold itself hosts only the static bundle plus its API.)
 - **NG6.** POP3 at launch.
@@ -133,7 +133,7 @@ Per single node, provisioned hardware (8 vCPU, 32 GB RAM, NVMe):
 - **Per-mailbox size:** up to ~1 TB individual mailboxes (power users, shared archive mailboxes).
 - **Total storage:** up to ~10 TB per node (a handful of large mailboxes + typical average-sized).
 
-At this scale SQLite handles a mixed workload but hits occasional contention when multiple large-mailbox clients do concurrent heavy writes. Operators with sustained high-concurrency writes pick PostgreSQL at install; both backends are first-class. See `architecture/02-storage-architecture.md`.
+At this scale SQLite handles a mixed workload but hits occasional contention when multiple large-mailbox clients do concurrent heavy writes. Operators with sustained high-concurrency writes pick PostgreSQL at install; both backends are first-class. See `server/architecture/02-storage-architecture.md`.
 
 LLM classification at ~15 msg/min is trivially affordable (cloud 2 s call or local ~300 ms). Per-mailbox full-text indexing on a 1 TB mailbox initially is minutes-to-hours of indexing throughput; incremental indexing on new mail is sub-second.
 
@@ -165,7 +165,7 @@ Plugin **contract** (process lifecycle, JSON-RPC schema, versioning) is a stable
 
 Plugin **catalogue** (installable plugins) is an ecosystem concern; we don't run a registry. Operators install plugins by dropping an executable into `plugins/` in the data dir and declaring it in system config.
 
-Detail: see `requirements/11-plugins.md` and `architecture/07-plugin-architecture.md`.
+Detail: see `server/requirements/11-plugins.md` and `server/architecture/07-plugin-architecture.md`.
 
 ## Config split summary
 
@@ -174,7 +174,7 @@ Detail: see `requirements/11-plugins.md` and `architecture/07-plugin-architectur
 | **System** | `/etc/herold/system.toml` | Operator edits file | SIGHUP (process-level) | hostname, listeners, bind addrs, TLS for admin + JMAP, ACME account, data dir, run-as user, plugin declarations |
 | **Application** | Inside the DB; editable via API/CLI/(later UI) | API calls | live (no SIGHUP) | domains, principals, aliases, Sieve scripts, DKIM keys, spam endpoint + prompts, queue policy, per-domain overrides |
 
-Detail: see `requirements/09-operations.md` §Config.
+Detail: see `server/requirements/09-operations.md` §Config.
 
 This split gives us:
 - A tiny, stable system file. Ansible/Nix/NixOS module owns it.

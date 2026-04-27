@@ -1,5 +1,5 @@
 // Package protoadmin implements the admin REST surface served under
-// /api/v1/ per docs/design/requirements/08-admin-and-management.md. It covers
+// /api/v1/ per docs/design/server/requirements/08-admin-and-management.md. It covers
 // the JSON-in/JSON-out shape (REQ-ADM-01..06), bearer-token API-key
 // authentication (REQ-ADM-03), the principal/domain/alias/OIDC/API-key
 // CRUD endpoints (REQ-ADM-10..11), the audit-log read endpoint

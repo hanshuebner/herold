@@ -36,7 +36,7 @@ Herold exposes three admin surfaces (REQ-ADM-01..05):
    does, the CLI does, and one REST call does.
 
 The full REST API reference lives in
-`docs/design/requirements/08-admin-and-management.md`. The CLI
+`docs/design/server/requirements/08-admin-and-management.md`. The CLI
 matches the REST shape.
 
 ### Authentication
@@ -264,7 +264,7 @@ herold oidc link-delete user@example.com google
 ```
 
 The link-create path is the user-facing OIDC sign-in flow per
-`docs/design/requirements/02-identity-and-auth.md`.
+`docs/design/server/requirements/02-identity-and-auth.md`.
 
 ### Grant / revoke admin
 
@@ -597,7 +597,7 @@ herold oidc link-delete user@example.com google
 ```
 
 The detailed flow lives in
-`docs/design/requirements/02-identity-and-auth.md`.
+`docs/design/server/requirements/02-identity-and-auth.md`.
 
 ## Chat / calendar / contacts admin (Phase 2)
 
@@ -622,13 +622,13 @@ The admin surface, where it exists, covers:
 The chat / cal / contacts admin REST surface is wave-2.x, not yet
 fully wired. TODO(operator-doc): chat-cal-contacts-admin-cli-not-yet-wired.
 Track the requirements documents under
-`docs/design/requirements/14-chat.md`, `15-video-calls.md`, plus the
+`docs/design/server/requirements/14-chat.md`, `15-video-calls.md`, plus the
 calendar / contacts requirements when those land.
 
 ## Where to next
 
 - Day-2 operator runbook: [./operate.md](./operate.md).
 - Real-domain walkthrough: [./quickstart-extended.md](./quickstart-extended.md).
-- The historical record: `docs/design/requirements/08-admin-and-management.md`
-  for the full REST + CLI shape, `docs/design/requirements/02-identity-and-auth.md`
+- The historical record: `docs/design/server/requirements/08-admin-and-management.md`
+  for the full REST + CLI shape, `docs/design/server/requirements/02-identity-and-auth.md`
   for the OIDC flow.

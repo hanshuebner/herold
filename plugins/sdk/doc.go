@@ -1,6 +1,6 @@
 // Package sdk is the Go plugin SDK used by first-party plugins. It
 // implements the JSON-RPC 2.0 stdio contract documented in
-// docs/design/architecture/07-plugin-architecture.md: handshake, configure, health,
+// docs/design/server/architecture/07-plugin-architecture.md: handshake, configure, health,
 // shutdown, plus typed sub-interfaces for DNS, spam, directory, delivery,
 // and event-publisher plugin kinds.
 //

@@ -12,7 +12,7 @@ import (
 )
 
 // Argon2id parameters. These match the conservative defaults suggested
-// in STANDARDS.md §9 and docs/design/requirements/02-identity-and-auth.md. We
+// in STANDARDS.md §9 and docs/design/server/requirements/02-identity-and-auth.md. We
 // pick time=2, memory=64*1024 KiB (64 MiB), threads=4, keyLen=32 bytes,
 // saltLen=16 bytes. Callers needing different parameters should change
 // them here; verification reads the params out of the encoded hash.

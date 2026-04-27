@@ -590,7 +590,7 @@ func (q *Queue) Run(ctx context.Context) error {
 // recoverStaleInflight transitions inflight rows whose last_attempt
 // timestamp is older than staleInflightFactor*PollInterval back to
 // queued so the scheduler picks them up. This is the at-least-once
-// recovery path described in docs/design/architecture/04 §Crash safety.
+// recovery path described in docs/design/server/architecture/04 §Crash safety.
 func (q *Queue) recoverStaleInflight(ctx context.Context) error {
 	cutoff := q.clk.Now().Add(-time.Duration(staleInflightFactor) * q.pollInterval)
 	rows, err := q.opts.Store.Meta().ListQueueItems(ctx, store.QueueFilter{

@@ -8,7 +8,7 @@ side.
 
 The recipe is the documented contract for REQ-DIR-RCPT-01..12,
 REQ-FLOW-ATTPOL-01..02, REQ-HOOK-EXTRACTED-01..03 (see
-`docs/design/requirements/`). Operators can configure against this
+`docs/design/server/requirements/`). Operators can configure against this
 shape; implementation tracks the spec.
 
 If you have not stood up Herold on a real domain yet, do
@@ -607,9 +607,9 @@ no attachments listed.
 - [../administer.md](../administer.md) - principal, domain, alias,
   API key, hook CRUD reference.
 - [../operate.md](../operate.md) - audit log, metrics, alerting.
-- `docs/design/requirements/11-plugins.md` REQ-DIR-RCPT-* - the
+- `docs/design/server/requirements/11-plugins.md` REQ-DIR-RCPT-* - the
   plugin contract this recipe builds on.
-- `docs/design/requirements/12-http-mail-api.md` REQ-HOOK-* and
+- `docs/design/server/requirements/12-http-mail-api.md` REQ-HOOK-* and
   REQ-SEND-* - the HTTP send and webhook contracts.
-- `docs/design/requirements/03-mail-flow.md` REQ-FLOW-ATTPOL-* -
+- `docs/design/server/requirements/03-mail-flow.md` REQ-FLOW-ATTPOL-* -
   the attachment-policy contract.

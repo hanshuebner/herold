@@ -14,7 +14,7 @@ const ABIVersion = 1
 const JSONRPCVersion = "2.0"
 
 // Standard JSON-RPC 2.0 error codes plus the Herold-reserved range
-// (-32000..-32099) noted in docs/design/architecture/07-plugin-architecture.md.
+// (-32000..-32099) noted in docs/design/server/architecture/07-plugin-architecture.md.
 const (
 	ErrCodeParseError     = -32700
 	ErrCodeInvalidRequest = -32600
@@ -85,7 +85,7 @@ func IsHeroldCode(code int) bool {
 }
 
 // Manifest is the plugin self-description returned by the initialize RPC.
-// Fields match docs/design/requirements/11-plugins.md §Manifest.
+// Fields match docs/design/server/requirements/11-plugins.md §Manifest.
 type Manifest struct {
 	Name                  string                  `json:"name"`
 	Version               string                  `json:"version"`
@@ -145,7 +145,7 @@ const (
 // Lifecycle describes how the supervisor runs the child process.
 type Lifecycle string
 
-// Lifecycle modes per docs/design/architecture/07-plugin-architecture.md.
+// Lifecycle modes per docs/design/server/architecture/07-plugin-architecture.md.
 const (
 	LifecycleLongRunning Lifecycle = "long-running"
 	LifecycleOnDemand    Lifecycle = "on-demand"

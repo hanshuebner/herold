@@ -1,5 +1,5 @@
 // Package fakeplugin implements an in-process stand-in for the out-of-process
-// plugin system (docs/design/architecture/07-plugin-architecture.md). In production
+// plugin system (docs/design/server/architecture/07-plugin-architecture.md). In production
 // plugins are child processes talking JSON-RPC over stdio; in tests the
 // harness wires a FakePlugin directly into the server's plugin registry so
 // protocol code can exercise delivery-hook / spam / DNS / events semantics

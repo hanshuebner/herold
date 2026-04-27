@@ -345,7 +345,7 @@ const (
 	// ConversationID, ParentEntityID = 0, Op).
 	EntityKindConversation EntityKind = "conversation"
 	// EntityKindChatMessage is a JMAP chat-`Message` row (REQ-CHAT-03).
-	// Distinct from EntityKindEmail per docs/design/architecture/08-chat.md
+	// Distinct from EntityKindEmail per docs/design/server/architecture/08-chat.md
 	// "chat-Message; distinct from email-Email" — the email datatype's
 	// state string and entity-kind name remain on EntityKindEmail. The
 	// feed carries (Kind, EntityID = ChatMessageID, ParentEntityID =

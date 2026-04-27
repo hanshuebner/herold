@@ -16,7 +16,7 @@ import (
 
 // Signaling-frame kinds carried inside SignalPayload.Kind. The values
 // match the wire vocabulary documented in
-// docs/design/architecture/08-chat.md and docs/design/requirements/15-video-calls.md.
+// docs/design/server/architecture/08-chat.md and docs/design/server/requirements/15-video-calls.md.
 const (
 	SignalKindOffer        = "offer"
 	SignalKindAnswer       = "answer"

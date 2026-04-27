@@ -13,7 +13,7 @@ import (
 // plus the audit log. A complete implementation requires joining
 // messages, state_changes, and queue rows for both inbound and
 // outbound mail, and exposing per-principal scoping. The Phase 2
-// minimum the docs/design/requirements/08 spec calls for is "queue rows
+// minimum the docs/design/server/requirements/08 spec calls for is "queue rows
 // matched by sender/recipient/state with date range"; richer joins
 // land when the scheduler ships its result-aggregation surface.
 //

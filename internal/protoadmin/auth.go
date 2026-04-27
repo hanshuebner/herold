@@ -41,7 +41,7 @@ func HashAPIKey(plaintext string) string {
 // a valid Phase 1 key). See REQ-ADM-03.
 //
 // TODO(phase2): accept session-cookie tokens here once protoadmin
-// ships the UI. Ticket ref: docs/design/implementation/02-phasing.md §Phase 2.
+// ships the UI. Ticket ref: docs/design/server/implementation/02-phasing.md §Phase 2.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()

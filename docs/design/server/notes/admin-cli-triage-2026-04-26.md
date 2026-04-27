@@ -39,8 +39,8 @@ include `mailbox` as a noun).
 
 ### `herold principal show <email-or-id>`
 
-- **Spec ref**: REQ-ADM-101 (`docs/design/requirements/08-admin-and-management.md:55`),
-  REQ-ADM-10 (`docs/design/requirements/08-admin-and-management.md:20`).
+- **Spec ref**: REQ-ADM-101 (`docs/design/server/requirements/08-admin-and-management.md:55`),
+  REQ-ADM-10 (`docs/design/server/requirements/08-admin-and-management.md:20`).
 - **Cobra subcommand**: missing. Suggested location:
   `internal/admin/cmd_principal.go` (extend the existing tree).
 - **Underlying surface**: REST endpoint `GET /api/v1/principals/{pid}`
@@ -126,7 +126,7 @@ include `mailbox` as a noun).
 ### `herold principal totp enroll <email-or-id>` and `disable`
 
 - **Spec ref**: REQ-ADM-203
-  (`docs/design/requirements/08-admin-and-management.md:94`)
+  (`docs/design/server/requirements/08-admin-and-management.md:94`)
   is the self-service angle; the operator override is not listed by
   REQ ID but the REST endpoints are wired, so the CLI is purely
   surface work.
@@ -220,7 +220,7 @@ include `mailbox` as a noun).
 ### `herold audit list`
 
 - **Spec ref**: REQ-ADM-19
-  (`docs/design/requirements/08-admin-and-management.md:29`),
+  (`docs/design/server/requirements/08-admin-and-management.md:29`),
   REQ-ADM-300 (line 99), REQ-ADM-302 (line 101).
 - **Cobra subcommand**: missing. Suggested location:
   `internal/admin/cmd_audit.go` (NEW file).
@@ -249,7 +249,7 @@ include `mailbox` as a noun).
 ### `herold categorise recategorise <email-or-id> [--limit N]`
 
 - **Spec ref**: REQ-FILT-220
-  (`docs/design/requirements/06-filtering.md:139`).
+  (`docs/design/server/requirements/06-filtering.md:139`).
 - **Cobra subcommand**: missing. Suggested location:
   `internal/admin/cmd_categorise.go` (NEW file).
 - **Underlying surface**:
@@ -269,9 +269,9 @@ include `mailbox` as a noun).
 ### `herold dkim generate <domain>`
 
 - **Spec ref**: REQ-ADM-11
-  (`docs/design/requirements/08-admin-and-management.md:21`)
+  (`docs/design/server/requirements/08-admin-and-management.md:21`)
   identifies `/dkim` as a documented subresource of `/domains`.
-  REQ-OPS-60 (`docs/design/requirements/09-operations.md:132`)
+  REQ-OPS-60 (`docs/design/server/requirements/09-operations.md:132`)
   says key generation happens automatically on `domain add`, so
   this CLI is the explicit re-generation / rotation knob.
 - **Cobra subcommand**: missing.
@@ -301,7 +301,7 @@ include `mailbox` as a noun).
 ### `herold dkim show <domain>`
 
 - **Spec ref**: REQ-ADM-11 (line 21), REQ-ADM-310
-  (`docs/design/requirements/08-admin-and-management.md:108`).
+  (`docs/design/server/requirements/08-admin-and-management.md:108`).
 - **Cobra subcommand**: missing.
 - **Underlying surface**: NO REST endpoint. Store has
   `GetActiveDKIMKey` (`internal/store/store.go:407`). The DKIM TXT
@@ -316,8 +316,8 @@ include `mailbox` as a noun).
 ### `herold sieve put <email> active < script.sieve`
 
 - **Spec ref**: REQ-ADM-15
-  (`docs/design/requirements/08-admin-and-management.md:25`),
-  REQ-FILT-120 (`docs/design/requirements/06-filtering.md:104`).
+  (`docs/design/server/requirements/08-admin-and-management.md:25`),
+  REQ-FILT-120 (`docs/design/server/requirements/06-filtering.md:104`).
 - **Cobra subcommand**: missing.
 - **Underlying surface**: NO REST endpoint for Sieve admin. Store
   has `GetSieveScript` / `SetSieveScript`
@@ -347,7 +347,7 @@ include `mailbox` as a noun).
 ### `herold sieve validate < script.sieve`
 
 - **Spec ref**: REQ-PROTO-53
-  (`docs/design/requirements/01-protocols.md:130`) -- JMAP Sieve
+  (`docs/design/server/requirements/01-protocols.md:130`) -- JMAP Sieve
   validate is a Phase 1 datatype. ManageSieve VALIDATE is in
   REQ-PROTO-MGSV.
 - **Cobra subcommand**: missing.
@@ -385,7 +385,7 @@ include `mailbox` as a noun).
 ### `herold categorise prompt set <email> < prompt.txt` and `list-categories`
 
 - **Spec ref**: REQ-FILT-211
-  (`docs/design/requirements/06-filtering.md:128`),
+  (`docs/design/server/requirements/06-filtering.md:128`),
   REQ-FILT-210 (line 127), REQ-FILT-212 (line 129).
 - **Cobra subcommand**: missing.
 - **Underlying surface**: store has `GetCategorisationConfig` and
@@ -406,7 +406,7 @@ include `mailbox` as a noun).
 ### `herold mailbox acl <addr>`
 
 - **Spec ref**: REQ-PROTO-37 (per the user doc reference; actually
-  in `docs/design/requirements/01-protocols.md`). User doc explicitly
+  in `docs/design/server/requirements/01-protocols.md`). User doc explicitly
   notes "Phase 2".
 - **Cobra subcommand**: missing.
 - **Underlying surface**: shared mailboxes + ACL is a Phase 2

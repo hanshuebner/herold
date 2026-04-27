@@ -91,7 +91,7 @@ jobs:
           cache: true
       # Cross-arch builds run under emulation only for build/vet; tests run
       # native on amd64. We still build on arm64 to catch portability issues
-      # early (per docs/design/implementation/03-testing-strategy.md §CI matrix).
+      # early (per docs/design/server/implementation/03-testing-strategy.md §CI matrix).
       - name: build
         run: go build -trimpath ./...
       - name: wait for postgres
