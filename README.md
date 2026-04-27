@@ -188,9 +188,16 @@ click through and check "always trust" so the prompt does not
 reappear. If the client returns a generic "Unable to verify account
 name or password" without prompting, regenerate the cert with the
 helper in step 3 (the SAN block must include `localhost` and
-`127.0.0.1` for clients that connect via `localhost`).
+`127.0.0.1`, which the helper writes by default).
 
-The public HTTP listener (default `127.0.0.1:8080` per the quickstart
+A note on `localhost` vs `127.0.0.1`: macOS's resolver returns the
+IPv6 loopback (`::1`) for `localhost` first, and CFNetwork-based
+clients (Apple Mail) do not always Happy-Eyeballs back to IPv4. The
+quickstart `system.toml` therefore binds every listener as
+`localhost:PORT`, which expands at startup into one socket on
+`127.0.0.1` and one on `[::1]`; either name works in the client.
+
+The public HTTP listener (default `localhost:8080` per the quickstart
 config) serves the tabard consumer SPA at `/` alongside the JMAP, send,
 chat, and image-proxy endpoints.
 

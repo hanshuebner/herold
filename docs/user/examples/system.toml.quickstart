@@ -61,20 +61,26 @@ backend = "sqlite"
 path = "./data/herold.sqlite"
 
 # Listeners - each [[listener]] is a separately-bound endpoint. For
-# the loopback quickstart, every listener binds 127.0.0.1 and uses
-# non-privileged ports (1025 / 1143 / 1993 / 8080) so the operator
-# does not need root or setcap. Adjust to the standard ports
-# (25 / 143 / 993 / 8080) for production.
+# the loopback quickstart, every listener binds the literal hostname
+# "localhost", which expands at bind time into one socket on
+# 127.0.0.1 and one on ::1. macOS resolves "localhost" to ::1 first
+# and several mainstream clients (Apple Mail in particular) do not
+# fall back to IPv4 when the IPv6 connect is refused, so binding
+# both stacks via one config line is the path of least surprise.
+# Replace "localhost" with "127.0.0.1" or "0.0.0.0" if you want the
+# IPv4-only or all-interfaces shape. Non-privileged ports
+# (1025 / 1143 / 1993 / 8080) avoid root / setcap; adjust to the
+# standard ports (25 / 143 / 993 / 8080) for production.
 
 [[listener]]
 name = "smtp-relay"
-address = "127.0.0.1:1025"
+address = "localhost:1025"
 protocol = "smtp"
 tls = "none"
 
 [[listener]]
 name = "smtp-submission"
-address = "127.0.0.1:1587"
+address = "localhost:1587"
 protocol = "smtp-submission"
 tls = "starttls"
 auth_required = true
@@ -83,7 +89,7 @@ key_file  = "./data/admin.key"
 
 [[listener]]
 name = "imap"
-address = "127.0.0.1:1143"
+address = "localhost:1143"
 protocol = "imap"
 tls = "starttls"
 cert_file = "./data/admin.crt"
@@ -91,7 +97,7 @@ key_file  = "./data/admin.key"
 
 [[listener]]
 name = "imaps"
-address = "127.0.0.1:1993"
+address = "localhost:1993"
 protocol = "imaps"
 tls = "implicit"
 cert_file = "./data/admin.crt"
@@ -104,7 +110,7 @@ key_file  = "./data/admin.key"
 # certs; the quickstart binds loopback for one-keypair-no-fuss boot.
 [[listener]]
 name = "public"
-address = "127.0.0.1:8080"
+address = "localhost:8080"
 protocol = "admin"
 kind = "public"
 tls = "none"
@@ -118,7 +124,7 @@ tls = "none"
 [[listener]]
 name = "admin"
 # The port number does not imply the scheme; with tls = "none" this listener is plain HTTP.
-address = "127.0.0.1:9443"
+address = "localhost:9443"
 protocol = "admin"
 kind = "admin"
 tls = "none"

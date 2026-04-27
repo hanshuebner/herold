@@ -1614,7 +1614,7 @@ func TestAdminRESTURL(t *testing.T) {
 			wantOK:  true,
 		},
 		{
-			name:      "no_admin_listener_returns_false",
+			name: "no_admin_listener_returns_false",
 			listeners: []ListenerConfig{
 				{Kind: "public", Address: "0.0.0.0:443", Protocol: "admin", TLS: "implicit"},
 			},
@@ -1658,6 +1658,17 @@ func TestAdminRESTURL(t *testing.T) {
 			wantURL: "",
 			wantOK:  false,
 		},
+		{
+			// `localhost` expands to dual-stack at bind time but the
+			// saved server_url is pinned to 127.0.0.1 so the value is
+			// deterministic across machines.
+			name: "localhost_pins_to_ipv4_loopback",
+			listeners: []ListenerConfig{
+				{Kind: "admin", Address: "localhost:9443", Protocol: "admin", TLS: "none"},
+			},
+			wantURL: "http://127.0.0.1:9443",
+			wantOK:  true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1674,6 +1685,83 @@ func TestAdminRESTURL(t *testing.T) {
 			}
 			if !tt.wantWarnings && len(warns) != 0 {
 				t.Errorf("AdminRESTURL: unexpected warnings: %v", warns)
+			}
+		})
+	}
+}
+
+func TestResolveBindAddresses(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+		want    []string
+		wantErr bool
+	}{
+		{
+			name:    "ipv4_loopback",
+			address: "127.0.0.1:1143",
+			want:    []string{"127.0.0.1:1143"},
+		},
+		{
+			name:    "ipv6_loopback",
+			address: "[::1]:1143",
+			want:    []string{"[::1]:1143"},
+		},
+		{
+			name:    "ipv4_wildcard",
+			address: "0.0.0.0:1143",
+			want:    []string{"0.0.0.0:1143"},
+		},
+		{
+			name:    "ipv6_wildcard",
+			address: "[::]:1143",
+			want:    []string{"[::]:1143"},
+		},
+		{
+			name:    "localhost_expands_to_both_stacks",
+			address: "localhost:1143",
+			want:    []string{"127.0.0.1:1143", "[::1]:1143"},
+		},
+		{
+			name:    "localhost_uppercase_still_expands",
+			address: "LOCALHOST:1143",
+			want:    []string{"127.0.0.1:1143", "[::1]:1143"},
+		},
+		{
+			name:    "explicit_hostname_kept_verbatim",
+			address: "mail.example.com:993",
+			want:    []string{"mail.example.com:993"},
+		},
+		{
+			name:    "empty_passes_through",
+			address: "",
+			want:    []string{""},
+		},
+		{
+			name:    "malformed_address_errors",
+			address: "no-port-here",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResolveBindAddresses(tt.address)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("[%d] got %q, want %q", i, got[i], tt.want[i])
+				}
 			}
 		})
 	}

@@ -1615,11 +1615,18 @@ func AdminRESTURL(cfg *Config) (string, []string, bool) {
 			return "", nil, false
 		}
 		originalBind := l.Address
-		switch host {
-		case "0.0.0.0":
+		switch {
+		case host == "0.0.0.0":
 			host = "127.0.0.1"
-		case "::":
+		case host == "::":
 			host = "[::1]"
+		case strings.EqualFold(host, "localhost"):
+			// `localhost` expands to two listening sockets (IPv4 +
+			// IPv6) at bind time. Pin the saved server_url to the IPv4
+			// loopback so the value is deterministic across operator
+			// machines and works regardless of how the local resolver
+			// orders A vs AAAA records.
+			host = "127.0.0.1"
 		}
 		// If the host contains a colon (bare IPv6 literal) wrap it in
 		// brackets so the URL is well-formed.
@@ -1638,6 +1645,44 @@ func AdminRESTURL(cfg *Config) (string, []string, bool) {
 		return fmt.Sprintf("%s://%s:%s", scheme, host, port), warnings, true
 	}
 	return "", nil, false
+}
+
+// ResolveBindAddresses turns a single listener address into the concrete
+// host:port pairs that should be bound. The expansion exists because
+// macOS resolves the literal hostname "localhost" to ::1 first (an
+// IPv6 loopback) but Apple Mail and other CFNetwork-based clients do
+// not Happy-Eyeballs back to IPv4 reliably; an operator who writes
+// `address = "127.0.0.1:1143"` and tells a client `localhost:1143`
+// thus hits a refused IPv6 connect with no IPv4 fallback. Writing
+// `address = "localhost:1143"` instead expands here into both
+// `127.0.0.1:1143` and `[::1]:1143`, so both stacks accept.
+//
+// Rules:
+//   - host == "localhost" (case-insensitive): expand to 127.0.0.1 and ::1.
+//   - everything else (literal IP, "0.0.0.0", "::", explicit hostname):
+//     return the address as-is. We deliberately do not DNS-resolve
+//     non-loopback hostnames at bind time; an operator who writes
+//     `mail.example.com:443` wants the listener to follow whatever
+//     the kernel binds for that name and to fail loudly if it does
+//     not exist, not to silently bind on N IPs.
+//
+// An empty address is returned as a single empty string so the caller
+// surfaces sysconfig.Validate's existing "address is required" error.
+func ResolveBindAddresses(address string) ([]string, error) {
+	if address == "" {
+		return []string{""}, nil
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("sysconfig: address %q: %w", address, err)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return []string{
+			net.JoinHostPort("127.0.0.1", port),
+			net.JoinHostPort("::1", port),
+		}, nil
+	}
+	return []string{address}, nil
 }
 
 // isLoopbackBindAddr reports whether bind is a host:port style address

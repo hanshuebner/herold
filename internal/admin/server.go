@@ -1101,26 +1101,36 @@ func bindListeners(
 			adminBinds = append(adminBinds, l)
 			continue
 		}
-		ln, fn, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, bundle, opts)
+		lns, fns, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, bundle, opts)
 		if err != nil {
 			set.Close()
 			return nil, err
 		}
-		set.listeners = append(set.listeners, ln)
-		set.serveFns = append(set.serveFns, namedServe{name: l.Name, fn: fn})
+		for i, ln := range lns {
+			set.listeners = append(set.listeners, ln)
+			set.serveFns = append(set.serveFns, namedServe{name: l.Name, fn: fns[i]})
+		}
 	}
 	for _, l := range adminBinds {
-		ln, fn, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, bundle, opts)
+		lns, fns, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, bundle, opts)
 		if err != nil {
 			set.Close()
 			return nil, err
 		}
-		set.listeners = append(set.listeners, ln)
-		set.serveFns = append(set.serveFns, namedServe{name: l.Name, fn: fn})
+		for i, ln := range lns {
+			set.listeners = append(set.listeners, ln)
+			set.serveFns = append(set.serveFns, namedServe{name: l.Name, fn: fns[i]})
+		}
 	}
 	return set, nil
 }
 
+// bindOne opens one or more TCP sockets for the listener spec and
+// returns one serve function per socket. A literal `localhost:port`
+// address expands to two sockets (127.0.0.1 and ::1) so a single
+// configuration line covers both stacks; every other address yields a
+// single socket. On error any sockets opened earlier in the call are
+// closed before returning.
 func bindOne(
 	ctx context.Context,
 	cfg *sysconfig.Config,
@@ -1131,12 +1141,56 @@ func bindOne(
 	imapServer *protoimap.Server,
 	bundle composedHandlers,
 	opts StartOpts,
-) (net.Listener, listenerServeFn, error) {
-	ln, err := net.Listen("tcp", l.Address)
+) ([]net.Listener, []listenerServeFn, error) {
+	addrs, err := sysconfig.ResolveBindAddresses(l.Address)
 	if err != nil {
-		return nil, nil, fmt.Errorf("admin: listen %s (%s): %w", l.Name, l.Address, err)
+		return nil, nil, fmt.Errorf("admin: listen %s: %w", l.Name, err)
 	}
-	if opts.ListenerAddrs != nil {
+	var (
+		listeners []net.Listener
+		serves    []listenerServeFn
+	)
+	closeAll := func() {
+		for _, ln := range listeners {
+			_ = ln.Close()
+		}
+	}
+	for _, addr := range addrs {
+		ln, fn, err := bindOneAddress(ctx, cfg, logger, l, addr, tlsStore, smtpServer, imapServer, bundle, opts, len(listeners) == 0)
+		if err != nil {
+			closeAll()
+			return nil, nil, err
+		}
+		listeners = append(listeners, ln)
+		serves = append(serves, fn)
+	}
+	return listeners, serves, nil
+}
+
+// bindOneAddress binds a single host:port and wires the protocol-specific
+// serve function. The publishAddr flag controls whether this socket's
+// resolved address is recorded in opts.ListenerAddrs; when bindOne expands
+// a localhost listener into two sockets we publish only the first
+// (IPv4) address so the existing test fixture contract — one entry per
+// listener name — is preserved.
+func bindOneAddress(
+	ctx context.Context,
+	cfg *sysconfig.Config,
+	logger *slog.Logger,
+	l sysconfig.ListenerConfig,
+	bindAddr string,
+	tlsStore *heroldtls.Store,
+	smtpServer *protosmtp.Server,
+	imapServer *protoimap.Server,
+	bundle composedHandlers,
+	opts StartOpts,
+	publishAddr bool,
+) (net.Listener, listenerServeFn, error) {
+	ln, err := net.Listen("tcp", bindAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("admin: listen %s (%s): %w", l.Name, bindAddr, err)
+	}
+	if publishAddr && opts.ListenerAddrs != nil {
 		addr := ln.Addr().String()
 		if opts.ListenerAddrsMu != nil {
 			opts.ListenerAddrsMu.Lock()
@@ -1179,11 +1233,6 @@ func bindOne(
 		}, nil
 	case "admin":
 		spec := l
-		// Pick the handler matching the listener kind. Production
-		// configs declare both kinds (validate enforces); dev_mode
-		// allows a single un-kinded HTTP listener that co-mounts
-		// public + admin behind a small composing mux per
-		// REQ-OPS-ADMIN-LISTENER-01 dev escape.
 		handler := pickHTTPHandler(cfg, l, bundle)
 		return ln, func(ctx context.Context) error {
 			return serveAdmin(ctx, ln, spec, tlsStore, handler, logger)
