@@ -15,9 +15,11 @@ package protoadmin
 // brute-force is throttled before any principal is resolved.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/auth"
@@ -91,6 +93,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// No differentiation between wrong email and wrong password in
 		// the response (anti-enumeration). Rate-limited via directory.
+		// Audit the failure (REQ-ADM-300, REQ-ADM-303): failed auth
+		// attempts MUST land in the durable audit log so SIEM /
+		// fail2ban pipelines can see brute-force activity.
+		s.auditLoginFailure(r, req.Email, 0, humanLoginError(err))
 		writeProblem(w, r, http.StatusUnauthorized,
 			"unauthorized", humanLoginError(err), "")
 		return
@@ -100,11 +106,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.loggerFrom(ctx).Warn("protoadmin.login.principal_lookup_failed",
 			"err", err, "principal_id", pid)
+		s.auditLoginFailure(r, req.Email, pid, "principal load failed")
 		writeProblem(w, r, http.StatusInternalServerError,
 			"internal_error", "principal load failed", "")
 		return
 	}
 	if p.Flags.Has(store.PrincipalFlagDisabled) {
+		s.auditLoginFailure(r, p.CanonicalEmail, pid, "account is disabled")
 		writeProblem(w, r, http.StatusUnauthorized,
 			"unauthorized", "account is disabled", "")
 		return
@@ -114,15 +122,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// code for 2FA-enabled principals before issuing admin-scoped cookie.
 	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
 		if req.TOTPCode == "" {
+			s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp code missing")
 			writeLoginProblemStepUp(w, r)
 			return
 		}
 		if err := s.dir.VerifyTOTP(ctx, pid, req.TOTPCode); err != nil {
 			if errors.Is(err, directory.ErrRateLimited) {
+				s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp rate-limited")
 				writeProblem(w, r, http.StatusUnauthorized,
 					"unauthorized", "too many TOTP attempts; please wait", "")
 				return
 			}
+			s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp code invalid")
 			writeLoginProblemStepUp(w, r)
 			return
 		}
@@ -145,7 +156,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	cfg := s.sessionConfig()
 	protoui.WriteSessionCookie(w, cfg, sess)
 
-	s.appendAudit(r.Context(),
+	// Attach the just-authenticated principal to the audit context so
+	// the success record carries actor=principal/<id> rather than the
+	// pre-auth actor=system fallback (REQ-ADM-300).
+	auditCtx := context.WithValue(r.Context(), ctxKeyPrincipal, p)
+	s.appendAudit(auditCtx,
 		"auth.login",
 		"principal:"+p.CanonicalEmail,
 		store.OutcomeSuccess,
@@ -171,17 +186,50 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // authentication; a caller who is already logged out (no cookies, no
 // Bearer) just gets 401 from requireAuth, which is consistent with the
 // "nothing to do" case being a no-op.
+//
+// Sessions are stateless HMAC-signed cookies (REQ-AUTH-JSON-LOGOUT);
+// logout invalidates the client-side cookies only. There is no
+// server-side revocation list -- residual sessions on a stolen device
+// expire when the cookie's TTL elapses.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	cfg := s.sessionConfig()
 	protoui.ClearSessionCookies(w, cfg)
+	subject := ""
+	if p, ok := principalFrom(r.Context()); ok {
+		subject = "principal:" + p.CanonicalEmail
+	}
 	s.appendAudit(r.Context(),
 		"auth.logout",
-		"",
+		subject,
 		store.OutcomeSuccess,
 		"",
 		nil,
 	)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// auditLoginFailure writes a failed-login audit record. The actor is
+// always actor=system (we do not trust the supplied email to identify
+// a real principal); the subject carries the attempted email so an
+// operator searching the audit log for "email:alice@example.com" sees
+// every attempt against that account, including pre-existence ones.
+// principalID is non-zero only when the post-Authenticate steps fail
+// (TOTP, disabled-account); the record's metadata carries it.
+func (s *Server) auditLoginFailure(r *http.Request, attemptedEmail string, principalID directory.PrincipalID, message string) {
+	meta := map[string]string{
+		"remote":          remoteHost(r.RemoteAddr),
+		"attempted_email": attemptedEmail,
+	}
+	if principalID > 0 {
+		meta["principal_id"] = strconv.FormatUint(uint64(principalID), 10)
+	}
+	s.appendAudit(r.Context(),
+		"auth.login",
+		"email:"+attemptedEmail,
+		store.OutcomeFailure,
+		message,
+		meta,
+	)
 }
 
 // sessionConfig builds the protoui.SessionConfig from the server's

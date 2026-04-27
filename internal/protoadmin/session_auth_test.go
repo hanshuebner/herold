@@ -30,6 +30,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/protoui"
+	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
@@ -484,5 +485,73 @@ func TestSessionAuth_TOTP_WithCodeSucceeds(t *testing.T) {
 	}
 	if !sh.sessionCookiePresent() {
 		t.Fatalf("session cookie not set after TOTP login")
+	}
+}
+
+// TestSessionAuth_Login_BadCredentials_AuditsFailure asserts that a wrong
+// password lands a structured failure record in the audit log
+// (REQ-ADM-300, REQ-ADM-303). Without this, brute-force attempts are
+// invisible to operators reading GET /api/v1/audit.
+func TestSessionAuth_Login_BadCredentials_AuditsFailure(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	email, _, _ := sh.bootstrapWithPassword("auditfail@example.com")
+
+	if code, _ := sh.doLogin(email, "wrong-password", nil); code != http.StatusUnauthorized {
+		t.Fatalf("bad-creds login: status=%d, want 401", code)
+	}
+
+	entries, err := sh.h.Store.Meta().ListAuditLog(context.Background(),
+		store.AuditLogFilter{Action: "auth.login"})
+	if err != nil {
+		t.Fatalf("ListAuditLog: %v", err)
+	}
+	var found *store.AuditLogEntry
+	for i := range entries {
+		if entries[i].Outcome == store.OutcomeFailure &&
+			entries[i].Subject == "email:"+email {
+			found = &entries[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no failure audit record for bad-creds login; entries=%+v", entries)
+	}
+	if found.Metadata["attempted_email"] != email {
+		t.Errorf("metadata.attempted_email=%q, want %q",
+			found.Metadata["attempted_email"], email)
+	}
+}
+
+// TestSessionAuth_Logout_AuditRecordCarriesPrincipal asserts the logout
+// audit record's subject identifies the calling principal, not the empty
+// string -- REQ-ADM-300 requires {actor, action, resource} per record.
+func TestSessionAuth_Logout_AuditRecordCarriesPrincipal(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	email, password, _ := sh.bootstrapWithPassword("auditlogout@example.com")
+
+	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+		t.Fatalf("login: status=%d", code)
+	}
+	if code, _ := sh.doWithCookie("POST", "/api/v1/auth/logout", nil, sh.csrfToken()); code != http.StatusNoContent {
+		t.Fatalf("logout: status=%d", code)
+	}
+
+	entries, err := sh.h.Store.Meta().ListAuditLog(context.Background(),
+		store.AuditLogFilter{Action: "auth.logout"})
+	if err != nil {
+		t.Fatalf("ListAuditLog: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("expected one auth.logout entry, got 0")
+	}
+	last := entries[len(entries)-1]
+	want := "principal:" + email
+	if last.Subject != want {
+		t.Errorf("logout audit subject=%q, want %q", last.Subject, want)
+	}
+	if last.ActorKind != store.ActorPrincipal {
+		t.Errorf("logout audit actor_kind=%q, want %q", last.ActorKind, store.ActorPrincipal)
 	}
 }

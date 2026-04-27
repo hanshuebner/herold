@@ -473,6 +473,21 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			Session:       adminSessionCookieConfig(cfg),
 		},
 	)
+	// REQ-AUTH-SESSION-REST: cookie auth on /api/v1 is gated on the
+	// signing key being long enough for HMAC-SHA256 (>= 32 bytes). When
+	// the operator has not configured one (typical first-boot scenario
+	// before bootstrap publishes the env var) we keep cookie auth off
+	// but emit a clear startup line so an operator looking at "why
+	// can't the SPA log in?" finds the answer in the herold log
+	// instead of in the source.
+	if cfg.Server.UI.SigningKeyEnv == "" {
+		logger.Info("admin: REST session-cookie auth disabled",
+			"reason", "no signing key configured (set [server.ui].signing_key_env)")
+	} else if v := os.Getenv(cfg.Server.UI.SigningKeyEnv); len(v) < 32 {
+		logger.Info("admin: REST session-cookie auth disabled",
+			"reason", "signing key shorter than 32 bytes",
+			"env", cfg.Server.UI.SigningKeyEnv)
+	}
 	// Parent mux composition (Phase 2 Wave 2.4): the admin HTTP
 	// listener serves both the REST surface (protoadmin under
 	// /api/v1) and the operator web UI (protoui under /ui). We
