@@ -258,10 +258,15 @@ async function handleChatAction(data, action, event) {
     // Mark read is best-effort from the SW; the app can re-sync on open.
     // We open the app at the conversation to let the user see the update.
   }
+  // Open the mail route with the openChat deep-link parameter so the
+  // conversation appears as a floating overlay rather than navigating away
+  // from whatever the user was doing.  The overlay path is friendlier when
+  // the user is mid-mail; the fullscreen /chat/* route can still be reached
+  // from the rail.
   await openApp(
     data.conversationId
-      ? `/chat/${encodeURIComponent(data.conversationId)}`
-      : '/chat',
+      ? `/#/mail?openChat=${encodeURIComponent(data.conversationId)}`
+      : '/#/mail',
   );
 }
 

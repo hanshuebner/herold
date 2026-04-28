@@ -8,6 +8,8 @@
   import { sync } from './lib/jmap/sync.svelte';
   import { chatWs } from './lib/chat/chat-ws.svelte';
   import { chat } from './lib/chat/store.svelte';
+  import { chatOverlay } from './lib/chat/overlay-store.svelte';
+  import { handleOpenChatDeepLink } from './lib/chat/deep-link';
   import { Capability } from './lib/jmap/types';
   import { compose } from './lib/compose/compose.svelte';
   import { composeStack } from './lib/compose/compose-stack.svelte';
@@ -148,6 +150,44 @@
     if (!ok) return;
     await mail.destroyMailbox(id);
   }
+
+  // ── Deep-link: ?openChat=<conversationId> ────────────────────────────────
+  //
+  // Allows push notifications (and any external link) to land on a mail or
+  // settings route while immediately opening a specific conversation as a
+  // floating overlay.  The parameter is intentionally in the hash query string
+  // so the server never sees it and the SPA's static hosting contract is
+  // unchanged.
+  //
+  // Firing condition:
+  //   - auth ready (capabilities known)
+  //   - chat capability present
+  //   - conversations cache populated (size > 0) so the overlay can render
+  //   - not currently on the fullscreen /chat/* route (that view owns the UI)
+  //   - URL has an openChat param
+  //
+  // The effect removes the param from the URL after consuming it so a reload
+  // does not re-fire.  All store writes are wrapped in untrack() to avoid
+  // the read-write loop pattern documented in web/CLAUDE.md.
+  $effect(() => {
+    if (auth.status !== 'ready') return;
+    // Track the param and the conversation map size so the effect re-evaluates
+    // when either changes (e.g. conversations finish loading after boot).
+    const param = router.getParam('openChat');
+    const loaded = chat.conversations.size > 0;
+    const onChatRoute = router.matches('chat');
+
+    untrack(() => {
+      handleOpenChatDeepLink({
+        param,
+        conversationsReady: loaded,
+        hasChatCap,
+        onChatRoute,
+        openWindow: (id) => chatOverlay.openWindow(id),
+        clearParam: () => router.setParam('openChat', null),
+      });
+    });
+  });
 
   // ── Web Push: non-modal notification banner (REQ-PUSH-30) ───────────────
   //
