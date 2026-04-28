@@ -5,6 +5,7 @@
   import ToastHost from '../toast/ToastHost.svelte';
   import ComposeWindow from '../compose/ComposeWindow.svelte';
   import HelpOverlay from '../help/HelpOverlay.svelte';
+  import MoveTargetPicker from '../mail/MoveTargetPicker.svelte';
 
   interface Props {
     activeApp?: 'mail' | 'chat';
@@ -45,6 +46,7 @@
   <ToastHost />
   <ComposeWindow />
   <HelpOverlay />
+  <MoveTargetPicker />
 </div>
 
 <style>

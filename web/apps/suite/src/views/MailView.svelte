@@ -4,6 +4,7 @@
   import { mail, type FolderID } from '../lib/mail/store.svelte';
   import { keyboard } from '../lib/keyboard/engine.svelte';
   import { compose } from '../lib/compose/compose.svelte';
+  import { movePicker } from '../lib/mail/move-picker.svelte';
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import type { Email } from '../lib/mail/types';
 
@@ -179,6 +180,14 @@
           if (id) void mail.setSeen(id, false);
         },
       },
+      {
+        key: 'v',
+        description: 'Move to mailbox',
+        action: () => {
+          const id = focusedEmailId();
+          if (id) movePicker.open(id);
+        },
+      },
     ];
     if (isInboxRoute) {
       layer.push(
@@ -246,6 +255,14 @@
         key: 'u',
         description: `Back to ${mail.listFolderLabel}`,
         action: () => router.navigate(folderHref(mail.listFolder)),
+      },
+      {
+        key: 'v',
+        description: 'Move to mailbox',
+        action: () => {
+          const e = replyTarget();
+          if (e) movePicker.open(e.id);
+        },
       },
     ]);
     return pop;

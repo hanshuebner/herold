@@ -729,6 +729,71 @@ class MailStore {
     });
   }
 
+  /**
+   * Move an email to a single target mailbox: replaces mailboxIds with
+   * `{[targetId]: true}`. Optimistic; restored on failure with a toast.
+   * The Undo path replays the prior mailboxIds set.
+   */
+  async moveEmailToMailbox(emailId: string, targetId: string): Promise<void> {
+    const email = this.emails.get(emailId);
+    if (!email) return;
+    if (email.mailboxIds[targetId] && Object.keys(email.mailboxIds).length === 1) {
+      return; // already only-in-target
+    }
+    const prevMailboxIds = { ...email.mailboxIds };
+    const prevListIds = [...this.listEmailIds];
+    const prevFocused = this.listFocusedIndex;
+
+    this.#patchEmail(emailId, { mailboxIds: { [targetId]: true } });
+    // Whether to drop from the visible list depends on the active
+    // folder. If we're showing the target mailbox the email stays;
+    // otherwise drop it. All Mail keeps the email visible regardless.
+    if (this.listFolder !== 'all') {
+      const activeRole = this.listFolder;
+      const target = this.mailboxes.get(targetId);
+      const targetRole = target?.role ?? '';
+      if (targetRole !== activeRole) this.#removeFromList(emailId);
+    }
+
+    const revert = (): void => {
+      this.#patchEmail(emailId, { mailboxIds: prevMailboxIds });
+      this.listEmailIds = prevListIds;
+      this.listFocusedIndex = prevFocused;
+    };
+
+    try {
+      await this.#emailSetUpdate(emailId, {
+        mailboxIds: { [targetId]: true },
+      });
+    } catch (err) {
+      revert();
+      toast.show({
+        message: errMessage(err, 'Move failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return;
+    }
+
+    const targetName = this.mailboxes.get(targetId)?.name ?? 'mailbox';
+    toast.show({
+      message: `Moved to ${targetName}`,
+      undo: async () => {
+        try {
+          await this.#emailSetUpdate(emailId, { mailboxIds: prevMailboxIds });
+          this.#patchEmail(emailId, { mailboxIds: prevMailboxIds });
+          this.listEmailIds = prevListIds;
+        } catch (err) {
+          toast.show({
+            message: errMessage(err, 'Undo failed'),
+            kind: 'error',
+            timeoutMs: 6000,
+          });
+        }
+      },
+    });
+  }
+
   /** Toggle the $flagged keyword. No toast / no undo (toggle is itself the undo). */
   async toggleFlagged(emailId: string): Promise<void> {
     const email = this.emails.get(emailId);

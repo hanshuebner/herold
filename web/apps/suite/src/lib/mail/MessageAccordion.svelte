@@ -3,6 +3,7 @@
   import { htmlHasExternalImages } from './sanitize';
   import { emailHtmlBody, emailTextBody, type Email } from './types';
   import { compose } from '../compose/compose.svelte';
+  import { movePicker } from './move-picker.svelte';
   import { settings } from '../settings/settings.svelte';
 
   interface Props {
@@ -126,6 +127,9 @@
         {/if}
         <button type="button" class="pill" onclick={() => compose.openForward(email)}>
           ↪ Forward
+        </button>
+        <button type="button" class="pill" onclick={() => movePicker.open(email.id)}>
+          → Move…
         </button>
       </div>
     </div>
