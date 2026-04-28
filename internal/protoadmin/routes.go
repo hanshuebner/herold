@@ -144,3 +144,75 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/domains/{name}/attachment-policy", authAdmin(s.handleGetDomainAttPol))
 	mux.HandleFunc("PUT /api/v1/domains/{name}/attachment-policy", authAdmin(s.handlePutDomainAttPol))
 }
+
+// RegisterSelfServiceRoutes registers the self-service subset of the
+// /api/v1/... endpoints on mux. Only routes that a non-admin end-user
+// should be able to reach from the public listener are included; all
+// admin-only surfaces (queue, certs, domains, aliases, audit, spam policy,
+// webhooks, OIDC providers, server status) are deliberately excluded so
+// the public-listener REST surface stays minimal.
+//
+// Each registered route relies on the per-handler requireSelfOrAdmin gate
+// already present in the handler implementation — this function does not
+// add new authorisation logic. The caller is responsible for mounting the
+// returned SelfServiceHandler (or wiring the mux) behind the public
+// listener's session cookie + CSRF middleware.
+//
+// REQ-ADM-203: supports the Suite SPA /settings panel (change password,
+// 2FA, app passwords, OIDC identity links, API key management).
+func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
+	auth1 := func(h http.HandlerFunc) http.HandlerFunc { return s.requireAuth(h) }
+
+	// Health (unauth) — useful for public-listener liveness probes.
+	mux.HandleFunc("GET /api/v1/healthz/live", s.handleHealthLive)
+	mux.HandleFunc("GET /api/v1/healthz/ready", s.handleHealthReady)
+
+	// Principal self-service: a non-admin principal may only access their
+	// own row; requireSelfOrAdmin inside each handler enforces this.
+	mux.HandleFunc("GET /api/v1/principals/{pid}", auth1(s.handleGetPrincipal))
+	mux.HandleFunc("PATCH /api/v1/principals/{pid}", auth1(s.handlePatchPrincipal))
+	mux.HandleFunc("PUT /api/v1/principals/{pid}/password", auth1(s.handleSetPassword))
+
+	// TOTP enrolment / management.
+	mux.HandleFunc("POST /api/v1/principals/{pid}/totp/enroll", auth1(s.handleTOTPEnroll))
+	mux.HandleFunc("POST /api/v1/principals/{pid}/totp/confirm", auth1(s.handleTOTPConfirm))
+	mux.HandleFunc("DELETE /api/v1/principals/{pid}/totp", auth1(s.handleTOTPDisable))
+
+	// API key management (principal-scoped). The flat self-service surface
+	// lists and revokes keys belonging to the authenticated caller only.
+	// POST creates a new key scoped to the {pid} (gates by self-or-admin).
+	mux.HandleFunc("GET /api/v1/api-keys", auth1(s.handleListOwnAPIKeys))
+	mux.HandleFunc("DELETE /api/v1/api-keys/{id}", auth1(s.handleDeleteAPIKey))
+	mux.HandleFunc("POST /api/v1/principals/{pid}/api-keys", auth1(s.handleCreateAPIKey))
+
+	// OIDC identity links (link / unlink an external IdP identity to the
+	// principal's account). begin redirects the browser to the IdP;
+	// the callback completion is handled on the admin listener (OIDC
+	// callback uses admin session state) and is NOT registered here.
+	mux.HandleFunc("GET /api/v1/principals/{pid}/oidc-links", auth1(s.handleListOIDCLinks))
+	mux.HandleFunc("POST /api/v1/principals/{pid}/oidc-links/begin", auth1(s.handleBeginOIDCLink))
+	mux.HandleFunc("DELETE /api/v1/principals/{pid}/oidc-links/{provider_id}", auth1(s.handleUnlinkOIDC))
+}
+
+// SelfServiceHandler returns the self-service route set wrapped in the
+// same middleware chain as Handler() (concurrency limit, panic recover,
+// request logging, metrics). It is intended for mounting on the public
+// listener at the specific path prefixes below so the end-user /settings
+// panel in the Suite SPA can reach the relevant REST endpoints without
+// exposing the full admin surface.
+//
+// Recommended mount points (longest-prefix wins in Go's stdlib mux):
+//
+//	publicMux.Handle("/api/v1/principals/", selfServiceHandler)
+//	publicMux.Handle("/api/v1/api-keys",    selfServiceHandler)
+//	publicMux.Handle("/api/v1/api-keys/",   selfServiceHandler)
+//	publicMux.Handle("/api/v1/healthz/",    selfServiceHandler)
+func (s *Server) SelfServiceHandler() http.Handler {
+	mux := http.NewServeMux()
+	s.RegisterSelfServiceRoutes(mux)
+	sem := make(chan struct{}, s.opts.MaxConcurrentRequests)
+	return s.withConcurrencyLimit(sem,
+		s.withPanicRecover(
+			s.withRequestLog(
+				s.withMetrics(mux))))
+}

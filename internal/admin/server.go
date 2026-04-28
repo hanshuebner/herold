@@ -499,7 +499,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// constructor. The two handlers are otherwise independent --
 	// session cookies (SPA) and Bearer keys (REST) live in disjoint
 	// header/cookie namespaces, and the URL prefixes do not overlap.
-	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey)
+	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey, health)
 	if err != nil {
 		return err
 	}
@@ -1502,6 +1502,7 @@ func composeAdminAndUI(
 	adminHandler http.Handler,
 	smtpSrv *protosmtp.Server,
 	webhookSigningKey []byte,
+	health *observe.Health,
 ) (composedHandlers, error) {
 	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
 	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
@@ -1613,6 +1614,44 @@ func composeAdminAndUI(
 		AuditAppender: publicLoginAuditAppender(st, clk),
 	})
 	publicLoginSrv.Mount(publicMux)
+
+	// Self-service REST routes (Phase 4a, REQ-ADM-203): the Suite SPA
+	// /settings panel calls these endpoints with the public-listener
+	// session cookie + CSRF token. A second protoadmin.Server instance
+	// is constructed with the public cookie config so requireAuth inside
+	// each handler verifies the herold_public_session cookie rather than
+	// the admin one. Only the self-service subset is mounted; admin-only
+	// routes (queue, certs, domains, audit, etc.) are not reachable on
+	// the public listener.
+	//
+	// Ordering note: publicLoginSrv already registered
+	// POST /api/v1/auth/login and POST /api/v1/auth/logout above; Go's
+	// longest-prefix mux gives those registrations priority over the
+	// self-service mounts below because they are more-specific patterns.
+	// The self-service server registers only /api/v1/principals/,
+	// /api/v1/api-keys, /api/v1/api-keys/, and /api/v1/healthz/ so
+	// there is no overlap with the login/logout paths.
+	//
+	// The OIDC callback (POST /api/v1/oidc/callback) continues to
+	// forward to adminHandler: it completes a flow started on the admin
+	// side and uses admin session state.
+	selfServiceSrv := protoadmin.NewServer(
+		st,
+		dir,
+		oidcRP,
+		logger.With("subsystem", "admin", "listener", "public-selfservice"),
+		clk,
+		protoadmin.Options{
+			ServerVersion: "0.1.0",
+			Health:        health,
+			Session:       publicCookieCfg,
+		},
+	)
+	selfServiceHandler := selfServiceSrv.SelfServiceHandler()
+	publicMux.Handle("/api/v1/principals/", selfServiceHandler)
+	publicMux.Handle("/api/v1/api-keys", selfServiceHandler)
+	publicMux.Handle("/api/v1/api-keys/", selfServiceHandler)
+	publicMux.Handle("/api/v1/healthz/", selfServiceHandler)
 
 	// Image proxy (REQ-SEND-70..78). Public-listener-only: the
 	// browser presenting an end-user cookie loads upstream-tracking-
