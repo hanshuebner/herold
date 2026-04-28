@@ -1821,9 +1821,10 @@ func (m *metadata) DeleteJMAPIdentity(ctx context.Context, id string) error {
 
 // -- LLM categorisation (REQ-FILT-200..221) --------------------------
 
-// defaultCategorySet matches the documented Gmail-style seed
-// (REQ-FILT-201/210); kept here so the pg backend can seed the row on
-// first read without importing higher-level packages.
+// defaultCategorySet is retained for seeding existing rows and the legacy
+// CategorySet field; new code reads DerivedCategories. Kept here so the
+// pg backend can seed the row on first read without importing higher-level
+// packages.
 var defaultCategorySet = []store.CategoryDef{
 	{Name: "primary", Description: "Personal correspondence and important messages from people you know."},
 	{Name: "social", Description: "Messages from social networks and dating sites."},
@@ -1832,7 +1833,21 @@ var defaultCategorySet = []store.CategoryDef{
 	{Name: "forums", Description: "Mailing-list digests, online community discussions."},
 }
 
-const defaultCategorisationPrompt = `You are an email-categorisation assistant. Given an email envelope and a short body excerpt, choose exactly one category from the supplied list whose description best fits the message, or return "none" if no category is a clear match. Respond ONLY with a single JSON object of the form {"category":"<name>"} where <name> is one of the listed category names or the literal "none". Do not include any other text.`
+// defaultCategorisationPrompt is the seeded system prompt (REQ-FILT-211).
+// The prompt is the single source of truth for the category vocabulary.
+// Must stay in sync with categorise.DefaultPrompt in internal/categorise/prompt.go.
+const defaultCategorisationPrompt = `You are an email-categorisation assistant. Classify the message into one of the following categories:
+
+- primary: Direct correspondence and important messages from people you know, plus anything that does not fit the categories below.
+- social: Notifications and messages from social networks, dating sites, and messaging apps.
+- promotions: Marketing emails, deals, offers, coupons, and newsletters from retailers or services.
+- updates: Automated notifications — receipts, statements, confirmations, package tracking, and account alerts.
+- forums: Mailing-list discussions, online community threads, and group digests.
+
+Respond ONLY with a JSON object of the shape {"categories":["primary","social","promotions","updates","forums"],"assigned":"<name>"} where:
+- "categories" lists every category defined above (always all five, in the order listed).
+- "assigned" is the single category name that best fits this message, or null if no category fits.
+Do not include any other text.`
 
 func (m *metadata) GetCategorisationConfig(ctx context.Context, pid store.PrincipalID) (store.CategorisationConfig, error) {
 	cfg, found, err := m.readCategorisationRow(ctx, pid)
@@ -1860,22 +1875,25 @@ func (m *metadata) GetCategorisationConfig(ctx context.Context, pid store.Princi
 
 func (m *metadata) readCategorisationRow(ctx context.Context, pid store.PrincipalID) (store.CategorisationConfig, bool, error) {
 	var (
-		prompt          string
-		guardrail       string
-		categorySetJSON []byte
-		endpointURL     *string
-		model           *string
-		apiKeyEnv       *string
-		timeoutSec      int32
-		enabled         bool
-		updatedAtUs     int64
+		prompt                string
+		guardrail             string
+		categorySetJSON       []byte
+		derivedCategoriesJSON *string
+		endpointURL           *string
+		model                 *string
+		apiKeyEnv             *string
+		timeoutSec            int32
+		enabled               bool
+		updatedAtUs           int64
 	)
 	err := m.s.pool.QueryRow(ctx, `
-		SELECT prompt, guardrail, category_set_json, endpoint_url, model, api_key_env,
+		SELECT prompt, guardrail, category_set_json, derived_categories_json,
+		       endpoint_url, model, api_key_env,
 		       timeout_sec, enabled, updated_at_us
 		  FROM jmap_categorisation_config
 		 WHERE principal_id = $1`, int64(pid)).Scan(
-		&prompt, &guardrail, &categorySetJSON, &endpointURL, &model, &apiKeyEnv,
+		&prompt, &guardrail, &categorySetJSON, &derivedCategoriesJSON,
+		&endpointURL, &model, &apiKeyEnv,
 		&timeoutSec, &enabled, &updatedAtUs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -1899,6 +1917,11 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 			return store.CategorisationConfig{}, false, fmt.Errorf("storepg: decode category_set_json: %w", err)
 		}
 	}
+	if derivedCategoriesJSON != nil && *derivedCategoriesJSON != "" {
+		if err := json.Unmarshal([]byte(*derivedCategoriesJSON), &cfg.DerivedCategories); err != nil {
+			return store.CategorisationConfig{}, false, fmt.Errorf("storepg: decode derived_categories_json: %w", err)
+		}
+	}
 	return cfg, true, nil
 }
 
@@ -1916,26 +1939,87 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 		timeoutSec = 5
 	}
 	return m.runTx(ctx, func(tx pgx.Tx) error {
+		// When the caller updates the prompt, clear derived_categories_json
+		// so the next classifier call refills it (REQ-FILT-217).
+		var storedPrompt *string
+		_ = tx.QueryRow(ctx,
+			`SELECT prompt FROM jmap_categorisation_config WHERE principal_id = $1`,
+			int64(cfg.PrincipalID)).Scan(&storedPrompt)
+		promptChanged := storedPrompt == nil || *storedPrompt != cfg.Prompt
+		var derivedJSON *string
+		if !promptChanged && len(cfg.DerivedCategories) > 0 {
+			b, jerr := json.Marshal(cfg.DerivedCategories)
+			if jerr != nil {
+				return fmt.Errorf("storepg: encode derived_categories_json: %w", jerr)
+			}
+			s := string(b)
+			derivedJSON = &s
+		}
 		_, err := tx.Exec(ctx, `
 			INSERT INTO jmap_categorisation_config
-			  (principal_id, prompt, guardrail, category_set_json, endpoint_url, model,
-			   api_key_env, timeout_sec, enabled, updated_at_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			  (principal_id, prompt, guardrail, category_set_json, derived_categories_json,
+			   endpoint_url, model, api_key_env, timeout_sec, enabled, updated_at_us)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			ON CONFLICT (principal_id) DO UPDATE SET
 			  prompt = EXCLUDED.prompt,
 			  guardrail = EXCLUDED.guardrail,
 			  category_set_json = EXCLUDED.category_set_json,
+			  derived_categories_json = EXCLUDED.derived_categories_json,
 			  endpoint_url = EXCLUDED.endpoint_url,
 			  model = EXCLUDED.model,
 			  api_key_env = EXCLUDED.api_key_env,
 			  timeout_sec = EXCLUDED.timeout_sec,
 			  enabled = EXCLUDED.enabled,
 			  updated_at_us = EXCLUDED.updated_at_us`,
-			int64(cfg.PrincipalID), cfg.Prompt, cfg.Guardrail, js,
+			int64(cfg.PrincipalID), cfg.Prompt, cfg.Guardrail, js, derivedJSON,
 			cfg.Endpoint, cfg.Model, cfg.APIKeyEnv,
 			int32(timeoutSec), cfg.Enabled, usMicros(now))
 		return mapErr(err)
 	})
+}
+
+// SetDerivedCategories updates only the derived_categories_json column for
+// pid (REQ-FILT-217). See store.Metadata.SetDerivedCategories for contract.
+func (m *metadata) SetDerivedCategories(ctx context.Context, pid store.PrincipalID, categories []string) error {
+	cats := sanitiseDerivedCategories(categories)
+	var derivedJSON *string
+	if len(cats) > 0 {
+		b, err := json.Marshal(cats)
+		if err != nil {
+			return fmt.Errorf("storepg: encode derived_categories_json: %w", err)
+		}
+		s := string(b)
+		derivedJSON = &s
+	}
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE jmap_categorisation_config
+			    SET derived_categories_json = $1
+			  WHERE principal_id = $2`,
+			derivedJSON, int64(pid))
+		return mapErr(err)
+	})
+}
+
+// sanitiseDerivedCategories enforces the per-entry and total bounds defined
+// by store.MaxDerivedCategoryEntries and store.MaxDerivedCategoryNameBytes.
+func sanitiseDerivedCategories(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, name := range in {
+		if len(out) >= store.MaxDerivedCategoryEntries {
+			break
+		}
+		if len(name) > store.MaxDerivedCategoryNameBytes {
+			name = name[:store.MaxDerivedCategoryNameBytes]
+		}
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // -- LLM classification records (REQ-FILT-66 / REQ-FILT-216) ----------

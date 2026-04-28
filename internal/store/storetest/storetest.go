@@ -119,6 +119,8 @@ func Run(t *testing.T, f Factory) {
 		{"CategorisationConfig_DefaultsSeededOnFirstRead", testCategorisationConfigDefaults},
 		{"CategorisationConfig_RoundTrip", testCategorisationConfigRoundtrip},
 		{"CategorisationConfig_GuardrailRoundTrip", testCategorisationConfigGuardrailRoundtrip},
+		{"CategorisationConfig_DerivedCategoriesRoundTrip", testCategorisationConfigDerivedCategoriesRoundtrip},
+		{"CategorisationConfig_PromptChangeClearsDerived", testCategorisationConfigPromptChangeClearsDerived},
 		// -- REQ-FILT-66 / REQ-FILT-216 / G14 LLM classification records --
 		{"LLMClassification_SetGet_SpamOnly", testLLMClassificationSpamOnly},
 		{"LLMClassification_SetGet_CategoryOnly", testLLMClassificationCategoryOnly},
@@ -3275,6 +3277,68 @@ func testCategorisationConfigGuardrailRoundtrip(t *testing.T, s store.Store) {
 	}
 	if got2.Guardrail != "" {
 		t.Fatalf("Guardrail after clear = %q, want empty", got2.Guardrail)
+	}
+}
+
+func testCategorisationConfigDerivedCategoriesRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cat-derived@example.com")
+	// Seed the config row.
+	if _, err := s.Meta().GetCategorisationConfig(ctx, p.ID); err != nil {
+		t.Fatalf("GetCategorisationConfig (seed): %v", err)
+	}
+	want := []string{"primary", "social", "promotions", "updates", "forums"}
+	if err := s.Meta().SetDerivedCategories(ctx, p.ID, want); err != nil {
+		t.Fatalf("SetDerivedCategories: %v", err)
+	}
+	got, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig after SetDerivedCategories: %v", err)
+	}
+	if len(got.DerivedCategories) != len(want) {
+		t.Fatalf("DerivedCategories = %v, want %v", got.DerivedCategories, want)
+	}
+	for i, name := range want {
+		if got.DerivedCategories[i] != name {
+			t.Errorf("DerivedCategories[%d] = %q, want %q", i, got.DerivedCategories[i], name)
+		}
+	}
+}
+
+func testCategorisationConfigPromptChangeClearsDerived(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cat-prompt-clear@example.com")
+	// Seed and set derived categories.
+	cfg, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (seed): %v", err)
+	}
+	if err := s.Meta().SetDerivedCategories(ctx, p.ID, []string{"primary", "social"}); err != nil {
+		t.Fatalf("SetDerivedCategories: %v", err)
+	}
+	// Verify they are set.
+	cfg2, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (after set): %v", err)
+	}
+	if len(cfg2.DerivedCategories) == 0 {
+		t.Fatalf("expected DerivedCategories to be set before prompt change")
+	}
+	// Change the prompt via UpdateCategorisationConfig.
+	cfg.Prompt = "completely different prompt text"
+	if err := s.Meta().UpdateCategorisationConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateCategorisationConfig (prompt change): %v", err)
+	}
+	got, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (after prompt change): %v", err)
+	}
+	// DerivedCategories must be cleared after the prompt changed (REQ-FILT-217).
+	if len(got.DerivedCategories) != 0 {
+		t.Fatalf("DerivedCategories not cleared after prompt change: %v", got.DerivedCategories)
+	}
+	if got.Prompt != cfg.Prompt {
+		t.Fatalf("Prompt not updated: %q, want %q", got.Prompt, cfg.Prompt)
 	}
 }
 

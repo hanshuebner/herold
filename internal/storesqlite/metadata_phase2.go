@@ -1936,10 +1936,22 @@ var defaultCategorySet = []store.CategoryDef{
 	{Name: "forums", Description: "Mailing-list digests, online community discussions."},
 }
 
-// defaultCategorisationPrompt is the seeded system prompt
-// (REQ-FILT-211). Kept terse: small local models follow short prompts
-// better than long ones. Operators may override per-account.
-const defaultCategorisationPrompt = `You are an email-categorisation assistant. Given an email envelope and a short body excerpt, choose exactly one category from the supplied list whose description best fits the message, or return "none" if no category is a clear match. Respond ONLY with a single JSON object of the form {"category":"<name>"} where <name> is one of the listed category names or the literal "none". Do not include any other text.`
+// defaultCategorisationPrompt is the seeded system prompt (REQ-FILT-211).
+// The prompt is the single source of truth for the category vocabulary;
+// the LLM enumerates categories in every response (REQ-FILT-215).
+// Must stay in sync with categorise.DefaultPrompt in internal/categorise/prompt.go.
+const defaultCategorisationPrompt = `You are an email-categorisation assistant. Classify the message into one of the following categories:
+
+- primary: Direct correspondence and important messages from people you know, plus anything that does not fit the categories below.
+- social: Notifications and messages from social networks, dating sites, and messaging apps.
+- promotions: Marketing emails, deals, offers, coupons, and newsletters from retailers or services.
+- updates: Automated notifications — receipts, statements, confirmations, package tracking, and account alerts.
+- forums: Mailing-list discussions, online community threads, and group digests.
+
+Respond ONLY with a JSON object of the shape {"categories":["primary","social","promotions","updates","forums"],"assigned":"<name>"} where:
+- "categories" lists every category defined above (always all five, in the order listed).
+- "assigned" is the single category name that best fits this message, or null if no category fits.
+Do not include any other text.`
 
 func (m *metadata) GetCategorisationConfig(ctx context.Context, pid store.PrincipalID) (store.CategorisationConfig, error) {
 	cfg, found, err := m.readCategorisationRow(ctx, pid)
@@ -1973,22 +1985,25 @@ func (m *metadata) GetCategorisationConfig(ctx context.Context, pid store.Princi
 // "row absent" is not an error.
 func (m *metadata) readCategorisationRow(ctx context.Context, pid store.PrincipalID) (store.CategorisationConfig, bool, error) {
 	var (
-		prompt          string
-		guardrail       string
-		categorySetJSON []byte
-		endpointURL     sql.NullString
-		model           sql.NullString
-		apiKeyEnv       sql.NullString
-		timeoutSec      int64
-		enabled         int64
-		updatedAtUs     int64
+		prompt                 string
+		guardrail              string
+		categorySetJSON        []byte
+		derivedCategoriesJSON  sql.NullString
+		endpointURL            sql.NullString
+		model                  sql.NullString
+		apiKeyEnv              sql.NullString
+		timeoutSec             int64
+		enabled                int64
+		updatedAtUs            int64
 	)
 	err := m.s.db.QueryRowContext(ctx, `
-		SELECT prompt, guardrail, category_set_json, endpoint_url, model, api_key_env,
+		SELECT prompt, guardrail, category_set_json, derived_categories_json,
+		       endpoint_url, model, api_key_env,
 		       timeout_sec, enabled, updated_at_us
 		  FROM jmap_categorisation_config
 		 WHERE principal_id = ?`, int64(pid)).Scan(
-		&prompt, &guardrail, &categorySetJSON, &endpointURL, &model, &apiKeyEnv,
+		&prompt, &guardrail, &categorySetJSON, &derivedCategoriesJSON,
+		&endpointURL, &model, &apiKeyEnv,
 		&timeoutSec, &enabled, &updatedAtUs)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -2007,6 +2022,11 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 	if len(categorySetJSON) > 0 {
 		if err := json.Unmarshal(categorySetJSON, &cfg.CategorySet); err != nil {
 			return store.CategorisationConfig{}, false, fmt.Errorf("storesqlite: decode category_set_json: %w", err)
+		}
+	}
+	if derivedCategoriesJSON.Valid && derivedCategoriesJSON.String != "" {
+		if err := json.Unmarshal([]byte(derivedCategoriesJSON.String), &cfg.DerivedCategories); err != nil {
+			return store.CategorisationConfig{}, false, fmt.Errorf("storesqlite: decode derived_categories_json: %w", err)
 		}
 	}
 	if endpointURL.Valid {
@@ -2038,26 +2058,94 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 		timeoutSec = 5
 	}
 	return m.runTx(ctx, func(tx *sql.Tx) error {
+		// When the caller updates the prompt, clear derived_categories_json
+		// so the next classifier call refills it (REQ-FILT-217).
+		// We detect a prompt change by comparing against the current row;
+		// when no row exists yet (first insert) we also clear it (nil → nil).
+		var storedPrompt sql.NullString
+		_ = tx.QueryRowContext(ctx, `SELECT prompt FROM jmap_categorisation_config WHERE principal_id = ?`,
+			int64(cfg.PrincipalID)).Scan(&storedPrompt)
+		promptChanged := !storedPrompt.Valid || storedPrompt.String != cfg.Prompt
+		// Only persist the caller-supplied DerivedCategories when the prompt
+		// has NOT changed; a prompt change always wins and clears them.
+		var derivedJSON any
+		if !promptChanged && len(cfg.DerivedCategories) > 0 {
+			b, jerr := json.Marshal(cfg.DerivedCategories)
+			if jerr != nil {
+				return fmt.Errorf("storesqlite: encode derived_categories_json: %w", jerr)
+			}
+			derivedJSON = string(b)
+		}
+		// derivedJSON is nil → SQL NULL (clears the column).
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO jmap_categorisation_config
-			  (principal_id, prompt, guardrail, category_set_json, endpoint_url, model,
-			   api_key_env, timeout_sec, enabled, updated_at_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			  (principal_id, prompt, guardrail, category_set_json, derived_categories_json,
+			   endpoint_url, model, api_key_env, timeout_sec, enabled, updated_at_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(principal_id) DO UPDATE SET
 			  prompt = excluded.prompt,
 			  guardrail = excluded.guardrail,
 			  category_set_json = excluded.category_set_json,
+			  derived_categories_json = excluded.derived_categories_json,
 			  endpoint_url = excluded.endpoint_url,
 			  model = excluded.model,
 			  api_key_env = excluded.api_key_env,
 			  timeout_sec = excluded.timeout_sec,
 			  enabled = excluded.enabled,
 			  updated_at_us = excluded.updated_at_us`,
-			int64(cfg.PrincipalID), cfg.Prompt, cfg.Guardrail, js,
+			int64(cfg.PrincipalID), cfg.Prompt, cfg.Guardrail, js, derivedJSON,
 			nullStringPtr(cfg.Endpoint), nullStringPtr(cfg.Model), nullStringPtr(cfg.APIKeyEnv),
 			int64(timeoutSec), boolToInt(cfg.Enabled), usMicros(now))
 		return mapErr(err)
 	})
+}
+
+// SetDerivedCategories updates only the derived_categories_json column for
+// pid (REQ-FILT-217). The row must already exist (seeded by
+// GetCategorisationConfig). A non-existent row is a no-op (the next
+// GetCategorisationConfig call will seed it and the categoriser will refill
+// DerivedCategories on the following delivery).
+func (m *metadata) SetDerivedCategories(ctx context.Context, pid store.PrincipalID, categories []string) error {
+	cats := sanitiseDerivedCategories(categories)
+	var derivedJSON any
+	if len(cats) > 0 {
+		b, err := json.Marshal(cats)
+		if err != nil {
+			return fmt.Errorf("storesqlite: encode derived_categories_json: %w", err)
+		}
+		derivedJSON = string(b)
+	}
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE jmap_categorisation_config
+			    SET derived_categories_json = ?
+			  WHERE principal_id = ?`,
+			derivedJSON, int64(pid))
+		return mapErr(err)
+	})
+}
+
+// sanitiseDerivedCategories enforces the per-entry and total bounds defined
+// by store.MaxDerivedCategoryEntries and store.MaxDerivedCategoryNameBytes.
+// Names are already lowercase ASCII when they arrive from the categoriser;
+// this function provides a last-resort defence.
+func sanitiseDerivedCategories(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, name := range in {
+		if len(out) >= store.MaxDerivedCategoryEntries {
+			break
+		}
+		if len(name) > store.MaxDerivedCategoryNameBytes {
+			name = name[:store.MaxDerivedCategoryNameBytes]
+		}
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // -- LLM classification records (REQ-FILT-66 / REQ-FILT-216) ----------

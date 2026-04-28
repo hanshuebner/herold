@@ -1607,8 +1607,20 @@ var fakestoreDefaultCategorySet = []store.CategoryDef{
 }
 
 // fakestoreDefaultCategorisationPrompt is the seeded system prompt
-// (REQ-FILT-211).
-const fakestoreDefaultCategorisationPrompt = `You are an email-categorisation assistant. Given an email envelope and a short body excerpt, choose exactly one category from the supplied list whose description best fits the message, or return "none" if no category is a clear match. Respond ONLY with a single JSON object of the form {"category":"<name>"} where <name> is one of the listed category names or the literal "none". Do not include any other text.`
+// (REQ-FILT-211). Must stay in sync with categorise.DefaultPrompt in
+// internal/categorise/prompt.go.
+const fakestoreDefaultCategorisationPrompt = `You are an email-categorisation assistant. Classify the message into one of the following categories:
+
+- primary: Direct correspondence and important messages from people you know, plus anything that does not fit the categories below.
+- social: Notifications and messages from social networks, dating sites, and messaging apps.
+- promotions: Marketing emails, deals, offers, coupons, and newsletters from retailers or services.
+- updates: Automated notifications — receipts, statements, confirmations, package tracking, and account alerts.
+- forums: Mailing-list discussions, online community threads, and group digests.
+
+Respond ONLY with a JSON object of the shape {"categories":["primary","social","promotions","updates","forums"],"assigned":"<name>"} where:
+- "categories" lists every category defined above (always all five, in the order listed).
+- "assigned" is the single category name that best fits this message, or null if no category fits.
+Do not include any other text.`
 
 // GetCategorisationConfig returns the per-account categoriser
 // configuration for pid; absent rows seed the documented defaults
@@ -1640,6 +1652,8 @@ func (m *metaFace) GetCategorisationConfig(ctx context.Context, pid store.Princi
 }
 
 // UpdateCategorisationConfig upserts the per-account categoriser row.
+// When the Prompt field differs from the stored value, DerivedCategories
+// is cleared to nil (REQ-FILT-217 invalidation rule).
 func (m *metaFace) UpdateCategorisationConfig(ctx context.Context, cfg store.CategorisationConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1654,8 +1668,39 @@ func (m *metaFace) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 	if cfg.TimeoutSec <= 0 {
 		cfg.TimeoutSec = 5
 	}
+	// Clear DerivedCategories when the prompt changes (REQ-FILT-217).
+	if existing, ok := s.phase2.catConfig[cfg.PrincipalID]; ok {
+		if existing.Prompt != cfg.Prompt {
+			cfg.DerivedCategories = nil
+		}
+	} else {
+		// First write: no previous prompt, clear derived.
+		cfg.DerivedCategories = nil
+	}
 	cfg.UpdatedAtUs = s.clk.Now().UnixMicro()
 	s.phase2.catConfig[cfg.PrincipalID] = cloneCategorisationConfig(cfg)
+	return nil
+}
+
+// SetDerivedCategories updates only the DerivedCategories field for pid
+// (REQ-FILT-217). A no-op when no config row exists yet.
+func (m *metaFace) SetDerivedCategories(ctx context.Context, pid store.PrincipalID, categories []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	if s.phase2.catConfig == nil {
+		return nil
+	}
+	cfg, ok := s.phase2.catConfig[pid]
+	if !ok {
+		return nil
+	}
+	cfg.DerivedCategories = append([]string(nil), categories...)
+	s.phase2.catConfig[pid] = cfg
 	return nil
 }
 
@@ -1666,6 +1711,9 @@ func cloneCategorisationConfig(cfg store.CategorisationConfig) store.Categorisat
 	out := cfg
 	if cfg.CategorySet != nil {
 		out.CategorySet = append([]store.CategoryDef(nil), cfg.CategorySet...)
+	}
+	if cfg.DerivedCategories != nil {
+		out.DerivedCategories = append([]string(nil), cfg.DerivedCategories...)
 	}
 	if cfg.Endpoint != nil {
 		v := *cfg.Endpoint

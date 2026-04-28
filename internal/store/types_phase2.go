@@ -1161,6 +1161,14 @@ type JMAPIdentity struct {
 
 // -- LLM categorisation (REQ-FILT-200..231) --------------------------
 
+// MaxDerivedCategoryEntries is the server-side cap on the number of
+// entries in DerivedCategories (REQ-FILT-217).
+const MaxDerivedCategoryEntries = 64
+
+// MaxDerivedCategoryNameBytes is the per-entry byte cap on a
+// DerivedCategories name.
+const MaxDerivedCategoryNameBytes = 200
+
 // CategoryDef is one entry in a CategorisationConfig.CategorySet.
 // Names are lowercase ASCII dash-separated tokens (REQ-FILT-201);
 // Description is a free-text gloss that lands in the LLM prompt to
@@ -1176,17 +1184,21 @@ type CategoryDef struct {
 }
 
 // CategorisationConfig is the per-account row driving the LLM
-// categoriser (REQ-FILT-210/211/213). Endpoint, Model, APIKeyEnv and
+// categoriser (REQ-FILT-211/213/217). Endpoint, Model, APIKeyEnv and
 // TimeoutSec are nullable so a per-account row can override only the
 // knobs the user cares about; nil falls back to the operator-supplied
-// default. Prompt and CategorySet are required and seeded with the
-// REQ-FILT-201/210 defaults on first read.
+// default. Prompt is the single source of truth for the category
+// vocabulary; DerivedCategories is populated from the LLM response
+// (REQ-FILT-217) and is read-only to the user.
 type CategorisationConfig struct {
 	// PrincipalID is the owning principal.
 	PrincipalID PrincipalID
 	// Prompt is the user-visible system prompt fed to the LLM (REQ-FILT-67).
 	// This is the editable text from REQ-FILT-211; it is returned by the
-	// LLM transparency endpoints. Free text; default approximates Gmail's.
+	// LLM transparency endpoints. Free text; default enumerates the five
+	// Gmail-style categories and instructs JSON shape {categories, assigned}.
+	// Writing a new Prompt clears DerivedCategories (REQ-FILT-217
+	// invalidation rule: the next successful classifier call refills it).
 	Prompt string
 	// Guardrail is the operator-only prefix prepended to the LLM prompt
 	// at call time (REQ-FILT-67). NEVER returned by transparency endpoints.
@@ -1196,7 +1208,15 @@ type CategorisationConfig struct {
 	// CategorySet enumerates the categories the LLM may pick from.
 	// JSON-serialised in storage; the order is preserved so a "reset
 	// to default" control stays stable.
+	// Deprecated: retained for in-flight rows; new code reads DerivedCategories.
 	CategorySet []CategoryDef
+	// DerivedCategories is the server-persisted list of category names
+	// sourced from the most recent successful classifier response
+	// (REQ-FILT-217). Names are lowercase ASCII, dash-separated.
+	// Read-only to the user; cleared to nil when Prompt is updated so
+	// the next classifier call refills it. Nil means no successful
+	// classifier call has occurred since the last prompt change.
+	DerivedCategories []string
 	// Endpoint, when non-nil, overrides the operator-default
 	// OpenAI-compatible endpoint URL for this account.
 	Endpoint *string

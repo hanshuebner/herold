@@ -711,7 +711,21 @@ type Metadata interface {
 	// UpdateCategorisationConfig upserts the per-account categoriser
 	// row. UpdatedAtUs on the supplied struct is ignored — the store
 	// stamps it with the current Clock instant.
+	// When the Prompt field differs from the stored value, DerivedCategories
+	// is cleared to nil as part of the same write (REQ-FILT-217 invalidation
+	// rule). Callers that only want to refill DerivedCategories should use
+	// SetDerivedCategories instead.
 	UpdateCategorisationConfig(ctx context.Context, cfg CategorisationConfig) error
+
+	// SetDerivedCategories persists the categories slice derived from the
+	// most recent successful classifier response (REQ-FILT-217). It is a
+	// targeted write: only the derived_categories_json column is updated; all
+	// other config fields are left unchanged. Categories are lowercase ASCII
+	// dash-separated names; bounded to MaxDerivedCategoryEntries entries and
+	// MaxDerivedCategoryNameBytes bytes per name. Writes are de-duplicated by
+	// callers: this method is called only when the new slice differs from the
+	// currently persisted one.
+	SetDerivedCategories(ctx context.Context, pid PrincipalID, categories []string) error
 
 	// SetLLMClassification upserts the per-message LLM classification
 	// record (REQ-FILT-66 / REQ-FILT-216). The record is written once at
