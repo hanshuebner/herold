@@ -16,6 +16,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/email"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/mailbox"
+	"github.com/hanshuebner/herold/internal/protojmap/mail/thread"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness"
 )
@@ -65,6 +66,7 @@ func setupFixture(t *testing.T) *fixture {
 	jmapServ := protojmap.NewServer(srv.Store, dir, nil, srv.Logger, srv.Clock, protojmap.Options{})
 	mailbox.Register(jmapServ.Registry(), srv.Store, srv.Logger, srv.Clock)
 	email.Register(jmapServ.Registry(), srv.Store, srv.Logger, srv.Clock)
+	thread.Register(jmapServ.Registry(), srv.Store, srv.Logger, srv.Clock)
 
 	if err := srv.AttachJMAP("jmap", jmapServ, protojmap.ListenerModePlain); err != nil {
 		t.Fatalf("AttachJMAP: %v", err)
@@ -678,5 +680,133 @@ func TestEmailSet_ClearKeywordAlsoClearsDate(t *testing.T) {
 	}
 	if got := messageSnoozedUntil(t, f, m.ID); got != nil {
 		t.Errorf("SnoozedUntil = %v, want nil after keyword clear", got)
+	}
+}
+
+// TestEmail_Thread_IngestTimeResolution verifies that when message B is
+// imported with an In-Reply-To header pointing at message A's Message-ID,
+// Thread/get for B's threadId returns a thread containing both A and B.
+//
+// This is the end-to-end acceptance test for the ingest-time thread
+// resolution introduced alongside migration 0022.
+func TestEmail_Thread_IngestTimeResolution(t *testing.T) {
+	f := setupFixture(t)
+	accountID := protojmap.AccountIDForPrincipal(f.pid)
+
+	// Ingest message A: a standalone original message.
+	bodyA := "From: alice@example.test\r\nTo: bob@example.test\r\n" +
+		"Subject: Hello\r\nMessage-ID: <thread-test-a@example.test>\r\n\r\nHello"
+	refA := f.putBlob(t, bodyA)
+	_, rawA := f.invoke(t, "Email/import", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"emails": map[string]any{
+			"a": map[string]any{
+				"blobId":     refA.Hash,
+				"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+			},
+		},
+	})
+	var importA struct {
+		Created map[string]struct {
+			ID string `json:"id"`
+		} `json:"created"`
+	}
+	if err := json.Unmarshal(rawA, &importA); err != nil {
+		t.Fatalf("unmarshal Email/import A: %v %s", err, rawA)
+	}
+	emailIDA := importA.Created["a"].ID
+	if emailIDA == "" {
+		t.Fatalf("Email/import A: no id in created: %s", rawA)
+	}
+
+	// Ingest message B: a reply to A.
+	bodyB := "From: bob@example.test\r\nTo: alice@example.test\r\n" +
+		"Subject: Re: Hello\r\nMessage-ID: <thread-test-b@example.test>\r\n" +
+		"In-Reply-To: <thread-test-a@example.test>\r\n\r\nHi back"
+	refB := f.putBlob(t, bodyB)
+	_, rawB := f.invoke(t, "Email/import", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"emails": map[string]any{
+			"b": map[string]any{
+				"blobId":     refB.Hash,
+				"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+			},
+		},
+	})
+	var importB struct {
+		Created map[string]struct {
+			ID string `json:"id"`
+		} `json:"created"`
+	}
+	if err := json.Unmarshal(rawB, &importB); err != nil {
+		t.Fatalf("unmarshal Email/import B: %v %s", err, rawB)
+	}
+	emailIDB := importB.Created["b"].ID
+	if emailIDB == "" {
+		t.Fatalf("Email/import B: no id in created: %s", rawB)
+	}
+
+	// Fetch B's threadId via Email/get.
+	_, rawGet := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  accountID,
+		"ids":        []string{emailIDB},
+		"properties": []string{"threadId"},
+	})
+	var getResp struct {
+		List []struct {
+			ID       string `json:"id"`
+			ThreadID string `json:"threadId"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(rawGet, &getResp); err != nil {
+		t.Fatalf("unmarshal Email/get: %v %s", err, rawGet)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("Email/get list len = %d, want 1: %s", len(getResp.List), rawGet)
+	}
+	threadID := getResp.List[0].ThreadID
+	if threadID == "" {
+		t.Fatalf("Email/get: B has empty threadId: %s", rawGet)
+	}
+
+	// Thread/get with B's threadId must return a thread containing both
+	// A and B.
+	_, rawThread := f.invoke(t, "Thread/get", map[string]any{
+		"accountId": accountID,
+		"ids":       []string{threadID},
+	})
+	var threadResp struct {
+		List []struct {
+			ID       string   `json:"id"`
+			EmailIDs []string `json:"emailIds"`
+		} `json:"list"`
+		NotFound []string `json:"notFound"`
+	}
+	if err := json.Unmarshal(rawThread, &threadResp); err != nil {
+		t.Fatalf("unmarshal Thread/get: %v %s", err, rawThread)
+	}
+	if len(threadResp.NotFound) > 0 {
+		t.Fatalf("Thread/get: notFound = %v for threadId %q", threadResp.NotFound, threadID)
+	}
+	if len(threadResp.List) != 1 {
+		t.Fatalf("Thread/get: list len = %d, want 1: %s", len(threadResp.List), rawThread)
+	}
+	emailIDs := threadResp.List[0].EmailIDs
+	if len(emailIDs) != 2 {
+		t.Fatalf("Thread/get: emailIds = %v, want [A, B] (2 emails): %s",
+			emailIDs, rawThread)
+	}
+	hasA, hasB := false, false
+	for _, id := range emailIDs {
+		if id == emailIDA {
+			hasA = true
+		}
+		if id == emailIDB {
+			hasB = true
+		}
+	}
+	if !hasA || !hasB {
+		t.Fatalf("Thread/get: emailIds = %v, want both A=%q and B=%q",
+			emailIDs, emailIDA, emailIDB)
 	}
 }

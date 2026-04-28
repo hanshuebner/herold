@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -463,6 +464,36 @@ func (m *metaFace) InsertMessage(ctx context.Context, msg store.Message) (store.
 		}
 		if used+msg.Size > p.QuotaBytes {
 			return 0, 0, fmt.Errorf("principal %d: %w", p.ID, store.ErrQuotaExceeded)
+		}
+	}
+	// Normalise env_message_id at insert time so the in-memory lookup
+	// uses bare equality (matching SQLite/Postgres behaviour after
+	// migration 0022).
+	if msg.Envelope.MessageID != "" {
+		msg.Envelope.MessageID = mailparse.NormalizeMessageID(msg.Envelope.MessageID)
+	}
+	// Thread resolution: if the caller did not supply a ThreadID, scan
+	// the principal's messages for a matching ancestor via references.
+	if msg.ThreadID == 0 && msg.Envelope.InReplyTo != "" {
+		principalID := mb.PrincipalID
+		refs := mailparse.ParseReferences(msg.Envelope.InReplyTo)
+	refLoop:
+		for _, ref := range refs {
+			for _, m2 := range s.messages {
+				mb2, ok := s.mailboxes[m2.MailboxID]
+				if !ok || mb2.PrincipalID != principalID {
+					continue
+				}
+				if mailparse.NormalizeMessageID(m2.Envelope.MessageID) != ref {
+					continue
+				}
+				if m2.ThreadID != 0 {
+					msg.ThreadID = m2.ThreadID
+				} else {
+					msg.ThreadID = uint64(m2.ID)
+				}
+				break refLoop
+			}
 		}
 	}
 	now := s.clk.Now()

@@ -118,13 +118,10 @@ func (h *handlerSet) listAllMessages(ctx context.Context, p store.Principal) ([]
 // "t<m.ID>" -- so a client that takes Email.threadId and passes it
 // back into Thread/get always resolves to a thread row.
 //
-// The JWZ algorithm in jwz.go is the canonical threading logic but is
-// not yet wired into the inbound delivery path -- it is intended to run
-// at ingest and persist the result into store.Message.ThreadID. Until
-// that lands, every message is a singleton thread; clicking a thread
-// in the inbox loads the message bodies and the UI works, but
-// reply-chain collapsing (multiple emails grouped under one thread)
-// does not happen. See TODO(thread/jwz-at-ingest).
+// Thread assignment happens at ingest time: InsertMessage resolves
+// references via ParseReferences(env_in_reply_to) and looks up ancestor
+// messages by env_message_id in the same principal's mailboxes. The
+// resolved thread_id is persisted so this read path is a simple group-by.
 func (h *handlerSet) computeForPrincipal(ctx context.Context, p store.Principal) (map[store.MessageID]ThreadKey, map[ThreadKey][]store.MessageID, error) {
 	msgs, err := h.listAllMessages(ctx, p)
 	if err != nil {

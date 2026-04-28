@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -676,6 +677,44 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message) (store.
 		}
 		uid = store.UID(uidNext)
 		modseq = store.ModSeq(highestModSeq + 1)
+		// Normalise env_message_id before storing so the thread-lookup
+		// index (idx_messages_env_message_id, migration 0022) and
+		// GetMessageByMessageIDHeader can use bare equality rather than
+		// SQL LOWER/TRIM functions that would skip the index.
+		if msg.Envelope.MessageID != "" {
+			msg.Envelope.MessageID = mailparse.NormalizeMessageID(msg.Envelope.MessageID)
+		}
+		// Thread resolution: if the caller did not supply a ThreadID, look
+		// up references in the same principal's mailboxes to inherit the
+		// thread from an already-stored ancestor. The index on
+		// env_message_id (migration 0022) keeps this O(refs) instead of
+		// O(messages).
+		if msg.ThreadID == 0 && msg.Envelope.InReplyTo != "" {
+			refs := mailparse.ParseReferences(msg.Envelope.InReplyTo)
+			for _, ref := range refs {
+				var ancestorID, ancestorThread int64
+				lookupErr := tx.QueryRow(ctx, `
+					SELECT m.id, m.thread_id
+					  FROM messages m
+					  JOIN mailboxes mb ON mb.id = m.mailbox_id
+					 WHERE mb.principal_id = $1
+					   AND m.env_message_id = $2
+					 LIMIT 1`,
+					pid, ref).Scan(&ancestorID, &ancestorThread)
+				if errors.Is(lookupErr, pgx.ErrNoRows) {
+					continue
+				}
+				if lookupErr != nil {
+					return fmt.Errorf("storepg: thread lookup: %w", lookupErr)
+				}
+				if ancestorThread != 0 {
+					msg.ThreadID = uint64(ancestorThread)
+				} else {
+					msg.ThreadID = uint64(ancestorID)
+				}
+				break
+			}
+		}
 		var mid int64
 		var snoozedArg any
 		if msg.SnoozedUntil != nil {

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -213,47 +214,18 @@ func keyFor(canon string) ThreadKey {
 }
 
 // normalizeMessageID strips angle brackets and lowercases the id, per
-// RFC 5322 §3.6.4 — Message-IDs are case-insensitive in their domain
-// component. We compare case-insensitively to maximise threading
-// recall for stored messages with mixed-case ids.
+// RFC 5322 §3.6.4. Delegates to mailparse.NormalizeMessageID; retained
+// as a package-local alias so the rest of jwz.go does not need to be
+// updated and the call sites read naturally.
 func normalizeMessageID(id string) string {
-	id = strings.TrimSpace(id)
-	id = strings.TrimPrefix(id, "<")
-	id = strings.TrimSuffix(id, ">")
-	return strings.ToLower(id)
+	return mailparse.NormalizeMessageID(id)
 }
 
 // parseReferences pulls Message-IDs out of a References / In-Reply-To
-// header value. Both headers carry one or more "<id>" tokens separated
-// by whitespace and optional CFWS.
+// header value. Delegates to mailparse.ParseReferences; retained as a
+// package-local alias so the JWZ algorithm does not need restructuring.
 func parseReferences(s string) []string {
-	if s == "" {
-		return nil
-	}
-	out := []string{}
-	cur := strings.Builder{}
-	inAngle := false
-	for _, r := range s {
-		switch {
-		case r == '<':
-			inAngle = true
-			cur.Reset()
-		case r == '>':
-			if inAngle {
-				inAngle = false
-				v := normalizeMessageID(cur.String())
-				if v != "" {
-					out = append(out, v)
-				}
-				cur.Reset()
-			}
-		default:
-			if inAngle {
-				cur.WriteRune(r)
-			}
-		}
-	}
-	return out
+	return mailparse.ParseReferences(s)
 }
 
 // normalizeSubject implements RFC 5256 §2.1 base-subject extraction:

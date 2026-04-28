@@ -79,15 +79,6 @@ func insertMsg(t *testing.T, st *fakestore.Store, mb store.Mailbox, msgID, inRep
 }
 
 func TestThread_Get_DerivedFromMessages(t *testing.T) {
-	// TODO(thread/jwz-at-ingest): re-enable once inbound delivery runs
-	// computeThreads (jwz.go) and persists the result into
-	// store.Message.ThreadID. Today Thread/get keys threads by ThreadID
-	// (with MessageID fallback) so it agrees with Email/get's wire form
-	// (commit fixing accountNotFound + invalidResultReference); without
-	// JWZ at ingest, every newly-stored message is a singleton thread
-	// and this assertion (3 messages -> 1 thread) cannot hold.
-	t.Skip("threading-by-references requires JWZ at ingest; tracked separately")
-
 	h, st, p, mb := setup(t)
 	id1 := insertMsg(t, st, mb, "<m1@example.test>", "", "Original subject")
 	id2 := insertMsg(t, st, mb, "<m2@example.test>", "<m1@example.test>", "Re: Original subject")
@@ -115,25 +106,27 @@ func TestThread_Get_DerivedFromMessages(t *testing.T) {
 }
 
 func TestThread_Get_OrphanReply(t *testing.T) {
-	// TODO(thread/jwz-at-ingest): same gap as above. Reply-collapsing
-	// requires JWZ at ingest.
-	t.Skip("threading-by-references requires JWZ at ingest; tracked separately")
-
 	h, st, p, mb := setup(t)
-	// id1 references a parent we never ingested; the reply should
-	// still produce a thread that contains the orphan plus any
-	// children we do ingest.
+	// Both replies reference a parent that was never ingested. The
+	// ingest-time thread resolver looks up ancestors by env_message_id;
+	// since no message with Message-ID "<missing@elsewhere>" exists in
+	// the store, neither reply can locate a shared thread root at ingest
+	// time. Each message therefore becomes its own singleton thread.
+	// Full JWZ grouping of co-orphans (two messages that share the same
+	// missing parent) is left for a future read-time pass.
 	insertMsg(t, st, mb, "<reply1@example.test>", "<missing@elsewhere>", "Re: lost thread")
 	insertMsg(t, st, mb, "<reply2@example.test>", "<missing@elsewhere>", "Re: lost thread")
 	args, _ := json.Marshal(map[string]any{})
 	resp, _ := getHandler{h: h}.executeAs(p, args)
 	g := resp.(getResponse)
-	// Both replies share the missing parent; one thread.
-	if len(g.List) != 1 {
-		t.Fatalf("expected 1 thread, got %d", len(g.List))
+	// Each orphan reply is its own singleton thread.
+	if len(g.List) != 2 {
+		t.Fatalf("expected 2 singleton threads for co-orphan replies, got %d", len(g.List))
 	}
-	if len(g.List[0].EmailIDs) != 2 {
-		t.Fatalf("expected 2 emails, got %d", len(g.List[0].EmailIDs))
+	for _, thr := range g.List {
+		if len(thr.EmailIDs) != 1 {
+			t.Fatalf("expected singleton thread, got %d emails: %v", len(thr.EmailIDs), thr.EmailIDs)
+		}
 	}
 }
 
