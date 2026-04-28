@@ -16,6 +16,29 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
+// emailAddress is the JMAP EmailAddress object used in the create-from-
+// properties path (RFC 8621 §4.1.2.3). Mirrors jmapAddress but is used
+// in struct fields that are decoded from the create payload; the
+// canonical jmapAddress is used only for the response wire form.
+type emailAddress struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// emailBodyValue is the JMAP EmailBodyValue (RFC 8621 §4.1.4) in the
+// create-from-properties path.
+type emailBodyValue struct {
+	Value             string `json:"value"`
+	IsEncodingProblem bool   `json:"isEncodingProblem"`
+	IsTruncated       bool   `json:"isTruncated"`
+}
+
+// emailBodyPart is a minimal EmailBodyPart as accepted on create — we
+// only need the partId to look up the value in bodyValues.
+type emailBodyPart struct {
+	PartID string `json:"partId"`
+}
+
 // setRequest is the wire-form Email/set request (RFC 8620 §5.3).
 type setRequest struct {
 	AccountID jmapID                     `json:"accountId"`
@@ -49,13 +72,41 @@ type setResponse struct {
 // Email properties); v1 honours the operator-relevant subset and
 // returns "invalidProperties" for unrecognised keys at strict-decode
 // time.
+//
+// Two distinct creation paths are supported:
+//
+//  1. Blob path: BlobID is set. The message body is fetched from the
+//     blob store as an already-formed RFC 5322 message (the upload-then-
+//     reference flow).
+//
+//  2. Inline path (RFC 8621 §4.6 "construct from properties"): BlobID
+//     is absent; BodyValues plus at least one of TextBody/HtmlBody must
+//     be present. The handler assembles an RFC 5322 message server-side
+//     and stores the result in the blob store before continuing.
 type emailCreateInput struct {
-	BlobID       string          `json:"blobId"`
+	// Blob path.
+	BlobID string `json:"blobId"`
+
+	// Common fields.
 	MailboxIDs   map[jmapID]bool `json:"mailboxIds"`
 	Keywords     map[string]bool `json:"keywords"`
 	ReceivedAt   *string         `json:"receivedAt"`
 	Subject      *string         `json:"subject"`
 	SnoozedUntil *string         `json:"snoozedUntil"`
+
+	// Inline-body path (RFC 8621 §4.6 "construct from properties").
+	From       []emailAddress            `json:"from"`
+	To         []emailAddress            `json:"to"`
+	Cc         []emailAddress            `json:"cc"`
+	Bcc        []emailAddress            `json:"bcc"`
+	ReplyTo    []emailAddress            `json:"replyTo"`
+	InReplyTo  []string                  `json:"inReplyTo"`
+	References []string                  `json:"references"`
+	MessageID  []string                  `json:"messageId"`
+	SentAt     *string                   `json:"sentAt"`
+	BodyValues map[string]emailBodyValue `json:"bodyValues"`
+	TextBody   []emailBodyPart           `json:"textBody"`
+	HtmlBody   []emailBodyPart           `json:"htmlBody"`
 }
 
 // setHandler implements Email/set.
@@ -170,22 +221,48 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 	return resp, nil
 }
 
-// createEmail handles one Email/set create entry. The body is fetched
-// from the blob store (a prior /jmap/upload landed it) and inserted
-// into the named mailbox. v1 supports exactly one mailboxId per
-// create; multi-mailbox creation requires the per-mailbox row fanout
-// the parallel agent's storage extension lands later.
+// createEmail handles one Email/set create entry. Two paths are
+// supported:
+//
+//  1. Blob path: in.BlobID is non-empty. The message body is fetched
+//     directly from the blob store (the client called /jmap/upload
+//     first, then referenced the resulting blobId).
+//
+//  2. Inline path (RFC 8621 §4.6): in.BlobID is empty AND in.BodyValues
+//     plus at least one of in.TextBody/in.HtmlBody is present. The
+//     handler assembles an RFC 5322 message server-side and stores it
+//     before continuing down the shared insertion path.
+//
+// v1 supports exactly one mailboxId per create; multi-mailbox creation
+// requires the per-mailbox row fanout the parallel agent's storage
+// extension lands later.
 func (h *handlerSet) createEmail(
 	ctx context.Context,
 	pid store.PrincipalID,
 	in emailCreateInput,
 ) (store.MessageID, jmapEmail, *setError, error) {
-	if in.BlobID == "" {
+	hasBlob := in.BlobID != ""
+	hasBodyValues := len(in.BodyValues) > 0 && (len(in.TextBody) > 0 || len(in.HtmlBody) > 0)
+
+	if hasBlob && hasBodyValues {
+		// Strict: reject ambiguous inputs. Callers must pick one path.
+		// This mirrors the intent of RFC 8621 §4.6: blobId and the
+		// inline properties are mutually exclusive on create.
 		return 0, jmapEmail{}, &setError{
-			Type: "invalidProperties", Properties: []string{"blobId"},
-			Description: "blobId is required",
+			Type:        "invalidProperties",
+			Properties:  []string{"blobId", "bodyValues"},
+			Description: "cannot set both blobId and bodyValues; provide exactly one",
 		}, nil
 	}
+
+	if !hasBlob && !hasBodyValues {
+		return 0, jmapEmail{}, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"blobId"},
+			Description: "blobId is required, or provide bodyValues + textBody/htmlBody",
+		}, nil
+	}
+
 	if len(in.MailboxIDs) == 0 {
 		return 0, jmapEmail{}, &setError{
 			Type: "invalidProperties", Properties: []string{"mailboxIds"},
@@ -229,29 +306,43 @@ func (h *handlerSet) createEmail(
 		}, nil
 	}
 
-	// Read the blob so we can re-canonicalise it through Blobs.Put
-	// (which CRLF-normalises and computes the canonical hash). The
-	// uploaded blobId may already be canonical, in which case Put is
-	// a no-op idempotent re-write; we still call it so the Message's
-	// Blob.Hash matches the canonical form deterministically.
-	rc, err := h.store.Blobs().Get(ctx, in.BlobID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return 0, jmapEmail{}, &setError{
-				Type: "invalidProperties", Properties: []string{"blobId"},
-				Description: "blob not found",
-			}, nil
+	// Obtain the raw RFC 5322 message bytes. For the blob path we read
+	// from the blob store; for the inline path we assemble the message
+	// from the supplied header and body properties (RFC 8621 §4.6).
+	var body []byte
+	if hasBlob {
+		// Blob path: read and re-canonicalise through Blobs.Put (which
+		// CRLF-normalises and computes the canonical hash). The
+		// uploaded blobId may already be canonical; Put is idempotent.
+		rc, err := h.store.Blobs().Get(ctx, in.BlobID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return 0, jmapEmail{}, &setError{
+					Type: "invalidProperties", Properties: []string{"blobId"},
+					Description: "blob not found",
+				}, nil
+			}
+			return 0, jmapEmail{}, nil, err
 		}
-		return 0, jmapEmail{}, nil, err
-	}
-	defer rc.Close()
-	body, err := io.ReadAll(io.LimitReader(rc, 64<<20))
-	if err != nil {
-		return 0, jmapEmail{}, nil, fmt.Errorf("email: read blob: %w", err)
+		defer rc.Close()
+		body, err = io.ReadAll(io.LimitReader(rc, 64<<20))
+		if err != nil {
+			return 0, jmapEmail{}, nil, fmt.Errorf("email: read blob: %w", err)
+		}
+	} else {
+		// Inline path: assemble an RFC 5322 message from the create
+		// properties supplied by the client. The resulting bytes are
+		// canonicalised through Blobs.Put below, just like the blob
+		// path; from that point the two paths are identical.
+		var buildErr error
+		body, buildErr = buildEmailFromProperties(in, h.clk.Now(), "")
+		if buildErr != nil {
+			return 0, jmapEmail{}, nil, fmt.Errorf("email: build from properties: %w", buildErr)
+		}
 	}
 	ref, err := h.store.Blobs().Put(ctx, bytes.NewReader(body))
 	if err != nil {
-		return 0, jmapEmail{}, nil, fmt.Errorf("email: re-put blob: %w", err)
+		return 0, jmapEmail{}, nil, fmt.Errorf("email: put blob: %w", err)
 	}
 
 	// Parse just enough to populate the envelope cache.

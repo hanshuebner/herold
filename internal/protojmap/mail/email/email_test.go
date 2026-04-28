@@ -810,3 +810,326 @@ func TestEmail_Thread_IngestTimeResolution(t *testing.T) {
 			emailIDs, emailIDA, emailIDB)
 	}
 }
+
+// -- RFC 8621 §4.6 inline bodyValues creation path ----------------------
+
+// setCreateFromBodyValues is a helper that fires Email/set with the
+// inline-body payload and returns the raw set response.
+func setCreateFromBodyValues(t *testing.T, f *fixture, payload map[string]any) (created map[string]map[string]any, notCreated map[string]map[string]any) {
+	t.Helper()
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"create": map[string]any{
+			"draft": payload,
+		},
+	})
+	var resp struct {
+		Created    map[string]map[string]any `json:"created"`
+		NotCreated map[string]map[string]any `json:"notCreated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal Email/set response: %v: %s", err, raw)
+	}
+	return resp.Created, resp.NotCreated
+}
+
+// getBodyValues retrieves bodyValues for a message via Email/get.
+func getBodyValues(t *testing.T, f *fixture, emailID string) (map[string]any, map[string]any) {
+	t.Helper()
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":           protojmap.AccountIDForPrincipal(f.pid),
+		"ids":                 []string{emailID},
+		"fetchTextBodyValues": true,
+		"fetchHTMLBodyValues": true,
+		"maxBodyValueBytes":   64 * 1024,
+	})
+	var resp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal Email/get response: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("Email/get: got %d entries, want 1: %s", len(resp.List), raw)
+	}
+	bv, _ := resp.List[0]["bodyValues"].(map[string]any)
+	tb, _ := resp.List[0]["textBody"].([]any)
+	// Build a map of partId -> bodyValue from the flat bodyValues map,
+	// filtered to the partIds listed in textBody.
+	textPartIDs := map[string]struct{}{}
+	for _, x := range tb {
+		if m, ok := x.(map[string]any); ok {
+			if pid, ok := m["partId"].(string); ok {
+				textPartIDs[pid] = struct{}{}
+			}
+		}
+	}
+	textBV := map[string]any{}
+	htmlBV := map[string]any{}
+	for k, v := range bv {
+		if _, ok := textPartIDs[k]; ok {
+			textBV[k] = v
+		} else {
+			htmlBV[k] = v
+		}
+	}
+	return textBV, htmlBV
+}
+
+func TestEmailSet_Create_FromBodyValues_TextOnly(t *testing.T) {
+	f := setupFixture(t)
+
+	created, notCreated := setCreateFromBodyValues(t, f, map[string]any{
+		"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+		"keywords":   map[string]bool{"$draft": true, "$seen": true},
+		"from":       []map[string]any{{"name": "Alice", "email": "alice@example.test"}},
+		"to":         []map[string]any{{"name": "Bob", "email": "bob@example.test"}},
+		"subject":    "Text-only draft",
+		"bodyValues": map[string]any{
+			"1": map[string]any{"value": "Hello Bob, this is a plain-text draft.", "isTruncated": false, "isEncodingProblem": false},
+		},
+		"textBody": []map[string]any{
+			{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+		},
+	})
+
+	if len(notCreated) != 0 {
+		t.Fatalf("notCreated = %v", notCreated)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created = %v", created)
+	}
+	emailID, _ := created["draft"]["id"].(string)
+	if emailID == "" {
+		t.Fatalf("no id in created: %v", created)
+	}
+
+	// Confirm body round-trips.
+	textBV, _ := getBodyValues(t, f, emailID)
+	found := false
+	for _, v := range textBV {
+		bv := v.(map[string]any)
+		if strings.Contains(bv["value"].(string), "plain-text draft") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("text body value not found in Email/get response; textBV=%v", textBV)
+	}
+}
+
+func TestEmailSet_Create_FromBodyValues_HtmlOnly(t *testing.T) {
+	f := setupFixture(t)
+
+	created, notCreated := setCreateFromBodyValues(t, f, map[string]any{
+		"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+		"keywords":   map[string]bool{"$draft": true},
+		"from":       []map[string]any{{"name": "Alice", "email": "alice@example.test"}},
+		"to":         []map[string]any{{"name": "Bob", "email": "bob@example.test"}},
+		"subject":    "HTML draft",
+		"bodyValues": map[string]any{
+			"2": map[string]any{"value": "<p>Hello from HTML</p>", "isTruncated": false, "isEncodingProblem": false},
+		},
+		"htmlBody": []map[string]any{
+			{"partId": "2", "type": "text/html", "charset": "utf-8"},
+		},
+	})
+
+	if len(notCreated) != 0 {
+		t.Fatalf("notCreated = %v", notCreated)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created = %v", created)
+	}
+	emailID, _ := created["draft"]["id"].(string)
+	if emailID == "" {
+		t.Fatalf("no id in created: %v", created)
+	}
+
+	// Email/get with fetchHTMLBodyValues should return the HTML content.
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":           protojmap.AccountIDForPrincipal(f.pid),
+		"ids":                 []string{emailID},
+		"fetchHTMLBodyValues": true,
+		"maxBodyValueBytes":   64 * 1024,
+	})
+	var getResp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	bv, _ := getResp.List[0]["bodyValues"].(map[string]any)
+	found := false
+	for _, v := range bv {
+		if m, ok := v.(map[string]any); ok {
+			if s, ok := m["value"].(string); ok && strings.Contains(s, "HTML") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("HTML body value not found; bodyValues=%v", bv)
+	}
+}
+
+func TestEmailSet_Create_FromBodyValues_Multipart(t *testing.T) {
+	f := setupFixture(t)
+	textContent := "This is the plain-text part."
+	htmlContent := "<p>This is the HTML part.</p>"
+
+	created, notCreated := setCreateFromBodyValues(t, f, map[string]any{
+		"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+		"keywords":   map[string]bool{"$draft": true, "$seen": true},
+		"from":       []map[string]any{{"name": "Alice", "email": "alice@example.test"}},
+		"to":         []map[string]any{{"name": "Bob", "email": "bob@example.test"}},
+		"subject":    "Multipart draft",
+		"bodyValues": map[string]any{
+			"1": map[string]any{"value": textContent, "isTruncated": false, "isEncodingProblem": false},
+			"2": map[string]any{"value": htmlContent, "isTruncated": false, "isEncodingProblem": false},
+		},
+		"textBody": []map[string]any{
+			{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+		},
+		"htmlBody": []map[string]any{
+			{"partId": "2", "type": "text/html", "charset": "utf-8"},
+		},
+	})
+
+	if len(notCreated) != 0 {
+		t.Fatalf("notCreated = %v", notCreated)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created = %v", created)
+	}
+	emailID, _ := created["draft"]["id"].(string)
+	if emailID == "" {
+		t.Fatalf("no id in created: %v", created)
+	}
+
+	// Fetch with both text and html body values.
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":           protojmap.AccountIDForPrincipal(f.pid),
+		"ids":                 []string{emailID},
+		"fetchTextBodyValues": true,
+		"fetchHTMLBodyValues": true,
+		"maxBodyValueBytes":   64 * 1024,
+	})
+	var getResp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	item := getResp.List[0]
+	bv, _ := item["bodyValues"].(map[string]any)
+	if len(bv) < 2 {
+		t.Fatalf("expected at least 2 body values (text + html), got %d: %s", len(bv), raw)
+	}
+	foundText, foundHTML := false, false
+	for _, v := range bv {
+		if m, ok := v.(map[string]any); ok {
+			s, _ := m["value"].(string)
+			if strings.Contains(s, "plain-text part") {
+				foundText = true
+			}
+			if strings.Contains(s, "HTML part") {
+				foundHTML = true
+			}
+		}
+	}
+	if !foundText {
+		t.Errorf("text part not found in bodyValues: %v", bv)
+	}
+	if !foundHTML {
+		t.Errorf("HTML part not found in bodyValues: %v", bv)
+	}
+}
+
+func TestEmailSet_Create_FromBodyValues_WithReplyHeaders(t *testing.T) {
+	f := setupFixture(t)
+
+	originalMsgID := "<original-1234@example.test>"
+	refMsgID := "<ref-5678@example.test>"
+
+	created, notCreated := setCreateFromBodyValues(t, f, map[string]any{
+		"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+		"keywords":   map[string]bool{"$draft": true},
+		"from":       []map[string]any{{"name": "Bob", "email": "bob@example.test"}},
+		"to":         []map[string]any{{"name": "Alice", "email": "alice@example.test"}},
+		"subject":    "Re: Original",
+		"inReplyTo":  []string{originalMsgID},
+		"references": []string{refMsgID, originalMsgID},
+		"bodyValues": map[string]any{
+			"1": map[string]any{"value": "Thanks for the original message.", "isTruncated": false, "isEncodingProblem": false},
+		},
+		"textBody": []map[string]any{
+			{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+		},
+	})
+
+	if len(notCreated) != 0 {
+		t.Fatalf("notCreated = %v", notCreated)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created = %v", created)
+	}
+	emailID, _ := created["draft"]["id"].(string)
+	if emailID == "" {
+		t.Fatalf("no id in created: %v", created)
+	}
+
+	// Fetch the message and verify the envelope carries the reply headers.
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{emailID},
+		"properties": []string{"inReplyTo", "references", "subject"},
+	})
+	var getResp struct {
+		List []struct {
+			InReplyTo  []string `json:"inReplyTo"`
+			References []string `json:"references"`
+			Subject    string   `json:"subject"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("got %d entries, want 1: %s", len(getResp.List), raw)
+	}
+	got := getResp.List[0]
+	if len(got.InReplyTo) == 0 {
+		t.Errorf("inReplyTo empty in Email/get response")
+	} else if got.InReplyTo[0] != originalMsgID {
+		t.Errorf("inReplyTo[0] = %q, want %q", got.InReplyTo[0], originalMsgID)
+	}
+	if got.Subject != "Re: Original" {
+		t.Errorf("subject = %q, want Re: Original", got.Subject)
+	}
+}
+
+func TestEmailSet_Create_NoBlobAndNoBody(t *testing.T) {
+	f := setupFixture(t)
+
+	created, notCreated := setCreateFromBodyValues(t, f, map[string]any{
+		"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+		"keywords":   map[string]bool{"$draft": true},
+		// No blobId, no bodyValues, no textBody, no htmlBody.
+	})
+
+	if len(created) != 0 {
+		t.Fatalf("expected no created entry, got %v", created)
+	}
+	if len(notCreated) != 1 {
+		t.Fatalf("expected 1 notCreated entry, got %v", notCreated)
+	}
+	entry, _ := notCreated["draft"]
+	if errType, _ := entry["type"].(string); errType != "invalidProperties" {
+		t.Errorf("error type = %q, want invalidProperties", errType)
+	}
+	desc, _ := entry["description"].(string)
+	if !strings.Contains(desc, "blobId") {
+		t.Errorf("error description %q does not mention blobId", desc)
+	}
+}
