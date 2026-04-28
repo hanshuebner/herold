@@ -901,6 +901,13 @@ func scanMessage(row rowLike) (store.Message, error) {
 	return msg, nil
 }
 
+func (m *metadata) UpdateMessageThreadID(ctx context.Context, msgID store.MessageID, threadID uint64) error {
+	_, err := m.s.db.ExecContext(ctx,
+		`UPDATE messages SET thread_id = ? WHERE id = ?`,
+		int64(threadID), int64(msgID))
+	return mapErr(err)
+}
+
 func (m *metadata) UpdateMessageFlags(
 	ctx context.Context,
 	id store.MessageID,

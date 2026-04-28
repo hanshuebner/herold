@@ -661,6 +661,22 @@ func (m *metaFace) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 	return nil
 }
 
+func (m *metaFace) UpdateMessageThreadID(ctx context.Context, msgID store.MessageID, threadID uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msg, ok := s.messages[msgID]
+	if !ok {
+		return fmt.Errorf("message %d: %w", msgID, store.ErrNotFound)
+	}
+	msg.ThreadID = threadID
+	s.messages[msgID] = msg
+	return nil
+}
+
 func (m *metaFace) MoveMessage(ctx context.Context, msgID store.MessageID, targetMailboxID store.MailboxID) error {
 	if err := ctx.Err(); err != nil {
 		return err

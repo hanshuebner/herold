@@ -148,6 +148,13 @@ type Metadata interface {
 	// Email id) is preserved. Returns ErrNotFound if msgID is absent.
 	MoveMessage(ctx context.Context, msgID MessageID, targetMailboxID MailboxID) error
 
+	// UpdateMessageThreadID sets the thread_id of message msgID to
+	// threadID. Used by the post-import thread re-linking pass when
+	// emails are imported out of order (replies before originals).
+	// Does NOT bump HighestModSeq or add change-feed entries — thread
+	// re-linking is transparent to IMAP clients.
+	UpdateMessageThreadID(ctx context.Context, msgID MessageID, threadID uint64) error
+
 	// UpdateMailboxModseqAndAppendChange is the low-level escape hatch
 	// used by protocol code that has already computed a multi-row
 	// mutation and needs to advance HighestModSeq and append a

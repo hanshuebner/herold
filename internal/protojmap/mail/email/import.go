@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -81,6 +82,7 @@ func (i *importHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 		NotCreated: map[string]setError{},
 	}
 
+	var createdIDs []store.MessageID
 	for key, entry := range req.Emails {
 		jm, serr, err := i.importOne(ctx, pid, entry)
 		if err != nil {
@@ -91,6 +93,20 @@ func (i *importHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 			continue
 		}
 		resp.Created[key] = jm
+		// Track the created MessageID for post-import thread re-linking.
+		mid, _ := emailIDFromJMAP(jm.ID)
+		if mid != 0 {
+			createdIDs = append(createdIDs, mid)
+		}
+	}
+
+	// Post-import thread re-linking: when emails are imported out of order
+	// (replies before originals), thread_id resolution at InsertMessage time
+	// fails because the ancestor is not yet present. After all emails are
+	// inserted, walk the created messages and re-link any whose InReplyTo
+	// ancestor now exists.
+	if err := i.relinkThreads(ctx, pid, createdIDs); err != nil {
+		return nil, serverFail(err)
 	}
 
 	newState, err := currentState(ctx, i.h.store.Meta(), pid)
@@ -99,6 +115,51 @@ func (i *importHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 	}
 	resp.NewState = newState
 	return resp, nil
+}
+
+// relinkThreads walks createdIDs and, for each message whose InReplyTo
+// points to an ancestor that now exists in the store, updates the
+// thread_id to match the ancestor's thread. This fixes threading when
+// replies are imported before their originals.
+func (i *importHandler) relinkThreads(ctx context.Context, pid store.PrincipalID, createdIDs []store.MessageID) error {
+	if len(createdIDs) == 0 {
+		return nil
+	}
+	for _, mid := range createdIDs {
+		msg, err := i.h.store.Meta().GetMessage(ctx, mid)
+		if err != nil {
+			continue // silently skip; best-effort
+		}
+		if msg.Envelope.InReplyTo == "" {
+			continue
+		}
+		if msg.ThreadID != 0 && msg.ThreadID != uint64(msg.ID) {
+			continue // already properly threaded (ancestor was present at import time)
+		}
+		// Look up the ancestor by Message-ID.
+		refs := mailparse.ParseReferences(msg.Envelope.InReplyTo)
+		for _, ref := range refs {
+			ancestor, err := i.h.store.Meta().GetMessageByMessageIDHeader(ctx, pid, ref)
+			if err != nil {
+				continue
+			}
+			// Determine the thread key for the ancestor.
+			var ancestorThread uint64
+			if ancestor.ThreadID != 0 {
+				ancestorThread = ancestor.ThreadID
+			} else {
+				ancestorThread = uint64(ancestor.ID)
+			}
+			if ancestorThread == uint64(mid) {
+				continue // would create a self-link
+			}
+			if err := i.h.store.Meta().UpdateMessageThreadID(ctx, mid, ancestorThread); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	return nil
 }
 
 // importOne is the per-entry workhorse. Mirrors createEmail but with
@@ -184,6 +245,16 @@ func (i *importHandler) importOne(
 			Description: "blob is not a valid RFC 5322 message: " + parseErr.Error(),
 		}, nil
 	}
+	// RFC 5322 requires at minimum a Date and From header.  A blob with
+	// no headers at all (e.g. arbitrary binary data) is not a valid
+	// message even if the parser did not reject it outright.
+	if len(parsed.Headers.Keys()) == 0 {
+		return jmapEmail{}, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"blobId"},
+			Description: "blob has no RFC 5322 headers; not a valid message",
+		}, nil
+	}
 	env := buildEnvelopeFromParsed(parsed)
 
 	receivedAt := i.h.clk.Now()
@@ -222,6 +293,10 @@ func (i *importHandler) importOne(
 
 	if _, err := i.h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
 		return jmapEmail{}, nil, fmt.Errorf("email: bump state: %w", err)
+	}
+	// Thread membership changed: bump Thread state.
+	if _, err := i.h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindThread); err != nil {
+		return jmapEmail{}, nil, fmt.Errorf("email: bump thread state: %w", err)
 	}
 	return renderEmailMetadata(msg), nil, nil
 }

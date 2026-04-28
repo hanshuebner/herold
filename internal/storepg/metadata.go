@@ -938,6 +938,13 @@ func (m *metadata) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 	})
 }
 
+func (m *metadata) UpdateMessageThreadID(ctx context.Context, msgID store.MessageID, threadID uint64) error {
+	_, err := m.s.pool.Exec(ctx,
+		`UPDATE messages SET thread_id = $1 WHERE id = $2`,
+		int64(threadID), int64(msgID))
+	return mapErr(err)
+}
+
 func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, targetMailboxID store.MailboxID) error {
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx pgx.Tx) error {

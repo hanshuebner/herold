@@ -44,20 +44,36 @@ type filterShape struct {
 	Conditions     []filterShape `json:"conditions,omitempty"`
 }
 
-// extractTerms walks the (possibly nested) filter and returns the
-// flat list of terms to highlight. Operators (and / or / not) are
-// flattened — a SearchSnippet only renders the highlight overlay, so
-// we surface every term in the tree.
-func (f filterShape) extractTerms() []string {
+// extractSubjectTerms returns the terms that should be highlighted in
+// the subject field. Per RFC 8621 §6.1 the subject is highlighted only
+// when the filter matches the subject: the text: (all-field) and
+// subject: conditions are in scope; body-only conditions are not.
+func (f filterShape) extractSubjectTerms() []string {
 	var out []string
-	for _, t := range []string{f.Text, f.From, f.To, f.Cc, f.Bcc,
-		f.Subject, f.Body, f.AttachmentName} {
+	for _, t := range []string{f.Text, f.Subject} {
 		if t = strings.TrimSpace(t); t != "" {
 			out = append(out, splitTerms(t)...)
 		}
 	}
 	for _, c := range f.Conditions {
-		out = append(out, c.extractTerms()...)
+		out = append(out, c.extractSubjectTerms()...)
+	}
+	return out
+}
+
+// extractPreviewTerms returns the terms that should be highlighted in
+// the preview (body) field. body:, text: (all-field), from:, to:,
+// cc:, bcc: and attachmentName: conditions all contribute.
+func (f filterShape) extractPreviewTerms() []string {
+	var out []string
+	for _, t := range []string{f.Text, f.From, f.To, f.Cc, f.Bcc,
+		f.Body, f.AttachmentName} {
+		if t = strings.TrimSpace(t); t != "" {
+			out = append(out, splitTerms(t)...)
+		}
+	}
+	for _, c := range f.Conditions {
+		out = append(out, c.extractPreviewTerms()...)
 	}
 	return out
 }
@@ -167,7 +183,8 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 				fmt.Sprintf("filter: %s", err.Error()))
 		}
 	}
-	terms := filter.extractTerms()
+	subjectTerms := filter.extractSubjectTerms()
+	previewTerms := filter.extractPreviewTerms()
 	resp := getResponse{
 		AccountID: accountIDForPrincipal(p),
 		Filter:    req.Filter,
@@ -195,9 +212,11 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		}
 		previewSrc := g.h.previewText(ctx, msg)
 		// RFC 8621 §6.1: subject and preview are null when the search term
-		// does not appear in that field.
-		subjectHighlight := highlight(collapseWhitespace(msg.Envelope.Subject), terms)
-		previewHighlight := snippet(previewSrc, terms)
+		// does not appear in that field.  Apply field-specific term sets so
+		// that a body: search does not falsely highlight the subject and
+		// vice-versa.
+		subjectHighlight := highlight(collapseWhitespace(msg.Envelope.Subject), subjectTerms)
+		previewHighlight := snippet(previewSrc, previewTerms)
 		var subjectPtr, previewPtr *string
 		if subjectHighlight != "" && strings.Contains(subjectHighlight, "<mark>") {
 			subjectPtr = &subjectHighlight

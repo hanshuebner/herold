@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -140,9 +141,9 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 		return nil, serverFail(gatherErr)
 	}
 
-	// Pre-compute hasAttachment for all candidates if the filter requires it.
-	attachmentMap := buildAttachmentMap(ctx, q.h.store.Blobs(), allMessages, filter)
-	matched := filterMessagesWithCtxAndAttachments(allMessages, filter, allMessages, attachmentMap)
+	// Pre-compute blob-based filter data (hasAttachment, non-standard headers).
+	fd := buildFilterData(ctx, q.h.store.Blobs(), allMessages, filter)
+	matched := filterMessagesWithCtxAndAttachments(allMessages, filter, allMessages, fd)
 	sortMessages(matched, req.Sort)
 
 	// collapseThreads: keep only the sort-order representative of each thread.
@@ -244,6 +245,22 @@ func filterNeedsThreadAgg(f *emailFilter) bool {
 	return f.SomeInThreadHaveKeyword != nil || f.NoneInThreadHaveKeyword != nil
 }
 
+// filterData holds precomputed per-message data needed by filter
+// predicates that require blob parsing (hasAttachment, non-standard
+// header lookup, body text). All fields are optional; a nil pointer
+// or nil map means the corresponding predicate falls back to a safe
+// default.
+type filterData struct {
+	// attachments maps message ID to whether the message has >=1 attachment.
+	attachments map[store.MessageID]bool
+	// blobHeaders maps message ID to a map of lowercased header name ->
+	// first value. Populated only when the filter uses a non-standard header.
+	blobHeaders map[store.MessageID]map[string]string
+	// blobBodyText maps message ID to the extracted plain-text body.
+	// Populated when the filter has a body: condition.
+	blobBodyText map[store.MessageID]string
+}
+
 // filterMessages applies a filter to candidates with the full message set
 // for thread-keyword aggregation. When thread aggregation is not needed
 // allMessages may equal candidates.
@@ -258,32 +275,154 @@ func filterMessagesWithCtx(candidates []store.Message, f *emailFilter, allMessag
 }
 
 // filterMessagesWithCtxAndAttachments is filterMessagesWithCtx extended
-// with a pre-computed attachment map (message ID -> hasAttachment).
-func filterMessagesWithCtxAndAttachments(candidates []store.Message, f *emailFilter, allMessages []store.Message, attachments map[store.MessageID]bool) []store.Message {
+// with precomputed blob-based filter data.
+func filterMessagesWithCtxAndAttachments(candidates []store.Message, f *emailFilter, allMessages []store.Message, fd *filterData) []store.Message {
 	out := make([]store.Message, 0, len(candidates))
 	for _, m := range candidates {
-		if matchFilterWithAttachments(m, f, allMessages, attachments) {
+		if matchFilterWithAttachments(m, f, allMessages, fd) {
 			out = append(out, m)
 		}
 	}
 	return out
 }
 
-// buildAttachmentMap pre-computes the hasAttachment flag for each
-// message in msgs when the filter requires it. Returns nil if not needed.
-func buildAttachmentMap(ctx context.Context, blobs store.Blobs, msgs []store.Message, f *emailFilter) map[store.MessageID]bool {
-	if f == nil || f.HasAttachment == nil {
+// buildFilterData pre-computes blob-based predicates for all msgs
+// when the filter requires it. Returns nil when no blob parsing is needed.
+func buildFilterData(ctx context.Context, blobs store.Blobs, msgs []store.Message, f *emailFilter) *filterData {
+	if f == nil {
 		return nil
 	}
-	m := make(map[store.MessageID]bool, len(msgs))
-	for _, msg := range msgs {
-		m[msg.ID] = messageHasAttachment(ctx, blobs, msg)
+	needAtt := filterNeedsAttachment(f)
+	headerName := filterNeedsNonStandardHeader(f)
+	needBody := filterNeedsBodyBlobParse(f)
+	if !needAtt && headerName == "" && !needBody {
+		return nil
 	}
-	return m
+	fd := &filterData{}
+	if needAtt {
+		fd.attachments = make(map[store.MessageID]bool, len(msgs))
+	}
+	if headerName != "" {
+		fd.blobHeaders = make(map[store.MessageID]map[string]string, len(msgs))
+	}
+	if needBody {
+		fd.blobBodyText = make(map[store.MessageID]string, len(msgs))
+	}
+	for _, msg := range msgs {
+		rc, err := blobs.Get(ctx, msg.Blob.Hash)
+		if err != nil {
+			if needAtt {
+				fd.attachments[msg.ID] = false
+			}
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(rc, 4<<20))
+		rc.Close()
+		if err != nil {
+			if needAtt {
+				fd.attachments[msg.ID] = false
+			}
+			continue
+		}
+		parsed, err := defaultParseFn(bytes.NewReader(body))
+		if err != nil {
+			if needAtt {
+				fd.attachments[msg.ID] = false
+			}
+			continue
+		}
+		if needAtt {
+			_, _, _, _, attParts := walkParts(parsed.Body, 0, "")
+			fd.attachments[msg.ID] = len(attParts) > 0
+		}
+		if headerName != "" {
+			hdrMap := make(map[string]string, len(parsed.Headers.Keys()))
+			for _, k := range parsed.Headers.Keys() {
+				hdrMap[strings.ToLower(k)] = parsed.Headers.Get(k)
+			}
+			fd.blobHeaders[msg.ID] = hdrMap
+		}
+		if needBody {
+			fd.blobBodyText[msg.ID] = extractBodyText(parsed)
+		}
+	}
+	return fd
+}
+
+// extractBodyText returns a concatenated plain-text representation of
+// the message body. Used for blob-based body: filter matching.
+func extractBodyText(m mailparse.Message) string {
+	var sb strings.Builder
+	var walk func(p mailparse.Part)
+	walk = func(p mailparse.Part) {
+		ct := strings.ToLower(p.ContentType)
+		if strings.HasPrefix(ct, "text/plain") {
+			if p.Text != "" {
+				sb.WriteString(p.Text)
+				sb.WriteByte(' ')
+			} else if len(p.Bytes) > 0 {
+				sb.Write(p.Bytes)
+				sb.WriteByte(' ')
+			}
+		}
+		for _, child := range p.Children {
+			walk(child)
+		}
+	}
+	walk(m.Body)
+	return strings.ToLower(sb.String())
+}
+
+// filterNeedsAttachment reports whether f (or any nested condition)
+// uses a hasAttachment predicate.
+func filterNeedsAttachment(f *emailFilter) bool {
+	if f == nil {
+		return false
+	}
+	if f.HasAttachment != nil {
+		return true
+	}
+	for _, raw := range f.Conditions {
+		var sub emailFilter
+		if err := json.Unmarshal(raw, &sub); err == nil {
+			if filterNeedsAttachment(&sub) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// filterNeedsNonStandardHeader returns the non-standard header name
+// used in a header[] filter condition (first non-standard header found),
+// or "" when not needed. Non-standard means not in the envelope cache.
+func filterNeedsNonStandardHeader(f *emailFilter) string {
+	if f == nil {
+		return ""
+	}
+	if len(f.Header) > 0 {
+		name := strings.ToLower(strings.TrimSpace(f.Header[0]))
+		switch name {
+		case "subject", "from", "to", "cc", "bcc", "reply-to", "message-id", "in-reply-to":
+			// cached in envelope; no blob parse needed
+		default:
+			return name
+		}
+	}
+	for _, raw := range f.Conditions {
+		var sub emailFilter
+		if err := json.Unmarshal(raw, &sub); err == nil {
+			if n := filterNeedsNonStandardHeader(&sub); n != "" {
+				return n
+			}
+		}
+	}
+	return ""
 }
 
 // messageHasAttachment parses the message blob to determine whether it
 // has any attachment parts. Returns false on parse error.
+// Prefer buildFilterData + filterData.attachments in bulk scenarios.
 func messageHasAttachment(ctx context.Context, blobs store.Blobs, m store.Message) bool {
 	rc, err := blobs.Get(ctx, m.Blob.Hash)
 	if err != nil {
@@ -308,16 +447,16 @@ func matchFilter(m store.Message, f *emailFilter, all []store.Message) bool {
 	return matchFilterWithAttachments(m, f, all, nil)
 }
 
-// matchFilterWithAttachments is matchFilter with a pre-computed attachment map.
-func matchFilterWithAttachments(m store.Message, f *emailFilter, all []store.Message, attachments map[store.MessageID]bool) bool {
+// matchFilterWithAttachments is matchFilter with precomputed blob filter data.
+func matchFilterWithAttachments(m store.Message, f *emailFilter, all []store.Message, fd *filterData) bool {
 	if f == nil {
 		return true
 	}
 	// FilterOperator: operator + conditions
 	if f.Operator != "" {
-		return matchOperatorWithAttachments(m, f, all, attachments)
+		return matchOperatorWithAttachments(m, f, all, fd)
 	}
-	return matchConditionWithAttachments(m, f, all, attachments)
+	return matchConditionWithAttachments(m, f, all, fd)
 }
 
 // matchOperator handles FilterOperator (AND / OR / NOT).
@@ -325,8 +464,8 @@ func matchOperator(m store.Message, f *emailFilter, all []store.Message) bool {
 	return matchOperatorWithAttachments(m, f, all, nil)
 }
 
-// matchOperatorWithAttachments is matchOperator with attachment map.
-func matchOperatorWithAttachments(m store.Message, f *emailFilter, all []store.Message, attachments map[store.MessageID]bool) bool {
+// matchOperatorWithAttachments is matchOperator with precomputed blob filter data.
+func matchOperatorWithAttachments(m store.Message, f *emailFilter, all []store.Message, fd *filterData) bool {
 	op := strings.ToUpper(f.Operator)
 	switch op {
 	case "AND":
@@ -335,7 +474,7 @@ func matchOperatorWithAttachments(m store.Message, f *emailFilter, all []store.M
 			if err := json.Unmarshal(raw, &sub); err != nil {
 				return false
 			}
-			if !matchFilterWithAttachments(m, &sub, all, attachments) {
+			if !matchFilterWithAttachments(m, &sub, all, fd) {
 				return false
 			}
 		}
@@ -346,7 +485,7 @@ func matchOperatorWithAttachments(m store.Message, f *emailFilter, all []store.M
 			if err := json.Unmarshal(raw, &sub); err != nil {
 				continue
 			}
-			if matchFilterWithAttachments(m, &sub, all, attachments) {
+			if matchFilterWithAttachments(m, &sub, all, fd) {
 				return true
 			}
 		}
@@ -360,7 +499,7 @@ func matchOperatorWithAttachments(m store.Message, f *emailFilter, all []store.M
 			if err := json.Unmarshal(raw, &sub); err != nil {
 				return false
 			}
-			if matchFilterWithAttachments(m, &sub, all, attachments) {
+			if matchFilterWithAttachments(m, &sub, all, fd) {
 				return false
 			}
 		}
@@ -374,8 +513,8 @@ func matchCondition(m store.Message, f *emailFilter, all []store.Message) bool {
 	return matchConditionWithAttachments(m, f, all, nil)
 }
 
-// matchConditionWithAttachments is matchCondition with attachment map.
-func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.Message, attachments map[store.MessageID]bool) bool {
+// matchConditionWithAttachments is matchCondition with precomputed blob filter data.
+func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.Message, fd *filterData) bool {
 	if f.InMailbox != nil {
 		want, ok := mailboxIDFromJMAP(*f.InMailbox)
 		if !ok || m.MailboxID != want {
@@ -454,15 +593,20 @@ func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.
 	}
 	if f.HasAttachment != nil {
 		// Use the pre-computed attachment map when available (populated by
-		// buildAttachmentMap in the query Execute path). If not available,
-		// fall back to false (conservative: no false positives for hasAttachment=true
+		// buildFilterData in the query Execute path). If not available,
+		// fall back to false (no false positives for hasAttachment=true
 		// but may miss messages for hasAttachment=false).
-		has := attachments != nil && attachments[m.ID]
+		var has bool
+		if fd != nil && fd.attachments != nil {
+			has = fd.attachments[m.ID]
+		}
 		if has != *f.HasAttachment {
 			return false
 		}
 	}
-	// Header filter: name-only or name+value against the envelope cache.
+	// Header filter: name-only or name+value. Standard RFC 5322 headers
+	// are checked against the envelope cache; non-standard headers require
+	// a pre-parsed blob header map from filterData.blobHeaders.
 	if len(f.Header) > 0 {
 		name := strings.ToLower(strings.TrimSpace(f.Header[0]))
 		var wantValue string
@@ -470,6 +614,11 @@ func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.
 			wantValue = strings.ToLower(strings.TrimSpace(f.Header[1]))
 		}
 		got := envelopeHeader(m, name)
+		if got == "" && fd != nil && fd.blobHeaders != nil {
+			if hdrs, ok := fd.blobHeaders[m.ID]; ok {
+				got = hdrs[name]
+			}
+		}
 		if got == "" {
 			return false
 		}
@@ -477,11 +626,17 @@ func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.
 			return false
 		}
 	}
-	// Body / text predicates: when we reach here via the non-FTS path these
-	// were not pre-filtered; fall back to envelope-header substring match.
+	// Body predicate: matched against blob-extracted plain-text body when
+	// filterData.blobBodyText is available (populated by buildFilterData).
 	if f.Body != nil {
-		// Body search requires FTS; in the metadata path we skip.
-		// The gatherCandidatesRaw already routes body queries through FTS.
+		term := strings.ToLower(*f.Body)
+		bodyText := ""
+		if fd != nil && fd.blobBodyText != nil {
+			bodyText = fd.blobBodyText[m.ID]
+		}
+		if !strings.Contains(bodyText, term) {
+			return false
+		}
 	}
 	return true
 }
@@ -524,7 +679,9 @@ func gatherCandidates(
 }
 
 // filterHasTextPredicate reports whether f (or any nested condition) has
-// a text-bearing predicate that should be routed through FTS.
+// an envelope-field text predicate that should be routed through FTS.
+// The body: predicate is excluded — it requires blob parsing and is
+// handled by filterNeedsBodyBlobParse / filterData.blobBodyText.
 func filterHasTextPredicate(f *emailFilter) bool {
 	if f == nil {
 		return false
@@ -541,7 +698,27 @@ func filterHasTextPredicate(f *emailFilter) bool {
 		return false
 	}
 	return f.Text != nil || f.From != nil || f.To != nil || f.Cc != nil ||
-		f.Bcc != nil || f.Subject != nil || f.Body != nil
+		f.Bcc != nil || f.Subject != nil
+}
+
+// filterNeedsBodyBlobParse reports whether f (or any nested condition)
+// has a body: predicate that requires blob-level text extraction.
+func filterNeedsBodyBlobParse(f *emailFilter) bool {
+	if f == nil {
+		return false
+	}
+	if f.Body != nil {
+		return true
+	}
+	for _, raw := range f.Conditions {
+		var sub emailFilter
+		if err := json.Unmarshal(raw, &sub); err == nil {
+			if filterNeedsBodyBlobParse(&sub) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // buildFTSQuery projects the text-bearing predicates onto the
@@ -566,9 +743,8 @@ func buildFTSQuery(f *emailFilter) store.Query {
 	if f.To != nil {
 		q.To = []string{*f.To}
 	}
-	if f.Body != nil {
-		q.Body = []string{*f.Body}
-	}
+	// Body: is handled via blob-parsing (buildFilterData / filterData.blobBodyText)
+	// rather than FTS, so it is intentionally omitted here.
 	if f.Cc != nil {
 		q.To = append(q.To, *f.Cc)
 	}
@@ -656,16 +832,19 @@ func compareMessage(a, b store.Message, c comparator) int {
 	case "subject":
 		return strings.Compare(strings.ToLower(a.Envelope.Subject), strings.ToLower(b.Envelope.Subject))
 	case "hasKeyword":
-		// Messages that have the keyword sort before those that don't.
+		// Treat "has keyword" as boolean true > false.  In an ascending sort
+		// the lower value (false / no keyword) comes first; in a descending
+		// sort the higher value (true / has keyword) comes first, which is the
+		// conventional expectation for isAscending:false.
 		aHas := messageHasKeyword(a, c.Keyword)
 		bHas := messageHasKeyword(b, c.Keyword)
 		if aHas == bHas {
 			return 0
 		}
 		if aHas {
-			return -1 // a before b when ascending; b before a when descending
+			return 1 // a is "greater"; descending puts a before b
 		}
-		return 1
+		return -1
 	}
 	return 0
 }

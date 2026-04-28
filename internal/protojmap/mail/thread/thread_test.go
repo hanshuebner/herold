@@ -145,14 +145,15 @@ func TestThread_Get_DistinctThreadsForUnrelatedMessages(t *testing.T) {
 
 func TestThread_Changes_NoOpWhenSameState(t *testing.T) {
 	h, st, p, _ := setup(t)
-	stState, err := st.Meta().GetJMAPStates(context.Background(), p.ID)
-	if err != nil {
-		t.Fatalf("states: %v", err)
-	}
+	// Get current thread state via Thread/get.
+	getArgs, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID), "ids": []string{}})
+	getResp, _ := getHandler{h: h}.executeAs(p, getArgs)
+	currentState := getResp.(getResponse).State
 	args, _ := json.Marshal(map[string]any{
 		"accountId":  protojmap.AccountIDForPrincipal(p.ID),
-		"sinceState": stateString(stState.Thread),
+		"sinceState": currentState,
 	})
+	_ = st
 	resp, mErr := changesHandler{h: h}.executeAs(p, args)
 	if mErr != nil {
 		t.Fatalf("Thread/changes: %v", mErr)

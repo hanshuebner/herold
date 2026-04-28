@@ -184,6 +184,11 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			resp.NotCreated[key] = *serr
 			continue
 		}
+		// Increment Thread state for each created email: a new message either
+		// starts a new thread or joins an existing one.
+		if _, terr := s.h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindThread); terr != nil {
+			return nil, serverFail(terr)
+		}
 		creationRefs[key] = mid
 		resp.Created[key] = jm
 	}
@@ -918,6 +923,10 @@ func (h *handlerSet) destroyEmail(
 	}
 	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
 		return nil, fmt.Errorf("email: bump state: %w", err)
+	}
+	// Thread membership changed: bump Thread state so Thread/changes reflects the deletion.
+	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindThread); err != nil {
+		return nil, fmt.Errorf("email: bump thread state: %w", err)
 	}
 	return nil, nil
 }

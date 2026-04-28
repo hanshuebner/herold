@@ -332,12 +332,12 @@ func TestEmail_Set_Update_Keywords(t *testing.T) {
 func TestEmail_Query_TextPredicate_BackedByFTS(t *testing.T) {
 	f := setupFixture(t)
 	f.insertMessage(t,
-		"From: a@example.test\r\nTo: b@example.test\r\nSubject: invoice\r\n\r\nplease pay",
-		"invoice", "a@example.test", "b@example.test", nil, "subject invoice please pay")
+		"From: a@example.test\r\nTo: b@example.test\r\nSubject: payment reminder\r\n\r\nPlease pay the attached invoice promptly.",
+		"payment reminder", "a@example.test", "b@example.test", nil, "")
 	matchID := mostRecentMessageID(t, f)
 	f.insertMessage(t,
 		"From: a@example.test\r\nTo: b@example.test\r\nSubject: kittens\r\n\r\ncute pictures",
-		"kittens", "a@example.test", "b@example.test", nil, "subject kittens cute pictures")
+		"kittens", "a@example.test", "b@example.test", nil, "")
 
 	_, raw := f.invoke(t, "Email/query", map[string]any{
 		"accountId": protojmap.AccountIDForPrincipal(f.pid),

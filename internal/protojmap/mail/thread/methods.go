@@ -55,8 +55,35 @@ type handlerSet struct {
 	store store.Store
 }
 
-// stateString stringifies the per-principal Thread state counter.
-func stateString(seq int64) string { return strconv.FormatInt(seq, 10) }
+// stateString stringifies a ChangeSeq into the wire form used by
+// Thread/get and Thread/changes. Thread state is derived from the
+// Email change feed (EntityKindEmail) so that Thread state advances
+// whenever an email is created or destroyed, without requiring a
+// separate Thread-level counter.
+func stateString(seq uint64) string { return strconv.FormatUint(seq, 10) }
+
+// parseSeq parses a wire-form state string into a ChangeSeq.
+// Returns 0 on empty input (which is valid: "no state yet").
+func parseSeq(s string) (store.ChangeSeq, bool) {
+	if s == "" {
+		return 0, true
+	}
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return store.ChangeSeq(v), true
+}
+
+// currentThreadState returns the Thread state string derived from the
+// maximum Email change-feed seq for this principal.
+func currentThreadState(ctx context.Context, meta store.Metadata, pid store.PrincipalID) (string, error) {
+	seq, err := meta.GetMaxChangeSeqForKind(ctx, pid, store.EntityKindEmail)
+	if err != nil {
+		return "", err
+	}
+	return stateString(uint64(seq)), nil
+}
 
 func accountIDForPrincipal(p store.Principal) string {
 	return protojmap.AccountIDForPrincipal(p.ID)
@@ -194,7 +221,7 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	if e := validateAccountID(p, req.AccountID); e != nil {
 		return nil, e
 	}
-	st, err := g.h.store.Meta().GetJMAPStates(ctx, p.ID)
+	state, err := currentThreadState(ctx, g.h.store.Meta(), p.ID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
@@ -204,7 +231,7 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	}
 	resp := getResponse{
 		AccountID: accountIDForPrincipal(p),
-		State:     stateString(st.Thread),
+		State:     state,
 		List:      []jmapThread{},
 		NotFound:  []jmapID{},
 	}
@@ -257,11 +284,10 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 	if e := validateAccountID(p, req.AccountID); e != nil {
 		return nil, e
 	}
-	st, err := c.h.store.Meta().GetJMAPStates(ctx, p.ID)
+	now, err := currentThreadState(ctx, c.h.store.Meta(), p.ID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
-	now := stateString(st.Thread)
 	resp := changesResponse{
 		AccountID: accountIDForPrincipal(p),
 		OldState:  req.SinceState,
@@ -273,15 +299,103 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 	if req.SinceState == now {
 		return resp, nil
 	}
-	// Without a per-thread change feed we conservatively report the
-	// current thread set as updated. Clients re-fetch on observed
-	// updates, RFC 8620 §5.2 permits over-reporting.
-	_, threadToMsgs, err := c.h.computeForPrincipal(ctx, p)
-	if err != nil {
+	// Parse the sinceState into a change-feed cursor.
+	sinceSeq, ok := parseSeq(req.SinceState)
+	if !ok {
+		return nil, protojmap.NewMethodError("cannotCalculateChanges",
+			"unrecognised sinceState; please re-sync")
+	}
+	// Compute Thread changes from the Email change feed.
+	// We read Email change-feed entries after sinceSeq and classify
+	// the affected threads into created / updated / destroyed.
+	if err := c.computeThreadChanges(ctx, p, sinceSeq, &resp); err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
-	for k := range threadToMsgs {
-		resp.Updated = append(resp.Updated, renderThreadID(k))
-	}
 	return resp, nil
+}
+
+// computeThreadChanges populates resp.Created/Updated/Destroyed by
+// inspecting the Email change feed from sinceSeq onward.
+//
+// Algorithm (RFC 8620 §5.2 permits over-reporting):
+//   - Read Email change feed entries after sinceSeq.
+//   - Track which message IDs are brand-new (ChangeOpCreated) since sinceSeq.
+//   - For each affected thread: if all its current messages are brand-new →
+//     "created"; if it has no surviving messages → "destroyed"; otherwise →
+//     "updated".
+func (c changesHandler) computeThreadChanges(
+	ctx context.Context,
+	p store.Principal,
+	sinceSeq store.ChangeSeq,
+	resp *changesResponse,
+) error {
+	const maxEntries = 1000
+	feed, err := c.h.store.Meta().ReadChangeFeed(ctx, p.ID, sinceSeq, maxEntries)
+	if err != nil {
+		return err
+	}
+
+	// newMsgIDs: message IDs created since sinceSeq.
+	newMsgIDs := map[store.MessageID]struct{}{}
+	// affectedThreads: set of thread keys that had any change since sinceSeq.
+	affectedThreads := map[ThreadKey]struct{}{}
+
+	for _, entry := range feed {
+		if entry.Kind != store.EntityKindEmail {
+			continue
+		}
+		msgID := store.MessageID(entry.EntityID)
+		if entry.Op == store.ChangeOpCreated {
+			newMsgIDs[msgID] = struct{}{}
+		}
+		// Load the message to get its thread key.
+		msg, merr := c.h.store.Meta().GetMessage(ctx, msgID)
+		if merr != nil {
+			// Message is gone (destroyed); we cannot recover its thread key from
+			// the change feed alone. The destroyed thread may still appear as
+			// empty in threadToMsgs below.
+			continue
+		}
+		var tk ThreadKey
+		if msg.ThreadID != 0 {
+			tk = ThreadKey(msg.ThreadID)
+		} else {
+			tk = ThreadKey(uint64(msg.ID))
+		}
+		affectedThreads[tk] = struct{}{}
+	}
+
+	if len(affectedThreads) == 0 {
+		return nil
+	}
+
+	// Load all current threads to classify creates vs updates vs destroys.
+	_, threadToMsgs, err := c.h.computeForPrincipal(ctx, p)
+	if err != nil {
+		return err
+	}
+
+	for tk := range affectedThreads {
+		tid := renderThreadID(tk)
+		msgIDs, exists := threadToMsgs[tk]
+		if !exists {
+			// Thread has no surviving messages → destroyed.
+			resp.Destroyed = append(resp.Destroyed, tid)
+			continue
+		}
+		// Thread is "created" if ALL its current messages are in newMsgIDs.
+		allNew := true
+		for _, mid := range msgIDs {
+			if _, isNew := newMsgIDs[mid]; !isNew {
+				allNew = false
+				break
+			}
+		}
+		if allNew {
+			resp.Created = append(resp.Created, tid)
+		} else {
+			resp.Updated = append(resp.Updated, tid)
+		}
+	}
+	return nil
 }
