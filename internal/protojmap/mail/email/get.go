@@ -148,10 +148,12 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 }
 
 // propertiesNeedBody reports whether the properties list requests any
-// property that requires full blob parsing.
+// property that requires full blob parsing. When props is nil (client
+// did not specify a properties filter), all properties are returned
+// including body-level ones, so we always need the blob.
 func propertiesNeedBody(props *[]string) bool {
 	if props == nil {
-		return false
+		return true
 	}
 	for _, p := range *props {
 		switch p {
