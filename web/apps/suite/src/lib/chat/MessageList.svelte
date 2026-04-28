@@ -19,8 +19,29 @@
   interface Props {
     conversationId: string;
     conversation: Conversation;
+    /**
+     * External message list.  When supplied the component reads from this
+     * array instead of chat.messages.  Used by overlay windows so each
+     * window has its own message cache independent of the main pane.
+     */
+    externalMessages?: Message[];
+    externalStatus?: 'idle' | 'loading' | 'ready' | 'error';
+    externalHasMore?: boolean;
+    onLoadMore?: (conversationId: string) => void;
   }
-  let { conversationId, conversation }: Props = $props();
+  let {
+    conversationId,
+    conversation,
+    externalMessages,
+    externalStatus,
+    externalHasMore,
+    onLoadMore,
+  }: Props = $props();
+
+  // Read from external sources when provided, fall back to the store.
+  let effectiveMessages = $derived(externalMessages ?? chat.messages);
+  let effectiveStatus = $derived(externalStatus ?? chat.messagesStatus);
+  let effectiveHasMore = $derived(externalHasMore ?? chat.hasMoreMessages);
 
   let scrollEl = $state<HTMLDivElement | null>(null);
   let showPickerFor = $state<string | null>(null);
@@ -29,8 +50,8 @@
   let wasAtBottom = true;
 
   $effect(() => {
-    // Track messages to trigger scroll effect reactively.
-    const _messages = chat.messages;
+    // Track effective messages to trigger scroll effect reactively.
+    const _messages = effectiveMessages;
     untrack(() => {
       if (!scrollEl) return;
       if (wasAtBottom) {
@@ -47,8 +68,12 @@
     wasAtBottom = scrollHeight - scrollTop - clientHeight < 40;
 
     // Paginate: load more when scrolled near top.
-    if (scrollTop < 80 && chat.hasMoreMessages) {
-      void chat.loadMoreMessages(conversationId);
+    if (scrollTop < 80 && effectiveHasMore) {
+      if (onLoadMore) {
+        onLoadMore(conversationId);
+      } else {
+        void chat.loadMoreMessages(conversationId);
+      }
     }
 
     // Mark read: debounce 500ms after scroll settles.
@@ -65,7 +90,7 @@
   }
 
   function doMarkRead(): void {
-    const msgs = chat.messages;
+    const msgs = effectiveMessages;
     if (msgs.length === 0) return;
     const last = msgs[msgs.length - 1];
     if (!last) return;
@@ -100,7 +125,7 @@
   let grouped = $derived.by(() => {
     const result: Array<{ date: string; messages: Message[] }> = [];
     let currentDate = '';
-    for (const msg of chat.messages) {
+    for (const msg of effectiveMessages) {
       const d = new Date(msg.createdAt).toDateString();
       if (d !== currentDate) {
         currentDate = d;
@@ -156,16 +181,22 @@
 </script>
 
 <div class="message-list" bind:this={scrollEl} onscroll={handleScroll}>
-  {#if chat.messagesStatus === 'loading'}
+  {#if effectiveStatus === 'loading'}
     <p class="loading">Loading messages…</p>
-  {:else if chat.messagesStatus === 'error'}
+  {:else if effectiveStatus === 'error'}
     <p class="error">Failed to load messages</p>
   {:else}
-    {#if chat.hasMoreMessages}
+    {#if effectiveHasMore}
       <button
         type="button"
         class="load-more"
-        onclick={() => chat.loadMoreMessages(conversationId)}
+        onclick={() => {
+          if (onLoadMore) {
+            onLoadMore(conversationId);
+          } else {
+            void chat.loadMoreMessages(conversationId);
+          }
+        }}
       >
         Load earlier messages
       </button>

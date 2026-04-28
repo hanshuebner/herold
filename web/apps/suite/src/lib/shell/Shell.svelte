@@ -12,11 +12,17 @@
   import ReactionConfirmModal from '../mail/ReactionConfirmModal.svelte';
   import ConfirmDialog from '../dialog/ConfirmDialog.svelte';
   import PromptDialog from '../dialog/PromptDialog.svelte';
+  import ChatRail from '../chat/ChatRail.svelte';
+  import ChatOverlayHost from '../chat/ChatOverlayHost.svelte';
 
   interface Props {
     activeApp?: 'mail' | 'chat';
     mailUnread?: number;
     chatUnread?: number;
+    /** When true, suppress the chat rail and overlay host (fullscreen chat route). */
+    hideChatOverlay?: boolean;
+    /** When false, hide both chat rail and overlay (capability gate). */
+    chatEnabled?: boolean;
     sidebar?: import('svelte').Snippet;
     children?: import('svelte').Snippet;
     onAppSelect?: (app: 'mail' | 'chat') => void;
@@ -25,6 +31,8 @@
     activeApp = 'mail',
     mailUnread = 0,
     chatUnread = 0,
+    hideChatOverlay = false,
+    chatEnabled = false,
     sidebar,
     children,
     onAppSelect,
@@ -55,6 +63,12 @@
         {@render children?.()}
       </div>
     </main>
+
+    <!-- Right-edge chat rail: hidden on fullscreen chat route or when
+         chat capability is absent.  Also hidden at <768px via CSS. -->
+    {#if chatEnabled && !hideChatOverlay}
+      <ChatRail />
+    {/if}
   </div>
 
   <CoachStrip />
@@ -68,6 +82,12 @@
   <ReactionConfirmModal />
   <ConfirmDialog />
   <PromptDialog />
+
+  <!-- Floating chat overlay windows: hidden on fullscreen chat route,
+       phone breakpoints, or when chat capability is absent. -->
+  {#if chatEnabled && !hideChatOverlay}
+    <ChatOverlayHost />
+  {/if}
 </div>
 
 <style>

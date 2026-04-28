@@ -27,6 +27,17 @@
     router.matches('chat') ? 'chat' : 'mail',
   );
 
+  // True when the user's session has the chat capability.
+  let hasChatCap = $derived(
+    auth.status === 'ready' && auth.session
+      ? Capability.HeroldChat in (auth.session.capabilities ?? {})
+      : false,
+  );
+
+  // On the fullscreen /chat/* route the existing two-column ChatView is
+  // the complete chat surface; suppress the rail and overlays there.
+  let hideChatOverlay = $derived(router.matches('chat'));
+
   // Open the EventSource subscription once auth is ready. Sync handlers
   // were registered at module init by the mail store, so they're already
   // listening when the connection comes up. Also prime the mailbox list
@@ -235,7 +246,14 @@
     </button>
   </div>
 {/if}
-<Shell {activeApp} mailUnread={mail.inbox?.unreadEmails ?? 0} chatUnread={chat.totalUnread} onAppSelect={selectApp}>
+<Shell
+  {activeApp}
+  mailUnread={mail.inbox?.unreadEmails ?? 0}
+  chatUnread={chat.totalUnread}
+  chatEnabled={hasChatCap}
+  {hideChatOverlay}
+  onAppSelect={selectApp}
+>
   {#snippet sidebar()}
     {#if activeApp === 'mail'}
       <div class="sidebar-inner">

@@ -60,6 +60,15 @@ class ChatStore {
   /** Memberships keyed by conversation id. */
   memberships = $state(new Map<string, Membership[]>());
 
+  /**
+   * Per-conversation message caches for overlay windows.
+   * Keyed by conversationId; each entry mirrors the shape used by the
+   * main message pane so the same MessageList component can read from it.
+   */
+  overlayMessages = $state(
+    new Map<string, { messages: Message[]; status: LoadStatus; hasMore: boolean }>(),
+  );
+
   /** principalId -> presence state, populated from WS presence-update frames. */
   presence = $state(new Map<string, PresenceState>());
 
@@ -638,16 +647,37 @@ class ChatStore {
       if (getResp && getResp[0] === 'Message/get') {
         const gr = getResp[1] as { list: Message[] };
         for (const incoming of gr.list) {
-          if (incoming.conversationId !== openId) continue;
-          const idx = this.messages.findIndex((m) => m.id === incoming.id);
-          if (idx >= 0) {
-            // Update existing (edited, reaction toggle, etc.).
-            this.messages = this.messages.map((m) =>
-              m.id === incoming.id ? incoming : m,
-            );
-          } else {
-            // New message — append.
-            this.messages = [...this.messages, incoming];
+          // Update main message pane (if this is the open conversation).
+          if (incoming.conversationId === openId) {
+            const idx = this.messages.findIndex((m) => m.id === incoming.id);
+            if (idx >= 0) {
+              // Update existing (edited, reaction toggle, etc.).
+              this.messages = this.messages.map((m) =>
+                m.id === incoming.id ? incoming : m,
+              );
+            } else {
+              // New message — append.
+              this.messages = [...this.messages, incoming];
+            }
+          }
+
+          // Also update the overlay cache for this conversation if loaded.
+          const overlayEntry = this.overlayMessages.get(incoming.conversationId);
+          if (overlayEntry) {
+            const idx = overlayEntry.messages.findIndex((m) => m.id === incoming.id);
+            let updated: Message[];
+            if (idx >= 0) {
+              updated = overlayEntry.messages.map((m) =>
+                m.id === incoming.id ? incoming : m,
+              );
+            } else {
+              updated = [...overlayEntry.messages, incoming];
+            }
+            this.overlayMessages.set(incoming.conversationId, {
+              ...overlayEntry,
+              messages: updated,
+            });
+            this.overlayMessages = new Map(this.overlayMessages);
           }
         }
       }
@@ -719,6 +749,149 @@ class ChatStore {
     } catch (err) {
       console.error('Membership/changes sync failed', err);
     }
+  }
+
+  // ------------------------------------------------------------------
+  // Overlay window message management
+  // ------------------------------------------------------------------
+
+  /**
+   * Load messages for an overlay window.  Stores results in
+   * overlayMessages keyed by conversationId so multiple windows can
+   * each have their own cache independently of the main message pane.
+   */
+  async loadOverlayMessages(conversationId: string): Promise<void> {
+    const accountId = this.#accountId();
+    if (!accountId) return;
+
+    const existing = this.overlayMessages.get(conversationId);
+    if (existing?.status === 'loading') return;
+
+    // Seed the entry so the overlay shows a loading state immediately.
+    this.overlayMessages.set(conversationId, {
+      messages: existing?.messages ?? [],
+      status: 'loading',
+      hasMore: existing?.hasMore ?? false,
+    });
+    // Trigger reactivity.
+    this.overlayMessages = new Map(this.overlayMessages);
+
+    try {
+      const { responses } = await jmap.batch((b) => {
+        const q = b.call(
+          'Message/query',
+          {
+            accountId,
+            filter: { conversationId },
+            sort: [{ property: 'createdAt', isAscending: false }],
+            limit: PAGE_SIZE,
+          },
+          USING,
+        );
+        b.call(
+          'Message/get',
+          { accountId, '#ids': q.ref('/ids') },
+          USING,
+        );
+      });
+
+      const queryResp = responses.find(([name]) => name === 'Message/query');
+      const getResp = responses.find(([name]) => name === 'Message/get');
+      if (!getResp || getResp[0] === 'error') {
+        throw new Error('Message/get failed');
+      }
+
+      let hasMore = false;
+      if (queryResp && queryResp[0] === 'Message/query') {
+        const qResult = queryResp[1] as { total: number };
+        hasMore = qResult.total > PAGE_SIZE;
+      }
+
+      const result = getResp[1] as { state: string; list: Message[] };
+      // Query returns newest-first; reverse for display (oldest first).
+      const msgs = result.list.slice().reverse();
+
+      this.overlayMessages.set(conversationId, {
+        messages: msgs,
+        status: 'ready',
+        hasMore,
+      });
+      this.overlayMessages = new Map(this.overlayMessages);
+    } catch (err) {
+      const cur = this.overlayMessages.get(conversationId);
+      this.overlayMessages.set(conversationId, {
+        messages: cur?.messages ?? [],
+        status: 'error',
+        hasMore: false,
+      });
+      this.overlayMessages = new Map(this.overlayMessages);
+      console.error('loadOverlayMessages failed', err);
+    }
+  }
+
+  /**
+   * Load the next page of older messages for an overlay window.
+   */
+  async loadMoreOverlayMessages(conversationId: string): Promise<void> {
+    const entry = this.overlayMessages.get(conversationId);
+    if (!entry || !entry.hasMore) return;
+    const accountId = this.#accountId();
+    if (!accountId) return;
+
+    const position = entry.messages.length;
+
+    try {
+      const { responses } = await jmap.batch((b) => {
+        const q = b.call(
+          'Message/query',
+          {
+            accountId,
+            filter: { conversationId },
+            sort: [{ property: 'createdAt', isAscending: false }],
+            limit: PAGE_SIZE,
+            position,
+          },
+          USING,
+        );
+        b.call(
+          'Message/get',
+          { accountId, '#ids': q.ref('/ids') },
+          USING,
+        );
+      });
+
+      const queryResp = responses.find(([name]) => name === 'Message/query');
+      const getResp = responses.find(([name]) => name === 'Message/get');
+      if (!getResp || getResp[0] === 'error') return;
+
+      let hasMore = false;
+      if (queryResp && queryResp[0] === 'Message/query') {
+        const qResult = queryResp[1] as { total: number };
+        hasMore = qResult.total > position + PAGE_SIZE;
+      }
+
+      const result = getResp[1] as { list: Message[] };
+      const older = result.list.slice().reverse();
+
+      const cur = this.overlayMessages.get(conversationId)!;
+      this.overlayMessages.set(conversationId, {
+        messages: [...older, ...cur.messages],
+        status: 'ready',
+        hasMore,
+      });
+      this.overlayMessages = new Map(this.overlayMessages);
+    } catch (err) {
+      console.error('loadMoreOverlayMessages failed', err);
+    }
+  }
+
+  /**
+   * Drop the cached overlay messages for a conversation (called when its
+   * overlay window is closed to keep memory tidy).
+   */
+  closeOverlayMessages(conversationId: string): void {
+    this.overlayMessages.delete(conversationId);
+    this.overlayMessages = new Map(this.overlayMessages);
   }
 
   // ------------------------------------------------------------------
