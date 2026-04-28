@@ -217,6 +217,16 @@ These call the public-listener self-service REST surface (under
 session cookie; admin-only endpoints (queue, certs, audit, domains)
 are not reachable from the public listener.
 
+Chat is on by default; the Suite shell exposes it at `/#/chat` (or
+`g c`). DMs and Spaces ride the same JMAP store as mail; presence,
+typing, reactions, and 1:1 video calls flow over the WebSocket at
+`/chat/ws` and need no additional configuration. Operators who want
+to disable chat add `[server.chat] enabled = false` to `system.toml`.
+Group video calls require an external SFU and are out of scope for
+v1; 1:1 calls work through any STUN-only setup but a TURN relay
+greatly improves reliability behind symmetric NATs (see
+`docs/design/server/requirements/15-video-calls.md`).
+
 #### IMAP / SMTP desktop client
 
 - Server: `localhost`

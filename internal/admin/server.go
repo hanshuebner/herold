@@ -43,6 +43,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protoimg"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/protojmap/calendars/imip"
+	jmapchat "github.com/hanshuebner/herold/internal/protojmap/chat"
 	jmapcoach "github.com/hanshuebner/herold/internal/protojmap/coach"
 	jmapmail "github.com/hanshuebner/herold/internal/protojmap/mail"
 	jmapcatsettings "github.com/hanshuebner/herold/internal/protojmap/mail/categorysettings"
@@ -1515,13 +1516,8 @@ func composeAdminAndUI(
 ) (composedHandlers, error) {
 	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
 	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
-	// FTS worker writes to; the chat JMAP handlers, when registered
-	// here, pass it to chat.RegisterWithFTS so Message/query routes
-	// free-text filters through SearchChatMessages. The chat JMAP
-	// surface is not yet mounted on the production HTTP listener
-	// (Phase 2 Wave 2.9 covers WebSocket only); when the JMAP wiring
-	// lands, ftsIndex is already in scope here.
-	_ = ftsIndex
+	// FTS worker writes to; jmapchat.RegisterWithFTS below uses it so
+	// Message/query routes free-text filters through SearchChatMessages.
 	var bundle composedHandlers
 
 	// Public-listener session resolver (Phase 3c-iii). Built as a
@@ -1876,6 +1872,15 @@ func composeAdminAndUI(
 	// fields). categoriserEndpoint/Model are empty strings; per-account overrides come
 	// from the store's CategorisationConfig row.
 	jmapllmtransparency.Register(jmapSrv.Registry(), st, nil, "", "")
+	// Chat JMAP capability (REQ-CHAT-*). Advertised whenever the chat
+	// subsystem is enabled (the chat WebSocket listener at /chat/ws is
+	// gated on the same flag below). Without this registration the
+	// Suite SPA reports "Chat is not configured on this server" because
+	// the capability URL never appears in the session descriptor.
+	if cfg.Server.Chat.Enabled == nil || *cfg.Server.Chat.Enabled {
+		jmapchat.RegisterWithFTS(jmapSrv.Registry(), st, ftsIndex,
+			logger.With("subsystem", "jmap-chat"), clk, jmapchat.DefaultLimits())
+	}
 	jmapHandler := jmapSrv.Handler()
 	publicMux.Handle("/.well-known/jmap",
 		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.session", jmapHandler))
