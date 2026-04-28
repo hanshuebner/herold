@@ -34,9 +34,21 @@ type emailBodyValue struct {
 }
 
 // emailBodyPart is a minimal EmailBodyPart as accepted on create — we
-// only need the partId to look up the value in bodyValues.
+// only need the partId and type to look up the value in bodyValues and
+// determine the MIME type.
 type emailBodyPart struct {
-	PartID string `json:"partId"`
+	PartID   string          `json:"partId"`
+	Type     string          `json:"type"`
+	SubParts []emailBodyPart `json:"subParts"`
+}
+
+// emailBodyStructurePart is the bodyStructure shape in Email/set create
+// (RFC 8621 §4.6). Clients may pass either textBody/htmlBody arrays or
+// a bodyStructure tree; both reference parts via partId into bodyValues.
+type emailBodyStructurePart struct {
+	PartID   string                   `json:"partId"`
+	Type     string                   `json:"type"`
+	SubParts []emailBodyStructurePart `json:"subParts"`
 }
 
 // setRequest is the wire-form Email/set request (RFC 8620 §5.3).
@@ -95,18 +107,23 @@ type emailCreateInput struct {
 	SnoozedUntil *string         `json:"snoozedUntil"`
 
 	// Inline-body path (RFC 8621 §4.6 "construct from properties").
-	From       []emailAddress            `json:"from"`
-	To         []emailAddress            `json:"to"`
-	Cc         []emailAddress            `json:"cc"`
-	Bcc        []emailAddress            `json:"bcc"`
-	ReplyTo    []emailAddress            `json:"replyTo"`
-	InReplyTo  []string                  `json:"inReplyTo"`
-	References []string                  `json:"references"`
-	MessageID  []string                  `json:"messageId"`
-	SentAt     *string                   `json:"sentAt"`
-	BodyValues map[string]emailBodyValue `json:"bodyValues"`
-	TextBody   []emailBodyPart           `json:"textBody"`
-	HtmlBody   []emailBodyPart           `json:"htmlBody"`
+	From          []emailAddress            `json:"from"`
+	To            []emailAddress            `json:"to"`
+	Cc            []emailAddress            `json:"cc"`
+	Bcc           []emailAddress            `json:"bcc"`
+	ReplyTo       []emailAddress            `json:"replyTo"`
+	InReplyTo     []string                  `json:"inReplyTo"`
+	References    []string                  `json:"references"`
+	MessageID     []string                  `json:"messageId"`
+	SentAt        *string                   `json:"sentAt"`
+	BodyValues    map[string]emailBodyValue  `json:"bodyValues"`
+	TextBody      []emailBodyPart           `json:"textBody"`
+	HtmlBody      []emailBodyPart           `json:"htmlBody"`
+	// BodyStructure is the alternative form of the inline-body path
+	// (RFC 8621 §4.6). Clients send either textBody/htmlBody arrays or
+	// a bodyStructure tree; the handler normalises both into textBody /
+	// htmlBody before calling buildEmailFromProperties.
+	BodyStructure *emailBodyStructurePart   `json:"bodyStructure"`
 }
 
 // setHandler implements Email/set.
@@ -242,12 +259,19 @@ func (h *handlerSet) createEmail(
 	in emailCreateInput,
 ) (store.MessageID, jmapEmail, *setError, error) {
 	hasBlob := in.BlobID != ""
+
+	// Normalise bodyStructure into textBody/htmlBody so the builder only
+	// needs one representation. A bodyStructure with a single leaf maps
+	// to textBody or htmlBody depending on its type; a multipart/alternative
+	// with two text parts maps to both.
+	if in.BodyStructure != nil && len(in.BodyValues) > 0 {
+		normaliseBodyStructure(&in)
+	}
+
 	hasBodyValues := len(in.BodyValues) > 0 && (len(in.TextBody) > 0 || len(in.HtmlBody) > 0)
 
 	if hasBlob && hasBodyValues {
-		// Strict: reject ambiguous inputs. Callers must pick one path.
-		// This mirrors the intent of RFC 8621 §4.6: blobId and the
-		// inline properties are mutually exclusive on create.
+		// Strict: reject ambiguous inputs.
 		return 0, jmapEmail{}, &setError{
 			Type:        "invalidProperties",
 			Properties:  []string{"blobId", "bodyValues"},
@@ -259,7 +283,7 @@ func (h *handlerSet) createEmail(
 		return 0, jmapEmail{}, &setError{
 			Type:        "invalidProperties",
 			Properties:  []string{"blobId"},
-			Description: "blobId is required, or provide bodyValues + textBody/htmlBody",
+			Description: "blobId is required, or provide bodyValues + textBody/htmlBody/bodyStructure",
 		}, nil
 	}
 
@@ -475,14 +499,82 @@ func (h *handlerSet) updateEmail(
 		}
 	}
 
-	if newMailboxes, ok := obj["mailboxIds"]; ok {
-		// Reject mailbox moves in v1 — see comment above.
-		_ = newMailboxes
-		return &setError{
-			Type:        "invalidProperties",
-			Properties:  []string{"mailboxIds"},
-			Description: "moving messages between mailboxes via Email/set is not supported in v1",
-		}, nil
+	// Handle mailboxIds change (full replacement) or mailboxIds/<id>
+	// incremental patch.
+	if newMailboxIDs, ok := obj["mailboxIds"]; ok {
+		var mbMap map[jmapID]bool
+		if err := json.Unmarshal(newMailboxIDs, &mbMap); err != nil {
+			return &setError{
+				Type: "invalidProperties", Properties: []string{"mailboxIds"},
+				Description: err.Error(),
+			}, nil
+		}
+		// v1: pick the first true mailboxId as the target.
+		var targetID store.MailboxID
+		for raw, present := range mbMap {
+			if !present {
+				continue
+			}
+			id, ok := mailboxIDFromJMAP(raw)
+			if !ok {
+				return &setError{
+					Type: "invalidProperties", Properties: []string{"mailboxIds"},
+					Description: "unparseable mailboxId",
+				}, nil
+			}
+			targetID = id
+			break
+		}
+		if targetID == 0 {
+			return &setError{
+				Type: "invalidProperties", Properties: []string{"mailboxIds"},
+				Description: "mailboxIds must contain at least one true entry",
+			}, nil
+		}
+		if targetID != m.MailboxID {
+			if serr, err := h.moveMessage(ctx, pid, m, targetID); err != nil || serr != nil {
+				return serr, err
+			}
+		}
+	} else {
+		// Handle mailboxIds/<id>: true|null incremental patches.
+		for k, v := range obj {
+			const prefix = "mailboxIds/"
+			if !strings.HasPrefix(k, prefix) {
+				continue
+			}
+			rawID := strings.TrimPrefix(k, prefix)
+			targetID, ok := mailboxIDFromJMAP(rawID)
+			if !ok {
+				return &setError{
+					Type: "invalidProperties", Properties: []string{k},
+					Description: "unparseable mailboxId in patch key",
+				}, nil
+			}
+			var boolVal bool
+			if string(v) == "true" {
+				boolVal = true
+			} else if string(v) == "null" || string(v) == "false" {
+				boolVal = false
+			} else {
+				_ = json.Unmarshal(v, &boolVal)
+			}
+			if boolVal && targetID != m.MailboxID {
+				if serr, err := h.moveMessage(ctx, pid, m, targetID); err != nil || serr != nil {
+					return serr, err
+				}
+				// Update m so subsequent patches see the new mailbox.
+				m.MailboxID = targetID
+			} else if !boolVal && targetID == m.MailboxID {
+				// Removing the current mailbox without adding another is
+				// forbidden per RFC 8621 §4.6.
+				return &setError{
+					Type:        "invalidProperties",
+					Properties:  []string{k},
+					Description: "cannot remove the only mailbox membership",
+				}, nil
+			}
+		}
 	}
 
 	// REQ-PROTO-101: handle reactions/<emoji>/<principalId> patch keys.
@@ -496,7 +588,10 @@ func (h *handlerSet) updateEmail(
 		} else if serr != nil {
 			return serr, nil
 		}
-		if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
+		// Write a state_changes entry so that Email/changes picks up the
+		// reaction mutation. UpdateMessageFlags with empty deltas is the
+		// lightest way to do this without extending the store interface.
+		if _, err := h.store.Meta().UpdateMessageFlags(ctx, m.ID, 0, 0, nil, nil, 0); err != nil {
 			return nil, fmt.Errorf("email: bump state after reaction: %w", err)
 		}
 		// Only reaction keys in the patch — nothing more to do.
@@ -758,6 +853,41 @@ func applyPatch(
 			*clearKW = append(*clearKW, name)
 		}
 	}
+}
+
+// moveMessage atomically moves a message to targetID using MoveMessage,
+// which preserves the message row ID (and therefore the JMAP Email id).
+func (h *handlerSet) moveMessage(
+	ctx context.Context,
+	pid store.PrincipalID,
+	m store.Message,
+	targetID store.MailboxID,
+) (*setError, error) {
+	// Verify the target mailbox is accessible.
+	mb, err := h.store.Meta().GetMailboxByID(ctx, targetID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return &setError{
+				Type: "invalidProperties", Properties: []string{"mailboxIds"},
+				Description: "target mailbox does not exist",
+			}, nil
+		}
+		return nil, fmt.Errorf("email: move: get mailbox: %w", err)
+	}
+	if mb.PrincipalID != pid {
+		return &setError{
+			Type:        "forbidden",
+			Description: "target mailbox is not owned by this principal",
+		}, nil
+	}
+
+	if err := h.store.Meta().MoveMessage(ctx, m.ID, targetID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return &setError{Type: "notFound"}, nil
+		}
+		return nil, fmt.Errorf("email: move: %w", err)
+	}
+	return nil, nil
 }
 
 // destroyEmail expunges m from its mailbox and bumps the Email state.

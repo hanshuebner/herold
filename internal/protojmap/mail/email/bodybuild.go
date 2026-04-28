@@ -141,6 +141,49 @@ func buildEmailFromProperties(in emailCreateInput, now time.Time, hostname strin
 	return buf.Bytes(), nil
 }
 
+// normaliseBodyStructure converts a bodyStructure tree into the
+// textBody/htmlBody form that buildEmailFromProperties expects.
+// Handles the common cases clients send:
+//   - Single leaf text/plain → TextBody
+//   - Single leaf text/html → HtmlBody
+//   - multipart/alternative with text/plain + text/html children → both
+//
+// Unknown or unsupported structures are mapped to a text/plain part
+// with an empty body so the create does not error.
+func normaliseBodyStructure(in *emailCreateInput) {
+	bs := in.BodyStructure
+	if bs == nil {
+		return
+	}
+	ct := strings.ToLower(bs.Type)
+	switch {
+	case strings.HasPrefix(ct, "multipart/"):
+		// Walk children and collect text/plain + text/html parts.
+		for i := range bs.SubParts {
+			sub := &bs.SubParts[i]
+			subCT := strings.ToLower(sub.Type)
+			if strings.HasPrefix(subCT, "text/plain") && sub.PartID != "" {
+				in.TextBody = append(in.TextBody, emailBodyPart{PartID: sub.PartID, Type: sub.Type})
+			} else if strings.HasPrefix(subCT, "text/html") && sub.PartID != "" {
+				in.HtmlBody = append(in.HtmlBody, emailBodyPart{PartID: sub.PartID, Type: sub.Type})
+			}
+		}
+	case strings.HasPrefix(ct, "text/plain"):
+		if bs.PartID != "" {
+			in.TextBody = append(in.TextBody, emailBodyPart{PartID: bs.PartID, Type: bs.Type})
+		}
+	case strings.HasPrefix(ct, "text/html"):
+		if bs.PartID != "" {
+			in.HtmlBody = append(in.HtmlBody, emailBodyPart{PartID: bs.PartID, Type: bs.Type})
+		}
+	default:
+		// Unknown content type: treat as text/plain so we have at least one part.
+		if bs.PartID != "" {
+			in.TextBody = append(in.TextBody, emailBodyPart{PartID: bs.PartID, Type: "text/plain"})
+		}
+	}
+}
+
 // writeLiteralHeader writes "Name: Value\r\n" with no additional folding.
 // The caller is responsible for encoding the value (e.g. mime.QEncoding
 // for non-ASCII subjects).
