@@ -79,6 +79,7 @@ export const Capability = {
   Mail: 'urn:ietf:params:jmap:mail',
   Submission: 'urn:ietf:params:jmap:submission',
   Sieve: 'urn:ietf:params:jmap:sieve',
+  VacationResponse: 'urn:ietf:params:jmap:vacationresponse',
   Calendars: 'urn:ietf:params:jmap:calendars',
   Contacts: 'urn:ietf:params:jmap:contacts',
   WebSocket: 'urn:ietf:params:jmap:websocket',

@@ -15,6 +15,7 @@
   import IdentitySignatureForm from './settings/IdentitySignatureForm.svelte';
   import SecurityForm from './settings/SecurityForm.svelte';
   import ApiKeysForm from './settings/ApiKeysForm.svelte';
+  import VacationForm from './settings/VacationForm.svelte';
 
   // Section order per Phase 4 spec: Account, Security, Appearance, Mail,
   // API keys, Privacy, About.
@@ -201,6 +202,9 @@
           {/each}
         </select>
       </div>
+
+      <h3>Vacation auto-reply</h3>
+      <VacationForm />
 
       <h3>Shortcut coach</h3>
       <div class="row">
