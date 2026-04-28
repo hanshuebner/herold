@@ -95,16 +95,29 @@ class MailStore {
 
   async #onEmailStateChange(newState: string): Promise<void> {
     if (newState === this.emailState) return;
-    // First-iteration sync: the cheapest correct thing is to refresh the
-    // active list view. Email/changes-driven incremental update lands
-    // when other views (search / threads) start needing it.
+    // First-iteration sync: the cheapest correct thing is to refresh
+    // every view we already have ready — the active list slice plus
+    // every cached-ready thread. The thread refresh is what surfaces
+    // a freshly-arrived reply in the open ThreadReader without the
+    // user reloading the page; without it the thread cache stays
+    // 'ready' and loadThread short-circuits.
+    const tasks: Promise<unknown>[] = [];
     if (this.listLoadStatus === 'ready') {
-      try {
-        await this.refreshFolder();
-      } catch (err) {
-        console.error('list refresh after state change failed', err);
-      }
+      tasks.push(
+        this.refreshFolder().catch((err) => {
+          console.error('list refresh after state change failed', err);
+        }),
+      );
     }
+    for (const [tid, status] of this.threadLoadStatus) {
+      if (status !== 'ready') continue;
+      tasks.push(
+        this.refreshThread(tid).catch((err) => {
+          console.error('thread refresh after state change failed', err);
+        }),
+      );
+    }
+    if (tasks.length > 0) await Promise.all(tasks);
     this.emailState = newState;
   }
 
@@ -492,6 +505,55 @@ class MailStore {
       this.#setThreadStatus(threadId, 'error');
       this.#setThreadError(threadId, err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /**
+   * Re-fetch a thread that is already cached as 'ready'. Used by the
+   * Email-state-change handler to surface freshly-arrived replies in
+   * the open ThreadReader without forcing a full route reload. Keeps
+   * the thread's status as 'ready' throughout so subscribers don't
+   * flash the "loading" spinner; on failure we log and leave the
+   * stale cache in place rather than dropping the open thread.
+   */
+  async refreshThread(threadId: string): Promise<void> {
+    const accountId = this.mailAccountId;
+    if (!accountId) return;
+    const { responses } = await jmap.batch((b) => {
+      const t = b.call(
+        'Thread/get',
+        { accountId, ids: [threadId] },
+        [Capability.Mail],
+      );
+      b.call(
+        'Email/get',
+        {
+          accountId,
+          '#ids': t.ref('/list/0/emailIds'),
+          properties: EMAIL_BODY_PROPERTIES,
+          fetchHTMLBodyValues: true,
+          fetchTextBodyValues: true,
+          maxBodyValueBytes: 256 * 1024,
+        },
+        [Capability.Mail],
+      );
+    });
+    strict(responses);
+
+    const threadResult = invocationArgs<{ list: Thread[] }>(responses[0]);
+    const emailResult = invocationArgs<{ list: Email[]; state: string }>(
+      responses[1],
+    );
+    if (typeof emailResult.state === 'string') this.emailState = emailResult.state;
+
+    const thread = threadResult.list.find((t) => t.id === threadId);
+    if (!thread) return;
+    const nextThreads = new Map(this.threads);
+    nextThreads.set(thread.id, thread);
+    this.threads = nextThreads;
+
+    const nextEmails = new Map(this.emails);
+    for (const e of emailResult.list) nextEmails.set(e.id, e);
+    this.emails = nextEmails;
   }
 
   /** Resolved thread emails in display order (per Thread.emailIds). */
