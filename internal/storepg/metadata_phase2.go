@@ -1245,7 +1245,7 @@ func (m *metadata) ListMailboxesAccessibleBy(ctx context.Context, pid store.Prin
 	rows, err := m.s.pool.Query(ctx, `
 		SELECT mb.id, mb.principal_id, mb.parent_id, mb.name, mb.attributes,
 		       mb.uidvalidity, mb.uidnext, mb.highest_modseq, mb.created_at_us,
-		       mb.updated_at_us, mb.color_hex
+		       mb.updated_at_us, mb.color_hex, mb.sort_order
 		  FROM mailboxes mb
 		 WHERE mb.id IN (
 		   SELECT mailbox_id FROM mailbox_acl

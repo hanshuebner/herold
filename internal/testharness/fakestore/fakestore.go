@@ -1456,7 +1456,7 @@ func (m *metaFace) SetMailboxSubscribed(ctx context.Context, mailboxID store.Mai
 
 // RenameMailbox updates the Name field, returning store.ErrConflict if
 // the destination collides with an existing mailbox for the same
-// principal.
+// principal. Appends an (EntityKindMailbox, ChangeOpUpdated) entry.
 func (m *metaFace) RenameMailbox(ctx context.Context, mailboxID store.MailboxID, newName string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1479,6 +1479,65 @@ func (m *metaFace) RenameMailbox(ctx context.Context, mailboxID store.MailboxID,
 	mb.Name = newName
 	mb.UpdatedAt = s.clk.Now()
 	s.mailboxes[mailboxID] = mb
+	s.appendStateChangeLocked(store.StateChange{
+		PrincipalID: mb.PrincipalID,
+		Kind:        store.EntityKindMailbox,
+		EntityID:    uint64(mailboxID),
+		Op:          store.ChangeOpUpdated,
+		ProducedAt:  s.clk.Now(),
+	})
+	return nil
+}
+
+// MoveMailbox updates the ParentID field and appends an
+// (EntityKindMailbox, ChangeOpUpdated) change-feed entry.
+func (m *metaFace) MoveMailbox(ctx context.Context, mailboxID store.MailboxID, newParentID store.MailboxID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mb, ok := s.mailboxes[mailboxID]
+	if !ok {
+		return fmt.Errorf("mailbox %d: %w", mailboxID, store.ErrNotFound)
+	}
+	mb.ParentID = newParentID
+	mb.UpdatedAt = s.clk.Now()
+	s.mailboxes[mailboxID] = mb
+	s.appendStateChangeLocked(store.StateChange{
+		PrincipalID: mb.PrincipalID,
+		Kind:        store.EntityKindMailbox,
+		EntityID:    uint64(mailboxID),
+		Op:          store.ChangeOpUpdated,
+		ProducedAt:  s.clk.Now(),
+	})
+	return nil
+}
+
+// SetMailboxSortOrder updates the SortOrder field and appends an
+// (EntityKindMailbox, ChangeOpUpdated) change-feed entry.
+func (m *metaFace) SetMailboxSortOrder(ctx context.Context, mailboxID store.MailboxID, sortOrder uint32) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mb, ok := s.mailboxes[mailboxID]
+	if !ok {
+		return fmt.Errorf("mailbox %d: %w", mailboxID, store.ErrNotFound)
+	}
+	mb.SortOrder = sortOrder
+	mb.UpdatedAt = s.clk.Now()
+	s.mailboxes[mailboxID] = mb
+	s.appendStateChangeLocked(store.StateChange{
+		PrincipalID: mb.PrincipalID,
+		Kind:        store.EntityKindMailbox,
+		EntityID:    uint64(mailboxID),
+		Op:          store.ChangeOpUpdated,
+		ProducedAt:  s.clk.Now(),
+	})
 	return nil
 }
 

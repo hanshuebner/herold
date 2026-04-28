@@ -537,10 +537,10 @@ func (m *metadata) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.M
 		}
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO mailboxes (principal_id, parent_id, name, attributes, uidvalidity,
-			  uidnext, highest_modseq, created_at_us, updated_at_us, color_hex)
-			VALUES ($1, $2, $3, $4, $5, 1, 0, $6, $7, $8) RETURNING id`,
+			  uidnext, highest_modseq, created_at_us, updated_at_us, color_hex, sort_order)
+			VALUES ($1, $2, $3, $4, $5, 1, 0, $6, $7, $8, $9) RETURNING id`,
 			int64(mb.PrincipalID), int64(mb.ParentID), mb.Name, int64(mb.Attributes),
-			int64(mb.UIDValidity), usMicros(now), usMicros(now), color).Scan(&id); err != nil {
+			int64(mb.UIDValidity), usMicros(now), usMicros(now), color, int64(mb.SortOrder)).Scan(&id); err != nil {
 			return mapErr(err)
 		}
 		return appendStateChange(ctx, tx, mb.PrincipalID,
@@ -560,7 +560,7 @@ func (m *metadata) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.M
 func (m *metadata) GetMailboxByID(ctx context.Context, id store.MailboxID) (store.Mailbox, error) {
 	row := m.s.pool.QueryRow(ctx, `
 		SELECT id, principal_id, parent_id, name, attributes, uidvalidity, uidnext,
-		       highest_modseq, created_at_us, updated_at_us, color_hex
+		       highest_modseq, created_at_us, updated_at_us, color_hex, sort_order
 		  FROM mailboxes WHERE id = $1`, int64(id))
 	return scanMailbox(row)
 }
@@ -575,7 +575,8 @@ func scanMailbox(row rowLike) (store.Mailbox, error) {
 	var attrs, uidv, uidn, hm int64
 	var createdUs, updatedUs int64
 	var color *string
-	err := row.Scan(&id, &pid, &parent, &mb.Name, &attrs, &uidv, &uidn, &hm, &createdUs, &updatedUs, &color)
+	var sortOrder int64
+	err := row.Scan(&id, &pid, &parent, &mb.Name, &attrs, &uidv, &uidn, &hm, &createdUs, &updatedUs, &color, &sortOrder)
 	if err != nil {
 		return store.Mailbox{}, mapErr(err)
 	}
@@ -588,6 +589,7 @@ func scanMailbox(row rowLike) (store.Mailbox, error) {
 	mb.HighestModSeq = store.ModSeq(hm)
 	mb.CreatedAt = fromMicros(createdUs)
 	mb.UpdatedAt = fromMicros(updatedUs)
+	mb.SortOrder = uint32(sortOrder)
 	if color != nil {
 		v := *color
 		mb.Color = &v
@@ -598,7 +600,7 @@ func scanMailbox(row rowLike) (store.Mailbox, error) {
 func (m *metadata) ListMailboxes(ctx context.Context, principalID store.PrincipalID) ([]store.Mailbox, error) {
 	rows, err := m.s.pool.Query(ctx, `
 		SELECT id, principal_id, parent_id, name, attributes, uidvalidity, uidnext,
-		       highest_modseq, created_at_us, updated_at_us, color_hex
+		       highest_modseq, created_at_us, updated_at_us, color_hex, sort_order
 		  FROM mailboxes WHERE principal_id = $1 ORDER BY name`, int64(principalID))
 	if err != nil {
 		return nil, mapErr(err)
@@ -1449,7 +1451,7 @@ func (m *metadata) AppendAuditLog(ctx context.Context, entry store.AuditLogEntry
 func (m *metadata) GetMailboxByName(ctx context.Context, pid store.PrincipalID, name string) (store.Mailbox, error) {
 	row := m.s.pool.QueryRow(ctx, `
 		SELECT id, principal_id, parent_id, name, attributes, uidvalidity, uidnext,
-		       highest_modseq, created_at_us, updated_at_us, color_hex
+		       highest_modseq, created_at_us, updated_at_us, color_hex, sort_order
 		  FROM mailboxes WHERE principal_id = $1 AND name = $2`,
 		int64(pid), name)
 	return scanMailbox(row)
@@ -1538,7 +1540,56 @@ func (m *metadata) RenameMailbox(ctx context.Context, mailboxID store.MailboxID,
 		if res.RowsAffected() == 0 {
 			return store.ErrNotFound
 		}
-		return nil
+		return appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindMailbox, uint64(mailboxID), 0, store.ChangeOpUpdated, now)
+	})
+}
+
+// MoveMailbox implements store.Metadata.MoveMailbox: updates the
+// parent_id column and appends a change-feed entry.
+func (m *metadata) MoveMailbox(ctx context.Context, mailboxID store.MailboxID, newParentID store.MailboxID) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var pid int64
+		if err := tx.QueryRow(ctx,
+			`SELECT principal_id FROM mailboxes WHERE id = $1`, int64(mailboxID)).Scan(&pid); err != nil {
+			return mapErr(err)
+		}
+		res, err := tx.Exec(ctx,
+			`UPDATE mailboxes SET parent_id = $1, updated_at_us = $2 WHERE id = $3`,
+			int64(newParentID), usMicros(now), int64(mailboxID))
+		if err != nil {
+			return mapErr(err)
+		}
+		if res.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindMailbox, uint64(mailboxID), 0, store.ChangeOpUpdated, now)
+	})
+}
+
+// SetMailboxSortOrder implements store.Metadata.SetMailboxSortOrder:
+// updates sort_order and appends a change-feed entry.
+func (m *metadata) SetMailboxSortOrder(ctx context.Context, mailboxID store.MailboxID, sortOrder uint32) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var pid int64
+		if err := tx.QueryRow(ctx,
+			`SELECT principal_id FROM mailboxes WHERE id = $1`, int64(mailboxID)).Scan(&pid); err != nil {
+			return mapErr(err)
+		}
+		res, err := tx.Exec(ctx,
+			`UPDATE mailboxes SET sort_order = $1, updated_at_us = $2 WHERE id = $3`,
+			int64(sortOrder), usMicros(now), int64(mailboxID))
+		if err != nil {
+			return mapErr(err)
+		}
+		if res.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindMailbox, uint64(mailboxID), 0, store.ChangeOpUpdated, now)
 	})
 }
 

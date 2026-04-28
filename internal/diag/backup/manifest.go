@@ -58,7 +58,18 @@ const CurrentBackupVersion = 1
 //	REQ-SEND-30). Column-only migration: adds
 //	api_keys.allowed_from_addresses_json and
 //	api_keys.allowed_from_domains_json (no new tables).
-const CurrentSchemaVersion = 21
+//
+// 22 — 0022_messages_env_message_id_index.sql. Index-only migration:
+//
+//	adds idx_messages_env_message_id on messages(env_message_id) to
+//	speed up the thread-resolution lookup in InsertMessage.
+//	No new tables.
+//
+// 23 — 0023_mailbox_sort_order.sql. Column-only migration: adds
+//
+//	mailboxes.sort_order (INTEGER/BIGINT NOT NULL DEFAULT 0) for the
+//	JMAP Mailbox.sortOrder property (RFC 8621 §2.1). No new tables.
+const CurrentSchemaVersion = 23
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

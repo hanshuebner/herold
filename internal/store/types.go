@@ -209,6 +209,10 @@ type Mailbox struct {
 	// unset and clients render their own default. Not advertised on
 	// the IMAP wire — IMAP has no keyword for mailbox colour.
 	Color *string
+	// SortOrder is the JMAP Mailbox.sortOrder property (RFC 8621 §2.1).
+	// Lower values sort first; 0 is the default. Clients use this to
+	// reorder the mailbox list independently of the name.
+	SortOrder uint32
 	// CreatedAt is the insert instant.
 	CreatedAt time.Time
 	// UpdatedAt is the instant of the most recent mutation.

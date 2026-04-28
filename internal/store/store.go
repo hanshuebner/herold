@@ -316,8 +316,19 @@ type Metadata interface {
 	// RenameMailbox changes the Name of a mailbox. Returns
 	// ErrNotFound if the mailbox does not exist and ErrConflict when
 	// the new name collides with an existing mailbox for the same
-	// principal.
+	// principal. Appends an (EntityKindMailbox, ChangeOpUpdated) entry
+	// to the principal's change feed.
 	RenameMailbox(ctx context.Context, mailboxID MailboxID, newName string) error
+
+	// MoveMailbox sets the parent of mailboxID to newParentID (0 means
+	// top-level). Returns ErrNotFound when the mailbox is missing.
+	// Appends an (EntityKindMailbox, ChangeOpUpdated) change-feed entry.
+	MoveMailbox(ctx context.Context, mailboxID MailboxID, newParentID MailboxID) error
+
+	// SetMailboxSortOrder updates the sortOrder column (RFC 8621 §2.1).
+	// Returns ErrNotFound when the mailbox is missing.
+	// Appends an (EntityKindMailbox, ChangeOpUpdated) change-feed entry.
+	SetMailboxSortOrder(ctx context.Context, mailboxID MailboxID, sortOrder uint32) error
 
 	// SetMailboxColor updates the optional Mailbox.Color extension
 	// (REQ-PROTO-56 / REQ-STORE-34). A nil color clears the value;
