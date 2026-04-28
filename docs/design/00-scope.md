@@ -1,5 +1,22 @@
 # 00 — Scope and non-goals
 
+**2026-04-28** (rev 10): three product-design rules promoted to top-level
+goals (G14, G15, G16). G14 — LLM transparency: every place herold uses an
+LLM to act on a user's content (spam classification, automatic
+categorisation, future LLM-driven features), the user can see the prompt
+that was used, minus the operator's system guardrails. The classifier is
+not a black box. G15 — inline images vs attachments are user-controlled,
+not auto-detected from MIME type alone: compose offers separate drop
+targets for "drop here to inline" and "drop here to attach", and an inline
+image can be dragged out to the attachment list and back. G16 — inline
+images in received messages are easy to download: a single-action save on
+each inline image (right-click "Save image" + a chip-level download
+affordance), and "Download all attachments" includes inline images by
+default (rev 10 supersedes the prior REQ-ATT-41 "exclude inline" rule).
+Concrete REQ entries propagated to `server/requirements/06-filtering.md`,
+`web/requirements/05-categorisation.md`, and
+`web/requirements/17-attachments.md`.
+
 **2026-04-26** (rev 9): co-deployment shape locked. Herold ships
 the suite SPA as embedded static assets (REQ-DEPLOY-COLOC-01..05);
 the deployment topology splits into a public listener (default
@@ -81,6 +98,9 @@ Herold narrows the target in some dimensions (no multi-tenancy, no multi-node, n
 - **G11. Full-text search that's actually useful.** Body + common attachment formats (PDF, Office, plain text). Large mailboxes searchable.
 - **G12. Observable.** JSON logs + Prometheus metrics on every build. OTLP traces optional.
 - **G13. No phone-home. No license gates. Ever.**
+- **G14. LLM use is transparent to users.** Anywhere herold uses an LLM to act on a user's content — spam classification, automatic categorisation, any future LLM-driven feature — the user can read the prompt that was used to produce the result, minus the operator's system guardrails. The exposed prompt is the user-relevant part: the per-account configurable prompt (REQ-FILT-22, REQ-FILT-211), the per-message context fields, and the message excerpt that was sent. Operator-side guardrails (e.g. "respond only in JSON", abuse-prevention prefixes) are excluded so the operator can iterate on those without leaking implementation detail. Surfaced both per-account (in settings: "the prompt currently used to categorise your mail is …") and per-message (the suite's message-inspect view: "the LLM was asked …" + the verdict).
+- **G15. Inline images and attachments are distinct, user-controlled, and visible.** When a user drops an image into a compose window the suite distinguishes "inline this in the body" from "attach this alongside the body" via two separate drop targets, not by guessing from MIME type or sender intent. Either choice is reversible (drag inline image out to attachment list and vice-versa). Pasting an image while the cursor is in the body inlines it; the file picker attaches it; the explicit drop targets cover the ambiguous case.
+- **G16. Inline images in received messages are first-class downloads.** The suite renders inline images (CID-referenced and data: URLs that survive the renderer) in the body where the sender placed them, and surfaces the same single-action download affordance for each (right-click "Save image", chip-level download button) that attachments get. "Download all attachments" includes inline images by default; users who want body-only zips opt out per-action.
 
 ## Non-goals
 

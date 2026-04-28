@@ -88,7 +88,15 @@ type SpamPolicy struct {
 	PluginName           string  `json:"plugin_name"`
 	Threshold            float64 `json:"threshold"`
 	Model                string  `json:"model,omitempty"`
-	SystemPromptOverride string  `json:"system_prompt_override,omitempty"`
+	// SystemPromptOverride is the user-visible system prompt for the spam
+	// classifier (REQ-FILT-22). Returned by the LLM-transparency endpoint
+	// (REQ-FILT-65 / REQ-FILT-67). Default empty = use the plugin's built-in
+	// default prompt.
+	SystemPromptOverride string `json:"system_prompt_override,omitempty"`
+	// Guardrail is the operator-only prefix prepended to the system prompt
+	// at plugin-call time (REQ-FILT-67). NEVER returned by transparency
+	// endpoints. Mutable only via admin REST. Default empty.
+	Guardrail string `json:"guardrail,omitempty"`
 }
 
 // SpamPolicyStore reads + writes the live spam policy.

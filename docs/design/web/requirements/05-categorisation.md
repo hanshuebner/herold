@@ -61,6 +61,8 @@ The user can edit both the category set and the prompt that classifies into them
 | REQ-CAT-41 | The classifier prompt is editable in settings (advanced section). The default prompt approximates Gmail's behaviour. The suite provides the editor; herold validates and applies the prompt. |
 | REQ-CAT-42 | A reset-to-default control reverts the prompt and category set to the shipped defaults. |
 | REQ-CAT-43 | When the user saves prompt or category-set changes, herold runs the re-categorisation flow (REQ-CAT-30) automatically; the suite's UI shows the progress. |
+| REQ-CAT-44 | Per-message transparency (G14): the message-inspect view (linked from the conversation overflow menu) shows, for any categorised message, the assigned category, the model identifier, and the **user-visible prompt as it was applied to that message** — i.e. the editable prompt text from REQ-CAT-41 plus the per-message context fields (From/To/Subject/List-Id/excerpt) that herold used. Operator guardrails are excluded by REQ-FILT-67. The view reads from the per-message LLM-inspect endpoint defined in `../server/requirements/06-filtering.md` REQ-FILT-66 / REQ-FILT-216. |
+| REQ-CAT-45 | The settings panel that exposes the prompt editor (REQ-CAT-41) shows the user the current effective prompt (text the user has edited or default) AND a clear note: "this is the prompt used to categorise your mail. Your messages are sent to herold's configured classifier endpoint along with this prompt." Operator-side guardrails, if any, are not shown — the wording above is accurate without them. |
 
 ## Storage and contract
 

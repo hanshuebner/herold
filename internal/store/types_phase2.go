@@ -1184,9 +1184,15 @@ type CategoryDef struct {
 type CategorisationConfig struct {
 	// PrincipalID is the owning principal.
 	PrincipalID PrincipalID
-	// Prompt is the system prompt fed to the LLM. Free text;
-	// REQ-FILT-211 default approximates Gmail's behaviour.
+	// Prompt is the user-visible system prompt fed to the LLM (REQ-FILT-67).
+	// This is the editable text from REQ-FILT-211; it is returned by the
+	// LLM transparency endpoints. Free text; default approximates Gmail's.
 	Prompt string
+	// Guardrail is the operator-only prefix prepended to the LLM prompt
+	// at call time (REQ-FILT-67). NEVER returned by transparency endpoints.
+	// Mutable only via admin REST. Default empty. Operators who embed
+	// abuse-prevention or output-shape preambles do so here consciously.
+	Guardrail string
 	// CategorySet enumerates the categories the LLM may pick from.
 	// JSON-serialised in storage; the order is preserved so a "reset
 	// to default" control stays stable.
@@ -1208,4 +1214,51 @@ type CategorisationConfig struct {
 	Enabled bool
 	// UpdatedAtUs is the unix-micros instant of the most recent write.
 	UpdatedAtUs int64
+}
+
+// LLMClassificationRecord stores the LLM-classification result for one
+// delivered message. It covers both spam classification (from
+// internal/spam) and automatic categorisation (from internal/categorise)
+// to satisfy REQ-FILT-66 / REQ-FILT-216 (per-message transparency).
+//
+// One row per message in the llm_classifications table. Rows are written
+// once at delivery time; never updated (REQ-FILT-203 / REQ-FILT-66).
+type LLMClassificationRecord struct {
+	// MessageID identifies the delivered message (FK to messages.id).
+	MessageID MessageID
+	// PrincipalID is the owning principal (denormalised for fast GC).
+	PrincipalID PrincipalID
+
+	// -- Spam classification (nil when the spam classifier was not run) --
+
+	// SpamVerdict is the classifier's verdict string ("ham", "spam",
+	// "suspect", "unclassified").
+	SpamVerdict *string
+	// SpamConfidence is the [0,1] confidence returned by the classifier.
+	// Negative means the plugin returned no score.
+	SpamConfidence *float64
+	// SpamReason is the short reason text the classifier returned.
+	SpamReason *string
+	// SpamPromptApplied is the user-visible portion of the system prompt
+	// as built for this specific message (REQ-FILT-66). Guardrails are
+	// excluded. Body excerpt is NOT stored here (privacy; it is already in
+	// the blob); only the structured context fields + prompt template.
+	SpamPromptApplied *string
+	// SpamModel is the model identifier reported at classification time.
+	SpamModel *string
+	// SpamClassifiedAt is the instant the spam classifier ran.
+	SpamClassifiedAt *time.Time
+
+	// -- Categorisation (nil when categorisation was not run or produced no category) --
+
+	// CategoryAssigned is the bare category name (no "$category-" prefix),
+	// or nil when no category was assigned.
+	CategoryAssigned *string
+	// CategoryPromptApplied is the user-visible system prompt as built for
+	// this message (REQ-FILT-216 / REQ-FILT-66). Guardrails excluded.
+	CategoryPromptApplied *string
+	// CategoryModel is the model identifier used for categorisation.
+	CategoryModel *string
+	// CategoryClassifiedAt is the instant categorisation ran.
+	CategoryClassifiedAt *time.Time
 }

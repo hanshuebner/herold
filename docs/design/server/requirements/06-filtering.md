@@ -66,6 +66,18 @@ accept → authenticate (SPF/DKIM/DMARC/ARC) → classify (LLM) → global Sieve
 - **REQ-FILT-62** No logging of raw LLM request bodies at `info` level (contains message content). `debug` level logs LLM payloads for troubleshooting.
 - **REQ-FILT-63** MUST NOT send messages marked with `Autocrypt` or `X-PGP-*` headers to external LLM endpoints (stays local or skipped entirely — configurable, default skip).
 
+### Transparency to the user (G14)
+
+LLM use on a user's mail is not a black box. The user can see the prompt
+that was used to produce a verdict and the verdict itself. The operator
+keeps system-side guardrails private (so guardrails can be iterated
+without leaking implementation detail to recipients).
+
+- **REQ-FILT-65** Per-account read API: the suite (and any JMAP client) can fetch the **user-visible prompt** currently in effect for spam classification — i.e. the operator-or-user-configurable system prompt portion (REQ-FILT-22) plus a description of the structured context fields (REQ-FILT-30..32), but NOT operator-defined guardrail prefixes/suffixes that the operator has marked as guardrails in application config.
+- **REQ-FILT-66** Per-message inspect API: for any delivered Email, the suite can fetch the LLM's verdict, confidence, reason text, the **user-visible prompt as actually applied to that message** (with the per-message context fields filled in but with body excerpt either elided or truncated to the first ~200 chars to avoid re-exposing in admin contexts), and the model identifier. Implementation lives alongside `herold mail inspect` (REQ-FILT-141); this REQ requires the same data to be available over admin REST and via a JMAP datatype the suite can read for its own messages.
+- **REQ-FILT-67** Application config separates **user-visible prompt** (mutable by user, returned by REQ-FILT-65/66) from **operator guardrails** (mutable by operator only, NOT returned by REQ-FILT-65/66). Default config puts no text in the guardrail slot; operators who add abuse-prevention or output-shape preambles do so consciously and accept that those will be invisible to end users.
+- **REQ-FILT-68** The same prompt-transparency contract applies to categorisation (REQ-FILT-216 in Part C). One transparency surface, two LLM features.
+
 ### Training / feedback
 
 - **REQ-FILT-70** Users moving a message to/from Junk generates a **feedback record** (timestamp, verdict given, corrected verdict, headers). Stored locally for operator review; NOT sent back to the LLM.
@@ -133,6 +145,7 @@ Used by the suite's category tabs (`docs/design/web/requirements/05-categorisati
 - **REQ-FILT-213** Categorisation calls the same kind of OpenAI-compatible HTTP endpoint as the spam classifier (REQ-FILT-15..23) but is its own per-account configuration. Operators can point them at the same endpoint or different ones; the spam classifier may run on a tighter, faster model than categorisation.
 - **REQ-FILT-214** The categorisation call carries: the prompt, the message envelope summary (From, To, Subject), the first ~2 KB of the plain-text body. Same privacy posture as the spam classifier (REQ-FILT-30..33). Headers like `List-ID`, `Authentication-Results`, and `List-Unsubscribe` are included as features.
 - **REQ-FILT-215** The classifier returns one of the configured category names or a sentinel `none`. Unknown names → log a warning, treat as `none`. Failures (timeout, 5xx) → no category applied, log a warning, mail is delivered uncategorised.
+- **REQ-FILT-216** Transparency (G14): the categoriser honours the same contract as REQ-FILT-65..67. Per-account read returns the user-visible prompt (the editable text from REQ-FILT-211) plus the category set with descriptions. Per-message read returns the assigned category and the user-visible prompt as applied to that message; operator guardrails are excluded.
 
 ### Re-classification
 
