@@ -129,6 +129,30 @@
     return out;
   });
 
+  /**
+   * G16: metadata keyed by the resolved image URL (the value in cidMap).
+   * HtmlBody uses this to render per-image download buttons in the overlay
+   * layer positioned above the iframe (REQ-ATT-26).
+   */
+  let inlineImageMeta = $derived.by<
+    Record<string, { name: string; downloadUrl: string }>
+  >(() => {
+    const out: Record<string, { name: string; downloadUrl: string }> = {};
+    let idx = 0;
+    for (const part of email.attachments ?? []) {
+      if (part.disposition !== 'inline') continue;
+      if (!part.cid || !part.blobId) continue;
+      const url = cidMap[part.cid];
+      if (!url) continue;
+      const ext = part.type.split('/')[1] ?? 'bin';
+      out[url] = {
+        name: part.name ?? `inline-${++idx}.${ext}`,
+        downloadUrl: url,
+      };
+    }
+    return out;
+  });
+
   // ── Reactions ──────────────────────────────────────────────────────────
 
   // Controls visibility of the emoji picker floating near the React button.
@@ -338,7 +362,7 @@
             {/if}
           </div>
         {/if}
-        <HtmlBody {html} {loadImages} {cidMap} />
+        <HtmlBody {html} {loadImages} {cidMap} {inlineImageMeta} />
       {:else if text && textSplit}
         <pre class="text-body">{textSplit.fresh}</pre>
         {#if textSplit.quoted}
