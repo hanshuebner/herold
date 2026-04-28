@@ -43,6 +43,29 @@ export type FolderID = string;
 
 const ROLED_FOLDERS = new Set(['inbox', 'sent', 'drafts', 'trash']);
 
+const SEARCH_HISTORY_MAX = 12;
+const SEARCH_HISTORY_KEY = 'herold.suite.search.history';
+
+function readSearchHistory(): string[] {
+  try {
+    const raw = localStorage.getItem(SEARCH_HISTORY_KEY);
+    if (raw === null) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x): x is string => typeof x === 'string');
+  } catch {
+    return [];
+  }
+}
+
+function persistSearchHistory(history: string[]): void {
+  try {
+    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(history));
+  } catch {
+    // Quota / private mode — history just doesn't persist this run.
+  }
+}
+
 const FOLDER_ROLE: Record<string, string> = {
   inbox: 'inbox',
   sent: 'sent',
@@ -87,6 +110,12 @@ class MailStore {
   searchFocusedIndex = $state<number>(-1);
 
   /**
+   * Recent search queries, most-recent first, capped at SEARCH_HISTORY_MAX.
+   * Persisted in localStorage so the suggestions survive reload.
+   */
+  searchHistory = $state<string[]>([]);
+
+  /**
    * Most recent state strings per JMAP type. Updated from `Foo/get`
    * responses and from sync handlers. Used to dedupe redundant refreshes.
    */
@@ -102,6 +131,10 @@ class MailStore {
     sync.on('Mailbox', (newState) => {
       void this.#onMailboxStateChange(newState);
     });
+    // Search history is local-only and survives reload.
+    if (typeof localStorage !== 'undefined') {
+      this.searchHistory = readSearchHistory();
+    }
   }
 
   async #onEmailStateChange(newState: string): Promise<void> {
@@ -260,10 +293,35 @@ class MailStore {
       this.emails = next;
       this.searchEmailIds = queryResult.ids;
       this.searchLoadStatus = 'ready';
+      this.#recordSearchHistory(query);
     } catch (err) {
       this.searchLoadStatus = 'error';
       this.searchError = err instanceof Error ? err.message : String(err);
     }
+  }
+
+  /**
+   * Push `q` onto the front of search history, dedupe, cap at
+   * SEARCH_HISTORY_MAX, and persist. Empty queries are ignored.
+   */
+  #recordSearchHistory(q: string): void {
+    const trimmed = q.trim();
+    if (!trimmed) return;
+    const next = [trimmed, ...this.searchHistory.filter((x) => x !== trimmed)];
+    if (next.length > SEARCH_HISTORY_MAX) next.length = SEARCH_HISTORY_MAX;
+    this.searchHistory = next;
+    persistSearchHistory(next);
+  }
+
+  /** Clear search history entirely. */
+  clearSearchHistory(): void {
+    this.searchHistory = [];
+    persistSearchHistory([]);
+  }
+
+  /** Hydrate search history from localStorage. Idempotent. */
+  hydrateSearchHistory(): void {
+    this.searchHistory = readSearchHistory();
   }
 
   clearSearch(): void {

@@ -28,6 +28,66 @@ export interface ParseContext {
   mailboxes: Map<string, Mailbox>;
 }
 
+/**
+ * UI-side projection of a single recognised query token. The search
+ * route renders these as chips above the result list so the user can
+ * see at a glance how the parser understood their input.
+ */
+export interface SearchChip {
+  /** Original token string (e.g. "from:alice@x" or "weekly meeting"). */
+  raw: string;
+  /** Operator name when recognised, otherwise "text". */
+  operator: string;
+  /** Operator value (or text content). */
+  value: string;
+  /** Human-friendly label rendered inside the chip. */
+  label: string;
+}
+
+/** Decode a query into UI chips without committing to a JMAP filter. */
+export function decodeChips(input: string): SearchChip[] {
+  const trimmed = input.trim();
+  if (!trimmed) return [];
+  const tokens = tokenize(trimmed);
+  return tokens.map((tok) => decodeOne(tok));
+}
+
+function decodeOne(token: string): SearchChip {
+  const m = token.match(/^([a-z_]+):(.+)$/i);
+  if (!m) {
+    const value = unquote(token);
+    return { raw: token, operator: 'text', value, label: value };
+  }
+  const op = m[1]!.toLowerCase();
+  const val = unquote(m[2]!);
+  return { raw: token, operator: op, value: val, label: chipLabel(op, val) };
+}
+
+function chipLabel(op: string, val: string): string {
+  switch (op) {
+    case 'has':
+      return val === 'attachment' ? 'has attachment' : `has:${val}`;
+    case 'is':
+      return `is ${val}`;
+    case 'before':
+      return `before ${val}`;
+    case 'after':
+      return `after ${val}`;
+    case 'newer_than':
+      return `newer than ${val}`;
+    case 'older_than':
+      return `older than ${val}`;
+    case 'label':
+      return `label ${val}`;
+    case 'list':
+      return `list ${val}`;
+    case 'filename':
+      return `filename ${val}`;
+    default:
+      return `${op}: ${val}`;
+  }
+}
+
 /** Parse a suite search-query string into a JMAP filter shape. */
 export function parseQuery(input: string, ctx: ParseContext): ParsedQuery {
   const trimmed = input.trim();

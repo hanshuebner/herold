@@ -5,6 +5,7 @@
   import { keyboard } from '../lib/keyboard/engine.svelte';
   import { compose } from '../lib/compose/compose.svelte';
   import { movePicker } from '../lib/mail/move-picker.svelte';
+  import { decodeChips } from '../lib/mail/search-query';
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import type { Email } from '../lib/mail/types';
 
@@ -442,6 +443,43 @@
       </button>
     </header>
 
+    {#if searchQuery}
+      <div class="search-chips" aria-label="Recognised query">
+        {#each decodeChips(searchQuery) as chip, i (i + chip.raw)}
+          <span class="chip" class:text={chip.operator === 'text'}>
+            {#if chip.operator !== 'text'}<span class="op">{chip.operator}</span>{/if}
+            <span class="value">{chip.value || chip.label}</span>
+          </span>
+        {/each}
+      </div>
+    {/if}
+
+    {#if mail.searchHistory.length > 0}
+      <div class="search-history" aria-label="Recent searches">
+        <span class="history-label">Recent:</span>
+        {#each mail.searchHistory.slice(0, 6) as q (q)}
+          <button
+            type="button"
+            class="history-chip"
+            onclick={() =>
+              router.navigate(`/mail/search/${encodeURIComponent(q)}`)}
+            title="Re-run search"
+          >
+            {q}
+          </button>
+        {/each}
+        <button
+          type="button"
+          class="history-clear"
+          onclick={() => mail.clearSearchHistory()}
+          aria-label="Clear search history"
+          title="Clear history"
+        >
+          Clear
+        </button>
+      </div>
+    {/if}
+
     {#if mail.searchLoadStatus === 'idle' || mail.searchLoadStatus === 'loading'}
       <div class="state">Searching…</div>
     {:else if mail.searchLoadStatus === 'error'}
@@ -644,6 +682,70 @@
     color: var(--text-secondary);
     font-size: var(--type-body-compact-01-size);
   }
+  .search-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-02);
+    padding: var(--spacing-03) var(--spacing-05);
+    background: var(--layer-01);
+    border-bottom: 1px solid var(--border-subtle-01);
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-02);
+    padding: var(--spacing-01) var(--spacing-03);
+    background: var(--layer-02);
+    border-radius: var(--radius-pill);
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-primary);
+  }
+  .chip .op {
+    color: var(--interactive);
+    font-family: var(--font-mono);
+    font-size: var(--type-code-01-size);
+    font-weight: 600;
+  }
+  .chip.text {
+    background: var(--layer-01);
+    border: 1px dashed var(--border-subtle-01);
+  }
+
+  .search-history {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-02);
+    align-items: center;
+    padding: var(--spacing-02) var(--spacing-05);
+    border-bottom: 1px solid var(--border-subtle-01);
+  }
+  .history-label {
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    margin-right: var(--spacing-02);
+  }
+  .history-chip {
+    padding: var(--spacing-01) var(--spacing-03);
+    background: var(--layer-02);
+    color: var(--text-secondary);
+    border-radius: var(--radius-pill);
+    font-size: var(--type-body-compact-01-size);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .history-chip:hover {
+    background: var(--layer-03);
+    color: var(--text-primary);
+  }
+  .history-clear {
+    margin-left: auto;
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    padding: var(--spacing-01) var(--spacing-03);
+  }
+  .history-clear:hover {
+    color: var(--text-primary);
+  }
+
   .query-echo {
     font-family: var(--font-mono);
     font-size: var(--type-code-02-size);
