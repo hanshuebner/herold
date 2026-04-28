@@ -39,8 +39,12 @@ type handlerSet struct {
 
 func stateString(seq int64) string { return strconv.FormatInt(seq, 10) }
 
+// accountIDForPrincipal returns the canonical wire-form accountId for p
+// (e.g. "a42") matching the session descriptor's primaryAccounts entry.
+// Sharing protojmap.AccountIDForPrincipal keeps the format in sync with
+// the rest of the JMAP surface.
 func accountIDForPrincipal(p store.Principal) string {
-	return strconv.FormatUint(uint64(p.ID), 10)
+	return string(protojmap.AccountIDForPrincipal(p.ID))
 }
 
 func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodError {

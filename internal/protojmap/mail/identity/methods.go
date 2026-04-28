@@ -113,11 +113,15 @@ func (h *handlerSet) currentState(ctx context.Context, p store.Principal) (strin
 	return stateString(st.Identity), nil
 }
 
-// accountIDForPrincipal returns the wire-form accountId for p. v1
-// collapses Account onto Principal, so the accountId is the principal
-// id stringified.
+// accountIDForPrincipal returns the canonical wire-form accountId for p,
+// matching the value the session descriptor advertises in
+// session.primaryAccounts (e.g. "a42" for principal id 42). v1
+// collapses Account onto Principal, so the accountId derives from the
+// principal id; protojmap.AccountIDForPrincipal is the single source of
+// truth for the wire format and is shared with the rest of the JMAP
+// surface.
 func accountIDForPrincipal(p store.Principal) string {
-	return strconv.FormatUint(uint64(p.ID), 10)
+	return string(protojmap.AccountIDForPrincipal(p.ID))
 }
 
 // validateAccountID checks the inbound accountId against the
