@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { router } from '../lib/router/router.svelte';
   import { mail } from '../lib/mail/store.svelte';
   import { keyboard } from '../lib/keyboard/engine.svelte';
@@ -14,17 +15,28 @@
   let isInboxRoute = $derived(router.matches('mail') && !router.parts[1]);
   let isSearchRoute = $derived(router.matches('mail', 'search'));
 
-  // Kick off the inbox load when the inbox route is shown.
+  // Kick off the inbox load when the inbox route is shown. The load call is
+  // wrapped in untrack() so the synchronous loadInbox/loadStatus read-modify-
+  // write inside the store does not register the status cell as a dep of
+  // this effect; otherwise a JMAP error (status -> 'error') re-fires the
+  // effect, which retries the call, which writes 'error' again, in a tight
+  // loop.
   $effect(() => {
     if (isInboxRoute) {
-      void mail.loadInbox();
+      untrack(() => {
+        void mail.loadInbox();
+      });
     }
   });
 
-  // Run the search whenever the search route's query changes.
+  // Run the search whenever the search route's query changes. Same untrack
+  // rationale as the inbox effect above.
   $effect(() => {
     if (isSearchRoute && searchQuery !== undefined) {
-      void mail.runSearch(searchQuery);
+      const q = searchQuery;
+      untrack(() => {
+        void mail.runSearch(q);
+      });
     }
   });
 

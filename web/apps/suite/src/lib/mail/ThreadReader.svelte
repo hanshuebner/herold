@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { mail } from './store.svelte';
   import MessageAccordion from './MessageAccordion.svelte';
   import type { Email } from './types';
@@ -8,8 +9,15 @@
   }
   let { threadId }: Props = $props();
 
+  // Kick off thread load on prop change. untrack() prevents the load
+  // function's synchronous read-modify-write of its status cell from
+  // becoming a dep of this effect, which would otherwise produce a tight
+  // retry loop on JMAP errors.
   $effect(() => {
-    void mail.loadThread(threadId);
+    const tid = threadId;
+    untrack(() => {
+      void mail.loadThread(tid);
+    });
   });
 
   let status = $derived(mail.threadStatus(threadId));
