@@ -192,6 +192,12 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/principals/{pid}/oidc-links", auth1(s.handleListOIDCLinks))
 	mux.HandleFunc("POST /api/v1/principals/{pid}/oidc-links/begin", auth1(s.handleBeginOIDCLink))
 	mux.HandleFunc("DELETE /api/v1/principals/{pid}/oidc-links/{provider_id}", auth1(s.handleUnlinkOIDC))
+
+	// Spam-classifier feedback signal (Wave 3.15). The Suite SPA's
+	// per-message report-spam / report-phishing actions POST here so
+	// the operator can surface the signal for tuning. Per-handler
+	// ownership check: the caller must own the referenced email.
+	mux.HandleFunc("POST /api/v1/spam-feedback", auth1(s.handleSpamFeedback))
 }
 
 // SelfServiceHandler returns the self-service route set wrapped in the

@@ -73,6 +73,8 @@ func TestRegisterSelfServiceRoutes_ExpectedPathsArePresent(t *testing.T) {
 		{"GET", "/api/v1/principals/1/oidc-links"},
 		{"POST", "/api/v1/principals/1/oidc-links/begin"},
 		{"DELETE", "/api/v1/principals/1/oidc-links/someprovider"},
+		// Spam-classifier feedback signal (Wave 3.15).
+		{"POST", "/api/v1/spam-feedback"},
 	}
 
 	for _, tc := range cases {
