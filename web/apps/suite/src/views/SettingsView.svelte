@@ -13,12 +13,18 @@
   import { mail } from '../lib/mail/store.svelte';
   import { router } from '../lib/router/router.svelte';
   import IdentitySignatureForm from './settings/IdentitySignatureForm.svelte';
+  import SecurityForm from './settings/SecurityForm.svelte';
+  import ApiKeysForm from './settings/ApiKeysForm.svelte';
 
-  type Section = 'account' | 'appearance' | 'mail' | 'privacy' | 'about';
+  // Section order per Phase 4 spec: Account, Security, Appearance, Mail,
+  // API keys, Privacy, About.
+  type Section = 'account' | 'security' | 'appearance' | 'mail' | 'api-keys' | 'privacy' | 'about';
   const SECTIONS: { id: Section; label: string }[] = [
     { id: 'account', label: 'Account' },
+    { id: 'security', label: 'Security' },
     { id: 'appearance', label: 'Appearance' },
     { id: 'mail', label: 'Mail' },
+    { id: 'api-keys', label: 'API keys' },
     { id: 'privacy', label: 'Privacy' },
     { id: 'about', label: 'About' },
   ];
@@ -97,6 +103,10 @@
           <IdentitySignatureForm {identity} />
         {/each}
       {/if}
+
+    {:else if activeSection === 'security'}
+      <h2>Security</h2>
+      <SecurityForm />
 
     {:else if activeSection === 'appearance'}
       <h2>Appearance</h2>
@@ -205,6 +215,10 @@
           <span class="track" aria-hidden="true"></span>
         </label>
       </div>
+
+    {:else if activeSection === 'api-keys'}
+      <h2>API keys</h2>
+      <ApiKeysForm />
 
     {:else if activeSection === 'privacy'}
       <h2>Privacy</h2>

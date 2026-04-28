@@ -13,10 +13,16 @@
  *
  * The session cookie (herold_session) is set by the server and is HttpOnly;
  * the Suite never reads or stores any auth token.
+ *
+ * Phase 4 adds principal_id to the auth state. The value is a string because
+ * the wire type is uint64 and JS Number loses precision past 2^53. It is only
+ * used for URL construction (e.g. /api/v1/principals/{pid}), never for
+ * arithmetic.
  */
 
 import { jmap } from '../jmap/client';
 import { UnauthenticatedError } from '../jmap/errors';
+import { get } from '../api/client';
 import type { SessionResource } from '../jmap/types';
 
 export type AuthStatus =
@@ -37,24 +43,64 @@ interface LoginErrorResponse {
   message?: string;
 }
 
+/** Shape of POST /api/v1/auth/login and GET /api/v1/auth/me response bodies. */
+interface AuthMeResponse {
+  /** uint64 as a JSON number. Parse to string immediately to avoid precision loss. */
+  principal_id: number;
+  email: string;
+  scopes: string[];
+}
+
 class Auth {
   status = $state<AuthStatus>('idle');
   errorMessage = $state<string | null>(null);
   session = $state<SessionResource | null>(null);
+  /**
+   * The current principal's ID as a decimal string. Populated by login()
+   * (from the response body) and by loadMe() (from GET /api/v1/auth/me).
+   * Null until bootstrap completes successfully.
+   */
+  principalId = $state<string | null>(null);
   /** True after a /api/v1/auth/login 401 with step_up_required; the LoginView
    *  uses this to reveal the TOTP-code field. */
   needsStepUp = $state(false);
 
   /**
+   * Resolve the current principal's ID from GET /api/v1/auth/me.
+   *
+   * This is a non-throwing helper: on failure (e.g. 401 race between
+   * bootstrap and this call) the error is silently swallowed and
+   * principalId remains null. The caller is responsible for checking.
+   */
+  async loadMe(): Promise<void> {
+    try {
+      const me = await get<AuthMeResponse>('/api/v1/auth/me');
+      // Stringify immediately to avoid JS Number precision loss for large
+      // uint64 values (> 2^53 rounds to the wrong integer).
+      this.principalId = String(me.principal_id);
+    } catch {
+      // Non-fatal: security forms degrade gracefully when principalId is null.
+    }
+  }
+
+  /**
    * Run the bootstrap once. Subsequent calls are idempotent unless
    * the previous attempt errored, in which case retry is allowed.
+   *
+   * The JMAP session fetch and the /auth/me fetch run in parallel;
+   * neither blocks the other and both are awaited before transitioning
+   * to 'ready'.
    */
   async bootstrap(): Promise<void> {
     if (this.status === 'bootstrapping' || this.status === 'ready') return;
     this.status = 'bootstrapping';
     this.errorMessage = null;
     try {
-      const session = await jmap.bootstrap();
+      // Fire both requests in parallel. jmap.bootstrap() throws
+      // UnauthenticatedError on 401 and controls the state machine.
+      // loadMe() is non-throwing and populates principalId as a side
+      // effect.
+      const [session] = await Promise.all([jmap.bootstrap(), this.loadMe()]);
       this.session = session;
       this.status = 'ready';
     } catch (err) {
@@ -110,6 +156,13 @@ class Auth {
 
     if (response.status === 200) {
       this.needsStepUp = false;
+      // Capture principal_id from the login response body.
+      try {
+        const body = (await response.json()) as AuthMeResponse;
+        this.principalId = String(body.principal_id);
+      } catch {
+        // Ignore parse errors; loadMe() in bootstrap() will populate it.
+      }
       // Re-bootstrap so the JMAP session descriptor reflects the new auth state.
       // Reset status to allow bootstrap() to re-run.
       this.status = 'idle';
@@ -158,6 +211,7 @@ class Auth {
       // Swallow network errors: we log out locally regardless.
     }
     this.session = null;
+    this.principalId = null;
     this.status = 'unauthenticated';
   }
 }

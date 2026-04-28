@@ -54,6 +54,9 @@ importers:
       dompurify:
         specifier: ^3.2.0
         version: 3.4.1
+      qrcode-svg:
+        specifier: ^1.1.0
+        version: 1.1.0
       prosemirror-commands:
         specifier: ^1.6.0
         version: 1.7.1
