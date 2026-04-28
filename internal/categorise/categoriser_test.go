@@ -94,10 +94,26 @@ func parsedMessage(t *testing.T) mailparse.Message {
 	return msg
 }
 
+// newCategoriserReply produces the new {categories, assigned} JSON shape
+// (REQ-FILT-215).
+func newCategoriserReply(assigned string) string {
+	resp := map[string]any{
+		"categories": []string{"primary", "social", "promotions", "updates", "forums"},
+		"assigned":   assigned,
+	}
+	b, _ := json.Marshal(resp)
+	return chatJSON(string(b))
+}
+
+// newCategoriserReplyNullAssigned produces a reply with assigned=null.
+func newCategoriserReplyNullAssigned() string {
+	return chatJSON(`{"categories":["primary","social","promotions","updates","forums"],"assigned":null}`)
+}
+
 func TestCategorise_HappyPath_ReturnsCategory(t *testing.T) {
 	fs := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, chatJSON(`{"category":"promotions"}`))
+		_, _ = io.WriteString(w, newCategoriserReply("promotions"))
 	})
 	st, pid := makeStoreAndPrincipal(t)
 	// FakeClock anchored at time.Now() so withBoundedDeadline produces
@@ -123,28 +139,127 @@ func TestCategorise_HappyPath_ReturnsCategory(t *testing.T) {
 	}
 }
 
-func TestCategorise_NoneIsEmpty(t *testing.T) {
+// TestCategorise_NewResponseShape_BothFieldsParsed verifies that the new
+// {categories, assigned} shape is parsed end-to-end and that DerivedCategories
+// is written to the store (REQ-FILT-215/217).
+func TestCategorise_NewResponseShape_BothFieldsParsed(t *testing.T) {
 	fs := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, chatJSON(`{"category":"none"}`))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, newCategoriserReply("social"))
 	})
 	st, pid := makeStoreAndPrincipal(t)
-	c := categorise.New(categorise.Options{
-		Store: st, Clock: clock.NewFake(time.Now()),
-		DefaultEndpoint: fs.srv.URL, DefaultModel: "m",
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
-	cat, err := c.Categorise(context.Background(), pid, parsedMessage(t), nil, spam.Ham)
-	if err != nil {
-		t.Fatalf("err: %v", err)
+	// Seed the config row so SetDerivedCategories has a target.
+	if _, err := st.Meta().GetCategorisationConfig(context.Background(), pid); err != nil {
+		t.Fatalf("GetCategorisationConfig (seed): %v", err)
 	}
-	if cat != "" {
-		t.Fatalf("category = %q, want empty", cat)
+	c := categorise.New(categorise.Options{
+		Store:           st,
+		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:           clock.NewFake(time.Now()),
+		DefaultEndpoint: fs.srv.URL,
+		DefaultModel:    "test-model",
+	})
+	result, err := c.CategoriseRich(context.Background(), pid, parsedMessage(t), nil, spam.Ham)
+	if err != nil {
+		t.Fatalf("CategoriseRich: %v", err)
+	}
+	if result.Category != "social" {
+		t.Errorf("Category = %q, want %q", result.Category, "social")
+	}
+	// Categories slice from the response must be populated.
+	wantCats := []string{"primary", "social", "promotions", "updates", "forums"}
+	if len(result.Categories) != len(wantCats) {
+		t.Fatalf("Categories = %v, want %v", result.Categories, wantCats)
+	}
+	for i, name := range wantCats {
+		if result.Categories[i] != name {
+			t.Errorf("Categories[%d] = %q, want %q", i, result.Categories[i], name)
+		}
+	}
+	// DerivedCategories must have been written to the store.
+	cfg, err := st.Meta().GetCategorisationConfig(context.Background(), pid)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig: %v", err)
+	}
+	if len(cfg.DerivedCategories) != len(wantCats) {
+		t.Fatalf("store DerivedCategories = %v, want %v", cfg.DerivedCategories, wantCats)
 	}
 }
 
-func TestCategorise_UnknownNameIsEmpty(t *testing.T) {
+// TestCategorise_DerivedCategoriesWriteDedup verifies that
+// SetDerivedCategories is not called again when the slice is unchanged.
+// We use a second call and check that the store's value remains the same.
+func TestCategorise_DerivedCategoriesWriteDedup(t *testing.T) {
+	calls := atomic.Int64{}
 	fs := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, chatJSON(`{"category":"made-up-bucket"}`))
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, newCategoriserReply("primary"))
+	})
+	st, pid := makeStoreAndPrincipal(t)
+	ctx := context.Background()
+	// Seed config row.
+	if _, err := st.Meta().GetCategorisationConfig(ctx, pid); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	c := categorise.New(categorise.Options{
+		Store:           st,
+		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:           clock.NewFake(time.Now()),
+		DefaultEndpoint: fs.srv.URL,
+		DefaultModel:    "m",
+	})
+	// First call writes DerivedCategories.
+	if _, err := c.CategoriseRich(ctx, pid, parsedMessage(t), nil, spam.Ham); err != nil {
+		t.Fatalf("first CategoriseRich: %v", err)
+	}
+	cfg1, _ := st.Meta().GetCategorisationConfig(ctx, pid)
+	// Second call with identical categories should be deduplicated — the
+	// store value must not change.
+	if _, err := c.CategoriseRich(ctx, pid, parsedMessage(t), nil, spam.Ham); err != nil {
+		t.Fatalf("second CategoriseRich: %v", err)
+	}
+	cfg2, _ := st.Meta().GetCategorisationConfig(ctx, pid)
+	if len(cfg1.DerivedCategories) != len(cfg2.DerivedCategories) {
+		t.Errorf("DerivedCategories changed on second identical call: %v -> %v",
+			cfg1.DerivedCategories, cfg2.DerivedCategories)
+	}
+}
+
+// TestCategorise_PromptWriteClears verifies that writing a new prompt
+// via UpdateCategorisationConfig clears DerivedCategories (REQ-FILT-217).
+func TestCategorise_PromptWriteClears(t *testing.T) {
+	st, pid := makeStoreAndPrincipal(t)
+	ctx := context.Background()
+	// Seed config row and set derived categories.
+	cfg, err := st.Meta().GetCategorisationConfig(ctx, pid)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig: %v", err)
+	}
+	if err := st.Meta().SetDerivedCategories(ctx, pid, []string{"primary", "social"}); err != nil {
+		t.Fatalf("SetDerivedCategories: %v", err)
+	}
+	// Verify they are set.
+	cfg2, _ := st.Meta().GetCategorisationConfig(ctx, pid)
+	if len(cfg2.DerivedCategories) == 0 {
+		t.Fatalf("expected DerivedCategories to be set before prompt change")
+	}
+	// Now write a new prompt.
+	cfg.Prompt = "a completely different prompt"
+	if err := st.Meta().UpdateCategorisationConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateCategorisationConfig: %v", err)
+	}
+	// DerivedCategories must be cleared.
+	cfg3, _ := st.Meta().GetCategorisationConfig(ctx, pid)
+	if len(cfg3.DerivedCategories) != 0 {
+		t.Errorf("expected DerivedCategories to be empty after prompt change, got %v",
+			cfg3.DerivedCategories)
+	}
+}
+
+func TestCategorise_NullAssignedIsEmpty(t *testing.T) {
+	fs := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, newCategoriserReplyNullAssigned())
 	})
 	st, pid := makeStoreAndPrincipal(t)
 	c := categorise.New(categorise.Options{
@@ -152,9 +267,16 @@ func TestCategorise_UnknownNameIsEmpty(t *testing.T) {
 		DefaultEndpoint: fs.srv.URL, DefaultModel: "m",
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	cat, _ := c.Categorise(context.Background(), pid, parsedMessage(t), nil, spam.Ham)
-	if cat != "" {
-		t.Fatalf("category = %q, want empty (unknown -> empty + warn)", cat)
+	result, err := c.CategoriseRich(context.Background(), pid, parsedMessage(t), nil, spam.Ham)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if result.Category != "" {
+		t.Fatalf("Category = %q, want empty for null assigned", result.Category)
+	}
+	// categories should still be populated even when assigned is null.
+	if len(result.Categories) == 0 {
+		t.Errorf("expected Categories to be populated even when assigned is null")
 	}
 }
 
@@ -208,7 +330,7 @@ func TestCategorise_CtxDeadlineShorterThanTimeout(t *testing.T) {
 
 func TestCategorise_PerAccountPromptOverride_RewritesPromptInRequest(t *testing.T) {
 	fs := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, chatJSON(`{"category":"primary"}`))
+		_, _ = io.WriteString(w, newCategoriserReply("primary"))
 	})
 	st, pid := makeStoreAndPrincipal(t)
 	// Override the prompt for this principal. The request body must
@@ -243,7 +365,7 @@ func TestCategorise_DisabledShortCircuits(t *testing.T) {
 	calls := atomic.Int64{}
 	fs := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		_, _ = io.WriteString(w, chatJSON(`{"category":"primary"}`))
+		_, _ = io.WriteString(w, newCategoriserReply("primary"))
 	})
 	st, pid := makeStoreAndPrincipal(t)
 	cfg, _ := st.Meta().GetCategorisationConfig(context.Background(), pid)
@@ -268,12 +390,12 @@ func TestCategorise_DisabledShortCircuits(t *testing.T) {
 	}
 }
 
-// TestCategorise_PromptCarriesCategoryDescriptions confirms the
-// system prompt the server posts to the LLM lists the category set
-// (so the model can pick from a known vocabulary).
-func TestCategorise_PromptCarriesCategoryDescriptions(t *testing.T) {
+// TestCategorise_PromptCarriesCategories confirms the system prompt the
+// server posts to the LLM contains the category names from the default
+// prompt (REQ-FILT-211/214).
+func TestCategorise_PromptCarriesCategories(t *testing.T) {
 	fs := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, chatJSON(`{"category":"primary"}`))
+		_, _ = io.WriteString(w, newCategoriserReply("primary"))
 	})
 	st, pid := makeStoreAndPrincipal(t)
 	c := categorise.New(categorise.Options{
@@ -298,7 +420,7 @@ func TestCategorise_PromptCarriesCategoryDescriptions(t *testing.T) {
 
 func TestCategorise_RecategoriseRecent_ReplacesKeyword(t *testing.T) {
 	fs := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, chatJSON(`{"category":"updates"}`))
+		_, _ = io.WriteString(w, newCategoriserReply("updates"))
 	})
 	st, pid := makeStoreAndPrincipal(t)
 	ctx := context.Background()
@@ -407,17 +529,17 @@ func TestCategorise_WithLLMReplayer(t *testing.T) {
 		// when LLMClient is non-nil.
 		DefaultModel: "test-model",
 	})
-	cat, err := c.Categorise(context.Background(), pid, parsedMessage(t), nil, spam.Ham)
+	result, err := c.CategoriseRich(context.Background(), pid, parsedMessage(t), nil, spam.Ham)
 	if err != nil {
-		t.Fatalf("Categorise: %v", err)
+		t.Fatalf("CategoriseRich: %v", err)
 	}
 	// The replayer returns one of the five default category names.
 	validCategories := map[string]bool{
 		"primary": true, "social": true, "promotions": true,
 		"updates": true, "forums": true, "": true,
 	}
-	if !validCategories[cat] {
-		t.Fatalf("unexpected category %q from replayer", cat)
+	if !validCategories[result.Category] {
+		t.Fatalf("unexpected category %q from replayer", result.Category)
 	}
 }
 

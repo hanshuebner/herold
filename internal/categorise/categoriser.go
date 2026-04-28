@@ -158,20 +158,23 @@ func New(opts Options) *Categoriser {
 	}
 }
 
-// CategorisationResult is the rich result from Categorise. It carries
-// the assigned category name (empty string = "no category") and the
-// transparency fields required by REQ-FILT-216: the user-visible prompt
-// as applied to this message and the model identifier.
+// CategorisationResult is the rich result from Categorise. It carries the
+// assigned category name, the full category list returned by the LLM, and
+// the transparency fields required by REQ-FILT-216.
 //
 // PromptApplied is the user-visible portion only (Guardrail excluded per
 // REQ-FILT-67). Model is the resolved model identifier.
 type CategorisationResult struct {
 	// Category is the bare category name (no "$category-" prefix), or ""
-	// when no category applies or an error path was taken.
+	// when no category applies or an error path was taken (REQ-FILT-202).
 	Category string
+	// Categories is the full list of category names the LLM enumerated in
+	// its response (REQ-FILT-215). Nil/empty when the call failed or
+	// returned an unparseable response. The delivery pipeline writes this
+	// slice to DerivedCategories in the store (REQ-FILT-217).
+	Categories []string
 	// PromptApplied is the user-visible system prompt as actually built for
-	// this message: renderSystemPrompt(cfg.Prompt, cfg.CategorySet). The
-	// operator guardrail is NOT included.
+	// this message. The operator guardrail is NOT included (REQ-FILT-67).
 	PromptApplied string
 	// Model is the resolved LLM model identifier used for this call.
 	Model string
@@ -242,10 +245,10 @@ func (c *Categoriser) CategoriseRich(
 	callCtx, cancel := withBoundedDeadline(ctx, c.clock, timeout)
 	defer cancel()
 
-	// The user-visible prompt is renderSystemPrompt(cfg.Prompt, cfg.CategorySet).
-	// The guardrail (cfg.Guardrail) is prepended to the full LLM prompt but
-	// EXCLUDED from PromptApplied returned to transparency consumers (REQ-FILT-67).
-	userVisiblePrompt := renderSystemPrompt(cfg.Prompt, cfg.CategorySet)
+	// The user-visible prompt is cfg.Prompt (the operator guardrail is
+	// prepended at call time but excluded from PromptApplied returned to
+	// transparency consumers — REQ-FILT-67).
+	userVisiblePrompt := cfg.Prompt
 	fullPrompt := userVisiblePrompt
 	if cfg.Guardrail != "" {
 		fullPrompt = cfg.Guardrail + "\n\n" + userVisiblePrompt
@@ -275,32 +278,56 @@ func (c *Categoriser) CategoriseRich(
 		}
 		return CategorisationResult{PromptApplied: userVisiblePrompt, Model: model}, nil
 	}
-	cat, parseErr := parseModelCategory(content)
+	mr, parseErr := parseModelResponse(content)
 	if parseErr != nil {
 		c.logger.WarnContext(ctx, "categorise: parse model reply",
 			slog.Uint64("principal_id", uint64(principal)),
 			slog.String("err", parseErr.Error()))
-		observe.CategoriseCallsTotal.WithLabelValues("http_error").Inc()
+		observe.CategoriseCallsTotal.WithLabelValues("parse_error").Inc()
 		return CategorisationResult{PromptApplied: userVisiblePrompt, Model: model}, nil
 	}
-	if cat == "" || strings.EqualFold(cat, "none") {
+
+	// Persist the derived category list whenever the response parses
+	// successfully (REQ-FILT-217). De-duplicate writes: only write when the
+	// new slice differs from the persisted one. This is fire-and-forget:
+	// a store error here is logged but never blocks delivery.
+	if len(mr.Categories) > 0 && !stringSliceEqual(mr.Categories, cfg.DerivedCategories) {
+		if serr := c.store.Meta().SetDerivedCategories(ctx, principal, mr.Categories); serr != nil {
+			c.logger.WarnContext(ctx, "categorise: persist derived categories",
+				slog.Uint64("principal_id", uint64(principal)),
+				slog.String("err", serr.Error()))
+		}
+	}
+
+	if mr.Assigned == "" {
 		observe.CategoriseCallsTotal.WithLabelValues("none").Inc()
-		return CategorisationResult{PromptApplied: userVisiblePrompt, Model: model}, nil
-	}
-	if !categoryInSet(cat, cfg.CategorySet) {
-		c.logger.WarnContext(ctx, "categorise: model returned unknown category",
-			slog.Uint64("principal_id", uint64(principal)),
-			slog.String("category", cat))
-		observe.CategoriseCallsTotal.WithLabelValues("unknown_category").Inc()
-		return CategorisationResult{PromptApplied: userVisiblePrompt, Model: model}, nil
+		return CategorisationResult{
+			Categories:    mr.Categories,
+			PromptApplied: userVisiblePrompt,
+			Model:         model,
+		}, nil
 	}
 	observe.CategoriseCallsTotal.WithLabelValues("categorised").Inc()
-	observe.CategoriseCategoriesAssignedTotal.WithLabelValues(cat).Inc()
+	observe.CategoriseCategoriesAssignedTotal.WithLabelValues(mr.Assigned).Inc()
 	return CategorisationResult{
-		Category:      cat,
+		Category:      mr.Assigned,
+		Categories:    mr.Categories,
 		PromptApplied: userVisiblePrompt,
 		Model:         model,
 	}, nil
+}
+
+// stringSliceEqual reports whether a and b are element-wise equal.
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveClient picks the LLM client and model to use for a single
@@ -488,45 +515,69 @@ func buildUserPayload(msg mailparse.Message, auth *mailauth.AuthResults, spamVer
 	return out
 }
 
-// modelVerdict is the JSON shape the model is instructed to emit.
-type modelVerdict struct {
-	Category string `json:"category"`
+// modelResponse is the JSON shape the model is instructed to emit
+// (REQ-FILT-215): { "categories": [...], "assigned": "<name>" | null }.
+type modelResponse struct {
+	Categories []string `json:"categories"`
+	Assigned   string   `json:"assigned"` // null → empty string after unmarshal
 }
 
 // jsonObjectRE finds the first balanced-looking JSON object in a
 // string. Tolerant fallback for prose-wrapped model output.
 var jsonObjectRE = regexp.MustCompile(`(?s)\{.*\}`)
 
-// parseModelCategory extracts the category name from the assistant's
-// textual content. Strict JSON first; tolerant {...} extraction next.
-func parseModelCategory(text string) (string, error) {
+// parseModelResponse extracts the categorisation result from the
+// assistant's textual content (REQ-FILT-215). Strict JSON first;
+// tolerant {...} extraction next. Both fields are slug-normalised
+// (lowercase, dash-separated) on return. The "assigned" field may be
+// a JSON null — the decoder maps that to an empty string which the
+// caller treats as "no category" (REQ-FILT-202).
+func parseModelResponse(text string) (modelResponse, error) {
 	s := strings.TrimSpace(text)
-	var mv modelVerdict
-	if err := json.Unmarshal([]byte(s), &mv); err == nil && mv.Category != "" {
-		return strings.ToLower(strings.TrimSpace(mv.Category)), nil
+	var mr modelResponse
+	if err := json.Unmarshal([]byte(s), &mr); err == nil {
+		return normModelResponse(mr), nil
 	}
 	m := jsonObjectRE.FindString(s)
 	if m == "" {
-		return "", fmt.Errorf("no JSON object in model reply: %q", truncateForError(text))
+		return modelResponse{}, fmt.Errorf("no JSON object in model reply: %q", truncateForError(text))
 	}
-	if err := json.Unmarshal([]byte(m), &mv); err != nil {
-		return "", fmt.Errorf("parse model JSON: %w (raw=%q)", err, truncateForError(m))
+	if err := json.Unmarshal([]byte(m), &mr); err != nil {
+		return modelResponse{}, fmt.Errorf("parse model JSON: %w (raw=%q)", err, truncateForError(m))
 	}
-	if mv.Category == "" {
-		return "", fmt.Errorf("model JSON missing category: %q", truncateForError(m))
-	}
-	return strings.ToLower(strings.TrimSpace(mv.Category)), nil
+	return normModelResponse(mr), nil
 }
 
-// categoryInSet reports whether name (case-insensitive) is one of the
-// configured category names.
-func categoryInSet(name string, set []store.CategoryDef) bool {
-	for _, c := range set {
-		if strings.EqualFold(c.Name, name) {
-			return true
+// normModelResponse lowercases and slug-normalises all names in mr
+// and returns the result. "none" assigned maps to empty string.
+func normModelResponse(mr modelResponse) modelResponse {
+	out := modelResponse{
+		Categories: make([]string, 0, len(mr.Categories)),
+	}
+	for _, name := range mr.Categories {
+		n := slugNorm(name)
+		if n != "" {
+			out.Categories = append(out.Categories, n)
 		}
 	}
-	return false
+	assigned := slugNorm(mr.Assigned)
+	if !strings.EqualFold(assigned, "none") {
+		out.Assigned = assigned
+	}
+	return out
+}
+
+// slugNorm lowercases the name and replaces whitespace runs with a
+// single dash, matching the $category-<name> keyword alphabet
+// (REQ-FILT-201). Returns "" for an empty or whitespace-only input.
+func slugNorm(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return ""
+	}
+	// Replace runs of whitespace with a dash.
+	parts := strings.Fields(name)
+	return strings.Join(parts, "-")
 }
 
 // addrsToStrings flattens a list of mail.Address into "name <addr>"
