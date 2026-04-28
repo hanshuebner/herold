@@ -87,6 +87,10 @@
 /* ── Dark theme (default) ──────────────────────────────────────────────── */
 :root,
 :root[data-theme='dark'] {
+  /* color-scheme drives UA defaults: scrollbar tones, native form
+     controls, etc. Without it Chrome paints light-themed scrollbars
+     against our dark background. */
+  color-scheme: dark;
   --background: #161616;
   --layer-01: #262626;
   --layer-02: #393939;
@@ -112,6 +116,7 @@
 
 /* ── Light theme ───────────────────────────────────────────────────────── */
 :root[data-theme='light'] {
+  color-scheme: light;
   --background: #ffffff;
   --layer-01: #f4f4f4;
   --layer-02: #ffffff;
@@ -138,6 +143,7 @@
 /* ── System theme — follow prefers-color-scheme ────────────────────────── */
 @media (prefers-color-scheme: light) {
   :root[data-theme='system'] {
+    color-scheme: light;
     --background: #ffffff;
     --layer-01: #f4f4f4;
     --layer-02: #ffffff;
