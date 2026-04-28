@@ -113,6 +113,53 @@ instance other than `http://localhost:8080`.
   `docs/design/web/architecture/01-system-overview.md` § Bootstrap).
   Cross-origin deployment is not supported.
 
+## Patterns to avoid
+
+- **`$effect` reading and writing the same `$state` cell loops.** A
+  Svelte 5 `$effect` registers everything it reads as a dependency.
+  If the body then writes one of those reads — directly or transitively
+  via a store action that mutates `$state` — the effect re-runs, writes
+  again, re-runs, ad infinitum. We hit this three times this session
+  (`MailView` inbox load, `ThreadReader` thread load, `App.svelte`
+  mailbox prime). The fix is `untrack(() => ...)` around the side-effect:
+
+  ```ts
+  $effect(() => {
+    if (auth.status === 'ready') {
+      untrack(() => {
+        if (mail.mailboxes.size === 0) void mail.loadMailboxes();
+      });
+    }
+  });
+  ```
+
+  Whenever a route or auth-state effect kicks off async work that
+  eventually writes back into the store, wrap the write in `untrack`.
+  The effect's intended deps (`auth.status`, the route prop) stay
+  tracked; the side-effect's reads do not.
+
+- **Idempotent `loadFoo` cells must serve fresh state when stale.**
+  Caching by status (`'ready'`) is fine for the original load, but
+  pair it with a refresh path that bypasses the cache (e.g.
+  `refreshThread`). Sync handlers should call the refresh, not the
+  load, so cached views update without a route remount.
+
+## Suite test stack
+
+`web/apps/suite/` ships vitest + happy-dom + `@testing-library/svelte`
++ `@testing-library/jest-dom`. New code must land with tests:
+
+- Pure helpers (formatters, parsers, validators): plain vitest.
+- State stores (`*.svelte.ts`): test their public surface, mock
+  singleton dependencies with `vi.mock`. Prefer extracting pure
+  helpers and exporting a small `_internals_forTest` namespace over
+  driving the full singleton.
+- Components: render via `@testing-library/svelte`, assert with the
+  jest-dom matchers (`toBeInTheDocument`, `toHaveAttribute`, ...).
+- The `test` script is `vitest run`; `test:watch` for development;
+  `test:coverage` for v8 coverage. CI runs `test` automatically on
+  every PR via the existing `pnpm --dir web run test` lane.
+
 ## Brand
 
 The product is "herold". User-facing strings (HTML titles, page

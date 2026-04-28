@@ -7,12 +7,14 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.json"
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@herold/design-system": "workspace:*",
     "dompurify": "^3.2.0",
-    "qrcode-svg": "^1.1.0",
     "prosemirror-commands": "^1.6.0",
     "prosemirror-history": "^1.4.0",
     "prosemirror-keymap": "^1.2.0",
@@ -20,14 +22,20 @@
     "prosemirror-schema-basic": "^1.2.0",
     "prosemirror-schema-list": "^1.5.0",
     "prosemirror-state": "^1.4.0",
-    "prosemirror-view": "^1.37.0"
+    "prosemirror-view": "^1.37.0",
+    "qrcode-svg": "^1.1.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/svelte": "^5.3.1",
     "@tsconfig/svelte": "^5.0.4",
+    "@vitest/coverage-v8": "^4.1.5",
+    "happy-dom": "^20.9.0",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "typescript": "^5.6.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vitest": "^4.1.5"
   }
 }

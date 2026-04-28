@@ -628,3 +628,21 @@ function formatForwardQuote(parent: Email): string {
 }
 
 export const compose = new ComposeStore();
+
+/**
+ * Pure helpers that compose() exercises internally; named-exported
+ * here so unit tests can target them without spinning up the whole
+ * ComposeStore or its singleton-store dependencies. Not part of the
+ * stable public surface — name suffix _forTest signals that.
+ */
+export const _internals_forTest = {
+  parseAddressList,
+  htmlToPlainText,
+  replySubject,
+  forwardSubject,
+  mergeReferences,
+  addressToString,
+  addressListToString,
+  escapeHtml,
+  plainTextToHtml,
+};
