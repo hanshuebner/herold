@@ -16,6 +16,7 @@
   import SecurityForm from './settings/SecurityForm.svelte';
   import ApiKeysForm from './settings/ApiKeysForm.svelte';
   import VacationForm from './settings/VacationForm.svelte';
+  import SieveForm from './settings/SieveForm.svelte';
 
   // Section order per Phase 4 spec: Account, Security, Appearance, Mail,
   // API keys, Privacy, About.
@@ -205,6 +206,9 @@
 
       <h3>Vacation auto-reply</h3>
       <VacationForm />
+
+      <h3>Sieve filtering</h3>
+      <SieveForm />
 
       <h3>Shortcut coach</h3>
       <div class="row">
