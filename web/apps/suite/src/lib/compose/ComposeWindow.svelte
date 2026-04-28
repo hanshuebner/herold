@@ -20,7 +20,7 @@
         key: 'Mod+Enter',
         description: 'Send',
         action: () => {
-          void compose.send();
+          sendWithWarn();
         },
       },
       {
@@ -158,6 +158,27 @@
 
   function onEditorUpdate(html: string, _text: string): void {
     compose.body = html;
+  }
+
+  // Warn the user before sending a message that's missing the subject
+  // or body — easy to forget and easy to embarrass yourself with.
+  // Empty body is detected by stripping HTML tags and checking for
+  // visible characters; the editor renders one or more empty <p> tags
+  // even when nothing has been typed.
+  function sendWithWarn(): void {
+    const subjectEmpty = compose.subject.trim().length === 0;
+    const bodyText = compose.body.replace(/<[^>]+>/g, '').trim();
+    const bodyEmpty = bodyText.length === 0;
+    if (subjectEmpty || bodyEmpty) {
+      const missing = subjectEmpty && bodyEmpty
+        ? 'subject and body'
+        : subjectEmpty
+          ? 'subject'
+          : 'body';
+      const ok = window.confirm(`Send this message without a ${missing}?`);
+      if (!ok) return;
+    }
+    void compose.send();
   }
 
   // Snapshot the initial body once per open so the editor doesn't
@@ -378,7 +399,7 @@
       <button
         type="button"
         class="send"
-        onclick={() => void compose.send()}
+        onclick={sendWithWarn}
         disabled={compose.status === 'sending' || compose.attachmentsBusy}
         title={compose.attachmentsBusy ? 'Attachments still uploading' : ''}
       >
