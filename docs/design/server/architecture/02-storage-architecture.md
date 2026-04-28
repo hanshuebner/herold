@@ -67,8 +67,9 @@ Both backends implement the same internal `store.Metadata` interface (a typed re
 - `principal_oidc_links(principal_id, provider_name, subject, email_at_provider, linked_at)`
 - `domains(domain, owner_principal_id, dkim_current_selector, dns_plugin_name, ...)`
 - `dkim_keys(domain, selector, algorithm, private_key, public_key, created_at, expires_at, active)`
-- `mailboxes(id, principal_id, parent_id, name, role, subscribed, uidvalidity, highest_uid, highest_modseq, created_at, updated_at)`
-- `messages(id, mailbox_id, blob_id, uid, modseq, internal_date, received_date, size_bytes, flags_bitmap, flag_keywords_json, thread_id, header_cache_json)`
+- `mailboxes(id, principal_id, parent_id, name, role, subscribed, uidvalidity, highest_uid, highest_modseq, sort_order, color, created_at, updated_at)`
+- `messages(id, principal_id, blob_id, internal_date, received_date, size_bytes, thread_id, header_cache_json)` — mailbox-independent per-message attributes
+- `message_mailboxes(message_id, mailbox_id, uid, modseq, flags_bitmap, flag_keywords_json)` — M:N membership per REQ-STORE-36..38; UIDs and MODSEQ are per-(message, mailbox); composite PK `(message_id, mailbox_id)`; secondary index on `(mailbox_id, uid)` for IMAP UID lookup
 - `threads(id, root_message_id, subject_hash, participant_hash, updated_modseq)`
 - `blob_refs(blob_id, ref_count, last_ref_change)`
 - `queue(id, direction, state, next_attempt_at, attempts, sender, rcpt, blob_id, tags_json, config_set, ...)`
@@ -89,7 +90,7 @@ Indices created explicitly. Every query has a matching index. Schema kept small 
 ### Transactions
 
 - Every state change that affects multiple tables runs in one transaction.
-- Common transaction: "deliver message to mailbox" — insert into `messages`, bump `mailboxes.highest_uid`/`highest_modseq`, insert into `state_changes`, update `blob_refs`.
+- Common transaction: "deliver message to mailbox" — insert into `messages`, insert into `message_mailboxes` for each target mailbox, bump each `mailboxes.highest_uid`/`highest_modseq`, insert into `state_changes`, update `blob_refs`.
 - Transactions short (milliseconds). No long-held locks.
 
 ### State-change feed
@@ -135,7 +136,7 @@ If steps 1–4 succeed but the transaction fails, the blob is orphaned. GC clean
 ### Refcount and GC
 
 - `blob_refs` table tracks ref count per blob.
-- Ref count incremented on insert into `messages`, decremented on delete.
+- Ref count tracks distinct `messages` rows referencing the blob — NOT per-(message, mailbox) rows. The same logical message in N mailboxes is still one `messages` row pointing at one blob, so refcount stays at 1 across the N memberships. Final dec happens when the last `messages` row pointing at the blob is removed.
 - Blobs with refcount 0 older than grace window (24h default) are deleted from filesystem.
 - GC runs on scheduler every hour; batch-limited to avoid I/O spikes.
 - A blob with refcount > 0 is never deleted; a blob with no refcount row at all is considered orphaned (safety net).

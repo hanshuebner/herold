@@ -74,11 +74,18 @@ New in v1 scope. Prevents exfiltration and heavy-handed client behavior.
 ## Mailbox metadata
 
 - **REQ-STORE-30** Per-principal mailboxes, with name, role, UIDVALIDITY, highest UID, highest MODSEQ, subscription state, flags.
-- **REQ-STORE-31** Per-message-in-mailbox: blob ID, UID, MODSEQ, flags, internal-date, received-date, size, JMAP id, threadId, parsed header cache.
+- **REQ-STORE-31** Per-message metadata (mailbox-independent): blob ID, JMAP id, threadId, internal-date, received-date, size, parsed header cache. Per-(message, mailbox) metadata: UID, MODSEQ, flags. See REQ-STORE-36.
 - **REQ-STORE-32** MODSEQ strictly increasing per mailbox. JMAP state tracks per-type + per-account.
-- **REQ-STORE-33** Delete semantics: `\Deleted` + `EXPUNGE` or JMAP `Email/set destroy`. Blob refcount decremented; blob eventually GC'd.
+- **REQ-STORE-33** Delete semantics: `\Deleted` + `EXPUNGE` or JMAP `Email/set destroy`. Blob refcount decremented; blob eventually GC'd. JMAP `destroy` removes the message from every mailbox it is in (REQ-STORE-36); IMAP `EXPUNGE` only removes the per-(message, mailbox) row for the selected mailbox — when other mailbox memberships remain, the message stays visible there. Final blob deref happens when the last per-(message, mailbox) row is removed.
 - **REQ-STORE-34** Mailbox row carries an optional `color` column (string, hex like `#5B8DEE`, NULL when unset). Read/write through JMAP per REQ-PROTO-56. Not advertised to IMAP clients (no IMAP keyword for mailbox colour).
 - **REQ-STORE-35** Identity row carries an optional `signature` column (plain-text body, NULL when unset; HTML signature deferred to phase 2 as a separate column). Read/write through JMAP per REQ-PROTO-57. Used by clients to populate compose; not embedded automatically by the server in outgoing messages — the client decides whether and how to insert it.
+
+### Multi-mailbox membership
+
+- **REQ-STORE-36** A single `Email` (per JMAP RFC 8621 §1.6.1) MAY be present in **multiple mailboxes simultaneously** within the same account. The model is M:N: one logical message (one blob, one threadId, one JMAP id) referenced from N mailboxes via N per-(message, mailbox) rows. JMAP `mailboxIds` is the set of mailbox IDs whose per-(message, mailbox) row points at this message. Required for spec-conformant `Email/get`, `Email/set update mailboxIds`, `Email/set destroy`, and `Mailbox/set onDestroyRemoveEmails` (RFC 8621 §4.6, §2.5).
+- **REQ-STORE-37** IMAP UIDs remain **per-mailbox** (RFC 9051 §2.3.1.1). A message in N mailboxes carries N independent UIDs — one per per-(message, mailbox) row, allocated against that mailbox's `highest_uid`. JMAP `Email/copy` (within an account) and JMAP `Email/set update mailboxIds` allocate new per-(message, mailbox) rows with new UIDs in the target mailboxes; the source rows remain untouched until the client explicitly removes them. `MODSEQ` is also per-(message, mailbox); a flag change in one mailbox does not bump the row in another.
+- **REQ-STORE-38** Migration plan from the current 1:1 model: introduce a `message_mailboxes(message_id, mailbox_id, uid, modseq, flags_bitmap, flag_keywords_json, internal_date)` join table; move `uid`, `modseq`, and the flag columns out of `messages`; backfill one row per existing `messages.mailbox_id`; drop `messages.mailbox_id`. Migration runs as a single offline upgrade (REQ-OPS-46) with an integrity check that asserts row counts match before drop. Both SQLite and Postgres carry the migration in lock-step.
+- **REQ-STORE-39** **Deferred to next round (post 2026-04-28).** The four JMAP test-suite failures this unblocks are listed in `test/interop/README.md` "Known deferred failures" — `email/get-mailbox-ids`, `email/set-update-add-mailbox`, `email/set-update-remove-mailbox`, `email/set-destroy-removes-from-all-mailboxes`. Until REQ-STORE-36..38 land, herold reports a single mailboxId per Email and silently ignores attempts to add a second.
 
 ## Threading
 
