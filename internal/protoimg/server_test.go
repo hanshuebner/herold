@@ -594,16 +594,30 @@ func TestProxy_5xxRetried_ThenSucceeds(t *testing.T) {
 		}
 		writePNG(w)
 	})
-	// Drive the FakeClock past the 1 s retry gap by advancing it in a
-	// goroutine. The clk.After waiter blocks until Advance crosses
-	// the deadline; after that the handler proceeds.
+	// Drive the FakeClock past the 1 s retry gap. clk.Advance only
+	// fires waiters that have already been registered, so a single
+	// sleep+advance races the request goroutine: under CI contention
+	// Advance can fire before the handler reaches s.clk.After, leaving
+	// the retry waiter unfired. Tickle Advance in a loop until the
+	// second upstream call lands.
+	stop := make(chan struct{})
 	go func() {
-		// Wait briefly so the first attempt has registered its
-		// After-waiter, then advance.
-		time.Sleep(50 * time.Millisecond)
-		h.clk.Advance(2 * time.Second)
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if atomic.LoadInt32(&calls) >= 2 {
+					return
+				}
+				h.clk.Advance(time.Second)
+			}
+		}
 	}()
 	rec := h.do(1, h.upstream.URL+"/retry.png")
+	close(stop)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200 (calls=%d)", rec.Code, atomic.LoadInt32(&calls))
 	}
@@ -620,11 +634,24 @@ func TestProxy_5xxExhausted_502_AfterRetry(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 		w.WriteHeader(http.StatusBadGateway)
 	})
+	stop := make(chan struct{})
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		h.clk.Advance(2 * time.Second)
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if atomic.LoadInt32(&calls) >= 2 {
+					return
+				}
+				h.clk.Advance(time.Second)
+			}
+		}
 	}()
 	rec := h.do(1, h.upstream.URL+"/x")
+	close(stop)
 	// Upstream verbatim: 502. The handler maps "5xx after retry" to
 	// the upstream status code.
 	if rec.Code != http.StatusBadGateway {

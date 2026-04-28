@@ -40,6 +40,13 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      # go vet / staticcheck / govulncheck must compile the tree, which
+      # means internal/webspa/embed_default.go's `//go:embed dist` has to
+      # resolve. prep-web copies the tracked placeholders into
+      # internal/webspa/dist/ when the directory is empty (clean checkout
+      # path). Mirrors the same step in the test job.
+      - name: prep web placeholders
+        run: make prep-web
       - name: gofmt
         run: |
           diff=$(gofmt -l .)
