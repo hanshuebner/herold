@@ -67,7 +67,7 @@ func newSessionHarness(t *testing.T) *sessionHarness {
 		BootstrapWindow:         5 * time.Minute,
 		RequestsPerMinutePerKey: 100,
 		Session: authsession.SessionConfig{
-			SigningKey:      testSigningKey,
+			SigningKey:     testSigningKey,
 			CookieName:     "herold_admin_session",
 			CSRFCookieName: "herold_admin_csrf",
 			TTL:            24 * time.Hour,

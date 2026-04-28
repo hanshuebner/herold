@@ -54,7 +54,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *fakestore.Store, *directory
 	}
 
 	cfg := authsession.SessionConfig{
-		SigningKey:      testSigningKey,
+		SigningKey:     testSigningKey,
 		CookieName:     "herold_public_session",
 		CSRFCookieName: "herold_public_csrf",
 		TTL:            24 * time.Hour,

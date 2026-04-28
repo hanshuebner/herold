@@ -13,7 +13,7 @@ import (
 
 func testConfig() authsession.SessionConfig {
 	return authsession.SessionConfig{
-		SigningKey:      testKey,
+		SigningKey:     testKey,
 		CookieName:     "herold_test_session",
 		CSRFCookieName: "herold_test_csrf",
 		TTL:            24 * time.Hour,

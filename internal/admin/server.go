@@ -22,8 +22,8 @@ import (
 
 	"github.com/hanshuebner/herold/internal/acme"
 	"github.com/hanshuebner/herold/internal/auth"
-	"github.com/hanshuebner/herold/internal/autodns"
 	"github.com/hanshuebner/herold/internal/authsession"
+	"github.com/hanshuebner/herold/internal/autodns"
 	"github.com/hanshuebner/herold/internal/chatretention"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
@@ -61,10 +61,10 @@ import (
 	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/sysconfig"
-	"github.com/hanshuebner/herold/internal/webspa"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 	"github.com/hanshuebner/herold/internal/vapid"
 	"github.com/hanshuebner/herold/internal/webpush"
+	"github.com/hanshuebner/herold/internal/webspa"
 )
 
 // StartOpts bundles optional StartServer knobs that have no home in

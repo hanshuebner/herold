@@ -29,7 +29,7 @@ var resolveTestKey = []byte("resolve-test-signing-key-32bytes")
 
 func resolveTestConfig() authsession.SessionConfig {
 	return authsession.SessionConfig{
-		SigningKey:      resolveTestKey,
+		SigningKey:     resolveTestKey,
 		CookieName:     "herold_resolve_test_session",
 		CSRFCookieName: "herold_resolve_test_csrf",
 		TTL:            24 * time.Hour,
