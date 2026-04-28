@@ -165,12 +165,12 @@ type queryRequest struct {
 }
 
 type queryResponse struct {
-	AccountID string   `json:"accountId"`
-	QueryState string  `json:"queryState"`
-	CanCalculateChanges bool `json:"canCalculateChanges"`
-	Position  int      `json:"position"`
-	IDs       []jmapID `json:"ids"`
-	Total     int      `json:"total"`
+	AccountID           string   `json:"accountId"`
+	QueryState          string   `json:"queryState"`
+	CanCalculateChanges bool     `json:"canCalculateChanges"`
+	Position            int      `json:"position"`
+	IDs                 []jmapID `json:"ids"`
+	Total               int      `json:"total"`
 }
 
 type queryHandler struct{ h *handlerSet }
@@ -239,15 +239,15 @@ type setRequest struct {
 }
 
 type setResponse struct {
-	AccountID    jmapID                        `json:"accountId"`
-	OldState     string                        `json:"oldState,omitempty"`
-	NewState     string                        `json:"newState"`
-	Created      map[string]jmapManagedRule    `json:"created,omitempty"`
-	Updated      map[jmapID]*jmapManagedRule   `json:"updated,omitempty"`
-	Destroyed    []jmapID                      `json:"destroyed,omitempty"`
-	NotCreated   map[string]setError           `json:"notCreated,omitempty"`
-	NotUpdated   map[jmapID]setError           `json:"notUpdated,omitempty"`
-	NotDestroyed map[jmapID]setError           `json:"notDestroyed,omitempty"`
+	AccountID    jmapID                      `json:"accountId"`
+	OldState     string                      `json:"oldState,omitempty"`
+	NewState     string                      `json:"newState"`
+	Created      map[string]jmapManagedRule  `json:"created,omitempty"`
+	Updated      map[jmapID]*jmapManagedRule `json:"updated,omitempty"`
+	Destroyed    []jmapID                    `json:"destroyed,omitempty"`
+	NotCreated   map[string]setError         `json:"notCreated,omitempty"`
+	NotUpdated   map[jmapID]setError         `json:"notUpdated,omitempty"`
+	NotDestroyed map[jmapID]setError         `json:"notDestroyed,omitempty"`
 }
 
 func (r *setResponse) notCreated(k string, e setError) {
@@ -524,7 +524,7 @@ type threadMuteRequest struct {
 }
 
 type threadMuteResponse struct {
-	AccountID  jmapID `json:"accountId"`
+	AccountID     jmapID `json:"accountId"`
 	ManagedRuleID jmapID `json:"managedRuleId"`
 }
 

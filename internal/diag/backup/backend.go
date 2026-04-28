@@ -160,6 +160,8 @@ func rowsForTable(table string) (any, bool) {
 		return &MailboxRow{}, true
 	case "messages":
 		return &MessageRow{}, true
+	case "message_mailboxes":
+		return &MessageMailboxRow{}, true
 	case "mailbox_acl":
 		return &MailboxACLRow{}, true
 	case "state_changes":
@@ -222,6 +224,8 @@ func rowsForTable(table string) (any, bool) {
 		return &CoachEventRow{}, true
 	case "coach_dismiss":
 		return &CoachDismissRow{}, true
+	case "managed_rules":
+		return &ManagedRuleRow{}, true
 	}
 	return nil, false
 }

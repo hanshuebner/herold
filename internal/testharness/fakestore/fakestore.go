@@ -542,6 +542,9 @@ func (m *metaFace) InsertMessage(ctx context.Context, msg store.Message, targets
 	now := s.clk.Now()
 	msg.ID = s.nextMessageID
 	s.nextMessageID++
+	if msg.PrincipalID == 0 {
+		msg.PrincipalID = p.ID
+	}
 	if msg.InternalDate.IsZero() {
 		msg.InternalDate = now
 	}

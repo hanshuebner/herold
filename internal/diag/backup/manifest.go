@@ -77,7 +77,20 @@ const CurrentBackupVersion = 1
 //	with (message_id, mailbox_id, uid, modseq, flags, keywords_csv,
 //	snoozed_until_us). Adds messages.principal_id (denorm for query
 //	speed). Forward-only; no downgrade path.
-const CurrentSchemaVersion = 24
+//
+// 25 — 0025_category_settings_state.sql. Column-only migration: adds
+//
+//	jmap_states.category_settings_state (REQ-CAT-50) so the
+//	CategorySettings JMAP datatype has a /changes-able state counter.
+//	No new tables.
+//
+// 26 — 0026_managed_rules.sql. ManagedRule structured filter abstraction
+//
+//	(Wave 3.15, REQ-FLT-01..31). Adds the managed_rules table and
+//	jmap_states.managed_rule_state counter. Adds
+//	sieve_scripts.user_script column so the user-written Sieve half
+//	survives recompilations of the managed-rule preamble.
+const CurrentSchemaVersion = 26
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -132,6 +145,10 @@ var TableNames = []string{
 	"api_keys",
 	"aliases",
 	"sieve_scripts",
+	// Phase 3 Wave 3.15 ManagedRule structured filter abstraction
+	// (REQ-FLT-01..31, migration 0026). FK to principals(id); restored
+	// after principals are in place.
+	"managed_rules",
 	// Phase 2 LLM categorisation (REQ-FILT-200..221, migration 0009).
 	// Per-principal singleton row; principals already populated above.
 	"jmap_categorisation_config",
@@ -146,6 +163,9 @@ var TableNames = []string{
 	"coach_dismiss",
 	"mailboxes",
 	"messages",
+	// Phase 3 Wave 3.11 M:N message-mailbox membership (migration 0024).
+	// FK to messages(id) and mailboxes(id); restored after both parents.
+	"message_mailboxes",
 	// Phase 3 Wave 3.9 email reactions (REQ-PROTO-100..103,
 	// REQ-FLOW-100..108, migration 0019). FK to messages(id); restored
 	// after messages are in place.
