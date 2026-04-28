@@ -38,6 +38,27 @@ export class JmapClient {
   }
 
   /**
+   * Resolve a JMAP downloadUrl template (RFC 8620 §6.2) for a blob.
+   * The session.downloadUrl carries `{accountId}`, `{blobId}`, `{type}`,
+   * and `{name}` placeholders; this helper substitutes the obvious four
+   * with URL-encoded values. Returns null when no session is bootstrapped.
+   */
+  downloadUrl(args: {
+    accountId: string;
+    blobId: string;
+    type?: string;
+    name?: string;
+  }): string | null {
+    const session = this.#session;
+    if (!session) return null;
+    return session.downloadUrl
+      .replace('{accountId}', encodeURIComponent(args.accountId))
+      .replace('{blobId}', encodeURIComponent(args.blobId))
+      .replace('{type}', encodeURIComponent(args.type ?? 'application/octet-stream'))
+      .replace('{name}', encodeURIComponent(args.name ?? 'attachment'));
+  }
+
+  /**
    * Fetch `/.well-known/jmap` and pin the session for subsequent requests.
    */
   async bootstrap(): Promise<SessionResource> {

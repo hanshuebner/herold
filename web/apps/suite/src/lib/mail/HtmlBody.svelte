@@ -21,14 +21,16 @@
   interface Props {
     html: string;
     loadImages?: boolean;
+    /** cid → URL map for inline images. */
+    cidMap?: Record<string, string>;
   }
-  let { html, loadImages = false }: Props = $props();
+  let { html, loadImages = false, cidMap }: Props = $props();
 
   let frameEl = $state<HTMLIFrameElement | null>(null);
   let height = $state(120);
 
   // Re-sanitise whenever inputs change (e.g. user clicks "Load images").
-  let srcdoc = $derived(sanitizeHtml(html, { loadImages }));
+  let srcdoc = $derived(sanitizeHtml(html, { loadImages, cidMap }));
 
   function onLoad(): void {
     const doc = frameEl?.contentDocument;

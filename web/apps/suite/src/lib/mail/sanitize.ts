@@ -22,6 +22,13 @@ import DOMPurify from 'dompurify';
 export interface SanitizeOptions {
   /** When true, http(s) <img src> rewrites through the image proxy. */
   loadImages: boolean;
+  /**
+   * Map of cid (with no angle brackets, no `cid:` prefix) → resolved
+   * URL. Inline images referenced by Content-ID get rewritten to the
+   * matching URL when present. Resolution is unconditional: cid refs
+   * point at attachments of the same email so there is no privacy leak.
+   */
+  cidMap?: Record<string, string>;
 }
 
 const ALLOWED_TAGS = [
@@ -86,9 +93,18 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
   if (!src) {
     return;
   }
-  // cid: inline images — block; CID resolution + the image proxy live behind
-  // the same "Load images" affordance and arrive in a follow-up.
+  // cid: inline images — resolve via the per-message attachment map
+  // when present; otherwise leave the placeholder data attribute so the
+  // user knows the image is missing.
   if (src.startsWith('cid:')) {
+    const cid = src.slice(4).trim();
+    const resolved = options.cidMap?.[cid];
+    if (resolved) {
+      img.setAttribute('src', resolved);
+      img.setAttribute('referrerpolicy', 'no-referrer');
+      img.setAttribute('loading', 'lazy');
+      return;
+    }
     img.removeAttribute('src');
     img.setAttribute('alt', alt || '[inline image]');
     img.setAttribute('data-herold-blocked', 'cid');

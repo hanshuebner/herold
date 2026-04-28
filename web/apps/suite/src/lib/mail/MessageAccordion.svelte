@@ -1,11 +1,14 @@
 <script lang="ts">
   import HtmlBody from './HtmlBody.svelte';
+  import AttachmentList from './AttachmentList.svelte';
   import { htmlHasExternalImages } from './sanitize';
   import { emailHtmlBody, emailTextBody, type Email } from './types';
   import { compose } from '../compose/compose.svelte';
   import { movePicker } from './move-picker.svelte';
   import { mail } from './store.svelte';
   import { settings } from '../settings/settings.svelte';
+  import { jmap } from '../jmap/client';
+  import { auth } from '../auth/auth.svelte';
 
   interface Props {
     email: Email;
@@ -71,6 +74,26 @@
   });
 
   let isSeen = $derived(Boolean(email.keywords.$seen));
+
+  // Build a cid -> downloadUrl map from the email's attachments. Inline
+  // images referenced by Content-ID land in the body as `cid:<id>`; the
+  // sanitiser uses this map to rewrite them to a same-origin JMAP blob URL.
+  let cidMap = $derived.by<Record<string, string>>(() => {
+    const accountId = auth.session?.primaryAccounts['urn:ietf:params:jmap:mail'];
+    if (!accountId) return {};
+    const out: Record<string, string> = {};
+    for (const part of email.attachments ?? []) {
+      if (!part.cid || !part.blobId) continue;
+      const url = jmap.downloadUrl({
+        accountId,
+        blobId: part.blobId,
+        type: part.type,
+        name: part.name ?? 'inline',
+      });
+      if (url) out[part.cid] = url;
+    }
+    return out;
+  });
 </script>
 
 <article class="message" class:expanded>
@@ -120,12 +143,14 @@
             {/if}
           </div>
         {/if}
-        <HtmlBody {html} {loadImages} />
+        <HtmlBody {html} {loadImages} {cidMap} />
       {:else if text}
         <pre class="text-body">{text}</pre>
       {:else}
         <p class="empty">(no body)</p>
       {/if}
+
+      <AttachmentList {email} />
 
       <div class="actions">
         <button type="button" class="pill" onclick={() => compose.openReply(email)}>
