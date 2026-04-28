@@ -17,11 +17,17 @@
   import ApiKeysForm from './settings/ApiKeysForm.svelte';
   import VacationForm from './settings/VacationForm.svelte';
   import SieveForm from './settings/SieveForm.svelte';
+  import CategoriesForm from './settings/CategoriesForm.svelte';
+  import { Capability } from '../lib/jmap/types';
+  import { jmap } from '../lib/jmap/client';
 
   // Section order per Phase 4 spec: Account, Security, Appearance, Mail,
-  // API keys, Privacy, About.
-  type Section = 'account' | 'security' | 'appearance' | 'mail' | 'api-keys' | 'privacy' | 'about';
-  const SECTIONS: { id: Section; label: string }[] = [
+  // Categories, API keys, Privacy, About.
+  type Section = 'account' | 'security' | 'appearance' | 'mail' | 'categories' | 'api-keys' | 'privacy' | 'about';
+
+  let hasCategorise = $derived(jmap.hasCapability(Capability.HeroldCategorise));
+
+  let sectionsBase: { id: Section; label: string }[] = [
     { id: 'account', label: 'Account' },
     { id: 'security', label: 'Security' },
     { id: 'appearance', label: 'Appearance' },
@@ -30,6 +36,17 @@
     { id: 'privacy', label: 'Privacy' },
     { id: 'about', label: 'About' },
   ];
+
+  let SECTIONS = $derived.by(() => {
+    if (!hasCategorise) return sectionsBase;
+    // Insert 'categories' after 'mail'.
+    const result: { id: Section; label: string }[] = [];
+    for (const s of sectionsBase) {
+      result.push(s);
+      if (s.id === 'mail') result.push({ id: 'categories', label: 'Categories' });
+    }
+    return result;
+  });
 
   // The active section comes from /settings/<section>; default = account.
   let activeSection = $derived<Section>(
@@ -223,6 +240,10 @@
           <span class="track" aria-hidden="true"></span>
         </label>
       </div>
+
+    {:else if activeSection === 'categories'}
+      <h2>Categories</h2>
+      <CategoriesForm />
 
     {:else if activeSection === 'api-keys'}
       <h2>API keys</h2>

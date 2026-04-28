@@ -6,8 +6,11 @@
   import { compose } from '../lib/compose/compose.svelte';
   import { movePicker } from '../lib/mail/move-picker.svelte';
   import { snoozePicker } from '../lib/mail/snooze-picker.svelte';
+  import { categoryPicker } from '../lib/mail/category-picker.svelte';
+  import { categorySettings, emailMatchesTab, categoryKeyword } from '../lib/settings/category-settings.svelte';
   import { decodeChips } from '../lib/mail/search-query';
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
+  import CategoryPicker from '../lib/mail/CategoryPicker.svelte';
   import type { Email } from '../lib/mail/types';
 
   const ROLED_FOLDERS = new Set<FolderID>([
@@ -43,6 +46,72 @@
   let isSearchRoute = $derived(router.matches('mail', 'search'));
   let isInboxRoute = $derived(folder === 'inbox');
   let folderLabel = $derived(folder ? mail.listFolderLabel : '');
+
+  // ── Category tabs (Inbox only, REQ-CAT-10..14) ───────────────────────────
+  //
+  // When the categorise capability is advertised and we're in the inbox view,
+  // show the tab strip. The active tab name comes from `?tab=<name>` in the
+  // URL; null means Primary (no category keyword on the email, REQ-CAT-11).
+  //
+  // "null" is Primary; any other value is the category name from the settings.
+
+  let showTabs = $derived(
+    isInboxRoute && categorySettings.available && categorySettings.categories.length > 0,
+  );
+
+  /**
+   * Active tab name; null means "Primary" (emails without a $category-*
+   * keyword, per REQ-CAT-03/11).
+   */
+  let activeTabName = $derived.by<string | null>(() => {
+    if (!showTabs) return null;
+    const param = router.getParam('tab');
+    if (!param) return null; // Default = Primary
+    // Validate: must be a known category name (case-insensitive).
+    const match = categorySettings.categories.find(
+      (c) => c.name.toLowerCase() === param.toLowerCase(),
+    );
+    return match ? match.name : null;
+  });
+
+  /** Filtered list for the active inbox tab. */
+  let tabFilteredEmailIds = $derived.by<string[]>(() => {
+    if (!showTabs) return mail.listEmailIds;
+    return mail.listEmailIds.filter((id) => {
+      const e = mail.emails.get(id);
+      if (!e) return false;
+      return emailMatchesTab(e.keywords, activeTabName, categorySettings.categories);
+    });
+  });
+
+  /** Unread count per category tab (for the badge). */
+  function tabUnreadCount(tabName: string | null): number {
+    if (!showTabs) return 0;
+    let n = 0;
+    for (const id of mail.listEmailIds) {
+      const e = mail.emails.get(id);
+      if (!e) continue;
+      if (!emailMatchesTab(e.keywords, tabName, categorySettings.categories)) continue;
+      if (!e.keywords.$seen) n++;
+    }
+    return n;
+  }
+
+  function selectTab(tabKey: string | null): void {
+    // Primary is encoded as no param (cleaner URLs).
+    // tabKey is either null (Primary) or the category name; lowercase for URL.
+    router.setParam('tab', tabKey === null ? null : tabKey.toLowerCase());
+  }
+
+  /** The effective list email ids — tab-filtered when in inbox, raw otherwise. */
+  let effectiveListEmailIds = $derived(showTabs ? tabFilteredEmailIds : mail.listEmailIds);
+
+  /** Resolved emails for the effective list. */
+  let effectiveListEmails = $derived(
+    effectiveListEmailIds
+      .map((id) => mail.emails.get(id))
+      .filter((e): e is Email => e !== undefined),
+  );
 
   // Kick off the list load when a folder route is shown. The load call is
   // wrapped in untrack() so the synchronous loadFolder/loadStatus read-
@@ -228,6 +297,14 @@
         },
       },
       {
+        key: 'm',
+        description: 'Move to category',
+        action: () => {
+          const id = focusedEmailId();
+          if (id && categorySettings.available) categoryPicker.open(id);
+        },
+      },
+      {
         key: '*',
         description: 'Select all visible',
         action: () => mail.selectAllVisible(),
@@ -344,6 +421,14 @@
           if (e) snoozePicker.open(e.id);
         },
       },
+      {
+        key: 'm',
+        description: 'Move to category',
+        action: () => {
+          const e = replyTarget();
+          if (e && categorySettings.available) categoryPicker.open(e.id);
+        },
+      },
     ]);
     return pop;
   });
@@ -356,6 +441,15 @@
     if (idx < 0 || !listEl) return;
     const row = listEl.querySelector<HTMLElement>(`[data-row-index="${idx}"]`);
     row?.scrollIntoView({ block: 'nearest' });
+  });
+
+  // Load categorySettings when transitioning to inbox and capability available.
+  $effect(() => {
+    if (isInboxRoute && categorySettings.available && categorySettings.loadStatus === 'idle') {
+      untrack(() => {
+        void categorySettings.load();
+      });
+    }
   });
 
   function folderHref(f: FolderID): string {
@@ -597,6 +691,28 @@
       </button>
     </header>
 
+    {#if showTabs}
+      <nav class="tab-strip" aria-label="Inbox categories">
+        {#each categorySettings.categories as cat (cat.id)}
+          {@const tabKey = cat.name.toLowerCase() === 'primary' ? null : cat.name}
+          {@const isActive = activeTabName === tabKey}
+          {@const unread = tabUnreadCount(tabKey)}
+          <button
+            type="button"
+            class="tab"
+            class:tab-active={isActive}
+            aria-current={isActive ? 'page' : undefined}
+            onclick={() => selectTab(tabKey)}
+          >
+            {cat.name}
+            {#if unread > 0}
+              <span class="tab-badge" aria-label="{unread} unread">{unread}</span>
+            {/if}
+          </button>
+        {/each}
+      </nav>
+    {/if}
+
     {#if mail.listLoadStatus === 'idle' || mail.listLoadStatus === 'loading'}
       <div class="state">Loading…</div>
     {:else if mail.listLoadStatus === 'error'}
@@ -605,8 +721,14 @@
         {#if mail.listError}<p class="detail">{mail.listError}</p>{/if}
         <button type="button" onclick={() => mail.refreshFolder()}>Retry</button>
       </div>
-    {:else if mail.listEmails.length === 0}
-      <div class="state">{emptyMessage(folder)}</div>
+    {:else if effectiveListEmails.length === 0}
+      <div class="state">
+        {#if showTabs && mail.listEmails.length > 0}
+          No messages in {activeTabName ?? 'Primary'}.
+        {:else}
+          {emptyMessage(folder)}
+        {/if}
+      </div>
     {:else}
       {#if mail.listSelectedIds.size > 0}
         <div class="bulk-bar" role="toolbar" aria-label="Bulk actions">
@@ -621,6 +743,12 @@
           <button type="button" onclick={bulkMarkRead}>Mark read</button>
           <button type="button" onclick={bulkMarkUnread}>Mark unread</button>
           <button type="button" onclick={bulkMove}>Move…</button>
+          {#if categorySettings.available}
+            <button type="button" onclick={() => {
+              const ids = [...mail.listSelectedIds];
+              if (ids.length > 0) categoryPicker.open(ids[0]!);
+            }}>Category…</button>
+          {/if}
           <button type="button" class="danger" onclick={bulkDelete}>Delete</button>
         </div>
       {/if}
@@ -631,7 +759,7 @@
         aria-multiselectable="true"
         bind:this={listEl}
       >
-        {#each mail.listEmails as email, i (email.id)}
+        {#each effectiveListEmails as email, i (email.id)}
           <li
             class="thread-row"
             class:unread={isUnread(email)}
@@ -680,11 +808,70 @@
   {/if}
 </div>
 
+<CategoryPicker />
+
 <style>
   .mail {
     height: 100%;
     overflow: auto;
     background: var(--background);
+  }
+
+  /* ── Category tab strip (Inbox only) ─────────────────────────────────── */
+  .tab-strip {
+    display: flex;
+    overflow-x: auto;
+    border-bottom: 2px solid var(--border-subtle-01);
+    background: var(--layer-01);
+    padding: 0 var(--spacing-05);
+    gap: 0;
+    flex-shrink: 0;
+    scrollbar-width: none;
+  }
+  .tab-strip::-webkit-scrollbar {
+    display: none;
+  }
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-02);
+    padding: var(--spacing-03) var(--spacing-04);
+    color: var(--text-secondary);
+    font-size: var(--type-body-compact-01-size);
+    white-space: nowrap;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    min-height: var(--touch-min);
+    transition:
+      color var(--duration-fast-02) var(--easing-productive-enter),
+      border-color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .tab:hover {
+    color: var(--text-primary);
+    background: var(--layer-02);
+  }
+  .tab-active {
+    color: var(--text-primary);
+    font-weight: 600;
+    border-bottom-color: var(--interactive);
+  }
+  .tab-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 var(--spacing-02);
+    background: var(--interactive);
+    color: var(--text-on-color);
+    border-radius: var(--radius-pill);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .tab:not(.tab-active) .tab-badge {
+    background: var(--layer-03);
+    color: var(--text-primary);
   }
 
   .thread-frame {
