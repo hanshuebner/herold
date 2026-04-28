@@ -8,17 +8,34 @@ import type { Mailbox } from './types';
 
 class MovePicker {
   isOpen = $state(false);
+  /** Single-email mode target, null when bulk mode is active. */
   emailId = $state<string | null>(null);
+  /** Bulk-mode targets, empty when single mode is active. */
+  bulkIds = $state<string[]>([]);
 
-  /** Open the picker for a specific email. */
+  /** Open the picker for a single email. */
   open(emailId: string): void {
     this.emailId = emailId;
+    this.bulkIds = [];
     this.isOpen = true;
+  }
+
+  /** Open the picker for a bulk move targeting many emails. */
+  openBulk(ids: string[]): void {
+    this.emailId = null;
+    this.bulkIds = ids;
+    this.isOpen = true;
+  }
+
+  /** True when the picker is operating in bulk-move mode. */
+  get isBulk(): boolean {
+    return this.bulkIds.length > 0;
   }
 
   close(): void {
     this.isOpen = false;
     this.emailId = null;
+    this.bulkIds = [];
   }
 }
 

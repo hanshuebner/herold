@@ -63,6 +63,8 @@ class MailStore {
   listError = $state<string | null>(null);
   /** Index into listEmailIds of the keyboard-focused row; -1 = none. */
   listFocusedIndex = $state<number>(-1);
+  /** Bulk-selected email ids in the current list view. Cleared on folder switch. */
+  listSelectedIds = $state(new Set<string>());
 
   /** Per-thread load status keyed by threadId. */
   threadLoadStatus = $state(new Map<string, LoadStatus>());
@@ -359,6 +361,7 @@ class MailStore {
     if (sameFolder && this.listLoadStatus === 'ready') return;
     this.listFolder = folder;
     this.listFocusedIndex = -1;
+    this.listSelectedIds = new Set();
     this.listLoadStatus = 'loading';
     this.listError = null;
     try {
@@ -891,6 +894,220 @@ class MailStore {
         timeoutMs: 6000,
       });
       return 0;
+    }
+  }
+
+  // ── Bulk-selection helpers ────────────────────────────────────────────
+
+  /** Toggle whether `id` is in the bulk selection set. */
+  toggleSelected(id: string): void {
+    const next = new Set(this.listSelectedIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    this.listSelectedIds = next;
+  }
+
+  /** Replace the selection with every id currently visible in the list. */
+  selectAllVisible(): void {
+    this.listSelectedIds = new Set(this.listEmailIds);
+  }
+
+  /** Clear the bulk selection set. */
+  clearSelection(): void {
+    if (this.listSelectedIds.size === 0) return;
+    this.listSelectedIds = new Set();
+  }
+
+  /**
+   * Issue a single `Email/set` with one entry in `update` per id. Used
+   * by every bulk action — archive / delete / mark / move — so the
+   * server gets one round-trip and we can present one summary toast.
+   */
+  async #emailSetUpdateBulk(
+    updates: Record<string, Record<string, unknown>>,
+  ): Promise<{ updated: string[]; failed: Record<string, string> }> {
+    const accountId = this.mailAccountId;
+    if (!accountId) throw new Error('No Mail account on this session');
+    const { responses } = await jmap.batch((b) => {
+      b.call('Email/set', { accountId, update: updates }, [Capability.Mail]);
+    });
+    strict(responses);
+    const result = invocationArgs<{
+      updated?: Record<string, unknown> | null;
+      notUpdated?: Record<string, { type: string; description?: string }>;
+    }>(responses[0]);
+    const updated = Object.keys(result.updated ?? {});
+    const failed: Record<string, string> = {};
+    for (const [id, info] of Object.entries(result.notUpdated ?? {})) {
+      failed[id] = info.description ?? info.type;
+    }
+    return { updated, failed };
+  }
+
+  /** Bulk archive: remove the inbox mailbox from every id. Inbox-only. */
+  async bulkArchive(ids: string[]): Promise<void> {
+    const inbox = this.inbox;
+    if (!inbox || ids.length === 0) return;
+    const updates: Record<string, Record<string, unknown>> = {};
+    const prevById = new Map<string, Record<string, true>>();
+    for (const id of ids) {
+      const e = this.emails.get(id);
+      if (!e) continue;
+      if (!e.mailboxIds[inbox.id]) continue;
+      prevById.set(id, { ...e.mailboxIds });
+      updates[id] = { [`mailboxIds/${inbox.id}`]: null };
+      const next: Record<string, true> = { ...e.mailboxIds };
+      delete next[inbox.id];
+      this.#patchEmail(id, { mailboxIds: next });
+    }
+    if (Object.keys(updates).length === 0) return;
+    if (this.listFolder === 'inbox') {
+      for (const id of Object.keys(updates)) this.#removeFromList(id);
+    }
+    this.clearSelection();
+    try {
+      const { failed } = await this.#emailSetUpdateBulk(updates);
+      this.#summarizeBulk('archived', Object.keys(updates).length, failed);
+    } catch (err) {
+      for (const [id, prev] of prevById) {
+        this.#patchEmail(id, { mailboxIds: prev });
+      }
+      toast.show({
+        message: errMessage(err, 'Bulk archive failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
+  /** Bulk delete: replace every id's mailboxIds with `{<trashId>: true}`. */
+  async bulkDelete(ids: string[]): Promise<void> {
+    const trash = this.trash;
+    if (!trash || ids.length === 0) return;
+    const updates: Record<string, Record<string, unknown>> = {};
+    const prevById = new Map<string, Record<string, true>>();
+    for (const id of ids) {
+      const e = this.emails.get(id);
+      if (!e) continue;
+      if (e.mailboxIds[trash.id] && Object.keys(e.mailboxIds).length === 1) continue;
+      prevById.set(id, { ...e.mailboxIds });
+      updates[id] = { mailboxIds: { [trash.id]: true } };
+      this.#patchEmail(id, { mailboxIds: { [trash.id]: true } });
+    }
+    if (Object.keys(updates).length === 0) return;
+    if (this.listFolder !== 'trash') {
+      for (const id of Object.keys(updates)) this.#removeFromList(id);
+    }
+    this.clearSelection();
+    try {
+      const { failed } = await this.#emailSetUpdateBulk(updates);
+      this.#summarizeBulk('deleted', Object.keys(updates).length, failed);
+    } catch (err) {
+      for (const [id, prev] of prevById) {
+        this.#patchEmail(id, { mailboxIds: prev });
+      }
+      toast.show({
+        message: errMessage(err, 'Bulk delete failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
+  /** Bulk mark-read / mark-unread: set $seen on every id. */
+  async bulkSetSeen(ids: string[], seen: boolean): Promise<void> {
+    if (ids.length === 0) return;
+    const updates: Record<string, Record<string, unknown>> = {};
+    const prevById = new Map<string, Record<string, true | undefined>>();
+    for (const id of ids) {
+      const e = this.emails.get(id);
+      if (!e) continue;
+      const wasSeen = Boolean(e.keywords.$seen);
+      if (wasSeen === seen) continue;
+      prevById.set(id, { ...e.keywords });
+      updates[id] = { 'keywords/$seen': seen ? true : null };
+      const nextKeywords: Record<string, true | undefined> = { ...e.keywords };
+      if (seen) nextKeywords.$seen = true;
+      else delete nextKeywords.$seen;
+      this.#patchEmail(id, { keywords: nextKeywords });
+    }
+    if (Object.keys(updates).length === 0) return;
+    this.clearSelection();
+    try {
+      const { failed } = await this.#emailSetUpdateBulk(updates);
+      this.#summarizeBulk(
+        seen ? 'marked read' : 'marked unread',
+        Object.keys(updates).length,
+        failed,
+      );
+    } catch (err) {
+      for (const [id, prev] of prevById) {
+        this.#patchEmail(id, { keywords: prev });
+      }
+      toast.show({
+        message: errMessage(err, 'Bulk mark failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
+  /** Bulk move: replace every id's mailboxIds with `{[targetId]: true}`. */
+  async bulkMoveToMailbox(ids: string[], targetId: string): Promise<void> {
+    if (ids.length === 0) return;
+    const updates: Record<string, Record<string, unknown>> = {};
+    const prevById = new Map<string, Record<string, true>>();
+    for (const id of ids) {
+      const e = this.emails.get(id);
+      if (!e) continue;
+      if (e.mailboxIds[targetId] && Object.keys(e.mailboxIds).length === 1) continue;
+      prevById.set(id, { ...e.mailboxIds });
+      updates[id] = { mailboxIds: { [targetId]: true } };
+      this.#patchEmail(id, { mailboxIds: { [targetId]: true } });
+    }
+    if (Object.keys(updates).length === 0) return;
+    if (this.listFolder !== 'all') {
+      const target = this.mailboxes.get(targetId);
+      const targetRole = target?.role ?? '';
+      if (targetRole !== this.listFolder) {
+        for (const id of Object.keys(updates)) this.#removeFromList(id);
+      }
+    }
+    this.clearSelection();
+    try {
+      const { failed } = await this.#emailSetUpdateBulk(updates);
+      const targetName = this.mailboxes.get(targetId)?.name ?? 'mailbox';
+      this.#summarizeBulk(
+        `moved to ${targetName}`,
+        Object.keys(updates).length,
+        failed,
+      );
+    } catch (err) {
+      for (const [id, prev] of prevById) {
+        this.#patchEmail(id, { mailboxIds: prev });
+      }
+      toast.show({
+        message: errMessage(err, 'Bulk move failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
+  /** Render a "X messages <verb>" / partial-failure toast for bulk ops. */
+  #summarizeBulk(verb: string, total: number, failed: Record<string, string>): void {
+    const failCount = Object.keys(failed).length;
+    const ok = total - failCount;
+    if (failCount > 0) {
+      toast.show({
+        message: `${ok} ${verb}, ${failCount} failed`,
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    } else {
+      toast.show({
+        message: `${ok} message${ok === 1 ? '' : 's'} ${verb}`,
+      });
     }
   }
 

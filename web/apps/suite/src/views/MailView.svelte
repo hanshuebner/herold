@@ -188,6 +188,19 @@
           if (id) movePicker.open(id);
         },
       },
+      {
+        key: 'x',
+        description: 'Toggle selection',
+        action: () => {
+          const id = focusedEmailId();
+          if (id) mail.toggleSelected(id);
+        },
+      },
+      {
+        key: '*',
+        description: 'Select all visible',
+        action: () => mail.selectAllVisible(),
+      },
     ];
     if (isInboxRoute) {
       layer.push(
@@ -298,6 +311,30 @@
       `Permanently delete ${n} message${n === 1 ? '' : 's'} from Trash? This cannot be undone.`,
     );
     if (ok) void mail.emptyTrash();
+  }
+
+  function selectedIds(): string[] {
+    return [...mail.listSelectedIds];
+  }
+  function bulkArchive(): void {
+    void mail.bulkArchive(selectedIds());
+  }
+  function bulkDelete(): void {
+    const ids = selectedIds();
+    if (ids.length === 0) return;
+    const ok = confirm(`Move ${ids.length} message${ids.length === 1 ? '' : 's'} to Trash?`);
+    if (ok) void mail.bulkDelete(ids);
+  }
+  function bulkMarkRead(): void {
+    void mail.bulkSetSeen(selectedIds(), true);
+  }
+  function bulkMarkUnread(): void {
+    void mail.bulkSetSeen(selectedIds(), false);
+  }
+  function bulkMove(): void {
+    const ids = selectedIds();
+    if (ids.length === 0) return;
+    movePicker.openBulk(ids);
   }
 
   function emptyMessage(f: FolderID | undefined): string {
@@ -474,10 +511,27 @@
     {:else if mail.listEmails.length === 0}
       <div class="state">{emptyMessage(folder)}</div>
     {:else}
+      {#if mail.listSelectedIds.size > 0}
+        <div class="bulk-bar" role="toolbar" aria-label="Bulk actions">
+          <span class="bulk-count">
+            {mail.listSelectedIds.size} selected
+          </span>
+          <button type="button" onclick={() => mail.clearSelection()}>Clear</button>
+          <span class="bulk-spacer"></span>
+          {#if folder === 'inbox'}
+            <button type="button" onclick={bulkArchive}>Archive</button>
+          {/if}
+          <button type="button" onclick={bulkMarkRead}>Mark read</button>
+          <button type="button" onclick={bulkMarkUnread}>Mark unread</button>
+          <button type="button" onclick={bulkMove}>Move…</button>
+          <button type="button" class="danger" onclick={bulkDelete}>Delete</button>
+        </div>
+      {/if}
       <ul
         class="thread-list"
         role="listbox"
         aria-label="{folderLabel} threads"
+        aria-multiselectable="true"
         bind:this={listEl}
       >
         {#each mail.listEmails as email, i (email.id)}
@@ -485,10 +539,20 @@
             class="thread-row"
             class:unread={isUnread(email)}
             class:focused={mail.listFocusedIndex === i}
+            class:selected={mail.listSelectedIds.has(email.id)}
             data-row-index={i}
           >
+            <input
+              type="checkbox"
+              class="row-check"
+              aria-label="Select message"
+              checked={mail.listSelectedIds.has(email.id)}
+              onchange={() => mail.toggleSelected(email.id)}
+              onclick={(e) => e.stopPropagation()}
+            />
             <button
               type="button"
+              class="row-activate"
               role="option"
               aria-selected={mail.listFocusedIndex === i}
               onclick={() => {
@@ -644,6 +708,9 @@
     padding: 0;
   }
   .thread-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
     border-bottom: 1px solid var(--border-subtle-01);
     border-left: 3px solid transparent;
     transition: border-color var(--duration-fast-02) var(--easing-productive-enter);
@@ -652,22 +719,67 @@
     border-left-color: var(--interactive);
     background: var(--layer-01);
   }
-  .thread-row button {
+  .thread-row.selected {
+    background: var(--layer-02);
+  }
+  .row-check {
+    margin: 0 var(--spacing-03) 0 var(--spacing-04);
+    width: 16px;
+    height: 16px;
+    accent-color: var(--interactive);
+    cursor: pointer;
+  }
+  .row-activate {
     display: grid;
     grid-template-columns: 24px 14ch 1fr auto auto;
     gap: var(--spacing-04);
     align-items: center;
     width: 100%;
-    padding: var(--spacing-03) var(--spacing-05);
+    padding: var(--spacing-03) var(--spacing-04) var(--spacing-03) 0;
     color: var(--text-secondary);
     text-align: left;
     transition: background var(--duration-fast-02) var(--easing-productive-enter);
   }
-  .thread-row button:hover {
+  .row-activate:hover {
     background: var(--layer-01);
   }
-  .thread-row.unread button {
+  .thread-row.unread .row-activate {
     color: var(--text-primary);
+  }
+
+  .bulk-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+    padding: var(--spacing-03) var(--spacing-05);
+    border-bottom: 1px solid var(--border-subtle-01);
+    background: var(--layer-02);
+  }
+  .bulk-count {
+    color: var(--text-primary);
+    font-weight: 600;
+    margin-right: var(--spacing-02);
+  }
+  .bulk-spacer {
+    flex: 1;
+  }
+  .bulk-bar button {
+    padding: var(--spacing-02) var(--spacing-04);
+    border-radius: var(--radius-md);
+    background: var(--layer-01);
+    color: var(--text-primary);
+    font-weight: 500;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .bulk-bar button:hover {
+    background: var(--layer-03);
+  }
+  .bulk-bar button.danger {
+    color: var(--support-error);
+  }
+  .bulk-bar button.danger:hover {
+    background: var(--support-error);
+    color: var(--text-on-color);
   }
 
   .star {

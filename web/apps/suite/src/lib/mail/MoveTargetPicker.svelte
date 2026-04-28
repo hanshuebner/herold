@@ -9,6 +9,14 @@
   import type { Mailbox } from './types';
 
   let candidates = $derived.by<Mailbox[]>(() => {
+    if (!movePicker.isOpen) return [];
+    if (movePicker.isBulk) {
+      // In bulk mode, every mailbox is a valid target — we don't try to
+      // exclude "already there" because that would shrink the set
+      // arbitrarily depending on which selected emails happen to live
+      // where.
+      return computeMoveCandidates(mail.mailboxes.values(), new Set());
+    }
     const eid = movePicker.emailId;
     if (!eid) return [];
     const email = mail.emails.get(eid);
@@ -53,6 +61,12 @@
   });
 
   function commit(target: Mailbox): void {
+    if (movePicker.isBulk) {
+      const ids = [...movePicker.bulkIds];
+      movePicker.close();
+      void mail.bulkMoveToMailbox(ids, target.id);
+      return;
+    }
     const eid = movePicker.emailId;
     movePicker.close();
     if (!eid) return;
@@ -84,7 +98,13 @@
     tabindex="-1"
   >
     <header>
-      <h2 id="move-title">Move to mailbox</h2>
+      <h2 id="move-title">
+        {#if movePicker.isBulk}
+          Move {movePicker.bulkIds.length} message{movePicker.bulkIds.length === 1 ? '' : 's'} to
+        {:else}
+          Move to mailbox
+        {/if}
+      </h2>
       <button
         type="button"
         class="close"
