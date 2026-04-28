@@ -30,6 +30,7 @@ Priorities (P0 / P1 / P2) are calibrated from gmail-logger capture data. They ar
 | `Enter` | Open focused thread | P0 |
 | `Escape` | Close picker / dismiss overlay / blur search | P0 |
 | `Ctrl+Enter` | Send compose | P0 |
+| `+` | Open emoji picker for focused/expanded message | P1 |
 
 ## Two-key (`g…`) navigation sequences
 

@@ -1508,6 +1508,53 @@ class MailStore {
     }
   }
 
+  /**
+   * Add or remove the current user's reaction on an email.
+   * Optimistic: applies the change locally, fires `Email/set` with a
+   * JSON-patch path, reverts and toasts on failure.
+   *
+   * Per REQ-MAIL-171/173: `reactions/<emoji>/<principalId>: true` to add,
+   * `... null` to remove. A `forbidden` response means the server rejected
+   * a mutation of someone else's entry — should not occur via this UI path
+   * but handled defensively.
+   */
+  async toggleReaction(emailId: string, emoji: string, principalId: string): Promise<void> {
+    const email = this.emails.get(emailId);
+    if (!email) return;
+
+    const prevReactions = email.reactions ? { ...email.reactions } : {};
+    const reactors = prevReactions[emoji] ?? [];
+    const alreadyReacted = reactors.includes(principalId);
+
+    // Optimistic patch.
+    const nextReactions: Record<string, string[]> = { ...prevReactions };
+    if (alreadyReacted) {
+      const filtered = reactors.filter((p) => p !== principalId);
+      if (filtered.length === 0) {
+        delete nextReactions[emoji];
+      } else {
+        nextReactions[emoji] = filtered;
+      }
+    } else {
+      nextReactions[emoji] = [...reactors, principalId];
+    }
+    this.#patchEmail(emailId, { reactions: nextReactions });
+
+    try {
+      await this.#emailSetUpdate(emailId, {
+        [`reactions/${emoji}/${principalId}`]: alreadyReacted ? null : true,
+      });
+    } catch (err) {
+      // Revert the optimistic patch.
+      this.#patchEmail(emailId, { reactions: Object.keys(prevReactions).length === 0 ? null : prevReactions });
+      toast.show({
+        message: errMessage(err, 'React failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
   async setSeen(emailId: string, seen: boolean): Promise<void> {
     const email = this.emails.get(emailId);
     if (!email) return;
@@ -1643,3 +1690,6 @@ function errMessage(err: unknown, fallback: string): string {
 }
 
 export const mail = new MailStore();
+
+/** Exported purely for unit tests; not part of the public surface. */
+export const _internals_forTest = { errMessage };

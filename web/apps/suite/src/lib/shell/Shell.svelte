@@ -8,6 +8,7 @@
   import HelpOverlay from '../help/HelpOverlay.svelte';
   import MoveTargetPicker from '../mail/MoveTargetPicker.svelte';
   import SnoozePicker from '../mail/SnoozePicker.svelte';
+  import ReactionConfirmModal from '../mail/ReactionConfirmModal.svelte';
 
   interface Props {
     activeApp?: 'mail' | 'chat';
@@ -51,6 +52,7 @@
   <HelpOverlay />
   <MoveTargetPicker />
   <SnoozePicker />
+  <ReactionConfirmModal />
 </div>
 
 <style>

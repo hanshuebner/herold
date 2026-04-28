@@ -111,6 +111,18 @@ export interface Email {
   messageId?: string[] | null;
   inReplyTo?: string[] | null;
   references?: string[] | null;
+  /**
+   * Email reactions extension property per REQ-MAIL-170. Shape:
+   * `{ "<emoji>": ["<principal-id>", ...] }`. Sparse — emojis with no
+   * current reactors are absent. Capability:
+   * https://netzhansa.com/jmap/email-reactions
+   */
+  reactions?: Record<string, string[]> | null;
+  /**
+   * Raw header values for list detection (REQ-MAIL-191). The suite
+   * fetches `header:List-ID:asText` to determine mailing-list mail.
+   */
+  'header:List-ID:asText'?: string | null;
 }
 
 /** The properties projection the suite requests for list rendering. */
@@ -153,6 +165,8 @@ export const EMAIL_BODY_PROPERTIES = [
   'messageId',
   'inReplyTo',
   'references',
+  'reactions',
+  'header:List-ID:asText',
 ] as const;
 
 /**

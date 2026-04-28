@@ -1,6 +1,8 @@
 <script lang="ts">
   import HtmlBody from './HtmlBody.svelte';
   import AttachmentList from './AttachmentList.svelte';
+  import EmojiPicker from './EmojiPicker.svelte';
+  import ReactionsStrip from './ReactionsStrip.svelte';
   import { htmlHasExternalImages } from './sanitize';
   import { splitQuotedText } from './quoted';
   import { emailHtmlBody, emailTextBody, type Email } from './types';
@@ -11,6 +13,9 @@
   import { settings } from '../settings/settings.svelte';
   import { jmap } from '../jmap/client';
   import { auth } from '../auth/auth.svelte';
+  import { reactionConfirm } from './reaction-confirm.svelte';
+  import { keyboard } from '../keyboard/engine.svelte';
+  import { untrack } from 'svelte';
 
   interface Props {
     email: Email;
@@ -100,6 +105,74 @@
     }
     return out;
   });
+
+  // ── Reactions ──────────────────────────────────────────────────────────
+
+  // Controls visibility of the emoji picker floating near the React button.
+  let pickerOpen = $state(false);
+
+  let reactButtonEl = $state<HTMLButtonElement | null>(null);
+
+  /**
+   * Total explicit recipient count (to + cc), used for the cross-server
+   * confirmation threshold per REQ-MAIL-191.
+   */
+  let totalRecipients = $derived((email.to?.length ?? 0) + (email.cc?.length ?? 0));
+
+  /**
+   * The mailing-list id from the List-ID header, if present. A non-empty
+   * value triggers the cross-server confirmation check.
+   */
+  let listId = $derived((email['header:List-ID:asText'] ?? '').trim() || null);
+
+  function openPicker(): void {
+    if (expanded) pickerOpen = true;
+  }
+
+  function handleReaction(emoji: string): void {
+    const principalId = auth.principalId;
+    if (!principalId) return;
+
+    const proceed = (): void => {
+      void mail.toggleReaction(email.id, emoji, principalId);
+    };
+
+    const needed = reactionConfirm.needsConfirm({
+      listId,
+      totalRecipients,
+      emailId: email.id,
+      emoji,
+      onProceed: proceed,
+      onAbort: () => {
+        // User cancelled; nothing to do.
+      },
+    });
+
+    if (!needed) proceed();
+  }
+
+  function handleChipAddReaction(emoji: string): void {
+    handleReaction(emoji);
+  }
+
+  // Keyboard shortcut: `+` opens the emoji picker for the expanded/focused
+  // message. Per the task spec, `r` is taken by Reply so `+` is used.
+  // The layer is pushed only while this message is expanded to avoid
+  // shadowing the global `+` key unnecessarily.
+  $effect(() => {
+    if (!expanded) return;
+    const pop = untrack(() =>
+      keyboard.pushLayer([
+        {
+          key: '+',
+          action: () => {
+            openPicker();
+          },
+        },
+      ]),
+    );
+    return pop;
+  });
 </script>
 
 <article class="message" class:expanded>
@@ -179,27 +252,63 @@
 
       <AttachmentList {email} />
 
+      <!-- Reactions strip: shown whenever reactions exist on the message. -->
+      <ReactionsStrip
+        emailId={email.id}
+        reactions={email.reactions}
+        principalId={auth.principalId}
+        onAddReaction={handleChipAddReaction}
+      />
+
       <div class="actions">
         <button type="button" class="pill" onclick={() => compose.openReply(email)}>
-          ↩ Reply
+          Reply
         </button>
         {#if hasMultipleRecipients}
           <button type="button" class="pill" onclick={() => compose.openReplyAll(email)}>
-            ↩↩ Reply all
+            Reply all
           </button>
         {/if}
         <button type="button" class="pill" onclick={() => compose.openForward(email)}>
-          ↪ Forward
+          Forward
         </button>
+        <!-- React button per REQ-MAIL-152. The `+` key also opens this
+             picker when the message is expanded (see keyboard layer above). -->
+        <div class="react-wrapper">
+          <button
+            type="button"
+            class="pill"
+            class:active={pickerOpen}
+            bind:this={reactButtonEl}
+            onclick={() => (pickerOpen = !pickerOpen)}
+            aria-label="React with emoji"
+            aria-expanded={pickerOpen}
+            aria-haspopup="dialog"
+          >
+            React
+          </button>
+          {#if pickerOpen}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="picker-anchor"
+              onkeydown={(e) => { if (e.key === 'Escape') pickerOpen = false; }}
+            >
+              <EmojiPicker
+                onSelect={handleReaction}
+                onClose={() => (pickerOpen = false)}
+              />
+            </div>
+          {/if}
+        </div>
         <button type="button" class="pill" onclick={() => movePicker.open(email.id)}>
-          → Move…
+          Move...
         </button>
         <button
           type="button"
           class="pill"
           onclick={() => mail.setSeen(email.id, !isSeen)}
         >
-          {isSeen ? '○ Mark unread' : '● Mark read'}
+          {isSeen ? 'Mark unread' : 'Mark read'}
         </button>
         <button
           type="button"
@@ -207,7 +316,7 @@
           class:active={isImportant}
           onclick={() => mail.toggleImportant(email.id)}
         >
-          {isImportant ? '! Important' : 'Mark important'}
+          {isImportant ? 'Important' : 'Mark important'}
         </button>
         {#if isSnoozed}
           <button
@@ -216,7 +325,7 @@
             onclick={() => mail.unsnoozeEmail(email.id)}
             title="Wake up now"
           >
-            ⏰ Unsnooze
+            Unsnooze
           </button>
         {:else}
           <button
@@ -224,7 +333,7 @@
             class="pill"
             onclick={() => snoozePicker.open(email.id)}
           >
-            ⏰ Snooze
+            Snooze
           </button>
         {/if}
         {#if isInTrash}
@@ -233,7 +342,7 @@
             class="pill"
             onclick={() => mail.restoreFromTrash(email.id)}
           >
-            ⤺ Restore
+            Restore
           </button>
         {/if}
       </div>
@@ -348,6 +457,7 @@
 
   .actions {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--spacing-03);
     padding: var(--spacing-04) 0 0;
   }
@@ -373,6 +483,19 @@
     color: var(--text-primary);
     border-color: var(--support-warning);
   }
+
+  /* The react wrapper positions the picker relative to the button. */
+  .react-wrapper {
+    position: relative;
+    display: inline-flex;
+  }
+  .picker-anchor {
+    position: absolute;
+    bottom: calc(100% + var(--spacing-02));
+    left: 0;
+    z-index: 200;
+  }
+
   .text-body {
     margin: 0;
     padding: var(--spacing-04);
