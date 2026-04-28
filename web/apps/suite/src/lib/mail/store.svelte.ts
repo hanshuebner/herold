@@ -1461,6 +1461,75 @@ class MailStore {
     }
   }
 
+  /**
+   * Apply a category keyword to an email (or every email in the thread when
+   * `threadGranular` is true). Sets `$category-<name>` and removes all other
+   * `$category-*` keywords. Optimistic; reverts on failure.
+   *
+   * REQ-CAT-20..22: used by the "Move to category" action and the `m` shortcut.
+   */
+  async setCategoryKeyword(
+    emailId: string,
+    categoryKeyword: string | null,
+    threadGranular: boolean,
+  ): Promise<void> {
+    const email = this.emails.get(emailId);
+    if (!email) return;
+
+    // Collect the ids to patch (thread-granular or single).
+    const targetIds: string[] = threadGranular
+      ? (this.threads.get(email.threadId)?.emailIds ?? [emailId])
+      : [emailId];
+
+    // Build the keyword patches for each target.
+    const prevById = new Map<string, Record<string, true | undefined>>();
+    const updates: Record<string, Record<string, unknown>> = {};
+
+    for (const id of targetIds) {
+      const e = this.emails.get(id);
+      if (!e) continue;
+      prevById.set(id, { ...e.keywords });
+
+      // Remove all existing $category-* keywords.
+      const nextKeywords: Record<string, true | undefined> = {};
+      for (const [kw, v] of Object.entries(e.keywords)) {
+        if (!kw.startsWith('$category-')) nextKeywords[kw] = v;
+      }
+      if (categoryKeyword) {
+        nextKeywords[categoryKeyword] = true;
+      }
+      this.#patchEmail(id, { keywords: nextKeywords });
+
+      // Build the Email/set patches: null each old $category-* key, then set new.
+      const setPatches: Record<string, unknown> = {};
+      for (const kw of Object.keys(e.keywords)) {
+        if (kw.startsWith('$category-')) {
+          setPatches[`keywords/${kw}`] = null;
+        }
+      }
+      if (categoryKeyword) {
+        setPatches[`keywords/${categoryKeyword}`] = true;
+      }
+      updates[id] = setPatches;
+    }
+
+    if (Object.keys(updates).length === 0) return;
+
+    try {
+      await this.#emailSetUpdateBulk(updates);
+    } catch (err) {
+      // Revert all patches.
+      for (const [id, prev] of prevById) {
+        this.#patchEmail(id, { keywords: prev });
+      }
+      toast.show({
+        message: errMessage(err, 'Move to category failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
   /** Toggle the $important keyword. No toast (toggle is itself the undo). */
   async toggleImportant(emailId: string): Promise<void> {
     const email = this.emails.get(emailId);
