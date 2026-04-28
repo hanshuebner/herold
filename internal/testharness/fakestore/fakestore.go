@@ -661,6 +661,49 @@ func (m *metaFace) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 	return nil
 }
 
+func (m *metaFace) MoveMessage(ctx context.Context, msgID store.MessageID, targetMailboxID store.MailboxID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msg, ok := s.messages[msgID]
+	if !ok {
+		return fmt.Errorf("message %d: %w", msgID, store.ErrNotFound)
+	}
+	tgtMB, ok := s.mailboxes[targetMailboxID]
+	if !ok {
+		return fmt.Errorf("mailbox %d: %w", targetMailboxID, store.ErrNotFound)
+	}
+	srcMB := s.mailboxes[msg.MailboxID]
+	now := s.clk.Now()
+
+	// Advance source mailbox modseq.
+	srcMB.HighestModSeq++
+	s.mailboxes[msg.MailboxID] = srcMB
+
+	// Move the message.
+	tgtMB.HighestModSeq++
+	msg.MailboxID = targetMailboxID
+	msg.UID = store.UID(tgtMB.HighestModSeq)
+	msg.ModSeq = store.ModSeq(tgtMB.HighestModSeq)
+	s.messages[msgID] = msg
+	tgtMB.UpdatedAt = now
+	s.mailboxes[targetMailboxID] = tgtMB
+
+	// Record state change.
+	s.appendStateChangeLocked(store.StateChange{
+		PrincipalID:    tgtMB.PrincipalID,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(msgID),
+		ParentEntityID: uint64(targetMailboxID),
+		Op:             store.ChangeOpUpdated,
+		ProducedAt:     now,
+	})
+	return nil
+}
+
 func (m *metaFace) UpdateMailboxModseqAndAppendChange(
 	ctx context.Context,
 	mailboxID store.MailboxID,
@@ -722,6 +765,26 @@ func (m *metaFace) ReadChangeFeed(
 		}
 	}
 	return out, nil
+}
+
+func (m *metaFace) GetMaxChangeSeqForKind(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	kind store.EntityKind,
+) (store.ChangeSeq, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var maxSeq store.ChangeSeq
+	for _, c := range s.stateChanges[principalID] {
+		if c.Kind == kind && c.Seq > maxSeq {
+			maxSeq = c.Seq
+		}
+	}
+	return maxSeq, nil
 }
 
 // ---------- Metadata: aliases, domains ----------

@@ -938,6 +938,56 @@ func (m *metadata) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 	})
 }
 
+func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, targetMailboxID store.MailboxID) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var srcMailboxID int64
+		err := tx.QueryRow(ctx, `SELECT mailbox_id FROM messages WHERE id = $1`, int64(msgID)).Scan(&srcMailboxID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		if err != nil {
+			return mapErr(err)
+		}
+
+		var pid, tgtHighest int64
+		err = tx.QueryRow(ctx, `SELECT principal_id, highest_modseq FROM mailboxes WHERE id = $1`,
+			int64(targetMailboxID)).Scan(&pid, &tgtHighest)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		if err != nil {
+			return mapErr(err)
+		}
+
+		newUID := tgtHighest + 1
+		newModseq := tgtHighest + 1
+
+		if _, err := tx.Exec(ctx,
+			`UPDATE messages SET mailbox_id = $1, uid = $2, modseq = $3 WHERE id = $4`,
+			int64(targetMailboxID), newUID, newModseq, int64(msgID)); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE mailboxes SET highest_modseq = $1, updated_at_us = $2 WHERE id = $3`,
+			newModseq, usMicros(now), int64(targetMailboxID)); err != nil {
+			return mapErr(err)
+		}
+		var srcHighest int64
+		if err := tx.QueryRow(ctx, `SELECT highest_modseq FROM mailboxes WHERE id = $1`, srcMailboxID).Scan(&srcHighest); err != nil {
+			return mapErr(err)
+		}
+		srcHighest++
+		if _, err := tx.Exec(ctx,
+			`UPDATE mailboxes SET highest_modseq = $1, updated_at_us = $2 WHERE id = $3`,
+			srcHighest, usMicros(now), srcMailboxID); err != nil {
+			return mapErr(err)
+		}
+		return appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindEmail, uint64(msgID), uint64(targetMailboxID), store.ChangeOpUpdated, now)
+	})
+}
+
 func (m *metadata) UpdateMailboxModseqAndAppendChange(
 	ctx context.Context,
 	mailboxID store.MailboxID,
@@ -1022,6 +1072,21 @@ func (m *metadata) ReadChangeFeed(
 		})
 	}
 	return out, rows.Err()
+}
+
+func (m *metadata) GetMaxChangeSeqForKind(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	kind store.EntityKind,
+) (store.ChangeSeq, error) {
+	var seq int64
+	err := m.s.pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(seq), 0) FROM state_changes WHERE principal_id = $1 AND entity_kind = $2`,
+		int64(principalID), string(kind)).Scan(&seq)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return store.ChangeSeq(seq), nil
 }
 
 // -- helpers ----------------------------------------------------------

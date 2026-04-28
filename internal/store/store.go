@@ -140,6 +140,14 @@ type Metadata interface {
 	// if every ID is absent.
 	ExpungeMessages(ctx context.Context, mailboxID MailboxID, ids []MessageID) error
 
+	// MoveMessage atomically changes the mailbox_id of the message
+	// identified by msgID from its current mailbox to targetMailboxID,
+	// assigns a fresh UID within the target mailbox, bumps both source
+	// and target HighestModSeq, and appends an (EntityKindEmail,
+	// ChangeOpUpdated) entry. The message row ID (and therefore the JMAP
+	// Email id) is preserved. Returns ErrNotFound if msgID is absent.
+	MoveMessage(ctx context.Context, msgID MessageID, targetMailboxID MailboxID) error
+
 	// UpdateMailboxModseqAndAppendChange is the low-level escape hatch
 	// used by protocol code that has already computed a multi-row
 	// mutation and needs to advance HighestModSeq and append a
@@ -164,6 +172,18 @@ type Metadata interface {
 		fromSeq ChangeSeq,
 		max int,
 	) ([]StateChange, error)
+
+	// GetMaxChangeSeqForKind returns the highest Seq in the change feed
+	// for the given principal and entity kind, or 0 when no matching row
+	// exists. Used by JMAP Foo/changes and Foo/set to derive per-type
+	// state strings directly from the change feed, so that mutations made
+	// outside the JMAP layer (e.g. IMAP APPEND, principal provisioning)
+	// are reflected in state strings without a separate counter.
+	GetMaxChangeSeqForKind(
+		ctx context.Context,
+		principalID PrincipalID,
+		kind EntityKind,
+	) (ChangeSeq, error)
 
 	// InsertAlias creates an alias mapping. Returns ErrConflict on
 	// duplicate (local_part, domain).

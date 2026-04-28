@@ -1037,6 +1037,65 @@ func (m *metadata) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 	})
 }
 
+func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, targetMailboxID store.MailboxID) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		// Load the message to get its current mailbox and the principal.
+		var srcMailboxID int64
+		err := tx.QueryRowContext(ctx, `SELECT mailbox_id FROM messages WHERE id = ?`, int64(msgID)).Scan(&srcMailboxID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		if err != nil {
+			return mapErr(err)
+		}
+
+		// Get principal and current highest modseq for the target mailbox.
+		var pid, tgtHighest int64
+		err = tx.QueryRowContext(ctx, `SELECT principal_id, highest_modseq FROM mailboxes WHERE id = ?`,
+			int64(targetMailboxID)).Scan(&pid, &tgtHighest)
+		if errors.Is(err, sql.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		if err != nil {
+			return mapErr(err)
+		}
+
+		// Compute new UID for the target mailbox (highest_modseq+1 is used
+		// as UID — same pattern as InsertMessage).
+		newUID := tgtHighest + 1
+		newModseq := tgtHighest + 1
+
+		// Atomically update the message row.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE messages SET mailbox_id = ?, uid = ?, modseq = ? WHERE id = ?`,
+			int64(targetMailboxID), newUID, newModseq, int64(msgID)); err != nil {
+			return mapErr(err)
+		}
+		// Advance target mailbox highest_modseq.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE mailboxes SET highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
+			newModseq, usMicros(now), int64(targetMailboxID)); err != nil {
+			return mapErr(err)
+		}
+		// Advance source mailbox highest_modseq so IMAP IDLE / NOOP
+		// picks up the disappearance.
+		var srcHighest int64
+		if err := tx.QueryRowContext(ctx, `SELECT highest_modseq FROM mailboxes WHERE id = ?`, srcMailboxID).Scan(&srcHighest); err != nil {
+			return mapErr(err)
+		}
+		srcHighest++
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE mailboxes SET highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
+			srcHighest, usMicros(now), srcMailboxID); err != nil {
+			return mapErr(err)
+		}
+		// Append a single ChangeOpUpdated entry (the email ID is stable).
+		return appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindEmail, uint64(msgID), uint64(targetMailboxID), store.ChangeOpUpdated, now)
+	})
+}
+
 func (m *metadata) UpdateMailboxModseqAndAppendChange(
 	ctx context.Context,
 	mailboxID store.MailboxID,
@@ -1120,6 +1179,21 @@ func (m *metadata) ReadChangeFeed(
 		})
 	}
 	return out, rows.Err()
+}
+
+func (m *metadata) GetMaxChangeSeqForKind(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	kind store.EntityKind,
+) (store.ChangeSeq, error) {
+	var seq int64
+	err := m.s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq), 0) FROM state_changes WHERE principal_id = ? AND entity_kind = ?`,
+		int64(principalID), string(kind)).Scan(&seq)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return store.ChangeSeq(seq), nil
 }
 
 // -- helpers ----------------------------------------------------------
