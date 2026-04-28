@@ -6,6 +6,9 @@
   import { keyboard } from './lib/keyboard/engine.svelte';
   import { auth } from './lib/auth/auth.svelte';
   import { sync } from './lib/jmap/sync.svelte';
+  import { chatWs } from './lib/chat/chat-ws.svelte';
+  import { chat } from './lib/chat/store.svelte';
+  import { Capability } from './lib/jmap/types';
   import { compose } from './lib/compose/compose.svelte';
   import { composeStack } from './lib/compose/compose-stack.svelte';
   import { help } from './lib/help/help.svelte';
@@ -38,14 +41,30 @@
   $effect(() => {
     if (auth.status === 'ready') {
       settings.hydrate();
-      sync.start(['Email', 'Mailbox', 'Thread']);
+      // Start the EventSource for mail types; if chat is available also
+      // subscribe to Conversation, Message, Membership changes.
+      const hasChatCap = auth.session
+        ? Capability.HeroldChat in (auth.session.capabilities ?? {})
+        : false;
+      const types = hasChatCap
+        ? ['Email', 'Mailbox', 'Thread', 'Conversation', 'Message', 'Membership']
+        : ['Email', 'Mailbox', 'Thread'];
+      sync.start(types);
+
       untrack(() => {
         if (mail.mailboxes.size === 0) {
           mail.loadMailboxes().catch((err) => {
             console.error('initial mailbox load failed', err);
           });
         }
+        // Connect the chat WebSocket if the server supports chat.
+        if (hasChatCap) {
+          chatWs.connect();
+        }
       });
+    } else if (auth.status === 'unauthenticated') {
+      // Clean disconnect on logout / session expiry.
+      chatWs.disconnect();
     }
   });
 
@@ -142,7 +161,7 @@
 </script>
 
 <AuthGate>
-<Shell {activeApp} mailUnread={mail.inbox?.unreadEmails ?? 0} onAppSelect={selectApp}>
+<Shell {activeApp} mailUnread={mail.inbox?.unreadEmails ?? 0} chatUnread={chat.totalUnread} onAppSelect={selectApp}>
   {#snippet sidebar()}
     {#if activeApp === 'mail'}
       <div class="sidebar-inner">
