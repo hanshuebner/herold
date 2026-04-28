@@ -38,6 +38,7 @@ Each owns an area of the code tree. Ownership is where design and first-pass rev
 | `conformance-fuzz-engineer` | Wire-protocol conformance suites (imaptest, scripted SMTP, Pigeonhole, DKIM/DMARC/ARC vectors); fuzz target coverage; deterministic test harness. |
 | `release-ci-engineer` | GitHub Actions workflows, pre-commit hooks, Dockerfiles, packaging (`.deb`, `.rpm`, K8s manifests), reproducible-build toolchain, SBOM. |
 | `docs-writer` | Operator manual, admin reference, plugin SDK docs, migration guides. Active from Phase 2.5 onward. |
+| `bugfix-issues` | Triages and fixes open GitHub issues at `github.com/hanshuebner/herold/issues`. Reproduces the reported defect; either ships a focused fix-commit (`(fixes #N)` subject trailer) or comments on the issue asking the reporter for the missing details. Bounded to small, focused fixes — escalates anything that needs subsystem-implementor judgment to the root agent. |
 
 ## Phase-to-agent map
 
