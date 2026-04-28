@@ -459,6 +459,308 @@ func TestMailbox_Set_AcceptsColor(t *testing.T) {
 	}
 }
 
+// TestMailbox_Get_PropertiesFilter asserts that the properties field
+// in Mailbox/get limits the returned properties (RFC 8620 §5.1).
+// "id" must always be returned; fields absent from the list must not
+// appear.
+func TestMailbox_Get_PropertiesFilter(t *testing.T) {
+	f := setupFixture(t)
+	mustInsertMailbox(t, f, "INBOX", store.MailboxAttrInbox)
+
+	_, raw := f.invoke(t, "Mailbox/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"properties": []string{"id", "name"},
+	})
+	var resp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("got %d mailboxes, want 1", len(resp.List))
+	}
+	m := resp.List[0]
+	if _, ok := m["id"]; !ok {
+		t.Errorf("id must always be returned")
+	}
+	if _, ok := m["name"]; !ok {
+		t.Errorf("name should be returned when requested")
+	}
+	if _, ok := m["totalEmails"]; ok {
+		t.Errorf("totalEmails must not be returned when not requested")
+	}
+	if _, ok := m["myRights"]; ok {
+		t.Errorf("myRights must not be returned when not requested")
+	}
+}
+
+// TestMailbox_Query_FilterParentIdNull asserts that { "parentId": null }
+// in a Mailbox/query filter returns only top-level mailboxes (RFC 8621
+// §2.3).
+func TestMailbox_Query_FilterParentIdNull(t *testing.T) {
+	f := setupFixture(t)
+	// Insert a top-level mailbox and a child.
+	parent := mustInsertMailbox(t, f, "Parent", 0)
+	_, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid,
+		ParentID:    parent.ID,
+		Name:        "Child",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox child: %v", err)
+	}
+
+	_, raw := f.invoke(t, "Mailbox/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter":    map[string]any{"parentId": nil},
+	})
+	var resp struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	parentIDStr := fmt.Sprintf("%d", parent.ID)
+	if len(resp.IDs) != 1 || resp.IDs[0] != parentIDStr {
+		t.Errorf("expected only parent %s; got %v", parentIDStr, resp.IDs)
+	}
+}
+
+// TestMailbox_Set_DuplicateNameAlreadyExists asserts that creating two
+// mailboxes with the same name under the same parent returns alreadyExists
+// (RFC 8621 §2.5).
+func TestMailbox_Set_DuplicateNameAlreadyExists(t *testing.T) {
+	f := setupFixture(t)
+	// First creation must succeed.
+	_, raw := f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"create":    map[string]any{"a": map[string]any{"name": "Duplicate"}},
+	})
+	var r1 struct {
+		Created map[string]any `json:"created"`
+	}
+	_ = json.Unmarshal(raw, &r1)
+	if len(r1.Created) == 0 {
+		t.Fatalf("first create failed: %s", raw)
+	}
+
+	// Second creation with the same name must fail with alreadyExists.
+	_, raw = f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"create":    map[string]any{"b": map[string]any{"name": "Duplicate"}},
+	})
+	var r2 struct {
+		NotCreated map[string]map[string]any `json:"notCreated"`
+	}
+	if err := json.Unmarshal(raw, &r2); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if r2.NotCreated["b"]["type"] != "alreadyExists" {
+		t.Errorf("expected alreadyExists, got %v", r2.NotCreated["b"]["type"])
+	}
+}
+
+// TestMailbox_Set_ChangeSortOrder asserts that sortOrder is persisted
+// and read back via Mailbox/get (RFC 8621 §2.1).
+func TestMailbox_Set_ChangeSortOrder(t *testing.T) {
+	f := setupFixture(t)
+	mb := mustInsertMailbox(t, f, "Sorted", 0)
+	id := fmt.Sprintf("%d", mb.ID)
+
+	_, raw := f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update":    map[string]any{id: map[string]any{"sortOrder": 99}},
+	})
+	var uresp struct {
+		Updated    map[string]any `json:"updated"`
+		NotUpdated map[string]any `json:"notUpdated"`
+	}
+	_ = json.Unmarshal(raw, &uresp)
+	if len(uresp.Updated) != 1 {
+		t.Fatalf("update failed: %s", raw)
+	}
+
+	_, getraw := f.invoke(t, "Mailbox/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{id},
+	})
+	var gresp struct {
+		List []map[string]any `json:"list"`
+	}
+	_ = json.Unmarshal(getraw, &gresp)
+	if len(gresp.List) == 0 {
+		t.Fatalf("mailbox not found after sortOrder update")
+	}
+	so := gresp.List[0]["sortOrder"]
+	// JSON numbers unmarshal to float64.
+	if so != float64(99) {
+		t.Errorf("sortOrder = %v, want 99", so)
+	}
+}
+
+// TestMailbox_Set_CannotDestroyWithChildren asserts that destroying a
+// mailbox that has child mailboxes returns a mailboxHasChild SetError
+// (RFC 8621 §2.5).
+func TestMailbox_Set_CannotDestroyWithChildren(t *testing.T) {
+	f := setupFixture(t)
+	parent := mustInsertMailbox(t, f, "Parent", 0)
+	_, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid,
+		ParentID:    parent.ID,
+		Name:        "Child",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox child: %v", err)
+	}
+
+	_, raw := f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"destroy":   []string{fmt.Sprintf("%d", parent.ID)},
+	})
+	var resp struct {
+		Destroyed    []string                  `json:"destroyed"`
+		NotDestroyed map[string]map[string]any `json:"notDestroyed"`
+	}
+	_ = json.Unmarshal(raw, &resp)
+	if len(resp.Destroyed) != 0 {
+		t.Errorf("parent should not be destroyed when it has children")
+	}
+	parentIDStr := fmt.Sprintf("%d", parent.ID)
+	if resp.NotDestroyed[parentIDStr]["type"] != "mailboxHasChild" {
+		t.Errorf("expected mailboxHasChild, got %v", resp.NotDestroyed[parentIDStr]["type"])
+	}
+}
+
+// TestMailbox_Changes_AfterRename asserts that renaming a mailbox via
+// Mailbox/set causes it to appear in the updated list of a subsequent
+// Mailbox/changes call. The mailbox is created via JMAP (not directly
+// via the store) so that IncrementJMAPState is called and the
+// change-feed cursor aligns with the JMAP state counter.
+func TestMailbox_Changes_AfterRename(t *testing.T) {
+	f := setupFixture(t)
+
+	// Create via JMAP so IncrementJMAPState runs.
+	_, createRaw := f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"create":    map[string]any{"mb": map[string]any{"name": "BeforeRename"}},
+	})
+	var createResp struct {
+		Created  map[string]map[string]any `json:"created"`
+		NewState string                    `json:"newState"`
+	}
+	_ = json.Unmarshal(createRaw, &createResp)
+	mbID := createResp.Created["mb"]["id"].(string)
+
+	// startState is after the creation.
+	startState := createResp.NewState
+
+	// Rename via Mailbox/set.
+	f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update":    map[string]any{mbID: map[string]any{"name": "AfterRename"}},
+	})
+
+	// Mailbox/changes from startState must include the renamed mailbox.
+	_, raw := f.invoke(t, "Mailbox/changes", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"sinceState": startState,
+	})
+	var chResp struct {
+		Updated []string `json:"updated"`
+	}
+	_ = json.Unmarshal(raw, &chResp)
+	found := false
+	for _, id := range chResp.Updated {
+		if id == mbID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("renamed mailbox %s not in updated list: %v (raw=%s)", mbID, chResp.Updated, raw)
+	}
+}
+
+// TestMailbox_QueryChanges_NoChanges asserts the queryChanges response
+// structure when no mailboxes have changed since sinceQueryState.
+func TestMailbox_QueryChanges_NoChanges(t *testing.T) {
+	f := setupFixture(t)
+	mustInsertMailbox(t, f, "INBOX", store.MailboxAttrInbox)
+
+	_, queryRaw := f.invoke(t, "Mailbox/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+	})
+	var qresp struct{ QueryState string `json:"queryState"` }
+	_ = json.Unmarshal(queryRaw, &qresp)
+
+	_, raw := f.invoke(t, "Mailbox/queryChanges", map[string]any{
+		"accountId":       protojmap.AccountIDForPrincipal(f.pid),
+		"sinceQueryState": qresp.QueryState,
+	})
+	var resp struct {
+		OldQueryState string   `json:"oldQueryState"`
+		NewQueryState string   `json:"newQueryState"`
+		Removed       []string `json:"removed"`
+		Added         []any    `json:"added"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if resp.OldQueryState != qresp.QueryState {
+		t.Errorf("oldQueryState = %q, want %q", resp.OldQueryState, qresp.QueryState)
+	}
+	if len(resp.Removed) != 0 {
+		t.Errorf("removed = %v, want empty", resp.Removed)
+	}
+	if len(resp.Added) != 0 {
+		t.Errorf("added = %v, want empty", resp.Added)
+	}
+}
+
+// TestMailbox_QueryChanges_AfterCreate asserts that a newly created
+// mailbox appears in the added list of a queryChanges response.
+func TestMailbox_QueryChanges_AfterCreate(t *testing.T) {
+	f := setupFixture(t)
+
+	_, queryRaw := f.invoke(t, "Mailbox/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+	})
+	var qresp struct{ QueryState string `json:"queryState"` }
+	_ = json.Unmarshal(queryRaw, &qresp)
+	startState := qresp.QueryState
+
+	// Create a mailbox.
+	_, setRaw := f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"create":    map[string]any{"n": map[string]any{"name": "NewBox"}},
+	})
+	var setResp struct {
+		Created map[string]map[string]any `json:"created"`
+	}
+	_ = json.Unmarshal(setRaw, &setResp)
+	newID := setResp.Created["n"]["id"].(string)
+
+	_, raw := f.invoke(t, "Mailbox/queryChanges", map[string]any{
+		"accountId":       protojmap.AccountIDForPrincipal(f.pid),
+		"sinceQueryState": startState,
+	})
+	var resp struct {
+		Added []map[string]any `json:"added"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	found := false
+	for _, item := range resp.Added {
+		if item["id"] == newID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("new mailbox %s not in added list: %v (raw=%s)", newID, resp.Added, raw)
+	}
+}
+
 // TestMailbox_Set_RejectsInvalidColorFormat asserts the JMAP layer
 // rejects malformed hex literals on both create and update with a
 // SetError pointing at the "color" property.
