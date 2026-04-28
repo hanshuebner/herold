@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { compose } from './compose.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
   import { mail } from '../mail/store.svelte';
@@ -56,9 +57,28 @@
   // Snapshot the initial body once per open so the editor doesn't
   // re-mount as the user types (which would write into compose.body and
   // re-trigger the prop). The key on RichEditor below ensures it remounts
-  // only when compose transitions from idle → editing.
-  let initialHtml = $derived.by(() => {
-    return compose.status === 'editing' ? compose.body : '';
+  // only when compose transitions from idle -> editing.
+  //
+  // IMPORTANT: this must be $state, not $derived. A $derived that reads
+  // compose.body would recompute on every keystroke (because onEditorUpdate
+  // writes compose.body), causing $effect in RichEditor to destroy and
+  // recreate the ProseMirror view on each character, which resets the cursor
+  // to position 0 and produces reversed text. The $effect below reads
+  // compose.status (not compose.body) so it only fires on open/close
+  // transitions, capturing compose.body as a one-time snapshot.
+  let initialHtml = $state('');
+  $effect(() => {
+    if (compose.status === 'editing') {
+      // Read compose.body via untrack so this effect only re-runs when
+      // compose.status changes, not on every keystroke. compose.body is
+      // written by onEditorUpdate on every character; tracking it here would
+      // recompute initialHtml on each keystroke, which would cause
+      // RichEditor's $effect to recreate the ProseMirror view, resetting the
+      // cursor to position 0 and producing reversed text.
+      initialHtml = untrack(() => compose.body);
+    } else {
+      initialHtml = '';
+    }
   });
 </script>
 
