@@ -177,6 +177,18 @@
     return pop;
   });
 
+  // Reading marks the message as read: when this accordion is expanded
+  // and the email is currently unread, flip $seen. untrack() keeps the
+  // setSeen write from re-fueling this effect via the keywords read.
+  $effect(() => {
+    if (!expanded) return;
+    if (email.keywords.$seen) return;
+    const id = email.id;
+    untrack(() => {
+      void mail.setSeen(id, true);
+    });
+  });
+
   // ── Mute thread ────────────────────────────────────────────────────────
 
   let isMuted = $derived(managedRules.isThreadMuted(email.threadId));
