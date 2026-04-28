@@ -5,6 +5,7 @@
   import { mail } from '../mail/store.svelte';
   import RichEditor from './RichEditor.svelte';
   import ComposeToolbar from './ComposeToolbar.svelte';
+  import AddressAutocomplete from './AddressAutocomplete.svelte';
   import { EMPTY_ACTIVE, type ActiveState } from './editor';
   import type { EditorView } from 'prosemirror-view';
 
@@ -49,12 +50,17 @@
   // ProseMirror editor; otherwise the To field. (The editor's own
   // autofocus handles cursor placement; replies pre-populate the body
   // such that the empty leading paragraphs put the caret at the top.)
-  let toInput = $state<HTMLInputElement | null>(null);
+  let modalEl = $state<HTMLElement | null>(null);
   $effect(() => {
     if (compose.status !== 'editing') return;
     requestAnimationFrame(() => {
-      if (!compose.replyContext.parentId && toInput) {
-        toInput.focus();
+      if (!compose.replyContext.parentId && modalEl) {
+        // Focus the To-field input — the AddressAutocomplete's <input>
+        // is the first text input inside the modal, so query for it.
+        const first = modalEl.querySelector<HTMLInputElement>(
+          '.row input[type="text"]',
+        );
+        first?.focus();
       }
     });
   });
@@ -184,6 +190,7 @@
     aria-modal="true"
     aria-labelledby="compose-title"
     tabindex="-1"
+    bind:this={modalEl}
     ondragenter={onDragEnter}
     ondragover={onDragOver}
     ondragleave={onDragLeave}
@@ -221,14 +228,11 @@
         </span>
       </div>
 
-      <label class="row">
+      <div class="row">
         <span class="label">To</span>
-        <input
-          bind:this={toInput}
+        <AddressAutocomplete
           bind:value={compose.to}
-          type="text"
-          spellcheck="false"
-          autocomplete="off"
+          onChange={(v) => (compose.to = v)}
           placeholder="recipient@example.com"
           disabled={compose.status === 'sending'}
         />
@@ -241,29 +245,25 @@
             Cc / Bcc
           </button>
         {/if}
-      </label>
+      </div>
 
       {#if compose.ccBccVisible}
-        <label class="row">
+        <div class="row">
           <span class="label">Cc</span>
-          <input
+          <AddressAutocomplete
             bind:value={compose.cc}
-            type="text"
-            spellcheck="false"
-            autocomplete="off"
+            onChange={(v) => (compose.cc = v)}
             disabled={compose.status === 'sending'}
           />
-        </label>
-        <label class="row">
+        </div>
+        <div class="row">
           <span class="label">Bcc</span>
-          <input
+          <AddressAutocomplete
             bind:value={compose.bcc}
-            type="text"
-            spellcheck="false"
-            autocomplete="off"
+            onChange={(v) => (compose.bcc = v)}
             disabled={compose.status === 'sending'}
           />
-        </label>
+        </div>
       {/if}
 
       <label class="row">
