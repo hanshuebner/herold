@@ -270,10 +270,11 @@ class ComposeStore {
     if (this.to.trim() || this.cc.trim() || this.bcc.trim()) return true;
     if (this.subject.trim()) return true;
     if (this.attachments.length > 0) return true;
-    // Body is HTML; an empty editor renders one or more empty <p> tags.
-    // Strip tags and whitespace before deciding it's "empty".
-    const textOnly = this.body.replace(/<[^>]+>/g, '').trim();
-    return textOnly.length > 0;
+    // The auto-inserted signature is not "user input" -- a fresh
+    // openBlank() body is only the signature, and discarding that
+    // shouldn't prompt (issue #22). Strip the signature-and-after
+    // section before deciding the body is empty (issue #21).
+    return bodyTextWithoutSignature(this.body).length > 0;
   }
 
   /** True when at least one attachment is still uploading. */
@@ -1070,6 +1071,22 @@ function appendSignature(body: string, identity: Identity | null): string {
 }
 
 /**
+ * Strip the standard sig-dash delimiter (`-- ` per RFC 3676 §4.3) and
+ * everything below it, then HTML tags, then whitespace. Used by
+ * hasContent and the empty-body send check so a fresh compose carrying
+ * only the appended signature is treated as having no user-authored
+ * body content (issues #21, #22).
+ */
+export function bodyTextWithoutSignature(html: string): string {
+  const text = html.replace(/<[^>]+>/g, '\n').replace(/&nbsp;/g, ' ');
+  // Match the sig-dash on its own line: optional whitespace, `--`,
+  // a single space, end-of-line. RFC 3676 mandates the trailing space.
+  const idx = text.search(/(^|\n)\s*-- (?:\n|$)/);
+  const above = idx === -1 ? text : text.slice(0, idx);
+  return above.trim();
+}
+
+/**
  * Convert plain-text body content to a paragraph-broken HTML block. Used
  * when quoting parent bodies in reply / forward — ProseMirror parses the
  * resulting HTML cleanly.
@@ -1136,4 +1153,5 @@ export const _internals_forTest = {
   computeReplyAllCc,
   formatBytes,
   appendSignature,
+  bodyTextWithoutSignature,
 };

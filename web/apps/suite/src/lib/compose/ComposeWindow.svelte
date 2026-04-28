@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { compose } from './compose.svelte';
+  import { compose, bodyTextWithoutSignature } from './compose.svelte';
   import { composeStack } from './compose-stack.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
   import { mail } from '../mail/store.svelte';
@@ -191,8 +191,10 @@
       return;
     }
     const subjectEmpty = compose.subject.trim().length === 0;
-    const bodyText = compose.body.replace(/<[^>]+>/g, '').trim();
-    const bodyEmpty = bodyText.length === 0;
+    // Treat the auto-inserted signature as not-user-authored, so a body
+    // that contains only the signature still triggers the empty-body
+    // warning (issue #21).
+    const bodyEmpty = bodyTextWithoutSignature(compose.body).length === 0;
     if (subjectEmpty || bodyEmpty) {
       const missing = subjectEmpty && bodyEmpty
         ? 'subject and body'

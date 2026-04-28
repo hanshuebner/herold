@@ -21,6 +21,7 @@ const {
   computeReplyAllCc,
   formatBytes,
   appendSignature,
+  bodyTextWithoutSignature,
 } = _internals_forTest;
 
 const ID_NO_SIG = {
@@ -309,5 +310,32 @@ describe('formatBytes', () => {
   });
   it('formats gigabytes with two decimals', () => {
     expect(formatBytes(1024 * 1024 * 1024)).toBe('1.00 GB');
+  });
+});
+
+describe('bodyTextWithoutSignature', () => {
+  it('returns empty for an empty editor', () => {
+    expect(bodyTextWithoutSignature('<p></p>')).toBe('');
+    expect(bodyTextWithoutSignature('')).toBe('');
+  });
+
+  it('returns empty when only the signature is present', () => {
+    const sigBlock =
+      '<p></p><p></p><p>-- </p><p>Hans</p><p>h@example.test</p>';
+    expect(bodyTextWithoutSignature(sigBlock)).toBe('');
+  });
+
+  it('returns user content above the signature', () => {
+    const html =
+      '<p>Hi there</p><p></p><p>-- </p><p>Hans</p>';
+    expect(bodyTextWithoutSignature(html)).toBe('Hi there');
+  });
+
+  it('does not strip when the dash is not on its own line', () => {
+    expect(bodyTextWithoutSignature('<p>5 -- 3 = 2</p>')).toBe('5 -- 3 = 2');
+  });
+
+  it('handles &nbsp; whitespace from rich editors', () => {
+    expect(bodyTextWithoutSignature('<p>&nbsp;</p>')).toBe('');
   });
 });
