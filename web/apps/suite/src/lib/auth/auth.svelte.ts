@@ -214,6 +214,20 @@ class Auth {
     this.principalId = null;
     this.status = 'unauthenticated';
   }
+
+  /**
+   * Tell the auth state machine that the session was rejected by the
+   * server. Callers in non-bootstrap code paths (e.g. settings panels
+   * that hit /api/v1/...) use this when they catch UnauthenticatedError
+   * so the LoginView re-prompts instead of leaving the user with a
+   * scary inline banner. Idempotent.
+   */
+  signalUnauthenticated(): void {
+    if (this.status === 'unauthenticated') return;
+    this.session = null;
+    this.principalId = null;
+    this.status = 'unauthenticated';
+  }
 }
 
 export const auth = new Auth();

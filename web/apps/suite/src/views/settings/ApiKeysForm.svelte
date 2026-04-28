@@ -18,7 +18,13 @@
   import { auth } from '../../lib/auth/auth.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
   import { confirm } from '../../lib/dialog/confirm.svelte';
-  import { get, post, del, ApiError } from '../../lib/api/client';
+  import {
+    get,
+    post,
+    del,
+    ApiError,
+    UnauthenticatedError,
+  } from '../../lib/api/client';
   import { localeTag } from '../../lib/i18n/i18n.svelte';
 
   // End-user scopes available for key creation. Sorted to match AllEndUserScopes
@@ -73,6 +79,16 @@
       const result = await get<PageDTO<APIKeyDTO>>('/api/v1/api-keys');
       keys = result.items ?? [];
     } catch (err) {
+      if (err instanceof UnauthenticatedError) {
+        // 401 here means the session-cookie verifier rejected the
+        // public-listener cookie. Hand control back to the auth state
+        // machine so the LoginView re-prompts; the previous behaviour
+        // displayed a scary "Session expired" banner from inside the
+        // settings panel even when other panels still had a valid
+        // session (issue #6).
+        auth.signalUnauthenticated();
+        return;
+      }
       listError = errorMessage(err);
     } finally {
       listLoading = false;
@@ -205,6 +221,24 @@
   }
 </script>
 
+<!-- Help text. API keys are an opt-in feature for users who want to
+     drive the JMAP / REST surface from a script; people who only use
+     the web suite never need to create one. -->
+<div class="intro">
+  <p>
+    API keys let scripts and external programs authenticate against this
+    account using <code>Authorization: Bearer hk_...</code>. They are
+    optional -- nothing in the web suite needs one. Create a key only if
+    you want to drive JMAP or the REST API from outside the browser.
+  </p>
+  <p class="intro-hint">
+    Each key carries a fixed scope: tighten it to the smallest set of
+    permissions the script actually needs (for example, <code>mail.send</code>
+    for an outbound bot). Keys appear only once at creation time -- copy
+    them then; they cannot be retrieved later.
+  </p>
+</div>
+
 <!-- Plaintext token reveal panel (shown immediately after creation) -->
 {#if revealToken}
   <div class="reveal-panel">
@@ -319,6 +353,36 @@
 {/if}
 
 <style>
+  .intro {
+    max-width: 720px;
+    margin-bottom: var(--spacing-05);
+    padding: var(--spacing-04) var(--spacing-05);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+  }
+  .intro p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--type-body-01-size);
+    line-height: var(--type-body-01-line);
+  }
+  .intro p + p {
+    margin-top: var(--spacing-03);
+  }
+  .intro .intro-hint {
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    line-height: var(--type-body-compact-01-line);
+  }
+  .intro code {
+    font-family: var(--font-mono);
+    font-size: 0.95em;
+    background: var(--layer-02);
+    padding: 0 var(--spacing-02);
+    border-radius: var(--radius-sm);
+  }
+
   .list-header {
     margin-bottom: var(--spacing-05);
   }
