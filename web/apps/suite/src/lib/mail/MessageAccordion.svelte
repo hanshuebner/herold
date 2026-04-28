@@ -53,6 +53,12 @@
   }
 
   let recipientSummary = $derived(formatRecipientSummary(email));
+
+  // Show the Reply-all button only when there's somebody to add to Cc:
+  // multiple To recipients, or any Cc recipient at all.
+  let hasMultipleRecipients = $derived(
+    (email.to?.length ?? 0) > 1 || (email.cc?.length ?? 0) > 0,
+  );
 </script>
 
 <article class="message" class:expanded>
@@ -113,6 +119,11 @@
         <button type="button" class="pill" onclick={() => compose.openReply(email)}>
           ↩ Reply
         </button>
+        {#if hasMultipleRecipients}
+          <button type="button" class="pill" onclick={() => compose.openReplyAll(email)}>
+            ↩↩ Reply all
+          </button>
+        {/if}
         <button type="button" class="pill" onclick={() => compose.openForward(email)}>
           ↪ Forward
         </button>

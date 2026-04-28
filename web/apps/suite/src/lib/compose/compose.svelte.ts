@@ -126,6 +126,32 @@ class ComposeStore {
     });
   }
 
+  /**
+   * Open compose as a reply-all: To = parent.from, Cc = (parent.to ∪
+   * parent.cc) minus every Identity.email this user owns minus the
+   * primary recipient. Falls back to a regular reply when no Cc would
+   * survive the self-filter.
+   */
+  openReplyAll(parent: Email): void {
+    const selfEmails = new Set<string>();
+    for (const id of mail.identities.values()) {
+      selfEmails.add(id.email.toLowerCase());
+    }
+    const cc = computeReplyAllCc(parent, selfEmails);
+    this.openWith({
+      to: addressToString(parent.from?.[0]),
+      cc: cc.map(addressToString).join(', '),
+      subject: replySubject(parent.subject),
+      body: formatReplyQuote(parent),
+      replyContext: {
+        parentId: parent.id,
+        parentKeyword: '$answered',
+        inReplyTo: parent.messageId ?? null,
+        references: mergeReferences(parent),
+      },
+    });
+  }
+
   /** Open compose as a forward of the given email. */
   openForward(parent: Email): void {
     this.openWith({
@@ -458,6 +484,31 @@ function forwardSubject(orig: string | null): string {
   return `Fwd: ${s}`;
 }
 
+/**
+ * Compute the Cc address list for a reply-all: every parent To and Cc
+ * address, minus those whose lowercase email matches the user's
+ * Identity.email set, minus the primary reply target (parent.from).
+ * Order preserves the parent's To-then-Cc sequence; duplicates are
+ * dropped on the lowercase form.
+ */
+function computeReplyAllCc(parent: Email, selfEmails: Set<string>): Address[] {
+  const out: Address[] = [];
+  const primary = parent.from?.[0]?.email?.toLowerCase() ?? '';
+  const seen = new Set<string>([primary]);
+  for (const list of [parent.to, parent.cc]) {
+    if (!list) continue;
+    for (const addr of list) {
+      const lc = (addr.email ?? '').toLowerCase();
+      if (!lc) continue;
+      if (selfEmails.has(lc)) continue;
+      if (seen.has(lc)) continue;
+      seen.add(lc);
+      out.push(addr);
+    }
+  }
+  return out;
+}
+
 function mergeReferences(parent: Email): string[] {
   const refs: string[] = [];
   if (parent.references) refs.push(...parent.references);
@@ -645,4 +696,5 @@ export const _internals_forTest = {
   addressListToString,
   escapeHtml,
   plainTextToHtml,
+  computeReplyAllCc,
 };

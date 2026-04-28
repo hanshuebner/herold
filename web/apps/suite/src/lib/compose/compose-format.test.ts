@@ -18,6 +18,7 @@ const {
   addressListToString,
   htmlToPlainText,
   escapeHtml,
+  computeReplyAllCc,
 } = _internals_forTest;
 
 describe('parseAddressList', () => {
@@ -176,5 +177,72 @@ describe('escapeHtml', () => {
     expect(escapeHtml('<a href="x">&y</a>')).toBe(
       '&lt;a href=&quot;x&quot;&gt;&amp;y&lt;/a&gt;',
     );
+  });
+});
+
+describe('computeReplyAllCc', () => {
+  function emailWith(args: {
+    from?: string;
+    to?: string[];
+    cc?: string[];
+  }): Email {
+    return {
+      id: 'x',
+      threadId: 't',
+      mailboxIds: {},
+      keywords: {},
+      from: args.from ? [{ name: null, email: args.from }] : null,
+      to: args.to?.map((email) => ({ name: null, email })) ?? null,
+      cc: args.cc?.map((email) => ({ name: null, email })) ?? null,
+      subject: null,
+      preview: '',
+      receivedAt: '2026-04-28T00:00:00Z',
+      hasAttachment: false,
+    } as unknown as Email;
+  }
+
+  it('includes parent To and Cc, excluding the From', () => {
+    const parent = emailWith({
+      from: 'alice@x.test',
+      to: ['bob@y.test', 'carol@z.test'],
+      cc: ['dave@w.test'],
+    });
+    const cc = computeReplyAllCc(parent, new Set());
+    expect(cc.map((a) => a.email)).toEqual([
+      'bob@y.test',
+      'carol@z.test',
+      'dave@w.test',
+    ]);
+  });
+
+  it('excludes every Identity.email (case-insensitive)', () => {
+    const parent = emailWith({
+      from: 'alice@x.test',
+      to: ['ME@self.test', 'bob@y.test'],
+      cc: ['Other@Self.Test'],
+    });
+    const self = new Set(['me@self.test', 'other@self.test']);
+    const cc = computeReplyAllCc(parent, self);
+    expect(cc.map((a) => a.email)).toEqual(['bob@y.test']);
+  });
+
+  it('drops duplicates on lowercase email', () => {
+    const parent = emailWith({
+      from: 'alice@x.test',
+      to: ['Bob@Y.Test', 'bob@y.test'],
+      cc: ['BOB@y.test'],
+    });
+    const cc = computeReplyAllCc(parent, new Set());
+    expect(cc).toHaveLength(1);
+  });
+
+  it('returns empty when only the From is on the message', () => {
+    const parent = emailWith({ from: 'alice@x.test', to: [] });
+    expect(computeReplyAllCc(parent, new Set())).toEqual([]);
+  });
+
+  it('handles missing addresses without throwing', () => {
+    const parent = emailWith({});
+    expect(computeReplyAllCc(parent, new Set())).toEqual([]);
   });
 });

@@ -220,6 +220,14 @@
         },
       },
       {
+        key: 'R',
+        description: 'Reply all',
+        action: () => {
+          const e = replyTarget();
+          if (e) compose.openReplyAll(e);
+        },
+      },
+      {
         key: 'f',
         description: 'Forward',
         action: () => {
