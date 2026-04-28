@@ -48,6 +48,11 @@ type Store struct {
 	byEmail    map[string]store.PrincipalID
 	mailboxes  map[store.MailboxID]store.Mailbox
 	messages   map[store.MessageID]store.Message
+	// msgMailboxes tracks the per-(message, mailbox) membership for the M:N
+	// join table. Keys are mmKey{MessageID, MailboxID}; values are the per-
+	// membership metadata (UID, ModSeq, Flags, Keywords, SnoozedUntil).
+	// This is the authoritative source for Mailboxes on GetMessage.
+	msgMailboxes map[mmKey]store.MessageMailbox
 	aliases    map[store.AliasID]store.Alias
 	aliasBy    map[string]store.AliasID // "local@domain" -> alias
 	domains    map[string]store.Domain
@@ -82,6 +87,9 @@ type Store struct {
 	// sieveScripts holds the active Sieve script text per principal.
 	// Absence means "no script"; GetSieveScript returns ("", nil).
 	sieveScripts map[store.PrincipalID]string
+	// userSieveScripts holds the user-written Sieve script half per
+	// principal (Wave 3.15 two-source composition).
+	userSieveScripts map[store.PrincipalID]string
 
 	// inbound attachment policy rows (REQ-FLOW-ATTPOL-01); absence
 	// means the implicit default ("accept").
@@ -101,6 +109,10 @@ type Store struct {
 	// Lazily initialised on first coach method call.
 	coach *coachData
 
+	// managedRules holds Wave 3.15 ManagedRule rows keyed by ID.
+	managedRules   map[store.ManagedRuleID]store.ManagedRule
+	managedRuleSeq int64
+
 	// monotonic ID counters
 	nextPrincipalID store.PrincipalID
 	nextMailboxID   store.MailboxID
@@ -110,6 +122,12 @@ type Store struct {
 	nextUIDValidity store.UIDValidity
 
 	closed bool
+}
+
+// mmKey is the composite primary key for msgMailboxes.
+type mmKey struct {
+	msgID store.MessageID
+	mbID  store.MailboxID
 }
 
 type ftsDoc struct {
@@ -162,9 +180,12 @@ func New(opts Options) (*Store, error) {
 		changeSeq:       make(map[store.PrincipalID]store.ChangeSeq),
 		cursors:         make(map[string]uint64),
 		ftsDocs:         make(map[store.MessageID]ftsDoc),
-		sieveScripts:    make(map[store.PrincipalID]string),
+		sieveScripts:     make(map[store.PrincipalID]string),
+		userSieveScripts: make(map[store.PrincipalID]string),
 		attpolRecipient: make(map[string]store.InboundAttachmentPolicyRow),
 		attpolDomain:    make(map[string]store.InboundAttachmentPolicyRow),
+		managedRules:    make(map[store.ManagedRuleID]store.ManagedRule),
+		msgMailboxes:    make(map[mmKey]store.MessageMailbox),
 		nextPrincipalID: 1,
 		nextMailboxID:   1,
 		nextMessageID:   1,
@@ -436,6 +457,14 @@ func (m *metaFace) GetMessage(ctx context.Context, id store.MessageID) (store.Me
 	if !ok {
 		return store.Message{}, fmt.Errorf("message %d: %w", id, store.ErrNotFound)
 	}
+	// Populate msg.Mailboxes from the M:N join map (authoritative for multi-
+	// mailbox membership). Always call this so callers see the full set.
+	msg.Mailboxes = nil
+	for k, mm := range s.msgMailboxes {
+		if k.msgID == id {
+			msg.Mailboxes = append(msg.Mailboxes, mm)
+		}
+	}
 	return msg, nil
 }
 
@@ -521,7 +550,8 @@ func (m *metaFace) InsertMessage(ctx context.Context, msg store.Message, targets
 	}
 	// Allocate UID/ModSeq for each target mailbox. The first target's
 	// UID/ModSeq populate the convenience fields on msg so that callers
-	// which do not use Mailboxes still work.
+	// which do not use Mailboxes still work. The M:N join map is always
+	// populated so GetMessage can return the full Mailboxes slice.
 	var firstUID store.UID
 	var firstModSeq store.ModSeq
 	for i, t := range targets {
@@ -547,6 +577,15 @@ func (m *metaFace) InsertMessage(ctx context.Context, msg store.Message, targets
 			msg.ModSeq = modSeq
 			msg.Flags = t.Flags
 			msg.Keywords = t.Keywords
+		}
+		// Store in the M:N join map for GetMessage to return Mailboxes.
+		s.msgMailboxes[mmKey{msg.ID, t.MailboxID}] = store.MessageMailbox{
+			MessageID: msg.ID,
+			MailboxID: t.MailboxID,
+			UID:       uid,
+			ModSeq:    modSeq,
+			Flags:     t.Flags,
+			Keywords:  t.Keywords,
 		}
 		s.appendStateChangeLocked(store.StateChange{
 			PrincipalID:    mb2.PrincipalID,
@@ -587,6 +626,10 @@ func (m *metaFace) AddMessageToMailbox(ctx context.Context, msgID store.MessageI
 	if !ok {
 		return 0, 0, fmt.Errorf("mailbox %d: %w", mailboxID, store.ErrNotFound)
 	}
+	// Reject duplicate memberships.
+	if _, exists := s.msgMailboxes[mmKey{msgID, mailboxID}]; exists {
+		return 0, 0, fmt.Errorf("message %d already in mailbox %d: %w", msgID, mailboxID, store.ErrConflict)
+	}
 	uid := mb.UIDNext
 	mb.UIDNext++
 	mb.HighestModSeq++
@@ -594,7 +637,15 @@ func (m *metaFace) AddMessageToMailbox(ctx context.Context, msgID store.MessageI
 	now := s.clk.Now()
 	mb.UpdatedAt = now
 	s.mailboxes[mb.ID] = mb
-	_ = msg
+	// Store in the M:N join map.
+	s.msgMailboxes[mmKey{msgID, mailboxID}] = store.MessageMailbox{
+		MessageID: msgID,
+		MailboxID: mailboxID,
+		UID:       uid,
+		ModSeq:    modSeq,
+		Flags:     msg.Flags,
+		Keywords:  msg.Keywords,
+	}
 	s.appendStateChangeLocked(store.StateChange{
 		PrincipalID:    mb.PrincipalID,
 		Kind:           store.EntityKindEmail,
@@ -621,8 +672,20 @@ func (m *metaFace) RemoveMessageFromMailbox(ctx context.Context, msgID store.Mes
 	if !ok {
 		return fmt.Errorf("mailbox %d: %w", mailboxID, store.ErrNotFound)
 	}
-	// If this is the message's only mailbox, remove the message row.
-	if msg.MailboxID == mailboxID {
+	// Remove the M:N row.
+	k := mmKey{msgID, mailboxID}
+	if _, exists := s.msgMailboxes[k]; !exists {
+		return fmt.Errorf("message %d not in mailbox %d: %w", msgID, mailboxID, store.ErrNotFound)
+	}
+	delete(s.msgMailboxes, k)
+	// Check remaining memberships: if none left, remove the message row.
+	var remaining int
+	for mk := range s.msgMailboxes {
+		if mk.msgID == msgID {
+			remaining++
+		}
+	}
+	if remaining == 0 {
 		delete(s.messages, msgID)
 		if msg.Blob.Hash != "" {
 			if s.blobRefs[msg.Blob.Hash] > 0 {
@@ -705,6 +768,15 @@ func (m *metaFace) UpdateMessageFlags(
 	mb.UpdatedAt = now
 	s.mailboxes[mb.ID] = mb
 	s.messages[msg.ID] = msg
+	// Mirror keyword and flag updates into the per-(message, mailbox) join
+	// row so that ListMessages (which reads from msgMailboxes on the M:N
+	// path) returns the updated values on subsequent reads.
+	if mm, ok := s.msgMailboxes[mmKey{msg.ID, lookupMailboxID}]; ok {
+		mm.Flags = msg.Flags
+		mm.Keywords = msg.Keywords
+		mm.ModSeq = msg.ModSeq
+		s.msgMailboxes[mmKey{msg.ID, lookupMailboxID}] = mm
+	}
 	s.appendStateChangeLocked(store.StateChange{
 		PrincipalID:    mb.PrincipalID,
 		Kind:           store.EntityKindEmail,
@@ -738,19 +810,37 @@ func (m *metaFace) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 	now := s.clk.Now()
 	var found int
 	for _, id := range ids {
-		msg, ok := s.messages[id]
-		if !ok || msg.MailboxID != mailboxID {
+		msg, msgOK := s.messages[id]
+		if !msgOK {
+			continue
+		}
+		k := mmKey{id, mailboxID}
+		_, hasMM := s.msgMailboxes[k]
+		// A message is considered in this mailbox if it has a M:N row
+		// or (for legacy single-mailbox paths) the convenience field matches.
+		if !hasMM && msg.MailboxID != mailboxID {
 			continue
 		}
 		found++
-		if msg.Blob.Hash != "" {
-			s.blobRefs[msg.Blob.Hash]--
-			if s.blobRefs[msg.Blob.Hash] < 0 {
-				s.blobRefs[msg.Blob.Hash] = 0
+		delete(s.msgMailboxes, k)
+		// Count remaining M:N memberships.
+		var remaining int
+		for mk := range s.msgMailboxes {
+			if mk.msgID == id {
+				remaining++
 			}
 		}
-		delete(s.messages, id)
-		delete(s.ftsDocs, id)
+		if remaining == 0 {
+			// No more memberships: delete the message row.
+			if msg.Blob.Hash != "" {
+				s.blobRefs[msg.Blob.Hash]--
+				if s.blobRefs[msg.Blob.Hash] < 0 {
+					s.blobRefs[msg.Blob.Hash] = 0
+				}
+			}
+			delete(s.messages, id)
+			delete(s.ftsDocs, id)
+		}
 		mb.HighestModSeq++
 		s.appendStateChangeLocked(store.StateChange{
 			PrincipalID:    mb.PrincipalID,
@@ -768,7 +858,6 @@ func (m *metaFace) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 			Op:             store.ChangeOpDestroyed,
 			ProducedAt:     now,
 		})
-		_ = msg.UID // UID is no longer carried on the change row.
 	}
 	if found == 0 && len(ids) > 0 {
 		return fmt.Errorf("expunge: %w", store.ErrNotFound)
@@ -1610,6 +1699,9 @@ func (m *metaFace) GetMailboxByName(ctx context.Context, principalID store.Princ
 
 // ListMessages returns the messages in mailboxID in UID-ascending
 // order, honouring filter.AfterUID and filter.Limit.
+// For M:N membership: a message is included if it has a msgMailboxes row
+// for mailboxID (authoritative) or if msg.MailboxID == mailboxID (legacy
+// single-mailbox path).
 func (m *metaFace) ListMessages(ctx context.Context, mailboxID store.MailboxID, filter store.MessageFilter) ([]store.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -1623,11 +1715,29 @@ func (m *metaFace) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 	defer s.mu.RUnlock()
 	var out []store.Message
 	for _, msg := range s.messages {
-		if msg.MailboxID != mailboxID {
+		k := mmKey{msg.ID, mailboxID}
+		mm, hasMM := s.msgMailboxes[k]
+		if !hasMM && msg.MailboxID != mailboxID {
 			continue
 		}
-		if msg.UID <= filter.AfterUID {
+		// Use the per-mailbox UID for the AfterUID filter.
+		uid := msg.UID
+		if hasMM {
+			uid = mm.UID
+		}
+		if uid <= filter.AfterUID {
 			continue
+		}
+		// For M:N paths, set the per-mailbox convenience fields (UID,
+		// ModSeq, Flags, Keywords) from the join row. SnoozedUntil is
+		// kept from the message row (authoritative in the fakestore since
+		// SetSnooze updates s.messages directly).
+		if hasMM {
+			msg.MailboxID = mm.MailboxID
+			msg.UID = mm.UID
+			msg.ModSeq = mm.ModSeq
+			msg.Flags = mm.Flags
+			msg.Keywords = mm.Keywords
 		}
 		out = append(out, msg)
 	}
@@ -1919,6 +2029,13 @@ func (m *metaFace) SetSnooze(ctx context.Context, msgID store.MessageID, mailbox
 	mb.UpdatedAt = now
 	s.mailboxes[mb.ID] = mb
 	s.messages[msg.ID] = msg
+	// Keep the join row in sync so ListMessages sees current Keywords/SnoozedUntil.
+	if mm, ok := s.msgMailboxes[mmKey{msg.ID, lookupMailboxID}]; ok {
+		mm.Keywords = msg.Keywords
+		mm.SnoozedUntil = msg.SnoozedUntil
+		mm.ModSeq = msg.ModSeq
+		s.msgMailboxes[mmKey{msg.ID, lookupMailboxID}] = mm
+	}
 	s.appendStateChangeLocked(store.StateChange{
 		PrincipalID:    mb.PrincipalID,
 		Kind:           store.EntityKindEmail,

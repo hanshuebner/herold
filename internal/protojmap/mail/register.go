@@ -7,6 +7,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/email"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/mailbox"
+	"github.com/hanshuebner/herold/internal/protojmap/mail/managedrule"
 	jmapsieve "github.com/hanshuebner/herold/internal/protojmap/mail/sieve"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -44,6 +45,11 @@ func Register(reg *protojmap.CapabilityRegistry, st store.Store, logger *slog.Lo
 	// owns the Sieve/get, Sieve/set, Sieve/validate handlers and
 	// registers its own capability descriptor.
 	jmapsieve.Register(reg, st, logger, clk)
+
+	// ManagedRule datatype (Wave 3.15 / REQ-FLT-01..31). Structured
+	// filter rules that compile to a Sieve preamble and coexist with the
+	// user's hand-written script.
+	managedrule.Register(reg, st, logger)
 }
 
 // mailAccountCapability is the per-account capability provider. RFC 8621

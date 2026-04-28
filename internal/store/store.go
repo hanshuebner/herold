@@ -402,6 +402,20 @@ type Metadata interface {
 	// principal.
 	SetSieveScript(ctx context.Context, pid PrincipalID, text string) error
 
+	// GetUserSieveScript returns the user-written Sieve script half for
+	// pid. The user-written half is the script the user edits via
+	// ManageSieve or the JMAP Sieve surface; the managed-rules compiler
+	// prepends its compiled preamble before persisting the effective
+	// (combined) script. Returns ("", nil) when no user script is on record.
+	GetUserSieveScript(ctx context.Context, pid PrincipalID) (string, error)
+
+	// SetUserSieveScript upserts the user-written Sieve script half for
+	// pid. After updating, callers must recompile the managed-rules
+	// preamble and call SetSieveScript with the combined effective script.
+	// An empty text clears the user-written half (the effective script
+	// then contains only the managed-rules preamble, or nothing).
+	SetUserSieveScript(ctx context.Context, pid PrincipalID, text string) error
+
 	// -- Phase 2 outbound queue ---------------------------------------
 
 	// EnqueueMessage inserts one queue row and increments the body
@@ -1154,6 +1168,31 @@ type Metadata interface {
 	// strictly before cutoff. Intended to be called periodically (90-day
 	// retention window in production). Returns the number of rows deleted.
 	GCCoachEvents(ctx context.Context, cutoff time.Time) (int64, error)
+
+	// -- Wave 3.15 ManagedRule (REQ-FLT-01..31) -----------------------
+
+	// InsertManagedRule creates a new managed_rules row. The returned
+	// ManagedRule carries the server-assigned ID and timestamps. Returns
+	// ErrInvalidArgument when the Conditions or Actions JSON is invalid.
+	InsertManagedRule(ctx context.Context, rule ManagedRule) (ManagedRule, error)
+
+	// UpdateManagedRule replaces the mutable fields (Name, Enabled,
+	// SortOrder, Conditions, Actions) of the row identified by rule.ID.
+	// Returns ErrNotFound when the row is absent or owned by a different
+	// principal. Returns ErrInvalidArgument for invalid Conditions/Actions.
+	UpdateManagedRule(ctx context.Context, rule ManagedRule) (ManagedRule, error)
+
+	// DeleteManagedRule removes the row. Returns ErrNotFound when the row
+	// does not exist or is owned by a different principal.
+	DeleteManagedRule(ctx context.Context, id ManagedRuleID, pid PrincipalID) error
+
+	// GetManagedRule returns one row by id. Returns ErrNotFound when the
+	// row does not exist or is owned by a different principal.
+	GetManagedRule(ctx context.Context, id ManagedRuleID, pid PrincipalID) (ManagedRule, error)
+
+	// ListManagedRules returns the principal's rules in (sort_order, id)
+	// ascending order, subject to filter.
+	ListManagedRules(ctx context.Context, pid PrincipalID, filter ManagedRuleFilter) ([]ManagedRule, error)
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

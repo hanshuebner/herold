@@ -2249,6 +2249,36 @@ func (m *metadata) SetSieveScript(ctx context.Context, pid store.PrincipalID, te
 	})
 }
 
+func (m *metadata) GetUserSieveScript(ctx context.Context, pid store.PrincipalID) (string, error) {
+	var script string
+	err := m.s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(user_script, '') FROM sieve_scripts WHERE principal_id = ?`, int64(pid)).Scan(&script)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", mapErr(err)
+	}
+	return script, nil
+}
+
+func (m *metadata) SetUserSieveScript(ctx context.Context, pid store.PrincipalID, text string) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		// Upsert the row. On insert we set user_script; on conflict we only
+		// update user_script (the effective script column is managed
+		// separately by recompileAndPersist via SetSieveScript).
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO sieve_scripts (principal_id, script, user_script, updated_at_us)
+			VALUES (?, '', ?, ?)
+			ON CONFLICT(principal_id) DO UPDATE
+			  SET user_script = excluded.user_script,
+			      updated_at_us = excluded.updated_at_us`,
+			int64(pid), text, usMicros(now))
+		return mapErr(err)
+	})
+}
+
 // -- JMAP snooze (REQ-PROTO-49) --------------------------------------
 
 func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, limit int) ([]store.Message, error) {

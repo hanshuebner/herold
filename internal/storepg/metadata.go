@@ -2048,6 +2048,33 @@ func (m *metadata) SetSieveScript(ctx context.Context, pid store.PrincipalID, te
 	})
 }
 
+func (m *metadata) GetUserSieveScript(ctx context.Context, pid store.PrincipalID) (string, error) {
+	var script string
+	err := m.s.pool.QueryRow(ctx,
+		`SELECT COALESCE(user_script, '') FROM sieve_scripts WHERE principal_id = $1`, int64(pid)).Scan(&script)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", mapErr(err)
+	}
+	return script, nil
+}
+
+func (m *metadata) SetUserSieveScript(ctx context.Context, pid store.PrincipalID, text string) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO sieve_scripts (principal_id, script, user_script, updated_at_us)
+			VALUES ($1, '', $2, $3)
+			ON CONFLICT (principal_id) DO UPDATE
+			  SET user_script = EXCLUDED.user_script,
+			      updated_at_us = EXCLUDED.updated_at_us`,
+			int64(pid), text, usMicros(now))
+		return mapErr(err)
+	})
+}
+
 // -- JMAP snooze (REQ-PROTO-49) --------------------------------------
 
 func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, limit int) ([]store.Message, error) {
