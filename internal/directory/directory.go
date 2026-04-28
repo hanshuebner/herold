@@ -142,7 +142,53 @@ func (d *Directory) CreatePrincipal(ctx context.Context, email, password string)
 		return 0, fmt.Errorf("directory: insert principal: %w", err)
 	}
 	d.audit(ctx, p.ID, "principal.create", slog.String("email", canon))
+	// Provision the standard mailbox set so JMAP / IMAP clients find an
+	// INBOX immediately. Provisioning lives here (not in protoadmin)
+	// because herold has multiple principal-creation entry points -- the
+	// admin REST API, the bootstrap CLI, the upcoming OIDC autoprovision
+	// flow -- and they all funnel through this method. A failure to
+	// provision is logged but not surfaced as an error: the principal row
+	// is committed, and the first SMTP delivery will recreate any missing
+	// mailbox via the existing lazy ensureMailbox path in protosmtp.
+	d.provisionDefaultMailboxes(ctx, p.ID)
 	return p.ID, nil
+}
+
+// provisionDefaultMailboxes creates the standard mailbox set for a
+// newly-created user principal: INBOX, Sent, Drafts, Trash, Junk,
+// Archive. Each is tagged with its IMAP SPECIAL-USE attribute so JMAP
+// clients can resolve role=inbox / role=drafts / etc. immediately.
+//
+// Errors are logged and ignored. ErrConflict is treated as success so
+// the call is idempotent against re-runs (bootstrap re-invoked, OIDC
+// autoprovision racing the admin REST path, etc.).
+func (d *Directory) provisionDefaultMailboxes(ctx context.Context, pid PrincipalID) {
+	specs := []struct {
+		name string
+		attr store.MailboxAttributes
+	}{
+		{"INBOX", store.MailboxAttrInbox},
+		{"Sent", store.MailboxAttrSent},
+		{"Drafts", store.MailboxAttrDrafts},
+		{"Trash", store.MailboxAttrTrash},
+		{"Junk", store.MailboxAttrJunk},
+		{"Archive", store.MailboxAttrArchive},
+	}
+	for _, s := range specs {
+		_, err := d.meta.InsertMailbox(ctx, store.Mailbox{
+			PrincipalID: pid,
+			Name:        s.name,
+			Attributes:  s.attr,
+		})
+		if err == nil || errors.Is(err, store.ErrConflict) {
+			continue
+		}
+		d.logger.Warn("directory.provision_mailbox_failed",
+			"principal_id", pid,
+			"mailbox", s.name,
+			"err", err,
+		)
+	}
 }
 
 // GetPrincipalByEmail resolves a principal by canonical email or alias.

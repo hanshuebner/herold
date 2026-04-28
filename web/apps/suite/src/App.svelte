@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import Shell from './lib/shell/Shell.svelte';
   import AuthGate from './lib/auth/AuthGate.svelte';
   import { router } from './lib/router/router.svelte';
@@ -23,15 +24,24 @@
   // listening when the connection comes up. Also prime the mailbox list
   // so the rail/sidebar unread badges populate regardless of which route
   // the user lands on (otherwise they stay empty until /mail is visited).
+  //
+  // The mailbox-prime branch is wrapped in untrack() so reading
+  // mail.mailboxes.size and writing this.mailboxes inside loadMailboxes()
+  // do not turn the effect into a self-fueled retry loop. The effect
+  // depends only on auth.status; the mailbox prime is a one-shot
+  // side-effect that fires once when auth becomes ready. Mailbox state
+  // changes from then on come over the EventSource sync handlers.
   $effect(() => {
     if (auth.status === 'ready') {
       settings.hydrate();
       sync.start(['Email', 'Mailbox', 'Thread']);
-      if (mail.mailboxes.size === 0) {
-        mail.loadMailboxes().catch((err) => {
-          console.error('initial mailbox load failed', err);
-        });
-      }
+      untrack(() => {
+        if (mail.mailboxes.size === 0) {
+          mail.loadMailboxes().catch((err) => {
+            console.error('initial mailbox load failed', err);
+          });
+        }
+      });
     }
   });
 
