@@ -8,7 +8,7 @@
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import type { Email } from '../lib/mail/types';
 
-  const VALID_FOLDERS: FolderID[] = ['inbox', 'sent', 'drafts', 'trash', 'all'];
+  const ROLED_FOLDERS = new Set<FolderID>(['inbox', 'sent', 'drafts', 'trash', 'all']);
 
   let threadId = $derived(router.parts[1] === 'thread' ? router.parts[2] : undefined);
   let label = $derived(router.parts[1] === 'label' ? router.parts[2] : undefined);
@@ -17,12 +17,17 @@
   );
   // Folder routes:
   //   /mail                       → inbox (legacy path)
-  //   /mail/folder/<id>           → generic folder view (sent / drafts / trash / all)
+  //   /mail/folder/<role>         → roled folder (inbox / sent / drafts / trash / all)
+  //   /mail/folder/<id>           → custom mailbox by Mailbox.id
   let folder = $derived.by<FolderID | undefined>(() => {
     if (router.matches('mail') && !router.parts[1]) return 'inbox';
     if (router.parts[1] !== 'folder') return undefined;
     const id = router.parts[2];
-    return VALID_FOLDERS.includes(id as FolderID) ? (id as FolderID) : undefined;
+    if (!id) return undefined;
+    if (ROLED_FOLDERS.has(id)) return id;
+    // Custom mailbox: only accept if the id resolves to a real mailbox
+    // we know about (otherwise we'd start a load that will 'error').
+    return mail.mailboxes.has(id) ? id : undefined;
   });
   let isListRoute = $derived(folder !== undefined);
   let isSearchRoute = $derived(router.matches('mail', 'search'));
@@ -351,9 +356,10 @@
     if (!f) return '';
     if (f === 'inbox') return 'Inbox is empty.';
     if (f === 'all') return 'No mail.';
-    return `${FOLDER_DISPLAY[f]} is empty.`;
+    if (FOLDER_DISPLAY[f]) return `${FOLDER_DISPLAY[f]} is empty.`;
+    return `${mail.mailboxes.get(f)?.name ?? 'Mailbox'} is empty.`;
   }
-  const FOLDER_DISPLAY: Record<FolderID, string> = {
+  const FOLDER_DISPLAY: Record<string, string> = {
     inbox: 'Inbox',
     sent: 'Sent',
     drafts: 'Drafts',

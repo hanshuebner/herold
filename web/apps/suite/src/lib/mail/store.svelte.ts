@@ -32,16 +32,25 @@ type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
  * "sent", "drafts", "trash" map to the matching mailbox role; "all"
  * spans every folder visible to this account.
  */
-export type FolderID = 'inbox' | 'sent' | 'drafts' | 'trash' | 'all';
+/**
+ * The folder slice's identifier. The well-known names below resolve via
+ * mailbox role; 'all' is account-scoped and has no mailbox; any other
+ * value is taken as a literal Mailbox.id and resolved directly. This
+ * union encoding lets `/mail/folder/<x>` route both kinds of folder
+ * without splitting the slice.
+ */
+export type FolderID = string;
 
-const FOLDER_ROLE: Record<Exclude<FolderID, 'all'>, string> = {
+const ROLED_FOLDERS = new Set(['inbox', 'sent', 'drafts', 'trash']);
+
+const FOLDER_ROLE: Record<string, string> = {
   inbox: 'inbox',
   sent: 'sent',
   drafts: 'drafts',
   trash: 'trash',
 };
 
-const FOLDER_LABEL: Record<FolderID, string> = {
+const FOLDER_LABEL: Record<string, string> = {
   inbox: 'Inbox',
   sent: 'Sent',
   drafts: 'Drafts',
@@ -162,7 +171,10 @@ class MailStore {
 
   /** Human-readable label for the folder currently held in the list slice. */
   get listFolderLabel(): string {
-    return FOLDER_LABEL[this.listFolder] ?? 'Inbox';
+    const wellKnown = FOLDER_LABEL[this.listFolder];
+    if (wellKnown) return wellKnown;
+    // Custom mailbox: render its name.
+    return this.mailboxes.get(this.listFolder)?.name ?? 'Mailbox';
   }
 
   /** Resolved search-result emails in result order. */
@@ -327,6 +339,193 @@ class MailStore {
     if (typeof args.state === 'string') this.mailboxState = args.state;
   }
 
+  /**
+   * Create a new top-level mailbox with the given name. Returns the
+   * server-assigned mailbox id on success, or null on failure (with toast).
+   * The mailbox cache is repopulated from the server response so callers
+   * can immediately route to the new id.
+   */
+  async createMailbox(name: string, parentId: string | null = null): Promise<string | null> {
+    const accountId = this.mailAccountId;
+    if (!accountId) return null;
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Mailbox/set',
+          {
+            accountId,
+            create: { new: { name: trimmed, parentId } },
+          },
+          [Capability.Mail],
+        );
+      });
+      strict(responses);
+      const result = invocationArgs<{
+        created?: Record<string, Mailbox> | null;
+        notCreated?: Record<string, { type: string; description?: string }>;
+      }>(responses[0]);
+      const failure = result.notCreated?.new;
+      if (failure) {
+        toast.show({
+          message: failure.description ?? `Create failed: ${failure.type}`,
+          kind: 'error',
+          timeoutMs: 6000,
+        });
+        return null;
+      }
+      const created = result.created?.new;
+      if (created) {
+        const next = new Map(this.mailboxes);
+        next.set(created.id, created);
+        this.mailboxes = next;
+        toast.show({ message: `Created ${created.name}` });
+        return created.id;
+      }
+      // Server applied the create but didn't echo the row; refetch.
+      await this.loadMailboxes();
+      return null;
+    } catch (err) {
+      toast.show({
+        message: errMessage(err, 'Create mailbox failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return null;
+    }
+  }
+
+  /** Rename an existing mailbox. */
+  async renameMailbox(id: string, name: string): Promise<boolean> {
+    const accountId = this.mailAccountId;
+    if (!accountId) return false;
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    const prev = this.mailboxes.get(id);
+    if (!prev || prev.name === trimmed) return false;
+    // Optimistic.
+    const next = new Map(this.mailboxes);
+    next.set(id, { ...prev, name: trimmed });
+    this.mailboxes = next;
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Mailbox/set',
+          { accountId, update: { [id]: { name: trimmed } } },
+          [Capability.Mail],
+        );
+      });
+      strict(responses);
+      const result = invocationArgs<{
+        notUpdated?: Record<string, { type: string; description?: string }>;
+      }>(responses[0]);
+      const failure = result.notUpdated?.[id];
+      if (failure) {
+        // Roll back.
+        const back = new Map(this.mailboxes);
+        back.set(id, prev);
+        this.mailboxes = back;
+        toast.show({
+          message: failure.description ?? `Rename failed: ${failure.type}`,
+          kind: 'error',
+          timeoutMs: 6000,
+        });
+        return false;
+      }
+      toast.show({ message: `Renamed to ${trimmed}` });
+      return true;
+    } catch (err) {
+      const back = new Map(this.mailboxes);
+      back.set(id, prev);
+      this.mailboxes = back;
+      toast.show({
+        message: errMessage(err, 'Rename failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Permanently delete a mailbox. The server side may refuse for roled
+   * mailboxes (Inbox / Sent / Drafts / Trash) -- the toast surfaces that.
+   * `onMailRemoval` controls server-side disposition of the mailbox's
+   * messages (RFC 8621 Mailbox/set §2.5):
+   *   - "destroy": permanently delete every email only-in-this-mailbox
+   *   - "removeOnly" (default): leave emails alone, just unmount this id
+   */
+  async destroyMailbox(
+    id: string,
+    onMailRemoval: 'destroy' | 'removeOnly' = 'removeOnly',
+  ): Promise<boolean> {
+    const accountId = this.mailAccountId;
+    if (!accountId) return false;
+    const prev = this.mailboxes.get(id);
+    if (!prev) return false;
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Mailbox/set',
+          {
+            accountId,
+            destroy: [id],
+            onDestroyRemoveEmails: onMailRemoval === 'destroy',
+          },
+          [Capability.Mail],
+        );
+      });
+      strict(responses);
+      const result = invocationArgs<{
+        destroyed?: string[] | null;
+        notDestroyed?: Record<string, { type: string; description?: string }>;
+      }>(responses[0]);
+      const failure = result.notDestroyed?.[id];
+      if (failure) {
+        toast.show({
+          message: failure.description ?? `Delete failed: ${failure.type}`,
+          kind: 'error',
+          timeoutMs: 6000,
+        });
+        return false;
+      }
+      const next = new Map(this.mailboxes);
+      next.delete(id);
+      this.mailboxes = next;
+      toast.show({ message: `Deleted ${prev.name}` });
+      // If we were viewing this mailbox, fall back to the inbox.
+      if (this.listFolder === id) {
+        void this.loadFolder('inbox');
+      }
+      return true;
+    } catch (err) {
+      toast.show({
+        message: errMessage(err, 'Delete mailbox failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Mailboxes that should appear in the "More" sidebar list — every
+   * mailbox without a JMAP role (or with a role we don't surface
+   * elsewhere). Sorted by name. Roled mailboxes that already have their
+   * own sidebar entry (inbox / sent / drafts / trash) are excluded.
+   */
+  get customMailboxes(): Mailbox[] {
+    const out: Mailbox[] = [];
+    for (const m of this.mailboxes.values()) {
+      const role = m.role ?? '';
+      if (role === 'inbox' || role === 'sent' || role === 'drafts' || role === 'trash') continue;
+      out.push(m);
+    }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    return out;
+  }
+
   async loadIdentities(): Promise<void> {
     const accountId = this.mailAccountId;
     if (!accountId) throw new Error('No Mail account on this session');
@@ -377,12 +576,21 @@ class MailStore {
       let filter: Record<string, unknown> | undefined;
       let sortProperty: 'receivedAt' | 'sentAt' = 'receivedAt';
       if (folder !== 'all') {
-        const role = FOLDER_ROLE[folder];
-        const mailbox = this.#mailboxByRole(role);
-        if (!mailbox) {
-          throw new Error(`No ${FOLDER_LABEL[folder]} mailbox in this account`);
+        let mailboxId: string | null = null;
+        if (ROLED_FOLDERS.has(folder)) {
+          const role = FOLDER_ROLE[folder] ?? folder;
+          const mailbox = this.#mailboxByRole(role);
+          if (!mailbox) {
+            throw new Error(`No ${FOLDER_LABEL[folder]} mailbox in this account`);
+          }
+          mailboxId = mailbox.id;
+        } else if (this.mailboxes.has(folder)) {
+          // Custom mailbox: folder is the Mailbox.id.
+          mailboxId = folder;
+        } else {
+          throw new Error(`Unknown mailbox: ${folder}`);
         }
-        filter = { inMailbox: mailbox.id };
+        filter = { inMailbox: mailboxId };
         // Sent / Drafts have no externally-set receivedAt the way inbound
         // mail does; sentAt is the natural ordering.
         if (folder === 'sent' || folder === 'drafts') sortProperty = 'sentAt';

@@ -55,6 +55,40 @@
     router.navigate(app === 'chat' ? '/chat' : '/mail');
   }
 
+  // Sidebar "More" expand/collapse state. The first time the user lands
+  // on the app with custom mailboxes already in their account we expand
+  // the section automatically; from then on we honour their explicit
+  // collapse / expand choice.
+  let moreOpen = $state(false);
+  let moreInitialised = $state(false);
+  $effect(() => {
+    if (!moreInitialised && mail.customMailboxes.length > 0) {
+      untrack(() => {
+        moreOpen = true;
+        moreInitialised = true;
+      });
+    }
+  });
+
+  async function promptCreateMailbox(): Promise<void> {
+    const name = prompt('New mailbox name')?.trim();
+    if (!name) return;
+    const id = await mail.createMailbox(name);
+    if (id) router.navigate(`/mail/folder/${encodeURIComponent(id)}`);
+  }
+  async function promptRenameMailbox(id: string, current: string): Promise<void> {
+    const next = prompt('Rename mailbox', current)?.trim();
+    if (!next || next === current) return;
+    await mail.renameMailbox(id, next);
+  }
+  async function confirmDestroyMailbox(id: string, name: string): Promise<void> {
+    const ok = confirm(
+      `Delete mailbox "${name}"? Messages it contains will remain in any other mailboxes they're in (otherwise they go to Trash on the server).`,
+    );
+    if (!ok) return;
+    await mail.destroyMailbox(id);
+  }
+
   // Suite-global bindings — always active.
   keyboard.registerGlobal({
     key: 'c',
@@ -125,10 +159,65 @@
               <span>All Mail</span>
             </button>
           </li>
-          <li class="more disabled" title="Custom folder list arrives later">
-            <button type="button" disabled>More</button>
-          </li>
         </ul>
+
+        <button
+          type="button"
+          class="more-toggle"
+          aria-expanded={moreOpen}
+          onclick={() => (moreOpen = !moreOpen)}
+        >
+          <span aria-hidden="true">{moreOpen ? '▾' : '▸'}</span>
+          More
+          <span class="count">{mail.customMailboxes.length}</span>
+        </button>
+        {#if moreOpen}
+          <ul class="mailbox-list custom">
+            {#each mail.customMailboxes as m (m.id)}
+              <li class:active={router.matches('mail', 'folder', m.id)}>
+                <button
+                  type="button"
+                  class="mailbox-row"
+                  onclick={() => router.navigate(`/mail/folder/${encodeURIComponent(m.id)}`)}
+                >
+                  <span class="name">{m.name}</span>
+                  {#if m.unreadEmails > 0}
+                    <span class="count">{m.unreadEmails}</span>
+                  {/if}
+                </button>
+                <button
+                  type="button"
+                  class="row-action"
+                  aria-label="Rename {m.name}"
+                  title="Rename"
+                  onclick={(ev) => {
+                    ev.stopPropagation();
+                    promptRenameMailbox(m.id, m.name);
+                  }}
+                >
+                  ✎
+                </button>
+                <button
+                  type="button"
+                  class="row-action danger"
+                  aria-label="Delete {m.name}"
+                  title="Delete"
+                  onclick={(ev) => {
+                    ev.stopPropagation();
+                    confirmDestroyMailbox(m.id, m.name);
+                  }}
+                >
+                  ×
+                </button>
+              </li>
+            {:else}
+              <li class="empty"><span>No custom mailboxes.</span></li>
+            {/each}
+            <li class="add-row">
+              <button type="button" onclick={promptCreateMailbox}>+ New mailbox</button>
+            </li>
+          </ul>
+        {/if}
 
         <h3>Labels</h3>
         <ul class="label-list">
@@ -253,11 +342,6 @@
   .mailbox-list li.disabled button {
     opacity: 0.6;
   }
-  .mailbox-list .more {
-    background: var(--layer-02);
-    color: var(--text-helper);
-    margin-top: var(--spacing-02);
-  }
 
   h3 {
     font-size: var(--type-heading-compact-01-size);
@@ -266,6 +350,75 @@
     color: var(--text-helper);
     margin: var(--spacing-04) 0 0;
     padding: 0 var(--spacing-04);
+  }
+
+  .more-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-02);
+    padding: var(--spacing-02) var(--spacing-04);
+    color: var(--text-helper);
+    font-weight: 500;
+    font-size: var(--type-body-compact-01-size);
+    border-radius: var(--radius-md);
+    margin-top: var(--spacing-02);
+    text-align: left;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .more-toggle:hover {
+    background: var(--layer-02);
+    color: var(--text-primary);
+  }
+  .more-toggle .count {
+    margin-left: auto;
+    color: var(--text-helper);
+    font-variant-numeric: tabular-nums;
+  }
+  .mailbox-list.custom li {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: var(--spacing-01);
+    align-items: stretch;
+  }
+  .mailbox-list.custom li.add-row {
+    grid-template-columns: 1fr;
+  }
+  .mailbox-list.custom li.empty {
+    grid-template-columns: 1fr;
+    padding: var(--spacing-02) var(--spacing-04);
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    font-style: italic;
+  }
+  .mailbox-list.custom .mailbox-row {
+    justify-content: space-between;
+  }
+  .mailbox-list.custom .row-action {
+    width: 28px;
+    padding: var(--spacing-02);
+    color: var(--text-helper);
+    border-radius: var(--radius-md);
+    text-align: center;
+    opacity: 0;
+    transition:
+      opacity var(--duration-fast-02) var(--easing-productive-enter),
+      background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .mailbox-list.custom li:hover .row-action,
+  .mailbox-list.custom li:focus-within .row-action {
+    opacity: 1;
+  }
+  .mailbox-list.custom .row-action:hover {
+    background: var(--layer-03);
+    color: var(--text-primary);
+  }
+  .mailbox-list.custom .row-action.danger:hover {
+    background: var(--support-error);
+    color: var(--text-on-color);
+  }
+  .mailbox-list.custom .add-row button {
+    color: var(--interactive);
+    font-weight: 500;
   }
 
   .label-list .dot {
