@@ -18,18 +18,20 @@ type getRequest struct {
 	Properties *[]string `json:"properties"`
 }
 
-// getResponse is the wire-form Mailbox/get response.
-type getResponse struct {
-	AccountID jmapID        `json:"accountId"`
-	State     string        `json:"state"`
-	List      []jmapMailbox `json:"list"`
-	NotFound  []jmapID      `json:"notFound"`
-}
-
 // getHandler implements protojmap.MethodHandler for Mailbox/get.
 type getHandler struct{ h *handlerSet }
 
 func (g *getHandler) Method() string { return "Mailbox/get" }
+
+// getResponse is the wire-form Mailbox/get response. List holds either
+// []jmapMailbox (all properties) or []map[string]any (subset filtered
+// by req.Properties) — both marshal to the correct JSON shape.
+type getResponseFiltered struct {
+	AccountID jmapID   `json:"accountId"`
+	State     string   `json:"state"`
+	List      []any    `json:"list"`
+	NotFound  []jmapID `json:"notFound"`
+}
 
 func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
 	pid, merr := requirePrincipal(ctx)
@@ -57,20 +59,42 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 		return nil, serverFail(err)
 	}
 
-	resp := getResponse{
+	// Build a property allow-set when the client requested a subset.
+	// "id" is always returned per RFC 8620 §5.1.
+	var propSet map[string]struct{}
+	if req.Properties != nil {
+		propSet = make(map[string]struct{}, len(*req.Properties)+1)
+		propSet["id"] = struct{}{}
+		for _, p := range *req.Properties {
+			propSet[p] = struct{}{}
+		}
+	}
+
+	resp := getResponseFiltered{
 		AccountID: req.AccountID,
 		State:     state,
-		List:      []jmapMailbox{},
+		List:      []any{},
 		NotFound:  []jmapID{},
+	}
+
+	appendRendered := func(mb store.Mailbox) *protojmap.MethodError {
+		rendered, err := renderMailbox(ctx, g.h.store.Meta(), pid, mb)
+		if err != nil {
+			return serverFail(err)
+		}
+		if propSet == nil {
+			resp.List = append(resp.List, rendered)
+		} else {
+			resp.List = append(resp.List, filterMailboxProperties(rendered, propSet))
+		}
+		return nil
 	}
 
 	if req.IDs == nil {
 		for _, mb := range all {
-			rendered, err := renderMailbox(ctx, g.h.store.Meta(), pid, mb)
-			if err != nil {
-				return nil, serverFail(err)
+			if merr := appendRendered(mb); merr != nil {
+				return nil, merr
 			}
-			resp.List = append(resp.List, rendered)
 		}
 		return resp, nil
 	}
@@ -90,13 +114,55 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			resp.NotFound = append(resp.NotFound, raw)
 			continue
 		}
-		rendered, err := renderMailbox(ctx, g.h.store.Meta(), pid, mb)
-		if err != nil {
-			return nil, serverFail(err)
+		if merr := appendRendered(mb); merr != nil {
+			return nil, merr
 		}
-		resp.List = append(resp.List, rendered)
 	}
 	return resp, nil
+}
+
+// filterMailboxProperties projects a fully-rendered jmapMailbox onto a
+// map[string]any containing only the keys present in propSet. RFC 8620
+// §5.1: "id" is always included regardless of the client's list.
+func filterMailboxProperties(mb jmapMailbox, propSet map[string]struct{}) map[string]any {
+	m := make(map[string]any, len(propSet))
+	if _, ok := propSet["id"]; ok {
+		m["id"] = mb.ID
+	}
+	if _, ok := propSet["name"]; ok {
+		m["name"] = mb.Name
+	}
+	if _, ok := propSet["parentId"]; ok {
+		m["parentId"] = mb.ParentID
+	}
+	if _, ok := propSet["role"]; ok {
+		m["role"] = mb.Role
+	}
+	if _, ok := propSet["sortOrder"]; ok {
+		m["sortOrder"] = mb.SortOrder
+	}
+	if _, ok := propSet["totalEmails"]; ok {
+		m["totalEmails"] = mb.TotalEmails
+	}
+	if _, ok := propSet["unreadEmails"]; ok {
+		m["unreadEmails"] = mb.UnreadEmails
+	}
+	if _, ok := propSet["totalThreads"]; ok {
+		m["totalThreads"] = mb.TotalThreads
+	}
+	if _, ok := propSet["unreadThreads"]; ok {
+		m["unreadThreads"] = mb.UnreadThreads
+	}
+	if _, ok := propSet["myRights"]; ok {
+		m["myRights"] = mb.MyRights
+	}
+	if _, ok := propSet["isSubscribed"]; ok {
+		m["isSubscribed"] = mb.IsSubscribed
+	}
+	if _, ok := propSet["color"]; ok {
+		m["color"] = mb.Color
+	}
+	return m
 }
 
 // errMailboxMissing reports "looks the same as never existed" per
