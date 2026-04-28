@@ -115,10 +115,22 @@ export const en = {
   'compose.attach': 'Attach',
   'compose.attached': 'Attached',
   'compose.dropToAttach': 'Drop to attach',
+  'compose.dropInline': 'Drop image here to inline',
+  'compose.dropAttach': 'Drop file here to attach',
+  'compose.moveToAttachments': 'Move to attachments',
   'compose.discardConfirm.title': 'Discard this message?',
   'compose.discardConfirm.message': 'Your draft will be lost.',
   'compose.discardConfirm.confirm': 'Discard',
   'compose.discardConfirm.cancel': 'Keep editing',
+
+  // ── Attachment list ──────────────────────────────────────────────────
+  'att.attachments': '{count} attachment',
+  'att.attachments.other': '{count} attachments',
+  'att.inlineImages': 'Inline images',
+  'att.downloadAll': 'Download all ({count})',
+  'att.attachmentsOnly': 'Attachments only',
+  'att.download': 'Download',
+  'att.noUrl': 'No URL',
 
   // ── Pickers (move / label / etc.) ────────────────────────────────────
   'picker.close': 'Close',

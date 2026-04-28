@@ -27,6 +27,7 @@ import { mail } from '../mail/store.svelte';
 import { settings } from '../settings/settings.svelte';
 import { toast } from '../toast/toast.svelte';
 import { localeTag } from '../i18n/i18n.svelte';
+import { applyImage } from './editor';
 import {
   emailHtmlBody,
   emailTextBody,
@@ -393,6 +394,61 @@ class ComposeStore {
       const msg = err instanceof Error ? err.message : 'Upload failed';
       this.#patchAttachment(key, { status: 'failed', error: msg });
       return null;
+    }
+  }
+
+  /**
+   * Flip an existing attachment from inline to regular attachment
+   * (disposition: 'attachment'). Removes any cid: reference from the
+   * body HTML so the image no longer appears inline. Triggers dirty
+   * state for auto-save (REQ-ATT-07, REQ-DFT-03).
+   */
+  flipToAttachment(key: string): void {
+    const att = this.attachments.find((a) => a.key === key);
+    if (!att || !att.inline) return;
+    // Remove the img tag from the body. The body may reference the image by
+    // either its `blob:` objectURL (during composition) or its `cid:` Content-ID
+    // (after an earlier rewrite). Remove whichever is present.
+    if (this.body) {
+      // Try objectURL first (the common path during composition).
+      if (att.objectURL) {
+        const escapedUrl = att.objectURL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const reUrl = new RegExp(`<img[^>]*src=["']${escapedUrl}["'][^>]*>`, 'gi');
+        this.body = this.body.replace(reUrl, '');
+      }
+      // Also try the cid: form (in case body was persisted/reloaded).
+      if (att.cid) {
+        const escapedCid = att.cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const reCid = new RegExp(`<img[^>]*src=["']cid:${escapedCid}["'][^>]*>`, 'gi');
+        this.body = this.body.replace(reCid, '');
+      }
+    }
+    this.#patchAttachment(key, { inline: false, cid: null });
+  }
+
+  /**
+   * Flip an existing regular attachment to an inline image
+   * (disposition: 'inline'). Assigns a fresh Content-ID and inserts
+   * an <img src="cid:…"> into the editor at the current cursor via
+   * the provided EditorView handle. A no-op when the attachment is
+   * not image/* or when the view is unavailable (REQ-ATT-07).
+   */
+  flipToInline(key: string, view: import('prosemirror-view').EditorView | null): void {
+    const att = this.attachments.find((a) => a.key === key);
+    if (!att || att.inline) return;
+    if (!att.type.startsWith('image/')) return;
+    const cid = generateInlineCID(++this.#attachmentSeq);
+    // Use the objectURL if the flip was triggered from a prior inline
+    // that was moved to attachments; otherwise we have no blob URL so
+    // we can only use cid: directly. The editor will render a broken
+    // image icon for the cid: src before send — acceptable, since
+    // the flip path for attachments-to-inline is an uncommon flow
+    // (the user already has the file uploaded).
+    const src = att.objectURL ?? `cid:${cid}`;
+    this.#patchAttachment(key, { inline: true, cid });
+    // Insert the image into the editor at the cursor position.
+    if (view) {
+      applyImage(view, src, att.name);
     }
   }
 
@@ -1296,4 +1352,5 @@ export const _internals_forTest = {
   rewriteInlineImageURLs,
   buildBodyStructure,
   buildAttachmentParts,
+  generateInlineCID,
 };

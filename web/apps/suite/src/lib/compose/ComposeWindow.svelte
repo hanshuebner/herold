@@ -9,7 +9,7 @@
   import AddressAutocomplete from './AddressAutocomplete.svelte';
   import { confirm } from '../dialog/confirm.svelte';
   import { t } from '../i18n/i18n.svelte';
-  import { EMPTY_ACTIVE, type ActiveState } from './editor';
+  import { EMPTY_ACTIVE, type ActiveState, applyImage } from './editor';
   import type { EditorView } from 'prosemirror-view';
 
   // Per-compose keyboard layer: Mod+Enter sends, Escape closes.
@@ -118,12 +118,9 @@
   let editorView = $state<EditorView | null>(null);
   let active = $state<ActiveState>(EMPTY_ACTIVE);
 
-  // File picker + drag-drop. The hidden input is triggered by the
-  // toolbar Attach button; the modal-level drag handlers below show a
-  // drop overlay and route File objects to compose.addAttachments.
+  // File picker — triggered by the toolbar Attach button. Always attaches
+  // (never inlines) per REQ-ATT-01.
   let fileInput = $state<HTMLInputElement | null>(null);
-  let dragActive = $state(false);
-  let dragDepth = 0;
 
   function onFilePick(e: Event): void {
     const input = e.currentTarget as HTMLInputElement;
@@ -132,31 +129,7 @@
     // Reset so the same file can be picked again immediately afterward.
     input.value = '';
   }
-  function onDragEnter(e: DragEvent): void {
-    if (!hasFiles(e)) return;
-    e.preventDefault();
-    dragDepth++;
-    dragActive = true;
-  }
-  function onDragOver(e: DragEvent): void {
-    if (!hasFiles(e)) return;
-    e.preventDefault();
-  }
-  function onDragLeave(): void {
-    dragDepth = Math.max(0, dragDepth - 1);
-    if (dragDepth === 0) dragActive = false;
-  }
-  function onDrop(e: DragEvent): void {
-    if (!hasFiles(e)) return;
-    e.preventDefault();
-    dragDepth = 0;
-    dragActive = false;
-    const files = e.dataTransfer?.files;
-    if (files && files.length > 0) void compose.addAttachments(files);
-  }
-  function hasFiles(e: DragEvent): boolean {
-    return Boolean(e.dataTransfer?.types.includes('Files'));
-  }
+
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -238,6 +211,179 @@
       initialHtml = '';
     }
   });
+
+  // ── G15: Dual drop targets ─────────────────────────────────────────────
+  //
+  // Design: Two distinct drop zones become visible while a drag is active.
+  //   - Inline drop zone: overlays the body editor (position: absolute inside
+  //     body-stack); accepts image files, calls addInlineImage, inserts into
+  //     ProseMirror editor at the current cursor position.
+  //   - Attachment drop zone: rendered below the editor, above the chip strip;
+  //     accepts any file, calls addAttachments.
+  //
+  // Drag tracking uses a depth counter on the modal root to handle
+  // dragenter/dragleave bubbling correctly across child elements.
+  // The two drop zones each track their own hover state independently.
+  //
+  // Disposition flip: each attachment chip carries a draggable handle that
+  // sets a custom MIME type 'application/x-herold-compose-part' with the
+  // chip key. Dropping on the opposite zone calls flipToInline /
+  // flipToAttachment, which mutates the attachment record and (for
+  // inline->attachment) removes the cid: img from the body.
+
+  let dragActive = $state(false);
+  let dragDepth = 0;
+
+  // Hover state for each zone — drives the highlighted CSS class.
+  let inlineZoneHover = $state(false);
+  let attachZoneHover = $state(false);
+
+  /** True if the drag event carries OS-level files (external drag). */
+  function hasFiles(e: DragEvent): boolean {
+    return Boolean(e.dataTransfer?.types.includes('Files'));
+  }
+
+  /** True if the drag event carries our custom compose-part type. */
+  function hasComposePart(e: DragEvent): boolean {
+    return Boolean(
+      e.dataTransfer?.types.includes('application/x-herold-compose-part'),
+    );
+  }
+
+  function isRelevantDrag(e: DragEvent): boolean {
+    return hasFiles(e) || hasComposePart(e);
+  }
+
+  // Modal-level drag tracking.
+  function onModalDragEnter(e: DragEvent): void {
+    if (!isRelevantDrag(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    dragActive = true;
+  }
+  function onModalDragOver(e: DragEvent): void {
+    if (!isRelevantDrag(e)) return;
+    e.preventDefault();
+  }
+  function onModalDragLeave(): void {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) {
+      dragActive = false;
+      inlineZoneHover = false;
+      attachZoneHover = false;
+    }
+  }
+  function onModalDrop(e: DragEvent): void {
+    // If a drop lands somewhere inside the modal that is NOT one of our
+    // two explicit zones (e.g. the subject field, a header row), ignore
+    // the files rather than auto-routing. The two zone handlers call
+    // stopPropagation() so they don't reach here.
+    e.preventDefault();
+    dragDepth = 0;
+    dragActive = false;
+    inlineZoneHover = false;
+    attachZoneHover = false;
+  }
+
+  // Inline zone handlers.
+  function onInlineZoneDragEnter(e: DragEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    inlineZoneHover = true;
+  }
+  function onInlineZoneDragOver(e: DragEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = hasComposePart(e) ? 'move' : 'copy';
+    }
+  }
+  function onInlineZoneDragLeave(e: DragEvent): void {
+    // Only clear hover when leaving the zone element itself (not a child).
+    if (!(e.currentTarget as Element).contains(e.relatedTarget as Node | null)) {
+      inlineZoneHover = false;
+    }
+  }
+  function onInlineZoneDrop(e: DragEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepth = 0;
+    dragActive = false;
+    inlineZoneHover = false;
+    attachZoneHover = false;
+
+    // Disposition flip: compose-part key dropped from the attachment strip.
+    const partKey = e.dataTransfer?.getData('application/x-herold-compose-part');
+    if (partKey) {
+      void compose.flipToInline(partKey, editorView);
+      return;
+    }
+
+    // External file drop: inline the first image, ignore non-images.
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    if (!file || !file.type.startsWith('image/')) return;
+    void handleInlineDrop(file);
+  }
+
+  async function handleInlineDrop(file: File): Promise<void> {
+    const result = await compose.addInlineImage(file);
+    if (!result) return;
+    // Insert <img src="<objectURL>" alt="<filename>"> at the current
+    // cursor in the ProseMirror editor. The objectURL is used for the
+    // in-composition preview; rewriteInlineImageURLs rewrites it to
+    // cid: on send/save.
+    applyImage(editorView, result.objectURL, file.name);
+  }
+
+  // Attachment zone handlers.
+  function onAttachZoneDragEnter(e: DragEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    attachZoneHover = true;
+  }
+  function onAttachZoneDragOver(e: DragEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = hasComposePart(e) ? 'move' : 'copy';
+    }
+  }
+  function onAttachZoneDragLeave(e: DragEvent): void {
+    if (!(e.currentTarget as Element).contains(e.relatedTarget as Node | null)) {
+      attachZoneHover = false;
+    }
+  }
+  function onAttachZoneDrop(e: DragEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepth = 0;
+    dragActive = false;
+    inlineZoneHover = false;
+    attachZoneHover = false;
+
+    // Disposition flip: compose-part key dropped from the body (inline chip).
+    const partKey = e.dataTransfer?.getData('application/x-herold-compose-part');
+    if (partKey) {
+      void compose.flipToAttachment(partKey);
+      return;
+    }
+
+    // External file drop: attach normally.
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) void compose.addAttachments(files);
+  }
+
+  // Chip drag-start: encode the attachment key as the custom MIME type so
+  // drop targets can recognise an intra-compose drag.
+  function onChipDragStart(e: DragEvent, key: string): void {
+    e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.setData('application/x-herold-compose-part', key);
+      e.dataTransfer.effectAllowed = 'move';
+    }
+  }
 </script>
 
 {#if compose.isOpen}
@@ -249,10 +395,10 @@
     aria-labelledby="compose-title"
     tabindex="-1"
     bind:this={modalEl}
-    ondragenter={onDragEnter}
-    ondragover={onDragOver}
-    ondragleave={onDragLeave}
-    ondrop={onDrop}
+    ondragenter={onModalDragEnter}
+    ondragover={onModalDragOver}
+    ondragleave={onModalDragLeave}
+    ondrop={onModalDrop}
   >
     <header class="modal-header">
       <h2 id="compose-title">
@@ -346,56 +492,145 @@
       <div class="row body-row">
         <span class="label">{t('compose.body')}</span>
         <div class="body-stack">
-          {#key compose.replyContext.parentId ?? '__blank__'}
-            <RichEditor
-              {initialHtml}
-              autofocus={Boolean(compose.replyContext.parentId)}
-              onUpdate={onEditorUpdate}
-              onActiveChange={(a) => (active = a)}
-              onView={(v) => (editorView = v)}
-            />
-          {/key}
+          <!-- Inline drop zone: overlays the editor during drag. Positioned
+               absolutely so it does not affect the editor layout at all when
+               not visible (dragActive = false). -->
+          <div
+            class="zone-container"
+          >
+            {#key compose.replyContext.parentId ?? '__blank__'}
+              <RichEditor
+                {initialHtml}
+                autofocus={Boolean(compose.replyContext.parentId)}
+                onUpdate={onEditorUpdate}
+                onActiveChange={(a) => (active = a)}
+                onView={(v) => (editorView = v)}
+              />
+            {/key}
+            {#if dragActive}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="inline-drop-zone"
+                class:hover={inlineZoneHover}
+                aria-label={t('compose.dropInline')}
+                ondragenter={onInlineZoneDragEnter}
+                ondragover={onInlineZoneDragOver}
+                ondragleave={onInlineZoneDragLeave}
+                ondrop={onInlineZoneDrop}
+              >
+                <span class="zone-label">{t('compose.dropInline')}</span>
+              </div>
+            {/if}
+          </div>
           <ComposeToolbar view={editorView} {active} />
+
+          <!-- Attachment drop zone: always rendered below the toolbar;
+               highlighted only during a drag. Quiet hint at rest. -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="attach-drop-zone"
+            class:visible={dragActive}
+            class:hover={attachZoneHover}
+            aria-label={t('compose.dropAttach')}
+            ondragenter={onAttachZoneDragEnter}
+            ondragover={onAttachZoneDragOver}
+            ondragleave={onAttachZoneDragLeave}
+            ondrop={onAttachZoneDrop}
+          >
+            <span class="zone-label">{t('compose.dropAttach')}</span>
+          </div>
         </div>
       </div>
 
       {#if compose.attachments.length > 0}
-        <div class="row attachments-row">
-          <span class="label">{t('compose.attached')}</span>
-          <ul class="attachments-list">
-            {#each compose.attachments as a (a.key)}
-              <li class:failed={a.status === 'failed'}>
-                <span class="att-name">{a.name}</span>
-                <span class="att-size">{formatSize(a.size)}</span>
-                <span class="att-status">
-                  {#if a.status === 'uploading'}
-                    Uploading…
-                  {:else if a.status === 'failed'}
-                    {a.error ?? 'Upload failed'}
-                  {:else}
-                    Ready
-                  {/if}
-                </span>
-                <button
-                  type="button"
-                  class="att-remove"
-                  aria-label="Remove {a.name}"
-                  onclick={() => compose.removeAttachment(a.key)}
+        {@const attaches = compose.attachments.filter((a) => !a.inline)}
+        {@const inlines = compose.attachments.filter((a) => a.inline)}
+
+        {#if attaches.length > 0}
+          <div class="row attachments-row">
+            <span class="label">{t('compose.attached')}</span>
+            <ul class="attachments-list">
+              {#each attaches as a (a.key)}
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                <li
+                  class:failed={a.status === 'failed'}
+                  draggable="true"
+                  ondragstart={(e) => onChipDragStart(e, a.key)}
                 >
-                  ×
-                </button>
-              </li>
-            {/each}
-          </ul>
-        </div>
+                  <span class="att-name">{a.name}</span>
+                  <span class="att-size">{formatSize(a.size)}</span>
+                  <span class="att-status">
+                    {#if a.status === 'uploading'}
+                      Uploading…
+                    {:else if a.status === 'failed'}
+                      {a.error ?? 'Upload failed'}
+                    {:else}
+                      Ready
+                    {/if}
+                  </span>
+                  <button
+                    type="button"
+                    class="att-remove"
+                    aria-label="Remove {a.name}"
+                    onclick={() => compose.removeAttachment(a.key)}
+                  >
+                    ×
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+
+        {#if inlines.length > 0}
+          <div class="row attachments-row">
+            <span class="label">Inline</span>
+            <ul class="attachments-list">
+              {#each inlines as a (a.key)}
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                <li
+                  class:failed={a.status === 'failed'}
+                  draggable="true"
+                  ondragstart={(e) => onChipDragStart(e, a.key)}
+                >
+                  {#if a.objectURL}
+                    <img class="att-thumb" src={a.objectURL} alt={a.name} />
+                  {/if}
+                  <span class="att-name">{a.name}</span>
+                  <span class="att-size">{formatSize(a.size)}</span>
+                  <span class="att-status">
+                    {#if a.status === 'uploading'}
+                      Uploading…
+                    {:else if a.status === 'failed'}
+                      {a.error ?? 'Upload failed'}
+                    {:else}
+                      Inline
+                    {/if}
+                  </span>
+                  <button
+                    type="button"
+                    class="att-move"
+                    aria-label={t('compose.moveToAttachments')}
+                    title={t('compose.moveToAttachments')}
+                    onclick={() => void compose.flipToAttachment(a.key)}
+                  >
+                    &#x2913;
+                  </button>
+                  <button
+                    type="button"
+                    class="att-remove"
+                    aria-label="Remove {a.name}"
+                    onclick={() => compose.removeAttachment(a.key)}
+                  >
+                    ×
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
       {/if}
     </div>
-
-    {#if dragActive}
-      <div class="drop-overlay" aria-hidden="true">
-        <p>{t('compose.dropToAttach')}</p>
-      </div>
-    {/if}
 
     {#if compose.errorMessage}
       <p class="error" role="alert">{compose.errorMessage}</p>
@@ -571,6 +806,76 @@
     background: var(--layer-03);
   }
 
+  /* Editor + inline drop zone wrapper */
+  .zone-container {
+    position: relative;
+  }
+
+  /* Inline drop zone: absolutely positioned over the editor; invisible
+     at rest and when no drag is active. Becomes a visually distinct
+     target only while dragActive is true (rendered conditionally in the
+     template above). */
+  .inline-drop-zone {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px dashed var(--interactive);
+    border-radius: var(--radius-md);
+    background: rgba(15, 98, 254, 0.08);
+    color: var(--interactive);
+    font-weight: 600;
+    font-size: var(--type-body-compact-01-size);
+    pointer-events: all;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter),
+      border-color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .inline-drop-zone.hover {
+    background: rgba(15, 98, 254, 0.2);
+    border-color: var(--interactive);
+  }
+
+  /* Attachment drop zone: shown below the editor only during a drag.
+     Hidden (zero-height, no pointer events) when drag is not active. */
+  .attach-drop-zone {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 0;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+    border: 2px dashed transparent;
+    border-radius: var(--radius-md);
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    transition: opacity var(--duration-fast-02) var(--easing-productive-enter),
+      height var(--duration-fast-02) var(--easing-productive-enter),
+      background var(--duration-fast-02) var(--easing-productive-enter),
+      border-color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .attach-drop-zone.visible {
+    height: 48px;
+    opacity: 1;
+    pointer-events: all;
+    border-color: var(--border-strong-01);
+    background: var(--layer-01);
+    color: var(--text-secondary);
+    font-weight: 600;
+  }
+  .attach-drop-zone.hover {
+    background: rgba(15, 98, 254, 0.08);
+    border-color: var(--interactive);
+    color: var(--interactive);
+  }
+
+  .zone-label {
+    pointer-events: none;
+    user-select: none;
+  }
+
   .error {
     margin: 0 var(--spacing-05);
     padding: var(--spacing-03) var(--spacing-04);
@@ -632,6 +937,18 @@
     background: var(--layer-01);
     border: 1px solid var(--border-subtle-01);
     border-radius: var(--radius-md);
+    cursor: grab;
+  }
+  /* Inline chips get a thumbnail column */
+  .attachments-list li:has(.att-thumb) {
+    grid-template-columns: auto 1fr auto auto auto auto;
+  }
+  .att-thumb {
+    width: 32px;
+    height: 32px;
+    object-fit: cover;
+    border-radius: var(--radius-sm);
+    flex-shrink: 0;
   }
   .attachments-list li.failed {
     border-color: var(--support-error);
@@ -651,6 +968,18 @@
   .attachments-list li.failed .att-status {
     color: var(--support-error);
   }
+  .att-move {
+    width: 24px;
+    height: 24px;
+    color: var(--text-helper);
+    border-radius: var(--radius-pill);
+    line-height: 1;
+    font-size: 14px;
+  }
+  .att-move:hover {
+    background: var(--layer-03);
+    color: var(--text-primary);
+  }
   .att-remove {
     width: 24px;
     height: 24px;
@@ -663,20 +992,6 @@
     color: var(--text-primary);
   }
 
-  .drop-overlay {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(15, 98, 254, 0.15);
-    border: 2px dashed var(--interactive);
-    color: var(--interactive);
-    font-weight: 600;
-    font-size: var(--type-heading-01-size);
-    pointer-events: none;
-    z-index: 1;
-  }
   .send {
     background: var(--interactive);
     color: var(--text-on-color);

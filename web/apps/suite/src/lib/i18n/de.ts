@@ -114,10 +114,22 @@ export const de = {
   'compose.attach': 'Anhängen',
   'compose.attached': 'Anhänge',
   'compose.dropToAttach': 'Hier ablegen zum Anhängen',
+  'compose.dropInline': 'Bild hier ablegen zum Einbetten',
+  'compose.dropAttach': 'Datei hier ablegen zum Anhängen',
+  'compose.moveToAttachments': 'Als Anhang verschieben',
   'compose.discardConfirm.title': 'Diese Nachricht verwerfen?',
   'compose.discardConfirm.message': 'Der Entwurf geht verloren.',
   'compose.discardConfirm.confirm': 'Verwerfen',
   'compose.discardConfirm.cancel': 'Weiter bearbeiten',
+
+  // ── Attachment list ──────────────────────────────────────────────────
+  'att.attachments': '{count} Anhang',
+  'att.attachments.other': '{count} Anhänge',
+  'att.inlineImages': 'Eingebettete Bilder',
+  'att.downloadAll': 'Alle herunterladen ({count})',
+  'att.attachmentsOnly': 'Nur Anhänge',
+  'att.download': 'Herunterladen',
+  'att.noUrl': 'Keine URL',
 
   // ── Pickers (move / label / etc.) ────────────────────────────────────
   'picker.close': 'Schließen',
