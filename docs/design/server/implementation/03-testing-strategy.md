@@ -204,3 +204,37 @@ Every phase document lists explicit exit criteria — those are primarily tests.
 ## Documentation tests
 
 Every documented CLI command, REST endpoint, and config example MUST be executable in a test. Broken examples in docs are bugs.
+
+## LLM-touching tests
+
+The categoriser (`internal/categorise`) and the spam classifier (`internal/spam`)
+each call into an LLM endpoint. Tests for these surfaces use the deterministic
+`internal/llmtest.Replayer` fed from JSON-line fixtures under
+`internal/llmtest/fixtures/<kind>/` — landed in Wave 3.12 (REQ-FILT-300..303).
+
+Cadence:
+
+- Tests run with `Replayer` by default in CI. The lookup key is
+  `(kind, sha256(prompt))`, so any prompt change surfaces as a missing-fixture
+  failure naming the expected hash; tests never silently pass against stale
+  responses.
+- When a test author adds a new LLM-touching path, they wrap it with
+  `t.Skip("LLM fixtures not yet captured — run scripts/llm-capture.sh")`
+  until the next capture pass updates the fixtures.
+- The maintainer (not CI) re-runs `scripts/llm-capture.sh` against a real
+  Ollama (or any OpenAI-compatible endpoint via `HEROLD_LLM_CAPTURE_ENDPOINT`)
+  whenever:
+  - A prompt under `internal/categorise/prompt.go` or
+    `internal/spam/prompt.go` changes (the hash mismatch is visible in CI
+    as a missing-fixture failure).
+  - A new LLM-touching test lands with its skip wrapper still in place.
+  - The pinned model version moves (the `model` field on captured fixtures
+    is informational; if the operator wants to re-baseline against a newer
+    model, re-running capture is the way).
+- The capture script writes line-delimited JSON; PR diffs are readable.
+  Reviewers should spot-check that a recorded response shape matches the
+  test's assertion (e.g. the categoriser's response contains a known
+  category name).
+
+CI never sets `HEROLD_LLM_CAPTURE=1`. The script bails out clearly when
+invoked without the env var set.
