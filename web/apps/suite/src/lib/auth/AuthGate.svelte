@@ -1,5 +1,6 @@
 <script lang="ts">
   import { auth } from './auth.svelte';
+  import LoginView from './LoginView.svelte';
 
   interface Props {
     children?: import('svelte').Snippet;
@@ -11,36 +12,33 @@
     if (auth.status === 'idle') {
       void auth.bootstrap();
     }
-    if (auth.status === 'unauthenticated') {
-      // Slight delay so the user sees the "redirecting" state. Avoids a
-      // disorienting instant flash on slow auth.
-      const t = setTimeout(() => auth.redirectToLogin(), 150);
-      return () => clearTimeout(t);
-    }
   });
 </script>
 
 {#if auth.status === 'ready'}
   {@render children?.()}
+{:else if auth.status === 'unauthenticated'}
+  <LoginView />
+{:else if auth.status === 'error'}
+  <div class="splash" role="alert" aria-live="assertive">
+    <div class="card">
+      <h1 class="wordmark">Herold</h1>
+      <p class="message error">Could not reach the server.</p>
+      {#if auth.errorMessage}
+        <p class="detail">{auth.errorMessage}</p>
+      {/if}
+      <button type="button" class="retry" onclick={() => auth.bootstrap()}>
+        Retry
+      </button>
+    </div>
+  </div>
 {:else}
+  <!-- bootstrapping (or idle before first effect tick): centred spinner -->
   <div class="splash" role="status" aria-live="polite">
     <div class="card">
       <h1 class="wordmark">Herold</h1>
-
-      {#if auth.status === 'idle' || auth.status === 'bootstrapping'}
-        <p class="message">Connecting…</p>
-        <div class="spinner" aria-hidden="true"></div>
-      {:else if auth.status === 'unauthenticated'}
-        <p class="message">Redirecting to sign-in…</p>
-      {:else if auth.status === 'error'}
-        <p class="message error">Could not reach the server.</p>
-        {#if auth.errorMessage}
-          <p class="detail">{auth.errorMessage}</p>
-        {/if}
-        <button type="button" class="retry" onclick={() => auth.bootstrap()}>
-          Retry
-        </button>
-      {/if}
+      <p class="message">Connecting...</p>
+      <div class="spinner" aria-hidden="true"></div>
     </div>
   </div>
 {/if}
