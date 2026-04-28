@@ -1,6 +1,7 @@
 package protojmap
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -129,6 +132,82 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// partBlobID reports whether blobID is a synthetic per-part blob reference of
+// the form "<msgBlobHash>/p<N>" produced by render.go's walkParts. When true it
+// returns the message blob hash and the 1-based part index.
+func partBlobID(blobID string) (msgHash string, partIdx int, ok bool) {
+	slash := strings.LastIndex(blobID, "/")
+	if slash < 0 {
+		return "", 0, false
+	}
+	suffix := blobID[slash+1:]
+	if !strings.HasPrefix(suffix, "p") {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(suffix[1:])
+	if err != nil || n <= 0 {
+		return "", 0, false
+	}
+	return blobID[:slash], n, true
+}
+
+// partBlobResult carries the decoded content extracted from a MIME part.
+type partBlobResult struct {
+	contentType string
+	data        []byte
+}
+
+// resolvePartBlob fetches message blob msgHash from blobs, parses the MIME
+// tree, and returns the decoded bytes of the part at 1-based pre-order DFS
+// index partIdx (the same enumeration walkParts uses when assigning blobId
+// values to each EmailBodyPart).
+func resolvePartBlob(ctx context.Context, blobs store.Blobs, msgHash string, partIdx int) (*partBlobResult, error) {
+	rc, err := blobs.Get(ctx, msgHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	raw, err := io.ReadAll(io.LimitReader(rc, 64<<20))
+	if err != nil {
+		return nil, fmt.Errorf("resolvePartBlob: read: %w", err)
+	}
+	parsed, err := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
+	if err != nil {
+		return nil, fmt.Errorf("resolvePartBlob: parse: %w", err)
+	}
+	// Walk the part tree in the same pre-order DFS as walkParts so that the
+	// index here matches the partId assigned during rendering.
+	idx := 0
+	var found *partBlobResult
+	var walk func(p mailparse.Part)
+	walk = func(p mailparse.Part) {
+		if found != nil {
+			return
+		}
+		idx++
+		if idx == partIdx {
+			ct := p.ContentType
+			if ct == "" {
+				ct = "application/octet-stream"
+			}
+			data := p.Bytes
+			if len(data) == 0 && p.Text != "" {
+				data = []byte(p.Text)
+			}
+			found = &partBlobResult{contentType: ct, data: data}
+			return
+		}
+		for _, c := range p.Children {
+			walk(c)
+		}
+	}
+	walk(parsed.Body)
+	if found == nil {
+		return nil, store.ErrNotFound
+	}
+	return found, nil
+}
+
 // handleDownload streams a blob back to the client. The path bears the
 // accountId, blobId, content type, and human-friendly filename per the
 // JMAP downloadUrl template.
@@ -151,6 +230,56 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/octet-stream"
 	}
 	name := r.PathValue("name")
+
+	// Synthetic per-part blob IDs have the form "<msgBlobHash>/p<N>".
+	// The blob store holds only full message blobs; resolve these by
+	// re-parsing the message and extracting the indicated MIME part.
+	if msgHash, partIdx, isPartBlob := partBlobID(blobID); isPartBlob {
+		part, err := resolvePartBlob(r.Context(), s.store.Blobs(), msgHash, partIdx)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				WriteJMAPError(w, http.StatusNotFound, "blobNotFound", blobID)
+				return
+			}
+			s.log.Warn("protojmap.download.part_resolve_failed", "err", err, "blob", blobID)
+			WriteJMAPError(w, http.StatusInternalServerError,
+				"serverFail", "part blob resolve failed")
+			return
+		}
+		// Rate-limit by decoded part size (REQ-STORE-20..25).
+		size := int64(len(part.data))
+		bucket := s.dlBucket(p.ID)
+		if bucket != nil && !p.Flags.Has(store.PrincipalFlagIgnoreDownloadLimits) {
+			ok, retryAfter := bucket.tryConsume(size)
+			if !ok {
+				w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
+				WriteJMAPError(w, http.StatusTooManyRequests,
+					"rateLimited",
+					fmt.Sprintf("download bandwidth budget exhausted; retry after %s", retryAfter))
+				return
+			}
+		}
+		// Use the MIME part's own content-type when the client does not
+		// override it (the URL template always substitutes {type}, so
+		// contentType is always set; keeping the part's own type here is
+		// still useful when the caller passes "application/octet-stream"
+		// as the generic fallback).
+		if contentType == "application/octet-stream" && part.contentType != "" {
+			contentType = part.contentType
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		if name != "" {
+			w.Header().Set("Content-Disposition",
+				fmt.Sprintf(`attachment; filename=%q`, name))
+		}
+		w.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(w, bytes.NewReader(part.data)); err != nil {
+			s.log.Warn("protojmap.download.copy_failed", "err", err, "blob", blobID)
+		}
+		return
+	}
+
 	size, _, err := s.store.Blobs().Stat(r.Context(), blobID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {

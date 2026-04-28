@@ -3,6 +3,7 @@ package email_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1522,5 +1523,115 @@ func TestEmailSet_Create_MultipleMailboxes(t *testing.T) {
 	}
 	if len(emailCreatedIDs) != 1 {
 		t.Errorf("expected 1 unique message created, got %d: %v", len(emailCreatedIDs), emailCreatedIDs)
+	}
+}
+
+// TestEmail_Attachment_BlobDownload_RoundTrip inserts a multipart/mixed
+// message with an image attachment, asserts that Email/get returns an
+// attachment entry whose blobId is a synthesized "<msgHash>/p<N>" form, then
+// fetches that blobId via the JMAP download endpoint and checks the response
+// body matches the original attachment bytes.
+//
+// This is the regression test for the blobNotFound 404 reported in issue #1:
+// the download handler must resolve synthetic per-part blobIds by re-parsing
+// the message blob rather than forwarding the literal string to the blob store.
+func TestEmail_Attachment_BlobDownload_RoundTrip(t *testing.T) {
+	f := setupFixture(t)
+
+	// Minimal valid JPEG magic bytes (just enough to look like binary image data).
+	imgData := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}
+	imgB64 := base64.StdEncoding.EncodeToString(imgData)
+
+	msgBody := strings.Join([]string{
+		"From: sender@example.test",
+		"To: rcpt@example.test",
+		"Subject: image attachment test",
+		"MIME-Version: 1.0",
+		"Content-Type: multipart/mixed; boundary=\"testboundary\"",
+		"",
+		"--testboundary",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"see attached image",
+		"--testboundary",
+		"Content-Type: image/jpeg",
+		"Content-Disposition: attachment; filename=\"photo.jpg\"",
+		"Content-Transfer-Encoding: base64",
+		"",
+		imgB64,
+		"--testboundary--",
+	}, "\r\n")
+
+	m := f.insertMessage(t, msgBody, "image attachment test",
+		"sender@example.test", "rcpt@example.test", nil, "")
+
+	// Fetch the email with body properties so attachments are populated.
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{fmt.Sprintf("%d", m.ID)},
+		"properties": []string{"attachments", "hasAttachment"},
+	})
+
+	var resp struct {
+		List []struct {
+			Attachments []struct {
+				BlobID string `json:"blobId"`
+				Type   string `json:"type"`
+				Name   string `json:"name"`
+			} `json:"attachments"`
+			HasAttachment bool `json:"hasAttachment"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("got %d messages, want 1: %s", len(resp.List), raw)
+	}
+	em := resp.List[0]
+	if !em.HasAttachment {
+		t.Fatalf("hasAttachment=false, want true (raw=%s)", raw)
+	}
+	if len(em.Attachments) == 0 {
+		t.Fatalf("attachments empty (raw=%s)", raw)
+	}
+
+	att := em.Attachments[0]
+	if att.BlobID == "" {
+		t.Fatalf("attachment blobId empty (raw=%s)", raw)
+	}
+	// The synthesized blob id must contain a slash and a part suffix.
+	if !strings.Contains(att.BlobID, "/p") {
+		t.Errorf("attachment blobId %q does not look like a synthesized part id", att.BlobID)
+	}
+
+	// Download the part via the JMAP download endpoint.
+	// The blobId contains a slash that must be percent-encoded in the URL so
+	// it arrives as a single {blobId} path segment to the handler.
+	encodedBlobID := strings.ReplaceAll(att.BlobID, "/", "%2F")
+	accountID := protojmap.AccountIDForPrincipal(f.pid)
+	dlURL := fmt.Sprintf("%s/jmap/download/%s/%s/image%%2Fjpeg/photo.jpg",
+		f.baseURL, accountID, encodedBlobID)
+
+	req, err := http.NewRequest(http.MethodGet, dlURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+f.apiKey)
+
+	dlResp, err := f.client.Do(req)
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	defer dlResp.Body.Close()
+	dlBody, err := io.ReadAll(dlResp.Body)
+	if err != nil {
+		t.Fatalf("read download body: %v", err)
+	}
+	if dlResp.StatusCode != http.StatusOK {
+		t.Fatalf("download status = %d, body = %s", dlResp.StatusCode, dlBody)
+	}
+	if !bytes.Equal(dlBody, imgData) {
+		t.Fatalf("downloaded bytes mismatch:\n  got  %v\n  want %v", dlBody, imgData)
 	}
 }
