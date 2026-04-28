@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { compose } from './compose.svelte';
+  import { composeStack } from './compose-stack.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
   import { mail } from '../mail/store.svelte';
   import RichEditor from './RichEditor.svelte';
@@ -21,6 +22,11 @@
         action: () => {
           void compose.send();
         },
+      },
+      {
+        key: 'Mod+M',
+        description: 'Minimize compose',
+        action: () => composeStack.minimizeCurrent(),
       },
       {
         key: 'Escape',
@@ -206,6 +212,15 @@
           New message
         {/if}
       </h2>
+      <button
+        type="button"
+        class="minimize"
+        onclick={() => composeStack.minimizeCurrent()}
+        aria-label="Minimize compose"
+        title="Minimize"
+      >
+        —
+      </button>
       <button
         type="button"
         class="close"
@@ -412,7 +427,8 @@
     line-height: var(--type-heading-01-line);
     font-weight: var(--type-heading-01-weight);
   }
-  .close {
+  .close,
+  .minimize {
     color: var(--text-helper);
     font-size: 20px;
     line-height: 1;
@@ -420,7 +436,12 @@
     height: 28px;
     border-radius: var(--radius-pill);
   }
-  .close:hover {
+  .minimize {
+    font-weight: 600;
+    margin-right: var(--spacing-01);
+  }
+  .close:hover,
+  .minimize:hover {
     background: var(--layer-03);
     color: var(--text-primary);
   }

@@ -7,6 +7,7 @@
   import { auth } from './lib/auth/auth.svelte';
   import { sync } from './lib/jmap/sync.svelte';
   import { compose } from './lib/compose/compose.svelte';
+  import { composeStack } from './lib/compose/compose-stack.svelte';
   import { help } from './lib/help/help.svelte';
   import { settings, applyTheme } from './lib/settings/settings.svelte';
   import { mail } from './lib/mail/store.svelte';
@@ -50,6 +51,11 @@
   $effect(() => {
     applyTheme(settings.theme);
   });
+
+  // Wire the compose stack's auto-minimize hook so opening a fresh
+  // compose while one is already active snapshots the current one
+  // into the tray instead of overwriting it.
+  compose.setBeforeOpenHook(() => composeStack.beforeOpenNew());
 
   function selectApp(app: 'mail' | 'chat'): void {
     router.navigate(app === 'chat' ? '/chat' : '/mail');

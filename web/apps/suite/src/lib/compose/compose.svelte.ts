@@ -106,8 +106,23 @@ class ComposeStore {
    */
   editingDraftId = $state<string | null>(null);
 
+  /**
+   * Optional pre-open guard.  When set, every open* path calls it
+   * first; a false return aborts the open.  Wired by composeStack to
+   * snapshot the current compose into the minimized tray before a
+   * fresh compose takes over the modal.
+   */
+  #beforeOpenHook: (() => boolean) | null = null;
+  setBeforeOpenHook(fn: (() => boolean) | null): void {
+    this.#beforeOpenHook = fn;
+  }
+  #runBeforeOpen(): boolean {
+    return this.#beforeOpenHook ? this.#beforeOpenHook() : true;
+  }
+
   /** Open a fresh compose. */
   openBlank(): void {
+    if (!this.#runBeforeOpen()) return;
     this.to = '';
     this.cc = '';
     this.bcc = '';
@@ -135,7 +150,10 @@ class ComposeStore {
     replyContext?: ReplyContext;
     /** When set the compose is editing an existing server draft. */
     draftId?: string | null;
+    /** Skip the beforeOpen hook — used when restoring from the minimized tray. */
+    skipHook?: boolean;
   }): void {
+    if (!args.skipHook && !this.#runBeforeOpen()) return;
     this.to = args.to;
     this.cc = args.cc ?? '';
     this.bcc = args.bcc ?? '';

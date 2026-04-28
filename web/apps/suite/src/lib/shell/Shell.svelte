@@ -4,6 +4,7 @@
   import CoachStrip from './CoachStrip.svelte';
   import ToastHost from '../toast/ToastHost.svelte';
   import ComposeWindow from '../compose/ComposeWindow.svelte';
+  import MinimizedTray from '../compose/MinimizedTray.svelte';
   import HelpOverlay from '../help/HelpOverlay.svelte';
   import MoveTargetPicker from '../mail/MoveTargetPicker.svelte';
   import SnoozePicker from '../mail/SnoozePicker.svelte';
@@ -46,6 +47,7 @@
   <CoachStrip />
   <ToastHost />
   <ComposeWindow />
+  <MinimizedTray />
   <HelpOverlay />
   <MoveTargetPicker />
   <SnoozePicker />
