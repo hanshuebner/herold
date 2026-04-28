@@ -950,9 +950,9 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, targe
 			return mapErr(err)
 		}
 
-		var pid, tgtHighest int64
-		err = tx.QueryRow(ctx, `SELECT principal_id, highest_modseq FROM mailboxes WHERE id = $1`,
-			int64(targetMailboxID)).Scan(&pid, &tgtHighest)
+		var pid, uidNext, tgtHighest int64
+		err = tx.QueryRow(ctx, `SELECT principal_id, uidnext, highest_modseq FROM mailboxes WHERE id = $1`,
+			int64(targetMailboxID)).Scan(&pid, &uidNext, &tgtHighest)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.ErrNotFound
 		}
@@ -960,7 +960,7 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, targe
 			return mapErr(err)
 		}
 
-		newUID := tgtHighest + 1
+		newUID := uidNext
 		newModseq := tgtHighest + 1
 
 		if _, err := tx.Exec(ctx,
@@ -969,7 +969,7 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, targe
 			return mapErr(err)
 		}
 		if _, err := tx.Exec(ctx,
-			`UPDATE mailboxes SET highest_modseq = $1, updated_at_us = $2 WHERE id = $3`,
+			`UPDATE mailboxes SET uidnext = uidnext + 1, highest_modseq = $1, updated_at_us = $2 WHERE id = $3`,
 			newModseq, usMicros(now), int64(targetMailboxID)); err != nil {
 			return mapErr(err)
 		}

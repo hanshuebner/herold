@@ -1040,7 +1040,7 @@ func (m *metadata) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, targetMailboxID store.MailboxID) error {
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx *sql.Tx) error {
-		// Load the message to get its current mailbox and the principal.
+		// Load the message to get its current mailbox.
 		var srcMailboxID int64
 		err := tx.QueryRowContext(ctx, `SELECT mailbox_id FROM messages WHERE id = ?`, int64(msgID)).Scan(&srcMailboxID)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1050,10 +1050,10 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, targe
 			return mapErr(err)
 		}
 
-		// Get principal and current highest modseq for the target mailbox.
-		var pid, tgtHighest int64
-		err = tx.QueryRowContext(ctx, `SELECT principal_id, highest_modseq FROM mailboxes WHERE id = ?`,
-			int64(targetMailboxID)).Scan(&pid, &tgtHighest)
+		// Get uidnext, highest_modseq, and principal for the target mailbox.
+		var pid, uidNext, tgtHighest int64
+		err = tx.QueryRowContext(ctx, `SELECT principal_id, uidnext, highest_modseq FROM mailboxes WHERE id = ?`,
+			int64(targetMailboxID)).Scan(&pid, &uidNext, &tgtHighest)
 		if errors.Is(err, sql.ErrNoRows) {
 			return store.ErrNotFound
 		}
@@ -1061,20 +1061,19 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, targe
 			return mapErr(err)
 		}
 
-		// Compute new UID for the target mailbox (highest_modseq+1 is used
-		// as UID — same pattern as InsertMessage).
-		newUID := tgtHighest + 1
+		// Assign the next UID and advance modseq (mirrors InsertMessage).
+		newUID := uidNext
 		newModseq := tgtHighest + 1
 
-		// Atomically update the message row.
+		// Update the message row to point at the new mailbox.
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE messages SET mailbox_id = ?, uid = ?, modseq = ? WHERE id = ?`,
 			int64(targetMailboxID), newUID, newModseq, int64(msgID)); err != nil {
 			return mapErr(err)
 		}
-		// Advance target mailbox highest_modseq.
+		// Advance target mailbox uidnext and highest_modseq.
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE mailboxes SET highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
+			`UPDATE mailboxes SET uidnext = uidnext + 1, highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
 			newModseq, usMicros(now), int64(targetMailboxID)); err != nil {
 			return mapErr(err)
 		}

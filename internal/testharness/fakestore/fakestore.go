@@ -683,10 +683,14 @@ func (m *metaFace) MoveMessage(ctx context.Context, msgID store.MessageID, targe
 	srcMB.HighestModSeq++
 	s.mailboxes[msg.MailboxID] = srcMB
 
-	// Move the message.
+	// Move the message, using UIDNext for the new UID.
+	if tgtMB.UIDNext == 0 {
+		tgtMB.UIDNext = 1
+	}
+	msg.UID = tgtMB.UIDNext
+	tgtMB.UIDNext++
 	tgtMB.HighestModSeq++
 	msg.MailboxID = targetMailboxID
-	msg.UID = store.UID(tgtMB.HighestModSeq)
 	msg.ModSeq = store.ModSeq(tgtMB.HighestModSeq)
 	s.messages[msgID] = msg
 	tgtMB.UpdatedAt = now
