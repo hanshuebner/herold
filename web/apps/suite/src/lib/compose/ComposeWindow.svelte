@@ -642,6 +642,30 @@
       opacity: 1;
     }
   }
+  @media (max-width: 640px) {
+    .modal {
+      top: 0;
+      left: 0;
+      transform: none;
+      width: 100vw;
+      max-height: 100vh;
+      max-height: 100dvh;
+      height: 100vh;
+      height: 100dvh;
+      border-radius: 0;
+      border: none;
+    }
+    .modal-header {
+      padding: var(--spacing-03) var(--spacing-04);
+    }
+    .fields {
+      padding: var(--spacing-03) var(--spacing-04);
+    }
+    .row .label {
+      min-width: 6em;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .backdrop,
     .modal {

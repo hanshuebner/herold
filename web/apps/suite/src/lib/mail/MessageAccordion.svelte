@@ -377,4 +377,21 @@
     color: var(--text-helper);
     font-style: italic;
   }
+
+  @media (max-width: 560px) {
+    .header {
+      grid-template-columns: 28px 1fr auto;
+      padding: var(--spacing-03) var(--spacing-04);
+      gap: var(--spacing-02);
+    }
+    .body {
+      padding: 0 var(--spacing-04) var(--spacing-04);
+    }
+    .actions {
+      flex-wrap: wrap;
+    }
+    .pill {
+      padding: var(--spacing-01) var(--spacing-03);
+    }
+  }
 </style>

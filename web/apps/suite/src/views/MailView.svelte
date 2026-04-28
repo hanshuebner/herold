@@ -947,4 +947,39 @@
     color: var(--text-secondary);
     font-weight: 600;
   }
+
+  /* Narrow viewport: compress the row grid so the date and sender stay
+     visible on a phone-width screen. The from cell shrinks to the
+     sender's initials-region; the subject + preview gets the rest. */
+  @media (max-width: 560px) {
+    .row-activate {
+      grid-template-columns: 18px 8ch 1fr auto;
+      gap: var(--spacing-02);
+      padding: var(--spacing-02) var(--spacing-03) var(--spacing-02) 0;
+    }
+    .row-activate .attachment {
+      display: none;
+    }
+    .from {
+      font-size: var(--type-body-compact-01-size);
+    }
+    .date {
+      font-size: var(--type-body-compact-01-size);
+    }
+    .row-check {
+      margin-left: var(--spacing-02);
+      margin-right: var(--spacing-02);
+    }
+    .list-header {
+      padding: var(--spacing-03) var(--spacing-04);
+    }
+    .bulk-bar {
+      flex-wrap: wrap;
+      padding: var(--spacing-02) var(--spacing-03);
+    }
+    .search-history,
+    .search-chips {
+      padding: var(--spacing-02) var(--spacing-04);
+    }
+  }
 </style>
