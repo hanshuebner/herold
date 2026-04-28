@@ -388,6 +388,18 @@ const (
 	// still advanced so clients can detect their own writes via the
 	// standard /changes pattern.
 	JMAPStateKindShortcutCoach
+	// JMAPStateKindCategorySettings tracks JMAP CategorySettings changes
+	// (REQ-CAT-50 / https://netzhansa.com/jmap/categorise). Bumped on
+	// every successful CategorySettings/set or when a
+	// CategorySettings/recategorise job starts or finishes.
+	JMAPStateKindCategorySettings
+	// JMAPStateKindManagedRule tracks ManagedRule changes (Wave 3.15 /
+	// REQ-FLT-01..31 / https://netzhansa.com/jmap/managed-rules). Bumped
+	// on every ManagedRule/set mutation. Defined here (rather than in
+	// types_phase2.go) so the iota chain from the chat const block stays
+	// contiguous and does not collide with the mail const block that ends
+	// at JMAPStateKindCalendarEvent (value 11).
+	JMAPStateKindManagedRule
 )
 
 // Chat-side server-enforced caps. CHECK constraints in SQL would

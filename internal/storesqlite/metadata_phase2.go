@@ -1399,16 +1399,17 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			       calendar_state, calendar_event_state,
 			       conversation_state, message_chat_state, membership_state,
 			       push_subscription_state, shortcut_coach_state,
+			       category_settings_state, managed_rule_state,
 			       updated_at_us
 			  FROM jmap_states WHERE principal_id = ?`, int64(pid))
 		var (
 			ppid, mb, em, th, ide, es, vr, sv, ab, ct, cal, ce int64
 			conv, msgChat, memb                                int64
-			pushSub, coach                                     int64
+			pushSub, coach, catSettings, managedRule           int64
 			updatedUs                                          int64
 		)
 		if err := row.Scan(&ppid, &mb, &em, &th, &ide, &es, &vr, &sv, &ab, &ct, &cal, &ce,
-			&conv, &msgChat, &memb, &pushSub, &coach, &updatedUs); err != nil {
+			&conv, &msgChat, &memb, &pushSub, &coach, &catSettings, &managedRule, &updatedUs); err != nil {
 			return mapErr(err)
 		}
 		out = store.JMAPStates{
@@ -1429,6 +1430,8 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			Membership:       memb,
 			PushSubscription: pushSub,
 			ShortcutCoach:    coach,
+			CategorySettings: catSettings,
+			ManagedRule:      managedRule,
 			UpdatedAt:        fromMicros(updatedUs),
 		}
 		return nil
@@ -1508,6 +1511,10 @@ func jmapStateColumn(kind store.JMAPStateKind) (string, error) {
 		return "push_subscription_state", nil
 	case store.JMAPStateKindShortcutCoach:
 		return "shortcut_coach_state", nil
+	case store.JMAPStateKindCategorySettings:
+		return "category_settings_state", nil
+	case store.JMAPStateKindManagedRule:
+		return "managed_rule_state", nil
 	default:
 		return "", fmt.Errorf("storesqlite: unknown JMAPStateKind %d", kind)
 	}

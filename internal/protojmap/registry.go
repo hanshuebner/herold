@@ -78,6 +78,19 @@ const (
 	// per the suite's server-contract.md. Implemented under
 	// internal/protojmap/coach.
 	CapabilityShortcutCoach CapabilityID = "https://netzhansa.com/jmap/shortcut-coach"
+	// CapabilityJMAPCategorise is the LLM-categorisation capability
+	// (REQ-CAT-50 / REQ-CAT-51). Advertised when the categoriser is
+	// configured for the server. Provides the CategorySettings singleton
+	// datatype (CategorySettings/get, CategorySettings/set,
+	// CategorySettings/recategorise) and declares the per-account
+	// category set and classifier prompt. URI is fixed per
+	// docs/design/web/notes/server-contract.md §"LLM categorisation".
+	CapabilityJMAPCategorise CapabilityID = "https://netzhansa.com/jmap/categorise"
+	// CapabilityManagedRules is the JMAP ManagedRule datatype capability
+	// (Wave 3.15 / REQ-FLT-01..31). Structured filter rules compiled to
+	// Sieve. URI per docs/design/web/notes/server-contract.md.
+	// Implemented under internal/protojmap/mail/managedrule.
+	CapabilityManagedRules CapabilityID = "https://netzhansa.com/jmap/managed-rules"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

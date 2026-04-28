@@ -1238,6 +1238,12 @@ func (m *metaFace) IncrementJMAPState(ctx context.Context, pid store.PrincipalID
 	case store.JMAPStateKindShortcutCoach:
 		st.ShortcutCoach++
 		ret = st.ShortcutCoach
+	case store.JMAPStateKindCategorySettings:
+		st.CategorySettings++
+		ret = st.CategorySettings
+	case store.JMAPStateKindManagedRule:
+		st.ManagedRule++
+		ret = st.ManagedRule
 	default:
 		return 0, fmt.Errorf("fakestore: unknown JMAPStateKind %d", kind)
 	}

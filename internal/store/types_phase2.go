@@ -913,6 +913,8 @@ const (
 	// (REQ-PROTO-54 / RFC 8984 JSCalendar). Bumped on every
 	// CalendarEvent/set mutation.
 	JMAPStateKindCalendarEvent
+	// Chat-derived kinds (JMAPStateKindConversation..JMAPStateKindManagedRule)
+	// are declared in types_chat.go to keep the iota chain contiguous.
 )
 
 // JMAPStates is the per-principal row of JMAP object-scoped state
@@ -962,6 +964,14 @@ type JMAPStates struct {
 	// (REQ-PROTO-110..112). Bumped on every ShortcutCoachStat/set
 	// mutation.
 	ShortcutCoach int64
+	// CategorySettings is the JMAP CategorySettings state
+	// (REQ-CAT-50 / https://netzhansa.com/jmap/categorise). Bumped on
+	// every CategorySettings/set and on recategorise job transitions.
+	CategorySettings int64
+	// ManagedRule is the JMAP ManagedRule state (Wave 3.15 /
+	// REQ-FLT-01..31 / https://netzhansa.com/jmap/managed-rules). Bumped
+	// on every ManagedRule/set mutation.
+	ManagedRule int64
 	// UpdatedAt is the instant of the most recent increment.
 	UpdatedAt time.Time
 }

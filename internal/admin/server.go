@@ -49,6 +49,7 @@ import (
 	jmapidentity "github.com/hanshuebner/herold/internal/protojmap/mail/identity"
 	jmapsearchsnippet "github.com/hanshuebner/herold/internal/protojmap/mail/searchsnippet"
 	jmapthread "github.com/hanshuebner/herold/internal/protojmap/mail/thread"
+	jmapcatsettings "github.com/hanshuebner/herold/internal/protojmap/mail/categorysettings"
 	jmapvacation "github.com/hanshuebner/herold/internal/protojmap/mail/vacation"
 	jmappush "github.com/hanshuebner/herold/internal/protojmap/push"
 	"github.com/hanshuebner/herold/internal/protologin"
@@ -1845,6 +1846,11 @@ func composeAdminAndUI(
 	}
 	bundle.srvs.webpushDispatch = pushDispatcher
 	jmappush.Register(jmapSrv.Registry(), st, vapidMgr, pushDispatcher, logger.With("subsystem", "jmap-push"), clk)
+	// CategorySettings/get + CategorySettings/set + CategorySettings/recategorise
+	// (Wave 3.13, REQ-FILT-200..231). Both cat and jobs are nil when no LLM
+	// endpoint is configured; the handlers advertise the capability and serve
+	// get/set normally, returning serverFail only for recategorise.
+	jmapcatsettings.Register(jmapSrv.Registry(), st, nil, nil, logger.With("subsystem", "jmap-categorysettings"), clk)
 	jmapHandler := jmapSrv.Handler()
 	publicMux.Handle("/.well-known/jmap",
 		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.session", jmapHandler))
