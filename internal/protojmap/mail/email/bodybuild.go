@@ -2,15 +2,19 @@ package email
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net/textproto"
 	"strings"
 	"time"
+
+	"github.com/hanshuebner/herold/internal/store"
 )
 
 // buildEmailFromProperties assembles an RFC 5322 message from the inline
@@ -18,9 +22,13 @@ import (
 // plus header-level properties). This is the "construct from properties"
 // path defined by RFC 8621 §4.6.
 //
+// blobs and ctx are used to fetch the raw bytes for blob-referenced
+// attachment parts (populated from bodyStructure subParts with a blobId).
+// blobs may be nil when no attachment parts are present.
+//
 // The returned []byte is a fully-formed RFC 5322 message ready to be
 // stored in the blob store.
-func buildEmailFromProperties(in emailCreateInput, now time.Time, hostname string) ([]byte, error) {
+func buildEmailFromProperties(ctx context.Context, blobs store.Blobs, in emailCreateInput, now time.Time, hostname string) ([]byte, error) {
 	var buf bytes.Buffer
 
 	// --- top-level headers ---
@@ -121,21 +129,30 @@ func buildEmailFromProperties(in emailCreateInput, now time.Time, hostname strin
 	textVal, hasText := bodyValueFor(in.BodyValues, textPartID)
 	htmlVal, hasHTML := bodyValueFor(in.BodyValues, htmlPartID)
 
-	switch {
-	case hasText && hasHTML:
-		// multipart/alternative: text first (RFC 1341 §7.2 ordering: the
-		// last alternative is the preferred one; text/plain first, html last
-		// so html-capable clients use html).
-		if err := writeMultipartAlternative(&buf, textVal, htmlVal); err != nil {
-			return nil, fmt.Errorf("bodybuild: multipart: %w", err)
+	hasAttachments := len(in.attachmentParts) > 0 && blobs != nil
+
+	if hasAttachments {
+		// multipart/mixed wraps the body part(s) + attachment(s).
+		if err := writeMultipartMixed(ctx, blobs, &buf, textVal, htmlVal, hasText, hasHTML, in.attachmentParts); err != nil {
+			return nil, fmt.Errorf("bodybuild: multipart/mixed: %w", err)
 		}
-	case hasText:
-		writeTextPart(&buf, textVal, "text/plain")
-	case hasHTML:
-		writeTextPart(&buf, htmlVal, "text/html")
-	default:
-		// Empty body: just write the blank line.
-		buf.WriteString("\r\n")
+	} else {
+		switch {
+		case hasText && hasHTML:
+			// multipart/alternative: text first (RFC 1341 §7.2 ordering: the
+			// last alternative is the preferred one; text/plain first, html last
+			// so html-capable clients use html).
+			if err := writeMultipartAlternative(&buf, textVal, htmlVal); err != nil {
+				return nil, fmt.Errorf("bodybuild: multipart: %w", err)
+			}
+		case hasText:
+			writeTextPart(&buf, textVal, "text/plain")
+		case hasHTML:
+			writeTextPart(&buf, htmlVal, "text/html")
+		default:
+			// Empty body: just write the blank line.
+			buf.WriteString("\r\n")
+		}
 	}
 
 	return buf.Bytes(), nil
@@ -147,6 +164,8 @@ func buildEmailFromProperties(in emailCreateInput, now time.Time, hostname strin
 //   - Single leaf text/plain → TextBody
 //   - Single leaf text/html → HtmlBody
 //   - multipart/alternative with text/plain + text/html children → both
+//   - multipart/mixed with text + blob-referenced attachment parts →
+//     text parts normalised as above; blob parts stored in attachmentParts
 //
 // Unknown or unsupported structures are mapped to a text/plain part
 // with an empty body so the create does not error.
@@ -158,14 +177,19 @@ func normaliseBodyStructure(in *emailCreateInput) {
 	ct := strings.ToLower(bs.Type)
 	switch {
 	case strings.HasPrefix(ct, "multipart/"):
-		// Walk children and collect text/plain + text/html parts.
+		// Walk children and collect text/plain, text/html, and blob-attached parts.
 		for i := range bs.SubParts {
 			sub := &bs.SubParts[i]
 			subCT := strings.ToLower(sub.Type)
-			if strings.HasPrefix(subCT, "text/plain") && sub.PartID != "" {
+			switch {
+			case strings.HasPrefix(subCT, "text/plain") && sub.PartID != "":
 				in.TextBody = append(in.TextBody, emailBodyPart{PartID: sub.PartID, Type: sub.Type})
-			} else if strings.HasPrefix(subCT, "text/html") && sub.PartID != "" {
+			case strings.HasPrefix(subCT, "text/html") && sub.PartID != "":
 				in.HtmlBody = append(in.HtmlBody, emailBodyPart{PartID: sub.PartID, Type: sub.Type})
+			case sub.BlobID != "":
+				// Blob-referenced part (attachment or inline blob). Store for
+				// inclusion in the assembled MIME message.
+				in.attachmentParts = append(in.attachmentParts, *sub)
 			}
 		}
 	case strings.HasPrefix(ct, "text/plain"):
@@ -259,6 +283,134 @@ func writeMultipartAlternative(buf *bytes.Buffer, textVal, htmlVal string) error
 	buf.WriteString("\r\n")
 	buf.Write(bodyBuf.Bytes())
 	return nil
+}
+
+// writeMultipartMixed assembles a multipart/mixed body containing the
+// inline text/html body part(s) followed by blob-referenced attachment
+// parts (RFC 8621 §4.6 attachment assembly).
+func writeMultipartMixed(ctx context.Context, blobs store.Blobs, buf *bytes.Buffer, textVal, htmlVal string, hasText, hasHTML bool, attachments []emailBodyStructurePart) error {
+	var bodyBuf bytes.Buffer
+	mw := multipart.NewWriter(&bodyBuf)
+
+	// Write the inline body as the first part.
+	switch {
+	case hasText && hasHTML:
+		// Nest as multipart/alternative.
+		altBoundary := generateBoundary()
+		altHeaders := textproto.MIMEHeader{}
+		altHeaders.Set("Content-Type", "multipart/alternative; boundary="+altBoundary)
+		altPart, err := mw.CreatePart(altHeaders)
+		if err != nil {
+			return err
+		}
+		if err := writeMultipartAlternativeInto(altPart, altBoundary, textVal, htmlVal); err != nil {
+			return err
+		}
+	case hasText:
+		ph := textproto.MIMEHeader{}
+		ph.Set("Content-Type", "text/plain; charset=utf-8")
+		ph.Set("Content-Transfer-Encoding", "quoted-printable")
+		p, err := mw.CreatePart(ph)
+		if err != nil {
+			return err
+		}
+		qw := quotedprintable.NewWriter(p)
+		_, _ = qw.Write([]byte(textVal))
+		_ = qw.Close()
+	case hasHTML:
+		ph := textproto.MIMEHeader{}
+		ph.Set("Content-Type", "text/html; charset=utf-8")
+		ph.Set("Content-Transfer-Encoding", "quoted-printable")
+		p, err := mw.CreatePart(ph)
+		if err != nil {
+			return err
+		}
+		qw := quotedprintable.NewWriter(p)
+		_, _ = qw.Write([]byte(htmlVal))
+		_ = qw.Close()
+	}
+
+	// Append blob-referenced attachment parts.
+	for _, att := range attachments {
+		attData, err := readBlobBytes(ctx, blobs, att.BlobID)
+		if err != nil {
+			// Skip unreadable blobs rather than aborting the whole create.
+			continue
+		}
+		ct := att.Type
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		ph := textproto.MIMEHeader{}
+		if att.Name != "" {
+			ph.Set("Content-Type", ct+"; name="+mime.QEncoding.Encode("utf-8", att.Name))
+		} else {
+			ph.Set("Content-Type", ct)
+		}
+		ph.Set("Content-Transfer-Encoding", "base64")
+		disp := att.Disposition
+		if disp == "" {
+			disp = "attachment"
+		}
+		if att.Name != "" {
+			ph.Set("Content-Disposition", disp+"; filename="+mime.QEncoding.Encode("utf-8", att.Name))
+		} else {
+			ph.Set("Content-Disposition", disp)
+		}
+		p, err := mw.CreatePart(ph)
+		if err != nil {
+			return err
+		}
+		enc := base64.NewEncoder(base64.StdEncoding, p)
+		_, _ = enc.Write(attData)
+		_ = enc.Close()
+	}
+
+	if err := mw.Close(); err != nil {
+		return err
+	}
+
+	writeLiteralHeader(buf, "Content-Type",
+		"multipart/mixed; boundary="+fmt.Sprintf("%q", mw.Boundary()))
+	buf.WriteString("\r\n")
+	buf.Write(bodyBuf.Bytes())
+	return nil
+}
+
+// writeMultipartAlternativeInto writes text/plain + text/html parts into
+// an existing io.Writer (for nesting inside multipart/mixed).
+func writeMultipartAlternativeInto(w io.Writer, boundary, textVal, htmlVal string) error {
+	fmt.Fprintf(w, "--%s\r\n", boundary)
+	fmt.Fprintf(w, "Content-Type: text/plain; charset=utf-8\r\n")
+	fmt.Fprintf(w, "Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+	qw := quotedprintable.NewWriter(w)
+	_, _ = qw.Write([]byte(textVal))
+	_ = qw.Close()
+	fmt.Fprintf(w, "\r\n--%s\r\n", boundary)
+	fmt.Fprintf(w, "Content-Type: text/html; charset=utf-8\r\n")
+	fmt.Fprintf(w, "Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+	qw = quotedprintable.NewWriter(w)
+	_, _ = qw.Write([]byte(htmlVal))
+	_ = qw.Close()
+	fmt.Fprintf(w, "\r\n--%s--\r\n", boundary)
+	return nil
+}
+
+// generateBoundary returns a random MIME boundary string.
+func generateBoundary() string {
+	b := make([]byte, 12)
+	_, _ = rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// readBlobBytes fetches a blob by ID and returns its raw bytes.
+func readBlobBytes(ctx context.Context, blobs store.Blobs, blobID string) ([]byte, error) {
+	rc, err := blobs.Get(ctx, blobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(io.LimitReader(rc, 64<<20))
 }
 
 // resolvePartID extracts the first partId from a bodyPart slice (textBody

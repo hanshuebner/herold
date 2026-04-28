@@ -46,9 +46,12 @@ type emailBodyPart struct {
 // (RFC 8621 §4.6). Clients may pass either textBody/htmlBody arrays or
 // a bodyStructure tree; both reference parts via partId into bodyValues.
 type emailBodyStructurePart struct {
-	PartID   string                   `json:"partId"`
-	Type     string                   `json:"type"`
-	SubParts []emailBodyStructurePart `json:"subParts"`
+	PartID      string                   `json:"partId"`
+	Type        string                   `json:"type"`
+	BlobID      string                   `json:"blobId"`
+	Name        string                   `json:"name"`
+	Disposition string                   `json:"disposition"`
+	SubParts    []emailBodyStructurePart `json:"subParts"`
 }
 
 // setRequest is the wire-form Email/set request (RFC 8620 §5.3).
@@ -124,6 +127,11 @@ type emailCreateInput struct {
 	// a bodyStructure tree; the handler normalises both into textBody /
 	// htmlBody before calling buildEmailFromProperties.
 	BodyStructure *emailBodyStructurePart `json:"bodyStructure"`
+	// attachmentParts is populated by normaliseBodyStructure when the
+	// bodyStructure tree contains blob-referenced attachment subParts
+	// (RFC 8621 §4.6: type != text/plain and != text/html with a blobId).
+	// Not a JSON field; set programmatically.
+	attachmentParts []emailBodyStructurePart
 }
 
 // setHandler implements Email/set.
@@ -364,7 +372,7 @@ func (h *handlerSet) createEmail(
 		// canonicalised through Blobs.Put below, just like the blob
 		// path; from that point the two paths are identical.
 		var buildErr error
-		body, buildErr = buildEmailFromProperties(in, h.clk.Now(), "")
+		body, buildErr = buildEmailFromProperties(ctx, h.store.Blobs(), in, h.clk.Now(), "")
 		if buildErr != nil {
 			return 0, jmapEmail{}, nil, fmt.Errorf("email: build from properties: %w", buildErr)
 		}
