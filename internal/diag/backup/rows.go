@@ -90,6 +90,25 @@ type SieveScriptRow struct {
 	PrincipalID int64  `json:"principal_id"`
 	Script      string `json:"script"`
 	UpdatedAtUs int64  `json:"updated_at_us"`
+	// UserScript is the migration-0026 user-written Sieve script half
+	// (Wave 3.15 REQ-FLT-01..31). Empty string means no user script.
+	UserScript string `json:"user_script,omitempty"`
+}
+
+// ManagedRuleRow mirrors one row of the managed_rules table introduced
+// in migration 0026 (Wave 3.15, REQ-FLT-01..31). Each row is one
+// structured filter rule for a principal; the effective Sieve preamble
+// is compiled from all enabled rules.
+type ManagedRuleRow struct {
+	ID             int64  `json:"id"`
+	PrincipalID    int64  `json:"principal_id"`
+	Name           string `json:"name"`
+	Enabled        bool   `json:"enabled"`
+	SortOrder      int64  `json:"sort_order"`
+	ConditionsJSON string `json:"conditions_json"`
+	ActionsJSON    string `json:"actions_json"`
+	CreatedAtUs    int64  `json:"created_at_us"`
+	UpdatedAtUs    int64  `json:"updated_at_us"`
 }
 
 // CategorisationConfigRow mirrors store.CategorisationConfig and the
@@ -122,13 +141,13 @@ type MailboxRow struct {
 	UpdatedAtUs   int64  `json:"updated_at_us"`
 }
 
+// MessageRow mirrors the messages table after migration 0024 removed the
+// per-mailbox columns (mailbox_id, uid, modseq, flags, keywords_csv,
+// snoozed_until_us) into the new message_mailboxes join table and added
+// principal_id as a denorm column for query speed.
 type MessageRow struct {
 	ID             int64  `json:"id"`
-	MailboxID      int64  `json:"mailbox_id"`
-	UID            int64  `json:"uid"`
-	ModSeq         int64  `json:"modseq"`
-	Flags          int64  `json:"flags"`
-	KeywordsCSV    string `json:"keywords_csv"`
+	PrincipalID    int64  `json:"principal_id"`
 	InternalDateUs int64  `json:"internal_date_us"`
 	ReceivedAtUs   int64  `json:"received_at_us"`
 	Size           int64  `json:"size"`
@@ -144,6 +163,19 @@ type MessageRow struct {
 	EnvMessageID   string `json:"env_message_id"`
 	EnvInReplyTo   string `json:"env_in_reply_to"`
 	EnvDateUs      int64  `json:"env_date_us"`
+}
+
+// MessageMailboxRow mirrors one row of the message_mailboxes join table
+// introduced in migration 0024 (Wave 3.11 M:N membership). Each row
+// records the per-(message, mailbox) state: IMAP UID, CONDSTORE modseq,
+// flags, keywords, and the optional snooze deadline.
+type MessageMailboxRow struct {
+	MessageID      int64  `json:"message_id"`
+	MailboxID      int64  `json:"mailbox_id"`
+	UID            int64  `json:"uid"`
+	ModSeq         int64  `json:"modseq"`
+	Flags          int64  `json:"flags"`
+	KeywordsCSV    string `json:"keywords_csv"`
 	SnoozedUntilUs *int64 `json:"snoozed_until_us,omitempty"`
 }
 
@@ -313,6 +345,14 @@ type JMAPStateRow struct {
 	// the ShortcutCoachStat datatype (REQ-PROTO-110..112). Zero for
 	// rows written before migration 0020.
 	ShortcutCoachState int64 `json:"shortcut_coach_state,omitempty"`
+	// CategorySettingsState is the migration-0025 JMAP state counter
+	// for the CategorySettings datatype (REQ-CAT-50). Zero for rows
+	// written before migration 0025.
+	CategorySettingsState int64 `json:"category_settings_state,omitempty"`
+	// ManagedRuleState is the migration-0026 JMAP state counter for
+	// the ManagedRule datatype (Wave 3.15 REQ-FLT-01..31). Zero for
+	// rows written before migration 0026.
+	ManagedRuleState int64 `json:"managed_rule_state,omitempty"`
 }
 
 type JMAPEmailSubmissionRow struct {
