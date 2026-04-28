@@ -794,6 +794,106 @@ class MailStore {
     });
   }
 
+  /**
+   * Restore an email from Trash to Inbox: replaces mailboxIds with
+   * `{<inboxId>: true}`. Same optimistic + undo pattern as move.
+   */
+  async restoreFromTrash(emailId: string): Promise<void> {
+    const inbox = this.inbox;
+    if (!inbox) return;
+    return this.moveEmailToMailbox(emailId, inbox.id);
+  }
+
+  /**
+   * Permanently delete every email currently in the Trash mailbox.
+   * Issues Email/query to enumerate the ids, then a single Email/set
+   * with `destroy: [...]`. No undo: destroy is final.
+   *
+   * Returns the number of emails deleted, or 0 on failure (with toast).
+   */
+  async emptyTrash(): Promise<number> {
+    const accountId = this.mailAccountId;
+    const trash = this.trash;
+    if (!accountId || !trash) return 0;
+
+    let ids: string[] = [];
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Email/query',
+          {
+            accountId,
+            filter: { inMailbox: trash.id },
+            limit: 10000,
+          },
+          [Capability.Mail],
+        );
+      });
+      strict(responses);
+      const args = invocationArgs<{ ids: string[] }>(responses[0]);
+      ids = args.ids ?? [];
+    } catch (err) {
+      toast.show({
+        message: errMessage(err, 'Empty trash failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return 0;
+    }
+    if (ids.length === 0) {
+      toast.show({ message: 'Trash is already empty' });
+      return 0;
+    }
+
+    const prevListIds = [...this.listEmailIds];
+    const prevFocused = this.listFocusedIndex;
+    // Optimistic: drop everything from the list view if Trash is open.
+    if (this.listFolder === 'trash') {
+      this.listEmailIds = [];
+      this.listFocusedIndex = -1;
+    }
+    for (const id of ids) this.emails.delete(id);
+
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Email/set',
+          { accountId, destroy: ids },
+          [Capability.Mail],
+        );
+      });
+      strict(responses);
+      const result = invocationArgs<{
+        destroyed?: string[] | null;
+        notDestroyed?: Record<string, { type: string; description?: string }>;
+      }>(responses[0]);
+      const destroyed = (result.destroyed ?? []).length;
+      const failed = result.notDestroyed
+        ? Object.keys(result.notDestroyed).length
+        : 0;
+      if (failed > 0) {
+        toast.show({
+          message: `Deleted ${destroyed}, ${failed} could not be deleted`,
+          kind: 'error',
+          timeoutMs: 6000,
+        });
+      } else {
+        toast.show({ message: `Deleted ${destroyed} message${destroyed === 1 ? '' : 's'}` });
+      }
+      return destroyed;
+    } catch (err) {
+      // Best-effort recovery: refetch the trash list so the UI is consistent.
+      this.listEmailIds = prevListIds;
+      this.listFocusedIndex = prevFocused;
+      toast.show({
+        message: errMessage(err, 'Empty trash failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return 0;
+    }
+  }
+
   /** Toggle the $flagged keyword. No toast / no undo (toggle is itself the undo). */
   async toggleFlagged(emailId: string): Promise<void> {
     const email = this.emails.get(emailId);

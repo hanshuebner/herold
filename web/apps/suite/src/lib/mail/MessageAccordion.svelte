@@ -4,6 +4,7 @@
   import { emailHtmlBody, emailTextBody, type Email } from './types';
   import { compose } from '../compose/compose.svelte';
   import { movePicker } from './move-picker.svelte';
+  import { mail } from './store.svelte';
   import { settings } from '../settings/settings.svelte';
 
   interface Props {
@@ -60,6 +61,14 @@
   let hasMultipleRecipients = $derived(
     (email.to?.length ?? 0) > 1 || (email.cc?.length ?? 0) > 0,
   );
+
+  // True when the email currently lives in the Trash mailbox — drives
+  // the per-message Restore button visibility.
+  let isInTrash = $derived.by(() => {
+    const t = mail.trash;
+    if (!t) return false;
+    return Boolean(email.mailboxIds[t.id]);
+  });
 </script>
 
 <article class="message" class:expanded>
@@ -131,6 +140,15 @@
         <button type="button" class="pill" onclick={() => movePicker.open(email.id)}>
           → Move…
         </button>
+        {#if isInTrash}
+          <button
+            type="button"
+            class="pill"
+            onclick={() => mail.restoreFromTrash(email.id)}
+          >
+            ⤺ Restore
+          </button>
+        {/if}
       </div>
     </div>
   {/if}

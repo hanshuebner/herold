@@ -209,6 +209,16 @@
         },
       );
     }
+    if (folder === 'trash') {
+      layer.push({
+        key: 'Z',
+        description: 'Restore from trash',
+        action: () => {
+          const id = focusedEmailId();
+          if (id) void mail.restoreFromTrash(id);
+        },
+      });
+    }
     const pop = keyboard.pushLayer(layer);
     return pop;
   });
@@ -280,6 +290,14 @@
 
   function folderHref(f: FolderID): string {
     return f === 'inbox' ? '/mail' : `/mail/folder/${f}`;
+  }
+
+  function confirmEmptyTrash(): void {
+    const n = mail.listEmails.length;
+    const ok = confirm(
+      `Permanently delete ${n} message${n === 1 ? '' : 's'} from Trash? This cannot be undone.`,
+    );
+    if (ok) void mail.emptyTrash();
   }
 
   function emptyMessage(f: FolderID | undefined): string {
@@ -424,6 +442,16 @@
   {:else if isListRoute}
     <header class="list-header">
       <h1>{folderLabel}</h1>
+      {#if folder === 'trash' && mail.listEmails.length > 0}
+        <button
+          type="button"
+          class="danger"
+          onclick={confirmEmptyTrash}
+          disabled={mail.listLoadStatus === 'loading'}
+        >
+          Empty trash
+        </button>
+      {/if}
       <button
         type="button"
         class="refresh"
@@ -566,6 +594,23 @@
     color: var(--text-primary);
   }
   .refresh:disabled {
+    opacity: 0.4;
+    cursor: progress;
+  }
+  .danger {
+    padding: var(--spacing-02) var(--spacing-04);
+    border-radius: var(--radius-md);
+    background: var(--layer-02);
+    color: var(--support-error);
+    font-weight: 600;
+    min-height: var(--touch-min);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .danger:hover:not(:disabled) {
+    background: var(--support-error);
+    color: var(--text-on-color);
+  }
+  .danger:disabled {
     opacity: 0.4;
     cursor: progress;
   }
