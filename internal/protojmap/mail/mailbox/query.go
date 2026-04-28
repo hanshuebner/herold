@@ -229,13 +229,13 @@ func compareMailbox(a, b store.Mailbox, property string) int {
 // queryChangesRequest is the wire-form Mailbox/queryChanges request
 // (RFC 8620 §5.6).
 type queryChangesRequest struct {
-	AccountID      jmapID           `json:"accountId"`
-	Filter         *filterCondition `json:"filter"`
-	Sort           []comparator     `json:"sort"`
-	SinceQueryState string          `json:"sinceQueryState"`
-	MaxChanges     *int             `json:"maxChanges"`
-	UpToID         *jmapID          `json:"upToId"`
-	CalculateTotal bool             `json:"calculateTotal"`
+	AccountID       jmapID           `json:"accountId"`
+	Filter          *filterCondition `json:"filter"`
+	Sort            []comparator     `json:"sort"`
+	SinceQueryState string           `json:"sinceQueryState"`
+	MaxChanges      *int             `json:"maxChanges"`
+	UpToID          *jmapID          `json:"upToId"`
+	CalculateTotal  bool             `json:"calculateTotal"`
 }
 
 // queryChangesAddedItem is a (id, index) pair in the added list.
@@ -246,12 +246,12 @@ type queryChangesAddedItem struct {
 
 // queryChangesResponse is the wire-form Mailbox/queryChanges response.
 type queryChangesResponse struct {
-	AccountID       jmapID                  `json:"accountId"`
-	OldQueryState   string                  `json:"oldQueryState"`
-	NewQueryState   string                  `json:"newQueryState"`
-	Total           *int                    `json:"total,omitempty"`
-	Removed         []jmapID                `json:"removed"`
-	Added           []queryChangesAddedItem `json:"added"`
+	AccountID     jmapID                  `json:"accountId"`
+	OldQueryState string                  `json:"oldQueryState"`
+	NewQueryState string                  `json:"newQueryState"`
+	Total         *int                    `json:"total,omitempty"`
+	Removed       []jmapID                `json:"removed"`
+	Added         []queryChangesAddedItem `json:"added"`
 }
 
 // queryChangesHandler implements Mailbox/queryChanges (RFC 8620 §5.6).

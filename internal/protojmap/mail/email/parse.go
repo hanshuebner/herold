@@ -24,10 +24,10 @@ type parseRequest struct {
 
 // parseResponse is the wire-form Email/parse response.
 type parseResponse struct {
-	AccountID   jmapID                   `json:"accountId"`
+	AccountID   jmapID                     `json:"accountId"`
 	Parsed      map[string]jmapParsedEmail `json:"parsed"`
-	NotParsable []string                 `json:"notParsable"`
-	NotFound    []string                 `json:"notFound"`
+	NotParsable []string                   `json:"notParsable"`
+	NotFound    []string                   `json:"notFound"`
 }
 
 // jmapParsedEmail wraps jmapEmail and overrides MarshalJSON so that
@@ -41,33 +41,33 @@ type jmapParsedEmail struct {
 // MarshalJSON outputs the parsed email with null for server-set fields.
 func (e jmapParsedEmail) MarshalJSON() ([]byte, error) {
 	type alias struct {
-		ID           json.RawMessage            `json:"id"`
-		BlobID       string                     `json:"blobId"`
-		ThreadID     json.RawMessage            `json:"threadId"`
-		MailboxIDs   json.RawMessage            `json:"mailboxIds"`
-		Keywords     json.RawMessage            `json:"keywords"`
-		Size         int64                      `json:"size"`
-		ReceivedAt   json.RawMessage            `json:"receivedAt"`
-		SnoozedUntil *string                    `json:"snoozedUntil"`
-		Reactions    map[string][]string        `json:"reactions,omitempty"`
-		From         []jmapAddress              `json:"from,omitempty"`
-		To           []jmapAddress              `json:"to,omitempty"`
-		Cc           []jmapAddress              `json:"cc,omitempty"`
-		Bcc          []jmapAddress              `json:"bcc,omitempty"`
-		ReplyTo      []jmapAddress              `json:"replyTo,omitempty"`
-		Sender       []jmapAddress              `json:"sender,omitempty"`
-		Subject      string                     `json:"subject,omitempty"`
-		MessageID    []string                   `json:"messageId,omitempty"`
-		InReplyTo    []string                   `json:"inReplyTo,omitempty"`
-		References   []string                   `json:"references,omitempty"`
-		SentAt       string                     `json:"sentAt,omitempty"`
-		BodyStructure *bodyPart                 `json:"bodyStructure,omitempty"`
-		BodyValues   map[string]bodyValue       `json:"bodyValues,omitempty"`
-		TextBody     []bodyPartRef              `json:"textBody,omitempty"`
-		HTMLBody     []bodyPartRef              `json:"htmlBody,omitempty"`
-		Attachments  []bodyPartRef              `json:"attachments,omitempty"`
-		HasAttachment bool                      `json:"hasAttachment"`
-		Preview      string                     `json:"preview,omitempty"`
+		ID            json.RawMessage      `json:"id"`
+		BlobID        string               `json:"blobId"`
+		ThreadID      json.RawMessage      `json:"threadId"`
+		MailboxIDs    json.RawMessage      `json:"mailboxIds"`
+		Keywords      json.RawMessage      `json:"keywords"`
+		Size          int64                `json:"size"`
+		ReceivedAt    json.RawMessage      `json:"receivedAt"`
+		SnoozedUntil  *string              `json:"snoozedUntil"`
+		Reactions     map[string][]string  `json:"reactions,omitempty"`
+		From          []jmapAddress        `json:"from,omitempty"`
+		To            []jmapAddress        `json:"to,omitempty"`
+		Cc            []jmapAddress        `json:"cc,omitempty"`
+		Bcc           []jmapAddress        `json:"bcc,omitempty"`
+		ReplyTo       []jmapAddress        `json:"replyTo,omitempty"`
+		Sender        []jmapAddress        `json:"sender,omitempty"`
+		Subject       string               `json:"subject,omitempty"`
+		MessageID     []string             `json:"messageId,omitempty"`
+		InReplyTo     []string             `json:"inReplyTo,omitempty"`
+		References    []string             `json:"references,omitempty"`
+		SentAt        string               `json:"sentAt,omitempty"`
+		BodyStructure *bodyPart            `json:"bodyStructure,omitempty"`
+		BodyValues    map[string]bodyValue `json:"bodyValues,omitempty"`
+		TextBody      []bodyPartRef        `json:"textBody,omitempty"`
+		HTMLBody      []bodyPartRef        `json:"htmlBody,omitempty"`
+		Attachments   []bodyPartRef        `json:"attachments,omitempty"`
+		HasAttachment bool                 `json:"hasAttachment"`
+		Preview       string               `json:"preview,omitempty"`
 	}
 	return json.Marshal(alias{
 		ID:            json.RawMessage("null"),

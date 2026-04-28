@@ -690,7 +690,9 @@ func TestMailbox_QueryChanges_NoChanges(t *testing.T) {
 	_, queryRaw := f.invoke(t, "Mailbox/query", map[string]any{
 		"accountId": protojmap.AccountIDForPrincipal(f.pid),
 	})
-	var qresp struct{ QueryState string `json:"queryState"` }
+	var qresp struct {
+		QueryState string `json:"queryState"`
+	}
 	_ = json.Unmarshal(queryRaw, &qresp)
 
 	_, raw := f.invoke(t, "Mailbox/queryChanges", map[string]any{
@@ -725,7 +727,9 @@ func TestMailbox_QueryChanges_AfterCreate(t *testing.T) {
 	_, queryRaw := f.invoke(t, "Mailbox/query", map[string]any{
 		"accountId": protojmap.AccountIDForPrincipal(f.pid),
 	})
-	var qresp struct{ QueryState string `json:"queryState"` }
+	var qresp struct {
+		QueryState string `json:"queryState"`
+	}
 	_ = json.Unmarshal(queryRaw, &qresp)
 	startState := qresp.QueryState
 
@@ -843,13 +847,13 @@ func TestMailbox_Set_DestroyParentAndChildTogether(t *testing.T) {
 
 	// Destroy parent first in the list (worst-case ordering for the server).
 	_, rawDestroy := f.invoke(t, "Mailbox/set", map[string]any{
-		"accountId":              accountID,
-		"destroy":                []string{parentID, childID},
+		"accountId":             accountID,
+		"destroy":               []string{parentID, childID},
 		"onDestroyRemoveEmails": false,
 	})
 	var destroyResp struct {
-		Destroyed    []string          `json:"destroyed"`
-		NotDestroyed map[string]any    `json:"notDestroyed"`
+		Destroyed    []string       `json:"destroyed"`
+		NotDestroyed map[string]any `json:"notDestroyed"`
 	}
 	if err := json.Unmarshal(rawDestroy, &destroyResp); err != nil {
 		t.Fatalf("unmarshal destroy: %v: %s", err, rawDestroy)

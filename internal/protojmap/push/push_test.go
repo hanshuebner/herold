@@ -139,7 +139,7 @@ func (f *fixture) invokeGet(ctx context.Context, args getRequest) (getResponse, 
 func TestPushSet_Create_AllocatesVerificationCode(t *testing.T) {
 	f := newFixture(t)
 	resp, merr := f.invokeSet(f.ctx(), setRequest{
-Create: map[string]json.RawMessage{
+		Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				DeviceClientID: "browser-1",
 				URL:            "https://push.example.test/abc",
@@ -176,7 +176,7 @@ func TestPushSet_Create_WithoutKeys(t *testing.T) {
 	// encryption keys.
 	f := newFixture(t)
 	resp, merr := f.invokeSet(f.ctx(), setRequest{
-Create: map[string]json.RawMessage{
+		Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				DeviceClientID: "keyless-client",
 				URL:            "https://push.example.test/keyless",
@@ -213,7 +213,7 @@ Create: map[string]json.RawMessage{
 func TestPushSet_Create_RejectsNonHTTPS(t *testing.T) {
 	f := newFixture(t)
 	resp, merr := f.invokeSet(f.ctx(), setRequest{
-Create: map[string]json.RawMessage{
+		Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "http://insecure.example.test",
 				Keys: validKeysJSON(),
@@ -234,7 +234,7 @@ Create: map[string]json.RawMessage{
 func TestPushSet_VerificationHandshake(t *testing.T) {
 	f := newFixture(t)
 	createResp, merr := f.invokeSet(f.ctx(), setRequest{
-Create: map[string]json.RawMessage{
+		Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/v",
 				Keys: validKeysJSON(),
@@ -247,7 +247,7 @@ Create: map[string]json.RawMessage{
 	c := createResp.Created["c1"]
 	code := *c.VerificationCode
 	updateResp, merr := f.invokeSet(f.ctx(), setRequest{
-Update: map[jmapID]json.RawMessage{
+		Update: map[jmapID]json.RawMessage{
 			c.ID: mustJSON(map[string]any{"verificationCode": code}),
 		},
 	})
@@ -258,7 +258,7 @@ Update: map[jmapID]json.RawMessage{
 		t.Fatalf("verification update rejected: %+v", updateResp.NotUpdated)
 	}
 	getResp, merr := f.invokeGet(f.ctx(), getRequest{
-IDs:       ptrSlice([]jmapID{c.ID}),
+		IDs: ptrSlice([]jmapID{c.ID}),
 	})
 	if merr != nil {
 		t.Fatalf("Get: %v", merr)
@@ -275,7 +275,7 @@ IDs:       ptrSlice([]jmapID{c.ID}),
 func TestPushSet_VerificationHandshake_RejectsWrongCode(t *testing.T) {
 	f := newFixture(t)
 	createResp, merr := f.invokeSet(f.ctx(), setRequest{
-Create: map[string]json.RawMessage{
+		Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/v",
 				Keys: validKeysJSON(),
@@ -287,7 +287,7 @@ Create: map[string]json.RawMessage{
 	}
 	c := createResp.Created["c1"]
 	updateResp, merr := f.invokeSet(f.ctx(), setRequest{
-Update: map[jmapID]json.RawMessage{
+		Update: map[jmapID]json.RawMessage{
 			c.ID: mustJSON(map[string]any{"verificationCode": "definitely-wrong"}),
 		},
 	})
@@ -306,7 +306,7 @@ Update: map[jmapID]json.RawMessage{
 func TestPushSet_RejectsImmutableUpdate(t *testing.T) {
 	f := newFixture(t)
 	createResp, _ := f.invokeSet(f.ctx(), setRequest{
-Create: map[string]json.RawMessage{
+		Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/u",
 				Keys: validKeysJSON(),
@@ -315,7 +315,7 @@ Create: map[string]json.RawMessage{
 	})
 	c := createResp.Created["c1"]
 	updateResp, _ := f.invokeSet(f.ctx(), setRequest{
-Update: map[jmapID]json.RawMessage{
+		Update: map[jmapID]json.RawMessage{
 			c.ID: mustJSON(map[string]any{"url": "https://other.example.test"}),
 		},
 	})
@@ -331,7 +331,7 @@ Update: map[jmapID]json.RawMessage{
 func TestPushSet_Destroy_Roundtrip(t *testing.T) {
 	f := newFixture(t)
 	createResp, _ := f.invokeSet(f.ctx(), setRequest{
-Create: map[string]json.RawMessage{
+		Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/d",
 				Keys: validKeysJSON(),
@@ -340,7 +340,7 @@ Create: map[string]json.RawMessage{
 	})
 	c := createResp.Created["c1"]
 	destroyResp, _ := f.invokeSet(f.ctx(), setRequest{
-Destroy:   []jmapID{c.ID},
+		Destroy: []jmapID{c.ID},
 	})
 	if len(destroyResp.Destroyed) != 1 || destroyResp.Destroyed[0] != c.ID {
 		t.Fatalf("Destroyed = %+v", destroyResp.Destroyed)
@@ -354,7 +354,7 @@ Destroy:   []jmapID{c.ID},
 func TestPush_CrossPrincipalDenied(t *testing.T) {
 	f := newFixture(t)
 	createResp, _ := f.invokeSet(f.ctx(), setRequest{
-Create: map[string]json.RawMessage{
+		Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/x",
 				Keys: validKeysJSON(),
@@ -462,7 +462,7 @@ func TestCapabilityDescriptor_OmitsKeyWhenUnconfigured(t *testing.T) {
 func TestPushSet_QuietHoursValidation(t *testing.T) {
 	f := newFixture(t)
 	resp, _ := f.invokeSet(f.ctx(), setRequest{
-Create: map[string]json.RawMessage{
+		Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/qh",
 				Keys: validKeysJSON(),
@@ -482,7 +482,7 @@ Create: map[string]json.RawMessage{
 func TestPushSet_QuietHoursRejectsBadTZ(t *testing.T) {
 	f := newFixture(t)
 	resp, _ := f.invokeSet(f.ctx(), setRequest{
-Create: map[string]json.RawMessage{
+		Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/qh",
 				Keys: validKeysJSON(),

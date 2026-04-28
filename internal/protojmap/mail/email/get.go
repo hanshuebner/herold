@@ -339,7 +339,7 @@ func resolveHeaderProperty(parsed mailparse.Message, prop string) json.RawMessag
 		}
 		// Wrap all in a single unnamed group.
 		type groupedAddress struct {
-			Name      *string      `json:"name"`
+			Name      *string       `json:"name"`
 			Addresses []jmapAddress `json:"addresses"`
 		}
 		group := groupedAddress{Name: nil, Addresses: addrs}
