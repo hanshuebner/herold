@@ -19,8 +19,56 @@ function parse(hash: string): string {
   return '/' + trimmed;
 }
 
+/**
+ * Extract a query-parameter value from the hash fragment.
+ * The hash may contain a `?key=value` portion after the path segments:
+ * e.g. `#/mail?tab=promotions` → `parseHashParam('tab') === 'promotions'`.
+ */
+function parseHashParam(hash: string, key: string): string | null {
+  const qIdx = hash.indexOf('?');
+  if (qIdx < 0) return null;
+  const qs = hash.slice(qIdx + 1);
+  for (const pair of qs.split('&')) {
+    const eq = pair.indexOf('=');
+    if (eq < 0) continue;
+    const k = decodeURIComponent(pair.slice(0, eq));
+    if (k === key) return decodeURIComponent(pair.slice(eq + 1));
+  }
+  return null;
+}
+
+/**
+ * Build a hash string that preserves current path segments but sets (or
+ * removes) a single query parameter. Other params are preserved.
+ */
+function withHashParam(current: string, key: string, value: string | null): string {
+  // Split path from query.
+  const qIdx = current.indexOf('?');
+  const path = qIdx >= 0 ? current.slice(0, qIdx) : current;
+  const oldQs = qIdx >= 0 ? current.slice(qIdx + 1) : '';
+  const params = new Map<string, string>();
+  for (const pair of oldQs.split('&')) {
+    if (!pair) continue;
+    const eq = pair.indexOf('=');
+    if (eq < 0) {
+      params.set(decodeURIComponent(pair), '');
+    } else {
+      params.set(decodeURIComponent(pair.slice(0, eq)), decodeURIComponent(pair.slice(eq + 1)));
+    }
+  }
+  if (value === null) {
+    params.delete(key);
+  } else {
+    params.set(key, value);
+  }
+  const qs = Array.from(params.entries())
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join('&');
+  return qs ? `${path}?${qs}` : path;
+}
+
 class Router {
-  /** Current path; always starts with '/'. */
+  /** Current path (including query string); always starts with '/'. */
   current = $state(parse(window.location.hash));
 
   constructor() {
@@ -34,9 +82,27 @@ class Router {
     }
   }
 
-  /** Path segments, e.g. /mail/thread/abc → ['mail', 'thread', 'abc']. */
+  /** Path segments (query string stripped), e.g. /mail/thread/abc → ['mail', 'thread', 'abc']. */
   get parts(): readonly string[] {
-    return this.current.split('/').filter(Boolean);
+    const path = this.current.split('?')[0] ?? this.current;
+    return path.split('/').filter(Boolean);
+  }
+
+  /**
+   * Read a query parameter from the current hash URL.
+   * e.g. current = '/mail?tab=promotions' → getParam('tab') === 'promotions'.
+   */
+  getParam(key: string): string | null {
+    return parseHashParam(this.current, key);
+  }
+
+  /**
+   * Navigate to the current path with a query parameter set or removed.
+   * Preserves all other params. Removes the param when value is null.
+   */
+  setParam(key: string, value: string | null): void {
+    const next = withHashParam(this.current, key, value);
+    this.navigate(next);
   }
 
   /** Push a new path; the browser back button returns the user. */
