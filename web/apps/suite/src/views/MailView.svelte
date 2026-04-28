@@ -329,7 +329,14 @@
           description: 'Delete',
           action: () => {
             const id = focusedEmailId();
-            if (id) void mail.deleteEmail(id);
+            if (!id) return;
+            // In trash: '#' permanently destroys (with prompt). Issue
+            // #29. Elsewhere it moves to trash silently with Undo.
+            if (folder === 'trash') {
+              void confirmAndDestroy(id);
+            } else {
+              void mail.deleteEmail(id);
+            }
           },
         },
       );
@@ -486,17 +493,37 @@
   function bulkArchive(): void {
     void mail.bulkArchive(selectedIds());
   }
-  async function bulkDelete(): Promise<void> {
-    const ids = selectedIds();
-    if (ids.length === 0) return;
+  async function confirmAndDestroy(id: string): Promise<void> {
     const ok = await confirm.ask({
-      title: `Move ${ids.length} message${ids.length === 1 ? '' : 's'} to Trash?`,
-      message: 'You can restore from Trash before it is emptied.',
-      confirmLabel: 'Move to Trash',
+      title: 'Delete this message permanently?',
+      message:
+        'This message will be removed from the server and cannot be restored.',
+      confirmLabel: 'Delete permanently',
       cancelLabel: 'Cancel',
       kind: 'danger',
     });
-    if (ok) void mail.bulkDelete(ids);
+    if (ok) void mail.destroyEmail(id);
+  }
+
+  async function bulkDelete(): Promise<void> {
+    const ids = selectedIds();
+    if (ids.length === 0) return;
+    // Issue #29: moving to trash is reversible (Undo + Trash retains
+    // the messages), so it should not prompt. Permanently destroying
+    // from inside Trash is not reversible -- prompt for confirmation.
+    if (folder === 'trash') {
+      const ok = await confirm.ask({
+        title: `Delete ${ids.length} message${ids.length === 1 ? '' : 's'} permanently?`,
+        message:
+          'These messages will be removed from the server and cannot be restored.',
+        confirmLabel: 'Delete permanently',
+        cancelLabel: 'Cancel',
+        kind: 'danger',
+      });
+      if (ok) void mail.bulkDestroy(ids);
+      return;
+    }
+    void mail.bulkDelete(ids);
   }
   function bulkMarkRead(): void {
     void mail.bulkSetSeen(selectedIds(), true);

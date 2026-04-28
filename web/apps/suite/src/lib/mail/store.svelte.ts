@@ -1358,6 +1358,70 @@ class MailStore {
     }
   }
 
+  /**
+   * Permanently destroy a list of emails (Email/set { destroy: [...] }).
+   * Use only after the user confirms; there is no undo. Issue #29.
+   */
+  async bulkDestroy(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const accountId = this.mailAccountId;
+    if (!accountId) return;
+    // Optimistic: drop from the visible list and the email cache.
+    const prevListIds = [...this.listEmailIds];
+    const prevFocused = this.listFocusedIndex;
+    const prevEmails = new Map<string, Email>();
+    for (const id of ids) {
+      const e = this.emails.get(id);
+      if (e) prevEmails.set(id, e);
+      this.#removeFromList(id);
+      this.emails.delete(id);
+    }
+    this.clearSelection();
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call('Email/set', { accountId, destroy: ids }, [Capability.Mail]);
+      });
+      strict(responses);
+      const result = invocationArgs<{
+        destroyed?: string[] | null;
+        notDestroyed?: Record<string, { type: string; description?: string }>;
+      }>(responses[0]);
+      const destroyed = (result.destroyed ?? []).length;
+      const failed = result.notDestroyed
+        ? Object.keys(result.notDestroyed).length
+        : 0;
+      if (failed > 0) {
+        toast.show({
+          message: `Deleted ${destroyed}, ${failed} could not be deleted`,
+          kind: 'error',
+          timeoutMs: 6000,
+        });
+      } else {
+        toast.show({
+          message: `Deleted ${destroyed} message${destroyed === 1 ? '' : 's'}`,
+        });
+      }
+      this.#refreshMailboxesSoon();
+    } catch (err) {
+      // Best-effort restore: put the rows back.
+      this.listEmailIds = prevListIds;
+      this.listFocusedIndex = prevFocused;
+      for (const [id, e] of prevEmails) {
+        this.emails.set(id, e);
+      }
+      toast.show({
+        message: errMessage(err, 'Delete failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
+  /** Permanently destroy one email; thin wrapper around bulkDestroy. */
+  async destroyEmail(id: string): Promise<void> {
+    return this.bulkDestroy([id]);
+  }
+
   /** Bulk delete: replace every id's mailboxIds with `{<trashId>: true}`. */
   async bulkDelete(ids: string[]): Promise<void> {
     const trash = this.trash;
