@@ -8,12 +8,11 @@
 //     web/apps/suite/; built dist copied into dist/suite/ via
 //     scripts/build-web.sh.
 //  2. The operator admin SPA, mounted at "/admin/" on the admin
-//     listener (Phase 2 of the merge plan; see
-//     docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md).
-//     Source under web/apps/admin/; built dist copied into
-//     dist/admin/. Phase 1 ships a placeholder index.html that
-//     documents how the cutover will work; the working operator UI
-//     remains internal/protoui mounted at /ui/ until the cutover.
+//     listener. Source under web/apps/admin/; built dist copied into
+//     dist/admin/ via scripts/build-web.sh. The legacy HTMX UI
+//     (internal/protoui) was deleted in Phase 3c-iii of the tabard
+//     merge plan; /ui/* on the admin listener 308-redirects to
+//     /admin/ as a one-release compatibility shim.
 //
 // Build-tag split (plan section 5):
 //

@@ -89,7 +89,8 @@ type Options struct {
 
 	// SessionResolver returns the principal id for an authenticated
 	// HTTP request, or zero + false if not authenticated. Production
-	// wiring uses internal/protoui.Server.ResolveSession.
+	// wiring uses a closure over authsession.ResolveSession built in
+	// internal/admin/server.go.
 	SessionResolver func(r *http.Request) (store.PrincipalID, bool)
 }
 
@@ -266,9 +267,9 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// REQ-AUTH-SCOPE-02: image proxy requires end-user scope. The
-	// AuthContext is attached by the public-listener protoui session
-	// resolver; tests that drive the proxy without protoui (the
-	// legacy resolver-only fixtures) skip the check.
+	// AuthContext is attached by the authsession-based session
+	// resolver; tests that supply only a PrincipalID resolver (without
+	// an AuthContext) skip the scope check.
 	if actx := authFromCtx(r); actx != nil {
 		if err := authRequireScope(r, scopeEndUser); err != nil {
 			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)

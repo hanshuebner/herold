@@ -254,20 +254,17 @@ Exit criteria: `make build-web` produces both `apps/admin/dist/` and `apps/suite
 
 ### Phase 3 -- cutover and protoui deletion (medium PR)
 
-Goal: `/admin/` is the only admin UI. `/ui/` is gone or 308-redirects.
+**Status: complete on `main` (Phase 3c-iii, 2026-04-27).**
 
-Steps:
+Phase 3 was delivered in four sub-commits on `main`:
 
-1. Mount `internal/webspa/admin.go` at `/admin/` on the admin listener unconditionally. Drop the dev-only flag.
-2. Replace `internal/protoui` route registration with a 308 redirect handler from `/ui/*` to `/admin/*`. (Keep the redirect for one release window; remove in a follow-up.)
-3. Delete `internal/protoui/` in its entirety: handlers, templates, vendored htmx/alpine, ui.css, tests.
-4. Update operator-facing docs:
-   - `docs/operators/...` (or wherever quickstart admin URLs live) -> `/admin/`.
-   - The admin-user agent's smoke-run script must navigate `/admin/...` not `/ui/...`.
-   - `README.md` if it mentions `/ui/`.
-5. Update audit-log fixtures or test data that reference protoui handler names.
+- **3a** (3322b75): `internal/authsession` extracted from protoui; protoui/session.go became an alias shim.
+- **3b** (c762774): admin-listener /ui/* 308-redirects to /admin/; admin SPA at /admin/ unconditional.
+- **3c-i** (3cc6df3): public-listener POST /api/v1/auth/login + /api/v1/auth/logout via internal/protologin; authsession.ResolveSession + ResolveSessionWithScope helpers; integration test at internal/admin/public_json_login_test.go.
+- **3c-ii** (d67d443): Suite SPA renders LoginView inline; no longer redirects to /login.
+- **3c-iii** (this commit): `internal/protoui/` deleted in its entirety (39 files). protoui import removed from internal/admin/server.go. Root-path /login /logout /oidc/ adapters removed. Session resolvers for protoimg, protochat, protocall, and protojmap wired via closures over authsession.ResolveSession / ResolveSessionWithScope. UIConfig.Enabled and UIConfig.PathPrefix removed from sysconfig. newProtoUIServer function deleted. internal/testharness/attach_ui.go deleted. coMountHandler /ui/ routing arm dropped.
 
-Exit criteria: `internal/protoui` is gone. `/admin/` serves the Svelte SPA. The admin-user smoke-test passes against the full binary. `reviewer` and `security-reviewer` sign off.
+Exit criteria met: `internal/protoui` is gone. `/admin/` serves the Svelte SPA. `go test ./...` green. `git grep 'internal/protoui'` returns zero hits.
 
 ### Phase 4 (deferred) -- end-user `/settings` panel
 

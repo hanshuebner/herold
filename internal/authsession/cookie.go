@@ -10,11 +10,10 @@ import (
 // is intentionally NOT HttpOnly so the SPA's JS can read it and attach
 // it as X-CSRF-Token on mutating requests (REQ-AUTH-CSRF).
 //
-// This is the standalone (config-driven) form of the session-cookie
-// writer shared by protoui.Server.setSessionCookie and protoadmin's
-// JSON login endpoint (REQ-AUTH-SESSION-REST). The session cookie Path
-// is "/" so the same cookie accompanies /api/v1/*, /admin/*, and /ui/*
-// on the same listener (REQ-AUTH-COOKIE-PATH).
+// Used by protologin (public-listener JSON login) and protoadmin
+// (admin-listener JSON login, REQ-AUTH-SESSION-REST). The session
+// cookie Path is "/" so the same cookie accompanies /api/v1/* and
+// /admin/* on the same listener (REQ-AUTH-COOKIE-PATH).
 func WriteSessionCookie(w http.ResponseWriter, cfg SessionConfig, sess Session) {
 	encoded := encodeSession(sess, cfg.SigningKey)
 	maxAge := int(cfg.TTL.Seconds())

@@ -56,7 +56,8 @@ type APIKeyLookup func(ctx context.Context, hash string) (store.APIKey, error)
 
 // SessionResolver resolves a suite-session cookie on an inbound HTTP
 // request into the authenticated principal ID and its scope set.
-// Implementations are provided by protoui.Server.ResolveSessionWithScope.
+// Production wiring uses a closure over authsession.ResolveSessionWithScope
+// built in internal/admin/server.go.
 // A nil resolver disables cookie-based auth (Bearer + Basic only).
 // When non-nil it is called only when no Authorization header is
 // present; Bearer / Basic always take precedence.
@@ -96,11 +97,11 @@ type Options struct {
 	// SessionResolver, when non-nil, enables cookie-based authentication
 	// on the public listener. The JMAP auth middleware calls it when no
 	// Authorization header is present on the request. Production wiring
-	// supplies protoui.Server.ResolveSessionWithScope here so a browser
-	// with a valid suite-session cookie can call JMAP endpoints without
-	// a separate Bearer credential. The resolver must return false for
-	// expired or invalid sessions; a true result is trusted without
-	// additional store round-trips (the protoui layer already validates
+	// supplies a closure over authsession.ResolveSessionWithScope so a
+	// browser with a valid suite-session cookie can call JMAP endpoints
+	// without a separate Bearer credential. The resolver must return
+	// false for expired or invalid sessions; a true result is trusted
+	// without additional store round-trips (authsession already validates
 	// the cookie signature and checks the disabled flag).
 	SessionResolver SessionResolver
 	// PushPingInterval is the interval at which idle EventSource

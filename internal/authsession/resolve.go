@@ -4,12 +4,9 @@ package authsession
 // and validate a session cookie on an incoming request without knowing
 // about server lifecycle. Consumers (internal/protoimg, internal/protochat,
 // internal/protocall, internal/protojmap JMAP cookie-auth) call these
-// functions directly after Phase 3c-iii removes the internal/protoui
-// dependency from those packages.
-//
-// The functions are parallel to internal/protoui.Server.ResolveSession and
-// ResolveSessionWithScope (the parity target); protoui's methods keep working
-// through their own internal call paths until Phase 3c-iii deletes protoui.
+// functions via closures wired in internal/admin/server.go. The closures
+// capture the public-listener SessionConfig, store, and clock so each
+// subsystem gets cookie validation without depending on a server struct.
 
 import (
 	"net/http"

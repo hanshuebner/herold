@@ -8,10 +8,10 @@
 //   - over-large or non-image responses are rejected before they reach
 //     the user's renderer.
 //
-// Scope. The handler is mounted at GET /proxy/image on the admin HTTP
-// listener, alongside protoadmin's REST surface and protoui's web UI.
-// It reuses protoui's session cookie for authentication via a
-// SessionResolver callback the parent (internal/admin) wires through.
+// Scope. The handler is mounted at GET /proxy/image on the public HTTP
+// listener. It reuses the public-listener session cookie for
+// authentication via a SessionResolver callback the parent
+// (internal/admin) wires from authsession.ResolveSession.
 // The proxy is in-process for v1; REQ-SEND-78 leaves a future plug-in
 // path open.
 //

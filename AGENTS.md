@@ -49,6 +49,8 @@ Pulls directly from `docs/design/server/implementation/02-phasing.md`.
 
 **Phase 2 — Outbound + ACME + auto-DNS + JMAP + HTTP APIs + events + shared mailboxes + web UI.** `queue-delivery-implementor` (queue + outbound + ACME + autodns), `mail-auth-implementor` (signing + MTA-STS + DANE + DMARC reports + TLS-RPT), `plugin-platform-implementor` (Cloudflare + Route53 + Hetzner + manual DNS plugins + NATS event publisher), `jmap-implementor`, `imap-implementor` (CONDSTORE/QRESYNC + MOVE + ACL), `http-api-implementor` (send + webhooks + events dispatcher), `ops-observability-implementor` (SQLite↔Postgres migration tool), `web-frontend-implementor` (Suite SPA hardening + admin SPA replacing the protoui HTMX surface, Phase 2 of the merge plan).
 
+**Phase 3 — protoui cutover and deletion (merge-plan Phases 3a through 3c-iii). COMPLETE on `main` (2026-04-27).** `web-frontend-implementor` owned all sub-phases. `internal/protoui` is deleted; `/admin/` is the only admin UI; `/ui/*` on the admin listener 308-redirects to `/admin/`. Phase 4 (end-user `/settings` panel, REQ-ADM-203) remains deferred.
+
 **Phase 2.5 — Hardening.** `conformance-fuzz-engineer` leads; `reviewer` + `security-reviewer` close the remaining items; `docs-writer` writes operator + plugin-SDK docs; `release-ci-engineer` ships packaging and SBOM pipeline.
 
 ## Cross-subsystem coordination points (where the root agent must merge)

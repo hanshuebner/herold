@@ -7,9 +7,9 @@ workspace that builds the SPAs herold serves at runtime.
 
 - **`apps/suite/`** — end-user mail / calendar / contacts / chat
   client. Mounted at `/` on herold's public listener.
-- **`apps/admin/`** — operator admin SPA. Phase 2 of the merge plan;
-  does not exist yet. Mounted at `/admin/` once it lands. Until
-  then the working operator UI is `internal/protoui` at `/ui/`.
+- **`apps/admin/`** — operator admin SPA. Mounted at `/admin/` on
+  herold's admin listener. The former HTMX UI (`internal/protoui`)
+  was deleted in Phase 3c-iii; `/ui/*` 308-redirects to `/admin/`.
 
 ## Packages
 

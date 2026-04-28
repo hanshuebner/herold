@@ -50,7 +50,6 @@ import (
 	"github.com/hanshuebner/herold/internal/protologin"
 	"github.com/hanshuebner/herold/internal/protosend"
 	"github.com/hanshuebner/herold/internal/protosmtp"
-	"github.com/hanshuebner/herold/internal/protoui"
 	"github.com/hanshuebner/herold/internal/protowebhook"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/sesinbound"
@@ -460,10 +459,10 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// health was constructed before the ACME block above so the ACME gate
 	// and protoadmin share the same instance (REQ-OPS-111).
 	//
-	// The Session config threads the same cookie name + signing key that
-	// the protoui admin server uses into protoadmin so the JSON login
-	// endpoint at POST /api/v1/auth/login issues a cookie that requireAuth
-	// can subsequently verify (REQ-AUTH-SESSION-REST, REQ-AUTH-CSRF).
+	// The Session config threads the cookie name + signing key into
+	// protoadmin so the JSON login endpoint at POST /api/v1/auth/login
+	// issues a cookie that requireAuth can subsequently verify
+	// (REQ-AUTH-SESSION-REST, REQ-AUTH-CSRF).
 	adminServer := protoadmin.NewServer(
 		st,
 		dir,
@@ -493,12 +492,12 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	}
 	// Parent mux composition (Phase 2 Wave 2.4): the admin HTTP
 	// listener serves both the REST surface (protoadmin under
-	// /api/v1) and the operator web UI (protoui under /ui). We
-	// chose composition over a protoadmin.Mount(prefix, h) method so
-	// protoadmin stays focused on its REST API and the UI's
+	// /api/v1) and the admin Svelte SPA (webspa.admin under /admin/).
+	// We chose composition over a protoadmin.Mount(prefix, h) method
+	// so protoadmin stays focused on its REST API and the SPA's
 	// dependency on directory + store goes through its own
-	// constructor. The two handlers are otherwise independent —
-	// session cookies (UI) and Bearer keys (REST) live in disjoint
+	// constructor. The two handlers are otherwise independent --
+	// session cookies (SPA) and Bearer keys (REST) live in disjoint
 	// header/cookie namespaces, and the URL prefixes do not overlap.
 	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey)
 	if err != nil {
@@ -1308,7 +1307,7 @@ func pickHTTPHandler(cfg *sysconfig.Config, l sysconfig.ListenerConfig, bundle c
 }
 
 // coMountHandler is the dev-mode-only fallback. Routes /api/v1/, /admin/,
-// /metrics, and /ui/ to the admin handler; everything else to public.
+// and /metrics to the admin handler; everything else to public.
 // The auth.RequireScope check on the admin paths still enforces the
 // scope boundary; coMountHandler is a routing convenience, not a
 // security boundary.
@@ -1318,7 +1317,6 @@ func coMountHandler(public, admin http.Handler) http.Handler {
 		case strings.HasPrefix(r.URL.Path, "/api/v1/admin/"),
 			strings.HasPrefix(r.URL.Path, "/admin/"),
 			strings.HasPrefix(r.URL.Path, "/metrics"),
-			strings.HasPrefix(r.URL.Path, "/ui/"),
 			r.URL.Path == "/api/v1/principals" || strings.HasPrefix(r.URL.Path, "/api/v1/principals/"),
 			r.URL.Path == "/api/v1/domains" || strings.HasPrefix(r.URL.Path, "/api/v1/domains/"),
 			r.URL.Path == "/api/v1/aliases" || strings.HasPrefix(r.URL.Path, "/api/v1/aliases/"),
@@ -1515,28 +1513,19 @@ func composeAdminAndUI(
 	// lands, ftsIndex is already in scope here.
 	_ = ftsIndex
 	var bundle composedHandlers
-	prefix := cfg.Server.UI.PathPrefix
-	if prefix == "" {
-		prefix = "/ui"
-	}
 
-	// Public-listener UI server. Issues end-user-scoped cookies with
-	// Path=/ so the suite session accompanies all public-listener
-	// endpoints (JMAP, chat, send API). Cookie-based JMAP auth is
-	// wired below via jmapSessionResolver (Wave 3.7-A).
-	//
-	// The admin-listener UI server retired in Phase 3b of the merge
-	// plan -- the admin Svelte SPA at /admin/ replaces it. Legacy
-	// /ui/* paths on the admin listener now 308-redirect to /admin/.
-	// The public-listener UI server stays mounted because the Suite
-	// SPA at / still redirects to /login when its session expires
-	// (Wave 3.7-A). Phase 3c retires the public protoui /login flow
-	// once the Suite SPA migrates to a JSON login endpoint.
-	uiSrvPublic, err := newProtoUIServer(cfg, st, dir, oidcRP, clk, logger, "public")
-	if err != nil {
-		logger.LogAttrs(ctx, slog.LevelError, "protoui: public server failed",
-			slog.String("err", err.Error()))
-		uiSrvPublic = nil
+	// Public-listener session resolver (Phase 3c-iii). Built as a
+	// closure over authsession.ResolveSession so siblings that need
+	// cookie auth (image proxy, chat, call, JMAP) no longer depend on
+	// the deleted internal/protoui package. The cookie config is the
+	// same one protologin uses when issuing the cookie, so HMAC
+	// verification succeeds.
+	publicCookieCfg := publicSessionCookieConfig(cfg)
+	publicSessionResolver := func(r *http.Request) (store.PrincipalID, bool) {
+		return authsession.ResolveSession(r, publicCookieCfg, st, clk)
+	}
+	publicSessionWithScopeResolver := func(r *http.Request) (store.PrincipalID, auth.ScopeSet, bool) {
+		return authsession.ResolveSessionWithScope(r, publicCookieCfg, st, clk)
 	}
 
 	// ----- Admin handler -----
@@ -1549,8 +1538,7 @@ func composeAdminAndUI(
 	// admin listener is the only HTTP surface.
 	adminMux.Handle("/metrics", observe.MetricsHandler())
 	// Admin Svelte SPA at /admin/ (Phase 3b of the merge plan -- the
-	// only admin UI; the AdminSPA.Enabled flag was retired). Always
-	// mounted on the admin listener.
+	// only admin UI). Always mounted on the admin listener.
 	adminSPA, err := webspa.NewAdmin(webspa.AdminOptions{
 		Logger:        logger.With("subsystem", "webspa.admin"),
 		AdminAssetDir: cfg.Server.AdminSPA.AssetDir,
@@ -1562,16 +1550,13 @@ func composeAdminAndUI(
 		http.StripPrefix("/admin",
 			withPanicRecover(logger.With("subsystem", "webspa.admin"),
 				"webspa.admin", adminSPA.Handler())))
-	// Legacy /ui/* paths on the admin listener -> 308 to /admin/* so
-	// older bookmarks, fail2ban regexes, and habitually-typed URLs
-	// land on the new SPA without breaking. 308 (Permanent Redirect)
-	// preserves request method on retry, which is intentional: a
-	// stale POST to /ui/login lands on /admin/ where the SPA serves
-	// its login page; the operator notices the URL change.
-	adminMux.HandleFunc(prefix+"/", func(w http.ResponseWriter, r *http.Request) {
+	// Legacy /ui/* paths on the admin listener -> 308 to /admin/ so
+	// older bookmarks land on the new SPA without breaking. The path
+	// is hardcoded to /ui/ (the only value that was ever used).
+	adminMux.HandleFunc("/ui/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/", http.StatusPermanentRedirect)
 	})
-	adminMux.HandleFunc(prefix, func(w http.ResponseWriter, r *http.Request) {
+	adminMux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/", http.StatusPermanentRedirect)
 	})
 	// Bare `/` on the admin listener: redirect a browser to the
@@ -1612,16 +1597,13 @@ func composeAdminAndUI(
 	// POST /api/v1/auth/login issues herold_public_session + herold_public_csrf
 	// cookies with the end-user scope set so the Suite SPA can authenticate
 	// without the HTML /login redirect dance. POST /api/v1/auth/logout clears
-	// both cookies.
-	//
-	// The protoui HTML /login flow at prefix+"/login" remains mounted below
-	// (coexistence through Phase 3c-ii); Phase 3c-iii migrates the SPA to
-	// this JSON endpoint and drops the protoui side.
+	// both cookies. This is the single login surface on the public listener;
+	// the protoui HTML /login flow was retired in Phase 3c-iii.
 	//
 	// A no-op rate limiter is used here; a public-listener per-IP bucket will
 	// be added as a follow-up to Phase 3c-i.
 	publicLoginSrv := protologin.New(protologin.Options{
-		Session:       publicSessionCookieConfig(cfg),
+		Session:       publicCookieCfg,
 		Store:         st,
 		Directory:     dir,
 		Clock:         clk,
@@ -1632,44 +1614,11 @@ func composeAdminAndUI(
 	})
 	publicLoginSrv.Mount(publicMux)
 
-	// Public /login flow (suite-login per REQ-AUTH-SCOPE-01) lives at
-	// the same /ui path prefix on the public listener with end-user
-	// scope issuance. The public protoui server uses a distinct
-	// cookie name (herold_public_session) so an admin cookie
-	// presented here is silently ignored at the parser level.
-	if uiSrvPublic != nil {
-		publicMux.Handle(prefix+"/", uiSrvPublic.Handler())
-
-		// Root-path adapters for the login flow (REQ-AUTH-SCOPE-01).
-		// The protoui server registers its routes under prefix+"/login"
-		// etc., so a browser directed to /login?return=%2F%23%2Fmail
-		// would 404 because only prefix+"/login" is mounted. These
-		// adapters rewrite the inbound path to the prefix-based
-		// equivalent and delegate to the same protoui handler without
-		// mutating the original request. Go's longest-prefix routing
-		// ensures these registrations take priority over the SPA
-		// catch-all at "/", so the suite SPA's defensive 404 for
-		// /login never fires for these paths in practice.
-		uiHandler := uiSrvPublic.Handler()
-		for _, root := range []string{"/login", "/logout", "/oidc/"} {
-			root := root // pin for closure
-			publicMux.HandleFunc(root, func(w http.ResponseWriter, r *http.Request) {
-				r2 := r.Clone(r.Context())
-				r2.URL.Path = prefix + r.URL.Path
-				uiHandler.ServeHTTP(w, r2)
-			})
-		}
-	}
-
 	// Image proxy (REQ-SEND-70..78). Public-listener-only: the
 	// browser presenting an end-user cookie loads upstream-tracking-
 	// free images without a separate auth dance.
 	if cfg.Server.ImageProxy.Enabled == nil || *cfg.Server.ImageProxy.Enabled {
 		ipCfg := cfg.Server.ImageProxy
-		var imgResolver func(*http.Request) (store.PrincipalID, bool)
-		if uiSrvPublic != nil {
-			imgResolver = uiSrvPublic.ResolveSession
-		}
 		imgSrv := protoimg.New(protoimg.Options{
 			Logger:              logger.With("subsystem", "protoimg"),
 			Clock:               clk,
@@ -1680,7 +1629,7 @@ func composeAdminAndUI(
 			PerUserPerMin:       ipCfg.PerUserPerMinute,
 			PerUserOriginPerMin: ipCfg.PerUserOriginPerMinute,
 			PerUserConcurrent:   ipCfg.PerUserConcurrent,
-			SessionResolver:     imgResolver,
+			SessionResolver:     publicSessionResolver,
 		})
 		publicMux.Handle("/proxy/image",
 			withPanicRecover(logger.With("subsystem", "protoimg"),
@@ -1694,15 +1643,11 @@ func composeAdminAndUI(
 		chatBroadcaster = protochat.NewBroadcaster(
 			logger.With("subsystem", "protochat"),
 			callChatMembersResolver(st))
-		var chatResolver func(*http.Request) (store.PrincipalID, bool)
-		if uiSrvPublic != nil {
-			chatResolver = uiSrvPublic.ResolveSession
-		}
 		chatSrv = protochat.New(protochat.Options{
 			Store:            st,
 			Logger:           logger.With("subsystem", "protochat"),
 			Clock:            clk,
-			SessionResolver:  chatResolver,
+			SessionResolver:  publicSessionResolver,
 			Broadcaster:      chatBroadcaster,
 			Membership:       callChatMembershipResolver(st),
 			PeersResolver:    callChatPeersResolver(st),
@@ -1740,10 +1685,6 @@ func composeAdminAndUI(
 			}
 			sharedSecret = []byte(s)
 		}
-		var callResolver func(*http.Request) (store.PrincipalID, bool)
-		if uiSrvPublic != nil {
-			callResolver = uiSrvPublic.ResolveSession
-		}
 		callSrv := protocall.New(protocall.Options{
 			Logger:         logger.With("subsystem", "protocall"),
 			Clock:          clk,
@@ -1756,7 +1697,7 @@ func composeAdminAndUI(
 				SharedSecret:  sharedSecret,
 				CredentialTTL: time.Duration(cfg.Server.TURN.CredentialTTLSeconds) * time.Second,
 			},
-			Authn:       newCallAuthn(st, callResolver),
+			Authn:       newCallAuthn(st, publicSessionResolver),
 			RingTimeout: time.Duration(cfg.Server.Call.RingTimeoutSeconds) * time.Second,
 		})
 		publicMux.Handle("/api/v1/call/credentials",
@@ -1772,15 +1713,11 @@ func composeAdminAndUI(
 
 	// JMAP Core (RFC 8620) + Mail / Identity / EmailSubmission
 	// (RFC 8621). Public-listener-only. Cookie-based auth is wired
-	// here via the public-listener protoui session resolver so a
-	// browser logged in via /login can call JMAP without a separate
-	// Bearer credential (Wave 3.7-A, REQ-AUTH-SCOPE-01).
-	var jmapSessionResolver protojmap.SessionResolver
-	if uiSrvPublic != nil {
-		jmapSessionResolver = uiSrvPublic.ResolveSessionWithScope
-	}
+	// here via the public-listener authsession resolver so a browser
+	// logged in via /api/v1/auth/login can call JMAP without a
+	// separate Bearer credential (Wave 3.7-A, REQ-AUTH-SCOPE-01).
 	jmapSrv := protojmap.NewServer(st, dir, tlsStore, logger.With("subsystem", "jmap"), clk, protojmap.Options{
-		SessionResolver: jmapSessionResolver,
+		SessionResolver: publicSessionWithScopeResolver,
 	})
 	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk),
 		logger.With("subsystem", "jmap-emailsubmission"), clk)
@@ -1959,91 +1896,12 @@ func composeAdminAndUI(
 	return bundle, nil
 }
 
-// newProtoUIServer constructs a protoui.Server for the named listener
-// kind. The cookie name is forked per REQ-AUTH-SCOPE-01 +
-// REQ-OPS-ADMIN-LISTENER-03 so cross-listener cookie reuse is
-// mechanically impossible: a public-listener cookie presented to the
-// admin listener fails the cookie-name lookup and conversely. Both
-// servers share the same templates and signing key (the latter so a
-// dev-mode co-mount that uses a single signing key still produces
-// stable cookies; in production they're independent listener
-// instances and the signing key environment variable is the same
-// process-wide).
-func newProtoUIServer(
-	cfg *sysconfig.Config,
-	st store.Store,
-	dir *directory.Directory,
-	oidcRP *directoryoidc.RP,
-	clk clock.Clock,
-	logger *slog.Logger,
-	listenerKind string,
-) (*protoui.Server, error) {
-	if cfg.Server.UI.Enabled != nil && !*cfg.Server.UI.Enabled {
-		return nil, errors.New("ui disabled")
-	}
-	prefix := cfg.Server.UI.PathPrefix
-	if prefix == "" {
-		prefix = "/ui"
-	}
-	signingKey := []byte{}
-	if env := cfg.Server.UI.SigningKeyEnv; env != "" {
-		if v := os.Getenv(env); v != "" {
-			signingKey = []byte(v)
-		}
-	}
-	secure := true
-	if cfg.Server.UI.SecureCookies != nil {
-		secure = *cfg.Server.UI.SecureCookies
-	}
-	cookieName := cfg.Server.UI.CookieName
-	csrfName := cfg.Server.UI.CSRFCookieName
-	switch listenerKind {
-	case "admin":
-		// Admin-listener cookie. Distinct name per REQ-AUTH-SCOPE-01
-		// so cross-listener cookie reuse is mechanically impossible
-		// at the parser level. Operator-supplied CookieName is used
-		// only for the public listener (the admin listener is
-		// loopback-by-default and rarely renamed).
-		if cookieName == "" || cookieName == "herold_ui_session" {
-			cookieName = "herold_admin_session"
-		} else {
-			cookieName = cookieName + "_admin"
-		}
-		if csrfName == "" || csrfName == "herold_ui_csrf" {
-			csrfName = "herold_admin_csrf"
-		} else {
-			csrfName = csrfName + "_admin"
-		}
-	default:
-		// Public listener.
-		if cookieName == "" {
-			cookieName = "herold_public_session"
-		}
-		if csrfName == "" {
-			csrfName = "herold_public_csrf"
-		}
-	}
-	return protoui.NewServer(st, dir, oidcRP, clk, protoui.Options{
-		PathPrefix:   prefix,
-		Logger:       logger.With("subsystem", "ui", "listener", listenerKind),
-		ListenerKind: listenerKind,
-		Session: protoui.SessionConfig{
-			SigningKey:     signingKey,
-			CookieName:     cookieName,
-			CSRFCookieName: csrfName,
-			TTL:            cfg.Server.UI.SessionTTL.AsDuration(),
-			SecureCookies:  secure,
-		},
-	})
-}
-
 // adminSessionCookieConfig extracts the admin-listener cookie parameters
 // from sysconfig and returns an authsession.SessionConfig suitable for
 // passing to protoadmin.Options.Session. The returned config uses the same
-// signing key and cookie names that newProtoUIServer uses for the "admin"
-// kind so cookies minted by the protoui HTML /login flow and by
-// protoadmin's JSON /api/v1/auth/login endpoint are mutually verifiable
-// (REQ-AUTH-SESSION-REST).
+// signing key and cookie names as the admin listener so cookies minted by
+// protoadmin's JSON /api/v1/auth/login endpoint are verifiable by
+// requireAuth (REQ-AUTH-SESSION-REST).
 func adminSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
 	signingKey := []byte{}
 	if env := cfg.Server.UI.SigningKeyEnv; env != "" {
@@ -2078,10 +1936,9 @@ func adminSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
 
 // publicSessionCookieConfig extracts the public-listener cookie parameters
 // from sysconfig and returns an authsession.SessionConfig for
-// protologin.Options.Session. The returned config uses the same signing key
-// and cookie names that newProtoUIServer uses for the "public" kind so
-// cookies minted by the protoui HTML /login flow and by protologin's JSON
-// /api/v1/auth/login endpoint on the public listener are mutually verifiable
+// protologin.Options.Session and the authsession-based resolvers wired
+// into protoimg, protochat, protocall, and protojmap. Cookies issued by
+// protologin's JSON /api/v1/auth/login are verified by those resolvers
 // (REQ-AUTH-SESSION-REST).
 func publicSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
 	signingKey := []byte{}

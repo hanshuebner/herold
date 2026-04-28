@@ -2,11 +2,12 @@
 
 Svelte 5 admin SPA for the Herold operator interface.
 
-This app is Phase 2 of the merge plan documented at
+This app is the result of Phases 2 and 3 of the merge plan documented at
 `docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md`.
-It will reach feature parity with `internal/protoui` (the server-rendered
-HTMX admin UI) over a series of follow-up commits, then replace it
-entirely in Phase 3.
+It replaces the former server-rendered HTMX admin UI (`internal/protoui`,
+deleted in Phase 3c-iii) and is the only admin UI in herold. It is mounted
+at `/admin/` on the admin listener; legacy `/ui/*` bookmarks 308-redirect
+to `/admin/`.
 
 ## Dev loop
 
@@ -44,12 +45,13 @@ committed to source control so the `//go:embed` directive resolves on a
 fresh checkout without running `make build-web`. They are overwritten by
 the build script and are not served in production builds.
 
-## Parity target
+## REST API coverage
 
-The parity target is `internal/protoui`. See the audit at
+See the audit at
 `docs/design/server/notes/phase-2-protoui-protoadmin-coverage-audit-2026-04-27.md`
-for the full page-by-page breakdown of which `/api/v1/...` endpoints each
-admin page consumes.
+for the page-by-page breakdown of which `/api/v1/...` endpoints each
+admin page consumes (written when `internal/protoui` was the parity
+reference; still useful as a checklist).
 
 Pages currently implemented:
 - Login (`/login`) -- full-bleed form targeting `POST /api/v1/auth/login`

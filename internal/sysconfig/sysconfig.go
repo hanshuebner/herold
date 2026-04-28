@@ -485,21 +485,22 @@ type ImageProxyConfig struct {
 	PerUserConcurrent int `toml:"per_user_concurrent,omitempty"`
 }
 
-// UIConfig configures the operator-facing web UI (internal/protoui).
-// The UI mounts as a sibling handler on the existing admin HTTP
-// listener; operators may opt out (set Enabled = false) on a host
-// where only the API surface is wanted.
+// UIConfig configures the session-cookie and CSRF substrate shared by the
+// JSON login endpoints (/api/v1/auth/login on both listeners) and the admin
+// SPA mount at /admin/.
+//
+// The [server.ui] block was previously the config home for the now-deleted
+// internal/protoui HTMX server. The fields that survive (CookieName,
+// CSRFCookieName, SigningKeyEnv, SessionTTL, SecureCookies) are consumed by
+// internal/protoadmin (admin-listener cookie auth) and internal/protologin
+// (public-listener JSON login). The Enabled and PathPrefix fields were
+// protoui-specific and have been removed.
 //
 // SecureCookies defaults to true: cookies issued for sessions and
 // CSRF tokens carry the Secure attribute. Operators running behind a
 // trusted localhost reverse proxy during development can override
 // (set false), but production deployments MUST keep it true.
 type UIConfig struct {
-	// Enabled selects whether the UI is mounted. Defaults to true.
-	Enabled *bool `toml:"enabled,omitempty"`
-	// PathPrefix is the URL prefix every UI route lives under
-	// (default "/ui"). Leading slash required.
-	PathPrefix string `toml:"path_prefix,omitempty"`
 	// CookieName overrides the session cookie name (default
 	// "herold_ui_session").
 	CookieName string `toml:"cookie_name,omitempty"`
@@ -846,16 +847,10 @@ func applyDefaults(c *Config) {
 	if c.Server.Snooze.PollInterval == 0 {
 		c.Server.Snooze.PollInterval = Duration(60 * time.Second)
 	}
-	// UI defaults: enabled, /ui prefix, 24-hour session TTL, secure
-	// cookies. Strict TOML parsing keeps unknown keys an error so
-	// operators see typos.
-	if c.Server.UI.Enabled == nil {
-		t := true
-		c.Server.UI.Enabled = &t
-	}
-	if c.Server.UI.PathPrefix == "" {
-		c.Server.UI.PathPrefix = "/ui"
-	}
+	// UI session-cookie defaults: 24-hour session TTL, secure cookies.
+	// CookieName / CSRFCookieName serve as the root from which listener-
+	// specific names are derived (see adminSessionCookieConfig and
+	// publicSessionCookieConfig in internal/admin/server.go).
 	if c.Server.UI.CookieName == "" {
 		c.Server.UI.CookieName = "herold_ui_session"
 	}
