@@ -69,7 +69,15 @@ const CurrentBackupVersion = 1
 //
 //	mailboxes.sort_order (INTEGER/BIGINT NOT NULL DEFAULT 0) for the
 //	JMAP Mailbox.sortOrder property (RFC 8621 §2.1). No new tables.
-const CurrentSchemaVersion = 23
+//
+// 24 — 0024_message_mailboxes.sql. M:N membership: removes per-mailbox
+//
+//	columns from messages (mailbox_id, uid, modseq, flags, keywords_csv,
+//	snoozed_until_us) and introduces the message_mailboxes join table
+//	with (message_id, mailbox_id, uid, modseq, flags, keywords_csv,
+//	snoozed_until_us). Adds messages.principal_id (denorm for query
+//	speed). Forward-only; no downgrade path.
+const CurrentSchemaVersion = 24
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

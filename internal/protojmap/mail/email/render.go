@@ -29,9 +29,18 @@ func rfc3339UTC(t time.Time) string {
 //
 // blobs and bodyValues are NOT populated here -- Email/get's "properties"
 // hint drives the optional render in renderEmailFull.
+//
+// mailboxIds is populated from m.Mailboxes when that slice is non-empty
+// (the multi-mailbox M:N case). For single-mailbox paths where Mailboxes
+// is nil or empty, the convenience field m.MailboxID is used as a fallback.
 func renderEmailMetadata(m store.Message) jmapEmail {
-	mailboxIDs := map[jmapID]bool{
-		jmapIDFromMailbox(m.MailboxID): true,
+	mailboxIDs := make(map[jmapID]bool, max(1, len(m.Mailboxes)))
+	if len(m.Mailboxes) > 0 {
+		for _, mm := range m.Mailboxes {
+			mailboxIDs[jmapIDFromMailbox(mm.MailboxID)] = true
+		}
+	} else {
+		mailboxIDs[jmapIDFromMailbox(m.MailboxID)] = true
 	}
 	out := jmapEmail{
 		ID:         jmapIDFromMessage(m.ID),

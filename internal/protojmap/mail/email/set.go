@@ -306,13 +306,10 @@ func (h *handlerSet) createEmail(
 			Description: "mailboxIds must list at least one mailbox",
 		}, nil
 	}
-	if len(in.MailboxIDs) > 1 {
-		return 0, jmapEmail{}, &setError{
-			Type: "invalidProperties", Properties: []string{"mailboxIds"},
-			Description: "v1 supports a single mailbox per Email; multi-mailbox lands with the storage extension",
-		}, nil
-	}
-	var mailboxID store.MailboxID
+	// Collect the target mailboxes for this create. Multiple mailbox
+	// memberships are supported per REQ-STORE-36: the message row is
+	// inserted once and N message_mailboxes rows are created atomically.
+	var targetMailboxIDs []store.MailboxID
 	for raw, present := range in.MailboxIDs {
 		if !present {
 			continue
@@ -324,22 +321,28 @@ func (h *handlerSet) createEmail(
 				Description: "mailboxIds carries an unparseable id",
 			}, nil
 		}
-		mailboxID = id
-	}
-	mb, err := h.store.Meta().GetMailboxByID(ctx, mailboxID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		mb, err := h.store.Meta().GetMailboxByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return 0, jmapEmail{}, &setError{
+					Type: "invalidProperties", Properties: []string{"mailboxIds"},
+					Description: "mailbox does not exist",
+				}, nil
+			}
+			return 0, jmapEmail{}, nil, err
+		}
+		if mb.PrincipalID != pid {
 			return 0, jmapEmail{}, &setError{
-				Type: "invalidProperties", Properties: []string{"mailboxIds"},
-				Description: "mailbox does not exist",
+				Type:        "forbidden",
+				Description: "target mailbox is not owned by this principal",
 			}, nil
 		}
-		return 0, jmapEmail{}, nil, err
+		targetMailboxIDs = append(targetMailboxIDs, id)
 	}
-	if mb.PrincipalID != pid {
+	if len(targetMailboxIDs) == 0 {
 		return 0, jmapEmail{}, &setError{
-			Type:        "forbidden",
-			Description: "v1 does not allow inserting into a non-owned mailbox via Email/set",
+			Type: "invalidProperties", Properties: []string{"mailboxIds"},
+			Description: "mailboxIds must contain at least one true entry",
 		}, nil
 	}
 
@@ -444,7 +447,11 @@ func (h *handlerSet) createEmail(
 		Envelope:     env,
 		SnoozedUntil: snoozedUntil,
 	}
-	uid, modseq, err := h.store.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mailboxID, Flags: flags, Keywords: customKW, SnoozedUntil: snoozedUntil}})
+	targets := make([]store.MessageMailbox, len(targetMailboxIDs))
+	for i, mbID := range targetMailboxIDs {
+		targets[i] = store.MessageMailbox{MailboxID: mbID, Flags: flags, Keywords: customKW, SnoozedUntil: snoozedUntil}
+	}
+	uid, modseq, err := h.store.Meta().InsertMessage(ctx, msg, targets)
 	if err != nil {
 		if errors.Is(err, store.ErrQuotaExceeded) {
 			return 0, jmapEmail{}, &setError{
@@ -520,8 +527,24 @@ func (h *handlerSet) updateEmail(
 	}
 
 	// Handle mailboxIds change (full replacement) or mailboxIds/<id>
-	// incremental patch.
+	// incremental patch. M:N membership: compute the desired set, diff
+	// against the current set, then call AddMessageToMailbox for new
+	// memberships and RemoveMessageFromMailbox for removed ones.
+	// At least one membership must remain after the patch.
+
+	// currentMBIDs builds a set from m.Mailboxes (the authoritative
+	// M:N source loaded by GetMessage). Falls back to the convenience
+	// field for messages returned by single-mailbox list paths.
+	currentMBIDs := make(map[store.MailboxID]struct{})
+	for _, mm := range m.Mailboxes {
+		currentMBIDs[mm.MailboxID] = struct{}{}
+	}
+	if len(currentMBIDs) == 0 {
+		currentMBIDs[m.MailboxID] = struct{}{}
+	}
+
 	if newMailboxIDs, ok := obj["mailboxIds"]; ok {
+		// Full replacement: the new set is every id with value true.
 		var mbMap map[jmapID]bool
 		if err := json.Unmarshal(newMailboxIDs, &mbMap); err != nil {
 			return &setError{
@@ -529,8 +552,7 @@ func (h *handlerSet) updateEmail(
 				Description: err.Error(),
 			}, nil
 		}
-		// v1: pick the first true mailboxId as the target.
-		var targetID store.MailboxID
+		desired := make(map[store.MailboxID]struct{})
 		for raw, present := range mbMap {
 			if !present {
 				continue
@@ -542,22 +564,24 @@ func (h *handlerSet) updateEmail(
 					Description: "unparseable mailboxId",
 				}, nil
 			}
-			targetID = id
-			break
+			desired[id] = struct{}{}
 		}
-		if targetID == 0 {
+		if len(desired) == 0 {
 			return &setError{
 				Type: "invalidProperties", Properties: []string{"mailboxIds"},
 				Description: "mailboxIds must contain at least one true entry",
 			}, nil
 		}
-		if targetID != m.MailboxID {
-			if serr, err := h.moveMessage(ctx, pid, m, targetID); err != nil || serr != nil {
-				return serr, err
-			}
+		if serr, err := h.applyMailboxDiff(ctx, pid, m, currentMBIDs, desired); err != nil || serr != nil {
+			return serr, err
 		}
 	} else {
-		// Handle mailboxIds/<id>: true|null incremental patches.
+		// Incremental patch: mailboxIds/<id>: true|null keys.
+		// Build the desired set starting from current, then add/remove.
+		desired := make(map[store.MailboxID]struct{}, len(currentMBIDs))
+		for id := range currentMBIDs {
+			desired[id] = struct{}{}
+		}
 		for k, v := range obj {
 			const prefix = "mailboxIds/"
 			if !strings.HasPrefix(k, prefix) {
@@ -579,21 +603,20 @@ func (h *handlerSet) updateEmail(
 			} else {
 				_ = json.Unmarshal(v, &boolVal)
 			}
-			if boolVal && targetID != m.MailboxID {
-				if serr, err := h.moveMessage(ctx, pid, m, targetID); err != nil || serr != nil {
-					return serr, err
-				}
-				// Update m so subsequent patches see the new mailbox.
-				m.MailboxID = targetID
-			} else if !boolVal && targetID == m.MailboxID {
-				// Removing the current mailbox without adding another is
-				// forbidden per RFC 8621 §4.6.
-				return &setError{
-					Type:        "invalidProperties",
-					Properties:  []string{k},
-					Description: "cannot remove the only mailbox membership",
-				}, nil
+			if boolVal {
+				desired[targetID] = struct{}{}
+			} else {
+				delete(desired, targetID)
 			}
+		}
+		if len(desired) == 0 {
+			return &setError{
+				Type: "invalidProperties", Properties: []string{"mailboxIds"},
+				Description: "cannot remove all mailbox memberships",
+			}, nil
+		}
+		if serr, err := h.applyMailboxDiff(ctx, pid, m, currentMBIDs, desired); err != nil || serr != nil {
+			return serr, err
 		}
 	}
 
@@ -875,6 +898,64 @@ func applyPatch(
 	}
 }
 
+// applyMailboxDiff reconciles a message's current mailbox membership set
+// (currentIDs) with the desired set (desiredIDs). For each mailbox id in
+// desired but not in current, AddMessageToMailbox is called. For each id
+// in current but not in desired, RemoveMessageFromMailbox is called.
+// The principal ownership of any new mailboxes is verified before adding.
+// Returns a setError if ownership fails or a store error if the operation
+// fails.
+func (h *handlerSet) applyMailboxDiff(
+	ctx context.Context,
+	pid store.PrincipalID,
+	m store.Message,
+	currentIDs, desiredIDs map[store.MailboxID]struct{},
+) (*setError, error) {
+	// Add memberships present in desired but absent from current.
+	for id := range desiredIDs {
+		if _, exists := currentIDs[id]; exists {
+			continue
+		}
+		mb, err := h.store.Meta().GetMailboxByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return &setError{
+					Type: "invalidProperties", Properties: []string{"mailboxIds"},
+					Description: "target mailbox does not exist",
+				}, nil
+			}
+			return nil, fmt.Errorf("email: add mailbox: get mailbox: %w", err)
+		}
+		if mb.PrincipalID != pid {
+			return &setError{
+				Type:        "forbidden",
+				Description: "target mailbox is not owned by this principal",
+			}, nil
+		}
+		if _, _, err := h.store.Meta().AddMessageToMailbox(ctx, m.ID, id); err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				// Already in this mailbox (race or duplicate patch key): skip.
+				continue
+			}
+			return nil, fmt.Errorf("email: add to mailbox: %w", err)
+		}
+	}
+	// Remove memberships present in current but absent from desired.
+	for id := range currentIDs {
+		if _, keep := desiredIDs[id]; keep {
+			continue
+		}
+		if err := h.store.Meta().RemoveMessageFromMailbox(ctx, m.ID, id); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				// Already removed (race): skip.
+				continue
+			}
+			return nil, fmt.Errorf("email: remove from mailbox: %w", err)
+		}
+	}
+	return nil, nil
+}
+
 // moveMessage atomically moves a message to targetID using MoveMessage,
 // which preserves the message row ID (and therefore the JMAP Email id).
 func (h *handlerSet) moveMessage(
@@ -910,7 +991,14 @@ func (h *handlerSet) moveMessage(
 	return nil, nil
 }
 
-// destroyEmail expunges m from its mailbox and bumps the Email state.
+// destroyEmail removes the message from every mailbox it belongs to and
+// bumps the Email + Thread state. For a multi-mailbox message (M:N) this
+// means iterating all Mailboxes memberships; for a single-mailbox message
+// the convenience field is used as a fallback.
+//
+// REQ-STORE-33: Email/set destroy removes from every membership in one
+// logical transaction per the store's ExpungeMessages and
+// RemoveMessageFromMailbox contracts.
 func (h *handlerSet) destroyEmail(
 	ctx context.Context,
 	pid store.PrincipalID,
@@ -923,11 +1011,23 @@ func (h *handlerSet) destroyEmail(
 		}
 		return nil, err
 	}
-	if err := h.store.Meta().ExpungeMessages(ctx, m.MailboxID, []store.MessageID{m.ID}); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return &setError{Type: "notFound"}, nil
+	// Collect all mailbox memberships. GetMessage (called inside
+	// loadMessageForPrincipal) populates m.Mailboxes for the M:N case.
+	mailboxIDs := make([]store.MailboxID, 0, max(1, len(m.Mailboxes)))
+	for _, mm := range m.Mailboxes {
+		mailboxIDs = append(mailboxIDs, mm.MailboxID)
+	}
+	if len(mailboxIDs) == 0 {
+		mailboxIDs = append(mailboxIDs, m.MailboxID)
+	}
+	for _, mbID := range mailboxIDs {
+		if err := h.store.Meta().ExpungeMessages(ctx, mbID, []store.MessageID{m.ID}); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				// Already removed (concurrent operation): skip.
+				continue
+			}
+			return nil, fmt.Errorf("email: expunge from mailbox %d: %w", mbID, err)
 		}
-		return nil, fmt.Errorf("email: expunge: %w", err)
 	}
 	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
 		return nil, fmt.Errorf("email: bump state: %w", err)

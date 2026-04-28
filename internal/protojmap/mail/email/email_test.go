@@ -1131,3 +1131,396 @@ func TestEmailSet_Create_NoBlobAndNoBody(t *testing.T) {
 		t.Errorf("error description %q does not mention blobId", desc)
 	}
 }
+
+// TestEmailGet_MailboxIds_MultiMailbox verifies that Email/get returns all
+// mailbox memberships in the mailboxIds map (REQ-STORE-36, jmaptest
+// email/get-mailbox-ids).
+func TestEmailGet_MailboxIds_MultiMailbox(t *testing.T) {
+	f := setupFixture(t)
+	ctx := context.Background()
+
+	// Create a second mailbox.
+	drafts, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Drafts",
+		Attributes:  store.MailboxAttrDrafts,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Drafts: %v", err)
+	}
+
+	// Insert a message and then add it to the second mailbox.
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: multi\r\n\r\nbody"
+	m := f.insertMessage(t, body, "multi", "a@example.test", "b@example.test", nil, "")
+
+	if _, _, err := f.srv.Store.Meta().AddMessageToMailbox(ctx, m.ID, drafts.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox: %v", err)
+	}
+
+	// Email/get should return both mailbox ids.
+	emailID := fmt.Sprintf("%d", m.ID)
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{emailID},
+		"properties": []string{"mailboxIds"},
+	})
+	var resp struct {
+		List []struct {
+			MailboxIDs map[string]bool `json:"mailboxIds"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("got %d list entries, want 1: %s", len(resp.List), raw)
+	}
+	mbIDs := resp.List[0].MailboxIDs
+	inboxKey := fmt.Sprintf("%d", f.inbox.ID)
+	draftsKey := fmt.Sprintf("%d", drafts.ID)
+	if !mbIDs[inboxKey] {
+		t.Errorf("INBOX (%s) missing from mailboxIds: %v", inboxKey, mbIDs)
+	}
+	if !mbIDs[draftsKey] {
+		t.Errorf("Drafts (%s) missing from mailboxIds: %v", draftsKey, mbIDs)
+	}
+	if len(mbIDs) != 2 {
+		t.Errorf("expected exactly 2 mailboxIds, got %d: %v", len(mbIDs), mbIDs)
+	}
+}
+
+// TestEmailSet_Update_AddMailbox verifies that patching mailboxIds with an
+// incremental mailboxIds/<id>: true adds the message to that mailbox without
+// removing the existing membership (REQ-STORE-36, jmaptest
+// email/set-update-add-mailbox).
+func TestEmailSet_Update_AddMailbox(t *testing.T) {
+	f := setupFixture(t)
+	ctx := context.Background()
+
+	drafts, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Drafts",
+		Attributes:  store.MailboxAttrDrafts,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Drafts: %v", err)
+	}
+
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: add-mb\r\n\r\nbody"
+	m := f.insertMessage(t, body, "add-mb", "a@example.test", "b@example.test", nil, "")
+	emailID := fmt.Sprintf("%d", m.ID)
+	draftsKey := fmt.Sprintf("%d", drafts.ID)
+
+	// Patch: add Drafts to this message's mailboxIds.
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			emailID: map[string]any{
+				"mailboxIds/" + draftsKey: true,
+			},
+		},
+	})
+	var setResp struct {
+		Updated    map[string]any `json:"updated"`
+		NotUpdated map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &setResp); err != nil {
+		t.Fatalf("unmarshal set: %v: %s", err, raw)
+	}
+	if _, ok := setResp.Updated[emailID]; !ok {
+		t.Fatalf("message not updated; notUpdated=%v", setResp.NotUpdated)
+	}
+
+	// Verify via Email/get that both mailboxes appear.
+	_, raw = f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{emailID},
+		"properties": []string{"mailboxIds"},
+	})
+	var getResp struct {
+		List []struct {
+			MailboxIDs map[string]bool `json:"mailboxIds"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal get: %v: %s", err, raw)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("got %d list entries, want 1: %s", len(getResp.List), raw)
+	}
+	mbIDs := getResp.List[0].MailboxIDs
+	inboxKey := fmt.Sprintf("%d", f.inbox.ID)
+	if !mbIDs[inboxKey] {
+		t.Errorf("INBOX missing after add: %v", mbIDs)
+	}
+	if !mbIDs[draftsKey] {
+		t.Errorf("Drafts missing after add: %v", mbIDs)
+	}
+}
+
+// TestEmailSet_Update_RemoveMailbox verifies that patching mailboxIds/<id>:
+// false removes the message from that mailbox while preserving other
+// memberships (REQ-STORE-36, jmaptest email/set-update-remove-mailbox).
+func TestEmailSet_Update_RemoveMailbox(t *testing.T) {
+	f := setupFixture(t)
+	ctx := context.Background()
+
+	drafts, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Drafts",
+		Attributes:  store.MailboxAttrDrafts,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Drafts: %v", err)
+	}
+
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: rm-mb\r\n\r\nbody"
+	m := f.insertMessage(t, body, "rm-mb", "a@example.test", "b@example.test", nil, "")
+
+	// Add to Drafts first.
+	if _, _, err := f.srv.Store.Meta().AddMessageToMailbox(ctx, m.ID, drafts.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox: %v", err)
+	}
+
+	emailID := fmt.Sprintf("%d", m.ID)
+	draftsKey := fmt.Sprintf("%d", drafts.ID)
+
+	// Patch: remove Drafts.
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			emailID: map[string]any{
+				"mailboxIds/" + draftsKey: false,
+			},
+		},
+	})
+	var setResp struct {
+		Updated    map[string]any `json:"updated"`
+		NotUpdated map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &setResp); err != nil {
+		t.Fatalf("unmarshal set: %v: %s", err, raw)
+	}
+	if _, ok := setResp.Updated[emailID]; !ok {
+		t.Fatalf("message not updated; notUpdated=%v", setResp.NotUpdated)
+	}
+
+	// Verify INBOX still present and Drafts gone.
+	_, raw = f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{emailID},
+		"properties": []string{"mailboxIds"},
+	})
+	var getResp struct {
+		List []struct {
+			MailboxIDs map[string]bool `json:"mailboxIds"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal get: %v: %s", err, raw)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("got %d list entries, want 1: %s", len(getResp.List), raw)
+	}
+	mbIDs := getResp.List[0].MailboxIDs
+	inboxKey := fmt.Sprintf("%d", f.inbox.ID)
+	if !mbIDs[inboxKey] {
+		t.Errorf("INBOX missing after Drafts removal: %v", mbIDs)
+	}
+	if mbIDs[draftsKey] {
+		t.Errorf("Drafts still present after removal: %v", mbIDs)
+	}
+	if len(mbIDs) != 1 {
+		t.Errorf("expected exactly 1 mailboxId after removal, got %d: %v", len(mbIDs), mbIDs)
+	}
+}
+
+// TestEmailSet_Destroy_RemovesFromAllMailboxes verifies that Email/set destroy
+// removes a message from every mailbox it belongs to, not just the first one
+// (REQ-STORE-33, jmaptest email/set-destroy-removes-from-all-mailboxes).
+func TestEmailSet_Destroy_RemovesFromAllMailboxes(t *testing.T) {
+	f := setupFixture(t)
+	ctx := context.Background()
+
+	drafts, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Drafts",
+		Attributes:  store.MailboxAttrDrafts,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Drafts: %v", err)
+	}
+
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: destroy-all\r\n\r\nbody"
+	m := f.insertMessage(t, body, "destroy-all", "a@example.test", "b@example.test", nil, "")
+
+	// Add to Drafts too.
+	if _, _, err := f.srv.Store.Meta().AddMessageToMailbox(ctx, m.ID, drafts.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox: %v", err)
+	}
+
+	emailID := fmt.Sprintf("%d", m.ID)
+
+	// Destroy.
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"destroy":   []string{emailID},
+	})
+	var setResp struct {
+		Destroyed    []string       `json:"destroyed"`
+		NotDestroyed map[string]any `json:"notDestroyed"`
+	}
+	if err := json.Unmarshal(raw, &setResp); err != nil {
+		t.Fatalf("unmarshal set: %v: %s", err, raw)
+	}
+	found := false
+	for _, d := range setResp.Destroyed {
+		if d == emailID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("email %s not in destroyed list %v; notDestroyed=%v", emailID, setResp.Destroyed, setResp.NotDestroyed)
+	}
+
+	// Verify the message is gone from both mailboxes.
+	_, raw = f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{emailID},
+		"properties": []string{"id"},
+	})
+	var getResp struct {
+		List     []any    `json:"list"`
+		NotFound []string `json:"notFound"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal get: %v: %s", err, raw)
+	}
+	if len(getResp.List) != 0 {
+		t.Errorf("message still returned after destroy: %s", raw)
+	}
+	if len(getResp.NotFound) != 1 || getResp.NotFound[0] != emailID {
+		t.Errorf("expected notFound=[%s], got %v: %s", emailID, getResp.NotFound, raw)
+	}
+
+	// Verify neither mailbox has the message in the store directly.
+	msgs, err := f.srv.Store.Meta().ListMessages(ctx, f.inbox.ID, store.MessageFilter{})
+	if err != nil {
+		t.Fatalf("ListMessages INBOX: %v", err)
+	}
+	for _, msg := range msgs {
+		if msg.ID == m.ID {
+			t.Errorf("message still present in INBOX after destroy")
+		}
+	}
+	msgs, err = f.srv.Store.Meta().ListMessages(ctx, drafts.ID, store.MessageFilter{})
+	if err != nil {
+		t.Fatalf("ListMessages Drafts: %v", err)
+	}
+	for _, msg := range msgs {
+		if msg.ID == m.ID {
+			t.Errorf("message still present in Drafts after destroy")
+		}
+	}
+}
+
+// TestEmailSet_Create_MultipleMailboxes verifies that Email/set create
+// with multiple mailboxIds creates a single message with memberships in
+// all specified mailboxes (REQ-STORE-36).
+func TestEmailSet_Create_MultipleMailboxes(t *testing.T) {
+	f := setupFixture(t)
+	ctx := context.Background()
+
+	drafts, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Drafts",
+		Attributes:  store.MailboxAttrDrafts,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Drafts: %v", err)
+	}
+
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: multi-create\r\n\r\nbody"
+	ref := f.putBlob(t, body)
+
+	inboxKey := fmt.Sprintf("%d", f.inbox.ID)
+	draftsKey := fmt.Sprintf("%d", drafts.ID)
+
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"create": map[string]any{
+			"new1": map[string]any{
+				"blobId": ref.Hash,
+				"mailboxIds": map[string]bool{
+					inboxKey:  true,
+					draftsKey: true,
+				},
+			},
+		},
+	})
+	var setResp struct {
+		Created    map[string]map[string]any `json:"created"`
+		NotCreated map[string]any            `json:"notCreated"`
+	}
+	if err := json.Unmarshal(raw, &setResp); err != nil {
+		t.Fatalf("unmarshal set: %v: %s", err, raw)
+	}
+	if len(setResp.NotCreated) > 0 {
+		t.Fatalf("notCreated=%v", setResp.NotCreated)
+	}
+	if len(setResp.Created) != 1 {
+		t.Fatalf("created=%v", setResp.Created)
+	}
+	emailID, _ := setResp.Created["new1"]["id"].(string)
+	if emailID == "" {
+		t.Fatalf("no id in created: %v", setResp.Created)
+	}
+
+	// Verify both mailboxes appear in Email/get.
+	_, raw = f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{emailID},
+		"properties": []string{"mailboxIds"},
+	})
+	var getResp struct {
+		List []struct {
+			MailboxIDs map[string]bool `json:"mailboxIds"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal get: %v: %s", err, raw)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("got %d list entries, want 1: %s", len(getResp.List), raw)
+	}
+	mbIDs := getResp.List[0].MailboxIDs
+	if !mbIDs[inboxKey] {
+		t.Errorf("INBOX missing from created message mailboxIds: %v", mbIDs)
+	}
+	if !mbIDs[draftsKey] {
+		t.Errorf("Drafts missing from created message mailboxIds: %v", mbIDs)
+	}
+	if len(mbIDs) != 2 {
+		t.Errorf("expected 2 mailboxIds, got %d: %v", len(mbIDs), mbIDs)
+	}
+
+	// Verify only ONE message row was created (not two).
+	feed, err := f.srv.Store.Meta().ReadChangeFeed(ctx, f.pid, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed: %v", err)
+	}
+	var emailCreatedIDs []store.MessageID
+	seen := make(map[store.MessageID]bool)
+	for _, e := range feed {
+		if e.Kind == store.EntityKindEmail && e.Op == store.ChangeOpCreated {
+			mid := store.MessageID(e.EntityID)
+			if !seen[mid] {
+				seen[mid] = true
+				emailCreatedIDs = append(emailCreatedIDs, mid)
+			}
+		}
+	}
+	if len(emailCreatedIDs) != 1 {
+		t.Errorf("expected 1 unique message created, got %d: %v", len(emailCreatedIDs), emailCreatedIDs)
+	}
+}
