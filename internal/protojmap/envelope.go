@@ -241,9 +241,23 @@ func substituteCreationRefs(v any, creations map[string]Id) (any, bool) {
 	switch t := v.(type) {
 	case map[string]any:
 		mutated := false
+		// First pass: substitute values.
 		for k, child := range t {
 			if nv, m := substituteCreationRefs(child, creations); m {
 				t[k] = nv
+				mutated = true
+			}
+		}
+		// Second pass: substitute creation references used as object keys
+		// (RFC 8620 §5.3). This is needed for mailboxIds: {"#newMb": true}
+		// where the creation id is the key, not the value.
+		for k, child := range t {
+			if !looksLikeCreationRef(k) {
+				continue
+			}
+			if real, ok := creations[k[1:]]; ok {
+				t[real] = child
+				delete(t, k)
 				mutated = true
 			}
 		}

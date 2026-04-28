@@ -29,8 +29,8 @@ type jmapIdentity struct {
 	Email         string         `json:"email"`
 	ReplyTo       []emailAddress `json:"replyTo,omitempty"`
 	Bcc           []emailAddress `json:"bcc,omitempty"`
-	TextSignature string         `json:"textSignature,omitempty"`
-	HTMLSignature string         `json:"htmlSignature,omitempty"`
+	TextSignature string         `json:"textSignature"` // RFC 8621 §7.1: always present, defaults to ""
+	HTMLSignature string         `json:"htmlSignature"` // RFC 8621 §7.1: always present, defaults to ""
 	Signature     *string        `json:"signature"`
 	MayDelete     bool           `json:"mayDelete"`
 }

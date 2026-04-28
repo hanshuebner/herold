@@ -158,7 +158,7 @@ func propertiesNeedBody(props *[]string) bool {
 	for _, p := range *props {
 		switch p {
 		case "preview", "bodyStructure", "textBody", "htmlBody", "attachments",
-			"bodyValues", "hasAttachment":
+			"bodyValues", "hasAttachment", "references":
 			return true
 		}
 		// Dynamic header accessors: "header:X:asY"
@@ -240,14 +240,14 @@ func renderFullWithProperties(
 	}
 
 	// Populate body parts.
-	bs, values, textRefs, htmlRefs, attRefs := walkParts(parsed.Body, truncateAt)
+	bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, truncateAt, m.Blob.Hash)
 	out.BodyStructure = bs
 	out.BodyValues = values
-	out.TextBody = textRefs
-	out.HTMLBody = htmlRefs
-	out.Attachments = attRefs
-	out.HasAttachment = len(attRefs) > 0
-	out.Preview = previewFromValues(values, textRefs, 256)
+	out.TextBody = textParts
+	out.HTMLBody = htmlParts
+	out.Attachments = attParts
+	out.HasAttachment = len(attParts) > 0
+	out.Preview = previewFromValues(values, textParts, 256)
 
 	// Also populate References from the parsed message if the envelope
 	// didn't carry it.

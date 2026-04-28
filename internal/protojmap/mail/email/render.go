@@ -27,7 +27,7 @@ func rfc3339UTC(t time.Time) string {
 // of the JMAP Email object: id, blobId, threadId, mailboxIds, keywords,
 // size, receivedAt, plus the cached envelope fields.
 //
-// blobs and bodyValues are NOT populated here — Email/get's "properties"
+// blobs and bodyValues are NOT populated here -- Email/get's "properties"
 // hint drives the optional render in renderEmailFull.
 func renderEmailMetadata(m store.Message) jmapEmail {
 	mailboxIDs := map[jmapID]bool{
@@ -136,14 +136,14 @@ func renderFull(
 		// see size, blobId, mailboxIds, keywords, and envelope fields.
 		return out, nil
 	}
-	bs, values, textRefs, htmlRefs, attRefs := walkParts(parsed.Body, truncateAt)
+	bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, truncateAt, m.Blob.Hash)
 	out.BodyStructure = bs
 	out.BodyValues = values
-	out.TextBody = textRefs
-	out.HTMLBody = htmlRefs
-	out.Attachments = attRefs
-	out.HasAttachment = len(attRefs) > 0
-	out.Preview = previewFromValues(values, textRefs, 256)
+	out.TextBody = textParts
+	out.HTMLBody = htmlParts
+	out.Attachments = attParts
+	out.HasAttachment = len(attParts) > 0
+	out.Preview = previewFromValues(values, textParts, 256)
 	return out, nil
 }
 
@@ -160,18 +160,19 @@ func defaultParseFn(r io.Reader) (mailparse.Message, error) {
 
 // walkParts builds the bodyStructure tree and the flat textBody /
 // htmlBody / attachments lists per RFC 8621 §4.1.4. Truncation
-// applies per-bodyValue.
-func walkParts(root mailparse.Part, truncateAt int) (
+// applies per-bodyValue. msgBlobHash is used to construct per-part
+// blobId values in the form "<msgBlobHash>/p<partId>".
+func walkParts(root mailparse.Part, truncateAt int, msgBlobHash string) (
 	*bodyPart,
 	map[string]bodyValue,
-	[]bodyPartRef,
-	[]bodyPartRef,
-	[]bodyPartRef,
+	[]bodyPart,
+	[]bodyPart,
+	[]bodyPart,
 ) {
 	values := map[string]bodyValue{}
-	var textRefs []bodyPartRef
-	var htmlRefs []bodyPartRef
-	var attRefs []bodyPartRef
+	var textParts []bodyPart
+	var htmlParts []bodyPart
+	var attParts []bodyPart
 	idx := 0
 	var walk func(p mailparse.Part) bodyPart
 	walk = func(p mailparse.Part) bodyPart {
@@ -195,6 +196,15 @@ func walkParts(root mailparse.Part, truncateAt int) (
 			c := p.Charset
 			charset = &c
 		}
+		// Populate cid from Content-ID header, stripping angle brackets
+		// per RFC 2392 / RFC 8621 §4.1.4.
+		var cid *string
+		if raw := p.Headers.Get("Content-ID"); raw != "" {
+			v := strings.Trim(raw, "<> \t")
+			if v != "" {
+				cid = &v
+			}
+		}
 		out := bodyPart{
 			PartID:      &partID,
 			Size:        size,
@@ -202,6 +212,12 @@ func walkParts(root mailparse.Part, truncateAt int) (
 			Charset:     charset,
 			Disposition: disposition,
 			Name:        name,
+			Cid:         cid,
+		}
+		// Set blobId on every part so clients can download part content.
+		if msgBlobHash != "" {
+			blobID := msgBlobHash + "/p" + partID
+			out.BlobID = &blobID
 		}
 		for _, hk := range p.Headers.Keys() {
 			for _, v := range p.Headers.GetAll(hk) {
@@ -214,7 +230,7 @@ func walkParts(root mailparse.Part, truncateAt int) (
 			}
 			return out
 		}
-		// Leaf.
+		// Leaf: record body value and classify into textParts/htmlParts/attParts.
 		text := p.Text
 		truncated := false
 		if truncateAt > 0 && len(text) > truncateAt {
@@ -226,31 +242,34 @@ func walkParts(root mailparse.Part, truncateAt int) (
 			IsEncodingProblem: len(p.DecodeErrors) > 0,
 			IsTruncated:       truncated,
 		}
-		ref := bodyPartRef{PartID: partID}
 		switch {
 		case p.Disposition == mailparse.DispositionAttachment:
-			attRefs = append(attRefs, ref)
+			attParts = append(attParts, out)
 		case strings.EqualFold(out.Type, "text/plain"):
-			textRefs = append(textRefs, ref)
+			textParts = append(textParts, out)
 		case strings.EqualFold(out.Type, "text/html"):
-			htmlRefs = append(htmlRefs, ref)
+			htmlParts = append(htmlParts, out)
 		default:
-			// Treat as inline non-text — RFC 8621 puts it in attachments.
-			attRefs = append(attRefs, ref)
+			// Treat as inline non-text -- RFC 8621 puts it in attachments.
+			attParts = append(attParts, out)
 		}
 		return out
 	}
 	bs := walk(root)
-	return &bs, values, textRefs, htmlRefs, attRefs
+	return &bs, values, textParts, htmlParts, attParts
 }
 
 // previewFromValues returns the first n runes of the leftmost text body
 // value, used as the JMAP "preview" property.
-func previewFromValues(values map[string]bodyValue, textRefs []bodyPartRef, n int) string {
-	if len(textRefs) == 0 {
+func previewFromValues(values map[string]bodyValue, textParts []bodyPart, n int) string {
+	if len(textParts) == 0 {
 		return ""
 	}
-	v, ok := values[textRefs[0].PartID]
+	partID := textParts[0].PartID
+	if partID == nil {
+		return ""
+	}
+	v, ok := values[*partID]
 	if !ok {
 		return ""
 	}

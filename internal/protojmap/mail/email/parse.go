@@ -63,9 +63,9 @@ func (e jmapParsedEmail) MarshalJSON() ([]byte, error) {
 		SentAt        string               `json:"sentAt,omitempty"`
 		BodyStructure *bodyPart            `json:"bodyStructure,omitempty"`
 		BodyValues    map[string]bodyValue `json:"bodyValues,omitempty"`
-		TextBody      []bodyPartRef        `json:"textBody,omitempty"`
-		HTMLBody      []bodyPartRef        `json:"htmlBody,omitempty"`
-		Attachments   []bodyPartRef        `json:"attachments,omitempty"`
+		TextBody      []bodyPart           `json:"textBody,omitempty"`
+		HTMLBody      []bodyPart           `json:"htmlBody,omitempty"`
+		Attachments   []bodyPart           `json:"attachments,omitempty"`
 		HasAttachment bool                 `json:"hasAttachment"`
 		Preview       string               `json:"preview,omitempty"`
 	}
@@ -176,14 +176,17 @@ func (p *parseHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 			jm.InReplyTo = []string{env.InReplyTo}
 		}
 		if wantBodies {
-			bs, values, textRefs, htmlRefs, attRefs := walkParts(parsed.Body, req.MaxBodyValueBytes)
+			// Pass empty msgBlobHash for parsed emails since they have no
+			// persistent message blob hash (they're parsed from an uploaded
+			// blob that may not be a stored message).
+			bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, req.MaxBodyValueBytes, blobID)
 			jm.BodyStructure = bs
 			jm.BodyValues = values
-			jm.TextBody = textRefs
-			jm.HTMLBody = htmlRefs
-			jm.Attachments = attRefs
-			jm.HasAttachment = len(attRefs) > 0
-			jm.Preview = previewFromValues(values, textRefs, 256)
+			jm.TextBody = textParts
+			jm.HTMLBody = htmlParts
+			jm.Attachments = attParts
+			jm.HasAttachment = len(attParts) > 0
+			jm.Preview = previewFromValues(values, textParts, 256)
 		}
 		// Wrap in jmapParsedEmail which renders server-set fields as null.
 		resp.Parsed[blobID] = jmapParsedEmail{jm}

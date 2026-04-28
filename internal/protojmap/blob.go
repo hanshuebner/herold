@@ -1,6 +1,7 @@
 package protojmap
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,67 @@ import (
 
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// blobCopyHandler implements Blob/copy (RFC 8620 §6.3). v1 supports
+// only the minimal compliant subset: copying blobs between different
+// accounts. Copying within the same account is rejected as
+// "invalidArguments" per RFC 8620 §6.3.
+type blobCopyHandler struct {
+	store store.Store
+}
+
+func (blobCopyHandler) Method() string { return "Blob/copy" }
+
+// blobCopyRequest is the wire-form Blob/copy request.
+type blobCopyRequest struct {
+	FromAccountID Id   `json:"fromAccountId"`
+	AccountID     Id   `json:"accountId"`
+	BlobIDs       []Id `json:"blobIds"`
+}
+
+// blobCopyResponse is the wire-form Blob/copy response.
+type blobCopyResponse struct {
+	FromAccountID Id                   `json:"fromAccountId"`
+	AccountID     Id                   `json:"accountId"`
+	Copied        map[Id]Id            `json:"copied,omitempty"`
+	NotCopied     map[Id]blobNotCopied `json:"notCopied,omitempty"`
+}
+
+type blobNotCopied struct {
+	Type        string `json:"type"`
+	Description string `json:"description,omitempty"`
+}
+
+func (h blobCopyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *MethodError) {
+	var req blobCopyRequest
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &req); err != nil {
+			return nil, NewMethodError("invalidArguments", err.Error())
+		}
+	}
+	// RFC 8620 §6.3: same-account copy is rejected.
+	if req.FromAccountID == req.AccountID {
+		return nil, NewMethodError("invalidArguments",
+			"fromAccountId and accountId must differ; same-account blob copy is not permitted")
+	}
+	// v1: cross-account blob copy between different principals is not
+	// implemented (each principal has an isolated blob namespace).
+	// Return notCopied for all blobIds.
+	resp := blobCopyResponse{
+		FromAccountID: req.FromAccountID,
+		AccountID:     req.AccountID,
+	}
+	if len(req.BlobIDs) > 0 {
+		resp.NotCopied = make(map[Id]blobNotCopied, len(req.BlobIDs))
+		for _, bid := range req.BlobIDs {
+			resp.NotCopied[bid] = blobNotCopied{
+				Type:        "blobNotFound",
+				Description: "cross-account blob copy is not supported in v1",
+			}
+		}
+	}
+	return resp, nil
+}
 
 // uploadResponse is the body returned by POST /jmap/upload (RFC 8620
 // §6.1).

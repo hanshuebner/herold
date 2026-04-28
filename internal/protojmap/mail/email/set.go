@@ -107,23 +107,23 @@ type emailCreateInput struct {
 	SnoozedUntil *string         `json:"snoozedUntil"`
 
 	// Inline-body path (RFC 8621 §4.6 "construct from properties").
-	From          []emailAddress            `json:"from"`
-	To            []emailAddress            `json:"to"`
-	Cc            []emailAddress            `json:"cc"`
-	Bcc           []emailAddress            `json:"bcc"`
-	ReplyTo       []emailAddress            `json:"replyTo"`
-	InReplyTo     []string                  `json:"inReplyTo"`
-	References    []string                  `json:"references"`
-	MessageID     []string                  `json:"messageId"`
-	SentAt        *string                   `json:"sentAt"`
-	BodyValues    map[string]emailBodyValue  `json:"bodyValues"`
-	TextBody      []emailBodyPart           `json:"textBody"`
-	HtmlBody      []emailBodyPart           `json:"htmlBody"`
+	From       []emailAddress            `json:"from"`
+	To         []emailAddress            `json:"to"`
+	Cc         []emailAddress            `json:"cc"`
+	Bcc        []emailAddress            `json:"bcc"`
+	ReplyTo    []emailAddress            `json:"replyTo"`
+	InReplyTo  []string                  `json:"inReplyTo"`
+	References []string                  `json:"references"`
+	MessageID  []string                  `json:"messageId"`
+	SentAt     *string                   `json:"sentAt"`
+	BodyValues map[string]emailBodyValue `json:"bodyValues"`
+	TextBody   []emailBodyPart           `json:"textBody"`
+	HtmlBody   []emailBodyPart           `json:"htmlBody"`
 	// BodyStructure is the alternative form of the inline-body path
 	// (RFC 8621 §4.6). Clients send either textBody/htmlBody arrays or
 	// a bodyStructure tree; the handler normalises both into textBody /
 	// htmlBody before calling buildEmailFromProperties.
-	BodyStructure *emailBodyStructurePart   `json:"bodyStructure"`
+	BodyStructure *emailBodyStructurePart `json:"bodyStructure"`
 }
 
 // setHandler implements Email/set.
@@ -451,10 +451,17 @@ func (h *handlerSet) createEmail(
 	}
 	msg.ID = mid
 
-	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
-		return 0, jmapEmail{}, nil, fmt.Errorf("email: bump state: %w", err)
+	// Render the created email. Use the full render path so that
+	// hasAttachment is computed from the MIME structure rather than
+	// defaulting to false. RFC 8621 §4.6 requires the Email object
+	// returned on create to include server-set properties.
+	created, err := renderFull(ctx, h.store.Blobs(), msg, 0, parser)
+	if err != nil {
+		// Non-fatal: fall back to metadata-only render rather than
+		// failing the create.
+		created = renderEmailMetadata(msg)
 	}
-	return mid, renderEmailMetadata(msg), nil, nil
+	return mid, created, nil, nil
 }
 
 // updateEmail applies a flags / keywords / mailboxIds delta. v1

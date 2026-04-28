@@ -239,6 +239,9 @@ func NewServer(
 	// method (RFC 8620 §4). Parallel agents register the Mail
 	// capability + its handlers via Registry().
 	s.reg.Register(CapabilityCore, coreEchoHandler{})
+	// Blob/copy (RFC 8620 §6.3): registered under Core since it applies
+	// regardless of which data-type capabilities are enabled.
+	s.reg.Register(CapabilityCore, blobCopyHandler{store: s.store})
 	s.reg.installCapabilityDescriptor(CapabilityCore, coreCapabilityDescriptor(opts))
 	return s
 }

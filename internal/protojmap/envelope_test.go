@@ -59,6 +59,14 @@ func TestResolveCreationReferences(t *testing.T) {
 			in:   `{"label":"#"}`,
 			want: `{"label":"#"}`,
 		},
+		{
+			// RFC 8620 §5.3: creation references may appear as object keys
+			// (e.g. mailboxIds: {"#newMb": true} where #newMb was a prior
+			// Mailbox/set creation id). The resolver must substitute the key.
+			name: "creation ref as object key (mailboxIds pattern)",
+			in:   `{"mailboxIds":{"#draft1":true,"other-id":false}}`,
+			want: `{"mailboxIds":{"msg-42":true,"other-id":false}}`,
+		},
 	}
 
 	for _, tc := range cases {
