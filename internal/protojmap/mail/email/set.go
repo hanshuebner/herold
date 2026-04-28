@@ -956,41 +956,6 @@ func (h *handlerSet) applyMailboxDiff(
 	return nil, nil
 }
 
-// moveMessage atomically moves a message to targetID using MoveMessage,
-// which preserves the message row ID (and therefore the JMAP Email id).
-func (h *handlerSet) moveMessage(
-	ctx context.Context,
-	pid store.PrincipalID,
-	m store.Message,
-	targetID store.MailboxID,
-) (*setError, error) {
-	// Verify the target mailbox is accessible.
-	mb, err := h.store.Meta().GetMailboxByID(ctx, targetID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return &setError{
-				Type: "invalidProperties", Properties: []string{"mailboxIds"},
-				Description: "target mailbox does not exist",
-			}, nil
-		}
-		return nil, fmt.Errorf("email: move: get mailbox: %w", err)
-	}
-	if mb.PrincipalID != pid {
-		return &setError{
-			Type:        "forbidden",
-			Description: "target mailbox is not owned by this principal",
-		}, nil
-	}
-
-	if err := h.store.Meta().MoveMessage(ctx, m.ID, m.MailboxID, targetID); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return &setError{Type: "notFound"}, nil
-		}
-		return nil, fmt.Errorf("email: move: %w", err)
-	}
-	return nil, nil
-}
-
 // destroyEmail removes the message from every mailbox it belongs to and
 // bumps the Email + Thread state. For a multi-mailbox message (M:N) this
 // means iterating all Mailboxes memberships; for a single-mailbox message

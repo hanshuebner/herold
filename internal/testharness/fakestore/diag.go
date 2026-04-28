@@ -112,13 +112,9 @@ func (s *Store) DiagSnapshot() *DiagDump {
 		dd.Tables["messages"] = append(dd.Tables["messages"], s.messages[id])
 	}
 	// message_mailboxes: emit sorted by (message_id, mailbox_id).
-	type mmKeySort struct {
-		msgID store.MessageID
-		mbID  store.MailboxID
-	}
-	mmkeys := make([]mmKeySort, 0, len(s.msgMailboxes))
+	mmkeys := make([]mmKey, 0, len(s.msgMailboxes))
 	for k := range s.msgMailboxes {
-		mmkeys = append(mmkeys, mmKeySort{k.msgID, k.mbID})
+		mmkeys = append(mmkeys, k)
 	}
 	sort.Slice(mmkeys, func(i, j int) bool {
 		if mmkeys[i].msgID != mmkeys[j].msgID {
@@ -129,7 +125,7 @@ func (s *Store) DiagSnapshot() *DiagDump {
 	dd.Tables["message_mailboxes"] = make([]any, 0, len(mmkeys))
 	for _, k := range mmkeys {
 		dd.Tables["message_mailboxes"] = append(dd.Tables["message_mailboxes"],
-			s.msgMailboxes[mmKey{k.msgID, k.mbID}])
+			s.msgMailboxes[k])
 	}
 	for _, pid := range pids {
 		for _, c := range s.stateChanges[pid] {

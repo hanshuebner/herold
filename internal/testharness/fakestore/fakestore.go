@@ -53,13 +53,13 @@ type Store struct {
 	// membership metadata (UID, ModSeq, Flags, Keywords, SnoozedUntil).
 	// This is the authoritative source for Mailboxes on GetMessage.
 	msgMailboxes map[mmKey]store.MessageMailbox
-	aliases    map[store.AliasID]store.Alias
-	aliasBy    map[string]store.AliasID // "local@domain" -> alias
-	domains    map[string]store.Domain
-	providers  map[string]store.OIDCProvider
-	oidcLinks  map[string]store.OIDCLink // "provider|subject" -> link
-	apiKeys    map[store.APIKeyID]store.APIKey
-	keyByHash  map[string]store.APIKeyID
+	aliases      map[store.AliasID]store.Alias
+	aliasBy      map[string]store.AliasID // "local@domain" -> alias
+	domains      map[string]store.Domain
+	providers    map[string]store.OIDCProvider
+	oidcLinks    map[string]store.OIDCLink // "provider|subject" -> link
+	apiKeys      map[store.APIKeyID]store.APIKey
+	keyByHash    map[string]store.APIKeyID
 
 	// content-addressed blobs: refcount lives here (not in Metadata) because
 	// the fake does not split the two surfaces; the test harness does not
@@ -161,38 +161,38 @@ func New(opts Options) (*Store, error) {
 		dir = d
 	}
 	return &Store{
-		clk:             clk,
-		blobDir:         dir,
-		principals:      make(map[store.PrincipalID]store.Principal),
-		byEmail:         make(map[string]store.PrincipalID),
-		mailboxes:       make(map[store.MailboxID]store.Mailbox),
-		messages:        make(map[store.MessageID]store.Message),
-		aliases:         make(map[store.AliasID]store.Alias),
-		aliasBy:         make(map[string]store.AliasID),
-		domains:         make(map[string]store.Domain),
-		providers:       make(map[string]store.OIDCProvider),
-		oidcLinks:       make(map[string]store.OIDCLink),
-		apiKeys:         make(map[store.APIKeyID]store.APIKey),
-		keyByHash:       make(map[string]store.APIKeyID),
-		blobSize:        make(map[string]int64),
-		blobRefs:        make(map[string]int),
-		stateChanges:    make(map[store.PrincipalID][]store.StateChange),
-		changeSeq:       make(map[store.PrincipalID]store.ChangeSeq),
-		cursors:         make(map[string]uint64),
-		ftsDocs:         make(map[store.MessageID]ftsDoc),
+		clk:              clk,
+		blobDir:          dir,
+		principals:       make(map[store.PrincipalID]store.Principal),
+		byEmail:          make(map[string]store.PrincipalID),
+		mailboxes:        make(map[store.MailboxID]store.Mailbox),
+		messages:         make(map[store.MessageID]store.Message),
+		aliases:          make(map[store.AliasID]store.Alias),
+		aliasBy:          make(map[string]store.AliasID),
+		domains:          make(map[string]store.Domain),
+		providers:        make(map[string]store.OIDCProvider),
+		oidcLinks:        make(map[string]store.OIDCLink),
+		apiKeys:          make(map[store.APIKeyID]store.APIKey),
+		keyByHash:        make(map[string]store.APIKeyID),
+		blobSize:         make(map[string]int64),
+		blobRefs:         make(map[string]int),
+		stateChanges:     make(map[store.PrincipalID][]store.StateChange),
+		changeSeq:        make(map[store.PrincipalID]store.ChangeSeq),
+		cursors:          make(map[string]uint64),
+		ftsDocs:          make(map[store.MessageID]ftsDoc),
 		sieveScripts:     make(map[store.PrincipalID]string),
 		userSieveScripts: make(map[store.PrincipalID]string),
-		attpolRecipient: make(map[string]store.InboundAttachmentPolicyRow),
-		attpolDomain:    make(map[string]store.InboundAttachmentPolicyRow),
-		managedRules:    make(map[store.ManagedRuleID]store.ManagedRule),
-		msgMailboxes:    make(map[mmKey]store.MessageMailbox),
-		nextPrincipalID: 1,
-		nextMailboxID:   1,
-		nextMessageID:   1,
-		nextAliasID:     1,
-		nextAPIKeyID:    1,
-		nextUIDValidity: 1,
-		nextAuditLogID:  1,
+		attpolRecipient:  make(map[string]store.InboundAttachmentPolicyRow),
+		attpolDomain:     make(map[string]store.InboundAttachmentPolicyRow),
+		managedRules:     make(map[store.ManagedRuleID]store.ManagedRule),
+		msgMailboxes:     make(map[mmKey]store.MessageMailbox),
+		nextPrincipalID:  1,
+		nextMailboxID:    1,
+		nextMessageID:    1,
+		nextAliasID:      1,
+		nextAPIKeyID:     1,
+		nextUIDValidity:  1,
+		nextAuditLogID:   1,
 	}, nil
 }
 
@@ -492,7 +492,7 @@ func (m *metaFace) InsertMessage(ctx context.Context, msg store.Message, targets
 		}
 	}
 	firstMailboxID := targets[0].MailboxID
-	mb, _ := s.mailboxes[firstMailboxID]
+	mb := s.mailboxes[firstMailboxID]
 	p, ok := s.principals[mb.PrincipalID]
 	if !ok {
 		return 0, 0, fmt.Errorf("principal %d: %w", mb.PrincipalID, store.ErrNotFound)

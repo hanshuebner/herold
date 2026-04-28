@@ -32,7 +32,6 @@ type Recorder struct {
 	updated   int
 	unchanged int
 	existing  map[FixtureKey]*FixtureEntry
-	pkg       string
 }
 
 // RecorderOptions configures a Recorder.

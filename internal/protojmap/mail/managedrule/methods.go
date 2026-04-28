@@ -21,7 +21,7 @@ type handlerSet struct {
 
 // requirePrincipal pulls the authenticated principal from ctx.
 func requirePrincipal(ctx context.Context) (store.PrincipalID, *protojmap.MethodError) {
-	p, ok := principalFromTestCtx(ctx)
+	p, ok := protojmap.PrincipalFromContext(ctx)
 	if !ok || p.ID == 0 {
 		return 0, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
@@ -590,7 +590,7 @@ func (t threadMuteHandler) Execute(ctx context.Context, args json.RawMessage) (a
 		t.h.logger.ErrorContext(ctx, "Thread/mute: recompile failed", slog.String("err", err.Error()))
 	}
 	if _, err := t.h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindManagedRule); err != nil {
-		return nil, serverFail(fmt.Errorf("Thread/mute: bump state: %w", err))
+		return nil, serverFail(fmt.Errorf("thread/mute: bump state: %w", err))
 	}
 	return threadMuteResponse{AccountID: req.AccountID, ManagedRuleID: idForRule(inserted.ID)}, nil
 }

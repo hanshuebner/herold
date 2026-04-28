@@ -2,7 +2,6 @@ package managedrule
 
 import (
 	"strconv"
-	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -96,6 +95,3 @@ func ruleFromWire(w jmapManagedRule) store.ManagedRule {
 
 // stateString converts a store JMAP counter to the wire opaque string.
 func stateString(n int64) string { return strconv.FormatInt(n, 10) }
-
-// zeroTime is a sentinel returned for zero-value times.
-var zeroTime = time.Time{}

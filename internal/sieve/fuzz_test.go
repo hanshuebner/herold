@@ -56,8 +56,11 @@ if body :contains "unsubscribe" { discard; }`))
 			return
 		}
 		// Interpreter must not panic on arbitrary messages. Errors are
-		// fine (sandbox budgets, bad test args); panics are not.
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		// fine (sandbox budgets, bad test args); panics are not. The
+		// per-input deadline is generous (1 s) because shared CI runners
+		// occasionally see slow ticks that would otherwise mark a clean
+		// fuzz pass as a timeout failure.
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 		_, _ = in.Evaluate(ctx, script, msg, Environment{Limits: DefaultSandboxLimits()})
 	})

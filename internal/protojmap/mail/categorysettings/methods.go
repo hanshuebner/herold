@@ -186,15 +186,15 @@ type setError struct {
 
 // setResponse mirrors RFC 8620 §5.3.
 type setResponse struct {
-	AccountID    string                       `json:"accountId"`
-	OldState     string                       `json:"oldState,omitempty"`
-	NewState     string                       `json:"newState"`
-	Created      map[jmapID]any               `json:"created,omitempty"`
+	AccountID    string                           `json:"accountId"`
+	OldState     string                           `json:"oldState,omitempty"`
+	NewState     string                           `json:"newState"`
+	Created      map[jmapID]any                   `json:"created,omitempty"`
 	Updated      map[jmapID]*jmapCategorySettings `json:"updated,omitempty"`
-	Destroyed    []jmapID                     `json:"destroyed,omitempty"`
-	NotCreated   map[jmapID]setError          `json:"notCreated,omitempty"`
-	NotUpdated   map[jmapID]setError          `json:"notUpdated,omitempty"`
-	NotDestroyed map[jmapID]setError          `json:"notDestroyed,omitempty"`
+	Destroyed    []jmapID                         `json:"destroyed,omitempty"`
+	NotCreated   map[jmapID]setError              `json:"notCreated,omitempty"`
+	NotUpdated   map[jmapID]setError              `json:"notUpdated,omitempty"`
+	NotDestroyed map[jmapID]setError              `json:"notDestroyed,omitempty"`
 }
 
 // setHandler implements CategorySettings/set.
@@ -415,7 +415,7 @@ type recategoriseResponse struct {
 	// JobID is an opaque identifier the client may use to correlate
 	// progress state-changes. It is not a JMAP id in the RFC sense but
 	// a server-assigned opaque token.
-	JobID  string `json:"jobId"`
+	JobID string `json:"jobId"`
 	// Queued is the number of messages that were queued for processing.
 	// For "inbox-recent" this is capped by Limit; for "inbox-all" it is
 	// the total inbox size at job-dispatch time.

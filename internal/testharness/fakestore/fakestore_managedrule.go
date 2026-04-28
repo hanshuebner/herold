@@ -134,4 +134,3 @@ func (m *metaFace) SetUserSieveScript(ctx context.Context, pid store.PrincipalID
 	s.userSieveScripts[pid] = text
 	return nil
 }
-
