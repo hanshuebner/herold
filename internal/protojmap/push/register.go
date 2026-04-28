@@ -34,12 +34,17 @@ type handlerSet struct {
 }
 
 // Register installs the JMAP PushSubscription handlers under
-// CapabilityPush ("https://netzhansa.com/jmap/push") and registers the
-// per-server capability descriptor that carries the deployment's
-// VAPID applicationServerKey. When vm is nil or unconfigured the
-// capability is still advertised (so clients can detect that herold
-// supports the surface) but applicationServerKey is omitted; the suite
-// then surfaces a "push not available on this deployment" UI.
+// CapabilityCore (RFC 8620 §5.2) and registers the per-server
+// capability descriptor under CapabilityPush that carries the
+// deployment's VAPID applicationServerKey.
+//
+// RFC 8620 §5.2 places PushSubscription/get and PushSubscription/set
+// in the core capability, not in a vendor-specific one. Registering
+// the methods under CapabilityCore means a client that lists only
+// "urn:ietf:params:jmap:core" in its "using" array can call them
+// without knowing the herold-specific push URI. The vendor descriptor
+// under CapabilityPush remains so the suite SPA can discover the
+// deployment's VAPID applicationServerKey from the session resource.
 //
 // Idempotent on the per-method axis: re-registering a method panics
 // because that is a programmer bug per protojmap.CapabilityRegistry's
@@ -52,8 +57,14 @@ func Register(reg *protojmap.CapabilityRegistry, st store.Store, vm *vapid.Manag
 		clk = clock.NewReal()
 	}
 	h := &handlerSet{store: st, logger: logger, clk: clk, vapid: vm, verifier: verifier}
-	reg.Register(protojmap.CapabilityPush, &getHandler{h: h})
-	reg.Register(protojmap.CapabilityPush, &setHandler{h: h})
+	// PushSubscription/get and PushSubscription/set are Core methods per
+	// RFC 8620 §5.2. Register them under CapabilityCore so the standard
+	// "using": ["urn:ietf:params:jmap:core"] is sufficient.
+	reg.Register(protojmap.CapabilityCore, &getHandler{h: h})
+	reg.Register(protojmap.CapabilityCore, &setHandler{h: h})
+	// The vendor descriptor is kept under CapabilityPush so the suite SPA
+	// can read the deployment's VAPID applicationServerKey from the session
+	// capabilities map without a separate endpoint.
 	reg.RegisterCapabilityDescriptor(protojmap.CapabilityPush, buildCapabilityDescriptor(vm))
 }
 
