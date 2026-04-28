@@ -32,10 +32,14 @@
 </script>
 
 <div class="shell">
-  <GlobalBar placeholder={activeApp === 'chat' ? 'Search chat' : 'Search mail'} />
-
+  <!-- Issue #31: the GlobalBar sits inside the content pane so the
+       search field spans only the content area. The space above the
+       rail and sidebar is reserved for the brand mark. -->
   <div class="middle">
-    <Rail {activeApp} {mailUnread} {chatUnread} onSelect={onAppSelect} />
+    <div class="left-stack">
+      <a class="brand" href="/" aria-label="Herold home">Herold</a>
+      <Rail {activeApp} {mailUnread} {chatUnread} onSelect={onAppSelect} />
+    </div>
 
     {#if sidebar}
       <aside class="sidebar" aria-label="Navigation">
@@ -44,7 +48,12 @@
     {/if}
 
     <main class="content">
-      {@render children?.()}
+      <GlobalBar
+        placeholder={activeApp === 'chat' ? 'Search chat' : 'Search mail'}
+      />
+      <div class="content-body">
+        {@render children?.()}
+      </div>
     </main>
   </div>
 
@@ -73,6 +82,28 @@
     display: flex;
     min-height: 0; /* enable child overflow */
   }
+  /* Brand mark + rail share the leftmost column. The brand sits in the
+     empty header strip the GlobalBar used to occupy (issue #31). */
+  .left-stack {
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border-subtle-01);
+    background: var(--background);
+  }
+  .brand {
+    height: var(--spacing-08);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 var(--spacing-04);
+    color: var(--text-primary);
+    background: var(--layer-01);
+    border-bottom: 1px solid var(--border-subtle-01);
+    font-size: var(--type-heading-compact-02-size);
+    font-weight: var(--type-heading-compact-02-weight);
+    letter-spacing: 0.02em;
+    text-decoration: none;
+  }
   .sidebar {
     flex: 0 0 240px;
     border-right: 1px solid var(--border-subtle-01);
@@ -82,8 +113,14 @@
   .content {
     flex: 1;
     min-width: 0;
-    overflow: auto;
+    display: flex;
+    flex-direction: column;
     background: var(--background);
+  }
+  .content-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
   }
 
   /* Tablet portrait + smaller: collapse the rail's labels and the sidebar
@@ -91,6 +128,9 @@
   @media (max-width: 768px) {
     .sidebar {
       display: none;
+    }
+    .brand {
+      padding: 0 var(--spacing-02);
     }
   }
 </style>

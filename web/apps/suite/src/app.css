@@ -14,10 +14,13 @@
   body {
     background: #fff;
   }
-  /* Hide the global app chrome: rail, sidebar, header, toasts, compose. */
-  .shell > .middle > nav,
+  /* Hide the global app chrome: brand strip + rail (in left-stack),
+     sidebar, GlobalBar (lives inside .content now), coach strip,
+     toasts, compose. Issue #12 + #31: chrome is not part of the
+     printed thread. */
+  .shell > .middle > .left-stack,
   .shell > .middle > .sidebar,
-  .shell > header,
+  .shell > .middle > .content > header,
   .shell > .coach,
   .toast-host,
   .compose-modal {
@@ -25,7 +28,8 @@
   }
   .shell,
   .shell > .middle,
-  .shell > .middle > .content {
+  .shell > .middle > .content,
+  .shell > .middle > .content > .content-body {
     display: block !important;
     height: auto !important;
     overflow: visible !important;

@@ -4,6 +4,7 @@
   import SettingsIcon from '../icons/SettingsIcon.svelte';
   import { sync } from '../../lib/jmap/sync.svelte';
   import { router } from '../../lib/router/router.svelte';
+  import { help } from '../help/help.svelte';
 
   interface Props {
     placeholder?: string;
@@ -65,7 +66,13 @@
   {/if}
 
   <div class="controls">
-    <button type="button" class="icon-btn" aria-label="Help">
+    <button
+      type="button"
+      class="icon-btn"
+      aria-label="Help"
+      title="Keyboard shortcuts"
+      onclick={() => help.toggle()}
+    >
       <HelpIcon size={20} />
     </button>
     <button
