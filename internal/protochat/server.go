@@ -913,9 +913,9 @@ func (c *chatConn) handleTyping(in ClientFrame, start bool) {
 		state = "stop"
 	}
 	body, err := json.Marshal(outboundTyping{
-		ConversationID:    p.ConversationID,
-		SenderPrincipalID: c.pid,
-		State:             state,
+		ConversationID: p.ConversationID,
+		PrincipalID:    c.pid,
+		State:          state,
 	})
 	if err != nil {
 		c.send(makeError(ErrCodeInvalid, "marshal", in.ClientID))
@@ -968,9 +968,9 @@ func (c *chatConn) scheduleTypingAutoStop(conv string) {
 			return
 		}
 		body, err := json.Marshal(outboundTyping{
-			ConversationID:    conv,
-			SenderPrincipalID: pid,
-			State:             "stop",
+			ConversationID: conv,
+			PrincipalID:    pid,
+			State:          "stop",
 		})
 		if err != nil {
 			return

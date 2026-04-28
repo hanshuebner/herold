@@ -314,7 +314,7 @@ func TestProtocol_TypingStart_FansOutToMembers(t *testing.T) {
 	if err := json.Unmarshal(sf.Payload, &ot); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if ot.ConversationID != "c1" || ot.SenderPrincipalID != 1 || ot.State != "start" {
+	if ot.ConversationID != "c1" || ot.PrincipalID != 1 || ot.State != "start" {
 		t.Fatalf("payload: got %+v", ot)
 	}
 }

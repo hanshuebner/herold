@@ -100,11 +100,14 @@ type callSignalPayload struct {
 }
 
 // outboundTyping is the shape encoded into a server→client typing
-// frame. State is "start" or "stop".
+// frame. State is "start" or "stop". PrincipalID identifies the
+// originating principal; it is included so that clients who receive a
+// fan-out frame know who is typing without maintaining a separate
+// session-ID→principal-ID mapping on their side.
 type outboundTyping struct {
-	ConversationID    string            `json:"conversationId"`
-	SenderPrincipalID store.PrincipalID `json:"senderPrincipalId"`
-	State             string            `json:"state"`
+	ConversationID string            `json:"conversationId"`
+	PrincipalID    store.PrincipalID `json:"principalId"`
+	State          string            `json:"state"`
 }
 
 // outboundPresence is the shape encoded into a server→client
