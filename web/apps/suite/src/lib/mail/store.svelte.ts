@@ -79,6 +79,7 @@ const FOLDER_LABEL: Record<string, string> = {
   drafts: 'Drafts',
   trash: 'Trash',
   all: 'All Mail',
+  important: 'Important',
 };
 
 class MailStore {
@@ -633,7 +634,11 @@ class MailStore {
 
       let filter: Record<string, unknown> | undefined;
       let sortProperty: 'receivedAt' | 'sentAt' = 'receivedAt';
-      if (folder !== 'all') {
+      if (folder === 'important') {
+        // Virtual folder: every email with the $important keyword,
+        // regardless of which mailbox it lives in.
+        filter = { hasKeyword: '$important' };
+      } else if (folder !== 'all') {
         let mailboxId: string | null = null;
         if (ROLED_FOLDERS.has(folder)) {
           const role = FOLDER_ROLE[folder] ?? folder;
@@ -1388,6 +1393,29 @@ class MailStore {
     } else {
       toast.show({
         message: `${ok} message${ok === 1 ? '' : 's'} ${verb}`,
+      });
+    }
+  }
+
+  /** Toggle the $important keyword. No toast (toggle is itself the undo). */
+  async toggleImportant(emailId: string): Promise<void> {
+    const email = this.emails.get(emailId);
+    if (!email) return;
+    const wasImportant = Boolean(email.keywords.$important);
+    const nextKeywords = { ...email.keywords };
+    if (wasImportant) delete nextKeywords.$important;
+    else nextKeywords.$important = true;
+    this.#patchEmail(emailId, { keywords: nextKeywords });
+    try {
+      await this.#emailSetUpdate(emailId, {
+        'keywords/$important': wasImportant ? null : true,
+      });
+    } catch (err) {
+      this.#patchEmail(emailId, { keywords: email.keywords });
+      toast.show({
+        message: errMessage(err, 'Mark important failed'),
+        kind: 'error',
+        timeoutMs: 6000,
       });
     }
   }

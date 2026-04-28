@@ -77,6 +77,7 @@
   });
 
   let isSeen = $derived(Boolean(email.keywords.$seen));
+  let isImportant = $derived(Boolean(email.keywords.$important));
 
   // Build a cid -> downloadUrl map from the email's attachments. Inline
   // images referenced by Content-ID land in the body as `cid:<id>`; the
@@ -197,6 +198,14 @@
           onclick={() => mail.setSeen(email.id, !isSeen)}
         >
           {isSeen ? '○ Mark unread' : '● Mark read'}
+        </button>
+        <button
+          type="button"
+          class="pill"
+          class:active={isImportant}
+          onclick={() => mail.toggleImportant(email.id)}
+        >
+          {isImportant ? '! Important' : 'Mark important'}
         </button>
         {#if isInTrash}
           <button
@@ -338,6 +347,11 @@
   }
   .pill:hover {
     background: var(--layer-02);
+  }
+  .pill.active {
+    background: var(--support-warning);
+    color: var(--text-primary);
+    border-color: var(--support-warning);
   }
   .text-body {
     margin: 0;

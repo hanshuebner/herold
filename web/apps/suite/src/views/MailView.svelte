@@ -9,7 +9,14 @@
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import type { Email } from '../lib/mail/types';
 
-  const ROLED_FOLDERS = new Set<FolderID>(['inbox', 'sent', 'drafts', 'trash', 'all']);
+  const ROLED_FOLDERS = new Set<FolderID>([
+    'inbox',
+    'sent',
+    'drafts',
+    'trash',
+    'all',
+    'important',
+  ]);
 
   let threadId = $derived(router.parts[1] === 'thread' ? router.parts[2] : undefined);
   let label = $derived(router.parts[1] === 'label' ? router.parts[2] : undefined);
@@ -203,6 +210,14 @@
         },
       },
       {
+        key: '!',
+        description: 'Toggle important',
+        action: () => {
+          const id = focusedEmailId();
+          if (id) void mail.toggleImportant(id);
+        },
+      },
+      {
         key: '*',
         description: 'Select all visible',
         action: () => mail.selectAllVisible(),
@@ -303,6 +318,14 @@
         description: 'Mark thread unread',
         action: () => void mail.markThreadSeen(tid, false),
       },
+      {
+        key: '!',
+        description: 'Toggle important',
+        action: () => {
+          const e = replyTarget();
+          if (e) void mail.toggleImportant(e.id);
+        },
+      },
     ]);
     return pop;
   });
@@ -366,6 +389,7 @@
     drafts: 'Drafts',
     trash: 'Trash',
     all: 'All Mail',
+    important: 'Important',
   };
 
   function senderLabel(email: Email): string {

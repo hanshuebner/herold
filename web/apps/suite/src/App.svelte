@@ -133,8 +133,13 @@
           <li class="disabled" title="Snoozing arrives later">
             <button type="button" disabled>Snoozed</button>
           </li>
-          <li class="disabled" title="Importance markers arrive later">
-            <button type="button" disabled>Important</button>
+          <li class:active={router.matches('mail', 'folder', 'important')}>
+            <button
+              type="button"
+              onclick={() => router.navigate('/mail/folder/important')}
+            >
+              <span>Important</span>
+            </button>
           </li>
           <li class:active={router.matches('mail', 'folder', 'sent')}>
             <button type="button" onclick={() => router.navigate('/mail/folder/sent')}>
