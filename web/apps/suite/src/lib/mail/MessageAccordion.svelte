@@ -19,6 +19,23 @@
   import { managedRules, type RuleCondition } from '../settings/managed-rules.svelte';
   import { filterLike } from '../settings/filter-like.svelte';
   import { router } from '../router/router.svelte';
+  import ReplyIcon from '../icons/ReplyIcon.svelte';
+  import ReplyAllIcon from '../icons/ReplyAllIcon.svelte';
+  import ForwardIcon from '../icons/ForwardIcon.svelte';
+  import ReactIcon from '../icons/ReactIcon.svelte';
+  import MoveIcon from '../icons/MoveIcon.svelte';
+  import MarkReadIcon from '../icons/MarkReadIcon.svelte';
+  import MarkUnreadIcon from '../icons/MarkUnreadIcon.svelte';
+  import ImportantIcon from '../icons/ImportantIcon.svelte';
+  import SnoozeIcon from '../icons/SnoozeIcon.svelte';
+  import UnsnoozeIcon from '../icons/UnsnoozeIcon.svelte';
+  import RestoreIcon from '../icons/RestoreIcon.svelte';
+  import MuteIcon from '../icons/MuteIcon.svelte';
+  import UnmuteIcon from '../icons/UnmuteIcon.svelte';
+  import SpamIcon from '../icons/SpamIcon.svelte';
+  import PhishingIcon from '../icons/PhishingIcon.svelte';
+  import BlockIcon from '../icons/BlockIcon.svelte';
+  import FilterIcon from '../icons/FilterIcon.svelte';
 
   interface Props {
     email: Email;
@@ -357,31 +374,50 @@
       />
 
       <div class="actions">
-        <button type="button" class="pill" onclick={() => compose.openReply(email)}>
-          Reply
+        <button
+          type="button"
+          class="pill icon-only"
+          aria-label="Reply"
+          title="Reply"
+          onclick={() => compose.openReply(email)}
+        >
+          <ReplyIcon size={18} />
         </button>
         {#if hasMultipleRecipients}
-          <button type="button" class="pill" onclick={() => compose.openReplyAll(email)}>
-            Reply all
+          <button
+            type="button"
+            class="pill icon-only"
+            aria-label="Reply all"
+            title="Reply all"
+            onclick={() => compose.openReplyAll(email)}
+          >
+            <ReplyAllIcon size={18} />
           </button>
         {/if}
-        <button type="button" class="pill" onclick={() => compose.openForward(email)}>
-          Forward
+        <button
+          type="button"
+          class="pill icon-only"
+          aria-label="Forward"
+          title="Forward"
+          onclick={() => compose.openForward(email)}
+        >
+          <ForwardIcon size={18} />
         </button>
         <!-- React button per REQ-MAIL-152. The `+` key also opens this
              picker when the message is expanded (see keyboard layer above). -->
         <div class="react-wrapper">
           <button
             type="button"
-            class="pill"
+            class="pill icon-only"
             class:active={pickerOpen}
             bind:this={reactButtonEl}
             onclick={() => (pickerOpen = !pickerOpen)}
             aria-label="React with emoji"
+            title="React"
             aria-expanded={pickerOpen}
             aria-haspopup="dialog"
           >
-            React
+            <ReactIcon size={18} />
           </button>
           {#if pickerOpen}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -396,97 +432,124 @@
             </div>
           {/if}
         </div>
-        <button type="button" class="pill" onclick={() => movePicker.open(email.id)}>
-          Move...
+        <button
+          type="button"
+          class="pill icon-only"
+          aria-label="Move to mailbox"
+          title="Move to mailbox"
+          onclick={() => movePicker.open(email.id)}
+        >
+          <MoveIcon size={18} />
         </button>
         <button
           type="button"
-          class="pill"
+          class="pill icon-only"
+          aria-label={isSeen ? 'Mark as unread' : 'Mark as read'}
+          title={isSeen ? 'Mark as unread' : 'Mark as read'}
           onclick={() => mail.setSeen(email.id, !isSeen)}
         >
-          {isSeen ? 'Mark unread' : 'Mark read'}
+          {#if isSeen}<MarkUnreadIcon size={18} />{:else}<MarkReadIcon size={18} />{/if}
         </button>
         <button
           type="button"
-          class="pill"
+          class="pill icon-only"
           class:active={isImportant}
+          aria-label={isImportant ? 'Unmark important' : 'Mark important'}
+          aria-pressed={isImportant}
+          title={isImportant ? 'Unmark important' : 'Mark important'}
           onclick={() => mail.toggleImportant(email.id)}
         >
-          {isImportant ? 'Important' : 'Mark important'}
+          <ImportantIcon size={18} />
         </button>
         {#if isSnoozed}
           <button
             type="button"
-            class="pill"
-            onclick={() => mail.unsnoozeEmail(email.id)}
+            class="pill icon-only"
+            aria-label="Wake up now"
             title="Wake up now"
+            onclick={() => mail.unsnoozeEmail(email.id)}
           >
-            Unsnooze
+            <UnsnoozeIcon size={18} />
           </button>
         {:else}
           <button
             type="button"
-            class="pill"
+            class="pill icon-only"
+            aria-label="Snooze"
+            title="Snooze"
             onclick={() => snoozePicker.open(email.id)}
           >
-            Snooze
+            <SnoozeIcon size={18} />
           </button>
         {/if}
         {#if isInTrash}
           <button
             type="button"
-            class="pill"
+            class="pill icon-only"
+            aria-label="Restore from trash"
+            title="Restore from trash"
             onclick={() => mail.restoreFromTrash(email.id)}
           >
-            Restore
+            <RestoreIcon size={18} />
           </button>
         {/if}
 
         <!-- Mute / Unmute thread per REQ-MAIL-160. -->
         <button
           type="button"
-          class="pill"
+          class="pill icon-only"
+          aria-label={isMuted ? 'Unmute thread' : 'Mute thread'}
+          aria-pressed={isMuted}
+          title={isMuted ? 'Unmute thread' : 'Mute thread'}
           onclick={() => void handleMuteToggle()}
         >
-          {isMuted ? 'Unmute thread' : 'Mute thread'}
+          {#if isMuted}<UnmuteIcon size={18} />{:else}<MuteIcon size={18} />{/if}
         </button>
 
         <!-- Report spam per REQ-MAIL-135. -->
         <button
           type="button"
-          class="pill"
+          class="pill icon-only"
+          aria-label="Report spam"
+          title="Report spam"
           onclick={() => void handleReportSpam()}
         >
-          Report spam
+          <SpamIcon size={18} />
         </button>
 
         <!-- Report phishing per REQ-MAIL-136. -->
         <button
           type="button"
-          class="pill"
+          class="pill icon-only"
+          aria-label="Report phishing"
+          title="Report phishing"
           onclick={() => void handleReportPhishing()}
         >
-          Report phishing
+          <PhishingIcon size={18} />
         </button>
 
         <!-- Block sender per REQ-MAIL-134. -->
         {#if senderEmail}
           <button
             type="button"
-            class="pill"
+            class="pill icon-only"
+            aria-label="Block sender"
+            title="Block sender"
             onclick={openBlockConfirm}
           >
-            Block sender
+            <BlockIcon size={18} />
           </button>
         {/if}
 
         <!-- Filter messages like this per REQ-MAIL-138. -->
         <button
           type="button"
-          class="pill"
+          class="pill icon-only"
+          aria-label="Filter messages like this"
+          title="Filter messages like this"
           onclick={handleFilterLike}
         >
-          Filter messages like this
+          <FilterIcon size={18} />
         </button>
       </div>
 
@@ -660,6 +723,15 @@
     background: var(--support-warning);
     color: var(--text-primary);
     border-color: var(--support-warning);
+  }
+  /* Icon-only action buttons: square hit target, no horizontal padding
+     so the SVG sits centered inside the pill. The accessible name and
+     hover tooltip come from aria-label / title on the button. */
+  .pill.icon-only {
+    width: 36px;
+    min-height: 36px;
+    padding: 0;
+    justify-content: center;
   }
 
   /* The react wrapper positions the picker relative to the button. */

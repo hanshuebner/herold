@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { mail } from './store.svelte';
   import MessageAccordion from './MessageAccordion.svelte';
+  import PrintIcon from '../icons/PrintIcon.svelte';
   import type { Email } from './types';
 
   interface Props {
@@ -100,7 +101,7 @@
           title="Print thread"
           onclick={() => void printThread()}
         >
-          🖨 Print
+          <PrintIcon size={18} />
         </button>
       </div>
       <p class="count">
@@ -146,12 +147,14 @@
   }
   .print {
     flex: 0 0 auto;
-    padding: var(--spacing-02) var(--spacing-04);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
     border-radius: var(--radius-pill);
     color: var(--text-secondary);
     background: var(--layer-02);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 500;
     transition: background var(--duration-fast-02) var(--easing-productive-enter);
   }
   .print:hover {
