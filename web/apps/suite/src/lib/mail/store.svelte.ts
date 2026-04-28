@@ -359,6 +359,11 @@ class MailStore {
     return this.#mailboxByRole('sent');
   }
 
+  /** The Mailbox row whose `role` is `'junk'`, if any. */
+  get junk(): Mailbox | null {
+    return this.#mailboxByRole('junk');
+  }
+
   /** The first available Identity — used as the default From for compose. */
   get primaryIdentity(): Identity | null {
     for (const id of this.identities.values()) return id;
@@ -1621,6 +1626,112 @@ class MailStore {
         kind: 'error',
         timeoutMs: 6000,
       });
+    }
+  }
+
+  /**
+   * Report spam (REQ-MAIL-135): sets $junk keyword optimistically, moves
+   * the email to the Junk mailbox, and posts a feedback signal to the
+   * spam classifier endpoint if available. Undo toast reverts both moves.
+   *
+   * NOTE: The spam-feedback HTTP endpoint (/api/v1/spam-feedback) described
+   * in the Wave 3.15 plan was not implemented server-side in commits c799e7a
+   * or 14cca4f. The POST is attempted but silently dropped on 404/501 so
+   * the user-visible flow is not blocked. This is documented as a server-side
+   * gap in the Wave 3.15 implementation report.
+   */
+  async reportSpam(emailId: string, kind: 'spam' | 'phishing' = 'spam'): Promise<void> {
+    const email = this.emails.get(emailId);
+    const junkMailbox = this.junk;
+    if (!email) return;
+
+    const prevMailboxIds = { ...email.mailboxIds };
+    const prevKeywords = { ...email.keywords };
+    const prevListIds = [...this.listEmailIds];
+    const prevFocused = this.listFocusedIndex;
+
+    // Optimistic apply: add $junk (and $phishing for phishing reports).
+    const nextKeywords: Record<string, true | undefined> = { ...prevKeywords, $junk: true };
+    if (kind === 'phishing') nextKeywords.$phishing = true;
+    const nextMailboxIds = junkMailbox
+      ? { [junkMailbox.id]: true as const }
+      : { ...prevMailboxIds };
+
+    this.#patchEmail(emailId, { keywords: nextKeywords, mailboxIds: nextMailboxIds });
+    this.#removeFromList(emailId);
+
+    const revert = (): void => {
+      this.#patchEmail(emailId, { keywords: prevKeywords, mailboxIds: prevMailboxIds });
+      this.listEmailIds = prevListIds;
+      this.listFocusedIndex = prevFocused;
+    };
+
+    try {
+      const patches: Record<string, unknown> = { 'keywords/$junk': true };
+      if (kind === 'phishing') patches['keywords/$phishing'] = true;
+      if (junkMailbox) {
+        // Move to junk mailbox by replacing mailboxIds.
+        patches.mailboxIds = { [junkMailbox.id]: true };
+      }
+      await this.#emailSetUpdate(emailId, patches);
+    } catch (err) {
+      revert();
+      toast.show({
+        message: errMessage(err, 'Report failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return;
+    }
+
+    // Fire the spam-feedback endpoint (advisory — ignore errors).
+    void this.#postSpamFeedback(emailId, kind);
+
+    const label = kind === 'phishing' ? 'Reported as phishing' : 'Reported as spam';
+    toast.show({
+      message: label,
+      undo: async () => {
+        try {
+          const undoPatches: Record<string, unknown> = {
+            'keywords/$junk': null,
+            mailboxIds: prevMailboxIds,
+          };
+          if (kind === 'phishing') undoPatches['keywords/$phishing'] = null;
+          await this.#emailSetUpdate(emailId, undoPatches);
+          this.#patchEmail(emailId, { keywords: prevKeywords, mailboxIds: prevMailboxIds });
+          this.listEmailIds = prevListIds;
+        } catch (err) {
+          toast.show({
+            message: errMessage(err, 'Undo failed'),
+            kind: 'error',
+            timeoutMs: 6000,
+          });
+        }
+      },
+    });
+  }
+
+  /** Report phishing: delegates to reportSpam with kind='phishing'. */
+  async reportPhishing(emailId: string): Promise<void> {
+    return this.reportSpam(emailId, 'phishing');
+  }
+
+  /**
+   * Post a spam-feedback signal to the server. The endpoint
+   * (/api/v1/spam-feedback) is advisory and not yet implemented server-side
+   * in Wave 3.15 (gap documented in implementation report). Errors are
+   * silently swallowed so the user-visible report-spam flow is unaffected.
+   */
+  async #postSpamFeedback(emailId: string, kind: 'spam' | 'phishing'): Promise<void> {
+    try {
+      await fetch('/api/v1/spam-feedback', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emailId, kind }),
+      });
+    } catch {
+      // Network error or endpoint absent — silently drop.
     }
   }
 

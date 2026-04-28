@@ -16,6 +16,9 @@
   import { reactionConfirm } from './reaction-confirm.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
   import { untrack } from 'svelte';
+  import { managedRules, type RuleCondition } from '../settings/managed-rules.svelte';
+  import { filterLike } from '../settings/filter-like.svelte';
+  import { router } from '../router/router.svelte';
 
   interface Props {
     email: Email;
@@ -173,6 +176,87 @@
     );
     return pop;
   });
+
+  // ── Mute thread ────────────────────────────────────────────────────────
+
+  let isMuted = $derived(managedRules.isThreadMuted(email.threadId));
+
+  async function handleMuteToggle(): Promise<void> {
+    if (isMuted) {
+      await managedRules.unmuteThread(email.threadId);
+    } else {
+      await managedRules.muteThread(email.threadId);
+    }
+  }
+
+  // ── Block sender ───────────────────────────────────────────────────────
+
+  let blockConfirmOpen = $state(false);
+  let blockError = $state<string | null>(null);
+  let blockInProgress = $state(false);
+
+  function openBlockConfirm(): void {
+    blockError = null;
+    blockConfirmOpen = true;
+  }
+
+  function closeBlockConfirm(): void {
+    blockConfirmOpen = false;
+    blockError = null;
+  }
+
+  async function confirmBlock(): Promise<void> {
+    if (!senderEmail) return;
+    blockInProgress = true;
+    blockError = null;
+    try {
+      await managedRules.blockSender(senderEmail);
+      blockConfirmOpen = false;
+    } catch (err) {
+      blockError = err instanceof Error ? err.message : 'Block failed';
+    } finally {
+      blockInProgress = false;
+    }
+  }
+
+  // ── Report spam / phishing ─────────────────────────────────────────────
+
+  async function handleReportSpam(): Promise<void> {
+    await mail.reportSpam(email.id, 'spam');
+  }
+
+  async function handleReportPhishing(): Promise<void> {
+    await mail.reportSpam(email.id, 'phishing');
+  }
+
+  // ── Filter messages like this ──────────────────────────────────────────
+
+  function handleFilterLike(): void {
+    // Strip common reply/forward prefixes from the subject before using it
+    // as a condition.
+    const rawSubject = email.subject ?? '';
+    const subject = rawSubject.replace(/^(re|fwd?|aw|sv):\s*/i, '').trim();
+
+    const conditions: RuleCondition[] = [];
+    if (senderEmail) {
+      conditions.push({ field: 'from', op: 'equals', value: senderEmail });
+    }
+    if (subject) {
+      conditions.push({ field: 'subject', op: 'contains', value: subject });
+    }
+    const listIdRaw = (email['header:List-ID:asText'] ?? '').trim();
+    if (listIdRaw) {
+      // List-ID format: "Name <list@example.com>" — extract the angle-bracket part.
+      const match = listIdRaw.match(/<([^>]+)>/);
+      const listId = match ? match[1]! : listIdRaw;
+      conditions.push({ field: 'from', op: 'wildcard-match', value: `*@${listId.split('.').slice(1).join('.')}` });
+    }
+
+    // Set the pending payload so FiltersForm picks it up on mount.
+    filterLike.set({ conditions });
+    // Navigate to the filters settings section.
+    router.navigate('/settings/filters');
+  }
 </script>
 
 <article class="message" class:expanded>
@@ -345,7 +429,89 @@
             Restore
           </button>
         {/if}
+
+        <!-- Mute / Unmute thread per REQ-MAIL-160. -->
+        <button
+          type="button"
+          class="pill"
+          onclick={() => void handleMuteToggle()}
+        >
+          {isMuted ? 'Unmute thread' : 'Mute thread'}
+        </button>
+
+        <!-- Report spam per REQ-MAIL-135. -->
+        <button
+          type="button"
+          class="pill"
+          onclick={() => void handleReportSpam()}
+        >
+          Report spam
+        </button>
+
+        <!-- Report phishing per REQ-MAIL-136. -->
+        <button
+          type="button"
+          class="pill"
+          onclick={() => void handleReportPhishing()}
+        >
+          Report phishing
+        </button>
+
+        <!-- Block sender per REQ-MAIL-134. -->
+        {#if senderEmail}
+          <button
+            type="button"
+            class="pill"
+            onclick={openBlockConfirm}
+          >
+            Block sender
+          </button>
+        {/if}
+
+        <!-- Filter messages like this per REQ-MAIL-138. -->
+        <button
+          type="button"
+          class="pill"
+          onclick={handleFilterLike}
+        >
+          Filter messages like this
+        </button>
       </div>
+
+      <!-- Block sender confirmation modal (inline). -->
+      {#if blockConfirmOpen}
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <div
+          class="block-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Block sender"
+          tabindex="-1"
+          onkeydown={(e) => { if (e.key === 'Escape') closeBlockConfirm(); }}
+        >
+          <p class="block-modal-body">
+            Block all messages from <strong>{senderEmail}</strong>?
+            Existing messages stay; future messages go to Trash.
+            You can unblock them later in Settings &rarr; Filters.
+          </p>
+          {#if blockError}
+            <p class="block-modal-error" role="alert">{blockError}</p>
+          {/if}
+          <div class="block-modal-actions">
+            <button
+              type="button"
+              class="pill"
+              onclick={() => void confirmBlock()}
+              disabled={blockInProgress}
+            >
+              {blockInProgress ? 'Blocking…' : 'Block sender'}
+            </button>
+            <button type="button" class="pill" onclick={closeBlockConfirm}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      {/if}
     </div>
   {/if}
 </article>
@@ -533,6 +699,33 @@
     padding: var(--spacing-04);
     color: var(--text-helper);
     font-style: italic;
+  }
+
+  /* Block-sender confirmation inline modal. */
+  .block-modal {
+    margin-top: var(--spacing-04);
+    padding: var(--spacing-04);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-03);
+  }
+  .block-modal-body {
+    color: var(--text-primary);
+    font-size: var(--type-body-compact-01-size);
+    margin: 0;
+  }
+  .block-modal-error {
+    color: var(--support-error);
+    font-size: var(--type-body-compact-01-size);
+    margin: 0;
+  }
+  .block-modal-actions {
+    display: flex;
+    gap: var(--spacing-03);
+    flex-wrap: wrap;
   }
 
   @media (max-width: 560px) {
