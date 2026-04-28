@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
@@ -83,7 +84,7 @@ func TestThread_Get_DerivedFromMessages(t *testing.T) {
 	id1 := insertMsg(t, st, mb, "<m1@example.test>", "", "Original subject")
 	id2 := insertMsg(t, st, mb, "<m2@example.test>", "<m1@example.test>", "Re: Original subject")
 	id3 := insertMsg(t, st, mb, "<m3@example.test>", "<m1@example.test> <m2@example.test>", "Re: Original subject")
-	args, _ := json.Marshal(map[string]any{})
+	args, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
 	resp, mErr := getHandler{h: h}.executeAs(p, args)
 	if mErr != nil {
 		t.Fatalf("Thread/get: %v", mErr)
@@ -116,7 +117,7 @@ func TestThread_Get_OrphanReply(t *testing.T) {
 	// missing parent) is left for a future read-time pass.
 	insertMsg(t, st, mb, "<reply1@example.test>", "<missing@elsewhere>", "Re: lost thread")
 	insertMsg(t, st, mb, "<reply2@example.test>", "<missing@elsewhere>", "Re: lost thread")
-	args, _ := json.Marshal(map[string]any{})
+	args, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
 	resp, _ := getHandler{h: h}.executeAs(p, args)
 	g := resp.(getResponse)
 	// Each orphan reply is its own singleton thread.
@@ -134,7 +135,7 @@ func TestThread_Get_DistinctThreadsForUnrelatedMessages(t *testing.T) {
 	h, st, p, mb := setup(t)
 	insertMsg(t, st, mb, "<u1@example.test>", "", "Topic A")
 	insertMsg(t, st, mb, "<u2@example.test>", "", "Topic B")
-	args, _ := json.Marshal(map[string]any{})
+	args, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
 	resp, _ := getHandler{h: h}.executeAs(p, args)
 	g := resp.(getResponse)
 	if len(g.List) != 2 {
@@ -149,6 +150,7 @@ func TestThread_Changes_NoOpWhenSameState(t *testing.T) {
 		t.Fatalf("states: %v", err)
 	}
 	args, _ := json.Marshal(map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(p.ID),
 		"sinceState": stateString(stState.Thread),
 	})
 	resp, mErr := changesHandler{h: h}.executeAs(p, args)

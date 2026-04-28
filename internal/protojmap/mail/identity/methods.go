@@ -125,11 +125,12 @@ func accountIDForPrincipal(p store.Principal) string {
 }
 
 // validateAccountID checks the inbound accountId against the
-// authenticated principal. JMAP returns "accountNotFound" when the
-// caller asks for an account that is not theirs.
+// authenticated principal. An absent accountId is rejected with
+// "invalidArguments" per RFC 8620 §5.1; a mismatched one returns
+// "accountNotFound".
 func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodError {
 	if requested == "" {
-		return nil // some clients omit; default to caller's account.
+		return protojmap.NewMethodError("invalidArguments", "accountId is required")
 	}
 	if requested != accountIDForPrincipal(p) {
 		return protojmap.NewMethodError("accountNotFound",

@@ -22,9 +22,11 @@ func requirePrincipal(ctx context.Context) (store.PrincipalID, *protojmap.Method
 }
 
 // requireAccount validates that accountId matches the calling principal.
+// An absent accountId is rejected with "invalidArguments" per RFC 8620
+// §5.1; a mismatched one returns "accountNotFound".
 func requireAccount(req jmapID, pid store.PrincipalID) *protojmap.MethodError {
 	if req == "" {
-		return nil
+		return protojmap.NewMethodError("invalidArguments", "accountId is required")
 	}
 	if req != protojmap.AccountIDForPrincipal(pid) {
 		return protojmap.NewMethodError("accountNotFound",

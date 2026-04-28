@@ -26,6 +26,8 @@ ADMIN_EMAIL="admin@herold.test"
 ADMIN_PASSWORD="adminpw-interop"
 ALICE_EMAIL="alice@herold.test"
 ALICE_PASSWORD="alicepw-interop"
+BOB_EMAIL="bob@herold.test"
+BOB_PASSWORD="bobpw-interop"
 
 mkdir -p "${DATA_DIR}"
 
@@ -103,6 +105,16 @@ curl -sf \
     -d "{\"email\":\"${ALICE_EMAIL}\",\"password\":\"${ALICE_PASSWORD}\"}" \
     "${ADMIN_URL}/api/v1/principals" \
     || echo "bootstrap: principal creation returned error (may already exist)"
+
+# Step 5b: Create bob@herold.test (secondary user the JMAP test suite needs
+# for EmailSubmission tests; harmless for non-JMAP runs).
+echo "bootstrap: creating bob@herold.test"
+curl -sf \
+    -H "Authorization: Bearer ${API_KEY}" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"${BOB_EMAIL}\",\"password\":\"${BOB_PASSWORD}\"}" \
+    "${ADMIN_URL}/api/v1/principals" \
+    || echo "bootstrap: bob principal creation returned error (may already exist)"
 
 # Step 6: Mark done and stop background server.
 touch "${BOOTSTRAP_DONE}"

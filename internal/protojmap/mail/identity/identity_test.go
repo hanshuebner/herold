@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
@@ -53,7 +54,7 @@ func newHandlers(t *testing.T) (*handlerSet, *fakestore.Store, store.Principal) 
 
 func TestIdentity_Get_DefaultIdentityIsSynthesized(t *testing.T) {
 	h, _, p := newHandlers(t)
-	args, _ := json.Marshal(map[string]any{})
+	args, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
 	resp, mErr := getHandler{h: h}.executeAs(p, args)
 	if mErr != nil {
 		t.Fatalf("Identity/get: %v", mErr)
@@ -70,6 +71,7 @@ func TestIdentity_Get_DefaultIdentityIsSynthesized(t *testing.T) {
 func TestIdentity_Set_RejectsForeignDomain(t *testing.T) {
 	h, _, p := newHandlers(t)
 	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"alt": map[string]any{
 				"name":  "Alice Elsewhere",
@@ -90,6 +92,7 @@ func TestIdentity_Set_RejectsForeignDomain(t *testing.T) {
 func TestIdentity_Set_AcceptsLocalDomain(t *testing.T) {
 	h, _, p := newHandlers(t)
 	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"work": map[string]any{
 				"name":          "Alice At Work",
@@ -118,7 +121,7 @@ func TestIdentity_Changes_NoOpWhenSameState(t *testing.T) {
 		t.Fatalf("states: %v", err)
 	}
 	state := stateString(stState.Identity)
-	args, _ := json.Marshal(map[string]any{"sinceState": state})
+	args, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID), "sinceState": state})
 	resp, mErr := changesHandler{h: h}.executeAs(p, args)
 	if mErr != nil {
 		t.Fatalf("Identity/changes: %v", mErr)
@@ -139,6 +142,7 @@ func TestIdentity_Get_IncludesSignature(t *testing.T) {
 	// Set the signature on the default identity via the overlay path.
 	sig := "Cheers,\nAlice"
 	updateArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"update": map[string]any{
 			"default": map[string]any{"signature": sig},
 		},
@@ -147,7 +151,8 @@ func TestIdentity_Get_IncludesSignature(t *testing.T) {
 	if mErr != nil {
 		t.Fatalf("Identity/set update default: %v", mErr)
 	}
-	resp, mErr := getHandler{h: h}.executeAs(p, json.RawMessage(`{}`))
+	getArgs, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
+	resp, mErr := getHandler{h: h}.executeAs(p, getArgs)
 	if mErr != nil {
 		t.Fatalf("Identity/get: %v", mErr)
 	}
@@ -162,6 +167,7 @@ func TestIdentity_Get_IncludesSignature(t *testing.T) {
 func TestIdentity_Set_AcceptsSignature(t *testing.T) {
 	h, _, p := newHandlers(t)
 	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"alt": map[string]any{
 				"name":      "Alice Personal",
@@ -185,6 +191,7 @@ func TestIdentity_Set_AcceptsSignature(t *testing.T) {
 		t.Fatalf("create response missing alt: %+v", sresp.Created)
 	}
 	updateArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"update": map[string]any{
 			created.ID: map[string]any{"signature": "Updated"},
 		},
@@ -199,6 +206,7 @@ func TestIdentity_Set_AcceptsSignature(t *testing.T) {
 	}
 	// Clear via explicit null.
 	clearArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"update": map[string]any{
 			created.ID: map[string]any{"signature": nil},
 		},
@@ -207,7 +215,8 @@ func TestIdentity_Set_AcceptsSignature(t *testing.T) {
 	if mErr3 != nil {
 		t.Fatalf("Identity/set clear: %v", mErr3)
 	}
-	resp3, _ := getHandler{h: h}.executeAs(p, json.RawMessage(`{}`))
+	getArgs3, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
+	resp3, _ := getHandler{h: h}.executeAs(p, getArgs3)
 	js3, _ := json.Marshal(resp3)
 	if strings.Contains(string(js3), `"signature":"Updated"`) {
 		t.Fatalf("signature did not clear: %s", js3)

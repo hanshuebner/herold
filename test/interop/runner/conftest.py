@@ -30,6 +30,11 @@ def pytest_configure(config):
         "imaptest: Dovecot imaptest IMAP wire-protocol conformance; "
         "requires --profile imaptest compose stack; NOT collected by default",
     )
+    config.addinivalue_line(
+        "markers",
+        "jmaptest: jmapio/jmap-test-suite JMAP wire-protocol conformance; "
+        "requires --profile jmaptest compose stack; NOT collected by default",
+    )
 
 
 @pytest.fixture(scope="session")

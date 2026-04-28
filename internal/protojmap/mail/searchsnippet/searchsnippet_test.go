@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
@@ -62,8 +63,9 @@ func TestSearchSnippet_Get_HighlightsBodyHits(t *testing.T) {
 	}
 	h := &handlerSet{store: st}
 	args, _ := json.Marshal(map[string]any{
-		"filter":   map[string]any{"body": "invoice"},
-		"emailIds": []string{toJMAPID(mid)},
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"filter":    map[string]any{"body": "invoice"},
+		"emailIds":  []string{toJMAPID(mid)},
 	})
 	resp, mErr := getHandler{h: h}.executeAs(p, args)
 	if mErr != nil {
@@ -104,8 +106,9 @@ func TestSearchSnippet_Get_HighlightsSubject(t *testing.T) {
 	}
 	h := &handlerSet{store: st}
 	args, _ := json.Marshal(map[string]any{
-		"filter":   map[string]any{"subject": "invoice"},
-		"emailIds": []string{toJMAPID(mid)},
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"filter":    map[string]any{"subject": "invoice"},
+		"emailIds":  []string{toJMAPID(mid)},
 	})
 	resp, _ := getHandler{h: h}.executeAs(p, args)
 	g := resp.(getResponse)
@@ -123,8 +126,9 @@ func TestSearchSnippet_Get_NotFoundForUnknownIDs(t *testing.T) {
 	p, _ := st.Meta().InsertPrincipal(ctx, store.Principal{CanonicalEmail: "alice@example.test"})
 	h := &handlerSet{store: st}
 	args, _ := json.Marshal(map[string]any{
-		"filter":   map[string]any{"body": "anything"},
-		"emailIds": []string{"99999"},
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"filter":    map[string]any{"body": "anything"},
+		"emailIds":  []string{"99999"},
 	})
 	resp, _ := getHandler{h: h}.executeAs(p, args)
 	js, _ := json.Marshal(resp)

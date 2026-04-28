@@ -193,9 +193,11 @@ func requirePrincipal(getter func() (store.PrincipalID, bool)) (store.PrincipalI
 }
 
 // requireAccount validates the JMAP accountId against the principal.
+// An absent accountId is rejected with "invalidArguments" per RFC 8620
+// §5.1: every method that operates on an account MUST carry the field.
 func requireAccount(reqAccountID jmapID, pid store.PrincipalID) *protojmap.MethodError {
 	if reqAccountID == "" {
-		return nil
+		return protojmap.NewMethodError("invalidArguments", "accountId is required")
 	}
 	if reqAccountID != protojmap.AccountIDForPrincipal(pid) {
 		return protojmap.NewMethodError("accountNotFound",

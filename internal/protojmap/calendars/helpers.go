@@ -25,11 +25,13 @@ func requirePrincipal(ctx context.Context) (store.PrincipalID, *protojmap.Method
 
 // requireAccount validates the JMAP accountId against the authenticated
 // principal. v1 maps one principal -> one account; cross-principal
-// access is rejected with "accountNotFound" per RFC 8620 §3.6.2. An
-// empty accountId is treated as "the requesting principal".
+// access is rejected with "accountNotFound" per RFC 8620 §3.6.2.
+//
+// An absent accountId is rejected with "invalidArguments" per RFC 8620
+// §5.1: every method that operates on an account MUST carry the field.
 func requireAccount(reqAccountID jmapID, pid store.PrincipalID) *protojmap.MethodError {
 	if reqAccountID == "" {
-		return nil
+		return protojmap.NewMethodError("invalidArguments", "accountId is required")
 	}
 	if reqAccountID != string(protojmap.AccountIDForPrincipal(pid)) {
 		return protojmap.NewMethodError("accountNotFound",

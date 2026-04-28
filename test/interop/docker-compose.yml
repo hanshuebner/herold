@@ -316,6 +316,47 @@ services:
       - imaptest
 
   # -----------------------------------------------------------------------
+  # jmaptest - jmapio/jmap-test-suite TypeScript conformance tester.
+  # Built from upstream master at a pinned SHA; see
+  # config/jmaptest/Dockerfile for the pin and re-pin instructions.
+  # Used only when the "jmaptest" compose profile is active; does NOT
+  # start during normal run.sh / make interop flows.
+  #
+  # The container idles (sleep infinity) after the CA is installed.
+  # The pytest runner docker-execs the suite via:
+  #   node /opt/jmap-test-suite/dist/cli.js -c /etc/jmap-test/config.json ...
+  # -----------------------------------------------------------------------
+  jmaptest:
+    build:
+      context: ./config/jmaptest
+      dockerfile: Dockerfile
+    image: herold-jmaptest:latest
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        cp /etc/interop/tls/ca.crt /usr/local/share/ca-certificates/herold-interop-ca.crt
+        update-ca-certificates --fresh 2>&1 | tail -2
+        echo "jmaptest: ready"
+        sleep infinity
+    volumes:
+      - tls-data:/etc/interop/tls:ro
+      - ./config/jmaptest/config.json:/etc/jmap-test/config.json:ro
+    networks:
+      interop:
+        ipv4_address: 10.77.0.33
+    dns:
+      - 10.77.0.2
+    restart: "no"
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
+      herold:
+        condition: service_healthy
+    profiles:
+      - jmaptest
+
+  # -----------------------------------------------------------------------
   # Test runner - pytest inside the compose network.
   # Runs after all MTAs are up and bootstrapped.
   # -----------------------------------------------------------------------

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
@@ -46,7 +47,7 @@ vacation :subject "Out of office" "I am away through Friday.";`
 	if err := st.Meta().SetSieveScript(context.Background(), p.ID, script); err != nil {
 		t.Fatalf("set sieve script: %v", err)
 	}
-	args, _ := json.Marshal(map[string]any{})
+	args, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
 	resp, mErr := getHandler{h: h}.executeAs(p, args)
 	if mErr != nil {
 		t.Fatalf("VacationResponse/get: %v", mErr)
@@ -65,7 +66,7 @@ vacation :subject "Out of office" "I am away through Friday.";`
 
 func TestVacationResponse_Get_EmptyScriptReturnsDisabled(t *testing.T) {
 	h, _, p := setup(t)
-	args, _ := json.Marshal(map[string]any{})
+	args, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
 	resp, mErr := getHandler{h: h}.executeAs(p, args)
 	if mErr != nil {
 		t.Fatalf("VacationResponse/get: %v", mErr)
@@ -79,6 +80,7 @@ func TestVacationResponse_Get_EmptyScriptReturnsDisabled(t *testing.T) {
 func TestVacationResponse_Set_RoundTripsThroughSieve(t *testing.T) {
 	h, st, p := setup(t)
 	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"update": map[string]any{
 			"singleton": map[string]any{
 				"isEnabled": true,
@@ -110,7 +112,7 @@ func TestVacationResponse_Set_RoundTripsThroughSieve(t *testing.T) {
 		t.Fatalf("expected body in script: %s", persisted)
 	}
 	// Round-trip: re-read via /get.
-	args2, _ := json.Marshal(map[string]any{})
+	args2, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
 	resp2, _ := getHandler{h: h}.executeAs(p, args2)
 	js2, _ := json.Marshal(resp2)
 	if !strings.Contains(string(js2), `"subject":"Holiday"`) {
@@ -129,6 +131,7 @@ if envelope :is "to" "alice@example.test" {
 		t.Fatalf("set sieve: %v", err)
 	}
 	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"update": map[string]any{
 			"singleton": map[string]any{
 				"isEnabled": false,

@@ -388,6 +388,139 @@ func TestDispatch_UnknownCapability_Errors(t *testing.T) {
 	}
 }
 
+// TestDispatch_WrongContentType verifies that POST /jmap rejects
+// requests whose Content-Type is not "application/json" with a 4xx
+// error before any body parsing occurs (RFC 8620 §3.4).
+func TestDispatch_WrongContentType(t *testing.T) {
+	f := newFixture(t)
+	body := `{"using":["urn:ietf:params:jmap:core"],"methodCalls":[["Core/echo",{},"c0"]]}`
+	req, err := http.NewRequest(http.MethodPost, f.httpd.URL+"/jmap", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+f.apiKey)
+	req.Header.Set("Content-Type", "text/plain")
+	res, err := f.httpd.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 400 || res.StatusCode >= 500 {
+		t.Fatalf("status = %d, want 4xx for wrong Content-Type", res.StatusCode)
+	}
+}
+
+// TestDispatch_MissingContentType verifies that POST /jmap rejects
+// requests with no Content-Type header (RFC 8620 §3.4).
+func TestDispatch_MissingContentType(t *testing.T) {
+	f := newFixture(t)
+	body := `{"using":["urn:ietf:params:jmap:core"],"methodCalls":[["Core/echo",{},"c0"]]}`
+	req, err := http.NewRequest(http.MethodPost, f.httpd.URL+"/jmap", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+f.apiKey)
+	// deliberately omit Content-Type
+	res, err := f.httpd.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 400 || res.StatusCode >= 500 {
+		t.Fatalf("status = %d, want 4xx for missing Content-Type", res.StatusCode)
+	}
+}
+
+// TestDispatch_ContentTypeWithCharset verifies that "application/json;
+// charset=utf-8" (with a parameter) is accepted (RFC 8620 §3.4).
+func TestDispatch_ContentTypeWithCharset(t *testing.T) {
+	f := newFixture(t)
+	body := `{"using":["urn:ietf:params:jmap:core"],"methodCalls":[["Core/echo",{},"c0"]]}`
+	req, err := http.NewRequest(http.MethodPost, f.httpd.URL+"/jmap", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+f.apiKey)
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	res, err := f.httpd.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		buf, _ := io.ReadAll(res.Body)
+		t.Fatalf("status = %d, want 200 for application/json; charset=utf-8: %s", res.StatusCode, buf)
+	}
+}
+
+// TestDispatch_MissingAccountID verifies that a method call that
+// requires an accountId returns a method-level "invalidArguments"
+// error when accountId is absent from the args (RFC 8620 §5.1).
+// We register a minimal fake handler that calls requireAccount via its
+// Execute so the test exercises the dispatch → handler path without
+// depending on a real mail datatype.
+func TestDispatch_MissingAccountID(t *testing.T) {
+	f := newFixture(t)
+	const cap = protojmap.CapabilityID("urn:test:acct")
+	// fakeAccountHandler rejects calls with missing accountId, just like
+	// all real datatype handlers do via their requireAccount helper.
+	fakeAcct := &fakeAccountIDHandler{method: "Acct/get"}
+	f.srv.Registry().Register(cap, fakeAcct)
+
+	res, env, raw := f.jmapPost(
+		[]protojmap.CapabilityID{cap},
+		[]protojmap.Invocation{
+			// no accountId in args — must produce invalidArguments
+			{Name: "Acct/get", Args: json.RawMessage(`{}`), CallID: "c1"},
+		},
+	)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", res.StatusCode, raw)
+	}
+	if len(env.MethodResponses) != 1 {
+		t.Fatalf("len = %d", len(env.MethodResponses))
+	}
+	got := env.MethodResponses[0]
+	if got.Name != "error" {
+		t.Fatalf("response name = %q, want \"error\" (accountId omitted)", got.Name)
+	}
+	var merr struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(got.Args, &merr); err != nil {
+		t.Fatalf("unmarshal error body: %v", err)
+	}
+	if merr.Type != "invalidArguments" {
+		t.Fatalf("error type = %q, want invalidArguments", merr.Type)
+	}
+}
+
+// fakeAccountIDHandler simulates any real JMAP datatype handler that
+// validates accountId, without importing a concrete datatype package.
+type fakeAccountIDHandler struct{ method string }
+
+func (h *fakeAccountIDHandler) Method() string { return h.method }
+
+func (h *fakeAccountIDHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
+	var req struct {
+		AccountID string `json:"accountId"`
+	}
+	if len(args) > 0 {
+		_ = json.Unmarshal(args, &req)
+	}
+	p, ok := protojmap.PrincipalFromContext(ctx)
+	if !ok {
+		return nil, protojmap.NewMethodError("forbidden", "no principal")
+	}
+	if req.AccountID == "" {
+		return nil, protojmap.NewMethodError("invalidArguments", "accountId is required")
+	}
+	if req.AccountID != protojmap.AccountIDForPrincipal(p.ID) {
+		return nil, protojmap.NewMethodError("accountNotFound", "wrong account")
+	}
+	return map[string]any{"ok": true}, nil
+}
+
 func TestDispatch_MethodError_PartialResponse_OtherCallsExecute(t *testing.T) {
 	f := newFixture(t)
 	const cap = protojmap.CapabilityID("urn:test:partial")
@@ -636,14 +769,22 @@ func TestDownload_RateLimit_Throttles(t *testing.T) {
 
 func TestEventSource_StateChange_OnFakeChangeFeed(t *testing.T) {
 	f := newFixture(t)
-	// Seed a mailbox so InsertMessage has a target.
-	mb, err := f.store.Meta().InsertMailbox(context.Background(), store.Mailbox{
-		PrincipalID: f.pid,
-		Name:        "INBOX",
-		Attributes:  store.MailboxAttrInbox,
-	})
+	// Fetch the INBOX that CreatePrincipal auto-provisioned. We do not
+	// re-insert it because directory.provisionDefaultMailboxes already
+	// created it when the principal was created.
+	mboxes, err := f.store.Meta().ListMailboxes(context.Background(), f.pid)
 	if err != nil {
-		t.Fatalf("insert mailbox: %v", err)
+		t.Fatalf("list mailboxes: %v", err)
+	}
+	var mb store.Mailbox
+	for _, m := range mboxes {
+		if m.Name == "INBOX" {
+			mb = m
+			break
+		}
+	}
+	if mb.ID == 0 {
+		t.Fatalf("INBOX not found after principal creation")
 	}
 
 	url := f.httpd.URL + "/jmap/eventsource?types=Email&closeafter=state&ping=300"

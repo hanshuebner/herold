@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
@@ -78,7 +79,7 @@ func TestJMAPSieve_Get_Set_RoundTrip(t *testing.T) {
 	blob := uploadBlob(t, st, validScript)
 
 	// Initially empty: /get returns an empty list and state "0".
-	getArgs, _ := json.Marshal(map[string]any{})
+	getArgs, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
 	resp, mErr := getHandler{h: h}.Execute(ctx, getArgs)
 	if mErr != nil {
 		t.Fatalf("Sieve/get(initial): %v", mErr)
@@ -93,6 +94,7 @@ func TestJMAPSieve_Get_Set_RoundTrip(t *testing.T) {
 
 	// Sieve/set create with the uploaded blob.
 	setArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"new": map[string]any{"name": "main", "blobId": blob},
 		},
@@ -129,7 +131,7 @@ func TestJMAPSieve_Get_Set_RoundTrip(t *testing.T) {
 	}
 
 	// /get now returns the singleton.
-	resp2, mErr := getHandler{h: h}.Execute(ctx, getArgs)
+	resp2, mErr := getHandler{h: h}.Execute(ctx, getArgs) // getArgs already has accountId
 	if mErr != nil {
 		t.Fatalf("Sieve/get(post): %v", mErr)
 	}
@@ -143,9 +145,10 @@ func TestJMAPSieve_Get_Set_RoundTrip(t *testing.T) {
 }
 
 func TestJMAPSieve_Set_InvalidScript_Returns_sieveValidationError(t *testing.T) {
-	h, st, _, ctx := newHandlers(t)
+	h, st, p, ctx := newHandlers(t)
 	blob := uploadBlob(t, st, invalidScript)
 	setArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"bad": map[string]any{"blobId": blob},
 		},
@@ -181,7 +184,7 @@ func TestJMAPSieve_Validate_NoPersist(t *testing.T) {
 	badBlob := uploadBlob(t, st, invalidScript)
 
 	// Good script → isValid true, errors empty.
-	args, _ := json.Marshal(map[string]any{"blobId": goodBlob})
+	args, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID), "blobId": goodBlob})
 	resp, mErr := validateHandler{h: h}.Execute(ctx, args)
 	if mErr != nil {
 		t.Fatalf("Sieve/validate(good): %v", mErr)
@@ -195,7 +198,7 @@ func TestJMAPSieve_Validate_NoPersist(t *testing.T) {
 	}
 
 	// Bad script → isValid false, errors populated.
-	args, _ = json.Marshal(map[string]any{"blobId": badBlob})
+	args, _ = json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID), "blobId": badBlob})
 	resp, mErr = validateHandler{h: h}.Execute(ctx, args)
 	if mErr != nil {
 		t.Fatalf("Sieve/validate(bad): %v", mErr)

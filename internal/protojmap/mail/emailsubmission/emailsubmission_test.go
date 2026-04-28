@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
@@ -148,6 +149,7 @@ func newSetup(t *testing.T) (*handlerSet, *fakestore.Store, store.Principal, sto
 func TestEmailSubmission_Set_DispatchesIntoQueue(t *testing.T) {
 	h, _, p, _, mid, sub := newSetup(t)
 	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"k1": map[string]any{
 				"identityId": "default",
@@ -185,6 +187,7 @@ func TestEmailSubmission_Get_RendersQueueState(t *testing.T) {
 	h, st, p, _, mid, sub := newSetup(t)
 	// Submit one message.
 	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"k1": map[string]any{
 				"identityId": "default",
@@ -197,7 +200,7 @@ func TestEmailSubmission_Get_RendersQueueState(t *testing.T) {
 	}
 	envID := sub.envs[0]
 	// /get should return undoStatus=pending while the queue row is queued.
-	getArgs, _ := json.Marshal(map[string]any{})
+	getArgs, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
 	resp, _ := getHandler{h: h}.executeAs(p, getArgs)
 	g := resp.(getResponse)
 	if len(g.List) != 1 {
@@ -222,6 +225,7 @@ func TestEmailSubmission_Set_RejectsUnknownIdentity(t *testing.T) {
 	h, _, p, _, mid, _ := newSetup(t)
 	h.identity = stubResolver{email: ""}
 	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"k1": map[string]any{
 				"identityId": "999",
@@ -242,6 +246,7 @@ func TestEmailSubmission_Set_RejectsUnknownIdentity(t *testing.T) {
 func TestEmailSubmission_Set_RejectsUnknownEmail(t *testing.T) {
 	h, _, p, _, _, _ := newSetup(t)
 	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"k1": map[string]any{
 				"identityId": "default",
@@ -262,6 +267,7 @@ func TestSet_Create_HonoursSendAt(t *testing.T) {
 	h, _, p, _, mid, sub := newSetup(t)
 	sendAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"k1": map[string]any{
 				"identityId": "default",
@@ -286,6 +292,7 @@ func TestSet_Create_HonoursSendAt(t *testing.T) {
 func TestSet_Create_RejectsMalformedSendAt(t *testing.T) {
 	h, _, p, _, mid, _ := newSetup(t)
 	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"k1": map[string]any{
 				"identityId": "default",
@@ -309,6 +316,7 @@ func TestSet_Destroy_BeforeSendAt_CancelsAtomically(t *testing.T) {
 	ctx := context.Background()
 	sendAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"k1": map[string]any{
 				"identityId": "default",
@@ -327,7 +335,8 @@ func TestSet_Destroy_BeforeSendAt_CancelsAtomically(t *testing.T) {
 	}
 	subID := renderSubmissionID(envID)
 	destroyArgs, _ := json.Marshal(map[string]any{
-		"destroy": []string{string(subID)},
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"destroy":   []string{string(subID)},
 	})
 	resp, mErr := setHandler{h: h}.executeAs(p, destroyArgs)
 	if mErr != nil {
@@ -357,6 +366,7 @@ func TestSet_Destroy_AlreadyInflight_ReturnsNotDestroyedWithReason(t *testing.T)
 	h, st, p, _, mid, sub := newSetup(t)
 	ctx := context.Background()
 	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"k1": map[string]any{
 				"identityId": "default",
@@ -379,7 +389,8 @@ func TestSet_Destroy_AlreadyInflight_ReturnsNotDestroyedWithReason(t *testing.T)
 	}
 	subID := renderSubmissionID(envID)
 	destroyArgs, _ := json.Marshal(map[string]any{
-		"destroy": []string{string(subID)},
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"destroy":   []string{string(subID)},
 	})
 	resp, mErr := setHandler{h: h}.executeAs(p, destroyArgs)
 	if mErr != nil {
@@ -411,6 +422,7 @@ func TestEmailSubmission_Set_ForbiddenFrom(t *testing.T) {
 	h.identity = stubResolver{email: "eve@other.test"}
 
 	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"k1": map[string]any{
 				"identityId": "default",
@@ -437,6 +449,7 @@ func TestEmailSubmission_Set_AllowedFrom_CanonicalAddress(t *testing.T) {
 	h, _, p, _, mid, sub := newSetup(t)
 	// Default resolver returns alice@example.test which is p's canonical.
 	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
 			"k1": map[string]any{
 				"identityId": "default",
