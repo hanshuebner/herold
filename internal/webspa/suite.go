@@ -268,7 +268,7 @@ func buildCSP(publicHost string) string {
 		"default-src 'self'",
 		"script-src 'self'",
 		"style-src 'self' 'unsafe-inline'",
-		"img-src 'self' https:",
+		"img-src 'self' https: data: blob:",
 		connect,
 		"font-src 'self' data:",
 		"frame-ancestors 'none'",

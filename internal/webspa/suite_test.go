@@ -210,7 +210,7 @@ func TestSpa_CSP_Header_Set(t *testing.T) {
 				"default-src 'self'",
 				"script-src 'self'",
 				"style-src 'self' 'unsafe-inline'",
-				"img-src 'self' https:",
+				"img-src 'self' https: data: blob:",
 				"connect-src 'self' wss://mail.example.com",
 				"font-src 'self' data:",
 				"frame-ancestors 'none'",
