@@ -49,18 +49,22 @@ Herold runs a per-message LLM classification on each delivered Email. The result
 | ID | Requirement |
 |----|-------------|
 | REQ-CAT-30 | The settings panel exposes "Re-categorise inbox": triggers herold to re-run the classifier on the user's recent inbox (e.g. last 1000 messages). Slow operation; runs in background with a progress indicator in the chrome. |
-| REQ-CAT-31 | Re-categorisation is also triggered automatically when the user changes the category prompt or category set (REQ-CAT-40, REQ-CAT-41). |
+| REQ-CAT-31 | Re-categorisation is triggered automatically when the user changes the prompt (REQ-CAT-41). |
 
 ## User configuration
 
-The user can edit both the category set and the prompt that classifies into them.
+*(Revised 2026-04-28: the prompt is the only user-editable lever. The
+category set is no longer separately editable; it is derived
+server-side from the prompt as `derivedCategories` per
+`../server/requirements/06-filtering.md` REQ-FILT-217. REQ-CAT-40 is
+withdrawn; REQ-CAT-41 expanded; REQ-CAT-42 narrowed to the prompt.)*
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CAT-40 | The category set is editable in settings: rename, reorder, add, remove. The Primary category cannot be removed (it's the fallback); other defaults can. |
-| REQ-CAT-41 | The classifier prompt is editable in settings (advanced section). The default prompt approximates Gmail's behaviour. The suite provides the editor; herold validates and applies the prompt. |
-| REQ-CAT-42 | A reset-to-default control reverts the prompt and category set to the shipped defaults. |
-| REQ-CAT-43 | When the user saves prompt or category-set changes, herold runs the re-categorisation flow (REQ-CAT-30) automatically; the suite's UI shows the progress. |
+| REQ-CAT-40 | **Withdrawn.** The categoriser has no manually-editable category list. Categories are defined by the prompt and reported by the LLM in every classifier response (REQ-FILT-215); the suite renders the server-derived list (`derivedCategories`) read-only beneath the prompt editor for transparency. The user changes categories by changing the prompt. |
+| REQ-CAT-41 | The classifier prompt is the single user-editable categoriser lever. The settings panel exposes a multi-line text editor with the current prompt pre-filled. The default prompt enumerates the five Gmail-style categories and instructs the LLM to return JSON `{categories: [...], assigned: ...}` per REQ-FILT-215. The suite provides the editor; herold validates and applies. |
+| REQ-CAT-42 | A reset-to-default control reverts the prompt to the shipped default. |
+| REQ-CAT-43 | When the user saves prompt changes, herold runs the re-categorisation flow (REQ-CAT-30) automatically; the suite's UI shows the progress. The first successful classifier call after a prompt change refills `derivedCategories`; the suite's tab strip updates from that. |
 | REQ-CAT-44 | Per-message transparency (G14): the message-inspect view (linked from the conversation overflow menu) shows, for any categorised message, the assigned category, the model identifier, and the **user-visible prompt as it was applied to that message** — i.e. the editable prompt text from REQ-CAT-41 plus the per-message context fields (From/To/Subject/List-Id/excerpt) that herold used. Operator guardrails are excluded by REQ-FILT-67. The view reads from the per-message LLM-inspect endpoint defined in `../server/requirements/06-filtering.md` REQ-FILT-66 / REQ-FILT-216. |
 | REQ-CAT-45 | The settings panel that exposes the prompt editor (REQ-CAT-41) shows the user the current effective prompt (text the user has edited or default) AND a clear note: "this is the prompt used to categorise your mail. Your messages are sent to herold's configured classifier endpoint along with this prompt." Operator-side guardrails, if any, are not shown — the wording above is accurate without them. |
 
@@ -68,7 +72,7 @@ The user can edit both the category set and the prompt that classifies into them
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CAT-50 | The category set and the classifier prompt are stored server-side, per account. They sync across devices automatically (a fresh the suite tab reads them on bootstrap). |
+| REQ-CAT-50 | The classifier prompt and the server-derived `derivedCategories` are stored server-side, per account. The prompt is the only user-editable field; `derivedCategories` is read-only and refreshed by every successful classifier response. They sync across devices automatically (a fresh suite tab reads them on bootstrap). |
 | REQ-CAT-51 | The server contract for categorisation is `https://netzhansa.com/jmap/categorise` (proposed URN — see `../notes/server-contract.md`). It declares: per-account category set, per-account prompt, per-Email `$category-*` keyword application by the classifier on delivery, and the re-classification API. |
 
 ## Cross-references

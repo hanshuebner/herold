@@ -1,41 +1,22 @@
 package categorise
 
-import (
-	"fmt"
-	"strings"
+// DefaultPrompt is the default per-account categorisation system prompt
+// (REQ-FILT-211). The prompt is the single source of truth for the
+// category vocabulary; the LLM enumerates categories in every response
+// (REQ-FILT-215). This constant is exported so admin tooling and tests
+// can reset to default without re-deriving the canonical text.
+//
+// The store seeds this string when a principal first reads their
+// categorisation config.
+const DefaultPrompt = `You are an email-categorisation assistant. Classify the message into one of the following categories:
 
-	"github.com/hanshuebner/herold/internal/store"
-)
+- primary: Direct correspondence and important messages from people you know, plus anything that does not fit the categories below.
+- social: Notifications and messages from social networks, dating sites, and messaging apps.
+- promotions: Marketing emails, deals, offers, coupons, and newsletters from retailers or services.
+- updates: Automated notifications — receipts, statements, confirmations, package tracking, and account alerts.
+- forums: Mailing-list discussions, online community threads, and group digests.
 
-// DefaultPrompt is the seeded system prompt (REQ-FILT-211). The store
-// seeds this string when a principal first reads their categorisation
-// config; this constant is exported so admin tooling and tests can
-// reset to default without re-deriving the canonical text.
-const DefaultPrompt = `You are an email-categorisation assistant. Given an email envelope and a short body excerpt, choose exactly one category from the supplied list whose description best fits the message, or return "none" if no category is a clear match. Respond ONLY with a single JSON object of the form {"category":"<name>"} where <name> is one of the listed category names or the literal "none". Do not include any other text.`
-
-// DefaultCategorySet is the seeded per-account category set
-// (REQ-FILT-201/210). The order is preserved when surfaced to clients
-// (admin REST + suite) so a "reset to default" toggle stays stable.
-var DefaultCategorySet = []store.CategoryDef{
-	{Name: "primary", Description: "Personal correspondence and important messages from people you know."},
-	{Name: "social", Description: "Messages from social networks and dating sites."},
-	{Name: "promotions", Description: "Marketing emails, offers, deals, newsletters."},
-	{Name: "updates", Description: "Receipts, confirmations, statements, account notices."},
-	{Name: "forums", Description: "Mailing-list digests, online community discussions."},
-}
-
-// renderSystemPrompt joins the configured prompt with a serialised
-// description of the category set. The shape mirrors what the LLM
-// needs to follow the instruction: prompt body first, then a bullet
-// list of "<name>: <description>" lines, one per category.
-func renderSystemPrompt(basePrompt string, set []store.CategoryDef) string {
-	var b strings.Builder
-	b.Grow(len(basePrompt) + 64*len(set))
-	b.WriteString(strings.TrimRight(basePrompt, " \n\t"))
-	b.WriteString("\n\nAvailable categories:\n")
-	for _, c := range set {
-		fmt.Fprintf(&b, "- %s: %s\n", c.Name, c.Description)
-	}
-	b.WriteString("- none: no listed category fits the message.\n")
-	return b.String()
-}
+Respond ONLY with a JSON object of the shape {"categories":["primary","social","promotions","updates","forums"],"assigned":"<name>"} where:
+- "categories" lists every category defined above (always all five, in the order listed).
+- "assigned" is the single category name that best fits this message, or null if no category fits.
+Do not include any other text.`

@@ -136,16 +136,22 @@ Used by the suite's category tabs (`docs/design/web/requirements/05-categorisati
 
 ### Configuration
 
-- **REQ-FILT-210** Per-account category set: list of category names + per-category descriptions (used in the prompt). Default set as in REQ-FILT-201 with descriptions matching Gmail's behaviour. Mutable via admin REST + (eventually) the suite's settings panel.
-- **REQ-FILT-211** Per-account classifier prompt: free text. Default prompt approximates Gmail's. Mutable.
-- **REQ-FILT-212** A "reset to default" control on both the category set and the prompt.
+*(Revised 2026-04-28: the prompt is the single source of truth. The
+manually-editable category list is gone; categories are derived from
+the LLM's response. Old REQ-FILT-210/212 references to a separate
+category-set editor are obsolete.)*
+
+- **REQ-FILT-210** **Removed.** The per-account category set is no longer separately configured. The prompt (REQ-FILT-211) defines the categories; the LLM enumerates them in every response (REQ-FILT-215); the server persists the latest enumeration as `derivedCategories` (REQ-FILT-217). There is no manually-editable category list.
+- **REQ-FILT-211** Per-account classifier prompt: free text. This is the single source of truth for categorisation. The default prompt enumerates Gmail-style categories (Primary, Social, Promotions, Updates, Forums) and instructs the LLM to return JSON of the shape REQ-FILT-215 specifies. Mutable.
+- **REQ-FILT-212** A "reset to default" control reverts the prompt only.
 
 ### Classifier endpoint
 
 - **REQ-FILT-213** Categorisation calls the same kind of OpenAI-compatible HTTP endpoint as the spam classifier (REQ-FILT-15..23) but is its own per-account configuration. Operators can point them at the same endpoint or different ones; the spam classifier may run on a tighter, faster model than categorisation.
 - **REQ-FILT-214** The categorisation call carries: the prompt, the message envelope summary (From, To, Subject), the first ~2 KB of the plain-text body. Same privacy posture as the spam classifier (REQ-FILT-30..33). Headers like `List-ID`, `Authentication-Results`, and `List-Unsubscribe` are included as features.
-- **REQ-FILT-215** The classifier returns one of the configured category names or a sentinel `none`. Unknown names → log a warning, treat as `none`. Failures (timeout, 5xx) → no category applied, log a warning, mail is delivered uncategorised.
-- **REQ-FILT-216** Transparency (G14): the categoriser honours the same contract as REQ-FILT-65..67. Per-account read returns the user-visible prompt (the editable text from REQ-FILT-211) plus the category set with descriptions. Per-message read returns the assigned category and the user-visible prompt as applied to that message; operator guardrails are excluded.
+- **REQ-FILT-215** The classifier returns JSON of the shape `{ "categories": [<name>, ...], "assigned": <name> | null }`. `categories` enumerates every category the prompt defines (the LLM's interpretation of the prompt); `assigned` is the chosen category for this message, or `null` if no category fits. The server applies `$category-<assigned>` as a keyword (REQ-FILT-201) when `assigned` is non-null; `null` falls through with no keyword (REQ-FILT-202). Names in either field are lowercase ASCII, dash-separated; the server lowercases and slug-normalises any name the LLM returns. Unparseable JSON or a missing `assigned` field after one retry → no keyword applied, log a warning. Failures (timeout, 5xx) → no keyword applied, log a warning, mail is delivered uncategorised.
+- **REQ-FILT-216** Transparency (G14): the categoriser honours the same contract as REQ-FILT-65..67. Per-account read returns the user-visible prompt (the editable text from REQ-FILT-211) plus the latest `derivedCategories` (REQ-FILT-217). Per-message read returns the assigned category and the user-visible prompt as applied to that message; operator guardrails are excluded.
+- **REQ-FILT-217** **Derived category set.** The server persists a per-account `derivedCategories` list, sourced from the most recent successful classifier response's `categories` field. On prompt change (REQ-FILT-211 mutation), `derivedCategories` is invalidated and refilled from the next successful classifier call. The list is exposed via JMAP `CategorySettings/get` and is **read-only** to the user (the prompt is the lever; the list is a consequence of it). The suite's inbox tab strip reads `derivedCategories` to know what tabs to render. If the list is empty (no classifier call has succeeded since the most recent prompt change), the suite shows no category tabs and treats every message as Primary.
 
 ### Re-classification
 
