@@ -17,6 +17,7 @@
    */
   import { auth } from '../../lib/auth/auth.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
+  import { confirm } from '../../lib/dialog/confirm.svelte';
   import { get, post, del, ApiError } from '../../lib/api/client';
 
   // End-user scopes available for key creation. Sorted to match AllEndUserScopes
@@ -84,9 +85,14 @@
   });
 
   async function revokeKey(id: number): Promise<void> {
-    if (!window.confirm('Revoke this API key? Any applications using it will stop working immediately.')) {
-      return;
-    }
+    const ok = await confirm.ask({
+      title: 'Revoke this API key?',
+      message: 'Any applications using it will stop working immediately.',
+      confirmLabel: 'Revoke',
+      cancelLabel: 'Cancel',
+      kind: 'danger',
+    });
+    if (!ok) return;
     try {
       await del<void>(`/api/v1/api-keys/${String(id)}`);
       keys = keys.filter((k) => k.id !== id);

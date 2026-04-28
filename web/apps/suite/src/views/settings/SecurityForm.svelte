@@ -14,6 +14,7 @@
   import QRCode from 'qrcode-svg';
   import { auth } from '../../lib/auth/auth.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
+  import { confirm } from '../../lib/dialog/confirm.svelte';
   import { get, put, post, del, ApiError, UnauthenticatedError } from '../../lib/api/client';
 
   // --- Principal fetch ---
@@ -168,9 +169,14 @@
 
   async function disableTOTP(): Promise<void> {
     if (!totpDisablePassword) return;
-    if (!window.confirm('Disable two-factor authentication? This reduces your account security.')) {
-      return;
-    }
+    const ok = await confirm.ask({
+      title: 'Disable two-factor authentication?',
+      message: 'This reduces your account security.',
+      confirmLabel: 'Disable',
+      cancelLabel: 'Cancel',
+      kind: 'danger',
+    });
+    if (!ok) return;
     const pid = auth.principalId;
     if (!pid) return;
     totpLoading = true;

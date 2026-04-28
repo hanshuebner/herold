@@ -4,6 +4,7 @@
   import { mail, type FolderID } from '../lib/mail/store.svelte';
   import { keyboard } from '../lib/keyboard/engine.svelte';
   import { compose } from '../lib/compose/compose.svelte';
+  import { confirm } from '../lib/dialog/confirm.svelte';
   import { movePicker } from '../lib/mail/move-picker.svelte';
   import { snoozePicker } from '../lib/mail/snooze-picker.svelte';
   import { categoryPicker } from '../lib/mail/category-picker.svelte';
@@ -456,11 +457,15 @@
     return f === 'inbox' ? '/mail' : `/mail/folder/${f}`;
   }
 
-  function confirmEmptyTrash(): void {
+  async function confirmEmptyTrash(): Promise<void> {
     const n = mail.listEmails.length;
-    const ok = confirm(
-      `Permanently delete ${n} message${n === 1 ? '' : 's'} from Trash? This cannot be undone.`,
-    );
+    const ok = await confirm.ask({
+      title: 'Empty Trash?',
+      message: `Permanently delete ${n} message${n === 1 ? '' : 's'} from Trash. This cannot be undone.`,
+      confirmLabel: 'Empty Trash',
+      cancelLabel: 'Cancel',
+      kind: 'danger',
+    });
     if (ok) void mail.emptyTrash();
   }
 
@@ -470,10 +475,16 @@
   function bulkArchive(): void {
     void mail.bulkArchive(selectedIds());
   }
-  function bulkDelete(): void {
+  async function bulkDelete(): Promise<void> {
     const ids = selectedIds();
     if (ids.length === 0) return;
-    const ok = confirm(`Move ${ids.length} message${ids.length === 1 ? '' : 's'} to Trash?`);
+    const ok = await confirm.ask({
+      title: `Move ${ids.length} message${ids.length === 1 ? '' : 's'} to Trash?`,
+      message: 'You can restore from Trash before it is emptied.',
+      confirmLabel: 'Move to Trash',
+      cancelLabel: 'Cancel',
+      kind: 'danger',
+    });
     if (ok) void mail.bulkDelete(ids);
   }
   function bulkMarkRead(): void {

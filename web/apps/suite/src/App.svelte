@@ -10,6 +10,7 @@
   import { composeStack } from './lib/compose/compose-stack.svelte';
   import { help } from './lib/help/help.svelte';
   import { settings, applyTheme } from './lib/settings/settings.svelte';
+  import { confirm } from './lib/dialog/confirm.svelte';
   import { mail } from './lib/mail/store.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
@@ -88,9 +89,14 @@
     await mail.renameMailbox(id, next);
   }
   async function confirmDestroyMailbox(id: string, name: string): Promise<void> {
-    const ok = confirm(
-      `Delete mailbox "${name}"? Messages it contains will remain in any other mailboxes they're in (otherwise they go to Trash on the server).`,
-    );
+    const ok = await confirm.ask({
+      title: `Delete mailbox "${name}"?`,
+      message:
+        "Messages it contains will remain in any other mailboxes they're in (otherwise they go to Trash on the server).",
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      kind: 'danger',
+    });
     if (!ok) return;
     await mail.destroyMailbox(id);
   }

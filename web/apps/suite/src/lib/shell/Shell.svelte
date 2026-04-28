@@ -9,6 +9,7 @@
   import MoveTargetPicker from '../mail/MoveTargetPicker.svelte';
   import SnoozePicker from '../mail/SnoozePicker.svelte';
   import ReactionConfirmModal from '../mail/ReactionConfirmModal.svelte';
+  import ConfirmDialog from '../dialog/ConfirmDialog.svelte';
 
   interface Props {
     activeApp?: 'mail' | 'chat';
@@ -53,6 +54,7 @@
   <MoveTargetPicker />
   <SnoozePicker />
   <ReactionConfirmModal />
+  <ConfirmDialog />
 </div>
 
 <style>

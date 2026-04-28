@@ -7,6 +7,7 @@
   import RichEditor from './RichEditor.svelte';
   import ComposeToolbar from './ComposeToolbar.svelte';
   import AddressAutocomplete from './AddressAutocomplete.svelte';
+  import { confirm } from '../dialog/confirm.svelte';
   import { EMPTY_ACTIVE, type ActiveState } from './editor';
   import type { EditorView } from 'prosemirror-view';
 
@@ -43,10 +44,16 @@
   // close through the same prompt for consistency. When the auto-save
   // path has already created a server draft, route through compose.discard
   // so the row is removed instead of stranded.
-  function closeWithConfirm(): void {
+  async function closeWithConfirm(): Promise<void> {
     const dirty = compose.hasContent || compose.editingDraftId !== null;
     if (dirty && compose.status !== 'sending') {
-      const ok = window.confirm('Discard this message?');
+      const ok = await confirm.ask({
+        title: 'Discard this message?',
+        message: 'Your draft will be lost.',
+        confirmLabel: 'Discard',
+        cancelLabel: 'Keep editing',
+        kind: 'danger',
+      });
       if (!ok) return;
     }
     void compose.discard();
@@ -165,7 +172,7 @@
   // Empty body is detected by stripping HTML tags and checking for
   // visible characters; the editor renders one or more empty <p> tags
   // even when nothing has been typed.
-  function sendWithWarn(): void {
+  async function sendWithWarn(): Promise<void> {
     const subjectEmpty = compose.subject.trim().length === 0;
     const bodyText = compose.body.replace(/<[^>]+>/g, '').trim();
     const bodyEmpty = bodyText.length === 0;
@@ -175,7 +182,12 @@
         : subjectEmpty
           ? 'subject'
           : 'body';
-      const ok = window.confirm(`Send this message without a ${missing}?`);
+      const ok = await confirm.ask({
+        title: `Send without a ${missing}?`,
+        message: 'You can keep editing instead.',
+        confirmLabel: 'Send anyway',
+        cancelLabel: 'Keep editing',
+      });
       if (!ok) return;
     }
     void compose.send();
