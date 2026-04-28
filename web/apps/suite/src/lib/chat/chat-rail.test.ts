@@ -68,6 +68,8 @@ import { chatOverlay } from './overlay-store.svelte';
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(chatOverlay.isOpen).mockReturnValue(false);
+  // Reset any CSS var the rail may have written.
+  document.documentElement.style.removeProperty('--chat-rail-width');
 });
 
 describe('ChatRail', () => {
@@ -124,5 +126,34 @@ describe('ChatRail', () => {
     expect(items[0]).toHaveClass('active');
     // Second item is General (c2) — should not.
     expect(items[1]).not.toHaveClass('active');
+  });
+
+  it('sets --chat-rail-width to 64px on :root when collapsed', () => {
+    render(ChatRail);
+    expect(
+      document.documentElement.style.getPropertyValue('--chat-rail-width'),
+    ).toBe('64px');
+  });
+
+  it('sets --chat-rail-width to 280px on :root when expanded', async () => {
+    render(ChatRail);
+    const toggle = screen.getByRole('button', { name: /Expand chat rail/i });
+    await fireEvent.click(toggle);
+    expect(
+      document.documentElement.style.getPropertyValue('--chat-rail-width'),
+    ).toBe('280px');
+  });
+
+  it('resets --chat-rail-width to 64px on :root when collapsed again', async () => {
+    render(ChatRail);
+    const toggle = screen.getByRole('button', { name: /Expand chat rail/i });
+    await fireEvent.click(toggle);
+    expect(
+      document.documentElement.style.getPropertyValue('--chat-rail-width'),
+    ).toBe('280px');
+    await fireEvent.click(toggle);
+    expect(
+      document.documentElement.style.getPropertyValue('--chat-rail-width'),
+    ).toBe('64px');
   });
 });

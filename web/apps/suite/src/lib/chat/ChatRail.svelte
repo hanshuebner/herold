@@ -33,6 +33,18 @@
 
   let expanded = $state(false);
 
+  // Publish the current rail width as a CSS custom property on :root so
+  // ChatOverlayHost (position:fixed) can read it without sharing a DOM
+  // subtree.  The property transitions in sync with the rail's own width
+  // transition; ChatOverlayHost reads it via calc(var(--chat-rail-width,64px)+16px).
+  $effect(() => {
+    const width = expanded ? '280px' : '64px';
+    document.documentElement.style.setProperty('--chat-rail-width', width);
+    return () => {
+      document.documentElement.style.removeProperty('--chat-rail-width');
+    };
+  });
+
   // All conversations sorted by the store's established ordering.
   let conversations = $derived(
     chat.conversationIds

@@ -32,13 +32,25 @@
   .overlay-host {
     position: fixed;
     bottom: 0;
-    right: 80px; /* clear the chat rail when collapsed (64px + 16px) */
+    /* right tracks the chat rail width so overlays slide left when the rail
+       expands.  --chat-rail-width is set on :root by ChatRail.svelte's $effect;
+       the 16px gap matches the collapsed baseline (64px + 16px = 80px). */
+    right: calc(var(--chat-rail-width, 64px) + 16px);
     display: flex;
     align-items: flex-end;
     gap: var(--spacing-03);
     z-index: 400;
     /* Pointer events only on the windows themselves; the gap is transparent. */
     pointer-events: none;
+    /* Animate the right offset in sync with the rail's width transition.
+       Uses the same duration/easing token as the rail itself. */
+    transition: right var(--duration-moderate-01) var(--easing-productive-enter);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .overlay-host {
+      transition: none;
+    }
   }
 
   .overlay-host > :global(*) {
