@@ -52,12 +52,14 @@ type mailboxCreateInput struct {
 	Color *string `json:"color,omitempty"`
 }
 
-// mailboxUpdateInput uses json.RawMessage for "color" so the patch
-// distinguishes "absent" (no change) from explicit null (clear) per
+// mailboxUpdateInput uses json.RawMessage for fields where we must
+// distinguish "absent" (no change) from explicit null (clear) per
 // JMAP /set update semantics.
+// - Color: null clears the colour; absent means no change.
+// - ParentID: null moves to top-level; absent means no change.
 type mailboxUpdateInput struct {
 	Name         *string         `json:"name"`
-	ParentID     *jmapID         `json:"parentId"`
+	ParentID     json.RawMessage `json:"parentId"`
 	Role         *string         `json:"role"`
 	IsSubscribed *bool           `json:"isSubscribed"`
 	SortOrder    *int            `json:"sortOrder"`
@@ -268,18 +270,25 @@ func (h *handlerSet) createMailbox(
 		color = &v
 	}
 
+	sortOrder := uint32(0)
+	if in.SortOrder != nil {
+		sortOrder = uint32(*in.SortOrder)
+	}
+
 	mb, err := h.store.Meta().InsertMailbox(ctx, store.Mailbox{
 		PrincipalID: pid,
 		ParentID:    parentID,
 		Name:        in.Name,
 		Attributes:  attrs,
 		Color:       color,
+		SortOrder:   sortOrder,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
+			// RFC 8621 §2.5: duplicate name under same parent is alreadyExists.
 			return store.Mailbox{}, &setError{
-				Type: "invalidProperties", Properties: []string{"name"},
-				Description: "another mailbox with this name already exists",
+				Type:        "alreadyExists",
+				Description: "a mailbox with this name already exists under the same parent",
 			}, nil
 		}
 		return store.Mailbox{}, nil, fmt.Errorf("mailbox: insert: %w", err)
@@ -353,11 +362,56 @@ func (h *handlerSet) updateMailbox(
 		}
 	}
 
-	if in.ParentID != nil {
-		return &setError{
-			Type: "invalidProperties", Properties: []string{"parentId"},
-			Description: "reparenting is not supported in v1",
-		}, nil
+	// ParentID is json.RawMessage so we can distinguish three cases:
+	//   absent (nil/empty): no change to parent
+	//   JSON null: move to top-level (parentId == 0)
+	//   JSON string: move under the named parent
+	if len(in.ParentID) > 0 {
+		rawParent := strings.TrimSpace(string(in.ParentID))
+		newParentID := store.MailboxID(0)
+		if rawParent != "null" {
+			var idStr string
+			if err := json.Unmarshal(in.ParentID, &idStr); err != nil {
+				return &setError{
+					Type: "invalidProperties", Properties: []string{"parentId"},
+					Description: "parentId must be a string or null",
+				}, nil
+			}
+			targetID, ok := mailboxIDFromJMAP(idStr)
+			if !ok {
+				return &setError{
+					Type: "invalidProperties", Properties: []string{"parentId"},
+					Description: "parentId references an unknown mailbox",
+				}, nil
+			}
+			parent, err := loadMailboxForPrincipal(ctx, h.store.Meta(), pid, targetID)
+			if err != nil {
+				if errors.Is(err, errMailboxMissing) {
+					return &setError{
+						Type: "invalidProperties", Properties: []string{"parentId"},
+						Description: "parent mailbox does not exist",
+					}, nil
+				}
+				return nil, fmt.Errorf("mailbox: load parent: %w", err)
+			}
+			parentRights, err := rightsForPrincipal(ctx, h.store.Meta(), pid, parent)
+			if err != nil {
+				return nil, err
+			}
+			if !parentRights.MayCreateChild {
+				return &setError{
+					Type:        "forbidden",
+					Description: "principal lacks mayCreateChild on the target parent",
+				}, nil
+			}
+			newParentID = targetID
+		}
+		if err := h.store.Meta().MoveMailbox(ctx, mb.ID, newParentID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return &setError{Type: "notFound"}, nil
+			}
+			return nil, fmt.Errorf("mailbox: move: %w", err)
+		}
 	}
 
 	if in.Role != nil {
@@ -377,6 +431,16 @@ func (h *handlerSet) updateMailbox(
 					Description: "changing role is not supported in v1",
 				}, nil
 			}
+		}
+	}
+
+	if in.SortOrder != nil {
+		so := uint32(*in.SortOrder)
+		if err := h.store.Meta().SetMailboxSortOrder(ctx, mb.ID, so); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return &setError{Type: "notFound"}, nil
+			}
+			return nil, fmt.Errorf("mailbox: sort order: %w", err)
 		}
 	}
 
@@ -466,8 +530,26 @@ func (h *handlerSet) destroyMailbox(
 		return &setError{Type: "forbidden", Description: "principal lacks mayDelete"}, nil
 	}
 
-	allowEmptyOnly := onDestroyRem == nil || !*onDestroyRem
-	if allowEmptyOnly {
+	// RFC 8621 §2.5: a mailbox with children MUST be refused unless the
+	// client also destroys all children in the same /set call. We always
+	// refuse here — the caller is responsible for ordering destroys so
+	// that children are destroyed before parents. The error type is
+	// "mailboxHasChild" per the RFC.
+	allMailboxes, err := h.store.Meta().ListMailboxes(ctx, pid)
+	if err != nil {
+		return nil, fmt.Errorf("mailbox: list for children check: %w", err)
+	}
+	for _, candidate := range allMailboxes {
+		if candidate.ParentID == mb.ID {
+			return &setError{
+				Type:        "mailboxHasChild",
+				Description: "mailbox has child mailboxes; destroy children first",
+			}, nil
+		}
+	}
+
+	removeEmails := onDestroyRem != nil && *onDestroyRem
+	if !removeEmails {
 		total, _, cerr := countMessages(ctx, h.store.Meta(), mb.ID)
 		if cerr != nil {
 			return nil, cerr

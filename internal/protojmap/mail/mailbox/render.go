@@ -48,7 +48,7 @@ func renderMailbox(
 		Name:          mb.Name,
 		ParentID:      parent,
 		Role:          roleFromAttributes(mb.Attributes),
-		SortOrder:     0,
+		SortOrder:     mb.SortOrder,
 		TotalEmails:   totalEmails,
 		UnreadEmails:  unreadEmails,
 		TotalThreads:  totalEmails,
