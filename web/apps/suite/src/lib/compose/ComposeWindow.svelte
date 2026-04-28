@@ -24,11 +24,23 @@
       {
         key: 'Escape',
         description: 'Close compose',
-        action: () => compose.close(),
+        action: () => closeWithConfirm(),
       },
     ]);
     return pop;
   });
+
+  // Confirm before throwing away in-progress content. The "sending" state
+  // is the user's commit point — discarding while sending means cancelling
+  // the request, which the close path doesn't currently do; we just route
+  // close through the same prompt for consistency.
+  function closeWithConfirm(): void {
+    if (compose.hasContent && compose.status !== 'sending') {
+      const ok = window.confirm('Discard this message?');
+      if (!ok) return;
+    }
+    compose.close();
+  }
 
   // Focus the right field when compose opens — for reply / forward, the
   // ProseMirror editor; otherwise the To field. (The editor's own
@@ -83,7 +95,7 @@
 </script>
 
 {#if compose.isOpen}
-  <div class="backdrop" onclick={() => compose.close()} aria-hidden="true"></div>
+  <div class="backdrop" onclick={closeWithConfirm} aria-hidden="true"></div>
   <div
     class="modal"
     role="dialog"
@@ -104,7 +116,7 @@
       <button
         type="button"
         class="close"
-        onclick={() => compose.close()}
+        onclick={closeWithConfirm}
         aria-label="Close compose"
       >
         ×
@@ -134,7 +146,39 @@
           placeholder="recipient@example.com"
           disabled={compose.status === 'sending'}
         />
+        {#if !compose.ccBccVisible}
+          <button
+            type="button"
+            class="cc-bcc-toggle"
+            onclick={() => (compose.ccBccVisible = true)}
+          >
+            Cc / Bcc
+          </button>
+        {/if}
       </label>
+
+      {#if compose.ccBccVisible}
+        <label class="row">
+          <span class="label">Cc</span>
+          <input
+            bind:value={compose.cc}
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            disabled={compose.status === 'sending'}
+          />
+        </label>
+        <label class="row">
+          <span class="label">Bcc</span>
+          <input
+            bind:value={compose.bcc}
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            disabled={compose.status === 'sending'}
+          />
+        </label>
+      {/if}
 
       <label class="row">
         <span class="label">Subject</span>
@@ -171,7 +215,7 @@
       <button
         type="button"
         class="discard"
-        onclick={() => compose.close()}
+        onclick={closeWithConfirm}
         disabled={compose.status === 'sending'}
       >
         Discard
@@ -297,6 +341,20 @@
   input[type='text']:focus {
     box-shadow: 0 0 0 2px var(--focus);
     border-radius: var(--radius-sm);
+  }
+
+  .cc-bcc-toggle {
+    flex: 0 0 auto;
+    margin-left: var(--spacing-03);
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    background: none;
+    padding: var(--spacing-01) var(--spacing-02);
+    border-radius: var(--radius-sm);
+  }
+  .cc-bcc-toggle:hover {
+    color: var(--text-primary);
+    background: var(--layer-03);
   }
 
   .error {

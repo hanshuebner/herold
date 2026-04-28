@@ -83,7 +83,7 @@
   {#snippet sidebar()}
     {#if activeApp === 'mail'}
       <div class="sidebar-inner">
-        <button type="button" class="compose">
+        <button type="button" class="compose" onclick={() => compose.openBlank()}>
           <span aria-hidden="true">✎</span> Compose
         </button>
 

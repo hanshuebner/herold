@@ -56,9 +56,19 @@ const EMPTY_REPLY: ReplyContext = {
 class ComposeStore {
   status = $state<ComposeStatus>('idle');
   to = $state('');
+  cc = $state('');
+  bcc = $state('');
   subject = $state('');
   body = $state('');
   errorMessage = $state<string | null>(null);
+
+  /**
+   * True when the user has opened the Cc/Bcc fields, or when those fields
+   * are non-empty (e.g. opened via Undo with prior cc/bcc state). The
+   * UI keeps them collapsed by default so the common single-recipient
+   * compose stays uncluttered.
+   */
+  ccBccVisible = $state(false);
 
   /** Reply / forward context — null fields mean "this is a fresh compose". */
   replyContext = $state<ReplyContext>({ ...EMPTY_REPLY });
@@ -66,9 +76,12 @@ class ComposeStore {
   /** Open a fresh compose. */
   openBlank(): void {
     this.to = '';
+    this.cc = '';
+    this.bcc = '';
     this.subject = '';
     this.body = '';
     this.errorMessage = null;
+    this.ccBccVisible = false;
     this.replyContext = { ...EMPTY_REPLY };
     this.status = 'editing';
     this.#ensureAccountReady();
@@ -80,15 +93,20 @@ class ComposeStore {
    */
   openWith(args: {
     to: string;
+    cc?: string;
+    bcc?: string;
     subject: string;
     body: string;
     replyContext?: ReplyContext;
   }): void {
     this.to = args.to;
+    this.cc = args.cc ?? '';
+    this.bcc = args.bcc ?? '';
     this.subject = args.subject;
     this.body = args.body;
     this.replyContext = args.replyContext ?? { ...EMPTY_REPLY };
     this.errorMessage = null;
+    this.ccBccVisible = Boolean(this.cc || this.bcc);
     this.status = 'editing';
     this.#ensureAccountReady();
   }
@@ -123,13 +141,26 @@ class ComposeStore {
     });
   }
 
+  /** True when the form holds anything the user might want to keep. */
+  get hasContent(): boolean {
+    if (this.to.trim() || this.cc.trim() || this.bcc.trim()) return true;
+    if (this.subject.trim()) return true;
+    // Body is HTML; an empty editor renders one or more empty <p> tags.
+    // Strip tags and whitespace before deciding it's "empty".
+    const textOnly = this.body.replace(/<[^>]+>/g, '').trim();
+    return textOnly.length > 0;
+  }
+
   /** Close and clear. */
   close(): void {
     this.status = 'idle';
     this.to = '';
+    this.cc = '';
+    this.bcc = '';
     this.subject = '';
     this.body = '';
     this.errorMessage = null;
+    this.ccBccVisible = false;
     this.replyContext = { ...EMPTY_REPLY };
   }
 
@@ -159,8 +190,11 @@ class ComposeStore {
       return;
     }
 
-    const recipients = parseAddressList(this.to);
-    if (recipients.length === 0) {
+    const toRecipients = parseAddressList(this.to);
+    const ccRecipients = parseAddressList(this.cc);
+    const bccRecipients = parseAddressList(this.bcc);
+    const allRecipients = [...toRecipients, ...ccRecipients, ...bccRecipients];
+    if (allRecipients.length === 0) {
       this.errorMessage = 'At least one recipient is required';
       return;
     }
@@ -171,6 +205,8 @@ class ComposeStore {
 
     // Snapshot for Undo (full state, including reply context).
     const savedTo = this.to;
+    const savedCc = this.cc;
+    const savedBcc = this.bcc;
     const savedSubject = subject;
     const savedBody = bodyHtml;
     const savedReplyContext: ReplyContext = { ...replyContext };
@@ -200,7 +236,7 @@ class ComposeStore {
       mailboxIds: { [drafts.id]: true },
       keywords: { $draft: true, $seen: true },
       from: [{ name: identity.name, email: identity.email }],
-      to: recipients.map((email) => ({ email, name: null })),
+      to: toRecipients.map((email) => ({ email, name: null })),
       subject,
       bodyValues: {
         '1': { value: bodyText, isTruncated: false, isEncodingProblem: false },
@@ -216,6 +252,16 @@ class ComposeStore {
         ],
       },
     };
+    if (ccRecipients.length > 0) {
+      draftEmail.cc = ccRecipients.map((email) => ({ email, name: null }));
+    }
+    // Bcc: per RFC 8621 §4.1.2 the Bcc header is set on the draft so the
+    // sender's Sent-folder copy retains the blind list, but the envelope
+    // recipients (below) are what actually drive delivery — the server
+    // strips Bcc from the wire-bound message.
+    if (bccRecipients.length > 0) {
+      draftEmail.bcc = bccRecipients.map((email) => ({ email, name: null }));
+    }
     if (replyContext.inReplyTo && replyContext.inReplyTo.length > 0) {
       draftEmail.inReplyTo = replyContext.inReplyTo;
     }
@@ -252,7 +298,7 @@ class ComposeStore {
                 identityId: identity.id,
                 envelope: {
                   mailFrom: { email: identity.email },
-                  rcptTo: recipients.map((email) => ({ email })),
+                  rcptTo: allRecipients.map((email) => ({ email })),
                 },
                 sendAt,
               },
@@ -307,6 +353,8 @@ class ComposeStore {
               // Re-open compose with the full saved state (including reply context).
               this.openWith({
                 to: savedTo,
+                cc: savedCc,
+                bcc: savedBcc,
                 subject: savedSubject,
                 body: savedBody,
                 replyContext: savedReplyContext,
