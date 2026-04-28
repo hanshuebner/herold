@@ -102,7 +102,7 @@ type handlerSet struct {
 func stateString(seq int64) string { return strconv.FormatInt(seq, 10) }
 
 func accountIDForPrincipal(p store.Principal) string {
-	return strconv.FormatUint(uint64(p.ID), 10)
+	return protojmap.AccountIDForPrincipal(p.ID)
 }
 
 func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodError {

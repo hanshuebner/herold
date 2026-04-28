@@ -46,6 +46,10 @@ import (
 	jmapcoach "github.com/hanshuebner/herold/internal/protojmap/coach"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/emailsubmission"
 	jmapidentity "github.com/hanshuebner/herold/internal/protojmap/mail/identity"
+	jmapmail "github.com/hanshuebner/herold/internal/protojmap/mail"
+	jmapsearchsnippet "github.com/hanshuebner/herold/internal/protojmap/mail/searchsnippet"
+	jmapthread "github.com/hanshuebner/herold/internal/protojmap/mail/thread"
+	jmapvacation "github.com/hanshuebner/herold/internal/protojmap/mail/vacation"
 	jmappush "github.com/hanshuebner/herold/internal/protojmap/push"
 	"github.com/hanshuebner/herold/internal/protologin"
 	"github.com/hanshuebner/herold/internal/protosend"
@@ -499,7 +503,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// constructor. The two handlers are otherwise independent --
 	// session cookies (SPA) and Bearer keys (REST) live in disjoint
 	// header/cookie namespaces, and the URL prefixes do not overlap.
-	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey, health)
+	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey, health, sieveInterp)
 	if err != nil {
 		return err
 	}
@@ -1503,6 +1507,7 @@ func composeAdminAndUI(
 	smtpSrv *protosmtp.Server,
 	webhookSigningKey []byte,
 	health *observe.Health,
+	sieveInterp *sieve.Interpreter,
 ) (composedHandlers, error) {
 	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
 	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
@@ -1758,6 +1763,25 @@ func composeAdminAndUI(
 	jmapSrv := protojmap.NewServer(st, dir, tlsStore, logger.With("subsystem", "jmap"), clk, protojmap.Options{
 		SessionResolver: publicSessionWithScopeResolver,
 	})
+	// JMAP Mail core handlers: Mailbox/* + Email/* + Sieve/* +
+	// per-account capability provider (REQ-PROTO-41, REQ-PROTO-53,
+	// REQ-PROTO-56). The top-level jmapmail.Register bundles all three;
+	// Thread, SearchSnippet, and VacationResponse have separate entry
+	// points because jmapmail.Register does not include them.
+	jmapmail.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-mail"), clk)
+	// Thread/get + Thread/changes (REQ-PROTO-41).
+	jmapthread.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-thread"), clk)
+	// SearchSnippet/get (REQ-PROTO-41 / REQ-PROTO-47).
+	jmapsearchsnippet.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-searchsnippet"), clk)
+	// VacationResponse/get + VacationResponse/set (REQ-PROTO-41,
+	// REQ-PROTO-46). The sieve interpreter is the same instance used
+	// by the inbound delivery pipeline; vacation rules are compiled by
+	// the sieve package at delivery time, not at JMAP read time.
+	jmapvacation.Register(jmapSrv.Registry(), st, sieveInterp, logger.With("subsystem", "jmap-vacation"), clk)
+	// Identity + EmailSubmission (REQ-PROTO-41, REQ-PROTO-42,
+	// REQ-PROTO-57, REQ-PROTO-58). Identity Register returns the
+	// provider that EmailSubmission's Register needs to resolve
+	// per-identity send-from addresses.
 	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk),
 		logger.With("subsystem", "jmap-emailsubmission"), clk)
 	// JMAP PushSubscription (REQ-PROTO-120..122). The VAPID key
@@ -1905,6 +1929,16 @@ func composeAdminAndUI(
 			slog.Int("buckets", len(sesCfg.S3BucketAllowlist)))
 	}
 
+	// Block /admin/ on the public listener. The admin SPA lives on the
+	// admin listener (kind = "admin") only; without these explicit
+	// handlers Go's stdlib mux falls through to the Suite SPA catch-all
+	// below, which serves index.html and confuses the operator (the
+	// Suite hash router then snaps to its default /#/mail route).
+	// Return 404 with a hint so a misdirected operator can correct
+	// course rather than getting a silent miss.
+	publicMux.HandleFunc("/admin/", adminListenerHint)
+	publicMux.HandleFunc("/admin", adminListenerHint)
+
 	// Suite SPA mount (REQ-DEPLOY-COLOC-01..05). When the operator
 	// has not opted out (Suite.Enabled defaults true), the SPA
 	// handler registers as the catch-all `/` on the public mux.
@@ -1933,6 +1967,23 @@ func composeAdminAndUI(
 	bundle.public = withPanicRecover(logger.With("subsystem", "public-mux"),
 		"public.mux", publicMux)
 	return bundle, nil
+}
+
+// adminListenerHint serves /admin and /admin/ on the public listener with
+// a 404 plus a short text body redirecting the operator to the admin
+// listener (kind = "admin") where the admin SPA actually lives. Without
+// this, the Suite SPA catch-all would intercept the request, serve
+// index.html, and the Suite's hash router would snap to its default
+// /#/mail route -- confusing operators who typed /admin/ on the public
+// host by mistake.
+func adminListenerHint(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(
+		"The herold admin SPA is served by the admin listener (kind = \"admin\")," +
+			" not the public listener. Connect to the admin listener's host:port" +
+			" instead -- typically 127.0.0.1:9443 reachable via 'ssh -L 9443:127.0.0.1:9443'.\n",
+	))
 }
 
 // adminSessionCookieConfig extracts the admin-listener cookie parameters
