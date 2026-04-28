@@ -39,6 +39,8 @@
   import FilterIcon from '../icons/FilterIcon.svelte';
   import LabelIcon from '../icons/LabelIcon.svelte';
   import { t, localeTag } from '../i18n/i18n.svelte';
+  import { llmTransparency } from '../llm/transparency.svelte';
+  import LLMInspectModal from '../llm/LLMInspectModal.svelte';
 
   interface Props {
     email: Email;
@@ -284,6 +286,11 @@
   async function handleReportPhishing(): Promise<void> {
     await mail.reportSpam(email.id, 'phishing');
   }
+
+  // ── LLM classification inspect ────────────────────────────────────────
+
+  let llmInspectOpen = $state(false);
+  let hasLLMTransparency = $derived(llmTransparency.available);
 
   // ── Filter messages like this ──────────────────────────────────────────
 
@@ -587,6 +594,19 @@
         >
           <FilterIcon size={18} />
         </button>
+
+        <!-- LLM classification inspect per REQ-CAT-44 / REQ-FILT-66. -->
+        {#if hasLLMTransparency}
+          <button
+            type="button"
+            class="pill"
+            aria-label="Show classification"
+            title="Show how this message was classified"
+            onclick={() => (llmInspectOpen = true)}
+          >
+            Inspect
+          </button>
+        {/if}
       </div>
 
       <!-- Block sender confirmation modal (inline). -->
@@ -626,6 +646,10 @@
     </div>
   {/if}
 </article>
+
+{#if llmInspectOpen}
+  <LLMInspectModal emailId={email.id} onClose={() => (llmInspectOpen = false)} />
+{/if}
 
 <style>
   .message {

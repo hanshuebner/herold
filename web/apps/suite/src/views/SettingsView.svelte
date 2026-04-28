@@ -23,13 +23,27 @@
   import { jmap } from '../lib/jmap/client';
   import { LOCALES, type Locale } from '../lib/i18n/i18n.svelte';
   import { t } from '../lib/i18n/i18n.svelte';
+  import { llmTransparency } from '../lib/llm/transparency.svelte';
+  import { pushSubscription } from '../lib/push/push-subscription.svelte';
 
-  // Section order per Phase 4 spec: Account, Security, Appearance, Mail,
-  // Categories, Filters, API keys, Privacy, About.
-  type Section = 'account' | 'security' | 'appearance' | 'mail' | 'categories' | 'filters' | 'api-keys' | 'privacy' | 'about';
+  // Section order: Account, Security, Appearance, Mail, Categories, Filters,
+  // Notifications, API keys, Privacy, About.
+  type Section =
+    | 'account'
+    | 'security'
+    | 'appearance'
+    | 'mail'
+    | 'categories'
+    | 'filters'
+    | 'notifications'
+    | 'api-keys'
+    | 'privacy'
+    | 'about';
 
   let hasCategorise = $derived(jmap.hasCapability(Capability.HeroldCategorise));
   let hasManagedRules = $derived(jmap.hasCapability(Capability.HeroldManagedRules));
+  let hasLLMTransparency = $derived(jmap.hasCapability(Capability.HeroldLLMTransparency));
+  let hasPush = $derived(jmap.hasCapability(Capability.HeroldPush));
 
   let sectionsBase: { id: Section; label: string }[] = [
     { id: 'account', label: 'Account' },
@@ -48,6 +62,7 @@
       if (s.id === 'mail') {
         if (hasCategorise) result.push({ id: 'categories', label: 'Categories' });
         if (hasManagedRules) result.push({ id: 'filters', label: 'Filters' });
+        if (hasPush) result.push({ id: 'notifications', label: 'Notifications' });
       }
     }
     return result;
@@ -72,6 +87,14 @@
   // navigation to /settings without loading the inbox first).
   $effect(() => {
     if (mail.identities.size === 0) void mail.loadIdentities();
+  });
+
+  // Lazy-load LLM transparency data when the user opens settings and the
+  // capability is present. Needed for the Spam section disclosure.
+  $effect(() => {
+    if (hasLLMTransparency && llmTransparency.loadStatus === 'idle') {
+      void llmTransparency.load();
+    }
   });
 
   // ── Helpers / labels for the form rows ────────────────────────────────
@@ -249,6 +272,34 @@
       <h3>Sieve filtering</h3>
       <SieveForm />
 
+      {#if hasLLMTransparency}
+        <h3>Spam classifier</h3>
+        <p class="hint">
+          The prompt used when classifying your inbound mail as spam.
+          Your messages are sent to herold's configured classifier endpoint along with this prompt.
+        </p>
+        {#if llmTransparency.loadStatus === 'loading' || llmTransparency.loadStatus === 'idle'}
+          <p class="muted">Loading…</p>
+        {:else if llmTransparency.loadStatus === 'error'}
+          <p class="muted">{llmTransparency.loadError ?? 'Could not load'}</p>
+        {:else if llmTransparency.data?.spamPrompt}
+          <pre class="prompt-display">{llmTransparency.data.spamPrompt}</pre>
+          {#if llmTransparency.data.spamModel}
+            <div class="row">
+              <span class="label">Model</span>
+              <span class="value mono">{llmTransparency.data.spamModel}</span>
+            </div>
+          {/if}
+          {#if llmTransparency.data.disclosureNote}
+            <div class="disclosure-note">
+              <p>{llmTransparency.data.disclosureNote}</p>
+            </div>
+          {/if}
+        {:else}
+          <p class="muted">No spam prompt configured.</p>
+        {/if}
+      {/if}
+
       <h3>Shortcut coach</h3>
       <div class="row">
         <span class="label">Show coach hints</span>
@@ -270,6 +321,66 @@
     {:else if activeSection === 'filters'}
       <h2>Filters</h2>
       <FiltersForm />
+
+    {:else if activeSection === 'notifications'}
+      <h2>Notifications</h2>
+      {#if hasPush}
+        <div class="row vertical">
+          <span class="label">Push notifications</span>
+          {#if pushSubscription.permissionState === 'denied'}
+            <p class="hint">
+              Notifications are off. You can re-enable them in your browser settings.
+            </p>
+            <button
+              type="button"
+              onclick={() => pushSubscription.forgetDenial()}
+            >
+              Forget my decision
+            </button>
+          {:else if pushSubscription.subscribed}
+            <p class="hint">Notifications are on.</p>
+            <button
+              type="button"
+              onclick={() => void pushSubscription.unsubscribe()}
+              disabled={pushSubscription.busy}
+            >
+              {pushSubscription.busy ? 'Updating…' : 'Disable notifications'}
+            </button>
+          {:else}
+            <p class="hint">
+              Get notified about new mail and messages when this tab is closed.
+            </p>
+            <button
+              type="button"
+              class="primary-action"
+              onclick={() => void pushSubscription.subscribe()}
+              disabled={pushSubscription.busy}
+            >
+              {pushSubscription.busy ? 'Enabling…' : 'Enable notifications'}
+            </button>
+          {/if}
+          {#if pushSubscription.errorMessage}
+            <p class="error-text" role="alert">{pushSubscription.errorMessage}</p>
+          {/if}
+        </div>
+
+        <div class="row vertical">
+          <span class="label">Forget all subscriptions</span>
+          <p class="hint">
+            Removes all notification subscriptions for your account.
+            Useful when decommissioning a device.
+          </p>
+          <button
+            type="button"
+            onclick={() => void pushSubscription.destroyAll()}
+            disabled={pushSubscription.busy}
+          >
+            Forget all notification subscriptions
+          </button>
+        </div>
+      {:else}
+        <p class="muted">Push notifications are not available on this server.</p>
+      {/if}
 
     {:else if activeSection === 'api-keys'}
       <h2>API keys</h2>
@@ -587,6 +698,58 @@
   }
   .link:hover {
     text-decoration: underline;
+  }
+
+  .prompt-display {
+    font-family: var(--font-mono);
+    font-size: var(--type-code-01-size);
+    color: var(--text-primary);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-03) var(--spacing-04);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+    margin: 0;
+  }
+
+  .disclosure-note {
+    background: var(--layer-01);
+    border-left: 3px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-03) var(--spacing-04);
+    margin-top: var(--spacing-02);
+  }
+
+  .disclosure-note p {
+    margin: 0;
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
+  }
+
+  .error-text {
+    color: var(--support-error);
+    font-size: var(--type-body-compact-01-size);
+    margin: 0;
+  }
+
+  .primary-action {
+    padding: var(--spacing-03) var(--spacing-05);
+    background: var(--interactive);
+    color: var(--text-on-color);
+    border-radius: var(--radius-pill);
+    font-weight: 600;
+    min-height: var(--touch-min);
+    width: fit-content;
+  }
+  .primary-action:hover:not(:disabled) {
+    filter: brightness(1.1);
+  }
+  .primary-action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   @media (max-width: 768px) {

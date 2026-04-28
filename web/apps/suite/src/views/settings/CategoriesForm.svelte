@@ -1,8 +1,10 @@
 <script lang="ts">
   /**
-   * Categories settings form — Wave 3.13, REQ-CAT-40..43, REQ-CAT-30.
+   * Categories settings form — Wave 3.13, REQ-CAT-40..45, REQ-CAT-30.
    *
    * Sections:
+   *   0. Transparency disclosure: current effective prompt + disclosure note
+   *      (REQ-CAT-45).
    *   1. Category list editor: rename, reorder (up/down), add, remove.
    *      Primary cannot be removed (REQ-CAT-40).
    *   2. Advanced: edit the system prompt textarea (REQ-CAT-41).
@@ -18,6 +20,7 @@
     categorySettings,
     type Category,
   } from '../../lib/settings/category-settings.svelte';
+  import { llmTransparency } from '../../lib/llm/transparency.svelte';
 
   $effect(() => {
     if (categorySettings.loadStatus === 'idle') {
@@ -26,6 +29,20 @@
       });
     }
   });
+
+  // Load LLM transparency data for the prompt-disclosure section (REQ-CAT-45).
+  $effect(() => {
+    if (llmTransparency.loadStatus === 'idle') {
+      untrack(() => {
+        void llmTransparency.load();
+      });
+    }
+  });
+
+  let disclosureNote = $derived(llmTransparency.data?.disclosureNote ?? '');
+  let effectivePrompt = $derived(
+    llmTransparency.data?.categoriserPrompt ?? categorySettings.systemPrompt,
+  );
 
   // Local copy of the category list for the editor. We keep a local mutable
   // copy so the user can manipulate the list and submit it atomically.
@@ -154,6 +171,25 @@
       Re-categorisation in progress — results will update automatically.
     </div>
   {/if}
+
+  <!-- REQ-CAT-45: transparency at rest — show the current effective prompt. -->
+  <section class="form-section">
+    <h3>How your mail is classified</h3>
+    <p class="hint">
+      This is the prompt used to categorise your mail. Your messages are sent to
+      herold's configured classifier endpoint along with this prompt.
+    </p>
+    {#if effectivePrompt}
+      <pre class="prompt-display">{effectivePrompt}</pre>
+    {:else}
+      <p class="hint">(Default prompt — not yet loaded.)</p>
+    {/if}
+    {#if disclosureNote}
+      <div class="disclosure-note" role="note">
+        <p>{disclosureNote}</p>
+      </div>
+    {/if}
+  </section>
 
   <section class="form-section">
     <h3>Category list</h3>
@@ -490,5 +526,33 @@
   button:not(.icon-btn):not(.small-btn):not(.primary):hover {
     background: var(--layer-03);
     color: var(--text-primary);
+  }
+
+  .prompt-display {
+    font-family: var(--font-mono);
+    font-size: var(--type-code-01-size);
+    color: var(--text-primary);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-03) var(--spacing-04);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+    margin: 0;
+  }
+
+  .disclosure-note {
+    background: var(--layer-01);
+    border-left: 3px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-03) var(--spacing-04);
+  }
+
+  .disclosure-note p {
+    margin: 0;
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
   }
 </style>
