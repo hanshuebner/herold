@@ -288,7 +288,7 @@ func (sess *session) deliverOne(
 			return false, fmt.Errorf("ensure mailbox %q: %w", mbName, err)
 		}
 		storeMsg := store.Message{
-			MailboxID:    mb.ID,
+			PrincipalID:  rc.principalID,
 			Size:         int64(len(finalBytes)),
 			Blob:         blobRef,
 			ReceivedAt:   sess.srv.clk.Now(),
@@ -296,22 +296,28 @@ func (sess *session) deliverOne(
 			Envelope:     envelopeFromParsed(msg),
 		}
 		// Propagate sieve-added flags onto system flags where possible.
-		storeMsg.Flags = sieveFlagsFromOutcome(outcome)
+		msgFlags := sieveFlagsFromOutcome(outcome)
 		// REQ-FILT-200: only categorise messages destined for the
 		// inbox, after Sieve fileinto + spam classification. Spam
 		// suppresses the call. Categorisation NEVER blocks delivery
 		// (REQ-FILT-230); a failure here returns "" and we proceed.
+		var msgKeywords []string
 		if sess.srv.categorise != nil &&
 			classification.Verdict != spam.Spam &&
 			strings.EqualFold(mb.Name, "INBOX") {
 			cat, _ := sess.srv.categorise.Categorise(
 				ctx, rc.principalID, msg, &authResults, classification.Verdict)
 			if cat != "" {
-				storeMsg.Keywords = append(storeMsg.Keywords, "$category-"+cat)
+				msgKeywords = append(msgKeywords, "$category-"+cat)
 			}
 		}
+		target := store.MessageMailbox{
+			MailboxID: mb.ID,
+			Flags:     msgFlags,
+			Keywords:  msgKeywords,
+		}
 		insertTimer := observe.StartStoreOp("insert_message")
-		_, _, ierr := sess.srv.store.Meta().InsertMessage(ctx, storeMsg)
+		_, _, ierr := sess.srv.store.Meta().InsertMessage(ctx, storeMsg, []store.MessageMailbox{target})
 		insertTimer.Done()
 		if ierr != nil {
 			if errors.Is(ierr, store.ErrQuotaExceeded) {

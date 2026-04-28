@@ -47,8 +47,8 @@ func seedSmallCorpus(t *testing.T, st store.Store) []string {
 			}
 			hashes = append(hashes, ref.Hash)
 			if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
-				MailboxID: mb.ID, Size: int64(len(body)), Blob: ref,
-			}); err != nil {
+				Size: int64(len(body)), Blob: ref,
+			}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 				t.Fatalf("insert message: %v", err)
 			}
 		}
@@ -240,8 +240,8 @@ func TestCreateBundle_ConsistentSnapshot_UnderConcurrentWrites(t *testing.T) {
 			t.Fatalf("blob put: %v", err)
 		}
 		if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
-			MailboxID: mb.ID, Size: int64(len(body)), Blob: ref,
-		}); err != nil {
+			Size: int64(len(body)), Blob: ref,
+		}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 			t.Fatalf("insert msg: %v", err)
 		}
 	}
@@ -267,8 +267,8 @@ func TestCreateBundle_ConsistentSnapshot_UnderConcurrentWrites(t *testing.T) {
 				return
 			}
 			_, _, _ = st.Meta().InsertMessage(ctx, store.Message{
-				MailboxID: mb.ID, Size: int64(len(body)), Blob: ref,
-			})
+				Size: int64(len(body)), Blob: ref,
+			}, []store.MessageMailbox{{MailboxID: mb.ID}})
 		}
 	}()
 

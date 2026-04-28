@@ -43,13 +43,12 @@ func TestSearchSnippet_Get_HighlightsBodyHits(t *testing.T) {
 		t.Fatalf("put blob: %v", err)
 	}
 	uid, _, err := st.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: mb.ID,
-		Blob:      ref,
-		Size:      int64(len(body)),
+		Blob: ref,
+		Size: int64(len(body)),
 		Envelope: store.Envelope{
 			Subject: "Invoice 123",
 		},
-	})
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("insert message: %v", err)
 	}
@@ -92,11 +91,10 @@ func TestSearchSnippet_Get_HighlightsSubject(t *testing.T) {
 	body := "From: bob@example.test\r\n\r\nshort body.\r\n"
 	ref, _ := st.Blobs().Put(ctx, bytes.NewReader([]byte(body)))
 	uid, _, _ := st.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: mb.ID,
-		Blob:      ref,
-		Size:      int64(len(body)),
-		Envelope:  store.Envelope{Subject: "Quarterly invoice update"},
-	})
+		Blob:     ref,
+		Size:     int64(len(body)),
+		Envelope: store.Envelope{Subject: "Quarterly invoice update"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	msgs, _ := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
 	var mid store.MessageID
 	for _, m := range msgs {

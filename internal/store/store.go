@@ -104,30 +104,55 @@ type Metadata interface {
 	// Returns ErrNotFound if the mailbox does not exist.
 	DeleteMailbox(ctx context.Context, id MailboxID) error
 
-	// GetMessage returns a single message row. Returns ErrNotFound if
-	// the message does not exist.
+	// GetMessage returns a single message row with its full Mailboxes
+	// slice populated. Returns ErrNotFound if the message does not exist.
 	GetMessage(ctx context.Context, id MessageID) (Message, error)
 
-	// InsertMessage inserts a message into its mailbox (msg.MailboxID),
-	// allocating a fresh UID and ModSeq, advancing Mailbox.UIDNext and
-	// Mailbox.HighestModSeq, appending an (EntityKindEmail,
-	// ChangeOpCreated) entry to the principal's state-change feed, and
-	// incrementing the blob refcount — all in a single transaction.
-	// Returns the allocated UID and ModSeq. Returns ErrQuotaExceeded if
-	// the insert would exceed the owning principal's quota.
-	InsertMessage(ctx context.Context, msg Message) (UID, ModSeq, error)
+	// InsertMessage inserts a message row (msg) together with one or more
+	// per-(message, mailbox) rows (targets). Each target entry carries the
+	// MailboxID, UID, ModSeq, Flags, and Keywords for that mailbox
+	// membership; the store allocates fresh UIDs and MODSEQs and fills
+	// the UID/ModSeq fields in the returned slice.
+	//
+	// Atomically: inserts messages row, inserts N message_mailboxes rows,
+	// advances each mailbox's highest_uid / highest_modseq, appends N
+	// (EntityKindEmail, ChangeOpCreated) state-change entries, and
+	// increments the blob refcount by 1 (regardless of N).
+	//
+	// msg.PrincipalID must be set. Returns ErrQuotaExceeded if the insert
+	// would exceed the principal's quota. Returns the first target's UID
+	// and ModSeq for backward-compatibility with single-mailbox callers.
+	InsertMessage(ctx context.Context, msg Message, targets []MessageMailbox) (UID, ModSeq, error)
+
+	// AddMessageToMailbox adds an existing message (by msgID) to
+	// mailboxID, allocating a fresh UID and ModSeq for that mailbox.
+	// Returns the allocated UID and ModSeq. Returns ErrNotFound if msgID
+	// does not exist. Returns ErrConflict if the message is already in
+	// that mailbox (idempotency: callers should check first).
+	AddMessageToMailbox(ctx context.Context, msgID MessageID, mailboxID MailboxID) (UID, ModSeq, error)
+
+	// RemoveMessageFromMailbox removes the (msgID, mailboxID) membership
+	// row. If the message has no remaining memberships the messages row
+	// and blob refcount are cleaned up in the same transaction. Returns
+	// ErrNotFound if the row is absent. Does NOT return ErrNotFound when
+	// the message row itself still exists in other mailboxes — only the
+	// membership is gone.
+	RemoveMessageFromMailbox(ctx context.Context, msgID MessageID, mailboxID MailboxID) error
 
 	// UpdateMessageFlags applies flagAdd and flagClear (bitfield deltas)
-	// plus keyword additions and removals to the message, bumps its
-	// ModSeq and the mailbox's HighestModSeq, and appends an
-	// (EntityKindEmail, ChangeOpUpdated) entry — atomically.
+	// plus keyword additions and removals to the per-(message, mailbox)
+	// row identified by (id, mailboxID), bumps its ModSeq and the
+	// mailbox's HighestModSeq, and appends an (EntityKindEmail,
+	// ChangeOpUpdated) entry — atomically. Flag changes in one mailbox do
+	// not affect other mailbox memberships.
 	// unchangedSince, when non-zero, implements IMAP STORE UNCHANGEDSINCE
 	// (RFC 7162 §3.1.3): the update is rejected with ErrConflict if the
-	// message's current ModSeq exceeds it. Returns the new ModSeq on
-	// success.
+	// message's current ModSeq in that mailbox exceeds it. Returns the
+	// new ModSeq on success.
 	UpdateMessageFlags(
 		ctx context.Context,
 		id MessageID,
+		mailboxID MailboxID,
 		flagAdd, flagClear MessageFlags,
 		keywordAdd, keywordClear []string,
 		unchangedSince ModSeq,
@@ -140,13 +165,12 @@ type Metadata interface {
 	// if every ID is absent.
 	ExpungeMessages(ctx context.Context, mailboxID MailboxID, ids []MessageID) error
 
-	// MoveMessage atomically changes the mailbox_id of the message
-	// identified by msgID from its current mailbox to targetMailboxID,
-	// assigns a fresh UID within the target mailbox, bumps both source
-	// and target HighestModSeq, and appends an (EntityKindEmail,
-	// ChangeOpUpdated) entry. The message row ID (and therefore the JMAP
-	// Email id) is preserved. Returns ErrNotFound if msgID is absent.
-	MoveMessage(ctx context.Context, msgID MessageID, targetMailboxID MailboxID) error
+	// MoveMessage atomically moves the (msgID, fromMailboxID) membership
+	// to targetMailboxID: deletes the source message_mailboxes row and
+	// inserts a new row in the target mailbox with a fresh UID and ModSeq.
+	// The messages row ID (and therefore the JMAP Email id) is preserved.
+	// Returns ErrNotFound if the (msgID, fromMailboxID) membership is absent.
+	MoveMessage(ctx context.Context, msgID MessageID, fromMailboxID, targetMailboxID MailboxID) error
 
 	// UpdateMessageThreadID sets the thread_id of message msgID to
 	// threadID. Used by the post-import thread re-linking pass when
@@ -651,13 +675,13 @@ type Metadata interface {
 	ListDueSnoozedMessages(ctx context.Context, now time.Time, limit int) ([]Message, error)
 
 	// SetSnooze sets or clears the snoozed-until / "$snoozed" keyword
-	// pair atomically inside one transaction. when==nil clears both;
-	// when non-nil sets both. The mailbox's HighestModSeq is bumped
-	// and a (EntityKindEmail, ChangeOpUpdated) row is appended to the
-	// state-change feed in the same tx so JMAP push, IMAP IDLE and
-	// NOTIFY consumers see the change. Returns the message's new
-	// ModSeq. Returns ErrNotFound when the message is gone.
-	SetSnooze(ctx context.Context, msgID MessageID, when *time.Time) (ModSeq, error)
+	// pair on the (msgID, mailboxID) per-mailbox row, atomically inside
+	// one transaction. when==nil clears both; when non-nil sets both.
+	// The mailbox's HighestModSeq is bumped and a (EntityKindEmail,
+	// ChangeOpUpdated) row is appended to the state-change feed in the
+	// same tx. Returns the message's new ModSeq. Returns ErrNotFound when
+	// the (msgID, mailboxID) membership is gone.
+	SetSnooze(ctx context.Context, msgID MessageID, mailboxID MailboxID, when *time.Time) (ModSeq, error)
 
 	// -- Phase 2 LLM categorisation (REQ-FILT-200..221) ---------------
 

@@ -439,17 +439,31 @@ func (m *metaFace) GetMessage(ctx context.Context, id store.MessageID) (store.Me
 	return msg, nil
 }
 
-func (m *metaFace) InsertMessage(ctx context.Context, msg store.Message) (store.UID, store.ModSeq, error) {
+func (m *metaFace) InsertMessage(ctx context.Context, msg store.Message, targets []store.MessageMailbox) (store.UID, store.ModSeq, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, 0, err
+	}
+	// When no targets are supplied, derive the single target from the
+	// convenience fields on msg (backward-compatible with pre-Wave-3.11
+	// call sites that have not yet been updated).
+	if len(targets) == 0 {
+		targets = []store.MessageMailbox{{
+			MailboxID: msg.MailboxID,
+			Flags:     msg.Flags,
+			Keywords:  msg.Keywords,
+		}}
 	}
 	s := m.s()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	mb, ok := s.mailboxes[msg.MailboxID]
-	if !ok {
-		return 0, 0, fmt.Errorf("mailbox %d: %w", msg.MailboxID, store.ErrNotFound)
+	// Validate all target mailboxes before inserting anything.
+	for _, t := range targets {
+		if _, ok := s.mailboxes[t.MailboxID]; !ok {
+			return 0, 0, fmt.Errorf("mailbox %d: %w", t.MailboxID, store.ErrNotFound)
+		}
 	}
+	firstMailboxID := targets[0].MailboxID
+	mb, _ := s.mailboxes[firstMailboxID]
 	p, ok := s.principals[mb.PrincipalID]
 	if !ok {
 		return 0, 0, fmt.Errorf("principal %d: %w", mb.PrincipalID, store.ErrNotFound)
@@ -499,44 +513,135 @@ func (m *metaFace) InsertMessage(ctx context.Context, msg store.Message) (store.
 	now := s.clk.Now()
 	msg.ID = s.nextMessageID
 	s.nextMessageID++
-	msg.UID = mb.UIDNext
-	mb.UIDNext++
-	mb.HighestModSeq++
-	msg.ModSeq = mb.HighestModSeq
 	if msg.InternalDate.IsZero() {
 		msg.InternalDate = now
 	}
 	if msg.ReceivedAt.IsZero() {
 		msg.ReceivedAt = now
 	}
-	mb.UpdatedAt = now
-	s.mailboxes[mb.ID] = mb
+	// Allocate UID/ModSeq for each target mailbox. The first target's
+	// UID/ModSeq populate the convenience fields on msg so that callers
+	// which do not use Mailboxes still work.
+	var firstUID store.UID
+	var firstModSeq store.ModSeq
+	for i, t := range targets {
+		mb2 := s.mailboxes[t.MailboxID]
+		uid := mb2.UIDNext
+		mb2.UIDNext++
+		mb2.HighestModSeq++
+		modSeq := mb2.HighestModSeq
+		mb2.UpdatedAt = now
+		s.mailboxes[mb2.ID] = mb2
+		if i == 0 {
+			firstUID = uid
+			firstModSeq = modSeq
+			msg.MailboxID = t.MailboxID
+			msg.UID = uid
+			msg.ModSeq = modSeq
+			msg.Flags = t.Flags
+			msg.Keywords = t.Keywords
+		}
+		s.appendStateChangeLocked(store.StateChange{
+			PrincipalID:    mb2.PrincipalID,
+			Kind:           store.EntityKindEmail,
+			EntityID:       uint64(msg.ID),
+			ParentEntityID: uint64(mb2.ID),
+			Op:             store.ChangeOpCreated,
+			ProducedAt:     now,
+		})
+		s.appendFTSChangeLocked(store.FTSChange{
+			PrincipalID:    mb2.PrincipalID,
+			Kind:           store.EntityKindEmail,
+			EntityID:       uint64(msg.ID),
+			ParentEntityID: uint64(mb2.ID),
+			Op:             store.ChangeOpCreated,
+			ProducedAt:     now,
+		})
+	}
 	s.messages[msg.ID] = msg
 	if msg.Blob.Hash != "" {
 		s.blobRefs[msg.Blob.Hash]++
 	}
+	return firstUID, firstModSeq, nil
+}
+
+func (m *metaFace) AddMessageToMailbox(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID) (store.UID, store.ModSeq, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msg, ok := s.messages[msgID]
+	if !ok {
+		return 0, 0, fmt.Errorf("message %d: %w", msgID, store.ErrNotFound)
+	}
+	mb, ok := s.mailboxes[mailboxID]
+	if !ok {
+		return 0, 0, fmt.Errorf("mailbox %d: %w", mailboxID, store.ErrNotFound)
+	}
+	uid := mb.UIDNext
+	mb.UIDNext++
+	mb.HighestModSeq++
+	modSeq := mb.HighestModSeq
+	now := s.clk.Now()
+	mb.UpdatedAt = now
+	s.mailboxes[mb.ID] = mb
+	_ = msg
 	s.appendStateChangeLocked(store.StateChange{
 		PrincipalID:    mb.PrincipalID,
 		Kind:           store.EntityKindEmail,
-		EntityID:       uint64(msg.ID),
-		ParentEntityID: uint64(mb.ID),
+		EntityID:       uint64(msgID),
+		ParentEntityID: uint64(mailboxID),
 		Op:             store.ChangeOpCreated,
 		ProducedAt:     now,
 	})
-	s.appendFTSChangeLocked(store.FTSChange{
+	return uid, modSeq, nil
+}
+
+func (m *metaFace) RemoveMessageFromMailbox(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msg, ok := s.messages[msgID]
+	if !ok {
+		return fmt.Errorf("message %d: %w", msgID, store.ErrNotFound)
+	}
+	mb, ok := s.mailboxes[mailboxID]
+	if !ok {
+		return fmt.Errorf("mailbox %d: %w", mailboxID, store.ErrNotFound)
+	}
+	// If this is the message's only mailbox, remove the message row.
+	if msg.MailboxID == mailboxID {
+		delete(s.messages, msgID)
+		if msg.Blob.Hash != "" {
+			if s.blobRefs[msg.Blob.Hash] > 0 {
+				s.blobRefs[msg.Blob.Hash]--
+			}
+		}
+	}
+	mb.HighestModSeq++
+	now := s.clk.Now()
+	mb.UpdatedAt = now
+	s.mailboxes[mb.ID] = mb
+	s.appendStateChangeLocked(store.StateChange{
 		PrincipalID:    mb.PrincipalID,
 		Kind:           store.EntityKindEmail,
-		EntityID:       uint64(msg.ID),
-		ParentEntityID: uint64(mb.ID),
-		Op:             store.ChangeOpCreated,
+		EntityID:       uint64(msgID),
+		ParentEntityID: uint64(mailboxID),
+		Op:             store.ChangeOpDestroyed,
 		ProducedAt:     now,
 	})
-	return msg.UID, msg.ModSeq, nil
+	return nil
 }
 
 func (m *metaFace) UpdateMessageFlags(
 	ctx context.Context,
 	id store.MessageID,
+	mailboxID store.MailboxID,
 	flagAdd, flagClear store.MessageFlags,
 	keywordAdd, keywordClear []string,
 	unchangedSince store.ModSeq,
@@ -554,9 +659,14 @@ func (m *metaFace) UpdateMessageFlags(
 	if unchangedSince != 0 && msg.ModSeq > unchangedSince {
 		return 0, fmt.Errorf("message %d unchangedsince: %w", id, store.ErrConflict)
 	}
-	mb, ok := s.mailboxes[msg.MailboxID]
+	// Use the provided mailboxID if non-zero; fall back to msg.MailboxID.
+	lookupMailboxID := mailboxID
+	if lookupMailboxID == 0 {
+		lookupMailboxID = msg.MailboxID
+	}
+	mb, ok := s.mailboxes[lookupMailboxID]
 	if !ok {
-		return 0, fmt.Errorf("mailbox %d: %w", msg.MailboxID, store.ErrNotFound)
+		return 0, fmt.Errorf("mailbox %d: %w", lookupMailboxID, store.ErrNotFound)
 	}
 	msg.Flags = (msg.Flags | flagAdd) &^ flagClear
 	// Keyword delta
@@ -677,7 +787,7 @@ func (m *metaFace) UpdateMessageThreadID(ctx context.Context, msgID store.Messag
 	return nil
 }
 
-func (m *metaFace) MoveMessage(ctx context.Context, msgID store.MessageID, targetMailboxID store.MailboxID) error {
+func (m *metaFace) MoveMessage(ctx context.Context, msgID store.MessageID, fromMailboxID, targetMailboxID store.MailboxID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -692,7 +802,13 @@ func (m *metaFace) MoveMessage(ctx context.Context, msgID store.MessageID, targe
 	if !ok {
 		return fmt.Errorf("mailbox %d: %w", targetMailboxID, store.ErrNotFound)
 	}
-	srcMB := s.mailboxes[msg.MailboxID]
+	// Use fromMailboxID if provided; fall back to msg.MailboxID for
+	// backward compat.
+	srcMailboxID := fromMailboxID
+	if srcMailboxID == 0 {
+		srcMailboxID = msg.MailboxID
+	}
+	srcMB := s.mailboxes[srcMailboxID]
 	now := s.clk.Now()
 
 	// Advance source mailbox modseq.
@@ -1744,7 +1860,7 @@ func (m *metaFace) ListDueSnoozedMessages(ctx context.Context, now time.Time, li
 	return out, nil
 }
 
-func (m *metaFace) SetSnooze(ctx context.Context, msgID store.MessageID, when *time.Time) (store.ModSeq, error) {
+func (m *metaFace) SetSnooze(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID, when *time.Time) (store.ModSeq, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -1755,9 +1871,14 @@ func (m *metaFace) SetSnooze(ctx context.Context, msgID store.MessageID, when *t
 	if !ok {
 		return 0, fmt.Errorf("message %d: %w", msgID, store.ErrNotFound)
 	}
-	mb, ok := s.mailboxes[msg.MailboxID]
+	// Use provided mailboxID if non-zero; fall back to msg.MailboxID.
+	lookupMailboxID := mailboxID
+	if lookupMailboxID == 0 {
+		lookupMailboxID = msg.MailboxID
+	}
+	mb, ok := s.mailboxes[lookupMailboxID]
 	if !ok {
-		return 0, fmt.Errorf("mailbox %d: %w", msg.MailboxID, store.ErrNotFound)
+		return 0, fmt.Errorf("mailbox %d: %w", lookupMailboxID, store.ErrNotFound)
 	}
 	// Update keywords: force $snoozed on/off based on `when`.
 	set := map[string]struct{}{}

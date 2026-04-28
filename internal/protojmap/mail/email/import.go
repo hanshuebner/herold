@@ -265,16 +265,18 @@ func (i *importHandler) importOne(
 	}
 	flags, customKW := flagsAndKeywordsFromJMAP(in.Keywords)
 	msg := store.Message{
-		MailboxID:    mailboxID,
-		Flags:        flags,
-		Keywords:     customKW,
+		PrincipalID:  pid,
 		InternalDate: receivedAt,
 		ReceivedAt:   receivedAt,
 		Size:         ref.Size,
 		Blob:         ref,
 		Envelope:     env,
 	}
-	uid, modseq, err := i.h.store.Meta().InsertMessage(ctx, msg)
+	uid, modseq, err := i.h.store.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{
+		MailboxID: mailboxID,
+		Flags:     flags,
+		Keywords:  customKW,
+	}})
 	if err != nil {
 		if errors.Is(err, store.ErrQuotaExceeded) {
 			return jmapEmail{}, &setError{

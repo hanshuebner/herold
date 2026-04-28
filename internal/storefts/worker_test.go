@@ -109,12 +109,11 @@ func (h *workerHarness) insertMessage(t *testing.T, mb store.Mailbox, subject, b
 		t.Fatalf("put blob: %v", err)
 	}
 	msg := store.Message{
-		MailboxID: mb.ID,
-		Size:      ref.Size,
-		Blob:      ref,
-		Envelope:  store.Envelope{Subject: subject},
+		Size:     ref.Size,
+		Blob:     ref,
+		Envelope: store.Envelope{Subject: subject},
 	}
-	uid, modseq, err := h.store.Meta().InsertMessage(h.ctx, msg)
+	uid, modseq, err := h.store.Meta().InsertMessage(h.ctx, msg, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("insert message: %v", err)
 	}
@@ -310,7 +309,7 @@ func TestWorker_CursorPersistsAcrossRestart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Put: %v", err)
 		}
-		if _, _, err := fake.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+		if _, _, err := fake.Meta().InsertMessage(ctx, store.Message{Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 			t.Fatalf("InsertMessage: %v", err)
 		}
 	}

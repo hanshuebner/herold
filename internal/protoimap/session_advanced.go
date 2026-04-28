@@ -87,7 +87,7 @@ func (ses *session) handleMOVE(ctx context.Context, c *Command) error {
 		// reference is preserved so the underlying bytes are not
 		// duplicated; only the metadata row is new.
 		copyMsg := store.Message{
-			MailboxID:    dest.ID,
+			PrincipalID:  ses.pid,
 			Flags:        m.Flags,
 			Keywords:     m.Keywords,
 			InternalDate: m.InternalDate,
@@ -96,7 +96,7 @@ func (ses *session) handleMOVE(ctx context.Context, c *Command) error {
 			Blob:         m.Blob,
 			Envelope:     m.Envelope,
 		}
-		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, copyMsg)
+		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, copyMsg, []store.MessageMailbox{{MailboxID: dest.ID, Flags: m.Flags, Keywords: m.Keywords}})
 		if err != nil {
 			return ses.resp.taggedNO(c.Tag, "", "move failed")
 		}
@@ -156,7 +156,7 @@ func (ses *session) handleCOPY(ctx context.Context, c *Command) error {
 		}
 		m := srcMsgs[seq-1]
 		copyMsg := store.Message{
-			MailboxID:    dest.ID,
+			PrincipalID:  ses.pid,
 			Flags:        m.Flags,
 			Keywords:     m.Keywords,
 			InternalDate: m.InternalDate,
@@ -165,7 +165,7 @@ func (ses *session) handleCOPY(ctx context.Context, c *Command) error {
 			Blob:         m.Blob,
 			Envelope:     m.Envelope,
 		}
-		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, copyMsg)
+		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, copyMsg, []store.MessageMailbox{{MailboxID: dest.ID, Flags: m.Flags, Keywords: m.Keywords}})
 		if err != nil {
 			return ses.resp.taggedNO(c.Tag, "", "copy failed")
 		}
@@ -253,7 +253,7 @@ func (ses *session) applyMultiAppend(ctx context.Context, c *Command, mb store.M
 			internal = now
 		}
 		msg := store.Message{
-			MailboxID:    mb.ID,
+			PrincipalID:  ses.pid,
 			Flags:        flags,
 			Keywords:     kw,
 			InternalDate: internal,
@@ -263,7 +263,7 @@ func (ses *session) applyMultiAppend(ctx context.Context, c *Command, mb store.M
 			Envelope:     env,
 		}
 		insertTimer := observe.StartStoreOp("insert_message")
-		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, msg)
+		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mb.ID, Flags: flags, Keywords: kw}})
 		insertTimer.Done()
 		if err != nil {
 			ses.rollbackMultiAppend(ctx, mb.ID, inserted)

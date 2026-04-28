@@ -217,9 +217,10 @@ func Seed(
 			if err != nil {
 				t.Fatalf("corpus: put blob: %v", err)
 			}
+			msg.PrincipalID = mb.PrincipalID
 			msg.Blob = ref
 			msg.Size = ref.Size
-			uid, modseq, err := s.Meta().InsertMessage(ctx, msg)
+			uid, modseq, err := s.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mb.ID}})
 			if err != nil {
 				t.Fatalf("corpus: insert message %d: %v", i, err)
 			}

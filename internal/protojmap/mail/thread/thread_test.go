@@ -51,14 +51,13 @@ func setup(t *testing.T) (*handlerSet, *fakestore.Store, store.Principal, store.
 func insertMsg(t *testing.T, st *fakestore.Store, mb store.Mailbox, msgID, inReplyTo, subject string) store.MessageID {
 	t.Helper()
 	uid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
-		MailboxID: mb.ID,
-		Blob:      store.BlobRef{Hash: "deadbeef" + msgID, Size: 1},
+		Blob: store.BlobRef{Hash: "deadbeef" + msgID, Size: 1},
 		Envelope: store.Envelope{
 			Subject:   subject,
 			MessageID: msgID,
 			InReplyTo: inReplyTo,
 		},
-	})
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("insert message: %v", err)
 	}

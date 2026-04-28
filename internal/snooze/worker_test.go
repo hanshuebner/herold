@@ -60,10 +60,10 @@ func (f *fixture) snoozeMessage(t *testing.T, body string, when time.Time) store
 		t.Fatalf("Blobs.Put: %v", err)
 	}
 	if _, _, err := f.store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: f.mbID,
-		Blob:      ref,
-		Size:      ref.Size,
-	}); err != nil {
+		PrincipalID: f.pid,
+		Blob:        ref,
+		Size:        ref.Size,
+	}, []store.MessageMailbox{{MailboxID: f.mbID}}); err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 	// Walk the feed in pages so we don't truncate at the default 1000
@@ -88,7 +88,7 @@ func (f *fixture) snoozeMessage(t *testing.T, body string, when time.Time) store
 	if id == 0 {
 		t.Fatalf("no created entry in feed")
 	}
-	if _, err := f.store.Meta().SetSnooze(ctx, id, &when); err != nil {
+	if _, err := f.store.Meta().SetSnooze(ctx, id, f.mbID, &when); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	return id

@@ -203,16 +203,16 @@ func (h *dispatcherHarness) deliverMessage(t *testing.T, mb store.Mailbox, subje
 		t.Fatalf("blob put: %v", err)
 	}
 	msg := store.Message{
-		MailboxID: mb.ID,
-		Size:      ref.Size,
-		Blob:      ref,
+		PrincipalID: mb.PrincipalID,
+		Size:        ref.Size,
+		Blob:        ref,
 		Envelope: store.Envelope{
 			Subject: subject,
 			From:    "alice@example.net",
 			To:      "user@example.com",
 		},
 	}
-	if _, _, err := h.store.Meta().InsertMessage(h.ctx, msg); err != nil {
+	if _, _, err := h.store.Meta().InsertMessage(h.ctx, msg, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 		t.Fatalf("insert message: %v", err)
 	}
 	return msg
@@ -585,11 +585,11 @@ func TestRunResume_FromCursor_AfterRestart(t *testing.T) {
 		t.Fatalf("blob put: %v", err)
 	}
 	if _, _, err := fake.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: mb.ID,
-		Size:      ref.Size,
-		Blob:      ref,
-		Envelope:  store.Envelope{Subject: "x", From: "a@example.net", To: "user@example.com"},
-	}); err != nil {
+		PrincipalID: p.ID,
+		Size:        ref.Size,
+		Blob:        ref,
+		Envelope:    store.Envelope{Subject: "x", From: "a@example.net", To: "user@example.com"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 		t.Fatalf("insert message: %v", err)
 	}
 

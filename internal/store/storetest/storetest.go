@@ -491,12 +491,12 @@ func testInsertMessageAllocatesUIDAndModSeq(t *testing.T, s store.Store) {
 	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
 	ref := putBlob(t, s, "first")
 	uid1, modseq1, err := s.Meta().InsertMessage(ctx, store.Message{
-		MailboxID:    mb.ID,
+		PrincipalID:  p.ID,
 		Blob:         ref,
 		Size:         ref.Size,
 		InternalDate: time.Unix(1000, 0).UTC(),
 		ReceivedAt:   time.Unix(1000, 0).UTC(),
-	})
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("InsertMessage #1: %v", err)
 	}
@@ -505,12 +505,12 @@ func testInsertMessageAllocatesUIDAndModSeq(t *testing.T, s store.Store) {
 	}
 	ref2 := putBlob(t, s, "second")
 	uid2, modseq2, err := s.Meta().InsertMessage(ctx, store.Message{
-		MailboxID:    mb.ID,
+		PrincipalID:  p.ID,
 		Blob:         ref2,
 		Size:         ref2.Size,
 		InternalDate: time.Unix(1001, 0).UTC(),
 		ReceivedAt:   time.Unix(1001, 0).UTC(),
-	})
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("InsertMessage #2: %v", err)
 	}
@@ -537,7 +537,7 @@ func testUpdateFlagsBumpsModSeq(t *testing.T, s store.Store) {
 	p := mustInsertPrincipal(t, s, "flags@example.com")
 	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
 	ref := putBlob(t, s, "body-a")
-	_, modseq0, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size})
+	_, modseq0, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -550,7 +550,7 @@ func testUpdateFlagsBumpsModSeq(t *testing.T, s store.Store) {
 	// The interface doesn't return it directly, so we use a helper that
 	// enumerates messages via the change feed to discover ids.
 	id := firstMessageIDFromFeed(t, s, p.ID)
-	modseq1, err := s.Meta().UpdateMessageFlags(ctx, id, store.MessageFlagSeen, 0, nil, nil, 0)
+	modseq1, err := s.Meta().UpdateMessageFlags(ctx, id, mb.ID, store.MessageFlagSeen, 0, nil, nil, 0)
 	if err != nil {
 		t.Fatalf("UpdateMessageFlags: %v", err)
 	}
@@ -568,7 +568,7 @@ func testUpdateFlagsBumpsModSeq(t *testing.T, s store.Store) {
 		t.Fatalf("GetMessage ModSeq = %d, want %d", got.ModSeq, modseq1)
 	}
 	// Clear the flag.
-	if _, err := s.Meta().UpdateMessageFlags(ctx, id, 0, store.MessageFlagSeen, nil, nil, 0); err != nil {
+	if _, err := s.Meta().UpdateMessageFlags(ctx, id, mb.ID, 0, store.MessageFlagSeen, nil, nil, 0); err != nil {
 		t.Fatalf("clear \\Seen: %v", err)
 	}
 	got, err = s.Meta().GetMessage(ctx, id)
@@ -585,21 +585,21 @@ func testUpdateFlagsUnchangedSince(t *testing.T, s store.Store) {
 	p := mustInsertPrincipal(t, s, "ucs@example.com")
 	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
 	ref := putBlob(t, s, "ucs-body")
-	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	id := firstMessageIDFromFeed(t, s, p.ID)
-	modseq, err := s.Meta().UpdateMessageFlags(ctx, id, store.MessageFlagFlagged, 0, nil, nil, 0)
+	modseq, err := s.Meta().UpdateMessageFlags(ctx, id, mb.ID, store.MessageFlagFlagged, 0, nil, nil, 0)
 	if err != nil {
 		t.Fatalf("initial update: %v", err)
 	}
 	// unchangedSince with stale ModSeq must conflict.
-	_, err = s.Meta().UpdateMessageFlags(ctx, id, store.MessageFlagSeen, 0, nil, nil, modseq-1)
+	_, err = s.Meta().UpdateMessageFlags(ctx, id, mb.ID, store.MessageFlagSeen, 0, nil, nil, modseq-1)
 	if !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("stale UNCHANGEDSINCE = %v, want ErrConflict", err)
 	}
 	// unchangedSince == current ModSeq is allowed.
-	if _, err := s.Meta().UpdateMessageFlags(ctx, id, store.MessageFlagSeen, 0, nil, nil, modseq); err != nil {
+	if _, err := s.Meta().UpdateMessageFlags(ctx, id, mb.ID, store.MessageFlagSeen, 0, nil, nil, modseq); err != nil {
 		t.Fatalf("current UNCHANGEDSINCE: %v", err)
 	}
 }
@@ -609,11 +609,11 @@ func testUpdateFlagsKeywords(t *testing.T, s store.Store) {
 	p := mustInsertPrincipal(t, s, "kw@example.com")
 	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
 	ref := putBlob(t, s, "kw-body")
-	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	id := firstMessageIDFromFeed(t, s, p.ID)
-	if _, err := s.Meta().UpdateMessageFlags(ctx, id, 0, 0, []string{"work", "urgent"}, nil, 0); err != nil {
+	if _, err := s.Meta().UpdateMessageFlags(ctx, id, mb.ID, 0, 0, []string{"work", "urgent"}, nil, 0); err != nil {
 		t.Fatalf("add keywords: %v", err)
 	}
 	got, err := s.Meta().GetMessage(ctx, id)
@@ -623,7 +623,7 @@ func testUpdateFlagsKeywords(t *testing.T, s store.Store) {
 	if !containsAll(got.Keywords, []string{"work", "urgent"}) {
 		t.Fatalf("Keywords = %v, want work+urgent", got.Keywords)
 	}
-	if _, err := s.Meta().UpdateMessageFlags(ctx, id, 0, 0, nil, []string{"urgent"}, 0); err != nil {
+	if _, err := s.Meta().UpdateMessageFlags(ctx, id, mb.ID, 0, 0, nil, []string{"urgent"}, 0); err != nil {
 		t.Fatalf("remove keyword: %v", err)
 	}
 	got, err = s.Meta().GetMessage(ctx, id)
@@ -645,7 +645,7 @@ func testExpungeMessages(t *testing.T, s store.Store) {
 	var ids []store.MessageID
 	for i := 0; i < 3; i++ {
 		ref := putBlob(t, s, "exp-"+string(rune('a'+i)))
-		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 			t.Fatalf("Insert %d: %v", i, err)
 		}
 	}
@@ -690,7 +690,7 @@ func testChangeFeedMonotonic(t *testing.T, s store.Store) {
 	var lastSeq store.ChangeSeq
 	for i := 0; i < 5; i++ {
 		ref := putBlob(t, s, "feed-"+string(rune('0'+i)))
-		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 			t.Fatalf("Insert %d: %v", i, err)
 		}
 	}
@@ -738,11 +738,11 @@ func testQuotaEnforcement(t *testing.T, s store.Store) {
 	}
 	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
 	small := putBlob(t, s, "1234567")
-	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: small, Size: small.Size}); err != nil {
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: small, Size: small.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 		t.Fatalf("Insert small: %v", err)
 	}
 	big := putBlob(t, s, "aaaaaaaaaaaaaaaaaaaaa")
-	_, _, err = s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: big, Size: big.Size})
+	_, _, err = s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: big, Size: big.Size}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if !errors.Is(err, store.ErrQuotaExceeded) {
 		t.Fatalf("Insert over quota = %v, want ErrQuotaExceeded", err)
 	}
@@ -753,7 +753,7 @@ func testDeleteMailboxCascades(t *testing.T, s store.Store) {
 	p := mustInsertPrincipal(t, s, "del@example.com")
 	mb := mustInsertMailbox(t, s, p.ID, "Temp")
 	ref := putBlob(t, s, "to-delete")
-	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	if err := s.Meta().DeleteMailbox(ctx, mb.ID); err != nil {
@@ -959,7 +959,7 @@ func testDeletePrincipalCascade(t *testing.T, s store.Store) {
 	p := mustInsertPrincipal(t, s, "cascade@example.com")
 	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
 	ref := putBlob(t, s, "cascade-body")
-	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
@@ -1325,8 +1325,8 @@ func testListMessagesPagination(t *testing.T, s store.Store) {
 	for i := 0; i < n; i++ {
 		ref := putBlob(t, s, fmt.Sprintf("lmp-%d", i))
 		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
-			MailboxID: mb.ID, Blob: ref, Size: ref.Size,
-		}); err != nil {
+			PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+		}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 			t.Fatalf("InsertMessage %d: %v", i, err)
 		}
 	}
@@ -2896,12 +2896,12 @@ func testSnoozeSetGetRoundtrip(t *testing.T, s store.Store) {
 	p := mustInsertPrincipal(t, s, "snooze-rt@example.com")
 	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
 	ref := putBlob(t, s, "snooze-body")
-	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	id := firstMessageIDFromFeed(t, s, p.ID)
 	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
-	if _, err := s.Meta().SetSnooze(ctx, id, &t1); err != nil {
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &t1); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	got, err := s.Meta().GetMessage(ctx, id)
@@ -2921,15 +2921,15 @@ func testSnoozeClear(t *testing.T, s store.Store) {
 	p := mustInsertPrincipal(t, s, "snooze-clear@example.com")
 	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
 	ref := putBlob(t, s, "snooze-clear-body")
-	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	id := firstMessageIDFromFeed(t, s, p.ID)
 	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
-	if _, err := s.Meta().SetSnooze(ctx, id, &t1); err != nil {
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &t1); err != nil {
 		t.Fatalf("SetSnooze set: %v", err)
 	}
-	if _, err := s.Meta().SetSnooze(ctx, id, nil); err != nil {
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, nil); err != nil {
 		t.Fatalf("SetSnooze clear: %v", err)
 	}
 	got, err := s.Meta().GetMessage(ctx, id)
@@ -2949,7 +2949,7 @@ func testSnoozeStateChangeAppended(t *testing.T, s store.Store) {
 	p := mustInsertPrincipal(t, s, "snooze-sc@example.com")
 	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
 	ref := putBlob(t, s, "snooze-sc-body")
-	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	id := firstMessageIDFromFeed(t, s, p.ID)
@@ -2965,7 +2965,7 @@ func testSnoozeStateChangeAppended(t *testing.T, s store.Store) {
 		}
 	}
 	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
-	if _, err := s.Meta().SetSnooze(ctx, id, &t1); err != nil {
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &t1); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	tail, err := s.Meta().ReadChangeFeed(ctx, p.ID, cursor, 1000)
@@ -2999,7 +2999,7 @@ func testSnoozeListDueOnlyReturnsDue(t *testing.T, s store.Store) {
 	}
 	for i := range deadlines {
 		ref := putBlob(t, s, fmt.Sprintf("body-%d", i))
-		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 			t.Fatalf("Insert %d: %v", i, err)
 		}
 	}
@@ -3016,7 +3016,7 @@ func testSnoozeListDueOnlyReturnsDue(t *testing.T, s store.Store) {
 		t.Fatalf("created %d messages, want 3", len(ids))
 	}
 	for i, id := range ids {
-		if _, err := s.Meta().SetSnooze(ctx, id, &deadlines[i]); err != nil {
+		if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &deadlines[i]); err != nil {
 			t.Fatalf("SetSnooze[%d]: %v", i, err)
 		}
 	}
@@ -3042,7 +3042,7 @@ func testSnoozeListDueLimit(t *testing.T, s store.Store) {
 	due := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < 10; i++ {
 		ref := putBlob(t, s, fmt.Sprintf("body-%d", i))
-		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 			t.Fatalf("Insert %d: %v", i, err)
 		}
 	}
@@ -3052,7 +3052,7 @@ func testSnoozeListDueLimit(t *testing.T, s store.Store) {
 	}
 	for _, e := range feed {
 		if e.Kind == store.EntityKindEmail && e.Op == store.ChangeOpCreated {
-			if _, err := s.Meta().SetSnooze(ctx, store.MessageID(e.EntityID), &due); err != nil {
+			if _, err := s.Meta().SetSnooze(ctx, store.MessageID(e.EntityID), mb.ID, &due); err != nil {
 				t.Fatalf("SetSnooze: %v", err)
 			}
 		}
@@ -3079,12 +3079,12 @@ func testSnoozeListDueRequiresKeyword(t *testing.T, s store.Store) {
 	p := mustInsertPrincipal(t, s, "snooze-kw@example.com")
 	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
 	ref := putBlob(t, s, "snooze-kw-body")
-	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Blob: ref, Size: ref.Size}); err != nil {
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	id := firstMessageIDFromFeed(t, s, p.ID)
 	due := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := s.Meta().SetSnooze(ctx, id, &due); err != nil {
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &due); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	// Sanity: due list returns the row right now.
@@ -3097,7 +3097,7 @@ func testSnoozeListDueRequiresKeyword(t *testing.T, s store.Store) {
 	}
 	// Now remove the keyword via UpdateMessageFlags directly. The
 	// SnoozedUntil column remains set (programmer-error shape).
-	if _, err := s.Meta().UpdateMessageFlags(ctx, id, 0, 0, nil, []string{"$snoozed"}, 0); err != nil {
+	if _, err := s.Meta().UpdateMessageFlags(ctx, id, mb.ID, 0, 0, nil, []string{"$snoozed"}, 0); err != nil {
 		t.Fatalf("UpdateMessageFlags clear: %v", err)
 	}
 	got2, err := s.Meta().ListDueSnoozedMessages(ctx, due.Add(time.Hour), 100)
@@ -5306,9 +5306,14 @@ func testPushSubscriptionCascadeOnPrincipalDelete(t *testing.T, s store.Store) {
 
 func mustInsertMessage(t *testing.T, s store.Store, mailboxID store.MailboxID, msgID string) store.Message {
 	t.Helper()
+	// Look up the principal that owns this mailbox so we can set PrincipalID.
+	mb, err := s.Meta().GetMailboxByID(ctxT(t), mailboxID)
+	if err != nil {
+		t.Fatalf("mustInsertMessage: GetMailboxByID(%d): %v", mailboxID, err)
+	}
 	ref := putBlob(t, s, "From: sender@example.com\r\nMessage-ID: <"+msgID+">\r\n\r\nBody\r\n")
 	uid, _, err := s.Meta().InsertMessage(ctxT(t), store.Message{
-		MailboxID:    mailboxID,
+		PrincipalID:  mb.PrincipalID,
 		Size:         ref.Size,
 		Blob:         ref,
 		ReceivedAt:   time.Now().UTC(),
@@ -5317,7 +5322,7 @@ func mustInsertMessage(t *testing.T, s store.Store, mailboxID store.MailboxID, m
 			MessageID: msgID,
 			From:      "sender@example.com",
 		},
-	})
+	}, []store.MessageMailbox{{MailboxID: mailboxID}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}

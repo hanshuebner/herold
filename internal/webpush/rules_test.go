@@ -158,10 +158,9 @@ func TestEvaluate_Default_AllowsMailPrimary(t *testing.T) {
 	pid := mustInsertPrincipal(t, st, "alice@example.test")
 	mbid := mustInsertMailbox(t, st, pid, "INBOX")
 	mid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
-		MailboxID: mbid,
-		Keywords:  []string{"$category-primary"},
-		Envelope:  store.Envelope{Subject: "x"},
-	})
+		Keywords: []string{"$category-primary"},
+		Envelope: store.Envelope{Subject: "x"},
+	}, []store.MessageMailbox{{MailboxID: mbid}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
@@ -183,10 +182,10 @@ func TestEvaluate_Default_DeniesMailPromotions(t *testing.T) {
 	pid := mustInsertPrincipal(t, st, "alice@example.test")
 	mbid := mustInsertMailbox(t, st, pid, "INBOX")
 	mid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
-		MailboxID: mbid,
-		Keywords:  []string{"$category-promotions"},
-		Envelope:  store.Envelope{Subject: "buy now"},
-	})
+		PrincipalID: pid,
+		Keywords:    []string{"$category-promotions"},
+		Envelope:    store.Envelope{Subject: "buy now"},
+	}, []store.MessageMailbox{{MailboxID: mbid}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
@@ -226,10 +225,10 @@ func TestEvaluate_PerEventTypeOff_DeniesMailAllowsChat(t *testing.T) {
 	pid := mustInsertPrincipal(t, st, "alice@example.test")
 	mbid := mustInsertMailbox(t, st, pid, "INBOX")
 	mid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
-		MailboxID: mbid,
-		Keywords:  []string{"$category-primary"},
-		Envelope:  store.Envelope{Subject: "ignored"},
-	})
+		PrincipalID: pid,
+		Keywords:    []string{"$category-primary"},
+		Envelope:    store.Envelope{Subject: "ignored"},
+	}, []store.MessageMailbox{{MailboxID: mbid}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
@@ -250,10 +249,9 @@ func TestEvaluate_QuietHoursDeniesUnlessOverride(t *testing.T) {
 	pid := mustInsertPrincipal(t, st, "alice@example.test")
 	mbid := mustInsertMailbox(t, st, pid, "INBOX")
 	mid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
-		MailboxID: mbid,
-		Keywords:  []string{"$category-primary"},
-		Envelope:  store.Envelope{Subject: "x"},
-	})
+		Keywords: []string{"$category-primary"},
+		Envelope: store.Envelope{Subject: "x"},
+	}, []store.MessageMailbox{{MailboxID: mbid}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
@@ -368,10 +366,10 @@ func TestEvaluate_VIPField_NotConsultedServerSide(t *testing.T) {
 	pid := mustInsertPrincipal(t, st, "alice@example.test")
 	mbid := mustInsertMailbox(t, st, pid, "INBOX")
 	mid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
-		MailboxID: mbid,
-		Keywords:  []string{"$category-promotions"},
-		Envelope:  store.Envelope{From: "vip@example.test", Subject: "promo"},
-	})
+		PrincipalID: pid,
+		Keywords:    []string{"$category-promotions"},
+		Envelope:    store.Envelope{From: "vip@example.test", Subject: "promo"},
+	}, []store.MessageMailbox{{MailboxID: mbid}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
@@ -433,10 +431,10 @@ func TestEvaluate_NilCategoryAllowlist_PassesEveryMail(t *testing.T) {
 	pid := mustInsertPrincipal(t, st, "alice@example.test")
 	mbid := mustInsertMailbox(t, st, pid, "INBOX")
 	mid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
-		MailboxID: mbid,
-		Keywords:  []string{"$category-promotions"},
-		Envelope:  store.Envelope{Subject: "x"},
-	})
+		PrincipalID: pid,
+		Keywords:    []string{"$category-promotions"},
+		Envelope:    store.Envelope{Subject: "x"},
+	}, []store.MessageMailbox{{MailboxID: mbid}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}

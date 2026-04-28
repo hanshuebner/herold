@@ -411,13 +411,13 @@ func TestFETCH_Envelope_Body_Flags(t *testing.T) {
 	}
 	env := parseStoreEnvelope(msg)
 	_, _, err = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID:    f.inbox.ID,
+		PrincipalID:  f.pid,
 		Flags:        0,
 		InternalDate: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		Size:         int64(len(msg)),
 		Blob:         blob,
 		Envelope:     env,
-	})
+	}, []store.MessageMailbox{{MailboxID: f.inbox.ID}})
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -473,8 +473,8 @@ func TestSTORE_SetFlags_EmitsUntaggedFETCH(t *testing.T) {
 		msg := buildMessage(fmt.Sprintf("m%d", i), "body")
 		blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
 		_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-			MailboxID: f.inbox.ID, Size: int64(len(msg)), Blob: blob, Envelope: parseStoreEnvelope(msg),
-		})
+			Size: int64(len(msg)), Blob: blob, Envelope: parseStoreEnvelope(msg),
+		}, []store.MessageMailbox{{MailboxID: f.inbox.ID}})
 	}
 	c := loggedInClient(t, f)
 	defer c.close()
@@ -502,8 +502,8 @@ func TestSEARCH_Flagged_Subject(t *testing.T) {
 			flags = store.MessageFlagFlagged
 		}
 		_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-			MailboxID: f.inbox.ID, Size: int64(len(msg)), Blob: blob, Flags: flags, Envelope: parseStoreEnvelope(msg),
-		})
+			Size: int64(len(msg)), Blob: blob, Flags: flags, Envelope: parseStoreEnvelope(msg),
+		}, []store.MessageMailbox{{MailboxID: f.inbox.ID}})
 	}
 	insert("invoice 001", true)
 	insert("hello world", false)
@@ -541,8 +541,8 @@ func TestUID_FETCH_Semantics(t *testing.T) {
 		msg := buildMessage(fmt.Sprintf("m%d", i), "body")
 		blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
 		uid, _, _ := f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-			MailboxID: f.inbox.ID, Size: int64(len(msg)), Blob: blob, Envelope: parseStoreEnvelope(msg),
-		})
+			Size: int64(len(msg)), Blob: blob, Envelope: parseStoreEnvelope(msg),
+		}, []store.MessageMailbox{{MailboxID: f.inbox.ID}})
 		if i == 0 {
 			firstUID = uid
 		}
@@ -564,8 +564,8 @@ func TestEXPUNGE_EmitsUntaggedExpunges(t *testing.T) {
 		msg := buildMessage(fmt.Sprintf("m%d", i), "body")
 		blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
 		_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-			MailboxID: f.inbox.ID, Size: int64(len(msg)), Blob: blob, Envelope: parseStoreEnvelope(msg),
-		})
+			Size: int64(len(msg)), Blob: blob, Envelope: parseStoreEnvelope(msg),
+		}, []store.MessageMailbox{{MailboxID: f.inbox.ID}})
 	}
 	c := loggedInClient(t, f)
 	defer c.close()
@@ -622,8 +622,8 @@ func TestIDLE_StreamsNewMessage(t *testing.T) {
 	msg := buildMessage("pushed", "idle delivery")
 	blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
 	_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: f.inbox.ID, Size: int64(len(msg)), Blob: blob, Envelope: parseStoreEnvelope(msg),
-	})
+		Size: int64(len(msg)), Blob: blob, Envelope: parseStoreEnvelope(msg),
+	}, []store.MessageMailbox{{MailboxID: f.inbox.ID}})
 	// Fire the poll tick.
 	if fc, ok := f.ha.Clock.(*clock.FakeClock); ok {
 		fc.Advance(250 * time.Millisecond)
@@ -669,8 +669,8 @@ func TestFETCH_DownloadRateLimit_Throttles(t *testing.T) {
 	msg := buildMessage("big", body)
 	blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
 	_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: f.inbox.ID, Size: int64(len(msg)), Blob: blob, Envelope: parseStoreEnvelope(msg),
-	})
+		Size: int64(len(msg)), Blob: blob, Envelope: parseStoreEnvelope(msg),
+	}, []store.MessageMailbox{{MailboxID: f.inbox.ID}})
 	c := loggedInClient(t, f)
 	defer c.close()
 	c.send("s1", "SELECT INBOX")
@@ -718,12 +718,11 @@ func seedMessageID(t *testing.T, f *fixture, subject string) store.MessageID {
 		t.Fatalf("put: %v", err)
 	}
 	if _, _, err := f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID:    f.inbox.ID,
 		Size:         int64(len(body)),
 		Blob:         blob,
 		InternalDate: time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC),
 		Envelope:     parseStoreEnvelope(body),
-	}); err != nil {
+	}, []store.MessageMailbox{{MailboxID: f.inbox.ID}}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	feed, err := f.ha.Store.Meta().ReadChangeFeed(ctx, f.pid, 0, 1000)
@@ -795,7 +794,7 @@ func TestSTORE_RemoveSnoozedKeyword_AlsoNullsColumn(t *testing.T) {
 	id := seedMessageID(t, f, "snooze-remove")
 	// Set snooze via the store (canonical JMAP path).
 	t1 := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
-	if _, err := f.ha.Store.Meta().SetSnooze(context.Background(), id, &t1); err != nil {
+	if _, err := f.ha.Store.Meta().SetSnooze(context.Background(), id, f.inbox.ID, &t1); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	c := loggedInClient(t, f)
@@ -825,7 +824,7 @@ func TestSEARCH_Keyword_Snoozed_FindsSnoozedMessages(t *testing.T) {
 	id1 := seedMessageID(t, f, "msg-snoozed")
 	seedMessage(t, f, "msg-not-snoozed")
 	t1 := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
-	if _, err := f.ha.Store.Meta().SetSnooze(context.Background(), id1, &t1); err != nil {
+	if _, err := f.ha.Store.Meta().SetSnooze(context.Background(), id1, f.inbox.ID, &t1); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	c := loggedInClient(t, f)
@@ -860,12 +859,11 @@ func TestSELECT_FLAGS_IncludesExistingKeywords(t *testing.T) {
 	msg := buildMessage("kw-seed", "body")
 	blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
 	_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: f.inbox.ID,
-		Size:      int64(len(msg)),
-		Blob:      blob,
-		Keywords:  []string{"$label1"},
-		Envelope:  parseStoreEnvelope(msg),
-	})
+		Size:     int64(len(msg)),
+		Blob:     blob,
+		Keywords: []string{"$label1"},
+		Envelope: parseStoreEnvelope(msg),
+	}, []store.MessageMailbox{{MailboxID: f.inbox.ID}})
 
 	c := loggedInClient(t, f)
 	defer c.close()
@@ -921,11 +919,10 @@ func TestSTORE_NewKeyword_EmitsFLAGSBeforeFETCH(t *testing.T) {
 	msg := buildMessage("kw-new", "body")
 	blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
 	_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: f.inbox.ID,
-		Size:      int64(len(msg)),
-		Blob:      blob,
-		Envelope:  parseStoreEnvelope(msg),
-	})
+		Size:     int64(len(msg)),
+		Blob:     blob,
+		Envelope: parseStoreEnvelope(msg),
+	}, []store.MessageMailbox{{MailboxID: f.inbox.ID}})
 
 	c := loggedInClient(t, f)
 	defer c.close()
@@ -974,11 +971,10 @@ func TestSTORE_ExistingKeyword_NoExtraFLAGS(t *testing.T) {
 	msg := buildMessage("kw-repeat", "body")
 	blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
 	_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: f.inbox.ID,
-		Size:      int64(len(msg)),
-		Blob:      blob,
-		Envelope:  parseStoreEnvelope(msg),
-	})
+		Size:     int64(len(msg)),
+		Blob:     blob,
+		Envelope: parseStoreEnvelope(msg),
+	}, []store.MessageMailbox{{MailboxID: f.inbox.ID}})
 
 	c := loggedInClient(t, f)
 	defer c.close()
@@ -1044,11 +1040,10 @@ func TestIDLE_NewKeyword_StreamsFLAGSUpdate(t *testing.T) {
 	msg := buildMessage("idle-kw", "idle keyword body")
 	blob, _ := f.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
 	_, _, _ = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: f.inbox.ID,
-		Size:      int64(len(msg)),
-		Blob:      blob,
-		Envelope:  parseStoreEnvelope(msg),
-	})
+		Size:     int64(len(msg)),
+		Blob:     blob,
+		Envelope: parseStoreEnvelope(msg),
+	}, []store.MessageMailbox{{MailboxID: f.inbox.ID}})
 
 	// Session B enters IDLE.
 	cB := loggedInClient(t, f)

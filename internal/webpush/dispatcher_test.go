@@ -200,11 +200,10 @@ func (f *dispatcherFixture) triggerEmailChange(t *testing.T) {
 		t.Fatalf("ListMailboxes: %v %d", err, len(mailboxes))
 	}
 	if _, _, err := f.store.Meta().InsertMessage(context.Background(), store.Message{
-		MailboxID: mailboxes[0].ID,
-		Blob:      ref,
-		Size:      ref.Size,
-		Envelope:  store.Envelope{From: "Bob <bob@example.test>", Subject: "hello"},
-	}); err != nil {
+		Blob:     ref,
+		Size:     ref.Size,
+		Envelope: store.Envelope{From: "Bob <bob@example.test>", Subject: "hello"},
+	}, []store.MessageMailbox{{MailboxID: mailboxes[0].ID}}); err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 	if _, err := f.disp.tick(context.Background()); err != nil {

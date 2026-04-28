@@ -32,11 +32,10 @@ func TestBuildPayload_Email_IncludesPreview(t *testing.T) {
 		t.Fatalf("Blobs.Put: %v", err)
 	}
 	mid, _, err := st.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: mbid,
-		Blob:      ref,
-		Size:      ref.Size,
-		Envelope:  store.Envelope{From: "bob@example.test", Subject: "Hi"},
-	})
+		Blob:     ref,
+		Size:     ref.Size,
+		Envelope: store.Envelope{From: "bob@example.test", Subject: "Hi"},
+	}, []store.MessageMailbox{{MailboxID: mbid}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
@@ -76,11 +75,10 @@ func TestBuildPayload_Email_BlobMissingOmitsPreview(t *testing.T) {
 	pid := mustInsertPrincipal(t, st, "alice@example.test")
 	mbid := mustInsertMailbox(t, st, pid, "INBOX")
 	mid, _, err := st.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: mbid,
 		// Blob ref points at nothing.
 		Blob:     store.BlobRef{Hash: "", Size: 0},
 		Envelope: store.Envelope{Subject: "no body"},
-	})
+	}, []store.MessageMailbox{{MailboxID: mbid}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}

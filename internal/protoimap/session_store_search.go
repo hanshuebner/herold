@@ -99,7 +99,7 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 		// drops the keyword) and the message currently has a
 		// SnoozedUntil, route through SetSnooze for the atomic clear.
 		if clearsSnoozed && m.SnoozedUntil != nil {
-			if _, err := ses.s.store.Meta().SetSnooze(ctx, m.ID, nil); err != nil {
+			if _, err := ses.s.store.Meta().SetSnooze(ctx, m.ID, ses.sel.id, nil); err != nil {
 				return ses.resp.taggedNO(c.Tag, "", "store failed")
 			}
 			// Drop the keyword from the residual delta; SetSnooze
@@ -109,7 +109,7 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 		// addsSnoozed is permitted only when SnoozedUntil is already
 		// non-null (JMAP wrote the column first); the keyword
 		// addition is then a no-op flip in the kw set.
-		_, err := ses.s.store.Meta().UpdateMessageFlags(ctx, m.ID, addFlags, clearFlags, myAddKW, myClearKW, store.ModSeq(c.StoreOptions.UnchangedSince))
+		_, err := ses.s.store.Meta().UpdateMessageFlags(ctx, m.ID, ses.sel.id, addFlags, clearFlags, myAddKW, myClearKW, store.ModSeq(c.StoreOptions.UnchangedSince))
 		if err != nil {
 			if errors.Is(err, store.ErrConflict) {
 				rejectedSeqs = append(rejectedSeqs, seq)

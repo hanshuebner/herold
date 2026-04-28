@@ -705,27 +705,61 @@ func (m *metadata) DeleteMailbox(ctx context.Context, id store.MailboxID) error 
 		if err != nil {
 			return mapErr(err)
 		}
-		// Decrement refcounts for all blobs referenced by this mailbox.
-		hashRows, err := tx.QueryContext(ctx, `SELECT blob_hash FROM messages WHERE mailbox_id = ?`, int64(id))
+		// Find messages whose ONLY membership is this mailbox — those
+		// messages must have their blob refcounts decremented and their
+		// messages rows removed.
+		hashRows, err := tx.QueryContext(ctx, `
+			SELECT m.blob_hash, m.size
+			  FROM messages m
+			  JOIN message_mailboxes mm ON mm.message_id = m.id
+			 WHERE mm.mailbox_id = ?
+			   AND (SELECT COUNT(*) FROM message_mailboxes mm2 WHERE mm2.message_id = m.id) = 1`,
+			int64(id))
 		if err != nil {
 			return mapErr(err)
 		}
-		var hashes []string
+		type blobInfo struct {
+			hash string
+			size int64
+		}
+		var soleBlobs []blobInfo
 		for hashRows.Next() {
-			var h string
-			if err := hashRows.Scan(&h); err != nil {
+			var bi blobInfo
+			if err := hashRows.Scan(&bi.hash, &bi.size); err != nil {
 				hashRows.Close()
 				return mapErr(err)
 			}
-			hashes = append(hashes, h)
+			soleBlobs = append(soleBlobs, bi)
 		}
 		hashRows.Close()
-		for _, h := range hashes {
-			if err := decRef(ctx, tx, h, m.s.clock.Now()); err != nil {
+
+		// For sole-membership messages: delete messages rows (message_mailboxes
+		// rows cascade), decrement refcounts, and adjust principal used_bytes.
+		for _, bi := range soleBlobs {
+			if _, err := tx.ExecContext(ctx, `
+				DELETE FROM messages
+				 WHERE blob_hash = ?
+				   AND id IN (SELECT message_id FROM message_mailboxes WHERE mailbox_id = ?)`,
+				bi.hash, int64(id)); err != nil {
+				return mapErr(err)
+			}
+			if err := decRef(ctx, tx, bi.hash, m.s.clock.Now()); err != nil {
 				return err
 			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE principals SET used_bytes = used_bytes - ?, updated_at_us = ? WHERE id = ?`,
+				bi.size, usMicros(m.s.clock.Now()), pid); err != nil {
+				return mapErr(err)
+			}
 		}
-		// Messages cascade via FK.
+		// For multi-membership messages: just remove the membership rows
+		// for this mailbox (ON DELETE CASCADE on the FK would handle it, but
+		// we want explicit control here for the used_bytes accounting above).
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM message_mailboxes WHERE mailbox_id = ?`, int64(id)); err != nil {
+			return mapErr(err)
+		}
+		// Now delete the mailbox itself.
 		res, err := tx.ExecContext(ctx, `DELETE FROM mailboxes WHERE id = ?`, int64(id))
 		if err != nil {
 			return mapErr(err)
@@ -744,43 +778,127 @@ func (m *metadata) DeleteMailbox(ctx context.Context, id store.MailboxID) error 
 
 // -- messages ---------------------------------------------------------
 
-func (m *metadata) InsertMessage(ctx context.Context, msg store.Message) (store.UID, store.ModSeq, error) {
-	now := m.s.clock.Now().UTC()
-	var uid store.UID
-	var modseq store.ModSeq
-	err := m.runTx(ctx, func(tx *sql.Tx) error {
-		// Load mailbox + principal row.
-		var pid int64
-		var uidNext, highestModSeq int64
-		err := tx.QueryRowContext(ctx, `
-			SELECT principal_id, uidnext, highest_modseq FROM mailboxes WHERE id = ?`,
-			int64(msg.MailboxID)).Scan(&pid, &uidNext, &highestModSeq)
+// scanMessageRow scans the mailbox-independent message columns.
+func scanMessageRow(row rowLike) (store.Message, error) {
+	var msg store.Message
+	var id, pid int64
+	var idUs, rcvUs int64
+	var blobSize int64
+	var thread int64
+	var envDateUs int64
+	err := row.Scan(&id, &pid, &msg.Blob.Hash, &blobSize, &idUs, &rcvUs,
+		&msg.Size, &thread,
+		&msg.Envelope.Subject, &msg.Envelope.From, &msg.Envelope.To,
+		&msg.Envelope.Cc, &msg.Envelope.Bcc, &msg.Envelope.ReplyTo,
+		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &envDateUs)
+	if err != nil {
+		return store.Message{}, mapErr(err)
+	}
+	msg.ID = store.MessageID(id)
+	msg.PrincipalID = store.PrincipalID(pid)
+	msg.InternalDate = fromMicros(idUs)
+	msg.ReceivedAt = fromMicros(rcvUs)
+	msg.Blob.Size = blobSize
+	msg.ThreadID = uint64(thread)
+	msg.Envelope.Date = fromMicros(envDateUs)
+	return msg, nil
+}
+
+// scanMessageMailboxRow scans one message_mailboxes row.
+func scanMessageMailboxRow(row rowLike) (store.MessageMailbox, error) {
+	var mm store.MessageMailbox
+	var mid, mbox, uid, modseq, flags int64
+	var keywords string
+	var snoozedUs sql.NullInt64
+	err := row.Scan(&mid, &mbox, &uid, &modseq, &flags, &keywords, &snoozedUs)
+	if err != nil {
+		return store.MessageMailbox{}, mapErr(err)
+	}
+	mm.MessageID = store.MessageID(mid)
+	mm.MailboxID = store.MailboxID(mbox)
+	mm.UID = store.UID(uid)
+	mm.ModSeq = store.ModSeq(modseq)
+	mm.Flags = store.MessageFlags(flags)
+	if keywords != "" {
+		mm.Keywords = strings.Split(keywords, ",")
+	}
+	if snoozedUs.Valid {
+		t := fromMicros(snoozedUs.Int64)
+		mm.SnoozedUntil = &t
+	}
+	return mm, nil
+}
+
+// loadMailboxes fetches all message_mailboxes rows for a message and
+// populates the convenience fields on msg from the entry matching
+// mailboxID (or the first entry when mailboxID == 0).
+func (m *metadata) loadMailboxes(ctx context.Context, msg *store.Message, mailboxID store.MailboxID) error {
+	rows, err := m.s.db.QueryContext(ctx, `
+		SELECT message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us
+		  FROM message_mailboxes
+		 WHERE message_id = ?
+		 ORDER BY mailbox_id`,
+		int64(msg.ID))
+	if err != nil {
+		return mapErr(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		mm, err := scanMessageMailboxRow(rows)
 		if err != nil {
-			return mapErr(err)
+			return err
+		}
+		msg.Mailboxes = append(msg.Mailboxes, mm)
+	}
+	if err := rows.Err(); err != nil {
+		return mapErr(err)
+	}
+	// Populate convenience fields from the target mailbox entry or
+	// the first entry (for single-mailbox or unscoped reads).
+	for _, mm := range msg.Mailboxes {
+		if mailboxID == 0 || mm.MailboxID == mailboxID {
+			msg.MailboxID = mm.MailboxID
+			msg.UID = mm.UID
+			msg.ModSeq = mm.ModSeq
+			msg.Flags = mm.Flags
+			msg.Keywords = mm.Keywords
+			msg.SnoozedUntil = mm.SnoozedUntil
+			break
+		}
+	}
+	return nil
+}
+
+func (m *metadata) InsertMessage(ctx context.Context, msg store.Message, targets []store.MessageMailbox) (store.UID, store.ModSeq, error) {
+	if len(targets) == 0 {
+		return 0, 0, fmt.Errorf("storesqlite: InsertMessage: targets must not be empty")
+	}
+	now := m.s.clock.Now().UTC()
+	var firstUID store.UID
+	var firstModSeq store.ModSeq
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		// Principal from caller (required).
+		pid := int64(msg.PrincipalID)
+		if pid == 0 {
+			// Fallback: derive from first target's mailbox.
+			if err := tx.QueryRowContext(ctx, `SELECT principal_id FROM mailboxes WHERE id = ?`,
+				int64(targets[0].MailboxID)).Scan(&pid); err != nil {
+				return mapErr(err)
+			}
 		}
 		// Quota check.
 		var quota, used int64
-		err = tx.QueryRowContext(ctx, `SELECT quota_bytes, used_bytes FROM principals WHERE id = ?`, pid).Scan(&quota, &used)
-		if err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT quota_bytes, used_bytes FROM principals WHERE id = ?`, pid).Scan(&quota, &used); err != nil {
 			return mapErr(err)
 		}
 		if quota > 0 && used+msg.Size > quota {
 			return store.ErrQuotaExceeded
 		}
-		uid = store.UID(uidNext)
-		modseq = store.ModSeq(highestModSeq + 1)
-		// Normalise env_message_id before storing so the thread-lookup
-		// index (idx_messages_env_message_id, migration 0022) and
-		// GetMessageByMessageIDHeader can use bare equality rather than
-		// SQL LOWER/TRIM functions that would skip the index.
+		// Normalise env_message_id.
 		if msg.Envelope.MessageID != "" {
 			msg.Envelope.MessageID = mailparse.NormalizeMessageID(msg.Envelope.MessageID)
 		}
-		// Thread resolution: if the caller did not supply a ThreadID, look
-		// up references in the same principal's mailboxes to inherit the
-		// thread from an already-stored ancestor. The index on
-		// env_message_id (migration 0022) keeps this O(refs) instead of
-		// O(messages).
+		// Thread resolution against the principal's existing messages.
 		if msg.ThreadID == 0 && msg.Envelope.InReplyTo != "" {
 			refs := mailparse.ParseReferences(msg.Envelope.InReplyTo)
 			for _, ref := range refs {
@@ -788,8 +906,7 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message) (store.
 				lookupErr := tx.QueryRowContext(ctx, `
 					SELECT m.id, m.thread_id
 					  FROM messages m
-					  JOIN mailboxes mb ON mb.id = m.mailbox_id
-					 WHERE mb.principal_id = ?
+					 WHERE m.principal_id = ?
 					   AND m.env_message_id = ?
 					 LIMIT 1`,
 					pid, ref).Scan(&ancestorID, &ancestorThread)
@@ -807,24 +924,18 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message) (store.
 				break
 			}
 		}
-		var snoozedArg any
-		if msg.SnoozedUntil != nil {
-			snoozedArg = usMicros(*msg.SnoozedUntil)
-		}
+		// Insert the mailbox-independent messages row.
 		res, err := tx.ExecContext(ctx, `
-			INSERT INTO messages (mailbox_id, uid, modseq, flags, keywords_csv,
-			  internal_date_us, received_at_us, size, blob_hash, blob_size, thread_id,
+			INSERT INTO messages (principal_id, blob_hash, blob_size,
+			  internal_date_us, received_at_us, size, thread_id,
 			  env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
-			  env_message_id, env_in_reply_to, env_date_us, snoozed_until_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			int64(msg.MailboxID), int64(uid), int64(modseq), int64(msg.Flags),
-			strings.Join(msg.Keywords, ","),
-			usMicros(msg.InternalDate), usMicros(msg.ReceivedAt), msg.Size,
-			msg.Blob.Hash, msg.Blob.Size, int64(msg.ThreadID),
+			  env_message_id, env_in_reply_to, env_date_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			pid, msg.Blob.Hash, msg.Blob.Size,
+			usMicros(msg.InternalDate), usMicros(msg.ReceivedAt), msg.Size, int64(msg.ThreadID),
 			msg.Envelope.Subject, msg.Envelope.From, msg.Envelope.To,
 			msg.Envelope.Cc, msg.Envelope.Bcc, msg.Envelope.ReplyTo,
-			msg.Envelope.MessageID, msg.Envelope.InReplyTo, usMicros(msg.Envelope.Date),
-			snoozedArg)
+			msg.Envelope.MessageID, msg.Envelope.InReplyTo, usMicros(msg.Envelope.Date))
 		if err != nil {
 			return mapErr(err)
 		}
@@ -832,56 +943,104 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message) (store.
 		if err != nil {
 			return fmt.Errorf("storesqlite: last insert id: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE mailboxes SET uidnext = uidnext + 1, highest_modseq = ?, updated_at_us = ?
-			 WHERE id = ?`, int64(modseq), usMicros(now), int64(msg.MailboxID)); err != nil {
-			return mapErr(err)
+		// Insert one message_mailboxes row per target.
+		for i, t := range targets {
+			var uidNext, highest int64
+			if err := tx.QueryRowContext(ctx, `SELECT uidnext, highest_modseq FROM mailboxes WHERE id = ?`,
+				int64(t.MailboxID)).Scan(&uidNext, &highest); err != nil {
+				return mapErr(err)
+			}
+			allocUID := store.UID(uidNext)
+			allocModSeq := store.ModSeq(highest + 1)
+			var snoozedArg any
+			if t.SnoozedUntil != nil {
+				snoozedArg = usMicros(*t.SnoozedUntil)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO message_mailboxes
+				  (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				mid, int64(t.MailboxID), int64(allocUID), int64(allocModSeq),
+				int64(t.Flags), strings.Join(t.Keywords, ","), snoozedArg); err != nil {
+				return mapErr(err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE mailboxes SET uidnext = uidnext + 1, highest_modseq = ?, updated_at_us = ?
+				 WHERE id = ?`, int64(allocModSeq), usMicros(now), int64(t.MailboxID)); err != nil {
+				return mapErr(err)
+			}
+			if err := appendStateChange(ctx, tx, store.PrincipalID(pid),
+				store.EntityKindEmail, uint64(mid), uint64(t.MailboxID), store.ChangeOpCreated, now); err != nil {
+				return err
+			}
+			if i == 0 {
+				firstUID = allocUID
+				firstModSeq = allocModSeq
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE principals SET used_bytes = used_bytes + ?, updated_at_us = ? WHERE id = ?`,
 			msg.Size, usMicros(now), pid); err != nil {
 			return mapErr(err)
 		}
-		if err := incRef(ctx, tx, msg.Blob.Hash, msg.Blob.Size, now); err != nil {
-			return err
-		}
-		return appendStateChange(ctx, tx, store.PrincipalID(pid),
-			store.EntityKindEmail, uint64(mid), uint64(msg.MailboxID), store.ChangeOpCreated, now)
+		return incRef(ctx, tx, msg.Blob.Hash, msg.Blob.Size, now)
 	})
 	if err != nil {
 		return 0, 0, err
 	}
-	return uid, modseq, nil
+	return firstUID, firstModSeq, nil
 }
 
 func (m *metadata) GetMessage(ctx context.Context, id store.MessageID) (store.Message, error) {
 	row := m.s.db.QueryRowContext(ctx, `
-		SELECT id, mailbox_id, uid, modseq, flags, keywords_csv, internal_date_us,
-		       received_at_us, size, blob_hash, blob_size, thread_id,
+		SELECT id, principal_id, blob_hash, blob_size, internal_date_us,
+		       received_at_us, size, thread_id,
 		       env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
-		       env_message_id, env_in_reply_to, env_date_us, snoozed_until_us
+		       env_message_id, env_in_reply_to, env_date_us
 		  FROM messages WHERE id = ?`, int64(id))
-	return scanMessage(row)
+	msg, err := scanMessageRow(row)
+	if err != nil {
+		return store.Message{}, err
+	}
+	if err := m.loadMailboxes(ctx, &msg, 0); err != nil {
+		return store.Message{}, err
+	}
+	return msg, nil
 }
 
+// scanMessage is a backward-compat shim that scans a joined
+// (messages JOIN message_mailboxes) row. Used by ListMessages and
+// ListDueSnoozedMessages where a specific mailbox context is known.
 func scanMessage(row rowLike) (store.Message, error) {
 	var msg store.Message
-	var id, mbox, uid, modseq, flags int64
-	var keywords string
+	var id, pid int64
 	var idUs, rcvUs int64
 	var blobSize int64
 	var thread int64
 	var envDateUs int64
+	// message_mailboxes fields
+	var mbox, uid, modseq, flags int64
+	var keywords string
 	var snoozedUs sql.NullInt64
-	err := row.Scan(&id, &mbox, &uid, &modseq, &flags, &keywords, &idUs, &rcvUs,
-		&msg.Size, &msg.Blob.Hash, &blobSize, &thread,
+	err := row.Scan(
+		&id, &pid, &msg.Blob.Hash, &blobSize, &idUs, &rcvUs,
+		&msg.Size, &thread,
 		&msg.Envelope.Subject, &msg.Envelope.From, &msg.Envelope.To,
 		&msg.Envelope.Cc, &msg.Envelope.Bcc, &msg.Envelope.ReplyTo,
-		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &envDateUs, &snoozedUs)
+		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &envDateUs,
+		// message_mailboxes
+		&mbox, &uid, &modseq, &flags, &keywords, &snoozedUs,
+	)
 	if err != nil {
 		return store.Message{}, mapErr(err)
 	}
 	msg.ID = store.MessageID(id)
+	msg.PrincipalID = store.PrincipalID(pid)
+	msg.InternalDate = fromMicros(idUs)
+	msg.ReceivedAt = fromMicros(rcvUs)
+	msg.Blob.Size = blobSize
+	msg.ThreadID = uint64(thread)
+	msg.Envelope.Date = fromMicros(envDateUs)
 	msg.MailboxID = store.MailboxID(mbox)
 	msg.UID = store.UID(uid)
 	msg.ModSeq = store.ModSeq(modseq)
@@ -889,15 +1048,20 @@ func scanMessage(row rowLike) (store.Message, error) {
 	if keywords != "" {
 		msg.Keywords = strings.Split(keywords, ",")
 	}
-	msg.InternalDate = fromMicros(idUs)
-	msg.ReceivedAt = fromMicros(rcvUs)
-	msg.Blob.Size = blobSize
-	msg.ThreadID = uint64(thread)
-	msg.Envelope.Date = fromMicros(envDateUs)
 	if snoozedUs.Valid {
 		t := fromMicros(snoozedUs.Int64)
 		msg.SnoozedUntil = &t
 	}
+	mm := store.MessageMailbox{
+		MessageID:    msg.ID,
+		MailboxID:    msg.MailboxID,
+		UID:          msg.UID,
+		ModSeq:       msg.ModSeq,
+		Flags:        msg.Flags,
+		Keywords:     msg.Keywords,
+		SnoozedUntil: msg.SnoozedUntil,
+	}
+	msg.Mailboxes = []store.MessageMailbox{mm}
 	return msg, nil
 }
 
@@ -911,6 +1075,7 @@ func (m *metadata) UpdateMessageThreadID(ctx context.Context, msgID store.Messag
 func (m *metadata) UpdateMessageFlags(
 	ctx context.Context,
 	id store.MessageID,
+	mailboxID store.MailboxID,
 	flagAdd, flagClear store.MessageFlags,
 	keywordAdd, keywordClear []string,
 	unchangedSince store.ModSeq,
@@ -918,13 +1083,13 @@ func (m *metadata) UpdateMessageFlags(
 	now := m.s.clock.Now().UTC()
 	var modseq store.ModSeq
 	err := m.runTx(ctx, func(tx *sql.Tx) error {
-		var mbox int64
 		var curFlags int64
 		var curKeywords string
 		var curModSeq int64
 		err := tx.QueryRowContext(ctx, `
-			SELECT mailbox_id, flags, keywords_csv, modseq
-			  FROM messages WHERE id = ?`, int64(id)).Scan(&mbox, &curFlags, &curKeywords, &curModSeq)
+			SELECT flags, keywords_csv, modseq
+			  FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+			int64(id), int64(mailboxID)).Scan(&curFlags, &curKeywords, &curModSeq)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -948,29 +1113,30 @@ func (m *metadata) UpdateMessageFlags(
 		for k := range kwSet {
 			kws = append(kws, k)
 		}
-		// Sort for determinism.
 		sortStrings(kws)
 
 		// Advance mailbox modseq.
 		var pid, highest int64
-		err = tx.QueryRowContext(ctx, `SELECT principal_id, highest_modseq FROM mailboxes WHERE id = ?`, mbox).Scan(&pid, &highest)
-		if err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT principal_id, highest_modseq FROM mailboxes WHERE id = ?`,
+			int64(mailboxID)).Scan(&pid, &highest); err != nil {
 			return mapErr(err)
 		}
 		modseq = store.ModSeq(highest + 1)
 
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE messages SET flags = ?, keywords_csv = ?, modseq = ? WHERE id = ?`,
-			int64(newFlags), strings.Join(kws, ","), int64(modseq), int64(id)); err != nil {
+			UPDATE message_mailboxes SET flags = ?, keywords_csv = ?, modseq = ?
+			 WHERE message_id = ? AND mailbox_id = ?`,
+			int64(newFlags), strings.Join(kws, ","), int64(modseq),
+			int64(id), int64(mailboxID)); err != nil {
 			return mapErr(err)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE mailboxes SET highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
-			int64(modseq), usMicros(now), mbox); err != nil {
+			int64(modseq), usMicros(now), int64(mailboxID)); err != nil {
 			return mapErr(err)
 		}
 		return appendStateChange(ctx, tx, store.PrincipalID(pid),
-			store.EntityKindEmail, uint64(id), uint64(mbox), store.ChangeOpUpdated, now)
+			store.EntityKindEmail, uint64(id), uint64(mailboxID), store.ChangeOpUpdated, now)
 	})
 	if err != nil {
 		return 0, err
@@ -985,45 +1151,56 @@ func (m *metadata) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		var pid, highest int64
-		err := tx.QueryRowContext(ctx, `SELECT principal_id, highest_modseq FROM mailboxes WHERE id = ?`,
-			int64(mailboxID)).Scan(&pid, &highest)
-		if err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT principal_id, highest_modseq FROM mailboxes WHERE id = ?`,
+			int64(mailboxID)).Scan(&pid, &highest); err != nil {
 			return mapErr(err)
 		}
 		var removed int
 		for _, id := range ids {
-			// Fetch the row for refcount decrement. UID is not needed
-			// here — it is no longer carried on the change row (consumers
-			// join the messages table when they need it).
-			var size int64
-			var hash string
+			// Check the membership exists.
+			var memberCount int64
 			err := tx.QueryRowContext(ctx, `
-				SELECT size, blob_hash FROM messages WHERE id = ? AND mailbox_id = ?`,
-				int64(id), int64(mailboxID)).Scan(&size, &hash)
-			if errors.Is(err, sql.ErrNoRows) {
-				continue // silently skip gone messages
-			}
+				SELECT COUNT(*) FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+				int64(id), int64(mailboxID)).Scan(&memberCount)
 			if err != nil {
 				return mapErr(err)
 			}
-			res, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, int64(id))
-			if err != nil {
-				return mapErr(err)
+			if memberCount == 0 {
+				continue // silently skip
 			}
-			n, err := res.RowsAffected()
-			if err != nil {
-				return fmt.Errorf("storesqlite: rows affected: %w", err)
-			}
-			if n == 0 {
-				continue
-			}
-			if err := decRef(ctx, tx, hash, now); err != nil {
-				return err
-			}
+			// Delete this membership.
 			if _, err := tx.ExecContext(ctx,
-				`UPDATE principals SET used_bytes = used_bytes - ?, updated_at_us = ? WHERE id = ?`,
-				size, usMicros(now), pid); err != nil {
+				`DELETE FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+				int64(id), int64(mailboxID)); err != nil {
 				return mapErr(err)
+			}
+			// Check remaining memberships.
+			var remaining int64
+			if err := tx.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM message_mailboxes WHERE message_id = ?`, int64(id)).Scan(&remaining); err != nil {
+				return mapErr(err)
+			}
+			if remaining == 0 {
+				// Last membership gone: clean up messages row + blob refcount.
+				var size int64
+				var hash string
+				if err := tx.QueryRowContext(ctx,
+					`SELECT size, blob_hash FROM messages WHERE id = ?`, int64(id)).Scan(&size, &hash); err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return mapErr(err)
+				}
+				if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, int64(id)); err != nil {
+					return mapErr(err)
+				}
+				if hash != "" {
+					if err := decRef(ctx, tx, hash, now); err != nil {
+						return err
+					}
+					if _, err := tx.ExecContext(ctx,
+						`UPDATE principals SET used_bytes = used_bytes - ?, updated_at_us = ? WHERE id = ?`,
+						size, usMicros(now), pid); err != nil {
+						return mapErr(err)
+					}
+				}
 			}
 			highest++
 			if _, err := tx.ExecContext(ctx,
@@ -1044,12 +1221,17 @@ func (m *metadata) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 	})
 }
 
-func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, targetMailboxID store.MailboxID) error {
+func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, fromMailboxID, targetMailboxID store.MailboxID) error {
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx *sql.Tx) error {
-		// Load the message to get its current mailbox.
-		var srcMailboxID int64
-		err := tx.QueryRowContext(ctx, `SELECT mailbox_id FROM messages WHERE id = ?`, int64(msgID)).Scan(&srcMailboxID)
+		// Verify source membership exists.
+		var srcUID, srcModSeq, srcFlags int64
+		var srcKeywords string
+		var snoozedUs sql.NullInt64
+		err := tx.QueryRowContext(ctx, `
+			SELECT uid, modseq, flags, keywords_csv, snoozed_until_us
+			  FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+			int64(msgID), int64(fromMailboxID)).Scan(&srcUID, &srcModSeq, &srcFlags, &srcKeywords, &snoozedUs)
 		if errors.Is(err, sql.ErrNoRows) {
 			return store.ErrNotFound
 		}
@@ -1057,48 +1239,166 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, targe
 			return mapErr(err)
 		}
 
-		// Get uidnext, highest_modseq, and principal for the target mailbox.
-		var pid, uidNext, tgtHighest int64
-		err = tx.QueryRowContext(ctx, `SELECT principal_id, uidnext, highest_modseq FROM mailboxes WHERE id = ?`,
-			int64(targetMailboxID)).Scan(&pid, &uidNext, &tgtHighest)
-		if errors.Is(err, sql.ErrNoRows) {
-			return store.ErrNotFound
-		}
-		if err != nil {
+		// Get target mailbox info.
+		var pid, tgtUIDNext, tgtHighest int64
+		if err := tx.QueryRowContext(ctx, `SELECT principal_id, uidnext, highest_modseq FROM mailboxes WHERE id = ?`,
+			int64(targetMailboxID)).Scan(&pid, &tgtUIDNext, &tgtHighest); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return store.ErrNotFound
+			}
 			return mapErr(err)
 		}
+		newUID := tgtUIDNext
+		newModSeq := tgtHighest + 1
 
-		// Assign the next UID and advance modseq (mirrors InsertMessage).
-		newUID := uidNext
-		newModseq := tgtHighest + 1
-
-		// Update the message row to point at the new mailbox.
+		var snoozedArg any
+		if snoozedUs.Valid {
+			snoozedArg = snoozedUs.Int64
+		}
+		// Insert new membership in target.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO message_mailboxes
+			  (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			int64(msgID), int64(targetMailboxID), newUID, newModSeq,
+			srcFlags, srcKeywords, snoozedArg); err != nil {
+			return mapErr(err)
+		}
+		// Delete source membership.
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE messages SET mailbox_id = ?, uid = ?, modseq = ? WHERE id = ?`,
-			int64(targetMailboxID), newUID, newModseq, int64(msgID)); err != nil {
+			`DELETE FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+			int64(msgID), int64(fromMailboxID)); err != nil {
 			return mapErr(err)
 		}
-		// Advance target mailbox uidnext and highest_modseq.
+		// Advance target mailbox uidnext + highest_modseq.
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE mailboxes SET uidnext = uidnext + 1, highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
-			newModseq, usMicros(now), int64(targetMailboxID)); err != nil {
+			newModSeq, usMicros(now), int64(targetMailboxID)); err != nil {
 			return mapErr(err)
 		}
-		// Advance source mailbox highest_modseq so IMAP IDLE / NOOP
-		// picks up the disappearance.
-		var srcHighest int64
-		if err := tx.QueryRowContext(ctx, `SELECT highest_modseq FROM mailboxes WHERE id = ?`, srcMailboxID).Scan(&srcHighest); err != nil {
+		// Advance source mailbox highest_modseq.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE mailboxes SET highest_modseq = highest_modseq + 1, updated_at_us = ? WHERE id = ?`,
+			usMicros(now), int64(fromMailboxID)); err != nil {
 			return mapErr(err)
 		}
-		srcHighest++
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE mailboxes SET highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
-			srcHighest, usMicros(now), srcMailboxID); err != nil {
-			return mapErr(err)
-		}
-		// Append a single ChangeOpUpdated entry (the email ID is stable).
 		return appendStateChange(ctx, tx, store.PrincipalID(pid),
 			store.EntityKindEmail, uint64(msgID), uint64(targetMailboxID), store.ChangeOpUpdated, now)
+	})
+}
+
+// AddMessageToMailbox adds an existing message to mailboxID.
+func (m *metadata) AddMessageToMailbox(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID) (store.UID, store.ModSeq, error) {
+	now := m.s.clock.Now().UTC()
+	var allocUID store.UID
+	var allocModSeq store.ModSeq
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		// Verify message exists and get pid for state change.
+		var pid int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT principal_id FROM messages WHERE id = ?`, int64(msgID)).Scan(&pid); err != nil {
+			return mapErr(err)
+		}
+		// Check for duplicate membership.
+		var existing int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+			int64(msgID), int64(mailboxID)).Scan(&existing); err != nil {
+			return mapErr(err)
+		}
+		if existing > 0 {
+			return fmt.Errorf("message already in mailbox: %w", store.ErrConflict)
+		}
+		var uidNext, highest int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT uidnext, highest_modseq FROM mailboxes WHERE id = ?`, int64(mailboxID)).Scan(&uidNext, &highest); err != nil {
+			return mapErr(err)
+		}
+		allocUID = store.UID(uidNext)
+		allocModSeq = store.ModSeq(highest + 1)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO message_mailboxes
+			  (message_id, mailbox_id, uid, modseq, flags, keywords_csv)
+			VALUES (?, ?, ?, ?, 0, '')`,
+			int64(msgID), int64(mailboxID), int64(allocUID), int64(allocModSeq)); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE mailboxes SET uidnext = uidnext + 1, highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
+			int64(allocModSeq), usMicros(now), int64(mailboxID)); err != nil {
+			return mapErr(err)
+		}
+		return appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindEmail, uint64(msgID), uint64(mailboxID), store.ChangeOpCreated, now)
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return allocUID, allocModSeq, nil
+}
+
+// RemoveMessageFromMailbox removes the (msgID, mailboxID) membership.
+// If no memberships remain, the messages row and blob refcount are
+// cleaned up.
+func (m *metadata) RemoveMessageFromMailbox(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		// Verify membership exists.
+		var exists int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+			int64(msgID), int64(mailboxID)).Scan(&exists); err != nil {
+			return mapErr(err)
+		}
+		if exists == 0 {
+			return store.ErrNotFound
+		}
+		// Get pid for state change.
+		var pid int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT principal_id FROM messages WHERE id = ?`, int64(msgID)).Scan(&pid); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+			int64(msgID), int64(mailboxID)); err != nil {
+			return mapErr(err)
+		}
+		// Bump mailbox modseq.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE mailboxes SET highest_modseq = highest_modseq + 1, updated_at_us = ? WHERE id = ?`,
+			usMicros(now), int64(mailboxID)); err != nil {
+			return mapErr(err)
+		}
+		// Check remaining memberships.
+		var remaining int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM message_mailboxes WHERE message_id = ?`, int64(msgID)).Scan(&remaining); err != nil {
+			return mapErr(err)
+		}
+		if remaining == 0 {
+			var size int64
+			var hash string
+			if err := tx.QueryRowContext(ctx,
+				`SELECT size, blob_hash FROM messages WHERE id = ?`, int64(msgID)).Scan(&size, &hash); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return mapErr(err)
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, int64(msgID)); err != nil {
+				return mapErr(err)
+			}
+			if hash != "" {
+				if err := decRef(ctx, tx, hash, now); err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE principals SET used_bytes = used_bytes - ?, updated_at_us = ? WHERE id = ?`,
+					size, usMicros(now), pid); err != nil {
+					return mapErr(err)
+				}
+			}
+		}
+		return appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindEmail, uint64(msgID), uint64(mailboxID), store.ChangeOpDestroyed, now)
 	})
 }
 
@@ -1396,11 +1696,11 @@ func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 		if err != nil {
 			return mapErr(err)
 		}
-		// Decrement refcounts for every blob still owned by this
-		// principal's messages before the FK cascade wipes the rows.
+		// Decrement refcounts for every blob still owned by this principal.
+		// Blobs are refcounted per messages row (not per membership), so we
+		// look at messages.principal_id directly.
 		hashRows, err := tx.QueryContext(ctx, `
-			SELECT blob_hash FROM messages
-			 WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE principal_id = ?)`,
+			SELECT blob_hash FROM messages WHERE principal_id = ?`,
 			int64(pid))
 		if err != nil {
 			return mapErr(err)
@@ -1708,13 +2008,15 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 		limit = 1000
 	}
 	rows, err := m.s.db.QueryContext(ctx, `
-		SELECT id, mailbox_id, uid, modseq, flags, keywords_csv, internal_date_us,
-		       received_at_us, size, blob_hash, blob_size, thread_id,
-		       env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
-		       env_message_id, env_in_reply_to, env_date_us, snoozed_until_us
-		  FROM messages
-		 WHERE mailbox_id = ? AND uid > ?
-		 ORDER BY uid ASC LIMIT ?`,
+		SELECT m.id, m.principal_id, m.blob_hash, m.blob_size, m.internal_date_us,
+		       m.received_at_us, m.size, m.thread_id,
+		       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
+		       m.env_message_id, m.env_in_reply_to, m.env_date_us,
+		       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
+		  FROM messages m
+		  JOIN message_mailboxes mm ON mm.message_id = m.id
+		 WHERE mm.mailbox_id = ? AND mm.uid > ?
+		 ORDER BY mm.uid ASC LIMIT ?`,
 		int64(mailboxID), int64(filter.AfterUID), limit)
 	if err != nil {
 		return nil, mapErr(err)
@@ -1726,10 +2028,6 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 		if err != nil {
 			return nil, err
 		}
-		// filter.WithEnvelope is a permission-to-skip; we always
-		// populate the envelope because the SELECT list already
-		// carries the columns. The flag is honoured by backends that
-		// want a cheap-path query (Phase 2+).
 		out = append(out, msg)
 	}
 	return out, rows.Err()
@@ -1950,22 +2248,20 @@ func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, li
 	if limit <= 0 || limit > 10000 {
 		limit = 1000
 	}
-	// The partial index idx_messages_snoozed_until covers rows with
-	// snoozed_until_us NOT NULL; the predicate then filters to due
-	// rows. We additionally require ',$snoozed,' to appear inside the
-	// padded keywords_csv to enforce the atomicity invariant — a row
-	// whose snoozed_until_us was set without the keyword via direct
-	// UpdateMessageFlags is a programmer error and is excluded.
+	// Join message_mailboxes to find snoozed rows. The $snoozed keyword
+	// check enforces the atomicity invariant.
 	rows, err := m.s.db.QueryContext(ctx, `
-		SELECT id, mailbox_id, uid, modseq, flags, keywords_csv, internal_date_us,
-		       received_at_us, size, blob_hash, blob_size, thread_id,
-		       env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
-		       env_message_id, env_in_reply_to, env_date_us, snoozed_until_us
-		  FROM messages
-		 WHERE snoozed_until_us IS NOT NULL
-		   AND snoozed_until_us <= ?
-		   AND (',' || keywords_csv || ',') LIKE '%,$snoozed,%'
-		 ORDER BY snoozed_until_us ASC LIMIT ?`,
+		SELECT m.id, m.principal_id, m.blob_hash, m.blob_size, m.internal_date_us,
+		       m.received_at_us, m.size, m.thread_id,
+		       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
+		       m.env_message_id, m.env_in_reply_to, m.env_date_us,
+		       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
+		  FROM messages m
+		  JOIN message_mailboxes mm ON mm.message_id = m.id
+		 WHERE mm.snoozed_until_us IS NOT NULL
+		   AND mm.snoozed_until_us <= ?
+		   AND (',' || mm.keywords_csv || ',') LIKE '%,$snoozed,%'
+		 ORDER BY mm.snoozed_until_us ASC LIMIT ?`,
 		usMicros(now.UTC()), limit)
 	if err != nil {
 		return nil, mapErr(err)
@@ -1982,21 +2278,19 @@ func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, li
 	return out, rows.Err()
 }
 
-func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, when *time.Time) (store.ModSeq, error) {
+func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID, when *time.Time) (store.ModSeq, error) {
 	now := m.s.clock.Now().UTC()
 	var modseq store.ModSeq
 	err := m.runTx(ctx, func(tx *sql.Tx) error {
-		var mbox int64
 		var curFlags int64
 		var curKeywords string
 		err := tx.QueryRowContext(ctx, `
-			SELECT mailbox_id, flags, keywords_csv
-			  FROM messages WHERE id = ?`, int64(msgID)).Scan(&mbox, &curFlags, &curKeywords)
+			SELECT flags, keywords_csv
+			  FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+			int64(msgID), int64(mailboxID)).Scan(&curFlags, &curKeywords)
 		if err != nil {
 			return mapErr(err)
 		}
-		// Build the keyword set with $snoozed forced on/off per the
-		// new state, preserving every other keyword.
 		kwSet := map[string]struct{}{}
 		if curKeywords != "" {
 			for _, k := range strings.Split(curKeywords, ",") {
@@ -2017,8 +2311,8 @@ func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, when *t
 		sortStrings(kws)
 
 		var pid, highest int64
-		err = tx.QueryRowContext(ctx, `SELECT principal_id, highest_modseq FROM mailboxes WHERE id = ?`, mbox).Scan(&pid, &highest)
-		if err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT principal_id, highest_modseq FROM mailboxes WHERE id = ?`,
+			int64(mailboxID)).Scan(&pid, &highest); err != nil {
 			return mapErr(err)
 		}
 		modseq = store.ModSeq(highest + 1)
@@ -2028,19 +2322,20 @@ func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, when *t
 			snoozedArg = usMicros(when.UTC())
 		}
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE messages
+			UPDATE message_mailboxes
 			   SET keywords_csv = ?, modseq = ?, snoozed_until_us = ?
-			 WHERE id = ?`,
-			strings.Join(kws, ","), int64(modseq), snoozedArg, int64(msgID)); err != nil {
+			 WHERE message_id = ? AND mailbox_id = ?`,
+			strings.Join(kws, ","), int64(modseq), snoozedArg,
+			int64(msgID), int64(mailboxID)); err != nil {
 			return mapErr(err)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE mailboxes SET highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
-			int64(modseq), usMicros(now), mbox); err != nil {
+			int64(modseq), usMicros(now), int64(mailboxID)); err != nil {
 			return mapErr(err)
 		}
 		return appendStateChange(ctx, tx, store.PrincipalID(pid),
-			store.EntityKindEmail, uint64(msgID), uint64(mbox), store.ChangeOpUpdated, now)
+			store.EntityKindEmail, uint64(msgID), uint64(mailboxID), store.ChangeOpUpdated, now)
 	})
 	if err != nil {
 		return 0, err

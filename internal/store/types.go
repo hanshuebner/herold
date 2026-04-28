@@ -264,23 +264,75 @@ type Envelope struct {
 	Date time.Time
 }
 
-// Message is one message row within a mailbox. The message body is stored
-// once by content hash (Blob) and referenced here by hash.
+// MessageMailbox holds the per-(message, mailbox) state as required by
+// RFC 9051 §2.3.1.1 and REQ-STORE-36..38. One row in this struct
+// corresponds to one row in the message_mailboxes join table.
+//
+// A message that lives in N mailboxes has N MessageMailbox entries,
+// each with an independent UID, MODSEQ, flags, and keyword set.
+// Callers that operate on a single mailbox (IMAP, most JMAP paths)
+// receive the relevant entry pre-joined; multi-mailbox callers (JMAP
+// mailboxIds rendering) iterate over Message.Mailboxes.
+type MessageMailbox struct {
+	// MessageID is the owning message (join key).
+	MessageID MessageID
+	// MailboxID is the containing mailbox (join key).
+	MailboxID MailboxID
+	// UID is the IMAP UID within MailboxID. Per-mailbox, not global.
+	UID UID
+	// ModSeq is the IMAP CONDSTORE modification sequence for this
+	// (message, mailbox) pair. A flag change in mailbox A does not
+	// bump the ModSeq in mailbox B.
+	ModSeq ModSeq
+	// Flags is the system-flag bitfield for this mailbox membership.
+	Flags MessageFlags
+	// Keywords is the list of user-defined IMAP keyword flags for this
+	// mailbox membership (lowercase, per RFC 5788).
+	Keywords []string
+	// SnoozedUntil is the wake-up deadline for the JMAP snooze
+	// extension (REQ-PROTO-49). Atomicity invariant: non-nil iff
+	// Keywords contains "$snoozed". Enforced at the store boundary;
+	// direct callers use SetSnooze.
+	SnoozedUntil *time.Time
+}
+
+// Message is the mailbox-independent metadata for a delivered message.
+// The message body is stored once by content hash (Blob) and referenced
+// by hash. Per-(message, mailbox) state (UID, MODSEQ, flags, keywords)
+// lives in MessageMailbox rows accessible via the Mailboxes field.
+//
+// For single-mailbox read paths (IMAP, most JMAP paths), the store
+// populates the convenience fields MailboxID / UID / ModSeq / Flags /
+// Keywords / SnoozedUntil from the first (or only) Mailboxes entry so
+// existing callers do not need to change. Multi-mailbox callers should
+// iterate Mailboxes directly.
 type Message struct {
 	// ID is the stable primary key.
 	ID MessageID
-	// MailboxID is the containing mailbox.
+	// PrincipalID is the owning principal (denormalised for query speed).
+	// Required on insert; populated on read.
+	PrincipalID PrincipalID
+
+	// -- Convenience fields populated from the first Mailboxes entry ---
+	// These are valid when the Message was returned by a mailbox-scoped
+	// query (ListMessages, GetMessage with a mailbox context). Do not
+	// rely on them when iterating a multi-mailbox response.
+
+	// MailboxID is the first (or only) mailbox this message belongs to.
 	MailboxID MailboxID
-	// UID is the IMAP UID within that mailbox.
+	// UID is the IMAP UID within MailboxID.
 	UID UID
-	// ModSeq is the IMAP CONDSTORE modification sequence assigned at the
-	// last mutation of this message in its mailbox.
+	// ModSeq is the IMAP CONDSTORE modification sequence for MailboxID.
 	ModSeq ModSeq
-	// Flags is the system-flag bitfield.
+	// Flags is the system-flag bitfield for MailboxID.
 	Flags MessageFlags
-	// Keywords is the list of user-defined IMAP keyword flags (lowercase,
-	// per RFC 5788). Nil for messages with no keywords.
+	// Keywords is the list of user-defined IMAP keyword flags for MailboxID.
 	Keywords []string
+	// SnoozedUntil is the snooze deadline for MailboxID.
+	SnoozedUntil *time.Time
+
+	// -- Mailbox-independent fields ------------------------------------
+
 	// InternalDate is the IMAP INTERNALDATE (RFC 3501 §2.3.3) — the
 	// instant the server took ownership of the message.
 	InternalDate time.Time
@@ -297,18 +349,15 @@ type Message struct {
 	// Envelope is the cached parsed envelope (for STATUS / FETCH without
 	// touching the blob).
 	Envelope Envelope
-	// SnoozedUntil is the wake-up deadline for the JMAP snooze
-	// extension (REQ-PROTO-49). nil means not snoozed; non-nil
-	// requires Keywords to contain "$snoozed". This atomicity
-	// invariant — SnoozedUntil != nil iff Keywords contains
-	// "$snoozed" — is enforced at the store boundary by
-	// Metadata.SetSnooze (which sets or clears both inside one
-	// transaction) and at the JMAP / IMAP handler boundaries; the
-	// wake-up sweeper relies on it when it consumes both halves to
-	// emit the "due now" view. Direct callers of UpdateMessageFlags
-	// MUST NOT add or remove "$snoozed" without the matching column
-	// update — go through SetSnooze instead.
-	SnoozedUntil *time.Time
+
+	// -- Multi-mailbox membership (REQ-STORE-36) -----------------------
+
+	// Mailboxes is the full set of per-(message, mailbox) rows for this
+	// message, populated when the caller requests multi-mailbox data
+	// (e.g. JMAP Email/get with mailboxIds). In single-mailbox paths the
+	// slice contains exactly one entry (matching the convenience fields
+	// above). May be nil when the caller has not requested it.
+	Mailboxes []MessageMailbox
 }
 
 // MessageFilter narrows a ListMessages read. Zero values mean "no

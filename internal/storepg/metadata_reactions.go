@@ -130,10 +130,9 @@ func (m *metadata) GetMessageByMessageIDHeader(
 	msgIDHeader string,
 ) (store.Message, error) {
 	const q = `
-		SELECT ms.id FROM messages ms
-		JOIN mailboxes mb ON mb.id = ms.mailbox_id
-		WHERE mb.principal_id = $1
-		  AND ms.env_message_id = $2
+		SELECT id FROM messages
+		WHERE principal_id = $1
+		  AND env_message_id = $2
 		LIMIT 1`
 	var msgID int64
 	err := m.s.pool.QueryRow(ctx, q, int64(principalID), msgIDHeader).Scan(&msgID)

@@ -366,12 +366,12 @@ func seedMessage(t *testing.T, f *fixture, subject string) {
 		t.Fatalf("blob put: %v", err)
 	}
 	_, _, err = f.ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID:    f.inbox.ID,
+		PrincipalID:  f.pid,
 		Size:         int64(len(body)),
 		Blob:         blob,
 		Envelope:     parseStoreEnvelope(body),
 		InternalDate: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
-	})
+	}, []store.MessageMailbox{{MailboxID: f.inbox.ID}})
 	if err != nil {
 		t.Fatalf("insert message: %v", err)
 	}

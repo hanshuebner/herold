@@ -130,12 +130,12 @@ func (m *metadata) GetMessageByMessageIDHeader(
 	principalID store.PrincipalID,
 	msgIDHeader string,
 ) (store.Message, error) {
-	// messages rows are in mailboxes owned by principalID; join to filter.
+	// Use messages.principal_id for the lookup now that the column is
+	// directly on messages (Wave 3.11 migration).
 	const q = `
-		SELECT ms.id FROM messages ms
-		JOIN mailboxes mb ON mb.id = ms.mailbox_id
-		WHERE mb.principal_id = ?
-		  AND ms.env_message_id = ?
+		SELECT id FROM messages
+		WHERE principal_id = ?
+		  AND env_message_id = ?
 		LIMIT 1`
 	var msgID int64
 	err := m.s.db.QueryRowContext(ctx, q, int64(principalID), msgIDHeader).Scan(&msgID)

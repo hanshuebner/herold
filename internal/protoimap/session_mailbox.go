@@ -780,7 +780,7 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 		internal = now
 	}
 	msg := store.Message{
-		MailboxID:    mb.ID,
+		PrincipalID:  ses.pid,
 		Flags:        flags,
 		Keywords:     kw,
 		InternalDate: internal,
@@ -790,7 +790,7 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 		Envelope:     env,
 	}
 	insertTimer := observe.StartStoreOp("insert_message")
-	uid, _, err := ses.s.store.Meta().InsertMessage(ctx, msg)
+	uid, _, err := ses.s.store.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mb.ID, Flags: flags, Keywords: kw}})
 	insertTimer.Done()
 	if err != nil {
 		if errors.Is(err, store.ErrQuotaExceeded) {

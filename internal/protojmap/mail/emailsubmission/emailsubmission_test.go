@@ -120,15 +120,14 @@ func newSetup(t *testing.T) (*handlerSet, *fakestore.Store, store.Principal, sto
 	body := "From: alice@example.test\r\nTo: bob@example.test\r\nSubject: hi\r\n\r\nbody.\r\n"
 	ref, _ := st.Blobs().Put(ctx, bytes.NewReader([]byte(body)))
 	uid, _, _ := st.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: mb.ID,
-		Blob:      ref,
-		Size:      int64(len(body)),
+		Blob: ref,
+		Size: int64(len(body)),
 		Envelope: store.Envelope{
 			Subject: "hi",
 			From:    "alice@example.test",
 			To:      "bob@example.test",
 		},
-	})
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	msgs, _ := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
 	var mid store.MessageID
 	for _, m := range msgs {

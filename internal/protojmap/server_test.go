@@ -973,12 +973,11 @@ func TestStateChange_DerivesFromChangeFeed_OnInsertMessage(t *testing.T) {
 	}
 	now := f.clk.Now().UTC()
 	if _, _, err := f.store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID:    inboxID,
 		Blob:         ref,
 		Size:         ref.Size,
 		InternalDate: now,
 		ReceivedAt:   now,
-	}); err != nil {
+	}, []store.MessageMailbox{{MailboxID: inboxID}}); err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 

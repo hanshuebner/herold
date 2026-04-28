@@ -211,9 +211,8 @@ func TestEmit_ChangeFeed_DerivedKinds(t *testing.T) {
 
 	// Insert a message, which appends a (Email, Created) StateChange.
 	if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: mb.ID,
-		Size:      42,
-	}); err != nil {
+		Size: 42,
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 
@@ -412,7 +411,7 @@ func TestCursorResume_AcrossRestart(t *testing.T) {
 	ctx1, cancel1 := context.WithCancel(ctx)
 	_, done1 := runOnce(ctx1, first)
 
-	id1, _, err := st.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Size: 1})
+	id1, _, err := st.Meta().InsertMessage(ctx, store.Message{Size: 1}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
@@ -456,7 +455,7 @@ firstDone:
 		<-done2
 	}()
 
-	id2, _, err := st.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Size: 1})
+	id2, _, err := st.Meta().InsertMessage(ctx, store.Message{Size: 1}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("InsertMessage(2): %v", err)
 	}

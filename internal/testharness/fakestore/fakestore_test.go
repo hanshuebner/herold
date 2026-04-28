@@ -95,10 +95,9 @@ func TestMailboxAndMessageRoundTrip(t *testing.T) {
 		t.Fatalf("expected stable hash, got %s vs %s", ref2.Hash, ref.Hash)
 	}
 	uid, modseq, err := s.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: mb.ID,
-		Size:      ref.Size,
-		Blob:      ref,
-	})
+		Size: ref.Size,
+		Blob: ref,
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("insert message: %v", err)
 	}
@@ -126,8 +125,8 @@ func TestFTSIndexAndQuery(t *testing.T) {
 	p, _ := s.Meta().InsertPrincipal(ctx, store.Principal{CanonicalEmail: "alice@example.test"})
 	mb, _ := s.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "INBOX"})
 	ref, _ := s.Blobs().Put(ctx, strings.NewReader("irrelevant"))
-	msg := store.Message{MailboxID: mb.ID, Size: ref.Size, Blob: ref}
-	_, _, err := s.Meta().InsertMessage(ctx, msg)
+	msg := store.Message{Size: ref.Size, Blob: ref}
+	_, _, err := s.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -164,7 +163,7 @@ func TestChangeFeedMonotonicity(t *testing.T) {
 	mb, _ := s.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "INBOX"})
 	ref, _ := s.Blobs().Put(ctx, strings.NewReader("x"))
 	for i := 0; i < 3; i++ {
-		_, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Size: ref.Size, Blob: ref})
+		_, _, err := s.Meta().InsertMessage(ctx, store.Message{Size: ref.Size, Blob: ref}, []store.MessageMailbox{{MailboxID: mb.ID}})
 		if err != nil {
 			t.Fatalf("insert %d: %v", i, err)
 		}
@@ -209,7 +208,7 @@ func TestQuotaExceeded(t *testing.T) {
 	})
 	mb, _ := s.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "INBOX"})
 	ref, _ := s.Blobs().Put(ctx, strings.NewReader("xxxxxxxxxxxxxxxxxx"))
-	_, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Size: 100, Blob: ref})
+	_, _, err := s.Meta().InsertMessage(ctx, store.Message{Size: 100, Blob: ref}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if !errors.Is(err, store.ErrQuotaExceeded) {
 		t.Fatalf("expected ErrQuotaExceeded, got %v", err)
 	}
@@ -221,20 +220,20 @@ func TestUnchangedSinceConflict(t *testing.T) {
 	p, _ := s.Meta().InsertPrincipal(ctx, store.Principal{CanonicalEmail: "alice@example.test"})
 	mb, _ := s.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "INBOX"})
 	ref, _ := s.Blobs().Put(ctx, strings.NewReader("x"))
-	_, _, err := s.Meta().InsertMessage(ctx, store.Message{MailboxID: mb.ID, Size: ref.Size, Blob: ref})
+	_, _, err := s.Meta().InsertMessage(ctx, store.Message{Size: ref.Size, Blob: ref}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	_, err = s.Meta().UpdateMessageFlags(ctx, 1, store.MessageFlagSeen, 0, nil, nil, 0)
+	_, err = s.Meta().UpdateMessageFlags(ctx, 1, mb.ID, store.MessageFlagSeen, 0, nil, nil, 0)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	// unchangedSince=0 disables check; with an old modseq we expect conflict.
-	_, err = s.Meta().UpdateMessageFlags(ctx, 1, store.MessageFlagFlagged, 0, nil, nil, 0)
+	_, err = s.Meta().UpdateMessageFlags(ctx, 1, mb.ID, store.MessageFlagFlagged, 0, nil, nil, 0)
 	if err != nil {
 		t.Fatalf("update2: %v", err)
 	}
-	_, err = s.Meta().UpdateMessageFlags(ctx, 1, store.MessageFlagDraft, 0, nil, nil, 1)
+	_, err = s.Meta().UpdateMessageFlags(ctx, 1, mb.ID, store.MessageFlagDraft, 0, nil, nil, 1)
 	if !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("expected ErrConflict, got %v", err)
 	}

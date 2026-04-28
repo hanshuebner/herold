@@ -175,7 +175,7 @@ func (w *Worker) tick(ctx context.Context) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		if _, err := w.store.Meta().SetSnooze(ctx, msg.ID, nil); err != nil {
+		if _, err := w.store.Meta().SetSnooze(ctx, msg.ID, msg.MailboxID, nil); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				// Message was expunged between list and set; skip.
 				continue

@@ -33,7 +33,6 @@ func TestBuildPayload_Email(t *testing.T) {
 	pid := mustInsertPrincipal(t, st, "alice@example.test")
 	mbid := mustInsertMailbox(t, st, pid, "INBOX")
 	msg := store.Message{
-		MailboxID:    mbid,
 		Flags:        0,
 		InternalDate: time.Now(),
 		ReceivedAt:   time.Now(),
@@ -44,7 +43,7 @@ func TestBuildPayload_Email(t *testing.T) {
 		},
 		Blob: store.BlobRef{Hash: "deadbeef", Size: 123},
 	}
-	_, _, err := st.Meta().InsertMessage(ctx, msg)
+	_, _, err := st.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mbid}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}

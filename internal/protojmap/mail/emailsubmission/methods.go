@@ -751,12 +751,12 @@ func (h *handlerSet) applyEmailPatch(
 		if err != nil || mb.PrincipalID != p.ID {
 			return &setError{Type: "notFound", Description: "target mailbox not found"}
 		}
-		if err := h.store.Meta().MoveMessage(ctx, msg.ID, targetMailboxID); err != nil {
+		if err := h.store.Meta().MoveMessage(ctx, msg.ID, msg.MailboxID, targetMailboxID); err != nil {
 			return &setError{Type: "serverFail", Description: err.Error()}
 		}
 	}
 	if addFlags != 0 || clearFlags != 0 || len(addKW) > 0 || len(clearKW) > 0 {
-		if _, err := h.store.Meta().UpdateMessageFlags(ctx, msg.ID,
+		if _, err := h.store.Meta().UpdateMessageFlags(ctx, msg.ID, msg.MailboxID,
 			addFlags, clearFlags, addKW, clearKW, 0); err != nil {
 			return &setError{Type: "serverFail", Description: err.Error()}
 		}

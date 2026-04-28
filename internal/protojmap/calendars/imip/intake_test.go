@@ -98,16 +98,15 @@ func deliverIMIP(t *testing.T, f *fixture, ics []byte) {
 		t.Fatalf("put blob: %v", err)
 	}
 	msg := store.Message{
-		MailboxID: f.mailbx,
-		Size:      ref.Size,
-		Blob:      ref,
+		Size: ref.Size,
+		Blob: ref,
 		Envelope: store.Envelope{
 			From:    "organizer@example.test",
 			To:      "alice@example.test",
 			Subject: "Meeting invite",
 		},
 	}
-	if _, _, err := f.store.Meta().InsertMessage(ctx, msg); err != nil {
+	if _, _, err := f.store.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: f.mailbx}}); err != nil {
 		t.Fatalf("insert message: %v", err)
 	}
 }

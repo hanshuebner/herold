@@ -434,7 +434,7 @@ func (h *handlerSet) createEmail(
 	}
 
 	msg := store.Message{
-		MailboxID:    mailboxID,
+		PrincipalID:  pid,
 		Flags:        flags,
 		Keywords:     customKW,
 		InternalDate: receivedAt,
@@ -444,7 +444,7 @@ func (h *handlerSet) createEmail(
 		Envelope:     env,
 		SnoozedUntil: snoozedUntil,
 	}
-	uid, modseq, err := h.store.Meta().InsertMessage(ctx, msg)
+	uid, modseq, err := h.store.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mailboxID, Flags: flags, Keywords: customKW, SnoozedUntil: snoozedUntil}})
 	if err != nil {
 		if errors.Is(err, store.ErrQuotaExceeded) {
 			return 0, jmapEmail{}, &setError{
@@ -611,7 +611,7 @@ func (h *handlerSet) updateEmail(
 		// Write a state_changes entry so that Email/changes picks up the
 		// reaction mutation. UpdateMessageFlags with empty deltas is the
 		// lightest way to do this without extending the store interface.
-		if _, err := h.store.Meta().UpdateMessageFlags(ctx, m.ID, 0, 0, nil, nil, 0); err != nil {
+		if _, err := h.store.Meta().UpdateMessageFlags(ctx, m.ID, m.MailboxID, 0, 0, nil, nil, 0); err != nil {
 			return nil, fmt.Errorf("email: bump state after reaction: %w", err)
 		}
 		// Only reaction keys in the patch — nothing more to do.
@@ -663,14 +663,14 @@ func (h *handlerSet) updateEmail(
 
 	switch snoozeAct.kind {
 	case snoozeSet:
-		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, &snoozeAct.when); err != nil {
+		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, m.MailboxID, &snoozeAct.when); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return &setError{Type: "notFound"}, nil
 			}
 			return nil, fmt.Errorf("email: set snooze: %w", err)
 		}
 	case snoozeClear:
-		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, nil); err != nil {
+		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, m.MailboxID, nil); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return &setError{Type: "notFound"}, nil
 			}
@@ -695,7 +695,7 @@ func (h *handlerSet) updateEmail(
 		return nil, nil
 	}
 
-	if _, err := h.store.Meta().UpdateMessageFlags(ctx, m.ID, addFlags, clearFlags, addKW, clearKW, 0); err != nil {
+	if _, err := h.store.Meta().UpdateMessageFlags(ctx, m.ID, m.MailboxID, addFlags, clearFlags, addKW, clearKW, 0); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return &setError{Type: "notFound"}, nil
 		}
@@ -901,7 +901,7 @@ func (h *handlerSet) moveMessage(
 		}, nil
 	}
 
-	if err := h.store.Meta().MoveMessage(ctx, m.ID, targetID); err != nil {
+	if err := h.store.Meta().MoveMessage(ctx, m.ID, m.MailboxID, targetID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return &setError{Type: "notFound"}, nil
 		}

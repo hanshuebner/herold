@@ -288,12 +288,10 @@ func TestEXPUNGE_RequiresExpungeRight(t *testing.T) {
 	msg := buildMessage("expunge-me", "body")
 	blob, _ := af.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
 	_, _, err := af.ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: af.aliceShared.ID,
-		Flags:     store.MessageFlagDeleted,
-		Size:      int64(len(msg)),
-		Blob:      blob,
-		Envelope:  parseStoreEnvelope(msg),
-	})
+		Size:     int64(len(msg)),
+		Blob:     blob,
+		Envelope: parseStoreEnvelope(msg),
+	}, []store.MessageMailbox{{MailboxID: af.aliceShared.ID, Flags: store.MessageFlagDeleted}})
 	if err != nil {
 		t.Fatalf("seed message: %v", err)
 	}
@@ -323,9 +321,9 @@ func TestSharedMailbox_TwoPrincipals_OneSupportInbox(t *testing.T) {
 	msg := buildMessage("ticket-1", "first ticket body")
 	blob, _ := af.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
 	_, _, err := af.ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID: af.aliceShared.ID, Size: int64(len(msg)), Blob: blob,
+		Size: int64(len(msg)), Blob: blob,
 		Envelope: parseStoreEnvelope(msg),
-	})
+	}, []store.MessageMailbox{{MailboxID: af.aliceShared.ID}})
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}

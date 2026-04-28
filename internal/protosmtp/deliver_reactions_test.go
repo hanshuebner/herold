@@ -71,7 +71,7 @@ func newReactionFixture(t *testing.T) *reactionFixture {
 		t.Fatalf("Blobs.Put: %v", err)
 	}
 	uid, _, err := ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID:    inbox.ID,
+		PrincipalID:  pid,
 		InternalDate: now,
 		ReceivedAt:   now,
 		Size:         blob.Size,
@@ -83,7 +83,7 @@ func newReactionFixture(t *testing.T) *reactionFixture {
 			To:        "alice@example.test",
 			Date:      now,
 		},
-	})
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
@@ -247,7 +247,6 @@ func TestReaction_InboundConsumed(t *testing.T) {
 	}
 	newOrigID := "seed-charlie@example.test"
 	if _, _, err := rf.ha.Store.Meta().InsertMessage(ctx, store.Message{
-		MailboxID:    rf.inbox.ID,
 		InternalDate: now,
 		ReceivedAt:   now,
 		Size:         blob.Size,
@@ -259,7 +258,7 @@ func TestReaction_InboundConsumed(t *testing.T) {
 			To:        "alice@example.test",
 			Date:      now,
 		},
-	}); err != nil {
+	}, []store.MessageMailbox{{MailboxID: rf.inbox.ID}}); err != nil {
 		t.Fatalf("InsertMessage charlie-orig: %v", err)
 	}
 

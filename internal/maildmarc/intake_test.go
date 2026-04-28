@@ -40,16 +40,15 @@ func seedDMARCReportMessage(t *testing.T, fs *fakestore.Store, recipient string,
 		t.Fatalf("put blob: %v", err)
 	}
 	msg := store.Message{
-		MailboxID: mb.ID,
-		Size:      ref.Size,
-		Blob:      ref,
+		Size: ref.Size,
+		Blob: ref,
 		Envelope: store.Envelope{
 			To:      recipient,
 			Subject: "Report Domain: example.test",
 			From:    "noreply-dmarc-support@google.com",
 		},
 	}
-	uid, modseq, err := fs.Meta().InsertMessage(ctx, msg)
+	uid, modseq, err := fs.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("insert message: %v", err)
 	}

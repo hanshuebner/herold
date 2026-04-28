@@ -69,8 +69,8 @@ func seedSmall(t *testing.T, st store.Store) {
 			t.Fatal(err)
 		}
 		if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
-			MailboxID: mb.ID, Size: int64(len(body)), Blob: ref,
-		}); err != nil {
+			Size: int64(len(body)), Blob: ref,
+		}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 			t.Fatal(err)
 		}
 	}

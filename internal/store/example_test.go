@@ -36,11 +36,11 @@ func ExampleStore() {
 		// Insert the mailbox row; InsertMessage also bumps UIDNext,
 		// HighestModSeq, and appends a StateChange atomically.
 		msg := store.Message{
-			MailboxID: mailboxID,
-			Size:      ref.Size,
-			Blob:      ref,
+			PrincipalID: p.ID,
+			Size:        ref.Size,
+			Blob:        ref,
 		}
-		_, _, err = s.Meta().InsertMessage(ctx, msg)
+		_, _, err = s.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mailboxID}})
 		if err != nil {
 			return fmt.Errorf("insert message for %d: %w", p.ID, err)
 		}

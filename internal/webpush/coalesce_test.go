@@ -36,13 +36,12 @@ func (f *dispatcherFixture) triggerEmailWithThread(t *testing.T, threadID uint64
 		t.Fatalf("ListMailboxes: %v %d", err, len(mailboxes))
 	}
 	if _, _, err := f.store.Meta().InsertMessage(context.Background(), store.Message{
-		MailboxID: mailboxes[0].ID,
-		Blob:      ref,
-		Size:      ref.Size,
-		ThreadID:  threadID,
-		Keywords:  []string{"$category-primary"},
-		Envelope:  store.Envelope{Subject: subject},
-	}); err != nil {
+		Blob:     ref,
+		Size:     ref.Size,
+		ThreadID: threadID,
+		Keywords: []string{"$category-primary"},
+		Envelope: store.Envelope{Subject: subject},
+	}, []store.MessageMailbox{{MailboxID: mailboxes[0].ID}}); err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 	if _, err := f.disp.tick(context.Background()); err != nil {
