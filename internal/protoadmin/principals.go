@@ -1,6 +1,7 @@
 package protoadmin
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -116,6 +117,13 @@ func (s *Server) handleCreatePrincipal(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.Meta().UpdatePrincipal(r.Context(), p); err != nil {
 		s.writeStoreError(w, r, err)
 		return
+	}
+	// Provision the standard mailbox set for user principals so that
+	// JMAP and IMAP clients encounter a populated mailbox hierarchy
+	// immediately, without needing a first SMTP delivery to trigger
+	// lazy creation (REQ-ADM-MAILBOX-INIT).
+	if p.Kind == store.PrincipalKindUser {
+		s.provisionDefaultMailboxes(r.Context(), p.ID)
 	}
 	s.appendAudit(r.Context(), "principal.create",
 		fmt.Sprintf("principal:%d", p.ID),
@@ -300,6 +308,40 @@ func (s *Server) adminSetPassword(r *http.Request, pid store.PrincipalID, newPas
 	}
 	p.PasswordHash = hash
 	return s.store.Meta().UpdatePrincipal(r.Context(), p)
+}
+
+// provisionDefaultMailboxes creates the six standard mailboxes for a
+// newly-created user principal. Errors are logged and ignored: a
+// missing mailbox only prevents immediate JMAP/IMAP access; the first
+// SMTP delivery will recreate them. The principal is never rolled back
+// because of a mailbox provisioning failure.
+func (s *Server) provisionDefaultMailboxes(ctx context.Context, pid store.PrincipalID) {
+	type mbSpec struct {
+		name string
+		attr store.MailboxAttributes
+	}
+	specs := []mbSpec{
+		{"INBOX", store.MailboxAttrInbox},
+		{"Sent", store.MailboxAttrSent},
+		{"Drafts", store.MailboxAttrDrafts},
+		{"Trash", store.MailboxAttrTrash},
+		{"Junk", store.MailboxAttrJunk},
+		{"Archive", store.MailboxAttrArchive},
+	}
+	for _, spec := range specs {
+		_, err := s.store.Meta().InsertMailbox(ctx, store.Mailbox{
+			PrincipalID: pid,
+			Name:        spec.name,
+			Attributes:  spec.attr,
+		})
+		if err != nil && !errors.Is(err, store.ErrConflict) {
+			s.loggerFrom(ctx).Warn("protoadmin.provision_mailbox_failed",
+				"principal_id", pid,
+				"mailbox", spec.name,
+				"err", err,
+			)
+		}
+	}
 }
 
 // writeStoreError maps a store error to an HTTP problem response.

@@ -281,6 +281,58 @@ func TestPrincipals_CRUD(t *testing.T) {
 	}
 }
 
+// TestCreatePrincipal_ProvisionesDefaultMailboxes asserts that
+// POST /api/v1/principals immediately creates the six standard
+// mailboxes for the new user, with the correct Attributes bits, so
+// that JMAP and IMAP clients see a populated hierarchy without needing
+// a first SMTP delivery (REQ-ADM-MAILBOX-INIT).
+func TestCreatePrincipal_ProvisionesDefaultMailboxes(t *testing.T) {
+	h := newHarness(t)
+	_, adminKey := h.bootstrap("admin@example.com")
+	aliceID := h.createPrincipal(adminKey, "alice@example.com")
+
+	mbs, err := h.h.Store.Meta().ListMailboxes(context.Background(), store.PrincipalID(aliceID))
+	if err != nil {
+		t.Fatalf("ListMailboxes: %v", err)
+	}
+
+	type wantSpec struct {
+		name string
+		attr store.MailboxAttributes
+	}
+	want := []wantSpec{
+		{"INBOX", store.MailboxAttrInbox},
+		{"Sent", store.MailboxAttrSent},
+		{"Drafts", store.MailboxAttrDrafts},
+		{"Trash", store.MailboxAttrTrash},
+		{"Junk", store.MailboxAttrJunk},
+		{"Archive", store.MailboxAttrArchive},
+	}
+
+	byName := make(map[string]store.Mailbox, len(mbs))
+	for _, mb := range mbs {
+		byName[mb.Name] = mb
+	}
+
+	for _, w := range want {
+		mb, ok := byName[w.name]
+		if !ok {
+			t.Errorf("mailbox %q not found; got %v", w.name, byName)
+			continue
+		}
+		if mb.Attributes&w.attr == 0 {
+			t.Errorf("mailbox %q: attributes = %b, want bit %b set", w.name, mb.Attributes, w.attr)
+		}
+	}
+
+	if t.Failed() {
+		return
+	}
+	if len(mbs) != len(want) {
+		t.Errorf("got %d mailboxes, want %d", len(mbs), len(want))
+	}
+}
+
 func TestPrincipals_Keyset_Pagination(t *testing.T) {
 	h := newHarness(t)
 	_, key := h.bootstrap("admin@example.com")
