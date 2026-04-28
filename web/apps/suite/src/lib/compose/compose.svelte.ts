@@ -71,9 +71,7 @@ class ComposeStore {
     this.errorMessage = null;
     this.replyContext = { ...EMPTY_REPLY };
     this.status = 'editing';
-    if (!mail.primaryIdentity || !mail.drafts) {
-      void this.#warmupAccount();
-    }
+    this.#ensureAccountReady();
   }
 
   /**
@@ -92,6 +90,7 @@ class ComposeStore {
     this.replyContext = args.replyContext ?? { ...EMPTY_REPLY };
     this.errorMessage = null;
     this.status = 'editing';
+    this.#ensureAccountReady();
   }
 
   /** Open compose as a reply to the given email. */
@@ -141,13 +140,16 @@ class ComposeStore {
   async send(): Promise<void> {
     if (this.status === 'sending') return;
     const accountId = mail.mailAccountId;
-    const identity = mail.primaryIdentity;
-    const drafts = mail.drafts;
-    const sentMailbox = mail.sent;
     if (!accountId) {
       this.errorMessage = 'No Mail account on this session';
       return;
     }
+    if (!mail.primaryIdentity || !mail.drafts) {
+      await this.#ensureAccountReady();
+    }
+    const identity = mail.primaryIdentity;
+    const drafts = mail.drafts;
+    const sentMailbox = mail.sent;
     if (!identity) {
       this.errorMessage = 'No identity available — cannot send';
       return;
@@ -329,6 +331,25 @@ class ComposeStore {
       this.errorMessage = err instanceof Error ? err.message : String(err);
       return;
     }
+  }
+
+  /**
+   * In-flight warmup promise so concurrent open/send paths share one
+   * load. Cleared on completion so a later call re-checks the store
+   * (e.g. after a logout/login or an explicit identities refresh).
+   */
+  #warmup: Promise<void> | null = null;
+
+  #ensureAccountReady(): Promise<void> {
+    if (mail.primaryIdentity && mail.drafts) {
+      return Promise.resolve();
+    }
+    if (!this.#warmup) {
+      this.#warmup = this.#warmupAccount().finally(() => {
+        this.#warmup = null;
+      });
+    }
+    return this.#warmup;
   }
 
   async #warmupAccount(): Promise<void> {
