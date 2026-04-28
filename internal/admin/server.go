@@ -1797,16 +1797,33 @@ func composeAdminAndUI(
 	if ref := cfg.Server.Push.VAPIDPrivateKeyRef(); ref != "" {
 		raw, err := sysconfig.ResolveSecretStrict(ref)
 		if err != nil {
-			logger.Warn("vapid: failed to resolve VAPID private key; Web Push disabled",
+			logger.Warn("vapid: failed to resolve VAPID private key; falling back to ephemeral key",
 				slog.String("err", err.Error()))
 		} else if err := vapidMgr.Load([]byte(raw)); err != nil {
-			logger.Warn("vapid: failed to load VAPID private key; Web Push disabled",
+			logger.Warn("vapid: failed to load VAPID private key; falling back to ephemeral key",
 				slog.String("err", err.Error()))
 		} else {
 			logger.Info("vapid: loaded VAPID key pair; Web Push enabled")
 		}
-	} else {
-		logger.Info("vapid: no VAPID key pair configured; Web Push disabled")
+	}
+	if !vapidMgr.Configured() {
+		// No operator-configured VAPID key (typical zero-config / Docker
+		// quickstart scenario): generate an ephemeral P-256 key pair so
+		// the suite SPA can register Web Push subscriptions out of the
+		// box. Subscriptions registered against the ephemeral key are
+		// invalidated on process restart (the applicationServerKey
+		// changes), which is acceptable for development. Operators
+		// wanting subscription continuity wire a persistent key via
+		// [server.push].vapid_private_key_env or _file (see
+		// `herold vapid generate`).
+		kp, err := vapid.Generate(nil)
+		if err != nil {
+			logger.Warn("vapid: failed to generate ephemeral VAPID key; Web Push disabled",
+				slog.String("err", err.Error()))
+		} else {
+			vapidMgr = vapid.NewWithKey(kp)
+			logger.Info("vapid: using ephemeral VAPID key pair; Web Push enabled (subscriptions reset on restart -- configure [server.push].vapid_private_key_env for persistence)")
+		}
 	}
 	// Outbound Web Push dispatcher (Wave 3.8b, REQ-PROTO-123 + 125 +
 	// 126). Constructed unconditionally so the JMAP handler can call
