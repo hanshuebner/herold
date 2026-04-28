@@ -1653,7 +1653,8 @@ func (m *metaFace) GetCategorisationConfig(ctx context.Context, pid store.Princi
 
 // UpdateCategorisationConfig upserts the per-account categoriser row.
 // When the Prompt field differs from the stored value, DerivedCategories
-// is cleared to nil (REQ-FILT-217 invalidation rule).
+// is cleared to nil and DerivedCategoriesEpoch is incremented
+// (REQ-FILT-217 invalidation rule).
 func (m *metaFace) UpdateCategorisationConfig(ctx context.Context, cfg store.CategorisationConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1668,14 +1669,20 @@ func (m *metaFace) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 	if cfg.TimeoutSec <= 0 {
 		cfg.TimeoutSec = 5
 	}
-	// Clear DerivedCategories when the prompt changes (REQ-FILT-217).
+	// Clear DerivedCategories when the prompt changes (REQ-FILT-217) and
+	// increment the epoch so in-flight SetDerivedCategories calls become no-ops.
 	if existing, ok := s.phase2.catConfig[cfg.PrincipalID]; ok {
 		if existing.Prompt != cfg.Prompt {
 			cfg.DerivedCategories = nil
+			cfg.DerivedCategoriesEpoch = existing.DerivedCategoriesEpoch + 1
+		} else {
+			// Prompt unchanged: keep the existing epoch.
+			cfg.DerivedCategoriesEpoch = existing.DerivedCategoriesEpoch
 		}
 	} else {
 		// First write: no previous prompt, clear derived.
 		cfg.DerivedCategories = nil
+		cfg.DerivedCategoriesEpoch = 1
 	}
 	cfg.UpdatedAtUs = s.clk.Now().UnixMicro()
 	s.phase2.catConfig[cfg.PrincipalID] = cloneCategorisationConfig(cfg)
@@ -1683,25 +1690,29 @@ func (m *metaFace) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 }
 
 // SetDerivedCategories updates only the DerivedCategories field for pid
-// (REQ-FILT-217). A no-op when no config row exists yet.
-func (m *metaFace) SetDerivedCategories(ctx context.Context, pid store.PrincipalID, categories []string) error {
+// (REQ-FILT-217). A no-op when no config row exists yet. Returns (true,nil)
+// on success, (false, nil) when the epoch guard rejects the write.
+func (m *metaFace) SetDerivedCategories(ctx context.Context, pid store.PrincipalID, categories []string, expectedEpoch int64) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	s := m.s()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensurePhase2()
 	if s.phase2.catConfig == nil {
-		return nil
+		return false, nil
 	}
 	cfg, ok := s.phase2.catConfig[pid]
 	if !ok {
-		return nil
+		return false, nil
+	}
+	if cfg.DerivedCategoriesEpoch != expectedEpoch {
+		return false, nil
 	}
 	cfg.DerivedCategories = append([]string(nil), categories...)
 	s.phase2.catConfig[pid] = cfg
-	return nil
+	return true, nil
 }
 
 // cloneCategorisationConfig returns a deep copy so callers cannot

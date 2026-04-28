@@ -717,15 +717,25 @@ type Metadata interface {
 	// SetDerivedCategories instead.
 	UpdateCategorisationConfig(ctx context.Context, cfg CategorisationConfig) error
 
-	// SetDerivedCategories persists the categories slice derived from the
-	// most recent successful classifier response (REQ-FILT-217). It is a
-	// targeted write: only the derived_categories_json column is updated; all
-	// other config fields are left unchanged. Categories are lowercase ASCII
+	// SetDerivedCategories persists the categories slice derived from the most
+	// recent successful classifier response (REQ-FILT-217). It is a targeted
+	// write: only the derived_categories_json column is updated; all other
+	// config fields are left unchanged. Categories are lowercase ASCII
 	// dash-separated names; bounded to MaxDerivedCategoryEntries entries and
 	// MaxDerivedCategoryNameBytes bytes per name. Writes are de-duplicated by
 	// callers: this method is called only when the new slice differs from the
 	// currently persisted one.
-	SetDerivedCategories(ctx context.Context, pid PrincipalID, categories []string) error
+	//
+	// expectedEpoch must equal the DerivedCategoriesEpoch the caller read from
+	// GetCategorisationConfig before starting the classifier call. If the stored
+	// epoch has been incremented in the interim (because UpdateCategorisationConfig
+	// ran a prompt change), the UPDATE is a no-op and the method returns
+	// (false, nil). This prevents stale classifier results from overwriting the
+	// NULL that a prompt change wrote. Multiple concurrent in-flight classifier
+	// calls with the same expected epoch are also safe: exactly one wins and
+	// the others are silently dropped — correct behaviour, since only the latest
+	// persisted categories are meaningful once the prompt has not changed.
+	SetDerivedCategories(ctx context.Context, pid PrincipalID, categories []string, expectedEpoch int64) (bool, error)
 
 	// SetLLMClassification upserts the per-message LLM classification
 	// record (REQ-FILT-66 / REQ-FILT-216). The record is written once at

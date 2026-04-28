@@ -257,11 +257,12 @@ func TestLLMTransparency_Get_DerivedCategoriesExposed(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed the config row then write derived categories.
-	if _, err := st.Meta().GetCategorisationConfig(ctx, p.ID); err != nil {
+	seedCfg, err := st.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
 		t.Fatalf("GetCategorisationConfig (seed): %v", err)
 	}
 	want := []string{"primary", "social", "promotions", "updates", "forums"}
-	if err := st.Meta().SetDerivedCategories(ctx, p.ID, want); err != nil {
+	if _, err := st.Meta().SetDerivedCategories(ctx, p.ID, want, seedCfg.DerivedCategoriesEpoch); err != nil {
 		t.Fatalf("SetDerivedCategories: %v", err)
 	}
 

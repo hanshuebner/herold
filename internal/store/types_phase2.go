@@ -1217,6 +1217,14 @@ type CategorisationConfig struct {
 	// the next classifier call refills it. Nil means no successful
 	// classifier call has occurred since the last prompt change.
 	DerivedCategories []string
+	// DerivedCategoriesEpoch is an optimistic-lock counter incremented
+	// atomically by UpdateCategorisationConfig whenever the prompt
+	// changes (and DerivedCategories is cleared). SetDerivedCategories
+	// requires the caller to supply the epoch it read from
+	// GetCategorisationConfig; the UPDATE only proceeds when the stored
+	// epoch still matches, making concurrent stale classifier writes
+	// a silent no-op rather than a data-corruption risk.
+	DerivedCategoriesEpoch int64
 	// Endpoint, when non-nil, overrides the operator-default
 	// OpenAI-compatible endpoint URL for this account.
 	Endpoint *string

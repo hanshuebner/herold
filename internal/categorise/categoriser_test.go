@@ -236,7 +236,7 @@ func TestCategorise_PromptWriteClears(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCategorisationConfig: %v", err)
 	}
-	if err := st.Meta().SetDerivedCategories(ctx, pid, []string{"primary", "social"}); err != nil {
+	if _, err := st.Meta().SetDerivedCategories(ctx, pid, []string{"primary", "social"}, cfg.DerivedCategoriesEpoch); err != nil {
 		t.Fatalf("SetDerivedCategories: %v", err)
 	}
 	// Verify they are set.
@@ -516,8 +516,6 @@ func TestCategoriseJobRegistry_GetPutEvict(t *testing.T) {
 // The skip message is a contract: reviewer verifies that every skipped
 // test in this package has this exact reason prefix.
 func TestCategorise_WithLLMReplayer(t *testing.T) {
-	t.Skip("LLM fixtures not yet captured — run scripts/llm-capture.sh; see Wave 3.16")
-
 	st, pid := makeStoreAndPrincipal(t)
 	replayer := llmtest.LoadReplayer(t, llmtest.KindCategorise)
 	c := categorise.New(categorise.Options{
@@ -533,13 +531,9 @@ func TestCategorise_WithLLMReplayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CategoriseRich: %v", err)
 	}
-	// The replayer returns one of the five default category names.
-	validCategories := map[string]bool{
-		"primary": true, "social": true, "promotions": true,
-		"updates": true, "forums": true, "": true,
-	}
-	if !validCategories[result.Category] {
-		t.Fatalf("unexpected category %q from replayer", result.Category)
+	// The fixture assigns "forums" for the List-ID bearing test message.
+	if result.Category != "forums" {
+		t.Fatalf("unexpected category %q from replayer, want forums", result.Category)
 	}
 }
 

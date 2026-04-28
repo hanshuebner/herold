@@ -3,12 +3,15 @@ package categorysettings
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/categorise"
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/llmtest"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
@@ -142,7 +145,11 @@ func TestCategorySettings_Set_PromptRoundTrip(t *testing.T) {
 	accountID := protojmap.AccountIDForPrincipal(p.ID)
 
 	// Pre-populate derivedCategories so we can verify it is cleared.
-	if err := st.Meta().SetDerivedCategories(ctx, p.ID, []string{"primary", "social"}); err != nil {
+	seed, err := st.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (seed): %v", err)
+	}
+	if _, err := st.Meta().SetDerivedCategories(ctx, p.ID, []string{"primary", "social"}, seed.DerivedCategoriesEpoch); err != nil {
 		t.Fatalf("SetDerivedCategories (setup): %v", err)
 	}
 
@@ -197,13 +204,14 @@ func TestCategorySettings_Get_DerivedCategoriesExposed(t *testing.T) {
 	ctx := context.Background()
 	accountID := protojmap.AccountIDForPrincipal(p.ID)
 
-	// Seed the config row first (GetCategorisationConfig creates it on first read).
-	if _, err := st.Meta().GetCategorisationConfig(ctx, p.ID); err != nil {
+	// Seed the config row and read the epoch.
+	seedCfg, err := st.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
 		t.Fatalf("GetCategorisationConfig (seed): %v", err)
 	}
 
 	want := []string{"primary", "social", "promotions", "updates", "forums"}
-	if err := st.Meta().SetDerivedCategories(ctx, p.ID, want); err != nil {
+	if _, err := st.Meta().SetDerivedCategories(ctx, p.ID, want, seedCfg.DerivedCategoriesEpoch); err != nil {
 		t.Fatalf("SetDerivedCategories: %v", err)
 	}
 
@@ -422,11 +430,108 @@ func TestCategorySettings_Recategorise_InvalidScope(t *testing.T) {
 }
 
 // TestCategorySettings_Recategorise_WithLLM tests the recategorise method
-// end-to-end using a Wave 3.12 Replayer fixture.
-//
-// This test is skipped until LLM fixtures are captured (Wave 3.16).
+// end-to-end using a replayer fixture. It seeds one message into INBOX,
+// dispatches a recategorise job, and waits for the background goroutine
+// to finish before asserting the message gained the expected category
+// keyword.
 func TestCategorySettings_Recategorise_WithLLM(t *testing.T) {
-	t.Skip("LLM fixtures not yet captured — run scripts/llm-capture.sh; see Wave 3.16")
+	ctx := context.Background()
+	st := newStore(t)
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+
+	// Seed INBOX with one message that has a wrong category keyword so we
+	// can assert the recategoriser replaced it.
+	mb, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID,
+		Name:        "INBOX",
+		Attributes:  store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	body := "From: bob@sender.test\r\nTo: alice@example.test\r\nSubject: hello\r\nList-ID: <weekly.example>\r\n\r\nGood morning, team.\r\n"
+	ref, err := st.Blobs().Put(ctx, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	if _, _, err = st.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		Size:         int64(len(body)),
+		Blob:         ref,
+		ReceivedAt:   time.Now(),
+		InternalDate: time.Now(),
+	}, []store.MessageMailbox{{
+		MailboxID: mb.ID,
+		Keywords:  []string{"$category-promotions"},
+	}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	replayer := llmtest.LoadReplayer(t, llmtest.KindCategorise)
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	cat := categorise.New(categorise.Options{
+		Store:        st,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:        clk,
+		LLMClient:    replayer,
+		DefaultModel: "test-model",
+	})
+	jobs := categorise.NewJobRegistry(24*time.Hour, 256)
+	h := &handlerSet{
+		store:       st,
+		categoriser: cat,
+		jobs:        jobs,
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		clk:         clk,
+	}
+
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"scope":     "inbox-recent",
+	})
+	resp, mErr := (&recategoriseHandler{h: h}).executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("recategorise: %v", mErr)
+	}
+	rr, ok := resp.(recategoriseResponse)
+	if !ok {
+		t.Fatalf("unexpected response type %T", resp)
+	}
+	if rr.JobID == "" {
+		t.Fatal("expected non-empty JobID")
+	}
+
+	// Poll until the background goroutine finishes or the test times out.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status, found := jobs.Get(rr.JobID)
+		if found && (status.State == categorise.JobStateDone || status.State == categorise.JobStateFailed) {
+			if status.State == categorise.JobStateFailed {
+				t.Fatalf("recategorise job failed: %s", status.Err)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Verify the message now carries the fixture-assigned category keyword.
+	msgs, err := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	got := categorise.CategoryFromKeywords(msgs[0].Keywords)
+	if got != "forums" {
+		t.Fatalf("expected category forums, got %q (keywords=%v)", got, msgs[0].Keywords)
+	}
 }
 
 // TestCategorySettings_Get_AccountIDRequired verifies that an absent

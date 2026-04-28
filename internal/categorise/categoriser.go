@@ -289,10 +289,14 @@ func (c *Categoriser) CategoriseRich(
 
 	// Persist the derived category list whenever the response parses
 	// successfully (REQ-FILT-217). De-duplicate writes: only write when the
-	// new slice differs from the persisted one. This is fire-and-forget:
-	// a store error here is logged but never blocks delivery.
+	// new slice differs from the persisted one. Pass the epoch we read before
+	// the LLM call so SetDerivedCategories can reject this write if a prompt
+	// change occurred while the LLM was processing (epoch guard). A false
+	// return means the write was correctly suppressed — not an error.
+	// This is fire-and-forget: a store error here is logged but never blocks
+	// delivery.
 	if len(mr.Categories) > 0 && !stringSliceEqual(mr.Categories, cfg.DerivedCategories) {
-		if serr := c.store.Meta().SetDerivedCategories(ctx, principal, mr.Categories); serr != nil {
+		if _, serr := c.store.Meta().SetDerivedCategories(ctx, principal, mr.Categories, cfg.DerivedCategoriesEpoch); serr != nil {
 			c.logger.WarnContext(ctx, "categorise: persist derived categories",
 				slog.Uint64("principal_id", uint64(principal)),
 				slog.String("err", serr.Error()))

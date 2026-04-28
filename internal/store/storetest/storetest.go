@@ -121,6 +121,8 @@ func Run(t *testing.T, f Factory) {
 		{"CategorisationConfig_GuardrailRoundTrip", testCategorisationConfigGuardrailRoundtrip},
 		{"CategorisationConfig_DerivedCategoriesRoundTrip", testCategorisationConfigDerivedCategoriesRoundtrip},
 		{"CategorisationConfig_PromptChangeClearsDerived", testCategorisationConfigPromptChangeClearsDerived},
+		{"CategorisationConfig_EpochGuard_StaleWriteDropped", testCategorisationConfigEpochGuardStaleWriteDropped},
+		{"CategorisationConfig_EpochGuard_PromptChangeBumpsEpoch", testCategorisationConfigEpochBumpsOnPromptChange},
 		// -- REQ-FILT-66 / REQ-FILT-216 / G14 LLM classification records --
 		{"LLMClassification_SetGet_SpamOnly", testLLMClassificationSpamOnly},
 		{"LLMClassification_SetGet_CategoryOnly", testLLMClassificationCategoryOnly},
@@ -3283,13 +3285,18 @@ func testCategorisationConfigGuardrailRoundtrip(t *testing.T, s store.Store) {
 func testCategorisationConfigDerivedCategoriesRoundtrip(t *testing.T, s store.Store) {
 	ctx := ctxT(t)
 	p := mustInsertPrincipal(t, s, "cat-derived@example.com")
-	// Seed the config row.
-	if _, err := s.Meta().GetCategorisationConfig(ctx, p.ID); err != nil {
+	// Seed the config row and read the epoch.
+	seed, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
 		t.Fatalf("GetCategorisationConfig (seed): %v", err)
 	}
 	want := []string{"primary", "social", "promotions", "updates", "forums"}
-	if err := s.Meta().SetDerivedCategories(ctx, p.ID, want); err != nil {
+	ok, err := s.Meta().SetDerivedCategories(ctx, p.ID, want, seed.DerivedCategoriesEpoch)
+	if err != nil {
 		t.Fatalf("SetDerivedCategories: %v", err)
+	}
+	if !ok {
+		t.Fatalf("SetDerivedCategories: expected hit, got miss")
 	}
 	got, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
 	if err != nil {
@@ -3313,7 +3320,7 @@ func testCategorisationConfigPromptChangeClearsDerived(t *testing.T, s store.Sto
 	if err != nil {
 		t.Fatalf("GetCategorisationConfig (seed): %v", err)
 	}
-	if err := s.Meta().SetDerivedCategories(ctx, p.ID, []string{"primary", "social"}); err != nil {
+	if _, err := s.Meta().SetDerivedCategories(ctx, p.ID, []string{"primary", "social"}, cfg.DerivedCategoriesEpoch); err != nil {
 		t.Fatalf("SetDerivedCategories: %v", err)
 	}
 	// Verify they are set.
@@ -3339,6 +3346,116 @@ func testCategorisationConfigPromptChangeClearsDerived(t *testing.T, s store.Sto
 	}
 	if got.Prompt != cfg.Prompt {
 		t.Fatalf("Prompt not updated: %q, want %q", got.Prompt, cfg.Prompt)
+	}
+}
+
+// testCategorisationConfigEpochGuardStaleWriteDropped verifies that a
+// SetDerivedCategories call carrying a stale epoch (i.e., the caller read
+// the config before a prompt-change that bumped the epoch) is silently
+// dropped: the method returns false and the NULL written by the prompt-change
+// is preserved.
+func testCategorisationConfigEpochGuardStaleWriteDropped(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cat-epoch-stale@example.com")
+
+	// Seed and read the initial epoch.
+	cfg0, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (seed): %v", err)
+	}
+	epoch0 := cfg0.DerivedCategoriesEpoch
+
+	// Simulate: classifier starts, reads epoch 0.
+	// Meanwhile: prompt changes via UpdateCategorisationConfig — bumps epoch.
+	cfg0.Prompt = "new prompt that changes the epoch"
+	if err := s.Meta().UpdateCategorisationConfig(ctx, cfg0); err != nil {
+		t.Fatalf("UpdateCategorisationConfig (prompt change): %v", err)
+	}
+
+	// Verify epoch was bumped.
+	cfg1, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (post-prompt-change): %v", err)
+	}
+	if cfg1.DerivedCategoriesEpoch <= epoch0 {
+		t.Fatalf("epoch not bumped after prompt change: got %d, want > %d",
+			cfg1.DerivedCategoriesEpoch, epoch0)
+	}
+	if len(cfg1.DerivedCategories) != 0 {
+		t.Fatalf("DerivedCategories not cleared after prompt change: %v", cfg1.DerivedCategories)
+	}
+
+	// Classifier finishes, tries to write with the OLD epoch — must be dropped.
+	ok, err := s.Meta().SetDerivedCategories(ctx, p.ID, []string{"primary", "social"}, epoch0)
+	if err != nil {
+		t.Fatalf("SetDerivedCategories (stale epoch): %v", err)
+	}
+	if ok {
+		t.Fatalf("SetDerivedCategories returned true with stale epoch — want false")
+	}
+
+	// The NULL must still be persisted.
+	got, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (final): %v", err)
+	}
+	if len(got.DerivedCategories) != 0 {
+		t.Fatalf("stale write persisted DerivedCategories = %v, want nil", got.DerivedCategories)
+	}
+}
+
+// testCategorisationConfigEpochBumpsOnPromptChange verifies that the epoch
+// increments on every prompt change and stays unchanged when only non-prompt
+// fields are updated.
+func testCategorisationConfigEpochBumpsOnPromptChange(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cat-epoch-bump@example.com")
+
+	cfg, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig: %v", err)
+	}
+	epoch0 := cfg.DerivedCategoriesEpoch
+
+	// Write with same prompt — epoch must not change.
+	if err := s.Meta().UpdateCategorisationConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateCategorisationConfig (same prompt): %v", err)
+	}
+	cfg1, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (same prompt): %v", err)
+	}
+	if cfg1.DerivedCategoriesEpoch != epoch0 {
+		t.Fatalf("epoch changed on same-prompt update: got %d, want %d",
+			cfg1.DerivedCategoriesEpoch, epoch0)
+	}
+
+	// Write with changed prompt — epoch must increment.
+	cfg1.Prompt = "a new prompt"
+	if err := s.Meta().UpdateCategorisationConfig(ctx, cfg1); err != nil {
+		t.Fatalf("UpdateCategorisationConfig (new prompt): %v", err)
+	}
+	cfg2, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (new prompt): %v", err)
+	}
+	if cfg2.DerivedCategoriesEpoch != epoch0+1 {
+		t.Fatalf("epoch after prompt change: got %d, want %d",
+			cfg2.DerivedCategoriesEpoch, epoch0+1)
+	}
+
+	// Write with changed prompt again — epoch must increment once more.
+	cfg2.Prompt = "yet another prompt"
+	if err := s.Meta().UpdateCategorisationConfig(ctx, cfg2); err != nil {
+		t.Fatalf("UpdateCategorisationConfig (second new prompt): %v", err)
+	}
+	cfg3, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (second new prompt): %v", err)
+	}
+	if cfg3.DerivedCategoriesEpoch != epoch0+2 {
+		t.Fatalf("epoch after second prompt change: got %d, want %d",
+			cfg3.DerivedCategoriesEpoch, epoch0+2)
 	}
 }
 

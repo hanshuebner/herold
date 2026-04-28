@@ -1879,6 +1879,7 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 		guardrail             string
 		categorySetJSON       []byte
 		derivedCategoriesJSON *string
+		derivedEpoch          int64
 		endpointURL           *string
 		model                 *string
 		apiKeyEnv             *string
@@ -1888,11 +1889,13 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 	)
 	err := m.s.pool.QueryRow(ctx, `
 		SELECT prompt, guardrail, category_set_json, derived_categories_json,
+		       derived_categories_epoch,
 		       endpoint_url, model, api_key_env,
 		       timeout_sec, enabled, updated_at_us
 		  FROM jmap_categorisation_config
 		 WHERE principal_id = $1`, int64(pid)).Scan(
 		&prompt, &guardrail, &categorySetJSON, &derivedCategoriesJSON,
+		&derivedEpoch,
 		&endpointURL, &model, &apiKeyEnv,
 		&timeoutSec, &enabled, &updatedAtUs)
 	if err != nil {
@@ -1902,15 +1905,16 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 		return store.CategorisationConfig{}, false, mapErr(err)
 	}
 	cfg := store.CategorisationConfig{
-		PrincipalID: pid,
-		Prompt:      prompt,
-		Guardrail:   guardrail,
-		Endpoint:    endpointURL,
-		Model:       model,
-		APIKeyEnv:   apiKeyEnv,
-		TimeoutSec:  int(timeoutSec),
-		Enabled:     enabled,
-		UpdatedAtUs: updatedAtUs,
+		PrincipalID:            pid,
+		Prompt:                 prompt,
+		Guardrail:              guardrail,
+		Endpoint:               endpointURL,
+		Model:                  model,
+		APIKeyEnv:              apiKeyEnv,
+		TimeoutSec:             int(timeoutSec),
+		Enabled:                enabled,
+		UpdatedAtUs:            updatedAtUs,
+		DerivedCategoriesEpoch: derivedEpoch,
 	}
 	if len(categorySetJSON) > 0 {
 		if err := json.Unmarshal(categorySetJSON, &cfg.CategorySet); err != nil {
@@ -1940,14 +1944,22 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 	}
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		// When the caller updates the prompt, clear derived_categories_json
-		// so the next classifier call refills it (REQ-FILT-217).
+		// so the next classifier call refills it (REQ-FILT-217), and bump
+		// the epoch so any in-flight classifier call with the old epoch
+		// cannot overwrite the NULL via SetDerivedCategories.
 		var storedPrompt *string
+		var storedEpoch int64
 		_ = tx.QueryRow(ctx,
-			`SELECT prompt FROM jmap_categorisation_config WHERE principal_id = $1`,
-			int64(cfg.PrincipalID)).Scan(&storedPrompt)
+			`SELECT prompt, derived_categories_epoch FROM jmap_categorisation_config WHERE principal_id = $1`,
+			int64(cfg.PrincipalID)).Scan(&storedPrompt, &storedEpoch)
 		promptChanged := storedPrompt == nil || *storedPrompt != cfg.Prompt
 		var derivedJSON *string
-		if !promptChanged && len(cfg.DerivedCategories) > 0 {
+		newEpoch := storedEpoch
+		if promptChanged {
+			// Increment the epoch so SetDerivedCategories calls that read
+			// the previous epoch become no-ops.
+			newEpoch = storedEpoch + 1
+		} else if len(cfg.DerivedCategories) > 0 {
 			b, jerr := json.Marshal(cfg.DerivedCategories)
 			if jerr != nil {
 				return fmt.Errorf("storepg: encode derived_categories_json: %w", jerr)
@@ -1958,13 +1970,15 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 		_, err := tx.Exec(ctx, `
 			INSERT INTO jmap_categorisation_config
 			  (principal_id, prompt, guardrail, category_set_json, derived_categories_json,
+			   derived_categories_epoch,
 			   endpoint_url, model, api_key_env, timeout_sec, enabled, updated_at_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 			ON CONFLICT (principal_id) DO UPDATE SET
 			  prompt = EXCLUDED.prompt,
 			  guardrail = EXCLUDED.guardrail,
 			  category_set_json = EXCLUDED.category_set_json,
 			  derived_categories_json = EXCLUDED.derived_categories_json,
+			  derived_categories_epoch = EXCLUDED.derived_categories_epoch,
 			  endpoint_url = EXCLUDED.endpoint_url,
 			  model = EXCLUDED.model,
 			  api_key_env = EXCLUDED.api_key_env,
@@ -1972,6 +1986,7 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 			  enabled = EXCLUDED.enabled,
 			  updated_at_us = EXCLUDED.updated_at_us`,
 			int64(cfg.PrincipalID), cfg.Prompt, cfg.Guardrail, js, derivedJSON,
+			newEpoch,
 			cfg.Endpoint, cfg.Model, cfg.APIKeyEnv,
 			int32(timeoutSec), cfg.Enabled, usMicros(now))
 		return mapErr(err)
@@ -1980,25 +1995,35 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 
 // SetDerivedCategories updates only the derived_categories_json column for
 // pid (REQ-FILT-217). See store.Metadata.SetDerivedCategories for contract.
-func (m *metadata) SetDerivedCategories(ctx context.Context, pid store.PrincipalID, categories []string) error {
+//
+// Returns (true, nil) when the row was updated, (false, nil) when the epoch
+// guard rejected the write (stale call — prompt changed under us).
+func (m *metadata) SetDerivedCategories(ctx context.Context, pid store.PrincipalID, categories []string, expectedEpoch int64) (bool, error) {
 	cats := sanitiseDerivedCategories(categories)
 	var derivedJSON *string
 	if len(cats) > 0 {
 		b, err := json.Marshal(cats)
 		if err != nil {
-			return fmt.Errorf("storepg: encode derived_categories_json: %w", err)
+			return false, fmt.Errorf("storepg: encode derived_categories_json: %w", err)
 		}
 		s := string(b)
 		derivedJSON = &s
 	}
-	return m.runTx(ctx, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
+	var updated bool
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		res, err := tx.Exec(ctx,
 			`UPDATE jmap_categorisation_config
 			    SET derived_categories_json = $1
-			  WHERE principal_id = $2`,
-			derivedJSON, int64(pid))
-		return mapErr(err)
+			  WHERE principal_id = $2
+			    AND derived_categories_epoch = $3`,
+			derivedJSON, int64(pid), expectedEpoch)
+		if err != nil {
+			return mapErr(err)
+		}
+		updated = res.RowsAffected() > 0
+		return nil
 	})
+	return updated, err
 }
 
 // sanitiseDerivedCategories enforces the per-entry and total bounds defined
