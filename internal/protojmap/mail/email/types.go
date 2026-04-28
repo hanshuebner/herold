@@ -78,18 +78,18 @@ type jmapEmail struct {
 	Reactions map[string][]string `json:"reactions,omitempty"`
 
 	// Header form (RFC 8621 §4.1.2 + §4.1.3).
-	From       []jmapAddress `json:"from,omitempty"`
-	To         []jmapAddress `json:"to,omitempty"`
-	Cc         []jmapAddress `json:"cc,omitempty"`
-	Bcc        []jmapAddress `json:"bcc,omitempty"`
-	ReplyTo    []jmapAddress `json:"replyTo,omitempty"`
-	Sender     []jmapAddress `json:"sender,omitempty"`
+	From    []jmapAddress `json:"from,omitempty"`
+	To      []jmapAddress `json:"to,omitempty"`
+	Cc      []jmapAddress `json:"cc,omitempty"`
+	Bcc     []jmapAddress `json:"bcc,omitempty"`
+	ReplyTo []jmapAddress `json:"replyTo,omitempty"`
+	Sender  []jmapAddress `json:"sender,omitempty"`
 	// Subject must not use omitempty: RFC 8621 requires "" for no-Subject emails.
-	Subject    string        `json:"subject"`
-	MessageID  []string      `json:"messageId,omitempty"`
-	InReplyTo  []string      `json:"inReplyTo,omitempty"`
-	References []string      `json:"references,omitempty"`
-	SentAt     string        `json:"sentAt,omitempty"`
+	Subject    string   `json:"subject"`
+	MessageID  []string `json:"messageId,omitempty"`
+	InReplyTo  []string `json:"inReplyTo,omitempty"`
+	References []string `json:"references,omitempty"`
+	SentAt     string   `json:"sentAt,omitempty"`
 
 	// Body parts (RFC 8621 §4.1.4). Populated only on Email/parse and
 	// when the caller asks for bodyStructure / bodyValues; the cheap
@@ -98,11 +98,11 @@ type jmapEmail struct {
 	BodyValues    map[string]bodyValue `json:"bodyValues,omitempty"`
 	// TextBody, HTMLBody, Attachments carry full EmailBodyPart objects
 	// (RFC 8621 §4.2 specifies these as arrays of EmailBodyPart).
-	TextBody      []bodyPart           `json:"textBody,omitempty"`
-	HTMLBody      []bodyPart           `json:"htmlBody,omitempty"`
-	Attachments   []bodyPart           `json:"attachments,omitempty"`
-	HasAttachment bool                 `json:"hasAttachment"`
-	Preview       string               `json:"preview,omitempty"`
+	TextBody      []bodyPart `json:"textBody,omitempty"`
+	HTMLBody      []bodyPart `json:"htmlBody,omitempty"`
+	Attachments   []bodyPart `json:"attachments,omitempty"`
+	HasAttachment bool       `json:"hasAttachment"`
+	Preview       string     `json:"preview,omitempty"`
 
 	// HeaderProperties holds the decoded values for dynamic header
 	// property accessors (RFC 8621 §4.1.2.4) — keys like
@@ -236,7 +236,6 @@ type bodyValue struct {
 	IsEncodingProblem bool   `json:"isEncodingProblem"`
 	IsTruncated       bool   `json:"isTruncated"`
 }
-
 
 // keywordsFromMessage projects the IMAP system flag bitfield + keyword
 // list onto the JMAP keyword map. The IMAP \Seen / \Answered / \Flagged

@@ -131,7 +131,6 @@ func (s *Server) dispatchOneMulti(ctx context.Context, call Invocation, prior []
 	return []Invocation{{Name: call.Name, Args: respBytes, CallID: call.CallID}}
 }
 
-
 // MultipleInvocations may be returned by a MethodHandler.Execute
 // implementation when the method must produce more than one entry in
 // the methodResponses array (e.g. EmailSubmission/set with

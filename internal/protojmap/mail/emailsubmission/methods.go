@@ -589,15 +589,15 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 // implicitEmailSetResponse is the wire form of the implicit Email/set
 // triggered by onSuccessUpdateEmail (RFC 8621 §7.5).
 type implicitEmailSetResponse struct {
-	AccountID string                     `json:"accountId"`
-	OldState  string                     `json:"oldState,omitempty"`
-	NewState  string                     `json:"newState"`
-	Updated   map[jmapID]*implicitUpdate `json:"updated,omitempty"`
-	NotUpdated map[jmapID]setError       `json:"notUpdated,omitempty"`
-	Created    map[jmapID]any            `json:"created,omitempty"`
-	Destroyed  []jmapID                  `json:"destroyed,omitempty"`
-	NotCreated map[jmapID]setError       `json:"notCreated,omitempty"`
-	NotDestroyed map[jmapID]setError     `json:"notDestroyed,omitempty"`
+	AccountID    string                     `json:"accountId"`
+	OldState     string                     `json:"oldState,omitempty"`
+	NewState     string                     `json:"newState"`
+	Updated      map[jmapID]*implicitUpdate `json:"updated,omitempty"`
+	NotUpdated   map[jmapID]setError        `json:"notUpdated,omitempty"`
+	Created      map[jmapID]any             `json:"created,omitempty"`
+	Destroyed    []jmapID                   `json:"destroyed,omitempty"`
+	NotCreated   map[jmapID]setError        `json:"notCreated,omitempty"`
+	NotDestroyed map[jmapID]setError        `json:"notDestroyed,omitempty"`
 }
 
 type implicitUpdate struct{} // null in JSON — update returned as null per RFC 8620

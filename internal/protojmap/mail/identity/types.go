@@ -24,9 +24,9 @@ type emailAddress struct {
 // signature body separate from textSignature/htmlSignature; clients
 // populate compose with this value when present. NULL means unset.
 type jmapIdentity struct {
-	ID            jmapID          `json:"id"`
-	Name          string          `json:"name"`
-	Email         string          `json:"email"`
+	ID    jmapID `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
 	// ReplyTo and Bcc are RFC 8621 §6.1 nullable arrays. When not set
 	// they must appear as JSON null (not absent). Use pointer-to-slice.
 	ReplyTo       *[]emailAddress `json:"replyTo"`
