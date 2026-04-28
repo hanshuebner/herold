@@ -1,0 +1,17 @@
+{
+  "sessionUrl": "http://mail.herold.test:8080/.well-known/jmap",
+  "serverInfo": "herold interop",
+  "users": {
+    "primary": {
+      "username": "alice@herold.test",
+      "password": "alicepw-interop"
+    },
+    "secondary": {
+      "username": "bob@herold.test",
+      "password": "bobpw-interop"
+    }
+  },
+  "authMethod": "basic",
+  "timeout": 30000,
+  "verbose": false
+}

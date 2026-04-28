@@ -217,6 +217,97 @@ will fail if the behaviour regresses.
     IMAPTEST_SECS=300 make interop-imaptest    # 5-minute run
     IMAPTEST_SECS=3600 make interop-imaptest   # 1-hour soak
 
+### jmaptest conformance suite (make interop-jmaptest / pytest -m jmaptest)
+
+The upstream `jmapio/jmap-test-suite` runs ~300 tests across RFC 8620 (JMAP
+Core) and RFC 8621 (JMAP Mail) by speaking JMAP to a live server with a
+primary and a secondary test account.
+
+| Test                              | Status      | Notes                                              |
+|-----------------------------------|-------------|----------------------------------------------------|
+| test_jmap_compliance_baseline     | PASS (goal) | Runs the full upstream suite against herold:8080   |
+
+Gated behind the `jmaptest` compose profile and the `jmaptest` pytest
+marker.  Does NOT run as part of `make interop`.
+
+#### How to run
+
+    make interop-jmaptest                    # full suite
+
+Or directly from the interop directory:
+
+    ./test/interop/run-jmaptest.sh
+
+Optional knobs:
+
+    JMAPTEST_FILTER='core/*' make interop-jmaptest   # restrict to one category
+    JMAPTEST_TIMEOUT=1800 make interop-jmaptest      # raise wall-clock cap
+
+Or to run just the pytest scenario against an already-running stack
+(with the jmaptest container up):
+
+    cd test/interop && docker compose --profile jmaptest run --rm runner \
+      pytest -v -m jmaptest scenarios/
+
+#### What the suite does
+
+The suite seeds a fresh test account (cleaning any prior state via `-f`),
+then drives the JMAP HTTP API with realistic call sequences and asserts
+spec-conformant responses.  It writes a structured JSON report which the
+runner pulls into `logs/<RUN_ID>/jmap-report.json` for post-run inspection.
+
+Endpoint: `http://mail.herold.test:8080/.well-known/jmap` (the interop
+herold runs in `dev_mode = true`, which co-mounts the JMAP handler on the
+admin listener; production splits these into separate `kind="public"` and
+`kind="admin"` listeners).
+
+Auth: HTTP Basic.  Accounts seeded by `config/herold/bootstrap.sh`:
+
+| Role      | Account            | Password         |
+|-----------|--------------------|------------------|
+| primary   | alice@herold.test  | alicepw-interop  |
+| secondary | bob@herold.test    | bobpw-interop    |
+
+#### Suite source provenance
+
+`test/interop/config/jmaptest/Dockerfile` clones
+`https://github.com/jmapio/jmap-test-suite` at a pinned commit SHA and
+runs `npm install && npm run build` inside a `node:22-bookworm-slim`
+image.  The upstream repo carries no runtime dependencies (Node 22's
+built-in `fetch` is used), so the commit pin alone is sufficient for
+reproducibility — no `package-lock.json` exists upstream.
+
+To re-pin after an upstream change: fetch the new master SHA and update
+`JMAPTEST_SHA` in the Dockerfile build args.
+
+#### Known deferred failures
+
+A small number of tests are expected to fail until the corresponding
+herold roadmap items land.  They are NOT suppressed; they appear as
+`FAIL` in the run output and are tracked here:
+
+1. **`email/get-mailbox-ids`, `email/set-update-add-mailbox`,
+   `email/set-update-remove-mailbox`,
+   `email/set-destroy-removes-from-all-mailboxes`** (4 tests)
+
+   Blocked on a multi-mailbox-per-message schema change.  `store.Message`
+   currently carries a single `MailboxID` foreign key; supporting multiple
+   mailbox membership requires a message-mailbox join table plus IMAP UID
+   redesign (UIDs are per-mailbox per RFC 9051, so a message in N mailboxes
+   needs N UIDs).
+
+2. **`push-subscription/push-subscription-receives-notification`** (1 test)
+
+   Requires the VAPID Web Push delivery dispatcher (REQ-PROTO-48, Phase 3).
+   The subscription is created and stored correctly; the test just times
+   out waiting for an outbound encrypted POST that herold does not yet
+   send.
+
+5 additional tests are skipped automatically because the primary user
+(alice) only has a single mail account; cross-account tests require a
+primary account with access to multiple accounts, which the interop
+fixture does not currently provide.
+
 The nightly CI run should use at least `IMAPTEST_SECS=300`.
 
 ### Bulk suite (make interop-bulk / pytest -m bulk)

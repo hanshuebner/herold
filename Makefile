@@ -13,7 +13,7 @@ FUZZTIME ?= 30s
 .PHONY: all build build-server build-web build-plugins prep-web test test-server test-web \
         test-short lint vet staticcheck vulncheck \
         fmt fmt-check fuzz-short tidy ci-local clean docker \
-        interop interop-bulk interop-imaptest interop-clean
+        interop interop-bulk interop-imaptest interop-jmaptest interop-clean
 
 all: build
 
@@ -147,6 +147,14 @@ interop-bulk:
 # IMAPTEST_SECS controls the run duration (default 30; use 300+ for soak runs).
 interop-imaptest:
 	PYTEST_MARKER=imaptest COMPOSE_PROFILES=imaptest ./test/interop/run-imaptest.sh
+
+# jmapio/jmap-test-suite JMAP wire-protocol conformance suite.
+# Brings up herold + the "jmaptest" profile (Node container with the upstream
+# suite at a pinned commit), then runs the @pytest.mark.jmaptest scenario.
+# JMAPTEST_FILTER restricts the run to a glob (e.g. "core/*"); JMAPTEST_TIMEOUT
+# is the overall wall-clock cap in seconds (default 900).
+interop-jmaptest:
+	./test/interop/run-jmaptest.sh
 
 interop-clean:
 	cd test/interop && docker compose down --remove-orphans --volumes 2>/dev/null || true
