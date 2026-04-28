@@ -125,6 +125,22 @@ class ComposeStore {
   editingDraftId = $state<string | null>(null);
 
   /**
+   * Snapshot of the form fields as they were the moment compose opened.
+   * Used by `hasContent` to distinguish "user has actually edited
+   * something" from "the form is non-empty because reply / forward
+   * pre-filled it" -- discarding an unmodified reply should not prompt.
+   * Captured by `openWith` after every field is set; cleared by
+   * `close()` so a stale snapshot can't cross-pollute the next compose.
+   */
+  #snapshot: {
+    to: string;
+    cc: string;
+    bcc: string;
+    subject: string;
+    body: string;
+  } | null = null;
+
+  /**
    * Optional pre-open guard.  When set, every open* path calls it
    * first; a false return aborts the open.  Wired by composeStack to
    * snapshot the current compose into the minimized tray before a
@@ -192,6 +208,13 @@ class ComposeStore {
     this.editingDraftId = args.draftId ?? null;
     this.attachments = [];
     this.status = 'editing';
+    this.#snapshot = {
+      to: this.to,
+      cc: this.cc,
+      bcc: this.bcc,
+      subject: this.subject,
+      body: this.body,
+    };
     this.#ensureAccountReady();
   }
 
@@ -282,16 +305,33 @@ class ComposeStore {
     });
   }
 
-  /** True when the form holds anything the user might want to keep. */
+  /**
+   * True when the user has changed the form since `openWith` captured
+   * the snapshot. Auto-injected content (signatures, reply quote,
+   * pre-filled To/Subject from openReply / openForward / openDraft) is
+   * the snapshot baseline -- discarding without further edits is
+   * therefore not "losing user content" and should not prompt for
+   * confirmation (REQ-DFT-41 spirit). Attachments added after open
+   * always count as user content.
+   */
   get hasContent(): boolean {
-    if (this.to.trim() || this.cc.trim() || this.bcc.trim()) return true;
-    if (this.subject.trim()) return true;
     if (this.attachments.length > 0) return true;
-    // The auto-inserted signature is not "user input" -- a fresh
-    // openBlank() body is only the signature, and discarding that
-    // shouldn't prompt (issue #22). Strip the signature-and-after
-    // section before deciding the body is empty (issue #21).
-    return bodyTextWithoutSignature(this.body).length > 0;
+    const snap = this.#snapshot;
+    if (!snap) {
+      // Pre-open or post-close state -- fall back to the original
+      // "any non-empty field" semantics so callers that misuse this
+      // outside an editing session still get a sensible answer.
+      if (this.to.trim() || this.cc.trim() || this.bcc.trim()) return true;
+      if (this.subject.trim()) return true;
+      return bodyTextWithoutSignature(this.body).length > 0;
+    }
+    return (
+      this.to !== snap.to ||
+      this.cc !== snap.cc ||
+      this.bcc !== snap.bcc ||
+      this.subject !== snap.subject ||
+      this.body !== snap.body
+    );
   }
 
   /** True when at least one attachment is still uploading. */
@@ -497,6 +537,7 @@ class ComposeStore {
     this.replyContext = { ...EMPTY_REPLY };
     this.editingDraftId = null;
     this.attachments = [];
+    this.#snapshot = null;
   }
 
   /**

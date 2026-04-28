@@ -398,8 +398,7 @@
     filter: brightness(1.1);
   }
 
-  .mailbox-list,
-  .label-list {
+  .mailbox-list {
     list-style: none;
     margin: 0;
     padding: 0;
@@ -407,15 +406,13 @@
     flex-direction: column;
     gap: var(--spacing-01);
   }
-  .mailbox-list li,
-  .label-list li {
+  .mailbox-list li {
     display: flex;
     color: var(--text-secondary);
     border-radius: var(--radius-md);
     transition: background var(--duration-fast-02) var(--easing-productive-enter);
   }
-  .mailbox-list li button,
-  .label-list li button {
+  .mailbox-list li button {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -427,19 +424,14 @@
     text-align: left;
     transition: background var(--duration-fast-02) var(--easing-productive-enter);
   }
-  .mailbox-list li.active,
-  .label-list li.active {
+  .mailbox-list li.active {
     background: var(--layer-02);
     color: var(--text-primary);
     font-weight: 600;
   }
-  .mailbox-list li:hover,
-  .label-list li:hover {
+  .mailbox-list li:hover {
     background: var(--layer-02);
     color: var(--text-primary);
-  }
-  .label-list li button {
-    justify-content: flex-start;
   }
   .mailbox-list .count {
     color: var(--text-helper);
@@ -522,15 +514,6 @@
   .mailbox-list.custom .add-row button {
     color: var(--interactive);
     font-weight: 500;
-  }
-
-  .label-list .dot {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border-radius: var(--radius-pill);
-    background: var(--c, var(--text-helper));
-    margin-right: var(--spacing-03);
   }
 
   /* Push enable / SW update banners: fixed bottom-center strip. */
