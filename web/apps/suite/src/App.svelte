@@ -17,6 +17,7 @@
   import { confirm } from './lib/dialog/confirm.svelte';
   import { prompt } from './lib/dialog/prompt.svelte';
   import { mail } from './lib/mail/store.svelte';
+  import { pushSubscription } from './lib/push/push-subscription.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
   import SettingsView from './views/SettingsView.svelte';
@@ -137,6 +138,57 @@
     await mail.destroyMailbox(id);
   }
 
+  // ── Web Push: non-modal notification banner (REQ-PUSH-30) ───────────────
+  //
+  // After the user has been in the app for >= 60s with no modal open, and
+  // push is available and permission is still 'default', show a non-
+  // intrusive in-chrome banner offering to enable notifications.
+  // The banner is suppressed if the user previously denied within 30 days.
+
+  let showPushBanner = $state(false);
+
+  $effect(() => {
+    if (auth.status !== 'ready') return;
+    if (!pushSubscription.available) return;
+    if (pushSubscription.subscribed) return;
+    if (pushSubscription.permissionState !== 'default') return;
+
+    // Check the 30-day denial cooldown.
+    const until = parseInt(localStorage.getItem('herold:push:denied_until') ?? '0', 10);
+    if (Date.now() < until) return;
+
+    // Show the banner after 60s of active session.
+    const timer = setTimeout(() => {
+      untrack(() => {
+        showPushBanner = true;
+      });
+    }, 60_000);
+
+    return () => clearTimeout(timer);
+  });
+
+  function dismissPushBanner(): void {
+    showPushBanner = false;
+  }
+
+  async function enablePushFromBanner(): Promise<void> {
+    showPushBanner = false;
+    await pushSubscription.subscribe();
+  }
+
+  // ── Web Push: SW update notification (REQ-PUSH-72 / REQ-MOB-75) ──────────
+
+  let showSwUpdateBanner = $state(false);
+
+  $effect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      untrack(() => {
+        showSwUpdateBanner = true;
+      });
+    });
+  });
+
   // Suite-global bindings — always active.
   keyboard.registerGlobal({
     key: 'c',
@@ -161,6 +213,28 @@
 </script>
 
 <AuthGate>
+<!-- Non-modal push-enable banner (REQ-PUSH-30): shown after 60s in-app. -->
+{#if showPushBanner}
+  <div class="push-banner" role="status" aria-live="polite">
+    <span>Get notified about new mail and messages.</span>
+    <button type="button" class="push-banner-enable" onclick={() => void enablePushFromBanner()}>
+      Enable
+    </button>
+    <button type="button" class="push-banner-dismiss" aria-label="Dismiss" onclick={dismissPushBanner}>
+      &#10005;
+    </button>
+  </div>
+{/if}
+<!-- SW update banner (REQ-PUSH-72 / REQ-MOB-75). -->
+{#if showSwUpdateBanner}
+  <div class="sw-update-banner" role="status" aria-live="polite">
+    <span>A new version is available.</span>
+    <button type="button" onclick={() => location.reload()}>Reload</button>
+    <button type="button" aria-label="Dismiss" onclick={() => (showSwUpdateBanner = false)}>
+      &#10005;
+    </button>
+  </div>
+{/if}
 <Shell {activeApp} mailUnread={mail.inbox?.unreadEmails ?? 0} chatUnread={chat.totalUnread} onAppSelect={selectApp}>
   {#snippet sidebar()}
     {#if activeApp === 'mail'}
@@ -475,5 +549,74 @@
     border-radius: var(--radius-pill);
     background: var(--c, var(--text-helper));
     margin-right: var(--spacing-03);
+  }
+
+  /* Push enable / SW update banners: fixed bottom-center strip. */
+  .push-banner,
+  .sw-update-banner {
+    position: fixed;
+    bottom: var(--spacing-05);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 500;
+    background: var(--layer-03);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-03) var(--spacing-05);
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-04);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.24);
+    color: var(--text-primary);
+    font-size: var(--type-body-compact-01-size);
+    max-width: 480px;
+    width: calc(100vw - var(--spacing-06) * 2);
+  }
+
+  .push-banner span,
+  .sw-update-banner span {
+    flex: 1;
+  }
+
+  .push-banner-enable {
+    padding: var(--spacing-02) var(--spacing-04);
+    background: var(--interactive);
+    color: var(--text-on-color);
+    border-radius: var(--radius-pill);
+    font-weight: 600;
+    min-height: var(--touch-min);
+    white-space: nowrap;
+  }
+  .push-banner-enable:hover {
+    filter: brightness(1.1);
+  }
+
+  .push-banner-dismiss,
+  .sw-update-banner button:last-child {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .push-banner-dismiss:hover,
+  .sw-update-banner button:last-child:hover {
+    background: var(--layer-02);
+    color: var(--text-primary);
+  }
+
+  .sw-update-banner button:not(:last-child) {
+    padding: var(--spacing-02) var(--spacing-04);
+    background: var(--interactive);
+    color: var(--text-on-color);
+    border-radius: var(--radius-pill);
+    font-weight: 600;
+    min-height: var(--touch-min);
+  }
+  .sw-update-banner button:not(:last-child):hover {
+    filter: brightness(1.1);
   }
 </style>
