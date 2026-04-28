@@ -169,6 +169,36 @@ Gone from scope. Plugins could reintroduce any of them as operator-written code.
 - **REQ-FILT-141** Admin UI/CLI: `herold mail inspect <msgid>` shows verdict + LLM request-response (redacted body) + Sieve trace.
 - **REQ-FILT-142** Sieve execution traces: optional per-user debug, logs sequence of actions.
 
+## Part D: LLM test infrastructure
+
+The LLM test contract ensures that every feature touching the classifier or
+categoriser can run deterministically in CI without a network connection.
+
+- **REQ-FILT-300** CI tests for the spam classifier and the categoriser MUST
+  use a deterministic `Replayer` (package `internal/llmtest`) that reads
+  pre-recorded fixture files. The `Replayer` MUST NOT make any network calls.
+  Tests that require a live endpoint are gated behind `t.Skip` until fixtures
+  are recorded.
+
+- **REQ-FILT-301** The `Replayer` looks up responses by `(kind, prompt_hash)`
+  where `prompt_hash` is the SHA-256 hex of the full concatenated prompt
+  (system message + user content). Any change to the prompt text produces a
+  different hash and causes the `Replayer` to return `ErrFixtureMissing`,
+  surfacing a clear "regenerate fixtures" message rather than silently serving
+  a stale response.
+
+- **REQ-FILT-302** When no fixture matches a given `(kind, prompt_hash)`, the
+  `Replayer` returns `ErrFixtureMissing` with the missing key embedded in the
+  error string. The test runner surfaces this as a test failure that names the
+  affected kind, the hash, and points the developer at `scripts/llm-capture.sh`.
+
+- **REQ-FILT-303** The capture script (`scripts/llm-capture.sh`) is operator
+  tooling only; it MUST NOT run in CI. It requires `HEROLD_LLM_CAPTURE=1` and
+  records fixture files under `internal/llmtest/fixtures/<kind>/<pkg>.jsonl`.
+  Running the script without `HEROLD_LLM_CAPTURE=1` prints usage and exits 0
+  without making any network calls. Fixtures are committed to the repository so
+  CI can use the `Replayer` with no network dependency.
+
 ## Out of scope
 
 - External AV (ClamAV, Sophos) integration. Operator writes a Sieve-compatible plugin if they want.
