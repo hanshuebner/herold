@@ -70,11 +70,13 @@ func New(opts Options) *Server {
 	return &Server{opts: opts, log: l}
 }
 
-// Mount registers POST /api/v1/auth/login and POST /api/v1/auth/logout on
-// mux. Both routes are unprotected by requireAuth -- they ARE the
-// authentication boundary. Rate limiting (if configured) gates them before
-// any principal is resolved.
+// Mount registers POST /api/v1/auth/login, POST /api/v1/auth/logout, and
+// GET /api/v1/auth/me on mux. login/logout are unprotected by requireAuth --
+// they ARE the authentication boundary; /auth/me reads the session cookie
+// directly and returns 401 if it is missing or invalid. Rate limiting
+// (if configured) gates login/logout before any principal is resolved.
 func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
+	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
 }

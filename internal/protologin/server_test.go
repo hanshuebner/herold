@@ -205,3 +205,53 @@ func TestLogin_InvalidJSON_Returns400(t *testing.T) {
 		t.Errorf("invalid JSON: status=%d, want 400", resp.StatusCode)
 	}
 }
+
+// TestMe_NoCookie_Returns401 asserts an unauthenticated GET /auth/me -> 401.
+func TestMe_NoCookie_Returns401(t *testing.T) {
+	t.Parallel()
+	ts, _, _, _, _ := newTestServer(t)
+
+	resp, err := http.Get(ts.URL + "/api/v1/auth/me")
+	if err != nil {
+		t.Fatalf("GET /api/v1/auth/me: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("/auth/me without cookie: status=%d, want 401", resp.StatusCode)
+	}
+}
+
+// TestMe_AfterLogin_ReturnsPrincipalID asserts the cookie issued by login
+// resolves through /auth/me to {principal_id, email, scopes}.
+func TestMe_AfterLogin_ReturnsPrincipalID(t *testing.T) {
+	t.Parallel()
+	ts, _, _, email, password := newTestServer(t)
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	if code, _ := doLogin(t, client, ts.URL, email, password, nil); code != http.StatusOK {
+		t.Fatalf("login: status=%d", code)
+	}
+
+	resp, err := client.Get(ts.URL + "/api/v1/auth/me")
+	if err != nil {
+		t.Fatalf("GET /api/v1/auth/me: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/auth/me: status=%d, want 200", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["email"] != email {
+		t.Errorf("/auth/me email=%v, want %q", body["email"], email)
+	}
+	if body["principal_id"] == nil {
+		t.Errorf("/auth/me missing principal_id: %v", body)
+	}
+	if scopes, _ := body["scopes"].([]interface{}); len(scopes) == 0 {
+		t.Errorf("/auth/me missing scopes: %v", body)
+	}
+}
