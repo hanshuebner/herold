@@ -1,0 +1,95 @@
+# Herold - container-internal default config.
+#
+# Baked into the image at /etc/herold/system.toml. Used by the
+# `docker run` quickstart so the container runs end-to-end without any
+# external file mounts.
+#
+# Listener TLS posture: IMAP / IMAPS / SMTP submission use the
+# throwaway self-signed cert baked into the image at
+# /var/lib/herold/admin.{crt,key}. Mail clients will warn the first
+# time they connect; click through and trust the cert (or replace
+# the cert + key by mounting your own files at the same path). The
+# admin / public HTTP listeners stay on plain TCP because the image
+# binds 0.0.0.0 inside the container and assumes the operator
+# publishes the ports on a loopback interface (see `-p 127.0.0.1:...`
+# in the README quickstart).
+#
+# For a real deployment, override /etc/herold/system.toml with a bind
+# mount and follow docs/user/quickstart-extended.md (DNS, ACME, DKIM,
+# DMARC, MTA-STS).
+
+[server]
+hostname = "mail.example.local"
+data_dir = "/var/lib/herold"
+shutdown_grace = "30s"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/var/lib/herold/admin.crt"
+key_file  = "/var/lib/herold/admin.key"
+
+[server.storage]
+backend = "sqlite"
+
+[server.storage.sqlite]
+path = "/var/lib/herold/herold.sqlite"
+
+# Listeners bind 0.0.0.0 inside the container so the port forwarding
+# Docker sets up with `-p 127.0.0.1:HOST:CONTAINER` reaches them. The
+# *host*-side bind picked by `docker run -p 127.0.0.1:...` is what
+# constrains the surface to loopback; inside the container the listener
+# must accept the forwarded connection.
+
+[[listener]]
+name = "smtp-relay"
+address = "0.0.0.0:1025"
+protocol = "smtp"
+tls = "none"
+
+[[listener]]
+name = "smtp-submission"
+address = "0.0.0.0:1587"
+protocol = "smtp-submission"
+tls = "starttls"
+auth_required = true
+cert_file = "/var/lib/herold/admin.crt"
+key_file  = "/var/lib/herold/admin.key"
+
+[[listener]]
+name = "imap"
+address = "0.0.0.0:1143"
+protocol = "imap"
+tls = "starttls"
+cert_file = "/var/lib/herold/admin.crt"
+key_file  = "/var/lib/herold/admin.key"
+
+[[listener]]
+name = "imaps"
+address = "0.0.0.0:1993"
+protocol = "imaps"
+tls = "implicit"
+cert_file = "/var/lib/herold/admin.crt"
+key_file  = "/var/lib/herold/admin.key"
+
+[[listener]]
+name = "public"
+address = "0.0.0.0:8080"
+protocol = "admin"
+kind = "public"
+tls = "none"
+
+[[listener]]
+name = "admin"
+address = "0.0.0.0:9443"
+protocol = "admin"
+kind = "admin"
+tls = "none"
+
+[server.suite]
+# Use the binary-embedded SPA artefacts (baked in by the Dockerfile).
+enabled = true
+
+[observability]
+log_format = "json"
+log_level = "info"
+metrics_bind = "0.0.0.0:9090"

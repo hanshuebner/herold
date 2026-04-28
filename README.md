@@ -43,9 +43,14 @@ scope decisions.
 
 ## Quickstart
 
-The 3-5 minute path. You will need:
+The 3-5 minute path. The default route uses the published Docker image
+so you do not need a Go toolchain or pnpm to try herold; a source-build
+alternative is described in [Quickstart - source build](#quickstart---source-build)
+further down.
 
-- Docker, or Go 1.25+ for a source build.
+You will need:
+
+- Docker (or any OCI-compatible runtime such as Podman).
 - An IMAP client (Thunderbird, Apple Mail, mutt, etc.).
 
 The quickstart binds herold to loopback ports only and uses SQLite for
@@ -53,135 +58,74 @@ storage. No public DNS, no ACME, no smart host. For the real-domain
 walkthrough (DNS records, ACME, DKIM publication, MTA-STS) see
 [docs/user/quickstart-extended.md](./docs/user/quickstart-extended.md).
 
-Every `herold` CLI command looks for the system config at
-`/etc/herold/system.toml` unless told otherwise. You can override the
-path with the `--system-config` flag or by setting the
-`HEROLD_SYSTEM_CONFIG` environment variable. The steps below pass
-`--system-config system.toml` on every CLI call so they work from the
-repo root regardless of your shell environment.
+The image ships a baked-in `system.toml` at `/etc/herold/system.toml`.
+Mail listeners (SMTP submission, IMAP, IMAPS) speak TLS using a
+throwaway self-signed cert that is also baked into the image; the
+admin and public HTTP listeners speak plain HTTP. That posture is
+appropriate for trying the software on a single machine and not
+appropriate for any deployment that exposes ports beyond `127.0.0.1`.
+For a real deployment, mount your own `system.toml` and follow the
+extended quickstart.
 
-### 1. Clone
-
-```bash
-git clone https://github.com/hanshuebner/herold.git
-cd herold
-```
-
-### 2. Copy the quickstart config
+### 1. Start the container (ephemeral, container-private data)
 
 ```bash
-cp docs/user/examples/system.toml.quickstart system.toml
+docker run --rm --name herold \
+  -p 127.0.0.1:1025:1025 \
+  -p 127.0.0.1:1587:1587 \
+  -p 127.0.0.1:1143:1143 \
+  -p 127.0.0.1:1993:1993 \
+  -p 127.0.0.1:8080:8080 \
+  -p 127.0.0.1:9443:9443 \
+  ghcr.io/hanshuebner/herold:latest
 ```
 
-Open `system.toml` in an editor. The template ships with
-`hostname = "mail.example.local"` and a placeholder admin TLS cert
-path; for the local-only quickstart the hostname does not need to
-resolve. Adjust paths if you want the data directory somewhere other
-than `./data`.
+This pulls the latest published image and starts the server with
+storage inside the container. Stopping the container (`docker stop
+herold`) discards every mailbox, principal, and config change you
+made; perfect for kicking the tyres, useless for anything you want to
+keep. See [Persistent state](#persistent-state) for the host-volume
+shape.
 
-### 3. Generate the TLS cert/key pair
+The image runs as a nonroot user and exposes the quickstart ports:
+`1025` SMTP relay, `1587` SMTP submission (STARTTLS), `1143` IMAP
+(STARTTLS), `1993` IMAPS (implicit TLS), `8080` public HTTP / Suite
+SPA, `9443` admin HTTP / admin SPA. All bound to `127.0.0.1` so the
+surface stays on the local host.
 
-The IMAP, IMAPS, and SMTP submission listeners reference
-`./data/admin.crt` and `./data/admin.key`. Generate them before
-starting the server:
+The image ships a throwaway self-signed cert at
+`/var/lib/herold/admin.{crt,key}` for the IMAP / IMAPS / submission
+TLS upgrade. Desktop clients will prompt to trust it on first
+connect.
 
-```bash
-./scripts/make-self-signed-cert.sh data mail.example.local
-```
-
-This writes `data/admin.key` and `data/admin.crt`. These are suitable
-for the loopback quickstart only.
-
-### 4. Build the Suite web client
-
-The quickstart `system.toml` mounts the consumer Suite SPA on the
-public HTTP listener at `/` so you can log in via a web client in
-addition to (or instead of) connecting an IMAP client. The Suite
-source lives in-tree under `web/apps/suite`. Build it with pnpm:
-
-```bash
-make build-web
-```
-
-This runs `pnpm --dir web install --frozen-lockfile`, builds both
-SPAs into `web/apps/{suite,admin}/dist`, and copies the artefacts
-into `internal/webspa/dist/{suite,admin}/` where the next
-`make build-server` (or `make build`) bakes them into the herold
-binary via `//go:embed`. The `internal/webspa/dist/{suite,admin}/`
-tree is gitignored, so building does not produce any "modified"
-entries in `git status`. The placeholder source served when neither
-`make build-web` nor an `asset_dir` override is in play lives under
-`internal/webspa/placeholder/`.
-
-The default `[server.suite].asset_dir` in the quickstart points at
-`./web/apps/suite/dist` for hot-reload during frontend development;
-remove that line (or comment out the `[server.suite]` block, or set
-`enabled = false`) to fall back to the binary-embedded artefacts.
-
-If pnpm is not installed locally, you can still run the server. A
-`make build-server` from a clean checkout copies the tracked
-placeholders into `internal/webspa/dist/` so `//go:embed` resolves;
-the resulting binary serves the placeholder index.html at `/` and
-`/admin/`. The IMAP / SMTP client surfaces work identically either
-way. For a backend-only binary that does not embed any web assets at
-all, use `go build -tags nofrontend ./cmd/herold`.
-
-### 5. Build and start the server
-
-Source build (one shot, includes the SPAs):
-
-```bash
-make build
-./bin/herold server start --system-config system.toml
-```
-
-Or, if you want to skip the pnpm step and run with the placeholder
-SPA shells:
-
-```bash
-make build-server
-./bin/herold server start --system-config system.toml
-```
-
-Or with Docker:
-
-```bash
-docker compose -f docs/user/examples/docker-compose.yml up -d
-```
-
-### 6. Bootstrap the first admin principal
+### 2. Bootstrap the first admin principal
 
 In a second terminal:
 
 ```bash
-./herold bootstrap --system-config system.toml --email admin@example.local --password 'change-me-now'
+docker exec herold /usr/local/bin/herold bootstrap \
+  --email admin@example.local --password 'change-me-now'
 ```
 
 Passing `--password` on the command line is acceptable for this loopback-only quickstart, but for any non-throwaway installation you should omit `--password` (a random password is then generated and printed once) or supply it via stdin or the `HEROLD_BOOTSTRAP_PASSWORD` environment variable, to avoid the value appearing in shell history and process listings.
 
 The command prints the admin email, the password, and a `hk_...` API
 key. The API key is also written to `~/.herold/credentials.toml`
-together with a `server_url` derived from the `kind = "admin"`
-listener (here `http://127.0.0.1:9443`). Subsequent CLI calls
-(`herold domain add`, `principal create`, etc.) read both values from
-that file. Keep the printed credentials; the password is stored
-hashed and the API key is stored as a SHA-256 hash, so neither is
-recoverable from the server after this point.
+*inside the container* (it lives at
+`/home/nonroot/.herold/credentials.toml` under the nonroot user), with
+a `server_url` derived from the `kind = "admin"` listener (here
+`http://127.0.0.1:9443`). Subsequent `docker exec herold ...` CLI
+calls read both values from that file. Keep the printed credentials;
+the password is stored hashed and the API key is stored as a SHA-256
+hash, so neither is recoverable from the server after this point.
 
-If a previous bootstrap left a stale `server_url` in
-`~/.herold/credentials.toml`, this run overwrites it with a warning.
-If the saved URL is wrong (you will see admin commands return
-`405 Method Not Allowed` because they hit the public listener instead
-of the admin one), edit `server_url` in `~/.herold/credentials.toml`
-to point at the `kind = "admin"` listener.
-
-### 7. Add the local domain
+### 3. Add the local domain
 
 ```bash
-./herold domain add --system-config system.toml example.local
+docker exec herold /usr/local/bin/herold domain add example.local
 ```
 
-### 8. Drop a test message into the inbox
+### 4. Drop a test message into the inbox
 
 Before connecting a client it helps to have something to read. The
 SMTP relay listener at `127.0.0.1:1025` accepts mail for local
@@ -214,7 +158,7 @@ outbound queue checks the recipient's domain, sees that
 reply locally instead of attempting to MX-resolve a domain that
 doesn't exist on the public internet.
 
-### 9. Connect a client
+### 5. Connect a client
 
 Herold exposes three independent client surfaces on the loopback
 quickstart. They live at distinct URLs and have distinct sign-in
@@ -228,7 +172,7 @@ to land you on the right screen.
 | IMAP / SMTP submission (Apple Mail, Thunderbird, mutt, ...) | `imap://localhost:1143`, `imaps://localhost:1993`, `smtp+starttls://localhost:1587` | direct AUTH against the listener with email + password | yes |
 
 The credentials are the same across all three surfaces: the email
-and password from step 6 (`admin@example.local` /
+and password from step 2 (`admin@example.local` /
 `change-me-now` if you copied the README literally).
 
 #### Operator UI (`/admin/`)
@@ -282,40 +226,128 @@ are not reachable from the public listener.
   client - that listener is the inbound relay and does not require
   AUTH.
 - Username: `admin@example.local`
-- Password: the one you set in step 6
+- Password: the one you set in step 2
 
-The cert generated in step 3 is self-signed. Apple Mail and
+The TLS cert baked into the image is self-signed and is shared by
+every container built from the same image tag. Apple Mail and
 Thunderbird will prompt to accept it the first time you connect;
 click through and check "always trust" so the prompt does not
-reappear. If the client returns a generic "Unable to verify account
-name or password" without prompting, regenerate the cert with the
-helper in step 3 (the SAN block must include `localhost` and
-`127.0.0.1`, which the helper writes by default).
+reappear. The baked-in cert covers `mail.example.local`, `localhost`,
+`127.0.0.1`, and `::1` in its SAN.
 
-A note on `localhost` vs `127.0.0.1`: macOS's resolver returns the
-IPv6 loopback (`::1`) for `localhost` first, and CFNetwork-based
-clients (Apple Mail) do not always Happy-Eyeballs back to IPv4. The
-quickstart `system.toml` therefore binds every listener as
-`localhost:PORT`, which expands at startup into one socket on
-`127.0.0.1` and one on `[::1]`; either name works in the client.
+A note on `localhost` vs `127.0.0.1`: macOS resolves `localhost` to
+the IPv6 loopback (`::1`) first, and `docker run -p 127.0.0.1:...`
+only binds the IPv4 loopback on the host side. If your client cannot
+connect to `localhost` but works against `127.0.0.1`, that is why -
+either use the literal `127.0.0.1` in your client, or publish the
+port on both stacks (`-p 127.0.0.1:1143:1143 -p [::1]:1143:1143`).
 
-### 10. (Optional) Outbound through a smart host
+### Persistent state
 
-To deliver outbound mail through Gmail / SES / SendGrid rather than
-talk SMTP to the public internet, copy the smart-host example:
+The ephemeral run above stores the SQLite DB, blobs, and FTS index
+inside the container's writable layer; `docker stop herold` discards
+all of it. To keep state across restarts, mount a host directory (or
+named volume) at `/var/lib/herold`:
 
 ```bash
-cp docs/user/examples/system.toml.smarthost system.toml
+mkdir -p ./herold-data
+docker run -d --name herold \
+  -v "$(pwd)/herold-data:/var/lib/herold" \
+  -p 127.0.0.1:1025:1025 \
+  -p 127.0.0.1:1587:1587 \
+  -p 127.0.0.1:1143:1143 \
+  -p 127.0.0.1:1993:1993 \
+  -p 127.0.0.1:8080:8080 \
+  -p 127.0.0.1:9443:9443 \
+  ghcr.io/hanshuebner/herold:latest
 ```
 
-Edit the active `[smart_host]` block, restart the server, send a
-message to an external address, and verify it arrives. (Note: smart
-host implementation lands in Wave 3.1 - the example documents the
-target config shape per the REQ-FLOW-SMARTHOST spec.)
+The host directory must be writable by UID `65532` (the distroless
+`nonroot` user that herold runs as):
+
+```bash
+sudo chown -R 65532:65532 ./herold-data
+```
+
+To override the baked-in `system.toml` (e.g. to switch to Postgres,
+add a smart host, or bind real ports), bind-mount your own file at
+`/etc/herold/system.toml`:
+
+```bash
+docker run -d --name herold \
+  -v "$(pwd)/herold-data:/var/lib/herold" \
+  -v "$(pwd)/system.toml:/etc/herold/system.toml:ro" \
+  -p 127.0.0.1:1025:1025 \
+  ... \
+  ghcr.io/hanshuebner/herold:latest
+```
 
 For a real domain with public inbound, MX records, ACME-issued certs,
 and DKIM publication, follow
 [docs/user/quickstart-extended.md](./docs/user/quickstart-extended.md).
+A `docker compose` example with persistent volumes lives at
+[docs/user/examples/docker-compose.yml](./docs/user/examples/docker-compose.yml).
+
+### (Optional) Outbound through a smart host
+
+To deliver outbound mail through Gmail / SES / SendGrid rather than
+talk SMTP to the public internet, copy the smart-host example as your
+mounted `system.toml` and restart:
+
+```bash
+cp docs/user/examples/system.toml.smarthost system.toml
+docker restart herold
+```
+
+Edit the active `[smart_host]` block, send a message to an external
+address, and verify it arrives. (Note: smart host implementation
+lands in Wave 3.1 - the example documents the target config shape
+per the REQ-FLOW-SMARTHOST spec.)
+
+## Quickstart - source build
+
+The Docker image above is the recommended path. If you want to build
+from source - to hack on herold itself, run an unreleased commit, or
+run on a host without Docker - the equivalent loopback shape lives in
+`docs/user/examples/system.toml.quickstart` and uses paths under
+`./data` rather than `/var/lib/herold`.
+
+You will need:
+
+- Go 1.25+ for the server build.
+- pnpm 10+ and Node 20+ if you want the consumer Suite SPA baked in
+  (otherwise the binary serves placeholder HTML at `/`).
+- An IMAP client.
+
+```bash
+git clone https://github.com/hanshuebner/herold.git
+cd herold
+
+cp docs/user/examples/system.toml.quickstart system.toml
+./scripts/make-self-signed-cert.sh data mail.example.local
+
+make build                   # build-web + build-server, embeds the SPAs
+./bin/herold server start --system-config system.toml
+```
+
+In a second terminal:
+
+```bash
+./bin/herold bootstrap --system-config system.toml \
+  --email admin@example.local --password 'change-me-now'
+./bin/herold domain add --system-config system.toml example.local
+```
+
+Connect clients exactly as documented in step 5 above; the URLs and
+ports are identical because the source-build `system.toml.quickstart`
+publishes the same listener shape.
+
+If pnpm is not installed locally, `make build-server` (without
+`build-web`) copies the tracked SPA placeholders so `//go:embed`
+resolves and the resulting binary serves a placeholder index.html at
+`/` and `/admin/`. The IMAP / SMTP client surfaces work identically.
+For a backend-only binary that does not embed any web assets at all,
+use `go build -tags nofrontend ./cmd/herold`.
 
 ## Documentation
 

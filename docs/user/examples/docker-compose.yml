@@ -1,13 +1,15 @@
-# Herold - minimal one-service docker compose for the quickstart.
+# Herold - minimal one-service docker compose for the quickstart with
+# persistent state.
 #
-# Mounts ./data and ./system.toml from the host so the operator can
-# inspect state and edit config without rebuilding the image. Binds
-# every published port to 127.0.0.1 - the quickstart runs on
-# loopback only.
+# Pulls the published image from GitHub Container Registry, mounts
+# ./data on the host as the data directory, and (optionally) mounts
+# ./system.toml over the image's baked-in config so you can edit
+# config without rebuilding. Binds every published port to 127.0.0.1
+# - the quickstart runs on loopback only.
 #
 # For the real-domain shape (public MX, ACME, DKIM, DMARC, MTA-STS),
 # adjust port mappings to bind 0.0.0.0 and use the standard ports
-# (25 / 587 / 465 / 143 / 993 / 4190 / 8080); see
+# (25 / 587 / 465 / 143 / 993 / 4190 / 80 / 443); see
 # docs/user/quickstart-extended.md.
 #
 # Usage:
@@ -16,26 +18,30 @@
 #   docker compose -f docs/user/examples/docker-compose.yml down
 #
 # Prereqs:
-#   - The image herold:dev exists locally. Build with:
-#       docker build -f deploy/docker/Dockerfile -t herold:dev .
-#   - ./system.toml exists alongside this file (copy from
-#     ./system.toml.quickstart and edit the two values noted there).
-#   - ./data/ will be created on first start.
+#   - ./data/ will be created on first start. It must be writable by
+#     UID 65532 (the distroless `nonroot` user the image runs as):
+#       mkdir -p ./data && sudo chown -R 65532:65532 ./data
+#   - To override the baked-in config, drop a system.toml next to this
+#     file (copy from ./system.toml.quickstart and edit) and uncomment
+#     the second volume mount below.
+#   - To pin a release rather than `latest`, replace the tag
+#     accordingly (e.g. `ghcr.io/hanshuebner/herold:v0.5.0`).
 
 services:
   herold:
-    image: herold:dev
+    image: ghcr.io/hanshuebner/herold:latest
     container_name: herold
     restart: unless-stopped
     volumes:
       - ./data:/var/lib/herold
-      - ./system.toml:/etc/herold/system.toml:ro
+      # - ./system.toml:/etc/herold/system.toml:ro
     ports:
       - "127.0.0.1:1025:1025"   # smtp-relay
-      - "127.0.0.1:1587:1587"   # smtp-submission
-      - "127.0.0.1:1143:1143"   # imap+starttls
-      - "127.0.0.1:1993:1993"   # imaps
-      - "127.0.0.1:8080:8080"   # admin REST + JMAP
+      - "127.0.0.1:1587:1587"   # smtp-submission (STARTTLS)
+      - "127.0.0.1:1143:1143"   # imap (STARTTLS)
+      - "127.0.0.1:1993:1993"   # imaps (implicit TLS)
+      - "127.0.0.1:8080:8080"   # public HTTP / Suite SPA / JMAP
+      - "127.0.0.1:9443:9443"   # admin HTTP / admin SPA / admin REST
       - "127.0.0.1:9090:9090"   # /metrics (loopback by default)
     environment:
       HEROLD_SYSTEM_CONFIG: /etc/herold/system.toml

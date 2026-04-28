@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -227,6 +228,67 @@ jobs:
           else
             echo "test/interop has no Go packages yet (Phase 0 placeholder); skipping."
           fi
+
+  docker:
+    name: docker (build + publish to ghcr)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [lint, web, test]
+    # On PRs we only build (no registry credentials, no push). On pushes
+    # to main and on git tags we additionally push to ghcr.io so users
+    # can `docker pull ghcr.io/${{ github.repository }}:latest` (or a
+    # tagged version) without having to clone and build the source.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: derive image tags
+        id: tags
+        run: |
+          # Lower-case the image owner because OCI registries reject
+          # uppercase repository segments and github.repository preserves
+          # the case the user typed.
+          repo="${GITHUB_REPOSITORY,,}"
+          image="ghcr.io/${repo}"
+          tags=""
+          # Always tag with the short commit SHA so PR builds are
+          # uniquely addressable in the local cache even when nothing
+          # is pushed.
+          tags="${image}:sha-${GITHUB_SHA::12}"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            tags="${tags},${image}:main,${image}:latest"
+          fi
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            ver="${GITHUB_REF#refs/tags/}"
+            tags="${tags},${image}:${ver},${image}:latest"
+          fi
+          echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+      - name: build (and push when not a PR)
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          # Multi-arch build matches the binary release surface in
+          # release.yml. amd64 builds native; arm64 goes through QEMU.
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          # GHA cache cuts the SPA + Go build from ~5min to seconds on
+          # incremental runs.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
 
   jmaptest:
     name: jmap conformance (jmapio/jmap-test-suite)
