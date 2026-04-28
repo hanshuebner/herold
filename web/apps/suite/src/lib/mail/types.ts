@@ -97,6 +97,11 @@ export interface Email {
   receivedAt: string;
   sentAt?: string | null;
   hasAttachment: boolean;
+  /**
+   * JMAP Snooze extension wake-up deadline (RFC 8621 +
+   * draft-ietf-jmap-snooze). null when the message is not snoozed.
+   */
+  snoozedUntil?: string | null;
   // Body properties — populated when the thread reader fetches them.
   bodyValues?: Record<string, EmailBodyValue>;
   htmlBody?: EmailBodyPart[];
@@ -120,6 +125,7 @@ export const EMAIL_LIST_PROPERTIES = [
   'preview',
   'receivedAt',
   'hasAttachment',
+  'snoozedUntil',
 ] as const;
 
 /** The properties projection the suite requests for thread / reading-pane rendering. */
@@ -139,6 +145,7 @@ export const EMAIL_BODY_PROPERTIES = [
   'receivedAt',
   'sentAt',
   'hasAttachment',
+  'snoozedUntil',
   'bodyValues',
   'htmlBody',
   'textBody',

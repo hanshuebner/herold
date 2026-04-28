@@ -5,6 +5,7 @@
   import { keyboard } from '../lib/keyboard/engine.svelte';
   import { compose } from '../lib/compose/compose.svelte';
   import { movePicker } from '../lib/mail/move-picker.svelte';
+  import { snoozePicker } from '../lib/mail/snooze-picker.svelte';
   import { decodeChips } from '../lib/mail/search-query';
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import type { Email } from '../lib/mail/types';
@@ -16,6 +17,7 @@
     'trash',
     'all',
     'important',
+    'snoozed',
   ]);
 
   let threadId = $derived(router.parts[1] === 'thread' ? router.parts[2] : undefined);
@@ -218,6 +220,14 @@
         },
       },
       {
+        key: 'h',
+        description: 'Snooze',
+        action: () => {
+          const id = focusedEmailId();
+          if (id) snoozePicker.open(id);
+        },
+      },
+      {
         key: '*',
         description: 'Select all visible',
         action: () => mail.selectAllVisible(),
@@ -326,6 +336,14 @@
           if (e) void mail.toggleImportant(e.id);
         },
       },
+      {
+        key: 'h',
+        description: 'Snooze',
+        action: () => {
+          const e = replyTarget();
+          if (e) snoozePicker.open(e.id);
+        },
+      },
     ]);
     return pop;
   });
@@ -390,6 +408,7 @@
     trash: 'Trash',
     all: 'All Mail',
     important: 'Important',
+    snoozed: 'Snoozed',
   };
 
   function senderLabel(email: Email): string {

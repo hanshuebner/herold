@@ -80,6 +80,7 @@ const FOLDER_LABEL: Record<string, string> = {
   trash: 'Trash',
   all: 'All Mail',
   important: 'Important',
+  snoozed: 'Snoozed',
 };
 
 class MailStore {
@@ -638,6 +639,10 @@ class MailStore {
         // Virtual folder: every email with the $important keyword,
         // regardless of which mailbox it lives in.
         filter = { hasKeyword: '$important' };
+      } else if (folder === 'snoozed') {
+        // Virtual folder: every email currently snoozed
+        // ($snoozed keyword, set by the server alongside snoozedUntil).
+        filter = { hasKeyword: '$snoozed' };
       } else if (folder !== 'all') {
         let mailboxId: string | null = null;
         if (ROLED_FOLDERS.has(folder)) {
@@ -1397,6 +1402,65 @@ class MailStore {
     }
   }
 
+  /**
+   * Snooze an email until the given ISO date. Sets `snoozedUntil` on
+   * the message; the server pairs that with the $snoozed keyword and
+   * removes both when the wake-up timer fires (or when the user
+   * unsnooze early).
+   */
+  async snoozeEmail(emailId: string, until: Date): Promise<void> {
+    const email = this.emails.get(emailId);
+    if (!email) return;
+    const iso = until.toISOString();
+    const prevUntil = email.snoozedUntil;
+    this.#patchEmail(emailId, { snoozedUntil: iso });
+    if (this.listFolder === 'inbox') this.#removeFromList(emailId);
+    try {
+      await this.#emailSetUpdate(emailId, { snoozedUntil: iso });
+      toast.show({
+        message: `Snoozed until ${formatSnoozeTarget(until)}`,
+        undo: async () => {
+          try {
+            await this.#emailSetUpdate(emailId, { snoozedUntil: null });
+            this.#patchEmail(emailId, { snoozedUntil: null });
+          } catch (err) {
+            toast.show({
+              message: errMessage(err, 'Undo failed'),
+              kind: 'error',
+              timeoutMs: 6000,
+            });
+          }
+        },
+      });
+    } catch (err) {
+      this.#patchEmail(emailId, { snoozedUntil: prevUntil ?? null });
+      toast.show({
+        message: errMessage(err, 'Snooze failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
+  /** Wake an email from snooze immediately. */
+  async unsnoozeEmail(emailId: string): Promise<void> {
+    const email = this.emails.get(emailId);
+    if (!email || !email.snoozedUntil) return;
+    const prev = email.snoozedUntil;
+    this.#patchEmail(emailId, { snoozedUntil: null });
+    if (this.listFolder === 'snoozed') this.#removeFromList(emailId);
+    try {
+      await this.#emailSetUpdate(emailId, { snoozedUntil: null });
+    } catch (err) {
+      this.#patchEmail(emailId, { snoozedUntil: prev });
+      toast.show({
+        message: errMessage(err, 'Unsnooze failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
   /** Toggle the $important keyword. No toast (toggle is itself the undo). */
   async toggleImportant(emailId: string): Promise<void> {
     const email = this.emails.get(emailId);
@@ -1546,6 +1610,31 @@ class MailStore {
 function invocationArgs<T>(inv: Invocation | undefined): T {
   if (!inv) throw new Error('Expected method invocation, got undefined');
   return inv[1] as T;
+}
+
+/**
+ * Format a snooze target relative to now: "3:00 pm tomorrow",
+ * "Mon May 12 8:00 am". Used by the snooze toast's confirmation
+ * message.
+ */
+function formatSnoozeTarget(d: Date): string {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const dayDiff = Math.round((target.getTime() - today.getTime()) / 86400000);
+  const time = d.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+  if (dayDiff === 0) return time;
+  if (dayDiff === 1) return `${time} tomorrow`;
+  if (dayDiff < 7 && dayDiff > 0) {
+    return `${d.toLocaleDateString(undefined, { weekday: 'long' })}, ${time}`;
+  }
+  return `${d.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  })}, ${time}`;
 }
 
 function errMessage(err: unknown, fallback: string): string {

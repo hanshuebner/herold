@@ -6,6 +6,7 @@
   import ComposeWindow from '../compose/ComposeWindow.svelte';
   import HelpOverlay from '../help/HelpOverlay.svelte';
   import MoveTargetPicker from '../mail/MoveTargetPicker.svelte';
+  import SnoozePicker from '../mail/SnoozePicker.svelte';
 
   interface Props {
     activeApp?: 'mail' | 'chat';
@@ -47,6 +48,7 @@
   <ComposeWindow />
   <HelpOverlay />
   <MoveTargetPicker />
+  <SnoozePicker />
 </div>
 
 <style>

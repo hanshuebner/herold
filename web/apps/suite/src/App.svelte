@@ -130,8 +130,13 @@
               {/if}
             </button>
           </li>
-          <li class="disabled" title="Snoozing arrives later">
-            <button type="button" disabled>Snoozed</button>
+          <li class:active={router.matches('mail', 'folder', 'snoozed')}>
+            <button
+              type="button"
+              onclick={() => router.navigate('/mail/folder/snoozed')}
+            >
+              <span>Snoozed</span>
+            </button>
           </li>
           <li class:active={router.matches('mail', 'folder', 'important')}>
             <button
@@ -335,17 +340,6 @@
   .mailbox-list .count {
     color: var(--text-helper);
     font-variant-numeric: tabular-nums;
-  }
-  .mailbox-list li.disabled,
-  .mailbox-list li.disabled button {
-    color: var(--text-helper);
-    cursor: not-allowed;
-  }
-  .mailbox-list li.disabled:hover {
-    background: transparent;
-  }
-  .mailbox-list li.disabled button {
-    opacity: 0.6;
   }
 
   h3 {

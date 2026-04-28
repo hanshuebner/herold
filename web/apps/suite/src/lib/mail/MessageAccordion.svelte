@@ -6,6 +6,7 @@
   import { emailHtmlBody, emailTextBody, type Email } from './types';
   import { compose } from '../compose/compose.svelte';
   import { movePicker } from './move-picker.svelte';
+  import { snoozePicker } from './snooze-picker.svelte';
   import { mail } from './store.svelte';
   import { settings } from '../settings/settings.svelte';
   import { jmap } from '../jmap/client';
@@ -78,6 +79,7 @@
 
   let isSeen = $derived(Boolean(email.keywords.$seen));
   let isImportant = $derived(Boolean(email.keywords.$important));
+  let isSnoozed = $derived(Boolean(email.snoozedUntil));
 
   // Build a cid -> downloadUrl map from the email's attachments. Inline
   // images referenced by Content-ID land in the body as `cid:<id>`; the
@@ -207,6 +209,24 @@
         >
           {isImportant ? '! Important' : 'Mark important'}
         </button>
+        {#if isSnoozed}
+          <button
+            type="button"
+            class="pill"
+            onclick={() => mail.unsnoozeEmail(email.id)}
+            title="Wake up now"
+          >
+            ⏰ Unsnooze
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="pill"
+            onclick={() => snoozePicker.open(email.id)}
+          >
+            ⏰ Snooze
+          </button>
+        {/if}
         {#if isInTrash}
           <button
             type="button"
