@@ -19,6 +19,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 COPY . .
+
+# Populate internal/webspa/dist/ with the tracked placeholder shells so
+# the //go:embed directive in embed_default.go has files to embed. The
+# host's `make build-server` runs this via the prep-web target; the
+# Dockerfile must do it explicitly because we are running `go build`
+# directly. The interop test does not exercise the real SPA bundle —
+# placeholders are sufficient.
+RUN make prep-web
+
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -buildvcs=false \
