@@ -176,7 +176,14 @@ func (i *importHandler) importOne(
 	if parser == nil {
 		parser = defaultParseFn
 	}
-	parsed, _ := parser(bytes.NewReader(body))
+	parsed, parseErr := parser(bytes.NewReader(body))
+	if parseErr != nil {
+		return jmapEmail{}, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"blobId"},
+			Description: "blob is not a valid RFC 5322 message: " + parseErr.Error(),
+		}, nil
+	}
 	env := buildEnvelopeFromParsed(parsed)
 
 	receivedAt := i.h.clk.Now()

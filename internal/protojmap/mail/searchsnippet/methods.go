@@ -17,13 +17,13 @@ import (
 type jmapID = string
 
 // jmapSnippet is the wire-form SearchSnippet object (RFC 8621 §6.1).
-// `null` for subject / preview means "no match in this field"; we
-// always emit a string here (possibly the unhighlighted leading text)
-// because clients prefer a value over nil.
+// subject and preview are null when the search term does not appear in
+// that field; a non-null value carries the text with matching terms
+// wrapped in <mark>...</mark>.
 type jmapSnippet struct {
-	EmailID jmapID `json:"emailId"`
-	Subject string `json:"subject"`
-	Preview string `json:"preview"`
+	EmailID jmapID  `json:"emailId"`
+	Subject *string `json:"subject"`
+	Preview *string `json:"preview"`
 }
 
 // filterShape is the subset of Email/query's filter we use to derive
@@ -194,10 +194,21 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			continue
 		}
 		previewSrc := g.h.previewText(ctx, msg)
+		// RFC 8621 §6.1: subject and preview are null when the search term
+		// does not appear in that field.
+		subjectHighlight := highlight(collapseWhitespace(msg.Envelope.Subject), terms)
+		previewHighlight := snippet(previewSrc, terms)
+		var subjectPtr, previewPtr *string
+		if subjectHighlight != "" && strings.Contains(subjectHighlight, "<mark>") {
+			subjectPtr = &subjectHighlight
+		}
+		if previewHighlight != "" && strings.Contains(previewHighlight, "<mark>") {
+			previewPtr = &previewHighlight
+		}
 		resp.List = append(resp.List, jmapSnippet{
 			EmailID: id,
-			Subject: highlight(collapseWhitespace(msg.Envelope.Subject), terms),
-			Preview: snippet(previewSrc, terms),
+			Subject: subjectPtr,
+			Preview: previewPtr,
 		})
 	}
 	return resp, nil

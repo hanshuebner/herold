@@ -75,8 +75,8 @@ func TestSearchSnippet_Get_HighlightsBodyHits(t *testing.T) {
 	if len(g.List) != 1 {
 		t.Fatalf("expected 1 snippet, got %d", len(g.List))
 	}
-	if !strings.Contains(g.List[0].Preview, "<mark>invoice</mark>") {
-		t.Fatalf("expected highlight in preview: %q", g.List[0].Preview)
+	if g.List[0].Preview == nil || !strings.Contains(*g.List[0].Preview, "<mark>invoice</mark>") {
+		t.Fatalf("expected highlight in preview: %v", g.List[0].Preview)
 	}
 }
 
@@ -115,8 +115,9 @@ func TestSearchSnippet_Get_HighlightsSubject(t *testing.T) {
 	if len(g.List) != 1 {
 		t.Fatalf("expected 1 snippet")
 	}
-	if g.List[0].Subject != "Quarterly <mark>invoice</mark> update" {
-		t.Fatalf("expected highlighted subject, got %q", g.List[0].Subject)
+	want := "Quarterly <mark>invoice</mark> update"
+	if g.List[0].Subject == nil || *g.List[0].Subject != want {
+		t.Fatalf("expected highlighted subject %q, got %v", want, g.List[0].Subject)
 	}
 }
 

@@ -1,8 +1,10 @@
 package email
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -60,11 +62,13 @@ type queryRequest struct {
 	CollapseThreads bool             `json:"collapseThreads"`
 }
 
-// comparator is the wire-form sort spec.
+// comparator is the wire-form sort spec (RFC 8621 §4.4.1).
 type comparator struct {
 	Property    string `json:"property"`
 	IsAscending *bool  `json:"isAscending"`
 	Collation   string `json:"collation,omitempty"`
+	// Keyword is required when Property is "hasKeyword" or "allInThreadHaveKeyword".
+	Keyword string `json:"keyword,omitempty"`
 }
 
 // queryResponse is the wire-form response.
@@ -136,7 +140,9 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 		return nil, serverFail(gatherErr)
 	}
 
-	matched := filterMessagesWithCtx(allMessages, filter, allMessages)
+	// Pre-compute hasAttachment for all candidates if the filter requires it.
+	attachmentMap := buildAttachmentMap(ctx, q.h.store.Blobs(), allMessages, filter)
+	matched := filterMessagesWithCtxAndAttachments(allMessages, filter, allMessages, attachmentMap)
 	sortMessages(matched, req.Sort)
 
 	// collapseThreads: keep only the sort-order representative of each thread.
@@ -248,30 +254,79 @@ func filterMessages(candidates []store.Message, f *emailFilter) []store.Message 
 // filterMessagesWithCtx applies a filter; allMessages is the full set
 // used for thread-aware predicates.
 func filterMessagesWithCtx(candidates []store.Message, f *emailFilter, allMessages []store.Message) []store.Message {
+	return filterMessagesWithCtxAndAttachments(candidates, f, allMessages, nil)
+}
+
+// filterMessagesWithCtxAndAttachments is filterMessagesWithCtx extended
+// with a pre-computed attachment map (message ID -> hasAttachment).
+func filterMessagesWithCtxAndAttachments(candidates []store.Message, f *emailFilter, allMessages []store.Message, attachments map[store.MessageID]bool) []store.Message {
 	out := make([]store.Message, 0, len(candidates))
 	for _, m := range candidates {
-		if matchFilter(m, f, allMessages) {
+		if matchFilterWithAttachments(m, f, allMessages, attachments) {
 			out = append(out, m)
 		}
 	}
 	return out
 }
 
+// buildAttachmentMap pre-computes the hasAttachment flag for each
+// message in msgs when the filter requires it. Returns nil if not needed.
+func buildAttachmentMap(ctx context.Context, blobs store.Blobs, msgs []store.Message, f *emailFilter) map[store.MessageID]bool {
+	if f == nil || f.HasAttachment == nil {
+		return nil
+	}
+	m := make(map[store.MessageID]bool, len(msgs))
+	for _, msg := range msgs {
+		m[msg.ID] = messageHasAttachment(ctx, blobs, msg)
+	}
+	return m
+}
+
+// messageHasAttachment parses the message blob to determine whether it
+// has any attachment parts. Returns false on parse error.
+func messageHasAttachment(ctx context.Context, blobs store.Blobs, m store.Message) bool {
+	rc, err := blobs.Get(ctx, m.Blob.Hash)
+	if err != nil {
+		return false
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(io.LimitReader(rc, 4<<20))
+	if err != nil {
+		return false
+	}
+	parsed, err := defaultParseFn(bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	_, _, _, _, attParts := walkParts(parsed.Body, 0, "")
+	return len(attParts) > 0
+}
+
 // matchFilter evaluates f against m. allMessages is passed for thread
 // aggregation predicates.
 func matchFilter(m store.Message, f *emailFilter, all []store.Message) bool {
+	return matchFilterWithAttachments(m, f, all, nil)
+}
+
+// matchFilterWithAttachments is matchFilter with a pre-computed attachment map.
+func matchFilterWithAttachments(m store.Message, f *emailFilter, all []store.Message, attachments map[store.MessageID]bool) bool {
 	if f == nil {
 		return true
 	}
 	// FilterOperator: operator + conditions
 	if f.Operator != "" {
-		return matchOperator(m, f, all)
+		return matchOperatorWithAttachments(m, f, all, attachments)
 	}
-	return matchCondition(m, f, all)
+	return matchConditionWithAttachments(m, f, all, attachments)
 }
 
 // matchOperator handles FilterOperator (AND / OR / NOT).
 func matchOperator(m store.Message, f *emailFilter, all []store.Message) bool {
+	return matchOperatorWithAttachments(m, f, all, nil)
+}
+
+// matchOperatorWithAttachments is matchOperator with attachment map.
+func matchOperatorWithAttachments(m store.Message, f *emailFilter, all []store.Message, attachments map[store.MessageID]bool) bool {
 	op := strings.ToUpper(f.Operator)
 	switch op {
 	case "AND":
@@ -280,7 +335,7 @@ func matchOperator(m store.Message, f *emailFilter, all []store.Message) bool {
 			if err := json.Unmarshal(raw, &sub); err != nil {
 				return false
 			}
-			if !matchFilter(m, &sub, all) {
+			if !matchFilterWithAttachments(m, &sub, all, attachments) {
 				return false
 			}
 		}
@@ -291,7 +346,7 @@ func matchOperator(m store.Message, f *emailFilter, all []store.Message) bool {
 			if err := json.Unmarshal(raw, &sub); err != nil {
 				continue
 			}
-			if matchFilter(m, &sub, all) {
+			if matchFilterWithAttachments(m, &sub, all, attachments) {
 				return true
 			}
 		}
@@ -305,7 +360,7 @@ func matchOperator(m store.Message, f *emailFilter, all []store.Message) bool {
 			if err := json.Unmarshal(raw, &sub); err != nil {
 				return false
 			}
-			if matchFilter(m, &sub, all) {
+			if matchFilterWithAttachments(m, &sub, all, attachments) {
 				return false
 			}
 		}
@@ -316,6 +371,11 @@ func matchOperator(m store.Message, f *emailFilter, all []store.Message) bool {
 
 // matchCondition evaluates a FilterCondition against m.
 func matchCondition(m store.Message, f *emailFilter, all []store.Message) bool {
+	return matchConditionWithAttachments(m, f, all, nil)
+}
+
+// matchConditionWithAttachments is matchCondition with attachment map.
+func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.Message, attachments map[store.MessageID]bool) bool {
 	if f.InMailbox != nil {
 		want, ok := mailboxIDFromJMAP(*f.InMailbox)
 		if !ok || m.MailboxID != want {
@@ -393,20 +453,14 @@ func matchCondition(m store.Message, f *emailFilter, all []store.Message) bool {
 		}
 	}
 	if f.HasAttachment != nil {
-		// hasAttachment requires parsing the MIME structure. In the
-		// metadata-only path the FTS index carries the flag; here we
-		// check the store's HasAttachment flag (set at ingest time via
-		// the FTS indexer) and fall back to false for messages not yet
-		// indexed. This is best-effort in v1; a post-ingest migration
-		// can backfill the flag.
-		//
-		// For now: messages imported via Email/import go through the FTS
-		// indexer which currently always writes false. Until the indexer
-		// populates the flag from the parsed MIME tree, hasAttachment
-		// filter will exclude messages that truly have attachments. This
-		// is noted as a known gap.
-		_ = f.HasAttachment
-		// Pass through without filtering — avoids false-negative exclusion.
+		// Use the pre-computed attachment map when available (populated by
+		// buildAttachmentMap in the query Execute path). If not available,
+		// fall back to false (conservative: no false positives for hasAttachment=true
+		// but may miss messages for hasAttachment=false).
+		has := attachments != nil && attachments[m.ID]
+		if has != *f.HasAttachment {
+			return false
+		}
 	}
 	// Header filter: name-only or name+value against the envelope cache.
 	if len(f.Header) > 0 {
@@ -574,7 +628,7 @@ func sortMessages(xs []store.Message, comps []comparator) {
 	sort.SliceStable(xs, func(i, j int) bool {
 		for _, c := range comps {
 			asc := c.IsAscending != nil && *c.IsAscending
-			cmp := compareMessage(xs[i], xs[j], c.Property)
+			cmp := compareMessage(xs[i], xs[j], c)
 			if cmp == 0 {
 				continue
 			}
@@ -587,8 +641,8 @@ func sortMessages(xs []store.Message, comps []comparator) {
 	})
 }
 
-func compareMessage(a, b store.Message, property string) int {
-	switch property {
+func compareMessage(a, b store.Message, c comparator) int {
+	switch c.Property {
 	case "receivedAt":
 		return compareTime(a.ReceivedAt, b.ReceivedAt)
 	case "sentAt":
@@ -601,6 +655,17 @@ func compareMessage(a, b store.Message, property string) int {
 		return strings.Compare(strings.ToLower(a.Envelope.To), strings.ToLower(b.Envelope.To))
 	case "subject":
 		return strings.Compare(strings.ToLower(a.Envelope.Subject), strings.ToLower(b.Envelope.Subject))
+	case "hasKeyword":
+		// Messages that have the keyword sort before those that don't.
+		aHas := messageHasKeyword(a, c.Keyword)
+		bHas := messageHasKeyword(b, c.Keyword)
+		if aHas == bHas {
+			return 0
+		}
+		if aHas {
+			return -1 // a before b when ascending; b before a when descending
+		}
+		return 1
 	}
 	return 0
 }
