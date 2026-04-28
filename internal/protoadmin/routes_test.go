@@ -125,6 +125,7 @@ func TestRegisterSelfServiceRoutes_AdminOnlyPathsAbsent(t *testing.T) {
 		{"POST", "/api/v1/bootstrap"},
 		{"POST", "/api/v1/auth/login"},
 		{"POST", "/api/v1/auth/logout"},
+		{"GET", "/api/v1/auth/whoami"},
 		{"POST", "/api/v1/oidc/callback"},
 	}
 

@@ -33,14 +33,19 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Bootstrap (unauth, rate-limited per remote).
 	mux.HandleFunc("POST /api/v1/bootstrap", s.handleBootstrap)
 
-	// JSON login / logout (REQ-AUTH-SESSION-REST). These endpoints are
-	// NOT protected by requireAuth -- they are the auth boundary.
-	// POST /api/v1/auth/login returns cookies + {principal_id, scopes}.
+	// JSON login / logout / whoami (REQ-AUTH-SESSION-REST). Login and
+	// logout are NOT protected by requireAuth -- they are the auth
+	// boundary. whoami IS protected: it returns 200 + principal info on
+	// a valid session or 401 when there is no session, which is the
+	// mechanism the admin SPA uses to probe session state on page load.
+	// POST /api/v1/auth/login  returns cookies + {principal_id, scopes}.
 	// POST /api/v1/auth/logout clears the cookies; accepts cookie or
 	// Bearer (Bearer-authenticated callers get a 204 with cookie-clear
 	// headers that are harmless since they had no cookie to begin with).
+	// GET  /api/v1/auth/whoami returns the calling principal's identity.
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", auth1(s.handleLogout))
+	mux.HandleFunc("GET /api/v1/auth/whoami", auth1(s.handleWhoAmI))
 
 	// OIDC callback (unauth).
 	mux.HandleFunc("POST /api/v1/oidc/callback", s.handleOIDCCallback)

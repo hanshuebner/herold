@@ -555,3 +555,121 @@ func TestSessionAuth_Logout_AuditRecordCarriesPrincipal(t *testing.T) {
 		t.Errorf("logout audit actor_kind=%q, want %q", last.ActorKind, store.ActorPrincipal)
 	}
 }
+
+// TestWhoAmI_WithValidSession returns 200 + principal info after login.
+func TestWhoAmI_WithValidSession(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	email, password, _ := sh.bootstrapWithPassword("whoami-ok@example.com")
+
+	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+		t.Fatalf("login: %d", code)
+	}
+
+	code, raw := sh.doWithCookie("GET", "/api/v1/auth/whoami", nil, "")
+	if code != http.StatusOK {
+		t.Fatalf("whoami: status=%d body=%s, want 200", code, raw)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("whoami unmarshal: %v", err)
+	}
+	if out["principal_id"] == nil {
+		t.Fatalf("whoami missing principal_id: %v", out)
+	}
+	if out["email"] != email {
+		t.Fatalf("whoami email=%v, want %q", out["email"], email)
+	}
+	scopes, _ := out["scopes"].([]interface{})
+	if len(scopes) == 0 {
+		t.Fatalf("whoami scopes empty: %v", out)
+	}
+}
+
+// TestWhoAmI_WithoutCredentials returns 401.
+func TestWhoAmI_WithoutCredentials(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	// No bootstrap, no login, no credentials.
+	code, _ := sh.doWithCookie("GET", "/api/v1/auth/whoami", nil, "")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("whoami without creds: status=%d, want 401", code)
+	}
+}
+
+// TestWhoAmI_AfterLogout returns 401 because the cookie jar is cleared.
+func TestWhoAmI_AfterLogout(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	email, password, _ := sh.bootstrapWithPassword("whoami-logout@example.com")
+
+	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+		t.Fatalf("login: %d", code)
+	}
+	// whoami OK while session is live.
+	if code, _ := sh.doWithCookie("GET", "/api/v1/auth/whoami", nil, ""); code != http.StatusOK {
+		t.Fatalf("whoami before logout: %d, want 200", code)
+	}
+	// Logout.
+	csrf := sh.csrfToken()
+	if code, _ := sh.doWithCookie("POST", "/api/v1/auth/logout", nil, csrf); code != http.StatusNoContent {
+		t.Fatalf("logout: %d", code)
+	}
+	// whoami after logout must be 401.
+	if code, _ := sh.doWithCookie("GET", "/api/v1/auth/whoami", nil, ""); code != http.StatusUnauthorized {
+		t.Fatalf("whoami after logout: status=%d, want 401", code)
+	}
+}
+
+// TestWhoAmI_BearerAuth returns 200 + principal info when authenticated
+// with a Bearer API key (not a session cookie).
+func TestWhoAmI_BearerAuth(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	_, _, apiKey := sh.bootstrapWithPassword("whoami-bearer@example.com")
+
+	// Use the standard doRequest helper (Bearer token, no cookie jar).
+	res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", apiKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("whoami bearer: status=%d body=%s, want 200", res.StatusCode, buf)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("whoami unmarshal: %v", err)
+	}
+	if out["principal_id"] == nil {
+		t.Fatalf("whoami bearer missing principal_id: %v", out)
+	}
+}
+
+// TestServerStatus_IncludesPrincipalInfo asserts that GET /api/v1/server/status
+// returns principal_id, email, and scopes so the admin SPA bootstrap()
+// can populate its auth state without a second whoami call.
+func TestServerStatus_IncludesPrincipalInfo(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	email, password, _ := sh.bootstrapWithPassword("status-principal@example.com")
+
+	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+		t.Fatalf("login: %d", code)
+	}
+
+	code, raw := sh.doWithCookie("GET", "/api/v1/server/status", nil, "")
+	if code != http.StatusOK {
+		t.Fatalf("server/status: status=%d body=%s, want 200", code, raw)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out["principal_id"] == nil {
+		t.Fatalf("server/status missing principal_id: %v", out)
+	}
+	if out["email"] != email {
+		t.Fatalf("server/status email=%v, want %q", out["email"], email)
+	}
+	scopes, _ := out["scopes"].([]interface{})
+	if len(scopes) == 0 {
+		t.Fatalf("server/status scopes empty: %v", out)
+	}
+}

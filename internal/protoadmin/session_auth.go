@@ -1,7 +1,7 @@
 package protoadmin
 
-// session_auth.go implements the JSON login / logout endpoints for the
-// admin REST surface (REQ-AUTH-SESSION-REST).
+// session_auth.go implements the JSON login / logout / whoami endpoints
+// for the admin REST surface (REQ-AUTH-SESSION-REST).
 //
 // POST /api/v1/auth/login  -- accepts {email, password, totp_code?},
 //
@@ -9,6 +9,10 @@ package protoadmin
 //	{principal_id, email, scopes:[...]}.
 //
 // POST /api/v1/auth/logout -- clears the cookies, returns 204.
+// GET  /api/v1/auth/whoami -- returns 200 + {principal_id, email, scopes}
+//
+//	when the session is valid, 401 otherwise. Used by the admin SPA to
+//	probe session state on page load.
 //
 // These endpoints are NOT protected by requireAuth (they ARE the auth
 // boundary). They are rate-limited via the per-source-IP bucket so
@@ -48,6 +52,19 @@ type loginResponse struct {
 	// Email is the principal's canonical email address.
 	Email string `json:"email"`
 	// Scopes is the scope set encoded into the issued session cookie
+	// (REQ-AUTH-SCOPE-01). The SPA uses this to gate UI surfaces.
+	Scopes []auth.Scope `json:"scopes"`
+}
+
+// whoamiResponse is the JSON body returned by GET /api/v1/auth/whoami
+// and also augments GET /api/v1/server/status so the admin SPA can
+// identify the calling principal from a single round-trip.
+type whoamiResponse struct {
+	// PrincipalID is the authenticated principal's numeric ID.
+	PrincipalID uint64 `json:"principal_id"`
+	// Email is the principal's canonical email address.
+	Email string `json:"email"`
+	// Scopes is the scope set carried by the session or API key
 	// (REQ-AUTH-SCOPE-01). The SPA uses this to gate UI surfaces.
 	Scopes []auth.Scope `json:"scopes"`
 }
@@ -176,6 +193,38 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		PrincipalID: uint64(p.ID),
 		Email:       p.CanonicalEmail,
 		Scopes:      sessScopes.Slice(),
+	})
+}
+
+// handleWhoAmI handles GET /api/v1/auth/whoami.
+//
+// Returns 200 + {principal_id, email, scopes} when the request carries
+// valid credentials (session cookie or Bearer API key). Returns 401
+// when no valid credential is present. The endpoint is protected by
+// requireAuth and therefore inherits the same dual-auth path (cookie
+// or Bearer) as every other authenticated endpoint.
+//
+// The SPA calls this on page load to determine whether an existing
+// session cookie is still valid (REQ-AUTH-SESSION-REST). It is a
+// read-only GET so CSRF is not required even for cookie-authenticated
+// callers (REQ-AUTH-CSRF: safe methods are exempt).
+func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
+	p, ok := principalFrom(r.Context())
+	if !ok {
+		// requireAuth already enforces this; belt-and-suspenders.
+		writeProblem(w, r, http.StatusUnauthorized,
+			"unauthorized", "authentication required", "")
+		return
+	}
+	ac := auth.FromContext(r.Context())
+	var scopes []auth.Scope
+	if ac != nil {
+		scopes = ac.Scopes.Slice()
+	}
+	writeJSON(w, http.StatusOK, whoamiResponse{
+		PrincipalID: uint64(p.ID),
+		Email:       p.CanonicalEmail,
+		Scopes:      scopes,
 	})
 }
 

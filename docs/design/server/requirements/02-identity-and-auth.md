@@ -135,6 +135,8 @@ Stalwart has a fine-grained permission matrix with ~80 permissions and role inhe
 
 - **REQ-AUTH-COOKIE-PATH**: Session cookies on both the admin and public listeners use `Path=/` so the same browser session accompanies `/api/v1/...`, `/admin/...`, and `/ui/...` requests on the same listener. Cross-listener isolation is enforced by the distinct cookie name (`herold_admin_session` vs `herold_public_session`), not by path scoping. CSRF cookies also use `Path=/`.
 
+- **REQ-AUTH-JSON-WHOAMI**: `GET /api/v1/auth/whoami` (authenticated by cookie or Bearer) returns 200 + `{principal_id, email, scopes:[...]}` for a valid session, or 401 when no valid credential is present. The endpoint is a safe GET method and therefore exempt from CSRF checking (REQ-AUTH-CSRF). The admin SPA calls this endpoint on page load to probe session state without requiring a full server-status round-trip. Additionally, `GET /api/v1/server/status` includes the same `{principal_id, email, scopes}` fields in its response body so the admin SPA's existing bootstrap probe can populate auth state from a single request.
+
 ## Out of scope
 
 - Fine-grained permissions beyond the three roles.

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -156,6 +157,19 @@ func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
 	if uptime < 0 {
 		uptime = 0
 	}
+	// Include the authenticated principal's identity in the response so
+	// the admin SPA can populate its auth state from this single
+	// round-trip (auth.svelte.ts bootstrap() reads principal_id, email,
+	// and scopes from GET /api/v1/server/status). This duplicates what
+	// GET /api/v1/auth/whoami returns but avoids a second round-trip.
+	var callerID uint64
+	var callerEmail string
+	var callerScopes []auth.Scope
+	if ac := auth.FromContext(r.Context()); ac != nil {
+		callerID = uint64(caller.ID)
+		callerEmail = caller.CanonicalEmail
+		callerScopes = ac.Scopes.Slice()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":        s.opts.ServerVersion,
 		"uptime_seconds": uptime,
@@ -163,6 +177,9 @@ func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
 		"listeners":      []string{},
 		"plugins":        []string{},
 		"store_backend":  storeBackendName(s.store),
+		"principal_id":   callerID,
+		"email":          callerEmail,
+		"scopes":         callerScopes,
 	})
 }
 
