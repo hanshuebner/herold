@@ -120,12 +120,23 @@ func (h *handlerSet) computeForPrincipal(ctx context.Context, p store.Principal)
 	return mt, tm, nil
 }
 
-// renderThreadID stringifies a ThreadKey for the JMAP wire.
+// renderThreadID stringifies a ThreadKey for the JMAP wire. The "t"
+// prefix matches the format Email/get's threadIDForMessage produces, so
+// a client that takes Email.threadId and passes it back to Thread/get
+// resolves to the same thread row. Without this prefix the two
+// renderings disagreed and Thread/get returned notFound for every
+// thread the suite asked about.
 func renderThreadID(k ThreadKey) jmapID {
-	return strconv.FormatUint(uint64(k), 10)
+	return "t" + strconv.FormatUint(uint64(k), 10)
 }
 
+// parseThreadID accepts the "t<n>" wire form. The bare numeric form is
+// also accepted for back-compatibility with any caller that constructed
+// a thread id by hand before this format was unified.
 func parseThreadID(s jmapID) (ThreadKey, bool) {
+	if len(s) > 1 && s[0] == 't' {
+		s = s[1:]
+	}
 	v, err := strconv.ParseUint(s, 10, 64)
 	if err != nil || v == 0 {
 		return 0, false
