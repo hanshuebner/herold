@@ -173,6 +173,22 @@
   // visible characters; the editor renders one or more empty <p> tags
   // even when nothing has been typed.
   async function sendWithWarn(): Promise<void> {
+    // No recipients — surface the error inline AND move the cursor to
+    // the To field so the user can type immediately. compose.send()
+    // would set the same error message but leaves focus on Send,
+    // forcing an extra click to fix it.
+    const noRecipients =
+      compose.to.trim().length === 0 &&
+      compose.cc.trim().length === 0 &&
+      compose.bcc.trim().length === 0;
+    if (noRecipients) {
+      compose.errorMessage = 'At least one recipient is required';
+      const toInput = modalEl?.querySelector<HTMLInputElement>(
+        '.row input[type="text"]',
+      );
+      toInput?.focus();
+      return;
+    }
     const subjectEmpty = compose.subject.trim().length === 0;
     const bodyText = compose.body.replace(/<[^>]+>/g, '').trim();
     const bodyEmpty = bodyText.length === 0;
