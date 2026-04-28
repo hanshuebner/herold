@@ -38,7 +38,7 @@
   import BlockIcon from '../icons/BlockIcon.svelte';
   import FilterIcon from '../icons/FilterIcon.svelte';
   import LabelIcon from '../icons/LabelIcon.svelte';
-  import { t } from '../i18n/i18n.svelte';
+  import { t, localeTag } from '../i18n/i18n.svelte';
 
   interface Props {
     email: Email;
@@ -79,7 +79,7 @@
 
   function formatDateTime(iso: string): string {
     const d = new Date(iso);
-    return d.toLocaleString(undefined, {
+    return d.toLocaleString(localeTag(), {
       weekday: 'short',
       day: 'numeric',
       month: 'short',

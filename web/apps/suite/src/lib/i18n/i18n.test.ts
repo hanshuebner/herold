@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { i18n, t, detectLocale, LOCALES } from './i18n.svelte';
+import { i18n, t, detectLocale, localeTag, LOCALES } from './i18n.svelte';
 
 describe('i18n', () => {
   beforeEach(() => {
@@ -48,5 +48,25 @@ describe('detectLocale', () => {
   it('returns a member of LOCALES', () => {
     const detected = detectLocale();
     expect(LOCALES).toContain(detected);
+  });
+});
+
+describe('localeTag', () => {
+  it('returns en-GB for the English locale (issue #23)', () => {
+    i18n.locale = 'en';
+    expect(localeTag()).toBe('en-GB');
+    // Sanity check that en-GB actually formats day-month-year +
+    // 24h, otherwise the bug could re-regress unnoticed if Intl
+    // changes behaviour.
+    const d = new Date('2026-04-28T15:30:00Z');
+    expect(
+      d.toLocaleDateString(localeTag(), { day: '2-digit', month: '2-digit' }),
+    ).toMatch(/^\d{2}\/\d{2}$/);
+  });
+
+  it('returns de-DE for the German locale', () => {
+    i18n.locale = 'de';
+    expect(localeTag()).toBe('de-DE');
+    i18n.locale = 'en';
   });
 });

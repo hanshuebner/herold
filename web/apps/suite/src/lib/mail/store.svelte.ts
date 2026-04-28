@@ -14,6 +14,7 @@ import { jmap, strict } from '../jmap/client';
 import { auth } from '../auth/auth.svelte';
 import { sync } from '../jmap/sync.svelte';
 import { toast } from '../toast/toast.svelte';
+import { localeTag } from '../i18n/i18n.svelte';
 import { Capability, type Invocation } from '../jmap/types';
 import {
   EMAIL_BODY_PROPERTIES,
@@ -1942,16 +1943,17 @@ function formatSnoozeTarget(d: Date): string {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const dayDiff = Math.round((target.getTime() - today.getTime()) / 86400000);
-  const time = d.toLocaleTimeString(undefined, {
+  const tag = localeTag();
+  const time = d.toLocaleTimeString(tag, {
     hour: 'numeric',
     minute: '2-digit',
   });
   if (dayDiff === 0) return time;
   if (dayDiff === 1) return `${time} tomorrow`;
   if (dayDiff < 7 && dayDiff > 0) {
-    return `${d.toLocaleDateString(undefined, { weekday: 'long' })}, ${time}`;
+    return `${d.toLocaleDateString(tag, { weekday: 'long' })}, ${time}`;
   }
-  return `${d.toLocaleDateString(undefined, {
+  return `${d.toLocaleDateString(tag, {
     month: 'short',
     day: 'numeric',
   })}, ${time}`;

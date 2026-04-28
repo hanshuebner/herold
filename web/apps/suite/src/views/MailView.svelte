@@ -14,7 +14,7 @@
   import CategoryPicker from '../lib/mail/CategoryPicker.svelte';
   import SelectChooser from '../lib/mail/SelectChooser.svelte';
   import { labelPicker } from '../lib/mail/label-picker.svelte';
-  import { t } from '../lib/i18n/i18n.svelte';
+  import { t, localeTag } from '../lib/i18n/i18n.svelte';
   import type { Email } from '../lib/mail/types';
 
   const ROLED_FOLDERS = new Set<FolderID>([
@@ -540,7 +540,7 @@
     const opts: Intl.DateTimeFormatOptions = sameYear
       ? { month: 'short', day: 'numeric' }
       : { month: 'short', day: 'numeric', year: 'numeric' };
-    return d.toLocaleDateString(undefined, opts);
+    return d.toLocaleDateString(localeTag(), opts);
   }
 
   function isUnread(email: Email): boolean {

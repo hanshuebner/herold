@@ -19,6 +19,7 @@
   import { toast } from '../../lib/toast/toast.svelte';
   import { confirm } from '../../lib/dialog/confirm.svelte';
   import { get, post, del, ApiError } from '../../lib/api/client';
+  import { localeTag } from '../../lib/i18n/i18n.svelte';
 
   // End-user scopes available for key creation. Sorted to match AllEndUserScopes
   // canonical order (auth/scope.go). Admin and webhook.publish are deliberately
@@ -194,7 +195,7 @@
   function formatDate(iso: string): string {
     const d = new Date(iso);
     if (isNaN(d.getTime())) return iso;
-    return d.toLocaleString(undefined, {
+    return d.toLocaleString(localeTag(), {
       year: 'numeric',
       month: 'short',
       day: 'numeric',

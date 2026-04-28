@@ -7,6 +7,7 @@
   import { mail } from './store.svelte';
   import { snoozePicker, snoozeQuickOptions } from './snooze-picker.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
+  import { localeTag } from '../i18n/i18n.svelte';
 
   let options = $derived(snoozeQuickOptions());
   let custom = $state('');
@@ -38,7 +39,8 @@
   }
 
   function fmt(d: Date): string {
-    const time = d.toLocaleTimeString(undefined, {
+    const tag = localeTag();
+    const time = d.toLocaleTimeString(tag, {
       hour: 'numeric',
       minute: '2-digit',
     });
@@ -50,9 +52,9 @@
     if (dayDiff === 0) return time;
     if (dayDiff === 1) return `${time} tomorrow`;
     if (dayDiff > 0 && dayDiff < 7) {
-      return `${d.toLocaleDateString(undefined, { weekday: 'long' })}, ${time}`;
+      return `${d.toLocaleDateString(tag, { weekday: 'long' })}, ${time}`;
     }
-    return `${d.toLocaleDateString(undefined, {
+    return `${d.toLocaleDateString(tag, {
       month: 'short',
       day: 'numeric',
     })}, ${time}`;

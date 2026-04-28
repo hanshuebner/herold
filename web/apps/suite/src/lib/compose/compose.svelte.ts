@@ -26,6 +26,7 @@ import { Capability, type Invocation } from '../jmap/types';
 import { mail } from '../mail/store.svelte';
 import { settings } from '../settings/settings.svelte';
 import { toast } from '../toast/toast.svelte';
+import { localeTag } from '../i18n/i18n.svelte';
 import {
   emailHtmlBody,
   emailTextBody,
@@ -1019,7 +1020,7 @@ function walk(node: Node, out: string[]): void {
 function formatDateForQuote(iso: string | null | undefined): string {
   if (!iso) return '';
   const d = new Date(iso);
-  return d.toLocaleString(undefined, {
+  return d.toLocaleString(localeTag(), {
     weekday: 'short',
     day: 'numeric',
     month: 'short',

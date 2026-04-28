@@ -70,3 +70,14 @@ export function detectLocale(): Locale {
   }
   return 'en';
 }
+
+/**
+ * BCP-47 tag for Intl-based date / time / number formatting that
+ * matches the active locale. Both supported locales pin to a
+ * 24-hour, day-month-year region (issue #23: English default would
+ * follow the browser to en-US otherwise -- 12h am/pm,
+ * mm/dd/yyyy -- which the spec rules out).
+ */
+export function localeTag(): string {
+  return i18n.locale === 'de' ? 'de-DE' : 'en-GB';
+}
