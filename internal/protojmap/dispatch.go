@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"mime"
 	"net/http"
 )
 
@@ -15,6 +16,25 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		WriteJMAPError(w, http.StatusMethodNotAllowed,
 			"methodNotAllowed", "POST required")
+		return
+	}
+	// RFC 8620 §3.4: the Content-Type MUST be "application/json".
+	// Parameters such as "; charset=utf-8" are permitted. Reject anything
+	// whose media type is not exactly "application/json" before body
+	// decode so malformed or incorrectly-typed requests never reach the
+	// JSON decoder.
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		mt, _, err := mime.ParseMediaType(ct)
+		if err != nil || mt != "application/json" {
+			WriteJMAPError(w, http.StatusBadRequest,
+				"notJSON", "Content-Type must be application/json")
+			return
+		}
+	} else {
+		// A missing Content-Type is equally invalid for a POST that must
+		// carry a JSON body.
+		WriteJMAPError(w, http.StatusBadRequest,
+			"notJSON", "Content-Type must be application/json")
 		return
 	}
 	body := http.MaxBytesReader(w, r.Body, s.opts.MaxSizeRequest)
