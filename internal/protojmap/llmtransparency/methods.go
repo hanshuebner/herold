@@ -28,12 +28,6 @@ type jmapModelInfo struct {
 	ModelName string `json:"modelName,omitempty"`
 }
 
-// jmapCategoryEntry is one entry in the categoriserCategories array.
-type jmapCategoryEntry struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-}
-
 // jmapLLMTransparency is the wire-form LLMTransparency object returned by
 // LLMTransparency/get (one singleton per account).
 type jmapLLMTransparency struct {
@@ -48,8 +42,11 @@ type jmapLLMTransparency struct {
 	// CategoriserPrompt is the user-visible system prompt for categorisation
 	// (REQ-FILT-211 / REQ-FILT-216). Operator guardrails excluded.
 	CategoriserPrompt string `json:"categoriserPrompt"`
-	// CategoriserCategories is the active category set with descriptions.
-	CategoriserCategories []jmapCategoryEntry `json:"categoriserCategories"`
+	// DerivedCategories is the server-derived list of category names from the
+	// most recent successful classifier response (REQ-FILT-216/217). Nil/empty
+	// when no successful classifier call has occurred since the last prompt
+	// change. Read-only; the prompt is the lever.
+	DerivedCategories []string `json:"derivedCategories"`
 	// CategoriserModel describes the categoriser endpoint and model name.
 	CategoriserModel jmapModelInfo `json:"categoriserModel"`
 	// DisclosureNote is a short server-side sentence the suite renders
@@ -129,17 +126,14 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 		Endpoint:  g.h.categoriserEndpoint,
 		ModelName: g.h.categoriserModel,
 	}
-	var catCategories []jmapCategoryEntry
 	cfg, err := g.h.store.Meta().GetCategorisationConfig(ctx, p.ID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
 	catPrompt = cfg.Prompt // Guardrail (cfg.Guardrail) is NOT included.
-	for _, c := range cfg.CategorySet {
-		catCategories = append(catCategories, jmapCategoryEntry{
-			Name:        c.Name,
-			Description: c.Description,
-		})
+	derivedCategories := cfg.DerivedCategories
+	if derivedCategories == nil {
+		derivedCategories = []string{}
 	}
 	// Per-account model/endpoint overrides from the config row.
 	if cfg.Model != nil && *cfg.Model != "" {
@@ -150,13 +144,13 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 	}
 
 	obj := jmapLLMTransparency{
-		ID:                    singletonID,
-		SpamPrompt:            spamPrompt,
-		SpamModel:             spamModel,
-		CategoriserPrompt:     catPrompt,
-		CategoriserCategories: catCategories,
-		CategoriserModel:      catModel,
-		DisclosureNote:        disclosureNote,
+		ID:                singletonID,
+		SpamPrompt:        spamPrompt,
+		SpamModel:         spamModel,
+		CategoriserPrompt: catPrompt,
+		DerivedCategories: derivedCategories,
+		CategoriserModel:  catModel,
+		DisclosureNote:    disclosureNote,
 	}
 
 	// State is derived from the categorisation config's UpdatedAtUs so that

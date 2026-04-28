@@ -43,9 +43,10 @@ func fakeChatJSON(content string) string {
 // "promotions"; the stored Email's Keywords slice must carry
 // "$category-promotions".
 func TestDelivery_Categoriser_AddsCategoryKeyword(t *testing.T) {
-	// Fake LLM endpoint that always answers "promotions".
+	// Fake LLM endpoint that always answers "promotions" in the new
+	// {categories, assigned} shape (REQ-FILT-215).
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, fakeChatJSON(`{"category":"promotions"}`))
+		_, _ = io.WriteString(w, fakeChatJSON(`{"categories":["primary","social","promotions","updates","forums"],"assigned":"promotions"}`))
 	}))
 	t.Cleanup(llm.Close)
 

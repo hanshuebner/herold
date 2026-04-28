@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/categorise"
@@ -26,10 +25,6 @@ const singletonID = "singleton"
 
 // jmapID is the wire form of a JMAP id (RFC 8620 §1.2).
 type jmapID = string
-
-// primaryCategoryName is the fallback category that cannot be removed from
-// the category set (REQ-CAT-40).
-const primaryCategoryName = "primary"
 
 // handlerSet bundles the dependencies shared by all CategorySettings handlers.
 type handlerSet struct {
@@ -58,20 +53,20 @@ type categoryAccountCapability struct {
 	BulkRecategoriseEnabled bool `json:"bulkRecategoriseEnabled"`
 }
 
-// jmapCategoryDef is the wire form of one category entry.
-type jmapCategoryDef struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Order       int    `json:"order"`
-}
-
-// jmapCategorySettings is the wire-form CategorySettings object.
+// jmapCategorySettings is the wire-form CategorySettings object
+// (REQ-FILT-211/217, REQ-CAT-41/50).
 type jmapCategorySettings struct {
-	ID            jmapID            `json:"id"`
-	Categories    []jmapCategoryDef `json:"categories"`
-	Prompt        string            `json:"prompt"`
-	DefaultPrompt string            `json:"defaultPrompt"`
+	// ID is always "singleton".
+	ID jmapID `json:"id"`
+	// Prompt is the user-editable categorisation system prompt (REQ-FILT-211).
+	Prompt string `json:"prompt"`
+	// DefaultPrompt is the shipped default prompt; read-only.
+	DefaultPrompt string `json:"defaultPrompt"`
+	// DerivedCategories is the server-derived list of category names from the
+	// most recent successful classifier response (REQ-FILT-217). Nil/empty when
+	// no successful classifier call has occurred since the last prompt change.
+	// Read-only to the user; the prompt is the lever.
+	DerivedCategories []string `json:"derivedCategories"`
 }
 
 // stateString converts an int64 JMAP state counter to the opaque string
@@ -80,20 +75,15 @@ func stateString(n int64) string { return strconv.FormatInt(n, 10) }
 
 // configToJMAP converts a store.CategorisationConfig to the wire form.
 func configToJMAP(cfg store.CategorisationConfig) jmapCategorySettings {
-	cats := make([]jmapCategoryDef, len(cfg.CategorySet))
-	for i, c := range cfg.CategorySet {
-		cats[i] = jmapCategoryDef{
-			ID:          c.Name,
-			Name:        c.Name,
-			Description: c.Description,
-			Order:       i,
-		}
+	derived := cfg.DerivedCategories
+	if derived == nil {
+		derived = []string{}
 	}
 	return jmapCategorySettings{
-		ID:            singletonID,
-		Categories:    cats,
-		Prompt:        cfg.Prompt,
-		DefaultPrompt: categorise.DefaultPrompt,
+		ID:                singletonID,
+		Prompt:            cfg.Prompt,
+		DefaultPrompt:     categorise.DefaultPrompt,
+		DerivedCategories: derived,
 	}
 }
 
@@ -301,8 +291,10 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 }
 
 // applySetPatch applies a JSON update patch to current and returns the
-// resulting config. Recognised properties: categories, prompt. The id and
-// defaultPrompt properties are read-only.
+// resulting config. The only user-writable property is "prompt" (REQ-FILT-211).
+// "id", "defaultPrompt", and "derivedCategories" are read-only and return an
+// invalidArguments error when a client attempts to set them. "categories" was
+// removed in REQ-FILT-210; attempts to write it are rejected.
 func applySetPatch(current store.CategorisationConfig, raw json.RawMessage) (store.CategorisationConfig, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -320,77 +312,16 @@ func applySetPatch(current store.CategorisationConfig, raw json.RawMessage) (sto
 				return current, fmt.Errorf("prompt exceeds maximum size of %d bytes", maxPromptBytes)
 			}
 			out.Prompt = s
-		case "categories":
-			defs, err := parseCategoryArray(v)
-			if err != nil {
-				return current, fmt.Errorf("categories: %w", err)
-			}
-			if err := validateCategorySet(defs); err != nil {
-				return current, fmt.Errorf("categories: %w", err)
-			}
-			out.CategorySet = defs
-		case "id", "defaultPrompt":
+		case "id", "defaultPrompt", "derivedCategories":
 			return current, fmt.Errorf("%s is read-only", k)
+		case "categories":
+			// REQ-FILT-210 removed: the category list is no longer user-editable.
+			return current, fmt.Errorf("categories is no longer user-editable; change the prompt instead (REQ-FILT-210)")
 		default:
 			return current, fmt.Errorf("unknown property %q", k)
 		}
 	}
 	return out, nil
-}
-
-// parseCategoryArray decodes the JSON array of category objects from the
-// wire form into store.CategoryDef values. Order is preserved.
-func parseCategoryArray(raw json.RawMessage) ([]store.CategoryDef, error) {
-	var items []struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
-	if err := json.Unmarshal(raw, &items); err != nil {
-		return nil, err
-	}
-	defs := make([]store.CategoryDef, 0, len(items))
-	for _, item := range items {
-		name := item.Name
-		if name == "" {
-			name = item.ID
-		}
-		defs = append(defs, store.CategoryDef{
-			Name:        strings.ToLower(strings.TrimSpace(name)),
-			Description: item.Description,
-		})
-	}
-	return defs, nil
-}
-
-// validateCategorySet enforces the invariants on the user-supplied
-// category list:
-//   - Must not be empty.
-//   - The "primary" category must be present (REQ-CAT-40).
-//   - Names must be non-empty lowercase ASCII (the keyword prefix rules).
-//   - No duplicate names.
-func validateCategorySet(defs []store.CategoryDef) error {
-	if len(defs) == 0 {
-		return fmt.Errorf("category set must not be empty")
-	}
-	seen := make(map[string]struct{}, len(defs))
-	hasPrimary := false
-	for _, d := range defs {
-		if d.Name == "" {
-			return fmt.Errorf("category name must not be empty")
-		}
-		if strings.EqualFold(d.Name, primaryCategoryName) {
-			hasPrimary = true
-		}
-		if _, dup := seen[d.Name]; dup {
-			return fmt.Errorf("duplicate category name %q", d.Name)
-		}
-		seen[d.Name] = struct{}{}
-	}
-	if !hasPrimary {
-		return fmt.Errorf("the %q category cannot be removed", primaryCategoryName)
-	}
-	return nil
 }
 
 // -- CategorySettings/recategorise ----------------------------------

@@ -50,7 +50,7 @@ func setup(t *testing.T) (*handlerSet, *fakestore.Store, store.Principal) {
 }
 
 // TestCategorySettings_Get_DefaultsOnEmpty verifies that a fresh principal
-// receives the default category set and default prompt on first read.
+// receives the default prompt and an empty derivedCategories on first read.
 func TestCategorySettings_Get_DefaultsOnEmpty(t *testing.T) {
 	h, _, p := setup(t)
 	args, _ := json.Marshal(map[string]any{
@@ -67,22 +67,21 @@ func TestCategorySettings_Get_DefaultsOnEmpty(t *testing.T) {
 	if !strings.Contains(jsStr, `"id":"singleton"`) {
 		t.Errorf("missing singleton id: %s", jsStr)
 	}
-	// Should have the default prompt.
-	if !strings.Contains(jsStr, "categorisation") {
-		t.Errorf("missing default prompt content: %s", jsStr)
+	// Default prompt should mention the new JSON shape (REQ-FILT-215).
+	if !strings.Contains(jsStr, "categories") {
+		t.Errorf("default prompt should reference categories: %s", jsStr)
 	}
 	// Should have defaultPrompt field.
 	if !strings.Contains(jsStr, `"defaultPrompt"`) {
 		t.Errorf("missing defaultPrompt field: %s", jsStr)
 	}
-	// Should include the primary category.
-	if !strings.Contains(jsStr, `"primary"`) {
-		t.Errorf("missing primary category in default set: %s", jsStr)
+	// derivedCategories should be present (empty array on first read).
+	if !strings.Contains(jsStr, `"derivedCategories"`) {
+		t.Errorf("missing derivedCategories field: %s", jsStr)
 	}
-	// Should have five categories by default.
 	var parsed struct {
 		List []struct {
-			Categories []jmapCategoryDef `json:"categories"`
+			DerivedCategories []string `json:"derivedCategories"`
 		} `json:"list"`
 	}
 	if err := json.Unmarshal([]byte(jsStr), &parsed); err != nil {
@@ -91,9 +90,10 @@ func TestCategorySettings_Get_DefaultsOnEmpty(t *testing.T) {
 	if len(parsed.List) != 1 {
 		t.Fatalf("expected 1 item in list, got %d", len(parsed.List))
 	}
-	if len(parsed.List[0].Categories) != 5 {
-		t.Errorf("expected 5 default categories, got %d: %v",
-			len(parsed.List[0].Categories), parsed.List[0].Categories)
+	// On first read no classifier has run, so derivedCategories is empty.
+	if len(parsed.List[0].DerivedCategories) != 0 {
+		t.Errorf("expected empty derivedCategories on first read, got %v",
+			parsed.List[0].DerivedCategories)
 	}
 }
 
@@ -133,22 +133,25 @@ func TestCategorySettings_Get_IDFilter(t *testing.T) {
 	}
 }
 
-// TestCategorySettings_Set_RoundTrip verifies that setting a custom prompt
-// and a modified category set is persisted and read back correctly.
-func TestCategorySettings_Set_RoundTrip(t *testing.T) {
-	h, _, p := setup(t)
+// TestCategorySettings_Set_PromptRoundTrip verifies that setting a custom
+// prompt is persisted and read back correctly. It also verifies that a
+// prompt change clears derivedCategories (REQ-FILT-217).
+func TestCategorySettings_Set_PromptRoundTrip(t *testing.T) {
+	h, st, p := setup(t)
+	ctx := context.Background()
 	accountID := protojmap.AccountIDForPrincipal(p.ID)
 
-	customPrompt := "My custom classifier prompt"
+	// Pre-populate derivedCategories so we can verify it is cleared.
+	if err := st.Meta().SetDerivedCategories(ctx, p.ID, []string{"primary", "social"}); err != nil {
+		t.Fatalf("SetDerivedCategories (setup): %v", err)
+	}
+
+	customPrompt := "My custom classifier prompt — new JSON shape"
 	setArgs, _ := json.Marshal(map[string]any{
 		"accountId": accountID,
 		"update": map[string]any{
 			singletonID: map[string]any{
 				"prompt": customPrompt,
-				"categories": []map[string]any{
-					{"id": "primary", "name": "primary", "description": "Important mail"},
-					{"id": "social", "name": "social", "description": "Social networks"},
-				},
 			},
 		},
 	})
@@ -161,7 +164,7 @@ func TestCategorySettings_Set_RoundTrip(t *testing.T) {
 		t.Errorf("expected 'updated' in set response: %s", js)
 	}
 
-	// Read back and verify.
+	// Read back and verify prompt persisted.
 	getArgs, _ := json.Marshal(map[string]any{"accountId": accountID})
 	getResp, mErr := (&getHandler{h: h}).executeAs(p, getArgs)
 	if mErr != nil {
@@ -171,24 +174,72 @@ func TestCategorySettings_Set_RoundTrip(t *testing.T) {
 	if !strings.Contains(string(js2), customPrompt) {
 		t.Errorf("prompt not persisted: %s", js2)
 	}
-	// Should now have only 2 categories.
+
+	// derivedCategories must be empty after a prompt change (REQ-FILT-217).
 	var parsed struct {
 		List []struct {
-			Categories []jmapCategoryDef `json:"categories"`
+			DerivedCategories []string `json:"derivedCategories"`
 		} `json:"list"`
 	}
 	if err := json.Unmarshal(js2, &parsed); err != nil {
 		t.Fatalf("parse get response: %v", err)
 	}
-	if len(parsed.List[0].Categories) != 2 {
-		t.Errorf("expected 2 categories after set, got %d: %v",
-			len(parsed.List[0].Categories), parsed.List[0].Categories)
+	if len(parsed.List[0].DerivedCategories) != 0 {
+		t.Errorf("expected empty derivedCategories after prompt change, got %v",
+			parsed.List[0].DerivedCategories)
 	}
 }
 
-// TestCategorySettings_Set_CannotRemovePrimary verifies that removing the
-// primary category is rejected with an invalidProperties error.
-func TestCategorySettings_Set_CannotRemovePrimary(t *testing.T) {
+// TestCategorySettings_Get_DerivedCategoriesExposed verifies that
+// derivedCategories is returned after SetDerivedCategories is called.
+func TestCategorySettings_Get_DerivedCategoriesExposed(t *testing.T) {
+	h, st, p := setup(t)
+	ctx := context.Background()
+	accountID := protojmap.AccountIDForPrincipal(p.ID)
+
+	// Seed the config row first (GetCategorisationConfig creates it on first read).
+	if _, err := st.Meta().GetCategorisationConfig(ctx, p.ID); err != nil {
+		t.Fatalf("GetCategorisationConfig (seed): %v", err)
+	}
+
+	want := []string{"primary", "social", "promotions", "updates", "forums"}
+	if err := st.Meta().SetDerivedCategories(ctx, p.ID, want); err != nil {
+		t.Fatalf("SetDerivedCategories: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]any{"accountId": accountID})
+	resp, mErr := (&getHandler{h: h}).executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("CategorySettings/get: %v", mErr)
+	}
+	js, _ := json.Marshal(resp)
+
+	var parsed struct {
+		List []struct {
+			DerivedCategories []string `json:"derivedCategories"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(js, &parsed); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if len(parsed.List) != 1 {
+		t.Fatalf("expected 1 item in list, got %d", len(parsed.List))
+	}
+	got := parsed.List[0].DerivedCategories
+	if len(got) != len(want) {
+		t.Fatalf("derivedCategories = %v, want %v", got, want)
+	}
+	for i, name := range want {
+		if got[i] != name {
+			t.Errorf("derivedCategories[%d] = %q, want %q", i, got[i], name)
+		}
+	}
+}
+
+// TestCategorySettings_Set_CategoriesRejected verifies that attempting to
+// write the removed "categories" property returns an invalidProperties error
+// (REQ-FILT-210 removal).
+func TestCategorySettings_Set_CategoriesRejected(t *testing.T) {
 	h, _, p := setup(t)
 	accountID := protojmap.AccountIDForPrincipal(p.ID)
 
@@ -197,7 +248,7 @@ func TestCategorySettings_Set_CannotRemovePrimary(t *testing.T) {
 		"update": map[string]any{
 			singletonID: map[string]any{
 				"categories": []map[string]any{
-					{"id": "social", "name": "social", "description": "Social networks"},
+					{"id": "primary", "name": "primary", "description": "Important mail"},
 				},
 			},
 		},
@@ -208,10 +259,7 @@ func TestCategorySettings_Set_CannotRemovePrimary(t *testing.T) {
 	}
 	js, _ := json.Marshal(resp)
 	if !strings.Contains(string(js), `"invalidProperties"`) {
-		t.Errorf("expected invalidProperties error for missing primary: %s", js)
-	}
-	if !strings.Contains(string(js), "primary") {
-		t.Errorf("expected 'primary' mentioned in error: %s", js)
+		t.Errorf("expected invalidProperties error for categories: %s", js)
 	}
 }
 
@@ -312,12 +360,12 @@ func TestCategorySettings_Set_StateAdvances(t *testing.T) {
 }
 
 // TestCategorySettings_Set_ReadOnlyFields verifies that attempts to set
-// read-only fields are rejected.
+// read-only fields are rejected with invalidProperties.
 func TestCategorySettings_Set_ReadOnlyFields(t *testing.T) {
 	h, _, p := setup(t)
 	accountID := protojmap.AccountIDForPrincipal(p.ID)
 
-	for _, field := range []string{"id", "defaultPrompt"} {
+	for _, field := range []string{"id", "defaultPrompt", "derivedCategories"} {
 		setArgs, _ := json.Marshal(map[string]any{
 			"accountId": accountID,
 			"update": map[string]any{

@@ -209,9 +209,10 @@ func TestLLMTransparency_Get_SpamPolicy(t *testing.T) {
 // returned by LLMTransparency/get (REQ-FILT-67 / REQ-FILT-216).
 func TestLLMTransparency_Get_CategoriserGuardrailExcluded(t *testing.T) {
 	h, st, p := setupHandlers(t, nil)
+	ctx := context.Background()
 
 	// Write a config with a guardrail that must not be returned.
-	err := st.Meta().UpdateCategorisationConfig(context.Background(), store.CategorisationConfig{
+	err := st.Meta().UpdateCategorisationConfig(ctx, store.CategorisationConfig{
 		PrincipalID: p.ID,
 		Prompt:      "Classify this message into categories.",
 		Guardrail:   "SUPER SECRET GUARDRAIL: never classify as spam.",
@@ -241,9 +242,57 @@ func TestLLMTransparency_Get_CategoriserGuardrailExcluded(t *testing.T) {
 	if strings.Contains(jsStr, "SUPER SECRET GUARDRAIL") {
 		t.Errorf("categoriser guardrail leaked into response (REQ-FILT-216): %s", jsStr)
 	}
-	// Category name must appear.
-	if !strings.Contains(jsStr, `"primary"`) {
-		t.Errorf("category not in response: %s", jsStr)
+	// derivedCategories field must be present (empty since no classifier call
+	// has occurred since the config write).
+	if !strings.Contains(jsStr, `"derivedCategories"`) {
+		t.Errorf("derivedCategories field missing from response: %s", jsStr)
+	}
+}
+
+// TestLLMTransparency_Get_DerivedCategoriesExposed verifies that
+// derivedCategories from the store is returned in the LLMTransparency
+// object (REQ-FILT-216/217).
+func TestLLMTransparency_Get_DerivedCategoriesExposed(t *testing.T) {
+	h, st, p := setupHandlers(t, nil)
+	ctx := context.Background()
+
+	// Seed the config row then write derived categories.
+	if _, err := st.Meta().GetCategorisationConfig(ctx, p.ID); err != nil {
+		t.Fatalf("GetCategorisationConfig (seed): %v", err)
+	}
+	want := []string{"primary", "social", "promotions", "updates", "forums"}
+	if err := st.Meta().SetDerivedCategories(ctx, p.ID, want); err != nil {
+		t.Fatalf("SetDerivedCategories: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+	})
+	resp, mErr := (&getHandler{h: h}).executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("LLMTransparency/get: %v", mErr)
+	}
+	js, _ := json.Marshal(resp)
+
+	var parsed struct {
+		List []struct {
+			DerivedCategories []string `json:"derivedCategories"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(js, &parsed); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if len(parsed.List) != 1 {
+		t.Fatalf("expected 1 item in list, got %d", len(parsed.List))
+	}
+	got := parsed.List[0].DerivedCategories
+	if len(got) != len(want) {
+		t.Fatalf("derivedCategories = %v, want %v", got, want)
+	}
+	for i, name := range want {
+		if got[i] != name {
+			t.Errorf("derivedCategories[%d] = %q, want %q", i, got[i], name)
+		}
 	}
 }
 
