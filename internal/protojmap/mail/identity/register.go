@@ -8,10 +8,17 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
-// Register installs the Identity datatype's method handlers on reg
-// under the JMAP Mail capability (RFC 8621 §1: identities live under
-// `urn:ietf:params:jmap:mail`). The returned *Store is the in-process
-// overlay; tests use it to assert state directly.
+// capabilitySubmission is the JMAP capability URI Identity is defined under
+// per RFC 8621 §1.1: "When the urn:ietf:params:jmap:submission capability is
+// included [...] the JMAP Identity object (Section 6) and EmailSubmission
+// (Section 7) objects are made available." Identity belongs to Submission,
+// not Mail; clients calling Identity/get with using=[submission] are
+// correct.
+const capabilitySubmission protojmap.CapabilityID = "urn:ietf:params:jmap:submission"
+
+// Register installs the Identity datatype's method handlers on reg under
+// the JMAP Submission capability per RFC 8621 §1.1. The returned *Store is
+// the in-process overlay; tests use it to assert state directly.
 func Register(
 	reg *protojmap.CapabilityRegistry,
 	st store.Store,
@@ -26,8 +33,8 @@ func Register(
 		identity: identityStore,
 		domains:  makeDomainsFn(st),
 	}
-	reg.Register(protojmap.CapabilityMail, getHandler{h: h})
-	reg.Register(protojmap.CapabilityMail, changesHandler{h: h})
-	reg.Register(protojmap.CapabilityMail, setHandler{h: h})
+	reg.Register(capabilitySubmission, getHandler{h: h})
+	reg.Register(capabilitySubmission, changesHandler{h: h})
+	reg.Register(capabilitySubmission, setHandler{h: h})
 	return identityStore
 }
