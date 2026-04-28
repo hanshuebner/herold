@@ -84,7 +84,7 @@ type jmapEmail struct {
 	Bcc        []jmapAddress `json:"bcc,omitempty"`
 	ReplyTo    []jmapAddress `json:"replyTo,omitempty"`
 	Sender     []jmapAddress `json:"sender,omitempty"`
-	Subject    string        `json:"subject"`
+	Subject    string        `json:"subject,omitempty"`
 	MessageID  []string      `json:"messageId,omitempty"`
 	InReplyTo  []string      `json:"inReplyTo,omitempty"`
 	References []string      `json:"references,omitempty"`
@@ -93,14 +93,11 @@ type jmapEmail struct {
 	// Body parts (RFC 8621 §4.1.4). Populated only on Email/parse and
 	// when the caller asks for bodyStructure / bodyValues; the cheap
 	// metadata path leaves these nil.
-	// TextBody, HTMLBody, Attachments carry full EmailBodyPart objects
-	// (filtered by the request bodyProperties). RFC 8621 §4.2 specifies
-	// these as arrays of EmailBodyPart, not thin {partId} references.
 	BodyStructure *bodyPart            `json:"bodyStructure,omitempty"`
 	BodyValues    map[string]bodyValue `json:"bodyValues,omitempty"`
-	TextBody      []bodyPart           `json:"textBody,omitempty"`
-	HTMLBody      []bodyPart           `json:"htmlBody,omitempty"`
-	Attachments   []bodyPart           `json:"attachments,omitempty"`
+	TextBody      []bodyPartRef        `json:"textBody,omitempty"`
+	HTMLBody      []bodyPartRef        `json:"htmlBody,omitempty"`
+	Attachments   []bodyPartRef        `json:"attachments,omitempty"`
 	HasAttachment bool                 `json:"hasAttachment"`
 	Preview       string               `json:"preview,omitempty"`
 
@@ -130,16 +127,16 @@ type jmapEmailWire struct {
 	Bcc           []jmapAddress        `json:"bcc,omitempty"`
 	ReplyTo       []jmapAddress        `json:"replyTo,omitempty"`
 	Sender        []jmapAddress        `json:"sender,omitempty"`
-	Subject       string               `json:"subject"`
+	Subject       string               `json:"subject,omitempty"`
 	MessageID     []string             `json:"messageId,omitempty"`
 	InReplyTo     []string             `json:"inReplyTo,omitempty"`
 	References    []string             `json:"references,omitempty"`
 	SentAt        string               `json:"sentAt,omitempty"`
 	BodyStructure *bodyPart            `json:"bodyStructure,omitempty"`
 	BodyValues    map[string]bodyValue `json:"bodyValues,omitempty"`
-	TextBody      []bodyPart           `json:"textBody,omitempty"`
-	HTMLBody      []bodyPart           `json:"htmlBody,omitempty"`
-	Attachments   []bodyPart           `json:"attachments,omitempty"`
+	TextBody      []bodyPartRef        `json:"textBody,omitempty"`
+	HTMLBody      []bodyPartRef        `json:"htmlBody,omitempty"`
+	Attachments   []bodyPartRef        `json:"attachments,omitempty"`
 	HasAttachment bool                 `json:"hasAttachment"`
 	Preview       string               `json:"preview,omitempty"`
 }
@@ -235,6 +232,12 @@ type bodyValue struct {
 	Value             string `json:"value"`
 	IsEncodingProblem bool   `json:"isEncodingProblem"`
 	IsTruncated       bool   `json:"isTruncated"`
+}
+
+// bodyPartRef is one entry in textBody/htmlBody/attachments — a thin
+// reference into bodyStructure's tree by partId.
+type bodyPartRef struct {
+	PartID string `json:"partId"`
 }
 
 // keywordsFromMessage projects the IMAP system flag bitfield + keyword
