@@ -11,6 +11,7 @@
   import SnoozePicker from '../mail/SnoozePicker.svelte';
   import ReactionConfirmModal from '../mail/ReactionConfirmModal.svelte';
   import ConfirmDialog from '../dialog/ConfirmDialog.svelte';
+  import PromptDialog from '../dialog/PromptDialog.svelte';
 
   interface Props {
     activeApp?: 'mail' | 'chat';
@@ -57,6 +58,7 @@
   <SnoozePicker />
   <ReactionConfirmModal />
   <ConfirmDialog />
+  <PromptDialog />
 </div>
 
 <style>

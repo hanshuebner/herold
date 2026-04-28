@@ -11,6 +11,7 @@
     removeLink,
     type ActiveState,
   } from './editor';
+  import { prompt } from '../dialog/prompt.svelte';
 
   interface Props {
     view: EditorView | null;
@@ -18,13 +19,18 @@
   }
   let { view, active }: Props = $props();
 
-  function promptLink(): void {
+  async function promptLink(): Promise<void> {
     if (!view) return;
     if (active.link) {
       removeLink(view);
       return;
     }
-    const url = window.prompt('Link URL');
+    const url = await prompt.ask({
+      title: 'Insert link',
+      label: 'URL',
+      placeholder: 'https://example.com',
+      confirmLabel: 'Insert',
+    });
     if (!url) {
       view.focus();
       return;

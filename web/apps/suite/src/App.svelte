@@ -12,6 +12,7 @@
   import { settings, applyTheme } from './lib/settings/settings.svelte';
   import { t } from './lib/i18n/i18n.svelte';
   import { confirm } from './lib/dialog/confirm.svelte';
+  import { prompt } from './lib/dialog/prompt.svelte';
   import { mail } from './lib/mail/store.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
@@ -85,13 +86,22 @@
   });
 
   async function promptCreateMailbox(): Promise<void> {
-    const name = prompt('New mailbox name')?.trim();
+    const name = await prompt.ask({
+      title: 'New mailbox',
+      label: 'Mailbox name',
+      confirmLabel: 'Create',
+    });
     if (!name) return;
     const id = await mail.createMailbox(name);
     if (id) router.navigate(`/mail/folder/${encodeURIComponent(id)}`);
   }
   async function promptRenameMailbox(id: string, current: string): Promise<void> {
-    const next = prompt('Rename mailbox', current)?.trim();
+    const next = await prompt.ask({
+      title: 'Rename mailbox',
+      label: 'New name',
+      defaultValue: current,
+      confirmLabel: 'Rename',
+    });
     if (!next || next === current) return;
     await mail.renameMailbox(id, next);
   }
