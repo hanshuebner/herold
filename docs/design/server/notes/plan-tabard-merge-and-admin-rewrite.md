@@ -266,9 +266,17 @@ Phase 3 was delivered in four sub-commits on `main`:
 
 Exit criteria met: `internal/protoui` is gone. `/admin/` serves the Svelte SPA. `go test ./...` green. `git grep 'internal/protoui'` returns zero hits.
 
-### Phase 4 (deferred) -- end-user `/settings` panel
+### Phase 4 -- end-user `/settings` panel. COMPLETE on `main` (2026-04-28).
 
-Out of scope for this plan. Tracked as a follow-up against REQ-ADM-203. Lands inside `web/apps/suite` as a new route, not in `web/apps/admin`.
+REQ-ADM-203 is shipped. The Suite SPA's existing `/settings` route gained two server-backed sections:
+
+- **4a** (18e930f): `internal/protoadmin` exposes `RegisterSelfServiceRoutes(mux)` and `SelfServiceHandler()`. `internal/admin/server.go` boots a second `protoadmin.Server` configured with `publicCookieCfg` and mounts the self-service subset on the public listener at `/api/v1/principals/`, `/api/v1/api-keys`, `/api/v1/api-keys/`. Admin-only routes (queue, certs, audit, domains, aliases, oidc/providers, server status, spam policy, recategorise config, webhooks, attachment policy, bootstrap) are NOT mounted on the public listener.
+- **4-prep** (dec78f3): `internal/protologin` adds `GET /api/v1/auth/me` so the Suite SPA can resolve its own `principal_id` from a session cookie alone after a page reload.
+- **4b** (058fae5): `web/apps/suite/src/lib/api/client.ts` (typed fetch wrapper with same-origin cookies + CSRF token attachment), `auth.svelte.ts` extended with `principalId` state + `loadMe()`, and two new settings forms — `SecurityForm.svelte` (change password, TOTP enrol/confirm/disable) and `ApiKeysForm.svelte` (list/create/revoke).
+
+Sections in the Suite Settings panel post-Phase 4: Account, Security, Appearance, Mail, API keys, Privacy, About.
+
+Deferred to a later phase: vacation responder (REQ-SET-09 — JMAP `VacationResponse`, RFC 8621 §8) and forwarding (Sieve rule UI).
 
 ## 7. Files this plan will touch
 
@@ -312,7 +320,7 @@ Deleted:
 
 ## 9. What this plan deliberately does not do
 
-- It does not implement REQ-ADM-203 (`/settings` self-service panel for end users).
+- It does not implement REQ-ADM-203 (`/settings` self-service panel for end users) in its initial scope. (Phase 4 added it as an in-plan extension on 2026-04-28; vacation responder and Sieve-rule forwarding remain deferred.)
 - It does not change auth scoping, principal model, or session lifetime.
 - It does not change the admin REST contract beyond filling gaps the SPA needs.
 - It does not change the JMAP, IMAP, SMTP, or any other wire-protocol surface.
