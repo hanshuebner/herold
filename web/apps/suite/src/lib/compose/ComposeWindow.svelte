@@ -401,20 +401,12 @@
     <footer class="modal-footer">
       <button
         type="button"
-        class="discard"
-        onclick={closeWithConfirm}
-        disabled={compose.status === 'sending'}
-      >
-        Discard
-      </button>
-      <button
-        type="button"
         class="attach"
         onclick={() => fileInput?.click()}
         disabled={compose.status === 'sending'}
         title="Attach files"
       >
-        📎 Attach
+        Attach
       </button>
       <input
         bind:this={fileInput}
@@ -424,6 +416,14 @@
         onchange={onFilePick}
       />
       <span class="footer-spacer"></span>
+      <button
+        type="button"
+        class="discard"
+        onclick={closeWithConfirm}
+        disabled={compose.status === 'sending'}
+      >
+        Discard
+      </button>
       <button
         type="button"
         class="send"
