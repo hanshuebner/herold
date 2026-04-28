@@ -3,6 +3,7 @@ package thread
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strconv"
 
 	"github.com/hanshuebner/herold/internal/protojmap"
@@ -140,8 +141,9 @@ func (h *handlerSet) listAllMessages(ctx context.Context, p store.Principal) ([]
 	return all, nil
 }
 
-// computeForPrincipal returns the (msg→thread, thread→[msg]) maps for
-// p's whole account.
+// computeForPrincipal returns the (msg→thread, thread→[msgs]) maps for
+// p's whole account. The inner slice keeps full store.Message values so
+// callers can sort by receivedAt without extra lookups.
 //
 // v1 keys threads by store.Message.ThreadID (falling back to MessageID
 // when ThreadID is 0). This matches Email/get's threadIDForMessage --
@@ -153,13 +155,13 @@ func (h *handlerSet) listAllMessages(ctx context.Context, p store.Principal) ([]
 // references via ParseReferences(env_in_reply_to) and looks up ancestor
 // messages by env_message_id in the same principal's mailboxes. The
 // resolved thread_id is persisted so this read path is a simple group-by.
-func (h *handlerSet) computeForPrincipal(ctx context.Context, p store.Principal) (map[store.MessageID]ThreadKey, map[ThreadKey][]store.MessageID, error) {
+func (h *handlerSet) computeForPrincipal(ctx context.Context, p store.Principal) (map[store.MessageID]ThreadKey, map[ThreadKey][]store.Message, error) {
 	msgs, err := h.listAllMessages(ctx, p)
 	if err != nil {
 		return nil, nil, err
 	}
 	msgToThread := make(map[store.MessageID]ThreadKey, len(msgs))
-	threadToMsgs := make(map[ThreadKey][]store.MessageID)
+	threadToMsgs := make(map[ThreadKey][]store.Message)
 	for _, m := range msgs {
 		var key ThreadKey
 		if m.ThreadID != 0 {
@@ -168,9 +170,20 @@ func (h *handlerSet) computeForPrincipal(ctx context.Context, p store.Principal)
 			key = ThreadKey(uint64(m.ID))
 		}
 		msgToThread[m.ID] = key
-		threadToMsgs[key] = append(threadToMsgs[key], m.ID)
+		threadToMsgs[key] = append(threadToMsgs[key], m)
 	}
 	return msgToThread, threadToMsgs, nil
+}
+
+// sortThreadMessages sorts a slice of messages by ReceivedAt ascending,
+// with tie-break on MessageID ascending (RFC 8621 §8.1).
+func sortThreadMessages(msgs []store.Message) {
+	sort.SliceStable(msgs, func(i, j int) bool {
+		if msgs[i].ReceivedAt.Equal(msgs[j].ReceivedAt) {
+			return msgs[i].ID < msgs[j].ID
+		}
+		return msgs[i].ReceivedAt.Before(msgs[j].ReceivedAt)
+	})
 }
 
 // renderThreadID stringifies a ThreadKey for the JMAP wire. The "t"
@@ -237,10 +250,11 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	}
 	if req.IDs == nil {
 		// Return all threads.
-		for k, ids := range threadToMsgs {
-			t := jmapThread{ID: renderThreadID(k), EmailIDs: make([]jmapID, 0, len(ids))}
-			for _, id := range ids {
-				t.EmailIDs = append(t.EmailIDs, renderEmailID(id))
+		for k, msgs := range threadToMsgs {
+			sortThreadMessages(msgs)
+			t := jmapThread{ID: renderThreadID(k), EmailIDs: make([]jmapID, 0, len(msgs))}
+			for _, m := range msgs {
+				t.EmailIDs = append(t.EmailIDs, renderEmailID(m.ID))
 			}
 			resp.List = append(resp.List, t)
 		}
@@ -252,14 +266,15 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
-		ids, ok := threadToMsgs[k]
+		msgs, ok := threadToMsgs[k]
 		if !ok {
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
-		t := jmapThread{ID: id, EmailIDs: make([]jmapID, 0, len(ids))}
-		for _, mid := range ids {
-			t.EmailIDs = append(t.EmailIDs, renderEmailID(mid))
+		sortThreadMessages(msgs)
+		t := jmapThread{ID: id, EmailIDs: make([]jmapID, 0, len(msgs))}
+		for _, m := range msgs {
+			t.EmailIDs = append(t.EmailIDs, renderEmailID(m.ID))
 		}
 		resp.List = append(resp.List, t)
 	}
@@ -351,9 +366,13 @@ func (c changesHandler) computeThreadChanges(
 		// Load the message to get its thread key.
 		msg, merr := c.h.store.Meta().GetMessage(ctx, msgID)
 		if merr != nil {
-			// Message is gone (destroyed); we cannot recover its thread key from
-			// the change feed alone. The destroyed thread may still appear as
-			// empty in threadToMsgs below.
+			// Message is gone (destroyed). We cannot recover its thread_id from
+			// the change feed. Per RFC 8620 §5.2, over-reporting is permitted:
+			// use the message ID as the thread key (correct for singleton threads,
+			// and a safe approximation for multi-message threads since the
+			// classification pass below will see the thread is absent and emit
+			// "destroyed").
+			affectedThreads[ThreadKey(uint64(msgID))] = struct{}{}
 			continue
 		}
 		var tk ThreadKey
@@ -377,7 +396,7 @@ func (c changesHandler) computeThreadChanges(
 
 	for tk := range affectedThreads {
 		tid := renderThreadID(tk)
-		msgIDs, exists := threadToMsgs[tk]
+		msgs, exists := threadToMsgs[tk]
 		if !exists {
 			// Thread has no surviving messages → destroyed.
 			resp.Destroyed = append(resp.Destroyed, tid)
@@ -385,8 +404,8 @@ func (c changesHandler) computeThreadChanges(
 		}
 		// Thread is "created" if ALL its current messages are in newMsgIDs.
 		allNew := true
-		for _, mid := range msgIDs {
-			if _, isNew := newMsgIDs[mid]; !isNew {
+		for _, m := range msgs {
+			if _, isNew := newMsgIDs[m.ID]; !isNew {
 				allNew = false
 				break
 			}

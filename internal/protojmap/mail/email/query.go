@@ -638,18 +638,42 @@ func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.
 			return false
 		}
 	}
+	// text: predicate (RFC 8621 §4.4.1): matches any searchable part of
+	// the message — subject, from, to, cc, bcc, and body. Envelope fields
+	// are checked directly; body text is checked against blobBodyText when
+	// available.
+	if f.Text != nil {
+		term := strings.ToLower(*f.Text)
+		env := m.Envelope
+		matched := strings.Contains(strings.ToLower(env.Subject), term) ||
+			strings.Contains(strings.ToLower(env.From), term) ||
+			strings.Contains(strings.ToLower(env.To), term) ||
+			strings.Contains(strings.ToLower(env.Cc), term) ||
+			strings.Contains(strings.ToLower(env.Bcc), term)
+		if !matched && fd != nil && fd.blobBodyText != nil {
+			matched = strings.Contains(fd.blobBodyText[m.ID], term)
+		}
+		if !matched {
+			return false
+		}
+	}
 	return true
 }
 
 // gatherCandidatesRaw returns the candidate message set for filter f
-// without thread aggregation. Text predicates are routed through FTS.
+// without thread aggregation. Text predicates are routed through FTS when
+// possible, but when the filter also requires body blob parsing (e.g.
+// text:, body:) we use a full scan so body content can be matched in the
+// post-filter pass.
 func gatherCandidatesRaw(
 	ctx context.Context,
 	st store.Store,
 	pid store.PrincipalID,
 	f *emailFilter,
 ) ([]store.Message, error) {
-	if f != nil && filterHasTextPredicate(f) {
+	if f != nil && filterHasTextPredicate(f) && !filterNeedsBodyBlobParse(f) {
+		// Pure envelope-field text predicates (from:, to:, cc:, bcc:,
+		// subject:) with no body: component can use FTS to narrow the set.
 		fts := buildFTSQuery(f)
 		hits, err := st.FTS().Query(ctx, pid, fts)
 		if err != nil {
@@ -702,12 +726,14 @@ func filterHasTextPredicate(f *emailFilter) bool {
 }
 
 // filterNeedsBodyBlobParse reports whether f (or any nested condition)
-// has a body: predicate that requires blob-level text extraction.
+// has a body: or text: predicate that requires blob-level text extraction.
+// text: is included because it matches the full message including body (RFC
+// 8621 §4.4.1), and the FTS stub does not index body content.
 func filterNeedsBodyBlobParse(f *emailFilter) bool {
 	if f == nil {
 		return false
 	}
-	if f.Body != nil {
+	if f.Body != nil || f.Text != nil {
 		return true
 	}
 	for _, raw := range f.Conditions {
