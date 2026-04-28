@@ -186,15 +186,17 @@ to point at the `kind = "admin"` listener.
 Before connecting a client it helps to have something to read. The
 SMTP relay listener at `127.0.0.1:1025` accepts mail for local
 domains and delivers it directly into the recipient's INBOX. The
-following one-liner uses only `nc` and ships a plain-text message:
+following one-liner uses only `nc` and ships a plain-text message
+addressed entirely within `example.local`, so reply-from-the-Suite
+also stays on this host:
 
 ```bash
 {
   printf 'EHLO localhost\r\n'
-  printf 'MAIL FROM:<sender@example.org>\r\n'
+  printf 'MAIL FROM:<admin@example.local>\r\n'
   printf 'RCPT TO:<admin@example.local>\r\n'
   printf 'DATA\r\n'
-  printf 'From: Test Sender <sender@example.org>\r\n'
+  printf 'From: Quickstart Test <admin@example.local>\r\n'
   printf 'To: admin@example.local\r\n'
   printf 'Subject: herold quickstart test\r\n'
   printf 'Date: %s\r\n' "$(date -u +'%a, %d %b %Y %H:%M:%S +0000')"
@@ -205,10 +207,12 @@ following one-liner uses only `nc` and ships a plain-text message:
 } | nc -w 2 127.0.0.1 1025
 ```
 
-Each line should come back with a `2xx` status. The HTTP send API
-(`POST /api/v1/mail/send`) is for outbound delivery to the public
-internet and is not the right path for loopback testing — it would
-queue an SMTP-out attempt and fail to resolve `example.local`.
+Each line should come back with a `2xx` status. Replying to the
+message from the Suite also works on the loopback shape: the
+outbound queue checks the recipient's domain, sees that
+`example.local` is hosted by this herold instance, and ingests the
+reply locally instead of attempting to MX-resolve a domain that
+doesn't exist on the public internet.
 
 ### 9. Connect a client
 

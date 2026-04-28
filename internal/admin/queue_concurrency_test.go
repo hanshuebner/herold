@@ -31,7 +31,7 @@ func TestBuildOutboundQueue_HonorsConcurrencyKnobs(t *testing.T) {
 	}
 	defer st.Close()
 
-	q, err := buildOutboundQueue(cfg, st, stubTLSRPTResolver{}, nil, discardLogger(), clk)
+	q, err := buildOutboundQueue(cfg, st, nil, nil, stubTLSRPTResolver{}, nil, discardLogger(), clk)
 	if err != nil {
 		t.Fatalf("buildOutboundQueue with concurrency=64: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestBuildOutboundQueue_DefaultConcurrency(t *testing.T) {
 	}
 	defer st.Close()
 
-	q, err := buildOutboundQueue(cfg, st, stubTLSRPTResolver{}, nil, discardLogger(), clk)
+	q, err := buildOutboundQueue(cfg, st, nil, nil, stubTLSRPTResolver{}, nil, discardLogger(), clk)
 	if err != nil {
 		t.Fatalf("buildOutboundQueue with default concurrency: %v", err)
 	}

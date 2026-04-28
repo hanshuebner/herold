@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailauth/keymgmt"
 	"github.com/hanshuebner/herold/internal/maildkim"
@@ -85,6 +87,94 @@ func (d outboundDeliverer) Deliver(ctx context.Context, req queue.DeliveryReques
 	return mapped, err
 }
 
+// localIngester is the slice of *protosmtp.Server that loopbackDeliverer
+// depends on, defined as an interface so tests can substitute a stub
+// without spinning up the full SMTP server.
+type localIngester interface {
+	IngestBytes(ctx context.Context, req protosmtp.IngestRequest) error
+}
+
+// loopbackDeliverer wraps an outbound queue.Deliverer with a local-
+// domain short-circuit: when the recipient's domain is hosted by this
+// herold instance (Domain.IsLocal == true) and resolves to a known
+// principal, the message is delivered into the local store via
+// protosmtp.Server.IngestBytes instead of dialled out via SMTP. This
+// keeps "send to a principal on this server" working in test
+// deployments where example.local has no real MX, and in production
+// where users on the same domain message one another without bouncing
+// the body through the public internet.
+//
+// Non-local domains, or local domains where the recipient does not
+// resolve, fall through to the wrapped outbound deliverer unchanged
+// (the outbound path then surfaces "no such recipient" or "no MX" the
+// way it always has).
+type loopbackDeliverer struct {
+	inner queue.Deliverer
+	smtp  localIngester
+	meta  store.Metadata
+	dir   addressResolver
+	log   *slog.Logger
+}
+
+// addressResolver is the slice of *directory.Directory loopbackDeliverer
+// uses; carved out as an interface for the same testability reason as
+// localIngester.
+type addressResolver interface {
+	ResolveAddress(ctx context.Context, local, domain string) (directory.PrincipalID, error)
+}
+
+// Deliver implements queue.Deliverer.
+func (d loopbackDeliverer) Deliver(ctx context.Context, req queue.DeliveryRequest) (queue.DeliveryOutcome, error) {
+	local, dom := splitEmailAddr(req.Recipient)
+	if dom == "" || d.smtp == nil || d.meta == nil || d.dir == nil {
+		return d.inner.Deliver(ctx, req)
+	}
+	domLower := strings.ToLower(dom)
+	domRow, err := d.meta.GetDomain(ctx, domLower)
+	if err != nil || !domRow.IsLocal {
+		return d.inner.Deliver(ctx, req)
+	}
+	pid, rerr := d.dir.ResolveAddress(ctx, strings.ToLower(local), domLower)
+	if rerr != nil {
+		if errors.Is(rerr, directory.ErrNotFound) {
+			// Domain is local but the recipient doesn't exist — this is
+			// a permanent failure. Returning it lets the queue emit a
+			// proper bounce DSN to the sender instead of retrying for
+			// hours against MX records that don't exist.
+			return queue.DeliveryOutcome{
+				Status: queue.DeliveryStatusPermanent,
+				Detail: "no such recipient on this server",
+			}, nil
+		}
+		// Anything else (a transient store error) reschedules.
+		return queue.DeliveryOutcome{
+			Status: queue.DeliveryStatusTransient,
+			Detail: "directory lookup failed: " + rerr.Error(),
+		}, nil
+	}
+	if d.log != nil {
+		d.log.InfoContext(ctx, "queue: loopback delivery",
+			slog.String("recipient", req.Recipient),
+			slog.String("mail_from", req.MailFrom))
+	}
+	if err := d.smtp.IngestBytes(ctx, protosmtp.IngestRequest{
+		Body:         req.Message,
+		MailFrom:     req.MailFrom,
+		SourceIP:     "127.0.0.1",
+		IngestSource: "loopback",
+		Recipients: []protosmtp.IngestRecipient{{
+			Addr:        req.Recipient,
+			PrincipalID: pid,
+		}},
+	}); err != nil {
+		return queue.DeliveryOutcome{
+			Status: queue.DeliveryStatusTransient,
+			Detail: "loopback ingest failed: " + err.Error(),
+		}, err
+	}
+	return queue.DeliveryOutcome{Status: queue.DeliveryStatusSuccess}, nil
+}
+
 // buildOutboundQueue constructs the production *queue.Queue alongside
 // the DKIM signer and SMTP-client deliverer. Returns the queue handle
 // and a non-nil error on construction failure.
@@ -96,9 +186,15 @@ func (d outboundDeliverer) Deliver(ctx context.Context, req queue.DeliveryReques
 // nil means no TLS-RPT reporting. When non-nil the reporter's Append
 // method is called on every outbound TLS failure recorded by the SMTP
 // client.
+//
+// smtpServer + dir, when both non-nil, install the loopback short-
+// circuit on the deliverer chain so messages addressed to local
+// principals stay on this host instead of being MX-resolved.
 func buildOutboundQueue(
 	cfg *sysconfig.Config,
 	st store.Store,
+	dir *directory.Directory,
+	smtpServer *protosmtp.Server,
 	resolver mailauth.Resolver,
 	reporter protosmtp.TLSRPTReporter,
 	logger *slog.Logger,
@@ -126,10 +222,20 @@ func buildOutboundQueue(
 	if err != nil {
 		return nil, fmt.Errorf("admin: build outbound smtp client: %w", err)
 	}
+	var deliverer queue.Deliverer = outboundDeliverer{client: client}
+	if smtpServer != nil && dir != nil {
+		deliverer = loopbackDeliverer{
+			inner: deliverer,
+			smtp:  smtpServer,
+			meta:  st.Meta(),
+			dir:   dir,
+			log:   logger.With("subsystem", "queue-loopback"),
+		}
+	}
 	dsnFrom := "postmaster@" + cfg.Server.Hostname
 	q := queue.New(queue.Options{
 		Store:          st,
-		Deliverer:      outboundDeliverer{client: client},
+		Deliverer:      deliverer,
 		Signer:         signer,
 		Logger:         logger.With("subsystem", "queue"),
 		Clock:          clk,

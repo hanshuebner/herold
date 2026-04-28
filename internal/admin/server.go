@@ -395,7 +395,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// lifecycle errgroup below so SIGTERM drains in-flight deliveries.
 	// composeAdminAndUI receives the handle so JMAP EmailSubmission/set
 	// and the HTTP send API enqueue through the same instance.
-	outboundQ, err := buildOutboundQueue(cfg, st, resolver, tlsRPTReporter, logger, clk)
+	outboundQ, err := buildOutboundQueue(cfg, st, dir, smtpServer, resolver, tlsRPTReporter, logger, clk)
 	if err != nil {
 		return fmt.Errorf("admin: outbound queue: %w", err)
 	}
