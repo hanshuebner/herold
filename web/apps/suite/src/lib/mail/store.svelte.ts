@@ -584,8 +584,7 @@ class MailStore {
   get customMailboxes(): Mailbox[] {
     const out: Mailbox[] = [];
     for (const m of this.mailboxes.values()) {
-      const role = m.role ?? '';
-      if (role === 'inbox' || role === 'sent' || role === 'drafts' || role === 'trash') continue;
+      if (isSystemRole(m.role ?? '')) continue;
       out.push(m);
     }
     out.sort((a, b) => a.name.localeCompare(b.name));
@@ -1965,6 +1964,36 @@ function invocationArgs<T>(inv: Invocation | undefined): T {
  * "Mon May 12 8:00 am". Used by the snooze toast's confirmation
  * message.
  */
+/**
+ * Role values JMAP defines for system-purpose mailboxes (RFC 8621
+ * §2.1.4) plus the suite-side virtual "snooze" / "important" role.
+ * Mailboxes carrying any of these are system mailboxes and the
+ * sidebar must not offer rename / delete affordances on them
+ * (issue #32).
+ */
+const SYSTEM_ROLES: ReadonlySet<string> = new Set([
+  'inbox',
+  'archive',
+  'drafts',
+  'sent',
+  'trash',
+  'junk',
+  'spam',
+  'important',
+  'flagged',
+  'all',
+  'snoozed',
+  'outbox',
+  'subscribed',
+  'templates',
+]);
+
+/** True when the role string identifies a system-purpose mailbox. */
+export function isSystemRole(role: string | null | undefined): boolean {
+  if (!role) return false;
+  return SYSTEM_ROLES.has(role.toLowerCase());
+}
+
 function formatSnoozeTarget(d: Date): string {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
