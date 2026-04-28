@@ -13,6 +13,7 @@
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import CategoryPicker from '../lib/mail/CategoryPicker.svelte';
   import SelectChooser from '../lib/mail/SelectChooser.svelte';
+  import { labelPicker } from '../lib/mail/label-picker.svelte';
   import type { Email } from '../lib/mail/types';
 
   const ROLED_FOLDERS = new Set<FolderID>([
@@ -398,6 +399,14 @@
         },
       },
       {
+        key: 'l',
+        description: 'Apply labels',
+        action: () => {
+          const e = replyTarget();
+          if (e) labelPicker.open(e.id);
+        },
+      },
+      {
         key: 'I',
         description: 'Mark thread read',
         action: () => void mail.markThreadSeen(tid, true),
@@ -745,6 +754,9 @@
           <button type="button" onclick={bulkMarkRead}>Mark read</button>
           <button type="button" onclick={bulkMarkUnread}>Mark unread</button>
           <button type="button" onclick={bulkMove}>Move…</button>
+          <button type="button" onclick={() => labelPicker.openBulk(selectedIds())}>
+            Label…
+          </button>
           {#if categorySettings.available}
             <button type="button" onclick={() => {
               const ids = [...mail.listSelectedIds];

@@ -1079,6 +1079,86 @@ class MailStore {
   }
 
   /**
+   * Toggle whether a single mailbox-as-label is attached to an email.
+   * Unlike moveEmailToMailbox this preserves all other mailbox
+   * memberships -- the message is multi-labelled. Used by the label
+   * picker (REQ-LBL-10..13, issue #16). Optimistic; reverts on failure.
+   */
+  async setEmailLabel(
+    emailId: string,
+    mailboxId: string,
+    on: boolean,
+  ): Promise<void> {
+    const email = this.emails.get(emailId);
+    if (!email) return;
+    const has = Boolean(email.mailboxIds[mailboxId]);
+    if (has === on) return;
+    const prev = { ...email.mailboxIds };
+    const next: Record<string, true> = { ...prev };
+    if (on) next[mailboxId] = true;
+    else delete next[mailboxId];
+    if (Object.keys(next).length === 0) return; // never strand an email
+    this.#patchEmail(emailId, { mailboxIds: next });
+    try {
+      await this.#emailSetUpdate(emailId, { mailboxIds: next });
+    } catch (err) {
+      this.#patchEmail(emailId, { mailboxIds: prev });
+      toast.show({
+        message: errMessage(err, 'Label update failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
+  /**
+   * Bulk version of setEmailLabel: add or remove a single mailbox-label
+   * across many emails. Other mailbox memberships are preserved per
+   * email. Empty no-op when nothing would change.
+   */
+  async bulkSetLabel(
+    ids: string[],
+    mailboxId: string,
+    on: boolean,
+  ): Promise<void> {
+    if (ids.length === 0) return;
+    const updates: Record<string, Record<string, unknown>> = {};
+    const prevById = new Map<string, Record<string, true>>();
+    for (const id of ids) {
+      const e = this.emails.get(id);
+      if (!e) continue;
+      const has = Boolean(e.mailboxIds[mailboxId]);
+      if (has === on) continue;
+      const next: Record<string, true> = { ...e.mailboxIds };
+      if (on) next[mailboxId] = true;
+      else delete next[mailboxId];
+      if (Object.keys(next).length === 0) continue;
+      prevById.set(id, { ...e.mailboxIds });
+      updates[id] = { mailboxIds: next };
+      this.#patchEmail(id, { mailboxIds: next });
+    }
+    if (Object.keys(updates).length === 0) return;
+    try {
+      const { failed } = await this.#emailSetUpdateBulk(updates);
+      const name = this.mailboxes.get(mailboxId)?.name ?? 'label';
+      this.#summarizeBulk(
+        on ? `labelled ${name}` : `unlabelled ${name}`,
+        Object.keys(updates).length,
+        failed,
+      );
+    } catch (err) {
+      for (const [id, prev] of prevById) {
+        this.#patchEmail(id, { mailboxIds: prev });
+      }
+      toast.show({
+        message: errMessage(err, 'Bulk label update failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
+  /**
    * Restore an email from Trash to Inbox: replaces mailboxIds with
    * `{<inboxId>: true}`. Same optimistic + undo pattern as move.
    */

@@ -7,6 +7,7 @@
   import MinimizedTray from '../compose/MinimizedTray.svelte';
   import HelpOverlay from '../help/HelpOverlay.svelte';
   import MoveTargetPicker from '../mail/MoveTargetPicker.svelte';
+  import LabelPicker from '../mail/LabelPicker.svelte';
   import SnoozePicker from '../mail/SnoozePicker.svelte';
   import ReactionConfirmModal from '../mail/ReactionConfirmModal.svelte';
   import ConfirmDialog from '../dialog/ConfirmDialog.svelte';
@@ -52,6 +53,7 @@
   <MinimizedTray />
   <HelpOverlay />
   <MoveTargetPicker />
+  <LabelPicker />
   <SnoozePicker />
   <ReactionConfirmModal />
   <ConfirmDialog />

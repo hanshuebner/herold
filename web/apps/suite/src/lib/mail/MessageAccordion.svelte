@@ -8,6 +8,7 @@
   import { emailHtmlBody, emailTextBody, type Email } from './types';
   import { compose } from '../compose/compose.svelte';
   import { movePicker } from './move-picker.svelte';
+  import { labelPicker } from './label-picker.svelte';
   import { snoozePicker } from './snooze-picker.svelte';
   import { mail } from './store.svelte';
   import { settings } from '../settings/settings.svelte';
@@ -36,6 +37,7 @@
   import PhishingIcon from '../icons/PhishingIcon.svelte';
   import BlockIcon from '../icons/BlockIcon.svelte';
   import FilterIcon from '../icons/FilterIcon.svelte';
+  import LabelIcon from '../icons/LabelIcon.svelte';
 
   interface Props {
     email: Email;
@@ -440,6 +442,15 @@
           onclick={() => movePicker.open(email.id)}
         >
           <MoveIcon size={18} />
+        </button>
+        <button
+          type="button"
+          class="pill icon-only"
+          aria-label="Apply labels"
+          title="Apply labels"
+          onclick={() => labelPicker.open(email.id)}
+        >
+          <LabelIcon size={18} />
         </button>
         <button
           type="button"
