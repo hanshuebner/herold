@@ -646,13 +646,27 @@
       <ul class="thread-list" role="listbox" aria-label="Search results">
         {#each mail.searchEmails as email, i (email.id)}
           <li
-            class="thread-row"
+            class="thread-row search"
             class:unread={isUnread(email)}
             class:focused={mail.searchFocusedIndex === i}
             data-row-index={i}
           >
             <button
               type="button"
+              class="row-star"
+              class:flagged={isFlagged(email)}
+              aria-label={isFlagged(email) ? 'Unstar' : 'Star'}
+              aria-pressed={isFlagged(email)}
+              onclick={(e) => {
+                e.stopPropagation();
+                void mail.toggleFlagged(email.id);
+              }}
+            >
+              <span aria-hidden="true">★</span>
+            </button>
+            <button
+              type="button"
+              class="row-activate"
               role="option"
               aria-selected={mail.searchFocusedIndex === i}
               onclick={() => {
@@ -660,7 +674,6 @@
                 openThread(email);
               }}
             >
-              <span class="star" class:flagged={isFlagged(email)} aria-hidden="true">★</span>
               <span class="from">{senderLabel(email)}</span>
               <span class="subject-and-preview">
                 <span class="subject">{email.subject || '(no subject)'}</span>
@@ -681,8 +694,37 @@
       <p class="lead">Label-view querying arrives after inbox.</p>
     </header>
   {:else if isListRoute}
-    <header class="list-header">
-      <h1>{folderLabel}</h1>
+    <!-- Issue #25 / #27: the mailbox name shows in the sidebar; we
+         dropped the redundant <h1> header and merged its remaining
+         controls (Empty trash, Refresh) into the always-visible
+         list-toolbar so the toolbar height is constant whether or not
+         a selection is active. -->
+    <div class="list-toolbar" role="toolbar" aria-label="List actions">
+      {#if effectiveListEmails.length > 0}
+        <SelectChooser />
+      {/if}
+      {#if mail.listSelectedIds.size > 0}
+        <span class="bulk-count">
+          {t('bulk.selected', { count: mail.listSelectedIds.size })}
+        </span>
+        {#if folder === 'inbox'}
+          <button type="button" onclick={bulkArchive}>{t('bulk.archive')}</button>
+        {/if}
+        <button type="button" onclick={bulkMarkRead}>{t('bulk.markRead')}</button>
+        <button type="button" onclick={bulkMarkUnread}>{t('bulk.markUnread')}</button>
+        <button type="button" onclick={bulkMove}>{t('bulk.move')}</button>
+        <button type="button" onclick={() => labelPicker.openBulk(selectedIds())}>
+          {t('bulk.label')}
+        </button>
+        {#if categorySettings.available}
+          <button type="button" onclick={() => {
+            const ids = [...mail.listSelectedIds];
+            if (ids.length > 0) categoryPicker.open(ids[0]!);
+          }}>{t('bulk.category')}</button>
+        {/if}
+        <button type="button" class="danger" onclick={bulkDelete}>{t('bulk.delete')}</button>
+      {/if}
+      <span class="list-toolbar-spacer"></span>
       {#if folder === 'trash' && mail.listEmails.length > 0}
         <button
           type="button"
@@ -702,7 +744,7 @@
       >
         ↻
       </button>
-    </header>
+    </div>
 
     {#if showTabs}
       <nav class="tab-strip" aria-label="Inbox categories">
@@ -743,30 +785,6 @@
         {/if}
       </div>
     {:else}
-      <div class="list-toolbar" role="toolbar" aria-label="List actions">
-        <SelectChooser />
-        {#if mail.listSelectedIds.size > 0}
-          <span class="bulk-count">
-            {t('bulk.selected', { count: mail.listSelectedIds.size })}
-          </span>
-          {#if folder === 'inbox'}
-            <button type="button" onclick={bulkArchive}>{t('bulk.archive')}</button>
-          {/if}
-          <button type="button" onclick={bulkMarkRead}>{t('bulk.markRead')}</button>
-          <button type="button" onclick={bulkMarkUnread}>{t('bulk.markUnread')}</button>
-          <button type="button" onclick={bulkMove}>{t('bulk.move')}</button>
-          <button type="button" onclick={() => labelPicker.openBulk(selectedIds())}>
-            {t('bulk.label')}
-          </button>
-          {#if categorySettings.available}
-            <button type="button" onclick={() => {
-              const ids = [...mail.listSelectedIds];
-              if (ids.length > 0) categoryPicker.open(ids[0]!);
-            }}>{t('bulk.category')}</button>
-          {/if}
-          <button type="button" class="danger" onclick={bulkDelete}>{t('bulk.delete')}</button>
-        {/if}
-      </div>
       <ul
         class="thread-list"
         role="listbox"
@@ -792,6 +810,19 @@
             />
             <button
               type="button"
+              class="row-star"
+              class:flagged={isFlagged(email)}
+              aria-label={isFlagged(email) ? 'Unstar' : 'Star'}
+              aria-pressed={isFlagged(email)}
+              onclick={(e) => {
+                e.stopPropagation();
+                void mail.toggleFlagged(email.id);
+              }}
+            >
+              <span aria-hidden="true">★</span>
+            </button>
+            <button
+              type="button"
               class="row-activate"
               role="option"
               aria-selected={mail.listFocusedIndex === i}
@@ -800,7 +831,6 @@
                 void openListRow(email);
               }}
             >
-              <span class="star" class:flagged={isFlagged(email)} aria-hidden="true">★</span>
               <span class="from">{senderLabel(email)}</span>
               <span class="subject-and-preview">
                 <span class="subject">{email.subject || '(no subject)'}</span>
@@ -1066,11 +1096,15 @@
   }
   .thread-row {
     display: grid;
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto auto 1fr;
     align-items: center;
     border-bottom: 1px solid var(--border-subtle-01);
     border-left: 3px solid transparent;
     transition: border-color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  /* Search rows still use the 2-column layout (no per-row checkbox). */
+  .thread-row.search {
+    grid-template-columns: auto 1fr;
   }
   .thread-row.focused {
     border-left-color: var(--interactive);
@@ -1086,9 +1120,34 @@
     accent-color: var(--interactive);
     cursor: pointer;
   }
+  /* Star is a real button so the click toggles $flagged instead of
+     bubbling up to row-activate (issue #26). */
+  .row-star {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    margin: 0 var(--spacing-02) 0 0;
+    color: var(--text-helper);
+    font-size: 16px;
+    line-height: 1;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    transition:
+      background var(--duration-fast-02) var(--easing-productive-enter),
+      color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .row-star.flagged {
+    color: var(--support-warning);
+  }
+  .row-star:hover {
+    background: var(--layer-03);
+    color: var(--support-warning);
+  }
   .row-activate {
     display: grid;
-    grid-template-columns: 24px 14ch 1fr auto auto;
+    grid-template-columns: 14ch 1fr auto auto;
     gap: var(--spacing-04);
     align-items: center;
     width: 100%;
@@ -1104,6 +1163,10 @@
     color: var(--text-primary);
   }
 
+  /* The list-toolbar height is fixed regardless of whether bulk-action
+     buttons are visible (issue #27). The bulk buttons and the trailing
+     refresh / empty-trash share the same min-height so toggling the
+     selection set does not jiggle the layout. */
   .list-toolbar {
     display: flex;
     align-items: center;
@@ -1111,6 +1174,10 @@
     padding: var(--spacing-02) var(--spacing-05);
     border-bottom: 1px solid var(--border-subtle-01);
     background: var(--layer-02);
+    min-height: 48px;
+  }
+  .list-toolbar-spacer {
+    flex: 1;
   }
   .bulk-count {
     color: var(--text-primary);
@@ -1134,15 +1201,6 @@
   .list-toolbar > button.danger:hover {
     background: var(--support-error);
     color: var(--text-on-color);
-  }
-
-  .star {
-    color: var(--text-helper);
-    font-size: 16px;
-    line-height: 1;
-  }
-  .star.flagged {
-    color: var(--support-warning);
   }
 
   .from {
@@ -1189,7 +1247,7 @@
      sender's initials-region; the subject + preview gets the rest. */
   @media (max-width: 560px) {
     .row-activate {
-      grid-template-columns: 18px 8ch 1fr auto;
+      grid-template-columns: 8ch 1fr auto;
       gap: var(--spacing-02);
       padding: var(--spacing-02) var(--spacing-03) var(--spacing-02) 0;
     }
@@ -1206,11 +1264,14 @@
       margin-left: var(--spacing-02);
       margin-right: var(--spacing-02);
     }
-    .list-header {
-      padding: var(--spacing-03) var(--spacing-04);
+    .row-star {
+      width: 24px;
+      height: 24px;
     }
     .list-toolbar {
-      flex-wrap: wrap;
+      /* Don't wrap on narrow screens -- the constant height is more
+         important than fitting every bulk button (the menu can scroll
+         horizontally if needed). */
       padding: var(--spacing-02) var(--spacing-03);
     }
     .search-history,
