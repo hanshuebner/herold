@@ -73,6 +73,16 @@ class ComposeStore {
   /** Reply / forward context — null fields mean "this is a fresh compose". */
   replyContext = $state<ReplyContext>({ ...EMPTY_REPLY });
 
+  /**
+   * Server-assigned id of the draft this compose is currently editing.
+   * null on fresh compose; set when:
+   *   1. the auto-save effect creates a draft (Email/set create), or
+   *   2. the user opened an existing draft via openDraft.
+   * Drives whether send() updates an existing draft or creates one,
+   * and whether closeWithConfirm destroys on discard.
+   */
+  editingDraftId = $state<string | null>(null);
+
   /** Open a fresh compose. */
   openBlank(): void {
     this.to = '';
@@ -83,6 +93,7 @@ class ComposeStore {
     this.errorMessage = null;
     this.ccBccVisible = false;
     this.replyContext = { ...EMPTY_REPLY };
+    this.editingDraftId = null;
     this.status = 'editing';
     this.#ensureAccountReady();
   }
@@ -98,6 +109,8 @@ class ComposeStore {
     subject: string;
     body: string;
     replyContext?: ReplyContext;
+    /** When set the compose is editing an existing server draft. */
+    draftId?: string | null;
   }): void {
     this.to = args.to;
     this.cc = args.cc ?? '';
@@ -107,6 +120,7 @@ class ComposeStore {
     this.replyContext = args.replyContext ?? { ...EMPTY_REPLY };
     this.errorMessage = null;
     this.ccBccVisible = Boolean(this.cc || this.bcc);
+    this.editingDraftId = args.draftId ?? null;
     this.status = 'editing';
     this.#ensureAccountReady();
   }
@@ -152,6 +166,33 @@ class ComposeStore {
     });
   }
 
+  /**
+   * Open compose pre-populated with an existing server draft. The
+   * caller has already loaded the email's body via Email/get with
+   * fetchHTMLBodyValues; this method only projects it into compose
+   * state and pins editingDraftId so subsequent saves update the same
+   * row instead of creating a new one.
+   */
+  openDraft(draft: Email): void {
+    const html = emailHtmlBody(draft) ?? '';
+    const text = emailTextBody(draft) ?? '';
+    const body = html || (text ? plainTextToHtml(text) : '');
+    this.openWith({
+      to: (draft.to ?? []).map(addressToString).join(', '),
+      cc: (draft.cc ?? []).map(addressToString).join(', '),
+      bcc: (draft.bcc ?? []).map(addressToString).join(', '),
+      subject: draft.subject ?? '',
+      body,
+      draftId: draft.id,
+      replyContext: {
+        parentId: null,
+        parentKeyword: null,
+        inReplyTo: draft.inReplyTo ?? null,
+        references: draft.references ?? null,
+      },
+    });
+  }
+
   /** Open compose as a forward of the given email. */
   openForward(parent: Email): void {
     this.openWith({
@@ -188,6 +229,146 @@ class ComposeStore {
     this.errorMessage = null;
     this.ccBccVisible = false;
     this.replyContext = { ...EMPTY_REPLY };
+    this.editingDraftId = null;
+  }
+
+  /**
+   * Discard the current compose. When a server-side draft has already
+   * been auto-saved, destroy the row so it doesn't accumulate in the
+   * Drafts folder; otherwise just reset state. This is what
+   * closeWithConfirm calls on user-confirmed discard.
+   */
+  async discard(): Promise<void> {
+    const draftId = this.editingDraftId;
+    const accountId = mail.mailAccountId;
+    if (draftId && accountId) {
+      try {
+        const { responses } = await jmap.batch((b) => {
+          b.call(
+            'Email/set',
+            { accountId, destroy: [draftId] },
+            [Capability.Mail],
+          );
+        });
+        strict(responses);
+      } catch (err) {
+        // Discard can race with the auto-save creating the row;
+        // surface as a toast rather than blocking the close.
+        toast.show({
+          message: err instanceof Error
+            ? `Could not delete draft: ${err.message}`
+            : 'Could not delete draft',
+          kind: 'error',
+          timeoutMs: 6000,
+        });
+      }
+    }
+    this.close();
+  }
+
+  /**
+   * Persist the current compose state as a draft. Creates the draft
+   * row on first call, updates the same row on subsequent calls.
+   * No-op when:
+   *   - the compose is not editing
+   *   - the form has no content (avoid spawning empty drafts)
+   *   - mail account or drafts mailbox is unavailable
+   * Returns true on a successful round-trip (so callers can stop
+   * marking the compose dirty).
+   */
+  async persistDraft(): Promise<boolean> {
+    if (this.status !== 'editing') return false;
+    if (!this.hasContent) return false;
+    const accountId = mail.mailAccountId;
+    if (!accountId) return false;
+    if (!mail.primaryIdentity || !mail.drafts) {
+      await this.#ensureAccountReady();
+    }
+    const identity = mail.primaryIdentity;
+    const drafts = mail.drafts;
+    if (!identity || !drafts) return false;
+
+    const toAddrs = parseAddressList(this.to);
+    const ccAddrs = parseAddressList(this.cc);
+    const bccAddrs = parseAddressList(this.bcc);
+    const bodyHtml = this.body;
+    const bodyText = htmlToPlainText(bodyHtml);
+
+    const fields: Record<string, unknown> = {
+      from: [{ name: identity.name, email: identity.email }],
+      to: toAddrs.map((email) => ({ email, name: null })),
+      subject: this.subject,
+      bodyValues: {
+        '1': { value: bodyText, isTruncated: false, isEncodingProblem: false },
+        '2': { value: bodyHtml, isTruncated: false, isEncodingProblem: false },
+      },
+      textBody: [{ partId: '1', type: 'text/plain', charset: 'utf-8' }],
+      htmlBody: [{ partId: '2', type: 'text/html', charset: 'utf-8' }],
+      bodyStructure: {
+        type: 'multipart/alternative',
+        subParts: [
+          { partId: '1', type: 'text/plain', charset: 'utf-8' },
+          { partId: '2', type: 'text/html', charset: 'utf-8' },
+        ],
+      },
+    };
+    if (ccAddrs.length > 0) {
+      fields.cc = ccAddrs.map((email) => ({ email, name: null }));
+    }
+    if (bccAddrs.length > 0) {
+      fields.bcc = bccAddrs.map((email) => ({ email, name: null }));
+    }
+    if (this.replyContext.inReplyTo && this.replyContext.inReplyTo.length > 0) {
+      fields.inReplyTo = this.replyContext.inReplyTo;
+    }
+    if (this.replyContext.references && this.replyContext.references.length > 0) {
+      fields.references = this.replyContext.references;
+    }
+
+    try {
+      if (this.editingDraftId) {
+        const { responses } = await jmap.batch((b) => {
+          b.call(
+            'Email/set',
+            {
+              accountId,
+              update: { [this.editingDraftId!]: fields },
+            },
+            [Capability.Mail],
+          );
+        });
+        strict(responses);
+      } else {
+        const create = {
+          ...fields,
+          mailboxIds: { [drafts.id]: true },
+          keywords: { $draft: true, $seen: true },
+        };
+        const { responses } = await jmap.batch((b) => {
+          b.call(
+            'Email/set',
+            {
+              accountId,
+              create: { autosave: create },
+            },
+            [Capability.Mail],
+          );
+        });
+        strict(responses);
+        const result = invocationArgs<{
+          created?: Record<string, { id: string }>;
+        }>(responses[0]);
+        const id = result.created?.autosave?.id;
+        if (id) this.editingDraftId = id;
+      }
+      return true;
+    } catch (err) {
+      // Auto-save errors don't block the user; log and let the next
+      // attempt try again. errorMessage is reserved for the explicit
+      // Send path so it stays visible there only.
+      console.error('compose: auto-save failed', err);
+      return false;
+    }
   }
 
   get isOpen(): boolean {
@@ -295,32 +476,48 @@ class ComposeStore {
       draftEmail.references = replyContext.references;
     }
 
+    // When editing an existing draft, update it in place and reference
+    // it directly from EmailSubmission/set; otherwise create a fresh
+    // draft and use the #draft1 creation reference. The
+    // onSuccessUpdate then drops $draft + moves into Sent on the same
+    // row in either case.
+    const existingDraftId = this.editingDraftId;
+    const setArgs: Record<string, unknown> = {
+      accountId,
+    };
+    let submissionEmailId: string;
+    if (existingDraftId) {
+      // Updating an existing draft: send the same field set as an
+      // /update entry.
+      const updates: Record<string, unknown> = { [existingDraftId]: draftEmail };
+      if (replyContext.parentId && replyContext.parentKeyword) {
+        updates[replyContext.parentId] = {
+          [`keywords/${replyContext.parentKeyword}`]: true,
+        };
+      }
+      setArgs.update = updates;
+      submissionEmailId = existingDraftId;
+    } else {
+      setArgs.create = { draft1: draftEmail };
+      if (replyContext.parentId && replyContext.parentKeyword) {
+        setArgs.update = {
+          [replyContext.parentId]: {
+            [`keywords/${replyContext.parentKeyword}`]: true,
+          },
+        };
+      }
+      submissionEmailId = '#draft1';
+    }
     try {
       const { responses } = await jmap.batch((b) => {
-        b.call(
-          'Email/set',
-          {
-            accountId,
-            create: { draft1: draftEmail },
-            ...(replyContext.parentId && replyContext.parentKeyword
-              ? {
-                  update: {
-                    [replyContext.parentId]: {
-                      [`keywords/${replyContext.parentKeyword}`]: true,
-                    },
-                  },
-                }
-              : {}),
-          },
-          [Capability.Mail],
-        );
+        b.call('Email/set', setArgs, [Capability.Mail]);
         b.call(
           'EmailSubmission/set',
           {
             accountId,
             create: {
               sub1: {
-                emailId: '#draft1',
+                emailId: submissionEmailId,
                 identityId: identity.id,
                 envelope: {
                   mailFrom: { email: identity.email },

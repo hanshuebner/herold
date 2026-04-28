@@ -33,13 +33,16 @@
   // Confirm before throwing away in-progress content. The "sending" state
   // is the user's commit point — discarding while sending means cancelling
   // the request, which the close path doesn't currently do; we just route
-  // close through the same prompt for consistency.
+  // close through the same prompt for consistency. When the auto-save
+  // path has already created a server draft, route through compose.discard
+  // so the row is removed instead of stranded.
   function closeWithConfirm(): void {
-    if (compose.hasContent && compose.status !== 'sending') {
+    const dirty = compose.hasContent || compose.editingDraftId !== null;
+    if (dirty && compose.status !== 'sending') {
       const ok = window.confirm('Discard this message?');
       if (!ok) return;
     }
-    compose.close();
+    void compose.discard();
   }
 
   // Focus the right field when compose opens — for reply / forward, the
@@ -57,6 +60,39 @@
   });
 
   let identity = $derived(mail.primaryIdentity);
+
+  // Auto-save the draft after a short period of typing inactivity so a
+  // closed-tab / reload does not lose the user's work. We track every
+  // user-edited field; the timer resets on each change and persists
+  // when the form goes idle for AUTOSAVE_IDLE_MS. compose.persistDraft
+  // is itself idempotent and a no-op for empty forms.
+  const AUTOSAVE_IDLE_MS = 4000;
+  let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    // Reactive deps: every editable field on the compose form.
+    const _to = compose.to;
+    const _cc = compose.cc;
+    const _bcc = compose.bcc;
+    const _subj = compose.subject;
+    const _body = compose.body;
+    void _to;
+    void _cc;
+    void _bcc;
+    void _subj;
+    void _body;
+    if (!compose.isOpen || compose.status === 'sending') return;
+    if (autosaveTimer !== null) clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(() => {
+      autosaveTimer = null;
+      void compose.persistDraft();
+    }, AUTOSAVE_IDLE_MS);
+    return () => {
+      if (autosaveTimer !== null) {
+        clearTimeout(autosaveTimer);
+        autosaveTimer = null;
+      }
+    };
+  });
 
   // Editor view bridge for the toolbar.
   let editorView = $state<EditorView | null>(null);

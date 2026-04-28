@@ -508,6 +508,40 @@ class MailStore {
   }
 
   /**
+   * Fetch a single email's body content into the cache. Used by
+   * compose's "open existing draft" path so we don't need to load the
+   * whole thread reader. Idempotent in the sense that a cached email
+   * with body values present is replaced with a fresh fetch.
+   */
+  async loadDraftBody(emailId: string): Promise<void> {
+    const accountId = this.mailAccountId;
+    if (!accountId) throw new Error('No Mail account on this session');
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Email/get',
+        {
+          accountId,
+          ids: [emailId],
+          properties: EMAIL_BODY_PROPERTIES,
+          fetchHTMLBodyValues: true,
+          fetchTextBodyValues: true,
+          maxBodyValueBytes: 256 * 1024,
+        },
+        [Capability.Mail],
+      );
+    });
+    strict(responses);
+    const result = invocationArgs<{ list: Email[]; state: string }>(responses[0]);
+    if (typeof result.state === 'string') this.emailState = result.state;
+    if (result.list.length === 0) {
+      throw new Error('Email not found');
+    }
+    const next = new Map(this.emails);
+    for (const e of result.list) next.set(e.id, e);
+    this.emails = next;
+  }
+
+  /**
    * Re-fetch a thread that is already cached as 'ready'. Used by the
    * Email-state-change handler to surface freshly-arrived replies in
    * the open ThreadReader without forcing a full route reload. Keeps

@@ -137,8 +137,15 @@
         key: 'Enter',
         description: 'Open focused thread',
         action: () => {
-          const tid = mail.focusedListThreadId();
-          if (tid) router.navigate(`/mail/thread/${encodeURIComponent(tid)}`);
+          const id = focusedEmailId();
+          if (!id) return;
+          const email = mail.emails.get(id);
+          if (!email) return;
+          if (folder === 'drafts') {
+            void openListRow(email);
+          } else {
+            router.navigate(`/mail/thread/${encodeURIComponent(email.threadId)}`);
+          }
         },
       },
       {
@@ -299,6 +306,28 @@
   function openThread(email: Email): void {
     router.navigate(`/mail/thread/${encodeURIComponent(email.threadId)}`);
   }
+
+  /**
+   * Drafts folder activation: instead of opening the thread reader (a
+   * draft is rarely interesting to read), load the body and open
+   * compose with the draft pre-populated. The send / discard paths in
+   * compose then update / destroy the same row.
+   */
+  async function openListRow(email: Email): Promise<void> {
+    if (folder === 'drafts') {
+      try {
+        await mail.loadDraftBody(email.id);
+        const full = mail.emails.get(email.id);
+        if (full) compose.openDraft(full);
+      } catch (err) {
+        console.error('open draft failed', err);
+        // Fall back to the thread reader so the user is not stuck.
+        openThread(email);
+      }
+      return;
+    }
+    openThread(email);
+  }
 </script>
 
 <div class="mail">
@@ -419,7 +448,7 @@
               aria-selected={mail.listFocusedIndex === i}
               onclick={() => {
                 mail.listFocusedIndex = i;
-                openThread(email);
+                void openListRow(email);
               }}
             >
               <span class="star" class:flagged={isFlagged(email)} aria-hidden="true">★</span>
