@@ -31,6 +31,7 @@ import {
   emailTextBody,
   type Address,
   type Email,
+  type Identity,
 } from '../mail/types';
 
 type ComposeStatus = 'idle' | 'editing' | 'sending';
@@ -127,7 +128,7 @@ class ComposeStore {
     this.cc = '';
     this.bcc = '';
     this.subject = '';
-    this.body = '';
+    this.body = appendSignature('', mail.primaryIdentity);
     this.errorMessage = null;
     this.ccBccVisible = false;
     this.replyContext = { ...EMPTY_REPLY };
@@ -140,6 +141,11 @@ class ComposeStore {
   /**
    * Open compose pre-populated (e.g. after Undo). Caller is responsible
    * for resetting / setting the reply context.
+   *
+   * Per REQ-MAIL-101 the From identity's signature is appended to the
+   * body separated by `\n-- \n`. `skipSignature` opts out — used by
+   * `openDraft` and Undo restores, where the body already contains the
+   * signature the user previously authored.
    */
   openWith(args: {
     to: string;
@@ -152,13 +158,17 @@ class ComposeStore {
     draftId?: string | null;
     /** Skip the beforeOpen hook — used when restoring from the minimized tray. */
     skipHook?: boolean;
+    /** Skip signature appending — body already carries the user's edited signature. */
+    skipSignature?: boolean;
   }): void {
     if (!args.skipHook && !this.#runBeforeOpen()) return;
     this.to = args.to;
     this.cc = args.cc ?? '';
     this.bcc = args.bcc ?? '';
     this.subject = args.subject;
-    this.body = args.body;
+    this.body = args.skipSignature
+      ? args.body
+      : appendSignature(args.body, mail.primaryIdentity);
     this.replyContext = args.replyContext ?? { ...EMPTY_REPLY };
     this.errorMessage = null;
     this.ccBccVisible = Boolean(this.cc || this.bcc);
@@ -233,6 +243,10 @@ class ComposeStore {
         inReplyTo: draft.inReplyTo ?? null,
         references: draft.references ?? null,
       },
+      // The saved draft already carries whatever signature the user
+      // had when it was last persisted; appending again would
+      // duplicate it.
+      skipSignature: true,
     });
   }
 
@@ -764,6 +778,8 @@ class ComposeStore {
               });
               strict(result.responses);
               // Re-open compose with the full saved state (including reply context).
+              // savedBody already carries the signature the user had on send;
+              // appending again would duplicate it.
               this.openWith({
                 to: savedTo,
                 cc: savedCc,
@@ -771,6 +787,7 @@ class ComposeStore {
                 subject: savedSubject,
                 body: savedBody,
                 replyContext: savedReplyContext,
+                skipSignature: true,
               });
             } catch (err) {
               toast.show({
@@ -1027,6 +1044,32 @@ function escapeHtml(s: string): string {
 }
 
 /**
+ * Append the From identity's signature to an HTML body per REQ-MAIL-101.
+ *
+ * The standard plain-text delimiter is `\n-- \n` (RFC 3676 §4.3); in HTML
+ * it becomes a paragraph containing exactly `-- ` (two dashes + space)
+ * followed by the signature lines, each their own paragraph so the
+ * editor sees them as block content. The signature goes BELOW any
+ * existing body content — the cursor lands at the top of the editor by
+ * default, which leaves the user above the delimiter as the spec
+ * requires.
+ *
+ * Returns the original body unchanged when the identity has no
+ * signature, when no identity is available, or when the signature is
+ * blank after trimming. v1 stores signatures as plain text only
+ * (REQ-MAIL-100); HTML-authored signatures are out of scope.
+ */
+function appendSignature(body: string, identity: Identity | null): string {
+  if (!identity) return body;
+  const sig = identity.textSignature ?? '';
+  if (!sig.trim()) return body;
+  const sigHtml = plainTextToHtml(sig);
+  // Empty paragraph between body and delimiter so the user has a blank
+  // line to type in if the body was an empty editor on openBlank.
+  return `${body}<p></p><p>-- </p>${sigHtml}`;
+}
+
+/**
  * Convert plain-text body content to a paragraph-broken HTML block. Used
  * when quoting parent bodies in reply / forward — ProseMirror parses the
  * resulting HTML cleanly.
@@ -1092,4 +1135,5 @@ export const _internals_forTest = {
   plainTextToHtml,
   computeReplyAllCc,
   formatBytes,
+  appendSignature,
 };

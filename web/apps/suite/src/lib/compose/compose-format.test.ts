@@ -20,7 +20,20 @@ const {
   escapeHtml,
   computeReplyAllCc,
   formatBytes,
+  appendSignature,
 } = _internals_forTest;
+
+const ID_NO_SIG = {
+  id: 'i1',
+  name: 'Hans',
+  email: 'h@x.test',
+  replyTo: null,
+  bcc: null,
+  textSignature: '',
+  htmlSignature: '',
+  mayDelete: false,
+};
+const ID_WITH_SIG = { ...ID_NO_SIG, textSignature: 'Hans Hübner\nh@x.test' };
 
 describe('parseAddressList', () => {
   it('splits commas and semicolons', () => {
@@ -245,6 +258,38 @@ describe('computeReplyAllCc', () => {
   it('handles missing addresses without throwing', () => {
     const parent = emailWith({});
     expect(computeReplyAllCc(parent, new Set())).toEqual([]);
+  });
+});
+
+describe('appendSignature', () => {
+  it('returns the body unchanged when identity is null', () => {
+    expect(appendSignature('<p>hello</p>', null)).toBe('<p>hello</p>');
+  });
+  it('returns the body unchanged when textSignature is empty', () => {
+    expect(appendSignature('<p>hello</p>', ID_NO_SIG)).toBe('<p>hello</p>');
+  });
+  it('returns the body unchanged when textSignature is whitespace only', () => {
+    expect(
+      appendSignature('<p>hello</p>', { ...ID_NO_SIG, textSignature: '   \n\n  ' }),
+    ).toBe('<p>hello</p>');
+  });
+  it('appends the standard delimiter and the signature lines', () => {
+    const out = appendSignature('<p>hello</p>', ID_WITH_SIG);
+    // Cursor lands at top of editor by default — signature must be
+    // BELOW the body so the user types above it (REQ-MAIL-101).
+    expect(out.startsWith('<p>hello</p>')).toBe(true);
+    // The standard `-- ` delimiter is present as its own paragraph.
+    expect(out).toContain('<p>-- </p>');
+    // Signature lines render as paragraphs.
+    expect(out).toContain('Hans Hübner');
+    expect(out).toContain('h@x.test');
+  });
+  it('escapes HTML metacharacters in the signature', () => {
+    const out = appendSignature('', {
+      ...ID_NO_SIG,
+      textSignature: 'A&B <c>',
+    });
+    expect(out).toContain('A&amp;B &lt;c&gt;');
   });
 });
 
