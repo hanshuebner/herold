@@ -1124,7 +1124,7 @@ func TestEmailSet_Create_NoBlobAndNoBody(t *testing.T) {
 	if len(notCreated) != 1 {
 		t.Fatalf("expected 1 notCreated entry, got %v", notCreated)
 	}
-	entry, _ := notCreated["draft"]
+	entry := notCreated["draft"]
 	if errType, _ := entry["type"].(string); errType != "invalidProperties" {
 		t.Errorf("error type = %q, want invalidProperties", errType)
 	}

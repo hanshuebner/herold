@@ -255,14 +255,6 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 	return p, scopes, true
 }
 
-// authenticate is kept for any internal callers that don't need the
-// viaCookie discriminator. It calls authenticateWithMode and discards
-// the flag. New code should call authenticateWithMode directly.
-func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, bool) {
-	p, scope, _, ok := s.authenticateWithMode(ctx, r)
-	return p, scope, ok
-}
-
 // parseAPIKeyScope decodes the JSON-encoded scope list stored on an
 // APIKey row. Empty / malformed values fall back to the legacy admin
 // scope so a bug in the storage layer can't silently drop access; the

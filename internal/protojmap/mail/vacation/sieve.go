@@ -494,23 +494,3 @@ func writeQuoted(b *strings.Builder, s string) {
 	}
 	b.WriteByte('"')
 }
-
-// stripTags is a tiny HTML-to-text fallback used when only an HTML
-// body is supplied. We strip "<...>" runs and collapse whitespace; not
-// a full HTML parser. The JMAP API client can always supply textBody
-// when it cares about formatting.
-func stripTags(s string) string {
-	var b strings.Builder
-	in := false
-	for _, r := range s {
-		switch {
-		case r == '<':
-			in = true
-		case r == '>':
-			in = false
-		case !in:
-			b.WriteRune(r)
-		}
-	}
-	return strings.TrimSpace(b.String())
-}

@@ -46,10 +46,6 @@ type emailFilter struct {
 	Header                  []string `json:"header"`
 }
 
-// emailFilterCondition is a type alias kept for backward compatibility
-// with callers that import the type; the actual filter struct is emailFilter.
-type emailFilterCondition = emailFilter
-
 // queryRequest is the wire-form Email/query request.
 type queryRequest struct {
 	AccountID       jmapID           `json:"accountId"`
@@ -420,34 +416,9 @@ func filterNeedsNonStandardHeader(f *emailFilter) string {
 	return ""
 }
 
-// messageHasAttachment parses the message blob to determine whether it
-// has any attachment parts. Returns false on parse error.
-// Prefer buildFilterData + filterData.attachments in bulk scenarios.
-func messageHasAttachment(ctx context.Context, blobs store.Blobs, m store.Message) bool {
-	rc, err := blobs.Get(ctx, m.Blob.Hash)
-	if err != nil {
-		return false
-	}
-	defer rc.Close()
-	body, err := io.ReadAll(io.LimitReader(rc, 4<<20))
-	if err != nil {
-		return false
-	}
-	parsed, err := defaultParseFn(bytes.NewReader(body))
-	if err != nil {
-		return false
-	}
-	_, _, _, _, attParts := walkParts(parsed.Body, 0, "")
-	return len(attParts) > 0
-}
-
-// matchFilter evaluates f against m. allMessages is passed for thread
-// aggregation predicates.
-func matchFilter(m store.Message, f *emailFilter, all []store.Message) bool {
-	return matchFilterWithAttachments(m, f, all, nil)
-}
-
-// matchFilterWithAttachments is matchFilter with precomputed blob filter data.
+// matchFilterWithAttachments evaluates f against m, with precomputed
+// blob filter data. allMessages is passed for thread aggregation
+// predicates.
 func matchFilterWithAttachments(m store.Message, f *emailFilter, all []store.Message, fd *filterData) bool {
 	if f == nil {
 		return true
@@ -459,12 +430,8 @@ func matchFilterWithAttachments(m store.Message, f *emailFilter, all []store.Mes
 	return matchConditionWithAttachments(m, f, all, fd)
 }
 
-// matchOperator handles FilterOperator (AND / OR / NOT).
-func matchOperator(m store.Message, f *emailFilter, all []store.Message) bool {
-	return matchOperatorWithAttachments(m, f, all, nil)
-}
-
-// matchOperatorWithAttachments is matchOperator with precomputed blob filter data.
+// matchOperatorWithAttachments handles FilterOperator (AND / OR / NOT)
+// with precomputed blob filter data.
 func matchOperatorWithAttachments(m store.Message, f *emailFilter, all []store.Message, fd *filterData) bool {
 	op := strings.ToUpper(f.Operator)
 	switch op {
@@ -508,12 +475,8 @@ func matchOperatorWithAttachments(m store.Message, f *emailFilter, all []store.M
 	return false
 }
 
-// matchCondition evaluates a FilterCondition against m.
-func matchCondition(m store.Message, f *emailFilter, all []store.Message) bool {
-	return matchConditionWithAttachments(m, f, all, nil)
-}
-
-// matchConditionWithAttachments is matchCondition with precomputed blob filter data.
+// matchConditionWithAttachments evaluates a FilterCondition against m
+// with precomputed blob filter data.
 func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.Message, fd *filterData) bool {
 	if f.InMailbox != nil {
 		want, ok := mailboxIDFromJMAP(*f.InMailbox)
@@ -912,12 +875,6 @@ func collapseByThread(xs []store.Message) []store.Message {
 		out = append(out, m)
 	}
 	return out
-}
-
-// matchEmailFilter is kept for backward compatibility with callers in
-// this package that predate the operator-aware rewrite.
-func matchEmailFilter(m store.Message, f *emailFilter) bool {
-	return matchFilter(m, f, nil)
 }
 
 // queryChangesRequest is the wire-form Email/queryChanges request (RFC 8620 §5.6).
