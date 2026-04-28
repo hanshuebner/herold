@@ -41,7 +41,7 @@ URL they bookmark.
 
 | Surface | Listener | URL (loopback quickstart shape) | Sign-in form | Cookie | Today |
 |---------|----------|---------------------------------|--------------|--------|-------|
-| The Suite consumer SPA (mail / calendar / contacts / chat) | public | `http://localhost:8080/` | `/login` redirects to the protoui sign-in form; after login the SPA's JMAP handshake completes | `herold_public_session` (`Path=/`, end-user scope) | yes |
+| The Suite consumer SPA (mail / calendar / contacts / chat) | public | `http://localhost:8080/` | Suite SPA inline login form posts JSON to `/api/v1/auth/login` | `herold_public_session` (`Path=/`, end-user scope) | yes |
 | Operator UI (domains, principals, queue, audit) | admin | `http://localhost:9443/admin/` | Svelte admin SPA login form posts JSON to `/api/v1/auth/login` | `herold_admin_session` (`Path=/`, `[admin]` scope after TOTP step-up) | yes |
 
 Which one to point an operator vs an end user at:
@@ -54,11 +54,20 @@ Which one to point an operator vs an end user at:
   (`docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md`)
   308-redirect to `/admin/` so older bookmarks still land on the
   admin SPA.
-- **End users** open `http://localhost:8080/` in a browser. The
-  suite SPA redirects to `/login?return=%2F%23%2Fmail`. After
-  signing in, herold issues a `herold_public_session` cookie with
-  `Path=/` and redirects back to `/#/mail`. The SPA's JMAP
-  handshake completes successfully using the cookie.
+- **End users** open `http://localhost:8080/` in a browser. With no
+  session cookie present the Suite SPA renders its own inline login
+  form (the legacy server-rendered `/login` page was retired in the
+  Phase 3 protoui cutover). It posts JSON to `/api/v1/auth/login`;
+  on success herold issues a `herold_public_session` cookie
+  (`Path=/`) plus a non-HttpOnly `herold_public_csrf` cookie that
+  the SPA echoes back as `X-CSRF-Token` on every mutating request.
+  The SPA's JMAP handshake then completes and the mailbox loads.
+  End-user self-service (password change, two-factor authentication
+  enrolment, API-key management) lives in the Suite at `/#/settings`
+  and calls the public-listener self-service REST surface
+  (`/api/v1/principals/{pid}/...`, `/api/v1/api-keys`); admin-only
+  endpoints (queue, certs, audit, domains) are not reachable from
+  the public listener.
 
 Cross-listener cookies are mechanically isolated: a
 `herold_public_session` cookie issued by the public listener is
@@ -157,18 +166,21 @@ production -- see below).
 HTTP listeners (`protocol = "admin"`) carry a `kind` field that
 partitions the suite's HTTP surface into two roles:
 
-- **`kind = "public"`** -- internet-facing. Serves the SPA mount
-  point, JMAP, chat WebSocket, the HTTP send API, the call
-  credential mint, the image proxy, public webhook ingress, and the
-  public `/login` flow that issues end-user-scoped cookies with
-  `Path=/`. Default bind `0.0.0.0:443`.
-- **`kind = "admin"`** -- operator-only. Serves the protoadmin REST
-  surface, the admin UI, `/metrics`, and the admin `/login` flow that
-  issues admin-scoped cookies after a TOTP step-up
-  (REQ-AUTH-SCOPE-03). Default bind `127.0.0.1:9443` so the surface
-  is invisible to internet scanners. Operators with a VPN flip the
-  bind to a routable interface; operators without one tunnel via
-  `ssh -L 9443:127.0.0.1:9443 admin@host`.
+- **`kind = "public"`** -- internet-facing. Serves the Suite SPA
+  mount point, JMAP, chat WebSocket, the HTTP send API, the call
+  credential mint, the image proxy, public webhook ingress, the
+  JSON login surface (`POST /api/v1/auth/login`, `POST /api/v1/auth/logout`,
+  `GET /api/v1/auth/me`) that issues end-user-scoped cookies with
+  `Path=/`, and the self-service REST subset
+  (`/api/v1/principals/{pid}/...`, `/api/v1/api-keys`) the Suite's
+  `/settings` panel uses. Default bind `0.0.0.0:443`.
+- **`kind = "admin"`** -- operator-only. Serves the full protoadmin
+  REST surface, the admin SPA at `/admin/`, `/metrics`, and the
+  admin JSON login surface that issues admin-scoped cookies after a
+  TOTP step-up (REQ-AUTH-SCOPE-03). Default bind `127.0.0.1:9443` so
+  the surface is invisible to internet scanners. Operators with a
+  VPN flip the bind to a routable interface; operators without one
+  tunnel via `ssh -L 9443:127.0.0.1:9443 admin@host`.
 
 Cookies are mechanically distinct: the public listener issues
 `herold_public_session`, the admin listener issues
@@ -209,7 +221,7 @@ protocol = "imaps"
 tls = "implicit"
 
 # Public HTTP listener: SPA + JMAP + chat WS + send API + call creds +
-# image proxy + public webhook ingress + public /login.
+# image proxy + public webhook ingress + JSON login + self-service REST.
 [[listener]]
 name = "public"
 address = "0.0.0.0:443"
@@ -219,9 +231,10 @@ tls = "implicit"
 cert_file = "/etc/herold/admin.crt"
 key_file  = "/etc/herold/admin.key"
 
-# Admin HTTP listener: protoadmin REST + admin UI + /metrics + admin
-# /login (TOTP step-up).  Loopback by default; tunnel via ssh -L from
-# operator workstations or flip the bind to a VPN interface.
+# Admin HTTP listener: full protoadmin REST + admin SPA at /admin/ +
+# /metrics + admin JSON login (TOTP step-up). Loopback by default;
+# tunnel via ssh -L from operator workstations or flip the bind to a
+# VPN interface.
 [[listener]]
 name = "admin"
 address = "127.0.0.1:9443"

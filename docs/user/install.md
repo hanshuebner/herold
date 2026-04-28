@@ -413,11 +413,15 @@ available; route end users and operators to different URLs:
   assets baked into the binary via `//go:embed` (built by
   `make build-web` from the in-tree `web/apps/suite` workspace), or
   served from a developer dist tree pointed at by `[server.suite].asset_dir`.
-  The SPA redirects to `/login`, the
-  user signs in with their email and password, and herold issues a
-  `herold_public_session` cookie with `Path=/`. The SPA's JMAP
-  handshake then completes and the mailbox loads. See
-  [./operate.md](./operate.md) "The web URLs herold exposes" for
+  When no session cookie is present the SPA renders its own inline
+  login form (the legacy server-rendered `/login` page was retired
+  in the Phase 3 protoui cutover), posts JSON to
+  `POST /api/v1/auth/login`, and receives the `herold_public_session`
+  cookie (`Path=/`, end-user scope) plus the non-HttpOnly
+  `herold_public_csrf` cookie. The SPA's JMAP handshake then
+  completes and the mailbox loads. End-users self-serve password
+  changes, TOTP enrolment, and API-key management at `/#/settings`.
+  See [./operate.md](./operate.md) "The web URLs herold exposes" for
   details.
 - **Operator UI** (Svelte admin SPA): `http(s)://<admin host>/admin/`
   on the admin listener. The SPA's login form posts to

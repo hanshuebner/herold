@@ -233,14 +233,25 @@ loopback-only or fronted by ssh tunnel (see `docs/user/operate.md`).
 
 Open `http://localhost:8080/` in a browser. The Suite SPA loads
 and immediately tries to fetch `/.well-known/jmap`. With no session
-cookie present it redirects the browser to
-`/login?return=%2F%23%2Fmail`.
+cookie present the SPA renders its own inline login form (no redirect
+to a server-rendered `/login` page; that flow was retired in the
+Phase 3 protoui cutover).
 
-Sign in at the login form with the bootstrap credentials. Herold
-redirects back to `/#/mail` and the SPA's JMAP handshake succeeds
-using the `herold_public_session` cookie now in the browser's jar.
-The cookie is scoped to `Path=/` so it accompanies all subsequent
-JMAP, chat, and send-API calls from the SPA.
+Sign in with the bootstrap credentials. The SPA posts JSON to
+`/api/v1/auth/login`; on success the server sets the
+`herold_public_session` cookie (HttpOnly, `Path=/`) plus
+`herold_public_csrf` (non-HttpOnly so the SPA's JS reads it and
+attaches `X-CSRF-Token` on every mutating request). The SPA then
+re-runs its JMAP bootstrap and lands on `/#/mail`. The cookie's
+`Path=/` scope lets it accompany all subsequent JMAP, chat, and
+send-API calls from the SPA.
+
+Self-service: navigate to `/#/settings` (or press `g s`) for password
+change, two-factor authentication enrolment, and API-key management.
+These call the public-listener self-service REST surface (under
+`/api/v1/principals/{pid}/...` and `/api/v1/api-keys`) using the
+session cookie; admin-only endpoints (queue, certs, audit, domains)
+are not reachable from the public listener.
 
 #### IMAP / SMTP desktop client
 
