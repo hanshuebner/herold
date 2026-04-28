@@ -107,6 +107,17 @@ func joinTypesCSV(types []string) string {
 	return strings.Join(types, ",")
 }
 
+// bytesOrEmpty coerces a nil byte slice to an empty byte slice so the
+// value satisfies a NOT NULL BLOB column. RFC 8620 §7.2 makes the
+// encryption keys optional; we store zero-length bytes for keyless
+// subscriptions rather than migrating the schema to nullable BLOBs.
+func bytesOrEmpty(b []byte) []byte {
+	if b == nil {
+		return []byte{}
+	}
+	return b
+}
+
 func (m *metadata) InsertPushSubscription(ctx context.Context, ps store.PushSubscription) (store.PushSubscriptionID, error) {
 	now := m.s.clock.Now().UTC()
 	var id int64
@@ -134,7 +145,7 @@ func (m *metadata) InsertPushSubscription(ctx context.Context, ps store.PushSubs
 				quiet_hours_start_local, quiet_hours_end_local, quiet_hours_tz,
 				created_at_us, updated_at_us)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			int64(ps.PrincipalID), ps.DeviceClientID, ps.URL, ps.P256DH, ps.Auth,
+			int64(ps.PrincipalID), ps.DeviceClientID, ps.URL, bytesOrEmpty(ps.P256DH), bytesOrEmpty(ps.Auth),
 			expiresArg, joinTypesCSV(ps.Types), ps.VerificationCode, boolToInt(ps.Verified),
 			ps.VAPIDKeyAtRegistration, rulesArg,
 			qhStart, qhEnd, ps.QuietHoursTZ,

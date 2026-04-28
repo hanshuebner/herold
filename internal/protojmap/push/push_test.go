@@ -169,6 +169,47 @@ func TestPushSet_Create_AllocatesVerificationCode(t *testing.T) {
 	}
 }
 
+func TestPushSet_Create_WithoutKeys(t *testing.T) {
+	// RFC 8620 §7.2: keys is optional. A client that has no Web Push
+	// gateway credentials (e.g. the jmap-test-suite) should be able to
+	// create a subscription for the basic lifecycle without supplying
+	// encryption keys.
+	f := newFixture(t)
+	resp, merr := f.invokeSet(f.ctx(), setRequest{
+		Create: map[string]json.RawMessage{
+			"c1": mustJSON(pushCreateInput{
+				DeviceClientID: "keyless-client",
+				URL:            "https://push.example.test/keyless",
+				Types:          []string{"Email"},
+			}),
+		},
+	})
+	if merr != nil {
+		t.Fatalf("Execute: %v", merr)
+	}
+	if len(resp.NotCreated) != 0 {
+		t.Fatalf("NotCreated non-empty: %+v", resp.NotCreated)
+	}
+	if len(resp.Created) != 1 {
+		t.Fatalf("Created len = %d, want 1", len(resp.Created))
+	}
+	created, ok := resp.Created["c1"]
+	if !ok {
+		t.Fatalf("c1 not in created")
+	}
+	if created.ID == "" {
+		t.Fatalf("created id empty")
+	}
+	// Verify it round-trips through /get.
+	getResp, merr := f.invokeGet(f.ctx(), getRequest{IDs: ptrSlice([]jmapID{created.ID})})
+	if merr != nil {
+		t.Fatalf("Get: %v", merr)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("Get list len = %d, want 1", len(getResp.List))
+	}
+}
+
 func TestPushSet_Create_RejectsNonHTTPS(t *testing.T) {
 	f := newFixture(t)
 	resp, merr := f.invokeSet(f.ctx(), setRequest{

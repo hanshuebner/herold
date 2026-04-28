@@ -352,37 +352,49 @@ func (h *handlerSet) createSubscription(ctx context.Context, pid store.Principal
 			Description: "url must use https",
 		}, nil
 	}
-	if strings.TrimSpace(in.Keys.P256DH) == "" || strings.TrimSpace(in.Keys.Auth) == "" {
-		return store.PushSubscription{}, &setError{
-			Type: "invalidProperties", Properties: []string{"keys"},
-			Description: "keys.p256dh and keys.auth are required",
-		}, nil
-	}
-	p256dh, err := decodeBase64URL(in.Keys.P256DH)
-	if err != nil {
-		return store.PushSubscription{}, &setError{
-			Type: "invalidProperties", Properties: []string{"keys"},
-			Description: "keys.p256dh: " + err.Error(),
-		}, nil
-	}
-	if len(p256dh) != 65 || p256dh[0] != 0x04 {
-		return store.PushSubscription{}, &setError{
-			Type: "invalidProperties", Properties: []string{"keys"},
-			Description: "keys.p256dh must be the 65-byte uncompressed P-256 form",
-		}, nil
-	}
-	authBytes, err := decodeBase64URL(in.Keys.Auth)
-	if err != nil {
-		return store.PushSubscription{}, &setError{
-			Type: "invalidProperties", Properties: []string{"keys"},
-			Description: "keys.auth: " + err.Error(),
-		}, nil
-	}
-	if len(authBytes) != 16 {
-		return store.PushSubscription{}, &setError{
-			Type: "invalidProperties", Properties: []string{"keys"},
-			Description: "keys.auth must be 16 bytes",
-		}, nil
+	// RFC 8620 §7.2: keys is optional. When provided (Web Push encrypted
+	// delivery) both p256dh and auth must be present and well-formed.
+	// When absent the server stores empty key material; the dispatcher
+	// will send unencrypted notifications to such subscriptions or skip
+	// them — that is a 3.8b concern. The test suite exercises keyless
+	// create/get/destroy to verify the basic subscription lifecycle
+	// without standing up a Web Push gateway.
+	var p256dh, authBytes []byte
+	if strings.TrimSpace(in.Keys.P256DH) != "" || strings.TrimSpace(in.Keys.Auth) != "" {
+		// At least one key field supplied — require both.
+		if strings.TrimSpace(in.Keys.P256DH) == "" || strings.TrimSpace(in.Keys.Auth) == "" {
+			return store.PushSubscription{}, &setError{
+				Type: "invalidProperties", Properties: []string{"keys"},
+				Description: "keys.p256dh and keys.auth must both be supplied when keys is present",
+			}, nil
+		}
+		var err error
+		p256dh, err = decodeBase64URL(in.Keys.P256DH)
+		if err != nil {
+			return store.PushSubscription{}, &setError{
+				Type: "invalidProperties", Properties: []string{"keys"},
+				Description: "keys.p256dh: " + err.Error(),
+			}, nil
+		}
+		if len(p256dh) != 65 || p256dh[0] != 0x04 {
+			return store.PushSubscription{}, &setError{
+				Type: "invalidProperties", Properties: []string{"keys"},
+				Description: "keys.p256dh must be the 65-byte uncompressed P-256 form",
+			}, nil
+		}
+		authBytes, err = decodeBase64URL(in.Keys.Auth)
+		if err != nil {
+			return store.PushSubscription{}, &setError{
+				Type: "invalidProperties", Properties: []string{"keys"},
+				Description: "keys.auth: " + err.Error(),
+			}, nil
+		}
+		if len(authBytes) != 16 {
+			return store.PushSubscription{}, &setError{
+				Type: "invalidProperties", Properties: []string{"keys"},
+				Description: "keys.auth must be 16 bytes",
+			}, nil
+		}
 	}
 	row := store.PushSubscription{
 		PrincipalID:            pid,

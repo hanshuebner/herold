@@ -116,7 +116,7 @@ func (m *metadata) InsertPushSubscription(ctx context.Context, ps store.PushSubs
 				created_at_us, updated_at_us)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 			RETURNING id`,
-			int64(ps.PrincipalID), ps.DeviceClientID, ps.URL, ps.P256DH, ps.Auth,
+			int64(ps.PrincipalID), ps.DeviceClientID, ps.URL, bytesOrEmpty(ps.P256DH), bytesOrEmpty(ps.Auth),
 			expiresArg, joinTypesCSVPG(ps.Types), ps.VerificationCode, ps.Verified,
 			ps.VAPIDKeyAtRegistration, rulesArg,
 			qhStart, qhEnd, ps.QuietHoursTZ,
@@ -222,6 +222,17 @@ func (m *metadata) DeletePushSubscription(ctx context.Context, id store.PushSubs
 		return appendStateChange(ctx, tx, store.PrincipalID(pid),
 			store.EntityKindPushSubscription, uint64(id), 0, store.ChangeOpDestroyed, now)
 	})
+}
+
+// bytesOrEmpty coerces a nil byte slice to an empty byte slice so the
+// value satisfies a NOT NULL BYTEA column. RFC 8620 §7.2 makes the
+// encryption keys optional; we store zero-length bytes for keyless
+// subscriptions rather than migrating the schema to nullable columns.
+func bytesOrEmpty(b []byte) []byte {
+	if b == nil {
+		return []byte{}
+	}
+	return b
 }
 
 // pushExpiresArg returns the SQL placeholder argument for a
