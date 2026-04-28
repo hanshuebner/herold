@@ -1200,6 +1200,19 @@ class MailStore {
   }
 
   /**
+   * Replace the selection with every visible email matching a predicate.
+   * Used by the message-list select dropdown's Read / Unread / Starred /
+   * Unstarred entries (REQ-MAIL-LIST-SELECT, issue #10).
+   */
+  selectVisibleWhere(predicate: (email: Email) => boolean): void {
+    const next = new Set<string>();
+    for (const e of this.listEmails) {
+      if (predicate(e)) next.add(e.id);
+    }
+    this.listSelectedIds = next;
+  }
+
+  /**
    * Issue a single `Email/set` with one entry in `update` per id. Used
    * by every bulk action — archive / delete / mark / move — so the
    * server gets one round-trip and we can present one summary toast.

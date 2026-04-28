@@ -12,6 +12,7 @@
   import { decodeChips } from '../lib/mail/search-query';
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import CategoryPicker from '../lib/mail/CategoryPicker.svelte';
+  import SelectChooser from '../lib/mail/SelectChooser.svelte';
   import type { Email } from '../lib/mail/types';
 
   const ROLED_FOLDERS = new Set<FolderID>([
@@ -732,13 +733,12 @@
         {/if}
       </div>
     {:else}
-      {#if mail.listSelectedIds.size > 0}
-        <div class="bulk-bar" role="toolbar" aria-label="Bulk actions">
+      <div class="list-toolbar" role="toolbar" aria-label="List actions">
+        <SelectChooser />
+        {#if mail.listSelectedIds.size > 0}
           <span class="bulk-count">
             {mail.listSelectedIds.size} selected
           </span>
-          <button type="button" onclick={() => mail.clearSelection()}>Clear</button>
-          <span class="bulk-spacer"></span>
           {#if folder === 'inbox'}
             <button type="button" onclick={bulkArchive}>Archive</button>
           {/if}
@@ -752,8 +752,8 @@
             }}>Category…</button>
           {/if}
           <button type="button" class="danger" onclick={bulkDelete}>Delete</button>
-        </div>
-      {/if}
+        {/if}
+      </div>
       <ul
         class="thread-list"
         role="listbox"
@@ -1091,11 +1091,11 @@
     color: var(--text-primary);
   }
 
-  .bulk-bar {
+  .list-toolbar {
     display: flex;
     align-items: center;
     gap: var(--spacing-03);
-    padding: var(--spacing-03) var(--spacing-05);
+    padding: var(--spacing-02) var(--spacing-05);
     border-bottom: 1px solid var(--border-subtle-01);
     background: var(--layer-02);
   }
@@ -1104,10 +1104,7 @@
     font-weight: 600;
     margin-right: var(--spacing-02);
   }
-  .bulk-spacer {
-    flex: 1;
-  }
-  .bulk-bar button {
+  .list-toolbar > button {
     padding: var(--spacing-02) var(--spacing-04);
     border-radius: var(--radius-md);
     background: var(--layer-01);
@@ -1115,13 +1112,13 @@
     font-weight: 500;
     transition: background var(--duration-fast-02) var(--easing-productive-enter);
   }
-  .bulk-bar button:hover {
+  .list-toolbar > button:hover {
     background: var(--layer-03);
   }
-  .bulk-bar button.danger {
+  .list-toolbar > button.danger {
     color: var(--support-error);
   }
-  .bulk-bar button.danger:hover {
+  .list-toolbar > button.danger:hover {
     background: var(--support-error);
     color: var(--text-on-color);
   }
@@ -1199,7 +1196,7 @@
     .list-header {
       padding: var(--spacing-03) var(--spacing-04);
     }
-    .bulk-bar {
+    .list-toolbar {
       flex-wrap: wrap;
       padding: var(--spacing-02) var(--spacing-03);
     }
