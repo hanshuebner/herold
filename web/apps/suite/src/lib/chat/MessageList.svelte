@@ -1,0 +1,569 @@
+<script lang="ts">
+  /**
+   * Message list pane for an open conversation.
+   *
+   * Renders messages oldest-first. Inline images display with max-width 400px
+   * per REQ-CHAT-22. Reactions strip below each message per REQ-CHAT-30..33.
+   * Read receipts shown for DMs per REQ-CHAT-40.
+   *
+   * Scroll-based read tracking: when the conversation is open and a message
+   * scrolls into view, markRead is called (debounced 500ms) per REQ-CHAT-43.
+   */
+
+  import { untrack } from 'svelte';
+  import { chat } from './store.svelte';
+  import { auth } from '../auth/auth.svelte';
+  import EmojiPicker from '../mail/EmojiPicker.svelte';
+  import type { Message, Conversation } from './types';
+
+  interface Props {
+    conversationId: string;
+    conversation: Conversation;
+  }
+  let { conversationId, conversation }: Props = $props();
+
+  let scrollEl = $state<HTMLDivElement | null>(null);
+  let showPickerFor = $state<string | null>(null);
+
+  // Auto-scroll to bottom when new messages arrive (while at bottom).
+  let wasAtBottom = true;
+
+  $effect(() => {
+    // Track messages to trigger scroll effect reactively.
+    const _messages = chat.messages;
+    untrack(() => {
+      if (!scrollEl) return;
+      if (wasAtBottom) {
+        requestAnimationFrame(() => {
+          if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+        });
+      }
+    });
+  });
+
+  function handleScroll(): void {
+    if (!scrollEl) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollEl;
+    wasAtBottom = scrollHeight - scrollTop - clientHeight < 40;
+
+    // Paginate: load more when scrolled near top.
+    if (scrollTop < 80 && chat.hasMoreMessages) {
+      void chat.loadMoreMessages(conversationId);
+    }
+
+    // Mark read: debounce 500ms after scroll settles.
+    scheduleMarkRead();
+  }
+
+  let markReadTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleMarkRead(): void {
+    if (markReadTimer !== null) clearTimeout(markReadTimer);
+    markReadTimer = setTimeout(() => {
+      markReadTimer = null;
+      doMarkRead();
+    }, 500);
+  }
+
+  function doMarkRead(): void {
+    const msgs = chat.messages;
+    if (msgs.length === 0) return;
+    const last = msgs[msgs.length - 1];
+    if (!last) return;
+    void chat.markRead(conversationId, last.id);
+  }
+
+  function formatTime(isoDate: string): string {
+    const d = new Date(isoDate);
+    return d.toLocaleTimeString(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  function formatDate(isoDate: string): string {
+    const d = new Date(isoDate);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    if (d.toDateString() === today.toDateString()) return 'Today';
+    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+    return d.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year:
+        d.getFullYear() !== today.getFullYear() ? 'numeric' : undefined,
+    });
+  }
+
+  /** Group messages by date for date-divider rendering. */
+  let grouped = $derived.by(() => {
+    const result: Array<{ date: string; messages: Message[] }> = [];
+    let currentDate = '';
+    for (const msg of chat.messages) {
+      const d = new Date(msg.createdAt).toDateString();
+      if (d !== currentDate) {
+        currentDate = d;
+        result.push({ date: msg.createdAt, messages: [msg] });
+      } else {
+        result[result.length - 1]!.messages.push(msg);
+      }
+    }
+    return result;
+  });
+
+  function isMine(senderId: string): boolean {
+    return senderId === auth.principalId;
+  }
+
+  /** Resolve principalId to display name (best effort). */
+  function senderName(senderId: string): string {
+    const mem = conversation.members.find((m) => m.principalId === senderId);
+    // The Membership shape doesn't carry a display name directly.
+    // We'd need a contact lookup; for now fall back to the id.
+    void mem;
+    return senderId;
+  }
+
+  function handleToggleReaction(messageId: string, emoji: string): void {
+    void chat.toggleReaction(messageId, emoji, auth.principalId ?? '');
+  }
+
+  function handleAddReaction(messageId: string, emoji: string): void {
+    showPickerFor = null;
+    void chat.toggleReaction(messageId, emoji, auth.principalId ?? '');
+  }
+
+  // DM read receipt: find the other participant's readThrough message id.
+  let otherReadThrough = $derived.by(() => {
+    if (conversation.type !== 'dm') return null;
+    const mems = chat.memberships.get(conversationId) ?? [];
+    const other = mems.find((m) => m.principalId !== auth.principalId);
+    return other?.readThrough ?? null;
+  });
+
+  // Typing indicator text.
+  let typingText = $derived.by(() => {
+    const typers = Array.from(chat.typing.get(conversationId) ?? []).filter(
+      (id) => id !== auth.principalId,
+    );
+    if (typers.length === 0) return null;
+    if (typers.length === 1) return `${typers[0]} is typing…`;
+    if (typers.length === 2)
+      return `${typers[0]} and ${typers[1]} are typing…`;
+    return `${typers.length} people are typing…`;
+  });
+</script>
+
+<div class="message-list" bind:this={scrollEl} onscroll={handleScroll}>
+  {#if chat.messagesStatus === 'loading'}
+    <p class="loading">Loading messages…</p>
+  {:else if chat.messagesStatus === 'error'}
+    <p class="error">Failed to load messages</p>
+  {:else}
+    {#if chat.hasMoreMessages}
+      <button
+        type="button"
+        class="load-more"
+        onclick={() => chat.loadMoreMessages(conversationId)}
+      >
+        Load earlier messages
+      </button>
+    {/if}
+
+    {#each grouped as group (group.date)}
+      <div class="date-divider" aria-label={formatDate(group.date)}>
+        <span>{formatDate(group.date)}</span>
+      </div>
+
+      {#each group.messages as msg (msg.id)}
+        <div
+          class="message"
+          class:mine={isMine(msg.senderId)}
+          class:system={msg.type === 'system'}
+          id="msg-{msg.id}"
+        >
+          {#if msg.type === 'system'}
+            <p class="system-text">{msg.body.text}</p>
+          {:else}
+            <div class="bubble-row" class:mine={isMine(msg.senderId)}>
+              {#if !isMine(msg.senderId)}
+                <span class="avatar" aria-hidden="true">
+                  {senderName(msg.senderId).charAt(0).toUpperCase()}
+                </span>
+              {/if}
+
+              <div class="bubble" class:mine={isMine(msg.senderId)}>
+                {#if !isMine(msg.senderId)}
+                  <span class="sender-name">{senderName(msg.senderId)}</span>
+                {/if}
+
+                {#if msg.deleted}
+                  <em class="deleted">message deleted</em>
+                {:else}
+                  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                  <div class="body">{@html msg.body.html}</div>
+                {/if}
+
+                <div class="meta">
+                  <span class="time" title={new Date(msg.createdAt).toLocaleString()}>
+                    {formatTime(msg.createdAt)}
+                  </span>
+                  {#if msg.editedAt}
+                    <span class="edited" title="Edited: {new Date(msg.editedAt).toLocaleString()}">(edited)</span>
+                  {/if}
+                  {#if conversation.type === 'dm' && isMine(msg.senderId) && otherReadThrough === msg.id}
+                    <span class="read-receipt">Read</span>
+                  {/if}
+                </div>
+
+                <!-- Reactions -->
+                {#if Object.keys(msg.reactions).length > 0}
+                  <div class="reactions" aria-label="Reactions">
+                    {#each Object.entries(msg.reactions).filter(([, rs]) => rs.length > 0) as [emoji, reactors] (emoji)}
+                      {@const myReaction = auth.principalId ? reactors.includes(auth.principalId) : false}
+                      <button
+                        type="button"
+                        class="reaction-chip"
+                        class:mine={myReaction}
+                        title="Reacted by: {reactors.join(', ')}"
+                        aria-label="{emoji} {reactors.length} reaction{reactors.length === 1 ? '' : 's'}{myReaction ? ' (click to remove)' : ''}"
+                        onclick={() => handleToggleReaction(msg.id, emoji)}
+                      >
+                        <span class="chip-emoji" aria-hidden="true">{emoji}</span>
+                        <span class="chip-count">{reactors.length}</span>
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+
+                <!-- React button (hover) -->
+                {#if !msg.deleted}
+                  <div class="message-actions">
+                    <button
+                      type="button"
+                      class="react-btn"
+                      aria-label="Add reaction"
+                      onclick={() => {
+                        showPickerFor = showPickerFor === msg.id ? null : msg.id;
+                      }}
+                    >
+                      +
+                    </button>
+                    {#if showPickerFor === msg.id}
+                      <div class="picker-anchor">
+                        <EmojiPicker
+                          onSelect={(emoji) => handleAddReaction(msg.id, emoji)}
+                          onClose={() => { showPickerFor = null; }}
+                        />
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/each}
+    {/each}
+
+    {#if typingText}
+      <p class="typing-indicator" aria-live="polite">{typingText}</p>
+    {/if}
+  {/if}
+</div>
+
+<style>
+  .message-list {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding: var(--spacing-04);
+    gap: var(--spacing-01);
+    min-height: 0;
+  }
+
+  .loading,
+  .error {
+    margin: auto;
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-helper);
+    font-style: italic;
+  }
+
+  .error {
+    color: var(--support-error);
+  }
+
+  .load-more {
+    align-self: center;
+    padding: var(--spacing-02) var(--spacing-04);
+    color: var(--interactive);
+    font-size: var(--type-body-compact-01-size);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--spacing-04);
+  }
+
+  .load-more:hover {
+    background: var(--layer-02);
+  }
+
+  .date-divider {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+    margin: var(--spacing-04) 0;
+  }
+
+  .date-divider::before,
+  .date-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border-subtle-01);
+  }
+
+  .date-divider span {
+    font-size: var(--type-helper-text-01-size);
+    color: var(--text-helper);
+    white-space: nowrap;
+  }
+
+  .message {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .system {
+    align-items: center;
+  }
+
+  .system-text {
+    font-size: var(--type-helper-text-01-size);
+    color: var(--text-helper);
+    font-style: italic;
+    margin: var(--spacing-02) 0;
+    text-align: center;
+  }
+
+  .bubble-row {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--spacing-02);
+    margin-bottom: var(--spacing-02);
+  }
+
+  .bubble-row.mine {
+    flex-direction: row-reverse;
+  }
+
+  .avatar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-pill);
+    background: var(--interactive);
+    color: var(--text-on-color);
+    font-size: var(--type-helper-text-01-size);
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .bubble {
+    max-width: 75%;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-01);
+    position: relative;
+  }
+
+  .bubble:hover .message-actions {
+    opacity: 1;
+  }
+
+  .sender-name {
+    font-size: var(--type-helper-text-01-size);
+    color: var(--text-helper);
+    font-weight: 600;
+    padding: 0 var(--spacing-03);
+  }
+
+  .body {
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-03) var(--spacing-04);
+    font-size: var(--type-body-01-size);
+    line-height: var(--type-body-01-line);
+    word-break: break-word;
+  }
+
+  .bubble.mine .body {
+    background: color-mix(in srgb, var(--interactive) 18%, transparent);
+    border-color: var(--interactive);
+  }
+
+  .body :global(img) {
+    max-width: 400px;
+    max-height: 300px;
+    border-radius: var(--radius-sm);
+    display: block;
+    margin: var(--spacing-02) 0;
+  }
+
+  .body :global(p) {
+    margin: 0;
+  }
+
+  .body :global(p + p) {
+    margin-top: var(--spacing-02);
+  }
+
+  .body :global(code) {
+    font-family: var(--font-mono);
+    font-size: var(--type-code-02-size);
+    background: var(--layer-02);
+    padding: 0 var(--spacing-01);
+    border-radius: var(--radius-sm);
+  }
+
+  .body :global(pre) {
+    background: var(--layer-02);
+    padding: var(--spacing-03);
+    border-radius: var(--radius-sm);
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: var(--type-code-02-size);
+    margin: var(--spacing-02) 0;
+  }
+
+  .deleted {
+    color: var(--text-helper);
+    padding: var(--spacing-03) var(--spacing-04);
+  }
+
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-02);
+    padding: 0 var(--spacing-03);
+  }
+
+  .time {
+    font-size: 11px;
+    color: var(--text-helper);
+  }
+
+  .edited {
+    font-size: 11px;
+    color: var(--text-helper);
+    font-style: italic;
+  }
+
+  .read-receipt {
+    font-size: 11px;
+    color: var(--interactive);
+  }
+
+  .reactions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-01);
+    padding: 0 var(--spacing-02);
+  }
+
+  .reaction-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-01);
+    padding: var(--spacing-01) var(--spacing-02);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-pill);
+    font-size: var(--type-body-compact-01-size);
+    line-height: 1;
+    min-height: 24px;
+    cursor: pointer;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+
+  .reaction-chip:hover {
+    background: var(--layer-02);
+    border-color: var(--border-strong-01);
+  }
+
+  .reaction-chip.mine {
+    background: color-mix(in srgb, var(--interactive) 18%, transparent);
+    border-color: var(--interactive);
+    color: var(--interactive);
+  }
+
+  .reaction-chip.mine:hover {
+    background: color-mix(in srgb, var(--interactive) 28%, transparent);
+  }
+
+  .chip-emoji {
+    font-size: 14px;
+    line-height: 1;
+  }
+
+  .chip-count {
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+  }
+
+  .message-actions {
+    position: absolute;
+    top: -12px;
+    right: var(--spacing-02);
+    opacity: 0;
+    transition: opacity var(--duration-fast-02) var(--easing-productive-enter);
+    display: flex;
+    gap: var(--spacing-01);
+  }
+
+  .bubble.mine .message-actions {
+    right: auto;
+    left: var(--spacing-02);
+  }
+
+  .react-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-pill);
+    background: var(--layer-02);
+    border: 1px solid var(--border-subtle-01);
+    color: var(--text-helper);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+
+  .react-btn:hover {
+    background: var(--layer-03);
+    color: var(--text-primary);
+  }
+
+  .picker-anchor {
+    position: absolute;
+    top: 28px;
+    right: 0;
+    z-index: 100;
+  }
+
+  .typing-indicator {
+    font-size: var(--type-helper-text-01-size);
+    color: var(--text-helper);
+    font-style: italic;
+    padding: var(--spacing-02) var(--spacing-04);
+    margin: 0;
+    min-height: 24px;
+  }
+</style>
