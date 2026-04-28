@@ -302,26 +302,53 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 			}, fn)
 	case "messages":
 		return enumerate(ctx, s.tx,
-			`SELECT id, mailbox_id, uid, modseq, flags, keywords_csv,
-			        internal_date_us, received_at_us, size, blob_hash, blob_size,
-			        thread_id, env_subject, env_from, env_to, env_cc, env_bcc,
-			        env_reply_to, env_message_id, env_in_reply_to, env_date_us,
-			        snoozed_until_us
+			`SELECT id, principal_id, internal_date_us, received_at_us, size,
+			        blob_hash, blob_size, thread_id, env_subject, env_from,
+			        env_to, env_cc, env_bcc, env_reply_to, env_message_id,
+			        env_in_reply_to, env_date_us
 			   FROM messages ORDER BY id`,
 			func(rs *sql.Rows) (any, error) {
 				var r MessageRow
+				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.InternalDateUs, &r.ReceivedAtUs,
+					&r.Size, &r.BlobHash, &r.BlobSize, &r.ThreadID,
+					&r.EnvSubject, &r.EnvFrom, &r.EnvTo, &r.EnvCc, &r.EnvBcc,
+					&r.EnvReplyTo, &r.EnvMessageID, &r.EnvInReplyTo, &r.EnvDateUs); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
+	case "message_mailboxes":
+		return enumerate(ctx, s.tx,
+			`SELECT message_id, mailbox_id, uid, modseq, flags, keywords_csv,
+			        snoozed_until_us
+			   FROM message_mailboxes ORDER BY message_id, mailbox_id`,
+			func(rs *sql.Rows) (any, error) {
+				var r MessageMailboxRow
 				var snooze sql.NullInt64
-				if err := rs.Scan(&r.ID, &r.MailboxID, &r.UID, &r.ModSeq, &r.Flags,
-					&r.KeywordsCSV, &r.InternalDateUs, &r.ReceivedAtUs, &r.Size,
-					&r.BlobHash, &r.BlobSize, &r.ThreadID, &r.EnvSubject, &r.EnvFrom,
-					&r.EnvTo, &r.EnvCc, &r.EnvBcc, &r.EnvReplyTo, &r.EnvMessageID,
-					&r.EnvInReplyTo, &r.EnvDateUs, &snooze); err != nil {
+				if err := rs.Scan(&r.MessageID, &r.MailboxID, &r.UID, &r.ModSeq,
+					&r.Flags, &r.KeywordsCSV, &snooze); err != nil {
 					return nil, err
 				}
 				if snooze.Valid {
 					v := snooze.Int64
 					r.SnoozedUntilUs = &v
 				}
+				return &r, nil
+			}, fn)
+	case "managed_rules":
+		return enumerate(ctx, s.tx,
+			`SELECT id, principal_id, name, enabled, sort_order,
+			        conditions_json, actions_json, created_at_us, updated_at_us
+			   FROM managed_rules ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r ManagedRuleRow
+				var enabled int64
+				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.Name, &enabled,
+					&r.SortOrder, &r.ConditionsJSON, &r.ActionsJSON,
+					&r.CreatedAtUs, &r.UpdatedAtUs); err != nil {
+					return nil, err
+				}
+				r.Enabled = enabled != 0
 				return &r, nil
 			}, fn)
 	case "mailbox_acl":
@@ -1041,20 +1068,37 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		return err
 	case "messages":
 		r := row.(*MessageRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO messages (id, principal_id, internal_date_us, received_at_us,
+			   size, blob_hash, blob_size, thread_id, env_subject, env_from, env_to,
+			   env_cc, env_bcc, env_reply_to, env_message_id, env_in_reply_to, env_date_us)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.PrincipalID, r.InternalDateUs, r.ReceivedAtUs,
+			r.Size, r.BlobHash, r.BlobSize, r.ThreadID,
+			r.EnvSubject, r.EnvFrom, r.EnvTo, r.EnvCc, r.EnvBcc, r.EnvReplyTo,
+			r.EnvMessageID, r.EnvInReplyTo, r.EnvDateUs)
+		return err
+	case "message_mailboxes":
+		r := row.(*MessageMailboxRow)
 		var snooze any
 		if r.SnoozedUntilUs != nil {
 			snooze = *r.SnoozedUntilUs
 		}
 		_, err := s.tx.ExecContext(ctx,
-			`INSERT INTO messages (id, mailbox_id, uid, modseq, flags, keywords_csv,
-			   internal_date_us, received_at_us, size, blob_hash, blob_size, thread_id,
-			   env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
-			   env_message_id, env_in_reply_to, env_date_us, snoozed_until_us)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, r.MailboxID, r.UID, r.ModSeq, r.Flags, r.KeywordsCSV,
-			r.InternalDateUs, r.ReceivedAtUs, r.Size, r.BlobHash, r.BlobSize, r.ThreadID,
-			r.EnvSubject, r.EnvFrom, r.EnvTo, r.EnvCc, r.EnvBcc, r.EnvReplyTo,
-			r.EnvMessageID, r.EnvInReplyTo, r.EnvDateUs, snooze)
+			`INSERT INTO message_mailboxes (message_id, mailbox_id, uid, modseq,
+			   flags, keywords_csv, snoozed_until_us)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.MessageID, r.MailboxID, r.UID, r.ModSeq,
+			r.Flags, r.KeywordsCSV, snooze)
+		return err
+	case "managed_rules":
+		r := row.(*ManagedRuleRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO managed_rules (id, principal_id, name, enabled, sort_order,
+			   conditions_json, actions_json, created_at_us, updated_at_us)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.PrincipalID, r.Name, boolToInt(r.Enabled), r.SortOrder,
+			r.ConditionsJSON, r.ActionsJSON, r.CreatedAtUs, r.UpdatedAtUs)
 		return err
 	case "mailbox_acl":
 		r := row.(*MailboxACLRow)

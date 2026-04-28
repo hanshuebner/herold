@@ -85,6 +85,16 @@ func (s *Store) DiagSnapshot() *DiagDump {
 		dd.Tables["sieve_scripts"] = append(dd.Tables["sieve_scripts"],
 			SieveEntry{PrincipalID: pid, Script: s.sieveScripts[pid]})
 	}
+	// managed_rules: emit sorted by ID.
+	mrids := make([]store.ManagedRuleID, 0, len(s.managedRules))
+	for id := range s.managedRules {
+		mrids = append(mrids, id)
+	}
+	sort.Slice(mrids, func(i, j int) bool { return mrids[i] < mrids[j] })
+	dd.Tables["managed_rules"] = make([]any, 0, len(mrids))
+	for _, id := range mrids {
+		dd.Tables["managed_rules"] = append(dd.Tables["managed_rules"], s.managedRules[id])
+	}
 	mbids := make([]store.MailboxID, 0, len(s.mailboxes))
 	for id := range s.mailboxes {
 		mbids = append(mbids, id)
@@ -100,6 +110,26 @@ func (s *Store) DiagSnapshot() *DiagDump {
 	sort.Slice(mids, func(i, j int) bool { return mids[i] < mids[j] })
 	for _, id := range mids {
 		dd.Tables["messages"] = append(dd.Tables["messages"], s.messages[id])
+	}
+	// message_mailboxes: emit sorted by (message_id, mailbox_id).
+	type mmKeySort struct {
+		msgID store.MessageID
+		mbID  store.MailboxID
+	}
+	mmkeys := make([]mmKeySort, 0, len(s.msgMailboxes))
+	for k := range s.msgMailboxes {
+		mmkeys = append(mmkeys, mmKeySort{k.msgID, k.mbID})
+	}
+	sort.Slice(mmkeys, func(i, j int) bool {
+		if mmkeys[i].msgID != mmkeys[j].msgID {
+			return mmkeys[i].msgID < mmkeys[j].msgID
+		}
+		return mmkeys[i].mbID < mmkeys[j].mbID
+	})
+	dd.Tables["message_mailboxes"] = make([]any, 0, len(mmkeys))
+	for _, k := range mmkeys {
+		dd.Tables["message_mailboxes"] = append(dd.Tables["message_mailboxes"],
+			s.msgMailboxes[mmKey{k.msgID, k.mbID}])
 	}
 	for _, pid := range pids {
 		for _, c := range s.stateChanges[pid] {
@@ -403,6 +433,9 @@ func (s *Store) DiagReset() {
 	s.nextAuditLogID = 1
 	s.ftsDocs = map[store.MessageID]ftsDoc{}
 	s.sieveScripts = map[store.PrincipalID]string{}
+	s.msgMailboxes = map[mmKey]store.MessageMailbox{}
+	s.managedRules = map[store.ManagedRuleID]store.ManagedRule{}
+	s.managedRuleSeq = 0
 	s.phase2 = nil
 	s.reactions = nil
 	s.coach = nil
@@ -478,6 +511,15 @@ func (s *Store) DiagInsert(table string, row any) error {
 		// references so subsequent expunge does not underflow.
 		if m.Blob.Hash != "" {
 			s.blobRefs[m.Blob.Hash]++
+		}
+	case "message_mailboxes":
+		mm := row.(store.MessageMailbox)
+		s.msgMailboxes[mmKey{mm.MessageID, mm.MailboxID}] = mm
+	case "managed_rules":
+		mr := row.(store.ManagedRule)
+		s.managedRules[mr.ID] = mr
+		if int64(mr.ID) >= s.managedRuleSeq {
+			s.managedRuleSeq = int64(mr.ID) + 1
 		}
 	case "state_changes":
 		c := row.(store.StateChange)

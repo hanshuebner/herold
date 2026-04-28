@@ -192,10 +192,9 @@ func convertFakeToRow(table string, raw any) (any, error) {
 		}, nil
 	case "messages":
 		m := raw.(store.Message)
-		r := &MessageRow{
-			ID: int64(m.ID), MailboxID: int64(m.MailboxID), UID: int64(m.UID),
-			ModSeq: int64(m.ModSeq), Flags: int64(m.Flags),
-			KeywordsCSV:    strings.Join(m.Keywords, ","),
+		return &MessageRow{
+			ID:             int64(m.ID),
+			PrincipalID:    int64(m.PrincipalID),
 			InternalDateUs: micros(m.InternalDate), ReceivedAtUs: micros(m.ReceivedAt),
 			Size: m.Size, BlobHash: m.Blob.Hash, BlobSize: m.Blob.Size,
 			ThreadID:   int64(m.ThreadID),
@@ -203,12 +202,35 @@ func convertFakeToRow(table string, raw any) (any, error) {
 			EnvTo: m.Envelope.To, EnvCc: m.Envelope.Cc, EnvBcc: m.Envelope.Bcc,
 			EnvReplyTo: m.Envelope.ReplyTo, EnvMessageID: m.Envelope.MessageID,
 			EnvInReplyTo: m.Envelope.InReplyTo, EnvDateUs: micros(m.Envelope.Date),
+		}, nil
+	case "message_mailboxes":
+		mm := raw.(store.MessageMailbox)
+		r := &MessageMailboxRow{
+			MessageID:   int64(mm.MessageID),
+			MailboxID:   int64(mm.MailboxID),
+			UID:         int64(mm.UID),
+			ModSeq:      int64(mm.ModSeq),
+			Flags:       int64(mm.Flags),
+			KeywordsCSV: strings.Join(mm.Keywords, ","),
 		}
-		if m.SnoozedUntil != nil {
-			us := m.SnoozedUntil.UnixMicro()
+		if mm.SnoozedUntil != nil {
+			us := mm.SnoozedUntil.UnixMicro()
 			r.SnoozedUntilUs = &us
 		}
 		return r, nil
+	case "managed_rules":
+		mr := raw.(store.ManagedRule)
+		return &ManagedRuleRow{
+			ID:             int64(mr.ID),
+			PrincipalID:    int64(mr.PrincipalID),
+			Name:           mr.Name,
+			Enabled:        mr.Enabled,
+			SortOrder:      int64(mr.SortOrder),
+			ConditionsJSON: encodeJSON(mr.Conditions),
+			ActionsJSON:    encodeJSON(mr.Actions),
+			CreatedAtUs:    micros(mr.CreatedAt),
+			UpdatedAtUs:    micros(mr.UpdatedAt),
+		}, nil
 	case "state_changes":
 		c := raw.(store.StateChange)
 		return &StateChangeRow{
@@ -523,11 +545,9 @@ func convertRowToFake(table string, row any) (any, error) {
 		}, nil
 	case "messages":
 		r := row.(*MessageRow)
-		m := store.Message{
-			ID: store.MessageID(r.ID), MailboxID: store.MailboxID(r.MailboxID),
-			UID: store.UID(r.UID), ModSeq: store.ModSeq(r.ModSeq),
-			Flags:        store.MessageFlags(r.Flags),
-			Keywords:     splitCSV(r.KeywordsCSV),
+		return store.Message{
+			ID:           store.MessageID(r.ID),
+			PrincipalID:  store.PrincipalID(r.PrincipalID),
 			InternalDate: fromMicros(r.InternalDateUs),
 			ReceivedAt:   fromMicros(r.ReceivedAtUs),
 			Size:         r.Size,
@@ -539,12 +559,40 @@ func convertRowToFake(table string, row any) (any, error) {
 				MessageID: r.EnvMessageID, InReplyTo: r.EnvInReplyTo,
 				Date: fromMicros(r.EnvDateUs),
 			},
+		}, nil
+	case "message_mailboxes":
+		r := row.(*MessageMailboxRow)
+		mm := store.MessageMailbox{
+			MessageID: store.MessageID(r.MessageID),
+			MailboxID: store.MailboxID(r.MailboxID),
+			UID:       store.UID(r.UID),
+			ModSeq:    store.ModSeq(r.ModSeq),
+			Flags:     store.MessageFlags(r.Flags),
+			Keywords:  splitCSV(r.KeywordsCSV),
 		}
 		if r.SnoozedUntilUs != nil {
 			t := fromMicros(*r.SnoozedUntilUs)
-			m.SnoozedUntil = &t
+			mm.SnoozedUntil = &t
 		}
-		return m, nil
+		return mm, nil
+	case "managed_rules":
+		r := row.(*ManagedRuleRow)
+		mr := store.ManagedRule{
+			ID:          store.ManagedRuleID(r.ID),
+			PrincipalID: store.PrincipalID(r.PrincipalID),
+			Name:        r.Name,
+			Enabled:     r.Enabled,
+			SortOrder:   int(r.SortOrder),
+			CreatedAt:   fromMicros(r.CreatedAtUs),
+			UpdatedAt:   fromMicros(r.UpdatedAtUs),
+		}
+		if r.ConditionsJSON != "" && r.ConditionsJSON != "null" {
+			_ = decodeJSON(r.ConditionsJSON, &mr.Conditions)
+		}
+		if r.ActionsJSON != "" && r.ActionsJSON != "null" {
+			_ = decodeJSON(r.ActionsJSON, &mr.Actions)
+		}
+		return mr, nil
 	case "state_changes":
 		r := row.(*StateChangeRow)
 		return store.StateChange{
