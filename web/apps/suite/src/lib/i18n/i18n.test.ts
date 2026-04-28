@@ -36,7 +36,7 @@ describe('i18n', () => {
   it('interpolates {name} placeholders', () => {
     expect(t('bulk.selected', { count: 3 })).toBe('3 selected');
     i18n.locale = 'de';
-    expect(t('bulk.selected', { count: 3 })).toBe('3 ausgewaehlt');
+    expect(t('bulk.selected', { count: 3 })).toBe('3 ausgewählt');
   });
 
   it('leaves unmatched placeholders untouched', () => {
