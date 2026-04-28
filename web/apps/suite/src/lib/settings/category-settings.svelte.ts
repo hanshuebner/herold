@@ -1,9 +1,13 @@
 /**
- * CategorySettings store — Wave 3.13.
+ * CategorySettings store — Wave 3.13 (revised 2026-04-28, REQ-CAT-40/41).
  *
  * Manages the JMAP `CategorySettings` singleton (id "singleton") exposed by
  * the `https://netzhansa.com/jmap/categorise` capability. Loaded on app boot
  * when the capability is advertised; exposes reactive state and actions.
+ *
+ * The prompt is the single user-editable lever. The category list is
+ * server-derived (`derivedCategories: string[]`, read-only) per REQ-CAT-40
+ * and REQ-FILT-217. No list-mutation methods; only the prompt is mutable.
  *
  * Pattern mirrors settings.svelte.ts (local prefs) and the VacationForm
  * (server-side singleton pattern), adapted for a reactive store that
@@ -16,25 +20,26 @@ import { sync } from '../jmap/sync.svelte';
 import { toast } from '../toast/toast.svelte';
 import { Capability, type Invocation } from '../jmap/types';
 
-export interface Category {
-  id: string;
-  name: string;
-  order: number;
-}
-
-/** Default category set — matches Gmail's, per REQ-CAT-10. */
-const DEFAULT_CATEGORIES: Category[] = [
-  { id: 'primary', name: 'Primary', order: 0 },
-  { id: 'social', name: 'Social', order: 1 },
-  { id: 'promotions', name: 'Promotions', order: 2 },
-  { id: 'updates', name: 'Updates', order: 3 },
-  { id: 'forums', name: 'Forums', order: 4 },
-];
-
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 /** Scope for the bulk re-categorisation RPC. */
 export type RecategoriseScope = 'inbox-recent' | 'inbox-all';
+
+/**
+ * Default prompt used when the server has not yet returned settings or
+ * the user has not modified the prompt. Enumerates Gmail-style categories
+ * and instructs the LLM to return the REQ-FILT-215 JSON shape.
+ */
+export const DEFAULT_PROMPT = `You are a mail categoriser. Classify the message into exactly one of the following categories:
+- Primary: direct correspondence, transactional mail, anything that does not fit another category
+- Social: notifications from social networks, messaging apps, friend activity
+- Promotions: marketing, offers, deals, retail newsletters
+- Updates: receipts, statements, automated notifications, package tracking
+- Forums: mailing-list discussion, online groups, community digests
+
+Respond with JSON only, no explanation:
+{"categories":["Primary","Social","Promotions","Updates","Forums"],"assigned":"<chosen category>"}
+If none of the categories fit, use "Primary". The "assigned" value must be one of the "categories" list.`;
 
 function invocationArgs<T>(inv: Invocation | undefined): T {
   if (!inv) throw new Error('Expected method invocation, got undefined');
@@ -45,10 +50,15 @@ class CategorySettingsStore {
   loadStatus = $state<LoadStatus>('idle');
   loadError = $state<string | null>(null);
 
-  // Reactive properties mirroring the server singleton.
-  categories = $state<Category[]>([...DEFAULT_CATEGORIES]);
+  /**
+   * Server-derived category names (read-only to the user). Populated from
+   * the most recent successful classifier response via REQ-FILT-217.
+   * Empty when no classifier call has succeeded since the last prompt change.
+   */
+  derivedCategories = $state<string[]>([]);
+
   systemPrompt = $state<string>('');
-  defaultPrompt = $state<string>('');
+  defaultPrompt = $state<string>(DEFAULT_PROMPT);
   enabled = $state<boolean>(true);
 
   /** True while a bulk re-categorise RPC is in flight. */
@@ -117,7 +127,7 @@ class CategorySettingsStore {
       const args = invocationArgs<{
         list: Array<{
           id: string;
-          categories?: Category[];
+          derivedCategories?: string[];
           systemPrompt?: string;
           defaultPrompt?: string;
           enabled?: boolean;
@@ -127,17 +137,17 @@ class CategorySettingsStore {
 
       const row = args.list?.[0];
       if (row) {
-        this.categories = row.categories?.length
-          ? [...row.categories].sort((a, b) => a.order - b.order)
-          : [...DEFAULT_CATEGORIES];
+        this.derivedCategories = Array.isArray(row.derivedCategories)
+          ? [...row.derivedCategories]
+          : [];
         this.systemPrompt = row.systemPrompt ?? '';
-        this.defaultPrompt = row.defaultPrompt ?? '';
+        this.defaultPrompt = row.defaultPrompt ?? DEFAULT_PROMPT;
         this.enabled = row.enabled ?? true;
       } else {
         // Server synthesises defaults; mirror them locally.
-        this.categories = [...DEFAULT_CATEGORIES];
+        this.derivedCategories = [];
         this.systemPrompt = '';
-        this.defaultPrompt = '';
+        this.defaultPrompt = DEFAULT_PROMPT;
         this.enabled = true;
       }
       if (typeof args.state === 'string') this.#state = args.state;
@@ -146,18 +156,6 @@ class CategorySettingsStore {
       this.loadStatus = 'error';
       this.loadError = err instanceof Error ? err.message : String(err);
     }
-  }
-
-  /**
-   * Set the category list. Optimistic: applies locally and fires
-   * `CategorySettings/set`. Reverts on failure with a toast.
-   */
-  async setCategories(next: Category[]): Promise<void> {
-    const prev = this.categories;
-    this.categories = next;
-    await this.#set({ categories: next }, () => {
-      this.categories = prev;
-    });
   }
 
   /**
@@ -184,9 +182,14 @@ class CategorySettingsStore {
 
   /**
    * Reset system prompt to the server default. Replaces systemPrompt with
-   * defaultPrompt locally, then persists via /set.
+   * defaultPrompt locally, then persists via /set. Also invalidates
+   * derivedCategories because the prompt change will trigger a new
+   * classifier call on the server (REQ-FILT-217).
    */
   async reset(): Promise<void> {
+    // Invalidate derivedCategories immediately: they will be refilled after
+    // the next successful classifier call (REQ-FILT-217).
+    this.derivedCategories = [];
     await this.setSystemPrompt(this.defaultPrompt);
     toast.show({ message: 'Prompt reset to default' });
   }
@@ -212,7 +215,7 @@ class CategorySettingsStore {
         );
       });
       strict(responses);
-      // Server returns { jobId, state: "running" } — we don't use the jobId;
+      // Server returns { jobId, state: "running" } -- we don't use the jobId;
       // completion is signalled by a CategorySettings state-change event.
       toast.show({ message: 'Re-categorisation started' });
     } catch (err) {
@@ -263,7 +266,7 @@ class CategorySettingsStore {
         });
         return;
       }
-      toast.show({ message: 'Categories saved' });
+      toast.show({ message: 'Settings saved' });
     } catch (err) {
       revert();
       toast.show({
@@ -292,26 +295,26 @@ export function categoryKeyword(name: string): string {
  */
 export function emailCategory(
   keywords: Record<string, true | undefined>,
-  categories: Category[],
+  derivedCategories: string[],
 ): string | null {
-  for (const cat of categories) {
-    const kw = categoryKeyword(cat.name);
-    if (keywords[kw]) return cat.name;
+  for (const name of derivedCategories) {
+    const kw = categoryKeyword(name);
+    if (keywords[kw]) return name;
   }
   return null;
 }
 
 /**
  * True when the given email keyword set matches the given category tab.
- * The Primary tab matches emails with NO category keyword; all other tabs
- * match emails whose `$category-<name>` keyword is present.
+ * The Primary tab (tabName === null) matches emails with NO category keyword;
+ * all other tabs match emails whose `$category-<name>` keyword is present.
  */
 export function emailMatchesTab(
   keywords: Record<string, true | undefined>,
   tabName: string | null,
-  categories: Category[],
+  derivedCategories: string[],
 ): boolean {
-  const actual = emailCategory(keywords, categories);
+  const actual = emailCategory(keywords, derivedCategories);
   if (tabName === null) {
     // Primary tab: no category keyword set.
     return actual === null;
@@ -323,5 +326,5 @@ export const _internals_forTest = {
   categoryKeyword,
   emailCategory,
   emailMatchesTab,
-  DEFAULT_CATEGORIES,
+  DEFAULT_PROMPT,
 };

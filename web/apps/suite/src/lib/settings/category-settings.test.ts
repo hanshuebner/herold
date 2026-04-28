@@ -1,26 +1,26 @@
 /**
- * CategorySettings store unit tests — Wave 3.13.
+ * CategorySettings store unit tests (revised 2026-04-28, REQ-CAT-40/41).
  *
  * Tests the pure helpers and the store's action surface using vi.mock
  * for the JMAP client, auth, sync, and toast singletons.
  *
  * Coverage:
  *   1. Helper: categoryKeyword / emailCategory / emailMatchesTab
- *   2. Default categories render correctly when the server returns synthesis
- *   3. setCategories — optimistic update + server persistence
- *   4. Cannot remove Primary — server rejects; optimistic patch reverts
- *   5. recategorise — fires the RPC; recategorising flag is set
+ *   2. Default state when the server returns an empty list
+ *   3. Load: derivedCategories populated from the server response
+ *   4. setSystemPrompt -- optimistic update + server persistence
+ *   5. reset -- clears derivedCategories, reverts prompt on failure
+ *   6. recategorise -- fires the RPC; recategorising flag is set
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   _internals_forTest,
   categorySettings,
-  type Category,
 } from './category-settings.svelte';
 import type { Invocation } from '../jmap/types';
 
-const { categoryKeyword, emailCategory, emailMatchesTab, DEFAULT_CATEGORIES } =
+const { categoryKeyword, emailCategory, emailMatchesTab, DEFAULT_PROMPT } =
   _internals_forTest;
 
 // ── JMAP client mock ──────────────────────────────────────────────────────
@@ -155,11 +155,7 @@ describe('categoryKeyword', () => {
 });
 
 describe('emailCategory', () => {
-  const cats: Category[] = [
-    { id: 'primary', name: 'Primary', order: 0 },
-    { id: 'social', name: 'Social', order: 1 },
-    { id: 'promotions', name: 'Promotions', order: 2 },
-  ];
+  const cats = ['Primary', 'Social', 'Promotions'];
 
   it('returns null when no $category-* keyword is present', () => {
     expect(emailCategory({ $seen: true }, cats)).toBeNull();
@@ -176,10 +172,7 @@ describe('emailCategory', () => {
 });
 
 describe('emailMatchesTab', () => {
-  const cats: Category[] = [
-    { id: 'primary', name: 'Primary', order: 0 },
-    { id: 'social', name: 'Social', order: 1 },
-  ];
+  const cats = ['Primary', 'Social'];
 
   it('Primary tab (null) matches emails with no category keyword', () => {
     expect(emailMatchesTab({ $seen: true }, null, cats)).toBe(true);
@@ -198,27 +191,38 @@ describe('emailMatchesTab', () => {
   });
 });
 
+describe('DEFAULT_PROMPT', () => {
+  it('includes the five Gmail-style category names', () => {
+    expect(DEFAULT_PROMPT).toContain('Primary');
+    expect(DEFAULT_PROMPT).toContain('Social');
+    expect(DEFAULT_PROMPT).toContain('Promotions');
+    expect(DEFAULT_PROMPT).toContain('Updates');
+    expect(DEFAULT_PROMPT).toContain('Forums');
+  });
+
+  it('instructs the LLM to return JSON with categories and assigned fields', () => {
+    expect(DEFAULT_PROMPT).toContain('"categories"');
+    expect(DEFAULT_PROMPT).toContain('"assigned"');
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────
-// Test suite 2: store load — default synthesis
+// Test suite 2: store load
 // ─────────────────────────────────────────────────────────────────────────
 
-describe('categorySettings.load — default synthesis', () => {
+describe('categorySettings.load -- empty list synthesis', () => {
   beforeEach(async () => {
-    // Reset load state.
     (categorySettings as unknown as { loadStatus: string }).loadStatus = 'idle';
     (categorySettings as unknown as { loadError: null }).loadError = null;
   });
 
-  it('populates the default category set when the server returns an empty list', async () => {
+  it('sets derivedCategories to [] when the server returns an empty list', async () => {
     const mock = await getJmapMock();
     mock.__setBatchImpl(() => ({
       responses: [
         [
           'CategorySettings/get',
-          {
-            list: [],
-            state: 'state-cat-1',
-          },
+          { list: [], state: 'state-cat-1' },
           'c0',
         ] as Invocation,
       ],
@@ -228,13 +232,12 @@ describe('categorySettings.load — default synthesis', () => {
     await categorySettings.load(true);
 
     expect(categorySettings.loadStatus).toBe('ready');
-    expect(categorySettings.categories).toHaveLength(DEFAULT_CATEGORIES.length);
-    expect(categorySettings.categories[0]!.name).toBe('Primary');
+    expect(categorySettings.derivedCategories).toHaveLength(0);
 
     mock.__setBatchImpl(null);
   });
 
-  it('loads and sorts categories from the server response', async () => {
+  it('populates derivedCategories from the server response', async () => {
     const mock = await getJmapMock();
     mock.__setBatchImpl(() => ({
       responses: [
@@ -244,11 +247,7 @@ describe('categorySettings.load — default synthesis', () => {
             list: [
               {
                 id: 'singleton',
-                categories: [
-                  { id: 'social', name: 'Social', order: 1 },
-                  { id: 'primary', name: 'Primary', order: 0 },
-                  { id: 'promotions', name: 'Promotions', order: 2 },
-                ],
+                derivedCategories: ['Primary', 'Social', 'Promotions'],
                 systemPrompt: 'Custom prompt',
                 defaultPrompt: 'Default prompt',
                 enabled: true,
@@ -264,30 +263,53 @@ describe('categorySettings.load — default synthesis', () => {
 
     await categorySettings.load(true);
 
-    expect(categorySettings.categories[0]!.name).toBe('Primary');
-    expect(categorySettings.categories[1]!.name).toBe('Social');
-    expect(categorySettings.categories[2]!.name).toBe('Promotions');
+    expect(categorySettings.derivedCategories).toEqual(['Primary', 'Social', 'Promotions']);
     expect(categorySettings.systemPrompt).toBe('Custom prompt');
     expect(categorySettings.defaultPrompt).toBe('Default prompt');
+
+    mock.__setBatchImpl(null);
+  });
+
+  it('handles a missing derivedCategories field gracefully', async () => {
+    const mock = await getJmapMock();
+    mock.__setBatchImpl(() => ({
+      responses: [
+        [
+          'CategorySettings/get',
+          {
+            list: [
+              {
+                id: 'singleton',
+                systemPrompt: 'Some prompt',
+              },
+            ],
+            state: 'state-cat-3',
+          },
+          'c0',
+        ] as Invocation,
+      ],
+      sessionState: 'state-1',
+    }));
+
+    await categorySettings.load(true);
+
+    expect(categorySettings.derivedCategories).toEqual([]);
 
     mock.__setBatchImpl(null);
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// Test suite 3: setCategories — rename persists and re-renders
+// Test suite 3: setSystemPrompt
 // ─────────────────────────────────────────────────────────────────────────
 
-describe('categorySettings.setCategories — rename persists', () => {
-  beforeEach(async () => {
+describe('categorySettings.setSystemPrompt', () => {
+  beforeEach(() => {
     (categorySettings as unknown as { loadStatus: string }).loadStatus = 'ready';
-    (categorySettings as unknown as { categories: Category[] }).categories = [
-      { id: 'primary', name: 'Primary', order: 0 },
-      { id: 'social', name: 'Social', order: 1 },
-    ];
+    (categorySettings as unknown as { systemPrompt: string }).systemPrompt = 'Old prompt';
   });
 
-  it('applies the rename optimistically and keeps it after a successful set', async () => {
+  it('applies the prompt optimistically and keeps it after a successful set', async () => {
     const mock = await getJmapMock();
     mock.__setBatchImpl(() => ({
       responses: [
@@ -300,18 +322,14 @@ describe('categorySettings.setCategories — rename persists', () => {
       sessionState: 'state-1',
     }));
 
-    const renamed: Category[] = [
-      { id: 'primary', name: 'Primary', order: 0 },
-      { id: 'social', name: 'Networking', order: 1 },
-    ];
-    await categorySettings.setCategories(renamed);
+    await categorySettings.setSystemPrompt('New prompt');
 
-    expect(categorySettings.categories[1]!.name).toBe('Networking');
+    expect(categorySettings.systemPrompt).toBe('New prompt');
 
     mock.__setBatchImpl(null);
   });
 
-  it('reverts the optimistic rename when the server returns notUpdated', async () => {
+  it('reverts the optimistic prompt when the server returns notUpdated', async () => {
     const toastMock = await getToastMock();
     toastMock.toast.show.mockClear();
 
@@ -322,7 +340,7 @@ describe('categorySettings.setCategories — rename persists', () => {
           'CategorySettings/set',
           {
             notUpdated: {
-              singleton: { type: 'invalidProperties', description: 'Cannot remove Primary' },
+              singleton: { type: 'invalidProperties', description: 'Prompt too long' },
             },
           },
           'c0',
@@ -331,18 +349,10 @@ describe('categorySettings.setCategories — rename persists', () => {
       sessionState: 'state-1',
     }));
 
-    const original = categorySettings.categories.map((c) => ({ ...c }));
-    const bad: Category[] = [
-      // Intentionally an empty list (no Primary) — server rejects this.
-      { id: 'social', name: 'Social', order: 0 },
-    ];
-    await categorySettings.setCategories(bad);
+    await categorySettings.setSystemPrompt('Bad prompt');
 
-    // The categories should have reverted to the original list.
-    expect(categorySettings.categories).toHaveLength(original.length);
-    expect(categorySettings.categories[0]!.name).toBe(original[0]!.name);
-
-    // A toast error should have been surfaced.
+    // Should have reverted to the original.
+    expect(categorySettings.systemPrompt).toBe('Old prompt');
     expect(toastMock.toast.show).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'error' }),
     );
@@ -352,7 +362,46 @@ describe('categorySettings.setCategories — rename persists', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// Test suite 4: recategorise — fires the RPC and sets the flag
+// Test suite 4: reset
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('categorySettings.reset', () => {
+  beforeEach(() => {
+    (categorySettings as unknown as { loadStatus: string }).loadStatus = 'ready';
+    (categorySettings as unknown as { systemPrompt: string }).systemPrompt = 'Custom prompt';
+    (categorySettings as unknown as { defaultPrompt: string }).defaultPrompt = 'Default prompt';
+    (categorySettings as unknown as { derivedCategories: string[] }).derivedCategories = [
+      'Primary',
+      'Social',
+    ];
+  });
+
+  it('clears derivedCategories immediately and resets the prompt', async () => {
+    const mock = await getJmapMock();
+    mock.__setBatchImpl(() => ({
+      responses: [
+        [
+          'CategorySettings/set',
+          { updated: { singleton: null }, notUpdated: null },
+          'c0',
+        ] as Invocation,
+      ],
+      sessionState: 'state-1',
+    }));
+
+    await categorySettings.reset();
+
+    // derivedCategories must be cleared (server will refill after next classifier call).
+    expect(categorySettings.derivedCategories).toEqual([]);
+    // systemPrompt should now be the default.
+    expect(categorySettings.systemPrompt).toBe('Default prompt');
+
+    mock.__setBatchImpl(null);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Test suite 5: recategorise
 // ─────────────────────────────────────────────────────────────────────────
 
 describe('categorySettings.recategorise', () => {
@@ -389,7 +438,6 @@ describe('categorySettings.recategorise', () => {
 
     await recatPromise;
     // After success the flag stays true (cleared on state-change reload).
-    // We only assert the RPC was issued.
     expect(mock.jmap.batch).toHaveBeenCalled();
 
     mock.__setBatchImpl(null);

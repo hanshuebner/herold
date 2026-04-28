@@ -149,6 +149,29 @@ export const en = {
   'labelPicker.empty.filter': 'No labels match "{filter}".',
   'labelPicker.done': 'Done',
 
+  // ── Categories settings ──────────────────────────────────────────────
+  'cat.currentCategories': 'Current categories',
+  'cat.currentCategories.hint':
+    'These are the categories the LLM is currently using, derived from the prompt above. Edit the prompt to change them.',
+  'cat.currentCategories.empty':
+    'No categories yet. Categories will appear here after the next message is classified.',
+  'cat.prompt.heading': 'Classification prompt',
+  'cat.prompt.hint':
+    'The prompt used by the LLM to classify your mail into categories. Editing this changes how future mail (and re-categorised mail) is classified. Max 32 KB.',
+  'cat.prompt.reset': 'Reset to default',
+  'cat.prompt.save': 'Save prompt',
+  'cat.disclosure.heading': 'How your mail is classified',
+  'cat.disclosure.hint':
+    'This is the prompt used to categorise your mail. Your messages are sent to herold\'s configured classifier endpoint along with this prompt.',
+  'cat.recategorise.heading': 'Re-categorise inbox',
+  'cat.recategorise.hint':
+    'Run the classifier on your recent inbox (up to 1000 messages). Results appear as the job progresses in the background.',
+  'cat.recategorise.run': 'Re-categorise inbox',
+  'cat.recategorise.running': 'Running...',
+  'cat.recategorise.notAvailable': 'Not available on this server.',
+  'cat.recategorise.inProgress':
+    'Re-categorisation in progress -- results will update automatically.',
+
   // ── Settings ────────────────────────────────────────────────────────
   'settings.title': 'Settings',
   'settings.account': 'Account',

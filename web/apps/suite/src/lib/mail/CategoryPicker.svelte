@@ -44,13 +44,16 @@
     <div class="picker-panel">
       <h2>Move to category</h2>
       <ul class="cat-list">
-        {#each categorySettings.categories as cat (cat.id)}
+        {#each categorySettings.derivedCategories as name (name)}
           <li>
-            <button type="button" onclick={() => pick(cat.name)}>
-              {cat.name}
+            <button type="button" onclick={() => pick(name)}>
+              {name}
             </button>
           </li>
         {/each}
+        {#if categorySettings.derivedCategories.length === 0}
+          <li class="empty-hint">No categories available yet.</li>
+        {/if}
       </ul>
       <div class="picker-footer">
         <button type="button" class="cancel" onclick={() => categoryPicker.close()}>
@@ -125,5 +128,11 @@
   .cancel:hover {
     background: var(--layer-02);
     color: var(--text-primary);
+  }
+  .empty-hint {
+    padding: var(--spacing-03) var(--spacing-04);
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    list-style: none;
   }
 </style>

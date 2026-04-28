@@ -148,6 +148,29 @@ export const de = {
   'labelPicker.empty.filter': 'Keine Labels passen zu "{filter}".',
   'labelPicker.done': 'Fertig',
 
+  // ── Categories settings ──────────────────────────────────────────────
+  'cat.currentCategories': 'Aktuelle Kategorien',
+  'cat.currentCategories.hint':
+    'Dies sind die Kategorien, die das Sprachmodell aktuell verwendet, abgeleitet aus dem Prompt oben. Bearbeite den Prompt, um sie zu andern.',
+  'cat.currentCategories.empty':
+    'Noch keine Kategorien. Kategorien erscheinen hier, sobald die nachste Nachricht klassifiziert wurde.',
+  'cat.prompt.heading': 'Klassifizierungs-Prompt',
+  'cat.prompt.hint':
+    'Der Prompt, den das Sprachmodell zur Klassifizierung deiner Nachrichten in Kategorien verwendet. Anpassungen wirken sich auf zukunftige (und neu klassifizierte) Nachrichten aus. Max. 32 KB.',
+  'cat.prompt.reset': 'Auf Standard zurucksetzen',
+  'cat.prompt.save': 'Prompt speichern',
+  'cat.disclosure.heading': 'Wie deine Nachrichten klassifiziert werden',
+  'cat.disclosure.hint':
+    'Dies ist der Prompt, der zur Kategorisierung deiner E-Mails verwendet wird. Deine Nachrichten werden zusammen mit diesem Prompt an den konfigurierten Klassifizierungs-Endpunkt von herold gesendet.',
+  'cat.recategorise.heading': 'Posteingang neu klassifizieren',
+  'cat.recategorise.hint':
+    'Fuhrt die Klassifizierung fur deinen letzten Posteingang erneut aus (bis zu 1000 Nachrichten). Die Ergebnisse werden im Hintergrund aktualisiert.',
+  'cat.recategorise.run': 'Posteingang neu klassifizieren',
+  'cat.recategorise.running': 'Lauft...',
+  'cat.recategorise.notAvailable': 'Auf diesem Server nicht verfugbar.',
+  'cat.recategorise.inProgress':
+    'Neu-Klassifizierung lauft -- Ergebnisse werden automatisch aktualisiert.',
+
   // ── Settings ────────────────────────────────────────────────────────
   'settings.title': 'Einstellungen',
   'settings.account': 'Konto',
