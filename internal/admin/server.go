@@ -46,6 +46,7 @@ import (
 	jmapcoach "github.com/hanshuebner/herold/internal/protojmap/coach"
 	jmapmail "github.com/hanshuebner/herold/internal/protojmap/mail"
 	jmapcatsettings "github.com/hanshuebner/herold/internal/protojmap/mail/categorysettings"
+	jmapllmtransparency "github.com/hanshuebner/herold/internal/protojmap/llmtransparency"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/emailsubmission"
 	jmapidentity "github.com/hanshuebner/herold/internal/protojmap/mail/identity"
 	jmapsearchsnippet "github.com/hanshuebner/herold/internal/protojmap/mail/searchsnippet"
@@ -1853,6 +1854,11 @@ func composeAdminAndUI(
 	// endpoint is configured; the handlers advertise the capability and serve
 	// get/set normally, returning serverFail only for recategorise.
 	jmapcatsettings.Register(jmapSrv.Registry(), st, nil, nil, logger.With("subsystem", "jmap-categorysettings"), clk)
+	// LLMTransparency/get + Email/llmInspect (G14, REQ-FILT-65..68 / REQ-FILT-216).
+	// spamPolicy is nil until a spam plugin is configured (handler returns empty spam
+	// fields). categoriserEndpoint/Model are empty strings; per-account overrides come
+	// from the store's CategorisationConfig row.
+	jmapllmtransparency.Register(jmapSrv.Registry(), st, nil, "", "")
 	jmapHandler := jmapSrv.Handler()
 	publicMux.Handle("/.well-known/jmap",
 		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.session", jmapHandler))

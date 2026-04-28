@@ -91,6 +91,14 @@ const (
 	// Sieve. URI per docs/design/web/notes/server-contract.md.
 	// Implemented under internal/protojmap/mail/managedrule.
 	CapabilityManagedRules CapabilityID = "https://netzhansa.com/jmap/managed-rules"
+
+	// CapabilityLLMTransparency is the G14 LLM-transparency capability
+	// (REQ-FILT-65..68 / REQ-FILT-216). Provides the LLMTransparency
+	// singleton datatype (LLMTransparency/get) and the per-message inspect
+	// method (Email/llmInspect). URI follows the vendor-URL convention used
+	// by CapabilityJMAPChat and CapabilityJMAPCategorise.
+	// Implemented under internal/protojmap/llmtransparency.
+	CapabilityLLMTransparency CapabilityID = "https://netzhansa.com/jmap/llm-transparency"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP
