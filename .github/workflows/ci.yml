@@ -220,3 +220,26 @@ jobs:
           else
             echo "test/interop has no Go packages yet (Phase 0 placeholder); skipping."
           fi
+
+  jmaptest:
+    name: jmap conformance (jmapio/jmap-test-suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Advisory only for now. The suite has 5 Required failures tracked under
+    # REQ-STORE-36..39 (multi-mailbox membership) and REQ-PROTO-48 (Web Push
+    # VAPID dispatcher); failing the build on those would block every PR
+    # until those items land. Surface the result for visibility without
+    # gating. Drop continue-on-error once the deferred items close out.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: run jmaptest harness
+        run: make interop-jmaptest
+      - name: upload artifacts
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: jmaptest-logs
+          path: test/interop/logs/
+          if-no-files-found: warn
+          retention-days: 14

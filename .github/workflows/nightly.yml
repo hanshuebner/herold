@@ -60,6 +60,49 @@ jobs:
           if [ -d test/interop-external ]; then go test -count=1 ./test/interop-external/...; else
             echo "test/interop-external not yet populated"; fi
 
+  jmaptest-pin-check:
+    name: jmaptest pin freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Fails when the JMAPTEST_SHA pin in test/interop/config/jmaptest/Dockerfile
+    # is no longer the upstream master HEAD of jmapio/jmap-test-suite.
+    # Treats divergence as a signal to bump the pin (and re-run the suite)
+    # so we pick up new conformance tests as upstream lands them.
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: compare pinned SHA against upstream master
+        run: |
+          set -euo pipefail
+          DOCKERFILE=test/interop/config/jmaptest/Dockerfile
+          PINNED=$(grep -E '^ARG JMAPTEST_SHA=' "${DOCKERFILE}" \
+                   | head -1 \
+                   | sed -E 's/^ARG JMAPTEST_SHA=([0-9a-f]+).*/\1/')
+          if [ -z "${PINNED}" ]; then
+            echo "ERROR: could not parse JMAPTEST_SHA from ${DOCKERFILE}"
+            exit 2
+          fi
+          UPSTREAM=$(curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/jmapio/jmap-test-suite/commits/master \
+              | sed -nE 's/^[[:space:]]*"sha":[[:space:]]*"([0-9a-f]+)".*/\1/p' \
+              | head -1)
+          if [ -z "${UPSTREAM}" ]; then
+            echo "ERROR: could not fetch upstream master SHA"
+            exit 2
+          fi
+          echo "pinned SHA:   ${PINNED}"
+          echo "upstream SHA: ${UPSTREAM}"
+          if [ "${PINNED}" != "${UPSTREAM}" ]; then
+            echo ""
+            echo "FAIL: jmap-test-suite pin is stale."
+            echo "Update JMAPTEST_SHA in ${DOCKERFILE} to ${UPSTREAM}"
+            echo "and re-run the suite (make interop-jmaptest) to pick up"
+            echo "any new conformance tests."
+            exit 1
+          fi
+          echo "OK: pin matches upstream master."
+
   sbom-diff:
     name: sbom diff
     runs-on: ubuntu-latest
