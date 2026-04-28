@@ -110,14 +110,39 @@ func (h *handlerSet) listAllMessages(ctx context.Context, p store.Principal) ([]
 }
 
 // computeForPrincipal returns the (msg→thread, thread→[msg]) maps for
-// p's whole account. Computed fresh per call; caching can land later.
+// p's whole account.
+//
+// v1 keys threads by store.Message.ThreadID (falling back to MessageID
+// when ThreadID is 0). This matches Email/get's threadIDForMessage --
+// both render "t<m.ThreadID>" or, for un-threaded messages,
+// "t<m.ID>" -- so a client that takes Email.threadId and passes it
+// back into Thread/get always resolves to a thread row.
+//
+// The JWZ algorithm in jwz.go is the canonical threading logic but is
+// not yet wired into the inbound delivery path -- it is intended to run
+// at ingest and persist the result into store.Message.ThreadID. Until
+// that lands, every message is a singleton thread; clicking a thread
+// in the inbox loads the message bodies and the UI works, but
+// reply-chain collapsing (multiple emails grouped under one thread)
+// does not happen. See TODO(thread/jwz-at-ingest).
 func (h *handlerSet) computeForPrincipal(ctx context.Context, p store.Principal) (map[store.MessageID]ThreadKey, map[ThreadKey][]store.MessageID, error) {
 	msgs, err := h.listAllMessages(ctx, p)
 	if err != nil {
 		return nil, nil, err
 	}
-	mt, tm := computeThreads(msgs)
-	return mt, tm, nil
+	msgToThread := make(map[store.MessageID]ThreadKey, len(msgs))
+	threadToMsgs := make(map[ThreadKey][]store.MessageID)
+	for _, m := range msgs {
+		var key ThreadKey
+		if m.ThreadID != 0 {
+			key = ThreadKey(m.ThreadID)
+		} else {
+			key = ThreadKey(uint64(m.ID))
+		}
+		msgToThread[m.ID] = key
+		threadToMsgs[key] = append(threadToMsgs[key], m.ID)
+	}
+	return msgToThread, threadToMsgs, nil
 }
 
 // renderThreadID stringifies a ThreadKey for the JMAP wire. The "t"
