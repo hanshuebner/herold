@@ -570,15 +570,6 @@
 <div class="mail">
   {#if threadId}
     <div class="thread-frame">
-      <header class="thread-frame-bar">
-        <button
-          type="button"
-          class="back"
-          onclick={() => router.navigate(folderHref(mail.listFolder))}
-        >
-          ← Back to {mail.listFolderLabel}
-        </button>
-      </header>
       <ThreadReader {threadId} />
     </div>
   {:else if isSearchRoute}
@@ -889,12 +880,6 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-  }
-  .thread-frame-bar {
-    flex: 0 0 auto;
-    padding: var(--spacing-03) var(--spacing-05);
-    border-bottom: 1px solid var(--border-subtle-01);
-    background: var(--layer-01);
   }
   .thread-frame :global(.thread-reader) {
     flex: 1;
