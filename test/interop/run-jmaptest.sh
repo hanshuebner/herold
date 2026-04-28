@@ -71,8 +71,11 @@ compose_up_one() {
     return 1
 }
 
-# Build the herold + runner + jmaptest images.
-docker compose --profile jmaptest build --quiet herold runner jmaptest \
+# Build the herold + runner + jmaptest images. Verbose output (no --quiet)
+# so a failed go build inside the herold image surfaces its compile error
+# directly in the CI log instead of just "did not complete successfully:
+# exit code: 1".
+docker compose --profile jmaptest build herold runner jmaptest \
     2>&1 | tee "${LOGS_DIR}/build.log"
 docker compose --profile jmaptest pull --quiet coredns \
     2>&1 | tee -a "${LOGS_DIR}/build.log" || true
