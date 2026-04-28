@@ -638,11 +638,12 @@
     cursor: progress;
   }
   .discard {
-    color: var(--text-secondary);
+    background: var(--layer-02);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle-01);
   }
   .discard:hover:not(:disabled) {
     background: var(--layer-03);
-    color: var(--text-primary);
   }
 
   @keyframes fade-in {
