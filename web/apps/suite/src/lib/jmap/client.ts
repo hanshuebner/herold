@@ -38,6 +38,62 @@ export class JmapClient {
   }
 
   /**
+   * Upload a blob via POST to the session uploadUrl (RFC 8620 §6.1).
+   * Returns the parsed `{accountId, blobId, type, size}` response on
+   * success. The body is streamed as-is; the caller picks the right
+   * Content-Type (defaults to application/octet-stream).
+   */
+  async uploadBlob(args: {
+    accountId: string;
+    body: Blob;
+    type?: string;
+  }): Promise<{ accountId: string; blobId: string; type: string; size: number }> {
+    const session = this.#session;
+    if (!session) {
+      throw new JmapTransportError('JMAP client not bootstrapped', undefined);
+    }
+    const url = session.uploadUrl.replace(
+      '{accountId}',
+      encodeURIComponent(args.accountId),
+    );
+    const res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': args.type || args.body.type || 'application/octet-stream',
+        Accept: 'application/json',
+      },
+      body: args.body,
+    });
+    if (res.status === 401) throw new UnauthenticatedError();
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const body = (await res.json()) as { type?: string; description?: string };
+        if (body.description) detail = body.description;
+        else if (body.type) detail = body.type;
+      } catch {
+        // body wasn't JSON; keep the HTTP status
+      }
+      throw new JmapTransportError(`Upload failed: ${detail}`, res.status);
+    }
+    return (await res.json()) as {
+      accountId: string;
+      blobId: string;
+      type: string;
+      size: number;
+    };
+  }
+
+  /** Maximum bytes per upload from the core capability, or null when unknown. */
+  get maxUploadSize(): number | null {
+    const core = this.#session?.capabilities['urn:ietf:params:jmap:core'] as
+      | { maxSizeUpload?: number }
+      | undefined;
+    return core?.maxSizeUpload ?? null;
+  }
+
+  /**
    * Resolve a JMAP downloadUrl template (RFC 8620 §6.2) for a blob.
    * The session.downloadUrl carries `{accountId}`, `{blobId}`, `{type}`,
    * and `{name}` placeholders; this helper substitutes the obvious four

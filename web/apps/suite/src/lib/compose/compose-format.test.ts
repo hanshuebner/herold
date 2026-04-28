@@ -19,6 +19,7 @@ const {
   htmlToPlainText,
   escapeHtml,
   computeReplyAllCc,
+  formatBytes,
 } = _internals_forTest;
 
 describe('parseAddressList', () => {
@@ -244,5 +245,24 @@ describe('computeReplyAllCc', () => {
   it('handles missing addresses without throwing', () => {
     const parent = emailWith({});
     expect(computeReplyAllCc(parent, new Set())).toEqual([]);
+  });
+});
+
+describe('formatBytes', () => {
+  it('formats bytes', () => {
+    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(900)).toBe('900 B');
+  });
+  it('formats kilobytes with one decimal', () => {
+    expect(formatBytes(1024)).toBe('1.0 KB');
+    expect(formatBytes(2048)).toBe('2.0 KB');
+    expect(formatBytes(1536)).toBe('1.5 KB');
+  });
+  it('formats megabytes with one decimal', () => {
+    expect(formatBytes(1024 * 1024)).toBe('1.0 MB');
+    expect(formatBytes(50 * 1024 * 1024)).toBe('50.0 MB');
+  });
+  it('formats gigabytes with two decimals', () => {
+    expect(formatBytes(1024 * 1024 * 1024)).toBe('1.00 GB');
   });
 });

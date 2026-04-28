@@ -35,6 +35,21 @@ import {
 
 type ComposeStatus = 'idle' | 'editing' | 'sending';
 
+/** One queued attachment, owned by a single compose state-machine. */
+export interface ComposeAttachment {
+  /** Stable per-compose key used by the UI. */
+  key: string;
+  name: string;
+  size: number;
+  type: string;
+  /** Upload progress / status. */
+  status: 'uploading' | 'ready' | 'failed';
+  /** Server-assigned blob id once status === 'ready'. */
+  blobId: string | null;
+  /** Failure reason — surfaced as the row's helper text. */
+  error: string | null;
+}
+
 interface ReplyContext {
   /** Parent email id — used to flip $answered / $forwarded after send. */
   parentId: string | null;
@@ -74,6 +89,14 @@ class ComposeStore {
   replyContext = $state<ReplyContext>({ ...EMPTY_REPLY });
 
   /**
+   * Attachments queued for the in-progress message. Each entry tracks
+   * its own upload state so the UI can render uploading / failed / ready
+   * affordances without blocking the rest of the compose.
+   */
+  attachments = $state<ComposeAttachment[]>([]);
+  #attachmentSeq = 0;
+
+  /**
    * Server-assigned id of the draft this compose is currently editing.
    * null on fresh compose; set when:
    *   1. the auto-save effect creates a draft (Email/set create), or
@@ -94,6 +117,7 @@ class ComposeStore {
     this.ccBccVisible = false;
     this.replyContext = { ...EMPTY_REPLY };
     this.editingDraftId = null;
+    this.attachments = [];
     this.status = 'editing';
     this.#ensureAccountReady();
   }
@@ -121,6 +145,7 @@ class ComposeStore {
     this.errorMessage = null;
     this.ccBccVisible = Boolean(this.cc || this.bcc);
     this.editingDraftId = args.draftId ?? null;
+    this.attachments = [];
     this.status = 'editing';
     this.#ensureAccountReady();
   }
@@ -212,10 +237,89 @@ class ComposeStore {
   get hasContent(): boolean {
     if (this.to.trim() || this.cc.trim() || this.bcc.trim()) return true;
     if (this.subject.trim()) return true;
+    if (this.attachments.length > 0) return true;
     // Body is HTML; an empty editor renders one or more empty <p> tags.
     // Strip tags and whitespace before deciding it's "empty".
     const textOnly = this.body.replace(/<[^>]+>/g, '').trim();
     return textOnly.length > 0;
+  }
+
+  /** True when at least one attachment is still uploading. */
+  get attachmentsBusy(): boolean {
+    return this.attachments.some((a) => a.status === 'uploading');
+  }
+
+  /**
+   * Queue one or more files for upload. Each file becomes an attachment
+   * row in `uploading` status; the upload runs in parallel and the row
+   * flips to `ready` (with `blobId`) or `failed` (with `error`) on its own.
+   * Files exceeding the server's advertised maxSizeUpload (when present)
+   * are rejected immediately as `failed`.
+   */
+  async addAttachments(files: File[] | FileList): Promise<void> {
+    const accountId = mail.mailAccountId;
+    if (!accountId) return;
+    const list = Array.from(files);
+    if (list.length === 0) return;
+    const maxSize = jmap.maxUploadSize;
+    const tasks: Promise<void>[] = [];
+    for (const file of list) {
+      const key = `att-${++this.#attachmentSeq}`;
+      const att: ComposeAttachment = {
+        key,
+        name: file.name || 'file',
+        size: file.size,
+        type: file.type || 'application/octet-stream',
+        status: 'uploading',
+        blobId: null,
+        error: null,
+      };
+      if (maxSize !== null && file.size > maxSize) {
+        att.status = 'failed';
+        att.error = `Too large: ${formatBytes(file.size)} (max ${formatBytes(maxSize)})`;
+      }
+      this.attachments = [...this.attachments, att];
+      if (att.status === 'failed') continue;
+      tasks.push(this.#uploadOne(att.key, file, accountId));
+    }
+    await Promise.all(tasks);
+  }
+
+  /** Remove a queued attachment by key. */
+  removeAttachment(key: string): void {
+    this.attachments = this.attachments.filter((a) => a.key !== key);
+  }
+
+  /** Retry a failed upload. */
+  async retryAttachment(key: string, file: File): Promise<void> {
+    const accountId = mail.mailAccountId;
+    if (!accountId) return;
+    this.#patchAttachment(key, { status: 'uploading', error: null, blobId: null });
+    await this.#uploadOne(key, file, accountId);
+  }
+
+  async #uploadOne(key: string, file: File, accountId: string): Promise<void> {
+    try {
+      const result = await jmap.uploadBlob({
+        accountId,
+        body: file,
+        type: file.type || 'application/octet-stream',
+      });
+      this.#patchAttachment(key, {
+        status: 'ready',
+        blobId: result.blobId,
+        error: null,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Upload failed';
+      this.#patchAttachment(key, { status: 'failed', error: msg });
+    }
+  }
+
+  #patchAttachment(key: string, patch: Partial<ComposeAttachment>): void {
+    this.attachments = this.attachments.map((a) =>
+      a.key === key ? { ...a, ...patch } : a,
+    );
   }
 
   /** Close and clear. */
@@ -230,6 +334,7 @@ class ComposeStore {
     this.ccBccVisible = false;
     this.replyContext = { ...EMPTY_REPLY };
     this.editingDraftId = null;
+    this.attachments = [];
   }
 
   /**
@@ -294,6 +399,45 @@ class ComposeStore {
     const bodyHtml = this.body;
     const bodyText = htmlToPlainText(bodyHtml);
 
+    const readyAttachments = this.attachments.filter(
+      (a): a is ComposeAttachment & { blobId: string } =>
+        a.status === 'ready' && typeof a.blobId === 'string',
+    );
+
+    // Body structure is multipart/alternative when there are no
+    // attachments; with attachments it becomes multipart/mixed wrapping
+    // the alternative body + one part per attachment.
+    const altPart = {
+      type: 'multipart/alternative',
+      subParts: [
+        { partId: '1', type: 'text/plain', charset: 'utf-8' },
+        { partId: '2', type: 'text/html', charset: 'utf-8' },
+      ],
+    };
+    const bodyStructure: Record<string, unknown> =
+      readyAttachments.length === 0
+        ? altPart
+        : {
+            type: 'multipart/mixed',
+            subParts: [
+              altPart,
+              ...readyAttachments.map((a) => ({
+                blobId: a.blobId,
+                type: a.type,
+                disposition: 'attachment',
+                name: a.name,
+                size: a.size,
+              })),
+            ],
+          };
+    const attachmentParts = readyAttachments.map((a) => ({
+      blobId: a.blobId,
+      type: a.type,
+      disposition: 'attachment',
+      name: a.name,
+      size: a.size,
+    }));
+
     const fields: Record<string, unknown> = {
       from: [{ name: identity.name, email: identity.email }],
       to: toAddrs.map((email) => ({ email, name: null })),
@@ -304,13 +448,9 @@ class ComposeStore {
       },
       textBody: [{ partId: '1', type: 'text/plain', charset: 'utf-8' }],
       htmlBody: [{ partId: '2', type: 'text/html', charset: 'utf-8' }],
-      bodyStructure: {
-        type: 'multipart/alternative',
-        subParts: [
-          { partId: '1', type: 'text/plain', charset: 'utf-8' },
-          { partId: '2', type: 'text/html', charset: 'utf-8' },
-        ],
-      },
+      bodyStructure,
+      ...(attachmentParts.length > 0 ? { attachments: attachmentParts } : {}),
+      hasAttachment: attachmentParts.length > 0,
     };
     if (ccAddrs.length > 0) {
       fields.cc = ccAddrs.map((email) => ({ email, name: null }));
@@ -435,10 +575,46 @@ class ComposeStore {
     onSuccessUpdate['keywords/$draft'] = null;
     onSuccessUpdate['keywords/$seen'] = true;
 
-    // Build the new email — multipart/alternative with text/plain + text/html.
+    // Build the new email — multipart/alternative with text/plain + text/html,
+    // wrapped in multipart/mixed when there are attachments.
     // Include In-Reply-To / References when this is a reply or forward.
     // Mark the parent $answered / $forwarded in the same batch
     // (REQ-MAIL-33) so the UI reflects the change immediately.
+    const readyAttachments = this.attachments.filter(
+      (a): a is ComposeAttachment & { blobId: string } =>
+        a.status === 'ready' && typeof a.blobId === 'string',
+    );
+    const altPart = {
+      type: 'multipart/alternative',
+      subParts: [
+        { partId: '1', type: 'text/plain', charset: 'utf-8' },
+        { partId: '2', type: 'text/html', charset: 'utf-8' },
+      ],
+    };
+    const sendBodyStructure: Record<string, unknown> =
+      readyAttachments.length === 0
+        ? altPart
+        : {
+            type: 'multipart/mixed',
+            subParts: [
+              altPart,
+              ...readyAttachments.map((a) => ({
+                blobId: a.blobId,
+                type: a.type,
+                disposition: 'attachment',
+                name: a.name,
+                size: a.size,
+              })),
+            ],
+          };
+    const sendAttachmentParts = readyAttachments.map((a) => ({
+      blobId: a.blobId,
+      type: a.type,
+      disposition: 'attachment',
+      name: a.name,
+      size: a.size,
+    }));
+
     const draftEmail: Record<string, unknown> = {
       mailboxIds: { [drafts.id]: true },
       keywords: { $draft: true, $seen: true },
@@ -451,13 +627,9 @@ class ComposeStore {
       },
       textBody: [{ partId: '1', type: 'text/plain', charset: 'utf-8' }],
       htmlBody: [{ partId: '2', type: 'text/html', charset: 'utf-8' }],
-      bodyStructure: {
-        type: 'multipart/alternative',
-        subParts: [
-          { partId: '1', type: 'text/plain', charset: 'utf-8' },
-          { partId: '2', type: 'text/html', charset: 'utf-8' },
-        ],
-      },
+      bodyStructure: sendBodyStructure,
+      ...(sendAttachmentParts.length > 0 ? { attachments: sendAttachmentParts } : {}),
+      hasAttachment: sendAttachmentParts.length > 0,
     };
     if (ccRecipients.length > 0) {
       draftEmail.cc = ccRecipients.map((email) => ({ email, name: null }));
@@ -640,6 +812,13 @@ class ComposeStore {
  * "Name <addr>" wrappers — for v1 we keep only the bare address; structured
  * Address objects come in a follow-up pass.
  */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 function parseAddressList(raw: string): string[] {
   return raw
     .split(/[,;\n]/)
@@ -894,4 +1073,5 @@ export const _internals_forTest = {
   escapeHtml,
   plainTextToHtml,
   computeReplyAllCc,
+  formatBytes,
 };

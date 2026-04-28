@@ -98,6 +98,52 @@
   let editorView = $state<EditorView | null>(null);
   let active = $state<ActiveState>(EMPTY_ACTIVE);
 
+  // File picker + drag-drop. The hidden input is triggered by the
+  // toolbar Attach button; the modal-level drag handlers below show a
+  // drop overlay and route File objects to compose.addAttachments.
+  let fileInput = $state<HTMLInputElement | null>(null);
+  let dragActive = $state(false);
+  let dragDepth = 0;
+
+  function onFilePick(e: Event): void {
+    const input = e.currentTarget as HTMLInputElement;
+    if (!input.files || input.files.length === 0) return;
+    void compose.addAttachments(input.files);
+    // Reset so the same file can be picked again immediately afterward.
+    input.value = '';
+  }
+  function onDragEnter(e: DragEvent): void {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    dragActive = true;
+  }
+  function onDragOver(e: DragEvent): void {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+  }
+  function onDragLeave(): void {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) dragActive = false;
+  }
+  function onDrop(e: DragEvent): void {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    dragActive = false;
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) void compose.addAttachments(files);
+  }
+  function hasFiles(e: DragEvent): boolean {
+    return Boolean(e.dataTransfer?.types.includes('Files'));
+  }
+  function formatSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
   function onEditorUpdate(html: string, _text: string): void {
     compose.body = html;
   }
@@ -138,6 +184,10 @@
     aria-modal="true"
     aria-labelledby="compose-title"
     tabindex="-1"
+    ondragenter={onDragEnter}
+    ondragover={onDragOver}
+    ondragleave={onDragLeave}
+    ondrop={onDrop}
   >
     <header class="modal-header">
       <h2 id="compose-title">
@@ -241,7 +291,44 @@
           <ComposeToolbar view={editorView} {active} />
         </div>
       </div>
+
+      {#if compose.attachments.length > 0}
+        <div class="row attachments-row">
+          <span class="label">Attached</span>
+          <ul class="attachments-list">
+            {#each compose.attachments as a (a.key)}
+              <li class:failed={a.status === 'failed'}>
+                <span class="att-name">{a.name}</span>
+                <span class="att-size">{formatSize(a.size)}</span>
+                <span class="att-status">
+                  {#if a.status === 'uploading'}
+                    Uploading…
+                  {:else if a.status === 'failed'}
+                    {a.error ?? 'Upload failed'}
+                  {:else}
+                    Ready
+                  {/if}
+                </span>
+                <button
+                  type="button"
+                  class="att-remove"
+                  aria-label="Remove {a.name}"
+                  onclick={() => compose.removeAttachment(a.key)}
+                >
+                  ×
+                </button>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
     </div>
+
+    {#if dragActive}
+      <div class="drop-overlay" aria-hidden="true">
+        <p>Drop to attach</p>
+      </div>
+    {/if}
 
     {#if compose.errorMessage}
       <p class="error" role="alert">{compose.errorMessage}</p>
@@ -258,9 +345,27 @@
       </button>
       <button
         type="button"
+        class="attach"
+        onclick={() => fileInput?.click()}
+        disabled={compose.status === 'sending'}
+        title="Attach files"
+      >
+        📎 Attach
+      </button>
+      <input
+        bind:this={fileInput}
+        type="file"
+        multiple
+        hidden
+        onchange={onFilePick}
+      />
+      <span class="footer-spacer"></span>
+      <button
+        type="button"
         class="send"
         onclick={() => void compose.send()}
-        disabled={compose.status === 'sending'}
+        disabled={compose.status === 'sending' || compose.attachmentsBusy}
+        title={compose.attachmentsBusy ? 'Attachments still uploading' : ''}
       >
         {compose.status === 'sending' ? 'Sending…' : 'Send'}
       </button>
@@ -404,18 +509,100 @@
 
   .modal-footer {
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
     gap: var(--spacing-03);
     padding: var(--spacing-04) var(--spacing-05);
     border-top: 1px solid var(--border-subtle-01);
     background: var(--layer-01);
   }
+  .footer-spacer {
+    flex: 1;
+  }
   .send,
-  .discard {
+  .discard,
+  .attach {
     padding: var(--spacing-03) var(--spacing-05);
     border-radius: var(--radius-pill);
     font-weight: 600;
     min-height: var(--touch-min);
+  }
+  .attach {
+    color: var(--text-secondary);
+  }
+  .attach:hover:not(:disabled) {
+    background: var(--layer-03);
+    color: var(--text-primary);
+  }
+  .attach:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .attachments-row {
+    align-items: flex-start;
+  }
+  .attachments-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+    flex: 1;
+  }
+  .attachments-list li {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    gap: var(--spacing-03);
+    align-items: center;
+    padding: var(--spacing-02) var(--spacing-03);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+  }
+  .attachments-list li.failed {
+    border-color: var(--support-error);
+  }
+  .att-name {
+    color: var(--text-primary);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .att-size,
+  .att-status {
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+  }
+  .attachments-list li.failed .att-status {
+    color: var(--support-error);
+  }
+  .att-remove {
+    width: 24px;
+    height: 24px;
+    color: var(--text-helper);
+    border-radius: var(--radius-pill);
+    line-height: 1;
+  }
+  .att-remove:hover {
+    background: var(--layer-03);
+    color: var(--text-primary);
+  }
+
+  .drop-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 98, 254, 0.15);
+    border: 2px dashed var(--interactive);
+    color: var(--interactive);
+    font-weight: 600;
+    font-size: var(--type-heading-01-size);
+    pointer-events: none;
+    z-index: 1;
   }
   .send {
     background: var(--interactive);
