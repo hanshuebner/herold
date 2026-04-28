@@ -28,14 +28,22 @@ The repo-root `Makefile` is the source of truth:
 
 - `make build-web` runs `pnpm -C web install --frozen-lockfile` then
   `pnpm -C web build`, producing `web/apps/{admin,suite}/dist/`. A
-  follow-up step (`scripts/build-web.sh`, see plan section 5) copies
-  the dists into `internal/webspa/dist/{admin,suite}/`.
+  follow-up step (`scripts/build-web.sh`) copies the dists into
+  `internal/webspa/dist/{admin,suite}/`.
 - `make build` runs `make build-web && make build-server`, producing
   the full single-binary release artifact with the SPAs embedded.
-- `make build-server` runs `go build` with `-tags nofrontend` (no
-  pnpm dependency; binary serves a placeholder at `/` and `/admin/`).
+- `make build-server` runs `go build ./cmd/herold` (no `-tags
+  nofrontend`). It depends on `prep-web`, which copies the tracked
+  placeholders from `internal/webspa/placeholder/` into
+  `internal/webspa/dist/` if and only if `dist/` is empty -- so a
+  fresh checkout that has not run pnpm yet still compiles, and the
+  resulting binary serves placeholder index.html shells.
+- `make build-server -tags nofrontend` (or directly,
+  `go build -tags nofrontend ./cmd/herold`) compiles the backend-
+  only variant with no embedded web assets at all.
 - `make test-web` runs vitest + Playwright. `make test-server` runs
-  `go test -tags nofrontend ./...`. `make test` runs both.
+  `go test -race ./...` (depends on `prep-web` for the same reason
+  as `build-server`). `make test` runs both.
 
 Dev loop, web-only:
 
@@ -85,9 +93,13 @@ instance other than `http://localhost:8080`.
 
 ## House rules
 
-- No build pipeline state checked in to `web/apps/*/dist/`. Those are
-  produced by `make build-web` and copied into `internal/webspa/dist/`
-  for embedding.
+- No build pipeline state checked in to `web/apps/*/dist/` or
+  `internal/webspa/dist/{admin,suite}/`. Both trees are gitignored
+  build output. The Vite-produced artefacts live in
+  `web/apps/*/dist/`; `scripts/build-web.sh` mirrors them to
+  `internal/webspa/dist/` for the `//go:embed` directive. Placeholder
+  source (used by `make prep-web` when no real build has run) lives
+  under `internal/webspa/placeholder/`.
 - The `nofrontend` build tag must keep working. Anything that imports
   `internal/webspa` must compile against either `embed_default.go` or
   `embed_stub.go` (`go test -tags nofrontend ./...` is a CI lane).

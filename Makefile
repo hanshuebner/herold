@@ -10,7 +10,7 @@ BUILDFLAGS := -buildvcs=true $(LDFLAGS)
 PKGS := ./...
 FUZZTIME ?= 30s
 
-.PHONY: all build build-server build-web build-plugins test test-server test-web \
+.PHONY: all build build-server build-web build-plugins prep-web test test-server test-web \
         test-short lint vet staticcheck vulncheck \
         fmt fmt-check fuzz-short tidy ci-local clean docker \
         interop interop-bulk interop-imaptest interop-clean
@@ -27,8 +27,11 @@ build: build-web build-server
 # build-server compiles the herold binary from the current state of
 # internal/webspa/dist/. It does NOT invoke the pnpm build first, so
 # `make build-server` after `make build-web` is the iteration loop
-# when only Go code has changed.
-build-server:
+# when only Go code has changed. The prep-web prerequisite ensures
+# the //go:embed directive in internal/webspa/embed_default.go has
+# something to embed when the user has not run `make build-web` --
+# placeholders are copied from internal/webspa/placeholder/.
+build-server: prep-web
 	$(GO) build $(BUILDFLAGS) -o bin/herold ./cmd/herold
 
 # build-web runs scripts/build-web.sh which calls pnpm install
@@ -36,6 +39,19 @@ build-server:
 # copies the artefacts into internal/webspa/dist/suite/.
 build-web:
 	./scripts/build-web.sh
+
+# prep-web ensures internal/webspa/dist/{admin,suite}/index.html exist so
+# //go:embed dist resolves. If the dist tree is empty (clean checkout, no
+# `make build-web` yet) we copy the tracked placeholders from
+# internal/webspa/placeholder/. If the dist tree already holds real Vite
+# output (after `make build-web`) we leave it alone -- the existence
+# check on index.html is the cheap idempotency guard.
+prep-web:
+	@mkdir -p internal/webspa/dist/admin internal/webspa/dist/suite
+	@[ -f internal/webspa/dist/admin/index.html ] || \
+	  cp internal/webspa/placeholder/admin/index.html internal/webspa/dist/admin/index.html
+	@[ -f internal/webspa/dist/suite/index.html ] || \
+	  cp internal/webspa/placeholder/suite/index.html internal/webspa/dist/suite/index.html
 
 build-plugins:
 	@for p in plugins/herold-*; do \
@@ -46,13 +62,12 @@ build-plugins:
 
 test: test-server
 
-# test-server runs the Go test suite. It does NOT depend on a freshly
-# built web/ tree because the embedded FS in internal/webspa/dist/
-# always contains a placeholder index.html that satisfies the //go:embed
-# directive. The placeholder is enough for any test that exercises the
-# webspa package; tests that need the real suite assets bring up their
-# own asset_dir override.
-test-server:
+# test-server runs the Go test suite. The prep-web prerequisite guarantees
+# the //go:embed directive in internal/webspa/embed_default.go finds a
+# placeholder index.html (or real build output, if `make build-web` ran
+# first). Tests that need the real suite assets bring up their own
+# asset_dir override.
+test-server: prep-web
 	$(GO) test -race -count=1 $(GOFLAGS) $(PKGS)
 
 # test-web runs the workspace-side checks (svelte-check today; vitest
@@ -65,13 +80,13 @@ test-web:
 	pnpm --dir web run test
 	pnpm --dir web run lint
 
-test-short:
+test-short: prep-web
 	$(GO) test -race -count=1 -short $(GOFLAGS) $(PKGS)
 
-vet:
+vet: prep-web
 	$(GO) vet $(PKGS)
 
-staticcheck:
+staticcheck: prep-web
 	@command -v staticcheck >/dev/null 2>&1 || { \
 	  echo "staticcheck not installed. Run: go install honnef.co/go/tools/cmd/staticcheck@latest"; \
 	  exit 1; }

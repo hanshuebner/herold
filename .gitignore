@@ -35,15 +35,16 @@ coverage.html
 # Container bind mounts
 /deploy/docker/data/
 
-# Web workspace build artefacts. The committed placeholders in
-# internal/webspa/dist/{suite,admin}/index.html satisfy the //go:embed
-# directive for go build / go test; `make build-web` overwrites
-# index.html and adds an assets/ tree which we DO NOT commit. Run
-# `git checkout internal/webspa/dist/` to restore the placeholder
-# before committing if a build pollutes the tree.
+# Web workspace build artefacts. The internal/webspa/dist/{suite,admin}/
+# tree is ephemeral build output -- populated either by `make build-web`
+# (real Vite output) or by `make prep-web` (placeholder fallback so the
+# //go:embed directive resolves on a clean checkout that has not run pnpm
+# yet). The placeholder source lives under internal/webspa/placeholder/
+# and is tracked. dist/.gitkeep is tracked so the embed root exists in a
+# fresh clone.
 /web/apps/*/dist/
 /web/apps/*/.svelte-kit/
 /web/node_modules/
 /web/**/node_modules/
-/internal/webspa/dist/suite/assets/
-/internal/webspa/dist/admin/assets/
+/internal/webspa/dist/admin/
+/internal/webspa/dist/suite/

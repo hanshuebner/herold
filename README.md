@@ -103,28 +103,44 @@ source lives in-tree under `web/apps/suite`. Build it with pnpm:
 make build-web
 ```
 
-This runs `pnpm --dir web install --frozen-lockfile`, builds the SPA
-into `web/apps/suite/dist`, and copies the artefacts into
-`internal/webspa/dist/suite/` where the next `make build-server` (or
-`make build`) bakes them into the herold binary via `//go:embed`.
+This runs `pnpm --dir web install --frozen-lockfile`, builds both
+SPAs into `web/apps/{suite,admin}/dist`, and copies the artefacts
+into `internal/webspa/dist/{suite,admin}/` where the next
+`make build-server` (or `make build`) bakes them into the herold
+binary via `//go:embed`. The `internal/webspa/dist/{suite,admin}/`
+tree is gitignored, so building does not produce any "modified"
+entries in `git status`. The placeholder source served when neither
+`make build-web` nor an `asset_dir` override is in play lives under
+`internal/webspa/placeholder/`.
 
 The default `[server.suite].asset_dir` in the quickstart points at
 `./web/apps/suite/dist` for hot-reload during frontend development;
 remove that line (or comment out the `[server.suite]` block, or set
 `enabled = false`) to fall back to the binary-embedded artefacts.
 
-If pnpm is not installed locally, you can still run the server: a
-`go build -tags nofrontend ./cmd/herold` produces a backend-only
-binary that serves a placeholder index.html at `/`. The IMAP / SMTP
-client surfaces work identically either way.
+If pnpm is not installed locally, you can still run the server. A
+`make build-server` from a clean checkout copies the tracked
+placeholders into `internal/webspa/dist/` so `//go:embed` resolves;
+the resulting binary serves the placeholder index.html at `/` and
+`/admin/`. The IMAP / SMTP client surfaces work identically either
+way. For a backend-only binary that does not embed any web assets at
+all, use `go build -tags nofrontend ./cmd/herold`.
 
 ### 5. Build and start the server
 
-Source build:
+Source build (one shot, includes the SPAs):
 
 ```bash
-go build ./cmd/herold
-./herold server start --system-config system.toml
+make build
+./bin/herold server start --system-config system.toml
+```
+
+Or, if you want to skip the pnpm step and run with the placeholder
+SPA shells:
+
+```bash
+make build-server
+./bin/herold server start --system-config system.toml
 ```
 
 Or with Docker:
