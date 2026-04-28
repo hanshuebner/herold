@@ -3,6 +3,7 @@
   import { mail } from './store.svelte';
   import MessageAccordion from './MessageAccordion.svelte';
   import PrintIcon from '../icons/PrintIcon.svelte';
+  import { t } from '../i18n/i18n.svelte';
   import type { Email } from './types';
 
   interface Props {
@@ -23,7 +24,7 @@
 
   let status = $derived(mail.threadStatus(threadId));
   let emails = $derived(mail.threadEmails(threadId));
-  let subject = $derived(emails[0]?.subject ?? '(no subject)');
+  let subject = $derived(emails[0]?.subject || t('thread.subject.none'));
 
   /**
    * Per docs/requirements/09-ui-layout.md REQ-UI-20: collapsed except the
@@ -79,17 +80,17 @@
 
 <div class="thread-reader">
   {#if status === 'idle' || status === 'loading'}
-    <div class="state">Loading thread…</div>
+    <div class="state">{t('thread.loading')}</div>
   {:else if status === 'error'}
     <div class="state error">
-      <p>Couldn't load thread.</p>
+      <p>{t('thread.couldNotLoad')}</p>
       {#if mail.threadError(threadId)}
         <p class="detail">{mail.threadError(threadId)}</p>
       {/if}
-      <button type="button" onclick={() => mail.loadThread(threadId)}>Retry</button>
+      <button type="button" onclick={() => mail.loadThread(threadId)}>{t('thread.retry')}</button>
     </div>
   {:else if emails.length === 0}
-    <div class="state">Thread has no messages.</div>
+    <div class="state">{t('thread.empty')}</div>
   {:else}
     <header>
       <div class="header-row">
@@ -97,15 +98,17 @@
         <button
           type="button"
           class="print"
-          aria-label="Print thread"
-          title="Print thread"
+          aria-label={t('thread.print')}
+          title={t('thread.print')}
           onclick={() => void printThread()}
         >
           <PrintIcon size={18} />
         </button>
       </div>
       <p class="count">
-        {emails.length} message{emails.length === 1 ? '' : 's'}
+        {emails.length === 1
+          ? t('thread.messages', { count: emails.length })
+          : t('thread.messages.other', { count: emails.length })}
       </p>
     </header>
     <div class="messages">

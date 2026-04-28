@@ -10,6 +10,7 @@
   import { composeStack } from './lib/compose/compose-stack.svelte';
   import { help } from './lib/help/help.svelte';
   import { settings, applyTheme } from './lib/settings/settings.svelte';
+  import { t } from './lib/i18n/i18n.svelte';
   import { confirm } from './lib/dialog/confirm.svelte';
   import { mail } from './lib/mail/store.svelte';
   import MailView from './views/MailView.svelte';
@@ -51,6 +52,12 @@
   // the user toggling theme in the panel re-runs this and updates <html>.
   $effect(() => {
     applyTheme(settings.theme);
+  });
+
+  // Mirror the active locale onto <html lang> so screen readers and
+  // automatic-translation extensions see the correct language.
+  $effect(() => {
+    document.documentElement.lang = settings.locale;
   });
 
   // Wire the compose stack's auto-minimize hook so opening a fresh
@@ -130,13 +137,13 @@
     {#if activeApp === 'mail'}
       <div class="sidebar-inner">
         <button type="button" class="compose" onclick={() => compose.openBlank()}>
-          <span aria-hidden="true">✎</span> Compose
+          <span aria-hidden="true">✎</span> {t('sidebar.compose')}
         </button>
 
         <ul class="mailbox-list">
           <li class:active={router.matches('mail') && !router.parts[1]}>
             <button type="button" onclick={() => router.navigate('/mail')}>
-              <span>Inbox</span>
+              <span>{t('sidebar.inbox')}</span>
               {#if (mail.inbox?.unreadEmails ?? 0) > 0}
                 <span class="count">{mail.inbox?.unreadEmails ?? 0}</span>
               {/if}
@@ -147,7 +154,7 @@
               type="button"
               onclick={() => router.navigate('/mail/folder/snoozed')}
             >
-              <span>Snoozed</span>
+              <span>{t('sidebar.snoozed')}</span>
             </button>
           </li>
           <li class:active={router.matches('mail', 'folder', 'important')}>
@@ -155,17 +162,17 @@
               type="button"
               onclick={() => router.navigate('/mail/folder/important')}
             >
-              <span>Important</span>
+              <span>{t('sidebar.important')}</span>
             </button>
           </li>
           <li class:active={router.matches('mail', 'folder', 'sent')}>
             <button type="button" onclick={() => router.navigate('/mail/folder/sent')}>
-              <span>Sent</span>
+              <span>{t('sidebar.sent')}</span>
             </button>
           </li>
           <li class:active={router.matches('mail', 'folder', 'drafts')}>
             <button type="button" onclick={() => router.navigate('/mail/folder/drafts')}>
-              <span>Drafts</span>
+              <span>{t('sidebar.drafts')}</span>
               {#if (mail.drafts?.totalEmails ?? 0) > 0}
                 <span class="count">{mail.drafts?.totalEmails ?? 0}</span>
               {/if}
@@ -173,12 +180,12 @@
           </li>
           <li class:active={router.matches('mail', 'folder', 'trash')}>
             <button type="button" onclick={() => router.navigate('/mail/folder/trash')}>
-              <span>Trash</span>
+              <span>{t('sidebar.trash')}</span>
             </button>
           </li>
           <li class:active={router.matches('mail', 'folder', 'all')}>
             <button type="button" onclick={() => router.navigate('/mail/folder/all')}>
-              <span>All Mail</span>
+              <span>{t('sidebar.allMail')}</span>
             </button>
           </li>
         </ul>
@@ -190,7 +197,7 @@
           onclick={() => (moreOpen = !moreOpen)}
         >
           <span aria-hidden="true">{moreOpen ? '▾' : '▸'}</span>
-          More
+          {t('sidebar.more')}
           <span class="count">{mail.customMailboxes.length}</span>
         </button>
         {#if moreOpen}
@@ -210,8 +217,8 @@
                 <button
                   type="button"
                   class="row-action"
-                  aria-label="Rename {m.name}"
-                  title="Rename"
+                  aria-label="{t('sidebar.rename')} {m.name}"
+                  title={t('sidebar.rename')}
                   onclick={(ev) => {
                     ev.stopPropagation();
                     promptRenameMailbox(m.id, m.name);
@@ -222,8 +229,8 @@
                 <button
                   type="button"
                   class="row-action danger"
-                  aria-label="Delete {m.name}"
-                  title="Delete"
+                  aria-label="{t('sidebar.delete')} {m.name}"
+                  title={t('sidebar.delete')}
                   onclick={(ev) => {
                     ev.stopPropagation();
                     confirmDestroyMailbox(m.id, m.name);
@@ -233,15 +240,15 @@
                 </button>
               </li>
             {:else}
-              <li class="empty"><span>No custom mailboxes.</span></li>
+              <li class="empty"><span>{t('sidebar.noCustom')}</span></li>
             {/each}
             <li class="add-row">
-              <button type="button" onclick={promptCreateMailbox}>+ New mailbox</button>
+              <button type="button" onclick={promptCreateMailbox}>+ {t('sidebar.newMailbox')}</button>
             </li>
           </ul>
         {/if}
 
-        <h3>Labels</h3>
+        <h3>{t('sidebar.labels')}</h3>
         <ul class="label-list">
           <li class:active={router.matches('mail', 'label', 'work')}>
             <button type="button" onclick={() => router.navigate('/mail/label/work')}>

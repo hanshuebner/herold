@@ -8,6 +8,7 @@
   import ComposeToolbar from './ComposeToolbar.svelte';
   import AddressAutocomplete from './AddressAutocomplete.svelte';
   import { confirm } from '../dialog/confirm.svelte';
+  import { t } from '../i18n/i18n.svelte';
   import { EMPTY_ACTIVE, type ActiveState } from './editor';
   import type { EditorView } from 'prosemirror-view';
 
@@ -48,10 +49,10 @@
     const dirty = compose.hasContent || compose.editingDraftId !== null;
     if (dirty && compose.status !== 'sending') {
       const ok = await confirm.ask({
-        title: 'Discard this message?',
-        message: 'Your draft will be lost.',
-        confirmLabel: 'Discard',
-        cancelLabel: 'Keep editing',
+        title: t('compose.discardConfirm.title'),
+        message: t('compose.discardConfirm.message'),
+        confirmLabel: t('compose.discardConfirm.confirm'),
+        cancelLabel: t('compose.discardConfirm.cancel'),
         kind: 'danger',
       });
       if (!ok) return;
@@ -254,19 +255,19 @@
     <header class="modal-header">
       <h2 id="compose-title">
         {#if compose.replyContext.parentKeyword === '$answered'}
-          Reply
+          {t('compose.title.reply')}
         {:else if compose.replyContext.parentKeyword === '$forwarded'}
-          Forward
+          {t('compose.title.forward')}
         {:else}
-          New message
+          {t('compose.title.new')}
         {/if}
       </h2>
       <button
         type="button"
         class="minimize"
         onclick={() => composeStack.minimizeCurrent()}
-        aria-label="Minimize compose"
-        title="Minimize"
+        aria-label={t('compose.minimize')}
+        title={t('compose.minimize')}
       >
         —
       </button>
@@ -274,7 +275,7 @@
         type="button"
         class="close"
         onclick={closeWithConfirm}
-        aria-label="Close compose"
+        aria-label={t('compose.close')}
       >
         ×
       </button>
@@ -282,7 +283,7 @@
 
     <div class="fields">
       <div class="row">
-        <span class="label">From</span>
+        <span class="label">{t('compose.from')}</span>
         <span class="from-display">
           {#if identity}
             {identity.name ? `${identity.name} <${identity.email}>` : identity.email}
@@ -293,7 +294,7 @@
       </div>
 
       <div class="row">
-        <span class="label">To</span>
+        <span class="label">{t('compose.to')}</span>
         <AddressAutocomplete
           bind:value={compose.to}
           onChange={(v) => (compose.to = v)}
@@ -306,14 +307,14 @@
             class="cc-bcc-toggle"
             onclick={() => (compose.ccBccVisible = true)}
           >
-            Cc / Bcc
+            {t('compose.toggleCcBcc')}
           </button>
         {/if}
       </div>
 
       {#if compose.ccBccVisible}
         <div class="row">
-          <span class="label">Cc</span>
+          <span class="label">{t('compose.cc')}</span>
           <AddressAutocomplete
             bind:value={compose.cc}
             onChange={(v) => (compose.cc = v)}
@@ -321,7 +322,7 @@
           />
         </div>
         <div class="row">
-          <span class="label">Bcc</span>
+          <span class="label">{t('compose.bcc')}</span>
           <AddressAutocomplete
             bind:value={compose.bcc}
             onChange={(v) => (compose.bcc = v)}
@@ -331,7 +332,7 @@
       {/if}
 
       <label class="row">
-        <span class="label">Subject</span>
+        <span class="label">{t('compose.subject')}</span>
         <input
           bind:value={compose.subject}
           type="text"
@@ -341,7 +342,7 @@
       </label>
 
       <div class="row body-row">
-        <span class="label">Body</span>
+        <span class="label">{t('compose.body')}</span>
         <div class="body-stack">
           {#key compose.replyContext.parentId ?? '__blank__'}
             <RichEditor
@@ -358,7 +359,7 @@
 
       {#if compose.attachments.length > 0}
         <div class="row attachments-row">
-          <span class="label">Attached</span>
+          <span class="label">{t('compose.attached')}</span>
           <ul class="attachments-list">
             {#each compose.attachments as a (a.key)}
               <li class:failed={a.status === 'failed'}>
@@ -390,7 +391,7 @@
 
     {#if dragActive}
       <div class="drop-overlay" aria-hidden="true">
-        <p>Drop to attach</p>
+        <p>{t('compose.dropToAttach')}</p>
       </div>
     {/if}
 
@@ -404,9 +405,9 @@
         class="attach"
         onclick={() => fileInput?.click()}
         disabled={compose.status === 'sending'}
-        title="Attach files"
+        title={t('compose.attach')}
       >
-        Attach
+        {t('compose.attach')}
       </button>
       <input
         bind:this={fileInput}
@@ -422,7 +423,7 @@
         onclick={closeWithConfirm}
         disabled={compose.status === 'sending'}
       >
-        Discard
+        {t('compose.discard')}
       </button>
       <button
         type="button"
@@ -431,7 +432,7 @@
         disabled={compose.status === 'sending' || compose.attachmentsBusy}
         title={compose.attachmentsBusy ? 'Attachments still uploading' : ''}
       >
-        {compose.status === 'sending' ? 'Sending…' : 'Send'}
+        {compose.status === 'sending' ? t('compose.sending') : t('compose.send')}
       </button>
     </footer>
   </div>

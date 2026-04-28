@@ -1,6 +1,7 @@
 <script lang="ts">
   import MailIcon from '../icons/MailIcon.svelte';
   import ChatIcon from '../icons/ChatIcon.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     activeApp?: 'mail' | 'chat';
@@ -27,7 +28,7 @@
         </span>
       {/if}
     </span>
-    <span class="label">Mail</span>
+    <span class="label">{t('rail.mail')}</span>
   </button>
 
   <button
@@ -45,7 +46,7 @@
         </span>
       {/if}
     </span>
-    <span class="label">Chat</span>
+    <span class="label">{t('rail.chat')}</span>
   </button>
 </nav>
 

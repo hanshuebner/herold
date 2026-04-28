@@ -14,6 +14,7 @@
   import CategoryPicker from '../lib/mail/CategoryPicker.svelte';
   import SelectChooser from '../lib/mail/SelectChooser.svelte';
   import { labelPicker } from '../lib/mail/label-picker.svelte';
+  import { t } from '../lib/i18n/i18n.svelte';
   import type { Email } from '../lib/mail/types';
 
   const ROLED_FOLDERS = new Set<FolderID>([
@@ -689,13 +690,13 @@
           onclick={confirmEmptyTrash}
           disabled={mail.listLoadStatus === 'loading'}
         >
-          Empty trash
+          {t('list.emptyTrash')}
         </button>
       {/if}
       <button
         type="button"
         class="refresh"
-        aria-label="Refresh"
+        aria-label={t('list.refresh')}
         onclick={() => mail.refreshFolder()}
         disabled={mail.listLoadStatus === 'loading'}
       >
@@ -726,12 +727,12 @@
     {/if}
 
     {#if mail.listLoadStatus === 'idle' || mail.listLoadStatus === 'loading'}
-      <div class="state">Loading…</div>
+      <div class="state">{t('list.loading')}</div>
     {:else if mail.listLoadStatus === 'error'}
       <div class="state error">
-        <p>Couldn't load {folderLabel.toLowerCase()}.</p>
+        <p>{t('list.couldNotLoad', { name: folderLabel.toLowerCase() })}</p>
         {#if mail.listError}<p class="detail">{mail.listError}</p>{/if}
-        <button type="button" onclick={() => mail.refreshFolder()}>Retry</button>
+        <button type="button" onclick={() => mail.refreshFolder()}>{t('list.retry')}</button>
       </div>
     {:else if effectiveListEmails.length === 0}
       <div class="state">
@@ -746,24 +747,24 @@
         <SelectChooser />
         {#if mail.listSelectedIds.size > 0}
           <span class="bulk-count">
-            {mail.listSelectedIds.size} selected
+            {t('bulk.selected', { count: mail.listSelectedIds.size })}
           </span>
           {#if folder === 'inbox'}
-            <button type="button" onclick={bulkArchive}>Archive</button>
+            <button type="button" onclick={bulkArchive}>{t('bulk.archive')}</button>
           {/if}
-          <button type="button" onclick={bulkMarkRead}>Mark read</button>
-          <button type="button" onclick={bulkMarkUnread}>Mark unread</button>
-          <button type="button" onclick={bulkMove}>Move…</button>
+          <button type="button" onclick={bulkMarkRead}>{t('bulk.markRead')}</button>
+          <button type="button" onclick={bulkMarkUnread}>{t('bulk.markUnread')}</button>
+          <button type="button" onclick={bulkMove}>{t('bulk.move')}</button>
           <button type="button" onclick={() => labelPicker.openBulk(selectedIds())}>
-            Label…
+            {t('bulk.label')}
           </button>
           {#if categorySettings.available}
             <button type="button" onclick={() => {
               const ids = [...mail.listSelectedIds];
               if (ids.length > 0) categoryPicker.open(ids[0]!);
-            }}>Category…</button>
+            }}>{t('bulk.category')}</button>
           {/if}
-          <button type="button" class="danger" onclick={bulkDelete}>Delete</button>
+          <button type="button" class="danger" onclick={bulkDelete}>{t('bulk.delete')}</button>
         {/if}
       </div>
       <ul

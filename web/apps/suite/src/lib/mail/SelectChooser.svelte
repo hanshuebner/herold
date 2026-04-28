@@ -2,6 +2,7 @@
   import { mail } from './store.svelte';
   import CheckSquareIcon from '../icons/CheckSquareIcon.svelte';
   import ChevronDownIcon from '../icons/ChevronDownIcon.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   // The chooser sits at the top of the message list and lets the user
   // change the selection set without per-row checkbox bookkeeping. The
@@ -67,9 +68,13 @@
   <button
     type="button"
     class="check-btn"
-    aria-label={allSelected ? 'Deselect all' : someSelected ? 'Clear selection' : 'Select all'}
+    aria-label={allSelected
+      ? t('select.deselectAll')
+      : someSelected
+        ? t('select.clearSelection')
+        : t('select.selectAll')}
     aria-pressed={allSelected}
-    title={allSelected ? 'Deselect all' : 'Select all'}
+    title={allSelected ? t('select.deselectAll') : t('select.selectAll')}
     onclick={toggleAll}
   >
     <CheckSquareIcon
@@ -81,22 +86,22 @@
   <button
     type="button"
     class="menu-btn"
-    aria-label="Select options"
+    aria-label={t('select.options')}
     aria-haspopup="menu"
     aria-expanded={menuOpen}
-    title="Select…"
+    title={t('select.openMenu')}
     onclick={() => (menuOpen = !menuOpen)}
   >
     <ChevronDownIcon size={14} />
   </button>
   {#if menuOpen}
     <ul class="menu" role="menu">
-      <li><button type="button" role="menuitem" onclick={() => pick('all')}>All</button></li>
-      <li><button type="button" role="menuitem" onclick={() => pick('none')}>None</button></li>
-      <li><button type="button" role="menuitem" onclick={() => pick('read')}>Read</button></li>
-      <li><button type="button" role="menuitem" onclick={() => pick('unread')}>Unread</button></li>
-      <li><button type="button" role="menuitem" onclick={() => pick('starred')}>Starred</button></li>
-      <li><button type="button" role="menuitem" onclick={() => pick('unstarred')}>Unstarred</button></li>
+      <li><button type="button" role="menuitem" onclick={() => pick('all')}>{t('select.all')}</button></li>
+      <li><button type="button" role="menuitem" onclick={() => pick('none')}>{t('select.none')}</button></li>
+      <li><button type="button" role="menuitem" onclick={() => pick('read')}>{t('select.read')}</button></li>
+      <li><button type="button" role="menuitem" onclick={() => pick('unread')}>{t('select.unread')}</button></li>
+      <li><button type="button" role="menuitem" onclick={() => pick('starred')}>{t('select.starred')}</button></li>
+      <li><button type="button" role="menuitem" onclick={() => pick('unstarred')}>{t('select.unstarred')}</button></li>
     </ul>
   {/if}
 </div>

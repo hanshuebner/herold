@@ -18,6 +18,7 @@
  */
 
 import { auth } from '../auth/auth.svelte';
+import { i18n, detectLocale, LOCALES, type Locale } from '../i18n/i18n.svelte';
 
 export type ThemeChoice = 'system' | 'light' | 'dark';
 export type ImageLoadDefault = 'never' | 'per-sender' | 'always';
@@ -31,6 +32,7 @@ export type SwipeAction =
 
 const KEYS = {
   theme: 'theme',
+  locale: 'locale',
   imageLoadDefault: 'imageLoadDefault',
   imageAllowList: 'imageAllowList',
   undoWindowSec: 'undoWindowSec',
@@ -93,6 +95,12 @@ class Settings {
   /** Read every setting from localStorage. Idempotent. */
   hydrate(): void {
     this.#theme = readJson<ThemeChoice>(KEYS.theme, DEFAULTS.theme);
+    const persistedLocale = readJson<Locale | null>(KEYS.locale, null);
+    const resolvedLocale =
+      persistedLocale && LOCALES.includes(persistedLocale)
+        ? persistedLocale
+        : detectLocale();
+    i18n.locale = resolvedLocale;
     this.#imageLoadDefault = readJson<ImageLoadDefault>(
       KEYS.imageLoadDefault,
       DEFAULTS.imageLoadDefault,
@@ -122,6 +130,19 @@ class Settings {
   setTheme(value: ThemeChoice): void {
     this.#theme = value;
     writeJson(KEYS.theme, value);
+  }
+
+  // ── Locale ────────────────────────────────────────────────────────────
+  /**
+   * Locale lives on the i18n singleton -- this getter is a thin
+   * forwarder so SettingsView can use the familiar settings.* shape.
+   */
+  get locale(): Locale {
+    return i18n.locale;
+  }
+  setLocale(value: Locale): void {
+    i18n.locale = value;
+    writeJson(KEYS.locale, value);
   }
 
   // ── Image-load default ────────────────────────────────────────────────

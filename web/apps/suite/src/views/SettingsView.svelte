@@ -21,6 +21,8 @@
   import FiltersForm from './settings/FiltersForm.svelte';
   import { Capability } from '../lib/jmap/types';
   import { jmap } from '../lib/jmap/client';
+  import { LOCALES, type Locale } from '../lib/i18n/i18n.svelte';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   // Section order per Phase 4 spec: Account, Security, Appearance, Mail,
   // Categories, Filters, API keys, Privacy, About.
@@ -131,11 +133,11 @@
       <SecurityForm />
 
     {:else if activeSection === 'appearance'}
-      <h2>Appearance</h2>
+      <h2>{t('settings.appearance')}</h2>
 
       <div class="row vertical">
-        <span class="label">Theme</span>
-        <div class="segmented" role="radiogroup" aria-label="Theme">
+        <span class="label">{t('settings.theme')}</span>
+        <div class="segmented" role="radiogroup" aria-label={t('settings.theme')}>
           {#each ['system', 'light', 'dark'] as const as choice}
             <button
               type="button"
@@ -144,13 +146,30 @@
               class:on={settings.theme === choice}
               onclick={() => settings.setTheme(choice)}
             >
-              {choice[0]?.toUpperCase()}{choice.slice(1)}
+              {t(`settings.theme.${choice}`)}
             </button>
           {/each}
         </div>
         <p class="hint">
           System follows your OS-level preference and updates live when you toggle it.
         </p>
+      </div>
+
+      <div class="row vertical">
+        <span class="label">{t('settings.language')}</span>
+        <div class="segmented" role="radiogroup" aria-label={t('settings.language')}>
+          {#each LOCALES as locale}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={settings.locale === locale}
+              class:on={settings.locale === locale}
+              onclick={() => settings.setLocale(locale as Locale)}
+            >
+              {t(`settings.language.${locale}`)}
+            </button>
+          {/each}
+        </div>
       </div>
 
     {:else if activeSection === 'mail'}

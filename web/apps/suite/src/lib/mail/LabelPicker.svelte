@@ -2,6 +2,7 @@
   import { mail } from './store.svelte';
   import { labelPicker } from './label-picker.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
+  import { t } from '../i18n/i18n.svelte';
   import type { Mailbox } from './types';
 
   // The labelable set is the user-created mailboxes -- system roles
@@ -87,15 +88,17 @@
     <header>
       <h2 id="label-title">
         {#if labelPicker.isBulk}
-          Label {labelPicker.bulkIds.length} message{labelPicker.bulkIds.length === 1 ? '' : 's'}
+          {labelPicker.bulkIds.length === 1
+            ? t('labelPicker.title.bulk', { count: labelPicker.bulkIds.length })
+            : t('labelPicker.title.bulk.other', { count: labelPicker.bulkIds.length })}
         {:else}
-          Apply labels
+          {t('labelPicker.title.single')}
         {/if}
       </h2>
       <button
         type="button"
         class="close"
-        aria-label="Close label picker"
+        aria-label={t('picker.close')}
         onclick={() => labelPicker.close()}
       >
         ×
@@ -105,20 +108,20 @@
     <div class="filter-row">
       <input
         type="text"
-        placeholder="Filter labels…"
+        placeholder={t('labelPicker.filter')}
         bind:value={filter}
         bind:this={inputEl}
-        aria-label="Filter labels"
+        aria-label={t('labelPicker.filter')}
         autocomplete="off"
       />
     </div>
 
     {#if candidates.length === 0}
       <p class="empty">
-        No labels yet. Create a custom mailbox in the sidebar to use it as a label.
+        {t('labelPicker.empty')}
       </p>
     {:else if visible.length === 0}
-      <p class="empty">No labels match "{filter}".</p>
+      <p class="empty">{t('labelPicker.empty.filter', { filter })}</p>
     {:else}
       <ul class="list">
         {#each visible as m (m.id)}
@@ -144,7 +147,7 @@
 
     <footer>
       <button type="button" class="done" onclick={() => labelPicker.close()}>
-        Done
+        {t('labelPicker.done')}
       </button>
     </footer>
   </div>

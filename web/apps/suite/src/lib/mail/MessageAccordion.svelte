@@ -38,6 +38,7 @@
   import BlockIcon from '../icons/BlockIcon.svelte';
   import FilterIcon from '../icons/FilterIcon.svelte';
   import LabelIcon from '../icons/LabelIcon.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     email: Email;
@@ -379,8 +380,8 @@
         <button
           type="button"
           class="pill icon-only"
-          aria-label="Reply"
-          title="Reply"
+          aria-label={t('msg.reply')}
+          title={t('msg.reply')}
           onclick={() => compose.openReply(email)}
         >
           <ReplyIcon size={18} />
@@ -389,8 +390,8 @@
           <button
             type="button"
             class="pill icon-only"
-            aria-label="Reply all"
-            title="Reply all"
+            aria-label={t('msg.replyAll')}
+            title={t('msg.replyAll')}
             onclick={() => compose.openReplyAll(email)}
           >
             <ReplyAllIcon size={18} />
@@ -399,8 +400,8 @@
         <button
           type="button"
           class="pill icon-only"
-          aria-label="Forward"
-          title="Forward"
+          aria-label={t('msg.forward')}
+          title={t('msg.forward')}
           onclick={() => compose.openForward(email)}
         >
           <ForwardIcon size={18} />
@@ -414,8 +415,8 @@
             class:active={pickerOpen}
             bind:this={reactButtonEl}
             onclick={() => (pickerOpen = !pickerOpen)}
-            aria-label="React with emoji"
-            title="React"
+            aria-label={t('msg.react')}
+            title={t('msg.react')}
             aria-expanded={pickerOpen}
             aria-haspopup="dialog"
           >
@@ -437,8 +438,8 @@
         <button
           type="button"
           class="pill icon-only"
-          aria-label="Move to mailbox"
-          title="Move to mailbox"
+          aria-label={t('msg.move')}
+          title={t('msg.move')}
           onclick={() => movePicker.open(email.id)}
         >
           <MoveIcon size={18} />
@@ -446,8 +447,8 @@
         <button
           type="button"
           class="pill icon-only"
-          aria-label="Apply labels"
-          title="Apply labels"
+          aria-label={t('msg.label')}
+          title={t('msg.label')}
           onclick={() => labelPicker.open(email.id)}
         >
           <LabelIcon size={18} />
@@ -455,8 +456,8 @@
         <button
           type="button"
           class="pill icon-only"
-          aria-label={isSeen ? 'Mark as unread' : 'Mark as read'}
-          title={isSeen ? 'Mark as unread' : 'Mark as read'}
+          aria-label={isSeen ? t('msg.markUnread') : t('msg.markRead')}
+          title={isSeen ? t('msg.markUnread') : t('msg.markRead')}
           onclick={() => mail.setSeen(email.id, !isSeen)}
         >
           {#if isSeen}<MarkUnreadIcon size={18} />{:else}<MarkReadIcon size={18} />{/if}
@@ -465,9 +466,9 @@
           type="button"
           class="pill icon-only"
           class:active={isImportant}
-          aria-label={isImportant ? 'Unmark important' : 'Mark important'}
+          aria-label={isImportant ? t('msg.unmarkImportant') : t('msg.markImportant')}
           aria-pressed={isImportant}
-          title={isImportant ? 'Unmark important' : 'Mark important'}
+          title={isImportant ? t('msg.unmarkImportant') : t('msg.markImportant')}
           onclick={() => mail.toggleImportant(email.id)}
         >
           <ImportantIcon size={18} />
@@ -476,8 +477,8 @@
           <button
             type="button"
             class="pill icon-only"
-            aria-label="Wake up now"
-            title="Wake up now"
+            aria-label={t('msg.unsnooze')}
+            title={t('msg.unsnooze')}
             onclick={() => mail.unsnoozeEmail(email.id)}
           >
             <UnsnoozeIcon size={18} />
@@ -486,8 +487,8 @@
           <button
             type="button"
             class="pill icon-only"
-            aria-label="Snooze"
-            title="Snooze"
+            aria-label={t('msg.snooze')}
+            title={t('msg.snooze')}
             onclick={() => snoozePicker.open(email.id)}
           >
             <SnoozeIcon size={18} />
@@ -497,8 +498,8 @@
           <button
             type="button"
             class="pill icon-only"
-            aria-label="Restore from trash"
-            title="Restore from trash"
+            aria-label={t('msg.restore')}
+            title={t('msg.restore')}
             onclick={() => mail.restoreFromTrash(email.id)}
           >
             <RestoreIcon size={18} />
@@ -509,9 +510,9 @@
         <button
           type="button"
           class="pill icon-only"
-          aria-label={isMuted ? 'Unmute thread' : 'Mute thread'}
+          aria-label={isMuted ? t('msg.unmuteThread') : t('msg.muteThread')}
           aria-pressed={isMuted}
-          title={isMuted ? 'Unmute thread' : 'Mute thread'}
+          title={isMuted ? t('msg.unmuteThread') : t('msg.muteThread')}
           onclick={() => void handleMuteToggle()}
         >
           {#if isMuted}<UnmuteIcon size={18} />{:else}<MuteIcon size={18} />{/if}
@@ -521,8 +522,8 @@
         <button
           type="button"
           class="pill icon-only"
-          aria-label="Report spam"
-          title="Report spam"
+          aria-label={t('msg.reportSpam')}
+          title={t('msg.reportSpam')}
           onclick={() => void handleReportSpam()}
         >
           <SpamIcon size={18} />
@@ -532,8 +533,8 @@
         <button
           type="button"
           class="pill icon-only"
-          aria-label="Report phishing"
-          title="Report phishing"
+          aria-label={t('msg.reportPhishing')}
+          title={t('msg.reportPhishing')}
           onclick={() => void handleReportPhishing()}
         >
           <PhishingIcon size={18} />
@@ -544,8 +545,8 @@
           <button
             type="button"
             class="pill icon-only"
-            aria-label="Block sender"
-            title="Block sender"
+            aria-label={t('msg.blockSender')}
+            title={t('msg.blockSender')}
             onclick={openBlockConfirm}
           >
             <BlockIcon size={18} />
@@ -556,8 +557,8 @@
         <button
           type="button"
           class="pill icon-only"
-          aria-label="Filter messages like this"
-          title="Filter messages like this"
+          aria-label={t('msg.filterLike')}
+          title={t('msg.filterLike')}
           onclick={handleFilterLike}
         >
           <FilterIcon size={18} />
