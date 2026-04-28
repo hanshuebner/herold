@@ -55,14 +55,11 @@ func newReactionFixture(t *testing.T) *reactionFixture {
 		t.Fatalf("CreatePrincipal: %v", err)
 	}
 
-	// Insert an INBOX and a seed message that the reaction will target.
-	inbox, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
-		PrincipalID: pid,
-		Name:        "INBOX",
-		Attributes:  store.MailboxAttrInbox,
-	})
+	// directory.CreatePrincipal already provisioned the standard mailbox
+	// set (INBOX/Sent/Drafts/Trash/Junk/Archive); look INBOX up by name.
+	inbox, err := ha.Store.Meta().GetMailboxByName(ctx, pid, "INBOX")
 	if err != nil {
-		t.Fatalf("InsertMailbox: %v", err)
+		t.Fatalf("GetMailboxByName INBOX: %v", err)
 	}
 
 	origMsgIDHeader := "seed001@example.test"
@@ -384,13 +381,10 @@ func TestReaction_InboundSpamDeliveredNormally(t *testing.T) {
 		return json.RawMessage(`{"verdict":"spam","score":0.99}`), nil
 	})
 
-	// Ensure a Junk mailbox exists.
-	junk, err := rf.ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
-		PrincipalID: rf.pid,
-		Name:        "Junk",
-	})
+	// directory.CreatePrincipal already provisioned a Junk mailbox.
+	junk, err := rf.ha.Store.Meta().GetMailboxByName(ctx, rf.pid, "Junk")
 	if err != nil {
-		t.Fatalf("InsertMailbox Junk: %v", err)
+		t.Fatalf("GetMailboxByName Junk: %v", err)
 	}
 
 	before := rf.messageCountInInbox(t)
