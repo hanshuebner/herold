@@ -1245,6 +1245,8 @@ class MailStore {
       } else {
         toast.show({ message: `Deleted ${destroyed} message${destroyed === 1 ? '' : 's'}` });
       }
+      // Refresh mailbox counts (issue #24).
+      this.#refreshMailboxesSoon();
       return destroyed;
     } catch (err) {
       // Best-effort recovery: refetch the trash list so the UI is consistent.
@@ -1316,6 +1318,8 @@ class MailStore {
     for (const [id, info] of Object.entries(result.notUpdated ?? {})) {
       failed[id] = info.description ?? info.type;
     }
+    // Refresh sidebar mailbox counts after a bulk mutation. Issue #24.
+    this.#refreshMailboxesSoon();
     return { updated, failed };
   }
 
@@ -1906,6 +1910,29 @@ class MailStore {
     if (failure) {
       throw new Error(failure.description ?? failure.type);
     }
+    // Sidebar mailbox counters (totalEmails / unreadEmails) are
+    // server-computed; refresh them after every successful Email/set
+    // so the counts in App.svelte don't drift out of sync. Issue #24.
+    this.#refreshMailboxesSoon();
+  }
+
+  /**
+   * Coalesce mailbox-count refreshes so a burst of Email/set calls (e.g.
+   * a bulk operation followed by individual UI updates) only triggers
+   * one Mailbox/get round-trip. Errors are swallowed: a stale count is
+   * cosmetic, not catastrophic, and the EventSource Mailbox handler is
+   * still around as a backstop. Issue #24.
+   */
+  #refreshMailboxesPending = false;
+  #refreshMailboxesSoon(): void {
+    if (this.#refreshMailboxesPending) return;
+    this.#refreshMailboxesPending = true;
+    queueMicrotask(() => {
+      this.#refreshMailboxesPending = false;
+      void this.loadMailboxes().catch((err) => {
+        console.warn('mailbox count refresh failed', err);
+      });
+    });
   }
 
   #setThreadStatus(id: string, status: LoadStatus): void {
