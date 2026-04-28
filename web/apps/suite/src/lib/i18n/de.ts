@@ -142,10 +142,11 @@ export const de = {
   'labelPicker.title.single': 'Labels zuweisen',
   'labelPicker.title.bulk': '{count} Nachricht mit Labels versehen',
   'labelPicker.title.bulk.other': '{count} Nachrichten mit Labels versehen',
-  'labelPicker.filter': 'Labels filtern...',
+  'labelPicker.filter': 'Label filtern oder anlegen...',
   'labelPicker.empty':
-    'Noch keine Labels. Erstelle einen eigenen Ordner in der Seitenleiste, um ihn als Label zu verwenden.',
+    'Noch keine Labels. Tippe oben einen Namen ein, um ein Label anzulegen.',
   'labelPicker.empty.filter': 'Keine Labels passen zu "{filter}".',
+  'labelPicker.create': 'Label "{name}" anlegen',
   'labelPicker.done': 'Fertig',
 
   // ── Categories settings ──────────────────────────────────────────────

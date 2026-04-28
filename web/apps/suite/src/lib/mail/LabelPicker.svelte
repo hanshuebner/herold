@@ -74,6 +74,44 @@
       void mail.setEmailLabel(labelPicker.emailId, m.id, turnOn);
     }
   }
+
+  // Gmail-style inline label creation: when the filter input has text
+  // that doesn't match an existing label, offer "Create '<text>'" so the
+  // user doesn't have to bounce out to the sidebar's folder-create flow
+  // just to make a label they want to assign right now.
+  const trimmedFilter = $derived(filter.trim());
+  const canCreateNew = $derived.by(() => {
+    if (!trimmedFilter) return false;
+    const lc = trimmedFilter.toLowerCase();
+    return !candidates.some((m) => m.name.toLowerCase() === lc);
+  });
+  let creating = $state(false);
+
+  async function createAndAssign(): Promise<void> {
+    if (!canCreateNew || creating) return;
+    const name = trimmedFilter;
+    creating = true;
+    try {
+      const id = await mail.createMailbox(name);
+      if (!id) return; // toast already surfaced by createMailbox
+      if (labelPicker.isBulk) {
+        await mail.bulkSetLabel(labelPicker.bulkIds, id, true);
+      } else if (labelPicker.emailId) {
+        await mail.setEmailLabel(labelPicker.emailId, id, true);
+      }
+      filter = '';
+      queueMicrotask(() => inputEl?.focus());
+    } finally {
+      creating = false;
+    }
+  }
+
+  function onFilterKey(e: KeyboardEvent): void {
+    if (e.key === 'Enter' && canCreateNew) {
+      e.preventDefault();
+      void createAndAssign();
+    }
+  }
 </script>
 
 {#if labelPicker.isOpen}
@@ -111,16 +149,17 @@
         placeholder={t('labelPicker.filter')}
         bind:value={filter}
         bind:this={inputEl}
+        onkeydown={onFilterKey}
         aria-label={t('labelPicker.filter')}
         autocomplete="off"
       />
     </div>
 
-    {#if candidates.length === 0}
+    {#if candidates.length === 0 && !canCreateNew}
       <p class="empty">
         {t('labelPicker.empty')}
       </p>
-    {:else if visible.length === 0}
+    {:else if visible.length === 0 && !canCreateNew}
       <p class="empty">{t('labelPicker.empty.filter', { filter })}</p>
     {:else}
       <ul class="list">
@@ -142,6 +181,19 @@
             </button>
           </li>
         {/each}
+        {#if canCreateNew}
+          <li>
+            <button
+              type="button"
+              class="row create"
+              disabled={creating}
+              onclick={createAndAssign}
+            >
+              <span class="check" aria-hidden="true">+</span>
+              <span class="name">{t('labelPicker.create', { name: trimmedFilter })}</span>
+            </button>
+          </li>
+        {/if}
       </ul>
     {/if}
 
@@ -270,6 +322,18 @@
     background: var(--layer-03);
     border-color: var(--text-helper);
     color: var(--text-secondary);
+  }
+  .row.create {
+    color: var(--interactive);
+  }
+  .row.create .check {
+    background: transparent;
+    border-color: var(--interactive);
+    color: var(--interactive);
+  }
+  .row.create:disabled {
+    opacity: 0.6;
+    cursor: progress;
   }
   .name {
     flex: 1;

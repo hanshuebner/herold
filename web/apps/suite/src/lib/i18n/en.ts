@@ -143,10 +143,11 @@ export const en = {
   'labelPicker.title.single': 'Apply labels',
   'labelPicker.title.bulk': 'Label {count} message',
   'labelPicker.title.bulk.other': 'Label {count} messages',
-  'labelPicker.filter': 'Filter labels...',
+  'labelPicker.filter': 'Filter or create label...',
   'labelPicker.empty':
-    'No labels yet. Create a custom mailbox in the sidebar to use it as a label.',
+    'No labels yet. Type a name above to create one.',
   'labelPicker.empty.filter': 'No labels match "{filter}".',
+  'labelPicker.create': 'Create label "{name}"',
   'labelPicker.done': 'Done',
 
   // ── Categories settings ──────────────────────────────────────────────
