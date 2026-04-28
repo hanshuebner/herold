@@ -27,23 +27,46 @@ import { parseQuery } from './search-query';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
+/**
+ * Identifier for the folder rendered by the generic list view. "inbox",
+ * "sent", "drafts", "trash" map to the matching mailbox role; "all"
+ * spans every folder visible to this account.
+ */
+export type FolderID = 'inbox' | 'sent' | 'drafts' | 'trash' | 'all';
+
+const FOLDER_ROLE: Record<Exclude<FolderID, 'all'>, string> = {
+  inbox: 'inbox',
+  sent: 'sent',
+  drafts: 'drafts',
+  trash: 'trash',
+};
+
+const FOLDER_LABEL: Record<FolderID, string> = {
+  inbox: 'Inbox',
+  sent: 'Sent',
+  drafts: 'Drafts',
+  trash: 'Trash',
+  all: 'All Mail',
+};
+
 class MailStore {
   mailboxes = $state(new Map<string, Mailbox>());
   emails = $state(new Map<string, Email>());
   threads = $state(new Map<string, Thread>());
   identities = $state(new Map<string, Identity>());
 
-  /** Ordered (most-recent first) email ids visible in the current inbox view. */
-  inboxEmailIds = $state<string[]>([]);
-  inboxLoadStatus = $state<LoadStatus>('idle');
-  inboxError = $state<string | null>(null);
+  /** Which folder the generic list slice currently holds. */
+  listFolder = $state<FolderID>('inbox');
+  /** Ordered (most-recent first) email ids visible in the current list view. */
+  listEmailIds = $state<string[]>([]);
+  listLoadStatus = $state<LoadStatus>('idle');
+  listError = $state<string | null>(null);
+  /** Index into listEmailIds of the keyboard-focused row; -1 = none. */
+  listFocusedIndex = $state<number>(-1);
 
   /** Per-thread load status keyed by threadId. */
   threadLoadStatus = $state(new Map<string, LoadStatus>());
   threadLoadError = $state(new Map<string, string>());
-
-  /** Index into inboxEmailIds of the keyboard-focused row; -1 = none. */
-  inboxFocusedIndex = $state<number>(-1);
 
   /** Most recent search query string (raw, user-typed). */
   searchQuery = $state('');
@@ -73,13 +96,13 @@ class MailStore {
   async #onEmailStateChange(newState: string): Promise<void> {
     if (newState === this.emailState) return;
     // First-iteration sync: the cheapest correct thing is to refresh the
-    // active inbox view. Email/changes-driven incremental update lands
-    // when other views (labels / search / threads) start needing it.
-    if (this.inboxLoadStatus === 'ready') {
+    // active list view. Email/changes-driven incremental update lands
+    // when other views (search / threads) start needing it.
+    if (this.listLoadStatus === 'ready') {
       try {
-        await this.refreshInbox();
+        await this.refreshFolder();
       } catch (err) {
-        console.error('inbox refresh after state change failed', err);
+        console.error('list refresh after state change failed', err);
       }
     }
     this.emailState = newState;
@@ -96,30 +119,35 @@ class MailStore {
   }
 
   /** Move focus to the next row, clamped. Returns the new focused id, if any. */
-  focusInboxNext(): string | null {
-    if (this.inboxEmailIds.length === 0) return null;
+  focusListNext(): string | null {
+    if (this.listEmailIds.length === 0) return null;
     const next =
-      this.inboxFocusedIndex < 0
+      this.listFocusedIndex < 0
         ? 0
-        : Math.min(this.inboxFocusedIndex + 1, this.inboxEmailIds.length - 1);
-    this.inboxFocusedIndex = next;
-    return this.inboxEmailIds[next] ?? null;
+        : Math.min(this.listFocusedIndex + 1, this.listEmailIds.length - 1);
+    this.listFocusedIndex = next;
+    return this.listEmailIds[next] ?? null;
   }
 
   /** Move focus to the previous row, clamped. */
-  focusInboxPrev(): string | null {
-    if (this.inboxEmailIds.length === 0) return null;
+  focusListPrev(): string | null {
+    if (this.listEmailIds.length === 0) return null;
     const next =
-      this.inboxFocusedIndex < 0 ? 0 : Math.max(this.inboxFocusedIndex - 1, 0);
-    this.inboxFocusedIndex = next;
-    return this.inboxEmailIds[next] ?? null;
+      this.listFocusedIndex < 0 ? 0 : Math.max(this.listFocusedIndex - 1, 0);
+    this.listFocusedIndex = next;
+    return this.listEmailIds[next] ?? null;
   }
 
-  /** The threadId of the currently-focused inbox row, or null. */
-  focusedInboxThreadId(): string | null {
-    const emailId = this.inboxEmailIds[this.inboxFocusedIndex];
+  /** The threadId of the currently-focused list row, or null. */
+  focusedListThreadId(): string | null {
+    const emailId = this.listEmailIds[this.listFocusedIndex];
     if (!emailId) return null;
     return this.emails.get(emailId)?.threadId ?? null;
+  }
+
+  /** Human-readable label for the folder currently held in the list slice. */
+  get listFolderLabel(): string {
+    return FOLDER_LABEL[this.listFolder] ?? 'Inbox';
   }
 
   /** Resolved search-result emails in result order. */
@@ -257,8 +285,9 @@ class MailStore {
     return null;
   }
 
-  inboxEmails = $derived(
-    this.inboxEmailIds
+  /** Resolved list emails in display order. */
+  listEmails = $derived(
+    this.listEmailIds
       .map((id) => this.emails.get(id))
       .filter((e): e is Email => e !== undefined),
   );
@@ -299,15 +328,26 @@ class MailStore {
   }
 
   /**
-   * Initial inbox load: fetch mailboxes if needed, then run a batched
-   * Email/query + Email/get for the inbox's most recent threads (collapsed,
-   * one Email per thread). Idempotent for already-loaded inboxes.
+   * Load the email list for the given folder. Idempotent: when the
+   * requested folder is already showing 'ready' state, the call is a
+   * no-op so route effects can fire freely. Switching to a different
+   * folder always re-runs.
+   *
+   * "all" maps to an account-scoped Email/query with no inMailbox
+   * filter; everything else maps to the matching role mailbox. When a
+   * role mailbox is missing for the principal (e.g. a brand-new account
+   * with no Trash row yet) the slice lands in 'error' state with a
+   * clear message — the sidebar still renders, the user just sees the
+   * cause.
    */
-  async loadInbox(): Promise<void> {
-    if (this.inboxLoadStatus === 'loading') return;
-    if (this.inboxLoadStatus === 'ready') return;
-    this.inboxLoadStatus = 'loading';
-    this.inboxError = null;
+  async loadFolder(folder: FolderID): Promise<void> {
+    const sameFolder = this.listFolder === folder;
+    if (sameFolder && this.listLoadStatus === 'loading') return;
+    if (sameFolder && this.listLoadStatus === 'ready') return;
+    this.listFolder = folder;
+    this.listFocusedIndex = -1;
+    this.listLoadStatus = 'loading';
+    this.listError = null;
     try {
       // Mailboxes + identities both feed compose / list-rendering paths;
       // load them in parallel on first use.
@@ -315,20 +355,30 @@ class MailStore {
       if (this.mailboxes.size === 0) setup.push(this.loadMailboxes());
       if (this.identities.size === 0) setup.push(this.loadIdentities());
       if (setup.length > 0) await Promise.all(setup);
-      const inbox = this.inbox;
-      if (!inbox) {
-        throw new Error('No inbox mailbox in this account');
-      }
       const accountId = this.mailAccountId;
       if (!accountId) throw new Error('No Mail account on this session');
+
+      let filter: Record<string, unknown> | undefined;
+      let sortProperty: 'receivedAt' | 'sentAt' = 'receivedAt';
+      if (folder !== 'all') {
+        const role = FOLDER_ROLE[folder];
+        const mailbox = this.#mailboxByRole(role);
+        if (!mailbox) {
+          throw new Error(`No ${FOLDER_LABEL[folder]} mailbox in this account`);
+        }
+        filter = { inMailbox: mailbox.id };
+        // Sent / Drafts have no externally-set receivedAt the way inbound
+        // mail does; sentAt is the natural ordering.
+        if (folder === 'sent' || folder === 'drafts') sortProperty = 'sentAt';
+      }
 
       const { responses } = await jmap.batch((b) => {
         const q = b.call(
           'Email/query',
           {
             accountId,
-            filter: { inMailbox: inbox.id },
-            sort: [{ property: 'receivedAt', isAscending: false }],
+            ...(filter ? { filter } : {}),
+            sort: [{ property: sortProperty, isAscending: false }],
             collapseThreads: true,
             limit: 50,
             calculateTotal: false,
@@ -355,20 +405,27 @@ class MailStore {
       const next = new Map(this.emails);
       for (const e of getResult.list) next.set(e.id, e);
       this.emails = next;
-      this.inboxEmailIds = queryResult.ids;
+      this.listEmailIds = queryResult.ids;
       if (typeof getResult.state === 'string') this.emailState = getResult.state;
-      this.inboxLoadStatus = 'ready';
+      this.listLoadStatus = 'ready';
     } catch (err) {
-      this.inboxLoadStatus = 'error';
-      this.inboxError = err instanceof Error ? err.message : String(err);
+      this.listLoadStatus = 'error';
+      this.listError = err instanceof Error ? err.message : String(err);
     }
   }
 
-  /** Force a refresh of the inbox view. Drops cached state for the view. */
-  async refreshInbox(): Promise<void> {
-    this.inboxLoadStatus = 'idle';
-    this.inboxEmailIds = [];
-    await this.loadInbox();
+  /** Inbox-specific entry point retained for callers that don't yet know
+   * about generic folders. New code should call loadFolder('inbox'). */
+  loadInbox(): Promise<void> {
+    return this.loadFolder('inbox');
+  }
+
+  /** Force a refresh of the current folder view. Drops cached state. */
+  async refreshFolder(): Promise<void> {
+    const folder = this.listFolder;
+    this.listLoadStatus = 'idle';
+    this.listEmailIds = [];
+    await this.loadFolder(folder);
   }
 
   threadStatus(threadId: string): LoadStatus {
@@ -466,19 +523,21 @@ class MailStore {
     if (!email.mailboxIds[inbox.id]) return; // already not in inbox
 
     const prevMailboxIds = { ...email.mailboxIds };
-    const prevInboxIds = [...this.inboxEmailIds];
-    const prevFocused = this.inboxFocusedIndex;
+    const prevListIds = [...this.listEmailIds];
+    const prevFocused = this.listFocusedIndex;
 
     // Optimistic apply
     const nextMailboxIds = { ...prevMailboxIds };
     delete nextMailboxIds[inbox.id];
     this.#patchEmail(emailId, { mailboxIds: nextMailboxIds });
-    this.#removeFromInbox(emailId);
+    // Only remove from the visible list when the active folder is the
+    // inbox; in All Mail / Sent the message stays visible.
+    if (this.listFolder === 'inbox') this.#removeFromList(emailId);
 
     const revert = (): void => {
       this.#patchEmail(emailId, { mailboxIds: prevMailboxIds });
-      this.inboxEmailIds = prevInboxIds;
-      this.inboxFocusedIndex = prevFocused;
+      this.listEmailIds = prevListIds;
+      this.listFocusedIndex = prevFocused;
     };
 
     try {
@@ -506,7 +565,7 @@ class MailStore {
           // Server state will refresh via sync; meanwhile keep our local
           // "back in inbox" state visible.
           this.#patchEmail(emailId, { mailboxIds: prevMailboxIds });
-          this.inboxEmailIds = prevInboxIds;
+          this.listEmailIds = prevListIds;
         } catch (err) {
           toast.show({
             message: errMessage(err, 'Undo failed'),
@@ -528,16 +587,18 @@ class MailStore {
     }
 
     const prevMailboxIds = { ...email.mailboxIds };
-    const prevInboxIds = [...this.inboxEmailIds];
-    const prevFocused = this.inboxFocusedIndex;
+    const prevListIds = [...this.listEmailIds];
+    const prevFocused = this.listFocusedIndex;
 
     this.#patchEmail(emailId, { mailboxIds: { [trash.id]: true } });
-    this.#removeFromInbox(emailId);
+    // Move-to-trash removes the email from the current view in every
+    // folder except trash itself.
+    if (this.listFolder !== 'trash') this.#removeFromList(emailId);
 
     const revert = (): void => {
       this.#patchEmail(emailId, { mailboxIds: prevMailboxIds });
-      this.inboxEmailIds = prevInboxIds;
-      this.inboxFocusedIndex = prevFocused;
+      this.listEmailIds = prevListIds;
+      this.listFocusedIndex = prevFocused;
     };
 
     try {
@@ -560,7 +621,7 @@ class MailStore {
         try {
           await this.#emailSetUpdate(emailId, { mailboxIds: prevMailboxIds });
           this.#patchEmail(emailId, { mailboxIds: prevMailboxIds });
-          this.inboxEmailIds = prevInboxIds;
+          this.listEmailIds = prevListIds;
         } catch (err) {
           toast.show({
             message: errMessage(err, 'Undo failed'),
@@ -631,16 +692,16 @@ class MailStore {
     this.emails = next;
   }
 
-  #removeFromInbox(emailId: string): void {
-    const idx = this.inboxEmailIds.indexOf(emailId);
+  #removeFromList(emailId: string): void {
+    const idx = this.listEmailIds.indexOf(emailId);
     if (idx < 0) return;
-    this.inboxEmailIds = [
-      ...this.inboxEmailIds.slice(0, idx),
-      ...this.inboxEmailIds.slice(idx + 1),
+    this.listEmailIds = [
+      ...this.listEmailIds.slice(0, idx),
+      ...this.listEmailIds.slice(idx + 1),
     ];
     // Clamp focus to the new bounds.
-    if (this.inboxFocusedIndex >= this.inboxEmailIds.length) {
-      this.inboxFocusedIndex = this.inboxEmailIds.length - 1;
+    if (this.listFocusedIndex >= this.listEmailIds.length) {
+      this.listFocusedIndex = this.listEmailIds.length - 1;
     }
   }
 

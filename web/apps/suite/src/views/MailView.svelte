@@ -1,30 +1,44 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { router } from '../lib/router/router.svelte';
-  import { mail } from '../lib/mail/store.svelte';
+  import { mail, type FolderID } from '../lib/mail/store.svelte';
   import { keyboard } from '../lib/keyboard/engine.svelte';
   import { compose } from '../lib/compose/compose.svelte';
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import type { Email } from '../lib/mail/types';
+
+  const VALID_FOLDERS: FolderID[] = ['inbox', 'sent', 'drafts', 'trash', 'all'];
 
   let threadId = $derived(router.parts[1] === 'thread' ? router.parts[2] : undefined);
   let label = $derived(router.parts[1] === 'label' ? router.parts[2] : undefined);
   let searchQuery = $derived(
     router.parts[1] === 'search' ? decodeURIComponent(router.parts[2] ?? '') : undefined,
   );
-  let isInboxRoute = $derived(router.matches('mail') && !router.parts[1]);
+  // Folder routes:
+  //   /mail                       → inbox (legacy path)
+  //   /mail/folder/<id>           → generic folder view (sent / drafts / trash / all)
+  let folder = $derived.by<FolderID | undefined>(() => {
+    if (router.matches('mail') && !router.parts[1]) return 'inbox';
+    if (router.parts[1] !== 'folder') return undefined;
+    const id = router.parts[2];
+    return VALID_FOLDERS.includes(id as FolderID) ? (id as FolderID) : undefined;
+  });
+  let isListRoute = $derived(folder !== undefined);
   let isSearchRoute = $derived(router.matches('mail', 'search'));
+  let isInboxRoute = $derived(folder === 'inbox');
+  let folderLabel = $derived(folder ? mail.listFolderLabel : '');
 
-  // Kick off the inbox load when the inbox route is shown. The load call is
-  // wrapped in untrack() so the synchronous loadInbox/loadStatus read-modify-
-  // write inside the store does not register the status cell as a dep of
-  // this effect; otherwise a JMAP error (status -> 'error') re-fires the
-  // effect, which retries the call, which writes 'error' again, in a tight
-  // loop.
+  // Kick off the list load when a folder route is shown. The load call is
+  // wrapped in untrack() so the synchronous loadFolder/loadStatus read-
+  // modify-write inside the store does not register the status cell as a
+  // dep of this effect; otherwise a JMAP error (status -> 'error') re-
+  // fires the effect, which retries the call, which writes 'error' again,
+  // in a tight loop.
   $effect(() => {
-    if (isInboxRoute) {
+    const f = folder;
+    if (f) {
       untrack(() => {
-        void mail.loadInbox();
+        void mail.loadFolder(f);
       });
     }
   });
@@ -94,32 +108,36 @@
     return pop;
   });
 
-  // Inbox-view keyboard bindings are pushed only while the inbox is showing.
+  // List-view keyboard bindings are pushed while any folder list is
+  // showing. j/k focus, Enter opens the thread, s toggles the flag, I/U
+  // toggle the read keyword. Archive (e) and Delete (#) are wired only
+  // for the inbox: archiving from Sent / Drafts / All Mail / Trash has
+  // no useful semantic at v1.
   $effect(() => {
-    if (!isInboxRoute) return;
+    if (!isListRoute) return;
 
     const focusedEmailId = (): string | null => {
-      const idx = mail.inboxFocusedIndex;
+      const idx = mail.listFocusedIndex;
       if (idx < 0) return null;
-      return mail.inboxEmailIds[idx] ?? null;
+      return mail.listEmailIds[idx] ?? null;
     };
 
-    const pop = keyboard.pushLayer([
+    const layer = [
       {
         key: 'j',
         description: 'Next thread',
-        action: () => mail.focusInboxNext(),
+        action: () => mail.focusListNext(),
       },
       {
         key: 'k',
         description: 'Previous thread',
-        action: () => mail.focusInboxPrev(),
+        action: () => mail.focusListPrev(),
       },
       {
         key: 'Enter',
         description: 'Open focused thread',
         action: () => {
-          const tid = mail.focusedInboxThreadId();
+          const tid = mail.focusedListThreadId();
           if (tid) router.navigate(`/mail/thread/${encodeURIComponent(tid)}`);
         },
       },
@@ -127,23 +145,7 @@
         key: 'Escape',
         description: 'Clear focus',
         action: () => {
-          mail.inboxFocusedIndex = -1;
-        },
-      },
-      {
-        key: 'e',
-        description: 'Archive',
-        action: () => {
-          const id = focusedEmailId();
-          if (id) void mail.archiveEmail(id);
-        },
-      },
-      {
-        key: '#',
-        description: 'Delete',
-        action: () => {
-          const id = focusedEmailId();
-          if (id) void mail.deleteEmail(id);
+          mail.listFocusedIndex = -1;
         },
       },
       {
@@ -170,7 +172,28 @@
           if (id) void mail.setSeen(id, false);
         },
       },
-    ]);
+    ];
+    if (isInboxRoute) {
+      layer.push(
+        {
+          key: 'e',
+          description: 'Archive',
+          action: () => {
+            const id = focusedEmailId();
+            if (id) void mail.archiveEmail(id);
+          },
+        },
+        {
+          key: '#',
+          description: 'Delete',
+          action: () => {
+            const id = focusedEmailId();
+            if (id) void mail.deleteEmail(id);
+          },
+        },
+      );
+    }
+    const pop = keyboard.pushLayer(layer);
     return pop;
   });
 
@@ -185,8 +208,8 @@
     const pop = keyboard.pushLayer([
       {
         key: 'Escape',
-        description: 'Back to inbox',
-        action: () => router.navigate('/mail'),
+        description: `Back to ${mail.listFolderLabel}`,
+        action: () => router.navigate(folderHref(mail.listFolder)),
       },
       {
         key: 'r',
@@ -206,8 +229,8 @@
       },
       {
         key: 'u',
-        description: 'Back to inbox',
-        action: () => router.navigate('/mail'),
+        description: `Back to ${mail.listFolderLabel}`,
+        action: () => router.navigate(folderHref(mail.listFolder)),
       },
     ]);
     return pop;
@@ -216,12 +239,30 @@
   // Scroll the focused row into view whenever the index changes.
   let listEl = $state<HTMLUListElement | null>(null);
   $effect(() => {
-    if (!isInboxRoute) return;
-    const idx = mail.inboxFocusedIndex;
+    if (!isListRoute) return;
+    const idx = mail.listFocusedIndex;
     if (idx < 0 || !listEl) return;
     const row = listEl.querySelector<HTMLElement>(`[data-row-index="${idx}"]`);
     row?.scrollIntoView({ block: 'nearest' });
   });
+
+  function folderHref(f: FolderID): string {
+    return f === 'inbox' ? '/mail' : `/mail/folder/${f}`;
+  }
+
+  function emptyMessage(f: FolderID | undefined): string {
+    if (!f) return '';
+    if (f === 'inbox') return 'Inbox is empty.';
+    if (f === 'all') return 'No mail.';
+    return `${FOLDER_DISPLAY[f]} is empty.`;
+  }
+  const FOLDER_DISPLAY: Record<FolderID, string> = {
+    inbox: 'Inbox',
+    sent: 'Sent',
+    drafts: 'Drafts',
+    trash: 'Trash',
+    all: 'All Mail',
+  };
 
   function senderLabel(email: Email): string {
     const a = email.from?.[0];
@@ -256,8 +297,12 @@
   {#if threadId}
     <div class="thread-frame">
       <header class="thread-frame-bar">
-        <button type="button" class="back" onclick={() => router.navigate('/mail')}>
-          ← Back to inbox
+        <button
+          type="button"
+          class="back"
+          onclick={() => router.navigate(folderHref(mail.listFolder))}
+        >
+          ← Back to {mail.listFolderLabel}
         </button>
       </header>
       <ThreadReader {threadId} />
@@ -322,50 +367,50 @@
       <h1>Label: {label}</h1>
       <p class="lead">Label-view querying arrives after inbox.</p>
     </header>
-  {:else}
+  {:else if isListRoute}
     <header class="list-header">
-      <h1>Inbox</h1>
+      <h1>{folderLabel}</h1>
       <button
         type="button"
         class="refresh"
         aria-label="Refresh"
-        onclick={() => mail.refreshInbox()}
-        disabled={mail.inboxLoadStatus === 'loading'}
+        onclick={() => mail.refreshFolder()}
+        disabled={mail.listLoadStatus === 'loading'}
       >
         ↻
       </button>
     </header>
 
-    {#if mail.inboxLoadStatus === 'idle' || mail.inboxLoadStatus === 'loading'}
+    {#if mail.listLoadStatus === 'idle' || mail.listLoadStatus === 'loading'}
       <div class="state">Loading…</div>
-    {:else if mail.inboxLoadStatus === 'error'}
+    {:else if mail.listLoadStatus === 'error'}
       <div class="state error">
-        <p>Couldn't load inbox.</p>
-        {#if mail.inboxError}<p class="detail">{mail.inboxError}</p>{/if}
-        <button type="button" onclick={() => mail.loadInbox()}>Retry</button>
+        <p>Couldn't load {folderLabel.toLowerCase()}.</p>
+        {#if mail.listError}<p class="detail">{mail.listError}</p>{/if}
+        <button type="button" onclick={() => mail.refreshFolder()}>Retry</button>
       </div>
-    {:else if mail.inboxEmails.length === 0}
-      <div class="state">Inbox is empty.</div>
+    {:else if mail.listEmails.length === 0}
+      <div class="state">{emptyMessage(folder)}</div>
     {:else}
       <ul
         class="thread-list"
         role="listbox"
-        aria-label="Inbox threads"
+        aria-label="{folderLabel} threads"
         bind:this={listEl}
       >
-        {#each mail.inboxEmails as email, i (email.id)}
+        {#each mail.listEmails as email, i (email.id)}
           <li
             class="thread-row"
             class:unread={isUnread(email)}
-            class:focused={mail.inboxFocusedIndex === i}
+            class:focused={mail.listFocusedIndex === i}
             data-row-index={i}
           >
             <button
               type="button"
               role="option"
-              aria-selected={mail.inboxFocusedIndex === i}
+              aria-selected={mail.listFocusedIndex === i}
               onclick={() => {
-                mail.inboxFocusedIndex = i;
+                mail.listFocusedIndex = i;
                 openThread(email);
               }}
             >
@@ -384,6 +429,11 @@
         {/each}
       </ul>
     {/if}
+  {:else}
+    <header>
+      <h1>Not found</h1>
+      <p class="lead">No mail folder at that URL.</p>
+    </header>
   {/if}
 </div>
 

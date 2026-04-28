@@ -96,19 +96,38 @@
               {/if}
             </button>
           </li>
-          <li><button type="button">Snoozed</button></li>
-          <li><button type="button">Important</button></li>
-          <li><button type="button">Sent</button></li>
-          <li>
-            <button type="button">
+          <li class="disabled" title="Snoozing arrives later">
+            <button type="button" disabled>Snoozed</button>
+          </li>
+          <li class="disabled" title="Importance markers arrive later">
+            <button type="button" disabled>Important</button>
+          </li>
+          <li class:active={router.matches('mail', 'folder', 'sent')}>
+            <button type="button" onclick={() => router.navigate('/mail/folder/sent')}>
+              <span>Sent</span>
+            </button>
+          </li>
+          <li class:active={router.matches('mail', 'folder', 'drafts')}>
+            <button type="button" onclick={() => router.navigate('/mail/folder/drafts')}>
               <span>Drafts</span>
               {#if (mail.drafts?.totalEmails ?? 0) > 0}
                 <span class="count">{mail.drafts?.totalEmails ?? 0}</span>
               {/if}
             </button>
           </li>
-          <li><button type="button">All Mail</button></li>
-          <li class="more"><button type="button">More</button></li>
+          <li class:active={router.matches('mail', 'folder', 'trash')}>
+            <button type="button" onclick={() => router.navigate('/mail/folder/trash')}>
+              <span>Trash</span>
+            </button>
+          </li>
+          <li class:active={router.matches('mail', 'folder', 'all')}>
+            <button type="button" onclick={() => router.navigate('/mail/folder/all')}>
+              <span>All Mail</span>
+            </button>
+          </li>
+          <li class="more disabled" title="Custom folder list arrives later">
+            <button type="button" disabled>More</button>
+          </li>
         </ul>
 
         <h3>Labels</h3>
@@ -222,6 +241,17 @@
   .mailbox-list .count {
     color: var(--text-helper);
     font-variant-numeric: tabular-nums;
+  }
+  .mailbox-list li.disabled,
+  .mailbox-list li.disabled button {
+    color: var(--text-helper);
+    cursor: not-allowed;
+  }
+  .mailbox-list li.disabled:hover {
+    background: transparent;
+  }
+  .mailbox-list li.disabled button {
+    opacity: 0.6;
   }
   .mailbox-list .more {
     background: var(--layer-02);
