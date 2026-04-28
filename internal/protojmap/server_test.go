@@ -922,3 +922,75 @@ func TestEventSource_Heartbeat(t *testing.T) {
 	}
 	t.Fatalf("did not observe heartbeat; buf=%q", buf)
 }
+
+// TestStateChange_DerivesFromChangeFeed_OnInsertMessage pins the
+// "new mail arrives but inbox does not refresh" regression. The
+// inbound delivery path (protosmtp.IngestBytes / Server.deliverOne)
+// inserts a message via store.InsertMessage, which appends a
+// change-feed entry but does NOT call IncrementJMAPState. The push
+// state-change payload must therefore be derived from the change
+// feed, not from the jmap_states row, so the pushed Email state
+// strictly increases on delivery and the client refreshes its inbox.
+func TestStateChange_DerivesFromChangeFeed_OnInsertMessage(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	p, err := f.store.Meta().GetPrincipalByID(ctx, f.pid)
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+
+	// Pre-state: with no email mutations the change-feed-derived state is "0".
+	pre, err := f.srv.CollectStateMapForTest(ctx, p, map[string]struct{}{"Email": {}})
+	if err != nil {
+		t.Fatalf("CollectStateMap pre: %v", err)
+	}
+	if pre["Email"] != "0" {
+		t.Fatalf("pre Email state = %q, want %q", pre["Email"], "0")
+	}
+
+	// Find the auto-provisioned INBOX, then deliver a message via the
+	// real InsertMessage path — same call site IngestBytes / deliverOne
+	// invoke. No IncrementJMAPState is called here, mirroring inbound
+	// delivery.
+	mboxes, err := f.store.Meta().ListMailboxes(ctx, f.pid)
+	if err != nil {
+		t.Fatalf("ListMailboxes: %v", err)
+	}
+	var inboxID store.MailboxID
+	for _, m := range mboxes {
+		if m.Name == "INBOX" {
+			inboxID = m.ID
+			break
+		}
+	}
+	if inboxID == 0 {
+		t.Fatalf("INBOX not found")
+	}
+	ref, err := f.store.Blobs().Put(ctx, strings.NewReader("body"))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	now := f.clk.Now().UTC()
+	if _, _, err := f.store.Meta().InsertMessage(ctx, store.Message{
+		MailboxID:    inboxID,
+		Blob:         ref,
+		Size:         ref.Size,
+		InternalDate: now,
+		ReceivedAt:   now,
+	}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	// Post-state: the change-feed seq for EntityKindEmail moved, so the
+	// pushed Email state must move with it. Without the fix this stayed
+	// "0" because jmap_states.email had not been bumped.
+	post, err := f.srv.CollectStateMapForTest(ctx, p, map[string]struct{}{"Email": {}})
+	if err != nil {
+		t.Fatalf("CollectStateMap post: %v", err)
+	}
+	if post["Email"] == "0" || post["Email"] == pre["Email"] {
+		t.Fatalf("post Email state = %q, want > %q (change-feed-derived)",
+			post["Email"], pre["Email"])
+	}
+}

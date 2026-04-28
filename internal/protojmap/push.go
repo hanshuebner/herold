@@ -168,43 +168,91 @@ func (s *Server) runEventSource(
 	}
 }
 
-// buildStateChange assembles a single StateChange payload by reading
-// the requesting principal's per-kind state row. The result includes
-// only the requested types, so a client subscribed to "Email" does not
-// see Mailbox state churn.
+// buildStateChange assembles a single StateChange payload using the
+// same per-type state-derivation rules each JMAP datatype applies for
+// its own /get and /changes responses. For Email / Mailbox / Thread
+// that means the maximum change-feed seq for the corresponding entity
+// kind (so a delivery into the inbox bumps the state without anybody
+// having to call IncrementJMAPState); for Identity / EmailSubmission /
+// VacationResponse it is still the per-kind counter on the
+// jmap_states row, since those datatypes mutate exclusively through
+// JMAP /set and the row is the authoritative source.
+//
+// Mismatching the data side here is the canonical "new mail arrives
+// but the inbox does not refresh" failure: clients early-return when
+// the pushed state string equals the one they already cached.
 func (s *Server) buildStateChange(ctx context.Context, p store.Principal, types map[string]struct{}) (stateChangeEvent, error) {
-	st, err := s.store.Meta().GetJMAPStates(ctx, p.ID)
+	row, err := s.collectStateMap(ctx, p, types)
 	if err != nil {
-		return stateChangeEvent{}, fmt.Errorf("get jmap states: %w", err)
-	}
-	row := stateRowToMap(st)
-	out := make(map[string]string, len(row))
-	for typ, state := range row {
-		if !matchesEventSourceTypeName(types, typ) {
-			continue
-		}
-		out[typ] = state
+		return stateChangeEvent{}, err
 	}
 	return stateChangeEvent{
 		Type: "StateChange",
 		Changed: map[Id]map[string]string{
-			AccountIDForPrincipal(p.ID): out,
+			AccountIDForPrincipal(p.ID): row,
 		},
 	}, nil
 }
 
-// stateRowToMap projects a JMAPStates row to the JMAP type name keyed
-// state-string map. The state strings are the int64 counters
-// stringified; opaque to clients per RFC 8620 §1.5 ("opaque string").
-func stateRowToMap(st store.JMAPStates) map[string]string {
-	return map[string]string{
-		"Mailbox":          strconv.FormatInt(st.Mailbox, 10),
-		"Email":            strconv.FormatInt(st.Email, 10),
-		"Thread":           strconv.FormatInt(st.Thread, 10),
-		"Identity":         strconv.FormatInt(st.Identity, 10),
-		"EmailSubmission":  strconv.FormatInt(st.EmailSubmission, 10),
-		"VacationResponse": strconv.FormatInt(st.VacationResponse, 10),
+// collectStateMap returns the typeName -> state-string map for the
+// types the EventSource subscription requested. Types not in the
+// subscription are skipped; types with no derivation rule are also
+// skipped (rather than reporting "0" and lying that nothing changed).
+func (s *Server) collectStateMap(ctx context.Context, p store.Principal, types map[string]struct{}) (map[string]string, error) {
+	out := make(map[string]string, 6)
+
+	// Change-feed-derived types. We fetch only the ones the
+	// subscription cares about; the SQL store implements
+	// GetMaxChangeSeqForKind as an indexed MAX() so each call is
+	// cheap.
+	feedKinds := []struct {
+		typeName string
+		kind     store.EntityKind
+	}{
+		{"Mailbox", store.EntityKindMailbox},
+		{"Email", store.EntityKindEmail},
+		{"Thread", store.EntityKindEmail}, // Threads are derived from Email mutations.
 	}
+	for _, fk := range feedKinds {
+		if !matchesEventSourceTypeName(types, fk.typeName) {
+			continue
+		}
+		if _, ok := out[fk.typeName]; ok {
+			continue // de-dupe: Email and Thread share the same kind.
+		}
+		seq, err := s.store.Meta().GetMaxChangeSeqForKind(ctx, p.ID, fk.kind)
+		if err != nil {
+			return nil, fmt.Errorf("max change seq %s: %w", fk.typeName, err)
+		}
+		out[fk.typeName] = strconv.FormatUint(uint64(seq), 10)
+	}
+
+	// jmap_states-derived types — only fetch the row when at least one
+	// row-based subscriber needs it.
+	rowTypes := []string{"Identity", "EmailSubmission", "VacationResponse"}
+	rowNeeded := false
+	for _, t := range rowTypes {
+		if matchesEventSourceTypeName(types, t) {
+			rowNeeded = true
+			break
+		}
+	}
+	if rowNeeded {
+		st, err := s.store.Meta().GetJMAPStates(ctx, p.ID)
+		if err != nil {
+			return nil, fmt.Errorf("get jmap states: %w", err)
+		}
+		if matchesEventSourceTypeName(types, "Identity") {
+			out["Identity"] = strconv.FormatInt(st.Identity, 10)
+		}
+		if matchesEventSourceTypeName(types, "EmailSubmission") {
+			out["EmailSubmission"] = strconv.FormatInt(st.EmailSubmission, 10)
+		}
+		if matchesEventSourceTypeName(types, "VacationResponse") {
+			out["VacationResponse"] = strconv.FormatInt(st.VacationResponse, 10)
+		}
+	}
+	return out, nil
 }
 
 // writeSSEStateChange emits a single SSE event in the wire form
