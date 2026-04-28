@@ -480,20 +480,22 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			Session:       adminSessionCookieConfig(cfg),
 		},
 	)
-	// REQ-AUTH-SESSION-REST: cookie auth on /api/v1 is gated on the
-	// signing key being long enough for HMAC-SHA256 (>= 32 bytes). When
-	// the operator has not configured one (typical first-boot scenario
-	// before bootstrap publishes the env var) we keep cookie auth off
-	// but emit a clear startup line so an operator looking at "why
-	// can't the SPA log in?" finds the answer in the herold log
-	// instead of in the source.
+	// REQ-AUTH-SESSION-REST: when no signing key is configured (typical
+	// zero-config / Docker quickstart scenario), both the admin and public
+	// cookie configs fall back to an ephemeral random key generated at
+	// startup. Sessions issued with the ephemeral key are invalidated on
+	// restart, which is acceptable for a development deployment. A
+	// persistent key can be wired via [server.ui].signing_key_env once the
+	// operator wants session continuity across restarts.
 	if cfg.Server.UI.SigningKeyEnv == "" {
-		logger.Info("admin: REST session-cookie auth disabled",
-			"reason", "no signing key configured (set [server.ui].signing_key_env)")
+		logger.Info("admin: session-cookie signing key not configured; " +
+			"using ephemeral random key (sessions invalidated on restart). " +
+			"Set [server.ui].signing_key_env for a persistent key.")
 	} else if v := os.Getenv(cfg.Server.UI.SigningKeyEnv); len(v) < 32 {
-		logger.Info("admin: REST session-cookie auth disabled",
-			"reason", "signing key shorter than 32 bytes",
-			"env", cfg.Server.UI.SigningKeyEnv)
+		logger.Info("admin: session-cookie signing key too short; "+
+			"using ephemeral random key (sessions invalidated on restart)",
+			"env", cfg.Server.UI.SigningKeyEnv,
+			"min_bytes", 32)
 	}
 	// Parent mux composition (Phase 2 Wave 2.4): the admin HTTP
 	// listener serves both the REST surface (protoadmin under
@@ -1992,19 +1994,49 @@ func adminListenerHint(w http.ResponseWriter, _ *http.Request) {
 	))
 }
 
+// resolveSessionSigningKey returns the HMAC-SHA256 signing key to use for
+// session cookies. If [server.ui].signing_key_env names an env variable
+// that holds a value of at least 32 bytes, that value is used. Otherwise a
+// fresh cryptographically-random 32-byte key is generated. Callers that
+// need an admin key and a public key MUST call this function independently
+// for each; the two keys are intentionally different so cookies issued on
+// one listener are not accepted on the other (REQ-AUTH-COOKIE-SCOPE).
+//
+// A randomly-generated key means sessions are invalidated when the process
+// restarts. This is acceptable for development deployments and the default
+// Docker quickstart; operators wanting session continuity should set
+// signing_key_env.
+func resolveSessionSigningKey(cfg *sysconfig.Config) []byte {
+	if env := cfg.Server.UI.SigningKeyEnv; env != "" {
+		if v := os.Getenv(env); len(v) >= 32 {
+			return []byte(v)
+		}
+	}
+	// No usable configured key: generate a fresh ephemeral one. Each call
+	// returns a different key, so the admin and public configs diverge
+	// intentionally.
+	var key [32]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		// rand.Read failing is OS-level catastrophic; panic rather than
+		// silently issuing cookies signed with a zero key.
+		panic("admin: failed to generate ephemeral session signing key: " + err.Error())
+	}
+	return key[:]
+}
+
 // adminSessionCookieConfig extracts the admin-listener cookie parameters
 // from sysconfig and returns an authsession.SessionConfig suitable for
 // passing to protoadmin.Options.Session. The returned config uses the same
 // signing key and cookie names as the admin listener so cookies minted by
 // protoadmin's JSON /api/v1/auth/login endpoint are verifiable by
 // requireAuth (REQ-AUTH-SESSION-REST).
+//
+// When no persistent signing key is configured, resolveSessionSigningKey
+// generates an ephemeral 32-byte key so cookie auth works out-of-the-box
+// (fixes #6, #7: the public self-service endpoints returned 401 because
+// the empty signing key caused authenticateWithMode to skip cookie auth).
 func adminSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
-	signingKey := []byte{}
-	if env := cfg.Server.UI.SigningKeyEnv; env != "" {
-		if v := os.Getenv(env); v != "" {
-			signingKey = []byte(v)
-		}
-	}
+	signingKey := resolveSessionSigningKey(cfg)
 	secure := true
 	if cfg.Server.UI.SecureCookies != nil {
 		secure = *cfg.Server.UI.SecureCookies
@@ -2036,13 +2068,16 @@ func adminSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
 // into protoimg, protochat, protocall, and protojmap. Cookies issued by
 // protologin's JSON /api/v1/auth/login are verified by those resolvers
 // (REQ-AUTH-SESSION-REST).
+//
+// Critically, this function is called ONCE inside composeAdminAndUI and the
+// returned SessionConfig is shared between publicLoginSrv (cookie issuance)
+// and selfServiceSrv (cookie verification). Both consumers must use the
+// same SigningKey or HMAC verification will fail for every cookie.
+//
+// When no persistent signing key is configured, resolveSessionSigningKey
+// generates an ephemeral 32-byte key (fixes #6, #7).
 func publicSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
-	signingKey := []byte{}
-	if env := cfg.Server.UI.SigningKeyEnv; env != "" {
-		if v := os.Getenv(env); v != "" {
-			signingKey = []byte(v)
-		}
-	}
+	signingKey := resolveSessionSigningKey(cfg)
 	secure := true
 	if cfg.Server.UI.SecureCookies != nil {
 		secure = *cfg.Server.UI.SecureCookies
