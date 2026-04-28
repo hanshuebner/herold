@@ -58,6 +58,22 @@
     else next.add(id);
     expanded = next;
   }
+
+  function expandAll(): void {
+    expanded = new Set(emails.map((e) => e.id));
+  }
+
+  // Open the browser's print dialog with every message expanded. The
+  // print stylesheet (defined in this component plus app.css) hides the
+  // surrounding shell and renders only the thread inline, with each
+  // message a page-break-avoid block.
+  async function printThread(): Promise<void> {
+    expandAll();
+    // Defer one frame so the DOM update lands before the print dialog
+    // captures the document.
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    window.print();
+  }
 </script>
 
 <div class="thread-reader">
@@ -75,7 +91,18 @@
     <div class="state">Thread has no messages.</div>
   {:else}
     <header>
-      <h1>{subject}</h1>
+      <div class="header-row">
+        <h1>{subject}</h1>
+        <button
+          type="button"
+          class="print"
+          aria-label="Print thread"
+          title="Print thread"
+          onclick={() => void printThread()}
+        >
+          🖨 Print
+        </button>
+      </div>
       <p class="count">
         {emails.length} message{emails.length === 1 ? '' : 's'}
       </p>
@@ -99,17 +126,54 @@
     border-bottom: 1px solid var(--border-subtle-01);
     background: var(--layer-01);
   }
+  .header-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-04);
+  }
   h1 {
     font-size: var(--type-heading-02-size);
     line-height: var(--type-heading-02-line);
     font-weight: var(--type-heading-02-weight);
     margin: 0 0 var(--spacing-02);
     word-break: break-word;
+    flex: 1;
   }
   .count {
     color: var(--text-secondary);
     font-size: var(--type-body-compact-01-size);
     margin: 0;
+  }
+  .print {
+    flex: 0 0 auto;
+    padding: var(--spacing-02) var(--spacing-04);
+    border-radius: var(--radius-pill);
+    color: var(--text-secondary);
+    background: var(--layer-02);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .print:hover {
+    background: var(--layer-03);
+    color: var(--text-primary);
+  }
+
+  @media print {
+    .print {
+      display: none;
+    }
+    .thread-reader {
+      overflow: visible !important;
+      height: auto !important;
+    }
+    header {
+      background: transparent;
+      border-bottom-color: #000;
+    }
+    :global(.message) {
+      page-break-inside: avoid;
+    }
   }
 
   .state {

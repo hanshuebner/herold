@@ -1,3 +1,30 @@
 /* The design system handles fonts, reset, and tokens. Suite-specific
    overrides (if any) go below. */
 @import '@herold/design-system/index.css';
+
+/* Print: collapse the shell to the active thread reader so users get
+   a clean printout that's just the messages -- no rail, no sidebar,
+   no global header.  ThreadReader's own print stylesheet handles the
+   per-message formatting; this rule just makes it the only thing
+   visible on the page. */
+@media print {
+  body {
+    background: #fff;
+  }
+  /* Hide the global app chrome: rail, sidebar, header, toasts, etc. */
+  :global(.shell > .middle > nav),
+  :global(.shell > .middle > .sidebar),
+  :global(.shell > header),
+  :global(.shell > .coach),
+  :global(.toast-host),
+  :global(.compose-modal) {
+    display: none !important;
+  }
+  :global(.shell),
+  :global(.shell > .middle),
+  :global(.shell > .middle > .content) {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+}
