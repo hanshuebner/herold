@@ -79,7 +79,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		CreatedIDs:      req.CreatedIDs,
 	}
 	for _, call := range req.MethodCalls {
-		entry := s.dispatchOne(ctx, call, resp.MethodResponses, req.Using)
+		entry := s.dispatchOne(ctx, call, resp.MethodResponses, req.Using, req.CreatedIDs)
 		resp.MethodResponses = append(resp.MethodResponses, entry)
 	}
 
@@ -96,8 +96,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 // successful executions yield ["<method>", <response>, <callId>]. The
 // returned Invocation is appended to the response envelope by the
 // caller. prior is the slice of already-rendered response invocations
-// — back-references resolve against it.
-func (s *Server) dispatchOne(ctx context.Context, call Invocation, prior []Invocation, using []CapabilityID) Invocation {
+// — back-references and §5.3 creation references resolve against it.
+// requestCreatedIDs is the request envelope's optional createdIds map,
+// merged into the creation-ref namespace for the same-request scope.
+func (s *Server) dispatchOne(ctx context.Context, call Invocation, prior []Invocation, using []CapabilityID, requestCreatedIDs map[Id]Id) Invocation {
 	handler, ok := s.reg.Resolve(call.Name)
 	if !ok {
 		return errorInvocation(call.CallID, NewMethodError("unknownMethod",
@@ -113,6 +115,11 @@ func (s *Server) dispatchOne(ctx context.Context, call Invocation, prior []Invoc
 			"method "+call.Name+" requires capability "+string(cap)+" in 'using'"))
 	}
 	args, refErr := resolveBackReferences(call.Args, prior)
+	if refErr != nil {
+		return errorInvocation(call.CallID, refErr)
+	}
+	creations := gatherCreations(prior, requestCreatedIDs)
+	args, refErr = resolveCreationReferences(args, creations)
 	if refErr != nil {
 		return errorInvocation(call.CallID, refErr)
 	}

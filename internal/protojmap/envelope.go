@@ -149,6 +149,127 @@ func resolveBackReferences(args json.RawMessage, prior []Invocation) (json.RawMe
 	return out, nil
 }
 
+// gatherCreations builds the in-request creation-id map per RFC 8620
+// §5.3: every prior /set response's "created" object contributes one
+// entry (creationId -> server-assigned id), and any request-envelope
+// createdIds map is merged in. The resulting map is what
+// resolveCreationReferences consults.
+func gatherCreations(prior []Invocation, requestCreatedIDs map[Id]Id) map[string]Id {
+	out := make(map[string]Id, len(requestCreatedIDs)+len(prior))
+	for k, v := range requestCreatedIDs {
+		out[k] = v
+	}
+	for _, p := range prior {
+		if p.Name == "error" || len(p.Args) == 0 {
+			continue
+		}
+		var resp struct {
+			Created map[string]struct {
+				ID Id `json:"id"`
+			} `json:"created"`
+		}
+		if err := json.Unmarshal(p.Args, &resp); err != nil {
+			continue
+		}
+		for cid, rec := range resp.Created {
+			if rec.ID != "" {
+				out[cid] = rec.ID
+			}
+		}
+	}
+	return out
+}
+
+// isCreationIDChar reports whether c is permitted in a JMAP creation id
+// (RFC 8620 §1.2: same character set as Id — A-Z, a-z, 0-9, "-", "_").
+func isCreationIDChar(c byte) bool {
+	return (c >= 'A' && c <= 'Z') ||
+		(c >= 'a' && c <= 'z') ||
+		(c >= '0' && c <= '9') ||
+		c == '-' || c == '_'
+}
+
+// looksLikeCreationRef reports whether s is "#<creationId>" with a
+// non-empty suffix matching the JMAP id character set. The suffix
+// length is bounded at 255 per RFC 8620 §1.2.
+func looksLikeCreationRef(s string) bool {
+	if len(s) < 2 || len(s) > 256 || s[0] != '#' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if !isCreationIDChar(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveCreationReferences walks args and substitutes any string value
+// of shape "#<creationId>" with the real id assigned by a prior /set in
+// the same request, per RFC 8620 §5.3. Strings whose suffix does not
+// match the JMAP id character set are left alone (they are not
+// creation references). Strings that look like creation references but
+// whose creationId is not in creations are left untouched too — the
+// handler will see the original string and may reject it as invalid.
+// This is intentionally permissive at the dispatcher to avoid mistaking
+// user-supplied content (e.g. a "#hashtag" subject line) for a
+// reference.
+func resolveCreationReferences(args json.RawMessage, creations map[string]Id) (json.RawMessage, *MethodError) {
+	if len(args) == 0 || len(creations) == 0 {
+		return args, nil
+	}
+	var v any
+	if err := json.Unmarshal(args, &v); err != nil {
+		return args, nil
+	}
+	v, mutated := substituteCreationRefs(v, creations)
+	if !mutated {
+		return args, nil
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return nil, NewMethodError("serverFail",
+			fmt.Sprintf("creation-ref re-marshal: %v", err))
+	}
+	return out, nil
+}
+
+// substituteCreationRefs recursively walks a JSON-decoded value and
+// replaces qualifying creation references. Returns the (possibly new)
+// value and whether any substitution occurred.
+func substituteCreationRefs(v any, creations map[string]Id) (any, bool) {
+	switch t := v.(type) {
+	case map[string]any:
+		mutated := false
+		for k, child := range t {
+			if nv, m := substituteCreationRefs(child, creations); m {
+				t[k] = nv
+				mutated = true
+			}
+		}
+		return t, mutated
+	case []any:
+		mutated := false
+		for i, child := range t {
+			if nv, m := substituteCreationRefs(child, creations); m {
+				t[i] = nv
+				mutated = true
+			}
+		}
+		return t, mutated
+	case string:
+		if !looksLikeCreationRef(t) {
+			return v, false
+		}
+		if real, ok := creations[t[1:]]; ok {
+			return real, true
+		}
+		return v, false
+	default:
+		return v, false
+	}
+}
+
 // evalJSONPointer evaluates an RFC 6901 JSON Pointer against the JSON
 // document doc. RFC 8620 §3.7 limits the pointer subset to: empty
 // string (whole doc), /<key>, /<index>, and the "*" wildcard which
