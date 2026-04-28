@@ -1,6 +1,7 @@
 package email
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -52,6 +53,10 @@ type jmapAddress struct {
 // htmlBody, attachments) are populated only when the request opts in
 // via the "properties" / "fetchTextBodyValues" / "fetchHTMLBodyValues" /
 // "fetchAllBodyValues" hints.
+//
+// Dynamic header property accessors (RFC 8621 §4.1.2.4) like
+// "header:Subject:asText" are carried in HeaderProperties and
+// serialised by jmapEmail.MarshalJSON.
 type jmapEmail struct {
 	ID         jmapID          `json:"id"`
 	BlobID     string          `json:"blobId"`
@@ -95,6 +100,109 @@ type jmapEmail struct {
 	Attachments   []bodyPartRef        `json:"attachments,omitempty"`
 	HasAttachment bool                 `json:"hasAttachment"`
 	Preview       string               `json:"preview,omitempty"`
+
+	// HeaderProperties holds the decoded values for dynamic header
+	// property accessors (RFC 8621 §4.1.2.4) — keys like
+	// "header:Subject:asText". Serialised directly into the JSON object
+	// alongside the other fields by MarshalJSON.
+	HeaderProperties map[string]json.RawMessage `json:"-"`
+}
+
+// jmapEmailWire is the JSON-serialisable alias; we copy all exported
+// fields so that MarshalJSON can merge in HeaderProperties without
+// reflection.
+type jmapEmailWire struct {
+	ID            jmapID                     `json:"id"`
+	BlobID        string                     `json:"blobId"`
+	ThreadID      jmapID                     `json:"threadId"`
+	MailboxIDs    map[jmapID]bool            `json:"mailboxIds"`
+	Keywords      map[string]bool            `json:"keywords"`
+	Size          int64                      `json:"size"`
+	ReceivedAt    string                     `json:"receivedAt"`
+	SnoozedUntil  *string                    `json:"snoozedUntil"`
+	Reactions     map[string][]string        `json:"reactions,omitempty"`
+	From          []jmapAddress              `json:"from,omitempty"`
+	To            []jmapAddress              `json:"to,omitempty"`
+	Cc            []jmapAddress              `json:"cc,omitempty"`
+	Bcc           []jmapAddress              `json:"bcc,omitempty"`
+	ReplyTo       []jmapAddress              `json:"replyTo,omitempty"`
+	Sender        []jmapAddress              `json:"sender,omitempty"`
+	Subject       string                     `json:"subject,omitempty"`
+	MessageID     []string                   `json:"messageId,omitempty"`
+	InReplyTo     []string                   `json:"inReplyTo,omitempty"`
+	References    []string                   `json:"references,omitempty"`
+	SentAt        string                     `json:"sentAt,omitempty"`
+	BodyStructure *bodyPart                  `json:"bodyStructure,omitempty"`
+	BodyValues    map[string]bodyValue       `json:"bodyValues,omitempty"`
+	TextBody      []bodyPartRef              `json:"textBody,omitempty"`
+	HTMLBody      []bodyPartRef              `json:"htmlBody,omitempty"`
+	Attachments   []bodyPartRef              `json:"attachments,omitempty"`
+	HasAttachment bool                       `json:"hasAttachment"`
+	Preview       string                     `json:"preview,omitempty"`
+}
+
+// MarshalJSON serialises jmapEmail, merging HeaderProperties keys
+// directly into the JSON object so they appear as top-level fields
+// (e.g. `"header:Subject:asText": "..."`) per RFC 8621 §4.1.2.4.
+func (e jmapEmail) MarshalJSON() ([]byte, error) {
+	wire := jmapEmailWire{
+		ID:            e.ID,
+		BlobID:        e.BlobID,
+		ThreadID:      e.ThreadID,
+		MailboxIDs:    e.MailboxIDs,
+		Keywords:      e.Keywords,
+		Size:          e.Size,
+		ReceivedAt:    e.ReceivedAt,
+		SnoozedUntil:  e.SnoozedUntil,
+		Reactions:     e.Reactions,
+		From:          e.From,
+		To:            e.To,
+		Cc:            e.Cc,
+		Bcc:           e.Bcc,
+		ReplyTo:       e.ReplyTo,
+		Sender:        e.Sender,
+		Subject:       e.Subject,
+		MessageID:     e.MessageID,
+		InReplyTo:     e.InReplyTo,
+		References:    e.References,
+		SentAt:        e.SentAt,
+		BodyStructure: e.BodyStructure,
+		BodyValues:    e.BodyValues,
+		TextBody:      e.TextBody,
+		HTMLBody:      e.HTMLBody,
+		Attachments:   e.Attachments,
+		HasAttachment: e.HasAttachment,
+		Preview:       e.Preview,
+	}
+	if len(e.HeaderProperties) == 0 {
+		return json.Marshal(wire)
+	}
+	// Merge HeaderProperties into the object. We serialise wire first,
+	// then inject the extra keys.
+	base, err := json.Marshal(wire)
+	if err != nil {
+		return nil, err
+	}
+	if len(base) < 2 || base[0] != '{' {
+		return base, nil
+	}
+	var extra []byte
+	for k, v := range e.HeaderProperties {
+		kJSON, _ := json.Marshal(k)
+		extra = append(extra, ',')
+		extra = append(extra, kJSON...)
+		extra = append(extra, ':')
+		extra = append(extra, v...)
+	}
+	if len(extra) == 0 {
+		return base, nil
+	}
+	// Insert before the closing '}'.
+	result := make([]byte, 0, len(base)+len(extra))
+	result = append(result, base[:len(base)-1]...)
+	result = append(result, extra...)
+	result = append(result, '}')
+	return result, nil
 }
 
 // bodyPart is the wire-form EmailBodyPart (RFC 8621 §4.1.4).
