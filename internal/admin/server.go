@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hanshuebner/herold/internal/acme"
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/autodns"
 	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/chatretention"
@@ -46,6 +47,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap/mail/emailsubmission"
 	jmapidentity "github.com/hanshuebner/herold/internal/protojmap/mail/identity"
 	jmappush "github.com/hanshuebner/herold/internal/protojmap/push"
+	"github.com/hanshuebner/herold/internal/protologin"
 	"github.com/hanshuebner/herold/internal/protosend"
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/protoui"
@@ -1606,6 +1608,30 @@ func composeAdminAndUI(
 	// only; only the callback completion needs to be public.
 	publicMux.Handle("/api/v1/oidc/callback", adminHandler)
 
+	// JSON login/logout on the public listener (Phase 3c-i, REQ-AUTH-SCOPE-01).
+	// POST /api/v1/auth/login issues herold_public_session + herold_public_csrf
+	// cookies with the end-user scope set so the Suite SPA can authenticate
+	// without the HTML /login redirect dance. POST /api/v1/auth/logout clears
+	// both cookies.
+	//
+	// The protoui HTML /login flow at prefix+"/login" remains mounted below
+	// (coexistence through Phase 3c-ii); Phase 3c-iii migrates the SPA to
+	// this JSON endpoint and drops the protoui side.
+	//
+	// A no-op rate limiter is used here; a public-listener per-IP bucket will
+	// be added as a follow-up to Phase 3c-i.
+	publicLoginSrv := protologin.New(protologin.Options{
+		Session:       publicSessionCookieConfig(cfg),
+		Store:         st,
+		Directory:     dir,
+		Clock:         clk,
+		Logger:        logger.With("subsystem", "protologin", "listener", "public"),
+		Listener:      "public",
+		Scopes:        publicSessionScopes,
+		AuditAppender: publicLoginAuditAppender(st, clk),
+	})
+	publicLoginSrv.Mount(publicMux)
+
 	// Public /login flow (suite-login per REQ-AUTH-SCOPE-01) lives at
 	// the same /ui path prefix on the public listener with end-user
 	// scope issuance. The public protoui server uses a distinct
@@ -2047,6 +2073,83 @@ func adminSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
 		CSRFCookieName: csrfName,
 		TTL:            cfg.Server.UI.SessionTTL.AsDuration(),
 		SecureCookies:  secure,
+	}
+}
+
+// publicSessionCookieConfig extracts the public-listener cookie parameters
+// from sysconfig and returns an authsession.SessionConfig for
+// protologin.Options.Session. The returned config uses the same signing key
+// and cookie names that newProtoUIServer uses for the "public" kind so
+// cookies minted by the protoui HTML /login flow and by protologin's JSON
+// /api/v1/auth/login endpoint on the public listener are mutually verifiable
+// (REQ-AUTH-SESSION-REST).
+func publicSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
+	signingKey := []byte{}
+	if env := cfg.Server.UI.SigningKeyEnv; env != "" {
+		if v := os.Getenv(env); v != "" {
+			signingKey = []byte(v)
+		}
+	}
+	secure := true
+	if cfg.Server.UI.SecureCookies != nil {
+		secure = *cfg.Server.UI.SecureCookies
+	}
+	cookieName := cfg.Server.UI.CookieName
+	csrfName := cfg.Server.UI.CSRFCookieName
+	// sysconfig.Load fills in "herold_ui_session" / "herold_ui_csrf" as
+	// defaults when the operator omits them. Treat those defaults as "not
+	// operator-supplied" the same as empty string so we can apply the
+	// public-listener names. The admin-listener function uses the same
+	// pattern (see adminSessionCookieConfig above).
+	if cookieName == "" || cookieName == "herold_ui_session" {
+		cookieName = "herold_public_session"
+	}
+	if csrfName == "" || csrfName == "herold_ui_csrf" {
+		csrfName = "herold_public_csrf"
+	}
+	return authsession.SessionConfig{
+		SigningKey:     signingKey,
+		CookieName:     cookieName,
+		CSRFCookieName: csrfName,
+		TTL:            cfg.Server.UI.SessionTTL.AsDuration(),
+		SecureCookies:  secure,
+	}
+}
+
+// publicSessionScopes returns the end-user scope set for cookies issued on
+// the public listener (REQ-AUTH-SCOPE-01). The set covers all nine end-user
+// scopes: end-user, mail.send, mail.receive, chat.read, chat.write, cal.read,
+// cal.write, contacts.read, contacts.write.
+//
+// Today the principal flags do not bifurcate access at a finer granularity
+// than "user has TOTP enabled"; a constant AllEndUserScopes set is therefore
+// correct. When per-subsystem principal flags are added in a future phase,
+// this function should be updated to gate the mail.*/chat.*/cal.*/contacts.*
+// scopes against those flags.
+func publicSessionScopes(_ store.Principal) auth.ScopeSet {
+	return auth.NewScopeSet(auth.AllEndUserScopes...)
+}
+
+// publicLoginAuditAppender returns an AuditAppender func that writes records
+// to the store's metadata audit log. It is the thin shim that lets
+// protologin (which does not depend on any specific store implementation)
+// write audit events via the store.Metadata interface (REQ-ADM-300).
+//
+// The actor defaults to ActorSystem / "system"; protologin's login handler
+// overrides this by attaching the principal to the context before calling
+// the appender on successful login.
+func publicLoginAuditAppender(st store.Store, clk clock.Clock) func(ctx context.Context, action, subject string, outcome store.AuditOutcome, message string, meta map[string]string) {
+	return func(ctx context.Context, action, subject string, outcome store.AuditOutcome, message string, meta map[string]string) {
+		_ = st.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+			At:        clk.Now(),
+			ActorKind: store.ActorSystem,
+			ActorID:   "system",
+			Action:    action,
+			Subject:   subject,
+			Outcome:   outcome,
+			Message:   message,
+			Metadata:  meta,
+		})
 	}
 }
 
