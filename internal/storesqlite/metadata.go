@@ -945,6 +945,13 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message, targets
 		}
 		// Insert one message_mailboxes row per target.
 		for i, t := range targets {
+			// Inherit message-level flags/keywords if the target doesn't
+			// specify its own. This lets callers set Flags/Keywords on the
+			// Message struct alone (common in tests and SMTP deliver).
+			if t.Flags == 0 && len(t.Keywords) == 0 {
+				t.Flags = msg.Flags
+				t.Keywords = msg.Keywords
+			}
 			var uidNext, highest int64
 			if err := tx.QueryRowContext(ctx, `SELECT uidnext, highest_modseq FROM mailboxes WHERE id = ?`,
 				int64(t.MailboxID)).Scan(&uidNext, &highest); err != nil {

@@ -525,6 +525,13 @@ func (m *metaFace) InsertMessage(ctx context.Context, msg store.Message, targets
 	var firstUID store.UID
 	var firstModSeq store.ModSeq
 	for i, t := range targets {
+		// Inherit message-level flags/keywords if the target doesn't
+		// specify its own. This lets callers set Flags/Keywords on the
+		// Message struct alone (common in tests and SMTP deliver).
+		if t.Flags == 0 && len(t.Keywords) == 0 {
+			t.Flags = msg.Flags
+			t.Keywords = msg.Keywords
+		}
 		mb2 := s.mailboxes[t.MailboxID]
 		uid := mb2.UIDNext
 		mb2.UIDNext++
