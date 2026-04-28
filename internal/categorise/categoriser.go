@@ -158,6 +158,25 @@ func New(opts Options) *Categoriser {
 	}
 }
 
+// CategorisationResult is the rich result from Categorise. It carries
+// the assigned category name (empty string = "no category") and the
+// transparency fields required by REQ-FILT-216: the user-visible prompt
+// as applied to this message and the model identifier.
+//
+// PromptApplied is the user-visible portion only (Guardrail excluded per
+// REQ-FILT-67). Model is the resolved model identifier.
+type CategorisationResult struct {
+	// Category is the bare category name (no "$category-" prefix), or ""
+	// when no category applies or an error path was taken.
+	Category string
+	// PromptApplied is the user-visible system prompt as actually built for
+	// this message: renderSystemPrompt(cfg.Prompt, cfg.CategorySet). The
+	// operator guardrail is NOT included.
+	PromptApplied string
+	// Model is the resolved LLM model identifier used for this call.
+	Model string
+}
+
 // Categorise runs the per-message classification (REQ-FILT-200..215).
 // principal identifies the recipient whose configuration row drives
 // the call; msg / auth / spamVerdict are passed through to the prompt
@@ -174,18 +193,32 @@ func (c *Categoriser) Categorise(
 	auth *mailauth.AuthResults,
 	spamVerdict spam.Verdict,
 ) (string, error) {
+	r, err := c.CategoriseRich(ctx, principal, msg, auth, spamVerdict)
+	return r.Category, err
+}
+
+// CategoriseRich is the transparency-aware variant of Categorise. It
+// returns the full CategorisationResult including the user-visible
+// prompt-as-applied and model identifier required for REQ-FILT-216.
+func (c *Categoriser) CategoriseRich(
+	ctx context.Context,
+	principal store.PrincipalID,
+	msg mailparse.Message,
+	auth *mailauth.AuthResults,
+	spamVerdict spam.Verdict,
+) (CategorisationResult, error) {
 	if c == nil {
-		return "", nil
+		return CategorisationResult{}, nil
 	}
 	cfg, err := c.store.Meta().GetCategorisationConfig(ctx, principal)
 	if err != nil {
 		c.logger.WarnContext(ctx, "categorise: load config",
 			slog.Uint64("principal_id", uint64(principal)),
 			slog.String("err", err.Error()))
-		return "", nil
+		return CategorisationResult{}, nil
 	}
 	if !cfg.Enabled {
-		return "", nil
+		return CategorisationResult{}, nil
 	}
 
 	// Resolve which LLM client to use. When the caller has injected an
@@ -195,10 +228,10 @@ func (c *Categoriser) Categorise(
 	client, model, logEndpoint, err := c.resolveClient(ctx, principal, cfg)
 	if err != nil {
 		// resolveClient already logged and incremented metrics.
-		return "", nil
+		return CategorisationResult{}, nil
 	}
 	if client == nil {
-		return "", nil
+		return CategorisationResult{}, nil
 	}
 
 	timeout := time.Duration(cfg.TimeoutSec) * time.Second
@@ -209,17 +242,25 @@ func (c *Categoriser) Categorise(
 	callCtx, cancel := withBoundedDeadline(ctx, c.clock, timeout)
 	defer cancel()
 
-	prompt := renderSystemPrompt(cfg.Prompt, cfg.CategorySet)
+	// The user-visible prompt is renderSystemPrompt(cfg.Prompt, cfg.CategorySet).
+	// The guardrail (cfg.Guardrail) is prepended to the full LLM prompt but
+	// EXCLUDED from PromptApplied returned to transparency consumers (REQ-FILT-67).
+	userVisiblePrompt := renderSystemPrompt(cfg.Prompt, cfg.CategorySet)
+	fullPrompt := userVisiblePrompt
+	if cfg.Guardrail != "" {
+		fullPrompt = cfg.Guardrail + "\n\n" + userVisiblePrompt
+	}
+
 	userJSON, err := json.Marshal(buildUserPayload(msg, auth, spamVerdict))
 	if err != nil {
 		c.logger.WarnContext(ctx, "categorise: marshal user payload",
 			slog.Uint64("principal_id", uint64(principal)),
 			slog.String("err", err.Error()))
-		return "", nil
+		return CategorisationResult{}, nil
 	}
 
 	start := c.clock.Now()
-	content, callErr := client.Complete(callCtx, prompt, string(userJSON))
+	content, callErr := client.Complete(callCtx, fullPrompt, string(userJSON))
 	observe.CategoriseCallDurationSeconds.Observe(c.clock.Now().Sub(start).Seconds())
 	if callErr != nil {
 		c.logger.WarnContext(ctx, "categorise: chat completion failed",
@@ -232,7 +273,7 @@ func (c *Categoriser) Categorise(
 		} else {
 			observe.CategoriseCallsTotal.WithLabelValues("http_error").Inc()
 		}
-		return "", nil
+		return CategorisationResult{PromptApplied: userVisiblePrompt, Model: model}, nil
 	}
 	cat, parseErr := parseModelCategory(content)
 	if parseErr != nil {
@@ -240,22 +281,26 @@ func (c *Categoriser) Categorise(
 			slog.Uint64("principal_id", uint64(principal)),
 			slog.String("err", parseErr.Error()))
 		observe.CategoriseCallsTotal.WithLabelValues("http_error").Inc()
-		return "", nil
+		return CategorisationResult{PromptApplied: userVisiblePrompt, Model: model}, nil
 	}
 	if cat == "" || strings.EqualFold(cat, "none") {
 		observe.CategoriseCallsTotal.WithLabelValues("none").Inc()
-		return "", nil
+		return CategorisationResult{PromptApplied: userVisiblePrompt, Model: model}, nil
 	}
 	if !categoryInSet(cat, cfg.CategorySet) {
 		c.logger.WarnContext(ctx, "categorise: model returned unknown category",
 			slog.Uint64("principal_id", uint64(principal)),
 			slog.String("category", cat))
 		observe.CategoriseCallsTotal.WithLabelValues("unknown_category").Inc()
-		return "", nil
+		return CategorisationResult{PromptApplied: userVisiblePrompt, Model: model}, nil
 	}
 	observe.CategoriseCallsTotal.WithLabelValues("categorised").Inc()
 	observe.CategoriseCategoriesAssignedTotal.WithLabelValues(cat).Inc()
-	return cat, nil
+	return CategorisationResult{
+		Category:      cat,
+		PromptApplied: userVisiblePrompt,
+		Model:         model,
+	}, nil
 }
 
 // resolveClient picks the LLM client and model to use for a single

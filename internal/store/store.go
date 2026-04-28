@@ -713,6 +713,27 @@ type Metadata interface {
 	// stamps it with the current Clock instant.
 	UpdateCategorisationConfig(ctx context.Context, cfg CategorisationConfig) error
 
+	// SetLLMClassification upserts the per-message LLM classification
+	// record (REQ-FILT-66 / REQ-FILT-216). The record is written once at
+	// delivery time; subsequent calls are silently treated as upserts so
+	// re-classification (REQ-FILT-220) can overwrite. Nil pointer fields
+	// on rec leave the corresponding columns unchanged when updating
+	// (except that the entire spam or category sub-record is replaced
+	// atomically).
+	SetLLMClassification(ctx context.Context, rec LLMClassificationRecord) error
+
+	// GetLLMClassification returns the classification record for msgID,
+	// or ErrNotFound when no record exists (e.g. the classifier was not
+	// run, or the message pre-dates this feature).
+	GetLLMClassification(ctx context.Context, msgID MessageID) (LLMClassificationRecord, error)
+
+	// BatchGetLLMClassifications returns the classification records for
+	// every id in msgIDs. Absent entries (no classification run) are
+	// omitted from the returned map; callers treat a missing key as
+	// "no classification available". The returned map is keyed by
+	// MessageID.
+	BatchGetLLMClassifications(ctx context.Context, msgIDs []MessageID) (map[MessageID]LLMClassificationRecord, error)
+
 	// -- Phase 2 Wave 2.6 JMAP for Contacts (REQ-PROTO-55) -----------
 
 	// InsertAddressBook persists a new address book and returns the

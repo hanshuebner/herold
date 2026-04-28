@@ -1974,6 +1974,7 @@ func (m *metadata) GetCategorisationConfig(ctx context.Context, pid store.Princi
 func (m *metadata) readCategorisationRow(ctx context.Context, pid store.PrincipalID) (store.CategorisationConfig, bool, error) {
 	var (
 		prompt          string
+		guardrail       string
 		categorySetJSON []byte
 		endpointURL     sql.NullString
 		model           sql.NullString
@@ -1983,11 +1984,11 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 		updatedAtUs     int64
 	)
 	err := m.s.db.QueryRowContext(ctx, `
-		SELECT prompt, category_set_json, endpoint_url, model, api_key_env,
+		SELECT prompt, guardrail, category_set_json, endpoint_url, model, api_key_env,
 		       timeout_sec, enabled, updated_at_us
 		  FROM jmap_categorisation_config
 		 WHERE principal_id = ?`, int64(pid)).Scan(
-		&prompt, &categorySetJSON, &endpointURL, &model, &apiKeyEnv,
+		&prompt, &guardrail, &categorySetJSON, &endpointURL, &model, &apiKeyEnv,
 		&timeoutSec, &enabled, &updatedAtUs)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1998,6 +1999,7 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 	cfg := store.CategorisationConfig{
 		PrincipalID: pid,
 		Prompt:      prompt,
+		Guardrail:   guardrail,
 		TimeoutSec:  int(timeoutSec),
 		Enabled:     enabled != 0,
 		UpdatedAtUs: updatedAtUs,
@@ -2038,11 +2040,12 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO jmap_categorisation_config
-			  (principal_id, prompt, category_set_json, endpoint_url, model,
+			  (principal_id, prompt, guardrail, category_set_json, endpoint_url, model,
 			   api_key_env, timeout_sec, enabled, updated_at_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(principal_id) DO UPDATE SET
 			  prompt = excluded.prompt,
+			  guardrail = excluded.guardrail,
 			  category_set_json = excluded.category_set_json,
 			  endpoint_url = excluded.endpoint_url,
 			  model = excluded.model,
@@ -2050,11 +2053,157 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 			  timeout_sec = excluded.timeout_sec,
 			  enabled = excluded.enabled,
 			  updated_at_us = excluded.updated_at_us`,
-			int64(cfg.PrincipalID), cfg.Prompt, js,
+			int64(cfg.PrincipalID), cfg.Prompt, cfg.Guardrail, js,
 			nullStringPtr(cfg.Endpoint), nullStringPtr(cfg.Model), nullStringPtr(cfg.APIKeyEnv),
 			int64(timeoutSec), boolToInt(cfg.Enabled), usMicros(now))
 		return mapErr(err)
 	})
+}
+
+// -- LLM classification records (REQ-FILT-66 / REQ-FILT-216) ----------
+
+func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassificationRecord) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO llm_classifications
+			  (message_id, principal_id,
+			   spam_verdict, spam_confidence, spam_reason,
+			   spam_prompt_applied, spam_model, spam_classified_at_us,
+			   category_assigned, category_prompt_applied,
+			   category_model, category_classified_at_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(message_id) DO UPDATE SET
+			  spam_verdict             = COALESCE(excluded.spam_verdict, spam_verdict),
+			  spam_confidence          = COALESCE(excluded.spam_confidence, spam_confidence),
+			  spam_reason              = COALESCE(excluded.spam_reason, spam_reason),
+			  spam_prompt_applied      = COALESCE(excluded.spam_prompt_applied, spam_prompt_applied),
+			  spam_model               = COALESCE(excluded.spam_model, spam_model),
+			  spam_classified_at_us    = COALESCE(excluded.spam_classified_at_us, spam_classified_at_us),
+			  category_assigned        = COALESCE(excluded.category_assigned, category_assigned),
+			  category_prompt_applied  = COALESCE(excluded.category_prompt_applied, category_prompt_applied),
+			  category_model           = COALESCE(excluded.category_model, category_model),
+			  category_classified_at_us = COALESCE(excluded.category_classified_at_us, category_classified_at_us)`,
+			int64(rec.MessageID), int64(rec.PrincipalID),
+			rec.SpamVerdict, rec.SpamConfidence, rec.SpamReason,
+			rec.SpamPromptApplied, rec.SpamModel, optTimeToUs(rec.SpamClassifiedAt),
+			rec.CategoryAssigned, rec.CategoryPromptApplied,
+			rec.CategoryModel, optTimeToUs(rec.CategoryClassifiedAt))
+		return mapErr(err)
+	})
+}
+
+func (m *metadata) GetLLMClassification(ctx context.Context, msgID store.MessageID) (store.LLMClassificationRecord, error) {
+	recs, err := m.BatchGetLLMClassifications(ctx, []store.MessageID{msgID})
+	if err != nil {
+		return store.LLMClassificationRecord{}, err
+	}
+	r, ok := recs[msgID]
+	if !ok {
+		return store.LLMClassificationRecord{}, store.ErrNotFound
+	}
+	return r, nil
+}
+
+func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []store.MessageID) (map[store.MessageID]store.LLMClassificationRecord, error) {
+	if len(msgIDs) == 0 {
+		return map[store.MessageID]store.LLMClassificationRecord{}, nil
+	}
+	args := make([]any, len(msgIDs))
+	ph := make([]string, len(msgIDs))
+	for i, id := range msgIDs {
+		args[i] = int64(id)
+		ph[i] = "?"
+	}
+	q := `SELECT message_id, principal_id,
+		     spam_verdict, spam_confidence, spam_reason,
+		     spam_prompt_applied, spam_model, spam_classified_at_us,
+		     category_assigned, category_prompt_applied,
+		     category_model, category_classified_at_us
+		  FROM llm_classifications
+		 WHERE message_id IN (` + strings.Join(ph, ",") + `)`
+	rows, err := m.s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make(map[store.MessageID]store.LLMClassificationRecord, len(msgIDs))
+	for rows.Next() {
+		var (
+			msgID, pidInt              int64
+			spamVerdict                sql.NullString
+			spamConfidence             sql.NullFloat64
+			spamReason                 sql.NullString
+			spamPromptApplied          sql.NullString
+			spamModel                  sql.NullString
+			spamClassifiedAtUs         sql.NullInt64
+			categoryAssigned           sql.NullString
+			categoryPromptApplied      sql.NullString
+			categoryModel              sql.NullString
+			categoryClassifiedAtUs     sql.NullInt64
+		)
+		if err := rows.Scan(&msgID, &pidInt,
+			&spamVerdict, &spamConfidence, &spamReason,
+			&spamPromptApplied, &spamModel, &spamClassifiedAtUs,
+			&categoryAssigned, &categoryPromptApplied,
+			&categoryModel, &categoryClassifiedAtUs); err != nil {
+			return nil, mapErr(err)
+		}
+		rec := store.LLMClassificationRecord{
+			MessageID:   store.MessageID(msgID),
+			PrincipalID: store.PrincipalID(pidInt),
+		}
+		if spamVerdict.Valid {
+			v := spamVerdict.String
+			rec.SpamVerdict = &v
+		}
+		if spamConfidence.Valid {
+			v := spamConfidence.Float64
+			rec.SpamConfidence = &v
+		}
+		if spamReason.Valid {
+			v := spamReason.String
+			rec.SpamReason = &v
+		}
+		if spamPromptApplied.Valid {
+			v := spamPromptApplied.String
+			rec.SpamPromptApplied = &v
+		}
+		if spamModel.Valid {
+			v := spamModel.String
+			rec.SpamModel = &v
+		}
+		if spamClassifiedAtUs.Valid {
+			t := fromMicros(spamClassifiedAtUs.Int64)
+			rec.SpamClassifiedAt = &t
+		}
+		if categoryAssigned.Valid {
+			v := categoryAssigned.String
+			rec.CategoryAssigned = &v
+		}
+		if categoryPromptApplied.Valid {
+			v := categoryPromptApplied.String
+			rec.CategoryPromptApplied = &v
+		}
+		if categoryModel.Valid {
+			v := categoryModel.String
+			rec.CategoryModel = &v
+		}
+		if categoryClassifiedAtUs.Valid {
+			t := fromMicros(categoryClassifiedAtUs.Int64)
+			rec.CategoryClassifiedAt = &t
+		}
+		out[store.MessageID(msgID)] = rec
+	}
+	return out, mapErr(rows.Err())
+}
+
+// optTimeToUs converts an optional *time.Time to a nullable int64 (Unix
+// micros) for SQL binding. Nil input → nil (SQL NULL).
+func optTimeToUs(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return usMicros(*t)
 }
 
 // nullStringPtr converts an optional string into a value suitable for

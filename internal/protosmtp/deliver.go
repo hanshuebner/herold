@@ -10,6 +10,7 @@ import (
 	"net/mail"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/categorise"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
@@ -302,13 +303,14 @@ func (sess *session) deliverOne(
 		// suppresses the call. Categorisation NEVER blocks delivery
 		// (REQ-FILT-230); a failure here returns "" and we proceed.
 		var msgKeywords []string
+		var catResult categorise.CategorisationResult
 		if sess.srv.categorise != nil &&
 			classification.Verdict != spam.Spam &&
 			strings.EqualFold(mb.Name, "INBOX") {
-			cat, _ := sess.srv.categorise.Categorise(
+			catResult, _ = sess.srv.categorise.CategoriseRich(
 				ctx, rc.principalID, msg, &authResults, classification.Verdict)
-			if cat != "" {
-				msgKeywords = append(msgKeywords, "$category-"+cat)
+			if catResult.Category != "" {
+				msgKeywords = append(msgKeywords, "$category-"+catResult.Category)
 			}
 		}
 		target := store.MessageMailbox{
@@ -330,8 +332,86 @@ func (sess *session) deliverOne(
 			}
 			return false, ierr
 		}
+		// Persist the LLM classification record for transparency (REQ-FILT-66 /
+		// REQ-FILT-216 / G14). Only when at least one LLM was invoked.
+		// The record is fire-and-forget: a failure here is logged but never
+		// blocks delivery (REQ-FILT-230 / REQ-FILT-40).
+		if rc.principalID != 0 && (classification.Verdict != spam.Unclassified || catResult.PromptApplied != "") {
+			sess.persistLLMRecord(ctx, rc.principalID, storeMsg.Envelope.MessageID, msg, authResults, classification, catResult)
+		}
 	}
 	return true, nil
+}
+
+// persistLLMRecord stores the LLM classification transparency record for a
+// newly-delivered message. It is fire-and-forget: any error is logged at
+// warn level but never propagated to the delivery caller.
+func (sess *session) persistLLMRecord(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	msgIDHeader string,
+	msg mailparse.Message,
+	authResults mailauth.AuthResults,
+	classification spam.Classification,
+	catResult categorise.CategorisationResult,
+) {
+	// Retrieve the message ID by Message-ID header lookup. This is the only
+	// way to get the store-assigned MessageID without changing InsertMessage's
+	// return type. The overhead is one indexed lookup per delivered message
+	// when LLM classification ran.
+	m, err := sess.srv.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, msgIDHeader)
+	if err != nil {
+		sess.srv.log.WarnContext(ctx, "llm-transparency: lookup message ID for record",
+			slog.String("msg_id_header", msgIDHeader),
+			slog.String("err", err.Error()))
+		return
+	}
+	rec := store.LLMClassificationRecord{
+		MessageID:   m.ID,
+		PrincipalID: principalID,
+	}
+	// Spam sub-record.
+	if classification.Verdict != spam.Unclassified {
+		v := classification.Verdict.String()
+		rec.SpamVerdict = &v
+		score := classification.Score
+		rec.SpamConfidence = &score
+		if raw := classification.RawResponse; raw != nil {
+			if reason, ok := raw["reason"].(string); ok && reason != "" {
+				rec.SpamReason = &reason
+			}
+			if mdl, ok := raw["model"].(string); ok && mdl != "" {
+				rec.SpamModel = &mdl
+			}
+		}
+		// Build the user-visible prompt-as-applied from the spam.Request.
+		// The spam.Request is the structured context sent to the plugin —
+		// this is the content visible to users. The plugin's system prompt
+		// is not in herold's scope; SpamPolicy.SystemPromptOverride is
+		// the per-account user-editable text returned by LLMTransparency/get.
+		req := spam.BuildRequest(msg, &authResults)
+		if b, jerr := req.Canonical(); jerr == nil {
+			s := string(b)
+			rec.SpamPromptApplied = &s
+		}
+		t := sess.srv.clk.Now()
+		rec.SpamClassifiedAt = &t
+	}
+	// Categorisation sub-record.
+	if catResult.PromptApplied != "" {
+		rec.CategoryPromptApplied = &catResult.PromptApplied
+		rec.CategoryModel = &catResult.Model
+		if catResult.Category != "" {
+			rec.CategoryAssigned = &catResult.Category
+		}
+		t := sess.srv.clk.Now()
+		rec.CategoryClassifiedAt = &t
+	}
+	if err := sess.srv.store.Meta().SetLLMClassification(ctx, rec); err != nil {
+		sess.srv.log.WarnContext(ctx, "llm-transparency: persist classification record",
+			slog.String("msg_id_header", msgIDHeader),
+			slog.String("err", err.Error()))
+	}
 }
 
 // runMailAuth evaluates DKIM/SPF/DMARC/ARC on inbound (relay-in) mail

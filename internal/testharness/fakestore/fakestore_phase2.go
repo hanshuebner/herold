@@ -55,6 +55,10 @@ type phase2Data struct {
 	// constructor does not need editing.
 	catConfig map[store.PrincipalID]store.CategorisationConfig
 
+	// llmClassifications holds per-message LLM classification records
+	// (REQ-FILT-66 / REQ-FILT-216 / G14 transparency).
+	llmClassifications map[store.MessageID]store.LLMClassificationRecord
+
 	// Wave 2.6 JMAP for Contacts (REQ-PROTO-55).
 	addressBooks    map[store.AddressBookID]store.AddressBook
 	nextAddressBook store.AddressBookID
@@ -1675,5 +1679,144 @@ func cloneCategorisationConfig(cfg store.CategorisationConfig) store.Categorisat
 		v := *cfg.APIKeyEnv
 		out.APIKeyEnv = &v
 	}
+	return out
+}
+
+// -- LLM classification records (REQ-FILT-66 / REQ-FILT-216 / G14) ---
+
+// SetLLMClassification upserts the per-message LLM classification record.
+func (m *metaFace) SetLLMClassification(ctx context.Context, rec store.LLMClassificationRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	if s.phase2.llmClassifications == nil {
+		s.phase2.llmClassifications = make(map[store.MessageID]store.LLMClassificationRecord)
+	}
+	existing, ok := s.phase2.llmClassifications[rec.MessageID]
+	if !ok {
+		s.phase2.llmClassifications[rec.MessageID] = cloneLLMClassificationRecord(rec)
+		return nil
+	}
+	// Upsert: merge non-nil fields from rec into existing (mirrors SQL COALESCE).
+	if rec.SpamVerdict != nil {
+		v := *rec.SpamVerdict
+		existing.SpamVerdict = &v
+	}
+	if rec.SpamConfidence != nil {
+		v := *rec.SpamConfidence
+		existing.SpamConfidence = &v
+	}
+	if rec.SpamReason != nil {
+		v := *rec.SpamReason
+		existing.SpamReason = &v
+	}
+	if rec.SpamPromptApplied != nil {
+		v := *rec.SpamPromptApplied
+		existing.SpamPromptApplied = &v
+	}
+	if rec.SpamModel != nil {
+		v := *rec.SpamModel
+		existing.SpamModel = &v
+	}
+	if rec.SpamClassifiedAt != nil {
+		t := *rec.SpamClassifiedAt
+		existing.SpamClassifiedAt = &t
+	}
+	if rec.CategoryAssigned != nil {
+		v := *rec.CategoryAssigned
+		existing.CategoryAssigned = &v
+	}
+	if rec.CategoryPromptApplied != nil {
+		v := *rec.CategoryPromptApplied
+		existing.CategoryPromptApplied = &v
+	}
+	if rec.CategoryModel != nil {
+		v := *rec.CategoryModel
+		existing.CategoryModel = &v
+	}
+	if rec.CategoryClassifiedAt != nil {
+		t := *rec.CategoryClassifiedAt
+		existing.CategoryClassifiedAt = &t
+	}
+	s.phase2.llmClassifications[rec.MessageID] = existing
+	return nil
+}
+
+// GetLLMClassification returns the classification record for msgID, or
+// store.ErrNotFound when no record exists.
+func (m *metaFace) GetLLMClassification(ctx context.Context, msgID store.MessageID) (store.LLMClassificationRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return store.LLMClassificationRecord{}, err
+	}
+	recs, err := m.BatchGetLLMClassifications(ctx, []store.MessageID{msgID})
+	if err != nil {
+		return store.LLMClassificationRecord{}, err
+	}
+	r, ok := recs[msgID]
+	if !ok {
+		return store.LLMClassificationRecord{}, store.ErrNotFound
+	}
+	return r, nil
+}
+
+// BatchGetLLMClassifications returns classification records for every id in
+// msgIDs. Absent entries are omitted from the returned map.
+func (m *metaFace) BatchGetLLMClassifications(ctx context.Context, msgIDs []store.MessageID) (map[store.MessageID]store.LLMClassificationRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[store.MessageID]store.LLMClassificationRecord, len(msgIDs))
+	if s.phase2 == nil || s.phase2.llmClassifications == nil {
+		return out, nil
+	}
+	for _, id := range msgIDs {
+		if r, ok := s.phase2.llmClassifications[id]; ok {
+			out[id] = cloneLLMClassificationRecord(r)
+		}
+	}
+	return out, nil
+}
+
+// cloneLLMClassificationRecord returns a deep copy of r.
+func cloneLLMClassificationRecord(r store.LLMClassificationRecord) store.LLMClassificationRecord {
+	out := r
+	cloneStrPtr := func(p *string) *string {
+		if p == nil {
+			return nil
+		}
+		v := *p
+		return &v
+	}
+	cloneF64Ptr := func(p *float64) *float64 {
+		if p == nil {
+			return nil
+		}
+		v := *p
+		return &v
+	}
+	cloneTimePtr := func(p *time.Time) *time.Time {
+		if p == nil {
+			return nil
+		}
+		t := *p
+		return &t
+	}
+	out.SpamVerdict = cloneStrPtr(r.SpamVerdict)
+	out.SpamConfidence = cloneF64Ptr(r.SpamConfidence)
+	out.SpamReason = cloneStrPtr(r.SpamReason)
+	out.SpamPromptApplied = cloneStrPtr(r.SpamPromptApplied)
+	out.SpamModel = cloneStrPtr(r.SpamModel)
+	out.SpamClassifiedAt = cloneTimePtr(r.SpamClassifiedAt)
+	out.CategoryAssigned = cloneStrPtr(r.CategoryAssigned)
+	out.CategoryPromptApplied = cloneStrPtr(r.CategoryPromptApplied)
+	out.CategoryModel = cloneStrPtr(r.CategoryModel)
+	out.CategoryClassifiedAt = cloneTimePtr(r.CategoryClassifiedAt)
 	return out
 }

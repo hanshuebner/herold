@@ -118,6 +118,14 @@ func Run(t *testing.T, f Factory) {
 		// -- REQ-FILT-200..221 LLM categorisation -----------------
 		{"CategorisationConfig_DefaultsSeededOnFirstRead", testCategorisationConfigDefaults},
 		{"CategorisationConfig_RoundTrip", testCategorisationConfigRoundtrip},
+		{"CategorisationConfig_GuardrailRoundTrip", testCategorisationConfigGuardrailRoundtrip},
+		// -- REQ-FILT-66 / REQ-FILT-216 / G14 LLM classification records --
+		{"LLMClassification_SetGet_SpamOnly", testLLMClassificationSpamOnly},
+		{"LLMClassification_SetGet_CategoryOnly", testLLMClassificationCategoryOnly},
+		{"LLMClassification_SetGet_BothFields", testLLMClassificationBothFields},
+		{"LLMClassification_Upsert_SpamThenCategory", testLLMClassificationUpsertSpamThenCategory},
+		{"LLMClassification_BatchGet", testLLMClassificationBatchGet},
+		{"LLMClassification_GetNotFound", testLLMClassificationGetNotFound},
 		// -- Wave 2.7 JMAP for Calendars (REQ-PROTO-54) -----------
 		{"Calendar_InsertGet_Roundtrip", testCalendarInsertGetRoundtrip},
 		{"Calendar_List_FilterAndPagination", testCalendarListFilterAndPagination},
@@ -3229,6 +3237,263 @@ func testCategorisationConfigRoundtrip(t *testing.T, s store.Store) {
 	}
 	if !got2.Enabled {
 		t.Fatalf("Enabled = false, want true after re-enable")
+	}
+}
+
+func testCategorisationConfigGuardrailRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cat-guardrail@example.com")
+	cfg := store.CategorisationConfig{
+		PrincipalID: p.ID,
+		Prompt:      "user-visible prompt text",
+		Guardrail:   "operator-only guardrail text",
+		CategorySet: []store.CategoryDef{{Name: "primary", Description: "Primary."}},
+		TimeoutSec:  5,
+		Enabled:     true,
+	}
+	if err := s.Meta().UpdateCategorisationConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateCategorisationConfig: %v", err)
+	}
+	got, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig: %v", err)
+	}
+	if got.Prompt != cfg.Prompt {
+		t.Fatalf("Prompt = %q, want %q", got.Prompt, cfg.Prompt)
+	}
+	if got.Guardrail != cfg.Guardrail {
+		t.Fatalf("Guardrail = %q, want %q", got.Guardrail, cfg.Guardrail)
+	}
+	// Update with empty guardrail; should clear.
+	cfg.Guardrail = ""
+	if err := s.Meta().UpdateCategorisationConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateCategorisationConfig (clear guardrail): %v", err)
+	}
+	got2, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (post-clear): %v", err)
+	}
+	if got2.Guardrail != "" {
+		t.Fatalf("Guardrail after clear = %q, want empty", got2.Guardrail)
+	}
+}
+
+// -- REQ-FILT-66 / REQ-FILT-216 / G14 LLM classification records -----
+
+func testLLMClassificationSpamOnly(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "llm-spam@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg := mustInsertMessage(t, s, mb.ID, "llm-spam@host")
+
+	verdict := "ham"
+	confidence := 0.95
+	reason := "looks good"
+	prompt := "spam system prompt"
+	model := "llama3:8b"
+	now := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	rec := store.LLMClassificationRecord{
+		MessageID:         msg.ID,
+		PrincipalID:       p.ID,
+		SpamVerdict:       &verdict,
+		SpamConfidence:    &confidence,
+		SpamReason:        &reason,
+		SpamPromptApplied: &prompt,
+		SpamModel:         &model,
+		SpamClassifiedAt:  &now,
+	}
+	if err := s.Meta().SetLLMClassification(ctx, rec); err != nil {
+		t.Fatalf("SetLLMClassification: %v", err)
+	}
+	got, err := s.Meta().GetLLMClassification(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if got.MessageID != msg.ID {
+		t.Fatalf("MessageID = %d, want %d", got.MessageID, msg.ID)
+	}
+	if got.SpamVerdict == nil || *got.SpamVerdict != verdict {
+		t.Fatalf("SpamVerdict = %v, want %q", got.SpamVerdict, verdict)
+	}
+	if got.SpamConfidence == nil || *got.SpamConfidence != confidence {
+		t.Fatalf("SpamConfidence = %v, want %v", got.SpamConfidence, confidence)
+	}
+	if got.SpamReason == nil || *got.SpamReason != reason {
+		t.Fatalf("SpamReason = %v, want %q", got.SpamReason, reason)
+	}
+	if got.SpamPromptApplied == nil || *got.SpamPromptApplied != prompt {
+		t.Fatalf("SpamPromptApplied = %v, want %q", got.SpamPromptApplied, prompt)
+	}
+	if got.SpamModel == nil || *got.SpamModel != model {
+		t.Fatalf("SpamModel = %v, want %q", got.SpamModel, model)
+	}
+	if got.SpamClassifiedAt == nil || !got.SpamClassifiedAt.Equal(now) {
+		t.Fatalf("SpamClassifiedAt = %v, want %v", got.SpamClassifiedAt, now)
+	}
+	// Category fields must be nil.
+	if got.CategoryAssigned != nil {
+		t.Fatalf("CategoryAssigned should be nil, got %q", *got.CategoryAssigned)
+	}
+}
+
+func testLLMClassificationCategoryOnly(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "llm-cat@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg := mustInsertMessage(t, s, mb.ID, "llm-cat@host")
+
+	cat := "promotions"
+	catPrompt := "categorise this email"
+	catModel := "gpt-4o-mini"
+	catAt := time.Date(2024, 3, 1, 8, 0, 0, 0, time.UTC)
+
+	rec := store.LLMClassificationRecord{
+		MessageID:             msg.ID,
+		PrincipalID:           p.ID,
+		CategoryAssigned:      &cat,
+		CategoryPromptApplied: &catPrompt,
+		CategoryModel:         &catModel,
+		CategoryClassifiedAt:  &catAt,
+	}
+	if err := s.Meta().SetLLMClassification(ctx, rec); err != nil {
+		t.Fatalf("SetLLMClassification: %v", err)
+	}
+	got, err := s.Meta().GetLLMClassification(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if got.CategoryAssigned == nil || *got.CategoryAssigned != cat {
+		t.Fatalf("CategoryAssigned = %v, want %q", got.CategoryAssigned, cat)
+	}
+	if got.CategoryModel == nil || *got.CategoryModel != catModel {
+		t.Fatalf("CategoryModel = %v, want %q", got.CategoryModel, catModel)
+	}
+	if got.SpamVerdict != nil {
+		t.Fatalf("SpamVerdict should be nil for category-only record, got %q", *got.SpamVerdict)
+	}
+}
+
+func testLLMClassificationBothFields(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "llm-both@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg := mustInsertMessage(t, s, mb.ID, "llm-both@host")
+
+	verdict := "spam"
+	conf := 0.87
+	cat := "promotions"
+
+	rec := store.LLMClassificationRecord{
+		MessageID:   msg.ID,
+		PrincipalID: p.ID,
+		SpamVerdict:      &verdict,
+		SpamConfidence:   &conf,
+		CategoryAssigned: &cat,
+	}
+	if err := s.Meta().SetLLMClassification(ctx, rec); err != nil {
+		t.Fatalf("SetLLMClassification: %v", err)
+	}
+	got, err := s.Meta().GetLLMClassification(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if got.SpamVerdict == nil || *got.SpamVerdict != verdict {
+		t.Fatalf("SpamVerdict = %v, want %q", got.SpamVerdict, verdict)
+	}
+	if got.CategoryAssigned == nil || *got.CategoryAssigned != cat {
+		t.Fatalf("CategoryAssigned = %v, want %q", got.CategoryAssigned, cat)
+	}
+}
+
+func testLLMClassificationUpsertSpamThenCategory(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "llm-upsert@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg := mustInsertMessage(t, s, mb.ID, "llm-upsert@host")
+
+	verdict := "ham"
+	rec1 := store.LLMClassificationRecord{
+		MessageID:   msg.ID,
+		PrincipalID: p.ID,
+		SpamVerdict: &verdict,
+	}
+	if err := s.Meta().SetLLMClassification(ctx, rec1); err != nil {
+		t.Fatalf("SetLLMClassification (spam): %v", err)
+	}
+
+	cat := "social"
+	rec2 := store.LLMClassificationRecord{
+		MessageID:        msg.ID,
+		PrincipalID:      p.ID,
+		CategoryAssigned: &cat,
+	}
+	if err := s.Meta().SetLLMClassification(ctx, rec2); err != nil {
+		t.Fatalf("SetLLMClassification (category): %v", err)
+	}
+
+	got, err := s.Meta().GetLLMClassification(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	// Both spam and category must survive the two-step upsert.
+	if got.SpamVerdict == nil || *got.SpamVerdict != verdict {
+		t.Fatalf("SpamVerdict after upsert = %v, want %q", got.SpamVerdict, verdict)
+	}
+	if got.CategoryAssigned == nil || *got.CategoryAssigned != cat {
+		t.Fatalf("CategoryAssigned after upsert = %v, want %q", got.CategoryAssigned, cat)
+	}
+}
+
+func testLLMClassificationBatchGet(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "llm-batch@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg1 := mustInsertMessage(t, s, mb.ID, "llm-batch-1@host")
+	msg2 := mustInsertMessage(t, s, mb.ID, "llm-batch-2@host")
+	msg3 := mustInsertMessage(t, s, mb.ID, "llm-batch-3@host")
+
+	v1, v2 := "ham", "spam"
+	if err := s.Meta().SetLLMClassification(ctx, store.LLMClassificationRecord{
+		MessageID: msg1.ID, PrincipalID: p.ID, SpamVerdict: &v1,
+	}); err != nil {
+		t.Fatalf("SetLLMClassification msg1: %v", err)
+	}
+	if err := s.Meta().SetLLMClassification(ctx, store.LLMClassificationRecord{
+		MessageID: msg2.ID, PrincipalID: p.ID, SpamVerdict: &v2,
+	}); err != nil {
+		t.Fatalf("SetLLMClassification msg2: %v", err)
+	}
+	// msg3 has no classification.
+
+	batch, err := s.Meta().BatchGetLLMClassifications(ctx, []store.MessageID{msg1.ID, msg2.ID, msg3.ID})
+	if err != nil {
+		t.Fatalf("BatchGetLLMClassifications: %v", err)
+	}
+	if len(batch) != 2 {
+		t.Fatalf("batch len = %d, want 2 (msg3 has no record)", len(batch))
+	}
+	r1, ok := batch[msg1.ID]
+	if !ok {
+		t.Fatal("msg1 missing from batch")
+	}
+	if r1.SpamVerdict == nil || *r1.SpamVerdict != v1 {
+		t.Fatalf("msg1 SpamVerdict = %v, want %q", r1.SpamVerdict, v1)
+	}
+	r2, ok := batch[msg2.ID]
+	if !ok {
+		t.Fatal("msg2 missing from batch")
+	}
+	if r2.SpamVerdict == nil || *r2.SpamVerdict != v2 {
+		t.Fatalf("msg2 SpamVerdict = %v, want %q", r2.SpamVerdict, v2)
+	}
+}
+
+func testLLMClassificationGetNotFound(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	_, err := s.Meta().GetLLMClassification(ctx, store.MessageID(999999))
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetLLMClassification for absent id: err = %v, want ErrNotFound", err)
 	}
 }
 
