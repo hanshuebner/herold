@@ -8,6 +8,7 @@
   import { compose } from './lib/compose/compose.svelte';
   import { help } from './lib/help/help.svelte';
   import { settings, applyTheme } from './lib/settings/settings.svelte';
+  import { mail } from './lib/mail/store.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
   import SettingsView from './views/SettingsView.svelte';
@@ -19,11 +20,18 @@
 
   // Open the EventSource subscription once auth is ready. Sync handlers
   // were registered at module init by the mail store, so they're already
-  // listening when the connection comes up.
+  // listening when the connection comes up. Also prime the mailbox list
+  // so the rail/sidebar unread badges populate regardless of which route
+  // the user lands on (otherwise they stay empty until /mail is visited).
   $effect(() => {
     if (auth.status === 'ready') {
       settings.hydrate();
       sync.start(['Email', 'Mailbox', 'Thread']);
+      if (mail.mailboxes.size === 0) {
+        mail.loadMailboxes().catch((err) => {
+          console.error('initial mailbox load failed', err);
+        });
+      }
     }
   });
 
@@ -61,7 +69,7 @@
 </script>
 
 <AuthGate>
-<Shell {activeApp} mailUnread={14} chatUnread={3} onAppSelect={selectApp}>
+<Shell {activeApp} mailUnread={mail.inbox?.unreadEmails ?? 0} onAppSelect={selectApp}>
   {#snippet sidebar()}
     {#if activeApp === 'mail'}
       <div class="sidebar-inner">
@@ -72,7 +80,10 @@
         <ul class="mailbox-list">
           <li class:active={router.matches('mail') && !router.parts[1]}>
             <button type="button" onclick={() => router.navigate('/mail')}>
-              <span>Inbox</span><span class="count">14</span>
+              <span>Inbox</span>
+              {#if (mail.inbox?.unreadEmails ?? 0) > 0}
+                <span class="count">{mail.inbox?.unreadEmails ?? 0}</span>
+              {/if}
             </button>
           </li>
           <li><button type="button">Snoozed</button></li>
@@ -80,7 +91,10 @@
           <li><button type="button">Sent</button></li>
           <li>
             <button type="button">
-              <span>Drafts</span><span class="count">1</span>
+              <span>Drafts</span>
+              {#if (mail.drafts?.totalEmails ?? 0) > 0}
+                <span class="count">{mail.drafts?.totalEmails ?? 0}</span>
+              {/if}
             </button>
           </li>
           <li><button type="button">All Mail</button></li>
