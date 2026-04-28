@@ -33,8 +33,10 @@ type changesHandler struct{ h *handlerSet }
 func (c *changesHandler) Method() string { return "Email/changes" }
 
 // Execute walks the principal's change feed for email-kind entries
-// since the supplied state. Mirrors mailbox.changes but filters
-// EntityKindEmail and resolves EntityID -> MessageID.
+// since the supplied state. Mirrors Mailbox/changes: the state string
+// is the max change-feed seq for EntityKindEmail entries, so mutations
+// from IMAP STORE / delivery are included without a separate
+// bookkeeping pass.
 func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
 	pid, merr := principalFromCtx(ctx)
 	if merr != nil {
@@ -53,11 +55,12 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 	if !ok {
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "unparseable sinceState")
 	}
-	st, err := c.h.store.Meta().GetJMAPStates(ctx, pid)
+
+	newSeq, err := c.h.store.Meta().GetMaxChangeSeqForKind(ctx, pid, store.EntityKindEmail)
 	if err != nil {
 		return nil, serverFail(err)
 	}
-	newState := stateFromCounter(st.Email)
+	newState := stateFromSeq(newSeq)
 
 	resp := changesResponse{
 		AccountID: req.AccountID,
@@ -67,19 +70,18 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		Updated:   []jmapID{},
 		Destroyed: []jmapID{},
 	}
-	if since == st.Email {
+	if since == newSeq {
 		return resp, nil
 	}
-	if since > st.Email {
+	if since > newSeq {
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "sinceState is in the future")
 	}
 
 	const page = 1000
-	var cursor store.ChangeSeq
+	var cursor store.ChangeSeq = since
 	created := map[store.MessageID]struct{}{}
 	updated := map[store.MessageID]struct{}{}
 	destroyed := map[store.MessageID]struct{}{}
-	emailOpsAfterSince := int64(0)
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, serverFail(err)
@@ -91,10 +93,6 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		for _, entry := range batch {
 			cursor = entry.Seq
 			if entry.Kind != store.EntityKindEmail {
-				continue
-			}
-			emailOpsAfterSince++
-			if emailOpsAfterSince <= since {
 				continue
 			}
 			id := store.MessageID(entry.EntityID)

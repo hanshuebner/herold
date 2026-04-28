@@ -34,9 +34,10 @@ type changesHandler struct{ h *handlerSet }
 func (c *changesHandler) Method() string { return "Mailbox/changes" }
 
 // Execute walks the per-principal change feed for mailbox-kind entries
-// since the supplied state. v1 has no dense per-state index so we
-// stream the entire tail; the per-principal mailbox mutation rate is
-// low, so this is acceptable.
+// with seq > sinceState. The state string is the max change-feed seq for
+// EntityKindMailbox so any mailbox mutation — including ones made outside
+// the JMAP layer (IMAP renames, provisioning) — advances the state
+// and is reflected in the changes response.
 func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
 	pid, merr := requirePrincipal(ctx)
 	if merr != nil {
@@ -57,11 +58,11 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "unparseable sinceState")
 	}
 
-	st, err := c.h.store.Meta().GetJMAPStates(ctx, pid)
+	newSeq, err := c.h.store.Meta().GetMaxChangeSeqForKind(ctx, pid, store.EntityKindMailbox)
 	if err != nil {
 		return nil, serverFail(err)
 	}
-	newState := stateFromCounter(st.Mailbox)
+	newState := stateFromSeq(newSeq)
 
 	resp := changesResponse{
 		AccountID: req.AccountID,
@@ -71,19 +72,18 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		Updated:   []jmapID{},
 		Destroyed: []jmapID{},
 	}
-	if since == st.Mailbox {
+	if since == newSeq {
 		return resp, nil
 	}
-	if since > st.Mailbox {
+	if since > newSeq {
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "sinceState is in the future")
 	}
 
 	const page = 1000
-	var cursor store.ChangeSeq
+	var cursor store.ChangeSeq = since
 	created := map[store.MailboxID]struct{}{}
 	updated := map[store.MailboxID]struct{}{}
 	destroyed := map[store.MailboxID]struct{}{}
-	mailboxOpsAfterSince := int64(0)
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, serverFail(err)
@@ -95,10 +95,6 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		for _, entry := range batch {
 			cursor = entry.Seq
 			if entry.Kind != store.EntityKindMailbox {
-				continue
-			}
-			mailboxOpsAfterSince++
-			if mailboxOpsAfterSince <= since {
 				continue
 			}
 			id := store.MailboxID(entry.EntityID)

@@ -2,36 +2,45 @@ package mailbox
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
 
 // currentState returns the JMAP state string for the principal's
-// Mailbox datatype: the decimal of JMAPStates.Mailbox per
-// docs/design/server/architecture/05-sync-and-state.md. The store creates a
-// zero-valued row on first access, so an unmutated principal returns
-// "0".
+// Mailbox datatype. The state string is the decimal encoding of the
+// maximum change-feed seq for EntityKindMailbox entries for this
+// principal (0 when no mailbox mutations have been recorded yet).
+//
+// Using the change-feed seq directly (rather than a separate
+// jmap_states counter) means that mailbox mutations made outside the
+// JMAP layer — e.g. auto-provisioned folders during CreatePrincipal,
+// IMAP renames — are visible in Mailbox/changes without a separate
+// bookkeeping pass.
 func currentState(ctx context.Context, meta store.Metadata, pid store.PrincipalID) (string, error) {
-	st, err := meta.GetJMAPStates(ctx, pid)
+	seq, err := meta.GetMaxChangeSeqForKind(ctx, pid, store.EntityKindMailbox)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("mailbox currentState: %w", err)
 	}
-	return strconv.FormatInt(st.Mailbox, 10), nil
+	return strconv.FormatUint(uint64(seq), 10), nil
 }
 
-// parseState decodes a client-supplied state string into the integer
-// counter form. Returns ok=false on unparseable input; callers map that
-// to RFC 8620 §5.2 "cannotCalculateChanges".
-func parseState(s string) (int64, bool) {
-	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || v < 0 {
+// parseState decodes a client-supplied state string into a ChangeSeq.
+// Returns ok=false on unparseable input; callers map that to RFC 8620
+// §5.2 "cannotCalculateChanges".
+func parseState(s string) (store.ChangeSeq, bool) {
+	if s == "" {
+		return 0, true
+	}
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
 		return 0, false
 	}
-	return v, true
+	return store.ChangeSeq(v), true
 }
 
-// stateFromCounter renders a state counter into the wire form.
-func stateFromCounter(v int64) string {
-	return strconv.FormatInt(v, 10)
+// stateFromSeq renders a ChangeSeq into the wire form.
+func stateFromSeq(v store.ChangeSeq) string {
+	return strconv.FormatUint(uint64(v), 10)
 }
