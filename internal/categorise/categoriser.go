@@ -1,12 +1,10 @@
 package categorise
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/mail"
@@ -16,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/llmtest"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/netguard"
@@ -23,6 +22,14 @@ import (
 	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// LLMClient is the interface the Categoriser uses to make chat-completions
+// calls. The production implementation is llmtest.HTTPChatCompleter; tests
+// substitute llmtest.Replayer (or llmtest.Recorder in capture mode).
+//
+// Complete sends systemPrompt and userContent to the LLM and returns the
+// assistant's text reply. The caller supplies the deadline via ctx.
+type LLMClient = llmtest.ChatCompleter
 
 // DefaultBodyExcerptBytes is the per-call cap on the body excerpt
 // passed to the LLM, per REQ-FILT-214 (~2 KB plain text).
@@ -43,9 +50,17 @@ type Options struct {
 	Logger *slog.Logger
 	// Clock is the time source; tests inject a deterministic clock.
 	Clock clock.Clock
+	// LLMClient is the chat-completions client. When non-nil it is used
+	// directly and the endpoint/model/api-key/HTTPClient fields are
+	// ignored for the actual HTTP call (they are still used for endpoint
+	// validation). Tests inject llmtest.Replayer here so no network
+	// calls occur. Production code leaves this nil and the constructor
+	// builds an HTTPChatCompleter from the other fields.
+	LLMClient LLMClient
 	// HTTPClient is the shared HTTP client used for chat-completions
-	// calls. Nil falls back to a fresh client with a 30s overall
-	// transport timeout. Tests inject one pointing at httptest.
+	// calls when LLMClient is nil. Nil falls back to a fresh client
+	// with a 30s overall transport timeout. Tests that use LLMClient
+	// do not need to set this.
 	HTTPClient *http.Client
 	// DefaultEndpoint is the operator-configured chat-completions
 	// endpoint URL (e.g. "http://localhost:11434/v1"). Per-account
@@ -78,6 +93,7 @@ type Categoriser struct {
 	store        store.Store
 	logger       *slog.Logger
 	clock        clock.Clock
+	llmClient    LLMClient
 	httpClient   *http.Client
 	endpoint     string
 	model        string
@@ -117,10 +133,22 @@ func New(opts Options) *Categoriser {
 			allowed[h] = struct{}{}
 		}
 	}
+	llmClient := opts.LLMClient
+	if llmClient == nil && strings.TrimRight(opts.DefaultEndpoint, "/") != "" {
+		// Build the real HTTP client from the endpoint/model/api-key
+		// fields when no injectable client is supplied.
+		llmClient = llmtest.NewHTTPChatCompleter(llmtest.HTTPChatCompleterOptions{
+			Endpoint:   strings.TrimRight(opts.DefaultEndpoint, "/"),
+			Model:      opts.DefaultModel,
+			APIKey:     opts.DefaultAPIKey,
+			HTTPClient: httpClient,
+		})
+	}
 	return &Categoriser{
 		store:        opts.Store,
 		logger:       logger,
 		clock:        clk,
+		llmClient:    llmClient,
 		httpClient:   httpClient,
 		endpoint:     strings.TrimRight(opts.DefaultEndpoint, "/"),
 		model:        opts.DefaultModel,
@@ -159,53 +187,20 @@ func (c *Categoriser) Categorise(
 	if !cfg.Enabled {
 		return "", nil
 	}
-	endpoint := c.endpoint
-	overrideEndpoint := false
-	if cfg.Endpoint != nil && *cfg.Endpoint != "" {
-		endpoint = strings.TrimRight(*cfg.Endpoint, "/")
-		overrideEndpoint = true
-	}
-	if endpoint == "" {
-		// No endpoint configured at any level — leave the message
-		// uncategorised. Logged at debug because steady-state
-		// operations on a server without LLM should not spam warn.
-		c.logger.DebugContext(ctx, "categorise: no endpoint configured",
-			slog.Uint64("principal_id", uint64(principal)))
-		return "", nil
-	}
-	host, attachOperatorKey, err := c.validateEndpoint(ctx, endpoint, overrideEndpoint)
+
+	// Resolve which LLM client to use. When the caller has injected an
+	// explicit client (e.g. llmtest.Replayer in tests), use it directly
+	// and skip endpoint validation — the caller owns the transport.
+	// Otherwise, resolve endpoint and build or reuse an HTTPChatCompleter.
+	client, model, logEndpoint, err := c.resolveClient(ctx, principal, cfg)
 	if err != nil {
-		c.logger.WarnContext(ctx, "categorise: endpoint rejected",
-			slog.Uint64("principal_id", uint64(principal)),
-			slog.String("endpoint", endpoint),
-			slog.String("err", err.Error()))
-		observe.CategoriseCallsTotal.WithLabelValues("endpoint_rejected").Inc()
+		// resolveClient already logged and incremented metrics.
 		return "", nil
 	}
-	_ = host
-	model := c.model
-	if cfg.Model != nil && *cfg.Model != "" {
-		model = *cfg.Model
-	}
-	if model == "" {
-		c.logger.WarnContext(ctx, "categorise: no model configured",
-			slog.Uint64("principal_id", uint64(principal)))
-		observe.CategoriseCallsTotal.WithLabelValues("endpoint_rejected").Inc()
+	if client == nil {
 		return "", nil
 	}
-	apiKey := c.apiKey
-	if cfg.APIKeyEnv != nil && *cfg.APIKeyEnv != "" {
-		// API-key resolution is the operator's responsibility at
-		// startup time; we do NOT read os.Getenv here because the
-		// store row is mutable from admin tooling and a typo must not
-		// leak environment names into a runtime panic. Per-account
-		// overrides therefore require the operator to plumb the key
-		// through DefaultAPIKey or the HTTPClient transport. We log
-		// at debug to make the override visible during diagnostics.
-		c.logger.DebugContext(ctx, "categorise: per-account api_key_env override ignored at runtime; configure via operator default",
-			slog.Uint64("principal_id", uint64(principal)),
-			slog.String("api_key_env", *cfg.APIKeyEnv))
-	}
+
 	timeout := time.Duration(cfg.TimeoutSec) * time.Second
 	if timeout <= 0 {
 		timeout = c.timeout
@@ -215,21 +210,21 @@ func (c *Categoriser) Categorise(
 	defer cancel()
 
 	prompt := renderSystemPrompt(cfg.Prompt, cfg.CategorySet)
-	user := buildUserPayload(msg, auth, spamVerdict)
-	if !attachOperatorKey {
-		// Per-account override pointing at a host the operator did not
-		// allowlist: never attach the operator-default API key. The
-		// account row could be operator-set to point at a localhost
-		// Ollama, in which case no Bearer token is appropriate either.
-		apiKey = ""
+	userJSON, err := json.Marshal(buildUserPayload(msg, auth, spamVerdict))
+	if err != nil {
+		c.logger.WarnContext(ctx, "categorise: marshal user payload",
+			slog.Uint64("principal_id", uint64(principal)),
+			slog.String("err", err.Error()))
+		return "", nil
 	}
+
 	start := c.clock.Now()
-	cat, callErr := c.callLLM(callCtx, endpoint, model, apiKey, prompt, user)
+	content, callErr := client.Complete(callCtx, prompt, string(userJSON))
 	observe.CategoriseCallDurationSeconds.Observe(c.clock.Now().Sub(start).Seconds())
 	if callErr != nil {
 		c.logger.WarnContext(ctx, "categorise: chat completion failed",
 			slog.Uint64("principal_id", uint64(principal)),
-			slog.String("endpoint", endpoint),
+			slog.String("endpoint", logEndpoint),
 			slog.String("model", model),
 			slog.String("err", callErr.Error()))
 		if errors.Is(callErr, context.DeadlineExceeded) {
@@ -237,6 +232,14 @@ func (c *Categoriser) Categorise(
 		} else {
 			observe.CategoriseCallsTotal.WithLabelValues("http_error").Inc()
 		}
+		return "", nil
+	}
+	cat, parseErr := parseModelCategory(content)
+	if parseErr != nil {
+		c.logger.WarnContext(ctx, "categorise: parse model reply",
+			slog.Uint64("principal_id", uint64(principal)),
+			slog.String("err", parseErr.Error()))
+		observe.CategoriseCallsTotal.WithLabelValues("http_error").Inc()
 		return "", nil
 	}
 	if cat == "" || strings.EqualFold(cat, "none") {
@@ -253,6 +256,96 @@ func (c *Categoriser) Categorise(
 	observe.CategoriseCallsTotal.WithLabelValues("categorised").Inc()
 	observe.CategoriseCategoriesAssignedTotal.WithLabelValues(cat).Inc()
 	return cat, nil
+}
+
+// resolveClient picks the LLM client and model to use for a single
+// categorisation call. It returns (nil, "", "", nil) when categorisation
+// should be silently skipped (no endpoint, no client configured). A
+// non-nil error means a hard rejection (bad endpoint, no model) that
+// the caller should log and count.
+func (c *Categoriser) resolveClient(
+	ctx context.Context,
+	principal store.PrincipalID,
+	cfg store.CategorisationConfig,
+) (client LLMClient, model, logEndpoint string, err error) {
+	// Injected client takes precedence over everything — tests use this
+	// path. Endpoint validation is skipped; the injected client owns its
+	// transport.
+	if c.llmClient != nil {
+		model = c.model
+		if cfg.Model != nil && *cfg.Model != "" {
+			model = *cfg.Model
+		}
+		return c.llmClient, model, "(injected)", nil
+	}
+
+	// Production path: resolve the endpoint.
+	endpoint := c.endpoint
+	overrideEndpoint := false
+	if cfg.Endpoint != nil && *cfg.Endpoint != "" {
+		endpoint = strings.TrimRight(*cfg.Endpoint, "/")
+		overrideEndpoint = true
+	}
+	if endpoint == "" {
+		c.logger.DebugContext(ctx, "categorise: no endpoint configured",
+			slog.Uint64("principal_id", uint64(principal)))
+		return nil, "", "", nil
+	}
+	host, attachOperatorKey, verr := c.validateEndpoint(ctx, endpoint, overrideEndpoint)
+	if verr != nil {
+		c.logger.WarnContext(ctx, "categorise: endpoint rejected",
+			slog.Uint64("principal_id", uint64(principal)),
+			slog.String("endpoint", endpoint),
+			slog.String("err", verr.Error()))
+		observe.CategoriseCallsTotal.WithLabelValues("endpoint_rejected").Inc()
+		return nil, "", "", verr
+	}
+	_ = host
+
+	model = c.model
+	if cfg.Model != nil && *cfg.Model != "" {
+		model = *cfg.Model
+	}
+	if model == "" {
+		c.logger.WarnContext(ctx, "categorise: no model configured",
+			slog.Uint64("principal_id", uint64(principal)))
+		observe.CategoriseCallsTotal.WithLabelValues("endpoint_rejected").Inc()
+		return nil, "", "", errors.New("categorise: no model configured")
+	}
+
+	if cfg.APIKeyEnv != nil && *cfg.APIKeyEnv != "" {
+		c.logger.DebugContext(ctx, "categorise: per-account api_key_env override ignored at runtime; configure via operator default",
+			slog.Uint64("principal_id", uint64(principal)),
+			slog.String("api_key_env", *cfg.APIKeyEnv))
+	}
+	apiKey := c.apiKey
+	if !attachOperatorKey {
+		apiKey = ""
+	}
+
+	// When the per-account endpoint differs from the operator default,
+	// build a per-call HTTPChatCompleter rather than reusing c.llmClient
+	// which was built against the operator-default endpoint.
+	if overrideEndpoint {
+		client = llmtest.NewHTTPChatCompleter(llmtest.HTTPChatCompleterOptions{
+			Endpoint:   endpoint,
+			Model:      model,
+			APIKey:     apiKey,
+			HTTPClient: c.httpClient,
+		})
+	} else {
+		// The operator-default client was already constructed in New.
+		// Reconstruct it here to pick up the resolved model/key in case
+		// they differ from what New saw (shouldn't happen but keeps the
+		// logic explicit).
+		client = llmtest.NewHTTPChatCompleter(llmtest.HTTPChatCompleterOptions{
+			Endpoint:   endpoint,
+			Model:      model,
+			APIKey:     apiKey,
+			HTTPClient: c.httpClient,
+		})
+	}
+	return client, model, endpoint, nil
 }
 
 // validateEndpoint enforces the categoriser's outbound-call policy:
@@ -350,98 +443,14 @@ func buildUserPayload(msg mailparse.Message, auth *mailauth.AuthResults, spamVer
 	return out
 }
 
-// chatMessage is one entry in an OpenAI chat-completions request.
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// chatRequest is the request body sent to {endpoint}/chat/completions.
-type chatRequest struct {
-	Model          string         `json:"model"`
-	Messages       []chatMessage  `json:"messages"`
-	Temperature    float64        `json:"temperature"`
-	ResponseFormat map[string]any `json:"response_format,omitempty"`
-}
-
-// chatResponse is the slice of the OpenAI response we need.
-type chatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-}
-
 // modelVerdict is the JSON shape the model is instructed to emit.
 type modelVerdict struct {
 	Category string `json:"category"`
 }
 
 // jsonObjectRE finds the first balanced-looking JSON object in a
-// string. Mirrors the spam plugin's tolerant fallback for prose-
-// wrapped model output.
+// string. Tolerant fallback for prose-wrapped model output.
 var jsonObjectRE = regexp.MustCompile(`(?s)\{.*\}`)
-
-// callLLM POSTs the chat-completions request, parses the assistant
-// reply, and returns the chosen category name (or "none"). Transport
-// or parse failures are returned as wrapped errors.
-func (c *Categoriser) callLLM(
-	ctx context.Context,
-	endpoint, model, apiKey, systemPrompt string,
-	user userPayload,
-) (string, error) {
-	userJSON, err := json.Marshal(user)
-	if err != nil {
-		return "", fmt.Errorf("marshal user payload: %w", err)
-	}
-	body := chatRequest{
-		Model: model,
-		Messages: []chatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: string(userJSON)},
-		},
-		Temperature:    0.0,
-		ResponseFormat: map[string]any{"type": "json_object"},
-	}
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return "", fmt.Errorf("marshal chat request: %w", err)
-	}
-	url := endpoint + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
-	if err != nil {
-		return "", fmt.Errorf("build chat request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("POST %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", fmt.Errorf("read chat response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		prefix := string(respBytes)
-		if len(prefix) > 256 {
-			prefix = prefix[:256]
-		}
-		return "", fmt.Errorf("chat completions HTTP %d: %s", resp.StatusCode, prefix)
-	}
-	var cr chatResponse
-	if err := json.Unmarshal(respBytes, &cr); err != nil {
-		return "", fmt.Errorf("decode chat response: %w", err)
-	}
-	if len(cr.Choices) == 0 {
-		return "", errors.New("chat completions returned no choices")
-	}
-	return parseModelCategory(cr.Choices[0].Message.Content)
-}
 
 // parseModelCategory extracts the category name from the assistant's
 // textual content. Strict JSON first; tolerant {...} extraction next.

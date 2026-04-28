@@ -264,7 +264,7 @@ func (c *Categoriser) applyCategoryKeyword(ctx context.Context, m store.Message,
 		}
 		clear = filtered
 	}
-	_, err := c.store.Meta().UpdateMessageFlags(ctx, m.ID, 0, 0, add, clear, 0)
+	_, err := c.store.Meta().UpdateMessageFlags(ctx, m.ID, m.MailboxID, 0, 0, add, clear, 0)
 	return err
 }
 

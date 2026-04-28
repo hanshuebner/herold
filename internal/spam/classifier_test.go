@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/llmtest"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
 )
@@ -222,5 +223,46 @@ func TestClassify_AppliesDefaultTimeout(t *testing.T) {
 	}
 	if !sawDeadline {
 		t.Fatalf("Classify did not apply a default deadline")
+	}
+}
+
+// TestClassify_WithLLMReplayer exercises Classify end-to-end through
+// the llmtest.Replayer. Skipped until Wave 3.16 records the fixture
+// baseline via scripts/llm-capture.sh.
+//
+// The skip message is a contract: reviewer checks that every skipped
+// test in this package has this exact reason prefix.
+func TestClassify_WithLLMReplayer(t *testing.T) {
+	t.Skip("LLM fixtures not yet captured — run scripts/llm-capture.sh; see Wave 3.16")
+
+	replayer := llmtest.LoadReplayer(t, llmtest.KindSpamClassify)
+	c := New(replayer, silentLogger(), clock.NewFake(time.Now()))
+	msg := buildMessage(t, canonMsg)
+	r, err := c.Classify(context.Background(), msg,
+		newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "example.com"),
+		"herold-spam-llm")
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if r.Verdict == Unclassified {
+		t.Fatalf("Replayer-backed Classify returned Unclassified; check fixture at internal/llmtest/fixtures/spam-classify/")
+	}
+}
+
+// TestClassify_ReplayerMissingFixtureError verifies that Replayer
+// surfaces ErrFixtureMissing (not a silent pass) when no matching
+// fixture is recorded. This is the prompt-hash invalidation path
+// described in REQ-FILT-302.
+func TestClassify_ReplayerMissingFixtureError(t *testing.T) {
+	// Empty replayer — no fixtures loaded.
+	replayer := llmtest.NewReplayer(llmtest.KindSpamClassify, nil)
+	c := New(replayer, silentLogger(), clock.NewFake(time.Now()))
+	msg := buildMessage(t, canonMsg)
+	_, err := c.Classify(context.Background(), msg, nil, "herold-spam-llm")
+	if err == nil {
+		t.Fatal("expected ErrFixtureMissing, got nil")
+	}
+	if !errors.Is(err, llmtest.ErrFixtureMissing) {
+		t.Fatalf("expected ErrFixtureMissing, got: %v", err)
 	}
 }

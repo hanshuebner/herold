@@ -15,6 +15,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/categorise"
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/llmtest"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
@@ -315,13 +316,15 @@ func TestCategorise_RecategoriseRecent_ReplacesKeyword(t *testing.T) {
 		t.Fatalf("Blobs.Put: %v", err)
 	}
 	_, _, err = st.Meta().InsertMessage(ctx, store.Message{
-		MailboxID:    mb.ID,
+		PrincipalID:  pid,
 		Size:         int64(len(body)),
 		Blob:         ref,
 		ReceivedAt:   time.Now(),
 		InternalDate: time.Now(),
-		Keywords:     []string{"$category-promotions"}, // the categoriser must clear this
-	})
+	}, []store.MessageMailbox{{
+		MailboxID: mb.ID,
+		Keywords:  []string{"$category-promotions"}, // the categoriser must clear this
+	}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
@@ -381,6 +384,40 @@ func TestCategoriseJobRegistry_GetPutEvict(t *testing.T) {
 	}
 	if _, ok := r.Get("c"); !ok {
 		t.Fatalf("expected 'c' to remain")
+	}
+}
+
+// TestCategorise_WithLLMReplayer exercises the full Categorise pipeline
+// through the llmtest.Replayer. This test is skipped until the fixture
+// file is populated by scripts/llm-capture.sh (Wave 3.16).
+//
+// The skip message is a contract: reviewer verifies that every skipped
+// test in this package has this exact reason prefix.
+func TestCategorise_WithLLMReplayer(t *testing.T) {
+	t.Skip("LLM fixtures not yet captured — run scripts/llm-capture.sh; see Wave 3.16")
+
+	st, pid := makeStoreAndPrincipal(t)
+	replayer := llmtest.LoadReplayer(t, llmtest.KindCategorise)
+	c := categorise.New(categorise.Options{
+		Store:     st,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:     clock.NewFake(time.Now()),
+		LLMClient: replayer,
+		// DefaultModel is still used for logging; endpoint is ignored
+		// when LLMClient is non-nil.
+		DefaultModel: "test-model",
+	})
+	cat, err := c.Categorise(context.Background(), pid, parsedMessage(t), nil, spam.Ham)
+	if err != nil {
+		t.Fatalf("Categorise: %v", err)
+	}
+	// The replayer returns one of the five default category names.
+	validCategories := map[string]bool{
+		"primary": true, "social": true, "promotions": true,
+		"updates": true, "forums": true, "": true,
+	}
+	if !validCategories[cat] {
+		t.Fatalf("unexpected category %q from replayer", cat)
 	}
 }
 
