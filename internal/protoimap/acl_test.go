@@ -66,19 +66,22 @@ func newACLFixture(t *testing.T) *aclFixture {
 		t.Fatalf("create bob: %v", err)
 	}
 
-	aliceInbox, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
-		PrincipalID: aliceID, Name: "INBOX",
-		Attributes: store.MailboxAttrInbox | store.MailboxAttrSubscribed,
-	})
+	// directory.CreatePrincipal auto-provisions INBOX (+Sent/Drafts/...);
+	// the IMAP harness needs it marked subscribed so SUBSCRIBE/LIST work
+	// without an explicit subscribe step in every test.
+	aliceInbox, err := ha.Store.Meta().GetMailboxByName(ctx, aliceID, "INBOX")
 	if err != nil {
 		t.Fatalf("alice INBOX: %v", err)
 	}
-	bobInbox, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
-		PrincipalID: bobID, Name: "INBOX",
-		Attributes: store.MailboxAttrInbox | store.MailboxAttrSubscribed,
-	})
+	if err := ha.Store.Meta().SetMailboxSubscribed(ctx, aliceInbox.ID, true); err != nil {
+		t.Fatalf("alice INBOX subscribe: %v", err)
+	}
+	bobInbox, err := ha.Store.Meta().GetMailboxByName(ctx, bobID, "INBOX")
 	if err != nil {
 		t.Fatalf("bob INBOX: %v", err)
+	}
+	if err := ha.Store.Meta().SetMailboxSubscribed(ctx, bobInbox.ID, true); err != nil {
+		t.Fatalf("bob INBOX subscribe: %v", err)
 	}
 	aliceShared, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
 		PrincipalID: aliceID, Name: "Shared/support",

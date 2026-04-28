@@ -151,13 +151,14 @@ func TestQRESYNC_EXPUNGE_EmitsVanishedNotExpunge(t *testing.T) {
 func TestMOVE_AtomicCopyExpunge(t *testing.T) {
 	f := newFixture(t, fxOpts{implicitTLS: true})
 	ctx := context.Background()
-	dest, err := f.ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
-		PrincipalID: f.pid,
-		Name:        "Archive",
-		Attributes:  store.MailboxAttrArchive | store.MailboxAttrSubscribed,
-	})
+	// Archive is auto-provisioned by directory.CreatePrincipal — fetch
+	// the existing row and mark it subscribed.
+	dest, err := f.ha.Store.Meta().GetMailboxByName(ctx, f.pid, "Archive")
 	if err != nil {
-		t.Fatalf("create dest: %v", err)
+		t.Fatalf("get Archive: %v", err)
+	}
+	if err := f.ha.Store.Meta().SetMailboxSubscribed(ctx, dest.ID, true); err != nil {
+		t.Fatalf("subscribe Archive: %v", err)
 	}
 	for i := 0; i < 2; i++ {
 		seedMessage(t, f, fmt.Sprintf("m%d", i))
@@ -322,25 +323,30 @@ func TestSPECIAL_USE_PerCreate(t *testing.T) {
 	f := newFixture(t, fxOpts{implicitTLS: true})
 	c := loggedInClient(t, f)
 	defer c.close()
-	resp := c.send("c1", `CREATE Drafts (USE (\Drafts))`)
+	// Use \Flagged + a fresh name: \Drafts / \Sent / \Trash / \Junk /
+	// \Archive are auto-provisioned by directory.CreatePrincipal so any
+	// CREATE that names them collides with the existing row. \Flagged
+	// is not auto-provisioned, so this exercises the per-CREATE
+	// SPECIAL-USE path in isolation.
+	resp := c.send("c1", `CREATE Starred (USE (\Flagged))`)
 	last := resp[len(resp)-1]
 	if !strings.Contains(last, "OK") {
 		t.Fatalf("CREATE-SPECIAL-USE failed: %v", resp)
 	}
 	// Verify the attribute persisted.
 	ctx := context.Background()
-	mb, err := f.ha.Store.Meta().GetMailboxByName(ctx, f.pid, "Drafts")
+	mb, err := f.ha.Store.Meta().GetMailboxByName(ctx, f.pid, "Starred")
 	if err != nil {
-		t.Fatalf("lookup Drafts: %v", err)
+		t.Fatalf("lookup Starred: %v", err)
 	}
-	if mb.Attributes&store.MailboxAttrDrafts == 0 {
-		t.Fatalf("expected \\Drafts attribute on created mailbox: attrs=%v", mb.Attributes)
+	if mb.Attributes&store.MailboxAttrFlagged == 0 {
+		t.Fatalf("expected \\Flagged attribute on created mailbox: attrs=%v", mb.Attributes)
 	}
 	// LIST should reflect the attribute.
-	resp = c.send("l1", `LIST "" "Drafts"`)
+	resp = c.send("l1", `LIST "" "Starred"`)
 	joined := strings.Join(resp, "\n")
-	if !strings.Contains(joined, "\\Drafts") {
-		t.Fatalf("LIST should expose \\Drafts: %v", resp)
+	if !strings.Contains(joined, "\\Flagged") {
+		t.Fatalf("LIST should expose \\Flagged: %v", resp)
 	}
 }
 

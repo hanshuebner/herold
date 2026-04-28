@@ -611,6 +611,9 @@ func (ses *session) handleLIST(ctx context.Context, c *Command, lsub bool) error
 		if mb.Attributes&store.MailboxAttrArchive != 0 {
 			attrs = append(attrs, "\\Archive")
 		}
+		if mb.Attributes&store.MailboxAttrFlagged != 0 {
+			attrs = append(attrs, "\\Flagged")
+		}
 		if mb.Attributes&store.MailboxAttrSubscribed != 0 {
 			attrs = append(attrs, "\\Subscribed")
 		}

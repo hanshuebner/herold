@@ -72,14 +72,15 @@ func newFixture(t *testing.T, fo fxOpts) *fixture {
 		t.Fatalf("create principal: %v", err)
 	}
 
-	// Create an INBOX for alice.
-	inbox, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
-		PrincipalID: pid,
-		Name:        "INBOX",
-		Attributes:  store.MailboxAttrInbox | store.MailboxAttrSubscribed,
-	})
+	// directory.CreatePrincipal auto-provisions INBOX (+Sent/Drafts/...);
+	// fetch the row and mark it subscribed so SUBSCRIBE/LIST behave the
+	// same as before that change.
+	inbox, err := ha.Store.Meta().GetMailboxByName(ctx, pid, "INBOX")
 	if err != nil {
-		t.Fatalf("insert INBOX: %v", err)
+		t.Fatalf("get INBOX: %v", err)
+	}
+	if err := ha.Store.Meta().SetMailboxSubscribed(ctx, inbox.ID, true); err != nil {
+		t.Fatalf("subscribe INBOX: %v", err)
 	}
 
 	// TLS store + client config.
