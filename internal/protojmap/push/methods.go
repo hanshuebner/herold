@@ -35,20 +35,6 @@ func requirePrincipal(ctx context.Context) (store.PrincipalID, *protojmap.Method
 	return p.ID, nil
 }
 
-// requireAccount validates the JMAP accountId against the authenticated
-// principal. An absent accountId is rejected with "invalidArguments"
-// per RFC 8620 §5.1; a mismatched one returns "accountNotFound".
-func requireAccount(req jmapID, pid store.PrincipalID) *protojmap.MethodError {
-	if req == "" {
-		return protojmap.NewMethodError("invalidArguments", "accountId is required")
-	}
-	if req != protojmap.AccountIDForPrincipal(pid) {
-		return protojmap.NewMethodError("accountNotFound",
-			"requested account is not accessible to the caller")
-	}
-	return nil
-}
-
 // serverFail wraps an internal Go error into a JMAP method-error
 // envelope.
 func serverFail(err error) *protojmap.MethodError {
@@ -111,17 +97,18 @@ func renderSubscription(ps store.PushSubscription) jmapPushSubscription {
 
 // -- PushSubscription/get --------------------------------------------
 
+// getRequest is the wire-form PushSubscription/get request.
+// RFC 8620 §7.2 explicitly states that PushSubscription is not
+// account-scoped; accountId is absent from this method's contract.
 type getRequest struct {
-	AccountID  jmapID    `json:"accountId"`
 	IDs        *[]jmapID `json:"ids"`
 	Properties *[]string `json:"properties"`
 }
 
 type getResponse struct {
-	AccountID jmapID                 `json:"accountId"`
-	State     string                 `json:"state"`
-	List      []jmapPushSubscription `json:"list"`
-	NotFound  []jmapID               `json:"notFound"`
+	State    string                 `json:"state"`
+	List     []jmapPushSubscription `json:"list"`
+	NotFound []jmapID               `json:"notFound"`
 }
 
 type getHandler struct{ h *handlerSet }
@@ -139,9 +126,6 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
-		return nil, merr
-	}
 	state, err := currentState(ctx, g.h.store.Meta(), pid)
 	if err != nil {
 		return nil, serverFail(err)
@@ -151,10 +135,9 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 		return nil, serverFail(err)
 	}
 	resp := getResponse{
-		AccountID: req.AccountID,
-		State:     state,
-		List:      []jmapPushSubscription{},
-		NotFound:  []jmapID{},
+		State:    state,
+		List:     []jmapPushSubscription{},
+		NotFound: []jmapID{},
 	}
 	if req.IDs == nil {
 		for _, ps := range rows {
@@ -184,8 +167,9 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 
 // -- PushSubscription/set --------------------------------------------
 
+// setRequest is the wire-form PushSubscription/set request.
+// RFC 8620 §7.2: PushSubscription is session-scoped; no accountId.
 type setRequest struct {
-	AccountID jmapID                     `json:"accountId"`
 	IfInState *string                    `json:"ifInState"`
 	Create    map[string]json.RawMessage `json:"create"`
 	Update    map[jmapID]json.RawMessage `json:"update"`
@@ -199,7 +183,6 @@ type setError struct {
 }
 
 type setResponse struct {
-	AccountID    jmapID                          `json:"accountId"`
 	OldState     string                          `json:"oldState"`
 	NewState     string                          `json:"newState"`
 	Created      map[string]jmapPushSubscription `json:"created"`
@@ -250,9 +233,6 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
-		return nil, merr
-	}
 	state, err := currentState(ctx, s.h.store.Meta(), pid)
 	if err != nil {
 		return nil, serverFail(err)
@@ -262,7 +242,6 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			"ifInState does not match current state")
 	}
 	resp := setResponse{
-		AccountID:    req.AccountID,
 		OldState:     state,
 		NewState:     state,
 		Created:      map[string]jmapPushSubscription{},

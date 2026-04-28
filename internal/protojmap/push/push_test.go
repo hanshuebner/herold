@@ -139,8 +139,7 @@ func (f *fixture) invokeGet(ctx context.Context, args getRequest) (getResponse, 
 func TestPushSet_Create_AllocatesVerificationCode(t *testing.T) {
 	f := newFixture(t)
 	resp, merr := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Create: map[string]json.RawMessage{
+Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				DeviceClientID: "browser-1",
 				URL:            "https://push.example.test/abc",
@@ -177,8 +176,7 @@ func TestPushSet_Create_WithoutKeys(t *testing.T) {
 	// encryption keys.
 	f := newFixture(t)
 	resp, merr := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Create: map[string]json.RawMessage{
+Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				DeviceClientID: "keyless-client",
 				URL:            "https://push.example.test/keyless",
@@ -203,7 +201,7 @@ func TestPushSet_Create_WithoutKeys(t *testing.T) {
 		t.Fatalf("created id empty")
 	}
 	// Verify it round-trips through /get.
-	getResp, merr := f.invokeGet(f.ctx(), getRequest{AccountID: protojmap.AccountIDForPrincipal(f.pid), IDs: ptrSlice([]jmapID{created.ID})})
+	getResp, merr := f.invokeGet(f.ctx(), getRequest{IDs: ptrSlice([]jmapID{created.ID})})
 	if merr != nil {
 		t.Fatalf("Get: %v", merr)
 	}
@@ -215,8 +213,7 @@ func TestPushSet_Create_WithoutKeys(t *testing.T) {
 func TestPushSet_Create_RejectsNonHTTPS(t *testing.T) {
 	f := newFixture(t)
 	resp, merr := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Create: map[string]json.RawMessage{
+Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "http://insecure.example.test",
 				Keys: validKeysJSON(),
@@ -237,8 +234,7 @@ func TestPushSet_Create_RejectsNonHTTPS(t *testing.T) {
 func TestPushSet_VerificationHandshake(t *testing.T) {
 	f := newFixture(t)
 	createResp, merr := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Create: map[string]json.RawMessage{
+Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/v",
 				Keys: validKeysJSON(),
@@ -251,8 +247,7 @@ func TestPushSet_VerificationHandshake(t *testing.T) {
 	c := createResp.Created["c1"]
 	code := *c.VerificationCode
 	updateResp, merr := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Update: map[jmapID]json.RawMessage{
+Update: map[jmapID]json.RawMessage{
 			c.ID: mustJSON(map[string]any{"verificationCode": code}),
 		},
 	})
@@ -263,8 +258,7 @@ func TestPushSet_VerificationHandshake(t *testing.T) {
 		t.Fatalf("verification update rejected: %+v", updateResp.NotUpdated)
 	}
 	getResp, merr := f.invokeGet(f.ctx(), getRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		IDs:       ptrSlice([]jmapID{c.ID}),
+IDs:       ptrSlice([]jmapID{c.ID}),
 	})
 	if merr != nil {
 		t.Fatalf("Get: %v", merr)
@@ -281,8 +275,7 @@ func TestPushSet_VerificationHandshake(t *testing.T) {
 func TestPushSet_VerificationHandshake_RejectsWrongCode(t *testing.T) {
 	f := newFixture(t)
 	createResp, merr := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Create: map[string]json.RawMessage{
+Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/v",
 				Keys: validKeysJSON(),
@@ -294,8 +287,7 @@ func TestPushSet_VerificationHandshake_RejectsWrongCode(t *testing.T) {
 	}
 	c := createResp.Created["c1"]
 	updateResp, merr := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Update: map[jmapID]json.RawMessage{
+Update: map[jmapID]json.RawMessage{
 			c.ID: mustJSON(map[string]any{"verificationCode": "definitely-wrong"}),
 		},
 	})
@@ -314,8 +306,7 @@ func TestPushSet_VerificationHandshake_RejectsWrongCode(t *testing.T) {
 func TestPushSet_RejectsImmutableUpdate(t *testing.T) {
 	f := newFixture(t)
 	createResp, _ := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Create: map[string]json.RawMessage{
+Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/u",
 				Keys: validKeysJSON(),
@@ -324,8 +315,7 @@ func TestPushSet_RejectsImmutableUpdate(t *testing.T) {
 	})
 	c := createResp.Created["c1"]
 	updateResp, _ := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Update: map[jmapID]json.RawMessage{
+Update: map[jmapID]json.RawMessage{
 			c.ID: mustJSON(map[string]any{"url": "https://other.example.test"}),
 		},
 	})
@@ -341,8 +331,7 @@ func TestPushSet_RejectsImmutableUpdate(t *testing.T) {
 func TestPushSet_Destroy_Roundtrip(t *testing.T) {
 	f := newFixture(t)
 	createResp, _ := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Create: map[string]json.RawMessage{
+Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/d",
 				Keys: validKeysJSON(),
@@ -351,13 +340,12 @@ func TestPushSet_Destroy_Roundtrip(t *testing.T) {
 	})
 	c := createResp.Created["c1"]
 	destroyResp, _ := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Destroy:   []jmapID{c.ID},
+Destroy:   []jmapID{c.ID},
 	})
 	if len(destroyResp.Destroyed) != 1 || destroyResp.Destroyed[0] != c.ID {
 		t.Fatalf("Destroyed = %+v", destroyResp.Destroyed)
 	}
-	getResp, _ := f.invokeGet(f.ctx(), getRequest{AccountID: protojmap.AccountIDForPrincipal(f.pid), IDs: ptrSlice([]jmapID{c.ID})})
+	getResp, _ := f.invokeGet(f.ctx(), getRequest{IDs: ptrSlice([]jmapID{c.ID})})
 	if len(getResp.NotFound) != 1 {
 		t.Fatalf("NotFound after destroy = %+v", getResp.NotFound)
 	}
@@ -366,8 +354,7 @@ func TestPushSet_Destroy_Roundtrip(t *testing.T) {
 func TestPush_CrossPrincipalDenied(t *testing.T) {
 	f := newFixture(t)
 	createResp, _ := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Create: map[string]json.RawMessage{
+Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/x",
 				Keys: validKeysJSON(),
@@ -388,8 +375,7 @@ func TestPush_CrossPrincipalDenied(t *testing.T) {
 	// /get from the other principal must NOT see our subscription
 	// (no list rows + targeted ID returns notFound).
 	getResp, _ := f.invokeGet(f.ctxFor(other.ID), getRequest{
-		AccountID: protojmap.AccountIDForPrincipal(other.ID),
-		IDs:       ptrSlice([]jmapID{c.ID}),
+		IDs: ptrSlice([]jmapID{c.ID}),
 	})
 	if len(getResp.List) != 0 {
 		t.Fatalf("foreign principal saw list: %+v", getResp.List)
@@ -400,7 +386,6 @@ func TestPush_CrossPrincipalDenied(t *testing.T) {
 	// /set update must surface notFound (not "forbidden") so the
 	// existence of the foreign row is not confirmable.
 	updateResp, _ := f.invokeSet(f.ctxFor(other.ID), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(other.ID),
 		Update: map[jmapID]json.RawMessage{
 			c.ID: mustJSON(map[string]any{"types": []string{"Mailbox"}}),
 		},
@@ -410,8 +395,7 @@ func TestPush_CrossPrincipalDenied(t *testing.T) {
 	}
 	// /set destroy must also surface notFound.
 	destroyResp, _ := f.invokeSet(f.ctxFor(other.ID), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(other.ID),
-		Destroy:   []jmapID{c.ID},
+		Destroy: []jmapID{c.ID},
 	})
 	if len(destroyResp.Destroyed) != 0 {
 		t.Fatalf("foreign principal destroyed our row: %+v", destroyResp)
@@ -425,7 +409,6 @@ func TestPushGet_AllRows(t *testing.T) {
 	f := newFixture(t)
 	for i, name := range []string{"c1", "c2", "c3"} {
 		_, merr := f.invokeSet(f.ctx(), setRequest{
-			AccountID: protojmap.AccountIDForPrincipal(f.pid),
 			Create: map[string]json.RawMessage{
 				name: mustJSON(pushCreateInput{
 					URL:  "https://push.example.test/r" + name,
@@ -437,7 +420,7 @@ func TestPushGet_AllRows(t *testing.T) {
 			t.Fatalf("Create %d: %v", i, merr)
 		}
 	}
-	getResp, merr := f.invokeGet(f.ctx(), getRequest{AccountID: protojmap.AccountIDForPrincipal(f.pid)})
+	getResp, merr := f.invokeGet(f.ctx(), getRequest{})
 	if merr != nil {
 		t.Fatalf("Get all: %v", merr)
 	}
@@ -479,8 +462,7 @@ func TestCapabilityDescriptor_OmitsKeyWhenUnconfigured(t *testing.T) {
 func TestPushSet_QuietHoursValidation(t *testing.T) {
 	f := newFixture(t)
 	resp, _ := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Create: map[string]json.RawMessage{
+Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/qh",
 				Keys: validKeysJSON(),
@@ -500,8 +482,7 @@ func TestPushSet_QuietHoursValidation(t *testing.T) {
 func TestPushSet_QuietHoursRejectsBadTZ(t *testing.T) {
 	f := newFixture(t)
 	resp, _ := f.invokeSet(f.ctx(), setRequest{
-		AccountID: protojmap.AccountIDForPrincipal(f.pid),
-		Create: map[string]json.RawMessage{
+Create: map[string]json.RawMessage{
 			"c1": mustJSON(pushCreateInput{
 				URL:  "https://push.example.test/qh",
 				Keys: validKeysJSON(),
