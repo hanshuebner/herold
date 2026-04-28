@@ -287,6 +287,16 @@
           if (e) movePicker.open(e.id);
         },
       },
+      {
+        key: 'I',
+        description: 'Mark thread read',
+        action: () => void mail.markThreadSeen(tid, true),
+      },
+      {
+        key: 'U',
+        description: 'Mark thread unread',
+        action: () => void mail.markThreadSeen(tid, false),
+      },
     ]);
     return pop;
   });

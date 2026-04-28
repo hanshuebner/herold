@@ -69,6 +69,8 @@
     if (!t) return false;
     return Boolean(email.mailboxIds[t.id]);
   });
+
+  let isSeen = $derived(Boolean(email.keywords.$seen));
 </script>
 
 <article class="message" class:expanded>
@@ -139,6 +141,13 @@
         </button>
         <button type="button" class="pill" onclick={() => movePicker.open(email.id)}>
           → Move…
+        </button>
+        <button
+          type="button"
+          class="pill"
+          onclick={() => mail.setSeen(email.id, !isSeen)}
+        >
+          {isSeen ? '○ Mark unread' : '● Mark read'}
         </button>
         {#if isInTrash}
           <button

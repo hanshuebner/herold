@@ -1014,6 +1014,21 @@ class MailStore {
     }
   }
 
+  /**
+   * Mark every email in a thread as read or unread. Filters out emails
+   * already in the desired state, then defers to the bulk path so a
+   * single Email/set covers the whole thread.
+   */
+  async markThreadSeen(threadId: string, seen: boolean): Promise<void> {
+    const ids: string[] = [];
+    for (const e of this.threadEmails(threadId)) {
+      const wasSeen = Boolean(e.keywords.$seen);
+      if (wasSeen !== seen) ids.push(e.id);
+    }
+    if (ids.length === 0) return;
+    return this.bulkSetSeen(ids, seen);
+  }
+
   /** Bulk mark-read / mark-unread: set $seen on every id. */
   async bulkSetSeen(ids: string[], seen: boolean): Promise<void> {
     if (ids.length === 0) return;
