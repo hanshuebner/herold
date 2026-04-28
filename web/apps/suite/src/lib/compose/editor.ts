@@ -221,3 +221,25 @@ export function removeLink(view: EditorView | null): void {
   view.dispatch(tr);
   view.focus();
 }
+
+/**
+ * Insert an image node at the current cursor position. The src is a
+ * `cid:<content-id>` URL that points to an inline part attached to the
+ * outbound message at send time (issue #20). Alt text describes the
+ * image when it can't be displayed.
+ */
+export function applyImage(
+  view: EditorView | null,
+  src: string,
+  alt: string,
+): void {
+  if (!view) return;
+  const trimmedSrc = src.trim();
+  if (!trimmedSrc) return;
+  const imageType = composeSchema.nodes.image;
+  if (!imageType) return;
+  const node = imageType.create({ src: trimmedSrc, alt: alt || null });
+  const tr = view.state.tr.replaceSelectionWith(node, false);
+  view.dispatch(tr);
+  view.focus();
+}

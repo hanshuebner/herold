@@ -50,6 +50,21 @@ export interface ComposeAttachment {
   blobId: string | null;
   /** Failure reason — surfaced as the row's helper text. */
   error: string | null;
+  /**
+   * Inline images get disposition: 'inline' on the part and a Content-
+   * ID that the body's <img src="cid:..."> references. Issue #20.
+   * Regular file attachments leave inline=false / cid=null.
+   */
+  inline?: boolean;
+  cid?: string | null;
+  /**
+   * `URL.createObjectURL(file)` value for inline images: lets the
+   * editor display the image while the message is being composed.
+   * On send/persist the body is rewritten to replace this URL with
+   * `cid:<cid>` so the receiving client resolves it against the
+   * inline part. Revoked when the attachment is removed.
+   */
+  objectURL?: string | null;
 }
 
 interface ReplyContext {
@@ -321,7 +336,64 @@ class ComposeStore {
 
   /** Remove a queued attachment by key. */
   removeAttachment(key: string): void {
+    const removed = this.attachments.find((a) => a.key === key);
+    if (removed?.objectURL) URL.revokeObjectURL(removed.objectURL);
     this.attachments = this.attachments.filter((a) => a.key !== key);
+  }
+
+  /**
+   * Upload a single image as an inline attachment and return its
+   * Content-ID and blob-id once the upload completes. The caller (the
+   * compose toolbar Insert image action, issue #20) inserts an
+   * <img src="cid:<cid>"> node into the editor body. The inline part
+   * is added to the bodyStructure at send time with disposition:
+   * 'inline'.
+   *
+   * Resolves null on upload failure (a toast row already surfaces the
+   * error).
+   */
+  async addInlineImage(
+    file: File,
+  ): Promise<{ cid: string; objectURL: string } | null> {
+    const accountId = mail.mailAccountId;
+    if (!accountId) return null;
+    const maxSize = jmap.maxUploadSize;
+    if (maxSize !== null && file.size > maxSize) {
+      return null;
+    }
+    const key = `att-${++this.#attachmentSeq}`;
+    const cid = generateInlineCID(this.#attachmentSeq);
+    const objectURL = URL.createObjectURL(file);
+    const att: ComposeAttachment = {
+      key,
+      name: file.name || 'image',
+      size: file.size,
+      type: file.type || 'application/octet-stream',
+      status: 'uploading',
+      blobId: null,
+      error: null,
+      inline: true,
+      cid,
+      objectURL,
+    };
+    this.attachments = [...this.attachments, att];
+    try {
+      const result = await jmap.uploadBlob({
+        accountId,
+        body: file,
+        type: att.type,
+      });
+      this.#patchAttachment(key, {
+        status: 'ready',
+        blobId: result.blobId,
+        error: null,
+      });
+      return { cid, objectURL };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Upload failed';
+      this.#patchAttachment(key, { status: 'failed', error: msg });
+      return null;
+    }
   }
 
   /** Retry a failed upload. */
@@ -430,47 +502,16 @@ class ComposeStore {
     const toAddrs = parseAddressList(this.to);
     const ccAddrs = parseAddressList(this.cc);
     const bccAddrs = parseAddressList(this.bcc);
-    const bodyHtml = this.body;
+    // Rewrite blob: object URLs back to cid: references so the
+    // outbound message references the inline parts (issue #20). The
+    // editor uses blob URLs while composing for in-place preview.
+    const bodyHtml = rewriteInlineImageURLs(this.body, this.attachments);
     const bodyText = htmlToPlainText(bodyHtml);
 
     const readyAttachments = this.attachments.filter(
       (a): a is ComposeAttachment & { blobId: string } =>
         a.status === 'ready' && typeof a.blobId === 'string',
     );
-
-    // Body structure is multipart/alternative when there are no
-    // attachments; with attachments it becomes multipart/mixed wrapping
-    // the alternative body + one part per attachment.
-    const altPart = {
-      type: 'multipart/alternative',
-      subParts: [
-        { partId: '1', type: 'text/plain', charset: 'utf-8' },
-        { partId: '2', type: 'text/html', charset: 'utf-8' },
-      ],
-    };
-    const bodyStructure: Record<string, unknown> =
-      readyAttachments.length === 0
-        ? altPart
-        : {
-            type: 'multipart/mixed',
-            subParts: [
-              altPart,
-              ...readyAttachments.map((a) => ({
-                blobId: a.blobId,
-                type: a.type,
-                disposition: 'attachment',
-                name: a.name,
-                size: a.size,
-              })),
-            ],
-          };
-    const attachmentParts = readyAttachments.map((a) => ({
-      blobId: a.blobId,
-      type: a.type,
-      disposition: 'attachment',
-      name: a.name,
-      size: a.size,
-    }));
 
     const fields: Record<string, unknown> = {
       from: [{ name: identity.name, email: identity.email }],
@@ -482,9 +523,11 @@ class ComposeStore {
       },
       textBody: [{ partId: '1', type: 'text/plain', charset: 'utf-8' }],
       htmlBody: [{ partId: '2', type: 'text/html', charset: 'utf-8' }],
-      bodyStructure,
-      ...(attachmentParts.length > 0 ? { attachments: attachmentParts } : {}),
-      hasAttachment: attachmentParts.length > 0,
+      bodyStructure: buildBodyStructure(readyAttachments),
+      ...(readyAttachments.length > 0
+        ? { attachments: buildAttachmentParts(readyAttachments) }
+        : {}),
+      hasAttachment: readyAttachments.length > 0,
     };
     if (ccAddrs.length > 0) {
       fields.cc = ccAddrs.map((email) => ({ email, name: null }));
@@ -580,7 +623,10 @@ class ComposeStore {
       return;
     }
     const subject = this.subject;
-    const bodyHtml = this.body;
+    // Rewrite blob: object URLs back to cid: references so the
+    // outbound message references the inline parts (issue #20). The
+    // editor uses blob URLs while composing for in-place preview.
+    const bodyHtml = rewriteInlineImageURLs(this.body, this.attachments);
     const bodyText = htmlToPlainText(bodyHtml);
     const replyContext = this.replyContext;
 
@@ -618,37 +664,6 @@ class ComposeStore {
       (a): a is ComposeAttachment & { blobId: string } =>
         a.status === 'ready' && typeof a.blobId === 'string',
     );
-    const altPart = {
-      type: 'multipart/alternative',
-      subParts: [
-        { partId: '1', type: 'text/plain', charset: 'utf-8' },
-        { partId: '2', type: 'text/html', charset: 'utf-8' },
-      ],
-    };
-    const sendBodyStructure: Record<string, unknown> =
-      readyAttachments.length === 0
-        ? altPart
-        : {
-            type: 'multipart/mixed',
-            subParts: [
-              altPart,
-              ...readyAttachments.map((a) => ({
-                blobId: a.blobId,
-                type: a.type,
-                disposition: 'attachment',
-                name: a.name,
-                size: a.size,
-              })),
-            ],
-          };
-    const sendAttachmentParts = readyAttachments.map((a) => ({
-      blobId: a.blobId,
-      type: a.type,
-      disposition: 'attachment',
-      name: a.name,
-      size: a.size,
-    }));
-
     const draftEmail: Record<string, unknown> = {
       mailboxIds: { [drafts.id]: true },
       keywords: { $draft: true, $seen: true },
@@ -661,9 +676,11 @@ class ComposeStore {
       },
       textBody: [{ partId: '1', type: 'text/plain', charset: 'utf-8' }],
       htmlBody: [{ partId: '2', type: 'text/html', charset: 'utf-8' }],
-      bodyStructure: sendBodyStructure,
-      ...(sendAttachmentParts.length > 0 ? { attachments: sendAttachmentParts } : {}),
-      hasAttachment: sendAttachmentParts.length > 0,
+      bodyStructure: buildBodyStructure(readyAttachments),
+      ...(readyAttachments.length > 0
+        ? { attachments: buildAttachmentParts(readyAttachments) }
+        : {}),
+      hasAttachment: readyAttachments.length > 0,
     };
     if (ccRecipients.length > 0) {
       draftEmail.cc = ccRecipients.map((email) => ({ email, name: null }));
@@ -1061,6 +1078,127 @@ function escapeHtml(s: string): string {
  * blank after trimming. v1 stores signatures as plain text only
  * (REQ-MAIL-100); HTML-authored signatures are out of scope.
  */
+/**
+ * Generate a Content-ID for an inline image part. Format: a short
+ * random suffix plus the per-compose attachment sequence number, both
+ * lowercase alphanumeric so RFC 2392 cid: URLs work without escaping.
+ */
+function generateInlineCID(seq: number): string {
+  const rand = Math.random().toString(36).slice(2, 10);
+  return `inl-${seq}-${rand}@herold.local`;
+}
+
+/**
+ * Rewrite the editor body's inline-image src attributes from the
+ * `blob:...` previews used during composition to the `cid:<id>`
+ * references the receiving client expects (RFC 2392). Returns the
+ * input unchanged when there are no inline images.
+ */
+export function rewriteInlineImageURLs(
+  body: string,
+  attachments: ComposeAttachment[],
+): string {
+  if (!body) return body;
+  const inlines = attachments.filter(
+    (a) => a.inline && a.objectURL && a.cid,
+  ) as (ComposeAttachment & { objectURL: string; cid: string })[];
+  if (inlines.length === 0) return body;
+  let out = body;
+  for (const a of inlines) {
+    // The src attribute is HTML-attribute-quoted with either " or '.
+    // Match both via a non-capturing alternation. The objectURL is
+    // a same-origin "blob:https://..." which is a literal substring.
+    const escaped = a.objectURL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`src=(["'])${escaped}\\1`, 'g');
+    out = out.replace(re, `src=$1cid:${a.cid}$1`);
+  }
+  return out;
+}
+
+/**
+ * Construct the JMAP bodyStructure from the ready attachments list.
+ *
+ * Layout per RFC 8621 + RFC 2387:
+ * - no attachments: multipart/alternative (text/plain + text/html).
+ * - inline-only: multipart/related wrapping the alternative + each
+ *   inline part (so the html-body's cid: refs resolve).
+ * - attachment-only: multipart/mixed wrapping the alternative + each
+ *   attachment part.
+ * - both: multipart/mixed wrapping a multipart/related (alt + inline
+ *   parts) + each attachment part.
+ *
+ * Inline parts gain `disposition: 'inline'` and a `cid` matching the
+ * <img src="cid:..."> reference in the html body. Attachments stay
+ * disposition: 'attachment'.
+ */
+function buildBodyStructure(
+  ready: (ComposeAttachment & { blobId: string })[],
+): Record<string, unknown> {
+  const altPart: Record<string, unknown> = {
+    type: 'multipart/alternative',
+    subParts: [
+      { partId: '1', type: 'text/plain', charset: 'utf-8' },
+      { partId: '2', type: 'text/html', charset: 'utf-8' },
+    ],
+  };
+  const inlines = ready.filter((a) => a.inline);
+  const attached = ready.filter((a) => !a.inline);
+  const inlineParts = inlines.map((a) => ({
+    blobId: a.blobId,
+    type: a.type,
+    disposition: 'inline',
+    name: a.name,
+    size: a.size,
+    cid: a.cid ?? null,
+  }));
+  const attachmentParts = attached.map((a) => ({
+    blobId: a.blobId,
+    type: a.type,
+    disposition: 'attachment',
+    name: a.name,
+    size: a.size,
+  }));
+  const inner: Record<string, unknown> =
+    inlineParts.length === 0
+      ? altPart
+      : {
+          type: 'multipart/related',
+          subParts: [altPart, ...inlineParts],
+        };
+  if (attachmentParts.length === 0) return inner;
+  return {
+    type: 'multipart/mixed',
+    subParts: [inner, ...attachmentParts],
+  };
+}
+
+/**
+ * Flat attachment list mirrored on the JMAP `attachments` field. Both
+ * inline and regular attachments are listed here per RFC 8621 §4.1.4.
+ */
+function buildAttachmentParts(
+  ready: (ComposeAttachment & { blobId: string })[],
+): Record<string, unknown>[] {
+  return ready.map((a) =>
+    a.inline
+      ? {
+          blobId: a.blobId,
+          type: a.type,
+          disposition: 'inline',
+          name: a.name,
+          size: a.size,
+          cid: a.cid ?? null,
+        }
+      : {
+          blobId: a.blobId,
+          type: a.type,
+          disposition: 'attachment',
+          name: a.name,
+          size: a.size,
+        },
+  );
+}
+
 function appendSignature(body: string, identity: Identity | null): string {
   if (!identity) return body;
   const sig = identity.textSignature ?? '';
@@ -1155,4 +1293,7 @@ export const _internals_forTest = {
   formatBytes,
   appendSignature,
   bodyTextWithoutSignature,
+  rewriteInlineImageURLs,
+  buildBodyStructure,
+  buildAttachmentParts,
 };

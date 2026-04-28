@@ -4,6 +4,7 @@
     applyBlockquote,
     applyBold,
     applyBulletList,
+    applyImage,
     applyItalic,
     applyLink,
     applyOrderedList,
@@ -12,12 +13,17 @@
     type ActiveState,
   } from './editor';
   import { prompt } from '../dialog/prompt.svelte';
+  import { compose } from './compose.svelte';
+  import { toast } from '../toast/toast.svelte';
+  import ImageIcon from '../icons/ImageIcon.svelte';
 
   interface Props {
     view: EditorView | null;
     active: ActiveState;
   }
   let { view, active }: Props = $props();
+
+  let imageInput = $state<HTMLInputElement | null>(null);
 
   async function promptLink(): Promise<void> {
     if (!view) return;
@@ -36,6 +42,37 @@
       return;
     }
     applyLink(view, url);
+  }
+
+  function pickImage(): void {
+    imageInput?.click();
+  }
+
+  async function onImagePicked(e: Event): Promise<void> {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file || !view) return;
+    if (!file.type.startsWith('image/')) {
+      toast.show({
+        message: 'Pick an image file (PNG, JPEG, GIF, WebP).',
+        kind: 'error',
+        timeoutMs: 4000,
+      });
+      return;
+    }
+    const result = await compose.addInlineImage(file);
+    if (!result) {
+      toast.show({
+        message: 'Image upload failed.',
+        kind: 'error',
+        timeoutMs: 4000,
+      });
+      return;
+    }
+    // Use the blob: URL for in-editor preview; persistDraft and
+    // send() rewrite it to cid:<cid> before the message goes to JMAP.
+    applyImage(view, result.objectURL, file.name);
   }
 </script>
 
@@ -123,6 +160,23 @@
   >
     <span class="glyph">⎘</span>
   </button>
+
+  <button
+    type="button"
+    class="tool"
+    aria-label="Insert image"
+    title="Insert image"
+    onclick={pickImage}
+  >
+    <ImageIcon size={18} />
+  </button>
+  <input
+    bind:this={imageInput}
+    type="file"
+    accept="image/*"
+    hidden
+    onchange={onImagePicked}
+  />
 </div>
 
 <style>

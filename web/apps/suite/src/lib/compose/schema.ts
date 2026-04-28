@@ -5,10 +5,12 @@
  * the suite accepts inbound after sanitisation — see
  * docs/architecture/04-rendering.md and docs/implementation/01-tech-stack.md.
  *
- * Starts from prosemirror-schema-basic + prosemirror-schema-list and adds
- * an underline mark (basic doesn't include it). The image node is
- * removed: inline images flow through the attachment / Blob/upload path,
- * not the editor's image insertion.
+ * Starts from prosemirror-schema-basic + prosemirror-schema-list, adds
+ * an underline mark, and keeps the image node so inline images uploaded
+ * via the toolbar Insert image action (issue #20) can be edited as
+ * part of the document. The image node serialises to an `<img>` tag
+ * whose `src` is a `cid:<content-id>` reference; the corresponding
+ * inline part is added to the outbound message at send time.
  */
 
 import { Schema, type MarkSpec } from 'prosemirror-model';
@@ -28,8 +30,7 @@ const underlineMark: MarkSpec = {
   },
 };
 
-const baseNodes = basicSchema.spec.nodes.remove('image');
-const nodes = addListNodes(baseNodes, 'paragraph block*', 'block');
+const nodes = addListNodes(basicSchema.spec.nodes, 'paragraph block*', 'block');
 const marks = basicSchema.spec.marks.addToEnd('underline', underlineMark);
 
 export const composeSchema = new Schema({ nodes, marks });

@@ -22,6 +22,9 @@ const {
   formatBytes,
   appendSignature,
   bodyTextWithoutSignature,
+  rewriteInlineImageURLs,
+  buildBodyStructure,
+  buildAttachmentParts,
 } = _internals_forTest;
 
 const ID_NO_SIG = {
@@ -337,5 +340,150 @@ describe('bodyTextWithoutSignature', () => {
 
   it('handles &nbsp; whitespace from rich editors', () => {
     expect(bodyTextWithoutSignature('<p>&nbsp;</p>')).toBe('');
+  });
+});
+
+describe('rewriteInlineImageURLs', () => {
+  it('returns input unchanged when there are no inline attachments', () => {
+    const html = '<p>hello</p>';
+    expect(rewriteInlineImageURLs(html, [])).toBe(html);
+  });
+
+  it('rewrites blob:url to cid:<cid> for matching inline attachment', () => {
+    const blob = 'blob:https://app.test/abc-123';
+    const html = `<p>hi</p><p><img src="${blob}" alt="x"></p>`;
+    const out = rewriteInlineImageURLs(html, [
+      {
+        key: 'a1',
+        name: 'x.png',
+        size: 1,
+        type: 'image/png',
+        status: 'ready',
+        blobId: 'b1',
+        error: null,
+        inline: true,
+        cid: 'inl-1@herold.local',
+        objectURL: blob,
+      },
+    ]);
+    expect(out).toBe(
+      '<p>hi</p><p><img src="cid:inl-1@herold.local" alt="x"></p>',
+    );
+  });
+
+  it('handles single-quoted src attributes', () => {
+    const blob = 'blob:https://app.test/x';
+    const html = `<img src='${blob}'>`;
+    const out = rewriteInlineImageURLs(html, [
+      {
+        key: 'a1',
+        name: 'x.png',
+        size: 1,
+        type: 'image/png',
+        status: 'ready',
+        blobId: 'b1',
+        error: null,
+        inline: true,
+        cid: 'inl@herold.local',
+        objectURL: blob,
+      },
+    ]);
+    expect(out).toBe(`<img src='cid:inl@herold.local'>`);
+  });
+
+  it('skips unmatched blob URLs', () => {
+    const html = '<img src="blob:other">';
+    expect(
+      rewriteInlineImageURLs(html, [
+        {
+          key: 'a1',
+          name: 'x.png',
+          size: 1,
+          type: 'image/png',
+          status: 'ready',
+          blobId: 'b1',
+          error: null,
+          inline: true,
+          cid: 'inl@herold.local',
+          objectURL: 'blob:foo',
+        },
+      ]),
+    ).toBe(html);
+  });
+});
+
+describe('buildBodyStructure', () => {
+  function ready(over: Record<string, unknown>): Record<string, unknown> {
+    return {
+      key: 'k',
+      name: 'n',
+      size: 1,
+      type: 'image/png',
+      status: 'ready',
+      blobId: 'bid',
+      error: null,
+      ...over,
+    };
+  }
+
+  it('returns alternative-only when there are no attachments', () => {
+    const r = buildBodyStructure([] as never[]);
+    expect(r.type).toBe('multipart/alternative');
+  });
+
+  it('wraps in related when there are inline parts only', () => {
+    const r = buildBodyStructure([
+      ready({ inline: true, cid: 'c1' }),
+    ] as never[]);
+    expect(r.type).toBe('multipart/related');
+  });
+
+  it('wraps in mixed when there are attachments only', () => {
+    const r = buildBodyStructure([
+      ready({ inline: false, name: 'doc.pdf', type: 'application/pdf' }),
+    ] as never[]);
+    expect(r.type).toBe('multipart/mixed');
+  });
+
+  it('wraps in mixed-around-related when both kinds are present', () => {
+    const r = buildBodyStructure([
+      ready({ inline: true, cid: 'c1' }),
+      ready({ inline: false, name: 'doc.pdf', type: 'application/pdf' }),
+    ] as never[]);
+    expect(r.type).toBe('multipart/mixed');
+    const subParts = r.subParts as { type: string }[];
+    expect(subParts[0]?.type).toBe('multipart/related');
+  });
+});
+
+describe('buildAttachmentParts', () => {
+  it('marks inline parts with disposition=inline + cid', () => {
+    const parts = buildAttachmentParts([
+      {
+        key: 'a',
+        name: 'x.png',
+        size: 1,
+        type: 'image/png',
+        status: 'ready',
+        blobId: 'b',
+        error: null,
+        inline: true,
+        cid: 'cid-1',
+      },
+      {
+        key: 'b',
+        name: 'd.pdf',
+        size: 2,
+        type: 'application/pdf',
+        status: 'ready',
+        blobId: 'b2',
+        error: null,
+      },
+    ] as never[]);
+    expect((parts[0] as { disposition: string }).disposition).toBe('inline');
+    expect((parts[0] as { cid: string }).cid).toBe('cid-1');
+    expect((parts[1] as { disposition: string }).disposition).toBe(
+      'attachment',
+    );
   });
 });
