@@ -18,14 +18,16 @@
   import VacationForm from './settings/VacationForm.svelte';
   import SieveForm from './settings/SieveForm.svelte';
   import CategoriesForm from './settings/CategoriesForm.svelte';
+  import FiltersForm from './settings/FiltersForm.svelte';
   import { Capability } from '../lib/jmap/types';
   import { jmap } from '../lib/jmap/client';
 
   // Section order per Phase 4 spec: Account, Security, Appearance, Mail,
-  // Categories, API keys, Privacy, About.
-  type Section = 'account' | 'security' | 'appearance' | 'mail' | 'categories' | 'api-keys' | 'privacy' | 'about';
+  // Categories, Filters, API keys, Privacy, About.
+  type Section = 'account' | 'security' | 'appearance' | 'mail' | 'categories' | 'filters' | 'api-keys' | 'privacy' | 'about';
 
   let hasCategorise = $derived(jmap.hasCapability(Capability.HeroldCategorise));
+  let hasManagedRules = $derived(jmap.hasCapability(Capability.HeroldManagedRules));
 
   let sectionsBase: { id: Section; label: string }[] = [
     { id: 'account', label: 'Account' },
@@ -38,12 +40,13 @@
   ];
 
   let SECTIONS = $derived.by(() => {
-    if (!hasCategorise) return sectionsBase;
-    // Insert 'categories' after 'mail'.
     const result: { id: Section; label: string }[] = [];
     for (const s of sectionsBase) {
       result.push(s);
-      if (s.id === 'mail') result.push({ id: 'categories', label: 'Categories' });
+      if (s.id === 'mail') {
+        if (hasCategorise) result.push({ id: 'categories', label: 'Categories' });
+        if (hasManagedRules) result.push({ id: 'filters', label: 'Filters' });
+      }
     }
     return result;
   });
@@ -244,6 +247,10 @@
     {:else if activeSection === 'categories'}
       <h2>Categories</h2>
       <CategoriesForm />
+
+    {:else if activeSection === 'filters'}
+      <h2>Filters</h2>
+      <FiltersForm />
 
     {:else if activeSection === 'api-keys'}
       <h2>API keys</h2>

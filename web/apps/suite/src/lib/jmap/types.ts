@@ -90,6 +90,7 @@ export const Capability = {
   HeroldEmailReactions: 'https://netzhansa.com/jmap/email-reactions',
   HeroldShortcutCoach: 'https://netzhansa.com/jmap/shortcut-coach',
   HeroldPush: 'https://netzhansa.com/jmap/push',
+  HeroldManagedRules: 'https://netzhansa.com/jmap/managed-rules',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];
