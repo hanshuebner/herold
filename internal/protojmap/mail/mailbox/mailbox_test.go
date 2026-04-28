@@ -793,3 +793,71 @@ func TestMailbox_Set_RejectsInvalidColorFormat(t *testing.T) {
 		t.Fatalf("notCreated[bad].properties = %v, want [\"color\"]", props)
 	}
 }
+
+// TestMailbox_Set_DestroyParentAndChildTogether asserts that RFC 8621 §2.5
+// ordering is respected: when both a parent and its child are in the same
+// destroy list, the server must destroy the child first so the parent
+// destroy succeeds. The client sends the parent ID first in the list
+// (worst-case ordering) to verify the server reorders correctly.
+func TestMailbox_Set_DestroyParentAndChildTogether(t *testing.T) {
+	f := setupFixture(t)
+
+	// Create parent via JMAP so IncrementJMAPState fires and currentState
+	// is consistent.
+	accountID := protojmap.AccountIDForPrincipal(f.pid)
+	_, rawCreate := f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": accountID,
+		"create": map[string]any{
+			"parent": map[string]any{"name": "Parent"},
+		},
+	})
+	var createResp struct {
+		Created map[string]map[string]any `json:"created"`
+	}
+	if err := json.Unmarshal(rawCreate, &createResp); err != nil {
+		t.Fatalf("unmarshal create: %v: %s", err, rawCreate)
+	}
+	parentRaw, ok := createResp.Created["parent"]
+	if !ok {
+		t.Fatalf("parent not created: %s", rawCreate)
+	}
+	parentID, _ := parentRaw["id"].(string)
+
+	_, rawCreate2 := f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": accountID,
+		"create": map[string]any{
+			"child": map[string]any{"name": "Child", "parentId": parentID},
+		},
+	})
+	var createResp2 struct {
+		Created map[string]map[string]any `json:"created"`
+	}
+	if err := json.Unmarshal(rawCreate2, &createResp2); err != nil {
+		t.Fatalf("unmarshal create2: %v: %s", err, rawCreate2)
+	}
+	childRaw, ok := createResp2.Created["child"]
+	if !ok {
+		t.Fatalf("child not created: %s", rawCreate2)
+	}
+	childID, _ := childRaw["id"].(string)
+
+	// Destroy parent first in the list (worst-case ordering for the server).
+	_, rawDestroy := f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId":              accountID,
+		"destroy":                []string{parentID, childID},
+		"onDestroyRemoveEmails": false,
+	})
+	var destroyResp struct {
+		Destroyed    []string          `json:"destroyed"`
+		NotDestroyed map[string]any    `json:"notDestroyed"`
+	}
+	if err := json.Unmarshal(rawDestroy, &destroyResp); err != nil {
+		t.Fatalf("unmarshal destroy: %v: %s", err, rawDestroy)
+	}
+	if len(destroyResp.NotDestroyed) > 0 {
+		t.Fatalf("notDestroyed should be empty, got: %v (raw=%s)", destroyResp.NotDestroyed, rawDestroy)
+	}
+	if len(destroyResp.Destroyed) != 2 {
+		t.Fatalf("expected 2 destroyed, got %d: %v", len(destroyResp.Destroyed), destroyResp.Destroyed)
+	}
+}

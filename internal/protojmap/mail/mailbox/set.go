@@ -150,7 +150,14 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 		resp.Updated[raw] = nil
 	}
 
-	for _, raw := range req.Destroy {
+	// RFC 8621 §2.5: when destroying both a parent and its children in the
+	// same /set call, the server MUST process children before parents. Sort
+	// the destroy list topologically so no child appears after its parent.
+	sortedDestroy, notFoundRaws := sortDestroyTopologically(ctx, req.Destroy, creationRefs, s.h.store.Meta(), pid)
+	for _, raw := range notFoundRaws {
+		resp.NotDestroyed[raw] = setError{Type: "notFound"}
+	}
+	for _, raw := range sortedDestroy {
 		mid, ok := resolveID(raw, creationRefs)
 		if !ok {
 			resp.NotDestroyed[raw] = setError{Type: "notFound"}
@@ -173,6 +180,119 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 	}
 	resp.NewState = newState
 	return resp, nil
+}
+
+// sortDestroyTopologically returns the destroy IDs reordered so that child
+// mailboxes appear before their parents. This allows a single /set call to
+// destroy a parent and all its children: RFC 8621 §2.5 requires the server
+// to ensure the ordering internally when the client requests both.
+//
+// IDs that cannot be resolved are collected in notFoundRaws and excluded from
+// the returned sorted slice; the caller adds them directly to notDestroyed.
+func sortDestroyTopologically(
+	ctx context.Context,
+	rawIDs []jmapID,
+	creationRefs map[string]store.MailboxID,
+	meta store.Metadata,
+	pid store.PrincipalID,
+) (sorted []jmapID, notFoundRaws []jmapID) {
+	// Resolve all IDs; collect unresolvable ones separately.
+	type entry struct {
+		raw jmapID
+		mid store.MailboxID
+	}
+	var entries []entry
+	for _, raw := range rawIDs {
+		mid, ok := resolveID(raw, creationRefs)
+		if !ok {
+			notFoundRaws = append(notFoundRaws, raw)
+			continue
+		}
+		entries = append(entries, entry{raw: raw, mid: mid})
+	}
+	if len(entries) <= 1 {
+		sorted = make([]jmapID, len(entries))
+		for i, e := range entries {
+			sorted[i] = e.raw
+		}
+		return sorted, notFoundRaws
+	}
+
+	// Load the principal's mailboxes to get parent relationships.
+	allMBs, err := meta.ListMailboxes(ctx, pid)
+	if err != nil {
+		// On error fall back to original order; destroyMailbox will catch issues.
+		sorted = make([]jmapID, len(entries))
+		for i, e := range entries {
+			sorted[i] = e.raw
+		}
+		return sorted, notFoundRaws
+	}
+	parentOf := make(map[store.MailboxID]store.MailboxID, len(allMBs))
+	for _, mb := range allMBs {
+		parentOf[mb.ID] = mb.ParentID
+	}
+
+	rawOf := make(map[store.MailboxID]jmapID, len(entries))
+	for _, e := range entries {
+		rawOf[e.mid] = e.raw
+	}
+
+	// Topological sort (children before parents) using Kahn's algorithm.
+	// A node is ready to emit when none of the nodes still waiting to be
+	// emitted are its children (i.e. when no remaining node has this node
+	// as its parent). Start by computing, for each node in the destroy set,
+	// how many of its children are also in the destroy set.
+	destroySet := make(map[store.MailboxID]struct{}, len(entries))
+	for _, e := range entries {
+		destroySet[e.mid] = struct{}{}
+	}
+	// childCount[mid] = number of nodes in destroySet whose parent is mid.
+	childCount := make(map[store.MailboxID]int, len(entries))
+	for _, e := range entries {
+		childCount[e.mid] = 0 // ensure every node has an entry
+	}
+	for _, e := range entries {
+		if parent := parentOf[e.mid]; parent != 0 {
+			if _, parentInSet := destroySet[parent]; parentInSet {
+				childCount[parent]++
+			}
+		}
+	}
+	// Queue nodes with no remaining children (leaves).
+	queue := make([]store.MailboxID, 0, len(entries))
+	for _, e := range entries {
+		if childCount[e.mid] == 0 {
+			queue = append(queue, e.mid)
+		}
+	}
+	emitted := make(map[store.MailboxID]struct{}, len(entries))
+	sorted = make([]jmapID, 0, len(entries))
+	for len(queue) > 0 {
+		// Pop first leaf.
+		mid := queue[0]
+		queue = queue[1:]
+		sorted = append(sorted, rawOf[mid])
+		emitted[mid] = struct{}{}
+		// Tell the parent it lost a child; when its count reaches zero it
+		// becomes a leaf and joins the queue.
+		if parent := parentOf[mid]; parent != 0 {
+			if _, parentInSet := destroySet[parent]; parentInSet {
+				childCount[parent]--
+				if childCount[parent] == 0 {
+					queue = append(queue, parent)
+				}
+			}
+		}
+	}
+	// Defensive: append any not-yet-emitted entries (can only happen in a
+	// cycle, which mailbox trees cannot have by design, but guard anyway).
+	for _, e := range entries {
+		if _, ok := emitted[e.mid]; !ok {
+			sorted = append(sorted, e.raw)
+		}
+	}
+	return sorted, notFoundRaws
 }
 
 func resolveID(raw jmapID, creationRefs map[string]store.MailboxID) (store.MailboxID, bool) {

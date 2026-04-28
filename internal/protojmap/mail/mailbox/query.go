@@ -295,11 +295,11 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "unparseable sinceQueryState")
 	}
 
-	st, err := qc.h.store.Meta().GetJMAPStates(ctx, pid)
+	newSeq, err := qc.h.store.Meta().GetMaxChangeSeqForKind(ctx, pid, store.EntityKindMailbox)
 	if err != nil {
 		return nil, serverFail(err)
 	}
-	newQueryState := stateFromCounter(st.Mailbox)
+	newQueryState := stateFromSeq(newSeq)
 
 	resp := queryChangesResponse{
 		AccountID:     req.AccountID,
@@ -309,11 +309,11 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		Added:         []queryChangesAddedItem{},
 	}
 
-	if since > st.Mailbox {
+	if since > newSeq {
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "sinceQueryState is in the future")
 	}
 
-	if since == st.Mailbox {
+	if since == newSeq {
 		// No changes: return empty diff.
 		if req.CalculateTotal {
 			all, err := listAccessibleMailboxes(ctx, qc.h.store.Meta(), pid)
@@ -332,13 +332,13 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		return resp, nil
 	}
 
-	// Collect the IDs that changed since sinceQueryState.
+	// Collect the IDs that changed since sinceQueryState by walking the
+	// change feed from seq > since.
 	const page = 1000
-	var cursor store.ChangeSeq
+	var cursor store.ChangeSeq = since
 	created := map[store.MailboxID]struct{}{}
 	updated := map[store.MailboxID]struct{}{}
 	destroyed := map[store.MailboxID]struct{}{}
-	mailboxOpsAfterSince := int64(0)
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, serverFail(err)
@@ -350,10 +350,6 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		for _, entry := range batch {
 			cursor = entry.Seq
 			if entry.Kind != store.EntityKindMailbox {
-				continue
-			}
-			mailboxOpsAfterSince++
-			if mailboxOpsAfterSince <= since {
 				continue
 			}
 			id := store.MailboxID(entry.EntityID)
