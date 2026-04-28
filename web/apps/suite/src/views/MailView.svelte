@@ -60,7 +60,7 @@
   // "null" is Primary; any other value is the category name from the settings.
 
   let showTabs = $derived(
-    isInboxRoute && categorySettings.available && categorySettings.categories.length > 0,
+    isInboxRoute && categorySettings.available && categorySettings.derivedCategories.length > 0,
   );
 
   /**
@@ -71,11 +71,11 @@
     if (!showTabs) return null;
     const param = router.getParam('tab');
     if (!param) return null; // Default = Primary
-    // Validate: must be a known category name (case-insensitive).
-    const match = categorySettings.categories.find(
-      (c) => c.name.toLowerCase() === param.toLowerCase(),
+    // Validate: must be a known derived category name (case-insensitive).
+    const match = categorySettings.derivedCategories.find(
+      (name) => name.toLowerCase() === param.toLowerCase(),
     );
-    return match ? match.name : null;
+    return match ?? null;
   });
 
   /** Filtered list for the active inbox tab. */
@@ -84,7 +84,7 @@
     return mail.listEmailIds.filter((id) => {
       const e = mail.emails.get(id);
       if (!e) return false;
-      return emailMatchesTab(e.keywords, activeTabName, categorySettings.categories);
+      return emailMatchesTab(e.keywords, activeTabName, categorySettings.derivedCategories);
     });
   });
 
@@ -95,7 +95,7 @@
     for (const id of mail.listEmailIds) {
       const e = mail.emails.get(id);
       if (!e) continue;
-      if (!emailMatchesTab(e.keywords, tabName, categorySettings.categories)) continue;
+      if (!emailMatchesTab(e.keywords, tabName, categorySettings.derivedCategories)) continue;
       if (!e.keywords.$seen) n++;
     }
     return n;
@@ -775,8 +775,8 @@
 
     {#if showTabs}
       <nav class="tab-strip" aria-label="Inbox categories">
-        {#each categorySettings.categories as cat (cat.id)}
-          {@const tabKey = cat.name.toLowerCase() === 'primary' ? null : cat.name}
+        {#each categorySettings.derivedCategories as name (name)}
+          {@const tabKey = name.toLowerCase() === 'primary' ? null : name}
           {@const isActive = activeTabName === tabKey}
           {@const unread = tabUnreadCount(tabKey)}
           <button
@@ -786,7 +786,7 @@
             aria-current={isActive ? 'page' : undefined}
             onclick={() => selectTab(tabKey)}
           >
-            {cat.name}
+            {name}
             {#if unread > 0}
               <span class="tab-badge" aria-label="{unread} unread">{unread}</span>
             {/if}
