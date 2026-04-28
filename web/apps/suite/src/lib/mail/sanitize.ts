@@ -33,10 +33,10 @@ export interface SanitizeOptions {
 
 const ALLOWED_TAGS = [
   'a', 'abbr', 'address', 'b', 'blockquote', 'br', 'caption',
-  'cite', 'code', 'col', 'colgroup', 'div', 'dl', 'dt', 'dd',
+  'cite', 'code', 'col', 'colgroup', 'details', 'div', 'dl', 'dt', 'dd',
   'em', 'figcaption', 'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'hr', 'i', 'img', 'kbd', 'li', 'mark', 'ol', 'p', 'pre', 'q',
-  's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'table',
+  's', 'samp', 'small', 'span', 'strong', 'sub', 'summary', 'sup', 'table',
   'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul', 'var',
 ];
 
@@ -79,6 +79,11 @@ export function sanitizeHtml(raw: string, options: SanitizeOptions): string {
   for (const img of fragment.querySelectorAll('img')) {
     rewriteImage(img, options);
   }
+
+  // Wrap quoted-history regions (blockquote / gmail_quote / Apple-style
+  // attribution divs) in <details>. Only the first quoted region per
+  // body is wrapped — nested replies inside a quote stay nested.
+  collapseQuotedRegions(fragment);
 
   // Serialise back to HTML. (innerHTML round-trip preserves attribute changes.)
   const wrap = document.createElement('div');
@@ -129,6 +134,53 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
 }
 
 /**
+ * Wrap top-level quoted-history regions in <details><summary>...</summary>
+ * so the iframe collapses them by default and the user expands them with
+ * a single click. The detection rule: first <blockquote> child of <body>,
+ * or a <div class*="gmail_quote"|"yahoo_quoted">. Only the *first* such
+ * region per body is wrapped — nested replies inside a quote remain
+ * inert because they are deeper in the tree.
+ */
+function collapseQuotedRegions(fragment: DocumentFragment): void {
+  const root = fragment;
+  const candidate = findFirstQuotedRegion(root);
+  if (!candidate) return;
+  const owner = candidate.ownerDocument!;
+  const details = owner.createElement('details');
+  details.setAttribute('class', 'herold-quoted');
+  const summary = owner.createElement('summary');
+  summary.textContent = 'Show trimmed content';
+  details.appendChild(summary);
+  candidate.parentNode?.insertBefore(details, candidate);
+  details.appendChild(candidate);
+  // Move every subsequent sibling of the original blockquote into
+  // <details> too — quoted history typically continues with the
+  // attribution/signature blob outside the <blockquote> tag.
+  let next = details.nextSibling;
+  while (next) {
+    const after = next.nextSibling;
+    details.appendChild(next);
+    next = after;
+  }
+}
+
+function findFirstQuotedRegion(root: ParentNode): Element | null {
+  // Walk in document order; the first match wins.
+  const walker = root.querySelectorAll
+    ? root.querySelectorAll('blockquote, div, hr')
+    : null;
+  if (!walker) return null;
+  for (const el of walker) {
+    if (el.tagName === 'BLOCKQUOTE') return el;
+    if (el.tagName === 'DIV') {
+      const cls = el.getAttribute('class') ?? '';
+      if (/gmail_quote|yahoo_quoted|moz-cite-prefix/i.test(cls)) return el;
+    }
+  }
+  return null;
+}
+
+/**
  * Wrap the sanitised body in a minimal HTML document with an inline CSP
  * and base styles. The iframe sandbox + same-origin parent combination
  * means `'self'` in the CSP refers to the suite origin where the image
@@ -161,5 +213,25 @@ function wrapInIframeDocument(body: string): string {
   }
   pre { white-space: pre-wrap; word-break: break-word; }
   table { border-collapse: collapse; max-width: 100%; }
+  details.herold-quoted { margin-top: 8px; }
+  details.herold-quoted > summary {
+    cursor: pointer;
+    list-style: none;
+    display: inline-block;
+    padding: 2px 12px;
+    margin-bottom: 8px;
+    background: #f4f4f4;
+    color: #525252;
+    border-radius: 16px;
+    font-size: 14px;
+  }
+  details.herold-quoted > summary::-webkit-details-marker { display: none; }
+  details.herold-quoted > summary::before { content: "···"; letter-spacing: 1px; }
+  details.herold-quoted[open] > summary { background: #e0e0e0; }
+  details.herold-quoted[open] > summary::before { content: "Hide trimmed content"; letter-spacing: normal; }
+  @media (prefers-color-scheme: dark) {
+    details.herold-quoted > summary { background: #393939; color: #c6c6c6; }
+    details.herold-quoted[open] > summary { background: #525252; }
+  }
 </style></head><body>${body}</body></html>`;
 }

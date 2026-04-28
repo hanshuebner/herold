@@ -99,6 +99,35 @@ describe('sanitizeHtml — anchor rewrite', () => {
   });
 });
 
+describe('sanitizeHtml — quoted-history collapse', () => {
+  it('wraps a top-level <blockquote> in <details>', () => {
+    const html =
+      '<p>My reply.</p>' +
+      '<blockquote>Original message body.</blockquote>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).toContain('<details class="herold-quoted">');
+    expect(body).toContain('<summary>Show trimmed content</summary>');
+    expect(body).toContain('<blockquote>Original message body.</blockquote>');
+    expect(body.indexOf('My reply.')).toBeLessThan(body.indexOf('<details'));
+  });
+
+  it('wraps gmail_quote class divs', () => {
+    const html =
+      '<p>My reply.</p>' +
+      '<div class="gmail_quote_attribution">On Mon...</div>' +
+      '<div class="gmail_quote">Original.</div>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).toContain('<details class="herold-quoted">');
+    expect(body).toContain('Original.');
+  });
+
+  it('does not wrap when there is no quoted region', () => {
+    const html = '<p>Just my reply.</p>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).not.toContain('<details');
+  });
+});
+
 describe('sanitizeHtml — script/style filters', () => {
   it('drops <script>', () => {
     const html = '<p>hi</p><script>evil()</script>';

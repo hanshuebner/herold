@@ -2,6 +2,7 @@
   import HtmlBody from './HtmlBody.svelte';
   import AttachmentList from './AttachmentList.svelte';
   import { htmlHasExternalImages } from './sanitize';
+  import { splitQuotedText } from './quoted';
   import { emailHtmlBody, emailTextBody, type Email } from './types';
   import { compose } from '../compose/compose.svelte';
   import { movePicker } from './move-picker.svelte';
@@ -19,6 +20,8 @@
 
   let html = $derived(emailHtmlBody(email));
   let text = $derived(emailTextBody(email));
+  let textSplit = $derived(text ? splitQuotedText(text) : null);
+  let quotedExpanded = $state(false);
 
   // Per REQ-SEC-05 / REQ-SET-04..05: external images blocked by default;
   // user can flip the per-message toggle, or pre-allow at the per-sender
@@ -144,8 +147,29 @@
           </div>
         {/if}
         <HtmlBody {html} {loadImages} {cidMap} />
-      {:else if text}
-        <pre class="text-body">{text}</pre>
+      {:else if text && textSplit}
+        <pre class="text-body">{textSplit.fresh}</pre>
+        {#if textSplit.quoted}
+          {#if quotedExpanded}
+            <pre class="text-body quoted">{textSplit.quoted}</pre>
+            <button
+              type="button"
+              class="quoted-toggle"
+              onclick={() => (quotedExpanded = false)}
+            >
+              Hide trimmed content
+            </button>
+          {:else}
+            <button
+              type="button"
+              class="quoted-toggle"
+              onclick={() => (quotedExpanded = true)}
+              aria-label="Show trimmed content"
+            >
+              <span aria-hidden="true">···</span>
+            </button>
+          {/if}
+        {/if}
       {:else}
         <p class="empty">(no body)</p>
       {/if}
@@ -326,6 +350,26 @@
     font-size: var(--type-body-01-size);
     color: var(--text-primary);
     overflow: auto;
+  }
+  .text-body.quoted {
+    color: var(--text-helper);
+    margin-top: var(--spacing-03);
+  }
+  .quoted-toggle {
+    display: inline-flex;
+    align-items: center;
+    margin-top: var(--spacing-03);
+    padding: var(--spacing-01) var(--spacing-04);
+    background: var(--layer-02);
+    color: var(--text-helper);
+    border-radius: var(--radius-pill);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .quoted-toggle:hover {
+    background: var(--layer-03);
+    color: var(--text-primary);
   }
   .empty {
     margin: 0;
