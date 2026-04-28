@@ -64,6 +64,16 @@ func readVacation(script string) (vacationParams, error) {
 		c := parsed.Commands[0]
 		vacCmd = &c
 	}
+	isDisabled := false
+	if vacCmd == nil {
+		// Try the `if false { vacation ...; }` disabled-but-data pattern.
+		if fd, td, inner, ok := matchFalseEnvelope(parsed.Commands); ok {
+			vacCmd = inner
+			fromDate = fd
+			toDate = td
+			isDisabled = true
+		}
+	}
 	if vacCmd == nil {
 		// Try the date-window envelope.
 		fd, td, inner, ok := matchDateEnvelope(parsed.Commands)
@@ -74,7 +84,7 @@ func readVacation(script string) (vacationParams, error) {
 		fromDate = fd
 		toDate = td
 	}
-	params := vacationParams{IsEnabled: true, FromDate: fromDate, ToDate: toDate}
+	params := vacationParams{IsEnabled: !isDisabled, FromDate: fromDate, ToDate: toDate}
 	hasMime := false
 	for i := 0; i < len(vacCmd.Args); i++ {
 		arg := vacCmd.Args[i]
@@ -164,6 +174,36 @@ func extractMIMEBodies(raw string, params *vacationParams) {
 		// Fallback: treat entire body as TextBody.
 		params.TextBody = raw
 	}
+}
+
+// matchFalseEnvelope recognises the disabled-but-data pattern emitted by
+// synthesizeVacation when IsEnabled=false:
+//
+//	if false { vacation ...; }
+//
+// or with date conditions nested inside:
+//
+//	if false { if allof(...) { vacation ...; } }
+//
+// Returns the inner vacation command and (fromDate, toDate) on a match.
+// The fromDate/toDate are nil when no date conditions were nested.
+func matchFalseEnvelope(cmds []sieve.Command) (*time.Time, *time.Time, *sieve.Command, bool) {
+	if len(cmds) != 1 || cmds[0].Name != "if" || cmds[0].Test == nil {
+		return nil, nil, nil, false
+	}
+	if cmds[0].Test.Name != "false" {
+		return nil, nil, nil, false
+	}
+	body := cmds[0].Block
+	if len(body) == 1 && body[0].Name == "vacation" {
+		vc := body[0]
+		return nil, nil, &vc, true
+	}
+	// Try the nested date-window envelope inside the false block.
+	if fd, td, vc, ok := matchDateEnvelope(body); ok {
+		return fd, td, vc, true
+	}
+	return nil, nil, nil, false
 }
 
 // matchDateEnvelope recognises the date-window patterns that
@@ -280,15 +320,23 @@ func matchCurrentDate(t *sieve.Test, op string) (*time.Time, bool) {
 }
 
 // synthesizeVacation renders a vacation params object into the
-// canonical Sieve script that readVacation can round-trip. When the
-// params is disabled, returns the empty string (delete the script).
+// canonical Sieve script that readVacation can round-trip.
+//
+// When disabled AND there is no data worth preserving, returns the
+// empty string (no script).
+//
+// When disabled but there is data (dates, subject, or body), wraps
+// the vacation command in `if false { ... }` so the data survives a
+// round-trip without executing. readVacation recognises this pattern.
 //
 // When both textBody and htmlBody are set, the body is encoded as a
 // MIME multipart/alternative message using the :mime flag so that both
 // bodies survive a round-trip (RFC 5230 §4 :mime tag). When only
 // htmlBody is set, it is stored with :mime as text/html.
 func synthesizeVacation(p vacationParams) string {
-	if !p.IsEnabled {
+	hasData := p.FromDate != nil || p.ToDate != nil || p.Subject != "" ||
+		p.TextBody != "" || p.HTMLBody != ""
+	if !p.IsEnabled && !hasData {
 		return ""
 	}
 	var b strings.Builder
@@ -298,22 +346,56 @@ func synthesizeVacation(p vacationParams) string {
 	}
 	b.WriteString("];\n")
 	indent := ""
-	if p.FromDate != nil && p.ToDate != nil {
+	// closingBraces tracks how many `}` closers to emit at the end.
+	closingBraces := 0
+	if !p.IsEnabled {
+		// When disabled, wrap in `if false { ... }` to preserve data without
+		// executing. readVacation treats the false-test pattern as IsEnabled=false.
+		// Any date conditions are emitted inside the false block so they
+		// survive the round-trip.
+		b.WriteString("if false {\n")
+		closingBraces++
+		indent = "  "
+		if p.FromDate != nil && p.ToDate != nil {
+			b.WriteString(indent + `if allof(currentdate :value "ge" "date" "`)
+			b.WriteString(p.FromDate.UTC().Format("2006-01-02"))
+			b.WriteString(`", currentdate :value "le" "date" "`)
+			b.WriteString(p.ToDate.UTC().Format("2006-01-02"))
+			b.WriteString("\") {\n")
+			closingBraces++
+			indent = "    "
+		} else if p.FromDate != nil {
+			b.WriteString(indent + `if currentdate :value "ge" "date" "`)
+			b.WriteString(p.FromDate.UTC().Format("2006-01-02"))
+			b.WriteString("\" {\n")
+			closingBraces++
+			indent = "    "
+		} else if p.ToDate != nil {
+			b.WriteString(indent + `if currentdate :value "le" "date" "`)
+			b.WriteString(p.ToDate.UTC().Format("2006-01-02"))
+			b.WriteString("\" {\n")
+			closingBraces++
+			indent = "    "
+		}
+	} else if p.FromDate != nil && p.ToDate != nil {
 		b.WriteString(`if allof(currentdate :value "ge" "date" "`)
 		b.WriteString(p.FromDate.UTC().Format("2006-01-02"))
 		b.WriteString(`", currentdate :value "le" "date" "`)
 		b.WriteString(p.ToDate.UTC().Format("2006-01-02"))
 		b.WriteString("\") {\n")
+		closingBraces++
 		indent = "  "
 	} else if p.FromDate != nil {
 		b.WriteString(`if currentdate :value "ge" "date" "`)
 		b.WriteString(p.FromDate.UTC().Format("2006-01-02"))
 		b.WriteString("\" {\n")
+		closingBraces++
 		indent = "  "
 	} else if p.ToDate != nil {
 		b.WriteString(`if currentdate :value "le" "date" "`)
 		b.WriteString(p.ToDate.UTC().Format("2006-01-02"))
 		b.WriteString("\" {\n")
+		closingBraces++
 		indent = "  "
 	}
 	b.WriteString(indent)
@@ -349,8 +431,16 @@ func synthesizeVacation(p vacationParams) string {
 	}
 
 	b.WriteString(";\n")
-	if indent != "" {
-		b.WriteString("}\n")
+	// Close any open if blocks, innermost first. Each closing brace is
+	// at one level less indentation than the block it closes.
+	for closingBraces > 0 {
+		closeIndent := ""
+		if len(indent) >= 2 {
+			closeIndent = indent[:len(indent)-2]
+		}
+		b.WriteString(closeIndent + "}\n")
+		indent = closeIndent
+		closingBraces--
 	}
 	return b.String()
 }

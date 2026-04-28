@@ -24,15 +24,17 @@ type emailAddress struct {
 // signature body separate from textSignature/htmlSignature; clients
 // populate compose with this value when present. NULL means unset.
 type jmapIdentity struct {
-	ID            jmapID         `json:"id"`
-	Name          string         `json:"name"`
-	Email         string         `json:"email"`
-	ReplyTo       []emailAddress `json:"replyTo,omitempty"`
-	Bcc           []emailAddress `json:"bcc,omitempty"`
-	TextSignature string         `json:"textSignature"` // RFC 8621 §7.1: always present, defaults to ""
-	HTMLSignature string         `json:"htmlSignature"` // RFC 8621 §7.1: always present, defaults to ""
-	Signature     *string        `json:"signature"`
-	MayDelete     bool           `json:"mayDelete"`
+	ID            jmapID          `json:"id"`
+	Name          string          `json:"name"`
+	Email         string          `json:"email"`
+	// ReplyTo and Bcc are RFC 8621 §6.1 nullable arrays. When not set
+	// they must appear as JSON null (not absent). Use pointer-to-slice.
+	ReplyTo       *[]emailAddress `json:"replyTo"`
+	Bcc           *[]emailAddress `json:"bcc"`
+	TextSignature string          `json:"textSignature"` // RFC 8621 §7.1: always present, defaults to ""
+	HTMLSignature string          `json:"htmlSignature"` // RFC 8621 §7.1: always present, defaults to ""
+	Signature     *string         `json:"signature"`
+	MayDelete     bool            `json:"mayDelete"`
 }
 
 // identityRecord is the in-memory representation backing an Identity.
@@ -61,12 +63,23 @@ func (r identityRecord) toJMAP() jmapIdentity {
 		v := *r.Signature
 		sig = &v
 	}
+	// RFC 8621 §6.1: replyTo and bcc are null when not set (not absent).
+	var replyTo *[]emailAddress
+	if len(r.ReplyTo) > 0 {
+		rt := append([]emailAddress(nil), r.ReplyTo...)
+		replyTo = &rt
+	}
+	var bcc *[]emailAddress
+	if len(r.Bcc) > 0 {
+		b := append([]emailAddress(nil), r.Bcc...)
+		bcc = &b
+	}
 	return jmapIdentity{
 		ID:            renderID(r.ID),
 		Name:          r.Name,
 		Email:         r.Email,
-		ReplyTo:       r.ReplyTo,
-		Bcc:           r.Bcc,
+		ReplyTo:       replyTo,
+		Bcc:           bcc,
 		TextSignature: r.TextSignature,
 		HTMLSignature: r.HTMLSignature,
 		Signature:     sig,

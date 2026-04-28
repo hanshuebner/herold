@@ -171,8 +171,9 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	resp := getResponse{
 		AccountID: accountIDForPrincipal(p),
 		Filter:    req.Filter,
-		List:      []jmapSnippet{},
-		NotFound:  []jmapID{},
+		// List is always an array; NotFound is null (nil) when empty per
+		// RFC 8621 §6 which requires notFound to be null or non-empty.
+		List: []jmapSnippet{},
 	}
 	for _, id := range req.EmailIDs {
 		mid, ok := parseEmailID(id)
