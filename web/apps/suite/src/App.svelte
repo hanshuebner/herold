@@ -351,24 +351,6 @@
           </ul>
         {/if}
 
-        <h3>{t('sidebar.labels')}</h3>
-        <ul class="label-list">
-          <li class:active={router.matches('mail', 'label', 'work')}>
-            <button type="button" onclick={() => router.navigate('/mail/label/work')}>
-              <span class="dot" style="--c: #4589ff"></span><span>work</span>
-            </button>
-          </li>
-          <li class:active={router.matches('mail', 'label', 'family')}>
-            <button type="button" onclick={() => router.navigate('/mail/label/family')}>
-              <span class="dot" style="--c: #42be65"></span><span>family</span>
-            </button>
-          </li>
-          <li>
-            <button type="button">
-              <span class="dot" style="--c: #f1c21b"></span><span>volunteer</span>
-            </button>
-          </li>
-        </ul>
       </div>
     {:else}
       <div class="sidebar-inner">
