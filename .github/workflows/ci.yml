@@ -151,6 +151,12 @@ jobs:
       # via go:embed) and then a second pass with -tags nofrontend so
       # the build-tag split (internal/webspa/embed_default.go vs
       # embed_stub.go) cannot regress without CI catching it.
+      #
+      # prep-web populates internal/webspa/dist/{admin,suite}/index.html
+      # from the tracked placeholders so //go:embed dist resolves on a
+      # clean checkout where `make build-web` has not run.
+      - name: prep web placeholders
+        run: make prep-web
       - name: build (embedded)
         run: go build -trimpath ./...
       - name: build (nofrontend)
