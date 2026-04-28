@@ -75,6 +75,7 @@ func readVacation(script string) (vacationParams, error) {
 		toDate = td
 	}
 	params := vacationParams{IsEnabled: true, FromDate: fromDate, ToDate: toDate}
+	hasMime := false
 	for i := 0; i < len(vacCmd.Args); i++ {
 		arg := vacCmd.Args[i]
 		switch arg.Kind {
@@ -87,11 +88,7 @@ func readVacation(script string) (vacationParams, error) {
 					i++
 				}
 			case ":mime":
-				// We render :mime when both text and html bodies are
-				// set; the inverse — extracting :mime back into JMAP —
-				// requires an RFC 2045 multipart/alternative parse.
-				// On read we fall back to placing the entire body text
-				// in TextBody.
+				hasMime = true
 			case ":days", ":seconds", ":handle", ":addresses", ":from":
 				// Skip the value argument when present; these tags do
 				// not surface through JMAP.
@@ -102,10 +99,11 @@ func readVacation(script string) (vacationParams, error) {
 				}
 			}
 		case sieve.ArgString:
-			// The vacation body — JMAP exposes textBody and htmlBody;
-			// we round-trip through textBody when the script does not
-			// carry MIME structure.
-			if params.TextBody == "" {
+			// The vacation body — if :mime was seen, extract text/html
+			// and text/plain parts; otherwise treat as plain textBody.
+			if hasMime {
+				extractMIMEBodies(arg.Str, &params)
+			} else if params.TextBody == "" {
 				params.TextBody = arg.Str
 			}
 		}
@@ -113,44 +111,112 @@ func readVacation(script string) (vacationParams, error) {
 	return params, nil
 }
 
-// matchDateEnvelope recognises the `if currentdate :value "ge" ...`
-// pattern that synthesizeVacation emits when a fromDate / toDate is
-// active. Returns (fromDate, toDate, vacationCmd, true) on a match.
+// extractMIMEBodies parses a simple MIME body string (as emitted by
+// synthesizeVacation) and populates params.TextBody and params.HTMLBody.
+// This is not a full RFC 2045 parser — it handles only the fixed format
+// that synthesizeVacation emits. The body may have CRLF or LF line
+// endings depending on whether the Sieve text: heredoc preserved CRLF.
+func extractMIMEBodies(raw string, params *vacationParams) {
+	// splitHeaderBody splits at the first blank line and returns the
+	// separator length (2 for \n\n, 4 for \r\n\r\n).
+	splitHeaderBody := func(s string) (header, body string, ok bool) {
+		if idx := strings.Index(s, "\r\n\r\n"); idx >= 0 {
+			return s[:idx], s[idx+4:], true
+		}
+		if idx := strings.Index(s, "\n\n"); idx >= 0 {
+			return s[:idx], s[idx+2:], true
+		}
+		return "", "", false
+	}
+
+	// Check for multipart/alternative.
+	if strings.Contains(raw, "multipart/alternative") {
+		const boundary = "jmap-vacation-b"
+		parts := strings.Split(raw, "--"+boundary)
+		for _, part := range parts {
+			part = strings.Trim(part, "\r\n")
+			if part == "" || part == "-" || strings.HasPrefix(part, "--") {
+				continue
+			}
+			header, body, ok := splitHeaderBody(part)
+			if !ok {
+				continue
+			}
+			body = strings.TrimRight(body, "\r\n")
+			if strings.Contains(header, "text/plain") {
+				params.TextBody = body
+			} else if strings.Contains(header, "text/html") {
+				params.HTMLBody = body
+			}
+		}
+		return
+	}
+	// Single body (text/html or other).
+	header, body, ok := splitHeaderBody(raw)
+	if ok {
+		body = strings.TrimRight(body, "\r\n")
+		if strings.Contains(header, "text/html") {
+			params.HTMLBody = body
+		} else {
+			params.TextBody = body
+		}
+	} else {
+		// Fallback: treat entire body as TextBody.
+		params.TextBody = raw
+	}
+}
+
+// matchDateEnvelope recognises the date-window patterns that
+// synthesizeVacation emits when fromDate / toDate is active.
+// Returns (fromDate, toDate, vacationCmd, true) on a match.
+//
+// Handled patterns:
+//
+//  1. allof(ge, le): both from and to dates.
+//  2. ge only (fromDate without toDate): single if with ge test.
+//  3. le only (toDate without fromDate): single if with le test.
+//  4. ge + nested le if: nested-if form (legacy).
 func matchDateEnvelope(cmds []sieve.Command) (*time.Time, *time.Time, *sieve.Command, bool) {
 	if len(cmds) != 1 || cmds[0].Name != "if" || cmds[0].Test == nil {
 		return nil, nil, nil, false
 	}
 	outer := cmds[0]
-	from, _ := matchCurrentDate(outer.Test, "ge")
-	to, _ := (*time.Time)(nil), false
 	body := outer.Block
-	// Two flavours: a single `if` containing both ge + le tests via
-	// allof, OR nested ifs. We handle both.
-	if outer.Test.Name == "allof" && len(outer.Test.Children) == 2 {
+
+	var from, to *time.Time
+
+	switch {
+	case outer.Test.Name == "allof" && len(outer.Test.Children) == 2:
+		// allof(ge, le) — both dates.
 		f, ok1 := matchCurrentDate(&outer.Test.Children[0], "ge")
 		t, ok2 := matchCurrentDate(&outer.Test.Children[1], "le")
 		if !ok1 || !ok2 {
 			return nil, nil, nil, false
 		}
-		from = f
-		to = t
-	} else if outer.Test.Name == "currentdate" {
-		// Outer is just ge; inner is le wrapped if.
-		if len(body) != 1 || body[0].Name != "if" || body[0].Test == nil {
+		from, to = f, t
+
+	case outer.Test.Name == "currentdate":
+		// Single currentdate test — could be ge (from-only), le (to-only),
+		// or the nested-if form (ge + inner if le).
+		if f, ok := matchCurrentDate(outer.Test, "ge"); ok {
+			from = f
+			// Check for nested if le (legacy nested form).
+			if len(body) == 1 && body[0].Name == "if" && body[0].Test != nil {
+				if t, ok := matchCurrentDate(body[0].Test, "le"); ok {
+					to = t
+					body = body[0].Block
+				}
+			}
+		} else if t, ok := matchCurrentDate(outer.Test, "le"); ok {
+			to = t
+		} else {
 			return nil, nil, nil, false
 		}
-		t, ok := matchCurrentDate(body[0].Test, "le")
-		if !ok {
-			return nil, nil, nil, false
-		}
-		to = t
-		body = body[0].Block
-	} else {
+
+	default:
 		return nil, nil, nil, false
 	}
-	if from == nil {
-		return nil, nil, nil, false
-	}
+
 	// Body must be exactly one vacation command.
 	if len(body) != 1 || body[0].Name != "vacation" {
 		return nil, nil, nil, false
@@ -216,6 +282,11 @@ func matchCurrentDate(t *sieve.Test, op string) (*time.Time, bool) {
 // synthesizeVacation renders a vacation params object into the
 // canonical Sieve script that readVacation can round-trip. When the
 // params is disabled, returns the empty string (delete the script).
+//
+// When both textBody and htmlBody are set, the body is encoded as a
+// MIME multipart/alternative message using the :mime flag so that both
+// bodies survive a round-trip (RFC 5230 §4 :mime tag). When only
+// htmlBody is set, it is stored with :mime as text/html.
 func synthesizeVacation(p vacationParams) string {
 	if !p.IsEnabled {
 		return ""
@@ -251,18 +322,32 @@ func synthesizeVacation(p vacationParams) string {
 		b.WriteString(" :subject ")
 		writeQuoted(&b, p.Subject)
 	}
-	body := p.TextBody
-	if body == "" && p.HTMLBody != "" {
-		// JMAP allows htmlBody alone; we wrap it in a synthetic plain
-		// text fallback for delivery — Phase 2 sieve only renders text
-		// vacation bodies, so we strip tags conservatively.
-		body = stripTags(p.HTMLBody)
+
+	switch {
+	case p.TextBody != "" && p.HTMLBody != "":
+		// Both bodies: emit a MIME multipart/alternative using :mime.
+		// We use a fixed boundary "b" for simplicity; the Sieve action
+		// uses it verbatim as the MIME body.
+		b.WriteString(" :mime")
+		mimeBody := buildMIMEAlternative(p.TextBody, p.HTMLBody)
+		b.WriteString(" ")
+		writeQuoted(&b, mimeBody)
+	case p.HTMLBody != "":
+		// HTML only: emit as text/html with :mime tag.
+		b.WriteString(" :mime")
+		mimeBody := "Content-Type: text/html; charset=utf-8\r\n\r\n" + p.HTMLBody
+		b.WriteString(" ")
+		writeQuoted(&b, mimeBody)
+	default:
+		// Text only (or empty — use default).
+		body := p.TextBody
+		if body == "" {
+			body = "I am away."
+		}
+		b.WriteString(" ")
+		writeQuoted(&b, body)
 	}
-	if body == "" {
-		body = "I am away."
-	}
-	b.WriteString(" ")
-	writeQuoted(&b, body)
+
 	b.WriteString(";\n")
 	if indent != "" {
 		b.WriteString("}\n")
@@ -270,9 +355,29 @@ func synthesizeVacation(p vacationParams) string {
 	return b.String()
 }
 
+// buildMIMEAlternative builds a minimal multipart/alternative MIME body
+// containing a text/plain and a text/html part. The boundary is fixed
+// at "jmap-vacation-b" for determinism.
+func buildMIMEAlternative(text, html string) string {
+	const boundary = "jmap-vacation-b"
+	var b strings.Builder
+	b.WriteString("Content-Type: multipart/alternative; boundary=\"" + boundary + "\"\r\n")
+	b.WriteString("MIME-Version: 1.0\r\n\r\n")
+	b.WriteString("--" + boundary + "\r\n")
+	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
+	b.WriteString(text)
+	b.WriteString("\r\n--" + boundary + "\r\n")
+	b.WriteString("Content-Type: text/html; charset=utf-8\r\n\r\n")
+	b.WriteString(html)
+	b.WriteString("\r\n--" + boundary + "--\r\n")
+	return b.String()
+}
+
 // writeQuoted writes a Sieve quoted-string to b. The Sieve grammar
 // accepts only `\"` and `\\` as escapes; everything else is literal.
-// Multi-line bodies use the `text:` heredoc form.
+// Multi-line bodies use the `text:` heredoc form (RFC 5228 §2.4.2.1).
+// The heredoc terminator is a lone "." on its own line followed by a
+// newline; the caller must NOT append a newline before the terminator.
 func writeQuoted(b *strings.Builder, s string) {
 	if strings.ContainsAny(s, "\r\n") {
 		b.WriteString("text:\n")
@@ -284,7 +389,7 @@ func writeQuoted(b *strings.Builder, s string) {
 			b.WriteString(strings.TrimRight(line, "\r"))
 			b.WriteByte('\n')
 		}
-		b.WriteString(".")
+		b.WriteString(".\n") // terminator must be followed by newline
 		return
 	}
 	b.WriteByte('"')

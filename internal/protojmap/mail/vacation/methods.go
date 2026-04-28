@@ -75,7 +75,9 @@ type getResponse struct {
 type setRequest struct {
 	AccountID jmapID                     `json:"accountId"`
 	IfInState *string                    `json:"ifInState,omitempty"`
+	Create    map[jmapID]json.RawMessage `json:"create,omitempty"`
 	Update    map[jmapID]json.RawMessage `json:"update,omitempty"`
+	Destroy   []jmapID                   `json:"destroy,omitempty"`
 }
 
 type setError struct {
@@ -84,14 +86,17 @@ type setError struct {
 	Properties  []string `json:"properties,omitempty"`
 }
 
-// setResponse mirrors RFC 8620 §5.3 with create/destroy slots elided
-// because singletons cannot be created or destroyed.
+// setResponse mirrors RFC 8620 §5.3.
 type setResponse struct {
-	AccountID  string                   `json:"accountId"`
-	OldState   string                   `json:"oldState,omitempty"`
-	NewState   string                   `json:"newState"`
-	Updated    map[jmapID]*jmapVacation `json:"updated,omitempty"`
-	NotUpdated map[jmapID]setError      `json:"notUpdated,omitempty"`
+	AccountID    string                   `json:"accountId"`
+	OldState     string                   `json:"oldState,omitempty"`
+	NewState     string                   `json:"newState"`
+	Created      map[jmapID]any           `json:"created,omitempty"`
+	Updated      map[jmapID]*jmapVacation `json:"updated,omitempty"`
+	Destroyed    []jmapID                 `json:"destroyed,omitempty"`
+	NotCreated   map[jmapID]setError      `json:"notCreated,omitempty"`
+	NotUpdated   map[jmapID]setError      `json:"notUpdated,omitempty"`
+	NotDestroyed map[jmapID]setError      `json:"notDestroyed,omitempty"`
 }
 
 // handlerSet binds the VacationResponse handlers to the store.
@@ -221,6 +226,26 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	resp := setResponse{
 		AccountID: accountIDForPrincipal(p),
 		OldState:  oldState,
+	}
+	// Create: RFC 8621 §9 — singletons cannot be created.
+	for id := range req.Create {
+		if resp.NotCreated == nil {
+			resp.NotCreated = make(map[jmapID]setError)
+		}
+		resp.NotCreated[id] = setError{
+			Type:        "singleton",
+			Description: "VacationResponse is a singleton that cannot be created",
+		}
+	}
+	// Destroy: RFC 8621 §9 — the singleton cannot be destroyed.
+	for _, id := range req.Destroy {
+		if resp.NotDestroyed == nil {
+			resp.NotDestroyed = make(map[jmapID]setError)
+		}
+		resp.NotDestroyed[id] = setError{
+			Type:        "singleton",
+			Description: "VacationResponse is a singleton that cannot be destroyed",
+		}
 	}
 	mutated := false
 	for id, raw := range req.Update {

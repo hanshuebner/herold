@@ -151,6 +151,142 @@ if envelope :is "to" "alice@example.test" {
 	}
 }
 
+func TestVacationResponse_Set_CannotCreateOrDestroy(t *testing.T) {
+	h, _, p := setup(t)
+	accountID := protojmap.AccountIDForPrincipal(p.ID)
+
+	// Create should be rejected with singleton error.
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID,
+		"create": map[string]any{
+			"new1": map[string]any{"isEnabled": true},
+		},
+	})
+	respCreate, mErr := setHandler{h: h}.executeAs(p, createArgs)
+	if mErr != nil {
+		t.Fatalf("VacationResponse/set create: %v", mErr)
+	}
+	jsCreate, _ := json.Marshal(respCreate)
+	if !strings.Contains(string(jsCreate), `"singleton"`) {
+		t.Errorf("expected singleton error for create: %s", jsCreate)
+	}
+	if strings.Contains(string(jsCreate), `"created"`) {
+		t.Errorf("unexpected created key in response: %s", jsCreate)
+	}
+
+	// Destroy should be rejected with singleton error.
+	destroyArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID,
+		"destroy":   []string{"singleton"},
+	})
+	respDestroy, mErr := setHandler{h: h}.executeAs(p, destroyArgs)
+	if mErr != nil {
+		t.Fatalf("VacationResponse/set destroy: %v", mErr)
+	}
+	jsDestroy, _ := json.Marshal(respDestroy)
+	if !strings.Contains(string(jsDestroy), `"singleton"`) {
+		t.Errorf("expected singleton error for destroy: %s", jsDestroy)
+	}
+}
+
+func TestVacationResponse_Set_DateRoundTrip(t *testing.T) {
+	h, _, p := setup(t)
+	accountID := protojmap.AccountIDForPrincipal(p.ID)
+
+	setArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID,
+		"update": map[string]any{
+			"singleton": map[string]any{
+				"isEnabled": true,
+				"fromDate":  "2026-03-01T00:00:00Z",
+				"toDate":    "2026-03-10T00:00:00Z",
+				"subject":   "On vacation",
+				"textBody":  "Be back soon.",
+			},
+		},
+	})
+	_, mErr := setHandler{h: h}.executeAs(p, setArgs)
+	if mErr != nil {
+		t.Fatalf("VacationResponse/set dates: %v", mErr)
+	}
+
+	getArgs, _ := json.Marshal(map[string]any{"accountId": accountID})
+	resp, mErr := getHandler{h: h}.executeAs(p, getArgs)
+	if mErr != nil {
+		t.Fatalf("VacationResponse/get after set: %v", mErr)
+	}
+	js, _ := json.Marshal(resp)
+	jsStr := string(js)
+	if !strings.Contains(jsStr, `"fromDate":"2026-03-01T00:00:00Z"`) {
+		t.Errorf("fromDate not preserved: %s", jsStr)
+	}
+	if !strings.Contains(jsStr, `"toDate":"2026-03-10T00:00:00Z"`) {
+		t.Errorf("toDate not preserved: %s", jsStr)
+	}
+}
+
+func TestVacationResponse_Set_HTMLBodyRoundTrip(t *testing.T) {
+	h, _, p := setup(t)
+	accountID := protojmap.AccountIDForPrincipal(p.ID)
+
+	// Set HTML-only body.
+	setArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID,
+		"update": map[string]any{
+			"singleton": map[string]any{
+				"isEnabled": true,
+				"htmlBody":  "<p>Out of office</p>",
+			},
+		},
+	})
+	_, mErr := setHandler{h: h}.executeAs(p, setArgs)
+	if mErr != nil {
+		t.Fatalf("VacationResponse/set htmlBody: %v", mErr)
+	}
+
+	getArgs, _ := json.Marshal(map[string]any{"accountId": accountID})
+	resp, mErr := getHandler{h: h}.executeAs(p, getArgs)
+	if mErr != nil {
+		t.Fatalf("VacationResponse/get after set: %v", mErr)
+	}
+	js, _ := json.Marshal(resp)
+	jsStr := string(js)
+	if !strings.Contains(jsStr, `"htmlBody"`) {
+		t.Errorf("htmlBody not in response: %s", jsStr)
+	}
+	if !strings.Contains(jsStr, "Out of office") {
+		t.Errorf("htmlBody content not preserved: %s", jsStr)
+	}
+
+	// Set both text and html bodies.
+	setArgs2, _ := json.Marshal(map[string]any{
+		"accountId": accountID,
+		"update": map[string]any{
+			"singleton": map[string]any{
+				"isEnabled": true,
+				"textBody":  "I am away.",
+				"htmlBody":  "<p>I am <b>away</b>.</p>",
+			},
+		},
+	})
+	_, mErr = setHandler{h: h}.executeAs(p, setArgs2)
+	if mErr != nil {
+		t.Fatalf("VacationResponse/set text+html: %v", mErr)
+	}
+	resp2, mErr := getHandler{h: h}.executeAs(p, getArgs)
+	if mErr != nil {
+		t.Fatalf("VacationResponse/get after set text+html: %v", mErr)
+	}
+	js2, _ := json.Marshal(resp2)
+	js2Str := string(js2)
+	if !strings.Contains(js2Str, `"textBody":"I am away."`) {
+		t.Errorf("textBody not preserved in text+html: %s", js2Str)
+	}
+	if !strings.Contains(js2Str, "I am") {
+		t.Errorf("htmlBody content not preserved in text+html: %s", js2Str)
+	}
+}
+
 func TestSynthesizeVacation_RoundTripsRequiredFields(t *testing.T) {
 	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 1, 8, 0, 0, 0, 0, time.UTC)
