@@ -744,4 +744,21 @@
       padding: var(--spacing-01) var(--spacing-03);
     }
   }
+
+  /* Print: drop every interactive control inside the message — the
+     per-message action bar, the external-image banner buttons, the
+     react picker / button, the trimmed-content toggle, and the inline
+     block-sender modal — so the printout shows only the message
+     content. The header avatar / button styling stays since it
+     carries the from / date / recipients metadata the reader expects
+     on paper. */
+  @media print {
+    .actions,
+    .image-banner,
+    .react-wrapper,
+    .quoted-toggle,
+    .block-modal {
+      display: none !important;
+    }
+  }
 </style>
