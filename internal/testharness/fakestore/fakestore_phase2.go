@@ -1248,6 +1248,9 @@ func (m *metaFace) IncrementJMAPState(ctx context.Context, pid store.PrincipalID
 	case store.JMAPStateKindManagedRule:
 		st.ManagedRule++
 		ret = st.ManagedRule
+	case store.JMAPStateKindSeenAddress:
+		st.SeenAddress++
+		ret = st.SeenAddress
 	default:
 		return 0, fmt.Errorf("fakestore: unknown JMAPStateKind %d", kind)
 	}

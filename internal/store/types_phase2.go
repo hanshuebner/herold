@@ -972,6 +972,10 @@ type JMAPStates struct {
 	// REQ-FLT-01..31 / https://netzhansa.com/jmap/managed-rules). Bumped
 	// on every ManagedRule/set mutation.
 	ManagedRule int64
+	// SeenAddress is the JMAP SeenAddress state (REQ-MAIL-11e..m). Bumped
+	// on every UpsertSeenAddress, DestroySeenAddress, or
+	// PurgeSeenAddressesByPrincipal call.
+	SeenAddress int64
 	// UpdatedAt is the instant of the most recent increment.
 	UpdatedAt time.Time
 }

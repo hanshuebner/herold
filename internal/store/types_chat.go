@@ -400,6 +400,10 @@ const (
 	// contiguous and does not collide with the mail const block that ends
 	// at JMAPStateKindCalendarEvent (value 11).
 	JMAPStateKindManagedRule
+	// JMAPStateKindSeenAddress tracks SeenAddress changes (REQ-MAIL-11e..m).
+	// Bumped on every UpsertSeenAddress, DestroySeenAddress, or
+	// PurgeSeenAddressesByPrincipal call.
+	JMAPStateKindSeenAddress
 )
 
 // Chat-side server-enforced caps. CHECK constraints in SQL would
