@@ -83,6 +83,9 @@ func nilSafeBytes(b []byte) []byte {
 }
 
 func (m *metadata) UpsertIdentitySubmission(ctx context.Context, sub store.IdentitySubmission) error {
+	if err := store.ValidateIdentitySubmissionCTs(sub); err != nil {
+		return err
+	}
 	now := m.s.clock.Now().UTC()
 	nowUs := usMicros(now)
 	if sub.CreatedAt.IsZero() {
@@ -187,72 +190,83 @@ func (m *metadata) ListIdentitySubmissionsDue(ctx context.Context, before time.T
 
 // MaterializeDefaultIdentity ensures a persisted jmap_identities row exists
 // for the principal's synthesised default identity (idempotent).
+//
+// Under concurrent load two sessions may both observe no existing row and race
+// to INSERT. We guard against this TOCTOU with a single retry: if the INSERT
+// did not affect a row the winning transaction already wrote it, so we
+// re-SELECT and return whatever it wrote. A second failure (attempt == 1)
+// means something genuinely unexpected happened and we surface the error.
 func (m *metadata) MaterializeDefaultIdentity(ctx context.Context, principalID store.PrincipalID) (string, error) {
 	var identityID string
-	err := m.runTx(ctx, func(tx pgx.Tx) error {
-		// Check whether a persisted default identity row already exists
-		// (may_delete = false, owned by this principal).
-		var existing string
-		err := tx.QueryRow(ctx, `
-			SELECT id FROM jmap_identities
-			 WHERE principal_id = $1 AND may_delete = false
-			 LIMIT 1`, int64(principalID)).Scan(&existing)
-		if err == nil {
-			identityID = existing
+	for attempt := 0; attempt < 2; attempt++ {
+		err := m.runTx(ctx, func(tx pgx.Tx) error {
+			// SELECT the existing row — the fast path on all calls after the first.
+			var existing string
+			err := tx.QueryRow(ctx, `
+				SELECT id FROM jmap_identities
+				 WHERE principal_id = $1 AND may_delete = false
+				 LIMIT 1`, int64(principalID)).Scan(&existing)
+			if err == nil {
+				identityID = existing
+				return nil
+			}
+			if err != pgx.ErrNoRows {
+				return mapErr(err)
+			}
+
+			// No row yet — fetch principal details and attempt the INSERT.
+			var email, displayName string
+			if err := tx.QueryRow(ctx,
+				`SELECT canonical_email, display_name FROM principals WHERE id = $1`,
+				int64(principalID)).Scan(&email, &displayName); err != nil {
+				return mapErr(err)
+			}
+
+			now := m.s.clock.Now().UTC()
+			nowUs := usMicros(now)
+			// Compute the next numeric id from the current max to avoid a
+			// dedicated sequence object (jmap_identities.id is TEXT PK).
+			var nextID int64
+			if err := tx.QueryRow(ctx, `
+				SELECT COALESCE(MAX(id::bigint), 0) + 1
+				  FROM jmap_identities
+				 WHERE id ~ '^[0-9]+$'`).Scan(&nextID); err != nil {
+				return fmt.Errorf("storepg: MaterializeDefaultIdentity: compute next id: %w", err)
+			}
+			newID := strconv.FormatInt(nextID, 10)
+			tag, err := tx.Exec(ctx, `
+				INSERT INTO jmap_identities
+				  (id, principal_id, name, email, reply_to_json, bcc_json,
+				   text_signature, html_signature, may_delete, created_at_us, updated_at_us)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+				ON CONFLICT DO NOTHING`,
+				newID, int64(principalID), displayName, email,
+				[]byte{}, []byte{}, "", "", false,
+				nowUs, nowUs)
+			if err != nil {
+				return mapErr(err)
+			}
+			if tag.RowsAffected() == 1 {
+				identityID = newID
+				return nil
+			}
+			// RowsAffected == 0: another transaction won the race. Signal
+			// the outer loop to retry the SELECT on the next attempt.
 			return nil
-		}
-		if err != pgx.ErrNoRows {
-			return mapErr(err)
-		}
-
-		// Fetch the principal's canonical email and display name.
-		var email, displayName string
-		if err := tx.QueryRow(ctx,
-			`SELECT canonical_email, display_name FROM principals WHERE id = $1`,
-			int64(principalID)).Scan(&email, &displayName); err != nil {
-			return mapErr(err)
-		}
-
-		now := m.s.clock.Now().UTC()
-		nowUs := usMicros(now)
-		// In Postgres the primary key is TEXT; we use a two-step approach:
-		// insert with a placeholder id, retrieve the generated sequence value
-		// via RETURNING ctid or use a sequence. The cleanest portable approach
-		// is to use a Postgres sequence via a temporary placeholder, then
-		// UPDATE the id to the sequence value.
-		// However, jmap_identities.id is TEXT PRIMARY KEY with no sequence.
-		// We need a unique id. Use a Postgres sequence from a separate sequence
-		// object, OR simply use the max existing numeric id + 1.
-		// The most robust approach: use a transaction-local sequence by
-		// fetching nextval from the same underlying row sequence if available,
-		// or just increment past the current max.
-		var nextID int64
-		err = tx.QueryRow(ctx, `
-			SELECT COALESCE(MAX(id::bigint), 0) + 1
-			  FROM jmap_identities
-			 WHERE id ~ '^[0-9]+$'`).Scan(&nextID)
+		})
 		if err != nil {
-			return fmt.Errorf("storepg: MaterializeDefaultIdentity: compute next id: %w", err)
+			return "", err
 		}
-		newID := strconv.FormatInt(nextID, 10)
-		_, err = tx.Exec(ctx, `
-			INSERT INTO jmap_identities
-			  (id, principal_id, name, email, reply_to_json, bcc_json,
-			   text_signature, html_signature, may_delete, created_at_us, updated_at_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-			newID, int64(principalID), displayName, email,
-			[]byte{}, []byte{}, "", "", false,
-			nowUs, nowUs)
-		if err != nil {
-			return mapErr(err)
+		if identityID != "" {
+			return identityID, nil
 		}
-		identityID = newID
-		return nil
-	})
-	if err != nil {
-		return "", err
+		if attempt == 1 {
+			return "", fmt.Errorf("storepg: MaterializeDefaultIdentity: concurrent insert race unresolved for principal %d", principalID)
+		}
+		// attempt == 0, identityID still empty: loop and re-SELECT.
 	}
-	return identityID, nil
+	// Unreachable, but satisfies the compiler.
+	return "", fmt.Errorf("storepg: MaterializeDefaultIdentity: unexpected loop exit for principal %d", principalID)
 }
 
 // pgNullBytes returns nil when b is empty; otherwise returns b.

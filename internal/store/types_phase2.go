@@ -1,8 +1,43 @@
 package store
 
 import (
+	"bytes"
+	"fmt"
 	"time"
 )
+
+// v1CTPrefix is the expected prefix for all sealed ciphertext fields
+// produced by internal/secrets.Seal. Any non-nil CT field that does not
+// begin with this prefix is rejected by ValidateIdentitySubmissionCTs so
+// the storage layer cannot silently persist plaintext.
+var v1CTPrefix = []byte("v1:")
+
+// ValidateIdentitySubmissionCTs checks every ciphertext field in sub.
+// A nil / empty field is allowed (the credential is absent for that auth
+// method). A non-nil field that does not start with "v1:" is rejected
+// with a descriptive error wrapping ErrInvalidArgument
+// (REQ-AUTH-EXT-SUBMIT-01).
+func ValidateIdentitySubmissionCTs(sub IdentitySubmission) error {
+	type field struct {
+		name string
+		val  []byte
+	}
+	for _, f := range []field{
+		{"PasswordCT", sub.PasswordCT},
+		{"OAuthAccessCT", sub.OAuthAccessCT},
+		{"OAuthRefreshCT", sub.OAuthRefreshCT},
+		{"OAuthClientSecretCT", sub.OAuthClientSecretCT},
+	} {
+		if len(f.val) == 0 {
+			continue
+		}
+		if !bytes.HasPrefix(f.val, v1CTPrefix) {
+			return fmt.Errorf("%w: identity_submission: %s does not look like a sealed ciphertext (missing v1: prefix); refusing to store",
+				ErrInvalidArgument, f.name)
+		}
+	}
+	return nil
+}
 
 // This file declares the Phase 2 typed entities consumed by Wave 2.1
 // subsystems (queue, outbound SMTP, mail-auth signer, ACME, DNS plugins,

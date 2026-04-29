@@ -207,6 +207,9 @@ func Run(t *testing.T, f Factory) {
 		{"IdentitySubmission_Cascade_OnIdentityDelete", testIdentitySubmission_Cascade},
 		{"IdentitySubmission_ListDue_OrderedAndFiltered", testIdentitySubmission_ListDue},
 		{"IdentitySubmission_UpsertWithoutMaterialize_Errors", testIdentitySubmission_UpsertWithoutMaterialize},
+		{"IdentitySubmission_CTValidation_ValidPrefix", testIdentitySubmission_CTValidation_ValidPrefix},
+		{"IdentitySubmission_CTValidation_InvalidPrefix_Rejected", testIdentitySubmission_CTValidation_InvalidPrefix},
+		{"IdentitySubmission_CTValidation_NilFields_Allowed", testIdentitySubmission_CTValidation_NilFields},
 	}
 	for _, c := range cases {
 		tc := c

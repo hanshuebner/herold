@@ -699,6 +699,13 @@ type Metadata interface {
 	// with the wire form: decimal string of the row's ROWID / sequence).
 	// Calling this method twice with the same principalID returns the
 	// same id both times without creating a second row.
+	//
+	// The materialised id is stable across the principal's lifetime; once
+	// written, callers MAY hold references to it. Any future export /
+	// import tool MUST preserve jmap_identities.id values verbatim across
+	// the round-trip AND carry the corresponding identity_submission rows
+	// alongside, so cross-table references survive. Failing to do so will
+	// orphan submission rows from their identities at import time.
 	MaterializeDefaultIdentity(ctx context.Context, principalID PrincipalID) (string, error)
 
 	// UpsertIdentitySubmission creates or replaces the submission config

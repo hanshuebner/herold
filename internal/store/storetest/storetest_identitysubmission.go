@@ -68,7 +68,7 @@ func testIdentitySubmission_UpsertGet_Roundtrip(t *testing.T, s store.Store) {
 		SubmitPort:       587,
 		SubmitSecurity:   "starttls",
 		SubmitAuthMethod: "password",
-		PasswordCT:       []byte("encrypted-password-blob"),
+		PasswordCT:       []byte("v1:encrypted-password-blob"),
 		State:            store.IdentitySubmissionStateOK,
 		StateAt:          now,
 		CreatedAt:        now,
@@ -122,8 +122,8 @@ func testIdentitySubmission_OAuthFields_Roundtrip(t *testing.T, s store.Store) {
 		SubmitPort:         465,
 		SubmitSecurity:     "implicit_tls",
 		SubmitAuthMethod:   "oauth2",
-		OAuthAccessCT:      []byte("sealed-access-token"),
-		OAuthRefreshCT:     []byte("sealed-refresh-token"),
+		OAuthAccessCT:      []byte("v1:sealed-access-token"),
+		OAuthRefreshCT:     []byte("v1:sealed-refresh-token"),
 		OAuthTokenEndpoint: "https://oauth2.googleapis.com/token",
 		OAuthClientID:      "client-123",
 		OAuthExpiresAt:     expires,
@@ -186,7 +186,7 @@ func testIdentitySubmission_StateTransition(t *testing.T, s store.Store) {
 		SubmitPort:       587,
 		SubmitSecurity:   "starttls",
 		SubmitAuthMethod: "password",
-		PasswordCT:       []byte("pw"),
+		PasswordCT:       []byte("v1:pw"),
 		State:            store.IdentitySubmissionStateOK,
 		StateAt:          now,
 		CreatedAt:        now,
@@ -227,7 +227,7 @@ func testIdentitySubmission_Delete_NotFoundAfter(t *testing.T, s store.Store) {
 		SubmitPort:       587,
 		SubmitSecurity:   "starttls",
 		SubmitAuthMethod: "password",
-		PasswordCT:       []byte("pw"),
+		PasswordCT:       []byte("v1:pw"),
 		State:            store.IdentitySubmissionStateOK,
 		StateAt:          now,
 		CreatedAt:        now,
@@ -263,7 +263,7 @@ func testIdentitySubmission_Cascade(t *testing.T, s store.Store) {
 		SubmitPort:       587,
 		SubmitSecurity:   "starttls",
 		SubmitAuthMethod: "password",
-		PasswordCT:       []byte("pw"),
+		PasswordCT:       []byte("v1:pw"),
 		State:            store.IdentitySubmissionStateOK,
 		StateAt:          now,
 		CreatedAt:        now,
@@ -304,7 +304,7 @@ func testIdentitySubmission_ListDue(t *testing.T, s store.Store) {
 			SubmitPort:       587,
 			SubmitSecurity:   "starttls",
 			SubmitAuthMethod: "oauth2",
-			OAuthAccessCT:    []byte("tok"),
+			OAuthAccessCT:    []byte("v1:tok"),
 			RefreshDue:       due,
 			State:            store.IdentitySubmissionStateOK,
 			StateAt:          base,
@@ -329,7 +329,7 @@ func testIdentitySubmission_ListDue(t *testing.T, s store.Store) {
 		SubmitPort:       587,
 		SubmitSecurity:   "starttls",
 		SubmitAuthMethod: "password",
-		PasswordCT:       []byte("pw"),
+		PasswordCT:       []byte("v1:pw"),
 		State:            store.IdentitySubmissionStateOK,
 		StateAt:          base,
 		CreatedAt:        base,
@@ -366,7 +366,7 @@ func testIdentitySubmission_UpsertWithoutMaterialize(t *testing.T, s store.Store
 		SubmitPort:       587,
 		SubmitSecurity:   "starttls",
 		SubmitAuthMethod: "password",
-		PasswordCT:       []byte("pw"),
+		PasswordCT:       []byte("v1:pw"),
 		State:            store.IdentitySubmissionStateOK,
 		StateAt:          now,
 		CreatedAt:        now,
@@ -374,5 +374,106 @@ func testIdentitySubmission_UpsertWithoutMaterialize(t *testing.T, s store.Store
 	err := s.Meta().UpsertIdentitySubmission(ctx, sub)
 	if err == nil {
 		t.Fatal("expected error when upserting with non-existent identity, got nil")
+	}
+}
+
+// testIdentitySubmission_CTValidation_ValidPrefix verifies that an upsert
+// with properly v1:-prefixed CT fields succeeds.
+func testIdentitySubmission_CTValidation_ValidPrefix(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ct-valid@example.com")
+	identityID := mustMaterializeDefaultIdentity(t, s, p.ID)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sub := store.IdentitySubmission{
+		IdentityID:       identityID,
+		SubmitHost:       "smtp.example.com",
+		SubmitPort:       587,
+		SubmitSecurity:   "starttls",
+		SubmitAuthMethod: "password",
+		PasswordCT:       []byte("v1:sealed-password-bytes"),
+		State:            store.IdentitySubmissionStateOK,
+		StateAt:          now,
+		CreatedAt:        now,
+	}
+	if err := s.Meta().UpsertIdentitySubmission(ctx, sub); err != nil {
+		t.Fatalf("UpsertIdentitySubmission with valid v1: prefix: %v", err)
+	}
+	got, err := s.Meta().GetIdentitySubmission(ctx, identityID)
+	if err != nil {
+		t.Fatalf("GetIdentitySubmission after valid upsert: %v", err)
+	}
+	if !bytes.Equal(got.PasswordCT, sub.PasswordCT) {
+		t.Errorf("PasswordCT = %v; want %v", got.PasswordCT, sub.PasswordCT)
+	}
+}
+
+// testIdentitySubmission_CTValidation_InvalidPrefix verifies that an upsert
+// with a bare (non-v1:) CT payload is rejected and nothing is written.
+func testIdentitySubmission_CTValidation_InvalidPrefix(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ct-invalid@example.com")
+	identityID := mustMaterializeDefaultIdentity(t, s, p.ID)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	// A 16-byte bare payload — no "v1:" prefix.
+	bareCT := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+		0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f}
+	sub := store.IdentitySubmission{
+		IdentityID:       identityID,
+		SubmitHost:       "smtp.example.com",
+		SubmitPort:       587,
+		SubmitSecurity:   "starttls",
+		SubmitAuthMethod: "password",
+		PasswordCT:       bareCT,
+		State:            store.IdentitySubmissionStateOK,
+		StateAt:          now,
+		CreatedAt:        now,
+	}
+	err := s.Meta().UpsertIdentitySubmission(ctx, sub)
+	if err == nil {
+		t.Fatal("UpsertIdentitySubmission with bare CT: expected rejection error, got nil")
+	}
+	if !errors.Is(err, store.ErrInvalidArgument) {
+		t.Errorf("expected error wrapping ErrInvalidArgument, got: %v", err)
+	}
+	// Confirm nothing was written to the table.
+	_, getErr := s.Meta().GetIdentitySubmission(ctx, identityID)
+	if !errors.Is(getErr, store.ErrNotFound) {
+		t.Errorf("expected ErrNotFound after rejected upsert, got: %v", getErr)
+	}
+}
+
+// testIdentitySubmission_CTValidation_NilFields verifies that an upsert
+// with all-nil CT fields succeeds (sparse row).
+func testIdentitySubmission_CTValidation_NilFields(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ct-nil@example.com")
+	identityID := mustMaterializeDefaultIdentity(t, s, p.ID)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	// No CT fields set — simulates an identity without stored credentials.
+	sub := store.IdentitySubmission{
+		IdentityID:       identityID,
+		SubmitHost:       "smtp.example.com",
+		SubmitPort:       587,
+		SubmitSecurity:   "starttls",
+		SubmitAuthMethod: "password",
+		State:            store.IdentitySubmissionStateOK,
+		StateAt:          now,
+		CreatedAt:        now,
+	}
+	if err := s.Meta().UpsertIdentitySubmission(ctx, sub); err != nil {
+		t.Fatalf("UpsertIdentitySubmission with nil CT fields: %v", err)
+	}
+	got, err := s.Meta().GetIdentitySubmission(ctx, identityID)
+	if err != nil {
+		t.Fatalf("GetIdentitySubmission after nil-CT upsert: %v", err)
+	}
+	if got.PasswordCT != nil {
+		t.Errorf("PasswordCT = %v; want nil", got.PasswordCT)
 	}
 }

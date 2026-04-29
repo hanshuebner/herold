@@ -82,6 +82,9 @@ func nullableBytes(b []byte) []byte {
 }
 
 func (m *metadata) UpsertIdentitySubmission(ctx context.Context, sub store.IdentitySubmission) error {
+	if err := store.ValidateIdentitySubmissionCTs(sub); err != nil {
+		return err
+	}
 	now := m.s.clock.Now().UTC()
 	nowUs := usMicros(now)
 	if sub.CreatedAt.IsZero() {
@@ -196,6 +199,9 @@ func (m *metadata) ListIdentitySubmissionsDue(ctx context.Context, before time.T
 // The default identity uses the principal's canonical email as the From
 // address. The returned string is the row id (wire form used as identity_id
 // in identity_submission).
+//
+// SQLite's single-writer model serialises concurrent calls by construction,
+// so no TOCTOU retry is needed here (unlike the Postgres implementation).
 func (m *metadata) MaterializeDefaultIdentity(ctx context.Context, principalID store.PrincipalID) (string, error) {
 	var identityID string
 	err := m.runTx(ctx, func(tx *sql.Tx) error {
