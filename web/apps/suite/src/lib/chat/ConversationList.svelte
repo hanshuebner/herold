@@ -202,22 +202,22 @@
 
   .presence-dot {
     position: absolute;
-    bottom: -1px;
-    right: -1px;
-    width: 11px;
-    height: 11px;
+    bottom: -2px;
+    right: -2px;
+    width: 14px;
+    height: 14px;
     border-radius: var(--radius-pill);
-    border: 2.5px solid var(--background);
+    border: 2px solid var(--background);
   }
 
   .presence-dot.online {
     background: var(--presence-online);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--presence-online) 60%, transparent),
-      0 0 6px color-mix(in srgb, var(--presence-online) 50%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--presence-online) 70%, transparent);
   }
 
   .presence-dot.away {
     background: var(--presence-away);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--presence-away) 70%, transparent);
   }
 
   .presence-dot.offline {
