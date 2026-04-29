@@ -14,6 +14,53 @@ import (
 // in internal/storesqlite/migrations/0012_chat.sql; the type
 // definitions are in internal/store/types_chat.go.
 
+// -- Helpers ----------------------------------------------------------
+
+// appendStateChangeForMembersLocked fans a state-change to every current
+// member of convID plus the owner principal (always included). Requires
+// s.mu held exclusively (re #47).
+func (s *Store) appendStateChangeForMembersLocked(
+	owner store.PrincipalID,
+	convID store.ConversationID,
+	kind store.EntityKind, entityID uint64, parentEntityID uint64,
+	op store.ChangeOp, now time.Time,
+) {
+	seen := make(map[store.PrincipalID]bool)
+	ordered := []store.PrincipalID{owner}
+	seen[owner] = true
+	if s.phase2 != nil {
+		// Collect members in ascending membership ID order for
+		// deterministic test output.
+		type entry struct {
+			id  store.MembershipID
+			pid store.PrincipalID
+		}
+		var members []entry
+		for _, mb := range s.phase2.chatMemberships {
+			if mb.ConversationID == convID {
+				members = append(members, entry{mb.ID, mb.PrincipalID})
+			}
+		}
+		sort.Slice(members, func(i, j int) bool { return members[i].id < members[j].id })
+		for _, e := range members {
+			if !seen[e.pid] {
+				seen[e.pid] = true
+				ordered = append(ordered, e.pid)
+			}
+		}
+	}
+	for _, pid := range ordered {
+		s.appendStateChangeLocked(store.StateChange{
+			PrincipalID:    pid,
+			Kind:           kind,
+			EntityID:       entityID,
+			ParentEntityID: parentEntityID,
+			Op:             op,
+			ProducedAt:     now,
+		})
+	}
+}
+
 // -- ChatConversation -------------------------------------------------
 
 func (m *metaFace) InsertChatConversation(ctx context.Context, c store.ChatConversation) (store.ConversationID, error) {
@@ -48,13 +95,11 @@ func (m *metaFace) InsertChatConversation(ctx context.Context, c store.ChatConve
 		c.EditWindowSeconds = &v
 	}
 	s.phase2.chatConversations[c.ID] = c
-	s.appendStateChangeLocked(store.StateChange{
-		PrincipalID: c.CreatedByPrincipalID,
-		Kind:        store.EntityKindConversation,
-		EntityID:    uint64(c.ID),
-		Op:          store.ChangeOpCreated,
-		ProducedAt:  now,
-	})
+	// At creation time the conversation has no members yet; the fan
+	// falls back to creator-only (re #47).
+	s.appendStateChangeForMembersLocked(c.CreatedByPrincipalID, c.ID,
+		store.EntityKindConversation, uint64(c.ID), 0,
+		store.ChangeOpCreated, now)
 	return c.ID, nil
 }
 
@@ -154,13 +199,9 @@ func (m *metaFace) UpdateChatConversation(ctx context.Context, c store.ChatConve
 	cur.UpdatedAt = now
 	cur.ModSeq++
 	s.phase2.chatConversations[c.ID] = cur
-	s.appendStateChangeLocked(store.StateChange{
-		PrincipalID: cur.CreatedByPrincipalID,
-		Kind:        store.EntityKindConversation,
-		EntityID:    uint64(c.ID),
-		Op:          store.ChangeOpUpdated,
-		ProducedAt:  now,
-	})
+	s.appendStateChangeForMembersLocked(cur.CreatedByPrincipalID, c.ID,
+		store.EntityKindConversation, uint64(c.ID), 0,
+		store.ChangeOpUpdated, now)
 	return nil
 }
 
@@ -178,7 +219,40 @@ func (m *metaFace) DeleteChatConversation(ctx context.Context, id store.Conversa
 	}
 	now := s.clk.Now()
 	// Cascade: drop every membership and message owned by the
-	// conversation and append per-row destroyed state-change rows.
+	// conversation and append per-row destroyed state-change rows fanned
+	// to all members (re #47). Build the audience snapshot first so the
+	// fan helper does not read partially-deleted membership rows.
+	seen := make(map[store.PrincipalID]bool)
+	audience := []store.PrincipalID{cur.CreatedByPrincipalID}
+	seen[cur.CreatedByPrincipalID] = true
+	type memEntry struct {
+		id store.MembershipID
+		mb store.ChatMembership
+	}
+	var memEntries []memEntry
+	for memID, mb := range s.phase2.chatMemberships {
+		if mb.ConversationID == id {
+			memEntries = append(memEntries, memEntry{memID, mb})
+			if !seen[mb.PrincipalID] {
+				seen[mb.PrincipalID] = true
+				audience = append(audience, mb.PrincipalID)
+			}
+		}
+	}
+	sort.Slice(memEntries, func(i, j int) bool { return memEntries[i].id < memEntries[j].id })
+	// appFan emits a state-change row for every principal in audience.
+	appFan := func(kind store.EntityKind, entityID, parentEntityID uint64, op store.ChangeOp) {
+		for _, pid := range audience {
+			s.appendStateChangeLocked(store.StateChange{
+				PrincipalID:    pid,
+				Kind:           kind,
+				EntityID:       entityID,
+				ParentEntityID: parentEntityID,
+				Op:             op,
+				ProducedAt:     now,
+			})
+		}
+	}
 	var msgIDs []store.ChatMessageID
 	for mid, msg := range s.phase2.chatMessages {
 		if msg.ConversationID == id {
@@ -188,41 +262,14 @@ func (m *metaFace) DeleteChatConversation(ctx context.Context, id store.Conversa
 	sort.Slice(msgIDs, func(i, j int) bool { return msgIDs[i] < msgIDs[j] })
 	for _, mid := range msgIDs {
 		delete(s.phase2.chatMessages, mid)
-		s.appendStateChangeLocked(store.StateChange{
-			PrincipalID:    cur.CreatedByPrincipalID,
-			Kind:           store.EntityKindChatMessage,
-			EntityID:       uint64(mid),
-			ParentEntityID: uint64(id),
-			Op:             store.ChangeOpDestroyed,
-			ProducedAt:     now,
-		})
+		appFan(store.EntityKindChatMessage, uint64(mid), uint64(id), store.ChangeOpDestroyed)
 	}
-	var memIDs []store.MembershipID
-	for memID, mb := range s.phase2.chatMemberships {
-		if mb.ConversationID == id {
-			memIDs = append(memIDs, memID)
-		}
-	}
-	sort.Slice(memIDs, func(i, j int) bool { return memIDs[i] < memIDs[j] })
-	for _, memID := range memIDs {
-		delete(s.phase2.chatMemberships, memID)
-		s.appendStateChangeLocked(store.StateChange{
-			PrincipalID:    cur.CreatedByPrincipalID,
-			Kind:           store.EntityKindMembership,
-			EntityID:       uint64(memID),
-			ParentEntityID: uint64(id),
-			Op:             store.ChangeOpDestroyed,
-			ProducedAt:     now,
-		})
+	for _, e := range memEntries {
+		delete(s.phase2.chatMemberships, e.id)
+		appFan(store.EntityKindMembership, uint64(e.id), uint64(id), store.ChangeOpDestroyed)
 	}
 	delete(s.phase2.chatConversations, id)
-	s.appendStateChangeLocked(store.StateChange{
-		PrincipalID: cur.CreatedByPrincipalID,
-		Kind:        store.EntityKindConversation,
-		EntityID:    uint64(id),
-		Op:          store.ChangeOpDestroyed,
-		ProducedAt:  now,
-	})
+	appFan(store.EntityKindConversation, uint64(id), 0, store.ChangeOpDestroyed)
 	return nil
 }
 
@@ -260,14 +307,12 @@ func (m *metaFace) InsertChatMembership(ctx context.Context, mb store.ChatMember
 		mb.MuteUntil = &t
 	}
 	s.phase2.chatMemberships[mb.ID] = mb
-	s.appendStateChangeLocked(store.StateChange{
-		PrincipalID:    mb.PrincipalID,
-		Kind:           store.EntityKindMembership,
-		EntityID:       uint64(mb.ID),
-		ParentEntityID: uint64(mb.ConversationID),
-		Op:             store.ChangeOpCreated,
-		ProducedAt:     now,
-	})
+	// The newly inserted membership is now in the map, so
+	// appendStateChangeForMembersLocked will include the new member as
+	// well as all pre-existing members (re #47).
+	s.appendStateChangeForMembersLocked(mb.PrincipalID, mb.ConversationID,
+		store.EntityKindMembership, uint64(mb.ID), uint64(mb.ConversationID),
+		store.ChangeOpCreated, now)
 	return mb.ID, nil
 }
 
@@ -387,15 +432,12 @@ func (m *metaFace) DeleteChatMembership(ctx context.Context, id store.Membership
 		return fmt.Errorf("membership %d: %w", id, store.ErrNotFound)
 	}
 	now := s.clk.Now()
+	// Fan the destroy notification before deleting the row so all current
+	// members (including the departing one) receive the change (re #47).
+	s.appendStateChangeForMembersLocked(cur.PrincipalID, cur.ConversationID,
+		store.EntityKindMembership, uint64(id), uint64(cur.ConversationID),
+		store.ChangeOpDestroyed, now)
 	delete(s.phase2.chatMemberships, id)
-	s.appendStateChangeLocked(store.StateChange{
-		PrincipalID:    cur.PrincipalID,
-		Kind:           store.EntityKindMembership,
-		EntityID:       uint64(id),
-		ParentEntityID: uint64(cur.ConversationID),
-		Op:             store.ChangeOpDestroyed,
-		ProducedAt:     now,
-	})
 	return nil
 }
 
@@ -472,14 +514,10 @@ func (m *metaFace) InsertChatMessage(ctx context.Context, msg store.ChatMessage)
 			s.blobSize[a.Hash] = a.Size
 		}
 	}
-	s.appendStateChangeLocked(store.StateChange{
-		PrincipalID:    conv.CreatedByPrincipalID,
-		Kind:           store.EntityKindChatMessage,
-		EntityID:       uint64(msg.ID),
-		ParentEntityID: uint64(msg.ConversationID),
-		Op:             store.ChangeOpCreated,
-		ProducedAt:     now,
-	})
+	// Fan the state-change to every current member (re #47).
+	s.appendStateChangeForMembersLocked(conv.CreatedByPrincipalID, msg.ConversationID,
+		store.EntityKindChatMessage, uint64(msg.ID), uint64(msg.ConversationID),
+		store.ChangeOpCreated, now)
 	s.appendFTSChangeLocked(store.FTSChange{
 		PrincipalID:    conv.CreatedByPrincipalID,
 		Kind:           store.EntityKindChatMessage,
@@ -601,14 +639,9 @@ func (m *metaFace) UpdateChatMessage(ctx context.Context, msg store.ChatMessage)
 	}
 	cur.ModSeq++
 	s.phase2.chatMessages[msg.ID] = cur
-	s.appendStateChangeLocked(store.StateChange{
-		PrincipalID:    conv.CreatedByPrincipalID,
-		Kind:           store.EntityKindChatMessage,
-		EntityID:       uint64(cur.ID),
-		ParentEntityID: uint64(cur.ConversationID),
-		Op:             store.ChangeOpUpdated,
-		ProducedAt:     now,
-	})
+	s.appendStateChangeForMembersLocked(conv.CreatedByPrincipalID, cur.ConversationID,
+		store.EntityKindChatMessage, uint64(cur.ID), uint64(cur.ConversationID),
+		store.ChangeOpUpdated, now)
 	s.appendFTSChangeLocked(store.FTSChange{
 		PrincipalID:    conv.CreatedByPrincipalID,
 		Kind:           store.EntityKindChatMessage,
@@ -653,14 +686,9 @@ func (m *metaFace) SoftDeleteChatMessage(ctx context.Context, id store.ChatMessa
 	conv.UpdatedAt = now
 	conv.ModSeq++
 	s.phase2.chatConversations[cur.ConversationID] = conv
-	s.appendStateChangeLocked(store.StateChange{
-		PrincipalID:    conv.CreatedByPrincipalID,
-		Kind:           store.EntityKindChatMessage,
-		EntityID:       uint64(id),
-		ParentEntityID: uint64(cur.ConversationID),
-		Op:             store.ChangeOpUpdated,
-		ProducedAt:     now,
-	})
+	s.appendStateChangeForMembersLocked(conv.CreatedByPrincipalID, cur.ConversationID,
+		store.EntityKindChatMessage, uint64(id), uint64(cur.ConversationID),
+		store.ChangeOpUpdated, now)
 	s.appendFTSChangeLocked(store.FTSChange{
 		PrincipalID:    conv.CreatedByPrincipalID,
 		Kind:           store.EntityKindChatMessage,
@@ -704,14 +732,9 @@ func (m *metaFace) SetChatReaction(ctx context.Context, msgID store.ChatMessageI
 	cur.ModSeq++
 	s.phase2.chatMessages[msgID] = cur
 	now := s.clk.Now()
-	s.appendStateChangeLocked(store.StateChange{
-		PrincipalID:    conv.CreatedByPrincipalID,
-		Kind:           store.EntityKindChatMessage,
-		EntityID:       uint64(msgID),
-		ParentEntityID: uint64(cur.ConversationID),
-		Op:             store.ChangeOpUpdated,
-		ProducedAt:     now,
-	})
+	s.appendStateChangeForMembersLocked(conv.CreatedByPrincipalID, cur.ConversationID,
+		store.EntityKindChatMessage, uint64(msgID), uint64(cur.ConversationID),
+		store.ChangeOpUpdated, now)
 	return nil
 }
 
@@ -1007,14 +1030,9 @@ func (m *metaFace) HardDeleteChatMessage(ctx context.Context, id store.ChatMessa
 	conv.UpdatedAt = now
 	conv.ModSeq++
 	s.phase2.chatConversations[cur.ConversationID] = conv
-	s.appendStateChangeLocked(store.StateChange{
-		PrincipalID:    conv.CreatedByPrincipalID,
-		Kind:           store.EntityKindChatMessage,
-		EntityID:       uint64(id),
-		ParentEntityID: uint64(cur.ConversationID),
-		Op:             store.ChangeOpDestroyed,
-		ProducedAt:     now,
-	})
+	s.appendStateChangeForMembersLocked(conv.CreatedByPrincipalID, cur.ConversationID,
+		store.EntityKindChatMessage, uint64(id), uint64(cur.ConversationID),
+		store.ChangeOpDestroyed, now)
 	s.appendFTSChangeLocked(store.FTSChange{
 		PrincipalID:    conv.CreatedByPrincipalID,
 		Kind:           store.EntityKindChatMessage,

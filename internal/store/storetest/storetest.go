@@ -173,6 +173,9 @@ func Run(t *testing.T, f Factory) {
 		{"ChatRetention_ListConversationsForRetention", testChatRetentionListConversationsForRetention},
 		{"ChatAttachment_BlobRefcountOnHardDelete", testChatAttachmentBlobRefcountOnHardDelete},
 		{"ChatAttachment_DecRefUnderflowGuard", testChatAttachmentDecRefUnderflowGuard},
+		// -- re #47: per-member change-feed fanout --------------------
+		{"ChatChangeFeed_InsertMessage_FansToAllMembers", testChatChangeFeedInsertMessageFansToAllMembers},
+		{"ChatChangeFeed_InsertMembership_FansToExistingMembers", testChatChangeFeedInsertMembershipFansToExistingMembers},
 		// -- Wave 3.8a JMAP PushSubscription (REQ-PROTO-120..122) --
 		{"PushSubscription_InsertGet_Roundtrip", testPushSubscriptionInsertGetRoundtrip},
 		{"PushSubscription_ListByPrincipal", testPushSubscriptionListByPrincipal},
@@ -5641,6 +5644,197 @@ func testChatAttachmentDecRefUnderflowGuard(t *testing.T, s store.Store) {
 	}
 	if got := get("after-delete-2"); got != 0 {
 		t.Fatalf("ref_count after final delete = %d, want 0", got)
+	}
+}
+
+// -- re #47: per-member change-feed fanout ----------------------------
+
+// testChatChangeFeedInsertMessageFansToAllMembers verifies that
+// InsertChatMessage appends a state-change row to EVERY member's change
+// feed, not just the conversation creator. Concretely: alice creates a
+// DM, both alice and bob are members, bob sends a message — alice's feed
+// must contain the new-message entry without a manual reload.
+func testChatChangeFeedInsertMessageFansToAllMembers(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	alice := mustInsertPrincipal(t, s, "fanout-alice@example.com")
+	bob := mustInsertPrincipal(t, s, "fanout-bob@example.com")
+
+	cid, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind:                 store.ChatConversationKindDM,
+		CreatedByPrincipalID: alice.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	if _, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: alice.ID, Role: store.ChatRoleAdmin,
+	}); err != nil {
+		t.Fatalf("InsertChatMembership alice: %v", err)
+	}
+	if _, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: bob.ID, Role: store.ChatRoleMember,
+	}); err != nil {
+		t.Fatalf("InsertChatMembership bob: %v", err)
+	}
+
+	// Drain the feeds so we have a clean baseline.
+	aliceFeedPre, err := s.Meta().ReadChangeFeed(ctx, alice.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed alice pre: %v", err)
+	}
+	var aliceCursor store.ChangeSeq
+	if len(aliceFeedPre) > 0 {
+		aliceCursor = aliceFeedPre[len(aliceFeedPre)-1].Seq
+	}
+	bobFeedPre, err := s.Meta().ReadChangeFeed(ctx, bob.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed bob pre: %v", err)
+	}
+	var bobCursor store.ChangeSeq
+	if len(bobFeedPre) > 0 {
+		bobCursor = bobFeedPre[len(bobFeedPre)-1].Seq
+	}
+
+	// Bob sends a message.
+	bobPID := bob.ID
+	msgID, err := s.Meta().InsertChatMessage(ctx, store.ChatMessage{
+		ConversationID:    cid,
+		SenderPrincipalID: &bobPID,
+		BodyText:          "hello alice",
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMessage: %v", err)
+	}
+
+	// Alice's feed must contain a Created entry for the new message.
+	aliceTail, err := s.Meta().ReadChangeFeed(ctx, alice.ID, aliceCursor, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed alice tail: %v", err)
+	}
+	var aliceSawMsg bool
+	for _, e := range aliceTail {
+		if e.Kind == store.EntityKindChatMessage && e.EntityID == uint64(msgID) &&
+			e.Op == store.ChangeOpCreated {
+			aliceSawMsg = true
+		}
+	}
+	if !aliceSawMsg {
+		t.Fatalf("alice's change feed missing new-message entry: tail=%+v", aliceTail)
+	}
+
+	// Bob's feed must also contain a Created entry.
+	bobTail, err := s.Meta().ReadChangeFeed(ctx, bob.ID, bobCursor, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed bob tail: %v", err)
+	}
+	var bobSawMsg bool
+	for _, e := range bobTail {
+		if e.Kind == store.EntityKindChatMessage && e.EntityID == uint64(msgID) &&
+			e.Op == store.ChangeOpCreated {
+			bobSawMsg = true
+		}
+	}
+	if !bobSawMsg {
+		t.Fatalf("bob's change feed missing new-message entry: tail=%+v", bobTail)
+	}
+}
+
+// testChatChangeFeedInsertMembershipFansToExistingMembers verifies that
+// when a new member joins an existing conversation, all pre-existing
+// members receive a Membership/Created state-change row so their
+// conversation list refreshes without a manual reload (re #47).
+func testChatChangeFeedInsertMembershipFansToExistingMembers(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	alice := mustInsertPrincipal(t, s, "fanout-mem-alice@example.com")
+	bob := mustInsertPrincipal(t, s, "fanout-mem-bob@example.com")
+	carol := mustInsertPrincipal(t, s, "fanout-mem-carol@example.com")
+
+	cid, err := s.Meta().InsertChatConversation(ctx, store.ChatConversation{
+		Kind:                 store.ChatConversationKindSpace,
+		Name:                 "team",
+		CreatedByPrincipalID: alice.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	if _, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: alice.ID, Role: store.ChatRoleAdmin,
+	}); err != nil {
+		t.Fatalf("InsertChatMembership alice: %v", err)
+	}
+	// Bob is also already in the conversation.
+	if _, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: bob.ID, Role: store.ChatRoleMember,
+	}); err != nil {
+		t.Fatalf("InsertChatMembership bob: %v", err)
+	}
+
+	// Drain alice's and bob's feeds.
+	aliceFeedPre, _ := s.Meta().ReadChangeFeed(ctx, alice.ID, 0, 1000)
+	var aliceCursor store.ChangeSeq
+	if len(aliceFeedPre) > 0 {
+		aliceCursor = aliceFeedPre[len(aliceFeedPre)-1].Seq
+	}
+	bobFeedPre, _ := s.Meta().ReadChangeFeed(ctx, bob.ID, 0, 1000)
+	var bobCursor store.ChangeSeq
+	if len(bobFeedPre) > 0 {
+		bobCursor = bobFeedPre[len(bobFeedPre)-1].Seq
+	}
+
+	// Carol joins.
+	carolMemID, err := s.Meta().InsertChatMembership(ctx, store.ChatMembership{
+		ConversationID: cid, PrincipalID: carol.ID, Role: store.ChatRoleMember,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatMembership carol: %v", err)
+	}
+
+	// Alice must see the new membership in her feed.
+	aliceTail, err := s.Meta().ReadChangeFeed(ctx, alice.ID, aliceCursor, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed alice tail: %v", err)
+	}
+	var aliceSawMem bool
+	for _, e := range aliceTail {
+		if e.Kind == store.EntityKindMembership && e.EntityID == uint64(carolMemID) &&
+			e.Op == store.ChangeOpCreated {
+			aliceSawMem = true
+		}
+	}
+	if !aliceSawMem {
+		t.Fatalf("alice's change feed missing carol's membership entry: tail=%+v", aliceTail)
+	}
+
+	// Bob must also see it.
+	bobTail, err := s.Meta().ReadChangeFeed(ctx, bob.ID, bobCursor, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed bob tail: %v", err)
+	}
+	var bobSawMem bool
+	for _, e := range bobTail {
+		if e.Kind == store.EntityKindMembership && e.EntityID == uint64(carolMemID) &&
+			e.Op == store.ChangeOpCreated {
+			bobSawMem = true
+		}
+	}
+	if !bobSawMem {
+		t.Fatalf("bob's change feed missing carol's membership entry: tail=%+v", bobTail)
+	}
+
+	// Carol herself must also see her own membership in her feed.
+	carolTail, err := s.Meta().ReadChangeFeed(ctx, carol.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed carol: %v", err)
+	}
+	var carolSawMem bool
+	for _, e := range carolTail {
+		if e.Kind == store.EntityKindMembership && e.EntityID == uint64(carolMemID) &&
+			e.Op == store.ChangeOpCreated {
+			carolSawMem = true
+		}
+	}
+	if !carolSawMem {
+		t.Fatalf("carol's change feed missing her own membership entry: tail=%+v", carolTail)
 	}
 }
 

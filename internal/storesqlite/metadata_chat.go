@@ -120,7 +120,13 @@ func (m *metadata) InsertChatConversation(ctx context.Context, c store.ChatConve
 			return fmt.Errorf("storesqlite: last insert id: %w", err)
 		}
 		id = n
-		return appendStateChange(ctx, tx, c.CreatedByPrincipalID,
+		// Fan the state-change out to all current members. At creation
+		// time the membership table for this conversation is empty, so
+		// appendStateChangeForMembers falls back to the creator alone.
+		// Subsequent InsertChatMembership calls notify the new member via
+		// their own membership change row (re #47).
+		return appendStateChangeForMembers(ctx, tx, c.CreatedByPrincipalID,
+			store.ConversationID(id),
 			store.EntityKindConversation, uint64(id), 0,
 			store.ChangeOpCreated, now)
 	})
@@ -238,7 +244,8 @@ func (m *metadata) UpdateChatConversation(ctx context.Context, c store.ChatConve
 		if n == 0 {
 			return store.ErrNotFound
 		}
-		return appendStateChange(ctx, tx, store.PrincipalID(owner),
+		return appendStateChangeForMembers(ctx, tx, store.PrincipalID(owner),
+			c.ID,
 			store.EntityKindConversation, uint64(c.ID), 0,
 			store.ChangeOpUpdated, now)
 	})
@@ -254,8 +261,13 @@ func (m *metadata) DeleteChatConversation(ctx context.Context, id store.Conversa
 		if err != nil {
 			return mapErr(err)
 		}
-		// Capture child IDs before the FK cascade wipes them so we
-		// can append per-child destroyed state-change rows.
+		// Capture member principal IDs and child row IDs before the FK
+		// cascade wipes them so we can fan out per-member destroyed
+		// state-change rows (re #47).
+		memberPIDs, err := conversationMemberIDs(ctx, tx, id)
+		if err != nil {
+			return err
+		}
 		msgRows, err := tx.QueryContext(ctx,
 			`SELECT id FROM chat_messages WHERE conversation_id = ?`, int64(id))
 		if err != nil {
@@ -298,23 +310,42 @@ func (m *metadata) DeleteChatConversation(ctx context.Context, id store.Conversa
 		if n == 0 {
 			return store.ErrNotFound
 		}
+		// Build the deduplicated audience for all destroy notifications.
+		seen := make(map[store.PrincipalID]bool, len(memberPIDs)+1)
+		audience := []store.PrincipalID{store.PrincipalID(owner)}
+		seen[store.PrincipalID(owner)] = true
+		for _, pid := range memberPIDs {
+			if !seen[pid] {
+				seen[pid] = true
+				audience = append(audience, pid)
+			}
+		}
 		for _, mid := range msgIDs {
-			if err := appendStateChange(ctx, tx, store.PrincipalID(owner),
-				store.EntityKindChatMessage, uint64(mid), uint64(id),
-				store.ChangeOpDestroyed, now); err != nil {
-				return err
+			for _, pid := range audience {
+				if err := appendStateChange(ctx, tx, pid,
+					store.EntityKindChatMessage, uint64(mid), uint64(id),
+					store.ChangeOpDestroyed, now); err != nil {
+					return err
+				}
 			}
 		}
 		for _, mid := range memIDs {
-			if err := appendStateChange(ctx, tx, store.PrincipalID(owner),
-				store.EntityKindMembership, uint64(mid), uint64(id),
+			for _, pid := range audience {
+				if err := appendStateChange(ctx, tx, pid,
+					store.EntityKindMembership, uint64(mid), uint64(id),
+					store.ChangeOpDestroyed, now); err != nil {
+					return err
+				}
+			}
+		}
+		for _, pid := range audience {
+			if err := appendStateChange(ctx, tx, pid,
+				store.EntityKindConversation, uint64(id), 0,
 				store.ChangeOpDestroyed, now); err != nil {
 				return err
 			}
 		}
-		return appendStateChange(ctx, tx, store.PrincipalID(owner),
-			store.EntityKindConversation, uint64(id), 0,
-			store.ChangeOpDestroyed, now)
+		return nil
 	})
 }
 
@@ -396,7 +427,12 @@ func (m *metadata) InsertChatMembership(ctx context.Context, mb store.ChatMember
 			return fmt.Errorf("storesqlite: last insert id: %w", err)
 		}
 		id = n
-		return appendStateChange(ctx, tx, mb.PrincipalID,
+		// Notify the new member via their own membership row (the primary
+		// subscriber for their Membership/changes feed).  Also notify all
+		// pre-existing members so their conversation sidebar refreshes
+		// without a manual reload (re #47).
+		return appendStateChangeForMembers(ctx, tx, mb.PrincipalID,
+			mb.ConversationID,
 			store.EntityKindMembership, uint64(id), uint64(mb.ConversationID),
 			store.ChangeOpCreated, now)
 	})
@@ -512,6 +548,12 @@ func (m *metadata) DeleteChatMembership(ctx context.Context, id store.Membership
 		if err != nil {
 			return mapErr(err)
 		}
+		// Capture all current members (including the leaving principal)
+		// before the row is removed so we can notify everyone (re #47).
+		memberPIDs, err := conversationMemberIDs(ctx, tx, store.ConversationID(convID))
+		if err != nil {
+			return err
+		}
 		res, err := tx.ExecContext(ctx,
 			`DELETE FROM chat_memberships WHERE id = ?`, int64(id))
 		if err != nil {
@@ -524,9 +566,25 @@ func (m *metadata) DeleteChatMembership(ctx context.Context, id store.Membership
 		if n == 0 {
 			return store.ErrNotFound
 		}
-		return appendStateChange(ctx, tx, store.PrincipalID(pid),
-			store.EntityKindMembership, uint64(id), uint64(convID),
-			store.ChangeOpDestroyed, now)
+		// Fan the destroy notification to every member that existed before
+		// the delete (includes the departing member).
+		seen := make(map[store.PrincipalID]bool, len(memberPIDs)+1)
+		audience := []store.PrincipalID{store.PrincipalID(pid)}
+		seen[store.PrincipalID(pid)] = true
+		for _, p := range memberPIDs {
+			if !seen[p] {
+				seen[p] = true
+				audience = append(audience, p)
+			}
+		}
+		for _, p := range audience {
+			if err := appendStateChange(ctx, tx, p,
+				store.EntityKindMembership, uint64(id), uint64(convID),
+				store.ChangeOpDestroyed, now); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -684,7 +742,10 @@ func (m *metadata) InsertChatMessage(ctx context.Context, msg store.ChatMessage)
 				return err
 			}
 		}
-		return appendStateChange(ctx, tx, store.PrincipalID(owner),
+		// Fan the state-change to every current member so all participants
+		// see the new message without a manual reload (re #47).
+		return appendStateChangeForMembers(ctx, tx, store.PrincipalID(owner),
+			msg.ConversationID,
 			store.EntityKindChatMessage, uint64(id), uint64(msg.ConversationID),
 			store.ChangeOpCreated, now)
 	})
@@ -817,7 +878,8 @@ func (m *metadata) UpdateChatMessage(ctx context.Context, msg store.ChatMessage)
 		if n == 0 {
 			return store.ErrNotFound
 		}
-		return appendStateChange(ctx, tx, store.PrincipalID(owner),
+		return appendStateChangeForMembers(ctx, tx, store.PrincipalID(owner),
+			store.ConversationID(convID),
 			store.EntityKindChatMessage, uint64(msg.ID), uint64(convID),
 			store.ChangeOpUpdated, now)
 	})
@@ -864,7 +926,8 @@ func (m *metadata) SoftDeleteChatMessage(ctx context.Context, id store.ChatMessa
 			 WHERE id = ?`, usMicros(now), convID); err != nil {
 			return mapErr(err)
 		}
-		return appendStateChange(ctx, tx, store.PrincipalID(owner),
+		return appendStateChangeForMembers(ctx, tx, store.PrincipalID(owner),
+			store.ConversationID(convID),
 			store.EntityKindChatMessage, uint64(id), uint64(convID),
 			store.ChangeOpUpdated, now)
 	})
@@ -900,7 +963,8 @@ func (m *metadata) SetChatReaction(ctx context.Context, msgID store.ChatMessageI
 			 WHERE id = ?`, nilIfEmpty(updated), int64(msgID)); err != nil {
 			return mapErr(err)
 		}
-		return appendStateChange(ctx, tx, store.PrincipalID(owner),
+		return appendStateChangeForMembers(ctx, tx, store.PrincipalID(owner),
+			store.ConversationID(convID),
 			store.EntityKindChatMessage, uint64(msgID), uint64(convID),
 			store.ChangeOpUpdated, now)
 	})
@@ -1230,13 +1294,71 @@ func (m *metadata) HardDeleteChatMessage(ctx context.Context, id store.ChatMessa
 			liveCount, lastArg, usMicros(now), convID); err != nil {
 			return mapErr(err)
 		}
-		return appendStateChange(ctx, tx, store.PrincipalID(owner),
+		return appendStateChangeForMembers(ctx, tx, store.PrincipalID(owner),
+			store.ConversationID(convID),
 			store.EntityKindChatMessage, uint64(id), uint64(convID),
 			store.ChangeOpDestroyed, now)
 	})
 }
 
 // -- Helpers ----------------------------------------------------------
+
+// conversationMemberIDs returns the principal_id of every current member
+// of a conversation, in ascending ID order, within the same tx. Used to
+// fan out state-change rows to all members rather than just the
+// conversation creator (re #47).
+func conversationMemberIDs(ctx context.Context, tx *sql.Tx, convID store.ConversationID) ([]store.PrincipalID, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT principal_id FROM chat_memberships WHERE conversation_id = ? ORDER BY id ASC`,
+		int64(convID))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.PrincipalID
+	for rows.Next() {
+		var pid int64
+		if err := rows.Scan(&pid); err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, store.PrincipalID(pid))
+	}
+	return out, rows.Err()
+}
+
+// appendStateChangeForMembers fans a single logical state-change out to
+// every current member of the conversation. The owner principal always
+// receives a row regardless of membership (important for the conversation-
+// creator before any memberships have been inserted).
+func appendStateChangeForMembers(
+	ctx context.Context, tx *sql.Tx, owner store.PrincipalID,
+	convID store.ConversationID,
+	kind store.EntityKind, entityID uint64, parentEntityID uint64,
+	op store.ChangeOp, now time.Time,
+) error {
+	members, err := conversationMemberIDs(ctx, tx, convID)
+	if err != nil {
+		return err
+	}
+	// Build a deduplicated set; owner is always included so callers get a
+	// row even when memberships do not yet exist (e.g. right after
+	// InsertChatConversation, before InsertChatMembership runs).
+	seen := make(map[store.PrincipalID]bool, len(members)+1)
+	ordered := []store.PrincipalID{owner}
+	seen[owner] = true
+	for _, pid := range members {
+		if !seen[pid] {
+			seen[pid] = true
+			ordered = append(ordered, pid)
+		}
+	}
+	for _, pid := range ordered {
+		if err := appendStateChange(ctx, tx, pid, kind, entityID, parentEntityID, op, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // nilIfEmpty returns nil for a zero-length byte slice so the binding
 // layer writes SQL NULL instead of a zero-length BLOB. Postgres
