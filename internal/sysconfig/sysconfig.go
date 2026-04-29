@@ -210,6 +210,12 @@ type ExternalSubmissionConfig struct {
 	// to start otherwise (boot-time hard-fail per architectural decision 4).
 	// Default false.
 	Enabled bool `toml:"enabled,omitempty"`
+	// SweeperWorkers is the size of the bounded worker pool that the OAuth
+	// refresh sweeper dispatches refresh attempts to. Zero or absent defaults
+	// to 4 (architectural decision 1, Phase 6). A higher value allows more
+	// concurrent refreshes when many OAuth identities are due at once;
+	// raising it above 16 provides diminishing returns for typical deployments.
+	SweeperWorkers int `toml:"sweeper_workers,omitempty"`
 }
 
 // OAuthProviderConfig is the per-provider OAuth 2.0 client configuration for

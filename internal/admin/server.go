@@ -472,6 +472,48 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	})
 	smtpServer.SetWebhookDispatcher(syntheticDispatcherAdapter{d: webhookDispatcher})
 
+	// External SMTP submission (REQ-AUTH-EXT-SUBMIT-01..10, Phase 4 cleanup).
+	// The Submitter is built here — before adminServer — so that
+	// protoadmin.Options.ExternalProbe can be set to the real probe rather
+	// than the noopProbe fallback.  Without this wiring, PUT
+	// /api/v1/identities/{id}/submission accepts any credential as "probe ok"
+	// (REQ-MAIL-SUBMIT-03 silently broken). The same submitter is forwarded
+	// into composeAdminAndUI for the JMAP EmailSubmission path, avoiding a
+	// second data-key load.
+	var prebuiltExtSubmitter *extsubmit.Submitter
+	var extSubmitDataKey []byte
+	var adminOAuthProviders map[string]protoadmin.OAuthProviderOptions
+	if cfg.Server.ExternalSubmission.Enabled {
+		dk, dkErr := secrets.LoadDataKey(cfg.Server.Secrets)
+		if dkErr != nil {
+			return fmt.Errorf("external submission: load data key: %w", dkErr)
+		}
+		extSubmitDataKey = dk
+		prebuiltExtSubmitter = &extsubmit.Submitter{
+			DataKey:  dk,
+			HostName: cfg.Server.Hostname,
+		}
+		// Resolve OAuth provider client secrets from the sysconfig secret
+		// references so the plaintext is available in-memory for the OAuth
+		// start/callback handlers (REQ-AUTH-EXT-SUBMIT-03).
+		if len(cfg.Server.OAuthProviders) > 0 {
+			adminOAuthProviders = make(map[string]protoadmin.OAuthProviderOptions, len(cfg.Server.OAuthProviders))
+			for name, pc := range cfg.Server.OAuthProviders {
+				cs, csErr := sysconfig.ResolveSecretStrict(pc.ClientSecretRef)
+				if csErr != nil {
+					return fmt.Errorf("external submission: oauth_providers.%s: resolve client_secret_ref: %w", name, csErr)
+				}
+				adminOAuthProviders[name] = protoadmin.OAuthProviderOptions{
+					ClientID:     pc.ClientID,
+					ClientSecret: cs,
+					AuthURL:      pc.AuthURL,
+					TokenURL:     pc.TokenURL,
+					Scopes:       pc.Scopes,
+				}
+			}
+		}
+	}
+
 	// Admin HTTP handler: the real protoadmin server. Options defaults
 	// are applied inside NewServer; we pass only subsystem-level fields.
 	// health was constructed before the ACME block above so the ACME gate
@@ -481,17 +523,23 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// protoadmin so the JSON login endpoint at POST /api/v1/auth/login
 	// issues a cookie that requireAuth can subsequently verify
 	// (REQ-AUTH-SESSION-REST, REQ-AUTH-CSRF).
+	adminServerOpts := protoadmin.Options{
+		ServerVersion:             "0.1.0",
+		Health:                    health,
+		Session:                   adminSessionCookieConfig(cfg),
+		ExternalSubmissionDataKey: extSubmitDataKey,
+		OAuthProviders:            adminOAuthProviders,
+	}
+	if prebuiltExtSubmitter != nil {
+		adminServerOpts.ExternalProbe = protoadmin.DefaultProbeFromSubmitter(prebuiltExtSubmitter)
+	}
 	adminServer := protoadmin.NewServer(
 		st,
 		dir,
 		oidc,
 		logger.With("subsystem", "admin"),
 		clk,
-		protoadmin.Options{
-			ServerVersion: "0.1.0",
-			Health:        health,
-			Session:       adminSessionCookieConfig(cfg),
-		},
+		adminServerOpts,
 	)
 	// REQ-AUTH-SESSION-REST: when no signing key is configured (typical
 	// zero-config / Docker quickstart scenario), both the admin and public
@@ -532,7 +580,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// constructor. The two handlers are otherwise independent --
 	// session cookies (SPA) and Bearer keys (REST) live in disjoint
 	// header/cookie namespaces, and the URL prefixes do not overlap.
-	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey, health, sieveInterp)
+	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey, health, sieveInterp, prebuiltExtSubmitter)
 	if err != nil {
 		return err
 	}
@@ -1611,6 +1659,7 @@ func composeAdminAndUI(
 	webhookSigningKey []byte,
 	health *observe.Health,
 	sieveInterp *sieve.Interpreter,
+	extSubmitter *extsubmit.Submitter,
 ) (composedHandlers, error) {
 	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
 	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
@@ -1883,21 +1932,12 @@ func composeAdminAndUI(
 	jmapIdentityStore := jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk)
 	// External SMTP submission (REQ-AUTH-EXT-SUBMIT-05): wire the
 	// extsubmit.Submitter when [server.external_submission].enabled is true.
-	// The data key is required (validated by sysconfig.Validate before
-	// StartServer is called); we load it here so the key material stays in
-	// this scope and is not passed outside the server constructor.
+	// The Submitter was pre-built in StartServer (Phase-4 fix) so the same
+	// instance serves both the JMAP path here and the REST probe in protoadmin.
 	var extSub emailsubmission.ExternalSubmitter
 	var extRouter emailsubmission.ExternalRouter
-	if cfg.Server.ExternalSubmission.Enabled {
-		dataKey, dkErr := secrets.LoadDataKey(cfg.Server.Secrets)
-		if dkErr != nil {
-			return composedHandlers{}, fmt.Errorf("external submission: load data key: %w", dkErr)
-		}
-		hostName := cfg.Server.Hostname
-		extSub = &extsubmit.Submitter{
-			DataKey:  dataKey,
-			HostName: hostName,
-		}
+	if cfg.Server.ExternalSubmission.Enabled && extSubmitter != nil {
+		extSub = extSubmitter
 		extRouter = jmapIdentityStore
 		jmapSrv.Registry().RegisterCapabilityDescriptor(
 			protojmap.CapabilityExternalSubmission, struct{}{})

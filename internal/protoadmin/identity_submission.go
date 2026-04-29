@@ -324,8 +324,10 @@ func noopProbe(_ context.Context, _ store.IdentitySubmission) extsubmit.Outcome 
 	return extsubmit.Outcome{State: extsubmit.OutcomeOK}
 }
 
-// defaultProbeFromSubmitter wraps a *extsubmit.Submitter as an ExternalProbe.
-func defaultProbeFromSubmitter(sub *extsubmit.Submitter) ExternalProbe {
+// DefaultProbeFromSubmitter wraps a *extsubmit.Submitter as an ExternalProbe.
+// admin/server.go uses this to pass the real probe into protoadmin.Options
+// (REQ-MAIL-SUBMIT-03 — the probe validates credentials before persisting).
+func DefaultProbeFromSubmitter(sub *extsubmit.Submitter) ExternalProbe {
 	return func(ctx context.Context, row store.IdentitySubmission) extsubmit.Outcome {
 		return sub.Probe(ctx, row)
 	}
