@@ -206,6 +206,13 @@
       <div class="row">
         <span class="label">Signed in as</span>
         <span class="value">{auth.session?.username ?? '—'}</span>
+        <button
+          type="button"
+          class="signout-btn"
+          onclick={() => void auth.logout()}
+        >
+          Sign out
+        </button>
       </div>
 
       <h3>Identities &amp; signatures</h3>
@@ -992,5 +999,21 @@
     .badge-alert {
       animation: none;
     }
+  }
+
+  .signout-btn {
+    padding: var(--spacing-02) var(--spacing-04);
+    background: var(--layer-02);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    min-height: var(--touch-min);
+    font-size: var(--type-body-compact-01-size);
+    flex-shrink: 0;
+  }
+  .signout-btn:hover {
+    background: var(--support-error);
+    color: var(--text-on-color);
+    border-color: var(--support-error);
   }
 </style>
