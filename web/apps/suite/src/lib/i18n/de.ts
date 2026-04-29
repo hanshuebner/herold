@@ -3,10 +3,6 @@
  * fall back to English at runtime.
  */
 export const de = {
-  // ── Suite rail / nav ─────────────────────────────────────────────────
-  'rail.mail': 'E-Mail',
-  'rail.chat': 'Chat',
-
   // ── Mail sidebar ─────────────────────────────────────────────────────
   'sidebar.compose': 'Verfassen',
   'sidebar.inbox': 'Posteingang',
@@ -22,6 +18,8 @@ export const de = {
   'sidebar.noCustom': 'Keine eigenen Ordner.',
   'sidebar.rename': 'Umbenennen',
   'sidebar.delete': 'Löschen',
+  'sidebar.chats': 'Chats',
+  'sidebar.newChat': 'Neuer Chat',
 
   // ── Mail list ───────────────────────────────────────────────────────
   'list.refresh': 'Aktualisieren',

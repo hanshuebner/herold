@@ -11,13 +11,13 @@ describe('i18n', () => {
   });
 
   it('returns the English string by default', () => {
-    expect(t('rail.mail')).toBe('Mail');
+    expect(t('sidebar.inbox')).toBe('Inbox');
     expect(t('compose.send')).toBe('Send');
   });
 
   it('returns the German string when locale is de', () => {
     i18n.locale = 'de';
-    expect(t('rail.mail')).toBe('E-Mail');
+    expect(t('sidebar.inbox')).toBe('Posteingang');
     expect(t('compose.send')).toBe('Senden');
   });
 

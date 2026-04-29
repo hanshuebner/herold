@@ -4,10 +4,6 @@
  * future additions discoverable.
  */
 export const en = {
-  // ── Suite rail / nav ─────────────────────────────────────────────────
-  'rail.mail': 'Mail',
-  'rail.chat': 'Chat',
-
   // ── Mail sidebar ─────────────────────────────────────────────────────
   'sidebar.compose': 'Compose',
   'sidebar.inbox': 'Inbox',
@@ -23,6 +19,8 @@ export const en = {
   'sidebar.noCustom': 'No custom mailboxes.',
   'sidebar.rename': 'Rename',
   'sidebar.delete': 'Delete',
+  'sidebar.chats': 'Chats',
+  'sidebar.newChat': 'New chat',
 
   // ── Mail list ───────────────────────────────────────────────────────
   'list.refresh': 'Refresh',

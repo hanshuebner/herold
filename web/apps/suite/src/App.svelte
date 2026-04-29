@@ -24,10 +24,7 @@
   import ChatView from './views/ChatView.svelte';
   import SettingsView from './views/SettingsView.svelte';
   import NotFoundView from './views/NotFoundView.svelte';
-
-  let activeApp = $derived<'mail' | 'chat'>(
-    router.matches('chat') ? 'chat' : 'mail',
-  );
+  import SidebarChats from './lib/chat/SidebarChats.svelte';
 
   // True when the user's session has the chat capability.
   let hasChatCap = $derived(
@@ -37,14 +34,14 @@
   );
 
   // On the fullscreen /chat/* route the existing two-column ChatView is
-  // the complete chat surface; suppress the rail and overlays there.
+  // the complete chat surface; suppress the overlays there.
   let hideChatOverlay = $derived(router.matches('chat'));
 
   // Open the EventSource subscription once auth is ready. Sync handlers
   // were registered at module init by the mail store, so they're already
   // listening when the connection comes up. Also prime the mailbox list
-  // so the rail/sidebar unread badges populate regardless of which route
-  // the user lands on (otherwise they stay empty until /mail is visited).
+  // so the sidebar unread badges populate regardless of which route
+  // the user lands on.
   //
   // The mailbox-prime branch is wrapped in untrack() so reading
   // mail.mailboxes.size and writing this.mailboxes inside loadMailboxes()
@@ -57,10 +54,10 @@
       settings.hydrate();
       // Start the EventSource for mail types; if chat is available also
       // subscribe to Conversation, Message, Membership changes.
-      const hasChatCap = auth.session
+      const hasCap = auth.session
         ? Capability.HeroldChat in (auth.session.capabilities ?? {})
         : false;
-      const types = hasChatCap
+      const types = hasCap
         ? ['Email', 'Mailbox', 'Thread', 'Conversation', 'Message', 'Membership']
         : ['Email', 'Mailbox', 'Thread'];
       sync.start(types);
@@ -71,9 +68,15 @@
             console.error('initial mailbox load failed', err);
           });
         }
-        // Connect the chat WebSocket if the server supports chat.
-        if (hasChatCap) {
+        if (hasCap) {
           chatWs.connect();
+          // Load conversations so the sidebar chats section populates
+          // on first boot without needing to visit /chat.
+          if (chat.conversationsStatus === 'idle') {
+            chat.loadConversations().catch((err) => {
+              console.error('initial conversation load failed', err);
+            });
+          }
         }
       });
     } else if (auth.status === 'unauthenticated') {
@@ -82,31 +85,20 @@
     }
   });
 
-  // Apply theme reactively. settings.theme is read inside the effect, so
-  // the user toggling theme in the panel re-runs this and updates <html>.
+  // Apply theme reactively.
   $effect(() => {
     applyTheme(settings.theme);
   });
 
-  // Mirror the active locale onto <html lang> so screen readers and
-  // automatic-translation extensions see the correct language.
+  // Mirror the active locale onto <html lang>.
   $effect(() => {
     document.documentElement.lang = settings.locale;
   });
 
-  // Wire the compose stack's auto-minimize hook so opening a fresh
-  // compose while one is already active snapshots the current one
-  // into the tray instead of overwriting it.
+  // Wire the compose stack's auto-minimize hook.
   compose.setBeforeOpenHook(() => composeStack.beforeOpenNew());
 
-  function selectApp(app: 'mail' | 'chat'): void {
-    router.navigate(app === 'chat' ? '/chat' : '/mail');
-  }
-
-  // Sidebar "More" expand/collapse state. The first time the user lands
-  // on the app with custom mailboxes already in their account we expand
-  // the section automatically; from then on we honour their explicit
-  // collapse / expand choice.
+  // Sidebar "More" expand/collapse state.
   let moreOpen = $state(false);
   let moreInitialised = $state(false);
   $effect(() => {
@@ -158,21 +150,8 @@
   // floating overlay.  The parameter is intentionally in the hash query string
   // so the server never sees it and the SPA's static hosting contract is
   // unchanged.
-  //
-  // Firing condition:
-  //   - auth ready (capabilities known)
-  //   - chat capability present
-  //   - conversations cache populated (size > 0) so the overlay can render
-  //   - not currently on the fullscreen /chat/* route (that view owns the UI)
-  //   - URL has an openChat param
-  //
-  // The effect removes the param from the URL after consuming it so a reload
-  // does not re-fire.  All store writes are wrapped in untrack() to avoid
-  // the read-write loop pattern documented in web/CLAUDE.md.
   $effect(() => {
     if (auth.status !== 'ready') return;
-    // Track the param and the conversation map size so the effect re-evaluates
-    // when either changes (e.g. conversations finish loading after boot).
     const param = router.getParam('openChat');
     const loaded = chat.conversations.size > 0;
     const onChatRoute = router.matches('chat');
@@ -190,12 +169,6 @@
   });
 
   // ── Web Push: non-modal notification banner (REQ-PUSH-30) ───────────────
-  //
-  // After the user has been in the app for >= 60s with no modal open, and
-  // push is available and permission is still 'default', show a non-
-  // intrusive in-chrome banner offering to enable notifications.
-  // The banner is suppressed if the user previously denied within 30 days.
-
   let showPushBanner = $state(false);
 
   $effect(() => {
@@ -204,11 +177,9 @@
     if (pushSubscription.subscribed) return;
     if (pushSubscription.permissionState !== 'default') return;
 
-    // Check the 30-day denial cooldown.
     const until = parseInt(localStorage.getItem('herold:push:denied_until') ?? '0', 10);
     if (Date.now() < until) return;
 
-    // Show the banner after 60s of active session.
     const timer = setTimeout(() => {
       untrack(() => {
         showPushBanner = true;
@@ -287,138 +258,127 @@
   </div>
 {/if}
 <Shell
-  {activeApp}
-  mailUnread={mail.inbox?.unreadEmails ?? 0}
-  chatUnread={chat.totalUnread}
   chatEnabled={hasChatCap}
   {hideChatOverlay}
-  onAppSelect={selectApp}
 >
   {#snippet sidebar()}
-    {#if activeApp === 'mail'}
-      <div class="sidebar-inner">
-        <button type="button" class="compose" onclick={() => compose.openBlank()}>
-          <span aria-hidden="true">✎</span> {t('sidebar.compose')}
-        </button>
+    <div class="sidebar-inner">
+      <button type="button" class="compose" onclick={() => compose.openBlank()}>
+        <span aria-hidden="true">&#x270E;</span> {t('sidebar.compose')}
+      </button>
 
-        <ul class="mailbox-list">
-          <li class:active={router.matches('mail') && !router.parts[1]}>
-            <button type="button" onclick={() => router.navigate('/mail')}>
-              <span>{t('sidebar.inbox')}</span>
-              {#if (mail.inbox?.unreadEmails ?? 0) > 0}
-                <span class="count">{mail.inbox?.unreadEmails ?? 0}</span>
-              {/if}
-            </button>
-          </li>
-          <li class:active={router.matches('mail', 'folder', 'snoozed')}>
-            <button
-              type="button"
-              onclick={() => router.navigate('/mail/folder/snoozed')}
-            >
-              <span>{t('sidebar.snoozed')}</span>
-            </button>
-          </li>
-          <li class:active={router.matches('mail', 'folder', 'important')}>
-            <button
-              type="button"
-              onclick={() => router.navigate('/mail/folder/important')}
-            >
-              <span>{t('sidebar.important')}</span>
-            </button>
-          </li>
-          <li class:active={router.matches('mail', 'folder', 'sent')}>
-            <button type="button" onclick={() => router.navigate('/mail/folder/sent')}>
-              <span>{t('sidebar.sent')}</span>
-            </button>
-          </li>
-          <li class:active={router.matches('mail', 'folder', 'drafts')}>
-            <button type="button" onclick={() => router.navigate('/mail/folder/drafts')}>
-              <span>{t('sidebar.drafts')}</span>
-              {#if (mail.drafts?.totalEmails ?? 0) > 0}
-                <span class="count">{mail.drafts?.totalEmails ?? 0}</span>
-              {/if}
-            </button>
-          </li>
-          <li class:active={router.matches('mail', 'folder', 'trash')}>
-            <button type="button" onclick={() => router.navigate('/mail/folder/trash')}>
-              <span>{t('sidebar.trash')}</span>
-            </button>
-          </li>
-          <li class:active={router.matches('mail', 'folder', 'all')}>
-            <button type="button" onclick={() => router.navigate('/mail/folder/all')}>
-              <span>{t('sidebar.allMail')}</span>
-            </button>
-          </li>
-        </ul>
+      <ul class="mailbox-list">
+        <li class:active={router.matches('mail') && !router.parts[1]}>
+          <button type="button" onclick={() => router.navigate('/mail')}>
+            <span>{t('sidebar.inbox')}</span>
+            {#if (mail.inbox?.unreadEmails ?? 0) > 0}
+              <span class="count">{mail.inbox?.unreadEmails ?? 0}</span>
+            {/if}
+          </button>
+        </li>
+        <li class:active={router.matches('mail', 'folder', 'snoozed')}>
+          <button
+            type="button"
+            onclick={() => router.navigate('/mail/folder/snoozed')}
+          >
+            <span>{t('sidebar.snoozed')}</span>
+          </button>
+        </li>
+        <li class:active={router.matches('mail', 'folder', 'important')}>
+          <button
+            type="button"
+            onclick={() => router.navigate('/mail/folder/important')}
+          >
+            <span>{t('sidebar.important')}</span>
+          </button>
+        </li>
+        <li class:active={router.matches('mail', 'folder', 'sent')}>
+          <button type="button" onclick={() => router.navigate('/mail/folder/sent')}>
+            <span>{t('sidebar.sent')}</span>
+          </button>
+        </li>
+        <li class:active={router.matches('mail', 'folder', 'drafts')}>
+          <button type="button" onclick={() => router.navigate('/mail/folder/drafts')}>
+            <span>{t('sidebar.drafts')}</span>
+            {#if (mail.drafts?.totalEmails ?? 0) > 0}
+              <span class="count">{mail.drafts?.totalEmails ?? 0}</span>
+            {/if}
+          </button>
+        </li>
+        <li class:active={router.matches('mail', 'folder', 'trash')}>
+          <button type="button" onclick={() => router.navigate('/mail/folder/trash')}>
+            <span>{t('sidebar.trash')}</span>
+          </button>
+        </li>
+        <li class:active={router.matches('mail', 'folder', 'all')}>
+          <button type="button" onclick={() => router.navigate('/mail/folder/all')}>
+            <span>{t('sidebar.allMail')}</span>
+          </button>
+        </li>
+      </ul>
 
-        <button
-          type="button"
-          class="more-toggle"
-          aria-expanded={moreOpen}
-          onclick={() => (moreOpen = !moreOpen)}
-        >
-          <span aria-hidden="true">{moreOpen ? '▾' : '▸'}</span>
-          {t('sidebar.more')}
-          <span class="count">{mail.customMailboxes.length}</span>
-        </button>
-        {#if moreOpen}
-          <ul class="mailbox-list custom">
-            {#each mail.customMailboxes as m (m.id)}
-              <li class:active={router.matches('mail', 'folder', m.id)}>
-                <button
-                  type="button"
-                  class="mailbox-row"
-                  onclick={() => router.navigate(`/mail/folder/${encodeURIComponent(m.id)}`)}
-                >
-                  <span class="name">{m.name}</span>
-                  {#if m.unreadEmails > 0}
-                    <span class="count">{m.unreadEmails}</span>
-                  {/if}
-                </button>
-                <button
-                  type="button"
-                  class="row-action"
-                  aria-label="{t('sidebar.rename')} {m.name}"
-                  title={t('sidebar.rename')}
-                  onclick={(ev) => {
-                    ev.stopPropagation();
-                    promptRenameMailbox(m.id, m.name);
-                  }}
-                >
-                  ✎
-                </button>
-                <button
-                  type="button"
-                  class="row-action danger"
-                  aria-label="{t('sidebar.delete')} {m.name}"
-                  title={t('sidebar.delete')}
-                  onclick={(ev) => {
-                    ev.stopPropagation();
-                    confirmDestroyMailbox(m.id, m.name);
-                  }}
-                >
-                  ×
-                </button>
-              </li>
-            {:else}
-              <li class="empty"><span>{t('sidebar.noCustom')}</span></li>
-            {/each}
-            <li class="add-row">
-              <button type="button" onclick={promptCreateMailbox}>+ {t('sidebar.newMailbox')}</button>
+      <button
+        type="button"
+        class="more-toggle"
+        aria-expanded={moreOpen}
+        onclick={() => (moreOpen = !moreOpen)}
+      >
+        <span aria-hidden="true">{moreOpen ? '&#9662;' : '&#9656;'}</span>
+        {t('sidebar.more')}
+        <span class="count">{mail.customMailboxes.length}</span>
+      </button>
+      {#if moreOpen}
+        <ul class="mailbox-list custom">
+          {#each mail.customMailboxes as m (m.id)}
+            <li class:active={router.matches('mail', 'folder', m.id)}>
+              <button
+                type="button"
+                class="mailbox-row"
+                onclick={() => router.navigate(`/mail/folder/${encodeURIComponent(m.id)}`)}
+              >
+                <span class="name">{m.name}</span>
+                {#if m.unreadEmails > 0}
+                  <span class="count">{m.unreadEmails}</span>
+                {/if}
+              </button>
+              <button
+                type="button"
+                class="row-action"
+                aria-label="{t('sidebar.rename')} {m.name}"
+                title={t('sidebar.rename')}
+                onclick={(ev) => {
+                  ev.stopPropagation();
+                  promptRenameMailbox(m.id, m.name);
+                }}
+              >
+                &#x270E;
+              </button>
+              <button
+                type="button"
+                class="row-action danger"
+                aria-label="{t('sidebar.delete')} {m.name}"
+                title={t('sidebar.delete')}
+                onclick={(ev) => {
+                  ev.stopPropagation();
+                  confirmDestroyMailbox(m.id, m.name);
+                }}
+              >
+                &times;
+              </button>
             </li>
-          </ul>
-        {/if}
-
-      </div>
-    {:else}
-      <div class="sidebar-inner">
-        <h3>Conversations</h3>
-        <ul class="mailbox-list">
-          <li><button type="button">Direct messages</button></li>
-          <li><button type="button">Spaces</button></li>
+          {:else}
+            <li class="empty"><span>{t('sidebar.noCustom')}</span></li>
+          {/each}
+          <li class="add-row">
+            <button type="button" onclick={promptCreateMailbox}>+ {t('sidebar.newMailbox')}</button>
+          </li>
         </ul>
-      </div>
-    {/if}
+      {/if}
+
+      {#if hasChatCap}
+        <SidebarChats />
+      {/if}
+    </div>
   {/snippet}
 
   {#if router.matches('mail')}
@@ -438,7 +398,9 @@
     padding: var(--spacing-04);
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-04);
+    gap: var(--spacing-03);
+    height: 100%;
+    box-sizing: border-box;
   }
   .compose {
     display: flex;
@@ -451,6 +413,7 @@
     font-weight: 600;
     min-height: var(--touch-min);
     transition: filter var(--duration-fast-02) var(--easing-productive-enter);
+    flex-shrink: 0;
   }
   .compose:hover {
     filter: brightness(1.1);
@@ -475,7 +438,7 @@
     align-items: center;
     justify-content: space-between;
     width: 100%;
-    padding: var(--spacing-03) var(--spacing-04);
+    padding: var(--spacing-02) var(--spacing-04);
     border-radius: var(--radius-md);
     color: inherit;
     min-height: var(--touch-min);
@@ -496,15 +459,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  h3 {
-    font-size: var(--type-heading-compact-01-size);
-    line-height: var(--type-heading-compact-01-line);
-    font-weight: var(--type-heading-compact-01-weight);
-    color: var(--text-helper);
-    margin: var(--spacing-04) 0 0;
-    padding: 0 var(--spacing-04);
-  }
-
   .more-toggle {
     display: flex;
     align-items: center;
@@ -514,9 +468,9 @@
     font-weight: 500;
     font-size: var(--type-body-compact-01-size);
     border-radius: var(--radius-md);
-    margin-top: var(--spacing-02);
     text-align: left;
     transition: background var(--duration-fast-02) var(--easing-productive-enter);
+    flex-shrink: 0;
   }
   .more-toggle:hover {
     background: var(--layer-02);
