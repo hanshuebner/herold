@@ -262,6 +262,14 @@
             <IdentitySignatureForm {identity} />
           {/if}
         {/each}
+        {#if !showExtSub}
+          <p class="hint ext-sub-hint">
+            External SMTP submission (e.g. Gmail or Microsoft 365) is not enabled on this server.
+            To allow routing outbound mail through an external provider, an operator can enable it
+            in <code>system.toml</code> — see
+            <code>docs/operator/external-smtp-submission.md</code>.
+          </p>
+        {/if}
       {/if}
 
       {#if editDialogIdentity}
@@ -713,6 +721,9 @@
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);
     margin: 0;
+  }
+  .ext-sub-hint {
+    margin-top: var(--spacing-04);
   }
 
   .segmented {
