@@ -562,6 +562,13 @@ type ChatConfig struct {
 	// (REQ-CHAT-92). Defaults match chatretention package
 	// constants; operators rarely override either.
 	Retention ChatRetentionConfig `toml:"retention,omitempty"`
+	// MessageTimestampGroupingSeconds controls when the chat UI
+	// renders a timestamp under a message: only when more than this
+	// many seconds elapsed since the previous message in the same
+	// day-group. Default 120 (2 minutes). 0 means "always show".
+	// Advertised to the client through the chat capability descriptor
+	// so a single operator-supplied value drives every Suite session.
+	MessageTimestampGroupingSeconds int `toml:"message_timestamp_grouping_seconds,omitempty"`
 }
 
 // ChatRetentionConfig tunes the chat retention sweeper
@@ -1167,6 +1174,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.Server.Chat.Retention.BatchSize == 0 {
 		c.Server.Chat.Retention.BatchSize = 1000
+	}
+	if c.Server.Chat.MessageTimestampGroupingSeconds == 0 {
+		c.Server.Chat.MessageTimestampGroupingSeconds = 120
 	}
 	// Video calls (REQ-CALL-*). Defaults to enabled with a five-
 	// minute credential TTL (REQ-CALL-22) and a 30-second ring

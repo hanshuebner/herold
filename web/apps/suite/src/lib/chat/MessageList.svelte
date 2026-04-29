@@ -13,6 +13,7 @@
   import { untrack } from 'svelte';
   import { chat } from './store.svelte';
   import { auth } from '../auth/auth.svelte';
+  import { chatTimestampGroupingSeconds } from '../auth/capabilities';
   import EmojiPicker from '../mail/EmojiPicker.svelte';
   import type { Message, Conversation } from './types';
 
@@ -134,18 +135,37 @@
     });
   }
 
-  /** Group messages by date for date-divider rendering. */
+  /**
+   * Group messages by date for date-divider rendering. Each entry also
+   * carries a `showTimestamp` flag computed from the gap to the
+   * previous message in the same group: if the gap is at or below the
+   * server-supplied threshold we suppress the timestamp under the
+   * second message, matching the iMessage / Slack convention. The
+   * threshold is configurable via system.toml chat
+   * message_timestamp_grouping_seconds (default 120).
+   */
+  let groupingThresholdMs = $derived(chatTimestampGroupingSeconds() * 1000);
   let grouped = $derived.by(() => {
-    const result: Array<{ date: string; messages: Message[] }> = [];
+    const result: Array<{
+      date: string;
+      messages: Array<{ msg: Message; showTimestamp: boolean }>;
+    }> = [];
     let currentDate = '';
+    let prevMsAtDate = 0;
+    const threshold = groupingThresholdMs;
     for (const msg of effectiveMessages) {
+      const ms = new Date(msg.createdAt).getTime();
       const d = new Date(msg.createdAt).toDateString();
+      let showTimestamp: boolean;
       if (d !== currentDate) {
         currentDate = d;
-        result.push({ date: msg.createdAt, messages: [msg] });
+        showTimestamp = true; // first message in a date group: always show
+        result.push({ date: msg.createdAt, messages: [{ msg, showTimestamp }] });
       } else {
-        result[result.length - 1]!.messages.push(msg);
+        showTimestamp = threshold === 0 || ms - prevMsAtDate > threshold;
+        result[result.length - 1]!.messages.push({ msg, showTimestamp });
       }
+      prevMsAtDate = ms;
     }
     return result;
   });
@@ -259,7 +279,8 @@
         <span>{formatDate(group.date)}</span>
       </div>
 
-      {#each group.messages as msg (msg.id)}
+      {#each group.messages as entry (entry.msg.id)}
+        {@const msg = entry.msg}
         <div
           class="message"
           class:mine={isMine(msg.senderPrincipalId)}
@@ -289,9 +310,11 @@
                 {/if}
 
                 <div class="meta">
-                  <span class="time" title={new Date(msg.createdAt).toLocaleString()}>
-                    {formatTime(msg.createdAt)}
-                  </span>
+                  {#if entry.showTimestamp}
+                    <span class="time" title={new Date(msg.createdAt).toLocaleString()}>
+                      {formatTime(msg.createdAt)}
+                    </span>
+                  {/if}
                   {#if msg.editedAt}
                     <span class="edited" title="Edited: {new Date(msg.editedAt).toLocaleString()}">(edited)</span>
                   {/if}

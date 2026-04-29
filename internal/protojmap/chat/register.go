@@ -74,19 +74,26 @@ type AccountLimits struct {
 	// edit window for this account (REQ-CHAT-20). 0 means "no time
 	// limit".
 	DefaultEditWindowSeconds int64 `json:"defaultEditWindowSeconds"`
+	// MessageTimestampGroupingSeconds is a UI-only knob: the chat
+	// composer renders a timestamp under a message only when more
+	// than this many seconds elapsed since the previous message in
+	// the same day-group. 0 = always show. Sourced from
+	// sysconfig.Chat.MessageTimestampGroupingSeconds (default 120).
+	MessageTimestampGroupingSeconds int `json:"messageTimestampGroupingSeconds"`
 }
 
 // DefaultLimits returns the conservative defaults from the REQ-CHAT
 // capacity envelope.
 func DefaultLimits() AccountLimits {
 	return AccountLimits{
-		MaxConversationsPerAccount: 10000,
-		MaxMembersPerSpace:         1000,
-		MaxMessageBodyBytes:        64 * 1024,
-		MaxAttachmentsPerMessage:   10,
-		MaxReactionsPerMessage:     100,
-		DefaultRetentionSeconds:    store.ChatDefaultRetentionSeconds,
-		DefaultEditWindowSeconds:   store.ChatDefaultEditWindowSeconds,
+		MaxConversationsPerAccount:      10000,
+		MaxMembersPerSpace:              1000,
+		MaxMessageBodyBytes:             64 * 1024,
+		MaxAttachmentsPerMessage:        10,
+		MaxReactionsPerMessage:          100,
+		DefaultRetentionSeconds:         store.ChatDefaultRetentionSeconds,
+		DefaultEditWindowSeconds:        store.ChatDefaultEditWindowSeconds,
+		MessageTimestampGroupingSeconds: 120,
 	}
 }
 

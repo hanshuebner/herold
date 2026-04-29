@@ -2107,8 +2107,12 @@ func composeAdminAndUI(
 	// Suite SPA reports "Chat is not configured on this server" because
 	// the capability URL never appears in the session descriptor.
 	if cfg.Server.Chat.Enabled == nil || *cfg.Server.Chat.Enabled {
+		limits := jmapchat.DefaultLimits()
+		if cfg.Server.Chat.MessageTimestampGroupingSeconds > 0 {
+			limits.MessageTimestampGroupingSeconds = cfg.Server.Chat.MessageTimestampGroupingSeconds
+		}
 		jmapchat.RegisterWithFTS(jmapSrv.Registry(), st, ftsIndex,
-			logger.With("subsystem", "jmap-chat"), clk, jmapchat.DefaultLimits())
+			logger.With("subsystem", "jmap-chat"), clk, limits)
 	}
 	jmapHandler := jmapSrv.Handler()
 	publicMux.Handle("/.well-known/jmap",

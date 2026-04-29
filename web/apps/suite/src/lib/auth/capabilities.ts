@@ -60,3 +60,19 @@ export function directoryAutocompleteMode(): 'all' | 'domain' | null {
   if (cap?.mode === 'all' || cap?.mode === 'domain') return cap.mode;
   return null;
 }
+
+/**
+ * Seconds threshold under which a chat message's timestamp is hidden
+ * because the previous message in the same day-group is recent enough.
+ * Sourced from the chat capability descriptor; defaults to 120 (2
+ * minutes) when the field is missing or non-positive. 0 from the
+ * server is honoured as "always show".
+ */
+export function chatTimestampGroupingSeconds(): number {
+  const cap = jmap.session?.capabilities[Capability.HeroldChat] as
+    | { messageTimestampGroupingSeconds?: number }
+    | undefined;
+  const v = cap?.messageTimestampGroupingSeconds;
+  if (typeof v === 'number' && v >= 0) return v;
+  return 120;
+}
