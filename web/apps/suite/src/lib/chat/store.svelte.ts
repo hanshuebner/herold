@@ -93,14 +93,19 @@ class ChatStore {
   #presenceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor() {
+    // [chat-debug] one-shot identity log so the console clearly
+    // attributes subsequent traces to a session — temporary.
+    console.debug('[chat-debug] ChatStore constructed; auth.principalId at construction =', auth.principalId);
     // Register EventSource state-change handlers so the store syncs
     // when herold pushes a state advance for chat types.
     sync.on('Conversation', (newState, accountId) => {
+      console.debug('[chat-debug] sync.on Conversation fired', { newState, accountId });
       this.#syncConversationChanges(newState, accountId).catch((err) => {
         console.error('chat Conversation/changes failed', err);
       });
     });
     sync.on('Message', (newState, accountId) => {
+      console.debug('[chat-debug] sync.on Message fired', { newState, accountId });
       this.#syncMessageChanges(newState, accountId).catch((err) => {
         console.error('chat Message/changes failed', err);
       });
@@ -165,6 +170,29 @@ class ChatStore {
         notFound?: string[];
       };
       this.#conversationState = result.state;
+      // [chat-debug] log loaded conversations — temporary, see commit log.
+      console.debug('[chat-debug] loadConversations response', {
+        authPrincipalId: auth.principalId,
+        state: result.state,
+        list: result.list.map((c) => ({
+          id: c.id,
+          kind: c.kind,
+          name: c.name,
+          unreadCount: c.unreadCount,
+          members: c.members.map((m) => ({
+            principalId: m.principalId,
+            displayName: m.displayName,
+            role: m.role,
+          })),
+          myMembership: c.myMembership
+            ? {
+                id: c.myMembership.id,
+                principalId: c.myMembership.principalId,
+                lastReadMessageId: c.myMembership.lastReadMessageId,
+              }
+            : null,
+        })),
+      });
       for (const c of result.list) {
         this.conversations.set(c.id, c);
       }
@@ -315,6 +343,14 @@ class ChatStore {
     this.messages = [...this.messages, optimisticMsg];
     this.#appendOverlayMessage(conversationId, optimisticMsg);
 
+    // [chat-debug] log send request — temporary, see commit log.
+    console.debug('[chat-debug] sendMessage request', {
+      authPrincipalId: auth.principalId,
+      conversationId,
+      tempId,
+      text,
+    });
+
     try {
       const { responses } = await jmap.batch((b) => {
         b.call(
@@ -333,6 +369,9 @@ class ChatStore {
         );
       });
 
+      // [chat-debug] log full Message/set response — temporary.
+      console.debug('[chat-debug] sendMessage response', JSON.parse(JSON.stringify(responses)));
+
       const setResp = responses.find(([name]) => name === 'Message/set');
       if (!setResp || setResp[0] === 'error') {
         this.#rollbackOptimistic(conversationId, tempId);
@@ -341,7 +380,7 @@ class ChatStore {
       }
 
       const result = setResp[1] as {
-        created?: Record<string, { id: string }>;
+        created?: Record<string, { id: string; senderPrincipalId?: string }>;
         notCreated?: Record<string, { type: string; description?: string }>;
       };
 
@@ -352,7 +391,15 @@ class ChatStore {
         return;
       }
 
-      const realId = result.created?.[tempId]?.id;
+      const created = result.created?.[tempId];
+      const realId = created?.id;
+      // [chat-debug] log server-assigned senderPrincipalId for the new
+      // message vs the local auth.principalId — if these don't match we
+      // know why filip's messages render as bob's.
+      console.debug('[chat-debug] sendMessage created', {
+        authPrincipalId: auth.principalId,
+        serverAssigned: created,
+      });
       if (realId) {
         // Replace optimistic record with real id in both caches.
         this.messages = this.messages.map((m) =>
@@ -611,6 +658,11 @@ class ChatStore {
       await this.loadConversations();
       return;
     }
+    // [chat-debug] log sync entry — temporary.
+    console.debug('[chat-debug] #syncConversationChanges entry', {
+      sinceState: this.#conversationState,
+      newStateFromPush: _newState,
+    });
     try {
       const { responses } = await jmap.batch((b) => {
         const changes = b.call(
@@ -636,6 +688,9 @@ class ChatStore {
           USING,
         );
       });
+
+      // [chat-debug] log full sync response — temporary.
+      console.debug('[chat-debug] #syncConversationChanges response', JSON.parse(JSON.stringify(responses)));
 
       const changesResp = responses.find(
         ([name]) => name === 'Conversation/changes',
@@ -685,7 +740,16 @@ class ChatStore {
     // valid sinceState anchor — that case is bridged by loadMessages /
     // loadOverlayMessages which seed the field on first fetch.
     const openId = this.openConversationId;
-    if (!this.#messageState) return;
+    // [chat-debug] log sync entry — temporary.
+    console.debug('[chat-debug] #syncMessageChanges entry', {
+      sinceState: this.#messageState,
+      newStateFromPush: _newState,
+      openId,
+    });
+    if (!this.#messageState) {
+      console.debug('[chat-debug] #syncMessageChanges: no #messageState, exiting (this is expected before any chat is opened)');
+      return;
+    }
 
     try {
       const { responses } = await jmap.batch((b) => {
@@ -710,6 +774,9 @@ class ChatStore {
           USING,
         );
       });
+
+      // [chat-debug] log full sync response — temporary.
+      console.debug('[chat-debug] #syncMessageChanges response', JSON.parse(JSON.stringify(responses)));
 
       const changesResp = responses.find(([name]) => name === 'Message/changes');
       const getResps = responses.filter(([name]) => name === 'Message/get');
@@ -945,6 +1012,18 @@ class ChatStore {
       }
 
       const result = getResp[1] as { state: string; list: Message[] };
+      // [chat-debug] log overlay messages with their senderPrincipalId
+      // so we can compare to auth.principalId at render time.
+      console.debug('[chat-debug] loadOverlayMessages response', {
+        conversationId,
+        authPrincipalId: auth.principalId,
+        state: result.state,
+        list: result.list.map((m) => ({
+          id: m.id,
+          senderPrincipalId: m.senderPrincipalId,
+          textPreview: typeof m.body?.text === 'string' ? m.body.text.slice(0, 40) : null,
+        })),
+      });
       // Query returns newest-first; reverse for display (oldest first).
       const msgs = result.list.slice().reverse();
 

@@ -165,12 +165,34 @@
     const member = conversation.members.find(
       (m) => m.principalId === senderPrincipalId,
     );
-    if (member?.displayName) return member.displayName;
-    // Final fallback: for a DM the conversation name is already the other
-    // participant's display name (server-projected per viewer); for a
-    // Space we have no better label than a generic placeholder.
-    if (conversation.kind === 'dm') return conversation.name;
-    return 'Member';
+    // [chat-debug] log resolution path — temporary.
+    let branch: string;
+    let result: string;
+    if (member?.displayName) {
+      branch = 'member.displayName';
+      result = member.displayName;
+    } else if (conversation.kind === 'dm') {
+      branch = 'dm-fallback (conversation.name)';
+      result = conversation.name;
+    } else {
+      branch = 'space-fallback (literal "Member")';
+      result = 'Member';
+    }
+    console.debug('[chat-debug] senderName', {
+      senderPrincipalId,
+      authPrincipalId: auth.principalId,
+      conversationId: conversation.id,
+      conversationKind: conversation.kind,
+      conversationName: conversation.name,
+      members: conversation.members.map((m) => ({
+        principalId: m.principalId,
+        displayName: m.displayName,
+      })),
+      matchedMember: member ? { principalId: member.principalId, displayName: member.displayName } : null,
+      branch,
+      result,
+    });
+    return result;
   }
 
   function handleToggleReaction(messageId: string, emoji: string): void {
