@@ -9,12 +9,26 @@
 # failures that CI would report. CI enforces this parity by running
 # `pre-commit run --all-files` in its own job.
 
+# Run hooks only at the stage they were declared for. Without this,
+# `default_stages` is "all stages", so every hook below runs at both the
+# pre-commit and pre-push hook-types — meaning gofmt/goimports/vet/
+# staticcheck etc. fire twice for every push (once when the commit was
+# created, once before the push). Pinning to [pre-commit] makes the
+# default explicit; the diag-fast-tests hook below opts into [pre-push]
+# explicitly so it still runs as the pre-push gate.
+default_stages: [pre-commit]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
+      # Several upstream hooks declare stages: [pre-commit, pre-push,
+      # manual] in their own .pre-commit-hooks.yaml, which overrides
+      # our top-level `default_stages`. Pin them to [pre-commit] here
+      # so the pre-push gate doesn't redundantly re-run them.
       - id: check-added-large-files
         args: [--maxkb=512]
+        stages: [pre-commit]
       - id: check-case-conflict
       - id: check-merge-conflict
       - id: check-symlinks
@@ -27,11 +41,13 @@ repos:
       # rewrite them or the parser tests change meaning.
       - id: end-of-file-fixer
         exclude: ^internal/mailparse/testdata/
+        stages: [pre-commit]
       - id: mixed-line-ending
         args: [--fix=lf]
         exclude: ^internal/mailparse/testdata/
       - id: trailing-whitespace
         exclude: ^internal/mailparse/testdata/
+        stages: [pre-commit]
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.21.2
