@@ -6,10 +6,11 @@
    * per REQ-CHAT-22. Reactions strip below each message per REQ-CHAT-30..33.
    * Read receipts shown for DMs per REQ-CHAT-40.
    *
-   * Read tracking is engagement-based: the unread badge clears only when the
-   * recipient actually starts composing a reply (or sends one). The trigger
-   * lives in ChatCompose, not here — bare focus or scrolling does not advance
-   * the read pointer, so the badge stays visible until the recipient engages.
+   * Read tracking is focus-driven: when the recipient's cursor is in the
+   * chat compose for THIS conversation, the read pointer advances to the
+   * latest message — both on focus itself, and whenever a new message
+   * arrives while focus is held. Bare scrolling, hover, or focus on a
+   * different conversation's compose do NOT advance the pointer.
    */
 
   import { untrack } from 'svelte';
@@ -80,10 +81,25 @@
     }
   }
 
-  // Mark-read trigger lives in ChatCompose: it fires on the first
-  // user keystroke (or send) per overlay-open. Bare focus does not
-  // advance the read pointer, so the unread badge stays visible
-  // until the recipient actually starts replying.
+  // Focus-gated mark-read. Re-runs on three triggers:
+  //   - focus enters this conversation's compose (chat.focusedConversationId)
+  //   - a new message arrives in this conversation while focused
+  //   - the conversation transitions from loading to ready while focused
+  // The store's markRead is idempotent against the read pointer it
+  // already has, so re-firing on every messages-array mutation is
+  // cheap and avoids a debounce timer.
+  $effect(() => {
+    const msgs = effectiveMessages;
+    const status = effectiveStatus;
+    const focused = chat.focusedConversationId;
+    untrack(() => {
+      if (status !== 'ready' || msgs.length === 0) return;
+      if (focused !== conversationId) return;
+      const last = msgs[msgs.length - 1];
+      if (!last) return;
+      void chat.markRead(conversationId, last.id);
+    });
+  });
 
   function formatTime(isoDate: string): string {
     const d = new Date(isoDate);
