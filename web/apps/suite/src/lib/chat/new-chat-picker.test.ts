@@ -107,10 +107,12 @@ describe('NewChatPicker', () => {
 
   // ── DM: autocomplete happy path ──────────────────────────────────────
 
-  it('DM mode: autocomplete suggests principals and selecting adds a chip', async () => {
+  it('DM mode: autocomplete suggests principals and selecting starts the chat', async () => {
     vi.mocked(chat.searchPrincipals).mockResolvedValue([
       { id: 'prin-alice', email: 'alice@example.com', displayName: 'Alice' },
     ]);
+    vi.mocked(chat.findExistingDM).mockReturnValue(null);
+    vi.mocked(chat.createConversation).mockResolvedValue({ id: 'conv-new-1' });
 
     render(NewChatPicker);
     openDM();
@@ -128,13 +130,17 @@ describe('NewChatPicker', () => {
 
     await fireEvent.click(screen.getByRole('button', { name: /Alice/ }));
 
-    // Chip should appear; no principal id in DOM.
+    // Picking the recipient is the entire DM-creation action; no second
+    // click on Start chat is required.
     await waitFor(() =>
-      expect(screen.getByLabelText(/Recipient: Alice/)).toBeInTheDocument(),
+      expect(chat.createConversation).toHaveBeenCalledWith({
+        kind: 'dm',
+        members: ['prin-alice'],
+      }),
     );
-    // The input hides after chip in DM mode (replaced by the chip).
-    const startBtn = screen.getByRole('button', { name: 'Start chat' });
-    expect(startBtn).not.toBeDisabled();
+    await waitFor(() =>
+      expect(chatOverlay.openWindow).toHaveBeenCalledWith('conv-new-1'),
+    );
   });
 
   it('DM mode: Start chat button is disabled with no recipient', async () => {
@@ -170,12 +176,14 @@ describe('NewChatPicker', () => {
     expect(screen.getByRole('button', { name: 'Start chat' })).toBeDisabled();
   });
 
-  it('DM mode: valid email resolves to principal and adds chip', async () => {
+  it('DM mode: pressing Enter on a valid email starts the chat without a second click', async () => {
     vi.mocked(chat.lookupPrincipalByEmail).mockResolvedValue({
       id: 'prin-bob',
       email: 'bob@example.com',
       displayName: 'Bob',
     });
+    vi.mocked(chat.findExistingDM).mockReturnValue(null);
+    vi.mocked(chat.createConversation).mockResolvedValue({ id: 'conv-new-2' });
 
     render(NewChatPicker);
     openDM();
@@ -186,7 +194,13 @@ describe('NewChatPicker', () => {
     await fireEvent.keyDown(input, { key: 'Enter' });
 
     await waitFor(() =>
-      expect(screen.getByLabelText(/Recipient: Bob/)).toBeInTheDocument(),
+      expect(chat.createConversation).toHaveBeenCalledWith({
+        kind: 'dm',
+        members: ['prin-bob'],
+      }),
+    );
+    await waitFor(() =>
+      expect(chatOverlay.openWindow).toHaveBeenCalledWith('conv-new-2'),
     );
   });
 
@@ -218,12 +232,8 @@ describe('NewChatPicker', () => {
     await fireEvent.input(input, { target: { value: 'alice@example.com' } });
     await fireEvent.keyDown(input, { key: 'Enter' });
 
-    // Wait for chip to appear, then click Start chat.
-    await waitFor(() =>
-      expect(screen.getByLabelText(/Recipient: Alice/)).toBeInTheDocument(),
-    );
-
-    await fireEvent.click(screen.getByRole('button', { name: 'Start chat' }));
+    // Picking the recipient now auto-submits; the existing DM is opened
+    // directly without going through Conversation/set.
     await waitFor(() =>
       expect(chatOverlay.openWindow).toHaveBeenCalledWith('conv-existing'),
     );

@@ -140,13 +140,23 @@
     }, 150);
   }
 
-  /** Pick a suggestion from the dropdown list. */
+  /**
+   * Pick a suggestion from the dropdown list (or commit a free-text email).
+   * In DM mode the recipient *is* the entire action, so as soon as a valid
+   * chip exists we start the chat — Enter / click / suggestion-arrow-Enter
+   * all collapse to "start chat with this person" without a second click
+   * on the Start chat button.
+   */
   function pickSuggestion(principal: Principal): void {
     addChip(principal);
     inputValue = '';
     suggestions = [];
     emailError = null;
     selectedSuggestionIndex = -1;
+    if (mode === 'dm' && chips.length === 1 && !submitting) {
+      void submit();
+      return;
+    }
     requestAnimationFrame(() => inputEl?.focus());
   }
 
