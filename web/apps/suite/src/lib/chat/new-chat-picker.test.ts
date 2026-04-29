@@ -209,7 +209,7 @@ describe('NewChatPicker', () => {
   it('DM mode: routes to existing DM rather than creating a new one', async () => {
     const existingConv = {
       id: 'conv-existing',
-      type: 'dm' as const,
+      kind: 'dm' as const,
       name: 'Alice',
       members: [],
       createdAt: '',

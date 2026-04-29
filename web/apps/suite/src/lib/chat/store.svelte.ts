@@ -1022,7 +1022,7 @@ class ChatStore {
     const myId = auth.principalId;
     if (!myId) return null;
     for (const conv of this.conversations.values()) {
-      if (conv.type !== 'dm') continue;
+      if (conv.kind !== 'dm') continue;
       const memberIds = conv.members.map((m) => m.principalId);
       if (
         memberIds.length === 2 &&

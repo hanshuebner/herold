@@ -90,7 +90,7 @@ describe('ChatStore', () => {
 
     const fakeConv = {
       id: 'c1',
-      type: 'dm' as const,
+      kind: 'dm' as const,
       name: 'Alice',
       members: [],
       createdAt: '2024-01-01T10:00:00Z',
@@ -133,7 +133,7 @@ describe('ChatStore', () => {
 
     chat.conversations.set('c1', {
       id: 'c1',
-      type: 'dm',
+      kind: 'dm',
       name: 'Alice',
       members: [],
       createdAt: '2024-01-01T10:00:00Z',
@@ -143,7 +143,7 @@ describe('ChatStore', () => {
     });
     chat.conversations.set('c2', {
       id: 'c2',
-      type: 'space',
+      kind: 'space',
       name: 'General',
       members: [],
       createdAt: '2024-01-01T10:00:00Z',
@@ -407,7 +407,7 @@ describe('ChatStore', () => {
 
     chat.conversations.set('dm-c1', {
       id: 'dm-c1',
-      type: 'dm',
+      kind: 'dm',
       name: 'Alice',
       members: [
         { id: 'm1', conversationId: 'dm-c1', principalId: 'p1', role: 'member', joinedAt: '', notificationsMuted: false },
@@ -434,7 +434,7 @@ describe('ChatStore', () => {
 
     chat.conversations.set('space-1', {
       id: 'space-1',
-      type: 'space',
+      kind: 'space',
       name: 'General',
       members: [
         { id: 'm1', conversationId: 'space-1', principalId: 'p1', role: 'member', joinedAt: '', notificationsMuted: false },
@@ -461,7 +461,7 @@ describe('ChatStore', () => {
     const newId = 'conv-new-1';
     const newConv = {
       id: newId,
-      type: 'dm' as const,
+      kind: 'dm' as const,
       name: 'Bob',
       members: [],
       createdAt: '2024-02-01T10:00:00Z',
@@ -499,7 +499,7 @@ describe('ChatStore', () => {
     const newId = 'conv-cache-1';
     const newConv = {
       id: newId,
-      type: 'dm' as const,
+      kind: 'dm' as const,
       name: 'Carol',
       members: [],
       createdAt: '2024-03-01T10:00:00Z',
@@ -544,7 +544,7 @@ describe('ChatStore', () => {
     chat.conversations.set('c-existing', {
       id: 'c-existing',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      type: undefined as any,
+      kind: undefined as any,
       name: 'pre-existing',
       members: [],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -598,7 +598,7 @@ describe('ChatStore', () => {
     const newId = 'conv-new-2';
     const newConv = {
       id: newId,
-      type: 'space' as const,
+      kind: 'space' as const,
       name: 'project',
       description: 'planning',
       members: [],

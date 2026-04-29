@@ -11,10 +11,16 @@
 /** A DM (1:1) or Space (group) conversation. */
 export interface Conversation {
   id: string;
-  type: 'dm' | 'space';
   /**
-   * For spaces: the display name. For DMs: computed from the other member
-   * (server returns the other participant's display name here for convenience).
+   * Wire-level discriminator from herold's JMAP chat handler. The server
+   * field is `kind` (not `type`); aliasing it locally as `type` previously
+   * meant `conv.type === 'dm'` was always false, breaking presence dots,
+   * space icons, and DM-only labels.
+   */
+  kind: 'dm' | 'space';
+  /**
+   * For spaces: the display name. For DMs: server projects the OTHER
+   * member's display name per viewer.
    */
   name: string;
   description?: string;
@@ -50,6 +56,13 @@ export interface Membership {
   conversationId: string;
   principalId: string;
   role: 'member' | 'admin';
+  /**
+   * Server-side projection of the principal's display name. Present on
+   * Conversation.members[] (so the UI can label messages by sender without
+   * a per-sender Principal/get round-trip). Absent on standalone
+   * Membership records returned by Membership/get.
+   */
+  displayName?: string;
   joinedAt: string; // UTCDate
   /** The last Message id this member has read. Null = none read. */
   readThrough?: string;

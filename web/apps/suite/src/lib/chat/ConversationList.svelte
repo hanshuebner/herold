@@ -19,12 +19,12 @@
   let dms = $derived(
     chat.conversationIds
       .map((id) => chat.conversations.get(id)!)
-      .filter((c): c is Conversation => !!c && c.type === 'dm'),
+      .filter((c): c is Conversation => !!c && c.kind === 'dm'),
   );
   let spaces = $derived(
     chat.conversationIds
       .map((id) => chat.conversations.get(id)!)
-      .filter((c): c is Conversation => !!c && c.type === 'space'),
+      .filter((c): c is Conversation => !!c && c.kind === 'space'),
   );
 
   function presenceClass(principalId: string): string {

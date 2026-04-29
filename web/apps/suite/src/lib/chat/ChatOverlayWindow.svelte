@@ -42,7 +42,7 @@
    */
   function conversationDisplayName(conv: Conversation | null): string {
     if (!conv) return 'Loading...';
-    if (conv.type === 'space' && !conv.name) return 'Untitled space';
+    if (conv.kind === 'space' && !conv.name) return 'Untitled space';
     return conv.name || 'Conversation';
   }
 
@@ -90,7 +90,7 @@
 
   // Presence dot for DM
   function presenceClass(): string {
-    if (!conversation || conversation.type !== 'dm') return '';
+    if (!conversation || conversation.kind !== 'dm') return '';
     const other = conversation.members.find(
       (m) => m.principalId !== auth.principalId,
     );
@@ -124,7 +124,7 @@
     }}
   >
     <span class="title-content">
-      {#if conversation?.type === 'dm'}
+      {#if conversation?.kind === 'dm'}
         <span class="presence-dot {presenceClass()}" aria-hidden="true"></span>
       {:else}
         <span class="space-icon" aria-hidden="true">#</span>

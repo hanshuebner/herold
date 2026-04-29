@@ -14,7 +14,7 @@ vi.mock('./store.svelte', () => ({
         'c1',
         {
           id: 'c1',
-          type: 'dm',
+          kind: 'dm',
           name: 'Alice',
           members: [
             {
@@ -46,7 +46,7 @@ vi.mock('./store.svelte', () => ({
         'c2',
         {
           id: 'c2',
-          type: 'space',
+          kind: 'space',
           name: 'General',
           members: [],
           createdAt: '2024-01-01T10:00:00Z',

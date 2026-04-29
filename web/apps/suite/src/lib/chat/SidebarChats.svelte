@@ -27,7 +27,7 @@
   );
 
   function presenceClass(conv: Conversation): string {
-    if (conv.type !== 'dm') return '';
+    if (conv.kind !== 'dm') return '';
     const other = conv.members.find((m) => m.principalId !== auth.principalId);
     if (!other) return 'offline';
     const p = chat.presence.get(other.principalId);
@@ -75,10 +75,10 @@
             onclick={() => chatOverlay.openWindow(conv.id)}
           >
             <span class="avatar-wrap" aria-hidden="true">
-              <span class="avatar" class:space={conv.type === 'space'}>
-                {conv.type === 'space' ? '#' : conv.name.charAt(0).toUpperCase()}
+              <span class="avatar" class:space={conv.kind === 'space'}>
+                {conv.kind === 'space' ? '#' : conv.name.charAt(0).toUpperCase()}
               </span>
-              {#if conv.type === 'dm'}
+              {#if conv.kind === 'dm'}
                 <span class="presence-dot {pc}"></span>
               {/if}
             </span>

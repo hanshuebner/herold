@@ -61,6 +61,7 @@ const memberAlice: Membership = {
   conversationId: 'c1',
   principalId: 'p1',
   role: 'member',
+  displayName: 'Alice',
   joinedAt: '2024-01-01T10:00:00Z',
   notificationsMuted: false,
 };
@@ -69,13 +70,14 @@ const memberBob: Membership = {
   conversationId: 'c1',
   principalId: 'p2',
   role: 'member',
+  displayName: 'Bob',
   joinedAt: '2024-01-01T10:00:00Z',
   notificationsMuted: false,
 };
 
 const baseConversation: Conversation = {
   id: 'c1',
-  type: 'dm',
+  kind: 'dm',
   name: 'Alice',
   members: [memberAlice, memberBob],
   createdAt: '2024-01-01T10:00:00Z',
@@ -114,6 +116,34 @@ describe('MessageList', () => {
     });
     const chip = screen.getByRole('button', { name: /2 reactions/i });
     expect(chip.classList.contains('mine')).toBe(true);
+  });
+
+  it('labels a sender by member.displayName, not the literal "Member"', () => {
+    const { container } = render(MessageList, {
+      props: { conversationId: 'c1', conversation: baseConversation },
+    });
+    const senderLabels = container.querySelectorAll('.sender-name');
+    // m1 was sent by p2 (Bob); the label must read "Bob", not "Member".
+    const labelTexts = Array.from(senderLabels).map((n) => n.textContent?.trim());
+    expect(labelTexts).toContain('Bob');
+    expect(labelTexts).not.toContain('Member');
+  });
+
+  it('falls back to "Member" only when the sender is unknown to the member list', () => {
+    const stranger: Conversation = {
+      ...baseConversation,
+      kind: 'space',
+      // Members list does not include p2, so the senderId resolution
+      // for m1 has nothing to look up.
+      members: [memberAlice],
+    };
+    const { container } = render(MessageList, {
+      props: { conversationId: 'c1', conversation: stranger },
+    });
+    const senderLabels = Array.from(
+      container.querySelectorAll('.sender-name'),
+    ).map((n) => n.textContent?.trim());
+    expect(senderLabels).toContain('Member');
   });
 
   it('shows typing indicator when someone is typing', async () => {

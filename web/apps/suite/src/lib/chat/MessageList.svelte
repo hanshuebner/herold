@@ -142,15 +142,19 @@
   }
 
   /**
-   * Resolve a senderId to a display name.
-   * The Membership type doesn't carry a display name; for DMs the
-   * conversation.name is the other participant's display name.
-   * For Spaces, fall back to a generic "Member" label rather than
-   * exposing the opaque principalId (REQ-CHAT-15).
+   * Resolve a senderId to a display name. The server populates
+   * conversation.members[i].displayName for every participant, so any
+   * sender — DM peer or Space contributor — can be labelled by name
+   * without leaking the principal id (REQ-CHAT-15).
    */
   function senderName(senderId: string): string {
     if (isMine(senderId)) return 'You';
-    if (conversation.type === 'dm') return conversation.name;
+    const member = conversation.members.find((m) => m.principalId === senderId);
+    if (member?.displayName) return member.displayName;
+    // Final fallback: for a DM the conversation name is already the other
+    // participant's display name (server-projected per viewer); for a
+    // Space we have no better label than a generic placeholder.
+    if (conversation.kind === 'dm') return conversation.name;
     return 'Member';
   }
 
@@ -165,7 +169,7 @@
 
   // DM read receipt: find the other participant's readThrough message id.
   let otherReadThrough = $derived.by(() => {
-    if (conversation.type !== 'dm') return null;
+    if (conversation.kind !== 'dm') return null;
     const mems = chat.memberships.get(conversationId) ?? [];
     const other = mems.find((m) => m.principalId !== auth.principalId);
     return other?.readThrough ?? null;
@@ -180,7 +184,7 @@
       (id) => id !== auth.principalId,
     ).length;
     if (typerCount === 0) return null;
-    if (conversation.type === 'dm') return `${conversation.name} is typing…`;
+    if (conversation.kind === 'dm') return `${conversation.name} is typing…`;
     if (typerCount === 1) return 'Someone is typing…';
     return `${typerCount} people are typing…`;
   });
@@ -249,7 +253,7 @@
                   {#if msg.editedAt}
                     <span class="edited" title="Edited: {new Date(msg.editedAt).toLocaleString()}">(edited)</span>
                   {/if}
-                  {#if conversation.type === 'dm' && isMine(msg.senderId) && otherReadThrough === msg.id}
+                  {#if conversation.kind === 'dm' && isMine(msg.senderId) && otherReadThrough === msg.id}
                     <span class="read-receipt">Read</span>
                   {/if}
                 </div>

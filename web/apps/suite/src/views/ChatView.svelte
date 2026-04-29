@@ -161,12 +161,12 @@
         <header class="conv-header">
           <div class="conv-title">
             <span class="conv-icon" aria-hidden="true">
-              {activeConversation.type === 'dm' ? '@' : '#'}
+              {activeConversation.kind === 'dm' ? '@' : '#'}
             </span>
             <h1>{activeConversation.name}</h1>
           </div>
 
-          {#if activeConversation.type === 'dm'}
+          {#if activeConversation.kind === 'dm'}
             <button
               type="button"
               class="call-btn"

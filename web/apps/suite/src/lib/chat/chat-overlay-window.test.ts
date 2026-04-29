@@ -19,7 +19,7 @@ vi.mock('./store.svelte', () => ({
         'c1',
         {
           id: 'c1',
-          type: 'dm',
+          kind: 'dm',
           name: 'Alice',
           members: [
             { id: 'mem1', conversationId: 'c1', principalId: 'self', role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsMuted: false },
@@ -35,7 +35,7 @@ vi.mock('./store.svelte', () => ({
         'c2',
         {
           id: 'c2',
-          type: 'space',
+          kind: 'space',
           name: '',
           members: [
             { id: 'mem3', conversationId: 'c2', principalId: 'self', role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsMuted: false },
@@ -50,7 +50,7 @@ vi.mock('./store.svelte', () => ({
         'c3',
         {
           id: 'c3',
-          type: 'space',
+          kind: 'space',
           name: 'Engineering',
           members: [
             { id: 'mem4', conversationId: 'c3', principalId: 'self', role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsMuted: false },
