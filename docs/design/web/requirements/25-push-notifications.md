@@ -95,11 +95,21 @@ The service worker registered for PWA install (`24-mobile-and-touch.md` REQ-MOB-
 | REQ-PUSH-93 | Subscription endpoint URLs are stored on herold and rotated as the browser issues new endpoints (typical lifetime: weeks to months). Old endpoints are deleted on first 410 response from the push service (REQ-PUSH-34). |
 | REQ-PUSH-94 | A "Forget all my notification subscriptions" affordance in settings (REQ-PUSH-84-adjacent) issues `PushSubscription/set { destroy: <all> }` to herold and unregisters the local SW subscription. Useful for selling / decommissioning a device. |
 
-## Out of scope
+## In-app audio cues
+
+These are short sounds played by the SPA itself while the tab is open. They are distinct from Web Push notifications (which the OS owns). The two channels can fire for the same event when the device is busy elsewhere — that is fine.
+
+| ID | Requirement |
+|----|-------------|
+| REQ-PUSH-95 | The suite plays a short audio cue for three event types while the tab is open: incoming video call (`/sounds/sound-call.wav`), incoming chat message (`/sounds/sound-chat.wav`), and new email arrival (`/sounds/sound-mail.wav`). Files are bundled with the SPA and served from `public/sounds/`. |
+| REQ-PUSH-96 | An audio cue plays only when ALL of the following hold: master toggle is on (REQ-SET-16); the sender is not the user; the relevant conversation / thread is not muted (`08-chat.md` REQ-CHAT-07 for chat); the user is not currently focused on a view that already surfaces the event inline. The "already focused" check is: chat — the conversation overlay or fullscreen `/chat/<id>` is open AND `document.visibilityState === 'visible'`; mail — the route is `/mail` (or a `/mail/folder/inbox`-equivalent) AND `document.visibilityState === 'visible'`; call — never suppressed, an incoming call is high-priority and always plays. |
+| REQ-PUSH-97 | Quiet hours (REQ-PUSH-82) suppress chat and mail audio cues. Incoming call cues bypass quiet hours per the existing high-priority override. |
+| REQ-PUSH-98 | Browser autoplay policy: the suite catches `play()` rejections silently and continues. The first user interaction with the tab primes the audio context; cues that would have played before that are dropped (no queueing). The user is not warned. |
+| REQ-PUSH-99 | The call cue plays once on `call.invite` arrival and stops as soon as the user accepts, declines, or the 30-second auto-decline window elapses (`21-video-calls.md` REQ-CALL-04). It is not looped — the visible IncomingCall modal carries the persistent affordance. |
 
 - Digest notifications ("You have 5 new messages — see all"). Coalescing per-thread covers the dominant case; daily-digest-style summaries deferred to phase 2.
 - AI-summarised notification body ("This message says you should call your bank"). NG7-adjacent; cut.
-- Custom notification sounds beyond the platform default. Platform default per type (call ring vs message ping) is what every other client does and is recognisable; custom sounds are a long tail.
+- Custom notification sounds in the Web Push payload's `sound` field. The platform default carries every Web Push notification; custom sounds at the SW level are a long tail. (In-app audio cues — played by the SPA itself while the tab is open — are in scope and specified in REQ-PUSH-95..99.)
 - Notifications when the device is offline and queued for delivery on reconnect. Push services handle this opaquely; the suite relies on their behaviour, doesn't second-guess.
 - Notifications for sent mail confirmation / delivery success. EventSource carries that for active sessions; nobody wants a "your message was sent" notification.
 - Per-conversation push rules in chat (this conversation always vs muted). Conversation-mute already covers it (`08-chat.md` REQ-CHAT-07); a separate "always notify" doesn't add value over the inverse.
