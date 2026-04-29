@@ -56,8 +56,8 @@ type jmapLLMTransparency struct {
 
 // handlerSet bundles dependencies for all LLMTransparency handlers.
 type handlerSet struct {
-	store        store.Store
-	spamPolicy   protoadmin.SpamPolicyStore
+	store      store.Store
+	spamPolicy protoadmin.SpamPolicyStore
 	// categoriserEndpoint and categoriserModel are the operator-default values
 	// (from system config / Options). Per-account overrides are resolved from
 	// the store.CategorisationConfig row.

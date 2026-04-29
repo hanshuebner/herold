@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
-	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailarc"
+	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailauth/keymgmt"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"

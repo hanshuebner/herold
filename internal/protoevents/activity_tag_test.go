@@ -154,12 +154,12 @@ func TestEventsActivityTag_Publish_IsSystem(t *testing.T) {
 	inv := &alwaysSucceedInvoker{}
 
 	d, err := protoevents.New(protoevents.Options{
-		Logger:      lg,
-		Clock:       clk,
-		Plugins:     inv,
-		PluginNames: []string{"nats"},
-		BufferSize:  16,
-		MaxRetries:  1,
+		Logger:       lg,
+		Clock:        clk,
+		Plugins:      inv,
+		PluginNames:  []string{"nats"},
+		BufferSize:   16,
+		MaxRetries:   1,
 		RetryBackoff: 10 * time.Millisecond,
 	})
 	if err != nil {
@@ -330,9 +330,9 @@ func TestEventsActivityTag_AllRecordsTagged(t *testing.T) {
 
 // mixedCallInvoker returns an error based on call count.
 type mixedCallInvoker struct {
-	mu   sync.Mutex
-	n    int
-	fn   func(n int) error
+	mu sync.Mutex
+	n  int
+	fn func(n int) error
 }
 
 func (m *mixedCallInvoker) Call(_ context.Context, _, _ string, _, _ any) error {

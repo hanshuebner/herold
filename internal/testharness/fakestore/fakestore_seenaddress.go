@@ -13,9 +13,9 @@ import (
 
 // seenAddressData holds the in-memory seen-address state.
 type seenAddressData struct {
-	rows      map[store.SeenAddressID]store.SeenAddress
-	nextID    store.SeenAddressID
-	byEmail   map[string]store.SeenAddressID // "pid:email" -> id
+	rows    map[store.SeenAddressID]store.SeenAddress
+	nextID  store.SeenAddressID
+	byEmail map[string]store.SeenAddressID // "pid:email" -> id
 }
 
 func newSeenAddressData() *seenAddressData {
@@ -304,4 +304,3 @@ func (m *metaFace) PurgeSeenAddressesByPrincipal(
 	}
 	return n, nil
 }
-

@@ -310,7 +310,6 @@ func (h *ConsoleHandler) formatRecord(buf *bytes.Buffer, r slog.Record) {
 	buf.WriteByte('\n')
 }
 
-
 // levelStr returns a 4-char level abbreviation and ANSI colour for it.
 func levelStr(lvl slog.Level) (string, string) {
 	switch {

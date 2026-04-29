@@ -53,10 +53,10 @@ type principalGetRequest struct {
 }
 
 type principalGetResponse struct {
-	AccountID string         `json:"accountId"`
-	State     string         `json:"state"`
+	AccountID string          `json:"accountId"`
+	State     string          `json:"state"`
 	List      []jmapPrincipal `json:"list"`
-	NotFound  []jmapID       `json:"notFound"`
+	NotFound  []jmapID        `json:"notFound"`
 }
 
 type principalGetHandler struct{ h *handlerSet }

@@ -2122,17 +2122,17 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 	out := make(map[store.MessageID]store.LLMClassificationRecord, len(msgIDs))
 	for rows.Next() {
 		var (
-			msgIDInt, pidInt         int64
-			spamVerdict              *string
-			spamConfidence           *float64
-			spamReason               *string
-			spamPromptApplied        *string
-			spamModel                *string
-			spamClassifiedAtUs       *int64
-			categoryAssigned         *string
-			categoryPromptApplied    *string
-			categoryModel            *string
-			categoryClassifiedAtUs   *int64
+			msgIDInt, pidInt       int64
+			spamVerdict            *string
+			spamConfidence         *float64
+			spamReason             *string
+			spamPromptApplied      *string
+			spamModel              *string
+			spamClassifiedAtUs     *int64
+			categoryAssigned       *string
+			categoryPromptApplied  *string
+			categoryModel          *string
+			categoryClassifiedAtUs *int64
 		)
 		if err := rows.Scan(&msgIDInt, &pidInt,
 			&spamVerdict, &spamConfidence, &spamReason,

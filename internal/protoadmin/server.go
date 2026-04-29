@@ -85,9 +85,9 @@ type DNSVerifyRecord struct {
 // SpamPolicy is the active spam policy snapshot. The store holds it
 // in-memory (no schema yet); persistence lands in a later phase.
 type SpamPolicy struct {
-	PluginName           string  `json:"plugin_name"`
-	Threshold            float64 `json:"threshold"`
-	Model                string  `json:"model,omitempty"`
+	PluginName string  `json:"plugin_name"`
+	Threshold  float64 `json:"threshold"`
+	Model      string  `json:"model,omitempty"`
 	// SystemPromptOverride is the user-visible system prompt for the spam
 	// classifier (REQ-FILT-22). Returned by the LLM-transparency endpoint
 	// (REQ-FILT-65 / REQ-FILT-67). Default empty = use the plugin's built-in

@@ -3580,8 +3580,8 @@ func testLLMClassificationBothFields(t *testing.T, s store.Store) {
 	cat := "promotions"
 
 	rec := store.LLMClassificationRecord{
-		MessageID:   msg.ID,
-		PrincipalID: p.ID,
+		MessageID:        msg.ID,
+		PrincipalID:      p.ID,
 		SpamVerdict:      &verdict,
 		SpamConfidence:   &conf,
 		CategoryAssigned: &cat,

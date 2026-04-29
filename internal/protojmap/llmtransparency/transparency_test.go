@@ -24,7 +24,7 @@ type fakeSpamPolicy struct {
 	policy protoadmin.SpamPolicy
 }
 
-func (f *fakeSpamPolicy) GetSpamPolicy() protoadmin.SpamPolicy { return f.policy }
+func (f *fakeSpamPolicy) GetSpamPolicy() protoadmin.SpamPolicy  { return f.policy }
 func (f *fakeSpamPolicy) SetSpamPolicy(p protoadmin.SpamPolicy) { f.policy = p }
 
 // -- helpers ---------------------------------------------------------------

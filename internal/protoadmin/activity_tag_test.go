@@ -46,7 +46,7 @@ func buildTagServer(t *testing.T, lg *slog.Logger) (*protoadmin.Server, *fakesto
 		BootstrapPerWindow: 10,
 		BootstrapWindow:    time.Minute,
 		Session: authsession.SessionConfig{
-			SigningKey:  []byte("activity-tag-test-key-32bytes-xx"),
+			SigningKey: []byte("activity-tag-test-key-32bytes-xx"),
 			CookieName: "herold_admin_session",
 		},
 	})
@@ -230,7 +230,7 @@ func TestActivityTag_LoginFailure_IsAuditWarn(t *testing.T) {
 		BootstrapPerWindow: 10,
 		BootstrapWindow:    time.Minute,
 		Session: authsession.SessionConfig{
-			SigningKey:  []byte("activity-tag-test-key-32bytes-xx"),
+			SigningKey: []byte("activity-tag-test-key-32bytes-xx"),
 			CookieName: "herold_admin_session",
 		},
 	})

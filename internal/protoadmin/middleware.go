@@ -206,4 +206,3 @@ func (s *Server) appendAudit(
 }
 
 const ctxKeyRemoteAddr ctxKey = 99
-

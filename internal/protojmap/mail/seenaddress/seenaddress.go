@@ -363,12 +363,12 @@ type setRequest struct {
 }
 
 type setResponse struct {
-	AccountID    jmapID             `json:"accountId"`
-	OldState     string             `json:"oldState"`
-	NewState     string             `json:"newState"`
-	Created      map[string]any     `json:"created"`
-	Updated      map[jmapID]any     `json:"updated"`
-	Destroyed    []jmapID           `json:"destroyed"`
+	AccountID    jmapID              `json:"accountId"`
+	OldState     string              `json:"oldState"`
+	NewState     string              `json:"newState"`
+	Created      map[string]any      `json:"created"`
+	Updated      map[jmapID]any      `json:"updated"`
+	Destroyed    []jmapID            `json:"destroyed"`
 	NotCreated   map[string]setError `json:"notCreated"`
 	NotUpdated   map[jmapID]setError `json:"notUpdated"`
 	NotDestroyed map[jmapID]setError `json:"notDestroyed"`

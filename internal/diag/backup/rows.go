@@ -590,18 +590,18 @@ type CoachDismissRow struct {
 // All nullable sub-record columns use pointers so absent fields round-trip
 // as JSON null.
 type LLMClassificationRow struct {
-	MessageID               int64    `json:"message_id"`
-	PrincipalID             int64    `json:"principal_id"`
-	SpamVerdict             *string  `json:"spam_verdict,omitempty"`
-	SpamConfidence          *float64 `json:"spam_confidence,omitempty"`
-	SpamReason              *string  `json:"spam_reason,omitempty"`
-	SpamPromptApplied       *string  `json:"spam_prompt_applied,omitempty"`
-	SpamModel               *string  `json:"spam_model,omitempty"`
-	SpamClassifiedAtUs      *int64   `json:"spam_classified_at_us,omitempty"`
-	CategoryAssigned        *string  `json:"category_assigned,omitempty"`
-	CategoryPromptApplied   *string  `json:"category_prompt_applied,omitempty"`
-	CategoryModel           *string  `json:"category_model,omitempty"`
-	CategoryClassifiedAtUs  *int64   `json:"category_classified_at_us,omitempty"`
+	MessageID              int64    `json:"message_id"`
+	PrincipalID            int64    `json:"principal_id"`
+	SpamVerdict            *string  `json:"spam_verdict,omitempty"`
+	SpamConfidence         *float64 `json:"spam_confidence,omitempty"`
+	SpamReason             *string  `json:"spam_reason,omitempty"`
+	SpamPromptApplied      *string  `json:"spam_prompt_applied,omitempty"`
+	SpamModel              *string  `json:"spam_model,omitempty"`
+	SpamClassifiedAtUs     *int64   `json:"spam_classified_at_us,omitempty"`
+	CategoryAssigned       *string  `json:"category_assigned,omitempty"`
+	CategoryPromptApplied  *string  `json:"category_prompt_applied,omitempty"`
+	CategoryModel          *string  `json:"category_model,omitempty"`
+	CategoryClassifiedAtUs *int64   `json:"category_classified_at_us,omitempty"`
 }
 
 // SeenAddressRow mirrors the seen_addresses table introduced in

@@ -222,14 +222,14 @@ func TestDispatch_LogsMethodActivity(t *testing.T) {
 	// response schemas so appendMethodCountAttrs can decode them.
 	const cap = protojmap.CapabilityID("urn:test:activity")
 	setResp := map[string]any{
-		"accountId":  protojmap.AccountIDForPrincipal(pid),
-		"oldState":   "1",
-		"newState":   "2",
-		"created":    map[string]any{"c1": map[string]any{"id": "new1"}},
-		"updated":    map[string]any{},
-		"destroyed":  []string{"old1"},
-		"notCreated": map[string]any{},
-		"notUpdated": map[string]any{},
+		"accountId":    protojmap.AccountIDForPrincipal(pid),
+		"oldState":     "1",
+		"newState":     "2",
+		"created":      map[string]any{"c1": map[string]any{"id": "new1"}},
+		"updated":      map[string]any{},
+		"destroyed":    []string{"old1"},
+		"notCreated":   map[string]any{},
+		"notUpdated":   map[string]any{},
 		"notDestroyed": map[string]any{},
 	}
 	getResp := map[string]any{

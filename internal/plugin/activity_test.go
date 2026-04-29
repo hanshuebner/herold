@@ -389,9 +389,9 @@ func TestSuperviseLoop_RestartLog_ActivitySystem(t *testing.T) {
 	// We only want one crash + restart log. Cap the test by limiting
 	// MaxCrashes to 0 so the circuit breaker fires after 1 crash recorded.
 	p := newPlugin(mgr, Spec{
-		Name:      "fake",
-		Type:      TypeEcho,
-		Lifecycle: LifecycleLongRunning,
+		Name:       "fake",
+		Type:       TypeEcho,
+		Lifecycle:  LifecycleLongRunning,
 		MaxCrashes: 0, // exhaust immediately after first crash
 	})
 	// Override logger so records go to our handler.
