@@ -77,7 +77,7 @@ func (s *Server) handleEventSource(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	log := loggerFromContext(r.Context(), s.log)
-	log.Info("protojmap.eventsource.open",
+	log.Info("eventsource.open",
 		"activity", "user",
 		"principal_id", uint64(p.ID),
 		"types", q.Get("types"),
@@ -87,14 +87,14 @@ func (s *Server) handleEventSource(w http.ResponseWriter, r *http.Request) {
 	poll := changeFeedPoller(s.store.Meta().ReadChangeFeed)
 	if err := s.runEventSource(r.Context(), log, w, flusher, p, types, closeAfterState, ping, poll); err != nil {
 		if !errors.Is(err, context.Canceled) {
-			log.Debug("protojmap.eventsource.exit",
+			log.Debug("eventsource.exit",
 				"activity", "user",
 				"err", err,
 				"principal_id", uint64(p.ID),
 			)
 		}
 	}
-	log.Info("protojmap.eventsource.close",
+	log.Info("eventsource.close",
 		"activity", "user",
 		"principal_id", uint64(p.ID),
 	)
@@ -143,7 +143,7 @@ func (s *Server) runEventSource(
 				if errors.Is(err, context.Canceled) {
 					return err
 				}
-				log.Warn("protojmap.eventsource.read_failed",
+				log.Warn("eventsource.read_failed",
 					"activity", "internal",
 					"err", err,
 					"principal_id", uint64(p.ID),
@@ -171,7 +171,7 @@ func (s *Server) runEventSource(
 			pendingChanged = false
 			ev, err := s.buildStateChange(ctx, p, types)
 			if err != nil {
-				log.Warn("protojmap.eventsource.state_failed",
+				log.Warn("eventsource.state_failed",
 					"activity", "internal",
 					"err", err,
 					"principal_id", uint64(p.ID),
@@ -191,7 +191,7 @@ func (s *Server) runEventSource(
 				return err
 			}
 			flusher.Flush()
-			log.Debug("protojmap.eventsource.ping",
+			log.Debug("eventsource.ping",
 				"activity", "poll",
 				"principal_id", uint64(p.ID),
 			)

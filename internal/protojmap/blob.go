@@ -116,7 +116,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 				"limitTooLarge", "upload exceeds maxSizeUpload")
 			return
 		}
-		s.log.Warn("protojmap.upload.put_failed", "err", err)
+		s.log.Warn("upload.put_failed", "err", err)
 		WriteJMAPError(w, http.StatusInternalServerError,
 			"serverFail", "blob put failed")
 		return
@@ -128,7 +128,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		Size:      ref.Size,
 	}
 	log := loggerFromContext(r.Context(), s.log)
-	log.Info("protojmap.upload",
+	log.Info("upload",
 		"activity", "user",
 		"principal_id", uint64(p.ID),
 		"account_id", accountID,
@@ -250,7 +250,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 				WriteJMAPError(w, http.StatusNotFound, "blobNotFound", blobID)
 				return
 			}
-			s.log.Warn("protojmap.download.part_resolve_failed", "err", err, "blob", blobID)
+			s.log.Warn("download.part_resolve_failed", "err", err, "blob", blobID)
 			WriteJMAPError(w, http.StatusInternalServerError,
 				"serverFail", "part blob resolve failed")
 			return
@@ -277,7 +277,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			contentType = part.contentType
 		}
 		log := loggerFromContext(r.Context(), s.log)
-		log.Info("protojmap.download",
+		log.Info("download",
 			"activity", "user",
 			"principal_id", uint64(p.ID),
 			"account_id", accountID,
@@ -293,7 +293,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(w, bytes.NewReader(part.data)); err != nil {
-			s.log.Warn("protojmap.download.copy_failed", "err", err, "blob", blobID)
+			s.log.Warn("download.copy_failed", "err", err, "blob", blobID)
 		}
 		return
 	}
@@ -304,7 +304,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			WriteJMAPError(w, http.StatusNotFound, "blobNotFound", blobID)
 			return
 		}
-		s.log.Warn("protojmap.download.stat_failed", "err", err, "blob", blobID)
+		s.log.Warn("download.stat_failed", "err", err, "blob", blobID)
 		WriteJMAPError(w, http.StatusInternalServerError,
 			"serverFail", "stat failed")
 		return
@@ -331,14 +331,14 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			WriteJMAPError(w, http.StatusNotFound, "blobNotFound", blobID)
 			return
 		}
-		s.log.Warn("protojmap.download.get_failed", "err", err, "blob", blobID)
+		s.log.Warn("download.get_failed", "err", err, "blob", blobID)
 		WriteJMAPError(w, http.StatusInternalServerError,
 			"serverFail", "blob get failed")
 		return
 	}
 	defer rc.Close()
 	log := loggerFromContext(r.Context(), s.log)
-	log.Info("protojmap.download",
+	log.Info("download",
 		"activity", "user",
 		"principal_id", uint64(p.ID),
 		"account_id", accountID,
@@ -354,6 +354,6 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(w, rc); err != nil {
-		s.log.Warn("protojmap.download.copy_failed", "err", err, "blob", blobID)
+		s.log.Warn("download.copy_failed", "err", err, "blob", blobID)
 	}
 }

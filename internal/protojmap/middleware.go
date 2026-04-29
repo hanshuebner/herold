@@ -49,7 +49,7 @@ func (s *Server) withRequestLog(next http.Handler) http.Handler {
 		if p, ok := PrincipalFromContext(r.Context()); ok {
 			attrs = append(attrs, slog.Uint64("principal_id", uint64(p.ID)))
 		}
-		reqLog.LogAttrs(ctx, slog.LevelDebug, "protojmap.request", attrs...)
+		reqLog.LogAttrs(ctx, slog.LevelDebug, "request", attrs...)
 	})
 }
 
@@ -61,7 +61,7 @@ func (s *Server) withPanicRecover(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				log := loggerFromContext(r.Context(), s.log)
-				log.Error("protojmap.panic",
+				log.Error("panic",
 					"activity", "internal",
 					"err", fmt.Sprintf("%v", rec),
 					"stack", string(debug.Stack()))

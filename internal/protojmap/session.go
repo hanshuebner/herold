@@ -54,7 +54,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(desc); err != nil {
-		s.log.Warn("protojmap.session.encode_failed", "err", err)
+		s.log.Warn("session.encode_failed", "err", err)
 	}
 }
 

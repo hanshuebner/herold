@@ -165,7 +165,7 @@ func TestRequestLog_AccessTagged(t *testing.T) {
 	// Find the access record.
 	var accessRecs []capturedRecord
 	for _, rec := range records.snapshot() {
-		if rec.Message == "protojmap.request" {
+		if rec.Message == "request" {
 			accessRecs = append(accessRecs, rec)
 		}
 	}
@@ -474,7 +474,7 @@ pinged:
 	// Find ping records.
 	var pingRecs []capturedRecord
 	for _, rec := range records.snapshot() {
-		if rec.Message == "protojmap.eventsource.ping" {
+		if rec.Message == "eventsource.ping" {
 			pingRecs = append(pingRecs, rec)
 		}
 	}
@@ -492,7 +492,7 @@ pinged:
 
 	// Spot-check that the open record is at info + activity=user.
 	for _, rec := range records.snapshot() {
-		if rec.Message == "protojmap.eventsource.open" {
+		if rec.Message == "eventsource.open" {
 			if rec.Level != slog.LevelInfo {
 				t.Errorf("open record level = %v, want info", rec.Level)
 			}

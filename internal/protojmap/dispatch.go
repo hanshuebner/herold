@@ -91,7 +91,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
 	if err := enc.Encode(resp); err != nil {
-		s.log.Warn("protojmap.api.encode_failed", "err", err)
+		s.log.Warn("api.encode_failed", "err", err)
 	}
 }
 

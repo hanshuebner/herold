@@ -119,7 +119,7 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Princ
 		if ok {
 			p, err := s.store.Meta().GetPrincipalByID(ctx, pid)
 			if err != nil {
-				s.log.Warn("protojmap.auth.cookie_principal_lookup_failed",
+				s.log.Warn("auth.cookie_principal_lookup_failed",
 					"err", err, "principal_id", pid)
 				return store.Principal{}, nil, false
 			}
@@ -140,7 +140,7 @@ func (s *Server) authenticateBearer(ctx context.Context, token string) (store.Pr
 	key, err := s.apikeyLookup(ctx, hashed)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
-			s.log.Warn("protojmap.auth.lookup_failed", "err", err)
+			s.log.Warn("auth.lookup_failed", "err", err)
 		}
 		return store.Principal{}, nil, false
 	}
@@ -149,7 +149,7 @@ func (s *Server) authenticateBearer(ctx context.Context, token string) (store.Pr
 	}
 	p, err := s.store.Meta().GetPrincipalByID(ctx, key.PrincipalID)
 	if err != nil {
-		s.log.Warn("protojmap.auth.principal_lookup_failed",
+		s.log.Warn("auth.principal_lookup_failed",
 			"err", err, "principal_id", key.PrincipalID)
 		return store.Principal{}, nil, false
 	}
@@ -178,7 +178,7 @@ func (s *Server) authenticateBasic(ctx context.Context, encoded string) (store.P
 	}
 	p, err := s.store.Meta().GetPrincipalByID(ctx, pid)
 	if err != nil {
-		s.log.Warn("protojmap.auth.basic_principal_lookup_failed",
+		s.log.Warn("auth.basic_principal_lookup_failed",
 			"err", err, "principal_id", pid)
 		return store.Principal{}, false
 	}
