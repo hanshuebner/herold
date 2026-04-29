@@ -114,11 +114,14 @@
   --support-info: #4589ff;
 
   /* Presence dots want a louder, more saturated palette than the
-     muted Carbon support- tokens; the chat dots are tiny (~11px)
-     and need to read at a glance against the avatar. */
-  --presence-online: #22c55e;
+     muted Carbon support- tokens; the chat dots are tiny and need to
+     read at a glance against the avatar. emerald-500 reads as more
+     vivid green than the previous tailwind green-500 (#22c55e); the
+     offline tone is a lighter slate so the dot is clearly muted
+     without competing with the surrounding chrome. */
+  --presence-online: #10b981;
   --presence-away: #f59e0b;
-  --presence-offline: #94a3b8;
+  --presence-offline: #cbd5e1;
 }
 
 /* ── Light theme ───────────────────────────────────────────────────────── */
@@ -146,9 +149,9 @@
   --support-warning: #f1c21b;
   --support-info: #0043ce;
 
-  --presence-online: #16a34a;
+  --presence-online: #059669;
   --presence-away: #d97706;
-  --presence-offline: #64748b;
+  --presence-offline: #94a3b8;
 }
 
 /* ── System theme — follow prefers-color-scheme ────────────────────────── */
@@ -177,8 +180,8 @@
     --support-warning: #f1c21b;
     --support-info: #0043ce;
 
-    --presence-online: #16a34a;
+    --presence-online: #059669;
     --presence-away: #d97706;
-    --presence-offline: #64748b;
+    --presence-offline: #94a3b8;
   }
 }
