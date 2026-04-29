@@ -338,9 +338,12 @@
           <div class="recipient-anchor">
             <div class="recipient-box" class:has-error={!!emailError}>
               {#each chips as chip (chip.principal.id)}
+                {@const hasRealName = chip.principal.displayName !== chip.principal.email}
                 <span class="chip" aria-label="Recipient: {chip.principal.displayName}">
-                  <span class="chip-name">{chip.principal.displayName}</span>
-                  <span class="chip-email">{chip.principal.email}</span>
+                  <span
+                    class="chip-label"
+                    title={hasRealName ? chip.principal.email : undefined}
+                  >{hasRealName ? chip.principal.displayName : chip.principal.email}</span>
                   <button
                     type="button"
                     class="chip-remove"
@@ -588,17 +591,8 @@
     max-width: 200px;
   }
 
-  .chip-name {
-    font-weight: 600;
+  .chip-label {
     color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .chip-email {
-    color: var(--text-helper);
-    font-size: 11px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

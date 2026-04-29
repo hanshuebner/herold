@@ -357,6 +357,64 @@ describe('NewChatPicker', () => {
     expect(heightAfter).toBe(heightBefore);
   });
 
+  // ── chip label rendering (issue #45) ────────────────────────────────
+
+  it('chip label: shows name only when displayName differs from email, email on title', async () => {
+    vi.mocked(chat.lookupPrincipalByEmail).mockResolvedValue({
+      id: 'prin-alice',
+      email: 'alice@example.com',
+      displayName: 'Alice Smith',
+    });
+
+    render(NewChatPicker);
+    openDM();
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+
+    const input = screen.getByRole('textbox', { name: /Search for a person/i });
+    await fireEvent.input(input, { target: { value: 'alice@example.com' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/Recipient: Alice Smith/)).toBeInTheDocument(),
+    );
+
+    const chipLabel = screen.getByRole('dialog').querySelector('.chip-label') as HTMLElement;
+    expect(chipLabel).not.toBeNull();
+    // Visible text is the name only — email must not appear in text content.
+    expect(chipLabel.textContent?.trim()).toBe('Alice Smith');
+    expect(chipLabel.textContent).not.toContain('alice@example.com');
+    // Email is on the title attribute for hover.
+    expect(chipLabel.getAttribute('title')).toBe('alice@example.com');
+  });
+
+  it('chip label: shows email only when displayName equals email (no real name set), no title', async () => {
+    vi.mocked(chat.lookupPrincipalByEmail).mockResolvedValue({
+      id: 'prin-bob',
+      email: 'bob@example.com',
+      // Server returns email as displayName when no real name is set.
+      displayName: 'bob@example.com',
+    });
+
+    render(NewChatPicker);
+    openDM();
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+
+    const input = screen.getByRole('textbox', { name: /Search for a person/i });
+    await fireEvent.input(input, { target: { value: 'bob@example.com' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/Recipient: bob@example.com/)).toBeInTheDocument(),
+    );
+
+    const chipLabel = screen.getByRole('dialog').querySelector('.chip-label') as HTMLElement;
+    expect(chipLabel).not.toBeNull();
+    // Visible text is the email — appears exactly once in the chip label.
+    expect(chipLabel.textContent?.trim()).toBe('bob@example.com');
+    // No title attribute when name equals email.
+    expect(chipLabel.getAttribute('title')).toBeNull();
+  });
+
   // ── REQ-CHAT-15: no principal id in DOM ─────────────────────────────
 
   it('REQ-CHAT-15: principal id is never rendered in the chip or suggestions', async () => {
