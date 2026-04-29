@@ -19,6 +19,7 @@
   import SieveForm from './settings/SieveForm.svelte';
   import CategoriesForm from './settings/CategoriesForm.svelte';
   import FiltersForm from './settings/FiltersForm.svelte';
+  import PrivacyForm from './settings/PrivacyForm.svelte';
   import { Capability } from '../lib/jmap/types';
   import { jmap } from '../lib/jmap/client';
   import { LOCALES, type Locale } from '../lib/i18n/i18n.svelte';
@@ -436,6 +437,9 @@
           </ul>
         {/if}
       {/if}
+
+      <h3>Autocomplete history</h3>
+      <PrivacyForm />
 
     {:else if activeSection === 'about'}
       <h2>About</h2>

@@ -14,6 +14,10 @@
    *     (REQ-MAIL-11d).
    */
   import { contacts, type ContactSuggestion } from '../contacts/store.svelte';
+  import { seenAddresses } from '../contacts/seen-addresses.svelte';
+  import { jmap, strict } from '../jmap/client';
+  import { Capability } from '../jmap/types';
+  import { auth } from '../auth/auth.svelte';
   import {
     tryCommit,
     parsePaste,
@@ -69,6 +73,7 @@
 
   function onFocus(): void {
     if (contacts.status === 'idle') void contacts.load();
+    if (seenAddresses.status === 'idle') void seenAddresses.load();
     isOpen = true;
   }
 
@@ -239,6 +244,55 @@
   function onRowClick(): void {
     inputEl?.focus();
   }
+
+  /**
+   * Return true when the chip's email is in the seen-addresses history but
+   * NOT already a saved JMAP Contact. Used to show the "Save to contacts"
+   * affordance (REQ-MAIL-11 secondary).
+   * TODO REQ-MAIL-11 secondary: wire "Save to contacts" into the chip menu
+   * when the Contact/set round-trip is tested end-to-end.
+   */
+  function isSeenOnly(chip: Recipient): boolean {
+    const email = chip.email.toLowerCase();
+    const inContacts = contacts.suggestions.some((c) => c.email.toLowerCase() === email);
+    if (inContacts) return false;
+    return seenAddresses.entries.some((sa) => sa.email.toLowerCase() === email);
+  }
+
+  /** Create a JMAP Contact for a chip whose address is seen-only. */
+  async function saveToContacts(chip: Recipient): Promise<void> {
+    const accountId = auth.session?.primaryAccounts[Capability.Contacts] ?? null;
+    if (!accountId) return;
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Contact/set',
+          {
+            accountId,
+            create: {
+              new1: {
+                name: chip.name
+                  ? {
+                      full: chip.name,
+                      components: [{ type: 'personal', value: chip.name }],
+                    }
+                  : undefined,
+                emails: {
+                  primary: { address: chip.email },
+                },
+              },
+            },
+          },
+          [Capability.Contacts],
+        );
+      });
+      strict(responses);
+      // The server removes the matching SeenAddress row on the next state
+      // advance (REQ-MAIL-11l). No local cleanup needed here.
+    } catch (err) {
+      console.error('saveToContacts failed', err);
+    }
+  }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -251,6 +305,18 @@
         <span class="chip-label">
           {chip.name ? `${chip.name} <${chip.email}>` : chip.email}
         </span>
+        {#if isSeenOnly(chip)}
+          <button
+            type="button"
+            class="chip-save"
+            title="Save to contacts"
+            aria-label="Save {chip.email} to contacts"
+            {disabled}
+            onclick={(e) => { e.stopPropagation(); void saveToContacts(chip); }}
+          >
+            +
+          </button>
+        {/if}
         <button
           type="button"
           class="chip-remove"
@@ -354,7 +420,8 @@
     color: var(--text-primary);
   }
 
-  .chip-remove {
+  .chip-remove,
+  .chip-save {
     flex: 0 0 auto;
     width: 16px;
     height: 16px;
@@ -366,11 +433,13 @@
     align-items: center;
     justify-content: center;
   }
-  .chip-remove:hover:not(:disabled) {
+  .chip-remove:hover:not(:disabled),
+  .chip-save:hover:not(:disabled) {
     background: var(--layer-03);
     color: var(--text-primary);
   }
-  .chip-remove:disabled {
+  .chip-remove:disabled,
+  .chip-save:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }

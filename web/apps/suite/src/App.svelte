@@ -58,8 +58,8 @@
         ? Capability.HeroldChat in (auth.session.capabilities ?? {})
         : false;
       const types = hasCap
-        ? ['Email', 'Mailbox', 'Thread', 'Conversation', 'Message', 'Membership']
-        : ['Email', 'Mailbox', 'Thread'];
+        ? ['Email', 'Mailbox', 'Thread', 'Conversation', 'Message', 'Membership', 'SeenAddress']
+        : ['Email', 'Mailbox', 'Thread', 'SeenAddress'];
       sync.start(types);
 
       untrack(() => {
