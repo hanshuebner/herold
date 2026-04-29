@@ -846,6 +846,36 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		return nil
 	})
 
+	// OAuth token refresh sweeper (REQ-AUTH-EXT-SUBMIT-02, Phase 6).
+	// Only started when external_submission.enabled = true; the sweeper
+	// queries identity_submission rows whose refresh_due_us <= now and
+	// dispatches refresh attempts to a bounded worker pool.
+	if cfg.Server.ExternalSubmission.Enabled && prebuiltExtSubmitter != nil {
+		workerCount := cfg.Server.ExternalSubmission.SweeperWorkers
+		if workerCount <= 0 {
+			workerCount = 4 // default per architectural decision 1
+		}
+		refresher := &extsubmit.Refresher{
+			Meta:    st.Meta(),
+			DataKey: extSubmitDataKey,
+		}
+		sweeper := &extsubmit.Sweeper{
+			Store:        st.Meta(),
+			TokenRefresh: refresher,
+			DataKey:      extSubmitDataKey,
+			Logger:       logger.With("subsystem", "extsubmit-sweeper"),
+			Workers:      workerCount,
+		}
+		g.Go(func() error {
+			if err := sweeper.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.LogAttrs(context.Background(), slog.LevelWarn,
+					"extsubmit sweeper exited", slog.String("err", err.Error()))
+				return err
+			}
+			return nil
+		})
+	}
+
 	// ShortcutCoachStat GC tick (Phase 3 Wave 3.10 fixup, REQ-PROTO-110).
 	// Deletes coach_events rows older than jmapcoach.GCWindow (90 days) on
 	// a daily cadence with a 1-hour jitter to avoid thundering-herd on
