@@ -300,6 +300,69 @@ func recordToPersisted(r identityRecord) store.JMAPIdentity {
 	return row
 }
 
+// BumpIdentityPushState increments the JMAPStateKindIdentity counter for
+// principal pid. EmailSubmission/set calls this when an external submission
+// results in an auth-failed or unreachable outcome so JMAP push clients
+// observe the identity state change (REQ-AUTH-EXT-SUBMIT-05).
+// Returns an error only when the store call fails; the caller decides
+// whether to surface it to the client.
+func (s *Store) BumpIdentityPushState(ctx context.Context, pid store.PrincipalID) error {
+	if s.st == nil {
+		return nil
+	}
+	_, err := s.st.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindIdentity)
+	return err
+}
+
+// HasExternalSubmission reports whether the Identity identified by the
+// wire-form JMAP id (e.g. "default" or a decimal overlay id) belonging to
+// principal pid has an external SMTP submission configuration stored.
+// Returns false on any error (treat as "no configuration"). The decryption of
+// credential fields happens inside extsubmit.Submitter.Submit; this method
+// never touches ciphertext.
+func (s *Store) HasExternalSubmission(ctx context.Context, pid store.PrincipalID, identityJMAPID string) bool {
+	if s.st == nil {
+		return false
+	}
+	// Resolve wire-form id to the storage id. The default identity uses the
+	// principal's canonical email, not a row in jmap_identities; its storage
+	// id in identity_submission uses the JMAP wire id verbatim (the REST
+	// layer that created it did the same mapping).
+	sub, err := s.st.Meta().GetIdentitySubmission(ctx, identityJMAPID)
+	if err != nil {
+		return false
+	}
+	// Cross-check that the submission config belongs to an identity owned by
+	// the requesting principal by verifying either it is the default identity
+	// or that the identity row belongs to pid.
+	if identityJMAPID == "default" {
+		// Default identity is always owned by the principal.
+		return true
+	}
+	row, err := s.st.Meta().GetJMAPIdentity(ctx, identityJMAPID)
+	if err != nil || row.PrincipalID != pid {
+		return false
+	}
+	_ = sub
+	return true
+}
+
+// SubmissionConfig returns the external SMTP submission configuration for the
+// Identity identified by identityJMAPID owned by pid. Returns an error when no
+// configuration exists or when the identity does not belong to pid.
+func (s *Store) SubmissionConfig(ctx context.Context, pid store.PrincipalID, identityJMAPID string) (store.IdentitySubmission, error) {
+	if s.st == nil {
+		return store.IdentitySubmission{}, store.ErrNotFound
+	}
+	if identityJMAPID != "default" {
+		row, err := s.st.Meta().GetJMAPIdentity(ctx, identityJMAPID)
+		if err != nil || row.PrincipalID != pid {
+			return store.IdentitySubmission{}, store.ErrNotFound
+		}
+	}
+	return s.st.Meta().GetIdentitySubmission(ctx, identityJMAPID)
+}
+
 var _ = fmt.Sprint // keep fmt import in case future code logs persistence errors
 
 // snapshot returns the principal's identities in id order, used by

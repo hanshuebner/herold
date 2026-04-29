@@ -132,6 +132,35 @@ func TestIdentity_Changes_NoOpWhenSameState(t *testing.T) {
 	}
 }
 
+// -- REQ-AUTH-EXT-SUBMIT-05: external-submission state bump -----------
+
+// TestIdentity_BumpIdentityPushState verifies that BumpIdentityPushState
+// increments JMAPStateKindIdentity so JMAP push clients are notified when an
+// external submission outcome transitions the identity state (e.g. auth-failed
+// or unreachable).
+func TestIdentity_BumpIdentityPushState(t *testing.T) {
+	_, st, p := newHandlers(t)
+	ctx := context.Background()
+	idStore := NewStoreWith(st, clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+
+	before, err := st.Meta().GetJMAPStates(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetJMAPStates before: %v", err)
+	}
+
+	if err := idStore.BumpIdentityPushState(ctx, p.ID); err != nil {
+		t.Fatalf("BumpIdentityPushState: %v", err)
+	}
+
+	after, err := st.Meta().GetJMAPStates(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetJMAPStates after: %v", err)
+	}
+	if after.Identity <= before.Identity {
+		t.Fatalf("identity state not incremented: before=%d after=%d", before.Identity, after.Identity)
+	}
+}
+
 // -- REQ-PROTO-57 / REQ-STORE-35 Identity.signature extension ------
 
 // TestIdentity_Get_IncludesSignature verifies that Identity/get reflects
