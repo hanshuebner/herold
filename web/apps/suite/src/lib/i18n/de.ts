@@ -62,8 +62,6 @@ export const de = {
   'thread.retry': 'Erneut versuchen',
   'thread.empty': 'Diese Konversation enthält keine Nachrichten.',
   'thread.print': 'Konversation drucken',
-  'thread.messages': '{count} Nachricht',
-  'thread.messages.other': '{count} Nachrichten',
   'thread.subject.none': '(kein Betreff)',
 
   // ── Message actions (issue #17 tooltips) ─────────────────────────────

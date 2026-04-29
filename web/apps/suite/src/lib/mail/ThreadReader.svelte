@@ -105,11 +105,6 @@
           <PrintIcon size={18} />
         </button>
       </div>
-      <p class="count">
-        {emails.length === 1
-          ? t('thread.messages', { count: emails.length })
-          : t('thread.messages.other', { count: emails.length })}
-      </p>
     </header>
     <div class="messages">
       {#each emails as email (email.id)}
@@ -142,11 +137,6 @@
     margin: 0 0 var(--spacing-02);
     word-break: break-word;
     flex: 1;
-  }
-  .count {
-    color: var(--text-secondary);
-    font-size: var(--type-body-compact-01-size);
-    margin: 0;
   }
   .print {
     flex: 0 0 auto;

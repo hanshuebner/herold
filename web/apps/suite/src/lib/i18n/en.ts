@@ -63,8 +63,6 @@ export const en = {
   'thread.retry': 'Retry',
   'thread.empty': 'Thread has no messages.',
   'thread.print': 'Print thread',
-  'thread.messages': '{count} message',
-  'thread.messages.other': '{count} messages',
   'thread.subject.none': '(no subject)',
 
   // ── Message actions (issue #17 tooltips) ─────────────────────────────
