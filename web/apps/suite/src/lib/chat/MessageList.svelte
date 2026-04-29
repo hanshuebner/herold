@@ -2,8 +2,8 @@
   /**
    * Message list pane for an open conversation.
    *
-   * Renders messages oldest-first. Inline images display with max-width 400px
-   * per REQ-CHAT-22. Reactions strip below each message per REQ-CHAT-30..33.
+   * Renders messages oldest-first. Inline images scale to the bubble width
+   * (max-height 320px) per REQ-CHAT-22. Reactions strip below each message per REQ-CHAT-30..33.
    * Read receipts shown for DMs per REQ-CHAT-40.
    *
    * Read tracking is focus-driven: when the recipient's cursor is in the
@@ -478,11 +478,15 @@
   }
 
   .body :global(img) {
-    max-width: 400px;
-    max-height: 300px;
+    max-width: 100%;
+    max-height: 320px;
+    height: auto;
+    width: auto;
     border-radius: var(--radius-sm);
     display: block;
     margin: var(--spacing-02) 0;
+    cursor: zoom-in;
+    background: var(--layer-02);
   }
 
   .body :global(p) {

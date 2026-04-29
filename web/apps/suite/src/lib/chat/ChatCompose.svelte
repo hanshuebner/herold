@@ -382,11 +382,14 @@
   }
 
   .compose-editor :global(.ProseMirror img) {
-    max-width: 400px;
-    max-height: 300px;
+    max-width: 100%;
+    max-height: 320px;
+    height: auto;
+    width: auto;
     border-radius: var(--radius-sm);
     display: block;
     margin: var(--spacing-02) 0;
+    background: var(--layer-02);
   }
 
   .upload-error {
