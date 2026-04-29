@@ -210,12 +210,16 @@
   // External focus requests: a sidebar click (or other UI affordance)
   // sets chat.focusRequest to ask the compose for this conversation to
   // grab keyboard focus. The epoch bumps on every request so re-clicking
-  // the same conversation re-fires the effect.
+  // the same conversation re-fires the effect. Deferred via
+  // requestAnimationFrame because a sibling component (e.g. the parent
+  // ChatOverlayWindow that mounts this compose) may still be running
+  // its own mount work in the same microtask, and ProseMirror.focus
+  // is a no-op against a contenteditable that hasn't yet been laid out.
   $effect(() => {
     const req = chat.focusRequest;
     if (!req || req.conversationId !== conversationId) return;
     untrack(() => {
-      view?.focus();
+      requestAnimationFrame(() => view?.focus());
     });
   });
 
