@@ -350,8 +350,13 @@ class ChatStore {
             create: {
               [tempId]: {
                 conversationId,
-                type: 'text',
-                body: { html, text },
+                // The compose editor always emits HTML (it wraps even
+                // plain text in <p>...</p>). The server requires
+                // format='html' + non-empty body.html OR format='text'
+                // + non-empty body.text; for image-only pastes the
+                // text projection is empty, so format='html' is the
+                // shape that always validates here.
+                body: { format: 'html', html, text },
               },
             },
           },
