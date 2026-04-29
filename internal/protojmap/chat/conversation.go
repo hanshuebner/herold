@@ -112,14 +112,16 @@ func (h *convGetHandler) Execute(ctx context.Context, args json.RawMessage) (any
 
 // renderConversation projects a store.ChatConversation + its
 // memberships into the wire-form jmapConversation, filling in the
-// requesting principal's myMembership row, unread count, and
-// per-viewer DM name.
+// requesting principal's myMembership row, unread count, per-member
+// display names, and per-viewer DM name.
 //
-// DM name projection: the stored Name is computed from the creator's
-// perspective at create time. On the wire we override it for DMs by
-// finding the OTHER member from self's point of view and looking up
-// that principal's display name. This keeps the stored row unchanged
-// while every viewer sees the correct counterpart name.
+// DM name projection: the stored Name is set at create time from the
+// creator's perspective. On the wire we override it by resolving the
+// OTHER member's display name from self's point of view. The stored row
+// is intentionally left unchanged; only the wire projection is per-viewer.
+//
+// Member displayName: populated from the principal's display name so the
+// client can label senders without a separate Principal/get round trip.
 func renderConversation(ctx context.Context, meta store.Metadata, c store.ChatConversation, members []store.ChatMembership, self store.PrincipalID) jmapConversation {
 	// REQ-CHAT-31 / REQ-CHAT-32: DMs always advertise read receipts on,
 	// regardless of the underlying column. Spaces project the column
@@ -143,8 +145,10 @@ func renderConversation(ctx context.Context, meta store.Metadata, c store.ChatCo
 	}
 	var unreadAnchor *store.ChatMessageID
 	for _, m := range members {
+		displayName := resolvePrincipalEmail(ctx, meta, m.PrincipalID)
 		out.Members = append(out.Members, jmapConversationMember{
 			PrincipalID: jmapIDFromPrincipal(m.PrincipalID),
+			DisplayName: displayName,
 			Role:        m.Role,
 			JoinedAt:    m.JoinedAt.UTC().Format(rfc3339Layout),
 			IsMuted:     m.IsMuted,
@@ -158,7 +162,7 @@ func renderConversation(ctx context.Context, meta store.Metadata, c store.ChatCo
 	// For DMs, override the stored Name with the OTHER member's display
 	// name from the requesting principal's perspective. The stored row
 	// keeps the creator's-perspective name unchanged; only the wire
-	// projection is per-viewer.
+	// projection is per-viewer (re #47).
 	if c.Kind == store.ChatConversationKindDM {
 		otherPID := otherDMMember(members, self)
 		if otherPID != 0 {

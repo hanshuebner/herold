@@ -361,6 +361,42 @@ func TestConversation_DM_Get_BobSeesAliceName(t *testing.T) {
 	}
 }
 
+// TestConversation_Members_HaveDisplayName asserts Bug-B fix: every
+// member entry in Conversation/get carries a non-empty displayName so
+// the client can label senders without a separate Principal/get call.
+func TestConversation_Members_HaveDisplayName(t *testing.T) {
+	f := setupFixture(t)
+	cid, _ := createSpace(t, f, "team")
+
+	_, raw := f.invoke(t, "Conversation/get", map[string]any{
+		"accountId": string(protojmap.AccountIDForPrincipal(f.pid)),
+		"ids":       []string{cid},
+	})
+	var resp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal Conversation/get: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("list = %+v", resp.List)
+	}
+	members, _ := resp.List[0]["members"].([]any)
+	if len(members) == 0 {
+		t.Fatalf("members is empty")
+	}
+	for i, raw := range members {
+		m, _ := raw.(map[string]any)
+		if m == nil {
+			t.Fatalf("member[%d] is not a map: %T", i, raw)
+		}
+		dn, _ := m["displayName"].(string)
+		if dn == "" {
+			t.Errorf("member[%d] (principalId=%v) has empty displayName: %+v", i, m["principalId"], m)
+		}
+	}
+}
+
 // parseConvID parses a stringified conversation id.
 func parseConvID(s string) store.ConversationID {
 	var n uint64

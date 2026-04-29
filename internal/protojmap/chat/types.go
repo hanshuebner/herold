@@ -126,9 +126,12 @@ type jmapAttachment struct {
 
 // jmapConversationMember is the denormalised member entry returned in
 // Conversation.members. Convenience join over chat_memberships so a
-// client renders a conversation header without a second round trip.
+// client renders a conversation header without a separate round trip.
+// DisplayName is populated by renderConversation via principalDisplayName
+// so message list renderers can label senders without a Principal/get call.
 type jmapConversationMember struct {
 	PrincipalID jmapID `json:"principalId"`
+	DisplayName string `json:"displayName"`
 	Role        string `json:"role"`
 	JoinedAt    string `json:"joinedAt"`
 	IsMuted     bool   `json:"isMuted"`
