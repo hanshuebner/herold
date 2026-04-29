@@ -369,8 +369,8 @@ class ChatStore {
         );
       });
 
-      // [chat-debug] log full Message/set response — temporary.
-      console.log('[chat-debug] sendMessage response', JSON.parse(JSON.stringify(responses)));
+      // [chat-debug] log full Message/set response — temporary, stringified.
+      console.log('[chat-debug] sendMessage response\n' + JSON.stringify(responses, null, 2));
 
       const setResp = responses.find(([name]) => name === 'Message/set');
       if (!setResp || setResp[0] === 'error') {
@@ -689,8 +689,10 @@ class ChatStore {
         );
       });
 
-      // [chat-debug] log full sync response — temporary.
-      console.log('[chat-debug] #syncConversationChanges response', JSON.parse(JSON.stringify(responses)));
+      // [chat-debug] log full sync response — temporary. Stringified so
+      // the entire body lands in the console (Chrome otherwise prints
+      // `(N) [Array(3), …]` and requires manual expansion).
+      console.log('[chat-debug] #syncConversationChanges response\n' + JSON.stringify(responses, null, 2));
 
       const changesResp = responses.find(
         ([name]) => name === 'Conversation/changes',
@@ -775,8 +777,8 @@ class ChatStore {
         );
       });
 
-      // [chat-debug] log full sync response — temporary.
-      console.log('[chat-debug] #syncMessageChanges response', JSON.parse(JSON.stringify(responses)));
+      // [chat-debug] log full sync response — temporary, stringified.
+      console.log('[chat-debug] #syncMessageChanges response\n' + JSON.stringify(responses, null, 2));
 
       const changesResp = responses.find(([name]) => name === 'Message/changes');
       const getResps = responses.filter(([name]) => name === 'Message/get');
