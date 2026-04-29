@@ -728,10 +728,19 @@ func (m *metadata) InsertChatMessage(ctx context.Context, msg store.ChatMessage)
 		}
 		// Fan the state-change to every current member so all participants
 		// see the new message without a manual reload (re #47).
-		return appendStateChangeForMembersPG(ctx, tx, store.PrincipalID(owner),
+		if err := appendStateChangeForMembersPG(ctx, tx, store.PrincipalID(owner),
 			msg.ConversationID,
 			store.EntityKindChatMessage, uint64(id), uint64(msg.ConversationID),
-			store.ChangeOpCreated, now)
+			store.ChangeOpCreated, now); err != nil {
+			return err
+		}
+		// Also fan a Conversation Updated event so the unreadCount and
+		// lastMessageAt visible to each member move in lockstep with the
+		// new message (re #47).
+		return appendStateChangeForMembersPG(ctx, tx, store.PrincipalID(owner),
+			msg.ConversationID,
+			store.EntityKindConversation, uint64(msg.ConversationID), uint64(msg.ConversationID),
+			store.ChangeOpUpdated, now)
 	})
 	if err != nil {
 		return 0, err
