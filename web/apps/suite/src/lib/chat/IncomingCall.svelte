@@ -14,17 +14,21 @@
     callId: string;
     callerName: string;
     remoteSdp: string;
+    conversationId: string;
     onAccept: (callId: string, remoteSdp: string) => void;
     onDecline: () => void;
   }
-  let { callId, callerName, remoteSdp, onAccept, onDecline }: Props = $props();
+  let { callId, callerName, remoteSdp, conversationId, onAccept, onDecline }: Props = $props();
 
   let timeLeft = $state(30);
   const timer = setInterval(() => {
     timeLeft--;
     if (timeLeft <= 0) {
       clearInterval(timer);
-      chatWs.send({ op: 'call.decline', callId });
+      chatWs.send({
+        type: 'call.signal',
+        payload: { conversationId, kind: 'decline', payload: { callId } },
+      });
       onDecline();
     }
   }, 1000);
@@ -36,7 +40,10 @@
 
   function decline(): void {
     clearInterval(timer);
-    chatWs.send({ op: 'call.decline', callId });
+    chatWs.send({
+      type: 'call.signal',
+      payload: { conversationId, kind: 'decline', payload: { callId } },
+    });
     onDecline();
   }
 

@@ -74,7 +74,7 @@ class ChatStore {
     new Map<string, { messages: Message[]; status: LoadStatus; hasMore: boolean }>(),
   );
 
-  /** principalId -> presence state, populated from WS presence-update frames. */
+  /** principalId -> presence state, populated from WS presence frames. */
   presence = $state(new Map<string, PresenceState>());
 
   /**
@@ -132,20 +132,16 @@ class ChatStore {
     });
 
     // Presence updates from the ephemeral channel.
-    chatWs.on('presence-update', (frame) => {
+    // principalId arrives as a string (coerced from uint64 at the WS boundary).
+    chatWs.on('presence', (frame) => {
       this.presence.set(frame.principalId, frame.state);
     });
 
     // Typing indicators from the ephemeral channel.
-    // The server fans out typing frames with principalId added; fall back
-    // to a placeholder when the field is absent (should not happen in practice).
+    // A single inbound 'typing' token carries state: 'start' | 'stop'.
+    // principalId arrives as a string (coerced from uint64 at the WS boundary).
     chatWs.on('typing', (frame) => {
-      const pid = (frame as { principalId?: string }).principalId ?? 'unknown';
-      this.#setTyping(frame.conversationId, pid, true);
-    });
-    chatWs.on('typing-stopped', (frame) => {
-      const pid = (frame as { principalId?: string }).principalId ?? 'unknown';
-      this.#setTyping(frame.conversationId, pid, false);
+      this.#setTyping(frame.conversationId, frame.principalId, frame.state === 'start');
     });
   }
 
@@ -570,7 +566,7 @@ class ChatStore {
     const now = Date.now();
     if (now - this._lastTypingSent >= 3000) {
       this._lastTypingSent = now;
-      chatWs.send({ op: 'typing', conversationId });
+      chatWs.send({ type: 'typing.start', payload: { conversationId } });
     }
 
     // Schedule a "stopped" frame 5s after the last keystroke.
@@ -579,7 +575,7 @@ class ChatStore {
     }
     this._typingStopTimer = setTimeout(() => {
       this._typingStopTimer = null;
-      chatWs.send({ op: 'typing-stopped', conversationId });
+      chatWs.send({ type: 'typing.stop', payload: { conversationId } });
     }, 5000);
   }
 
@@ -588,7 +584,7 @@ class ChatStore {
       clearTimeout(this._typingStopTimer);
       this._typingStopTimer = null;
     }
-    chatWs.send({ op: 'typing-stopped', conversationId });
+    chatWs.send({ type: 'typing.stop', payload: { conversationId } });
   }
 
   // ------------------------------------------------------------------

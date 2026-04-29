@@ -117,22 +117,32 @@
     callId = null;
   }
 
-  // Listen for incoming call invites over the WS.
-  const offInvite = chatWs.on('call.invite', (frame) => {
+  // Listen for incoming call offers over the WS.
+  // The server sends call signaling as a single 'call.signal' type with a
+  // 'kind' field. An incoming call invite arrives with kind === 'offer'.
+  const offInvite = chatWs.on('call.signal', (frame) => {
+    if (frame.kind !== 'offer') return;
+    const inner = frame.payload as { callId?: string; sdp?: string };
+    const inboundCallId = inner.callId ?? '';
+    const inboundSdp = inner.sdp ?? '';
+
     if (callPhase !== 'idle') {
-      // Already in a call — auto-decline.
-      chatWs.send({ op: 'call.decline', callId: frame.callId });
+      // Already in a call -- auto-decline.
+      chatWs.send({
+        type: 'call.signal',
+        payload: { conversationId: frame.conversationId, kind: 'decline', payload: { callId: inboundCallId } },
+      });
       return;
     }
     callConversationId = frame.conversationId;
-    incomingRemoteSdp = frame.sdp;
+    incomingRemoteSdp = inboundSdp;
 
     // Resolve caller display name from the conversation.
     // For a DM, conv.name is the other participant's display name (server-computed).
     const conv = chat.conversations.get(frame.conversationId);
     incomingCallerName = conv?.name ?? 'Unknown caller';
 
-    callId = frame.callId;
+    callId = inboundCallId;
     callPhase = 'incoming';
     // Calls bypass the focus / muted-conversation gates per REQ-PUSH-96.
     sounds.play('call');
@@ -210,11 +220,12 @@
 {/if}
 
 <!-- Incoming call modal -->
-{#if callPhase === 'incoming' && callId}
+{#if callPhase === 'incoming' && callId && callConversationId}
   <IncomingCall
     callId={callId}
     callerName={incomingCallerName}
     remoteSdp={incomingRemoteSdp}
+    conversationId={callConversationId}
     onAccept={acceptIncoming}
     onDecline={declineIncoming}
   />

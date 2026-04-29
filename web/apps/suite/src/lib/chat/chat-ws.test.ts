@@ -3,6 +3,9 @@
  *
  * Uses a mock WebSocket so no real network is needed. We install the mock
  * on globalThis before each test and restore it after.
+ *
+ * Wire protocol: { "type": "<token>", "payload": {...} }
+ * (internal/protochat/protocol.go is the source of truth)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -112,53 +115,90 @@ describe('ChatWebSocket', () => {
     chatWs.disconnect();
   });
 
-  it('responds to ping with pong', async () => {
+  it('responds to ping with pong using the wire envelope', async () => {
     const { chatWs } = await import('./chat-ws.svelte');
     chatWs.disconnect();
     chatWs.connect();
     // Wait for the open microtask.
     await new Promise<void>((r) => queueMicrotask(r));
-    lastWs!.simulateMessage(JSON.stringify({ op: 'ping' }));
-    expect(lastWs!.sent).toContain(JSON.stringify({ op: 'pong' }));
+    // Server sends ping as { "type": "ping" } per protocol.go.
+    lastWs!.simulateMessage(JSON.stringify({ type: 'ping' }));
+    expect(lastWs!.sent).toContain(JSON.stringify({ type: 'pong' }));
     chatWs.disconnect();
   });
 
-  it('calls registered handlers with the parsed frame', async () => {
+  it('calls registered handlers with the parsed payload', async () => {
     const { chatWs } = await import('./chat-ws.svelte');
     chatWs.disconnect();
     chatWs.connect();
     await new Promise<void>((r) => queueMicrotask(r));
 
     const received: unknown[] = [];
-    const off = chatWs.on('presence-update', (frame) => received.push(frame));
+    const off = chatWs.on('presence', (payload) => received.push(payload));
 
-    const frame = {
-      op: 'presence-update',
-      principalId: 'p1',
-      state: 'online',
+    // Presence payload: principalId as number on wire (uint64), coerced to string.
+    const envelope = {
+      type: 'presence',
+      payload: { principalId: 42, state: 'online', lastSeenAt: 1700000000 },
     };
-    lastWs!.simulateMessage(JSON.stringify(frame));
+    lastWs!.simulateMessage(JSON.stringify(envelope));
 
     expect(received).toHaveLength(1);
-    expect(received[0]).toMatchObject(frame);
+    // principalId must be coerced to string at the WS boundary.
+    expect(received[0]).toMatchObject({ principalId: '42', state: 'online', lastSeenAt: 1700000000 });
 
     off();
-    lastWs!.simulateMessage(JSON.stringify(frame));
+    lastWs!.simulateMessage(JSON.stringify(envelope));
     expect(received).toHaveLength(1); // handler removed
 
     chatWs.disconnect();
   });
 
-  it('send() serialises frame to JSON', async () => {
+  it('coerces numeric principalId to string for typing frames', async () => {
     const { chatWs } = await import('./chat-ws.svelte');
     chatWs.disconnect();
     chatWs.connect();
     await new Promise<void>((r) => queueMicrotask(r));
 
-    chatWs.send({ op: 'typing', conversationId: 'c1' });
+    const received: unknown[] = [];
+    const off = chatWs.on('typing', (payload) => received.push(payload));
+
+    const envelope = {
+      type: 'typing',
+      payload: { conversationId: 'c1', principalId: 99, state: 'start' },
+    };
+    lastWs!.simulateMessage(JSON.stringify(envelope));
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({ conversationId: 'c1', principalId: '99', state: 'start' });
+
+    off();
+    chatWs.disconnect();
+  });
+
+  it('send() wraps outbound payload in the wire envelope', async () => {
+    const { chatWs } = await import('./chat-ws.svelte');
+    chatWs.disconnect();
+    chatWs.connect();
+    await new Promise<void>((r) => queueMicrotask(r));
+
+    chatWs.send({ type: 'typing.start', payload: { conversationId: 'c1' } });
     expect(lastWs!.sent).toContain(
-      JSON.stringify({ op: 'typing', conversationId: 'c1' }),
+      JSON.stringify({ type: 'typing.start', payload: { conversationId: 'c1' } }),
     );
+
+    chatWs.disconnect();
+  });
+
+  it('send() wraps presence.set payload in the wire envelope', async () => {
+    const { chatWs } = await import('./chat-ws.svelte');
+    chatWs.disconnect();
+    chatWs.connect();
+    await new Promise<void>((r) => queueMicrotask(r));
+
+    // Consume the presence.set that is auto-sent on open.
+    const presenceSet = JSON.stringify({ type: 'presence.set', payload: { state: 'online' } });
+    expect(lastWs!.sent).toContain(presenceSet);
 
     chatWs.disconnect();
   });

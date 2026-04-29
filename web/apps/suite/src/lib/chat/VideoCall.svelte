@@ -102,7 +102,10 @@
   }
 
   async function hangup(): Promise<void> {
-    chatWs.send({ op: 'call.hangup', callId });
+    chatWs.send({
+      type: 'call.signal',
+      payload: { conversationId, kind: 'hangup', payload: { callId } },
+    });
     teardown();
     onHangup();
   }
@@ -124,13 +127,19 @@
   function fetchTurnCredentials(): Promise<TurnConfig> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('TURN credential timeout')), 10000);
-      const off = chatWs.on('call.credentials.response', (frame) => {
-        if (frame.callId !== callId) return;
+      const off = chatWs.on('call.signal', (frame) => {
+        if (frame.kind !== 'credentials-response') return;
+        const inner = frame.payload as { callId?: string; config?: TurnConfig };
+        if (inner.callId !== callId) return;
         off();
         clearTimeout(timeout);
-        resolve(frame.config);
+        if (inner.config) resolve(inner.config);
+        else reject(new Error('TURN credentials response missing config'));
       });
-      chatWs.send({ op: 'call.credentials', callId });
+      chatWs.send({
+        type: 'call.signal',
+        payload: { conversationId, kind: 'credentials-request', payload: { callId } },
+      });
     });
   }
 
@@ -166,9 +175,12 @@
     pc.addEventListener('icecandidate', (event) => {
       if (event.candidate) {
         chatWs.send({
-          op: 'call.candidate',
-          callId,
-          candidate: JSON.stringify(event.candidate),
+          type: 'call.signal',
+          payload: {
+            conversationId,
+            kind: 'ice-candidate',
+            payload: { callId, candidate: JSON.stringify(event.candidate) },
+          },
         });
       }
     });
@@ -257,10 +269,8 @@
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     chatWs.send({
-      op: 'call.invite',
-      conversationId,
-      sdp: offer.sdp ?? '',
-      callId,
+      type: 'call.signal',
+      payload: { conversationId, kind: 'offer', payload: { callId, sdp: offer.sdp ?? '' } },
     });
   }
 
@@ -274,35 +284,44 @@
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     chatWs.send({
-      op: 'call.accept',
-      callId,
-      sdp: answer.sdp ?? '',
+      type: 'call.signal',
+      payload: { conversationId, kind: 'answer', payload: { callId, sdp: answer.sdp ?? '' } },
     });
   }
 
   // ------------------------------------------------------------------
-  // Inbound ICE candidates and answer (caller receives call.accept)
+  // Inbound call.signal handler (answer, ice-candidate, hangup)
   // ------------------------------------------------------------------
 
-  const offAccept = chatWs.on('call.accept', async (frame) => {
-    if (frame.callId !== callId || !pc) return;
-    await pc.setRemoteDescription({ type: 'answer', sdp: frame.sdp });
-  });
+  // All call signaling arrives as a single 'call.signal' type; the 'kind'
+  // field discriminates the verb. We register one handler and switch on kind.
+  const offCallSignal = chatWs.on('call.signal', (frame) => {
+    const inner = frame.payload as { callId?: string; sdp?: string; candidate?: string };
+    if (inner.callId !== callId) return;
 
-  const offCandidate = chatWs.on('call.candidate', async (frame) => {
-    if (frame.callId !== callId || !pc) return;
-    try {
-      const candidate = JSON.parse(frame.candidate) as RTCIceCandidateInit;
-      await pc.addIceCandidate(candidate);
-    } catch {
-      // Stale or invalid candidate; ignore.
+    switch (frame.kind) {
+      case 'answer': {
+        if (!pc) return;
+        void pc.setRemoteDescription({ type: 'answer', sdp: inner.sdp ?? '' });
+        break;
+      }
+      case 'ice-candidate': {
+        if (!pc) return;
+        try {
+          const candidate = JSON.parse(inner.candidate ?? 'null') as RTCIceCandidateInit;
+          void pc.addIceCandidate(candidate);
+        } catch {
+          // Stale or invalid candidate; ignore.
+        }
+        break;
+      }
+      case 'hangup': {
+        teardown();
+        onHangup();
+        break;
+      }
+      // Other kinds (credentials-response handled by fetchTurnCredentials) are ignored.
     }
-  });
-
-  const offHangup = chatWs.on('call.hangup', (frame) => {
-    if (frame.callId !== callId) return;
-    teardown();
-    onHangup();
   });
 
   // ------------------------------------------------------------------
@@ -314,9 +333,7 @@
       void setup();
     });
     return () => {
-      offAccept();
-      offCandidate();
-      offHangup();
+      offCallSignal();
       teardown();
     };
   });

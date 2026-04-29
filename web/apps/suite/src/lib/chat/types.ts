@@ -89,116 +89,130 @@ export interface Membership {
 }
 
 /**
- * Ephemeral WebSocket frame shapes.
+ * Ephemeral WebSocket wire envelope.
  *
- * Outbound (client -> server): TypingFrame, PresenceFrame, CallFrame variants.
- * Inbound (server -> client): mirrors plus presence-update, call.credentials.response.
+ * Both directions use this envelope shape, per internal/protochat/protocol.go:
+ *   { "type": "<token>", "payload": {...}, "ack": "...", "error": {...} }
+ *
+ * Inbound (server -> client) and outbound (client -> server) use SEPARATE
+ * discriminated unions because their token sets differ.
  */
 
-export interface TypingFrame {
-  op: 'typing';
+/** Raw wire envelope — both directions. */
+export interface WireEnvelope {
+  type: string;
+  payload?: unknown;
+  ack?: string;
+  error?: { code: string; message?: string };
+}
+
+// ------------------------------------------------------------------
+// Outbound payload interfaces (client -> server)
+// ------------------------------------------------------------------
+
+export interface TypingStartPayload {
   conversationId: string;
-  /** Present on inbound frames (added by server when fanning out). */
-  principalId?: string;
 }
 
-export interface TypingStoppedFrame {
-  op: 'typing-stopped';
+export interface TypingStopPayload {
   conversationId: string;
-  /** Present on inbound frames (added by server when fanning out). */
-  principalId?: string;
 }
 
-export interface PresenceFrame {
-  op: 'presence';
-  state: 'online' | 'away';
+export interface PresenceSetPayload {
+  state: PresenceState;
 }
 
-export interface PongFrame {
-  op: 'pong';
+export interface SubscribePayload {
+  conversationIds: string[];
 }
 
-export interface CallInviteFrame {
-  op: 'call.invite';
+export interface UnsubscribePayload {
+  conversationIds: string[];
+}
+
+/**
+ * Outbound call.signal payload. Kind selects the WebRTC verb;
+ * payload is the verb-specific body forwarded to the peer unchanged.
+ * targetPrincipalId identifies the call recipient (uint64 on wire).
+ */
+export interface CallSignalOutPayload {
   conversationId: string;
-  sdp: string;
-  callId: string;
+  targetPrincipalId?: number;
+  kind: string;
+  payload: unknown;
 }
 
-export interface CallAcceptFrame {
-  op: 'call.accept';
-  callId: string;
-  sdp: string;
-}
-
-export interface CallDeclineFrame {
-  op: 'call.decline';
-  callId: string;
-}
-
-export interface CallCandidateFrame {
-  op: 'call.candidate';
-  callId: string;
-  candidate: string;
-}
-
-export interface CallHangupFrame {
-  op: 'call.hangup';
-  callId: string;
-}
-
-export interface CallCredentialsRequestFrame {
-  op: 'call.credentials';
-  callId: string;
-}
-
-// Inbound-only frames
-export interface PingFrame {
-  op: 'ping';
-}
-
-export interface PresenceUpdateFrame {
-  op: 'presence-update';
-  principalId: string;
-  state: 'online' | 'away' | 'offline';
-}
-
-export interface CallCredentialsResponseFrame {
-  op: 'call.credentials.response';
-  callId: string;
-  config: TurnConfig;
-}
-
-export interface TurnConfig {
-  urls: string[];
-  username: string;
-  credential: string;
-  ttl: number;
-}
-
+// Discriminated union of typed outbound frames.
 export type OutboundFrame =
-  | TypingFrame
-  | TypingStoppedFrame
-  | PresenceFrame
-  | PongFrame
-  | CallInviteFrame
-  | CallAcceptFrame
-  | CallDeclineFrame
-  | CallCandidateFrame
-  | CallHangupFrame
-  | CallCredentialsRequestFrame;
+  | { type: 'typing.start'; payload: TypingStartPayload }
+  | { type: 'typing.stop'; payload: TypingStopPayload }
+  | { type: 'presence.set'; payload: PresenceSetPayload }
+  | { type: 'subscribe'; payload: SubscribePayload }
+  | { type: 'unsubscribe'; payload: UnsubscribePayload }
+  | { type: 'call.signal'; payload: CallSignalOutPayload }
+  | { type: 'ping' };
 
+// ------------------------------------------------------------------
+// Inbound payload interfaces (server -> client)
+// ------------------------------------------------------------------
+
+/**
+ * Inbound typing payload. PrincipalID is uint64 on the wire (a JSON
+ * number); coerce to string at the WS boundary so Map<string, ...> keys work.
+ */
+export interface TypingPayload {
+  conversationId: string;
+  principalId: string; // coerced from uint64 at WS boundary
+  state: 'start' | 'stop';
+}
+
+/**
+ * Inbound presence payload. PrincipalID is uint64 on the wire (a JSON
+ * number); coerce to string at the WS boundary.
+ */
+export interface PresencePayload {
+  principalId: string; // coerced from uint64 at WS boundary
+  state: PresenceState;
+  lastSeenAt: number; // unix seconds
+}
+
+/** Inbound read-receipt payload. */
+export interface ReadPayload {
+  conversationId: string;
+  principalId: string; // coerced from uint64 at WS boundary
+  lastReadMessageId: string;
+}
+
+/**
+ * Inbound call.signal payload. fromPrincipalId identifies the sender.
+ * Kind selects the WebRTC verb; payload is opaque and forwarded to the
+ * peer's RTCPeerConnection unchanged.
+ */
+export interface CallSignalInPayload {
+  conversationId: string;
+  kind: string;
+  payload: unknown;
+  fromPrincipalId: number; // uint64 on wire; coerce at call-signal handler boundary
+}
+
+export interface AckPayload {
+  clientId: string;
+}
+
+export interface ErrorPayload {
+  code: string;
+  message?: string;
+}
+
+// Discriminated union of typed inbound frames (by server token).
 export type InboundFrame =
-  | PingFrame
-  | TypingFrame
-  | TypingStoppedFrame
-  | PresenceUpdateFrame
-  | CallInviteFrame
-  | CallAcceptFrame
-  | CallDeclineFrame
-  | CallCandidateFrame
-  | CallHangupFrame
-  | CallCredentialsResponseFrame;
+  | { type: 'typing'; payload: TypingPayload }
+  | { type: 'presence'; payload: PresencePayload }
+  | { type: 'read'; payload: ReadPayload }
+  | { type: 'call.signal'; payload: CallSignalInPayload }
+  | { type: 'error'; payload: ErrorPayload }
+  | { type: 'ack'; payload: AckPayload }
+  | { type: 'pong' };
 
 /** Presence state for a principal. */
 export type PresenceState = 'online' | 'away' | 'offline';
@@ -212,4 +226,12 @@ export interface Principal {
   id: string;
   email: string;
   displayName: string;
+}
+
+/** TURN server configuration returned inside a credentials call.signal response. */
+export interface TurnConfig {
+  urls: string[];
+  username: string;
+  credential: string;
+  ttl: number;
 }

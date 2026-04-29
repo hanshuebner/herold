@@ -2,33 +2,47 @@
  * Chat ephemeral WebSocket client per docs/design/web/architecture/07-chat-protocol.md.
  *
  * Single persistent connection at wss://<origin>/chat/ws, authenticated by
- * the session cookie (attaches automatically — same-origin deployment).
+ * the session cookie (attaches automatically -- same-origin deployment).
+ *
+ * Wire envelope (both directions):
+ *   { "type": "<token>", "payload": {...}, "ack": "...", "error": {...} }
+ *
+ * Server token names are the source of truth (internal/protochat/protocol.go).
+ * Inbound tokens: typing, presence, read, call.signal, error, ack, pong.
+ * Outbound tokens: typing.start, typing.stop, presence.set, subscribe,
+ *   unsubscribe, call.signal, ping.
+ *
+ * PrincipalID arrives as uint64 (JSON number) on the wire. The boundary
+ * coerces it to string so downstream Map<string, ...> keys are unaffected.
  *
  * Lifecycle:
  *   - connect() opens the socket; idempotent while OPEN/CONNECTING.
  *   - Reconnects on close with exponential backoff (1s, 2s, 4s, 8s, max 30s).
- *   - Server sends { "op": "ping" } every 30s; we respond { "op": "pong" }.
+ *   - Server sends { "type": "ping" } periodically; we respond { "type": "pong" }.
  *   - disconnect() closes cleanly and suppresses reconnect (call on logout).
  *
  * The shell mounts the WS once per browser tab (after auth), so it outlives
  * route changes per the persistent-panel requirement.
  *
- * Consumers register handlers via on(op, handler) which returns an
+ * Consumers register handlers via on(type, handler) which returns an
  * unregister function.
  */
 
-import type { InboundFrame, OutboundFrame } from './types';
+import type { InboundFrame, OutboundFrame, WireEnvelope } from './types';
 
-type InboundOp = InboundFrame['op'];
+type InboundType = InboundFrame['type'];
 
-type FrameByOp<T extends InboundFrame, Op extends InboundOp> = T extends {
-  op: Op;
+type PayloadByType<T extends InboundFrame, Type extends InboundType> = T extends {
+  type: Type;
+  payload: infer P;
 }
-  ? T
-  : never;
+  ? P
+  : T extends { type: Type }
+    ? undefined
+    : never;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyHandler = (frame: any) => void;
+type AnyHandler = (payload: any) => void;
 
 export type ChatWsState =
   | 'idle'
@@ -79,34 +93,42 @@ class ChatWebSocket {
   }
 
   /**
-   * Send a frame. If the socket is not open, the frame is dropped silently
-   * (ephemeral signals are best-effort; the caller should not queue them).
+   * Send a frame. Wraps the outbound payload in the wire envelope
+   * { type, payload }. If the socket is not open, the frame is dropped
+   * silently (ephemeral signals are best-effort; the caller should not
+   * queue them).
    */
   send(frame: OutboundFrame): void {
     if (!this.#ws || this.#ws.readyState !== WebSocket.OPEN) return;
-    this.#ws.send(JSON.stringify(frame));
+    const envelope: WireEnvelope =
+      frame.type === 'ping'
+        ? { type: 'ping' }
+        : { type: frame.type, payload: (frame as { payload: unknown }).payload };
+    this.#ws.send(JSON.stringify(envelope));
   }
 
   /**
-   * Register a handler for a specific op. Returns an unregister function.
+   * Register a handler for a specific inbound type token. The handler
+   * receives the parsed payload (not the envelope). Returns an unregister
+   * function.
    *
    * Usage:
-   *   const off = chatWs.on('presence-update', frame => { ... });
+   *   const off = chatWs.on('presence', frame => { ... });
    *   // later:
    *   off();
    */
-  on<Op extends InboundOp>(
-    op: Op,
-    handler: (frame: FrameByOp<InboundFrame, Op>) => void,
+  on<Type extends InboundType>(
+    type: Type,
+    handler: (payload: PayloadByType<InboundFrame, Type>) => void,
   ): () => void {
-    let set = this.#handlers.get(op);
+    let set = this.#handlers.get(type);
     if (!set) {
       set = new Set();
-      this.#handlers.set(op, set);
+      this.#handlers.set(type, set);
     }
     set.add(handler as AnyHandler);
     return () => {
-      this.#handlers.get(op)?.delete(handler as AnyHandler);
+      this.#handlers.get(type)?.delete(handler as AnyHandler);
     };
   }
 
@@ -124,7 +146,7 @@ class ChatWebSocket {
       this.#backoffIndex = 0;
       this.state = 'connected';
       // Announce presence as online.
-      this.send({ op: 'presence', state: 'online' });
+      this.send({ type: 'presence.set', payload: { state: 'online' } });
     });
 
     ws.addEventListener('message', (event: MessageEvent) => {
@@ -149,29 +171,56 @@ class ChatWebSocket {
   }
 
   #handleMessage(raw: string): void {
-    let frame: InboundFrame;
+    let envelope: WireEnvelope;
     try {
-      frame = JSON.parse(raw) as InboundFrame;
+      envelope = JSON.parse(raw) as WireEnvelope;
     } catch {
       return;
     }
-    const op = frame.op;
+    const type = envelope.type;
 
-    // Handle ping/pong at the transport layer without requiring consumers.
-    if (op === 'ping') {
-      this.send({ op: 'pong' });
+    // Handle ping at the transport layer without requiring consumers.
+    // The server periodically sends { "type": "ping" }; respond with pong
+    // directly without going through the typed send() path.
+    if (type === 'ping') {
+      if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
+        this.#ws.send(JSON.stringify({ type: 'pong' }));
+      }
       return;
     }
 
-    const set = this.#handlers.get(op);
+    // Coerce uint64 principalId fields to string at the boundary so
+    // downstream Map<string, ...> keys work without changes elsewhere.
+    const payload = this.#coercePrincipalIds(type, envelope.payload);
+
+    const set = this.#handlers.get(type);
     if (!set) return;
     for (const handler of set) {
       try {
-        handler(frame);
+        handler(payload);
       } catch (err) {
         console.error('chatWs handler threw', err);
       }
     }
+  }
+
+  /**
+   * Coerce uint64 principalId fields to string for known inbound types.
+   * The server sends PrincipalID as a JSON number; client-side Maps key by
+   * string, so we normalise once at the wire boundary.
+   */
+  #coercePrincipalIds(type: string, payload: unknown): unknown {
+    if (payload === null || typeof payload !== 'object') return payload;
+    const p = payload as Record<string, unknown>;
+
+    if (type === 'presence' || type === 'typing' || type === 'read') {
+      if (typeof p['principalId'] === 'number') {
+        return { ...p, principalId: String(p['principalId']) };
+      }
+    }
+    // call.signal fromPrincipalId stays as a number on the payload; callers
+    // that need string keys must coerce themselves (it is not used as a Map key).
+    return payload;
   }
 
   #scheduleReconnect(): void {
@@ -195,5 +244,5 @@ class ChatWebSocket {
   }
 }
 
-/** Module-level singleton — one WebSocket connection per browser tab. */
+/** Module-level singleton -- one WebSocket connection per browser tab. */
 export const chatWs = new ChatWebSocket();
