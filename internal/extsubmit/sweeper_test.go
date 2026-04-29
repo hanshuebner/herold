@@ -31,6 +31,18 @@ func (f *fakeStore) ListIdentitySubmissionsDue(_ context.Context, before time.Ti
 	return due, nil
 }
 
+func (f *fakeStore) CountOAuthIdentitySubmissions(_ context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, r := range f.rows {
+		if r.SubmitAuthMethod == "oauth2" {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (f *fakeStore) UpsertIdentitySubmission(_ context.Context, sub store.IdentitySubmission) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

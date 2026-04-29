@@ -1,6 +1,20 @@
 package extsubmit
 
-import "io"
+import (
+	"io"
+	"time"
+)
+
+// RefreshLeadTime is the fixed duration before OAuth token expiry at which the
+// sweeper schedules the next refresh. Using a fixed buffer (rather than a
+// percentage of token lifetime) is more predictable across providers and gives
+// the sweeper 5 ticks of headroom at the default 60-second interval to retry
+// on transient refresh failures.
+//
+// All code that writes RefreshDue to an IdentitySubmission row must use this
+// constant so the two write sites (OAuth callback and sweeper refresh) remain
+// consistent (REQ-AUTH-EXT-SUBMIT-05).
+const RefreshLeadTime = 5 * time.Minute
 
 // OutcomeState is the result category of one external submission attempt.
 type OutcomeState string

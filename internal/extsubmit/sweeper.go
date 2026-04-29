@@ -29,11 +29,17 @@ const (
 )
 
 // SweeperStore is the minimal store surface the Sweeper needs: list rows due
-// for refresh and persist updated rows after a successful or failed refresh.
+// for refresh, count all OAuth rows, and persist updated rows after a
+// successful or failed refresh.
 type SweeperStore interface {
 	// ListIdentitySubmissionsDue returns rows whose refresh_due_us is
 	// non-null and <= before, ordered by refresh_due_us ascending.
 	ListIdentitySubmissionsDue(ctx context.Context, before time.Time) ([]store.IdentitySubmission, error)
+	// CountOAuthIdentitySubmissions returns the total number of
+	// identity_submission rows with submit_auth_method = 'oauth2', regardless
+	// of refresh_due_us. Used to keep the active-identities gauge accurate
+	// between refresh windows.
+	CountOAuthIdentitySubmissions(ctx context.Context) (int, error)
 	// UpsertIdentitySubmission persists an updated IdentitySubmission row.
 	UpsertIdentitySubmission(ctx context.Context, sub store.IdentitySubmission) error
 }
@@ -160,9 +166,18 @@ func (sw *Sweeper) tick(ctx context.Context) {
 		return
 	}
 
-	// Update the active-identities gauge so operators can see how many OAuth
-	// identities exist, even when none are due for refresh right now.
-	observe.SetExtSubActiveIdentities(len(rows))
+	// Update the active-identities gauge with the count of ALL OAuth-configured
+	// identities, not just those due for refresh in this window. This keeps the
+	// gauge accurate between refresh windows (it would otherwise read 0 when no
+	// rows are due, misleading operators into thinking no OAuth identities exist).
+	if n, err := sw.Store.CountOAuthIdentitySubmissions(ctx); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			sw.logger().LogAttrs(ctx, slog.LevelWarn, "extsubmit.sweeper: count oauth identities",
+				slog.String("err", err.Error()))
+		}
+	} else {
+		observe.SetExtSubActiveIdentities(n)
+	}
 
 	if len(rows) == 0 {
 		return

@@ -135,9 +135,10 @@ func (r *Refresher) Refresh(ctx context.Context, sub store.IdentitySubmission, c
 	updated := sub
 	updated.OAuthAccessCT = newAccessCT
 	updated.OAuthExpiresAt = newToken.Expiry
-	// Refresh again 5 minutes before expiry.
+	// Refresh again RefreshLeadTime before expiry (shared constant so the
+	// sweeper and the OAuth callback write the same value to RefreshDue).
 	if !newToken.Expiry.IsZero() {
-		updated.RefreshDue = newToken.Expiry.Add(-5 * time.Minute)
+		updated.RefreshDue = newToken.Expiry.Add(-RefreshLeadTime)
 	}
 	updated.State = store.IdentitySubmissionStateOK
 	updated.StateAt = r.now()
