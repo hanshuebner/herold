@@ -44,6 +44,7 @@ This doc is a placeholder skeleton. Concrete requirements come from gmail-logger
 | REQ-MAIL-51 | Archive removes the inbox mailbox from `mailboxIds`. Thread-level by default; per-message archive is not exposed. |
 | REQ-MAIL-52 | Delete moves the thread to Trash by setting `mailboxIds` to `{<trash-id>: true}` for all emails in the thread. |
 | REQ-MAIL-53 | Mark-read / mark-unread toggles `keywords/$seen`. Available on thread and on individual messages. |
+| REQ-MAIL-54 | Move-to relocates a thread (or a multi-selection of threads) into a single chosen mailbox by replacing each affected email's `mailboxIds` with `{<target-id>: true}`. Surfaced as the move-to toolbar button (REQ-UI-19b, REQ-UI-51) and as drag-and-drop from the thread list onto a sidebar mailbox (REQ-UI-17). Optimistic with Undo. |
 
 ## Compose details
 

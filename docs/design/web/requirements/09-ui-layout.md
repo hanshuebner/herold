@@ -111,6 +111,7 @@ Two regions: an outer **rail** with suite-app navigation, and an **inner sidebar
 | REQ-UI-14 | "Select all" selects all threads in the current view. For result sets > 50, a confirmation banner is shown ("This selects all N threads"). |
 | REQ-UI-15 | A bulk-actions toolbar replaces the per-row toolbar in the list header when ≥ 1 thread is selected (REQ-UI-50). |
 | REQ-UI-16 | The list virtualises rendering: only rows in (and near) the viewport are in the DOM. Scrolling fetches additional pages via `Email/query` with the next position cursor. |
+| REQ-UI-17 | A thread row is a drag source. Dragging it onto a sidebar mailbox row (Inbox, Snoozed, Important, Sent, Drafts, Trash, All Mail, or any custom mailbox) executes the move-to operation defined in REQ-MAIL-54 against the dragged thread. If a multi-row selection is active and includes the dragged row, all selected threads move together. The drop target highlights on dragover; releasing outside any valid target cancels the drag. The trash mailbox is a valid target (equivalent to delete). The currently-active mailbox view is not a valid target — dropping there is a no-op. Drag-and-drop is desktop-only; touch breakpoints (`24-mobile-and-touch.md`) use the move-to picker instead. |
 
 ## Reading pane
 
