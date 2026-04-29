@@ -801,6 +801,8 @@ class ChatStore {
         if (resp[0] !== 'Message/get') continue;
         const gr = resp[1] as { list: Message[] };
         for (const incoming of gr.list) {
+          const fromMe = incoming.senderPrincipalId === auth.principalId;
+          let isNewArrival = false;
           // Update main message pane (if this is the open conversation).
           if (incoming.conversationId === openId) {
             const idx = this.messages.findIndex((m) => m.id === incoming.id);
@@ -813,6 +815,7 @@ class ChatStore {
               // New message — append and maybe play an audio cue.
               this.messages = [...this.messages, incoming];
               this.#maybeChatCue(incoming);
+              isNewArrival = true;
             }
           } else {
             // Message for a conversation that is not the open pane.
@@ -822,6 +825,7 @@ class ChatStore {
               overlayEntry?.messages.some((m) => m.id === incoming.id) ?? false;
             if (!alreadyInOverlay) {
               this.#maybeChatCue(incoming);
+              isNewArrival = true;
             }
           }
 
@@ -842,6 +846,22 @@ class ChatStore {
               messages: updated,
             });
             this.overlayMessages = new Map(this.overlayMessages);
+          }
+
+          // Auto-open an overlay for a new message from someone else,
+          // unless the recipient is already viewing this conversation in
+          // the main chat route (in which case the message is already
+          // visible in the main pane). chatOverlay.openWindow dedupes
+          // and un-minimizes when a window for the conversation is
+          // already in the tray, so this is a no-op when it should be.
+          if (isNewArrival && !fromMe) {
+            const routeActive =
+              router.parts[0] === 'chat' &&
+              router.parts[1] === 'conversation' &&
+              router.parts[2] === incoming.conversationId;
+            if (!routeActive) {
+              chatOverlay.openWindow(incoming.conversationId);
+            }
           }
         }
       }
