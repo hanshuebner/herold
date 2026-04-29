@@ -91,17 +91,6 @@ func (h *eventsCaptureHandler) hasActivityLevel(activity string, minLevel slog.L
 	return false
 }
 
-func (h *eventsCaptureHandler) anyUntagged() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, r := range h.records {
-		if r.activity == "" {
-			return true
-		}
-	}
-	return false
-}
-
 // waitForRecord blocks until a record matching pred appears, advancing
 // the FakeClock each iteration.
 func waitForRecord(t *testing.T, cap *eventsCaptureHandler, clk *clock.FakeClock, pred func() bool, timeout time.Duration) bool {

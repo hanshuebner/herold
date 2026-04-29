@@ -6,7 +6,6 @@ package plugin
 // activity + level combinations as specified by the task's activity guide.
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -23,67 +22,17 @@ import (
 
 // --- recording slog handler --------------------------------------------------
 
-// captureHandler records every slog.Record for post-test inspection.
-// It is the same pattern used in observe.AssertActivityTagged but here we
-// also record level so tests can assert activity + level together.
-type captureHandler struct {
-	mu      sync.Mutex
-	records []capturedEvent
-	// pre holds attrs set via WithAttrs.
-	pre map[string]string
-}
-
 type capturedEvent struct {
 	level   slog.Level
 	message string
 	attrs   map[string]string
 }
 
-func newCaptureHandler() *captureHandler { return &captureHandler{pre: map[string]string{}} }
-
-func (h *captureHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
-
-func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
-	ev := capturedEvent{
-		level:   r.Level,
-		message: r.Message,
-		attrs:   make(map[string]string, len(h.pre)),
-	}
-	for k, v := range h.pre {
-		ev.attrs[k] = v
-	}
-	r.Attrs(func(a slog.Attr) bool {
-		ev.attrs[a.Key] = a.Value.String()
-		return true
-	})
-	h.mu.Lock()
-	h.records = append(h.records, ev)
-	h.mu.Unlock()
-	return nil
-}
-
-func (h *captureHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	merged := make(map[string]string, len(h.pre)+len(attrs))
-	for k, v := range h.pre {
-		merged[k] = v
-	}
-	for _, a := range attrs {
-		merged[a.Key] = a.Value.String()
-	}
-	return &captureHandler{pre: merged, records: nil}
-}
-
-func (h *captureHandler) WithGroup(_ string) slog.Handler { return h }
-
-// allRecords returns a snapshot of all captured events across the tree.
-// Note: WithAttrs children track their own slice; this only returns the
-// root's records. For this test file every tested path uses the *same*
-// Plugin whose logger was built from the root, so pre-scoped attrs are
-// merged into the child handler's records which get surfaced via the root
-// through a shared pointer approach below.
-
-// sharedCaptureHandler is a captureHandler variant that always writes into
-// a shared record slice so WithAttrs children are visible from the root.
+// sharedCaptureHandler records every slog.Record into a shared slice so that
+// WithAttrs children (which carry per-sink attribute prefixes) are all visible
+// from the root handler. Every test in this file uses sharedCaptureHandler
+// directly rather than a per-instance handler so that logger.With("...") chains
+// do not hide records from the parent snapshot.
 type sharedCaptureHandler struct {
 	mu      *sync.Mutex
 	records *[]capturedEvent
@@ -236,9 +185,6 @@ func TestClientDispatch_MalformedFrame_ActivityInternal(t *testing.T) {
 func TestClientDispatch_OrphanResponse_ActivityInternal(t *testing.T) {
 	h := newShared()
 	log := slog.New(h)
-
-	import_ := func() *semaphoreWeighted { return nil } // not needed
-	_ = import_
 
 	client := &Client{
 		name:    "test",
@@ -534,18 +480,8 @@ func TestNotifSink_AssertActivityTagged(t *testing.T) {
 
 // --- helpers -----------------------------------------------------------------
 
-// pipePair is a minimal read/write/close pair backed by a byte buffer.
-type pipePair struct {
-	r *bufio.Reader
-	w *bytes.Buffer
-}
-
-func (p *pipePair) Read(b []byte) (int, error)  { return p.r.Read(b) }
-func (p *pipePair) Write(b []byte) (int, error) { return p.w.Write(b) }
-func (p *pipePair) Close() error                { return nil }
-
-// newPipePair returns server-side reader backed by a bytes.Buffer and a
-// writer that fills it. Closing the writer triggers EOF on next Read.
+// closableBuffer is a bytes.Buffer with a close flag; it acts as the fake
+// stdout/stderr of a stubbed plugin child in supervise-loop tests.
 type closableBuffer struct {
 	mu     sync.Mutex
 	buf    bytes.Buffer
@@ -569,10 +505,6 @@ func newPipePair(t *testing.T) (*closableBuffer, *closableBuffer) {
 	t.Helper()
 	return &closableBuffer{}, &closableBuffer{}
 }
-
-// semaphoreWeighted is referenced only to avoid the compiler complaining
-// about the unused import in the orphan-response test helper.
-type semaphoreWeighted = struct{}
 
 func mustMarshal(t *testing.T, v any) json.RawMessage {
 	t.Helper()

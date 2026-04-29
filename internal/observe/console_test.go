@@ -2,6 +2,7 @@ package observe
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
@@ -61,7 +62,7 @@ func TestConsoleHandler_LevelAbbreviations(t *testing.T) {
 		var buf bytes.Buffer
 		h := NewConsoleHandlerWithClock(&buf, &slog.HandlerOptions{Level: LevelTrace}, clk, &boolFalse)
 		logger := slog.New(h)
-		logger.Log(nil, tc.level, "msg")
+		logger.Log(context.Background(), tc.level, "msg")
 		if !strings.Contains(buf.String(), tc.want) {
 			t.Errorf("level %v: want %q in %q", tc.level, tc.want, buf.String())
 		}

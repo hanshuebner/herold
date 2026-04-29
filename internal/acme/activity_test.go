@@ -5,7 +5,6 @@ package acme
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -112,10 +111,6 @@ func findAcmeRecord(recs []acmeCapturedRec, pred func(acmeCapturedRec) bool) (ac
 		}
 	}
 	return acmeCapturedRec{}, false
-}
-
-func discardAcmeLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
 // TestActivityTagged_ACMEIssueSuccess verifies that "acme issue success"

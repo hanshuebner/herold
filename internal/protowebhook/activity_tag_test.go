@@ -79,34 +79,11 @@ func (h *webhookCaptureHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *webhookCaptureHandler) WithGroup(_ string) slog.Handler { return h }
 
-func (h *webhookCaptureHandler) hasActivity(activity string) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, r := range h.records {
-		if r.activity == activity {
-			return true
-		}
-	}
-	return false
-}
-
 func (h *webhookCaptureHandler) hasActivityLevel(activity string, minLevel slog.Level) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, r := range h.records {
 		if r.activity == activity && r.level >= minLevel {
-			return true
-		}
-	}
-	return false
-}
-
-// anyUntagged returns true if any record has an empty activity.
-func (h *webhookCaptureHandler) anyUntagged() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, r := range h.records {
-		if r.activity == "" {
 			return true
 		}
 	}

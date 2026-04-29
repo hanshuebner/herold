@@ -24,9 +24,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -436,12 +434,3 @@ func (c *activityCaptureChild) WithGroup(name string) slog.Handler {
 		t:       c.t,
 	}
 }
-
-// buildSMTPMsg builds a minimal RFC 5322 message.
-func buildSMTPMsg(from, to, subject, body string) string {
-	return fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n%s\r\n.\r\n",
-		from, to, subject, body)
-}
-
-// Silence unused import warnings.
-var _ = strings.Contains

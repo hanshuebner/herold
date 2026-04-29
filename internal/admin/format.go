@@ -146,7 +146,7 @@ func writeQueueStatsHuman(w io.Writer, out map[string]any) error {
 		return nil
 	}
 	for _, state := range []string{"queued", "deferred", "inflight", "done", "failed", "held"} {
-		v, _ := counts[state]
+		v := counts[state]
 		fmt.Fprintf(w, "%-10s  %s\n", state, cliout.FloatStr(toFloat64(v)))
 	}
 	return nil
