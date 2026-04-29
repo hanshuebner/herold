@@ -26,6 +26,10 @@
   import { t } from '../lib/i18n/i18n.svelte';
   import { llmTransparency } from '../lib/llm/transparency.svelte';
   import { pushSubscription } from '../lib/push/push-subscription.svelte';
+  import { sounds } from '../lib/notifications/sounds.svelte';
+
+  // Hydrate the sounds toggle from localStorage on mount.
+  sounds.hydrate();
 
   // Section order: Account, Security, Appearance, Mail, Categories, Filters,
   // Notifications, API keys, Privacy, About.
@@ -63,7 +67,8 @@
       if (s.id === 'mail') {
         if (hasCategorise) result.push({ id: 'categories', label: 'Categories' });
         if (hasManagedRules) result.push({ id: 'filters', label: 'Filters' });
-        if (hasPush) result.push({ id: 'notifications', label: 'Notifications' });
+        // Notifications section always shown (in-app sounds; push if available).
+        result.push({ id: 'notifications', label: 'Notifications' });
       }
     }
     return result;
@@ -325,6 +330,22 @@
 
     {:else if activeSection === 'notifications'}
       <h2>Notifications</h2>
+
+      <div class="row vertical">
+        <span class="label">Notification sounds</span>
+        <p class="hint">
+          Play a sound when a new message or call arrives while this tab is open.
+        </p>
+        <label class="switch" aria-label="Notification sounds">
+          <input
+            type="checkbox"
+            checked={sounds.enabled}
+            onchange={(e) => sounds.setEnabled((e.currentTarget as HTMLInputElement).checked)}
+          />
+          <span class="track" aria-hidden="true"></span>
+        </label>
+      </div>
+
       {#if hasPush}
         <div class="row vertical">
           <span class="label">Push notifications</span>

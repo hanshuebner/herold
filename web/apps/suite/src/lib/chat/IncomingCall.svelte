@@ -8,6 +8,7 @@
 
   import { chatWs } from './chat-ws.svelte';
   import { toast } from '../toast/toast.svelte';
+  import { sounds } from '../notifications/sounds.svelte';
 
   interface Props {
     callId: string;
@@ -39,9 +40,12 @@
     onDecline();
   }
 
-  // Clear timer on unmount.
+  // Clear timer and stop the call ringtone on unmount.
   $effect(() => {
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      sounds.stop('call');
+    };
   });
 </script>
 

@@ -27,6 +27,10 @@ import { sync } from '../jmap/sync.svelte';
 import { toast } from '../toast/toast.svelte';
 import { Capability } from '../jmap/types';
 import { chatWs } from './chat-ws.svelte';
+import { sounds } from '../notifications/sounds.svelte';
+import { shouldPlayChatCue } from '../notifications/cue-gates';
+import { chatOverlay } from './overlay-store.svelte';
+import { router } from '../router/router.svelte';
 import type {
   Conversation,
   Message,
@@ -657,8 +661,18 @@ class ChatStore {
                 m.id === incoming.id ? incoming : m,
               );
             } else {
-              // New message — append.
+              // New message — append and maybe play an audio cue.
               this.messages = [...this.messages, incoming];
+              this.#maybeChatCue(incoming);
+            }
+          } else {
+            // Message for a conversation that is not the open pane.
+            // It may still be new (not in overlay cache) — check and cue.
+            const overlayEntry = this.overlayMessages.get(incoming.conversationId);
+            const alreadyInOverlay =
+              overlayEntry?.messages.some((m) => m.id === incoming.id) ?? false;
+            if (!alreadyInOverlay) {
+              this.#maybeChatCue(incoming);
             }
           }
 
@@ -1073,6 +1087,46 @@ class ChatStore {
       if (!c.muted) n += c.unreadCount;
     }
     return n;
+  }
+
+  /**
+   * Conditionally play the chat audio cue for an incoming message.
+   * Evaluates all gates via shouldPlayChatCue:
+   *   - not from self
+   *   - conversation not muted
+   *   - not focused: document visible AND the conversation is the
+   *     active route OR an un-minimized overlay window is open for it.
+   */
+  #maybeChatCue(message: Message): void {
+    const conv = this.conversations.get(message.conversationId);
+    const conversationMuted = conv?.muted ?? false;
+
+    // Focus gate: is this conversation in the foreground?
+    const documentVisible =
+      typeof document !== 'undefined' &&
+      document.visibilityState === 'visible';
+    const routeActive =
+      router.parts[0] === 'chat' &&
+      router.parts[1] === 'conversation' &&
+      router.parts[2] === message.conversationId;
+    const overlayExpanded =
+      chatOverlay.windows.some(
+        (w) =>
+          w.conversationId === message.conversationId && !w.minimized,
+      );
+    const conversationFocused =
+      documentVisible && (routeActive || overlayExpanded);
+
+    if (
+      shouldPlayChatCue({
+        senderId: message.senderId,
+        myPrincipalId: auth.principalId,
+        conversationMuted,
+        conversationFocused,
+      })
+    ) {
+      sounds.play('chat');
+    }
   }
 }
 

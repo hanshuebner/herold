@@ -25,6 +25,9 @@ import {
   type Thread,
 } from './types';
 import { parseQuery } from './search-query';
+import { sounds } from '../notifications/sounds.svelte';
+import { shouldPlayMailCue } from '../notifications/cue-gates';
+import { router } from '../router/router.svelte';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -148,6 +151,10 @@ class MailStore {
     // a freshly-arrived reply in the open ThreadReader without the
     // user reloading the page; without it the thread cache stays
     // 'ready' and loadThread short-circuits.
+
+    // Snapshot known email ids before the refresh so we can detect arrivals.
+    const knownEmailIds = new Set(this.emails.keys());
+
     const tasks: Promise<unknown>[] = [];
     if (this.listLoadStatus === 'ready') {
       tasks.push(
@@ -166,6 +173,22 @@ class MailStore {
     }
     if (tasks.length > 0) await Promise.all(tasks);
     this.emailState = newState;
+
+    // After the refresh, find emails that were not in the cache before
+    // and evaluate the mail-cue gate for each. Play at most one cue per
+    // state-change event to avoid a burst of sounds when the user has
+    // been offline.
+    if (knownEmailIds.size > 0) {
+      // Only trigger cues on state-change refreshes (not the initial load
+      // where knownEmailIds would be empty).
+      for (const [id, email] of this.emails) {
+        if (knownEmailIds.has(id)) continue;
+        if (this.#shouldMailCue(email)) {
+          sounds.play('mail');
+          break; // one cue per event
+        }
+      }
+    }
   }
 
   async #onMailboxStateChange(newState: string): Promise<void> {
@@ -2023,6 +2046,43 @@ class MailStore {
     const next = new Map(this.threadLoadError);
     next.delete(id);
     this.threadLoadError = next;
+  }
+
+  /**
+   * Evaluate whether a newly-arrived email should trigger the mail audio cue.
+   *
+   * Gates:
+   *   - email is in the inbox mailbox
+   *   - not from the user themselves
+   *   - focus gate: not (visible AND inbox is the active view)
+   *
+   * Quiet-hours gate (REQ-PUSH-97) deferred; see shouldPlayMailCue TODO.
+   */
+  #shouldMailCue(email: Email): boolean {
+    const inboxId = this.inbox?.id ?? null;
+    const senderEmail = email.from?.[0]?.email ?? null;
+    const ownEmails = new Set<string>(
+      Array.from(this.identities.values()).map((id) => id.email),
+    );
+
+    const documentVisible =
+      typeof document !== 'undefined' &&
+      document.visibilityState === 'visible';
+    // Inbox is focused when visible and the route is /mail (default) or
+    // /mail/folder/inbox specifically.
+    const inboxFocused =
+      documentVisible &&
+      router.parts[0] === 'mail' &&
+      (router.parts[1] === undefined ||
+        (router.parts[1] === 'folder' && router.parts[2] === 'inbox'));
+
+    return shouldPlayMailCue({
+      mailboxIds: email.mailboxIds,
+      inboxMailboxId: inboxId,
+      senderEmail,
+      ownEmails,
+      inboxFocused,
+    });
   }
 }
 

@@ -20,6 +20,7 @@
   import { chatWs } from '../lib/chat/chat-ws.svelte';
   import { toast } from '../lib/toast/toast.svelte';
   import { Capability } from '../lib/jmap/types';
+  import { sounds } from '../lib/notifications/sounds.svelte';
   import ConversationList from '../lib/chat/ConversationList.svelte';
   import MessageList from '../lib/chat/MessageList.svelte';
   import ChatCompose from '../lib/chat/ChatCompose.svelte';
@@ -103,6 +104,7 @@
   }
 
   function acceptIncoming(inboundCallId: string, remoteSdp: string): void {
+    sounds.stop('call');
     callId = inboundCallId;
     callRole = 'callee';
     incomingRemoteSdp = remoteSdp;
@@ -110,6 +112,7 @@
   }
 
   function declineIncoming(): void {
+    sounds.stop('call');
     callPhase = 'idle';
     callId = null;
   }
@@ -131,6 +134,8 @@
 
     callId = frame.callId;
     callPhase = 'incoming';
+    // Calls bypass the focus / muted-conversation gates per REQ-PUSH-96.
+    sounds.play('call');
   });
 
   $effect(() => {
