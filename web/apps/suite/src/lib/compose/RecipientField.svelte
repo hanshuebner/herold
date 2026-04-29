@@ -312,6 +312,8 @@
     padding: var(--spacing-02) 0;
     border-bottom: 1px solid var(--border-subtle-01);
     cursor: text;
+    flex: 1;
+    min-width: 0;
   }
 
   .label {

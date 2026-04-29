@@ -892,7 +892,7 @@ class ComposeStore {
                 identityId: identity.id,
                 envelope: {
                   mailFrom: { email: identity.email },
-                  rcptTo: allRecipients.map((email) => ({ email })),
+                  rcptTo: allRecipients.map((r) => ({ email: r.email })),
                 },
                 sendAt,
               },
