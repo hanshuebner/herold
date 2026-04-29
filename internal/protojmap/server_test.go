@@ -75,12 +75,19 @@ func newFixture(t *testing.T) *fixture {
 // token. Mirrors what the protoadmin POST /api-keys handler does
 // internally so tests do not need to drive that surface.
 func createAPIKey(ctx context.Context, st store.Store, pid store.PrincipalID) (string, store.APIKey, error) {
-	const plaintext = "hk_protojmap_test_key_alice_0001"
+	return createAPIKeyNamed(ctx, st, pid, "test")
+}
+
+// createAPIKeyNamed mints a fresh API key under the supplied row name.
+// Tests that need keys for multiple principals against the same store
+// use this so the (principal_id, name) pair stays unique.
+func createAPIKeyNamed(ctx context.Context, st store.Store, pid store.PrincipalID, name string) (string, store.APIKey, error) {
+	plaintext := fmt.Sprintf("hk_protojmap_test_key_%s_%d", name, pid)
 	hashed := protojmap.HashAPIKeyForTest(plaintext)
 	row, err := st.Meta().InsertAPIKey(ctx, store.APIKey{
 		PrincipalID: pid,
 		Hash:        hashed,
-		Name:        "test",
+		Name:        name,
 		CreatedAt:   time.Now(),
 	})
 	if err != nil {
@@ -706,6 +713,119 @@ func TestDownload_RoundTrip(t *testing.T) {
 	}
 	if got := res.Header.Get("Content-Disposition"); !strings.Contains(got, "file.txt") {
 		t.Fatalf("Content-Disposition = %q", got)
+	}
+}
+
+// TestDownload_CrossAccount_ChatMember_Allowed asserts the chat-fanout
+// auth path: when a chat message embeds an inline image as
+// <img src="/jmap/download/{senderAccountId}/.../{blobHash}/...">, the
+// recipient's browser fetches that URL with the SENDER's accountId in
+// the path. The download endpoint must allow the request because the
+// recipient is a member of a conversation referencing the blob hash.
+// Without this fallback every chat image would render as a broken
+// icon for every viewer except the sender (re #47).
+func TestDownload_CrossAccount_ChatMember_Allowed(t *testing.T) {
+	f := newFixture(t)
+	bobPID, err := f.dir.CreatePrincipal(context.Background(),
+		"bob@example.com", "correct-horse-battery-staple-2")
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+	bobKey, _, err := createAPIKeyNamed(context.Background(), f.store, bobPID, "test-bob")
+	if err != nil {
+		t.Fatalf("bob api key: %v", err)
+	}
+
+	body := []byte("shared chat image bytes")
+	ref, err := f.store.Blobs().Put(context.Background(), bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("blob put: %v", err)
+	}
+
+	// Seed a conversation that alice (f.pid) and bob both belong to,
+	// with a chat message whose body_html embeds the blob hash. The
+	// chat-aware auth predicate scans body_html for the hash.
+	convID, err := f.store.Meta().InsertChatConversation(context.Background(),
+		store.ChatConversation{
+			Kind:               store.ChatConversationKindDM,
+			Name:               "alice-bob",
+			CreatedByPrincipalID: f.pid,
+			CreatedAt:          f.clk.Now(),
+			UpdatedAt:          f.clk.Now(),
+		})
+	if err != nil {
+		t.Fatalf("insert conversation: %v", err)
+	}
+	for _, pid := range []store.PrincipalID{f.pid, bobPID} {
+		if _, err := f.store.Meta().InsertChatMembership(context.Background(),
+			store.ChatMembership{
+				ConversationID:       convID,
+				PrincipalID:          pid,
+				Role:                 store.ChatRoleMember,
+				JoinedAt:             f.clk.Now(),
+				NotificationsSetting: store.ChatNotificationsAll,
+			}); err != nil {
+			t.Fatalf("insert membership for %d: %v", pid, err)
+		}
+	}
+	senderID := f.pid
+	if _, err := f.store.Meta().InsertChatMessage(context.Background(),
+		store.ChatMessage{
+			ConversationID:    convID,
+			SenderPrincipalID: &senderID,
+			BodyHTML: fmt.Sprintf(
+				`<p><img src="/jmap/download/%s/%s/image%%2Fpng/img.png" alt="img.png"/></p>`,
+				protojmap.AccountIDForPrincipal(f.pid), ref.Hash),
+			BodyFormat: store.ChatBodyFormatHTML,
+			CreatedAt:  f.clk.Now(),
+		}); err != nil {
+		t.Fatalf("insert chat message: %v", err)
+	}
+
+	// Bob fetches via a URL that names ALICE's accountId. The strict
+	// same-account check would reject; the chat-blob fallback must
+	// allow.
+	senderAccountID := protojmap.AccountIDForPrincipal(f.pid)
+	url := fmt.Sprintf("/jmap/download/%s/%s/image%%2Fpng/img.png", senderAccountID, ref.Hash)
+	res, raw := f.doRequest("GET", url, bobKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("bob cross-account download status = %d, body = %s", res.StatusCode, raw)
+	}
+	if !bytes.Equal(raw, body) {
+		t.Fatalf("body mismatch: got %q want %q", raw, body)
+	}
+}
+
+// TestDownload_CrossAccount_NonMember_Forbidden asserts the negative:
+// a principal with no shared conversation referencing the blob is
+// still rejected on a cross-account download URL, even if the blob
+// exists in the store. Guards against an authenticated user enumerating
+// blobs by hash.
+func TestDownload_CrossAccount_NonMember_Forbidden(t *testing.T) {
+	f := newFixture(t)
+	bobPID, err := f.dir.CreatePrincipal(context.Background(),
+		"bob@example.com", "correct-horse-battery-staple-2")
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+	bobKey, _, err := createAPIKeyNamed(context.Background(), f.store, bobPID, "test-bob")
+	if err != nil {
+		t.Fatalf("bob api key: %v", err)
+	}
+
+	body := []byte("alice-private bytes")
+	ref, err := f.store.Blobs().Put(context.Background(), bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("blob put: %v", err)
+	}
+
+	// No conversation, no message — bob must not get the blob even
+	// though it exists, because nothing shares it with him.
+	senderAccountID := protojmap.AccountIDForPrincipal(f.pid)
+	url := fmt.Sprintf("/jmap/download/%s/%s/image%%2Fpng/img.png", senderAccountID, ref.Hash)
+	res, _ := f.doRequest("GET", url, bobKey, nil)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("bob non-member download status = %d, want 403", res.StatusCode)
 	}
 }
 

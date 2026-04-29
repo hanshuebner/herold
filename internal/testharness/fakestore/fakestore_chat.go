@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
@@ -836,6 +837,43 @@ func (m *metaFace) LastReadAt(ctx context.Context, principalID store.PrincipalID
 		}
 	}
 	return nil, time.Time{}, fmt.Errorf("membership (%d, %d): %w", conversationID, principalID, store.ErrNotFound)
+}
+
+func (m *metaFace) ChatPrincipalCanReadBlob(ctx context.Context, principalID store.PrincipalID, blobHash string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return false, nil
+	}
+	conversations := make(map[store.ConversationID]struct{})
+	for _, mb := range s.phase2.chatMemberships {
+		if mb.PrincipalID == principalID {
+			conversations[mb.ConversationID] = struct{}{}
+		}
+	}
+	if len(conversations) == 0 {
+		return false, nil
+	}
+	needleAttachments := `"blob_hash":"` + blobHash + `"`
+	for _, msg := range s.phase2.chatMessages {
+		if msg.DeletedAt != nil {
+			continue
+		}
+		if _, ok := conversations[msg.ConversationID]; !ok {
+			continue
+		}
+		if len(msg.AttachmentsJSON) > 0 && strings.Contains(string(msg.AttachmentsJSON), needleAttachments) {
+			return true, nil
+		}
+		if msg.BodyHTML != "" && strings.Contains(msg.BodyHTML, blobHash) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *metaFace) CountChatMessagesUnread(ctx context.Context, conversationID store.ConversationID, viewerPID store.PrincipalID, lastReadMessageID *store.ChatMessageID) (int, error) {

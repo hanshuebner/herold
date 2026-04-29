@@ -141,6 +141,24 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// isLikelyBlobHash reports whether s looks like a hex-encoded BLAKE3
+// digest (64 lowercase hex chars). Used as a cheap sanity guard
+// before passing a candidate hash through to a substring scan in
+// the metadata store; rejects URL-injection patterns like "%" or
+// path-traversal segments.
+func isLikelyBlobHash(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(('0' <= c && c <= '9') || ('a' <= c && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 // partBlobID reports whether blobID is a synthetic per-part blob reference of
 // the form "<msgBlobHash>/p<N>" produced by render.go's walkParts. When true it
 // returns the message blob hash and the 1-based part index.
@@ -227,14 +245,44 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	accountID := r.PathValue("accountId")
-	pid, ok := principalIDFromAccountID(accountID)
-	if !ok || pid != p.ID {
+	ownerPID, ownerOK := principalIDFromAccountID(accountID)
+	if !ownerOK {
 		WriteJMAPError(w, http.StatusForbidden, "accountNotFound",
 			"account does not match authenticated principal")
 		return
 	}
 	blobID := r.PathValue("blobId")
 	contentType := r.PathValue("type")
+	// Cross-account access via the chat fan-out path: the suite embeds
+	// `<img src="/jmap/download/{senderAccountId}/...">` into chat
+	// messages, so a recipient (different accountId from the sender)
+	// must be allowed through if they are a member of any conversation
+	// referencing this blob hash. Mail / contact / calendar blobs keep
+	// the strict same-account check — there is no cross-account fan-out
+	// path for those.
+	if ownerPID != p.ID {
+		hashCandidate := blobID
+		if msgHash, _, isPartBlob := partBlobID(blobID); isPartBlob {
+			hashCandidate = msgHash
+		}
+		if !isLikelyBlobHash(hashCandidate) {
+			WriteJMAPError(w, http.StatusForbidden, "accountNotFound",
+				"account does not match authenticated principal")
+			return
+		}
+		canRead, err := s.store.Meta().ChatPrincipalCanReadBlob(r.Context(), p.ID, hashCandidate)
+		if err != nil {
+			s.log.Warn("download.chat_auth_failed", "err", err.Error(), "blob", blobID)
+			WriteJMAPError(w, http.StatusInternalServerError,
+				"serverFail", "chat-blob auth failed")
+			return
+		}
+		if !canRead {
+			WriteJMAPError(w, http.StatusForbidden, "accountNotFound",
+				"account does not match authenticated principal")
+			return
+		}
+	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}

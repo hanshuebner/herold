@@ -1101,6 +1101,24 @@ type Metadata interface {
 	// once any conversation has had a real markRead.
 	CountChatMessagesUnread(ctx context.Context, conversationID ConversationID, viewerPID PrincipalID, lastReadMessageID *ChatMessageID) (int, error)
 
+	// ChatPrincipalCanReadBlob reports whether principalID is a
+	// member of any conversation that contains a non-deleted chat
+	// message referencing blobHash — either via attachments_json
+	// (`"blob_hash":"<hash>"` substring) or via an inline reference
+	// in body_html (the suite embeds image attachments as
+	// `<img src="/jmap/download/.../<hash>/...">`). Used by the
+	// JMAP /jmap/download endpoint as a fallback authorisation path
+	// when the URL's accountId does not match the requester: chat
+	// blobs are intentionally shared across the conversation's
+	// members, so the strict mail-style accountId check cannot stand
+	// alone for chat-embedded images.
+	//
+	// Implementations may scan with a substring predicate; blobHash
+	// MUST be a hex-encoded BLAKE3 digest validated by the caller
+	// before calling this method (the implementations do not
+	// re-validate to keep the predicate sargable).
+	ChatPrincipalCanReadBlob(ctx context.Context, principalID PrincipalID, blobHash string) (bool, error)
+
 	// SetLastRead advances the per-membership LastReadMessageID
 	// pointer (REQ-CHAT-30) to msgID, bumps ModSeq, and appends a
 	// (EntityKindMembership, ChangeOpUpdated) state-change row. Returns

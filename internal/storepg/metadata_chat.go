@@ -1070,6 +1070,34 @@ func (m *metadata) LastReadAt(ctx context.Context, principalID store.PrincipalID
 	return out, fromMicros(joinedUs), nil
 }
 
+func (m *metadata) ChatPrincipalCanReadBlob(ctx context.Context, principalID store.PrincipalID, blobHash string) (bool, error) {
+	// Substring scan against attachments_json AND body_html. attachments_json
+	// is BYTEA in postgres; convert to text via convert_from for the LIKE.
+	// Joining chat_memberships on conversation_id constrains the scan to
+	// the principal's own conversations.
+	var n int
+	err := m.s.pool.QueryRow(ctx, `
+		SELECT 1 FROM chat_messages cm
+		JOIN chat_memberships cmb ON cm.conversation_id = cmb.conversation_id
+		WHERE cmb.principal_id = $1
+		  AND cm.deleted_at_us IS NULL
+		  AND (
+		    (cm.attachments_json IS NOT NULL AND position($2 in convert_from(cm.attachments_json, 'UTF8')) > 0)
+		    OR (cm.body_html IS NOT NULL AND position($3 in cm.body_html) > 0)
+		  )
+		LIMIT 1`,
+		int64(principalID),
+		`"blob_hash":"`+blobHash+`"`,
+		blobHash).Scan(&n)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, mapErr(err)
+	}
+	return true, nil
+}
+
 func (m *metadata) CountChatMessagesUnread(ctx context.Context, conversationID store.ConversationID, viewerPID store.PrincipalID, lastReadMessageID *store.ChatMessageID) (int, error) {
 	// Two query shapes so the predicate stays sargable on the
 	// (conversation_id, id) index. The lastRead branch additionally
