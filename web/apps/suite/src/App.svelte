@@ -501,11 +501,14 @@
     justify-content: space-between;
   }
   .mailbox-list.custom .row-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 28px;
     padding: var(--spacing-02);
     color: var(--text-helper);
     border-radius: var(--radius-md);
-    text-align: center;
+    line-height: 1;
     opacity: 0;
     transition:
       opacity var(--duration-fast-02) var(--easing-productive-enter),
