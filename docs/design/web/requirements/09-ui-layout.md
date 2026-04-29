@@ -164,7 +164,7 @@ Multi-selection in the thread list — gestures, range-select, bulk actions, and
 | ID | Requirement |
 |----|-------------|
 | REQ-UI-50 | When ≥ 1 row is selected, the per-row toolbar above the thread list switches to a bulk-actions toolbar. The list keeps rendering. |
-| REQ-UI-51 | The bulk-actions toolbar exposes — left-to-right — the bulk-select control (REQ-UI-44a), archive, report-spam, delete, mark-as-unread, snooze, add-to-tasks (cut for v1; hidden), move-to, label, three-dot more-menu. |
+| REQ-UI-51 | The bulk-actions toolbar exposes — left-to-right — the bulk-select control (REQ-UI-44a), archive, report-spam, delete, mark-as-unread, snooze, add-to-tasks (cut for v1; hidden), move-to, label, three-dot more-menu. Each action is an icon-only button; the action name is provided as both `aria-label` and `title` (tooltip on hover). |
 | REQ-UI-51a | The bulk three-dot more-menu offers: star/unstar, mark-as-read, mark-as-unread, mark-as-important, mark-as-not-important, filter-similar, mute-thread, forward-as-attachment, "Switch to simple toolbar" (matches the per-thread toolbar's compact-mode toggle in REQ-UI-19c). |
 | REQ-UI-52 | A bulk action issues a single batched JMAP call where possible (`Email/set` with multiple `update` entries, not one call per email). |
 | REQ-UI-53 | If a "select all matching this query" selection is in force, bulk actions issue against the query rather than enumerated IDs — the underlying mechanism is `Email/query` for the IDs as needed, then `Email/set` in pages. |
