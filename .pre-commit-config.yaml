@@ -40,7 +40,11 @@ repos:
         pass_filenames: true
       - id: goimports
         name: goimports
-        entry: bash -c 'command -v goimports >/dev/null 2>&1 || { echo "install: go install golang.org/x/tools/cmd/goimports@latest" >&2; exit 1; }; goimports -l -d -local github.com/hanshuebner/herold "$@"' --
+        # Block scalar (|-) so the inner `install: go install` text does not
+        # collide with YAML's plain-scalar rule against ": ". Strips the
+        # trailing newline so pre-commit sees a single-line command.
+        entry: |-
+          bash -c 'command -v goimports >/dev/null 2>&1 || { echo "install: go install golang.org/x/tools/cmd/goimports@latest" >&2; exit 1; }; goimports -l -d -local github.com/hanshuebner/herold "$@"' --
         language: system
         types: [go]
         pass_filenames: true
@@ -58,7 +62,9 @@ repos:
         files: (^go\.mod$|^go\.sum$|\.go$)
       - id: staticcheck
         name: staticcheck
-        entry: bash -c 'command -v staticcheck >/dev/null 2>&1 || { echo "install: go install honnef.co/go/tools/cmd/staticcheck@latest" >&2; exit 1; }; staticcheck ./...' --
+        # See goimports above re: |- block scalar.
+        entry: |-
+          bash -c 'command -v staticcheck >/dev/null 2>&1 || { echo "install: go install honnef.co/go/tools/cmd/staticcheck@latest" >&2; exit 1; }; staticcheck ./...' --
         language: system
         types: [go]
         pass_filenames: false
