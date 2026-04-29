@@ -259,6 +259,19 @@ describe('ChatOverlayWindow', () => {
     expect(titleName?.textContent).toBe('Engineering');
   });
 
+  // --- Sub-issue: title must never expose the raw conversation id (issue #47) ---
+
+  it('does not display the raw conversation id when the conversation is not yet cached', () => {
+    const { container } = render(ChatOverlayWindow, {
+      props: { windowKey: 'ow-x', conversationId: 'cid-not-in-cache', minimized: false },
+    });
+    const titleName = container.querySelector('.title-name');
+    expect(titleName?.textContent).not.toContain('cid-not-in-cache');
+    expect(titleName?.textContent?.trim()).toBe('Loading...');
+    const section = container.querySelector('section');
+    expect(section?.getAttribute('aria-label')).not.toContain('cid-not-in-cache');
+  });
+
   // --- Sub-issue: icon characters not rendered as HTML entities (issue #44) ---
 
   it('renders the minimize button as a plain dash character, not an HTML entity string', () => {

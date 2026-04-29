@@ -37,11 +37,13 @@
    * - DM: the conversation name (set server-side to the other member's display name).
    * - Space: the space name, or "Untitled space" when the name is absent/empty.
    *   Pre-existing spaces created without a name have an empty string here.
+   * Never falls back to the raw conversation id — that is a wire-level
+   * identifier that has no meaning to the user (REQ-CHAT-15-style hygiene).
    */
   function conversationDisplayName(conv: Conversation | null): string {
-    if (!conv) return conversationId;
+    if (!conv) return 'Loading...';
     if (conv.type === 'space' && !conv.name) return 'Untitled space';
-    return conv.name || conversationId;
+    return conv.name || 'Conversation';
   }
 
   let conversation = $derived<Conversation | null>(
