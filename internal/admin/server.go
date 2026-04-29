@@ -32,6 +32,7 @@ import (
 	"github.com/hanshuebner/herold/internal/mailarc"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/maildkim"
+	"github.com/hanshuebner/herold/internal/linkpreview"
 	"github.com/hanshuebner/herold/internal/maildmarc"
 	"github.com/hanshuebner/herold/internal/mailspf"
 	"github.com/hanshuebner/herold/internal/netguard"
@@ -2111,7 +2112,16 @@ func composeAdminAndUI(
 		if cfg.Server.Chat.MessageTimestampGroupingSeconds > 0 {
 			limits.MessageTimestampGroupingSeconds = cfg.Server.Chat.MessageTimestampGroupingSeconds
 		}
-		jmapchat.RegisterWithFTS(jmapSrv.Registry(), st, ftsIndex,
+		// Link-preview fetcher: enabled by default, hardened by
+		// netguard at the dialer + pre-flight resolver layers so a
+		// crafted URL in chat body cannot reflect off herold into
+		// the operator's internal network. See package
+		// internal/linkpreview for the trust posture.
+		previewer := linkpreview.New(linkpreview.Options{
+			Logger: logger.With("subsystem", "linkpreview"),
+		})
+		jmapchat.RegisterWithFTSAndLinkPreview(jmapSrv.Registry(), st, ftsIndex,
+			previewer,
 			logger.With("subsystem", "jmap-chat"), clk, limits)
 	}
 	jmapHandler := jmapSrv.Handler()

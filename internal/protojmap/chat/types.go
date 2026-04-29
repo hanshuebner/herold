@@ -189,10 +189,26 @@ type jmapMessage struct {
 	ReplyToMessageID  any                 `json:"replyToMessageId"`
 	Reactions         map[string][]string `json:"reactions"`
 	Attachments       []jmapAttachment    `json:"attachments"`
+	LinkPreviews      []jmapLinkPreview   `json:"linkPreviews,omitempty"`
 	Metadata          any                 `json:"metadata"`
 	EditedAt          any                 `json:"editedAt"`
 	DeletedAt         any                 `json:"deletedAt"`
 	CreatedAt         string              `json:"createdAt"`
+}
+
+// jmapLinkPreview is the wire shape of a single link-preview card
+// attached to a Message. Populated server-side by the linkpreview
+// fetcher when the dispatcher detects URLs in body.text; clients
+// render it as a card under the message body. Empty fields mean the
+// upstream did not advertise the value; the renderer is expected to
+// gracefully omit them.
+type jmapLinkPreview struct {
+	URL          string `json:"url"`
+	CanonicalURL string `json:"canonicalUrl,omitempty"`
+	Title        string `json:"title,omitempty"`
+	Description  string `json:"description,omitempty"`
+	ImageURL     string `json:"imageUrl,omitempty"`
+	SiteName     string `json:"siteName,omitempty"`
 }
 
 // jmapBlock is the wire-form Block object.

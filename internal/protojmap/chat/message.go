@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/linkpreview"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -154,6 +155,17 @@ func renderMessage(m store.ChatMessage) jmapMessage {
 	}
 	if len(m.MetadataJSON) > 0 {
 		out.Metadata = json.RawMessage(m.MetadataJSON)
+		// Project linkPreviews out of metadata_json into a typed wire
+		// field. The dispatcher stores them as
+		// {"linkPreviews":[{...},...]} alongside any other metadata
+		// keys; decoding a typed shape here means clients don't have
+		// to parse the embedded JSON themselves.
+		var meta struct {
+			LinkPreviews []jmapLinkPreview `json:"linkPreviews"`
+		}
+		if err := json.Unmarshal(m.MetadataJSON, &meta); err == nil && len(meta.LinkPreviews) > 0 {
+			out.LinkPreviews = meta.LinkPreviews
+		}
 	}
 	return out
 }
@@ -385,6 +397,68 @@ func resolveMessageID(raw jmapID, creationRefs map[string]store.ChatMessageID) (
 	return messageIDFromJMAP(raw)
 }
 
+// linkPreviewBudget caps the total time the createMessage path will
+// spend fetching URL previews. Set tight on purpose: a slow upstream
+// must not block message delivery. URLs that don't return a preview
+// in time are silently dropped; the message still gets created.
+const linkPreviewBudget = 2 * time.Second
+
+// linkPreviewMaxURLs caps the number of URLs we'll fetch per message
+// to prevent message-creation amplification: a body containing 50
+// URLs would otherwise burn 50 outbound HTTP requests.
+const linkPreviewMaxURLs = 3
+
+// fetchLinkPreviews scans bodyText for http(s) URLs, fetches preview
+// metadata for up to linkPreviewMaxURLs of them in parallel, and
+// returns the JSON to store in chat_messages.metadata_json. Returns
+// nil when:
+//   - no fetcher is wired (handlerSet.linkPreview == nil)
+//   - bodyText contains no URLs
+//   - every fetch failed (the renderer treats nil metadata as empty)
+//
+// Errors from the fetcher are logged at warn level and otherwise
+// swallowed: a missing preview must never block a message from being
+// sent.
+func (h *handlerSet) fetchLinkPreviews(ctx context.Context, bodyText string) []byte {
+	if h.linkPreview == nil || bodyText == "" {
+		return nil
+	}
+	urls := linkpreview.ExtractURLs(bodyText, linkPreviewMaxURLs)
+	if len(urls) == 0 {
+		return nil
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, linkPreviewBudget)
+	defer cancel()
+	previews := h.linkPreview.FetchAll(fetchCtx, urls, linkPreviewMaxURLs)
+	out := make([]jmapLinkPreview, 0, len(previews))
+	for _, p := range previews {
+		if p.URL == "" {
+			// Empty Preview marks a fetch failure; FetchAll preserves
+			// slot ordering with empty entries on failure.
+			continue
+		}
+		out = append(out, jmapLinkPreview{
+			URL:          p.URL,
+			CanonicalURL: p.CanonicalURL,
+			Title:        p.Title,
+			Description:  p.Description,
+			ImageURL:     p.ImageURL,
+			SiteName:     p.SiteName,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(struct {
+		LinkPreviews []jmapLinkPreview `json:"linkPreviews"`
+	}{LinkPreviews: out})
+	if err != nil {
+		h.logger.Warn("chat.linkpreview.marshal_failed", "err", err.Error())
+		return nil
+	}
+	return payload
+}
+
 func (h *handlerSet) createMessage(
 	ctx context.Context,
 	sender store.PrincipalID,
@@ -513,6 +587,7 @@ func (h *handlerSet) createMessage(
 		BodyFormat:        body.Format,
 		ReplyToMessageID:  replyTo,
 		AttachmentsJSON:   attsJSON,
+		MetadataJSON:      h.fetchLinkPreviews(ctx, body.Text),
 		CreatedAt:         h.clk.Now(),
 	}
 	id, err := h.store.Meta().InsertChatMessage(ctx, row)

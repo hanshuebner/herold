@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/linkpreview"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
@@ -48,6 +49,14 @@ type handlerSet struct {
 	// ftsFallbackWarnOnce guards the one-time warn-log emitted when
 	// Message/query takes the substring fallback path.
 	ftsFallbackWarnOnce sync.Once
+
+	// linkPreview fetches OG-tag metadata for URLs found in
+	// body.text on Message/set create. Nil disables the feature
+	// (the chat surface still functions, just without preview cards
+	// — the call sites guard on this nil). Production wiring lives
+	// in admin/server.go; tests pass nil unless they exercise the
+	// preview flow specifically.
+	linkPreview *linkpreview.Fetcher
 }
 
 // AccountLimits is the per-account capability descriptor body. Defaults
@@ -135,6 +144,22 @@ func RegisterWithFTS(
 	clk clock.Clock,
 	limits AccountLimits,
 ) {
+	RegisterWithFTSAndLinkPreview(reg, st, fts, nil, logger, clk, limits)
+}
+
+// RegisterWithFTSAndLinkPreview is the most fully-parameterised
+// constructor. Pass a non-nil fetcher to enable URL preview cards on
+// Message/set create; nil disables the feature without affecting any
+// other surface. Wired from admin/server.go on the production path.
+func RegisterWithFTSAndLinkPreview(
+	reg *protojmap.CapabilityRegistry,
+	st store.Store,
+	fts FTS,
+	fetcher *linkpreview.Fetcher,
+	logger *slog.Logger,
+	clk clock.Clock,
+	limits AccountLimits,
+) {
 	observe.RegisterProtojmapChatMetrics()
 	if logger == nil {
 		logger = slog.Default()
@@ -142,7 +167,7 @@ func RegisterWithFTS(
 	if clk == nil {
 		clk = clock.NewReal()
 	}
-	h := &handlerSet{store: st, logger: logger, clk: clk, limits: limits, fts: fts}
+	h := &handlerSet{store: st, logger: logger, clk: clk, limits: limits, fts: fts, linkPreview: fetcher}
 
 	register := func(handler protojmap.MethodHandler) {
 		reg.Register(protojmap.CapabilityJMAPChat, instrumentChatHandler(handler))
