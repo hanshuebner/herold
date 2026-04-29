@@ -2,37 +2,47 @@
 
 The visual structure of the client: how the screen is divided, how lists render, how a thread reads.
 
+> **Layout status**: the canonical layout is the two-column form below. An earlier draft proposed a four-column form (suite-app rail + inner sidebar + thread list/reading pane + chat panel); that variant is deferred to a later release. See § Future revision.
+
 ## Overall layout
 
 The mail app's screen, from outermost to innermost:
 
 ```
-┌─[ global bar (suite shell) ]──────────────────────────────────────────┐
-├─[ rail ]──┬─[ inner sidebar ]──┬─[ pagination + 3-dot ]───────┬─[ chat ]─┤
-│           │                    │ [ category tabs ]            │  panel  │
-│  Mail     │ [ Compose ]        ├──────────────────────────────┤         │
-│  Chat     │ Inbox        14    │                              │ (per    │
-│           │ Snoozed            │                              │  arch/  │
-│           │ Important          │  thread list (virtualised)   │  06-    │
-│           │ Sent               │                              │  design)│
-│           │ Drafts        1    │                              │         │
-│           │ All Mail           │                              │         │
-│           │ ▼ More             │                              │         │
-│           │                    ├──────────────────────────────┤         │
-│           │ Labels         +   │  reading pane (when a thread │         │
-│           │ ▶ work             │  is open); else preview      │         │
-│           │ ▶ family           │                              │         │
-│           │ ▼ More             │                              │         │
-└───────────┴────────────────────┴──────────────────────────────┴─────────┘
+┌──────────────────┬─────────────────────────────────────────────────┐
+│ Herold           │ [ search bar | help | settings ]                │
+│                  ├─────────────────────────────────────────────────┤
+│ [ Compose ]      │ [ bulk-select | refresh | 3-dot |  pagination ] │
+│ Inbox        14  │ [ category tabs ]                               │
+│ Snoozed          ├─────────────────────────────────────────────────┤
+│ Important        │                                                 │
+│ Sent             │  thread list (virtualised)                      │
+│ Drafts        1  │                                                 │
+│ All Mail         │                                                 │
+│ ▼ More           ├─────────────────────────────────────────────────┤
+│                  │  reading pane (when a thread is open);          │
+│ Labels         + │  else preview                                   │
+│ ▶ work           │                                                 │
+│ ▶ family         │                                                 │
+│ ▼ More           │                                                 │
+│ ──────────────── │                                                 │
+│ Chats         +  │                                                 │
+│ ● Alice          │                                                 │
+│   Bob's Space    │                                                 │
+└──────────────────┴─────────────────────────────────────────────────┘
 ```
 
 | ID | Requirement |
 |----|-------------|
-| REQ-UI-01 | Three-pane layout (rail + sidebar combined as the left region; thread list centre; reading pane right). The chat panel is a fourth column on the right edge, mounted by the suite shell — see `08-chat.md` and `../architecture/01-system-overview.md`. |
-| REQ-UI-02 | The inner sidebar is collapsible to a thin (rail-only) state. Collapsed/expanded state persists per-account in `localStorage`. |
+| REQ-UI-01 | Two-column layout: a single sidebar on the left (brand + mail navigation + chats), the content area on the right (global bar + thread list + reading pane, vertically stacked). There is no separate suite-app rail and no separate chat panel — chat lives as a section in the sidebar (REQ-UI-13g) and individual conversations open as floating overlays per `08-chat.md`. |
+| REQ-UI-02 | The sidebar is a fixed-width column on desktop. On phone breakpoints (`24-mobile-and-touch.md`) it collapses off-canvas; on desktop it is not user-collapsible in this revision. |
 | REQ-UI-03 | The thread list / reading pane split ratio is user-adjustable via a drag handle and persists. |
 | REQ-UI-04 | Compose opens as a modal in the bottom-right corner. Multiple compose windows stack (cap: 3). Above the cap, Send-or-discard prompts on a fourth open attempt. |
 | REQ-UI-05 | Toast / snackbar notifications appear bottom-centre with Undo where applicable. Auto-dismiss at 5 seconds. |
+
+### Future revision
+
+A later release is expected to reintroduce a dedicated chat panel and possibly a left-edge suite-app rail when calendar and contacts join the suite. Treat the two-column layout above as the **current** canonical form; the four-column variant is documented only in `notes/` once the design lands. Until then, do not implement rail or chat-panel surfaces.
 
 ## Global bar (suite shell)
 
@@ -62,26 +72,27 @@ A persistent bar at the top of every route in the suite. Owned by the suite shel
 
 ## Sidebar
 
-Two regions: an outer **rail** with suite-app navigation, and an **inner sidebar** with the active app's navigation tree. Mail's inner sidebar is what most of this section describes.
+A single sidebar column. Top to bottom: brand mark, Compose button, system mailboxes, Labels, Chats. The Chats section is anchored to the bottom of the sidebar; the mailbox + labels region grows to absorb leftover height.
 
-### Rail
-
-| ID | Requirement |
-|----|-------------|
-| REQ-UI-12a | The rail shows app icons for the top-level suite apps that are deployed: Mail, Chat (the panel toggle, also addressable as the `/chat` fullscreen route), eventually Calendar and Contacts. |
-| REQ-UI-12b | Each rail entry shows an unread / activity badge: Mail's badge is the global unread count across mail; Chat's badge is the count of conversations with unread messages (excluding muted). |
-| REQ-UI-12c | The rail is always visible; not collapsible. |
-
-### Inner sidebar (mail)
+### Sidebar — mail
 
 | ID | Requirement |
 |----|-------------|
-| REQ-UI-13a | Top of the inner sidebar: a prominent "Compose" button (also `c` shortcut). |
+| REQ-UI-13a | Top of the sidebar: a prominent "Compose" button (also `c` shortcut). The "Herold" brand mark sits above Compose. |
 | REQ-UI-13b | Below Compose: the system-mailbox list in this fixed order — Inbox, Snoozed, Important, Sent, Drafts, All Mail. Spam, Trash, and any further system folders live under a "More" expander (default collapsed; state persists). |
-| REQ-UI-13c | Each system-mailbox row shows the unread count when non-zero. The Inbox count is also reflected on the rail's Mail badge. |
+| REQ-UI-13c | Each system-mailbox row shows the unread count when non-zero. |
 | REQ-UI-13d | Below the system mailboxes: a "Labels" section with a "+" affordance to create a label. Labels render as a tree (REQ-MODEL-05); top-level labels at the root, children indented. Each label shows its colour swatch and unread count. |
 | REQ-UI-13e | The Labels section also has a "More" expander when the count exceeds a threshold (default: more than 7 visible; persisted threshold is per-account configurable in settings). |
 | REQ-UI-13f | The currently-active mailbox/label is highlighted (`--layer-02` background). |
+
+### Sidebar — chats
+
+| ID | Requirement |
+|----|-------------|
+| REQ-UI-13g | Bottom of the sidebar: a "Chats" section, visible only when the chat capability is advertised (`08-chat.md`). The section is anchored to the bottom of the sidebar; the mailbox + labels region above it absorbs leftover height. |
+| REQ-UI-13h | The Chats header shows the title and a single "+" button at the right edge. The "+" button opens the new-chat picker (`08-chat.md` REQ-CHAT-01a). There is no separate "+ Space" affordance; DM and Space creation share one entry point. |
+| REQ-UI-13i | Below the header: the most-recently-active conversations (cap: 8 visible). Each row shows the conversation's display name (`08-chat.md` REQ-CHAT-15), unread badge if non-zero and unmuted, and a presence dot for DMs (`08-chat.md` REQ-CHAT-62). Clicking a row opens the conversation as a floating overlay; it does not navigate away from the current mail view. |
+| REQ-UI-13j | Empty state: when chat is enabled and the user has zero conversations, the section shows the header (with the "+") and a small italic "No conversations yet" line. The "+" alone is the call-to-action; no additional empty-state CTA is rendered. |
 
 ## Thread list
 

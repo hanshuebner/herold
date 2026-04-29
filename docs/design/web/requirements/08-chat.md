@@ -10,13 +10,19 @@ Two types: direct (DM, 1:1) and space (group, 2+ members).
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CHAT-01 | DMs are 1:1 conversations. Created on first message — the user picks a recipient (autocompleted from the contacts source per `02-mail-basics.md` REQ-MAIL-11) and types. The conversation is created server-side on send. |
-| REQ-CHAT-02 | Spaces are group conversations with explicit membership. Created from a "+ Space" affordance: name, optional description, initial members. |
+| REQ-CHAT-01 | DMs are 1:1 conversations. Created on first message via the new-chat picker (REQ-CHAT-01a..d). The conversation is created server-side on first send. |
+| REQ-CHAT-01a | The single new-chat entry point is the "+" button in the sidebar Chats section header (`09-ui-layout.md` REQ-UI-13h). It opens a modal picker that defaults to DM mode and offers a "Create Space" toggle to switch to multi-recipient Space creation. There is no separate "+ Space" affordance and no "Start chat with X" affordance in search (`08-chat.md` REQ-CHAT-80 is find-existing only). |
+| REQ-CHAT-01b | The picker's typeahead source is the directory of Herold Principals on this server only — not the user's mail-contacts list. Each suggestion renders the principal's display name and email address. Principal IDs are never shown (REQ-CHAT-15). |
+| REQ-CHAT-01c | The picker's input also accepts a free-text email address. On commit, the suite resolves the address against the directory: if it matches a Herold Principal on this server the picker accepts the recipient; if it does not, the picker shows a hard error inline ("<address> is not a Herold user on this server") and refuses to proceed. There is no "send mail instead" fallback and no out-of-server invite flow in v1. |
+| REQ-CHAT-01d | If the picked DM recipient already has an existing DM with the user, the picker routes to the existing conversation rather than creating a duplicate. The existing conversation opens as the floating overlay (`09-ui-layout.md` REQ-UI-13i). |
+| REQ-CHAT-02 | Spaces are group conversations with explicit membership. Created via the same picker (REQ-CHAT-01a) in "Create Space" mode: name (required), description (optional), and initial members. |
+| REQ-CHAT-02a | Space creation requires at least one initial member besides the creator. The picker disables the create button until the member list is non-empty. Members are picked using the same typeahead and validation rules as DM recipients (REQ-CHAT-01b..c); the input is multi-select and renders confirmed members as chips. Promoting an existing DM to a Space (i.e. adding a third member to a DM) is out of scope for v1; the user creates a new Space instead. |
 | REQ-CHAT-03 | Space members have a role: `member` or `admin`. The creator is admin. Admins can add/remove members and change the space name; members cannot. |
 | REQ-CHAT-04 | A user can leave a Space at any time. Leaving emits a system message ("Hans left the Space"); the user is removed from membership. |
 | REQ-CHAT-05 | An admin can remove a member; same system-message emission. |
 | REQ-CHAT-06 | Conversations sort by most recent activity. Pinned conversations sort first within their type. |
 | REQ-CHAT-07 | Each conversation has a mute state: muted conversations don't trigger panel notifications and don't show in the unread count, but new messages still appear when the conversation is open. |
+| REQ-CHAT-15 | Principal IDs are an internal identifier and MUST NOT appear in any user-facing surface. This includes the new-chat picker, member lists, recipient chips, error messages, settings panels, profile cards, and tooltips. The canonical user-facing identifiers for a Principal are the display name and the email address; the suite renders one or both depending on context but never the principal ID. |
 
 ## Messages
 
@@ -80,7 +86,7 @@ Two types: direct (DM, 1:1) and space (group, 2+ members).
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CHAT-80 | A search box at the top of the chat panel searches conversation names, member names, and message content. |
+| REQ-CHAT-80 | A search box at the top of the chat panel searches conversation names, member names, and message content. Search is **find-existing only**: it surfaces conversations and messages the user already has access to. It does not offer "Start a chat with this person" — new conversations are started exclusively through the picker (REQ-CHAT-01a). |
 | REQ-CHAT-81 | Search-within-conversation: when a conversation is open, `/` focuses an inline search bar that filters messages in that conversation only (highlights matches; `n`/`Shift+n` cycles). |
 | REQ-CHAT-82 | Cross-conversation search is full-text against `Message.body` plain-text projection. Results group by conversation. |
 | REQ-CHAT-83 | Search results are paged; 50 messages per page. |
