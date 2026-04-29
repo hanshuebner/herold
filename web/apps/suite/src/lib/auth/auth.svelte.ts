@@ -61,6 +61,13 @@ class Auth {
    * Null until bootstrap completes successfully.
    */
   principalId = $state<string | null>(null);
+  /**
+   * Scopes granted to the current principal. Populated by loadMe() and
+   * by login(). Used to gate admin-visible UI (e.g. the app-switcher
+   * admin entry requires the 'admin' scope). Empty array until bootstrap
+   * completes or when unauthenticated.
+   */
+  scopes = $state<string[]>([]);
   /** True after a /api/v1/auth/login 401 with step_up_required; the LoginView
    *  uses this to reveal the TOTP-code field. */
   needsStepUp = $state(false);
@@ -78,6 +85,7 @@ class Auth {
       // Stringify immediately to avoid JS Number precision loss for large
       // uint64 values (> 2^53 rounds to the wrong integer).
       this.principalId = String(me.principal_id);
+      this.scopes = me.scopes ?? [];
     } catch {
       // Non-fatal: security forms degrade gracefully when principalId is null.
     }
@@ -156,10 +164,11 @@ class Auth {
 
     if (response.status === 200) {
       this.needsStepUp = false;
-      // Capture principal_id from the login response body.
+      // Capture principal_id and scopes from the login response body.
       try {
         const body = (await response.json()) as AuthMeResponse;
         this.principalId = String(body.principal_id);
+        this.scopes = body.scopes ?? [];
       } catch {
         // Ignore parse errors; loadMe() in bootstrap() will populate it.
       }
@@ -212,6 +221,7 @@ class Auth {
     }
     this.session = null;
     this.principalId = null;
+    this.scopes = [];
     this.status = 'unauthenticated';
   }
 
@@ -226,6 +236,7 @@ class Auth {
     if (this.status === 'unauthenticated') return;
     this.session = null;
     this.principalId = null;
+    this.scopes = [];
     this.status = 'unauthenticated';
   }
 }

@@ -25,6 +25,9 @@
 </script>
 
 <div class="shell">
+  <!-- TODO REQ-UI-13k: add AppSwitcherMenu burger button to the left of
+       the wordmark once a shared component package or inlined copy is
+       wired for the admin SPA. Admin is the 'admin' currentApp entry. -->
   <header class="topbar">
     <span class="wordmark">Herold admin</span>
     <div class="topbar-right">

@@ -183,6 +183,14 @@ export const en = {
   'settings.language.en': 'English',
   'settings.language.de': 'Deutsch',
 
+  // ── App switcher ────────────────────────────────────────────────────
+  'app.mail': 'Mail',
+  'app.calendar': 'Calendar',
+  'app.contacts': 'Contacts',
+  'app.chat': 'Chat',
+  'app.admin': 'Server admin',
+  'app.switch': 'Switch suite component',
+
   // ── Common ──────────────────────────────────────────────────────────
   'common.cancel': 'Cancel',
   'common.confirm': 'Confirm',
