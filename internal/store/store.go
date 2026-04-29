@@ -689,6 +689,39 @@ type Metadata interface {
 	// ErrNotFound when the row is missing.
 	DeleteJMAPIdentity(ctx context.Context, id string) error
 
+	// MaterializeDefaultIdentity ensures that a real jmap_identities row
+	// exists for the principal's synthesised default identity
+	// (REQ-AUTH-EXT-SUBMIT-01). The default identity is normally a
+	// synthesised value not stored in jmap_identities; this method
+	// creates a persisted row (idempotently) so that a FK-backed
+	// identity_submission row can reference it. The returned int64 is
+	// the numeric ID that was assigned to the identity row (consistent
+	// with the wire form: decimal string of the row's ROWID / sequence).
+	// Calling this method twice with the same principalID returns the
+	// same id both times without creating a second row.
+	MaterializeDefaultIdentity(ctx context.Context, principalID PrincipalID) (string, error)
+
+	// UpsertIdentitySubmission creates or replaces the submission config
+	// for sub.IdentityID. The IdentityID must already exist in
+	// jmap_identities (either as an overlay row or after
+	// MaterializeDefaultIdentity). Returns ErrNotFound when the identity
+	// row is absent.
+	UpsertIdentitySubmission(ctx context.Context, sub IdentitySubmission) error
+
+	// GetIdentitySubmission returns the submission config for identityID.
+	// Returns ErrNotFound when no row is present (i.e., the identity
+	// uses herold's default outbound queue).
+	GetIdentitySubmission(ctx context.Context, identityID string) (IdentitySubmission, error)
+
+	// DeleteIdentitySubmission removes the submission config for
+	// identityID. Returns ErrNotFound when absent.
+	DeleteIdentitySubmission(ctx context.Context, identityID string) error
+
+	// ListIdentitySubmissionsDue returns rows whose refresh_due_us is
+	// non-null and <= before (i.e., the OAuth token sweeper should
+	// refresh these). Results are ordered by refresh_due_us ascending.
+	ListIdentitySubmissionsDue(ctx context.Context, before time.Time) ([]IdentitySubmission, error)
+
 	// -- Phase 2 JMAP snooze (REQ-PROTO-49) ---------------------------
 
 	// ListDueSnoozedMessages returns messages whose SnoozedUntil <= now

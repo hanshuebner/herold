@@ -1294,3 +1294,81 @@ type LLMClassificationRecord struct {
 	// CategoryClassifiedAt is the instant categorisation ran.
 	CategoryClassifiedAt *time.Time
 }
+
+// -- Identity submission (REQ-AUTH-EXT-SUBMIT-01..10) -----------------
+
+// IdentitySubmissionState is the health state of a per-Identity external SMTP
+// submission configuration (REQ-AUTH-EXT-SUBMIT-07). State changes emit a
+// JMAP push event so the suite can prompt the user to re-authenticate.
+type IdentitySubmissionState string
+
+// IdentitySubmissionState values. The empty string is not a valid persisted
+// state; callers should treat it as IdentitySubmissionStateOK.
+const (
+	// IdentitySubmissionStateOK means the last submission succeeded (or no
+	// submission has been attempted yet).
+	IdentitySubmissionStateOK IdentitySubmissionState = "ok"
+	// IdentitySubmissionStateAuthFailed means the last submission attempt
+	// received a 535 response, or an OAuth refresh failed.
+	IdentitySubmissionStateAuthFailed IdentitySubmissionState = "auth-failed"
+	// IdentitySubmissionStateUnreachable means the last attempt failed at
+	// the network or DNS layer before the SMTP conversation began.
+	IdentitySubmissionStateUnreachable IdentitySubmissionState = "unreachable"
+)
+
+// IdentitySubmission is one row in the identity_submission table. It carries
+// the external SMTP endpoint configuration and encrypted credential material
+// for one JMAP Identity (REQ-AUTH-EXT-SUBMIT-01).
+//
+// Credential fields (PasswordCT, OAuthAccessCT, OAuthRefreshCT,
+// OAuthClientSecretCT) hold AEAD-sealed blobs produced by
+// internal/secrets.Seal. The store layer is oblivious to the ciphertext
+// content; callers seal before writing and open after reading.
+//
+// A nil credential field means the credential is absent (e.g. password auth
+// has no OAuth fields, and OAuthClientSecretCT is nil for v1 which uses
+// operator-level OAuth client credentials).
+type IdentitySubmission struct {
+	// IdentityID is the JMAP Identity id (FK to jmap_identities(id)).
+	IdentityID string
+	// SubmitHost is the external SMTP server hostname.
+	SubmitHost string
+	// SubmitPort is the TCP port (typically 587 or 465).
+	SubmitPort int
+	// SubmitSecurity is the TLS posture: "implicit_tls", "starttls", or "none".
+	SubmitSecurity string
+	// SubmitAuthMethod is the SASL method: "password" or "oauth2".
+	SubmitAuthMethod string
+	// PasswordCT is the AEAD-sealed password bytes. Non-nil only when
+	// SubmitAuthMethod == "password".
+	PasswordCT []byte
+	// OAuthAccessCT is the AEAD-sealed OAuth access token. Non-nil when
+	// SubmitAuthMethod == "oauth2".
+	OAuthAccessCT []byte
+	// OAuthRefreshCT is the AEAD-sealed OAuth refresh token. Non-nil when
+	// SubmitAuthMethod == "oauth2" and a refresh token was supplied.
+	OAuthRefreshCT []byte
+	// OAuthTokenEndpoint is the token endpoint URL for OAuth refresh.
+	// Empty when SubmitAuthMethod == "password".
+	OAuthTokenEndpoint string
+	// OAuthClientID is the OAuth client identifier. Empty when
+	// SubmitAuthMethod == "password".
+	OAuthClientID string
+	// OAuthClientSecretCT is the AEAD-sealed per-Identity OAuth client
+	// secret. Nil in v1 (operator-level provider config is used instead).
+	OAuthClientSecretCT []byte
+	// OAuthExpiresAt is the instant the access token expires. Zero when
+	// SubmitAuthMethod == "password" or when no expiry was returned.
+	OAuthExpiresAt time.Time
+	// RefreshDue is the instant the sweeper should next attempt a token
+	// refresh. Zero (nil in the DB) when SubmitAuthMethod == "password".
+	RefreshDue time.Time
+	// State is the current health state of this submission config.
+	State IdentitySubmissionState
+	// StateAt is the instant State was last set.
+	StateAt time.Time
+	// CreatedAt is the insert instant.
+	CreatedAt time.Time
+	// UpdatedAt is the instant of the most recent write.
+	UpdatedAt time.Time
+}

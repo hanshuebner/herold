@@ -2410,3 +2410,33 @@ func (m *metaFace) InsertSESSeen(_ context.Context, _ string, _ time.Time) error
 func (m *metaFace) GCOldSESSeen(_ context.Context, _ time.Time) error {
 	return nil
 }
+
+// -- Identity submission stubs (REQ-AUTH-EXT-SUBMIT-01..10) -----------
+// These methods are not exercised by fakestore consumers (the conformance
+// suite runs them against the real SQLite and Postgres backends). The stubs
+// satisfy the store.Metadata interface.
+
+// MaterializeDefaultIdentity is not implemented in the fakestore.
+func (m *metaFace) MaterializeDefaultIdentity(_ context.Context, _ store.PrincipalID) (string, error) {
+	return "", store.ErrNotFound
+}
+
+// UpsertIdentitySubmission is not implemented in the fakestore.
+func (m *metaFace) UpsertIdentitySubmission(_ context.Context, _ store.IdentitySubmission) error {
+	return store.ErrNotFound
+}
+
+// GetIdentitySubmission is not implemented in the fakestore.
+func (m *metaFace) GetIdentitySubmission(_ context.Context, _ string) (store.IdentitySubmission, error) {
+	return store.IdentitySubmission{}, store.ErrNotFound
+}
+
+// DeleteIdentitySubmission is not implemented in the fakestore.
+func (m *metaFace) DeleteIdentitySubmission(_ context.Context, _ string) error {
+	return store.ErrNotFound
+}
+
+// ListIdentitySubmissionsDue is not implemented in the fakestore.
+func (m *metaFace) ListIdentitySubmissionsDue(_ context.Context, _ time.Time) ([]store.IdentitySubmission, error) {
+	return nil, nil
+}

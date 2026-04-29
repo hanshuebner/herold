@@ -197,6 +197,16 @@ func Run(t *testing.T, f Factory) {
 		{"SeenAddress_GetByEmail", testSeenAddressGetByEmail},
 		{"SeenAddress_Destroy", testSeenAddressDestroy},
 		{"SeenAddress_Purge", testSeenAddressPurge},
+		// -- REQ-AUTH-EXT-SUBMIT-01..10 external SMTP submission ----------
+		{"IdentitySubmission_MaterializeDefault_Idempotent", testMaterializeDefaultIdentity_Idempotent},
+		{"IdentitySubmission_UpsertGet_Roundtrip", testIdentitySubmission_UpsertGet_Roundtrip},
+		{"IdentitySubmission_OAuthFields_Roundtrip", testIdentitySubmission_OAuthFields_Roundtrip},
+		{"IdentitySubmission_GetNotFound", testIdentitySubmission_GetNotFound},
+		{"IdentitySubmission_StateTransition", testIdentitySubmission_StateTransition},
+		{"IdentitySubmission_Delete_NotFoundAfter", testIdentitySubmission_Delete_NotFoundAfter},
+		{"IdentitySubmission_Cascade_OnIdentityDelete", testIdentitySubmission_Cascade},
+		{"IdentitySubmission_ListDue_OrderedAndFiltered", testIdentitySubmission_ListDue},
+		{"IdentitySubmission_UpsertWithoutMaterialize_Errors", testIdentitySubmission_UpsertWithoutMaterialize},
 	}
 	for _, c := range cases {
 		tc := c
