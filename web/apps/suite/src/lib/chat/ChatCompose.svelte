@@ -36,6 +36,7 @@
   import { history, undo, redo } from 'prosemirror-history';
 
   import { chatSchema, chatMarks_, chatNodes_ } from './schema';
+  import { urlInputRulesPlugin, handleUrlPaste } from './url-input-rules';
   import { chat } from './store.svelte';
   import { jmap } from '../jmap/client';
   import { auth } from '../auth/auth.svelte';
@@ -133,11 +134,14 @@
     const state = EditorState.create({
       schema: chatSchema,
       doc: emptyDoc,
-      plugins: [history(), buildKeymap(), keymap(baseKeymap)],
+      plugins: [history(), buildKeymap(), keymap(baseKeymap), urlInputRulesPlugin(chatSchema)],
     });
 
     const editorView = new EditorView(host, {
       state,
+      handlePaste: (v, event) => {
+        return handleUrlPaste(v, event);
+      },
       handleDOMEvents: {
         drop: (_v, event) => {
           const dt = (event as DragEvent).dataTransfer;

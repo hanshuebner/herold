@@ -6,6 +6,10 @@
  * strikethrough, inline code, links. Supported blocks: paragraph, code_block,
  * bullet_list, ordered_list, list_item. Inline images are allowed (for
  * paste/drag-and-drop upload per REQ-CHAT-22/23).
+ *
+ * The link mark overrides prosemirror-schema-basic's default to add
+ * target="_blank" and rel="noopener noreferrer" on serialization, and
+ * restricts accepted hrefs to http:// and https:// only.
  */
 
 import { Schema, type MarkSpec, type NodeSpec } from 'prosemirror-model';
@@ -51,7 +55,47 @@ const filteredNodes = basicSchema.spec.nodes
 
 const chatNodes = addListNodes(filteredNodes, 'paragraph block*', 'block');
 
+/**
+ * Safe link mark: http/https only, serializes with target="_blank" and
+ * rel="noopener noreferrer". Other schemes (mailto, javascript, data, etc.)
+ * are rejected at parse time and stripped by the input rules.
+ */
+const safeLinkMark: MarkSpec = {
+  attrs: {
+    href: { validate: 'string' },
+    title: { default: null, validate: 'string|null' },
+  },
+  inclusive: false,
+  parseDOM: [
+    {
+      tag: 'a[href]',
+      getAttrs(dom) {
+        const href = (dom as HTMLElement).getAttribute('href') ?? '';
+        if (!/^https?:\/\//i.test(href)) return false;
+        return {
+          href,
+          title: (dom as HTMLElement).getAttribute('title'),
+        };
+      },
+    },
+  ],
+  toDOM(node) {
+    const { href, title } = node.attrs as { href: string; title: string | null };
+    return [
+      'a',
+      {
+        href,
+        ...(title ? { title } : {}),
+        target: '_blank',
+        rel: 'noopener noreferrer',
+      },
+      0,
+    ];
+  },
+};
+
 const chatMarks = basicSchema.spec.marks
+  .update('link', safeLinkMark)
   .addToEnd('underline', underlineMark)
   .addToEnd('strikethrough', strikethroughMark);
 
