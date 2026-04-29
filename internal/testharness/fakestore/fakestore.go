@@ -2421,22 +2421,84 @@ func (m *metaFace) MaterializeDefaultIdentity(_ context.Context, _ store.Princip
 	return "", store.ErrNotFound
 }
 
-// UpsertIdentitySubmission is not implemented in the fakestore.
-func (m *metaFace) UpsertIdentitySubmission(_ context.Context, _ store.IdentitySubmission) error {
-	return store.ErrNotFound
+// UpsertIdentitySubmission creates or replaces the submission config for sub.IdentityID.
+func (m *metaFace) UpsertIdentitySubmission(ctx context.Context, sub store.IdentitySubmission) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := store.ValidateIdentitySubmissionCTs(sub); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	// Verify the identity exists.
+	if _, ok := s.phase2.jmapIdentities[sub.IdentityID]; !ok {
+		return fmt.Errorf("identity %q: %w", sub.IdentityID, store.ErrNotFound)
+	}
+	s.phase2.identitySubmissions[sub.IdentityID] = sub
+	return nil
 }
 
-// GetIdentitySubmission is not implemented in the fakestore.
-func (m *metaFace) GetIdentitySubmission(_ context.Context, _ string) (store.IdentitySubmission, error) {
-	return store.IdentitySubmission{}, store.ErrNotFound
+// GetIdentitySubmission returns the submission config for identityID.
+// Returns ErrNotFound if no config exists.
+func (m *metaFace) GetIdentitySubmission(ctx context.Context, identityID string) (store.IdentitySubmission, error) {
+	if err := ctx.Err(); err != nil {
+		return store.IdentitySubmission{}, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return store.IdentitySubmission{}, fmt.Errorf("identity_submission %q: %w", identityID, store.ErrNotFound)
+	}
+	sub, ok := s.phase2.identitySubmissions[identityID]
+	if !ok {
+		return store.IdentitySubmission{}, fmt.Errorf("identity_submission %q: %w", identityID, store.ErrNotFound)
+	}
+	return sub, nil
 }
 
-// DeleteIdentitySubmission is not implemented in the fakestore.
-func (m *metaFace) DeleteIdentitySubmission(_ context.Context, _ string) error {
-	return store.ErrNotFound
+// DeleteIdentitySubmission removes the submission config for identityID.
+func (m *metaFace) DeleteIdentitySubmission(ctx context.Context, identityID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.phase2 == nil {
+		return fmt.Errorf("identity_submission %q: %w", identityID, store.ErrNotFound)
+	}
+	if _, ok := s.phase2.identitySubmissions[identityID]; !ok {
+		return fmt.Errorf("identity_submission %q: %w", identityID, store.ErrNotFound)
+	}
+	delete(s.phase2.identitySubmissions, identityID)
+	return nil
 }
 
-// ListIdentitySubmissionsDue is not implemented in the fakestore.
-func (m *metaFace) ListIdentitySubmissionsDue(_ context.Context, _ time.Time) ([]store.IdentitySubmission, error) {
-	return nil, nil
+// ListIdentitySubmissionsDue returns rows whose RefreshDue is <= before,
+// ordered by RefreshDue ascending.
+func (m *metaFace) ListIdentitySubmissionsDue(ctx context.Context, before time.Time) ([]store.IdentitySubmission, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return nil, nil
+	}
+	var out []store.IdentitySubmission
+	for _, sub := range s.phase2.identitySubmissions {
+		if !sub.RefreshDue.IsZero() && !sub.RefreshDue.After(before) {
+			out = append(out, sub)
+		}
+	}
+	// Sort ascending by RefreshDue.
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].RefreshDue.Before(out[j].RefreshDue)
+	})
+	return out, nil
 }

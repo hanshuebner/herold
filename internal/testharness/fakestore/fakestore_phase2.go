@@ -47,8 +47,9 @@ type phase2Data struct {
 	tlsrpt     map[store.TLSRPTFailureID]store.TLSRPTFailure
 	nextTLSRPT store.TLSRPTFailureID
 
-	emailSubmissions map[string]store.EmailSubmissionRow
-	jmapIdentities   map[string]store.JMAPIdentity
+	emailSubmissions    map[string]store.EmailSubmissionRow
+	jmapIdentities      map[string]store.JMAPIdentity
+	identitySubmissions map[string]store.IdentitySubmission
 
 	// catConfig is the LLM categoriser per-principal configuration
 	// (REQ-FILT-210). Lazily initialised on first read so the existing
@@ -127,6 +128,7 @@ func (s *Store) ensurePhase2() {
 		nextTLSRPT:           1,
 		emailSubmissions:     make(map[string]store.EmailSubmissionRow),
 		jmapIdentities:       make(map[string]store.JMAPIdentity),
+		identitySubmissions:  make(map[string]store.IdentitySubmission),
 		catConfig:            make(map[store.PrincipalID]store.CategorisationConfig),
 		addressBooks:         make(map[store.AddressBookID]store.AddressBook),
 		nextAddressBook:      1,

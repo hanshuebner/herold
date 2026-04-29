@@ -646,6 +646,25 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 		slog.Int("attempt", int(item.Attempts)+1),
 	)
 
+	// Defensive assertion: if this queue item was submitted under a JMAP
+	// Identity that has external submission configured, it must not be
+	// delivered via the local outbound queue. Phase 3 wires
+	// EmailSubmission/set to bypass the queue for such identities; this
+	// guard catches any regression where an external-submission row leaks
+	// into the local queue (REQ-AUTH-EXT-SUBMIT-05 / REQ-AUTH-EXT-SUBMIT-06).
+	if q.isExternalSubmissionItem(ctx, item) {
+		q.opts.Logger.ErrorContext(ctx, "queue: BUG: external-submission item reached local queue; dropping",
+			slog.String("activity", observe.ActivitySystem),
+			slog.Uint64("id", uint64(item.ID)),
+			slog.String("envelope_id", string(item.EnvelopeID)),
+		)
+		q.handlePermanent(ctx, item, DeliveryOutcome{
+			Status: DeliveryStatusPermanent,
+			Detail: "queue: external-submission identity must not route through local queue (REQ-AUTH-EXT-SUBMIT-05)",
+		})
+		return
+	}
+
 	body, err := q.readBody(ctx, item.BodyBlobHash)
 	if err != nil {
 		q.opts.Logger.ErrorContext(ctx, "queue: read body blob failed",
@@ -715,6 +734,33 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 			slog.Uint64("id", uint64(item.ID)))
 		q.handleTransient(ctx, item, "deliverer returned unknown status")
 	}
+}
+
+// isExternalSubmissionItem checks whether item was submitted under a JMAP
+// Identity that has an external SMTP submission config. If so, the item must
+// not be delivered by the local queue (REQ-AUTH-EXT-SUBMIT-05).
+//
+// The lookup path is: QueueItem.EnvelopeID → EmailSubmissionRow.IdentityID →
+// IdentitySubmission. Both lookups return ErrNotFound for queue items that did
+// not originate from a JMAP EmailSubmission (e.g. SMTP relay, alias fanout,
+// DSN bounce), so those items pass through silently.
+func (q *Queue) isExternalSubmissionItem(ctx context.Context, item store.QueueItem) bool {
+	// EmailSubmissionRow.ID == EnvelopeID (see store.EmailSubmissionRow comment).
+	subRow, err := q.opts.Store.Meta().GetEmailSubmission(ctx, string(item.EnvelopeID))
+	if err != nil {
+		// ErrNotFound is the expected case for non-JMAP items.
+		return false
+	}
+	if subRow.IdentityID == "" {
+		return false
+	}
+	_, err = q.opts.Store.Meta().GetIdentitySubmission(ctx, subRow.IdentityID)
+	if err != nil {
+		// ErrNotFound: no external submission config; deliver normally.
+		return false
+	}
+	// An IdentitySubmission row exists: this identity uses external SMTP.
+	return true
 }
 
 func (q *Queue) handleSuccess(ctx context.Context, item store.QueueItem, outcome DeliveryOutcome) {

@@ -879,6 +879,91 @@ func TestCancel_DuringInflight_ReportsInflight(t *testing.T) {
 	}
 }
 
+// TestDeliver_ExternalSubmissionItem verifies that a queue item whose
+// EnvelopeID maps to a JMAP EmailSubmissionRow referencing an Identity with
+// external submission configured is dropped with a permanent failure and never
+// passed to the Deliverer (REQ-AUTH-EXT-SUBMIT-05).
+//
+// This is a defensive regression test: Phase 3 wires EmailSubmission/set to
+// bypass the queue for external identities. If that routing is ever missed,
+// this guard detects the leak before double-delivery occurs.
+func TestDeliver_ExternalSubmissionItem(t *testing.T) {
+	f := newFixture(t, fixtureOpts{concurrency: 4, skipRun: true})
+
+	ctx := f.ctx
+
+	// Insert a JMAP identity and an IdentitySubmission row so that
+	// isExternalSubmissionItem returns true for our test envelope.
+	const identityID = "ext-identity-1"
+	if err := f.store.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID:          identityID,
+		PrincipalID: 1,
+		Email:       "alice@example.com",
+		Name:        "Alice",
+		MayDelete:   true,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	if err := f.store.Meta().UpsertIdentitySubmission(ctx, store.IdentitySubmission{
+		IdentityID:       identityID,
+		SubmitHost:       "smtp.example.com",
+		SubmitPort:       587,
+		SubmitSecurity:   "starttls",
+		SubmitAuthMethod: "password",
+		PasswordCT:       []byte("v1:placeholder"),
+		State:            store.IdentitySubmissionStateOK,
+		StateAt:          f.clk.Now(),
+		CreatedAt:        f.clk.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertIdentitySubmission: %v", err)
+	}
+
+	// Submit a queue item whose EnvelopeID we control. We first enqueue
+	// normally, then plant an EmailSubmissionRow with that EnvelopeID.
+	envID := f.submit(t, queue.Submission{
+		MailFrom:   "alice@example.com",
+		Recipients: []string{"bob@dest.test"},
+		Body:       strings.NewReader("Subject: ext\r\n\r\nbody\r\n"),
+	})
+
+	// Insert the EmailSubmissionRow that links this envelope to the
+	// external identity. ID == stringified EnvelopeID per store convention.
+	if err := f.store.Meta().InsertEmailSubmission(ctx, store.EmailSubmissionRow{
+		ID:          string(envID),
+		EnvelopeID:  envID,
+		PrincipalID: 1,
+		IdentityID:  identityID,
+		UndoStatus:  "pending",
+		SendAtUs:    f.clk.Now().UnixMicro(),
+		CreatedAtUs: f.clk.Now().UnixMicro(),
+	}); err != nil {
+		t.Fatalf("InsertEmailSubmission: %v", err)
+	}
+
+	// Now start the queue and wait for the item to be processed.
+	f.wg.Add(1)
+	go func() {
+		defer f.wg.Done()
+		_ = f.queue.Run(ctx)
+	}()
+
+	// The item should be marked as failed (permanent), not delivered.
+	if !waitFor(t, 3*time.Second, func() bool {
+		s, err := f.queue.Stats(f.ctx)
+		if err != nil {
+			return false
+		}
+		return s.Failed >= 1
+	}) {
+		t.Fatalf("expected item to reach failed state; stats: %+v", mustStats(t, f))
+	}
+
+	// The deliverer must NOT have been called.
+	if f.deliv.callCount() != 0 {
+		t.Errorf("Deliverer was called %d times; want 0 for external-submission item", f.deliv.callCount())
+	}
+}
+
 // -- helpers ----------------------------------------------------------
 
 func waitFor(t *testing.T, timeout time.Duration, pred func() bool) bool {
