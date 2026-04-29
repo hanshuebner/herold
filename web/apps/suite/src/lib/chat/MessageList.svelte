@@ -18,6 +18,7 @@
   import { auth } from '../auth/auth.svelte';
   import { chatTimestampGroupingSeconds } from '../auth/capabilities';
   import EmojiPicker from '../mail/EmojiPicker.svelte';
+  import ImageLightbox from './ImageLightbox.svelte';
   import type { Message, Conversation } from './types';
 
   interface Props {
@@ -49,6 +50,19 @@
 
   let scrollEl = $state<HTMLDivElement | null>(null);
   let showPickerFor = $state<string | null>(null);
+  let lightboxSrc = $state<string | null>(null);
+
+  /**
+   * Delegated click handler for inline images rendered via {@html}.
+   * Since the image nodes are inserted by the browser parser we cannot
+   * attach svelte onclick directives; instead we listen on the .body
+   * wrapper and check whether the event landed on an <img>.
+   */
+  function handleBodyClick(ev: MouseEvent): void {
+    if (ev.target instanceof HTMLImageElement) {
+      lightboxSrc = ev.target.src;
+    }
+  }
 
   // Auto-scroll to bottom when new messages arrive (while at bottom).
   let wasAtBottom = true;
@@ -271,7 +285,8 @@
                   <em class="deleted">message deleted</em>
                 {:else}
                   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                  <div class="body">{@html msg.body.html}</div>
+                  <!-- svelte-ignore a11y_click_events_have_key_events -->
+                  <div class="body" role="presentation" onclick={handleBodyClick}>{@html msg.body.html}</div>
                 {/if}
 
                 <div class="meta">
@@ -343,6 +358,13 @@
     {/if}
   {/if}
 </div>
+
+{#if lightboxSrc}
+  <ImageLightbox
+    src={lightboxSrc}
+    onClose={() => { lightboxSrc = null; }}
+  />
+{/if}
 
 <style>
   .message-list {
