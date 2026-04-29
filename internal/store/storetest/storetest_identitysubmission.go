@@ -446,6 +446,64 @@ func testIdentitySubmission_CTValidation_InvalidPrefix(t *testing.T, s store.Sto
 	}
 }
 
+// testIdentitySubmission_CountOAuth verifies that CountOAuthIdentitySubmissions
+// returns the total count of oauth2-method rows regardless of refresh_due_us,
+// and does not count password-method rows.
+func testIdentitySubmission_CountOAuth(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	// Helper to insert an identity with the given auth method.
+	insertSub := func(email, authMethod string) {
+		t.Helper()
+		p := mustInsertPrincipal(t, s, email)
+		identityID := mustMaterializeDefaultIdentity(t, s, p.ID)
+		sub := store.IdentitySubmission{
+			IdentityID:       identityID,
+			SubmitHost:       "smtp.example.com",
+			SubmitPort:       587,
+			SubmitSecurity:   "starttls",
+			SubmitAuthMethod: authMethod,
+			State:            store.IdentitySubmissionStateOK,
+			StateAt:          now,
+			CreatedAt:        now,
+		}
+		if authMethod == "oauth2" {
+			sub.OAuthAccessCT = []byte("v1:tok")
+			// RefreshDue intentionally not set to verify the query is
+			// independent of refresh_due_us.
+		} else {
+			sub.PasswordCT = []byte("v1:pw")
+		}
+		if err := s.Meta().UpsertIdentitySubmission(ctx, sub); err != nil {
+			t.Fatalf("UpsertIdentitySubmission(%s): %v", email, err)
+		}
+	}
+
+	// Empty table: count must be 0.
+	n, err := s.Meta().CountOAuthIdentitySubmissions(ctx)
+	if err != nil {
+		t.Fatalf("CountOAuthIdentitySubmissions (empty): %v", err)
+	}
+	if n != 0 {
+		t.Errorf("empty table: count = %d; want 0", n)
+	}
+
+	// Insert two oauth2 rows and one password row.
+	insertSub("count-oauth1@example.com", "oauth2")
+	insertSub("count-oauth2@example.com", "oauth2")
+	insertSub("count-pw@example.com", "password")
+
+	n, err = s.Meta().CountOAuthIdentitySubmissions(ctx)
+	if err != nil {
+		t.Fatalf("CountOAuthIdentitySubmissions: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("count = %d; want 2 (only oauth2 rows)", n)
+	}
+}
+
 // testIdentitySubmission_CTValidation_NilFields verifies that an upsert
 // with all-nil CT fields succeeds (sparse row).
 func testIdentitySubmission_CTValidation_NilFields(t *testing.T, s store.Store) {

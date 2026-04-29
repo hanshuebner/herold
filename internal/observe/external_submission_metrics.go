@@ -35,10 +35,10 @@ var (
 	// attempt (success or failure).
 	ExtSubOAuthRefreshTotal *prometheus.CounterVec
 
-	// ExtSubActiveIdentities is set to the number of identity_submission rows
-	// returned by ListIdentitySubmissionsDue on every sweeper tick. The value
-	// approximates "how many OAuth identities exist in the system" (not
-	// limited to those due for refresh).
+	// ExtSubActiveIdentities is set to the total number of identity_submission
+	// rows with submit_auth_method='oauth2', updated on every sweeper tick via
+	// CountOAuthIdentitySubmissions. Counts all OAuth-configured identities,
+	// not just those due for refresh in the current window.
 	ExtSubActiveIdentities prometheus.Gauge
 )
 
@@ -65,7 +65,7 @@ func RegisterExtSubMetrics() {
 
 		ExtSubActiveIdentities = prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "herold_external_submission_active_identities",
-			Help: "Most recently observed count of identity_submission rows with a non-null refresh_due_us (OAuth identities). Updated on every sweeper tick.",
+			Help: "Number of identities with external SMTP submission configured via OAuth 2.0. Updated on every sweeper tick. Counts all oauth2-configured identities, not just those due for refresh in the current window.",
 		})
 
 		MustRegister(
@@ -102,9 +102,10 @@ func RecordOAuthRefreshOutcome(outcome string) {
 	ExtSubOAuthRefreshTotal.WithLabelValues(outcome).Inc()
 }
 
-// SetExtSubActiveIdentities records the most recently observed count of
-// OAuth-configured identity_submission rows. Called by the sweeper on every
-// tick.
+// SetExtSubActiveIdentities records the total count of OAuth-configured
+// identity_submission rows (all rows with submit_auth_method='oauth2',
+// regardless of refresh_due_us). Called by the sweeper on every tick via
+// CountOAuthIdentitySubmissions.
 //
 // Safe to call before RegisterExtSubMetrics.
 func SetExtSubActiveIdentities(n int) {

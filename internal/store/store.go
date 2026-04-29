@@ -729,6 +729,13 @@ type Metadata interface {
 	// refresh these). Results are ordered by refresh_due_us ascending.
 	ListIdentitySubmissionsDue(ctx context.Context, before time.Time) ([]IdentitySubmission, error)
 
+	// CountOAuthIdentitySubmissions returns the total number of
+	// identity_submission rows whose submit_auth_method is 'oauth2',
+	// regardless of refresh_due_us. Used by the sweeper to keep the
+	// herold_external_submission_active_identities gauge accurate between
+	// refresh windows (REQ-AUTH-EXT-SUBMIT-09).
+	CountOAuthIdentitySubmissions(ctx context.Context) (int, error)
+
 	// -- Phase 2 JMAP snooze (REQ-PROTO-49) ---------------------------
 
 	// ListDueSnoozedMessages returns messages whose SnoozedUntil <= now

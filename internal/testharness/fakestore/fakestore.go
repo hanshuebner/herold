@@ -2478,6 +2478,27 @@ func (m *metaFace) DeleteIdentitySubmission(ctx context.Context, identityID stri
 	return nil
 }
 
+// CountOAuthIdentitySubmissions returns the total number of identity_submission
+// rows with submit_auth_method == "oauth2", regardless of RefreshDue.
+func (m *metaFace) CountOAuthIdentitySubmissions(ctx context.Context) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return 0, nil
+	}
+	n := 0
+	for _, sub := range s.phase2.identitySubmissions {
+		if sub.SubmitAuthMethod == "oauth2" {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // ListIdentitySubmissionsDue returns rows whose RefreshDue is <= before,
 // ordered by RefreshDue ascending.
 func (m *metaFace) ListIdentitySubmissionsDue(ctx context.Context, before time.Time) ([]store.IdentitySubmission, error) {

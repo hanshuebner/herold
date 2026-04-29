@@ -211,6 +211,7 @@ func Run(t *testing.T, f Factory) {
 		{"IdentitySubmission_CTValidation_ValidPrefix", testIdentitySubmission_CTValidation_ValidPrefix},
 		{"IdentitySubmission_CTValidation_InvalidPrefix_Rejected", testIdentitySubmission_CTValidation_InvalidPrefix},
 		{"IdentitySubmission_CTValidation_NilFields_Allowed", testIdentitySubmission_CTValidation_NilFields},
+		{"IdentitySubmission_CountOAuth_AllRows", testIdentitySubmission_CountOAuth},
 	}
 	for _, c := range cases {
 		tc := c

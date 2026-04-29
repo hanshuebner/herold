@@ -166,6 +166,17 @@ func (m *metadata) DeleteIdentitySubmission(ctx context.Context, identityID stri
 	})
 }
 
+func (m *metadata) CountOAuthIdentitySubmissions(ctx context.Context) (int, error) {
+	var n int
+	err := m.s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM identity_submission WHERE submit_auth_method = 'oauth2'`,
+	).Scan(&n)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return n, nil
+}
+
 func (m *metadata) ListIdentitySubmissionsDue(ctx context.Context, before time.Time) ([]store.IdentitySubmission, error) {
 	rows, err := m.s.pool.Query(ctx, `
 		SELECT `+identitySubmissionSelectColsPG+`
