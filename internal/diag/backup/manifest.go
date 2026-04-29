@@ -118,7 +118,20 @@ const CurrentBackupVersion = 1
 //	seen-addresses-enabled flag (REQ-SET-15). Adds
 //	principals.seen_addresses_enabled column (default true).
 //	Column-only migration.
-const CurrentSchemaVersion = 31
+//
+// 32 — 0032_identity_submission.sql. Per-Identity external SMTP
+//
+//	submission config (REQ-AUTH-EXT-SUBMIT-01..10). Adds the
+//	identity_submission table with FK to jmap_identities(id) ON
+//	DELETE CASCADE; carries AEAD-sealed credential blobs and the
+//	background refresh-due index.
+//
+// 33 — 0033_email_submission_external.sql. Adds the external flag to
+//
+//	jmap_email_submissions (REQ-AUTH-EXT-SUBMIT-05) so /get can
+//	reconstruct deliveryStatus for externally-routed submissions
+//	without consulting the queue. Column-only migration.
+const CurrentSchemaVersion = 33
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

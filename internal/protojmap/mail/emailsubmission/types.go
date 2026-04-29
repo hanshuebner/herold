@@ -135,10 +135,10 @@ func rowToJMAP(rows []store.QueueItem, identityID jmapID, emailID jmapID, thread
 // per-recipient list and the diagnostic returned by extsubmit.Submitter so the
 // /get path can reconstruct deliveryStatus without touching the queue.
 type externalSubmissionProperties struct {
-	RcptTo    []string `json:"rcptTo,omitempty"`
-	ExtState  string   `json:"extState,omitempty"`
-	ExtDiag   string   `json:"extDiag,omitempty"`
-	MailFrom  string   `json:"mailFrom,omitempty"`
+	RcptTo   []string `json:"rcptTo,omitempty"`
+	ExtState string   `json:"extState,omitempty"`
+	ExtDiag  string   `json:"extDiag,omitempty"`
+	MailFrom string   `json:"mailFrom,omitempty"`
 }
 
 // externalRowToJMAP converts an External=true EmailSubmissionRow into the

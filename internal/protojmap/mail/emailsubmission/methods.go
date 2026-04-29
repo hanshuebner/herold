@@ -34,12 +34,12 @@ type IdentityResolver interface {
 
 // handlerSet binds the EmailSubmission handlers to their dependencies.
 type handlerSet struct {
-	store            store.Store
-	queue            Submitter
-	clk              clock.Clock
-	identity         IdentityResolver
-	externalSubmit   ExternalSubmitter // nil when external submission is disabled
-	externalRouter   ExternalRouter    // nil when external submission is disabled
+	store          store.Store
+	queue          Submitter
+	clk            clock.Clock
+	identity       IdentityResolver
+	externalSubmit ExternalSubmitter // nil when external submission is disabled
+	externalRouter ExternalRouter    // nil when external submission is disabled
 }
 
 func stateString(seq int64) string { return strconv.FormatInt(seq, 10) }
