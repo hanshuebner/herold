@@ -61,6 +61,8 @@ vi.mock('./store.svelte', () => ({
     ]),
     presence: new Map([['p2', 'online']]),
     conversationsStatus: 'ready',
+    requestComposeFocus: vi.fn(),
+    destroyConversation: vi.fn(),
   },
 }));
 
@@ -80,6 +82,7 @@ vi.mock('./new-chat-picker.svelte', () => ({
 }));
 
 import SidebarChats from './SidebarChats.svelte';
+import { chat } from './store.svelte';
 import { chatOverlay } from './overlay-store.svelte';
 import { newChatPicker } from './new-chat-picker.svelte';
 
@@ -114,6 +117,7 @@ describe('SidebarChats', () => {
     const aliceBtn = screen.getByRole('button', { name: 'Alice, 2 unread' });
     await fireEvent.click(aliceBtn);
     expect(chatOverlay.openWindow).toHaveBeenCalledWith('c1');
+    expect(chat.requestComposeFocus).toHaveBeenCalledWith('c1');
   });
 
   it('marks the conv-item active when the overlay is open', () => {

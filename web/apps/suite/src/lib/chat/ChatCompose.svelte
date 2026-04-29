@@ -181,10 +181,42 @@
     view = editorView;
     if (autofocus) requestAnimationFrame(() => editorView.focus());
 
+    // Track focus state in the chat store so MessageList can gate
+    // auto-mark-read on "the cursor is actually in this compose box".
+    // The ProseMirror editor host receives focus/blur via its
+    // contenteditable element; mirror it onto chat.focusedConversationId.
+    const onFocus = (): void => {
+      chat.focusedConversationId = conversationId;
+    };
+    const onBlur = (): void => {
+      if (chat.focusedConversationId === conversationId) {
+        chat.focusedConversationId = null;
+      }
+    };
+    editorView.dom.addEventListener('focus', onFocus);
+    editorView.dom.addEventListener('blur', onBlur);
+
     return () => {
+      editorView.dom.removeEventListener('focus', onFocus);
+      editorView.dom.removeEventListener('blur', onBlur);
+      if (chat.focusedConversationId === conversationId) {
+        chat.focusedConversationId = null;
+      }
       editorView.destroy();
       view = null;
     };
+  });
+
+  // External focus requests: a sidebar click (or other UI affordance)
+  // sets chat.focusRequest to ask the compose for this conversation to
+  // grab keyboard focus. The epoch bumps on every request so re-clicking
+  // the same conversation re-fires the effect.
+  $effect(() => {
+    const req = chat.focusRequest;
+    if (!req || req.conversationId !== conversationId) return;
+    untrack(() => {
+      view?.focus();
+    });
   });
 
   async function uploadImage(file: File): Promise<void> {

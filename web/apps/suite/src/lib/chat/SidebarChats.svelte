@@ -96,7 +96,10 @@
             class:active={chatOverlay.isOpen(conv.id)}
             aria-label="{conv.name}{conv.unreadCount > 0 && !conv.muted ? `, ${conv.unreadCount} unread` : ''}"
             title={conv.name}
-            onclick={() => chatOverlay.openWindow(conv.id)}
+            onclick={() => {
+              chatOverlay.openWindow(conv.id);
+              chat.requestComposeFocus(conv.id);
+            }}
           >
             <span class="avatar-wrap" aria-hidden="true">
               <span class="avatar" class:space={conv.kind === 'space'}>

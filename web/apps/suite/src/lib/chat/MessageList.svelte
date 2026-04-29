@@ -63,15 +63,20 @@
     });
   });
 
-  // Mark-read on first render and on each subsequent message arrival,
-  // so opening a conversation (especially in an overlay window where
-  // the user may never scroll) advances Membership.readThrough and the
-  // sidebar unread badge clears. Debounced via scheduleMarkRead.
+  // Mark-read tracks two reactive sources: (a) the effective messages
+  // (so a newly arrived message can advance the read pointer if the
+  // user is already typing) and (b) chat.focusedConversationId (so
+  // moving focus into THIS conversation's compose advances the
+  // pointer for the messages already on screen). The cursor must be
+  // inside the chat compose for this conversation — scroll alone or
+  // hover do not advance the pointer.
   $effect(() => {
     const msgs = effectiveMessages;
     const status = effectiveStatus;
+    const focused = chat.focusedConversationId;
     untrack(() => {
       if (status !== 'ready' || msgs.length === 0) return;
+      if (focused !== conversationId) return;
       scheduleMarkRead();
     });
   });
@@ -89,9 +94,6 @@
         void chat.loadMoreMessages(conversationId);
       }
     }
-
-    // Mark read: debounce 500ms after scroll settles.
-    scheduleMarkRead();
   }
 
   let markReadTimer: ReturnType<typeof setTimeout> | null = null;
@@ -185,34 +187,9 @@
     const member = conversation.members.find(
       (m) => m.principalId === senderPrincipalId,
     );
-    // [chat-debug] log resolution path — temporary.
-    let branch: string;
-    let result: string;
-    if (member?.displayName) {
-      branch = 'member.displayName';
-      result = member.displayName;
-    } else if (conversation.kind === 'dm') {
-      branch = 'dm-fallback (conversation.name)';
-      result = conversation.name;
-    } else {
-      branch = 'space-fallback (literal "Member")';
-      result = 'Member';
-    }
-    console.log('[chat-debug] senderName', {
-      senderPrincipalId,
-      authPrincipalId: auth.principalId,
-      conversationId: conversation.id,
-      conversationKind: conversation.kind,
-      conversationName: conversation.name,
-      members: conversation.members.map((m) => ({
-        principalId: m.principalId,
-        displayName: m.displayName,
-      })),
-      matchedMember: member ? { principalId: member.principalId, displayName: member.displayName } : null,
-      branch,
-      result,
-    });
-    return result;
+    if (member?.displayName) return member.displayName;
+    if (conversation.kind === 'dm') return conversation.name;
+    return 'Member';
   }
 
   function handleToggleReaction(messageId: string, emoji: string): void {

@@ -121,8 +121,6 @@ class Sync {
       return;
     }
     if (!isStateChange(payload)) return;
-    // [chat-debug] frame trace — temporary, see commit log.
-    console.log('[chat-debug] EventSource frame', JSON.parse(JSON.stringify(payload.changed)));
     for (const accountId of Object.keys(payload.changed)) {
       const typeMap = payload.changed[accountId];
       if (!typeMap) continue;
@@ -130,11 +128,7 @@ class Sync {
         const newState = typeMap[type];
         if (typeof newState !== 'string') continue;
         const set = this.#handlers.get(type);
-        if (!set) {
-          console.log('[chat-debug] EventSource: no handlers registered for', type);
-          continue;
-        }
-        console.log('[chat-debug] EventSource: dispatching', type, 'newState=', newState, 'handlers=', set.size);
+        if (!set) continue;
         for (const handler of set) {
           try {
             handler(newState, accountId);

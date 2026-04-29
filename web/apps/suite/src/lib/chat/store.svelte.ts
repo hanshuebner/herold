@@ -83,6 +83,26 @@ class ChatStore {
    */
   typing = $state(new Map<string, Set<string>>());
 
+  /**
+   * The conversationId whose compose textarea currently holds keyboard
+   * focus, or null when no compose is focused. ChatCompose maintains
+   * this on focus / blur events; MessageList uses it to gate
+   * auto-mark-read so the unread badge resets only when the recipient
+   * is actually about to type a reply.
+   */
+  focusedConversationId = $state<string | null>(null);
+
+  /**
+   * One-shot focus request: a sidebar click sets this to the picked
+   * conversationId together with a monotonic epoch so subscribers
+   * (the matching ChatCompose) can re-focus even when the same
+   * conversation is clicked twice in a row. ChatCompose watches the
+   * field via $effect and calls view.focus() when it sees a value
+   * naming its conversation.
+   */
+  focusRequest = $state<{ conversationId: string; epoch: number } | null>(null);
+  #focusEpoch = 0;
+
   /** State strings for incremental sync. */
   #conversationState: string | null = null;
   #messageState: string | null = null;
@@ -93,19 +113,14 @@ class ChatStore {
   #presenceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor() {
-    // [chat-debug] one-shot identity log so the console clearly
-    // attributes subsequent traces to a session — temporary.
-    console.log('[chat-debug] ChatStore constructed; auth.principalId at construction =', auth.principalId);
     // Register EventSource state-change handlers so the store syncs
     // when herold pushes a state advance for chat types.
     sync.on('Conversation', (newState, accountId) => {
-      console.log('[chat-debug] sync.on Conversation fired', { newState, accountId });
       this.#syncConversationChanges(newState, accountId).catch((err) => {
         console.error('chat Conversation/changes failed', err);
       });
     });
     sync.on('Message', (newState, accountId) => {
-      console.log('[chat-debug] sync.on Message fired', { newState, accountId });
       this.#syncMessageChanges(newState, accountId).catch((err) => {
         console.error('chat Message/changes failed', err);
       });
@@ -170,29 +185,6 @@ class ChatStore {
         notFound?: string[];
       };
       this.#conversationState = result.state;
-      // [chat-debug] log loaded conversations — temporary, see commit log.
-      console.log('[chat-debug] loadConversations response', {
-        authPrincipalId: auth.principalId,
-        state: result.state,
-        list: result.list.map((c) => ({
-          id: c.id,
-          kind: c.kind,
-          name: c.name,
-          unreadCount: c.unreadCount,
-          members: c.members.map((m) => ({
-            principalId: m.principalId,
-            displayName: m.displayName,
-            role: m.role,
-          })),
-          myMembership: c.myMembership
-            ? {
-                id: c.myMembership.id,
-                principalId: c.myMembership.principalId,
-                lastReadMessageId: c.myMembership.lastReadMessageId,
-              }
-            : null,
-        })),
-      });
       for (const c of result.list) {
         this.conversations.set(c.id, c);
       }
@@ -211,6 +203,16 @@ class ChatStore {
   async openConversation(id: string): Promise<void> {
     this.openConversationId = id;
     await this.loadMessages(id);
+  }
+
+  /**
+   * Ask the ChatCompose for the named conversation to take focus.
+   * Bumps a monotonic epoch so the same conversation can be focused
+   * twice in a row (the subscriber's $effect re-fires on every change).
+   */
+  requestComposeFocus(conversationId: string): void {
+    this.#focusEpoch += 1;
+    this.focusRequest = { conversationId, epoch: this.#focusEpoch };
   }
 
   async loadMessages(conversationId: string): Promise<void> {
@@ -343,14 +345,6 @@ class ChatStore {
     this.messages = [...this.messages, optimisticMsg];
     this.#appendOverlayMessage(conversationId, optimisticMsg);
 
-    // [chat-debug] log send request — temporary, see commit log.
-    console.log('[chat-debug] sendMessage request', {
-      authPrincipalId: auth.principalId,
-      conversationId,
-      tempId,
-      text,
-    });
-
     try {
       const { responses } = await jmap.batch((b) => {
         b.call(
@@ -368,9 +362,6 @@ class ChatStore {
           USING,
         );
       });
-
-      // [chat-debug] log full Message/set response — temporary, stringified.
-      console.log('[chat-debug] sendMessage response\n' + JSON.stringify(responses, null, 2));
 
       const setResp = responses.find(([name]) => name === 'Message/set');
       if (!setResp || setResp[0] === 'error') {
@@ -393,13 +384,6 @@ class ChatStore {
 
       const created = result.created?.[tempId];
       const realId = created?.id;
-      // [chat-debug] log server-assigned senderPrincipalId for the new
-      // message vs the local auth.principalId — if these don't match we
-      // know why filip's messages render as bob's.
-      console.log('[chat-debug] sendMessage created', {
-        authPrincipalId: auth.principalId,
-        serverAssigned: created,
-      });
       if (realId) {
         // Replace optimistic record with real id in both caches.
         this.messages = this.messages.map((m) =>
@@ -658,11 +642,6 @@ class ChatStore {
       await this.loadConversations();
       return;
     }
-    // [chat-debug] log sync entry — temporary.
-    console.log('[chat-debug] #syncConversationChanges entry', {
-      sinceState: this.#conversationState,
-      newStateFromPush: _newState,
-    });
     try {
       const { responses } = await jmap.batch((b) => {
         const changes = b.call(
@@ -688,11 +667,6 @@ class ChatStore {
           USING,
         );
       });
-
-      // [chat-debug] log full sync response — temporary. Stringified so
-      // the entire body lands in the console (Chrome otherwise prints
-      // `(N) [Array(3), …]` and requires manual expansion).
-      console.log('[chat-debug] #syncConversationChanges response\n' + JSON.stringify(responses, null, 2));
 
       const changesResp = responses.find(
         ([name]) => name === 'Conversation/changes',
@@ -750,14 +724,7 @@ class ChatStore {
     // Conversation/changes, so the user sees that something arrived;
     // every subsequent push diffs correctly and auto-pops as expected.
     const openId = this.openConversationId;
-    // [chat-debug] log sync entry — temporary.
-    console.log('[chat-debug] #syncMessageChanges entry', {
-      sinceState: this.#messageState,
-      newStateFromPush: newState,
-      openId,
-    });
     if (!this.#messageState) {
-      console.log('[chat-debug] #syncMessageChanges: seeding #messageState from push and skipping diff for this round');
       this.#messageState = newState;
       return;
     }
@@ -785,9 +752,6 @@ class ChatStore {
           USING,
         );
       });
-
-      // [chat-debug] log full sync response — temporary, stringified.
-      console.log('[chat-debug] #syncMessageChanges response\n' + JSON.stringify(responses, null, 2));
 
       const changesResp = responses.find(([name]) => name === 'Message/changes');
       const getResps = responses.filter(([name]) => name === 'Message/get');
@@ -867,30 +831,8 @@ class ChatStore {
             router.parts[0] === 'chat' &&
             router.parts[1] === 'conversation' &&
             router.parts[2] === incoming.conversationId;
-          // [chat-debug] auto-open decision — temporary.
-          console.log('[chat-debug] auto-open decision', {
-            messageId: incoming.id,
-            conversationId: incoming.conversationId,
-            senderPrincipalId: incoming.senderPrincipalId,
-            authPrincipalId: auth.principalId,
-            fromMe,
-            isNewArrival,
-            routeActive,
-            routerParts: [...router.parts],
-            willOpen: isNewArrival && !fromMe && !routeActive,
-            overlayWindowsBefore: chatOverlay.windows.length,
-          });
           if (isNewArrival && !fromMe && !routeActive) {
             chatOverlay.openWindow(incoming.conversationId);
-            console.log('[chat-debug] auto-open after openWindow', {
-              conversationId: incoming.conversationId,
-              overlayWindowsAfter: chatOverlay.windows.length,
-              keys: chatOverlay.windows.map((w) => ({
-                key: w.key,
-                conversationId: w.conversationId,
-                minimized: w.minimized,
-              })),
-            });
           }
         }
       }
@@ -1063,18 +1005,6 @@ class ChatStore {
       }
 
       const result = getResp[1] as { state: string; list: Message[] };
-      // [chat-debug] log overlay messages with their senderPrincipalId
-      // so we can compare to auth.principalId at render time.
-      console.log('[chat-debug] loadOverlayMessages response', {
-        conversationId,
-        authPrincipalId: auth.principalId,
-        state: result.state,
-        list: result.list.map((m) => ({
-          id: m.id,
-          senderPrincipalId: m.senderPrincipalId,
-          textPreview: typeof m.body?.text === 'string' ? m.body.text.slice(0, 40) : null,
-        })),
-      });
       // Query returns newest-first; reverse for display (oldest first).
       const msgs = result.list.slice().reverse();
 
