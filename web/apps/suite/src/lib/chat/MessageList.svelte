@@ -178,7 +178,7 @@
       branch = 'space-fallback (literal "Member")';
       result = 'Member';
     }
-    console.debug('[chat-debug] senderName', {
+    console.log('[chat-debug] senderName', {
       senderPrincipalId,
       authPrincipalId: auth.principalId,
       conversationId: conversation.id,
