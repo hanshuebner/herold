@@ -782,10 +782,47 @@ class ChatStore {
   }
 
   async #syncMembershipChanges(
-    _newState: string,
+    newState: string,
     accountId: string,
   ): Promise<void> {
-    if (!this.#membershipState) return;
+    if (!this.#membershipState) {
+      // First Membership state push of the session: nothing to diff
+      // against, so seed the baseline and pull the caller's full
+      // membership list. Without this seed the handler returns early
+      // forever and the OTHER party's lastReadMessageId never refreshes
+      // (read receipts in DMs depend on this map).
+      try {
+        const { responses } = await jmap.batch((b) => {
+          b.call(
+            'Membership/get',
+            { accountId },
+            USING,
+          );
+        });
+        const getResp = responses.find(
+          ([name]) => name === 'Membership/get',
+        );
+        if (getResp && getResp[0] === 'Membership/get') {
+          const gr = getResp[1] as { state: string; list: Membership[] };
+          this.#membershipState = gr.state || newState;
+          for (const mem of gr.list) {
+            const existing = this.memberships.get(mem.conversationId) ?? [];
+            const idx = existing.findIndex((m) => m.id === mem.id);
+            const updated =
+              idx >= 0
+                ? existing.map((m) => (m.id === mem.id ? mem : m))
+                : [...existing, mem];
+            this.memberships.set(mem.conversationId, updated);
+          }
+        } else {
+          this.#membershipState = newState;
+        }
+      } catch (err) {
+        console.error('Membership/get baseline failed', err);
+        this.#membershipState = newState;
+      }
+      return;
+    }
     try {
       const { responses } = await jmap.batch((b) => {
         const changes = b.call(
