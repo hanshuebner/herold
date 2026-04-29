@@ -13,7 +13,8 @@ FUZZTIME ?= 30s
 .PHONY: all build build-server build-web build-plugins prep-web test test-server test-web \
         test-short lint vet staticcheck vulncheck \
         fmt fmt-check fuzz-short tidy ci-local clean docker \
-        interop interop-bulk interop-imaptest interop-jmaptest interop-clean
+        interop interop-bulk interop-imaptest interop-jmaptest interop-clean \
+        precommit precommit-all install-hooks check-schema-version
 
 all: build
 
@@ -125,6 +126,33 @@ tidy:
 
 ci-local: fmt-check vet test vulncheck
 	@echo "local CI pipeline green"
+
+# install-hooks wires .pre-commit-config.yaml into .git/hooks/ for both the
+# pre-commit and pre-push stages. Idempotent. Run once after a fresh clone
+# (or after the config grows new stages).
+install-hooks:
+	./scripts/install-hooks.sh
+
+# check-schema-version enforces the
+# CurrentSchemaVersion == max(migrations) invariant in <1s. Wired into
+# pre-commit; available standalone for ad-hoc verification.
+check-schema-version:
+	./scripts/check-schema-version.sh
+
+# precommit runs the same chain a pre-commit hook would (changed files
+# only when invoked through `git commit`; --all-files when invoked via
+# `make precommit-all`). Recommended before pushing.
+precommit:
+	@command -v pre-commit >/dev/null 2>&1 || { \
+	  echo "pre-commit not installed; run: make install-hooks (after installing pre-commit itself)"; \
+	  exit 1; }
+	pre-commit run
+
+precommit-all:
+	@command -v pre-commit >/dev/null 2>&1 || { \
+	  echo "pre-commit not installed; run: make install-hooks (after installing pre-commit itself)"; \
+	  exit 1; }
+	pre-commit run --all-files
 
 docker:
 	docker build -t herold:dev -f deploy/docker/Dockerfile .

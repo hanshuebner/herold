@@ -1,10 +1,13 @@
-# Pre-commit hooks. Install once with:
-#   pip install pre-commit && pre-commit install
+# Pre-commit hooks. Install in one shot with:
+#   make install-hooks
+# (which runs scripts/install-hooks.sh; that wraps `pre-commit install` for
+# both pre-commit and pre-push stages).
 #
 # The Go-specific hooks use local wrappers so the versions match what CI uses
 # (they read $(go env GOPATH)/bin). Keep this file and .github/workflows/ci.yml
 # aligned — a contributor running pre-commit locally should see the same
-# failures that CI would report.
+# failures that CI would report. CI enforces this parity by running
+# `pre-commit run --all-files` in its own job.
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -59,6 +62,34 @@ repos:
         language: system
         types: [go]
         pass_filenames: false
+      # Schema-version invariant: CurrentSchemaVersion must equal the max
+      # migration number on both backends, with identical migration sets.
+      # Mirrors internal/diag/backup.TestCurrentSchemaVersionMatchesMaxMigration
+      # but runs in <1s without compiling Go. Triggered when manifest.go or
+      # any *.sql migration changes.
+      - id: schema-version
+        name: schema version vs max migration
+        entry: scripts/check-schema-version.sh
+        language: system
+        pass_filenames: false
+        files: |
+          (?x)^(
+            internal/diag/backup/manifest\.go
+          | internal/storesqlite/migrations/.*\.sql
+          | internal/storepg/migrations/.*\.sql
+          )$
+
+      # pre-push stage: fast invariant tests that catch the bug class
+      # (schema version + migrate round-trip) which has been the most
+      # common cause of green-locally-red-on-main failures. ~10s on a
+      # warm cache. Install with `make install-hooks` (which passes
+      # --hook-type pre-push to pre-commit install).
+      - id: diag-fast-tests
+        name: go test ./internal/diag/backup ./internal/diag/migrate
+        entry: bash -c 'go test -count=1 -short ./internal/diag/backup/... ./internal/diag/migrate/...' --
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
 
 default_language_version:
   python: python3
