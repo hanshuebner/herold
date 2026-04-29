@@ -41,6 +41,22 @@ export interface Conversation {
   myMembership?: Membership;
 }
 
+/**
+ * A server-fetched link preview card. Corresponds to jmapLinkPreview in
+ * internal/protojmap/chat/types.go. All fields except url are optional
+ * because the server omits unavailable fields rather than sending empty
+ * strings.
+ */
+export interface LinkPreview {
+  url: string;
+  canonicalUrl?: string;
+  title?: string;
+  description?: string;
+  /** Absolute URL, resolved server-side. Public resource; no auth headers. */
+  imageUrl?: string;
+  siteName?: string;
+}
+
 /** A message within a conversation. */
 export interface Message {
   id: string;
@@ -58,6 +74,13 @@ export interface Message {
   inReplyTo?: string; // Message id
   /** Sparse map of emoji -> list of principalIds who reacted. */
   reactions: Record<string, string[]>;
+  /**
+   * Server-fetched open-graph preview cards for URLs in the message body.
+   * Omitted (never an empty array on the wire) when no previews were
+   * successfully fetched. Max 3 per message. Matches jmapLinkPreview in
+   * internal/protojmap/chat/types.go.
+   */
+  linkPreviews?: LinkPreview[];
   createdAt: string; // UTCDate
   editedAt?: string; // UTCDate
   deleted: boolean;

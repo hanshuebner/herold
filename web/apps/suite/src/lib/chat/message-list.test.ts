@@ -24,6 +24,15 @@ vi.mock('./store.svelte', () => ({
         reactions: { '\u{1F44D}': ['p1', 'p2'] },
         createdAt: '2024-01-01T10:00:00Z',
         deleted: false,
+        linkPreviews: [
+          {
+            url: 'https://example.com/',
+            canonicalUrl: 'https://example.com/',
+            title: 'Example Domain',
+            description: 'This domain is for illustrative examples.',
+            siteName: 'Example',
+          },
+        ],
       },
       {
         id: 'm2',
@@ -155,5 +164,35 @@ describe('MessageList', () => {
     });
     expect(screen.getByText(/is typing/)).toBeInTheDocument();
     chat.typing.clear();
+  });
+
+  it('renders a link preview card with title and site name', () => {
+    render(MessageList, {
+      props: { conversationId: 'c1', conversation: baseConversation },
+    });
+    expect(screen.getByText('Example Domain')).toBeInTheDocument();
+    expect(screen.getByText('Example')).toBeInTheDocument();
+    expect(screen.getByText('This domain is for illustrative examples.')).toBeInTheDocument();
+  });
+
+  it('link preview card links to the canonicalUrl', () => {
+    const { container } = render(MessageList, {
+      props: { conversationId: 'c1', conversation: baseConversation },
+    });
+    const card = container.querySelector('.link-preview-card') as HTMLAnchorElement;
+    expect(card).not.toBeNull();
+    expect(card.href).toBe('https://example.com/');
+    expect(card.target).toBe('_blank');
+    expect(card.rel).toContain('noopener');
+    expect(card.rel).toContain('noreferrer');
+  });
+
+  it('renders no preview cards when linkPreviews is absent', () => {
+    const { container } = render(MessageList, {
+      props: { conversationId: 'c1', conversation: baseConversation },
+    });
+    // m2 (system message) has no linkPreviews; only one card from m1 present.
+    const cards = container.querySelectorAll('.link-preview-card');
+    expect(cards.length).toBe(1);
   });
 });

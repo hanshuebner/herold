@@ -19,7 +19,7 @@
   import { chatTimestampGroupingSeconds } from '../auth/capabilities';
   import EmojiPicker from '../mail/EmojiPicker.svelte';
   import ImageLightbox from './ImageLightbox.svelte';
-  import type { Message, Conversation } from './types';
+  import type { Message, Conversation, LinkPreview } from './types';
 
   interface Props {
     conversationId: string;
@@ -198,6 +198,12 @@
     void chat.toggleReaction(messageId, emoji, auth.principalId ?? '');
   }
 
+  function hideImage(ev: Event): void {
+    if (ev.target instanceof HTMLImageElement) {
+      ev.target.style.display = 'none';
+    }
+  }
+
   function handleAddReaction(messageId: string, emoji: string): void {
     showPickerFor = null;
     void chat.toggleReaction(messageId, emoji, auth.principalId ?? '');
@@ -287,6 +293,43 @@
                   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                   <!-- svelte-ignore a11y_click_events_have_key_events -->
                   <div class="body" role="presentation" onclick={handleBodyClick}>{@html msg.body.html}</div>
+
+                  {#if msg.linkPreviews && msg.linkPreviews.length > 0}
+                    <div class="link-previews">
+                      {#each msg.linkPreviews as preview (preview.url)}
+                        {@const href = preview.canonicalUrl ?? preview.url}
+                        <a
+                          class="link-preview-card"
+                          {href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label={preview.title ?? preview.siteName ?? href}
+                        >
+                          <div class="link-preview-text">
+                            {#if preview.title}
+                              <span class="link-preview-title">{preview.title}</span>
+                            {/if}
+                            {#if preview.description}
+                              <span class="link-preview-description">{preview.description}</span>
+                            {/if}
+                            {#if preview.siteName}
+                              <span class="link-preview-site">{preview.siteName}</span>
+                            {:else}
+                              <span class="link-preview-site">{new URL(href).hostname}</span>
+                            {/if}
+                          </div>
+                          {#if preview.imageUrl}
+                            <img
+                              class="link-preview-thumb"
+                              src={preview.imageUrl}
+                              alt={preview.title ?? ''}
+                              onerror={hideImage}
+                            />
+                          {/if}
+                        </a>
+                      {/each}
+                    </div>
+                  {/if}
                 {/if}
 
                 <div class="meta">
@@ -662,5 +705,79 @@
     padding: var(--spacing-02) var(--spacing-04);
     margin: 0;
     min-height: 24px;
+  }
+
+  /* Link preview cards */
+  .link-previews {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+    margin-top: var(--spacing-02);
+  }
+
+  .link-preview-card {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-left: 3px solid var(--interactive);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter),
+                border-color var(--duration-fast-02) var(--easing-productive-enter);
+    max-width: 100%;
+  }
+
+  .link-preview-card:hover {
+    background: var(--layer-02);
+    border-left-color: color-mix(in srgb, var(--interactive) 70%, var(--text-primary));
+  }
+
+  .link-preview-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-01);
+    padding: var(--spacing-03) var(--spacing-04);
+    min-width: 0;
+  }
+
+  .link-preview-title {
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: var(--type-body-compact-01-line);
+  }
+
+  .link-preview-description {
+    font-size: var(--type-helper-text-01-size);
+    color: var(--text-secondary);
+    line-height: var(--type-helper-text-01-line);
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .link-preview-site {
+    font-size: 11px;
+    color: var(--text-helper);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .link-preview-thumb {
+    width: 80px;
+    height: 80px;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: var(--layer-02);
   }
 </style>
