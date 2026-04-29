@@ -12,10 +12,17 @@ export interface ToastSpec {
   /** The body text shown in the toast. */
   message: string;
   /**
-   * Optional Undo handler — when set, an Undo button is rendered.
+   * Optional action handler — when set, an action button is rendered.
    * Clicking it dismisses the toast and invokes this callback.
+   * Historically used for Undo; also used for "Re-authenticate"
+   * (REQ-MAIL-SUBMIT-06) and other one-shot actions.
    */
   undo?: () => void | Promise<void>;
+  /**
+   * Label for the action button. Defaults to "Undo" when not set,
+   * preserving backward compatibility with existing undo flows.
+   */
+  actionLabel?: string;
   /** Default 5000 ms; 0 disables auto-dismiss (useful for errors). */
   timeoutMs?: number;
   /** Visual variant. Default 'info'. */

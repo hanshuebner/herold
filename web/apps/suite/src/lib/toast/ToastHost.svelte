@@ -18,7 +18,7 @@
           void toast.undo();
         }}
       >
-        Undo
+        {toast.current.actionLabel ?? 'Undo'}
       </button>
     {/if}
     <button
