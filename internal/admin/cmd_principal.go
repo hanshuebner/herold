@@ -42,7 +42,10 @@ func newPrincipalCmd() *cobra.Command {
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writePrincipalHuman(cmd.OutOrStdout(), out)
 		},
 	})
 	c.Commands()[len(c.Commands())-1].Flags().String("password", "", "explicit password (omit to let the server generate one)")
@@ -93,7 +96,10 @@ func newPrincipalCmd() *cobra.Command {
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writePrincipalListHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	listCmd.Flags().String("after", "", "pagination cursor")
@@ -122,7 +128,10 @@ func newPrincipalCmd() *cobra.Command {
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writePrincipalHuman(cmd.OutOrStdout(), out)
 		},
 	})
 

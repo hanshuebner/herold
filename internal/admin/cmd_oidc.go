@@ -71,7 +71,10 @@ func newOIDCCmd() *cobra.Command {
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeOIDCProviderListHuman(cmd.OutOrStdout(), out)
 		},
 	})
 	prov.AddCommand(&cobra.Command{
@@ -108,7 +111,10 @@ func newOIDCCmd() *cobra.Command {
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeOIDCProviderHuman(cmd.OutOrStdout(), out)
 		},
 	})
 
@@ -135,7 +141,10 @@ func newOIDCCmd() *cobra.Command {
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeOIDCProviderHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	updCmd.Flags().String("client-secret-env", "", "name of the environment variable holding the new client secret")
@@ -160,7 +169,10 @@ func newOIDCCmd() *cobra.Command {
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeOIDCLinkListHuman(cmd.OutOrStdout(), out)
 		},
 	})
 

@@ -64,7 +64,10 @@ func newAPIKeyCmd() *cobra.Command {
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeAPIKeyHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	createCmd.Flags().String("label", "", "operator-visible key label")
@@ -121,7 +124,10 @@ func newAPIKeyCmd() *cobra.Command {
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeAPIKeyListHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	listCmd.Flags().String("principal", "",

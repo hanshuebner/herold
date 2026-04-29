@@ -70,7 +70,10 @@ func newAuditCmd() *cobra.Command {
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeAuditListHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	listCmd.Flags().String("since", "",

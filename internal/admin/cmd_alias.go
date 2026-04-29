@@ -51,7 +51,10 @@ func newAliasCmd() *cobra.Command {
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeAliasHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	c.AddCommand(addCmd)
@@ -75,7 +78,10 @@ func newAliasCmd() *cobra.Command {
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeAliasListHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	listCmd.Flags().String("domain", "", "restrict to aliases on this domain")

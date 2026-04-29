@@ -61,7 +61,10 @@ func newQueueListCmd() *cobra.Command {
 			if err := client.do(cmd.Context(), "GET", path, nil, &out); err != nil {
 				return err
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeQueueListHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	cmd.Flags().String("state", "", "queued|deferred|inflight|done|failed|held")
@@ -86,7 +89,10 @@ func newQueueShowCmd() *cobra.Command {
 			if err := client.do(cmd.Context(), "GET", "/api/v1/queue/"+args[0], nil, &out); err != nil {
 				return err
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeQueueItemHuman(cmd.OutOrStdout(), out)
 		},
 	}
 }
@@ -194,7 +200,10 @@ func newQueueStatsCmd() *cobra.Command {
 			if err := client.do(cmd.Context(), "GET", "/api/v1/queue/stats", nil, &out); err != nil {
 				return err
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeQueueStatsHuman(cmd.OutOrStdout(), out)
 		},
 	}
 }
@@ -224,7 +233,10 @@ func newQueueFlushCmd() *cobra.Command {
 			if err := client.do(cmd.Context(), "POST", "/api/v1/queue/flush?state="+url.QueryEscape(state), nil, &out); err != nil {
 				return err
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeQueueFlushHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	cmd.Flags().String("state", "", "lifecycle state to flush (only 'deferred' is currently supported)")

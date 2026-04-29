@@ -27,7 +27,10 @@ func newSpamCmd() *cobra.Command {
 			if err := client.do(cmd.Context(), "GET", "/api/v1/spam/policy", nil, &out); err != nil {
 				return err
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeSpamPolicyHuman(cmd.OutOrStdout(), out)
 		},
 	})
 
@@ -69,7 +72,10 @@ func newSpamCmd() *cobra.Command {
 			if err := client.do(cmd.Context(), "PUT", "/api/v1/spam/policy", body, &out); err != nil {
 				return err
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeSpamPolicyHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	setCmd.Flags().String("plugin", "", "plugin name (required)")

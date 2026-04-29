@@ -23,7 +23,10 @@ func newCertCmd() *cobra.Command {
 			if err := client.do(cmd.Context(), "GET", "/api/v1/certs", nil, &out); err != nil {
 				return err
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeCertListHuman(cmd.OutOrStdout(), out)
 		},
 	})
 	c.AddCommand(&cobra.Command{
@@ -40,7 +43,10 @@ func newCertCmd() *cobra.Command {
 			if err := client.do(cmd.Context(), "GET", "/api/v1/certs/"+args[0], nil, &out); err != nil {
 				return err
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeCertHuman(cmd.OutOrStdout(), out)
 		},
 	})
 	c.AddCommand(&cobra.Command{
@@ -58,7 +64,10 @@ func newCertCmd() *cobra.Command {
 				return err
 			}
 			writeLine(cmd.OutOrStdout(), g, "cert renewed: "+args[0])
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeCertHuman(cmd.OutOrStdout(), out)
 		},
 	})
 	return c

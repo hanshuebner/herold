@@ -2,7 +2,6 @@ package admin
 
 import (
 	"errors"
-	"fmt"
 	"net/url"
 
 	"github.com/spf13/cobra"
@@ -49,7 +48,10 @@ func newHookListCmd() *cobra.Command {
 			if err := client.do(cmd.Context(), "GET", path, nil, &out); err != nil {
 				return err
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeHookListHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	cmd.Flags().String("owner-kind", "", "owner kind: domain | principal")
@@ -72,7 +74,10 @@ func newHookShowCmd() *cobra.Command {
 			if err := client.do(cmd.Context(), "GET", "/api/v1/webhooks/"+args[0], nil, &out); err != nil {
 				return err
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeHookHuman(cmd.OutOrStdout(), out)
 		},
 	}
 }
@@ -132,16 +137,10 @@ func newHookCreateCmd() *cobra.Command {
 			if err := client.do(cmd.Context(), "POST", "/api/v1/webhooks", body, &out); err != nil {
 				return err
 			}
-			// Highlight the one-shot secret prominently in human mode so
-			// operators know they need to copy it now. In JSON mode, the
-			// secret is part of the body and the caller will pipe it into a
-			// secret manager.
-			if !g.jsonOut {
-				if secret, ok := out["hmac_secret"].(string); ok && secret != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "hmac_secret: %s  (shown once; store it in your receiver's secret manager)\n", secret)
-				}
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			return writeHookHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	cmd.Flags().String("owner-kind", "", "owner kind: domain | principal (legacy)")
@@ -208,7 +207,10 @@ func newHookUpdateCmd() *cobra.Command {
 			if err := client.do(cmd.Context(), "PATCH", "/api/v1/webhooks/"+args[0], body, &out); err != nil {
 				return err
 			}
-			return writeResult(cmd.OutOrStdout(), g, out)
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeHookHuman(cmd.OutOrStdout(), out)
 		},
 	}
 	cmd.Flags().String("target-url", "", "new receiver URL")
