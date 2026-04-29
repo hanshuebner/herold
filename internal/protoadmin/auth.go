@@ -316,6 +316,28 @@ func requireSelfOrAdmin(w http.ResponseWriter, r *http.Request, caller store.Pri
 	return false
 }
 
+// requireSelfOnly returns 403 when the caller is not the target principal.
+// Unlike requireSelfOrAdmin this helper returns 403 even for admin-scoped
+// callers: submission credentials on a foreign identity cannot be read or
+// written by admins in v1 (REQ-AUTH-EXT-SUBMIT-04 last bullet; no
+// impersonation in v1). Apply to all submission endpoints.
+// Permission denials are logged activity=audit at warn (REQ-OPS-86).
+func requireSelfOnly(w http.ResponseWriter, r *http.Request, caller store.Principal, target store.PrincipalID) bool {
+	if caller.ID == target {
+		return true
+	}
+	slog.WarnContext(r.Context(), "protoadmin.permission_denied",
+		"activity", observe.ActivityAudit,
+		"actor_id", caller.ID,
+		"target_id", target,
+		"method", r.Method,
+		"path", r.URL.Path,
+		"reason", "self-only surface; admin impersonation disallowed")
+	writeProblem(w, r, http.StatusForbidden, "forbidden",
+		"submission credentials may only be accessed by the owning principal", "")
+	return false
+}
+
 // requireAdmin returns 403 when the caller is not an admin.
 // Permission denials are logged activity=audit at warn (REQ-OPS-86).
 func requireAdmin(w http.ResponseWriter, r *http.Request, caller store.Principal) bool {
