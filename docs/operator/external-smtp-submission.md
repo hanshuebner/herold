@@ -211,13 +211,12 @@ credential entry; the feature works either way.
    "Authorized redirect URIs", add:
 
    ```
-   https://<your-herold-hostname>/api/v1/identities/{id}/submission/oauth/callback
+   https://<your-herold-hostname>/api/v1/oauth/external-submission/callback
    ```
 
-   Note: `{id}` is the literal string that appears in the redirect URI
-   registered with Google. Herold's routing layer accepts it as a path
-   parameter and substitutes the actual Identity id at runtime. Google
-   validates the prefix, not the full path.
+   This is a fixed URL — the same URI is used for all identities on your
+   deployment. Herold carries the identity id in the OAuth state token, not
+   in the redirect URI, so one registration covers every user.
 
 5. Note the generated client ID and client secret. Store the client secret in
    an environment variable or a file (not inline in `system.toml`).
@@ -257,10 +256,12 @@ credential entry; the feature works either way.
 2. Under "Redirect URI", set the platform to "Web" and enter:
 
    ```
-   https://<your-herold-hostname>/api/v1/identities/{id}/submission/oauth/callback
+   https://<your-herold-hostname>/api/v1/oauth/external-submission/callback
    ```
 
-   The same `{id}` literal applies here as for Gmail.
+   This is the same fixed URI used for all identities on your deployment.
+   Herold carries the identity id in the OAuth state token, not in the
+   redirect URI, so one registration covers every user.
 
 3. After the application is created, navigate to "API permissions" >
    "Add a permission" > "APIs my organization uses" > search for "Office 365

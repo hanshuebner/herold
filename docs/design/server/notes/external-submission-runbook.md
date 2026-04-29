@@ -67,9 +67,10 @@ herold_external_submission_active_identities 3
 ```
 
 A non-zero `auth-failed` or `failure` count that is rising indicates an
-ongoing problem. A `herold_external_submission_active_identities` value of `0`
-with OAuth Identities configured means the sweeper is not finding rows with
-`refresh_due_us` set; see the Sweeper section.
+ongoing problem. `herold_external_submission_active_identities` shows the
+total number of OAuth-configured identities, updated on every sweeper tick.
+A value of `0` with OAuth Identities configured means the sweeper cannot
+find any rows with `submit_auth_method = 'oauth2'`; see the Sweeper section.
 
 **Step 3. Check the structured logs.**
 
@@ -276,8 +277,11 @@ startup log for any `sysconfig:` error lines.
 curl -s http://127.0.0.1:9090/metrics | grep herold_external_submission_active_identities
 ```
 
-If the gauge is `0` but OAuth Identities exist, the sweeper is not finding
-rows with a `refresh_due_us` value in the past. Query the store directly:
+The gauge counts all rows with `submit_auth_method = 'oauth2'`, regardless of
+whether they are currently due for a refresh. It is updated on every sweeper
+tick (default 60 s). If the gauge is `0` but OAuth Identities have been
+configured, the rows may not have been written with `submit_auth_method =
+'oauth2'`. Query the store directly:
 
 SQLite:
 
