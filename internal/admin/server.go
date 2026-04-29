@@ -51,6 +51,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap/mail/emailsubmission"
 	jmapidentity "github.com/hanshuebner/herold/internal/protojmap/mail/identity"
 	jmapsearchsnippet "github.com/hanshuebner/herold/internal/protojmap/mail/searchsnippet"
+	jmapseenaddress "github.com/hanshuebner/herold/internal/protojmap/mail/seenaddress"
 	jmapthread "github.com/hanshuebner/herold/internal/protojmap/mail/thread"
 	jmapvacation "github.com/hanshuebner/herold/internal/protojmap/mail/vacation"
 	jmappush "github.com/hanshuebner/herold/internal/protojmap/push"
@@ -96,6 +97,10 @@ type StartOpts struct {
 	// ExternalShutdown, when non-nil, replaces the default SIGTERM/SIGINT
 	// handler registration so tests can drive shutdown explicitly.
 	ExternalShutdown bool
+	// LogVerbose, when true, overrides every sink's activity filter to
+	// allow-all and lowers every sink's level floor to debug (REQ-OPS-86c).
+	// Set by --log-verbose CLI flag or HEROLD_LOG_VERBOSE=1.
+	LogVerbose bool
 }
 
 // Runtime holds live handles so Reload and callers can inspect state.
@@ -119,18 +124,22 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		return errors.New("admin: nil Config")
 	}
 
-	// Observability.
+	// Observability. Build the multi-sink logger from sysconfig (REQ-OPS-80).
 	levelVar := new(slog.LevelVar)
 	levelVar.Set(parseSlogLevel(cfg.Observability.LogLevel))
 	logger := opts.Logger
 	if logger == nil {
-		logger = observe.NewLogger(observe.ObservabilityConfig{
-			LogFormat:    cfg.Observability.LogFormat,
-			LogLevel:     cfg.Observability.LogLevel,
-			LogModules:   cfg.Observability.LogModules,
-			MetricsBind:  cfg.Observability.MetricsBind,
-			OTLPEndpoint: cfg.Observability.OTLPEndpoint,
-		})
+		ml, err := observe.NewLogger(sysconfigToObserveCfg(cfg, opts.LogVerbose))
+		if err != nil {
+			// Non-fatal: fall back to a stderr JSON logger so startup
+			// errors are still visible.
+			slog.Default().LogAttrs(ctx, slog.LevelError,
+				"admin: failed to build logger from config; falling back to default",
+				slog.String("err", err.Error()),
+			)
+			ml, _ = observe.NewLogger(observe.ObservabilityConfig{})
+		}
+		logger = ml.Logger
 	}
 	logger.LogAttrs(ctx, slog.LevelInfo, "herold: startup",
 		slog.String("hostname", cfg.Server.Hostname),
@@ -486,23 +495,31 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// zero-config / Docker quickstart scenario), both the admin and public
 	// cookie configs fall back to an ephemeral random key generated at
 	// startup. Sessions issued with the ephemeral key are invalidated on
-	// restart, which is acceptable for a development deployment. A
-	// persistent key can be wired via [server.ui].signing_key_env once the
-	// operator wants session continuity across restarts.
+	// restart, which is acceptable for a development deployment. Operators
+	// wanting session continuity across restarts set HEROLD_UI_SESSION_KEY
+	// to a value of at least 32 bytes. The [server.ui].signing_key_env TOML
+	// knob is a back-compat override that names an alternative env var; most
+	// operators can ignore it and use HEROLD_UI_SESSION_KEY directly.
 	//
 	// Logged at WARN (not INFO) so an operator scanning logs after their
 	// users complain about being logged out on every restart sees the
 	// cause without trawling INFO traffic.
-	if cfg.Server.UI.SigningKeyEnv == "" {
-		logger.Warn("session-cookie signing key not configured; " +
-			"using ephemeral random key (admin and public sessions invalidated on every restart). " +
-			"Set [server.ui].signing_key_env to a 32+ byte env var name for a persistent key.")
-	} else if v := os.Getenv(cfg.Server.UI.SigningKeyEnv); len(v) < 32 {
-		logger.Warn("session-cookie signing key too short; "+
-			"using ephemeral random key (sessions invalidated on every restart)",
-			"env", cfg.Server.UI.SigningKeyEnv,
-			"min_bytes", 32,
-			"got_bytes", len(v))
+	effectiveEnv := cfg.Server.UI.SigningKeyEnv
+	if effectiveEnv == "" {
+		effectiveEnv = defaultSessionKeyEnv
+	}
+	if v := os.Getenv(effectiveEnv); len(v) < 32 {
+		if len(v) == 0 {
+			logger.Warn("session-cookie signing key not configured; " +
+				"using ephemeral random key (admin and public sessions invalidated on every restart). " +
+				"Set " + defaultSessionKeyEnv + " to a 32+ byte value for a persistent key.")
+		} else {
+			logger.Warn("session-cookie signing key too short; "+
+				"using ephemeral random key (sessions invalidated on every restart)",
+				"env", effectiveEnv,
+				"min_bytes", 32,
+				"got_bytes", len(v))
+		}
 	}
 	// Parent mux composition (Phase 2 Wave 2.4): the admin HTTP
 	// listener serves both the REST surface (protoadmin under
@@ -1482,6 +1499,48 @@ func resolvePluginOptions(in map[string]string) (map[string]any, error) {
 }
 
 // parseSlogLevel translates a sysconfig log-level string to slog.Level.
+// sysconfigToObserveCfg converts a *sysconfig.Config and StartOpts into an
+// observe.ObservabilityConfig by mapping the [[log.sink]] entries and the
+// observability knobs. The sysconfig package is the authoritative source for
+// the parsed / validated sink list; observe is the layering consumer that must
+// not import sysconfig. This adapter lives in admin (the integration layer
+// that owns both sides) so neither package depends on the other.
+//
+// verbose carries the --log-verbose / HEROLD_LOG_VERBOSE flag (REQ-OPS-86c).
+func sysconfigToObserveCfg(cfg *sysconfig.Config, verbose bool) observe.ObservabilityConfig {
+	sinks := make([]observe.LogSinkConfig, 0, len(cfg.Log.Sink))
+	for _, sc := range cfg.Log.Sink {
+		var act observe.ActivityFilterConfig
+		if len(sc.Activities.Allow) > 0 {
+			act.Allow = append([]string(nil), sc.Activities.Allow...)
+		}
+		if len(sc.Activities.Deny) > 0 {
+			act.Deny = append([]string(nil), sc.Activities.Deny...)
+		}
+		var mods map[string]string
+		if len(sc.Modules) > 0 {
+			mods = make(map[string]string, len(sc.Modules))
+			for k, v := range sc.Modules {
+				mods[k] = v
+			}
+		}
+		sinks = append(sinks, observe.LogSinkConfig{
+			Target:     sc.Target,
+			Format:     sc.Format,
+			Level:      sc.Level,
+			Modules:    mods,
+			Activities: act,
+		})
+	}
+	return observe.ObservabilityConfig{
+		Sinks:        sinks,
+		Verbose:      verbose,
+		MetricsBind:  cfg.Observability.MetricsBind,
+		OTLPEndpoint: cfg.Observability.OTLPEndpoint,
+		// SecretKeys: not overridden here; observe defaults apply.
+	}
+}
+
 func parseSlogLevel(s string) slog.Level {
 	switch strings.ToLower(s) {
 	case "debug":
@@ -1821,6 +1880,9 @@ func composeAdminAndUI(
 	// per-identity send-from addresses.
 	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk),
 		logger.With("subsystem", "jmap-emailsubmission"), clk)
+	// SeenAddress (REQ-MAIL-11e..m): recipient autocomplete history, exposed
+	// under urn:ietf:params:jmap:mail (no new capability URI needed).
+	jmapseenaddress.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-seenaddress"), clk)
 	// JMAP PushSubscription (REQ-PROTO-120..122). The VAPID key
 	// reference is operator-supplied; an unconfigured deployment
 	// still advertises the capability but omits applicationServerKey
@@ -2059,26 +2121,42 @@ func adminListenerHint(w http.ResponseWriter, _ *http.Request) {
 	))
 }
 
+// defaultSessionKeyEnv is the fixed env var name operators set to provide a
+// persistent HMAC-SHA256 signing key for session cookies. Using a well-known
+// name means operators do not need to read docs to discover the knob: the WARN
+// log line emitted when the key is absent names this variable directly.
+const defaultSessionKeyEnv = "HEROLD_UI_SESSION_KEY"
+
 // resolveSessionSigningKey returns the HMAC-SHA256 signing key to use for
-// session cookies. If [server.ui].signing_key_env names an env variable
-// that holds a value of at least 32 bytes, that value is used. Otherwise a
-// fresh cryptographically-random 32-byte key is generated. Callers that
-// need an admin key and a public key MUST call this function independently
-// for each; the two keys are intentionally different so cookies issued on
-// one listener are not accepted on the other (REQ-AUTH-COOKIE-SCOPE).
+// session cookies. Resolution order:
+//
+//  1. If [server.ui].signing_key_env is set (explicit TOML override), read
+//     that env var. This is the back-compat path for operators who wired the
+//     old knob; the key must be >= 32 bytes.
+//  2. Otherwise read the predefined env var HEROLD_UI_SESSION_KEY.
+//  3. If neither yields a usable key, generate a fresh cryptographically-random
+//     32-byte key for this process lifetime.
+//
+// Callers that need an admin key and a public key MUST call this function
+// independently for each; the two keys are intentionally different so cookies
+// issued on one listener are not accepted on the other (REQ-AUTH-COOKIE-SCOPE).
 //
 // A randomly-generated key means sessions are invalidated when the process
 // restarts. This is acceptable for development deployments and the default
-// Docker quickstart; operators wanting session continuity should set
-// signing_key_env.
+// Docker quickstart; operators wanting session continuity set HEROLD_UI_SESSION_KEY.
 func resolveSessionSigningKey(cfg *sysconfig.Config) []byte {
+	// Step 1: honour the explicit TOML override (back-compat).
 	if env := cfg.Server.UI.SigningKeyEnv; env != "" {
 		if v := os.Getenv(env); len(v) >= 32 {
 			return []byte(v)
 		}
 	}
-	// No usable configured key: generate a fresh ephemeral one. Each call
-	// returns a different key, so the admin and public configs diverge
+	// Step 2: read the predefined env var.
+	if v := os.Getenv(defaultSessionKeyEnv); len(v) >= 32 {
+		return []byte(v)
+	}
+	// Step 3: No usable configured key: generate a fresh ephemeral one. Each
+	// call returns a different key, so the admin and public configs diverge
 	// intentionally.
 	var key [32]byte
 	if _, err := rand.Read(key[:]); err != nil {

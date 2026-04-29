@@ -424,14 +424,26 @@ at that revision (or use the `asset_dir` override at runtime); see
 
 ```toml
 [server.ui]
-enabled = true
-path_prefix = "/ui"
 cookie_name = "herold_ui_session"
 csrf_cookie_name = "herold_ui_csrf"
 session_ttl = "24h"
 secure_cookies = true            # production must keep this true.
-signing_key_env = "$HEROLD_UI_KEY"   # empty = random per-process key.
+# signing_key_env = "MY_CUSTOM_VAR"   # override only; see note below.
 ```
+
+**Session-cookie signing key.** By default herold reads the env var
+`HEROLD_UI_SESSION_KEY` (see the [Environment variables reference](#environment-variables-reference)
+below). Set that variable to a value of at least 32 bytes; herold uses
+it as the HMAC-SHA256 signing key for session cookies. If the variable
+is absent or shorter than 32 bytes, herold generates a random
+per-process key and emits a WARN at startup — sessions are then
+invalidated on every restart, which is acceptable for development but
+not for production.
+
+`signing_key_env` is an override knob for environments where you
+cannot use the standard variable name (e.g. a secrets manager that
+mandates its own naming). Most operators leave it unset and just set
+`HEROLD_UI_SESSION_KEY`.
 
 `secure_cookies = true` is the production policy; only override
 during local development behind a trusted localhost reverse proxy.
@@ -470,6 +482,36 @@ proxy.
 
 OTLP is off by default. When enabled, traces export over OTLP/HTTP to
 the configured endpoint.
+
+## Environment variables reference
+
+Herold reads the following environment variables. The naming convention is
+`HEROLD_<SUBSYSTEM>_<PURPOSE>` in SCREAMING_SNAKE_CASE; the `HEROLD_` prefix
+is mandatory for all operator-facing variables (see
+`docs/design/server/architecture/09-environment-variables.md`).
+
+Test/dev-only variables (e.g. `HEROLD_E2E_*`, `HEROLD_SPIKE`, `HEROLD_PG_DSN`
+used in CI) are not listed here; they are internal to the test harness.
+
+| Variable | Purpose | Required / Optional | Default | Subsystem |
+|---|---|---|---|---|
+| `HEROLD_UI_SESSION_KEY` | HMAC-SHA256 signing key for session cookies. Must be >= 32 bytes. | Optional | Ephemeral random key per restart; WARN emitted at startup when absent or too short. | `internal/admin` |
+| `HEROLD_SYSTEM_CONFIG` | Path to `system.toml`. | Optional | `/etc/herold/system.toml` | CLI (`internal/admin`) |
+| `HEROLD_API_KEY` | Admin REST API key for CLI commands that call the REST surface. | Optional | None; CLI prompts or errors if key is needed and absent. | CLI (`internal/admin`) |
+| `HEROLD_PID_FILE` | Path to the PID file written by `herold server start`. | Optional | `/var/run/herold.pid` | CLI (`internal/admin`) |
+| `HEROLD_LOG_FILE` | Path to the server log file; used by `herold diag collect` to include recent log lines in the support bundle. | Optional | Not included in bundle when absent. | `internal/admin` |
+| `HEROLD_LOG_VERBOSE` | Set to `1` to override every log sink's activity filter to allow-all and lower level floors to debug (REQ-OPS-86c). Equivalent to `--log-verbose`. | Optional | Off. | CLI (`internal/admin`) |
+| `NOTIFY_SOCKET` | systemd sd_notify socket path. Read from the environment automatically by systemd; herold writes `READY=1` after binding listeners. | Optional | Not notified when absent. | `internal/admin` |
+
+### Adding a new env var
+
+Before adding a new env var, read
+`docs/design/server/architecture/09-environment-variables.md`. In summary:
+
+- Name it `HEROLD_<SUBSYSTEM>_<PURPOSE>` (SCREAMING_SNAKE_CASE).
+- Decide: Required (process refuses to start without it) or Optional with a documented default.
+- Add a row to the table above.
+- If Optional and the absence changes observable behaviour, emit WARN or INFO once at startup.
 
 ## TLS and ACME
 

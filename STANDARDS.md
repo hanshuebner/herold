@@ -98,6 +98,8 @@ deploy/                  debian, rpm, docker, k8s
 ## 7. Logging, metrics, tracing
 
 - Structured logs via `log/slog`. JSON handler in production. Attach request ID, session ID, principal ID, remote addr.
+- **Multi-sink logging is the model.** Operators configure one or more sinks (stderr `console`/`auto` for humans, file `json` for forensics, ...) each with its own level, per-module overrides, and activity filter. See REQ-OPS-80..86 in `docs/design/server/requirements/09-operations.md`. Code MUST NOT assume a single destination, MUST NOT call `slog.SetDefault` outside the bootstrap path, and MUST NOT bypass the configured logger to write directly to stderr (`fmt.Fprintln(os.Stderr, ...)` for diagnostics is a bug).
+- **Activity tagging is mandatory.** Every log record emitted from a wire-protocol layer (`protosmtp`, `protoimap`, `protojmap`, `protomanagesieve`, `protoadmin`, `protosend`, `protowebhook`), the queue/delivery path, the plugin supervisor, and the auth/directory layer MUST carry an `activity` attribute drawn from the closed enum `{user, audit, system, poll, access, internal}` defined in REQ-OPS-86. The level chosen must be consistent with the activity: `access` and `poll` default to `debug`; caller-initiated state changes are `user` at `info`; auth and permission events are `audit` at `info` (failures at `warn`). The pre-scoped logger pattern (`log.With("subsystem", "protojmap", "activity", "user")`) is preferred over per-call attrs so activity is uniform across a request's lifecycle. Records emitted from a covered package without an `activity` attribute are a CI failure (REQ-OPS-86a) and a `reviewer` block.
 - Prometheus metrics via `prometheus/client_golang`. Metric names `herold_<subsystem>_<what>_<unit>` (e.g., `herold_smtp_sessions_active`). Cardinality reviewed in PRs; no unbounded label values.
 - OTLP tracing optional; spans on every wire request, queue operation, plugin invocation.
 - A single event emits exactly one log line, zero or more metric updates, at most one span. Log fields and span attributes agree on names and values.
@@ -128,6 +130,7 @@ The testing strategy in `docs/design/server/implementation/03-testing-strategy.m
 - Secrets never logged. Field allow-list in structured log fields; `slog` handlers strip known-secret keys.
 - No inline secrets in `system.toml`. Env var, file, or external KMS only.
 - Every feature parsing untrusted input has a security-review note in the PR description.
+- **Env var naming and documentation rules**: `HEROLD_<SUBSYSTEM>_<PURPOSE>` (SCREAMING_SNAKE_CASE); every operator-facing var documented in `docs/user/operate.md`; each classified as Required or Optional with a default. See `docs/design/server/architecture/09-environment-variables.md` for the full design rule.
 
 ## 10. Backwards compatibility and versioning
 
