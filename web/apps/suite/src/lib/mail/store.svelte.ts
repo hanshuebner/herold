@@ -1275,6 +1275,19 @@ class MailStore {
     this.listSelectedIds = new Set(this.listEmailIds);
   }
 
+  /**
+   * Toggle select-all for the visible list (REQ-KEY-06 / issue #36).
+   * If every id in `visibleIds` is already selected, clear the selection;
+   * otherwise select all of them.
+   */
+  toggleSelectAllVisible(visibleIds: string[]): void {
+    if (allVisibleSelected(visibleIds, this.listSelectedIds)) {
+      this.listSelectedIds = new Set();
+    } else {
+      this.listSelectedIds = new Set(visibleIds);
+    }
+  }
+
   /** Clear the bulk selection set. */
   clearSelection(): void {
     if (this.listSelectedIds.size === 0) return;
@@ -2084,7 +2097,17 @@ function errMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
+/**
+ * Returns true when every id in `visibleIds` is present in `selected`
+ * AND `visibleIds` is non-empty. Used by toggleSelectAllVisible to
+ * decide whether to clear or set the selection.
+ */
+export function allVisibleSelected(visibleIds: string[], selected: Set<string>): boolean {
+  if (visibleIds.length === 0) return false;
+  return visibleIds.every((id) => selected.has(id));
+}
+
 export const mail = new MailStore();
 
 /** Exported purely for unit tests; not part of the public surface. */
-export const _internals_forTest = { errMessage };
+export const _internals_forTest = { errMessage, allVisibleSelected };

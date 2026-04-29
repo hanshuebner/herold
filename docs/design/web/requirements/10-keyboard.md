@@ -54,3 +54,4 @@ Priorities (P0 / P1 / P2) are calibrated from gmail-logger capture data. They ar
 | REQ-KEY-03 | The two-key `g` prefix waits up to 1000 ms for the second key. After timeout the buffer clears. |
 | REQ-KEY-04 | All P0 bindings are remappable in a settings panel (post-v1 if behind capacity). The default set is Gmail-compatible. |
 | REQ-KEY-05 | The shortcut engine has a single dispatcher; pickers (label, snooze, search) register their own keymap that supersedes the global one while open. |
+| REQ-KEY-06 | `*` in the mail list toggles select-all: if every visible row is already selected, pressing `*` clears the selection; otherwise it selects all visible rows. |

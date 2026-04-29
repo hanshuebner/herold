@@ -16,6 +16,13 @@
   import { labelPicker } from '../lib/mail/label-picker.svelte';
   import { t, localeTag } from '../lib/i18n/i18n.svelte';
   import type { Email } from '../lib/mail/types';
+  import ArchiveIcon from '../lib/icons/ArchiveIcon.svelte';
+  import TrashIcon from '../lib/icons/TrashIcon.svelte';
+  import MarkReadIcon from '../lib/icons/MarkReadIcon.svelte';
+  import MarkUnreadIcon from '../lib/icons/MarkUnreadIcon.svelte';
+  import MoveIcon from '../lib/icons/MoveIcon.svelte';
+  import LabelIcon from '../lib/icons/LabelIcon.svelte';
+  import CategoryIcon from '../lib/icons/CategoryIcon.svelte';
 
   const ROLED_FOLDERS = new Set<FolderID>([
     'inbox',
@@ -310,8 +317,8 @@
       },
       {
         key: '*',
-        description: 'Select all visible',
-        action: () => mail.selectAllVisible(),
+        description: 'Select / deselect all visible',
+        action: () => mail.toggleSelectAllVisible(effectiveListEmailIds),
       },
     ];
     if (isInboxRoute) {
@@ -735,21 +742,61 @@
           {t('bulk.selected', { count: mail.listSelectedIds.size })}
         </span>
         {#if folder === 'inbox'}
-          <button type="button" onclick={bulkArchive}>{t('bulk.archive')}</button>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label={t('bulk.archive')}
+            title={t('bulk.archive')}
+            onclick={bulkArchive}
+          ><ArchiveIcon size={18} /></button>
         {/if}
-        <button type="button" onclick={bulkMarkRead}>{t('bulk.markRead')}</button>
-        <button type="button" onclick={bulkMarkUnread}>{t('bulk.markUnread')}</button>
-        <button type="button" onclick={bulkMove}>{t('bulk.move')}</button>
-        <button type="button" onclick={() => labelPicker.openBulk(selectedIds())}>
-          {t('bulk.label')}
-        </button>
+        <button
+          type="button"
+          class="icon-btn"
+          aria-label={t('bulk.markRead')}
+          title={t('bulk.markRead')}
+          onclick={bulkMarkRead}
+        ><MarkReadIcon size={18} /></button>
+        <button
+          type="button"
+          class="icon-btn"
+          aria-label={t('bulk.markUnread')}
+          title={t('bulk.markUnread')}
+          onclick={bulkMarkUnread}
+        ><MarkUnreadIcon size={18} /></button>
+        <button
+          type="button"
+          class="icon-btn"
+          aria-label={t('bulk.move')}
+          title={t('bulk.move')}
+          onclick={bulkMove}
+        ><MoveIcon size={18} /></button>
+        <button
+          type="button"
+          class="icon-btn"
+          aria-label={t('bulk.label')}
+          title={t('bulk.label')}
+          onclick={() => labelPicker.openBulk(selectedIds())}
+        ><LabelIcon size={18} /></button>
         {#if categorySettings.available}
-          <button type="button" onclick={() => {
-            const ids = [...mail.listSelectedIds];
-            if (ids.length > 0) categoryPicker.open(ids[0]!);
-          }}>{t('bulk.category')}</button>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label={t('bulk.category')}
+            title={t('bulk.category')}
+            onclick={() => {
+              const ids = [...mail.listSelectedIds];
+              if (ids.length > 0) categoryPicker.open(ids[0]!);
+            }}
+          ><CategoryIcon size={18} /></button>
         {/if}
-        <button type="button" class="danger" onclick={bulkDelete}>{t('bulk.delete')}</button>
+        <button
+          type="button"
+          class="icon-btn danger"
+          aria-label={t('bulk.delete')}
+          title={t('bulk.delete')}
+          onclick={bulkDelete}
+        ><TrashIcon size={18} /></button>
       {/if}
       <span class="list-toolbar-spacer"></span>
       {#if folder === 'trash' && mail.listEmails.length > 0}
@@ -1226,6 +1273,34 @@
     color: var(--support-error);
   }
   .list-toolbar > button.danger:hover {
+    background: var(--support-error);
+    color: var(--text-on-color);
+  }
+  /* Bulk-action icon buttons — square, touch-friendly, icon-only. */
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--touch-min, 44px);
+    height: var(--touch-min, 44px);
+    padding: 0;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+    transition:
+      background var(--duration-fast-02) var(--easing-productive-enter),
+      color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .icon-btn:hover {
+    background: var(--layer-03);
+    color: var(--text-primary);
+  }
+  .icon-btn.danger {
+    color: var(--support-error);
+    background: transparent;
+    font-weight: normal;
+  }
+  .icon-btn.danger:hover {
     background: var(--support-error);
     color: var(--text-on-color);
   }
