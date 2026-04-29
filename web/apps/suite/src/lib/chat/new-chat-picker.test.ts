@@ -70,7 +70,7 @@ describe('NewChatPicker', () => {
     await waitFor(() =>
       expect(screen.getByRole('dialog')).toBeInTheDocument(),
     );
-    expect(screen.getByText('New direct message')).toBeInTheDocument();
+    expect(screen.getByText('Chat')).toBeInTheDocument();
   });
 
   it('renders the Space modal when opened in Space mode', async () => {
@@ -79,7 +79,9 @@ describe('NewChatPicker', () => {
     await waitFor(() =>
       expect(screen.getByRole('dialog')).toBeInTheDocument(),
     );
-    expect(screen.getByText('Create space')).toBeInTheDocument();
+    // Title is always "Chat"; mode tab "Create Space" is selected.
+    expect(screen.getByText('Chat')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Create Space', selected: true })).toBeInTheDocument();
   });
 
   it('switches mode via tab buttons', async () => {
@@ -88,7 +90,8 @@ describe('NewChatPicker', () => {
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
 
     await fireEvent.click(screen.getByRole('tab', { name: 'Create Space' }));
-    expect(screen.getByText('Create space')).toBeInTheDocument();
+    // Title stays "Chat" regardless of mode.
+    expect(screen.getByText('Chat')).toBeInTheDocument();
   });
 
   it('closes when the Cancel button is clicked', async () => {
@@ -322,6 +325,36 @@ describe('NewChatPicker', () => {
     );
     // Picker stays open.
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  // ── floating suggestions: modal height must not change ───────────────
+
+  it('suggestions dropdown does not change modal outer height', async () => {
+    vi.mocked(chat.searchPrincipals).mockResolvedValue([
+      { id: 'p1', email: 'alpha@example.com', displayName: 'Alpha' },
+      { id: 'p2', email: 'beta@example.com', displayName: 'Beta' },
+      { id: 'p3', email: 'gamma@example.com', displayName: 'Gamma' },
+      { id: 'p4', email: 'delta@example.com', displayName: 'Delta' },
+      { id: 'p5', email: 'epsilon@example.com', displayName: 'Epsilon' },
+    ]);
+
+    render(NewChatPicker);
+    openDM();
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+
+    const dialog = screen.getByRole('dialog');
+    const heightBefore = dialog.offsetHeight;
+
+    const input = screen.getByRole('textbox', { name: /Search for a person/i });
+    await fireEvent.input(input, { target: { value: 'al' } });
+
+    // Advance the 150ms debounce.
+    await new Promise((r) => setTimeout(r, 200));
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+
+    // Suggestions are present; the dialog's outer height must not have grown.
+    const heightAfter = dialog.offsetHeight;
+    expect(heightAfter).toBe(heightBefore);
   });
 
   // ── REQ-CHAT-15: no principal id in DOM ─────────────────────────────

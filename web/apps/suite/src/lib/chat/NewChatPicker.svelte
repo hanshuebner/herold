@@ -278,9 +278,7 @@
   >
     <div class="modal">
       <div class="modal-header">
-        <h2 id="ncp-title" class="title">
-          {mode === 'dm' ? 'New direct message' : 'Create space'}
-        </h2>
+        <h2 id="ncp-title" class="title">Chat</h2>
         <button
           type="button"
           class="close-btn"
@@ -337,65 +335,67 @@
             {mode === 'dm' ? 'To' : 'Members'}
           </span>
 
-          <div class="recipient-box" class:has-error={!!emailError}>
-            {#each chips as chip (chip.principal.id)}
-              <span class="chip" aria-label="Recipient: {chip.principal.displayName}">
-                <span class="chip-name">{chip.principal.displayName}</span>
-                <span class="chip-email">{chip.principal.email}</span>
-                <button
-                  type="button"
-                  class="chip-remove"
-                  aria-label="Remove {chip.principal.displayName}"
-                  onclick={() => removeChip(chip.principal.id)}
-                >x</button>
-              </span>
-            {/each}
+          <div class="recipient-anchor">
+            <div class="recipient-box" class:has-error={!!emailError}>
+              {#each chips as chip (chip.principal.id)}
+                <span class="chip" aria-label="Recipient: {chip.principal.displayName}">
+                  <span class="chip-name">{chip.principal.displayName}</span>
+                  <span class="chip-email">{chip.principal.email}</span>
+                  <button
+                    type="button"
+                    class="chip-remove"
+                    aria-label="Remove {chip.principal.displayName}"
+                    onclick={() => removeChip(chip.principal.id)}
+                  >x</button>
+                </span>
+              {/each}
 
-            {#if mode === 'dm' && chips.length === 1}
-              <!-- DM: one recipient picked, hide input -->
-            {:else}
-              <input
-                type="text"
-                class="recipient-input"
-                bind:value={inputValue}
-                bind:this={inputEl}
-                placeholder={chips.length === 0 ? 'Name or email' : 'Add another'}
-                autocomplete="off"
-                spellcheck="false"
-                aria-label="Search for a person"
-                aria-autocomplete="list"
-                oninput={handleInput}
-                onkeydown={(e) => void handleKeydown(e)}
-              />
+              {#if mode === 'dm' && chips.length === 1}
+                <!-- DM: one recipient picked, hide input -->
+              {:else}
+                <input
+                  type="text"
+                  class="recipient-input"
+                  bind:value={inputValue}
+                  bind:this={inputEl}
+                  placeholder={chips.length === 0 ? 'Name or email' : 'Add another'}
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-label="Search for a person"
+                  aria-autocomplete="list"
+                  oninput={handleInput}
+                  onkeydown={(e) => void handleKeydown(e)}
+                />
+              {/if}
+            </div>
+
+            {#if suggestions.length > 0}
+              <ul class="suggestions" role="listbox" aria-label="People suggestions">
+                {#each suggestions as suggestion, idx (suggestion.id)}
+                  <li
+                    role="option"
+                    aria-selected={idx === selectedSuggestionIndex}
+                    class="suggestion-row"
+                    class:highlighted={idx === selectedSuggestionIndex}
+                  >
+                    <button
+                      type="button"
+                      class="suggestion-btn"
+                      onclick={() => pickSuggestion(suggestion)}
+                    >
+                      <span class="suggestion-name">{suggestion.displayName}</span>
+                      <span class="suggestion-email">{suggestion.email}</span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {:else if suggestionsLoading}
+              <p class="suggestions-loading" aria-live="polite">Searching...</p>
             {/if}
           </div>
 
           {#if emailError}
             <p class="field-error" role="alert">{emailError}</p>
-          {/if}
-
-          {#if suggestions.length > 0}
-            <ul class="suggestions" role="listbox" aria-label="People suggestions">
-              {#each suggestions as suggestion, idx (suggestion.id)}
-                <li
-                  role="option"
-                  aria-selected={idx === selectedSuggestionIndex}
-                  class="suggestion-row"
-                  class:highlighted={idx === selectedSuggestionIndex}
-                >
-                  <button
-                    type="button"
-                    class="suggestion-btn"
-                    onclick={() => pickSuggestion(suggestion)}
-                  >
-                    <span class="suggestion-name">{suggestion.displayName}</span>
-                    <span class="suggestion-email">{suggestion.email}</span>
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          {:else if suggestionsLoading}
-            <p class="suggestions-loading" aria-live="polite">Searching...</p>
           {/if}
         </div>
       </div>
@@ -642,9 +642,18 @@
     margin: 0;
   }
 
+  .recipient-anchor {
+    position: relative;
+  }
+
   .suggestions {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 30;
     list-style: none;
-    margin: 0;
+    margin: 2px 0 0;
     padding: 0;
     background: var(--layer-01);
     border: 1px solid var(--border-subtle-01);
