@@ -47,9 +47,9 @@
       title: 'Discard chat',
       message:
         conv.kind === 'dm'
-          ? `Discard the conversation with ${conv.name}? All messages will be permanently deleted.`
-          : `Discard the space "${conv.name}"? All messages will be permanently deleted.`,
-      confirmLabel: 'Discard',
+          ? `This will permanently delete the conversation with ${conv.name}, including every message — for ${conv.name}, too. This cannot be undone.`
+          : `This will permanently delete the space "${conv.name}" and every message in it for every member. This cannot be undone.`,
+      confirmLabel: 'Delete for everyone',
       cancelLabel: 'Cancel',
       kind: 'danger',
     });
