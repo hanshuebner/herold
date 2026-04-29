@@ -657,6 +657,10 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// scrapes against an alternative endpoint (e.g. an admin sidecar)
 	// still see them.
 	observe.RegisterRuntimeCollectors()
+	// External submission metrics — registered unconditionally so the metric
+	// names are always present in /metrics even when the feature is disabled,
+	// allowing scrape configs to reference them without conditional logic.
+	observe.RegisterExtSubMetrics()
 
 	// FTS worker goroutine — registered on the lifecycle group so
 	// shutdown drains it.

@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/secrets"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -105,6 +106,7 @@ func (r *Refresher) Refresh(ctx context.Context, sub store.IdentitySubmission, c
 	src := cfg.TokenSource(ctx, oldToken)
 	newToken, err := src.Token()
 	if err != nil {
+		observe.RecordOAuthRefreshOutcome("failure")
 		// golang.org/x/oauth2 wraps the HTTP response as an *oauth2.RetrieveError
 		// with StatusCode for HTTP errors.
 		var rerr *oauth2.RetrieveError
@@ -121,6 +123,7 @@ func (r *Refresher) Refresh(ctx context.Context, sub store.IdentitySubmission, c
 		}
 		return "", fmt.Errorf("extsubmit: token refresh: %w", err)
 	}
+	observe.RecordOAuthRefreshOutcome("success")
 
 	// Seal the new access token.
 	newAccessCT, err := secrets.Seal(r.DataKey, []byte(newToken.AccessToken))

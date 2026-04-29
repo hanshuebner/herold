@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protosmtp/session"
 	"github.com/hanshuebner/herold/internal/secrets"
 	"github.com/hanshuebner/herold/internal/store"
@@ -262,8 +263,14 @@ func (s *Submitter) auth(ctx context.Context, sess *session.Session, sub store.I
 // the pattern used by the queue delivery workers.
 //
 // No local retry: the returned Outcome is final (REQ-AUTH-EXT-SUBMIT-05).
+// Emits herold_external_submission_total and
+// herold_external_submission_duration_seconds on every call.
 func (s *Submitter) Submit(ctx context.Context, sub store.IdentitySubmission, env Envelope) Outcome {
+	start := s.now()
 	out := Outcome{CorrelationID: env.CorrelationID}
+	defer func() {
+		observe.RecordSubmissionOutcome(string(out.State), s.now().Sub(start))
+	}()
 
 	sess, conn, err := s.buildSession(ctx, sub)
 	if err != nil {
