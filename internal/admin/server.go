@@ -108,7 +108,7 @@ type StartOpts struct {
 // Runtime holds live handles so Reload and callers can inspect state.
 type Runtime struct {
 	mu     sync.Mutex
-	cfg    atomic.Pointer[sysconfig.Config]
+	cfg    *atomic.Pointer[sysconfig.Config]
 	level  *slog.LevelVar
 	logger *slog.Logger
 }
@@ -580,7 +580,14 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// constructor. The two handlers are otherwise independent --
 	// session cookies (SPA) and Bearer keys (REST) live in disjoint
 	// header/cookie namespaces, and the URL prefixes do not overlap.
-	bundle, err := composeAdminAndUI(ctx, cfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey, health, sieveInterp, prebuiltExtSubmitter)
+	//
+	// sharedCfg is an atomic pointer shared between the JMAP handler
+	// layer (for live directory-autocomplete mode reads) and the
+	// Runtime (for config reload). Both hold the same pointer so
+	// ReloadConfig updates propagate to in-flight JMAP calls.
+	sharedCfg := new(atomic.Pointer[sysconfig.Config])
+	sharedCfg.Store(cfg)
+	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey, health, sieveInterp, prebuiltExtSubmitter)
 	if err != nil {
 		return err
 	}
@@ -993,9 +1000,10 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		})
 	}
 
-	// Runtime snapshot for Reload.
-	rt := &Runtime{level: levelVar, logger: logger}
-	rt.cfg.Store(cfg)
+	// Runtime snapshot for Reload. sharedCfg is the same atomic that
+	// was handed to composeAdminAndUI so JMAP handlers see the live
+	// value on every ReloadConfig call.
+	rt := &Runtime{cfg: sharedCfg, level: levelVar, logger: logger}
 
 	// Readiness.
 	health.MarkReady()
@@ -1681,6 +1689,7 @@ type composedHandlers struct {
 func composeAdminAndUI(
 	ctx context.Context,
 	cfg *sysconfig.Config,
+	cfgPtr *atomic.Pointer[sysconfig.Config],
 	st store.Store,
 	dir *directory.Directory,
 	oidcRP *directoryoidc.RP,
@@ -1982,6 +1991,25 @@ func composeAdminAndUI(
 	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapIdentityStore,
 		extSub, extRouter,
 		logger.With("subsystem", "jmap-emailsubmission"), clk)
+	// Directory autocomplete (compose-window address autocomplete). The
+	// capability is advertised when mode != "off". The modeFn closure
+	// reads cfgPtr on every request so a SIGHUP reload takes effect
+	// without a restart (REQ-PROTO-DA-01, if assigned).
+	if cfg.Server.DirectoryAutocomplete.Mode != sysconfig.DirectoryAutocompleteModeOff {
+		modeFn := func() sysconfig.DirectoryAutocompleteMode {
+			return cfgPtr.Load().Server.DirectoryAutocomplete.Mode
+		}
+		jmapSrv.Registry().RegisterCapabilityDescriptor(
+			protojmap.CapabilityDirectoryAutocomplete,
+			struct {
+				Mode string `json:"mode"`
+			}{Mode: string(cfg.Server.DirectoryAutocomplete.Mode)},
+		)
+		jmapchat.RegisterDirectorySearch(jmapSrv.Registry(), st, modeFn)
+		logger.Info("directory autocomplete enabled",
+			slog.String("subsystem", "jmap-directory-autocomplete"),
+			slog.String("mode", string(cfg.Server.DirectoryAutocomplete.Mode)))
+	}
 	// SeenAddress (REQ-MAIL-11e..m): recipient autocomplete history, exposed
 	// under urn:ietf:params:jmap:mail (no new capability URI needed).
 	jmapseenaddress.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-seenaddress"), clk)

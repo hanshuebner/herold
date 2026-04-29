@@ -334,6 +334,15 @@ type Metadata interface {
 	// (docs/design/web/architecture/07-chat-protocol.md).
 	SearchPrincipalsByText(ctx context.Context, prefix string, limit int) ([]Principal, error)
 
+	// SearchPrincipalsByTextInDomain is identical to SearchPrincipalsByText
+	// but restricts results to principals whose canonical email belongs to
+	// domain (case-insensitive exact match against the domain part). When
+	// domain is empty (or whitespace-only), the method behaves identically to
+	// SearchPrincipalsByText with no domain restriction. Used by
+	// Directory/search to provide compose-window autocomplete scoped to the
+	// caller's email domain.
+	SearchPrincipalsByTextInDomain(ctx context.Context, prefix, domain string, limit int) ([]Principal, error)
+
 	// GetFTSCursor returns the persisted cursor value for key, or
 	// (0, nil) when no row exists (the consumer starts from the
 	// beginning). Used by the FTS indexer (key == "fts") and reserved

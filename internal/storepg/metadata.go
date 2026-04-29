@@ -1604,6 +1604,65 @@ func (m *metadata) SearchPrincipalsByText(ctx context.Context, prefix string, li
 	return store.SortPrincipalSearchResults(out, lower, limit), nil
 }
 
+// -- SearchPrincipalsByTextInDomain ------------------------------------
+
+func (m *metadata) SearchPrincipalsByTextInDomain(ctx context.Context, prefix, domain string, limit int) ([]store.Principal, error) {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return m.SearchPrincipalsByText(ctx, prefix, limit)
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	lower := strings.ToLower(prefix)
+	lowerDomain := strings.ToLower(domain)
+	rows, err := m.s.pool.Query(ctx, `
+		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
+		       quota_bytes, flags, created_at_us, updated_at_us
+		  FROM principals
+		 WHERE (lower(display_name) LIKE $1 OR lower(canonical_email) LIKE $2)
+		   AND lower(canonical_email) LIKE $3
+		 LIMIT $4`,
+		"%"+lower+"%",
+		lower+"%@%",
+		"%@"+lowerDomain,
+		limit*2, // over-fetch; Go-side sort trims to limit
+	)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.Principal
+	for rows.Next() {
+		var p store.Principal
+		var kind int32
+		var flags int64
+		var createdUs, updatedUs int64
+		var totp []byte
+		var id int64
+		if err := rows.Scan(&id, &kind, &p.CanonicalEmail, &p.DisplayName, &p.PasswordHash,
+			&totp, &p.QuotaBytes, &flags, &createdUs, &updatedUs); err != nil {
+			return nil, mapErr(err)
+		}
+		p.ID = store.PrincipalID(id)
+		p.Kind = store.PrincipalKind(kind)
+		p.Flags = store.PrincipalFlags(flags)
+		p.CreatedAt = fromMicros(createdUs)
+		p.UpdatedAt = fromMicros(updatedUs)
+		if len(totp) > 0 {
+			p.TOTPSecret = totp
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err)
+	}
+	return store.SortPrincipalSearchResults(out, lower, limit), nil
+}
+
 // -- DeletePrincipal --------------------------------------------------
 
 func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) error {

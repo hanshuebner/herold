@@ -448,6 +448,30 @@ mandates its own naming). Most operators leave it unset and just set
 `secure_cookies = true` is the production policy; only override
 during local development behind a trusted localhost reverse proxy.
 
+### `[server.directory_autocomplete]` - compose To-field autocomplete
+
+```toml
+[server.directory_autocomplete]
+mode = "domain"   # "all" | "domain" (default) | "off"
+```
+
+Controls which principals are surfaced as autocomplete candidates when a
+user types in the compose To, Cc, or Bcc fields. The section is optional;
+omitting it entirely is equivalent to `mode = "domain"`.
+
+- `mode = "domain"` (default): suggest only principals whose email address
+  shares the calling user's domain. This is the privacy-respecting default
+  for multi-tenant deployments where users should not be able to enumerate
+  principals in other domains.
+- `mode = "all"`: suggest any principal known to the instance, regardless of
+  domain. Use this for single-domain or fully trusted deployments where
+  cross-domain discovery is desirable.
+- `mode = "off"`: disable the feature entirely. The JMAP directory-autocomplete
+  capability is not advertised to clients when mode is "off".
+
+If the section is present but `mode` is absent, the server defaults to
+`"domain"`. Any other value is rejected at startup with a validation error.
+
 ### `[acme]` - ACME account
 
 ```toml

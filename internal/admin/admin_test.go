@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -381,7 +382,7 @@ func TestReloadConfig_LogLevelChange_ApplyLive(t *testing.T) {
 	newCfg.Observability.LogLevel = "debug"
 	level := new(slog.LevelVar)
 	level.Set(slog.LevelInfo)
-	rt := &Runtime{level: level}
+	rt := &Runtime{cfg: new(atomic.Pointer[sysconfig.Config]), level: level}
 	rt.cfg.Store(cfg)
 	if err := ReloadConfig(context.Background(), rt, &newCfg); err != nil {
 		t.Fatalf("reload: %v", err)
@@ -398,7 +399,7 @@ func TestReloadConfig_DataDirChange_Rejected(t *testing.T) {
 	_, cfg := minimalConfigFixture(t)
 	newCfg := *cfg
 	newCfg.Server.DataDir = "/srv/new"
-	rt := &Runtime{level: new(slog.LevelVar)}
+	rt := &Runtime{cfg: new(atomic.Pointer[sysconfig.Config]), level: new(slog.LevelVar)}
 	rt.cfg.Store(cfg)
 	err := ReloadConfig(context.Background(), rt, &newCfg)
 	if err == nil {

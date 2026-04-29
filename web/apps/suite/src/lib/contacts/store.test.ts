@@ -8,6 +8,7 @@
  *   - Sort tiers: name-prefix > email-local-part-prefix > substring.
  *   - Within tier: seen entries by lastUsedAt desc, contacts alphabetically.
  *   - Cap at limit.
+ * Section 3: mergeFilter() with three sources (directory results).
  *
  * The actual JMAP load() path is integration territory and tested live.
  */
@@ -103,7 +104,7 @@ const SA_ALICE_DUP: SeenAddress = {
 
 describe('mergeFilter: empty query', () => {
   it('returns contacts first, then seen entries', () => {
-    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL, SA_DAN], '', 8);
+    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL, SA_DAN], [], '', 8);
     expect(result[0]!.id).toBe('c1'); // Alice (contact)
     expect(result[1]!.id).toBe('c2'); // Bob (contact)
     expect(result[2]!.id).toBe('sa:sa1'); // Carol (seen)
@@ -111,7 +112,7 @@ describe('mergeFilter: empty query', () => {
   });
 
   it('deduplicates by email: contact wins, seen entry suppressed', () => {
-    const result = mergeFilter([C_ALICE], [SA_ALICE_DUP, SA_CAROL], '', 8);
+    const result = mergeFilter([C_ALICE], [SA_ALICE_DUP, SA_CAROL], [], '', 8);
     // Only one Alice (the contact)
     const alices = result.filter((r) => r.email === 'alice@x.test');
     expect(alices).toHaveLength(1);
@@ -119,7 +120,7 @@ describe('mergeFilter: empty query', () => {
   });
 
   it('caps at limit', () => {
-    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL, SA_DAN], '', 2);
+    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL, SA_DAN], [], '', 2);
     expect(result).toHaveLength(2);
   });
 });
@@ -128,21 +129,21 @@ describe('mergeFilter: with query', () => {
   it('name-prefix match ranks tier 0', () => {
     // "ali" matches start of "Alice Liddell" (tier 0) but is also substring
     // of carol's displayName nowhere — just checking Alice comes first.
-    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL], 'ali');
+    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL], [], 'ali');
     expect(result[0]!.id).toBe('c1');
   });
 
   it('email-local-part prefix match ranks tier 1', () => {
     // "car" matches start of "carol@z.test" local-part (tier 1).
     // Carol has no name-prefix match. Alice and Bob don't match at all.
-    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL, SA_DAN], 'car');
+    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL, SA_DAN], [], 'car');
     expect(result).toHaveLength(1);
     expect(result[0]!.id).toBe('sa:sa1');
   });
 
   it('substring match ranks tier 2', () => {
     // "liddell" is a substring of Alice's name (not a prefix of local-part or name).
-    const result = mergeFilter([C_ALICE, C_BOB], [], 'liddell');
+    const result = mergeFilter([C_ALICE, C_BOB], [], [], 'liddell');
     expect(result).toHaveLength(1);
     expect(result[0]!.id).toBe('c1');
   });
@@ -150,7 +151,7 @@ describe('mergeFilter: with query', () => {
   it('within same tier: seen entries sorted by lastUsedAt desc', () => {
     // Both Carol (lastUsedAt 2026-04-10) and Dan (lastUsedAt 2026-04-01) match
     // "test" as substring. Carol is more recent so should come first within tier 2.
-    const result = mergeFilter([], [SA_CAROL, SA_DAN], 'test');
+    const result = mergeFilter([], [SA_CAROL, SA_DAN], [], 'test');
     expect(result[0]!.id).toBe('sa:sa1'); // Carol (more recent)
     expect(result[1]!.id).toBe('sa:sa2'); // Dan
   });
@@ -158,7 +159,7 @@ describe('mergeFilter: with query', () => {
   it('within same tier: contact entries sorted alphabetically', () => {
     // "test" matches both Alice and Bob by email substring. Both are contacts;
     // should appear alphabetically by name: Alice before Bob.
-    const result = mergeFilter([C_ALICE, C_BOB], [], 'test');
+    const result = mergeFilter([C_ALICE, C_BOB], [], [], 'test');
     expect(result[0]!.id).toBe('c1'); // Alice
     expect(result[1]!.id).toBe('c2'); // Bob
   });
@@ -166,26 +167,104 @@ describe('mergeFilter: with query', () => {
   it('within same tier: contacts before seen entries', () => {
     // Both Alice (contact) and Carol (seen) match at tier 2 ("test").
     // Contacts precede seen entries within the same tier.
-    const result = mergeFilter([C_ALICE], [SA_CAROL], 'test');
+    const result = mergeFilter([C_ALICE], [SA_CAROL], [], 'test');
     expect(result[0]!.id).toBe('c1');
     expect(result[1]!.id).toBe('sa:sa1');
   });
 
   it('deduplicates when query is provided', () => {
     // SA_ALICE_DUP has same email as C_ALICE; only the contact should appear.
-    const result = mergeFilter([C_ALICE], [SA_ALICE_DUP], 'alice');
+    const result = mergeFilter([C_ALICE], [SA_ALICE_DUP], [], 'alice');
     const alices = result.filter((r) => r.email === 'alice@x.test');
     expect(alices).toHaveLength(1);
     expect(alices[0]!.id).toBe('c1');
   });
 
   it('returns empty when nothing matches', () => {
-    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL, SA_DAN], 'zzz-nomatch');
+    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL, SA_DAN], [], 'zzz-nomatch');
     expect(result).toHaveLength(0);
   });
 
   it('caps at limit', () => {
-    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL, SA_DAN], 'test', 2);
+    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL, SA_DAN], [], 'test', 2);
     expect(result).toHaveLength(2);
+  });
+});
+
+// ── Section 3: mergeFilter with three sources (directory results) ─────────
+
+const D_EVE: ContactSuggestion = { id: 'dir:d1', name: 'Eve Adams', email: 'eve@corp.test' };
+const D_FRANK: ContactSuggestion = {
+  id: 'dir:d2',
+  name: 'Frank Bean',
+  email: 'frank@corp.test',
+};
+// Directory entry whose email matches C_ALICE (should be suppressed).
+const D_ALICE_DUP: ContactSuggestion = {
+  id: 'dir:d3',
+  name: 'Alice Dir',
+  email: 'alice@x.test',
+};
+// Directory entry whose email matches SA_CAROL (should be suppressed).
+const D_CAROL_DUP: ContactSuggestion = {
+  id: 'dir:d4',
+  name: 'Carol Dir',
+  email: 'carol@z.test',
+};
+
+describe('mergeFilter: three sources (with directory)', () => {
+  it('directory entries appear after contacts and seen in empty-query mode', () => {
+    const result = mergeFilter([C_ALICE], [SA_CAROL], [D_EVE], '', 8);
+    expect(result[0]!.id).toBe('c1'); // Alice (contact)
+    expect(result[1]!.id).toBe('sa:sa1'); // Carol (seen)
+    expect(result[2]!.id).toBe('dir:d1'); // Eve (directory)
+  });
+
+  it('contact wins over directory for same email', () => {
+    const result = mergeFilter([C_ALICE], [], [D_ALICE_DUP], 'alice', 8);
+    const alices = result.filter((r) => r.email === 'alice@x.test');
+    expect(alices).toHaveLength(1);
+    expect(alices[0]!.id).toBe('c1');
+  });
+
+  it('seen-address wins over directory for same email', () => {
+    const result = mergeFilter([], [SA_CAROL], [D_CAROL_DUP], 'carol', 8);
+    const carols = result.filter((r) => r.email === 'carol@z.test');
+    expect(carols).toHaveLength(1);
+    expect(carols[0]!.id).toBe('sa:sa1');
+  });
+
+  it('directory entries appear at end of each tier after contacts and seen', () => {
+    // "test" matches Alice (contact, tier 2), Carol (seen, tier 2), Eve (dir, tier 2).
+    const result = mergeFilter([C_ALICE], [SA_CAROL], [D_EVE], 'test', 8);
+    expect(result[0]!.id).toBe('c1');    // Alice: contact
+    expect(result[1]!.id).toBe('sa:sa1'); // Carol: seen
+    expect(result[2]!.id).toBe('dir:d1'); // Eve: directory
+  });
+
+  it('empty directory results behave identically to no directory', () => {
+    const withEmpty = mergeFilter([C_ALICE, C_BOB], [SA_CAROL], [], 'test', 8);
+    const withoutDir = mergeFilter([C_ALICE, C_BOB], [SA_CAROL], [], 'test', 8);
+    expect(withEmpty).toEqual(withoutDir);
+  });
+
+  it('non-overlapping directory entries appear at the end of each tier', () => {
+    // "corp" only matches Eve and Frank (directory email domain).
+    // No contact or seen entries match.
+    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL], [D_EVE, D_FRANK], 'corp', 8);
+    expect(result[0]!.id).toBe('dir:d1'); // Eve (alphabetically first)
+    expect(result[1]!.id).toBe('dir:d2'); // Frank
+  });
+
+  it('directory entries sorted alphabetically by displayName within tier', () => {
+    // Both Eve and Frank match. Frank should come after Eve alphabetically.
+    const result = mergeFilter([], [], [D_FRANK, D_EVE], 'corp', 8);
+    expect(result[0]!.name).toBe('Eve Adams');
+    expect(result[1]!.name).toBe('Frank Bean');
+  });
+
+  it('cap respected when total across all three sources exceeds limit', () => {
+    const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL, SA_DAN], [D_EVE, D_FRANK], 'test', 3);
+    expect(result).toHaveLength(3);
   });
 });

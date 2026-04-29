@@ -191,6 +191,13 @@ func Run(t *testing.T, f Factory) {
 		{"SearchPrincipalsByText_LimitClamped", testSearchPrincipalsByTextLimitClamped},
 		{"SearchPrincipalsByText_NoMatch", testSearchPrincipalsByTextNoMatch},
 		{"SearchPrincipalsByText_CaseInsensitive", testSearchPrincipalsByTextCaseInsensitive},
+		// -- Directory/search domain-scoped search (REQ-JMAP-DIR-01) ------
+		{"SearchPrincipalsByTextInDomain_EmptyDomain", testSearchPrincipalsByTextInDomainEmptyDomain},
+		{"SearchPrincipalsByTextInDomain_DomainFilter", testSearchPrincipalsByTextInDomainDomainFilter},
+		{"SearchPrincipalsByTextInDomain_CaseInsensitiveDomain", testSearchPrincipalsByTextInDomainCaseInsensitiveDomain},
+		{"SearchPrincipalsByTextInDomain_NoMatch", testSearchPrincipalsByTextInDomainNoMatch},
+		{"SearchPrincipalsByTextInDomain_EmptyPrefix", testSearchPrincipalsByTextInDomainEmptyPrefix},
+		{"SearchPrincipalsByTextInDomain_LimitRespected", testSearchPrincipalsByTextInDomainLimitRespected},
 		// -- REQ-MAIL-11e..m seen-addresses history -----------------------
 		{"SeenAddress_UpsertInsert", testSeenAddressUpsertInsert},
 		{"SeenAddress_UpsertUpdate_CountsIncrement", testSeenAddressUpsertUpdate},
@@ -6148,5 +6155,165 @@ func testSearchPrincipalsByTextCaseInsensitive(t *testing.T, s store.Store) {
 		if len(got) != 1 {
 			t.Fatalf("SearchPrincipalsByText(%q): got %d results, want 1", prefix, len(got))
 		}
+	}
+}
+
+// -- SearchPrincipalsByTextInDomain tests -----------------------------
+
+// testSearchPrincipalsByTextInDomainEmptyDomain verifies that passing an
+// empty domain string is equivalent to calling SearchPrincipalsByText:
+// principals from multiple domains all appear.
+func testSearchPrincipalsByTextInDomainEmptyDomain(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	for _, row := range []struct{ email, name string }{
+		{"carol@alpha.test", "Carol Alpha"},
+		{"carol@beta.test", "Carol Beta"},
+	} {
+		if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+			Kind: store.PrincipalKindUser, CanonicalEmail: row.email, DisplayName: row.name,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", row.email, err)
+		}
+	}
+	// empty domain — should see both principals
+	got, err := s.Meta().SearchPrincipalsByTextInDomain(ctx, "carol", "", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByTextInDomain: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d results, want 2: %+v", len(got), got)
+	}
+	// whitespace-only domain also counts as empty
+	got2, err := s.Meta().SearchPrincipalsByTextInDomain(ctx, "carol", "   ", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByTextInDomain(whitespace domain): %v", err)
+	}
+	if len(got2) != 2 {
+		t.Fatalf("whitespace domain: got %d results, want 2", len(got2))
+	}
+}
+
+// testSearchPrincipalsByTextInDomainDomainFilter verifies that only
+// principals whose canonical email is in the requested domain are returned.
+func testSearchPrincipalsByTextInDomainDomainFilter(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	for _, row := range []struct{ email, name string }{
+		{"dave@corp.example", "Dave Corp"},
+		{"dave@other.example", "Dave Other"},
+		{"eve@corp.example", "Eve Corp"},
+	} {
+		if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+			Kind: store.PrincipalKindUser, CanonicalEmail: row.email, DisplayName: row.name,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", row.email, err)
+		}
+	}
+	got, err := s.Meta().SearchPrincipalsByTextInDomain(ctx, "dave", "corp.example", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByTextInDomain: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d results, want 1: %+v", len(got), got)
+	}
+	if got[0].CanonicalEmail != "dave@corp.example" {
+		t.Errorf("got %q, want dave@corp.example", got[0].CanonicalEmail)
+	}
+}
+
+// testSearchPrincipalsByTextInDomainCaseInsensitiveDomain verifies that
+// the domain match is case-insensitive regardless of how the input is cased.
+func testSearchPrincipalsByTextInDomainCaseInsensitiveDomain(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "frank@mail.example",
+		DisplayName: "Frank",
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	for _, domain := range []string{"mail.example", "MAIL.EXAMPLE", "Mail.Example"} {
+		got, err := s.Meta().SearchPrincipalsByTextInDomain(ctx, "frank", domain, 10)
+		if err != nil {
+			t.Fatalf("SearchPrincipalsByTextInDomain(domain=%q): %v", domain, err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("domain=%q: got %d results, want 1", domain, len(got))
+		}
+		if got[0].CanonicalEmail != "frank@mail.example" {
+			t.Errorf("domain=%q: got %q, want frank@mail.example", domain, got[0].CanonicalEmail)
+		}
+	}
+}
+
+// testSearchPrincipalsByTextInDomainNoMatch verifies that when no
+// principals match both the prefix and the domain, an empty slice (not
+// an error) is returned.
+func testSearchPrincipalsByTextInDomainNoMatch(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "grace@present.example",
+		DisplayName: "Grace",
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	got, err := s.Meta().SearchPrincipalsByTextInDomain(ctx, "grace", "absent.example", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByTextInDomain: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d results, want 0: %+v", len(got), got)
+	}
+}
+
+// testSearchPrincipalsByTextInDomainEmptyPrefix verifies behaviour when
+// prefix is empty but domain is set: all principals in the domain are
+// returned (consistent with SearchPrincipalsByText("", ...) which
+// returns all principals that match the empty-string LIKE patterns).
+func testSearchPrincipalsByTextInDomainEmptyPrefix(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	for _, row := range []struct{ email, name string }{
+		{"hank@scoped.test", "Hank Scoped"},
+		{"ivan@scoped.test", "Ivan Scoped"},
+		{"judy@other.test", "Judy Other"},
+	} {
+		if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+			Kind: store.PrincipalKindUser, CanonicalEmail: row.email, DisplayName: row.name,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", row.email, err)
+		}
+	}
+	got, err := s.Meta().SearchPrincipalsByTextInDomain(ctx, "", "scoped.test", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByTextInDomain: %v", err)
+	}
+	// Both scoped.test principals should appear; judy@other.test must not.
+	for _, p := range got {
+		if strings.HasSuffix(p.CanonicalEmail, "@other.test") {
+			t.Errorf("unexpected cross-domain result: %s", p.CanonicalEmail)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d results, want 2: %+v", len(got), got)
+	}
+}
+
+// testSearchPrincipalsByTextInDomainLimitRespected verifies that the
+// limit parameter caps the result set when there are more matches.
+func testSearchPrincipalsByTextInDomainLimitRespected(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	for i := 0; i < 5; i++ {
+		if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+			Kind:           store.PrincipalKindUser,
+			CanonicalEmail: fmt.Sprintf("dlimit%d@dlimit.test", i),
+			DisplayName:    fmt.Sprintf("DLimit User %d", i),
+		}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	got, err := s.Meta().SearchPrincipalsByTextInDomain(ctx, "dlimit", "dlimit.test", 3)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByTextInDomain: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d results, want 3 (limit applied): %+v", len(got), got)
 	}
 }

@@ -154,7 +154,8 @@ type ServerConfig struct {
 	Push               PushConfig               `toml:"push,omitempty"`
 	Queue              QueueConfig              `toml:"queue,omitempty"`
 	Secrets            SecretsConfig            `toml:"secrets,omitempty"`
-	ExternalSubmission ExternalSubmissionConfig `toml:"external_submission,omitempty"`
+	ExternalSubmission      ExternalSubmissionConfig      `toml:"external_submission,omitempty"`
+	DirectoryAutocomplete   DirectoryAutocompleteConfig   `toml:"directory_autocomplete,omitempty"`
 	// OAuthProviders maps provider name to per-provider OAuth 2.0 client
 	// configuration for server-mediated OAuth flows (REQ-AUTH-EXT-SUBMIT-03).
 	// Provider names are normalised to lowercase at parse time. The reserved
@@ -216,6 +217,43 @@ type ExternalSubmissionConfig struct {
 	// concurrent refreshes when many OAuth identities are due at once;
 	// raising it above 16 provides diminishing returns for typical deployments.
 	SweeperWorkers int `toml:"sweeper_workers,omitempty"`
+}
+
+// DirectoryAutocompleteMode is the typed enum for the compose To-field
+// autocomplete behaviour (see DirectoryAutocompleteConfig).
+type DirectoryAutocompleteMode string
+
+const (
+	// DirectoryAutocompleteModeAll enables cross-domain principal suggestions
+	// from the full instance directory. Opt-in; operators who want to allow
+	// any authenticated user to discover all principals set this.
+	DirectoryAutocompleteModeAll DirectoryAutocompleteMode = "all"
+	// DirectoryAutocompleteModeDomain suggests only principals that share the
+	// calling user's email domain (privacy-respecting default).
+	DirectoryAutocompleteModeDomain DirectoryAutocompleteMode = "domain"
+	// DirectoryAutocompleteModeOff disables the feature entirely. The JMAP
+	// directory-autocomplete capability is not advertised when mode is "off".
+	DirectoryAutocompleteModeOff DirectoryAutocompleteMode = "off"
+)
+
+// DirectoryAutocompleteConfig controls the compose To-field autocomplete
+// feature that suggests principals known to this herold instance.
+//
+// When the section is omitted entirely, Mode defaults to "domain" (only
+// suggest principals sharing the caller's email domain). Set mode = "all"
+// to opt in to cross-domain suggestions, or mode = "off" to disable the
+// feature and suppress the JMAP capability advertisement.
+//
+// Example (system.toml):
+//
+//	[server.directory_autocomplete]
+//	mode = "domain"   # "all" | "domain" (default) | "off"
+type DirectoryAutocompleteConfig struct {
+	// Mode controls which principals are surfaced as autocomplete candidates.
+	// "all": suggest any principal on the instance regardless of domain.
+	// "domain": suggest only principals sharing the caller's email domain (default).
+	// "off": disable autocomplete; the JMAP capability is not advertised.
+	Mode DirectoryAutocompleteMode `toml:"mode,omitempty"`
 }
 
 // OAuthProviderConfig is the per-provider OAuth 2.0 client configuration for
@@ -941,6 +979,13 @@ var (
 		"pinned":               {},
 		"insecure_skip_verify": {},
 	}
+
+	// Directory autocomplete modes.
+	validDirectoryAutocompleteModes = map[DirectoryAutocompleteMode]struct{}{
+		DirectoryAutocompleteModeAll:    {},
+		DirectoryAutocompleteModeDomain: {},
+		DirectoryAutocompleteModeOff:    {},
+	}
 )
 
 // Load reads path, parses it strictly, applies defaults, and validates.
@@ -1164,6 +1209,10 @@ func applyDefaults(c *Config) {
 			normalised[strings.ToLower(k)] = v
 		}
 		c.Server.OAuthProviders = normalised
+	}
+	// Directory autocomplete default: "domain" (privacy-respecting).
+	if c.Server.DirectoryAutocomplete.Mode == "" {
+		c.Server.DirectoryAutocomplete.Mode = DirectoryAutocompleteModeDomain
 	}
 }
 
@@ -1785,6 +1834,11 @@ func Validate(c *Config) error {
 	// OAuth providers (REQ-AUTH-EXT-SUBMIT-03).
 	if err := validateOAuthProviders(c); err != nil {
 		return err
+	}
+	// Directory autocomplete mode.
+	if _, ok := validDirectoryAutocompleteModes[c.Server.DirectoryAutocomplete.Mode]; !ok {
+		return fmt.Errorf("sysconfig: [server.directory_autocomplete] mode %q not recognised (want \"all\", \"domain\", or \"off\")",
+			c.Server.DirectoryAutocomplete.Mode)
 	}
 	return nil
 }

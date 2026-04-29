@@ -13,15 +13,22 @@
  * Sort order (per tier): name-prefix matches first, then email-local-part
  * prefix, then any substring match; within each tier SeenAddress entries
  * sort by lastUsedAt desc, Contacts sort alphabetically by name.
+ *
+ * filterAsync() extends filter() with an async Directory/search query
+ * when the server advertises the directory-autocomplete capability
+ * (https://netzhansa.com/jmap/directory-autocomplete). Directory results
+ * are appended after Contacts and SeenAddress entries within each tier,
+ * deduplicated by lowercased email (Contacts win > SeenAddress > Directory).
  */
 
 import { jmap, strict } from '../jmap/client';
 import { Capability } from '../jmap/types';
 import { auth } from '../auth/auth.svelte';
 import { seenAddresses, type SeenAddress } from './seen-addresses.svelte';
+import { hasDirectoryAutocomplete } from '../auth/capabilities';
 
 export interface ContactSuggestion {
-  /** JMAP Contact id (string) or SeenAddress id prefixed with 'sa:'. */
+  /** JMAP Contact id (string), SeenAddress id prefixed with 'sa:', or Directory id prefixed with 'dir:'. */
   id: string;
   /** Display name — JSContact name.full || derived from name components. */
   name: string;
@@ -89,7 +96,25 @@ class Contacts {
    *     each capped proportionally to fill the limit.
    */
   filter(query: string, limit = 8): ContactSuggestion[] {
-    return mergeFilter(this.suggestions, seenAddresses.entries, query, limit);
+    return mergeFilter(this.suggestions, seenAddresses.entries, [], query, limit);
+  }
+
+  /**
+   * Async version of filter() that also queries Directory/search when the
+   * server advertises the directory-autocomplete capability. The result merges
+   * all three sources with priority: Contacts > SeenAddress > Directory.
+   *
+   * Returns [] immediately (synchronously via Promise.resolve) when:
+   *   - the query is empty or shorter than 2 characters (no directory call)
+   *
+   * Directory results are deduped against Contacts and SeenAddress by
+   * lowercased email.
+   */
+  async filterAsync(query: string, limit = 8): Promise<ContactSuggestion[]> {
+    const contactsAndSeen = this.filter(query, limit);
+    const dirResults = await searchDirectory(query, limit);
+    if (dirResults.length === 0) return contactsAndSeen;
+    return mergeFilter(this.suggestions, seenAddresses.entries, dirResults, query, limit);
   }
 
   #accountId(): string | null {
@@ -100,27 +125,83 @@ class Contacts {
 export const contacts = new Contacts();
 
 /**
- * Merge JMAP Contact suggestions with SeenAddress entries and return a
- * filtered, sorted, deduped list capped at `limit`.
+ * Query the server's Directory/search method with the given prefix.
+ *
+ * Returns [] when:
+ *   - the directory-autocomplete capability is not advertised
+ *   - prefix is empty or shorter than 2 characters
+ *   - the JMAP call fails for any reason (soft-fail)
+ *
+ * Soft-fail: logs to console but does not surface a toast.
+ */
+export async function searchDirectory(
+  prefix: string,
+  limit = 8,
+): Promise<ContactSuggestion[]> {
+  if (!hasDirectoryAutocomplete()) return [];
+  if (prefix.length < 2) return [];
+
+  const accountId = directoryAccountId();
+  if (!accountId) return [];
+
+  try {
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Directory/search',
+        { accountId, textPrefix: prefix, limit },
+        [Capability.HeroldDirectoryAutocomplete],
+      );
+    });
+    const resp = responses[0];
+    if (!resp || resp[0] === 'error') return [];
+    const args = resp[1] as {
+      accountId: string;
+      items: Array<{ id: string; email: string; displayName?: string }>;
+    };
+    const items = args.items ?? [];
+    return items.slice(0, limit).map((item) => ({
+      id: `dir:${item.id}`,
+      name: item.displayName ?? '',
+      email: item.email,
+    }));
+  } catch (err) {
+    console.error('Directory/search failed', err);
+    return [];
+  }
+}
+
+/**
+ * Merge JMAP Contact suggestions with SeenAddress entries and (optionally)
+ * Directory results, returning a filtered, sorted, deduped list capped at
+ * `limit`.
+ *
+ * Priority for deduplication by lowercased email:
+ *   1. JMAP Contacts (highest)
+ *   2. SeenAddress entries
+ *   3. Directory results
  *
  * Sort tiers:
  *   0 — query matches start of name/displayName
  *   1 — query matches start of email local-part
  *   2 — any other substring match
  *
- * Within each tier: SeenAddress entries ordered by lastUsedAt desc;
- * Contact entries ordered alphabetically by name.
+ * Within each tier:
+ *   - Contact entries ordered alphabetically by name.
+ *   - SeenAddress entries ordered by lastUsedAt desc.
+ *   - Directory entries ordered alphabetically by displayName.
+ *   - Contacts precede SeenAddress which precede Directory within the same tier.
  */
 export function mergeFilter(
   contacts: ContactSuggestion[],
   seen: SeenAddress[],
+  directory: ContactSuggestion[],
   query: string,
   limit = 8,
 ): ContactSuggestion[] {
   const q = query.trim().toLowerCase();
 
   // Build a set of lowercased emails already covered by JMAP Contacts so we
-  // can suppress matching SeenAddress entries (dedup by email, Contacts win).
+  // can suppress matching SeenAddress and Directory entries.
   const contactEmails = new Set(contacts.map((c) => c.email.toLowerCase()));
 
   // Convert SeenAddress entries to ContactSuggestion shape with a namespaced
@@ -133,15 +214,33 @@ export function mergeFilter(
       email: sa.email,
     }));
 
+  // Build dedup set covering contacts + seen, to suppress directory duplicates.
+  const seenEmails = new Set(seenSuggestions.map((s) => s.email.toLowerCase()));
+  const coveredEmails = new Set([...contactEmails, ...seenEmails]);
+
+  // Deduplicate directory results against contacts and seen-address entries.
+  const dirSuggestions: ContactSuggestion[] = directory.filter(
+    (d) => !coveredEmails.has(d.email.toLowerCase()),
+  );
+
   if (!q) {
-    // Empty query: contacts first, then seen entries, each slice proportional.
+    // Empty query: contacts first, then seen, then directory, proportional.
     const allContacts = contacts.slice(0, limit);
-    const remaining = limit - allContacts.length;
-    const allSeen = remaining > 0 ? seenSuggestions.slice(0, remaining) : [];
-    return [...allContacts, ...allSeen];
+    const rem1 = limit - allContacts.length;
+    const allSeen = rem1 > 0 ? seenSuggestions.slice(0, rem1) : [];
+    const rem2 = limit - allContacts.length - allSeen.length;
+    const allDir = rem2 > 0 ? dirSuggestions.slice(0, rem2) : [];
+    return [...allContacts, ...allSeen, ...allDir];
   }
 
-  type Scored = { item: ContactSuggestion; tier: number; sortKey: string; date: string };
+  // Source tag: 0 = contact, 1 = seen, 2 = directory (used for inter-source ordering).
+  type Scored = {
+    item: ContactSuggestion;
+    tier: number;
+    source: number;
+    sortKey: string;
+    date: string;
+  };
 
   function tier(item: ContactSuggestion): number {
     const nameLower = item.name.toLowerCase();
@@ -158,7 +257,7 @@ export function mergeFilter(
   for (const c of contacts) {
     const t = tier(c);
     if (t < 0) continue;
-    scored.push({ item: c, tier: t, sortKey: c.name.toLowerCase(), date: '' });
+    scored.push({ item: c, tier: t, source: 0, sortKey: c.name.toLowerCase(), date: '' });
   }
 
   // Capture lastUsedAt for SeenAddress entries via the original seen array
@@ -171,28 +270,30 @@ export function mergeFilter(
     scored.push({
       item: s,
       tier: t,
+      source: 1,
       sortKey: s.name.toLowerCase(),
       date: dateBySeenId.get(s.id) ?? '',
     });
   }
 
-  // Sort: tier asc, then within tier:
-  //   - SeenAddress entries (date non-empty) by date desc
-  //   - Contact entries by name asc
+  for (const d of dirSuggestions) {
+    const t = tier(d);
+    if (t < 0) continue;
+    scored.push({ item: d, tier: t, source: 2, sortKey: d.name.toLowerCase(), date: '' });
+  }
+
+  // Sort: tier asc, then source asc (contacts < seen < directory), then within source:
+  //   - SeenAddress entries (source 1) by date desc
+  //   - Contact and Directory entries by name asc
   scored.sort((a, b) => {
     if (a.tier !== b.tier) return a.tier - b.tier;
-    const aIsSeen = a.date !== '';
-    const bIsSeen = b.date !== '';
-    if (aIsSeen && bIsSeen) {
+    if (a.source !== b.source) return a.source - b.source;
+    if (a.source === 1) {
       // Both seen: more recent first.
       return b.date.localeCompare(a.date);
     }
-    if (!aIsSeen && !bIsSeen) {
-      // Both contacts: alphabetical.
-      return a.sortKey.localeCompare(b.sortKey);
-    }
-    // Mixed: contact before seen within the same tier (contacts are primary).
-    return aIsSeen ? 1 : -1;
+    // Both contacts or both directory: alphabetical.
+    return a.sortKey.localeCompare(b.sortKey);
   });
 
   return scored.slice(0, limit).map((s) => s.item);
@@ -200,7 +301,23 @@ export function mergeFilter(
 
 // ── Test surface ───────────────────────────────────────────────────────────
 
-export const _internals_forTest = { mergeFilter };
+export const _internals_forTest = { mergeFilter, searchDirectory };
+
+/**
+ * Resolve the accountId to use for Directory/search. Mirrors the chat
+ * store's principal-account resolution: prefer the directory-autocomplete
+ * primaryAccount if the server sets one, otherwise fall back to the mail
+ * account (the Mail capability is the standard home for address data).
+ */
+function directoryAccountId(): string | null {
+  const session = auth.session;
+  if (!session) return null;
+  return (
+    session.primaryAccounts[Capability.HeroldDirectoryAutocomplete] ??
+    session.primaryAccounts[Capability.Mail] ??
+    null
+  );
+}
 
 /**
  * Extract a display name from a JSContact card — prefer name.full,

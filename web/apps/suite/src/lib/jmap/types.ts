@@ -103,6 +103,16 @@ export const Capability = {
    * Both sides MUST be updated together if the URI changes.
    */
   HeroldExternalSubmission: 'https://netzhansa.com/jmap/external-submission',
+  /**
+   * Principal directory autocomplete (REQ-MAIL-11).
+   * Advertised when the server supports Directory/search.
+   * The capability value is { mode: "all" | "domain" }.
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/registry.go CapabilityDirectoryAutocomplete.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldDirectoryAutocomplete: 'https://netzhansa.com/jmap/directory-autocomplete',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

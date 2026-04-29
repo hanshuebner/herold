@@ -1,12 +1,19 @@
 <script lang="ts">
   /**
    * Address-field autocomplete: standard text input, plus a dropdown of
-   * matching contacts that appears once the user has typed at least one
-   * character past the most recent comma. Selecting a suggestion replaces
+   * matching contacts that appears once the user has typed at least two
+   * characters past the most recent comma. Selecting a suggestion replaces
    * the partial token with `Name <email>` and inserts a comma so the
    * user can keep typing the next address.
+   *
+   * Suggestions are fetched asynchronously via contacts.filterAsync() so
+   * that the Directory/search query (when the server advertises the
+   * directory-autocomplete capability) does not block the UI.
+   * Keystrokes are debounced by 150ms; stale in-flight results are
+   * discarded via a per-call sequence number.
    */
   import { contacts, type ContactSuggestion } from '../contacts/store.svelte';
+  import { hasDirectoryAutocomplete } from '../auth/capabilities';
 
   interface Props {
     value: string;
@@ -20,6 +27,11 @@
   let isOpen = $state(false);
   let focusIdx = $state(0);
 
+  // Async suggestions list — populated by the debounced filterAsync call.
+  let suggestions = $state<ContactSuggestion[]>([]);
+  // True when the user has typed >= 2 chars and is waiting for results.
+  let hasQueried = $state(false);
+
   // The last token of the input drives the filter. Tokens split on comma;
   // whitespace inside the token is allowed (so "John D" matches).
   let activeToken = $derived.by(() => {
@@ -27,16 +39,44 @@
     return idx === -1 ? value.trim() : value.slice(idx + 1).trim();
   });
 
-  // Don't show suggestions for an empty token; do show them once the
-  // user has typed at least 2 characters or after a comma.
-  let suggestions = $derived<ContactSuggestion[]>(
-    isOpen && activeToken.length >= 2 ? contacts.filter(activeToken) : [],
-  );
+  // Per-call sequence number for stale-result suppression.
+  let seq = 0;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Reset focus when the suggestion shape changes.
   $effect(() => {
     void suggestions;
     focusIdx = 0;
+  });
+
+  // Kick off a debounced async query whenever the active token changes.
+  $effect(() => {
+    const token = activeToken;
+
+    if (debounceTimer !== null) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+
+    if (!isOpen || token.length < 2) {
+      suggestions = [];
+      hasQueried = false;
+      return;
+    }
+
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      hasQueried = true;
+      const callSeq = ++seq;
+      contacts.filterAsync(token, 8).then((results) => {
+        // Discard stale results from an earlier keystroke.
+        if (callSeq !== seq) return;
+        suggestions = results;
+      }).catch(() => {
+        if (callSeq !== seq) return;
+        suggestions = [];
+      });
+    }, 150);
   });
 
   // Trigger contacts load lazily on first focus.
@@ -61,6 +101,8 @@
     onChange(next);
     isOpen = false;
     focusIdx = 0;
+    suggestions = [];
+    hasQueried = false;
     requestAnimationFrame(() => inputEl?.focus());
   }
 
@@ -89,6 +131,18 @@
     onChange(next);
     isOpen = true;
   }
+
+  // The empty-state hint is shown when the user has focused, typed >= 2 chars,
+  // and the (now-resolved) query returned no results.
+  let showEmptyHint = $derived(
+    isOpen && hasQueried && activeToken.length >= 2 && suggestions.length === 0,
+  );
+
+  let emptyHintText = $derived(
+    hasDirectoryAutocomplete()
+      ? 'No matches in your contacts, recent recipients, or directory.'
+      : 'No matches in your contacts or recent recipients.',
+  );
 </script>
 
 <div class="address-autocomplete">
@@ -127,6 +181,10 @@
         </li>
       {/each}
     </ul>
+  {:else if showEmptyHint}
+    <div class="dropdown empty-hint" role="status" aria-live="polite">
+      {emptyHintText}
+    </div>
   {/if}
 </div>
 
@@ -169,6 +227,13 @@
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
     max-height: 240px;
     overflow: auto;
+  }
+  .dropdown.empty-hint {
+    padding: var(--spacing-03) var(--spacing-04);
+    color: var(--text-helper);
+    font-size: var(--type-body-01-size);
+    font-style: italic;
+    list-style: none;
   }
   .dropdown li.focused {
     background: var(--layer-01);

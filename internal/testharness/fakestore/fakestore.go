@@ -1418,6 +1418,42 @@ func (m *metaFace) SearchPrincipalsByText(ctx context.Context, prefix string, li
 	return store.SortPrincipalSearchResults(all, strings.ToLower(prefix), limit), nil
 }
 
+// SearchPrincipalsByTextInDomain is identical to SearchPrincipalsByText but
+// restricts results to principals whose canonical email domain matches domain
+// (case-insensitive). When domain is empty the method delegates to
+// SearchPrincipalsByText with no domain restriction.
+func (m *metaFace) SearchPrincipalsByTextInDomain(ctx context.Context, prefix, domain string, limit int) ([]store.Principal, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return m.SearchPrincipalsByText(ctx, prefix, limit)
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	lowerDomain := strings.ToLower(domain)
+	s := m.s()
+	s.mu.RLock()
+	all := make([]store.Principal, 0, len(s.principals))
+	for _, p := range s.principals {
+		idx := strings.LastIndexByte(p.CanonicalEmail, '@')
+		if idx < 0 {
+			continue
+		}
+		if strings.ToLower(p.CanonicalEmail[idx+1:]) != lowerDomain {
+			continue
+		}
+		all = append(all, p)
+	}
+	s.mu.RUnlock()
+	return store.SortPrincipalSearchResults(all, strings.ToLower(prefix), limit), nil
+}
+
 // DeletePrincipal cascades every row belonging to pid in one pass.
 // The fakestore has no transactions so "atomic" here means "under the
 // single writer lock"; that is enough for test determinism.

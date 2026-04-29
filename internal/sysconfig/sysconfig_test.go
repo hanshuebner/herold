@@ -2367,3 +2367,100 @@ func TestOAuthProviders_EmptyMapAccepted(t *testing.T) {
 		t.Fatalf("expected no error for config without oauth_providers; got %v", err)
 	}
 }
+
+// TestDirectoryAutocomplete_SectionOmitted verifies that omitting the section
+// entirely defaults Mode to "domain".
+func TestDirectoryAutocomplete_SectionOmitted(t *testing.T) {
+	cfg, err := Parse([]byte(minimalNoObs))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.DirectoryAutocomplete.Mode != DirectoryAutocompleteModeDomain {
+		t.Errorf("default mode: got %q, want %q", cfg.Server.DirectoryAutocomplete.Mode, DirectoryAutocompleteModeDomain)
+	}
+}
+
+// TestDirectoryAutocomplete_ModeAll verifies that mode = "all" is accepted and
+// surfaces as DirectoryAutocompleteModeAll.
+func TestDirectoryAutocomplete_ModeAll(t *testing.T) {
+	const tomlSrc = minimalNoObs + `
+[server.directory_autocomplete]
+mode = "all"
+`
+	cfg, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.DirectoryAutocomplete.Mode != DirectoryAutocompleteModeAll {
+		t.Errorf("mode: got %q, want %q", cfg.Server.DirectoryAutocomplete.Mode, DirectoryAutocompleteModeAll)
+	}
+}
+
+// TestDirectoryAutocomplete_ModeDomain verifies that mode = "domain" is
+// accepted and surfaces as DirectoryAutocompleteModeDomain.
+func TestDirectoryAutocomplete_ModeDomain(t *testing.T) {
+	const tomlSrc = minimalNoObs + `
+[server.directory_autocomplete]
+mode = "domain"
+`
+	cfg, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.DirectoryAutocomplete.Mode != DirectoryAutocompleteModeDomain {
+		t.Errorf("mode: got %q, want %q", cfg.Server.DirectoryAutocomplete.Mode, DirectoryAutocompleteModeDomain)
+	}
+}
+
+// TestDirectoryAutocomplete_ModeOff verifies that mode = "off" is accepted and
+// surfaces as DirectoryAutocompleteModeOff.
+func TestDirectoryAutocomplete_ModeOff(t *testing.T) {
+	const tomlSrc = minimalNoObs + `
+[server.directory_autocomplete]
+mode = "off"
+`
+	cfg, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.DirectoryAutocomplete.Mode != DirectoryAutocompleteModeOff {
+		t.Errorf("mode: got %q, want %q", cfg.Server.DirectoryAutocomplete.Mode, DirectoryAutocompleteModeOff)
+	}
+}
+
+// TestDirectoryAutocomplete_SectionPresentModeAbsent verifies that a section
+// present with no mode field defaults to "domain".
+func TestDirectoryAutocomplete_SectionPresentModeAbsent(t *testing.T) {
+	const tomlSrc = minimalNoObs + `
+[server.directory_autocomplete]
+`
+	cfg, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.DirectoryAutocomplete.Mode != DirectoryAutocompleteModeDomain {
+		t.Errorf("default mode with section present: got %q, want %q", cfg.Server.DirectoryAutocomplete.Mode, DirectoryAutocompleteModeDomain)
+	}
+}
+
+// TestDirectoryAutocomplete_InvalidMode verifies that an unrecognised mode
+// value is rejected with a sysconfig validation error.
+func TestDirectoryAutocomplete_InvalidMode(t *testing.T) {
+	cases := []string{"Domain", "ALL", "yes", "1", " domain"}
+	for _, bad := range cases {
+		bad := bad
+		t.Run(bad, func(t *testing.T) {
+			tomlSrc := minimalNoObs + "\n[server.directory_autocomplete]\nmode = " + `"` + bad + `"` + "\n"
+			_, err := Parse([]byte(tomlSrc))
+			if err == nil {
+				t.Fatalf("expected error for mode = %q, got nil", bad)
+			}
+			if !strings.Contains(err.Error(), "directory_autocomplete") {
+				t.Errorf("error should mention directory_autocomplete: %v", err)
+			}
+			if !strings.Contains(err.Error(), bad) {
+				t.Errorf("error should quote the bad value %q: %v", bad, err)
+			}
+		})
+	}
+}

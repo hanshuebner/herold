@@ -102,6 +102,17 @@ const (
 	// additional properties defined for v1).
 	CapabilityExternalSubmission CapabilityID = "https://netzhansa.com/jmap/external-submission"
 
+	// CapabilityDirectoryAutocomplete is the compose-window address
+	// autocomplete capability. Advertised when
+	// [server.directory_autocomplete].mode != "off". The Directory/search
+	// method searches the server's principal directory by display-name /
+	// email-local-part text prefix and returns a small inline list of
+	// {id, email, displayName} records — one round-trip per keystroke.
+	// The capability value in the session descriptor includes the active
+	// mode so clients can render appropriate UI text ("all principals" vs
+	// "same-domain principals").
+	CapabilityDirectoryAutocomplete CapabilityID = "https://netzhansa.com/jmap/directory-autocomplete"
+
 	// CapabilityLLMTransparency is the G14 LLM-transparency capability
 	// (REQ-FILT-65..68 / REQ-FILT-216). Provides the LLMTransparency
 	// singleton datatype (LLMTransparency/get) and the per-message inspect

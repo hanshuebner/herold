@@ -28,3 +28,35 @@ import { Capability } from '../jmap/types';
 export function hasExternalSubmission(): boolean {
   return jmap.hasCapability(Capability.HeroldExternalSubmission);
 }
+
+/**
+ * True when the server advertises the directory-autocomplete capability
+ * (`https://netzhansa.com/jmap/directory-autocomplete`).
+ *
+ * When true, the compose-window address autocomplete queries
+ * Directory/search in addition to JMAP Contacts and SeenAddress entries.
+ */
+export function hasDirectoryAutocomplete(): boolean {
+  return jmap.hasCapability(Capability.HeroldDirectoryAutocomplete);
+}
+
+/**
+ * Returns the directory-autocomplete mode from the capability value,
+ * or null when the capability is absent.
+ *
+ * The mode is informational for the UI (e.g. placeholder text); the
+ * server still enforces the actual filter regardless of what the client
+ * reads here.
+ *
+ *   "all"    - server returns results across all principals.
+ *   "domain" - server restricts results to the caller's email domain.
+ *   null     - capability not advertised.
+ */
+export function directoryAutocompleteMode(): 'all' | 'domain' | null {
+  if (!hasDirectoryAutocomplete()) return null;
+  const cap = jmap.session?.capabilities[Capability.HeroldDirectoryAutocomplete] as
+    | { mode?: string }
+    | undefined;
+  if (cap?.mode === 'all' || cap?.mode === 'domain') return cap.mode;
+  return null;
+}
