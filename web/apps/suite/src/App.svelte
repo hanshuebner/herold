@@ -341,30 +341,32 @@
                   <span class="count">{m.unreadEmails}</span>
                 {/if}
               </button>
-              <button
-                type="button"
-                class="row-action"
-                aria-label="{t('sidebar.rename')} {m.name}"
-                title={t('sidebar.rename')}
-                onclick={(ev) => {
-                  ev.stopPropagation();
-                  promptRenameMailbox(m.id, m.name);
-                }}
-              >
-                &#x270E;
-              </button>
-              <button
-                type="button"
-                class="row-action danger"
-                aria-label="{t('sidebar.delete')} {m.name}"
-                title={t('sidebar.delete')}
-                onclick={(ev) => {
-                  ev.stopPropagation();
-                  confirmDestroyMailbox(m.id, m.name);
-                }}
-              >
-                &times;
-              </button>
+              <div class="row-actions">
+                <button
+                  type="button"
+                  class="row-action"
+                  aria-label="{t('sidebar.rename')} {m.name}"
+                  title={t('sidebar.rename')}
+                  onclick={(ev) => {
+                    ev.stopPropagation();
+                    promptRenameMailbox(m.id, m.name);
+                  }}
+                >
+                  &#x270E;
+                </button>
+                <button
+                  type="button"
+                  class="row-action danger"
+                  aria-label="{t('sidebar.delete')} {m.name}"
+                  title={t('sidebar.delete')}
+                  onclick={(ev) => {
+                    ev.stopPropagation();
+                    confirmDestroyMailbox(m.id, m.name);
+                  }}
+                >
+                  &times;
+                </button>
+              </div>
             </li>
           {:else}
             <li class="empty"><span>{t('sidebar.noCustom')}</span></li>
@@ -482,23 +484,40 @@
     font-variant-numeric: tabular-nums;
   }
   .mailbox-list.custom li {
-    display: grid;
-    grid-template-columns: 1fr auto auto;
-    gap: var(--spacing-01);
-    align-items: stretch;
-  }
-  .mailbox-list.custom li.add-row {
-    grid-template-columns: 1fr;
+    position: relative;
   }
   .mailbox-list.custom li.empty {
-    grid-template-columns: 1fr;
     padding: var(--spacing-02) var(--spacing-04);
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);
     font-style: italic;
   }
+  /* The mailbox-row button fills the full row width; its count span is the
+     last child so justify-content: space-between places it at the right edge.
+     padding-right reserves space so the count is not obscured when the
+     absolutely-positioned action group fades in on hover. */
   .mailbox-list.custom .mailbox-row {
+    width: 100%;
     justify-content: space-between;
+    padding-right: calc(2 * 28px + var(--spacing-01) + var(--spacing-04));
+  }
+  /* Action buttons are positioned absolutely over the right edge of the row.
+     They start invisible and fade in on hover / focus-within so the count
+     remains the rightmost visible element at rest. */
+  .mailbox-list.custom .row-actions {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-01);
+    padding-right: var(--spacing-01);
+    pointer-events: none;
+  }
+  .mailbox-list.custom li:hover .row-actions,
+  .mailbox-list.custom li:focus-within .row-actions {
+    pointer-events: auto;
   }
   .mailbox-list.custom .row-action {
     display: inline-flex;
