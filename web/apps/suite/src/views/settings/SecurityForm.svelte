@@ -212,6 +212,20 @@
   <p class="form-error" role="alert">{principalError}</p>
 {:else}
 
+  <!-- Introductory copy -->
+  <div class="intro">
+    <p>
+      This page lets you manage the credentials and second-factor settings for
+      your account. Use it to change your password or to enrol a time-based
+      one-time password (TOTP) authenticator app for two-factor authentication.
+    </p>
+    <p class="intro-hint">
+      Two-factor authentication adds a second verification step at sign-in.
+      Once enabled, your authenticator app will be required in addition to your
+      password. Disabling it requires your current password to confirm.
+    </p>
+  </div>
+
   <!-- Change password -->
   <h3>Change password</h3>
   <form class="sec-form" onsubmit={changePassword} novalidate>
@@ -527,6 +541,29 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .spinner { animation: none; }
+  }
+
+  .intro {
+    max-width: 720px;
+    margin-bottom: var(--spacing-05);
+    padding: var(--spacing-04) var(--spacing-05);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+  }
+  .intro p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--type-body-01-size);
+    line-height: var(--type-body-01-line);
+  }
+  .intro p + p {
+    margin-top: var(--spacing-03);
+  }
+  .intro .intro-hint {
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    line-height: var(--type-body-compact-01-line);
   }
 
   .muted {
