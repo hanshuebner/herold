@@ -97,12 +97,19 @@
   }
 
   let markReadTimer: ReturnType<typeof setTimeout> | null = null;
+  // Debounce long enough that the unread badge has time to be
+  // perceptibly visible when an incoming message auto-pops the
+  // overlay and the input gains focus immediately afterwards. Too
+  // short (e.g. 500ms) clears the badge before the user can see it;
+  // too long leaves a stale badge while the user is actively
+  // attending to the conversation. 2500ms hits the middle.
+  const MARK_READ_DEBOUNCE_MS = 2500;
   function scheduleMarkRead(): void {
     if (markReadTimer !== null) clearTimeout(markReadTimer);
     markReadTimer = setTimeout(() => {
       markReadTimer = null;
       doMarkRead();
-    }, 500);
+    }, MARK_READ_DEBOUNCE_MS);
   }
 
   function doMarkRead(): void {
