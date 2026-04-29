@@ -489,15 +489,20 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// restart, which is acceptable for a development deployment. A
 	// persistent key can be wired via [server.ui].signing_key_env once the
 	// operator wants session continuity across restarts.
+	//
+	// Logged at WARN (not INFO) so an operator scanning logs after their
+	// users complain about being logged out on every restart sees the
+	// cause without trawling INFO traffic.
 	if cfg.Server.UI.SigningKeyEnv == "" {
-		logger.Info("admin: session-cookie signing key not configured; " +
-			"using ephemeral random key (sessions invalidated on restart). " +
-			"Set [server.ui].signing_key_env for a persistent key.")
+		logger.Warn("session-cookie signing key not configured; " +
+			"using ephemeral random key (admin and public sessions invalidated on every restart). " +
+			"Set [server.ui].signing_key_env to a 32+ byte env var name for a persistent key.")
 	} else if v := os.Getenv(cfg.Server.UI.SigningKeyEnv); len(v) < 32 {
-		logger.Info("admin: session-cookie signing key too short; "+
-			"using ephemeral random key (sessions invalidated on restart)",
+		logger.Warn("session-cookie signing key too short; "+
+			"using ephemeral random key (sessions invalidated on every restart)",
 			"env", cfg.Server.UI.SigningKeyEnv,
-			"min_bytes", 32)
+			"min_bytes", 32,
+			"got_bytes", len(v))
 	}
 	// Parent mux composition (Phase 2 Wave 2.4): the admin HTTP
 	// listener serves both the REST surface (protoadmin under
