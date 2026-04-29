@@ -409,6 +409,16 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	cc.id = s.broadcaster.Register(pid, cc)
 	s.presence.CancelOffline(pid)
 
+	// Snapshot the recorded presence of every peer this principal
+	// shares a conversation with and queue a presence frame per peer
+	// onto cc.writeQ. Without this, a client that connects AFTER its
+	// peers have already announced "online" never learns about them
+	// because the peers' announcements fanned out before this
+	// connection existed (emitPresence only targets the set of
+	// CURRENTLY-connected peers at announcement time). Frames sit in
+	// writeQ until writePump starts inside cc.run().
+	s.sendInitialPresenceSnapshot(r.Context(), cc)
+
 	// Write the 101 handshake. brw is the buffered writer the http
 	// server handed us; we flush after writing to ensure the
 	// response lands before the codec starts. If the handshake fails
@@ -591,6 +601,52 @@ func (s *Server) emitPresence(pid store.PrincipalID, state string, now time.Time
 			continue
 		}
 		s.broadcaster.Emit(peer, frame)
+	}
+}
+
+// sendInitialPresenceSnapshot queues a presence frame onto cc.writeQ
+// for every peer of cc.pid whose state is recorded in the tracker.
+// Required for newly-connecting clients to learn about peers that
+// announced "online" before this connection was registered: the
+// emitPresence fanout only targets currently-connected peers at
+// announcement time, so without this snapshot a later-arriving client
+// would render every already-online peer as offline until that peer
+// next emits a presence transition. Best-effort — a failed peers
+// lookup, marshal, or saturated writeQ is logged and the snapshot is
+// abandoned.
+func (s *Server) sendInitialPresenceSnapshot(ctx context.Context, cc *chatConn) {
+	if s.peers == nil {
+		return
+	}
+	peers, err := s.peers(ctx, cc.pid)
+	if err != nil {
+		s.logger.Warn("protochat.presence.snapshot.peers_lookup_failed",
+			"pid", uint64(cc.pid),
+			"err", err.Error())
+		return
+	}
+	if len(peers) == 0 {
+		return
+	}
+	entries := s.presence.ListSubscribed(peers)
+	for _, entry := range entries {
+		payload, err := json.Marshal(outboundPresence{
+			PrincipalID: entry.PrincipalID,
+			State:       entry.Presence.State,
+			LastSeenAt:  entry.Presence.LastSeenAt.Unix(),
+		})
+		if err != nil {
+			s.logger.Warn("protochat.presence.snapshot.marshal_failed",
+				"err", err.Error())
+			continue
+		}
+		// Best-effort: a saturated writeQ closes the connection,
+		// which is the right behaviour for a client that can't keep
+		// up with even its initial snapshot.
+		_ = cc.Send(ServerFrame{
+			Type:    ServerTypePresence,
+			Payload: payload,
+		})
 	}
 }
 

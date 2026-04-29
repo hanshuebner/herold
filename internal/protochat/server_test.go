@@ -880,6 +880,60 @@ func TestSocketDeadline_ReadDeadline_FiresOnSilentPeer(t *testing.T) {
 	}
 }
 
+// TestPresence_LateConnector_ReceivesSnapshotOfOnlinePeers asserts the
+// snapshot-on-connect path: a client that connects AFTER its peers
+// already announced "online" must learn their state, not render them
+// as offline. Without sendInitialPresenceSnapshot the second connect
+// would receive nothing because emitPresence only fans out to peers
+// that were already connected at announcement time.
+func TestPresence_LateConnector_ReceivesSnapshotOfOnlinePeers(t *testing.T) {
+	h := newHarness(t)
+	// alice (1) and bob (2) share c1; both are peers of each other.
+	h.mem.addMember("c1", 1)
+	h.mem.addMember("c1", 2)
+
+	// alice connects first and announces online. Nobody is connected
+	// yet to receive the fanout.
+	a := h.connect(1)
+	if err := a.writeText(mustJSON(t, ClientFrame{
+		Type:    clientTypePresenceSet,
+		Payload: mustJSON(t, presencePayload{State: "online"}),
+	})); err != nil {
+		t.Fatalf("alice presence: %v", err)
+	}
+	// Wait for the server to record the state by busy-reading the
+	// presence tracker; without this the snapshot may run before
+	// handlePresence has stored alice's state.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if pr, ok := h.srv.Presence().Get(1); ok && pr.State == "online" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("alice presence not recorded within deadline")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// bob connects after alice. He should receive a snapshot frame
+	// for alice's "online" state on the very first read.
+	b := h.connect(2)
+	sf, err := b.readServerFrame()
+	if err != nil {
+		t.Fatalf("bob readServerFrame: %v", err)
+	}
+	if sf.Type != ServerTypePresence {
+		t.Fatalf("bob first frame type: got %q want %q", sf.Type, ServerTypePresence)
+	}
+	var op outboundPresence
+	if err := json.Unmarshal(sf.Payload, &op); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if op.PrincipalID != 1 || op.State != "online" {
+		t.Fatalf("snapshot payload: got %+v want {PrincipalID:1 State:online}", op)
+	}
+}
+
 // ----- presence-fanout privacy (Wave 2.9.5 Track A #10) -----
 
 func TestPresence_NoFanoutToNonPeer(t *testing.T) {
