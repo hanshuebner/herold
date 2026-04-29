@@ -12,6 +12,8 @@
   import { EMPTY_ACTIVE, type ActiveState, applyImage } from './editor';
   import type { EditorView } from 'prosemirror-view';
   import { recipientToString } from './recipient-parse';
+  import { hasExternalSubmission } from '../auth/capabilities';
+  import { submissionStore } from '../identities/identity-submission.svelte';
 
   // Per-compose keyboard layer: Mod+Enter sends, Escape closes.
   // Both pass through input-focus carve-outs (see keyboard engine
@@ -91,6 +93,20 @@
   });
 
   let identity = $derived(mail.primaryIdentity);
+
+  // External submission indicator (REQ-MAIL-SUBMIT-05).
+  // Cosmetic only — shows a small marker next to the From identity when
+  // it has external submission configured.
+  let showExtSub = $derived(hasExternalSubmission());
+  let extSubHandle = $derived(
+    identity && showExtSub ? submissionStore.forIdentity(identity.id) : null,
+  );
+  $effect(() => {
+    if (extSubHandle) void extSubHandle.load();
+  });
+  let identityHasExternalConfig = $derived(
+    extSubHandle?.data?.configured === true,
+  );
 
   // Auto-save the draft after a short period of typing inactivity so a
   // closed-tab / reload does not lose the user's work. We track every
@@ -463,6 +479,13 @@
         <span class="from-display">
           {#if identity}
             {identity.name ? `${identity.name} <${identity.email}>` : identity.email}
+            {#if identityHasExternalConfig}
+              <span
+                class="ext-sub-indicator"
+                title="Mail sent via external SMTP"
+                aria-label="External SMTP"
+              >[ext]</span>
+            {/if}
           {:else}
             <span class="muted">Loading identity…</span>
           {/if}
@@ -811,6 +834,28 @@
   .from-display {
     color: var(--text-secondary);
     font-size: var(--type-body-compact-01-size);
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--spacing-02);
+    flex-wrap: wrap;
+  }
+
+  /* Cosmetic indicator for external submission (REQ-MAIL-SUBMIT-05). */
+  .ext-sub-indicator {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px var(--spacing-02);
+    background: color-mix(in srgb, var(--interactive) 12%, transparent);
+    color: var(--interactive);
+    border: 1px solid color-mix(in srgb, var(--interactive) 35%, transparent);
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    letter-spacing: 0.04em;
+    line-height: 1;
+    vertical-align: middle;
+    cursor: default;
   }
   .muted {
     color: var(--text-helper);

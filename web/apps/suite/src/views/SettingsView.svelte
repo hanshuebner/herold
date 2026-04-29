@@ -13,6 +13,7 @@
   import { mail } from '../lib/mail/store.svelte';
   import { router } from '../lib/router/router.svelte';
   import IdentitySignatureForm from './settings/IdentitySignatureForm.svelte';
+  import IdentityEditDialog from './settings/IdentityEditDialog.svelte';
   import SecurityForm from './settings/SecurityForm.svelte';
   import ApiKeysForm from './settings/ApiKeysForm.svelte';
   import VacationForm from './settings/VacationForm.svelte';
@@ -27,6 +28,9 @@
   import { llmTransparency } from '../lib/llm/transparency.svelte';
   import { pushSubscription } from '../lib/push/push-subscription.svelte';
   import { sounds } from '../lib/notifications/sounds.svelte';
+  import { hasExternalSubmission } from '../lib/auth/capabilities';
+  import { submissionStore } from '../lib/identities/identity-submission.svelte';
+  import type { Identity } from '../lib/mail/types';
 
   // Hydrate the sounds toggle from localStorage on mount.
   sounds.hydrate();
@@ -95,6 +99,62 @@
     if (mail.identities.size === 0) void mail.loadIdentities();
   });
 
+  // ── Identity edit dialog (external submission) ──────────────────────────
+
+  let showExtSub = $derived(hasExternalSubmission());
+
+  /** The identity currently open in the edit dialog, or null when closed. */
+  let editDialogIdentity = $state<Identity | null>(null);
+  /** Whether the edit dialog should scroll to the submission section on open. */
+  let editDialogScrollToSubmission = $state(false);
+
+  function openEditDialog(identity: Identity, scrollToSubmission = false): void {
+    editDialogIdentity = identity;
+    editDialogScrollToSubmission = scrollToSubmission;
+    // Pre-load the submission status for this identity.
+    if (showExtSub) {
+      void submissionStore.forIdentity(identity.id).load();
+    }
+  }
+
+  function closeEditDialog(): void {
+    editDialogIdentity = null;
+    editDialogScrollToSubmission = false;
+  }
+
+  // Handle the ?identity=<id>&action=reauth route param set by the
+  // compose failure toast's "Re-authenticate" button.
+  $effect(() => {
+    const identityParam = router.getParam('identity');
+    const actionParam = router.getParam('action');
+    if (
+      identityParam &&
+      actionParam === 'reauth' &&
+      activeSection === 'account' &&
+      showExtSub
+    ) {
+      const identity = mail.identities.get(identityParam);
+      if (identity && editDialogIdentity?.id !== identityParam) {
+        openEditDialog(identity, true);
+        // Clear the params from the URL so a back-navigation does not
+        // re-open the dialog.
+        router.setParam('identity', null);
+        router.setParam('action', null);
+      }
+    }
+  });
+
+  // Load submission statuses for all identities when the Account section is
+  // open and the external submission capability is present, so badges render
+  // without a per-row lazy load.
+  $effect(() => {
+    if (activeSection === 'account' && showExtSub) {
+      for (const identity of mail.identities.values()) {
+        void submissionStore.forIdentity(identity.id).load();
+      }
+    }
+  });
+
   // Lazy-load LLM transparency data when the user opens settings and the
   // capability is present. Needed for the Spam section disclosure.
   $effect(() => {
@@ -153,8 +213,63 @@
         <p class="muted">No identities loaded yet.</p>
       {:else}
         {#each identitiesArray as identity (identity.id)}
-          <IdentitySignatureForm {identity} />
+          {#if showExtSub}
+            {@const subHandle = submissionStore.forIdentity(identity.id)}
+            {@const subData = subHandle.data}
+            {@const subState = subData?.state}
+            {@const isAlert = subState === 'auth-failed' || subState === 'unreachable'}
+            <div class="identity-row-wrapper">
+              <div class="identity-badge-row">
+                <span class="identity-label">
+                  {identity.name ? `${identity.name} <${identity.email}>` : identity.email}
+                </span>
+                {#if subData?.configured}
+                  {#if isAlert}
+                    <button
+                      type="button"
+                      class="badge badge-alert"
+                      onclick={() => openEditDialog(identity, true)}
+                      title={subState === 'auth-failed'
+                        ? 'Authentication failed — click to re-authenticate'
+                        : 'External server unreachable — click to review config'}
+                    >
+                      {subState === 'auth-failed' ? 'Auth failed' : 'Unreachable'}
+                    </button>
+                  {:else}
+                    <button
+                      type="button"
+                      class="badge badge-external"
+                      onclick={() => openEditDialog(identity, true)}
+                      title="External SMTP configured — click to edit"
+                    >
+                      External
+                    </button>
+                  {/if}
+                {:else}
+                  <button
+                    type="button"
+                    class="badge-link"
+                    onclick={() => openEditDialog(identity, true)}
+                    title="Configure external SMTP submission"
+                  >
+                    Configure external SMTP
+                  </button>
+                {/if}
+              </div>
+              <IdentitySignatureForm {identity} />
+            </div>
+          {:else}
+            <IdentitySignatureForm {identity} />
+          {/if}
         {/each}
+      {/if}
+
+      {#if editDialogIdentity}
+        <IdentityEditDialog
+          identity={editDialogIdentity}
+          onclose={closeEditDialog}
+          scrollToSubmission={editDialogScrollToSubmission}
+        />
       {/if}
 
     {:else if activeSection === 'security'}
@@ -781,6 +896,90 @@
     .settings-shell {
       grid-template-columns: 1fr;
       padding: var(--spacing-04);
+    }
+  }
+
+  /* External submission identity badges (REQ-MAIL-SUBMIT-04) */
+  .identity-row-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+  }
+
+  .identity-badge-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+    flex-wrap: wrap;
+  }
+
+  .identity-label {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
+    font-weight: 500;
+    word-break: break-all;
+    flex: 1;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px var(--spacing-02);
+    border-radius: var(--radius-pill);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    border: none;
+    transition: filter var(--duration-fast-02) var(--easing-productive-enter);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .badge-external {
+    background: color-mix(in srgb, var(--interactive) 15%, transparent);
+    color: var(--interactive);
+    border: 1px solid color-mix(in srgb, var(--interactive) 40%, transparent);
+  }
+
+  .badge-external:hover {
+    filter: brightness(1.1);
+  }
+
+  .badge-alert {
+    background: color-mix(in srgb, var(--support-warning) 15%, transparent);
+    color: color-mix(in srgb, var(--support-warning) 90%, var(--text-primary));
+    border: 1px solid color-mix(in srgb, var(--support-warning) 50%, transparent);
+    animation: pulse-alert 2s ease-in-out infinite;
+  }
+
+  .badge-alert:hover {
+    filter: brightness(1.05);
+  }
+
+  .badge-link {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--interactive);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px var(--spacing-02);
+    border-radius: var(--radius-sm);
+    flex-shrink: 0;
+  }
+
+  .badge-link:hover {
+    text-decoration: underline;
+  }
+
+  @keyframes pulse-alert {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .badge-alert {
+      animation: none;
     }
   }
 </style>

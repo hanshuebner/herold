@@ -29,6 +29,11 @@ import { toast } from '../toast/toast.svelte';
 import { localeTag } from '../i18n/i18n.svelte';
 import { applyImage } from './editor';
 import {
+  showExternalSubmissionFailure,
+  parseExternalSubmissionFailure,
+} from '../mail/compose-failure';
+import { hasExternalSubmission } from '../auth/capabilities';
+import {
   emailHtmlBody,
   emailTextBody,
   type Address,
@@ -914,10 +919,35 @@ class ComposeStore {
 
       const subResult = invocationArgs<{
         created?: Record<string, { id: string }>;
-        notCreated?: Record<string, { type: string; description?: string }>;
+        notCreated?: Record<string, { type: string; description?: string; [key: string]: unknown }>;
       }>(responses[1]);
       if (subResult.notCreated?.sub1) {
         const e = subResult.notCreated.sub1;
+        // Check for external submission failure (REQ-MAIL-SUBMIT-06).
+        // When detected, leave the compose open with the draft id intact
+        // so the user can retry after re-authenticating, then surface
+        // a toast with the Re-authenticate affordance for auth failures.
+        if (hasExternalSubmission()) {
+          const extCategory = parseExternalSubmissionFailure(e);
+          if (extCategory !== null) {
+            this.status = 'editing';
+            // Preserve the draft id so the compose keeps autosaving.
+            if (!this.editingDraftId) {
+              // Try to recover the draft id from the set result.
+              const setResult2 = invocationArgs<{
+                created?: Record<string, { id: string }>;
+              }>(responses[0]);
+              const newId = setResult2.created?.draft1?.id;
+              if (newId) this.editingDraftId = newId;
+            }
+            showExternalSubmissionFailure({
+              category: extCategory,
+              identityId: identity.id,
+              diagnostic: e.description,
+            });
+            return;
+          }
+        }
         throw new Error(e.description ?? e.type);
       }
       const submissionId = subResult.created?.sub1?.id;
