@@ -36,6 +36,7 @@ Use `TaskCreate` / `TaskUpdate` / `TaskList` to coordinate. Agents claim unowned
 
 - One logical change per commit.
 - Commit message `subsystem: short imperative subject` on the first line, body explaining the *why*, affected REQ IDs, and the test plan run locally.
+- **Always reference the related issue(s) in commit messages, but never in a form that GitHub auto-closes.** GitHub closes issues whose number appears with any of `close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved` (case-insensitive) in a commit pushed to the default branch. Use neutral phrasing instead: `re #N`, `refs #N`, `(see #N)`, `(addresses #N)`, `(part of #N)`. Issues are closed manually after the fix has been verified in a deployed build, not by the merge.
 - **Run pre-commit before every commit.** One-time setup: `make install-hooks`. The hook chain runs gofmt, goimports, go vet, go mod tidy, staticcheck, the schema-version invariant, gitleaks, and generic file hygiene; the pre-push stage runs the fast diag invariant tests. CI also runs `pre-commit run --all-files` so local and CI never drift. If a hook is too slow for your loop, run the targeted check directly (`make fmt-check`, `make vet`, `make check-schema-version`) — never bypass with `--no-verify`.
 
 ## When in doubt
