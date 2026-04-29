@@ -864,6 +864,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			TokenRefresh: refresher,
 			DataKey:      extSubmitDataKey,
 			Logger:       logger.With("subsystem", "extsubmit-sweeper"),
+			AuditLog:     &sweeperAuditLogger{meta: st.Meta(), clk: clk},
 			Workers:      workerCount,
 		}
 		g.Go(func() error {
@@ -2454,6 +2455,44 @@ func (a acmePluginAdapter) Call(ctx context.Context, pluginName, method string, 
 		return fmt.Errorf("acme: dns plugin %q not registered", pluginName)
 	}
 	return pl.Call(ctx, method, params, result)
+}
+
+// sweeperAuditLogger implements extsubmit.SweeperAuditLogger and writes
+// structured audit entries to the store's audit log for sweeper-triggered
+// state transitions (Phase 6, REQ-AUTH-EXT-SUBMIT-09).
+//
+// The audit record carries the failure category and correlation id; it never
+// includes the credential material (token values, passwords).
+type sweeperAuditLogger struct {
+	meta store.Metadata
+	clk  clock.Clock
+}
+
+func (a *sweeperAuditLogger) AppendAudit(
+	ctx context.Context,
+	action, principalID, identityID, category, correlationID string,
+) {
+	subject := fmt.Sprintf("identity:%s", identityID)
+	metadata := map[string]string{
+		"category":       category,
+		"correlation_id": correlationID,
+	}
+	if principalID != "" {
+		metadata["principal_id"] = principalID
+	}
+	entry := store.AuditLogEntry{
+		At:        a.clk.Now(),
+		ActorKind: store.ActorSystem,
+		ActorID:   "extsubmit-sweeper",
+		Action:    action,
+		Subject:   subject,
+		Outcome:   store.OutcomeFailure,
+		Metadata:  metadata,
+	}
+	if err := a.meta.AppendAuditLog(ctx, entry); err != nil {
+		// Non-fatal: audit failure should not crash the sweeper.
+		_ = err
+	}
 }
 
 // parseChallengeType maps the sysconfig string to a store.ChallengeType.

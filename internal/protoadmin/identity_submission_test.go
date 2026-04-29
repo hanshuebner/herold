@@ -728,3 +728,92 @@ func TestPutSubmission_NoDataKey(t *testing.T) {
 		t.Errorf("PUT without data key: expected 503, got %d: %s", res2.StatusCode, buf2)
 	}
 }
+
+// TestAuditEntries_NoCredentialMaterial verifies that audit log entries for
+// identity.submission.set, identity.submission.delete, and
+// submission.external.failure do not contain the credential value (password
+// or OAuth token) — REQ-AUTH-EXT-SUBMIT-09, Phase-6 audit hygiene check.
+func TestAuditEntries_NoCredentialMaterial(t *testing.T) {
+	const sentinelPassword = "ya29.SENTINEL_PASSWORD_DO_NOT_LOG"
+	const sentinelOAuthToken = "ya29.SENTINEL_OAUTH_TOKEN_DO_NOT_LOG"
+
+	// Test 1: password submission — audit entry must not contain the password.
+	t.Run("password_set", func(t *testing.T) {
+		sh := newSubmissionHarness(t, alwaysOKProbe)
+		_, adminKey := sh.bootstrap("auditpw@example.com")
+
+		res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("whoami: %d", res.StatusCode)
+		}
+		var who struct{ PrincipalID uint64 `json:"principal_id"` }
+		json.Unmarshal(buf, &who)
+		identityID := sh.insertIdentity(who.PrincipalID, "auditpw@example.com")
+
+		body := map[string]any{
+			"submit_host":       "smtp.example.com",
+			"submit_port":       587,
+			"submit_security":   "starttls",
+			"submit_auth_method": "password",
+			"password":          sentinelPassword,
+		}
+		res2, buf2 := sh.doRequest("PUT", "/api/v1/identities/"+identityID+"/submission", adminKey, body)
+		if res2.StatusCode != http.StatusNoContent {
+			t.Fatalf("PUT: %d: %s", res2.StatusCode, buf2)
+		}
+
+		// Read audit log entries and assert none contain the sentinel.
+		entries, err := sh.fs.Meta().ListAuditLog(context.Background(), store.AuditLogFilter{Limit: 50})
+		if err != nil {
+			t.Fatalf("ListAuditLog: %v", err)
+		}
+		for _, e := range entries {
+			if e.Action == "identity.submission.set" || e.Action == "submission.external.failure" {
+				raw, _ := json.Marshal(e)
+				if bytes.Contains(raw, []byte(sentinelPassword)) {
+					t.Errorf("audit entry %q contains sentinel password material: %s", e.Action, raw)
+				}
+			}
+		}
+	})
+
+	// Test 2: probe failure audit entry must not contain the OAuth token.
+	t.Run("probe_failure_oauth", func(t *testing.T) {
+		sh := newSubmissionHarness(t, alwaysAuthFailProbe)
+		_, adminKey := sh.bootstrap("auditfail@example.com")
+
+		res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("whoami: %d", res.StatusCode)
+		}
+		var who struct{ PrincipalID uint64 `json:"principal_id"` }
+		json.Unmarshal(buf, &who)
+		identityID := sh.insertIdentity(who.PrincipalID, "auditfail@example.com")
+
+		body := map[string]any{
+			"submit_host":        "smtp.gmail.com",
+			"submit_port":        587,
+			"submit_security":    "starttls",
+			"submit_auth_method": "oauth2",
+			"oauth_access_token": sentinelOAuthToken,
+			"oauth_client_id":    "auditfail@example.com",
+		}
+		res2, _ := sh.doRequest("PUT", "/api/v1/identities/"+identityID+"/submission", adminKey, body)
+		if res2.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("PUT with failing probe: expected 422, got %d", res2.StatusCode)
+		}
+
+		entries, err := sh.fs.Meta().ListAuditLog(context.Background(), store.AuditLogFilter{Limit: 50})
+		if err != nil {
+			t.Fatalf("ListAuditLog: %v", err)
+		}
+		for _, e := range entries {
+			if e.Action == "submission.external.failure" {
+				raw, _ := json.Marshal(e)
+				if bytes.Contains(raw, []byte(sentinelOAuthToken)) {
+					t.Errorf("audit entry %q contains sentinel OAuth token: %s", e.Action, raw)
+				}
+			}
+		}
+	})
+}
