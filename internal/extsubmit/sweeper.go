@@ -252,7 +252,7 @@ func (sw *Sweeper) refreshRow(ctx context.Context, sub store.IdentitySubmission)
 		if sw.AuditLog != nil {
 			sw.AuditLog.AppendAudit(ctx,
 				"submission.external.refresh_failure",
-				"",             // principalID: not tracked on the sub row in v1
+				"", // principalID: not tracked on the sub row in v1
 				sub.IdentityID,
 				category,
 				correlationID,

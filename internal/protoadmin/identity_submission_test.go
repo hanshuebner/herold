@@ -746,16 +746,18 @@ func TestAuditEntries_NoCredentialMaterial(t *testing.T) {
 		if res.StatusCode != http.StatusOK {
 			t.Fatalf("whoami: %d", res.StatusCode)
 		}
-		var who struct{ PrincipalID uint64 `json:"principal_id"` }
+		var who struct {
+			PrincipalID uint64 `json:"principal_id"`
+		}
 		json.Unmarshal(buf, &who)
 		identityID := sh.insertIdentity(who.PrincipalID, "auditpw@example.com")
 
 		body := map[string]any{
-			"submit_host":       "smtp.example.com",
-			"submit_port":       587,
-			"submit_security":   "starttls",
+			"submit_host":        "smtp.example.com",
+			"submit_port":        587,
+			"submit_security":    "starttls",
 			"submit_auth_method": "password",
-			"password":          sentinelPassword,
+			"password":           sentinelPassword,
 		}
 		res2, buf2 := sh.doRequest("PUT", "/api/v1/identities/"+identityID+"/submission", adminKey, body)
 		if res2.StatusCode != http.StatusNoContent {
@@ -786,7 +788,9 @@ func TestAuditEntries_NoCredentialMaterial(t *testing.T) {
 		if res.StatusCode != http.StatusOK {
 			t.Fatalf("whoami: %d", res.StatusCode)
 		}
-		var who struct{ PrincipalID uint64 `json:"principal_id"` }
+		var who struct {
+			PrincipalID uint64 `json:"principal_id"`
+		}
 		json.Unmarshal(buf, &who)
 		identityID := sh.insertIdentity(who.PrincipalID, "auditfail@example.com")
 
