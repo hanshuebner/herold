@@ -846,17 +846,19 @@ class ChatStore {
           // the main chat route (in which case the message is already
           // visible in the main pane). chatOverlay.openWindow dedupes
           // and un-minimizes when a window for the conversation is
-          // already in the tray. The compose input is focused via
-          // requestComposeFocus so the recipient can immediately reply;
-          // this also lets MessageList's focus-gated mark-read clear
-          // the unread badge once the conversation is being attended to.
+          // already in the tray. We deliberately do NOT focus the
+          // compose input here: stealing focus on every incoming message
+          // would interrupt whatever the recipient is doing, and even
+          // with engagement-based mark-read the visual focus ring on
+          // the input gives the impression that the conversation has
+          // already been "opened". The recipient clicks into the input
+          // when they actually want to reply.
           const routeActive =
             router.parts[0] === 'chat' &&
             router.parts[1] === 'conversation' &&
             router.parts[2] === incoming.conversationId;
           if (isNewArrival && !fromMe && !routeActive) {
             chatOverlay.openWindow(incoming.conversationId);
-            this.requestComposeFocus(incoming.conversationId);
           }
         }
       }
