@@ -1005,8 +1005,11 @@ class ChatStore {
   }
 
   /**
-   * Create a new DM or Space via Conversation/set.
-   * Returns the server-assigned id of the new conversation.
+   * Create a new DM or Space via Conversation/set, then immediately load
+   * the freshly-created Conversation into the local cache so any UI that
+   * opens against the returned id (e.g. the chat overlay window or the
+   * sidebar list) renders with the full record without waiting for the
+   * server-pushed state advance.
    */
   async createConversation(args: {
     kind: 'dm' | 'space';
@@ -1053,7 +1056,31 @@ class ChatStore {
 
     const created = result.created?.[tempId];
     if (!created) throw new Error('Conversation/set returned no created id');
+
+    await this.#cacheConversationById(accountId, created.id);
     return { id: created.id };
+  }
+
+  /**
+   * Fetch a single Conversation by id and seed it into the local cache.
+   * Failure is logged but not surfaced — the next state-advance push will
+   * backfill, and callers should not block UI on this convenience load.
+   */
+  async #cacheConversationById(accountId: string, id: string): Promise<void> {
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call('Conversation/get', { accountId, ids: [id] }, USING);
+      });
+      const getResp = responses.find(([name]) => name === 'Conversation/get');
+      if (!getResp || getResp[0] === 'error') return;
+      const result = getResp[1] as { list: Conversation[] };
+      const conv = result.list.find((c) => c.id === id);
+      if (!conv) return;
+      this.conversations.set(conv.id, conv);
+      this.#rebuildConversationOrder();
+    } catch (err) {
+      console.error('cacheConversationById failed', err);
+    }
   }
 
   // ------------------------------------------------------------------

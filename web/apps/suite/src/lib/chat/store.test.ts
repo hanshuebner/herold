@@ -412,49 +412,150 @@ describe('ChatStore', () => {
     const { chat } = chatMod;
     const { jmap } = jmapMod;
 
+    const newId = 'conv-new-1';
+    const newConv = {
+      id: newId,
+      type: 'dm' as const,
+      name: 'Bob',
+      members: [],
+      createdAt: '2024-02-01T10:00:00Z',
+      pinned: false,
+      muted: false,
+      unreadCount: 0,
+    };
+
     vi.mocked(jmap.batch).mockImplementation(async (builder) => {
       let tempId = '';
+      let methodName = '';
       builder({
-        call: (_name: string, args: unknown) => {
+        call: (name: string, args: unknown) => {
+          methodName = name;
           const a = args as { create?: Record<string, unknown> };
           if (a.create) tempId = Object.keys(a.create)[0]!;
-          return { ref: () => ({ resultOf: 'c0', name: '', path: '' }) };
+          return { ref: () => ({ resultOf: 'c0', name, path: '' }) };
         },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any);
+      if (methodName === 'Conversation/get') {
+        return {
+          responses: [
+            ['Conversation/get', { state: 's1', list: [newConv], notFound: [] }, 'g0'],
+          ],
+          sessionState: 'ss1',
+        };
+      }
       return {
         responses: [
-          ['Conversation/set', { created: { [tempId]: { id: 'conv-new-1' } }, notCreated: {} }, 's0'],
+          ['Conversation/set', { created: { [tempId]: { id: newId } }, notCreated: {} }, 's0'],
         ],
         sessionState: 'ss1',
       };
     });
 
     const result = await chat.createConversation({ kind: 'dm', members: ['prin-other'] });
-    expect(result.id).toBe('conv-new-1');
+    expect(result.id).toBe(newId);
+  });
+
+  it('createConversation seeds the local cache and conversationIds', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    const newId = 'conv-cache-1';
+    const newConv = {
+      id: newId,
+      type: 'dm' as const,
+      name: 'Carol',
+      members: [],
+      createdAt: '2024-03-01T10:00:00Z',
+      pinned: false,
+      muted: false,
+      unreadCount: 0,
+    };
+
+    let capturedGetIds: string[] | null = null;
+    vi.mocked(jmap.batch).mockImplementation(async (builder) => {
+      let tempId = '';
+      let methodName = '';
+      builder({
+        call: (name: string, args: unknown) => {
+          methodName = name;
+          const a = args as {
+            create?: Record<string, unknown>;
+            ids?: string[];
+          };
+          if (a.create) tempId = Object.keys(a.create)[0]!;
+          if (name === 'Conversation/get' && a.ids) capturedGetIds = a.ids;
+          return { ref: () => ({ resultOf: 'c0', name, path: '' }) };
+        },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      if (methodName === 'Conversation/get') {
+        return {
+          responses: [
+            ['Conversation/get', { state: 's1', list: [newConv], notFound: [] }, 'g0'],
+          ],
+          sessionState: 'ss1',
+        };
+      }
+      return {
+        responses: [
+          ['Conversation/set', { created: { [tempId]: { id: newId } }, notCreated: {} }, 's0'],
+        ],
+        sessionState: 'ss1',
+      };
+    });
+
+    await chat.createConversation({ kind: 'dm', members: ['prin-other'] });
+
+    expect(capturedGetIds).toEqual([newId]);
+    expect(chat.conversations.get(newId)).toEqual(newConv);
+    expect(chat.conversationIds).toContain(newId);
   });
 
   it('createConversation sends kind/members/topic as the JMAP wire shape', async () => {
     const { chat } = chatMod;
     const { jmap } = jmapMod;
 
+    const newId = 'conv-new-2';
+    const newConv = {
+      id: newId,
+      type: 'space' as const,
+      name: 'project',
+      description: 'planning',
+      members: [],
+      createdAt: '2024-04-01T10:00:00Z',
+      pinned: false,
+      muted: false,
+      unreadCount: 0,
+    };
+
     let capturedCreate: Record<string, unknown> | null = null;
     vi.mocked(jmap.batch).mockImplementation(async (builder) => {
       let tempId = '';
+      let methodName = '';
       builder({
-        call: (_name: string, args: unknown) => {
+        call: (name: string, args: unknown) => {
+          methodName = name;
           const a = args as { create?: Record<string, Record<string, unknown>> };
           if (a.create) {
             tempId = Object.keys(a.create)[0]!;
             capturedCreate = a.create[tempId]!;
           }
-          return { ref: () => ({ resultOf: 'c0', name: '', path: '' }) };
+          return { ref: () => ({ resultOf: 'c0', name, path: '' }) };
         },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any);
+      if (methodName === 'Conversation/get') {
+        return {
+          responses: [
+            ['Conversation/get', { state: 's1', list: [newConv], notFound: [] }, 'g0'],
+          ],
+          sessionState: 'ss1',
+        };
+      }
       return {
         responses: [
-          ['Conversation/set', { created: { [tempId]: { id: 'conv-new-2' } }, notCreated: {} }, 's0'],
+          ['Conversation/set', { created: { [tempId]: { id: newId } }, notCreated: {} }, 's0'],
         ],
         sessionState: 'ss1',
       };
