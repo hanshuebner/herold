@@ -25,6 +25,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,34 +81,64 @@ func newFixture(t *testing.T) *fixture {
 	}
 }
 
+// sharedTestCert is the package-wide self-signed leaf used by every
+// test fixture. ECDSA P-256 keypair generation + x509.CreateCertificate
+// is small in absolute terms (tens of milliseconds in good times) but
+// becomes a multi-second outlier under `go test -race ./...`, where
+// dozens of test binaries compete for CPU and the runtime cannot
+// schedule the cert work fast enough. Generating the cert once and
+// reusing it across every fixture removes the per-test setup cost as
+// a source of deadline pressure on the wire-protocol round trips.
+var (
+	sharedTestCertOnce sync.Once
+	sharedTestCert     *tls.Certificate
+	sharedTestLeaf     *x509.Certificate
+	sharedTestCertErr  error
+)
+
+func ensureSharedTestCert() error {
+	sharedTestCertOnce.Do(func() {
+		priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			sharedTestCertErr = fmt.Errorf("gen key: %w", err)
+			return
+		}
+		tmpl := &x509.Certificate{
+			SerialNumber:          big.NewInt(1),
+			Subject:               pkix.Name{CommonName: "mail.example.test"},
+			NotBefore:             time.Now().Add(-time.Hour),
+			NotAfter:              time.Now().Add(time.Hour),
+			KeyUsage:              x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			BasicConstraintsValid: true,
+			DNSNames:              []string{"mail.example.test"},
+			IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+		if err != nil {
+			sharedTestCertErr = fmt.Errorf("cert: %w", err)
+			return
+		}
+		leaf, err := x509.ParseCertificate(der)
+		if err != nil {
+			sharedTestCertErr = fmt.Errorf("parse cert: %w", err)
+			return
+		}
+		sharedTestCert = &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv, Leaf: leaf}
+		sharedTestLeaf = leaf
+	})
+	return sharedTestCertErr
+}
+
 func newTestTLSStore(t *testing.T) (*heroldtls.Store, *tls.Config) {
 	t.Helper()
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("gen key: %v", err)
+	if err := ensureSharedTestCert(); err != nil {
+		t.Fatalf("shared test cert: %v", err)
 	}
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "mail.example.test"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		DNSNames:              []string{"mail.example.test"},
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
-	if err != nil {
-		t.Fatalf("cert: %v", err)
-	}
-	cert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv}
-	leaf, _ := x509.ParseCertificate(der)
-	cert.Leaf = leaf
 	st := heroldtls.NewStore()
-	st.SetDefault(&cert)
+	st.SetDefault(sharedTestCert)
 	pool := x509.NewCertPool()
-	pool.AddCert(leaf)
+	pool.AddCert(sharedTestLeaf)
 	return st, &tls.Config{RootCAs: pool, ServerName: "mail.example.test"}
 }
 
