@@ -869,18 +869,29 @@ func Load(path string) (*Config, error) {
 }
 
 // Parse parses the given TOML bytes and validates them.
-func Parse(raw []byte) (*Config, error) {
-	var cfg Config
+func Parse(raw []byte) (cfg *Config, err error) {
+	// go-toml/v2 panics on certain malformed inputs instead of returning an
+	// error (upstream issue, current as of v2.3.0). Recover so that Parse
+	// always returns an error rather than crashing the process — required by
+	// the FuzzLoad invariant and safe-parser posture for operator-supplied
+	// config files.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("sysconfig: parse: internal decoder panic: %v", r)
+		}
+	}()
+
+	var c Config
 	dec := toml.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&cfg); err != nil {
+	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("sysconfig: parse: %w", enrichDecodeError(err))
 	}
-	applyDefaults(&cfg)
-	if err := Validate(&cfg); err != nil {
+	applyDefaults(&c)
+	if err := Validate(&c); err != nil {
 		return nil, err
 	}
-	return &cfg, nil
+	return &c, nil
 }
 
 // enrichDecodeError turns go-toml's generic "fields in the document are
