@@ -191,10 +191,6 @@ func walkParts(root mailparse.Part, truncateAt int, msgBlobHash string) (
 		if size == 0 && p.Text != "" {
 			size = int64(len(p.Text))
 		}
-		var disposition *string
-		if d := p.Disposition.String(); d != "" {
-			disposition = &d
-		}
 		var name *string
 		if p.Filename != "" {
 			n := p.Filename
@@ -212,6 +208,27 @@ func walkParts(root mailparse.Part, truncateAt int, msgBlobHash string) (
 			v := strings.Trim(raw, "<> \t")
 			if v != "" {
 				cid = &v
+			}
+		}
+		// Compute the JMAP disposition value.
+		//
+		// Content-Disposition: inline is meaningful on its own only when the
+		// part also carries a Content-ID header, because only a CID makes the
+		// part addressable by a cid: URL in the HTML body.  A part with
+		// Content-Disposition: inline but no Content-ID cannot be referenced
+		// inline; it is effectively a regular attachment whose sender chose
+		// to hint "display this rather than offer as a download."  Clients
+		// (e.g. AttachmentList) use disposition=="inline" to separate the
+		// "Inline images" sub-section from the normal attachments section, so
+		// stripping the "inline" disposition from CID-less parts ensures they
+		// surface in the regular attachment section rather than being hidden
+		// under a sub-section the user may not notice.
+		var disposition *string
+		if d := p.Disposition.String(); d != "" {
+			if p.Disposition == mailparse.DispositionInline && cid == nil {
+				// No CID: cannot be inline-referenced; treat as regular attachment.
+			} else {
+				disposition = &d
 			}
 		}
 		out := bodyPart{

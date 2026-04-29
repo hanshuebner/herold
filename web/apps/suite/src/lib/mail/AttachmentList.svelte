@@ -22,8 +22,15 @@
 
   interface Props {
     email: Email;
+    /**
+     * Set of cid values that were successfully resolved to blob URLs by the
+     * HTML body renderer (cidMap keys from MessageAccordion). Parts whose cid
+     * appears here are already rendered inline in the message body; showing
+     * them again as attachment chips would be a duplicate (defect 3, re #1).
+     */
+    resolvedCids?: Set<string>;
   }
-  let { email }: Props = $props();
+  let { email, resolvedCids }: Props = $props();
 
   let accountId = $derived<string | null>(
     auth.session?.primaryAccounts['urn:ietf:params:jmap:mail'] ?? null,
@@ -40,9 +47,17 @@
    * Inline image parts: disposition=inline with a cid. These are the parts
    * the HTML body references via cid: URLs. We surface them in a separate
    * sub-section so each is independently downloadable (REQ-ATT-26).
+   *
+   * Parts whose cid was resolved to an inline reference (in resolvedCids) are
+   * excluded here because they already appear rendered in the message body;
+   * showing them again would be a duplicate (defect 3, re #1).
    */
   let inlineParts = $derived(
-    allParts.filter((p) => p.disposition === 'inline'),
+    allParts.filter(
+      (p) =>
+        p.disposition === 'inline' &&
+        !(p.cid && resolvedCids?.has(p.cid)),
+    ),
   );
 
   let totalCount = $derived(attachParts.length + inlineParts.length);

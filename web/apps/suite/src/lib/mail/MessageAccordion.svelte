@@ -397,7 +397,7 @@
         <p class="empty">(no body)</p>
       {/if}
 
-      <AttachmentList {email} />
+      <AttachmentList {email} resolvedCids={new Set(Object.keys(cidMap))} />
 
       <!-- Reactions strip: shown whenever reactions exist on the message. -->
       <ReactionsStrip

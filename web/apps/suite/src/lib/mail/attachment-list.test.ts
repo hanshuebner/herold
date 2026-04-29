@@ -76,6 +76,59 @@ function makeEmail(parts: Partial<EmailBodyPart>[]): Email {
   } as unknown as Email;
 }
 
+describe('AttachmentList: resolvedCids deduplication (defect 3, re #1)', () => {
+  it('hides an inline part whose cid is in resolvedCids', () => {
+    const email = makeEmail([
+      { disposition: 'inline', name: 'photo.png', cid: 'img1@h.test', type: 'image/png' },
+    ]);
+    // The cid was resolved: HtmlBody already renders it inline — don't show again.
+    render(AttachmentList, { email, resolvedCids: new Set(['img1@h.test']) });
+    // "Inline images" section should not appear at all.
+    expect(screen.queryByText('Inline images')).toBeNull();
+    // And the chip itself should not appear.
+    expect(screen.queryByText('photo.png')).toBeNull();
+  });
+
+  it('shows an inline part whose cid is NOT in resolvedCids', () => {
+    const email = makeEmail([
+      { disposition: 'inline', name: 'photo.png', cid: 'img1@h.test', type: 'image/png' },
+    ]);
+    // The cid was NOT resolved (e.g. plain-text email or broken cid: reference).
+    render(AttachmentList, { email, resolvedCids: new Set<string>() });
+    expect(screen.getByText('Inline images')).toBeInTheDocument();
+    expect(screen.getByText('photo.png')).toBeInTheDocument();
+  });
+
+  it('shows an inline part when resolvedCids is not provided', () => {
+    const email = makeEmail([
+      { disposition: 'inline', name: 'photo.png', cid: 'img1@h.test', type: 'image/png' },
+    ]);
+    // No resolvedCids prop at all — backward compat; show all inline parts.
+    render(AttachmentList, { email });
+    expect(screen.getByText('Inline images')).toBeInTheDocument();
+  });
+
+  it('shows an inline part with no cid regardless of resolvedCids', () => {
+    const email = makeEmail([
+      { disposition: 'inline', name: 'noncid.png', cid: null, type: 'image/png' },
+    ]);
+    render(AttachmentList, { email, resolvedCids: new Set(['anything']) });
+    // No cid, can never match; always show.
+    expect(screen.getByText('Inline images')).toBeInTheDocument();
+    expect(screen.getByText('noncid.png')).toBeInTheDocument();
+  });
+
+  it('hides only the resolved inline part, keeps the unresolved one', () => {
+    const email = makeEmail([
+      { disposition: 'inline', name: 'resolved.png', cid: 'r@h.test', type: 'image/png', blobId: 'b0' },
+      { disposition: 'inline', name: 'unresolved.png', cid: 'u@h.test', type: 'image/png', blobId: 'b1' },
+    ]);
+    render(AttachmentList, { email, resolvedCids: new Set(['r@h.test']) });
+    expect(screen.queryByText('resolved.png')).toBeNull();
+    expect(screen.getByText('unresolved.png')).toBeInTheDocument();
+  });
+});
+
 describe('AttachmentList: inline images count in Download all', () => {
   it('shows no "Download all" when there is only one attachment', () => {
     const email = makeEmail([{ disposition: 'attachment', name: 'file.pdf', type: 'application/pdf' }]);
