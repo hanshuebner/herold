@@ -133,8 +133,13 @@ class ChatStore {
 
     // Presence updates from the ephemeral channel.
     // principalId arrives as a string (coerced from uint64 at the WS boundary).
+    // Reassign the Map after mutation: Svelte 5's $state proxy on a plain
+    // Map does not track .set() / .delete() at the entry level, so consumers
+    // (e.g. SidebarChats' presenceClass) only re-evaluate when the Map's
+    // identity changes. Same pattern as overlayMessages / memberships.
     chatWs.on('presence', (frame) => {
       this.presence.set(frame.principalId, frame.state);
+      this.presence = new Map(this.presence);
     });
 
     // Typing indicators from the ephemeral channel.
@@ -628,6 +633,11 @@ class ChatStore {
         this.#typingTimers.delete(timerKey);
       }
     }
+    // Reassign the outer Map so Svelte 5 picks up the entry change.
+    // Plain $state(new Map()) does not track .set / .delete on the
+    // existing Map; consumers re-evaluate only when the Map identity
+    // itself changes.
+    this.typing = new Map(this.typing);
   }
 
   // ------------------------------------------------------------------
