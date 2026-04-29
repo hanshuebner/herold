@@ -67,6 +67,17 @@ class ChatOverlayStore {
     this.windows = this.windows.filter((w) => w.key !== key);
   }
 
+  /**
+   * Close any open overlay window targeting a given conversation.
+   * Used when the conversation is destroyed so the floating window
+   * does not linger on top of a now-missing record.
+   */
+  closeWindowByConversation(conversationId: string): void {
+    this.windows = this.windows.filter(
+      (w) => w.conversationId !== conversationId,
+    );
+  }
+
   minimizeWindow(key: string): void {
     this.windows = this.windows.map((w) =>
       w.key === key ? { ...w, minimized: true } : w,

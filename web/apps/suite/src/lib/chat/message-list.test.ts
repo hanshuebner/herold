@@ -63,7 +63,7 @@ const memberAlice: Membership = {
   role: 'member',
   displayName: 'Alice',
   joinedAt: '2024-01-01T10:00:00Z',
-  notificationsMuted: false,
+  notificationsSetting: 'all',
 };
 const memberBob: Membership = {
   id: 'mem2',
@@ -72,7 +72,7 @@ const memberBob: Membership = {
   role: 'member',
   displayName: 'Bob',
   joinedAt: '2024-01-01T10:00:00Z',
-  notificationsMuted: false,
+  notificationsSetting: 'all',
 };
 
 const baseConversation: Conversation = {

@@ -32,6 +32,13 @@ export interface Conversation {
   muted: boolean;
   /** Server-computed unread count for the requesting user. */
   unreadCount: number;
+  /**
+   * Requester's own Membership row, projected by the server on every
+   * Conversation/get. Carries the Membership id needed for
+   * Membership/set update calls (mark-read, mute, role) without a
+   * separate Membership/get round-trip.
+   */
+  myMembership?: Membership;
 }
 
 /** A message within a conversation. */
@@ -61,7 +68,7 @@ export interface Membership {
   id: string;
   conversationId: string;
   principalId: string;
-  role: 'member' | 'admin';
+  role: 'member' | 'admin' | 'owner';
   /**
    * Server-side projection of the principal's display name. Present on
    * Conversation.members[] (so the UI can label messages by sender without
@@ -70,9 +77,15 @@ export interface Membership {
    */
   displayName?: string;
   joinedAt: string; // UTCDate
-  /** The last Message id this member has read. Null = none read. */
-  readThrough?: string;
-  notificationsMuted: boolean;
+  /**
+   * The last Message id this member has read. Wire field name matches
+   * the server's memUpdateInput / jmapMembership; previously aliased
+   * locally as `readThrough`, which silently failed Membership/set
+   * because the server ignored the unknown property.
+   */
+  lastReadMessageId?: string;
+  isMuted?: boolean;
+  notificationsSetting?: 'all' | 'mentions' | 'none';
 }
 
 /**

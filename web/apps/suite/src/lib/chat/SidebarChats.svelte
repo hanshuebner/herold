@@ -15,6 +15,8 @@
   import { newChatPicker } from './new-chat-picker.svelte';
   import { auth } from '../auth/auth.svelte';
   import { t } from '../i18n/i18n.svelte';
+  import { confirm } from '../dialog/confirm.svelte';
+  import { toast } from '../toast/toast.svelte';
   import type { Conversation } from './types';
 
   const MAX = 8;
@@ -38,6 +40,28 @@
 
   function handleNewChat(): void {
     newChatPicker.open({ mode: 'dm' });
+  }
+
+  async function handleDelete(conv: Conversation): Promise<void> {
+    const ok = await confirm.ask({
+      title: 'Discard chat',
+      message:
+        conv.kind === 'dm'
+          ? `Discard the conversation with ${conv.name}? All messages will be permanently deleted.`
+          : `Discard the space "${conv.name}"? All messages will be permanently deleted.`,
+      confirmLabel: 'Discard',
+      cancelLabel: 'Cancel',
+      kind: 'danger',
+    });
+    if (!ok) return;
+    try {
+      await chat.destroyConversation(conv.id);
+      // Close any open overlay window for this conversation.
+      chatOverlay.closeWindowByConversation(conv.id);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to discard chat';
+      toast.show({ message: msg, kind: 'error' });
+    }
   }
 </script>
 
@@ -65,7 +89,7 @@
     <ul class="conv-list">
       {#each conversations as conv (conv.id)}
         {@const pc = presenceClass(conv)}
-        <li>
+        <li class="conv-row">
           <button
             type="button"
             class="conv-item"
@@ -89,6 +113,16 @@
               </span>
             {/if}
           </button>
+          <button
+            type="button"
+            class="discard-btn"
+            aria-label="Discard chat with {conv.name}"
+            title="Discard chat"
+            onclick={(ev) => {
+              ev.stopPropagation();
+              void handleDelete(conv);
+            }}
+          >&#x1F5D1;</button>
         </li>
       {/each}
     </ul>
@@ -160,11 +194,45 @@
     flex-direction: column;
     gap: var(--spacing-01);
   }
+  .conv-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-01);
+    border-radius: var(--radius-md);
+  }
+  .conv-row:hover .discard-btn {
+    opacity: 1;
+  }
+  .discard-btn {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-md);
+    color: var(--text-helper);
+    font-size: 14px;
+    opacity: 0;
+    transition:
+      opacity var(--duration-fast-02) var(--easing-productive-enter),
+      background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .discard-btn:hover {
+    background: var(--support-error);
+    color: var(--text-on-color);
+    opacity: 1;
+  }
+  .discard-btn:focus-visible {
+    opacity: 1;
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
   .conv-item {
+    flex: 1;
     display: flex;
     align-items: center;
     gap: var(--spacing-03);
-    width: 100%;
     padding: var(--spacing-02) var(--spacing-04);
     min-height: var(--touch-min);
     border-radius: var(--radius-md);

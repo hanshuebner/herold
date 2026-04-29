@@ -182,12 +182,17 @@
     void chat.toggleReaction(messageId, emoji, auth.principalId ?? '');
   }
 
-  // DM read receipt: find the other participant's readThrough message id.
+  // DM read receipt: find the other participant's lastReadMessageId.
+  // The Conversation/get response only includes the requester's own
+  // myMembership (other members' read pointers are suppressed in the
+  // Members[] projection per REQ-CHAT-32 / 33), so this falls back to
+  // the chat.memberships map populated by Membership/changes pushes.
+  // For an unsynced overlay the indicator is simply absent.
   let otherReadThrough = $derived.by(() => {
     if (conversation.kind !== 'dm') return null;
     const mems = chat.memberships.get(conversationId) ?? [];
     const other = mems.find((m) => m.principalId !== auth.principalId);
-    return other?.readThrough ?? null;
+    return other?.lastReadMessageId ?? null;
   });
 
   // Typing indicator text.

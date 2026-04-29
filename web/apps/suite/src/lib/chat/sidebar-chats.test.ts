@@ -27,7 +27,7 @@ vi.mock('./store.svelte', () => ({
               principalId: 'self',
               role: 'member',
               joinedAt: '2024-01-01T10:00:00Z',
-              notificationsMuted: false,
+              notificationsSetting: 'all',
             },
             {
               id: 'mem2',
@@ -35,7 +35,7 @@ vi.mock('./store.svelte', () => ({
               principalId: 'p2',
               role: 'member',
               joinedAt: '2024-01-01T10:00:00Z',
-              notificationsMuted: false,
+              notificationsSetting: 'all',
             },
           ],
           createdAt: '2024-01-01T10:00:00Z',
@@ -111,7 +111,7 @@ describe('SidebarChats', () => {
 
   it('calls chatOverlay.openWindow when a conversation row is clicked', async () => {
     render(SidebarChats);
-    const aliceBtn = screen.getByRole('button', { name: /Alice/ });
+    const aliceBtn = screen.getByRole('button', { name: 'Alice, 2 unread' });
     await fireEvent.click(aliceBtn);
     expect(chatOverlay.openWindow).toHaveBeenCalledWith('c1');
   });

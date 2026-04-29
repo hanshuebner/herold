@@ -410,8 +410,8 @@ describe('ChatStore', () => {
       kind: 'dm',
       name: 'Alice',
       members: [
-        { id: 'm1', conversationId: 'dm-c1', principalId: 'p1', role: 'member', joinedAt: '', notificationsMuted: false },
-        { id: 'm2', conversationId: 'dm-c1', principalId: 'prin-other', role: 'member', joinedAt: '', notificationsMuted: false },
+        { id: 'm1', conversationId: 'dm-c1', principalId: 'p1', role: 'member', joinedAt: '', notificationsSetting: 'all' },
+        { id: 'm2', conversationId: 'dm-c1', principalId: 'prin-other', role: 'member', joinedAt: '', notificationsSetting: 'all' },
       ],
       createdAt: '',
       pinned: false,
@@ -437,8 +437,8 @@ describe('ChatStore', () => {
       kind: 'space',
       name: 'General',
       members: [
-        { id: 'm1', conversationId: 'space-1', principalId: 'p1', role: 'member', joinedAt: '', notificationsMuted: false },
-        { id: 'm2', conversationId: 'space-1', principalId: 'prin-other', role: 'member', joinedAt: '', notificationsMuted: false },
+        { id: 'm1', conversationId: 'space-1', principalId: 'p1', role: 'member', joinedAt: '', notificationsSetting: 'all' },
+        { id: 'm2', conversationId: 'space-1', principalId: 'prin-other', role: 'member', joinedAt: '', notificationsSetting: 'all' },
       ],
       createdAt: '',
       pinned: false,
@@ -670,5 +670,152 @@ describe('ChatStore', () => {
     await expect(
       chat.createConversation({ kind: 'dm', members: ['prin-other'] }),
     ).rejects.toThrow('forbidden');
+  });
+
+  // ------------------------------------------------------------------
+  // markRead — wire field name + myMembership lookup
+  // ------------------------------------------------------------------
+
+  it('markRead sends lastReadMessageId via Membership/set, not readThrough', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    chat.conversations.set('cMR', {
+      id: 'cMR',
+      kind: 'dm',
+      name: 'Bob',
+      members: [],
+      createdAt: '',
+      pinned: false,
+      muted: false,
+      unreadCount: 3,
+      myMembership: {
+        id: 'mb-self',
+        conversationId: 'cMR',
+        principalId: 'p1',
+        role: 'member',
+        joinedAt: '',
+      },
+    });
+
+    let capturedUpdate: Record<string, unknown> | null = null;
+    vi.mocked(jmap.batch).mockImplementation(async (builder) => {
+      builder({
+        call: (name: string, args: unknown) => {
+          const a = args as { update?: Record<string, Record<string, unknown>> };
+          if (name === 'Membership/set' && a.update) {
+            capturedUpdate = a.update;
+          }
+          return { ref: () => ({ resultOf: 'c0', name, path: '' }) };
+        },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      return {
+        responses: [
+          ['Membership/set', { updated: { 'mb-self': null }, notUpdated: {} }, 's0'],
+        ],
+        sessionState: 'ss1',
+      };
+    });
+
+    await chat.markRead('cMR', 'msg-99');
+
+    expect(capturedUpdate).toEqual({ 'mb-self': { lastReadMessageId: 'msg-99' } });
+    expect(JSON.stringify(capturedUpdate)).not.toContain('readThrough');
+
+    // Local cache reflects the new pointer and zeroes the unread badge.
+    const cached = chat.conversations.get('cMR');
+    expect(cached?.myMembership?.lastReadMessageId).toBe('msg-99');
+    expect(cached?.unreadCount).toBe(0);
+  });
+
+  it('markRead is a no-op when myMembership is absent (e.g. cache not yet hydrated)', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    chat.conversations.set('cNoMyMem', {
+      id: 'cNoMyMem',
+      kind: 'dm',
+      name: 'Bob',
+      members: [],
+      createdAt: '',
+      pinned: false,
+      muted: false,
+      unreadCount: 1,
+    });
+
+    await chat.markRead('cNoMyMem', 'msg-1');
+    expect(jmap.batch).not.toHaveBeenCalled();
+  });
+
+  // ------------------------------------------------------------------
+  // destroyConversation
+  // ------------------------------------------------------------------
+
+  it('destroyConversation sends Conversation/set destroy and removes the row from caches', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    chat.conversations.set('toRemove', {
+      id: 'toRemove',
+      kind: 'dm',
+      name: 'Bob',
+      members: [],
+      createdAt: '',
+      pinned: false,
+      muted: false,
+      unreadCount: 0,
+    });
+    chat.conversationIds = ['toRemove'];
+    chat.overlayMessages.set('toRemove', { messages: [], status: 'ready', hasMore: false });
+    chat.overlayMessages = new Map(chat.overlayMessages);
+
+    let capturedDestroy: string[] | null = null;
+    vi.mocked(jmap.batch).mockImplementation(async (builder) => {
+      builder({
+        call: (name: string, args: unknown) => {
+          const a = args as { destroy?: string[] };
+          if (name === 'Conversation/set' && a.destroy) {
+            capturedDestroy = a.destroy;
+          }
+          return { ref: () => ({ resultOf: 'c0', name, path: '' }) };
+        },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      return {
+        responses: [
+          ['Conversation/set', { destroyed: ['toRemove'], notDestroyed: {} }, 's0'],
+        ],
+        sessionState: 'ss1',
+      };
+    });
+
+    await chat.destroyConversation('toRemove');
+
+    expect(capturedDestroy).toEqual(['toRemove']);
+    expect(chat.conversations.get('toRemove')).toBeUndefined();
+    expect(chat.conversationIds).not.toContain('toRemove');
+    expect(chat.overlayMessages.get('toRemove')).toBeUndefined();
+  });
+
+  it('destroyConversation throws when the server returns notDestroyed', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    vi.mocked(jmap.batch).mockResolvedValue({
+      responses: [
+        [
+          'Conversation/set',
+          {
+            destroyed: [],
+            notDestroyed: { 'p': { type: 'forbidden', description: 'not allowed' } },
+          },
+          's0',
+        ],
+      ],
+      sessionState: 'ss1',
+    });
+
+    await expect(chat.destroyConversation('p')).rejects.toThrow('not allowed');
   });
 });

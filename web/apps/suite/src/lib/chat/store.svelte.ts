@@ -406,32 +406,64 @@ class ChatStore {
     const accountId = this.#accountId();
     if (!accountId || !auth.principalId) return;
 
-    try {
-      // Find the user's Membership in this conversation.
-      const mems = this.memberships.get(conversationId) ?? [];
-      const myMembership = mems.find(
-        (m) => m.principalId === auth.principalId,
-      );
-      if (!myMembership) return;
+    // The requester's Membership row is delivered with every
+    // Conversation/get under `myMembership`. The previous implementation
+    // tried to look it up in `this.memberships` (only ever populated by
+    // the EventSource Membership/changes handler), so the lookup failed
+    // silently on initial load and the unread badge never reset.
+    const conv = this.conversations.get(conversationId);
+    const myMembership = conv?.myMembership;
+    if (!myMembership) return;
 
-      await jmap.batch((b) => {
+    // Skip the round-trip if we have already advanced past this message.
+    if (myMembership.lastReadMessageId === messageId) return;
+
+    try {
+      // Wire field is `lastReadMessageId` per memUpdateInput in
+      // internal/protojmap/chat/membership.go. Sending `readThrough`
+      // (the suite's local field name) is silently ignored by the
+      // server.
+      const { responses } = await jmap.batch((b) => {
         b.call(
           'Membership/set',
           {
             accountId,
             update: {
-              [myMembership.id]: { readThrough: messageId },
+              [myMembership.id]: { lastReadMessageId: messageId },
             },
           },
           USING,
         );
       });
+      const setResp = responses.find(([name]) => name === 'Membership/set');
+      if (!setResp || setResp[0] === 'error') {
+        console.error('markRead Membership/set failed', setResp?.[1]);
+        return;
+      }
+      const result = setResp[1] as {
+        notUpdated?: Record<string, { type: string; description?: string }>;
+      };
+      if (result.notUpdated?.[myMembership.id]) {
+        console.error(
+          'markRead notUpdated',
+          result.notUpdated[myMembership.id],
+        );
+        return;
+      }
 
-      // Update local membership state.
-      const updated = mems.map((m) =>
-        m.id === myMembership.id ? { ...m, readThrough: messageId } : m,
-      );
-      this.memberships.set(conversationId, updated);
+      // Reflect the new read pointer locally so the unread badge
+      // updates immediately, before the next state-advance round-trip.
+      const updatedMembership: Membership = {
+        ...myMembership,
+        lastReadMessageId: messageId,
+      };
+      const updatedConv: Conversation = {
+        ...conv!,
+        myMembership: updatedMembership,
+        unreadCount: 0,
+      };
+      this.conversations.set(conversationId, updatedConv);
+      this.#rebuildConversationOrder();
     } catch (err) {
       console.error('markRead failed', err);
     }
@@ -1113,6 +1145,56 @@ class ChatStore {
     this.#rebuildConversationOrder();
 
     return { id: created.id };
+  }
+
+  /**
+   * Discard a conversation: Conversation/set { destroy: [id] }. The
+   * server destroys the conversation, all memberships, and all messages
+   * in one tx; the change feed is fanned to every member, so any other
+   * open client sees the row disappear from their sidebar on the next
+   * EventSource state advance.
+   *
+   * The cache is updated immediately so the sidebar reflects the
+   * deletion before the EventSource round-trip completes.
+   */
+  async destroyConversation(conversationId: string): Promise<void> {
+    const accountId = this.#accountId();
+    if (!accountId) throw new Error('Not authenticated');
+
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Conversation/set',
+        { accountId, destroy: [conversationId] },
+        USING,
+      );
+    });
+
+    const setResp = responses.find(([name]) => name === 'Conversation/set');
+    if (!setResp || setResp[0] === 'error') {
+      throw new Error('Conversation/set failed');
+    }
+    const result = setResp[1] as {
+      destroyed?: string[];
+      notDestroyed?: Record<string, { type: string; description?: string }>;
+    };
+    if (result.notDestroyed?.[conversationId]) {
+      const err = result.notDestroyed[conversationId]!;
+      throw new Error(err.description ?? err.type);
+    }
+    if (!result.destroyed?.includes(conversationId)) {
+      throw new Error('Conversation/set destroy did not return the id');
+    }
+
+    // Update the local caches so the sidebar drops the row immediately.
+    this.conversations.delete(conversationId);
+    this.#rebuildConversationOrder();
+    this.overlayMessages.delete(conversationId);
+    this.overlayMessages = new Map(this.overlayMessages);
+    this.memberships.delete(conversationId);
+    if (this.openConversationId === conversationId) {
+      this.openConversationId = null;
+      this.messages = [];
+    }
   }
 
   // ------------------------------------------------------------------

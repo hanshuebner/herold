@@ -22,8 +22,8 @@ vi.mock('./store.svelte', () => ({
           kind: 'dm',
           name: 'Alice',
           members: [
-            { id: 'mem1', conversationId: 'c1', principalId: 'self', role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsMuted: false },
-            { id: 'mem2', conversationId: 'c1', principalId: 'p2',   role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsMuted: false },
+            { id: 'mem1', conversationId: 'c1', principalId: 'self', role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsSetting: 'all' },
+            { id: 'mem2', conversationId: 'c1', principalId: 'p2',   role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsSetting: 'all' },
           ],
           createdAt: '2024-01-01T00:00:00Z',
           pinned: false,
@@ -38,7 +38,7 @@ vi.mock('./store.svelte', () => ({
           kind: 'space',
           name: '',
           members: [
-            { id: 'mem3', conversationId: 'c2', principalId: 'self', role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsMuted: false },
+            { id: 'mem3', conversationId: 'c2', principalId: 'self', role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsSetting: 'all' },
           ],
           createdAt: '2024-01-01T00:00:00Z',
           pinned: false,
@@ -53,7 +53,7 @@ vi.mock('./store.svelte', () => ({
           kind: 'space',
           name: 'Engineering',
           members: [
-            { id: 'mem4', conversationId: 'c3', principalId: 'self', role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsMuted: false },
+            { id: 'mem4', conversationId: 'c3', principalId: 'self', role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsSetting: 'all' },
           ],
           createdAt: '2024-01-01T00:00:00Z',
           pinned: false,

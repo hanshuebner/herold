@@ -23,7 +23,7 @@ vi.mock('./store.svelte', () => ({
               principalId: 'p1',
               role: 'member',
               joinedAt: '2024-01-01T10:00:00Z',
-              notificationsMuted: false,
+              notificationsSetting: 'all',
             },
             {
               id: 'mem2',
@@ -31,7 +31,7 @@ vi.mock('./store.svelte', () => ({
               principalId: 'p2',
               role: 'member',
               joinedAt: '2024-01-01T10:00:00Z',
-              notificationsMuted: false,
+              notificationsSetting: 'all',
             },
           ],
           createdAt: '2024-01-01T10:00:00Z',
