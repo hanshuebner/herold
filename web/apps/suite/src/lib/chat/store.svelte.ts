@@ -621,12 +621,18 @@ class ChatStore {
           },
           USING,
         );
+        // RFC 8620 §5.2: /changes returns separate `created`, `updated`,
+        // and `destroyed` arrays. JSON-pointer back-references are
+        // scalar, so we issue two /get calls to fetch both buckets in
+        // a single round-trip.
         b.call(
           'Conversation/get',
-          {
-            accountId,
-            '#ids': changes.ref('/changed'),
-          },
+          { accountId, '#ids': changes.ref('/created') },
+          USING,
+        );
+        b.call(
+          'Conversation/get',
+          { accountId, '#ids': changes.ref('/updated') },
           USING,
         );
       });
@@ -634,7 +640,7 @@ class ChatStore {
       const changesResp = responses.find(
         ([name]) => name === 'Conversation/changes',
       );
-      const getResp = responses.find(
+      const getResps = responses.filter(
         ([name]) => name === 'Conversation/get',
       );
 
@@ -652,8 +658,9 @@ class ChatStore {
         }
       }
 
-      if (getResp && getResp[0] === 'Conversation/get') {
-        const gr = getResp[1] as { list: Conversation[] };
+      for (const resp of getResps) {
+        if (resp[0] !== 'Conversation/get') continue;
+        const gr = resp[1] as { list: Conversation[] };
         for (const c of gr.list) {
           this.conversations.set(c.id, c);
         }
@@ -690,18 +697,22 @@ class ChatStore {
           },
           USING,
         );
+        // /changes returns `created` + `updated` + `destroyed`; we
+        // need both buckets, so issue two /get calls (one ref each).
         b.call(
           'Message/get',
-          {
-            accountId,
-            '#ids': changes.ref('/changed'),
-          },
+          { accountId, '#ids': changes.ref('/created') },
+          USING,
+        );
+        b.call(
+          'Message/get',
+          { accountId, '#ids': changes.ref('/updated') },
           USING,
         );
       });
 
       const changesResp = responses.find(([name]) => name === 'Message/changes');
-      const getResp = responses.find(([name]) => name === 'Message/get');
+      const getResps = responses.filter(([name]) => name === 'Message/get');
 
       if (changesResp && changesResp[0] === 'Message/changes') {
         const cr = changesResp[1] as {
@@ -717,8 +728,9 @@ class ChatStore {
         }
       }
 
-      if (getResp && getResp[0] === 'Message/get') {
-        const gr = getResp[1] as { list: Message[] };
+      for (const resp of getResps) {
+        if (resp[0] !== 'Message/get') continue;
+        const gr = resp[1] as { list: Message[] };
         for (const incoming of gr.list) {
           // Update main message pane (if this is the open conversation).
           if (incoming.conversationId === openId) {
@@ -784,12 +796,16 @@ class ChatStore {
           },
           USING,
         );
+        // /changes splits ids into `created` + `updated` + `destroyed`;
+        // fetch both buckets via two back-references in one batch.
         b.call(
           'Membership/get',
-          {
-            accountId,
-            '#ids': changes.ref('/changed'),
-          },
+          { accountId, '#ids': changes.ref('/created') },
+          USING,
+        );
+        b.call(
+          'Membership/get',
+          { accountId, '#ids': changes.ref('/updated') },
           USING,
         );
       });
@@ -797,7 +813,7 @@ class ChatStore {
       const changesResp = responses.find(
         ([name]) => name === 'Membership/changes',
       );
-      const getResp = responses.find(
+      const getResps = responses.filter(
         ([name]) => name === 'Membership/get',
       );
 
@@ -817,8 +833,9 @@ class ChatStore {
         }
       }
 
-      if (getResp && getResp[0] === 'Membership/get') {
-        const gr = getResp[1] as { list: Membership[] };
+      for (const resp of getResps) {
+        if (resp[0] !== 'Membership/get') continue;
+        const gr = resp[1] as { list: Membership[] };
         for (const mem of gr.list) {
           const existing = this.memberships.get(mem.conversationId) ?? [];
           const idx = existing.findIndex((m) => m.id === mem.id);
