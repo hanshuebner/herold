@@ -161,6 +161,102 @@ func TestCLIQueueFlush_DeferredOnly(t *testing.T) {
 	}
 }
 
+// TestCLIQueueList_HumanFormat exercises the default (non-JSON) human-
+// readable table output for queue list. Non-TTY buffers normally fall
+// through to JSON; we verify the human path by simulating a TTY writer
+// via globalOptions{jsonOut: false} and calling writeQueueListHuman
+// directly, and separately verify that the --json flag yields valid JSON
+// from the real cobra dispatch path.
+func TestCLIQueueList_HumanFormat(t *testing.T) {
+	// Build a sample page envelope that matches the shape the REST API
+	// returns from the queue list handler.
+	out := map[string]any{
+		"items": []any{
+			map[string]any{
+				"id":              float64(1),
+				"state":           "deferred",
+				"rcpt_to":         "sender@example.org",
+				"mail_from":       "from@example.org",
+				"attempts":        float64(6),
+				"last_attempt_at": "2026-04-28T23:39:37Z",
+				"last_error":      "mx resolution: null MX (RFC 7505)",
+			},
+			map[string]any{
+				"id":              float64(2),
+				"state":           "failed",
+				"rcpt_to":         "sender@example.local",
+				"mail_from":       "from@example.org",
+				"attempts":        float64(0),
+				"last_attempt_at": "2026-04-28T06:29:05Z",
+				"last_error":      "550 no MX or A/AAAA for example.local",
+			},
+		},
+		"next": nil,
+	}
+
+	var buf bytes.Buffer
+	if err := writeQueueListHuman(&buf, out); err != nil {
+		t.Fatalf("writeQueueListHuman: %v", err)
+	}
+	human := buf.String()
+
+	// Header must be present.
+	if !strings.Contains(human, "STATE") || !strings.Contains(human, "RCPT-TO") {
+		t.Errorf("expected header columns STATE and RCPT-TO in:\n%s", human)
+	}
+	// Both rows must be present.
+	if !strings.Contains(human, "sender@example.org") {
+		t.Errorf("expected sender@example.org in:\n%s", human)
+	}
+	if !strings.Contains(human, "sender@example.local") {
+		t.Errorf("expected sender@example.local in:\n%s", human)
+	}
+	if !strings.Contains(human, "deferred") {
+		t.Errorf("expected state 'deferred' in:\n%s", human)
+	}
+	// Error text should be visible.
+	if !strings.Contains(human, "RFC 7505") {
+		t.Errorf("expected error snippet 'RFC 7505' in:\n%s", human)
+	}
+	// Must not contain raw Go map syntax.
+	if strings.Contains(human, "map[") {
+		t.Errorf("must not contain raw map[] syntax in:\n%s", human)
+	}
+}
+
+func TestCLIQueueList_EmptyHuman(t *testing.T) {
+	out := map[string]any{
+		"items": []any{},
+	}
+	var buf bytes.Buffer
+	if err := writeQueueListHuman(&buf, out); err != nil {
+		t.Fatalf("writeQueueListHuman: %v", err)
+	}
+	human := buf.String()
+	if !strings.Contains(human, "empty") {
+		t.Errorf("expected empty queue message; got:\n%s", human)
+	}
+}
+
+func TestCLIQueueList_JSONFlag(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	seedQueueItem(t, env, store.QueueStateDeferred)
+
+	out, _, err := env.run("queue", "list", "--json")
+	if err != nil {
+		t.Fatalf("queue list --json: %v", err)
+	}
+	if !strings.Contains(out, `"items"`) {
+		t.Fatalf("expected items field in JSON output; got %s", out)
+	}
+	if !strings.Contains(out, `"state"`) {
+		t.Fatalf("expected state field in JSON output; got %s", out)
+	}
+	if !strings.Contains(out, `"rcpt_to"`) {
+		t.Fatalf("expected rcpt_to field in JSON output; got %s", out)
+	}
+}
+
 // uintStr is a tiny helper because strconv.FormatUint pulls in another
 // import in three different test files.
 func uintStr(n uint64) string {

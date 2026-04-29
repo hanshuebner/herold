@@ -15,8 +15,11 @@ func TestCLIHookCreate_PrintsSecretOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hook create: %v", err)
 	}
-	if !strings.Contains(out, "hmac_secret:") {
-		t.Fatalf("expected hmac_secret line in output: %s", out)
+	// In human mode the output has "hmac_secret: <value>"; in JSON mode
+	// (non-TTY test buffer) it has "\"hmac_secret\": \"<value>\"".
+	// Checking for the field name without the colon covers both.
+	if !strings.Contains(out, "hmac_secret") {
+		t.Fatalf("expected hmac_secret in output: %s", out)
 	}
 }
 
