@@ -113,6 +113,7 @@ func (m *metadata) InsertPrincipal(ctx context.Context, p store.Principal) (stor
 	p.ID = store.PrincipalID(id)
 	p.CreatedAt = now
 	p.UpdatedAt = now
+	p.SeenAddressesEnabled = true // default: enabled
 	p.CanonicalEmail = strings.ToLower(p.CanonicalEmail)
 	return p, nil
 }
@@ -128,22 +129,24 @@ func (m *metadata) GetPrincipalByEmail(ctx context.Context, email string) (store
 func (m *metadata) selectPrincipal(ctx context.Context, where string, args ...any) (store.Principal, error) {
 	row := m.s.db.QueryRowContext(ctx, `
 		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
-		       quota_bytes, flags, created_at_us, updated_at_us
+		       quota_bytes, flags, seen_addresses_enabled, created_at_us, updated_at_us
 		  FROM principals `+where, args...)
 	var p store.Principal
 	var kind int64
 	var flags int64
+	var seenAddrEnabled int64
 	var createdUs, updatedUs int64
 	var totp []byte
 	var id int64
 	err := row.Scan(&id, &kind, &p.CanonicalEmail, &p.DisplayName, &p.PasswordHash,
-		&totp, &p.QuotaBytes, &flags, &createdUs, &updatedUs)
+		&totp, &p.QuotaBytes, &flags, &seenAddrEnabled, &createdUs, &updatedUs)
 	if err != nil {
 		return store.Principal{}, mapErr(err)
 	}
 	p.ID = store.PrincipalID(id)
 	p.Kind = store.PrincipalKind(kind)
 	p.Flags = store.PrincipalFlags(flags)
+	p.SeenAddressesEnabled = seenAddrEnabled != 0
 	p.CreatedAt = fromMicros(createdUs)
 	p.UpdatedAt = fromMicros(updatedUs)
 	if len(totp) > 0 {
@@ -158,10 +161,12 @@ func (m *metadata) UpdatePrincipal(ctx context.Context, p store.Principal) error
 		res, err := tx.ExecContext(ctx, `
 			UPDATE principals
 			   SET kind = ?, canonical_email = ?, display_name = ?, password_hash = ?,
-			       totp_secret = ?, quota_bytes = ?, flags = ?, updated_at_us = ?
+			       totp_secret = ?, quota_bytes = ?, flags = ?,
+			       seen_addresses_enabled = ?, updated_at_us = ?
 			 WHERE id = ?`,
 			int64(p.Kind), strings.ToLower(p.CanonicalEmail), p.DisplayName, p.PasswordHash,
-			p.TOTPSecret, p.QuotaBytes, int64(p.Flags), usMicros(now), int64(p.ID))
+			p.TOTPSecret, p.QuotaBytes, int64(p.Flags), boolToInt(p.SeenAddressesEnabled),
+			usMicros(now), int64(p.ID))
 		if err != nil {
 			return mapErr(err)
 		}

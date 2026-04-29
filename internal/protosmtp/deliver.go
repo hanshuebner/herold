@@ -35,9 +35,8 @@ func (sess *session) finishMessage(body []byte) {
 	// Spam classification.
 	msg, perr := mailparse.Parse(bytes.NewReader(body), mailparse.NewParseOptions())
 	if perr != nil {
-		sess.srv.log.InfoContext(ctx, "smtp data: parse failed",
-			slog.String("session_id", sess.sessID),
-			slog.String("remote_ip", sess.remoteIP),
+		sess.log.InfoContext(ctx, "smtp data: parse failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("err", perr.Error()))
 		observe.SMTPMessagesRejectedTotal.WithLabelValues(sess.mode.String(), "policy").Inc()
 		sess.writeReply("554 5.6.0 message parse failed: " + perr.Error())
@@ -90,8 +89,8 @@ func (sess *session) finishMessage(body []byte) {
 	// same BlobRef.
 	blobRef, err := sess.srv.store.Blobs().Put(ctx, bytes.NewReader(finalBytes))
 	if err != nil {
-		sess.srv.log.ErrorContext(ctx, "smtp data: blob put failed",
-			slog.String("session_id", sess.sessID),
+		sess.log.ErrorContext(ctx, "smtp data: blob put failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("err", err.Error()))
 		sess.writeReply("451 4.3.0 temporary storage failure")
 		sess.resetEnvelope()
@@ -142,8 +141,8 @@ func (sess *session) finishMessage(body []byte) {
 					anyOK = true
 				}
 			default:
-				sess.srv.log.WarnContext(ctx, "phase1_rcpt_leak: non-local recipient on inbound listener slipped past RCPT TO",
-					slog.String("session_id", sess.sessID),
+				sess.log.WarnContext(ctx, "phase1_rcpt_leak: non-local recipient on inbound listener slipped past RCPT TO",
+					slog.String("activity", observe.ActivityInternal),
 					slog.String("recipient", rc.addr),
 					slog.String("mode", sess.mode.String()))
 				_ = sess.srv.store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
@@ -175,8 +174,8 @@ func (sess *session) finishMessage(body []byte) {
 		}
 		ok, derr := sess.deliverOne(ctx, rc, finalBytes, blobRef, msg, authResults, classification)
 		if derr != nil {
-			sess.srv.log.ErrorContext(ctx, "smtp delivery failed",
-				slog.String("session_id", sess.sessID),
+			sess.log.ErrorContext(ctx, "smtp delivery failed",
+				slog.String("activity", observe.ActivitySystem),
 				slog.String("recipient", rc.addr),
 				slog.String("err", derr.Error()))
 		}
@@ -222,6 +221,18 @@ func (sess *session) finishMessage(body []byte) {
 		reply = fmt.Sprintf("250 2.6.0 %s accepted", messageID)
 	}
 	observe.SMTPMessagesAcceptedTotal.WithLabelValues(listenerLabel).Inc()
+	// Per REQ-OPS-86d: DATA accepted on submission → user/info;
+	// relay/inbound → system/info.
+	dataActivity := observe.ActivitySystem
+	if sess.mode == SubmissionSTARTTLS || sess.mode == SubmissionImplicitTLS {
+		dataActivity = observe.ActivityUser
+	}
+	sess.log.InfoContext(ctx, "smtp data accepted",
+		slog.String("activity", dataActivity),
+		slog.String("message_id", messageID),
+		slog.Int("size_bytes", len(finalBytes)),
+		slog.Int("recipients", len(sess.envelope.rcpts)),
+		slog.Uint64("principal_id", uint64(sess.authPrincipal)))
 	sess.writeReply(reply)
 	sess.resetEnvelope()
 }
@@ -244,8 +255,8 @@ func (sess *session) deliverOne(
 	if serr != nil {
 		// Per REQ-FLOW-22: fatal sieve error on a user script MUST NOT
 		// lose the message; fall back to keep-to-Inbox.
-		sess.srv.log.WarnContext(ctx, "sieve evaluation failed; falling back to INBOX",
-			slog.String("session_id", sess.sessID),
+		sess.log.WarnContext(ctx, "sieve evaluation failed; falling back to INBOX",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("recipient", rc.addr),
 			slog.String("err", serr.Error()))
 		outcome = sieve.Outcome{ImplicitKeep: true}
@@ -258,7 +269,8 @@ func (sess *session) deliverOne(
 		// the operator log only. We do NOT bounce here because Phase 2
 		// owns outbound; we instead treat the message as accepted-
 		// then-dropped per REQ-FLOW-22 relaxation.
-		sess.srv.log.InfoContext(ctx, "sieve reject",
+		sess.log.InfoContext(ctx, "sieve reject",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("recipient", rc.addr),
 			slog.String("reason", rejectReason))
 		return true, nil
@@ -323,7 +335,8 @@ func (sess *session) deliverOne(
 		insertTimer.Done()
 		if ierr != nil {
 			if errors.Is(ierr, store.ErrQuotaExceeded) {
-				sess.srv.log.InfoContext(ctx, "delivery over quota",
+				sess.log.InfoContext(ctx, "delivery over quota",
+					slog.String("activity", observe.ActivitySystem),
 					slog.String("recipient", rc.addr))
 				// REQ-FLOW-11 default behaviour: defer (4.2.2). We
 				// already emitted 354; re-emit 452 for the whole
@@ -338,6 +351,16 @@ func (sess *session) deliverOne(
 		// blocks delivery (REQ-FILT-230 / REQ-FILT-40).
 		if rc.principalID != 0 && (classification.Verdict != spam.Unclassified || catResult.PromptApplied != "") {
 			sess.persistLLMRecord(ctx, rc.principalID, storeMsg.Envelope.MessageID, msg, authResults, classification, catResult)
+		}
+
+		// Seed-on-receive (REQ-MAIL-11h): record the From address in the
+		// principal's SeenAddress history when the sender is not spam,
+		// not a mailing list, not an identity or contact of the principal,
+		// and the principal has seen_addresses_enabled = true.
+		// Fire-and-forget — seeding never blocks delivery.
+		if rc.principalID != 0 && classification.Verdict != spam.Spam {
+			go seedFromAddress(context.Background(), sess.srv.store, sess.srv.log,
+				rc.principalID, sess.envelope.mailFrom, msg)
 		}
 	}
 	return true, nil
@@ -361,7 +384,8 @@ func (sess *session) persistLLMRecord(
 	// when LLM classification ran.
 	m, err := sess.srv.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, msgIDHeader)
 	if err != nil {
-		sess.srv.log.WarnContext(ctx, "llm-transparency: lookup message ID for record",
+		sess.log.WarnContext(ctx, "llm-transparency: lookup message ID for record",
+			slog.String("activity", observe.ActivityInternal),
 			slog.String("msg_id_header", msgIDHeader),
 			slog.String("err", err.Error()))
 		return
@@ -408,7 +432,8 @@ func (sess *session) persistLLMRecord(
 		rec.CategoryClassifiedAt = &t
 	}
 	if err := sess.srv.store.Meta().SetLLMClassification(ctx, rec); err != nil {
-		sess.srv.log.WarnContext(ctx, "llm-transparency: persist classification record",
+		sess.log.WarnContext(ctx, "llm-transparency: persist classification record",
+			slog.String("activity", observe.ActivityInternal),
 			slog.String("msg_id_header", msgIDHeader),
 			slog.String("err", err.Error()))
 	}
@@ -427,14 +452,18 @@ func (sess *session) runMailAuth(ctx context.Context, body []byte) (mailauth.Aut
 		if dkimRes, err := sess.srv.dkim.Verify(ctx, body); err == nil {
 			res.DKIM = dkimRes
 		} else {
-			sess.srv.log.WarnContext(ctx, "dkim verify error", slog.String("err", err.Error()))
+			sess.log.WarnContext(ctx, "dkim verify error",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("err", err.Error()))
 		}
 	}
 	if sess.srv.spf != nil {
 		if spfRes, err := sess.srv.spf.Check(ctx, sess.envelope.mailFrom, sess.helo, sess.remoteIP); err == nil {
 			res.SPF = spfRes
 		} else {
-			sess.srv.log.WarnContext(ctx, "spf check error", slog.String("err", err.Error()))
+			sess.log.WarnContext(ctx, "spf check error",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("err", err.Error()))
 		}
 	}
 	if sess.srv.dmarc != nil {
@@ -442,7 +471,9 @@ func (sess *session) runMailAuth(ctx context.Context, body []byte) (mailauth.Aut
 		if dres, err := sess.srv.dmarc.Evaluate(ctx, headerFrom, res.SPF, res.DKIM); err == nil {
 			res.DMARC = dres
 		} else {
-			sess.srv.log.WarnContext(ctx, "dmarc evaluate error", slog.String("err", err.Error()))
+			sess.log.WarnContext(ctx, "dmarc evaluate error",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("err", err.Error()))
 		}
 	}
 	if sess.srv.arc != nil {
@@ -893,8 +924,8 @@ func (sess *session) dispatchSynthetic(
 ) {
 	disp := sess.srv.webhookDisp
 	if disp == nil {
-		sess.srv.log.WarnContext(ctx, "synthetic recipient accepted but no webhook dispatcher wired",
-			slog.String("session_id", sess.sessID),
+		sess.log.WarnContext(ctx, "synthetic recipient accepted but no webhook dispatcher wired",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("recipient", rc.addr),
 			slog.String("route_tag", rc.routeTag))
 		sess.auditSyntheticAccepted(ctx, rc, msg, 0, "no_dispatcher_wired")
@@ -903,8 +934,8 @@ func (sess *session) dispatchSynthetic(
 	domain := strings.ToLower(strings.TrimSpace(rc.domain))
 	hooks := disp.MatchingSyntheticHooks(ctx, domain)
 	if len(hooks) == 0 {
-		sess.srv.log.InfoContext(ctx, "synthetic recipient accepted but no webhook subscriber",
-			slog.String("session_id", sess.sessID),
+		sess.log.InfoContext(ctx, "synthetic recipient accepted but no webhook subscriber",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("recipient", rc.addr),
 			slog.String("route_tag", rc.routeTag))
 		sess.auditSyntheticAccepted(ctx, rc, msg, 0, "no_subscription")
@@ -920,15 +951,15 @@ func (sess *session) dispatchSynthetic(
 		Parsed:    msg,
 	}
 	if err := disp.DispatchSynthetic(ctx, in, hooks); err != nil {
-		sess.srv.log.WarnContext(ctx, "synthetic dispatch enqueue failed",
-			slog.String("session_id", sess.sessID),
+		sess.log.WarnContext(ctx, "synthetic dispatch enqueue failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("recipient", rc.addr),
 			slog.String("err", err.Error()))
 		sess.auditSyntheticAccepted(ctx, rc, msg, len(hooks), "dispatch_error")
 		return
 	}
-	sess.srv.log.InfoContext(ctx, "synthetic recipient dispatched to webhooks",
-		slog.String("session_id", sess.sessID),
+	sess.log.InfoContext(ctx, "synthetic recipient dispatched to webhooks",
+		slog.String("activity", observe.ActivitySystem),
 		slog.String("recipient", rc.addr),
 		slog.String("route_tag", rc.routeTag),
 		slog.Int("subscribers", len(hooks)))
@@ -976,8 +1007,8 @@ func (sess *session) auditSyntheticAccepted(
 		Message:    "session=" + sess.sessID,
 		Metadata:   md,
 	}); err != nil {
-		sess.srv.log.WarnContext(ctx, "synthetic audit append failed",
-			slog.String("session_id", sess.sessID),
+		sess.log.WarnContext(ctx, "synthetic audit append failed",
+			slog.String("activity", observe.ActivityInternal),
 			slog.String("err", err.Error()))
 	}
 }
@@ -1003,8 +1034,8 @@ func (sess *session) queueOutboundFromSubmission(
 ) bool {
 	q := sess.srv.subQueue
 	if q == nil {
-		sess.srv.log.WarnContext(ctx, "submission listener: outbound queue not wired; recipient dropped",
-			slog.String("session_id", sess.sessID),
+		sess.log.WarnContext(ctx, "submission listener: outbound queue not wired; recipient dropped",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("recipient", rc.addr))
 		return false
 	}
@@ -1012,8 +1043,8 @@ func (sess *session) queueOutboundFromSubmission(
 		// Defensive: the cmdMAIL handler already required AUTH on
 		// submission listeners. Reaching this branch unauthenticated
 		// is a bug.
-		sess.srv.log.ErrorContext(ctx, "submission listener: unauthenticated session reached outbound queue path",
-			slog.String("session_id", sess.sessID),
+		sess.log.ErrorContext(ctx, "submission listener: unauthenticated session reached outbound queue path",
+			slog.String("activity", observe.ActivityInternal),
 			slog.String("recipient", rc.addr))
 		return false
 	}
@@ -1038,14 +1069,14 @@ func (sess *session) queueOutboundFromSubmission(
 		REQUIRETLS:     requireTLS,
 	})
 	if err != nil {
-		sess.srv.log.WarnContext(ctx, "submission listener: queue.Submit failed",
-			slog.String("session_id", sess.sessID),
+		sess.log.WarnContext(ctx, "submission listener: queue.Submit failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("recipient", rc.addr),
 			slog.String("err", err.Error()))
 		return false
 	}
-	sess.srv.log.InfoContext(ctx, "submission listener: outbound queued",
-		slog.String("session_id", sess.sessID),
+	sess.log.InfoContext(ctx, "submission listener: outbound queued",
+		slog.String("activity", observe.ActivityUser),
 		slog.String("recipient", rc.addr),
 		slog.String("envelope_id", string(envID)),
 		slog.String("signing_domain", signingDomain))

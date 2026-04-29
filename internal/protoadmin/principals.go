@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -148,9 +149,10 @@ func (s *Server) handleGetPrincipal(w http.ResponseWriter, r *http.Request) {
 // patchPrincipalRequest is the partial-update body. Pointer-typed
 // fields let a caller distinguish "not present" from "set to zero".
 type patchPrincipalRequest struct {
-	DisplayName *string   `json:"display_name,omitempty"`
-	QuotaBytes  *int64    `json:"quota_bytes,omitempty"`
-	Flags       *[]string `json:"flags,omitempty"`
+	DisplayName          *string   `json:"display_name,omitempty"`
+	QuotaBytes           *int64    `json:"quota_bytes,omitempty"`
+	Flags                *[]string `json:"flags,omitempty"`
+	SeenAddressesEnabled *bool     `json:"seen_addresses_enabled,omitempty"`
 }
 
 func (s *Server) handlePatchPrincipal(w http.ResponseWriter, r *http.Request) {
@@ -199,9 +201,32 @@ func (s *Server) handlePatchPrincipal(w http.ResponseWriter, r *http.Request) {
 		preserved := p.Flags & store.PrincipalFlagTOTPEnabled
 		p.Flags = flags | preserved
 	}
+	// seen_addresses_enabled (REQ-SET-15): any authenticated principal
+	// (including self) may flip their own toggle. When flipped to false
+	// the server purges all SeenAddress rows for the principal.
+	purgeSeenAddresses := false
+	if req.SeenAddressesEnabled != nil {
+		if !p.SeenAddressesEnabled && *req.SeenAddressesEnabled {
+			// Re-enabling: just flip the flag; history starts fresh.
+			p.SeenAddressesEnabled = true
+		} else if p.SeenAddressesEnabled && !*req.SeenAddressesEnabled {
+			// Disabling: flip and schedule purge after UpdatePrincipal.
+			p.SeenAddressesEnabled = false
+			purgeSeenAddresses = true
+		}
+	}
 	if err := s.store.Meta().UpdatePrincipal(r.Context(), p); err != nil {
 		s.writeStoreError(w, r, err)
 		return
+	}
+	if purgeSeenAddresses {
+		if _, err := s.store.Meta().PurgeSeenAddressesByPrincipal(r.Context(), pid); err != nil {
+			// Non-fatal: log but don't fail the request. The flag is
+			// already persisted; stale rows will not be seeded again.
+			s.logger.WarnContext(r.Context(), "seen_addresses: purge failed",
+				"activity", observe.ActivityInternal,
+				"principal_id", pid, "err", err)
+		}
 	}
 	s.appendAudit(r.Context(), "principal.update",
 		fmt.Sprintf("principal:%d", p.ID),
@@ -316,7 +341,8 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 	case errors.Is(err, store.ErrQuotaExceeded):
 		writeProblem(w, r, http.StatusInsufficientStorage, "quota_exceeded", err.Error(), "")
 	default:
-		s.loggerFrom(r.Context()).Error("protoadmin.store_error", "err", err)
+		s.loggerFrom(r.Context()).Error("protoadmin.store_error",
+			"activity", observe.ActivityInternal, "err", err)
 		writeProblem(w, r, http.StatusInternalServerError, "internal_error",
 			"internal server error", "")
 	}

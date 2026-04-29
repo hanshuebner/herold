@@ -121,16 +121,17 @@ func convertFakeToRow(table string, raw any) (any, error) {
 	case "principals":
 		p := raw.(store.Principal)
 		return &PrincipalRow{
-			ID:             int64(p.ID),
-			Kind:           int64(p.Kind),
-			CanonicalEmail: p.CanonicalEmail,
-			DisplayName:    p.DisplayName,
-			PasswordHash:   p.PasswordHash,
-			TOTPSecret:     p.TOTPSecret,
-			QuotaBytes:     p.QuotaBytes,
-			Flags:          int64(p.Flags),
-			CreatedAtUs:    micros(p.CreatedAt),
-			UpdatedAtUs:    micros(p.UpdatedAt),
+			ID:                   int64(p.ID),
+			Kind:                 int64(p.Kind),
+			CanonicalEmail:       p.CanonicalEmail,
+			DisplayName:          p.DisplayName,
+			PasswordHash:         p.PasswordHash,
+			TOTPSecret:           p.TOTPSecret,
+			QuotaBytes:           p.QuotaBytes,
+			Flags:                int64(p.Flags),
+			SeenAddressesEnabled: p.SeenAddressesEnabled,
+			CreatedAtUs:          micros(p.CreatedAt),
+			UpdatedAtUs:          micros(p.UpdatedAt),
 		}, nil
 	case "domains":
 		d := raw.(store.Domain)
@@ -365,7 +366,10 @@ func convertFakeToRow(table string, raw any) (any, error) {
 			MailboxState: j.Mailbox, EmailState: j.Email, ThreadState: j.Thread,
 			IdentityState: j.Identity, EmailSubmissionState: j.EmailSubmission,
 			VacationResponseState: j.VacationResponse, UpdatedAtUs: micros(j.UpdatedAt),
-			ShortcutCoachState: j.ShortcutCoach,
+			ShortcutCoachState:    j.ShortcutCoach,
+			CategorySettingsState: j.CategorySettings,
+			ManagedRuleState:      j.ManagedRule,
+			SeenAddressState:      j.SeenAddress,
 		}, nil
 	case "jmap_email_submissions":
 		e := raw.(store.EmailSubmissionRow)
@@ -456,6 +460,39 @@ func convertFakeToRow(table string, raw any) (any, error) {
 			r.DismissUntil = &us
 		}
 		return r, nil
+	case "llm_classifications":
+		c := raw.(store.LLMClassificationRecord)
+		r := &LLMClassificationRow{
+			MessageID:   int64(c.MessageID),
+			PrincipalID: int64(c.PrincipalID),
+			SpamVerdict: c.SpamVerdict, SpamConfidence: c.SpamConfidence,
+			SpamReason: c.SpamReason, SpamPromptApplied: c.SpamPromptApplied,
+			SpamModel:             c.SpamModel,
+			CategoryAssigned:      c.CategoryAssigned,
+			CategoryPromptApplied: c.CategoryPromptApplied,
+			CategoryModel:         c.CategoryModel,
+		}
+		if c.SpamClassifiedAt != nil {
+			us := c.SpamClassifiedAt.UnixMicro()
+			r.SpamClassifiedAtUs = &us
+		}
+		if c.CategoryClassifiedAt != nil {
+			us := c.CategoryClassifiedAt.UnixMicro()
+			r.CategoryClassifiedAtUs = &us
+		}
+		return r, nil
+	case "seen_addresses":
+		sa := raw.(store.SeenAddress)
+		return &SeenAddressRow{
+			ID:            int64(sa.ID),
+			PrincipalID:   int64(sa.PrincipalID),
+			Email:         sa.Email,
+			DisplayName:   sa.DisplayName,
+			FirstSeenAtUs: sa.FirstSeenAt.UnixMicro(),
+			LastUsedAtUs:  sa.LastUsedAt.UnixMicro(),
+			SendCount:     sa.SendCount,
+			ReceivedCount: sa.ReceivedCount,
+		}, nil
 	case "ses_seen_messages":
 		// The fakestore emits an empty slice for this table; this branch
 		// is only reached during tests that populate a SQLite source and
@@ -479,7 +516,8 @@ func convertRowToFake(table string, row any) (any, error) {
 			CanonicalEmail: r.CanonicalEmail, DisplayName: r.DisplayName,
 			PasswordHash: r.PasswordHash, TOTPSecret: r.TOTPSecret,
 			QuotaBytes: r.QuotaBytes, Flags: store.PrincipalFlags(r.Flags),
-			CreatedAt: fromMicros(r.CreatedAtUs), UpdatedAt: fromMicros(r.UpdatedAtUs),
+			SeenAddressesEnabled: r.SeenAddressesEnabled,
+			CreatedAt:            fromMicros(r.CreatedAtUs), UpdatedAt: fromMicros(r.UpdatedAtUs),
 		}, nil
 	case "domains":
 		r := row.(*DomainRow)
@@ -733,7 +771,10 @@ func convertRowToFake(table string, row any) (any, error) {
 			Mailbox:     r.MailboxState, Email: r.EmailState, Thread: r.ThreadState,
 			Identity: r.IdentityState, EmailSubmission: r.EmailSubmissionState,
 			VacationResponse: r.VacationResponseState, UpdatedAt: fromMicros(r.UpdatedAtUs),
-			ShortcutCoach: r.ShortcutCoachState,
+			ShortcutCoach:    r.ShortcutCoachState,
+			CategorySettings: r.CategorySettingsState,
+			ManagedRule:      r.ManagedRuleState,
+			SeenAddress:      r.SeenAddressState,
 		}, nil
 	case "jmap_email_submissions":
 		r := row.(*JMAPEmailSubmissionRow)
@@ -825,6 +866,41 @@ func convertRowToFake(table string, row any) (any, error) {
 			d.DismissUntil = &t
 		}
 		return d, nil
+	case "llm_classifications":
+		r := row.(*LLMClassificationRow)
+		rec := store.LLMClassificationRecord{
+			MessageID:             store.MessageID(r.MessageID),
+			PrincipalID:           store.PrincipalID(r.PrincipalID),
+			SpamVerdict:           r.SpamVerdict,
+			SpamConfidence:        r.SpamConfidence,
+			SpamReason:            r.SpamReason,
+			SpamPromptApplied:     r.SpamPromptApplied,
+			SpamModel:             r.SpamModel,
+			CategoryAssigned:      r.CategoryAssigned,
+			CategoryPromptApplied: r.CategoryPromptApplied,
+			CategoryModel:         r.CategoryModel,
+		}
+		if r.SpamClassifiedAtUs != nil {
+			t := fromMicros(*r.SpamClassifiedAtUs)
+			rec.SpamClassifiedAt = &t
+		}
+		if r.CategoryClassifiedAtUs != nil {
+			t := fromMicros(*r.CategoryClassifiedAtUs)
+			rec.CategoryClassifiedAt = &t
+		}
+		return rec, nil
+	case "seen_addresses":
+		r := row.(*SeenAddressRow)
+		return store.SeenAddress{
+			ID:            store.SeenAddressID(r.ID),
+			PrincipalID:   store.PrincipalID(r.PrincipalID),
+			Email:         r.Email,
+			DisplayName:   r.DisplayName,
+			FirstSeenAt:   fromMicros(r.FirstSeenAtUs),
+			LastUsedAt:    fromMicros(r.LastUsedAtUs),
+			SendCount:     r.SendCount,
+			ReceivedCount: r.ReceivedCount,
+		}, nil
 	case "ses_seen_messages":
 		// The fakestore DiagInsert default branch ignores unknown tables,
 		// so we simply return the SESSeenMessageRow and the fakestore

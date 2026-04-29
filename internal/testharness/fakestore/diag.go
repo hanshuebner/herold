@@ -344,6 +344,38 @@ func (s *Store) DiagSnapshot() *DiagDump {
 		dd.Tables["coach_dismiss"] = []any{}
 	}
 
+	// llm_classifications: emit sorted by message_id for determinism.
+	if s.phase2 != nil && len(s.phase2.llmClassifications) > 0 {
+		msgIDs := make([]store.MessageID, 0, len(s.phase2.llmClassifications))
+		for id := range s.phase2.llmClassifications {
+			msgIDs = append(msgIDs, id)
+		}
+		sort.Slice(msgIDs, func(i, j int) bool { return msgIDs[i] < msgIDs[j] })
+		for _, id := range msgIDs {
+			dd.Tables["llm_classifications"] = append(dd.Tables["llm_classifications"],
+				s.phase2.llmClassifications[id])
+		}
+	}
+	if dd.Tables["llm_classifications"] == nil {
+		dd.Tables["llm_classifications"] = []any{}
+	}
+
+	// seen_addresses: emit sorted by ID for determinism.
+	if s.seenAddresses != nil {
+		saIDs := make([]store.SeenAddressID, 0, len(s.seenAddresses.rows))
+		for id := range s.seenAddresses.rows {
+			saIDs = append(saIDs, id)
+		}
+		sort.Slice(saIDs, func(i, j int) bool { return saIDs[i] < saIDs[j] })
+		for _, id := range saIDs {
+			dd.Tables["seen_addresses"] = append(dd.Tables["seen_addresses"],
+				s.seenAddresses.rows[id])
+		}
+	}
+	if dd.Tables["seen_addresses"] == nil {
+		dd.Tables["seen_addresses"] = []any{}
+	}
+
 	// Blobs: include refcount=1 for every present blob; the caller's
 	// consumer treats this as the "blob_refs" table input.
 	bhashes := make([]string, 0, len(s.blobSize))
@@ -435,6 +467,7 @@ func (s *Store) DiagReset() {
 	s.phase2 = nil
 	s.reactions = nil
 	s.coach = nil
+	s.seenAddresses = nil
 	s.nextPrincipalID = 1
 	s.nextMailboxID = 1
 	s.nextMessageID = 1
@@ -629,6 +662,21 @@ func (s *Store) DiagInsert(table string, row any) error {
 			dup.DismissUntil = &t
 		}
 		s.coach.dismiss[coachKey{Principal: d.PrincipalID, Action: d.Action}] = dup
+	case "llm_classifications":
+		c := row.(store.LLMClassificationRecord)
+		s.ensurePhase2()
+		if s.phase2.llmClassifications == nil {
+			s.phase2.llmClassifications = make(map[store.MessageID]store.LLMClassificationRecord)
+		}
+		s.phase2.llmClassifications[c.MessageID] = c
+	case "seen_addresses":
+		sa := row.(store.SeenAddress)
+		d := s.ensureSeenAddr()
+		d.rows[sa.ID] = sa
+		d.byEmail[seenAddrKey(sa.PrincipalID, sa.Email)] = sa.ID
+		if sa.ID >= d.nextID {
+			d.nextID = sa.ID + 1
+		}
 	case "blob_refs":
 		b := row.(BlobRefEntry)
 		s.blobSize[b.Hash] = b.Size

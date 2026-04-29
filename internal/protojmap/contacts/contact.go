@@ -485,6 +485,16 @@ func (h *handlerSet) createContact(
 	if err != nil {
 		return store.Contact{}, nil, fmt.Errorf("contacts: reload: %w", err)
 	}
+
+	// Auto-promotion (REQ-MAIL-11l): when a new contact carries a primary
+	// email, remove any SeenAddress row for that address. The contact is
+	// now the authoritative entry; keeping both would cause stale
+	// duplication in the autocomplete surface. Best-effort — failure here
+	// is non-fatal for the Contact/set response.
+	if loaded.PrimaryEmail != "" {
+		_ = h.store.Meta().DestroySeenAddressByEmail(ctx, pid, loaded.PrimaryEmail)
+	}
+
 	return loaded, nil, nil
 }
 

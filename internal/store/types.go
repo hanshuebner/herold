@@ -121,6 +121,10 @@ type Principal struct {
 	QuotaBytes int64
 	// Flags is the bitfield of PrincipalFlag* toggles.
 	Flags PrincipalFlags
+	// SeenAddressesEnabled controls whether the server seeds SeenAddress rows
+	// for this principal (REQ-SET-15). Defaults to true; set to false to
+	// disable seeding and immediately purge all existing rows.
+	SeenAddressesEnabled bool
 	// CreatedAt is the instant the principal row was inserted.
 	CreatedAt time.Time
 	// UpdatedAt is the instant of the most recent mutation to the row.
@@ -437,6 +441,12 @@ const (
 	// "PushSubscription" via EventSource see their own administrative
 	// changes (other devices that the same user logged in from).
 	EntityKindPushSubscription EntityKind = "push_subscription"
+	// EntityKindSeenAddress is a `SeenAddress` row (REQ-MAIL-11e..m).
+	// The feed carries (Kind, EntityID = SeenAddressID, ParentEntityID = 0, Op).
+	// Clients that watch SeenAddress via EventSource observe their own
+	// autocomplete-history mutations (seed-on-send, seed-on-receive,
+	// auto-promotion, privacy purge).
+	EntityKindSeenAddress EntityKind = "seen_address"
 )
 
 // ChangeOp is the operation kind on a StateChange row. Distinct from

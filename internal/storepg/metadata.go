@@ -97,6 +97,7 @@ func (m *metadata) InsertPrincipal(ctx context.Context, p store.Principal) (stor
 	p.ID = store.PrincipalID(id)
 	p.CreatedAt = now
 	p.UpdatedAt = now
+	p.SeenAddressesEnabled = true // default: enabled
 	p.CanonicalEmail = strings.ToLower(p.CanonicalEmail)
 	return p, nil
 }
@@ -112,7 +113,7 @@ func (m *metadata) GetPrincipalByEmail(ctx context.Context, email string) (store
 func (m *metadata) selectPrincipal(ctx context.Context, where string, args ...any) (store.Principal, error) {
 	row := m.s.pool.QueryRow(ctx, `
 		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
-		       quota_bytes, flags, created_at_us, updated_at_us
+		       quota_bytes, flags, seen_addresses_enabled, created_at_us, updated_at_us
 		  FROM principals `+where, args...)
 	var p store.Principal
 	var kind int32
@@ -121,7 +122,7 @@ func (m *metadata) selectPrincipal(ctx context.Context, where string, args ...an
 	var totp []byte
 	var id int64
 	err := row.Scan(&id, &kind, &p.CanonicalEmail, &p.DisplayName, &p.PasswordHash,
-		&totp, &p.QuotaBytes, &flags, &createdUs, &updatedUs)
+		&totp, &p.QuotaBytes, &flags, &p.SeenAddressesEnabled, &createdUs, &updatedUs)
 	if err != nil {
 		return store.Principal{}, mapErr(err)
 	}
@@ -142,10 +143,12 @@ func (m *metadata) UpdatePrincipal(ctx context.Context, p store.Principal) error
 		res, err := tx.Exec(ctx, `
 			UPDATE principals
 			   SET kind = $1, canonical_email = $2, display_name = $3, password_hash = $4,
-			       totp_secret = $5, quota_bytes = $6, flags = $7, updated_at_us = $8
-			 WHERE id = $9`,
+			       totp_secret = $5, quota_bytes = $6, flags = $7,
+			       seen_addresses_enabled = $8, updated_at_us = $9
+			 WHERE id = $10`,
 			int32(p.Kind), strings.ToLower(p.CanonicalEmail), p.DisplayName, p.PasswordHash,
-			p.TOTPSecret, p.QuotaBytes, int64(p.Flags), usMicros(now), int64(p.ID))
+			p.TOTPSecret, p.QuotaBytes, int64(p.Flags), p.SeenAddressesEnabled,
+			usMicros(now), int64(p.ID))
 		if err != nil {
 			return mapErr(err)
 		}

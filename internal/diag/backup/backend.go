@@ -226,6 +226,10 @@ func rowsForTable(table string) (any, bool) {
 		return &CoachDismissRow{}, true
 	case "managed_rules":
 		return &ManagedRuleRow{}, true
+	case "llm_classifications":
+		return &LLMClassificationRow{}, true
+	case "seen_addresses":
+		return &SeenAddressRow{}, true
 	}
 	return nil, false
 }

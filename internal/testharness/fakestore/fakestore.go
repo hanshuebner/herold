@@ -113,6 +113,10 @@ type Store struct {
 	managedRules   map[store.ManagedRuleID]store.ManagedRule
 	managedRuleSeq int64
 
+	// seenAddresses holds seen-address history (REQ-MAIL-11e..m). Lazily
+	// initialised on first call.
+	seenAddresses *seenAddressData
+
 	// monotonic ID counters
 	nextPrincipalID store.PrincipalID
 	nextMailboxID   store.MailboxID
@@ -285,6 +289,7 @@ func (m *metaFace) InsertPrincipal(ctx context.Context, p store.Principal) (stor
 	p.CanonicalEmail = email
 	p.CreatedAt = now
 	p.UpdatedAt = now
+	p.SeenAddressesEnabled = true // default: enabled
 	s.principals[p.ID] = p
 	s.byEmail[email] = p.ID
 	return p, nil

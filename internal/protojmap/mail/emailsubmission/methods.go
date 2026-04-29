@@ -899,6 +899,13 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 		return jmapEmailSubmission{}, &setError{Type: "serverFail",
 			Description: fmt.Sprintf("persist submission: %s", err)}
 	}
+
+	// Seed-on-send (REQ-MAIL-11g): upsert a SeenAddress row for every
+	// recipient the principal has sent to. Fire-and-forget — a seeding
+	// failure never blocks the submission response. We use a background
+	// context so the seeding is not cancelled if the HTTP request ends.
+	go s.h.seedRecipientsOnSend(context.Background(), p, msg, recipients)
+
 	rows, _ := s.h.store.Meta().ListQueueItems(ctx, store.QueueFilter{EnvelopeID: envID})
 	return rowToJMAP(rows, in.IdentityID, in.EmailID, threadID), nil
 }

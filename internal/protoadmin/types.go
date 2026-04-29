@@ -9,28 +9,30 @@ import (
 // principalDTO is the wire representation of a Principal. Sensitive
 // fields (PasswordHash, TOTPSecret) are never serialised.
 type principalDTO struct {
-	ID             uint64    `json:"id"`
-	Kind           string    `json:"kind"`
-	CanonicalEmail string    `json:"canonical_email"`
-	DisplayName    string    `json:"display_name,omitempty"`
-	QuotaBytes     int64     `json:"quota_bytes"`
-	Flags          []string  `json:"flags"`
-	TOTPEnabled    bool      `json:"totp_enabled"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID                   uint64    `json:"id"`
+	Kind                 string    `json:"kind"`
+	CanonicalEmail       string    `json:"canonical_email"`
+	DisplayName          string    `json:"display_name,omitempty"`
+	QuotaBytes           int64     `json:"quota_bytes"`
+	Flags                []string  `json:"flags"`
+	TOTPEnabled          bool      `json:"totp_enabled"`
+	SeenAddressesEnabled bool      `json:"seen_addresses_enabled"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 func toPrincipalDTO(p store.Principal) principalDTO {
 	return principalDTO{
-		ID:             uint64(p.ID),
-		Kind:           principalKindString(p.Kind),
-		CanonicalEmail: p.CanonicalEmail,
-		DisplayName:    p.DisplayName,
-		QuotaBytes:     p.QuotaBytes,
-		Flags:          principalFlagsToStrings(p.Flags),
-		TOTPEnabled:    p.Flags.Has(store.PrincipalFlagTOTPEnabled),
-		CreatedAt:      p.CreatedAt,
-		UpdatedAt:      p.UpdatedAt,
+		ID:                   uint64(p.ID),
+		Kind:                 principalKindString(p.Kind),
+		CanonicalEmail:       p.CanonicalEmail,
+		DisplayName:          p.DisplayName,
+		QuotaBytes:           p.QuotaBytes,
+		Flags:                principalFlagsToStrings(p.Flags),
+		TOTPEnabled:          p.Flags.Has(store.PrincipalFlagTOTPEnabled),
+		SeenAddressesEnabled: p.SeenAddressesEnabled,
+		CreatedAt:            p.CreatedAt,
+		UpdatedAt:            p.UpdatedAt,
 	}
 }
 

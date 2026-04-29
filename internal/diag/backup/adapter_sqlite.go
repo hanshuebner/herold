@@ -138,15 +138,17 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 	case "principals":
 		return enumerate(ctx, s.tx,
 			`SELECT id, kind, canonical_email, display_name, password_hash,
-			        totp_secret, quota_bytes, flags, used_bytes,
-			        created_at_us, updated_at_us FROM principals ORDER BY id`,
+			        totp_secret, quota_bytes, flags, seen_addresses_enabled,
+			        used_bytes, created_at_us, updated_at_us FROM principals ORDER BY id`,
 			func(rs *sql.Rows) (any, error) {
 				var r PrincipalRow
+				var seenAddrEnabled int64
 				if err := rs.Scan(&r.ID, &r.Kind, &r.CanonicalEmail, &r.DisplayName, &r.PasswordHash,
-					&r.TOTPSecret, &r.QuotaBytes, &r.Flags, &r.UsedBytes,
-					&r.CreatedAtUs, &r.UpdatedAtUs); err != nil {
+					&r.TOTPSecret, &r.QuotaBytes, &r.Flags, &seenAddrEnabled,
+					&r.UsedBytes, &r.CreatedAtUs, &r.UpdatedAtUs); err != nil {
 					return nil, err
 				}
+				r.SeenAddressesEnabled = seenAddrEnabled != 0
 				return &r, nil
 			}, fn)
 	case "push_subscription":
@@ -545,12 +547,15 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 		return enumerate(ctx, s.tx,
 			`SELECT principal_id, mailbox_state, email_state, thread_state,
 			        identity_state, email_submission_state, vacation_response_state,
-			        updated_at_us, shortcut_coach_state FROM jmap_states ORDER BY principal_id`,
+			        updated_at_us, shortcut_coach_state, category_settings_state,
+			        managed_rule_state, seen_address_state
+			   FROM jmap_states ORDER BY principal_id`,
 			func(rs *sql.Rows) (any, error) {
 				var r JMAPStateRow
 				if err := rs.Scan(&r.PrincipalID, &r.MailboxState, &r.EmailState,
 					&r.ThreadState, &r.IdentityState, &r.EmailSubmissionState,
-					&r.VacationResponseState, &r.UpdatedAtUs, &r.ShortcutCoachState); err != nil {
+					&r.VacationResponseState, &r.UpdatedAtUs, &r.ShortcutCoachState,
+					&r.CategorySettingsState, &r.ManagedRuleState, &r.SeenAddressState); err != nil {
 					return nil, err
 				}
 				return &r, nil
@@ -883,6 +888,38 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "llm_classifications":
+		return enumerate(ctx, s.tx,
+			`SELECT message_id, principal_id,
+			        spam_verdict, spam_confidence, spam_reason, spam_prompt_applied,
+			        spam_model, spam_classified_at_us,
+			        category_assigned, category_prompt_applied, category_model,
+			        category_classified_at_us
+			   FROM llm_classifications ORDER BY message_id`,
+			func(rs *sql.Rows) (any, error) {
+				var r LLMClassificationRow
+				if err := rs.Scan(&r.MessageID, &r.PrincipalID,
+					&r.SpamVerdict, &r.SpamConfidence, &r.SpamReason, &r.SpamPromptApplied,
+					&r.SpamModel, &r.SpamClassifiedAtUs,
+					&r.CategoryAssigned, &r.CategoryPromptApplied, &r.CategoryModel,
+					&r.CategoryClassifiedAtUs); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
+	case "seen_addresses":
+		return enumerate(ctx, s.tx,
+			`SELECT id, principal_id, email, display_name,
+			        first_seen_at_us, last_used_at_us, send_count, received_count
+			   FROM seen_addresses ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r SeenAddressRow
+				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.Email, &r.DisplayName,
+					&r.FirstSeenAtUs, &r.LastUsedAtUs, &r.SendCount, &r.ReceivedCount); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
 	case "blob_refs":
 		return enumerate(ctx, s.tx,
 			`SELECT hash, size, ref_count, last_change_us FROM blob_refs ORDER BY hash`,
@@ -948,10 +985,12 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		r := row.(*PrincipalRow)
 		_, err := s.tx.ExecContext(ctx,
 			`INSERT INTO principals (id, kind, canonical_email, display_name, password_hash,
-			   totp_secret, quota_bytes, flags, used_bytes, created_at_us, updated_at_us)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   totp_secret, quota_bytes, flags, seen_addresses_enabled,
+			   used_bytes, created_at_us, updated_at_us)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.Kind, r.CanonicalEmail, r.DisplayName, r.PasswordHash,
-			r.TOTPSecret, r.QuotaBytes, r.Flags, r.UsedBytes, r.CreatedAtUs, r.UpdatedAtUs)
+			r.TOTPSecret, r.QuotaBytes, r.Flags, boolToInt(r.SeenAddressesEnabled),
+			r.UsedBytes, r.CreatedAtUs, r.UpdatedAtUs)
 		return err
 	case "push_subscription":
 		r := row.(*PushSubscriptionRow)
@@ -1233,11 +1272,13 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		_, err := s.tx.ExecContext(ctx,
 			`INSERT INTO jmap_states (principal_id, mailbox_state, email_state, thread_state,
 			   identity_state, email_submission_state, vacation_response_state, updated_at_us,
-			   shortcut_coach_state)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   shortcut_coach_state, category_settings_state, managed_rule_state,
+			   seen_address_state)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.PrincipalID, r.MailboxState, r.EmailState, r.ThreadState,
 			r.IdentityState, r.EmailSubmissionState, r.VacationResponseState, r.UpdatedAtUs,
-			r.ShortcutCoachState)
+			r.ShortcutCoachState, r.CategorySettingsState, r.ManagedRuleState,
+			r.SeenAddressState)
 		return err
 	case "jmap_email_submissions":
 		r := row.(*JMAPEmailSubmissionRow)
@@ -1464,6 +1505,30 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			 VALUES (?, ?)
 			 ON CONFLICT(message_id) DO NOTHING`,
 			r.MessageID, r.SeenAtUs)
+		return err
+	case "llm_classifications":
+		r := row.(*LLMClassificationRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO llm_classifications (message_id, principal_id,
+			   spam_verdict, spam_confidence, spam_reason, spam_prompt_applied,
+			   spam_model, spam_classified_at_us,
+			   category_assigned, category_prompt_applied, category_model,
+			   category_classified_at_us)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.MessageID, r.PrincipalID,
+			r.SpamVerdict, r.SpamConfidence, r.SpamReason, r.SpamPromptApplied,
+			r.SpamModel, r.SpamClassifiedAtUs,
+			r.CategoryAssigned, r.CategoryPromptApplied, r.CategoryModel,
+			r.CategoryClassifiedAtUs)
+		return err
+	case "seen_addresses":
+		r := row.(*SeenAddressRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO seen_addresses (id, principal_id, email, display_name,
+			   first_seen_at_us, last_used_at_us, send_count, received_count)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.PrincipalID, r.Email, r.DisplayName,
+			r.FirstSeenAtUs, r.LastUsedAtUs, r.SendCount, r.ReceivedCount)
 		return err
 	case "blob_refs":
 		r := row.(*BlobRefRow)

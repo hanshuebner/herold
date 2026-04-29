@@ -90,7 +90,35 @@ const CurrentBackupVersion = 1
 //	jmap_states.managed_rule_state counter. Adds
 //	sieve_scripts.user_script column so the user-written Sieve half
 //	survives recompilations of the managed-rule preamble.
-const CurrentSchemaVersion = 26
+//
+// 27 — 0027_llm_classifications.sql. Per-message LLM classification
+//
+//	records (REQ-FILT-66 / REQ-FILT-216 / G14). Adds the
+//	llm_classifications table and jmap_categorisation_config.guardrail
+//	column. Forward-only.
+//
+// 28 — 0028_derived_categories.sql. Derived category list per account
+//
+//	(REQ-FILT-217). Adds jmap_categorisation_config.derived_categories_json
+//	column. Column-only migration.
+//
+// 29 — 0029_derived_categories_epoch.sql. Epoch guard for derived
+//
+//	categories optimistic locking (REQ-FILT-217). Adds
+//	jmap_categorisation_config.derived_categories_epoch column.
+//	Column-only migration.
+//
+// 30 — 0030_seen_addresses.sql. Per-principal seen-addresses history
+//
+//	(REQ-MAIL-11e..m). Adds the seen_addresses table and
+//	jmap_states.seen_address_state column. Forward-only.
+//
+// 31 — 0031_seen_addresses_enabled.sql. Per-principal
+//
+//	seen-addresses-enabled flag (REQ-SET-15). Adds
+//	principals.seen_addresses_enabled column (default true).
+//	Column-only migration.
+const CurrentSchemaVersion = 31
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -205,5 +233,12 @@ var TableNames = []string{
 	// Phase 3 Wave 3.2 SES inbound replay deduplication
 	// (REQ-HOOK-SES-01..07, migration 0018). No FK dependencies.
 	"ses_seen_messages",
+	// LLM per-message classification records (REQ-FILT-66 / REQ-FILT-216,
+	// migration 0027). FK to messages(id) and principals(id); restored
+	// after both parents.
+	"llm_classifications",
+	// Per-principal seen-addresses history (REQ-MAIL-11e..m, migration 0030).
+	// FK to principals(id); restored after principals.
+	"seen_addresses",
 	"blob_refs",
 }

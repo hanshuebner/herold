@@ -190,6 +190,13 @@ func Run(t *testing.T, f Factory) {
 		{"SearchPrincipalsByText_LimitClamped", testSearchPrincipalsByTextLimitClamped},
 		{"SearchPrincipalsByText_NoMatch", testSearchPrincipalsByTextNoMatch},
 		{"SearchPrincipalsByText_CaseInsensitive", testSearchPrincipalsByTextCaseInsensitive},
+		// -- REQ-MAIL-11e..m seen-addresses history -----------------------
+		{"SeenAddress_UpsertInsert", testSeenAddressUpsertInsert},
+		{"SeenAddress_UpsertUpdate_CountsIncrement", testSeenAddressUpsertUpdate},
+		{"SeenAddress_Cap_501_OldestEvicted", testSeenAddressCap},
+		{"SeenAddress_GetByEmail", testSeenAddressGetByEmail},
+		{"SeenAddress_Destroy", testSeenAddressDestroy},
+		{"SeenAddress_Purge", testSeenAddressPurge},
 	}
 	for _, c := range cases {
 		tc := c

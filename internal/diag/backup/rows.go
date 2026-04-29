@@ -34,9 +34,13 @@ type PrincipalRow struct {
 	TOTPSecret     []byte `json:"totp_secret,omitempty"`
 	QuotaBytes     int64  `json:"quota_bytes"`
 	Flags          int64  `json:"flags"`
-	UsedBytes      int64  `json:"used_bytes"`
-	CreatedAtUs    int64  `json:"created_at_us"`
-	UpdatedAtUs    int64  `json:"updated_at_us"`
+	// SeenAddressesEnabled is the migration-0031 flag controlling whether
+	// the server seeds SeenAddress rows for this principal (REQ-SET-15).
+	// Default true; stored as 1/0 in SQLite, boolean in Postgres.
+	SeenAddressesEnabled bool  `json:"seen_addresses_enabled"`
+	UsedBytes            int64 `json:"used_bytes"`
+	CreatedAtUs          int64 `json:"created_at_us"`
+	UpdatedAtUs          int64 `json:"updated_at_us"`
 }
 
 type OIDCProviderRow struct {
@@ -353,6 +357,10 @@ type JMAPStateRow struct {
 	// the ManagedRule datatype (Wave 3.15 REQ-FLT-01..31). Zero for
 	// rows written before migration 0026.
 	ManagedRuleState int64 `json:"managed_rule_state,omitempty"`
+	// SeenAddressState is the migration-0030 JMAP state counter for
+	// the SeenAddress datatype (REQ-MAIL-11e..m). Zero for rows
+	// written before migration 0030.
+	SeenAddressState int64 `json:"seen_address_state,omitempty"`
 }
 
 type JMAPEmailSubmissionRow struct {
@@ -574,6 +582,40 @@ type CoachDismissRow struct {
 	DismissCount int64  `json:"dismiss_count"`
 	DismissUntil *int64 `json:"dismiss_until,omitempty"`
 	UpdatedAt    int64  `json:"updated_at"`
+}
+
+// LLMClassificationRow mirrors the llm_classifications table introduced
+// in migration 0027 (REQ-FILT-66 / REQ-FILT-216 / G14). One row per
+// delivered message; written at delivery, overwritten on re-classification.
+// All nullable sub-record columns use pointers so absent fields round-trip
+// as JSON null.
+type LLMClassificationRow struct {
+	MessageID               int64    `json:"message_id"`
+	PrincipalID             int64    `json:"principal_id"`
+	SpamVerdict             *string  `json:"spam_verdict,omitempty"`
+	SpamConfidence          *float64 `json:"spam_confidence,omitempty"`
+	SpamReason              *string  `json:"spam_reason,omitempty"`
+	SpamPromptApplied       *string  `json:"spam_prompt_applied,omitempty"`
+	SpamModel               *string  `json:"spam_model,omitempty"`
+	SpamClassifiedAtUs      *int64   `json:"spam_classified_at_us,omitempty"`
+	CategoryAssigned        *string  `json:"category_assigned,omitempty"`
+	CategoryPromptApplied   *string  `json:"category_prompt_applied,omitempty"`
+	CategoryModel           *string  `json:"category_model,omitempty"`
+	CategoryClassifiedAtUs  *int64   `json:"category_classified_at_us,omitempty"`
+}
+
+// SeenAddressRow mirrors the seen_addresses table introduced in
+// migration 0030 (REQ-MAIL-11e..m). One row per (principal, email)
+// pair; tracks send/receive counts and first/last-used timestamps.
+type SeenAddressRow struct {
+	ID            int64  `json:"id"`
+	PrincipalID   int64  `json:"principal_id"`
+	Email         string `json:"email"`
+	DisplayName   string `json:"display_name"`
+	FirstSeenAtUs int64  `json:"first_seen_at_us"`
+	LastUsedAtUs  int64  `json:"last_used_at_us"`
+	SendCount     int64  `json:"send_count"`
+	ReceivedCount int64  `json:"received_count"`
 }
 
 // PushSubscriptionRow mirrors the push_subscription table introduced

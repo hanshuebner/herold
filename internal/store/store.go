@@ -1248,6 +1248,46 @@ type Metadata interface {
 	// ListManagedRules returns the principal's rules in (sort_order, id)
 	// ascending order, subject to filter.
 	ListManagedRules(ctx context.Context, pid PrincipalID, filter ManagedRuleFilter) ([]ManagedRule, error)
+
+	// -- REQ-MAIL-11e..m: seen-addresses history -----------------------
+
+	// UpsertSeenAddress atomically inserts or updates the
+	// (principalID, email) seen-address row.  On insert, firstSeenAt
+	// and lastUsedAt are set to the current instant; on update,
+	// lastUsedAt is refreshed, sendCount is incremented by sendDelta,
+	// and receivedCount is incremented by receiveDelta.  When
+	// displayName is non-empty it overwrites the stored value.
+	//
+	// After the upsert, if the principal now has more than 500 rows the
+	// single oldest-by-lastUsedAt row is deleted in the same
+	// transaction (server-side 500-entry cap, REQ-MAIL-11e).
+	//
+	// Returns the upserted row and isNew=true when the row was inserted
+	// rather than updated.
+	UpsertSeenAddress(ctx context.Context, principalID PrincipalID, email, displayName string, sendDelta, receiveDelta int64) (SeenAddress, bool, error)
+
+	// ListSeenAddressesByPrincipal returns up to limit seen-address rows
+	// for principalID, ordered by last_used_at DESC. A non-positive limit
+	// applies the 500-row cap as the default.
+	ListSeenAddressesByPrincipal(ctx context.Context, principalID PrincipalID, limit int) ([]SeenAddress, error)
+
+	// GetSeenAddressByEmail returns the seen-address row for the given
+	// (principalID, email) pair, or ErrNotFound.
+	GetSeenAddressByEmail(ctx context.Context, principalID PrincipalID, email string) (SeenAddress, error)
+
+	// DestroySeenAddress removes the row identified by id owned by
+	// principalID.  Returns ErrNotFound when the row is absent or owned
+	// by a different principal.
+	DestroySeenAddress(ctx context.Context, principalID PrincipalID, id SeenAddressID) error
+
+	// DestroySeenAddressByEmail removes the row for (principalID, email).
+	// Returns ErrNotFound when the row is absent.
+	DestroySeenAddressByEmail(ctx context.Context, principalID PrincipalID, email string) error
+
+	// PurgeSeenAddressesByPrincipal removes every seen-address row for
+	// principalID (privacy-toggle-off path, REQ-MAIL-11m).  Returns the
+	// number of rows deleted.
+	PurgeSeenAddressesByPrincipal(ctx context.Context, principalID PrincipalID) (int, error)
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical
