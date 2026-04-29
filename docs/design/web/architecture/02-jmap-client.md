@@ -56,3 +56,13 @@ Method-call batches do not cancel mid-flight. If the user navigates away from a 
 ## Capability negotiation
 
 On bootstrap, the session descriptor's `capabilities` is read once and pinned for the session. Each batched call's `using` is computed from the methods it contains plus the pinned capability set. Capabilities the server doesn't advertise (e.g. `urn:ietf:params:jmap:sieve` if filters aren't supported) cause the corresponding feature paths to be removed from the UI; the suite never issues a method whose capability isn't advertised.
+
+## SeenAddress (recipient autocomplete supplement)
+
+Per `docs/design/web/requirements/02-mail-basics.md` REQ-MAIL-11e..m, the seen-addresses history is a per-principal sliding window of recently-used email addresses. It is exposed as a JMAP type on the Mail account under the existing `urn:ietf:params:jmap:mail` capability; no new capability slug is needed.
+
+- `SeenAddress/get` — standard JMAP get. `ids: null` returns all entries (capped at 500 per principal). Properties returned by default: `id`, `email`, `displayName`, `firstSeenAt`, `lastUsedAt`, `sendCount`, `receivedCount`.
+- `SeenAddress/changes` — standard. The state string advances when the seed-on-send / seed-on-receive / auto-promotion / privacy-purge paths run.
+- `SeenAddress/set` — `destroy: [String]` only. The user (or the dedup pruner of REQ-MAIL-11l) can drop entries. `create` and `update` are server-only and reject with `forbidden` from clients.
+
+The suite issues `SeenAddress/get { ids: null }` once on first compose (alongside `Contact/get`), refreshes via `SeenAddress/changes` from the change feed, and merges the entries with `Contact/get` results at render time. Dedup is by canonical lowercased `email`; JMAP Contacts win, seen-history entries are suppressed.
