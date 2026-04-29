@@ -324,6 +324,16 @@ type Metadata interface {
 	// above 1000 is silently lowered to 1000 to bound memory.
 	ListPrincipals(ctx context.Context, after PrincipalID, limit int) ([]Principal, error)
 
+	// SearchPrincipalsByText returns principals whose DisplayName contains
+	// prefix (case-insensitive, anywhere) or whose CanonicalEmail local-part
+	// starts with prefix (case-insensitive). Results are sorted: display-name
+	// matches first, then email-local-part matches; within each group,
+	// alphabetical by DisplayName then CanonicalEmail. limit caps the result;
+	// values <= 0 are treated as 1 and values > 1000 are clamped to 1000.
+	// Used exclusively by Principal/query with a textPrefix filter
+	// (docs/design/web/architecture/07-chat-protocol.md).
+	SearchPrincipalsByText(ctx context.Context, prefix string, limit int) ([]Principal, error)
+
 	// GetFTSCursor returns the persisted cursor value for key, or
 	// (0, nil) when no row exists (the consumer starts from the
 	// beginning). Used by the FTS indexer (key == "fts") and reserved

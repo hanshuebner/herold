@@ -1377,6 +1377,29 @@ func (m *metaFace) ListPrincipals(ctx context.Context, after store.PrincipalID, 
 	return out, nil
 }
 
+// SearchPrincipalsByText returns principals matching lowerPrefix via
+// the shared sort helper. The fake iterates over all in-memory
+// principals; acceptable for test volumes.
+func (m *metaFace) SearchPrincipalsByText(ctx context.Context, prefix string, limit int) ([]store.Principal, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	s := m.s()
+	s.mu.RLock()
+	all := make([]store.Principal, 0, len(s.principals))
+	for _, p := range s.principals {
+		all = append(all, p)
+	}
+	s.mu.RUnlock()
+	return store.SortPrincipalSearchResults(all, strings.ToLower(prefix), limit), nil
+}
+
 // DeletePrincipal cascades every row belonging to pid in one pass.
 // The fakestore has no transactions so "atomic" here means "under the
 // single writer lock"; that is enough for test determinism.

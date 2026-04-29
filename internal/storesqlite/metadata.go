@@ -1690,6 +1690,63 @@ func (m *metadata) ListPrincipals(ctx context.Context, after store.PrincipalID, 
 	return out, rows.Err()
 }
 
+// -- SearchPrincipalsByText --------------------------------------------
+
+func (m *metadata) SearchPrincipalsByText(ctx context.Context, prefix string, limit int) ([]store.Principal, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	lower := strings.ToLower(prefix)
+	// Two groups: display-name matches (anywhere) and email-local-part
+	// matches (prefix). We fetch both groups in one query using a
+	// computed priority column, then sort in Go to guarantee determinism.
+	// The LIKE patterns use '%' to match anywhere in display_name and
+	// prefix-match the local-part of canonical_email.
+	rows, err := m.s.db.QueryContext(ctx, `
+		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
+		       quota_bytes, flags, created_at_us, updated_at_us
+		  FROM principals
+		 WHERE lower(display_name) LIKE ? OR lower(canonical_email) LIKE ?
+		 LIMIT ?`,
+		"%"+lower+"%",
+		lower+"%@%",
+		limit*2, // over-fetch to ensure we can sort and trim to limit
+	)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.Principal
+	for rows.Next() {
+		var p store.Principal
+		var kind int64
+		var flags int64
+		var createdUs, updatedUs int64
+		var totp []byte
+		var id int64
+		if err := rows.Scan(&id, &kind, &p.CanonicalEmail, &p.DisplayName, &p.PasswordHash,
+			&totp, &p.QuotaBytes, &flags, &createdUs, &updatedUs); err != nil {
+			return nil, mapErr(err)
+		}
+		p.ID = store.PrincipalID(id)
+		p.Kind = store.PrincipalKind(kind)
+		p.Flags = store.PrincipalFlags(flags)
+		p.CreatedAt = fromMicros(createdUs)
+		p.UpdatedAt = fromMicros(updatedUs)
+		if len(totp) > 0 {
+			p.TOTPSecret = totp
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err)
+	}
+	return store.SortPrincipalSearchResults(out, lower, limit), nil
+}
+
 // -- DeletePrincipal --------------------------------------------------
 
 func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) error {

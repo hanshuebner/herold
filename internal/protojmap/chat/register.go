@@ -164,6 +164,9 @@ func RegisterWithFTS(
 	register(&blockGetHandler{h: h})
 	register(&blockSetHandler{h: h})
 
+	register(&principalGetHandler{h: h})
+	register(&principalQueryHandler{h: h})
+
 	// Per-account capability descriptor advertises the capacity envelope
 	// the server enforces. The server-wide capability descriptor is the
 	// empty object — every tunable lives on the per-account axis.

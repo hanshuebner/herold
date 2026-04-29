@@ -183,6 +183,13 @@ func Run(t *testing.T, f Factory) {
 		{"EmailReaction_ListEmpty", testEmailReactionListEmpty},
 		{"EmailReaction_BatchList", testEmailReactionBatchList},
 		{"EmailReaction_GetMessageByMessageIDHeader", testGetMessageByMessageIDHeader},
+		// -- Principal/query support (REQ-CHAT-01b/c) --------------------
+		{"SearchPrincipalsByText_DisplayNameMatch", testSearchPrincipalsByTextDisplayNameMatch},
+		{"SearchPrincipalsByText_EmailLocalPartMatch", testSearchPrincipalsByTextEmailLocalPartMatch},
+		{"SearchPrincipalsByText_SortOrder", testSearchPrincipalsByTextSortOrder},
+		{"SearchPrincipalsByText_LimitClamped", testSearchPrincipalsByTextLimitClamped},
+		{"SearchPrincipalsByText_NoMatch", testSearchPrincipalsByTextNoMatch},
+		{"SearchPrincipalsByText_CaseInsensitive", testSearchPrincipalsByTextCaseInsensitive},
 	}
 	for _, c := range cases {
 		tc := c
@@ -5900,5 +5907,148 @@ func testGetMessageByMessageIDHeader(t *testing.T, s store.Store) {
 	_, err = s.Meta().GetMessageByMessageIDHeader(ctx, p.ID, "not-here@host")
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("missing msgid: err = %v, want ErrNotFound", err)
+	}
+}
+
+// -- SearchPrincipalsByText tests -------------------------------------
+
+func testSearchPrincipalsByTextDisplayNameMatch(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.com",
+		DisplayName: "Alice Wonderland",
+	}); err != nil {
+		t.Fatalf("insert alice: %v", err)
+	}
+	if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "bob@example.com",
+		DisplayName: "Bob Builder",
+	}); err != nil {
+		t.Fatalf("insert bob: %v", err)
+	}
+	got, err := s.Meta().SearchPrincipalsByText(ctx, "alice", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByText: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d results, want 1: %+v", len(got), got)
+	}
+	if got[0].CanonicalEmail != "alice@example.com" {
+		t.Errorf("got %q, want alice@example.com", got[0].CanonicalEmail)
+	}
+}
+
+func testSearchPrincipalsByTextEmailLocalPartMatch(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "charlie@example.com",
+		DisplayName: "Charlie Brown",
+	}); err != nil {
+		t.Fatalf("insert charlie: %v", err)
+	}
+	if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "dave@example.com",
+		DisplayName: "Dave Green",
+	}); err != nil {
+		t.Fatalf("insert dave: %v", err)
+	}
+	// "cha" prefix matches "charlie" local-part but not "dave".
+	got, err := s.Meta().SearchPrincipalsByText(ctx, "cha", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByText: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d results, want 1: %+v", len(got), got)
+	}
+	if got[0].CanonicalEmail != "charlie@example.com" {
+		t.Errorf("got %q, want charlie@example.com", got[0].CanonicalEmail)
+	}
+}
+
+func testSearchPrincipalsByTextSortOrder(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	// Three principals: two with "ali" in the display name (prio 0),
+	// one that matches only on the email local-part prefix (prio 1).
+	for _, row := range []struct{ email, name string }{
+		{"zara@example.com", "Zara Ali"},    // name contains "ali" -> prio 0
+		{"alice@example.com", "Alice Ward"}, // name "Alice" contains "ali" -> prio 0
+		{"ali-only@example.com", "Plain"},   // only email local-part starts with "ali" -> prio 1
+	} {
+		if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+			Kind: store.PrincipalKindUser, CanonicalEmail: row.email, DisplayName: row.name,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", row.email, err)
+		}
+	}
+	got, err := s.Meta().SearchPrincipalsByText(ctx, "ali", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByText: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d results, want 3: %+v", len(got), got)
+	}
+	// prio 0: "Alice Ward" < "Zara Ali" (alphabetical by lower display name)
+	// prio 1: "Plain" (email-local-part match only)
+	wantOrder := []string{"alice@example.com", "zara@example.com", "ali-only@example.com"}
+	for i, w := range wantOrder {
+		if got[i].CanonicalEmail != w {
+			t.Errorf("pos %d: got %q, want %q", i, got[i].CanonicalEmail, w)
+		}
+	}
+}
+
+func testSearchPrincipalsByTextLimitClamped(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	for i := 0; i < 5; i++ {
+		if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+			Kind:           store.PrincipalKindUser,
+			CanonicalEmail: fmt.Sprintf("limituser%d@example.com", i),
+			DisplayName:    fmt.Sprintf("Limit User %d", i),
+		}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	got, err := s.Meta().SearchPrincipalsByText(ctx, "limit", 3)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByText: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d results, want 3 (limit applied): %+v", len(got), got)
+	}
+}
+
+func testSearchPrincipalsByTextNoMatch(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "nobody@example.com",
+		DisplayName: "Nobody",
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	got, err := s.Meta().SearchPrincipalsByText(ctx, "zzznomatch", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByText: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d results, want 0", len(got))
+	}
+}
+
+func testSearchPrincipalsByTextCaseInsensitive(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "francesca@example.com",
+		DisplayName: "Francesca",
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	for _, prefix := range []string{"Fra", "FRA", "fra", "FRAN"} {
+		got, err := s.Meta().SearchPrincipalsByText(ctx, prefix, 10)
+		if err != nil {
+			t.Fatalf("SearchPrincipalsByText(%q): %v", prefix, err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("SearchPrincipalsByText(%q): got %d results, want 1", prefix, len(got))
+		}
 	}
 }
