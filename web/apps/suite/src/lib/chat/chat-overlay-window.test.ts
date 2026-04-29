@@ -31,6 +31,36 @@ vi.mock('./store.svelte', () => ({
           unreadCount: 1,
         },
       ],
+      [
+        'c2',
+        {
+          id: 'c2',
+          type: 'space',
+          name: '',
+          members: [
+            { id: 'mem3', conversationId: 'c2', principalId: 'self', role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsMuted: false },
+          ],
+          createdAt: '2024-01-01T00:00:00Z',
+          pinned: false,
+          muted: false,
+          unreadCount: 0,
+        },
+      ],
+      [
+        'c3',
+        {
+          id: 'c3',
+          type: 'space',
+          name: 'Engineering',
+          members: [
+            { id: 'mem4', conversationId: 'c3', principalId: 'self', role: 'member', joinedAt: '2024-01-01T00:00:00Z', notificationsMuted: false },
+          ],
+          createdAt: '2024-01-01T00:00:00Z',
+          pinned: false,
+          muted: false,
+          unreadCount: 0,
+        },
+      ],
     ]),
     overlayMessages: new Map([
       [
@@ -53,6 +83,8 @@ vi.mock('./store.svelte', () => ({
           hasMore: false,
         },
       ],
+      ['c2', { messages: [], status: 'ready', hasMore: false }],
+      ['c3', { messages: [], status: 'ready', hasMore: false }],
     ]),
     presence: new Map([['p2', 'online']]),
     typing: new Map(),
@@ -178,5 +210,75 @@ describe('ChatOverlayWindow', () => {
       props: { windowKey: 'ow-1', conversationId: 'c1', minimized: true },
     });
     expect(container.querySelector('section')).toHaveClass('minimized');
+  });
+
+  // --- Sub-issue: title click to expand (issue #44) ---
+
+  it('calls expandWindow when the title bar is clicked in minimized state', async () => {
+    const { container } = render(ChatOverlayWindow, {
+      props: { windowKey: 'ow-1', conversationId: 'c1', minimized: true },
+    });
+    const titleBar = container.querySelector('.title-bar')!;
+    expect(titleBar).toBeInTheDocument();
+    await fireEvent.click(titleBar);
+    expect(chatOverlay.expandWindow).toHaveBeenCalledWith('ow-1');
+  });
+
+  it('does not call expandWindow when the title bar is clicked in expanded state', async () => {
+    const { container } = render(ChatOverlayWindow, {
+      props: { windowKey: 'ow-1', conversationId: 'c1', minimized: false },
+    });
+    const titleBar = container.querySelector('.title-bar')!;
+    await fireEvent.click(titleBar);
+    expect(chatOverlay.expandWindow).not.toHaveBeenCalled();
+  });
+
+  // --- Sub-issue: fallback name for space with empty name (issue #44) ---
+
+  it('shows "Untitled space" in the title bar when a space has an empty name', () => {
+    const { container } = render(ChatOverlayWindow, {
+      props: { windowKey: 'ow-2', conversationId: 'c2', minimized: false },
+    });
+    const titleName = container.querySelector('.title-name');
+    expect(titleName?.textContent).toBe('Untitled space');
+  });
+
+  it('shows "Untitled space" in the section aria-label when a space has an empty name', () => {
+    const { container } = render(ChatOverlayWindow, {
+      props: { windowKey: 'ow-2', conversationId: 'c2', minimized: false },
+    });
+    const section = container.querySelector('section');
+    expect(section).toHaveAttribute('aria-label', 'Chat: Untitled space');
+  });
+
+  it('shows the space name when the space has a non-empty name', () => {
+    const { container } = render(ChatOverlayWindow, {
+      props: { windowKey: 'ow-3', conversationId: 'c3', minimized: false },
+    });
+    const titleName = container.querySelector('.title-name');
+    expect(titleName?.textContent).toBe('Engineering');
+  });
+
+  // --- Sub-issue: icon characters not rendered as HTML entities (issue #44) ---
+
+  it('renders the minimize button as a plain dash character, not an HTML entity string', () => {
+    const { container } = render(ChatOverlayWindow, {
+      props: { windowKey: 'ow-1', conversationId: 'c1', minimized: false },
+    });
+    const minBtn = container.querySelector('.icon-btn[aria-label="Minimize"]')!;
+    // The inner text must be the Unicode en dash (U+2013), not the literal
+    // string "&#x2013;" which would indicate the entity was not parsed.
+    expect(minBtn.textContent?.trim()).toBe('–');
+    expect(minBtn.textContent).not.toContain('&');
+  });
+
+  it('renders the close button as a plain times character, not an HTML entity string', () => {
+    const { container } = render(ChatOverlayWindow, {
+      props: { windowKey: 'ow-1', conversationId: 'c1', minimized: false },
+    });
+    const closeBtn = screen.getByRole('button', { name: /Close/i });
+    // Must be U+00D7 (multiplication sign), not the literal "&#x00D7;" string.
+    expect(closeBtn.textContent?.trim()).toBe('×');
+    expect(closeBtn.textContent).not.toContain('&');
   });
 });

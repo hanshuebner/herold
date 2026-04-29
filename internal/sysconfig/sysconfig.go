@@ -514,10 +514,14 @@ type UIConfig struct {
 	// SecureCookies, when nil, applies the secure-by-default policy
 	// (true). Set explicitly to false only for development.
 	SecureCookies *bool `toml:"secure_cookies,omitempty"`
-	// SigningKeyEnv names the environment variable holding the
-	// HMAC signing key for session cookies. Empty makes the server
-	// generate a random per-process key (operators tolerate
-	// re-login on restart).
+	// SigningKeyEnv overrides the env var name the server reads for
+	// the HMAC signing key for session cookies. When empty (the usual
+	// case) the server reads the predefined variable HEROLD_UI_SESSION_KEY.
+	// Set this only when you cannot use the standard variable name
+	// (e.g. a secrets manager that mandates its own naming). If neither
+	// this variable nor HEROLD_UI_SESSION_KEY holds a value of at least 32
+	// bytes, the server generates a random per-process key (sessions are
+	// invalidated on every restart and a WARN is emitted at startup).
 	SigningKeyEnv string `toml:"signing_key_env,omitempty"`
 }
 

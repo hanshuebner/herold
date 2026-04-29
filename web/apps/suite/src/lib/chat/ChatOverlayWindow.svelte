@@ -32,6 +32,18 @@
   }
   let { windowKey, conversationId, minimized }: Props = $props();
 
+  /**
+   * Display name for the conversation.
+   * - DM: the conversation name (set server-side to the other member's display name).
+   * - Space: the space name, or "Untitled space" when the name is absent/empty.
+   *   Pre-existing spaces created without a name have an empty string here.
+   */
+  function conversationDisplayName(conv: Conversation | null): string {
+    if (!conv) return conversationId;
+    if (conv.type === 'space' && !conv.name) return 'Untitled space';
+    return conv.name || conversationId;
+  }
+
   let conversation = $derived<Conversation | null>(
     chat.conversations.get(conversationId) ?? null,
   );
@@ -92,14 +104,14 @@
 <section
   class="overlay-window"
   class:minimized
-  aria-label="Chat: {conversation?.name ?? conversationId}"
+  aria-label="Chat: {conversationDisplayName(conversation)}"
   onkeydown={handleKeydown}
 >
   <div
     class="title-bar"
     role="button"
     tabindex={minimized ? 0 : -1}
-    aria-label={minimized ? `Expand chat with ${conversation?.name ?? conversationId}` : undefined}
+    aria-label={minimized ? `Expand chat with ${conversationDisplayName(conversation)}` : undefined}
     aria-expanded={!minimized}
     onclick={handleTitleClick}
     onkeydown={(ev) => {
@@ -115,7 +127,7 @@
       {:else}
         <span class="space-icon" aria-hidden="true">#</span>
       {/if}
-      <span class="title-name">{conversation?.name ?? conversationId}</span>
+      <span class="title-name">{conversationDisplayName(conversation)}</span>
       {#if (conversation?.unreadCount ?? 0) > 0 && !(conversation?.muted)}
         <span class="unread-badge" aria-label="{conversation!.unreadCount} unread">
           {conversation!.unreadCount > 99 ? '99+' : conversation!.unreadCount}
@@ -135,7 +147,7 @@
           chatOverlay.toggleMinimize(windowKey);
         }}
       >
-        {minimized ? '+' : '&#x2013;'}
+        {minimized ? '+' : '–'}
       </button>
       <button
         type="button"
@@ -148,7 +160,7 @@
           handleClose();
         }}
       >
-        &#x00D7;
+        ×
       </button>
     </span>
   </div>
@@ -165,7 +177,9 @@
       />
     </div>
 
-    <ChatCompose {conversationId} autofocus={false} />
+    <div class="compose-footer">
+      <ChatCompose {conversationId} autofocus={false} />
+    </div>
   {/if}
 </section>
 
@@ -309,5 +323,14 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  /*
+   * The compose footer must never shrink when the message list is long.
+   * Without flex-shrink: 0 the flex layout can squish ChatCompose out of
+   * view when max-height is reached on the .overlay-window container.
+   */
+  .compose-footer {
+    flex-shrink: 0;
   }
 </style>
