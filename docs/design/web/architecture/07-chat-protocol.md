@@ -82,6 +82,15 @@ Standard JMAP shape:
 
 State strings advance per the standard JMAP rules (`architecture/03-sync-and-state.md`); push events on EventSource carry chat type names alongside mail's.
 
+### Principal directory (chat-only)
+
+The new-chat picker (`docs/design/web/requirements/08-chat.md` REQ-CHAT-01a..d) needs to look up Herold Principals on this server. Two methods, both gated by the chat capability so unauthenticated or non-chat clients cannot enumerate the directory.
+
+- `Principal/get` — standard JMAP get. `ids: [String]` returns `{ id, email, displayName }` for each found id; missing ids land in `notFound`. `properties` may restrict to a subset; default returns all three.
+- `Principal/query` — `filter` accepts either `{ "emailExact": "alice@example.com" }` (used to validate a free-text email entry) or `{ "textPrefix": "ali" }` (used for typeahead — matches against display name and email local-part, case-insensitive). `limit` caps the result list (server enforces a max of 25). Returns `{ ids: [String] }`; the suite then issues `Principal/get` to fetch full records.
+
+Both methods scope their results to **principals on this Herold server only** — the directory is a single-server set per `08-chat.md` § Storage and privacy. The methods never expose any field other than `id`, `email`, and `displayName`; account-level credentials, OIDC links, and audit fields stay server-internal. The `id` is opaque to the suite and used only as a foreign key on `Conversation/set` — it is never rendered to users (REQ-CHAT-15).
+
 ## Ephemeral channel: `wss://<origin>/chat/ws`
 
 Single per-session WebSocket. JSON-encoded messages.
