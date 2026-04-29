@@ -99,7 +99,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 // Invocation values. When the handler returns a MultipleInvocations the
 // extras are appended after the primary response entry per RFC 8621 §7.5.
 //
-// After each invocation it emits one "protojmap.method" record at info
+// After each invocation it emits one record whose message is the method name
 // (or warn on method-level error) per REQ-OPS-86d. The log carries:
 //   - activity = "user" for data methods; "audit" for Identity/* and
 //     Principal/* (security-relevant per REQ-OPS-86).
@@ -166,7 +166,6 @@ func (s *Server) logMethodCall(ctx context.Context, log *slog.Logger, call Invoc
 
 	attrs := []slog.Attr{
 		slog.String("activity", activity),
-		slog.String("method", call.Name),
 		slog.String("client_call_id", call.CallID),
 	}
 
@@ -194,7 +193,7 @@ func (s *Server) logMethodCall(ctx context.Context, log *slog.Logger, call Invoc
 		attrs = append(attrs, slog.String("error", mErr.Type))
 	}
 
-	log.LogAttrs(ctx, level, "protojmap.method", attrs...)
+	log.LogAttrs(ctx, level, call.Name, attrs...)
 }
 
 // methodActivity returns the activity tag for a JMAP method name per

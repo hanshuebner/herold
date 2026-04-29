@@ -37,10 +37,10 @@ func TestConsoleHandler_BasicNoColor(t *testing.T) {
 	if !strings.Contains(out, "herold starting") {
 		t.Errorf("missing message: %q", out)
 	}
-	if !strings.Contains(out, "activity") || !strings.Contains(out, "system") {
-		t.Errorf("missing activity=system: %q", out)
+	if strings.Contains(out, "activity=") {
+		t.Errorf("activity should NOT be rendered on console: %q", out)
 	}
-	if !strings.Contains(out, "version") || !strings.Contains(out, "1.0.0") {
+	if !strings.Contains(out, "version=1.0.0") {
 		t.Errorf("missing version=1.0.0: %q", out)
 	}
 }
@@ -84,57 +84,76 @@ func TestConsoleHandler_LevelFilter(t *testing.T) {
 	}
 }
 
-func TestConsoleHandler_SubsystemAndModule(t *testing.T) {
-	var buf bytes.Buffer
-	clk := fixedClock()
-	h := NewConsoleHandlerWithClock(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}, clk, &boolFalse)
-	logger := slog.New(h).With("subsystem", "protojmap", "module", "Email")
-	logger.Info("method called")
-	out := buf.String()
-	if !strings.Contains(out, "protojmap|Email") {
-		t.Errorf("subsystem|module not rendered: %q", out)
-	}
-}
-
-func TestConsoleHandler_SubsystemOnly(t *testing.T) {
+func TestConsoleHandler_SubsystemTag(t *testing.T) {
 	var buf bytes.Buffer
 	clk := fixedClock()
 	h := NewConsoleHandlerWithClock(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}, clk, &boolFalse)
 	logger := slog.New(h).With("subsystem", "queue")
 	logger.Info("delivery attempt")
 	out := buf.String()
-	if !strings.Contains(out, "queue") {
-		t.Errorf("subsystem not rendered: %q", out)
+	if !strings.Contains(out, "[queue] delivery attempt") {
+		t.Errorf("subsystem tag missing: %q", out)
+	}
+	if strings.Contains(out, "subsystem=") {
+		t.Errorf("subsystem should not also appear as a key=value: %q", out)
 	}
 }
 
-func TestConsoleHandler_FieldOrderActivity(t *testing.T) {
-	// activity must appear before arbitrary extra fields.
+func TestConsoleHandler_SubsystemSuppressedOnPrefixMatch(t *testing.T) {
+	// When the message already starts with "<subsystem>." the formatter
+	// must NOT also render "[subsystem]" — that's the protojmap.method
+	// duplication the user complained about.
+	var buf bytes.Buffer
+	clk := fixedClock()
+	h := NewConsoleHandlerWithClock(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}, clk, &boolFalse)
+	logger := slog.New(h).With("subsystem", "protojmap")
+	logger.Info("protojmap.method")
+	out := buf.String()
+	if strings.Contains(out, "[protojmap]") {
+		t.Errorf("redundant [protojmap] tag: %q", out)
+	}
+	if !strings.Contains(out, "protojmap.method") {
+		t.Errorf("message missing: %q", out)
+	}
+}
+
+func TestConsoleHandler_ModuleFallbackTag(t *testing.T) {
+	var buf bytes.Buffer
+	clk := fixedClock()
+	h := NewConsoleHandlerWithClock(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}, clk, &boolFalse)
+	logger := slog.New(h).With("module", "Email")
+	logger.Info("method called")
+	out := buf.String()
+	if !strings.Contains(out, "[Email]") {
+		t.Errorf("module fallback tag missing: %q", out)
+	}
+}
+
+func TestConsoleHandler_FieldOrder(t *testing.T) {
+	// Domain-meaningful attrs render in original order; correlation IDs sink
+	// to the end. activity is suppressed entirely from console output.
 	var buf bytes.Buffer
 	clk := fixedClock()
 	h := NewConsoleHandlerWithClock(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}, clk, &boolFalse)
 	logger := slog.New(h)
-	logger.Info("login", "user", "alice", "activity", "audit", "request_id", "r1")
+	logger.Info("login", "user", "alice", "activity", "audit", "request_id", "r1", "result", "ok")
 	out := buf.String()
-	// Find positions using key names (with possible padding before =).
-	actIdx := strings.Index(out, " activity")
-	requestIdx := strings.Index(out, " request_id")
-	userIdx := strings.Index(out, " user")
-	if actIdx < 0 {
-		t.Fatalf("missing activity field: %q", out)
+	if strings.Contains(out, "activity=") {
+		t.Errorf("activity should NOT be rendered on console: %q", out)
 	}
-	if requestIdx < 0 {
-		t.Fatalf("missing request_id field: %q", out)
+	userIdx := strings.Index(out, " user=alice")
+	resultIdx := strings.Index(out, " result=ok")
+	requestIdx := strings.Index(out, " request_id=r1")
+	if userIdx < 0 || resultIdx < 0 || requestIdx < 0 {
+		t.Fatalf("missing field(s): %q", out)
 	}
-	if userIdx < 0 {
-		t.Fatalf("missing user field: %q", out)
+	// user appears before result (insertion order preserved for primary attrs).
+	if userIdx > resultIdx {
+		t.Errorf("user should come before result (insertion order): %q", out)
 	}
-	// activity before request_id before user (lexicographic extras come last)
-	if actIdx > requestIdx {
-		t.Errorf("activity should come before request_id: %q", out)
-	}
-	if requestIdx > userIdx {
-		t.Errorf("request_id should come before user: %q", out)
+	// request_id is deprioritized — it sinks to the end after primary attrs.
+	if requestIdx < resultIdx {
+		t.Errorf("request_id should come after primary attrs: %q", out)
 	}
 }
 
@@ -196,20 +215,24 @@ func TestConsoleHandler_ForceColor(t *testing.T) {
 	}
 }
 
-func TestConsoleHandler_KeyWidthAlignment(t *testing.T) {
-	// All key=value pairs in a single record should be padded to the same
-	// key width to aid scanning.
+func TestConsoleHandler_NoKeyPadding(t *testing.T) {
+	// Keys must be flush against '=' with no padding. Padding adds visual
+	// gaps without aiding scanning across rows (each record has different
+	// keys), and the format aim is compactness.
 	var buf bytes.Buffer
 	clk := fixedClock()
 	h := NewConsoleHandlerWithClock(&buf, &slog.HandlerOptions{}, clk, &boolFalse)
 	logger := slog.New(h)
-	// short key "a" (len=1) and long key "long_key" (len=8) in same record.
 	logger.Info("align", "a", "1", "long_key", "2")
 	out := buf.String()
-	// The padded key "a" should be followed by spaces to match "long_key".
-	// Check that "a       =" appears (7 trailing spaces).
-	if !strings.Contains(out, "a       =") {
-		t.Errorf("key alignment missing: %q", out)
+	if !strings.Contains(out, " a=1") {
+		t.Errorf("expected flush a=1: %q", out)
+	}
+	if !strings.Contains(out, " long_key=2") {
+		t.Errorf("expected flush long_key=2: %q", out)
+	}
+	if strings.Contains(out, "a =") || strings.Contains(out, "a  ") {
+		t.Errorf("unexpected padding around 'a': %q", out)
 	}
 }
 

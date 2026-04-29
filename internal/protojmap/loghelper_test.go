@@ -186,9 +186,10 @@ func TestRequestLog_AccessTagged(t *testing.T) {
 }
 
 // TestDispatch_LogsMethodActivity verifies that a batch containing
-// Email/set and Mailbox/get emits exactly two protojmap.method records,
-// both at info, both with activity=user, and that the set record carries
-// created/updated/destroyed counts and the get record carries result_count.
+// Email/set and Mailbox/get emits exactly two per-method records (whose
+// message is the method name), both at info, both with activity=user,
+// and that the set record carries created/updated/destroyed counts and
+// the get record carries result_count.
 func TestDispatch_LogsMethodActivity(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
@@ -256,15 +257,15 @@ func TestDispatch_LogsMethodActivity(t *testing.T) {
 	)
 	_ = raw
 
-	// Collect the protojmap.method records.
+	// Collect the per-method records (message == method name).
 	var methodRecs []capturedRecord
 	for _, rec := range records.snapshot() {
-		if rec.Message == "protojmap.method" {
+		if rec.Message == "FakeType/set" || rec.Message == "FakeType/get" {
 			methodRecs = append(methodRecs, rec)
 		}
 	}
 	if len(methodRecs) != 2 {
-		t.Fatalf("want 2 protojmap.method records, got %d; all records: %v", len(methodRecs), records.snapshot())
+		t.Fatalf("want 2 method records, got %d; all records: %v", len(methodRecs), records.snapshot())
 	}
 
 	// Both should be at info, activity=user, and carry the method name.
@@ -280,7 +281,7 @@ func TestDispatch_LogsMethodActivity(t *testing.T) {
 	// Find the set record and check count attrs.
 	var setRec, getRec *capturedRecord
 	for i := range methodRecs {
-		switch methodRecs[i].Attrs["method"].String() {
+		switch methodRecs[i].Message {
 		case "FakeType/set":
 			setRec = &methodRecs[i]
 		case "FakeType/get":
@@ -362,10 +363,8 @@ func TestDispatch_AuditActivityForIdentityMethods(t *testing.T) {
 
 	var identityRecs []capturedRecord
 	for _, rec := range records.snapshot() {
-		if rec.Message == "protojmap.method" {
-			if rec.Attrs["method"].String() == "Identity/get" {
-				identityRecs = append(identityRecs, rec)
-			}
+		if rec.Message == "Identity/get" {
+			identityRecs = append(identityRecs, rec)
 		}
 	}
 	if len(identityRecs) == 0 {

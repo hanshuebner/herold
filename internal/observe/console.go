@@ -149,41 +149,69 @@ func (h *ConsoleHandler) clone() *ConsoleHandler {
 	}
 }
 
+// deprioritizedKeys are correlation IDs and similar opaque identifiers that
+// crowd the meaningful content; they are rendered after every other attr.
+var deprioritizedKeys = map[string]struct{}{
+	"request_id":     {},
+	"session_id":     {},
+	"principal_id":   {},
+	"account_id":     {},
+	"client_call_id": {},
+	"remote_addr":    {},
+}
+
 // formatRecord writes the full rendered line to buf.
 //
-// Output order (REQ-OPS-83):
+// Output order:
 //  1. Timestamp (HH:MM:SS.mmm local)
 //  2. Level (4-char: INFO, WARN, ERRO, DEBG, TRCE)
-//  3. subsystem|module (if present in pre-scoped or record attrs)
+//  3. [subsystem] tag (only when the message does NOT already start with
+//     "<subsystem>." — avoids "protojmap protojmap.method" duplication)
 //  4. Message
-//  5. activity (if present)
-//  6. request_id, session_id, principal_id (if present)
-//  7. All other attrs, lexicographically sorted, key=value aligned
+//  5. Domain-meaningful attrs in original record order
+//  6. Correlation IDs (deprioritizedKeys) in lex order, last
+//
+// "activity", "subsystem", "module" are NEVER rendered as trailing attrs:
+// they shape the record but are not display content (the operator already
+// chose which sink they're reading; the JSON sink and filter dimension still
+// see them).
 func (h *ConsoleHandler) formatRecord(buf *bytes.Buffer, r slog.Record) {
-	// Collect all attrs (pre-scoped first, then record attrs).
-	all := make([]slog.Attr, 0, len(h.preAttrs)+r.NumAttrs())
-	all = append(all, h.preAttrs...)
+	// Collect attrs preserving insertion order (pre-scoped first, then record).
+	type kv struct {
+		key string
+		val string
+	}
+	ordered := make([]kv, 0, len(h.preAttrs)+r.NumAttrs())
+	seen := make(map[string]int, len(h.preAttrs)+r.NumAttrs())
+	addAttr := func(a slog.Attr) {
+		if a.Key == "" {
+			return
+		}
+		v := renderAttrValue(a.Value)
+		if i, ok := seen[a.Key]; ok {
+			ordered[i].val = v
+			return
+		}
+		seen[a.Key] = len(ordered)
+		ordered = append(ordered, kv{key: a.Key, val: v})
+	}
+	for _, a := range h.preAttrs {
+		addAttr(a)
+	}
 	r.Attrs(func(a slog.Attr) bool {
-		all = append(all, a)
+		addAttr(a)
 		return true
 	})
 
-	// Index attrs by key for ordered output.
-	attrMap := make(map[string]string, len(all))
-	var extraKeys []string
-	for _, a := range all {
-		k := a.Key
-		v := renderAttrValue(a.Value)
-		attrMap[k] = v
-		switch k {
-		case "subsystem", "module", "activity",
-			"request_id", "session_id", "principal_id":
-			// handled in the ordered section
-		default:
-			extraKeys = append(extraKeys, k)
+	subsystem := ""
+	module := ""
+	for _, p := range ordered {
+		if p.key == "subsystem" {
+			subsystem = p.val
+		} else if p.key == "module" {
+			module = p.val
 		}
 	}
-	sort.Strings(extraKeys)
 
 	// 1. Timestamp.
 	now := h.clk.Now()
@@ -209,20 +237,18 @@ func (h *ConsoleHandler) formatRecord(buf *bytes.Buffer, r slog.Record) {
 	}
 	buf.WriteByte(' ')
 
-	// 3. subsystem|module.
-	subsystem := attrMap["subsystem"]
-	module := attrMap["module"]
-	if subsystem != "" || module != "" {
+	// 3. Subsystem tag, only when not redundant with the message prefix.
+	tag := subsystem
+	if tag == "" {
+		tag = module
+	}
+	if tag != "" && !messageHasPrefix(r.Message, tag) {
 		if h.useColor {
 			buf.WriteString(ansiCyan)
 		}
-		if subsystem != "" && module != "" {
-			buf.WriteString(subsystem)
-			buf.WriteByte('|')
-			buf.WriteString(module)
-		} else {
-			buf.WriteString(subsystem + module)
-		}
+		buf.WriteByte('[')
+		buf.WriteString(tag)
+		buf.WriteByte(']')
 		if h.useColor {
 			buf.WriteString(ansiReset)
 		}
@@ -238,54 +264,35 @@ func (h *ConsoleHandler) formatRecord(buf *bytes.Buffer, r slog.Record) {
 		buf.WriteString(ansiReset)
 	}
 
-	// 5..7. Ordered important attrs + extras. Compute max key width for
-	// alignment within this record.
-	orderedKeys := []string{}
-	for _, k := range []string{"activity", "request_id", "session_id", "principal_id"} {
-		if _, ok := attrMap[k]; ok {
-			orderedKeys = append(orderedKeys, k)
-		}
-	}
-	orderedKeys = append(orderedKeys, extraKeys...)
-	// Also skip subsystem/module from the trailing attrs since they were
-	// already rendered in position 3.
-	finalKeys := make([]string, 0, len(orderedKeys))
-	for _, k := range orderedKeys {
-		if k == "subsystem" || k == "module" {
+	// 5/6. Trailing attrs.
+	primary := make([]kv, 0, len(ordered))
+	deferred := make([]kv, 0, 4)
+	for _, p := range ordered {
+		switch p.key {
+		case "subsystem", "module", "activity":
 			continue
 		}
-		finalKeys = append(finalKeys, k)
-	}
-
-	if len(finalKeys) == 0 {
-		buf.WriteByte('\n')
-		return
-	}
-
-	// Compute max key width for alignment.
-	maxW := 0
-	for _, k := range finalKeys {
-		if len(k) > maxW {
-			maxW = len(k)
+		if _, late := deprioritizedKeys[p.key]; late {
+			deferred = append(deferred, p)
+			continue
 		}
+		primary = append(primary, p)
 	}
+	sort.Slice(deferred, func(i, j int) bool { return deferred[i].key < deferred[j].key })
 
-	for _, k := range finalKeys {
-		v := attrMap[k]
+	writePair := func(p kv) {
 		buf.WriteByte(' ')
 		if h.useColor {
 			buf.WriteString(ansiGray)
 		}
-		padded := fmt.Sprintf("%-*s", maxW, k)
-		buf.WriteString(padded)
+		buf.WriteString(p.key)
 		if h.useColor {
 			buf.WriteString(ansiReset)
 		}
 		buf.WriteByte('=')
-		// Multi-line values: first line inline, subsequent lines indented.
-		lines := strings.Split(v, "\n")
+		lines := strings.Split(p.val, "\n")
 		if needsQuote(lines[0]) {
-			buf.WriteString(fmt.Sprintf("%q", lines[0]))
+			fmt.Fprintf(buf, "%q", lines[0])
 		} else {
 			buf.WriteString(lines[0])
 		}
@@ -294,7 +301,33 @@ func (h *ConsoleHandler) formatRecord(buf *bytes.Buffer, r slog.Record) {
 			buf.WriteString(extra)
 		}
 	}
+	for _, p := range primary {
+		writePair(p)
+	}
+	for _, p := range deferred {
+		writePair(p)
+	}
 	buf.WriteByte('\n')
+}
+
+// messageHasPrefix reports whether msg begins with "<tag>." or equals "<tag>"
+// (case-insensitive). Used to suppress a redundant [subsystem] prefix when
+// the message itself already names the subsystem (e.g. msg="protojmap.method"
+// with subsystem="protojmap").
+func messageHasPrefix(msg, tag string) bool {
+	if tag == "" || msg == "" {
+		return false
+	}
+	if len(msg) < len(tag) {
+		return false
+	}
+	if !strings.EqualFold(msg[:len(tag)], tag) {
+		return false
+	}
+	if len(msg) == len(tag) {
+		return true
+	}
+	return msg[len(tag)] == '.'
 }
 
 // levelStr returns a 4-char level abbreviation and ANSI colour for it.
