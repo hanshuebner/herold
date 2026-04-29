@@ -126,7 +126,7 @@ func TestConversation_Get_RendersUnreadCount(t *testing.T) {
 	f := setupFixture(t)
 	cid, _ := createSpace(t, f, "team")
 
-	// Send a message in the space.
+	// alice sends a message in the space.
 	_, _ = f.invoke(t, "Message/set", map[string]any{
 		"accountId": string(protojmap.AccountIDForPrincipal(f.pid)),
 		"create": map[string]any{
@@ -137,7 +137,8 @@ func TestConversation_Get_RendersUnreadCount(t *testing.T) {
 		},
 	})
 
-	// Reload the conversation.
+	// alice's own message is NOT unread for her — Conversation/get
+	// from alice's perspective must report 0.
 	_, raw := f.invoke(t, "Conversation/get", map[string]any{
 		"accountId": string(protojmap.AccountIDForPrincipal(f.pid)),
 		"ids":       []string{cid},
@@ -146,30 +147,163 @@ func TestConversation_Get_RendersUnreadCount(t *testing.T) {
 		List []map[string]any `json:"list"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		t.Fatalf("unmarshal: %v: %s", err, raw)
+		t.Fatalf("unmarshal alice: %v: %s", err, raw)
 	}
 	if len(resp.List) != 1 {
-		t.Fatalf("list = %+v", resp.List)
+		t.Fatalf("alice list = %+v", resp.List)
 	}
-	got := resp.List[0]
-	count, _ := got["messageCount"].(float64)
-	if count < 1 {
-		t.Errorf("messageCount = %v, want >= 1", count)
+	if u, _ := resp.List[0]["unreadCount"].(float64); u != 0 {
+		t.Errorf("alice unreadCount = %v, want 0 (own message)", u)
 	}
-	// alice's unread count should be > 0 (she has not read her own
-	// message via setLastRead in this scenario; the gap proxy reports
-	// the full count).
-	unread, _ := got["unreadCount"].(float64)
-	if unread < 1 {
-		t.Errorf("unreadCount = %v, want >= 1", unread)
+
+	// From bob's perspective, alice's message IS unread.
+	bobKey := bobAPIKey(t, f)
+	_, raw = invokeAs(t, f, bobKey, "Conversation/get", map[string]any{
+		"accountId": string(protojmap.AccountIDForPrincipal(f.otherPID)),
+		"ids":       []string{cid},
+	})
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal bob: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("bob list = %+v", resp.List)
+	}
+	if u, _ := resp.List[0]["unreadCount"].(float64); u != 1 {
+		t.Errorf("bob unreadCount = %v, want 1", u)
+	}
+}
+
+// TestConversation_Get_UnreadCountSurvivesAcrossConversations is the
+// regression test for the gap-arithmetic bug fixed alongside this
+// test. chat_messages.id is a global autoincrement; the previous
+// implementation compared lastReadMessageID against the conversation's
+// per-row MessageCount, which silently returned 0 once a different
+// conversation had pushed message ids beyond the per-conversation
+// count.
+func TestConversation_Get_UnreadCountSurvivesAcrossConversations(t *testing.T) {
+	f := setupFixture(t)
+	bobKey := bobAPIKey(t, f)
+	dmID, _ := createDM(t, f) // alice + bob
+
+	// alice creates a separate space and posts several messages there
+	// to push global chat_messages.id well past the DM's per-row count.
+	otherID, _ := createSpace(t, f, "noise")
+	for i := 0; i < 5; i++ {
+		_, _ = f.invoke(t, "Message/set", map[string]any{
+			"accountId": string(protojmap.AccountIDForPrincipal(f.pid)),
+			"create": map[string]any{
+				fmt.Sprintf("n%d", i): map[string]any{
+					"conversationId": otherID,
+					"body":           map[string]any{"text": "noise", "format": "text"},
+				},
+			},
+		})
+	}
+
+	// alice now sends one DM message to bob. The global id of this
+	// message is at least 6, but the DM's MessageCount is 1.
+	_, _ = f.invoke(t, "Message/set", map[string]any{
+		"accountId": string(protojmap.AccountIDForPrincipal(f.pid)),
+		"create": map[string]any{
+			"d1": map[string]any{
+				"conversationId": dmID,
+				"body":           map[string]any{"text": "hi bob", "format": "text"},
+			},
+		},
+	})
+
+	// bob has never read anything in the DM (lastReadMessageID == nil),
+	// so he should see unreadCount == 1 regardless of message ids.
+	_, raw := invokeAs(t, f, bobKey, "Conversation/get", map[string]any{
+		"accountId": string(protojmap.AccountIDForPrincipal(f.otherPID)),
+		"ids":       []string{dmID},
+	})
+	var resp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal nil-anchor: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("nil-anchor list = %+v", resp.List)
+	}
+	if u, _ := resp.List[0]["unreadCount"].(float64); u != 1 {
+		t.Errorf("bob unreadCount (nil anchor) = %v, want 1", u)
+	}
+
+	// Pull bob's membership row so we can advance his read pointer to
+	// the message we just sent (simulates a markRead).
+	mems, err := f.srv.Store.Meta().ListChatMembershipsByConversation(context.Background(), parseConvID(dmID))
+	if err != nil {
+		t.Fatalf("ListChatMembershipsByConversation: %v", err)
+	}
+	var bobMem store.ChatMembership
+	for _, m := range mems {
+		if m.PrincipalID == f.otherPID {
+			bobMem = m
+		}
+	}
+	if bobMem.ID == 0 {
+		t.Fatalf("bob membership not found in %+v", mems)
+	}
+
+	// Find the DM message id.
+	msgs, err := f.srv.Store.Meta().ListChatMessages(context.Background(), store.ChatMessageFilter{
+		ConversationID: ptrConvID(parseConvID(dmID)),
+	})
+	if err != nil {
+		t.Fatalf("ListChatMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("dm messages = %+v", msgs)
+	}
+	if err := f.srv.Store.Meta().SetLastRead(context.Background(), f.otherPID, parseConvID(dmID), msgs[0].ID); err != nil {
+		t.Fatalf("SetLastRead: %v", err)
+	}
+
+	// After bob marks the DM read, unreadCount drops to 0.
+	_, raw = invokeAs(t, f, bobKey, "Conversation/get", map[string]any{
+		"accountId": string(protojmap.AccountIDForPrincipal(f.otherPID)),
+		"ids":       []string{dmID},
+	})
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal post-read: %v: %s", err, raw)
+	}
+	if u, _ := resp.List[0]["unreadCount"].(float64); u != 0 {
+		t.Errorf("bob unreadCount post-read = %v, want 0", u)
+	}
+
+	// alice now sends a SECOND DM message. With the old gap arithmetic
+	// (lastRead is some big global id, MessageCount is 2) the
+	// comparison `bigID < 2` would be false and unreadCount would
+	// report 0. Verify that the real COUNT query reports 1.
+	_, _ = f.invoke(t, "Message/set", map[string]any{
+		"accountId": string(protojmap.AccountIDForPrincipal(f.pid)),
+		"create": map[string]any{
+			"d2": map[string]any{
+				"conversationId": dmID,
+				"body":           map[string]any{"text": "still there?", "format": "text"},
+			},
+		},
+	})
+	_, raw = invokeAs(t, f, bobKey, "Conversation/get", map[string]any{
+		"accountId": string(protojmap.AccountIDForPrincipal(f.otherPID)),
+		"ids":       []string{dmID},
+	})
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal second-msg: %v: %s", err, raw)
+	}
+	if u, _ := resp.List[0]["unreadCount"].(float64); u != 1 {
+		t.Errorf("bob unreadCount after second message = %v, want 1 (regression: gap arithmetic)", u)
 	}
 }
 
 func TestConversation_Query_HasUnread(t *testing.T) {
 	f := setupFixture(t)
 	cid, _ := createSpace(t, f, "team")
+	bobKey := bobAPIKey(t, f)
 
-	// Send a message in the space.
+	// alice sends a message in the space.
 	_, _ = f.invoke(t, "Message/set", map[string]any{
 		"accountId": string(protojmap.AccountIDForPrincipal(f.pid)),
 		"create": map[string]any{
@@ -180,6 +314,8 @@ func TestConversation_Query_HasUnread(t *testing.T) {
 		},
 	})
 
+	// alice's own message is not unread for her, so hasUnread=true
+	// returns no conversations from her perspective.
 	_, raw := f.invoke(t, "Conversation/query", map[string]any{
 		"accountId": string(protojmap.AccountIDForPrincipal(f.pid)),
 		"filter":    map[string]any{"hasUnread": true},
@@ -188,15 +324,28 @@ func TestConversation_Query_HasUnread(t *testing.T) {
 		IDs []string `json:"ids"`
 	}
 	if err := json.Unmarshal(raw, &qr); err != nil {
-		t.Fatalf("unmarshal query: %v: %s", err, raw)
+		t.Fatalf("unmarshal alice query: %v: %s", err, raw)
 	}
-	if len(qr.IDs) != 1 {
-		t.Fatalf("hasUnread=true returned %d, want 1: %+v", len(qr.IDs), qr.IDs)
+	if len(qr.IDs) != 0 {
+		t.Errorf("alice hasUnread=true = %+v, want []", qr.IDs)
 	}
-	if qr.IDs[0] != cid {
-		t.Errorf("query result = %q, want %q", qr.IDs[0], cid)
+
+	// From bob's perspective the same query returns the space.
+	_, raw = invokeAs(t, f, bobKey, "Conversation/query", map[string]any{
+		"accountId": string(protojmap.AccountIDForPrincipal(f.otherPID)),
+		"filter":    map[string]any{"hasUnread": true},
+	})
+	if err := json.Unmarshal(raw, &qr); err != nil {
+		t.Fatalf("unmarshal bob query: %v: %s", err, raw)
+	}
+	if len(qr.IDs) != 1 || qr.IDs[0] != cid {
+		t.Errorf("bob hasUnread=true = %+v, want [%q]", qr.IDs, cid)
 	}
 }
+
+// ptrConvID returns a pointer to the given ConversationID, for use as
+// a ChatMessageFilter.ConversationID value.
+func ptrConvID(id store.ConversationID) *store.ConversationID { return &id }
 
 func TestConversation_Set_Update_OwnerOnly(t *testing.T) {
 	f := setupFixture(t)

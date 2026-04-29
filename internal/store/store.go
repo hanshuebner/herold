@@ -1086,6 +1086,21 @@ type Metadata interface {
 	// member of the conversation.
 	LastReadAt(ctx context.Context, principalID PrincipalID, conversationID ConversationID) (*ChatMessageID, time.Time, error)
 
+	// CountChatMessagesUnread returns the number of non-deleted messages
+	// in conversationID whose sender_principal_id != viewerPID and
+	// whose id > *lastReadMessageID. When lastReadMessageID is nil,
+	// every non-self, non-deleted message in the conversation counts.
+	// Self-sent and system messages are excluded so the unread badge
+	// reflects messages the viewer has not yet seen from someone else.
+	//
+	// This is the authoritative server-computed unread tally surfaced
+	// on the JMAP wire as Conversation.unreadCount. It cannot be
+	// derived from MessageCount alone because chat_messages.id is a
+	// global autoincrement, not a per-conversation counter, so naively
+	// comparing lastReadMessageID against MessageCount silently breaks
+	// once any conversation has had a real markRead.
+	CountChatMessagesUnread(ctx context.Context, conversationID ConversationID, viewerPID PrincipalID, lastReadMessageID *ChatMessageID) (int, error)
+
 	// SetLastRead advances the per-membership LastReadMessageID
 	// pointer (REQ-CHAT-30) to msgID, bumps ModSeq, and appends a
 	// (EntityKindMembership, ChangeOpUpdated) state-change row. Returns

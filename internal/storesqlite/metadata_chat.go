@@ -1093,6 +1093,39 @@ func (m *metadata) LastReadAt(ctx context.Context, principalID store.PrincipalID
 	return out, fromMicros(joinedUs), nil
 }
 
+func (m *metadata) CountChatMessagesUnread(ctx context.Context, conversationID store.ConversationID, viewerPID store.PrincipalID, lastReadMessageID *store.ChatMessageID) (int, error) {
+	// Two query shapes so the predicate stays sargable on the
+	// (conversation_id, id) index. The lastRead branch additionally
+	// excludes self-sent and system rows.
+	if lastReadMessageID == nil {
+		row := m.s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM chat_messages
+			 WHERE conversation_id = ?
+			   AND deleted_at_us IS NULL
+			   AND sender_principal_id IS NOT NULL
+			   AND sender_principal_id != ?`,
+			int64(conversationID), int64(viewerPID))
+		var n int64
+		if err := row.Scan(&n); err != nil {
+			return 0, mapErr(err)
+		}
+		return int(n), nil
+	}
+	row := m.s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM chat_messages
+		 WHERE conversation_id = ?
+		   AND id > ?
+		   AND deleted_at_us IS NULL
+		   AND sender_principal_id IS NOT NULL
+		   AND sender_principal_id != ?`,
+		int64(conversationID), int64(*lastReadMessageID), int64(viewerPID))
+	var n int64
+	if err := row.Scan(&n); err != nil {
+		return 0, mapErr(err)
+	}
+	return int(n), nil
+}
+
 func (m *metadata) SetLastRead(ctx context.Context, principalID store.PrincipalID, conversationID store.ConversationID, msgID store.ChatMessageID) error {
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx *sql.Tx) error {

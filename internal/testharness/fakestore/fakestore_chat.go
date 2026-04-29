@@ -838,6 +838,38 @@ func (m *metaFace) LastReadAt(ctx context.Context, principalID store.PrincipalID
 	return nil, time.Time{}, fmt.Errorf("membership (%d, %d): %w", conversationID, principalID, store.ErrNotFound)
 }
 
+func (m *metaFace) CountChatMessagesUnread(ctx context.Context, conversationID store.ConversationID, viewerPID store.PrincipalID, lastReadMessageID *store.ChatMessageID) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return 0, nil
+	}
+	n := 0
+	for _, msg := range s.phase2.chatMessages {
+		if msg.ConversationID != conversationID {
+			continue
+		}
+		if msg.DeletedAt != nil {
+			continue
+		}
+		if msg.SenderPrincipalID == nil {
+			continue
+		}
+		if *msg.SenderPrincipalID == viewerPID {
+			continue
+		}
+		if lastReadMessageID != nil && msg.ID <= *lastReadMessageID {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
 func (m *metaFace) SetLastRead(ctx context.Context, principalID store.PrincipalID, conversationID store.ConversationID, msgID store.ChatMessageID) error {
 	if err := ctx.Err(); err != nil {
 		return err

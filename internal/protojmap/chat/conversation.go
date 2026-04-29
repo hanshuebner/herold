@@ -105,7 +105,11 @@ func (h *convGetHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		if err != nil {
 			return nil, serverFail(err)
 		}
-		resp.List = append(resp.List, renderConversation(ctx, h.h.store.Meta(), c, members, pid))
+		jc, err := renderConversation(ctx, h.h.store.Meta(), c, members, pid)
+		if err != nil {
+			return nil, serverFail(err)
+		}
+		resp.List = append(resp.List, jc)
 	}
 	return resp, nil
 }
@@ -122,7 +126,11 @@ func (h *convGetHandler) Execute(ctx context.Context, args json.RawMessage) (any
 //
 // Member displayName: populated from the principal's display name so the
 // client can label senders without a separate Principal/get round trip.
-func renderConversation(ctx context.Context, meta store.Metadata, c store.ChatConversation, members []store.ChatMembership, self store.PrincipalID) jmapConversation {
+//
+// Returns an error when the unread-count lookup fails so the caller can
+// surface it as a JMAP serverFail rather than silently shipping a
+// zero-or-stale count to the client.
+func renderConversation(ctx context.Context, meta store.Metadata, c store.ChatConversation, members []store.ChatMembership, self store.PrincipalID) (jmapConversation, error) {
 	// REQ-CHAT-31 / REQ-CHAT-32: DMs always advertise read receipts on,
 	// regardless of the underlying column. Spaces project the column
 	// value verbatim.
@@ -169,23 +177,20 @@ func renderConversation(ctx context.Context, meta store.Metadata, c store.ChatCo
 			out.Name = resolvePrincipalEmail(ctx, meta, otherPID)
 		}
 	}
-	// Unread count approximation: the conversation's MessageCount minus
-	// the offset of LastReadMessageID. Message ids are monotonic per
-	// conversation; using the gap as a proxy keeps the JMAP get path a
-	// single round trip. Precise counts come from a Message/query with
-	// after = the last-read pointer.
+	// Unread count: number of non-deleted, non-self messages in this
+	// conversation whose id > LastReadMessageID. Done as a real COUNT
+	// query because chat_messages.id is a global autoincrement, not a
+	// per-conversation counter — the previous gap-via-MessageCount
+	// shortcut silently returned 0 once any markRead had advanced
+	// LastReadMessageID past the conversation's per-row count.
 	if c.MessageCount > 0 {
-		if unreadAnchor == nil {
-			out.UnreadCount = c.MessageCount
-		} else if uint64(*unreadAnchor) < uint64(c.MessageCount) {
-			gap := c.MessageCount - int(*unreadAnchor)
-			if gap < 0 {
-				gap = 0
-			}
-			out.UnreadCount = gap
+		n, err := meta.CountChatMessagesUnread(ctx, c.ID, self, unreadAnchor)
+		if err != nil {
+			return jmapConversation{}, err
 		}
+		out.UnreadCount = n
 	}
-	return out
+	return out, nil
 }
 
 // -- Conversation/changes ---------------------------------------------
@@ -435,7 +440,11 @@ func (h *convSetHandler) Execute(ctx context.Context, args json.RawMessage) (any
 			continue
 		}
 		creationRefs[key] = c.ID
-		resp.Created[key] = renderConversation(ctx, h.h.store.Meta(), c, members, pid)
+		jc, err := renderConversation(ctx, h.h.store.Meta(), c, members, pid)
+		if err != nil {
+			return nil, serverFail(err)
+		}
+		resp.Created[key] = jc
 	}
 
 	for raw, payload := range req.Update {
@@ -890,11 +899,11 @@ func (h *convQueryHandler) Execute(ctx context.Context, args json.RawMessage) (a
 				my, ok := findMembership(members, pid)
 				has := false
 				if ok && c.MessageCount > 0 {
-					if my.LastReadMessageID == nil {
-						has = true
-					} else if uint64(*my.LastReadMessageID) < uint64(c.MessageCount) {
-						has = true
+					n, err := h.h.store.Meta().CountChatMessagesUnread(ctx, c.ID, pid, my.LastReadMessageID)
+					if err != nil {
+						return nil, serverFail(err)
 					}
+					has = n > 0
 				}
 				if has != *req.Filter.HasUnread {
 					continue
