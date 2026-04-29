@@ -2215,3 +2215,155 @@ key_file  = "/etc/herold/admin.key"
 		t.Errorf("DataKeyRef = %q; want $HEROLD_DATA_KEY", c.Server.Secrets.DataKeyRef)
 	}
 }
+
+// oauthProviderBaseTOML is a minimal config base with external_submission
+// enabled and a data key, used by OAuth provider tests.
+const oauthProviderBaseTOML = minimalNoObs + `
+[server.external_submission]
+enabled = true
+
+[server.secrets]
+data_key_ref = "$HEROLD_DATA_KEY"
+`
+
+// TestOAuthProviders_AllFieldsLoad verifies that a well-formed
+// [server.oauth_providers.gmail] block parses and loads cleanly.
+func TestOAuthProviders_AllFieldsLoad(t *testing.T) {
+	const tomlSrc = oauthProviderBaseTOML + `
+[server.oauth_providers.gmail]
+client_id         = "123.apps.googleusercontent.com"
+client_secret_ref = "$HEROLD_GMAIL_SECRET"
+auth_url          = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url         = "https://oauth2.googleapis.com/token"
+scopes            = ["https://mail.google.com/"]
+`
+	c, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: unexpected error: %v", err)
+	}
+	p, ok := c.Server.OAuthProviders["gmail"]
+	if !ok {
+		t.Fatalf("OAuthProviders missing gmail entry; got %v", c.Server.OAuthProviders)
+	}
+	if p.ClientID != "123.apps.googleusercontent.com" {
+		t.Errorf("ClientID = %q; want %q", p.ClientID, "123.apps.googleusercontent.com")
+	}
+	if p.ClientSecretRef != "$HEROLD_GMAIL_SECRET" {
+		t.Errorf("ClientSecretRef = %q; want $HEROLD_GMAIL_SECRET", p.ClientSecretRef)
+	}
+	if len(p.Scopes) != 1 || p.Scopes[0] != "https://mail.google.com/" {
+		t.Errorf("Scopes = %v; want [https://mail.google.com/]", p.Scopes)
+	}
+}
+
+// TestOAuthProviders_NameNormalisedToLowercase verifies that a mixed-case
+// provider name is normalised to lowercase in applyDefaults.
+func TestOAuthProviders_NameNormalisedToLowercase(t *testing.T) {
+	const tomlSrc = oauthProviderBaseTOML + `
+[server.oauth_providers.Gmail]
+client_id         = "id"
+client_secret_ref = "$HEROLD_GMAIL_SECRET"
+auth_url          = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url         = "https://oauth2.googleapis.com/token"
+scopes            = ["https://mail.google.com/"]
+`
+	c, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: unexpected error: %v", err)
+	}
+	if _, ok := c.Server.OAuthProviders["gmail"]; !ok {
+		t.Errorf("OAuthProviders: want normalised key \"gmail\"; got keys %v", func() []string {
+			ks := make([]string, 0, len(c.Server.OAuthProviders))
+			for k := range c.Server.OAuthProviders {
+				ks = append(ks, k)
+			}
+			return ks
+		}())
+	}
+}
+
+// TestOAuthProviders_InlineSecretRejected verifies that a literal
+// client_secret_ref value (not a $VAR or file:/path) is rejected at Validate
+// per STANDARDS §9.
+func TestOAuthProviders_InlineSecretRejected(t *testing.T) {
+	const tomlSrc = oauthProviderBaseTOML + `
+[server.oauth_providers.gmail]
+client_id         = "id"
+client_secret_ref = "literally-inline-secret"
+auth_url          = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url         = "https://oauth2.googleapis.com/token"
+scopes            = ["https://mail.google.com/"]
+`
+	if _, err := Parse([]byte(tomlSrc)); err == nil {
+		t.Fatal("expected validate error for inline client_secret_ref")
+	}
+}
+
+// TestOAuthProviders_MissingClientSecretRef verifies that omitting
+// client_secret_ref is rejected.
+func TestOAuthProviders_MissingClientSecretRef(t *testing.T) {
+	const tomlSrc = oauthProviderBaseTOML + `
+[server.oauth_providers.gmail]
+client_id = "id"
+auth_url  = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url = "https://oauth2.googleapis.com/token"
+scopes    = ["https://mail.google.com/"]
+`
+	if _, err := Parse([]byte(tomlSrc)); err == nil {
+		t.Fatal("expected validate error for missing client_secret_ref")
+	}
+}
+
+// TestOAuthProviders_BadAuthURL verifies that a non-URL auth_url is rejected.
+func TestOAuthProviders_BadAuthURL(t *testing.T) {
+	const tomlSrc = oauthProviderBaseTOML + `
+[server.oauth_providers.gmail]
+client_id         = "id"
+client_secret_ref = "$HEROLD_GMAIL_SECRET"
+auth_url          = "not-a-url"
+token_url         = "https://oauth2.googleapis.com/token"
+scopes            = ["https://mail.google.com/"]
+`
+	if _, err := Parse([]byte(tomlSrc)); err == nil {
+		t.Fatal("expected validate error for bad auth_url")
+	}
+}
+
+// TestOAuthProviders_BadTokenURL verifies that a non-URL token_url is rejected.
+func TestOAuthProviders_BadTokenURL(t *testing.T) {
+	const tomlSrc = oauthProviderBaseTOML + `
+[server.oauth_providers.gmail]
+client_id         = "id"
+client_secret_ref = "$HEROLD_GMAIL_SECRET"
+auth_url          = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url         = "not-a-url"
+scopes            = ["https://mail.google.com/"]
+`
+	if _, err := Parse([]byte(tomlSrc)); err == nil {
+		t.Fatal("expected validate error for bad token_url")
+	}
+}
+
+// TestOAuthProviders_EmptyScopesRejected verifies that scopes = [] is rejected.
+func TestOAuthProviders_EmptyScopesRejected(t *testing.T) {
+	const tomlSrc = oauthProviderBaseTOML + `
+[server.oauth_providers.gmail]
+client_id         = "id"
+client_secret_ref = "$HEROLD_GMAIL_SECRET"
+auth_url          = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url         = "https://oauth2.googleapis.com/token"
+scopes            = []
+`
+	if _, err := Parse([]byte(tomlSrc)); err == nil {
+		t.Fatal("expected validate error for empty scopes")
+	}
+}
+
+// TestOAuthProviders_EmptyMapAccepted verifies that an operator omitting the
+// [server.oauth_providers] block entirely is valid.
+func TestOAuthProviders_EmptyMapAccepted(t *testing.T) {
+	const tomlSrc = minimalNoObs
+	if _, err := Parse([]byte(tomlSrc)); err != nil {
+		t.Fatalf("expected no error for config without oauth_providers; got %v", err)
+	}
+}

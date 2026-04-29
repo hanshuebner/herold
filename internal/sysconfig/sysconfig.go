@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,6 +155,15 @@ type ServerConfig struct {
 	Queue              QueueConfig              `toml:"queue,omitempty"`
 	Secrets            SecretsConfig            `toml:"secrets,omitempty"`
 	ExternalSubmission ExternalSubmissionConfig `toml:"external_submission,omitempty"`
+	// OAuthProviders maps provider name to per-provider OAuth 2.0 client
+	// configuration for server-mediated OAuth flows (REQ-AUTH-EXT-SUBMIT-03).
+	// Provider names are normalised to lowercase at parse time. The reserved
+	// names "gmail" and "m365" are the canonical Google and Microsoft 365
+	// providers; operators may omit them when only a custom provider is used.
+	// Each entry requires client_secret_ref (a $VAR or file:/path reference;
+	// inline secrets are rejected at Validate per STANDARDS §9), auth_url,
+	// token_url, and at least one entry in scopes.
+	OAuthProviders map[string]OAuthProviderConfig `toml:"oauth_providers,omitempty"`
 	// PublicBaseURL is the externally-reachable base URL of the public
 	// HTTP listener (e.g. "https://mail.example.com"). It is used to
 	// build signed webhook fetch URLs (REQ-HOOK-30..31) delivered to
@@ -200,6 +210,34 @@ type ExternalSubmissionConfig struct {
 	// to start otherwise (boot-time hard-fail per architectural decision 4).
 	// Default false.
 	Enabled bool `toml:"enabled,omitempty"`
+}
+
+// OAuthProviderConfig is the per-provider OAuth 2.0 client configuration for
+// the server-mediated external SMTP submission OAuth flow
+// (REQ-AUTH-EXT-SUBMIT-03).
+//
+// Example (system.toml):
+//
+//	[server.oauth_providers.gmail]
+//	client_id     = "123456789012-abc.apps.googleusercontent.com"
+//	client_secret_ref = "$HEROLD_GMAIL_CLIENT_SECRET"
+//	auth_url      = "https://accounts.google.com/o/oauth2/v2/auth"
+//	token_url     = "https://oauth2.googleapis.com/token"
+//	scopes        = ["https://mail.google.com/"]
+type OAuthProviderConfig struct {
+	// ClientID is the OAuth 2.0 client identifier issued by the provider.
+	ClientID string `toml:"client_id"`
+	// ClientSecretRef is a secret reference ("$VAR" or "file:/path") that
+	// resolves to the OAuth 2.0 client secret. Inline values are rejected at
+	// Validate per STANDARDS §9.
+	ClientSecretRef string `toml:"client_secret_ref"`
+	// AuthURL is the provider's authorisation endpoint.
+	AuthURL string `toml:"auth_url"`
+	// TokenURL is the provider's token endpoint used for code exchange and
+	// refresh.
+	TokenURL string `toml:"token_url"`
+	// Scopes is the set of OAuth scopes requested. Must be non-empty.
+	Scopes []string `toml:"scopes"`
 }
 
 // PushConfig configures the deployment-level VAPID key pair the Web
@@ -1110,6 +1148,17 @@ func applyDefaults(c *Config) {
 		applySmartHostDefaults(&ov)
 		c.Server.SmartHost.PerDomain[k] = ov
 	}
+	// OAuth providers: normalise provider names to lowercase
+	// (REQ-AUTH-EXT-SUBMIT-03). TOML map keys are case-sensitive; the
+	// operator may write "Gmail" or "GMAIL" — we normalise so lookups are
+	// always lowercase.
+	if len(c.Server.OAuthProviders) > 0 {
+		normalised := make(map[string]OAuthProviderConfig, len(c.Server.OAuthProviders))
+		for k, v := range c.Server.OAuthProviders {
+			normalised[strings.ToLower(k)] = v
+		}
+		c.Server.OAuthProviders = normalised
+	}
 }
 
 // applySmartHostDefaults populates the smart-host knobs that have a
@@ -1726,6 +1775,50 @@ func Validate(c *Config) error {
 	if c.Server.Secrets.DataKeyRef != "" && !IsSecretReference(c.Server.Secrets.DataKeyRef) {
 		return fmt.Errorf("sysconfig: [server.secrets] data_key_ref %q must be \"$VAR\" or \"file:/path\" (STANDARDS §9)",
 			c.Server.Secrets.DataKeyRef)
+	}
+	// OAuth providers (REQ-AUTH-EXT-SUBMIT-03).
+	if err := validateOAuthProviders(c); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateOAuthProviders checks each entry in [server.oauth_providers.<name>].
+// Provider names are normalised to lowercase at parse time (in applyDefaults);
+// this function validates the provider values.
+// Rules (REQ-AUTH-EXT-SUBMIT-03, STANDARDS §9):
+//   - client_secret_ref must be a $VAR or file:/path secret reference (no
+//     inline secrets).
+//   - auth_url and token_url must parse as absolute URLs.
+//   - scopes must be non-empty.
+//
+// Empty OAuthProviders maps are always valid (the feature is optional).
+func validateOAuthProviders(c *Config) error {
+	for name, p := range c.Server.OAuthProviders {
+		if p.ClientID == "" {
+			return fmt.Errorf("sysconfig: [server.oauth_providers.%s] client_id is required", name)
+		}
+		if p.ClientSecretRef == "" {
+			return fmt.Errorf("sysconfig: [server.oauth_providers.%s] client_secret_ref is required (STANDARDS §9)", name)
+		}
+		if !IsSecretReference(p.ClientSecretRef) {
+			return fmt.Errorf("sysconfig: [server.oauth_providers.%s] client_secret_ref %q must be \"$VAR\" or \"file:/path\" (STANDARDS §9)", name, p.ClientSecretRef)
+		}
+		if p.AuthURL == "" {
+			return fmt.Errorf("sysconfig: [server.oauth_providers.%s] auth_url is required", name)
+		}
+		if u, err := url.ParseRequestURI(p.AuthURL); err != nil || !u.IsAbs() {
+			return fmt.Errorf("sysconfig: [server.oauth_providers.%s] auth_url %q is not a valid absolute URL", name, p.AuthURL)
+		}
+		if p.TokenURL == "" {
+			return fmt.Errorf("sysconfig: [server.oauth_providers.%s] token_url is required", name)
+		}
+		if u, err := url.ParseRequestURI(p.TokenURL); err != nil || !u.IsAbs() {
+			return fmt.Errorf("sysconfig: [server.oauth_providers.%s] token_url %q is not a valid absolute URL", name, p.TokenURL)
+		}
+		if len(p.Scopes) == 0 {
+			return fmt.Errorf("sysconfig: [server.oauth_providers.%s] scopes must be non-empty", name)
+		}
 	}
 	return nil
 }
