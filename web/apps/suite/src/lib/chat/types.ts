@@ -228,10 +228,14 @@ export interface Principal {
   displayName: string;
 }
 
-/** TURN server configuration returned inside a credentials call.signal response. */
-export interface TurnConfig {
-  urls: string[];
+/**
+ * TURN credential returned by POST /api/v1/call/credentials.
+ * Wire shape matches internal/protocall/turn.go Credential struct.
+ */
+export interface TurnCredential {
   username: string;
-  credential: string;
-  ttl: number;
+  password: string;
+  uris: string[];
+  expiresAt: string; // RFC3339
+  ttlSeconds: number;
 }

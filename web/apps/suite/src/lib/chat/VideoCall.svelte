@@ -16,7 +16,7 @@
   import { untrack } from 'svelte';
   import { chatWs } from './chat-ws.svelte';
   import { toast } from '../toast/toast.svelte';
-  import type { TurnConfig } from './types';
+  import type { TurnCredential } from './types';
 
   interface Props {
     conversationId: string;
@@ -124,23 +124,15 @@
   // TURN credentials
   // ------------------------------------------------------------------
 
-  function fetchTurnCredentials(): Promise<TurnConfig> {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('TURN credential timeout')), 10000);
-      const off = chatWs.on('call.signal', (frame) => {
-        if (frame.kind !== 'credentials-response') return;
-        const inner = frame.payload as { callId?: string; config?: TurnConfig };
-        if (inner.callId !== callId) return;
-        off();
-        clearTimeout(timeout);
-        if (inner.config) resolve(inner.config);
-        else reject(new Error('TURN credentials response missing config'));
-      });
-      chatWs.send({
-        type: 'call.signal',
-        payload: { conversationId, kind: 'credentials-request', payload: { callId } },
-      });
+  async function fetchTurnCredentials(): Promise<TurnCredential> {
+    const resp = await fetch('/api/v1/call/credentials', {
+      method: 'POST',
+      credentials: 'same-origin',
     });
+    if (!resp.ok) {
+      throw new Error(`TURN credential fetch failed: ${resp.status}`);
+    }
+    return resp.json() as Promise<TurnCredential>;
   }
 
   // ------------------------------------------------------------------
@@ -148,7 +140,7 @@
   // ------------------------------------------------------------------
 
   async function setup(): Promise<void> {
-    let turn: TurnConfig | null = null;
+    let turn: TurnCredential | null = null;
     try {
       turn = await fetchTurnCredentials();
     } catch {
@@ -164,9 +156,9 @@
     ];
     if (turn) {
       iceServers.push({
-        urls: turn.urls,
+        urls: turn.uris,
         username: turn.username,
-        credential: turn.credential,
+        credential: turn.password,
       });
     }
 
@@ -320,7 +312,27 @@
         onHangup();
         break;
       }
-      // Other kinds (credentials-response handled by fetchTurnCredentials) are ignored.
+      case 'busy': {
+        // Server-emitted: remote peer is in another call.
+        console.warn('call.signal busy received for call', callId);
+        toast.show({ message: 'User is busy', kind: 'error', timeoutMs: 4000 });
+        teardown();
+        onHangup();
+        break;
+      }
+      case 'timeout': {
+        // Server-emitted: ring window expired with no answer.
+        console.warn('call.signal timeout received for call', callId);
+        toast.show({ message: 'No answer', kind: 'error', timeoutMs: 4000 });
+        teardown();
+        onHangup();
+        break;
+      }
+      default: {
+        // Unknown server-emitted kind; log and ignore.
+        console.warn('call.signal: unhandled kind', frame.kind, 'for call', callId);
+        break;
+      }
     }
   });
 
