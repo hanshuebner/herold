@@ -170,3 +170,14 @@ export type InboundFrame =
 
 /** Presence state for a principal. */
 export type PresenceState = 'online' | 'away' | 'offline';
+
+/**
+ * A Herold Principal as returned by Principal/get.
+ * Only the three fields the suite is allowed to see (REQ-CHAT-15).
+ * The id is opaque — used only as a foreign key; never rendered.
+ */
+export interface Principal {
+  id: string;
+  email: string;
+  displayName: string;
+}

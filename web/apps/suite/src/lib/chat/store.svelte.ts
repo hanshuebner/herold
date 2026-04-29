@@ -32,6 +32,7 @@ import type {
   Message,
   Membership,
   PresenceState,
+  Principal,
 } from './types';
 
 const CHAT_CAPABILITY = Capability.HeroldChat;
@@ -892,6 +893,153 @@ class ChatStore {
   closeOverlayMessages(conversationId: string): void {
     this.overlayMessages.delete(conversationId);
     this.overlayMessages = new Map(this.overlayMessages);
+  }
+
+  // ------------------------------------------------------------------
+  // Principal directory (REQ-CHAT-01b..c)
+  // ------------------------------------------------------------------
+
+  /**
+   * Search principals by display name / email local-part prefix.
+   * Issues Principal/query with textPrefix then Principal/get for the ids
+   * in a single batched call.
+   */
+  async searchPrincipals(prefix: string, limit = 25): Promise<Principal[]> {
+    const accountId = this.#accountId();
+    if (!accountId || prefix.length === 0) return [];
+
+    try {
+      const { responses } = await jmap.batch((b) => {
+        const q = b.call(
+          'Principal/query',
+          { accountId, filter: { textPrefix: prefix }, limit },
+          USING,
+        );
+        b.call(
+          'Principal/get',
+          { accountId, '#ids': q.ref('/ids') },
+          USING,
+        );
+      });
+
+      const getResp = responses.find(([name]) => name === 'Principal/get');
+      if (!getResp || getResp[0] === 'error') return [];
+      const result = getResp[1] as { list: Principal[] };
+      return result.list;
+    } catch (err) {
+      console.error('searchPrincipals failed', err);
+      return [];
+    }
+  }
+
+  /**
+   * Look up a principal by exact email address.
+   * Returns the principal if found, null if not a Herold user on this server.
+   */
+  async lookupPrincipalByEmail(email: string): Promise<Principal | null> {
+    const accountId = this.#accountId();
+    if (!accountId) return null;
+
+    try {
+      const { responses } = await jmap.batch((b) => {
+        const q = b.call(
+          'Principal/query',
+          { accountId, filter: { emailExact: email } },
+          USING,
+        );
+        b.call(
+          'Principal/get',
+          { accountId, '#ids': q.ref('/ids') },
+          USING,
+        );
+      });
+
+      const queryResp = responses.find(([name]) => name === 'Principal/query');
+      if (!queryResp || queryResp[0] !== 'Principal/query') return null;
+      const qResult = queryResp[1] as { ids: string[] };
+      if (qResult.ids.length === 0) return null;
+
+      const getResp = responses.find(([name]) => name === 'Principal/get');
+      if (!getResp || getResp[0] === 'error') return null;
+      const result = getResp[1] as { list: Principal[] };
+      return result.list[0] ?? null;
+    } catch (err) {
+      console.error('lookupPrincipalByEmail failed', err);
+      return null;
+    }
+  }
+
+  /**
+   * Pure helper: find an existing DM with the given other principal id.
+   * Scans the in-memory conversations map; no network call.
+   */
+  findExistingDM(otherPrincipalId: string): Conversation | null {
+    const myId = auth.principalId;
+    if (!myId) return null;
+    for (const conv of this.conversations.values()) {
+      if (conv.type !== 'dm') continue;
+      const memberIds = conv.members.map((m) => m.principalId);
+      if (
+        memberIds.length === 2 &&
+        memberIds.includes(myId) &&
+        memberIds.includes(otherPrincipalId)
+      ) {
+        return conv;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Create a new DM or Space via Conversation/set.
+   * Returns the server-assigned id of the new conversation.
+   */
+  async createConversation(args: {
+    kind: 'dm' | 'space';
+    members: string[];
+    name?: string;
+    topic?: string;
+  }): Promise<{ id: string }> {
+    const accountId = this.#accountId();
+    if (!accountId) throw new Error('Not authenticated');
+
+    const tempId = `new-conv-${Date.now()}`;
+    const createPayload: Record<string, unknown> = {
+      type: args.kind,
+      members: args.members.map((pid) => ({ principalId: pid })),
+    };
+    if (args.name) createPayload['name'] = args.name;
+    if (args.topic) createPayload['description'] = args.topic;
+
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Conversation/set',
+        {
+          accountId,
+          create: { [tempId]: createPayload },
+        },
+        USING,
+      );
+    });
+
+    const setResp = responses.find(([name]) => name === 'Conversation/set');
+    if (!setResp || setResp[0] === 'error') {
+      throw new Error('Conversation/set failed');
+    }
+
+    const result = setResp[1] as {
+      created?: Record<string, { id: string }>;
+      notCreated?: Record<string, { type: string; description?: string }>;
+    };
+
+    if (result.notCreated?.[tempId]) {
+      const err = result.notCreated[tempId]!;
+      throw new Error(err.description ?? err.type);
+    }
+
+    const created = result.created?.[tempId];
+    if (!created) throw new Error('Conversation/set returned no created id');
+    return { id: created.id };
   }
 
   // ------------------------------------------------------------------

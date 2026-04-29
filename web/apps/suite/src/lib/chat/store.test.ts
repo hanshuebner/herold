@@ -275,4 +275,189 @@ describe('ChatStore', () => {
     // After rollback the message list should be empty.
     expect(chat.messages).toHaveLength(0);
   });
+
+  // ------------------------------------------------------------------
+  // searchPrincipals
+  // ------------------------------------------------------------------
+
+  it('searchPrincipals returns matched principals from the directory', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    const fakePrincipal = { id: 'prin-1', email: 'alice@example.com', displayName: 'Alice' };
+
+    vi.mocked(jmap.batch).mockResolvedValueOnce({
+      responses: [
+        ['Principal/query', { ids: ['prin-1'], total: 1 }, 'q0'],
+        ['Principal/get', { state: 'ps1', list: [fakePrincipal], notFound: [] }, 'g0'],
+      ],
+      sessionState: 'ss1',
+    });
+
+    const results = await chat.searchPrincipals('ali');
+    expect(results).toHaveLength(1);
+    expect(results[0]).toEqual(fakePrincipal);
+  });
+
+  it('searchPrincipals returns empty array for empty prefix', async () => {
+    const { chat } = chatMod;
+    const results = await chat.searchPrincipals('');
+    expect(results).toHaveLength(0);
+  });
+
+  it('searchPrincipals returns empty array on network error', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    vi.mocked(jmap.batch).mockRejectedValueOnce(new Error('network'));
+    const results = await chat.searchPrincipals('ali');
+    expect(results).toHaveLength(0);
+  });
+
+  // ------------------------------------------------------------------
+  // lookupPrincipalByEmail
+  // ------------------------------------------------------------------
+
+  it('lookupPrincipalByEmail returns principal when found', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    const fakePrincipal = { id: 'prin-1', email: 'alice@example.com', displayName: 'Alice' };
+
+    vi.mocked(jmap.batch).mockResolvedValueOnce({
+      responses: [
+        ['Principal/query', { ids: ['prin-1'], total: 1 }, 'q0'],
+        ['Principal/get', { state: 'ps1', list: [fakePrincipal], notFound: [] }, 'g0'],
+      ],
+      sessionState: 'ss1',
+    });
+
+    const result = await chat.lookupPrincipalByEmail('alice@example.com');
+    expect(result).toEqual(fakePrincipal);
+  });
+
+  it('lookupPrincipalByEmail returns null when not found', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    vi.mocked(jmap.batch).mockResolvedValueOnce({
+      responses: [
+        ['Principal/query', { ids: [], total: 0 }, 'q0'],
+        ['Principal/get', { state: 'ps1', list: [], notFound: [] }, 'g0'],
+      ],
+      sessionState: 'ss1',
+    });
+
+    const result = await chat.lookupPrincipalByEmail('nobody@example.com');
+    expect(result).toBeNull();
+  });
+
+  // ------------------------------------------------------------------
+  // findExistingDM
+  // ------------------------------------------------------------------
+
+  it('findExistingDM returns conversation when a matching DM exists', () => {
+    const { chat } = chatMod;
+
+    chat.conversations.set('dm-c1', {
+      id: 'dm-c1',
+      type: 'dm',
+      name: 'Alice',
+      members: [
+        { id: 'm1', conversationId: 'dm-c1', principalId: 'p1', role: 'member', joinedAt: '', notificationsMuted: false },
+        { id: 'm2', conversationId: 'dm-c1', principalId: 'prin-other', role: 'member', joinedAt: '', notificationsMuted: false },
+      ],
+      createdAt: '',
+      pinned: false,
+      muted: false,
+      unreadCount: 0,
+    });
+
+    const result = chat.findExistingDM('prin-other');
+    expect(result?.id).toBe('dm-c1');
+  });
+
+  it('findExistingDM returns null when no matching DM exists', () => {
+    const { chat } = chatMod;
+    const result = chat.findExistingDM('prin-unknown');
+    expect(result).toBeNull();
+  });
+
+  it('findExistingDM ignores Spaces', () => {
+    const { chat } = chatMod;
+
+    chat.conversations.set('space-1', {
+      id: 'space-1',
+      type: 'space',
+      name: 'General',
+      members: [
+        { id: 'm1', conversationId: 'space-1', principalId: 'p1', role: 'member', joinedAt: '', notificationsMuted: false },
+        { id: 'm2', conversationId: 'space-1', principalId: 'prin-other', role: 'member', joinedAt: '', notificationsMuted: false },
+      ],
+      createdAt: '',
+      pinned: false,
+      muted: false,
+      unreadCount: 0,
+    });
+
+    const result = chat.findExistingDM('prin-other');
+    expect(result).toBeNull();
+  });
+
+  // ------------------------------------------------------------------
+  // createConversation
+  // ------------------------------------------------------------------
+
+  it('createConversation resolves with the new conversation id', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    vi.mocked(jmap.batch).mockImplementation(async (builder) => {
+      let tempId = '';
+      builder({
+        call: (_name: string, args: unknown) => {
+          const a = args as { create?: Record<string, unknown> };
+          if (a.create) tempId = Object.keys(a.create)[0]!;
+          return { ref: () => ({ resultOf: 'c0', name: '', path: '' }) };
+        },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      return {
+        responses: [
+          ['Conversation/set', { created: { [tempId]: { id: 'conv-new-1' } }, notCreated: {} }, 's0'],
+        ],
+        sessionState: 'ss1',
+      };
+    });
+
+    const result = await chat.createConversation({ kind: 'dm', members: ['prin-other'] });
+    expect(result.id).toBe('conv-new-1');
+  });
+
+  it('createConversation throws on notCreated', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    vi.mocked(jmap.batch).mockImplementation(async (builder) => {
+      let tempId = '';
+      builder({
+        call: (_name: string, args: unknown) => {
+          const a = args as { create?: Record<string, unknown> };
+          if (a.create) tempId = Object.keys(a.create)[0]!;
+          return { ref: () => ({ resultOf: 'c0', name: '', path: '' }) };
+        },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      return {
+        responses: [
+          ['Conversation/set', { created: {}, notCreated: { [tempId]: { type: 'forbidden' } } }, 's0'],
+        ],
+        sessionState: 'ss1',
+      };
+    });
+
+    await expect(
+      chat.createConversation({ kind: 'dm', members: ['prin-other'] }),
+    ).rejects.toThrow('forbidden');
+  });
 });

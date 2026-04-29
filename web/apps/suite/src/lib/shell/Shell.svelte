@@ -12,6 +12,7 @@
   import ConfirmDialog from '../dialog/ConfirmDialog.svelte';
   import PromptDialog from '../dialog/PromptDialog.svelte';
   import ChatOverlayHost from '../chat/ChatOverlayHost.svelte';
+  import NewChatPicker from '../chat/NewChatPicker.svelte';
 
   interface Props {
     /** When true, suppress the chat overlay host (fullscreen chat route). */
@@ -57,6 +58,7 @@
   <ReactionConfirmModal />
   <ConfirmDialog />
   <PromptDialog />
+  <NewChatPicker />
 
   <!-- Floating chat overlay windows: hidden on fullscreen chat route,
        phone breakpoints, or when chat capability is absent. -->

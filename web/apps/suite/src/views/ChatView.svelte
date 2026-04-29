@@ -124,12 +124,10 @@
     callConversationId = frame.conversationId;
     incomingRemoteSdp = frame.sdp;
 
-    // Resolve caller's name from conversation members.
+    // Resolve caller display name from the conversation.
+    // For a DM, conv.name is the other participant's display name (server-computed).
     const conv = chat.conversations.get(frame.conversationId);
-    const caller = conv?.members.find(
-      (m) => m.principalId !== auth.principalId,
-    );
-    incomingCallerName = caller?.principalId ?? 'Unknown caller';
+    incomingCallerName = conv?.name ?? 'Unknown caller';
 
     callId = frame.callId;
     callPhase = 'incoming';

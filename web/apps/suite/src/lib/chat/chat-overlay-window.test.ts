@@ -105,10 +105,11 @@ beforeEach(() => {
 
 describe('ChatOverlayWindow', () => {
   it('renders the conversation name in the title bar', () => {
-    render(ChatOverlayWindow, {
+    const { container } = render(ChatOverlayWindow, {
       props: { windowKey: 'ow-1', conversationId: 'c1', minimized: false },
     });
-    expect(screen.getByText('Alice')).toBeInTheDocument();
+    const titleBar = container.querySelector('.title-bar');
+    expect(titleBar?.textContent).toContain('Alice');
   });
 
   it('has an accessible aria-label on the section', () => {

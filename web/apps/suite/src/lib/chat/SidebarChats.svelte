@@ -12,10 +12,9 @@
 
   import { chat } from './store.svelte';
   import { chatOverlay } from './overlay-store.svelte';
+  import { newChatPicker } from './new-chat-picker.svelte';
   import { auth } from '../auth/auth.svelte';
   import { t } from '../i18n/i18n.svelte';
-  import { toast } from '../toast/toast.svelte';
-  import { prompt } from '../dialog/prompt.svelte';
   import type { Conversation } from './types';
 
   const MAX = 8;
@@ -37,14 +36,8 @@
     return 'offline';
   }
 
-  async function handleNewChat(): Promise<void> {
-    const target = await prompt.ask({
-      title: t('sidebar.newChat'),
-      label: 'Email or principal ID',
-    });
-    if (!target) return;
-    // Starting new chats via JMAP Conversation/set is not yet implemented.
-    toast.show({ message: 'Starting new chats is not yet supported', kind: 'info' });
+  function handleNewChat(): void {
+    newChatPicker.open({ mode: 'dm' });
   }
 </script>
 
@@ -56,7 +49,7 @@
       class="new-chat-btn"
       aria-label={t('sidebar.newChat')}
       title={t('sidebar.newChat')}
-      onclick={() => void handleNewChat()}
+      onclick={handleNewChat}
     >+</button>
   </div>
 

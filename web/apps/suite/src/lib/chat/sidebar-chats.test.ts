@@ -75,18 +75,13 @@ vi.mock('./overlay-store.svelte', () => ({
   },
 }));
 
-vi.mock('../dialog/prompt.svelte', () => ({
-  prompt: { ask: vi.fn() },
-}));
-
-vi.mock('../toast/toast.svelte', () => ({
-  toast: { show: vi.fn() },
+vi.mock('./new-chat-picker.svelte', () => ({
+  newChatPicker: { open: vi.fn() },
 }));
 
 import SidebarChats from './SidebarChats.svelte';
 import { chatOverlay } from './overlay-store.svelte';
-import { toast } from '../toast/toast.svelte';
-import { prompt } from '../dialog/prompt.svelte';
+import { newChatPicker } from './new-chat-picker.svelte';
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
@@ -94,6 +89,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(chatOverlay.isOpen).mockReturnValue(false);
 });
+
+
 
 describe('SidebarChats', () => {
   it('renders the Chats heading', () => {
@@ -132,14 +129,10 @@ describe('SidebarChats', () => {
     expect(screen.getByRole('button', { name: /New chat/i })).toBeInTheDocument();
   });
 
-  it('"+" button shows a toast when there is no create implementation', async () => {
-    vi.mocked(prompt.ask).mockResolvedValue('alice@example.com');
+  it('"+" button opens the new-chat picker in DM mode', async () => {
     render(SidebarChats);
     const newChatBtn = screen.getByRole('button', { name: /New chat/i });
     await fireEvent.click(newChatBtn);
-    await new Promise((r) => setTimeout(r, 0));
-    expect(toast.show).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'Starting new chats is not yet supported' }),
-    );
+    expect(newChatPicker.open).toHaveBeenCalledWith({ mode: 'dm' });
   });
 });

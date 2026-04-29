@@ -141,13 +141,17 @@
     return senderId === auth.principalId;
   }
 
-  /** Resolve principalId to display name (best effort). */
+  /**
+   * Resolve a senderId to a display name.
+   * The Membership type doesn't carry a display name; for DMs the
+   * conversation.name is the other participant's display name.
+   * For Spaces, fall back to a generic "Member" label rather than
+   * exposing the opaque principalId (REQ-CHAT-15).
+   */
   function senderName(senderId: string): string {
-    const mem = conversation.members.find((m) => m.principalId === senderId);
-    // The Membership shape doesn't carry a display name directly.
-    // We'd need a contact lookup; for now fall back to the id.
-    void mem;
-    return senderId;
+    if (isMine(senderId)) return 'You';
+    if (conversation.type === 'dm') return conversation.name;
+    return 'Member';
   }
 
   function handleToggleReaction(messageId: string, emoji: string): void {
@@ -168,15 +172,17 @@
   });
 
   // Typing indicator text.
+  // The typers set contains principalIds; we must not render them (REQ-CHAT-15).
+  // For a DM the other participant is identified by conversation.name.
+  // For Spaces, use the count only — we have no display name resolution yet.
   let typingText = $derived.by(() => {
-    const typers = Array.from(chat.typing.get(conversationId) ?? []).filter(
+    const typerCount = Array.from(chat.typing.get(conversationId) ?? []).filter(
       (id) => id !== auth.principalId,
-    );
-    if (typers.length === 0) return null;
-    if (typers.length === 1) return `${typers[0]} is typing…`;
-    if (typers.length === 2)
-      return `${typers[0]} and ${typers[1]} are typing…`;
-    return `${typers.length} people are typing…`;
+    ).length;
+    if (typerCount === 0) return null;
+    if (conversation.type === 'dm') return `${conversation.name} is typing…`;
+    if (typerCount === 1) return 'Someone is typing…';
+    return `${typerCount} people are typing…`;
   });
 </script>
 
@@ -257,7 +263,7 @@
                         type="button"
                         class="reaction-chip"
                         class:mine={myReaction}
-                        title="Reacted by: {reactors.join(', ')}"
+                        title="{reactors.length} reaction{reactors.length === 1 ? '' : 's'}"
                         aria-label="{emoji} {reactors.length} reaction{reactors.length === 1 ? '' : 's'}{myReaction ? ' (click to remove)' : ''}"
                         onclick={() => handleToggleReaction(msg.id, emoji)}
                       >
