@@ -1,11 +1,6 @@
 # External SMTP submission per Identity
 
-<!-- TODO docs-writer: This file is a scaffold. All sections marked with TODO
-     need real prose before the operator manual is published. The technical
-     facts in each TODO are accurate; the docs-writer should expand them into
-     readable, operator-facing documentation. -->
-
-This document explains how to configure herold to submit outbound mail through
+This chapter explains how to configure herold to submit outbound mail through
 an external SMTP server on a per-Identity basis (REQ-AUTH-EXT-SUBMIT-01..10).
 
 The v1 use case: send through Gmail, Microsoft 365, Fastmail, or a corporate
@@ -15,132 +10,488 @@ external provider.
 
 ## Overview
 
-<!-- TODO docs-writer: Write 3-5 paragraphs covering:
-     - What the feature does: per-Identity external SMTP submission.
-     - What it does NOT do (inbound is out of scope; operators arrange
-       forwarding at the external provider).
-     - The two auth methods: password (app-specific password) and oauth2
-       (server-mediated OAuth flow via configured providers).
-     - The credential lifecycle: credentials are encrypted at rest with
-       the server data key; the plaintext exists only during an active
-       submission attempt or an OAuth refresh round-trip.
-     - The background token refresh sweeper: runs every 60 seconds,
-       refreshes tokens 60 seconds before expiry, flips state to
-       auth-failed on failure.
-     - State surface: the suite shows "External" badge on Identities with
-       submission credentials; auth-failed / unreachable surfaces as a
-       warning badge.
--->
+External SMTP submission is a per-Identity feature. Each JMAP Identity
+(RFC 8621 §6) may carry its own SMTP submission endpoint, authentication
+method, and credential independently of every other Identity the same
+principal owns. A principal with three Identities can use herold's outbound
+queue for two and route the third through a personal Gmail account. The choice
+is made Identity by Identity; there is no deployment-wide switch that forces
+all mail through an external server.
+
+When an Identity has no external submission config, its outbound mail follows
+the normal path: herold's outbound queue, DKIM signing, and the delivery
+machinery described in the operations manual. When an Identity does carry
+external submission credentials, and the user composes a message selecting
+that Identity in the From picker, the JMAP EmailSubmission lands on the
+external server instead. The routing decision is made at submission time in
+`internal/extsubmit/submitter.go` (`Submit`), which is invoked by the JMAP
+EmailSubmission method handler in
+`internal/protojmap/mail/emailsubmission/methods.go` when the selected
+Identity has a configured `identity_submission` row (database migration 0032
+on both SQLite and Postgres backends).
+
+Inbound mail is entirely out of scope for this feature. Herold does not
+establish any connection to the external provider to fetch mail, and it does
+not know whether mail sent from an external account is delivered back to the
+local mailbox. Operators who want inbound mail to appear in herold must
+configure forwarding at the external provider: Gmail's "Forwarding and POP/IMAP"
+settings, the Microsoft 365 mailbox forwarding rule, or equivalent. Mail
+forwarded to herold's receiving address arrives through the normal inbound
+pipeline (REQ-FLOW-*). The suite shows the user's local mailbox unchanged;
+it makes no assumption that an Identity with external submission also has
+external inbound. The two directions are independent.
+
+Two authentication methods are supported. Password authentication uses a plain
+password or app-specific password, sent as SASL AUTH PLAIN or AUTH LOGIN after
+a TLS handshake. The submitter in `internal/extsubmit/submitter.go` prefers
+PLAIN when the server advertises it and falls back to LOGIN automatically.
+Gmail requires an app-specific password for accounts with two-factor
+authentication enabled; Microsoft 365 tenant policy determines whether legacy
+auth or app passwords are allowed. OAuth 2.0 uses SASL XOAUTH2 (RFC 7628);
+access tokens are obtained and refreshed by herold's background sweeper without
+any user interaction once the initial OAuth flow is complete.
+
+Credentials are never stored in plaintext. The password or OAuth token is
+sealed using ChaCha20-Poly1305 with a server-managed data key the moment the
+user submits the Settings form; the plaintext is discarded. The ciphertext is
+stored in the `identity_submission` table with a `v1:` version prefix (see
+`internal/secrets/aead.go`) so a future rotation tool can identify ciphertexts
+that were produced under the old key. The data key is decrypted from its
+configured reference, the credential is decrypted in memory, used for one
+submission attempt or one OAuth token exchange, and then zeroed. No credential
+material is written to logs; the slog redaction handler in
+`internal/observe/secret.go` filters any attribute key that matches the
+`DefaultSecretKeys` list before the record reaches any configured sink.
+
+Admin users cannot read or overwrite another principal's submission
+credentials. The REST endpoints (REQ-AUTH-EXT-SUBMIT-04) are gated by a
+`requireSelfOnly` check: only the principal who owns the Identity may call
+`GET`, `PUT`, or `DELETE` on
+`/api/v1/identities/{id}/submission`. This applies even to principals with
+the `admin` role. There is no impersonation path in v1.
+
+For OAuth 2.0 identities, herold refreshes the access token in the background
+before it expires. The refresh sweeper (`internal/extsubmit/sweeper.go`) runs
+as a goroutine within the herold process and ticks every 60 seconds. On each
+tick it queries the `identity_submission` table for rows whose `refresh_due_us`
+column is in the past and dispatches up to `sweeper_workers` (default: 4)
+concurrent refresh attempts using the `internal/extsubmit/oauth.go` refresh
+wrapper. A successful refresh updates the sealed access token and sets the
+next `refresh_due_us` to 80% of the new token's lifetime. A failed refresh
+writes `auth-failed` to the Identity's submission state and leaves
+`refresh_due_us` unchanged so the sweeper retries on the next tick. Repeated
+refresh failures do not cause the sweeper to back off; the retry cadence is
+one attempt every 60 seconds until the user re-authenticates.
+
+The suite surfaces three states in Settings under the Identities list
+(REQ-MAIL-SUBMIT-04):
+
+- No badge: the Identity uses herold's outbound queue (no external
+  submission configured, or state is `ok`).
+- "External" badge: submission credentials are configured and the last
+  submission or token refresh succeeded.
+- Attention-coloured warning badge: the submission state is `auth-failed` or
+  `unreachable`. Clicking the badge opens the Identity edit dialog scrolled
+  to the submission section. For `auth-failed`, the compose toast also offers
+  a one-click "Re-authenticate" button (REQ-MAIL-SUBMIT-06).
+
+Local DKIM signing is skipped for messages submitted via an external endpoint
+(REQ-AUTH-EXT-SUBMIT-06). The external server is responsible for signing under
+its own DKIM key for its own domain. Operators must ensure the external
+provider accepts the chosen `From:` address before users start sending: Gmail
+requires "Send mail as" verification in Gmail settings; Microsoft 365 requires
+send-as permissions on the mailbox or an Exchange Online shared mailbox. These
+are deployment-side concerns.
 
 ## Data-key setup
 
-<!-- TODO docs-writer: Write a step-by-step guide covering:
-     - Why a data key is required: credential encryption at rest.
-     - How to generate a 32-byte key (e.g. `openssl rand -hex 32`).
-     - How to set [server.secrets].data_key_ref in system.toml pointing
-       to the key via $ENV_VAR or file:/path.
-     - That setting [server.external_submission].enabled = true without
-       a data_key_ref causes the server to refuse to start (boot-time
-       hard-fail).
-     - Key rotation: not supported in v1; credentials must be re-entered
-       after a key rotation.
+The data key is a 32-byte symmetric key used by `internal/secrets/aead.go` to
+seal and unseal credential material. It is required before any Identity can
+store external submission credentials. Configuring it before enabling the
+feature is the correct order; enabling without a data key causes the server to
+refuse to start.
 
-Example system.toml snippet:
+Generate a 32-byte key as a 64-character hex string:
 
-  [server.secrets]
-  data_key_ref = "$HEROLD_DATA_KEY"
+```
+openssl rand -hex 64 | head -c 64
+```
 
-  [server.external_submission]
-  enabled = true
-  sweeper_workers = 4  # optional, default 4
--->
+The output is 64 hex digits, which decodes to exactly 32 bytes as required.
+Store the output in a location herold's operating user can read at startup. Two
+reference forms are accepted; inline values in `system.toml` are rejected at
+startup (STANDARDS §9) to prevent accidental commits of secret material:
+
+**Environment variable:**
+
+```toml
+[server.secrets]
+data_key_ref = "$HEROLD_DATA_KEY"
+```
+
+Set `HEROLD_DATA_KEY` to the 64-hex string in the process environment before
+starting herold. With systemd, add it to the service's `EnvironmentFile=` or
+`Environment=` directive. With Docker or Kubernetes, use a Secret mounted as
+an environment variable.
+
+**File path:**
+
+```toml
+[server.secrets]
+data_key_ref = "file:/var/lib/herold/data_key.hex"
+```
+
+Write the 64-hex string (no newline required, but one is tolerated) to the
+file. Set ownership to the herold operating user and restrict permissions to
+0600:
+
+```
+install -m 0600 -o herold /dev/stdin /var/lib/herold/data_key.hex <<'EOF'
+<paste 64-hex string here>
+EOF
+```
+
+A file-based reference is preferable when the deployment does not have a
+secrets management layer that injects environment variables.
+
+Enable the feature and optionally tune the sweeper:
+
+```toml
+[server.secrets]
+data_key_ref = "$HEROLD_DATA_KEY"
+
+[server.external_submission]
+enabled = true
+sweeper_workers = 4   # optional; default 4
+```
+
+If `[server.external_submission].enabled = true` is present and
+`[server.secrets].data_key_ref` is absent or resolves to fewer than 32 bytes,
+the server refuses to start with this error:
+
+```
+sysconfig: [server.external_submission] enabled requires [server.secrets].data_key_ref; set [server.secrets].data_key_ref to enable [server.external_submission]
+```
+
+Key rotation is not implemented in v1. The `v1:` version prefix on every
+ciphertext stored by `internal/secrets/aead.go` means a future rotation tool
+can identify ciphertexts produced under the old key. Until v1.1 ships rotation
+support, treat the data key as any other long-lived symmetric credential:
+rotate it alongside your other production secrets on the same cycle, and
+re-enter all external submission credentials after a rotation (users will see
+their Identities enter `auth-failed` state and will need to re-authenticate or
+re-enter their password).
 
 ## OAuth provider registration
 
-<!-- TODO docs-writer: Write a step-by-step guide for each supported provider.
-     Include:
+Registering an OAuth provider at the operator level enables the one-click
+"Sign in with Google" or "Sign in with Microsoft" flow in the suite's Identity
+settings (REQ-MAIL-SUBMIT-02, REQ-AUTH-EXT-SUBMIT-03). When a provider is not
+configured, users in its email domain fall back transparently to manual SMTP
+credential entry; the feature works either way.
 
-     ### Gmail / Google Workspace
+### Gmail and Google Workspace
 
-     Steps:
-     1. Create an OAuth 2.0 client ID in Google Cloud Console
-        (Application type: Web application).
-     2. Add the herold OAuth callback redirect URI:
-        https://<your-herold-hostname>/api/v1/submission/oauth/callback
-     3. Enable the Gmail API for the project.
-     4. Add to system.toml:
+1. Open `console.cloud.google.com` and create a new project (or select an
+   existing one). The project name is visible only to the operator.
 
-          [server.oauth_providers.gmail]
-          client_id     = "123456789012-abc.apps.googleusercontent.com"
-          client_secret_ref = "$HEROLD_GMAIL_CLIENT_SECRET"
-          auth_url      = "https://accounts.google.com/o/oauth2/v2/auth"
-          token_url     = "https://oauth2.googleapis.com/token"
-          scopes        = ["https://mail.google.com/"]
+2. In the project, navigate to "APIs & Services" > "Library" and enable the
+   Gmail API.
 
-     5. Set HEROLD_GMAIL_CLIENT_SECRET in the server environment.
-     6. Reload: `herold server reload` or send SIGHUP.
+3. Navigate to "APIs & Services" > "OAuth consent screen". Set the publishing
+   status to "Internal" for Google Workspace deployments (limiting the app to
+   your organization) or "External" for personal Gmail accounts (which requires
+   passing Google's app verification process if you plan to serve more than 100
+   users). Add the herold deployment's domain to the authorized domains list.
+   Under scopes, add `https://mail.google.com/` (the Gmail full-access scope
+   required for SMTP submission).
 
-     ### Microsoft 365
+4. Navigate to "APIs & Services" > "Credentials" > "Create Credentials" >
+   "OAuth client ID". Set the application type to "Web application". Under
+   "Authorized redirect URIs", add:
 
-     Steps (similar shape to Gmail):
-     - Register an application in Azure AD (Entra ID).
-     - Add redirect URI.
-     - Required scopes: https://outlook.office.com/SMTP.Send offline_access
-     - provider name: "microsoft365"
-     - auth_url / token_url from the tenant's OAuth 2.0 endpoints.
+   ```
+   https://<your-herold-hostname>/api/v1/identities/{id}/submission/oauth/callback
+   ```
 
-     ### Manual entry (any SMTP server)
+   Note: `{id}` is the literal string that appears in the redirect URI
+   registered with Google. Herold's routing layer accepts it as a path
+   parameter and substitutes the actual Identity id at runtime. Google
+   validates the prefix, not the full path.
 
-     When no provider is configured for the identity's email domain, the
-     settings dialog falls back to manual entry: host, port, security mode,
-     auth method, and credential. The PUT endpoint validates credentials via
-     a live probe before persisting.
--->
+5. Note the generated client ID and client secret. Store the client secret in
+   an environment variable or a file (not inline in `system.toml`).
+
+6. Add the provider block to `/etc/herold/system.toml`:
+
+   ```toml
+   [server.oauth_providers.gmail]
+   client_id         = "123456789012-abc.apps.googleusercontent.com"
+   client_secret_ref = "$HEROLD_OAUTH_GMAIL_SECRET"
+   auth_url          = "https://accounts.google.com/o/oauth2/v2/auth"
+   token_url         = "https://oauth2.googleapis.com/token"
+   scopes            = ["https://mail.google.com/"]
+   ```
+
+   When the OAuth flow completes, herold connects to `smtp.gmail.com` on port
+   465 (implicit TLS) and authenticates with SASL XOAUTH2. These defaults are
+   set automatically by the OAuth callback handler for the `gmail` provider
+   name; no manual SMTP host configuration is needed.
+
+7. Reload the configuration:
+
+   ```
+   herold server reload
+   ```
+
+   Or send SIGHUP to the herold process if the CLI reload is not available.
+
+### Microsoft 365
+
+1. Open `portal.azure.com` and navigate to "Azure Active Directory" (Entra ID)
+   > "App registrations" > "New registration". Set a display name. Under
+   "Supported account types", choose the option that matches your tenant scope
+   (typically "Accounts in this organizational directory only" for a single
+   tenant).
+
+2. Under "Redirect URI", set the platform to "Web" and enter:
+
+   ```
+   https://<your-herold-hostname>/api/v1/identities/{id}/submission/oauth/callback
+   ```
+
+   The same `{id}` literal applies here as for Gmail.
+
+3. After the application is created, navigate to "API permissions" >
+   "Add a permission" > "APIs my organization uses" > search for "Office 365
+   Exchange Online". Select "Delegated permissions" and add `SMTP.Send`.
+   Grant admin consent for the permission if your tenant requires it.
+
+4. Navigate to "Certificates & secrets" > "Client secrets" >
+   "New client secret". Set an expiry appropriate for your deployment
+   (12 or 24 months is typical). Copy the secret value immediately; it is
+   not shown again after you leave the page.
+
+5. Add the provider block to `/etc/herold/system.toml`. The `common`
+   tenant endpoint below works for both personal Microsoft accounts and
+   work/school accounts; replace `common` with your tenant ID if you want to
+   restrict to a single tenant:
+
+   ```toml
+   [server.oauth_providers.m365]
+   client_id         = "<application-client-id-from-azure>"
+   client_secret_ref = "$HEROLD_OAUTH_M365_SECRET"
+   auth_url          = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+   token_url         = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+   scopes            = ["https://outlook.office365.com/SMTP.Send", "offline_access"]
+   ```
+
+   Including `offline_access` in the scope list is essential; without it
+   Microsoft's token endpoint does not issue a refresh token, and the sweeper
+   will not be able to maintain the session without user interaction.
+
+   When the OAuth flow completes, herold connects to `smtp.office365.com` on
+   port 465 (implicit TLS). These defaults are set automatically for the `m365`
+   provider name.
+
+6. Reload the configuration as shown in the Gmail section.
+
+   Microsoft 365 tenant conditional access policies can block the OAuth
+   application from signing in. If users report that the OAuth flow completes
+   but the probe fails, check the tenant's sign-in logs in the Azure portal
+   correlated by timestamp and application name.
+
+### Manual entry
+
+When no OAuth provider is configured for an Identity's email domain, or when
+the user prefers not to use OAuth, the Settings dialog accepts manual SMTP
+credentials. The user supplies the submission host, port, security mode
+(`implicit_tls` for port 465, `starttls` for port 587, `none` for test-only
+fixtures), authentication method (`password` or `oauth2` with a custom token
+endpoint), and the credential.
+
+Before the Settings dialog saves the configuration, herold performs a live
+probe (an AUTH-only SMTP session using `internal/extsubmit/probe.go`) to
+confirm the credentials are accepted by the remote server. If the probe fails,
+the error category and diagnostic text are shown inline; nothing is written to
+the store. Common manual configurations:
+
+- Gmail with app password: host `smtp.gmail.com`, port 465, security
+  `implicit_tls`, auth method `password`. The credential is an app-specific
+  password generated in Google Account > Security > 2-Step Verification > App
+  passwords. Gmail requires an app password for any account that has 2-factor
+  authentication enabled; regular account passwords are rejected.
+
+- Microsoft 365 with legacy auth: host `smtp.office365.com`, port 587,
+  security `starttls`, auth method `password`. Legacy authentication must be
+  enabled at the tenant level and on the individual mailbox; Microsoft is
+  progressively disabling it across tenants. Where legacy auth is unavailable,
+  OAuth is the correct path.
+
+- Fastmail: host `smtp.fastmail.com`, port 465, security `implicit_tls`, auth
+  method `password`. Use an app password from Fastmail's "Password & Security"
+  settings.
 
 ## Troubleshooting
 
-<!-- TODO docs-writer: Write a troubleshooting guide covering the following
-     failure modes and their resolution steps.
+### auth-failed state
 
-     ### auth-failed state
+The Identity badge in Settings shows an attention-coloured warning when the
+submission state is `auth-failed`. This means the last submission attempt
+received an SMTP 535 response, or the OAuth refresh sweeper received an
+`invalid_grant` or similar 4xx response from the token endpoint.
 
-     - The Identity badge in settings shows a warning.
-     - Cause: the stored credential was rejected by the external server
-       (535 response to AUTH), or an OAuth access token could not be
-       refreshed (invalid_grant from the token endpoint).
-     - Resolution: open the Identity settings, click the warning badge,
-       and re-authenticate (OAuth) or re-enter the app-specific password.
-     - For OAuth: check that the OAuth application in the provider console
-       is still active and has not been revoked.
-     - For password: verify the app-specific password has not been revoked
-       in the external provider's security settings.
+For password authentication, the most common cause is a revoked or expired
+app-specific password. Ask the user to generate a new app password at the
+provider and re-enter it in Settings > Identities > the affected Identity >
+External SMTP submission. The Settings dialog runs the live probe on save;
+the badge clears when the probe succeeds.
 
-     ### unreachable state
+For OAuth authentication, `auth-failed` means the refresh token has been
+invalidated. Common causes: the user revoked herold's access in the provider's
+security settings (Google: "Third-party apps with account access"; Microsoft:
+"App permissions"), the OAuth application was suspended or deleted in the
+provider console, or a Microsoft 365 conditional access policy changed to
+block the application. Ask the user to open Settings > Identities > the
+affected Identity and click the "Re-authenticate" button or the warning badge.
+The one-click OAuth flow issues a new authorization code and stores fresh
+tokens. For Microsoft 365, check the tenant's sign-in logs in `portal.azure.com`
+for a blocked sign-in correlated by the timestamp of the first `auth-failed`
+audit entry.
 
-     - Cause: DNS or TCP failure connecting to submit_host:submit_port.
-     - Resolution: check network connectivity from the herold server to the
-       external SMTP server. Check firewall rules for outbound port 587 / 465.
+If many Identities enter `auth-failed` simultaneously across different users,
+the operator-level OAuth client secret may have been rotated at the provider
+without updating `system.toml`. Rotate `client_secret_ref` to point to the
+new secret and reload; users will need to re-authenticate because their stored
+refresh tokens reference the old client credentials.
 
-     ### OAuth token refresh not happening
+### unreachable state
 
-     - Check that [server.external_submission].enabled = true.
-     - Check that sweeper is running: `herold diag collect` includes a
-       sweeper-status section (TODO: add to diag collect).
-     - Check /metrics: herold_external_submission_oauth_refresh_total should
-       increment on each refresh attempt.
-     - Check logs for "extsubmit.sweeper:" entries at WARN or ERROR level.
+The `unreachable` state means herold could not establish a TCP connection to
+the configured `submit_host:submit_port`, or the TLS handshake failed. The
+submission is not retried; subsequent JMAP EmailSubmission calls will also fail
+until the state is resolved.
 
-     ### Credentials appearing in logs
+Verify connectivity from the herold host:
 
-     - Should not happen. The redaction handler (DefaultSecretKeys) covers
-       access_token, refresh_token, password, token, secret, authorization.
-     - If you see credential material: file a bug and redact the log file.
+```
+nc -zv smtp.gmail.com 465
+```
 
-     ### DKIM and DMARC
+Substitute the actual `submit_host` and `submit_port` for the affected
+Identity. The connection should succeed in under one second for well-known
+providers. If `nc` hangs or is refused, the egress firewall on the herold host
+is blocking outbound TCP on that port. Common ports are 465 (implicit TLS) and
+587 (STARTTLS). Cloud providers (AWS, GCP, Azure, Hetzner Cloud) frequently
+default-deny outbound port 25, 465, and 587 on new instances; request egress
+allowance from the provider or add a security group / firewall rule.
 
-     - Local DKIM signing is skipped for external-submission Identities.
-     - The external server signs under its own DKIM key.
-     - Operators are responsible for ensuring the external provider accepts
-       the chosen From: address (Gmail "Send mail as" verification,
-       Microsoft 365 send-as permissions).
--->
+For STARTTLS endpoints, verify the TLS chain independently:
+
+```
+openssl s_client -connect smtp.office365.com:587 -starttls smtp
+```
+
+Look for `Verify return code: 0 (ok)`. A non-zero return code indicates a
+certificate chain problem; check whether the herold host's CA bundle is
+up-to-date.
+
+Some shared-IP cloud providers are listed on Gmail's or Microsoft's IP
+blocklists. If the `nc` connection succeeds but the SMTP greeting is refused
+(check the diagnostic text in the `submission.external.failure` audit entry),
+consult the provider's postmaster tools to determine whether the server's IP
+is listed.
+
+### OAuth token not refreshing
+
+If OAuth Identities enter `auth-failed` at their natural token expiry rather
+than being refreshed by the sweeper, investigate in this order.
+
+Confirm the feature flag is on:
+
+```
+grep external_submission /etc/herold/system.toml
+```
+
+The output should include `enabled = true`. If `enabled` is absent or false,
+the sweeper goroutine was never started; it cannot be started without a server
+restart.
+
+Confirm the sweeper started:
+
+```
+journalctl -u herold | grep "extsubmit.sweeper: started"
+```
+
+The line is emitted at `INFO` level when the sweeper goroutine enters its loop.
+If the line is absent in the most recent startup, either the feature flag is
+off or the server startup failed before the sweeper was registered.
+
+Check the active-identities gauge:
+
+```
+curl -s http://127.0.0.1:9090/metrics | grep herold_external_submission_active_identities
+```
+
+A value of `0` means no OAuth `identity_submission` rows were returned on the
+last sweeper tick. This is expected if no users have configured OAuth
+Identities. If OAuth Identities exist but the gauge reads `0`, query the store
+directly to check whether `refresh_due_us` is set:
+
+```
+sqlite3 /var/lib/herold/herold.db \
+  "SELECT identity_id, state, refresh_due_us FROM identity_submission;"
+```
+
+For Postgres:
+
+```
+psql $HEROLD_DB_URL \
+  -c "SELECT identity_id, state, refresh_due_us FROM identity_submission;"
+```
+
+Rows with a null `refresh_due_us` are not picked up by the sweeper. This
+happens when an OAuth flow completed without an `expires_in` value in the
+token response (unusual but possible with non-standard providers). In that
+case, the token must be refreshed manually by the user re-authenticating.
+
+The `sweeper_workers` setting (default: 4) controls how many refresh attempts
+run concurrently. Increasing it is unlikely to help unless
+`herold_external_submission_oauth_refresh_total{outcome="failure"}` is climbing
+because refresh attempts are timing out under contention with many concurrent
+OAuth Identities.
+
+### Credential material in logs
+
+Any appearance of a password, access token, or refresh token in log output is
+a security incident. The slog redaction handler built into `observe.NewLogger`
+filters attribute keys listed in `DefaultSecretKeys` (`internal/observe/secret.go`):
+`password`, `token`, `access_token`, `refresh_token`, `xoauth2_token`,
+`bearer_token`, `api_key`, `secret`, `client_secret`, `authorization`,
+`cookie`, `set-cookie`. Matching is case-insensitive and exact against the
+full attribute key name.
+
+If you observe credential material in logs:
+
+1. Treat it as a security incident. Rotate the exposed credential at the
+   provider immediately: revoke the OAuth token or change the app-specific
+   password. Ask the affected user to re-authenticate.
+
+2. Identify the attribute key under which the credential appeared. Check
+   whether that key is already in `DefaultSecretKeys`. If it is not, the
+   code path that emitted the log record used a key name not yet covered by
+   the filter.
+
+3. File a bug referencing the attribute key name. The fix is to add the key
+   to `DefaultSecretKeys` in `internal/observe/secret.go`; it is a one-line
+   change requiring a security-reviewer-required PR.
+
+4. Audit other configured log sinks (OTLP exporters, file sinks, external log
+   aggregators) for the same token value and redact or purge any affected
+   records.
+
+If the key is already present in `DefaultSecretKeys` and the leak still
+occurred, the log record may have been emitted by a logger that was not
+constructed through `observe.NewLogger` and therefore does not have the
+`NewRedactHandler` wrapper in its handler chain. Identify the call site and
+ensure it obtains its logger from the standard construction path.
