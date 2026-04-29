@@ -221,20 +221,21 @@ func buildDSN(in dsnInput) ([]byte, error) {
 	}
 	buf.WriteString("\r\n")
 
-	// Part 3: original headers (or full message). We always emit the
-	// message/rfc822-headers part with whatever headers we have; an
-	// empty headers blob produces an empty (but well-formed) part.
-	fmt.Fprintf(&buf, "--%s\r\n", boundary)
-	writeHeader(&buf, "Content-Type", "message/rfc822-headers")
-	buf.WriteString("\r\n")
+	// Part 3: original headers. Omit the part entirely when the
+	// OriginalHeaders blob is empty — emitting a zero-byte part would
+	// cause mail clients and the suite to show an empty attachment chip
+	// (RFC 3462 §2 permits but does not require this part).
 	if len(in.OriginalHeaders) > 0 {
+		fmt.Fprintf(&buf, "--%s\r\n", boundary)
+		writeHeader(&buf, "Content-Type", "message/rfc822-headers")
+		buf.WriteString("\r\n")
 		buf.Write(ensureCRLF(in.OriginalHeaders))
 		// Ensure trailing CRLF.
 		if !bytes.HasSuffix(buf.Bytes(), []byte("\r\n")) {
 			buf.WriteString("\r\n")
 		}
+		buf.WriteString("\r\n")
 	}
-	buf.WriteString("\r\n")
 
 	fmt.Fprintf(&buf, "--%s--\r\n", boundary)
 	return buf.Bytes(), nil

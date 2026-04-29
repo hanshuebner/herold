@@ -379,11 +379,16 @@ func TestPermanentFailureEmitsDSN(t *testing.T) {
 		"Action: failed",
 		"Status: 5.1.1",
 		"Diagnostic-Code: smtp; 550 5.1.1 no such user",
-		"message/rfc822-headers",
 	} {
 		if !strings.Contains(bodyStr, want) {
 			t.Errorf("dsn body missing %q\n--BODY--\n%s\n--END--", want, bodyStr)
 		}
+	}
+	// When no original headers are available the message/rfc822-headers
+	// part must be omitted entirely (fix for issue #41: empty part
+	// appeared as an empty attachment chip in the suite).
+	if strings.Contains(bodyStr, "message/rfc822-headers") {
+		t.Errorf("dsn body must not contain message/rfc822-headers when no headers were supplied\n--BODY--\n%s\n--END--", bodyStr)
 	}
 }
 
