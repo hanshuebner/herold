@@ -937,14 +937,46 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		if metricsShutdown != nil {
 			_ = metricsShutdown()
 		}
-		select {
-		case err := <-groupErr:
-			return err
-		case <-time.After(grace):
-			logger.LogAttrs(context.Background(), slog.LevelWarn,
-				"shutdown drain window elapsed; some goroutines did not exit",
-				slog.Duration("grace", grace))
-			return nil
+		logger.LogAttrs(context.Background(), slog.LevelInfo,
+			"shutdown: draining; press Ctrl-C again to force exit",
+			slog.Duration("grace", grace))
+		// A second SIGINT/SIGTERM during drain is the user telling us
+		// to stop waiting. signal.NotifyContext above already consumed
+		// the first signal and is no longer delivering them, so we
+		// install our own handler for the duration of the drain.
+		forceCh := make(chan os.Signal, 1)
+		signal.Notify(forceCh, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(forceCh)
+		// Periodic progress so the operator knows the process is
+		// alive and how much of the grace window remains.
+		const tick = 5 * time.Second
+		ticker := time.NewTicker(tick)
+		defer ticker.Stop()
+		start := time.Now()
+		deadlineCh := time.After(grace)
+		for {
+			select {
+			case err := <-groupErr:
+				return err
+			case <-deadlineCh:
+				logger.LogAttrs(context.Background(), slog.LevelWarn,
+					"shutdown drain window elapsed; some goroutines did not exit",
+					slog.Duration("grace", grace))
+				return nil
+			case <-ticker.C:
+				remaining := (grace - time.Since(start)).Round(time.Second)
+				if remaining < 0 {
+					remaining = 0
+				}
+				logger.LogAttrs(context.Background(), slog.LevelInfo,
+					"shutdown: waiting for goroutines to exit",
+					slog.Duration("remaining", remaining))
+			case sig := <-forceCh:
+				logger.LogAttrs(context.Background(), slog.LevelWarn,
+					"shutdown: second signal received; exiting now",
+					slog.String("signal", sig.String()))
+				return nil
+			}
 		}
 	}
 
