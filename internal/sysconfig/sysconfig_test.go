@@ -2053,3 +2053,165 @@ activities = { allow = ["user", "audit"] }
 		t.Errorf("deny list should be empty: got %v", act.Deny)
 	}
 }
+
+// -- External submission + secrets validation (REQ-AUTH-EXT-SUBMIT-01..10) --
+
+// TestValidate_ExternalSubmission_EnabledRequiresDataKey checks that enabling
+// external_submission without a data_key_ref is a hard validation error.
+func TestValidate_ExternalSubmission_EnabledRequiresDataKey(t *testing.T) {
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir  = "/var/lib/herold"
+
+[server.admin_tls]
+source   = "file"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+[server.external_submission]
+enabled = true
+
+[[listener]]
+name     = "smtp"
+address  = "0.0.0.0:25"
+protocol = "smtp"
+tls      = "starttls"
+
+[[listener]]
+name     = "public"
+address  = "0.0.0.0:443"
+protocol = "admin"
+kind     = "public"
+tls      = "implicit"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+[[listener]]
+name     = "admin"
+address  = "127.0.0.1:9443"
+protocol = "admin"
+kind     = "admin"
+tls      = "implicit"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal("expected error when external_submission.enabled=true without data_key_ref")
+	}
+	if !strings.Contains(err.Error(), "data_key_ref") {
+		t.Errorf("error should mention data_key_ref: %v", err)
+	}
+}
+
+// TestValidate_ExternalSubmission_DisabledWithoutDataKey passes when enabled=false
+// and no data_key_ref is set (the default zero-value state).
+func TestValidate_ExternalSubmission_DisabledWithoutDataKey(t *testing.T) {
+	cfg, err := Parse([]byte(minimalValid))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.ExternalSubmission.Enabled {
+		t.Error("external_submission.enabled should default to false")
+	}
+}
+
+// TestValidate_Secrets_InlineRefusedInToml checks that setting data_key_ref to
+// a literal string (not $VAR or file:/) is rejected at validate time.
+func TestValidate_Secrets_InlineRefusedInToml(t *testing.T) {
+	const cfg = `
+[server]
+hostname  = "mail.example.com"
+data_dir  = "/var/lib/herold"
+
+[server.admin_tls]
+source    = "file"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+[server.secrets]
+data_key_ref = "not-a-reference-but-an-inline-value"
+
+[[listener]]
+name     = "smtp"
+address  = "0.0.0.0:25"
+protocol = "smtp"
+tls      = "starttls"
+
+[[listener]]
+name     = "public"
+address  = "0.0.0.0:443"
+protocol = "admin"
+kind     = "public"
+tls      = "implicit"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+[[listener]]
+name     = "admin"
+address  = "127.0.0.1:9443"
+protocol = "admin"
+kind     = "admin"
+tls      = "implicit"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal("expected error for inline data_key_ref")
+	}
+	if !strings.Contains(err.Error(), "STANDARDS §9") {
+		t.Errorf("error should cite STANDARDS §9: %v", err)
+	}
+}
+
+// TestValidate_Secrets_EnvRefAccepted verifies that a $VAR reference for
+// data_key_ref is accepted at parse time even when the env var is not set
+// (resolution happens at runtime, not at config parse).
+func TestValidate_Secrets_EnvRefAccepted(t *testing.T) {
+	const cfg = `
+[server]
+hostname  = "mail.example.com"
+data_dir  = "/var/lib/herold"
+
+[server.admin_tls]
+source    = "file"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+[server.secrets]
+data_key_ref = "$HEROLD_DATA_KEY"
+
+[[listener]]
+name     = "smtp"
+address  = "0.0.0.0:25"
+protocol = "smtp"
+tls      = "starttls"
+
+[[listener]]
+name     = "public"
+address  = "0.0.0.0:443"
+protocol = "admin"
+kind     = "public"
+tls      = "implicit"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+[[listener]]
+name     = "admin"
+address  = "127.0.0.1:9443"
+protocol = "admin"
+kind     = "admin"
+tls      = "implicit"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+`
+	c, err := Parse([]byte(cfg))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if c.Server.Secrets.DataKeyRef != "$HEROLD_DATA_KEY" {
+		t.Errorf("DataKeyRef = %q; want $HEROLD_DATA_KEY", c.Server.Secrets.DataKeyRef)
+	}
+}

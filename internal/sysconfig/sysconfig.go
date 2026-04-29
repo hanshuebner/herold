@@ -138,20 +138,22 @@ type ServerConfig struct {
 	// the scope check; this is the dev-only "trust the operator"
 	// posture). Production deployments MUST leave DevMode off and
 	// configure both listeners explicitly.
-	DevMode    bool             `toml:"dev_mode,omitempty"`
-	AdminTLS   AdminTLSConfig   `toml:"admin_tls"`
-	Storage    StorageConfig    `toml:"storage"`
-	Snooze     SnoozeConfig     `toml:"snooze,omitempty"`
-	UI         UIConfig         `toml:"ui,omitempty"`
-	ImageProxy ImageProxyConfig `toml:"image_proxy,omitempty"`
-	Chat       ChatConfig       `toml:"chat,omitempty"`
-	Call       CallConfig       `toml:"call,omitempty"`
-	TURN       TURNConfig       `toml:"turn,omitempty"`
-	SmartHost  SmartHostConfig  `toml:"smart_host,omitempty"`
-	Suite      SuiteConfig      `toml:"suite,omitempty"`
-	AdminSPA   AdminSPAConfig   `toml:"admin_spa,omitempty"`
-	Push       PushConfig       `toml:"push,omitempty"`
-	Queue      QueueConfig      `toml:"queue,omitempty"`
+	DevMode            bool                     `toml:"dev_mode,omitempty"`
+	AdminTLS           AdminTLSConfig           `toml:"admin_tls"`
+	Storage            StorageConfig            `toml:"storage"`
+	Snooze             SnoozeConfig             `toml:"snooze,omitempty"`
+	UI                 UIConfig                 `toml:"ui,omitempty"`
+	ImageProxy         ImageProxyConfig         `toml:"image_proxy,omitempty"`
+	Chat               ChatConfig               `toml:"chat,omitempty"`
+	Call               CallConfig               `toml:"call,omitempty"`
+	TURN               TURNConfig               `toml:"turn,omitempty"`
+	SmartHost          SmartHostConfig          `toml:"smart_host,omitempty"`
+	Suite              SuiteConfig              `toml:"suite,omitempty"`
+	AdminSPA           AdminSPAConfig           `toml:"admin_spa,omitempty"`
+	Push               PushConfig               `toml:"push,omitempty"`
+	Queue              QueueConfig              `toml:"queue,omitempty"`
+	Secrets            SecretsConfig            `toml:"secrets,omitempty"`
+	ExternalSubmission ExternalSubmissionConfig `toml:"external_submission,omitempty"`
 	// PublicBaseURL is the externally-reachable base URL of the public
 	// HTTP listener (e.g. "https://mail.example.com"). It is used to
 	// build signed webhook fetch URLs (REQ-HOOK-30..31) delivered to
@@ -160,6 +162,44 @@ type ServerConfig struct {
 	// operators running behind a reverse proxy or split-horizon DNS
 	// set this explicitly.
 	PublicBaseURL string `toml:"public_base_url,omitempty"`
+}
+
+// SecretsConfig carries references to operator-supplied secrets used for
+// at-rest encryption of per-identity submission credentials
+// (REQ-AUTH-EXT-SUBMIT-02). Per STANDARDS §9, the key is never specified
+// inline; it must be a $VAR or file:/path reference resolved via
+// sysconfig.ResolveSecretStrict.
+//
+// The referenced value must be 64 hex characters (encoding 32 bytes); the
+// internal/secrets package decodes and validates it at boot via LoadDataKey.
+//
+// Example (system.toml):
+//
+//	[server.secrets]
+//	data_key_ref = "$HEROLD_DATA_KEY"
+type SecretsConfig struct {
+	// DataKeyRef is a secret reference ("$VAR" or "file:/path") resolving
+	// to a 64-hex-character (32-byte) AES-grade key used to seal and open
+	// per-identity SMTP submission credentials. Required when
+	// [server.external_submission].enabled is true.
+	DataKeyRef string `toml:"data_key_ref,omitempty"`
+}
+
+// ExternalSubmissionConfig controls the external SMTP submission feature
+// (REQ-AUTH-EXT-SUBMIT-01..10). When Enabled is false (the default) the
+// submission-credential store methods are available but the HTTP surface
+// and background token-refresh sweeper are not started.
+//
+// Example (system.toml):
+//
+//	[server.external_submission]
+//	enabled = true
+type ExternalSubmissionConfig struct {
+	// Enabled activates the external SMTP submission surface. When true,
+	// [server.secrets].data_key_ref must be configured; the server refuses
+	// to start otherwise (boot-time hard-fail per architectural decision 4).
+	// Default false.
+	Enabled bool `toml:"enabled,omitempty"`
 }
 
 // PushConfig configures the deployment-level VAPID key pair the Web
@@ -1675,6 +1715,17 @@ func Validate(c *Config) error {
 	// SES inbound (REQ-HOOK-SES-03).
 	if err := validateSESInbound(&c.Hooks.SESInbound); err != nil {
 		return err
+	}
+	// External SMTP submission (REQ-AUTH-EXT-SUBMIT-01..10).
+	// When enabled, a data key must be configured; the server refuses to
+	// start without one (boot-time hard-fail, architectural decision 4).
+	if c.Server.ExternalSubmission.Enabled && c.Server.Secrets.DataKeyRef == "" {
+		return errors.New("sysconfig: [server.external_submission] enabled requires [server.secrets].data_key_ref; " +
+			"set [server.secrets].data_key_ref to enable [server.external_submission]")
+	}
+	if c.Server.Secrets.DataKeyRef != "" && !IsSecretReference(c.Server.Secrets.DataKeyRef) {
+		return fmt.Errorf("sysconfig: [server.secrets] data_key_ref %q must be \"$VAR\" or \"file:/path\" (STANDARDS §9)",
+			c.Server.Secrets.DataKeyRef)
 	}
 	return nil
 }
