@@ -1,16 +1,17 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { compose, bodyTextWithoutSignature } from './compose.svelte';
+  import { compose, bodyTextWithoutSignature, type Recipient } from './compose.svelte';
   import { composeStack } from './compose-stack.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
   import { mail } from '../mail/store.svelte';
   import RichEditor from './RichEditor.svelte';
   import ComposeToolbar from './ComposeToolbar.svelte';
-  import AddressAutocomplete from './AddressAutocomplete.svelte';
+  import RecipientField from './RecipientField.svelte';
   import { confirm } from '../dialog/confirm.svelte';
   import { t } from '../i18n/i18n.svelte';
   import { EMPTY_ACTIVE, type ActiveState, applyImage } from './editor';
   import type { EditorView } from 'prosemirror-view';
+  import { recipientToString } from './recipient-parse';
 
   // Per-compose keyboard layer: Mod+Enter sends, Escape closes.
   // Both pass through input-focus carve-outs (see keyboard engine
@@ -65,14 +66,24 @@
   // autofocus handles cursor placement; replies pre-populate the body
   // such that the empty leading paragraphs put the caret at the top.)
   let modalEl = $state<HTMLElement | null>(null);
+
+  // Per-field recipient warnings (REQ-MAIL-11d). Each is set by the
+  // RecipientField component when the input buffer has unrecognized text.
+  // Send is blocked while any is non-null.
+  let toWarning = $state<string | null>(null);
+  let ccWarning = $state<string | null>(null);
+  let bccWarning = $state<string | null>(null);
+  let hasRecipientWarnings = $derived(
+    toWarning !== null || ccWarning !== null || bccWarning !== null,
+  );
   $effect(() => {
     if (compose.status !== 'editing') return;
     requestAnimationFrame(() => {
       if (!compose.replyContext.parentId && modalEl) {
-        // Focus the To-field input — the AddressAutocomplete's <input>
-        // is the first text input inside the modal, so query for it.
+        // Focus the To-field input — the RecipientField's <input> is
+        // the first text input inside the modal.
         const first = modalEl.querySelector<HTMLInputElement>(
-          '.row input[type="text"]',
+          '.recipient-field input[type="text"]',
         );
         first?.focus();
       }
@@ -89,15 +100,23 @@
   const AUTOSAVE_IDLE_MS = 4000;
   let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
-    // Reactive deps: every editable field on the compose form.
-    const _to = compose.to;
-    const _cc = compose.cc;
-    const _bcc = compose.bcc;
+    // Reactive deps: every editable field on the compose form. Track the
+    // recipient arrays (which drive the string fields) rather than just
+    // the strings so chip additions/removals trigger the autosave timer.
+    const _to = compose.toRecipients;
+    const _cc = compose.ccRecipients;
+    const _bcc = compose.bccRecipients;
+    const _toStr = compose.to;
+    const _ccStr = compose.cc;
+    const _bccStr = compose.bcc;
     const _subj = compose.subject;
     const _body = compose.body;
     void _to;
     void _cc;
     void _bcc;
+    void _toStr;
+    void _ccStr;
+    void _bccStr;
     void _subj;
     void _body;
     if (!compose.isOpen || compose.status === 'sending') return;
@@ -147,18 +166,27 @@
   // visible characters; the editor renders one or more empty <p> tags
   // even when nothing has been typed.
   async function sendWithWarn(): Promise<void> {
+    // Recipient fields have stranded unparsed text (REQ-MAIL-11d).
+    if (hasRecipientWarnings) {
+      compose.errorMessage = 'Fix recipient warnings before sending';
+      return;
+    }
+
     // No recipients — surface the error inline AND move the cursor to
     // the To field so the user can type immediately. compose.send()
     // would set the same error message but leaves focus on Send,
     // forcing an extra click to fix it.
     const noRecipients =
+      compose.toRecipients.length === 0 &&
+      compose.ccRecipients.length === 0 &&
+      compose.bccRecipients.length === 0 &&
       compose.to.trim().length === 0 &&
       compose.cc.trim().length === 0 &&
       compose.bcc.trim().length === 0;
     if (noRecipients) {
       compose.errorMessage = 'At least one recipient is required';
       const toInput = modalEl?.querySelector<HTMLInputElement>(
-        '.row input[type="text"]',
+        '.recipient-field input[type="text"]',
       );
       toInput?.focus();
       return;
@@ -441,13 +469,18 @@
         </span>
       </div>
 
-      <div class="row">
-        <span class="label">{t('compose.to')}</span>
-        <AddressAutocomplete
-          bind:value={compose.to}
-          onChange={(v) => (compose.to = v)}
+      <div class="row recipient-row">
+        <RecipientField
+          label={t('compose.to')}
+          chips={compose.toRecipients}
+          onChipsChange={(chips) => {
+            compose.toRecipients = chips;
+            compose.to = chips.map(recipientToString).join(', ');
+          }}
+          onWarning={(w) => (toWarning = w)}
           placeholder="recipient@example.com"
           disabled={compose.status === 'sending'}
+          autofocus={!compose.replyContext.parentId && compose.status === 'editing'}
         />
         {#if !compose.ccBccVisible}
           <button
@@ -459,24 +492,41 @@
           </button>
         {/if}
       </div>
+      {#if toWarning}
+        <p class="field-warning" role="alert">{toWarning}</p>
+      {/if}
 
       {#if compose.ccBccVisible}
-        <div class="row">
-          <span class="label">{t('compose.cc')}</span>
-          <AddressAutocomplete
-            bind:value={compose.cc}
-            onChange={(v) => (compose.cc = v)}
+        <div class="row recipient-row">
+          <RecipientField
+            label={t('compose.cc')}
+            chips={compose.ccRecipients}
+            onChipsChange={(chips) => {
+              compose.ccRecipients = chips;
+              compose.cc = chips.map(recipientToString).join(', ');
+            }}
+            onWarning={(w) => (ccWarning = w)}
             disabled={compose.status === 'sending'}
           />
         </div>
-        <div class="row">
-          <span class="label">{t('compose.bcc')}</span>
-          <AddressAutocomplete
-            bind:value={compose.bcc}
-            onChange={(v) => (compose.bcc = v)}
+        {#if ccWarning}
+          <p class="field-warning" role="alert">{ccWarning}</p>
+        {/if}
+        <div class="row recipient-row">
+          <RecipientField
+            label={t('compose.bcc')}
+            chips={compose.bccRecipients}
+            onChipsChange={(chips) => {
+              compose.bccRecipients = chips;
+              compose.bcc = chips.map(recipientToString).join(', ');
+            }}
+            onWarning={(w) => (bccWarning = w)}
             disabled={compose.status === 'sending'}
           />
         </div>
+        {#if bccWarning}
+          <p class="field-warning" role="alert">{bccWarning}</p>
+        {/if}
       {/if}
 
       <label class="row">
@@ -666,8 +716,12 @@
         type="button"
         class="send"
         onclick={sendWithWarn}
-        disabled={compose.status === 'sending' || compose.attachmentsBusy}
-        title={compose.attachmentsBusy ? 'Attachments still uploading' : ''}
+        disabled={compose.status === 'sending' || compose.attachmentsBusy || hasRecipientWarnings}
+        title={compose.attachmentsBusy
+          ? 'Attachments still uploading'
+          : hasRecipientWarnings
+            ? 'Fix recipient warnings before sending'
+            : ''}
       >
         {compose.status === 'sending' ? t('compose.sending') : t('compose.send')}
       </button>
@@ -883,6 +937,21 @@
     border-left: 3px solid var(--support-error);
     color: var(--support-error);
     font-size: var(--type-body-compact-01-size);
+  }
+
+  /* Inline field-level warning for unrecognized recipient text (REQ-MAIL-11d). */
+  .field-warning {
+    margin: 0;
+    padding: var(--spacing-01) var(--spacing-05);
+    color: var(--support-warning);
+    font-size: var(--type-body-compact-01-size);
+  }
+
+  /* Recipient rows use RecipientField which draws its own border; suppress
+     the duplicate bottom border that .row adds. */
+  .recipient-row {
+    padding: 0;
+    border-bottom: none;
   }
 
   .modal-footer {

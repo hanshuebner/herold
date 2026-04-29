@@ -35,6 +35,13 @@ import {
   type Email,
   type Identity,
 } from '../mail/types';
+import {
+  tryCommit,
+  recipientToString,
+  type Recipient,
+} from './recipient-parse';
+
+export type { Recipient };
 
 type ComposeStatus = 'idle' | 'editing' | 'sending';
 
@@ -91,6 +98,15 @@ class ComposeStore {
   to = $state('');
   cc = $state('');
   bcc = $state('');
+  /**
+   * Structured recipient chips for the To field. Kept in sync with
+   * `to` (string form). The RecipientField component drives these;
+   * openWith / openReply etc. populate both the string and these arrays.
+   * REQ-MAIL-11a..d.
+   */
+  toRecipients = $state<Recipient[]>([]);
+  ccRecipients = $state<Recipient[]>([]);
+  bccRecipients = $state<Recipient[]>([]);
   subject = $state('');
   body = $state('');
   errorMessage = $state<string | null>(null);
@@ -160,6 +176,9 @@ class ComposeStore {
     this.to = '';
     this.cc = '';
     this.bcc = '';
+    this.toRecipients = [];
+    this.ccRecipients = [];
+    this.bccRecipients = [];
     this.subject = '';
     this.body = appendSignature('', mail.primaryIdentity);
     this.errorMessage = null;
@@ -198,6 +217,10 @@ class ComposeStore {
     this.to = args.to;
     this.cc = args.cc ?? '';
     this.bcc = args.bcc ?? '';
+    // Populate structured recipient arrays from the string representation.
+    this.toRecipients = parseStringToRecipients(this.to);
+    this.ccRecipients = parseStringToRecipients(this.cc);
+    this.bccRecipients = parseStringToRecipients(this.bcc);
     this.subject = args.subject;
     this.body = args.skipSignature
       ? args.body
@@ -530,6 +553,9 @@ class ComposeStore {
     this.to = '';
     this.cc = '';
     this.bcc = '';
+    this.toRecipients = [];
+    this.ccRecipients = [];
+    this.bccRecipients = [];
     this.subject = '';
     this.body = '';
     this.errorMessage = null;
@@ -596,9 +622,21 @@ class ComposeStore {
     const drafts = mail.drafts;
     if (!identity || !drafts) return false;
 
-    const toAddrs = parseAddressList(this.to);
-    const ccAddrs = parseAddressList(this.cc);
-    const bccAddrs = parseAddressList(this.bcc);
+    // Use structured recipient arrays (preserves display names). Fall back to
+    // parsing the string form for any field whose array is empty but the
+    // string is non-empty — covers snapshot-restore paths.
+    const toAddrs: Recipient[] =
+      this.toRecipients.length > 0
+        ? this.toRecipients
+        : parseAddressList(this.to).map((email) => ({ email }));
+    const ccAddrs: Recipient[] =
+      this.ccRecipients.length > 0
+        ? this.ccRecipients
+        : parseAddressList(this.cc).map((email) => ({ email }));
+    const bccAddrs: Recipient[] =
+      this.bccRecipients.length > 0
+        ? this.bccRecipients
+        : parseAddressList(this.bcc).map((email) => ({ email }));
     // Rewrite blob: object URLs back to cid: references so the
     // outbound message references the inline parts (issue #20). The
     // editor uses blob URLs while composing for in-place preview.
@@ -612,7 +650,7 @@ class ComposeStore {
 
     const fields: Record<string, unknown> = {
       from: [{ name: identity.name, email: identity.email }],
-      to: toAddrs.map((email) => ({ email, name: null })),
+      to: toAddrs.map((r) => ({ email: r.email, name: r.name ?? null })),
       subject: this.subject,
       bodyValues: {
         '1': { value: bodyText, isTruncated: false, isEncodingProblem: false },
@@ -627,10 +665,10 @@ class ComposeStore {
       hasAttachment: readyAttachments.length > 0,
     };
     if (ccAddrs.length > 0) {
-      fields.cc = ccAddrs.map((email) => ({ email, name: null }));
+      fields.cc = ccAddrs.map((r) => ({ email: r.email, name: r.name ?? null }));
     }
     if (bccAddrs.length > 0) {
-      fields.bcc = bccAddrs.map((email) => ({ email, name: null }));
+      fields.bcc = bccAddrs.map((r) => ({ email: r.email, name: r.name ?? null }));
     }
     if (this.replyContext.inReplyTo && this.replyContext.inReplyTo.length > 0) {
       fields.inReplyTo = this.replyContext.inReplyTo;
@@ -711,9 +749,22 @@ class ComposeStore {
       return;
     }
 
-    const toRecipients = parseAddressList(this.to);
-    const ccRecipients = parseAddressList(this.cc);
-    const bccRecipients = parseAddressList(this.bcc);
+    // Use structured recipient arrays (preserves display names). Fall back to
+    // parsing the string form for any field whose array is empty but the
+    // string is non-empty — this covers snapshot-restore paths that only
+    // carry the string representation.
+    const toRecipients: Recipient[] =
+      this.toRecipients.length > 0
+        ? this.toRecipients
+        : parseAddressList(this.to).map((email) => ({ email }));
+    const ccRecipients: Recipient[] =
+      this.ccRecipients.length > 0
+        ? this.ccRecipients
+        : parseAddressList(this.cc).map((email) => ({ email }));
+    const bccRecipients: Recipient[] =
+      this.bccRecipients.length > 0
+        ? this.bccRecipients
+        : parseAddressList(this.bcc).map((email) => ({ email }));
     const allRecipients = [...toRecipients, ...ccRecipients, ...bccRecipients];
     if (allRecipients.length === 0) {
       this.errorMessage = 'At least one recipient is required';
@@ -765,7 +816,7 @@ class ComposeStore {
       mailboxIds: { [drafts.id]: true },
       keywords: { $draft: true, $seen: true },
       from: [{ name: identity.name, email: identity.email }],
-      to: toRecipients.map((email) => ({ email, name: null })),
+      to: toRecipients.map((r) => ({ email: r.email, name: r.name ?? null })),
       subject,
       bodyValues: {
         '1': { value: bodyText, isTruncated: false, isEncodingProblem: false },
@@ -780,14 +831,14 @@ class ComposeStore {
       hasAttachment: readyAttachments.length > 0,
     };
     if (ccRecipients.length > 0) {
-      draftEmail.cc = ccRecipients.map((email) => ({ email, name: null }));
+      draftEmail.cc = ccRecipients.map((r) => ({ email: r.email, name: r.name ?? null }));
     }
     // Bcc: per RFC 8621 §4.1.2 the Bcc header is set on the draft so the
     // sender's Sent-folder copy retains the blind list, but the envelope
     // recipients (below) are what actually drive delivery — the server
     // strips Bcc from the wire-bound message.
     if (bccRecipients.length > 0) {
-      draftEmail.bcc = bccRecipients.map((email) => ({ email, name: null }));
+      draftEmail.bcc = bccRecipients.map((r) => ({ email: r.email, name: r.name ?? null }));
     }
     if (replyContext.inReplyTo && replyContext.inReplyTo.length > 0) {
       draftEmail.inReplyTo = replyContext.inReplyTo;
@@ -959,10 +1010,18 @@ class ComposeStore {
 }
 
 /**
- * Parse a comma- or semicolon-separated string of email addresses. Strips
- * "Name <addr>" wrappers — for v1 we keep only the bare address; structured
- * Address objects come in a follow-up pass.
+ * Parse a comma/semicolon-separated address string into structured
+ * Recipient objects. Used by openWith to populate the chip arrays when
+ * opening a compose that was pre-filled from a reply/forward/draft.
+ * Recognized fragments become chips; unrecognized tokens are silently
+ * dropped (the string form is still the canonical store value).
  */
+function parseStringToRecipients(raw: string): Recipient[] {
+  if (!raw.trim()) return [];
+  const { chips } = tryCommit(raw);
+  return chips;
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -1378,6 +1437,7 @@ export const compose = new ComposeStore();
  */
 export const _internals_forTest = {
   parseAddressList,
+  parseStringToRecipients,
   htmlToPlainText,
   replySubject,
   forwardSubject,
