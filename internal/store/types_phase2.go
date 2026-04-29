@@ -1127,6 +1127,13 @@ type EmailSubmissionRow struct {
 	// to round-trip across restart but which we do not model with their
 	// own column. Small JSON object; opaque to the store.
 	Properties []byte
+	// External is true when the submission was routed through an external
+	// SMTP endpoint (REQ-AUTH-EXT-SUBMIT-05) rather than herold's outbound
+	// queue. When true, no queue rows exist for this submission;
+	// EmailSubmission/get synthesises delivery status from the row itself.
+	// EmailSubmission/set { destroy } returns cannotUnsend for external rows
+	// because the wire transaction has already completed.
+	External bool
 }
 
 // EmailSubmissionFilter narrows a ListEmailSubmissions read per RFC 8621

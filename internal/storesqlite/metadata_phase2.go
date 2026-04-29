@@ -1588,9 +1588,10 @@ func scanEmailSubmission(row rowLike) (store.EmailSubmissionRow, error) {
 		principalID, emailID                        int64
 		sendAtUs, createdAtUs                       int64
 		props                                       []byte
+		external                                    int64
 	)
 	err := row.Scan(&id, &envID, &principalID, &identityID, &emailID,
-		&threadID, &sendAtUs, &createdAtUs, &undoStatus, &props)
+		&threadID, &sendAtUs, &createdAtUs, &undoStatus, &props, &external)
 	if err != nil {
 		return store.EmailSubmissionRow{}, mapErr(err)
 	}
@@ -1605,12 +1606,13 @@ func scanEmailSubmission(row rowLike) (store.EmailSubmissionRow, error) {
 		CreatedAtUs: createdAtUs,
 		UndoStatus:  undoStatus,
 		Properties:  props,
+		External:    external != 0,
 	}, nil
 }
 
 const emailSubmissionSelectColumns = `
 	id, envelope_id, principal_id, identity_id, email_id, thread_id,
-	send_at_us, created_at_us, undo_status, properties`
+	send_at_us, created_at_us, undo_status, properties, external`
 
 func (m *metadata) InsertEmailSubmission(ctx context.Context, row store.EmailSubmissionRow) error {
 	if row.ID == "" {
@@ -1637,14 +1639,18 @@ func (m *metadata) InsertEmailSubmission(ctx context.Context, row store.EmailSub
 		if props == nil {
 			props = []byte{}
 		}
+		extVal := int64(0)
+		if row.External {
+			extVal = 1
+		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO jmap_email_submissions
 			  (id, envelope_id, principal_id, identity_id, email_id, thread_id,
-			   send_at_us, created_at_us, undo_status, properties)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   send_at_us, created_at_us, undo_status, properties, external)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			row.ID, string(row.EnvelopeID), int64(row.PrincipalID),
 			row.IdentityID, int64(row.EmailID), row.ThreadID,
-			row.SendAtUs, row.CreatedAtUs, row.UndoStatus, props)
+			row.SendAtUs, row.CreatedAtUs, row.UndoStatus, props, extVal)
 		return mapErr(err)
 	})
 }

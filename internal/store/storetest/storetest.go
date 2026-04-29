@@ -99,6 +99,7 @@ func Run(t *testing.T, f Factory) {
 		{"EmailSubmission_List_FilterByIdentity_FilterByUndoStatus_FilterByTimeRange", testEmailSubmissionListFilters},
 		{"EmailSubmission_UpdateUndoStatus_Reflected_OnGet", testEmailSubmissionUpdateUndoStatus},
 		{"EmailSubmission_Delete_NotFoundAfter", testEmailSubmissionDeleteNotFoundAfter},
+		{"EmailSubmission_External_Flag_Roundtrip", testEmailSubmissionExternalFlagRoundtrip},
 		{"JMAPIdentity_InsertGet_Roundtrip", testJMAPIdentityInsertGetRoundtrip},
 		{"JMAPIdentity_List_ByPrincipal", testJMAPIdentityListByPrincipal},
 		{"JMAPIdentity_Update_RoundTrips", testJMAPIdentityUpdateRoundtrips},
@@ -2778,6 +2779,82 @@ func testEmailSubmissionDeleteNotFoundAfter(t *testing.T, s store.Store) {
 	// Second delete returns ErrNotFound.
 	if err := s.Meta().DeleteEmailSubmission(ctx, "env-d1"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Delete twice: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testEmailSubmissionExternalFlagRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "esext@example.com")
+	// Insert an external submission row (External = true).
+	extRow := store.EmailSubmissionRow{
+		ID:          "ext-env-001",
+		EnvelopeID:  store.EnvelopeID("ext-env-001"),
+		PrincipalID: p.ID,
+		IdentityID:  "alt",
+		EmailID:     store.MessageID(99),
+		ThreadID:    "Tx",
+		SendAtUs:    time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC).UnixMicro(),
+		CreatedAtUs: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC).UnixMicro(),
+		UndoStatus:  "final",
+		External:    true,
+	}
+	if err := s.Meta().InsertEmailSubmission(ctx, extRow); err != nil {
+		t.Fatalf("InsertEmailSubmission (external=true): %v", err)
+	}
+	got, err := s.Meta().GetEmailSubmission(ctx, "ext-env-001")
+	if err != nil {
+		t.Fatalf("GetEmailSubmission: %v", err)
+	}
+	if !got.External {
+		t.Fatalf("External flag: got false, want true")
+	}
+	// Insert an internal submission row (External = false) and confirm.
+	intRow := store.EmailSubmissionRow{
+		ID:          "int-env-001",
+		EnvelopeID:  store.EnvelopeID("int-env-001"),
+		PrincipalID: p.ID,
+		IdentityID:  "default",
+		EmailID:     store.MessageID(100),
+		SendAtUs:    time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC).UnixMicro(),
+		CreatedAtUs: time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC).UnixMicro(),
+		UndoStatus:  "pending",
+		External:    false,
+	}
+	if err := s.Meta().InsertEmailSubmission(ctx, intRow); err != nil {
+		t.Fatalf("InsertEmailSubmission (external=false): %v", err)
+	}
+	got2, err := s.Meta().GetEmailSubmission(ctx, "int-env-001")
+	if err != nil {
+		t.Fatalf("GetEmailSubmission (internal): %v", err)
+	}
+	if got2.External {
+		t.Fatalf("External flag: got true, want false for internal row")
+	}
+	// Both rows appear in list.
+	list, err := s.Meta().ListEmailSubmissions(ctx, p.ID, store.EmailSubmissionFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListEmailSubmissions: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ListEmailSubmissions: got %d rows, want 2", len(list))
+	}
+	extFound, intFound := false, false
+	for _, r := range list {
+		if r.ID == "ext-env-001" {
+			extFound = true
+			if !r.External {
+				t.Fatalf("list: External flag false for ext-env-001")
+			}
+		}
+		if r.ID == "int-env-001" {
+			intFound = true
+			if r.External {
+				t.Fatalf("list: External flag true for int-env-001")
+			}
+		}
+	}
+	if !extFound || !intFound {
+		t.Fatalf("list: extFound=%v intFound=%v", extFound, intFound)
 	}
 }
 

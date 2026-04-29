@@ -1497,9 +1497,10 @@ func scanEmailSubmissionPG(row pgx.Row) (store.EmailSubmissionRow, error) {
 		principalID, emailID                        int64
 		sendAtUs, createdAtUs                       int64
 		props                                       []byte
+		external                                    bool
 	)
 	err := row.Scan(&id, &envID, &principalID, &identityID, &emailID,
-		&threadID, &sendAtUs, &createdAtUs, &undoStatus, &props)
+		&threadID, &sendAtUs, &createdAtUs, &undoStatus, &props, &external)
 	if err != nil {
 		return store.EmailSubmissionRow{}, mapErr(err)
 	}
@@ -1514,12 +1515,13 @@ func scanEmailSubmissionPG(row pgx.Row) (store.EmailSubmissionRow, error) {
 		CreatedAtUs: createdAtUs,
 		UndoStatus:  undoStatus,
 		Properties:  props,
+		External:    external,
 	}, nil
 }
 
 const emailSubmissionSelectColumnsPG = `
 	id, envelope_id, principal_id, identity_id, email_id, thread_id,
-	send_at_us, created_at_us, undo_status, properties`
+	send_at_us, created_at_us, undo_status, properties, external`
 
 func (m *metadata) InsertEmailSubmission(ctx context.Context, row store.EmailSubmissionRow) error {
 	if row.ID == "" {
@@ -1540,11 +1542,11 @@ func (m *metadata) InsertEmailSubmission(ctx context.Context, row store.EmailSub
 		_, err := tx.Exec(ctx, `
 			INSERT INTO jmap_email_submissions
 			  (id, envelope_id, principal_id, identity_id, email_id, thread_id,
-			   send_at_us, created_at_us, undo_status, properties)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			   send_at_us, created_at_us, undo_status, properties, external)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 			row.ID, string(row.EnvelopeID), int64(row.PrincipalID),
 			row.IdentityID, int64(row.EmailID), row.ThreadID,
-			row.SendAtUs, row.CreatedAtUs, row.UndoStatus, props)
+			row.SendAtUs, row.CreatedAtUs, row.UndoStatus, props, row.External)
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
