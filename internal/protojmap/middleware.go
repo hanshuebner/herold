@@ -10,9 +10,13 @@ import (
 	"runtime/debug"
 )
 
-// withRequestLog attaches a request ID and scoped slog.Logger to every
-// request's context. Log lines emit on request start and finish with
-// standard attrs.
+// withRequestLog attaches a request ID and a pre-scoped slog.Logger to every
+// request's context, then emits one access-log record at debug after the
+// downstream handler returns. Method handlers retrieve the logger via
+// loggerFromContext rather than repeating the subsystem/request_id attrs.
+//
+// Level, activity tag, and field choices follow REQ-OPS-86 / REQ-OPS-86d:
+// per-transport echo lines are activity=access at debug.
 func (s *Server) withRequestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rid := r.Header.Get("X-Request-ID")
@@ -20,11 +24,23 @@ func (s *Server) withRequestLog(next http.Handler) http.Handler {
 			rid = newRequestID()
 		}
 		w.Header().Set("X-Request-ID", rid)
+
+		// Pre-scope the logger once per request; handlers and the
+		// per-method dispatcher pull it back out via loggerFromContext.
+		reqLog := s.log.With(
+			"subsystem", "protojmap",
+			"request_id", rid,
+		)
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, rid)
+		ctx = context.WithValue(ctx, ctxKeyLogger, reqLog)
+
 		rec := &statusRecorder{ResponseWriter: w, status: 200}
 		next.ServeHTTP(rec, r.WithContext(ctx))
+
+		// Emit the per-transport access record after the handler
+		// returns so it captures the final status code.
 		attrs := []slog.Attr{
-			slog.String("request_id", rid),
+			slog.String("activity", "access"),
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.String("remote_addr", r.RemoteAddr),
@@ -33,7 +49,7 @@ func (s *Server) withRequestLog(next http.Handler) http.Handler {
 		if p, ok := PrincipalFromContext(r.Context()); ok {
 			attrs = append(attrs, slog.Uint64("principal_id", uint64(p.ID)))
 		}
-		s.log.LogAttrs(ctx, slog.LevelInfo, "protojmap.request", attrs...)
+		reqLog.LogAttrs(ctx, slog.LevelDebug, "protojmap.request", attrs...)
 	})
 }
 
@@ -44,7 +60,9 @@ func (s *Server) withPanicRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				s.log.Error("protojmap.panic",
+				log := loggerFromContext(r.Context(), s.log)
+				log.Error("protojmap.panic",
+					"activity", "internal",
 					"err", fmt.Sprintf("%v", rec),
 					"stack", string(debug.Stack()))
 				WriteJMAPError(w, http.StatusInternalServerError,
@@ -53,6 +71,16 @@ func (s *Server) withPanicRecover(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// loggerFromContext returns the pre-scoped logger stashed by withRequestLog,
+// or fallback when no logger is in context (e.g. tests that bypass the
+// middleware chain). Callers add their own per-call attrs on top.
+func loggerFromContext(ctx context.Context, fallback *slog.Logger) *slog.Logger {
+	if l, ok := ctx.Value(ctxKeyLogger).(*slog.Logger); ok && l != nil {
+		return l
+	}
+	return fallback
 }
 
 // newRequestID produces a 32-character hex token used as X-Request-ID

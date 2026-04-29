@@ -127,6 +127,15 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		Type:      contentType,
 		Size:      ref.Size,
 	}
+	log := loggerFromContext(r.Context(), s.log)
+	log.Info("protojmap.upload",
+		"activity", "user",
+		"principal_id", uint64(p.ID),
+		"account_id", accountID,
+		"blob_id", ref.Hash,
+		"size_bytes", ref.Size,
+		"content_type", contentType,
+	)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(resp)
@@ -267,6 +276,15 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		if contentType == "application/octet-stream" && part.contentType != "" {
 			contentType = part.contentType
 		}
+		log := loggerFromContext(r.Context(), s.log)
+		log.Info("protojmap.download",
+			"activity", "user",
+			"principal_id", uint64(p.ID),
+			"account_id", accountID,
+			"blob_id", blobID,
+			"size_bytes", size,
+			"content_type", contentType,
+		)
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 		if name != "" {
@@ -319,6 +337,15 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
+	log := loggerFromContext(r.Context(), s.log)
+	log.Info("protojmap.download",
+		"activity", "user",
+		"principal_id", uint64(p.ID),
+		"account_id", accountID,
+		"blob_id", blobID,
+		"size_bytes", size,
+		"content_type", contentType,
+	)
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	if name != "" {

@@ -34,6 +34,7 @@ const (
 	ctxKeyRemoteAddr
 	ctxKeyRequestID
 	ctxKeyAPIKey
+	ctxKeyLogger
 )
 
 // PrincipalFromContext returns the authenticated principal attached to

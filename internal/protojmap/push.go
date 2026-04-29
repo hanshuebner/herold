@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -75,10 +76,28 @@ func (s *Server) handleEventSource(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	log := loggerFromContext(r.Context(), s.log)
+	log.Info("protojmap.eventsource.open",
+		"activity", "user",
+		"principal_id", uint64(p.ID),
+		"types", q.Get("types"),
+		"closeafter", q.Get("closeafter"),
+	)
+
 	poll := changeFeedPoller(s.store.Meta().ReadChangeFeed)
-	if err := s.runEventSource(r.Context(), w, flusher, p, types, closeAfterState, ping, poll); err != nil {
-		s.log.Debug("protojmap.eventsource.exit", "err", err, "pid", p.ID)
+	if err := s.runEventSource(r.Context(), log, w, flusher, p, types, closeAfterState, ping, poll); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			log.Debug("protojmap.eventsource.exit",
+				"activity", "user",
+				"err", err,
+				"principal_id", uint64(p.ID),
+			)
+		}
 	}
+	log.Info("protojmap.eventsource.close",
+		"activity", "user",
+		"principal_id", uint64(p.ID),
+	)
 }
 
 // runEventSource is the core push loop. Split out from handleEventSource
@@ -87,6 +106,7 @@ func (s *Server) handleEventSource(w http.ResponseWriter, r *http.Request) {
 // errors, or closeAfterState fires.
 func (s *Server) runEventSource(
 	ctx context.Context,
+	log *slog.Logger,
 	w http.ResponseWriter,
 	flusher http.Flusher,
 	p store.Principal,
@@ -123,7 +143,11 @@ func (s *Server) runEventSource(
 				if errors.Is(err, context.Canceled) {
 					return err
 				}
-				s.log.Warn("protojmap.eventsource.read_failed", "err", err, "pid", p.ID)
+				log.Warn("protojmap.eventsource.read_failed",
+					"activity", "internal",
+					"err", err,
+					"principal_id", uint64(p.ID),
+				)
 				continue
 			}
 			matched := false
@@ -147,8 +171,11 @@ func (s *Server) runEventSource(
 			pendingChanged = false
 			ev, err := s.buildStateChange(ctx, p, types)
 			if err != nil {
-				s.log.Warn("protojmap.eventsource.state_failed",
-					"err", err, "pid", p.ID)
+				log.Warn("protojmap.eventsource.state_failed",
+					"activity", "internal",
+					"err", err,
+					"principal_id", uint64(p.ID),
+				)
 				continue
 			}
 			if err := writeSSEStateChange(w, ev); err != nil {
@@ -164,6 +191,10 @@ func (s *Server) runEventSource(
 				return err
 			}
 			flusher.Flush()
+			log.Debug("protojmap.eventsource.ping",
+				"activity", "poll",
+				"principal_id", uint64(p.ID),
+			)
 		}
 	}
 }

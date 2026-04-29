@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"mime"
 	"net/http"
+	"strings"
 )
 
 // handleAPI is POST /jmap. Decodes the request envelope, validates the
@@ -73,13 +75,15 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	log := loggerFromContext(ctx, s.log)
+
 	resp := Response{
 		MethodResponses: make([]Invocation, 0, len(req.MethodCalls)),
 		SessionState:    s.sessionState(ctx),
 		CreatedIDs:      req.CreatedIDs,
 	}
 	for _, call := range req.MethodCalls {
-		entries := s.dispatchOneMulti(ctx, call, resp.MethodResponses, req.Using, req.CreatedIDs)
+		entries := s.dispatchOneMulti(ctx, log, call, resp.MethodResponses, req.Using, req.CreatedIDs)
 		resp.MethodResponses = append(resp.MethodResponses, entries...)
 	}
 
@@ -94,41 +98,163 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 // dispatchOneMulti executes one method call and returns one or more
 // Invocation values. When the handler returns a MultipleInvocations the
 // extras are appended after the primary response entry per RFC 8621 §7.5.
-func (s *Server) dispatchOneMulti(ctx context.Context, call Invocation, prior []Invocation, using []CapabilityID, requestCreatedIDs map[Id]Id) []Invocation {
+//
+// After each invocation it emits one "protojmap.method" record at info
+// (or warn on method-level error) per REQ-OPS-86d. The log carries:
+//   - activity = "user" for data methods; "audit" for Identity/* and
+//     Principal/* (security-relevant per REQ-OPS-86).
+//   - method, account_id (if present in args), client_call_id, principal_id.
+//   - For */set: created, updated, destroyed counts.
+//   - For */query: result_count, limit if present.
+//   - For */get: id_count requested.
+//   - On error: error = "<jmap error type>".
+func (s *Server) dispatchOneMulti(ctx context.Context, log *slog.Logger, call Invocation, prior []Invocation, using []CapabilityID, requestCreatedIDs map[Id]Id) []Invocation {
 	handler, ok := s.reg.Resolve(call.Name)
 	if !ok {
-		return []Invocation{errorInvocation(call.CallID, NewMethodError("unknownMethod",
-			"no handler registered for "+call.Name))}
+		err := NewMethodError("unknownMethod", "no handler registered for "+call.Name)
+		s.logMethodCall(ctx, log, call, nil, err)
+		return []Invocation{errorInvocation(call.CallID, err)}
 	}
 	cap, _ := s.reg.CapabilityFor(call.Name)
 	if !capabilityListed(using, cap) {
-		return []Invocation{errorInvocation(call.CallID, NewMethodError("unknownMethod",
-			"method "+call.Name+" requires capability "+string(cap)+" in 'using'"))}
+		err := NewMethodError("unknownMethod",
+			"method "+call.Name+" requires capability "+string(cap)+" in 'using'")
+		s.logMethodCall(ctx, log, call, nil, err)
+		return []Invocation{errorInvocation(call.CallID, err)}
 	}
 	args, refErr := resolveBackReferences(call.Args, prior)
 	if refErr != nil {
+		s.logMethodCall(ctx, log, call, nil, refErr)
 		return []Invocation{errorInvocation(call.CallID, refErr)}
 	}
 	creations := gatherCreations(prior, requestCreatedIDs)
 	args, refErr = resolveCreationReferences(args, creations)
 	if refErr != nil {
+		s.logMethodCall(ctx, log, call, nil, refErr)
 		return []Invocation{errorInvocation(call.CallID, refErr)}
 	}
 	resp, mErr := handler.Execute(ctx, args)
 	if mErr != nil {
+		s.logMethodCall(ctx, log, call, nil, mErr)
 		return []Invocation{errorInvocation(call.CallID, mErr)}
 	}
 	// Check for MultipleInvocations before marshalling.
 	if multi, ok := resp.(MultipleInvocations); ok {
 		primary := Invocation{Name: call.Name, Args: multi.Primary, CallID: call.CallID}
+		s.logMethodCall(ctx, log, call, multi.Primary, nil)
 		return append([]Invocation{primary}, multi.Extra...)
 	}
 	respBytes, err := json.Marshal(resp)
 	if err != nil {
-		return []Invocation{errorInvocation(call.CallID, NewMethodError("serverFail",
-			"response marshal: "+err.Error()))}
+		mErr := NewMethodError("serverFail", "response marshal: "+err.Error())
+		s.logMethodCall(ctx, log, call, nil, mErr)
+		return []Invocation{errorInvocation(call.CallID, mErr)}
 	}
+	s.logMethodCall(ctx, log, call, respBytes, nil)
 	return []Invocation{{Name: call.Name, Args: respBytes, CallID: call.CallID}}
+}
+
+// logMethodCall emits the per-method structured log record per REQ-OPS-86d.
+// respArgs is the marshaled response (nil on error paths). mErr is non-nil
+// when the method returned a JMAP-level error.
+func (s *Server) logMethodCall(ctx context.Context, log *slog.Logger, call Invocation, respArgs json.RawMessage, mErr *MethodError) {
+	activity := methodActivity(call.Name)
+	level := slog.LevelInfo
+	if mErr != nil {
+		level = slog.LevelWarn
+	}
+
+	attrs := []slog.Attr{
+		slog.String("activity", activity),
+		slog.String("method", call.Name),
+		slog.String("client_call_id", call.CallID),
+	}
+
+	// Pull principal_id from context if available.
+	if p, ok := PrincipalFromContext(ctx); ok {
+		attrs = append(attrs, slog.Uint64("principal_id", uint64(p.ID)))
+	}
+
+	// Extract account_id from the call args when present.
+	if len(call.Args) > 0 {
+		var base struct {
+			AccountID string `json:"accountId"`
+		}
+		if json.Unmarshal(call.Args, &base) == nil && base.AccountID != "" {
+			attrs = append(attrs, slog.String("account_id", base.AccountID))
+		}
+	}
+
+	// Emit method-family-specific count attrs from the response.
+	if len(respArgs) > 0 && mErr == nil {
+		attrs = appendMethodCountAttrs(attrs, call.Name, respArgs)
+	}
+
+	if mErr != nil {
+		attrs = append(attrs, slog.String("error", mErr.Type))
+	}
+
+	log.LogAttrs(ctx, level, "protojmap.method", attrs...)
+}
+
+// methodActivity returns the activity tag for a JMAP method name per
+// REQ-OPS-86. Identity/* and Principal/* methods are "audit" because
+// they touch identity/auth-scope data that a security reviewer would
+// want retained when other activities are filtered. All other JMAP
+// methods are "user".
+func methodActivity(method string) string {
+	switch {
+	case strings.HasPrefix(method, "Identity/"),
+		strings.HasPrefix(method, "Principal/"):
+		return "audit"
+	default:
+		return "user"
+	}
+}
+
+// appendMethodCountAttrs extracts operation counts from the JSON response
+// body and appends them as slog.Attr values. The method name determines
+// which response shape to decode.
+//
+//   - */set responses carry created, updated, destroyed maps; we log counts.
+//   - */query responses carry ids (the result list) and limit; we log counts.
+//   - */get responses carry list; we log the count of returned objects
+//     alongside the id_count from the request args (added by caller above).
+func appendMethodCountAttrs(attrs []slog.Attr, method string, resp json.RawMessage) []slog.Attr {
+	switch {
+	case strings.HasSuffix(method, "/set"):
+		var s struct {
+			Created   map[string]json.RawMessage `json:"created"`
+			Updated   map[string]json.RawMessage `json:"updated"`
+			Destroyed []string                   `json:"destroyed"`
+		}
+		if json.Unmarshal(resp, &s) == nil {
+			attrs = append(attrs,
+				slog.Int("created", len(s.Created)),
+				slog.Int("updated", len(s.Updated)),
+				slog.Int("destroyed", len(s.Destroyed)),
+			)
+		}
+	case strings.HasSuffix(method, "/query"):
+		var q struct {
+			IDs   []string `json:"ids"`
+			Limit *int     `json:"limit"`
+		}
+		if json.Unmarshal(resp, &q) == nil {
+			attrs = append(attrs, slog.Int("result_count", len(q.IDs)))
+			if q.Limit != nil {
+				attrs = append(attrs, slog.Int("limit", *q.Limit))
+			}
+		}
+	case strings.HasSuffix(method, "/get"):
+		var g struct {
+			List []json.RawMessage `json:"list"`
+		}
+		if json.Unmarshal(resp, &g) == nil {
+			attrs = append(attrs, slog.Int("result_count", len(g.List)))
+		}
+	}
+	return attrs
 }
 
 // MultipleInvocations may be returned by a MethodHandler.Execute
