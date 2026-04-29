@@ -9,37 +9,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// newExtSubRegistry builds a clean prometheus.Registry with the external
-// submission collectors registered. Tests must not use the process-global
-// Registry (which may already have these metrics from other tests in the
-// suite) so we build our own.
-func newExtSubRegistry(t *testing.T) *prometheus.Registry {
-	t.Helper()
-	r := prometheus.NewRegistry()
-
-	total := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "herold_external_submission_total",
-		Help: "test",
-	}, []string{"outcome"})
-	dur := prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "herold_external_submission_duration_seconds",
-		Help:    "test",
-		Buckets: prometheus.DefBuckets,
-	}, []string{"outcome"})
-	refresh := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "herold_external_submission_oauth_refresh_total",
-		Help: "test",
-	}, []string{"outcome"})
-	active := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "herold_external_submission_active_identities",
-		Help: "test",
-	})
-
-	r.MustRegister(total, dur, refresh, active)
-
-	return r
-}
-
 // TestExtSubMetricNames verifies the four metric names are stable and match
 // the spec (Phase 6, architectural decision 5). We prime each metric with one
 // observation so Gather includes it (zero-value counters / histograms without

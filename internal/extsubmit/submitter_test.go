@@ -76,20 +76,6 @@ func newSMTPServer(t *testing.T, handler func(conn net.Conn)) *smtpServer {
 
 func (s *smtpServer) addr() string { return s.ln.Addr().String() }
 
-func (s *smtpServer) host() string {
-	h, _, _ := net.SplitHostPort(s.ln.Addr().String())
-	return h
-}
-
-func (s *smtpServer) portInt() int {
-	_, portStr, _ := net.SplitHostPort(s.ln.Addr().String())
-	var p int
-	for _, c := range portStr {
-		p = p*10 + int(c-'0')
-	}
-	return p
-}
-
 // srvWrite writes a CRLF-terminated line to a bufio.Writer.
 func srvWrite(w *bufio.Writer, s string) {
 	_, _ = w.WriteString(s + "\r\n")

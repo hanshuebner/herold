@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/observe"
@@ -331,15 +330,4 @@ func DefaultProbeFromSubmitter(sub *extsubmit.Submitter) ExternalProbe {
 	return func(ctx context.Context, row store.IdentitySubmission) extsubmit.Outcome {
 		return sub.Probe(ctx, row)
 	}
-}
-
-// parseSecurityEnum validates the submit_security value from the
-// TOML field name to a canonical wire string. Used internally by
-// the OAuth callback to normalise the security field.
-func parseSecurityEnum(s string) (string, bool) {
-	switch strings.ToLower(s) {
-	case "implicit_tls", "starttls", "none":
-		return strings.ToLower(s), true
-	}
-	return "", false
 }

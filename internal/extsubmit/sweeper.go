@@ -22,10 +22,6 @@ const (
 	// defaultWorkerCount is the bounded worker-pool size when SweeperWorkers
 	// is zero (Phase-6 architectural decision 1).
 	defaultWorkerCount = 4
-
-	// refreshWindow is how far before token expiry the sweeper schedules the
-	// next refresh (Phase-6 architectural decision 3).
-	refreshWindow = 60 * time.Second
 )
 
 // SweeperStore is the minimal store surface the Sweeper needs: list rows due

@@ -57,13 +57,3 @@ type submissionPutRequest struct {
 	// and SubmitHost as a fallback for password.
 	AuthUser string `json:"auth_user,omitempty"`
 }
-
-// submissionProbeFailed is the RFC 7807 extra fields emitted as part of
-// the problem document when a probe fails at PUT time. The type slug is
-// "external_submission_probe_failed" (per architectural decision 2).
-type submissionProbeFailed struct {
-	// Category is the failure category from the Outcome.
-	Category string `json:"category"`
-	// Diagnostic is the human-readable text from the probe Outcome.
-	Diagnostic string `json:"diagnostic"`
-}
