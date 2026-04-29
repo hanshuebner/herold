@@ -99,21 +99,19 @@ func TestConsoleHandler_SubsystemTag(t *testing.T) {
 	}
 }
 
-func TestConsoleHandler_SubsystemSuppressedOnPrefixMatch(t *testing.T) {
-	// When the message already starts with "<subsystem>." the formatter
-	// must NOT also render "[subsystem]" — that's the protojmap.method
-	// duplication the user complained about.
+func TestConsoleHandler_SubsystemAlwaysRendered(t *testing.T) {
+	// The subsystem tag is always shown between level and message, even when
+	// the message itself happens to start with the subsystem name. We trust
+	// emit-site authors to keep messages from duplicating the subsystem
+	// prefix; the formatter does not second-guess.
 	var buf bytes.Buffer
 	clk := fixedClock()
 	h := NewConsoleHandlerWithClock(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}, clk, &boolFalse)
 	logger := slog.New(h).With("subsystem", "protojmap")
-	logger.Info("protojmap.method")
+	logger.Info("Email/query")
 	out := buf.String()
-	if strings.Contains(out, "[protojmap]") {
-		t.Errorf("redundant [protojmap] tag: %q", out)
-	}
-	if !strings.Contains(out, "protojmap.method") {
-		t.Errorf("message missing: %q", out)
+	if !strings.Contains(out, "[protojmap] Email/query") {
+		t.Errorf("expected [protojmap] Email/query: %q", out)
 	}
 }
 

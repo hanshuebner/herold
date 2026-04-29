@@ -165,8 +165,8 @@ var deprioritizedKeys = map[string]struct{}{
 // Output order:
 //  1. Timestamp (HH:MM:SS.mmm local)
 //  2. Level (4-char: INFO, WARN, ERRO, DEBG, TRCE)
-//  3. [subsystem] tag (only when the message does NOT already start with
-//     "<subsystem>." — avoids "protojmap protojmap.method" duplication)
+//  3. [subsystem] tag (always shown when subsystem or module is set; module
+//     is the fallback when subsystem is unset)
 //  4. Message
 //  5. Domain-meaningful attrs in original record order
 //  6. Correlation IDs (deprioritizedKeys) in lex order, last
@@ -237,12 +237,12 @@ func (h *ConsoleHandler) formatRecord(buf *bytes.Buffer, r slog.Record) {
 	}
 	buf.WriteByte(' ')
 
-	// 3. Subsystem tag, only when not redundant with the message prefix.
+	// 3. Subsystem tag (always shown; module is the fallback).
 	tag := subsystem
 	if tag == "" {
 		tag = module
 	}
-	if tag != "" && !messageHasPrefix(r.Message, tag) {
+	if tag != "" {
 		if h.useColor {
 			buf.WriteString(ansiCyan)
 		}
@@ -310,25 +310,6 @@ func (h *ConsoleHandler) formatRecord(buf *bytes.Buffer, r slog.Record) {
 	buf.WriteByte('\n')
 }
 
-// messageHasPrefix reports whether msg begins with "<tag>." or equals "<tag>"
-// (case-insensitive). Used to suppress a redundant [subsystem] prefix when
-// the message itself already names the subsystem (e.g. msg="protojmap.method"
-// with subsystem="protojmap").
-func messageHasPrefix(msg, tag string) bool {
-	if tag == "" || msg == "" {
-		return false
-	}
-	if len(msg) < len(tag) {
-		return false
-	}
-	if !strings.EqualFold(msg[:len(tag)], tag) {
-		return false
-	}
-	if len(msg) == len(tag) {
-		return true
-	}
-	return msg[len(tag)] == '.'
-}
 
 // levelStr returns a 4-char level abbreviation and ANSI colour for it.
 func levelStr(lvl slog.Level) (string, string) {
