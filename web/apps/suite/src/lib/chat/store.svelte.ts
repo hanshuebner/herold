@@ -309,8 +309,11 @@ class ChatStore {
       deleted: false,
     };
 
-    // Optimistic insert.
+    // Optimistic insert into both the main message pane and the overlay
+    // cache for this conversation, so the message renders immediately
+    // wherever the user is composing — main pane or floating overlay.
     this.messages = [...this.messages, optimisticMsg];
+    this.#appendOverlayMessage(conversationId, optimisticMsg);
 
     try {
       const { responses } = await jmap.batch((b) => {
@@ -332,7 +335,7 @@ class ChatStore {
 
       const setResp = responses.find(([name]) => name === 'Message/set');
       if (!setResp || setResp[0] === 'error') {
-        this.#rollbackOptimistic(tempId);
+        this.#rollbackOptimistic(conversationId, tempId);
         toast.show({ message: 'Failed to send message', kind: 'error' });
         return;
       }
@@ -343,7 +346,7 @@ class ChatStore {
       };
 
       if (result.notCreated?.[tempId]) {
-        this.#rollbackOptimistic(tempId);
+        this.#rollbackOptimistic(conversationId, tempId);
         const errType = result.notCreated[tempId]?.type ?? 'unknown';
         toast.show({ message: `Failed to send: ${errType}`, kind: 'error' });
         return;
@@ -351,20 +354,48 @@ class ChatStore {
 
       const realId = result.created?.[tempId]?.id;
       if (realId) {
-        // Replace optimistic record with real id.
+        // Replace optimistic record with real id in both caches.
         this.messages = this.messages.map((m) =>
           m.id === tempId ? { ...m, id: realId } : m,
         );
+        this.#replaceOverlayMessageId(conversationId, tempId, realId);
       }
     } catch (err) {
-      this.#rollbackOptimistic(tempId);
+      this.#rollbackOptimistic(conversationId, tempId);
       const msg = err instanceof Error ? err.message : 'Send failed';
       toast.show({ message: msg, kind: 'error' });
     }
   }
 
-  #rollbackOptimistic(tempId: string): void {
+  #rollbackOptimistic(conversationId: string, tempId: string): void {
     this.messages = this.messages.filter((m) => m.id !== tempId);
+    const entry = this.overlayMessages.get(conversationId);
+    if (!entry) return;
+    this.overlayMessages.set(conversationId, {
+      ...entry,
+      messages: entry.messages.filter((m) => m.id !== tempId),
+    });
+    this.overlayMessages = new Map(this.overlayMessages);
+  }
+
+  #appendOverlayMessage(conversationId: string, msg: Message): void {
+    const entry = this.overlayMessages.get(conversationId);
+    if (!entry) return;
+    this.overlayMessages.set(conversationId, {
+      ...entry,
+      messages: [...entry.messages, msg],
+    });
+    this.overlayMessages = new Map(this.overlayMessages);
+  }
+
+  #replaceOverlayMessageId(conversationId: string, oldId: string, newId: string): void {
+    const entry = this.overlayMessages.get(conversationId);
+    if (!entry) return;
+    this.overlayMessages.set(conversationId, {
+      ...entry,
+      messages: entry.messages.map((m) => (m.id === oldId ? { ...m, id: newId } : m)),
+    });
+    this.overlayMessages = new Map(this.overlayMessages);
   }
 
   // ------------------------------------------------------------------
@@ -1005,11 +1036,15 @@ class ChatStore {
   }
 
   /**
-   * Create a new DM or Space via Conversation/set, then immediately load
-   * the freshly-created Conversation into the local cache so any UI that
-   * opens against the returned id (e.g. the chat overlay window or the
-   * sidebar list) renders with the full record without waiting for the
-   * server-pushed state advance.
+   * Create a new DM or Space via Conversation/set and seed the resulting
+   * Conversation into the local cache so any UI that opens against the
+   * returned id (e.g. the chat overlay window or the sidebar list)
+   * renders with the full record without waiting for the server-pushed
+   * state advance.
+   *
+   * Per RFC 8620 §5.3 the server returns the fully populated record in
+   * `created` (not just the id), so no follow-up Conversation/get is
+   * needed.
    */
   async createConversation(args: {
     kind: 'dm' | 'space';
@@ -1045,7 +1080,7 @@ class ChatStore {
     }
 
     const result = setResp[1] as {
-      created?: Record<string, { id: string }>;
+      created?: Record<string, Conversation & { id: string }>;
       notCreated?: Record<string, { type: string; description?: string }>;
     };
 
@@ -1055,32 +1090,16 @@ class ChatStore {
     }
 
     const created = result.created?.[tempId];
-    if (!created) throw new Error('Conversation/set returned no created id');
-
-    await this.#cacheConversationById(accountId, created.id);
-    return { id: created.id };
-  }
-
-  /**
-   * Fetch a single Conversation by id and seed it into the local cache.
-   * Failure is logged but not surfaced — the next state-advance push will
-   * backfill, and callers should not block UI on this convenience load.
-   */
-  async #cacheConversationById(accountId: string, id: string): Promise<void> {
-    try {
-      const { responses } = await jmap.batch((b) => {
-        b.call('Conversation/get', { accountId, ids: [id] }, USING);
-      });
-      const getResp = responses.find(([name]) => name === 'Conversation/get');
-      if (!getResp || getResp[0] === 'error') return;
-      const result = getResp[1] as { list: Conversation[] };
-      const conv = result.list.find((c) => c.id === id);
-      if (!conv) return;
-      this.conversations.set(conv.id, conv);
-      this.#rebuildConversationOrder();
-    } catch (err) {
-      console.error('cacheConversationById failed', err);
+    if (!created || !created.id) {
+      throw new Error('Conversation/set returned no created record');
     }
+
+    // Seed the cache with the full record from the set response so the
+    // sidebar list and any open overlay window render immediately.
+    this.conversations.set(created.id, created);
+    this.#rebuildConversationOrder();
+
+    return { id: created.id };
   }
 
   // ------------------------------------------------------------------
@@ -1088,10 +1107,15 @@ class ChatStore {
   // ------------------------------------------------------------------
 
   #rebuildConversationOrder(): void {
+    // The server's Conversation wire shape does not always include
+    // createdAt (and lastMessageAt is null for brand-new conversations
+    // with no messages yet), so the comparator must tolerate missing
+    // values without throwing — otherwise the rebuild silently aborts
+    // and the sidebar never picks up the new row.
     const sorted = Array.from(this.conversations.values()).sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-      const ta = a.lastMessageAt ?? a.createdAt;
-      const tb = b.lastMessageAt ?? b.createdAt;
+      const ta = a.lastMessageAt ?? a.createdAt ?? '';
+      const tb = b.lastMessageAt ?? b.createdAt ?? '';
       return tb.localeCompare(ta);
     });
     this.conversationIds = sorted.map((c) => c.id);

@@ -72,6 +72,8 @@ describe('ChatStore', () => {
     chatMod.chat.conversations.clear();
     chatMod.chat.conversationIds = [];
     chatMod.chat.messages = [];
+    chatMod.chat.overlayMessages.clear();
+    chatMod.chat.overlayMessages = new Map();
     chatMod.chat.conversationsStatus = 'idle';
     chatMod.chat.messagesStatus = 'idle';
     chatMod.chat.openConversationId = null;
@@ -234,9 +236,52 @@ describe('ChatStore', () => {
     expect(chat.messages[0]!.id).toBe('real-m1');
   });
 
-  it('sendMessage rolls back on server error', async () => {
+  it('sendMessage also writes the optimistic message into the overlay cache', async () => {
     const { chat } = chatMod;
     const { jmap } = jmapMod;
+
+    // Seed an overlay cache entry for c1 (e.g. an open overlay window).
+    chat.overlayMessages.set('c1', { messages: [], status: 'ready', hasMore: false });
+    chat.overlayMessages = new Map(chat.overlayMessages);
+
+    let capturedTempId = '';
+    vi.mocked(jmap.batch).mockImplementation(async (builder) => {
+      builder({
+        call: (name: string, args: unknown) => {
+          const createArgs = args as { create?: Record<string, unknown> };
+          if (name === 'Message/set' && createArgs.create) {
+            capturedTempId = Object.keys(createArgs.create)[0]!;
+          }
+          return { ref: () => ({ resultOf: 'c0', name, path: '' }) };
+        },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      return {
+        responses: [
+          [
+            'Message/set',
+            { created: { [capturedTempId]: { id: 'real-m9' } }, notCreated: {} },
+            's0',
+          ],
+        ],
+        sessionState: 'ss1',
+      };
+    });
+
+    await chat.sendMessage('c1', '<p>hello overlay</p>', 'hello overlay');
+
+    const overlayEntry = chat.overlayMessages.get('c1');
+    expect(overlayEntry?.messages).toHaveLength(1);
+    expect(overlayEntry?.messages[0]!.id).toBe('real-m9');
+    expect(overlayEntry?.messages[0]!.body.text).toBe('hello overlay');
+  });
+
+  it('sendMessage rolls back on server error in both caches', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    chat.overlayMessages.set('c1', { messages: [], status: 'ready', hasMore: false });
+    chat.overlayMessages = new Map(chat.overlayMessages);
 
     let capturedTempId = '';
     vi.mocked(jmap.batch).mockImplementation(async (builder) => {
@@ -272,8 +317,9 @@ describe('ChatStore', () => {
 
     await chat.sendMessage('c1', '<p>hi</p>', 'hi');
 
-    // After rollback the message list should be empty.
+    // After rollback both the main pane and the overlay cache should be empty.
     expect(chat.messages).toHaveLength(0);
+    expect(chat.overlayMessages.get('c1')?.messages ?? []).toHaveLength(0);
   });
 
   // ------------------------------------------------------------------
@@ -426,27 +472,17 @@ describe('ChatStore', () => {
 
     vi.mocked(jmap.batch).mockImplementation(async (builder) => {
       let tempId = '';
-      let methodName = '';
       builder({
-        call: (name: string, args: unknown) => {
-          methodName = name;
+        call: (_name: string, args: unknown) => {
           const a = args as { create?: Record<string, unknown> };
           if (a.create) tempId = Object.keys(a.create)[0]!;
-          return { ref: () => ({ resultOf: 'c0', name, path: '' }) };
+          return { ref: () => ({ resultOf: 'c0', name: '', path: '' }) };
         },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any);
-      if (methodName === 'Conversation/get') {
-        return {
-          responses: [
-            ['Conversation/get', { state: 's1', list: [newConv], notFound: [] }, 'g0'],
-          ],
-          sessionState: 'ss1',
-        };
-      }
       return {
         responses: [
-          ['Conversation/set', { created: { [tempId]: { id: newId } }, notCreated: {} }, 's0'],
+          ['Conversation/set', { created: { [tempId]: newConv }, notCreated: {} }, 's0'],
         ],
         sessionState: 'ss1',
       };
@@ -472,34 +508,19 @@ describe('ChatStore', () => {
       unreadCount: 0,
     };
 
-    let capturedGetIds: string[] | null = null;
     vi.mocked(jmap.batch).mockImplementation(async (builder) => {
       let tempId = '';
-      let methodName = '';
       builder({
-        call: (name: string, args: unknown) => {
-          methodName = name;
-          const a = args as {
-            create?: Record<string, unknown>;
-            ids?: string[];
-          };
+        call: (_name: string, args: unknown) => {
+          const a = args as { create?: Record<string, unknown> };
           if (a.create) tempId = Object.keys(a.create)[0]!;
-          if (name === 'Conversation/get' && a.ids) capturedGetIds = a.ids;
-          return { ref: () => ({ resultOf: 'c0', name, path: '' }) };
+          return { ref: () => ({ resultOf: 'c0', name: '', path: '' }) };
         },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any);
-      if (methodName === 'Conversation/get') {
-        return {
-          responses: [
-            ['Conversation/get', { state: 's1', list: [newConv], notFound: [] }, 'g0'],
-          ],
-          sessionState: 'ss1',
-        };
-      }
       return {
         responses: [
-          ['Conversation/set', { created: { [tempId]: { id: newId } }, notCreated: {} }, 's0'],
+          ['Conversation/set', { created: { [tempId]: newConv }, notCreated: {} }, 's0'],
         ],
         sessionState: 'ss1',
       };
@@ -507,9 +528,67 @@ describe('ChatStore', () => {
 
     await chat.createConversation({ kind: 'dm', members: ['prin-other'] });
 
-    expect(capturedGetIds).toEqual([newId]);
     expect(chat.conversations.get(newId)).toEqual(newConv);
     expect(chat.conversationIds).toContain(newId);
+  });
+
+  it('createConversation tolerates a server record without createdAt or lastMessageAt', async () => {
+    // The herold Conversation wire shape omits createdAt and may have a
+    // null lastMessageAt for brand-new conversations.  rebuildConversation
+    // Order must not crash when these are missing.
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    // Pre-populate one existing conversation with neither field set so the
+    // sort comparator has to compare two records with empty timestamps.
+    chat.conversations.set('c-existing', {
+      id: 'c-existing',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      type: undefined as any,
+      name: 'pre-existing',
+      members: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      createdAt: undefined as any,
+      pinned: false,
+      muted: false,
+      unreadCount: 0,
+    });
+
+    const newId = 'c-no-times';
+    const newConv = {
+      id: newId,
+      kind: 'dm',
+      name: 'Dave',
+      members: [],
+      lastMessageAt: null,
+      // No createdAt at all — matches the herold wire shape.
+      pinned: false,
+      muted: false,
+      unreadCount: 0,
+    };
+
+    vi.mocked(jmap.batch).mockImplementation(async (builder) => {
+      let tempId = '';
+      builder({
+        call: (_name: string, args: unknown) => {
+          const a = args as { create?: Record<string, unknown> };
+          if (a.create) tempId = Object.keys(a.create)[0]!;
+          return { ref: () => ({ resultOf: 'c0', name: '', path: '' }) };
+        },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      return {
+        responses: [
+          ['Conversation/set', { created: { [tempId]: newConv }, notCreated: {} }, 's0'],
+        ],
+        sessionState: 'ss1',
+      };
+    });
+
+    await chat.createConversation({ kind: 'dm', members: ['prin-other'] });
+
+    expect(chat.conversationIds).toContain(newId);
+    expect(chat.conversationIds).toContain('c-existing');
   });
 
   it('createConversation sends kind/members/topic as the JMAP wire shape', async () => {
@@ -532,30 +611,20 @@ describe('ChatStore', () => {
     let capturedCreate: Record<string, unknown> | null = null;
     vi.mocked(jmap.batch).mockImplementation(async (builder) => {
       let tempId = '';
-      let methodName = '';
       builder({
-        call: (name: string, args: unknown) => {
-          methodName = name;
+        call: (_name: string, args: unknown) => {
           const a = args as { create?: Record<string, Record<string, unknown>> };
           if (a.create) {
             tempId = Object.keys(a.create)[0]!;
             capturedCreate = a.create[tempId]!;
           }
-          return { ref: () => ({ resultOf: 'c0', name, path: '' }) };
+          return { ref: () => ({ resultOf: 'c0', name: '', path: '' }) };
         },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any);
-      if (methodName === 'Conversation/get') {
-        return {
-          responses: [
-            ['Conversation/get', { state: 's1', list: [newConv], notFound: [] }, 'g0'],
-          ],
-          sessionState: 'ss1',
-        };
-      }
       return {
         responses: [
-          ['Conversation/set', { created: { [tempId]: { id: newId } }, notCreated: {} }, 's0'],
+          ['Conversation/set', { created: { [tempId]: newConv }, notCreated: {} }, 's0'],
         ],
         sessionState: 'ss1',
       };
