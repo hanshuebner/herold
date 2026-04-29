@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -61,6 +62,18 @@ Exits 10 if a principal already exists.`,
 					return fmt.Errorf("bootstrap: generate password: %w", err)
 				}
 				password = pw
+			}
+			// Bootstrap auto-registers the admin email's domain as a local
+			// domain. Without this, directory.CreatePrincipal would fail with
+			// ErrUnknownDomain on a fresh store: the operator hasn't yet had
+			// the chance to run `domain add`. Subsequent principals must use
+			// already-configured domains; bootstrap is the only special case.
+			if at := strings.LastIndex(adminEmail, "@"); at >= 0 {
+				domain := strings.ToLower(adminEmail[at+1:])
+				if err := st.Meta().InsertDomain(ctx, store.Domain{Name: domain}); err != nil &&
+					!errors.Is(err, store.ErrConflict) {
+					return fmt.Errorf("bootstrap: register domain %s: %w", domain, err)
+				}
 			}
 			dir := directory.New(st.Meta(), discardLogger(), clk, nil)
 			pid, err := dir.CreatePrincipal(ctx, adminEmail, password)

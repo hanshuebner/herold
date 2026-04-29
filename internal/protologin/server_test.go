@@ -44,6 +44,9 @@ func newTestServer(t *testing.T) (*httptest.Server, *fakestore.Store, *directory
 	if err != nil {
 		t.Fatalf("fakestore.New: %v", err)
 	}
+	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+		t.Fatalf("seed domain: %v", err)
+	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 
 	// Bootstrap a principal via the directory so the password hash is set.

@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/auth"
@@ -89,6 +91,19 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusInternalServerError, "internal_error",
 			"failed to generate password", "")
 		return
+	}
+	// Bootstrap auto-registers the admin email's domain as a local domain.
+	// directory.CreatePrincipal otherwise rejects with ErrUnknownDomain on
+	// a fresh store -- the operator has not yet had the chance to add a
+	// domain. Subsequent principal creations require an already-configured
+	// domain; bootstrap is the only special case.
+	if at := strings.LastIndex(req.Email, "@"); at >= 0 {
+		domain := strings.ToLower(req.Email[at+1:])
+		if err := s.store.Meta().InsertDomain(r.Context(), store.Domain{Name: domain}); err != nil &&
+			!errors.Is(err, store.ErrConflict) {
+			s.writeStoreError(w, r, err)
+			return
+		}
 	}
 	pid, err := s.dir.CreatePrincipal(r.Context(), req.Email, password)
 	if err != nil {

@@ -472,8 +472,10 @@ func totpCodeFor(t *testing.T, secret string, at time.Time) string {
 func TestDomains_CRUD(t *testing.T) {
 	h := newHarness(t)
 	_, key := h.bootstrap("admin@example.com")
+	// Bootstrap auto-registers example.com so the admin can be created.
+	// Use a different domain name for the create/list/delete cycle.
 	res, buf := h.doRequest("POST", "/api/v1/domains", key, map[string]any{
-		"name": "example.com",
+		"name": "extra.test",
 	})
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("create = %d: %s", res.StatusCode, buf)
@@ -482,14 +484,14 @@ func TestDomains_CRUD(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("list = %d: %s", res.StatusCode, buf)
 	}
-	if !strings.Contains(string(buf), "example.com") {
+	if !strings.Contains(string(buf), "extra.test") {
 		t.Fatalf("list missing domain: %s", buf)
 	}
-	res, _ = h.doRequest("DELETE", "/api/v1/domains/example.com", key, nil)
+	res, _ = h.doRequest("DELETE", "/api/v1/domains/extra.test", key, nil)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete = %d", res.StatusCode)
 	}
-	res, _ = h.doRequest("DELETE", "/api/v1/domains/example.com", key, nil)
+	res, _ = h.doRequest("DELETE", "/api/v1/domains/extra.test", key, nil)
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("delete again = %d", res.StatusCode)
 	}

@@ -43,6 +43,9 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatalf("fakestore: %v", err)
 	}
+	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+		t.Fatalf("seed domain: %v", err)
+	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	pid, err := dir.CreatePrincipal(context.Background(), "alice@example.com", "correct-horse-battery-staple-1")
 	if err != nil {
@@ -637,6 +640,9 @@ func TestUpload_TooLarge_413(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fakestore: %v", err)
 	}
+	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+		t.Fatalf("seed domain: %v", err)
+	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	pid, err := dir.CreatePrincipal(context.Background(), "alice@example.com", "correct-horse-battery-staple-1")
 	if err != nil {
@@ -708,6 +714,9 @@ func TestDownload_RateLimit_Throttles(t *testing.T) {
 	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("fakestore: %v", err)
+	}
+	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+		t.Fatalf("seed domain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	pid, err := dir.CreatePrincipal(context.Background(), "alice@example.com", "correct-horse-battery-staple-1")

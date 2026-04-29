@@ -200,6 +200,19 @@ func New(opts Options) (*Store, error) {
 	}, nil
 }
 
+// SeedDomain registers a local domain on s, ignoring an existing-row
+// conflict so callers can call it idempotently. Test-only convenience:
+// directory.CreatePrincipal now requires the email's domain to be a
+// known local domain (ErrUnknownDomain otherwise), and many tests want
+// to call CreatePrincipal without writing the boilerplate.
+func (s *Store) SeedDomain(ctx context.Context, name string) error {
+	err := s.Meta().InsertDomain(ctx, store.Domain{Name: name, IsLocal: true})
+	if err == nil || errors.Is(err, store.ErrConflict) {
+		return nil
+	}
+	return err
+}
+
 // Meta returns the metadata repository surface.
 func (s *Store) Meta() store.Metadata { return (*metaFace)(s) }
 

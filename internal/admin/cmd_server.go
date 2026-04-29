@@ -7,11 +7,14 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/hanshuebner/herold/internal/sysconfig"
 
@@ -199,14 +202,126 @@ func loadCredentialsServerURL() (string, bool) {
 	return f.ServerURL, f.ServerURL != ""
 }
 
-// writeResult writes body pretty-printed to w when g.jsonOut is set, or
-// as a human-readable summary otherwise.
+// writeResult writes body to w in one of two formats:
+//
+//   - JSON (pretty-indented) when g.jsonOut is true OR when w is not a
+//     terminal (output is being piped or redirected). Stable shape for
+//     scripts.
+//   - human-readable key/value lines when w is a terminal and --json
+//     was not passed. Sorted keys, ISO8601 timestamps formatted as
+//     local time, lists rendered as comma-joined values.
+//
+// Auto-detection on stdout means a script that does
+// `herold principal show alice@... | jq` always sees JSON without
+// needing --json on every invocation; a human running the same command
+// at a terminal sees the readable form by default.
 func writeResult(w io.Writer, g *globalOptions, body any) error {
-	if g.jsonOut {
+	if g.jsonOut || !isTerminal(w) {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		return enc.Encode(body)
 	}
-	_, err := fmt.Fprintf(w, "%+v\n", body)
-	return err
+	return writeHumanResult(w, body)
+}
+
+// isTerminal reports whether w writes to a terminal. Returns false when
+// the assertion to *os.File fails (e.g. test buffers, pipes), which
+// causes writeResult to default to JSON for non-terminal writers.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	return term.IsTerminal(int(f.Fd()))
+}
+
+// writeHumanResult renders body in a key/value format. Maps render as
+// aligned `key: value` lines with sorted keys; slices of maps render as
+// numbered records. Leaf values are formatted by writeHumanValue.
+func writeHumanResult(w io.Writer, body any) error {
+	switch v := body.(type) {
+	case map[string]any:
+		return writeHumanMap(w, v, "")
+	case []any:
+		for i, item := range v {
+			fmt.Fprintf(w, "[%d]\n", i+1)
+			if m, ok := item.(map[string]any); ok {
+				if err := writeHumanMap(w, m, "  "); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintf(w, "  %s\n", writeHumanValue(item))
+			}
+		}
+		return nil
+	default:
+		_, err := fmt.Fprintln(w, writeHumanValue(body))
+		return err
+	}
+}
+
+// writeHumanMap writes a map as aligned key:value lines; nested maps
+// render with deeper indent. Keys are sorted for deterministic output.
+func writeHumanMap(w io.Writer, m map[string]any, indent string) error {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	maxKey := 0
+	for _, k := range keys {
+		if len(k) > maxKey {
+			maxKey = len(k)
+		}
+	}
+	for _, k := range keys {
+		v := m[k]
+		switch nested := v.(type) {
+		case map[string]any:
+			fmt.Fprintf(w, "%s%s:\n", indent, k)
+			if err := writeHumanMap(w, nested, indent+"  "); err != nil {
+				return err
+			}
+		case []any:
+			if len(nested) == 0 {
+				fmt.Fprintf(w, "%s%-*s  (none)\n", indent, maxKey, k)
+				continue
+			}
+			fmt.Fprintf(w, "%s%-*s  %s\n", indent, maxKey, k, writeHumanValue(nested))
+		default:
+			fmt.Fprintf(w, "%s%-*s  %s\n", indent, maxKey, k, writeHumanValue(nested))
+		}
+	}
+	return nil
+}
+
+// writeHumanValue formats a JSON-decoded scalar (or short list) for
+// human display: bools as yes/no, RFC3339 timestamps as a local-time
+// short form, lists as comma-joined values.
+func writeHumanValue(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return "(unset)"
+	case bool:
+		if x {
+			return "yes"
+		}
+		return "no"
+	case string:
+		if t, err := time.Parse(time.RFC3339Nano, x); err == nil {
+			return t.Local().Format("2006-01-02 15:04:05 MST")
+		}
+		if x == "" {
+			return "(empty)"
+		}
+		return x
+	case []any:
+		parts := make([]string, 0, len(x))
+		for _, e := range x {
+			parts = append(parts, writeHumanValue(e))
+		}
+		return strings.Join(parts, ", ")
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }

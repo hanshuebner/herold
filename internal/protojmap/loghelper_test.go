@@ -134,6 +134,9 @@ func TestRequestLog_AccessTagged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fakestore: %v", err)
 	}
+	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+		t.Fatalf("seed domain: %v", err)
+	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	pid, err := dir.CreatePrincipal(context.Background(), "bob@example.com", "correct-horse-battery-staple-1")
 	if err != nil {
@@ -195,6 +198,9 @@ func TestDispatch_LogsMethodActivity(t *testing.T) {
 	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("fakestore: %v", err)
+	}
+	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+		t.Fatalf("seed domain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	pid, err := dir.CreatePrincipal(context.Background(), "charlie@example.com", "correct-horse-battery-staple-1")
@@ -323,6 +329,9 @@ func TestDispatch_AuditActivityForIdentityMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fakestore: %v", err)
 	}
+	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+		t.Fatalf("seed domain: %v", err)
+	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	pid, err := dir.CreatePrincipal(context.Background(), "diana@example.com", "correct-horse-battery-staple-1")
 	if err != nil {
@@ -386,6 +395,9 @@ func TestEventSource_PingTaggedPoll(t *testing.T) {
 	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("fakestore: %v", err)
+	}
+	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+		t.Fatalf("seed domain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	pid, err := dir.CreatePrincipal(context.Background(), "eve@example.com", "correct-horse-battery-staple-1")

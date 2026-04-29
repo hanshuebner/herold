@@ -19,6 +19,11 @@ import (
 
 // newDir builds a Directory wired to a fresh fakestore, a FakeClock
 // anchored at 2026-01-01, and a deterministic RNG reader.
+//
+// CreatePrincipal now requires the email's domain to be a configured
+// local domain (ErrUnknownDomain otherwise). The test fixtures pre-seed
+// the two domains the existing tests use so the CreatePrincipal call
+// sites do not all have to be touched.
 func newDir(t *testing.T) (*directory.Directory, *fakestore.Store, *clock.FakeClock) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
@@ -27,6 +32,11 @@ func newDir(t *testing.T) (*directory.Directory, *fakestore.Store, *clock.FakeCl
 		t.Fatalf("fakestore: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
+	for _, name := range []string{"example.test", "b.test"} {
+		if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: name}); err != nil {
+			t.Fatalf("seed domain %q: %v", name, err)
+		}
+	}
 	// Deterministic but non-zero RNG: repeating byte pattern.
 	rnd := newDeterministicReader()
 	dir := directory.New(fs.Meta(), slog.New(slog.NewTextHandler(io.Discard, nil)), clk, rnd)
@@ -100,6 +110,9 @@ func TestCreatePrincipalValidation(t *testing.T) {
 	}
 	if _, err := dir.CreatePrincipal(ctx, "a@b.test", "short"); !errors.Is(err, directory.ErrWeakPassword) {
 		t.Fatalf("want ErrWeakPassword, got %v", err)
+	}
+	if _, err := dir.CreatePrincipal(ctx, "user@unknown.invalid", "correct-horse-staple"); !errors.Is(err, directory.ErrUnknownDomain) {
+		t.Fatalf("want ErrUnknownDomain, got %v", err)
 	}
 	if _, err := dir.CreatePrincipal(ctx, "a@b.test", "correct-horse-staple"); err != nil {
 		t.Fatalf("first create: %v", err)
@@ -314,6 +327,9 @@ func TestActivityTagged_CreatePrincipal(t *testing.T) {
 		rnd := newDeterministicReader()
 		dir := directory.New(fs.Meta(), log, clk, rnd)
 		ctx := context.Background()
+		if err := fs.Meta().InsertDomain(ctx, store.Domain{Name: "example.test"}); err != nil {
+			t.Fatalf("seed domain: %v", err)
+		}
 		_, err = dir.CreatePrincipal(ctx, "alice@example.test", "correct-horse-staple")
 		if err != nil {
 			t.Fatalf("create: %v", err)
@@ -334,6 +350,9 @@ func TestActivityTagged_DeletePrincipal(t *testing.T) {
 		rnd := newDeterministicReader()
 		dir := directory.New(fs.Meta(), log, clk, rnd)
 		ctx := context.Background()
+		if err := fs.Meta().InsertDomain(ctx, store.Domain{Name: "example.test"}); err != nil {
+			t.Fatalf("seed domain: %v", err)
+		}
 		pid, err := dir.CreatePrincipal(ctx, "bob@example.test", "correct-horse-staple")
 		if err != nil {
 			t.Fatalf("create: %v", err)
@@ -357,6 +376,9 @@ func TestActivityTagged_UpdatePassword(t *testing.T) {
 		rnd := newDeterministicReader()
 		dir := directory.New(fs.Meta(), log, clk, rnd)
 		ctx := context.Background()
+		if err := fs.Meta().InsertDomain(ctx, store.Domain{Name: "example.test"}); err != nil {
+			t.Fatalf("seed domain: %v", err)
+		}
 		pid, err := dir.CreatePrincipal(ctx, "carol@example.test", "old-password-12chars")
 		if err != nil {
 			t.Fatalf("create: %v", err)

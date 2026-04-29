@@ -358,6 +358,8 @@ func (s *Server) writeDirectoryError(w http.ResponseWriter, r *http.Request, err
 		writeProblem(w, r, http.StatusConflict, "conflict", err.Error(), "")
 	case errors.Is(err, directory.ErrInvalidEmail):
 		writeProblem(w, r, http.StatusBadRequest, "invalid_email", err.Error(), "")
+	case errors.Is(err, directory.ErrUnknownDomain):
+		writeProblem(w, r, http.StatusBadRequest, "unknown_domain", err.Error(), "")
 	case errors.Is(err, directory.ErrWeakPassword):
 		writeProblem(w, r, http.StatusBadRequest, "weak_password", err.Error(), "")
 	case errors.Is(err, directory.ErrUnauthorized):

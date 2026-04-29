@@ -54,6 +54,11 @@ var (
 	// when the supplied password is shorter than MinPasswordLength.
 	ErrWeakPassword = errors.New("directory: password too weak")
 
+	// ErrUnknownDomain is returned by CreatePrincipal when the email's
+	// domain part is not registered as a local domain in the store.
+	// Operators must `domain add <name>` before creating principals on it.
+	ErrUnknownDomain = errors.New("directory: email domain is not a configured local domain")
+
 	// ErrRateLimited is returned by Authenticate / VerifyTOTP when the
 	// caller has exceeded the per-(email,source) failure budget.
 	ErrRateLimited = errors.New("directory: rate limited")
@@ -125,6 +130,15 @@ func (d *Directory) CreatePrincipal(ctx context.Context, email, password string)
 	}
 	if len(password) < MinPasswordLength {
 		return 0, ErrWeakPassword
+	}
+	if at := strings.LastIndex(canon, "@"); at >= 0 {
+		domainName := canon[at+1:]
+		if _, derr := d.meta.GetDomain(ctx, domainName); derr != nil {
+			if errors.Is(derr, store.ErrNotFound) {
+				return 0, fmt.Errorf("%w: %s", ErrUnknownDomain, domainName)
+			}
+			return 0, fmt.Errorf("directory: lookup domain: %w", derr)
+		}
 	}
 	hash, err := hashPassword(d.rand, password)
 	if err != nil {

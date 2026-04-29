@@ -123,7 +123,7 @@ func TestActivityTag_AdminMutation_IsUser(t *testing.T) {
 	handler := srv.Handler()
 	apiKey := bootstrapKey(t, handler, "mutation@example.com")
 
-	b, _ := json.Marshal(map[string]any{"name": "example.org"})
+	b, _ := json.Marshal(map[string]any{"name": "post-bootstrap.test"})
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/domains", bytes.NewReader(b))
 	r.Header.Set("Content-Type", "application/json")
