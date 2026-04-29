@@ -302,8 +302,8 @@
   <div class="chip-row" role="group" aria-label="{label} recipients">
     {#each chips as chip, i (recipientToString(chip) + i)}
       <span class="chip">
-        <span class="chip-label">
-          {chip.name ? `${chip.name} <${chip.email}>` : chip.email}
+        <span class="chip-label" title={chip.name ? chip.email : undefined}>
+          {chip.name ?? chip.email}
         </span>
         {#if isSeenOnly(chip)}
           <button
@@ -409,7 +409,7 @@
     padding: 1px var(--spacing-02) 1px var(--spacing-03);
     font-size: var(--type-body-compact-01-size);
     line-height: 1.4;
-    max-width: 100%;
+    max-width: 24em;
     overflow: hidden;
   }
 
