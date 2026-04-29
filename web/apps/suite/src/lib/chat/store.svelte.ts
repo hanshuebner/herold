@@ -1005,11 +1005,11 @@ class ChatStore {
 
     const tempId = `new-conv-${Date.now()}`;
     const createPayload: Record<string, unknown> = {
-      type: args.kind,
-      members: args.members.map((pid) => ({ principalId: pid })),
+      kind: args.kind,
+      members: args.members,
     };
     if (args.name) createPayload['name'] = args.name;
-    if (args.topic) createPayload['description'] = args.topic;
+    if (args.topic) createPayload['topic'] = args.topic;
 
     const { responses } = await jmap.batch((b) => {
       b.call(

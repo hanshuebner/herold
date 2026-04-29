@@ -434,6 +434,47 @@ describe('ChatStore', () => {
     expect(result.id).toBe('conv-new-1');
   });
 
+  it('createConversation sends kind/members/topic as the JMAP wire shape', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    let capturedCreate: Record<string, unknown> | null = null;
+    vi.mocked(jmap.batch).mockImplementation(async (builder) => {
+      let tempId = '';
+      builder({
+        call: (_name: string, args: unknown) => {
+          const a = args as { create?: Record<string, Record<string, unknown>> };
+          if (a.create) {
+            tempId = Object.keys(a.create)[0]!;
+            capturedCreate = a.create[tempId]!;
+          }
+          return { ref: () => ({ resultOf: 'c0', name: '', path: '' }) };
+        },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      return {
+        responses: [
+          ['Conversation/set', { created: { [tempId]: { id: 'conv-new-2' } }, notCreated: {} }, 's0'],
+        ],
+        sessionState: 'ss1',
+      };
+    });
+
+    await chat.createConversation({
+      kind: 'space',
+      members: ['prin-a', 'prin-b'],
+      name: 'project',
+      topic: 'planning',
+    });
+
+    expect(capturedCreate).toEqual({
+      kind: 'space',
+      members: ['prin-a', 'prin-b'],
+      name: 'project',
+      topic: 'planning',
+    });
+  });
+
   it('createConversation throws on notCreated', async () => {
     const { chat } = chatMod;
     const { jmap } = jmapMod;
