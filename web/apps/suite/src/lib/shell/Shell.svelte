@@ -16,15 +16,12 @@
   import NewChatPicker from '../chat/NewChatPicker.svelte';
 
   interface Props {
-    /** When true, suppress the chat overlay host (fullscreen chat route). */
-    hideChatOverlay?: boolean;
     /** When false, hide the overlay host (capability gate). */
     chatEnabled?: boolean;
     sidebar?: import('svelte').Snippet;
     children?: import('svelte').Snippet;
   }
   let {
-    hideChatOverlay = false,
     chatEnabled = false,
     sidebar,
     children,
@@ -64,9 +61,12 @@
   <PromptDialog />
   <NewChatPicker />
 
-  <!-- Floating chat overlay windows: hidden on fullscreen chat route,
-       phone breakpoints, or when chat capability is absent. -->
-  {#if chatEnabled && !hideChatOverlay}
+  <!-- Floating chat overlay windows. The host filters out the
+       conversation that's already rendered in the dedicated chat
+       route to avoid duplicate views; otherwise it renders so that
+       a background-arriving message can pop an overlay even while
+       the user is on /chat. Phone breakpoints suppress via CSS. -->
+  {#if chatEnabled}
     <ChatOverlayHost />
   {/if}
 </div>

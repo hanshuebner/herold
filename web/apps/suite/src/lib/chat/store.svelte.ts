@@ -854,14 +854,34 @@ class ChatStore {
           // visible in the main pane). chatOverlay.openWindow dedupes
           // and un-minimizes when a window for the conversation is
           // already in the tray, so this is a no-op when it should be.
-          if (isNewArrival && !fromMe) {
-            const routeActive =
-              router.parts[0] === 'chat' &&
-              router.parts[1] === 'conversation' &&
-              router.parts[2] === incoming.conversationId;
-            if (!routeActive) {
-              chatOverlay.openWindow(incoming.conversationId);
-            }
+          const routeActive =
+            router.parts[0] === 'chat' &&
+            router.parts[1] === 'conversation' &&
+            router.parts[2] === incoming.conversationId;
+          // [chat-debug] auto-open decision — temporary.
+          console.log('[chat-debug] auto-open decision', {
+            messageId: incoming.id,
+            conversationId: incoming.conversationId,
+            senderPrincipalId: incoming.senderPrincipalId,
+            authPrincipalId: auth.principalId,
+            fromMe,
+            isNewArrival,
+            routeActive,
+            routerParts: [...router.parts],
+            willOpen: isNewArrival && !fromMe && !routeActive,
+            overlayWindowsBefore: chatOverlay.windows.length,
+          });
+          if (isNewArrival && !fromMe && !routeActive) {
+            chatOverlay.openWindow(incoming.conversationId);
+            console.log('[chat-debug] auto-open after openWindow', {
+              conversationId: incoming.conversationId,
+              overlayWindowsAfter: chatOverlay.windows.length,
+              keys: chatOverlay.windows.map((w) => ({
+                key: w.key,
+                conversationId: w.conversationId,
+                minimized: w.minimized,
+              })),
+            });
           }
         }
       }

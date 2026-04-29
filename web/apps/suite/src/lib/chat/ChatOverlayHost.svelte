@@ -13,12 +13,28 @@
    */
 
   import { chatOverlay } from './overlay-store.svelte';
+  import { router } from '../router/router.svelte';
   import ChatOverlayWindow from './ChatOverlayWindow.svelte';
+
+  // Suppress the overlay window only for the conversation the user is
+  // currently viewing in the dedicated /chat/conversation/<id> route —
+  // that conversation is already shown in the main pane and the overlay
+  // would just duplicate it. Windows for other conversations still
+  // render so an incoming message in a background chat can pop a
+  // visible overlay even while the user is on the chat surface.
+  let visibleWindows = $derived.by(() => {
+    const activeId =
+      router.parts[0] === 'chat' && router.parts[1] === 'conversation'
+        ? router.parts[2]
+        : null;
+    if (!activeId) return chatOverlay.windows;
+    return chatOverlay.windows.filter((w) => w.conversationId !== activeId);
+  });
 </script>
 
-{#if chatOverlay.windows.length > 0}
+{#if visibleWindows.length > 0}
   <div class="overlay-host" aria-label="Chat windows" role="region">
-    {#each chatOverlay.windows as win (win.key)}
+    {#each visibleWindows as win (win.key)}
       <ChatOverlayWindow
         windowKey={win.key}
         conversationId={win.conversationId}

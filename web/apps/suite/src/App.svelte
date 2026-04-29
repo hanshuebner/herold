@@ -33,9 +33,6 @@
       : false,
   );
 
-  // On the fullscreen /chat/* route the existing two-column ChatView is
-  // the complete chat surface; suppress the overlays there.
-  let hideChatOverlay = $derived(router.matches('chat'));
 
   // Open the EventSource subscription once auth is ready. Sync handlers
   // were registered at module init by the mail store, so they're already
@@ -259,7 +256,6 @@
 {/if}
 <Shell
   chatEnabled={hasChatCap}
-  {hideChatOverlay}
 >
   {#snippet sidebar()}
     <div class="sidebar-inner">
