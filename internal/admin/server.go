@@ -22,6 +22,8 @@ import (
 
 	"github.com/hanshuebner/herold/internal/acme"
 	"github.com/hanshuebner/herold/internal/auth"
+	"github.com/hanshuebner/herold/internal/extsubmit"
+	"github.com/hanshuebner/herold/internal/secrets"
 	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/autodns"
 	"github.com/hanshuebner/herold/internal/chatretention"
@@ -1878,8 +1880,32 @@ func composeAdminAndUI(
 	// REQ-PROTO-57, REQ-PROTO-58). Identity Register returns the
 	// provider that EmailSubmission's Register needs to resolve
 	// per-identity send-from addresses.
-	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk),
-		nil, nil, // extSub, extRouter: wired in commit 4 when external-submission is configured
+	jmapIdentityStore := jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk)
+	// External SMTP submission (REQ-AUTH-EXT-SUBMIT-05): wire the
+	// extsubmit.Submitter when [server.external_submission].enabled is true.
+	// The data key is required (validated by sysconfig.Validate before
+	// StartServer is called); we load it here so the key material stays in
+	// this scope and is not passed outside the server constructor.
+	var extSub emailsubmission.ExternalSubmitter
+	var extRouter emailsubmission.ExternalRouter
+	if cfg.Server.ExternalSubmission.Enabled {
+		dataKey, dkErr := secrets.LoadDataKey(cfg.Server.Secrets)
+		if dkErr != nil {
+			return composedHandlers{}, fmt.Errorf("external submission: load data key: %w", dkErr)
+		}
+		hostName := cfg.Server.Hostname
+		extSub = &extsubmit.Submitter{
+			DataKey:  dataKey,
+			HostName: hostName,
+		}
+		extRouter = jmapIdentityStore
+		jmapSrv.Registry().RegisterCapabilityDescriptor(
+			protojmap.CapabilityExternalSubmission, struct{}{})
+		logger.Info("external SMTP submission enabled",
+			slog.String("subsystem", "jmap-emailsubmission"))
+	}
+	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapIdentityStore,
+		extSub, extRouter,
 		logger.With("subsystem", "jmap-emailsubmission"), clk)
 	// SeenAddress (REQ-MAIL-11e..m): recipient autocomplete history, exposed
 	// under urn:ietf:params:jmap:mail (no new capability URI needed).

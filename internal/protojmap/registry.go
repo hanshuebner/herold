@@ -92,6 +92,16 @@ const (
 	// Implemented under internal/protojmap/mail/managedrule.
 	CapabilityManagedRules CapabilityID = "https://netzhansa.com/jmap/managed-rules"
 
+	// CapabilityExternalSubmission is the JMAP external-SMTP-submission
+	// capability (REQ-AUTH-EXT-SUBMIT-05). Advertised when
+	// [server.external_submission].enabled is true. It signals to JMAP
+	// clients that per-Identity external SMTP credentials are honoured:
+	// EmailSubmission/set will route submissions whose Identity has an
+	// external configuration through extsubmit.Submitter instead of the
+	// local queue. The capability carries an empty per-server descriptor (no
+	// additional properties defined for v1).
+	CapabilityExternalSubmission CapabilityID = "https://netzhansa.com/jmap/external-submission"
+
 	// CapabilityLLMTransparency is the G14 LLM-transparency capability
 	// (REQ-FILT-65..68 / REQ-FILT-216). Provides the LLMTransparency
 	// singleton datatype (LLMTransparency/get) and the per-message inspect
