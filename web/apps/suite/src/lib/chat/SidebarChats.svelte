@@ -274,21 +274,27 @@
   }
   .presence-dot {
     position: absolute;
-    bottom: 0;
-    right: 0;
-    width: 8px;
-    height: 8px;
+    bottom: -1px;
+    right: -1px;
+    width: 11px;
+    height: 11px;
     border-radius: var(--radius-pill);
-    border: 2px solid var(--layer-01);
+    /* The 2.5px ring matches the surrounding sidebar background so the
+       dot looks "punched" through the avatar; adjust the negative
+       offsets if the avatar size changes. */
+    border: 2.5px solid var(--background);
   }
   .presence-dot.online {
-    background: var(--support-success);
+    background: var(--presence-online);
+    /* Subtle bloom so the green reads at a glance. */
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--presence-online) 60%, transparent),
+      0 0 6px color-mix(in srgb, var(--presence-online) 50%, transparent);
   }
   .presence-dot.away {
-    background: var(--support-warning);
+    background: var(--presence-away);
   }
   .presence-dot.offline {
-    background: var(--border-subtle-01);
+    background: var(--presence-offline);
   }
   .conv-name {
     flex: 1;

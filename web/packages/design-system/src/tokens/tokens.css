@@ -112,6 +112,13 @@
   --support-success: #42be65;
   --support-warning: #f1c21b;
   --support-info: #4589ff;
+
+  /* Presence dots want a louder, more saturated palette than the
+     muted Carbon support- tokens; the chat dots are tiny (~11px)
+     and need to read at a glance against the avatar. */
+  --presence-online: #22c55e;
+  --presence-away: #f59e0b;
+  --presence-offline: #94a3b8;
 }
 
 /* ── Light theme ───────────────────────────────────────────────────────── */
@@ -138,6 +145,10 @@
   --support-success: #198038;
   --support-warning: #f1c21b;
   --support-info: #0043ce;
+
+  --presence-online: #16a34a;
+  --presence-away: #d97706;
+  --presence-offline: #64748b;
 }
 
 /* ── System theme — follow prefers-color-scheme ────────────────────────── */
@@ -165,5 +176,9 @@
     --support-success: #198038;
     --support-warning: #f1c21b;
     --support-info: #0043ce;
+
+    --presence-online: #16a34a;
+    --presence-away: #d97706;
+    --presence-offline: #64748b;
   }
 }

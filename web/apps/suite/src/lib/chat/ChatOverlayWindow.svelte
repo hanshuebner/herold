@@ -252,22 +252,24 @@
   }
 
   .presence-dot {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
     border-radius: var(--radius-pill);
     flex-shrink: 0;
   }
 
   .presence-dot.online {
-    background: var(--support-success);
+    background: var(--presence-online);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--presence-online) 60%, transparent),
+      0 0 6px color-mix(in srgb, var(--presence-online) 50%, transparent);
   }
 
   .presence-dot.away {
-    background: var(--support-warning);
+    background: var(--presence-away);
   }
 
   .presence-dot.offline {
-    background: rgba(255, 255, 255, 0.4);
+    background: var(--presence-offline);
   }
 
   .space-icon {
