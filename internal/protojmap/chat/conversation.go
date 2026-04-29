@@ -272,10 +272,22 @@ func (h *convChangesHandler) Execute(ctx context.Context, args json.RawMessage) 
 	return resp, nil
 }
 
-// walkChatChangeFeed reads the principal's change feed, classifying
-// entries by kind. Mirrors the contacts package helper of the same
-// shape; chat datatypes flow through additively per the entity-kind-
-// agnostic dispatch pattern.
+// walkChatChangeFeed reads the principal's change feed and classifies
+// entries by kind. The walker mirrors the email package (see
+// internal/protojmap/mail/email/changes.go): chat state is the
+// change_feed.seq for the principal+kind, so the walker seeds the
+// cursor at the caller-supplied `since` and ReadChangeFeed yields
+// only entries with seq > since.
+//
+// An earlier implementation copied the contacts helper which compares
+// `since` against an op-count (opsAfter). Contacts' state is the
+// per-datatype counter in jmap_states, so its op-count compare is
+// correct there; for chat the state is the seq, and the op-count
+// compare silently dropped every entry until 127 ops had accumulated.
+// Bug surfaced as Conversation/Message/Membership /changes returning
+// `created: []` for the very principal that triggered the change,
+// even though the state advanced — the EventSource fired but the UI
+// never received the new ids (see issue #47).
 func walkChatChangeFeed(
 	ctx context.Context,
 	meta store.Metadata,
@@ -287,8 +299,7 @@ func walkChatChangeFeed(
 	updated = map[uint64]struct{}{}
 	destroyed = map[uint64]struct{}{}
 	const page = 1000
-	var cursor store.ChangeSeq
-	opsAfter := int64(0)
+	cursor := store.ChangeSeq(since)
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, nil, err
@@ -300,10 +311,6 @@ func walkChatChangeFeed(
 		for _, entry := range batch {
 			cursor = entry.Seq
 			if entry.Kind != kind {
-				continue
-			}
-			opsAfter++
-			if opsAfter <= since {
 				continue
 			}
 			id := entry.EntityID
