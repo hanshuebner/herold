@@ -213,6 +213,14 @@ func TestOAuthStart_RedirectsToProvider(t *testing.T) {
 	if !strings.Contains(u.Host, "accounts.google.com") {
 		t.Errorf("redirect host = %q; want accounts.google.com", u.Host)
 	}
+	// The redirect_uri must be the FIXED callback path — no identity id in URL.
+	redirectURI := q.Get("redirect_uri")
+	if !strings.HasSuffix(redirectURI, "/api/v1/oauth/external-submission/callback") {
+		t.Errorf("redirect_uri = %q; want suffix /api/v1/oauth/external-submission/callback", redirectURI)
+	}
+	if strings.Contains(redirectURI, identityID) {
+		t.Errorf("redirect_uri %q must not contain identity id %q", redirectURI, identityID)
+	}
 }
 
 // TestOAuthCallback_ExchangesAndPersists verifies that after a start, the
@@ -237,8 +245,10 @@ func TestOAuthCallback_ExchangesAndPersists(t *testing.T) {
 	}
 
 	// Call callback with the state token and a fake code.
-	callbackPath := fmt.Sprintf("/api/v1/identities/%s/submission/oauth/callback?state=%s&code=fake-code",
-		identityID, url.QueryEscape(stateTok))
+	// The callback path is fixed (no identity id in URL; identity id lives in
+	// the state token).
+	callbackPath := fmt.Sprintf("/api/v1/oauth/external-submission/callback?state=%s&code=fake-code",
+		url.QueryEscape(stateTok))
 	cbRes, cbBody := oh.doRequest("GET", callbackPath, apiKey, nil)
 	if cbRes.StatusCode != http.StatusNoContent {
 		t.Fatalf("callback: expected 204, got %d: %s", cbRes.StatusCode, cbBody)
@@ -258,16 +268,26 @@ func TestOAuthCallback_ExchangesAndPersists(t *testing.T) {
 	if len(sub.OAuthRefreshCT) == 0 {
 		t.Errorf("OAuthRefreshCT is empty; want sealed refresh token")
 	}
+	// RefreshDue must be 5 minutes before expiry (extsubmit.RefreshLeadTime),
+	// not 80% of token lifetime. The fake provider returns expires_in=3600;
+	// expected RefreshDue = OAuthExpiresAt - 5m = now + 3600s - 300s = now + 3300s.
+	if sub.OAuthExpiresAt.IsZero() {
+		t.Error("OAuthExpiresAt is zero; want non-zero")
+	} else {
+		wantRefreshDue := sub.OAuthExpiresAt.Add(-extsubmit.RefreshLeadTime)
+		if !sub.RefreshDue.Equal(wantRefreshDue) {
+			t.Errorf("RefreshDue = %v; want OAuthExpiresAt - RefreshLeadTime = %v", sub.RefreshDue, wantRefreshDue)
+		}
+	}
 }
 
 // TestOAuthCallback_BadState verifies that an unknown or expired state token
 // returns 400 with type oauth_state_invalid.
 func TestOAuthCallback_BadState(t *testing.T) {
 	oh := newOAuthHarness(t)
-	apiKey, identityID, _ := oh.bootstrapAndIdentity("oauth3@example.com")
+	apiKey, _, _ := oh.bootstrapAndIdentity("oauth3@example.com")
 
-	callbackPath := fmt.Sprintf("/api/v1/identities/%s/submission/oauth/callback?state=nonexistent&code=x",
-		identityID)
+	callbackPath := "/api/v1/oauth/external-submission/callback?state=nonexistent&code=x"
 	res, buf := oh.doRequest("GET", callbackPath, apiKey, nil)
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", res.StatusCode, buf)
@@ -298,8 +318,8 @@ func TestOAuthCallback_ExpiredState(t *testing.T) {
 	// Advance clock past the 5-minute TTL.
 	oh.clk.Advance(6 * time.Minute)
 
-	callbackPath := fmt.Sprintf("/api/v1/identities/%s/submission/oauth/callback?state=%s&code=x",
-		identityID, url.QueryEscape(stateTok))
+	callbackPath := fmt.Sprintf("/api/v1/oauth/external-submission/callback?state=%s&code=x",
+		url.QueryEscape(stateTok))
 	res, buf := oh.doRequest("GET", callbackPath, apiKey, nil)
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expired state: expected 400, got %d: %s", res.StatusCode, buf)

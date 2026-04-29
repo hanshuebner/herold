@@ -8,11 +8,14 @@ package protoadmin
 //  1. Suite calls POST /api/v1/identities/{id}/submission/oauth/start?provider=<name>
 //  2. Handler validates the provider exists in OAuthProviders, generates a
 //     PKCE code_verifier + code_challenge, stores a state token (16 random
-//     bytes, 5-minute TTL) in oauthStateStore, and redirects the browser to
-//     the provider's auth_url with state + code_challenge.
-//  3. Provider redirects back to
-//     GET /api/v1/identities/{id}/submission/oauth/callback?code=...&state=...
-//  4. Handler validates the state token (not expired, matches identity + provider),
+//     bytes, 5-minute TTL) in oauthStateStore (including the identity_id), and
+//     redirects the browser to the provider's auth_url with state + code_challenge.
+//  3. Provider redirects back to the FIXED path
+//     GET /api/v1/oauth/external-submission/callback?code=...&state=...
+//     (no identity id in the URL — the callback recovers the identity id from
+//     the state token, which allows a single redirect URI to be registered with
+//     Google/Microsoft for all identities).
+//  4. Handler validates the state token (not expired, matches provider),
 //     exchanges the code at the provider's token_url using PKCE, seals the
 //     resulting access + refresh tokens, runs the probe, persists on success,
 //     and returns 204 (or redirects to the suite's settings URL when
@@ -198,8 +201,10 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 	q.Set("scope", strings.Join(prov.Scopes, " "))
-	// The redirect_uri is the callback endpoint. Build it from the request.
-	callbackURL := buildCallbackURL(r, identityID)
+	// The redirect_uri is the fixed callback endpoint. The identity id is
+	// carried in the state token, not in the URL, so operators only register
+	// one redirect URI with their OAuth provider.
+	callbackURL := buildCallbackURL(r)
 	q.Set("redirect_uri", callbackURL)
 	authURL.RawQuery = q.Encode()
 
@@ -208,7 +213,12 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 
 // buildCallbackURL constructs the absolute callback URI for the OAuth flow
 // from the inbound request. Uses X-Forwarded-Host / Host fallback.
-func buildCallbackURL(r *http.Request, identityID string) string {
+//
+// The returned URL is the FIXED path /api/v1/oauth/external-submission/callback
+// — no identity id appears in the URL. The identity id travels in the opaque
+// state token so that operators can register a single redirect URI with OAuth
+// providers (Google, Microsoft) that performs exact-match validation.
+func buildCallbackURL(r *http.Request) string {
 	scheme := "https"
 	if r.TLS == nil {
 		scheme = "http"
@@ -217,7 +227,7 @@ func buildCallbackURL(r *http.Request, identityID string) string {
 	if host == "" {
 		host = r.Host
 	}
-	return fmt.Sprintf("%s://%s/api/v1/identities/%s/submission/oauth/callback", scheme, host, identityID)
+	return fmt.Sprintf("%s://%s/api/v1/oauth/external-submission/callback", scheme, host)
 }
 
 // tokenResponse is the subset of the OAuth 2.0 token response we care about.
@@ -269,32 +279,20 @@ func exchangeCode(ctx context.Context, httpClient *http.Client, tokenURL, client
 }
 
 // handleOAuthCallback implements
-// GET /api/v1/identities/{id}/submission/oauth/callback?code=...&state=...
+// GET /api/v1/oauth/external-submission/callback?code=...&state=...
 //
 // Validates state, exchanges the code, seals the tokens, runs the probe,
 // and persists on success. Returns 204 or redirects to ReturnURL.
 //
-// Gated by requireSelfOnly: the caller must own the identity.
+// The identity id is recovered from the opaque state token (stored there by
+// handleOAuthStart). No identity id appears in this URL — a single fixed
+// redirect URI is registered with OAuth providers so exact-match validation
+// works across all identities.
+//
+// Gated by requireSelfOnly: the caller must own the identity recovered from
+// the state token.
 func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
-	identityID := r.PathValue("id")
-	if identityID == "" {
-		writeProblem(w, r, http.StatusBadRequest, "invalid_id", "identity id is required", "")
-		return
-	}
 	caller, _ := principalFrom(r.Context())
-
-	ownerID, err := resolveIdentityOwner(r.Context(), s.store.Meta(), identityID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeProblem(w, r, http.StatusNotFound, "not_found", "identity not found", identityID)
-		} else {
-			s.writeStoreError(w, r, err)
-		}
-		return
-	}
-	if !requireSelfOnly(w, r, caller, ownerID) {
-		return
-	}
 
 	stateTok := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
@@ -311,9 +309,19 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 			"OAuth state token is invalid, expired, or already consumed", "")
 		return
 	}
-	if entry.IdentityID != identityID {
-		writeProblem(w, r, http.StatusBadRequest, "oauth_state_invalid",
-			"OAuth state token does not match the identity in the URL", "")
+
+	// Recover the identity id and verify the caller owns it.
+	identityID := entry.IdentityID
+	ownerID, err := resolveIdentityOwner(r.Context(), s.store.Meta(), identityID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "not_found", "identity not found", identityID)
+		} else {
+			s.writeStoreError(w, r, err)
+		}
+		return
+	}
+	if !requireSelfOnly(w, r, caller, ownerID) {
 		return
 	}
 
@@ -336,7 +344,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirectURI := buildCallbackURL(r, identityID)
+	redirectURI := buildCallbackURL(r)
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	tr, err := exchangeCode(r.Context(), httpClient, prov.TokenURL,
 		prov.ClientID, prov.ClientSecret, code, entry.CodeVerifier, redirectURI)
@@ -385,8 +393,10 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	if tr.ExpiresIn > 0 {
 		sub.OAuthExpiresAt = s.clk.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
-		// Refresh at 80 % of token lifetime.
-		sub.RefreshDue = s.clk.Now().Add(time.Duration(float64(tr.ExpiresIn)*0.8) * time.Second)
+		// Refresh extsubmit.RefreshLeadTime before expiry. Using the shared
+		// constant keeps this call site consistent with the sweeper refresh
+		// path in extsubmit.Refresher.Refresh (REQ-AUTH-EXT-SUBMIT-05).
+		sub.RefreshDue = sub.OAuthExpiresAt.Add(-extsubmit.RefreshLeadTime)
 	}
 
 	// Run probe before persisting.

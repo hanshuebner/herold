@@ -152,7 +152,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/identities/{id}/submission", auth1(s.handlePutSubmission))
 	mux.HandleFunc("DELETE /api/v1/identities/{id}/submission", auth1(s.handleDeleteSubmission))
 	mux.HandleFunc("POST /api/v1/identities/{id}/submission/oauth/start", auth1(s.handleOAuthStart))
-	mux.HandleFunc("GET /api/v1/identities/{id}/submission/oauth/callback", auth1(s.handleOAuthCallback))
+	// The OAuth callback URL is FIXED (no identity id in the path) so
+	// operators register one redirect URI with their OAuth provider (Google /
+	// Microsoft perform exact-match validation). The identity id travels in
+	// the opaque state token. REQ-MAIL-SUBMIT-02, REQ-AUTH-EXT-SUBMIT-03.
+	mux.HandleFunc("GET /api/v1/oauth/external-submission/callback", auth1(s.handleOAuthCallback))
 
 	// Inbound attachment policy (REQ-FLOW-ATTPOL-01..02).
 	mux.HandleFunc("GET /api/v1/mailboxes/{addr}/attachment-policy", authAdmin(s.handleGetMailboxAttPol))
@@ -227,7 +231,8 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	// Server-mediated OAuth start/callback for external submission
 	// (REQ-MAIL-SUBMIT-02, REQ-AUTH-EXT-SUBMIT-03).
 	mux.HandleFunc("POST /api/v1/identities/{id}/submission/oauth/start", auth1(s.handleOAuthStart))
-	mux.HandleFunc("GET /api/v1/identities/{id}/submission/oauth/callback", auth1(s.handleOAuthCallback))
+	// Fixed callback path — no identity id in URL (identity id in state token).
+	mux.HandleFunc("GET /api/v1/oauth/external-submission/callback", auth1(s.handleOAuthCallback))
 }
 
 // SelfServiceHandler returns the self-service route set wrapped in the
