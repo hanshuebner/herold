@@ -6,8 +6,10 @@
    * per REQ-CHAT-22. Reactions strip below each message per REQ-CHAT-30..33.
    * Read receipts shown for DMs per REQ-CHAT-40.
    *
-   * Scroll-based read tracking: when the conversation is open and a message
-   * scrolls into view, markRead is called (debounced 500ms) per REQ-CHAT-43.
+   * Read tracking is engagement-based: the unread badge clears only when the
+   * recipient actually starts composing a reply (or sends one). The trigger
+   * lives in ChatCompose, not here — bare focus or scrolling does not advance
+   * the read pointer, so the badge stays visible until the recipient engages.
    */
 
   import { untrack } from 'svelte';
@@ -63,24 +65,6 @@
     });
   });
 
-  // Mark-read tracks two reactive sources: (a) the effective messages
-  // (so a newly arrived message can advance the read pointer if the
-  // user is already typing) and (b) chat.focusedConversationId (so
-  // moving focus into THIS conversation's compose advances the
-  // pointer for the messages already on screen). The cursor must be
-  // inside the chat compose for this conversation — scroll alone or
-  // hover do not advance the pointer.
-  $effect(() => {
-    const msgs = effectiveMessages;
-    const status = effectiveStatus;
-    const focused = chat.focusedConversationId;
-    untrack(() => {
-      if (status !== 'ready' || msgs.length === 0) return;
-      if (focused !== conversationId) return;
-      scheduleMarkRead();
-    });
-  });
-
   function handleScroll(): void {
     if (!scrollEl) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollEl;
@@ -96,29 +80,10 @@
     }
   }
 
-  let markReadTimer: ReturnType<typeof setTimeout> | null = null;
-  // Debounce long enough that the unread badge has time to be
-  // perceptibly visible when an incoming message auto-pops the
-  // overlay and the input gains focus immediately afterwards. Too
-  // short (e.g. 500ms) clears the badge before the user can see it;
-  // too long leaves a stale badge while the user is actively
-  // attending to the conversation. 2500ms hits the middle.
-  const MARK_READ_DEBOUNCE_MS = 2500;
-  function scheduleMarkRead(): void {
-    if (markReadTimer !== null) clearTimeout(markReadTimer);
-    markReadTimer = setTimeout(() => {
-      markReadTimer = null;
-      doMarkRead();
-    }, MARK_READ_DEBOUNCE_MS);
-  }
-
-  function doMarkRead(): void {
-    const msgs = effectiveMessages;
-    if (msgs.length === 0) return;
-    const last = msgs[msgs.length - 1];
-    if (!last) return;
-    void chat.markRead(conversationId, last.id);
-  }
+  // Mark-read trigger lives in ChatCompose: it fires on the first
+  // user keystroke (or send) per overlay-open. Bare focus does not
+  // advance the read pointer, so the unread badge stays visible
+  // until the recipient actually starts replying.
 
   function formatTime(isoDate: string): string {
     const d = new Date(isoDate);

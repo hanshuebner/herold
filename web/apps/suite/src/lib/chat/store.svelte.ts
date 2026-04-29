@@ -215,6 +215,26 @@ class ChatStore {
     this.focusRequest = { conversationId, epoch: this.#focusEpoch };
   }
 
+  /**
+   * Advance the read pointer to the most recent message known to the
+   * client for this conversation. Looks at the main pane's messages
+   * array first (when this is the open conversation) and falls back
+   * to the per-overlay cache. No-op when neither cache has any rows
+   * for the conversation.
+   */
+  markReadLatest(conversationId: string): void {
+    let last: Message | undefined;
+    if (this.openConversationId === conversationId && this.messages.length > 0) {
+      last = this.messages[this.messages.length - 1];
+    } else {
+      const overlay = this.overlayMessages.get(conversationId);
+      const list = overlay?.messages ?? [];
+      if (list.length > 0) last = list[list.length - 1];
+    }
+    if (!last) return;
+    void this.markRead(conversationId, last.id);
+  }
+
   async loadMessages(conversationId: string): Promise<void> {
     const accountId = this.#accountId();
     if (!accountId) return;

@@ -53,6 +53,12 @@
   let view: EditorView | null = null;
   let uploading = $state(false);
   let uploadError = $state<string | null>(null);
+  // Per-editor-lifetime flag: the first user-driven doc change advances the
+  // read pointer to the latest visible message. Bare focus does NOT trigger
+  // mark-read — the recipient must actually start composing a reply before
+  // the unread badge clears. Reset when the editor remounts (e.g. when the
+  // overlay window is closed and reopened).
+  let hasMarkedRead = false;
 
   function docToHtml(): string {
     if (!view) return '';
@@ -89,6 +95,13 @@
     const text = docToText();
     clearEditor();
     chat.stopTyping(conversationId);
+    // Defensive: dispatchTransaction normally already fired this on the
+    // first keystroke, but a send without any prior input would otherwise
+    // leave the unread pointer stale.
+    if (!hasMarkedRead) {
+      hasMarkedRead = true;
+      chat.markReadLatest(conversationId);
+    }
     await chat.sendMessage(conversationId, html, text);
   }
 
@@ -173,6 +186,14 @@
           untrack(() => {
             uploadError = null;
             chat.notifyTyping(conversationId);
+            // Engagement-based mark-read: the badge clears only once the
+            // recipient actually starts composing (or sends), not when
+            // their cursor merely lands in the input. Fire once per
+            // editor lifetime to avoid spamming /Email/set on every key.
+            if (!hasMarkedRead) {
+              hasMarkedRead = true;
+              chat.markReadLatest(conversationId);
+            }
           });
         }
       },
