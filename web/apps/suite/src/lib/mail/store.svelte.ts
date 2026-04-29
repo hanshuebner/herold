@@ -878,12 +878,7 @@ class MailStore {
   threadEmails(threadId: string): Email[] {
     const thread = this.threads.get(threadId);
     if (!thread) return [];
-    const out: Email[] = [];
-    for (const id of thread.emailIds) {
-      const e = this.emails.get(id);
-      if (e) out.push(e);
-    }
-    return out;
+    return resolveThreadEmails(thread.emailIds, this.emails);
   }
 
   // ── Optimistic actions ────────────────────────────────────────────────
@@ -2098,6 +2093,26 @@ function errMessage(err: unknown, fallback: string): string {
 }
 
 /**
+ * Resolve a thread's email-id list against the email cache, deduplicating
+ * any repeated ids. JMAP servers are not supposed to return duplicate
+ * emailIds in a Thread object, but at least one server version did, which
+ * caused Svelte's keyed `{#each}` block to throw `each_key_duplicate`
+ * (issue #40). Deduplication here is cheap and defensive; it preserves
+ * the first occurrence of each id (i.e. display order is maintained).
+ */
+export function resolveThreadEmails(emailIds: string[], emails: Map<string, Email>): Email[] {
+  const seen = new Set<string>();
+  const out: Email[] = [];
+  for (const id of emailIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const e = emails.get(id);
+    if (e) out.push(e);
+  }
+  return out;
+}
+
+/**
  * Returns true when every id in `visibleIds` is present in `selected`
  * AND `visibleIds` is non-empty. Used by toggleSelectAllVisible to
  * decide whether to clear or set the selection.
@@ -2110,4 +2125,4 @@ export function allVisibleSelected(visibleIds: string[], selected: Set<string>):
 export const mail = new MailStore();
 
 /** Exported purely for unit tests; not part of the public surface. */
-export const _internals_forTest = { errMessage, allVisibleSelected };
+export const _internals_forTest = { errMessage, allVisibleSelected, resolveThreadEmails };
