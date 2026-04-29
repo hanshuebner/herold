@@ -323,7 +323,7 @@
         aria-expanded={moreOpen}
         onclick={() => (moreOpen = !moreOpen)}
       >
-        <span aria-hidden="true">{moreOpen ? '&#9662;' : '&#9656;'}</span>
+        <span aria-hidden="true">{moreOpen ? '▾' : '▸'}</span>
         {t('sidebar.more')}
         <span class="count">{mail.customMailboxes.length}</span>
       </button>
