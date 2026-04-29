@@ -27,10 +27,12 @@ fi
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$repo_root"
 
-# pre-commit framework manages both stages from a single config file.
-# Installing both hook types at once means a contributor only runs
-# `make install-hooks` once, regardless of which checks live where.
-pre-commit install --hook-type pre-commit --hook-type pre-push
+# All hooks live at the pre-commit stage now (including the fast diag
+# tests that used to be pre-push); we also un-install any stale
+# pre-push hook left over from earlier installs so `git push` is
+# never blocked by a hook.
+pre-commit install --hook-type pre-commit
+pre-commit uninstall --hook-type pre-push >/dev/null 2>&1 || true
 
 # Warm the hook environments so the first commit isn't slow. Best-effort:
 # if the system Python or Go toolchain is missing pieces, surface that now
@@ -51,10 +53,9 @@ Hooks installed.
 
   pre-commit -> .git/hooks/pre-commit  (gofmt, goimports, go vet, go mod tidy,
                                         staticcheck, schema-version invariant,
-                                        gitleaks, generic file hygiene)
-  pre-push   -> .git/hooks/pre-push    (fast invariant tests:
-                                        internal/diag/backup,
-                                        internal/diag/migrate)
+                                        diag-fast-tests, gitleaks,
+                                        generic file hygiene)
+  pre-push   -> not installed          (no hooks gate `git push`)
 
 Run `pre-commit run --all-files` to lint the whole tree, or
 `make precommit` to run the same chain CI runs.

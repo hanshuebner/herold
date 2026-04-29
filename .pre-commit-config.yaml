@@ -109,17 +109,19 @@ repos:
           | internal/storepg/migrations/.*\.sql
           )$
 
-      # pre-push stage: fast invariant tests that catch the bug class
-      # (schema version + migrate round-trip) which has been the most
-      # common cause of green-locally-red-on-main failures. ~10s on a
-      # warm cache. Install with `make install-hooks` (which passes
-      # --hook-type pre-push to pre-commit install).
+      # Fast invariant tests that catch the bug class (schema version
+      # + migrate round-trip) which has been the most common cause of
+      # green-locally-red-on-main failures. ~10s on a warm cache.
+      # Originally lived at pre-push so commits stayed snappy, but
+      # `git push` had two reasons to run any hooks at all (this row
+      # plus three upstream lint hooks that ignored default_stages),
+      # so it was confusing in practice. Pinned to pre-commit now;
+      # `git push` runs no hooks.
       - id: diag-fast-tests
         name: go test ./internal/diag/backup ./internal/diag/migrate
         entry: bash -c 'go test -count=1 -short ./internal/diag/backup/... ./internal/diag/migrate/...' --
         language: system
         pass_filenames: false
-        stages: [pre-push]
 
 default_language_version:
   python: python3
