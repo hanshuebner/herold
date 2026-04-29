@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -214,5 +215,83 @@ func TestMigration0005StateChangeGeneric(t *testing.T) {
 		if migrated[i] != want[i] {
 			t.Fatalf("row %d = %#v, want %#v", i, migrated[i], want[i])
 		}
+	}
+}
+
+// TestMaterializeDefaultIdentity_ConcurrentRace exercises the TOCTOU retry
+// in storepg.MaterializeDefaultIdentity: two goroutines call the method
+// simultaneously for the same principal and must (a) both return without
+// error, (b) both return the same identity id, and (c) only one row is
+// inserted into jmap_identities.
+func TestMaterializeDefaultIdentity_ConcurrentRace(t *testing.T) {
+	dsn, ok := getDSN(t)
+	if !ok {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres-specific concurrent test")
+	}
+	s, cleanup := openStore(t, dsn)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Insert a principal to test against.
+	p, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		CanonicalEmail: "concurrent-mat@example.com",
+		DisplayName:    "Concurrent Mat",
+		PasswordHash:   "x",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+
+	// Launch two goroutines that call MaterializeDefaultIdentity simultaneously.
+	const goroutines = 2
+	results := make([]string, goroutines)
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+	// Use a barrier so both goroutines hit the store method at the same time.
+	var ready sync.WaitGroup
+	ready.Add(goroutines)
+	start := make(chan struct{})
+
+	for i := 0; i < goroutines; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ready.Done()
+			<-start
+			results[i], errs[i] = s.Meta().MaterializeDefaultIdentity(ctx, p.ID)
+		}()
+	}
+	ready.Wait()
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: unexpected error: %v", i, err)
+		}
+	}
+	if results[0] == "" || results[1] == "" {
+		t.Fatalf("one or both goroutines returned empty id: %q %q", results[0], results[1])
+	}
+	if results[0] != results[1] {
+		t.Errorf("goroutines returned different ids: %q vs %q", results[0], results[1])
+	}
+
+	// Verify exactly one row was inserted (may_delete=false for this principal).
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgx pool: %v", err)
+	}
+	defer pool.Close()
+	var rowCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM jmap_identities WHERE principal_id = $1 AND may_delete = false`,
+		int64(p.ID)).Scan(&rowCount); err != nil {
+		t.Fatalf("count query: %v", err)
+	}
+	if rowCount != 1 {
+		t.Errorf("jmap_identities default rows = %d; want exactly 1", rowCount)
 	}
 }
