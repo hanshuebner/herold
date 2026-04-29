@@ -17,7 +17,7 @@ vi.mock('./store.svelte', () => ({
       {
         id: 'm1',
         conversationId: 'c1',
-        senderId: 'p2',
+        senderPrincipalId: 'p2',
         type: 'text',
         body: { html: '<p>Hello from Alice</p>', text: 'Hello from Alice' },
         inlineImages: [],
@@ -28,7 +28,7 @@ vi.mock('./store.svelte', () => ({
       {
         id: 'm2',
         conversationId: 'c1',
-        senderId: 'system',
+        senderPrincipalId: 'system',
         type: 'system',
         body: {
           html: '<p>Alice joined the space</p>',

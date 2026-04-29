@@ -165,7 +165,7 @@ describe('ChatStore', () => {
     const msg1: import('./types').Message = {
       id: 'm1',
       conversationId: 'c1',
-      senderId: 'p2',
+      senderPrincipalId: 'p2',
       type: 'text',
       body: { html: '<p>hello</p>', text: 'hello' },
       inlineImages: [],

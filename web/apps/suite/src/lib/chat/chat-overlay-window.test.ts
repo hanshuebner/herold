@@ -70,7 +70,7 @@ vi.mock('./store.svelte', () => ({
             {
               id: 'm1',
               conversationId: 'c1',
-              senderId: 'p2',
+              senderPrincipalId: 'p2',
               type: 'text',
               body: { html: '<p>Hey there</p>', text: 'Hey there' },
               inlineImages: [],

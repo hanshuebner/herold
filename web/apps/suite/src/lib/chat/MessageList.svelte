@@ -62,6 +62,19 @@
     });
   });
 
+  // Mark-read on first render and on each subsequent message arrival,
+  // so opening a conversation (especially in an overlay window where
+  // the user may never scroll) advances Membership.readThrough and the
+  // sidebar unread badge clears. Debounced via scheduleMarkRead.
+  $effect(() => {
+    const msgs = effectiveMessages;
+    const status = effectiveStatus;
+    untrack(() => {
+      if (status !== 'ready' || msgs.length === 0) return;
+      scheduleMarkRead();
+    });
+  });
+
   function handleScroll(): void {
     if (!scrollEl) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollEl;
@@ -137,19 +150,21 @@
     return result;
   });
 
-  function isMine(senderId: string): boolean {
-    return senderId === auth.principalId;
+  function isMine(senderPrincipalId: string): boolean {
+    return senderPrincipalId === auth.principalId;
   }
 
   /**
-   * Resolve a senderId to a display name. The server populates
+   * Resolve a senderPrincipalId to a display name. The server populates
    * conversation.members[i].displayName for every participant, so any
    * sender — DM peer or Space contributor — can be labelled by name
    * without leaking the principal id (REQ-CHAT-15).
    */
-  function senderName(senderId: string): string {
-    if (isMine(senderId)) return 'You';
-    const member = conversation.members.find((m) => m.principalId === senderId);
+  function senderName(senderPrincipalId: string): string {
+    if (isMine(senderPrincipalId)) return 'You';
+    const member = conversation.members.find(
+      (m) => m.principalId === senderPrincipalId,
+    );
     if (member?.displayName) return member.displayName;
     // Final fallback: for a DM the conversation name is already the other
     // participant's display name (server-projected per viewer); for a
@@ -220,23 +235,23 @@
       {#each group.messages as msg (msg.id)}
         <div
           class="message"
-          class:mine={isMine(msg.senderId)}
+          class:mine={isMine(msg.senderPrincipalId)}
           class:system={msg.type === 'system'}
           id="msg-{msg.id}"
         >
           {#if msg.type === 'system'}
             <p class="system-text">{msg.body.text}</p>
           {:else}
-            <div class="bubble-row" class:mine={isMine(msg.senderId)}>
-              {#if !isMine(msg.senderId)}
+            <div class="bubble-row" class:mine={isMine(msg.senderPrincipalId)}>
+              {#if !isMine(msg.senderPrincipalId)}
                 <span class="avatar" aria-hidden="true">
-                  {senderName(msg.senderId).charAt(0).toUpperCase()}
+                  {senderName(msg.senderPrincipalId).charAt(0).toUpperCase()}
                 </span>
               {/if}
 
-              <div class="bubble" class:mine={isMine(msg.senderId)}>
-                {#if !isMine(msg.senderId)}
-                  <span class="sender-name">{senderName(msg.senderId)}</span>
+              <div class="bubble" class:mine={isMine(msg.senderPrincipalId)}>
+                {#if !isMine(msg.senderPrincipalId)}
+                  <span class="sender-name">{senderName(msg.senderPrincipalId)}</span>
                 {/if}
 
                 {#if msg.deleted}
@@ -253,7 +268,7 @@
                   {#if msg.editedAt}
                     <span class="edited" title="Edited: {new Date(msg.editedAt).toLocaleString()}">(edited)</span>
                   {/if}
-                  {#if conversation.kind === 'dm' && isMine(msg.senderId) && otherReadThrough === msg.id}
+                  {#if conversation.kind === 'dm' && isMine(msg.senderPrincipalId) && otherReadThrough === msg.id}
                     <span class="read-receipt">Read</span>
                   {/if}
                 </div>

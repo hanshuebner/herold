@@ -300,7 +300,7 @@ class ChatStore {
     const optimisticMsg: Message = {
       id: tempId,
       conversationId,
-      senderId: auth.principalId ?? '',
+      senderPrincipalId: auth.principalId ?? '',
       type: 'text',
       body: { html, text },
       inlineImages: [],
@@ -640,8 +640,13 @@ class ChatStore {
     _newState: string,
     accountId: string,
   ): Promise<void> {
+    // The handler must run for any session that has chat open, even if
+    // the user is only looking at floating overlay windows (and so
+    // openConversationId is null). Without #messageState we have no
+    // valid sinceState anchor — that case is bridged by loadMessages /
+    // loadOverlayMessages which seed the field on first fetch.
     const openId = this.openConversationId;
-    if (!openId || !this.#messageState) return;
+    if (!this.#messageState) return;
 
     try {
       const { responses } = await jmap.batch((b) => {
@@ -856,6 +861,14 @@ class ChatStore {
       const result = getResp[1] as { state: string; list: Message[] };
       // Query returns newest-first; reverse for display (oldest first).
       const msgs = result.list.slice().reverse();
+
+      // Seed #messageState if it is not already known so the
+      // EventSource-driven Message/changes path has a valid sinceState
+      // anchor. Without this an overlay-only session never picks up
+      // pushed messages until a full reload.
+      if (!this.#messageState && result.state) {
+        this.#messageState = result.state;
+      }
 
       this.overlayMessages.set(conversationId, {
         messages: msgs,
@@ -1170,7 +1183,7 @@ class ChatStore {
 
     if (
       shouldPlayChatCue({
-        senderId: message.senderId,
+        senderId: message.senderPrincipalId,
         myPrincipalId: auth.principalId,
         conversationMuted,
         conversationFocused,

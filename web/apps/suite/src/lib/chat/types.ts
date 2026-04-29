@@ -38,7 +38,13 @@ export interface Conversation {
 export interface Message {
   id: string;
   conversationId: string;
-  senderId: string; // PrincipalId
+  /**
+   * Server wire field is `senderPrincipalId`; aliasing it locally as
+   * `senderId` previously meant every reload-served message had an
+   * undefined sender, which broke `isMine` and pinned every bubble to
+   * the other-party visual.
+   */
+  senderPrincipalId: string;
   type: 'text' | 'image' | 'system';
   body: { html: string; text: string };
   inlineImages: string[]; // BlobIds
