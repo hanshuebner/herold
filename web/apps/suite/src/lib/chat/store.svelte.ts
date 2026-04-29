@@ -733,23 +733,32 @@ class ChatStore {
   }
 
   async #syncMessageChanges(
-    _newState: string,
+    newState: string,
     accountId: string,
   ): Promise<void> {
     // The handler must run for any session that has chat open, even if
     // the user is only looking at floating overlay windows (and so
-    // openConversationId is null). Without #messageState we have no
-    // valid sinceState anchor — that case is bridged by loadMessages /
-    // loadOverlayMessages which seed the field on first fetch.
+    // openConversationId is null). Without a prior #messageState we
+    // have no valid sinceState anchor; loadMessages / loadOverlayMessages
+    // seed the field when the user opens a chat, but a session that
+    // never opened one would otherwise stay null forever and miss every
+    // push (including the auto-open trigger). Seed lazily on first push
+    // by accepting the EventSource's announced state as the baseline,
+    // mirroring the pattern in #syncMembershipChanges. The very first
+    // message that arrives during the seed is not auto-popped — the
+    // unread badge on the conversation row still updates via
+    // Conversation/changes, so the user sees that something arrived;
+    // every subsequent push diffs correctly and auto-pops as expected.
     const openId = this.openConversationId;
     // [chat-debug] log sync entry — temporary.
     console.log('[chat-debug] #syncMessageChanges entry', {
       sinceState: this.#messageState,
-      newStateFromPush: _newState,
+      newStateFromPush: newState,
       openId,
     });
     if (!this.#messageState) {
-      console.log('[chat-debug] #syncMessageChanges: no #messageState, exiting (this is expected before any chat is opened)');
+      console.log('[chat-debug] #syncMessageChanges: seeding #messageState from push and skipping diff for this round');
+      this.#messageState = newState;
       return;
     }
 
