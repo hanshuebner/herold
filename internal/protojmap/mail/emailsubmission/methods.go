@@ -3,6 +3,8 @@ package emailsubmission
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/auth/sendpolicy"
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/queue"
@@ -31,10 +34,12 @@ type IdentityResolver interface {
 
 // handlerSet binds the EmailSubmission handlers to their dependencies.
 type handlerSet struct {
-	store    store.Store
-	queue    Submitter
-	clk      clock.Clock
-	identity IdentityResolver
+	store            store.Store
+	queue            Submitter
+	clk              clock.Clock
+	identity         IdentityResolver
+	externalSubmit   ExternalSubmitter // nil when external submission is disabled
+	externalRouter   ExternalRouter    // nil when external submission is disabled
 }
 
 func stateString(seq int64) string { return strconv.FormatInt(seq, 10) }
@@ -88,7 +93,13 @@ func (h *handlerSet) listSubmissions(ctx context.Context, p store.Principal) ([]
 // queue rows have already been GC'd (terminal-state destroy path),
 // rowToJMAP receives an empty slice — the submission renders with no
 // recipients and a synthesised "final" undoStatus.
+// For external submissions (r.External == true) no queue rows exist; the
+// status is synthesised directly from the stored UndoStatus and
+// DeliveryStatus properties.
 func (h *handlerSet) renderSubmission(ctx context.Context, r store.EmailSubmissionRow) (jmapEmailSubmission, error) {
+	if r.External {
+		return externalRowToJMAP(r), nil
+	}
 	qrows, err := h.store.Meta().ListQueueItems(ctx, store.QueueFilter{EnvelopeID: r.EnvelopeID})
 	if err != nil {
 		return jmapEmailSubmission{}, err
@@ -860,6 +871,25 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 			Description: fmt.Sprintf("blob read: %s", err)}
 	}
 	signingDomain := domainOf(identityEmail)
+	threadID := strconv.FormatUint(msg.ThreadID, 10)
+	now := s.h.clk.Now().UTC()
+	// SendAtUs records the user-visible sendAt for /get rendering. When
+	// the request supplied a future sendAt we persist it verbatim so
+	// the UTCDate the client provided is what /get returns; otherwise
+	// the row was an "immediate" send and SendAtUs == CreatedAtUs.
+	sendAtUs := now.UnixMicro()
+	if !sendAt.IsZero() {
+		sendAtUs = sendAt.UnixMicro()
+	}
+
+	// REQ-AUTH-EXT-SUBMIT-05: when the Identity carries external SMTP
+	// configuration, submit directly via extsubmit.Submitter and skip
+	// the local queue entirely.
+	if s.h.externalRouter != nil && s.h.externalSubmit != nil &&
+		s.h.externalRouter.HasExternalSubmission(ctx, p.ID, in.IdentityID) {
+		return s.h.processCreateExternal(ctx, p, in.IdentityID, mid, in.EmailID, mailFrom, recipients, body, threadID, now, sendAtUs)
+	}
+
 	pid := p.ID
 	envID, err := s.h.queue.Submit(ctx, queue.Submission{
 		PrincipalID:   &pid,
@@ -873,16 +903,6 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 	if err != nil {
 		return jmapEmailSubmission{}, &setError{Type: "serverFail",
 			Description: fmt.Sprintf("queue submit: %s", err)}
-	}
-	threadID := strconv.FormatUint(msg.ThreadID, 10)
-	now := s.h.clk.Now().UTC()
-	// SendAtUs records the user-visible sendAt for /get rendering. When
-	// the request supplied a future sendAt we persist it verbatim so
-	// the UTCDate the client provided is what /get returns; otherwise
-	// the row was an "immediate" send and SendAtUs == CreatedAtUs.
-	sendAtUs := now.UnixMicro()
-	if !sendAt.IsZero() {
-		sendAtUs = sendAt.UnixMicro()
 	}
 	row := store.EmailSubmissionRow{
 		ID:          renderSubmissionID(envID),
@@ -908,6 +928,101 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 
 	rows, _ := s.h.store.Meta().ListQueueItems(ctx, store.QueueFilter{EnvelopeID: envID})
 	return rowToJMAP(rows, in.IdentityID, in.EmailID, threadID), nil
+}
+
+// processCreateExternal handles the external-submission fork of processCreate.
+// It allocates a synthetic "ext:<hex>" EnvelopeID, calls extsubmit.Submitter,
+// maps the outcome to JMAP deliveryStatus / undoStatus, and persists the row
+// with External=true. No queue rows are created.
+//
+// Outcomes:
+//   - ok          → undoStatus=final, delivered=yes for every recipient
+//   - auth-failed → undoStatus=final, delivered=no; JMAPStateKindIdentity bumped
+//   - unreachable → undoStatus=final, delivered=no; JMAPStateKindIdentity bumped
+//   - permanent   → undoStatus=final, delivered=no
+//   - transient   → undoStatus=final, delivered=no (no local retry in v1)
+func (h *handlerSet) processCreateExternal(
+	ctx context.Context,
+	p store.Principal,
+	identityID jmapID,
+	emailMsgID store.MessageID,
+	emailWireID jmapID,
+	mailFrom string,
+	recipients []string,
+	body []byte,
+	threadID string,
+	now time.Time,
+	sendAtUs int64,
+) (jmapEmailSubmission, *setError) {
+	// Allocate a synthetic EnvelopeID in the form "ext:<hex16>" using
+	// crypto/rand so it is globally unique and cannot collide with
+	// queue-generated IDs.
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return jmapEmailSubmission{}, &setError{Type: "serverFail",
+			Description: fmt.Sprintf("ext envID: %s", err)}
+	}
+	envID := store.EnvelopeID("ext:" + hex.EncodeToString(raw[:]))
+
+	cfg, err := h.externalRouter.SubmissionConfig(ctx, p.ID, identityID)
+	if err != nil {
+		return jmapEmailSubmission{}, &setError{Type: "serverFail",
+			Description: fmt.Sprintf("ext submission config: %s", err)}
+	}
+
+	env := extsubmit.Envelope{
+		MailFrom:      mailFrom,
+		RcptTo:        recipients,
+		Body:          bytes.NewReader(body),
+		CorrelationID: renderSubmissionID(envID),
+	}
+	outcome := h.externalSubmit.Submit(ctx, cfg, env)
+
+	// Bump identity push state on auth/network failures so JMAP push
+	// clients observe the identity-state transition.
+	if outcome.State == extsubmit.OutcomeAuthFailed || outcome.State == extsubmit.OutcomeUnreachable {
+		_ = h.externalRouter.BumpIdentityPushState(ctx, p.ID)
+	}
+
+	// Map outcome to undoStatus. All external outcomes are final — there
+	// is no undo once the wire transaction has completed or been attempted.
+	udoSt := string(undoStatusFinal)
+
+	extState := string(outcome.State)
+	extDiag := outcome.Diagnostic
+
+	props := externalSubmissionProperties{
+		RcptTo:   recipients,
+		ExtState: extState,
+		ExtDiag:  extDiag,
+		MailFrom: mailFrom,
+	}
+	propsJSON, _ := json.Marshal(props)
+
+	row := store.EmailSubmissionRow{
+		ID:          renderSubmissionID(envID),
+		EnvelopeID:  envID,
+		PrincipalID: p.ID,
+		IdentityID:  identityID,
+		EmailID:     emailMsgID,
+		ThreadID:    threadID,
+		SendAtUs:    sendAtUs,
+		CreatedAtUs: now.UnixMicro(),
+		UndoStatus:  udoSt,
+		Properties:  propsJSON,
+		External:    true,
+	}
+	if err := h.store.Meta().InsertEmailSubmission(ctx, row); err != nil {
+		return jmapEmailSubmission{}, &setError{Type: "serverFail",
+			Description: fmt.Sprintf("persist ext submission: %s", err)}
+	}
+
+	// Seed-on-send (REQ-MAIL-11g): fire-and-forget.
+	if msg, mErr := h.store.Meta().GetMessage(ctx, emailMsgID); mErr == nil {
+		go h.seedRecipientsOnSend(context.Background(), p, msg, recipients)
+	}
+
+	return externalRowToJMAP(row), nil
 }
 
 func (s setHandler) processUpdate(ctx context.Context, p store.Principal, id jmapID, raw json.RawMessage) *setError {
@@ -972,6 +1087,17 @@ func (s setHandler) processDestroy(ctx context.Context, p store.Principal, id jm
 	env, ok := parseSubmissionID(id)
 	if !ok {
 		return &setError{Type: "notFound"}
+	}
+	// REQ-AUTH-EXT-SUBMIT-05: external rows carry External=true and have no
+	// queue rows. Destroy is not semantically "undo" — the wire transaction
+	// already completed — so we return cannotUnsend per the design decision.
+	// The client may still call destroy to remove the audit row; for v1 we
+	// surface cannotUnsend and leave the row in place so the delivery
+	// evidence is preserved.
+	subRow, subErr := s.h.store.Meta().GetEmailSubmission(ctx, id)
+	if subErr == nil && subRow.External {
+		return &setError{Type: "cannotUnsend",
+			Description: "external submission cannot be undone after the wire transaction completed"}
 	}
 	rows, err := s.h.store.Meta().ListQueueItems(ctx, store.QueueFilter{
 		EnvelopeID:  env,

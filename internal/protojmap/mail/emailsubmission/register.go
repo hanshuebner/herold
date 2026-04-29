@@ -18,11 +18,15 @@ const capabilitySubmission protojmap.CapabilityID = "urn:ietf:params:jmap:submis
 // Register installs the EmailSubmission/* handlers on reg under the
 // dedicated submission capability. The submitter argument is typically
 // a *queue.Queue from the boot path; tests inject a fake.
+// extSub and extRouter are optional: pass non-nil to enable external
+// SMTP submission routing (REQ-AUTH-EXT-SUBMIT-05).
 func Register(
 	reg *protojmap.CapabilityRegistry,
 	st store.Store,
 	q *queue.Queue,
 	idStore *identity.Store,
+	extSub ExternalSubmitter,
+	extRouter ExternalRouter,
 	logger *slog.Logger,
 	clk clock.Clock,
 ) {
@@ -31,7 +35,7 @@ func Register(
 	if clk == nil {
 		clk = clock.NewReal()
 	}
-	registerWith(reg, st, queueAsSubmitter{q: q}, identityAdapter{store: idStore}, clk)
+	registerWith(reg, st, queueAsSubmitter{q: q}, identityAdapter{store: idStore}, extSub, extRouter, clk)
 }
 
 // RegisterWith is the test-friendly variant that accepts injected
@@ -43,18 +47,20 @@ func RegisterWith(
 	idr IdentityResolver,
 	clk clock.Clock,
 ) {
-	registerWith(reg, st, sub, idr, clk)
+	registerWith(reg, st, sub, idr, nil, nil, clk)
 }
 
-func registerWith(reg *protojmap.CapabilityRegistry, st store.Store, sub Submitter, idr IdentityResolver, clk clock.Clock) {
+func registerWith(reg *protojmap.CapabilityRegistry, st store.Store, sub Submitter, idr IdentityResolver, extSub ExternalSubmitter, extRouter ExternalRouter, clk clock.Clock) {
 	if clk == nil {
 		clk = clock.NewReal()
 	}
 	h := &handlerSet{
-		store:    st,
-		queue:    sub,
-		clk:      clk,
-		identity: idr,
+		store:          st,
+		queue:          sub,
+		clk:            clk,
+		identity:       idr,
+		externalSubmit: extSub,
+		externalRouter: extRouter,
 	}
 	reg.Register(capabilitySubmission, getHandler{h: h})
 	reg.Register(capabilitySubmission, changesHandler{h: h})

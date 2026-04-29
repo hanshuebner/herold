@@ -1879,6 +1879,7 @@ func composeAdminAndUI(
 	// provider that EmailSubmission's Register needs to resolve
 	// per-identity send-from addresses.
 	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk),
+		nil, nil, // extSub, extRouter: wired in commit 4 when external-submission is configured
 		logger.With("subsystem", "jmap-emailsubmission"), clk)
 	// SeenAddress (REQ-MAIL-11e..m): recipient autocomplete history, exposed
 	// under urn:ietf:params:jmap:mail (no new capability URI needed).

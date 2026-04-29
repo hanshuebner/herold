@@ -3,7 +3,9 @@ package emailsubmission
 import (
 	"context"
 
+	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/queue"
+	"github.com/hanshuebner/herold/internal/store"
 )
 
 // Submitter is the narrow seam EmailSubmission/set uses to dispatch a
@@ -27,6 +29,25 @@ import (
 type Submitter interface {
 	Submit(ctx context.Context, sub queue.Submission) (queue.EnvelopeID, error)
 	Cancel(ctx context.Context, env queue.EnvelopeID) (cancelled, inflight int, err error)
+}
+
+// ExternalSubmitter is the narrow seam EmailSubmission/set uses to dispatch
+// a new submission through an external SMTP relay when the Identity has an
+// external submission configuration. Production wires *extsubmit.Submitter;
+// tests inject a fake. The interface carries only Submit: there is no Cancel
+// for external submissions (REQ-AUTH-EXT-SUBMIT-05: no undo once the wire
+// transaction has completed).
+type ExternalSubmitter interface {
+	Submit(ctx context.Context, sub store.IdentitySubmission, env extsubmit.Envelope) extsubmit.Outcome
+}
+
+// ExternalRouter provides the HasExternalSubmission and SubmissionConfig
+// predicates so EmailSubmission/set can decide whether to route through the
+// external submitter. Production wires *identity.Store; tests inject a stub.
+type ExternalRouter interface {
+	HasExternalSubmission(ctx context.Context, pid store.PrincipalID, identityJMAPID string) bool
+	SubmissionConfig(ctx context.Context, pid store.PrincipalID, identityJMAPID string) (store.IdentitySubmission, error)
+	BumpIdentityPushState(ctx context.Context, pid store.PrincipalID) error
 }
 
 // queueAsSubmitter adapts *queue.Queue to the Submitter interface.

@@ -1,6 +1,7 @@
 package emailsubmission
 
 import (
+	"encoding/json"
 	"strconv"
 	"time"
 
@@ -125,6 +126,69 @@ func rowToJMAP(rows []store.QueueItem, identityID jmapID, emailID jmapID, thread
 		sub.UndoStatus = undoStatusPending
 	default:
 		sub.UndoStatus = undoStatusPending
+	}
+	return sub
+}
+
+// externalSubmissionProperties is the JSON shape stored in
+// EmailSubmissionRow.Properties for external-submission rows. It carries the
+// per-recipient list and the diagnostic returned by extsubmit.Submitter so the
+// /get path can reconstruct deliveryStatus without touching the queue.
+type externalSubmissionProperties struct {
+	RcptTo    []string `json:"rcptTo,omitempty"`
+	ExtState  string   `json:"extState,omitempty"`
+	ExtDiag   string   `json:"extDiag,omitempty"`
+	MailFrom  string   `json:"mailFrom,omitempty"`
+}
+
+// externalRowToJMAP converts an External=true EmailSubmissionRow into the
+// wire-form jmapEmailSubmission without consulting the queue. The
+// deliveryStatus for every recipient is synthesised from the stored outcome:
+// "ok" maps to delivered=yes, all other states to delivered=no with the
+// diagnostic as the smtpReply.
+func externalRowToJMAP(r store.EmailSubmissionRow) jmapEmailSubmission {
+	var props externalSubmissionProperties
+	if len(r.Properties) > 0 {
+		_ = json.Unmarshal(r.Properties, &props)
+	}
+	sendAt := time.UnixMicro(r.SendAtUs).UTC().Format(time.RFC3339)
+
+	sub := jmapEmailSubmission{
+		ID:         renderSubmissionID(r.EnvelopeID),
+		IdentityID: r.IdentityID,
+		EmailID:    renderEmailID(r.EmailID),
+		ThreadID:   r.ThreadID,
+		SendAt:     sendAt,
+		UndoStatus: undoStatus(r.UndoStatus),
+		DSNBlobIDs: []jmapID{},
+		MDNBlobIDs: []jmapID{},
+	}
+	if len(props.RcptTo) > 0 || props.MailFrom != "" {
+		env := jmapEnvelope{
+			MailFrom: jmapAddress{Email: props.MailFrom},
+		}
+		for _, rcpt := range props.RcptTo {
+			env.RcptTo = append(env.RcptTo, jmapAddress{Email: rcpt})
+		}
+		sub.Envelope = &env
+	}
+	if len(props.RcptTo) > 0 {
+		sub.DeliveryStatus = make(map[string]jmapDeliveryStatus, len(props.RcptTo))
+		for _, rcpt := range props.RcptTo {
+			var ds jmapDeliveryStatus
+			ds.Displayed = "unknown"
+			if props.ExtState == "ok" {
+				ds.Delivered = "yes"
+				ds.SMTPReply = "250 ok"
+			} else {
+				ds.Delivered = "no"
+				ds.SMTPReply = props.ExtDiag
+				if ds.SMTPReply == "" {
+					ds.SMTPReply = props.ExtState
+				}
+			}
+			sub.DeliveryStatus[rcpt] = ds
+		}
 	}
 	return sub
 }
