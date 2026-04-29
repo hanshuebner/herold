@@ -15,7 +15,7 @@ Mapping between Gmail's user-facing concepts and JMAP objects (RFC 8621 §1, §4
 | Important | `Email.keywords["$important"]` | Non-standard; the suite treats as advisory only. |
 | Snooze | Server-side: `$snoozed` keyword + `snoozedUntil` field | The suite requires herold to expose this; see `../notes/server-contract.md`. |
 | Filter / Rule | Sieve script via RFC 9007 | Stored on the server; the suite authors them through a UI. |
-| From-address / alias | `Identity` | The suite surfaces all `Identity` objects in the From picker. |
+| From-address / alias | `Identity` | The suite surfaces all `Identity` objects in the From picker. External-account Identities (`02-mail-basics.md` § External mail accounts, deferred) appear here too, grouped by their JMAP account. |
 
 ## Requirements
 

@@ -42,7 +42,7 @@ The following are intentionally cut. Each is a defensible decision; the cut keep
 | Filters management | Lives in `04-filters.md`'s own UI; not duplicated in settings. (The settings panel can carry a "Manage filters →" link.) |
 | Labels management | Same — inline in the sidebar plus a dedicated label-management dialog from `03-labels.md`. |
 | Notifications | Browser-push notifications cut entirely for v1 (NG2-adjacent: the suite is online-only; push notifications require service worker). Tab-title unread count is on always; cannot be disabled. |
-| Per-account preferences (multi-account) | Single account in v1 (NG3). |
+| Per-account preferences (multi-account) | Single account in v1 (NG3). Multi-account support via external mail accounts (`02-mail-basics.md` § External mail accounts) is spec'd-but-deferred — when implemented, it brings its own settings section per REQ-MAIL-EXT-13. |
 | Reading-pane location toggle (right / below / off) | One layout in v1: three-pane with reading on right (`09-ui-layout.md`). Revisit if capture data shows users want it. |
 | Compose default mode (plain / HTML) | Determined per-message by what the user types; if the body has no formatting on send, plain is sent; otherwise HTML. No global toggle. |
 | Auto-advance after archive (next / list) | Pinned to "next thread" by gmail convention; cut the toggle. Revisit on user feedback. |
