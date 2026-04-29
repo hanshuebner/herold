@@ -7,36 +7,39 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
-// currentConversationState returns the JMAP state string for the
-// principal's Conversation datatype: the decimal of
-// JMAPStates.Conversation.
+// Chat state values are derived from the per-principal change-feed max
+// seq for each entity kind, mirroring the Email/Mailbox/Thread pattern
+// (see internal/protojmap/mail/email/state.go). This matters for the
+// EventSource push: collectStateMap in protojmap/push.go also reports
+// the change-feed seq for these types, so a client comparing the
+// pushed state against its cached state from Conversation/get will see
+// the values move in lockstep. The previous implementation read the
+// jmap_states.conversation_state column, which nothing increments, so
+// every chat /get response advertised state="0" forever and the push
+// loop's matched-but-state-unchanged early-return masked every advance.
+
 func currentConversationState(ctx context.Context, meta store.Metadata, pid store.PrincipalID) (string, error) {
-	st, err := meta.GetJMAPStates(ctx, pid)
+	seq, err := meta.GetMaxChangeSeqForKind(ctx, pid, store.EntityKindConversation)
 	if err != nil {
 		return "", err
 	}
-	return strconv.FormatInt(st.Conversation, 10), nil
+	return strconv.FormatUint(uint64(seq), 10), nil
 }
 
-// currentMessageState returns the JMAP state string for the principal's
-// chat Message datatype (distinct from email-Email state per the
-// dual-meaning split in store/types_chat.go).
 func currentMessageState(ctx context.Context, meta store.Metadata, pid store.PrincipalID) (string, error) {
-	st, err := meta.GetJMAPStates(ctx, pid)
+	seq, err := meta.GetMaxChangeSeqForKind(ctx, pid, store.EntityKindChatMessage)
 	if err != nil {
 		return "", err
 	}
-	return strconv.FormatInt(st.ChatMessage, 10), nil
+	return strconv.FormatUint(uint64(seq), 10), nil
 }
 
-// currentMembershipState returns the JMAP state string for the
-// principal's Membership datatype.
 func currentMembershipState(ctx context.Context, meta store.Metadata, pid store.PrincipalID) (string, error) {
-	st, err := meta.GetJMAPStates(ctx, pid)
+	seq, err := meta.GetMaxChangeSeqForKind(ctx, pid, store.EntityKindMembership)
 	if err != nil {
 		return "", err
 	}
-	return strconv.FormatInt(st.Membership, 10), nil
+	return strconv.FormatUint(uint64(seq), 10), nil
 }
 
 // parseState decodes a client-supplied state string into the integer

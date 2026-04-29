@@ -199,11 +199,12 @@ func (h *msgChangesHandler) Execute(ctx context.Context, args json.RawMessage) (
 	if !ok {
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "unparseable sinceState")
 	}
-	st, err := h.h.store.Meta().GetJMAPStates(ctx, pid)
+	currentSeq, err := h.h.store.Meta().GetMaxChangeSeqForKind(ctx, pid, store.EntityKindChatMessage)
 	if err != nil {
 		return nil, serverFail(err)
 	}
-	newState := stateFromCounter(st.ChatMessage)
+	current := int64(currentSeq)
+	newState := stateFromCounter(current)
 	resp := msgChangesResponse{
 		AccountID: string(protojmap.AccountIDForPrincipal(pid)),
 		OldState:  req.SinceState,
@@ -212,10 +213,10 @@ func (h *msgChangesHandler) Execute(ctx context.Context, args json.RawMessage) (
 		Updated:   []jmapID{},
 		Destroyed: []jmapID{},
 	}
-	if since == st.ChatMessage {
+	if since == current {
 		return resp, nil
 	}
-	if since > st.ChatMessage {
+	if since > current {
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "sinceState is in the future")
 	}
 	created, updated, destroyed, ferr := walkChatChangeFeed(ctx, h.h.store.Meta(), pid, store.EntityKindChatMessage, since)

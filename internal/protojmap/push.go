@@ -243,6 +243,12 @@ func (s *Server) collectStateMap(ctx context.Context, p store.Principal, types m
 		{"Mailbox", store.EntityKindMailbox},
 		{"Email", store.EntityKindEmail},
 		{"Thread", store.EntityKindEmail}, // Threads are derived from Email mutations.
+		// Chat datatypes share the same per-principal change feed; the
+		// state value reported in the StateChange payload is the max
+		// change-feed seq for that EntityKind, mirroring the Email path.
+		{"Conversation", store.EntityKindConversation},
+		{"Message", store.EntityKindChatMessage},
+		{"Membership", store.EntityKindMembership},
 	}
 	for _, fk := range feedKinds {
 		if !matchesEventSourceTypeName(types, fk.typeName) {
@@ -357,6 +363,12 @@ func entityKindToJMAPType(k store.EntityKind) string {
 		return "Identity"
 	case store.EntityKindVacationResponse:
 		return "VacationResponse"
+	case store.EntityKindConversation:
+		return "Conversation"
+	case store.EntityKindChatMessage:
+		return "Message"
+	case store.EntityKindMembership:
+		return "Membership"
 	default:
 		return ""
 	}
