@@ -149,7 +149,13 @@ function collapseQuotedRegions(fragment: DocumentFragment): void {
   const details = owner.createElement('details');
   details.setAttribute('class', 'herold-quoted');
   const summary = owner.createElement('summary');
-  summary.textContent = 'Show trimmed content';
+  // The visible label ("···" / "Hide trimmed content") is supplied by the
+  // CSS ::before pseudo-element so that it toggles with the details[open]
+  // state without JavaScript. The textContent must be empty; setting it to
+  // the label text caused "···Show trimmed content" / "Hide trimmed
+  // contentShow trimmed content" to appear (both the pseudo-element text
+  // and the node text rendered side-by-side).
+  summary.setAttribute('aria-label', 'Show trimmed content');
   details.appendChild(summary);
   candidate.parentNode?.insertBefore(details, candidate);
   details.appendChild(candidate);

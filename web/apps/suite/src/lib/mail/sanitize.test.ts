@@ -106,7 +106,10 @@ describe('sanitizeHtml — quoted-history collapse', () => {
       '<blockquote>Original message body.</blockquote>';
     const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
     expect(body).toContain('<details class="herold-quoted">');
-    expect(body).toContain('<summary>Show trimmed content</summary>');
+    expect(body).toContain('<summary aria-label="Show trimmed content">');
+    // The visual label is provided entirely by CSS ::before; the summary
+    // element itself must be empty to avoid "···Show trimmed content" doubling.
+    expect(body).not.toContain('>Show trimmed content<');
     expect(body).toContain('<blockquote>Original message body.</blockquote>');
     expect(body.indexOf('My reply.')).toBeLessThan(body.indexOf('<details'));
   });
