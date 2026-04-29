@@ -176,6 +176,13 @@ func Run(t *testing.T, f Factory) {
 		// -- re #47: per-member change-feed fanout --------------------
 		{"ChatChangeFeed_InsertMessage_FansToAllMembers", testChatChangeFeedInsertMessageFansToAllMembers},
 		{"ChatChangeFeed_InsertMembership_FansToExistingMembers", testChatChangeFeedInsertMembershipFansToExistingMembers},
+		// -- re #47: DM server-side deduplication ---------------------
+		{"FindDMBetween_NotFound_WhenNoDM", testFindDMBetweenNotFound},
+		{"FindDMBetween_Found_AfterInsertDM", testFindDMBetweenFound},
+		{"FindDMBetween_Symmetric_BothOrders", testFindDMBetweenSymmetric},
+		{"InsertDMConversation_ReturnsConflict_OnDuplicate", testInsertDMConversationConflictOnDuplicate},
+		{"InsertDMConversation_SelfDM_Rejected", testInsertDMConversationSelfRejected},
+		{"InsertDMConversation_DistinctPairs", testInsertDMConversationDistinctPairs},
 		// -- Wave 3.8a JMAP PushSubscription (REQ-PROTO-120..122) --
 		{"PushSubscription_InsertGet_Roundtrip", testPushSubscriptionInsertGetRoundtrip},
 		{"PushSubscription_ListByPrincipal", testPushSubscriptionListByPrincipal},
@@ -5835,6 +5842,160 @@ func testChatChangeFeedInsertMembershipFansToExistingMembers(t *testing.T, s sto
 	}
 	if !carolSawMem {
 		t.Fatalf("carol's change feed missing her own membership entry: tail=%+v", carolTail)
+	}
+}
+
+// -- re #47: DM server-side deduplication --------------------------------
+
+// testFindDMBetweenNotFound verifies FindDMBetween returns (_, _, false,
+// nil) when no DM exists between the two principals.
+func testFindDMBetweenNotFound(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	alice := mustInsertPrincipal(t, s, "dm-notfound-alice@example.com")
+	bob := mustInsertPrincipal(t, s, "dm-notfound-bob@example.com")
+
+	_, _, found, err := s.Meta().FindDMBetween(ctx, alice.ID, bob.ID)
+	if err != nil {
+		t.Fatalf("FindDMBetween: %v", err)
+	}
+	if found {
+		t.Fatal("FindDMBetween: want false, got true")
+	}
+}
+
+// testFindDMBetweenFound verifies FindDMBetween returns the conversation
+// and its memberships after InsertDMConversation.
+func testFindDMBetweenFound(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	alice := mustInsertPrincipal(t, s, "dm-found-alice@example.com")
+	bob := mustInsertPrincipal(t, s, "dm-found-bob@example.com")
+
+	now := time.Now().Truncate(time.Microsecond)
+	c, members, err := s.Meta().InsertDMConversation(ctx, alice.ID, bob.ID, "bob@example.com", now)
+	if err != nil {
+		t.Fatalf("InsertDMConversation: %v", err)
+	}
+	if c.ID == 0 {
+		t.Fatal("InsertDMConversation returned zero conversation id")
+	}
+	if len(members) != 2 {
+		t.Fatalf("InsertDMConversation members: got %d, want 2", len(members))
+	}
+
+	got, gotMembers, found, err := s.Meta().FindDMBetween(ctx, alice.ID, bob.ID)
+	if err != nil {
+		t.Fatalf("FindDMBetween: %v", err)
+	}
+	if !found {
+		t.Fatal("FindDMBetween: want true, got false")
+	}
+	if got.ID != c.ID {
+		t.Errorf("FindDMBetween: conversation id = %d, want %d", got.ID, c.ID)
+	}
+	if len(gotMembers) != 2 {
+		t.Errorf("FindDMBetween: members count = %d, want 2", len(gotMembers))
+	}
+}
+
+// testFindDMBetweenSymmetric verifies FindDMBetween returns the same
+// result regardless of argument order.
+func testFindDMBetweenSymmetric(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	alice := mustInsertPrincipal(t, s, "dm-sym-alice@example.com")
+	bob := mustInsertPrincipal(t, s, "dm-sym-bob@example.com")
+
+	now := time.Now().Truncate(time.Microsecond)
+	c, _, err := s.Meta().InsertDMConversation(ctx, alice.ID, bob.ID, "bob", now)
+	if err != nil {
+		t.Fatalf("InsertDMConversation: %v", err)
+	}
+
+	// alice -> bob
+	got1, _, found1, err := s.Meta().FindDMBetween(ctx, alice.ID, bob.ID)
+	if err != nil {
+		t.Fatalf("FindDMBetween alice->bob: %v", err)
+	}
+	// bob -> alice
+	got2, _, found2, err := s.Meta().FindDMBetween(ctx, bob.ID, alice.ID)
+	if err != nil {
+		t.Fatalf("FindDMBetween bob->alice: %v", err)
+	}
+	if !found1 || !found2 {
+		t.Fatalf("FindDMBetween: found = (%v, %v), both want true", found1, found2)
+	}
+	if got1.ID != c.ID || got2.ID != c.ID {
+		t.Errorf("FindDMBetween ids = (%d, %d), want %d", got1.ID, got2.ID, c.ID)
+	}
+}
+
+// testInsertDMConversationConflictOnDuplicate verifies that a second
+// InsertDMConversation call for the same pair returns ErrConflict.
+func testInsertDMConversationConflictOnDuplicate(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	alice := mustInsertPrincipal(t, s, "dm-dup-alice@example.com")
+	bob := mustInsertPrincipal(t, s, "dm-dup-bob@example.com")
+
+	now := time.Now().Truncate(time.Microsecond)
+	_, _, err := s.Meta().InsertDMConversation(ctx, alice.ID, bob.ID, "bob", now)
+	if err != nil {
+		t.Fatalf("first InsertDMConversation: %v", err)
+	}
+
+	_, _, err2 := s.Meta().InsertDMConversation(ctx, alice.ID, bob.ID, "bob", now)
+	if !errors.Is(err2, store.ErrConflict) {
+		t.Errorf("second InsertDMConversation: want ErrConflict, got %v", err2)
+	}
+}
+
+// testInsertDMConversationSelfRejected verifies that a self-DM returns
+// ErrInvalidArgument.
+func testInsertDMConversationSelfRejected(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	alice := mustInsertPrincipal(t, s, "dm-self-alice@example.com")
+
+	now := time.Now().Truncate(time.Microsecond)
+	_, _, err := s.Meta().InsertDMConversation(ctx, alice.ID, alice.ID, "alice", now)
+	if !errors.Is(err, store.ErrInvalidArgument) {
+		t.Errorf("self-DM: want ErrInvalidArgument, got %v", err)
+	}
+}
+
+// testInsertDMConversationDistinctPairs verifies that DMs between
+// different pairs are independent: alice<->bob and alice<->carol produce
+// two separate conversation rows.
+func testInsertDMConversationDistinctPairs(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	alice := mustInsertPrincipal(t, s, "dm-pairs-alice@example.com")
+	bob := mustInsertPrincipal(t, s, "dm-pairs-bob@example.com")
+	carol := mustInsertPrincipal(t, s, "dm-pairs-carol@example.com")
+
+	now := time.Now().Truncate(time.Microsecond)
+	ab, _, err := s.Meta().InsertDMConversation(ctx, alice.ID, bob.ID, "bob", now)
+	if err != nil {
+		t.Fatalf("InsertDMConversation alice<->bob: %v", err)
+	}
+	ac, _, err := s.Meta().InsertDMConversation(ctx, alice.ID, carol.ID, "carol", now)
+	if err != nil {
+		t.Fatalf("InsertDMConversation alice<->carol: %v", err)
+	}
+	if ab.ID == ac.ID {
+		t.Errorf("alice<->bob and alice<->carol share the same conversation id %d", ab.ID)
+	}
+
+	// Confirm FindDMBetween returns the correct row for each pair.
+	gotAB, _, foundAB, err := s.Meta().FindDMBetween(ctx, alice.ID, bob.ID)
+	if err != nil {
+		t.Fatalf("FindDMBetween alice<->bob: %v", err)
+	}
+	gotAC, _, foundAC, err := s.Meta().FindDMBetween(ctx, alice.ID, carol.ID)
+	if err != nil {
+		t.Fatalf("FindDMBetween alice<->carol: %v", err)
+	}
+	if !foundAB || gotAB.ID != ab.ID {
+		t.Errorf("alice<->bob: found=%v id=%d, want %d", foundAB, gotAB.ID, ab.ID)
+	}
+	if !foundAC || gotAC.ID != ac.ID {
+		t.Errorf("alice<->carol: found=%v id=%d, want %d", foundAC, gotAC.ID, ac.ID)
 	}
 }
 

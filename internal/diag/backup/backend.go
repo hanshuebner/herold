@@ -212,6 +212,8 @@ func rowsForTable(table string) (any, bool) {
 		return &ChatMessageRow{}, true
 	case "chat_blocks":
 		return &ChatBlockRow{}, true
+	case "chat_dm_pairs":
+		return &ChatDMPairRow{}, true
 	case "blob_refs":
 		return &BlobRefRow{}, true
 	case "push_subscription":

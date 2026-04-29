@@ -361,6 +361,169 @@ func TestConversation_DM_Get_BobSeesAliceName(t *testing.T) {
 	}
 }
 
+// -- DM deduplication (re #47) -----------------------------------------
+
+// TestConversation_DM_Dedup_SameAliceCreate asserts that alice creating
+// the same DM twice returns the same conversation id and exactly one row
+// in the store.
+func TestConversation_DM_Dedup_SameAliceCreate(t *testing.T) {
+	f := setupFixture(t)
+
+	id1, _ := createDM(t, f)
+	id2, _ := createDM(t, f)
+
+	if id1 != id2 {
+		t.Errorf("duplicate DM create returned distinct ids %q and %q, want same id", id1, id2)
+	}
+
+	// Confirm exactly one row exists.
+	rows, err := f.srv.Store.Meta().ListChatConversations(context.Background(), store.ChatConversationFilter{
+		Kind:            &[]string{store.ChatConversationKindDM}[0],
+		IncludeArchived: true,
+	})
+	if err != nil {
+		t.Fatalf("ListChatConversations: %v", err)
+	}
+	dmCount := 0
+	for _, c := range rows {
+		if c.Kind == store.ChatConversationKindDM {
+			dmCount++
+		}
+	}
+	if dmCount != 1 {
+		t.Errorf("store has %d DM conversation rows, want 1", dmCount)
+	}
+}
+
+// TestConversation_DM_Dedup_Symmetric asserts that bob creating a DM
+// with alice returns the same conversation id that alice's earlier DM
+// creation produced.
+func TestConversation_DM_Dedup_Symmetric(t *testing.T) {
+	f := setupFixture(t)
+
+	// Alice creates first.
+	id1, _ := createDM(t, f)
+
+	// Provision a key for bob.
+	bobKey := bobAPIKey(t, f)
+	bobAcct := string(protojmap.AccountIDForPrincipal(f.otherPID))
+
+	// Bob creates (symmetric pair: bob -> alice).
+	_, raw := invokeAs(t, f, bobKey, "Conversation/set", map[string]any{
+		"accountId": bobAcct,
+		"create": map[string]any{
+			"c1": map[string]any{
+				"kind":    "dm",
+				"members": []string{pidStr(f.pid)},
+			},
+		},
+	})
+	var setResp struct {
+		Created    map[string]map[string]any `json:"created"`
+		NotCreated map[string]any            `json:"notCreated"`
+	}
+	if err := json.Unmarshal(raw, &setResp); err != nil {
+		t.Fatalf("unmarshal bob create: %v: %s", err, raw)
+	}
+	if len(setResp.Created) != 1 {
+		t.Fatalf("bob create failed: notCreated=%+v", setResp.NotCreated)
+	}
+	id2, _ := setResp.Created["c1"]["id"].(string)
+
+	if id1 != id2 {
+		t.Errorf("alice created %q, bob created %q; want same DM id", id1, id2)
+	}
+
+	// One DM row in total.
+	rows, err := f.srv.Store.Meta().ListChatConversations(context.Background(), store.ChatConversationFilter{
+		Kind:            &[]string{store.ChatConversationKindDM}[0],
+		IncludeArchived: true,
+	})
+	if err != nil {
+		t.Fatalf("ListChatConversations: %v", err)
+	}
+	dmCount := 0
+	for _, c := range rows {
+		if c.Kind == store.ChatConversationKindDM {
+			dmCount++
+		}
+	}
+	if dmCount != 1 {
+		t.Errorf("store has %d DM rows, want 1", dmCount)
+	}
+}
+
+// TestConversation_DM_Dedup_ArchivedIsHit asserts that a second create
+// call returns the existing DM even if it is archived, rather than
+// creating a fresh non-archived row.
+func TestConversation_DM_Dedup_ArchivedIsHit(t *testing.T) {
+	f := setupFixture(t)
+
+	id1, _ := createDM(t, f)
+
+	// Archive the DM.
+	_, archRaw := f.invoke(t, "Conversation/set", map[string]any{
+		"accountId": string(protojmap.AccountIDForPrincipal(f.pid)),
+		"update": map[string]any{
+			id1: map[string]any{"isArchived": true},
+		},
+	})
+	var archResp struct {
+		Updated    map[string]any `json:"updated"`
+		NotUpdated map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(archRaw, &archResp); err != nil {
+		t.Fatalf("unmarshal archive: %v", err)
+	}
+	if _, ok := archResp.Updated[id1]; !ok {
+		t.Fatalf("archive update failed: %+v", archResp.NotUpdated)
+	}
+
+	// Create again — must return the archived row, not a new one.
+	id2, created := createDM(t, f)
+	if id1 != id2 {
+		t.Errorf("archived DM was not a dedup hit: first=%q second=%q", id1, id2)
+	}
+	isArchived, _ := created["isArchived"].(bool)
+	if !isArchived {
+		t.Errorf("dedup-returned DM should be archived; got isArchived=%v", isArchived)
+	}
+}
+
+// TestConversation_DM_Dedup_ThreeWay asserts that alice<->bob and
+// alice<->carol are distinct DMs — neither aliases the other.
+func TestConversation_DM_Dedup_ThreeWay(t *testing.T) {
+	f := setupFixture(t)
+
+	idBob, _ := createDM(t, f) // alice <-> bob
+
+	// alice <-> carol
+	_, rawCarol := f.invoke(t, "Conversation/set", map[string]any{
+		"accountId": string(protojmap.AccountIDForPrincipal(f.pid)),
+		"create": map[string]any{
+			"c1": map[string]any{
+				"kind":    "dm",
+				"members": []string{pidStr(f.thirdPID)},
+			},
+		},
+	})
+	var setResp struct {
+		Created    map[string]map[string]any `json:"created"`
+		NotCreated map[string]any            `json:"notCreated"`
+	}
+	if err := json.Unmarshal(rawCarol, &setResp); err != nil {
+		t.Fatalf("unmarshal alice<->carol: %v: %s", err, rawCarol)
+	}
+	if len(setResp.Created) != 1 {
+		t.Fatalf("alice<->carol failed: %+v", setResp.NotCreated)
+	}
+	idCarol, _ := setResp.Created["c1"]["id"].(string)
+
+	if idBob == idCarol {
+		t.Errorf("alice<->bob and alice<->carol share the same id %q", idBob)
+	}
+}
+
 // TestConversation_Members_HaveDisplayName asserts Bug-B fix: every
 // member entry in Conversation/get carries a non-empty displayName so
 // the client can label senders without a separate Principal/get call.

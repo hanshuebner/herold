@@ -1268,6 +1268,165 @@ func (m *metadata) HardDeleteChatMessage(ctx context.Context, id store.ChatMessa
 	})
 }
 
+// -- DM deduplication (re #47) ----------------------------------------
+
+func (m *metadata) FindDMBetween(ctx context.Context, a, b store.PrincipalID) (store.ChatConversation, []store.ChatMembership, bool, error) {
+	if a == b {
+		return store.ChatConversation{}, nil, false, nil
+	}
+	pidLo, pidHi := dmPairNormalizePG(a, b)
+	// Fast path: the chat_dm_pairs index (populated for DMs created after
+	// migration 0034). O(1) primary key lookup.
+	var convID int64
+	err := m.s.pool.QueryRow(ctx,
+		`SELECT conversation_id FROM chat_dm_pairs WHERE pid_lo = $1 AND pid_hi = $2`,
+		pidLo, pidHi).Scan(&convID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return store.ChatConversation{}, nil, false, mapErr(err)
+	}
+	if err == nil {
+		c, merr := m.GetChatConversation(ctx, store.ConversationID(convID))
+		if merr != nil {
+			return store.ChatConversation{}, nil, false, merr
+		}
+		members, merr := m.ListChatMembershipsByConversation(ctx, c.ID)
+		if merr != nil {
+			return store.ChatConversation{}, nil, false, merr
+		}
+		return c, members, true, nil
+	}
+	// Slow path: membership JOIN for pre-migration DM rows.
+	row := m.s.pool.QueryRow(ctx, `
+		SELECT `+chatConversationSelectColumnsPG+`
+		  FROM chat_conversations c
+		 WHERE c.kind = 'dm'
+		   AND EXISTS (SELECT 1 FROM chat_memberships WHERE conversation_id = c.id AND principal_id = $1)
+		   AND EXISTS (SELECT 1 FROM chat_memberships WHERE conversation_id = c.id AND principal_id = $2)
+		   AND (SELECT COUNT(*) FROM chat_memberships WHERE conversation_id = c.id) = 2
+		 ORDER BY c.id ASC
+		 LIMIT 1`,
+		int64(a), int64(b))
+	c, err := scanChatConversationPG(row)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return store.ChatConversation{}, nil, false, nil
+		}
+		return store.ChatConversation{}, nil, false, err
+	}
+	members, err := m.ListChatMembershipsByConversation(ctx, c.ID)
+	if err != nil {
+		return store.ChatConversation{}, nil, false, err
+	}
+	return c, members, true, nil
+}
+
+func (m *metadata) InsertDMConversation(ctx context.Context, creator, other store.PrincipalID, name string, now time.Time) (store.ChatConversation, []store.ChatMembership, error) {
+	if creator == other {
+		return store.ChatConversation{}, nil, fmt.Errorf("%w: cannot create a DM with yourself", store.ErrInvalidArgument)
+	}
+	var convID int64
+	var creatorMemID, otherMemID int64
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		pidLo, pidHi := dmPairNormalizePG(creator, other)
+		// Check for existing pair in the same tx (holds a row-level lock
+		// in Postgres REPEATABLE READ / SERIALIZABLE; in READ COMMITTED
+		// the subsequent INSERT on chat_dm_pairs fires the unique
+		// constraint as the safety net).
+		var existingConvID int64
+		chkErr := tx.QueryRow(ctx,
+			`SELECT conversation_id FROM chat_dm_pairs WHERE pid_lo = $1 AND pid_hi = $2`,
+			pidLo, pidHi).Scan(&existingConvID)
+		if chkErr != nil && !errors.Is(chkErr, pgx.ErrNoRows) {
+			return mapErr(chkErr)
+		}
+		if chkErr == nil {
+			return store.ErrConflict
+		}
+		var nameArg *string
+		if name != "" {
+			v := name
+			nameArg = &v
+		}
+		err := tx.QueryRow(ctx, `
+			INSERT INTO chat_conversations (kind, name, topic,
+			  created_by_principal_id, created_at_us, updated_at_us,
+			  last_message_at_us, message_count, is_archived, modseq,
+			  read_receipts_enabled, retention_seconds, edit_window_seconds)
+			VALUES ('dm', $1, NULL, $2, $3, $4, NULL, 0, FALSE, 1, TRUE, NULL, NULL)
+			RETURNING id`,
+			nameArg, int64(creator), usMicros(now), usMicros(now)).Scan(&convID)
+		if err != nil {
+			return mapErr(err)
+		}
+		// Insert chat_dm_pairs uniqueness row; unique constraint fires on race.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO chat_dm_pairs (pid_lo, pid_hi, conversation_id) VALUES ($1, $2, $3)`,
+			pidLo, pidHi, convID); err != nil {
+			return mapErr(err)
+		}
+		// Creator membership (owner).
+		err = tx.QueryRow(ctx, `
+			INSERT INTO chat_memberships (conversation_id, principal_id, role,
+			  joined_at_us, last_read_message_id, is_muted, mute_until_us,
+			  notifications_setting, modseq)
+			VALUES ($1, $2, 'owner', $3, NULL, FALSE, NULL, 'all', 1)
+			RETURNING id`,
+			convID, int64(creator), usMicros(now)).Scan(&creatorMemID)
+		if err != nil {
+			return mapErr(err)
+		}
+		// Other member membership.
+		err = tx.QueryRow(ctx, `
+			INSERT INTO chat_memberships (conversation_id, principal_id, role,
+			  joined_at_us, last_read_message_id, is_muted, mute_until_us,
+			  notifications_setting, modseq)
+			VALUES ($1, $2, 'member', $3, NULL, FALSE, NULL, 'all', 1)
+			RETURNING id`,
+			convID, int64(other), usMicros(now)).Scan(&otherMemID)
+		if err != nil {
+			return mapErr(err)
+		}
+		// Fan state-change rows to both principals.
+		for _, pid := range []store.PrincipalID{creator, other} {
+			if err := appendStateChange(ctx, tx, pid,
+				store.EntityKindConversation, uint64(convID), 0,
+				store.ChangeOpCreated, now); err != nil {
+				return err
+			}
+		}
+		for _, memID := range []int64{creatorMemID, otherMemID} {
+			for _, pid := range []store.PrincipalID{creator, other} {
+				if err := appendStateChange(ctx, tx, pid,
+					store.EntityKindMembership, uint64(memID), uint64(convID),
+					store.ChangeOpCreated, now); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return store.ChatConversation{}, nil, err
+	}
+	c, err := m.GetChatConversation(ctx, store.ConversationID(convID))
+	if err != nil {
+		return store.ChatConversation{}, nil, err
+	}
+	members, err := m.ListChatMembershipsByConversation(ctx, c.ID)
+	if err != nil {
+		return store.ChatConversation{}, nil, err
+	}
+	return c, members, nil
+}
+
+// dmPairNormalizePG returns (pidLo, pidHi) with pidLo < pidHi.
+func dmPairNormalizePG(a, b store.PrincipalID) (pidLo, pidHi int64) {
+	if a < b {
+		return int64(a), int64(b)
+	}
+	return int64(b), int64(a)
+}
+
 // -- Helpers ----------------------------------------------------------
 
 // conversationMemberIDsPG returns the principal_id of every current member

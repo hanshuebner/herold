@@ -534,11 +534,7 @@ func (h *handlerSet) createConversation(
 	}
 
 	name := strings.TrimSpace(in.Name)
-	if kind == store.ChatConversationKindDM && name == "" {
-		// Auto-name from the other member's display name (REQ-CHAT-02
-		// allows omission for DMs).
-		name = resolvePrincipalEmail(ctx, h.store.Meta(), memberIDs[0])
-	}
+	topic := strings.TrimSpace(in.Topic)
 	// JMAP server-side caps are byte-oriented per the spec (clients
 	// using non-ASCII names see fewer "characters" but the wire-form
 	// limit is bytes). Wave 2.9 sec audit #9.
@@ -548,7 +544,6 @@ func (h *handlerSet) createConversation(
 			Description: "name exceeds 256 bytes",
 		}, nil
 	}
-	topic := strings.TrimSpace(in.Topic)
 	if len(topic) > maxConversationTopicBytes {
 		return store.ChatConversation{}, nil, &setError{
 			Type: "invalidProperties", Properties: []string{"topic"},
@@ -557,6 +552,53 @@ func (h *handlerSet) createConversation(
 	}
 
 	now := h.clk.Now()
+
+	// DM path: deduplicate server-side. InsertDMConversation is atomic
+	// (wraps conversation + both memberships + chat_dm_pairs uniqueness
+	// row in one tx) so concurrent callers cannot race past it. If the
+	// unique constraint fires we fall back to FindDMBetween to return
+	// the winner (re #47). Archived DMs are a hit — do not create a
+	// parallel non-archived row.
+	if kind == store.ChatConversationKindDM {
+		other := memberIDs[0]
+		// Check first to avoid taking a write lock when the DM already
+		// exists (the common case after the first creation).
+		existing, existingMembers, found, err := h.store.Meta().FindDMBetween(ctx, creator, other)
+		if err != nil {
+			return store.ChatConversation{}, nil, nil, err
+		}
+		if found {
+			return existing, existingMembers, nil, nil
+		}
+		if name == "" {
+			// Auto-name from the other member's display name (REQ-CHAT-02
+			// allows omission for DMs).
+			name = resolvePrincipalEmail(ctx, h.store.Meta(), other)
+		}
+		c, members, err := h.store.Meta().InsertDMConversation(ctx, creator, other, name, now)
+		if err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				// Concurrent creator won; return the existing DM.
+				c, members, found, ferr := h.store.Meta().FindDMBetween(ctx, creator, other)
+				if ferr != nil {
+					return store.ChatConversation{}, nil, nil, ferr
+				}
+				if found {
+					return c, members, nil, nil
+				}
+				// Extremely unlikely: the winning row was deleted before
+				// we could read it. Treat as a server error.
+				return store.ChatConversation{}, nil, nil, errors.New("DM pair conflict but no canonical row found")
+			}
+			if errors.Is(err, store.ErrInvalidArgument) {
+				return store.ChatConversation{}, nil, &setError{Type: "invalidProperties", Description: err.Error()}, nil
+			}
+			return store.ChatConversation{}, nil, nil, err
+		}
+		return c, members, nil, nil
+	}
+
+	// Space path: unchanged — no dedup check needed.
 	cid, err := h.store.Meta().InsertChatConversation(ctx, store.ChatConversation{
 		Kind:                 kind,
 		Name:                 name,
@@ -576,22 +618,20 @@ func (h *handlerSet) createConversation(
 	// supplied member as a regular member. Failures inside the loop
 	// surface as serverFail per the contacts/calendars convention; the
 	// store enforces the unique (cid, pid) constraint.
-	creatorRole := store.ChatRoleOwner
 	if _, err := h.store.Meta().InsertChatMembership(ctx, store.ChatMembership{
 		ConversationID:       cid,
 		PrincipalID:          creator,
-		Role:                 creatorRole,
+		Role:                 store.ChatRoleOwner,
 		JoinedAt:             now,
 		NotificationsSetting: store.ChatNotificationsAll,
 	}); err != nil {
 		return store.ChatConversation{}, nil, nil, err
 	}
 	for _, mid := range memberIDs {
-		role := store.ChatRoleMember
 		if _, err := h.store.Meta().InsertChatMembership(ctx, store.ChatMembership{
 			ConversationID:       cid,
 			PrincipalID:          mid,
-			Role:                 role,
+			Role:                 store.ChatRoleMember,
 			JoinedAt:             now,
 			NotificationsSetting: store.ChatNotificationsAll,
 		}); err != nil {

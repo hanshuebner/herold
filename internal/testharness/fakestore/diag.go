@@ -263,6 +263,50 @@ func (s *Store) DiagSnapshot() *DiagDump {
 		}
 	}
 
+	// chat_dm_pairs: derive from DM conversations already snapshotted
+	// above. The fakestore does not store pairs explicitly; we reconstruct
+	// them by scanning chatConversations for kind==DM and collecting the
+	// two-member principal IDs for each.
+	if s.phase2 != nil {
+		type dmPairRow struct {
+			pidLo, pidHi int64
+			convID       int64
+		}
+		var pairs []dmPairRow
+		for _, c := range s.phase2.chatConversations {
+			if c.Kind != store.ChatConversationKindDM {
+				continue
+			}
+			var pids []store.PrincipalID
+			for _, mb := range s.phase2.chatMemberships {
+				if mb.ConversationID == c.ID {
+					pids = append(pids, mb.PrincipalID)
+				}
+			}
+			if len(pids) != 2 {
+				continue
+			}
+			lo, hi := int64(pids[0]), int64(pids[1])
+			if lo > hi {
+				lo, hi = hi, lo
+			}
+			pairs = append(pairs, dmPairRow{lo, hi, int64(c.ID)})
+		}
+		sort.Slice(pairs, func(i, j int) bool {
+			if pairs[i].pidLo != pairs[j].pidLo {
+				return pairs[i].pidLo < pairs[j].pidLo
+			}
+			return pairs[i].pidHi < pairs[j].pidHi
+		})
+		for _, p := range pairs {
+			dd.Tables["chat_dm_pairs"] = append(dd.Tables["chat_dm_pairs"],
+				ChatDMPairDiagRow{PidLo: p.pidLo, PidHi: p.pidHi, ConversationID: p.convID})
+		}
+	}
+	if dd.Tables["chat_dm_pairs"] == nil {
+		dd.Tables["chat_dm_pairs"] = []any{}
+	}
+
 	// ses_seen_messages: fakestore never persists SES dedupe rows, so
 	// we always emit an empty slice to satisfy the TableNames iteration.
 	dd.Tables["ses_seen_messages"] = []any{}
@@ -432,6 +476,17 @@ type ReactionDiagRow struct {
 	Emoji       string
 	PrincipalID store.PrincipalID
 	CreatedAt   time.Time
+}
+
+// ChatDMPairDiagRow is the fakestore-native representation of one row
+// from the chat_dm_pairs table (migration 0034, re #47). The fakestore
+// does not store pairs in a separate map; DiagSnapshot derives them by
+// scanning chatConversations. DiagInsert ignores them because the
+// conversation + membership rows already encode the information.
+type ChatDMPairDiagRow struct {
+	PidLo          int64
+	PidHi          int64
+	ConversationID int64
 }
 
 // DiagReset wipes every row from the in-memory store and resets the
@@ -681,6 +736,13 @@ func (s *Store) DiagInsert(table string, row any) error {
 		b := row.(BlobRefEntry)
 		s.blobSize[b.Hash] = b.Size
 		s.blobRefs[b.Hash] = int(b.RefCount)
+	case "chat_dm_pairs":
+		// The fakestore deduplicates DMs via a linear scan of
+		// chatConversations rather than a separate pairs map. When
+		// restoring from a bundle, the chat_conversations and
+		// chat_memberships rows already encode the DM relationship, so
+		// inserting chat_dm_pairs rows is a no-op for the fakestore.
+		_ = row
 	default:
 		_ = ctxUnused
 	}

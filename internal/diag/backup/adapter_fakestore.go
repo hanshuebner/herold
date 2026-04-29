@@ -498,6 +498,9 @@ func convertFakeToRow(table string, raw any) (any, error) {
 		// is only reached during tests that populate a SQLite source and
 		// restore to a fakestore destination.
 		return nil, fmt.Errorf("fakestore: ses_seen_messages: unexpected call to convertFakeToRow with %T", raw)
+	case "chat_dm_pairs":
+		r := raw.(fakestore.ChatDMPairDiagRow)
+		return &ChatDMPairRow{PidLo: r.PidLo, PidHi: r.PidHi, ConversationID: r.ConversationID}, nil
 	case "blob_refs":
 		b := raw.(fakestore.BlobRefEntry)
 		return &BlobRefRow{Hash: b.Hash, Size: b.Size, RefCount: b.RefCount}, nil
@@ -907,6 +910,15 @@ func convertRowToFake(table string, row any) (any, error) {
 		// will silently discard it (SES dedupe is a best-effort cache).
 		r := row.(*SESSeenMessageRow)
 		return r, nil
+	case "chat_dm_pairs":
+		// The fakestore deduplicates DMs via a linear conversation scan
+		// rather than a separate pairs map, so chat_dm_pairs rows are not
+		// stored explicitly. Restore is a no-op: the pairs are implicitly
+		// reconstructed when DiagInsert restores the chat_conversations and
+		// chat_memberships rows that define each DM. We still need to
+		// return a native value so DiagInsert can receive it.
+		r := row.(*ChatDMPairRow)
+		return fakestore.ChatDMPairDiagRow{PidLo: r.PidLo, PidHi: r.PidHi, ConversationID: r.ConversationID}, nil
 	case "blob_refs":
 		r := row.(*BlobRefRow)
 		return fakestore.BlobRefEntry{Hash: r.Hash, Size: r.Size, RefCount: r.RefCount}, nil

@@ -541,6 +541,16 @@ type ChatBlockRow struct {
 	Reason             *string `json:"reason,omitempty"`
 }
 
+// ChatDMPairRow mirrors the chat_dm_pairs table introduced in
+// migration 0034 (re #47). Each row maps the canonical unordered
+// (pid_lo, pid_hi) pair to the DM conversation it backs; the unique
+// primary key prevents duplicate DM conversations for the same pair.
+type ChatDMPairRow struct {
+	PidLo          int64 `json:"pid_lo"`
+	PidHi          int64 `json:"pid_hi"`
+	ConversationID int64 `json:"conversation_id"`
+}
+
 // SESSeenMessageRow mirrors the ses_seen_messages table introduced in
 // migration 0018 (Phase 3 Wave 3.2, REQ-HOOK-SES-01..07). Used for
 // SNS MessageId replay deduplication.

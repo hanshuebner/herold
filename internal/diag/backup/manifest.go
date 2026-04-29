@@ -131,7 +131,15 @@ const CurrentBackupVersion = 1
 //	jmap_email_submissions (REQ-AUTH-EXT-SUBMIT-05) so /get can
 //	reconstruct deliveryStatus for externally-routed submissions
 //	without consulting the queue. Column-only migration.
-const CurrentSchemaVersion = 33
+//
+// 34 — 0034_chat_dm_pairs.sql. Server-side DM deduplication (re #47).
+//
+//	Adds chat_dm_pairs (pid_lo, pid_hi, conversation_id) with
+//	PRIMARY KEY (pid_lo, pid_hi) so concurrent Conversation/set
+//	calls for the same DM pair collide at the constraint level rather
+//	than producing duplicate rows. FK to chat_conversations(id) ON
+//	DELETE CASCADE.
+const CurrentSchemaVersion = 34
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -239,10 +247,13 @@ var TableNames = []string{
 	// Phase 2 Wave 2.8 chat (REQ-CHAT-*). chat_conversations precedes
 	// chat_memberships and chat_messages (both FK back to it);
 	// chat_blocks references principals only.
+	// chat_dm_pairs FKs to chat_conversations(id) so it is restored
+	// last among the chat tables (migration 0034, re #47).
 	"chat_conversations",
 	"chat_memberships",
 	"chat_messages",
 	"chat_blocks",
+	"chat_dm_pairs",
 	// Phase 3 Wave 3.2 SES inbound replay deduplication
 	// (REQ-HOOK-SES-01..07, migration 0018). No FK dependencies.
 	"ses_seen_messages",

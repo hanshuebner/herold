@@ -3,6 +3,7 @@ package storesqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -1299,6 +1300,196 @@ func (m *metadata) HardDeleteChatMessage(ctx context.Context, id store.ChatMessa
 			store.EntityKindChatMessage, uint64(id), uint64(convID),
 			store.ChangeOpDestroyed, now)
 	})
+}
+
+// -- DM deduplication (re #47) ----------------------------------------
+
+// dmPairNormalize returns (pidLo, pidHi) with pidLo < pidHi. Used to
+// write and read chat_dm_pairs rows in a canonical order.
+func dmPairNormalize(a, b store.PrincipalID) (pidLo, pidHi int64) {
+	if a < b {
+		return int64(a), int64(b)
+	}
+	return int64(b), int64(a)
+}
+
+func (m *metadata) FindDMBetween(ctx context.Context, a, b store.PrincipalID) (store.ChatConversation, []store.ChatMembership, bool, error) {
+	if a == b {
+		return store.ChatConversation{}, nil, false, nil
+	}
+	pidLo, pidHi := dmPairNormalize(a, b)
+	// Fast path: the chat_dm_pairs index (populated for DMs created after
+	// migration 0034). Fetches the conversation id in O(1) by primary key.
+	var convID int64
+	err := m.s.db.QueryRowContext(ctx,
+		`SELECT conversation_id FROM chat_dm_pairs WHERE pid_lo = ? AND pid_hi = ?`,
+		pidLo, pidHi).Scan(&convID)
+	if err != nil && err != sql.ErrNoRows {
+		return store.ChatConversation{}, nil, false, mapErr(err)
+	}
+	if err == nil {
+		// Found in the index; load the conversation and memberships.
+		c, merr := m.GetChatConversation(ctx, store.ConversationID(convID))
+		if merr != nil {
+			return store.ChatConversation{}, nil, false, merr
+		}
+		members, merr := m.ListChatMembershipsByConversation(ctx, c.ID)
+		if merr != nil {
+			return store.ChatConversation{}, nil, false, merr
+		}
+		return c, members, true, nil
+	}
+	// Slow path: membership JOIN for pre-migration DM rows. Selects the
+	// smallest-id conversation where kind='dm' and both principals are
+	// members with exactly two total members. LIMIT 1 keeps the scan
+	// bounded even on tables with many legacy duplicate rows.
+	row := m.s.db.QueryRowContext(ctx, `
+		SELECT `+chatConversationSelectColumns+`
+		  FROM chat_conversations c
+		 WHERE c.kind = 'dm'
+		   AND EXISTS (SELECT 1 FROM chat_memberships WHERE conversation_id = c.id AND principal_id = ?)
+		   AND EXISTS (SELECT 1 FROM chat_memberships WHERE conversation_id = c.id AND principal_id = ?)
+		   AND (SELECT COUNT(*) FROM chat_memberships WHERE conversation_id = c.id) = 2
+		 ORDER BY c.id ASC
+		 LIMIT 1`,
+		int64(a), int64(b))
+	c, err := scanChatConversation(row)
+	if err != nil {
+		if isNotFound(err) {
+			return store.ChatConversation{}, nil, false, nil
+		}
+		return store.ChatConversation{}, nil, false, err
+	}
+	members, err := m.ListChatMembershipsByConversation(ctx, c.ID)
+	if err != nil {
+		return store.ChatConversation{}, nil, false, err
+	}
+	return c, members, true, nil
+}
+
+func (m *metadata) InsertDMConversation(ctx context.Context, creator, other store.PrincipalID, name string, now time.Time) (store.ChatConversation, []store.ChatMembership, error) {
+	if creator == other {
+		return store.ChatConversation{}, nil, fmt.Errorf("%w: cannot create a DM with yourself", store.ErrInvalidArgument)
+	}
+	var convID int64
+	var creatorMemID, otherMemID int64
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		pidLo, pidHi := dmPairNormalize(creator, other)
+		// Atomically claim the DM pair slot. The PRIMARY KEY (pid_lo,
+		// pid_hi) on chat_dm_pairs surfaces as ErrConflict when a
+		// concurrent insert wins the race (re #47).
+		var existingConvID int64
+		chkErr := tx.QueryRowContext(ctx,
+			`SELECT conversation_id FROM chat_dm_pairs WHERE pid_lo = ? AND pid_hi = ?`,
+			pidLo, pidHi).Scan(&existingConvID)
+		if chkErr != nil && chkErr != sql.ErrNoRows {
+			return mapErr(chkErr)
+		}
+		if chkErr == nil {
+			// Another concurrent transaction already created the DM.
+			// Bubble up ErrConflict so the caller can call FindDMBetween
+			// to get the canonical row.
+			return store.ErrConflict
+		}
+		var nameArg any
+		if name != "" {
+			nameArg = name
+		}
+		// Insert the conversation row.
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO chat_conversations (kind, name, topic,
+			  created_by_principal_id, created_at_us, updated_at_us,
+			  last_message_at_us, message_count, is_archived, modseq,
+			  read_receipts_enabled, retention_seconds, edit_window_seconds)
+			VALUES ('dm', ?, NULL, ?, ?, ?, NULL, 0, 0, 1, 1, NULL, NULL)`,
+			nameArg, int64(creator), usMicros(now), usMicros(now))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("storesqlite: last insert id: %w", err)
+		}
+		convID = n
+		// Insert the chat_dm_pairs uniqueness row. If a concurrent tx
+		// inserted between the SELECT above and this INSERT, the PRIMARY
+		// KEY constraint fires and the tx is rolled back with ErrConflict.
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO chat_dm_pairs (pid_lo, pid_hi, conversation_id) VALUES (?, ?, ?)`,
+			pidLo, pidHi, convID); err != nil {
+			return mapErr(err)
+		}
+		// Insert creator's membership (owner).
+		res, err = tx.ExecContext(ctx, `
+			INSERT INTO chat_memberships (conversation_id, principal_id, role,
+			  joined_at_us, last_read_message_id, is_muted, mute_until_us,
+			  notifications_setting, modseq)
+			VALUES (?, ?, 'owner', ?, NULL, 0, NULL, 'all', 1)`,
+			convID, int64(creator), usMicros(now))
+		if err != nil {
+			return mapErr(err)
+		}
+		creatorMemID, err = res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("storesqlite: last insert id: %w", err)
+		}
+		// Insert other member's membership.
+		res, err = tx.ExecContext(ctx, `
+			INSERT INTO chat_memberships (conversation_id, principal_id, role,
+			  joined_at_us, last_read_message_id, is_muted, mute_until_us,
+			  notifications_setting, modseq)
+			VALUES (?, ?, 'member', ?, NULL, 0, NULL, 'all', 1)`,
+			convID, int64(other), usMicros(now))
+		if err != nil {
+			return mapErr(err)
+		}
+		otherMemID, err = res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("storesqlite: last insert id: %w", err)
+		}
+		// Fan state-change rows: conversation created (creator only at
+		// this point; membership inserts happen inside this same tx so
+		// appendStateChangeForMembers can see both).
+		if err := appendStateChange(ctx, tx, creator,
+			store.EntityKindConversation, uint64(convID), 0,
+			store.ChangeOpCreated, now); err != nil {
+			return err
+		}
+		if err := appendStateChange(ctx, tx, other,
+			store.EntityKindConversation, uint64(convID), 0,
+			store.ChangeOpCreated, now); err != nil {
+			return err
+		}
+		// Membership created rows for both principals.
+		for _, memID := range []int64{creatorMemID, otherMemID} {
+			for _, pid := range []store.PrincipalID{creator, other} {
+				if err := appendStateChange(ctx, tx, pid,
+					store.EntityKindMembership, uint64(memID), uint64(convID),
+					store.ChangeOpCreated, now); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return store.ChatConversation{}, nil, err
+	}
+	c, err := m.GetChatConversation(ctx, store.ConversationID(convID))
+	if err != nil {
+		return store.ChatConversation{}, nil, err
+	}
+	members, err := m.ListChatMembershipsByConversation(ctx, c.ID)
+	if err != nil {
+		return store.ChatConversation{}, nil, err
+	}
+	return c, members, nil
+}
+
+// isNotFound reports whether err wraps store.ErrNotFound. Used below to
+// distinguish a missing row from a genuine query error in FindDMBetween.
+func isNotFound(err error) bool {
+	return errors.Is(err, store.ErrNotFound)
 }
 
 // -- Helpers ----------------------------------------------------------

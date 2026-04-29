@@ -838,6 +838,17 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "chat_dm_pairs":
+		return enumerate(ctx, s.tx,
+			`SELECT pid_lo, pid_hi, conversation_id
+			   FROM chat_dm_pairs ORDER BY pid_lo, pid_hi`,
+			func(rs *sql.Rows) (any, error) {
+				var r ChatDMPairRow
+				if err := rs.Scan(&r.PidLo, &r.PidHi, &r.ConversationID); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
 	case "email_reactions":
 		return enumerate(ctx, s.tx,
 			`SELECT email_id, emoji, principal_id, created_at_us
@@ -1470,6 +1481,13 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			   created_at_us, reason)
 			 VALUES (?, ?, ?, ?)`,
 			r.BlockerPrincipalID, r.BlockedPrincipalID, r.CreatedAtUs, reason)
+		return err
+	case "chat_dm_pairs":
+		r := row.(*ChatDMPairRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO chat_dm_pairs (pid_lo, pid_hi, conversation_id)
+			 VALUES (?, ?, ?)`,
+			r.PidLo, r.PidHi, r.ConversationID)
 		return err
 	case "email_reactions":
 		r := row.(*EmailReactionRow)

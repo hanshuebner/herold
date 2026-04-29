@@ -1044,6 +1044,166 @@ func (m *metaFace) HardDeleteChatMessage(ctx context.Context, id store.ChatMessa
 	return nil
 }
 
+// -- DM deduplication (re #47) ----------------------------------------
+
+func (m *metaFace) FindDMBetween(ctx context.Context, a, b store.PrincipalID) (store.ChatConversation, []store.ChatMembership, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return store.ChatConversation{}, nil, false, err
+	}
+	if a == b {
+		return store.ChatConversation{}, nil, false, nil
+	}
+	s := m.s()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.phase2 == nil {
+		return store.ChatConversation{}, nil, false, nil
+	}
+	// Scan conversations for a DM where both a and b are members and
+	// there are exactly two members. Return the one with the smallest id.
+	var best *store.ChatConversation
+	for _, c := range s.phase2.chatConversations {
+		if c.Kind != store.ChatConversationKindDM {
+			continue
+		}
+		var hasA, hasB bool
+		var count int
+		for _, mb := range s.phase2.chatMemberships {
+			if mb.ConversationID != c.ID {
+				continue
+			}
+			count++
+			if mb.PrincipalID == a {
+				hasA = true
+			}
+			if mb.PrincipalID == b {
+				hasB = true
+			}
+		}
+		if !hasA || !hasB || count != 2 {
+			continue
+		}
+		cc := c
+		if best == nil || cc.ID < best.ID {
+			best = &cc
+		}
+	}
+	if best == nil {
+		return store.ChatConversation{}, nil, false, nil
+	}
+	clone := cloneChatConversation(*best)
+	var members []store.ChatMembership
+	for _, mb := range s.phase2.chatMemberships {
+		if mb.ConversationID == best.ID {
+			members = append(members, cloneChatMembership(mb))
+		}
+	}
+	sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
+	return clone, members, true, nil
+}
+
+func (m *metaFace) InsertDMConversation(ctx context.Context, creator, other store.PrincipalID, name string, now time.Time) (store.ChatConversation, []store.ChatMembership, error) {
+	if err := ctx.Err(); err != nil {
+		return store.ChatConversation{}, nil, err
+	}
+	if creator == other {
+		return store.ChatConversation{}, nil, fmt.Errorf("%w: cannot create a DM with yourself", store.ErrInvalidArgument)
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePhase2()
+	// Under the write lock there is no real race window: the fakestore
+	// serialises all writes, so this check-then-insert is atomic.
+	for _, c := range s.phase2.chatConversations {
+		if c.Kind != store.ChatConversationKindDM {
+			continue
+		}
+		var hasCreator, hasOther bool
+		var count int
+		for _, mb := range s.phase2.chatMemberships {
+			if mb.ConversationID != c.ID {
+				continue
+			}
+			count++
+			if mb.PrincipalID == creator {
+				hasCreator = true
+			}
+			if mb.PrincipalID == other {
+				hasOther = true
+			}
+		}
+		if hasCreator && hasOther && count == 2 {
+			// DM already exists; return ErrConflict so the handler falls
+			// through to FindDMBetween.
+			return store.ChatConversation{}, nil, store.ErrConflict
+		}
+	}
+	convID := s.phase2.nextChatConversation
+	s.phase2.nextChatConversation++
+	c := store.ChatConversation{
+		ID:                   convID,
+		Kind:                 store.ChatConversationKindDM,
+		Name:                 name,
+		CreatedByPrincipalID: creator,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+		ReadReceiptsEnabled:  true,
+		ModSeq:               1,
+	}
+	s.phase2.chatConversations[convID] = c
+	creatorMemID := s.phase2.nextChatMembership
+	s.phase2.nextChatMembership++
+	creatorMem := store.ChatMembership{
+		ID:                   creatorMemID,
+		ConversationID:       convID,
+		PrincipalID:          creator,
+		Role:                 store.ChatRoleOwner,
+		JoinedAt:             now,
+		NotificationsSetting: store.ChatNotificationsAll,
+		ModSeq:               1,
+	}
+	s.phase2.chatMemberships[creatorMemID] = creatorMem
+	otherMemID := s.phase2.nextChatMembership
+	s.phase2.nextChatMembership++
+	otherMem := store.ChatMembership{
+		ID:                   otherMemID,
+		ConversationID:       convID,
+		PrincipalID:          other,
+		Role:                 store.ChatRoleMember,
+		JoinedAt:             now,
+		NotificationsSetting: store.ChatNotificationsAll,
+		ModSeq:               1,
+	}
+	s.phase2.chatMemberships[otherMemID] = otherMem
+	// Fan state-change rows to both principals.
+	for _, pid := range []store.PrincipalID{creator, other} {
+		s.appendStateChangeLocked(store.StateChange{
+			PrincipalID:    pid,
+			Kind:           store.EntityKindConversation,
+			EntityID:       uint64(convID),
+			ParentEntityID: 0,
+			Op:             store.ChangeOpCreated,
+			ProducedAt:     now,
+		})
+	}
+	for _, memID := range []store.MembershipID{creatorMemID, otherMemID} {
+		for _, pid := range []store.PrincipalID{creator, other} {
+			s.appendStateChangeLocked(store.StateChange{
+				PrincipalID:    pid,
+				Kind:           store.EntityKindMembership,
+				EntityID:       uint64(memID),
+				ParentEntityID: uint64(convID),
+				Op:             store.ChangeOpCreated,
+				ProducedAt:     now,
+			})
+		}
+	}
+	result := cloneChatConversation(c)
+	members := []store.ChatMembership{cloneChatMembership(creatorMem), cloneChatMembership(otherMem)}
+	return result, members, nil
+}
+
 // -- clone helpers ----------------------------------------------------
 
 func cloneChatConversation(c store.ChatConversation) store.ChatConversation {

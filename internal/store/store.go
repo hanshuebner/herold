@@ -1131,6 +1131,30 @@ type Metadata interface {
 	// global retention policy.
 	ListChatAccountSettingsForRetention(ctx context.Context, afterID PrincipalID, limit int) ([]ChatAccountSettings, error)
 
+	// FindDMBetween returns the canonical DM conversation between
+	// principals a and b (a != b) together with its current membership
+	// rows. The third return value is true when a DM was found. When
+	// multiple legacy duplicate rows exist the one with the smallest id
+	// is returned. Returns (zero, nil, false, nil) when no DM exists.
+	//
+	// The check searches both the chat_dm_pairs index (populated for new
+	// DMs after migration 0034) and falls back to a membership JOIN for
+	// pre-migration rows.
+	FindDMBetween(ctx context.Context, a, b PrincipalID) (ChatConversation, []ChatMembership, bool, error)
+
+	// InsertDMConversation creates a new DM conversation between creator
+	// and other atomically: it inserts the chat_conversations row, both
+	// chat_memberships rows (creator as owner, other as member), and the
+	// chat_dm_pairs uniqueness row in a single transaction. If a
+	// concurrent insert races on the same (creator, other) pair and wins
+	// the unique constraint, InsertDMConversation returns ErrConflict so
+	// the caller can retry with FindDMBetween to obtain the winner.
+	//
+	// name is the pre-computed display name for the conversation row
+	// (resolved from the other principal's display name by the handler).
+	// now is the timestamp to use for CreatedAt / UpdatedAt / JoinedAt.
+	InsertDMConversation(ctx context.Context, creator, other PrincipalID, name string, now time.Time) (ChatConversation, []ChatMembership, error)
+
 	// GetBlobRef returns the metadata-side blob_refs row for hash:
 	// (size, ref_count). Returns ErrNotFound when no row exists for the
 	// hash. The blob-store sweeper is responsible for evicting rows
