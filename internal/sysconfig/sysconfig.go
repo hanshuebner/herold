@@ -139,23 +139,23 @@ type ServerConfig struct {
 	// the scope check; this is the dev-only "trust the operator"
 	// posture). Production deployments MUST leave DevMode off and
 	// configure both listeners explicitly.
-	DevMode            bool                     `toml:"dev_mode,omitempty"`
-	AdminTLS           AdminTLSConfig           `toml:"admin_tls"`
-	Storage            StorageConfig            `toml:"storage"`
-	Snooze             SnoozeConfig             `toml:"snooze,omitempty"`
-	UI                 UIConfig                 `toml:"ui,omitempty"`
-	ImageProxy         ImageProxyConfig         `toml:"image_proxy,omitempty"`
-	Chat               ChatConfig               `toml:"chat,omitempty"`
-	Call               CallConfig               `toml:"call,omitempty"`
-	TURN               TURNConfig               `toml:"turn,omitempty"`
-	SmartHost          SmartHostConfig          `toml:"smart_host,omitempty"`
-	Suite              SuiteConfig              `toml:"suite,omitempty"`
-	AdminSPA           AdminSPAConfig           `toml:"admin_spa,omitempty"`
-	Push               PushConfig               `toml:"push,omitempty"`
-	Queue              QueueConfig              `toml:"queue,omitempty"`
-	Secrets            SecretsConfig            `toml:"secrets,omitempty"`
-	ExternalSubmission      ExternalSubmissionConfig      `toml:"external_submission,omitempty"`
-	DirectoryAutocomplete   DirectoryAutocompleteConfig   `toml:"directory_autocomplete,omitempty"`
+	DevMode               bool                        `toml:"dev_mode,omitempty"`
+	AdminTLS              AdminTLSConfig              `toml:"admin_tls"`
+	Storage               StorageConfig               `toml:"storage"`
+	Snooze                SnoozeConfig                `toml:"snooze,omitempty"`
+	UI                    UIConfig                    `toml:"ui,omitempty"`
+	ImageProxy            ImageProxyConfig            `toml:"image_proxy,omitempty"`
+	Chat                  ChatConfig                  `toml:"chat,omitempty"`
+	Call                  CallConfig                  `toml:"call,omitempty"`
+	TURN                  TURNConfig                  `toml:"turn,omitempty"`
+	SmartHost             SmartHostConfig             `toml:"smart_host,omitempty"`
+	Suite                 SuiteConfig                 `toml:"suite,omitempty"`
+	AdminSPA              AdminSPAConfig              `toml:"admin_spa,omitempty"`
+	Push                  PushConfig                  `toml:"push,omitempty"`
+	Queue                 QueueConfig                 `toml:"queue,omitempty"`
+	Secrets               SecretsConfig               `toml:"secrets,omitempty"`
+	ExternalSubmission    ExternalSubmissionConfig    `toml:"external_submission,omitempty"`
+	DirectoryAutocomplete DirectoryAutocompleteConfig `toml:"directory_autocomplete,omitempty"`
 	// OAuthProviders maps provider name to per-provider OAuth 2.0 client
 	// configuration for server-mediated OAuth flows (REQ-AUTH-EXT-SUBMIT-03).
 	// Provider names are normalised to lowercase at parse time. The reserved
