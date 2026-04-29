@@ -128,11 +128,58 @@ func TestRedactHandler_CustomKeys(t *testing.T) {
 }
 
 func TestDefaultSecretKeys_Coverage(t *testing.T) {
-	want := []string{"password", "token", "api_key", "secret", "authorization", "cookie", "set-cookie"}
+	// Covers the base set plus the OAuth/credential additions for external
+	// SMTP submission (Phase 6, REQ-OPS-84).
+	want := []string{
+		"password",
+		"token",
+		"access_token",
+		"refresh_token",
+		"xoauth2_token",
+		"bearer_token",
+		"api_key",
+		"secret",
+		"client_secret",
+		"authorization",
+		"cookie",
+		"set-cookie",
+	}
 	joined := strings.Join(DefaultSecretKeys, ",")
 	for _, w := range want {
 		if !strings.Contains(joined, w) {
 			t.Fatalf("DefaultSecretKeys missing %q (got %q)", w, joined)
 		}
+	}
+}
+
+// TestDefaultSecretKeys_OAuthTokensRedacted is the targeted regression test
+// for the XOAUTH2 / OAuth credential keys that must never appear in log
+// output (Phase 6, architectural decision 7).
+func TestDefaultSecretKeys_OAuthTokensRedacted(t *testing.T) {
+	cases := []struct {
+		key   string
+		value string
+	}{
+		{"access_token", "ya29.SECRET_ACCESS"},
+		{"refresh_token", "1//SECRET_REFRESH"},
+		{"xoauth2_token", "ya29.XOAUTH2_SENTINEL"},
+		{"bearer_token", "Bearer-sentinel-value"},
+		{"client_secret", "client-secret-value"},
+		{"token", "generic-token-value"},
+		{"password", "hunter2"},
+	}
+	for _, c := range cases {
+		t.Run(c.key, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := newTestLogger(&buf, DefaultSecretKeys)
+			l.Info("credential-log", c.key, c.value)
+			got := decodeOneLine(t, buf.Bytes())
+			if got[c.key] == c.value {
+				t.Fatalf("key %q was NOT redacted; value %q visible in log", c.key, c.value)
+			}
+			if got[c.key] != RedactedValue {
+				t.Fatalf("key %q: want %q, got %v", c.key, RedactedValue, got[c.key])
+			}
+		})
 	}
 }

@@ -92,6 +92,17 @@ export const Capability = {
   HeroldPush: 'https://netzhansa.com/jmap/push',
   HeroldManagedRules: 'https://netzhansa.com/jmap/managed-rules',
   HeroldLLMTransparency: 'https://netzhansa.com/jmap/llm-transparency',
+  /**
+   * External SMTP submission per Identity (REQ-AUTH-EXT-SUBMIT-05).
+   * Advertised when [server.external_submission].enabled is true.
+   * The suite shows the submission-config UI only when this capability
+   * is present (REQ-MAIL-SUBMIT-01).
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/registry.go CapabilityExternalSubmission.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldExternalSubmission: 'https://netzhansa.com/jmap/external-submission',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

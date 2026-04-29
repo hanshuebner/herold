@@ -7,13 +7,26 @@ import (
 )
 
 // DefaultSecretKeys is the baseline set of attribute keys whose values are
-// redacted from log output (REQ-OPS-84). Matching is case-insensitive exact.
+// redacted from log output (REQ-OPS-84). Matching is case-insensitive exact
+// against the full attribute key name.
+//
+// The list covers the credential-bearing keys that have appeared in the
+// herold codebase. Key names containing "token" or "secret" appear verbatim
+// so that both short ("token") and long ("access_token", "refresh_token")
+// forms are caught without substring logic that could cause false positives on
+// keys like "total" or "section".
+//
 // Callers that want to extend the list should append to a copy, not mutate.
 var DefaultSecretKeys = []string{
 	"password",
 	"token",
+	"access_token",
+	"refresh_token",
+	"xoauth2_token",
+	"bearer_token",
 	"api_key",
 	"secret",
+	"client_secret",
 	"authorization",
 	"cookie",
 	"set-cookie",
