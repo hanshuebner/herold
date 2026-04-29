@@ -205,6 +205,42 @@ type Options struct {
 	// (REQ-AUTH-CSRF). Nil / unset signing key disables cookie auth so
 	// existing deployments that wire only Bearer keys are unaffected.
 	Session authsession.SessionConfig
+	// ExternalSubmissionDataKey is the 32-byte data key used to seal and
+	// open per-identity submission credentials (REQ-AUTH-EXT-SUBMIT-02).
+	// Sourced from sysconfig.SecretsConfig.DataKeyRef at server boot.
+	// When nil the submission endpoints return 503.
+	ExternalSubmissionDataKey []byte
+	// ExternalProbe is the function called by PUT
+	// /api/v1/identities/{id}/submission to validate credentials before
+	// persisting. Defaults to a no-op that always succeeds when nil and
+	// ExternalSubmissionDataKey is also nil (the 503 fires first). When
+	// ExternalSubmissionDataKey is set and ExternalProbe is nil, a
+	// default no-op probe is used. Tests inject a fake via this field.
+	// The production wiring passes defaultProbeFromSubmitter(s) where s
+	// is a configured *extsubmit.Submitter.
+	ExternalProbe ExternalProbe
+	// OAuthProviders is the operator-configured map of OAuth provider
+	// names to client credentials, sourced from sysconfig at boot
+	// (REQ-AUTH-EXT-SUBMIT-03). Used by the OAuth start/callback endpoints.
+	OAuthProviders map[string]OAuthProviderOptions
+}
+
+// OAuthProviderOptions carries the resolved (decrypted) OAuth 2.0 client
+// credentials for one provider entry from [server.oauth_providers.<name>].
+// The ClientSecret is resolved from the config reference at boot; it must
+// never appear in logs or API responses.
+type OAuthProviderOptions struct {
+	// ClientID is the OAuth 2.0 client identifier.
+	ClientID string
+	// ClientSecret is the resolved plaintext client secret. It is zeroed
+	// out of this struct on server Close.
+	ClientSecret string
+	// AuthURL is the provider's authorisation endpoint.
+	AuthURL string
+	// TokenURL is the provider's token endpoint.
+	TokenURL string
+	// Scopes is the set of OAuth scopes requested.
+	Scopes []string
 }
 
 // Server is the protoadmin REST handle. One *Server serves any number
@@ -273,6 +309,13 @@ func NewServer(
 	}
 	if opts.ServerVersion == "" {
 		opts.ServerVersion = "dev"
+	}
+	// Default ExternalProbe: when no probe is injected and no data key is
+	// configured, the 503 fires before the probe is reached. When a data
+	// key IS set but no probe is provided (test fixtures that seal but
+	// don't want a real probe), fall back to noopProbe.
+	if opts.ExternalProbe == nil {
+		opts.ExternalProbe = noopProbe
 	}
 	// Register the admin REST collector set on Server construction.
 	// Idempotent across multiple instances sharing a process Registry.

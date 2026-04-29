@@ -143,6 +143,17 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// owned by the parallel agent.
 	mux.HandleFunc("GET /api/v1/diag/dns-check/{domain}", authAdmin(s.handleDiagDNSCheck))
 
+	// External SMTP submission per-Identity credentials
+	// (REQ-AUTH-EXT-SUBMIT-04). Also registered in RegisterSelfServiceRoutes
+	// for the public listener. All four endpoints are gated by requireSelfOnly
+	// inside each handler — admins cannot read or write another principal's
+	// submission credentials (no impersonation in v1).
+	mux.HandleFunc("GET /api/v1/identities/{id}/submission", auth1(s.handleGetSubmission))
+	mux.HandleFunc("PUT /api/v1/identities/{id}/submission", auth1(s.handlePutSubmission))
+	mux.HandleFunc("DELETE /api/v1/identities/{id}/submission", auth1(s.handleDeleteSubmission))
+	mux.HandleFunc("POST /api/v1/identities/{id}/submission/oauth/start", auth1(s.handleOAuthStart))
+	mux.HandleFunc("GET /api/v1/identities/{id}/submission/oauth/callback", auth1(s.handleOAuthCallback))
+
 	// Inbound attachment policy (REQ-FLOW-ATTPOL-01..02).
 	mux.HandleFunc("GET /api/v1/mailboxes/{addr}/attachment-policy", authAdmin(s.handleGetMailboxAttPol))
 	mux.HandleFunc("PUT /api/v1/mailboxes/{addr}/attachment-policy", authAdmin(s.handlePutMailboxAttPol))
@@ -203,6 +214,20 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	// the operator can surface the signal for tuning. Per-handler
 	// ownership check: the caller must own the referenced email.
 	mux.HandleFunc("POST /api/v1/spam-feedback", auth1(s.handleSpamFeedback))
+
+	// External SMTP submission per-Identity credentials
+	// (REQ-AUTH-EXT-SUBMIT-04). All four endpoints are scoped to the
+	// principal that owns the Identity via requireSelfOnly inside each
+	// handler — admins cannot read or write another principal's submission
+	// credentials (no impersonation in v1).
+	mux.HandleFunc("GET /api/v1/identities/{id}/submission", auth1(s.handleGetSubmission))
+	mux.HandleFunc("PUT /api/v1/identities/{id}/submission", auth1(s.handlePutSubmission))
+	mux.HandleFunc("DELETE /api/v1/identities/{id}/submission", auth1(s.handleDeleteSubmission))
+
+	// Server-mediated OAuth start/callback for external submission
+	// (REQ-MAIL-SUBMIT-02, REQ-AUTH-EXT-SUBMIT-03).
+	mux.HandleFunc("POST /api/v1/identities/{id}/submission/oauth/start", auth1(s.handleOAuthStart))
+	mux.HandleFunc("GET /api/v1/identities/{id}/submission/oauth/callback", auth1(s.handleOAuthCallback))
 }
 
 // SelfServiceHandler returns the self-service route set wrapped in the
