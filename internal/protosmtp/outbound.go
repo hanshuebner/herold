@@ -128,10 +128,11 @@ func NewClient(opts ClientOptions) *Client {
 	if opts.Resolver == nil {
 		panic("protosmtp: ClientOptions.Resolver required")
 	}
-	log := opts.Logger
-	if log == nil {
-		log = slog.Default()
+	rawLog := opts.Logger
+	if rawLog == nil {
+		rawLog = slog.Default()
 	}
+	log := rawLog.With(slog.String("subsystem", "protosmtp"))
 	clk := opts.Clock
 	if clk == nil {
 		clk = clock.NewReal()
@@ -225,6 +226,7 @@ func (c *Client) Deliver(ctx context.Context, req DeliveryRequest) (DeliveryOutc
 		p, perr := c.stsCache.Lookup(ctx, domain)
 		if perr != nil {
 			c.log.WarnContext(ctx, "outbound: mta-sts lookup failed; treating as no-policy",
+				slog.String("activity", observe.ActivitySystem),
 				slog.String("domain", domain), slog.String("err", perr.Error()))
 		} else {
 			policy = p
@@ -235,6 +237,7 @@ func (c *Client) Deliver(ctx context.Context, req DeliveryRequest) (DeliveryOutc
 	candidates, mxErr := c.resolveMX(ctx, domain)
 	if mxErr != nil {
 		c.log.WarnContext(ctx, "outbound: mx resolution failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("domain", domain), slog.String("err", mxErr.Error()))
 		// Treat permanent / NXDOMAIN-shaped errors as Permanent; everything
 		// else as Transient. mailauth.IsTemporary captures the temporary
@@ -270,6 +273,7 @@ func (c *Client) Deliver(ctx context.Context, req DeliveryRequest) (DeliveryOutc
 		// skip it (and on the last candidate report Permanent).
 		if policy != nil && policy.Mode == MTASTSModeEnforce && !policy.Match(cand.host) {
 			c.log.InfoContext(ctx, "outbound: mta-sts enforce skip",
+				slog.String("activity", observe.ActivitySystem),
 				slog.String("domain", domain),
 				slog.String("mx", cand.host))
 			c.recordTLSRPT(ctx, domain, cand.host, store.TLSRPTFailureMTASTS,
@@ -293,6 +297,7 @@ func (c *Client) Deliver(ctx context.Context, req DeliveryRequest) (DeliveryOutc
 		case DeliveryTransient:
 			lastOutcome = outcome
 			c.log.InfoContext(ctx, "outbound: candidate transient; trying next",
+				slog.String("activity", observe.ActivitySystem),
 				slog.String("domain", domain),
 				slog.String("mx", cand.host),
 				slog.Int("smtp_code", outcome.SMTPCode),
@@ -329,6 +334,7 @@ func (c *Client) recordTLSRPT(ctx context.Context, domain, mxHost string, ft sto
 	}
 	if err := c.tlsRPT.Append(ctx, f); err != nil {
 		c.log.WarnContext(ctx, "outbound: tls-rpt append failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("domain", domain),
 			slog.String("err", err.Error()))
 	}

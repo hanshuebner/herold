@@ -129,6 +129,11 @@ func (ses *session) handleMOVE(ctx context.Context, c *Command) error {
 	}
 	_ = uidValiditySrc
 	_ = ses.reloadSelected(ctx)
+	ses.logger.Info("protoimap: MOVE",
+		"activity", "user",
+		"dest_mailbox", c.CopyMoveDest,
+		"uid_count", len(srcUIDs),
+	)
 	return ses.resp.taggedOK(c.Tag, "", "MOVE completed")
 }
 
@@ -173,6 +178,11 @@ func (ses *session) handleCOPY(ctx context.Context, c *Command) error {
 		dstUIDs = append(dstUIDs, uid)
 	}
 	if len(srcUIDs) > 0 {
+		ses.logger.Info("protoimap: COPY",
+			"activity", "user",
+			"dest_mailbox", c.CopyMoveDest,
+			"uid_count", len(srcUIDs),
+		)
 		code := fmt.Sprintf("COPYUID %d %s %s",
 			dest.UIDValidity,
 			formatUIDList(srcUIDs),
@@ -221,7 +231,10 @@ func (ses *session) handleCOMPRESS(ctx context.Context, c *Command) error {
 		return err
 	}
 	if err := ses.installDeflate(); err != nil {
-		ses.logger.Warn("protoimap: deflate install", "err", err)
+		ses.logger.Warn("protoimap: deflate install failed",
+			"activity", "internal",
+			"err", err,
+		)
 		return err
 	}
 	return nil
@@ -292,6 +305,9 @@ func (ses *session) rollbackMultiAppend(ctx context.Context, mailboxID store.Mai
 		return
 	}
 	if err := ses.s.store.Meta().ExpungeMessages(ctx, mailboxID, ids); err != nil {
-		ses.logger.Warn("protoimap: multi-append rollback", "err", err)
+		ses.logger.Warn("protoimap: multi-append rollback failed",
+			"activity", "internal",
+			"err", err,
+		)
 	}
 }

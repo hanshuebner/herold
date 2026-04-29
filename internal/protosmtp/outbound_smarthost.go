@@ -170,6 +170,7 @@ func (c *Client) deliverDirectMX(
 		p, perr := c.stsCache.Lookup(ctx, domain)
 		if perr != nil {
 			c.log.WarnContext(ctx, "outbound: mta-sts lookup failed; treating as no-policy",
+				slog.String("activity", observe.ActivitySystem),
 				slog.String("domain", domain), slog.String("err", perr.Error()))
 		} else {
 			policy = p
@@ -441,6 +442,7 @@ func (c *Client) deliverViaSmartHost(
 		out.EnhancedCode = fe
 		out.Diagnostic = ft
 		c.log.InfoContext(ctx, "outbound: smart-host delivered",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("upstream", upstream),
 			slog.String("rcpt", req.RcptTo),
 			slog.Bool("tls", out.TLSUsed),
@@ -594,7 +596,7 @@ func (c *Client) auditPath(
 	fellBack bool,
 ) {
 	c.log.LogAttrs(ctx, slog.LevelInfo, "outbound: audit",
-		slog.Bool("audit", true),
+		slog.String("activity", observe.ActivitySystem),
 		slog.String("domain", domain),
 		slog.String("rcpt", req.RcptTo),
 		slog.String("path", path),

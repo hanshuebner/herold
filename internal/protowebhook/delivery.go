@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -41,12 +42,14 @@ const (
 func (d *Dispatcher) deliver(ctx context.Context, hook store.Webhook, p store.Principal, mb store.Mailbox, msg store.Message) {
 	deliveryID, err := newDeliveryID()
 	if err != nil {
-		d.logger.Warn("protowebhook: generate delivery id", "err", err.Error())
+		d.logger.Warn("protowebhook: generate delivery id",
+			"activity", observe.ActivityInternal, "err", err.Error())
 		return
 	}
 	payload, dropped, err := d.buildPayload(ctx, hook, deliveryID, p, mb, msg)
 	if err != nil {
 		d.logger.Warn("protowebhook: build payload",
+			"activity", observe.ActivityInternal,
 			"webhook_id", uint64(hook.ID),
 			"message_id", uint64(msg.ID),
 			"err", err.Error())
@@ -60,6 +63,7 @@ func (d *Dispatcher) deliver(ctx context.Context, hook store.Webhook, p store.Pr
 		d.recordOutcome(hook, "dropped_no_text")
 		d.recordDropAudit(ctx, hook, deliveryID, msg.ID, msg.Envelope.MessageID)
 		d.logger.Info("protowebhook: dropped no_text",
+			"activity", observe.ActivitySystem,
 			"webhook_id", uint64(hook.ID),
 			"delivery_id", deliveryID,
 			"message_id", uint64(msg.ID))
@@ -85,6 +89,7 @@ func (d *Dispatcher) dispatchPayload(
 	body, err := json.Marshal(payload)
 	if err != nil {
 		d.logger.Warn("protowebhook: marshal payload",
+			"activity", observe.ActivityInternal,
 			"webhook_id", uint64(hook.ID),
 			"err", err.Error())
 		return
@@ -101,29 +106,32 @@ func (d *Dispatcher) dispatchPayload(
 		status, ok, transient := d.postOnce(ctx, hook, deliveryID, body)
 		if ok {
 			d.recordOutcome(hook, status)
-			d.logger.Info("protowebhook: delivered",
-				"webhook_id", uint64(hook.ID),
-				"delivery_id", deliveryID,
-				"message_id", messageID,
-				"attempt", attempt)
+			d.logger.LogAttrs(ctx, slog.LevelInfo, "protowebhook: delivered",
+				slog.String("activity", observe.ActivitySystem),
+				slog.Uint64("webhook_id", uint64(hook.ID)),
+				slog.String("delivery_id", deliveryID),
+				slog.Uint64("message_id", messageID),
+				slog.Int("attempt", attempt))
 			return
 		}
 		if !transient {
 			d.recordOutcome(hook, status)
-			d.logger.Warn("protowebhook: permanent failure",
-				"webhook_id", uint64(hook.ID),
-				"delivery_id", deliveryID,
-				"message_id", messageID,
-				"attempt", attempt)
+			d.logger.LogAttrs(ctx, slog.LevelWarn, "protowebhook: permanent failure",
+				slog.String("activity", observe.ActivitySystem),
+				slog.Uint64("webhook_id", uint64(hook.ID)),
+				slog.String("delivery_id", deliveryID),
+				slog.Uint64("message_id", messageID),
+				slog.Int("attempt", attempt))
 			return
 		}
 		if attempt > len(schedule) {
 			d.recordOutcome(hook, status)
-			d.logger.Warn("protowebhook: retries exhausted",
-				"webhook_id", uint64(hook.ID),
-				"delivery_id", deliveryID,
-				"message_id", messageID,
-				"attempts", attempt)
+			d.logger.LogAttrs(ctx, slog.LevelError, "protowebhook: retries exhausted",
+				slog.String("activity", observe.ActivitySystem),
+				slog.Uint64("webhook_id", uint64(hook.ID)),
+				slog.String("delivery_id", deliveryID),
+				slog.Uint64("message_id", messageID),
+				slog.Int("attempts", attempt))
 			return
 		}
 		wait := schedule[attempt-1]
@@ -194,6 +202,7 @@ func (d *Dispatcher) recordDropAudit(ctx context.Context, hook store.Webhook, de
 		// Never blocks delivery; the log warn surfaces store-side
 		// problems for the operator.
 		d.logger.Warn("protowebhook: append audit log",
+			"activity", observe.ActivityInternal,
 			"webhook_id", uint64(hook.ID),
 			"err", err.Error())
 	}
@@ -209,6 +218,7 @@ func (d *Dispatcher) postOnce(ctx context.Context, hook store.Webhook, deliveryI
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hook.TargetURL, bytes.NewReader(body))
 	if err != nil {
 		d.logger.Warn("protowebhook: build request",
+			"activity", observe.ActivityInternal,
 			"webhook_id", uint64(hook.ID),
 			"err", err.Error())
 		return "network", false, false
@@ -361,6 +371,7 @@ func (d *Dispatcher) fillLegacyBody(
 			// Fall through to fetch_url mode if the body cannot be
 			// read inline; the receiver still gets a usable payload.
 			d.logger.Warn("protowebhook: inline body read",
+				"activity", observe.ActivityInternal,
 				"webhook_id", uint64(hook.ID),
 				"message_id", uint64(msg.ID),
 				"err", err.Error())
@@ -462,6 +473,7 @@ func (d *Dispatcher) fillLegacyBodySynthetic(
 		raw, err := readBlob(ctx, d.store, in.BlobHash)
 		if err != nil {
 			d.logger.Warn("protowebhook: synthetic inline body read",
+				"activity", observe.ActivityInternal,
 				"webhook_id", uint64(hook.ID),
 				"recipient", in.Recipient,
 				"err", err.Error())
@@ -556,6 +568,7 @@ func (d *Dispatcher) fillExtractedBody(
 		// On parse failure, the only safe origin claim is "none";
 		// log and fall through so text_required still drops.
 		d.logger.Warn("protowebhook: parse for extraction",
+			"activity", observe.ActivityInternal,
 			"webhook_id", uint64(hook.ID),
 			"message_id", uint64(msg.ID),
 			"err", perr.Error())

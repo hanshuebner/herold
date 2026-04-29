@@ -12,9 +12,11 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -78,6 +80,11 @@ func (c *Client) Order(ctx context.Context, hostnames []string, challengeType st
 	if c.account == nil || c.signer == nil {
 		return nil, errors.New("acme: client not registered; call Register first")
 	}
+	c.opts.Logger.InfoContext(ctx, "acme issue start",
+		slog.String("activity", observe.ActivitySystem),
+		slog.String("hostname", hostnames[0]),
+		slog.String("challenge_type", string(challengeType)),
+	)
 	dir, err := c.fetchDirectory(ctx)
 	if err != nil {
 		return nil, err
@@ -273,6 +280,11 @@ func (c *Client) driveOrder(ctx context.Context, row store.ACMEOrder, orderResp 
 	}
 	row.Status = store.ACMEOrderStatusValid
 	_ = c.opts.Store.Meta().UpdateACMEOrder(ctx, row)
+	c.opts.Logger.InfoContext(ctx, "acme issue success",
+		slog.String("activity", observe.ActivitySystem),
+		slog.String("hostname", cert.Hostname),
+		slog.Time("not_after", cert.NotAfter),
+	)
 	return &cert, nil
 }
 
@@ -389,8 +401,15 @@ func (c *Client) markOrderInvalid(ctx context.Context, row store.ACMEOrder, caus
 	if cause != nil {
 		row.Error = cause.Error()
 	}
+	c.opts.Logger.ErrorContext(ctx, "acme issue failure",
+		slog.String("activity", observe.ActivitySystem),
+		slog.Any("hostnames", row.Hostnames),
+		slog.Any("err", cause),
+	)
 	if err := c.opts.Store.Meta().UpdateACMEOrder(ctx, row); err != nil {
-		c.opts.Logger.Warn("acme mark order invalid", "order_id", row.ID, "err", err)
+		c.opts.Logger.Warn("acme mark order invalid",
+			"activity", observe.ActivitySystem,
+			"order_id", row.ID, "err", err)
 	}
 }
 
@@ -416,7 +435,9 @@ func (c *challengeCleanup) add(t store.ChallengeType, token, host, plugin string
 	case store.ChallengeTypeDNS01:
 		c.fns = append(c.fns, func(ctx context.Context) {
 			if err := client.opts.DNS01Challenger.Cleanup(ctx, host, plugin); err != nil {
-				client.opts.Logger.Warn("acme dns-01 cleanup", "err", err)
+				client.opts.Logger.Warn("acme dns-01 cleanup",
+					"activity", observe.ActivitySystem,
+					"err", err)
 			}
 		})
 	}

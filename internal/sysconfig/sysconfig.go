@@ -24,6 +24,10 @@ type Config struct {
 	SMTP          SMTPConfig          `toml:"smtp,omitempty"`
 	Hooks         HooksConfig         `toml:"hooks,omitempty"`
 	Observability ObservabilityConfig `toml:"observability"`
+	// Log holds the multi-sink logging configuration (REQ-OPS-80..86).
+	// The legacy [observability] block is translated into a single
+	// [[log.sink]] entry at parse time by translateLegacyObservability.
+	Log LogConfig `toml:"log,omitempty"`
 }
 
 // HooksConfig groups ingress-hook subsystems (SES inbound, future
@@ -682,23 +686,86 @@ type PluginConfig struct {
 	Options   map[string]string `toml:"options,omitempty"`
 }
 
-// ObservabilityConfig controls log format, level, metrics bind, and OTLP export.
+// ObservabilityConfig holds the legacy single-sink fields plus the non-log
+// observability knobs (metrics, OTLP). New deployments use [[log.sink]] and
+// leave LogFormat/LogLevel/LogModules empty; the legacy fields are accepted as
+// a translation shim (one place, translateLegacyObservability) that synthesises
+// a single [[log.sink]] entry and emits a deprecation warning.
+//
+// MetricsBind and OTLPEndpoint remain here; they are not part of the per-sink
+// model and require no migration.
 type ObservabilityConfig struct {
+	// LogFormat is the legacy single-sink format ("json" or "text").
+	// Deprecated: use [[log.sink]] format instead.
 	LogFormat string `toml:"log_format,omitempty"`
-	LogLevel  string `toml:"log_level,omitempty"`
-	// LogModules allows per-subsystem level overrides (REQ-OPS-82).
-	// Keys are lowercase ASCII subsystem identifiers matching the
-	// "subsystem" or "module" attribute written by logger.With. Values
-	// are log level strings from the same closed enum as LogLevel
-	// ("trace", "debug", "info", "warn", "error").
-	//
-	// Example:
-	//   [observability]
-	//   log_level = "info"
-	//   log_modules = { smtp = "debug", queue = "warn" }
+	// LogLevel is the legacy single-sink level.
+	// Deprecated: use [[log.sink]] level instead.
+	LogLevel string `toml:"log_level,omitempty"`
+	// LogModules is the legacy per-module level map.
+	// Deprecated: use [[log.sink]] modules instead.
 	LogModules   map[string]string `toml:"log_modules,omitempty"`
 	MetricsBind  string            `toml:"metrics_bind,omitempty"`
 	OTLPEndpoint string            `toml:"otlp_endpoint,omitempty"`
+}
+
+// LogConfig is the top-level [log] table that holds the [[log.sink]] array
+// (REQ-OPS-80..86). An empty Sinks slice is valid; applyDefaults inserts
+// one stderr/auto/info sink so the process always produces some output.
+//
+// SecretKeys, if non-nil, overrides the default list of log attribute keys
+// whose values are redacted (REQ-OPS-84). Matching is case-insensitive exact.
+type LogConfig struct {
+	Sink []LogSinkConfig `toml:"sink,omitempty"`
+	// SecretKeys overrides the redaction key list for all sinks. Nil keeps
+	// the observe.DefaultSecretKeys set. Splitting per-sink is not supported;
+	// redaction is a single outermost layer applied before fan-out (REQ-OPS-84).
+	SecretKeys []string `toml:"secret_keys,omitempty"`
+}
+
+// LogSinkConfig describes a single log destination (REQ-OPS-80..86b).
+//
+// Example (TOML):
+//
+//	[[log.sink]]
+//	target = "stderr"
+//	format = "auto"
+//	level  = "info"
+//	activities = { deny = ["poll", "access"] }
+//
+//	[[log.sink]]
+//	target = "/var/log/herold/herold.jsonl"
+//	format = "json"
+//	level  = "debug"
+type LogSinkConfig struct {
+	// Target is one of "stderr", "stdout", or an absolute filesystem path.
+	// Relative paths and "/dev/null" are rejected at Validate.
+	Target string `toml:"target"`
+	// Format selects the rendering: "json", "console", or "auto" (default).
+	// "auto" resolves to "console" when Target is a TTY at process start,
+	// "json" otherwise (REQ-OPS-81a).
+	Format string `toml:"format,omitempty"`
+	// Level is the minimum level for this sink: trace/debug/info/warn/error.
+	// Default "info".
+	Level string `toml:"level,omitempty"`
+	// Modules maps subsystem/module names to per-module level overrides
+	// (REQ-OPS-82). Keys match the "subsystem" or "module" slog attribute;
+	// values are from the same closed enum as Level.
+	Modules map[string]string `toml:"modules,omitempty"`
+	// Activities is the optional activity filter for this sink (REQ-OPS-86b).
+	// Set either Allow or Deny; setting both is a validation error.
+	Activities ActivityFilterConfig `toml:"activities,omitempty"`
+}
+
+// ActivityFilterConfig holds the allow/deny lists for the activity filter
+// (REQ-OPS-86b). Exactly one of Allow or Deny may be non-nil; both set is
+// a validation error. Neither set means "pass all activities".
+type ActivityFilterConfig struct {
+	// Allow lists the only activities that pass this sink.
+	// Mutually exclusive with Deny.
+	Allow []string `toml:"allow,omitempty"`
+	// Deny lists activities that are dropped by this sink.
+	// Mutually exclusive with Allow.
+	Deny []string `toml:"deny,omitempty"`
 }
 
 // secretKeySubstrings is the closed-vocabulary list of substrings the
@@ -758,12 +825,14 @@ var (
 		ListenerKindPublic: {},
 		ListenerKindAdmin:  {},
 	}
-	validTLSModes   = map[string]struct{}{"none": {}, "starttls": {}, "implicit": {}}
-	validLifecycles = map[string]struct{}{"long-running": {}, "on-demand": {}}
-	validPluginType = map[string]struct{}{"dns": {}, "spam": {}, "events": {}, "directory": {}, "delivery": {}}
-	validLogLevels  = map[string]struct{}{"trace": {}, "debug": {}, "info": {}, "warn": {}, "error": {}}
-	validLogFormats = map[string]struct{}{"json": {}, "text": {}}
-	validBackends   = map[string]struct{}{"sqlite": {}, "postgres": {}}
+	validTLSModes    = map[string]struct{}{"none": {}, "starttls": {}, "implicit": {}}
+	validLifecycles  = map[string]struct{}{"long-running": {}, "on-demand": {}}
+	validPluginType  = map[string]struct{}{"dns": {}, "spam": {}, "events": {}, "directory": {}, "delivery": {}}
+	validLogLevels   = map[string]struct{}{"trace": {}, "debug": {}, "info": {}, "warn": {}, "error": {}}
+	validLogFormats  = map[string]struct{}{"json": {}, "text": {}, "console": {}, "auto": {}}
+	validSinkFormats = map[string]struct{}{"json": {}, "console": {}, "auto": {}}
+	validActivities  = map[string]struct{}{"user": {}, "audit": {}, "system": {}, "poll": {}, "access": {}, "internal": {}}
+	validBackends    = map[string]struct{}{"sqlite": {}, "postgres": {}}
 
 	// Smart-host enums (REQ-FLOW-SMARTHOST-01..06).
 	validSmartHostTLSModes = map[string]struct{}{
@@ -838,6 +907,33 @@ func applyDefaults(c *Config) {
 	}
 	if c.Observability.MetricsBind == "" {
 		c.Observability.MetricsBind = "127.0.0.1:9090"
+	}
+	// Multi-sink defaults (REQ-OPS-80): if no [[log.sink]] entries were
+	// configured AND the legacy [observability] block has no log fields,
+	// insert a single stderr/auto/info sink so the process always emits
+	// something. The legacy translation runs below in translateLegacyObservability
+	// and may populate Log.Sink first.
+	translateLegacyObservability(c)
+	if len(c.Log.Sink) == 0 {
+		c.Log.Sink = []LogSinkConfig{
+			{
+				Target: "stderr",
+				Format: "auto",
+				Level:  "info",
+				Activities: ActivityFilterConfig{
+					Deny: []string{"poll", "access"},
+				},
+			},
+		}
+	}
+	// Apply per-sink defaults.
+	for i := range c.Log.Sink {
+		if c.Log.Sink[i].Format == "" {
+			c.Log.Sink[i].Format = "auto"
+		}
+		if c.Log.Sink[i].Level == "" {
+			c.Log.Sink[i].Level = "info"
+		}
 	}
 	if c.Server.Storage.Backend == "" {
 		c.Server.Storage.Backend = "sqlite"
@@ -995,6 +1091,126 @@ func applySmartHostDefaults(sh *SmartHostConfig) {
 			sh.TLSMode = "starttls"
 		}
 	}
+}
+
+// validateLogSinks checks the [[log.sink]] array (REQ-OPS-80..86b).
+// Called from Validate after applyDefaults has run, so each sink has
+// non-empty Format and Level.
+func validateLogSinks(sinks []LogSinkConfig) error {
+	fileSeen := make(map[string]struct{})
+	for i, s := range sinks {
+		label := fmt.Sprintf("[[log.sink]] #%d (target=%q)", i, s.Target)
+		// Target validation: must be "stderr", "stdout", or an absolute path.
+		// Relative paths and "/dev/null" are rejected (REQ-OPS-81).
+		if s.Target == "" {
+			return fmt.Errorf("sysconfig: %s: target is required", label)
+		}
+		if s.Target != "stderr" && s.Target != "stdout" {
+			if !strings.HasPrefix(s.Target, "/") {
+				return fmt.Errorf("sysconfig: %s: target must be \"stderr\", \"stdout\", or an absolute path", label)
+			}
+			if s.Target == "/dev/null" {
+				return fmt.Errorf("sysconfig: %s: target \"/dev/null\" is not permitted", label)
+			}
+			// Duplicate file targets (REQ-OPS-80): one sink per path.
+			if _, dup := fileSeen[s.Target]; dup {
+				return fmt.Errorf("sysconfig: %s: duplicate file target %q (one sink per path)", label, s.Target)
+			}
+			fileSeen[s.Target] = struct{}{}
+		}
+		// Format.
+		if _, ok := validSinkFormats[s.Format]; !ok {
+			return fmt.Errorf("sysconfig: %s: format %q not recognised (want \"json\", \"console\", or \"auto\")", label, s.Format)
+		}
+		// Level.
+		if _, ok := validLogLevels[s.Level]; !ok {
+			return fmt.Errorf("sysconfig: %s: level %q not recognised", label, s.Level)
+		}
+		// Per-module level overrides.
+		for mod, lvl := range s.Modules {
+			if !isValidModuleIdent(mod) {
+				return fmt.Errorf("sysconfig: %s: modules key %q must be a non-empty lowercase ASCII identifier", label, mod)
+			}
+			if _, ok := validLogLevels[lvl]; !ok {
+				return fmt.Errorf("sysconfig: %s: modules[%q] level %q not recognised", label, mod, lvl)
+			}
+		}
+		// Activities filter (REQ-OPS-86b).
+		act := s.Activities
+		if len(act.Allow) > 0 && len(act.Deny) > 0 {
+			return fmt.Errorf("sysconfig: %s: activities.allow and activities.deny are mutually exclusive", label)
+		}
+		for _, a := range act.Allow {
+			if _, ok := validActivities[a]; !ok {
+				return fmt.Errorf("sysconfig: %s: activities.allow value %q not in enum {user,audit,system,poll,access,internal}", label, a)
+			}
+		}
+		for _, a := range act.Deny {
+			if _, ok := validActivities[a]; !ok {
+				return fmt.Errorf("sysconfig: %s: activities.deny value %q not in enum {user,audit,system,poll,access,internal}", label, a)
+			}
+		}
+	}
+	return nil
+}
+
+// translateLegacyObservability checks whether the operator used the old
+// [observability] log_format / log_level / log_modules fields. If so — and if
+// no [[log.sink]] entries were explicitly configured — it synthesises a single
+// [[log.sink]] entry from those fields and records a deprecation warning via
+// slog (printed at runtime, so it appears after the logger is bootstrapped).
+//
+// This shim is the single place where legacy-to-new translation lives;
+// no other code path scatters legacy logic.
+func translateLegacyObservability(c *Config) {
+	obs := &c.Observability
+	hasLegacyLog := obs.LogFormat != "" && obs.LogFormat != "json" ||
+		obs.LogLevel != "" && obs.LogLevel != "info" ||
+		len(obs.LogModules) > 0
+	if !hasLegacyLog {
+		return
+	}
+	if len(c.Log.Sink) > 0 {
+		// Operator mixed legacy and new forms. We ignore the legacy fields;
+		// the validator will later reject if needed.
+		return
+	}
+	// Build a synthetic sink. Map the old "text" format to "console".
+	format := obs.LogFormat
+	switch format {
+	case "text":
+		format = "console"
+	case "":
+		format = "auto"
+	}
+	level := obs.LogLevel
+	if level == "" {
+		level = "info"
+	}
+	// Clone modules map to avoid aliasing.
+	var modules map[string]string
+	if len(obs.LogModules) > 0 {
+		modules = make(map[string]string, len(obs.LogModules))
+		for k, v := range obs.LogModules {
+			modules[k] = v
+		}
+	}
+	c.Log.Sink = []LogSinkConfig{
+		{
+			Target:  "stderr",
+			Format:  format,
+			Level:   level,
+			Modules: modules,
+		},
+	}
+	// Emit a deprecation warning. At the time applyDefaults runs the
+	// configured logger may not be up yet; slog.Default() falls back to the
+	// stdlib default JSON logger which is fine — the message will still reach
+	// the operator via stderr.
+	slog.Default().LogAttrs(context.Background(), slog.LevelWarn,
+		"sysconfig: [observability] log_format/log_level/log_modules are deprecated; migrate to [[log.sink]] (REQ-OPS-80)",
+		slog.String("action", "synthesised single [[log.sink]] from legacy fields"),
+	)
 }
 
 // Validate performs cross-field and semantic checks that go-toml cannot express.
@@ -1388,7 +1604,8 @@ func Validate(c *Config) error {
 			}
 		}
 	}
-	// Observability.
+	// Observability legacy fields (validated only when present; the
+	// new [[log.sink]] model is validated below).
 	if _, ok := validLogFormats[c.Observability.LogFormat]; !ok {
 		return fmt.Errorf("sysconfig: [observability] log_format %q not recognised", c.Observability.LogFormat)
 	}
@@ -1402,6 +1619,10 @@ func Validate(c *Config) error {
 		if _, ok := validLogLevels[lvl]; !ok {
 			return fmt.Errorf("sysconfig: [observability] log_modules[%q] level %q not recognised", mod, lvl)
 		}
+	}
+	// [[log.sink]] validation (REQ-OPS-80..86b).
+	if err := validateLogSinks(c.Log.Sink); err != nil {
+		return err
 	}
 	// Storage.
 	if _, ok := validBackends[c.Server.Storage.Backend]; !ok {

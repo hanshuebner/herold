@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"runtime/debug"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -63,6 +64,7 @@ func newRequestID() string {
 }
 
 // withRequestLog attaches a request ID and scoped slog.Logger.
+// Tagged activity=access at debug (REQ-OPS-86d).
 func (s *Server) withRequestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rid := r.Header.Get("X-Request-ID")
@@ -71,6 +73,8 @@ func (s *Server) withRequestLog(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Request-ID", rid)
 		lg := s.logger.With(
+			slog.String("subsystem", "protosend"),
+			slog.String("activity", observe.ActivityAccess),
 			slog.String("request_id", rid),
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
@@ -81,19 +85,20 @@ func (s *Server) withRequestLog(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, ctxKeyRemoteAddr, r.RemoteAddr)
 		rec := &statusRecorder{ResponseWriter: w, status: 200}
 		next.ServeHTTP(rec, r.WithContext(ctx))
-		lg.LogAttrs(ctx, slog.LevelInfo, "protosend.request",
+		lg.LogAttrs(ctx, slog.LevelDebug, "protosend.request",
 			slog.Int("status", rec.status))
 	})
 }
 
 // withPanicRecover catches panics in downstream handlers and returns a
 // 500 problem response. One rogue handler does not crash the server
-// (STANDARDS.md §6).
+// (STANDARDS.md §6). Tagged activity=internal at error (REQ-OPS-86).
 func (s *Server) withPanicRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				s.loggerFrom(r.Context()).Error("protosend.panic",
+					"activity", observe.ActivityInternal,
 					"err", fmt.Sprintf("%v", rec),
 					"stack", string(debug.Stack()))
 				writeProblem(w, r, http.StatusInternalServerError,

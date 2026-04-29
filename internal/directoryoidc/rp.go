@@ -15,6 +15,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -169,6 +170,7 @@ func (r *RP) AddProvider(ctx context.Context, p ProviderConfig) (ProviderID, err
 	r.configs[id] = p
 	r.mu.Unlock()
 	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.provider.add",
+		slog.String("activity", observe.ActivityAudit),
 		slog.String("name", p.Name),
 		slog.String("issuer", p.IssuerURL))
 	return id, nil
@@ -250,7 +252,14 @@ func (r *RP) BeginLink(ctx context.Context, pid PrincipalID, providerID Provider
 	}
 	r.mu.Unlock()
 	oauthCfg := oauth2Config(prov, cfg, secret)
-	return oauthCfg.AuthCodeURL(st, oidc.Nonce(nonce)), st, nil
+	authURL = oauthCfg.AuthCodeURL(st, oidc.Nonce(nonce))
+	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.redirect",
+		slog.String("activity", observe.ActivityAudit),
+		slog.String("flow", "link"),
+		slog.String("issuer", cfg.IssuerURL),
+		slog.Uint64("principal_id", uint64(pid)),
+	)
+	return authURL, st, nil
 }
 
 // BeginSignIn starts a sign-in flow (no prior principal). The caller
@@ -276,7 +285,13 @@ func (r *RP) BeginSignIn(ctx context.Context, providerID ProviderID) (authURL, s
 	}
 	r.mu.Unlock()
 	oauthCfg := oauth2Config(prov, cfg, secret)
-	return oauthCfg.AuthCodeURL(st, oidc.Nonce(nonce)), st, nil
+	authURL = oauthCfg.AuthCodeURL(st, oidc.Nonce(nonce))
+	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.redirect",
+		slog.String("activity", observe.ActivityAudit),
+		slog.String("flow", "sign-in"),
+		slog.String("issuer", cfg.IssuerURL),
+	)
+	return authURL, st, nil
 }
 
 // CompleteLink exchanges code for a token set, verifies the ID token,
@@ -287,13 +302,31 @@ func (r *RP) CompleteLink(ctx context.Context, state, code string) (PrincipalID,
 	}
 	pending, err := r.takePending(state)
 	if err != nil {
+		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.callback.invalid_state",
+			slog.String("activity", observe.ActivityAudit),
+			slog.String("flow", "link"),
+			slog.String("err", err.Error()),
+		)
 		return 0, err
 	}
 	if pending.principalID == 0 {
 		return 0, fmt.Errorf("%w: state is for sign-in, not link", ErrInvalidState)
 	}
+	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.callback",
+		slog.String("activity", observe.ActivityAudit),
+		slog.String("flow", "link"),
+		slog.String("provider", string(pending.providerID)),
+		slog.Uint64("principal_id", uint64(pending.principalID)),
+	)
 	sub, _, err := r.exchangeAndVerify(ctx, pending, code)
 	if err != nil {
+		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.callback.failed",
+			slog.String("activity", observe.ActivityAudit),
+			slog.String("flow", "link"),
+			slog.String("provider", string(pending.providerID)),
+			slog.Uint64("principal_id", uint64(pending.principalID)),
+			slog.String("err", err.Error()),
+		)
 		return 0, err
 	}
 	if err := r.meta.LinkOIDC(ctx, store.OIDCLink{
@@ -307,8 +340,10 @@ func (r *RP) CompleteLink(ctx context.Context, state, code string) (PrincipalID,
 		return 0, fmt.Errorf("directoryoidc: link: %w", err)
 	}
 	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.link",
+		slog.String("activity", observe.ActivityAudit),
 		slog.String("provider", string(pending.providerID)),
-		slog.Uint64("principal_id", uint64(pending.principalID)))
+		slog.Uint64("principal_id", uint64(pending.principalID)),
+	)
 	return pending.principalID, nil
 }
 
@@ -321,13 +356,29 @@ func (r *RP) CompleteSignIn(ctx context.Context, state, code string) (PrincipalI
 	}
 	pending, err := r.takePending(state)
 	if err != nil {
+		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.callback.invalid_state",
+			slog.String("activity", observe.ActivityAudit),
+			slog.String("flow", "sign-in"),
+			slog.String("err", err.Error()),
+		)
 		return 0, err
 	}
 	if pending.principalID != 0 {
 		return 0, fmt.Errorf("%w: state is for link, not sign-in", ErrInvalidState)
 	}
+	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.callback",
+		slog.String("activity", observe.ActivityAudit),
+		slog.String("flow", "sign-in"),
+		slog.String("provider", string(pending.providerID)),
+	)
 	sub, _, err := r.exchangeAndVerify(ctx, pending, code)
 	if err != nil {
+		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.callback.failed",
+			slog.String("activity", observe.ActivityAudit),
+			slog.String("flow", "sign-in"),
+			slog.String("provider", string(pending.providerID)),
+			slog.String("err", err.Error()),
+		)
 		return 0, err
 	}
 	link, err := r.meta.LookupOIDCLink(ctx, string(pending.providerID), sub)
@@ -337,6 +388,11 @@ func (r *RP) CompleteSignIn(ctx context.Context, state, code string) (PrincipalI
 		}
 		return 0, fmt.Errorf("directoryoidc: lookup link: %w", err)
 	}
+	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.sign_in",
+		slog.String("activity", observe.ActivityAudit),
+		slog.String("provider", string(pending.providerID)),
+		slog.Uint64("principal_id", uint64(link.PrincipalID)),
+	)
 	return link.PrincipalID, nil
 }
 
@@ -353,8 +409,10 @@ func (r *RP) Unlink(ctx context.Context, pid PrincipalID, providerID ProviderID)
 		return fmt.Errorf("directoryoidc: unlink: %w", err)
 	}
 	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.unlink",
+		slog.String("activity", observe.ActivityAudit),
 		slog.String("provider", string(providerID)),
-		slog.Uint64("principal_id", uint64(pid)))
+		slog.Uint64("principal_id", uint64(pid)),
+	)
 	return nil
 }
 

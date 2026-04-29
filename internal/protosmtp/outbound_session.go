@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -485,6 +486,7 @@ func (c *Client) deliverToMX(
 		out.EnhancedCode = fe
 		out.Diagnostic = ft
 		c.log.InfoContext(ctx, "outbound: delivered",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("domain", domain),
 			slog.String("mx", cand.host),
 			slog.String("rcpt", req.RcptTo),

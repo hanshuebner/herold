@@ -123,6 +123,8 @@ func (i *Ingestor) IngestMessage(ctx context.Context, raw []byte) (bool, error) 
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			i.logger.InfoContext(ctx, "maildmarc: duplicate DMARC report ignored",
+				slog.String("activity", "system"),
+				slog.String("subsystem", "maildmarc"),
 				slog.String("reporter_org", header.ReporterOrg),
 				slog.String("report_id", header.ReportID),
 				slog.String("domain", header.Domain),
@@ -132,6 +134,8 @@ func (i *Ingestor) IngestMessage(ctx context.Context, raw []byte) (bool, error) 
 		return true, fmt.Errorf("maildmarc: persist report: %w", err)
 	}
 	i.logger.InfoContext(ctx, "maildmarc: ingested DMARC aggregate report",
+		slog.String("activity", "system"),
+		slog.String("subsystem", "maildmarc"),
 		slog.String("reporter_org", header.ReporterOrg),
 		slog.String("report_id", header.ReportID),
 		slog.String("domain", header.Domain),
@@ -166,6 +170,8 @@ func (i *Ingestor) persistFailure(ctx context.Context, msg *mailparse.Message, r
 			return
 		}
 		i.logger.WarnContext(ctx, "maildmarc: persist parse failure",
+			slog.String("activity", "internal"),
+			slog.String("subsystem", "maildmarc"),
 			slog.String("reason", reason),
 			slog.Any("err", err),
 		)

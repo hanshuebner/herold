@@ -350,6 +350,37 @@ func TestResolveRcpt_AuditLogWritten(t *testing.T) {
 	}
 }
 
+// TestActivityTagged_ResolveRcpt_Failure asserts that the "resolve_rcpt failed"
+// warn path carries activity=system (REQ-OPS-86a).
+func TestActivityTagged_ResolveRcpt_Failure(t *testing.T) {
+	observe.AssertActivityTagged(t, func(log *slog.Logger) {
+		clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+		fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+		if err != nil {
+			t.Fatalf("fakestore: %v", err)
+		}
+		defer fs.Close()
+		inv := &fakeResolveRcptInvoker{
+			fn: func(_ context.Context, _ string, _ directory.ResolveRcptRequest) (directory.ResolveRcptResponse, error) {
+				return directory.ResolveRcptResponse{}, fmt.Errorf("%w: timed out", directory.ErrResolveRcptTimeout)
+			},
+		}
+		r, err := directory.NewRcptResolver(directory.RcptResolverConfig{
+			Invoker:  inv,
+			Clock:    clk,
+			Logger:   log,
+			Metadata: fs.Meta(),
+		})
+		if err != nil {
+			t.Fatalf("NewRcptResolver: %v", err)
+		}
+		r.Resolve(context.Background(), "plugin", directory.ResolveRcptRequest{
+			Recipient: "x@y",
+			Envelope:  directory.ResolveRcptEnvelope{SourceIP: "1.1.1.1"},
+		})
+	})
+}
+
 // Confirm sentinel errors classify cleanly via errors.Is.
 func TestResolveRcptSentinelErrorsAreErrorsIs(t *testing.T) {
 	wrapped := fmt.Errorf("call failed: %w", directory.ErrResolveRcptTimeout)

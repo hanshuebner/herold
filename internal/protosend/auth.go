@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/hanshuebner/herold/internal/auth"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -35,12 +36,16 @@ func HashAPIKey(plaintext string) string {
 // requireAuth enforces Bearer-token authentication, per-key rate
 // limiting, and the mail.send scope check (REQ-AUTH-SCOPE-02).
 // On success it attaches the principal + API key + AuthContext to the
-// request context.
+// request context. Auth failures are audit=warn; scope denials are audit=warn.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		principal, key, ok := s.authenticate(ctx, r)
 		if !ok {
+			s.loggerFrom(ctx).WarnContext(ctx, "protosend.auth.failed",
+				"activity", observe.ActivityAudit,
+				"method", r.Method,
+				"path", r.URL.Path)
 			writeProblem(w, r, http.StatusUnauthorized,
 				"unauthorized", "authentication required", "")
 			return
@@ -62,6 +67,10 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		})
 		// REQ-AUTH-SCOPE-02: mail.send scope is required for /api/v1/mail/*.
 		if err := auth.RequireScope(ctx, auth.ScopeMailSend); err != nil {
+			s.loggerFrom(ctx).WarnContext(ctx, "protosend.scope_denied",
+				"activity", observe.ActivityAudit,
+				"api_key_id", key.ID,
+				"err", err)
 			writeProblem(w, r, http.StatusForbidden, "insufficient_scope",
 				"insufficient scope for this resource", err.Error())
 			return
@@ -104,7 +113,8 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Princ
 	key, err := s.apikeyLookup(ctx, hashed)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
-			s.loggerFrom(ctx).Warn("protosend.auth.lookup_failed", "err", err)
+			s.loggerFrom(ctx).Warn("protosend.auth.lookup_failed",
+				"activity", observe.ActivityAudit, "err", err)
 		}
 		return store.Principal{}, store.APIKey{}, false
 	}
@@ -114,6 +124,7 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Princ
 	p, err := s.store.Meta().GetPrincipalByID(ctx, key.PrincipalID)
 	if err != nil {
 		s.loggerFrom(ctx).Warn("protosend.auth.principal_lookup_failed",
+			"activity", observe.ActivityAudit,
 			"err", err, "principal_id", key.PrincipalID)
 		return store.Principal{}, store.APIKey{}, false
 	}

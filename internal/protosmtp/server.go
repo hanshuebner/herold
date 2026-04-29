@@ -460,6 +460,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) 
 		// Per-IP cap check.
 		if !s.admitIP(remoteIP) {
 			s.log.InfoContext(ctx, "smtp connection refused (per-IP cap)",
+				slog.String("activity", observe.ActivityAccess),
 				slog.String("remote_ip", remoteIP),
 				slog.String("mode", mode.String()))
 			// Best-effort 421 emission before close.
@@ -474,6 +475,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) 
 		default:
 			s.releaseIP(remoteIP)
 			s.log.InfoContext(ctx, "smtp connection refused (server cap)",
+				slog.String("activity", observe.ActivityAccess),
 				slog.String("remote_ip", remoteIP),
 				slog.String("mode", mode.String()))
 			_ = writeGreetline(conn, "421 4.7.0 server too busy\r\n", s.opts.WriteTimeout)
@@ -516,6 +518,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) 
 				if err := tlsConn.HandshakeContext(s.ctx); err != nil {
 					outcome = "error"
 					s.log.InfoContext(s.ctx, "smtp implicit-tls handshake failed",
+						slog.String("activity", observe.ActivityAccess),
 						slog.String("remote_ip", rip),
 						slog.String("err", err.Error()))
 					_ = tlsConn.Close()

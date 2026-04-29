@@ -87,11 +87,13 @@ func (sess *session) tryConsumeReaction(
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// Original not found — deliver normally (REQ-FLOW-105.4).
-			sess.srv.log.DebugContext(ctx, "reaction: original not found; delivering normally",
+			sess.log.DebugContext(ctx, "reaction: original not found; delivering normally",
+				slog.String("activity", observe.ActivityInternal),
 				slog.String("message_id", origMsgID))
 			return false
 		}
-		sess.srv.log.WarnContext(ctx, "reaction: store lookup error; delivering normally",
+		sess.log.WarnContext(ctx, "reaction: store lookup error; delivering normally",
+			slog.String("activity", observe.ActivityInternal),
 			slog.String("message_id", origMsgID),
 			slog.String("err", err.Error()))
 		return false
@@ -106,7 +108,8 @@ func (sess *session) tryConsumeReaction(
 	// Verify reactor is a recognised participant (sender or recipient).
 	if !isRecognisedParticipant(reactorAddr, origMsg.Envelope) {
 		// Deliver normally (REQ-FLOW-105.4).
-		sess.srv.log.DebugContext(ctx, "reaction: reactor not a recognised participant; delivering normally",
+		sess.log.DebugContext(ctx, "reaction: reactor not a recognised participant; delivering normally",
+			slog.String("activity", observe.ActivityInternal),
 			slog.String("reactor", reactorAddr),
 			slog.String("message_id", origMsgID))
 		return false
@@ -115,14 +118,16 @@ func (sess *session) tryConsumeReaction(
 	// REQ-FLOW-106: look up or synthesise a reactor principal id.
 	reactorPID, err := sess.resolveOrSynthesiseReactorPrincipal(ctx, reactorAddr)
 	if err != nil {
-		sess.srv.log.WarnContext(ctx, "reaction: reactor principal resolution failed; delivering normally",
+		sess.log.WarnContext(ctx, "reaction: reactor principal resolution failed; delivering normally",
+			slog.String("activity", observe.ActivityInternal),
 			slog.String("reactor", reactorAddr),
 			slog.String("err", err.Error()))
 		return false
 	}
 	if reactorPID == 0 {
 		// External reactor not in directory — deliver normally.
-		sess.srv.log.DebugContext(ctx, "reaction: reactor not in directory; delivering normally",
+		sess.log.DebugContext(ctx, "reaction: reactor not in directory; delivering normally",
+			slog.String("activity", observe.ActivityInternal),
 			slog.String("reactor", reactorAddr))
 		return false
 	}
@@ -131,7 +136,8 @@ func (sess *session) tryConsumeReaction(
 	if err := sess.srv.store.Meta().AddEmailReaction(
 		ctx, origMsg.ID, rh.reactionEmoji, reactorPID, sess.srv.clk.Now(),
 	); err != nil {
-		sess.srv.log.WarnContext(ctx, "reaction: add reaction failed; delivering normally",
+		sess.log.WarnContext(ctx, "reaction: add reaction failed; delivering normally",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("err", err.Error()))
 		return false
 	}
@@ -139,7 +145,8 @@ func (sess *session) tryConsumeReaction(
 	// Advance the Email JMAP state so push/EventSource clients see the change.
 	// Best-effort: failure here does not prevent consumption.
 	if _, err := sess.srv.store.Meta().IncrementJMAPState(ctx, rcpID, store.JMAPStateKindEmail); err != nil {
-		sess.srv.log.WarnContext(ctx, "reaction: bump jmap state failed",
+		sess.log.WarnContext(ctx, "reaction: bump jmap state failed",
+			slog.String("activity", observe.ActivityInternal),
 			slog.String("err", err.Error()))
 	}
 
@@ -147,7 +154,8 @@ func (sess *session) tryConsumeReaction(
 	observe.RegisterReactionMetrics()
 	observe.ReactionConsumedTotal.WithLabelValues(fmt.Sprintf("%d", uint64(rcpID))).Inc()
 
-	sess.srv.log.InfoContext(ctx, "reaction: consumed inbound reaction email",
+	sess.log.InfoContext(ctx, "reaction: consumed inbound reaction email",
+		slog.String("activity", observe.ActivitySystem),
 		slog.String("emoji", rh.reactionEmoji),
 		slog.String("reactor", reactorAddr),
 		slog.String("original_message_id", origMsgID))

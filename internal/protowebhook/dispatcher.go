@@ -16,6 +16,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailparse"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -253,6 +254,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 					return nil
 				}
 				d.logger.Warn("protowebhook: persist cursor",
+					"activity", observe.ActivityInternal,
 					"key", d.cursorKey,
 					"seq", maxSeq,
 					"err", err.Error())
@@ -272,6 +274,7 @@ func (d *Dispatcher) processChange(ctx context.Context, c store.FTSChange) {
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			d.logger.Warn("protowebhook: get message",
+				"activity", observe.ActivityInternal,
 				"message_id", uint64(msgID),
 				"err", err.Error())
 		}
@@ -281,6 +284,7 @@ func (d *Dispatcher) processChange(ctx context.Context, c store.FTSChange) {
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			d.logger.Warn("protowebhook: get mailbox",
+				"activity", observe.ActivityInternal,
 				"mailbox_id", uint64(mailboxID),
 				"err", err.Error())
 		}
@@ -290,6 +294,7 @@ func (d *Dispatcher) processChange(ctx context.Context, c store.FTSChange) {
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			d.logger.Warn("protowebhook: get principal",
+				"activity", observe.ActivityInternal,
 				"principal_id", uint64(mb.PrincipalID),
 				"err", err.Error())
 		}
@@ -339,6 +344,7 @@ func (d *Dispatcher) matchingWebhooks(ctx context.Context, p store.Principal, do
 		hooks, err := d.store.Meta().ListActiveWebhooksForDomain(ctx, domain)
 		if err != nil {
 			d.logger.Warn("protowebhook: list domain webhooks",
+				"activity", observe.ActivityInternal,
 				"domain", domain,
 				"err", err.Error())
 		}
@@ -354,6 +360,7 @@ func (d *Dispatcher) matchingWebhooks(ctx context.Context, p store.Principal, do
 	hooks, err := d.store.Meta().ListWebhooks(ctx, store.WebhookOwnerPrincipal, pidStr)
 	if err != nil {
 		d.logger.Warn("protowebhook: list principal webhooks",
+			"activity", observe.ActivityInternal,
 			"principal_id", uint64(p.ID),
 			"err", err.Error())
 	}
@@ -424,6 +431,7 @@ func (d *Dispatcher) MatchingSyntheticHooks(ctx context.Context, domain string) 
 	hooks, err := d.store.Meta().ListActiveWebhooksForDomain(ctx, domain)
 	if err != nil {
 		d.logger.Warn("protowebhook: list synthetic webhooks",
+			"activity", observe.ActivityInternal,
 			"domain", domain,
 			"err", err.Error())
 		return nil
@@ -487,12 +495,14 @@ func (d *Dispatcher) DispatchSynthetic(ctx context.Context, in SyntheticDispatch
 func (d *Dispatcher) deliverSynthetic(ctx context.Context, hook store.Webhook, in SyntheticDispatch) {
 	deliveryID, err := newDeliveryID()
 	if err != nil {
-		d.logger.Warn("protowebhook: synthetic generate delivery id", "err", err.Error())
+		d.logger.Warn("protowebhook: synthetic generate delivery id",
+			"activity", observe.ActivityInternal, "err", err.Error())
 		return
 	}
 	payload, dropped, err := d.buildSyntheticPayload(ctx, hook, deliveryID, in)
 	if err != nil {
 		d.logger.Warn("protowebhook: build synthetic payload",
+			"activity", observe.ActivityInternal,
 			"webhook_id", uint64(hook.ID),
 			"recipient", in.Recipient,
 			"err", err.Error())
@@ -504,6 +514,7 @@ func (d *Dispatcher) deliverSynthetic(ctx context.Context, hook store.Webhook, i
 		d.recordOutcome(hook, "dropped_no_text")
 		d.recordDropAudit(ctx, hook, deliveryID, 0, in.Parsed.Envelope.MessageID)
 		d.logger.Info("protowebhook: synthetic dropped no_text",
+			"activity", observe.ActivitySystem,
 			"webhook_id", uint64(hook.ID),
 			"delivery_id", deliveryID,
 			"recipient", in.Recipient)

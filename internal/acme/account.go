@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -109,6 +110,7 @@ func (c *Client) Register(ctx context.Context, contactEmail string) error {
 	c.account = &saved
 	c.signer = signer
 	c.opts.Logger.Info("acme account registered",
+		"activity", observe.ActivitySystem,
 		"directory", c.opts.DirectoryURL,
 		"contact", contactEmail,
 		"kid", saved.KID)

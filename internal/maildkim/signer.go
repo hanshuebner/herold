@@ -138,6 +138,8 @@ func (s *Signer) Sign(ctx context.Context, domain string, message []byte) ([]byt
 		return nil, fmt.Errorf("maildkim: sign: %w", err)
 	}
 	s.logger.DebugContext(ctx, "maildkim: signed message",
+		slog.String("activity", "system"),
+		slog.String("subsystem", "maildkim"),
 		slog.String("domain", key.Domain),
 		slog.String("selector", key.Selector),
 		slog.String("algorithm", key.Algorithm.String()))

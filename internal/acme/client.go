@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	herotls "github.com/hanshuebner/herold/internal/tls"
 )
@@ -141,6 +142,7 @@ func (c *Client) EnsureCert(ctx context.Context, hostnames []string, challengeTy
 	if existing, err := c.opts.Store.Meta().GetACMECert(ctx, primary); err == nil {
 		if existing.NotAfter.Sub(now) > RenewalThreshold {
 			c.opts.Logger.DebugContext(ctx, "acme cert still fresh",
+				slog.String("activity", observe.ActivityPoll),
 				"hostname", primary, "not_after", existing.NotAfter)
 			c.publishToTLSStore(&existing)
 			return nil
@@ -167,7 +169,9 @@ func (c *Client) publishToTLSStore(cert *store.ACMECert) {
 	}
 	pair, err := tls.X509KeyPair([]byte(cert.ChainPEM), []byte(cert.PrivateKeyPEM))
 	if err != nil {
-		c.opts.Logger.Warn("acme: parse issued cert for tls store", "err", err)
+		c.opts.Logger.Warn("acme: parse issued cert for tls store",
+			"activity", observe.ActivitySystem,
+			"err", err)
 		return
 	}
 	if pair.Leaf == nil && len(pair.Certificate) > 0 {
@@ -188,15 +192,21 @@ func (c *Client) RunRenewalLoop(ctx context.Context, interval time.Duration) err
 	if interval <= 0 {
 		interval = time.Hour
 	}
-	c.opts.Logger.Info("acme renewal loop starting", "interval", interval)
+	c.opts.Logger.Info("acme renewal loop starting",
+		"activity", observe.ActivitySystem,
+		"interval", interval)
 	for {
 		if err := c.runRenewalPass(ctx); err != nil {
-			c.opts.Logger.Warn("acme renewal pass failed", "err", err)
+			c.opts.Logger.Warn("acme renewal pass failed",
+				"activity", observe.ActivitySystem,
+				"err", err)
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-c.opts.Clock.After(interval):
+			c.opts.Logger.DebugContext(ctx, "acme renewal check tick",
+				slog.String("activity", observe.ActivityPoll))
 		}
 	}
 }
@@ -227,15 +237,20 @@ func (c *Client) runRenewalPass(ctx context.Context) error {
 		}
 		if err := c.EnsureCert(ctx, hostnames, challengeType, dnsPlugin); err != nil {
 			c.opts.Logger.Warn("acme renew failed",
+				"activity", observe.ActivitySystem,
 				"hostname", cert.Hostname, "err", err)
 			continue
 		}
-		c.opts.Logger.Info("acme cert renewed", "hostname", cert.Hostname)
+		c.opts.Logger.Info("acme cert renewed",
+			"activity", observe.ActivitySystem,
+			"hostname", cert.Hostname)
 	}
 	// Resume orders that crashed mid-flight (status pending, ready, or
 	// processing). The Order method picks the row up by URL.
 	if err := c.resumeInFlightOrders(ctx); err != nil {
-		c.opts.Logger.Warn("acme resume in-flight orders", "err", err)
+		c.opts.Logger.Warn("acme resume in-flight orders",
+			"activity", observe.ActivitySystem,
+			"err", err)
 	}
 	return nil
 }
@@ -261,11 +276,13 @@ func (c *Client) resumeInFlightOrders(ctx context.Context) error {
 			cert, err := c.resumeOrder(ctx, o)
 			if err != nil {
 				c.opts.Logger.Warn("acme resume order failed",
+					"activity", observe.ActivitySystem,
 					"order_id", o.ID, "err", err)
 				continue
 			}
 			c.publishToTLSStore(cert)
 			c.opts.Logger.Info("acme order resumed",
+				"activity", observe.ActivitySystem,
 				"order_id", o.ID, "hostnames", o.Hostnames)
 		}
 	}

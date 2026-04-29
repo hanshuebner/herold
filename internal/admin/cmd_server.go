@@ -60,7 +60,7 @@ func newServerStartCmd() *cobra.Command {
 					defer os.Remove(pidPath)
 				}
 			}
-			return StartServer(ctx, cfg, StartOpts{})
+			return StartServer(ctx, cfg, StartOpts{LogVerbose: g.logVerbose})
 		},
 	}
 }

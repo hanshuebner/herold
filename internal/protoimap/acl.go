@@ -248,6 +248,12 @@ func (ses *session) handleSETACL(ctx context.Context, c *Command) error {
 			return ses.resp.taggedNO(c.Tag, "", "ACL write failed")
 		}
 	}
+	ses.logger.Info("protoimap: SETACL",
+		"activity", "audit",
+		"mailbox", c.ACLMailbox,
+		"identifier", c.ACLIdentifier,
+		"rights", encodeRights(target),
+	)
 	return ses.resp.taggedOK(c.Tag, "", "SETACL completed")
 }
 
@@ -274,6 +280,11 @@ func (ses *session) handleDELETEACL(ctx context.Context, c *Command) error {
 		!errors.Is(err, store.ErrNotFound) {
 		return ses.resp.taggedNO(c.Tag, "", "ACL remove failed")
 	}
+	ses.logger.Info("protoimap: DELETEACL",
+		"activity", "audit",
+		"mailbox", c.ACLMailbox,
+		"identifier", c.ACLIdentifier,
+	)
 	return ses.resp.taggedOK(c.Tag, "", "DELETEACL completed")
 }
 

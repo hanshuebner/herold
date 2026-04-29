@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"strconv"
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protomanagesieve"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness"
@@ -394,4 +396,132 @@ func TestDELETESCRIPT_RemovesActive(t *testing.T) {
 	if persisted != "" {
 		t.Fatalf("expected empty after DELETESCRIPT, got %q", persisted)
 	}
+}
+
+// -----------------------------------------------------------------------------
+// Activity-tagging tests (REQ-OPS-86a)
+// -----------------------------------------------------------------------------
+
+// newFixtureWithLogger returns a fixture whose server uses the provided logger.
+// It replicates newFixture but accepts a caller-supplied logger so
+// AssertActivityTagged can capture all records.
+func newFixtureWithLogger(t *testing.T, logger *slog.Logger) *fixture {
+	t.Helper()
+	name := "managesieve"
+	ha, _ := testharness.Start(t, testharness.Options{
+		Listeners: []testharness.ListenerSpec{{Name: name, Protocol: "managesieve"}},
+		Logger:    logger,
+	})
+	ctx := context.Background()
+	if err := ha.Store.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("insert domain: %v", err)
+	}
+	dir := directory.New(ha.Store.Meta(), logger, ha.Clock, rand.Reader)
+	password := "correct-horse-staple-battery"
+	pid, err := dir.CreatePrincipal(ctx, "alice@example.test", password)
+	if err != nil {
+		t.Fatalf("create principal: %v", err)
+	}
+	tlsStore, clientCfg := newTestTLSStore(t)
+	srv := protomanagesieve.NewServer(
+		ha.Store, dir, tlsStore, ha.Clock, logger, nil, nil,
+		protomanagesieve.Options{
+			ServerName:  "herold",
+			IdleTimeout: time.Minute,
+		},
+	)
+	ha.AttachManageSieve(name, srv)
+	t.Cleanup(func() { _ = srv.Close() })
+	return &fixture{
+		ha: ha, srv: srv, name: name,
+		pid: pid, password: password,
+		dir: dir, tlsCfg: clientCfg,
+	}
+}
+
+// TestActivityTagging_PUTSCRIPT asserts PUTSCRIPT emits a user/info record
+// (REQ-OPS-86a / REQ-OPS-86d).
+func TestActivityTagging_PUTSCRIPT(t *testing.T) {
+	observe.AssertActivityTagged(t, func(log *slog.Logger) {
+		f := newFixtureWithLogger(t, log)
+		c := authedClient(t, f)
+		defer c.conn.Close()
+
+		body := validSieveScript
+		c.write(fmt.Sprintf("PUTSCRIPT \"active\" {%d+}\r\n%s\r\n", len(body), body))
+		resp := c.readLine()
+		if !strings.HasPrefix(strings.ToUpper(resp), "OK") {
+			t.Fatalf("PUTSCRIPT: %v", resp)
+		}
+	})
+}
+
+// TestActivityTagging_AUTHSuccess asserts a successful AUTHENTICATE emits
+// an audit/info record (REQ-OPS-86a).
+func TestActivityTagging_AUTHSuccess(t *testing.T) {
+	observe.AssertActivityTagged(t, func(log *slog.Logger) {
+		f := newFixtureWithLogger(t, log)
+		// authedClient performs STARTTLS + AUTHENTICATE; both must be tagged.
+		c := authedClient(t, f)
+		defer c.conn.Close()
+	})
+}
+
+// TestActivityTagging_AUTHFailure asserts a failed AUTHENTICATE emits an
+// audit/warn record (REQ-OPS-86a).
+func TestActivityTagging_AUTHFailure(t *testing.T) {
+	observe.AssertActivityTagged(t, func(log *slog.Logger) {
+		f := newFixtureWithLogger(t, log)
+		c := f.dial(t)
+		defer c.conn.Close()
+		c.write("STARTTLS\r\n")
+		resp := c.readLine()
+		if !strings.HasPrefix(strings.ToUpper(resp), "OK") {
+			t.Fatalf("STARTTLS: %v", resp)
+		}
+		c.upgradeTLS(t, f.tlsCfg)
+		// Send PLAIN with a wrong password.
+		ir := "\x00alice@example.test\x00wrongpassword"
+		encoded := base64.StdEncoding.EncodeToString([]byte(ir))
+		c.write(fmt.Sprintf("AUTHENTICATE \"PLAIN\" \"%s\"\r\n", encoded))
+		resp = c.readLine()
+		if !strings.HasPrefix(strings.ToUpper(resp), "NO") {
+			t.Fatalf("expected NO for bad auth, got %q", resp)
+		}
+	})
+}
+
+// TestActivityTagging_CHECKSCRIPT asserts CHECKSCRIPT emits a user/info
+// record (REQ-OPS-86a).
+func TestActivityTagging_CHECKSCRIPT(t *testing.T) {
+	observe.AssertActivityTagged(t, func(log *slog.Logger) {
+		f := newFixtureWithLogger(t, log)
+		c := authedClient(t, f)
+		defer c.conn.Close()
+
+		body := validSieveScript
+		c.write(fmt.Sprintf("CHECKSCRIPT {%d+}\r\n%s\r\n", len(body), body))
+		resp := c.readLine()
+		if !strings.HasPrefix(strings.ToUpper(resp), "OK") {
+			t.Fatalf("CHECKSCRIPT: %v", resp)
+		}
+	})
+}
+
+// TestActivityTagging_DELETESCRIPT asserts DELETESCRIPT emits a user/info
+// record (REQ-OPS-86a).
+func TestActivityTagging_DELETESCRIPT(t *testing.T) {
+	observe.AssertActivityTagged(t, func(log *slog.Logger) {
+		f := newFixtureWithLogger(t, log)
+		if err := f.ha.Store.Meta().SetSieveScript(context.Background(), f.pid, validSieveScript); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		c := authedClient(t, f)
+		defer c.conn.Close()
+		c.write("DELETESCRIPT \"active\"\r\n")
+		resp := c.readLine()
+		if !strings.HasPrefix(strings.ToUpper(resp), "OK") {
+			t.Fatalf("DELETESCRIPT: %v", resp)
+		}
+	})
 }

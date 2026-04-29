@@ -55,6 +55,11 @@ type globalOptions struct {
 	apiKey     string
 	quiet      bool
 	jsonOut    bool
+	// logVerbose corresponds to --log-verbose / HEROLD_LOG_VERBOSE=1
+	// (REQ-OPS-86c). When true the server overrides every sink's activity
+	// filter to allow-all and lowers every sink's level floor to debug for
+	// the lifetime of the process.
+	logVerbose bool
 }
 
 type globalOptsKey struct{}
@@ -106,6 +111,8 @@ func NewRootCmd() *cobra.Command {
 		"admin REST API key (also $HEROLD_API_KEY or ~/.herold/credentials.toml)")
 	root.PersistentFlags().BoolVar(&g.quiet, "quiet", false, "suppress non-error output")
 	root.PersistentFlags().BoolVar(&g.jsonOut, "json", false, "machine-readable JSON output where supported")
+	root.PersistentFlags().BoolVar(&g.logVerbose, "log-verbose", os.Getenv("HEROLD_LOG_VERBOSE") == "1",
+		"override every sink's activity filter to allow-all and lower level floors to debug (REQ-OPS-86c; also HEROLD_LOG_VERBOSE=1)")
 
 	// Subcommand groups.
 	root.AddCommand(newServerCmd())

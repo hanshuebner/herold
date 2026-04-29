@@ -118,6 +118,8 @@ func (m *Manager) GenerateKey(ctx context.Context, domain string, alg store.DKIM
 	}
 
 	m.logger.InfoContext(ctx, "keymgmt: generated DKIM key",
+		slog.String("activity", "system"),
+		slog.String("subsystem", "maildkim"),
 		slog.String("domain", domain),
 		slog.String("selector", selector),
 		slog.String("algorithm", alg.String()))

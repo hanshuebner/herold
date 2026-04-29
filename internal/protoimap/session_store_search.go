@@ -140,6 +140,13 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 			}
 		}
 	}
+	applied := len(seqs) - len(rejectedSeqs)
+	ses.logger.Info("protoimap: STORE",
+		"activity", "user",
+		"uid_mode", c.IsUID,
+		"applied", applied,
+		"rejected", len(rejectedSeqs),
+	)
 	if len(rejectedSeqs) > 0 {
 		// RFC 7162 §3.1.3: emit OK [MODIFIED <set>] with the UID-set
 		// for UID STORE and the seq-set for plain STORE. We collapse
@@ -683,6 +690,13 @@ func (ses *session) handleEXPUNGE(ctx context.Context, c *Command) error {
 		}
 	}
 	_ = ses.reloadSelected(ctx)
+	if len(ids) > 0 {
+		ses.logger.Info("protoimap: EXPUNGE",
+			"activity", "user",
+			"uid_mode", c.IsUID,
+			"expunged", len(ids),
+		)
+	}
 	return ses.resp.taggedOK(c.Tag, "", c.Op+" completed")
 }
 
@@ -697,8 +711,21 @@ func (ses *session) handleIDLE(ctx context.Context, c *Command) error {
 	if err := ses.resp.continuation("idling"); err != nil {
 		return err
 	}
+	ses.selMu.Lock()
+	idleMbox := ses.sel.name
+	ses.selMu.Unlock()
+	ses.logger.Info("protoimap: IDLE entered",
+		"activity", "user",
+		"mailbox", idleMbox,
+	)
 	observe.IMAPIdleActive.Inc()
-	defer observe.IMAPIdleActive.Dec()
+	defer func() {
+		observe.IMAPIdleActive.Dec()
+		ses.logger.Info("protoimap: IDLE exited",
+			"activity", "user",
+			"mailbox", idleMbox,
+		)
+	}()
 	idleCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -748,6 +775,10 @@ func (ses *session) handleIDLE(ctx context.Context, c *Command) error {
 		case <-idleCtx.Done():
 			return idleCtx.Err()
 		case <-ses.s.clk.After(pollInterval):
+			ses.logger.Debug("protoimap: IDLE poll tick",
+				"activity", "poll",
+				"mailbox", idleMbox,
+			)
 		}
 		if ses.s.clk.Now().After(deadline) {
 			_ = ses.resp.writeLine("* BYE IDLE timeout")

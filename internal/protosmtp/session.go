@@ -53,6 +53,9 @@ type session struct {
 	writer   *bufio.Writer
 	remoteIP string
 	sessID   string
+	// log is a pre-scoped logger carrying subsystem, session_id, and
+	// remote_addr so per-call records only need to add activity + event attrs.
+	log *slog.Logger
 
 	// protocol state
 	st              state
@@ -132,6 +135,7 @@ func (s *Server) runSession(raw net.Conn, mode ListenerMode, remoteIP string, im
 	sessCtx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 
+	sid := newSessionID()
 	sess := &session{
 		srv:      s,
 		mode:     mode,
@@ -139,7 +143,12 @@ func (s *Server) runSession(raw net.Conn, mode ListenerMode, remoteIP string, im
 		remoteIP: remoteIP,
 		ctx:      sessCtx,
 		cancel:   cancel,
-		sessID:   newSessionID(),
+		sessID:   sid,
+		log: s.log.With(
+			slog.String("subsystem", "protosmtp"),
+			slog.String("session_id", sid),
+			slog.String("remote_addr", remoteIP),
+		),
 	}
 	if implicit != nil {
 		sess.conn = implicit
@@ -158,9 +167,8 @@ func (s *Server) runSession(raw net.Conn, mode ListenerMode, remoteIP string, im
 	// kill the server; close the conn after a 421.
 	defer func() {
 		if rcv := recover(); rcv != nil {
-			sess.srv.log.ErrorContext(sessCtx, "smtp session panic",
-				slog.String("session_id", sess.sessID),
-				slog.String("remote_ip", sess.remoteIP),
+			sess.log.ErrorContext(sessCtx, "smtp session panic",
+				slog.String("activity", observe.ActivityInternal),
 				slog.Any("panic", rcv))
 			_ = sess.writeReplyLine("421 4.3.0 internal server error")
 			_ = sess.writer.Flush()
@@ -398,9 +406,8 @@ func (sess *session) cmdSTARTTLS(rest string) bool {
 	cap := sasl.NewCapturingTLSConfig(heroldtls.TLSConfig(sess.srv.tls, heroldtls.Intermediate, nil))
 	tlsConn := tls.Server(sess.conn, cap.Config())
 	if err := tlsConn.HandshakeContext(sess.ctx); err != nil {
-		sess.srv.log.InfoContext(sess.ctx, "starttls handshake failed",
-			slog.String("session_id", sess.sessID),
-			slog.String("remote_ip", sess.remoteIP),
+		sess.log.InfoContext(sess.ctx, "starttls handshake failed",
+			slog.String("activity", observe.ActivityAccess),
 			slog.String("err", err.Error()))
 		return true
 	}
@@ -526,6 +533,10 @@ func (sess *session) cmdAUTH(rest string) bool {
 	sess.authPrincipal = pid
 	sess.authMechName = mech.Name()
 	sess.submissionAllow = true
+	sess.log.InfoContext(sess.ctx, "smtp auth success",
+		slog.String("activity", observe.ActivityAudit),
+		slog.String("mechanism", mech.Name()),
+		slog.Uint64("principal_id", uint64(pid)))
 	sess.writeReply("235 2.7.0 authentication successful")
 	return false
 }
@@ -558,6 +569,9 @@ func (sess *session) buildMechanism(name string) (sasl.Mechanism, bool) {
 }
 
 func (sess *session) writeAuthError(err error) {
+	sess.log.WarnContext(sess.ctx, "smtp auth failed",
+		slog.String("activity", observe.ActivityAudit),
+		slog.String("err", err.Error()))
 	switch {
 	case errors.Is(err, sasl.ErrTLSRequired):
 		sess.writeReply("538 5.7.11 encryption required for requested mechanism")
@@ -815,7 +829,8 @@ func (sess *session) applyResolveRcpt(entry *rcptEntry) (rcptResolveOutcome, boo
 		if dec.PrincipalID != nil {
 			pid := directory.PrincipalID(*dec.PrincipalID)
 			if _, err := sess.srv.store.Meta().GetPrincipalByID(sess.ctx, pid); err != nil {
-				sess.srv.log.WarnContext(sess.ctx, "resolve_rcpt accept references unknown principal",
+				sess.log.WarnContext(sess.ctx, "resolve_rcpt accept references unknown principal",
+					slog.String("activity", observe.ActivityAudit),
 					slog.String("plugin", pluginName),
 					slog.String("recipient", entry.addr),
 					slog.Uint64("principal_id", *dec.PrincipalID),

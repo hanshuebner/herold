@@ -112,7 +112,9 @@ func (v *Verifier) Verify(ctx context.Context, raw []byte) ([]mailauth.DKIMResul
 		return nil, fmt.Errorf("maildkim: verify: %w", err)
 	}
 	if errors.Is(err, dkim.ErrTooManySignatures) {
-		v.logger.InfoContext(ctx, "maildkim: truncated signatures above cap",
+		v.logger.WarnContext(ctx, "maildkim: truncated signatures above cap",
+			slog.String("activity", "internal"),
+			slog.String("subsystem", "maildkim"),
 			slog.Int("cap", v.max))
 	}
 

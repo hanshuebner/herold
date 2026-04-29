@@ -232,6 +232,12 @@ func (ses *session) handleSELECT(ctx context.Context, c *Command, readOnly bool)
 	if readOnly {
 		code = "READ-ONLY"
 	}
+	ses.logger.Info("protoimap: SELECT",
+		"activity", "user",
+		"mailbox", name,
+		"read_only", readOnly,
+		"exists", len(msgs),
+	)
 	return ses.resp.taggedOK(c.Tag, code, c.Op+" completed")
 }
 
@@ -810,6 +816,12 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 			ses.emitUpdatedFlagsIfNeeded(kw)
 		}
 	}
+	ses.logger.Info("protoimap: APPEND",
+		"activity", "user",
+		"mailbox", canonical,
+		"uid", uid,
+		"size", len(c.AppendData),
+	)
 	code := fmt.Sprintf("APPENDUID %d %d", mb.UIDValidity, uid)
 	return ses.resp.taggedOK(c.Tag, code, "APPEND completed")
 }

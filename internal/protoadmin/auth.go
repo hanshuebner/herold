@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -177,7 +178,8 @@ func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Princi
 	key, err := s.apikeyLookup(ctx, hashed)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
-			s.loggerFrom(ctx).Warn("protoadmin.auth.lookup_failed", "err", err)
+			s.loggerFrom(ctx).Warn("protoadmin.auth.lookup_failed",
+				"activity", observe.ActivityAudit, "err", err)
 		}
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
 		return store.Principal{}, nil, false
@@ -194,6 +196,7 @@ func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Princi
 	p, err := s.store.Meta().GetPrincipalByID(ctx, key.PrincipalID)
 	if err != nil {
 		s.loggerFrom(ctx).Warn("protoadmin.auth.principal_lookup_failed",
+			"activity", observe.ActivityAudit,
 			"err", err, "principal_id", key.PrincipalID)
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
 		return store.Principal{}, nil, false
@@ -230,6 +233,7 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 	p, err := s.store.Meta().GetPrincipalByID(ctx, sess.PrincipalID)
 	if err != nil {
 		s.loggerFrom(ctx).Warn("protoadmin.auth.cookie_principal_lookup_failed",
+			"activity", observe.ActivityAudit,
 			"err", err, "principal_id", sess.PrincipalID)
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
 		return store.Principal{}, nil, false
@@ -296,20 +300,33 @@ func (s *Server) checkRateLimit(w http.ResponseWriter, r *http.Request, key stri
 // requireSelfOrAdmin returns 403 when the caller is neither the target
 // principal (self-scope) nor an admin. Read-only endpoints that are
 // public (e.g. listing the caller's own keys) must not use this gate.
+// Permission denials are logged activity=audit at warn (REQ-OPS-86).
 func requireSelfOrAdmin(w http.ResponseWriter, r *http.Request, caller store.Principal, target store.PrincipalID) bool {
 	if caller.ID == target || caller.Flags.Has(store.PrincipalFlagAdmin) {
 		return true
 	}
+	slog.WarnContext(r.Context(), "protoadmin.permission_denied",
+		"activity", observe.ActivityAudit,
+		"actor_id", caller.ID,
+		"target_id", target,
+		"method", r.Method,
+		"path", r.URL.Path)
 	writeProblem(w, r, http.StatusForbidden, "forbidden",
 		"insufficient privileges", "")
 	return false
 }
 
 // requireAdmin returns 403 when the caller is not an admin.
+// Permission denials are logged activity=audit at warn (REQ-OPS-86).
 func requireAdmin(w http.ResponseWriter, r *http.Request, caller store.Principal) bool {
 	if caller.Flags.Has(store.PrincipalFlagAdmin) {
 		return true
 	}
+	slog.WarnContext(r.Context(), "protoadmin.permission_denied",
+		"activity", observe.ActivityAudit,
+		"actor_id", caller.ID,
+		"method", r.Method,
+		"path", r.URL.Path)
 	writeProblem(w, r, http.StatusForbidden, "forbidden",
 		"admin privileges required", "")
 	return false
@@ -319,6 +336,7 @@ func requireAdmin(w http.ResponseWriter, r *http.Request, caller store.Principal
 // counterpart to requireAuth: it asserts the auth.AuthContext attached
 // to r holds every scope in scs and writes a 403 RFC 7807 problem
 // detail otherwise. Callers chain it after requireAuth in routes.go.
+// Scope-boundary rejections are logged activity=audit at warn (REQ-OPS-86).
 func (s *Server) requireScope(scs ...auth.Scope) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -328,6 +346,11 @@ func (s *Server) requireScope(scs ...auth.Scope) func(http.HandlerFunc) http.Han
 						"unauthorized", "authentication required", "")
 					return
 				}
+				s.loggerFrom(r.Context()).WarnContext(r.Context(), "protoadmin.scope_denied",
+					"activity", observe.ActivityAudit,
+					"method", r.Method,
+					"path", r.URL.Path,
+					"err", err)
 				writeProblem(w, r, http.StatusForbidden,
 					"insufficient_scope",
 					"insufficient scope for this resource",

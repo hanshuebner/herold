@@ -265,8 +265,11 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) 
 			// dedicated rate-limited greeting; a "* BYE" is the
 			// closest spec-friendly close response.
 			if !s.admitIP(remoteIP) {
-				s.logger.Info("protoimap: refusing connection (per-IP cap)",
-					"remote_ip", remoteIP)
+				s.logger.Debug("protoimap: refusing connection (per-IP cap)",
+					"activity", "access",
+					"subsystem", "protoimap",
+					"remote_addr", remoteIP,
+				)
 				_, _ = c.Write([]byte("* BYE Too many connections from your IP\r\n"))
 				_ = c.Close()
 				continue
@@ -308,7 +311,12 @@ func (s *Server) handle(ctx context.Context, c net.Conn, mode ListenerMode) {
 	defer func() {
 		if r := recover(); r != nil {
 			outcome = "panic"
-			s.logger.Error("protoimap: session panic", "err", r)
+			s.logger.Error("protoimap: session panic",
+				"activity", "internal",
+				"subsystem", "protoimap",
+				"remote_addr", remoteIPOf(c),
+				"err", r,
+			)
 		}
 		observe.IMAPSessionsTotal.WithLabelValues(outcome).Inc()
 		observe.IMAPSessionsActive.Dec()
@@ -320,7 +328,12 @@ func (s *Server) handle(ctx context.Context, c net.Conn, mode ListenerMode) {
 		tlsConn := tls.Server(c, cap.Config())
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			outcome = "error"
-			s.logger.Warn("protoimap: TLS handshake", "err", err, "remote", c.RemoteAddr().String())
+			s.logger.Warn("protoimap: TLS handshake failed",
+				"activity", "internal",
+				"subsystem", "protoimap",
+				"remote_addr", c.RemoteAddr().String(),
+				"err", err,
+			)
 			return
 		}
 		c = tlsConn

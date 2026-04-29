@@ -74,7 +74,10 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 		if dkimRes, err := s.dkim.Verify(ctx, req.Body); err == nil {
 			authResults.DKIM = dkimRes
 		} else {
-			s.log.WarnContext(ctx, "ingest: dkim verify error", slog.String("err", err.Error()))
+			s.log.WarnContext(ctx, "ingest: dkim verify error",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("subsystem", "protosmtp"),
+				slog.String("err", err.Error()))
 		}
 	}
 	if s.spf != nil {
@@ -83,7 +86,10 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 		if spfRes, err := s.spf.Check(ctx, req.MailFrom, "", req.SourceIP); err == nil {
 			authResults.SPF = spfRes
 		} else {
-			s.log.WarnContext(ctx, "ingest: spf check error", slog.String("err", err.Error()))
+			s.log.WarnContext(ctx, "ingest: spf check error",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("subsystem", "protosmtp"),
+				slog.String("err", err.Error()))
 		}
 	}
 	if s.dmarc != nil {
@@ -91,7 +97,10 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 		if dres, err := s.dmarc.Evaluate(ctx, headerFrom, authResults.SPF, authResults.DKIM); err == nil {
 			authResults.DMARC = dres
 		} else {
-			s.log.WarnContext(ctx, "ingest: dmarc evaluate error", slog.String("err", err.Error()))
+			s.log.WarnContext(ctx, "ingest: dmarc evaluate error",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("subsystem", "protosmtp"),
+				slog.String("err", err.Error()))
 		}
 	}
 	if s.arc != nil {
@@ -126,6 +135,8 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 	msg, perr := mailparse.Parse(bytes.NewReader(finalBytes), mailparse.NewParseOptions())
 	if perr != nil {
 		s.log.InfoContext(ctx, "ingest: parse failed",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("subsystem", "protosmtp"),
 			slog.String("source", source),
 			slog.String("err", perr.Error()))
 		return fmt.Errorf("protosmtp.IngestBytes: parse: %w", perr)
@@ -136,7 +147,10 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 	if s.spam != nil {
 		cls, err := s.spam.Classify(ctx, msg, &authResults, s.spamPlug)
 		if err != nil {
-			s.log.InfoContext(ctx, "ingest: spam classify error", slog.String("err", err.Error()))
+			s.log.InfoContext(ctx, "ingest: spam classify error",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("subsystem", "protosmtp"),
+				slog.String("err", err.Error()))
 			classification = spam.Classification{Verdict: spam.Unclassified, Score: -1}
 		} else {
 			classification = cls
@@ -152,7 +166,10 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 	// Persist the blob once; every recipient references the same BlobRef.
 	blobRef, err := s.store.Blobs().Put(ctx, bytes.NewReader(finalBytes))
 	if err != nil {
-		s.log.ErrorContext(ctx, "ingest: blob put failed", slog.String("err", err.Error()))
+		s.log.ErrorContext(ctx, "ingest: blob put failed",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("subsystem", "protosmtp"),
+			slog.String("err", err.Error()))
 		return fmt.Errorf("protosmtp.IngestBytes: blob put: %w", err)
 	}
 
@@ -167,6 +184,11 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 			mode:     RelayIn,
 			remoteIP: req.SourceIP,
 			sessID:   source,
+			log: s.log.With(
+				slog.String("subsystem", "protosmtp"),
+				slog.String("session_id", source),
+				slog.String("remote_addr", req.SourceIP),
+			),
 			envelope: envelope{
 				mailFrom: req.MailFrom,
 			},
@@ -179,6 +201,8 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 		ok, derr := fakeSess.deliverOne(ctx, rcEntry, finalBytes, blobRef, msg, authResults, classification)
 		if derr != nil {
 			s.log.ErrorContext(ctx, "ingest: delivery failed",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("subsystem", "protosmtp"),
 				slog.String("recipient", rc.Addr),
 				slog.String("err", derr.Error()))
 		}

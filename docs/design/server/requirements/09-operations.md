@@ -89,10 +89,12 @@ options.model = "llama3.2:3b"
 enabled = true
 # No LDAP section — LDAP is out of scope.
 
-[logging]
-format = "json"
-level = "info"
-destination = "stderr"
+# See "Logs" below for the full sink model. Minimal default:
+[[log.sink]]
+target = "stderr"
+format = "auto"            # console on a tty, json otherwise
+level  = "info"
+activities = { deny = ["poll", "access"] }
 
 [metrics]
 bind = "127.0.0.1:9100"
@@ -148,11 +150,59 @@ Three pillars, one honest policy: no enterprise gates, no phone-home, no vendor 
 
 ### Logs
 
-- **REQ-OPS-80** Logs are **JSON structured by default**. Text logfmt as alternate via config. Field names stable and documented.
-- **REQ-OPS-81** Log destinations: stdout/stderr (for systemd, container runtimes), file with rotation (when not running under a manager). Syslog via `syslog(3)` on Unix optional.
-- **REQ-OPS-82** Log levels: `trace`, `debug`, `info`, `warn`, `error`. Default `info`. Per-module level overrides (`logging.modules.smtp = "debug"`).
-- **REQ-OPS-83** Every log line includes: timestamp (RFC 3339 with timezone), level, module, message, request/session correlation ID where applicable.
-- **REQ-OPS-84** Sensitive values redacted at log time: passwords, API keys, bearer tokens, session cookies, LLM spam prompt bodies at `info` level. DKIM private keys never logged.
+#### Sinks (multi-destination)
+
+*(Revised 2026-04-29: a single log stream is not enough. Operators want JSON in a forensic file at `debug` and a calm human-readable view on the controlling terminal at `info`, with no choice between "useful for humans" and "useful for grep". The model below replaces the previous single-sink REQ-OPS-80/81. Per-module overrides (REQ-OPS-82) and field guarantees (REQ-OPS-83/84) are unchanged in spirit but now apply per sink.)*
+
+- **REQ-OPS-80** Logging is **multi-sink**. The system config declares zero or more sinks under `[[log.sink]]`. Each sink has an independent target, format, level, per-module level overrides, and activity filter (REQ-OPS-86). A record is evaluated separately for each sink. Default configuration: a single stderr sink at level `info`, format `auto`. Field names are stable and documented and are identical across sinks.
+- **REQ-OPS-81** Each sink's `target` is one of `stderr`, `stdout`, or an absolute filesystem path. File targets are append-only and rotated externally (logrotate, `journald` is reached via stderr under systemd). Syslog is not in v1.
+- **REQ-OPS-81a** Each sink's `format` is one of:
+  - `json` — `slog.JSONHandler`, one record per line (the canonical machine format).
+  - `console` — human-readable: short timestamp, colorized level, message, then `key=value` attrs aligned for scanning. Colors are emitted only when the target is a TTY; redirected output is plain ASCII (STANDARDS.md §12 — no emojis). Multi-line attrs (stack traces) are indented under the parent line.
+  - `auto` — `console` if and only if the target is a TTY at process start (or after SIGHUP re-detection), otherwise `json`. This is the default.
+- **REQ-OPS-82** Log levels: `trace`, `debug`, `info`, `warn`, `error`. Each sink has its own `level`; default `info`. Per-module level overrides apply per sink (`[log.sink.modules]` table; keys match the `subsystem` or `module` slog attribute). The lowest level any sink wants determines the minimum severity the logger materialises; sinks whose level is higher silently drop the record.
+- **REQ-OPS-83** Every log line includes: timestamp (RFC 3339 with timezone for `json`; short local time `HH:MM:SS.mmm` for `console`), level, module/subsystem, message, request/session correlation ID where applicable, and the activity tag from REQ-OPS-86. Field names are identical across formats; only rendering differs.
+- **REQ-OPS-84** Sensitive values redacted at log time before any sink sees them: passwords, API keys, bearer tokens, session cookies, LLM spam prompt bodies at `info` level. DKIM private keys never logged. Redaction is a single handler in the chain — no sink can opt out.
+- **REQ-OPS-85** SIGHUP reloads the sink list: sinks added, removed, or with changed parameters are reconciled without dropping records. File handles for unchanged file sinks are kept open across reload (so external `logrotate copytruncate` works without coordination).
+
+#### Activity taxonomy (REQ-OPS-86) — closed enum, mandatory
+
+*(Added 2026-04-29: severity alone cannot distinguish "user X moved 3 messages" from "POST /jmap 200" — both are routine operational signals. A small closed enum on every record lets operators filter noise from signal without losing forensic detail.)*
+
+- **REQ-OPS-86** Every log record emitted from a wire-protocol layer (`protosmtp`, `protoimap`, `protojmap`, `protomanagesieve`, `protoadmin`, `protosend`, `protowebhook`), the queue/delivery path, the plugin supervisor, and the auth/directory layer MUST carry an `activity` attribute drawn from this closed enum:
+  - `user` — caller-initiated state changes or information retrieval that an operator would want to see in a normal day's log: JMAP `*/set` calls, `*/query` and `*/get` at info, IMAP `APPEND` / `STORE` / `MOVE` / `EXPUNGE`, SMTP submission of a message, ManageSieve PUTSCRIPT, admin API mutations, login success.
+  - `audit` — security-relevant events: login attempts (success and failure), permission denials, ACL decisions, scope-boundary rejections, plugin process kills, key rotations. Always retained even when other activities are filtered out.
+  - `system` — server-initiated work the operator should see: outbound delivery attempts, queue retries, ACME issue/renew, DNS publication, schema migrations, plugin start/stop/restart.
+  - `poll` — recurring no-op heartbeats: JMAP EventSource pings, IMAP `IDLE` keep-alives, push reconnects, periodic reconciliation reads. Almost always filtered out of console sinks.
+  - `access` — per-request / per-command echo lines: HTTP request log, IMAP command trace, SMTP command echo. Forensic-only; emitted at `debug` by default.
+  - `internal` — diagnostic, framework-level, or library events with no caller-facing semantics. Used sparingly for background goroutine state, lock contention warnings, etc.
+- **REQ-OPS-86a** Records lacking an `activity` attribute on a layer that is required to tag fail CI: a lint check (`make lint-log-activity` / equivalent) inspects emitted records via the test harness and rejects any record from a covered package without an `activity` attribute. The test harness installs a debugging handler that records an attribute set on each record; tests that exercise wire layers assert tagging. Reviewer blocks merge on missing tags.
+- **REQ-OPS-86b** Each sink has an optional `activities` filter: `allow = [...]` (only these activities pass), `deny = [...]` (these activities are dropped), or omitted (all pass). The default console sink ships with `deny = ["poll", "access"]`. The default file sink (when configured) ships with no filter. `activities.allow` and `activities.deny` are mutually exclusive in any one sink.
+- **REQ-OPS-86c** A `--log-verbose` CLI flag and `HEROLD_LOG_VERBOSE=1` env var, when set, override every sink's `activities` filter to allow-all and lower every sink's `level` floor to `debug` for the lifetime of the process. This is the "give me everything for the next ten seconds" knob; operators reach for it during incident response without touching `system.toml`.
+- **REQ-OPS-86d** The HTTP/JMAP per-request access log is `activity=access` and emitted at `debug`. The corresponding per-JMAP-method log line (`Email/set`, `Mailbox/query`, …) is `activity=user` (or `audit` for `Identity/*` and auth-adjacent calls) and emitted at `info`. The IMAP per-command trace is `activity=access` at `debug`; per-state-change events (`APPEND`, `STORE`, `MOVE`, `EXPUNGE`) are `activity=user` at `info`. Equivalent splits apply to SMTP, ManageSieve, and the admin API.
+
+### Layout example (system.toml)
+
+```toml
+# /etc/herold/system.toml — observability section
+
+# Console sink: human-friendly, default-quiet, suppresses polling and access noise.
+[[log.sink]]
+target  = "stderr"
+format  = "auto"           # console on a tty, json otherwise
+level   = "info"
+modules = { protojmap = "info", queue = "info" }
+activities = { deny = ["poll", "access"] }
+
+# Forensic JSON sink: everything, including poll/access, for grep / shipping.
+[[log.sink]]
+target = "/var/log/herold/herold.jsonl"
+format = "json"
+level  = "debug"
+# no `activities` filter -> all activities are kept
+```
+
+The legacy single-sink form (`[logging] format=... level=... destination=...` from earlier revisions of this document) is accepted by the parser as a one-shot translation into a single `[[log.sink]]` entry, with a deprecation warning at startup. New deployments use the explicit list.
 
 ### Metrics
 

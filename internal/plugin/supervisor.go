@@ -18,6 +18,16 @@ import (
 	"github.com/hanshuebner/herold/internal/observe"
 )
 
+// activity constants mirror observe.Activity* but are aliased here so callers
+// inside the package can use short names without importing observe directly
+// at every log site.
+const (
+	actSystem   = observe.ActivitySystem
+	actAudit    = observe.ActivityAudit
+	actAccess   = observe.ActivityAccess
+	actInternal = observe.ActivityInternal
+)
+
 // State is the lifecycle state of a supervised plugin.
 type State int32
 
@@ -191,26 +201,30 @@ type Plugin struct {
 	mgr  *Manager
 	spec Spec
 
+	// logger is pre-scoped with subsystem=plugin and plugin=<name> so every
+	// log call in this package automatically carries both attributes. Per-call
+	// sites add "activity" and event-specific attrs only (REQ-OPS-86).
 	logger *slog.Logger
 
 	state    atomic.Int32 // State
 	manifest atomic.Pointer[Manifest]
 	pid      atomic.Int32
 
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	client  *Client
-	stopCh  chan struct{}
-	doneCh  chan struct{}
-	cancel  context.CancelFunc
-	crashes []time.Time
+	mu           sync.Mutex
+	cmd          *exec.Cmd
+	client       *Client
+	stopCh       chan struct{}
+	doneCh       chan struct{}
+	cancel       context.CancelFunc
+	crashes      []time.Time
+	restartCount int // incremented each time the child process is relaunched
 }
 
 func newPlugin(m *Manager, spec Spec) *Plugin {
 	return &Plugin{
 		mgr:    m,
 		spec:   spec,
-		logger: m.opts.Logger.With("plugin", spec.Name),
+		logger: m.opts.Logger.With("subsystem", "plugin", "plugin", spec.Name),
 		stopCh: make(chan struct{}),
 		doneCh: make(chan struct{}),
 	}
@@ -239,7 +253,10 @@ func (p *Plugin) Manifest() *Manifest { return p.manifest.Load() }
 func (p *Plugin) setState(s State) {
 	prev := State(p.state.Swap(int32(s)))
 	if prev != s {
-		p.logger.Info("plugin state changed", "from", prev.String(), "to", s.String())
+		p.logger.Info("plugin state changed",
+			"activity", actSystem,
+			"from", prev.String(),
+			"to", s.String())
 	}
 	if observe.PluginUp != nil {
 		if s == StateHealthy {
@@ -358,7 +375,7 @@ func (p *Plugin) superviseLoop(ctx context.Context) {
 
 		err := p.runOnce(ctx)
 		if err != nil {
-			p.logger.Warn("plugin run ended", "err", err)
+			p.logger.Warn("plugin run ended", "activity", actSystem, "err", err)
 		}
 
 		select {
@@ -374,14 +391,23 @@ func (p *Plugin) superviseLoop(ctx context.Context) {
 		p.recordCrash(now)
 		if p.crashBudgetExhausted(now) {
 			p.logger.Error("plugin crashed too many times, disabling",
+				"activity", actSystem,
 				"limit", p.effectiveMaxCrashes(),
 				"window", p.effectiveCrashWindow())
 			p.setState(StateDisabled)
 			return
 		}
 
+		p.mu.Lock()
+		p.restartCount++
+		restartCount := p.restartCount
+		p.mu.Unlock()
+
 		delay := backoff.next()
-		p.logger.Info("plugin restart after backoff", "delay", delay)
+		p.logger.Warn("plugin restart after crash",
+			"activity", actSystem,
+			"restart_count", restartCount,
+			"delay", delay)
 		select {
 		case <-ctx.Done():
 			return
@@ -422,7 +448,10 @@ func (p *Plugin) runOnce(ctx context.Context) error {
 	p.pid.Store(int32(cmd.Process.Pid))
 	defer p.pid.Store(0)
 
-	p.logger.Info("plugin started", "pid", cmd.Process.Pid, "path", p.spec.Path)
+	p.logger.Info("plugin started",
+		"activity", actSystem,
+		"pid", cmd.Process.Pid,
+		"path", p.spec.Path)
 
 	// Pipe stderr into the slog stream with plugin=<name> field.
 	stderrDone := make(chan struct{})
@@ -431,7 +460,7 @@ func (p *Plugin) runOnce(ctx context.Context) error {
 		sc := bufio.NewScanner(stderr)
 		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for sc.Scan() {
-			p.logger.Info("plugin stderr", "line", sc.Text())
+			p.logger.Info("plugin stderr", "activity", actInternal, "line", sc.Text())
 		}
 	}()
 
@@ -461,14 +490,14 @@ func (p *Plugin) runOnce(ctx context.Context) error {
 	}, &initRes)
 	cancel()
 	if err != nil {
-		p.logger.Error("plugin initialize failed", "err", err)
+		p.logger.Error("plugin initialize failed", "activity", actSystem, "err", err)
 		p.teardown(cmd, client)
 		<-stderrDone
 		<-clientErr
 		return err
 	}
 	if err := initRes.Manifest.Validate(); err != nil {
-		p.logger.Error("plugin manifest invalid", "err", err)
+		p.logger.Error("plugin manifest invalid", "activity", actSystem, "err", err)
 		p.teardown(cmd, client)
 		<-stderrDone
 		<-clientErr
@@ -476,7 +505,7 @@ func (p *Plugin) runOnce(ctx context.Context) error {
 	}
 	if p.spec.Type != "" && initRes.Manifest.Type != p.spec.Type {
 		err := fmt.Errorf("plugin: type mismatch want=%s got=%s", p.spec.Type, initRes.Manifest.Type)
-		p.logger.Error(err.Error())
+		p.logger.Error(err.Error(), "activity", actSystem)
 		p.teardown(cmd, client)
 		<-stderrDone
 		<-clientErr
@@ -493,7 +522,7 @@ func (p *Plugin) runOnce(ctx context.Context) error {
 	err = client.Call(configCtx, MethodConfigure, ConfigureParams{Options: p.spec.Options}, nil)
 	cancel()
 	if err != nil {
-		p.logger.Error("plugin configure failed", "err", err)
+		p.logger.Error("plugin configure failed", "activity", actSystem, "err", err)
 		p.teardown(cmd, client)
 		<-stderrDone
 		<-clientErr
@@ -544,12 +573,12 @@ func (p *Plugin) drivePlugin(ctx context.Context, client *Client, clientErr <-ch
 			err := client.Call(hctx, MethodHealth, nil, &hr)
 			cancel()
 			if err != nil {
-				p.logger.Warn("plugin health probe failed", "err", err)
+				p.logger.Warn("plugin health probe failed", "activity", actSystem, "err", err)
 				p.setState(StateUnhealthy)
 				return err
 			}
 			if !hr.OK {
-				p.logger.Warn("plugin reports unhealthy", "reason", hr.Reason)
+				p.logger.Warn("plugin reports unhealthy", "activity", actSystem, "reason", hr.Reason)
 				p.setState(StateUnhealthy)
 				return fmt.Errorf("plugin unhealthy: %s", hr.Reason)
 			}
@@ -572,7 +601,7 @@ func (p *Plugin) gracefulShutdown(client *Client, mf *Manifest) {
 	shutCtx, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
 	if err := client.Call(shutCtx, MethodShutdown, ShutdownParams{GraceSec: int(grace / time.Second)}, nil); err != nil {
-		p.logger.Warn("plugin shutdown rpc failed", "err", err)
+		p.logger.Warn("plugin shutdown rpc failed", "activity", actSystem, "err", err)
 	}
 }
 
@@ -598,15 +627,28 @@ func (p *Plugin) teardown(cmd *exec.Cmd, client *Client) {
 
 	select {
 	case <-done:
+		// Clean exit within grace window.
+		p.logger.Info("plugin exited cleanly",
+			"activity", actSystem,
+			"pid", cmd.Process.Pid)
 		return
 	case <-time.After(grace):
 	}
+	// Grace window elapsed — send SIGTERM (supervisor-initiated, security-relevant).
+	p.logger.Warn("plugin did not exit within grace window, sending SIGTERM",
+		"activity", actAudit,
+		"pid", cmd.Process.Pid,
+		"grace", grace)
 	_ = cmd.Process.Signal(sigterm)
 	select {
 	case <-done:
 		return
 	case <-time.After(grace):
 	}
+	// SIGTERM ignored — force kill (supervisor-initiated, security-relevant).
+	p.logger.Warn("plugin did not respond to SIGTERM, killing",
+		"activity", actAudit,
+		"pid", cmd.Process.Pid)
 	_ = cmd.Process.Kill()
 	<-done
 }
@@ -641,7 +683,7 @@ func (p *Plugin) invokeOnDemand(ctx context.Context, method string, params, resu
 	go func() {
 		sc := bufio.NewScanner(stderrPipe)
 		for sc.Scan() {
-			p.logger.Info("plugin stderr", "line", sc.Text())
+			p.logger.Info("plugin stderr", "activity", actInternal, "line", sc.Text())
 		}
 	}()
 
@@ -736,7 +778,7 @@ func (n *notifSink) OnLog(p LogParams) {
 	case "error":
 		lvl = slog.LevelError
 	}
-	attrs := []any{"source", "plugin"}
+	attrs := []any{"activity", actInternal, "source", "plugin"}
 	for k, v := range p.Fields {
 		attrs = append(attrs, k, v)
 	}
@@ -744,13 +786,23 @@ func (n *notifSink) OnLog(p LogParams) {
 }
 
 func (n *notifSink) OnMetric(p MetricParams) {
-	n.logger.Debug("plugin metric", "name", p.Name, "kind", p.Kind, "value", p.Value, "labels", p.Labels)
+	n.logger.Debug("plugin metric",
+		"activity", actInternal,
+		"name", p.Name,
+		"kind", p.Kind,
+		"value", p.Value,
+		"labels", p.Labels)
 }
 
 func (n *notifSink) OnNotify(p NotifyParams) {
-	n.logger.Info("plugin notify", "type", p.Type, "payload", p.Payload)
+	n.logger.Info("plugin notify",
+		"activity", actInternal,
+		"type", p.Type,
+		"payload", p.Payload)
 }
 
 func (n *notifSink) OnUnknown(method string, _ json.RawMessage) {
-	n.logger.Warn("plugin notification with unknown method", "method", method)
+	n.logger.Warn("plugin notification with unknown method",
+		"activity", actInternal,
+		"method", method)
 }

@@ -140,7 +140,8 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		Limit:       1000,
 	})
 	if err != nil {
-		s.loggerFrom(r.Context()).Error("protosend.stats.list_queue", "err", err)
+		s.loggerFrom(r.Context()).Error("protosend.stats.list_queue",
+			"activity", observe.ActivityInternal, "err", err)
 		writeProblem(w, r, http.StatusInternalServerError, "internal-error",
 			"could not read queue", "")
 		return
@@ -181,7 +182,8 @@ func (s *Server) processSend(ctx context.Context, r *http.Request, req sendReque
 	}
 	built, err := buildStructuredMessage(req, s.opts.Hostname, s.clk.Now())
 	if err != nil {
-		s.loggerFrom(ctx).Error("protosend.build_message", "err", err)
+		s.loggerFrom(ctx).Error("protosend.build_message",
+			"activity", observe.ActivityInternal, "err", err)
 		return nil, newProblem(r, http.StatusInternalServerError, "internal-error",
 			"could not build message", "")
 	}
@@ -199,7 +201,8 @@ func (s *Server) processSend(ctx context.Context, r *http.Request, req sendReque
 		DSNNotify:      parseDSNNotify(req.DSNNotify),
 	})
 	if err != nil && !errors.Is(err, queue.ErrConflict) {
-		s.loggerFrom(ctx).Error("protosend.queue.submit", "err", err)
+		s.loggerFrom(ctx).Error("protosend.queue.submit",
+			"activity", observe.ActivityInternal, "err", err)
 		return nil, newProblem(r, http.StatusInternalServerError, "queue-error",
 			"could not submit to queue", err.Error())
 	}
@@ -215,6 +218,20 @@ func (s *Server) processSend(ctx context.Context, r *http.Request, req sendReque
 			"config_set":    req.ConfigurationSet,
 			"idempotent":    boolStr(idempotent),
 		})
+	s.loggerFrom(ctx).InfoContext(ctx, "protosend.send.accepted",
+		"activity", observe.ActivityUser,
+		"api_key_id", func() uint64 {
+			if k, ok := apiKeyFrom(ctx); ok {
+				return uint64(k.ID)
+			}
+			return 0
+		}(),
+		"msg_id", built.messageID,
+		"submission_id", string(envID),
+		"recipient_count", len(rcpts),
+		"size_bytes", len(built.bytes),
+		"idempotent", idempotent,
+	)
 	return &sendResponse{
 		MessageID:    "<" + built.messageID + ">",
 		SubmissionID: string(envID),
@@ -281,7 +298,8 @@ func (s *Server) processSendRaw(ctx context.Context, r *http.Request, req sendRa
 		DSNNotify:      parseDSNNotify(req.DSNNotify),
 	})
 	if err != nil && !errors.Is(err, queue.ErrConflict) {
-		s.loggerFrom(ctx).Error("protosend.queue.submit_raw", "err", err)
+		s.loggerFrom(ctx).Error("protosend.queue.submit_raw",
+			"activity", observe.ActivityInternal, "err", err)
 		return nil, newProblem(r, http.StatusInternalServerError, "queue-error",
 			"could not submit to queue", err.Error())
 	}
@@ -295,6 +313,19 @@ func (s *Server) processSendRaw(ctx context.Context, r *http.Request, req sendRa
 			"config_set":    req.ConfigurationSet,
 			"idempotent":    boolStr(idempotent),
 		})
+	s.loggerFrom(ctx).InfoContext(ctx, "protosend.send_raw.accepted",
+		"activity", observe.ActivityUser,
+		"api_key_id", func() uint64 {
+			if k, ok := apiKeyFrom(ctx); ok {
+				return uint64(k.ID)
+			}
+			return 0
+		}(),
+		"msg_id", msgID,
+		"submission_id", string(envID),
+		"recipient_count", len(req.Destinations),
+		"idempotent", idempotent,
+	)
 	return &sendResponse{
 		MessageID:    "<" + msgID + ">",
 		SubmissionID: string(envID),
@@ -346,7 +377,8 @@ func (s *Server) checkFromPolicy(ctx context.Context, r *http.Request, p store.P
 	chk := sendpolicy.StoreChecker{Meta: s.store.Meta()}
 	dec, err := sendpolicy.CheckFrom(ctx, chk, p, key, strings.ToLower(from))
 	if err != nil {
-		s.loggerFrom(ctx).Error("protosend.checkfrom.store_error", "err", err, "from", from)
+		s.loggerFrom(ctx).Error("protosend.checkfrom.store_error",
+			"activity", observe.ActivityInternal, "err", err, "from", from)
 		return newProblem(r, http.StatusInternalServerError, "internal-error",
 			"from-address ownership check failed", err.Error())
 	}
@@ -355,6 +387,10 @@ func (s *Server) checkFromPolicy(ctx context.Context, r *http.Request, p store.P
 		s.appendAudit(ctx, "mail.send.forbidden_from", from, store.OutcomeFailure,
 			"from address not owned by principal",
 			map[string]string{"from": from, "source": string(sendpolicy.SourceHTTP), "reason": string(dec.Reason)})
+		s.loggerFrom(ctx).WarnContext(ctx, "protosend.send.rejected_forbidden_from",
+			"activity", observe.ActivityUser,
+			"from", from,
+			"reason", string(dec.Reason))
 		return newProblem(r, http.StatusForbidden, "forbidden-from",
 			"from address is not owned by the authenticated principal", from)
 	}
@@ -492,6 +528,7 @@ func (s *Server) appendAudit(ctx context.Context, action, subject string,
 	}
 	if err := s.store.Meta().AppendAuditLog(ctx, entry); err != nil {
 		s.loggerFrom(ctx).Warn("protosend.audit.append_failed",
+			"activity", observe.ActivityInternal,
 			"err", err, "action", action, "subject", subject)
 	}
 }

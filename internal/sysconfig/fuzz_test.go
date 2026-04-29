@@ -16,6 +16,45 @@ totally_unknown = true
 	f.Add([]byte(`[server]
 hostname = 1234
 `))
+	// Multi-sink seeds (REQ-OPS-80..86).
+	f.Add([]byte(minimalNoObs + `
+[[log.sink]]
+target = "stderr"
+format = "auto"
+level  = "info"
+activities = { deny = ["poll"] }
+`))
+	f.Add([]byte(minimalNoObs + `
+[[log.sink]]
+target = "/var/log/herold/a.jsonl"
+format = "json"
+level  = "debug"
+
+[[log.sink]]
+target = "/var/log/herold/a.jsonl"
+format = "json"
+level  = "debug"
+`))
+	f.Add([]byte(minimalNoObs + `
+[[log.sink]]
+target = "relative.log"
+format = "json"
+level  = "info"
+`))
+	f.Add([]byte(minimalNoObs + `
+[[log.sink]]
+target = "stderr"
+format = "json"
+level  = "info"
+activities = { allow = ["user"], deny = ["poll"] }
+`))
+	f.Add([]byte(minimalNoObs + `
+[[log.sink]]
+target = "stderr"
+format = "json"
+level  = "info"
+activities = { deny = ["totally_invalid_activity"] }
+`))
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		_, _ = Parse(raw)

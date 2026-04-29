@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 
 	"golang.org/x/sync/semaphore"
+
+	"github.com/hanshuebner/herold/internal/observe"
 )
 
 // NotificationHandler receives plugin-to-server notifications (log, metric,
@@ -114,26 +116,35 @@ func (c *Client) Run(ctx context.Context) error {
 func (c *Client) dispatch(raw []byte) {
 	kind, err := ClassifyFrame(raw)
 	if err != nil {
-		c.logger.Warn("plugin frame classify failed", "err", err, "len", len(raw))
+		c.logger.Warn("plugin frame classify failed",
+			"activity", observe.ActivityInternal,
+			"err", err,
+			"len", len(raw))
 		return
 	}
 	switch kind {
 	case FrameResponse:
 		var resp Response
 		if err := json.Unmarshal(raw, &resp); err != nil {
-			c.logger.Warn("plugin response decode failed", "err", err)
+			c.logger.Warn("plugin response decode failed",
+				"activity", observe.ActivityInternal,
+				"err", err)
 			return
 		}
 		c.deliverResponse(&resp)
 	case FrameRequest, FrameNotification:
 		var req Request
 		if err := json.Unmarshal(raw, &req); err != nil {
-			c.logger.Warn("plugin request decode failed", "err", err)
+			c.logger.Warn("plugin request decode failed",
+				"activity", observe.ActivityInternal,
+				"err", err)
 			return
 		}
 		c.handleIncoming(&req)
 	default:
-		c.logger.Warn("plugin unknown frame", "len", len(raw))
+		c.logger.Warn("plugin unknown frame",
+			"activity", observe.ActivityInternal,
+			"len", len(raw))
 	}
 }
 
@@ -190,7 +201,9 @@ func (c *Client) deliverResponse(resp *Response) {
 	}
 	c.mu.Unlock()
 	if !ok {
-		c.logger.Warn("plugin response without pending request", "id", key)
+		c.logger.Warn("plugin response without pending request",
+			"activity", observe.ActivityInternal,
+			"id", key)
 		return
 	}
 	ch <- resp

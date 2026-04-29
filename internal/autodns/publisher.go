@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -230,6 +231,7 @@ func (p *Publisher) PublishDomain(ctx context.Context, domain string, policy Dom
 	p.mu.Unlock()
 
 	p.opts.Logger.InfoContext(ctx, "autodns: domain published",
+		slog.String("activity", observe.ActivitySystem),
 		slog.String("domain", domain),
 		slog.String("plugin", pluginName),
 	)
@@ -273,6 +275,7 @@ func (p *Publisher) UpdateDKIMRecord(ctx context.Context, domain string, key sto
 	p.mu.Unlock()
 
 	p.opts.Logger.InfoContext(ctx, "autodns: DKIM updated",
+		slog.String("activity", observe.ActivitySystem),
 		slog.String("domain", domain),
 		slog.String("selector", key.Selector),
 	)
@@ -374,7 +377,29 @@ func (p *Publisher) VerifyDomain(ctx context.Context, domain string) (VerifyRepo
 			State:    state,
 		})
 	}
+	if report.OK {
+		p.opts.Logger.DebugContext(ctx, "autodns: reconciliation pass no drift",
+			slog.String("activity", observe.ActivityPoll),
+			slog.String("domain", domain),
+		)
+	} else {
+		p.opts.Logger.WarnContext(ctx, "autodns: reconciliation pass drift detected",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("domain", domain),
+			slog.Int("drifted_records", countDrifted(report.Records)),
+		)
+	}
 	return report, nil
+}
+
+func countDrifted(records []VerifyRecord) int {
+	n := 0
+	for _, r := range records {
+		if r.State != VerifyStateMatch {
+			n++
+		}
+	}
+	return n
 }
 
 func classify(expected string, recs []dnsRecord) (VerifyState, string) {

@@ -33,6 +33,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.16
 	github.com/aws/aws-sdk-go-v2/service/route53 v1.62.6
 	github.com/nats-io/nats.go v1.51.0
+	golang.org/x/term v0.41.0
 )
 
 require (

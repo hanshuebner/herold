@@ -29,6 +29,7 @@ import (
 	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -113,6 +114,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Audit the failure (REQ-ADM-300, REQ-ADM-303): failed auth
 		// attempts MUST land in the durable audit log so SIEM /
 		// fail2ban pipelines can see brute-force activity.
+		s.loggerFrom(r.Context()).WarnContext(r.Context(), "protoadmin.auth.login_failed",
+			"activity", observe.ActivityAudit,
+			"email", req.Email,
+			"reason", humanLoginError(err))
 		s.auditLoginFailure(r, req.Email, 0, humanLoginError(err))
 		writeProblem(w, r, http.StatusUnauthorized,
 			"unauthorized", humanLoginError(err), "")
@@ -122,6 +127,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	p, err := s.store.Meta().GetPrincipalByID(ctx, pid)
 	if err != nil {
 		s.loggerFrom(ctx).Warn("protoadmin.login.principal_lookup_failed",
+			"activity", observe.ActivityAudit,
 			"err", err, "principal_id", pid)
 		s.auditLoginFailure(r, req.Email, pid, "principal load failed")
 		writeProblem(w, r, http.StatusInternalServerError,
@@ -139,17 +145,26 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// code for 2FA-enabled principals before issuing admin-scoped cookie.
 	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
 		if req.TOTPCode == "" {
+			s.loggerFrom(r.Context()).WarnContext(r.Context(), "protoadmin.auth.totp_missing",
+				"activity", observe.ActivityAudit,
+				"principal_id", pid)
 			s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp code missing")
 			writeLoginProblemStepUp(w, r)
 			return
 		}
 		if err := s.dir.VerifyTOTP(ctx, pid, req.TOTPCode); err != nil {
 			if errors.Is(err, directory.ErrRateLimited) {
+				s.loggerFrom(r.Context()).WarnContext(r.Context(), "protoadmin.auth.totp_rate_limited",
+					"activity", observe.ActivityAudit,
+					"principal_id", pid)
 				s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp rate-limited")
 				writeProblem(w, r, http.StatusUnauthorized,
 					"unauthorized", "too many TOTP attempts; please wait", "")
 				return
 			}
+			s.loggerFrom(r.Context()).WarnContext(r.Context(), "protoadmin.auth.totp_invalid",
+				"activity", observe.ActivityAudit,
+				"principal_id", pid)
 			s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp code invalid")
 			writeLoginProblemStepUp(w, r)
 			return
@@ -177,6 +192,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// the success record carries actor=principal/<id> rather than the
 	// pre-auth actor=system fallback (REQ-ADM-300).
 	auditCtx := context.WithValue(r.Context(), ctxKeyPrincipal, p)
+	s.loggerFrom(r.Context()).InfoContext(r.Context(), "protoadmin.auth.login_success",
+		"activity", observe.ActivityAudit,
+		"principal_id", uint64(p.ID),
+		"email", p.CanonicalEmail)
 	s.appendAudit(auditCtx,
 		"auth.login",
 		"principal:"+p.CanonicalEmail,
@@ -246,6 +265,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	subject := ""
 	if p, ok := principalFrom(r.Context()); ok {
 		subject = "principal:" + p.CanonicalEmail
+		s.loggerFrom(r.Context()).InfoContext(r.Context(), "protoadmin.auth.logout",
+			"activity", observe.ActivityAudit,
+			"principal_id", uint64(p.ID))
 	}
 	s.appendAudit(r.Context(),
 		"auth.logout",

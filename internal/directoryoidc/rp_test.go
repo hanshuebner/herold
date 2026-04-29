@@ -21,6 +21,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
@@ -474,6 +475,106 @@ func TestPeekPendingFlow_ClassifiesWithoutConsuming(t *testing.T) {
 	if got := rp.PeekPendingFlow("nonsense"); got != directoryoidc.FlowKindUnknown {
 		t.Fatalf("unknown peek: got %v want FlowKindUnknown", got)
 	}
+}
+
+// TestActivityTagged_LinkFlow asserts that BeginLink and CompleteLink emit
+// log records tagged with a valid activity value (REQ-OPS-86a). The success
+// path produces audit-tagged records; the failure path (invalid state on
+// CompleteLink) also produces an audit-tagged warn.
+func TestActivityTagged_LinkFlow(t *testing.T) {
+	stub := newOIDCStub(t, "herold-client")
+	observe.AssertActivityTagged(t, func(log *slog.Logger) {
+		fs := newFakeStore(t)
+		ctx := context.Background()
+		p, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
+			Kind:           store.PrincipalKindUser,
+			CanonicalEmail: "alice@example.test",
+		})
+		if err != nil {
+			t.Fatalf("insert principal: %v", err)
+		}
+		rp := directoryoidc.New(fs.Meta(), log, &http.Client{Timeout: 5 * time.Second}, clock.NewReal())
+		if _, err := rp.AddProvider(ctx, directoryoidc.ProviderConfig{
+			Name:         "test",
+			IssuerURL:    stub.issuer,
+			ClientID:     "herold-client",
+			ClientSecret: "secret",
+			RedirectURL:  "http://localhost/cb",
+		}); err != nil {
+			t.Fatalf("add provider: %v", err)
+		}
+		stub.subject = "ext-sub-tag-test"
+		authURL, state, err := rp.BeginLink(ctx, p.ID, "test")
+		if err != nil {
+			t.Fatalf("begin link: %v", err)
+		}
+		code, gotState := followAuth(t, authURL)
+		if gotState != state {
+			t.Fatalf("state mismatch: %q vs %q", gotState, state)
+		}
+		if _, err := rp.CompleteLink(ctx, state, code); err != nil {
+			t.Fatalf("complete link: %v", err)
+		}
+		// Also exercise the invalid-state warn path.
+		_, _ = rp.CompleteLink(ctx, "bogus-state", "code")
+	})
+}
+
+// TestActivityTagged_SignInFlow asserts that BeginSignIn and CompleteSignIn
+// emit records with valid activity tags (REQ-OPS-86a), including the
+// failure path where the subject has no link.
+func TestActivityTagged_SignInFlow(t *testing.T) {
+	stub := newOIDCStub(t, "herold-client")
+	observe.AssertActivityTagged(t, func(log *slog.Logger) {
+		fs := newFakeStore(t)
+		ctx := context.Background()
+		p, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
+			Kind:           store.PrincipalKindUser,
+			CanonicalEmail: "alice@example.test",
+		})
+		if err != nil {
+			t.Fatalf("insert principal: %v", err)
+		}
+		rp := directoryoidc.New(fs.Meta(), log, &http.Client{Timeout: 5 * time.Second}, clock.NewReal())
+		if _, err := rp.AddProvider(ctx, directoryoidc.ProviderConfig{
+			Name:         "test",
+			IssuerURL:    stub.issuer,
+			ClientID:     "herold-client",
+			ClientSecret: "secret",
+			RedirectURL:  "http://localhost/cb",
+		}); err != nil {
+			t.Fatalf("add provider: %v", err)
+		}
+		// Link first so sign-in has something to find.
+		stub.subject = "ext-sub-signin-test"
+		authURL, state, err := rp.BeginLink(ctx, p.ID, "test")
+		if err != nil {
+			t.Fatalf("begin link: %v", err)
+		}
+		code, gotState := followAuth(t, authURL)
+		if gotState != state {
+			t.Fatalf("state mismatch: %q vs %q", gotState, state)
+		}
+		if _, err := rp.CompleteLink(ctx, state, code); err != nil {
+			t.Fatalf("complete link: %v", err)
+		}
+
+		// Sign-in success.
+		authURL, state, err = rp.BeginSignIn(ctx, "test")
+		if err != nil {
+			t.Fatalf("begin signin: %v", err)
+		}
+		code, gotState = followAuth(t, authURL)
+		if gotState != state {
+			t.Fatalf("state mismatch: %q vs %q", gotState, state)
+		}
+		if _, err := rp.CompleteSignIn(ctx, state, code); err != nil {
+			t.Fatalf("complete signin: %v", err)
+		}
+
+		// Unknown state on CompleteSignIn exercises the warn path.
+		_, _ = rp.CompleteSignIn(ctx, "bogus-state", "code")
+	})
 }
 
 // ensure fmt import is used; Go will strip otherwise.

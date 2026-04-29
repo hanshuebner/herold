@@ -184,6 +184,7 @@ func (d *Directory) provisionDefaultMailboxes(ctx context.Context, pid Principal
 			continue
 		}
 		d.logger.Warn("directory.provision_mailbox_failed",
+			"activity", observe.ActivityInternal,
 			"principal_id", pid,
 			"mailbox", s.name,
 			"err", err,
@@ -421,8 +422,9 @@ func (d *Directory) ResolveAddress(ctx context.Context, local, domain string) (P
 // entry so backend queries can filter on the same keys the logs
 // surface.
 func (d *Directory) audit(ctx context.Context, pid PrincipalID, action string, attrs ...slog.Attr) {
-	merged := make([]slog.Attr, 0, 2+len(attrs))
+	merged := make([]slog.Attr, 0, 3+len(attrs))
 	merged = append(merged,
+		slog.String("activity", observe.ActivityAudit),
 		slog.Uint64("principal_id", uint64(pid)),
 		slog.String("action", action),
 	)
@@ -448,6 +450,7 @@ func (d *Directory) audit(ctx context.Context, pid PrincipalID, action string, a
 		// at WARN so the operator notices a silently-dropping audit
 		// pipeline.
 		d.logger.LogAttrs(ctx, slog.LevelWarn, "directory.audit.append_failed",
+			slog.String("activity", observe.ActivityInternal),
 			slog.String("action", action),
 			slog.String("err", err.Error()))
 	}

@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -340,7 +341,8 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 			firstID = id
 		}
 	}
-	q.opts.Logger.InfoContext(ctx, "queue: submission enqueued",
+	q.opts.Logger.DebugContext(ctx, "queue: submission enqueued",
+		slog.String("activity", observe.ActivitySystem),
 		slog.String("envelope_id", string(envID)),
 		slog.Int("recipients", len(msg.Recipients)),
 		slog.String("body_hash", bodyRef.Hash),
@@ -424,6 +426,7 @@ func (q *Queue) Cancel(ctx context.Context, envelope EnvelopeID) (cancelled, inf
 		}
 	}
 	q.opts.Logger.InfoContext(ctx, "queue: cancel envelope",
+		slog.String("activity", observe.ActivitySystem),
 		slog.String("envelope_id", string(envelope)),
 		slog.Int("cancelled", cancelled),
 		slog.Int("inflight", inflightCount),
@@ -492,6 +495,7 @@ func (q *Queue) Run(ctx context.Context) error {
 	// of a Deliver call.
 	if err := q.recoverStaleInflight(ctx); err != nil {
 		q.opts.Logger.WarnContext(ctx, "queue: stale-inflight recovery failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.Any("err", err))
 	}
 
@@ -514,6 +518,7 @@ func (q *Queue) Run(ctx context.Context) error {
 					break
 				}
 				q.opts.Logger.ErrorContext(ctx, "queue: claim due items failed",
+					slog.String("activity", observe.ActivitySystem),
 					slog.Any("err", err))
 			} else {
 				for _, item := range items {
@@ -572,6 +577,7 @@ func (q *Queue) Run(ctx context.Context) error {
 			case <-done:
 			case <-drainCtx.Done():
 				q.opts.Logger.WarnContext(ctx, "queue: shutdown drain timeout exceeded",
+					slog.String("activity", observe.ActivitySystem),
 					slog.Duration("grace", q.shutdownGrace))
 			}
 			queueShutdownDrainTotal.Inc()
@@ -579,7 +585,8 @@ func (q *Queue) Run(ctx context.Context) error {
 		case <-q.wakeCh:
 			// New work or reschedule; loop immediately.
 		case <-q.clk.After(q.pollInterval):
-			// Loop again.
+			q.opts.Logger.DebugContext(ctx, "queue: poll tick",
+				slog.String("activity", observe.ActivityPoll))
 		}
 	}
 	// unreachable in normal control flow.
@@ -607,10 +614,12 @@ func (q *Queue) recoverStaleInflight(ctx context.Context) error {
 			if err := q.opts.Store.Meta().RescheduleQueueItem(ctx,
 				r.ID, q.clk.Now(), "recovered from stale inflight"); err != nil {
 				q.opts.Logger.WarnContext(ctx, "queue: recover stale inflight failed",
+					slog.String("activity", observe.ActivitySystem),
 					slog.Uint64("id", uint64(r.ID)),
 					slog.Any("err", err))
 			} else {
 				q.opts.Logger.InfoContext(ctx, "queue: recovered stale inflight row",
+					slog.String("activity", observe.ActivitySystem),
 					slog.Uint64("id", uint64(r.ID)),
 					slog.Time("last_attempt_at", r.LastAttemptAt))
 			}
@@ -629,9 +638,18 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Minute)
 	defer cancel()
 
+	q.opts.Logger.InfoContext(ctx, "queue: delivery attempt start",
+		slog.String("activity", observe.ActivitySystem),
+		slog.Uint64("id", uint64(item.ID)),
+		slog.String("envelope_id", string(item.EnvelopeID)),
+		slog.String("recipient_domain", recipientHost(item.RcptTo)),
+		slog.Int("attempt", int(item.Attempts)+1),
+	)
+
 	body, err := q.readBody(ctx, item.BodyBlobHash)
 	if err != nil {
 		q.opts.Logger.ErrorContext(ctx, "queue: read body blob failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.Uint64("id", uint64(item.ID)),
 			slog.String("body_hash", item.BodyBlobHash),
 			slog.Any("err", err))
@@ -646,6 +664,7 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 		signed, sErr := q.opts.Signer.Sign(ctx, intent.Domain, body)
 		if sErr != nil {
 			q.opts.Logger.WarnContext(ctx, "queue: signer failed; sending unsigned",
+				slog.String("activity", observe.ActivitySystem),
 				slog.String("domain", intent.Domain),
 				slog.Any("err", sErr))
 		} else {
@@ -684,6 +703,7 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 	case DeliveryStatusHold:
 		if hErr := q.opts.Store.Meta().HoldQueueItem(ctx, item.ID); hErr != nil {
 			q.opts.Logger.ErrorContext(ctx, "queue: hold failed",
+				slog.String("activity", observe.ActivitySystem),
 				slog.Uint64("id", uint64(item.ID)),
 				slog.Any("err", hErr))
 		}
@@ -691,6 +711,7 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 		q.handleTransient(ctx, item, outcomeToErrMsg(outcome))
 	default:
 		q.opts.Logger.ErrorContext(ctx, "queue: deliverer returned unknown status",
+			slog.String("activity", observe.ActivityInternal),
 			slog.Uint64("id", uint64(item.ID)))
 		q.handleTransient(ctx, item, "deliverer returned unknown status")
 	}
@@ -699,10 +720,17 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 func (q *Queue) handleSuccess(ctx context.Context, item store.QueueItem, outcome DeliveryOutcome) {
 	if err := q.opts.Store.Meta().CompleteQueueItem(ctx, item.ID, true, ""); err != nil {
 		q.opts.Logger.ErrorContext(ctx, "queue: complete success failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.Uint64("id", uint64(item.ID)),
 			slog.Any("err", err))
 		return
 	}
+	q.opts.Logger.InfoContext(ctx, "queue: delivery success",
+		slog.String("activity", observe.ActivitySystem),
+		slog.Uint64("id", uint64(item.ID)),
+		slog.String("envelope_id", string(item.EnvelopeID)),
+		slog.String("recipient_domain", recipientHost(item.RcptTo)),
+	)
 	if shouldEmitSuccessDSN(item.DSNNotify) {
 		q.emitDSN(ctx, item, outcome, DSNKindSuccess)
 	}
@@ -712,10 +740,17 @@ func (q *Queue) handlePermanent(ctx context.Context, item store.QueueItem, outco
 	if err := q.opts.Store.Meta().CompleteQueueItem(ctx, item.ID,
 		false, outcomeToErrMsg(outcome)); err != nil {
 		q.opts.Logger.ErrorContext(ctx, "queue: complete permanent failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.Uint64("id", uint64(item.ID)),
 			slog.Any("err", err))
 		return
 	}
+	q.opts.Logger.WarnContext(ctx, "queue: delivery permanent failure",
+		slog.String("activity", observe.ActivitySystem),
+		slog.Uint64("id", uint64(item.ID)),
+		slog.String("envelope_id", string(item.EnvelopeID)),
+		slog.String("detail", outcomeToErrMsg(outcome)),
+	)
 	if shouldEmitFailureDSN(item.DSNNotify) {
 		q.emitDSN(ctx, item, outcome, DSNKindFailure)
 	}
@@ -728,10 +763,17 @@ func (q *Queue) handleTransient(ctx context.Context, item store.QueueItem, errMs
 		if err := q.opts.Store.Meta().CompleteQueueItem(ctx, item.ID,
 			false, "retry schedule exhausted: "+errMsg); err != nil {
 			q.opts.Logger.ErrorContext(ctx, "queue: complete after exhaustion failed",
+				slog.String("activity", observe.ActivitySystem),
 				slog.Uint64("id", uint64(item.ID)),
 				slog.Any("err", err))
 			return
 		}
+		q.opts.Logger.WarnContext(ctx, "queue: delivery permanent failure (retry exhausted)",
+			slog.String("activity", observe.ActivitySystem),
+			slog.Uint64("id", uint64(item.ID)),
+			slog.String("envelope_id", string(item.EnvelopeID)),
+			slog.String("detail", errMsg),
+		)
 		if shouldEmitFailureDSN(item.DSNNotify) {
 			outcome := DeliveryOutcome{
 				Status:       DeliveryStatusPermanent,
@@ -743,8 +785,16 @@ func (q *Queue) handleTransient(ctx context.Context, item store.QueueItem, errMs
 		return
 	}
 	next := q.clk.Now().Add(delay)
+	q.opts.Logger.WarnContext(ctx, "queue: delivery transient failure; rescheduled",
+		slog.String("activity", observe.ActivitySystem),
+		slog.Uint64("id", uint64(item.ID)),
+		slog.String("envelope_id", string(item.EnvelopeID)),
+		slog.String("detail", errMsg),
+		slog.Time("next_attempt_at", next),
+	)
 	if err := q.opts.Store.Meta().RescheduleQueueItem(ctx, item.ID, next, errMsg); err != nil {
 		q.opts.Logger.ErrorContext(ctx, "queue: reschedule failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.Uint64("id", uint64(item.ID)),
 			slog.Any("err", err))
 	}
@@ -758,6 +808,7 @@ func (q *Queue) emitDSN(ctx context.Context, item store.QueueItem, outcome Deliv
 	if item.MailFrom == "" {
 		// Null sender — RFC 3464 says do not bounce a bounce. Suppress.
 		q.opts.Logger.InfoContext(ctx, "queue: skip DSN to null sender",
+			slog.String("activity", observe.ActivitySystem),
 			slog.Uint64("id", uint64(item.ID)),
 			slog.String("kind", kind.String()))
 		return
@@ -790,6 +841,7 @@ func (q *Queue) emitDSN(ctx context.Context, item store.QueueItem, outcome Deliv
 	})
 	if err != nil {
 		q.opts.Logger.ErrorContext(ctx, "queue: build DSN failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.Uint64("id", uint64(item.ID)),
 			slog.Any("err", err))
 		return
@@ -797,6 +849,7 @@ func (q *Queue) emitDSN(ctx context.Context, item store.QueueItem, outcome Deliv
 	bodyRef, err := q.opts.Store.Blobs().Put(ctx, bytes.NewReader(dsn))
 	if err != nil {
 		q.opts.Logger.ErrorContext(ctx, "queue: persist DSN body failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.Uint64("id", uint64(item.ID)),
 			slog.Any("err", err))
 		return
@@ -804,6 +857,7 @@ func (q *Queue) emitDSN(ctx context.Context, item store.QueueItem, outcome Deliv
 	envID, err := newEnvelopeID()
 	if err != nil {
 		q.opts.Logger.ErrorContext(ctx, "queue: dsn envelope id failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.Any("err", err))
 		return
 	}
@@ -828,6 +882,7 @@ func (q *Queue) emitDSN(ctx context.Context, item store.QueueItem, outcome Deliv
 			return
 		}
 		q.opts.Logger.ErrorContext(ctx, "queue: enqueue DSN failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.Uint64("id", uint64(item.ID)),
 			slog.Any("err", err))
 		return
@@ -888,6 +943,7 @@ func (q *Queue) PostBounce(ctx context.Context, in BounceInput) error {
 	if in.MailFrom == "" {
 		// RFC 3464: never bounce a bounce. Suppress and return.
 		q.opts.Logger.InfoContext(ctx, "queue: skip attpol bounce (null sender)",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("final_rcpt", in.FinalRcpt))
 		return nil
 	}

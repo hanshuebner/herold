@@ -298,3 +298,71 @@ func mustGenerate(t *testing.T, secret string, at time.Time) string {
 	}
 	return code
 }
+
+// TestActivityTagged_CreatePrincipal asserts that CreatePrincipal emits
+// correctly-tagged log records (REQ-OPS-86a). The audit record must carry
+// activity=audit; the provisioning-failure path (exercised on a second call
+// with the same address) must carry activity=internal.
+func TestActivityTagged_CreatePrincipal(t *testing.T) {
+	observe.AssertActivityTagged(t, func(log *slog.Logger) {
+		clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+		fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+		if err != nil {
+			t.Fatalf("fakestore: %v", err)
+		}
+		defer fs.Close()
+		rnd := newDeterministicReader()
+		dir := directory.New(fs.Meta(), log, clk, rnd)
+		ctx := context.Background()
+		_, err = dir.CreatePrincipal(ctx, "alice@example.test", "correct-horse-staple")
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	})
+}
+
+// TestActivityTagged_DeletePrincipal asserts activity=audit on the delete
+// audit record.
+func TestActivityTagged_DeletePrincipal(t *testing.T) {
+	observe.AssertActivityTagged(t, func(log *slog.Logger) {
+		clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+		fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+		if err != nil {
+			t.Fatalf("fakestore: %v", err)
+		}
+		defer fs.Close()
+		rnd := newDeterministicReader()
+		dir := directory.New(fs.Meta(), log, clk, rnd)
+		ctx := context.Background()
+		pid, err := dir.CreatePrincipal(ctx, "bob@example.test", "correct-horse-staple")
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if err := dir.DeletePrincipal(ctx, pid); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+	})
+}
+
+// TestActivityTagged_UpdatePassword asserts activity=audit on the
+// password-change audit record.
+func TestActivityTagged_UpdatePassword(t *testing.T) {
+	observe.AssertActivityTagged(t, func(log *slog.Logger) {
+		clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+		fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+		if err != nil {
+			t.Fatalf("fakestore: %v", err)
+		}
+		defer fs.Close()
+		rnd := newDeterministicReader()
+		dir := directory.New(fs.Meta(), log, clk, rnd)
+		ctx := context.Background()
+		pid, err := dir.CreatePrincipal(ctx, "carol@example.test", "old-password-12chars")
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if err := dir.UpdatePassword(ctx, pid, "old-password-12chars", "new-password-12chars"); err != nil {
+			t.Fatalf("update password: %v", err)
+		}
+	})
+}

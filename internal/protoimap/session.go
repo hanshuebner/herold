@@ -94,7 +94,14 @@ func newSession(s *Server, c net.Conn, tlsActive bool) *session {
 		remote:    c.RemoteAddr().String(),
 		tlsActive: tlsActive,
 		state:     stateNotAuthed,
-		logger:    s.logger.With("remote", c.RemoteAddr().String()),
+		// Pre-scope subsystem, remote_addr so per-event records only add
+		// activity and event-specific attrs (STANDARDS §7, REQ-OPS-86).
+		// principal_id is added by handleLOGIN / handleAUTHENTICATE via
+		// a logger replacement once authentication succeeds.
+		logger: s.logger.With(
+			"subsystem", "protoimap",
+			"remote_addr", c.RemoteAddr().String(),
+		),
 	}
 	if s.opts.DownloadBytesPerSecond > 0 {
 		ses.bucket = newTokenBucket(s.clk, s.opts.DownloadBytesPerSecond, s.opts.DownloadBurstBytes)
@@ -108,7 +115,7 @@ func (ses *session) run(ctx context.Context) {
 
 	greet := "* OK [CAPABILITY " + ses.capabilityString() + "] " + ses.s.opts.ServerName + " IMAP ready"
 	if err := ses.resp.writeLine(greet); err != nil {
-		ses.logger.Debug("protoimap: greeting write failed", "err", err)
+		ses.logger.Debug("protoimap: greeting write failed", "activity", "internal", "err", err)
 		return
 	}
 	for {
@@ -130,6 +137,7 @@ func (ses *session) run(ctx context.Context) {
 					rawLine = cmd.Raw
 				}
 				ses.logger.Debug("protoimap: read command",
+					"activity", "internal",
 					"err", err,
 					"raw", rawLine,
 				)
@@ -142,7 +150,7 @@ func (ses *session) run(ctx context.Context) {
 		ses.cmdCount++
 		if err := ses.dispatch(ctx, cmd); err != nil {
 			// A dispatch error ends the session (protocol violation).
-			ses.logger.Debug("protoimap: dispatch", "err", err)
+			ses.logger.Debug("protoimap: dispatch", "activity", "internal", "err", err)
 			_ = ses.resp.taggedBAD(cmd.Tag, "", fmt.Sprintf("error: %v", err))
 			return
 		}
@@ -191,7 +199,7 @@ func (ses *session) dispatch(ctx context.Context, c *Command) error {
 		ses.state = stateLogout
 		return ses.resp.taggedOK(c.Tag, "", "LOGOUT completed")
 	case "ID":
-		ses.logger.Debug("protoimap: client ID", "params", c.IDParams)
+		ses.logger.Debug("protoimap: ID", "activity", "access", "params", c.IDParams)
 		// Respond with a minimal server ID.
 		if err := ses.resp.untagged("ID (\"name\" \"" + ses.s.opts.ServerName + "\")"); err != nil {
 			return err
@@ -363,7 +371,10 @@ func (ses *session) handleSTARTTLS(ctx context.Context, c *Command) error {
 	cap := sasl.NewCapturingTLSConfig(heroldtls.TLSConfig(ses.s.tlsStore, heroldtls.Intermediate, nil))
 	tlsConn := tls.Server(ses.conn, cap.Config())
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		ses.logger.Warn("protoimap: STARTTLS", "err", err)
+		ses.logger.Warn("protoimap: STARTTLS handshake failed",
+			"activity", "internal",
+			"err", err,
+		)
 		return err
 	}
 	ses.conn = tlsConn
@@ -388,10 +399,21 @@ func (ses *session) handleLOGIN(ctx context.Context, c *Command) error {
 	ctx = directory.WithAuthSource(ctx, ses.remote)
 	pid, err := ses.s.dir.Authenticate(ctx, c.LoginUser, c.LoginPass)
 	if err != nil {
+		ses.logger.Warn("protoimap: LOGIN failed",
+			"activity", "audit",
+			"username", c.LoginUser,
+		)
 		return ses.resp.taggedNO(c.Tag, "AUTHENTICATIONFAILED", "LOGIN failed")
 	}
 	ses.pid = pid
 	ses.state = stateAuthed
+	// Narrow the session logger to include the authenticated principal so
+	// all subsequent records carry principal_id (STANDARDS §7, REQ-OPS-86).
+	ses.logger = ses.logger.With("principal_id", pid)
+	ses.logger.Info("protoimap: LOGIN succeeded",
+		"activity", "audit",
+		"username", c.LoginUser,
+	)
 	return ses.resp.taggedOK(c.Tag, "CAPABILITY "+ses.capabilityString(), "LOGIN completed")
 }
 
@@ -432,6 +454,10 @@ func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
 	)
 	challenge, done, err = mech.Start(ctx, initial)
 	if err != nil {
+		ses.logger.Warn("protoimap: AUTHENTICATE failed",
+			"activity", "audit",
+			"mechanism", c.AuthMechanism,
+		)
 		return ses.resp.taggedNO(c.Tag, "AUTHENTICATIONFAILED", "SASL failure")
 	}
 	for !done {
@@ -451,11 +477,19 @@ func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
 		}
 		challenge, done, err = mech.Next(ctx, resp)
 		if err != nil {
+			ses.logger.Warn("protoimap: AUTHENTICATE failed",
+				"activity", "audit",
+				"mechanism", c.AuthMechanism,
+			)
 			return ses.resp.taggedNO(c.Tag, "AUTHENTICATIONFAILED", "SASL failure")
 		}
 	}
 	pid, perr := mech.Principal()
 	if perr != nil {
+		ses.logger.Warn("protoimap: AUTHENTICATE failed",
+			"activity", "audit",
+			"mechanism", c.AuthMechanism,
+		)
 		return ses.resp.taggedNO(c.Tag, "AUTHENTICATIONFAILED", "SASL failure")
 	}
 	// Final challenge (for SCRAM success message) needs to go before OK.
@@ -468,6 +502,13 @@ func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
 	}
 	ses.pid = pid
 	ses.state = stateAuthed
+	// Narrow the session logger to include the authenticated principal so
+	// all subsequent records carry principal_id (STANDARDS §7, REQ-OPS-86).
+	ses.logger = ses.logger.With("principal_id", pid)
+	ses.logger.Info("protoimap: AUTHENTICATE succeeded",
+		"activity", "audit",
+		"mechanism", c.AuthMechanism,
+	)
 	return ses.resp.taggedOK(c.Tag, "CAPABILITY "+ses.capabilityString(), "AUTHENTICATE completed")
 }
 

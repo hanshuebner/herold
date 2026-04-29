@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/mail"
 	"regexp"
 	"regexp/syntax"
@@ -14,6 +15,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
+	"github.com/hanshuebner/herold/internal/observe"
 )
 
 // ActionKind enumerates the delivery actions a Sieve script can emit.
@@ -145,6 +147,18 @@ type Environment struct {
 	// Now overrides the "current" time tests see; preferred to pre-
 	// advancing Clock in simple tests.
 	Now time.Time
+	// Logger is the structured logger for the interpreter. When set it
+	// must already carry subsystem=sieve, principal_id, and script_id via
+	// log.With(...) at the call site (SMTP delivery path). A nil Logger
+	// silences interpreter log output — tests that do not exercise the
+	// logging path may leave this unset.
+	Logger *slog.Logger
+	// ScriptID identifies the script being evaluated; used in log records
+	// when Logger is non-nil (REQ-OPS-83).
+	ScriptID string
+	// PrincipalID identifies the script owner; used in log records when
+	// Logger is non-nil.
+	PrincipalID string
 }
 
 // Interpreter evaluates a pre-parsed, pre-validated script against a
@@ -156,6 +170,11 @@ func NewInterpreter() *Interpreter { return &Interpreter{} }
 
 // Evaluate runs the script against msg and env. It never performs I/O;
 // the returned Outcome describes what the caller should do.
+//
+// When env.Logger is non-nil the interpreter emits activity-tagged log
+// records for each action taken and for runtime errors (REQ-OPS-86).
+// The caller is responsible for pre-scoping the logger with
+// subsystem=sieve, principal_id, and script_id before passing it in.
 func (in *Interpreter) Evaluate(ctx context.Context, script *Script, msg mailparse.Message, env Environment) (Outcome, error) {
 	if script == nil {
 		return Outcome{}, errors.New("sieve: nil script")
@@ -169,6 +188,22 @@ func (in *Interpreter) Evaluate(ctx context.Context, script *Script, msg mailpar
 	if env.Limits == (SandboxLimits{}) {
 		env.Limits = DefaultSandboxLimits()
 	}
+	// Scope the logger for this evaluation. The caller may have already
+	// added subsystem/principal_id/script_id via log.With; we add them
+	// here only when they are not already present (safe to re-add, slog
+	// does not deduplicate but the pre-scoped pattern means the attrs are
+	// set once at entry). When env.Logger is nil we fall back to a discard
+	// logger so the rest of the code can log unconditionally.
+	log := env.Logger
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	} else {
+		log = log.With(
+			"subsystem", "sieve",
+			"principal_id", env.PrincipalID,
+			"script_id", env.ScriptID,
+		)
+	}
 	st := &state{
 		ctx:      ctx,
 		env:      env,
@@ -178,11 +213,15 @@ func (in *Interpreter) Evaluate(ctx context.Context, script *Script, msg mailpar
 		vars:     map[string]string{},
 		flags:    map[string]struct{}{},
 		outcome:  Outcome{ImplicitKeep: true},
+		log:      log,
 	}
 	for _, r := range script.Requires {
 		st.requires[r] = true
 	}
 	if err := st.runBlock(script.Commands); err != nil {
+		log.Warn("sieve runtime error",
+			"activity", observe.ActivityInternal,
+			"err", err)
 		return st.outcome, err
 	}
 	return st.outcome, nil
@@ -200,6 +239,7 @@ type state struct {
 	flags   map[string]struct{}
 
 	outcome Outcome
+	log     *slog.Logger
 }
 
 func (s *state) runBlock(cmds []Command) error {
@@ -348,7 +388,45 @@ func (s *state) appendAction(a Action) error {
 		s.outcome.ImplicitKeep = false
 	}
 	s.outcome.Actions = append(s.outcome.Actions, a)
+	// Emit system/debug for every action so the SMTP delivery flow log
+	// shows what Sieve decided (REQ-OPS-86 activity guide).
+	s.logAction(a)
 	return nil
+}
+
+// logAction emits a system/debug record describing the action. Vacation
+// is handled separately in the vacation() method to use system/info
+// (REQ-OPS-86 activity guide: "vacation-response sent -> system/info").
+func (s *state) logAction(a Action) {
+	switch a.Kind {
+	case ActionKeep:
+		s.log.Debug("sieve action: keep", "activity", observe.ActivitySystem)
+	case ActionDiscard:
+		s.log.Debug("sieve action: discard", "activity", observe.ActivitySystem)
+	case ActionFileInto:
+		s.log.Debug("sieve action: fileinto", "activity", observe.ActivitySystem,
+			"mailbox", a.Mailbox)
+	case ActionRedirect:
+		s.log.Debug("sieve action: redirect", "activity", observe.ActivitySystem,
+			"address", a.Address, "copy", a.Copy)
+	case ActionReject:
+		s.log.Debug("sieve action: reject", "activity", observe.ActivitySystem)
+	case ActionVacation:
+		// vacation-response sent is system/info per the activity guide.
+		s.log.Info("vacation response sent", "activity", observe.ActivitySystem,
+			"sender", s.env.Sender, "handle", a.Handle)
+	case ActionAddFlag, ActionSetFlag, ActionRemoveFlag:
+		s.log.Debug("sieve action: flag", "activity", observe.ActivitySystem,
+			"kind", a.Kind, "flag", a.Flag)
+	case ActionNotify:
+		s.log.Debug("sieve action: notify", "activity", observe.ActivitySystem,
+			"address", a.Address)
+	case ActionAddHeader, ActionDeleteHeader:
+		s.log.Debug("sieve action: editheader", "activity", observe.ActivitySystem,
+			"kind", a.Kind, "header", a.HeaderName)
+	default:
+		s.log.Debug("sieve action", "activity", observe.ActivitySystem, "kind", a.Kind)
+	}
 }
 
 // --- action implementations -------------------------------------------------

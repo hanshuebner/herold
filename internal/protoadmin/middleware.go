@@ -57,7 +57,7 @@ func newRequestID() string {
 // withRequestLog attaches a request ID and scoped slog.Logger to every
 // request's context. Log lines emit on request start and finish with
 // standard attrs (request_id, method, path, status, principal_id,
-// remote_addr).
+// remote_addr). Tagged activity=access at debug (REQ-OPS-86d).
 func (s *Server) withRequestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rid := r.Header.Get("X-Request-ID")
@@ -67,6 +67,8 @@ func (s *Server) withRequestLog(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-ID", rid)
 		remote := r.RemoteAddr
 		lg := s.logger.With(
+			slog.String("subsystem", "protoadmin"),
+			slog.String("activity", observe.ActivityAccess),
 			slog.String("request_id", rid),
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
@@ -80,18 +82,20 @@ func (s *Server) withRequestLog(next http.Handler) http.Handler {
 		if p, ok := principalFrom(ctx); ok {
 			attrs = append(attrs, slog.Uint64("principal_id", uint64(p.ID)))
 		}
-		lg.LogAttrs(ctx, slog.LevelInfo, "protoadmin.request", attrs...)
+		lg.LogAttrs(ctx, slog.LevelDebug, "protoadmin.request", attrs...)
 	})
 }
 
 // withPanicRecover catches panics in downstream handlers, logs them
 // with a stack trace, and returns a 500 problem response. One rogue
 // handler does not crash the server (STANDARDS.md §6).
+// Tagged activity=internal at error (REQ-OPS-86).
 func (s *Server) withPanicRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				s.loggerFrom(r.Context()).Error("protoadmin.panic",
+					"activity", observe.ActivityInternal,
 					"err", fmt.Sprintf("%v", rec),
 					"stack", string(debug.Stack()))
 				writeProblem(w, r, http.StatusInternalServerError,
@@ -127,8 +131,12 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 }
 
 // appendAudit writes an audit log entry describing a successful or
-// failed mutation. The store is the durable sink; a separate slog line
-// lets log tailers see the same event in real time.
+// failed mutation. The store is the durable sink; a slog line tagged
+// activity=user at info (success mutations) or activity=audit at warn
+// (auth events) lets log tailers see the event in real time (REQ-OPS-86).
+//
+// Auth-related actions (auth.login, auth.logout) are tagged audit;
+// all other mutations are tagged user.
 func (s *Server) appendAudit(
 	ctx context.Context,
 	action, subject string,
@@ -171,8 +179,31 @@ func (s *Server) appendAudit(
 	auditTimer.Done()
 	if err != nil {
 		s.loggerFrom(ctx).Warn("protoadmin.audit.append_failed",
+			"activity", observe.ActivityInternal,
 			"err", err, "action", action, "subject", subject)
+	}
+	// Emit a real-time slog line. Auth events (login/logout) are already
+	// logged separately with activity=audit; suppress the duplicate here
+	// to avoid double-counting those records. All other mutations that
+	// land in the audit log are operator-visible state changes and carry
+	// activity=user at info.
+	if action != "auth.login" && action != "auth.logout" {
+		lvl := slog.LevelInfo
+		activity := observe.ActivityUser
+		if outcome == store.OutcomeFailure {
+			// Failed mutations (e.g. forbidden-from in send) → audit/warn.
+			lvl = slog.LevelWarn
+			activity = observe.ActivityAudit
+		}
+		s.loggerFrom(ctx).LogAttrs(ctx, lvl, "protoadmin.audit",
+			slog.String("activity", activity),
+			slog.String("action", action),
+			slog.String("subject", subject),
+			slog.String("actor_id", actorID),
+			slog.String("outcome", string(outcome)),
+		)
 	}
 }
 
 const ctxKeyRemoteAddr ctxKey = 99
+

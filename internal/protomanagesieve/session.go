@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/sasl"
 	"github.com/hanshuebner/herold/internal/sieve"
 	"github.com/hanshuebner/herold/internal/store"
@@ -46,6 +47,14 @@ type session struct {
 }
 
 func newSession(s *Server, c net.Conn, tlsActive bool) *session {
+	remote := c.RemoteAddr().String()
+	// Pre-scope the session logger with subsystem and remote so every log
+	// record emitted by this session carries them without repetition
+	// (REQ-OPS-83, STANDARDS §7).
+	logger := s.logger.With(
+		"subsystem", "protomanagesieve",
+		"remote", remote,
+	)
 	return &session{
 		s:         s,
 		conn:      c,
@@ -53,8 +62,8 @@ func newSession(s *Server, c net.Conn, tlsActive bool) *session {
 		bw:        bufio.NewWriter(c),
 		tlsActive: tlsActive,
 		state:     stateUnauth,
-		logger:    s.logger.With("remote", c.RemoteAddr().String()),
-		remote:    c.RemoteAddr().String(),
+		logger:    logger,
+		remote:    remote,
 	}
 }
 
@@ -64,8 +73,11 @@ func (ses *session) run(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	ses.logger.Debug("connection accepted", "activity", observe.ActivityAccess)
+	defer ses.logger.Debug("connection closed", "activity", observe.ActivityAccess)
+
 	if err := ses.writeGreeting(); err != nil {
-		ses.logger.Debug("protomanagesieve: greeting", "err", err)
+		ses.logger.Debug("protomanagesieve: greeting error", "err", err, "activity", observe.ActivityAccess)
 		return
 	}
 	for {
@@ -76,7 +88,7 @@ func (ses *session) run(ctx context.Context) {
 		cmd, err := ses.readCommand()
 		if err != nil {
 			if !isClose(err) {
-				ses.logger.Debug("protomanagesieve: read", "err", err)
+				ses.logger.Debug("protomanagesieve: read error", "err", err, "activity", observe.ActivityAccess)
 			}
 			return
 		}
@@ -84,7 +96,7 @@ func (ses *session) run(ctx context.Context) {
 			continue
 		}
 		if err := ses.dispatch(ctx, cmd); err != nil {
-			ses.logger.Debug("protomanagesieve: dispatch", "err", err)
+			ses.logger.Debug("protomanagesieve: dispatch error", "err", err, "activity", observe.ActivityAccess)
 			return
 		}
 	}
@@ -182,12 +194,14 @@ func (ses *session) dispatch(ctx context.Context, c *Command) error {
 	case "AUTHENTICATE":
 		return ses.handleAUTHENTICATE(ctx, c)
 	case "LOGOUT":
+		ses.logger.Debug("LOGOUT", "activity", observe.ActivityAccess)
 		_ = ses.writeOK("Bye")
 		ses.state = stateLogout
 		return nil
 	case "CAPABILITY":
 		return ses.handleCAPABILITY(c)
 	case "NOOP":
+		ses.logger.Debug("NOOP", "activity", observe.ActivityAccess)
 		return ses.writeOK("NOOP completed")
 	case "HAVESPACE":
 		return ses.handleHAVESPACE(ctx, c)

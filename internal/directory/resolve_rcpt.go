@@ -256,6 +256,7 @@ func (r *RcptResolver) Resolve(ctx context.Context, plugin string, req ResolveRc
 			observe.DirectoryResolveRcptTimeoutsTotal.WithLabelValues(plugin).Inc()
 		}
 		r.logger.WarnContext(ctx, "directory.resolve_rcpt failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("plugin", plugin),
 			slog.String("recipient", req.Recipient),
 			slog.String("err", err.Error()),
@@ -374,6 +375,7 @@ func (r *RcptResolver) audit(ctx context.Context, plugin string, req ResolveRcpt
 		// Audit failure must not break the SMTP path; log at WARN so
 		// the operator notices a silently-dropping audit pipeline.
 		r.logger.WarnContext(ctx, "directory.resolve_rcpt audit append failed",
+			slog.String("activity", observe.ActivityInternal),
 			slog.String("plugin", plugin),
 			slog.String("recipient", req.Recipient),
 			slog.String("err", err.Error()))

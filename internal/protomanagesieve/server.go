@@ -13,6 +13,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/sasl"
 	"github.com/hanshuebner/herold/internal/store"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
@@ -209,7 +210,11 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 func (s *Server) handle(ctx context.Context, c net.Conn) {
 	defer func() {
 		if r := recover(); r != nil {
-			s.logger.Error("protomanagesieve: session panic", "err", r)
+			// Panic recovery: internal/error per the activity guide (REQ-OPS-86).
+			s.logger.Error("protomanagesieve: session panic recovered",
+				"activity", observe.ActivityInternal,
+				"remote", c.RemoteAddr().String(),
+				"err", r)
 		}
 		_ = c.Close()
 	}()

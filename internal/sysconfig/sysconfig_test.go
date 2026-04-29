@@ -8,6 +8,46 @@ import (
 	"testing"
 )
 
+// minimalNoObservability is a base config without any [observability] or
+// [[log.sink]] blocks; used for log-sink specific tests so we can add sinks
+// cleanly without conflicting with the legacy-shim path.
+const minimalNoObs = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+run_as_user = "herold"
+run_as_group = "herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+[[listener]]
+name = "smtp-relay"
+address = "0.0.0.0:25"
+protocol = "smtp"
+tls = "starttls"
+
+[[listener]]
+name = "public"
+address = "0.0.0.0:443"
+protocol = "admin"
+kind = "public"
+tls = "implicit"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:9443"
+protocol = "admin"
+kind = "admin"
+tls = "implicit"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+`
+
 const minimalValid = `
 [server]
 hostname = "mail.example.com"
@@ -1764,5 +1804,252 @@ func TestResolveBindAddresses(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ---- [[log.sink]] multi-sink tests (REQ-OPS-80..86) ----
+
+// TestLogSink_DefaultInserted verifies that when neither [observability] nor
+// [[log.sink]] is configured a single stderr/auto/info sink is synthesised.
+func TestLogSink_DefaultInserted(t *testing.T) {
+	cfg, err := Parse([]byte(minimalNoObs))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Log.Sink) != 1 {
+		t.Fatalf("expected 1 default sink, got %d", len(cfg.Log.Sink))
+	}
+	s := cfg.Log.Sink[0]
+	if s.Target != "stderr" {
+		t.Errorf("default sink target: got %q, want stderr", s.Target)
+	}
+	if s.Format != "auto" {
+		t.Errorf("default sink format: got %q, want auto", s.Format)
+	}
+	if s.Level != "info" {
+		t.Errorf("default sink level: got %q, want info", s.Level)
+	}
+}
+
+// TestLogSink_ExplicitSinks verifies that explicit [[log.sink]] entries are
+// parsed and validated correctly.
+func TestLogSink_ExplicitSinks(t *testing.T) {
+	toml := minimalNoObs + `
+[[log.sink]]
+target = "stderr"
+format = "console"
+level  = "info"
+activities = { deny = ["poll", "access"] }
+
+[[log.sink]]
+target = "/var/log/herold/herold.jsonl"
+format = "json"
+level  = "debug"
+`
+	cfg, err := Parse([]byte(toml))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Log.Sink) != 2 {
+		t.Fatalf("expected 2 sinks, got %d", len(cfg.Log.Sink))
+	}
+	s0 := cfg.Log.Sink[0]
+	if s0.Target != "stderr" || s0.Format != "console" || s0.Level != "info" {
+		t.Errorf("sink 0: got %+v", s0)
+	}
+	if len(s0.Activities.Deny) != 2 {
+		t.Errorf("sink 0 activities deny: got %v", s0.Activities.Deny)
+	}
+	s1 := cfg.Log.Sink[1]
+	if s1.Target != "/var/log/herold/herold.jsonl" || s1.Format != "json" || s1.Level != "debug" {
+		t.Errorf("sink 1: got %+v", s1)
+	}
+}
+
+// TestLogSink_LegacyTranslation verifies that the old [observability]
+// log_format / log_level / log_modules fields are synthesised into a single
+// [[log.sink]] entry.
+func TestLogSink_LegacyTranslation(t *testing.T) {
+	// Use non-default values so hasLegacyLog triggers.
+	toml := minimalNoObs + `
+[observability]
+log_format = "text"
+log_level  = "debug"
+log_modules = { smtp = "trace" }
+`
+	cfg, err := Parse([]byte(toml))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Log.Sink) != 1 {
+		t.Fatalf("legacy translation: expected 1 sink, got %d", len(cfg.Log.Sink))
+	}
+	s := cfg.Log.Sink[0]
+	if s.Target != "stderr" {
+		t.Errorf("legacy sink target: got %q", s.Target)
+	}
+	// "text" maps to "console" in the shim.
+	if s.Format != "console" {
+		t.Errorf("legacy sink format: got %q, want console", s.Format)
+	}
+	if s.Level != "debug" {
+		t.Errorf("legacy sink level: got %q, want debug", s.Level)
+	}
+	if s.Modules["smtp"] != "trace" {
+		t.Errorf("legacy sink modules: got %v", s.Modules)
+	}
+}
+
+// TestLogSink_RejectRelativePath verifies that relative file targets are rejected.
+func TestLogSink_RejectRelativePath(t *testing.T) {
+	toml := minimalNoObs + `
+[[log.sink]]
+target = "relative/path.log"
+format = "json"
+level  = "info"
+`
+	_, err := Parse([]byte(toml))
+	if err == nil {
+		t.Fatal("expected error for relative path, got nil")
+	}
+	if !strings.Contains(err.Error(), "absolute") {
+		t.Errorf("error should mention absolute path, got: %v", err)
+	}
+}
+
+// TestLogSink_RejectDevNull verifies that /dev/null is rejected.
+func TestLogSink_RejectDevNull(t *testing.T) {
+	toml := minimalNoObs + `
+[[log.sink]]
+target = "/dev/null"
+format = "json"
+level  = "info"
+`
+	_, err := Parse([]byte(toml))
+	if err == nil {
+		t.Fatal("expected error for /dev/null, got nil")
+	}
+	if !strings.Contains(err.Error(), "/dev/null") {
+		t.Errorf("error should mention /dev/null, got: %v", err)
+	}
+}
+
+// TestLogSink_RejectAllowAndDeny verifies that setting both allow and deny is rejected.
+func TestLogSink_RejectAllowAndDeny(t *testing.T) {
+	toml := minimalNoObs + `
+[[log.sink]]
+target = "stderr"
+format = "json"
+level  = "info"
+activities = { allow = ["user"], deny = ["poll"] }
+`
+	_, err := Parse([]byte(toml))
+	if err == nil {
+		t.Fatal("expected error for allow+deny set together, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error should mention mutually exclusive, got: %v", err)
+	}
+}
+
+// TestLogSink_RejectUnknownActivity verifies that unknown activity values are rejected.
+func TestLogSink_RejectUnknownActivity(t *testing.T) {
+	toml := minimalNoObs + `
+[[log.sink]]
+target = "stderr"
+format = "json"
+level  = "info"
+activities = { deny = ["not_an_activity"] }
+`
+	_, err := Parse([]byte(toml))
+	if err == nil {
+		t.Fatal("expected error for unknown activity, got nil")
+	}
+	if !strings.Contains(err.Error(), "not_an_activity") {
+		t.Errorf("error should mention the bad activity value, got: %v", err)
+	}
+}
+
+// TestLogSink_RejectDuplicateFilePath verifies that two sinks targeting the
+// same file path are rejected.
+func TestLogSink_RejectDuplicateFilePath(t *testing.T) {
+	toml := minimalNoObs + `
+[[log.sink]]
+target = "/var/log/herold/a.jsonl"
+format = "json"
+level  = "info"
+
+[[log.sink]]
+target = "/var/log/herold/a.jsonl"
+format = "json"
+level  = "debug"
+`
+	_, err := Parse([]byte(toml))
+	if err == nil {
+		t.Fatal("expected error for duplicate file path, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("error should mention duplicate, got: %v", err)
+	}
+}
+
+// TestLogSink_PerModuleLevels verifies that modules overrides are parsed.
+func TestLogSink_PerModuleLevels(t *testing.T) {
+	toml := minimalNoObs + `
+[[log.sink]]
+target = "stderr"
+format = "json"
+level  = "info"
+modules = { smtp = "debug", queue = "warn" }
+`
+	cfg, err := Parse([]byte(toml))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	s := cfg.Log.Sink[0]
+	if s.Modules["smtp"] != "debug" {
+		t.Errorf("smtp module: got %q", s.Modules["smtp"])
+	}
+	if s.Modules["queue"] != "warn" {
+		t.Errorf("queue module: got %q", s.Modules["queue"])
+	}
+}
+
+// TestLogSink_AutoFormatDefault verifies that a sink without an explicit format
+// gets "auto" applied by applyDefaults.
+func TestLogSink_AutoFormatDefault(t *testing.T) {
+	toml := minimalNoObs + `
+[[log.sink]]
+target = "stderr"
+level  = "info"
+`
+	cfg, err := Parse([]byte(toml))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Log.Sink[0].Format != "auto" {
+		t.Errorf("default format: got %q, want auto", cfg.Log.Sink[0].Format)
+	}
+}
+
+// TestLogSink_AllowActivity verifies the allow filter is parsed correctly.
+func TestLogSink_AllowActivity(t *testing.T) {
+	toml := minimalNoObs + `
+[[log.sink]]
+target = "stderr"
+format = "json"
+level  = "info"
+activities = { allow = ["user", "audit"] }
+`
+	cfg, err := Parse([]byte(toml))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	act := cfg.Log.Sink[0].Activities
+	if len(act.Allow) != 2 {
+		t.Errorf("allow list: got %v", act.Allow)
+	}
+	if len(act.Deny) != 0 {
+		t.Errorf("deny list should be empty: got %v", act.Deny)
 	}
 }

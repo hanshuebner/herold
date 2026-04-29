@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -218,6 +219,7 @@ func (d *Dispatcher) runChangeFeedLoop(ctx context.Context, pid store.PrincipalI
 	cur, err := meta.GetFTSCursor(ctx, cursorKey)
 	if err != nil {
 		d.opts.Logger.Warn("protoevents.changefeed.cursor_load_failed",
+			"activity", observe.ActivityInternal,
 			"err", err, "pid", pid)
 	}
 	cursor := store.ChangeSeq(cur)
@@ -233,6 +235,7 @@ func (d *Dispatcher) runChangeFeedLoop(ctx context.Context, pid store.PrincipalI
 				return
 			}
 			d.opts.Logger.Warn("protoevents.changefeed.read_failed",
+				"activity", observe.ActivityInternal,
 				"err", err, "pid", pid)
 			select {
 			case <-ctx.Done():
@@ -255,6 +258,7 @@ func (d *Dispatcher) runChangeFeedLoop(ctx context.Context, pid store.PrincipalI
 		if len(changes) > 0 {
 			if err := meta.SetFTSCursor(ctx, cursorKey, uint64(cursor)); err != nil {
 				d.opts.Logger.Warn("protoevents.changefeed.cursor_save_failed",
+					"activity", observe.ActivityInternal,
 					"err", err, "pid", pid)
 			}
 		}
@@ -305,7 +309,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, ev Event) {
 		return
 	}
 	if d.opts.Plugins == nil {
-		d.opts.Logger.Warn("protoevents.dispatch.no_invoker", "kind", ev.Kind)
+		d.opts.Logger.Warn("protoevents.dispatch.no_invoker",
+			"activity", observe.ActivityInternal, "kind", ev.Kind)
 		return
 	}
 	for _, name := range d.opts.PluginNames {
@@ -329,10 +334,16 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, plugin string, ev Event) {
 		err := d.opts.Plugins.Call(callCtx, plugin, MethodEventsPublish, eventToParams(ev), nil)
 		cancel()
 		if err == nil {
+			d.opts.Logger.LogAttrs(ctx, slog.LevelInfo, "protoevents.publish.ok",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("plugin", plugin),
+				slog.String("kind", string(ev.Kind)),
+				slog.String("id", ev.ID))
 			return
 		}
 		lastErr = err
 		d.opts.Logger.Warn("protoevents.publish.failed",
+			"activity", observe.ActivitySystem,
 			"plugin", plugin, "kind", ev.Kind, "id", ev.ID,
 			"attempt", attempt+1, "err", err)
 		if attempt == d.opts.MaxRetries {
@@ -352,6 +363,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, plugin string, ev Event) {
 	// event itself is an EventPublishFailed, do not re-emit.
 	if ev.Kind == EventPublishFailed || ev.RetryBudgetExhausted {
 		d.opts.Logger.Error("protoevents.publish.dropped_after_retries",
+			"activity", observe.ActivitySystem,
 			"plugin", plugin, "kind", ev.Kind, "id", ev.ID, "err", lastErr)
 		return
 	}
@@ -370,6 +382,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, plugin string, ev Event) {
 	}
 	if !d.TryEmit(failEv) {
 		d.opts.Logger.Error("protoevents.publish.failed_event_dropped",
+			"activity", observe.ActivitySystem,
 			"plugin", plugin, "id", ev.ID)
 	}
 }

@@ -53,8 +53,8 @@ func (sess *session) applyAttPolHeaderCheck(
 	for _, rc := range sess.envelope.rcpts {
 		row, err := sess.lookupAttPol(ctx, rc)
 		if err != nil {
-			sess.srv.log.WarnContext(ctx, "attpol lookup failed; treating as accept",
-				slog.String("session_id", sess.sessID),
+			sess.log.WarnContext(ctx, "attpol lookup failed; treating as accept",
+				slog.String("activity", observe.ActivitySystem),
 				slog.String("recipient", rc.addr),
 				slog.String("err", err.Error()))
 			keep = append(keep, kept{rc: rc})
@@ -130,8 +130,8 @@ func (sess *session) applyAttPolPostAcceptance(
 ) bool {
 	row, err := sess.lookupAttPol(ctx, rc)
 	if err != nil {
-		sess.srv.log.WarnContext(ctx, "attpol lookup failed; treating as accept",
-			slog.String("session_id", sess.sessID),
+		sess.log.WarnContext(ctx, "attpol lookup failed; treating as accept",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("recipient", rc.addr),
 			slog.String("err", err.Error()))
 		return false
@@ -240,8 +240,8 @@ func (sess *session) auditAttPol(
 		Message:    "session=" + sess.sessID,
 		Metadata:   md,
 	}); err != nil {
-		sess.srv.log.WarnContext(ctx, "attpol audit append failed",
-			slog.String("session_id", sess.sessID),
+		sess.log.WarnContext(ctx, "attpol audit append failed",
+			slog.String("activity", observe.ActivityInternal),
 			slog.String("err", err.Error()))
 	}
 }
@@ -263,14 +263,14 @@ func (sess *session) emitAttPolBounce(
 ) {
 	_ = row
 	if sess.envelope.mailFrom == "" {
-		sess.srv.log.InfoContext(ctx, "attpol bounce suppressed (null sender)",
-			slog.String("session_id", sess.sessID),
+		sess.log.InfoContext(ctx, "attpol bounce suppressed (null sender)",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("recipient", rc.addr))
 		return
 	}
 	if sess.srv.bouncePoster == nil {
-		sess.srv.log.WarnContext(ctx, "attpol bounce skipped (no BouncePoster wired)",
-			slog.String("session_id", sess.sessID),
+		sess.log.WarnContext(ctx, "attpol bounce skipped (no BouncePoster wired)",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("recipient", rc.addr))
 		return
 	}
@@ -284,8 +284,8 @@ func (sess *session) emitAttPolBounce(
 		OriginalHeaders: extractHeaderBlock(body),
 	}
 	if err := sess.srv.bouncePoster.PostBounce(ctx, in); err != nil {
-		sess.srv.log.WarnContext(ctx, "attpol bounce enqueue failed",
-			slog.String("session_id", sess.sessID),
+		sess.log.WarnContext(ctx, "attpol bounce enqueue failed",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("recipient", rc.addr),
 			slog.String("err", err.Error()))
 	}

@@ -176,6 +176,9 @@ func (i *Intake) Run(ctx context.Context) error {
 					return nil
 				}
 				i.logger.WarnContext(ctx, "maildmarc: persist intake cursor",
+					slog.String("activity", "internal"),
+					slog.String("subsystem", "maildmarc"),
+					slog.String("worker", "ingest"),
 					slog.String("key", i.opts.CursorKey),
 					slog.Uint64("seq", maxSeq),
 					slog.Any("err", err),
@@ -194,6 +197,9 @@ func (i *Intake) processChange(ctx context.Context, c store.FTSChange) {
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			i.logger.WarnContext(ctx, "maildmarc: get message",
+				slog.String("activity", "internal"),
+				slog.String("subsystem", "maildmarc"),
+				slog.String("worker", "ingest"),
 				slog.Uint64("message_id", uint64(msgID)),
 				slog.Any("err", err))
 		}
@@ -205,6 +211,9 @@ func (i *Intake) processChange(ctx context.Context, c store.FTSChange) {
 	body, err := i.readBody(ctx, msg.Blob.Hash)
 	if err != nil {
 		i.logger.WarnContext(ctx, "maildmarc: read body",
+			slog.String("activity", "internal"),
+			slog.String("subsystem", "maildmarc"),
+			slog.String("worker", "ingest"),
 			slog.Uint64("message_id", uint64(msgID)),
 			slog.String("blob_hash", msg.Blob.Hash),
 			slog.Any("err", err))
@@ -212,6 +221,9 @@ func (i *Intake) processChange(ctx context.Context, c store.FTSChange) {
 	}
 	if _, err := i.ingestor.IngestMessage(ctx, body); err != nil {
 		i.logger.WarnContext(ctx, "maildmarc: ingest message",
+			slog.String("activity", "internal"),
+			slog.String("subsystem", "maildmarc"),
+			slog.String("worker", "ingest"),
 			slog.Uint64("message_id", uint64(msgID)),
 			slog.Any("err", err))
 	}

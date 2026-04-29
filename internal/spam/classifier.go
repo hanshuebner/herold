@@ -13,6 +13,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
+	"github.com/hanshuebner/herold/internal/observe"
 )
 
 // Verdict is the classifier's normalized verdict. We intentionally keep the
@@ -133,18 +134,42 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 	ctx, cancel := c.deadline(ctx)
 	defer cancel()
 
+	// Pre-scope the call-local logger so every log line in this invocation
+	// carries subsystem=spam and classifier=<pluginName> (REQ-OPS-86).
+	log := c.logger.With("subsystem", "spam", "classifier", pluginName)
+
 	req := BuildRequest(msg, auth)
+	log.DebugContext(ctx, "spam classification request",
+		"activity", observe.ActivitySystem,
+		"method", ClassifyMethod)
+
 	var raw map[string]any
 	err := c.invoker.Call(ctx, pluginName, ClassifyMethod, req, &raw)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			c.logger.WarnContext(ctx, "spam classifier deadline", "plugin", pluginName, "err", err)
+			log.WarnContext(ctx, "spam classifier timeout",
+				"activity", observe.ActivitySystem,
+				"err", err)
 		} else {
-			c.logger.WarnContext(ctx, "spam classifier error", "plugin", pluginName, "err", err)
+			log.WarnContext(ctx, "spam classifier error",
+				"activity", observe.ActivitySystem,
+				"err", err)
 		}
 		return Classification{Verdict: Unclassified, Score: -1}, err
 	}
-	return parseClassification(raw)
+
+	cl, err := parseClassification(raw)
+	if err != nil {
+		log.WarnContext(ctx, "spam classifier unparseable verdict",
+			"activity", observe.ActivitySystem,
+			"err", err)
+		return cl, err
+	}
+	log.DebugContext(ctx, "spam classification verdict",
+		"activity", observe.ActivitySystem,
+		"verdict", cl.Verdict.String(),
+		"confidence", cl.Score)
+	return cl, nil
 }
 
 // deadline ensures ctx carries a deadline; if it does not, a DefaultTimeout

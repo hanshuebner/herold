@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 )
 
 // DNS01PropagationDelay is the time the challenger waits between a
@@ -136,6 +137,7 @@ func (d *DNS01Challenger) Provision(ctx context.Context, domain, keyAuth, plugin
 	}
 	d.records[strings.ToLower(domain)] = res.ID
 	d.logger.InfoContext(ctx, "acme dns-01 record presented",
+		slog.String("activity", observe.ActivitySystem),
 		"plugin", pluginName, "domain", domain, "record_id", res.ID,
 		"propagation_delay", d.propagateDelay)
 	if d.propagateDelay > 0 {
@@ -165,6 +167,7 @@ func (d *DNS01Challenger) Cleanup(ctx context.Context, domain, pluginName string
 		return fmt.Errorf("acme: dns.cleanup: %w", err)
 	}
 	d.logger.InfoContext(ctx, "acme dns-01 record cleaned",
+		slog.String("activity", observe.ActivitySystem),
 		"plugin", pluginName, "domain", domain, "record_id", id)
 	return nil
 }

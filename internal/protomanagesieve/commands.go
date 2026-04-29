@@ -7,9 +7,11 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/sasl"
 	"github.com/hanshuebner/herold/internal/sieve"
 	"github.com/hanshuebner/herold/internal/store"
@@ -158,6 +160,7 @@ func tokeniseLine(line string) (tokens []string, finished bool, lit *literalSpec
 // -----------------------------------------------------------------------------
 
 func (ses *session) handleCAPABILITY(c *Command) error {
+	ses.logger.Debug("CAPABILITY", "activity", observe.ActivityAccess)
 	for _, line := range ses.capabilityLines() {
 		if err := ses.writeLine(line); err != nil {
 			return err
@@ -171,6 +174,7 @@ func (ses *session) handleCAPABILITY(c *Command) error {
 // -----------------------------------------------------------------------------
 
 func (ses *session) handleSTARTTLS(ctx context.Context, c *Command) error {
+	ses.logger.Debug("STARTTLS", "activity", observe.ActivityAccess)
 	if ses.tlsActive {
 		return ses.writeNO("", "TLS already active")
 	}
@@ -182,7 +186,7 @@ func (ses *session) handleSTARTTLS(ctx context.Context, c *Command) error {
 	}
 	tlsConn, leaf, err := ses.s.upgradeTLS(ctx, ses.conn)
 	if err != nil {
-		ses.logger.Warn("protomanagesieve: STARTTLS handshake", "err", err)
+		ses.logger.Debug("STARTTLS handshake error", "err", err, "activity", observe.ActivityAccess)
 		return err
 	}
 	ses.conn = tlsConn
@@ -244,18 +248,28 @@ func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
 	if len(c.Args) >= 2 {
 		decoded, derr := decodeSASLPayload(c.Args[1])
 		if derr != nil {
+			ses.logger.Warn("AUTHENTICATE bad initial response",
+				"activity", observe.ActivityAudit,
+				"mechanism", mechName)
 			return ses.writeNO("", "bad SASL initial response")
 		}
 		initial = decoded
 	} else if len(c.Literals) > 0 {
 		decoded, derr := decodeSASLPayload(string(c.Literals[0]))
 		if derr != nil {
+			ses.logger.Warn("AUTHENTICATE bad initial response",
+				"activity", observe.ActivityAudit,
+				"mechanism", mechName)
 			return ses.writeNO("", "bad SASL initial response")
 		}
 		initial = decoded
 	}
 	challenge, done, err := mech.Start(ctx, initial)
 	if err != nil {
+		ses.logger.Warn("AUTHENTICATE failed",
+			"activity", observe.ActivityAudit,
+			"mechanism", mechName,
+			"err", err)
 		return ses.writeNO("", "Authentication failed")
 	}
 	for !done {
@@ -269,23 +283,43 @@ func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
 			return rerr
 		}
 		if line == `"*"` || line == "*" {
+			ses.logger.Warn("AUTHENTICATE aborted by client",
+				"activity", observe.ActivityAudit,
+				"mechanism", mechName)
 			return ses.writeNO("", "client aborted SASL")
 		}
 		decoded, derr := decodeSASLLine(line)
 		if derr != nil {
+			ses.logger.Warn("AUTHENTICATE bad SASL response",
+				"activity", observe.ActivityAudit,
+				"mechanism", mechName)
 			return ses.writeNO("", "bad SASL response")
 		}
 		challenge, done, err = mech.Next(ctx, decoded)
 		if err != nil {
+			ses.logger.Warn("AUTHENTICATE failed",
+				"activity", observe.ActivityAudit,
+				"mechanism", mechName,
+				"err", err)
 			return ses.writeNO("", "Authentication failed")
 		}
 	}
 	pid, perr := mech.Principal()
 	if perr != nil {
+		ses.logger.Warn("AUTHENTICATE principal lookup failed",
+			"activity", observe.ActivityAudit,
+			"mechanism", mechName,
+			"err", perr)
 		return ses.writeNO("", "Authentication failed")
 	}
 	ses.pid = pid
 	ses.state = stateAuthed
+	// Enrich the session logger with the authenticated principal (REQ-OPS-83).
+	ses.logger = ses.logger.With("principal_id", slog.AnyValue(pid))
+	ses.logger.Info("AUTHENTICATE success",
+		"activity", observe.ActivityAudit,
+		"mechanism", mechName,
+		"principal_id", pid)
 	return ses.writeOK("Authenticated")
 }
 
@@ -334,6 +368,7 @@ func (ses *session) handleHAVESPACE(ctx context.Context, c *Command) error {
 	// does not yet expose per-Sieve quota, so we approximate by
 	// rejecting only oversize scripts; a per-script quota lands when
 	// multi-script support arrives.
+	ses.logger.Debug("HAVESPACE", "activity", observe.ActivityAccess, "size", size)
 	return ses.writeOK("HAVESPACE completed")
 }
 
@@ -365,6 +400,11 @@ func (ses *session) handlePUTSCRIPT(ctx context.Context, c *Command) error {
 	if err := ses.s.store.Meta().SetSieveScript(ctx, ses.pid, string(body)); err != nil {
 		return ses.writeNO("", "store write failed")
 	}
+	ses.logger.Info("PUTSCRIPT",
+		"activity", observe.ActivityUser,
+		"script_name", name,
+		"principal_id", ses.pid,
+		"size_bytes", len(body))
 	return ses.writeOK("PUTSCRIPT completed")
 }
 
@@ -386,6 +426,10 @@ func (ses *session) handleCHECKSCRIPT(ctx context.Context, c *Command) error {
 	if verr := sieve.Validate(script); verr != nil {
 		return ses.writeNO("", verr.Error())
 	}
+	ses.logger.Info("CHECKSCRIPT",
+		"activity", observe.ActivityUser,
+		"principal_id", ses.pid,
+		"size_bytes", len(body))
 	return ses.writeOK("CHECKSCRIPT completed")
 }
 
@@ -408,6 +452,7 @@ func (ses *session) handleGETSCRIPT(ctx context.Context, c *Command) error {
 	if len(c.Args) < 1 {
 		return ses.writeNO("", "GETSCRIPT requires <name>")
 	}
+	ses.logger.Debug("GETSCRIPT", "activity", observe.ActivityAccess, "script_name", c.Args[0])
 	body, err := ses.s.store.Meta().GetSieveScript(ctx, ses.pid)
 	if err != nil {
 		return ses.writeNO("", "GETSCRIPT failed")
@@ -445,6 +490,10 @@ func (ses *session) handleDELETESCRIPT(ctx context.Context, c *Command) error {
 	if err := ses.s.store.Meta().SetSieveScript(ctx, ses.pid, ""); err != nil {
 		return ses.writeNO("", "DELETESCRIPT failed")
 	}
+	ses.logger.Info("DELETESCRIPT",
+		"activity", observe.ActivityUser,
+		"script_name", c.Args[0],
+		"principal_id", ses.pid)
 	return ses.writeOK("DELETESCRIPT completed")
 }
 
@@ -455,6 +504,7 @@ func (ses *session) handleLISTSCRIPTS(ctx context.Context, c *Command) error {
 	if err := ses.requireTLS(); err != nil {
 		return nil
 	}
+	ses.logger.Debug("LISTSCRIPTS", "activity", observe.ActivityAccess)
 	body, err := ses.s.store.Meta().GetSieveScript(ctx, ses.pid)
 	if err != nil {
 		return ses.writeNO("", "LISTSCRIPTS failed")
@@ -488,6 +538,9 @@ func (ses *session) handleSETACTIVE(ctx context.Context, c *Command) error {
 		if err := ses.s.store.Meta().SetSieveScript(ctx, ses.pid, ""); err != nil {
 			return ses.writeNO("", "SETACTIVE failed")
 		}
+		ses.logger.Info("SETACTIVE deactivated script",
+			"activity", observe.ActivityUser,
+			"principal_id", ses.pid)
 		return ses.writeOK("SETACTIVE completed")
 	}
 	body, err := ses.s.store.Meta().GetSieveScript(ctx, ses.pid)
@@ -497,6 +550,10 @@ func (ses *session) handleSETACTIVE(ctx context.Context, c *Command) error {
 	if name != scriptSlotName {
 		return ses.writeNO("NONEXISTENT", "no such script")
 	}
+	ses.logger.Info("SETACTIVE",
+		"activity", observe.ActivityUser,
+		"script_name", name,
+		"principal_id", ses.pid)
 	return ses.writeOK("SETACTIVE completed")
 }
 
@@ -518,6 +575,11 @@ func (ses *session) handleRENAMESCRIPT(ctx context.Context, c *Command) error {
 	if err != nil || body == "" {
 		return ses.writeNO("NONEXISTENT", "no such script")
 	}
+	ses.logger.Info("RENAMESCRIPT",
+		"activity", observe.ActivityUser,
+		"old_name", c.Args[0],
+		"new_name", c.Args[1],
+		"principal_id", ses.pid)
 	return ses.writeOK("RENAMESCRIPT completed")
 }
 

@@ -159,6 +159,8 @@ func (s *Sealer) Seal(ctx context.Context, msg []byte, prior mailauth.AuthResult
 	out.Write(body)
 
 	s.logger.DebugContext(ctx, "mailarc: sealed",
+		slog.String("activity", "system"),
+		slog.String("subsystem", "mailarc"),
 		slog.String("domain", signingDomain),
 		slog.String("selector", key.Selector),
 		slog.Int("instance", instance),

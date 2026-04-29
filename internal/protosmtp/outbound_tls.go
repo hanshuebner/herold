@@ -11,6 +11,7 @@ import (
 	"log/slog"
 
 	"github.com/hanshuebner/herold/internal/mailauth"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -130,6 +131,7 @@ func (c *Client) upgradeTLS(
 			return nil, tlsDecision{}, errDANEMismatch
 		}
 		c.log.DebugContext(ctx, "outbound: dane tlsa match",
+			slog.String("activity", observe.ActivitySystem),
 			slog.String("mx", mxHost), slog.Int("tlsa_records", len(tlsaRecs)))
 		return tlsConn, tlsDecision{used: true, policy: "dane", danAuthentic: true}, nil
 	}
