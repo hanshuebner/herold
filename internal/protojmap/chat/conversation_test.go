@@ -1,10 +1,15 @@
 package chat_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"testing"
 
+	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -250,6 +255,109 @@ func TestConversation_Set_Update_OwnerOnly(t *testing.T) {
 	}
 	if _, ok := upResp.NotUpdated[cid]; !ok {
 		t.Errorf("notUpdated should contain %q: %+v", cid, upResp.NotUpdated)
+	}
+}
+
+// invokeAs issues a single JMAP method call authenticated with the
+// given API key (not the fixture default). Used by tests that need to
+// observe the same resource from a different principal's perspective.
+func invokeAs(t *testing.T, f *fixture, apiKey, method string, args any) (string, json.RawMessage) {
+	t.Helper()
+	argsBytes, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	body := map[string]any{
+		"using":       []protojmap.CapabilityID{protojmap.CapabilityCore, protojmap.CapabilityJMAPChat},
+		"methodCalls": []any{[]any{method, json.RawMessage(argsBytes), "c0"}},
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, f.baseURL+"/jmap", bytes.NewReader(bodyBytes))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := f.client.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
+	}
+	var envelope struct {
+		MethodResponses []protojmap.Invocation `json:"methodResponses"`
+	}
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v: %s", err, respBody)
+	}
+	if len(envelope.MethodResponses) != 1 {
+		t.Fatalf("got %d method responses, want 1", len(envelope.MethodResponses))
+	}
+	inv := envelope.MethodResponses[0]
+	return inv.Name, inv.Args
+}
+
+// bobAPIKey provisions a fresh API key for bob and returns the plaintext
+// token.
+func bobAPIKey(t *testing.T, f *fixture) string {
+	t.Helper()
+	plaintext := fmt.Sprintf("hk_test_bob_%d", f.otherPID)
+	hash := protoadmin.HashAPIKey(plaintext)
+	if _, err := f.srv.Store.Meta().InsertAPIKey(context.Background(), store.APIKey{
+		PrincipalID: f.otherPID,
+		Hash:        hash,
+		Name:        "test-bob",
+	}); err != nil {
+		t.Fatalf("InsertAPIKey bob: %v", err)
+	}
+	return plaintext
+}
+
+// TestConversation_DM_Get_BobSeesAliceName asserts Bug-A fix: when bob
+// fetches a DM that alice created, the wire Name must be alice's display
+// name (not bob's own name).
+func TestConversation_DM_Get_BobSeesAliceName(t *testing.T) {
+	f := setupFixture(t)
+	// Alice creates the DM.
+	cid, _ := createDM(t, f)
+
+	// Provision a key so we can speak JMAP as bob.
+	bobKey := bobAPIKey(t, f)
+	bobAcct := string(protojmap.AccountIDForPrincipal(f.otherPID))
+
+	_, raw := invokeAs(t, f, bobKey, "Conversation/get", map[string]any{
+		"accountId": bobAcct,
+		"ids":       []string{cid},
+	})
+	var resp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal Conversation/get: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("list = %+v", resp.List)
+	}
+	got := resp.List[0]
+	name, _ := got["name"].(string)
+	// Bob must see Alice's display name, not his own.
+	if name == "" {
+		t.Errorf("DM name is empty for bob's view: %+v", got)
+	}
+	if name == "Bob" {
+		t.Errorf("DM name = %q: bob sees his own name instead of alice's", name)
+	}
+	if name != "Alice" {
+		t.Errorf("DM name = %q, want %q (alice's display name)", name, "Alice")
 	}
 }
 

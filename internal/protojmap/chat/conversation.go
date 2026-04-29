@@ -105,15 +105,22 @@ func (h *convGetHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		if err != nil {
 			return nil, serverFail(err)
 		}
-		resp.List = append(resp.List, renderConversation(c, members, pid))
+		resp.List = append(resp.List, renderConversation(ctx, h.h.store.Meta(), c, members, pid))
 	}
 	return resp, nil
 }
 
 // renderConversation projects a store.ChatConversation + its
 // memberships into the wire-form jmapConversation, filling in the
-// requesting principal's myMembership row and unread count.
-func renderConversation(c store.ChatConversation, members []store.ChatMembership, self store.PrincipalID) jmapConversation {
+// requesting principal's myMembership row, unread count, and
+// per-viewer DM name.
+//
+// DM name projection: the stored Name is computed from the creator's
+// perspective at create time. On the wire we override it for DMs by
+// finding the OTHER member from self's point of view and looking up
+// that principal's display name. This keeps the stored row unchanged
+// while every viewer sees the correct counterpart name.
+func renderConversation(ctx context.Context, meta store.Metadata, c store.ChatConversation, members []store.ChatMembership, self store.PrincipalID) jmapConversation {
 	// REQ-CHAT-31 / REQ-CHAT-32: DMs always advertise read receipts on,
 	// regardless of the underlying column. Spaces project the column
 	// value verbatim.
@@ -146,6 +153,16 @@ func renderConversation(c store.ChatConversation, members []store.ChatMembership
 			rendered := renderMembership(m)
 			out.MyMembership = &rendered
 			unreadAnchor = m.LastReadMessageID
+		}
+	}
+	// For DMs, override the stored Name with the OTHER member's display
+	// name from the requesting principal's perspective. The stored row
+	// keeps the creator's-perspective name unchanged; only the wire
+	// projection is per-viewer.
+	if c.Kind == store.ChatConversationKindDM {
+		otherPID := otherDMMember(members, self)
+		if otherPID != 0 {
+			out.Name = resolvePrincipalEmail(ctx, meta, otherPID)
 		}
 	}
 	// Unread count approximation: the conversation's MessageCount minus
@@ -406,7 +423,7 @@ func (h *convSetHandler) Execute(ctx context.Context, args json.RawMessage) (any
 			continue
 		}
 		creationRefs[key] = c.ID
-		resp.Created[key] = renderConversation(c, members, pid)
+		resp.Created[key] = renderConversation(ctx, h.h.store.Meta(), c, members, pid)
 	}
 
 	for raw, payload := range req.Update {
