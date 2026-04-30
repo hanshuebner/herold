@@ -118,15 +118,11 @@
     requestAnimationFrame(() => {
       recomputeHeight();
     });
-    // The trimmed-quote `<details>` element grows the body when the user
-    // opens it; without this listener the iframe's outer height stays
-    // pinned to the initial measurement and the revealed quote ends up
-    // below the visible viewport, requiring an awkward scroll to read.
-    // The `toggle` event bubbles up to `document` from any <details>
-    // inside, so a single listener catches every quoted-region open /
-    // close. We also re-measure on `load` of any image inside the body
-    // so picture-heavy bodies do not clip when external images finally
-    // resolve.
+    // Listen for `<details>` toggles + image loads as a coarse hook to
+    // re-measure when content sizes change. The authoritative signal is
+    // the inner-body ResizeObserver below — these listeners just
+    // shorten the perceived latency on the user's first toggle by
+    // queueing an immediate re-measure on the next frame.
     doc.addEventListener(
       'toggle',
       () => requestAnimationFrame(recomputeHeight),
@@ -137,11 +133,24 @@
       () => requestAnimationFrame(recomputeHeight),
       true,
     );
+    // Authoritative source of "the body grew/shrank": observe doc.body
+    // directly. The previous approach watched the iframe's outer element,
+    // which never changes size on inner reflow — so opening a trimmed
+    // <details> grew scrollHeight without ever firing the observer, and
+    // the iframe stayed pinned to its old height (the trimmed quote
+    // hung off the bottom and the action toolbar overlapped it).
+    bodyResizeObserver?.disconnect();
+    bodyResizeObserver = new ResizeObserver(() => {
+      recomputeHeight();
+    });
+    bodyResizeObserver.observe(doc.body);
   }
 
-  // Recompute overlay whenever the iframe height changes (i.e. when images
-  // finish loading and the body reflowsoverlay).
+  // Outer-iframe observer: keeps the inline-image overlay aligned when
+  // the iframe element's own bounding rect changes (parent layout shift).
+  // The body size observer above owns the iframe height re-measurement.
   let resizeObserver: ResizeObserver | null = null;
+  let bodyResizeObserver: ResizeObserver | null = null;
   $effect(() => {
     const frame = frameEl;
     if (!frame) return;
@@ -153,6 +162,8 @@
     return () => {
       resizeObserver?.disconnect();
       resizeObserver = null;
+      bodyResizeObserver?.disconnect();
+      bodyResizeObserver = null;
     };
   });
 </script>
