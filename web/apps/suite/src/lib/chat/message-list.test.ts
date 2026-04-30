@@ -56,6 +56,8 @@ vi.mock('./store.svelte', () => ({
     loadMoreMessages: vi.fn(),
     markRead: vi.fn(),
     toggleReaction: vi.fn(),
+    scrollToBottomSignal: 0,
+    focusedConversationId: null,
   },
 }));
 
@@ -194,5 +196,56 @@ describe('MessageList', () => {
     // m2 (system message) has no linkPreviews; only one card from m1 present.
     const cards = container.querySelectorAll('.link-preview-card');
     expect(cards.length).toBe(1);
+  });
+
+  // ------------------------------------------------------------------
+  // "New" divider (Bug C)
+  // ------------------------------------------------------------------
+
+  it('renders a "New" divider when conversation has unread messages', () => {
+    // m1 is the last-read message; m2 is unread.
+    const convWithUnread: Conversation = {
+      ...baseConversation,
+      unreadCount: 1,
+      myMembership: {
+        ...memberAlice,
+        lastReadMessageId: 'm1',
+      },
+    };
+    const { container } = render(MessageList, {
+      props: { conversationId: 'c1', conversation: convWithUnread },
+    });
+    const divider = container.querySelector('.new-divider');
+    expect(divider).not.toBeNull();
+    expect(divider?.textContent?.trim()).toBe('New');
+  });
+
+  it('does not render the "New" divider when all messages are read', () => {
+    // Both m1 and m2 exist; lastReadMessageId points to the last one.
+    const convAllRead: Conversation = {
+      ...baseConversation,
+      unreadCount: 0,
+      myMembership: {
+        ...memberAlice,
+        lastReadMessageId: 'm2',
+      },
+    };
+    const { container } = render(MessageList, {
+      props: { conversationId: 'c1', conversation: convAllRead },
+    });
+    const divider = container.querySelector('.new-divider');
+    expect(divider).toBeNull();
+  });
+
+  it('does not render the "New" divider when myMembership has no lastReadMessageId', () => {
+    const convNoPtr: Conversation = {
+      ...baseConversation,
+      myMembership: { ...memberAlice },
+    };
+    const { container } = render(MessageList, {
+      props: { conversationId: 'c1', conversation: convNoPtr },
+    });
+    const divider = container.querySelector('.new-divider');
+    expect(divider).toBeNull();
   });
 });

@@ -53,6 +53,17 @@
   let lightboxSrc = $state<string | null>(null);
 
   /**
+   * The message id after which the "New" divider is shown. Set once on
+   * conversation open from myMembership.lastReadMessageId; cleared when
+   * markRead advances the read pointer past the first unread message so
+   * the divider disappears naturally as the user reads.
+   *
+   * Anchored at open — new messages arriving while the user is reading
+   * do not move the divider.
+   */
+  let newDividerAfterMessageId = $state<string | null>(null);
+
+  /**
    * Delegated click handler for inline images rendered via {@html}.
    * Since the image nodes are inserted by the browser parser we cannot
    * attach svelte onclick directives; instead we listen on the .body
@@ -67,18 +78,44 @@
   // Auto-scroll to bottom when new messages arrive (while at bottom).
   let wasAtBottom = true;
 
+  /** Imperatively scroll the list to the bottom. */
+  function scrollToBottom(): void {
+    if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+  }
+
+  // Scroll when effective messages change (conditional on wasAtBottom).
   $effect(() => {
-    // Track effective messages to trigger scroll effect reactively.
     const _messages = effectiveMessages;
     untrack(() => {
       if (!scrollEl) return;
       if (wasAtBottom) {
-        requestAnimationFrame(() => {
-          if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
-        });
+        requestAnimationFrame(scrollToBottom);
       }
     });
   });
+
+  // Force-scroll unconditionally when the user sends a message (Bug B).
+  $effect(() => {
+    const _signal = chat.scrollToBottomSignal;
+    untrack(() => {
+      if (!scrollEl) return;
+      wasAtBottom = true;
+      requestAnimationFrame(scrollToBottom);
+    });
+  });
+
+  /**
+   * Event-delegated handler for <img> load/error events inside the
+   * scroll container. Re-scrolls to the bottom if the user has not
+   * scrolled away, so a conversation that ends with an image lands at
+   * the correct scroll position once the image dimensions are known
+   * (Bug A).
+   */
+  function handleContainerImgLoad(): void {
+    if (wasAtBottom) {
+      requestAnimationFrame(scrollToBottom);
+    }
+  }
 
   function handleScroll(): void {
     if (!scrollEl) return;
@@ -94,6 +131,61 @@
       }
     }
   }
+
+  // Reset the divider whenever the conversation changes so a fresh open
+  // always recomputes from the new conversation's read pointer.
+  $effect(() => {
+    const _cid = conversationId;
+    untrack(() => {
+      newDividerAfterMessageId = null;
+    });
+  });
+
+  // Set the "New" divider position once the message list is ready (Bug C).
+  // The divider is anchored at the last-read message at open time; it does
+  // not move as new messages arrive while the user is reading.
+  // conversationId is read outside untrack so this effect re-fires when the
+  // conversation switches, allowing the reset effect above to clear the old
+  // value before this one sets the new one.
+  $effect(() => {
+    const status = effectiveStatus;
+    const msgs = effectiveMessages;
+    // Read conversationId here (outside untrack) so this effect re-fires
+    // when the user switches conversations.
+    const _cid = conversationId;
+    untrack(() => {
+      if (status !== 'ready') return;
+      // Only set once per conversation open (guard against re-fires from
+      // incoming messages extending effectiveMessages while status stays ready).
+      if (newDividerAfterMessageId !== null) return;
+      const lastRead = conversation.myMembership?.lastReadMessageId;
+      if (!lastRead) return;
+      // Only show the divider when there is at least one unread message
+      // after the read pointer.
+      const lastReadIdx = msgs.findIndex((m) => m.id === lastRead);
+      if (lastReadIdx !== -1 && lastReadIdx < msgs.length - 1) {
+        newDividerAfterMessageId = lastRead;
+      }
+    });
+  });
+
+  // Clear the divider once markRead has advanced past the first unread
+  // message — i.e. once the conversation's read pointer has moved beyond
+  // where the divider is anchored.
+  $effect(() => {
+    const lastRead = conversation.myMembership?.lastReadMessageId;
+    const divider = newDividerAfterMessageId;
+    untrack(() => {
+      if (!divider || !lastRead) return;
+      const msgs = effectiveMessages;
+      const dividerIdx = msgs.findIndex((m) => m.id === divider);
+      const lastReadIdx = msgs.findIndex((m) => m.id === lastRead);
+      // If the read pointer has advanced past the divider anchor, hide it.
+      if (lastReadIdx > dividerIdx) {
+        newDividerAfterMessageId = null;
+      }
+    });
+  });
 
   // Focus-gated mark-read. Re-runs on three triggers:
   //   - focus enters this conversation's compose (chat.focusedConversationId)
@@ -237,7 +329,13 @@
   });
 </script>
 
-<div class="message-list" bind:this={scrollEl} onscroll={handleScroll}>
+<div
+  class="message-list"
+  bind:this={scrollEl}
+  onscroll={handleScroll}
+  onload_capture={(ev) => { if (ev.target instanceof HTMLImageElement) handleContainerImgLoad(); }}
+  onerror_capture={(ev) => { if (ev.target instanceof HTMLImageElement) handleContainerImgLoad(); }}
+>
   {#if effectiveStatus === 'loading'}
     <p class="loading">Loading messages…</p>
   {:else if effectiveStatus === 'error'}
@@ -393,6 +491,11 @@
             </div>
           {/if}
         </div>
+        {#if newDividerAfterMessageId === msg.id}
+          <div class="new-divider" role="separator" aria-label="New messages">
+            <span class="new-divider-label">New</span>
+          </div>
+        {/if}
       {/each}
     {/each}
 
@@ -464,6 +567,35 @@
     font-size: var(--type-helper-text-01-size);
     color: var(--text-helper);
     white-space: nowrap;
+  }
+
+  /* "New" unread divider — rendered between last-read and first-unread message */
+  .new-divider {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+    margin: var(--spacing-03) 0;
+  }
+
+  .new-divider::before,
+  .new-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--support-error);
+    opacity: 0.5;
+  }
+
+  .new-divider-label {
+    font-size: var(--type-helper-text-01-size);
+    font-weight: 600;
+    color: var(--support-error);
+    white-space: nowrap;
+    padding: 0 var(--spacing-02);
+    border: 1px solid var(--support-error);
+    border-radius: var(--radius-pill);
+    line-height: 1.6;
+    opacity: 0.8;
   }
 
   .message {

@@ -93,6 +93,14 @@ class ChatStore {
   focusedConversationId = $state<string | null>(null);
 
   /**
+   * Monotonic counter bumped by sendMessage after each optimistic
+   * insert. MessageList watches this via $effect to force-scroll to
+   * the bottom regardless of the user's current scroll position —
+   * the "I just sent something, take me to it" gesture.
+   */
+  scrollToBottomSignal = $state(0);
+
+  /**
    * One-shot focus request: a sidebar click sets this to the picked
    * conversationId together with a monotonic epoch so subscribers
    * (the matching ChatCompose) can re-focus even when the same
@@ -345,6 +353,9 @@ class ChatStore {
     // wherever the user is composing — main pane or floating overlay.
     this.messages = [...this.messages, optimisticMsg];
     this.#appendOverlayMessage(conversationId, optimisticMsg);
+    // Signal MessageList to scroll unconditionally — the user just sent
+    // a message and expects to see it at the bottom.
+    this.scrollToBottomSignal += 1;
 
     try {
       const { responses } = await jmap.batch((b) => {
@@ -516,10 +527,20 @@ class ChatStore {
     principalId: string,
   ): Promise<void> {
     const accountId = this.#accountId();
-    if (!accountId) return;
+    if (!accountId) {
+      console.warn('toggleReaction: dropped — no accountId', { messageId });
+      return;
+    }
 
     const msg = this.messages.find((m) => m.id === messageId);
-    if (!msg) return;
+    if (!msg) {
+      console.warn('toggleReaction: dropped — message not found', {
+        messageId,
+        accountId,
+        found: false,
+      });
+      return;
+    }
 
     const reactors = msg.reactions[emoji] ?? [];
     const alreadyReacted = reactors.includes(principalId);

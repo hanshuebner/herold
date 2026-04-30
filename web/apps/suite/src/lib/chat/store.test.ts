@@ -818,4 +818,92 @@ describe('ChatStore', () => {
 
     await expect(chat.destroyConversation('p')).rejects.toThrow('not allowed');
   });
+
+  // ------------------------------------------------------------------
+  // scrollToBottomSignal — bumped on optimistic send (Bug B)
+  // ------------------------------------------------------------------
+
+  it('scrollToBottomSignal increments when sendMessage inserts an optimistic message', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    const initialSignal = chat.scrollToBottomSignal;
+
+    let capturedTempId = '';
+    vi.mocked(jmap.batch).mockImplementation(async (builder) => {
+      builder({
+        call: (name: string, args: unknown) => {
+          const createArgs = args as { create?: Record<string, unknown> };
+          if (name === 'Message/set' && createArgs.create) {
+            capturedTempId = Object.keys(createArgs.create)[0]!;
+          }
+          return { ref: () => ({ resultOf: 'c0', name, path: '' }) };
+        },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      return {
+        responses: [
+          ['Message/set', { created: { [capturedTempId]: { id: 'real-x1' } }, notCreated: {} }, 's0'],
+        ],
+        sessionState: 'ss1',
+      };
+    });
+
+    await chat.sendMessage('c1', '<p>scroll test</p>', 'scroll test');
+
+    expect(chat.scrollToBottomSignal).toBe(initialSignal + 1);
+  });
+
+  it('scrollToBottomSignal is not incremented when sendMessage rolls back on error', async () => {
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    const initialSignal = chat.scrollToBottomSignal;
+
+    let capturedTempId = '';
+    vi.mocked(jmap.batch).mockImplementation(async (builder) => {
+      builder({
+        call: (name: string, args: unknown) => {
+          const createArgs = args as { create?: Record<string, unknown> };
+          if (name === 'Message/set' && createArgs.create) {
+            capturedTempId = Object.keys(createArgs.create)[0]!;
+          }
+          return { ref: () => ({ resultOf: 'c0', name, path: '' }) };
+        },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      return {
+        responses: [
+          ['Message/set', { created: {}, notCreated: { [capturedTempId]: { type: 'forbidden' } } }, 's0'],
+        ],
+        sessionState: 'ss1',
+      };
+    });
+
+    await chat.sendMessage('c1', '<p>fail</p>', 'fail');
+
+    // The signal was bumped at the optimistic-insert point (before the
+    // network round-trip), so it should still be initialSignal + 1 even
+    // though the message was rolled back.
+    expect(chat.scrollToBottomSignal).toBe(initialSignal + 1);
+  });
+
+  // ------------------------------------------------------------------
+  // toggleReaction — console.warn on dropped calls
+  // ------------------------------------------------------------------
+
+  it('toggleReaction emits console.warn when message is not found', async () => {
+    const { chat } = chatMod;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // No messages in store; the lookup will fail.
+    chat.messages = [];
+    await chat.toggleReaction('no-such-id', '👍', 'p1');
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('toggleReaction: dropped'),
+      expect.objectContaining({ messageId: 'no-such-id', found: false }),
+    );
+    warnSpy.mockRestore();
+  });
 });
