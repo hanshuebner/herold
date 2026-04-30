@@ -729,6 +729,52 @@ describe('ChatStore', () => {
     expect(cached?.unreadCount).toBe(0);
   });
 
+  it('markRead reassigns conversations Map so $derived(get(id)) cells re-fire', async () => {
+    // Regression: the overlay window's title bar reads
+    // chat.conversations.get(conversationId) directly through a
+    // $derived. Plain Map.set() does not propagate into Svelte 5
+    // $derived(map.get(id)) cells — only Map identity changes do.
+    // Sidebar surfaces re-render via the conversationIds array but
+    // overlay-window title badges would stay stale unless the Map is
+    // reassigned. This test pins the reassignment behaviour.
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    chat.conversations.set('cReassign', {
+      id: 'cReassign',
+      kind: 'dm',
+      name: 'Bob',
+      members: [],
+      createdAt: '',
+      pinned: false,
+      muted: false,
+      unreadCount: 5,
+      myMembership: {
+        id: 'mb-self',
+        conversationId: 'cReassign',
+        principalId: 'p1',
+        role: 'member',
+        joinedAt: '',
+      },
+    });
+    const beforeMap = chat.conversations;
+
+    vi.mocked(jmap.batch).mockResolvedValue({
+      responses: [
+        ['Membership/set', { updated: { 'mb-self': null }, notUpdated: {} }, 's0'],
+      ],
+      sessionState: 'ss1',
+    });
+
+    await chat.markRead('cReassign', 'msg-1');
+
+    // Identity must change so any $derived(map.get(...)) tracking the
+    // Map's identity (the only signal Svelte 5 propagates from Map
+    // mutations in this codebase per the presence/typing pattern) sees
+    // the update.
+    expect(chat.conversations).not.toBe(beforeMap);
+  });
+
   it('markRead is a no-op when myMembership is absent (e.g. cache not yet hydrated)', async () => {
     const { chat } = chatMod;
     const { jmap } = jmapMod;

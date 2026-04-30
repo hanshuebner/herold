@@ -197,6 +197,7 @@ class ChatStore {
       for (const c of result.list) {
         this.conversations.set(c.id, c);
       }
+      this.conversations = new Map(this.conversations);
       this.#rebuildConversationOrder();
       this.conversationsStatus = 'ready';
     } catch (err) {
@@ -510,7 +511,16 @@ class ChatStore {
         myMembership: updatedMembership,
         unreadCount: 0,
       };
+      // Plain `$state(new Map())` does not propagate .set() through
+      // `$derived(map.get(id))` cells in Svelte 5 — only Map *identity*
+      // changes do. The sidebar happens to re-render via the
+      // conversationIds array reassignment in rebuild below, but the
+      // overlay-window title badge reads conversations.get() directly
+      // and would stay stale. Reassign the Map (matching the
+      // presence / typing pattern in this file) so every $derived on
+      // the Map re-fires.
       this.conversations.set(conversationId, updatedConv);
+      this.conversations = new Map(this.conversations);
       this.#rebuildConversationOrder();
     } catch (err) {
       console.error('markRead failed', err);
@@ -734,6 +744,9 @@ class ChatStore {
         }
       }
 
+      // Reassign so $derived(conversations.get(...)) cells re-fire even
+      // when the consumer has no dependency on conversationIds.
+      this.conversations = new Map(this.conversations);
       this.#rebuildConversationOrder();
     } catch (err) {
       console.error('Conversation/changes sync failed', err);
@@ -1299,6 +1312,7 @@ class ChatStore {
     // Seed the cache with the full record from the set response so the
     // sidebar list and any open overlay window render immediately.
     this.conversations.set(created.id, created);
+    this.conversations = new Map(this.conversations);
     this.#rebuildConversationOrder();
 
     return { id: created.id };
