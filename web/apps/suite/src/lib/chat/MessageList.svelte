@@ -312,21 +312,33 @@
   });
 
   /**
-   * REQ-CHAT-206 — clear by focus when fully visible. When the user
-   * is present-in-chat AND the divider AND the latest unread message
-   * are both at intersectionRatio 1, advance the read pointer.
+   * REQ-CHAT-206 — clear by focus when fully visible.
+   *
+   * The literal phrasing of REQ-CHAT-206 requires both the divider
+   * and the latest unread message to be at intersectionRatio 1 while
+   * the user is present-in-chat. But REQ-CHAT-202 hides the divider
+   * exactly when the user is present-in-chat, so the divider element
+   * does not exist to observe. The user-friendly resolution is: the
+   * "divider visible" precondition is treated as satisfied trivially
+   * when the divider is suppressed. We still gate on the latest
+   * unread message being fully visible (intersectionRatio 1) AND on
+   * unreadCount > 0. Without unread there is nothing to advance.
    */
   $effect(() => {
-    const visible = dividerVisible;
-    const dr = dividerRatio;
     const lr = lastUnreadRatio;
     const ps = presenceState;
+    const unread = conversation.unreadCount;
     const last = effectiveMessages[effectiveMessages.length - 1];
+    const lastUnread = lastUnreadId;
     untrack(() => {
-      if (!visible) return;
       if (ps !== 'present-in-chat') return;
-      if (dr < 1 || lr < 1) return;
+      if (unread === 0) return;
       if (!last) return;
+      // If lastUnreadId resolves to null (no non-self message after the
+      // read pointer) the user has effectively read everything —
+      // advance to the latest message id. Otherwise require the latest
+      // unread message to be fully on screen.
+      if (lastUnread !== null && lr < 1) return;
       void chat.markRead(conversationId, last.id);
     });
   });

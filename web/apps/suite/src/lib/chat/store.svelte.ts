@@ -427,6 +427,15 @@ class ChatStore {
           m.id === tempId ? { ...m, id: realId } : m,
         );
         this.#replaceOverlayMessageId(conversationId, tempId, realId);
+
+        // REQ-CHAT-208 — sending a message is implicit engagement and
+        // clears any prior unread in the conversation. The user is
+        // demonstrably engaged; even if `present-in-chat` was false at
+        // arrival time (so REQ-CHAT-210 didn't auto-mark-read), the
+        // explicit send is treated as "I've seen everything that came
+        // before". markRead is idempotent against the current pointer
+        // so it is cheap when there is nothing to advance.
+        void this.markRead(conversationId, realId);
       }
     } catch (err) {
       this.#rollbackOptimistic(conversationId, tempId);
