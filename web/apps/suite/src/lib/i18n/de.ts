@@ -126,7 +126,7 @@ export const de = {
   'att.download': 'Herunterladen',
   'att.noUrl': 'Keine URL',
   'att.view': 'Anzeigen',
-  'att.close': 'Schliessen',
+  'att.close': 'Schließen',
   'att.headerIcon.label': 'Hat Anhang',
   'att.aria.open': '{name} öffnen',
   'att.aria.download': '{name} herunterladen',
@@ -153,25 +153,25 @@ export const de = {
   // ── Categories settings ──────────────────────────────────────────────
   'cat.currentCategories': 'Aktuelle Kategorien',
   'cat.currentCategories.hint':
-    'Dies sind die Kategorien, die das Sprachmodell aktuell verwendet, abgeleitet aus dem Prompt oben. Bearbeite den Prompt, um sie zu andern.',
+    'Dies sind die Kategorien, die das Sprachmodell aktuell verwendet, abgeleitet aus dem Prompt oben. Bearbeite den Prompt, um sie zu ändern.',
   'cat.currentCategories.empty':
-    'Noch keine Kategorien. Kategorien erscheinen hier, sobald die nachste Nachricht klassifiziert wurde.',
+    'Noch keine Kategorien. Kategorien erscheinen hier, sobald die nächste Nachricht klassifiziert wurde.',
   'cat.prompt.heading': 'Klassifizierungs-Prompt',
   'cat.prompt.hint':
-    'Der Prompt, den das Sprachmodell zur Klassifizierung deiner Nachrichten in Kategorien verwendet. Anpassungen wirken sich auf zukunftige (und neu klassifizierte) Nachrichten aus. Max. 32 KB.',
-  'cat.prompt.reset': 'Auf Standard zurucksetzen',
+    'Der Prompt, den das Sprachmodell zur Klassifizierung deiner Nachrichten in Kategorien verwendet. Anpassungen wirken sich auf zukünftige (und neu klassifizierte) Nachrichten aus. Max. 32 KB.',
+  'cat.prompt.reset': 'Auf Standard zurücksetzen',
   'cat.prompt.save': 'Prompt speichern',
   'cat.disclosure.heading': 'Wie deine Nachrichten klassifiziert werden',
   'cat.disclosure.hint':
     'Dies ist der Prompt, der zur Kategorisierung deiner E-Mails verwendet wird. Deine Nachrichten werden zusammen mit diesem Prompt an den konfigurierten Klassifizierungs-Endpunkt von herold gesendet.',
   'cat.recategorise.heading': 'Posteingang neu klassifizieren',
   'cat.recategorise.hint':
-    'Fuhrt die Klassifizierung fur deinen letzten Posteingang erneut aus (bis zu 1000 Nachrichten). Die Ergebnisse werden im Hintergrund aktualisiert.',
+    'Führt die Klassifizierung für deinen letzten Posteingang erneut aus (bis zu 1000 Nachrichten). Die Ergebnisse werden im Hintergrund aktualisiert.',
   'cat.recategorise.run': 'Posteingang neu klassifizieren',
-  'cat.recategorise.running': 'Lauft...',
-  'cat.recategorise.notAvailable': 'Auf diesem Server nicht verfugbar.',
+  'cat.recategorise.running': 'Läuft...',
+  'cat.recategorise.notAvailable': 'Auf diesem Server nicht verfügbar.',
   'cat.recategorise.inProgress':
-    'Neu-Klassifizierung lauft -- Ergebnisse werden automatisch aktualisiert.',
+    'Neu-Klassifizierung läuft -- Ergebnisse werden automatisch aktualisiert.',
 
   // ── Settings ────────────────────────────────────────────────────────
   'settings.title': 'Einstellungen',
@@ -193,23 +193,23 @@ export const de = {
   'settings.saved': 'Einstellungen gespeichert',
   'settings.saveFailed': 'Einstellungen konnten nicht gespeichert werden',
   'settings.avatar.title': 'Profilbild',
-  'settings.avatar.change': 'Aendern…',
+  'settings.avatar.change': 'Ändern…',
   'settings.avatar.remove': 'Entfernen',
-  'settings.avatar.pickNew': 'Datei auswaehlen',
+  'settings.avatar.pickNew': 'Datei auswählen',
   'settings.avatar.applyToAll.title':
-    'Dieses Profilbild fuer alle Identitaeten verwenden?',
+    'Dieses Profilbild für alle Identitäten verwenden?',
   'settings.avatar.applyToAll.message':
-    'Sie haben {count} Identitaeten. Dieses Bild auf alle anwenden?',
+    'Sie haben {count} Identitäten. Dieses Bild auf alle anwenden?',
   'settings.avatar.applyToAll.confirm': 'Ja, auf alle anwenden',
-  'settings.avatar.applyToAll.cancel': 'Nur diese Identitaet',
+  'settings.avatar.applyToAll.cancel': 'Nur diese Identität',
   'settings.avatar.xface.title': 'Profilbild in ausgehender Post einbetten?',
   'settings.avatar.xface.message':
-    'Wenn aktiviert, wird Ihr Profilbild als X-Face / Face-Header an jede Nachricht angehaengt, die Sie von dieser Identitaet senden. Empfaenger mit E-Mail-Clients, die diese Header unterstuetzen, sehen Ihr Bild neben Ihrem Namen.',
+    'Wenn aktiviert, wird Ihr Profilbild als X-Face / Face-Header an jede Nachricht angehängt, die Sie von dieser Identität senden. Empfänger mit E-Mail-Clients, die diese Header unterstützen, sehen Ihr Bild neben Ihrem Namen.',
   'settings.avatar.xface.confirm': 'Ja, aktivieren',
   'settings.avatar.xface.cancel': 'Nein, danke',
   'settings.avatar.upload.failed': 'Hochladen fehlgeschlagen: {reason}',
   'settings.avatar.upload.tooLarge':
-    'Bild ist nach Komprimierung zu gross. Bitte ein kleineres waehlen.',
+    'Bild ist nach Komprimierung zu groß. Bitte ein kleineres wählen.',
 
   // ── Datenschutzeinstellungen ──────────────────────────────────────────
   'settings.privacy.avatarLookup.label':
@@ -217,9 +217,9 @@ export const de = {
   'settings.privacy.avatarLookup.hint':
     'Wenn aktiviert, kontaktiert die Suite Gravatar mit einem Einweg-Hash der E-Mail-Adresse jedes Absenders, um deren Bild abzurufen. Deaktivieren, um alle Absendersuchen lokal zu halten.',
   'settings.privacy.avatarLookup.confirmTitle':
-    'Absenderbilder aus dem oeffentlichen Web abrufen?',
+    'Absenderbilder aus dem öffentlichen Web abrufen?',
   'settings.privacy.avatarLookup.confirmBody':
-    'Wenn aktiviert, kontaktiert die Suite Gravatar mit einem Einweg-Hash der E-Mail-Adresse jedes Absenders. Der Absender sieht diese Abfrage nicht, aber Gravitars Protokolle schon. Die E-Mail-Adresse des Absenders verlaesst Ihr Geraet nie im Klartext. Sie koennen dies jederzeit deaktivieren.',
+    'Wenn aktiviert, kontaktiert die Suite Gravatar mit einem Einweg-Hash der E-Mail-Adresse jedes Absenders. Der Absender sieht diese Abfrage nicht, aber Gravatars Protokolle schon. Die E-Mail-Adresse des Absenders verlässt Ihr Gerät nie im Klartext. Sie können dies jederzeit deaktivieren.',
   'settings.privacy.avatarLookup.confirmEnable': 'Suche aktivieren',
   'settings.privacy.avatarLookup.confirmCancel': 'Nur lokal bleiben',
 
