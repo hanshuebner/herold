@@ -82,6 +82,7 @@
         }
       });
     } catch (err) {
+      console.error('AvatarCaptureDialog: getUserMedia failed', err);
       cameraError =
         err instanceof Error ? err.message : 'Camera unavailable';
       mediaStream = null;
@@ -105,17 +106,33 @@
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      cameraError = 'Snapshot failed: no 2D context';
+      phase = 'choose';
+      return;
+    }
     // Mirror the front-camera preview so the captured image matches what
     // the user saw on screen (selfies are conventionally mirrored).
     ctx.translate(w, 0);
     ctx.scale(-1, 1);
     ctx.drawImage(videoEl, 0, 0, w, h);
     stopCamera();
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      void loadSourceFromBlob(blob);
-    }, 'image/jpeg', 0.92);
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          console.error(
+            'AvatarCaptureDialog: canvas.toBlob returned null (canvas tainted or quota?)',
+            { width: w, height: h },
+          );
+          cameraError = 'Snapshot failed: empty canvas';
+          phase = 'choose';
+          return;
+        }
+        void loadSourceFromBlob(blob);
+      },
+      'image/jpeg',
+      0.92,
+    );
   }
 
   // ── File / drop ───────────────────────────────────────────────────────────
@@ -151,24 +168,41 @@
 
   async function loadSourceFromBlob(blob: Blob): Promise<void> {
     revokeSourceUrl();
-    const url = URL.createObjectURL(blob);
-    sourceUrl = url;
-    const img = new Image();
-    img.onload = () => {
+    try {
+      // Two-stage validation: createImageBitmap rejects on undecodable
+      // bytes with a useful exception, which we log to the console (the
+      // bare `<img>.onerror` event used to fire silently with no clue
+      // about the underlying cause).
+      const bitmap = await createImageBitmap(blob);
+      const url = URL.createObjectURL(blob);
+      sourceUrl = url;
+      const img = document.createElement('img');
+      img.src = url;
+      // img.decode() is the modern reliable load+decode path; rejects
+      // with a real error when the image fails to decode (unlike
+      // onload/onerror which is fire-and-forget).
+      await img.decode();
       sourceImage = img;
-      // Initialise crop at centred max-square selection.
       const minDim = Math.min(img.naturalWidth, img.naturalHeight);
       crop = {
         x: Math.round((img.naturalWidth - minDim) / 2),
         y: Math.round((img.naturalHeight - minDim) / 2),
         size: minDim,
       };
+      bitmap.close();
       phase = 'crop';
-    };
-    img.onerror = () => {
-      cameraError = 'Could not decode image';
-    };
-    img.src = url;
+    } catch (err) {
+      console.error(
+        'AvatarCaptureDialog: image decode failed',
+        { blobSize: blob.size, blobType: blob.type, err },
+      );
+      cameraError =
+        err instanceof Error
+          ? `Could not decode image: ${err.message}`
+          : 'Could not decode image';
+      phase = 'choose';
+      revokeSourceUrl();
+    }
   }
 
   function revokeSourceUrl(): void {
