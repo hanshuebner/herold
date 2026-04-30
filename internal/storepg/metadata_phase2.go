@@ -1678,9 +1678,13 @@ func scanJMAPIdentityPG(row pgx.Row) (store.JMAPIdentity, error) {
 		mayDelete                         bool
 		createdAtUs, updatedAtUs          int64
 		signature                         *string
+		avatarBlobHash                    *string
+		avatarBlobSize                    *int64
+		xfaceEnabled                      bool
 	)
 	err := row.Scan(&id, &principalID, &name, &email, &replyTo, &bcc,
-		&textSig, &htmlSig, &mayDelete, &createdAtUs, &updatedAtUs, &signature)
+		&textSig, &htmlSig, &mayDelete, &createdAtUs, &updatedAtUs, &signature,
+		&avatarBlobHash, &avatarBlobSize, &xfaceEnabled)
 	if err != nil {
 		return store.JMAPIdentity{}, mapErr(err)
 	}
@@ -1696,10 +1700,17 @@ func scanJMAPIdentityPG(row pgx.Row) (store.JMAPIdentity, error) {
 		MayDelete:     mayDelete,
 		CreatedAtUs:   createdAtUs,
 		UpdatedAtUs:   updatedAtUs,
+		XFaceEnabled:  xfaceEnabled,
 	}
 	if signature != nil {
 		v := *signature
 		out.Signature = &v
+	}
+	if avatarBlobHash != nil {
+		out.AvatarBlobHash = *avatarBlobHash
+	}
+	if avatarBlobSize != nil {
+		out.AvatarBlobSize = *avatarBlobSize
 	}
 	return out, nil
 }
@@ -1707,7 +1718,7 @@ func scanJMAPIdentityPG(row pgx.Row) (store.JMAPIdentity, error) {
 const jmapIdentitySelectColumnsPG = `
 	id, principal_id, name, email, reply_to_json, bcc_json,
 	text_signature, html_signature, may_delete, created_at_us, updated_at_us,
-	signature`
+	signature, avatar_blob_hash, avatar_blob_size, xface_enabled`
 
 func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
 	if row.ID == "" {
@@ -1732,16 +1743,21 @@ func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 	if row.Signature != nil {
 		sig = *row.Signature
 	}
+	var avatarHash any
+	if row.AvatarBlobHash != "" {
+		avatarHash = row.AvatarBlobHash
+	}
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO jmap_identities
 			  (id, principal_id, name, email, reply_to_json, bcc_json,
 			   text_signature, html_signature, may_delete, created_at_us, updated_at_us,
-			   signature)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			   signature, avatar_blob_hash, avatar_blob_size, xface_enabled)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 			row.ID, int64(row.PrincipalID), row.Name, row.Email,
 			replyTo, bcc, row.TextSignature, row.HTMLSignature,
-			row.MayDelete, row.CreatedAtUs, row.UpdatedAtUs, sig)
+			row.MayDelete, row.CreatedAtUs, row.UpdatedAtUs, sig,
+			avatarHash, row.AvatarBlobSize, row.XFaceEnabled)
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -1794,15 +1810,22 @@ func (m *metadata) UpdateJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 	if row.Signature != nil {
 		sig = *row.Signature
 	}
+	var avatarHash any
+	if row.AvatarBlobHash != "" {
+		avatarHash = row.AvatarBlobHash
+	}
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
 			UPDATE jmap_identities
 			   SET name = $1, reply_to_json = $2, bcc_json = $3,
 			       text_signature = $4, html_signature = $5, signature = $6,
-			       updated_at_us = $7
-			 WHERE id = $8`,
+			       avatar_blob_hash = $7, avatar_blob_size = $8,
+			       xface_enabled = $9, updated_at_us = $10
+			 WHERE id = $11`,
 			row.Name, replyTo, bcc,
-			row.TextSignature, row.HTMLSignature, sig, usMicros(now), row.ID)
+			row.TextSignature, row.HTMLSignature, sig,
+			avatarHash, row.AvatarBlobSize,
+			row.XFaceEnabled, usMicros(now), row.ID)
 		if err != nil {
 			return mapErr(err)
 		}

@@ -1716,6 +1716,40 @@ func (m *metadata) GetBlobRef(ctx context.Context, hash string) (int64, int64, e
 	return size, refs, nil
 }
 
+// IncRefBlob increments (or inserts with count=1) the blob_refs row for
+// hash. size is used only when inserting a new row (REQ-SET-03b).
+func (m *metadata) IncRefBlob(ctx context.Context, hash string, size int64) error {
+	if hash == "" {
+		return nil
+	}
+	tx, err := m.s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if err := incRef(ctx, tx, hash, size, m.s.clock.Now()); err != nil {
+		return err
+	}
+	return mapErr(tx.Commit())
+}
+
+// DecRefBlob decrements the blob_refs row for hash, refusing to go below
+// zero. No-op when hash is empty (REQ-SET-03b).
+func (m *metadata) DecRefBlob(ctx context.Context, hash string) error {
+	if hash == "" {
+		return nil
+	}
+	tx, err := m.s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if err := decRef(ctx, tx, hash, m.s.clock.Now()); err != nil {
+		return err
+	}
+	return mapErr(tx.Commit())
+}
+
 func boolToInt(b bool) int64 {
 	if b {
 		return 1

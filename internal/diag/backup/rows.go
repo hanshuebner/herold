@@ -377,17 +377,20 @@ type JMAPEmailSubmissionRow struct {
 }
 
 type JMAPIdentityRow struct {
-	ID            string `json:"id"`
-	PrincipalID   int64  `json:"principal_id"`
-	Name          string `json:"name"`
-	Email         string `json:"email"`
-	ReplyToJSON   []byte `json:"reply_to_json,omitempty"`
-	BccJSON       []byte `json:"bcc_json,omitempty"`
-	TextSignature string `json:"text_signature"`
-	HTMLSignature string `json:"html_signature"`
-	MayDelete     bool   `json:"may_delete"`
-	CreatedAtUs   int64  `json:"created_at_us"`
-	UpdatedAtUs   int64  `json:"updated_at_us"`
+	ID             string `json:"id"`
+	PrincipalID    int64  `json:"principal_id"`
+	Name           string `json:"name"`
+	Email          string `json:"email"`
+	ReplyToJSON    []byte `json:"reply_to_json,omitempty"`
+	BccJSON        []byte `json:"bcc_json,omitempty"`
+	TextSignature  string `json:"text_signature"`
+	HTMLSignature  string `json:"html_signature"`
+	MayDelete      bool   `json:"may_delete"`
+	CreatedAtUs    int64  `json:"created_at_us"`
+	UpdatedAtUs    int64  `json:"updated_at_us"`
+	AvatarBlobHash string `json:"avatar_blob_hash,omitempty"`
+	AvatarBlobSize int64  `json:"avatar_blob_size,omitempty"`
+	XFaceEnabled   bool   `json:"xface_enabled,omitempty"`
 }
 
 type TLSRPTFailureRow struct {

@@ -3,8 +3,12 @@ package identity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
@@ -81,8 +85,7 @@ type handlerSet struct {
 	domains  func(ctx context.Context) (map[string]struct{}, error)
 }
 
-// listLocalDomains returns the set of domains we host. Backed by
-// store.ListLocalDomains.
+// makeDomainsFn returns a closure that lists the locally-hosted domains.
 func makeDomainsFn(st store.Store) func(ctx context.Context) (map[string]struct{}, error) {
 	return func(ctx context.Context) (map[string]struct{}, error) {
 		ds, err := st.Meta().ListLocalDomains(ctx)
@@ -98,8 +101,7 @@ func makeDomainsFn(st store.Store) func(ctx context.Context) (map[string]struct{
 }
 
 // stateString stringifies the per-principal Identity state counter to
-// the JMAP wire form. We use the integer's decimal representation; the
-// dispatcher treats it as opaque per RFC 8620 §3.2.
+// the JMAP wire form.
 func stateString(seq int64) string {
 	return strconv.FormatInt(seq, 10)
 }
@@ -113,21 +115,13 @@ func (h *handlerSet) currentState(ctx context.Context, p store.Principal) (strin
 	return stateString(st.Identity), nil
 }
 
-// accountIDForPrincipal returns the canonical wire-form accountId for p,
-// matching the value the session descriptor advertises in
-// session.primaryAccounts (e.g. "a42" for principal id 42). v1
-// collapses Account onto Principal, so the accountId derives from the
-// principal id; protojmap.AccountIDForPrincipal is the single source of
-// truth for the wire format and is shared with the rest of the JMAP
-// surface.
+// accountIDForPrincipal returns the canonical wire-form accountId for p.
 func accountIDForPrincipal(p store.Principal) string {
 	return string(protojmap.AccountIDForPrincipal(p.ID))
 }
 
 // validateAccountID checks the inbound accountId against the
-// authenticated principal. An absent accountId is rejected with
-// "invalidArguments" per RFC 8620 §5.1; a mismatched one returns
-// "accountNotFound".
+// authenticated principal.
 func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodError {
 	if requested == "" {
 		return protojmap.NewMethodError("invalidArguments", "accountId is required")
@@ -171,13 +165,11 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		NotFound:  []jmapID{},
 	}
 	if req.IDs == nil {
-		// Return everything.
 		for _, rec := range all {
 			resp.List = append(resp.List, rec.toJMAP())
 		}
 		return resp, nil
 	}
-	// Filter to requested ids.
 	byID := make(map[uint64]identityRecord, len(all))
 	for _, r := range all {
 		byID[r.ID] = r
@@ -230,10 +222,6 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 			Destroyed: []jmapID{},
 		}, nil
 	}
-	// Without a per-row change feed we conservatively report every
-	// current identity as updated. RFC 8620 §5.2 permits over-reporting
-	// when the server cannot reconstruct the precise delta — clients
-	// must re-fetch on observed updates anyway.
 	resp := changesResponse{
 		AccountID: accountIDForPrincipal(p),
 		OldState:  req.SinceState,
@@ -289,6 +277,9 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			TextSignature string         `json:"textSignature,omitempty"`
 			HTMLSignature string         `json:"htmlSignature,omitempty"`
 			Signature     *string        `json:"signature,omitempty"`
+			// AvatarBlobId and XFaceEnabled are herold extensions (REQ-SET-03b).
+			AvatarBlobId *string `json:"avatarBlobId,omitempty"`
+			XFaceEnabled bool    `json:"xFaceEnabled,omitempty"`
 		}
 		if err := json.Unmarshal(raw, &in); err != nil {
 			if resp.NotCreated == nil {
@@ -303,7 +294,8 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 				resp.NotCreated = make(map[string]setError)
 			}
 			resp.NotCreated[clientID] = setError{
-				Type: "invalidProperties", Properties: []string{"email"},
+				Type:        "invalidProperties",
+				Properties:  []string{"email"},
 				Description: "email must be a valid addr-spec",
 			}
 			continue
@@ -317,26 +309,47 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 				resp.NotCreated = make(map[string]setError)
 			}
 			resp.NotCreated[clientID] = setError{
-				Type: "forbiddenFrom",
-				Description: fmt.Sprintf(
-					"domain %q is not hosted by this server", dom),
-				Properties: []string{"email"},
+				Type:        "forbiddenFrom",
+				Description: fmt.Sprintf("domain %q is not hosted by this server", dom),
+				Properties:  []string{"email"},
 			}
 			continue
 		}
+		// Validate and resolve avatarBlobId if supplied.
+		var avatarHash string
+		var avatarSize int64
+		if in.AvatarBlobId != nil && *in.AvatarBlobId != "" {
+			hash, sz, serr := validateAvatarBlob(ctx, s.h.store, *in.AvatarBlobId)
+			if serr != nil {
+				if resp.NotCreated == nil {
+					resp.NotCreated = make(map[string]setError)
+				}
+				resp.NotCreated[clientID] = *serr
+				continue
+			}
+			avatarHash = hash
+			avatarSize = sz
+		}
 		rec := identityRecord{
-			Name:          in.Name,
-			Email:         in.Email,
-			ReplyTo:       in.ReplyTo,
-			Bcc:           in.Bcc,
-			TextSignature: in.TextSignature,
-			HTMLSignature: in.HTMLSignature,
+			Name:           in.Name,
+			Email:          in.Email,
+			ReplyTo:        in.ReplyTo,
+			Bcc:            in.Bcc,
+			TextSignature:  in.TextSignature,
+			HTMLSignature:  in.HTMLSignature,
+			AvatarBlobHash: avatarHash,
+			AvatarBlobSize: avatarSize,
+			XFaceEnabled:   in.XFaceEnabled,
 		}
 		if in.Signature != nil {
 			v := *in.Signature
 			rec.Signature = &v
 		}
 		created := s.h.identity.create(ctx, p, rec)
+		// incRef the avatar blob after the row is committed.
+		if avatarHash != "" {
+			_ = s.h.store.Meta().IncRefBlob(ctx, avatarHash, avatarSize)
+		}
 		if resp.Created == nil {
 			resp.Created = make(map[string]jmapIdentity)
 		}
@@ -353,14 +366,17 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			resp.NotUpdated[id] = setError{Type: "notFound"}
 			continue
 		}
-		patch, perr := decodePatch(raw)
+		patch, perr := decodePatch(ctx, s.h.store, raw)
 		if perr != nil {
 			if resp.NotUpdated == nil {
 				resp.NotUpdated = make(map[jmapID]setError)
 			}
-			resp.NotUpdated[id] = setError{Type: "invalidProperties", Description: perr.Error()}
+			resp.NotUpdated[id] = *perr
 			continue
 		}
+		// Snapshot old avatar hash before applying so we can manage
+		// refcounts after a successful update.
+		oldAvatarHash := s.h.identity.snapshotAvatarHash(ctx, p, v)
 		rec, ok := s.h.identity.update(ctx, p, v, patch)
 		if !ok {
 			if resp.NotUpdated == nil {
@@ -369,13 +385,20 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			resp.NotUpdated[id] = setError{Type: "notFound"}
 			continue
 		}
+		// Manage refcounts: incRef new avatar first (never transiently
+		// zero), then decRef old.
+		if patch.hasAvatarBlobId {
+			if rec.AvatarBlobHash != "" {
+				_ = s.h.store.Meta().IncRefBlob(ctx, rec.AvatarBlobHash, rec.AvatarBlobSize)
+			}
+			if oldAvatarHash != "" {
+				_ = s.h.store.Meta().DecRefBlob(ctx, oldAvatarHash)
+			}
+		}
 		if resp.Updated == nil {
 			resp.Updated = make(map[jmapID]*jmapIdentity)
 		}
 		j := rec.toJMAP()
-		// JMAP §5.3 update response carries `null` for fully-updated
-		// objects; we instead return the updated value so clients can
-		// observe server-applied normalisations. RFC 8620 permits this.
 		resp.Updated[id] = &j
 		mutated = true
 	}
@@ -397,12 +420,17 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 				Type: "forbidden", Description: "default identity is not deletable"}
 			continue
 		}
+		// Snapshot the avatar hash before destroying so we can decRef.
+		oldAvatarHash := s.h.identity.snapshotAvatarHash(ctx, p, v)
 		if !s.h.identity.destroy(ctx, p, v) {
 			if resp.NotDestroyed == nil {
 				resp.NotDestroyed = make(map[jmapID]setError)
 			}
 			resp.NotDestroyed[id] = setError{Type: "notFound"}
 			continue
+		}
+		if oldAvatarHash != "" {
+			_ = s.h.store.Meta().DecRefBlob(ctx, oldAvatarHash)
 		}
 		resp.Destroyed = append(resp.Destroyed, id)
 		mutated = true
@@ -424,10 +452,11 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 
 // decodePatch reads an Identity/set "update" object into the Store's
 // patch shape, distinguishing missing fields from cleared ones.
-func decodePatch(raw json.RawMessage) (identityPatch, error) {
+// ctx and st are needed to validate avatarBlobId when present.
+func decodePatch(ctx context.Context, st store.Store, raw json.RawMessage) (identityPatch, *setError) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return identityPatch{}, err
+		return identityPatch{}, &setError{Type: "invalidProperties", Description: err.Error()}
 	}
 	var out identityPatch
 	for k, v := range m {
@@ -435,27 +464,27 @@ func decodePatch(raw json.RawMessage) (identityPatch, error) {
 		case "name":
 			out.hasName = true
 			if err := json.Unmarshal(v, &out.name); err != nil {
-				return identityPatch{}, fmt.Errorf("name: %w", err)
+				return identityPatch{}, &setError{Type: "invalidProperties", Description: fmt.Sprintf("name: %v", err)}
 			}
 		case "replyTo":
 			out.hasReplyTo = true
 			if err := json.Unmarshal(v, &out.replyTo); err != nil {
-				return identityPatch{}, fmt.Errorf("replyTo: %w", err)
+				return identityPatch{}, &setError{Type: "invalidProperties", Description: fmt.Sprintf("replyTo: %v", err)}
 			}
 		case "bcc":
 			out.hasBcc = true
 			if err := json.Unmarshal(v, &out.bcc); err != nil {
-				return identityPatch{}, fmt.Errorf("bcc: %w", err)
+				return identityPatch{}, &setError{Type: "invalidProperties", Description: fmt.Sprintf("bcc: %v", err)}
 			}
 		case "textSignature":
 			out.hasTextSignature = true
 			if err := json.Unmarshal(v, &out.textSignature); err != nil {
-				return identityPatch{}, fmt.Errorf("textSignature: %w", err)
+				return identityPatch{}, &setError{Type: "invalidProperties", Description: fmt.Sprintf("textSignature: %v", err)}
 			}
 		case "htmlSignature":
 			out.hasHTMLSignature = true
 			if err := json.Unmarshal(v, &out.htmlSignature); err != nil {
-				return identityPatch{}, fmt.Errorf("htmlSignature: %w", err)
+				return identityPatch{}, &setError{Type: "invalidProperties", Description: fmt.Sprintf("htmlSignature: %v", err)}
 			}
 		case "signature":
 			out.hasSignature = true
@@ -463,20 +492,102 @@ func decodePatch(raw json.RawMessage) (identityPatch, error) {
 				out.signature = nil
 				continue
 			}
-			var s string
-			if err := json.Unmarshal(v, &s); err != nil {
-				return identityPatch{}, fmt.Errorf("signature: %w", err)
+			var sig string
+			if err := json.Unmarshal(v, &sig); err != nil {
+				return identityPatch{}, &setError{Type: "invalidProperties", Description: fmt.Sprintf("signature: %v", err)}
 			}
-			out.signature = &s
+			out.signature = &sig
+		case "avatarBlobId":
+			out.hasAvatarBlobId = true
+			if string(v) == "null" {
+				out.avatarBlobHash = ""
+				out.avatarBlobSize = 0
+				continue
+			}
+			var blobID string
+			if err := json.Unmarshal(v, &blobID); err != nil {
+				return identityPatch{}, &setError{
+					Type:        "invalidProperties",
+					Properties:  []string{"avatarBlobId"},
+					Description: fmt.Sprintf("avatarBlobId: %v", err),
+				}
+			}
+			if blobID == "" {
+				return identityPatch{}, &setError{
+					Type:        "invalidProperties",
+					Properties:  []string{"avatarBlobId"},
+					Description: "avatarBlobId must be a non-empty string or null",
+				}
+			}
+			hash, sz, serr := validateAvatarBlob(ctx, st, blobID)
+			if serr != nil {
+				return identityPatch{}, serr
+			}
+			out.avatarBlobHash = hash
+			out.avatarBlobSize = sz
+		case "xFaceEnabled":
+			out.hasXFaceEnabled = true
+			if err := json.Unmarshal(v, &out.xFaceEnabled); err != nil {
+				return identityPatch{}, &setError{
+					Type:        "invalidProperties",
+					Properties:  []string{"xFaceEnabled"},
+					Description: fmt.Sprintf("xFaceEnabled: %v", err),
+				}
+			}
 		case "email":
-			// JMAP forbids changing the primary email of an Identity
-			// (RFC 8621 §7.4 server "MAY" reject).
-			return identityPatch{}, fmt.Errorf("email is immutable")
+			return identityPatch{}, &setError{
+				Type:        "invalidProperties",
+				Description: "email is immutable",
+				Properties:  []string{"email"},
+			}
 		case "id", "mayDelete":
-			return identityPatch{}, fmt.Errorf("%s is read-only", k)
+			return identityPatch{}, &setError{
+				Type:        "invalidProperties",
+				Description: k + " is read-only",
+				Properties:  []string{k},
+			}
 		default:
-			return identityPatch{}, fmt.Errorf("unknown property %q", k)
+			return identityPatch{}, &setError{
+				Type:        "invalidProperties",
+				Description: fmt.Sprintf("unknown property %q", k),
+				Properties:  []string{k},
+			}
 		}
 	}
 	return out, nil
+}
+
+// validateAvatarBlob checks that blobID exists in the blob store and
+// that its detected content-type starts with "image/". Returns the hash
+// and size on success, or a setError for invalidProperties.
+func validateAvatarBlob(ctx context.Context, st store.Store, blobID string) (hash string, size int64, serr *setError) {
+	rc, err := st.Blobs().Get(ctx, blobID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) || strings.Contains(err.Error(), "not found") {
+			return "", 0, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"avatarBlobId"},
+				Description: "avatarBlobId: blob not found",
+			}
+		}
+		return "", 0, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"avatarBlobId"},
+			Description: fmt.Sprintf("avatarBlobId: blob lookup failed: %v", err),
+		}
+	}
+	defer rc.Close()
+	var buf [512]byte
+	n, _ := io.ReadFull(rc, buf[:])
+	ct := http.DetectContentType(buf[:n])
+	if !strings.HasPrefix(ct, "image/") {
+		return "", 0, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"avatarBlobId"},
+			Description: fmt.Sprintf("avatarBlobId: blob content-type %q is not an image", ct),
+		}
+	}
+	rest, _ := io.Copy(io.Discard, rc)
+	totalSize := int64(n) + rest
+	return blobID, totalSize, nil
 }

@@ -2376,6 +2376,44 @@ func (m *metaFace) GetBlobRef(ctx context.Context, hash string) (int64, int64, e
 	return s.blobSize[hash], int64(s.blobRefs[hash]), nil
 }
 
+// IncRefBlob increments the in-memory ref_count for hash by 1. If no
+// entry exists yet, one is created with size and ref_count=1. The size
+// argument is ignored when a row already exists (REQ-SET-03b).
+func (m *metaFace) IncRefBlob(ctx context.Context, hash string, size int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if hash == "" {
+		return nil
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.blobRefs[hash]++
+	if _, ok := s.blobSize[hash]; !ok {
+		s.blobSize[hash] = size
+	}
+	return nil
+}
+
+// DecRefBlob decrements the in-memory ref_count for hash by 1, clamped
+// at zero (REQ-SET-03b).
+func (m *metaFace) DecRefBlob(ctx context.Context, hash string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if hash == "" {
+		return nil
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.blobRefs[hash] > 0 {
+		s.blobRefs[hash]--
+	}
+	return nil
+}
+
 func (b *blobsFace) Delete(ctx context.Context, hash string) error {
 	if err := ctx.Err(); err != nil {
 		return err

@@ -1426,6 +1426,22 @@ type Metadata interface {
 	// principalID (privacy-toggle-off path, REQ-MAIL-11m).  Returns the
 	// number of rows deleted.
 	PurgeSeenAddressesByPrincipal(ctx context.Context, principalID PrincipalID) (int, error)
+
+	// -- REQ-SET-03b: per-identity avatar blob refcounting --
+
+	// IncRefBlob increments the ref_count for hash in blob_refs by 1.
+	// If no row exists for hash yet, one is inserted with ref_count=1.
+	// size is ignored when a row already exists. This is the caller-
+	// managed refcount path for objects that are not messages (e.g.
+	// identity avatar blobs); message blobs are managed atomically
+	// inside InsertMessage / ExpungeMessages.
+	IncRefBlob(ctx context.Context, hash string, size int64) error
+
+	// DecRefBlob decrements the ref_count for hash in blob_refs by 1,
+	// refusing to drive it below zero (same guard as the internal decRef
+	// used by message paths). A no-op when hash is empty or the row does
+	// not exist; logs a warning at the store level.
+	DecRefBlob(ctx context.Context, hash string) error
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

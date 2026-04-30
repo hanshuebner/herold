@@ -20,9 +20,8 @@ type emailAddress struct {
 
 // jmapIdentity is the wire-form Identity object (RFC 8621 §7.1) plus
 // the "signature" extension property defined by REQ-PROTO-57 /
-// REQ-STORE-35. The extension carries a single nullable plain-text
-// signature body separate from textSignature/htmlSignature; clients
-// populate compose with this value when present. NULL means unset.
+// REQ-STORE-35, and the "avatarBlobId" / "xFaceEnabled" extension
+// properties defined by REQ-SET-03b.
 type jmapIdentity struct {
 	ID    jmapID `json:"id"`
 	Name  string `json:"name"`
@@ -35,6 +34,14 @@ type jmapIdentity struct {
 	HTMLSignature string          `json:"htmlSignature"` // RFC 8621 §7.1: always present, defaults to ""
 	Signature     *string         `json:"signature"`
 	MayDelete     bool            `json:"mayDelete"`
+	// AvatarBlobId is the herold extension (REQ-SET-03b): the JMAP blob id
+	// of this identity's avatar image, or null when not set. The blob must
+	// have an image/* content-type; validation is enforced on set.
+	AvatarBlobId *string `json:"avatarBlobId"`
+	// XFaceEnabled controls outbound X-Face: / Face: header injection.
+	// When true and AvatarBlobId is non-null, createEmail prepends those
+	// headers derived from the avatar. Default false.
+	XFaceEnabled bool `json:"xFaceEnabled"`
 }
 
 // identityRecord is the in-memory representation backing an Identity.
@@ -53,8 +60,15 @@ type identityRecord struct {
 	// Signature is the plain-text Identity.signature extension
 	// property (REQ-PROTO-57 / REQ-STORE-35). Nil means unset.
 	Signature *string
-	MayDelete bool
-	UpdatedAt time.Time
+	// AvatarBlobHash is the BLAKE3 hex hash of the identity's avatar blob.
+	// Empty string when no avatar is set (REQ-SET-03b).
+	AvatarBlobHash string
+	// AvatarBlobSize is the byte size of the avatar blob.
+	AvatarBlobSize int64
+	// XFaceEnabled controls outbound X-Face: / Face: injection (REQ-SET-03b).
+	XFaceEnabled bool
+	MayDelete    bool
+	UpdatedAt    time.Time
 }
 
 func (r identityRecord) toJMAP() jmapIdentity {
@@ -74,6 +88,12 @@ func (r identityRecord) toJMAP() jmapIdentity {
 		b := append([]emailAddress(nil), r.Bcc...)
 		bcc = &b
 	}
+	// avatarBlobId is null on the wire when not set.
+	var avatarBlobId *string
+	if r.AvatarBlobHash != "" {
+		v := r.AvatarBlobHash
+		avatarBlobId = &v
+	}
 	return jmapIdentity{
 		ID:            renderID(r.ID),
 		Name:          r.Name,
@@ -84,6 +104,8 @@ func (r identityRecord) toJMAP() jmapIdentity {
 		HTMLSignature: r.HTMLSignature,
 		Signature:     sig,
 		MayDelete:     r.MayDelete,
+		AvatarBlobId:  avatarBlobId,
+		XFaceEnabled:  r.XFaceEnabled,
 	}
 }
 

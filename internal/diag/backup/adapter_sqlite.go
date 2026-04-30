@@ -578,16 +578,24 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 		return enumerate(ctx, s.tx,
 			`SELECT id, principal_id, name, email, reply_to_json, bcc_json,
 			        text_signature, html_signature, may_delete,
-			        created_at_us, updated_at_us FROM jmap_identities ORDER BY id`,
+			        created_at_us, updated_at_us,
+			        avatar_blob_hash, avatar_blob_size, xface_enabled
+			   FROM jmap_identities ORDER BY id`,
 			func(rs *sql.Rows) (any, error) {
 				var r JMAPIdentityRow
-				var md int64
+				var md, xf int64
+				var avatarHash sql.NullString
 				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.Name, &r.Email,
 					&r.ReplyToJSON, &r.BccJSON, &r.TextSignature, &r.HTMLSignature,
-					&md, &r.CreatedAtUs, &r.UpdatedAtUs); err != nil {
+					&md, &r.CreatedAtUs, &r.UpdatedAtUs,
+					&avatarHash, &r.AvatarBlobSize, &xf); err != nil {
 					return nil, err
 				}
 				r.MayDelete = md != 0
+				r.XFaceEnabled = xf != 0
+				if avatarHash.Valid {
+					r.AvatarBlobHash = avatarHash.String
+				}
 				return &r, nil
 			}, fn)
 	case "tlsrpt_failures":
@@ -1302,13 +1310,19 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		return err
 	case "jmap_identities":
 		r := row.(*JMAPIdentityRow)
+		var avatarHash any
+		if r.AvatarBlobHash != "" {
+			avatarHash = r.AvatarBlobHash
+		}
 		_, err := s.tx.ExecContext(ctx,
 			`INSERT INTO jmap_identities (id, principal_id, name, email, reply_to_json,
-			   bcc_json, text_signature, html_signature, may_delete, created_at_us, updated_at_us)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   bcc_json, text_signature, html_signature, may_delete, created_at_us, updated_at_us,
+			   avatar_blob_hash, avatar_blob_size, xface_enabled)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.PrincipalID, r.Name, r.Email, r.ReplyToJSON, r.BccJSON,
 			r.TextSignature, r.HTMLSignature, boolToInt(r.MayDelete),
-			r.CreatedAtUs, r.UpdatedAtUs)
+			r.CreatedAtUs, r.UpdatedAtUs,
+			avatarHash, r.AvatarBlobSize, boolToInt(r.XFaceEnabled))
 		return err
 	case "tlsrpt_failures":
 		r := row.(*TLSRPTFailureRow)

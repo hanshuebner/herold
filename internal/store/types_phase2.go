@@ -1199,6 +1199,18 @@ type JMAPIdentity struct {
 	// synthesised default identity sets this to false; persisted rows
 	// default to true.
 	MayDelete bool
+	// AvatarBlobHash is the BLAKE3 hex hash of the identity's avatar blob
+	// in blob_refs. Empty string when no avatar is set. The application
+	// layer owns refcount management (incRef on set, decRef on clear /
+	// replace); this column carries no FK to blob_refs.
+	AvatarBlobHash string
+	// AvatarBlobSize is the byte size of the avatar blob. Zero when no
+	// avatar is set.
+	AvatarBlobSize int64
+	// XFaceEnabled controls outbound X-Face: / Face: header injection
+	// (REQ-SET-03b). When true, createEmail looks up this identity by
+	// From address and prepends both headers derived from the avatar blob.
+	XFaceEnabled bool
 	// CreatedAtUs / UpdatedAtUs are unix-micros timestamps maintained
 	// by the store on insert / update.
 	CreatedAtUs int64

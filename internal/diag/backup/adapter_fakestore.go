@@ -388,6 +388,8 @@ func convertFakeToRow(table string, raw any) (any, error) {
 			ReplyToJSON: i.ReplyToJSON, BccJSON: i.BccJSON,
 			TextSignature: i.TextSignature, HTMLSignature: i.HTMLSignature,
 			MayDelete: i.MayDelete, CreatedAtUs: i.CreatedAtUs, UpdatedAtUs: i.UpdatedAtUs,
+			AvatarBlobHash: i.AvatarBlobHash, AvatarBlobSize: i.AvatarBlobSize,
+			XFaceEnabled: i.XFaceEnabled,
 		}, nil
 	case "tlsrpt_failures":
 		t := raw.(store.TLSRPTFailure)
@@ -797,6 +799,9 @@ func convertRowToFake(table string, row any) (any, error) {
 			TextSignature: r.TextSignature, HTMLSignature: r.HTMLSignature,
 			MayDelete:   r.MayDelete,
 			CreatedAtUs: r.CreatedAtUs, UpdatedAtUs: r.UpdatedAtUs,
+			AvatarBlobHash: r.AvatarBlobHash,
+			AvatarBlobSize: r.AvatarBlobSize,
+			XFaceEnabled:   r.XFaceEnabled,
 		}, nil
 	case "tlsrpt_failures":
 		r := row.(*TLSRPTFailureRow)

@@ -124,6 +124,11 @@ func (s *Store) defaultRecordLocked(p store.Principal) identityRecord {
 			v := *ovr.Signature
 			rec.Signature = &v
 		}
+		if ovr.AvatarBlobHash != "" {
+			rec.AvatarBlobHash = ovr.AvatarBlobHash
+			rec.AvatarBlobSize = ovr.AvatarBlobSize
+		}
+		rec.XFaceEnabled = ovr.XFaceEnabled
 		if !ovr.UpdatedAt.IsZero() {
 			rec.UpdatedAt = ovr.UpdatedAt
 		}
@@ -240,13 +245,16 @@ func (s *Store) destroy(ctx context.Context, p store.Principal, id uint64) bool 
 // in-memory identityRecord shape this package operates on.
 func persistedToRecord(r store.JMAPIdentity) identityRecord {
 	rec := identityRecord{
-		PrincipalID:   r.PrincipalID,
-		Name:          r.Name,
-		Email:         r.Email,
-		TextSignature: r.TextSignature,
-		HTMLSignature: r.HTMLSignature,
-		MayDelete:     r.MayDelete,
-		UpdatedAt:     time.UnixMicro(r.UpdatedAtUs).UTC(),
+		PrincipalID:    r.PrincipalID,
+		Name:           r.Name,
+		Email:          r.Email,
+		TextSignature:  r.TextSignature,
+		HTMLSignature:  r.HTMLSignature,
+		MayDelete:      r.MayDelete,
+		AvatarBlobHash: r.AvatarBlobHash,
+		AvatarBlobSize: r.AvatarBlobSize,
+		XFaceEnabled:   r.XFaceEnabled,
+		UpdatedAt:      time.UnixMicro(r.UpdatedAtUs).UTC(),
 	}
 	if r.Signature != nil {
 		v := *r.Signature
@@ -275,13 +283,16 @@ func persistedToRecord(r store.JMAPIdentity) identityRecord {
 // clock; UpdatedAtUs is left at zero for callers to fill explicitly.
 func recordToPersisted(r identityRecord) store.JMAPIdentity {
 	row := store.JMAPIdentity{
-		ID:            strconv.FormatUint(r.ID, 10),
-		PrincipalID:   r.PrincipalID,
-		Name:          r.Name,
-		Email:         r.Email,
-		TextSignature: r.TextSignature,
-		HTMLSignature: r.HTMLSignature,
-		MayDelete:     r.MayDelete,
+		ID:             strconv.FormatUint(r.ID, 10),
+		PrincipalID:    r.PrincipalID,
+		Name:           r.Name,
+		Email:          r.Email,
+		TextSignature:  r.TextSignature,
+		HTMLSignature:  r.HTMLSignature,
+		MayDelete:      r.MayDelete,
+		AvatarBlobHash: r.AvatarBlobHash,
+		AvatarBlobSize: r.AvatarBlobSize,
+		XFaceEnabled:   r.XFaceEnabled,
 	}
 	if r.Signature != nil {
 		v := *r.Signature
@@ -365,6 +376,32 @@ func (s *Store) SubmissionConfig(ctx context.Context, pid store.PrincipalID, ide
 
 var _ = fmt.Sprint // keep fmt import in case future code logs persistence errors
 
+// snapshotAvatarHash returns the persisted avatarBlobHash for the
+// identity (id) owned by p, or "" when the identity does not exist or
+// has no avatar set. Used by /set to learn the previous blob hash so
+// refcounts can be decremented after a successful avatar replacement
+// or deletion.
+func (s *Store) snapshotAvatarHash(ctx context.Context, p store.Principal, id uint64) string {
+	if id == 0 {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		ovr := s.defaultOverrides[p.ID]
+		if ovr == nil {
+			return ""
+		}
+		return ovr.AvatarBlobHash
+	}
+	if s.st == nil {
+		return ""
+	}
+	rowID := strconv.FormatUint(id, 10)
+	row, err := s.st.Meta().GetJMAPIdentity(ctx, rowID)
+	if err != nil || row.PrincipalID != p.ID {
+		return ""
+	}
+	return row.AvatarBlobHash
+}
+
 // snapshot returns the principal's identities in id order, used by
 // /get and /changes. The slice is a fresh copy safe to mutate.
 func (s *Store) snapshot(ctx context.Context, p store.Principal) []identityRecord {
@@ -400,6 +437,14 @@ func (v IdentityView) JMAPID() string { return renderID(v.r.ID) }
 // Email returns the addr-spec the identity sends from.
 func (v IdentityView) Email() string { return v.r.Email }
 
+// AvatarBlobHash returns the BLAKE3 hex hash of the avatar blob, or ""
+// when no avatar is set (REQ-SET-03b).
+func (v IdentityView) AvatarBlobHash() string { return v.r.AvatarBlobHash }
+
+// XFaceEnabled reports whether X-Face: / Face: header injection is
+// enabled for outbound messages from this identity (REQ-SET-03b).
+func (v IdentityView) XFaceEnabled() bool { return v.r.XFaceEnabled }
+
 // identityPatch is the JSON-decoded patch applied by /set update. It is
 // declared here (instead of in methods.go) so the Store can apply it
 // without importing the JSON layer.
@@ -416,6 +461,14 @@ type identityPatch struct {
 	htmlSignature    string
 	hasSignature     bool
 	signature        *string
+	// hasAvatarBlobId is true when the patch included avatarBlobId (even if null).
+	// avatarBlobHash + avatarBlobSize are pre-validated by the set handler.
+	hasAvatarBlobId bool
+	// avatarBlobHash is "" when the patch clears the avatar (null on wire).
+	avatarBlobHash  string
+	avatarBlobSize  int64
+	hasXFaceEnabled bool
+	xFaceEnabled    bool
 }
 
 func (p identityPatch) applyTo(r *identityRecord) {
@@ -441,5 +494,12 @@ func (p identityPatch) applyTo(r *identityRecord) {
 			v := *p.signature
 			r.Signature = &v
 		}
+	}
+	if p.hasAvatarBlobId {
+		r.AvatarBlobHash = p.avatarBlobHash
+		r.AvatarBlobSize = p.avatarBlobSize
+	}
+	if p.hasXFaceEnabled {
+		r.XFaceEnabled = p.xFaceEnabled
 	}
 }

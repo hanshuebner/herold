@@ -139,7 +139,13 @@ const CurrentBackupVersion = 1
 //	calls for the same DM pair collide at the constraint level rather
 //	than producing duplicate rows. FK to chat_conversations(id) ON
 //	DELETE CASCADE.
-const CurrentSchemaVersion = 34
+//
+// 35 — 0035_identity_avatar.sql. Per-Identity avatar + outbound X-Face/Face
+//
+//	headers (REQ-SET-03b). Adds avatar_blob_hash TEXT, avatar_blob_size
+//	INTEGER/BIGINT, xface_enabled BOOLEAN/INTEGER to jmap_identities.
+//	Refcounting managed by the application layer.
+const CurrentSchemaVersion = 35
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
