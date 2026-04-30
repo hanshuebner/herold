@@ -540,15 +540,20 @@ class ChatStore {
     });
 
     try {
-      const patch: Record<string, boolean | null> = {};
-      patch[`reactions/${emoji}/${principalId}`] = alreadyReacted ? null : true;
-
+      // Reactions are toggled through the dedicated Message/react JMAP
+      // method (server: internal/protojmap/chat/message.go msgReactHandler).
+      // Routing this through Message/set with a patch path looks like a
+      // valid update on the wire but the server's msgUpdateInput only
+      // accepts {body} — extra fields are silently dropped, so the
+      // optimistic reaction would never persist.
       await jmap.batch((b) => {
         b.call(
-          'Message/set',
+          'Message/react',
           {
             accountId,
-            update: { [messageId]: patch },
+            messageId,
+            emoji,
+            present: !alreadyReacted,
           },
           USING,
         );
