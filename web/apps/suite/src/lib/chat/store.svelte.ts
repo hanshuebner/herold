@@ -447,6 +447,30 @@ class ChatStore {
     this.overlayMessages = new Map(this.overlayMessages);
   }
 
+  /**
+   * Run a per-message projection across every overlay window's cached
+   * message list and reassign the Map identity so $derived(get(cid))
+   * cells re-fire. Used by toggleReaction's optimistic-update path so
+   * the same code can flip a reaction whether the user is acting on
+   * the main-pane copy or the overlay-window copy of the message.
+   */
+  #applyOverlayProjection(project: (m: Message) => Message): void {
+    let mutated = false;
+    for (const [cid, entry] of this.overlayMessages.entries()) {
+      const next = entry.messages.map(project);
+      // Reference equality is sufficient — project returns the same
+      // object for non-matching ids, so a different array means at
+      // least one row was reprojected.
+      if (next.some((m, i) => m !== entry.messages[i])) {
+        this.overlayMessages.set(cid, { ...entry, messages: next });
+        mutated = true;
+      }
+    }
+    if (mutated) {
+      this.overlayMessages = new Map(this.overlayMessages);
+    }
+  }
+
   // ------------------------------------------------------------------
   // Read receipts
   // ------------------------------------------------------------------
@@ -542,7 +566,25 @@ class ChatStore {
       return;
     }
 
-    const msg = this.messages.find((m) => m.id === messageId);
+    // The message can live in either the main pane cache
+    // (chat.messages, populated when this conversation is the focused
+    // pane) OR in any of the overlay-window caches
+    // (chat.overlayMessages.get(cid).messages). The receiver is often
+    // looking at the conversation as a floating overlay window — only
+    // the sender of a reply tends to have it as the main pane — so a
+    // lookup that only consulted this.messages silently dropped every
+    // overlay-window reaction toggle (no network call, the optimistic
+    // flip never happened either).
+    let msg = this.messages.find((m) => m.id === messageId);
+    if (!msg) {
+      for (const entry of this.overlayMessages.values()) {
+        const candidate = entry.messages.find((m) => m.id === messageId);
+        if (candidate) {
+          msg = candidate;
+          break;
+        }
+      }
+    }
     if (!msg) {
       console.warn('toggleReaction: dropped — message not found', {
         messageId,
@@ -552,11 +594,15 @@ class ChatStore {
       return;
     }
 
+    const original = msg;
     const reactors = msg.reactions[emoji] ?? [];
     const alreadyReacted = reactors.includes(principalId);
 
-    // Optimistic update.
-    this.messages = this.messages.map((m) => {
+    // The same optimistic projection runs over both caches; it's a
+    // no-op for any cache that does not hold the message id, so we
+    // unconditionally apply to both rather than tracking which one
+    // owned the original lookup.
+    const project = (m: Message): Message => {
       if (m.id !== messageId) return m;
       const updated = { ...m.reactions };
       if (alreadyReacted) {
@@ -568,7 +614,9 @@ class ChatStore {
         updated[emoji] = [...(updated[emoji] ?? []), principalId];
       }
       return { ...m, reactions: updated };
-    });
+    };
+    this.messages = this.messages.map(project);
+    this.#applyOverlayProjection(project);
 
     try {
       // Reactions are toggled through the dedicated Message/react JMAP
@@ -590,11 +638,10 @@ class ChatStore {
         );
       });
     } catch (err) {
-      // Rollback optimistic change.
-      this.messages = this.messages.map((m) => {
-        if (m.id !== messageId) return m;
-        return msg; // restore original
-      });
+      // Rollback optimistic change in both caches.
+      const restore = (m: Message): Message => (m.id === messageId ? original : m);
+      this.messages = this.messages.map(restore);
+      this.#applyOverlayProjection(restore);
       const errMsg = err instanceof Error ? err.message : 'Reaction failed';
       toast.show({ message: errMsg, kind: 'error' });
     }

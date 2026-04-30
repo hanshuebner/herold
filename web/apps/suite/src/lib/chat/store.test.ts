@@ -952,4 +952,66 @@ describe('ChatStore', () => {
     );
     warnSpy.mockRestore();
   });
+
+  it('toggleReaction finds overlay-window messages, not just the main pane', async () => {
+    // Regression: when the user has the conversation open as a
+    // floating overlay window (not the main pane), the message lives
+    // in chat.overlayMessages.get(cid).messages, NOT in chat.messages.
+    // A lookup that consulted only chat.messages dropped every overlay
+    // reaction toggle silently — the receiver in any DM seen this way
+    // saw "no network activity" when picking an emoji.
+    const { chat } = chatMod;
+    const { jmap } = jmapMod;
+
+    chat.messages = []; // explicitly empty main pane
+    chat.overlayMessages.set('cOver', {
+      messages: [
+        {
+          id: 'msg-overlay',
+          conversationId: 'cOver',
+          senderPrincipalId: 'pOther',
+          type: 'text',
+          body: { html: 'hi', text: 'hi' },
+          inlineImages: [],
+          reactions: {},
+          createdAt: '',
+          deleted: false,
+        },
+      ],
+      status: 'ready',
+      hasMore: false,
+    });
+    chat.overlayMessages = new Map(chat.overlayMessages);
+
+    let captured: Record<string, unknown> | null = null;
+    vi.mocked(jmap.batch).mockImplementation(async (builder) => {
+      builder({
+        call: (name: string, args: unknown) => {
+          if (name === 'Message/react') {
+            captured = args as Record<string, unknown>;
+          }
+          return { ref: () => ({ resultOf: 'c0', name, path: '' }) };
+        },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      return {
+        responses: [
+          ['Message/react', { reactions: { '👍': ['p1'] } }, 'r0'],
+        ],
+        sessionState: 'ss1',
+      };
+    });
+
+    await chat.toggleReaction('msg-overlay', '👍', 'p1');
+
+    expect(captured).toEqual(
+      expect.objectContaining({ messageId: 'msg-overlay', emoji: '👍', present: true }),
+    );
+
+    // Optimistic flip lands on the overlay cache (the only one holding
+    // the message), and the Map identity flips so the
+    // ChatOverlayWindow's $derived re-fires.
+    const entry = chat.overlayMessages.get('cOver');
+    expect(entry?.messages[0]?.reactions['👍']).toEqual(['p1']);
+  });
 });
