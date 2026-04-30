@@ -55,6 +55,20 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
+      # The svelte-check pre-commit hook runs `pnpm --dir web run check`,
+      # so the pre-commit job needs Node + pnpm on PATH and the workspace
+      # dependencies installed. Without this the hook fails with
+      # "pnpm: command not found" (CI 25148811931).
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: pnpm install (workspace)
+        run: pnpm --dir web install --frozen-lockfile
       - name: prep web placeholders
         run: make prep-web
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1

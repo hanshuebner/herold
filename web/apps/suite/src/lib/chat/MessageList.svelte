@@ -160,34 +160,58 @@
     }
   }
 
-  // Reset the divider and seen-flag whenever the conversation changes so
-  // a fresh open always recomputes from the new conversation's read pointer.
+  // Snapshot of myMembership.lastReadMessageId taken at conversation
+  // open, BEFORE the focus-gated markRead effect (further down) can
+  // advance the live pointer. The divider effect anchors against this
+  // snapshot rather than the live pointer because, on overlay-window
+  // open, the conversation is focused on mount — markRead fires
+  // immediately and overwrites the live pointer with the latest
+  // message id, which would make the divider effect see "no unread"
+  // and never render. Capturing the pre-markRead value gives the
+  // divider a stable anchor at the historical read pointer.
+  let lastReadAtOpen = $state<string | null>(null);
+
+  // Reset the divider, seen-flag, and read-pointer snapshot whenever
+  // the conversation changes so a fresh open always recomputes from
+  // the new conversation's read pointer.
   $effect(() => {
     const _cid = conversationId;
     untrack(() => {
       newDividerAfterMessageId = null;
       dividerHasBeenSeen = false;
+      lastReadAtOpen = null;
+    });
+  });
+
+  // Capture the read-pointer snapshot once per conversation open. The
+  // capture is gated on (a) the message list being ready (so we
+  // know myMembership has been hydrated) and (b) the snapshot being
+  // null (so a re-open of the same conversation captures fresh, but
+  // a markRead pulse mid-read does not overwrite the snapshot).
+  $effect(() => {
+    const status = effectiveStatus;
+    const _cid = conversationId;
+    untrack(() => {
+      if (status !== 'ready') return;
+      if (lastReadAtOpen !== null) return;
+      lastReadAtOpen = conversation.myMembership?.lastReadMessageId ?? null;
     });
   });
 
   // Set the "New" divider position once the message list is ready (Bug C).
-  // The divider is anchored at the last-read message at open time; it does
-  // not move as new messages arrive while the user is reading.
-  // conversationId is read outside untrack so this effect re-fires when the
-  // conversation switches, allowing the reset effect above to clear the old
-  // value before this one sets the new one.
+  // The divider is anchored at the snapshot of the read pointer taken
+  // on conversation open; it does not move as new messages arrive
+  // while the user is reading.
   $effect(() => {
     const status = effectiveStatus;
     const msgs = effectiveMessages;
-    // Read conversationId here (outside untrack) so this effect re-fires
-    // when the user switches conversations.
+    const lastRead = lastReadAtOpen;
     const _cid = conversationId;
     untrack(() => {
       if (status !== 'ready') return;
       // Only set once per conversation open (guard against re-fires from
       // incoming messages extending effectiveMessages while status stays ready).
       if (newDividerAfterMessageId !== null) return;
-      const lastRead = conversation.myMembership?.lastReadMessageId;
       if (!lastRead) return;
       // Only show the divider when there is at least one unread message
       // after the read pointer that was sent by someone else.  Messages
@@ -206,37 +230,36 @@
     });
   });
 
-  // Clear the divider once markRead has advanced past the first unread
-  // message — i.e. once the conversation's read pointer has moved beyond
-  // where the divider is anchored.
+  // Clear the divider once the user has both (a) seen it during a
+  // manual scroll-up (dividerHasBeenSeen) AND (b) markRead has advanced
+  // past the divider anchor. The seen-gate is what stops the open-time
+  // auto-focus markRead pulse from tearing down the divider before the
+  // user has had any chance to read the unread content. The handleScroll
+  // path also clears via dividerHasBeenSeen + scroll-to-bottom; this
+  // effect is the markRead-driven mirror for the case where markRead
+  // catches up while the user is mid-scroll.
   $effect(() => {
     const lastRead = conversation.myMembership?.lastReadMessageId;
     const divider = newDividerAfterMessageId;
+    const seen = dividerHasBeenSeen;
     untrack(() => {
-      if (!divider || !lastRead) return;
+      if (!divider || !lastRead || !seen) return;
       const msgs = effectiveMessages;
       const dividerIdx = msgs.findIndex((m) => m.id === divider);
       const lastReadIdx = msgs.findIndex((m) => m.id === lastRead);
-      // If the read pointer has advanced past the divider anchor, hide it.
       if (lastReadIdx > dividerIdx) {
         newDividerAfterMessageId = null;
       }
     });
   });
 
-  // Clear the divider synchronously when the compose for THIS conversation
-  // gains focus.  markRead is async, so the divider would linger until the
-  // RPC round-trip.  Clearing here is instant.  Also reset the seen-flag so
-  // a subsequent conversation switch starts clean.
-  $effect(() => {
-    const focused = chat.focusedConversationId;
-    untrack(() => {
-      if (focused === conversationId) {
-        newDividerAfterMessageId = null;
-        dividerHasBeenSeen = false;
-      }
-    });
-  });
+  // Focus is no longer a clearing trigger on its own. The overlay
+  // window auto-focuses its compose at open, which would otherwise
+  // tear the divider down before the user has seen the unread content.
+  // The two real signals are the IntersectionObserver-tracked manual
+  // scroll-up (sets dividerHasBeenSeen) followed by either a
+  // scroll-back-to-bottom (handleScroll path) or a markRead advance
+  // past the anchor (the effect above).
 
   // Bug A — track when the divider enters the viewport during a manual
   // scroll-up (wasAtBottom === false).  We do NOT clear here; clearing

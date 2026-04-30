@@ -316,8 +316,16 @@ describe('MessageList', () => {
   // nulls it out.
   // ------------------------------------------------------------------
 
-  it('does not show the "New" divider when compose is focused at mount time', async () => {
-    // externalMessages: m1 read, m2 unread from another sender.
+  it('shows the "New" divider even when compose is focused at mount time', async () => {
+    // Regression: the overlay window auto-focuses its compose at open,
+    // which used to fire a synchronous focus-clear of the divider AND
+    // an immediate markRead-advance that retroactively cleared the
+    // divider via the live read pointer. The combined effect was that
+    // the divider never rendered, even on a fresh open with unread
+    // content. The fix gates the markRead-advance clear on
+    // dividerHasBeenSeen (only set by the IntersectionObserver during
+    // a manual scroll-up) and drops the focus-clear entirely. So a
+    // mount-time focus must NOT tear down the divider.
     const msgsUnread = [
       {
         id: 'm1',
@@ -343,7 +351,6 @@ describe('MessageList', () => {
       },
     ];
 
-    // Import the mock to mutate focusedConversationId before render.
     const { chat } = await import('./store.svelte');
     (chat as { focusedConversationId: string | null }).focusedConversationId = 'c1';
 
@@ -361,10 +368,8 @@ describe('MessageList', () => {
         externalHasMore: false,
       },
     });
-    // The focus-clear effect clears the divider on the same tick it was set.
-    expect(container.querySelector('.new-divider')).toBeNull();
+    expect(container.querySelector('.new-divider')).not.toBeNull();
 
-    // Restore for other tests.
     (chat as { focusedConversationId: string | null }).focusedConversationId = null;
   });
 
