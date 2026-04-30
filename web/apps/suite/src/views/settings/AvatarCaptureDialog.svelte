@@ -98,6 +98,12 @@
   }
 
   function shutter(): void {
+    console.log('[AvatarCapture] shutter clicked', {
+      videoEl: !!videoEl,
+      stream: !!mediaStream,
+      vw: videoEl?.videoWidth,
+      vh: videoEl?.videoHeight,
+    });
     if (!videoEl || !mediaStream) return;
     const w = videoEl.videoWidth;
     const h = videoEl.videoHeight;
@@ -119,6 +125,10 @@
     stopCamera();
     canvas.toBlob(
       (blob) => {
+        console.log('[AvatarCapture] shutter -> canvas.toBlob', {
+          ok: !!blob,
+          size: blob?.size,
+        });
         if (!blob) {
           console.error(
             'AvatarCaptureDialog: canvas.toBlob returned null (canvas tainted or quota?)',
@@ -138,12 +148,21 @@
   // ── File / drop ───────────────────────────────────────────────────────────
 
   function pickFile(): void {
+    console.log('[AvatarCapture] pickFile clicked', {
+      hasInput: !!fileInputEl,
+    });
     fileInputEl?.click();
   }
 
   function onFileChange(e: Event): void {
     const input = e.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
+    console.log('[AvatarCapture] onFileChange', {
+      files: input.files?.length ?? 0,
+      name: file?.name,
+      size: file?.size,
+      type: file?.type,
+    });
     if (file) void loadSourceFromBlob(file);
     input.value = '';
   }
