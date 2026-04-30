@@ -1635,3 +1635,240 @@ func TestEmail_Attachment_BlobDownload_RoundTrip(t *testing.T) {
 		t.Fatalf("downloaded bytes mismatch:\n  got  %v\n  want %v", dlBody, imgData)
 	}
 }
+
+// uploadBlob uploads raw bytes to the JMAP upload endpoint and returns the
+// server-assigned blobId.
+func (f *fixture) uploadBlob(t *testing.T, data []byte, contentType string) string {
+	t.Helper()
+	accountID := protojmap.AccountIDForPrincipal(f.pid)
+	req, err := http.NewRequest(http.MethodPost,
+		f.baseURL+"/jmap/upload/"+accountID,
+		bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("uploadBlob: new request: %v", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Authorization", "Bearer "+f.apiKey)
+	resp, err := f.client.Do(req)
+	if err != nil {
+		t.Fatalf("uploadBlob: do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("uploadBlob: status %d: %s", resp.StatusCode, body)
+	}
+	var out struct {
+		BlobID string `json:"blobId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("uploadBlob: decode: %v", err)
+	}
+	if out.BlobID == "" {
+		t.Fatalf("uploadBlob: blobId empty")
+	}
+	return out.BlobID
+}
+
+// TestEmailSet_Create_InlineImage_RoundTrip verifies that an Email/set create
+// with a multipart/related bodyStructure (containing a multipart/alternative
+// body and an inline image with a cid) produces an RFC 5322 message where:
+//   - the top-level Content-Type is multipart/related
+//   - the inline image part carries a Content-ID matching the sent cid
+//   - Email/get returns the image in attachments with disposition="inline"
+//     and the matching cid
+//
+// This is the regression test for defects (4), (5), and (6) from issue #1:
+// the missing Cid field, the missing Content-ID header, and the wrong
+// multipart type (mixed vs related).
+func TestEmailSet_Create_InlineImage_RoundTrip(t *testing.T) {
+	f := setupFixture(t)
+
+	// Upload a minimal image blob.
+	imgData := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}
+	blobID := f.uploadBlob(t, imgData, "image/jpeg")
+
+	const cid = "inl-1-abc123@herold.local"
+	htmlBody := `<p>Hello</p><img src="cid:` + cid + `"/>`
+	textBody := "Hello"
+
+	// Create the email with a multipart/related bodyStructure — the same shape
+	// the compose sends for an email with an inline image (issue #1 defect 4-6).
+	created, notCreated := setCreateFromBodyValues(t, f, map[string]any{
+		"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+		"keywords":   map[string]bool{"$draft": true, "$seen": true},
+		"from":       []map[string]any{{"name": "Alice", "email": "alice@example.test"}},
+		"to":         []map[string]any{{"name": "Bob", "email": "bob@example.test"}},
+		"subject":    "inline image test",
+		"bodyValues": map[string]any{
+			"1": map[string]any{"value": textBody, "isTruncated": false, "isEncodingProblem": false},
+			"2": map[string]any{"value": htmlBody, "isTruncated": false, "isEncodingProblem": false},
+		},
+		// Direct textBody / htmlBody arrays (the compose sends both).
+		"textBody": []map[string]any{
+			{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+		},
+		"htmlBody": []map[string]any{
+			{"partId": "2", "type": "text/html", "charset": "utf-8"},
+		},
+		// bodyStructure: multipart/related wrapping the alternative + inline image.
+		"bodyStructure": map[string]any{
+			"type": "multipart/related",
+			"subParts": []map[string]any{
+				{
+					"type": "multipart/alternative",
+					"subParts": []map[string]any{
+						{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+						{"partId": "2", "type": "text/html", "charset": "utf-8"},
+					},
+				},
+				{
+					"type":        "image/jpeg",
+					"blobId":      blobID,
+					"name":        "photo.jpg",
+					"disposition": "inline",
+					"cid":         cid,
+				},
+			},
+		},
+		"attachments": []map[string]any{
+			{
+				"blobId":      blobID,
+				"type":        "image/jpeg",
+				"name":        "photo.jpg",
+				"disposition": "inline",
+				"cid":         cid,
+			},
+		},
+		"hasAttachment": true,
+	})
+
+	if len(notCreated) != 0 {
+		t.Fatalf("notCreated = %v", notCreated)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created = %v", created)
+	}
+	emailID, _ := created["draft"]["id"].(string)
+	if emailID == "" {
+		t.Fatalf("no id in created: %v", created)
+	}
+
+	// Email/get: the inline image must appear in attachments with
+	// disposition=inline and cid matching the sent value.
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{emailID},
+		"properties": []string{"attachments", "hasAttachment", "blobId"},
+	})
+	var getResp struct {
+		List []struct {
+			BlobID      string `json:"blobId"`
+			HasAtt      bool   `json:"hasAttachment"`
+			Attachments []struct {
+				Type        string  `json:"type"`
+				Disposition *string `json:"disposition"`
+				Cid         *string `json:"cid"`
+				BlobID      string  `json:"blobId"`
+			} `json:"attachments"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal Email/get: %v: %s", err, raw)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("got %d messages, want 1: %s", len(getResp.List), raw)
+	}
+	em := getResp.List[0]
+
+	// hasAttachment must be true.
+	if !em.HasAtt {
+		t.Errorf("hasAttachment=false, want true (raw=%s)", raw)
+	}
+	// At least one attachment must be present.
+	if len(em.Attachments) == 0 {
+		t.Fatalf("attachments empty after create with inline image (raw=%s)", raw)
+	}
+
+	// Find the inline image part.
+	var found bool
+	for _, att := range em.Attachments {
+		if att.Type != "image/jpeg" {
+			continue
+		}
+		found = true
+		if att.Disposition == nil || *att.Disposition != "inline" {
+			d := "<nil>"
+			if att.Disposition != nil {
+				d = *att.Disposition
+			}
+			t.Errorf("inline image disposition = %q, want inline", d)
+		}
+		if att.Cid == nil || *att.Cid != cid {
+			c := "<nil>"
+			if att.Cid != nil {
+				c = *att.Cid
+			}
+			t.Errorf("inline image cid = %q, want %q", c, cid)
+		}
+		if att.BlobID == "" {
+			t.Error("inline image blobId is empty")
+		}
+	}
+	if !found {
+		t.Errorf("no image/jpeg attachment found in Email/get response; attachments=%v", em.Attachments)
+	}
+
+	// Fetch the raw RFC 5322 message and verify the MIME structure:
+	//   - top-level Content-Type must be multipart/related (or multipart/mixed
+	//     containing a multipart/related)
+	//   - the image part must carry a Content-ID header.
+	msgBlobID := em.BlobID
+	if msgBlobID == "" {
+		t.Fatalf("message blobId empty")
+	}
+	dlURL := fmt.Sprintf("%s/jmap/download/%s/%s/message%%2Frfc822/msg.eml",
+		f.baseURL, protojmap.AccountIDForPrincipal(f.pid),
+		strings.ReplaceAll(msgBlobID, "/", "%2F"))
+	req, err := http.NewRequest(http.MethodGet, dlURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+f.apiKey)
+	dlResp, err := f.client.Do(req)
+	if err != nil {
+		t.Fatalf("download message: %v", err)
+	}
+	defer dlResp.Body.Close()
+	rawMsg, err := io.ReadAll(dlResp.Body)
+	if err != nil {
+		t.Fatalf("read msg: %v", err)
+	}
+	if dlResp.StatusCode != http.StatusOK {
+		t.Fatalf("download status = %d: %s", dlResp.StatusCode, rawMsg)
+	}
+
+	msgStr := string(rawMsg)
+	// The assembled message must be multipart/related at the top level (when
+	// inline-only) or contain a multipart/related sub-part (when mixed).
+	if !strings.Contains(strings.ToLower(msgStr), "multipart/related") {
+		t.Errorf("assembled message does not contain multipart/related; first 1024 bytes:\n%s", msgStr[:min(1024, len(msgStr))])
+	}
+	// The image part must carry a Content-ID header (Go's MIME library
+	// canonicalises the header name as "Content-Id" per RFC 2045 §5 casing
+	// rules; accept either form).
+	msgLower := strings.ToLower(msgStr)
+	if !strings.Contains(msgLower, "content-id:") {
+		t.Errorf("assembled message has no Content-Id/Content-ID header; first 1024 bytes:\n%s", msgStr[:min(1024, len(msgStr))])
+	}
+	if !strings.Contains(msgStr, cid) {
+		t.Errorf("assembled message Content-Id does not contain %q; first 1024 bytes:\n%s", cid, msgStr[:min(1024, len(msgStr))])
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

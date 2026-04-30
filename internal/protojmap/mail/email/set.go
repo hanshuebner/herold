@@ -46,12 +46,16 @@ type emailBodyPart struct {
 // (RFC 8621 §4.6). Clients may pass either textBody/htmlBody arrays or
 // a bodyStructure tree; both reference parts via partId into bodyValues.
 type emailBodyStructurePart struct {
-	PartID      string                   `json:"partId"`
-	Type        string                   `json:"type"`
-	BlobID      string                   `json:"blobId"`
-	Name        string                   `json:"name"`
-	Disposition string                   `json:"disposition"`
-	SubParts    []emailBodyStructurePart `json:"subParts"`
+	PartID      string `json:"partId"`
+	Type        string `json:"type"`
+	BlobID      string `json:"blobId"`
+	Name        string `json:"name"`
+	Disposition string `json:"disposition"`
+	// Cid is the Content-ID for inline parts (RFC 2392). Clients send this
+	// alongside disposition:"inline" for images referenced by cid: URLs in
+	// the HTML body.
+	Cid      string                   `json:"cid"`
+	SubParts []emailBodyStructurePart `json:"subParts"`
 }
 
 // setRequest is the wire-form Email/set request (RFC 8620 §5.3).
@@ -130,8 +134,14 @@ type emailCreateInput struct {
 	// attachmentParts is populated by normaliseBodyStructure when the
 	// bodyStructure tree contains blob-referenced attachment subParts
 	// (RFC 8621 §4.6: type != text/plain and != text/html with a blobId).
-	// Not a JSON field; set programmatically.
+	// Regular (non-inline) attachments land here. Not a JSON field; set
+	// programmatically.
 	attachmentParts []emailBodyStructurePart
+	// inlineParts is populated by normaliseBodyStructure for blob-referenced
+	// parts with disposition:"inline" and a non-empty cid. These are assembled
+	// into a multipart/related wrapper per RFC 2387 so that cid: references in
+	// the HTML body resolve correctly. Not a JSON field; set programmatically.
+	inlineParts []emailBodyStructurePart
 }
 
 // setHandler implements Email/set.
