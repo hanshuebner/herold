@@ -743,25 +743,47 @@ func urgencyForKind(k store.EntityKind) string {
 //   - other: log and give up; the next dispatcher pass to this row
 //     will fail the same way and the client's UI surfaces "push
 //     unconfirmed" until the user re-subscribes.
+// verificationEnvelope is the RFC 8620 §7.2.2 PushVerification body the
+// server posts to the client URL. The client then echoes
+// verificationCode back via PushSubscription/set { update } to flip
+// Verified.
+type verificationBody struct {
+	AtType             string `json:"@type"`
+	PushSubscriptionID string `json:"pushSubscriptionId"`
+	VerificationCode   string `json:"verificationCode"`
+}
+
+func verificationEnvelope(sub store.PushSubscription) verificationBody {
+	return verificationBody{
+		AtType:             "PushVerification",
+		PushSubscriptionID: fmt.Sprintf("%d", sub.ID),
+		VerificationCode:   sub.VerificationCode,
+	}
+}
+
 func (d *Dispatcher) SendVerificationPing(ctx context.Context, sub store.PushSubscription) error {
 	if !d.vapid.Configured() {
 		return vapid.ErrNotConfigured
 	}
-	body, err := json.Marshal(struct {
-		Type             string `json:"type"`
-		VerificationCode string `json:"code"`
-	}{
-		Type:             "verification",
-		VerificationCode: sub.VerificationCode,
-	})
+	// RFC 8620 §7.2.1 PushVerification: a push-subscription record's
+	// "keys" property is optional. When the client did not supply Web
+	// Push (RFC 8291) keys the server posts the JSON envelope as
+	// plaintext; when keys ARE present the body is aes128gcm-encrypted
+	// per RFC 8291. The two cases use different Content-Type headers
+	// (handled by post()).
+	body, err := json.Marshal(verificationEnvelope(sub))
 	if err != nil {
 		return fmt.Errorf("webpush: marshal verification payload: %w", err)
 	}
-	envelope, err := Encrypt(body, sub.P256DH, sub.Auth, nil)
-	if err != nil {
-		return fmt.Errorf("webpush: encrypt verification: %w", err)
+	encrypted := len(sub.P256DH) > 0 && len(sub.Auth) > 0
+	payload := body
+	if encrypted {
+		payload, err = Encrypt(body, sub.P256DH, sub.Auth, nil)
+		if err != nil {
+			return fmt.Errorf("webpush: encrypt verification: %w", err)
+		}
 	}
-	resp, err := d.post(ctx, sub, envelope, "", "high")
+	resp, err := d.post(ctx, sub, payload, "", "high", encrypted)
 	if err != nil {
 		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: verification ping failed",
 			slog.Uint64("subscription", uint64(sub.ID)),
@@ -793,16 +815,24 @@ func (d *Dispatcher) deliver(
 	coalesceTag string,
 	urgency string,
 ) {
-	envelope, err := Encrypt(payload, sub.P256DH, sub.Auth, nil)
-	if err != nil {
-		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: encrypt",
-			slog.Uint64("subscription", uint64(sub.ID)),
-			slog.String("err", err.Error()))
-		observe.WebPushDeliveriesTotal.WithLabelValues("rejected").Inc()
-		return
+	// Same keys-optional split as SendVerificationPing: encrypt only
+	// when the client provided Web Push (RFC 8291) keys. Without keys
+	// the JSON body is posted as plaintext (RFC 8620 §7.2.1).
+	encrypted := len(sub.P256DH) > 0 && len(sub.Auth) > 0
+	body := payload
+	if encrypted {
+		var err error
+		body, err = Encrypt(payload, sub.P256DH, sub.Auth, nil)
+		if err != nil {
+			d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: encrypt",
+				slog.Uint64("subscription", uint64(sub.ID)),
+				slog.String("err", err.Error()))
+			observe.WebPushDeliveriesTotal.WithLabelValues("rejected").Inc()
+			return
+		}
 	}
 	startedAt := d.clock.Now()
-	resp, err := d.post(ctx, sub, envelope, coalesceTag, urgency)
+	resp, err := d.post(ctx, sub, body, coalesceTag, urgency, encrypted)
 	if err != nil {
 		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: post",
 			slog.Uint64("subscription", uint64(sub.ID)),
@@ -858,8 +888,9 @@ func (d *Dispatcher) deliver(
 func (d *Dispatcher) post(
 	ctx context.Context,
 	sub store.PushSubscription,
-	envelope []byte,
+	body []byte,
 	coalesceTag, urgency string,
+	encrypted bool,
 ) (*http.Response, error) {
 	audience, err := vapid.AudienceFromEndpoint(sub.URL)
 	if err != nil {
@@ -876,12 +907,19 @@ func (d *Dispatcher) post(
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, d.httpTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, sub.URL, bytes.NewReader(envelope))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, sub.URL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("webpush: new request: %w", err)
 	}
-	req.Header.Set("Content-Encoding", "aes128gcm")
-	req.Header.Set("Content-Type", "application/octet-stream")
+	if encrypted {
+		// RFC 8291 / 8030 § 5.3: aes128gcm-encrypted Web Push body.
+		req.Header.Set("Content-Encoding", "aes128gcm")
+		req.Header.Set("Content-Type", "application/octet-stream")
+	} else {
+		// RFC 8620 §7.2.1: keys-less subscriptions receive plaintext
+		// JMAP envelopes (PushVerification / StateChange) as JSON.
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("TTL", fmt.Sprintf("%d", DefaultTTLSeconds))
 	req.Header.Set("Urgency", urgency)
 	req.Header.Set("Authorization", fmt.Sprintf("vapid t=%s, k=%s", jwt, pub))

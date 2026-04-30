@@ -61,7 +61,42 @@ func BuildPayload(ctx context.Context, st store.Store, ev store.StateChange) (bu
 // and CalendarEvent fan out to push subscribers in 3.8b.
 var errUnsupportedKind = errors.New("webpush: event kind not push-eligible")
 
+// stateChangeBase carries the RFC 8620 §7.3 StateChange discriminator
+// fields embedded into every push payload. Kept as a separate struct so
+// each per-kind payload (email, chat, calendar) embeds exactly the same
+// envelope shape: clients dispatch on AtType and resolve the changed
+// states through Changed; everything else on the parent struct is
+// herold-specific preview metadata that suite uses to render OS
+// notifications without a follow-up /get round-trip.
+type stateChangeBase struct {
+	AtType  string                       `json:"@type"`
+	Changed map[string]map[string]string `json:"changed"`
+}
+
+// newStateChangeBase builds the JMAP StateChange envelope for a given
+// principal + datatype + state value. Format mirrors
+// internal/protojmap/push.go (the EventSource path).
+func newStateChangeBase(pid store.PrincipalID, jmapTypeName, state string) stateChangeBase {
+	return stateChangeBase{
+		AtType: "StateChange",
+		Changed: map[string]map[string]string{
+			fmt.Sprintf("a%d", pid): {jmapTypeName: state},
+		},
+	}
+}
+
+// stateValueForKind derives the state-string the StateChange envelope
+// carries. For change-feed-derived kinds (Email, ChatMessage,
+// CalendarEvent) we surface ev.Seq — every change feed entry has a
+// monotonically-rising sequence so this is sufficient to invalidate a
+// client's cached state. Mirrors the EventSource derivation in
+// internal/protojmap/push.go (collectStateMap).
+func stateValueForKind(ev store.StateChange) string {
+	return fmt.Sprintf("%d", ev.Seq)
+}
+
 type emailPayload struct {
+	stateChangeBase
 	Type    string `json:"type"`
 	From    string `json:"from,omitempty"`
 	Subject string `json:"subject,omitempty"`
@@ -86,11 +121,12 @@ func buildEmailPayload(ctx context.Context, st store.Store, ev store.StateChange
 		mbox = store.Mailbox{Name: ""}
 	}
 	out := emailPayload{
-		Type:    "email",
-		From:    truncateUTF8(msg.Envelope.From, PayloadCapBytes),
-		Subject: truncateUTF8(msg.Envelope.Subject, PayloadCapBytes),
-		Mailbox: mbox.Name,
-		MsgID:   fmt.Sprintf("%d", msg.ID),
+		stateChangeBase: newStateChangeBase(ev.PrincipalID, "Email", stateValueForKind(ev)),
+		Type:            "email",
+		From:            truncateUTF8(msg.Envelope.From, PayloadCapBytes),
+		Subject:         truncateUTF8(msg.Envelope.Subject, PayloadCapBytes),
+		Mailbox:         mbox.Name,
+		MsgID:           fmt.Sprintf("%d", msg.ID),
 	}
 	// REQ-PROTO-125 / Wave 3.8c spec resolution: build the 80-byte
 	// preview by re-walking the blob inline via mailparse. This is the
@@ -119,6 +155,7 @@ func buildEmailPayload(ctx context.Context, st store.Store, ev store.StateChange
 }
 
 type chatPayload struct {
+	stateChangeBase
 	Type           string `json:"type"`
 	From           string `json:"from,omitempty"`
 	ConversationID string `json:"conversation_id,omitempty"`
@@ -139,8 +176,9 @@ func buildChatPayload(ctx context.Context, st store.Store, ev store.StateChange)
 		return buildPayloadResult{}, errUnsupportedKind
 	}
 	out := chatPayload{
-		Type:           "chat",
-		ConversationID: fmt.Sprintf("%d", msg.ConversationID),
+		stateChangeBase: newStateChangeBase(ev.PrincipalID, "Message", stateValueForKind(ev)),
+		Type:            "chat",
+		ConversationID:  fmt.Sprintf("%d", msg.ConversationID),
 	}
 	if msg.SenderPrincipalID != nil {
 		if p, err := st.Meta().GetPrincipalByID(ctx, *msg.SenderPrincipalID); err == nil {
@@ -170,6 +208,7 @@ func buildChatPayload(ctx context.Context, st store.Store, ev store.StateChange)
 }
 
 type calendarPayload struct {
+	stateChangeBase
 	Type     string `json:"type"`
 	Title    string `json:"title,omitempty"`
 	From     string `json:"from,omitempty"`
@@ -189,10 +228,11 @@ func buildCalendarEventPayload(ctx context.Context, st store.Store, ev store.Sta
 		return buildPayloadResult{}, fmt.Errorf("webpush: get calendar event %d: %w", id, err)
 	}
 	out := calendarPayload{
-		Type:  "calendar",
-		Title: truncateUTF8(cev.Summary, PayloadCapBytes),
-		UID:   cev.UID,
-		From:  cev.OrganizerEmail,
+		stateChangeBase: newStateChangeBase(ev.PrincipalID, "CalendarEvent", stateValueForKind(ev)),
+		Type:            "calendar",
+		Title:           truncateUTF8(cev.Summary, PayloadCapBytes),
+		UID:             cev.UID,
+		From:            cev.OrganizerEmail,
 	}
 	if !cev.Start.IsZero() {
 		out.Start = cev.Start.UTC().Format("2006-01-02T15:04:05Z")

@@ -331,11 +331,11 @@ func TestDispatcher_VerificationPing_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
-	if !strings.Contains(string(plain), `"type":"verification"`) {
-		t.Fatalf("verification payload missing type: %q", plain)
+	if !strings.Contains(string(plain), `"@type":"PushVerification"`) {
+		t.Fatalf("verification payload missing @type: %q", plain)
 	}
-	if !strings.Contains(string(plain), `"code":"abc123"`) {
-		t.Fatalf("verification code not present: %q", plain)
+	if !strings.Contains(string(plain), `"verificationCode":"abc123"`) {
+		t.Fatalf("verificationCode not present: %q", plain)
 	}
 }
 
