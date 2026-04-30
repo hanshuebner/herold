@@ -26,6 +26,12 @@
   import { t } from '../../lib/i18n/i18n.svelte';
   import { identityAvatarUrl } from '../../lib/mail/identity-avatar';
   import type { Identity } from '../../lib/mail/types';
+  import AvatarCaptureDialog from './AvatarCaptureDialog.svelte';
+  import {
+    AVATAR_MAX_BYTES,
+    uploadAndApplyAvatar,
+    type UploadDeps,
+  } from './identity-avatar-upload';
 
   interface Props {
     identity: Identity;
@@ -36,7 +42,7 @@
 
   let pickerOpen = $state(false);
   let uploading = $state(false);
-  let fileInputEl = $state<HTMLInputElement | null>(null);
+  let captureOpen = $state(false);
 
   // Derive the set of distinct blobIds already used across all identities,
   // excluding null/undefined values.
@@ -62,73 +68,20 @@
       .toUpperCase(),
   );
 
-  // ── Upload helpers ──────────────────────────────────────────────────────
-
-  const MAX_BYTES = 1024 * 1024; // 1 MiB
-  const MAX_DIM = 512;
-
-  /**
-   * Resize `file` to at most MAX_DIM x MAX_DIM, then compress as JPEG (or
-   * preserve as PNG/GIF for lossless types). Returns a Blob <= MAX_BYTES, or
-   * null when compression cannot achieve the target size.
-   */
-  async function resizeAndCompress(file: File): Promise<Blob | null> {
-    const bitmap = await createImageBitmap(file);
-    const { width: sw, height: sh } = bitmap;
-
-    const scale = Math.min(1, MAX_DIM / Math.max(sw, sh));
-    const dw = Math.round(sw * scale);
-    const dh = Math.round(sh * scale);
-
-    const canvas = document.createElement('canvas');
-    canvas.width = dw;
-    canvas.height = dh;
-    const ctx = canvas.getContext('2d')!;
-    ctx.drawImage(bitmap, 0, 0, dw, dh);
-    bitmap.close();
-
-    // PNG and GIF: lossless round-trip; use PNG output.
-    const lossless = file.type === 'image/png' || file.type === 'image/gif';
-    if (lossless) {
-      return new Promise<Blob | null>((res) =>
-        canvas.toBlob((b) => res(b && b.size <= MAX_BYTES ? b : null), 'image/png'),
-      );
-    }
-
-    // JPEG / WebP: try quality 0.85, then 0.7, then 0.5.
-    for (const q of [0.85, 0.7, 0.5]) {
-      const blob = await new Promise<Blob | null>((res) =>
-        canvas.toBlob((b) => res(b), 'image/jpeg', q),
-      );
-      if (blob && blob.size <= MAX_BYTES) return blob;
-    }
-    return null;
-  }
-
-  async function uploadFile(file: File): Promise<string | null> {
-    const blob = await resizeAndCompress(file);
-    if (!blob) {
-      toast.show({
-        message: t('settings.avatar.upload.tooLarge'),
-        kind: 'error',
-        timeoutMs: 6000,
-      });
-      return null;
-    }
-
-    const accountId =
-      auth.session?.primaryAccounts['urn:ietf:params:jmap:mail'] ?? null;
-    if (!accountId) return null;
-
-    const result = await jmap.uploadBlob({
-      accountId,
-      body: blob,
-      type: blob.type || 'image/jpeg',
-    });
-    return result.blobId;
-  }
-
   // ── Actions ─────────────────────────────────────────────────────────────
+
+  function uploadDeps(): UploadDeps {
+    return {
+      accountId:
+        auth.session?.primaryAccounts['urn:ietf:params:jmap:mail'] ?? null,
+      uploadBlob: jmap.uploadBlob.bind(jmap),
+      updateIdentityAvatar: mail.updateIdentityAvatar.bind(mail),
+      updateIdentityXFaceEnabled: mail.updateIdentityXFaceEnabled.bind(mail),
+      confirmAsk: confirm.ask.bind(confirm),
+      t,
+      allIdentities: () => Array.from(mail.identities.values()),
+    };
+  }
 
   async function pickExisting(blobId: string): Promise<void> {
     pickerOpen = false;
@@ -145,52 +98,21 @@
     }
   }
 
-  async function handleFileSelected(file: File): Promise<void> {
+  async function handleCaptureConfirm(blob: Blob): Promise<void> {
+    captureOpen = false;
     pickerOpen = false;
     uploading = true;
     try {
-      const blobId = await uploadFile(file);
-      if (!blobId) return;
-
-      await mail.updateIdentityAvatar(identity.id, blobId);
-
-      // Apply-to-all prompt: fires when NO other identity currently has an
-      // avatar AND there is more than one identity in total.
-      const allIdentities = Array.from(mail.identities.values());
-      const othersWithAvatar = allIdentities.filter(
-        (id) => id.id !== identity.id && typeof id.avatarBlobId === 'string' && id.avatarBlobId.length > 0,
-      );
-      if (othersWithAvatar.length === 0 && allIdentities.length > 1) {
-        const ok = await confirm.ask({
-          title: t('settings.avatar.applyToAll.title'),
-          message: t('settings.avatar.applyToAll.message', {
-            count: allIdentities.length,
-          }),
-          confirmLabel: t('settings.avatar.applyToAll.confirm'),
-          cancelLabel: t('settings.avatar.applyToAll.cancel'),
-        });
-        if (ok) {
-          for (const other of allIdentities) {
-            if (other.id !== identity.id) {
-              await mail.updateIdentityAvatar(other.id, blobId);
-            }
-          }
+      const blobId = await uploadAndApplyAvatar(uploadDeps(), identity, blob);
+      if (!blobId) {
+        if (blob.size > AVATAR_MAX_BYTES) {
+          toast.show({
+            message: t('settings.avatar.upload.tooLarge'),
+            kind: 'error',
+            timeoutMs: 6000,
+          });
         }
-      }
-
-      // X-Face prompt: fires only when xFaceEnabled is explicitly false for
-      // this identity (not when it is undefined/absent, because the server
-      // may default to true).
-      if (identity.xFaceEnabled === false) {
-        const ok = await confirm.ask({
-          title: t('settings.avatar.xface.title'),
-          message: t('settings.avatar.xface.message'),
-          confirmLabel: t('settings.avatar.xface.confirm'),
-          cancelLabel: t('settings.avatar.xface.cancel'),
-        });
-        if (ok) {
-          await mail.updateIdentityXFaceEnabled(identity.id, true);
-        }
+        return;
       }
     } catch (err) {
       toast.show({
@@ -203,6 +125,11 @@
     } finally {
       uploading = false;
     }
+  }
+
+  function openCaptureDialog(): void {
+    pickerOpen = false;
+    captureOpen = true;
   }
 
   async function removeAvatar(): Promise<void> {
@@ -219,17 +146,6 @@
     }
   }
 
-  function openFilePicker(): void {
-    fileInputEl?.click();
-  }
-
-  function onFileChange(e: Event): void {
-    const input = e.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (file) void handleFileSelected(file);
-    // Reset so re-selecting the same file fires the event again.
-    input.value = '';
-  }
 </script>
 
 <div class="avatar-form">
@@ -304,11 +220,12 @@
                 </button>
               {/each}
 
-              <!-- Pick new file tile -->
+              <!-- Pick new picture: opens the capture dialog (file /
+                   camera / drag-and-drop + interactive crop). -->
               <button
                 type="button"
                 class="tile-btn tile-new"
-                onclick={openFilePicker}
+                onclick={openCaptureDialog}
                 aria-label={t('settings.avatar.pickNew')}
                 title={t('settings.avatar.pickNew')}
               >
@@ -340,17 +257,13 @@
     </div>
   </div>
 
-  <!-- Hidden file input -->
-  <input
-    bind:this={fileInputEl}
-    type="file"
-    accept="image/png,image/jpeg,image/webp,image/gif"
-    class="sr-only"
-    onchange={onFileChange}
-    tabindex="-1"
-    aria-hidden="true"
-  />
 </div>
+
+<AvatarCaptureDialog
+  open={captureOpen}
+  onCancel={() => { captureOpen = false; }}
+  onConfirm={(blob) => { void handleCaptureConfirm(blob); }}
+/>
 
 <style>
   .avatar-form {
@@ -547,16 +460,4 @@
     line-height: 1;
   }
 
-  /* ── Accessibility ── */
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
 </style>
