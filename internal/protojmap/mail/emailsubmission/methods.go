@@ -756,6 +756,7 @@ func (h *handlerSet) applyEmailPatch(
 			}
 		}
 	}
+	flagsMailboxID := msg.MailboxID
 	if targetMailboxID != 0 && targetMailboxID != msg.MailboxID {
 		// Verify the principal owns the target mailbox.
 		mb, err := h.store.Meta().GetMailboxByID(ctx, targetMailboxID)
@@ -765,9 +766,15 @@ func (h *handlerSet) applyEmailPatch(
 		if err := h.store.Meta().MoveMessage(ctx, msg.ID, msg.MailboxID, targetMailboxID); err != nil {
 			return &setError{Type: "serverFail", Description: err.Error()}
 		}
+		// After MoveMessage the source row is gone — subsequent
+		// UpdateMessageFlags must target the new mailbox or it would
+		// hit ErrNotFound (the source row is what onSuccessUpdateEmail
+		// callers see when they combine a move with a keyword change,
+		// e.g. drafts->sent + clear $draft).
+		flagsMailboxID = targetMailboxID
 	}
 	if addFlags != 0 || clearFlags != 0 || len(addKW) > 0 || len(clearKW) > 0 {
-		if _, err := h.store.Meta().UpdateMessageFlags(ctx, msg.ID, msg.MailboxID,
+		if _, err := h.store.Meta().UpdateMessageFlags(ctx, msg.ID, flagsMailboxID,
 			addFlags, clearFlags, addKW, clearKW, 0); err != nil {
 			return &setError{Type: "serverFail", Description: err.Error()}
 		}
