@@ -39,6 +39,7 @@
   import FilterIcon from '../icons/FilterIcon.svelte';
   import LabelIcon from '../icons/LabelIcon.svelte';
   import { t, localeTag } from '../i18n/i18n.svelte';
+  import { relativeTimeAgo } from './relative-time';
   import { llmTransparency } from '../llm/transparency.svelte';
   import LLMInspectModal from '../llm/LLMInspectModal.svelte';
 
@@ -92,6 +93,14 @@
   }
 
   let recipientSummary = $derived(formatRecipientSummary(email));
+
+  // Relative annotation shown only in the expanded header, e.g. "(17 hours ago)".
+  // The label is computed once at mount time; a per-mount absolute label is
+  // fine -- the annotation is approximate by nature and a live ticker would
+  // add complexity with negligible UX gain.
+  let relativeAnnotation = $derived(
+    expanded ? `(${relativeTimeAgo(new Date(email.receivedAt))})` : '',
+  );
 
   // Show the Reply-all button only when there's somebody to add to Cc:
   // multiple To recipients, or any Cc recipient at all.
@@ -343,7 +352,9 @@
         <span class="preview">{email.preview}</span>
       {/if}
     </span>
-    <span class="date">{formatDateTime(email.receivedAt)}</span>
+    <span class="date">
+      {formatDateTime(email.receivedAt)}{#if relativeAnnotation}&nbsp;<span class="date-relative">{relativeAnnotation}</span>{/if}
+    </span>
   </button>
 
   {#if expanded}
@@ -726,6 +737,13 @@
     white-space: nowrap;
     align-self: flex-start;
     padding-top: var(--spacing-01);
+  }
+
+  /* Relative annotation appended to the date in the expanded header,
+     e.g. "(17 hours ago)". Slightly dimmer so it reads as secondary. */
+  .date-relative {
+    color: var(--text-placeholder);
+    font-size: var(--type-body-compact-01-size);
   }
 
   .body {

@@ -187,6 +187,12 @@ export const en = {
   'settings.language': 'Language',
   'settings.language.en': 'English',
   'settings.language.de': 'Deutsch',
+  'settings.displayName.label': 'Display name',
+  'settings.displayName.helper':
+    "Used in outbound mail's From header as 'Name' <address>.",
+  'settings.save': 'Save',
+  'settings.saved': 'Settings saved',
+  'settings.saveFailed': 'Could not save settings',
 
   // ── App switcher ────────────────────────────────────────────────────
   'app.mail': 'Mail',
