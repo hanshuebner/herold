@@ -6,20 +6,29 @@
    * (max-height 320px) per REQ-CHAT-22. Reactions strip below each message per REQ-CHAT-30..33.
    * Read receipts shown for DMs per REQ-CHAT-40.
    *
-   * Read tracking is focus-driven: when the recipient's cursor is in the
-   * chat compose for THIS conversation, the read pointer advances to the
-   * latest message — both on focus itself, and whenever a new message
-   * arrives while focus is held. Bare scrolling, hover, or focus on a
-   * different conversation's compose do NOT advance the pointer.
+   * Unread tracking and the "New" divider follow REQ-CHAT-200..211:
+   *
+   *   - The divider is anchored at the post-clearance read pointer at
+   *     the moment unreadCount transitions 0 -> non-zero (open with
+   *     pre-existing unread, or first arrival from someone else while
+   *     the user is not present-in-chat).
+   *   - The divider is hidden whenever the user is present-in-chat
+   *     for this conversation (REQ-CHAT-202); REQ-CHAT-210's
+   *     auto-mark-read in the store keeps unreadCount at 0 in that case.
+   *   - Two clear paths advance the read pointer: focus + both divider
+   *     and latest unread message fully visible (REQ-CHAT-206), and
+   *     3000ms of continuous divider visibility (REQ-CHAT-207).
+   *   - No other automatic mark-read paths (REQ-CHAT-208).
    */
 
   import { untrack } from 'svelte';
   import { chat } from './store.svelte';
+  import { presence } from './presence.svelte';
   import { auth } from '../auth/auth.svelte';
   import { chatTimestampGroupingSeconds } from '../auth/capabilities';
   import EmojiPicker from '../mail/EmojiPicker.svelte';
   import ImageLightbox from './ImageLightbox.svelte';
-  import type { Message, Conversation, LinkPreview } from './types';
+  import type { Message, Conversation } from './types';
 
   interface Props {
     conversationId: string;
@@ -53,35 +62,42 @@
   let lightboxSrc = $state<string | null>(null);
 
   /**
-   * The message id after which the "New" divider is shown. Set once on
-   * conversation open from myMembership.lastReadMessageId; cleared when
-   * markRead advances the read pointer past the first unread message so
-   * the divider disappears naturally as the user reads.
+   * The message id after which the "New" divider is anchored. Set on
+   * the 0 -> non-zero transition of unreadCount (REQ-CHAT-202..204):
+   * either at conversation open with pre-existing unread, or when a
+   * new message arrives from another principal while no unread was
+   * pending. Reset on conversation switch.
    *
-   * Also cleared synchronously when the compose input for THIS
-   * conversation gains focus.
-   *
-   * The IntersectionObserver path requires two ordered signals before
-   * clearing: (1) the user scrolled up and the divider entered the
-   * viewport while wasAtBottom === false (dividerHasBeenSeen), then
-   * (2) wasAtBottom flips back to true.  Auto-scroll intersections
-   * (wasAtBottom === true) do not count.
-   *
-   * Anchored at open — new messages arriving while the user is reading
-   * do not move the divider.
+   * The divider's *visibility* is gated separately by presence state
+   * (REQ-CHAT-202) — when the user is present-in-chat the auto-mark-
+   * read path keeps unreadCount at 0 so the divider does not render
+   * even when the anchor is set.
    */
-  let newDividerAfterMessageId = $state<string | null>(null);
-
-  /**
-   * Set to true by the IntersectionObserver when the divider enters
-   * the viewport while the user has manually scrolled up
-   * (wasAtBottom === false).  Once true, the divider is cleared the
-   * next time wasAtBottom becomes true again.
-   */
-  let dividerHasBeenSeen = $state(false);
+  let dividerAnchorId = $state<string | null>(null);
 
   /** DOM node for the "New" divider, bound via bind:this. */
   let dividerEl = $state<HTMLDivElement | null>(null);
+
+  /**
+   * Track which conversation the latest divider-anchor capture was made
+   * for. The capture only fires once per (conversationId, 0->non-zero
+   * unread transition) so a markRead pulse mid-read does not overwrite
+   * the anchor.
+   */
+  let anchorCapturedFor = $state<string | null>(null);
+
+  /**
+   * IntersectionObserver-tracked visibility ratios. Used by:
+   *   - REQ-CHAT-206: focus + divider AND lastUnread fully visible.
+   *   - REQ-CHAT-207: 3000ms of continuous divider visibility.
+   */
+  let dividerRatio = $state(0);
+  let lastUnreadRatio = $state(0);
+  /** Wall-clock timestamp the divider first became visible (>0 ratio). */
+  let dividerVisibleSinceMs = $state<number | null>(null);
+
+  /** Visibility-watch duration before auto-mark-read (REQ-CHAT-207). */
+  const VISIBILITY_TIMEOUT_MS = 3000;
 
   /**
    * Delegated click handler for inline images rendered via {@html}.
@@ -140,15 +156,7 @@
   function handleScroll(): void {
     if (!scrollEl) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollEl;
-    const atBottom = scrollHeight - scrollTop - clientHeight < 40;
-
-    // When the user returns to the bottom after having seen the divider
-    // during a manual scroll-up, clear the divider.
-    if (atBottom && !wasAtBottom && dividerHasBeenSeen) {
-      newDividerAfterMessageId = null;
-      dividerHasBeenSeen = false;
-    }
-    wasAtBottom = atBottom;
+    wasAtBottom = scrollHeight - scrollTop - clientHeight < 40;
 
     // Paginate: load more when scrolled near top.
     if (scrollTop < 80 && effectiveHasMore) {
@@ -160,151 +168,195 @@
     }
   }
 
-  // Snapshot of myMembership.lastReadMessageId taken at conversation
-  // open, BEFORE the focus-gated markRead effect (further down) can
-  // advance the live pointer. The divider effect anchors against this
-  // snapshot rather than the live pointer because, on overlay-window
-  // open, the conversation is focused on mount — markRead fires
-  // immediately and overwrites the live pointer with the latest
-  // message id, which would make the divider effect see "no unread"
-  // and never render. Capturing the pre-markRead value gives the
-  // divider a stable anchor at the historical read pointer.
-  let lastReadAtOpen = $state<string | null>(null);
-
-  // Reset the divider, seen-flag, and read-pointer snapshot whenever
-  // the conversation changes so a fresh open always recomputes from
-  // the new conversation's read pointer.
+  // Reset divider state on conversation switch so a fresh open always
+  // recomputes from the new conversation's read pointer.
   $effect(() => {
     const _cid = conversationId;
     untrack(() => {
-      newDividerAfterMessageId = null;
-      dividerHasBeenSeen = false;
-      lastReadAtOpen = null;
+      dividerAnchorId = null;
+      anchorCapturedFor = null;
+      dividerRatio = 0;
+      lastUnreadRatio = 0;
+      dividerVisibleSinceMs = null;
     });
   });
 
-  // Capture the read-pointer snapshot once per conversation open. The
-  // capture is gated on (a) the message list being ready (so we
-  // know myMembership has been hydrated) and (b) the snapshot being
-  // null (so a re-open of the same conversation captures fresh, but
-  // a markRead pulse mid-read does not overwrite the snapshot).
+  /**
+   * Anchor capture (REQ-CHAT-202, REQ-CHAT-204).
+   *
+   * The anchor is captured on a 0 -> non-zero transition of the
+   * effective unread count for this conversation (which is exactly
+   * how the user perceives "new content arrived"). This covers:
+   *   - conversation open with pre-existing unread (transition is
+   *     from "no anchor captured yet" to non-zero)
+   *   - 0 -> non-zero pulse mid-session (REQ-CHAT-204)
+   *
+   * The capture is gated on `unreadCount > 0` AND on at least one
+   * post-read-pointer message having a non-self sender (REQ-CHAT-205).
+   * Once captured for a (conversationId, transition), the anchor does
+   * not move until the conversation is switched or the count returns
+   * to 0 (REQ-CHAT-203).
+   */
+  let unreadCountForCapture = $derived(conversation.unreadCount);
   $effect(() => {
     const status = effectiveStatus;
-    const _cid = conversationId;
-    untrack(() => {
-      if (status !== 'ready') return;
-      if (lastReadAtOpen !== null) return;
-      lastReadAtOpen = conversation.myMembership?.lastReadMessageId ?? null;
-    });
-  });
-
-  // Set the "New" divider position once the message list is ready (Bug C).
-  // The divider is anchored at the snapshot of the read pointer taken
-  // on conversation open; it does not move as new messages arrive
-  // while the user is reading.
-  $effect(() => {
-    const status = effectiveStatus;
+    const unread = unreadCountForCapture;
+    const lastRead = conversation.myMembership?.lastReadMessageId ?? null;
+    const cid = conversationId;
     const msgs = effectiveMessages;
-    const lastRead = lastReadAtOpen;
-    const _cid = conversationId;
     untrack(() => {
       if (status !== 'ready') return;
-      // Only set once per conversation open (guard against re-fires from
-      // incoming messages extending effectiveMessages while status stays ready).
-      if (newDividerAfterMessageId !== null) return;
+
+      // 0 -> non-zero transition: re-arm the capture for THIS
+      // conversation so the next non-zero unread re-anchors.
+      if (unread === 0) {
+        anchorCapturedFor = null;
+        dividerAnchorId = null;
+        return;
+      }
+
+      // Already captured for this conversation's current non-zero
+      // window — leave the anchor alone (REQ-CHAT-203).
+      if (anchorCapturedFor === cid) return;
+
       if (!lastRead) return;
-      // Only show the divider when there is at least one unread message
-      // after the read pointer that was sent by someone else.  Messages
-      // that the current user sent themselves (e.g. a burst of outbound
-      // messages sent while offline, or a send-then-reopen flow) are not
-      // "unread" from the user's perspective, so they should not trigger
-      // the divider (Bug B).
       const lastReadIdx = msgs.findIndex((m) => m.id === lastRead);
       if (lastReadIdx === -1 || lastReadIdx >= msgs.length - 1) return;
       const hasOtherSenderAfterRead = msgs
         .slice(lastReadIdx + 1)
         .some((m) => m.senderPrincipalId !== auth.principalId);
-      if (hasOtherSenderAfterRead) {
-        newDividerAfterMessageId = lastRead;
-      }
+      if (!hasOtherSenderAfterRead) return;
+
+      dividerAnchorId = lastRead;
+      anchorCapturedFor = cid;
     });
   });
 
-  // Clear the divider once the user has both (a) seen it during a
-  // manual scroll-up (dividerHasBeenSeen) AND (b) markRead has advanced
-  // past the divider anchor. The seen-gate is what stops the open-time
-  // auto-focus markRead pulse from tearing down the divider before the
-  // user has had any chance to read the unread content. The handleScroll
-  // path also clears via dividerHasBeenSeen + scroll-to-bottom; this
-  // effect is the markRead-driven mirror for the case where markRead
-  // catches up while the user is mid-scroll.
-  $effect(() => {
-    const lastRead = conversation.myMembership?.lastReadMessageId;
-    const divider = newDividerAfterMessageId;
-    const seen = dividerHasBeenSeen;
-    untrack(() => {
-      if (!divider || !lastRead || !seen) return;
-      const msgs = effectiveMessages;
-      const dividerIdx = msgs.findIndex((m) => m.id === divider);
-      const lastReadIdx = msgs.findIndex((m) => m.id === lastRead);
-      if (lastReadIdx > dividerIdx) {
-        newDividerAfterMessageId = null;
-      }
-    });
+  /**
+   * Compute the most recent non-self message after the divider anchor —
+   * the "latest unread" element used by REQ-CHAT-206.
+   */
+  let lastUnreadId = $derived.by(() => {
+    if (!dividerAnchorId) return null;
+    const idx = effectiveMessages.findIndex((m) => m.id === dividerAnchorId);
+    if (idx === -1) return null;
+    for (let i = effectiveMessages.length - 1; i > idx; i--) {
+      const m = effectiveMessages[i]!;
+      if (m.senderPrincipalId !== auth.principalId) return m.id;
+    }
+    return null;
   });
 
-  // Focus is no longer a clearing trigger on its own. The overlay
-  // window auto-focuses its compose at open, which would otherwise
-  // tear the divider down before the user has seen the unread content.
-  // The two real signals are the IntersectionObserver-tracked manual
-  // scroll-up (sets dividerHasBeenSeen) followed by either a
-  // scroll-back-to-bottom (handleScroll path) or a markRead advance
-  // past the anchor (the effect above).
+  /** Divider visibility — REQ-CHAT-202. */
+  let presenceState = $derived(presence.stateFor(conversationId));
+  let dividerVisible = $derived(
+    dividerAnchorId !== null &&
+      conversation.unreadCount > 0 &&
+      presenceState !== 'present-in-chat',
+  );
 
-  // Bug A — track when the divider enters the viewport during a manual
-  // scroll-up (wasAtBottom === false).  We do NOT clear here; clearing
-  // happens in handleScroll when wasAtBottom flips back to true.
+  /**
+   * Track divider visibility ratio via IntersectionObserver. The
+   * observer also drives the visible-since timestamp used by
+   * REQ-CHAT-207's 3-second auto-mark-read.
+   */
   $effect(() => {
     const el = dividerEl;
     if (!el) return;
-    const observer = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting) {
-          // Only count this as "seen" when the user has manually scrolled
-          // away from the bottom.  Auto-scroll-to-bottom also triggers the
-          // observer but wasAtBottom is still true at that moment, so we
-          // ignore those intersections.
-          if (!wasAtBottom) {
-            untrack(() => { dividerHasBeenSeen = true; });
-          }
-          break;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          untrack(() => {
+            dividerRatio = entry.intersectionRatio;
+            if (entry.intersectionRatio > 0) {
+              if (dividerVisibleSinceMs === null) {
+                dividerVisibleSinceMs = Date.now();
+              }
+            } else {
+              dividerVisibleSinceMs = null;
+            }
+          });
         }
-      }
-    });
+      },
+      { threshold: [0, 1] },
+    );
     observer.observe(el);
-    return () => {
-      observer.disconnect();
-    };
+    return () => observer.disconnect();
   });
 
-  // Focus-gated mark-read. Re-runs on three triggers:
-  //   - focus enters this conversation's compose (chat.focusedConversationId)
-  //   - a new message arrives in this conversation while focused
-  //   - the conversation transitions from loading to ready while focused
-  // The store's markRead is idempotent against the read pointer it
-  // already has, so re-firing on every messages-array mutation is
-  // cheap and avoids a debounce timer.
+  /**
+   * IntersectionObserver on the latest unread message (REQ-CHAT-206).
+   * Tracks intersectionRatio so the focus rule can require both the
+   * divider and the latest unread element to be fully visible.
+   */
+  let lastUnreadEl = $derived.by(() => {
+    const id = lastUnreadId;
+    if (!id || !scrollEl) return null;
+    return scrollEl.querySelector<HTMLElement>(`#msg-${CSS.escape(id)}`);
+  });
   $effect(() => {
-    const msgs = effectiveMessages;
-    const status = effectiveStatus;
-    const focused = chat.focusedConversationId;
+    const el = lastUnreadEl;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          untrack(() => {
+            lastUnreadRatio = entry.intersectionRatio;
+          });
+        }
+      },
+      { threshold: [0, 1] },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
+
+  /**
+   * REQ-CHAT-206 — clear by focus when fully visible. When the user
+   * is present-in-chat AND the divider AND the latest unread message
+   * are both at intersectionRatio 1, advance the read pointer.
+   */
+  $effect(() => {
+    const visible = dividerVisible;
+    const dr = dividerRatio;
+    const lr = lastUnreadRatio;
+    const ps = presenceState;
+    const last = effectiveMessages[effectiveMessages.length - 1];
     untrack(() => {
-      if (status !== 'ready' || msgs.length === 0) return;
-      if (focused !== conversationId) return;
-      const last = msgs[msgs.length - 1];
+      if (!visible) return;
+      if (ps !== 'present-in-chat') return;
+      if (dr < 1 || lr < 1) return;
       if (!last) return;
       void chat.markRead(conversationId, last.id);
     });
+  });
+
+  /**
+   * REQ-CHAT-207 — clear by 3000ms of continuous divider visibility.
+   * The setTimeout is recreated whenever dividerVisibleSinceMs changes.
+   * On fire it re-checks visibility (the observer might have flipped
+   * back during the wait) and calls markRead if still visible.
+   */
+  $effect(() => {
+    const sinceMs = dividerVisibleSinceMs;
+    const visible = dividerVisible;
+    if (!visible || sinceMs === null) return;
+
+    const elapsed = Date.now() - sinceMs;
+    const remaining = Math.max(0, VISIBILITY_TIMEOUT_MS - elapsed);
+    const timer = setTimeout(() => {
+      // Re-check via $state cells (they may have flipped during wait).
+      // We re-read inside untrack so the timer fire does not register
+      // dependencies on the cells it inspects.
+      untrack(() => {
+        if (!dividerVisible) return;
+        if (dividerRatio === 0) return;
+        const last = effectiveMessages[effectiveMessages.length - 1];
+        if (!last) return;
+        void chat.markRead(conversationId, last.id);
+      });
+    }, remaining);
+    return () => clearTimeout(timer);
   });
 
   function formatTime(isoDate: string): string {
@@ -591,7 +643,7 @@
             </div>
           {/if}
         </div>
-        {#if newDividerAfterMessageId === msg.id}
+        {#if dividerVisible && dividerAnchorId === msg.id}
           <div class="new-divider" role="separator" aria-label="New messages" bind:this={dividerEl}>
             <span class="new-divider-label">New</span>
           </div>

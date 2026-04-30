@@ -1,6 +1,7 @@
 /**
  * Component test: MessageList renders text messages, system messages,
- * reactions, and the typing indicator.
+ * reactions, and the typing indicator. Also exercises divider rules
+ * REQ-CHAT-200..211.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -10,6 +11,45 @@ import type { Conversation, Membership } from './types';
 vi.mock('../auth/auth.svelte', () => ({
   auth: { principalId: 'p1' },
 }));
+
+vi.mock('./presence.svelte', () => {
+  const state = {
+    composeFocusedId: null as string | null,
+    windowFocused: true,
+    lastInputAt: Date.now(),
+    idleThresholdSeconds: 120,
+  };
+  return {
+    presence: {
+      ...state,
+      get composeFocusedId() {
+        return state.composeFocusedId;
+      },
+      set composeFocusedId(v: string | null) {
+        state.composeFocusedId = v;
+      },
+      stateFor(cid: string) {
+        if (state.windowFocused && state.composeFocusedId === cid) {
+          return 'present-in-chat';
+        }
+        const idle =
+          Date.now() - state.lastInputAt > state.idleThresholdSeconds * 1000;
+        if (state.windowFocused && !idle) return 'present-elsewhere';
+        return 'absent';
+      },
+      setComposeFocus(cid: string) {
+        state.composeFocusedId = cid;
+        state.lastInputAt = Date.now();
+      },
+      clearComposeFocus(cid: string) {
+        if (state.composeFocusedId === cid) state.composeFocusedId = null;
+      },
+      install: vi.fn(),
+      uninstall: vi.fn(),
+      _state: state,
+    },
+  };
+});
 
 vi.mock('./store.svelte', () => ({
   chat: {
@@ -204,11 +244,12 @@ describe('MessageList', () => {
   });
 
   // ------------------------------------------------------------------
-  // "New" divider (Bug C)
+  // "New" divider — REQ-CHAT-200..211
   // ------------------------------------------------------------------
 
-  it('renders a "New" divider when conversation has unread messages', () => {
-    // m1 is the last-read message; m2 is unread.
+  it('renders a "New" divider when conversation has unread messages (REQ-CHAT-202)', () => {
+    // m1 is the last-read message; m2 is unread; m2 is from p2 (non-self).
+    // unreadCount is the divider visibility gate (REQ-CHAT-202).
     const convWithUnread: Conversation = {
       ...baseConversation,
       unreadCount: 1,
@@ -217,8 +258,38 @@ describe('MessageList', () => {
         lastReadMessageId: 'm1',
       },
     };
+    const msgs = [
+      {
+        id: 'm1',
+        conversationId: 'c1',
+        senderPrincipalId: 'p2',
+        type: 'text' as const,
+        body: { html: '<p>Hi</p>', text: 'Hi' },
+        inlineImages: [],
+        reactions: {},
+        createdAt: '2024-01-01T10:00:00Z',
+        deleted: false,
+      },
+      {
+        id: 'm2',
+        conversationId: 'c1',
+        senderPrincipalId: 'p2',
+        type: 'text' as const,
+        body: { html: '<p>Unread</p>', text: 'Unread' },
+        inlineImages: [],
+        reactions: {},
+        createdAt: '2024-01-01T10:01:00Z',
+        deleted: false,
+      },
+    ];
     const { container } = render(MessageList, {
-      props: { conversationId: 'c1', conversation: convWithUnread },
+      props: {
+        conversationId: 'c1',
+        conversation: convWithUnread,
+        externalMessages: msgs,
+        externalStatus: 'ready',
+        externalHasMore: false,
+      },
     });
     const divider = container.querySelector('.new-divider');
     expect(divider).not.toBeNull();
@@ -308,24 +379,15 @@ describe('MessageList', () => {
   });
 
   // ------------------------------------------------------------------
-  // Bug A — divider does NOT appear when compose for this conversation
-  // is already focused when the component mounts.
-  // This verifies the synchronous focus-clear path: when
-  // chat.focusedConversationId === conversationId at mount time, the
-  // set-divider effect runs first but the focus-clear effect immediately
-  // nulls it out.
+  // REQ-CHAT-202 — divider hidden when user is present-in-chat.
+  //
+  // When the user has window focus AND DOM focus on this conversation's
+  // compose, presenceState resolves to 'present-in-chat' and the
+  // divider must NOT render. Server-side REQ-CHAT-210 keeps unreadCount
+  // at 0 in this state so this is a layered defense.
   // ------------------------------------------------------------------
 
-  it('shows the "New" divider even when compose is focused at mount time', async () => {
-    // Regression: the overlay window auto-focuses its compose at open,
-    // which used to fire a synchronous focus-clear of the divider AND
-    // an immediate markRead-advance that retroactively cleared the
-    // divider via the live read pointer. The combined effect was that
-    // the divider never rendered, even on a fresh open with unread
-    // content. The fix gates the markRead-advance clear on
-    // dividerHasBeenSeen (only set by the IntersectionObserver during
-    // a manual scroll-up) and drops the focus-clear entirely. So a
-    // mount-time focus must NOT tear down the divider.
+  it("does NOT render the 'New' divider when presence is 'present-in-chat' (REQ-CHAT-202)", async () => {
     const msgsUnread = [
       {
         id: 'm1',
@@ -351,8 +413,8 @@ describe('MessageList', () => {
       },
     ];
 
-    const { chat } = await import('./store.svelte');
-    (chat as { focusedConversationId: string | null }).focusedConversationId = 'c1';
+    const { presence } = await import('./presence.svelte');
+    presence.setComposeFocus('c1');
 
     const convUnread: Conversation = {
       ...baseConversation,
@@ -368,27 +430,12 @@ describe('MessageList', () => {
         externalHasMore: false,
       },
     });
-    expect(container.querySelector('.new-divider')).not.toBeNull();
+    expect(container.querySelector('.new-divider')).toBeNull();
 
-    (chat as { focusedConversationId: string | null }).focusedConversationId = null;
+    presence.clearComposeFocus('c1');
   });
 
-  // ------------------------------------------------------------------
-  // Bug A (new) — divider requires manual scroll-up AND scroll-back-to-bottom.
-  // ------------------------------------------------------------------
-
-  it('divider stays when IntersectionObserver fires while wasAtBottom is true (auto-scroll case)', async () => {
-    // wasAtBottom is true at mount (the component defaults to true).
-    // An IntersectionObserver firing at that point must NOT set dividerHasBeenSeen,
-    // so the divider must remain visible.
-    type IOCallback = (entries: IntersectionObserverEntry[]) => void;
-    let capturedCallback: IOCallback | null = null;
-    function MockIntersectionObserver(this: unknown, cb: IOCallback) {
-      capturedCallback = cb;
-      return { observe: vi.fn(), disconnect: vi.fn() };
-    }
-    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
-
+  it("renders the 'New' divider when presence is 'present-elsewhere' (REQ-CHAT-202)", async () => {
     const msgsUnread = [
       {
         id: 'm1',
@@ -414,8 +461,10 @@ describe('MessageList', () => {
       },
     ];
 
-    const { chat } = await import('./store.svelte');
-    (chat as { focusedConversationId: string | null }).focusedConversationId = null;
+    // Compose focus on a DIFFERENT conversation -> present-elsewhere
+    // for c1 (window focused, but c1's compose is not focused).
+    const { presence } = await import('./presence.svelte');
+    presence.setComposeFocus('c-other');
 
     const convUnread: Conversation = {
       ...baseConversation,
@@ -431,23 +480,42 @@ describe('MessageList', () => {
         externalHasMore: false,
       },
     });
-
-    // Divider exists at mount.
-    expect(container.querySelector('.new-divider')).not.toBeNull();
-    expect(capturedCallback).not.toBeNull();
-
-    // IO fires while wasAtBottom is still true (auto-scroll situation).
-    // The component checks wasAtBottom inside the observer; since the
-    // scroll container in happy-dom has no real layout, wasAtBottom stays
-    // at its initial value of true.  The intersection must NOT clear it.
-    capturedCallback!([{ isIntersecting: true } as IntersectionObserverEntry]);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // Divider must still be present.
     expect(container.querySelector('.new-divider')).not.toBeNull();
 
-    vi.unstubAllGlobals();
+    presence.clearComposeFocus('c-other');
+  });
+
+  it("does not render the 'New' divider when unreadCount is 0 (REQ-CHAT-202)", () => {
+    // unreadCount is the visibility gate; even with a stale anchor,
+    // a zero count must hide the divider.
+    const msgs = [
+      {
+        id: 'm1',
+        conversationId: 'c1',
+        senderPrincipalId: 'p2',
+        type: 'text' as const,
+        body: { html: '<p>Hi</p>', text: 'Hi' },
+        inlineImages: [],
+        reactions: {},
+        createdAt: '2024-01-01T10:00:00Z',
+        deleted: false,
+      },
+    ];
+    const conv: Conversation = {
+      ...baseConversation,
+      unreadCount: 0,
+      myMembership: { ...memberAlice, lastReadMessageId: 'm1' },
+    };
+    const { container } = render(MessageList, {
+      props: {
+        conversationId: 'c1',
+        conversation: conv,
+        externalMessages: msgs,
+        externalStatus: 'ready',
+        externalHasMore: false,
+      },
+    });
+    expect(container.querySelector('.new-divider')).toBeNull();
   });
 
   // ------------------------------------------------------------------

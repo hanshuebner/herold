@@ -8,6 +8,7 @@
   import { sync } from './lib/jmap/sync.svelte';
   import { chatWs } from './lib/chat/chat-ws.svelte';
   import { chat } from './lib/chat/store.svelte';
+  import { presence as chatPresence } from './lib/chat/presence.svelte';
   import { chatOverlay } from './lib/chat/overlay-store.svelte';
   import { handleOpenChatDeepLink } from './lib/chat/deep-link';
   import { Capability } from './lib/jmap/types';
@@ -67,6 +68,10 @@
         }
         if (hasCap) {
           chatWs.connect();
+          // Wire global window-focus / input listeners that drive the
+          // chat presence state machine (REQ-CHAT-180..184). Idempotent;
+          // safe to call repeatedly across re-fires of this effect.
+          chatPresence.install();
           // Load conversations so the sidebar chats section populates
           // on first boot without needing to visit /chat.
           if (chat.conversationsStatus === 'idle') {

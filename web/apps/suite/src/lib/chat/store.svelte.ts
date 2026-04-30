@@ -31,6 +31,7 @@ import { sounds } from '../notifications/sounds.svelte';
 import { shouldPlayChatCue } from '../notifications/cue-gates';
 import { chatOverlay } from './overlay-store.svelte';
 import { router } from '../router/router.svelte';
+import { presence } from './presence.svelte';
 import type {
   Conversation,
   Message,
@@ -38,6 +39,12 @@ import type {
   PresenceState,
   Principal,
 } from './types';
+
+/**
+ * Notification-sound debounce window (REQ-CHAT-221). Wall-clock; not
+ * reset by user activity. Per-tab — each tab maintains its own clock.
+ */
+const SOUND_DEBOUNCE_MS = 30_000;
 
 const CHAT_CAPABILITY = Capability.HeroldChat;
 const USING = [Capability.Core, CHAT_CAPABILITY];
@@ -85,12 +92,24 @@ class ChatStore {
 
   /**
    * The conversationId whose compose textarea currently holds keyboard
-   * focus, or null when no compose is focused. ChatCompose maintains
-   * this on focus / blur events; MessageList uses it to gate
-   * auto-mark-read so the unread badge resets only when the recipient
-   * is actually about to type a reply.
+   * focus, or null when no compose is focused. The store mirrors
+   * presence.composeFocusedId via a getter so existing readers (tests,
+   * old call sites) keep working while presence is the single source
+   * of truth (REQ-CHAT-181, REQ-CHAT-184).
+   *
+   * Writers should prefer presence.setComposeFocus() /
+   * clearComposeFocus(); writes through this setter are forwarded.
    */
-  focusedConversationId = $state<string | null>(null);
+  get focusedConversationId(): string | null {
+    return presence.composeFocusedId;
+  }
+  set focusedConversationId(value: string | null) {
+    if (value === null) {
+      presence.composeFocusedId = null;
+    } else {
+      presence.setComposeFocus(value);
+    }
+  }
 
   /**
    * Monotonic counter bumped by sendMessage after each optimistic
@@ -877,7 +896,8 @@ class ChatStore {
           if (incoming.conversationId === openId) {
             const idx = this.messages.findIndex((m) => m.id === incoming.id);
             if (idx >= 0) {
-              // Update existing (edited, reaction toggle, etc.).
+              // Update existing (edited, reaction toggle, etc.). Reactions
+              // and edits never trigger sound (REQ-CHAT-222).
               this.messages = this.messages.map((m) =>
                 m.id === incoming.id ? incoming : m,
               );
@@ -916,6 +936,23 @@ class ChatStore {
               messages: updated,
             });
             this.overlayMessages = new Map(this.overlayMessages);
+          }
+
+          // REQ-CHAT-210 — auto-mark-read while present-in-chat. When a
+          // new message arrives in the conversation the user is actively
+          // engaged with (window focus + compose focus on this conversation)
+          // advance the read pointer immediately so unreadCount stays at
+          // 0 and the divider does not appear. Bypass for own sends
+          // (their lastReadMessageId update would be wasted) and for any
+          // message that is not a fresh arrival (an edit / reaction that
+          // arrived as a Message/get update should never cause a read
+          // advance).
+          if (
+            isNewArrival &&
+            !fromMe &&
+            presence.stateFor(incoming.conversationId) === 'present-in-chat'
+          ) {
+            void this.markRead(incoming.conversationId, incoming.id);
           }
 
           // Auto-open an overlay for a new message from someone else,
@@ -1454,43 +1491,58 @@ class ChatStore {
   }
 
   /**
-   * Conditionally play the chat audio cue for an incoming message.
-   * Evaluates all gates via shouldPlayChatCue:
-   *   - not from self
-   *   - conversation not muted
-   *   - not focused: document visible AND the conversation is the
-   *     active route OR an un-minimized overlay window is open for it.
+   * Wall-clock timestamp of the last sound that was actually played
+   * (post-debounce, post-mute). The 30s debounce window in
+   * REQ-CHAT-221 tracks this; per-tab. -Infinity ensures the very
+   * first eligible message plays.
+   */
+  #lastSoundPlayedAt = -Infinity;
+
+  /**
+   * Conditionally play the chat audio cue for a freshly-arrived message.
+   *
+   * Evaluates the pure gates via shouldPlayChatCue (REQ-CHAT-220),
+   * applies the 30s wall-clock debounce (REQ-CHAT-221), and
+   * short-circuits if the user has globally muted chat sounds
+   * (REQ-CHAT-223). The user-mute path explicitly does NOT bump the
+   * debounce clock so re-enabling sound mid-session does not produce a
+   * delayed catch-up burst.
+   *
+   * Reactions, edits, and typing pulses never reach this method —
+   * they are filtered upstream in #syncMessageChanges (REQ-CHAT-222).
+   * Incoming-call ringtones use a separate audio path (REQ-CHAT-222).
    */
   #maybeChatCue(message: Message): void {
     const conv = this.conversations.get(message.conversationId);
     const conversationMuted = conv?.muted ?? false;
 
-    // Focus gate: is this conversation in the foreground?
-    const documentVisible =
-      typeof document !== 'undefined' &&
-      document.visibilityState === 'visible';
-    const routeActive =
-      router.parts[0] === 'chat' &&
-      router.parts[1] === 'conversation' &&
-      router.parts[2] === message.conversationId;
-    const overlayExpanded =
-      chatOverlay.windows.some(
-        (w) =>
-          w.conversationId === message.conversationId && !w.minimized,
-      );
-    const conversationFocused =
-      documentVisible && (routeActive || overlayExpanded);
-
     if (
-      shouldPlayChatCue({
+      !shouldPlayChatCue({
         senderId: message.senderPrincipalId,
         myPrincipalId: auth.principalId,
         conversationMuted,
-        conversationFocused,
+        presenceState: presence.stateFor(message.conversationId),
       })
     ) {
-      sounds.play('chat');
+      return;
     }
+
+    // 30s global debounce (REQ-CHAT-221). Tracks the wall-clock time
+    // of the last actually-played cue, not the arrival time, so a
+    // burst of messages within the window plays exactly one cue.
+    const now = Date.now();
+    if (now - this.#lastSoundPlayedAt < SOUND_DEBOUNCE_MS) {
+      return;
+    }
+
+    // REQ-CHAT-223 — user-mute short-circuits, but does NOT advance
+    // the debounce clock. Re-enabling sound mid-window must not
+    // produce a stale catch-up cue.
+    if (!sounds.enabled) {
+      return;
+    }
+    sounds.play('chat');
+    this.#lastSoundPlayedAt = now;
   }
 }
 

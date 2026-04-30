@@ -20,20 +20,24 @@ export interface ChatCueContext {
   /** Whether the conversation is muted. */
   conversationMuted: boolean;
   /**
-   * Whether this conversation is the one currently in focus.
-   * True when document is visible AND (the chat route shows this id
-   * OR an overlay window for this id is open and expanded).
+   * The local user's presence state for this conversation
+   * (REQ-CHAT-180..184). Sound fires only when the state is `absent`
+   * (REQ-CHAT-220).
    */
-  conversationFocused: boolean;
+  presenceState: 'present-in-chat' | 'present-elsewhere' | 'absent';
 }
 
 /**
  * Return true when an incoming chat message should trigger an audio cue.
  *
- * Gates (all must pass):
+ * Gates per REQ-CHAT-220 (all must pass):
  *   - message is not from the authenticated user (not an echo of own send)
  *   - conversation is not muted
- *   - focus gate: not (visible AND the conversation is the active one)
+ *   - presence state is `absent`
+ *
+ * The global 30s debounce (REQ-CHAT-221) and the user-mute
+ * short-circuit (REQ-CHAT-223) live in the store; they need wall-clock
+ * state and per-tab user preferences that this pure helper does not own.
  *
  * TODO: also suppress when quiet hours are active per REQ-PUSH-97 once
  * the quiet-hours store lands.
@@ -45,7 +49,7 @@ export function shouldPlayChatCue(ctx: ChatCueContext): boolean {
   if (ctx.conversationMuted) {
     return false;
   }
-  if (ctx.conversationFocused) {
+  if (ctx.presenceState !== 'absent') {
     return false;
   }
   return true;

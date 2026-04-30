@@ -2,11 +2,12 @@
  * Unit tests for shouldPlayChatCue() and shouldPlayMailCue().
  *
  * Coverage per spec:
- *   shouldPlayChatCue:
- *     - senderId == self  -> false
- *     - muted conversation -> false
- *     - visible + focused conversation -> false
- *     - backgrounded tab / un-focused conversation -> true
+ *   shouldPlayChatCue (REQ-CHAT-220):
+ *     - senderId == self                              -> false
+ *     - muted conversation                            -> false
+ *     - presenceState == 'present-in-chat'            -> false
+ *     - presenceState == 'present-elsewhere'          -> false
+ *     - presenceState == 'absent'                     -> true
  *   shouldPlayMailCue:
  *     - email not in inbox -> false
  *     - email from self -> false
@@ -25,7 +26,7 @@ function chatCtx(overrides: Partial<ChatCueContext> = {}): ChatCueContext {
     senderId: 'p-other',
     myPrincipalId: 'p-self',
     conversationMuted: false,
-    conversationFocused: false,
+    presenceState: 'absent',
     ...overrides,
   };
 }
@@ -48,14 +49,22 @@ describe('shouldPlayChatCue', () => {
     expect(shouldPlayChatCue(chatCtx({ conversationMuted: true }))).toBe(false);
   });
 
-  it('returns false when conversation is focused (visible + active)', () => {
+  it("returns false when presenceState is 'present-in-chat' (REQ-CHAT-220)", () => {
     expect(
-      shouldPlayChatCue(chatCtx({ conversationFocused: true })),
+      shouldPlayChatCue(chatCtx({ presenceState: 'present-in-chat' })),
     ).toBe(false);
   });
 
-  it('returns true for an incoming message when tab is backgrounded', () => {
-    expect(shouldPlayChatCue(chatCtx({ conversationFocused: false }))).toBe(true);
+  it("returns false when presenceState is 'present-elsewhere' (REQ-CHAT-220)", () => {
+    expect(
+      shouldPlayChatCue(chatCtx({ presenceState: 'present-elsewhere' })),
+    ).toBe(false);
+  });
+
+  it("returns true when presenceState is 'absent' and other gates pass (REQ-CHAT-220)", () => {
+    expect(
+      shouldPlayChatCue(chatCtx({ presenceState: 'absent' })),
+    ).toBe(true);
   });
 
   it('returns true for all gates passing', () => {
@@ -64,7 +73,7 @@ describe('shouldPlayChatCue', () => {
         senderId: 'p-other',
         myPrincipalId: 'p-self',
         conversationMuted: false,
-        conversationFocused: false,
+        presenceState: 'absent',
       }),
     ).toBe(true);
   });
