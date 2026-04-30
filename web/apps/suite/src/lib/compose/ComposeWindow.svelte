@@ -365,22 +365,32 @@
       return;
     }
 
-    // External file drop: inline the first image, ignore non-images.
+    // External file drop: inline every image file. Non-image files are
+    // silently ignored (a paragraph-of-images drop is the common case;
+    // mixing in a PDF is rare and dropping it on the body is ambiguous).
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
-    const file = files[0];
-    if (!file || !file.type.startsWith('image/')) return;
-    void handleInlineDrop(file);
+    const images = Array.from(files).filter((f) => f.type.startsWith('image/'));
+    if (images.length === 0) return;
+    void handleInlineDrop(images);
   }
 
-  async function handleInlineDrop(file: File): Promise<void> {
-    const result = await compose.addInlineImage(file);
-    if (!result) return;
-    // Insert <img src="<objectURL>" alt="<filename>"> at the current
-    // cursor in the ProseMirror editor. The objectURL is used for the
-    // in-composition preview; rewriteInlineImageURLs rewrites it to
-    // cid: on send/save.
-    applyImage(editorView, result.objectURL, file.name);
+  async function handleInlineDrop(files: File[]): Promise<void> {
+    // Inline each image sequentially so the editor's cursor advances
+    // between insertions and every image receives a unique cid. A
+    // parallel Promise.all would interleave the addInlineImage calls
+    // but the applyImage steps must be serial — the cursor position
+    // is mutated by each insert and ProseMirror has no ordering
+    // semantics across concurrent dispatches.
+    for (const file of files) {
+      const result = await compose.addInlineImage(file);
+      if (!result) continue;
+      // Insert <img src="<objectURL>" alt="<filename>"> at the current
+      // cursor in the ProseMirror editor. The objectURL is used for
+      // the in-composition preview; rewriteInlineImageURLs rewrites
+      // it to cid: on send/save.
+      applyImage(editorView, result.objectURL, file.name);
+    }
   }
 
   // Attachment zone handlers.

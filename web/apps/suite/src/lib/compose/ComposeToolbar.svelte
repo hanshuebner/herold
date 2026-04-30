@@ -50,29 +50,37 @@
 
   async function onImagePicked(e: Event): Promise<void> {
     const input = e.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
+    const files = Array.from(input.files ?? []);
     input.value = '';
-    if (!file || !view) return;
-    if (!file.type.startsWith('image/')) {
+    if (files.length === 0 || !view) return;
+    const images = files.filter((f) => f.type.startsWith('image/'));
+    if (images.length === 0) {
       toast.show({
-        message: 'Pick an image file (PNG, JPEG, GIF, WebP).',
+        message: 'Pick image files (PNG, JPEG, GIF, WebP).',
         kind: 'error',
         timeoutMs: 4000,
       });
       return;
     }
-    const result = await compose.addInlineImage(file);
-    if (!result) {
-      toast.show({
-        message: 'Image upload failed.',
-        kind: 'error',
-        timeoutMs: 4000,
-      });
-      return;
+    // Insert each picked image sequentially so the editor's cursor
+    // advances between insertions and every image receives its own
+    // <img> node + unique cid. A Promise.all would interleave
+    // addInlineImage calls and applyImage dispatches in unpredictable
+    // order.
+    for (const file of images) {
+      const result = await compose.addInlineImage(file);
+      if (!result) {
+        toast.show({
+          message: `Image upload failed: ${file.name}`,
+          kind: 'error',
+          timeoutMs: 4000,
+        });
+        continue;
+      }
+      // Use the blob: URL for in-editor preview; persistDraft and
+      // send() rewrite it to cid:<cid> before the message goes to JMAP.
+      applyImage(view, result.objectURL, file.name);
     }
-    // Use the blob: URL for in-editor preview; persistDraft and
-    // send() rewrite it to cid:<cid> before the message goes to JMAP.
-    applyImage(view, result.objectURL, file.name);
   }
 </script>
 
@@ -174,6 +182,7 @@
     bind:this={imageInput}
     type="file"
     accept="image/*"
+    multiple
     hidden
     onchange={onImagePicked}
   />
