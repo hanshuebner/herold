@@ -2135,17 +2135,42 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
 	}
-	rows, err := m.s.db.QueryContext(ctx, `
-		SELECT m.id, m.principal_id, m.blob_hash, m.blob_size, m.internal_date_us,
-		       m.received_at_us, m.size, m.thread_id,
-		       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
-		       m.env_message_id, m.env_in_reply_to, m.env_date_us,
-		       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
-		  FROM messages m
-		  JOIN message_mailboxes mm ON mm.message_id = m.id
-		 WHERE mm.mailbox_id = ? AND mm.uid > ?
-		 ORDER BY mm.uid ASC LIMIT ?`,
-		int64(mailboxID), int64(filter.AfterUID), limit)
+	// ReceivedBefore adds an optional time-range predicate. The column
+	// internal_date_us is used (matches InternalDate on the Message type)
+	// because it is always set and indexed alongside the mailbox_id foreign
+	// key. 0 means "no constraint" — callers that do not set ReceivedBefore
+	// get the previous behaviour.
+	var receivedBeforeUs int64
+	if filter.ReceivedBefore != nil {
+		receivedBeforeUs = usMicros(*filter.ReceivedBefore)
+	}
+	var rows *sql.Rows
+	var err error
+	if receivedBeforeUs > 0 {
+		rows, err = m.s.db.QueryContext(ctx, `
+			SELECT m.id, m.principal_id, m.blob_hash, m.blob_size, m.internal_date_us,
+			       m.received_at_us, m.size, m.thread_id,
+			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
+			       m.env_message_id, m.env_in_reply_to, m.env_date_us,
+			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
+			  FROM messages m
+			  JOIN message_mailboxes mm ON mm.message_id = m.id
+			 WHERE mm.mailbox_id = ? AND mm.uid > ? AND m.internal_date_us < ?
+			 ORDER BY mm.uid ASC LIMIT ?`,
+			int64(mailboxID), int64(filter.AfterUID), receivedBeforeUs, limit)
+	} else {
+		rows, err = m.s.db.QueryContext(ctx, `
+			SELECT m.id, m.principal_id, m.blob_hash, m.blob_size, m.internal_date_us,
+			       m.received_at_us, m.size, m.thread_id,
+			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
+			       m.env_message_id, m.env_in_reply_to, m.env_date_us,
+			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
+			  FROM messages m
+			  JOIN message_mailboxes mm ON mm.message_id = m.id
+			 WHERE mm.mailbox_id = ? AND mm.uid > ?
+			 ORDER BY mm.uid ASC LIMIT ?`,
+			int64(mailboxID), int64(filter.AfterUID), limit)
+	}
 	if err != nil {
 		return nil, mapErr(err)
 	}

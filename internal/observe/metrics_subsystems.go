@@ -792,6 +792,40 @@ func RegisterChatretentionMetrics() {
 	})
 }
 
+// trashretention metrics. Same shape as chatretention.
+var (
+	trashretentionMetricsOnce sync.Once
+
+	TrashretentionSweepsTotal          prometheus.Counter
+	TrashretentionMessagesDeletedTotal prometheus.Counter
+	TrashretentionSweepDurationSeconds prometheus.Histogram
+)
+
+// RegisterTrashretentionMetrics registers the trashretention collector
+// set; idempotent.
+func RegisterTrashretentionMetrics() {
+	trashretentionMetricsOnce.Do(func() {
+		TrashretentionSweepsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_trashretention_sweeps_total",
+			Help: "Total trash retention worker sweep ticks executed.",
+		})
+		TrashretentionMessagesDeletedTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_trashretention_messages_deleted_total",
+			Help: "Total email messages hard-deleted by the trash retention worker.",
+		})
+		TrashretentionSweepDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "herold_trashretention_sweep_duration_seconds",
+			Help:    "Trash retention worker sweep duration.",
+			Buckets: prometheus.DefBuckets,
+		})
+		MustRegister(
+			TrashretentionSweepsTotal,
+			TrashretentionMessagesDeletedTotal,
+			TrashretentionSweepDurationSeconds,
+		)
+	})
+}
+
 // protojmap chat / calendars / contacts metrics. Label vocabulary is
 // closed by the registered method set in each datatype's Register*
 // constructor; methods not registered cannot be invoked, so cardinality

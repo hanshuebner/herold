@@ -381,6 +381,11 @@ type MessageFilter struct {
 	// always populate the envelope; the flag is a permission to skip,
 	// not a requirement.
 	WithEnvelope bool
+	// ReceivedBefore, when non-nil, restricts results to messages whose
+	// InternalDate is strictly before this instant. Used by the trash
+	// retention sweeper (REQ-STORE-90) to page through aged-out messages
+	// without loading the full mailbox.
+	ReceivedBefore *time.Time
 }
 
 // BlobRef names a content-addressed blob in the blob store. A blob's

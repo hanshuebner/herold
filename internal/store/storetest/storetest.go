@@ -59,6 +59,7 @@ func Run(t *testing.T, f Factory) {
 		{"PrincipalFlagTOTPEnabled", testPrincipalFlagTOTPEnabled},
 		{"GetMailboxByName", testGetMailboxByName},
 		{"ListMessagesPagination", testListMessagesPagination},
+		{"ListMessages_ReceivedBefore", testListMessagesReceivedBefore},
 		{"SetMailboxSubscribed", testSetMailboxSubscribed},
 		{"RenameMailbox", testRenameMailbox},
 		{"SieveScript_EmptyReturnsEmpty", testSieveScriptEmpty},
@@ -1430,6 +1431,63 @@ func testListMessagesPagination(t *testing.T, s store.Store) {
 	}
 	if len(capped) != 2 {
 		t.Fatalf("limited page len = %d, want 2", len(capped))
+	}
+}
+
+// testListMessagesReceivedBefore exercises the ReceivedBefore filter added
+// for the trash retention sweeper (REQ-STORE-90). Two messages are inserted
+// with explicitly controlled InternalDate values — one 31 days old, one 1 day
+// old — and the test asserts that only the aged-out row appears when the
+// filter cutoff is set to 30 days ago.
+func testListMessagesReceivedBefore(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "trash-filter@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "Trash")
+	now := time.Now().UTC()
+	old := now.Add(-31 * 24 * time.Hour)
+	recent := now.Add(-1 * 24 * time.Hour)
+	// Insert the old message.
+	oldBlob := putBlob(t, s, "old-trash-message")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		Blob:         oldBlob,
+		Size:         oldBlob.Size,
+		InternalDate: old,
+		ReceivedAt:   old,
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage old: %v", err)
+	}
+	// Insert the recent message.
+	recentBlob := putBlob(t, s, "recent-trash-message")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		Blob:         recentBlob,
+		Size:         recentBlob.Size,
+		InternalDate: recent,
+		ReceivedAt:   recent,
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage recent: %v", err)
+	}
+	// No filter: both messages are visible.
+	all, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{})
+	if err != nil {
+		t.Fatalf("ListMessages (no filter): %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("no-filter len = %d, want 2", len(all))
+	}
+	// ReceivedBefore = 30 days ago: only the 31-day-old message is returned.
+	cutoff := now.Add(-30 * 24 * time.Hour)
+	aged, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{ReceivedBefore: &cutoff})
+	if err != nil {
+		t.Fatalf("ListMessages (ReceivedBefore): %v", err)
+	}
+	if len(aged) != 1 {
+		t.Fatalf("ReceivedBefore len = %d, want 1 (only the 31-day-old message)", len(aged))
+	}
+	if !aged[0].InternalDate.Before(cutoff) {
+		t.Fatalf("returned message InternalDate %v is not before cutoff %v",
+			aged[0].InternalDate, cutoff)
 	}
 }
 

@@ -36,6 +36,7 @@ func TestRegisterSubsystemMetrics_Idempotent(t *testing.T) {
 		RegisterCategoriseMetrics()
 		RegisterSnoozeMetrics()
 		RegisterChatretentionMetrics()
+		RegisterTrashretentionMetrics()
 		RegisterProtojmapChatMetrics()
 		RegisterProtojmapCalendarsMetrics()
 		RegisterProtojmapContactsMetrics()
@@ -63,6 +64,7 @@ func TestMetricsHandler_ExposesSubsystemMetrics(t *testing.T) {
 	RegisterCategoriseMetrics()
 	RegisterSnoozeMetrics()
 	RegisterChatretentionMetrics()
+	RegisterTrashretentionMetrics()
 	RegisterProtojmapChatMetrics()
 	RegisterProtojmapCalendarsMetrics()
 	RegisterProtojmapContactsMetrics()
@@ -87,6 +89,7 @@ func TestMetricsHandler_ExposesSubsystemMetrics(t *testing.T) {
 	CategoriseCallsTotal.WithLabelValues("categorised").Inc()
 	SnoozeSweepsTotal.Inc()
 	ChatretentionSweepsTotal.Inc()
+	TrashretentionSweepsTotal.Inc()
 	ProtojmapChatMethodsTotal.WithLabelValues("Conversation/get").Inc()
 	ProtojmapCalendarsMethodsTotal.WithLabelValues("Calendar/get").Inc()
 	ProtojmapContactsMethodsTotal.WithLabelValues("Contact/get").Inc()
@@ -117,6 +120,7 @@ func TestMetricsHandler_ExposesSubsystemMetrics(t *testing.T) {
 		"herold_categorise_calls_total",
 		"herold_snooze_sweeps_total",
 		"herold_chatretention_sweeps_total",
+		"herold_trashretention_sweeps_total",
 		"herold_protojmap_chat_methods_total",
 		"herold_protojmap_calendars_methods_total",
 		"herold_protojmap_contacts_methods_total",

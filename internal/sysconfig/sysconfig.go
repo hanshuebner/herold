@@ -156,6 +156,10 @@ type ServerConfig struct {
 	Secrets               SecretsConfig               `toml:"secrets,omitempty"`
 	ExternalSubmission    ExternalSubmissionConfig    `toml:"external_submission,omitempty"`
 	DirectoryAutocomplete DirectoryAutocompleteConfig `toml:"directory_autocomplete,omitempty"`
+	// TrashRetention configures the email trash retention sweeper
+	// (REQ-STORE-90). Defaults match the trashretention package
+	// constants: 30 days, 1-hour sweep interval.
+	TrashRetention TrashRetentionConfig `toml:"trash_retention,omitempty"`
 	// OAuthProviders maps provider name to per-provider OAuth 2.0 client
 	// configuration for server-mediated OAuth flows (REQ-AUTH-EXT-SUBMIT-03).
 	// Provider names are normalised to lowercase at parse time. The reserved
@@ -585,6 +589,21 @@ type ChatRetentionConfig struct {
 	// 1000. Validate rejects values below 1 or above 10000 so a
 	// typo cannot deadlock the writer or starve other workers.
 	BatchSize int `toml:"batch_size,omitempty"`
+}
+
+// TrashRetentionConfig tunes the email trash retention sweeper
+// (REQ-STORE-90): how long messages sit in Trash before permanent deletion,
+// and how often the sweeper scans. The defaults applied at applyDefaults
+// match the package constants in internal/trashretention.
+type TrashRetentionConfig struct {
+	// RetentionDays is the number of days after which messages in the
+	// Trash mailbox are permanently deleted. Default 30. Validate rejects
+	// values below 1 (cannot be zero) or above 3650 (10 years is a typo).
+	RetentionDays int `toml:"retention_days,omitempty"`
+	// SweepIntervalSeconds is the cadence at which the sweeper scans
+	// Trash mailboxes. Default 3600 (1 hour). Validate rejects values
+	// below 60 to avoid unnecessary load and above 86400 (1 day).
+	SweepIntervalSeconds int `toml:"sweep_interval_seconds,omitempty"`
 }
 
 // ImageProxyConfig configures the inbound HTML image proxy
@@ -1224,6 +1243,15 @@ func applyDefaults(c *Config) {
 	if c.Server.DirectoryAutocomplete.Mode == "" {
 		c.Server.DirectoryAutocomplete.Mode = DirectoryAutocompleteModeDomain
 	}
+	// Trash retention sweeper (REQ-STORE-90). Defaults mirror the
+	// trashretention package constants so a missing block and an empty
+	// block behave the same: 30-day retention, 1-hour sweep interval.
+	if c.Server.TrashRetention.RetentionDays == 0 {
+		c.Server.TrashRetention.RetentionDays = 30
+	}
+	if c.Server.TrashRetention.SweepIntervalSeconds == 0 {
+		c.Server.TrashRetention.SweepIntervalSeconds = 3600
+	}
 }
 
 // applySmartHostDefaults populates the smart-host knobs that have a
@@ -1450,6 +1478,25 @@ func Validate(c *Config) error {
 	}
 	if cr.BatchSize > 10000 {
 		return fmt.Errorf("sysconfig: [server.chat.retention] batch_size %d exceeds 10000 ceiling", cr.BatchSize)
+	}
+	// Trash retention sweeper (REQ-STORE-90). retention_days must be in
+	// [1, 3650]; sweep_interval_seconds in [60, 86400].
+	tr := c.Server.TrashRetention
+	if tr.RetentionDays < 1 {
+		return fmt.Errorf("sysconfig: [server.trash_retention] retention_days %d must be >= 1",
+			tr.RetentionDays)
+	}
+	if tr.RetentionDays > 3650 {
+		return fmt.Errorf("sysconfig: [server.trash_retention] retention_days %d exceeds 3650 (10-year) ceiling",
+			tr.RetentionDays)
+	}
+	if tr.SweepIntervalSeconds < 60 {
+		return fmt.Errorf("sysconfig: [server.trash_retention] sweep_interval_seconds %d below 60s floor",
+			tr.SweepIntervalSeconds)
+	}
+	if tr.SweepIntervalSeconds > 86400 {
+		return fmt.Errorf("sysconfig: [server.trash_retention] sweep_interval_seconds %d exceeds 1d ceiling",
+			tr.SweepIntervalSeconds)
 	}
 	// Video calls (REQ-CALL-*). When the operator supplies TURN URIs
 	// they MUST also point us at the shared secret via env / file

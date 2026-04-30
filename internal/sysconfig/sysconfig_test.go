@@ -2464,3 +2464,96 @@ func TestDirectoryAutocomplete_InvalidMode(t *testing.T) {
 		})
 	}
 }
+
+func TestParse_TrashRetentionDefaults(t *testing.T) {
+	const bare = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	cfg, err := Parse([]byte(bare))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.TrashRetention.RetentionDays != 30 {
+		t.Errorf("default trash retention_days: got %d, want 30",
+			cfg.Server.TrashRetention.RetentionDays)
+	}
+	if cfg.Server.TrashRetention.SweepIntervalSeconds != 3600 {
+		t.Errorf("default trash sweep_interval_seconds: got %d, want 3600",
+			cfg.Server.TrashRetention.SweepIntervalSeconds)
+	}
+}
+
+func TestValidate_TrashRetentionRejectsNegativeRetentionDays(t *testing.T) {
+	// retention_days = 0 is treated as "use default" by applyDefaults
+	// (zero-value convention); retention_days = -1 is an explicit negative
+	// that applyDefaults leaves alone and Validate must reject.
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[server.trash_retention]
+retention_days = -1
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected retention_days floor error")
+	}
+	if !strings.Contains(err.Error(), "retention_days") {
+		t.Errorf("error should name retention_days, got: %v", err)
+	}
+}
+
+func TestValidate_TrashRetentionRejectsLowSweepInterval(t *testing.T) {
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[server.trash_retention]
+retention_days = 30
+sweep_interval_seconds = 5
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected sweep_interval_seconds floor error")
+	}
+	if !strings.Contains(err.Error(), "sweep_interval_seconds") {
+		t.Errorf("error should name sweep_interval_seconds, got: %v", err)
+	}
+}

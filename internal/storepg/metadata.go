@@ -1951,17 +1951,38 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
 	}
-	rows, err := m.s.pool.Query(ctx, `
-		SELECT m.id, m.principal_id, m.internal_date_us, m.received_at_us,
-		       m.size, m.blob_hash, m.blob_size, m.thread_id,
-		       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
-		       m.env_message_id, m.env_in_reply_to, m.env_date_us,
-		       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
-		  FROM messages m
-		  JOIN message_mailboxes mm ON mm.message_id = m.id AND mm.mailbox_id = $1
-		 WHERE mm.uid > $2
-		 ORDER BY mm.uid ASC LIMIT $3`,
-		int64(mailboxID), int64(filter.AfterUID), limit)
+	// ReceivedBefore adds an optional time-range predicate. The column
+	// internal_date_us is used because it is always set. When nil no
+	// constraint is applied — callers that do not set ReceivedBefore
+	// get the previous behaviour.
+	var rows pgx.Rows
+	var err error
+	if filter.ReceivedBefore != nil {
+		receivedBeforeUs := usMicros(*filter.ReceivedBefore)
+		rows, err = m.s.pool.Query(ctx, `
+			SELECT m.id, m.principal_id, m.internal_date_us, m.received_at_us,
+			       m.size, m.blob_hash, m.blob_size, m.thread_id,
+			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
+			       m.env_message_id, m.env_in_reply_to, m.env_date_us,
+			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
+			  FROM messages m
+			  JOIN message_mailboxes mm ON mm.message_id = m.id AND mm.mailbox_id = $1
+			 WHERE mm.uid > $2 AND m.internal_date_us < $4
+			 ORDER BY mm.uid ASC LIMIT $3`,
+			int64(mailboxID), int64(filter.AfterUID), limit, receivedBeforeUs)
+	} else {
+		rows, err = m.s.pool.Query(ctx, `
+			SELECT m.id, m.principal_id, m.internal_date_us, m.received_at_us,
+			       m.size, m.blob_hash, m.blob_size, m.thread_id,
+			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
+			       m.env_message_id, m.env_in_reply_to, m.env_date_us,
+			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
+			  FROM messages m
+			  JOIN message_mailboxes mm ON mm.message_id = m.id AND mm.mailbox_id = $1
+			 WHERE mm.uid > $2
+			 ORDER BY mm.uid ASC LIMIT $3`,
+			int64(mailboxID), int64(filter.AfterUID), limit)
+	}
 	if err != nil {
 		return nil, mapErr(err)
 	}

@@ -1808,6 +1808,10 @@ func (m *metaFace) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 		if uid <= filter.AfterUID {
 			continue
 		}
+		// ReceivedBefore: filter on InternalDate (strictly before).
+		if filter.ReceivedBefore != nil && !msg.InternalDate.Before(*filter.ReceivedBefore) {
+			continue
+		}
 		// For M:N paths, set the per-mailbox convenience fields (UID,
 		// ModSeq, Flags, Keywords) from the join row. SnoozedUntil is
 		// kept from the message row (authoritative in the fakestore since

@@ -73,6 +73,7 @@ import (
 	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
+	"github.com/hanshuebner/herold/internal/trashretention"
 	"github.com/hanshuebner/herold/internal/vapid"
 	"github.com/hanshuebner/herold/internal/webpush"
 	"github.com/hanshuebner/herold/internal/webspa"
@@ -849,6 +850,25 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	g.Go(func() error {
 		if err := chatRetentionWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.LogAttrs(context.Background(), slog.LevelWarn, "chatretention worker exited", slog.String("err", err.Error()))
+			return err
+		}
+		return nil
+	})
+
+	// Trash retention sweeper — REQ-STORE-90. Hard-deletes email messages
+	// in each principal's Trash mailbox whose InternalDate is older than
+	// the configured retention window. Bounded by the lifecycle errgroup
+	// so shutdown drains it.
+	trashRetentionWorker := trashretention.NewWorker(trashretention.Options{
+		Store:         st,
+		Logger:        logger.With("subsystem", "trashretention"),
+		Clock:         clk,
+		RetentionDays: cfg.Server.TrashRetention.RetentionDays,
+		SweepInterval: time.Duration(cfg.Server.TrashRetention.SweepIntervalSeconds) * time.Second,
+	})
+	g.Go(func() error {
+		if err := trashRetentionWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.LogAttrs(context.Background(), slog.LevelWarn, "trashretention worker exited", slog.String("err", err.Error()))
 			return err
 		}
 		return nil
