@@ -485,7 +485,7 @@
 
   .bubble-row {
     display: flex;
-    align-items: flex-end;
+    align-items: flex-start;
     gap: var(--spacing-02);
     margin-bottom: var(--spacing-02);
   }

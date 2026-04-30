@@ -54,6 +54,7 @@
 
   function handleBackdropKeydown(ev: KeyboardEvent): void {
     if (ev.key === 'Escape') {
+      ev.stopPropagation();
       onClose();
     }
   }
