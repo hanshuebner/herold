@@ -19,6 +19,8 @@ const {
   htmlToPlainText,
   escapeHtml,
   computeReplyAllCc,
+  isOwnMessage,
+  computeOwnMessageReplyAllCc,
   formatBytes,
   appendSignature,
   bodyTextWithoutSignature,
@@ -523,5 +525,219 @@ describe('buildAttachmentParts', () => {
     expect((parts[1] as { disposition: string }).disposition).toBe(
       'attachment',
     );
+  });
+});
+
+// ── isOwnMessage ──────────────────────────────────────────────────────
+
+describe('isOwnMessage', () => {
+  function emailFrom(fromEmail: string | null): Email {
+    return {
+      id: 'x',
+      threadId: 't',
+      mailboxIds: {},
+      keywords: {},
+      from: fromEmail ? [{ name: null, email: fromEmail }] : null,
+      to: null,
+      subject: null,
+      preview: '',
+      receivedAt: '2026-04-28T00:00:00Z',
+      hasAttachment: false,
+    } as unknown as Email;
+  }
+
+  const self = new Set(['me@example.test', 'alias@example.test']);
+
+  it('returns true when from matches a self identity (exact case)', () => {
+    expect(isOwnMessage(emailFrom('me@example.test'), self)).toBe(true);
+  });
+
+  it('returns true when from matches a self identity (uppercase from)', () => {
+    expect(isOwnMessage(emailFrom('ME@EXAMPLE.TEST'), self)).toBe(true);
+  });
+
+  it('returns false when from is a different address', () => {
+    expect(isOwnMessage(emailFrom('other@example.test'), self)).toBe(false);
+  });
+
+  it('returns false when from is null', () => {
+    expect(isOwnMessage(emailFrom(null), self)).toBe(false);
+  });
+
+  it('returns false when selfEmails is empty', () => {
+    expect(isOwnMessage(emailFrom('me@example.test'), new Set())).toBe(false);
+  });
+});
+
+// ── computeOwnMessageReplyAllCc ───────────────────────────────────────
+
+describe('computeOwnMessageReplyAllCc', () => {
+  function emailWith(args: {
+    to?: string[];
+    cc?: string[];
+  }): Email {
+    return {
+      id: 'x',
+      threadId: 't',
+      mailboxIds: {},
+      keywords: {},
+      from: [{ name: null, email: 'me@example.test' }],
+      to: args.to?.map((email) => ({ name: null, email })) ?? null,
+      cc: args.cc?.map((email) => ({ name: null, email })) ?? null,
+      subject: null,
+      preview: '',
+      receivedAt: '2026-04-28T00:00:00Z',
+      hasAttachment: false,
+    } as unknown as Email;
+  }
+
+  const self = new Set(['me@example.test']);
+
+  it('returns the original Cc list when there are no self addresses', () => {
+    const parent = emailWith({
+      to: ['bob@y.test'],
+      cc: ['carol@z.test', 'dave@w.test'],
+    });
+    const result = computeOwnMessageReplyAllCc(parent, self);
+    expect(result.map((a) => a.email)).toEqual(['carol@z.test', 'dave@w.test']);
+  });
+
+  it('excludes own-identity addresses from Cc', () => {
+    const parent = emailWith({
+      to: ['bob@y.test'],
+      cc: ['me@example.test', 'carol@z.test'],
+    });
+    const result = computeOwnMessageReplyAllCc(parent, self);
+    expect(result.map((a) => a.email)).toEqual(['carol@z.test']);
+  });
+
+  it('does not include To addresses in the Cc result', () => {
+    const parent = emailWith({
+      to: ['bob@y.test'],
+      cc: ['bob@y.test', 'carol@z.test'],
+    });
+    const result = computeOwnMessageReplyAllCc(parent, self);
+    // bob is already in To, so he must not appear in Cc.
+    expect(result.map((a) => a.email)).toEqual(['carol@z.test']);
+  });
+
+  it('returns empty when Cc is null', () => {
+    const parent = emailWith({ to: ['bob@y.test'] });
+    expect(computeOwnMessageReplyAllCc(parent, self)).toEqual([]);
+  });
+
+  it('returns empty when Cc is empty', () => {
+    const parent = emailWith({ to: ['bob@y.test'], cc: [] });
+    expect(computeOwnMessageReplyAllCc(parent, self)).toEqual([]);
+  });
+
+  it('drops duplicates in Cc on lowercase', () => {
+    const parent = emailWith({
+      to: [],
+      cc: ['Carol@Z.Test', 'carol@z.test'],
+    });
+    const result = computeOwnMessageReplyAllCc(parent, self);
+    expect(result).toHaveLength(1);
+  });
+});
+
+// ── reply-to-own-message integration (REQ-MAIL-30 / REQ-MAIL-31) ─────
+
+describe('reply recipient derivation for own sent messages', () => {
+  // Build a minimal Email that looks like an outbound sent message.
+  function sentEmail(args: {
+    from: string;
+    to: string[];
+    cc?: string[];
+  }): Email {
+    return {
+      id: 'sent-1',
+      threadId: 't1',
+      mailboxIds: {},
+      keywords: { $seen: true },
+      from: [{ name: null, email: args.from }],
+      to: args.to.map((email) => ({ name: null, email })),
+      cc: args.cc?.map((email) => ({ name: null, email })) ?? null,
+      subject: 'Hello world',
+      preview: 'preview',
+      receivedAt: '2026-04-28T00:00:00Z',
+      sentAt: '2026-04-28T10:00:00Z',
+      hasAttachment: false,
+      messageId: ['<sent-1@example.test>'],
+      references: null,
+    } as unknown as Email;
+  }
+
+  // Build a received message (from someone else).
+  function receivedEmail(args: {
+    from: string;
+    to: string[];
+    cc?: string[];
+  }): Email {
+    return {
+      id: 'recv-1',
+      threadId: 't2',
+      mailboxIds: {},
+      keywords: { $seen: true },
+      from: [{ name: null, email: args.from }],
+      to: args.to.map((email) => ({ name: null, email })),
+      cc: args.cc?.map((email) => ({ name: null, email })) ?? null,
+      subject: 'Hello world',
+      preview: 'preview',
+      receivedAt: '2026-04-28T00:00:00Z',
+      sentAt: '2026-04-28T09:00:00Z',
+      hasAttachment: false,
+      messageId: ['<recv-1@example.test>'],
+      references: null,
+    } as unknown as Email;
+  }
+
+  const self = new Set(['me@example.test']);
+
+  it('reply on own sent message: To = original recipients, not self', () => {
+    const parent = sentEmail({
+      from: 'me@example.test',
+      to: ['alice@a.test', 'bob@b.test'],
+    });
+    // isOwnMessage must be true.
+    expect(isOwnMessage(parent, self)).toBe(true);
+    // The To field should be the original recipients.
+    const ownMessage = isOwnMessage(parent, self);
+    const toAddrs = ownMessage
+      ? (parent.to ?? [])
+      : parent.from ?? [];
+    expect(toAddrs.map((a) => a.email)).toEqual(['alice@a.test', 'bob@b.test']);
+  });
+
+  it('reply on received message: To = the sender (legacy behaviour)', () => {
+    const parent = receivedEmail({
+      from: 'alice@a.test',
+      to: ['me@example.test'],
+    });
+    expect(isOwnMessage(parent, self)).toBe(false);
+    // Original behaviour: reply goes to the From address.
+    expect(parent.from?.[0]?.email).toBe('alice@a.test');
+  });
+
+  it('reply-all on own sent message: Cc = original Cc minus self', () => {
+    const parent = sentEmail({
+      from: 'me@example.test',
+      to: ['alice@a.test'],
+      cc: ['me@example.test', 'bob@b.test'],
+    });
+    const cc = computeOwnMessageReplyAllCc(parent, self);
+    // Own address must be stripped; alice is in To so not in Cc either.
+    expect(cc.map((a) => a.email)).toEqual(['bob@b.test']);
+  });
+
+  it('reply-all on received message: Cc = To + Cc minus self and From', () => {
+    const parent = receivedEmail({
+      from: 'alice@a.test',
+      to: ['me@example.test', 'carol@c.test'],
+      cc: ['dave@d.test'],
+    });
+    const cc = computeReplyAllCc(parent, self);
+    // me@example.test stripped (self); alice stripped (From = primary).
+    expect(cc.map((a) => a.email)).toEqual(['carol@c.test', 'dave@d.test']);
   });
 });

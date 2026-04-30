@@ -248,8 +248,19 @@ class ComposeStore {
 
   /** Open compose as a reply to the given email. */
   openReply(parent: Email): void {
+    const selfEmails = new Set<string>();
+    for (const id of mail.identities.values()) {
+      selfEmails.add(id.email.toLowerCase());
+    }
+    // When replying to a message the user themselves sent, the logical
+    // recipient is the people who received that message (parent.to),
+    // not the user's own From address (REQ-MAIL-30).
+    const ownMessage = isOwnMessage(parent, selfEmails);
+    const to = ownMessage
+      ? (parent.to ?? []).map(addressToString).join(', ')
+      : addressToString(parent.from?.[0]);
     this.openWith({
-      to: addressToString(parent.from?.[0]),
+      to,
       subject: replySubject(parent.subject),
       body: formatReplyQuote(parent),
       replyContext: {
@@ -266,15 +277,31 @@ class ComposeStore {
    * parent.cc) minus every Identity.email this user owns minus the
    * primary recipient. Falls back to a regular reply when no Cc would
    * survive the self-filter.
+   *
+   * When the parent message was sent by the user (ownMessage), To =
+   * the original To list and Cc = the original Cc list minus self
+   * addresses (REQ-MAIL-31).
    */
   openReplyAll(parent: Email): void {
     const selfEmails = new Set<string>();
     for (const id of mail.identities.values()) {
       selfEmails.add(id.email.toLowerCase());
     }
-    const cc = computeReplyAllCc(parent, selfEmails);
+    const ownMessage = isOwnMessage(parent, selfEmails);
+    let to: string;
+    let cc: Address[];
+    if (ownMessage) {
+      // Reply-all on own sent message: preserve the original recipients.
+      // To = original To (the people who received the message).
+      // Cc = original Cc minus own identity addresses.
+      to = (parent.to ?? []).map(addressToString).join(', ');
+      cc = computeOwnMessageReplyAllCc(parent, selfEmails);
+    } else {
+      to = addressToString(parent.from?.[0]);
+      cc = computeReplyAllCc(parent, selfEmails);
+    }
     this.openWith({
-      to: addressToString(parent.from?.[0]),
+      to,
       cc: cc.map(addressToString).join(', '),
       subject: replySubject(parent.subject),
       body: formatReplyQuote(parent),
@@ -1125,6 +1152,46 @@ function computeReplyAllCc(parent: Email, selfEmails: Set<string>): Address[] {
   return out;
 }
 
+/**
+ * True when the message was authored by the user: the first From
+ * address matches one of the user's Identity emails (case-insensitive).
+ * Used to detect outbound/sent messages so Reply / Reply-all addresses
+ * the original recipients rather than the user themselves.
+ */
+function isOwnMessage(parent: Email, selfEmails: Set<string>): boolean {
+  const fromEmail = parent.from?.[0]?.email?.toLowerCase() ?? '';
+  return fromEmail !== '' && selfEmails.has(fromEmail);
+}
+
+/**
+ * Compute the Cc address list for reply-all on a message the user sent.
+ * In this case the original Cc is preserved as-is, minus own-identity
+ * addresses. The To list is NOT included in Cc (it becomes the To field
+ * of the new message). Duplicates are dropped on the lowercase form.
+ */
+function computeOwnMessageReplyAllCc(
+  parent: Email,
+  selfEmails: Set<string>,
+): Address[] {
+  const out: Address[] = [];
+  const seen = new Set<string>();
+  // Seed seen with all To addresses so they do not bleed into Cc.
+  for (const addr of parent.to ?? []) {
+    const lc = (addr.email ?? '').toLowerCase();
+    if (lc) seen.add(lc);
+  }
+  if (!parent.cc) return out;
+  for (const addr of parent.cc) {
+    const lc = (addr.email ?? '').toLowerCase();
+    if (!lc) continue;
+    if (selfEmails.has(lc)) continue;
+    if (seen.has(lc)) continue;
+    seen.add(lc);
+    out.push(addr);
+  }
+  return out;
+}
+
 function mergeReferences(parent: Email): string[] {
   const refs: string[] = [];
   if (parent.references) refs.push(...parent.references);
@@ -1495,6 +1562,8 @@ export const _internals_forTest = {
   escapeHtml,
   plainTextToHtml,
   computeReplyAllCc,
+  isOwnMessage,
+  computeOwnMessageReplyAllCc,
   formatBytes,
   appendSignature,
   bodyTextWithoutSignature,
