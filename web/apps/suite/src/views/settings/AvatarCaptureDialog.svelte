@@ -167,21 +167,43 @@
   }
 
   async function loadSourceFromBlob(blob: Blob): Promise<void> {
+    // Unconditional entry log so we can confirm the function ran and see
+    // what the blob actually looks like even if no error fires.
+    console.log('[AvatarCapture] loadSourceFromBlob', {
+      size: blob.size,
+      type: blob.type,
+    });
     revokeSourceUrl();
+    if (blob.size === 0) {
+      console.error('[AvatarCapture] empty blob', { type: blob.type });
+      cameraError = 'Could not decode image: the file is empty';
+      phase = 'choose';
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
     try {
-      // Two-stage validation: createImageBitmap rejects on undecodable
-      // bytes with a useful exception, which we log to the console (the
-      // bare `<img>.onerror` event used to fire silently with no clue
-      // about the underlying cause).
-      const bitmap = await createImageBitmap(blob);
-      const url = URL.createObjectURL(blob);
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = (event) => {
+          // <img>.onerror gives us no useful detail, so synthesise an
+          // error with the blob shape attached.
+          reject(
+            new Error(
+              `<img> failed to load blob (size=${blob.size}, type=${blob.type || '?'}): ${
+                typeof event === 'string' ? event : 'load error'
+              }`,
+            ),
+          );
+        };
+        img.src = url;
+      });
+      if (img.naturalWidth === 0 || img.naturalHeight === 0) {
+        throw new Error(
+          `image loaded but has zero dimensions (size=${blob.size}, type=${blob.type || '?'})`,
+        );
+      }
       sourceUrl = url;
-      const img = document.createElement('img');
-      img.src = url;
-      // img.decode() is the modern reliable load+decode path; rejects
-      // with a real error when the image fails to decode (unlike
-      // onload/onerror which is fire-and-forget).
-      await img.decode();
       sourceImage = img;
       const minDim = Math.min(img.naturalWidth, img.naturalHeight);
       crop = {
@@ -189,19 +211,19 @@
         y: Math.round((img.naturalHeight - minDim) / 2),
         size: minDim,
       };
-      bitmap.close();
       phase = 'crop';
     } catch (err) {
-      console.error(
-        'AvatarCaptureDialog: image decode failed',
-        { blobSize: blob.size, blobType: blob.type, err },
-      );
+      console.error('[AvatarCapture] image decode failed', {
+        size: blob.size,
+        type: blob.type,
+        err,
+      });
+      URL.revokeObjectURL(url);
       cameraError =
         err instanceof Error
           ? `Could not decode image: ${err.message}`
           : 'Could not decode image';
       phase = 'choose';
-      revokeSourceUrl();
     }
   }
 
