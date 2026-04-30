@@ -887,13 +887,26 @@ func TestCancel_DuringInflight_ReportsInflight(t *testing.T) {
 // This is a defensive regression test: Phase 3 wires EmailSubmission/set to
 // bypass the queue for external identities. If that routing is ever missed,
 // this guard detects the leak before double-delivery occurs.
+//
+// The test enqueues directly through the store (not through queue.Submit) so
+// it controls the EnvelopeID and can plant the EmailSubmissionRow +
+// IdentitySubmission BEFORE the queue row exists. That ordering guarantees
+// the bypass check sees both rows the first time the worker reaches it. An
+// earlier version of this test enqueued via queue.Submit and inserted the
+// EmailSubmissionRow afterwards; the call ordering was correct on paper, but
+// queue.Submit's wakeCh ping plus the worker's claim race produced a flaky
+// "Deliverer was called 1 times" failure on heavily-loaded CI lanes.
 func TestDeliver_ExternalSubmissionItem(t *testing.T) {
 	f := newFixture(t, fixtureOpts{concurrency: 4, skipRun: true})
 
 	ctx := f.ctx
+	now := f.clk.Now()
 
-	// Insert a JMAP identity and an IdentitySubmission row so that
-	// isExternalSubmissionItem returns true for our test envelope.
+	// Use a fixed envelope id so the EmailSubmissionRow can be planted
+	// before the queue row exists.
+	envID := queue.EnvelopeID("ext-submission-test-fixed-envelope")
+
+	// 1. JMAP identity + IdentitySubmission (the bypass keys off both).
 	const identityID = "ext-identity-1"
 	if err := f.store.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
 		ID:          identityID,
@@ -912,32 +925,44 @@ func TestDeliver_ExternalSubmissionItem(t *testing.T) {
 		SubmitAuthMethod: "password",
 		PasswordCT:       []byte("v1:placeholder"),
 		State:            store.IdentitySubmissionStateOK,
-		StateAt:          f.clk.Now(),
-		CreatedAt:        f.clk.Now(),
+		StateAt:          now,
+		CreatedAt:        now,
 	}); err != nil {
 		t.Fatalf("UpsertIdentitySubmission: %v", err)
 	}
 
-	// Submit a queue item whose EnvelopeID we control. We first enqueue
-	// normally, then plant an EmailSubmissionRow with that EnvelopeID.
-	envID := f.submit(t, queue.Submission{
-		MailFrom:   "alice@example.com",
-		Recipients: []string{"bob@dest.test"},
-		Body:       strings.NewReader("Subject: ext\r\n\r\nbody\r\n"),
-	})
-
-	// Insert the EmailSubmissionRow that links this envelope to the
-	// external identity. ID == stringified EnvelopeID per store convention.
+	// 2. EmailSubmissionRow tying envID to identityID.
 	if err := f.store.Meta().InsertEmailSubmission(ctx, store.EmailSubmissionRow{
 		ID:          string(envID),
 		EnvelopeID:  envID,
 		PrincipalID: 1,
 		IdentityID:  identityID,
 		UndoStatus:  "pending",
-		SendAtUs:    f.clk.Now().UnixMicro(),
-		CreatedAtUs: f.clk.Now().UnixMicro(),
+		SendAtUs:    now.UnixMicro(),
+		CreatedAtUs: now.UnixMicro(),
 	}); err != nil {
 		t.Fatalf("InsertEmailSubmission: %v", err)
+	}
+
+	// 3. Now — and only now — enqueue a queue row with the same envID.
+	//    Direct EnqueueMessage rather than queue.Submit so the test owns
+	//    the envID and the bypass-prerequisite rows are guaranteed to be
+	//    visible the first time the worker calls isExternalSubmissionItem.
+	bodyRef, err := f.store.Blobs().Put(ctx, strings.NewReader("Subject: ext\r\n\r\nbody\r\n"))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	if _, err := f.store.Meta().EnqueueMessage(ctx, store.QueueItem{
+		PrincipalID:   1,
+		MailFrom:      "alice@example.com",
+		RcptTo:        "bob@dest.test",
+		EnvelopeID:    envID,
+		BodyBlobHash:  bodyRef.Hash,
+		State:         store.QueueStateQueued,
+		NextAttemptAt: now,
+		CreatedAt:     now,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage: %v", err)
 	}
 
 	// Now start the queue and wait for the item to be processed.
@@ -947,20 +972,20 @@ func TestDeliver_ExternalSubmissionItem(t *testing.T) {
 		_ = f.queue.Run(ctx)
 	}()
 
-	// The item should be marked as failed (permanent), not delivered.
+	// The item must be marked Failed (permanent bypass) AND the deliverer
+	// must NOT have been called. Both conditions live inside the waitFor
+	// predicate so the assertion is one synchronization point: a successful
+	// return guarantees both observations were taken from the same instant.
 	if !waitFor(t, 3*time.Second, func() bool {
 		s, err := f.queue.Stats(f.ctx)
 		if err != nil {
 			return false
 		}
-		return s.Failed >= 1
+		return s.Failed >= 1 && f.deliv.callCount() == 0
 	}) {
-		t.Fatalf("expected item to reach failed state; stats: %+v", mustStats(t, f))
-	}
-
-	// The deliverer must NOT have been called.
-	if f.deliv.callCount() != 0 {
-		t.Errorf("Deliverer was called %d times; want 0 for external-submission item", f.deliv.callCount())
+		stats := mustStats(t, f)
+		t.Fatalf("expected item Failed AND deliverer untouched; stats: %+v, deliv calls: %d",
+			stats, f.deliv.callCount())
 	}
 }
 
