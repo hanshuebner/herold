@@ -129,9 +129,14 @@ describe('MessageList', () => {
     expect(chip.classList.contains('mine')).toBe(true);
   });
 
-  it('labels a sender by member.displayName, not the literal "Member"', () => {
+  it('labels a sender by member.displayName in a space, not the literal "Member"', () => {
+    // sender-name is only rendered in spaces; use kind: 'space' here.
+    const spaceConversation: Conversation = {
+      ...baseConversation,
+      kind: 'space',
+    };
     const { container } = render(MessageList, {
-      props: { conversationId: 'c1', conversation: baseConversation },
+      props: { conversationId: 'c1', conversation: spaceConversation },
     });
     const senderLabels = container.querySelectorAll('.sender-name');
     // m1 was sent by p2 (Bob); the label must read "Bob", not "Member".
@@ -364,23 +369,20 @@ describe('MessageList', () => {
   });
 
   // ------------------------------------------------------------------
-  // Bug A — divider clears when IntersectionObserver fires after the
-  // 500 ms settling period.
+  // Bug A (new) — divider requires manual scroll-up AND scroll-back-to-bottom.
   // ------------------------------------------------------------------
 
-  it('clears the "New" divider when the IntersectionObserver fires after settling', async () => {
-    // Stub IntersectionObserver before rendering so the component picks it up.
+  it('divider stays when IntersectionObserver fires while wasAtBottom is true (auto-scroll case)', async () => {
+    // wasAtBottom is true at mount (the component defaults to true).
+    // An IntersectionObserver firing at that point must NOT set dividerHasBeenSeen,
+    // so the divider must remain visible.
     type IOCallback = (entries: IntersectionObserverEntry[]) => void;
     let capturedCallback: IOCallback | null = null;
-    let capturedObserver: { observe: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> } | null = null;
     function MockIntersectionObserver(this: unknown, cb: IOCallback) {
       capturedCallback = cb;
-      capturedObserver = { observe: vi.fn(), disconnect: vi.fn() };
-      return capturedObserver;
+      return { observe: vi.fn(), disconnect: vi.fn() };
     }
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
-
-    vi.useFakeTimers();
 
     const msgsUnread = [
       {
@@ -425,27 +427,48 @@ describe('MessageList', () => {
       },
     });
 
-    // Divider is visible before settling.
+    // Divider exists at mount.
     expect(container.querySelector('.new-divider')).not.toBeNull();
     expect(capturedCallback).not.toBeNull();
 
-    // Before settling: IO callback fires but is ignored.
+    // IO fires while wasAtBottom is still true (auto-scroll situation).
+    // The component checks wasAtBottom inside the observer; since the
+    // scroll container in happy-dom has no real layout, wasAtBottom stays
+    // at its initial value of true.  The intersection must NOT clear it.
     capturedCallback!([{ isIntersecting: true } as IntersectionObserverEntry]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Divider must still be present.
     expect(container.querySelector('.new-divider')).not.toBeNull();
 
-    // Advance past the 500 ms settling delay.
-    vi.advanceTimersByTime(600);
-
-    // After settling: IO callback fires and clears the divider.
-    capturedCallback!([{ isIntersecting: true } as IntersectionObserverEntry]);
-    // Svelte schedules DOM updates as microtasks; flush the queue.
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(container.querySelector('.new-divider')).toBeNull();
-
-    vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  // ------------------------------------------------------------------
+  // Bug B (DM layout) — avatar and sender-name must be absent in DM.
+  // ------------------------------------------------------------------
+
+  it('does not render .avatar or .sender-name for DM messages', () => {
+    // baseConversation is kind:'dm'; partner message is m1 (senderPrincipalId:'p2').
+    const { container } = render(MessageList, {
+      props: { conversationId: 'c1', conversation: baseConversation },
+    });
+    expect(container.querySelector('.avatar')).toBeNull();
+    expect(container.querySelector('.sender-name')).toBeNull();
+  });
+
+  it('renders .avatar and .sender-name for Space messages from other senders', () => {
+    const spaceConversation: Conversation = {
+      ...baseConversation,
+      kind: 'space',
+    };
+    const { container } = render(MessageList, {
+      props: { conversationId: 'c1', conversation: spaceConversation },
+    });
+    // m1 is from p2 (not mine), so avatar and sender-name must be present.
+    expect(container.querySelector('.avatar')).not.toBeNull();
+    expect(container.querySelector('.sender-name')).not.toBeNull();
   });
 });
 

@@ -59,13 +59,26 @@
    * the divider disappears naturally as the user reads.
    *
    * Also cleared synchronously when the compose input for THIS
-   * conversation gains focus, and when the divider scrolls into the
-   * viewport (IntersectionObserver, after a 500ms settling delay).
+   * conversation gains focus.
+   *
+   * The IntersectionObserver path requires two ordered signals before
+   * clearing: (1) the user scrolled up and the divider entered the
+   * viewport while wasAtBottom === false (dividerHasBeenSeen), then
+   * (2) wasAtBottom flips back to true.  Auto-scroll intersections
+   * (wasAtBottom === true) do not count.
    *
    * Anchored at open — new messages arriving while the user is reading
    * do not move the divider.
    */
   let newDividerAfterMessageId = $state<string | null>(null);
+
+  /**
+   * Set to true by the IntersectionObserver when the divider enters
+   * the viewport while the user has manually scrolled up
+   * (wasAtBottom === false).  Once true, the divider is cleared the
+   * next time wasAtBottom becomes true again.
+   */
+  let dividerHasBeenSeen = $state(false);
 
   /** DOM node for the "New" divider, bound via bind:this. */
   let dividerEl = $state<HTMLDivElement | null>(null);
@@ -127,7 +140,15 @@
   function handleScroll(): void {
     if (!scrollEl) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollEl;
-    wasAtBottom = scrollHeight - scrollTop - clientHeight < 40;
+    const atBottom = scrollHeight - scrollTop - clientHeight < 40;
+
+    // When the user returns to the bottom after having seen the divider
+    // during a manual scroll-up, clear the divider.
+    if (atBottom && !wasAtBottom && dividerHasBeenSeen) {
+      newDividerAfterMessageId = null;
+      dividerHasBeenSeen = false;
+    }
+    wasAtBottom = atBottom;
 
     // Paginate: load more when scrolled near top.
     if (scrollTop < 80 && effectiveHasMore) {
@@ -139,12 +160,13 @@
     }
   }
 
-  // Reset the divider whenever the conversation changes so a fresh open
-  // always recomputes from the new conversation's read pointer.
+  // Reset the divider and seen-flag whenever the conversation changes so
+  // a fresh open always recomputes from the new conversation's read pointer.
   $effect(() => {
     const _cid = conversationId;
     untrack(() => {
       newDividerAfterMessageId = null;
+      dividerHasBeenSeen = false;
     });
   });
 
@@ -202,40 +224,42 @@
     });
   });
 
-  // Bug A — clear the divider synchronously when the compose for THIS
-  // conversation gains focus.  markRead is async, so the divider would
-  // linger until the RPC round-trip.  Clearing here is instant.
+  // Clear the divider synchronously when the compose for THIS conversation
+  // gains focus.  markRead is async, so the divider would linger until the
+  // RPC round-trip.  Clearing here is instant.  Also reset the seen-flag so
+  // a subsequent conversation switch starts clean.
   $effect(() => {
     const focused = chat.focusedConversationId;
     untrack(() => {
       if (focused === conversationId) {
         newDividerAfterMessageId = null;
+        dividerHasBeenSeen = false;
       }
     });
   });
 
-  // Bug A — clear the divider when it scrolls into view via IntersectionObserver.
-  // To avoid a false positive during the initial auto-scroll-to-bottom we
-  // ignore any intersection that fires in the first 500 ms after the divider
-  // is mounted; after that we clear immediately on the first intersection.
+  // Bug A — track when the divider enters the viewport during a manual
+  // scroll-up (wasAtBottom === false).  We do NOT clear here; clearing
+  // happens in handleScroll when wasAtBottom flips back to true.
   $effect(() => {
     const el = dividerEl;
     if (!el) return;
-    let settled = false;
-    const timer = setTimeout(() => { settled = true; }, 500);
     const observer = new IntersectionObserver((entries) => {
-      if (!settled) return;
       for (const entry of entries) {
         if (entry.isIntersecting) {
-          untrack(() => { newDividerAfterMessageId = null; });
-          observer.disconnect();
+          // Only count this as "seen" when the user has manually scrolled
+          // away from the bottom.  Auto-scroll-to-bottom also triggers the
+          // observer but wasAtBottom is still true at that moment, so we
+          // ignore those intersections.
+          if (!wasAtBottom) {
+            untrack(() => { dividerHasBeenSeen = true; });
+          }
           break;
         }
       }
     });
     observer.observe(el);
     return () => {
-      clearTimeout(timer);
       observer.disconnect();
     };
   });
@@ -427,14 +451,14 @@
             <p class="system-text">{msg.body.text}</p>
           {:else}
             <div class="bubble-row" class:mine={isMine(msg.senderPrincipalId)}>
-              {#if !isMine(msg.senderPrincipalId)}
+              {#if !isMine(msg.senderPrincipalId) && conversation.kind !== 'dm'}
                 <span class="avatar" aria-hidden="true">
                   {senderName(msg.senderPrincipalId).charAt(0).toUpperCase()}
                 </span>
               {/if}
 
               <div class="bubble" class:mine={isMine(msg.senderPrincipalId)}>
-                {#if !isMine(msg.senderPrincipalId)}
+                {#if !isMine(msg.senderPrincipalId) && conversation.kind !== 'dm'}
                   <span class="sender-name">{senderName(msg.senderPrincipalId)}</span>
                 {/if}
 
