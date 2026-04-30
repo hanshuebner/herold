@@ -98,20 +98,33 @@ export class JmapClient {
    * The session.downloadUrl carries `{accountId}`, `{blobId}`, `{type}`,
    * and `{name}` placeholders; this helper substitutes the obvious four
    * with URL-encoded values. Returns null when no session is bootstrapped.
+   *
+   * `disposition`: pass `'inline'` when the URL feeds an `<iframe>` or
+   * `<embed>` (PDF preview, image lightbox) so the server emits
+   * `Content-Disposition: inline` and the browser renders the resource
+   * in-page. Default `'attachment'` keeps the download-link behaviour —
+   * herold's blob endpoint forces `attachment` when the parameter is
+   * absent or unrecognised.
    */
   downloadUrl(args: {
     accountId: string;
     blobId: string;
     type?: string;
     name?: string;
+    disposition?: 'inline' | 'attachment';
   }): string | null {
     const session = this.#session;
     if (!session) return null;
-    return session.downloadUrl
+    const base = session.downloadUrl
       .replace('{accountId}', encodeURIComponent(args.accountId))
       .replace('{blobId}', encodeURIComponent(args.blobId))
       .replace('{type}', encodeURIComponent(args.type ?? 'application/octet-stream'))
       .replace('{name}', encodeURIComponent(args.name ?? 'attachment'));
+    if (args.disposition === 'inline') {
+      const sep = base.includes('?') ? '&' : '?';
+      return `${base}${sep}disposition=inline`;
+    }
+    return base;
   }
 
   /**

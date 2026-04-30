@@ -714,6 +714,63 @@ func TestDownload_RoundTrip(t *testing.T) {
 	if got := res.Header.Get("Content-Disposition"); !strings.Contains(got, "file.txt") {
 		t.Fatalf("Content-Disposition = %q", got)
 	}
+	if got := res.Header.Get("Content-Disposition"); !strings.HasPrefix(got, "attachment;") {
+		t.Fatalf("default Content-Disposition = %q, want attachment;...", got)
+	}
+}
+
+// TestDownload_InlineDisposition asserts that ?disposition=inline causes
+// the download endpoint to emit `Content-Disposition: inline; ...` so
+// that <iframe> previews (PDF lightbox, REQ-MAIL-23) can render the
+// resource in-page rather than triggering the browser's download UI.
+func TestDownload_InlineDisposition(t *testing.T) {
+	f := newFixture(t)
+	body := []byte("%PDF-1.4 fake pdf bytes")
+	ref, err := f.store.Blobs().Put(context.Background(), bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("blob put: %v", err)
+	}
+	accountID := protojmap.AccountIDForPrincipal(f.pid)
+	url := fmt.Sprintf(
+		"/jmap/download/%s/%s/application%%2Fpdf/spec.pdf?disposition=inline",
+		accountID, ref.Hash)
+	res, raw := f.doRequest("GET", url, f.apiKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", res.StatusCode)
+	}
+	if !bytes.Equal(raw, body) {
+		t.Fatalf("body mismatch: got %q want %q", raw, body)
+	}
+	got := res.Header.Get("Content-Disposition")
+	if !strings.HasPrefix(got, "inline;") {
+		t.Fatalf("Content-Disposition = %q, want inline;...", got)
+	}
+	if !strings.Contains(got, "spec.pdf") {
+		t.Fatalf("filename missing from Content-Disposition: %q", got)
+	}
+}
+
+// TestDownload_RejectsUnknownDisposition asserts that an unrecognised
+// disposition value is silently coerced to attachment (no surprise
+// inline preview from a typo).
+func TestDownload_RejectsUnknownDisposition(t *testing.T) {
+	f := newFixture(t)
+	body := []byte("body")
+	ref, err := f.store.Blobs().Put(context.Background(), bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("blob put: %v", err)
+	}
+	accountID := protojmap.AccountIDForPrincipal(f.pid)
+	url := fmt.Sprintf(
+		"/jmap/download/%s/%s/text%%2Fplain/file.txt?disposition=bogus",
+		accountID, ref.Hash)
+	res, _ := f.doRequest("GET", url, f.apiKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", res.StatusCode)
+	}
+	if got := res.Header.Get("Content-Disposition"); !strings.HasPrefix(got, "attachment;") {
+		t.Fatalf("Content-Disposition = %q, want attachment;...", got)
+	}
 }
 
 // TestDownload_CrossAccount_ChatMember_Allowed asserts the chat-fanout

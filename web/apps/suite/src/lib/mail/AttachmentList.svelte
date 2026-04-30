@@ -104,14 +104,25 @@
   }
 
   function openLightbox(part: EmailBodyPart): void {
-    const url = urlFor(part);
-    if (!url) return;
+    if (!accountId || !part.blobId) return;
     const kind: LightboxState['kind'] | null = part.type.startsWith('image/')
       ? 'image'
       : part.type === 'application/pdf'
         ? 'pdf'
         : null;
     if (!kind) return;
+    // Use Content-Disposition: inline so the iframe / img renders the
+    // resource in-page instead of the browser handing it to the
+    // download UI. Without this the PDF lightbox ships a blank pane and
+    // the browser pops a download prompt.
+    const url = jmap.downloadUrl({
+      accountId,
+      blobId: part.blobId,
+      type: part.type,
+      name: part.name ?? 'attachment',
+      disposition: 'inline',
+    });
+    if (!url) return;
     lightbox = { url, name: part.name ?? 'attachment', kind };
   }
 

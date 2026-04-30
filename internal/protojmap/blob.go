@@ -287,6 +287,16 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/octet-stream"
 	}
 	name := r.PathValue("name")
+	// Disposition: clients render in-browser previews (PDF iframe, image
+	// lightbox) by appending `?disposition=inline`. Anything else — and
+	// the empty default — maps to `attachment` so a plain download link
+	// behaves the same as before. Browsers refuse to render an iframe
+	// whose response carries `attachment`, which produced the original
+	// "white lightbox + download prompt" symptom on PDF preview.
+	disposition := "attachment"
+	if v := r.URL.Query().Get("disposition"); v == "inline" {
+		disposition = "inline"
+	}
 
 	// Synthetic per-part blob IDs have the form "<msgBlobHash>/p<N>".
 	// The blob store holds only full message blobs; resolve these by
@@ -337,7 +347,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 		if name != "" {
 			w.Header().Set("Content-Disposition",
-				fmt.Sprintf(`attachment; filename=%q`, name))
+				fmt.Sprintf(`%s; filename=%q`, disposition, name))
 		}
 		w.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(w, bytes.NewReader(part.data)); err != nil {
@@ -398,7 +408,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	if name != "" {
 		w.Header().Set("Content-Disposition",
-			fmt.Sprintf(`attachment; filename=%q`, name))
+			fmt.Sprintf(`%s; filename=%q`, disposition, name))
 	}
 	w.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(w, rc); err != nil {
