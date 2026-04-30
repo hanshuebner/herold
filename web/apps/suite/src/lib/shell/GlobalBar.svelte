@@ -2,6 +2,8 @@
   import SearchIcon from '../icons/SearchIcon.svelte';
   import HelpIcon from '../icons/HelpIcon.svelte';
   import SettingsIcon from '../icons/SettingsIcon.svelte';
+  import FilterIcon from '../icons/FilterIcon.svelte';
+  import AdvancedSearchPanel from '../mail/AdvancedSearchPanel.svelte';
   import { sync } from '../../lib/jmap/sync.svelte';
   import { router } from '../../lib/router/router.svelte';
   import { help } from '../help/help.svelte';
@@ -25,6 +27,9 @@
     }
   });
 
+  // Advanced-search panel toggle state. The panel sits below the bar.
+  let panelOpen = $state(false);
+
   function onSubmit(e: Event): void {
     e.preventDefault();
     const trimmed = query.trim();
@@ -33,7 +38,28 @@
     } else {
       router.navigate('/mail');
     }
+    // Close the panel after a free-text search so it doesn't sit open.
+    panelOpen = false;
   }
+
+  function togglePanel(): void {
+    panelOpen = !panelOpen;
+  }
+
+  function handlePanelSearch(q: string): void {
+    if (q.trim()) {
+      query = q;
+      router.navigate(`/mail/search/${encodeURIComponent(q)}`);
+    } else {
+      router.navigate('/mail');
+    }
+    panelOpen = false;
+  }
+
+  // The current URL query — passed to the panel so it can pre-populate.
+  let currentQuery = $derived(
+    router.matches('mail', 'search') ? decodeURIComponent(router.parts[2] ?? '') : '',
+  );
 
   // Hide the indicator when connected; show it during reconnecting /
   // disconnected so the user knows live updates aren't flowing.
@@ -46,47 +72,71 @@
   );
 </script>
 
-<header class="global-bar">
-  <form class="search" onsubmit={onSubmit} role="search">
-    <SearchIcon size={18} />
-    <input
-      type="search"
-      {placeholder}
-      bind:value={query}
-      aria-label={placeholder}
-      spellcheck="false"
+<div class="global-bar-wrapper">
+  <header class="global-bar">
+    <form class="search" onsubmit={onSubmit} role="search">
+      <SearchIcon size={18} />
+      <input
+        type="search"
+        {placeholder}
+        bind:value={query}
+        aria-label={placeholder}
+        spellcheck="false"
+      />
+    </form>
+
+    {#if indicatorVisible}
+      <span class="conn" role="status" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span>
+        {indicatorLabel}
+      </span>
+    {/if}
+
+    <div class="controls">
+      <button
+        type="button"
+        class="icon-btn"
+        class:active={panelOpen}
+        aria-label="Advanced search"
+        aria-expanded={panelOpen}
+        title="Advanced search"
+        onclick={togglePanel}
+      >
+        <FilterIcon size={18} />
+      </button>
+      <button
+        type="button"
+        class="icon-btn"
+        aria-label="Help"
+        title="Keyboard shortcuts"
+        onclick={() => help.toggle()}
+      >
+        <HelpIcon size={20} />
+      </button>
+      <button
+        type="button"
+        class="icon-btn"
+        aria-label="Settings"
+        onclick={() => router.navigate('/settings')}
+      >
+        <SettingsIcon size={20} />
+      </button>
+    </div>
+  </header>
+
+  {#if panelOpen}
+    <AdvancedSearchPanel
+      {currentQuery}
+      onSearch={handlePanelSearch}
+      onClose={() => (panelOpen = false)}
     />
-  </form>
-
-  {#if indicatorVisible}
-    <span class="conn" role="status" aria-live="polite">
-      <span class="dot" aria-hidden="true"></span>
-      {indicatorLabel}
-    </span>
   {/if}
-
-  <div class="controls">
-    <button
-      type="button"
-      class="icon-btn"
-      aria-label="Help"
-      title="Keyboard shortcuts"
-      onclick={() => help.toggle()}
-    >
-      <HelpIcon size={20} />
-    </button>
-    <button
-      type="button"
-      class="icon-btn"
-      aria-label="Settings"
-      onclick={() => router.navigate('/settings')}
-    >
-      <SettingsIcon size={20} />
-    </button>
-  </div>
-</header>
+</div>
 
 <style>
+  .global-bar-wrapper {
+    flex-shrink: 0;
+  }
   .global-bar {
     display: flex;
     align-items: center;
@@ -105,7 +155,7 @@
     background: var(--layer-02);
     border-radius: var(--radius-pill);
     color: var(--text-helper);
-    max-width: 720px;
+    /* Remove max-width so the search bar fills the remaining content area. */
   }
   .search input {
     flex: 1;
@@ -175,5 +225,9 @@
   .icon-btn:hover {
     background: var(--layer-02);
     color: var(--text-primary);
+  }
+  .icon-btn.active {
+    background: var(--layer-02);
+    color: var(--interactive);
   }
 </style>
