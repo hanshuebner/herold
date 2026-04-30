@@ -30,6 +30,9 @@ import {
   tryFetchGravatar,
 } from './email-metadata-avatar';
 import type { Identity } from './types';
+import { jmap } from '../jmap/client';
+import { Capability } from '../jmap/types';
+import { auth } from '../auth/auth.svelte';
 
 // ---------------------------------------------------------------------------
 // localStorage keys & TTL
@@ -152,10 +155,20 @@ async function resolveUncached(
   key: string,
   messageHeaders?: { face?: string; xFace?: string },
 ): Promise<string | null> {
+  // ── 2. Hosted-principal lookup (REQ-MAIL-44 tier 2) ───────────────────────
+  // Always tried before email-metadata fallback because it produces a
+  // higher-quality, server-stored picture; it is also a cheap one-shot
+  // JMAP round-trip whose negative is cached for 24 h.
+  const hostedUrl = await lookupHostedPrincipalAvatar(key);
+  if (hostedUrl) {
+    writeCache(key, hostedUrl);
+    return hostedUrl;
+  }
+
   const emailMetadata = readToggle();
 
   if (emailMetadata) {
-    // ── 2a. Face: header ───────────────────────────────────────────────────
+    // ── 3a. Face: header ───────────────────────────────────────────────────
     const faceHeader = messageHeaders?.face;
     if (faceHeader) {
       const blobUrl = decodeFaceHeader(faceHeader);
@@ -169,7 +182,7 @@ async function resolveUncached(
       }
     }
 
-    // ── 2b. Gravatar ─────────────────────────────────────────────────────
+    // ── 3b. Gravatar ─────────────────────────────────────────────────────
     const url = await gravatarUrl(key);
     const found = await tryFetchGravatar(url);
     if (found) {
@@ -178,9 +191,70 @@ async function resolveUncached(
     }
   }
 
-  // ── 3. No picture available ──────────────────────────────────────────────
+  // ── 4. No picture available ──────────────────────────────────────────────
   writeCache(key, null);
   return null;
+}
+
+/**
+ * Resolve a hosted principal's avatar via Principal/query + Principal/get,
+ * batched in one JMAP round-trip. Returns the JMAP download URL with
+ * `disposition=inline` when the address is a hosted principal that has set
+ * an avatarBlobId, otherwise null.
+ *
+ * Called from `resolveUncached` when own-identity tier misses; failure
+ * (network error, no chat capability, miss) returns null so the caller
+ * falls through to the email-metadata tiers.
+ */
+async function lookupHostedPrincipalAvatar(
+  email: string,
+): Promise<string | null> {
+  const session = auth.session;
+  if (!session) return null;
+  const accountId =
+    session.primaryAccounts[Capability.HeroldChat] ??
+    session.primaryAccounts[Capability.Core] ??
+    null;
+  if (!accountId) return null;
+
+  try {
+    const { responses } = await jmap.batch((b) => {
+      const q = b.call(
+        'Principal/query',
+        { accountId, filter: { emailExact: email } },
+        [Capability.Core, Capability.HeroldChat],
+      );
+      b.call(
+        'Principal/get',
+        {
+          accountId,
+          '#ids': q.ref('/ids'),
+          properties: ['id', 'email', 'avatarBlobId'],
+        },
+        [Capability.Core, Capability.HeroldChat],
+      );
+    });
+    const getResp = responses.find(([name]) => name === 'Principal/get');
+    if (!getResp || getResp[0] === 'error') return null;
+    const result = getResp[1] as {
+      list: Array<{
+        id: string;
+        email: string;
+        avatarBlobId: string | null;
+      }>;
+    };
+    const principal = result.list[0];
+    if (!principal?.avatarBlobId) return null;
+    return jmap.downloadUrl({
+      accountId,
+      blobId: principal.avatarBlobId,
+      type: 'image/*',
+      name: 'avatar',
+      disposition: 'inline',
+    });
+  } catch {
+    return null;
+  }
 }
 
 function writeCache(key: string, url: string | null): void {

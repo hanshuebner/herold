@@ -41,6 +41,11 @@ type PrincipalRow struct {
 	UsedBytes            int64 `json:"used_bytes"`
 	CreatedAtUs          int64 `json:"created_at_us"`
 	UpdatedAtUs          int64 `json:"updated_at_us"`
+	// Avatar / X-Face columns added in migration 0036 (REQ-SET-03b /
+	// REQ-MAIL-44). The default Identity is synthesised from this row.
+	AvatarBlobHash string `json:"avatar_blob_hash,omitempty"`
+	AvatarBlobSize int64  `json:"avatar_blob_size,omitempty"`
+	XFaceEnabled   bool   `json:"xface_enabled,omitempty"`
 }
 
 type OIDCProviderRow struct {

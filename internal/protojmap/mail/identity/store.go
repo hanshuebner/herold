@@ -94,17 +94,27 @@ func (s *Store) loadPersisted(ctx context.Context, p store.Principal) ([]identit
 
 // defaultRecordLocked synthesizes the default identity for p. Caller
 // must hold s.mu (read or write).
+//
+// Order of precedence for each field:
+//
+//  1. The persisted principal row (canonical home for name/avatar/xface
+//     since migration 0036).
+//  2. The in-memory override (still authoritative for replyTo/bcc/
+//     signature, which have no principal-row column yet).
 func (s *Store) defaultRecordLocked(p store.Principal) identityRecord {
 	rec := identityRecord{
-		ID:          0,
-		PrincipalID: p.ID,
-		Name:        p.DisplayName,
-		Email:       p.CanonicalEmail,
-		MayDelete:   false,
-		UpdatedAt:   p.UpdatedAt,
+		ID:             0,
+		PrincipalID:    p.ID,
+		Name:           p.DisplayName,
+		Email:          p.CanonicalEmail,
+		MayDelete:      false,
+		AvatarBlobHash: p.AvatarBlobHash,
+		AvatarBlobSize: p.AvatarBlobSize,
+		XFaceEnabled:   p.XFaceEnabled,
+		UpdatedAt:      p.UpdatedAt,
 	}
 	if ovr, ok := s.defaultOverrides[p.ID]; ok && ovr != nil {
-		// Apply non-empty override fields atop the synthesized default.
+		// Apply non-empty override fields atop the principal-row default.
 		if ovr.Name != "" {
 			rec.Name = ovr.Name
 		}
@@ -124,12 +134,7 @@ func (s *Store) defaultRecordLocked(p store.Principal) identityRecord {
 			v := *ovr.Signature
 			rec.Signature = &v
 		}
-		if ovr.AvatarBlobHash != "" {
-			rec.AvatarBlobHash = ovr.AvatarBlobHash
-			rec.AvatarBlobSize = ovr.AvatarBlobSize
-		}
-		rec.XFaceEnabled = ovr.XFaceEnabled
-		if !ovr.UpdatedAt.IsZero() {
+		if !ovr.UpdatedAt.IsZero() && ovr.UpdatedAt.After(rec.UpdatedAt) {
 			rec.UpdatedAt = ovr.UpdatedAt
 		}
 	}
@@ -187,7 +192,6 @@ func allocateIdentityID(now time.Time) uint64 {
 func (s *Store) update(ctx context.Context, p store.Principal, id uint64, patch identityPatch) (identityRecord, bool) {
 	if id == 0 {
 		s.mu.Lock()
-		defer s.mu.Unlock()
 		ovr := s.defaultOverrides[p.ID]
 		if ovr == nil {
 			ovr = &identityRecord{ID: 0, PrincipalID: p.ID}
@@ -195,7 +199,36 @@ func (s *Store) update(ctx context.Context, p store.Principal, id uint64, patch 
 		patch.applyTo(ovr)
 		ovr.UpdatedAt = s.clk.Now()
 		s.defaultOverrides[p.ID] = ovr
-		return s.defaultRecordLocked(p), true
+		// Writethrough name / avatar / xface to the principal row so the
+		// fields survive a restart and are visible to other principals
+		// via Principal/get (REQ-MAIL-44 / REQ-SET-03b). replyTo, bcc,
+		// and signature stay in the in-process overlay because they
+		// have no principal-row column yet.
+		updateP := p
+		dirty := false
+		if patch.hasName {
+			updateP.DisplayName = patch.name
+			dirty = true
+		}
+		if patch.hasAvatarBlobId {
+			updateP.AvatarBlobHash = patch.avatarBlobHash
+			updateP.AvatarBlobSize = patch.avatarBlobSize
+			dirty = true
+		}
+		if patch.hasXFaceEnabled {
+			updateP.XFaceEnabled = patch.xFaceEnabled
+			dirty = true
+		}
+		s.mu.Unlock()
+		if dirty && s.st != nil {
+			// Best-effort; the in-process overlay already carries the
+			// latest values so a transient store error is not fatal.
+			_ = s.st.Meta().UpdatePrincipal(ctx, updateP)
+		}
+		s.mu.RLock()
+		out := s.defaultRecordLocked(updateP)
+		s.mu.RUnlock()
+		return out, true
 	}
 	if s.st == nil {
 		return identityRecord{}, false
@@ -383,13 +416,10 @@ var _ = fmt.Sprint // keep fmt import in case future code logs persistence error
 // or deletion.
 func (s *Store) snapshotAvatarHash(ctx context.Context, p store.Principal, id uint64) string {
 	if id == 0 {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		ovr := s.defaultOverrides[p.ID]
-		if ovr == nil {
-			return ""
-		}
-		return ovr.AvatarBlobHash
+		// The default identity stores its canonical avatar on the
+		// principal row (migration 0036). The caller already passed in
+		// the freshly-fetched principal.
+		return p.AvatarBlobHash
 	}
 	if s.st == nil {
 		return ""

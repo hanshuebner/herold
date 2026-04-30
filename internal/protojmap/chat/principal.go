@@ -29,12 +29,15 @@ const principalQueryDefaultLimit = 10
 
 // -- Wire types -------------------------------------------------------
 
-// jmapPrincipal is the three-field public view of a Principal
-// (REQ-CHAT-01b, REQ-CHAT-15).
+// jmapPrincipal is the public view of a Principal (REQ-CHAT-01b,
+// REQ-CHAT-15). avatarBlobId surfaces the principal's profile picture
+// blob for cross-user avatar resolution (REQ-MAIL-44 / REQ-SET-03b);
+// it is null when the principal has no picture set.
 type jmapPrincipal struct {
-	ID          jmapID `json:"id"`
-	Email       string `json:"email"`
-	DisplayName string `json:"displayName"`
+	ID           jmapID  `json:"id"`
+	Email        string  `json:"email"`
+	DisplayName  string  `json:"displayName"`
+	AvatarBlobId *string `json:"avatarBlobId"`
 }
 
 // principalFilter is the union type for Principal/query filter. Exactly
@@ -219,8 +222,8 @@ func (h *principalQueryHandler) Execute(ctx context.Context, args json.RawMessag
 
 // -- rendering --------------------------------------------------------
 
-// renderPrincipal projects a store.Principal into the three-field wire
-// form. properties, when non-nil, restricts to the named subset; an
+// renderPrincipal projects a store.Principal into the wire form.
+// properties, when non-nil, restricts to the named subset; an
 // unrecognised property name is silently ignored (RFC 8620 §5.1).
 func renderPrincipal(p store.Principal, properties *[]string) jmapPrincipal {
 	out := jmapPrincipal{
@@ -228,11 +231,15 @@ func renderPrincipal(p store.Principal, properties *[]string) jmapPrincipal {
 		Email:       p.CanonicalEmail,
 		DisplayName: principalDisplayName(p),
 	}
+	if p.AvatarBlobHash != "" {
+		v := p.AvatarBlobHash
+		out.AvatarBlobId = &v
+	}
 	if properties == nil {
 		return out
 	}
 	// Apply property mask: zero out fields not requested.
-	wantID, wantEmail, wantDisplayName := false, false, false
+	wantID, wantEmail, wantDisplayName, wantAvatar := false, false, false, false
 	for _, prop := range *properties {
 		switch prop {
 		case "id":
@@ -241,6 +248,8 @@ func renderPrincipal(p store.Principal, properties *[]string) jmapPrincipal {
 			wantEmail = true
 		case "displayName":
 			wantDisplayName = true
+		case "avatarBlobId":
+			wantAvatar = true
 		}
 	}
 	if !wantID {
@@ -251,6 +260,9 @@ func renderPrincipal(p store.Principal, properties *[]string) jmapPrincipal {
 	}
 	if !wantDisplayName {
 		out.DisplayName = ""
+	}
+	if !wantAvatar {
+		out.AvatarBlobId = nil
 	}
 	return out
 }

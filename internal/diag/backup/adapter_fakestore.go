@@ -130,6 +130,9 @@ func convertFakeToRow(table string, raw any) (any, error) {
 			QuotaBytes:           p.QuotaBytes,
 			Flags:                int64(p.Flags),
 			SeenAddressesEnabled: p.SeenAddressesEnabled,
+			AvatarBlobHash:       p.AvatarBlobHash,
+			AvatarBlobSize:       p.AvatarBlobSize,
+			XFaceEnabled:         p.XFaceEnabled,
 			CreatedAtUs:          micros(p.CreatedAt),
 			UpdatedAtUs:          micros(p.UpdatedAt),
 		}, nil
@@ -522,6 +525,9 @@ func convertRowToFake(table string, row any) (any, error) {
 			PasswordHash: r.PasswordHash, TOTPSecret: r.TOTPSecret,
 			QuotaBytes: r.QuotaBytes, Flags: store.PrincipalFlags(r.Flags),
 			SeenAddressesEnabled: r.SeenAddressesEnabled,
+			AvatarBlobHash:       r.AvatarBlobHash,
+			AvatarBlobSize:       r.AvatarBlobSize,
+			XFaceEnabled:         r.XFaceEnabled,
 			CreatedAt:            fromMicros(r.CreatedAtUs), UpdatedAt: fromMicros(r.UpdatedAtUs),
 		}, nil
 	case "domains":

@@ -119,7 +119,12 @@ func (h *directorySearchHandler) Execute(ctx context.Context, args json.RawMessa
 			return nil, serverFail(err)
 		}
 		for _, p := range principals {
-			resp.Items = append(resp.Items, directorySearchItem(renderPrincipal(p, nil)))
+			rp := renderPrincipal(p, nil)
+			resp.Items = append(resp.Items, directorySearchItem{
+				ID:          rp.ID,
+				Email:       rp.Email,
+				DisplayName: rp.DisplayName,
+			})
 		}
 
 	case sysconfig.DirectoryAutocompleteModeDomain:
@@ -140,7 +145,12 @@ func (h *directorySearchHandler) Execute(ctx context.Context, args json.RawMessa
 			return nil, serverFail(err)
 		}
 		for _, p := range principals {
-			resp.Items = append(resp.Items, directorySearchItem(renderPrincipal(p, nil)))
+			rp := renderPrincipal(p, nil)
+			resp.Items = append(resp.Items, directorySearchItem{
+				ID:          rp.ID,
+				Email:       rp.Email,
+				DisplayName: rp.DisplayName,
+			})
 		}
 	}
 

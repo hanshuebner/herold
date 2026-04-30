@@ -125,6 +125,18 @@ type Principal struct {
 	// for this principal (REQ-SET-15). Defaults to true; set to false to
 	// disable seeding and immediately purge all existing rows.
 	SeenAddressesEnabled bool
+	// AvatarBlobHash is the BLAKE3 hex hash of the principal's profile-
+	// picture blob (REQ-SET-03b). Empty when no picture is set. Maintained
+	// as the writethrough target of Identity/set on the synthesised default
+	// identity so cross-user lookups (chat, mail thread headers) can resolve
+	// the picture without leaking the in-process identity overlay.
+	AvatarBlobHash string
+	// AvatarBlobSize is the byte size of the avatar blob; zero when unset.
+	AvatarBlobSize int64
+	// XFaceEnabled controls whether outbound messages from this principal's
+	// default identity carry the legacy X-Face / modern Face headers
+	// (REQ-SET-03b / REQ-MAIL-45). Default false.
+	XFaceEnabled bool
 	// CreatedAt is the instant the principal row was inserted.
 	CreatedAt time.Time
 	// UpdatedAt is the instant of the most recent mutation to the row.

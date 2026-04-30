@@ -145,7 +145,14 @@ const CurrentBackupVersion = 1
 //	headers (REQ-SET-03b). Adds avatar_blob_hash TEXT, avatar_blob_size
 //	INTEGER/BIGINT, xface_enabled BOOLEAN/INTEGER to jmap_identities.
 //	Refcounting managed by the application layer.
-const CurrentSchemaVersion = 35
+//
+// 36 — 0036_principal_avatar.sql. Promotes the default-identity avatar
+//
+//	to the principal row (REQ-SET-03b, REQ-MAIL-44). Adds avatar_blob_hash
+//	TEXT, avatar_blob_size INTEGER/BIGINT, xface_enabled BOOLEAN/INTEGER
+//	to principals so chat Principal/get and mail-thread cross-user avatar
+//	lookups can read the picture without leaking the per-Identity overlay.
+const CurrentSchemaVersion = 36
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

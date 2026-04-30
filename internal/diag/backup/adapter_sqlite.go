@@ -139,16 +139,23 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 		return enumerate(ctx, s.tx,
 			`SELECT id, kind, canonical_email, display_name, password_hash,
 			        totp_secret, quota_bytes, flags, seen_addresses_enabled,
+			        avatar_blob_hash, avatar_blob_size, xface_enabled,
 			        used_bytes, created_at_us, updated_at_us FROM principals ORDER BY id`,
 			func(rs *sql.Rows) (any, error) {
 				var r PrincipalRow
-				var seenAddrEnabled int64
+				var seenAddrEnabled, xfaceEnabled int64
+				var avatarHash sql.NullString
 				if err := rs.Scan(&r.ID, &r.Kind, &r.CanonicalEmail, &r.DisplayName, &r.PasswordHash,
 					&r.TOTPSecret, &r.QuotaBytes, &r.Flags, &seenAddrEnabled,
+					&avatarHash, &r.AvatarBlobSize, &xfaceEnabled,
 					&r.UsedBytes, &r.CreatedAtUs, &r.UpdatedAtUs); err != nil {
 					return nil, err
 				}
 				r.SeenAddressesEnabled = seenAddrEnabled != 0
+				r.XFaceEnabled = xfaceEnabled != 0
+				if avatarHash.Valid {
+					r.AvatarBlobHash = avatarHash.String
+				}
 				return &r, nil
 			}, fn)
 	case "push_subscription":
@@ -1002,13 +1009,19 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		return err
 	case "principals":
 		r := row.(*PrincipalRow)
+		var avatarHash any
+		if r.AvatarBlobHash != "" {
+			avatarHash = r.AvatarBlobHash
+		}
 		_, err := s.tx.ExecContext(ctx,
 			`INSERT INTO principals (id, kind, canonical_email, display_name, password_hash,
 			   totp_secret, quota_bytes, flags, seen_addresses_enabled,
+			   avatar_blob_hash, avatar_blob_size, xface_enabled,
 			   used_bytes, created_at_us, updated_at_us)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.Kind, r.CanonicalEmail, r.DisplayName, r.PasswordHash,
 			r.TOTPSecret, r.QuotaBytes, r.Flags, boolToInt(r.SeenAddressesEnabled),
+			avatarHash, r.AvatarBlobSize, boolToInt(r.XFaceEnabled),
 			r.UsedBytes, r.CreatedAtUs, r.UpdatedAtUs)
 		return err
 	case "push_subscription":

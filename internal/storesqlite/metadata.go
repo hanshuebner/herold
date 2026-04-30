@@ -129,17 +129,23 @@ func (m *metadata) GetPrincipalByEmail(ctx context.Context, email string) (store
 func (m *metadata) selectPrincipal(ctx context.Context, where string, args ...any) (store.Principal, error) {
 	row := m.s.db.QueryRowContext(ctx, `
 		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
-		       quota_bytes, flags, seen_addresses_enabled, created_at_us, updated_at_us
+		       quota_bytes, flags, seen_addresses_enabled,
+		       avatar_blob_hash, avatar_blob_size, xface_enabled,
+		       created_at_us, updated_at_us
 		  FROM principals `+where, args...)
 	var p store.Principal
 	var kind int64
 	var flags int64
 	var seenAddrEnabled int64
+	var xfaceEnabled int64
+	var avatarHash sql.NullString
 	var createdUs, updatedUs int64
 	var totp []byte
 	var id int64
 	err := row.Scan(&id, &kind, &p.CanonicalEmail, &p.DisplayName, &p.PasswordHash,
-		&totp, &p.QuotaBytes, &flags, &seenAddrEnabled, &createdUs, &updatedUs)
+		&totp, &p.QuotaBytes, &flags, &seenAddrEnabled,
+		&avatarHash, &p.AvatarBlobSize, &xfaceEnabled,
+		&createdUs, &updatedUs)
 	if err != nil {
 		return store.Principal{}, mapErr(err)
 	}
@@ -147,6 +153,10 @@ func (m *metadata) selectPrincipal(ctx context.Context, where string, args ...an
 	p.Kind = store.PrincipalKind(kind)
 	p.Flags = store.PrincipalFlags(flags)
 	p.SeenAddressesEnabled = seenAddrEnabled != 0
+	p.XFaceEnabled = xfaceEnabled != 0
+	if avatarHash.Valid {
+		p.AvatarBlobHash = avatarHash.String
+	}
 	p.CreatedAt = fromMicros(createdUs)
 	p.UpdatedAt = fromMicros(updatedUs)
 	if len(totp) > 0 {
@@ -157,15 +167,22 @@ func (m *metadata) selectPrincipal(ctx context.Context, where string, args ...an
 
 func (m *metadata) UpdatePrincipal(ctx context.Context, p store.Principal) error {
 	now := m.s.clock.Now().UTC()
+	var avatarHash any
+	if p.AvatarBlobHash != "" {
+		avatarHash = p.AvatarBlobHash
+	}
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `
 			UPDATE principals
 			   SET kind = ?, canonical_email = ?, display_name = ?, password_hash = ?,
 			       totp_secret = ?, quota_bytes = ?, flags = ?,
-			       seen_addresses_enabled = ?, updated_at_us = ?
+			       seen_addresses_enabled = ?,
+			       avatar_blob_hash = ?, avatar_blob_size = ?, xface_enabled = ?,
+			       updated_at_us = ?
 			 WHERE id = ?`,
 			int64(p.Kind), strings.ToLower(p.CanonicalEmail), p.DisplayName, p.PasswordHash,
 			p.TOTPSecret, p.QuotaBytes, int64(p.Flags), boolToInt(p.SeenAddressesEnabled),
+			avatarHash, p.AvatarBlobSize, boolToInt(p.XFaceEnabled),
 			usMicros(now), int64(p.ID))
 		if err != nil {
 			return mapErr(err)

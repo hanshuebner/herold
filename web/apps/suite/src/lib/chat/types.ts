@@ -242,13 +242,15 @@ export type PresenceState = 'online' | 'away' | 'offline';
 
 /**
  * A Herold Principal as returned by Principal/get.
- * Only the three fields the suite is allowed to see (REQ-CHAT-15).
  * The id is opaque — used only as a foreign key; never rendered.
+ * `avatarBlobId` is the principal's profile-picture blob id when set
+ * (REQ-MAIL-44 / REQ-SET-03b); null/absent when no picture is configured.
  */
 export interface Principal {
   id: string;
   email: string;
   displayName: string;
+  avatarBlobId?: string | null;
 }
 
 /**
