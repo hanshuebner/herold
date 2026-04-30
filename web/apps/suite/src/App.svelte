@@ -20,6 +20,7 @@
   import { confirm } from './lib/dialog/confirm.svelte';
   import { prompt } from './lib/dialog/prompt.svelte';
   import { mail } from './lib/mail/store.svelte';
+  import { threadDnd } from './lib/mail/dnd-thread.svelte';
   import { pushSubscription } from './lib/push/push-subscription.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
@@ -112,6 +113,45 @@
 
   // Wire the compose stack's auto-minimize hook.
   compose.setBeforeOpenHook(() => composeStack.beforeOpenNew());
+
+  // ── Sidebar mailbox drop targets (REQ-UI-17) ──────────────────────────
+  // Resolve a system-folder slug ('inbox', 'snoozed', …) to the mailbox
+  // row id we'd move into. Custom mailboxes pass their id directly.
+  function dropTargetIdForRole(role: string): string | null {
+    if (role === 'all') return null; // virtual; not a valid drop target
+    for (const m of mail.mailboxes.values()) {
+      if (m.role === role) return m.id;
+    }
+    return null;
+  }
+  let inboxDropId = $derived(dropTargetIdForRole('inbox'));
+  let sentDropId = $derived(dropTargetIdForRole('sent'));
+  let draftsDropId = $derived(dropTargetIdForRole('drafts'));
+  let trashDropId = $derived(dropTargetIdForRole('trash'));
+
+  function onMailboxDragOver(e: DragEvent, mailboxId: string | null): void {
+    if (!mailboxId) return;
+    if (!threadDnd.isValidTarget(mailboxId)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    threadDnd.setHovered(mailboxId);
+  }
+
+  function onMailboxDragLeave(mailboxId: string | null): void {
+    if (mailboxId && threadDnd.current?.hoveredMailboxId === mailboxId) {
+      threadDnd.setHovered(null);
+    }
+  }
+
+  function onMailboxDrop(e: DragEvent, mailboxId: string | null): void {
+    if (!mailboxId) return;
+    if (!threadDnd.isValidTarget(mailboxId)) return;
+    e.preventDefault();
+    const ids = threadDnd.current?.ids ?? [];
+    threadDnd.end();
+    if (ids.length === 0) return;
+    void mail.bulkMoveToMailbox(ids, mailboxId);
+  }
 
   // Sidebar "More" expand/collapse state.
   let moreOpen = $state(false);
@@ -282,7 +322,14 @@
       </button>
 
       <ul class="mailbox-list">
-        <li class:active={router.matches('mail') && !router.parts[1]}>
+        <li
+          class:active={router.matches('mail') && !router.parts[1]}
+          class:drag-over={threadDnd.current?.hoveredMailboxId === inboxDropId}
+          ondragenter={(e) => onMailboxDragOver(e, inboxDropId)}
+          ondragover={(e) => onMailboxDragOver(e, inboxDropId)}
+          ondragleave={() => onMailboxDragLeave(inboxDropId)}
+          ondrop={(e) => onMailboxDrop(e, inboxDropId)}
+        >
           <button type="button" onclick={() => router.navigate('/mail')}>
             <span>{t('sidebar.inbox')}</span>
             {#if (mail.inbox?.unreadEmails ?? 0) > 0}
@@ -306,12 +353,26 @@
             <span>{t('sidebar.important')}</span>
           </button>
         </li>
-        <li class:active={router.matches('mail', 'folder', 'sent')}>
+        <li
+          class:active={router.matches('mail', 'folder', 'sent')}
+          class:drag-over={threadDnd.current?.hoveredMailboxId === sentDropId}
+          ondragenter={(e) => onMailboxDragOver(e, sentDropId)}
+          ondragover={(e) => onMailboxDragOver(e, sentDropId)}
+          ondragleave={() => onMailboxDragLeave(sentDropId)}
+          ondrop={(e) => onMailboxDrop(e, sentDropId)}
+        >
           <button type="button" onclick={() => router.navigate('/mail/folder/sent')}>
             <span>{t('sidebar.sent')}</span>
           </button>
         </li>
-        <li class:active={router.matches('mail', 'folder', 'drafts')}>
+        <li
+          class:active={router.matches('mail', 'folder', 'drafts')}
+          class:drag-over={threadDnd.current?.hoveredMailboxId === draftsDropId}
+          ondragenter={(e) => onMailboxDragOver(e, draftsDropId)}
+          ondragover={(e) => onMailboxDragOver(e, draftsDropId)}
+          ondragleave={() => onMailboxDragLeave(draftsDropId)}
+          ondrop={(e) => onMailboxDrop(e, draftsDropId)}
+        >
           <button type="button" onclick={() => router.navigate('/mail/folder/drafts')}>
             <span>{t('sidebar.drafts')}</span>
             {#if (mail.drafts?.totalEmails ?? 0) > 0}
@@ -319,7 +380,14 @@
             {/if}
           </button>
         </li>
-        <li class:active={router.matches('mail', 'folder', 'trash')}>
+        <li
+          class:active={router.matches('mail', 'folder', 'trash')}
+          class:drag-over={threadDnd.current?.hoveredMailboxId === trashDropId}
+          ondragenter={(e) => onMailboxDragOver(e, trashDropId)}
+          ondragover={(e) => onMailboxDragOver(e, trashDropId)}
+          ondragleave={() => onMailboxDragLeave(trashDropId)}
+          ondrop={(e) => onMailboxDrop(e, trashDropId)}
+        >
           <button type="button" onclick={() => router.navigate('/mail/folder/trash')}>
             <span>{t('sidebar.trash')}</span>
           </button>
@@ -344,7 +412,14 @@
       {#if moreOpen}
         <ul class="mailbox-list custom">
           {#each mail.customMailboxes as m (m.id)}
-            <li class:active={router.matches('mail', 'folder', m.id)}>
+            <li
+              class:active={router.matches('mail', 'folder', m.id)}
+              class:drag-over={threadDnd.current?.hoveredMailboxId === m.id}
+              ondragenter={(e) => onMailboxDragOver(e, m.id)}
+              ondragover={(e) => onMailboxDragOver(e, m.id)}
+              ondragleave={() => onMailboxDragLeave(m.id)}
+              ondrop={(e) => onMailboxDrop(e, m.id)}
+            >
               <button
                 type="button"
                 class="mailbox-row"
@@ -469,6 +544,14 @@
   .mailbox-list li:hover {
     background: var(--layer-02);
     color: var(--text-primary);
+  }
+  /* Drag-over highlight (REQ-UI-17). Colours the row while a thread is
+     being dragged over a valid drop target. */
+  .mailbox-list li.drag-over {
+    background: color-mix(in srgb, var(--interactive) 18%, transparent);
+    color: var(--text-primary);
+    outline: 2px dashed var(--interactive);
+    outline-offset: -2px;
   }
   .mailbox-list .count {
     color: var(--text-helper);

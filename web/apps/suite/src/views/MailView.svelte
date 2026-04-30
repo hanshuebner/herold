@@ -10,6 +10,7 @@
   import { categoryPicker } from '../lib/mail/category-picker.svelte';
   import { categorySettings, emailMatchesTab, categoryKeyword } from '../lib/settings/category-settings.svelte';
   import { decodeChips } from '../lib/mail/search-query';
+  import { threadDnd, dragIdsForRow } from '../lib/mail/dnd-thread.svelte';
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import CategoryPicker from '../lib/mail/CategoryPicker.svelte';
   import SelectChooser from '../lib/mail/SelectChooser.svelte';
@@ -610,6 +611,25 @@
     }
     openThread(email);
   }
+
+  /**
+   * Thread row drag start (REQ-UI-17). When the dragged row is part of
+   * an active multi-selection, drag every selected row together;
+   * otherwise drag just this one. Sets a text/plain payload as a
+   * fallback for OS-level drop targets.
+   */
+  function onRowDragStart(e: DragEvent, email: Email): void {
+    const ids = dragIdsForRow(email.id);
+    threadDnd.begin(ids);
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      const label =
+        ids.length > 1
+          ? `${ids.length} messages`
+          : email.subject || '(no subject)';
+      e.dataTransfer.setData('text/plain', label);
+    }
+  }
 </script>
 
 <div class="mail">
@@ -872,7 +892,11 @@
             class:unread={isUnread(email)}
             class:focused={mail.listFocusedIndex === i}
             class:selected={mail.listSelectedIds.has(email.id)}
+            class:dragging={threadDnd.current?.ids.includes(email.id) ?? false}
             data-row-index={i}
+            draggable="true"
+            ondragstart={(e) => onRowDragStart(e, email)}
+            ondragend={() => threadDnd.end()}
           >
             <input
               type="checkbox"
@@ -1186,6 +1210,17 @@
   }
   .thread-row.selected {
     background: var(--layer-02);
+  }
+  .thread-row.dragging {
+    opacity: 0.45;
+  }
+  /* dnd is desktop-only (REQ-UI-17, REQ-MOB-37): suppress draggable on
+     coarse-pointer breakpoints so the row remains a normal pressable
+     target on touch. */
+  @media (pointer: coarse) {
+    .thread-row[draggable='true'] {
+      -webkit-user-drag: none;
+    }
   }
   .row-check {
     margin: 0 var(--spacing-03) 0 var(--spacing-04);

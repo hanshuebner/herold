@@ -1673,6 +1673,8 @@ class MailStore {
       this.#patchEmail(id, { mailboxIds: { [targetId]: true } });
     }
     if (Object.keys(updates).length === 0) return;
+    const prevListIds = [...this.listEmailIds];
+    const prevFocused = this.listFocusedIndex;
     if (this.listFolder !== 'all') {
       const target = this.mailboxes.get(targetId);
       const targetRole = target?.role ?? '';
@@ -1684,15 +1686,42 @@ class MailStore {
     try {
       const { failed } = await this.#emailSetUpdateBulk(updates);
       const targetName = this.mailboxes.get(targetId)?.name ?? 'mailbox';
+      const okIds = Object.keys(updates).filter((id) => !(id in failed));
       this.#summarizeBulk(
         `moved to ${targetName}`,
         Object.keys(updates).length,
         failed,
+        okIds.length > 0
+          ? async () => {
+              const undoUpdates: Record<string, Record<string, unknown>> = {};
+              for (const id of okIds) {
+                const prev = prevById.get(id);
+                if (prev) undoUpdates[id] = { mailboxIds: prev };
+              }
+              try {
+                await this.#emailSetUpdateBulk(undoUpdates);
+                for (const id of okIds) {
+                  const prev = prevById.get(id);
+                  if (prev) this.#patchEmail(id, { mailboxIds: prev });
+                }
+                this.listEmailIds = prevListIds;
+                this.listFocusedIndex = prevFocused;
+              } catch (err) {
+                toast.show({
+                  message: errMessage(err, 'Undo failed'),
+                  kind: 'error',
+                  timeoutMs: 6000,
+                });
+              }
+            }
+          : undefined,
       );
     } catch (err) {
       for (const [id, prev] of prevById) {
         this.#patchEmail(id, { mailboxIds: prev });
       }
+      this.listEmailIds = prevListIds;
+      this.listFocusedIndex = prevFocused;
       toast.show({
         message: errMessage(err, 'Bulk move failed'),
         kind: 'error',
@@ -1702,7 +1731,12 @@ class MailStore {
   }
 
   /** Render a "X messages <verb>" / partial-failure toast for bulk ops. */
-  #summarizeBulk(verb: string, total: number, failed: Record<string, string>): void {
+  #summarizeBulk(
+    verb: string,
+    total: number,
+    failed: Record<string, string>,
+    undo?: () => void | Promise<void>,
+  ): void {
     const failCount = Object.keys(failed).length;
     const ok = total - failCount;
     if (failCount > 0) {
@@ -1710,10 +1744,12 @@ class MailStore {
         message: `${ok} ${verb}, ${failCount} failed`,
         kind: 'error',
         timeoutMs: 6000,
+        ...(undo ? { undo } : {}),
       });
     } else {
       toast.show({
         message: `${ok} message${ok === 1 ? '' : 's'} ${verb}`,
+        ...(undo ? { undo } : {}),
       });
     }
   }
