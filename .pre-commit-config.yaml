@@ -58,17 +58,23 @@ repos:
     hooks:
       - id: gofmt
         name: gofmt
-        entry: gofmt -l -d
+        # gofmt -l -d prints diagnostics but ALWAYS exits 0, so a naive
+        # `entry: gofmt -l -d` lets dirty files through the hook. CI runs
+        # the right shape (capture -l output, fail when non-empty); mirror
+        # that here so local pre-commit and CI agree. Block scalar (|-)
+        # so the inline bash one-liner survives YAML quoting.
+        entry: |-
+          bash -c 'out=$(gofmt -l "$@"); if [ -n "$out" ]; then printf "gofmt needs to be run on:\n%s\n" "$out"; gofmt -d "$@"; exit 1; fi' --
         language: system
         types: [go]
         pass_filenames: true
       - id: goimports
         name: goimports
-        # Block scalar (|-) so the inner `install: go install` text does not
-        # collide with YAML's plain-scalar rule against ": ". Strips the
-        # trailing newline so pre-commit sees a single-line command.
+        # Same exit-code trap as gofmt: goimports -l -d emits findings
+        # but exits 0. Capture -l output and fail on non-empty so dirty
+        # imports cannot pass the hook.
         entry: |-
-          bash -c 'command -v goimports >/dev/null 2>&1 || { echo "install: go install golang.org/x/tools/cmd/goimports@latest" >&2; exit 1; }; goimports -l -d -local github.com/hanshuebner/herold "$@"' --
+          bash -c 'command -v goimports >/dev/null 2>&1 || { echo "install: go install golang.org/x/tools/cmd/goimports@latest" >&2; exit 1; }; out=$(goimports -l -local github.com/hanshuebner/herold "$@"); if [ -n "$out" ]; then printf "goimports needs to be run on:\n%s\n" "$out"; goimports -d -local github.com/hanshuebner/herold "$@"; exit 1; fi' --
         language: system
         types: [go]
         pass_filenames: true
