@@ -128,6 +128,7 @@ export const en = {
   'att.noUrl': 'No URL',
   'att.view': 'View',
   'att.close': 'Close',
+  'mail.trimmed.hide': 'Hide trimmed content',
 
   // ── Pickers (move / label / etc.) ────────────────────────────────────
   'picker.close': 'Close',

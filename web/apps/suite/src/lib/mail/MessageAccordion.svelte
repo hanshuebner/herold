@@ -674,8 +674,8 @@
     width: 32px;
     height: 32px;
     border-radius: var(--radius-pill);
-    background: var(--layer-02);
-    color: var(--text-primary);
+    background: var(--interactive);
+    color: var(--text-on-color);
     display: inline-flex;
     align-items: center;
     justify-content: center;

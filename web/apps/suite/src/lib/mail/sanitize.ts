@@ -19,6 +19,8 @@
 
 import DOMPurify from 'dompurify';
 
+import { t } from '../i18n/i18n.svelte';
+
 export interface SanitizeOptions {
   /** When true, http(s) <img src> rewrites through the image proxy. */
   loadImages: boolean;
@@ -195,6 +197,13 @@ function findFirstQuotedRegion(root: ParentNode): Element | null {
 function wrapInIframeDocument(body: string): string {
   const csp =
     "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self';";
+  // The "Hide trimmed content" label is supplied by the iframe's CSS
+  // ::before pseudo-element rather than a JS-rendered string, so we
+  // interpolate the translation here at sanitize-time. CSS string
+  // values escape with backslash-hex; this label is plain ASCII once
+  // the translation is fetched, so we just pass the raw text in
+  // double quotes after JSON-escaping any embedded quote characters.
+  const hideLabel = JSON.stringify(t('mail.trimmed.hide'));
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><style>
   html, body { margin: 0; padding: 0; }
@@ -234,7 +243,7 @@ function wrapInIframeDocument(body: string): string {
   details.herold-quoted > summary::-webkit-details-marker { display: none; }
   details.herold-quoted > summary::before { content: "···"; letter-spacing: 1px; }
   details.herold-quoted[open] > summary { background: #e0e0e0; }
-  details.herold-quoted[open] > summary::before { content: "Hide trimmed content"; letter-spacing: normal; }
+  details.herold-quoted[open] > summary::before { content: ${hideLabel}; letter-spacing: normal; }
   @media (prefers-color-scheme: dark) {
     details.herold-quoted > summary { background: #393939; color: #c6c6c6; }
     details.herold-quoted[open] > summary { background: #525252; }

@@ -127,6 +127,7 @@ export const de = {
   'att.noUrl': 'Keine URL',
   'att.view': 'Anzeigen',
   'att.close': 'Schliessen',
+  'mail.trimmed.hide': 'Zitat ausblenden',
 
   // ── Pickers (move / label / etc.) ────────────────────────────────────
   'picker.close': 'Schließen',
