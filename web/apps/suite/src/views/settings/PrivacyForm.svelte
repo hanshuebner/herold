@@ -21,6 +21,11 @@
   import { auth } from '../../lib/auth/auth.svelte';
   import { seenAddresses } from '../../lib/contacts/seen-addresses.svelte';
   import { patch, ApiError } from '../../lib/api/client';
+  import {
+    avatarEmailMetadataEnabled,
+    setAvatarEmailMetadataEnabled,
+    clearAvatarCache,
+  } from '../../lib/mail/avatar-resolver.svelte';
 
   let saving = $state(false);
   let error = $state<string | null>(null);
@@ -55,6 +60,49 @@
         loaded = true;
       });
   });
+
+  // ── Avatar lookup toggle ────────────────────────────────────────────────
+
+  // Local reactive state mirrors the persisted localStorage value.
+  let avatarLookupEnabled = $state(avatarEmailMetadataEnabled());
+
+  // The privacy confirm dialog fires only on OFF -> ON.
+  let confirmOpen = $state(false);
+  // Pending value waiting for confirm dialog resolution.
+  let pendingAvatarValue = $state<boolean | null>(null);
+
+  function handleAvatarToggle(value: boolean): void {
+    if (value && !avatarLookupEnabled) {
+      // OFF -> ON: show privacy confirm first.
+      pendingAvatarValue = value;
+      confirmOpen = true;
+    } else {
+      // ON -> OFF: no confirm needed.
+      applyAvatarToggle(value);
+    }
+  }
+
+  function applyAvatarToggle(value: boolean): void {
+    setAvatarEmailMetadataEnabled(value);
+    avatarLookupEnabled = value;
+    if (!value) {
+      // Clear cached Gravatar results so the next render shows initials.
+      clearAvatarCache();
+    }
+    confirmOpen = false;
+    pendingAvatarValue = null;
+  }
+
+  function confirmAvatarEnable(): void {
+    if (pendingAvatarValue !== null) applyAvatarToggle(pendingAvatarValue);
+  }
+
+  function cancelAvatarConfirm(): void {
+    confirmOpen = false;
+    pendingAvatarValue = null;
+  }
+
+  // ── Seen-addresses toggle ───────────────────────────────────────────────
 
   async function toggle(value: boolean): Promise<void> {
     const pid = auth.principalId;
@@ -103,6 +151,53 @@
 
 {#if error}
   <p class="form-error" role="alert">{error}</p>
+{/if}
+
+<div class="row">
+  <div class="label-group">
+    <span class="label">Look up sender avatars from email metadata (Gravatar / X-Face / Face)</span>
+    <p class="hint">
+      When enabled, the suite contacts Gravatar with a one-way hash of each
+      sender's email address to fetch their picture. Disable to keep all
+      sender lookups local-only.
+    </p>
+  </div>
+  <label class="switch" aria-label="Look up sender avatars from email metadata">
+    <input
+      type="checkbox"
+      checked={avatarLookupEnabled}
+      onchange={(e) => handleAvatarToggle((e.currentTarget as HTMLInputElement).checked)}
+    />
+    <span class="track" aria-hidden="true"></span>
+  </label>
+</div>
+
+{#if confirmOpen}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="confirm-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Look up sender pictures from the public web?"
+    tabindex="-1"
+    onkeydown={(e) => { if (e.key === 'Escape') cancelAvatarConfirm(); }}
+  >
+    <p class="confirm-title">Look up sender pictures from the public web?</p>
+    <p class="confirm-body">
+      When enabled, the suite contacts Gravatar with a one-way hash of each
+      sender's email address to fetch their picture. The sender does not see
+      this lookup, but Gravatar's logs do. The sender's email never leaves
+      your device in plaintext. You can turn this off any time.
+    </p>
+    <div class="confirm-actions">
+      <button type="button" class="btn-primary" onclick={confirmAvatarEnable}>
+        Enable lookups
+      </button>
+      <button type="button" class="btn-secondary" onclick={cancelAvatarConfirm}>
+        Keep local-only
+      </button>
+    </div>
+  </div>
 {/if}
 
 <style>

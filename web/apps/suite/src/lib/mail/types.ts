@@ -18,6 +18,10 @@ export interface Identity {
   textSignature: string;
   htmlSignature: string;
   mayDelete: boolean;
+  /** Herold extension: blob ID for the identity's avatar image. */
+  avatarBlobId?: string | null;
+  /** Herold extension: whether to embed an X-Face / Face header on outbound mail. */
+  xFaceEnabled?: boolean;
 }
 
 export interface Mailbox {
@@ -123,6 +127,19 @@ export interface Email {
    * fetches `header:List-ID:asText` to determine mailing-list mail.
    */
   'header:List-ID:asText'?: string | null;
+  /**
+   * Face: header (base64-encoded PNG/JPEG avatar per the Face convention).
+   * Fetched via `header:Face:asText` extension for the avatar resolver
+   * tier-2 path.
+   */
+  'header:Face:asText'?: string | null;
+  /**
+   * X-Face: header (legacy monochrome avatar format). Fetched via
+   * `header:X-Face:asText`. V1 of the resolver skips X-Face decoding
+   * (the format requires a bespoke decoder); the field is fetched so the
+   * resolver can signal "X-Face present" in future versions.
+   */
+  'header:X-Face:asText'?: string | null;
 }
 
 /** The properties projection the suite requests for list rendering. */
@@ -167,6 +184,8 @@ export const EMAIL_BODY_PROPERTIES = [
   'references',
   'reactions',
   'header:List-ID:asText',
+  'header:Face:asText',
+  'header:X-Face:asText',
 ] as const;
 
 /**

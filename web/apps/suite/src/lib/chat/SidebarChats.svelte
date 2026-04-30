@@ -17,6 +17,7 @@
   import { t } from '../i18n/i18n.svelte';
   import { confirm } from '../dialog/confirm.svelte';
   import { toast } from '../toast/toast.svelte';
+  import Avatar from '../avatar/Avatar.svelte';
   import type { Conversation } from './types';
 
   const MAX = 8;
@@ -102,9 +103,15 @@
             }}
           >
             <span class="avatar-wrap" aria-hidden="true">
-              <span class="avatar" class:space={conv.kind === 'space'}>
-                {conv.kind === 'space' ? '#' : conv.name.charAt(0).toUpperCase()}
-              </span>
+              {#if conv.kind === 'space'}
+                <span class="avatar space">#</span>
+              {:else}
+                <Avatar
+                  email=""
+                  fallbackInitial={conv.name.charAt(0).toUpperCase()}
+                  size={28}
+                />
+              {/if}
               {#if conv.kind === 'dm'}
                 <span class="presence-dot {pc}"></span>
               {/if}

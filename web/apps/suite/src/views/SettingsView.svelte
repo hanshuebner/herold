@@ -14,6 +14,7 @@
   import { router } from '../lib/router/router.svelte';
   import IdentitySignatureForm from './settings/IdentitySignatureForm.svelte';
   import IdentityDisplayNameForm from './settings/IdentityDisplayNameForm.svelte';
+  import IdentityAvatarForm from './settings/IdentityAvatarForm.svelte';
   import IdentityEditDialog from './settings/IdentityEditDialog.svelte';
   import SecurityForm from './settings/SecurityForm.svelte';
   import ApiKeysForm from './settings/ApiKeysForm.svelte';
@@ -264,10 +265,12 @@
                   </button>
                 {/if}
               </div>
+              <IdentityAvatarForm {identity} />
               <IdentityDisplayNameForm {identity} />
               <IdentitySignatureForm {identity} />
             </div>
           {:else}
+            <IdentityAvatarForm {identity} />
             <IdentityDisplayNameForm {identity} />
             <IdentitySignatureForm {identity} />
           {/if}

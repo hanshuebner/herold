@@ -35,6 +35,7 @@ vi.mock('../jmap/client', () => ({
 vi.mock('./store.svelte', () => ({
   mail: {
     mailboxes: new Map(),
+    identities: new Map(),
     trash: null,
     setSeen: vi.fn(),
     toggleImportant: vi.fn(),
@@ -43,6 +44,17 @@ vi.mock('./store.svelte', () => ({
     toggleReaction: vi.fn(),
     reportSpam: vi.fn(),
   },
+}));
+
+vi.mock('./avatar-resolver.svelte', () => ({
+  resolve: vi.fn().mockResolvedValue(null),
+  avatarEmailMetadataEnabled: () => false,
+  setAvatarEmailMetadataEnabled: vi.fn(),
+  clearAvatarCache: vi.fn(),
+}));
+
+vi.mock('./identity-avatar', () => ({
+  identityAvatarUrl: () => null,
 }));
 
 vi.mock('../settings/settings.svelte', () => ({

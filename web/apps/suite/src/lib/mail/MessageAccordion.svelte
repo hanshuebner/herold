@@ -1,6 +1,7 @@
 <script lang="ts">
   import HtmlBody from './HtmlBody.svelte';
   import AttachmentList from './AttachmentList.svelte';
+  import Avatar from '../avatar/Avatar.svelte';
   import EmojiPicker from './EmojiPicker.svelte';
   import ReactionsStrip from './ReactionsStrip.svelte';
   import { htmlHasExternalImages } from './sanitize';
@@ -69,6 +70,19 @@
   );
   let senderEmail = $derived(email.from?.[0]?.email ?? '');
   let initial = $derived(senderName.slice(0, 1).toUpperCase());
+
+  // Identity list for the avatar resolver's own-identity tier.
+  let ownIdentities = $derived(Array.from(mail.identities.values()));
+
+  // Parse Face/X-Face headers from this email for avatar resolver tier-2.
+  let avatarMessageHeaders = $derived.by<
+    { face?: string; xFace?: string } | undefined
+  >(() => {
+    const face = (email['header:Face:asText'] ?? '').trim() || undefined;
+    const xFace = (email['header:X-Face:asText'] ?? '').trim() || undefined;
+    if (!face && !xFace) return undefined;
+    return { face, xFace };
+  });
 
   function formatRecipientSummary(email: Email): string {
     const to = email.to ?? [];
@@ -351,7 +365,13 @@
     aria-expanded={expanded}
     onclick={() => onToggle?.(email.id)}
   >
-    <span class="avatar" aria-hidden="true">{initial}</span>
+    <Avatar
+      email={senderEmail}
+      fallbackInitial={initial}
+      size={32}
+      {ownIdentities}
+      messageHeaders={avatarMessageHeaders}
+    />
     <span class="meta">
       <span class="from">
         <span class="from-name">{senderName}</span>
@@ -697,19 +717,6 @@
   }
   .header:hover {
     background: var(--layer-01);
-  }
-
-  .avatar {
-    width: 32px;
-    height: 32px;
-    border-radius: var(--radius-pill);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 600;
-    font-size: var(--type-body-compact-01-size);
   }
 
   .meta {

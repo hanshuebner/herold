@@ -193,6 +193,34 @@ export const en = {
   'settings.save': 'Save',
   'settings.saved': 'Settings saved',
   'settings.saveFailed': 'Could not save settings',
+  'settings.avatar.title': 'Profile picture',
+  'settings.avatar.change': 'Change…',
+  'settings.avatar.remove': 'Remove',
+  'settings.avatar.pickNew': 'Pick new file',
+  'settings.avatar.applyToAll.title': 'Use this avatar for all identities?',
+  'settings.avatar.applyToAll.message':
+    'You have {count} identities. Apply this picture to all of them?',
+  'settings.avatar.applyToAll.confirm': 'Yes, apply to all',
+  'settings.avatar.applyToAll.cancel': 'Just this identity',
+  'settings.avatar.xface.title': 'Include avatar in outbound mail?',
+  'settings.avatar.xface.message':
+    'When enabled, your avatar is attached as an X-Face / Face header on every message you send from this identity. Recipients with email clients that support these headers will see your picture next to your name.',
+  'settings.avatar.xface.confirm': 'Yes, enable',
+  'settings.avatar.xface.cancel': 'No thanks',
+  'settings.avatar.upload.failed': 'Upload failed: {reason}',
+  'settings.avatar.upload.tooLarge':
+    'Image is too large after compression. Try a smaller picture.',
+
+  // ── Privacy settings ─────────────────────────────────────────────────
+  'settings.privacy.avatarLookup.label':
+    'Look up sender avatars from email metadata (Gravatar / X-Face / Face)',
+  'settings.privacy.avatarLookup.hint':
+    'When enabled, the suite contacts Gravatar with a one-way hash of each sender\'s email address to fetch their picture. Disable to keep all sender lookups local-only.',
+  'settings.privacy.avatarLookup.confirmTitle': 'Look up sender pictures from the public web?',
+  'settings.privacy.avatarLookup.confirmBody':
+    "When enabled, the suite contacts Gravatar with a one-way hash of each sender's email address to fetch their picture. The sender does not see this lookup, but Gravatar's logs do. The sender's email never leaves your device in plaintext. You can turn this off any time.",
+  'settings.privacy.avatarLookup.confirmEnable': 'Enable lookups',
+  'settings.privacy.avatarLookup.confirmCancel': 'Keep local-only',
 
   // ── App switcher ────────────────────────────────────────────────────
   'app.mail': 'Mail',

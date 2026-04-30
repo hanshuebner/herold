@@ -1,6 +1,5 @@
 /**
- * Tests for PrivacyForm.svelte — the "Remember recently-used addresses"
- * toggle (REQ-SET-15, REQ-MAIL-11m).
+ * Tests for PrivacyForm.svelte.
  *
  * Coverage:
  *   1. Toggle off writes seen_addresses_enabled: false via PATCH
@@ -61,6 +60,14 @@ vi.mock('../../lib/contacts/seen-addresses.svelte', () => ({
   },
 }));
 
+// ── Avatar resolver mock ───────────────────────────────────────────────────
+
+vi.mock('../../lib/mail/avatar-resolver.svelte', () => ({
+  avatarEmailMetadataEnabled: () => true,
+  setAvatarEmailMetadataEnabled: vi.fn(),
+  clearAvatarCache: vi.fn(),
+}));
+
 beforeEach(() => {
   vi.clearAllMocks();
   // Default: server returns enabled=true.
@@ -69,39 +76,46 @@ beforeEach(() => {
 });
 
 describe('PrivacyForm', () => {
-  it('renders the toggle checkbox', async () => {
-    const { getByRole } = render(PrivacyForm);
+  it('renders the seen-addresses toggle checkbox', async () => {
+    const { getByLabelText } = render(PrivacyForm);
     await waitFor(() => {
-      const checkbox = getByRole('checkbox');
+      const checkbox = getByLabelText('Remember recently-used addresses');
       expect(checkbox).toBeInTheDocument();
     });
   });
 
   it('toggle off calls PATCH with seen_addresses_enabled: false', async () => {
     mockPatch.mockResolvedValue({ id: '42', seen_addresses_enabled: false });
-    const { getByRole } = render(PrivacyForm);
+    const { getByLabelText } = render(PrivacyForm);
 
     await waitFor(() => expect(mockGet).toHaveBeenCalled());
 
-    const checkbox = getByRole('checkbox') as HTMLInputElement;
+    const checkboxLabel = getByLabelText('Remember recently-used addresses');
+    const checkbox = checkboxLabel.querySelector(
+      'input[type=checkbox]',
+    ) as HTMLInputElement;
+    await waitFor(() => expect(checkbox.disabled).toBe(false));
     // Simulate unchecking.
     await fireEvent.change(checkbox, { target: { checked: false } });
 
     await waitFor(() => {
-      expect(mockPatch).toHaveBeenCalledWith(
-        '/api/v1/principals/42',
-        { seen_addresses_enabled: false },
-      );
+      expect(mockPatch).toHaveBeenCalledWith('/api/v1/principals/42', {
+        seen_addresses_enabled: false,
+      });
     });
   });
 
   it('toggle off clears the local seenAddresses store on success', async () => {
     mockPatch.mockResolvedValue({ id: '42', seen_addresses_enabled: false });
-    const { getByRole } = render(PrivacyForm);
+    const { getByLabelText } = render(PrivacyForm);
 
     await waitFor(() => expect(mockGet).toHaveBeenCalled());
 
-    const checkbox = getByRole('checkbox') as HTMLInputElement;
+    const checkboxLabel = getByLabelText('Remember recently-used addresses');
+    const checkbox = checkboxLabel.querySelector(
+      'input[type=checkbox]',
+    ) as HTMLInputElement;
+    await waitFor(() => expect(checkbox.disabled).toBe(false));
     await fireEvent.change(checkbox, { target: { checked: false } });
 
     await waitFor(() => {
@@ -114,18 +128,21 @@ describe('PrivacyForm', () => {
     mockGet.mockResolvedValue({ id: '42', seen_addresses_enabled: false });
     mockPatch.mockResolvedValue({ id: '42', seen_addresses_enabled: true });
 
-    const { getByRole } = render(PrivacyForm);
+    const { getByLabelText } = render(PrivacyForm);
 
     await waitFor(() => expect(mockGet).toHaveBeenCalled());
 
-    const checkbox = getByRole('checkbox') as HTMLInputElement;
+    const checkboxLabel = getByLabelText('Remember recently-used addresses');
+    const checkbox = checkboxLabel.querySelector(
+      'input[type=checkbox]',
+    ) as HTMLInputElement;
+    await waitFor(() => expect(checkbox.disabled).toBe(false));
     await fireEvent.change(checkbox, { target: { checked: true } });
 
     await waitFor(() => {
-      expect(mockPatch).toHaveBeenCalledWith(
-        '/api/v1/principals/42',
-        { seen_addresses_enabled: true },
-      );
+      expect(mockPatch).toHaveBeenCalledWith('/api/v1/principals/42', {
+        seen_addresses_enabled: true,
+      });
     });
   });
 
@@ -133,10 +150,14 @@ describe('PrivacyForm', () => {
     mockGet.mockResolvedValue({ id: '42', seen_addresses_enabled: false });
     mockPatch.mockResolvedValue({ id: '42', seen_addresses_enabled: true });
 
-    const { getByRole } = render(PrivacyForm);
+    const { getByLabelText } = render(PrivacyForm);
     await waitFor(() => expect(mockGet).toHaveBeenCalled());
 
-    const checkbox = getByRole('checkbox') as HTMLInputElement;
+    const checkboxLabel = getByLabelText('Remember recently-used addresses');
+    const checkbox = checkboxLabel.querySelector(
+      'input[type=checkbox]',
+    ) as HTMLInputElement;
+    await waitFor(() => expect(checkbox.disabled).toBe(false));
     await fireEvent.change(checkbox, { target: { checked: true } });
 
     await waitFor(() => expect(mockPatch).toHaveBeenCalled());
@@ -147,10 +168,14 @@ describe('PrivacyForm', () => {
     const { ApiError } = await import('../../lib/api/client');
     mockPatch.mockRejectedValue(new ApiError(500, 'Server error'));
 
-    const { getByRole, findByRole } = render(PrivacyForm);
+    const { getByLabelText, findByRole } = render(PrivacyForm);
     await waitFor(() => expect(mockGet).toHaveBeenCalled());
 
-    const checkbox = getByRole('checkbox') as HTMLInputElement;
+    const checkboxLabel = getByLabelText('Remember recently-used addresses');
+    const checkbox = checkboxLabel.querySelector(
+      'input[type=checkbox]',
+    ) as HTMLInputElement;
+    await waitFor(() => expect(checkbox.disabled).toBe(false));
     await fireEvent.change(checkbox, { target: { checked: false } });
 
     // Should show an error message.

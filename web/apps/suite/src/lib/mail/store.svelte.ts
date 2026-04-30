@@ -670,6 +670,85 @@ class MailStore {
   }
 
   /**
+   * Update the avatar blob ID for the identity identified by `identityId`
+   * via `Identity/set update`. Pass null to clear the avatar. Mirrors the
+   * change into the local identities cache immediately (optimistic update)
+   * so the settings view reflects the new state without a round-trip.
+   *
+   * This writes the herold extension property `avatarBlobId`. The server-
+   * side handler lands separately; until it does, the server may return an
+   * `invalidProperties` error which will surface as a toast from the caller.
+   */
+  async updateIdentityAvatar(identityId: string, blobId: string | null): Promise<void> {
+    const accountId = this.mailAccountId;
+    if (!accountId) throw new Error('No Mail account on this session');
+
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Identity/set',
+        {
+          accountId,
+          update: {
+            [identityId]: { avatarBlobId: blobId },
+          },
+        },
+        [Capability.Submission],
+      );
+    });
+    strict(responses);
+
+    const result = invocationArgs<{
+      notUpdated?: Record<string, { type: string; description?: string }>;
+    }>(responses[0]);
+    const failure = result.notUpdated?.[identityId];
+    if (failure) {
+      throw new Error(failure.description ?? failure.type);
+    }
+
+    const next = new Map(this.identities);
+    const cur = next.get(identityId);
+    if (cur) next.set(identityId, { ...cur, avatarBlobId: blobId });
+    this.identities = next;
+  }
+
+  /**
+   * Update the `xFaceEnabled` extension property for the identity identified
+   * by `identityId` via `Identity/set update`. Mirrors the change into the
+   * local identities cache immediately.
+   */
+  async updateIdentityXFaceEnabled(identityId: string, enabled: boolean): Promise<void> {
+    const accountId = this.mailAccountId;
+    if (!accountId) throw new Error('No Mail account on this session');
+
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Identity/set',
+        {
+          accountId,
+          update: {
+            [identityId]: { xFaceEnabled: enabled },
+          },
+        },
+        [Capability.Submission],
+      );
+    });
+    strict(responses);
+
+    const result = invocationArgs<{
+      notUpdated?: Record<string, { type: string; description?: string }>;
+    }>(responses[0]);
+    const failure = result.notUpdated?.[identityId];
+    if (failure) {
+      throw new Error(failure.description ?? failure.type);
+    }
+
+    const next = new Map(this.identities);
+    const cur = next.get(identityId);
+    if (cur) next.set(identityId, { ...cur, xFaceEnabled: enabled });
+    this.identities = next;
+  }
+
+  /**
    * Load the email list for the given folder. Idempotent: when the
    * requested folder is already showing 'ready' state, the call is a
    * no-op so route effects can fire freely. Switching to a different

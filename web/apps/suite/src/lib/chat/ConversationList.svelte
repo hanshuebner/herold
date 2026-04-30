@@ -8,6 +8,7 @@
 
   import { chat } from './store.svelte';
   import { auth } from '../auth/auth.svelte';
+  import Avatar from '../avatar/Avatar.svelte';
   import type { Conversation } from './types';
 
   interface Props {
@@ -65,7 +66,11 @@
               aria-current={conv.id === activeId ? 'true' : undefined}
             >
               <span class="avatar-wrap" aria-hidden="true">
-                <span class="avatar">{conv.name.charAt(0).toUpperCase()}</span>
+                <Avatar
+                  email=""
+                  fallbackInitial={conv.name.charAt(0).toUpperCase()}
+                  size={32}
+                />
                 {#if otherId}
                   <span
                     class="presence-dot {presenceClass(otherId)}"

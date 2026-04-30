@@ -28,6 +28,7 @@
   import { chatTimestampGroupingSeconds } from '../auth/capabilities';
   import EmojiPicker from '../mail/EmojiPicker.svelte';
   import Lightbox from '../preview/Lightbox.svelte';
+  import Avatar from '../avatar/Avatar.svelte';
   import type { Message, Conversation } from './types';
 
   interface Props {
@@ -539,9 +540,11 @@
           {:else}
             <div class="bubble-row" class:mine={isMine(msg.senderPrincipalId)}>
               {#if !isMine(msg.senderPrincipalId) && conversation.kind !== 'dm'}
-                <span class="avatar" aria-hidden="true">
-                  {senderName(msg.senderPrincipalId).charAt(0).toUpperCase()}
-                </span>
+                <Avatar
+                  email=""
+                  fallbackInitial={senderName(msg.senderPrincipalId).charAt(0).toUpperCase()}
+                  size={32}
+                />
               {/if}
 
               <div class="bubble" class:mine={isMine(msg.senderPrincipalId)}>
@@ -788,20 +791,6 @@
 
   .bubble-row.mine {
     flex-direction: row-reverse;
-  }
-
-  .avatar {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: var(--radius-pill);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    font-size: var(--type-helper-text-01-size);
-    font-weight: 600;
-    flex-shrink: 0;
   }
 
   .bubble {

@@ -192,6 +192,36 @@ export const de = {
   'settings.save': 'Speichern',
   'settings.saved': 'Einstellungen gespeichert',
   'settings.saveFailed': 'Einstellungen konnten nicht gespeichert werden',
+  'settings.avatar.title': 'Profilbild',
+  'settings.avatar.change': 'Aendern…',
+  'settings.avatar.remove': 'Entfernen',
+  'settings.avatar.pickNew': 'Datei auswaehlen',
+  'settings.avatar.applyToAll.title':
+    'Dieses Profilbild fuer alle Identitaeten verwenden?',
+  'settings.avatar.applyToAll.message':
+    'Sie haben {count} Identitaeten. Dieses Bild auf alle anwenden?',
+  'settings.avatar.applyToAll.confirm': 'Ja, auf alle anwenden',
+  'settings.avatar.applyToAll.cancel': 'Nur diese Identitaet',
+  'settings.avatar.xface.title': 'Profilbild in ausgehender Post einbetten?',
+  'settings.avatar.xface.message':
+    'Wenn aktiviert, wird Ihr Profilbild als X-Face / Face-Header an jede Nachricht angehaengt, die Sie von dieser Identitaet senden. Empfaenger mit E-Mail-Clients, die diese Header unterstuetzen, sehen Ihr Bild neben Ihrem Namen.',
+  'settings.avatar.xface.confirm': 'Ja, aktivieren',
+  'settings.avatar.xface.cancel': 'Nein, danke',
+  'settings.avatar.upload.failed': 'Hochladen fehlgeschlagen: {reason}',
+  'settings.avatar.upload.tooLarge':
+    'Bild ist nach Komprimierung zu gross. Bitte ein kleineres waehlen.',
+
+  // ── Datenschutzeinstellungen ──────────────────────────────────────────
+  'settings.privacy.avatarLookup.label':
+    'Absenderbilder aus E-Mail-Metadaten abrufen (Gravatar / X-Face / Face)',
+  'settings.privacy.avatarLookup.hint':
+    'Wenn aktiviert, kontaktiert die Suite Gravatar mit einem Einweg-Hash der E-Mail-Adresse jedes Absenders, um deren Bild abzurufen. Deaktivieren, um alle Absendersuchen lokal zu halten.',
+  'settings.privacy.avatarLookup.confirmTitle':
+    'Absenderbilder aus dem oeffentlichen Web abrufen?',
+  'settings.privacy.avatarLookup.confirmBody':
+    'Wenn aktiviert, kontaktiert die Suite Gravatar mit einem Einweg-Hash der E-Mail-Adresse jedes Absenders. Der Absender sieht diese Abfrage nicht, aber Gravitars Protokolle schon. Die E-Mail-Adresse des Absenders verlaesst Ihr Geraet nie im Klartext. Sie koennen dies jederzeit deaktivieren.',
+  'settings.privacy.avatarLookup.confirmEnable': 'Suche aktivieren',
+  'settings.privacy.avatarLookup.confirmCancel': 'Nur lokal bleiben',
 
   // ── App switcher ────────────────────────────────────────────────────
   'app.mail': 'Mail',

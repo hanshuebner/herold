@@ -105,14 +105,38 @@
     overlayButtons = buttons;
   }
 
+  function recomputeHeight(): void {
+    const doc = frameEl?.contentDocument;
+    if (!doc?.body) return;
+    height = Math.max(doc.body.scrollHeight + 8, 120);
+    computeOverlay();
+  }
+
   function onLoad(): void {
     const doc = frameEl?.contentDocument;
     if (!doc?.body) return;
     requestAnimationFrame(() => {
-      if (!doc.body) return;
-      height = Math.max(doc.body.scrollHeight + 8, 120);
-      computeOverlay();
+      recomputeHeight();
     });
+    // The trimmed-quote `<details>` element grows the body when the user
+    // opens it; without this listener the iframe's outer height stays
+    // pinned to the initial measurement and the revealed quote ends up
+    // below the visible viewport, requiring an awkward scroll to read.
+    // The `toggle` event bubbles up to `document` from any <details>
+    // inside, so a single listener catches every quoted-region open /
+    // close. We also re-measure on `load` of any image inside the body
+    // so picture-heavy bodies do not clip when external images finally
+    // resolve.
+    doc.addEventListener(
+      'toggle',
+      () => requestAnimationFrame(recomputeHeight),
+      true,
+    );
+    doc.addEventListener(
+      'load',
+      () => requestAnimationFrame(recomputeHeight),
+      true,
+    );
   }
 
   // Recompute overlay whenever the iframe height changes (i.e. when images
