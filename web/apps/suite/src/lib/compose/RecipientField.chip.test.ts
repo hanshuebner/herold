@@ -86,3 +86,55 @@ describe('RecipientField chip label rendering (issue #45)', () => {
     expect(label.getAttribute('title')).toBe('long@example.com');
   });
 });
+
+describe('RecipientField blur commits a complete address (REQ-MAIL-11t)', () => {
+  it('typing a complete address and blurring commits it as a chip', async () => {
+    const onChipsChange = vi.fn();
+    const onWarning = vi.fn();
+    const { container } = render(RecipientField, {
+      label: 'To',
+      chips: [],
+      onChipsChange,
+      onWarning,
+    });
+    const input = container.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+
+    input.focus();
+    input.value = 'alice@example.com';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.blur();
+
+    // onBlur defers commit by 120 ms to allow click-on-suggestion to win.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(onChipsChange).toHaveBeenCalledTimes(1);
+    const chips = onChipsChange.mock.calls[0]?.[0] as Recipient[];
+    expect(chips).toHaveLength(1);
+    expect(chips[0]).toMatchObject({ email: 'alice@example.com' });
+  });
+
+  it('typing an unparseable buffer and blurring leaves a warning, not a chip', async () => {
+    const onChipsChange = vi.fn();
+    const onWarning = vi.fn();
+    const { container } = render(RecipientField, {
+      label: 'To',
+      chips: [],
+      onChipsChange,
+      onWarning,
+    });
+    const input = container.querySelector('input[type="text"]') as HTMLInputElement;
+
+    input.focus();
+    input.value = 'not-an-email';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.blur();
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(onChipsChange).not.toHaveBeenCalled();
+    // The latest onWarning call must surface the unrecognised text.
+    const lastCall = onWarning.mock.calls.at(-1);
+    expect(lastCall?.[0]).toMatch(/Couldn't recognize/);
+  });
+});

@@ -81,6 +81,19 @@
     // Defer so a click on a suggestion registers first.
     setTimeout(() => {
       isOpen = false;
+      // REQ-MAIL-11d (clarified): commit the buffer to a chip when it
+      // parses as a structurally complete address. The user moving
+      // focus elsewhere is treated as confirmation that the typed
+      // address is final, the same way Tab / Enter / comma already do.
+      // Without this, a user who types alice@x.test and clicks into
+      // the Subject field would see "At least one recipient is
+      // required" on Send because the buffer never reaches the chip
+      // array (issue addressed in 2026-04-30).
+      if (buffer.trim() && isStructurallyComplete(buffer)) {
+        if (commitBuffer()) {
+          return;
+        }
+      }
       checkWarning();
     }, 120);
   }

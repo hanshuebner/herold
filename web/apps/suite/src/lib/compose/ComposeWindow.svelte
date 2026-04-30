@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { compose, bodyTextWithoutSignature, type Recipient } from './compose.svelte';
+  import { compose, bodyHasContent, type Recipient } from './compose.svelte';
   import { composeStack } from './compose-stack.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
   import { mail } from '../mail/store.svelte';
@@ -210,8 +210,10 @@
     const subjectEmpty = compose.subject.trim().length === 0;
     // Treat the auto-inserted signature as not-user-authored, so a body
     // that contains only the signature still triggers the empty-body
-    // warning (issue #21).
-    const bodyEmpty = bodyTextWithoutSignature(compose.body).length === 0;
+    // warning (REQ-MAIL-19, issue #21). Inline images count as body —
+    // a message of "just pictures" is intentional content and must not
+    // be flagged (REQ-MAIL-18a).
+    const bodyEmpty = !bodyHasContent(compose.body);
     if (subjectEmpty || bodyEmpty) {
       const missing = subjectEmpty && bodyEmpty
         ? 'subject and body'

@@ -22,6 +22,7 @@ const {
   formatBytes,
   appendSignature,
   bodyTextWithoutSignature,
+  bodyHasContent,
   rewriteInlineImageURLs,
   buildBodyStructure,
   buildAttachmentParts,
@@ -340,6 +341,43 @@ describe('bodyTextWithoutSignature', () => {
 
   it('handles &nbsp; whitespace from rich editors', () => {
     expect(bodyTextWithoutSignature('<p>&nbsp;</p>')).toBe('');
+  });
+});
+
+describe('bodyHasContent (REQ-MAIL-18 / REQ-MAIL-18a)', () => {
+  it('returns false for an empty body', () => {
+    expect(bodyHasContent('')).toBe(false);
+    expect(bodyHasContent('<p></p>')).toBe(false);
+    expect(bodyHasContent('<p>&nbsp;</p>')).toBe(false);
+  });
+
+  it('returns false when only the signature is present (REQ-MAIL-19)', () => {
+    const sigBlock =
+      '<p></p><p></p><p>-- </p><p>Hans</p><p>h@example.test</p>';
+    expect(bodyHasContent(sigBlock)).toBe(false);
+  });
+
+  it('returns true when there is text content', () => {
+    expect(bodyHasContent('<p>Hi there</p>')).toBe(true);
+  });
+
+  it('returns true when there is an inline image, even with no text (REQ-MAIL-18a)', () => {
+    expect(bodyHasContent('<p><img src="cid:abc"></p>')).toBe(true);
+    expect(bodyHasContent('<img src="blob:https://app.test/foo">')).toBe(true);
+  });
+
+  it('returns true when an image is the only non-signature content', () => {
+    const sigBlockWithImage =
+      '<p><img src="cid:abc"></p><p>-- </p><p>Hans</p>';
+    expect(bodyHasContent(sigBlockWithImage)).toBe(true);
+  });
+
+  it('returns true for a self-closing tag <img/>', () => {
+    expect(bodyHasContent('<img />')).toBe(true);
+  });
+
+  it('matches <img> case-insensitively', () => {
+    expect(bodyHasContent('<IMG src="cid:abc">')).toBe(true);
   });
 });
 

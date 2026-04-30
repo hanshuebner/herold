@@ -1412,6 +1412,24 @@ export function bodyTextWithoutSignature(html: string): string {
 }
 
 /**
+ * Decide whether the compose body has user-visible content for the
+ * send-without-content warning (REQ-MAIL-18 / REQ-MAIL-18a).
+ *
+ * Returns true when the body has either:
+ *   - non-empty text after stripping the auto-inserted signature
+ *     (REQ-MAIL-19), OR
+ *   - at least one `<img>` element (inline images count as body
+ *     content per REQ-MAIL-18a; a message of "just pictures" is
+ *     intentional and must not trigger the warning).
+ *
+ * Returns false when the body is "empty" for the warning's purposes.
+ */
+export function bodyHasContent(html: string): boolean {
+  if (/<img\b/i.test(html)) return true;
+  return bodyTextWithoutSignature(html).length > 0;
+}
+
+/**
  * Convert plain-text body content to a paragraph-broken HTML block. Used
  * when quoting parent bodies in reply / forward — ProseMirror parses the
  * resulting HTML cleanly.
@@ -1480,6 +1498,7 @@ export const _internals_forTest = {
   formatBytes,
   appendSignature,
   bodyTextWithoutSignature,
+  bodyHasContent,
   rewriteInlineImageURLs,
   buildBodyStructure,
   buildAttachmentParts,
