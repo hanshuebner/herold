@@ -182,13 +182,13 @@ func (i *importHandler) importOne(
 			Description: "mailboxIds must list at least one mailbox",
 		}, nil
 	}
-	if len(in.MailboxIDs) > 1 {
-		return jmapEmail{}, &setError{
-			Type: "invalidProperties", Properties: []string{"mailboxIds"},
-			Description: "v1 supports a single mailbox per import",
-		}, nil
-	}
-	var mailboxID store.MailboxID
+	// JMAP Email/import accepts a {mailboxId: true} map identifying every
+	// mailbox the imported message should be linked into. Migration 0024
+	// (multi-mailbox membership) lets the store represent that natively
+	// via message_mailboxes; we walk the input map, validate each id is
+	// real and owned by the requesting principal, and pass the full set
+	// through to InsertMessage.
+	mailboxIDs := make([]store.MailboxID, 0, len(in.MailboxIDs))
 	for raw, present := range in.MailboxIDs {
 		if !present {
 			continue
@@ -200,22 +200,28 @@ func (i *importHandler) importOne(
 				Description: "mailboxIds carries an unparseable id",
 			}, nil
 		}
-		mailboxID = id
-	}
-	mb, err := i.h.store.Meta().GetMailboxByID(ctx, mailboxID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		mb, err := i.h.store.Meta().GetMailboxByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return jmapEmail{}, &setError{
+					Type: "invalidProperties", Properties: []string{"mailboxIds"},
+					Description: "mailbox does not exist",
+				}, nil
+			}
+			return jmapEmail{}, nil, err
+		}
+		if mb.PrincipalID != pid {
 			return jmapEmail{}, &setError{
-				Type: "invalidProperties", Properties: []string{"mailboxIds"},
-				Description: "mailbox does not exist",
+				Type:        "forbidden",
+				Description: "mailboxIds includes a mailbox not owned by the requesting principal",
 			}, nil
 		}
-		return jmapEmail{}, nil, err
+		mailboxIDs = append(mailboxIDs, id)
 	}
-	if mb.PrincipalID != pid {
+	if len(mailboxIDs) == 0 {
 		return jmapEmail{}, &setError{
-			Type:        "forbidden",
-			Description: "v1 does not allow importing into a non-owned mailbox",
+			Type: "invalidProperties", Properties: []string{"mailboxIds"},
+			Description: "mailboxIds must list at least one mailbox set to true",
 		}, nil
 	}
 
@@ -272,11 +278,15 @@ func (i *importHandler) importOne(
 		Blob:         ref,
 		Envelope:     env,
 	}
-	uid, modseq, err := i.h.store.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{
-		MailboxID: mailboxID,
-		Flags:     flags,
-		Keywords:  customKW,
-	}})
+	memberships := make([]store.MessageMailbox, 0, len(mailboxIDs))
+	for _, mid := range mailboxIDs {
+		memberships = append(memberships, store.MessageMailbox{
+			MailboxID: mid,
+			Flags:     flags,
+			Keywords:  customKW,
+		})
+	}
+	uid, modseq, err := i.h.store.Meta().InsertMessage(ctx, msg, memberships)
 	if err != nil {
 		if errors.Is(err, store.ErrQuotaExceeded) {
 			return jmapEmail{}, &setError{
