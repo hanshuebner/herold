@@ -28,12 +28,16 @@ func (f *ftsStub) Query(ctx context.Context, principalID store.PrincipalID, q st
 	if q.Limit <= 0 || q.Limit > 1000 {
 		q.Limit = 1000
 	}
+	// Multi-mailbox membership (migration 0024): mailbox_id moved off
+	// the messages row onto message_mailboxes. The principal scope uses
+	// the denorm column messages.principal_id; mailbox scoping (when
+	// q.MailboxID is set) joins via message_mailboxes.
 	terms := collectTerms(q)
-	where := []string{"m.mailbox_id IN (SELECT id FROM mailboxes WHERE principal_id = $1)"}
+	where := []string{"m.principal_id = $1"}
 	args := []any{int64(principalID)}
 	argIdx := 2
 	if q.MailboxID != 0 {
-		where = append(where, "m.mailbox_id = $"+itoa(argIdx))
+		where = append(where, "EXISTS (SELECT 1 FROM message_mailboxes mm WHERE mm.message_id = m.id AND mm.mailbox_id = $"+itoa(argIdx)+")")
 		args = append(args, int64(q.MailboxID))
 		argIdx++
 	}
@@ -48,7 +52,7 @@ func (f *ftsStub) Query(ctx context.Context, principalID store.PrincipalID, q st
 		args = append(args, "%"+strings.ToLower(term)+"%")
 		argIdx++
 	}
-	query := `SELECT m.id, m.mailbox_id FROM messages m WHERE ` +
+	query := `SELECT m.id FROM messages m WHERE ` +
 		strings.Join(where, " AND ") +
 		` ORDER BY m.received_at_us DESC LIMIT $` + itoa(argIdx)
 	args = append(args, q.Limit)
@@ -60,13 +64,12 @@ func (f *ftsStub) Query(ctx context.Context, principalID store.PrincipalID, q st
 	defer rows.Close()
 	var out []store.MessageRef
 	for rows.Next() {
-		var id, mbox int64
-		if err := rows.Scan(&id, &mbox); err != nil {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
 		out = append(out, store.MessageRef{
 			MessageID: store.MessageID(id),
-			MailboxID: store.MailboxID(mbox),
 			Score:     1,
 		})
 	}
