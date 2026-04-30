@@ -107,12 +107,12 @@
     return Boolean(email.hasAttachment);
   });
 
-  // Relative annotation shown only in the expanded header, e.g. "(17 hours ago)".
-  // The label is computed once at mount time; a per-mount absolute label is
-  // fine -- the annotation is approximate by nature and a live ticker would
-  // add complexity with negligible UX gain.
+  // Relative annotation appended to the date in both collapsed and
+  // expanded headers, e.g. "(17 hours ago)". The label is computed once
+  // per render; a live ticker would add complexity with negligible UX
+  // gain — the annotation is approximate by nature.
   let relativeAnnotation = $derived(
-    expanded ? `(${relativeTimeAgo(new Date(email.receivedAt))})` : '',
+    `(${relativeTimeAgo(new Date(email.receivedAt))})`,
   );
 
   // Show the Reply-all button only when there's somebody to add to Cc:
