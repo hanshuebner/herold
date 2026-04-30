@@ -321,33 +321,34 @@
         action: () => mail.toggleSelectAllVisible(effectiveListEmailIds),
       },
     ];
+    // Archive is inbox-only: archiving from Sent / Drafts / Trash has no
+    // well-defined semantic so we keep the binding scoped.
     if (isInboxRoute) {
-      layer.push(
-        {
-          key: 'e',
-          description: 'Archive',
-          action: () => {
-            const id = focusedEmailId();
-            if (id) void mail.archiveEmail(id);
-          },
+      layer.push({
+        key: 'e',
+        description: 'Archive',
+        action: () => {
+          const id = focusedEmailId();
+          if (id) void mail.archiveEmail(id);
         },
-        {
-          key: '#',
-          description: 'Delete',
-          action: () => {
-            const id = focusedEmailId();
-            if (!id) return;
-            // In trash: '#' permanently destroys (with prompt). Issue
-            // #29. Elsewhere it moves to trash silently with Undo.
-            if (folder === 'trash') {
-              void confirmAndDestroy(id);
-            } else {
-              void mail.deleteEmail(id);
-            }
-          },
-        },
-      );
+      });
     }
+    // Delete is available in every folder list (re #29):
+    //   - Outside Trash: silently move to Trash with an Undo toast.
+    //   - Inside Trash: permanent destroy with a confirm prompt.
+    layer.push({
+      key: '#',
+      description: 'Delete',
+      action: () => {
+        const id = focusedEmailId();
+        if (!id) return;
+        if (folder === 'trash') {
+          void confirmAndDestroy(id);
+        } else {
+          void mail.deleteEmail(id);
+        }
+      },
+    });
     if (folder === 'trash') {
       layer.push({
         key: 'Z',
@@ -503,8 +504,7 @@
   async function confirmAndDestroy(id: string): Promise<void> {
     const ok = await confirm.ask({
       title: 'Delete this message permanently?',
-      message:
-        'This message will be removed from the server and cannot be restored.',
+      message: "Permanently delete this message? It can't be recovered.",
       confirmLabel: 'Delete permanently',
       cancelLabel: 'Cancel',
       kind: 'danger',
@@ -519,10 +519,10 @@
     // the messages), so it should not prompt. Permanently destroying
     // from inside Trash is not reversible -- prompt for confirmation.
     if (folder === 'trash') {
+      const n = ids.length;
       const ok = await confirm.ask({
-        title: `Delete ${ids.length} message${ids.length === 1 ? '' : 's'} permanently?`,
-        message:
-          'These messages will be removed from the server and cannot be restored.',
+        title: `Permanently delete ${n} message${n === 1 ? '' : 's'}?`,
+        message: `Permanently delete ${n} message${n === 1 ? '' : 's'}? They can't be recovered.`,
         confirmLabel: 'Delete permanently',
         cancelLabel: 'Cancel',
         kind: 'danger',
