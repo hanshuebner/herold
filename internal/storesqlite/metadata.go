@@ -1003,6 +1003,115 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message, targets
 	return firstUID, firstModSeq, nil
 }
 
+func (m *metadata) ReplaceMessageBody(
+	ctx context.Context,
+	id store.MessageID,
+	ref store.BlobRef,
+	size int64,
+	env store.Envelope,
+) error {
+	now := m.s.clock.Now().UTC()
+	if env.MessageID != "" {
+		env.MessageID = mailparse.NormalizeMessageID(env.MessageID)
+	}
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		// Load the current message row so we can compute the byte
+		// delta and unref the old blob.
+		var pid, oldSize int64
+		var oldHash string
+		err := tx.QueryRowContext(ctx, `
+			SELECT principal_id, blob_hash, size FROM messages WHERE id = ?`,
+			int64(id)).Scan(&pid, &oldHash, &oldSize)
+		if err != nil {
+			return mapErr(err)
+		}
+		// Quota check on growth.
+		if delta := size - oldSize; delta > 0 {
+			var quota, used int64
+			if err := tx.QueryRowContext(ctx,
+				`SELECT quota_bytes, used_bytes FROM principals WHERE id = ?`, pid).Scan(&quota, &used); err != nil {
+				return mapErr(err)
+			}
+			if quota > 0 && used+delta > quota {
+				return store.ErrQuotaExceeded
+			}
+		}
+		// Update the messages row with the new blob + envelope.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE messages
+			   SET blob_hash = ?, blob_size = ?, size = ?,
+			       env_subject = ?, env_from = ?, env_to = ?, env_cc = ?, env_bcc = ?, env_reply_to = ?,
+			       env_message_id = ?, env_in_reply_to = ?, env_date_us = ?
+			 WHERE id = ?`,
+			ref.Hash, ref.Size, size,
+			env.Subject, env.From, env.To, env.Cc, env.Bcc, env.ReplyTo,
+			env.MessageID, env.InReplyTo, usMicros(env.Date),
+			int64(id),
+		); err != nil {
+			return mapErr(err)
+		}
+		// Adjust principal used_bytes.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE principals SET used_bytes = used_bytes + ?, updated_at_us = ? WHERE id = ?`,
+			size-oldSize, usMicros(now), pid); err != nil {
+			return mapErr(err)
+		}
+		// Refcount: dec old, inc new (skip when identical hash, which
+		// happens when the rewrite produces a byte-identical blob).
+		if oldHash != ref.Hash {
+			if err := decRef(ctx, tx, oldHash, now); err != nil {
+				return err
+			}
+			if err := incRef(ctx, tx, ref.Hash, ref.Size, now); err != nil {
+				return err
+			}
+		}
+		// Bump every membership's modseq + mailbox highest_modseq, and
+		// emit one EntityKindEmail/ChangeOpUpdated entry per mailbox so
+		// that JMAP Email/changes and IMAP CONDSTORE both observe the
+		// rewrite.
+		rows, err := tx.QueryContext(ctx,
+			`SELECT mailbox_id FROM message_mailboxes WHERE message_id = ?`, int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		var mailboxIDs []int64
+		for rows.Next() {
+			var mb int64
+			if err := rows.Scan(&mb); err != nil {
+				rows.Close()
+				return mapErr(err)
+			}
+			mailboxIDs = append(mailboxIDs, mb)
+		}
+		rows.Close()
+		for _, mb := range mailboxIDs {
+			var highest int64
+			if err := tx.QueryRowContext(ctx,
+				`SELECT highest_modseq FROM mailboxes WHERE id = ?`, mb).Scan(&highest); err != nil {
+				return mapErr(err)
+			}
+			newModSeq := highest + 1
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE message_mailboxes SET modseq = ? WHERE message_id = ? AND mailbox_id = ?`,
+				newModSeq, int64(id), mb); err != nil {
+				return mapErr(err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE mailboxes SET highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
+				newModSeq, usMicros(now), mb); err != nil {
+				return mapErr(err)
+			}
+			if err := appendStateChange(ctx, tx, store.PrincipalID(pid),
+				store.EntityKindEmail, uint64(id), uint64(mb),
+				store.ChangeOpUpdated, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (m *metadata) GetMessage(ctx context.Context, id store.MessageID) (store.Message, error) {
 	row := m.s.db.QueryRowContext(ctx, `
 		SELECT id, principal_id, blob_hash, blob_size, internal_date_us,

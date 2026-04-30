@@ -536,6 +536,23 @@ func (h *handlerSet) updateEmail(
 		}
 	}
 
+	// Body-or-header rebuild path. When the patch supplies any body or
+	// header field, we must re-assemble the RFC 5322 message and replace
+	// the underlying blob — otherwise the suite's autosave loop silently
+	// loses every body change made after the first save (subsequent
+	// updates only patched flags / mailboxIds, leaving the snapshot body
+	// untouched, so the user-visible bug was "I sent two images, only
+	// one arrived"). REQ-MAIL-23: Email/set update on $draft messages
+	// must rebuild the underlying blob whenever the patch carries body
+	// content or top-level header fields.
+	if needsBodyRebuild(obj) {
+		if serr, err := h.rebuildEmailBody(ctx, &m, raw, obj); err != nil {
+			return nil, err
+		} else if serr != nil {
+			return serr, nil
+		}
+	}
+
 	// Handle mailboxIds change (full replacement) or mailboxIds/<id>
 	// incremental patch. M:N membership: compute the desired set, diff
 	// against the current set, then call AddMessageToMailbox for new
@@ -738,6 +755,136 @@ func (h *handlerSet) updateEmail(
 		return nil, fmt.Errorf("email: bump state: %w", err)
 	}
 	return nil, nil
+}
+
+// bodyRebuildKeys lists the patch fields that imply a full RFC 5322
+// rebuild of the message blob: any body content key, plus the top-
+// level header fields the suite resends with every autosave on a
+// $draft. The set is closed: receivedAt / mailboxIds / keywords are
+// metadata-only and never trigger a rebuild.
+var bodyRebuildKeys = []string{
+	"bodyValues", "textBody", "htmlBody", "bodyStructure",
+	"subject", "from", "to", "cc", "bcc", "replyTo",
+	"inReplyTo", "references", "messageId", "sentAt",
+}
+
+// needsBodyRebuild reports whether the decoded patch object carries at
+// least one field from bodyRebuildKeys.
+func needsBodyRebuild(obj map[string]json.RawMessage) bool {
+	for _, k := range bodyRebuildKeys {
+		if _, ok := obj[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// rebuildEmailBody assembles a fresh RFC 5322 message from the patch
+// and the existing message envelope, writes it to the blob store, and
+// calls Metadata.ReplaceMessageBody to swap the message's blob and
+// envelope cache atomically. m is updated in place so the residual
+// flag / mailbox / snooze passes in updateEmail run against the
+// post-rebuild state.
+func (h *handlerSet) rebuildEmailBody(
+	ctx context.Context,
+	m *store.Message,
+	raw json.RawMessage,
+	obj map[string]json.RawMessage,
+) (*setError, error) {
+	var in emailCreateInput
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &in); err != nil {
+			return &setError{Type: "invalidProperties", Description: err.Error()}, nil
+		}
+	}
+	// Header fall-back: when the patch omits a header, preserve the
+	// existing envelope. The suite's autosave loop sends every header
+	// every time, so this is mostly belt-and-braces — but a manual
+	// JMAP client that only patches subject must not strip the
+	// existing From / To.
+	if _, ok := obj["subject"]; !ok {
+		s := m.Envelope.Subject
+		in.Subject = &s
+	}
+	if _, ok := obj["from"]; !ok {
+		in.From = parseEnvelopeAddressList(m.Envelope.From)
+	}
+	if _, ok := obj["to"]; !ok {
+		in.To = parseEnvelopeAddressList(m.Envelope.To)
+	}
+	if _, ok := obj["cc"]; !ok {
+		in.Cc = parseEnvelopeAddressList(m.Envelope.Cc)
+	}
+	if _, ok := obj["bcc"]; !ok {
+		in.Bcc = parseEnvelopeAddressList(m.Envelope.Bcc)
+	}
+	if _, ok := obj["replyTo"]; !ok {
+		in.ReplyTo = parseEnvelopeAddressList(m.Envelope.ReplyTo)
+	}
+	if _, ok := obj["messageId"]; !ok && m.Envelope.MessageID != "" {
+		in.MessageID = []string{m.Envelope.MessageID}
+	}
+	if _, ok := obj["inReplyTo"]; !ok && m.Envelope.InReplyTo != "" {
+		in.InReplyTo = []string{m.Envelope.InReplyTo}
+	}
+
+	if in.BodyStructure != nil && len(in.BodyValues) > 0 {
+		normaliseBodyStructure(&in)
+	}
+	if len(in.BodyValues) == 0 || (len(in.TextBody) == 0 && len(in.HtmlBody) == 0) {
+		return &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"bodyValues"},
+			Description: "body rebuild requires bodyValues + textBody/htmlBody/bodyStructure",
+		}, nil
+	}
+
+	body, err := buildEmailFromProperties(ctx, h.store.Blobs(), in, h.clk.Now(), "")
+	if err != nil {
+		return nil, fmt.Errorf("email: rebuild body: %w", err)
+	}
+	ref, err := h.store.Blobs().Put(ctx, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("email: put rebuilt body: %w", err)
+	}
+	parser := h.parseFn
+	if parser == nil {
+		parser = defaultParseFn
+	}
+	parsed, _ := parser(bytes.NewReader(body))
+	env := buildEnvelopeFromParsed(parsed)
+	if err := h.store.Meta().ReplaceMessageBody(ctx, m.ID, ref, ref.Size, env); err != nil {
+		if errors.Is(err, store.ErrQuotaExceeded) {
+			return &setError{Type: "overQuota", Description: "principal is over quota"}, nil
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			return &setError{Type: "notFound"}, nil
+		}
+		return nil, fmt.Errorf("email: replace body: %w", err)
+	}
+	// Refresh m so subsequent flag / mailbox / snooze passes run on
+	// the post-rebuild state.
+	m.Blob = ref
+	m.Size = ref.Size
+	m.Envelope = env
+	return nil, nil
+}
+
+// parseEnvelopeAddressList splits a cached envelope address list ("Name
+// <addr>, Name <addr>") into the []emailAddress shape buildEmailFromProperties
+// expects. This is a best-effort one-way conversion: the cached form is
+// already RFC 5322 normalised on the way in, so re-emitting addr-only is
+// sufficient for header round-trips.
+func parseEnvelopeAddressList(raw string) []emailAddress {
+	addrs := splitAddressList(raw)
+	if len(addrs) == 0 {
+		return nil
+	}
+	out := make([]emailAddress, 0, len(addrs))
+	for _, a := range addrs {
+		out = append(out, emailAddress{Email: a})
+	}
+	return out
 }
 
 // snoozeAction is the resolved snooze intent of a patch. snoozeSet

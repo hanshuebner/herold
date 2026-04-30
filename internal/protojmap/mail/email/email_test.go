@@ -1872,3 +1872,167 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// TestEmailSet_Update_RebuildsBody verifies that an Email/set update on a
+// $draft message that supplies new bodyValues / bodyStructure rebuilds the
+// underlying message blob. Without this rebuild the suite's autosave path
+// silently drops every body change made after the first autosave: the
+// initial create snapshots the body, subsequent updates only patch keywords
+// / mailboxIds, and Send (which is itself an update flipping $draft to
+// false) submits the stale body.
+//
+// Concrete user-visible effect (issue: "two images, only one arrived"):
+//
+//  1. user opens compose, types text, autosave creates draft (body=text).
+//  2. user inserts inline image #1, autosave updates draft.
+//  3. user inserts inline image #2, autosave updates draft.
+//  4. user clicks Send.
+//
+// Without body rebuild, the SMTP-submitted body is the step-1 snapshot
+// (text only) — both images are missing. The user reports "I sent two
+// images" because they observed both inserted in compose; the recipient
+// gets neither (or one, when the image was inserted before the first
+// autosave fired).
+//
+// This test fails on the original code and passes after Email/set update
+// rebuilds the body when bodyValues / bodyStructure / textBody / htmlBody
+// are present in the patch.
+func TestEmailSet_Update_RebuildsBody(t *testing.T) {
+	f := setupFixture(t)
+
+	// Step 1: create a draft with text-only body.
+	created, notCreated := setCreateFromBodyValues(t, f, map[string]any{
+		"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+		"keywords":   map[string]bool{"$draft": true, "$seen": true},
+		"from":       []map[string]any{{"name": "Alice", "email": "alice@example.test"}},
+		"to":         []map[string]any{{"name": "Bob", "email": "bob@example.test"}},
+		"subject":    "before image",
+		"bodyValues": map[string]any{
+			"1": map[string]any{"value": "Hello Bob, plain text only.", "isTruncated": false, "isEncodingProblem": false},
+		},
+		"textBody": []map[string]any{
+			{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+		},
+		"hasAttachment": false,
+	})
+	if len(notCreated) != 0 {
+		t.Fatalf("notCreated = %v", notCreated)
+	}
+	emailID, _ := created["draft"]["id"].(string)
+	if emailID == "" {
+		t.Fatalf("no id in created: %v", created)
+	}
+
+	// Step 2: upload an inline image and update the draft with bodyStructure
+	// referencing it. This is the autosave path the suite takes after the
+	// user inserts an inline image.
+	imgData := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}
+	blobID := f.uploadBlob(t, imgData, "image/jpeg")
+	const cid = "inl-after-update@herold.local"
+	htmlBody := `<p><img src="cid:` + cid + `"/></p>`
+	textBody := "Plain after image"
+
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			emailID: map[string]any{
+				"subject": "after image",
+				"bodyValues": map[string]any{
+					"1": map[string]any{"value": textBody, "isTruncated": false, "isEncodingProblem": false},
+					"2": map[string]any{"value": htmlBody, "isTruncated": false, "isEncodingProblem": false},
+				},
+				"textBody": []map[string]any{
+					{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+				},
+				"htmlBody": []map[string]any{
+					{"partId": "2", "type": "text/html", "charset": "utf-8"},
+				},
+				"bodyStructure": map[string]any{
+					"type": "multipart/related",
+					"subParts": []map[string]any{
+						{
+							"type": "multipart/alternative",
+							"subParts": []map[string]any{
+								{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+								{"partId": "2", "type": "text/html", "charset": "utf-8"},
+							},
+						},
+						{
+							"type":        "image/jpeg",
+							"blobId":      blobID,
+							"name":        "after.jpg",
+							"disposition": "inline",
+							"cid":         cid,
+						},
+					},
+				},
+				"hasAttachment": true,
+			},
+		},
+	})
+	var setResp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &setResp); err != nil {
+		t.Fatalf("unmarshal Email/set response: %v: %s", err, raw)
+	}
+	if len(setResp.NotUpdated) != 0 {
+		t.Fatalf("notUpdated = %v", setResp.NotUpdated)
+	}
+	if _, ok := setResp.Updated[emailID]; !ok {
+		t.Fatalf("expected updated[%s]; got %v", emailID, setResp.Updated)
+	}
+
+	// Step 3: Email/get must report the inline image in attachments
+	// with disposition=inline and cid matching the cid we sent. Without
+	// the body rebuild this fails because the underlying blob is still
+	// the step-1 text-only message.
+	_, raw = f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{emailID},
+		"properties": []string{"attachments", "hasAttachment", "subject"},
+	})
+	var getResp struct {
+		List []struct {
+			Subject     string `json:"subject"`
+			HasAtt      bool   `json:"hasAttachment"`
+			Attachments []struct {
+				Type        string  `json:"type"`
+				Disposition *string `json:"disposition"`
+				Cid         *string `json:"cid"`
+			} `json:"attachments"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal Email/get: %v: %s", err, raw)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("got %d messages, want 1: %s", len(getResp.List), raw)
+	}
+	em := getResp.List[0]
+	if em.Subject != "after image" {
+		t.Errorf("subject = %q, want %q", em.Subject, "after image")
+	}
+	if !em.HasAtt {
+		t.Errorf("hasAttachment=false, want true (raw=%s)", raw)
+	}
+	var found bool
+	for _, att := range em.Attachments {
+		if att.Type != "image/jpeg" {
+			continue
+		}
+		if att.Cid == nil || *att.Cid != cid {
+			t.Errorf("attachment cid = %v, want %q", att.Cid, cid)
+			continue
+		}
+		if att.Disposition == nil || *att.Disposition != "inline" {
+			t.Errorf("attachment disposition = %v, want \"inline\"", att.Disposition)
+			continue
+		}
+		found = true
+	}
+	if !found {
+		t.Errorf("no inline image found in attachments after update; raw=%s", raw)
+	}
+}

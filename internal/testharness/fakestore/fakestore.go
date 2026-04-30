@@ -632,6 +632,82 @@ func (m *metaFace) InsertMessage(ctx context.Context, msg store.Message, targets
 	return firstUID, firstModSeq, nil
 }
 
+func (m *metaFace) ReplaceMessageBody(
+	ctx context.Context,
+	id store.MessageID,
+	ref store.BlobRef,
+	size int64,
+	env store.Envelope,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msg, ok := s.messages[id]
+	if !ok {
+		return fmt.Errorf("message %d: %w", id, store.ErrNotFound)
+	}
+	if env.MessageID != "" {
+		env.MessageID = mailparse.NormalizeMessageID(env.MessageID)
+	}
+	// Quota check on growth.
+	if delta := size - msg.Size; delta > 0 {
+		if p, ok := s.principals[msg.PrincipalID]; ok && p.QuotaBytes > 0 {
+			var used int64
+			for _, m2 := range s.messages {
+				if m2.PrincipalID == msg.PrincipalID {
+					used += m2.Size
+				}
+			}
+			if used+delta > p.QuotaBytes {
+				return fmt.Errorf("principal %d: %w", p.ID, store.ErrQuotaExceeded)
+			}
+		}
+	}
+	oldHash := msg.Blob.Hash
+	msg.Blob = ref
+	msg.Size = size
+	msg.Envelope = env
+	now := s.clk.Now()
+	// Bump every membership's modseq + emit one ChangeOpUpdated per
+	// mailbox.
+	for k, mm := range s.msgMailboxes {
+		if k.msgID != id {
+			continue
+		}
+		mb, ok := s.mailboxes[mm.MailboxID]
+		if !ok {
+			continue
+		}
+		mb.HighestModSeq++
+		mb.UpdatedAt = now
+		s.mailboxes[mb.ID] = mb
+		mm.ModSeq = mb.HighestModSeq
+		s.msgMailboxes[k] = mm
+		s.appendStateChangeLocked(store.StateChange{
+			PrincipalID:    mb.PrincipalID,
+			Kind:           store.EntityKindEmail,
+			EntityID:       uint64(id),
+			ParentEntityID: uint64(mb.ID),
+			Op:             store.ChangeOpUpdated,
+			ProducedAt:     now,
+		})
+	}
+	s.messages[id] = msg
+	// Refcount adjustment.
+	if oldHash != ref.Hash {
+		if oldHash != "" && s.blobRefs[oldHash] > 0 {
+			s.blobRefs[oldHash]--
+		}
+		if ref.Hash != "" {
+			s.blobRefs[ref.Hash]++
+		}
+	}
+	return nil
+}
+
 func (m *metaFace) AddMessageToMailbox(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID) (store.UID, store.ModSeq, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, 0, err

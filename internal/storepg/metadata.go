@@ -818,6 +818,104 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message, targets
 	return firstUID, firstModSeq, nil
 }
 
+func (m *metadata) ReplaceMessageBody(
+	ctx context.Context,
+	id store.MessageID,
+	ref store.BlobRef,
+	size int64,
+	env store.Envelope,
+) error {
+	now := m.s.clock.Now().UTC()
+	if env.MessageID != "" {
+		env.MessageID = mailparse.NormalizeMessageID(env.MessageID)
+	}
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var pid, oldSize int64
+		var oldHash string
+		err := tx.QueryRow(ctx, `
+			SELECT principal_id, blob_hash, size FROM messages WHERE id = $1`,
+			int64(id)).Scan(&pid, &oldHash, &oldSize)
+		if err != nil {
+			return mapErr(err)
+		}
+		if delta := size - oldSize; delta > 0 {
+			var quota, used int64
+			if err := tx.QueryRow(ctx,
+				`SELECT quota_bytes, used_bytes FROM principals WHERE id = $1`, pid).Scan(&quota, &used); err != nil {
+				return mapErr(err)
+			}
+			if quota > 0 && used+delta > quota {
+				return store.ErrQuotaExceeded
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE messages
+			   SET blob_hash = $1, blob_size = $2, size = $3,
+			       env_subject = $4, env_from = $5, env_to = $6, env_cc = $7, env_bcc = $8, env_reply_to = $9,
+			       env_message_id = $10, env_in_reply_to = $11, env_date_us = $12
+			 WHERE id = $13`,
+			ref.Hash, ref.Size, size,
+			env.Subject, env.From, env.To, env.Cc, env.Bcc, env.ReplyTo,
+			env.MessageID, env.InReplyTo, usMicros(env.Date),
+			int64(id),
+		); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE principals SET used_bytes = used_bytes + $1, updated_at_us = $2 WHERE id = $3`,
+			size-oldSize, usMicros(now), pid); err != nil {
+			return mapErr(err)
+		}
+		if oldHash != ref.Hash {
+			if err := decRef(ctx, tx, oldHash, now); err != nil {
+				return err
+			}
+			if err := incRef(ctx, tx, ref.Hash, ref.Size, now); err != nil {
+				return err
+			}
+		}
+		rows, err := tx.Query(ctx,
+			`SELECT mailbox_id FROM message_mailboxes WHERE message_id = $1`, int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		var mailboxIDs []int64
+		for rows.Next() {
+			var mb int64
+			if err := rows.Scan(&mb); err != nil {
+				rows.Close()
+				return mapErr(err)
+			}
+			mailboxIDs = append(mailboxIDs, mb)
+		}
+		rows.Close()
+		for _, mb := range mailboxIDs {
+			var highest int64
+			if err := tx.QueryRow(ctx,
+				`SELECT highest_modseq FROM mailboxes WHERE id = $1`, mb).Scan(&highest); err != nil {
+				return mapErr(err)
+			}
+			newModSeq := highest + 1
+			if _, err := tx.Exec(ctx, `
+				UPDATE message_mailboxes SET modseq = $1 WHERE message_id = $2 AND mailbox_id = $3`,
+				newModSeq, int64(id), mb); err != nil {
+				return mapErr(err)
+			}
+			if _, err := tx.Exec(ctx, `
+				UPDATE mailboxes SET highest_modseq = $1, updated_at_us = $2 WHERE id = $3`,
+				newModSeq, usMicros(now), mb); err != nil {
+				return mapErr(err)
+			}
+			if err := appendStateChange(ctx, tx, store.PrincipalID(pid),
+				store.EntityKindEmail, uint64(id), uint64(mb),
+				store.ChangeOpUpdated, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (m *metadata) GetMessage(ctx context.Context, id store.MessageID) (store.Message, error) {
 	row := m.s.pool.QueryRow(ctx, `
 		SELECT id, principal_id, internal_date_us, received_at_us, size,

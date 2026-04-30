@@ -158,6 +158,31 @@ type Metadata interface {
 		unchangedSince ModSeq,
 	) (ModSeq, error)
 
+	// ReplaceMessageBody swaps the body blob and envelope cache for an
+	// existing message, preserving its MessageID, mailbox memberships,
+	// flags, and keywords. Used by JMAP Email/set update on draft messages
+	// when the patch supplies new body content (bodyValues / bodyStructure
+	// / textBody / htmlBody) or new header fields (subject, from, to, …).
+	//
+	// Atomically: updates messages.{blob_hash, blob_size, size, env_*},
+	// decrements the old blob refcount, increments the new blob refcount,
+	// adjusts the principal's used_bytes by (newSize - oldSize), bumps each
+	// mailbox membership's modseq + the mailbox's highest_modseq, and
+	// appends one (EntityKindEmail, ChangeOpUpdated) state-change entry per
+	// mailbox membership.
+	//
+	// The caller must already have written the new body via Blobs().Put;
+	// ref must point at that newly-written blob. Returns ErrNotFound if id
+	// no longer exists. Returns ErrQuotaExceeded if (newSize - oldSize) > 0
+	// and the principal would exceed its quota.
+	ReplaceMessageBody(
+		ctx context.Context,
+		id MessageID,
+		ref BlobRef,
+		size int64,
+		env Envelope,
+	) error
+
 	// ExpungeMessages removes the named messages from their mailbox,
 	// decrements blob refcounts, bumps HighestModSeq, and appends
 	// (EntityKindEmail, ChangeOpDestroyed) entries — atomically.
