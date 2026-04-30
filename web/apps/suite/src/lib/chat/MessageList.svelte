@@ -451,6 +451,15 @@
     return 'Member';
   }
 
+  /** Resolve a senderPrincipalId to its canonical email for the avatar
+   *  resolver. Empty when the sender membership is missing. */
+  function senderEmail(senderPrincipalId: string): string {
+    const member = conversation.members.find(
+      (m) => m.principalId === senderPrincipalId,
+    );
+    return member?.email ?? '';
+  }
+
   function handleToggleReaction(messageId: string, emoji: string): void {
     void chat.toggleReaction(messageId, emoji, auth.principalId ?? '');
   }
@@ -541,7 +550,7 @@
             <div class="bubble-row" class:mine={isMine(msg.senderPrincipalId)}>
               {#if !isMine(msg.senderPrincipalId) && conversation.kind !== 'dm'}
                 <Avatar
-                  email=""
+                  email={senderEmail(msg.senderPrincipalId)}
                   fallbackInitial={senderName(msg.senderPrincipalId).charAt(0).toUpperCase()}
                   size={32}
                 />

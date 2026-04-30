@@ -131,6 +131,19 @@ func resolvePrincipalEmail(ctx context.Context, meta store.Metadata, pid store.P
 	return principalDisplayName(p)
 }
 
+// resolvePrincipalContact returns both the canonical email and the
+// best-effort display name for one principal id. Used by
+// renderConversation so the wire-form member entry can carry both
+// fields — the email feeds the suite's avatar resolver (REQ-MAIL-44
+// tier 2) and the display name is shown in lists.
+func resolvePrincipalContact(ctx context.Context, meta store.Metadata, pid store.PrincipalID) (email, displayName string) {
+	p, err := meta.GetPrincipalByID(ctx, pid)
+	if err != nil {
+		return "", ""
+	}
+	return p.CanonicalEmail, principalDisplayName(p)
+}
+
 // dedupePrincipals returns the input slice with duplicates removed,
 // preserving order.
 func dedupePrincipals(xs []store.PrincipalID) []store.PrincipalID {

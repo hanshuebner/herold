@@ -259,7 +259,22 @@ async function lookupHostedPrincipalAvatar(
 
 function writeCache(key: string, url: string | null): void {
   memCache[key] = { url, ts: Date.now() };
-  saveCache(memCache);
+  // Persist only positive entries.  A negative outcome (no avatar found)
+  // is fragile — the sender's principal may have an avatar uploaded a
+  // moment after we asked, and a 24-hour persisted null would mask the
+  // update for everyone who saw the address before the upload.  In-memory
+  // negatives are still fine: they prevent thrash within one session.
+  if (url !== null) {
+    saveCache(memCache);
+  } else {
+    // Strip any stale persisted entry for this key so a previous positive
+    // result does not survive after the picture is removed.
+    const persisted = loadCache();
+    if (key in persisted) {
+      delete persisted[key];
+      saveCache(persisted);
+    }
+  }
 }
 
 /**

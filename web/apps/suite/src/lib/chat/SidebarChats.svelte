@@ -39,6 +39,16 @@
     return 'offline';
   }
 
+  /**
+   * Email of the OTHER member in a DM, used as the avatar resolver key
+   * (REQ-MAIL-44 tier 2). Empty for spaces and for malformed DMs.
+   */
+  function otherEmail(conv: Conversation): string {
+    if (conv.kind !== 'dm') return '';
+    const other = conv.members.find((m) => m.principalId !== auth.principalId);
+    return other?.email ?? '';
+  }
+
   function handleNewChat(): void {
     newChatPicker.open({ mode: 'dm' });
   }
@@ -107,7 +117,7 @@
                 <span class="avatar space">#</span>
               {:else}
                 <Avatar
-                  email=""
+                  email={otherEmail(conv)}
                   fallbackInitial={conv.name.charAt(0).toUpperCase()}
                   size={28}
                 />

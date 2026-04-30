@@ -99,6 +99,13 @@ export interface Membership {
    * Membership records returned by Membership/get.
    */
   displayName?: string;
+  /**
+   * Server-side projection of the principal's canonical email. Present on
+   * Conversation.members[] alongside displayName. Used by the suite's
+   * avatar resolver (REQ-MAIL-44) so DM avatars render without a
+   * separate Principal/query round-trip per row.
+   */
+  email?: string;
   joinedAt: string; // UTCDate
   /**
    * The last Message id this member has read. Wire field name matches

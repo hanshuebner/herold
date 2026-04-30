@@ -153,9 +153,10 @@ func renderConversation(ctx context.Context, meta store.Metadata, c store.ChatCo
 	}
 	var unreadAnchor *store.ChatMessageID
 	for _, m := range members {
-		displayName := resolvePrincipalEmail(ctx, meta, m.PrincipalID)
+		email, displayName := resolvePrincipalContact(ctx, meta, m.PrincipalID)
 		out.Members = append(out.Members, jmapConversationMember{
 			PrincipalID: jmapIDFromPrincipal(m.PrincipalID),
+			Email:       email,
 			DisplayName: displayName,
 			Role:        m.Role,
 			JoinedAt:    m.JoinedAt.UTC().Format(rfc3339Layout),

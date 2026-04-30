@@ -44,6 +44,13 @@
     const other = mems.find((m) => m.principalId !== auth.principalId);
     return other?.principalId ?? null;
   }
+
+  /** Email of the OTHER DM member, used as the avatar resolver key. */
+  function otherEmail(conv: Conversation): string {
+    if (conv.kind !== 'dm') return '';
+    const other = conv.members.find((m) => m.principalId !== auth.principalId);
+    return other?.email ?? '';
+  }
 </script>
 
 <nav class="conv-list" aria-label="Conversations">
@@ -67,7 +74,7 @@
             >
               <span class="avatar-wrap" aria-hidden="true">
                 <Avatar
-                  email=""
+                  email={otherEmail(conv)}
                   fallbackInitial={conv.name.charAt(0).toUpperCase()}
                   size={32}
                 />

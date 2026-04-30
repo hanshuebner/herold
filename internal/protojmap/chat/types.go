@@ -129,8 +129,12 @@ type jmapAttachment struct {
 // client renders a conversation header without a separate round trip.
 // DisplayName is populated by renderConversation via principalDisplayName
 // so message list renderers can label senders without a Principal/get call.
+// Email carries the principal's canonical email so the suite's avatar
+// resolver (REQ-MAIL-44 tier 2) can do its hosted-principal lookup
+// without a separate Principal/get round-trip per row.
 type jmapConversationMember struct {
 	PrincipalID jmapID `json:"principalId"`
+	Email       string `json:"email"`
 	DisplayName string `json:"displayName"`
 	Role        string `json:"role"`
 	JoinedAt    string `json:"joinedAt"`
