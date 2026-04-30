@@ -13,6 +13,7 @@
   import { mail } from '../lib/mail/store.svelte';
   import { router } from '../lib/router/router.svelte';
   import IdentitySignatureForm from './settings/IdentitySignatureForm.svelte';
+  import IdentityDisplayNameForm from './settings/IdentityDisplayNameForm.svelte';
   import IdentityEditDialog from './settings/IdentityEditDialog.svelte';
   import SecurityForm from './settings/SecurityForm.svelte';
   import ApiKeysForm from './settings/ApiKeysForm.svelte';
@@ -263,9 +264,11 @@
                   </button>
                 {/if}
               </div>
+              <IdentityDisplayNameForm {identity} />
               <IdentitySignatureForm {identity} />
             </div>
           {:else}
+            <IdentityDisplayNameForm {identity} />
             <IdentitySignatureForm {identity} />
           {/if}
         {/each}

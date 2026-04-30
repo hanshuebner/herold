@@ -630,6 +630,46 @@ class MailStore {
   }
 
   /**
+   * Update the display name of the identity identified by `identityId`
+   * via `Identity/set update`, then mirror the change into the local
+   * identities cache so compose / reply flows pick up the new name
+   * immediately without a round-trip Identity/get.
+   */
+  async updateIdentityName(identityId: string, name: string): Promise<void> {
+    const accountId = this.mailAccountId;
+    if (!accountId) throw new Error('No Mail account on this session');
+
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Identity/set',
+        {
+          accountId,
+          update: {
+            [identityId]: { name },
+          },
+        },
+        [Capability.Submission],
+      );
+    });
+    strict(responses);
+
+    const result = invocationArgs<{
+      notUpdated?: Record<string, { type: string; description?: string }>;
+    }>(responses[0]);
+    const failure = result.notUpdated?.[identityId];
+    if (failure) {
+      throw new Error(failure.description ?? failure.type);
+    }
+
+    // Optimistic mirror — update the cache so subsequent compose / reply
+    // flows see the new name without waiting for a full reload.
+    const next = new Map(this.identities);
+    const cur = next.get(identityId);
+    if (cur) next.set(identityId, { ...cur, name });
+    this.identities = next;
+  }
+
+  /**
    * Load the email list for the given folder. Idempotent: when the
    * requested folder is already showing 'ready' state, the call is a
    * no-op so route effects can fire freely. Switching to a different
