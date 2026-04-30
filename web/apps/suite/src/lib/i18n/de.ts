@@ -127,6 +127,9 @@ export const de = {
   'att.noUrl': 'Keine URL',
   'att.view': 'Anzeigen',
   'att.close': 'Schliessen',
+  'att.headerIcon.label': 'Hat Anhang',
+  'att.aria.open': '{name} öffnen',
+  'att.aria.download': '{name} herunterladen',
   'mail.trimmed.hide': 'Zitat ausblenden',
 
   // ── Pickers (move / label / etc.) ────────────────────────────────────
@@ -183,6 +186,12 @@ export const de = {
   'settings.language': 'Sprache',
   'settings.language.en': 'Englisch',
   'settings.language.de': 'Deutsch',
+  'settings.displayName.label': 'Anzeigename',
+  'settings.displayName.helper':
+    "Wird im Von-Feld ausgehender E-Mails als 'Name' <Adresse> angezeigt.",
+  'settings.save': 'Speichern',
+  'settings.saved': 'Einstellungen gespeichert',
+  'settings.saveFailed': 'Einstellungen konnten nicht gespeichert werden',
 
   // ── App switcher ────────────────────────────────────────────────────
   'app.mail': 'Mail',
@@ -191,6 +200,9 @@ export const de = {
   'app.chat': 'Chat',
   'app.admin': 'Server-Verwaltung',
   'app.switch': 'Suite-Komponente wechseln',
+
+  // ── Zeit ────────────────────────────────────────────────────────────
+  'time.justNow': 'gerade eben',
 
   // ── Common ──────────────────────────────────────────────────────────
   'common.cancel': 'Abbrechen',

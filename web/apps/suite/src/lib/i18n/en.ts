@@ -128,6 +128,9 @@ export const en = {
   'att.noUrl': 'No URL',
   'att.view': 'View',
   'att.close': 'Close',
+  'att.headerIcon.label': 'Has attachment',
+  'att.aria.open': 'Open {name}',
+  'att.aria.download': 'Download {name}',
   'mail.trimmed.hide': 'Hide trimmed content',
 
   // ── Pickers (move / label / etc.) ────────────────────────────────────
@@ -192,6 +195,9 @@ export const en = {
   'app.chat': 'Chat',
   'app.admin': 'Server admin',
   'app.switch': 'Switch suite component',
+
+  // ── Time ────────────────────────────────────────────────────────────
+  'time.justNow': 'just now',
 
   // ── Common ──────────────────────────────────────────────────────────
   'common.cancel': 'Cancel',
