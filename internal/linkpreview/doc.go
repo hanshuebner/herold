@@ -4,7 +4,7 @@
 // surface attaches to a Message so downstream clients can render a
 // Google-Chat-style preview card without re-fetching the page.
 //
-// Trust posture
+// # Trust posture
 //
 // Inputs come from end-user message text. Every fetch must therefore be
 // hardened against the standard server-side request forgery (SSRF) and

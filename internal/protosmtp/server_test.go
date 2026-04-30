@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/mailarc"
 	"github.com/hanshuebner/herold/internal/mailauth"
@@ -40,7 +42,6 @@ import (
 	"github.com/hanshuebner/herold/internal/testharness/fakedns"
 	"github.com/hanshuebner/herold/internal/testharness/fakeplugin"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // --- test fixtures ---------------------------------------------------

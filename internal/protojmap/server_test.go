@@ -747,11 +747,11 @@ func TestDownload_CrossAccount_ChatMember_Allowed(t *testing.T) {
 	// chat-aware auth predicate scans body_html for the hash.
 	convID, err := f.store.Meta().InsertChatConversation(context.Background(),
 		store.ChatConversation{
-			Kind:               store.ChatConversationKindDM,
-			Name:               "alice-bob",
+			Kind:                 store.ChatConversationKindDM,
+			Name:                 "alice-bob",
 			CreatedByPrincipalID: f.pid,
-			CreatedAt:          f.clk.Now(),
-			UpdatedAt:          f.clk.Now(),
+			CreatedAt:            f.clk.Now(),
+			UpdatedAt:            f.clk.Now(),
 		})
 	if err != nil {
 		t.Fatalf("insert conversation: %v", err)

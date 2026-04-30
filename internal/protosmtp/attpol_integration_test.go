@@ -7,11 +7,12 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // fakeBouncePoster captures BouncePoster calls so tests can assert

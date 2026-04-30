@@ -9,6 +9,7 @@ import (
 	"time"
 
 	imap "github.com/emersion/go-imap/v2"
+
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )

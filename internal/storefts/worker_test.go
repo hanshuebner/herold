@@ -8,12 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storefts"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // stringExtractor is a deterministic TextExtractor for tests: it reads

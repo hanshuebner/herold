@@ -743,6 +743,7 @@ func urgencyForKind(k store.EntityKind) string {
 //   - other: log and give up; the next dispatcher pass to this row
 //     will fail the same way and the client's UI surfaces "push
 //     unconfirmed" until the user re-subscribes.
+//
 // verificationEnvelope is the RFC 8620 §7.2.2 PushVerification body the
 // server posts to the client URL. The client then echoes
 // verificationCode back via PushSubscription/set { update } to flip
