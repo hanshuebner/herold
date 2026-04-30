@@ -19,18 +19,12 @@
   import { auth } from '../auth/auth.svelte';
   import { t } from '../i18n/i18n.svelte';
   import { zipBlobsAsDownload } from './download-zip';
+  import Lightbox from '../preview/Lightbox.svelte';
 
   interface Props {
     email: Email;
-    /**
-     * Set of cid values that were successfully resolved to blob URLs by the
-     * HTML body renderer (cidMap keys from MessageAccordion). Parts whose cid
-     * appears here are already rendered inline in the message body; showing
-     * them again as attachment chips would be a duplicate (defect 3, re #1).
-     */
-    resolvedCids?: Set<string>;
   }
-  let { email, resolvedCids }: Props = $props();
+  let { email }: Props = $props();
 
   let accountId = $derived<string | null>(
     auth.session?.primaryAccounts['urn:ietf:params:jmap:mail'] ?? null,
@@ -44,20 +38,17 @@
   );
 
   /**
-   * Inline image parts: disposition=inline with a cid. These are the parts
-   * the HTML body references via cid: URLs. We surface them in a separate
-   * sub-section so each is independently downloadable (REQ-ATT-26).
-   *
-   * Parts whose cid was resolved to an inline reference (in resolvedCids) are
-   * excluded here because they already appear rendered in the message body;
-   * showing them again would be a duplicate (defect 3, re #1).
+   * Inline image parts: disposition=inline with a cid. These belong to the
+   * rendered body (HtmlBody resolves them via the cidMap and shows them
+   * inline). REQ-MAIL-21: inline images must not appear in the attachment
+   * list at all — even when cid resolution failed at render time, the user
+   * intent is "this is part of the body" and a duplicate chip is a worse
+   * answer than an inline broken-image icon. The "inlineParts" channel
+   * still exists for the bulk-download "Download all" action so the user
+   * can grab the original bytes; it is no longer rendered as a chip strip.
    */
   let inlineParts = $derived(
-    allParts.filter(
-      (p) =>
-        p.disposition === 'inline' &&
-        !(p.cid && resolvedCids?.has(p.cid)),
-    ),
+    allParts.filter((p) => p.disposition === 'inline'),
   );
 
   let totalCount = $derived(attachParts.length + inlineParts.length);
@@ -87,6 +78,45 @@
       part.size > 0 &&
       part.size < 2 * 1024 * 1024 // 2 MB cap on inline thumbnail
     );
+  }
+
+  /**
+   * isViewable: the attachment can be previewed in-browser without a
+   * native viewer launch. REQ-MAIL-23: image and PDF parts get a "View"
+   * affordance; everything else falls through to "Download" only.
+   */
+  function isViewable(part: EmailBodyPart): boolean {
+    if (!part.type) return false;
+    if (part.type.startsWith('image/')) return true;
+    if (part.type === 'application/pdf') return true;
+    return false;
+  }
+
+  type LightboxState = {
+    url: string;
+    name: string;
+    kind: 'image' | 'pdf';
+  };
+  let lightbox = $state<LightboxState | null>(null);
+
+  function openViewer(part: EmailBodyPart): void {
+    openLightbox(part);
+  }
+
+  function openLightbox(part: EmailBodyPart): void {
+    const url = urlFor(part);
+    if (!url) return;
+    const kind: LightboxState['kind'] | null = part.type.startsWith('image/')
+      ? 'image'
+      : part.type === 'application/pdf'
+        ? 'pdf'
+        : null;
+    if (!kind) return;
+    lightbox = { url, name: part.name ?? 'attachment', kind };
+  }
+
+  function closeLightbox(): void {
+    lightbox = null;
   }
 
   /** Derive a safe filename for a part that has no name field. */
@@ -125,67 +155,53 @@
   }
 </script>
 
-{#if totalCount > 0}
+{#if attachParts.length > 0}
   <section class="attachments" aria-label="Attachments">
-    {#if attachParts.length > 0}
-      <h3>
-        {attachParts.length === 1
-          ? t('att.attachments', { count: attachParts.length })
-          : t('att.attachments.other', { count: attachParts.length })}
-      </h3>
-      <ul>
-        {#each attachParts as p (p.partId ?? p.blobId)}
-          {@const url = urlFor(p)}
-          <li>
+    <h3>
+      {attachParts.length === 1
+        ? t('att.attachments', { count: attachParts.length })
+        : t('att.attachments.other', { count: attachParts.length })}
+    </h3>
+    <ul>
+      {#each attachParts as p (p.partId ?? p.blobId)}
+        {@const url = urlFor(p)}
+        {@const previewable = isViewable(p)}
+        <li class:image-att={isImagePreview(p)}>
+          {#if isImagePreview(p) && url}
+            <button
+              type="button"
+              class="thumb-button"
+              aria-label={`Open ${p.name ?? 'image'} in lightbox`}
+              onclick={() => openLightbox(p)}
+            >
+              <img class="thumb" src={url} alt={p.name ?? 'attachment preview'} loading="lazy" />
+            </button>
+          {:else}
             <span class="icon" aria-hidden="true">&#128206;</span>
-            <span class="meta">
-              <span class="name">{p.name ?? '(unnamed)'}</span>
-              <span class="size">
-                {p.type || 'application/octet-stream'} · {formatSize(p.size)}
-              </span>
+          {/if}
+          <span class="meta">
+            <span class="name">{p.name ?? '(unnamed)'}</span>
+            <span class="size">
+              {p.type || 'application/octet-stream'} · {formatSize(p.size)}
             </span>
+          </span>
+          <span class="actions">
+            {#if url && previewable}
+              <button
+                type="button"
+                class="overlay view"
+                onclick={() => openViewer(p)}
+              >{t('att.view')}</button>
+            {/if}
             {#if url}
-              <a class="download" href={url} download={p.name ?? 'attachment'}>{t('att.download')}</a>
-              {#if isImagePreview(p)}
-                <a class="preview" href={url} target="_blank" rel="noopener">
-                  <img src={url} alt={p.name ?? 'attachment preview'} loading="lazy" />
-                </a>
-              {/if}
+              <a class="overlay download" href={url} download={p.name ?? 'attachment'}>{t('att.download')}</a>
             {:else}
-              <span class="download disabled">{t('att.noUrl')}</span>
+              <span class="overlay download disabled">{t('att.noUrl')}</span>
             {/if}
-          </li>
-        {/each}
-      </ul>
-    {/if}
-
-    {#if inlineParts.length > 0}
-      <h3 class="inline-header">{t('att.inlineImages')}</h3>
-      <ul>
-        {#each inlineParts as p, i (p.partId ?? p.blobId)}
-          {@const url = urlFor(p)}
-          {@const name = p.name ?? fallbackName(p, i)}
-          <li>
-            {#if url && isImagePreview(p)}
-              <a class="thumb-link" href={url} target="_blank" rel="noopener">
-                <img class="thumb" src={url} alt={name} loading="lazy" />
-              </a>
-            {:else}
-              <span class="icon" aria-hidden="true">&#128247;</span>
-            {/if}
-            <span class="meta">
-              <span class="name">{name}</span>
-              <span class="size">{p.type} · {formatSize(p.size)}</span>
-            </span>
-            {#if url}
-              <a class="download" href={url} download={name}>{t('att.download')}</a>
-            {:else}
-              <span class="download disabled">{t('att.noUrl')}</span>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    {/if}
+          </span>
+        </li>
+      {/each}
+    </ul>
 
     {#if totalCount > 1}
       <div class="bulk-actions">
@@ -212,6 +228,15 @@
   </section>
 {/if}
 
+{#if lightbox}
+  <Lightbox
+    src={lightbox.url}
+    name={lightbox.name}
+    kind={lightbox.kind}
+    onClose={closeLightbox}
+  />
+{/if}
+
 <style>
   .attachments {
     margin-top: var(--spacing-04);
@@ -226,9 +251,6 @@
     font-weight: 600;
     color: var(--text-primary);
   }
-  .inline-header {
-    margin-top: var(--spacing-04);
-  }
   ul {
     list-style: none;
     margin: 0;
@@ -240,9 +262,7 @@
   li {
     display: grid;
     grid-template-columns: auto 1fr auto;
-    grid-template-areas:
-      'icon meta download'
-      'preview preview preview';
+    grid-template-areas: 'icon meta actions';
     gap: var(--spacing-03);
     align-items: center;
   }
@@ -268,49 +288,19 @@
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);
   }
-  .download {
-    grid-area: download;
-    padding: var(--spacing-02) var(--spacing-04);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    font-size: var(--type-body-compact-01-size);
-    text-decoration: none;
-    transition: filter var(--duration-fast-02) var(--easing-productive-enter);
-  }
-  .download:hover {
-    filter: brightness(1.1);
-  }
-  .download.disabled {
-    background: var(--layer-03);
-    color: var(--text-helper);
-    cursor: not-allowed;
-  }
-  .preview {
-    grid-area: preview;
-    margin-top: var(--spacing-02);
-    border-radius: var(--radius-md);
-    overflow: hidden;
-    background: var(--layer-02);
-    display: block;
-  }
-  .preview img {
-    display: block;
-    max-width: 100%;
-    max-height: 320px;
-    object-fit: contain;
-  }
 
-  /* Inline image thumbnail column */
-  .thumb-link {
+  /* Image-attachment thumbnail column (replaces icon for image parts). */
+  .thumb-button {
     grid-area: icon;
     display: block;
-    width: 48px;
-    height: 48px;
+    width: 64px;
+    height: 64px;
+    padding: 0;
+    border: 0;
     border-radius: var(--radius-sm);
     overflow: hidden;
     background: var(--layer-02);
+    cursor: zoom-in;
   }
   .thumb {
     width: 100%;
@@ -318,6 +308,41 @@
     object-fit: cover;
     display: block;
   }
+  .actions {
+    grid-area: actions;
+    display: flex;
+    gap: var(--spacing-02);
+  }
+  .overlay {
+    padding: var(--spacing-02) var(--spacing-04);
+    border-radius: var(--radius-pill);
+    font-weight: 600;
+    font-size: var(--type-body-compact-01-size);
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .overlay.view {
+    background: var(--layer-02);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle-01);
+  }
+  .overlay.view:hover {
+    background: var(--layer-03);
+  }
+  .overlay.download {
+    background: var(--interactive);
+    color: var(--text-on-color);
+    transition: filter var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .overlay.download:hover {
+    filter: brightness(1.1);
+  }
+  .overlay.download.disabled {
+    background: var(--layer-03);
+    color: var(--text-helper);
+    cursor: not-allowed;
+  }
+
 
   /* Bulk download bar */
   .bulk-actions {

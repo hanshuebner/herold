@@ -1,10 +1,12 @@
 /**
- * Unit tests for G16 inline-image count in "Download all (N)" (REQ-ATT-41).
+ * Unit tests for the mail attachment chip strip.
  *
- * Verifies:
- *   - totalCount = attachments + inline images.
- *   - The chip strip surfaces both kinds.
- *   - The "Download all" button label reflects the combined count.
+ * REQ-MAIL-21: inline images (disposition=inline) must NOT appear in the
+ * attachment chip strip — they belong to the rendered body and a duplicate
+ * chip is the wrong UX, even when cid resolution failed at render time.
+ *
+ * REQ-MAIL-23: image and PDF chips render a "View" affordance that opens
+ * the shared Lightbox component (see lib/preview/Lightbox.svelte).
  */
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
@@ -34,11 +36,12 @@ vi.mock('../i18n/i18n.svelte', () => ({
     const map: Record<string, string> = {
       'att.attachments': `${args?.count} attachment`,
       'att.attachments.other': `${args?.count} attachments`,
-      'att.inlineImages': 'Inline images',
       'att.downloadAll': `Download all (${args?.count})`,
       'att.attachmentsOnly': 'Attachments only',
       'att.download': 'Download',
+      'att.view': 'View',
       'att.noUrl': 'No URL',
+      'att.close': 'Close',
     };
     return map[key] ?? key;
   },
@@ -76,84 +79,76 @@ function makeEmail(parts: Partial<EmailBodyPart>[]): Email {
   } as unknown as Email;
 }
 
-describe('AttachmentList: resolvedCids deduplication (defect 3, re #1)', () => {
-  it('hides an inline part whose cid is in resolvedCids', () => {
+describe('AttachmentList: inline images stay out of the chip strip (REQ-MAIL-21)', () => {
+  it('hides every disposition=inline part, regardless of cid resolution', () => {
     const email = makeEmail([
       { disposition: 'inline', name: 'photo.png', cid: 'img1@h.test', type: 'image/png' },
     ]);
-    // The cid was resolved: HtmlBody already renders it inline — don't show again.
-    render(AttachmentList, { email, resolvedCids: new Set(['img1@h.test']) });
-    // "Inline images" section should not appear at all.
-    expect(screen.queryByText('Inline images')).toBeNull();
-    // And the chip itself should not appear.
+    const { container } = render(AttachmentList, { email });
+    expect(container.querySelector('section')).toBeNull();
     expect(screen.queryByText('photo.png')).toBeNull();
   });
 
-  it('shows an inline part whose cid is NOT in resolvedCids', () => {
-    const email = makeEmail([
-      { disposition: 'inline', name: 'photo.png', cid: 'img1@h.test', type: 'image/png' },
-    ]);
-    // The cid was NOT resolved (e.g. plain-text email or broken cid: reference).
-    render(AttachmentList, { email, resolvedCids: new Set<string>() });
-    expect(screen.getByText('Inline images')).toBeInTheDocument();
-    expect(screen.getByText('photo.png')).toBeInTheDocument();
-  });
-
-  it('shows an inline part when resolvedCids is not provided', () => {
-    const email = makeEmail([
-      { disposition: 'inline', name: 'photo.png', cid: 'img1@h.test', type: 'image/png' },
-    ]);
-    // No resolvedCids prop at all — backward compat; show all inline parts.
-    render(AttachmentList, { email });
-    expect(screen.getByText('Inline images')).toBeInTheDocument();
-  });
-
-  it('shows an inline part with no cid regardless of resolvedCids', () => {
+  it('hides inline parts even with no cid (e.g. malformed inbound MIME)', () => {
     const email = makeEmail([
       { disposition: 'inline', name: 'noncid.png', cid: null, type: 'image/png' },
     ]);
-    render(AttachmentList, { email, resolvedCids: new Set(['anything']) });
-    // No cid, can never match; always show.
-    expect(screen.getByText('Inline images')).toBeInTheDocument();
-    expect(screen.getByText('noncid.png')).toBeInTheDocument();
+    const { container } = render(AttachmentList, { email });
+    expect(container.querySelector('section')).toBeNull();
   });
 
-  it('hides only the resolved inline part, keeps the unresolved one', () => {
+  it('still renders non-inline (regular) attachments', () => {
     const email = makeEmail([
-      { disposition: 'inline', name: 'resolved.png', cid: 'r@h.test', type: 'image/png', blobId: 'b0' },
-      { disposition: 'inline', name: 'unresolved.png', cid: 'u@h.test', type: 'image/png', blobId: 'b1' },
+      { disposition: 'attachment', name: 'doc.pdf', type: 'application/pdf' },
+      { disposition: 'inline', name: 'photo.png', cid: 'img1@h.test', type: 'image/png' },
     ]);
-    render(AttachmentList, { email, resolvedCids: new Set(['r@h.test']) });
-    expect(screen.queryByText('resolved.png')).toBeNull();
-    expect(screen.getByText('unresolved.png')).toBeInTheDocument();
+    render(AttachmentList, { email });
+    expect(screen.getByText('doc.pdf')).toBeInTheDocument();
+    expect(screen.queryByText('photo.png')).toBeNull();
   });
 });
 
-describe('AttachmentList: inline images count in Download all', () => {
+describe('AttachmentList: View action (REQ-MAIL-23)', () => {
+  it('renders a View button on image attachments', () => {
+    const email = makeEmail([
+      { disposition: 'attachment', name: 'pic.png', type: 'image/png' },
+    ]);
+    render(AttachmentList, { email });
+    expect(screen.getByText('View')).toBeInTheDocument();
+  });
+
+  it('renders a View button on PDF attachments', () => {
+    const email = makeEmail([
+      { disposition: 'attachment', name: 'doc.pdf', type: 'application/pdf' },
+    ]);
+    render(AttachmentList, { email });
+    expect(screen.getByText('View')).toBeInTheDocument();
+  });
+
+  it('does not render a View button for non-previewable types', () => {
+    const email = makeEmail([
+      { disposition: 'attachment', name: 'data.zip', type: 'application/zip' },
+    ]);
+    render(AttachmentList, { email });
+    expect(screen.queryByText('View')).toBeNull();
+  });
+});
+
+describe('AttachmentList: Download all bulk action', () => {
   it('shows no "Download all" when there is only one attachment', () => {
     const email = makeEmail([{ disposition: 'attachment', name: 'file.pdf', type: 'application/pdf' }]);
     render(AttachmentList, { email });
     expect(screen.queryByText(/Download all/i)).toBeNull();
   });
 
-  it('shows "Download all (N)" where N = attachments + inline images', () => {
+  it('shows "Download all (N)" counting both attachments and inline parts', () => {
     const email = makeEmail([
       { disposition: 'attachment', name: 'doc.pdf', type: 'application/pdf' },
       { disposition: 'attachment', name: 'data.csv', type: 'text/csv' },
       { disposition: 'inline', name: 'photo.png', cid: 'img1@h.test', type: 'image/png' },
     ]);
     render(AttachmentList, { email });
-    // Should show "Download all (3)"
     expect(screen.getByText('Download all (3)')).toBeInTheDocument();
-  });
-
-  it('shows the "Inline images" section header when inline parts exist', () => {
-    const email = makeEmail([
-      { disposition: 'attachment', name: 'doc.pdf', type: 'application/pdf' },
-      { disposition: 'inline', name: 'photo.png', cid: 'img1@h.test', type: 'image/png' },
-    ]);
-    render(AttachmentList, { email });
-    expect(screen.getByText('Inline images')).toBeInTheDocument();
   });
 
   it('shows "Attachments only" secondary action when both kinds are present', () => {
@@ -174,28 +169,9 @@ describe('AttachmentList: inline images count in Download all', () => {
     expect(screen.queryByText('Attachments only')).toBeNull();
   });
 
-  it('renders a chip for each inline image', () => {
-    const email = makeEmail([
-      { disposition: 'inline', name: 'img1.png', cid: 'c1@h.test', type: 'image/png' },
-      { disposition: 'inline', name: 'img2.jpg', cid: 'c2@h.test', type: 'image/jpeg' },
-    ]);
-    render(AttachmentList, { email });
-    expect(screen.getByText('img1.png')).toBeInTheDocument();
-    expect(screen.getByText('img2.jpg')).toBeInTheDocument();
-  });
-
   it('renders nothing when email has no attachments', () => {
     const email = makeEmail([]);
     const { container } = render(AttachmentList, { email });
     expect(container.querySelector('section')).toBeNull();
-  });
-
-  it('uses fallback name for inline images without a name', () => {
-    const email = makeEmail([
-      { disposition: 'inline', name: null, cid: 'c1@h.test', type: 'image/png', blobId: 'b0' },
-    ]);
-    render(AttachmentList, { email });
-    // fallback = "inline-1.png"
-    expect(screen.getByText('inline-1.png')).toBeInTheDocument();
   });
 });

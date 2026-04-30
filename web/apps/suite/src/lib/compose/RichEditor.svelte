@@ -103,4 +103,12 @@
   .rich-editor :global(.ProseMirror u) {
     text-decoration: underline;
   }
+  /* REQ-MAIL-24: cap inline image preview at the editor column width.
+     The full-resolution bytes still ship in the outbound MIME — this is
+     a pure CSS visual cap so a 4032×3024 phone photo does not blow up
+     the compose pane. height:auto preserves aspect ratio. */
+  .rich-editor :global(.ProseMirror img) {
+    max-width: 100%;
+    height: auto;
+  }
 </style>

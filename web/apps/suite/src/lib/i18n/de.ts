@@ -121,11 +121,12 @@ export const de = {
   // ── Attachment list ──────────────────────────────────────────────────
   'att.attachments': '{count} Anhang',
   'att.attachments.other': '{count} Anhänge',
-  'att.inlineImages': 'Eingebettete Bilder',
   'att.downloadAll': 'Alle herunterladen ({count})',
   'att.attachmentsOnly': 'Nur Anhänge',
   'att.download': 'Herunterladen',
   'att.noUrl': 'Keine URL',
+  'att.view': 'Anzeigen',
+  'att.close': 'Schliessen',
 
   // ── Pickers (move / label / etc.) ────────────────────────────────────
   'picker.close': 'Schließen',

@@ -27,7 +27,7 @@
   import { auth } from '../auth/auth.svelte';
   import { chatTimestampGroupingSeconds } from '../auth/capabilities';
   import EmojiPicker from '../mail/EmojiPicker.svelte';
-  import ImageLightbox from './ImageLightbox.svelte';
+  import Lightbox from '../preview/Lightbox.svelte';
   import type { Message, Conversation } from './types';
 
   interface Props {
@@ -670,7 +670,7 @@
 </div>
 
 {#if lightboxSrc}
-  <ImageLightbox
+  <Lightbox
     src={lightboxSrc}
     onClose={() => { lightboxSrc = null; }}
   />
