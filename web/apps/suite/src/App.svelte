@@ -66,6 +66,19 @@
             console.error('initial mailbox load failed', err);
           });
         }
+        // Prime identities at boot too, alongside mailboxes. Identity
+        // is the source of "is this address mine?" — Reply / Reply-all
+        // need it to detect own-sent messages and route To at the
+        // original recipients (REQ-MAIL-30..31). Without this prime
+        // the user could land on a thread URL before any folder load
+        // ran, click Reply on an own message, and selfEmails stays
+        // empty → the fix degenerates to the legacy "reply to
+        // yourself" behaviour.
+        if (mail.identities.size === 0) {
+          mail.loadIdentities().catch((err) => {
+            console.error('initial identity load failed', err);
+          });
+        }
         if (hasCap) {
           chatWs.connect();
           // Wire global window-focus / input listeners that drive the

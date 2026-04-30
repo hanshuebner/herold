@@ -247,7 +247,20 @@ class ComposeStore {
   }
 
   /** Open compose as a reply to the given email. */
-  openReply(parent: Email): void {
+  async openReply(parent: Email): Promise<void> {
+    // Defensive: if identities have not loaded yet (race between
+    // landing on a thread URL and the auth-ready prime), wait for
+    // them. Without identities populated, isOwnMessage cannot detect
+    // an own-sent message and the To field would silently fall back
+    // to the user's own address. App.svelte primes them on auth-ready
+    // already; this guard catches the degenerate timing.
+    if (mail.identities.size === 0) {
+      try {
+        await mail.loadIdentities();
+      } catch (err) {
+        console.warn('openReply: identity load failed', err);
+      }
+    }
     const selfEmails = new Set<string>();
     for (const id of mail.identities.values()) {
       selfEmails.add(id.email.toLowerCase());

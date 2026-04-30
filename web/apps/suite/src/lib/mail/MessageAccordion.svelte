@@ -94,6 +94,19 @@
 
   let recipientSummary = $derived(formatRecipientSummary(email));
 
+  // True when the message carries at least one non-inline attachment.
+  // Used to surface a paperclip glyph in the accordion header next to the
+  // date so the user can spot attachments without expanding each message.
+  // Inline images alone (referenced by the body via cid:) do NOT trip the
+  // indicator — they are part of the body, not a separate attachment.
+  let hasNonInlineAttachment = $derived.by(() => {
+    const parts = email.attachments;
+    if (parts !== undefined) {
+      return parts.some((p) => p.disposition !== 'inline');
+    }
+    return Boolean(email.hasAttachment);
+  });
+
   // Relative annotation shown only in the expanded header, e.g. "(17 hours ago)".
   // The label is computed once at mount time; a per-mount absolute label is
   // fine -- the annotation is approximate by nature and a live ticker would
@@ -352,8 +365,13 @@
         <span class="preview">{email.preview}</span>
       {/if}
     </span>
-    <span class="date">
-      {formatDateTime(email.receivedAt)}{#if relativeAnnotation}&nbsp;<span class="date-relative">{relativeAnnotation}</span>{/if}
+    <span class="header-right">
+      {#if hasNonInlineAttachment}
+        <span class="attachment-icon" aria-label={t('att.headerIcon.label')}>&#128206;</span>
+      {/if}
+      <span class="date">
+        {formatDateTime(email.receivedAt)}{#if relativeAnnotation}&nbsp;<span class="date-relative">{relativeAnnotation}</span>{/if}
+      </span>
     </span>
   </button>
 
@@ -731,12 +749,22 @@
     white-space: nowrap;
   }
 
+  .header-right {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--spacing-02);
+    align-self: flex-start;
+    padding-top: var(--spacing-01);
+  }
+  .attachment-icon {
+    color: var(--text-helper);
+    font-size: 14px;
+    line-height: 1;
+  }
   .date {
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);
     white-space: nowrap;
-    align-self: flex-start;
-    padding-top: var(--spacing-01);
   }
 
   /* Relative annotation appended to the date in the expanded header,
