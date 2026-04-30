@@ -58,10 +58,17 @@
    * markRead advances the read pointer past the first unread message so
    * the divider disappears naturally as the user reads.
    *
+   * Also cleared synchronously when the compose input for THIS
+   * conversation gains focus, and when the divider scrolls into the
+   * viewport (IntersectionObserver, after a 500ms settling delay).
+   *
    * Anchored at open — new messages arriving while the user is reading
    * do not move the divider.
    */
   let newDividerAfterMessageId = $state<string | null>(null);
+
+  /** DOM node for the "New" divider, bound via bind:this. */
+  let dividerEl = $state<HTMLDivElement | null>(null);
 
   /**
    * Delegated click handler for inline images rendered via {@html}.
@@ -161,9 +168,17 @@
       const lastRead = conversation.myMembership?.lastReadMessageId;
       if (!lastRead) return;
       // Only show the divider when there is at least one unread message
-      // after the read pointer.
+      // after the read pointer that was sent by someone else.  Messages
+      // that the current user sent themselves (e.g. a burst of outbound
+      // messages sent while offline, or a send-then-reopen flow) are not
+      // "unread" from the user's perspective, so they should not trigger
+      // the divider (Bug B).
       const lastReadIdx = msgs.findIndex((m) => m.id === lastRead);
-      if (lastReadIdx !== -1 && lastReadIdx < msgs.length - 1) {
+      if (lastReadIdx === -1 || lastReadIdx >= msgs.length - 1) return;
+      const hasOtherSenderAfterRead = msgs
+        .slice(lastReadIdx + 1)
+        .some((m) => m.senderPrincipalId !== auth.principalId);
+      if (hasOtherSenderAfterRead) {
         newDividerAfterMessageId = lastRead;
       }
     });
@@ -185,6 +200,44 @@
         newDividerAfterMessageId = null;
       }
     });
+  });
+
+  // Bug A — clear the divider synchronously when the compose for THIS
+  // conversation gains focus.  markRead is async, so the divider would
+  // linger until the RPC round-trip.  Clearing here is instant.
+  $effect(() => {
+    const focused = chat.focusedConversationId;
+    untrack(() => {
+      if (focused === conversationId) {
+        newDividerAfterMessageId = null;
+      }
+    });
+  });
+
+  // Bug A — clear the divider when it scrolls into view via IntersectionObserver.
+  // To avoid a false positive during the initial auto-scroll-to-bottom we
+  // ignore any intersection that fires in the first 500 ms after the divider
+  // is mounted; after that we clear immediately on the first intersection.
+  $effect(() => {
+    const el = dividerEl;
+    if (!el) return;
+    let settled = false;
+    const timer = setTimeout(() => { settled = true; }, 500);
+    const observer = new IntersectionObserver((entries) => {
+      if (!settled) return;
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          untrack(() => { newDividerAfterMessageId = null; });
+          observer.disconnect();
+          break;
+        }
+      }
+    });
+    observer.observe(el);
+    return () => {
+      clearTimeout(timer);
+      observer.disconnect();
+    };
   });
 
   // Focus-gated mark-read. Re-runs on three triggers:
@@ -492,7 +545,7 @@
           {/if}
         </div>
         {#if newDividerAfterMessageId === msg.id}
-          <div class="new-divider" role="separator" aria-label="New messages">
+          <div class="new-divider" role="separator" aria-label="New messages" bind:this={dividerEl}>
             <span class="new-divider-label">New</span>
           </div>
         {/if}
