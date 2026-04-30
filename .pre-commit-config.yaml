@@ -123,11 +123,44 @@ repos:
       # plus three upstream lint hooks that ignored default_stages),
       # so it was confusing in practice. Pinned to pre-commit now;
       # `git push` runs no hooks.
+      #
+      # The `-race` flag mirrors CI's test job. Without it the race
+      # detector only flagged shared-state bugs after a push (e.g. the
+      # FetchAll `pending` counter race in internal/linkpreview that
+      # CI 25147947077 surfaced); now the same code fails the diag
+      # round-trip locally if it has any race in the touched paths.
       - id: diag-fast-tests
         name: go test ./internal/diag/backup ./internal/diag/migrate
-        entry: bash -c 'go test -count=1 -short ./internal/diag/backup/... ./internal/diag/migrate/...' --
+        entry: bash -c 'go test -race -count=1 -short ./internal/diag/backup/... ./internal/diag/migrate/...' --
         language: system
         pass_filenames: false
+
+      # Race-detector lane on the highest-concurrency-density packages.
+      # Targeted (~17s on a warm cache) so the per-commit cost is bounded;
+      # a green run here would have caught the linkpreview FetchAll race
+      # that CI 25147947077 surfaced. CI runs the full -race lane across
+      # all packages, but for pre-commit speed we only cover the surfaces
+      # where shared state + goroutines actually live.
+      - id: race-fast-tests
+        name: go test -race (concurrency-heavy packages)
+        entry: |-
+          bash -c 'go test -race -count=1 -short ./internal/linkpreview/... ./internal/webpush/... ./internal/storefts/... ./internal/protocall/... ./internal/protochat/... ./internal/protojmap/push/...' --
+        language: system
+        pass_filenames: false
+
+      # svelte-check runs the same TypeScript / Svelte typing checks
+      # CI's "web (build + check)" job runs. Catches local typos like
+      # `onload_capture` vs `onloadcapture` (the wrong one is silently
+      # accepted by Svelte's runtime but rejected by svelte-check, and
+      # was the cause of CI 25147947077's web-check failure). Only
+      # fires when a file under web/ changes — the typical Go-only
+      # commit pays nothing.
+      - id: svelte-check
+        name: svelte-check (suite + admin SPA)
+        entry: bash -c 'pnpm --dir web run check' --
+        language: system
+        pass_filenames: false
+        files: ^web/.*\.(svelte|ts|tsx|js|json)$
 
 default_language_version:
   python: python3

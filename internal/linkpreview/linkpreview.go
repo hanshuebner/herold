@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/html"
@@ -290,18 +291,18 @@ func (f *Fetcher) FetchAll(ctx context.Context, urls []string, maxParallel int) 
 	if len(urls) == 0 {
 		return out
 	}
+	// Each goroutine writes to a distinct index of out, so the slice
+	// itself does not need a mutex; rendezvous is via sync.WaitGroup.
+	// (The previous incarnation decremented a shared `pending` counter
+	// without synchronisation, which the race detector flagged.)
 	sem := make(chan struct{}, maxParallel)
-	done := make(chan struct{})
-	pending := len(urls)
+	var wg sync.WaitGroup
 	for i, raw := range urls {
 		sem <- struct{}{}
+		wg.Add(1)
 		go func(idx int, u string) {
-			defer func() {
-				<-sem
-				if pending--; pending == 0 {
-					close(done)
-				}
-			}()
+			defer wg.Done()
+			defer func() { <-sem }()
 			p, err := f.Fetch(ctx, u)
 			if err != nil {
 				f.log.Warn("linkpreview.fetch_failed",
@@ -312,7 +313,7 @@ func (f *Fetcher) FetchAll(ctx context.Context, urls []string, maxParallel int) 
 			out[idx] = p
 		}(i, raw)
 	}
-	<-done
+	wg.Wait()
 	return out
 }
 

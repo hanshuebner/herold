@@ -410,8 +410,8 @@
   class="message-list"
   bind:this={scrollEl}
   onscroll={handleScroll}
-  onload_capture={(ev) => { if (ev.target instanceof HTMLImageElement) handleContainerImgLoad(); }}
-  onerror_capture={(ev) => { if (ev.target instanceof HTMLImageElement) handleContainerImgLoad(); }}
+  onloadcapture={(ev: Event) => { if (ev.target instanceof HTMLImageElement) handleContainerImgLoad(); }}
+  onerrorcapture={(ev: Event) => { if (ev.target instanceof HTMLImageElement) handleContainerImgLoad(); }}
 >
   {#if effectiveStatus === 'loading'}
     <p class="loading">Loading messages…</p>
@@ -970,6 +970,7 @@
     line-height: var(--type-helper-text-01-line);
     display: -webkit-box;
     -webkit-line-clamp: 3;
+    line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
