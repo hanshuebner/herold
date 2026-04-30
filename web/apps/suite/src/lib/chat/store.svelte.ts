@@ -947,12 +947,23 @@ class ChatStore {
           // message that is not a fresh arrival (an edit / reaction that
           // arrived as a Message/get update should never cause a read
           // advance).
-          if (
-            isNewArrival &&
-            !fromMe &&
-            presence.stateFor(incoming.conversationId) === 'present-in-chat'
-          ) {
-            void this.markRead(incoming.conversationId, incoming.id);
+          if (isNewArrival && !fromMe) {
+            const ps = presence.stateFor(incoming.conversationId);
+            if (
+              typeof localStorage !== 'undefined' &&
+              localStorage.getItem('herold:chat-presence-debug') === '1'
+            ) {
+              // eslint-disable-next-line no-console
+              console.log('[chat-presence] new arrival', {
+                conversationId: incoming.conversationId,
+                messageId: incoming.id,
+                presenceState: ps,
+                willAutoMarkRead: ps === 'present-in-chat',
+              });
+            }
+            if (ps === 'present-in-chat') {
+              void this.markRead(incoming.conversationId, incoming.id);
+            }
           }
 
           // Auto-open an overlay for a new message from someone else,
