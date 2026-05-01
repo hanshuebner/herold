@@ -229,6 +229,138 @@ The legacy single-sink form (`[logging] format=... level=... destination=...` fr
 - **REQ-OPS-102** Trace context propagated across internal async boundaries (queue enqueue/dequeue, worker handoff, plugin JSON-RPC).
 - **REQ-OPS-103** No built-in trace storage. Operators ship to Jaeger/Tempo/Datadog/etc.
 
+### Client log ingest (UI errors, logs, telemetry)
+
+*(Added 2026-05-01: the herold-served SPAs (Suite on the public listener, Admin on the admin listener) need to forward runtime errors, console output, and Web Vitals back to the server. The server is the sole upstream — no direct browser-to-third-party telemetry. Captured events are re-emitted into the existing `internal/observe` pipeline (slog + OTLP) so they fan out to whatever observability backend the operator already runs, plus a bounded ring buffer in the metadata DB so a small operator with no collector still has the last N hours visible from `/admin`.)*
+
+#### Endpoints and auth boundaries
+
+- **REQ-OPS-200** Two HTTP ingest paths exist, with different auth and different limits:
+  - **Authenticated**: `POST /api/v1/clientlog` on whichever listener serves the SPA emitting the event (public listener for Suite, admin listener for Admin UI). Requires a valid session cookie. Carries the full event schema.
+  - **Anonymous**: `POST /api/v1/clientlog/public` on the same listeners. No auth. Carries the *narrow* schema (REQ-OPS-207). Used for login-page crashes and any other pre-auth failure.
+  Each listener serves its own pair; the cookie-scope split (REQ-OPS-ADMIN-LISTENER-03) prevents cross-surface auth confusion.
+- **REQ-OPS-201** Both endpoints accept a JSON body of shape `{events: [Event, ...]}`. The `Content-Type` is `application/json` for `fetch` and `Blob`-wrapped `application/json` for `navigator.sendBeacon`; servers MUST accept both. Bodies over the per-endpoint cap (REQ-OPS-216) are rejected with 413; rate-limited requests on the anonymous endpoint are dropped silently (200 with empty body) to avoid signalling abuse.
+
+#### Event schema
+
+- **REQ-OPS-202** The full event schema (authenticated endpoint) is:
+  ```
+  {
+    "v":          1,                                    // schema version, integer
+    "kind":       "error" | "log" | "vital",
+    "level":      "trace"|"debug"|"info"|"warn"|"error",// "error" implied for kind=error
+    "msg":        "string",                             // human-readable summary, capped 4 KiB
+    "stack":      "string",                             // raw, unsymbolicated; capped 16 KiB; kind=error only
+    "client_ts":  "RFC3339 with ms",                    // browser wall clock at capture
+    "seq":        12345,                                // monotonic per page load
+    "page_id":    "uuid",                               // per page load, opaque
+    "session_id": "uuid",                               // per browser session (storage), opaque
+    "app":        "suite" | "admin",
+    "build_sha":  "string",                             // SPA build identifier
+    "route":      "string",                             // current route, e.g. "/mail/inbox"
+    "request_id": "string",                             // correlated server X-Request-Id when known; optional
+    "ua":         "string",                             // User-Agent, capped 256 chars
+    "breadcrumbs": [Breadcrumb, ...],                   // last N (≤32) navigation/network/log events; allow-listed fields only
+    "vital":      { "name": "LCP"|"INP"|"CLS"|..., "value": number, "id": "string" }, // kind=vital only
+    "synchronous": false                                // optional; see REQ-OPS-211
+  }
+  ```
+  A `Breadcrumb` carries `{ts, kind, route?, status?, method?, url_path?, msg?}` only. URL query strings, request bodies, response bodies, header values, DOM snapshots, and input field values MUST NOT appear in breadcrumbs.
+- **REQ-OPS-207** The narrow schema (anonymous endpoint) is the strict subset `{v, kind, level, msg, stack, client_ts, seq, page_id, app, build_sha, route, ua}`. No breadcrumbs, no `request_id`, no `session_id`, no `vital` payload. Server rejects (400) any unknown field on this endpoint — strict parsing only.
+
+#### Sanitisation, enrichment, fan-out
+
+- **REQ-OPS-203** On receive, the server:
+  1. Validates schema strictly (unknown fields fail; oversize fields truncate with a `_truncated` marker).
+  2. Strips/redacts the redaction set from REQ-OPS-84 from `msg`, `stack`, and breadcrumb `msg` (passwords, bearer tokens, cookies, API keys). The same redaction handler that protects server logs also runs on client payloads — no separate code path.
+  3. Enriches: stamps `server_recv_ts` (server wall clock), computes `clock_skew_ms = server_recv_ts - max(events[].client_ts)` for the batch, attaches `user_id` (auth'd endpoint only), `client_ip` (truncated per privacy policy), `listener` (`public`|`admin`), and `endpoint` (`auth`|`public`).
+  4. Fans out: writes one slog record per event (REQ-OPS-204), one OTLP log record per event when egress is enabled (REQ-OPS-205), and one row in the ring buffer (REQ-OPS-206).
+- **REQ-OPS-204** The slog emission carries the standard log fields plus `source=client`, `app`, `kind`, `route`, `build`, `client_ts`, `client_session=session_id`, `request_id` (when present), and the activity tag from REQ-OPS-86: `audit` for `kind=error` (security-relevant view: errors are seen by operators), `user` for `kind=log` at level `info` and below from authenticated sessions, `internal` for `kind=vital`, `access` for breadcrumb echo lines. The console formatter SHOULD render `source=client` records visually distinct from server records (e.g. a leading marker or distinct colour) on TTY targets.
+- **REQ-OPS-205** When OTLP export is enabled (REQ-OPS-100), client events are emitted as OTLP log records with resource attributes `service.name=herold-suite` or `herold-admin`, `service.version=<build_sha>`, `deployment.environment=<operator-config>`. Each record carries `attributes`: `client.session_id`, `client.page_id`, `client.route`, `client.ua`, `user.id` (auth'd only), `request_id` (when present). Anonymous events are NOT sent to OTLP unless the operator sets `[clientlog.public].otlp_egress = true` (default `false`); this prevents random internet abuse from inflating the operator's observability bill.
+- **REQ-OPS-213** Cross-source ordering between client and server events is via `request_id` correlation, not clock alignment: every JMAP/admin request response carries `X-Request-Id` (existing), the SPA captures it on each fetch and attaches it to every event emitted while that request is in flight. The admin viewer (REQ-ADM-230) joins client and server records by `request_id` when displaying a request timeline.
+
+#### Ring buffer (in-DB recent storage)
+
+- **REQ-OPS-206** The server stores recent client events in a bounded ring-buffer table in the metadata DB. Two separate slices: one for `endpoint=auth` events, one for `endpoint=public` events. Each slice is bounded by row count and age, both configurable; oldest rows are evicted as new ones arrive. Defaults: auth slice 100 000 rows / 7 days, public slice 10 000 rows / 24 h. Ring-buffer storage is independent of OTLP egress: operators with no collector still get a recent view.
+- **REQ-OPS-206a** Ring-buffer rows are read-only via the admin REST API (REQ-ADM-230..232). They are excluded from `herold diag backup` by default; `--include-clientlog` opts in.
+
+#### PII, opt-out, and field allowlist
+
+- **REQ-OPS-208** Per-user opt-out: each principal has a boolean `clientlog_telemetry_enabled`. When `false`, the SPA emits only `kind=error` events from that user's authenticated session; `kind=log` and `kind=vital` are dropped client-side. The default is taken from the system config (`[clientlog.defaults].telemetry_enabled`); the quickstart example ships this `true`. Errors are always sent regardless of the opt-out: a user cannot opt out of having their crashes reported, only out of behavioural telemetry.
+- **REQ-OPS-215** Server-side field allowlist is enforced on both endpoints: any `events[].breadcrumbs[]` entry MUST conform to the allow-listed shape (REQ-OPS-202); unknown fields are dropped silently with a warning metric (`herold_clientlog_dropped_fields_total`). Message bodies, attachment names, contact data, and chat content MUST NOT appear in any client-log payload — the SPA enforces this in the wrapper (REQ-CLOG-10) and the server enforces it again as defence-in-depth via the field allowlist.
+
+#### Console rendering and temporal ordering
+
+- **REQ-OPS-210** Client events emitted to console sinks pass through a per-session reorder buffer keyed by `client_ts + clock_skew_ms`. The buffer holds events for `reorder_window_ms` (default 1000 ms) before flushing in order. Events arriving after the window close for their session are emitted immediately with an attribute `late=true` and the original `client_ts`, so an operator can see they belong earlier. The reorder buffer applies only to console sinks; JSON file sinks and OTLP export receive events in arrival order with all timestamps preserved (downstream tools order by `client_ts`).
+- **REQ-OPS-211** Synchronous emission is supported for two cases:
+  1. **Per-event**: an event with `synchronous: true` is sent by the SPA as a non-batched `fetch` with `keepalive: true`. The SPA's caller awaits the request. Used for fatal-during-boot errors that must not be lost to a later batch flush. The server's handling is otherwise identical.
+  2. **Per-session live-tail**: an operator with admin scope can flip a session into "live tail" mode via `POST /api/v1/admin/clientlog/livetail` (REQ-ADM-232). The SPA polls the session's `clientlog.livetail_until` field on every JMAP response; while non-zero and in the future, the SPA flushes its queue every 100 ms and emits each event synchronously. Live-tail auto-expires (default 15 min, max 60 min); the server clamps the requested duration to the configured maximum.
+  Synchronous mode is never the default. The SPA wrapper documents the cost (one HTTP RTT per event) so contributors do not enable it casually.
+
+#### Source maps
+
+- **REQ-OPS-212** The server stores raw, unsymbolicated stacks. It does NOT perform server-side source-map resolution. Source maps are published as part of the SPA build artefacts and are publicly fetchable from the SPA origin (`/assets/*.map`), since herold is open-source and the maps reveal nothing not already in the source tree. The admin viewer (REQ-ADM-230) renders the raw stack and offers a "Symbolicate" button that fetches the relevant `.map` lazily client-side and rewrites the trace in place; symbolication never happens server-side.
+
+#### Quotas and limits
+
+- **REQ-OPS-216** Per-endpoint limits, configurable, with the following defaults:
+  | Limit | Auth endpoint | Public endpoint |
+  |---|---|---|
+  | Max body bytes per request | 256 KiB | 8 KiB |
+  | Max events per batch | 100 | 5 |
+  | Per-session token bucket | 1000 events / 5 min | n/a |
+  | Per-IP token bucket | n/a | 10 events / min, burst 20 |
+  | Max `stack` length | 16 KiB | 4 KiB |
+  | Max `msg` length | 4 KiB | 1 KiB |
+  | Breadcrumb count | 32 | 0 (none allowed) |
+  Over-quota events are dropped, counted in `herold_clientlog_dropped_total{endpoint, reason}`, and the SPA may include a synthetic `kind=log level=warn msg="N events dropped"` event in the next batch so the gap is visible.
+
+#### Anonymous-endpoint security
+
+- **REQ-OPS-217** The anonymous endpoint:
+  1. Enforces strict schema (REQ-OPS-207) — extra fields fail-closed.
+  2. Rate-limits per remote IP (REQ-OPS-216) with a separate bucket pool from the authenticated endpoint.
+  3. Checks `Origin` when present: requests from foreign origins are dropped silently. Absent `Origin` is allowed (CLI tools, sendBeacon may omit).
+  4. CORS preflight (`OPTIONS`) responds only with `Access-Control-Allow-Origin: <own origin>`; foreign origins receive 204 with no allow-headers, blocking browser-side cross-origin abuse.
+  5. Uses a separate ring-buffer slice (REQ-OPS-206) so anonymous traffic cannot evict authenticated records.
+  6. Defaults OTLP egress off (REQ-OPS-205).
+  7. Strips no source-map metadata (none stored), and admin-viewer rendering of public-slice rows is HTML-encoded with no clickable links — log-injection / stored-XSS defence (REQ-OPS-218).
+- **REQ-OPS-218** The admin viewer renders all client-log fields as text, never as HTML. URLs in `breadcrumbs[].url_path` and `route` are displayed as monospace text with no `href`. This applies to both endpoint slices but is mandatory for the public slice because content is attacker-controlled.
+
+#### Configuration
+
+- **REQ-OPS-219** System-config layout (extends `system.toml`):
+  ```toml
+  [clientlog]
+  enabled = true                        # master switch; default true
+  reorder_window_ms = 1000              # console reorder buffer (REQ-OPS-210)
+  livetail_default_duration = "15m"
+  livetail_max_duration    = "60m"
+
+  [clientlog.defaults]
+  telemetry_enabled = true              # default value of per-user opt-in (REQ-OPS-208)
+
+  [clientlog.auth]
+  ring_buffer_rows = 100000
+  ring_buffer_age  = "168h"              # 7 days
+  rate_per_session = "1000/5m"
+  body_max_bytes   = 262144
+
+  [clientlog.public]
+  enabled          = true                # the anonymous endpoint
+  otlp_egress      = false               # REQ-OPS-205 default
+  ring_buffer_rows = 10000
+  ring_buffer_age  = "24h"
+  rate_per_ip      = "10/m"
+  body_max_bytes   = 8192
+  ```
+  All values reloadable via SIGHUP (REQ-OPS-30). Setting `clientlog.enabled = false` disables both endpoints (404 to clients) and stops SPA emission via the bootstrap descriptor (REQ-CLOG-12).
+- **REQ-OPS-220** Metrics (extend REQ-OPS-91):
+  - `herold_clientlog_received_total{endpoint, app, kind}`
+  - `herold_clientlog_dropped_total{endpoint, reason}` (reason: `rate_limit`, `body_too_large`, `schema`, `field_allowlist`, `disabled`)
+  - `herold_clientlog_ring_buffer_rows{slice}`
+  - `herold_clientlog_livetail_active_sessions`
+
 ### What we explicitly do NOT ship
 
 - SNMP.

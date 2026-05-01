@@ -30,6 +30,12 @@ Grouped by resource. Every resource supports `GET list`, `GET /<id>`, `POST crea
 - **REQ-ADM-20** `/api/v1/server/config` — effective config (redacted secrets). `/api/v1/server/reload` — POST triggers SIGHUP-equivalent reload.
 - **REQ-ADM-21** `/api/v1/server/health` — liveness + readiness; unauthenticated.
 - **REQ-ADM-22** `/api/v1/server/stats` — high-level stats. Prometheus metrics on separate `/metrics` endpoint.
+- **REQ-ADM-23** Client-log surfaces (back the operator view of REQ-OPS-200..220):
+  - **REQ-ADM-230** `GET /api/v1/admin/clientlog` — paginated read of the ring buffer. Filters: `slice` (`auth`|`public`, default `auth`), `app` (`suite`|`admin`), `kind`, `level`, `since`, `until`, `user`, `session_id`, `request_id`, `route`, `text` (substring match on `msg`/`stack`). Cursor pagination per REQ-ADM-40. Response carries the enriched record (client + server timestamps, computed `clock_skew_ms`, redacted fields visible as `***`).
+  - **REQ-ADM-231** `GET /api/v1/admin/clientlog/timeline?request_id=<id>` — joined view of all server log records and client-log records carrying the same `X-Request-Id`, sorted by effective time. Implements the cross-source correlation surface (REQ-OPS-213).
+  - **REQ-ADM-232** `POST /api/v1/admin/clientlog/livetail` — body `{session_id, duration?}`. Sets `clientlog.livetail_until` on the target session (REQ-OPS-211). `duration` defaults to and is clamped by `clientlog.livetail_default_duration` / `livetail_max_duration`. `DELETE /api/v1/admin/clientlog/livetail/{session_id}` cancels live-tail. Audit-logged (REQ-ADM-300).
+  - **REQ-ADM-233** `GET /api/v1/admin/clientlog/stats` — high-level counters per endpoint and per app for the last hour / day, derived from the metrics in REQ-OPS-220. Used by the admin dashboard tile.
+  - All four require admin scope (REQ-AUTH-SCOPE-*); none are exposed on the public listener.
 
 ### Errors
 
@@ -91,6 +97,7 @@ Phase 3. Design placeholders here so later work doesn't demand redesign.
   - Server config (read-only with "edit in file" hint and reload button).
   - Audit log viewer.
   - Stats dashboard (queued, accepted, rejected, rate of delivery).
+  - Recent client errors / logs (ring-buffer view per REQ-ADM-230..233; per-request timeline; live-tail toggle).
 - **REQ-ADM-203** Self-service panel for users (separate URL `/settings`): change password, set up 2FA, app passwords, forwarding, Sieve vacation, identity management.
 - **REQ-ADM-204** UI framework: Svelte 5 + Vite + pnpm, sharing the design system imported from the former tabard repo (Bits UI + Carbon-inspired tokens + IBM Plex). See `docs/design/web/notes/adr-0001-merge-tabard-and-rewrite-admin-ui.md`. Built via the workspace under `web/`; embedded into the herold binary via `internal/webspa/` with a `-tags nofrontend` opt-out for backend-only builds.
 

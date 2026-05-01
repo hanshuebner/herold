@@ -136,8 +136,9 @@ One logical `Store` handle that every caller goes through; SQLite and Postgres i
 
 - Structured logging sink, pluggable format.
 - Metrics registry → `/metrics` endpoint.
-- Optional OTLP tracer.
+- Optional OTLP tracer (and optional OTLP log exporter for client events; see `10-client-log-pipeline.md`).
 - Health endpoints.
+- Browser-side errors and logs from the SPAs are ingested via authenticated and anonymous HTTP endpoints, sanitised, and re-emitted into the same slog + OTLP fan-out as server logs, with a bounded ring buffer for "last N hours" operator visibility. Detail in `10-client-log-pipeline.md`.
 
 All three share a common `span/event` abstraction so that a log line and a trace span for the same event agree on fields and IDs.
 

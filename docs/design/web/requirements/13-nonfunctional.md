@@ -57,3 +57,38 @@ Phone and tablet use the same browser engines as desktop (no native shells). Mob
 |----|-------------|
 | REQ-BR-01 | Below the supported versions the suite shows an "unsupported browser" page with an upgrade link. It does not attempt graceful degradation. |
 | REQ-BR-02 | The suite does not ship JavaScript polyfills for features available in all supported versions. |
+
+## Client logging and error reporting
+
+*(Added 2026-05-01: pairs with server-side REQ-OPS-200..220. Both the Suite and the Admin SPA forward runtime errors, console output, and Web Vitals to herold so they re-surface in the operator's slog/OTLP/ring-buffer pipeline. The wrapper is small, batched, and emits to herold only — there is no third-party SDK and no other origin.)*
+
+### Wrapper module
+
+| ID | Requirement |
+|----|-------------|
+| REQ-CLOG-01 | The SPA installs a single client-logging wrapper at module load: `window.onerror`, `window.onunhandledrejection`, the framework's error boundary, `console.error` and `console.warn` (always), and `console.info`/`console.log`/`console.debug` (only when REQ-CLOG-05 live-tail is active or the user has opted in to verbose telemetry per REQ-CLOG-06). The wrapper lives in a shared package (e.g. `web/packages/clientlog`) consumed by both Suite and Admin; there is no per-app reimplementation. |
+| REQ-CLOG-02 | Events are batched in memory and flushed when any of: 20 events queued, 5 s since first queued event, the page becomes hidden (`pagehide`), or the page is unloading. The unload flush uses `navigator.sendBeacon` with a `Blob` of `application/json`; in-flight `fetch` calls during normal operation use `keepalive: true` so a navigation racing the request does not silently drop the batch. |
+| REQ-CLOG-03 | Every event carries the fields specified by REQ-OPS-202 in full schema or REQ-OPS-207 in narrow schema. `client_ts` is `new Date().toISOString()` at capture time; `seq` is a monotonic counter per page load; `page_id` is generated once per page load; `session_id` is read from / written to `sessionStorage` so it spans page reloads in the same tab; `build_sha` is read from a `<meta name="herold-build">` tag injected by `internal/webspa` at asset bundling. |
+| REQ-CLOG-04 | The wrapper exposes a `logFatal(err, {synchronous: true})` API for boot-path errors that must not be lost to a later batch. A synchronous emission performs an immediate `fetch` with `keepalive: true` and awaits the result; the caller chooses whether to display anything to the user before resolving. Routine logs and errors NEVER use synchronous mode. |
+| REQ-CLOG-05 | The wrapper observes a `livetail_until` field on the JMAP session descriptor (refreshed on every JMAP response). While that timestamp is in the future, the wrapper switches to a 100 ms flush interval and emits each event synchronously per REQ-CLOG-04. Live-tail mode is operator-driven via REQ-ADM-232; the SPA is a passive observer. |
+| REQ-CLOG-06 | A per-user opt-in flag (`telemetry_enabled`, default from server config per REQ-OPS-208) suppresses all `kind=log` and `kind=vital` events from the SPA. Errors (`kind=error`) are always sent regardless of the flag — a user cannot opt out of crash reporting. The flag is exposed in `/settings` as a single checkbox with one-line copy ("Send anonymous diagnostic logs to my mail-server operator"). |
+| REQ-CLOG-07 | Pre-authentication code paths (login form, OIDC redirect, public unsubscribe view) emit only via the anonymous endpoint per REQ-OPS-200, and only with the narrow schema per REQ-OPS-207. The wrapper detects "no session yet" at module init by absence of the session cookie surface and routes accordingly until the first authenticated request succeeds. |
+| REQ-CLOG-08 | Web Vitals (LCP, INP, CLS, TTFB, FCP) are captured via the standard `web-vitals` library or an inline equivalent (whichever bundles smaller) and emitted as `kind=vital` events. One report per metric per page load; no continuous streaming. |
+| REQ-CLOG-09 | When the in-memory queue is at its cap (default 200 events) the wrapper drops oldest entries first (errors retained in preference to logs) and increments a drop counter. The next batch sent includes a synthetic `{kind: "log", level: "warn", msg: "clientlog: dropped N earlier events"}` entry so the gap is visible to the operator. |
+| REQ-CLOG-10 | The wrapper enforces a payload allowlist client-side (defence-in-depth with REQ-OPS-215). It MUST NOT include: message bodies, attachment names, contact data, chat content, draft contents, search queries, mailbox names, URL query strings, request bodies, response bodies, header values, DOM snapshots, input field values. Breadcrumbs carry only the fields permitted by REQ-OPS-202 (`ts`, `kind`, `route?`, `status?`, `method?`, `url_path?`, `msg?`). |
+
+### Correlation, ordering, breadcrumbs
+
+| ID | Requirement |
+|----|-------------|
+| REQ-CLOG-20 | Every outbound JMAP / admin / chat / SMTP-API fetch carries an `X-Request-Id` header (UUID v7 generated client-side); the wrapper records the in-flight request id in a thread-local-like context so events emitted while the request is open carry that `request_id`. The server echoes the same id in `X-Request-Id` on the response and in any associated server-side log lines, enabling REQ-OPS-213 cross-source correlation. |
+| REQ-CLOG-21 | Breadcrumbs capture: route changes (`{kind:"route", route, ts}`), fetch start/end (`{kind:"fetch", method, url_path, status?, ts}` — `url_path` is the path-only, query stripped), and explicit `console.warn`/`console.error` calls (`{kind:"console", level, msg, ts}`). The breadcrumb buffer is a ring of at most 32 entries; new entries evict oldest. |
+| REQ-CLOG-22 | The wrapper makes no attempt to time-align client and server clocks. It always records browser wall-clock `client_ts`; the server is responsible for computing skew and reordering (REQ-OPS-203, REQ-OPS-210). |
+
+### Bootstrap, kill switch, dev mode
+
+| ID | Requirement |
+|----|-------------|
+| REQ-CLOG-12 | The wrapper reads a small bootstrap descriptor from a `<meta name="herold-clientlog">` tag (or the JMAP session descriptor for authenticated callers) carrying `{enabled, batch_max_events, batch_max_age_ms, queue_cap, telemetry_enabled}`. When `enabled=false`, the wrapper installs no handlers and emits nothing — operators with `clientlog.enabled=false` (REQ-OPS-219) get truly silent SPAs. |
+| REQ-CLOG-13 | In Vite dev mode the wrapper additionally `console.log`s every captured event to the developer's browser console under a `[clientlog]` prefix, so a developer can see exactly what would be forwarded without needing the server side. The dev-mode echo is gated on `import.meta.env.DEV` and stripped from production bundles. |
+| REQ-CLOG-14 | Tests of the wrapper run with deterministic fakes for `Date.now`, `crypto.randomUUID`, and `navigator.sendBeacon`/`fetch`. No background timers in unit tests; flush is driven explicitly by the test harness. |

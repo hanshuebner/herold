@@ -39,6 +39,7 @@ The suite is **one** single-page application — the suite shell. It client-side
 - **Cache.** In-memory, normalised by JMAP type and ID. The single source of truth that views render from. Optimistic writes hit the cache first.
 - **Views.** Three-pane layout (`../requirements/09-ui-layout.md`), keyboard-driven (`../requirements/10-keyboard.md`), HTML-mail rendered in a sandboxed iframe (`04-rendering.md`).
 - **Keyboard engine.** Single global dispatcher, two-key sequence buffer, picker keymaps superseding the global map while open. See `05-keyboard-engine.md`.
+- **Client-log wrapper.** Side-channel that captures runtime errors, opted-in console output, and Web Vitals, batches them, and POSTs them back to herold over the same auth surface. Installed before any other code so a crash during JMAP setup is captured. See `08-clientlog.md`.
 
 ## What lives client-side, what lives server-side
 
