@@ -4,7 +4,7 @@
  * Issue #40: duplicate emailIds in Thread must not reach the each-key.
  */
 import { describe, it, expect } from 'vitest';
-import { allVisibleSelected, resolveThreadEmails } from './store.svelte';
+import { allVisibleSelected, expandToThreadIds, resolveThreadEmails } from './store.svelte';
 import type { Email } from './types';
 
 describe('allVisibleSelected', () => {
@@ -85,5 +85,97 @@ describe('resolveThreadEmails (issue #40)', () => {
   it('returns an empty array when the cache has no matching emails', () => {
     const emails = new Map<string, Email>();
     expect(resolveThreadEmails(['e1', 'e2'], emails)).toEqual([]);
+  });
+});
+
+// ── expandToThreadIds (REQ-MAIL-51, REQ-MAIL-52, REQ-MAIL-54) ───────────────
+//
+// Thread-scoped bulk operations (move, archive, delete) must hit every
+// email in the affected thread, not just the row the user clicked. The
+// helper computes the thread expansion; the bulk methods consume it.
+
+function makeEmailInThread(id: string, threadId: string): Email {
+  return { ...makeEmail(id), threadId };
+}
+
+describe('expandToThreadIds', () => {
+  it('expands a single id to every email in its thread', () => {
+    const emails = new Map<string, Email>([
+      ['e1', makeEmailInThread('e1', 't1')],
+      ['e2', makeEmailInThread('e2', 't1')],
+      ['e3', makeEmailInThread('e3', 't1')],
+    ]);
+    const threads = new Map<string, { emailIds: readonly string[] }>([
+      ['t1', { emailIds: ['e1', 'e2', 'e3'] }],
+    ]);
+    expect(expandToThreadIds(['e1'], threads, emails)).toEqual(['e1', 'e2', 'e3']);
+  });
+
+  it('expands multiple ids and deduplicates thread members', () => {
+    const emails = new Map<string, Email>([
+      ['e1', makeEmailInThread('e1', 't1')],
+      ['e2', makeEmailInThread('e2', 't1')],
+      ['e3', makeEmailInThread('e3', 't2')],
+    ]);
+    const threads = new Map<string, { emailIds: readonly string[] }>([
+      ['t1', { emailIds: ['e1', 'e2'] }],
+      ['t2', { emailIds: ['e3'] }],
+    ]);
+    // User selected e1 and e2 (same thread); both should expand once.
+    expect(expandToThreadIds(['e1', 'e2'], threads, emails)).toEqual(['e1', 'e2']);
+    // User selected one row from each of two threads.
+    expect(expandToThreadIds(['e1', 'e3'], threads, emails)).toEqual(['e1', 'e2', 'e3']);
+  });
+
+  it('does not visit the same thread twice when multiple rows of it are selected', () => {
+    const emails = new Map<string, Email>([
+      ['e1', makeEmailInThread('e1', 't1')],
+      ['e2', makeEmailInThread('e2', 't1')],
+    ]);
+    const threads = new Map<string, { emailIds: readonly string[] }>([
+      ['t1', { emailIds: ['e1', 'e2'] }],
+    ]);
+    // Both selected rows are members of t1; the result is t1 once.
+    const out = expandToThreadIds(['e2', 'e1'], threads, emails);
+    expect(new Set(out)).toEqual(new Set(['e1', 'e2']));
+    expect(out.length).toBe(2);
+  });
+
+  it('passes through ids whose thread is not loaded so partial caches still drive single-message ops', () => {
+    const emails = new Map<string, Email>([
+      ['e1', makeEmailInThread('e1', 't1')],
+    ]);
+    const threads = new Map<string, { emailIds: readonly string[] }>(); // empty
+    expect(expandToThreadIds(['e1'], threads, emails)).toEqual(['e1']);
+  });
+
+  it('passes through unknown email ids', () => {
+    const emails = new Map<string, Email>();
+    const threads = new Map<string, { emailIds: readonly string[] }>();
+    expect(expandToThreadIds(['unknown1', 'unknown2'], threads, emails)).toEqual([
+      'unknown1',
+      'unknown2',
+    ]);
+  });
+
+  it('handles a thread record with an empty emailIds list (transient state) by passing the seed through', () => {
+    const emails = new Map<string, Email>([['e1', makeEmailInThread('e1', 't1')]]);
+    const threads = new Map<string, { emailIds: readonly string[] }>([
+      ['t1', { emailIds: [] }],
+    ]);
+    expect(expandToThreadIds(['e1'], threads, emails)).toEqual(['e1']);
+  });
+
+  it('preserves stored thread order regardless of which row was the seed', () => {
+    const emails = new Map<string, Email>([
+      ['e1', makeEmailInThread('e1', 't1')],
+      ['e2', makeEmailInThread('e2', 't1')],
+      ['e3', makeEmailInThread('e3', 't1')],
+    ]);
+    const threads = new Map<string, { emailIds: readonly string[] }>([
+      ['t1', { emailIds: ['e1', 'e2', 'e3'] }],
+    ]);
+    // Seed is the middle reply — output still reflects thread storage order.
+    expect(expandToThreadIds(['e2'], threads, emails)).toEqual(['e1', 'e2', 'e3']);
   });
 });

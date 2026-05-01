@@ -1472,10 +1472,13 @@ class MailStore {
     return { updated, failed };
   }
 
-  /** Bulk archive: remove the inbox mailbox from every id. Inbox-only. */
+  /** Bulk archive: remove the inbox mailbox from every id. Inbox-only.
+   * Thread-scoped per REQ-MAIL-51: every email in each affected thread
+   * is archived together, regardless of which row the user clicked. */
   async bulkArchive(ids: string[]): Promise<void> {
     const inbox = this.inbox;
     if (!inbox || ids.length === 0) return;
+    ids = expandToThreadIds(ids, this.threads, this.emails);
     const updates: Record<string, Record<string, unknown>> = {};
     const prevById = new Map<string, Record<string, true>>();
     for (const id of ids) {
@@ -1576,6 +1579,8 @@ class MailStore {
   async bulkDelete(ids: string[]): Promise<void> {
     const trash = this.trash;
     if (!trash || ids.length === 0) return;
+    // Thread-scoped per REQ-MAIL-52: delete every email in the thread.
+    ids = expandToThreadIds(ids, this.threads, this.emails);
     const updates: Record<string, Record<string, unknown>> = {};
     const prevById = new Map<string, Record<string, true>>();
     for (const id of ids) {
@@ -1659,9 +1664,13 @@ class MailStore {
     }
   }
 
-  /** Bulk move: replace every id's mailboxIds with `{[targetId]: true}`. */
+  /** Bulk move: replace every id's mailboxIds with `{[targetId]: true}`.
+   * Thread-scoped per REQ-MAIL-54: a thread move relocates every email
+   * in the thread (including replies and the original message), not just
+   * the one whose row the user dragged or right-clicked. */
   async bulkMoveToMailbox(ids: string[], targetId: string): Promise<void> {
     if (ids.length === 0) return;
+    ids = expandToThreadIds(ids, this.threads, this.emails);
     const updates: Record<string, Record<string, unknown>> = {};
     const prevById = new Map<string, Record<string, true>>();
     for (const id of ids) {
@@ -2337,7 +2346,62 @@ export function allVisibleSelected(visibleIds: string[], selected: Set<string>):
   return visibleIds.every((id) => selected.has(id));
 }
 
+/**
+ * Expand a set of email ids to every email in their thread(s) so a
+ * thread-scoped bulk operation (move, archive, delete) acts on the
+ * whole conversation rather than just the row the user clicked
+ * (REQ-MAIL-51, REQ-MAIL-52, REQ-MAIL-54).
+ *
+ * Each affected thread is expanded once (no duplicate work across rows
+ * of the same thread). Email ids whose thread is not loaded — or whose
+ * thread record is empty — pass through as-is so a partial cache can
+ * still drive a single-message operation. Order is "id encounter
+ * order" with thread members appended in their stored order.
+ */
+export function expandToThreadIds(
+  ids: string[],
+  threads: Map<string, { emailIds: readonly string[] }>,
+  emails: Map<string, { threadId: string }>,
+): string[] {
+  const out: string[] = [];
+  const seenEmailIds = new Set<string>();
+  const seenThreadIds = new Set<string>();
+  for (const id of ids) {
+    const e = emails.get(id);
+    if (!e) {
+      // Unknown email: pass through so the caller's existing single-id
+      // behaviour is preserved when the thread cache is incomplete.
+      if (!seenEmailIds.has(id)) {
+        seenEmailIds.add(id);
+        out.push(id);
+      }
+      continue;
+    }
+    if (seenThreadIds.has(e.threadId)) continue;
+    seenThreadIds.add(e.threadId);
+    const t = threads.get(e.threadId);
+    if (!t || t.emailIds.length === 0) {
+      if (!seenEmailIds.has(id)) {
+        seenEmailIds.add(id);
+        out.push(id);
+      }
+      continue;
+    }
+    for (const tid of t.emailIds) {
+      if (seenEmailIds.has(tid)) continue;
+      seenEmailIds.add(tid);
+      out.push(tid);
+    }
+  }
+  return out;
+}
+
 export const mail = new MailStore();
 
 /** Exported purely for unit tests; not part of the public surface. */
-export const _internals_forTest = { errMessage, allVisibleSelected, resolveThreadEmails };
+export const _internals_forTest = {
+  errMessage,
+  allVisibleSelected,
+  resolveThreadEmails,
+  expandToThreadIds,
+};
