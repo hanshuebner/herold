@@ -59,8 +59,11 @@ func TestSpa_AssetDir_ServesIndex(t *testing.T) {
 		t.Fatalf("status=%d, want 200", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "<html><body>hi</body></html>" {
-		t.Errorf("body=%q, want index.html content", string(body))
+	// The response contains the original index.html content plus injected
+	// meta tags (REQ-CLOG-12). Check that the original content is present
+	// rather than requiring an exact match.
+	if !strings.Contains(string(body), "<html><body>hi</body></html>") {
+		t.Errorf("body=%q, want to contain index.html content", string(body))
 	}
 	if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "no-cache") {
 		t.Errorf("Cache-Control=%q, want no-cache", got)
@@ -133,8 +136,10 @@ func TestSpa_SPA_Fallback_RouterPath(t *testing.T) {
 		t.Fatalf("status=%d, want 200", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "<html>SPA</html>" {
-		t.Errorf("body=%q, want index.html content", string(body))
+	// The response contains the original index.html plus injected meta
+	// tags (REQ-CLOG-12); check for the original content substring.
+	if !strings.Contains(string(body), "<html>SPA</html>") {
+		t.Errorf("body=%q, want to contain index.html content", string(body))
 	}
 	if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "no-cache") {
 		t.Errorf("Cache-Control=%q, want no-cache for SPA fallback", got)

@@ -35,15 +35,26 @@ type Options struct {
 	// empty the directive collapses to 'self' which still matches a
 	// relative WebSocket URL on the same origin.
 	PublicHost string
+	// ClientLog is the bootstrap descriptor injected into the
+	// <meta name="herold-clientlog"> tag (REQ-CLOG-12). When the
+	// zero value is supplied, Enabled defaults to true so existing
+	// callers that pre-date this field get a working bootstrap tag.
+	ClientLog ClientLogBootstrap
+	// BuildSHA is the Git commit SHA embedded in the
+	// <meta name="herold-build"> tag (REQ-CLOG-03). When empty the
+	// tag carries "dev".
+	BuildSHA string
 }
 
 // Server is the suite SPA HTTP handler. Construct via New; serve via
 // Handler. The server is safe for concurrent use.
 type Server struct {
-	logger   *slog.Logger
-	assetDir string
-	root     fs.FS
-	csp      string
+	logger    *slog.Logger
+	assetDir  string
+	root      fs.FS
+	csp       string
+	clientLog ClientLogBootstrap
+	buildSHA  string
 }
 
 // reservedAPIPrefixes is the defensive 404 list (REQ-DEPLOY-COLOC-02).
@@ -114,6 +125,8 @@ func New(opts Options) (*Server, error) {
 		s.root = sub
 	}
 	s.csp = buildCSP(opts.PublicHost)
+	s.clientLog = opts.ClientLog
+	s.buildSHA = opts.BuildSHA
 	return s, nil
 }
 
@@ -221,7 +234,9 @@ func (s *Server) handleMiss(w http.ResponseWriter, r *http.Request, urlPath stri
 	s.serveIndex(w, r, http.StatusOK)
 }
 
-// serveIndex writes index.html with no-cache headers.
+// serveIndex writes index.html with no-cache headers. The meta tags
+// for the client-log bootstrap descriptor (REQ-CLOG-12) and the build
+// SHA (REQ-CLOG-03) are injected immediately before </head>.
 func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request, status int) {
 	body, err := fs.ReadFile(s.root, "index.html")
 	if err != nil {
@@ -230,6 +245,7 @@ func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request, status int) 
 		http.Error(w, "index.html unavailable", http.StatusInternalServerError)
 		return
 	}
+	body = InjectMetaTags(body, s.clientLog, s.buildSHA)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))

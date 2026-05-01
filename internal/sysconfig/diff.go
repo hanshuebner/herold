@@ -90,6 +90,13 @@ func Diff(oldCfg, newCfg *Config) ([]Change, error) {
 			Description: "log sink configuration updated",
 		})
 	}
+	if !reflect.DeepEqual(oldCfg.ClientLog, newCfg.ClientLog) {
+		changes = append(changes, Change{
+			Kind:        ChangeFieldUpdate,
+			Path:        "clientlog",
+			Description: "client-log configuration updated",
+		})
+	}
 
 	// Listeners: diff by name.
 	oldL := indexListeners(oldCfg.Listener)

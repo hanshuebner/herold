@@ -56,6 +56,45 @@ level  = "info"
 activities = { deny = ["totally_invalid_activity"] }
 `))
 
+	// [clientlog] seeds (REQ-OPS-219).
+	f.Add([]byte(minimalNoObs + `
+[clientlog]
+enabled = true
+reorder_window_ms = 1000
+livetail_default_duration = "15m"
+livetail_max_duration = "60m"
+
+[clientlog.defaults]
+telemetry_enabled = true
+
+[clientlog.auth]
+ring_buffer_rows = 100000
+ring_buffer_age  = "168h"
+rate_per_session = "1000/5m"
+body_max_bytes   = 262144
+
+[clientlog.public]
+enabled          = true
+otlp_egress      = false
+ring_buffer_rows = 10000
+ring_buffer_age  = "24h"
+rate_per_ip      = "10/m"
+body_max_bytes   = 8192
+`))
+	f.Add([]byte(minimalNoObs + `
+[clientlog]
+enabled = false
+`))
+	f.Add([]byte(minimalNoObs + `
+[clientlog.auth]
+rate_per_session = "not-a-rate"
+`))
+	f.Add([]byte(minimalNoObs + `
+[clientlog]
+livetail_default_duration = "90m"
+livetail_max_duration = "60m"
+`))
+
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		_, _ = Parse(raw)
 	})

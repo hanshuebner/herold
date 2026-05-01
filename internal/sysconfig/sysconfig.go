@@ -29,6 +29,12 @@ type Config struct {
 	// The legacy [observability] block is translated into a single
 	// [[log.sink]] entry at parse time by translateLegacyObservability.
 	Log LogConfig `toml:"log,omitempty"`
+	// ClientLog holds the client-log ingest configuration (REQ-OPS-219).
+	// All values are reloadable via SIGHUP (REQ-OPS-30). When
+	// ClientLog.Enabled is false both ingest endpoints return 404 and the
+	// bootstrap meta tag carries enabled:false so the SPA wrapper installs
+	// no handlers (REQ-CLOG-12).
+	ClientLog ClientLogConfig `toml:"clientlog,omitempty"`
 }
 
 // HooksConfig groups ingress-hook subsystems (SES inbound, future
@@ -916,6 +922,228 @@ type ActivityFilterConfig struct {
 	Deny []string `toml:"deny,omitempty"`
 }
 
+// RateLimit is a TOML-friendly rate specification of the form "N/unit"
+// where unit is one of "s" (second), "m" (minute), "h" (hour), or a
+// multi-unit window like "5m" (five minutes). Examples:
+//
+//   - "10/m"    — ten events per minute
+//   - "1000/5m" — one thousand events per five minutes
+//   - "10/s"    — ten events per second
+//
+// The zero value (empty string) means "no limit configured; use the
+// built-in default". RateLimit is comparable: two RateLimits are equal
+// when their raw text representations are identical.
+type RateLimit struct {
+	// raw is the original TOML string; preserved verbatim for
+	// round-tripping and equality comparisons.
+	raw string
+	// Count is the number of events per window.
+	Count int
+	// Window is the duration of the rate window.
+	Window time.Duration
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler so go-toml strict
+// decoding can populate a RateLimit from a TOML string value.
+func (r *RateLimit) UnmarshalText(text []byte) error {
+	s := string(text)
+	if s == "" {
+		r.raw = ""
+		return nil
+	}
+	count, window, err := parseRateLimit(s)
+	if err != nil {
+		return err
+	}
+	r.raw = s
+	r.Count = count
+	r.Window = window
+	return nil
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (r RateLimit) MarshalText() ([]byte, error) {
+	return []byte(r.raw), nil
+}
+
+// IsZero reports whether the RateLimit is unset (empty string in TOML).
+func (r RateLimit) IsZero() bool { return r.raw == "" }
+
+// String returns the original TOML string representation.
+func (r RateLimit) String() string { return r.raw }
+
+// parseRateLimit parses "N/unit" or "N/Xunit" where unit is s/m/h.
+// Examples: "10/m", "1000/5m", "10/s", "100/1h".
+func parseRateLimit(s string) (count int, window time.Duration, err error) {
+	slash := strings.LastIndex(s, "/")
+	if slash < 1 || slash == len(s)-1 {
+		return 0, 0, fmt.Errorf("invalid rate limit %q: want \"N/unit\" (e.g. \"10/m\", \"1000/5m\")", s)
+	}
+	countStr := s[:slash]
+	windowStr := s[slash+1:]
+
+	// Parse count.
+	n := 0
+	for _, ch := range countStr {
+		if ch < '0' || ch > '9' {
+			return 0, 0, fmt.Errorf("invalid rate limit %q: count %q is not a positive integer", s, countStr)
+		}
+		n = n*10 + int(ch-'0')
+	}
+	if n <= 0 {
+		return 0, 0, fmt.Errorf("invalid rate limit %q: count must be > 0", s)
+	}
+
+	// The window may be a bare unit letter ("m", "s", "h") or a
+	// multiplied form ("5m", "12h"). We normalise by prepending "1"
+	// when the string starts with a letter.
+	var windowInput string
+	if len(windowStr) > 0 && (windowStr[0] >= 'a' && windowStr[0] <= 'z') {
+		windowInput = "1" + windowStr
+	} else {
+		windowInput = windowStr
+	}
+	// Validate the window string: optional digits + exactly one unit letter.
+	if len(windowInput) < 2 {
+		return 0, 0, fmt.Errorf("invalid rate limit %q: window %q too short", s, windowStr)
+	}
+	// Allow standard go duration syntax with only s/m/h units.
+	w, durErr := time.ParseDuration(windowInput)
+	if durErr != nil {
+		return 0, 0, fmt.Errorf("invalid rate limit %q: window %q: %w", s, windowStr, durErr)
+	}
+	if w <= 0 {
+		return 0, 0, fmt.Errorf("invalid rate limit %q: window must be > 0", s)
+	}
+	return n, w, nil
+}
+
+// ClientLogConfig is the [clientlog] section of system.toml (REQ-OPS-219).
+// All fields are reloadable via SIGHUP (REQ-OPS-30).
+//
+// Example (system.toml):
+//
+//	[clientlog]
+//	enabled = true
+//	reorder_window_ms = 1000
+//	livetail_default_duration = "15m"
+//	livetail_max_duration    = "60m"
+//
+//	[clientlog.defaults]
+//	telemetry_enabled = true
+//
+//	[clientlog.auth]
+//	ring_buffer_rows = 100000
+//	ring_buffer_age  = "168h"
+//	rate_per_session = "1000/5m"
+//	body_max_bytes   = 262144
+//
+//	[clientlog.public]
+//	enabled          = true
+//	otlp_egress      = false
+//	ring_buffer_rows = 10000
+//	ring_buffer_age  = "24h"
+//	rate_per_ip      = "10/m"
+//	body_max_bytes   = 8192
+type ClientLogConfig struct {
+	// Enabled is the master switch for the client-log pipeline. Default
+	// true. When false, both ingest endpoints return 404 and the
+	// bootstrap meta tag carries enabled:false so the SPA wrapper
+	// installs no handlers (REQ-CLOG-12).
+	Enabled *bool `toml:"enabled,omitempty"`
+	// ReorderWindowMS is the per-session console reorder buffer window
+	// in milliseconds (REQ-OPS-210). Default 1000.
+	ReorderWindowMS int `toml:"reorder_window_ms,omitempty"`
+	// LivetailDefaultDuration is the default live-tail session length
+	// when the operator does not specify a duration (REQ-OPS-219).
+	// Default "15m".
+	LivetailDefaultDuration Duration `toml:"livetail_default_duration,omitempty"`
+	// LivetailMaxDuration caps the duration an operator may request for
+	// a live-tail session (REQ-OPS-219). Default "60m".
+	LivetailMaxDuration Duration `toml:"livetail_max_duration,omitempty"`
+	// Defaults holds deployment-wide default values for per-user
+	// opt-in flags (REQ-OPS-208).
+	Defaults ClientLogDefaultsConfig `toml:"defaults,omitempty"`
+	// Auth configures the authenticated ingest endpoint
+	// (REQ-OPS-200, REQ-OPS-216).
+	Auth ClientLogAuthConfig `toml:"auth,omitempty"`
+	// Public configures the anonymous ingest endpoint
+	// (REQ-OPS-200, REQ-OPS-216, REQ-OPS-217).
+	Public ClientLogPublicConfig `toml:"public,omitempty"`
+}
+
+// ClientLogDefaultsConfig holds deployment-wide default values for
+// per-user client-log settings (REQ-OPS-208).
+type ClientLogDefaultsConfig struct {
+	// TelemetryEnabled is the default value of the per-user
+	// telemetry opt-in (REQ-OPS-208). When true, kind=log and
+	// kind=vital events are emitted for all users unless they have
+	// explicitly opted out. Errors are always sent regardless.
+	// Default true.
+	TelemetryEnabled *bool `toml:"telemetry_enabled,omitempty"`
+}
+
+// ClientLogAuthConfig configures the authenticated client-log ingest
+// endpoint (REQ-OPS-200, REQ-OPS-216).
+type ClientLogAuthConfig struct {
+	// RingBufferRows is the maximum number of rows retained in the
+	// authenticated ring-buffer slice. Default 100000.
+	RingBufferRows int `toml:"ring_buffer_rows,omitempty"`
+	// RingBufferAge is the maximum age of rows in the authenticated
+	// ring-buffer slice. Default "168h" (7 days).
+	RingBufferAge Duration `toml:"ring_buffer_age,omitempty"`
+	// RatePerSession is the per-session token-bucket rate for the
+	// authenticated endpoint. Default "1000/5m". Empty means no limit.
+	RatePerSession RateLimit `toml:"rate_per_session,omitempty"`
+	// BodyMaxBytes is the maximum accepted request body size for the
+	// authenticated endpoint. Default 262144 (256 KiB).
+	BodyMaxBytes int `toml:"body_max_bytes,omitempty"`
+}
+
+// ClientLogPublicConfig configures the anonymous client-log ingest
+// endpoint (REQ-OPS-200, REQ-OPS-216, REQ-OPS-217).
+type ClientLogPublicConfig struct {
+	// Enabled controls whether the anonymous endpoint is mounted.
+	// When false the endpoint returns 404. Default true.
+	Enabled *bool `toml:"enabled,omitempty"`
+	// OTLPEgress controls whether anonymous events are forwarded to
+	// the OTLP exporter (REQ-OPS-205). Default false to prevent
+	// arbitrary internet traffic from inflating the operator's
+	// observability bill.
+	OTLPEgress bool `toml:"otlp_egress,omitempty"`
+	// RingBufferRows is the maximum number of rows retained in the
+	// public ring-buffer slice. Default 10000.
+	RingBufferRows int `toml:"ring_buffer_rows,omitempty"`
+	// RingBufferAge is the maximum age of rows in the public
+	// ring-buffer slice. Default "24h".
+	RingBufferAge Duration `toml:"ring_buffer_age,omitempty"`
+	// RatePerIP is the per-IP token-bucket rate for the anonymous
+	// endpoint. Default "10/m". Empty means no limit.
+	RatePerIP RateLimit `toml:"rate_per_ip,omitempty"`
+	// BodyMaxBytes is the maximum accepted request body size for the
+	// anonymous endpoint. Default 8192 (8 KiB).
+	BodyMaxBytes int `toml:"body_max_bytes,omitempty"`
+}
+
+// ClientLogEnabled returns true when the ClientLog pipeline is enabled.
+// It applies the default (true) when Enabled is nil.
+func (c *ClientLogConfig) ClientLogEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// ClientLogPublicEnabled returns true when the anonymous endpoint is
+// mounted. It applies the default (true) when Public.Enabled is nil.
+func (c *ClientLogConfig) ClientLogPublicEnabled() bool {
+	return c.Public.Enabled == nil || *c.Public.Enabled
+}
+
+// TelemetryEnabledDefault returns the deployment default for per-user
+// telemetry opt-in. It applies the default (true) when
+// Defaults.TelemetryEnabled is nil.
+func (c *ClientLogConfig) TelemetryEnabledDefault() bool {
+	return c.Defaults.TelemetryEnabled == nil || *c.Defaults.TelemetryEnabled
+}
+
 // secretKeySubstrings is the closed-vocabulary list of substrings the
 // strict secret-validation pass treats as secret-bearing in plugin
 // option keys. Matched case-insensitively. Operators who genuinely
@@ -1251,6 +1479,62 @@ func applyDefaults(c *Config) {
 	}
 	if c.Server.TrashRetention.SweepIntervalSeconds == 0 {
 		c.Server.TrashRetention.SweepIntervalSeconds = 3600
+	}
+	// Client-log ingest (REQ-OPS-219). Defaults match the table in
+	// REQ-OPS-216. A missing [clientlog] block produces a fully
+	// functional configuration with the documented default values.
+	applyClientLogDefaults(&c.ClientLog)
+}
+
+// applyClientLogDefaults fills in the documented default values for
+// the [clientlog] block (REQ-OPS-219) when fields are absent.
+func applyClientLogDefaults(cl *ClientLogConfig) {
+	if cl.Enabled == nil {
+		t := true
+		cl.Enabled = &t
+	}
+	if cl.ReorderWindowMS == 0 {
+		cl.ReorderWindowMS = 1000
+	}
+	if cl.LivetailDefaultDuration == 0 {
+		cl.LivetailDefaultDuration = Duration(15 * time.Minute)
+	}
+	if cl.LivetailMaxDuration == 0 {
+		cl.LivetailMaxDuration = Duration(60 * time.Minute)
+	}
+	if cl.Defaults.TelemetryEnabled == nil {
+		t := true
+		cl.Defaults.TelemetryEnabled = &t
+	}
+	// Auth endpoint defaults (REQ-OPS-216).
+	if cl.Auth.RingBufferRows == 0 {
+		cl.Auth.RingBufferRows = 100000
+	}
+	if cl.Auth.RingBufferAge == 0 {
+		cl.Auth.RingBufferAge = Duration(168 * time.Hour) // 7 days
+	}
+	if cl.Auth.RatePerSession.IsZero() {
+		_ = cl.Auth.RatePerSession.UnmarshalText([]byte("1000/5m"))
+	}
+	if cl.Auth.BodyMaxBytes == 0 {
+		cl.Auth.BodyMaxBytes = 262144 // 256 KiB
+	}
+	// Public endpoint defaults (REQ-OPS-216).
+	if cl.Public.Enabled == nil {
+		t := true
+		cl.Public.Enabled = &t
+	}
+	if cl.Public.RingBufferRows == 0 {
+		cl.Public.RingBufferRows = 10000
+	}
+	if cl.Public.RingBufferAge == 0 {
+		cl.Public.RingBufferAge = Duration(24 * time.Hour)
+	}
+	if cl.Public.RatePerIP.IsZero() {
+		_ = cl.Public.RatePerIP.UnmarshalText([]byte("10/m"))
+	}
+	if cl.Public.BodyMaxBytes == 0 {
+		cl.Public.BodyMaxBytes = 8192 // 8 KiB
 	}
 }
 
@@ -1896,6 +2180,49 @@ func Validate(c *Config) error {
 	if _, ok := validDirectoryAutocompleteModes[c.Server.DirectoryAutocomplete.Mode]; !ok {
 		return fmt.Errorf("sysconfig: [server.directory_autocomplete] mode %q not recognised (want \"all\", \"domain\", or \"off\")",
 			c.Server.DirectoryAutocomplete.Mode)
+	}
+	// Client-log ingest (REQ-OPS-219).
+	if err := validateClientLog(&c.ClientLog); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateClientLog checks semantic constraints on the [clientlog] block.
+func validateClientLog(cl *ClientLogConfig) error {
+	if cl.ReorderWindowMS < 0 {
+		return fmt.Errorf("sysconfig: [clientlog] reorder_window_ms %d must be >= 0", cl.ReorderWindowMS)
+	}
+	if cl.LivetailDefaultDuration < 0 {
+		return fmt.Errorf("sysconfig: [clientlog] livetail_default_duration must be >= 0")
+	}
+	if cl.LivetailMaxDuration < 0 {
+		return fmt.Errorf("sysconfig: [clientlog] livetail_max_duration must be >= 0")
+	}
+	if cl.LivetailDefaultDuration > 0 && cl.LivetailMaxDuration > 0 &&
+		cl.LivetailDefaultDuration > cl.LivetailMaxDuration {
+		return fmt.Errorf("sysconfig: [clientlog] livetail_default_duration %s exceeds livetail_max_duration %s",
+			cl.LivetailDefaultDuration.AsDuration(), cl.LivetailMaxDuration.AsDuration())
+	}
+	// Auth endpoint.
+	if cl.Auth.RingBufferRows < 0 {
+		return fmt.Errorf("sysconfig: [clientlog.auth] ring_buffer_rows %d must be >= 0", cl.Auth.RingBufferRows)
+	}
+	if cl.Auth.RingBufferAge < 0 {
+		return fmt.Errorf("sysconfig: [clientlog.auth] ring_buffer_age must be >= 0")
+	}
+	if cl.Auth.BodyMaxBytes < 0 {
+		return fmt.Errorf("sysconfig: [clientlog.auth] body_max_bytes %d must be >= 0", cl.Auth.BodyMaxBytes)
+	}
+	// Public endpoint.
+	if cl.Public.RingBufferRows < 0 {
+		return fmt.Errorf("sysconfig: [clientlog.public] ring_buffer_rows %d must be >= 0", cl.Public.RingBufferRows)
+	}
+	if cl.Public.RingBufferAge < 0 {
+		return fmt.Errorf("sysconfig: [clientlog.public] ring_buffer_age must be >= 0")
+	}
+	if cl.Public.BodyMaxBytes < 0 {
+		return fmt.Errorf("sysconfig: [clientlog.public] body_max_bytes %d must be >= 0", cl.Public.BodyMaxBytes)
 	}
 	return nil
 }

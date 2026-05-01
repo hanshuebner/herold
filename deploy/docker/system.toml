@@ -93,3 +93,12 @@ enabled = true
 log_format = "json"
 log_level = "info"
 metrics_bind = "0.0.0.0:9090"
+
+# Client-log ingest (REQ-OPS-219). telemetry_enabled = true is the
+# recommended quickstart default (REQ-OPS-208): operators that want
+# to opt out of per-user behavioural telemetry set this to false.
+[clientlog]
+enabled = true
+
+[clientlog.defaults]
+telemetry_enabled = true

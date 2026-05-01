@@ -23,6 +23,13 @@ type AdminOptions struct {
 	// builds without rebuilding herold (typical loop:
 	// `pnpm --filter @herold/admin build` -> hit refresh).
 	AdminAssetDir string
+	// ClientLog is the bootstrap descriptor injected into the
+	// <meta name="herold-clientlog"> tag (REQ-CLOG-12).
+	ClientLog ClientLogBootstrap
+	// BuildSHA is the Git commit SHA embedded in the
+	// <meta name="herold-build"> tag (REQ-CLOG-03). When empty
+	// the tag carries "dev".
+	BuildSHA string
 }
 
 // NewAdmin constructs a Server for the admin SPA.
@@ -80,6 +87,8 @@ func NewAdmin(opts AdminOptions) (*Server, error) {
 		s.root = sub
 	}
 	s.csp = buildAdminCSP()
+	s.clientLog = opts.ClientLog
+	s.buildSHA = opts.BuildSHA
 	return s, nil
 }
 
