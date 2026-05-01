@@ -2,6 +2,27 @@
 // Exposes the Clock and RandSource abstractions used by the rest of the server for
 // deterministic testing.
 //
+// # OTLP log exporter (REQ-OPS-205)
+//
+// [NewOTLPLogProvider] constructs an OTLP/HTTP log provider that mirrors the
+// trace exporter setup. When the endpoint is empty it returns a noop provider.
+// Resource attributes deployment.environment and service.instance.id are set
+// at provider construction time; service.name and service.version (build SHA)
+// are set per-event via the instrumentation scope so that herold-suite and
+// herold-admin records are distinguishable in the collector.
+//
+// # Client-log emitter (REQ-OPS-204, REQ-OPS-205)
+//
+// [ClientEmitter] fans an enriched [ClientEvent] into slog and OTLP:
+//
+//   - slog: one record per event with source=client plus the mandatory
+//     activity attribute (audit/user/internal depending on kind and auth).
+//   - OTLP: one log record with per-record attributes defined in
+//     architecture/10-client-log-pipeline.md §OTLP shape.
+//
+// Anonymous events (Endpoint=="public") skip OTLP unless the emitter's
+// PublicOTLPEgress flag is true (REQ-OPS-205, REQ-OPS-217 default false).
+//
 // # Multi-sink logging (REQ-OPS-80..86)
 //
 // The public API is:
