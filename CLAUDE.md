@@ -27,6 +27,7 @@ This file is the operating context the root agent reads first.
 - **System config (`/etc/herold/system.toml`) is never mutated at runtime.** Domains, principals, aliases, Sieve scripts, DKIM keys, etc. live in the DB.
 - **Full test coverage is the standard** (see `STANDARDS.md` §8). Every wire parser has a fuzz target; every integration test runs on both backends; tests are deterministic; documentation examples are executable tests.
 - **Requirements documents at the repo root are currently authoritative and frozen.** They will move under `docs/` in a future session; do not rearrange or edit them until then.
+- **Tests.** The only thing worse than a failing test is a reduction in test coverage.
 
 ## Task tracking
 
