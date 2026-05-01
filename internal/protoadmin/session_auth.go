@@ -57,6 +57,19 @@ type loginResponse struct {
 	Scopes []auth.Scope `json:"scopes"`
 }
 
+// clientlogSessionMeta is the per-session clientlog descriptor embedded
+// in whoamiResponse. The admin SPA reads it to configure the clientlog
+// wrapper per REQ-CLOG-05, REQ-CLOG-12.
+type clientlogSessionMeta struct {
+	// TelemetryEnabled is the resolved per-session telemetry flag.
+	// False when the session row is absent (API-key auth with no
+	// persisted session).
+	TelemetryEnabled bool `json:"telemetry_enabled"`
+	// LivetailUntil is the RFC 3339 timestamp (ms precision) of the
+	// live-tail expiry (REQ-OPS-211). Omitted when null or in the past.
+	LivetailUntil *string `json:"livetail_until,omitempty"`
+}
+
 // whoamiResponse is the JSON body returned by GET /api/v1/auth/whoami
 // and also augments GET /api/v1/server/status so the admin SPA can
 // identify the calling principal from a single round-trip.
@@ -68,6 +81,11 @@ type whoamiResponse struct {
 	// Scopes is the scope set carried by the session or API key
 	// (REQ-AUTH-SCOPE-01). The SPA uses this to gate UI surfaces.
 	Scopes []auth.Scope `json:"scopes"`
+	// Clientlog carries the per-session clientlog descriptor. Present
+	// on every authenticated response so the admin SPA can observe
+	// livetail_until and telemetry_enabled without a separate round-trip
+	// (REQ-CLOG-05, REQ-CLOG-12).
+	Clientlog clientlogSessionMeta `json:"clientlog"`
 }
 
 // handleLogin handles POST /api/v1/auth/login.
@@ -266,7 +284,42 @@ func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 		PrincipalID: uint64(p.ID),
 		Email:       p.CanonicalEmail,
 		Scopes:      scopes,
+		Clientlog:   s.buildClientlogMeta(r),
 	})
+}
+
+// buildClientlogMeta populates the clientlog block in whoamiResponse by
+// reading the sessions table row for the current request. The session_id
+// is the CSRF token extracted from the admin session cookie (the same key
+// used by sessionIDFromRequest). When no session row exists (API key auth
+// or cookie decode failure) the meta block has TelemetryEnabled=false and
+// no LivetailUntil.
+func (s *Server) buildClientlogMeta(r *http.Request) clientlogSessionMeta {
+	sessID := s.sessionIDFromRequest(r)
+	if sessID == "" {
+		return clientlogSessionMeta{}
+	}
+	row, err := s.store.Meta().GetSession(r.Context(), sessID)
+	if err != nil {
+		// ErrNotFound is fine (API key auth, or session row not yet
+		// created). Any other error is transient; degrade gracefully.
+		return clientlogSessionMeta{}
+	}
+	meta := clientlogSessionMeta{
+		TelemetryEnabled: row.ClientlogTelemetryEnabled,
+	}
+	if row.ClientlogLivetailUntil != nil && row.ClientlogLivetailUntil.After(s.clk.Now()) {
+		ts := formatAdminRFC3339Millis(*row.ClientlogLivetailUntil)
+		meta.LivetailUntil = &ts
+	}
+	return meta
+}
+
+// formatAdminRFC3339Millis formats t as RFC 3339 with millisecond
+// precision for the admin REST surface, matching the JMAP surface format
+// (REQ-OPS-211).
+func formatAdminRFC3339Millis(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 }
 
 // handleLogout handles POST /api/v1/auth/logout.

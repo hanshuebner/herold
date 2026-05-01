@@ -247,6 +247,91 @@ func testSessionEvictExpired(t *testing.T, s store.Store) {
 	}
 }
 
+// testSessionClearExpiredLivetail verifies that ClearExpiredLivetail sets
+// clientlog_livetail_until to NULL on rows whose timestamp is in the past and
+// leaves rows with a future timestamp untouched.
+func testSessionClearExpiredLivetail(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	pid := mustInsertPrincipal(t, s, "session-clt@example.test").ID
+
+	epoch := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	past := epoch.Add(-1 * time.Hour)
+	future := epoch.Add(1 * time.Hour)
+
+	// expired livetail
+	expiredRow := store.SessionRow{
+		SessionID:                 "csrf-lt-expired",
+		PrincipalID:               pid,
+		CreatedAt:                 past.Add(-24 * time.Hour),
+		ExpiresAt:                 future,
+		ClientlogTelemetryEnabled: true,
+		ClientlogLivetailUntil:    &past,
+	}
+	// active livetail
+	activeRow := store.SessionRow{
+		SessionID:                 "csrf-lt-active",
+		PrincipalID:               pid,
+		CreatedAt:                 past.Add(-24 * time.Hour),
+		ExpiresAt:                 future.Add(24 * time.Hour),
+		ClientlogTelemetryEnabled: true,
+		ClientlogLivetailUntil:    &future,
+	}
+	// no livetail
+	noLivetailRow := store.SessionRow{
+		SessionID:                 "csrf-lt-none",
+		PrincipalID:               pid,
+		CreatedAt:                 past.Add(-24 * time.Hour),
+		ExpiresAt:                 future,
+		ClientlogTelemetryEnabled: true,
+	}
+
+	if err := s.Meta().UpsertSession(ctx, expiredRow); err != nil {
+		t.Fatalf("UpsertSession expired: %v", err)
+	}
+	if err := s.Meta().UpsertSession(ctx, activeRow); err != nil {
+		t.Fatalf("UpsertSession active: %v", err)
+	}
+	if err := s.Meta().UpsertSession(ctx, noLivetailRow); err != nil {
+		t.Fatalf("UpsertSession no-livetail: %v", err)
+	}
+
+	cleared, err := s.Meta().ClearExpiredLivetail(ctx, epoch.UnixMicro())
+	if err != nil {
+		t.Fatalf("ClearExpiredLivetail: %v", err)
+	}
+	if cleared != 1 {
+		t.Errorf("cleared = %d; want 1", cleared)
+	}
+
+	// expired row should have livetail cleared
+	got, err := s.Meta().GetSession(ctx, expiredRow.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession expired: %v", err)
+	}
+	if got.ClientlogLivetailUntil != nil {
+		t.Errorf("expired livetail should be nil after sweep; got %v", got.ClientlogLivetailUntil)
+	}
+
+	// active row should still have its livetail
+	got, err = s.Meta().GetSession(ctx, activeRow.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession active: %v", err)
+	}
+	if got.ClientlogLivetailUntil == nil {
+		t.Error("active livetail should still be set after sweep; got nil")
+	}
+
+	// no-livetail row should be unchanged
+	got, err = s.Meta().GetSession(ctx, noLivetailRow.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession no-livetail: %v", err)
+	}
+	if got.ClientlogLivetailUntil != nil {
+		t.Errorf("no-livetail row should remain nil; got %v", got.ClientlogLivetailUntil)
+	}
+}
+
 // testSessionCascadeOnPrincipalDelete verifies that deleting a principal
 // removes its session rows (ON DELETE CASCADE).
 func testSessionCascadeOnPrincipalDelete(t *testing.T, s store.Store) {

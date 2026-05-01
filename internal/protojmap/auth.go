@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -35,6 +36,11 @@ const (
 	ctxKeyRequestID
 	ctxKeyAPIKey
 	ctxKeyLogger
+	// ctxKeySessionID holds the CSRF token from the suite-session cookie,
+	// which doubles as the sessions table primary key. Populated only when
+	// the request is cookie-authenticated via the SessionResolver. Bearer-
+	// and Basic-authenticated requests leave it absent.
+	ctxKeySessionID
 )
 
 // PrincipalFromContext returns the authenticated principal attached to
@@ -57,6 +63,17 @@ func APIKeyFromContext(ctx context.Context) (store.APIKey, bool) {
 	return store.APIKey{}, false
 }
 
+// SessionIDFromContext returns the session_id (CSRF token from the
+// suite-session cookie) stashed by requireAuth, or "" when the request
+// was authenticated via Bearer / Basic or when no session cookie was
+// present. Callers use this to look up the sessions table row.
+func SessionIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxKeySessionID).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // requireAuth is middleware that enforces authentication. It supports
 // two schemes:
 //
@@ -73,7 +90,7 @@ func APIKeyFromContext(ctx context.Context) (store.APIKey, bool) {
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		principal, key, ok := s.authenticate(ctx, r)
+		principal, key, sessID, ok := s.authenticate(ctx, r)
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="jmap", Basic realm="jmap"`)
 			WriteJMAPError(w, http.StatusUnauthorized,
@@ -85,31 +102,36 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		if key != nil {
 			ctx = context.WithValue(ctx, ctxKeyAPIKey, *key)
 		}
+		if sessID != "" {
+			ctx = context.WithValue(ctx, ctxKeySessionID, sessID)
+		}
 		next(w, r.WithContext(ctx))
 	}
 }
 
 // authenticate parses the Authorization header and resolves the
-// requesting principal.  On success it returns the principal and,
-// when the session was Bearer-authenticated, the matching API key
-// (nil for Basic-authenticated sessions).  Returns false on any
-// failure (no information leak through differentiated reasons).
+// requesting principal. On success it returns the principal, the API
+// key (non-nil only for Bearer-authenticated sessions), the session_id
+// (non-empty only for cookie-authenticated sessions), and true.
+// Returns false on any failure (no information leak through
+// differentiated reasons).
 //
 // When no Authorization header is present and a SessionResolver is
 // configured, cookie-based authentication is attempted (suite-session
 // cookie from the public-listener login flow). Bearer / Basic always
 // take precedence over the cookie when both are present.
-func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, *store.APIKey, bool) {
+func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, *store.APIKey, string, bool) {
 	h := r.Header.Get("Authorization")
 	if h != "" {
 		switch {
 		case strings.HasPrefix(h, "Bearer "):
-			return s.authenticateBearer(ctx, strings.TrimSpace(h[len("Bearer "):]))
+			p, key, ok := s.authenticateBearer(ctx, strings.TrimSpace(h[len("Bearer "):]))
+			return p, key, "", ok
 		case strings.HasPrefix(h, "Basic "):
 			p, ok := s.authenticateBasic(ctx, strings.TrimSpace(h[len("Basic "):]))
-			return p, nil, ok
+			return p, nil, "", ok
 		default:
-			return store.Principal{}, nil, false
+			return store.Principal{}, nil, "", false
 		}
 	}
 	// No Authorization header: try the Suite session cookie if the
@@ -121,15 +143,37 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Princ
 			if err != nil {
 				s.log.Warn("auth.cookie_principal_lookup_failed",
 					"err", err, "principal_id", pid)
-				return store.Principal{}, nil, false
+				return store.Principal{}, nil, "", false
 			}
 			if p.Flags.Has(store.PrincipalFlagDisabled) {
-				return store.Principal{}, nil, false
+				return store.Principal{}, nil, "", false
 			}
-			return p, nil, true
+			// Extract the CSRF token (session_id) from the cookie when a
+			// SessionCookieConfig is available, so the clientlog-meta
+			// middleware can look up the sessions table row.
+			sessID := s.extractSessionID(r)
+			return p, nil, sessID, true
 		}
 	}
-	return store.Principal{}, nil, false
+	return store.Principal{}, nil, "", false
+}
+
+// extractSessionID decodes the suite-session cookie and returns its
+// CSRFToken, which doubles as the sessions table primary key. Returns
+// "" when no config is present or the cookie cannot be decoded.
+func (s *Server) extractSessionID(r *http.Request) string {
+	if s.sessionCookieConfig == nil || len(s.sessionCookieConfig.SigningKey) < 32 {
+		return ""
+	}
+	c, err := r.Cookie(s.sessionCookieConfig.CookieName)
+	if err != nil || c.Value == "" {
+		return ""
+	}
+	sess, err := authsession.DecodeSession(c.Value, s.sessionCookieConfig.SigningKey, s.clk.Now())
+	if err != nil {
+		return ""
+	}
+	return sess.CSRFToken
 }
 
 func (s *Server) authenticateBearer(ctx context.Context, token string) (store.Principal, *store.APIKey, bool) {

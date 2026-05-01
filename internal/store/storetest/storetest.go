@@ -247,6 +247,7 @@ func Run(t *testing.T, f Factory) {
 		{"Session_UpdateTelemetry_FlipsFlag", testSessionUpdateTelemetry},
 		{"Session_UpdateTelemetry_NotFound", testSessionUpdateTelemetryNotFound},
 		{"Session_EvictExpired_RemovesExpiredLeavesAlive", testSessionEvictExpired},
+		{"Session_ClearExpiredLivetail", testSessionClearExpiredLivetail},
 		{"Session_CascadeOnPrincipalDelete", testSessionCascadeOnPrincipalDelete},
 	}
 	for _, c := range cases {

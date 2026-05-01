@@ -1499,6 +1499,13 @@ type Metadata interface {
 	// is <= nowMicros. Returns the number of rows deleted. Intended for
 	// a periodic background sweeper; safe to call concurrently.
 	EvictExpiredSessions(ctx context.Context, nowMicros int64) (deleted int, err error)
+
+	// ClearExpiredLivetail sets clientlog_livetail_until_us = NULL on all
+	// session rows where clientlog_livetail_until_us <= nowMicros. Returns
+	// the number of rows updated. Intended for a periodic background
+	// sweeper; the comparison also happens at read time so this is a
+	// cosmetic cleanup only (REQ-OPS-211).
+	ClearExpiredLivetail(ctx context.Context, nowMicros int64) (cleared int, err error)
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

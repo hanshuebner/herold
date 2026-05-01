@@ -874,6 +874,16 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		return nil
 	})
 
+	// JMAP clientlog livetail sweeper (REQ-OPS-211). Clears expired
+	// clientlog_livetail_until_us column values every 60 s. Bounded by
+	// the lifecycle errgroup so shutdown stops it cleanly.
+	if suiteSrvs.jmapSrv != nil {
+		jmapS := suiteSrvs.jmapSrv
+		g.Go(func() error {
+			return jmapS.RunLivetailSweeper(gctx)
+		})
+	}
+
 	// OAuth token refresh sweeper (REQ-AUTH-EXT-SUBMIT-02, Phase 6).
 	// Only started when external_submission.enabled = true; the sweeper
 	// queries identity_submission rows whose refresh_due_us <= now and
@@ -1676,6 +1686,7 @@ type suiteServers struct {
 	chatSrv         *protochat.Server
 	sendSrv         *protosend.Server
 	webpushDispatch *webpush.Dispatcher
+	jmapSrv         *protojmap.Server
 }
 
 // composedHandlers is the bundle of HTTP handlers the bind path
@@ -1973,7 +1984,8 @@ func composeAdminAndUI(
 	// logged in via /api/v1/auth/login can call JMAP without a
 	// separate Bearer credential (Wave 3.7-A, REQ-AUTH-SCOPE-01).
 	jmapSrv := protojmap.NewServer(st, dir, tlsStore, logger.With("subsystem", "jmap"), clk, protojmap.Options{
-		SessionResolver: publicSessionWithScopeResolver,
+		SessionResolver:     publicSessionWithScopeResolver,
+		SessionCookieConfig: &publicCookieCfg,
 	})
 	// JMAP Mail core handlers: Mailbox/* + Email/* + Sieve/* +
 	// per-account capability provider (REQ-PROTO-41, REQ-PROTO-53,
@@ -2144,6 +2156,7 @@ func composeAdminAndUI(
 			previewer,
 			logger.With("subsystem", "jmap-chat"), clk, limits)
 	}
+	bundle.srvs.jmapSrv = jmapSrv
 	jmapHandler := jmapSrv.Handler()
 	publicMux.Handle("/.well-known/jmap",
 		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.session", jmapHandler))

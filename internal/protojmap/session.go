@@ -76,8 +76,13 @@ func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p 
 	for cap := range accountCaps {
 		primary[cap] = accountID
 	}
+	caps := s.reg.Capabilities()
+	// Inject the clientlog capability unconditionally so the SPA always
+	// has a place to read telemetry_enabled and livetail_until.
+	sessID := SessionIDFromContext(ctx)
+	caps[CapabilityClientLog] = s.buildClientLogCapability(ctx, sessID)
 	desc := sessionDescriptor{
-		Capabilities: s.reg.Capabilities(),
+		Capabilities: caps,
 		Accounts: map[Id]accountDesc{
 			accountID: {
 				Name:                p.CanonicalEmail,
@@ -128,6 +133,11 @@ func principalIDFromAccountID(id Id) (store.PrincipalID, bool) {
 // change". We compute it as a hash of the per-principal JMAPStates row
 // plus the registered capability list so a capability hot-reload
 // changes the hash too.
+//
+// The clientlog columns (telemetry_enabled, livetail_until) are also
+// mixed in: when the admin activates live-tail or the user flips the
+// telemetry flag, the session state changes and the client re-fetches
+// the full session descriptor.
 func (s *Server) sessionState(ctx context.Context) string {
 	p, ok := PrincipalFromContext(ctx)
 	if !ok {
@@ -147,6 +157,22 @@ func (s *Server) sessionState(ctx context.Context) string {
 		st.EmailSubmission, st.VacationResponse)
 	for _, c := range caps {
 		fmt.Fprintf(h, "c=%s;", c)
+	}
+	// Mix in the clientlog session state so changes to telemetry_enabled
+	// or livetail_until cause the client to re-fetch the session descriptor.
+	sessID := SessionIDFromContext(ctx)
+	if sessID != "" {
+		if row, err := s.store.Meta().GetSession(ctx, sessID); err == nil {
+			lt := int64(0)
+			if row.ClientlogLivetailUntil != nil {
+				lt = row.ClientlogLivetailUntil.UnixMicro()
+			}
+			telInt := 0
+			if row.ClientlogTelemetryEnabled {
+				telInt = 1
+			}
+			fmt.Fprintf(h, "clog_tel=%d;clog_lt=%d;", telInt, lt)
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }

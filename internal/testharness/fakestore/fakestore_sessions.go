@@ -82,3 +82,21 @@ func (m *metaFace) EvictExpiredSessions(ctx context.Context, nowMicros int64) (i
 	}
 	return deleted, nil
 }
+
+func (m *metaFace) ClearExpiredLivetail(ctx context.Context, nowMicros int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s := m.s()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var cleared int
+	for id, row := range s.sessions {
+		if row.ClientlogLivetailUntil != nil && row.ClientlogLivetailUntil.UnixMicro() <= nowMicros {
+			row.ClientlogLivetailUntil = nil
+			s.sessions[id] = row
+			cleared++
+		}
+	}
+	return cleared, nil
+}

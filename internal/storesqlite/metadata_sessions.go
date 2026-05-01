@@ -113,3 +113,21 @@ func (m *metadata) EvictExpiredSessions(ctx context.Context, nowMicros int64) (i
 	})
 	return deleted, err
 }
+
+func (m *metadata) ClearExpiredLivetail(ctx context.Context, nowMicros int64) (int, error) {
+	var cleared int
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE sessions
+			   SET clientlog_livetail_until_us = NULL
+			 WHERE clientlog_livetail_until_us IS NOT NULL
+			   AND clientlog_livetail_until_us <= ?`, nowMicros)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, _ := res.RowsAffected()
+		cleared = int(n)
+		return nil
+	})
+	return cleared, err
+}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/auth"
+	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/store"
@@ -104,6 +105,15 @@ type Options struct {
 	// without additional store round-trips (authsession already validates
 	// the cookie signature and checks the disabled flag).
 	SessionResolver SessionResolver
+	// SessionCookieConfig, when non-zero (SigningKey set), is used by the
+	// auth middleware to decode the suite-session cookie and extract the
+	// CSRFToken. That token doubles as the sessions table primary key and
+	// is stored in the request context under ctxKeySessionID so the
+	// clientlog-meta middleware can look up the session row without a
+	// principal round-trip. When nil or the signing key is absent, the
+	// session_id context key is simply not populated (no-op for Bearer /
+	// Basic auth paths).
+	SessionCookieConfig *authsession.SessionConfig
 	// PushPingInterval is the interval at which idle EventSource
 	// streams emit a ": ping" comment. Default 5 minutes; clients
 	// supply a smaller value with the ?ping= query parameter.
@@ -142,8 +152,9 @@ type Server struct {
 	reg   *CapabilityRegistry
 	opts  Options
 
-	apikeyLookup    APIKeyLookup
-	sessionResolver SessionResolver
+	apikeyLookup        APIKeyLookup
+	sessionResolver     SessionResolver
+	sessionCookieConfig *authsession.SessionConfig
 
 	// dlBuckets holds per-principal download token buckets. Bounded by
 	// the registered principal count; entries persist for the life of
@@ -235,6 +246,7 @@ func NewServer(
 		}
 	}
 	s.sessionResolver = opts.SessionResolver
+	s.sessionCookieConfig = opts.SessionCookieConfig
 	// Register the JMAP Core capability + the canonical Core/echo
 	// method (RFC 8620 §4). Parallel agents register the Mail
 	// capability + its handlers via Registry().
