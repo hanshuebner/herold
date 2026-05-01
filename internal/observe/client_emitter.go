@@ -113,6 +113,7 @@ func (e *ClientEmitter) emitSlog(ctx context.Context, ev ClientEvent) {
 		slog.String("route", ev.Route),
 		slog.String("build", ev.BuildSHA),
 		slog.String("client_ts", ev.ClientTS.Format(time.RFC3339Nano)),
+		slog.Int64("clock_skew_ms", ev.ClockSkewMS),
 		slog.String("activity", activity),
 	}
 	if ev.SessionID != "" {

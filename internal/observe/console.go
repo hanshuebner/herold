@@ -18,13 +18,14 @@ import (
 // ANSI SGR colour codes. Only used when the writer is a TTY and NO_COLOR is
 // not set.
 const (
-	ansiReset  = "\x1b[0m"
-	ansiGray   = "\x1b[2m"
-	ansiBold   = "\x1b[1m"
-	ansiCyan   = "\x1b[36m"
-	ansiGreen  = "\x1b[32m"
-	ansiYellow = "\x1b[33m"
-	ansiRed    = "\x1b[31m"
+	ansiReset   = "\x1b[0m"
+	ansiGray    = "\x1b[2m"
+	ansiBold    = "\x1b[1m"
+	ansiCyan    = "\x1b[36m"
+	ansiGreen   = "\x1b[32m"
+	ansiYellow  = "\x1b[33m"
+	ansiRed     = "\x1b[31m"
+	ansiMagenta = "\x1b[35m" // used for [suite]/[admin] source markers
 )
 
 // isTerminal is the TTY detection hook. Replaced in tests via the
@@ -205,11 +206,24 @@ func (h *ConsoleHandler) formatRecord(buf *bytes.Buffer, r slog.Record) {
 
 	subsystem := ""
 	module := ""
+	sourceClient := false
+	clientApp := ""
+	clientStack := ""
 	for _, p := range ordered {
-		if p.key == "subsystem" {
+		switch p.key {
+		case "subsystem":
 			subsystem = p.val
-		} else if p.key == "module" {
+		case "module":
 			module = p.val
+		case "source":
+			if p.val == "client" {
+				sourceClient = true
+			}
+		case "app":
+			// Collect regardless; used only when sourceClient is true.
+			clientApp = p.val
+		case "stack":
+			clientStack = p.val
 		}
 	}
 
@@ -237,22 +251,39 @@ func (h *ConsoleHandler) formatRecord(buf *bytes.Buffer, r slog.Record) {
 	}
 	buf.WriteByte(' ')
 
-	// 3. Subsystem tag (always shown; module is the fallback).
-	tag := subsystem
-	if tag == "" {
-		tag = module
-	}
-	if tag != "" {
+	// 3. Source marker and/or subsystem tag.
+	//
+	// For source=client records, render a [suite] or [admin] marker in
+	// magenta (REQ-OPS-81a) so operators can distinguish browser events from
+	// server events at a glance. The colour is only emitted on TTY targets;
+	// plain-ASCII output uses the text marker only.
+	if sourceClient {
+		marker := clientSourceMarker(clientApp)
 		if h.useColor {
-			buf.WriteString(ansiCyan)
+			buf.WriteString(ansiMagenta)
 		}
-		buf.WriteByte('[')
-		buf.WriteString(tag)
-		buf.WriteByte(']')
+		buf.WriteString(marker)
 		if h.useColor {
 			buf.WriteString(ansiReset)
 		}
 		buf.WriteByte(' ')
+	} else {
+		tag := subsystem
+		if tag == "" {
+			tag = module
+		}
+		if tag != "" {
+			if h.useColor {
+				buf.WriteString(ansiCyan)
+			}
+			buf.WriteByte('[')
+			buf.WriteString(tag)
+			buf.WriteByte(']')
+			if h.useColor {
+				buf.WriteString(ansiReset)
+			}
+			buf.WriteByte(' ')
+		}
 	}
 
 	// 4. Message.
@@ -265,12 +296,23 @@ func (h *ConsoleHandler) formatRecord(buf *bytes.Buffer, r slog.Record) {
 	}
 
 	// 5/6. Trailing attrs.
+	//
+	// For source=client records, "source", "app", and "stack" are excluded
+	// from the inline key=value list: "source" is implicit from the marker,
+	// "app" is implicit from the marker, and "stack" is rendered as indented
+	// continuation lines after the main line (see step 7 below).
 	primary := make([]kv, 0, len(ordered))
 	deferred := make([]kv, 0, 4)
 	for _, p := range ordered {
 		switch p.key {
 		case "subsystem", "module", "activity":
 			continue
+		}
+		if sourceClient {
+			switch p.key {
+			case "source", "app", "stack":
+				continue
+			}
 		}
 		if _, late := deprioritizedKeys[p.key]; late {
 			deferred = append(deferred, p)
@@ -308,6 +350,29 @@ func (h *ConsoleHandler) formatRecord(buf *bytes.Buffer, r slog.Record) {
 		writePair(p)
 	}
 	buf.WriteByte('\n')
+
+	// 7. For source=client records, render the stack trace as indented lines
+	// under the parent line (REQ-OPS-81a, architecture §Console rendering).
+	// Only emitted when the stack field is non-empty.
+	if sourceClient && clientStack != "" {
+		stackLines := strings.Split(clientStack, "\n")
+		for _, sl := range stackLines {
+			buf.WriteString("  | ")
+			buf.WriteString(sl)
+			buf.WriteByte('\n')
+		}
+	}
+}
+
+// clientSourceMarker returns the [suite] or [admin] marker text for a given
+// app value.
+func clientSourceMarker(app string) string {
+	switch strings.ToLower(app) {
+	case "admin":
+		return "[admin]"
+	default:
+		return "[suite]"
+	}
 }
 
 // levelStr returns a 4-char level abbreviation and ANSI colour for it.
