@@ -31,6 +31,7 @@ export const en = {
   'list.empty.allMail': 'No mail.',
   'list.empty.folder': '{name} is empty.',
   'list.couldNotLoad': "Couldn't load {name}.",
+  'list.dragMessageCount': 'Move {count} messages',
 
   // ── Selection chooser (issue #10) ────────────────────────────────────
   'select.all': 'All',

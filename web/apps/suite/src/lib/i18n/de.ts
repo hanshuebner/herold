@@ -30,6 +30,7 @@ export const de = {
   'list.empty.allMail': 'Keine Nachrichten.',
   'list.empty.folder': '{name} ist leer.',
   'list.couldNotLoad': '{name} konnte nicht geladen werden.',
+  'list.dragMessageCount': '{count} Nachrichten verschieben',
 
   // ── Selection chooser (issue #10) ────────────────────────────────────
   'select.all': 'Alle',

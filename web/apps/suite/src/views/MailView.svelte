@@ -615,20 +615,59 @@
   /**
    * Thread row drag start (REQ-UI-17). When the dragged row is part of
    * an active multi-selection, drag every selected row together;
-   * otherwise drag just this one. Sets a text/plain payload as a
-   * fallback for OS-level drop targets.
+   * otherwise drag just this one. Multi-row drags swap the default
+   * row-shaped drag image for a compact "N messages" badge so the
+   * cursor doesn't trail the original row's visual.
    */
   function onRowDragStart(e: DragEvent, email: Email): void {
     const ids = dragIdsForRow(email.id);
     threadDnd.begin(ids);
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = 'move';
-      const label =
-        ids.length > 1
-          ? `${ids.length} messages`
-          : email.subject || '(no subject)';
-      e.dataTransfer.setData('text/plain', label);
+    if (!e.dataTransfer) return;
+    e.dataTransfer.effectAllowed = 'move';
+    const label =
+      ids.length > 1
+        ? t('list.dragMessageCount', { count: ids.length })
+        : email.subject || '(no subject)';
+    e.dataTransfer.setData('text/plain', label);
+    if (ids.length > 1) {
+      const badge = buildMultiDragBadge(ids.length);
+      e.dataTransfer.setDragImage(badge, 12, 12);
+      // The element must outlive the dragstart handler for the browser
+      // to snapshot it; remove on the next tick.
+      setTimeout(() => badge.remove(), 0);
     }
+  }
+
+  /**
+   * Build the floating "N messages" pill used as the drag image when
+   * the user drags a multi-selection. The element is appended to the
+   * document so the browser can snapshot it; the caller is responsible
+   * for removing it once the drag has started.
+   */
+  function buildMultiDragBadge(count: number): HTMLElement {
+    const badge = document.createElement('div');
+    badge.className = 'drag-multi-badge';
+    badge.textContent = t('list.dragMessageCount', { count });
+    // Inline styles so the badge renders correctly even though it's
+    // mounted to <body> outside the component's scoped CSS. We pin
+    // it off-screen until the browser takes its snapshot.
+    Object.assign(badge.style, {
+      position: 'fixed',
+      top: '-1000px',
+      left: '-1000px',
+      padding: '8px 14px',
+      borderRadius: '999px',
+      background: 'var(--interactive)',
+      color: 'var(--text-on-color)',
+      fontWeight: '600',
+      fontSize: '14px',
+      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.25)',
+      pointerEvents: 'none',
+      whiteSpace: 'nowrap',
+      zIndex: '9999',
+    });
+    document.body.appendChild(badge);
+    return badge;
   }
 </script>
 
@@ -898,6 +937,16 @@
             ondragstart={(e) => onRowDragStart(e, email)}
             ondragend={() => threadDnd.end()}
           >
+            <span class="drag-handle" aria-hidden="true">
+              <svg viewBox="0 0 8 14" width="8" height="14" fill="currentColor">
+                <circle cx="2" cy="2" r="1" />
+                <circle cx="6" cy="2" r="1" />
+                <circle cx="2" cy="7" r="1" />
+                <circle cx="6" cy="7" r="1" />
+                <circle cx="2" cy="12" r="1" />
+                <circle cx="6" cy="12" r="1" />
+              </svg>
+            </span>
             <input
               type="checkbox"
               class="row-check"
@@ -1194,15 +1243,41 @@
   }
   .thread-row {
     display: grid;
-    grid-template-columns: auto auto 1fr;
+    grid-template-columns: var(--drag-handle-col, 14px) auto auto 1fr;
     align-items: center;
     border-bottom: 1px solid var(--border-subtle-01);
     border-left: 3px solid transparent;
     transition: border-color var(--duration-fast-02) var(--easing-productive-enter);
   }
-  /* Search rows still use the 2-column layout (no per-row checkbox). */
+  /* Search rows still use the 2-column layout (no per-row checkbox / handle). */
   .thread-row.search {
     grid-template-columns: auto 1fr;
+  }
+  .drag-handle {
+    color: var(--text-helper);
+    opacity: 0;
+    transition: opacity var(--duration-fast-02) var(--easing-productive-enter);
+    cursor: grab;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .thread-row:hover .drag-handle,
+  .thread-row.focused .drag-handle {
+    opacity: 1;
+  }
+  .thread-row.dragging .drag-handle {
+    cursor: grabbing;
+  }
+  /* Handle is desktop-only — coarse pointers don't surface drag hints. */
+  @media (pointer: coarse) {
+    .drag-handle {
+      display: none;
+    }
+    .thread-row {
+      grid-template-columns: auto auto 1fr;
+    }
   }
   .thread-row.focused {
     border-left-color: var(--interactive);
