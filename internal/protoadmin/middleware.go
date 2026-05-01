@@ -20,6 +20,10 @@ const (
 	ctxKeyRequestID ctxKey = iota + 1
 	ctxKeyLogger
 	ctxKeyPrincipal
+	// ctxKeyListener carries the listener tag ("public" | "admin") set by
+	// the routing layer so clientlog handlers can tag emitted events correctly
+	// without inspecting the URL (REQ-OPS-203).
+	ctxKeyListener ctxKey = 10
 )
 
 // requestID returns the request ID attached to ctx, or "" if none.

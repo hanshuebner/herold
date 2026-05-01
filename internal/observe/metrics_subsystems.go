@@ -959,6 +959,58 @@ var (
 	webpushCDSource   func() float64
 )
 
+// Client-log ingest metrics (REQ-OPS-220). Label vocabulary:
+//   - endpoint: "auth" | "public"
+//   - app: "suite" | "admin" | "" (unknown)
+//   - kind: "error" | "log" | "vital"
+//   - reason (dropped): "rate_limit" | "body_too_large" | "schema" |
+//     "field_allowlist" | "telemetry_disabled" | "backpressure" |
+//     "ringbuf_write_failed" | "otlp_dropped"
+//   - slice (ring_buffer_rows): "auth" | "public"
+var (
+	clientlogMetricsOnce sync.Once
+
+	ClientlogReceivedTotal          *prometheus.CounterVec
+	ClientlogDroppedTotal           *prometheus.CounterVec
+	ClientlogDroppedFieldsTotal     *prometheus.CounterVec
+	ClientlogRingBufferRows         *prometheus.GaugeVec
+	ClientlogLivetailActiveSessions prometheus.Gauge
+)
+
+// RegisterClientlogMetrics registers the client-log ingest collector set;
+// idempotent (REQ-OPS-220).
+func RegisterClientlogMetrics() {
+	clientlogMetricsOnce.Do(func() {
+		ClientlogReceivedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_clientlog_received_total",
+			Help: "Total client-log events received, by endpoint, app, and kind.",
+		}, []string{"endpoint", "app", "kind"})
+		ClientlogDroppedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_clientlog_dropped_total",
+			Help: "Total client-log events dropped, by endpoint and reason.",
+		}, []string{"endpoint", "reason"})
+		ClientlogDroppedFieldsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_clientlog_dropped_fields_total",
+			Help: "Total field-allowlist violations (field dropped, event kept), by endpoint.",
+		}, []string{"endpoint"})
+		ClientlogRingBufferRows = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "herold_clientlog_ring_buffer_rows",
+			Help: "Approximate number of rows in each ring-buffer slice.",
+		}, []string{"slice"})
+		ClientlogLivetailActiveSessions = prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "herold_clientlog_livetail_active_sessions",
+			Help: "Number of sessions currently in live-tail mode (placeholder; task #7).",
+		})
+		MustRegister(
+			ClientlogReceivedTotal,
+			ClientlogDroppedTotal,
+			ClientlogDroppedFieldsTotal,
+			ClientlogRingBufferRows,
+			ClientlogLivetailActiveSessions,
+		)
+	})
+}
+
 // RegisterWebPushMetrics registers the dispatcher collector set;
 // idempotent. The two source closures are read on every scrape;
 // repeated calls update the sources so a server restart that

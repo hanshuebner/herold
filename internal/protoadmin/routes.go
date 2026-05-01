@@ -168,6 +168,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/mailboxes/{addr}/attachment-policy", authAdmin(s.handlePutMailboxAttPol))
 	mux.HandleFunc("GET /api/v1/domains/{name}/attachment-policy", authAdmin(s.handleGetDomainAttPol))
 	mux.HandleFunc("PUT /api/v1/domains/{name}/attachment-policy", authAdmin(s.handlePutDomainAttPol))
+
+	// Client-log ingest (REQ-OPS-200..207, REQ-OPS-215..218).
+	// Authenticated endpoint: requires valid session/API-key.
+	mux.HandleFunc("POST /api/v1/clientlog", auth1(s.handleClientLogAuth))
+	mux.HandleFunc("OPTIONS /api/v1/clientlog", s.handleClientLogPreflight)
+	// Anonymous endpoint: no auth. CORS check is done inside the handler.
+	mux.HandleFunc("POST /api/v1/clientlog/public", s.handleClientLogPublic)
+	mux.HandleFunc("OPTIONS /api/v1/clientlog/public", s.handleClientLogPreflight)
 }
 
 // RegisterSelfServiceRoutes registers the self-service subset of the
@@ -241,6 +249,13 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/identities/{id}/submission/oauth/start", auth1(s.handleOAuthStart))
 	// Fixed callback path — no identity id in URL (identity id in state token).
 	mux.HandleFunc("GET /api/v1/oauth/external-submission/callback", auth1(s.handleOAuthCallback))
+
+	// Client-log ingest from the Suite SPA (public listener), both endpoints
+	// (REQ-OPS-200, architecture §Endpoint mounting).
+	mux.HandleFunc("POST /api/v1/clientlog", auth1(s.handleClientLogAuth))
+	mux.HandleFunc("OPTIONS /api/v1/clientlog", s.handleClientLogPreflight)
+	mux.HandleFunc("POST /api/v1/clientlog/public", s.handleClientLogPublic)
+	mux.HandleFunc("OPTIONS /api/v1/clientlog/public", s.handleClientLogPreflight)
 }
 
 // SelfServiceHandler returns the self-service route set wrapped in the

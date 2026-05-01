@@ -223,6 +223,41 @@ type Options struct {
 	// names to client credentials, sourced from sysconfig at boot
 	// (REQ-AUTH-EXT-SUBMIT-03). Used by the OAuth start/callback endpoints.
 	OAuthProviders map[string]OAuthProviderOptions
+
+	// Clientlog overrides rate-limits, queue size, and the telemetry gate
+	// used by the clientlog ingest endpoints. Zero values retain the defaults
+	// from REQ-OPS-216. Intended for use in tests and sysconfig wiring.
+	Clientlog ClientlogOptions
+}
+
+// ClientlogOptions configures the client-log ingest pipeline parameters.
+// All zero values are replaced with the defaults from REQ-OPS-216 at Server
+// construction time.
+type ClientlogOptions struct {
+	// AuthRateLimit is the maximum events per AuthRateWindow per session.
+	// Defaults to clientlogRateAuthLimit (1000).
+	AuthRateLimit int
+	// AuthRateWindow is the sliding-window duration for auth rate limiting.
+	// Defaults to clientlogRateAuthWindow (5 min).
+	AuthRateWindow time.Duration
+	// PublicRateLimit is the maximum events per PublicRateWindow per IP.
+	// Defaults to clientlogRatePublicLimit (20).
+	PublicRateLimit int
+	// PublicRateWindow is the sliding-window duration for IP rate limiting.
+	// Defaults to clientlogRatePublicWindow (1 min).
+	PublicRateWindow time.Duration
+	// QueueSize is the buffered channel capacity. Defaults to
+	// clientlogQueueSize (256). Set to a value > 0 to override; the value
+	// 0 uses the default. Tests that need instant backpressure can set this
+	// to a very small positive value via Options.Clientlog.
+	QueueSize int
+	// TelemetryGate is the per-session opt-out gate (REQ-OPS-208). Nil
+	// defaults to the always-enabled stub. Replace with a real gate in task
+	// #6/#7 once the principal-flag store is available.
+	TelemetryGate TelemetryGate
+	// Emitter is the fan-out emitter for slog + OTLP. Nil defaults to the
+	// noop emitter. The production wiring passes a real ClientEmitter.
+	Emitter ClientlogEmitter
 }
 
 // OAuthProviderOptions carries the resolved (decrypted) OAuth 2.0 client
@@ -259,6 +294,13 @@ type Server struct {
 	bootstrapRL *rateLimiter
 
 	apikeyLookup APIKeyLookup
+
+	// clientlog ingest fields (REQ-OPS-200..207, REQ-OPS-215..218, REQ-OPS-220).
+	clientlogAuthRL        *rateLimiter
+	clientlogPublicRL      *rateLimiter
+	clientlogQueue         chan clientlogJob
+	clientlogPipeline      *clientlogPipeline
+	clientlogTelemetryGate TelemetryGate
 
 	mu        sync.Mutex
 	closed    bool
@@ -322,6 +364,42 @@ func NewServer(
 	observe.RegisterAdminMetrics()
 	observe.RegisterStoreMetrics()
 	observe.RegisterAuthMetrics()
+	observe.RegisterClientlogMetrics()
+
+	// Apply clientlog option defaults.
+	clo := opts.Clientlog
+	if clo.AuthRateLimit <= 0 {
+		clo.AuthRateLimit = clientlogRateAuthLimit
+	}
+	if clo.AuthRateWindow <= 0 {
+		clo.AuthRateWindow = clientlogRateAuthWindow
+	}
+	if clo.PublicRateLimit <= 0 {
+		clo.PublicRateLimit = clientlogRatePublicLimit
+	}
+	if clo.PublicRateWindow <= 0 {
+		clo.PublicRateWindow = clientlogRatePublicWindow
+	}
+	queueSize := clo.QueueSize
+	if queueSize <= 0 {
+		queueSize = clientlogQueueSize
+	}
+	var emitter ClientlogEmitter
+	if clo.Emitter != nil {
+		emitter = clo.Emitter
+	} else {
+		emitter = newNoopEmitter()
+	}
+	var gate TelemetryGate
+	if clo.TelemetryGate != nil {
+		gate = clo.TelemetryGate
+	} else {
+		gate = alwaysEnabledGate{}
+	}
+
+	clQueue := make(chan clientlogJob, queueSize)
+	pipeline := newClientlogPipeline(clQueue, emitter, st.Meta(), logger, clk)
+
 	s := &Server{
 		store:       st,
 		dir:         dir,
@@ -332,6 +410,12 @@ func NewServer(
 		startedAt:   clk.Now(),
 		rl:          newRateLimiter(clk, opts.RequestsPerMinutePerKey, time.Minute),
 		bootstrapRL: newRateLimiter(clk, opts.BootstrapPerWindow, opts.BootstrapWindow),
+
+		clientlogAuthRL:        newRateLimiter(clk, clo.AuthRateLimit, clo.AuthRateWindow),
+		clientlogPublicRL:      newRateLimiter(clk, clo.PublicRateLimit, clo.PublicRateWindow),
+		clientlogQueue:         clQueue,
+		clientlogPipeline:      pipeline,
+		clientlogTelemetryGate: gate,
 	}
 	if opts.APIKeyLookup != nil {
 		s.apikeyLookup = opts.APIKeyLookup
@@ -475,6 +559,10 @@ func (s *Server) Close() error {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
+	}
+	// Drain the clientlog worker pool after HTTP listeners are shut down.
+	if s.clientlogPipeline != nil {
+		s.clientlogPipeline.Close()
 	}
 	return first
 }
