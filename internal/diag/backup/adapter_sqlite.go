@@ -956,6 +956,42 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "clientlog":
+		return enumerate(ctx, s.tx,
+			`SELECT id, slice, server_ts, client_ts, clock_skew_ms,
+			        app, kind, level, user_id, session_id, page_id,
+			        request_id, route, build_sha, ua, msg, stack, payload_json
+			   FROM clientlog ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r ClientLogRow
+				var userID, sessionID, requestID, route, stack sql.NullString
+				if err := rs.Scan(&r.ID, &r.Slice, &r.ServerTS, &r.ClientTS, &r.ClockSkewMS,
+					&r.App, &r.Kind, &r.Level, &userID, &sessionID, &r.PageID,
+					&requestID, &route, &r.BuildSHA, &r.UA, &r.Msg, &stack, &r.PayloadJSON); err != nil {
+					return nil, err
+				}
+				if userID.Valid {
+					v := userID.String
+					r.UserID = &v
+				}
+				if sessionID.Valid {
+					v := sessionID.String
+					r.SessionID = &v
+				}
+				if requestID.Valid {
+					v := requestID.String
+					r.RequestID = &v
+				}
+				if route.Valid {
+					v := route.String
+					r.Route = &v
+				}
+				if stack.Valid {
+					v := stack.String
+					r.Stack = &v
+				}
+				return &r, nil
+			}, fn)
 	}
 	return fmt.Errorf("sqlite: unknown table %q", table)
 }
@@ -1581,6 +1617,17 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			`INSERT INTO blob_refs (hash, size, ref_count, last_change_us)
 			 VALUES (?, ?, ?, ?)`,
 			r.Hash, r.Size, r.RefCount, r.LastChangeUs)
+		return err
+	case "clientlog":
+		r := row.(*ClientLogRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO clientlog (id, slice, server_ts, client_ts, clock_skew_ms,
+			   app, kind, level, user_id, session_id, page_id, request_id, route,
+			   build_sha, ua, msg, stack, payload_json)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.Slice, r.ServerTS, r.ClientTS, r.ClockSkewMS,
+			r.App, r.Kind, r.Level, r.UserID, r.SessionID, r.PageID,
+			r.RequestID, r.Route, r.BuildSHA, r.UA, r.Msg, r.Stack, r.PayloadJSON)
 		return err
 	}
 	return fmt.Errorf("sqlite sink: unknown table %q", table)

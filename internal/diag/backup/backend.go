@@ -232,6 +232,8 @@ func rowsForTable(table string) (any, bool) {
 		return &LLMClassificationRow{}, true
 	case "seen_addresses":
 		return &SeenAddressRow{}, true
+	case "clientlog":
+		return &ClientLogRow{}, true
 	}
 	return nil, false
 }

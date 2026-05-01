@@ -230,6 +230,14 @@ func Run(t *testing.T, f Factory) {
 		{"IdentitySubmission_CTValidation_InvalidPrefix_Rejected", testIdentitySubmission_CTValidation_InvalidPrefix},
 		{"IdentitySubmission_CTValidation_NilFields_Allowed", testIdentitySubmission_CTValidation_NilFields},
 		{"IdentitySubmission_CountOAuth_AllRows", testIdentitySubmission_CountOAuth},
+		// -- REQ-OPS-206/206a/219 clientlog ring buffer ------------------
+		{"ClientLog_AppendAndList", testClientLogAppendAndList},
+		{"ClientLog_NullableFields_PublicSlice", testClientLogNullableFieldsPublicSlice},
+		{"ClientLog_Pagination", testClientLogPagination},
+		{"ClientLog_ListByRequestID", testClientLogListByRequestID},
+		{"ClientLog_EvictByAge", testClientLogEvictByAge},
+		{"ClientLog_EvictByCap", testClientLogEvictByCap},
+		{"ClientLog_EvictDoesNotCrossSlice", testClientLogEvictDoesNotCrossSlice},
 	}
 	for _, c := range cases {
 		tc := c

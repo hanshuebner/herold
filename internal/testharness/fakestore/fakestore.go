@@ -117,6 +117,10 @@ type Store struct {
 	// initialised on first call.
 	seenAddresses *seenAddressData
 
+	// clientlog holds the in-memory clientlog ring buffer (REQ-OPS-206).
+	// Lazily initialised on first AppendClientLog call.
+	clientlog *clientlogData
+
 	// monotonic ID counters
 	nextPrincipalID store.PrincipalID
 	nextMailboxID   store.MailboxID

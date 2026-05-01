@@ -420,6 +420,17 @@ func (s *Store) DiagSnapshot() *DiagDump {
 		dd.Tables["seen_addresses"] = []any{}
 	}
 
+	// clientlog: emit in insertion order (ascending ID) for determinism.
+	// Excluded from backup by default; the adapter honours IncludeClientLog.
+	if s.clientlog != nil {
+		for _, r := range s.clientlog.rows {
+			dd.Tables["clientlog"] = append(dd.Tables["clientlog"], r)
+		}
+	}
+	if dd.Tables["clientlog"] == nil {
+		dd.Tables["clientlog"] = []any{}
+	}
+
 	// Blobs: include refcount=1 for every present blob; the caller's
 	// consumer treats this as the "blob_refs" table input.
 	bhashes := make([]string, 0, len(s.blobSize))
@@ -523,6 +534,7 @@ func (s *Store) DiagReset() {
 	s.reactions = nil
 	s.coach = nil
 	s.seenAddresses = nil
+	s.clientlog = nil
 	s.nextPrincipalID = 1
 	s.nextMailboxID = 1
 	s.nextMessageID = 1
@@ -743,6 +755,13 @@ func (s *Store) DiagInsert(table string, row any) error {
 		// chat_memberships rows already encode the DM relationship, so
 		// inserting chat_dm_pairs rows is a no-op for the fakestore.
 		_ = row
+	case "clientlog":
+		r := row.(store.ClientLogRow)
+		d := s.ensureClientlog()
+		if r.ID >= d.nextID {
+			d.nextID = r.ID + 1
+		}
+		d.rows = append(d.rows, r)
 	default:
 		_ = ctxUnused
 	}

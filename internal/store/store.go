@@ -1442,6 +1442,33 @@ type Metadata interface {
 	// used by message paths). A no-op when hash is empty or the row does
 	// not exist; logs a warning at the store level.
 	DecRefBlob(ctx context.Context, hash string) error
+
+	// -- REQ-OPS-206: client-log ring buffer ---------------------------
+
+	// AppendClientLog inserts one event row into the clientlog ring-buffer
+	// table for the given slice.  The caller supplies a fully-enriched row
+	// (server_ts, clock_skew_ms, user_id, etc.); the store assigns the ID.
+	// Errors are non-fatal: the handler counts them and continues to the
+	// slog / OTLP fan-out legs.
+	AppendClientLog(ctx context.Context, row ClientLogRow) error
+
+	// ListClientLogByCursor returns up to opts.Limit rows matching
+	// opts.Filter in descending ID order (newest first).  The opaque
+	// cursor from a prior call resumes the page; an empty cursor starts
+	// from the newest row.  Returns the rows and a next-page cursor (empty
+	// string when there are no further rows).
+	ListClientLogByCursor(ctx context.Context, opts ClientLogCursorOptions) (rows []ClientLogRow, nextCursor string, err error)
+
+	// ListClientLogByRequestID returns every row whose request_id equals
+	// requestID, in descending ID order.  Used by the timeline endpoint
+	// (REQ-ADM-231).  Returns an empty slice when no rows match.
+	ListClientLogByRequestID(ctx context.Context, requestID string) ([]ClientLogRow, error)
+
+	// EvictClientLog deletes the oldest rows from the named slice that
+	// exceed either the row-count cap or the age limit.  At most
+	// opts.BatchSize rows are deleted per call to bound lock pressure on
+	// SQLite.  Returns the number of rows deleted.
+	EvictClientLog(ctx context.Context, opts ClientLogEvictOptions) (deleted int, err error)
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

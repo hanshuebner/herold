@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/testharness/fakestore"
@@ -509,6 +510,28 @@ func convertFakeToRow(table string, raw any) (any, error) {
 	case "blob_refs":
 		b := raw.(fakestore.BlobRefEntry)
 		return &BlobRefRow{Hash: b.Hash, Size: b.Size, RefCount: b.RefCount}, nil
+	case "clientlog":
+		r := raw.(store.ClientLogRow)
+		return &ClientLogRow{
+			ID:          r.ID,
+			Slice:       string(r.Slice),
+			ServerTS:    r.ServerTS.UnixMicro(),
+			ClientTS:    r.ClientTS.UnixMicro(),
+			ClockSkewMS: r.ClockSkewMS,
+			App:         r.App,
+			Kind:        r.Kind,
+			Level:       r.Level,
+			UserID:      r.UserID,
+			SessionID:   r.SessionID,
+			PageID:      r.PageID,
+			RequestID:   r.RequestID,
+			Route:       r.Route,
+			BuildSHA:    r.BuildSHA,
+			UA:          r.UA,
+			Msg:         r.Msg,
+			Stack:       r.Stack,
+			PayloadJSON: r.PayloadJSON,
+		}, nil
 	}
 	return nil, fmt.Errorf("fakestore: unknown table %q", table)
 }
@@ -933,6 +956,28 @@ func convertRowToFake(table string, row any) (any, error) {
 	case "blob_refs":
 		r := row.(*BlobRefRow)
 		return fakestore.BlobRefEntry{Hash: r.Hash, Size: r.Size, RefCount: r.RefCount}, nil
+	case "clientlog":
+		r := row.(*ClientLogRow)
+		return store.ClientLogRow{
+			ID:          r.ID,
+			Slice:       store.ClientLogSlice(r.Slice),
+			ServerTS:    time.UnixMicro(r.ServerTS).UTC(),
+			ClientTS:    time.UnixMicro(r.ClientTS).UTC(),
+			ClockSkewMS: r.ClockSkewMS,
+			App:         r.App,
+			Kind:        r.Kind,
+			Level:       r.Level,
+			UserID:      r.UserID,
+			SessionID:   r.SessionID,
+			PageID:      r.PageID,
+			RequestID:   r.RequestID,
+			Route:       r.Route,
+			BuildSHA:    r.BuildSHA,
+			UA:          r.UA,
+			Msg:         r.Msg,
+			Stack:       r.Stack,
+			PayloadJSON: r.PayloadJSON,
+		}, nil
 	}
 	return nil, fmt.Errorf("fakestore: unknown table %q", table)
 }

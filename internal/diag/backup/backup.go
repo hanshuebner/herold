@@ -31,6 +31,9 @@ type Options struct {
 	// Clock supplies the manifest timestamp. nil falls back to
 	// clock.NewReal.
 	Clock clock.Clock
+	// IncludeClientLog, when true, includes the clientlog ring-buffer
+	// table in the bundle.  Defaults to false (REQ-OPS-206a).
+	IncludeClientLog bool
 }
 
 // Backup is the top-level controller for writing a bundle.
@@ -96,6 +99,18 @@ func (b *Backup) CreateBundle(ctx context.Context, dst string) (Manifest, error)
 	}
 
 	for _, table := range TableNames {
+		// clientlog is excluded from backups by default (REQ-OPS-206a).
+		// The --include-clientlog flag opts in; without it we still write
+		// an empty .jsonl so the bundle is structurally complete and
+		// restore / verify do not have to special-case the absence of
+		// the file.
+		if table == "clientlog" && !b.opts.IncludeClientLog {
+			if err := writeEmptyJSONL(dst, table); err != nil {
+				return Manifest{}, fmt.Errorf("backup: empty %s: %w", table, err)
+			}
+			manifest.Tables[table] = 0
+			continue
+		}
 		count, err := writeTableJSONL(ctx, src, dst, table)
 		if err != nil {
 			return Manifest{}, fmt.Errorf("backup: dump %s: %w", table, err)
@@ -121,6 +136,18 @@ func (b *Backup) CreateBundle(ctx context.Context, dst string) (Manifest, error)
 		return Manifest{}, fmt.Errorf("backup: manifest: %w", err)
 	}
 	return manifest, nil
+}
+
+// writeEmptyJSONL creates an empty (zero-byte) JSONL file for table.
+// Used when a table is structurally part of the bundle schema but not
+// populated during this backup (e.g. clientlog when IncludeClientLog=false).
+func writeEmptyJSONL(dst, table string) error {
+	path := filepath.Join(dst, "metadata", table+".jsonl")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o640)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+	return f.Close()
 }
 
 // writeTableJSONL streams every row of one table into

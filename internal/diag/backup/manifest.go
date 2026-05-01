@@ -152,7 +152,16 @@ const CurrentBackupVersion = 1
 //	TEXT, avatar_blob_size INTEGER/BIGINT, xface_enabled BOOLEAN/INTEGER
 //	to principals so chat Principal/get and mail-thread cross-user avatar
 //	lookups can read the picture without leaking the per-Identity overlay.
-const CurrentSchemaVersion = 36
+//
+// 37 — 0037_clientlog.sql. Ring-buffer table for client-side log events
+//
+//	(REQ-OPS-206, REQ-OPS-206a, REQ-OPS-219). Adds the clientlog table
+//	with columns for slice, timestamps, app, kind, level, identity, route,
+//	build, ua, msg, stack, and full payload JSON.  Four indexes cover the
+//	canonical pagination, request-id correlation, session-ts ordering, and
+//	per-user server-ts ordering access patterns.  Excluded from
+//	herold diag backup by default (--include-clientlog opt-in).
+const CurrentSchemaVersion = 37
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -278,4 +287,9 @@ var TableNames = []string{
 	// FK to principals(id); restored after principals.
 	"seen_addresses",
 	"blob_refs",
+	// Client-log ring buffer (REQ-OPS-206, migration 0037).  No FK
+	// constraints; excluded from backup by default (--include-clientlog
+	// opts in, REQ-OPS-206a).  Listed last so restore tooling can skip
+	// it cleanly without disturbing FK-ordered table groups.
+	"clientlog",
 }

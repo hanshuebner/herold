@@ -636,6 +636,31 @@ type SeenAddressRow struct {
 	ReceivedCount int64  `json:"received_count"`
 }
 
+// ClientLogRow mirrors one row of the clientlog ring-buffer table
+// introduced in migration 0037 (REQ-OPS-206, REQ-OPS-219).
+// Nullable columns use pointers.  Excluded from backup by default;
+// --include-clientlog opts in (REQ-OPS-206a).
+type ClientLogRow struct {
+	ID          int64   `json:"id"`
+	Slice       string  `json:"slice"`
+	ServerTS    int64   `json:"server_ts"`
+	ClientTS    int64   `json:"client_ts"`
+	ClockSkewMS int64   `json:"clock_skew_ms"`
+	App         string  `json:"app"`
+	Kind        string  `json:"kind"`
+	Level       string  `json:"level"`
+	UserID      *string `json:"user_id,omitempty"`
+	SessionID   *string `json:"session_id,omitempty"`
+	PageID      string  `json:"page_id"`
+	RequestID   *string `json:"request_id,omitempty"`
+	Route       *string `json:"route,omitempty"`
+	BuildSHA    string  `json:"build_sha"`
+	UA          string  `json:"ua"`
+	Msg         string  `json:"msg"`
+	Stack       *string `json:"stack,omitempty"`
+	PayloadJSON string  `json:"payload_json"`
+}
+
 // PushSubscriptionRow mirrors the push_subscription table introduced
 // in migration 0017 (Phase 3 Wave 3.8a, REQ-PROTO-120..122). The
 // JMAP keys.p256dh / keys.auth byte slices are persisted verbatim;

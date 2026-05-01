@@ -1,7 +1,9 @@
 package storesqlite
 
 import (
+	"context"
 	"database/sql"
+	"time"
 )
 
 // OpenRaw opens the given path using the same DSN production Open uses,
@@ -15,6 +17,12 @@ func OpenRaw(path string) (*sql.DB, error) {
 // need to query PRAGMAs or inspect schema state without going through the
 // store.Store interface.
 func (s *Store) DB() *sql.DB { return s.db }
+
+// ClientlogCursorForTime returns the cursor for the row with the largest id
+// whose server_ts is <= ts. Test helper for clientlog pagination tests.
+func ClientlogCursorForTime(_ context.Context, ts time.Time) string {
+	return encodeClientLogCursor("", usMicros(ts))
+}
 
 // Migration0005SQL is the verbatim 0005_state_change_generic.sql body,
 // re-exported for the migration mapping test in storesqlite_test.go so
