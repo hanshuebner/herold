@@ -62,6 +62,7 @@ export const de = {
   'thread.empty': 'Diese Konversation enthält keine Nachrichten.',
   'thread.print': 'Konversation drucken',
   'thread.subject.none': '(kein Betreff)',
+  'thread.back': 'Zurück zur Liste',
 
   // ── Message actions (issue #17 tooltips) ─────────────────────────────
   'msg.reply': 'Antworten',

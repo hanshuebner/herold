@@ -63,6 +63,7 @@ export const en = {
   'thread.empty': 'Thread has no messages.',
   'thread.print': 'Print thread',
   'thread.subject.none': '(no subject)',
+  'thread.back': 'Back to list',
 
   // ── Message actions (issue #17 tooltips) ─────────────────────────────
   'msg.reply': 'Reply',

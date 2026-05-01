@@ -2,7 +2,8 @@
   import { untrack } from 'svelte';
   import { mail } from './store.svelte';
   import MessageAccordion from './MessageAccordion.svelte';
-  import PrintIcon from '../icons/PrintIcon.svelte';
+  import ThreadToolbar from './ThreadToolbar.svelte';
+  import ThreadReplyBar from './ThreadReplyBar.svelte';
   import { t } from '../i18n/i18n.svelte';
   import type { Email } from './types';
 
@@ -25,6 +26,11 @@
   let status = $derived(mail.threadStatus(threadId));
   let emails = $derived(mail.threadEmails(threadId));
   let subject = $derived(emails[0]?.subject || t('thread.subject.none'));
+
+  // Most recent email — what reply / reply-all / forward target by
+  // default, and the seed for thread-scoped bulk operations
+  // (REQ-MAIL-51..54 expansion handles the rest).
+  let latest = $derived(emails[emails.length - 1]);
 
   /**
    * Per docs/requirements/09-ui-layout.md REQ-UI-20: collapsed except the
@@ -89,79 +95,58 @@
       {/if}
       <button type="button" onclick={() => mail.loadThread(threadId)}>{t('thread.retry')}</button>
     </div>
-  {:else if emails.length === 0}
+  {:else if emails.length === 0 || !latest}
     <div class="state">{t('thread.empty')}</div>
   {:else}
-    <header>
-      <div class="header-row">
+    <ThreadToolbar {threadId} {latest} onPrint={() => void printThread()} />
+    <div class="scroll">
+      <header>
         <h1>{subject}</h1>
-        <button
-          type="button"
-          class="print"
-          aria-label={t('thread.print')}
-          title={t('thread.print')}
-          onclick={() => void printThread()}
-        >
-          <PrintIcon size={18} />
-        </button>
+      </header>
+      <div class="messages">
+        {#each emails as email (email.id)}
+          <MessageAccordion {email} expanded={expanded.has(email.id)} onToggle={toggle} />
+        {/each}
       </div>
-    </header>
-    <div class="messages">
-      {#each emails as email (email.id)}
-        <MessageAccordion {email} expanded={expanded.has(email.id)} onToggle={toggle} />
-      {/each}
     </div>
+    <ThreadReplyBar target={latest} />
   {/if}
 </div>
 
 <style>
   .thread-reader {
     height: 100%;
-    overflow: auto;
+    display: flex;
+    flex-direction: column;
     background: var(--background);
+    overflow: hidden;
+  }
+  /* The middle region scrolls; toolbar + reply bar stay pinned. */
+  .scroll {
+    flex: 1;
+    overflow: auto;
   }
   header {
     padding: var(--spacing-05);
     border-bottom: 1px solid var(--border-subtle-01);
     background: var(--layer-01);
   }
-  .header-row {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--spacing-04);
-  }
   h1 {
     font-size: var(--type-heading-02-size);
     line-height: var(--type-heading-02-line);
     font-weight: var(--type-heading-02-weight);
-    margin: 0 0 var(--spacing-02);
+    margin: 0;
     word-break: break-word;
-    flex: 1;
-  }
-  .print {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border-radius: var(--radius-pill);
-    color: var(--text-secondary);
-    background: var(--layer-02);
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-  }
-  .print:hover {
-    background: var(--layer-03);
-    color: var(--text-primary);
   }
 
   @media print {
-    .print {
-      display: none;
-    }
     .thread-reader {
       overflow: visible !important;
       height: auto !important;
+      display: block;
+    }
+    .scroll {
+      overflow: visible !important;
     }
     header {
       background: transparent;
