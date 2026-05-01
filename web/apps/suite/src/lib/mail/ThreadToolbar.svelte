@@ -65,7 +65,13 @@
   }
 
   function markUnread(): void {
+    // Mirror Gmail / "I'm done with this for now" semantics: marking a
+    // thread unread is the user saying "put it back". Take them back to
+    // the list so the thread reappears as a candidate for re-reading
+    // rather than leaving them staring at the message they just told us
+    // they didn't really process yet.
     void mail.markThreadSeen(threadId, false);
+    back();
   }
 
   function snooze(): void {
