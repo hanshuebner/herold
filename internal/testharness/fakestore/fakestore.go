@@ -734,15 +734,19 @@ func (m *metaFace) AddMessageToMailbox(ctx context.Context, msgID store.MessageI
 	now := s.clk.Now()
 	mb.UpdatedAt = now
 	s.mailboxes[mb.ID] = mb
-	// Store in the M:N join map.
+	// Store in the M:N join map. AddMessageToMailbox seeds a *fresh*
+	// membership: flags and keywords are zero / empty here, matching the
+	// storesqlite + storepg contract (each implementation inserts
+	// flags=0 with empty keywords_csv). Callers that want to preserve per-
+	// membership state across a move must use MoveMessage, or add the
+	// new membership and then patch its flags/keywords explicitly.
 	s.msgMailboxes[mmKey{msgID, mailboxID}] = store.MessageMailbox{
 		MessageID: msgID,
 		MailboxID: mailboxID,
 		UID:       uid,
 		ModSeq:    modSeq,
-		Flags:     msg.Flags,
-		Keywords:  msg.Keywords,
 	}
+	_ = msg // keep msg in scope for documentation; flags intentionally not copied.
 	s.appendStateChangeLocked(store.StateChange{
 		PrincipalID:    mb.PrincipalID,
 		Kind:           store.EntityKindEmail,

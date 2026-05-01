@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/protojmap"
@@ -19,6 +21,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap/mail/mailbox"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/thread"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness"
 )
 
@@ -33,7 +36,22 @@ type fixture struct {
 
 func setupFixture(t *testing.T) *fixture {
 	t.Helper()
+	// Use a real on-disk SQLite store rather than the fakestore default,
+	// so the email tests exercise the production schema and primitive
+	// semantics (move-preserves-seen, M:N membership transitions, …).
+	// Fakestore drifts from the SQL backends in subtle ways and silently
+	// hid this regression for months; the email package is too close to
+	// the persistence layer to tolerate that.
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	st, err := storesqlite.Open(context.Background(), dbPath, nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
 	srv, _ := testharness.Start(t, testharness.Options{
+		Store:     st,
+		Clock:     clk,
 		Listeners: []testharness.ListenerSpec{{Name: "jmap", Protocol: "jmap"}},
 	})
 
@@ -2034,5 +2052,188 @@ func TestEmailSet_Update_RebuildsBody(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no inline image found in attachments after update; raw=%s", raw)
+	}
+}
+
+// TestEmailSet_Update_MailboxIds_PreservesSeen is the regression test for
+// the move-loses-$seen bug: a message marked $seen in mailbox A whose
+// mailboxIds is then replaced with {B: true} via Email/set must retain
+// $seen on its B membership. The store has MoveMessage which preserves
+// per-membership flags/keywords; the JMAP layer must use it (rather than
+// AddMessageToMailbox + RemoveMessageFromMailbox, which inserts the new
+// membership with flags=0 and an empty keywords_csv).
+func TestEmailSet_Update_MailboxIds_PreservesSeen(t *testing.T) {
+	f := setupFixture(t)
+	ctx := context.Background()
+
+	archive, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Archive",
+		Attributes:  store.MailboxAttrArchive,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Archive: %v", err)
+	}
+
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: keep-seen\r\n\r\nbody"
+	m := f.insertMessage(t, body, "keep-seen", "a@example.test", "b@example.test", nil, "")
+
+	emailID := fmt.Sprintf("%d", m.ID)
+	archiveKey := fmt.Sprintf("%d", archive.ID)
+
+	// Step 1: mark $seen in inbox.
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			emailID: map[string]any{"keywords/$seen": true},
+		},
+	})
+	var seenResp struct {
+		Updated    map[string]any `json:"updated"`
+		NotUpdated map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &seenResp); err != nil {
+		t.Fatalf("unmarshal seen-update: %v: %s", err, raw)
+	}
+	if _, ok := seenResp.Updated[emailID]; !ok {
+		t.Fatalf("seen-update not applied: notUpdated=%v", seenResp.NotUpdated)
+	}
+
+	// Sanity: the inbox membership now carries the Seen flag.
+	got, err := f.srv.Store.Meta().GetMessage(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMessage after seen-set: %v", err)
+	}
+	var inboxFlags store.MessageFlags
+	for _, mm := range got.Mailboxes {
+		if mm.MailboxID == f.inbox.ID {
+			inboxFlags = mm.Flags
+		}
+	}
+	if inboxFlags&store.MessageFlagSeen == 0 {
+		t.Fatalf("precondition: inbox flags=%v, want $seen set", inboxFlags)
+	}
+
+	// Step 2: move to Archive by replacing mailboxIds with {archive: true}.
+	_, raw = f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			emailID: map[string]any{
+				"mailboxIds": map[string]bool{archiveKey: true},
+			},
+		},
+	})
+	var moveResp struct {
+		Updated    map[string]any `json:"updated"`
+		NotUpdated map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &moveResp); err != nil {
+		t.Fatalf("unmarshal move: %v: %s", err, raw)
+	}
+	if _, ok := moveResp.Updated[emailID]; !ok {
+		t.Fatalf("move not applied: notUpdated=%v", moveResp.NotUpdated)
+	}
+
+	// Step 3: read the message back; the archive membership must carry $seen.
+	got, err = f.srv.Store.Meta().GetMessage(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMessage after move: %v", err)
+	}
+	if len(got.Mailboxes) != 1 {
+		t.Fatalf("expected 1 mailbox membership after move, got %d: %+v", len(got.Mailboxes), got.Mailboxes)
+	}
+	mm := got.Mailboxes[0]
+	if mm.MailboxID != archive.ID {
+		t.Fatalf("post-move membership in mailbox %d, want archive %d", mm.MailboxID, archive.ID)
+	}
+	if mm.Flags&store.MessageFlagSeen == 0 {
+		t.Fatalf("$seen lost after move: flags=%v (expected MessageFlagSeen set); this is the move-loses-seen regression",
+			mm.Flags)
+	}
+
+	// Step 4: same assertion via JMAP (Email/get) so the wire-shape is exercised.
+	_, raw = f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{emailID},
+		"properties": []string{"keywords", "mailboxIds"},
+	})
+	var getResp struct {
+		List []struct {
+			MailboxIDs map[string]bool `json:"mailboxIds"`
+			Keywords   map[string]bool `json:"keywords"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal Email/get: %v: %s", err, raw)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("Email/get list len=%d, want 1: %s", len(getResp.List), raw)
+	}
+	if !getResp.List[0].MailboxIDs[archiveKey] {
+		t.Errorf("Email/get mailboxIds = %v, want archive %s present", getResp.List[0].MailboxIDs, archiveKey)
+	}
+	if !getResp.List[0].Keywords["$seen"] {
+		t.Errorf("Email/get keywords = %v, want $seen=true after move (regression)", getResp.List[0].Keywords)
+	}
+}
+
+// TestEmailSet_Update_MailboxIds_PreservesCustomKeywords is the same
+// regression check for non-system custom keywords (RFC 5788). A custom
+// keyword set on the source membership must survive a move.
+func TestEmailSet_Update_MailboxIds_PreservesCustomKeywords(t *testing.T) {
+	f := setupFixture(t)
+	ctx := context.Background()
+
+	archive, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Archive2",
+		Attributes:  store.MailboxAttrArchive,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Archive2: %v", err)
+	}
+
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: kw-keep\r\n\r\nbody"
+	m := f.insertMessage(t, body, "kw-keep", "a@example.test", "b@example.test", []string{"projectx"}, "")
+
+	emailID := fmt.Sprintf("%d", m.ID)
+	archiveKey := fmt.Sprintf("%d", archive.ID)
+
+	// Move.
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			emailID: map[string]any{
+				"mailboxIds": map[string]bool{archiveKey: true},
+			},
+		},
+	})
+	var moveResp struct {
+		Updated    map[string]any `json:"updated"`
+		NotUpdated map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &moveResp); err != nil {
+		t.Fatalf("unmarshal move: %v: %s", err, raw)
+	}
+	if _, ok := moveResp.Updated[emailID]; !ok {
+		t.Fatalf("move not applied: notUpdated=%v", moveResp.NotUpdated)
+	}
+
+	got, err := f.srv.Store.Meta().GetMessage(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMessage after move: %v", err)
+	}
+	if len(got.Mailboxes) != 1 || got.Mailboxes[0].MailboxID != archive.ID {
+		t.Fatalf("post-move memberships=%+v, want exactly archive %d", got.Mailboxes, archive.ID)
+	}
+	var foundKW bool
+	for _, kw := range got.Mailboxes[0].Keywords {
+		if kw == "projectx" {
+			foundKW = true
+			break
+		}
+	}
+	if !foundKW {
+		t.Fatalf("custom keyword 'projectx' lost after move: keywords=%v (regression)", got.Mailboxes[0].Keywords)
 	}
 }

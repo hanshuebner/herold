@@ -1068,11 +1068,23 @@ func (h *handlerSet) applyMailboxDiff(
 	m store.Message,
 	currentIDs, desiredIDs map[store.MailboxID]struct{},
 ) (*setError, error) {
-	// Add memberships present in desired but absent from current.
+	// Compute the diff sets up front so we can pick the right primitive
+	// for the common move-to case versus partial-overlap edits.
+	var addIDs []store.MailboxID
 	for id := range desiredIDs {
-		if _, exists := currentIDs[id]; exists {
-			continue
+		if _, exists := currentIDs[id]; !exists {
+			addIDs = append(addIDs, id)
 		}
+	}
+	var removeIDs []store.MailboxID
+	for id := range currentIDs {
+		if _, keep := desiredIDs[id]; !keep {
+			removeIDs = append(removeIDs, id)
+		}
+	}
+
+	// Verify ownership of every new target before any mutation.
+	for _, id := range addIDs {
 		mb, err := h.store.Meta().GetMailboxByID(ctx, id)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
@@ -1089,6 +1101,56 @@ func (h *handlerSet) applyMailboxDiff(
 				Description: "target mailbox is not owned by this principal",
 			}, nil
 		}
+	}
+
+	// Fast-path: a single add + a single remove is a move. Use the
+	// store's atomic MoveMessage which preserves the source membership's
+	// flags / keywords / snoozedUntil — the regression that hit the
+	// suite's drag-to-folder flow (the seen state vanished because
+	// AddMessageToMailbox seeds a fresh membership with flags=0 and
+	// an empty keywords_csv, and a separate RemoveMessageFromMailbox then
+	// drops the prior state entirely).
+	if len(addIDs) == 1 && len(removeIDs) == 1 {
+		if err := h.store.Meta().MoveMessage(ctx, m.ID, removeIDs[0], addIDs[0]); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return &setError{Type: "notFound"}, nil
+			}
+			return nil, fmt.Errorf("email: move message: %w", err)
+		}
+		return nil, nil
+	}
+
+	// General path: pick a "source" membership whose per-mailbox state
+	// the new memberships should inherit. Prefer one of the about-to-be-
+	// removed memberships when the patch contains both adds and removes
+	// (e.g. consolidating from N mailboxes to 1); otherwise fall back to
+	// any current membership so a pure-add patch (mailboxIds/<new>:true)
+	// also lands with the right seen / keyword state.
+	var sourceFlags store.MessageFlags
+	var sourceKW []string
+	if len(m.Mailboxes) > 0 {
+		var src store.MessageMailbox
+		var found bool
+		if len(removeIDs) > 0 {
+			rm := removeIDs[0]
+			for _, mm := range m.Mailboxes {
+				if mm.MailboxID == rm {
+					src = mm
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			src = m.Mailboxes[0]
+		}
+		sourceFlags = src.Flags
+		sourceKW = append(sourceKW, src.Keywords...)
+	}
+
+	// Add memberships first so a transient "no membership" state never
+	// becomes visible to a concurrent reader.
+	for _, id := range addIDs {
 		if _, _, err := h.store.Meta().AddMessageToMailbox(ctx, m.ID, id); err != nil {
 			if errors.Is(err, store.ErrConflict) {
 				// Already in this mailbox (race or duplicate patch key): skip.
@@ -1096,15 +1158,25 @@ func (h *handlerSet) applyMailboxDiff(
 			}
 			return nil, fmt.Errorf("email: add to mailbox: %w", err)
 		}
-	}
-	// Remove memberships present in current but absent from desired.
-	for id := range currentIDs {
-		if _, keep := desiredIDs[id]; keep {
-			continue
+		// Patch the freshly-inserted membership with the source state.
+		// This is non-atomic with the insert, but the only observable
+		// in-between state is "membership exists with flags=0" — better
+		// than dropping the user's seen state on the floor entirely.
+		if sourceFlags != 0 || len(sourceKW) > 0 {
+			if _, err := h.store.Meta().UpdateMessageFlags(
+				ctx, m.ID, id,
+				sourceFlags, 0,
+				sourceKW, nil,
+				0,
+			); err != nil {
+				return nil, fmt.Errorf("email: seed mailbox flags after add: %w", err)
+			}
 		}
+	}
+
+	for _, id := range removeIDs {
 		if err := h.store.Meta().RemoveMessageFromMailbox(ctx, m.ID, id); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				// Already removed (race): skip.
 				continue
 			}
 			return nil, fmt.Errorf("email: remove from mailbox: %w", err)
