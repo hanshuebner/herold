@@ -510,6 +510,20 @@ func convertFakeToRow(table string, raw any) (any, error) {
 	case "blob_refs":
 		b := raw.(fakestore.BlobRefEntry)
 		return &BlobRefRow{Hash: b.Hash, Size: b.Size, RefCount: b.RefCount}, nil
+	case "sessions":
+		r := raw.(store.SessionRow)
+		row := &SessionRow{
+			SessionID:                 r.SessionID,
+			PrincipalID:               int64(r.PrincipalID),
+			CreatedAtUs:               r.CreatedAt.UnixMicro(),
+			ExpiresAtUs:               r.ExpiresAt.UnixMicro(),
+			ClientlogTelemetryEnabled: r.ClientlogTelemetryEnabled,
+		}
+		if r.ClientlogLivetailUntil != nil {
+			v := r.ClientlogLivetailUntil.UnixMicro()
+			row.ClientlogLivetailUntilUs = &v
+		}
+		return row, nil
 	case "clientlog":
 		r := raw.(store.ClientLogRow)
 		return &ClientLogRow{
@@ -956,6 +970,20 @@ func convertRowToFake(table string, row any) (any, error) {
 	case "blob_refs":
 		r := row.(*BlobRefRow)
 		return fakestore.BlobRefEntry{Hash: r.Hash, Size: r.Size, RefCount: r.RefCount}, nil
+	case "sessions":
+		r := row.(*SessionRow)
+		sr := store.SessionRow{
+			SessionID:                 r.SessionID,
+			PrincipalID:               store.PrincipalID(r.PrincipalID),
+			CreatedAt:                 time.UnixMicro(r.CreatedAtUs).UTC(),
+			ExpiresAt:                 time.UnixMicro(r.ExpiresAtUs).UTC(),
+			ClientlogTelemetryEnabled: r.ClientlogTelemetryEnabled,
+		}
+		if r.ClientlogLivetailUntilUs != nil {
+			t := time.UnixMicro(*r.ClientlogLivetailUntilUs).UTC()
+			sr.ClientlogLivetailUntil = &t
+		}
+		return sr, nil
 	case "clientlog":
 		r := row.(*ClientLogRow)
 		return store.ClientLogRow{

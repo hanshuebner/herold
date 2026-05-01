@@ -100,11 +100,12 @@ func (b *Backup) CreateBundle(ctx context.Context, dst string) (Manifest, error)
 
 	for _, table := range TableNames {
 		// clientlog is excluded from backups by default (REQ-OPS-206a).
-		// The --include-clientlog flag opts in; without it we still write
-		// an empty .jsonl so the bundle is structurally complete and
-		// restore / verify do not have to special-case the absence of
-		// the file.
-		if table == "clientlog" && !b.opts.IncludeClientLog {
+		// sessions is excluded permanently: rows expire naturally and
+		// restoring stale session rows would confuse TelemetryGate.
+		// In both cases we still write an empty .jsonl so the bundle is
+		// structurally complete and restore / verify do not have to
+		// special-case the absence of the file.
+		if (table == "clientlog" && !b.opts.IncludeClientLog) || table == "sessions" {
 			if err := writeEmptyJSONL(dst, table); err != nil {
 				return Manifest{}, fmt.Errorf("backup: empty %s: %w", table, err)
 			}

@@ -238,6 +238,16 @@ func Run(t *testing.T, f Factory) {
 		{"ClientLog_EvictByAge", testClientLogEvictByAge},
 		{"ClientLog_EvictByCap", testClientLogEvictByCap},
 		{"ClientLog_EvictDoesNotCrossSlice", testClientLogEvictDoesNotCrossSlice},
+		// -- REQ-OPS-208 / REQ-CLOG-06 session rows ----------------------
+		{"Session_UpsertGet_Roundtrip", testSessionUpsertGetRoundtrip},
+		{"Session_Upsert_UpdatesOnConflict", testSessionUpsertUpdatesOnConflict},
+		{"Session_Get_NotFound", testSessionGetNotFound},
+		{"Session_Delete_RemovesRow", testSessionDeleteRemovesRow},
+		{"Session_Delete_NotFound", testSessionDeleteNotFound},
+		{"Session_UpdateTelemetry_FlipsFlag", testSessionUpdateTelemetry},
+		{"Session_UpdateTelemetry_NotFound", testSessionUpdateTelemetryNotFound},
+		{"Session_EvictExpired_RemovesExpiredLeavesAlive", testSessionEvictExpired},
+		{"Session_CascadeOnPrincipalDelete", testSessionCascadeOnPrincipalDelete},
 	}
 	for _, c := range cases {
 		tc := c

@@ -85,10 +85,12 @@ func (m *metadata) InsertPrincipal(ctx context.Context, p store.Principal) (stor
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
 			INSERT INTO principals (kind, canonical_email, display_name, password_hash,
-			  totp_secret, quota_bytes, flags, used_bytes, created_at_us, updated_at_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9) RETURNING id`,
+			  totp_secret, quota_bytes, flags, used_bytes, created_at_us, updated_at_us,
+			  clientlog_telemetry_enabled)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10) RETURNING id`,
 			int32(p.Kind), strings.ToLower(p.CanonicalEmail), p.DisplayName, p.PasswordHash,
 			p.TOTPSecret, p.QuotaBytes, int64(p.Flags), usMicros(now), usMicros(now),
+			p.ClientlogTelemetryEnabled,
 		).Scan(&id)
 	})
 	if err != nil {
@@ -115,6 +117,7 @@ func (m *metadata) selectPrincipal(ctx context.Context, where string, args ...an
 		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
 		       quota_bytes, flags, seen_addresses_enabled,
 		       avatar_blob_hash, avatar_blob_size, xface_enabled,
+		       clientlog_telemetry_enabled,
 		       created_at_us, updated_at_us
 		  FROM principals `+where, args...)
 	var p store.Principal
@@ -127,6 +130,7 @@ func (m *metadata) selectPrincipal(ctx context.Context, where string, args ...an
 	err := row.Scan(&id, &kind, &p.CanonicalEmail, &p.DisplayName, &p.PasswordHash,
 		&totp, &p.QuotaBytes, &flags, &p.SeenAddressesEnabled,
 		&avatarHash, &p.AvatarBlobSize, &p.XFaceEnabled,
+		&p.ClientlogTelemetryEnabled,
 		&createdUs, &updatedUs)
 	if err != nil {
 		return store.Principal{}, mapErr(err)
@@ -158,11 +162,13 @@ func (m *metadata) UpdatePrincipal(ctx context.Context, p store.Principal) error
 			       totp_secret = $5, quota_bytes = $6, flags = $7,
 			       seen_addresses_enabled = $8,
 			       avatar_blob_hash = $9, avatar_blob_size = $10, xface_enabled = $11,
-			       updated_at_us = $12
-			 WHERE id = $13`,
+			       clientlog_telemetry_enabled = $12,
+			       updated_at_us = $13
+			 WHERE id = $14`,
 			int32(p.Kind), strings.ToLower(p.CanonicalEmail), p.DisplayName, p.PasswordHash,
 			p.TOTPSecret, p.QuotaBytes, int64(p.Flags), p.SeenAddressesEnabled,
 			avatarHash, p.AvatarBlobSize, p.XFaceEnabled,
+			p.ClientlogTelemetryEnabled,
 			usMicros(now), int64(p.ID))
 		if err != nil {
 			return mapErr(err)

@@ -121,6 +121,10 @@ type Store struct {
 	// Lazily initialised on first AppendClientLog call.
 	clientlog *clientlogData
 
+	// sessions holds per-session state rows (REQ-OPS-208, REQ-CLOG-06).
+	// Key is SessionRow.SessionID.
+	sessions map[string]store.SessionRow
+
 	// monotonic ID counters
 	nextPrincipalID store.PrincipalID
 	nextMailboxID   store.MailboxID
@@ -194,6 +198,7 @@ func New(opts Options) (*Store, error) {
 		attpolDomain:     make(map[string]store.InboundAttachmentPolicyRow),
 		managedRules:     make(map[store.ManagedRuleID]store.ManagedRule),
 		msgMailboxes:     make(map[mmKey]store.MessageMailbox),
+		sessions:         make(map[string]store.SessionRow),
 		nextPrincipalID:  1,
 		nextMailboxID:    1,
 		nextMessageID:    1,

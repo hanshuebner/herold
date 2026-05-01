@@ -161,7 +161,24 @@ const CurrentBackupVersion = 1
 //	canonical pagination, request-id correlation, session-ts ordering, and
 //	per-user server-ts ordering access patterns.  Excluded from
 //	herold diag backup by default (--include-clientlog opt-in).
-const CurrentSchemaVersion = 37
+//
+// 38 — 0038_clientlog_telemetry.sql. Per-user client-log telemetry opt-out
+//
+//	(REQ-OPS-208, REQ-CLOG-06). Adds
+//	principals.clientlog_telemetry_enabled (nullable boolean) so each
+//	user can override the system default for behavioural telemetry.
+//	NULL means "use system default". Column-only migration.
+//
+// 39 — 0039_sessions.sql. Server-side session rows (REQ-OPS-208,
+//
+//	REQ-CLOG-06). Adds the sessions table keyed on session_id (the
+//	CSRF token from the signed cookie) with principal_id FK, expiry,
+//	clientlog_telemetry_enabled (non-NULL effective value computed at
+//	session creation / refresh), and clientlog_livetail_until_us
+//	(NULL when live-tail is inactive, REQ-OPS-211). Enables
+//	TelemetryGate.IsEnabled(sessionID) without a principal lookup on
+//	the hot path.
+const CurrentSchemaVersion = 39
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -287,6 +304,11 @@ var TableNames = []string{
 	// FK to principals(id); restored after principals.
 	"seen_addresses",
 	"blob_refs",
+	// Server-side session rows (REQ-OPS-208, REQ-CLOG-06, migration 0039).
+	// FK to principals(id) ON DELETE CASCADE; restored after principals.
+	// Excluded from backup by default: sessions expire naturally and
+	// restoring stale session rows would confuse TelemetryGate.
+	"sessions",
 	// Client-log ring buffer (REQ-OPS-206, migration 0037).  No FK
 	// constraints; excluded from backup by default (--include-clientlog
 	// opts in, REQ-OPS-206a).  Listed last so restore tooling can skip

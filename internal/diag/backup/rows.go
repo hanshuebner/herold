@@ -636,6 +636,20 @@ type SeenAddressRow struct {
 	ReceivedCount int64  `json:"received_count"`
 }
 
+// SessionRow mirrors one row of the sessions table introduced in
+// migration 0039 (REQ-OPS-208, REQ-CLOG-06). Excluded from backup by
+// default because sessions expire naturally and restoring stale rows
+// would confuse TelemetryGate. The row is included in TableNames so
+// VerifyBundle has a typed receiver; the backup writes an empty JSONL.
+type SessionRow struct {
+	SessionID                 string `json:"session_id"`
+	PrincipalID               int64  `json:"principal_id"`
+	CreatedAtUs               int64  `json:"created_at_us"`
+	ExpiresAtUs               int64  `json:"expires_at_us"`
+	ClientlogTelemetryEnabled bool   `json:"clientlog_telemetry_enabled"`
+	ClientlogLivetailUntilUs  *int64 `json:"clientlog_livetail_until_us,omitempty"`
+}
+
 // ClientLogRow mirrors one row of the clientlog ring-buffer table
 // introduced in migration 0037 (REQ-OPS-206, REQ-OPS-219).
 // Nullable columns use pointers.  Excluded from backup by default;

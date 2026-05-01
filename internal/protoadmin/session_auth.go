@@ -188,6 +188,28 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	cfg := s.sessionConfig()
 	authsession.WriteSessionCookie(w, cfg, sess)
 
+	// Persist a session row so TelemetryGate.IsEnabled can answer
+	// without a principal lookup on the clientlog hot path (REQ-OPS-208).
+	// The effective telemetry flag is resolved here and cached on the row.
+	// defaultTelemetryEnabled is true until task #8 wires the sysconfig block.
+	const defaultTelemetryEnabled = true
+	sessionRow := store.SessionRow{
+		SessionID:                 sess.CSRFToken,
+		PrincipalID:               pid,
+		CreatedAt:                 s.clk.Now(),
+		ExpiresAt:                 sess.ExpiresAt,
+		ClientlogTelemetryEnabled: directory.EffectiveTelemetry(p, defaultTelemetryEnabled),
+	}
+	if err := s.store.Meta().UpsertSession(ctx, sessionRow); err != nil {
+		// Non-fatal: log at warn and continue; the cookie is already set.
+		// The TelemetryGate will return ErrNotFound (treated as disabled)
+		// until the row is created on the next successful login.
+		s.loggerFrom(ctx).Warn("protoadmin.login.session_upsert_failed",
+			"activity", observe.ActivityInternal,
+			"principal_id", uint64(pid),
+			"err", err)
+	}
+
 	// Attach the just-authenticated principal to the audit context so
 	// the success record carries actor=principal/<id> rather than the
 	// pre-auth actor=system fallback (REQ-ADM-300).

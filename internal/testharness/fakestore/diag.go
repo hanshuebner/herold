@@ -420,6 +420,21 @@ func (s *Store) DiagSnapshot() *DiagDump {
 		dd.Tables["seen_addresses"] = []any{}
 	}
 
+	// sessions: emit sorted by session_id for determinism.
+	// Excluded from backup by default (sessions expire naturally and
+	// restoring stale rows would confuse TelemetryGate).
+	sids := make([]string, 0, len(s.sessions))
+	for id := range s.sessions {
+		sids = append(sids, id)
+	}
+	sort.Strings(sids)
+	for _, id := range sids {
+		dd.Tables["sessions"] = append(dd.Tables["sessions"], s.sessions[id])
+	}
+	if dd.Tables["sessions"] == nil {
+		dd.Tables["sessions"] = []any{}
+	}
+
 	// clientlog: emit in insertion order (ascending ID) for determinism.
 	// Excluded from backup by default; the adapter honours IncludeClientLog.
 	if s.clientlog != nil {
@@ -534,6 +549,7 @@ func (s *Store) DiagReset() {
 	s.reactions = nil
 	s.coach = nil
 	s.seenAddresses = nil
+	s.sessions = make(map[string]store.SessionRow)
 	s.clientlog = nil
 	s.nextPrincipalID = 1
 	s.nextMailboxID = 1
@@ -755,6 +771,9 @@ func (s *Store) DiagInsert(table string, row any) error {
 		// chat_memberships rows already encode the DM relationship, so
 		// inserting chat_dm_pairs rows is a no-op for the fakestore.
 		_ = row
+	case "sessions":
+		r := row.(store.SessionRow)
+		s.sessions[r.SessionID] = r
 	case "clientlog":
 		r := row.(store.ClientLogRow)
 		d := s.ensureClientlog()

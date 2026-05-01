@@ -1469,6 +1469,36 @@ type Metadata interface {
 	// opts.BatchSize rows are deleted per call to bound lock pressure on
 	// SQLite.  Returns the number of rows deleted.
 	EvictClientLog(ctx context.Context, opts ClientLogEvictOptions) (deleted int, err error)
+
+	// -- REQ-OPS-208 / REQ-CLOG-06: session rows for per-session state ---
+
+	// UpsertSession inserts or updates the session row identified by
+	// s.SessionID. On conflict (same session_id) all mutable columns are
+	// overwritten, so a refresh call is a plain Upsert. The store does not
+	// validate that ExpiresAt is in the future; callers enforce that.
+	UpsertSession(ctx context.Context, s SessionRow) error
+
+	// GetSession returns the session row for sessionID. Returns
+	// ErrNotFound when no row exists for that key (the session was never
+	// persisted or has been evicted).
+	GetSession(ctx context.Context, sessionID string) (SessionRow, error)
+
+	// DeleteSession removes the session row for sessionID. Returns
+	// ErrNotFound when the row is absent. Used by logout.
+	DeleteSession(ctx context.Context, sessionID string) error
+
+	// UpdateSessionTelemetry sets the clientlog_telemetry_enabled column
+	// on an existing session row. Returns ErrNotFound when the session
+	// does not exist (already expired or never created). This is called
+	// by the self-service telemetry endpoint after it has updated the
+	// principal row, so the session row stays in sync without a full
+	// Upsert.
+	UpdateSessionTelemetry(ctx context.Context, sessionID string, enabled bool) error
+
+	// EvictExpiredSessions deletes all session rows whose expires_at_us
+	// is <= nowMicros. Returns the number of rows deleted. Intended for
+	// a periodic background sweeper; safe to call concurrently.
+	EvictExpiredSessions(ctx context.Context, nowMicros int64) (deleted int, err error)
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

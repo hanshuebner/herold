@@ -956,6 +956,30 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "sessions":
+		// Sessions are excluded from backup by default (stale sessions confuse
+		// TelemetryGate), so this branch is only reached if a future caller
+		// explicitly enumerates the table.  It is provided for completeness
+		// and to satisfy the "unknown table" guard.
+		return enumerate(ctx, s.tx,
+			`SELECT session_id, principal_id, created_at_us, expires_at_us,
+			        clientlog_telemetry_enabled, clientlog_livetail_until_us
+			   FROM sessions ORDER BY session_id`,
+			func(rs *sql.Rows) (any, error) {
+				var r SessionRow
+				var telemetryInt int64
+				var livetailUs sql.NullInt64
+				if err := rs.Scan(&r.SessionID, &r.PrincipalID, &r.CreatedAtUs, &r.ExpiresAtUs,
+					&telemetryInt, &livetailUs); err != nil {
+					return nil, err
+				}
+				r.ClientlogTelemetryEnabled = telemetryInt != 0
+				if livetailUs.Valid {
+					v := livetailUs.Int64
+					r.ClientlogLivetailUntilUs = &v
+				}
+				return &r, nil
+			}, fn)
 	case "clientlog":
 		return enumerate(ctx, s.tx,
 			`SELECT id, slice, server_ts, client_ts, clock_skew_ms,
@@ -1617,6 +1641,19 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			`INSERT INTO blob_refs (hash, size, ref_count, last_change_us)
 			 VALUES (?, ?, ?, ?)`,
 			r.Hash, r.Size, r.RefCount, r.LastChangeUs)
+		return err
+	case "sessions":
+		r := row.(*SessionRow)
+		var telemetryInt int64
+		if r.ClientlogTelemetryEnabled {
+			telemetryInt = 1
+		}
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO sessions (session_id, principal_id, created_at_us, expires_at_us,
+			   clientlog_telemetry_enabled, clientlog_livetail_until_us)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			r.SessionID, r.PrincipalID, r.CreatedAtUs, r.ExpiresAtUs,
+			telemetryInt, r.ClientlogLivetailUntilUs)
 		return err
 	case "clientlog":
 		r := row.(*ClientLogRow)

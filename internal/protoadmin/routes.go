@@ -158,6 +158,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// the opaque state token. REQ-MAIL-SUBMIT-02, REQ-AUTH-EXT-SUBMIT-03.
 	mux.HandleFunc("GET /api/v1/oauth/external-submission/callback", auth1(s.handleOAuthCallback))
 
+	// Per-user client-log telemetry opt-out (REQ-OPS-208, REQ-CLOG-06).
+	// Self-service: the caller may only modify their own flag (enforced
+	// inside the handler by using principalFrom, not a {pid} path param).
+	mux.HandleFunc("PUT /api/v1/me/clientlog/telemetry_enabled", auth1(s.handlePutTelemetryEnabled))
+
 	// Inbound attachment policy (REQ-FLOW-ATTPOL-01..02).
 	mux.HandleFunc("GET /api/v1/mailboxes/{addr}/attachment-policy", authAdmin(s.handleGetMailboxAttPol))
 	mux.HandleFunc("PUT /api/v1/mailboxes/{addr}/attachment-policy", authAdmin(s.handlePutMailboxAttPol))
@@ -212,6 +217,9 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/principals/{pid}/oidc-links", auth1(s.handleListOIDCLinks))
 	mux.HandleFunc("POST /api/v1/principals/{pid}/oidc-links/begin", auth1(s.handleBeginOIDCLink))
 	mux.HandleFunc("DELETE /api/v1/principals/{pid}/oidc-links/{provider_id}", auth1(s.handleUnlinkOIDC))
+
+	// Per-user client-log telemetry opt-out (REQ-OPS-208, REQ-CLOG-06).
+	mux.HandleFunc("PUT /api/v1/me/clientlog/telemetry_enabled", auth1(s.handlePutTelemetryEnabled))
 
 	// Spam-classifier feedback signal (Wave 3.15). The Suite SPA's
 	// per-message report-spam / report-phishing actions POST here so

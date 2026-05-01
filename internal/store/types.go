@@ -137,6 +137,13 @@ type Principal struct {
 	// default identity carry the legacy X-Face / modern Face headers
 	// (REQ-SET-03b / REQ-MAIL-45). Default false.
 	XFaceEnabled bool
+	// ClientlogTelemetryEnabled is the per-user override for client-log
+	// behavioural telemetry (REQ-OPS-208, REQ-CLOG-06). nil means the
+	// principal inherits the system-config default
+	// ([clientlog.defaults].telemetry_enabled). A non-nil value takes
+	// precedence over the system default in either direction. Only
+	// kind=log and kind=vital events are gated; kind=error is always sent.
+	ClientlogTelemetryEnabled *bool
 	// CreatedAt is the instant the principal row was inserted.
 	CreatedAt time.Time
 	// UpdatedAt is the instant of the most recent mutation to the row.
@@ -671,6 +678,43 @@ type AuditLogEntry struct {
 	// store serialises the map deterministically (sorted keys) to the
 	// underlying column.
 	Metadata map[string]string
+}
+
+// SessionRow is one row in the sessions table. Each row is keyed on
+// session_id, which matches the CSRFToken embedded in the signed session
+// cookie (authsession.Session.CSRFToken). The row holds per-session state
+// that cannot live in the stateless HMAC-signed cookie payload.
+//
+// clientlog_telemetry_enabled is the resolved effective flag: the store
+// computes it once at session creation (principal override ?? system default)
+// and caches it here so the clientlog ingest handler can call
+// TelemetryGate.IsEnabled(sessionID) without a principal lookup.
+//
+// clientlog_livetail_until is the expiry for admin live-tail mode
+// (REQ-OPS-211 / REQ-ADM-232); nil means live-tail is inactive.
+type SessionRow struct {
+	// SessionID is the CSRF token from the signed session cookie. It is
+	// opaque to the store and serves only as the lookup key.
+	SessionID string
+	// PrincipalID is the owning principal. Used for cascade-delete on
+	// DeletePrincipal and for auditing.
+	PrincipalID PrincipalID
+	// CreatedAt is the instant the session row was inserted.
+	CreatedAt time.Time
+	// ExpiresAt is the session expiry deadline (matches the cookie TTL).
+	// Expired rows are not automatically evicted by the store; a sweeper
+	// goroutine or VACUUM handles that. Readers treat expired rows as
+	// not-found.
+	ExpiresAt time.Time
+	// ClientlogTelemetryEnabled is the effective resolved telemetry flag
+	// at session creation / last refresh. Always non-nil (computed from
+	// the principal's override and the system default passed by the
+	// directory layer).
+	ClientlogTelemetryEnabled bool
+	// ClientlogLivetailUntil, when non-nil, marks the end of an active
+	// admin live-tail session (REQ-OPS-211 / REQ-ADM-232). A nil value
+	// means live-tail is inactive for this session.
+	ClientlogLivetailUntil *time.Time
 }
 
 // AuditLogFilter narrows a ListAuditLog read. Unset (zero) fields are
