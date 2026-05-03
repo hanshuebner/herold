@@ -808,9 +808,9 @@
                 <span class="subject">{email.subject || '(no subject)'}</span>
                 <span class="preview"> — {email.preview}</span>
               </span>
-              {#if email.hasAttachment}
-                <span class="attachment" aria-label="Has attachment">📎</span>
-              {/if}
+              <span class="attachment" aria-hidden={!email.hasAttachment}>
+                {#if email.hasAttachment}<span aria-label="Has attachment">📎</span>{/if}
+              </span>
               <span class="date">{formatDate(email.receivedAt)}</span>
             </button>
           </li>
@@ -1027,9 +1027,9 @@
                 <span class="subject">{email.subject || '(no subject)'}</span>
                 <span class="preview"> — {email.preview}</span>
               </span>
-              {#if email.hasAttachment}
-                <span class="attachment" aria-label="Has attachment">📎</span>
-              {/if}
+              <span class="attachment" aria-hidden={!email.hasAttachment}>
+                {#if email.hasAttachment}<span aria-label="Has attachment">📎</span>{/if}
+              </span>
               <span class="date">{formatDate(email.receivedAt)}</span>
             </button>
           </li>
