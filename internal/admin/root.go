@@ -134,6 +134,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newDiagCmd())
 	root.AddCommand(newPluginCmd())
 	root.AddCommand(newVAPIDCmd())
+	root.AddCommand(newContactsCmd())
 	return root
 }
 
