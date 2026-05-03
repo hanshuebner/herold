@@ -1,3 +1,9 @@
+---
+title: Quickstart
+slug: quickstart
+audience: user
+---
+
 # Extended quickstart: a real domain with public inbound
 
 This is the follow-up to the README's 3-5 minute loopback quickstart.
@@ -6,9 +12,9 @@ public inbound MX, ACME-issued certs, DKIM publication, DMARC,
 MTA-STS, and TLS-RPT - what a deliverable mail server needs.
 
 If you have not already done the loopback quickstart, start there:
-[../../README.md](../../README.md). For the operator runbook, see
-[./operate.md](./operate.md). For application administration, see
-[./administer.md](./administer.md).
+the README at the repository root. For the operator runbook, see
+[Operating Herold](../admin/operate.mdoc). For application administration, see
+[Administering Herold](../admin/administer.mdoc).
 
 ## Prerequisites
 
@@ -202,7 +208,7 @@ port 9443).
 
 From an external mailbox (Gmail, iCloud, your mobile carrier), send
 an email to `you@example.com` (use a principal you've added - see
-[./administer.md](./administer.md) for `herold principal create`).
+[Administering Herold](../admin/administer.mdoc) for `herold principal create`).
 
 Verify it arrives:
 
@@ -312,7 +318,7 @@ fine; outbound direct delivery does not. Two routes around it:
 
 1. **Use a smart host.** Funnel outbound through SES / SendGrid /
    Gmail / a corporate relay. See
-   [./examples/system.toml.smarthost](./examples/system.toml.smarthost)
+   [examples/system.toml.smarthost](examples/system.toml.smarthost)
    for the target config shape; smart-host implementation lands in
    Wave 3.1.
 2. **File a request with the provider.** AWS lifts the SES sandbox
@@ -373,7 +379,7 @@ Symptom: receivers' DMARC reports show `dkim=fail`. Causes:
 - DKIM TXT record body is wrong - copy-paste truncation is the
   classic. Re-emit with `herold dkim show <domain>` (not yet wired;
   the server returns 501 today -- see the DKIM section in
-  `administer.md` for status) and re-publish.
+  [Administering Herold](../admin/administer.mdoc) for status) and re-publish.
 - DNS provider mangled the TXT body. Some providers split long TXT
   records on whitespace; herold's DKIM keys are 2048-bit and the TXT
   record is long. Concatenate quoted strings per RFC 6376.
@@ -383,8 +389,8 @@ Symptom: receivers' DMARC reports show `dkim=fail`. Causes:
 ## Where to next
 
 - Day-to-day operator runbook (queue triage, observability, signals,
-  performance tuning): [./operate.md](./operate.md).
+  performance tuning): [Operating Herold](../admin/operate.mdoc).
 - Application administration (principals, mailboxes, aliases, API
-  keys, Sieve, audit log): [./administer.md](./administer.md).
+  keys, Sieve, audit log): [Administering Herold](../admin/administer.mdoc).
 - The historical record (requirements, architecture, implementation):
   the `docs/design/` tree.

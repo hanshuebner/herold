@@ -1,0 +1,45 @@
+[user]
+home = "index"
+
+  [[user.chapters]]
+  slug  = "index"
+  file  = "user/index.mdoc"
+  title = "Welcome"
+
+  [[user.chapters]]
+  slug  = "quickstart"
+  file  = "user/quickstart.mdoc"
+  title = "Quickstart"
+
+[admin]
+home = "index"
+
+  [[admin.chapters]]
+  slug  = "index"
+  file  = "admin/index.mdoc"
+  title = "Welcome"
+
+  [[admin.chapters]]
+  slug  = "install"
+  file  = "admin/install.mdoc"
+  title = "Installation"
+
+  [[admin.chapters]]
+  slug  = "operate"
+  file  = "admin/operate.mdoc"
+  title = "Operating Herold"
+
+  [[admin.chapters]]
+  slug  = "administer"
+  file  = "admin/administer.mdoc"
+  title = "Administering Herold"
+
+  [[admin.chapters]]
+  slug  = "external-smtp-submission"
+  file  = "admin/external-smtp-submission.mdoc"
+  title = "External SMTP Submission"
+
+  [[admin.chapters]]
+  slug  = "manual-test-runbook"
+  file  = "admin/manual-test-runbook.mdoc"
+  title = "Manual Test Runbook"

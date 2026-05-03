@@ -1,3 +1,9 @@
+---
+title: External SMTP Submission
+slug: external-smtp-submission
+audience: admin
+---
+
 # External SMTP submission per Identity
 
 This chapter explains how to configure herold to submit outbound mail through
@@ -11,7 +17,7 @@ external provider.
 ## Overview
 
 External SMTP submission is a per-Identity feature. Each JMAP Identity
-(RFC 8621 §6) may carry its own SMTP submission endpoint, authentication
+(RFC 8621 section 6) may carry its own SMTP submission endpoint, authentication
 method, and credential independently of every other Identity the same
 principal owns. A principal with three Identities can use herold's outbound
 queue for two and route the third through a personal Gmail account. The choice
@@ -20,8 +26,8 @@ all mail through an external server.
 
 When an Identity has no external submission config, its outbound mail follows
 the normal path: herold's outbound queue, DKIM signing, and the delivery
-machinery described in the operations manual. When an Identity does carry
-external submission credentials, and the user composes a message selecting
+machinery described in [Operating Herold](operate.mdoc). When an Identity does
+carry external submission credentials, and the user composes a message selecting
 that Identity in the From picker, the JMAP EmailSubmission lands on the
 external server instead. The routing decision is made at submission time in
 `internal/extsubmit/submitter.go` (`Submit`), which is invoked by the JMAP
@@ -120,7 +126,7 @@ openssl rand -hex 64 | head -c 64
 The output is 64 hex digits, which decodes to exactly 32 bytes as required.
 Store the output in a location herold's operating user can read at startup. Two
 reference forms are accepted; inline values in `system.toml` are rejected at
-startup (STANDARDS §9) to prevent accidental commits of secret material:
+startup (STANDARDS section 9) to prevent accidental commits of secret material:
 
 **Environment variable:**
 
@@ -214,7 +220,7 @@ credential entry; the feature works either way.
    https://<your-herold-hostname>/api/v1/oauth/external-submission/callback
    ```
 
-   This is a fixed URL — the same URI is used for all identities on your
+   This is a fixed URL -- the same URI is used for all identities on your
    deployment. Herold carries the identity id in the OAuth state token, not
    in the redirect URI, so one registration covers every user.
 

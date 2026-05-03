@@ -1,11 +1,17 @@
+---
+title: Installation
+slug: install
+audience: admin
+---
+
 # Installing Herold
 
 This document walks through the install paths herold supports, the
 system resources to budget, the storage backend choice, and the
 first-run bootstrap. It is operator-facing; for the day-2 runbook see
-[./operate.md](./operate.md), for application-administration see
-[./administer.md](./administer.md), and for the real-domain
-walkthrough see [./quickstart-extended.md](./quickstart-extended.md).
+[Operating Herold](operate.mdoc), for application-administration see
+[Administering Herold](administer.mdoc), and for the real-domain
+walkthrough see [Quickstart](../user/quickstart.mdoc).
 
 ## Choose a deployment shape
 
@@ -89,7 +95,7 @@ The Makefile exposes several variables for non-standard environments:
 | `GOFLAGS`  | (empty) | Extra flags passed to every `go` invocation.             |
 | `FUZZTIME` | `30s`   | Per-target budget for `make fuzz-short`.                 |
 
-Example — build without the Node/pnpm toolchain (Go-only environments):
+Example - build without the Node/pnpm toolchain (Go-only environments):
 
 ```bash
 GOFLAGS="-tags nofrontend" make build-server
@@ -187,13 +193,13 @@ on a public registry; until then, build from source.)
 ### One-command stack
 
 The example compose file at
-[`docs/user/examples/docker-compose.yml`](./examples/docker-compose.yml)
+[`docs/manual/user/examples/docker-compose.yml`](../user/examples/docker-compose.yml)
 runs herold against SQLite, with the admin HTTP surface exposed on
 loopback only and no Postgres / NATS / Ollama dependencies. It is the
 shape recommended for the README quickstart:
 
 ```bash
-docker compose -f docs/user/examples/docker-compose.yml up -d
+docker compose -f docs/manual/user/examples/docker-compose.yml up -d
 ```
 
 For a development stack with Postgres, NATS, Ollama (for the LLM spam
@@ -224,10 +230,12 @@ Default exposed ports (adjust freely in the compose file):
 | 8080 | admin        | Admin REST + UI + JMAP + healthz         |
 | 9090 | metrics      | Prometheus `/metrics` (loopback default) |
 
-Operator note: the metrics listener (REQ-OPS-90, STANDARDS section 7)
-**defaults to loopback** and the `/metrics` handler does not perform
-authentication. If you publish a non-loopback `metrics_bind`, front it
-with TLS + auth at a reverse proxy.
+{% callout type="warning" title="Note" %}
+The metrics listener (REQ-OPS-90, STANDARDS section 7) defaults to
+loopback and the `/metrics` handler does not perform authentication.
+If you publish a non-loopback `metrics_bind`, front it with TLS +
+auth at a reverse proxy.
+{% /callout %}
 
 ### Container security posture
 
@@ -298,7 +306,7 @@ surface, and the MTA-STS vhost. Two cert sources (REQ-OPS-40):
 
 ACME is live as of Wave 3.3. Configure `[acme]` in `system.toml` with
 `email` and optionally `directory_url` (defaults to Let's Encrypt
-production). See [./operate.md](./operate.md) for the full TLS / ACME
+production). See [Operating Herold](operate.mdoc) for the full TLS / ACME
 runbook and `herold cert status` to inspect issued certificates.
 
 For the development quickstart on loopback only, `tls = "none"` on the
@@ -334,7 +342,7 @@ herold diag migrate \
 
 The migration is offline: stop the server, run the migrate, point
 `system.toml` at the new backend, start the server. See
-[./operate.md](./operate.md) "Upgrades and migration" for detail.
+[Operating Herold](operate.mdoc) "Upgrades and migration" for detail.
 
 ## First-run bootstrap
 
@@ -422,7 +430,7 @@ Once the domain is registered, herold:
 ### Add the first user principal
 
 User principal management lives in
-[./administer.md](./administer.md). The minimum:
+[Administering Herold](administer.mdoc). The minimum:
 
 ```bash
 herold principal create user1@example.com --password 'change-me-now'
@@ -445,7 +453,7 @@ available; route end users and operators to different URLs:
   `herold_public_csrf` cookie. The SPA's JMAP handshake then
   completes and the mailbox loads. End-users self-serve password
   changes, TOTP enrolment, and API-key management at `/#/settings`.
-  See [./operate.md](./operate.md) "The web URLs herold exposes" for
+  See [Operating Herold](operate.mdoc) "The web URLs herold exposes" for
   details.
 - **Operator UI** (Svelte admin SPA): `http(s)://<admin host>/admin/`
   on the admin listener. The SPA's login form posts to
@@ -459,16 +467,16 @@ available; route end users and operators to different URLs:
   TLS), and 8080 (admin REST + JMAP) -- or the loopback quickstart
   ports 1143 / 1993 / 1587 / 1025 / 8080. See the README quickstart
   for the desktop-client walkthrough and
-  [./operate.md](./operate.md) for the production listener layout.
+  [Operating Herold](operate.mdoc) for the production listener layout.
 
 ## Where to next
 
 - Day-2 operation, system.toml reference, TLS / DNS / observability
-  runbook: [./operate.md](./operate.md).
+  runbook: [Operating Herold](operate.mdoc).
 - Application administration (domains, principals, mailboxes,
-  aliases, API keys, Sieve, audit log): [./administer.md](./administer.md).
+  aliases, API keys, Sieve, audit log): [Administering Herold](administer.mdoc).
 - Real-domain walkthrough (DNS records, ACME, DKIM publication,
   DMARC, MTA-STS, TLS-RPT):
-  [./quickstart-extended.md](./quickstart-extended.md).
+  [Quickstart](../user/quickstart.mdoc).
 - Spec / requirements / architecture (the historical record): the
   `docs/design/` tree.

@@ -1,7 +1,13 @@
+---
+title: Manual Test Runbook
+slug: manual-test-runbook
+audience: admin
+---
+
 # Manual test runbook
 
 This runbook covers the herold user-documentation validation steps that
-cannot be automated inside a clean Debian container — anything that
+cannot be automated inside a clean Debian container -- anything that
 needs a real domain, public DNS, public IP, port 25 reachability, an
 external IdP, an LLM endpoint, or a smart-host SMTP relay with real
 credentials.
@@ -54,11 +60,11 @@ Before starting the DNS-bound walkthroughs, arrange:
 
 ---
 
-## 1. docs/user/install.md — deferred install paths
+## 1. docs/manual/admin/install.mdoc -- deferred install paths
 
 ### 1.1 Docker image build and run
 
-**Source:** `docs/user/install.md` "From Docker" section.
+**Source:** `docs/manual/admin/install.mdoc` "From Docker" section.
 
 **Pre-conditions:** Docker daemon, network access to Docker Hub.
 
@@ -67,9 +73,9 @@ Before starting the DNS-bound walkthroughs, arrange:
 ```bash
 docker build -f deploy/docker/Dockerfile -t herold:dev .
 mkdir -p ./test-run
-cp docs/user/examples/system.toml.quickstart ./test-run/system.toml
-docker compose -f docs/user/examples/docker-compose.yml up -d
-docker compose -f docs/user/examples/docker-compose.yml logs herold
+cp docs/manual/user/examples/system.toml.quickstart ./test-run/system.toml
+docker compose -f docs/manual/user/examples/docker-compose.yml up -d
+docker compose -f docs/manual/user/examples/docker-compose.yml logs herold
 ```
 
 **Verification:** the compose stack's `herold` container reaches the
@@ -82,14 +88,14 @@ docker compose -f docs/user/examples/docker-compose.yml logs herold
 
 ### 1.2 Standard-port `server start` (production ports)
 
-**Source:** `docs/user/install.md` "First-run bootstrap / Start the
+**Source:** `docs/manual/admin/install.mdoc` "First-run bootstrap / Start the
 server" section.
 
 **Pre-conditions:** running as root (or the binary has
 `cap_net_bind_service+ep` set), `/etc/herold/system.toml` configured to
 bind ports 25 / 143 / 993 / 80 / 443. A writable `data_dir`. The
 quickstart config is loopback-only; either copy and edit it or use the
-real-domain config from `quickstart-extended.md`.
+real-domain config from the quickstart chapter.
 
 **Commands:**
 
@@ -106,7 +112,7 @@ log; all required listeners bound on the documented ports.
 
 ### 1.3 Postgres backend
 
-**Source:** `docs/user/install.md` "Storage backend" section.
+**Source:** `docs/manual/admin/install.mdoc` "Storage backend" section.
 
 **Pre-conditions:** a reachable Postgres instance (recent stable
 version), an empty database the herold user can `CREATE TABLE` in.
@@ -129,15 +135,15 @@ herold server start --system-config /path/to/system.toml
 **Verification:** the boot log line records
 `storage_backend=postgres`; on first start herold runs migrations and
 the database contains the herold schema (`\dt` in psql). `herold
-diag migrate --help` shows the SQLite→Postgres migration flags.
+diag migrate --help` shows the SQLite->Postgres migration flags.
 
 **Pass criteria:** server reaches `ready`; subsequent
 `herold domain add example.com` succeeds and creates rows visible in
 the Postgres database.
 
-### 1.4 SQLite → Postgres backend migration
+### 1.4 SQLite -> Postgres backend migration
 
-**Source:** `docs/user/operate.md` "Backend migration" section.
+**Source:** `docs/manual/admin/operate.mdoc` "Backend migration" section.
 
 **Pre-conditions:** a herold instance with an existing SQLite store
 (populated via the quickstart, with at least one domain and one
@@ -161,11 +167,11 @@ SQLite file is left intact for rollback.
 
 ---
 
-## 2. docs/user/operate.md — deferred operator runbook items
+## 2. docs/manual/admin/operate.mdoc -- deferred operator runbook items
 
 ### 2.1 ACME issuance against the public Let's Encrypt directory
 
-**Source:** `docs/user/operate.md` "TLS / ACME" section.
+**Source:** `docs/manual/admin/operate.mdoc` "TLS / ACME" section.
 
 **Pre-conditions:** a public IP, DNS A/AAAA for `mail.example.com` and
 `mta-sts.example.com` published and propagated (TTL 300 while
@@ -202,7 +208,7 @@ log line fires on the documented schedule (REQ-OPS-94).
 
 ### 2.2 File-based cert live reload
 
-**Source:** `docs/user/operate.md` "TLS / file source" section.
+**Source:** `docs/manual/admin/operate.mdoc` "TLS / file source" section.
 
 **Pre-conditions:** `[server.admin_tls]` (or another TLS-enabled
 listener) is configured with `source = "file"` pointing at a key/cert
@@ -234,7 +240,7 @@ about the swap; live connections preserved.
 
 ### 2.3 OTLP trace export
 
-**Source:** `docs/user/operate.md` "Observability / OTLP" section.
+**Source:** `docs/manual/admin/operate.mdoc` "Observability / OTLP" section.
 
 **Pre-conditions:** an OTLP collector reachable from the herold host
 (local Jaeger / Grafana Tempo / OpenTelemetry Collector all work).
@@ -259,8 +265,8 @@ HTTP / SMTP / IMAP request handlers within seconds of the request.
 
 ### 2.4 OIDC RP flow (per-user external federation)
 
-**Source:** `docs/user/operate.md` "OIDC RP" section and
-`docs/user/administer.md` "OIDC RP federation" section.
+**Source:** `docs/manual/admin/operate.mdoc` "OIDC RP" section and
+`docs/manual/admin/administer.mdoc` "OIDC RP federation" section.
 
 **Pre-conditions:** an external IdP (Google, Okta, Auth0, or any
 OIDC-conformant provider) with a registered client whose redirect URI
@@ -292,22 +298,22 @@ that principal succeeds without a password.
 **Pass criteria:** end-to-end IdP login flow returns the user to the
 SPA logged in; the linkage is durable across restarts.
 
-### 2.5 Smart-host outbound delivery — DEFERRED to Wave 3.1
+### 2.5 Smart-host outbound delivery -- DEFERRED to Wave 3.1
 
 The smart-host config shape lives in
-`docs/user/examples/system.toml.smarthost` but the implementation
+`docs/manual/user/examples/system.toml.smarthost` but the implementation
 lands in Wave 3.1. Skip this section until Wave 3.1 has merged.
 
 ---
 
-## 3. docs/user/administer.md — deferred admin flows
+## 3. docs/manual/admin/administer.mdoc -- deferred admin flows
 
 ### 3.1 LLM-backed categorisation
 
-**Source:** `docs/user/administer.md` "Categorise" section.
+**Source:** `docs/manual/admin/administer.mdoc` "Categorise" section.
 
 **Pre-conditions:** an LLM endpoint configured for the `spam-llm`
-plugin — either a local Ollama instance, an OpenAI-compatible API, or
+plugin -- either a local Ollama instance, an OpenAI-compatible API, or
 the LLM your operator standard prescribes. The plugin must be loaded
 under `[[plugin]]` in `system.toml` with the relevant endpoint /
 credentials.
@@ -326,9 +332,9 @@ categories on the user's mailbox change to reflect the new prompt.
 **Pass criteria:** at least one message is recategorised within 30s of
 issuing the command.
 
-### 3.2 TOTP enrol → confirm → disable
+### 3.2 TOTP enrol -> confirm -> disable
 
-**Source:** `docs/user/administer.md` "TOTP" section.
+**Source:** `docs/manual/admin/administer.mdoc` "TOTP" section.
 
 **Pre-conditions:** a working herold instance with the public listener
 reachable from a browser. An authenticator app (Authy, Google
@@ -348,12 +354,12 @@ herold principal totp disable user@example.com --current-password '<pw>'
 `totp_enabled: true` after confirmation, then `totp_enabled: false`
 after disable.
 
-**Pass criteria:** enrol → confirm → disable round-trips with no error;
+**Pass criteria:** enrol -> confirm -> disable round-trips with no error;
 TOTP step-up is enforced on admin login between confirm and disable.
 
 ### 3.3 ManageSieve / JMAP Sieve client flows
 
-**Source:** `docs/user/administer.md` "Sieve" section.
+**Source:** `docs/manual/admin/administer.mdoc` "Sieve" section.
 
 **Pre-conditions:** a ManageSieve client (sieve-connect from
 sieve-connect or Pigeonhole, the Roundcube ManageSieve plugin,
@@ -384,11 +390,11 @@ mail is filtered correctly.
 
 ---
 
-## 4. docs/user/quickstart-extended.md — real-domain end-to-end
+## 4. docs/manual/user/quickstart.mdoc -- real-domain end-to-end
 
 ### 4.1 DNS records
 
-**Source:** `docs/user/quickstart-extended.md` Step 1.
+**Source:** `docs/manual/user/quickstart.mdoc` Step 1.
 
 Publish the four-record minimum at the registrar:
 
@@ -416,7 +422,7 @@ respected.
 
 ### 4.2 DKIM key generation and publication
 
-**Source:** `docs/user/quickstart-extended.md` Step 3.
+**Source:** `docs/manual/user/quickstart.mdoc` Step 3.
 
 **Note:** the inline `herold dkim show / generate` CLI is not yet
 wired in Wave 3 (returns 501 today). Until it lands, exercise the
@@ -458,7 +464,7 @@ serve over HTTPS on the same account.
 
 ### 4.4 First inbound test
 
-**Source:** `docs/user/quickstart-extended.md` Step 5.
+**Source:** `docs/manual/user/quickstart.mdoc` Step 5.
 
 **Pre-conditions:** A/AAAA + MX + SPF + DKIM published; cert issued;
 herold bound to standard ports; at least one principal (e.g.
@@ -488,7 +494,7 @@ TLS; the SPF + DKIM verification recorded in the
 
 ### 4.5 DMARC publication and report monitoring
 
-**Source:** `docs/user/quickstart-extended.md` Step 6.
+**Source:** `docs/manual/user/quickstart.mdoc` Step 6.
 
 Publish:
 
@@ -518,7 +524,7 @@ the report matches the herold host's public IP; `disposition` is
 
 ### 4.6 MTA-STS policy publication
 
-**Source:** `docs/user/quickstart-extended.md` Step 7.
+**Source:** `docs/manual/user/quickstart.mdoc` Step 7.
 
 Publish the TXT:
 
@@ -555,7 +561,7 @@ log the policy fetch and refuse to fall back to plaintext.
 
 ### 4.7 TLS-RPT
 
-**Source:** `docs/user/quickstart-extended.md` Step 7 / TLS-RPT.
+**Source:** `docs/manual/user/quickstart.mdoc` Step 7 / TLS-RPT.
 
 Publish:
 
@@ -585,19 +591,19 @@ the next docs validation cycle.
 - [ ] 1.1 Docker image build and run
 - [ ] 1.2 Standard-port `server start`
 - [ ] 1.3 Postgres backend
-- [ ] 1.4 SQLite → Postgres migration
+- [ ] 1.4 SQLite -> Postgres migration
 - [ ] 2.1 ACME issuance (staging then production)
 - [ ] 2.2 File-based cert live reload
 - [ ] 2.3 OTLP trace export
 - [ ] 2.4 OIDC RP flow
-- [ ] 2.5 Smart host — N/A until Wave 3.1
+- [ ] 2.5 Smart host -- N/A until Wave 3.1
 - [ ] 3.1 LLM-backed categorisation
-- [ ] 3.2 TOTP enrol → confirm → disable
+- [ ] 3.2 TOTP enrol -> confirm -> disable
 - [ ] 3.3 ManageSieve / JMAP Sieve client flows
 - [ ] 4.1 DNS records published and resolving
 - [ ] 4.2 DKIM key published; outbound DKIM-pass
 - [ ] 4.3 ACME cert covers both `mail` and `mta-sts` SANs
-- [ ] 4.4 First inbound test (external sender → INBOX)
+- [ ] 4.4 First inbound test (external sender -> INBOX)
 - [ ] 4.5 DMARC report received
 - [ ] 4.6 MTA-STS TXT and policy file serve correctly
 - [ ] 4.7 TLS-RPT report received
