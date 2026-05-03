@@ -1400,8 +1400,9 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, fromM
 
 		// Get target mailbox info.
 		var pid, tgtUIDNext, tgtHighest int64
-		if err := tx.QueryRowContext(ctx, `SELECT principal_id, uidnext, highest_modseq FROM mailboxes WHERE id = ?`,
-			int64(targetMailboxID)).Scan(&pid, &tgtUIDNext, &tgtHighest); err != nil {
+		var tgtAttrs int64
+		if err := tx.QueryRowContext(ctx, `SELECT principal_id, uidnext, highest_modseq, attributes FROM mailboxes WHERE id = ?`,
+			int64(targetMailboxID)).Scan(&pid, &tgtUIDNext, &tgtHighest, &tgtAttrs); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return store.ErrNotFound
 			}
@@ -1409,6 +1410,14 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, fromM
 		}
 		newUID := tgtUIDNext
 		newModSeq := tgtHighest + 1
+
+		// Snapshot pre-trash mailboxes if the target is Trash.
+		isToTrash := store.MailboxAttributes(tgtAttrs)&store.MailboxAttrTrash != 0
+		if isToTrash {
+			if err := snapshotPretrashMailboxes(ctx, tx, int64(msgID), int64(targetMailboxID)); err != nil {
+				return err
+			}
+		}
 
 		var snoozedArg any
 		if snoozedUs.Valid {
@@ -1429,6 +1438,20 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, fromM
 			int64(msgID), int64(fromMailboxID)); err != nil {
 			return mapErr(err)
 		}
+
+		// Replay pre-trash mailboxes if the source is Trash (i.e. restoring).
+		var srcAttrs int64
+		if err := tx.QueryRowContext(ctx, `SELECT attributes FROM mailboxes WHERE id = ?`,
+			int64(fromMailboxID)).Scan(&srcAttrs); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return mapErr(err)
+		}
+		isFromTrash := store.MailboxAttributes(srcAttrs)&store.MailboxAttrTrash != 0
+		if isFromTrash {
+			if err := replayPretrashMailboxes(ctx, tx, int64(msgID), now); err != nil {
+				return err
+			}
+		}
+
 		// Advance target mailbox uidnext + highest_modseq.
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE mailboxes SET uidnext = uidnext + 1, highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
@@ -1468,10 +1491,16 @@ func (m *metadata) AddMessageToMailbox(ctx context.Context, msgID store.MessageI
 		if existing > 0 {
 			return fmt.Errorf("message already in mailbox: %w", store.ErrConflict)
 		}
-		var uidNext, highest int64
+		var uidNext, highest, attrs int64
 		if err := tx.QueryRowContext(ctx,
-			`SELECT uidnext, highest_modseq FROM mailboxes WHERE id = ?`, int64(mailboxID)).Scan(&uidNext, &highest); err != nil {
+			`SELECT uidnext, highest_modseq, attributes FROM mailboxes WHERE id = ?`, int64(mailboxID)).Scan(&uidNext, &highest, &attrs); err != nil {
 			return mapErr(err)
+		}
+		// Snapshot pre-trash mailboxes if the target is Trash.
+		if store.MailboxAttributes(attrs)&store.MailboxAttrTrash != 0 {
+			if err := snapshotPretrashMailboxes(ctx, tx, int64(msgID), int64(mailboxID)); err != nil {
+				return err
+			}
 		}
 		allocUID = store.UID(uidNext)
 		allocModSeq = store.ModSeq(highest + 1)
@@ -1518,10 +1547,22 @@ func (m *metadata) RemoveMessageFromMailbox(ctx context.Context, msgID store.Mes
 			`SELECT principal_id FROM messages WHERE id = ?`, int64(msgID)).Scan(&pid); err != nil {
 			return mapErr(err)
 		}
+		// Check if we're removing from Trash — if so, replay pre-trash mailboxes.
+		var attrs int64
+		if err := tx.QueryRowContext(ctx, `SELECT attributes FROM mailboxes WHERE id = ?`,
+			int64(mailboxID)).Scan(&attrs); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return mapErr(err)
+		}
+		isTrash := store.MailboxAttributes(attrs)&store.MailboxAttrTrash != 0
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
 			int64(msgID), int64(mailboxID)); err != nil {
 			return mapErr(err)
+		}
+		if isTrash {
+			if err := replayPretrashMailboxes(ctx, tx, int64(msgID), now); err != nil {
+				return err
+			}
 		}
 		// Bump mailbox modseq.
 		if _, err := tx.ExecContext(ctx, `
@@ -1559,6 +1600,110 @@ func (m *metadata) RemoveMessageFromMailbox(ctx context.Context, msgID store.Mes
 		return appendStateChange(ctx, tx, store.PrincipalID(pid),
 			store.EntityKindEmail, uint64(msgID), uint64(mailboxID), store.ChangeOpDestroyed, now)
 	})
+}
+
+// snapshotPretrashMailboxes records the current non-Trash mailbox memberships
+// of msgID in email_pretrash_mailboxes, replacing any prior snapshot.
+// trashMailboxID is the Trash mailbox being added; it is excluded from the
+// snapshot so replay does not re-add Trash.
+func snapshotPretrashMailboxes(ctx context.Context, tx *sql.Tx, msgID, trashMailboxID int64) error {
+	// Clear any prior snapshot.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM email_pretrash_mailboxes WHERE email_id = ?`, msgID); err != nil {
+		return err
+	}
+	// Insert current non-Trash memberships (exclude the Trash mailbox being added).
+	rows, err := tx.QueryContext(ctx, `
+		SELECT mm.mailbox_id
+		  FROM message_mailboxes mm
+		  JOIN mailboxes mb ON mb.id = mm.mailbox_id
+		 WHERE mm.message_id = ?
+		   AND (mb.attributes & ?) = 0
+		   AND mm.mailbox_id != ?`,
+		msgID, int64(store.MailboxAttrTrash), trashMailboxID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mbID int64
+		if err := rows.Scan(&mbID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO email_pretrash_mailboxes (email_id, mailbox_id) VALUES (?, ?)`,
+			msgID, mbID); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+// replayPretrashMailboxes restores the pre-trash mailbox memberships for msgID
+// that were recorded by snapshotPretrashMailboxes. Each mailbox is re-added if
+// the mailbox still exists and the message is not already a member. The snapshot
+// is deleted after replay.
+func replayPretrashMailboxes(ctx context.Context, tx *sql.Tx, msgID int64, now time.Time) error {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT mailbox_id FROM email_pretrash_mailboxes WHERE email_id = ?`, msgID)
+	if err != nil {
+		return err
+	}
+	var mailboxIDs []int64
+	for rows.Next() {
+		var mbID int64
+		if err := rows.Scan(&mbID); err != nil {
+			rows.Close()
+			return err
+		}
+		mailboxIDs = append(mailboxIDs, mbID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, mbID := range mailboxIDs {
+		// Check mailbox still exists and get uidnext/highest_modseq.
+		var uidNext, highest int64
+		err := tx.QueryRowContext(ctx,
+			`SELECT uidnext, highest_modseq FROM mailboxes WHERE id = ?`, mbID).
+			Scan(&uidNext, &highest)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // mailbox was deleted; skip
+		}
+		if err != nil {
+			return err
+		}
+		// Check message is not already a member.
+		var cnt int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+			msgID, mbID).Scan(&cnt); err != nil {
+			return err
+		}
+		if cnt > 0 {
+			continue // already a member; skip
+		}
+		newUID := uidNext
+		newModSeq := highest + 1
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO message_mailboxes (message_id, mailbox_id, uid, modseq, flags, keywords_csv)
+			VALUES (?, ?, ?, ?, 0, '')`,
+			msgID, mbID, newUID, newModSeq); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE mailboxes SET uidnext = uidnext + 1, highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
+			newModSeq, usMicros(now), mbID); err != nil {
+			return err
+		}
+	}
+	// Clear the snapshot after replay.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM email_pretrash_mailboxes WHERE email_id = ?`, msgID); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (m *metadata) UpdateMailboxModseqAndAppendChange(

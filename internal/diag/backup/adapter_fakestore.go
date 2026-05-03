@@ -223,6 +223,10 @@ func convertFakeToRow(table string, raw any) (any, error) {
 			r.SnoozedUntilUs = &us
 		}
 		return r, nil
+	case "email_pretrash_mailboxes":
+		// fakestore does not implement the pretrash snapshot; this table is
+		// always empty in the fakestore and should never appear in convertFakeToRow.
+		return nil, fmt.Errorf("fakestore: email_pretrash_mailboxes: unexpected convertFakeToRow call")
 	case "managed_rules":
 		mr := raw.(store.ManagedRule)
 		return &ManagedRuleRow{
@@ -661,6 +665,10 @@ func convertRowToFake(table string, row any) (any, error) {
 			mm.SnoozedUntil = &t
 		}
 		return mm, nil
+	case "email_pretrash_mailboxes":
+		// fakestore does not implement the pretrash snapshot; restore is a no-op.
+		r := row.(*EmailPretrashMailboxRow)
+		return r, nil
 	case "managed_rules":
 		r := row.(*ManagedRuleRow)
 		mr := store.ManagedRule{

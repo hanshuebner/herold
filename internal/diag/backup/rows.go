@@ -188,6 +188,14 @@ type MessageMailboxRow struct {
 	SnoozedUntilUs *int64 `json:"snoozed_until_us,omitempty"`
 }
 
+// EmailPretrashMailboxRow mirrors one row of the email_pretrash_mailboxes
+// table introduced in migration 0040. Each row records one (email_id,
+// mailbox_id) pair that the message belonged to before being trashed.
+type EmailPretrashMailboxRow struct {
+	EmailID   int64 `json:"email_id"`
+	MailboxID int64 `json:"mailbox_id"`
+}
+
 type MailboxACLRow struct {
 	ID          int64  `json:"id"`
 	MailboxID   int64  `json:"mailbox_id"`

@@ -162,6 +162,8 @@ func rowsForTable(table string) (any, bool) {
 		return &MessageRow{}, true
 	case "message_mailboxes":
 		return &MessageMailboxRow{}, true
+	case "email_pretrash_mailboxes":
+		return &EmailPretrashMailboxRow{}, true
 	case "mailbox_acl":
 		return &MailboxACLRow{}, true
 	case "state_changes":

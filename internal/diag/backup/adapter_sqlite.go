@@ -344,6 +344,16 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "email_pretrash_mailboxes":
+		return enumerate(ctx, s.tx,
+			`SELECT email_id, mailbox_id FROM email_pretrash_mailboxes ORDER BY email_id, mailbox_id`,
+			func(rs *sql.Rows) (any, error) {
+				var r EmailPretrashMailboxRow
+				if err := rs.Scan(&r.EmailID, &r.MailboxID); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
 	case "managed_rules":
 		return enumerate(ctx, s.tx,
 			`SELECT id, principal_id, name, enabled, sort_order,
@@ -1221,6 +1231,12 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			r.MessageID, r.MailboxID, r.UID, r.ModSeq,
 			r.Flags, r.KeywordsCSV, snooze)
+		return err
+	case "email_pretrash_mailboxes":
+		r := row.(*EmailPretrashMailboxRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO email_pretrash_mailboxes (email_id, mailbox_id) VALUES (?, ?)`,
+			r.EmailID, r.MailboxID)
 		return err
 	case "managed_rules":
 		r := row.(*ManagedRuleRow)
