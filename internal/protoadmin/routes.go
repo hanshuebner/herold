@@ -287,5 +287,6 @@ func (s *Server) SelfServiceHandler() http.Handler {
 	return s.withConcurrencyLimit(sem,
 		s.withPanicRecover(
 			s.withRequestLog(
-				s.withMetrics(mux))))
+				s.withListenerTag(
+					s.withMetrics(mux)))))
 }

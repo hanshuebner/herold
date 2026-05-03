@@ -1873,6 +1873,7 @@ func composeAdminAndUI(
 			ServerVersion: "0.1.0",
 			Health:        health,
 			Session:       publicCookieCfg,
+			ListenerTag:   "public",
 		},
 	)
 	selfServiceHandler := selfServiceSrv.SelfServiceHandler()
@@ -1880,6 +1881,12 @@ func composeAdminAndUI(
 	publicMux.Handle("/api/v1/api-keys", selfServiceHandler)
 	publicMux.Handle("/api/v1/api-keys/", selfServiceHandler)
 	publicMux.Handle("/api/v1/healthz/", selfServiceHandler)
+	// Client-log ingest (REQ-OPS-200..207) and the per-user telemetry
+	// opt-out (REQ-OPS-208) live on the public listener so the SPA, served
+	// from the public origin, can reach them with a same-origin POST.
+	publicMux.Handle("/api/v1/clientlog", selfServiceHandler)
+	publicMux.Handle("/api/v1/clientlog/", selfServiceHandler)
+	publicMux.Handle("/api/v1/me/clientlog/telemetry_enabled", selfServiceHandler)
 
 	// Image proxy (REQ-SEND-70..78). Public-listener-only: the
 	// browser presenting an end-user cookie loads upstream-tracking-

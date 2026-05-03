@@ -228,6 +228,11 @@ type Options struct {
 	// used by the clientlog ingest endpoints. Zero values retain the defaults
 	// from REQ-OPS-216. Intended for use in tests and sysconfig wiring.
 	Clientlog ClientlogOptions
+	// ListenerTag is the value stamped onto request contexts via
+	// ctxKeyListener so handlers (notably clientlog ingest) can record the
+	// originating listener in the ring buffer and metrics. Empty defaults
+	// to "admin"; the public listener wiring passes "public".
+	ListenerTag string
 }
 
 // ClientlogOptions configures the client-log ingest pipeline parameters.
@@ -455,7 +460,21 @@ func (s *Server) Handler() http.Handler {
 	return s.withConcurrencyLimit(sem,
 		s.withPanicRecover(
 			s.withRequestLog(
-				s.withMetrics(mux))))
+				s.withListenerTag(
+					s.withMetrics(mux)))))
+}
+
+// withListenerTag stamps ctxKeyListener with the configured Options.ListenerTag
+// (default "admin") so downstream handlers can record the originating listener.
+func (s *Server) withListenerTag(next http.Handler) http.Handler {
+	tag := s.opts.ListenerTag
+	if tag == "" {
+		tag = "admin"
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), ctxKeyListener, tag)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // withMetrics records every served admin request in the
