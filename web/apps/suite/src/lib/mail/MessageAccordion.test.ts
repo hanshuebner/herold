@@ -4,9 +4,10 @@
  * - Attachment indicator in the header: verifies that the paperclip icon
  *   appears when the email has at least one non-inline attachment, and is
  *   suppressed otherwise.
- * - Label badges in the expanded message header (re #66): badges appear for
- *   custom-mailbox membership when the message is expanded, are absent when
- *   collapsed, and are suppressed for the active list folder.
+ * - No per-message label badges (re #66, re #70): label display was moved
+ *   to ThreadReader.svelte's thread-level header so badges are always
+ *   visible regardless of accordion expansion state. MessageAccordion no
+ *   longer renders label badges at all.
  * - Restore from trash navigation (re #29): clicking the Restore button
  *   calls restoreFromTrash and then navigates back.
  */
@@ -269,40 +270,24 @@ describe('MessageAccordion: attachment indicator in header', () => {
   });
 });
 
-describe('MessageAccordion: label badges in expanded message header (re #66)', () => {
+describe('MessageAccordion: no per-message label badges (re #66, re #70)', () => {
   beforeEach(() => {
     // Reset mailMock state that other describe blocks may have mutated.
     mailMock.listFolder = 'inbox';
     mailMock.trash = null;
   });
 
-  it('shows a label badge for a custom mailbox when the message is expanded', () => {
+  it('does not render a label badge even when expanded and email is in a custom mailbox', () => {
+    // Label badges were moved to ThreadReader.svelte (thread-level header).
+    // MessageAccordion must not render any label badge row.
     const email = makeEmail({ mailboxIds: { 'mbx-work': true } });
     renderAccordion(email, true);
-    const badge = screen.getByText('Work');
-    expect(badge).toBeInTheDocument();
-    expect(badge.classList.contains('label-badge')).toBe(true);
+    expect(screen.queryByLabelText('Labels')).not.toBeInTheDocument();
   });
 
-  it('does not show label badges when the message is collapsed', () => {
+  it('does not render a label badge when collapsed', () => {
     const email = makeEmail({ mailboxIds: { 'mbx-work': true } });
     renderAccordion(email, false);
-    // Collapsed: the labels row must not be rendered at all.
-    expect(screen.queryByLabelText('Labels')).not.toBeInTheDocument();
-  });
-
-  it('does not show a badge when the email belongs to no custom mailbox', () => {
-    const email = makeEmail({ mailboxIds: {} });
-    renderAccordion(email, true);
-    expect(screen.queryByLabelText('Labels')).not.toBeInTheDocument();
-  });
-
-  it('suppresses the badge for the active list folder', () => {
-    // When listFolder matches the custom mailbox id, no badge should appear
-    // (the user is already browsing that label; showing it is redundant).
-    mailMock.listFolder = WORK_MBX.id;
-    const email = makeEmail({ mailboxIds: { 'mbx-work': true } });
-    renderAccordion(email, true);
     expect(screen.queryByLabelText('Labels')).not.toBeInTheDocument();
   });
 });

@@ -597,16 +597,31 @@
   }
 
   /**
-   * Returns the sorted list of custom-mailbox names the email belongs to,
-   * excluding the currently-viewed folder and all system mailboxes.
-   * Used to render label badges in front of the subject in thread list rows.
-   * System mailboxes are excluded by only looking at mail.customMailboxes
-   * (the store's pre-filtered set of non-system, non-roled mailboxes).
+   * Returns the sorted list of custom-mailbox names any email in the
+   * thread belongs to, excluding the currently-viewed folder and all
+   * system mailboxes.
+   *
+   * Uses the union of mailboxIds across all thread emails (not just the
+   * thread-representative returned by the collapsed JMAP query), so a
+   * label attached to any message in a multi-message thread is visible
+   * in the list row immediately after attachment (re #70).
+   *
+   * Falls back to the representative email alone when thread email data
+   * has not been loaded yet.
    */
   function emailLabels(email: Email): string[] {
+    // Collect mailboxIds union across the entire thread when available.
+    const seen = new Set<string>(Object.keys(email.mailboxIds));
+    const thread = mail.threads?.get(email.threadId);
+    if (thread) {
+      for (const id of thread.emailIds) {
+        const e = mail.emails.get(id);
+        if (e) for (const mbxId of Object.keys(e.mailboxIds)) seen.add(mbxId);
+      }
+    }
     const labels: string[] = [];
     for (const m of mail.customMailboxes) {
-      if (!email.mailboxIds[m.id]) continue;
+      if (!seen.has(m.id)) continue;
       // Skip the currently-viewed folder so the badge is not redundant.
       if (m.id === folder) continue;
       labels.push(m.name);

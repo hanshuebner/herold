@@ -208,6 +208,53 @@ import MailView from './MailView.svelte';
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
+describe('MailView label badges — thread-union (re #70)', () => {
+  beforeEach(() => {
+    routerState.folder = 'inbox';
+    mailMock.listFolder = 'inbox';
+    // Restore threads map to empty between tests.
+    (mailMock as { threads: Map<unknown, unknown> }).threads = new Map();
+  });
+
+  it('shows a badge when the label is on a non-representative thread email', () => {
+    // EMAIL_SYSTEM_ONLY is the thread representative in the list (no label on it),
+    // but another email in the same thread carries 'mbx-work'.
+    const otherEmail = {
+      id: 'e-other',
+      threadId: 'tid-system',
+      mailboxIds: { 'mbx-inbox': true, 'mbx-work': true } as Record<string, true>,
+      keywords: { $seen: true } as Record<string, true | undefined>,
+      from: [{ name: 'Carol', email: 'carol@example.com' }],
+      to: [],
+      subject: 'Other in thread',
+      preview: 'preview',
+      receivedAt: '2024-01-15T09:00:00Z',
+      hasAttachment: false,
+      snoozedUntil: null,
+    };
+    // Add the other email to the emails map so the union can find it.
+    mailMock.emails.set('e-other', otherEmail as never);
+    // Set up thread data for tid-system so the union path is exercised.
+    (mailMock as { threads: Map<string, { id: string; emailIds: string[] }> }).threads.set('tid-system', {
+      id: 'tid-system',
+      emailIds: ['e-system', 'e-other'],
+    });
+
+    const { container } = render(MailView);
+    // Find the row for EMAIL_SYSTEM_ONLY (second row in the list).
+    const rows = container.querySelectorAll('.thread-row');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    const systemRow = rows[1]!;
+    // The badge should now appear because the union includes 'mbx-work' from e-other.
+    const badge = systemRow.querySelector('.label-badge');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe('Work');
+
+    // Clean up.
+    mailMock.emails.delete('e-other');
+  });
+});
+
 describe('MailView label badges (re #53)', () => {
   beforeEach(() => {
     routerState.folder = 'inbox';

@@ -145,23 +145,6 @@
   let isImportant = $derived(Boolean(email.keywords.$important));
   let isSnoozed = $derived(Boolean(email.snoozedUntil));
 
-  /**
-   * Custom-mailbox labels this email carries. Excludes system mailboxes
-   * (inbox, sent, drafts, trash) and the currently-viewed folder so the
-   * badge is not shown when the user is already browsing that label.
-   * Sorted alphabetically, matching the list-row badge logic in MailView.
-   */
-  let emailLabels = $derived.by<string[]>(() => {
-    const labels: string[] = [];
-    const activeFolder = mail.listFolder;
-    for (const m of mail.customMailboxes) {
-      if (!email.mailboxIds[m.id]) continue;
-      if (m.id === activeFolder) continue;
-      labels.push(m.name);
-    }
-    return labels.sort((a, b) => a.localeCompare(b));
-  });
-
   // Build a cid -> downloadUrl map from the email's attachments. Inline
   // images referenced by Content-ID land in the body as `cid:<id>`; the
   // sanitiser uses this map to rewrite them to a same-origin JMAP blob URL.
@@ -458,13 +441,6 @@
               <RecipientTrigger email={r.email} capturedName={r.name} inline>
                 <span class="recipient-chip-label">{r.name?.trim() || r.email}</span>
               </RecipientTrigger>{#if i < bccRecipients.length - 1},&nbsp;{/if}
-            {/each}
-          </span>
-        {/if}
-        {#if emailLabels.length > 0}
-          <span class="labels-row" aria-label="Labels">
-            {#each emailLabels as lname (lname)}
-              <span class="label-badge">{lname}</span>
             {/each}
           </span>
         {/if}
@@ -871,27 +847,6 @@
   }
   .recipient-chip-label {
     color: var(--text-secondary);
-  }
-
-  /* Labels row shown in the expanded message header below the recipients,
-     matching the pill style used in MailView list rows (re #66). */
-  .labels-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--spacing-02);
-    align-items: center;
-    margin-top: var(--spacing-01);
-  }
-  .label-badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 1px var(--spacing-02);
-    background: var(--layer-03);
-    color: var(--text-secondary);
-    border-radius: var(--radius-sm);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 500;
-    white-space: nowrap;
   }
 
   .header-right {

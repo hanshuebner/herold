@@ -5,7 +5,7 @@
   import ThreadToolbar from './ThreadToolbar.svelte';
   import ThreadReplyBar from './ThreadReplyBar.svelte';
   import { t } from '../i18n/i18n.svelte';
-  import type { Email } from './types';
+  import type { Email, Mailbox } from './types';
 
   interface Props {
     threadId: string;
@@ -31,6 +31,32 @@
   // default, and the seed for thread-scoped bulk operations
   // (REQ-MAIL-51..54 expansion handles the rest).
   let latest = $derived(emails[emails.length - 1]);
+
+  /**
+   * Union of custom-mailbox labels across all messages in the thread.
+   * Excludes system mailboxes (via mail.customMailboxes) and the
+   * currently-viewed folder (so browsing a label does not produce a
+   * redundant badge). Sorted alphabetically.
+   * Rendered under the thread subject so badges are always visible
+   * regardless of which messages are expanded (re #66, re #70).
+   */
+  let threadLabels = $derived.by<string[]>(() => {
+    // Collect the union of all mailboxIds across thread messages.
+    const seen = new Set<string>();
+    for (const email of emails) {
+      for (const id of Object.keys(email.mailboxIds)) {
+        seen.add(id);
+      }
+    }
+    const activeFolder = mail.listFolder;
+    const labels: string[] = [];
+    for (const m of mail.customMailboxes) {
+      if (!seen.has(m.id)) continue;
+      if (m.id === activeFolder) continue;
+      labels.push(m.name);
+    }
+    return labels.sort((a, b) => a.localeCompare(b));
+  });
 
   /**
    * Per docs/requirements/09-ui-layout.md REQ-UI-20: collapsed except the
@@ -102,6 +128,13 @@
     <div class="scroll">
       <header>
         <h1>{subject}</h1>
+        {#if threadLabels.length > 0}
+          <div class="thread-labels" aria-label="Labels">
+            {#each threadLabels as lname (lname)}
+              <span class="label-badge">{lname}</span>
+            {/each}
+          </div>
+        {/if}
       </header>
       <div class="messages">
         {#each emails as email (email.id)}
@@ -137,6 +170,29 @@
     font-weight: var(--type-heading-02-weight);
     margin: 0;
     word-break: break-word;
+  }
+
+  /* Thread-level label badges shown under the subject (re #66, re #70).
+     Always visible regardless of message accordion expansion state.
+     Badge set is the union of custom-mailbox memberships across all
+     thread messages, excluding system and currently-viewed-folder
+     mailboxes. */
+  .thread-labels {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-02);
+    margin-top: var(--spacing-03);
+  }
+  .label-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px var(--spacing-02);
+    background: var(--layer-03);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
+    white-space: nowrap;
   }
 
   @media print {
