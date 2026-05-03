@@ -165,6 +165,11 @@ func (d *Directory) CreatePrincipal(ctx context.Context, email, password string)
 	// is committed, and the first SMTP delivery will recreate any missing
 	// mailbox via the existing lazy ensureMailbox path in protosmtp.
 	d.provisionDefaultMailboxes(ctx, p.ID)
+	// Provision the default address book so JMAP Contacts clients find a
+	// usable container immediately (REQ-PROTO-55). Same error posture as
+	// provisionDefaultMailboxes: log on failure, do not surface to the
+	// caller.
+	d.provisionDefaultAddressBook(ctx, p.ID)
 	return p.ID, nil
 }
 
@@ -204,6 +209,27 @@ func (d *Directory) provisionDefaultMailboxes(ctx context.Context, pid Principal
 			"err", err,
 		)
 	}
+}
+
+// provisionDefaultAddressBook creates a single "Personal" address book
+// marked as the default for a newly-created user principal. It mirrors the
+// provisionDefaultMailboxes pattern: errors are logged and not surfaced, and
+// ErrConflict is treated as success so the call is idempotent.
+func (d *Directory) provisionDefaultAddressBook(ctx context.Context, pid PrincipalID) {
+	_, err := d.meta.InsertAddressBook(ctx, store.AddressBook{
+		PrincipalID:  pid,
+		Name:         "Personal",
+		IsDefault:    true,
+		IsSubscribed: true,
+	})
+	if err == nil || errors.Is(err, store.ErrConflict) {
+		return
+	}
+	d.logger.Warn("directory.provision_address_book_failed",
+		"activity", observe.ActivityInternal,
+		"principal_id", pid,
+		"err", err,
+	)
 }
 
 // GetPrincipalByEmail resolves a principal by canonical email or alias.
