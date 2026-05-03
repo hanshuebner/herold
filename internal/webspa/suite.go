@@ -55,6 +55,12 @@ type Server struct {
 	csp       string
 	clientLog ClientLogBootstrap
 	buildSHA  string
+	// serveDirectoryIndex, when true, causes directory hits to look for
+	// index.html within the matched directory before falling back to root
+	// index.html. Used by the manual server (NewManual) whose dist tree
+	// uses <audience>/<slug>/index.html layout. The suite SPA never hits
+	// real directories in its flat dist tree, so this is false by default.
+	serveDirectoryIndex bool
 }
 
 // reservedAPIPrefixes is the defensive 404 list (REQ-DEPLOY-COLOC-02).
@@ -73,6 +79,7 @@ var reservedAPIPrefixes = []string{
 	"/logout",
 	"/auth/",
 	"/oidc/",
+	"/manual/",
 }
 
 // New constructs a Server for the suite SPA.
@@ -199,6 +206,34 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if info.IsDir() {
+		if s.serveDirectoryIndex {
+			// For directory-index mode (manual server): try to serve
+			// index.html within the matched directory. If that succeeds,
+			// serve it as the page; if not, fall through to the root
+			// index.html SPA-router fallback.
+			idxPath := path.Join(clean, "index.html")
+			if fs.ValidPath(idxPath) {
+				if idxF, err := s.root.Open(idxPath); err == nil {
+					defer idxF.Close()
+					idxInfo, err := idxF.Stat()
+					if err == nil && !idxInfo.IsDir() {
+						w.Header().Set("Content-Type", "text/html; charset=utf-8")
+						w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+						w.Header().Set("Content-Length", fmt.Sprintf("%d", idxInfo.Size()))
+						if r.Method == http.MethodHead {
+							w.WriteHeader(http.StatusOK)
+							return
+						}
+						w.WriteHeader(http.StatusOK)
+						if _, err := io.Copy(w, idxF); err != nil {
+							s.logger.LogAttrs(r.Context(), slog.LevelDebug, "webspa.manual: copy dir index",
+								slog.String("path", urlPath), slog.String("err", err.Error()))
+						}
+						return
+					}
+				}
+			}
+		}
 		// Directory hits fall through to the SPA-router fallback for
 		// extension-free paths; with-extension paths cannot be
 		// directories on a sane dist tree.

@@ -43,9 +43,9 @@ coverage.html
 # Container bind mounts
 /deploy/docker/data/
 
-# Web workspace build artefacts. The internal/webspa/dist/{suite,admin}/
+# Web workspace build artefacts. The internal/webspa/dist/{suite,admin,manual}/
 # tree is ephemeral build output -- populated either by `make build-web`
-# (real Vite output) or by `make prep-web` (placeholder fallback so the
+# (real Vite/SSR output) or by `make prep-web` (placeholder fallback so the
 # //go:embed directive resolves on a clean checkout that has not run pnpm
 # yet). The placeholder source lives under internal/webspa/placeholder/
 # and is tracked. dist/.gitkeep is tracked so the embed root exists in a
@@ -56,3 +56,4 @@ coverage.html
 /web/**/node_modules/
 /internal/webspa/dist/admin/
 /internal/webspa/dist/suite/
+/internal/webspa/dist/manual/

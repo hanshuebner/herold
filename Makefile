@@ -48,11 +48,18 @@ build-web:
 # output (after `make build-web`) we leave it alone -- the existence
 # check on index.html is the cheap idempotency guard.
 prep-web:
-	@mkdir -p internal/webspa/dist/admin internal/webspa/dist/suite
+	@mkdir -p internal/webspa/dist/admin internal/webspa/dist/suite \
+	  internal/webspa/dist/manual/user internal/webspa/dist/manual/admin
 	@[ -f internal/webspa/dist/admin/index.html ] || \
 	  cp internal/webspa/placeholder/admin/index.html internal/webspa/dist/admin/index.html
 	@[ -f internal/webspa/dist/suite/index.html ] || \
 	  cp internal/webspa/placeholder/suite/index.html internal/webspa/dist/suite/index.html
+	@[ -f internal/webspa/dist/manual/index.html ] || \
+	  cp internal/webspa/placeholder/manual/index.html internal/webspa/dist/manual/index.html
+	@[ -f internal/webspa/dist/manual/user/index.html ] || \
+	  cp internal/webspa/placeholder/manual/user/index.html internal/webspa/dist/manual/user/index.html
+	@[ -f internal/webspa/dist/manual/admin/index.html ] || \
+	  cp internal/webspa/placeholder/manual/admin/index.html internal/webspa/dist/manual/admin/index.html
 
 build-plugins:
 	@for p in plugins/herold-*; do \

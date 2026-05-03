@@ -21,6 +21,11 @@ func adminEmbeddedFS() (fs.FS, error) {
 	return stubFS("Admin SPA not built (binary compiled with -tags nofrontend). Run `make build` to produce a binary that includes the frontend."), nil
 }
 
+// manualEmbeddedFS returns the nofrontend stub for the standalone manual.
+func manualEmbeddedFS() (fs.FS, error) {
+	return stubFS("Manual not built -- run `make build-web`."), nil
+}
+
 func stubFS(msg string) fs.FS {
 	body := []byte(`<!doctype html>
 <html lang="en">

@@ -305,6 +305,146 @@ home = "ghost"
 });
 
 // ---------------------------------------------------------------------------
+// SSR mode
+// ---------------------------------------------------------------------------
+
+describe('bundle SSR mode', () => {
+  const ssrOutDir = mkdtempSync(join(tmpdir(), 'herold-manual-ssr-'));
+  const jsonOutDir = mkdtempSync(join(tmpdir(), 'herold-manual-ssr-json-'));
+
+  it('exits 0 with --ssr flag on valid fixtures', () => {
+    const r = runBundle([
+      '--manifest', join(fixtureRoot, 'manifest.toml'),
+      '--content-root', fixtureRoot,
+      '--out-json', jsonOutDir,
+      '--out-ssr', ssrOutDir,
+      '--ssr',
+    ]);
+    expect(r.exitCode, `stderr: ${r.stderr}`).toBe(0);
+  });
+
+  it('writes user chapter HTML for user/index', () => {
+    const indexPath = join(ssrOutDir, 'user', 'index', 'index.html');
+    expect(existsSync(indexPath), `expected ${indexPath} to exist`).toBe(true);
+    const html = readFileSync(indexPath, 'utf8');
+    expect(html.length).toBeGreaterThan(0);
+    expect(html).toContain('<!doctype html>');
+    expect(html).toContain('<html lang="en">');
+  });
+
+  it('user chapter HTML contains the chapter title in <title>', () => {
+    const installPath = join(ssrOutDir, 'user', 'install', 'index.html');
+    const html = readFileSync(installPath, 'utf8');
+    expect(html).toContain('<title>Installation');
+  });
+
+  it('user chapter HTML contains the chapter body content', () => {
+    const installPath = join(ssrOutDir, 'user', 'install', 'index.html');
+    const html = readFileSync(installPath, 'utf8');
+    // The install fixture has a heading "System requirements"
+    expect(html).toContain('System requirements');
+  });
+
+  it('admin chapter HTML is non-empty for admin/overview', () => {
+    const overviewPath = join(ssrOutDir, 'admin', 'overview', 'index.html');
+    expect(existsSync(overviewPath)).toBe(true);
+    const html = readFileSync(overviewPath, 'utf8');
+    expect(html.length).toBeGreaterThan(100);
+    expect(html).toContain('<article');
+  });
+
+  it('user audience index.html is a redirect page', () => {
+    const audienceIndex = join(ssrOutDir, 'user', 'index.html');
+    expect(existsSync(audienceIndex)).toBe(true);
+    const html = readFileSync(audienceIndex, 'utf8');
+    // Should be a meta-refresh redirect
+    expect(html).toContain('meta http-equiv="refresh"');
+  });
+
+  it('writes manual/index.html redirect', () => {
+    const manualIndex = join(ssrOutDir, 'manual', 'index.html');
+    expect(existsSync(manualIndex)).toBe(true);
+    const html = readFileSync(manualIndex, 'utf8');
+    expect(html).toContain('meta http-equiv="refresh"');
+  });
+
+  it('writes manual.css', () => {
+    const cssPath = join(ssrOutDir, 'manual.css');
+    expect(existsSync(cssPath)).toBe(true);
+    const css = readFileSync(cssPath, 'utf8');
+    expect(css.length).toBeGreaterThan(100);
+    expect(css).toContain('.manual-page');
+  });
+
+  it('writes manual.js', () => {
+    const jsPath = join(ssrOutDir, 'manual.js');
+    expect(existsSync(jsPath)).toBe(true);
+    const js = readFileSync(jsPath, 'utf8');
+    expect(js.length).toBeGreaterThan(0);
+    expect(js).toContain('toc-search');
+  });
+
+  it('chapter HTML contains callout tag rendered as aside element', () => {
+    const tagsPath = join(ssrOutDir, 'user', 'tags', 'index.html');
+    const html = readFileSync(tagsPath, 'utf8');
+    expect(html).toContain('<aside class="callout callout--info"');
+    expect(html).toContain('<aside class="callout callout--warning"');
+    expect(html).toContain('<aside class="callout callout--caution"');
+  });
+
+  it('chapter HTML contains kbd tag rendered as kbd elements', () => {
+    const tagsPath = join(ssrOutDir, 'user', 'tags', 'index.html');
+    const html = readFileSync(tagsPath, 'utf8');
+    expect(html).toContain('<kbd>');
+  });
+
+  it('chapter HTML contains req tag rendered as span element', () => {
+    const tagsPath = join(ssrOutDir, 'user', 'tags', 'index.html');
+    const html = readFileSync(tagsPath, 'utf8');
+    expect(html).toContain('req-id');
+    expect(html).toContain('REQ-PROTO-01');
+  });
+
+  it('chapter HTML contains include tag rendered as pre/code block', () => {
+    // install.mdoc includes snippets/config.toml
+    const installPath = join(ssrOutDir, 'user', 'install', 'index.html');
+    const html = readFileSync(installPath, 'utf8');
+    expect(html).toContain('<pre');
+    expect(html).toContain('<code');
+  });
+
+  it('TOC sidebar lists all chapters', () => {
+    const installPath = join(ssrOutDir, 'user', 'install', 'index.html');
+    const html = readFileSync(installPath, 'utf8');
+    // All 3 user chapters should be in the TOC
+    expect(html).toContain('/manual/user/index/');
+    expect(html).toContain('/manual/user/install/');
+    expect(html).toContain('/manual/user/tags/');
+    // Active chapter gets active class
+    expect(html).toContain('class="active"><a href="/manual/user/install/');
+  });
+
+  it('on-this-page rail lists h2 and h3 headings', () => {
+    const installPath = join(ssrOutDir, 'user', 'install', 'index.html');
+    const html = readFileSync(installPath, 'utf8');
+    // install.mdoc has h2 headings: System requirements, Download, Configuration, Keyboard shortcuts
+    expect(html).toContain('System requirements');
+    expect(html).toContain('manual-on-this-page');
+  });
+
+  it('requires --out-ssr when --ssr is set', () => {
+    const r = runBundle([
+      '--manifest', join(fixtureRoot, 'manifest.toml'),
+      '--content-root', fixtureRoot,
+      '--out-json', jsonOutDir,
+      '--ssr',
+    ]);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr).toContain('--out-ssr is required');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // validate.mjs
 // ---------------------------------------------------------------------------
 

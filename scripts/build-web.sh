@@ -77,3 +77,55 @@ mkdir -p "${ADMIN_DST}"
 cp -R "${ADMIN_SRC}/." "${ADMIN_DST}/"
 
 echo "build-web.sh: admin SPA installed at ${ADMIN_DST}/"
+
+# 6. Run the manual bundler in SSR mode. This uses the Markdoc bundler at
+#    web/packages/manual/scripts/bundle.mjs with --ssr to produce per-chapter
+#    static HTML pages. No Svelte runtime or Vite build is required for SSR;
+#    the bundler uses Markdoc's renderers.html() directly.
+echo ">>> node web/packages/manual/scripts/bundle.mjs --ssr"
+MANUAL_SRC_MANIFEST="docs/manual/manifest.toml"
+MANUAL_CONTENT_ROOT="docs/manual"
+MANUAL_TMP_JSON="/tmp/herold-manual-build-json-$$"
+MANUAL_TMP_SSR="/tmp/herold-manual-build-ssr-$$"
+MANUAL_DST="internal/webspa/dist/manual"
+
+mkdir -p "${MANUAL_TMP_JSON}" "${MANUAL_TMP_SSR}"
+
+node web/packages/manual/scripts/bundle.mjs \
+  --manifest "${MANUAL_SRC_MANIFEST}" \
+  --content-root "${MANUAL_CONTENT_ROOT}" \
+  --out-json "${MANUAL_TMP_JSON}" \
+  --out-ssr "${MANUAL_TMP_SSR}" \
+  --ssr
+
+# Verify that at least the user and admin audience index redirects were produced.
+if [ ! -f "${MANUAL_TMP_SSR}/user/index.html" ]; then
+  echo "build-web.sh: ${MANUAL_TMP_SSR}/user/index.html missing after manual SSR build" >&2
+  exit 1
+fi
+if [ ! -f "${MANUAL_TMP_SSR}/admin/index.html" ]; then
+  echo "build-web.sh: ${MANUAL_TMP_SSR}/admin/index.html missing after manual SSR build" >&2
+  exit 1
+fi
+
+# 7. Mirror the manual SSR output into internal/webspa/dist/manual/.
+#    We place the user/ and admin/ chapter trees directly, plus the shared
+#    manual.css and manual.js. The manual/ redirect index goes at the root.
+echo ">>> copy manual SSR output -> ${MANUAL_DST}/"
+rm -rf "${MANUAL_DST}"
+mkdir -p "${MANUAL_DST}"
+cp -R "${MANUAL_TMP_SSR}/." "${MANUAL_DST}/"
+
+# The bundler emits manual/index.html as a redirect from the top-level;
+# move it to the dist/manual/ root so it is served at /manual/.
+if [ -d "${MANUAL_DST}/manual" ]; then
+  if [ -f "${MANUAL_DST}/manual/index.html" ]; then
+    cp "${MANUAL_DST}/manual/index.html" "${MANUAL_DST}/index.html"
+  fi
+  rm -rf "${MANUAL_DST}/manual"
+fi
+
+# Clean up temp dirs.
+rm -rf "${MANUAL_TMP_JSON}" "${MANUAL_TMP_SSR}"
+
+echo "build-web.sh: manual SSR installed at ${MANUAL_DST}/"

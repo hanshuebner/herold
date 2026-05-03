@@ -10,9 +10,25 @@
  *     --content-root <dir>    root dir for .mdoc files
  *     --out-json <dir>        output dir for user.json / admin.json
  *     --out-ssr <dir>         output dir for SSR HTML (requires --ssr)
- *     [--ssr]                 also emit per-chapter HTML via svelte/server
+ *     [--ssr]                 also emit per-chapter HTML via Markdoc renderers.html()
  *
  * Exits non-zero on any validation error.
+ *
+ * SSR mode (--ssr) uses Markdoc's built-in renderers.html() to produce
+ * pure static HTML without any Svelte runtime dependency.  Each custom
+ * tag (callout, code-group, include, req, kbd) is rendered via a
+ * transform that maps the Tag to a standard HTML element with
+ * appropriate attributes and class names.  The Svelte components in
+ * src/components/tags/ remain authoritative for the in-app render path;
+ * the SSR path intentionally uses the simpler HTML mapping.
+ *
+ * SSR output layout (under --out-ssr <dir>):
+ *   <out-ssr>/user/index.html          redirect to first user chapter
+ *   <out-ssr>/user/<slug>/index.html   per-chapter full HTML page
+ *   <out-ssr>/admin/...                same shape
+ *   <out-ssr>/manual/index.html        redirect to /manual/user/
+ *   <out-ssr>/manual.css               shared CSS
+ *   <out-ssr>/manual.js                tiny interactivity (TOC filter + smoothscroll)
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -47,7 +63,7 @@ const outJson = resolve(/** @type {string} */ (argv['out-json']));
 const outSsr = argv['out-ssr'] ? resolve(argv['out-ssr']) : null;
 
 // ---------------------------------------------------------------------------
-// TOML parsing (tiny subset — only what manifest.toml needs)
+// TOML parsing (tiny subset - only what manifest.toml needs)
 // ---------------------------------------------------------------------------
 
 /**
@@ -146,15 +162,9 @@ const Markdoc = /** @type {typeof import('@markdoc/markdoc').default} */ (
   require('@markdoc/markdoc')
 );
 
-// Load our schema from the compiled TS (we use the JS-side schema directly).
-// Because this script is run from Node (not Vite), we import the TS source
-// via the schema re-exported as ESM.  The schema file is pure TypeScript with
-// no Svelte dependencies, so we can import it directly in Node 22+ with
-// --experimental-strip-types, or we fall back to reading the CJS output.
-//
-// Strategy: dynamically import from the schema.ts source if --input-type
-// supports it, otherwise use a thin inline re-export.  We inline the schema
-// definition here to avoid requiring tsx/ts-node at bundle time.
+// ---------------------------------------------------------------------------
+// Tag schemas (shared between JSON and SSR paths)
+// ---------------------------------------------------------------------------
 
 /** @type {Record<string, import('@markdoc/markdoc').Schema>} */
 const tags = buildTagSchemas(Markdoc);
@@ -226,6 +236,90 @@ function buildTagSchemas(M) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// SSR-specific tag schemas: transform custom Tags -> plain HTML elements
+//
+// The SSR path does NOT use the Svelte components from src/components/tags/.
+// Instead each custom tag is mapped to a standard HTML structure.  This
+// keeps the SSR path free of any Svelte/Vite dependency.
+// ---------------------------------------------------------------------------
+
+/** @param {typeof import('@markdoc/markdoc').default} M */
+function buildSsrTagSchemas(M) {
+  const { Tag } = M;
+  return {
+    callout: {
+      render: 'aside',
+      children: ['paragraph', 'fence', 'list'],
+      attributes: {
+        type: { type: String, default: 'info', matches: ['info', 'warning', 'caution'], errorLevel: 'error' },
+        title: { type: String },
+      },
+      transform(node, config) {
+        const type = node.attributes['type'] ?? 'info';
+        const title = node.attributes['title'];
+        const children = node.transformChildren(config);
+        const innerChildren = title
+          ? [new Tag('strong', { class: 'callout-title' }, [title]), ...children]
+          : children;
+        return new Tag('aside', { class: `callout callout--${type}` }, innerChildren);
+      },
+    },
+    'code-group': {
+      render: 'div',
+      children: ['fence'],
+      attributes: {},
+      transform(node, config) {
+        return new Tag('div', { class: 'code-group' }, node.transformChildren(config));
+      },
+    },
+    include: {
+      render: 'pre',
+      selfClosing: true,
+      attributes: {
+        file: { type: String, required: true, errorLevel: 'error' },
+        lang: { type: String, default: 'text' },
+        content: { type: String },
+      },
+      transform(node, _config) {
+        const lang = node.attributes['lang'] ?? 'text';
+        const content = node.attributes['content'] ?? '';
+        const file = node.attributes['file'] ?? '';
+        return new Tag('pre', { class: `language-${lang}`, 'data-file': file },
+          [new Tag('code', {}, [content])]);
+      },
+    },
+    req: {
+      render: 'span',
+      selfClosing: true,
+      attributes: {
+        id: { type: String, required: true, errorLevel: 'error' },
+      },
+      transform(node, _config) {
+        const id = node.attributes['id'] ?? '';
+        return new Tag('span', { class: 'req-id' }, [id]);
+      },
+    },
+    kbd: {
+      render: 'kbd',
+      selfClosing: true,
+      attributes: {
+        keys: { type: String, required: true, errorLevel: 'error' },
+      },
+      transform(node, _config) {
+        const keys = node.attributes['keys'] ?? '';
+        // Render each key as its own <kbd> inside a wrapper span.
+        const keyParts = keys.split(/\s+/).filter(Boolean);
+        const inner = keyParts.flatMap((k, i) => {
+          const kbdTag = new Tag('kbd', {}, [k]);
+          return i === 0 ? [kbdTag] : ['+', kbdTag];
+        });
+        return new Tag('span', { class: 'kbd-combo' }, inner);
+      },
+    },
+  };
+}
+
 const allowedTagNames = new Set(Object.keys(tags));
 
 /** @type {import('@markdoc/markdoc').Config} */
@@ -291,7 +385,7 @@ function walkNode(node, errors, filePath, slugs) {
   if (node.type === 'tag') {
     const tagName = node.tag ?? '';
     if (tagName && !allowedTagNames.has(tagName)) {
-      errors.push(`${filePath}: unknown tag "{% ${tagName} %}" — add it to src/markdoc/schema.ts or remove it`);
+      errors.push(`${filePath}: unknown tag "{% ${tagName} %}" - add it to src/markdoc/schema.ts or remove it`);
     }
   }
   if (node.type === 'link') {
@@ -498,7 +592,7 @@ async function main() {
     console.log(`[bundle] wrote ${outPath} (${chapters.length} chapters)`);
 
     if (argv.ssr && outSsr) {
-      await emitSsr(bundle, outSsr);
+      emitSsr(bundle, outSsr);
     }
   }
 
@@ -506,30 +600,61 @@ async function main() {
     process.stderr.write(`[bundle] ${totalErrors} error(s), see above\n`);
     process.exit(1);
   }
+
+  // Emit shared SSR assets after processing all audiences.
+  if (argv.ssr && outSsr) {
+    emitSsrSharedAssets(outSsr);
+  }
 }
 
+// ---------------------------------------------------------------------------
+// SSR HTML emission via Markdoc renderers.html()
+//
+// This path requires NO compiled Svelte, NO Vite build, NO node-gyp.
+// It uses the same Markdoc transform pipeline as the JSON path but with
+// an SSR-specific tag schema that maps each custom tag to a standard
+// HTML element instead of a Svelte component name.
+// ---------------------------------------------------------------------------
+
 /**
- * Emit SSR HTML for each chapter using svelte/server render().
+ * Emit SSR HTML for each chapter using Markdoc renderers.html().
+ * No Svelte dependency -- pure static HTML with semantic class names
+ * that manual.css styles.
  *
- * @param {{ audience: string, home: string, chapters: unknown[] }} bundle
+ * @param {{ audience: string, home: string, chapters: Array<{slug: string, title: string, source: string, ast: unknown, outline: Array<{id: string, level: number, text: string}>}> }} bundle
  * @param {string} outDir
  */
-async function emitSsr(bundle, outDir) {
-  // Dynamic import keeps the SSR path tree-shaken when --ssr is not passed.
-  const { render } = await import('svelte/server');
-  const { default: Manual } = await import('../src/index.js');
+function emitSsr(bundle, outDir) {
+  const ssrTags = buildSsrTagSchemas(Markdoc);
+  const ssrConfig = { tags: ssrTags };
 
   mkdirSync(join(outDir, bundle.audience), { recursive: true });
 
+  // Build a TOC list of all chapters for the sidebar.
+  const tocItems = bundle.chapters.map((ch) => {
+    return { slug: ch.slug, title: ch.title };
+  });
+
+  // Emit per-chapter pages.
   for (const chapter of bundle.chapters) {
-    const ch = /** @type {{ slug: string, title: string }} */ (chapter);
-    const { html, head } = render(Manual, {
-      props: {
-        bundle,
-        slug: ch.slug,
-        onNavigate: () => {},
-      },
-    });
+    const ch = /** @type {{ slug: string, title: string, source: string, outline: Array<{id: string, level: number, text: string}> }} */ (chapter);
+
+    // Re-process the chapter from source using SSR-specific tag transforms.
+    // We read the source file again to get the raw AST and re-transform it
+    // with the SSR schemas so the HTML output uses plain elements.
+    const filePath = resolve(contentRoot, ch.source);
+    const src = readFile(filePath);
+    const rawAst = Markdoc.parse(src);
+    const ssrErrors = /** @type {string[]} */ ([]);
+    injectIncludes(rawAst, contentRoot, ssrErrors);
+    const ssrAst = Markdoc.transform(rawAst, ssrConfig);
+    const contentHtml = Markdoc.renderers.html(ssrAst);
+
+    // Build the TOC sidebar HTML.
+    const tocHtml = buildTocHtml(tocItems, ch.slug, bundle.audience);
+
+    // Build the on-this-page rail (headings from this chapter).
+    const onThisPageHtml = buildOnThisPageHtml(ch.outline);
 
     const page = `<!doctype html>
 <html lang="en">
@@ -537,25 +662,436 @@ async function emitSsr(bundle, outDir) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(ch.title)} - Herold Manual</title>
-${head}
 <link rel="stylesheet" href="/manual.css">
 </head>
-<body>
-${html}
+<body class="manual-page">
+<nav class="manual-nav" aria-label="Manual navigation">
+<div class="manual-nav-header">
+<a href="/manual/" class="manual-home-link">Herold Manual</a>
+<div class="manual-audience-tabs">
+<a href="/manual/user/" class="${bundle.audience === 'user' ? 'active' : ''}">User</a>
+<a href="/manual/admin/" class="${bundle.audience === 'admin' ? 'active' : ''}">Admin</a>
+</div>
+</div>
+<div class="manual-toc-search">
+<input type="search" id="toc-search" placeholder="Filter chapters..." aria-label="Filter chapters">
+</div>
+<ul class="manual-toc" id="manual-toc">
+${tocHtml}
+</ul>
+</nav>
+<main class="manual-main">
+<article class="manual-content">
+${contentHtml}
+</article>
+${onThisPageHtml ? `<nav class="manual-on-this-page" aria-label="On this page">
+<h2>On this page</h2>
+<ul>
+${onThisPageHtml}
+</ul>
+</nav>` : ''}
+</main>
 <script src="/manual.js" type="module"></script>
 </body>
 </html>`;
 
-    const outPath = join(outDir, bundle.audience, `${ch.slug}.html`);
+    const outPath = join(outDir, bundle.audience, ch.slug, 'index.html');
+    mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, page, 'utf8');
     console.log(`[bundle:ssr] wrote ${outPath}`);
   }
+
+  // Emit audience index redirect (-> home chapter).
+  const homeSlug = bundle.home;
+  const audienceIndexPath = join(outDir, bundle.audience, 'index.html');
+  const audienceIndexHtml = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=/manual/${bundle.audience}/${homeSlug}/">
+<title>Herold Manual - ${bundle.audience === 'user' ? 'User' : 'Admin'}</title>
+</head>
+<body>
+<p>Redirecting to <a href="/manual/${bundle.audience}/${homeSlug}/">manual home</a>...</p>
+<script>location.replace('/manual/${bundle.audience}/${homeSlug}/');</script>
+</body>
+</html>`;
+  writeFileSync(audienceIndexPath, audienceIndexHtml, 'utf8');
+  console.log(`[bundle:ssr] wrote ${audienceIndexPath}`);
+}
+
+/**
+ * Emit shared assets: manual.css and manual.js.
+ * Also emits the top-level /manual/index.html redirect.
+ *
+ * @param {string} outDir
+ */
+function emitSsrSharedAssets(outDir) {
+  mkdirSync(join(outDir, 'manual'), { recursive: true });
+
+  // Top-level /manual/index.html -> redirect to user manual.
+  const manualIndexPath = join(outDir, 'manual', 'index.html');
+  const manualIndexHtml = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=/manual/user/">
+<title>Herold Manual</title>
+</head>
+<body>
+<p>Redirecting to <a href="/manual/user/">user manual</a>...</p>
+<script>location.replace('/manual/user/');</script>
+</body>
+</html>`;
+  writeFileSync(manualIndexPath, manualIndexHtml, 'utf8');
+  console.log(`[bundle:ssr] wrote ${manualIndexPath}`);
+
+  // manual.css -- shared stylesheet for the standalone manual.
+  const cssPath = join(outDir, 'manual.css');
+  writeFileSync(cssPath, MANUAL_CSS, 'utf8');
+  console.log(`[bundle:ssr] wrote ${cssPath}`);
+
+  // manual.js -- tiny interactivity (TOC search filter + smooth scroll).
+  const jsPath = join(outDir, 'manual.js');
+  writeFileSync(jsPath, MANUAL_JS, 'utf8');
+  console.log(`[bundle:ssr] wrote ${jsPath}`);
+}
+
+/**
+ * Build the TOC sidebar HTML list items.
+ *
+ * @param {Array<{slug: string, title: string}>} items
+ * @param {string} activeSlug
+ * @param {string} audience
+ * @returns {string}
+ */
+function buildTocHtml(items, activeSlug, audience) {
+  return items.map((item) => {
+    const activeClass = item.slug === activeSlug ? ' class="active"' : '';
+    return `<li${activeClass}><a href="/manual/${audience}/${item.slug}/">${escapeHtml(item.title)}</a></li>`;
+  }).join('\n');
+}
+
+/**
+ * Build the on-this-page rail HTML list items.
+ *
+ * @param {Array<{id: string, level: number, text: string}>} outline
+ * @returns {string}
+ */
+function buildOnThisPageHtml(outline) {
+  if (!outline || outline.length === 0) return '';
+  return outline.map((entry) => {
+    const levelClass = `otp-h${entry.level}`;
+    return `<li class="${levelClass}"><a href="#${escapeHtml(entry.id)}">${escapeHtml(entry.text)}</a></li>`;
+  }).join('\n');
 }
 
 /** @param {string} s @returns {string} */
 function escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+
+// ---------------------------------------------------------------------------
+// Embedded CSS and JS for the standalone manual
+// ---------------------------------------------------------------------------
+
+const MANUAL_CSS = `/* manual.css -- standalone Herold manual stylesheet */
+:root {
+  --manual-sidebar-width: 260px;
+  --manual-otp-width: 200px;
+  --manual-font: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --manual-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  --manual-color-bg: #fff;
+  --manual-color-text: #1a1a2e;
+  --manual-color-link: #0057b7;
+  --manual-color-border: #e2e8f0;
+  --manual-color-sidebar-bg: #f8fafc;
+  --manual-color-active: #0057b7;
+  --manual-color-code-bg: #f1f5f9;
+  --manual-color-callout-info: #dbeafe;
+  --manual-color-callout-warning: #fef3c7;
+  --manual-color-callout-caution: #fee2e2;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body.manual-page {
+  display: grid;
+  grid-template-columns: var(--manual-sidebar-width) 1fr var(--manual-otp-width);
+  grid-template-rows: 1fr;
+  min-height: 100vh;
+  font-family: var(--manual-font);
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--manual-color-text);
+  background: var(--manual-color-bg);
+}
+
+/* Sidebar nav */
+.manual-nav {
+  grid-column: 1;
+  grid-row: 1;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--manual-color-sidebar-bg);
+  border-right: 1px solid var(--manual-color-border);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.manual-nav-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.manual-home-link {
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--manual-color-text);
+  text-decoration: none;
+}
+
+.manual-home-link:hover { text-decoration: underline; }
+
+.manual-audience-tabs {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.manual-audience-tabs a {
+  font-size: 0.85rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  text-decoration: none;
+  color: var(--manual-color-link);
+  border: 1px solid var(--manual-color-border);
+}
+
+.manual-audience-tabs a.active {
+  background: var(--manual-color-active);
+  color: #fff;
+  border-color: var(--manual-color-active);
+}
+
+.manual-toc-search input {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  border: 1px solid var(--manual-color-border);
+  border-radius: 4px;
+  font-family: inherit;
+}
+
+.manual-toc {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.manual-toc li a {
+  display: block;
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  text-decoration: none;
+  color: var(--manual-color-text);
+  font-size: 0.9rem;
+}
+
+.manual-toc li a:hover { background: var(--manual-color-border); }
+.manual-toc li.active > a {
+  background: var(--manual-color-active);
+  color: #fff;
+}
+
+/* Main content */
+.manual-main {
+  grid-column: 2;
+  grid-row: 1;
+  padding: 2rem 2.5rem;
+  max-width: 800px;
+  overflow-x: hidden;
+}
+
+.manual-content h1,
+.manual-content h2,
+.manual-content h3,
+.manual-content h4 {
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+  line-height: 1.3;
+}
+
+.manual-content h1 { font-size: 1.8rem; }
+.manual-content h2 { font-size: 1.4rem; border-bottom: 1px solid var(--manual-color-border); padding-bottom: 0.3em; }
+.manual-content h3 { font-size: 1.1rem; }
+
+.manual-content p { margin-bottom: 1em; }
+
+.manual-content a { color: var(--manual-color-link); }
+
+.manual-content code {
+  font-family: var(--manual-mono);
+  font-size: 0.88em;
+  background: var(--manual-color-code-bg);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+}
+
+.manual-content pre {
+  font-family: var(--manual-mono);
+  font-size: 0.88em;
+  background: var(--manual-color-code-bg);
+  padding: 1rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin-bottom: 1em;
+}
+
+.manual-content pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+.manual-content ul,
+.manual-content ol {
+  margin-bottom: 1em;
+  padding-left: 1.5em;
+}
+
+.manual-content li { margin-bottom: 0.25em; }
+
+/* Callout component */
+.callout {
+  padding: 1rem;
+  border-radius: 6px;
+  margin-bottom: 1em;
+  border-left: 4px solid currentColor;
+}
+
+.callout--info { background: var(--manual-color-callout-info); color: #1e40af; }
+.callout--warning { background: var(--manual-color-callout-warning); color: #92400e; }
+.callout--caution { background: var(--manual-color-callout-caution); color: #991b1b; }
+
+.callout-title { display: block; font-weight: 700; margin-bottom: 0.4em; }
+
+/* Code group */
+.code-group {
+  margin-bottom: 1em;
+  border: 1px solid var(--manual-color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.code-group pre { border-radius: 0; margin: 0; }
+
+/* Req reference */
+.req-id {
+  font-family: var(--manual-mono);
+  font-size: 0.85em;
+  background: var(--manual-color-code-bg);
+  padding: 0.1em 0.4em;
+  border-radius: 3px;
+  color: #6b21a8;
+}
+
+/* Keyboard shortcut */
+.kbd-combo { display: inline-flex; align-items: center; gap: 2px; }
+.kbd-combo kbd {
+  font-family: var(--manual-mono);
+  font-size: 0.8em;
+  background: var(--manual-color-code-bg);
+  border: 1px solid var(--manual-color-border);
+  border-radius: 3px;
+  padding: 0.1em 0.4em;
+  box-shadow: 0 1px 0 var(--manual-color-border);
+}
+
+/* On-this-page rail */
+.manual-on-this-page {
+  grid-column: 3;
+  grid-row: 1;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 2rem 1rem;
+  font-size: 0.85rem;
+}
+
+.manual-on-this-page h2 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-bottom: 0.75rem;
+}
+
+.manual-on-this-page ul { list-style: none; }
+.manual-on-this-page li { margin-bottom: 0.25rem; }
+.manual-on-this-page a { color: var(--manual-color-text); text-decoration: none; }
+.manual-on-this-page a:hover { color: var(--manual-color-link); }
+.otp-h3 { padding-left: 0.75rem; }
+
+/* Responsive: collapse sidebar on small screens */
+@media (max-width: 900px) {
+  body.manual-page {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .manual-nav {
+    grid-column: 1;
+    position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--manual-color-border);
+  }
+  .manual-main { grid-column: 1; padding: 1rem; max-width: none; }
+  .manual-on-this-page { display: none; }
+}
+`;
+
+const MANUAL_JS = `// manual.js -- minimal interactivity for the standalone Herold manual.
+// No framework, no JMAP, no auth -- just TOC search and smooth scroll.
+
+(function () {
+  'use strict';
+
+  // TOC search filter
+  const searchInput = document.getElementById('toc-search');
+  const tocList = document.getElementById('manual-toc');
+
+  if (searchInput && tocList) {
+    searchInput.addEventListener('input', function () {
+      const q = this.value.toLowerCase().trim();
+      const items = tocList.querySelectorAll('li');
+      items.forEach(function (li) {
+        const text = (li.textContent || '').toLowerCase();
+        li.style.display = q === '' || text.includes(q) ? '' : 'none';
+      });
+    });
+  }
+
+  // Smooth scroll for on-this-page links (headings already have id from Markdoc).
+  document.addEventListener('click', function (e) {
+    const target = e.target;
+    if (!(target instanceof HTMLAnchorElement)) return;
+    const href = target.getAttribute('href');
+    if (!href || !href.startsWith('#')) return;
+    const anchor = document.getElementById(href.slice(1));
+    if (!anchor) return;
+    e.preventDefault();
+    anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    history.pushState(null, '', href);
+  });
+})();
+`;
 
 /** @param {string} msg @returns {never} */
 function fatal(msg) {

@@ -1806,6 +1806,21 @@ func composeAdminAndUI(
 	// mount ensures scrapes also work when MetricsBind is empty or the
 	// admin listener is the only HTTP surface.
 	adminMux.Handle("/metrics", observe.MetricsHandler())
+	// Standalone manual -- public, no auth. Served at /admin/manual/ on
+	// the admin listener so operators can browse the manual while logged
+	// into the admin UI. The same manualSPA instance is reused on the
+	// public listener at /manual/.
+	manualSPA, err := webspa.NewManual(webspa.ManualOptions{
+		Logger: logger.With("subsystem", "webspa.manual"),
+	})
+	if err != nil {
+		return composedHandlers{}, fmt.Errorf("admin: manual SPA: %w", err)
+	}
+	adminMux.Handle("/admin/manual/",
+		http.StripPrefix("/admin/manual",
+			withPanicRecover(logger.With("subsystem", "webspa.manual"),
+				"webspa.manual", manualSPA.Handler())))
+
 	// Admin Svelte SPA at /admin/ (Phase 3b of the merge plan -- the
 	// only admin UI). Always mounted on the admin listener.
 	adminSPA, err := webspa.NewAdmin(webspa.AdminOptions{
@@ -2307,6 +2322,16 @@ func composeAdminAndUI(
 			slog.String("region", sesCfg.AWSRegion),
 			slog.Int("buckets", len(sesCfg.S3BucketAllowlist)))
 	}
+
+	// Standalone manual at /manual/ on the public listener -- intentionally
+	// PUBLIC, no session check. The same manualSPA instance constructed
+	// above for the admin listener is reused here; it is safe for
+	// concurrent use. Mount BEFORE the suite SPA catch-all so Go's
+	// longest-prefix routing gives the manual handler priority.
+	publicMux.Handle("/manual/",
+		http.StripPrefix("/manual",
+			withPanicRecover(logger.With("subsystem", "webspa.manual"),
+				"webspa.manual", manualSPA.Handler())))
 
 	// Block /admin/ on the public listener. The admin SPA lives on the
 	// admin listener (kind = "admin") only; without these explicit

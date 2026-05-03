@@ -29,3 +29,12 @@ func suiteEmbeddedFS() (fs.FS, error) {
 func adminEmbeddedFS() (fs.FS, error) {
 	return fs.Sub(distEmbed, "dist/admin")
 }
+
+// manualEmbeddedFS returns the embedded filesystem rooted at
+// dist/manual/. Used when ManualOptions.AssetDir is empty. The
+// dist/manual tree holds the SSR-bundled standalone manual HTML pages
+// produced by web/packages/manual/scripts/bundle.mjs --ssr, or the
+// placeholder index.html in a fresh checkout before build-web runs.
+func manualEmbeddedFS() (fs.FS, error) {
+	return fs.Sub(distEmbed, "dist/manual")
+}

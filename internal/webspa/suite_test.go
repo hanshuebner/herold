@@ -184,6 +184,12 @@ func TestSpa_ReservedAPIPath_404(t *testing.T) {
 		"/logout",
 		"/auth/callback",
 		"/oidc/callback",
+		// /manual/ is reserved: the suite SPA catch-all must not absorb it.
+		// The public mux mounts the manual handler at /manual/ before the
+		// suite catch-all so this path never reaches the SPA handler in
+		// production; the defensive guard keeps a future mis-ordering visible.
+		"/manual/user/install",
+		"/manual/",
 	}
 	for _, p := range cases {
 		t.Run(p, func(t *testing.T) {
