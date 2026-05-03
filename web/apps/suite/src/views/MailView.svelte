@@ -586,6 +586,24 @@
     return Boolean(email.keywords.$flagged);
   }
 
+  /**
+   * Returns the sorted list of custom-mailbox names the email belongs to,
+   * excluding the currently-viewed folder and all system mailboxes.
+   * Used to render label badges in front of the subject in thread list rows.
+   * System mailboxes are excluded by only looking at mail.customMailboxes
+   * (the store's pre-filtered set of non-system, non-roled mailboxes).
+   */
+  function emailLabels(email: Email): string[] {
+    const labels: string[] = [];
+    for (const m of mail.customMailboxes) {
+      if (!email.mailboxIds[m.id]) continue;
+      // Skip the currently-viewed folder so the badge is not redundant.
+      if (m.id === folder) continue;
+      labels.push(m.name);
+    }
+    return labels.sort((a, b) => a.localeCompare(b));
+  }
+
   function openThread(email: Email): void {
     router.navigate(`/mail/thread/${encodeURIComponent(email.threadId)}`);
   }
@@ -769,6 +787,9 @@
             >
               <span class="from">{senderLabel(email)}</span>
               <span class="subject-and-preview">
+                {#each emailLabels(email) as lname (lname)}
+                  <span class="label-badge">{lname}</span>
+                {/each}
                 <span class="subject">{email.subject || '(no subject)'}</span>
                 <span class="preview"> — {email.preview}</span>
               </span>
@@ -980,6 +1001,9 @@
             >
               <span class="from">{senderLabel(email)}</span>
               <span class="subject-and-preview">
+                {#each emailLabels(email) as lname (lname)}
+                  <span class="label-badge">{lname}</span>
+                {/each}
                 <span class="subject">{email.subject || '(no subject)'}</span>
                 <span class="preview"> — {email.preview}</span>
               </span>
@@ -1438,6 +1462,24 @@
   }
   .preview {
     color: var(--text-secondary);
+  }
+
+  /* Label badges: small pill shown before the subject for each custom
+     mailbox the email belongs to (re #56). System mailboxes are excluded
+     by emailLabels(); the currently-viewed folder is also skipped so the
+     badge is not shown when browsing that folder directly. */
+  .label-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px var(--spacing-02);
+    margin-right: var(--spacing-02);
+    background: var(--layer-03);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
+    white-space: nowrap;
+    vertical-align: middle;
   }
 
   .attachment {

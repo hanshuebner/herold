@@ -412,7 +412,7 @@
         onclick={() => (moreOpen = !moreOpen)}
       >
         <span aria-hidden="true">{moreOpen ? '▾' : '▸'}</span>
-        {t('sidebar.more')}
+        {t('sidebar.labels')}
         <span class="count">{mail.customMailboxes.length}</span>
       </button>
       {#if moreOpen}
