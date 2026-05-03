@@ -200,7 +200,11 @@
       kind: 'danger',
     });
     if (!ok) return;
-    await mail.destroyMailbox(id);
+    // Pass 'destroy' so the server sets onDestroyRemoveEmails: true. Without
+    // this the server returns a mailboxHasEmail error for any non-empty label
+    // (re #65). The warning dialog already tells the user that messages only
+    // in this label will be removed.
+    await mail.destroyMailbox(id, 'destroy');
   }
 
   // ── Deep-link: ?openChat=<conversationId> ────────────────────────────────
