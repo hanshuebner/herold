@@ -71,6 +71,12 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		"sieve_scripts",
 		// State change feed.
 		"state_changes",
+		// REQ-OPS-206 client-log ring buffer (migration 0037). No FK
+		// constraints, so it is NOT wiped by CASCADE from any other
+		// truncate above; must be enumerated explicitly or rows leak
+		// across subtests and break ClientLog_Pagination / EvictByAge /
+		// EvictByCap / EvictDoesNotCrossSlice in storetest.
+		"clientlog",
 		// Mail core: messages, mailbox ACL, mailboxes, blob refs.
 		"messages",
 		"mailbox_acl",
