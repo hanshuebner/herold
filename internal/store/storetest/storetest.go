@@ -29,12 +29,15 @@ func Run(t *testing.T, f Factory) {
 	}{
 		{"PrincipalsCRUD", testPrincipalsCRUD},
 		{"PrincipalConflict", testPrincipalConflict},
+		{"PrincipalConflict_ErrorStringIsClean", testPrincipalConflictErrorStringIsClean},
 		{"DomainsCRUD", testDomainsCRUD},
+		{"DomainConflict_ErrorStringIsClean", testDomainConflictErrorStringIsClean},
 		{"AliasesCRUDAndResolve", testAliases},
 		{"OIDCProviderAndLinks", testOIDC},
 		{"APIKeys", testAPIKeys},
 		{"MailboxesCRUD", testMailboxesCRUD},
 		{"MailboxConflict", testMailboxConflict},
+		{"MailboxConflict_ErrorStringIsClean", testMailboxConflictErrorStringIsClean},
 		{"InsertMessageAllocatesUIDAndModSeq", testInsertMessageAllocatesUIDAndModSeq},
 		{"UpdateFlagsBumpsModSeq", testUpdateFlagsBumpsModSeq},
 		{"UpdateFlagsUnchangedSince", testUpdateFlagsUnchangedSince},
@@ -370,6 +373,67 @@ func testPrincipalConflict(t *testing.T, s store.Store) {
 	}
 }
 
+// driverLeakTokens lists substrings that must never appear in a conflict
+// error message returned to callers. They are driver-internal identifiers
+// that would leak storage implementation details into API responses.
+var driverLeakTokens = []string{
+	"(1555)",                     // SQLite extended error code
+	"(2067)",                     // SQLite SQLITE_CONSTRAINT_UNIQUE
+	"UNIQUE constraint",          // SQLite error text
+	"duplicate key value",        // Postgres error text
+	"violates unique",            // Postgres error text
+	"domains_pkey",               // Postgres constraint name
+	"principals_pkey",            // Postgres constraint name
+	"mailboxes_pkey",             // Postgres constraint name
+	"domains.name",               // SQLite column path
+	"principals.canonical_email", // SQLite column path
+}
+
+func assertNoDriverLeak(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+	msg := err.Error()
+	for _, tok := range driverLeakTokens {
+		if strings.Contains(msg, tok) {
+			t.Errorf("conflict error leaks driver token %q: full error: %s", tok, msg)
+		}
+	}
+}
+
+func testPrincipalConflictErrorStringIsClean(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	_ = mustInsertPrincipal(t, s, "clean-dup@example.com")
+	_, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "clean-dup@example.com",
+	})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+	assertNoDriverLeak(t, err)
+	// Must contain the entity identity so callers can log it.
+	if !strings.Contains(err.Error(), "clean-dup@example.com") {
+		t.Errorf("conflict error should mention the email address; got: %s", err.Error())
+	}
+}
+
+func testDomainConflictErrorStringIsClean(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if err := s.Meta().InsertDomain(ctx, store.Domain{Name: "clean-dup.example", IsLocal: true}); err != nil {
+		t.Fatalf("first InsertDomain: %v", err)
+	}
+	err := s.Meta().InsertDomain(ctx, store.Domain{Name: "clean-dup.example", IsLocal: true})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+	assertNoDriverLeak(t, err)
+	if !strings.Contains(err.Error(), "clean-dup.example") {
+		t.Errorf("conflict error should mention the domain name; got: %s", err.Error())
+	}
+}
+
 func testDomainsCRUD(t *testing.T, s store.Store) {
 	ctx := ctxT(t)
 	if err := s.Meta().InsertDomain(ctx, store.Domain{Name: "example.com", IsLocal: true}); err != nil {
@@ -560,6 +624,20 @@ func testMailboxConflict(t *testing.T, s store.Store) {
 	_, err := s.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "INBOX"})
 	if !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("duplicate InsertMailbox = %v", err)
+	}
+}
+
+func testMailboxConflictErrorStringIsClean(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "mbx-clean-dup@example.com")
+	_ = mustInsertMailbox(t, s, p.ID, "CleanDupBox")
+	_, err := s.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "CleanDupBox"})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+	assertNoDriverLeak(t, err)
+	if !strings.Contains(err.Error(), "CleanDupBox") {
+		t.Errorf("conflict error should mention the mailbox name; got: %s", err.Error())
 	}
 }
 
