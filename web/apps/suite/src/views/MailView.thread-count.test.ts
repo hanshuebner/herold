@@ -261,4 +261,30 @@ describe('MailView thread count (re #64)', () => {
     expect(countBadge).not.toBeNull();
     expect(countBadge!.getAttribute('aria-label')).toBe('5 messages');
   });
+
+  it('sender text is inside .from-text so the badge is never clipped by overflow (issue #64 r2)', () => {
+    // Root cause of the r1 regression: the sender label was an anonymous text
+    // node directly inside the .from flex container, which has overflow:hidden.
+    // With min-width:auto (the flex default), the text never shrank below its
+    // natural width, pushing the badge out of the visible area when sender
+    // addresses were longer than the 14ch column.
+    //
+    // The fix wraps the sender text in .from-text (min-width:0; flex:1 1 0)
+    // so flex can shrink it below its natural width, guaranteeing the badge
+    // is always within the visible column regardless of sender string length.
+    const { container } = render(MailView);
+    const fromCell = container.querySelector('.thread-row .from')!;
+    expect(fromCell).not.toBeNull();
+
+    // .from-text must be the first child of .from.
+    const fromText = fromCell.querySelector('.from-text');
+    expect(fromText).not.toBeNull();
+    expect(fromText!.textContent).toContain('Olaf');
+
+    // .thread-count must be a sibling of .from-text (both direct children of .from).
+    const badge = fromCell.querySelector('.thread-count');
+    expect(badge).not.toBeNull();
+    expect(badge!.parentElement).toBe(fromCell);
+    expect(fromText!.parentElement).toBe(fromCell);
+  });
 });

@@ -796,7 +796,7 @@
               }}
             >
               <span class="from">
-                {senderLabel(email)}
+                <span class="from-text">{senderLabel(email)}</span>
                 {#if threadMessageCount(email) > 1}
                   <span class="thread-count" aria-label="{threadMessageCount(email)} messages">{threadMessageCount(email)}</span>
                 {/if}
@@ -1015,7 +1015,7 @@
               }}
             >
               <span class="from">
-                {senderLabel(email)}
+                <span class="from-text">{senderLabel(email)}</span>
                 {#if threadMessageCount(email) > 1}
                   <span class="thread-count" aria-label="{threadMessageCount(email)} messages">{threadMessageCount(email)}</span>
                 {/if}
@@ -1461,11 +1461,20 @@
 
   .from {
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     display: flex;
     align-items: center;
     gap: var(--spacing-02);
+  }
+  /* Sender text inside .from truncates with ellipsis so the thread-count
+     badge always has room to show. min-width: 0 lets the flex item shrink
+     below its natural text width (overriding the default min-width: auto
+     that would otherwise push the badge out of the visible area — issue #64). */
+  .from-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1 1 0;
   }
   .thread-row.unread .from {
     font-weight: 600;
