@@ -23,6 +23,18 @@ import {
   UnauthenticatedError,
 } from './errors';
 
+/**
+ * Optional callback invoked whenever the JMAP client receives a 401
+ * on a post-bootstrap request. Register once at application boot
+ * (auth.svelte.ts) so the auth state machine can transition to
+ * 'unauthenticated' without a circular import.
+ */
+let _onUnauthenticated: (() => void) | null = null;
+
+export function setJmapOnUnauthenticated(fn: () => void): void {
+  _onUnauthenticated = fn;
+}
+
 export class JmapClient {
   #session: SessionResource | null = null;
   #pinnedCapabilities: ReadonlySet<string> = new Set();
@@ -65,7 +77,10 @@ export class JmapClient {
       },
       body: args.body,
     });
-    if (res.status === 401) throw new UnauthenticatedError();
+    if (res.status === 401) {
+      _onUnauthenticated?.();
+      throw new UnauthenticatedError();
+    }
     if (!res.ok) {
       let detail = `HTTP ${res.status}`;
       try {
@@ -172,6 +187,7 @@ export class JmapClient {
       body: JSON.stringify(req),
     });
     if (res.status === 401) {
+      _onUnauthenticated?.();
       throw new UnauthenticatedError();
     }
     if (!res.ok) {

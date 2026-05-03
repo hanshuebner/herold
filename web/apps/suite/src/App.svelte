@@ -98,6 +98,7 @@
       });
     } else if (auth.status === 'unauthenticated') {
       // Clean disconnect on logout / session expiry.
+      sync.stop();
       chatWs.disconnect();
     }
   });

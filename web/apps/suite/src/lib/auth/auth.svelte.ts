@@ -20,9 +20,9 @@
  * arithmetic.
  */
 
-import { jmap } from '../jmap/client';
+import { jmap, setJmapOnUnauthenticated } from '../jmap/client';
 import { UnauthenticatedError } from '../jmap/errors';
-import { get } from '../api/client';
+import { get, setOnUnauthenticated } from '../api/client';
 import type { SessionResource } from '../jmap/types';
 
 export type AuthStatus =
@@ -242,3 +242,11 @@ class Auth {
 }
 
 export const auth = new Auth();
+
+// Wire both HTTP clients so that any 401 received after bootstrap
+// automatically transitions the auth state machine to 'unauthenticated',
+// causing AuthGate to replace the application shell with LoginView.
+// Registered here once at module init to avoid circular imports (the clients
+// cannot import auth; auth imports the clients).
+setOnUnauthenticated(() => auth.signalUnauthenticated());
+setJmapOnUnauthenticated(() => auth.signalUnauthenticated());

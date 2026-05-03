@@ -49,6 +49,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Optional callback invoked whenever the REST client receives a 401.
+ * Register once at application boot (auth.svelte.ts) so the auth state
+ * machine can transition to 'unauthenticated' without a circular import.
+ */
+let _onUnauthenticated: (() => void) | null = null;
+
+export function setOnUnauthenticated(fn: () => void): void {
+  _onUnauthenticated = fn;
+}
+
 /** Parse the herold_public_csrf cookie value from document.cookie. */
 function readCsrfToken(): string {
   const pairs = document.cookie.split(';');
@@ -99,6 +110,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     } catch {
       // ignore
     }
+    _onUnauthenticated?.();
     throw new UnauthenticatedError(msg);
   }
 
