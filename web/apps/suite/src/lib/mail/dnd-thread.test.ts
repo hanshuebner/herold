@@ -30,6 +30,7 @@ beforeEach(() => {
     ['mb-inbox', { id: 'mb-inbox', role: 'inbox' }],
     ['mb-trash', { id: 'mb-trash', role: 'trash' }],
     ['mb-drafts', { id: 'mb-drafts', role: 'drafts' }],
+    ['mb-sent', { id: 'mb-sent', role: 'sent' }],
     ['mb-custom', { id: 'mb-custom', role: '' }],
   ]);
 });
@@ -111,6 +112,26 @@ describe('threadDnd.isValidTarget — Drafts rejection (re #51)', () => {
   it('still accepts Trash as a drop target when dragging from inbox', () => {
     threadDnd.begin(['e1']);
     mailMock.listFolder = 'inbox';
+    expect(threadDnd.isValidTarget('mb-trash')).toBe(true);
+  });
+});
+
+describe('threadDnd.isValidTarget — Sent rejection (re #51)', () => {
+  it('rejects Sent as a drop target when dragging from inbox', () => {
+    threadDnd.begin(['e1']);
+    mailMock.listFolder = 'inbox';
+    expect(threadDnd.isValidTarget('mb-sent')).toBe(false);
+  });
+
+  it('rejects Sent as a drop target even when dragging from Sent itself', () => {
+    threadDnd.begin(['e1']);
+    mailMock.listFolder = 'sent';
+    expect(threadDnd.isValidTarget('mb-sent')).toBe(false);
+  });
+
+  it('still accepts Trash as a drop target when dragging from Sent', () => {
+    threadDnd.begin(['e1']);
+    mailMock.listFolder = 'sent';
     expect(threadDnd.isValidTarget('mb-trash')).toBe(true);
   });
 });
