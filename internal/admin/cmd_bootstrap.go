@@ -70,7 +70,7 @@ Exits 10 if a principal already exists.`,
 			// already-configured domains; bootstrap is the only special case.
 			if at := strings.LastIndex(adminEmail, "@"); at >= 0 {
 				domain := strings.ToLower(adminEmail[at+1:])
-				if err := st.Meta().InsertDomain(ctx, store.Domain{Name: domain}); err != nil &&
+				if err := st.Meta().InsertDomain(ctx, store.Domain{Name: domain, IsLocal: true}); err != nil &&
 					!errors.Is(err, store.ErrConflict) {
 					return fmt.Errorf("bootstrap: register domain %s: %w", domain, err)
 				}

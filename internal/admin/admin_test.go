@@ -248,6 +248,25 @@ func TestBootstrap_CreatesAdmin_Idempotent(t *testing.T) {
 		t.Fatalf("openStore: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	// Bootstrap auto-registers the admin's domain. It must be inserted
+	// as a local domain so the admin UI's GET /api/v1/domains (which
+	// filters on is_local=1) lists it and so SMTP routes mail for the
+	// admin's address to local delivery instead of looking up MX
+	// records on the public internet.
+	locals, err := st.Meta().ListLocalDomains(ctx)
+	if err != nil {
+		t.Fatalf("ListLocalDomains: %v", err)
+	}
+	var foundLocal bool
+	for _, d := range locals {
+		if d.Name == "test.local" {
+			foundLocal = true
+			break
+		}
+	}
+	if !foundLocal {
+		t.Fatalf("bootstrap did not register admin domain as local; locals=%v", locals)
+	}
 	dir := directory.New(st.Meta(), discardLogger(), clk, nil)
 	rp := directoryoidc.New(st.Meta(), discardLogger(), &http.Client{Timeout: 5 * time.Second}, clk)
 	srv := protoadmin.NewServer(st, dir, rp, discardLogger(), clk, protoadmin.Options{})
