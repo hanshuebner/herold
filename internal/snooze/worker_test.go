@@ -168,7 +168,10 @@ func TestWorker_BoundedBatch(t *testing.T) {
 		<-done
 	})
 
-	deadline := time.Now().Add(5 * time.Second)
+	// On slow CI runners with on-disk SQLite, releasing 1000 messages
+	// (one tx per SetSnooze) can take >5s; the success path breaks
+	// early, so a generous deadline only affects truly broken runs.
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		if w.Released() >= total {
 			break
