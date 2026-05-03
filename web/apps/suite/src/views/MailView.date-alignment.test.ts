@@ -116,6 +116,7 @@ const { mailMock } = vi.hoisted(() => {
     get searchQuery() {
       return '';
     },
+    threads: new Map<string, import('../lib/mail/types').Thread>(),
     threadEmails: vi.fn().mockReturnValue([]),
     threadStatus: vi.fn().mockReturnValue('idle'),
     threadError: vi.fn().mockReturnValue(null),

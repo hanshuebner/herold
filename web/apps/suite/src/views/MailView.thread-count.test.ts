@@ -1,32 +1,88 @@
 /**
- * Issue #29: delete-in-trash UX.
+ * Issue #64: multi-message threads should be decorated with message count.
  *
- * Outside Trash: the Delete toolbar button should call bulkDelete (move to
- * trash) without showing a confirm dialog.
- *
- * Inside Trash: the Delete toolbar button should show a permanence-wording
- * confirm dialog, and only call bulkDestroy when the user confirms.
+ * Thread list rows for threads with more than one message must show the
+ * message count next to the sender name. Single-message threads must not
+ * show a count.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { render, screen } from '@testing-library/svelte';
 
-// Use vi.hoisted so the objects are available when vi.mock factories run.
-const { mailMock, confirmMock, routerState } = vi.hoisted(() => {
+// All fixtures must live inside vi.hoisted() so they are available when the
+// vi.mock() factories run (which execute before the module-level code).
+const { mailMock, routerState } = vi.hoisted(() => {
+  const INBOX_MBX = {
+    id: 'mbx-inbox',
+    name: 'Inbox',
+    role: 'inbox',
+    parentId: null,
+    sortOrder: 0,
+    totalEmails: 2,
+    unreadEmails: 0,
+    totalThreads: 2,
+    unreadThreads: 0,
+  } as import('../lib/mail/types').Mailbox;
+
+  const MULTI_MSG_EMAIL = {
+    id: 'e-multi',
+    threadId: 'tid-multi',
+    mailboxIds: { 'mbx-inbox': true } as Record<string, true>,
+    keywords: { $seen: true } as Record<string, true | undefined>,
+    from: [{ name: 'Olaf', email: 'olaf@example.com' }],
+    to: [{ name: 'Me', email: 'me@example.com' }],
+    subject: 'Multi-message thread',
+    preview: 'Five messages in this thread.',
+    receivedAt: '2024-01-15T10:00:00Z',
+    hasAttachment: false,
+    snoozedUntil: null,
+  };
+
+  const SINGLE_MSG_EMAIL = {
+    id: 'e-single',
+    threadId: 'tid-single',
+    mailboxIds: { 'mbx-inbox': true } as Record<string, true>,
+    keywords: { $seen: true } as Record<string, true | undefined>,
+    from: [{ name: 'Alice', email: 'alice@example.com' }],
+    to: [{ name: 'Me', email: 'me@example.com' }],
+    subject: 'Single-message thread',
+    preview: 'Only one message here.',
+    receivedAt: '2024-01-15T11:00:00Z',
+    hasAttachment: false,
+    snoozedUntil: null,
+  };
+
+  const mbxMap = new Map([['mbx-inbox', INBOX_MBX]]);
+
+  const threadsMap = new Map([
+    ['tid-multi', { id: 'tid-multi', emailIds: ['e-multi', 'e-multi-2', 'e-multi-3', 'e-multi-4', 'e-multi-5'] }],
+    ['tid-single', { id: 'tid-single', emailIds: ['e-single'] }],
+  ]);
+
+  const routerState = { folder: 'inbox' as string };
+
   const mailMock = {
-    listSelectedIds: new Set(['e1', 'e2']),
-    listEmailIds: ['e1', 'e2'],
     listLoadStatus: 'ready' as const,
     listError: null,
     listFocusedIndex: -1,
-    listEmails: [] as unknown[],
     listFolder: 'inbox' as string,
     get listFolderLabel() {
-      return this.listFolder === 'trash' ? 'Trash' : 'Inbox';
+      return 'Inbox';
     },
-    mailboxes: new Map(),
-    emails: new Map(),
-    threads: new Map(),
+    listSelectedIds: new Set<string>(),
+    listEmailIds: [MULTI_MSG_EMAIL.id, SINGLE_MSG_EMAIL.id],
+    get listEmails() {
+      return [MULTI_MSG_EMAIL, SINGLE_MSG_EMAIL];
+    },
+    mailboxes: mbxMap,
+    get customMailboxes() {
+      return [];
+    },
+    threads: threadsMap,
+    emails: new Map([
+      [MULTI_MSG_EMAIL.id, MULTI_MSG_EMAIL],
+      [SINGLE_MSG_EMAIL.id, SINGLE_MSG_EMAIL],
+    ]),
     searchHistory: [] as string[],
     searchEmails: [] as unknown[],
     searchEmailIds: [] as string[],
@@ -65,14 +121,20 @@ const { mailMock, confirmMock, routerState } = vi.hoisted(() => {
     setCategoryKeyword: vi.fn().mockResolvedValue(undefined),
     bulkMoveToMailbox: vi.fn().mockResolvedValue(undefined),
     bulkSetLabel: vi.fn().mockResolvedValue(undefined),
+    get searchQuery() {
+      return '';
+    },
+    threadEmails: vi.fn().mockReturnValue([]),
+    threadStatus: vi.fn().mockReturnValue('idle'),
+    threadError: vi.fn().mockReturnValue(null),
+    loadThread: vi.fn().mockResolvedValue(undefined),
   };
-  const confirmMock = { ask: vi.fn() };
-  const routerState = { folder: 'inbox' as string };
-  return { mailMock, confirmMock, routerState };
+
+  return { mailMock, routerState };
 });
 
 vi.mock('../lib/mail/store.svelte', () => ({ mail: mailMock }));
-vi.mock('../lib/dialog/confirm.svelte', () => ({ confirm: confirmMock }));
+vi.mock('../lib/dialog/confirm.svelte', () => ({ confirm: { ask: vi.fn() } }));
 
 vi.mock('../lib/router/router.svelte', () => ({
   router: {
@@ -94,7 +156,12 @@ vi.mock('../lib/keyboard/engine.svelte', () => ({
 }));
 
 vi.mock('../lib/compose/compose.svelte', () => ({
-  compose: { openReply: vi.fn(), openReplyAll: vi.fn(), openForward: vi.fn(), openDraft: vi.fn() },
+  compose: {
+    openReply: vi.fn(),
+    openReplyAll: vi.fn(),
+    openForward: vi.fn(),
+    openDraft: vi.fn(),
+  },
 }));
 
 vi.mock('../lib/mail/move-picker.svelte', () => ({
@@ -122,6 +189,11 @@ vi.mock('../lib/settings/category-settings.svelte', () => ({
 
 vi.mock('../lib/mail/label-picker.svelte', () => ({
   labelPicker: { open: vi.fn(), openBulk: vi.fn() },
+}));
+
+vi.mock('../lib/mail/dnd-thread.svelte', () => ({
+  threadDnd: { current: null, begin: vi.fn(), end: vi.fn() },
+  dragIdsForRow: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock('../lib/i18n/i18n.svelte', () => ({
@@ -152,76 +224,41 @@ vi.mock('../lib/mail/search-query', () => ({
 
 import MailView from './MailView.svelte';
 
-/** Flush all queued microtasks so async click handlers finish. */
-async function flushMicrotasks(): Promise<void> {
-  await new Promise<void>((r) => setTimeout(r, 0));
-}
-
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
-describe('MailView delete-button: outside Trash (re #29)', () => {
+describe('MailView thread count (re #64)', () => {
   beforeEach(() => {
-    mailMock.listFolder = 'inbox';
     routerState.folder = 'inbox';
-    mailMock.bulkDelete.mockClear();
-    mailMock.bulkDestroy.mockClear();
-    confirmMock.ask.mockClear();
+    mailMock.listFolder = 'inbox';
   });
 
-  it('clicking Delete calls bulkDelete without showing a confirm dialog', async () => {
-    render(MailView);
-    const btn = screen.getByRole('button', { name: 'Delete' });
-    await fireEvent.click(btn);
-    await flushMicrotasks();
-    // No confirm prompt for move-to-trash outside Trash.
-    expect(confirmMock.ask).not.toHaveBeenCalled();
-    expect(mailMock.bulkDelete).toHaveBeenCalled();
-    expect(mailMock.bulkDestroy).not.toHaveBeenCalled();
-  });
-});
+  it('shows a count badge on the row for a multi-message thread', () => {
+    const { container } = render(MailView);
+    const rows = container.querySelectorAll('.thread-row');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
 
-describe('MailView delete-button: inside Trash (re #29)', () => {
-  beforeEach(() => {
-    mailMock.listFolder = 'trash';
-    routerState.folder = 'trash';
-    mailMock.bulkDelete.mockClear();
-    mailMock.bulkDestroy.mockClear();
-    confirmMock.ask.mockClear();
+    // First row is the 5-message thread.
+    const multiRow = rows[0]!;
+    const countBadge = multiRow.querySelector('.thread-count');
+    expect(countBadge).not.toBeNull();
+    expect(countBadge!.textContent?.trim()).toBe('5');
   });
 
-  it('clicking Delete shows a danger confirm dialog with permanence wording', async () => {
-    confirmMock.ask.mockResolvedValue(false); // user cancels
-    render(MailView);
-    const btn = screen.getByRole('button', { name: 'Delete' });
-    await fireEvent.click(btn);
-    await flushMicrotasks();
-    expect(confirmMock.ask).toHaveBeenCalledOnce();
-    const req = confirmMock.ask.mock.calls[0]?.[0] as {
-      message?: string;
-      kind?: string;
-    };
-    expect(req.message).toMatch(/permanently/i);
-    expect(req.message).toMatch(/can't be recovered/i);
-    expect(req.kind).toBe('danger');
+  it('does not show a count badge for a single-message thread', () => {
+    const { container } = render(MailView);
+    const rows = container.querySelectorAll('.thread-row');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+
+    // Second row is the single-message thread.
+    const singleRow = rows[1]!;
+    const countBadge = singleRow.querySelector('.thread-count');
+    expect(countBadge).toBeNull();
   });
 
-  it('calls bulkDestroy (not bulkDelete) when user confirms the dialog', async () => {
-    confirmMock.ask.mockResolvedValue(true); // user confirms
-    render(MailView);
-    const btn = screen.getByRole('button', { name: 'Delete' });
-    await fireEvent.click(btn);
-    await flushMicrotasks();
-    expect(mailMock.bulkDestroy).toHaveBeenCalled();
-    expect(mailMock.bulkDelete).not.toHaveBeenCalled();
-  });
-
-  it('does NOT call bulkDestroy when user cancels the dialog', async () => {
-    confirmMock.ask.mockResolvedValue(false); // user cancels
-    render(MailView);
-    const btn = screen.getByRole('button', { name: 'Delete' });
-    await fireEvent.click(btn);
-    await flushMicrotasks();
-    expect(mailMock.bulkDestroy).not.toHaveBeenCalled();
-    expect(mailMock.bulkDelete).not.toHaveBeenCalled();
+  it('count badge has an accessible aria-label', () => {
+    const { container } = render(MailView);
+    const countBadge = container.querySelector('.thread-count');
+    expect(countBadge).not.toBeNull();
+    expect(countBadge!.getAttribute('aria-label')).toBe('5 messages');
   });
 });

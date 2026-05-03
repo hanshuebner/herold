@@ -28,6 +28,7 @@ vi.mock('../lib/mail/store.svelte', () => ({
     },
     mailboxes: new Map(),
     emails: new Map(),
+    threads: new Map(),
     searchHistory: [],
     searchEmails: [],
     searchEmailIds: [],

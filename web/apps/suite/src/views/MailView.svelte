@@ -568,6 +568,16 @@
     return a.name?.trim() || a.email;
   }
 
+  /**
+   * Returns the number of messages in the thread containing this email,
+   * or 0 when the thread data has not been loaded yet.
+   * Used to show a count badge next to the sender name for multi-message
+   * threads (issue #64).
+   */
+  function threadMessageCount(email: Email): number {
+    return mail.threads?.get(email.threadId)?.emailIds.length ?? 0;
+  }
+
   function formatDate(iso: string): string {
     const d = new Date(iso);
     const now = new Date();
@@ -785,7 +795,12 @@
                 openThread(email);
               }}
             >
-              <span class="from">{senderLabel(email)}</span>
+              <span class="from">
+                {senderLabel(email)}
+                {#if threadMessageCount(email) > 1}
+                  <span class="thread-count" aria-label="{threadMessageCount(email)} messages">{threadMessageCount(email)}</span>
+                {/if}
+              </span>
               <span class="subject-and-preview">
                 {#each emailLabels(email) as lname (lname)}
                   <span class="label-badge">{lname}</span>
@@ -999,7 +1014,12 @@
                 void openListRow(email);
               }}
             >
-              <span class="from">{senderLabel(email)}</span>
+              <span class="from">
+                {senderLabel(email)}
+                {#if threadMessageCount(email) > 1}
+                  <span class="thread-count" aria-label="{threadMessageCount(email)} messages">{threadMessageCount(email)}</span>
+                {/if}
+              </span>
               <span class="subject-and-preview">
                 {#each emailLabels(email) as lname (lname)}
                   <span class="label-badge">{lname}</span>
@@ -1443,9 +1463,33 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-02);
   }
   .thread-row.unread .from {
     font-weight: 600;
+  }
+
+  /* Thread message count badge — shown only for multi-message threads (issue #64). */
+  .thread-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 var(--spacing-02);
+    background: var(--layer-03);
+    color: var(--text-secondary);
+    border-radius: var(--radius-pill);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .thread-row.unread .thread-count {
+    background: var(--layer-02);
+    color: var(--text-primary);
   }
 
   .subject-and-preview {

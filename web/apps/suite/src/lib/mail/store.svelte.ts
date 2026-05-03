@@ -299,7 +299,7 @@ class MailStore {
           },
           [Capability.Mail],
         );
-        b.call(
+        const eg = b.call(
           'Email/get',
           {
             accountId,
@@ -308,15 +308,31 @@ class MailStore {
           },
           [Capability.Mail],
         );
+        // Fetch thread membership so search results can show per-thread message
+        // counts (issue #64).
+        b.call(
+          'Thread/get',
+          {
+            accountId,
+            '#ids': eg.ref('/list/*/threadId'),
+          },
+          [Capability.Mail],
+        );
       });
       strict(responses);
 
       const queryResult = invocationArgs<{ ids: string[] }>(responses[0]);
       const getResult = invocationArgs<{ list: Email[] }>(responses[1]);
+      const threadResult = invocationArgs<{ list: Thread[] }>(responses[2]);
 
       const next = new Map(this.emails);
       for (const e of getResult.list) next.set(e.id, e);
       this.emails = next;
+
+      const nextThreads = new Map(this.threads);
+      for (const t of threadResult.list) nextThreads.set(t.id, t);
+      this.threads = nextThreads;
+
       this.searchEmailIds = queryResult.ids;
       this.searchLoadStatus = 'ready';
       this.#recordSearchHistory(query);
@@ -824,12 +840,22 @@ class MailStore {
           },
           [Capability.Mail],
         );
-        b.call(
+        const eg = b.call(
           'Email/get',
           {
             accountId,
             '#ids': q.ref('/ids'),
             properties: EMAIL_LIST_PROPERTIES,
+          },
+          [Capability.Mail],
+        );
+        // Fetch thread membership so the list can show per-thread message counts
+        // (issue #64). The wildcard path extracts all threadIds from the email list.
+        b.call(
+          'Thread/get',
+          {
+            accountId,
+            '#ids': eg.ref('/list/*/threadId'),
           },
           [Capability.Mail],
         );
@@ -840,12 +866,18 @@ class MailStore {
       const getResult = invocationArgs<{ list: Email[]; state: string }>(
         responses[1],
       );
+      const threadResult = invocationArgs<{ list: Thread[] }>(responses[2]);
 
       const next = new Map(this.emails);
       for (const e of getResult.list) next.set(e.id, e);
       this.emails = next;
       this.listEmailIds = queryResult.ids;
       if (typeof getResult.state === 'string') this.emailState = getResult.state;
+
+      const nextThreads = new Map(this.threads);
+      for (const t of threadResult.list) nextThreads.set(t.id, t);
+      this.threads = nextThreads;
+
       this.listLoadStatus = 'ready';
     } catch (err) {
       this.listLoadStatus = 'error';
