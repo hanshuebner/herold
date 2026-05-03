@@ -14,7 +14,6 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/storesqlite"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
 
 type byteReader struct {
@@ -83,23 +82,26 @@ func seed1k(t *testing.T, st store.Store) (perPrincipal int) {
 	return msgs
 }
 
-// TestMigrate_SQLiteToFakestore_RoundTrip migrates an sqlite source
-// into a fakestore target and confirms the row + blob counts.
-func TestMigrate_SQLiteToFakestore_RoundTrip(t *testing.T) {
-	t.Parallel()
+// openSQLite is a helper that opens a SQLite store in t.TempDir().
+func openSQLite(t *testing.T, name string) store.Store {
+	t.Helper()
 	dir := t.TempDir()
-	src, err := storesqlite.Open(context.Background(), filepath.Join(dir, "src.db"), nil, clock.NewReal())
+	st, err := storesqlite.Open(context.Background(), filepath.Join(dir, name), nil, clock.NewReal())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("storesqlite.Open %s: %v", name, err)
 	}
-	defer src.Close()
+	t.Cleanup(func() { st.Close() })
+	return st
+}
+
+// TestMigrate_SQLite_RoundTrip migrates an sqlite source into a fresh
+// sqlite target and confirms the row + blob counts.
+func TestMigrate_SQLite_RoundTrip(t *testing.T) {
+	t.Parallel()
+	src := openSQLite(t, "src.db")
 	seed1k(t, src)
 
-	dst, err := fakestore.New(fakestore.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer dst.Close()
+	dst := openSQLite(t, "dst.db")
 
 	start := time.Now()
 	m, err := migrate.Migrate(context.Background(), src, dst, migrate.MigrateOptions{})
@@ -111,7 +113,7 @@ func TestMigrate_SQLiteToFakestore_RoundTrip(t *testing.T) {
 		t.Errorf("messages: want 1000, got %d", m.Tables["messages"])
 	}
 	rps := float64(1000) / took.Seconds()
-	t.Logf("sqlite->fakestore: 1k messages in %s (%.0f rows/sec)", took, rps)
+	t.Logf("sqlite->sqlite: 1k messages in %s (%.0f rows/sec)", took, rps)
 
 	// Spot-check a principal can be retrieved.
 	p, err := dst.Meta().GetPrincipalByEmail(context.Background(), emailN(0))
@@ -123,55 +125,17 @@ func TestMigrate_SQLiteToFakestore_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestMigrate_FakestoreToSQLite_RoundTrip is the inverse direction.
-func TestMigrate_FakestoreToSQLite_RoundTrip(t *testing.T) {
-	t.Parallel()
-	src, err := fakestore.New(fakestore.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer src.Close()
-	seed1k(t, src)
-
-	dir := t.TempDir()
-	dst, err := storesqlite.Open(context.Background(), filepath.Join(dir, "tgt.db"), nil, clock.NewReal())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer dst.Close()
-
-	start := time.Now()
-	m, err := migrate.Migrate(context.Background(), src, dst, migrate.MigrateOptions{})
-	took := time.Since(start)
-	if err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	if m.Tables["messages"] != 1000 {
-		t.Errorf("messages: want 1000, got %d", m.Tables["messages"])
-	}
-	rps := float64(1000) / took.Seconds()
-	t.Logf("fakestore->sqlite: 1k messages in %s (%.0f rows/sec)", took, rps)
-}
-
 // TestMigrate_RefusesNonEmptyTarget asserts the empty-target guard.
 func TestMigrate_RefusesNonEmptyTarget(t *testing.T) {
 	t.Parallel()
-	src, err := fakestore.New(fakestore.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer src.Close()
-	dst, err := fakestore.New(fakestore.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer dst.Close()
+	src := openSQLite(t, "src.db")
+	dst := openSQLite(t, "dst.db")
 	if _, err := dst.Meta().InsertPrincipal(context.Background(), store.Principal{
 		Kind: store.PrincipalKindUser, CanonicalEmail: "block@example.test",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = migrate.Migrate(context.Background(), src, dst, migrate.MigrateOptions{})
+	_, err := migrate.Migrate(context.Background(), src, dst, migrate.MigrateOptions{})
 	if err == nil || !strings.Contains(err.Error(), "not empty") {
 		t.Errorf("expected non-empty refusal, got %v", err)
 	}
@@ -181,18 +145,9 @@ func TestMigrate_RefusesNonEmptyTarget(t *testing.T) {
 // after their owning mailbox so target FKs hold.
 func TestMigrate_FKOrderRespected(t *testing.T) {
 	t.Parallel()
-	src, err := fakestore.New(fakestore.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer src.Close()
+	src := openSQLite(t, "src.db")
 	seed1k(t, src)
-	dir := t.TempDir()
-	dst, err := storesqlite.Open(context.Background(), filepath.Join(dir, "tgt.db"), nil, clock.NewReal())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer dst.Close()
+	dst := openSQLite(t, "dst.db")
 	if _, err := migrate.Migrate(context.Background(), src, dst, migrate.MigrateOptions{}); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
@@ -213,11 +168,10 @@ func TestMigrate_FKOrderRespected(t *testing.T) {
 // operator-supplied DSN is in the environment.
 //
 // Currently skipped: internal/storepg has no diag/backup adapter
-// (only adapter_sqlite.go and adapter_fakestore.go exist), so a
-// sqlite -> postgres migration fails immediately with
-// "store does not expose a backup capability". Wiring a postgres
-// adapter is a separate piece of work; once it lands, drop the
-// build-time skip below.
+// (only adapter_sqlite.go exists), so a sqlite -> postgres migration
+// fails immediately with "store does not expose a backup capability".
+// Wiring a postgres adapter is a separate piece of work; once it
+// lands, drop the build-time skip below.
 func TestMigrate_PostgresLeg(t *testing.T) {
 	t.Skip("storepg backup adapter not implemented; see internal/diag/backup/adapter_sqlite.go for the template")
 	dsn := os.Getenv("HEROLD_PG_DSN")

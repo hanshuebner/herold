@@ -193,8 +193,7 @@ type Manifest struct {
 	// CreatedAt is the wall-clock instant the bundle write started
 	// (from the injected Clock).
 	CreatedAt time.Time `json:"created_at"`
-	// Backend records the source backend kind: "sqlite", "postgres",
-	// or "fakestore" (test harness only).
+	// Backend records the source backend kind: "sqlite" or "postgres".
 	Backend string `json:"backend"`
 	// Tables maps table name to row count written to that table's
 	// JSONL file. The verify tool re-reads each JSONL to confirm.
