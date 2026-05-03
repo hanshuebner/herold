@@ -20,6 +20,7 @@
   import { confirm } from './lib/dialog/confirm.svelte';
   import { getClientlog } from './lib/clientlog/clientlog.svelte';
   import { prompt } from './lib/dialog/prompt.svelte';
+  import { labelDialog } from './lib/dialog/label-dialog.svelte';
   import { mail } from './lib/mail/store.svelte';
   import { threadDnd } from './lib/mail/dnd-thread.svelte';
   import { pushSubscription } from './lib/push/push-subscription.svelte';
@@ -172,24 +173,24 @@
   let moreOpenEffective = $derived(moreOpen || threadDnd.current !== null);
 
   async function promptCreateMailbox(): Promise<void> {
-    const name = await prompt.ask({
+    const result = await labelDialog.open({
       title: t('sidebar.createFolder.title'),
-      label: t('sidebar.createFolder.label'),
       confirmLabel: t('sidebar.createFolder.confirm'),
     });
-    if (!name) return;
-    const id = await mail.createMailbox(name);
+    if (!result) return;
+    const id = await mail.createMailbox(result.name, null, result.color);
     if (id) router.navigate(`/mail/folder/${encodeURIComponent(id)}`);
   }
   async function promptRenameMailbox(id: string, current: string): Promise<void> {
-    const next = await prompt.ask({
+    const mb = mail.mailboxes.get(id);
+    const result = await labelDialog.open({
       title: t('sidebar.renameFolder.title'),
-      label: t('sidebar.renameFolder.label'),
-      defaultValue: current,
+      defaultName: current,
+      defaultColor: mb?.color ?? undefined,
       confirmLabel: t('sidebar.renameFolder.confirm'),
     });
-    if (!next || next === current) return;
-    await mail.renameMailbox(id, next);
+    if (!result) return;
+    await mail.renameMailbox(id, result.name, result.color);
   }
   async function confirmDestroyMailbox(id: string, name: string): Promise<void> {
     const ok = await confirm.ask({
@@ -432,6 +433,13 @@
                 class="mailbox-row"
                 onclick={() => router.navigate(`/mail/folder/${encodeURIComponent(m.id)}`)}
               >
+                {#if m.color}
+                  <span
+                    class="label-dot"
+                    style="background:{m.color};"
+                    aria-hidden="true"
+                  ></span>
+                {/if}
                 <span class="name">{m.name}</span>
                 {#if m.unreadEmails > 0}
                   <span class="count">{m.unreadEmails}</span>
@@ -674,6 +682,17 @@
   .mailbox-list.custom .add-row button {
     color: var(--interactive);
     font-weight: 500;
+  }
+
+  /* Color dot shown beside the label name in the sidebar when a color is set. */
+  .label-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    margin-right: var(--spacing-02);
   }
 
   /* Sidebar bottom: settings + help links pinned to the bottom rail. */

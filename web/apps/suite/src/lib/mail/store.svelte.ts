@@ -450,18 +450,24 @@ class MailStore {
    * The mailbox cache is repopulated from the server response so callers
    * can immediately route to the new id.
    */
-  async createMailbox(name: string, parentId: string | null = null): Promise<string | null> {
+  async createMailbox(
+    name: string,
+    parentId: string | null = null,
+    color?: string | null,
+  ): Promise<string | null> {
     const accountId = this.mailAccountId;
     if (!accountId) return null;
     const trimmed = name.trim();
     if (!trimmed) return null;
     try {
       const { responses } = await jmap.batch((b) => {
+        const props: Record<string, unknown> = { name: trimmed, parentId };
+        if (color !== undefined) props.color = color ?? null;
         b.call(
           'Mailbox/set',
           {
             accountId,
-            create: { new: { name: trimmed, parentId } },
+            create: { new: props },
           },
           [Capability.Mail],
         );
@@ -501,23 +507,28 @@ class MailStore {
     }
   }
 
-  /** Rename an existing mailbox. */
-  async renameMailbox(id: string, name: string): Promise<boolean> {
+  /** Rename an existing mailbox, optionally updating its color. */
+  async renameMailbox(id: string, name: string, color?: string | null): Promise<boolean> {
     const accountId = this.mailAccountId;
     if (!accountId) return false;
     const trimmed = name.trim();
     if (!trimmed) return false;
     const prev = this.mailboxes.get(id);
-    if (!prev || prev.name === trimmed) return false;
-    // Optimistic.
+    if (!prev) return false;
+    if (prev.name === trimmed && color === undefined) return false;
+    // Optimistic update.
+    const optimistic: typeof prev = { ...prev, name: trimmed };
+    if (color !== undefined) optimistic.color = color ?? null;
     const next = new Map(this.mailboxes);
-    next.set(id, { ...prev, name: trimmed });
+    next.set(id, optimistic);
     this.mailboxes = next;
     try {
+      const patch: Record<string, unknown> = { name: trimmed };
+      if (color !== undefined) patch.color = color ?? null;
       const { responses } = await jmap.batch((b) => {
         b.call(
           'Mailbox/set',
-          { accountId, update: { [id]: { name: trimmed } } },
+          { accountId, update: { [id]: patch } },
           [Capability.Mail],
         );
       });

@@ -17,6 +17,7 @@
   import { labelPicker } from '../lib/mail/label-picker.svelte';
   import { t, localeTag } from '../lib/i18n/i18n.svelte';
   import type { Email } from '../lib/mail/types';
+  import { labelForeground } from '../lib/mail/label-color';
   import ArchiveIcon from '../lib/icons/ArchiveIcon.svelte';
   import TrashIcon from '../lib/icons/TrashIcon.svelte';
   import MarkReadIcon from '../lib/icons/MarkReadIcon.svelte';
@@ -597,19 +598,19 @@
   }
 
   /**
-   * Returns the sorted list of custom-mailbox names any email in the
-   * thread belongs to, excluding the currently-viewed folder and all
-   * system mailboxes.
+   * Returns the sorted list of custom-mailbox labels (with optional color)
+   * any email in the thread belongs to, excluding the currently-viewed
+   * folder and all system mailboxes.
    *
    * Uses the union of mailboxIds across all thread emails (not just the
    * thread-representative returned by the collapsed JMAP query), so a
-   * label attached to any message in a multi-message thread is visible
-   * in the list row immediately after attachment (re #70).
-   *
-   * Falls back to the representative email alone when thread email data
-   * has not been loaded yet.
+   * label attached to any message in a multi-message thread is visible in
+   * the list row immediately after attachment (re #70). Falls back to the
+   * representative email alone when thread email data has not been loaded
+   * yet. Each label carries its user-defined color (re #69) for badge
+   * rendering.
    */
-  function emailLabels(email: Email): string[] {
+  function emailLabels(email: Email): { name: string; color: string | null | undefined }[] {
     // Collect mailboxIds union across the entire thread when available.
     const seen = new Set<string>(Object.keys(email.mailboxIds));
     const thread = mail.threads?.get(email.threadId);
@@ -619,14 +620,14 @@
         if (e) for (const mbxId of Object.keys(e.mailboxIds)) seen.add(mbxId);
       }
     }
-    const labels: string[] = [];
+    const labels: { name: string; color: string | null | undefined }[] = [];
     for (const m of mail.customMailboxes) {
       if (!seen.has(m.id)) continue;
       // Skip the currently-viewed folder so the badge is not redundant.
       if (m.id === folder) continue;
-      labels.push(m.name);
+      labels.push({ name: m.name, color: m.color });
     }
-    return labels.sort((a, b) => a.localeCompare(b));
+    return labels.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   function openThread(email: Email): void {
@@ -817,8 +818,13 @@
                 {/if}
               </span>
               <span class="subject-and-preview">
-                {#each emailLabels(email) as lname (lname)}
-                  <span class="label-badge">{lname}</span>
+                {#each emailLabels(email) as lbl (lbl.name)}
+                  <span
+                    class="label-badge"
+                    style={lbl.color
+                      ? `background:${lbl.color};color:${labelForeground(lbl.color)};`
+                      : undefined}
+                  >{lbl.name}</span>
                 {/each}
                 <span class="subject">{email.subject || '(no subject)'}</span>
                 <span class="preview"> — {email.preview}</span>
@@ -1036,8 +1042,13 @@
                 {/if}
               </span>
               <span class="subject-and-preview">
-                {#each emailLabels(email) as lname (lname)}
-                  <span class="label-badge">{lname}</span>
+                {#each emailLabels(email) as lbl (lbl.name)}
+                  <span
+                    class="label-badge"
+                    style={lbl.color
+                      ? `background:${lbl.color};color:${labelForeground(lbl.color)};`
+                      : undefined}
+                  >{lbl.name}</span>
                 {/each}
                 <span class="subject">{email.subject || '(no subject)'}</span>
                 <span class="preview"> — {email.preview}</span>
