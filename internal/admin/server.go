@@ -1074,6 +1074,19 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// value on every ReloadConfig call.
 	rt := &Runtime{cfg: sharedCfg, level: levelVar, logger: logger}
 
+	// Port report file: written after all listeners are bound, before
+	// marking ready, so test harnesses and dev launchers can discover
+	// kernel-assigned ports (port 0 binds). Removed on graceful shutdown.
+	if cfg.Server.PortReportFile != "" {
+		if err := writePortReportFile(cfg.Server.PortReportFile, boundListeners.boundAddrs); err != nil {
+			logger.LogAttrs(ctx, slog.LevelWarn, "port_report_file: write failed",
+				slog.String("path", cfg.Server.PortReportFile),
+				slog.String("err", err.Error()),
+				slog.String("activity", "system"),
+			)
+		}
+	}
+
 	// Readiness.
 	health.MarkReady()
 	if opts.Ready != nil {
@@ -1097,6 +1110,17 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	go func() { groupErr <- g.Wait() }()
 
 	drain := func() error {
+		// Remove port report file on graceful shutdown (best-effort).
+		if cfg.Server.PortReportFile != "" {
+			if err := os.Remove(cfg.Server.PortReportFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+				logger.LogAttrs(context.Background(), slog.LevelDebug,
+					"port_report_file: remove failed",
+					slog.String("path", cfg.Server.PortReportFile),
+					slog.String("err", err.Error()),
+					slog.String("activity", "system"),
+				)
+			}
+		}
 		// Tear down listeners so the SMTP / IMAP / admin Serve loops
 		// observe net.ErrClosed and unwind. The deferred
 		// boundListeners.Close runs again on return; double-close on a
@@ -1314,10 +1338,21 @@ type listenerServeFn func(ctx context.Context) error
 // boundListeners tracks the net.Listener instances bound by StartServer
 // so a deferred Close can tear them down. The serveFns slice carries
 // one closure per listener; StartServer launches them under an errgroup.
+// boundAddrs records the first (canonical) resolved address per listener
+// name — used to write [server].port_report_file when port 0 binds are
+// in use.
 type boundListenerSet struct {
-	listeners []net.Listener
-	serveFns  []namedServe
-	logger    *slog.Logger
+	listeners  []net.Listener
+	serveFns   []namedServe
+	boundAddrs []namedBoundAddr
+	logger     *slog.Logger
+}
+
+// namedBoundAddr pairs a listener config name with the kernel-resolved
+// address string (host:port) after a successful net.Listen call.
+type namedBoundAddr struct {
+	name string
+	addr string
 }
 
 type namedServe struct {
@@ -1349,7 +1384,7 @@ func bindListeners(
 			adminBinds = append(adminBinds, l)
 			continue
 		}
-		lns, fns, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, bundle, opts)
+		lns, fns, canonical, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, bundle, opts)
 		if err != nil {
 			set.Close()
 			return nil, err
@@ -1357,10 +1392,13 @@ func bindListeners(
 		for i, ln := range lns {
 			set.listeners = append(set.listeners, ln)
 			set.serveFns = append(set.serveFns, namedServe{name: l.Name, fn: fns[i]})
+		}
+		if canonical != "" {
+			set.boundAddrs = append(set.boundAddrs, namedBoundAddr{name: l.Name, addr: canonical})
 		}
 	}
 	for _, l := range adminBinds {
-		lns, fns, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, bundle, opts)
+		lns, fns, canonical, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, bundle, opts)
 		if err != nil {
 			set.Close()
 			return nil, err
@@ -1368,6 +1406,9 @@ func bindListeners(
 		for i, ln := range lns {
 			set.listeners = append(set.listeners, ln)
 			set.serveFns = append(set.serveFns, namedServe{name: l.Name, fn: fns[i]})
+		}
+		if canonical != "" {
+			set.boundAddrs = append(set.boundAddrs, namedBoundAddr{name: l.Name, addr: canonical})
 		}
 	}
 	return set, nil
@@ -1379,6 +1420,10 @@ func bindListeners(
 // configuration line covers both stacks; every other address yields a
 // single socket. On error any sockets opened earlier in the call are
 // closed before returning.
+//
+// The returned canonicalAddr is the kernel-resolved address of the first
+// (canonical) socket — used to build the port report file when port 0
+// binds are in use.
 func bindOne(
 	ctx context.Context,
 	cfg *sysconfig.Config,
@@ -1389,14 +1434,15 @@ func bindOne(
 	imapServer *protoimap.Server,
 	bundle composedHandlers,
 	opts StartOpts,
-) ([]net.Listener, []listenerServeFn, error) {
+) ([]net.Listener, []listenerServeFn, string, error) {
 	addrs, err := sysconfig.ResolveBindAddresses(l.Address)
 	if err != nil {
-		return nil, nil, fmt.Errorf("admin: listen %s: %w", l.Name, err)
+		return nil, nil, "", fmt.Errorf("admin: listen %s: %w", l.Name, err)
 	}
 	var (
-		listeners []net.Listener
-		serves    []listenerServeFn
+		listeners     []net.Listener
+		serves        []listenerServeFn
+		canonicalAddr string
 	)
 	closeAll := func() {
 		for _, ln := range listeners {
@@ -1404,15 +1450,18 @@ func bindOne(
 		}
 	}
 	for _, addr := range addrs {
-		ln, fn, err := bindOneAddress(ctx, cfg, logger, l, addr, tlsStore, smtpServer, imapServer, bundle, opts, len(listeners) == 0)
+		ln, fn, resolvedAddr, err := bindOneAddress(ctx, cfg, logger, l, addr, tlsStore, smtpServer, imapServer, bundle, opts, len(listeners) == 0)
 		if err != nil {
 			closeAll()
-			return nil, nil, err
+			return nil, nil, "", err
 		}
 		listeners = append(listeners, ln)
 		serves = append(serves, fn)
+		if canonicalAddr == "" {
+			canonicalAddr = resolvedAddr
+		}
 	}
-	return listeners, serves, nil
+	return listeners, serves, canonicalAddr, nil
 }
 
 // bindOneAddress binds a single host:port and wires the protocol-specific
@@ -1421,6 +1470,9 @@ func bindOne(
 // a localhost listener into two sockets we publish only the first
 // (IPv4) address so the existing test fixture contract — one entry per
 // listener name — is preserved.
+//
+// The third return value is the kernel-resolved address string (host:port)
+// of the bound socket, always populated on success regardless of publishAddr.
 func bindOneAddress(
 	ctx context.Context,
 	cfg *sysconfig.Config,
@@ -1433,32 +1485,32 @@ func bindOneAddress(
 	bundle composedHandlers,
 	opts StartOpts,
 	publishAddr bool,
-) (net.Listener, listenerServeFn, error) {
+) (net.Listener, listenerServeFn, string, error) {
 	ln, err := net.Listen("tcp", bindAddr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("admin: listen %s (%s): %w", l.Name, bindAddr, err)
+		return nil, nil, "", fmt.Errorf("admin: listen %s (%s): %w", l.Name, bindAddr, err)
 	}
+	resolvedAddr := ln.Addr().String()
 	if publishAddr && opts.ListenerAddrs != nil {
-		addr := ln.Addr().String()
 		if opts.ListenerAddrsMu != nil {
 			opts.ListenerAddrsMu.Lock()
-			opts.ListenerAddrs[l.Name] = addr
+			opts.ListenerAddrs[l.Name] = resolvedAddr
 			opts.ListenerAddrsMu.Unlock()
 		} else {
-			opts.ListenerAddrs[l.Name] = addr
+			opts.ListenerAddrs[l.Name] = resolvedAddr
 		}
 	}
 	logger.LogAttrs(ctx, slog.LevelInfo, "listener bound",
 		slog.String("name", l.Name),
 		slog.String("protocol", l.Protocol),
 		slog.String("tls", l.TLS),
-		slog.String("addr", ln.Addr().String()),
+		slog.String("addr", resolvedAddr),
 	)
 	switch l.Protocol {
 	case "smtp":
 		return ln, func(ctx context.Context) error {
 			return smtpServer.Serve(ctx, ln, protosmtp.RelayIn)
-		}, nil
+		}, resolvedAddr, nil
 	case "smtp-submission":
 		mode := protosmtp.SubmissionSTARTTLS
 		if l.TLS == "implicit" {
@@ -1466,7 +1518,7 @@ func bindOneAddress(
 		}
 		return ln, func(ctx context.Context) error {
 			return smtpServer.Serve(ctx, ln, mode)
-		}, nil
+		}, resolvedAddr, nil
 	case "imap":
 		mode := protoimap.ListenerModeSTARTTLS
 		if l.TLS == "implicit" {
@@ -1474,22 +1526,61 @@ func bindOneAddress(
 		}
 		return ln, func(ctx context.Context) error {
 			return imapServer.Serve(ctx, ln, mode)
-		}, nil
+		}, resolvedAddr, nil
 	case "imaps":
 		return ln, func(ctx context.Context) error {
 			return imapServer.Serve(ctx, ln, protoimap.ListenerModeImplicit993)
-		}, nil
+		}, resolvedAddr, nil
 	case "admin":
 		spec := l
 		handler := pickHTTPHandler(cfg, l, bundle)
 		return ln, func(ctx context.Context) error {
 			return serveAdmin(ctx, ln, spec, tlsStore, handler, logger)
-		}, nil
+		}, resolvedAddr, nil
 	default:
 		_ = ln.Close()
 		_ = cfg
-		return nil, nil, fmt.Errorf("admin: unknown listener protocol %q", l.Protocol)
+		return nil, nil, "", fmt.Errorf("admin: unknown listener protocol %q", l.Protocol)
 	}
+}
+
+// writePortReportFile atomically writes the port report TOML file at path.
+// Each entry in addrs produces one [[listener]] section with the resolved
+// name and address. The write is atomic: the content is written to a
+// temporary file in the same directory and then renamed into place so
+// readers never see a partial file.
+func writePortReportFile(path string, addrs []namedBoundAddr) error {
+	var buf strings.Builder
+	buf.WriteString("# written by herold after all listeners bound\n")
+	for _, a := range addrs {
+		buf.WriteString("\n[[listener]]\n")
+		buf.WriteString("name = ")
+		buf.WriteString(fmt.Sprintf("%q", a.name))
+		buf.WriteString("\n")
+		buf.WriteString("address = ")
+		buf.WriteString(fmt.Sprintf("%q", a.addr))
+		buf.WriteString("\n")
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".port-report-*.toml.tmp")
+	if err != nil {
+		return fmt.Errorf("port_report_file: create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(buf.String()); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("port_report_file: write: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("port_report_file: close: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("port_report_file: rename: %w", err)
+	}
+	return nil
 }
 
 // pickHTTPHandler returns the http.Handler appropriate to a single

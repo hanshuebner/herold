@@ -62,6 +62,7 @@ data_dir = %q
 run_as_user = ""
 run_as_group = ""
 shutdown_grace = "5s"
+port_report_file = %q
 
 [server.admin_tls]
 source = "file"
@@ -117,7 +118,7 @@ log_format = "text"
 log_level = "warn"
 metrics_bind = ""
 `,
-		dir, certPath, keyPath, filepath.Join(dir, "db.sqlite"),
+		dir, filepath.Join(dir, "ports.toml"), certPath, keyPath, filepath.Join(dir, "db.sqlite"),
 		rxHost, rxPortStr,
 		certPath, keyPath, certPath, keyPath)
 	if err := os.WriteFile(systomlPath, []byte(systomlBody), 0o600); err != nil {

@@ -209,6 +209,7 @@ hostname = "test.local"
 data_dir = %q
 run_as_user = ""
 run_as_group = ""
+port_report_file = %q
 
 [server.admin_tls]
 source = "file"
@@ -262,7 +263,7 @@ metrics_bind = ""
 
 [clientlog.public]
 otlp_egress = %s
-`, d, certPath, keyPath, filepath.Join(d, "db.sqlite"),
+`, d, filepath.Join(d, "ports.toml"), certPath, keyPath, filepath.Join(d, "db.sqlite"),
 		signingKeyEnvVar,
 		certPath, keyPath,
 		certPath, keyPath,
