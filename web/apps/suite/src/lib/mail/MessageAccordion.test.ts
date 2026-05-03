@@ -1,16 +1,20 @@
 /**
- * Unit tests for MessageAccordion: attachment indicator in the header and
- * label badges in the expanded message header (re #66).
+ * Unit tests for MessageAccordion.
  *
- * Verifies that the paperclip icon appears when the email has at least one
- * non-inline attachment, and is suppressed otherwise. Also verifies that
- * label badges are shown in the expanded header for custom-mailbox membership.
+ * - Attachment indicator in the header: verifies that the paperclip icon
+ *   appears when the email has at least one non-inline attachment, and is
+ *   suppressed otherwise.
+ * - Label badges in the expanded message header (re #66): badges appear for
+ *   custom-mailbox membership when the message is expanded, are absent when
+ *   collapsed, and are suppressed for the active list folder.
+ * - Restore from trash navigation (re #29): clicking the Restore button
+ *   calls restoreFromTrash and then navigates back.
  */
 
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/svelte';
 import MessageAccordion from './MessageAccordion.svelte';
-import type { Email, EmailBodyPart, Mailbox } from './types';
+import type { Email, EmailBodyPart } from './types';
 
 // ── module mocks ──────────────────────────────────────────────────────────────
 
@@ -37,7 +41,7 @@ vi.mock('../jmap/client', () => ({
 // vi.mock() factories are hoisted by vitest so they run before module-level
 // variable initialisers.  Use vi.hoisted() to define shared state that both
 // the factory and the test body can access.
-const { mailMock } = vi.hoisted(() => {
+const { mailMock, WORK_MBX, TRASH_MBX } = vi.hoisted(() => {
   const WORK_MBX = {
     id: 'mbx-work',
     name: 'Work',
@@ -50,9 +54,21 @@ const { mailMock } = vi.hoisted(() => {
     unreadThreads: 0,
   } as import('./types').Mailbox;
 
+  const TRASH_MBX = {
+    id: 'mbx-trash',
+    name: 'Trash',
+    role: 'trash',
+    parentId: null,
+    sortOrder: 0,
+    totalEmails: 0,
+    unreadEmails: 0,
+    totalThreads: 0,
+    unreadThreads: 0,
+  } as import('./types').Mailbox;
+
   // The mail store mock exposes customMailboxes and listFolder so that the
   // emailLabels derived value in MessageAccordion can compute badge names.
-  // listFolder is mutable so individual tests can override it.
+  // listFolder and trash are mutable so individual tests can override them.
   const mailMock = {
     mailboxes: new Map([['mbx-work', WORK_MBX]]),
     get customMailboxes(): import('./types').Mailbox[] {
@@ -64,12 +80,12 @@ const { mailMock } = vi.hoisted(() => {
     setSeen: vi.fn(),
     toggleImportant: vi.fn(),
     unsnoozeEmail: vi.fn(),
-    restoreFromTrash: vi.fn(),
+    restoreFromTrash: vi.fn().mockResolvedValue(undefined),
     toggleReaction: vi.fn(),
     reportSpam: vi.fn(),
   };
 
-  return { mailMock };
+  return { mailMock, WORK_MBX, TRASH_MBX };
 });
 
 vi.mock('./store.svelte', () => ({ mail: mailMock }));
@@ -254,6 +270,12 @@ describe('MessageAccordion: attachment indicator in header', () => {
 });
 
 describe('MessageAccordion: label badges in expanded message header (re #66)', () => {
+  beforeEach(() => {
+    // Reset mailMock state that other describe blocks may have mutated.
+    mailMock.listFolder = 'inbox';
+    mailMock.trash = null;
+  });
+
   it('shows a label badge for a custom mailbox when the message is expanded', () => {
     const email = makeEmail({ mailboxIds: { 'mbx-work': true } });
     renderAccordion(email, true);
@@ -278,11 +300,48 @@ describe('MessageAccordion: label badges in expanded message header (re #66)', (
   it('suppresses the badge for the active list folder', () => {
     // When listFolder matches the custom mailbox id, no badge should appear
     // (the user is already browsing that label; showing it is redundant).
-    mailMock.listFolder = 'mbx-work';
+    mailMock.listFolder = WORK_MBX.id;
     const email = makeEmail({ mailboxIds: { 'mbx-work': true } });
     renderAccordion(email, true);
     expect(screen.queryByLabelText('Labels')).not.toBeInTheDocument();
-    // Restore so other tests are not affected.
-    mailMock.listFolder = 'inbox';
+  });
+});
+
+describe('MessageAccordion: restore from trash navigates back (re #29)', () => {
+  beforeEach(() => {
+    mailMock.trash = TRASH_MBX;
+    mailMock.listFolder = 'trash';
+    mailMock.restoreFromTrash.mockClear();
+    mailMock.restoreFromTrash.mockResolvedValue(undefined);
+    vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+  });
+
+  it('calls restoreFromTrash then history.back when history is available', async () => {
+    // Simulate a real browser with navigation history (length > 1).
+    Object.defineProperty(window.history, 'length', { value: 3, configurable: true });
+
+    const email = makeEmail({ mailboxIds: { [TRASH_MBX.id]: true } });
+    renderAccordion(email, /* expanded */ true);
+
+    const btn = screen.getByLabelText('msg.restore');
+    await fireEvent.click(btn);
+
+    expect(mailMock.restoreFromTrash).toHaveBeenCalledWith('e1');
+    expect(window.history.back).toHaveBeenCalled();
+  });
+
+  it('falls back to router.navigate when history length is 1', async () => {
+    const { router } = await import('../router/router.svelte');
+    // No history to go back to — the fallback path uses router.navigate.
+    Object.defineProperty(window.history, 'length', { value: 1, configurable: true });
+
+    const email = makeEmail({ mailboxIds: { [TRASH_MBX.id]: true } });
+    renderAccordion(email, /* expanded */ true);
+
+    const btn = screen.getByLabelText('msg.restore');
+    await fireEvent.click(btn);
+
+    expect(mailMock.restoreFromTrash).toHaveBeenCalledWith('e1');
+    expect(router.navigate).toHaveBeenCalledWith('/mail/folder/trash');
   });
 });

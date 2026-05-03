@@ -667,7 +667,18 @@
             class="pill icon-only"
             aria-label={t('msg.restore')}
             title={t('msg.restore')}
-            onclick={() => mail.restoreFromTrash(email.id)}
+            onclick={() => {
+              void mail.restoreFromTrash(email.id);
+              // Return to the message list after restoring; the message is no
+              // longer in Trash so keeping the thread-reader open is confusing
+              // (re #29). Mirror the back() logic from ThreadToolbar.
+              if (window.history.length > 1) {
+                window.history.back();
+              } else {
+                const folder = mail.listFolder;
+                router.navigate(folder === 'inbox' ? '/mail' : `/mail/folder/${encodeURIComponent(folder)}`);
+              }
+            }}
           >
             <RestoreIcon size={18} />
           </button>
