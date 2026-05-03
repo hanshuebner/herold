@@ -3,6 +3,7 @@
   import HelpIcon from '../icons/HelpIcon.svelte';
   import SettingsIcon from '../icons/SettingsIcon.svelte';
   import FilterIcon from '../icons/FilterIcon.svelte';
+  import AppSwitcherMenu from './AppSwitcherMenu.svelte';
   import AdvancedSearchPanel from '../mail/AdvancedSearchPanel.svelte';
   import { sync } from '../../lib/jmap/sync.svelte';
   import { router } from '../../lib/router/router.svelte';
@@ -74,6 +75,11 @@
 
 <div class="global-bar-wrapper">
   <header class="global-bar">
+    <div class="brand-area">
+      <AppSwitcherMenu currentApp="mail" />
+      <a class="brand" href="/" aria-label="Herold home">Herold</a>
+    </div>
+
     <form class="search" onsubmit={onSubmit} role="search">
       <SearchIcon size={18} />
       <input
@@ -141,11 +147,42 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-04);
-    padding: var(--spacing-03) var(--spacing-05);
+    padding: 0 var(--spacing-05) 0 0;
     height: var(--spacing-08);
     background: var(--layer-01);
     border-bottom: 1px solid var(--border-subtle-01);
   }
+
+  /* Brand area: fixed-width left column that aligns with the nav
+     sidebar below it. The right border provides the visual separation
+     between the brand and the search bar that mirrors the sidebar
+     border seen in the content area. */
+  .brand-area {
+    flex: 0 0 240px;
+    display: flex;
+    align-items: center;
+    height: 100%;
+    border-right: 1px solid var(--border-subtle-01);
+    gap: 0;
+    overflow: hidden;
+  }
+
+  .brand {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    height: 100%;
+    padding: 0 var(--spacing-04) 0 var(--spacing-02);
+    color: var(--text-primary);
+    font-size: var(--type-heading-compact-02-size);
+    font-weight: var(--type-heading-compact-02-weight);
+    letter-spacing: 0.02em;
+    text-decoration: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .search {
     flex: 1;
     display: flex;
@@ -229,5 +266,17 @@
   .icon-btn.active {
     background: var(--layer-02);
     color: var(--interactive);
+  }
+
+  /* On narrow viewports the nav sidebar is hidden, so the brand area
+     would waste horizontal space. Collapse it to just the burger icon. */
+  @media (max-width: 768px) {
+    .brand-area {
+      flex: 0 0 auto;
+      border-right: none;
+    }
+    .brand {
+      display: none;
+    }
   }
 </style>

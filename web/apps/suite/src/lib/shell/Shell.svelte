@@ -1,7 +1,6 @@
 <script lang="ts">
   import GlobalBar from './GlobalBar.svelte';
   import CoachStrip from './CoachStrip.svelte';
-  import AppSwitcherMenu from './AppSwitcherMenu.svelte';
   import ToastHost from '../toast/ToastHost.svelte';
   import ComposeWindow from '../compose/ComposeWindow.svelte';
   import MinimizedTray from '../compose/MinimizedTray.svelte';
@@ -30,19 +29,16 @@
 </script>
 
 <div class="shell">
+  <GlobalBar />
+
   <div class="middle">
     <aside class="sidebar" aria-label="Navigation">
-      <div class="brand-row">
-        <AppSwitcherMenu currentApp="mail" />
-        <a class="brand" href="/" aria-label="Herold home">Herold</a>
-      </div>
       {#if sidebar}
         {@render sidebar()}
       {/if}
     </aside>
 
     <main class="content">
-      <GlobalBar />
       <div class="content-body">
         {@render children?.()}
       </div>
@@ -92,28 +88,6 @@
     border-right: 1px solid var(--border-subtle-01);
     background: var(--layer-01);
     overflow-y: auto;
-  }
-  .brand-row {
-    display: flex;
-    align-items: center;
-    flex-shrink: 0;
-    height: var(--touch-min, 44px);
-    background: var(--layer-01);
-    border-bottom: 1px solid var(--border-subtle-01);
-    gap: 0;
-  }
-
-  .brand {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    height: 100%;
-    padding: 0 var(--spacing-04) 0 var(--spacing-02);
-    color: var(--text-primary);
-    font-size: var(--type-heading-compact-02-size);
-    font-weight: var(--type-heading-compact-02-weight);
-    letter-spacing: 0.02em;
-    text-decoration: none;
   }
   .content {
     flex: 1;
