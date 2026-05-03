@@ -196,9 +196,12 @@ protocol = "admin"
 kind = "admin"
 tls = "none"
 
+# Herold serves only API surfaces in dev-instance mode; the SPA is
+# served by the Vite dev server on \$SUITE_URL. We leave asset_dir
+# unset so herold falls back to the binary's embedded SPA — agents
+# never load BACKEND_URL/ in the browser, so the placeholder is fine.
 [server.suite]
 enabled = true
-asset_dir = "$REPO_ROOT/web/apps/suite/dist"
 
 [observability]
 log_format = "json"
@@ -213,12 +216,16 @@ EOF
 seed_instance() {
     local dir="$1" backend_url="$2" api_key="$3"
 
-    log "registering domain $SEED_DOMAIN"
+    log "ensuring domain $SEED_DOMAIN exists"
+    # bootstrap auto-creates the admin's domain; ignore the conflict
+    # if domain add reports a duplicate.
     HEROLD_API_KEY="$api_key" "$HEROLD_BIN" domain add "$SEED_DOMAIN" \
-        --server-url "$backend_url" \
+        --server-url "$admin_url" \
         --system-config "$dir/system.toml" \
         --quiet \
-        || die "domain add failed"
+        >"$dir/domain-add.out" 2>"$dir/domain-add.err" \
+        || grep -q 'UNIQUE constraint\|already exists\|conflict' "$dir/domain-add.err" \
+        || { cat "$dir/domain-add.err" >&2; die "domain add failed"; }
 
     for spec in "${SEED_PRINCIPALS[@]}"; do
         local local_part="${spec%%:*}" flag="${spec##*:}"
@@ -228,10 +235,11 @@ seed_instance() {
         HEROLD_API_KEY="$api_key" "$HEROLD_BIN" principal create \
             "$local_part@$SEED_DOMAIN" \
             --password "$SEED_PASSWORD" \
-            --server-url "$backend_url" \
+            --server-url "$admin_url" \
             --system-config "$dir/system.toml" \
             --quiet \
-            || die "principal create $local_part failed"
+            >/dev/null 2>"$dir/logs/principal-$local_part.err" \
+            || { cat "$dir/logs/principal-$local_part.err" >&2; die "principal create $local_part failed"; }
     done
 }
 
@@ -276,11 +284,13 @@ cmd_start() {
         --email "admin@$SEED_DOMAIN" \
         --password "$SEED_PASSWORD" \
         --save-credentials=false \
-        --json >"$dir/bootstrap.json" 2>"$dir/bootstrap.err" \
+        >"$dir/bootstrap.out" 2>"$dir/bootstrap.err" \
         || die "bootstrap failed; see $dir/bootstrap.err"
+    # Bootstrap prints a human-readable block; the api_key line looks
+    # like "  api_key: hk_<token>" (two-space indent, single colon).
     local api_key
-    api_key=$(jq -r '.api_key // .key // empty' "$dir/bootstrap.json")
-    [ -n "$api_key" ] || die "bootstrap output did not include api_key (see $dir/bootstrap.json)"
+    api_key=$(awk -F': ' '/^[[:space:]]*api_key:/ { print $2; exit }' "$dir/bootstrap.out")
+    [ -n "$api_key" ] || die "bootstrap output did not include api_key (see $dir/bootstrap.out)"
     printf '%s\n' "$api_key" > "$dir/api-key.txt"
     chmod 600 "$dir/api-key.txt"
 
@@ -320,26 +330,40 @@ cmd_start() {
     # Seed: domain + principals (admin already created via bootstrap).
     seed_instance "$dir" "$backend_url" "$api_key"
 
+    # Make sure the workspace has node_modules installed (a no-op
+    # for the user's main checkout; mandatory for fresh agent
+    # worktrees).
+    if [ ! -d "$REPO_ROOT/web/node_modules" ]; then
+        log "running pnpm install (no node_modules found in $REPO_ROOT/web)"
+        ( cd "$REPO_ROOT/web" && pnpm install --frozen-lockfile ) \
+            >"$dir/logs/pnpm-install.log" 2>&1 \
+            || die "pnpm install failed; see $dir/logs/pnpm-install.log"
+    fi
+
+    # Pick a free port for Vite by asking the kernel for one (small
+    # TOCTOU window; vite --strictPort makes the bind fail fast if
+    # somebody snipes it before we connect).
+    local vite_port
+    vite_port=$(python3 -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()") \
+        || die "failed to pick a free port for vite"
+
     # Start Vite for the suite SPA, pointed at the per-instance backend.
-    log "starting vite (HEROLD_URL=$backend_url)"
+    # Bypass the `dev` script wrapper (which prepends `pnpm run
+    # bundle-manual` and swallows trailing args) and invoke the vite
+    # binary directly via `pnpm --dir ... exec`. We exec in the
+    # background without a subshell so $! captures the actual node
+    # pid, and we have a single process to SIGTERM later.
+    log "starting vite on port $vite_port (HEROLD_URL=$backend_url)"
     HEROLD_URL="$backend_url" \
-        pnpm -C "$REPO_ROOT/web" dev --filter @herold/suite -- --port 0 --strictPort=false \
+        pnpm --dir "$REPO_ROOT/web/apps/suite" exec vite --port "$vite_port" --strictPort \
         >"$dir/logs/vite.log" 2>&1 &
     local vite_pid=$!
     echo "$vite_pid" > "$dir/.vite.pid"
 
-    # Discover the port Vite chose by parsing its log. Vite prints
-    # `Local:   http://localhost:<port>/` when ready.
-    local vite_url=""
-    local deadline=$(( $(date +%s) + READY_TIMEOUT ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-        vite_url=$(grep -oE 'http://localhost:[0-9]+/' "$dir/logs/vite.log" 2>/dev/null | head -1 | sed 's:/$::')
-        [ -n "$vite_url" ] && break
-        sleep 0.2
-    done
-    if [ -z "$vite_url" ]; then
+    local vite_url="http://localhost:$vite_port"
+    if ! wait_for_http "$vite_url/" "$READY_TIMEOUT"; then
         kill "$vite_pid" "$herold_pid" 2>/dev/null || true
-        die "vite did not announce a port within ${READY_TIMEOUT}s; see $dir/logs/vite.log"
+        die "vite did not respond on $vite_url within ${READY_TIMEOUT}s; see $dir/logs/vite.log"
     fi
 
     # Persist state for stop/list/gc.
@@ -380,11 +404,11 @@ EOF
     # Foreground mode: register cleanup, then block.
     cleanup() {
         log "tearing down instance $id"
-        kill -TERM "$vite_pid" 2>/dev/null || true
-        kill -TERM "$herold_pid" 2>/dev/null || true
+        kill_tree "$vite_pid" TERM
+        kill_tree "$herold_pid" TERM
         sleep 1
-        kill -KILL "$vite_pid" 2>/dev/null || true
-        kill -KILL "$herold_pid" 2>/dev/null || true
+        kill_tree "$vite_pid" KILL
+        kill_tree "$herold_pid" KILL
         rm -rf "$dir"
     }
     trap cleanup EXIT INT TERM
@@ -396,6 +420,20 @@ EOF
 
 # ── stop subcommand ──────────────────────────────────────────────────
 
+# kill_tree PID SIG — send SIG to PID and every transitive descendant.
+# pnpm execs node which forks Vite which forks esbuild — without a
+# tree walk, SIGTERM to the root just orphans the children.
+kill_tree() {
+    local pid="$1" sig="${2:-TERM}"
+    [ -n "$pid" ] || return 0
+    local children
+    children=$(pgrep -P "$pid" 2>/dev/null || true)
+    for child in $children; do
+        kill_tree "$child" "$sig"
+    done
+    kill -"$sig" "$pid" 2>/dev/null || true
+}
+
 cmd_stop() {
     local id="${1:-}"
     [ -n "$id" ] || die "stop: missing instance id"
@@ -406,8 +444,8 @@ cmd_stop() {
     source "$state"
 
     log "stopping instance $INSTANCE_ID"
-    kill -TERM "$VITE_PID" 2>/dev/null || true
-    kill -TERM "$HEROLD_PID" 2>/dev/null || true
+    kill_tree "$VITE_PID" TERM
+    kill_tree "$HEROLD_PID" TERM
     local deadline=$(( $(date +%s) + 5 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         if ! kill -0 "$VITE_PID" 2>/dev/null && ! kill -0 "$HEROLD_PID" 2>/dev/null; then
@@ -415,8 +453,8 @@ cmd_stop() {
         fi
         sleep 0.2
     done
-    kill -KILL "$VITE_PID" 2>/dev/null || true
-    kill -KILL "$HEROLD_PID" 2>/dev/null || true
+    kill_tree "$VITE_PID" KILL
+    kill_tree "$HEROLD_PID" KILL
     rm -rf "$dir"
 }
 
