@@ -18,8 +18,14 @@ vi.mock('../contacts/store.svelte', () => ({
     status: 'idle',
     suggestions: [],
     filter: () => [],
+    filterAsync: vi.fn(async () => []),
     load: vi.fn(),
   },
+}));
+
+// Stub capability checks (keeps the empty-state hint deterministic).
+vi.mock('../auth/capabilities', () => ({
+  hasDirectoryAutocomplete: vi.fn(() => false),
 }));
 
 // Stub seenAddresses.
