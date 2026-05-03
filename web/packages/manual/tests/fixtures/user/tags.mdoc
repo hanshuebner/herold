@@ -1,0 +1,45 @@
+---
+title: Tag Examples
+slug: tags
+audience: user
+---
+
+# Tag Examples
+
+This chapter demonstrates all supported custom tags.
+
+## Callout tag
+
+{% callout type="info" title="Note" %}
+This is an informational callout.
+{% /callout %}
+
+{% callout type="warning" %}
+This is a warning without a custom title.
+{% /callout %}
+
+{% callout type="caution" title="Be careful" %}
+This is a caution box.
+{% /callout %}
+
+## Req tag
+
+This implements {% req id="REQ-PROTO-01" /%} and {% req id="REQ-MAIL-01" /%}.
+
+## Kbd tag
+
+Press {% kbd keys="Ctrl S" /%} to save.
+Press {% kbd keys="Mod Shift K" /%} for multi-key combos.
+
+## Code group
+
+{% code-group %}
+```bash
+herold start
+```
+
+```toml
+[server]
+bind = "0.0.0.0:8080"
+```
+{% /code-group %}

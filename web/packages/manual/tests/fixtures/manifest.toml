@@ -1,0 +1,27 @@
+# Fixture manifest for @herold/manual tests.
+
+[user]
+home = "index"
+
+  [[user.chapters]]
+  slug  = "index"
+  file  = "user/index.mdoc"
+  title = "Introduction"
+
+  [[user.chapters]]
+  slug  = "install"
+  file  = "user/install.mdoc"
+  title = "Installation"
+
+  [[user.chapters]]
+  slug  = "tags"
+  file  = "user/tags.mdoc"
+  title = "Tag Examples"
+
+[admin]
+home = "overview"
+
+  [[admin.chapters]]
+  slug  = "overview"
+  file  = "admin/overview.mdoc"
+  title = "Overview"

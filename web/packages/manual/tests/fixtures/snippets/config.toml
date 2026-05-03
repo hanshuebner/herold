@@ -1,0 +1,6 @@
+[server]
+bind = "0.0.0.0:8080"
+admin_bind = "127.0.0.1:8081"
+
+[database]
+url = "postgres://herold:password@localhost/herold"
