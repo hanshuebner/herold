@@ -84,8 +84,24 @@ async function request<T>(
   if (!response.ok) {
     let errorMessage: string | null = null;
     try {
-      const errBody = (await response.json()) as { message?: string; error?: string };
-      errorMessage = errBody.message ?? errBody.error ?? `HTTP ${response.status}`;
+      // The protoadmin REST surface emits RFC 7807 problem-json on errors
+      // (Content-Type: application/problem+json; fields title, detail, type,
+      // status, instance). Older / non-protoadmin endpoints may instead use
+      // the {message, error} shape. Try the RFC 7807 fields first so the
+      // operator sees a real reason ("store: not found") rather than the
+      // useless "HTTP 404" fallback.
+      const errBody = (await response.json()) as {
+        title?: string;
+        detail?: string;
+        message?: string;
+        error?: string;
+      };
+      const parts: string[] = [];
+      if (errBody.title) parts.push(errBody.title);
+      if (errBody.detail) parts.push(errBody.detail);
+      if (parts.length === 0 && errBody.message) parts.push(errBody.message);
+      if (parts.length === 0 && errBody.error) parts.push(errBody.error);
+      errorMessage = parts.length > 0 ? parts.join(': ') : `HTTP ${response.status}`;
     } catch {
       errorMessage = `HTTP ${response.status}`;
     }

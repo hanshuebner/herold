@@ -6,7 +6,7 @@ package protoadmin_test
 // Test coverage:
 //   - HTTP round-trip happy path on each endpoint (auth + narrow/public);
 //     assert ring-buffer rows via fakestore and metrics via Prometheus.
-//   - Body cap (auth 413, public silent 200), batch cap, msg-cap truncation.
+//   - Body cap (413 on both endpoints per REQ-OPS-201), batch cap, msg-cap truncation.
 //   - Origin drop for foreign-origin requests on the public endpoint.
 //   - CORS preflight OPTIONS: own-origin gets ALLOW, foreign-origin gets none.
 //   - Per-session (auth) and per-IP (public) rate limits.
@@ -337,7 +337,10 @@ func TestClientlogAuth_BodyCap(t *testing.T) {
 	}
 }
 
-// TestClientlogPublic_BodyCap: public endpoint body > 8 KiB silently 200.
+// TestClientlogPublic_BodyCap: public endpoint body > 8 KiB returns 413
+// (REQ-OPS-201). The silent-200 rule applies to rate-limited requests, not
+// to body-cap violations -- the latter is a configuration / client bug, not
+// an abuse signal that needs to be hidden from attackers.
 func TestClientlogPublic_BodyCap(t *testing.T) {
 	observe.RegisterClientlogMetrics()
 	h, _ := newClientlogHarness(t)
@@ -352,8 +355,8 @@ func TestClientlogPublic_BodyCap(t *testing.T) {
 		}},
 	}
 	res, _ := h.post("/api/v1/clientlog/public", body, nil, "")
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("want 200 silent, got %d", res.StatusCode)
+	if res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413, got %d", res.StatusCode)
 	}
 	after := testutil.ToFloat64(observe.ClientlogDroppedTotal.WithLabelValues("public", "body_too_large"))
 	if after <= before {

@@ -257,8 +257,12 @@ func (s *Server) handleClientLogPublic(w http.ResponseWriter, r *http.Request) {
 	}
 	if int64(len(bodyBytes)) > clientlogMaxBodyPublic {
 		observe.ClientlogDroppedTotal.WithLabelValues("public", "body_too_large").Inc()
-		// Silent 200 for public over-quota (REQ-OPS-216).
-		w.WriteHeader(http.StatusOK)
+		// REQ-OPS-201: bodies over the per-endpoint cap are rejected with 413.
+		// (The silent-200 rule is for rate-limited requests, not for body-cap
+		// violations -- the latter is a configuration / client bug, not an
+		// abuse signal.)
+		writeProblem(w, r, http.StatusRequestEntityTooLarge, "body_too_large",
+			"request body exceeds the public-endpoint limit", "")
 		return
 	}
 
