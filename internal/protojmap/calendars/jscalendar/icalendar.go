@@ -407,6 +407,13 @@ func unescapeText(s string) string {
 // TZID is "floating" — which iCalendar effectively pins to the
 // receiver's local zone, but for storage we resolve it as UTC and let
 // the ToJSCalendarEvent bridge carry the floating-ness via TimeZone="".
+//
+// Pre-year-1 timestamps (e.g. LAST-MODIFIED:00000101T000000Z) are
+// rejected and returned as the zero time.Time. Go's time.Parse accepts
+// year 0000 without error, producing a non-zero time.Time whose
+// Year() == 0; such values are not meaningful in calendar data and
+// would violate the JSCalendar Updated invariant checked in
+// FuzzVEventToJSCalendar (regression seed: regression_year_zero).
 func parseICSTime(value string, params map[string]string) time.Time {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -415,11 +422,17 @@ func parseICSTime(value string, params map[string]string) time.Time {
 	// DATE only — all-day.
 	if len(value) == 8 {
 		if t, err := time.Parse("20060102", value); err == nil {
+			if t.Year() < 1 {
+				return time.Time{}
+			}
 			return t.UTC()
 		}
 	}
 	if strings.HasSuffix(value, "Z") {
 		if t, err := time.Parse("20060102T150405Z", value); err == nil {
+			if t.Year() < 1 {
+				return time.Time{}
+			}
 			return t.UTC()
 		}
 	}
@@ -428,6 +441,9 @@ func parseICSTime(value string, params map[string]string) time.Time {
 		loc = resolveICSTimezone(tzid)
 	}
 	if t, err := time.ParseInLocation("20060102T150405", value, loc); err == nil {
+		if t.Year() < 1 {
+			return time.Time{}
+		}
 		return t.UTC()
 	}
 	return time.Time{}
