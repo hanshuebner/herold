@@ -214,18 +214,20 @@ describe('Shell — no .brand-row after #31 fix', () => {
     expect(shell).not.toBeNull();
 
     const children = Array.from(shell.children);
-    const globalBarWrapper = shell.querySelector('.global-bar-wrapper');
+    // After the #31 overlay fix the wrapper div was removed; the <header
+    // class="global-bar"> is now a direct flex child of .shell.
+    const globalBar = shell.querySelector('.global-bar');
     const middle = shell.querySelector('.middle');
 
-    expect(globalBarWrapper).not.toBeNull();
+    expect(globalBar).not.toBeNull();
     expect(middle).not.toBeNull();
 
-    const wrapperIdx = children.findIndex((el) =>
-      el.classList.contains('global-bar-wrapper'),
+    const barIdx = children.findIndex((el) =>
+      el.classList.contains('global-bar'),
     );
     const middleIdx = children.findIndex((el) => el.classList.contains('middle'));
 
-    expect(wrapperIdx).toBeGreaterThanOrEqual(0);
-    expect(middleIdx).toBeGreaterThan(wrapperIdx);
+    expect(barIdx).toBeGreaterThanOrEqual(0);
+    expect(middleIdx).toBeGreaterThan(barIdx);
   });
 });

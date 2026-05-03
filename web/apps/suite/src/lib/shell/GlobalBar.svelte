@@ -28,7 +28,8 @@
     }
   });
 
-  // Advanced-search panel toggle state. The panel sits below the bar.
+  // Advanced-search panel toggle state. The panel floats as a fixed popover
+  // below the bar so it does not push the sidebar or content columns down.
   let panelOpen = $state(false);
 
   function onSubmit(e: Event): void {
@@ -73,77 +74,81 @@
   );
 </script>
 
-<div class="global-bar-wrapper">
-  <header class="global-bar">
-    <div class="brand-area">
-      <AppSwitcherMenu currentApp="mail" />
-      <a class="brand" href="/" aria-label="Herold home">Herold</a>
-    </div>
+<header class="global-bar">
+  <div class="brand-area">
+    <AppSwitcherMenu currentApp="mail" />
+    <a class="brand" href="/" aria-label="Herold home">Herold</a>
+  </div>
 
-    <form class="search" onsubmit={onSubmit} role="search">
-      <SearchIcon size={18} />
-      <input
-        type="search"
-        {placeholder}
-        bind:value={query}
-        aria-label={placeholder}
-        spellcheck="false"
-      />
-    </form>
+  <form class="search" onsubmit={onSubmit} role="search">
+    <SearchIcon size={18} />
+    <input
+      type="search"
+      {placeholder}
+      bind:value={query}
+      aria-label={placeholder}
+      spellcheck="false"
+    />
+  </form>
 
-    {#if indicatorVisible}
-      <span class="conn" role="status" aria-live="polite">
-        <span class="dot" aria-hidden="true"></span>
-        {indicatorLabel}
-      </span>
-    {/if}
+  {#if indicatorVisible}
+    <span class="conn" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      {indicatorLabel}
+    </span>
+  {/if}
 
-    <div class="controls">
-      <button
-        type="button"
-        class="icon-btn"
-        class:active={panelOpen}
-        aria-label="Advanced search"
-        aria-expanded={panelOpen}
-        title="Advanced search"
-        onclick={togglePanel}
-      >
-        <FilterIcon size={18} />
-      </button>
-      <button
-        type="button"
-        class="icon-btn"
-        aria-label="Help"
-        title="Keyboard shortcuts"
-        onclick={() => help.toggle()}
-      >
-        <HelpIcon size={20} />
-      </button>
-      <button
-        type="button"
-        class="icon-btn"
-        aria-label="Settings"
-        onclick={() => router.navigate('/settings')}
-      >
-        <SettingsIcon size={20} />
-      </button>
-    </div>
-  </header>
+  <div class="controls">
+    <button
+      type="button"
+      class="icon-btn"
+      class:active={panelOpen}
+      aria-label="Advanced search"
+      aria-expanded={panelOpen}
+      title="Advanced search"
+      onclick={togglePanel}
+    >
+      <FilterIcon size={18} />
+    </button>
+    <button
+      type="button"
+      class="icon-btn"
+      aria-label="Help"
+      title="Keyboard shortcuts"
+      onclick={() => help.toggle()}
+    >
+      <HelpIcon size={20} />
+    </button>
+    <button
+      type="button"
+      class="icon-btn"
+      aria-label="Settings"
+      onclick={() => router.navigate('/settings')}
+    >
+      <SettingsIcon size={20} />
+    </button>
+  </div>
+</header>
 
-  {#if panelOpen}
+{#if panelOpen}
+  <!-- Transparent backdrop captures click-outside to dismiss the panel. -->
+  <div
+    class="search-panel-backdrop"
+    aria-hidden="true"
+    onclick={() => (panelOpen = false)}
+  ></div>
+  <div class="search-panel-popover">
     <AdvancedSearchPanel
       {currentQuery}
       onSearch={handlePanelSearch}
       onClose={() => (panelOpen = false)}
     />
-  {/if}
-</div>
+  </div>
+{/if}
 
 <style>
-  .global-bar-wrapper {
-    flex-shrink: 0;
-  }
   .global-bar {
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     gap: var(--spacing-04);
@@ -277,6 +282,38 @@
     }
     .brand {
       display: none;
+    }
+  }
+
+  /* ── Advanced-search popover ───────────────────────────────────────────────
+     The panel is rendered as a fixed overlay anchored just below the global
+     bar so it does not push the sidebar or the content columns down.
+
+     On wide viewports (>768px) the sidebar is 240px wide, so we start the
+     popover at left:240px to keep the sidebar fully visible.  On narrow
+     viewports the sidebar is hidden so we start at left:0.
+  */
+  .search-panel-backdrop {
+    position: fixed;
+    inset: 0;
+    /* Transparent — only captures pointer events to close the panel. */
+    background: transparent;
+    z-index: 200;
+  }
+
+  .search-panel-popover {
+    position: fixed;
+    top: var(--spacing-08); /* height of the global bar (40px) */
+    left: 240px;
+    right: 0;
+    z-index: 201;
+    /* Cap width so it doesn't stretch absurdly on very wide screens. */
+    max-width: 960px;
+  }
+
+  @media (max-width: 768px) {
+    .search-panel-popover {
+      left: 0;
     }
   }
 </style>
