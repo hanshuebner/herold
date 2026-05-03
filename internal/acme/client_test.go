@@ -2,11 +2,13 @@ package acme
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,8 +17,8 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness/fakeplugin"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
 
 // quickPoll is the poll interval used in client tests so the order
@@ -29,13 +31,14 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
-// newFS constructs the fakestore + fake clock used in every ACME test.
-func newFS(t *testing.T) (*fakestore.Store, *clock.FakeClock) {
+// newFS constructs the store + fake clock used in every ACME test.
+func newFS(t *testing.T) (store.Store, *clock.FakeClock) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	return fs, clk

@@ -2,10 +2,12 @@ package directory_test
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,7 +18,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // storeAuditFilter is a helper returning an empty AuditLogFilter so the
@@ -36,12 +38,13 @@ func (f *fakeResolveRcptInvoker) InvokeResolveRcpt(ctx context.Context, plugin s
 	return f.fn(ctx, plugin, req)
 }
 
-func newRcptResolver(t *testing.T, inv directory.ResolveRcptInvoker, perSec int) (*directory.RcptResolver, *clock.FakeClock, *fakestore.Store) {
+func newRcptResolver(t *testing.T, inv directory.ResolveRcptInvoker, perSec int) (*directory.RcptResolver, *clock.FakeClock, store.Store) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	r, err := directory.NewRcptResolver(directory.RcptResolverConfig{
@@ -356,9 +359,10 @@ func TestResolveRcpt_AuditLogWritten(t *testing.T) {
 func TestActivityTagged_ResolveRcpt_Failure(t *testing.T) {
 	observe.AssertActivityTagged(t, func(log *slog.Logger) {
 		clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-		fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+		dbPath := filepath.Join(t.TempDir(), "test.db")
+		fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 		if err != nil {
-			t.Fatalf("fakestore: %v", err)
+			t.Fatalf("storesqlite.OpenWithRand: %v", err)
 		}
 		defer fs.Close()
 		inv := &fakeResolveRcptInvoker{

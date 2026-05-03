@@ -19,11 +19,13 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // oidcStub is a minimal OIDC provider that speaks just enough of the
@@ -158,14 +160,13 @@ func (s *oidcStub) signIDToken() (string, error) {
 	return signingInput + "." + enc(sig), nil
 }
 
-func newFakeStore(t *testing.T) *fakestore.Store {
+func newFakeStore(t *testing.T) store.Store {
 	t.Helper()
-	fs, err := fakestore.New(fakestore.Options{
-		Clock:   clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
-		BlobDir: t.TempDir(),
-	})
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	return fs

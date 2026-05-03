@@ -13,8 +13,10 @@ package authsession_test
 
 import (
 	"context"
+	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -22,10 +24,25 @@ import (
 	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 var resolveTestKey = []byte("resolve-test-signing-key-32bytes")
+
+// newTestStore opens a fresh in-memory SQLite store for the given test.
+func newTestStore(t *testing.T, clk clock.Clock) store.Store {
+	t.Helper()
+	if clk == nil {
+		clk = clock.NewFake(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
+	}
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	st, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
+	if err != nil {
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
 
 func resolveTestConfig() authsession.SessionConfig {
 	return authsession.SessionConfig{
@@ -38,7 +55,7 @@ func resolveTestConfig() authsession.SessionConfig {
 }
 
 // insertTestPrincipal writes a minimal principal into fs and returns its ID.
-func insertTestPrincipal(t *testing.T, fs *fakestore.Store, email string, disabled bool) store.PrincipalID {
+func insertTestPrincipal(t *testing.T, fs store.Store, email string, disabled bool) store.PrincipalID {
 	t.Helper()
 	var flags store.PrincipalFlags
 	if disabled {
@@ -73,12 +90,9 @@ func requestWithSessionCookie(t *testing.T, cfg authsession.SessionConfig, sess 
 // TestResolveSession_NoCookie returns false when no cookie is present.
 func TestResolveSession_NoCookie(t *testing.T) {
 	t.Parallel()
-	fs, err := fakestore.New(fakestore.Options{})
-	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
-	}
-	cfg := resolveTestConfig()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
+	fs := newTestStore(t, clk)
+	cfg := resolveTestConfig()
 	req := httptest.NewRequest("GET", "/", nil) // no cookie
 	pid, ok := authsession.ResolveSession(req, cfg, fs, clk)
 	if ok {
@@ -92,12 +106,9 @@ func TestResolveSession_NoCookie(t *testing.T) {
 // TestResolveSession_BadSignature returns false when the cookie has a bad HMAC.
 func TestResolveSession_BadSignature(t *testing.T) {
 	t.Parallel()
-	fs, err := fakestore.New(fakestore.Options{})
-	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
-	}
-	cfg := resolveTestConfig()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
+	fs := newTestStore(t, clk)
+	cfg := resolveTestConfig()
 
 	// Encode a valid session with a different key so the signature is wrong.
 	wrongKey := []byte("wrong-signing-key-for-resolve-xx")
@@ -123,13 +134,10 @@ func TestResolveSession_BadSignature(t *testing.T) {
 // TestResolveSession_Expired returns false when the cookie is expired.
 func TestResolveSession_Expired(t *testing.T) {
 	t.Parallel()
-	fs, err := fakestore.New(fakestore.Options{})
-	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
-	}
-	cfg := resolveTestConfig()
 	issueAt := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	clk := clock.NewFake(issueAt)
+	fs := newTestStore(t, clk)
+	cfg := resolveTestConfig()
 
 	_ = insertTestPrincipal(t, fs, "expire@example.com", false)
 
@@ -157,10 +165,7 @@ func TestResolveSession_Expired(t *testing.T) {
 func TestResolveSession_OK(t *testing.T) {
 	t.Parallel()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk})
-	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
-	}
+	fs := newTestStore(t, clk)
 	cfg := resolveTestConfig()
 	pid := insertTestPrincipal(t, fs, "ok@example.com", false)
 
@@ -185,10 +190,7 @@ func TestResolveSession_OK(t *testing.T) {
 func TestResolveSessionWithScope_OK(t *testing.T) {
 	t.Parallel()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk})
-	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
-	}
+	fs := newTestStore(t, clk)
 	cfg := resolveTestConfig()
 	pid := insertTestPrincipal(t, fs, "scope@example.com", false)
 
@@ -219,10 +221,7 @@ func TestResolveSessionWithScope_OK(t *testing.T) {
 func TestResolveSession_DisabledPrincipal(t *testing.T) {
 	t.Parallel()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk})
-	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
-	}
+	fs := newTestStore(t, clk)
 	cfg := resolveTestConfig()
 	pid := insertTestPrincipal(t, fs, "disabled@example.com", true /* disabled */)
 

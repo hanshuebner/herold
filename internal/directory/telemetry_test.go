@@ -14,29 +14,32 @@ package directory_test
 
 import (
 	"context"
+	"crypto/rand"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // newDirForTelemetry builds a minimal Directory + fakestore + clock for
 // telemetry tests, seeding the "example.test" domain.
-func newDirForTelemetry(t *testing.T) (*directory.Directory, *fakestore.Store) {
+func newDirForTelemetry(t *testing.T) (*directory.Directory, store.Store) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	ctx := context.Background()
-	if err := fs.Meta().InsertDomain(ctx, store.Domain{Name: "example.test"}); err != nil {
+	if err := fs.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
 		t.Fatalf("seed domain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), slog.New(slog.NewTextHandler(io.Discard, nil)), clk, newDeterministicReader())

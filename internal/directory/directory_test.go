@@ -3,9 +3,11 @@ package directory_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,7 +17,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // newDir builds a Directory wired to a fresh fakestore, a FakeClock
@@ -25,16 +27,17 @@ import (
 // local domain (ErrUnknownDomain otherwise). The test fixtures pre-seed
 // the two domains the existing tests use so the CreatePrincipal call
 // sites do not all have to be touched.
-func newDir(t *testing.T) (*directory.Directory, *fakestore.Store, *clock.FakeClock) {
+func newDir(t *testing.T) (*directory.Directory, store.Store, *clock.FakeClock) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	for _, name := range []string{"example.test", "b.test"} {
-		if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: name}); err != nil {
+		if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: name, IsLocal: true}); err != nil {
 			t.Fatalf("seed domain %q: %v", name, err)
 		}
 	}
@@ -320,15 +323,16 @@ func mustGenerate(t *testing.T, secret string, at time.Time) string {
 func TestActivityTagged_CreatePrincipal(t *testing.T) {
 	observe.AssertActivityTagged(t, func(log *slog.Logger) {
 		clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-		fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+		dbPath := filepath.Join(t.TempDir(), "test.db")
+		fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 		if err != nil {
-			t.Fatalf("fakestore: %v", err)
+			t.Fatalf("storesqlite.OpenWithRand: %v", err)
 		}
 		defer fs.Close()
 		rnd := newDeterministicReader()
 		dir := directory.New(fs.Meta(), log, clk, rnd)
 		ctx := context.Background()
-		if err := fs.Meta().InsertDomain(ctx, store.Domain{Name: "example.test"}); err != nil {
+		if err := fs.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
 			t.Fatalf("seed domain: %v", err)
 		}
 		_, err = dir.CreatePrincipal(ctx, "alice@example.test", "correct-horse-staple")
@@ -343,15 +347,16 @@ func TestActivityTagged_CreatePrincipal(t *testing.T) {
 func TestActivityTagged_DeletePrincipal(t *testing.T) {
 	observe.AssertActivityTagged(t, func(log *slog.Logger) {
 		clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-		fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+		dbPath2 := filepath.Join(t.TempDir(), "test.db")
+		fs, err := storesqlite.OpenWithRand(context.Background(), dbPath2, nil, clk, rand.Reader)
 		if err != nil {
-			t.Fatalf("fakestore: %v", err)
+			t.Fatalf("storesqlite.OpenWithRand: %v", err)
 		}
 		defer fs.Close()
 		rnd := newDeterministicReader()
 		dir := directory.New(fs.Meta(), log, clk, rnd)
 		ctx := context.Background()
-		if err := fs.Meta().InsertDomain(ctx, store.Domain{Name: "example.test"}); err != nil {
+		if err := fs.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
 			t.Fatalf("seed domain: %v", err)
 		}
 		pid, err := dir.CreatePrincipal(ctx, "bob@example.test", "correct-horse-staple")
@@ -369,15 +374,16 @@ func TestActivityTagged_DeletePrincipal(t *testing.T) {
 func TestActivityTagged_UpdatePassword(t *testing.T) {
 	observe.AssertActivityTagged(t, func(log *slog.Logger) {
 		clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-		fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+		dbPath3 := filepath.Join(t.TempDir(), "test.db")
+		fs, err := storesqlite.OpenWithRand(context.Background(), dbPath3, nil, clk, rand.Reader)
 		if err != nil {
-			t.Fatalf("fakestore: %v", err)
+			t.Fatalf("storesqlite.OpenWithRand: %v", err)
 		}
 		defer fs.Close()
 		rnd := newDeterministicReader()
 		dir := directory.New(fs.Meta(), log, clk, rnd)
 		ctx := context.Background()
-		if err := fs.Meta().InsertDomain(ctx, store.Domain{Name: "example.test"}); err != nil {
+		if err := fs.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
 			t.Fatalf("seed domain: %v", err)
 		}
 		pid, err := dir.CreatePrincipal(ctx, "carol@example.test", "old-password-12chars")
