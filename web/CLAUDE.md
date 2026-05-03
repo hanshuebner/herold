@@ -91,6 +91,93 @@ so cookies attach to JMAP / chat-WS / login requests as if served
 from the same origin. Override `HEROLD_URL` to point at a herold
 instance other than `http://localhost:8080`.
 
+## UI changes require puppeteer verification
+
+Vitest + svelte-check are necessary but not sufficient. They cannot
+catch CSS layout bugs, drag-event browser quirks, focus traps,
+animation glitches, or visual regressions that only surface against
+a live ProseMirror / WebSocket / IndexedDB stack. **Any change to a
+`.svelte` file or to `src/**/*.{ts,css}` that affects what the user
+sees or interacts with MUST be exercised end-to-end via the
+puppeteer MCP server** (`mcp__puppeteer__puppeteer_navigate`,
+`_click`, `_fill`, `_screenshot`, `_evaluate`) against a running
+suite or admin dev server. Capture at least one screenshot of the
+new behaviour in the post-fix issue comment so the maintainer can
+compare without re-reproducing.
+
+**If the puppeteer MCP server is not in your tool list at the start
+of a UI task, pause the implementation, report the missing MCP, and
+wait for it to be restored.** Do not ship a UI change with test-only
+verification when puppeteer is the documented requirement. Pre-commit
+and CI catch type errors and snapshot drift; only the live browser
+catches the bugs the maintainer actually files.
+
+Manual loop (the user, on the reserved 8080 / 5173):
+`pnpm -C web dev --filter @herold/suite` (or `--filter
+@herold/admin`) starts Vite at `http://localhost:5173/` (suite) or
+`http://localhost:5174/` (admin). The Vite proxy forwards JMAP /
+chat-WS / login to a herold backend at `http://localhost:8080/` —
+the user starts that backend manually with their own quickstart
+config. Subagents must NOT use this loop; they spin up their own
+ephemeral instance via `scripts/dev-instance.sh` (see below).
+
+### Subagent ephemeral instances (REQUIRED)
+
+The user's manual herold instance owns ports `8080` (backend) and
+`5173` (Vite). **Subagents MUST NEVER bind those ports.** Every
+agent-driven puppeteer flow runs against its own ephemeral instance
+spun up by `scripts/dev-instance.sh`, which seeds a fresh tempdir
+and lets the kernel pick free ports for both the backend and Vite.
+
+Standard agent flow:
+
+```bash
+# Start a fresh instance in the foreground; capture its URLs.
+scripts/dev-instance.sh start | tee /tmp/instance.env
+# tee'd stdout shape:
+#   INSTANCE=<hex>
+#   STATE_DIR=/tmp/herold-instances/<hex>
+#   BACKEND_URL=http://127.0.0.1:<port>
+#   ADMIN_URL=http://127.0.0.1:<port>
+#   SUITE_URL=http://127.0.0.1:<port>
+#   IMAP_ADDR=127.0.0.1:<port>
+#   SMTP_ADDR=127.0.0.1:<port>
+#   SMTP_SUBMISSION_ADDR=127.0.0.1:<port>
+
+# Drive the puppeteer flow against $SUITE_URL above.
+# When done, kill the start invocation — the EXIT trap tears down.
+```
+
+When invoked from a Claude `Bash run_in_background` task, the agent
+captures the task's stdout (URLs appear as the first eight lines)
+and tears the instance down by calling `TaskStop` on the same task,
+or by running `scripts/dev-instance.sh stop <id>` explicitly.
+
+The seed always provisions:
+
+- domain `example.local`
+- principals `admin@example.local`, `alice@example.local`,
+  `filip@example.local`, `bob@example.local`
+- password (all four): `testpass123...` — the three trailing dots
+  are part of the password, not an ellipsis
+
+These are dev-only credentials in an ephemeral SQLite store; not
+secrets, not deployed, never persisted between runs.
+
+Cleanup discipline:
+
+- `scripts/dev-instance.sh list` shows every live instance.
+- `scripts/dev-instance.sh gc` removes tempdirs whose pids are dead
+  — agents should run it once at the start of a session if they
+  suspect stale state.
+- The script also accepts `--detach` for cases where the agent must
+  exit before the instance dies; in that mode the agent owns the
+  teardown contract via `stop <id>`.
+
+These are dev-only credentials in a local SQLite store; they are
+not secrets and are not deployed anywhere. Use them to drive the
+SPA past the sign-in screen during UI verification.
+
 ## House rules
 
 - No build pipeline state checked in to `web/apps/*/dist/` or
