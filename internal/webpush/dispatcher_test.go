@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +17,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/vapid"
 )
 
@@ -81,7 +82,7 @@ func (g *fakeGateway) Close() { g.srv.Close() }
 
 // dispatcherFixture bundles the moving parts of an e2e push test.
 type dispatcherFixture struct {
-	store   *fakestore.Store
+	store   store.Store
 	clk     *clock.FakeClock
 	disp    *Dispatcher
 	pid     store.PrincipalID
@@ -94,9 +95,10 @@ type dispatcherFixture struct {
 func newDispatcherFixture(t *testing.T, status int, opts ...func(*Options)) *dispatcherFixture {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC))
-	st, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	st, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
@@ -374,9 +376,10 @@ func TestDispatcher_TypeFilter_SkipsNonMatching(t *testing.T) {
 func TestDispatcher_RunBlocksWithoutVAPID(t *testing.T) {
 	t.Parallel()
 	clk := clock.NewFake(time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC))
-	st, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	st, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	defer st.Close()
 	disp, err := New(Options{

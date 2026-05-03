@@ -2,8 +2,10 @@ package storefts_test
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +16,7 @@ import (
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storefts"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // stringExtractor is a deterministic TextExtractor for tests: it reads
@@ -33,13 +35,13 @@ func (stringExtractor) Extract(ctx context.Context, _ store.Message, body io.Rea
 	return string(b), nil
 }
 
-// workerHarness wires up the fakestore + index + worker under a FakeClock
+// workerHarness wires up the store + index + worker under a FakeClock
 // so tests control time and batching precisely.
 type workerHarness struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	clk    *clock.FakeClock
-	store  *fakestore.Store
+	store  store.Store
 	idx    *storefts.Index
 	worker *storefts.Worker
 	done   chan error
@@ -48,9 +50,10 @@ type workerHarness struct {
 func newWorkerHarness(t *testing.T, opts storefts.WorkerOptions) *workerHarness {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fake, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fake, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	idx, err := storefts.New(t.TempDir(), nil, clk)
 	if err != nil {
@@ -280,9 +283,10 @@ func TestWorker_Lag(t *testing.T) {
 // cursor value is non-zero and equals the first worker's.
 func TestWorker_CursorPersistsAcrossRestart(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fake, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fake, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = fake.Close() })
 	idx, err := storefts.New(t.TempDir(), nil, clk)

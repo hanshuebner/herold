@@ -3,6 +3,7 @@ package protowebhook_test
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,7 +23,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protowebhook"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // dispatcherHarness wires a fakestore + dispatcher + httptest receiver
@@ -33,7 +35,7 @@ type dispatcherHarness struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	clk        *clock.FakeClock
-	store      *fakestore.Store
+	store      store.Store
 	dispatcher *protowebhook.Dispatcher
 	receiver   *httptest.Server
 	signingKey []byte
@@ -56,9 +58,10 @@ type receivedReq struct {
 func newDispatcherHarness(t *testing.T, opts dispatcherHarnessOptions) *dispatcherHarness {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC))
-	fake, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fake, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	h := &dispatcherHarness{
 		t:          t,
@@ -435,9 +438,10 @@ func TestDispatch_4xx_PermanentNoRetry(t *testing.T) {
 // 403 from the FetchHandler.
 func TestFetchURL_ExpiredToken_403(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC))
-	fake, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fake, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	defer fake.Close()
 	key := []byte("k")
@@ -470,9 +474,10 @@ func TestFetchURL_ExpiredToken_403(t *testing.T) {
 // request.
 func TestFetchURL_BadHMAC_403(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC))
-	fake, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath2 := filepath.Join(t.TempDir(), "test.db")
+	fake, err := storesqlite.OpenWithRand(context.Background(), dbPath2, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	defer fake.Close()
 	key := []byte("k")
@@ -511,9 +516,10 @@ func TestFetchURL_BadHMAC_403(t *testing.T) {
 // second dispatcher does not re-deliver the same message.
 func TestRunResume_FromCursor_AfterRestart(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC))
-	fake, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath3 := filepath.Join(t.TempDir(), "test.db")
+	fake, err := storesqlite.OpenWithRand(context.Background(), dbPath3, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	defer fake.Close()
 

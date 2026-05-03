@@ -3,19 +3,21 @@ package trashretention_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/trashretention"
 )
 
-// trashFixture holds a fakestore pre-populated with one principal and one
+// trashFixture holds a store pre-populated with one principal and one
 // Trash mailbox. The FakeClock lets tests control InternalDate values.
 type trashFixture struct {
-	store   *fakestore.Store
+	store   store.Store
 	clk     *clock.FakeClock
 	pid     store.PrincipalID
 	trashID store.MailboxID
@@ -24,12 +26,10 @@ type trashFixture struct {
 func newTrashFixture(t *testing.T) *trashFixture {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
-	s, err := fakestore.New(fakestore.Options{
-		Clock:   clk,
-		BlobDir: t.TempDir(),
-	})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	ctx := context.Background()
@@ -163,9 +163,10 @@ func TestWorker_EmptyTrash(t *testing.T) {
 // principals gracefully.
 func TestWorker_NoPrincipalNoTrash(t *testing.T) {
 	clk := clock.NewFake(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
-	s, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	w := trashretention.NewWorker(trashretention.Options{

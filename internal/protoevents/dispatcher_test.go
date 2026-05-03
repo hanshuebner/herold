@@ -2,11 +2,13 @@ package protoevents_test
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,7 +17,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protoevents"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // fakeInvoker is a stand-in for *plugin.Manager. Tests register
@@ -147,14 +149,15 @@ func TestEmit_ReachesPublishers(t *testing.T) {
 	<-loopDone
 }
 
-// TestEmit_ChangeFeed_DerivedKinds drives the fakestore change feed and
+// TestEmit_ChangeFeed_DerivedKinds drives the store change feed and
 // asserts that mail.received events appear at the registered publisher.
 func TestEmit_ChangeFeed_DerivedKinds(t *testing.T) {
 	t.Parallel()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	st, err := fakestore.New(fakestore.Options{Clock: clk})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	st, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	defer st.Close()
 
@@ -348,9 +351,10 @@ func TestBuffer_FullBlocksEmit(t *testing.T) {
 func TestCursorResume_AcrossRestart(t *testing.T) {
 	t.Parallel()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	st, err := fakestore.New(fakestore.Options{Clock: clk})
+	dbPath2 := filepath.Join(t.TempDir(), "test.db")
+	st, err := storesqlite.OpenWithRand(context.Background(), dbPath2, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	defer st.Close()
 

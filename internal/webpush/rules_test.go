@@ -400,12 +400,13 @@ func TestEvaluate_CalendarInvite(t *testing.T) {
 		t.Fatalf("InsertCalendar: %v", err)
 	}
 	cevID, err := st.Meta().InsertCalendarEvent(context.Background(), store.CalendarEvent{
-		CalendarID:  calID,
-		PrincipalID: pid,
-		UID:         "evt-1",
-		Summary:     "Standup",
-		Start:       time.Now().UTC(),
-		End:         time.Now().UTC().Add(time.Hour),
+		CalendarID:     calID,
+		PrincipalID:    pid,
+		UID:            "evt-1",
+		Summary:        "Standup",
+		JSCalendarJSON: []byte(`{"@type":"Event","uid":"evt-1","title":"Standup"}`),
+		Start:          time.Now().UTC(),
+		End:            time.Now().UTC().Add(time.Hour),
 	})
 	if err != nil {
 		t.Fatalf("InsertCalendarEvent: %v", err)

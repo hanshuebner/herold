@@ -11,9 +11,11 @@ package protowebhook_test
 
 import (
 	"context"
+	"crypto/rand"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -23,7 +25,7 @@ import (
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protowebhook"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // webhookCaptureHandler is a test-only slog.Handler that fires
@@ -92,12 +94,13 @@ func (h *webhookCaptureHandler) hasActivityLevel(activity string, minLevel slog.
 
 // newWebhookTagHarness constructs a minimal dispatcher test fixture with
 // a recording logger.
-func newWebhookTagHarness(t *testing.T, lg *slog.Logger, respond func(w http.ResponseWriter, r *http.Request)) (*protowebhook.Dispatcher, *fakestore.Store, *clock.FakeClock, *httptest.Server, chan struct{}) {
+func newWebhookTagHarness(t *testing.T, lg *slog.Logger, respond func(w http.ResponseWriter, r *http.Request)) (*protowebhook.Dispatcher, store.Store, *clock.FakeClock, *httptest.Server, chan struct{}) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 
 	notify := make(chan struct{}, 64)
@@ -135,7 +138,7 @@ func newWebhookTagHarness(t *testing.T, lg *slog.Logger, respond func(w http.Res
 
 // seedAndDeliverMessage creates the minimal store objects and inserts a
 // message that will trigger the webhook dispatcher.
-func seedAndDeliverMessage(t *testing.T, ctx context.Context, fs *fakestore.Store, recvURL string) {
+func seedAndDeliverMessage(t *testing.T, ctx context.Context, fs store.Store, recvURL string) {
 	t.Helper()
 	p, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
 		Kind:           store.PrincipalKindUser,
@@ -156,6 +159,7 @@ func seedAndDeliverMessage(t *testing.T, ctx context.Context, fs *fakestore.Stor
 		OwnerKind:    store.WebhookOwnerDomain,
 		OwnerID:      "tag.example",
 		TargetURL:    recvURL,
+		HMACSecret:   []byte("tag-test-signing-key"),
 		DeliveryMode: store.DeliveryModeInline,
 		Active:       true,
 	})

@@ -9,12 +9,14 @@ package protologin_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -24,7 +26,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/protologin"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 var testSigningKey = []byte("protologin-test-key-32bytes-xxxx")
@@ -34,18 +36,20 @@ func publicSessionScopes(_ store.Principal) auth.ScopeSet {
 	return auth.NewScopeSet(auth.AllEndUserScopes...)
 }
 
-// newTestServer creates a minimal protologin.Server backed by a fakestore
+// newTestServer creates a minimal protologin.Server backed by storesqlite
 // and a real directory. It inserts one principal with email / password and
 // returns the server, the base test server, and the email + password.
-func newTestServer(t *testing.T) (*httptest.Server, *fakestore.Store, *directory.Directory, string, string) {
+func newTestServer(t *testing.T) (*httptest.Server, store.Store, *directory.Directory, string, string) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
-	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
-		t.Fatalf("seed domain: %v", err)
+	t.Cleanup(func() { _ = fs.Close() })
+	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: "example.com", IsLocal: true}); err != nil {
+		t.Fatalf("InsertDomain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 

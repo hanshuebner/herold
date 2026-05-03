@@ -13,11 +13,13 @@ package protosend_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -26,17 +28,18 @@ import (
 	"github.com/hanshuebner/herold/internal/protosend"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
-// buildSendTagServer constructs a protosend.Server backed by fakestore +
+// buildSendTagServer constructs a protosend.Server backed by storesqlite +
 // fakeQueue using the supplied recording logger.
-func buildSendTagServer(t *testing.T, lg *slog.Logger) (*protosend.Server, *fakestore.Store, string) {
+func buildSendTagServer(t *testing.T, lg *slog.Logger) (*protosend.Server, store.Store, string) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 
@@ -145,9 +148,10 @@ func TestSendActivityTag_SendAccepted_IsUser(t *testing.T) {
 		},
 	})
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	defer fs.Close()
 	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: "example.test", IsLocal: true}); err != nil {
@@ -196,9 +200,10 @@ func TestSendActivityTag_SendRawAccepted_IsUser(t *testing.T) {
 		},
 	})
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath2 := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath2, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	defer fs.Close()
 	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: "example.test", IsLocal: true}); err != nil {
@@ -247,9 +252,10 @@ func TestSendActivityTag_AuthFailure_IsAudit(t *testing.T) {
 		},
 	})
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath3 := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath3, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	defer fs.Close()
 	srv := protosend.NewServer(fs, nil, &fakeTagQueue{}, nil, lg, clk, protosend.Options{

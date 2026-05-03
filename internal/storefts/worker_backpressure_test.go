@@ -2,21 +2,23 @@ package storefts_test
 
 import (
 	"context"
+	"crypto/rand"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storefts"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
-// backpressureStore wraps a fakestore.Store and records the number of
+// backpressureStore wraps a store.Store and records the number of
 // times ReadChangeFeedForFTS has been called. Lets the backpressure test
 // assert the worker is sleeping on the clock (one poll per flush
 // interval) rather than spinning.
 type backpressureStore struct {
-	*fakestore.Store
+	store.Store
 	fts *backpressureFTS
 }
 
@@ -53,9 +55,10 @@ func (b *backpressureFTS) Commit(ctx context.Context) error { return b.inner.Com
 
 func TestWorker_BackpressureOnEmptyFeed(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fake, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fake, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = fake.Close() })
 

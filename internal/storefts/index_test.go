@@ -2,15 +2,17 @@ package storefts_test
 
 import (
 	"context"
+	"crypto/rand"
 	"io"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storefts"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness/corpus"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
 
 // newIndex returns a fresh storefts.Index rooted at t.TempDir().
@@ -321,12 +323,11 @@ func TestIndexCorpus(t *testing.T) {
 	idx := newIndex(t)
 	ctx := context.Background()
 
-	fake, err := fakestore.New(fakestore.Options{
-		Clock:   clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
-		BlobDir: t.TempDir(),
-	})
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fake, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = fake.Close() })
 

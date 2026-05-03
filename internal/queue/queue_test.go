@@ -3,10 +3,12 @@ package queue_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,7 +18,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // -- test fixtures ----------------------------------------------------
@@ -117,7 +119,7 @@ func (s *recordingSigner) Sign(ctx context.Context, domain string, message []byt
 type fixture struct {
 	t      *testing.T
 	clk    *clock.FakeClock
-	store  *fakestore.Store
+	store  store.Store
 	deliv  *fakeDeliverer
 	queue  *queue.Queue
 	cancel context.CancelFunc
@@ -137,9 +139,10 @@ type fixtureOpts struct {
 func newFixture(t *testing.T, opts fixtureOpts) *fixture {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	st, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	st, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	deliv := newFakeDeliverer()
@@ -902,6 +905,15 @@ func TestDeliver_ExternalSubmissionItem(t *testing.T) {
 	ctx := f.ctx
 	now := f.clk.Now()
 
+	// Seed a principal that foreign keys in subsequent rows reference.
+	alice, err := f.store.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+
 	// Use a fixed envelope id so the EmailSubmissionRow can be planted
 	// before the queue row exists.
 	envID := queue.EnvelopeID("ext-submission-test-fixed-envelope")
@@ -910,7 +922,7 @@ func TestDeliver_ExternalSubmissionItem(t *testing.T) {
 	const identityID = "ext-identity-1"
 	if err := f.store.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
 		ID:          identityID,
-		PrincipalID: 1,
+		PrincipalID: alice.ID,
 		Email:       "alice@example.com",
 		Name:        "Alice",
 		MayDelete:   true,
@@ -935,7 +947,7 @@ func TestDeliver_ExternalSubmissionItem(t *testing.T) {
 	if err := f.store.Meta().InsertEmailSubmission(ctx, store.EmailSubmissionRow{
 		ID:          string(envID),
 		EnvelopeID:  envID,
-		PrincipalID: 1,
+		PrincipalID: alice.ID,
 		IdentityID:  identityID,
 		UndoStatus:  "pending",
 		SendAtUs:    now.UnixMicro(),
@@ -953,7 +965,7 @@ func TestDeliver_ExternalSubmissionItem(t *testing.T) {
 		t.Fatalf("Blobs.Put: %v", err)
 	}
 	if _, err := f.store.Meta().EnqueueMessage(ctx, store.QueueItem{
-		PrincipalID:   1,
+		PrincipalID:   alice.ID,
 		MailFrom:      "alice@example.com",
 		RcptTo:        "bob@dest.test",
 		EnvelopeID:    envID,

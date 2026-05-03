@@ -2,19 +2,21 @@ package chatretention_test
 
 import (
 	"context"
+	"crypto/rand"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/chatretention"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
-// fixture builds a fakestore with one principal, one Space conversation
+// fixture builds a store with one principal, one Space conversation
 // and the worker under test wired to a deterministic FakeClock.
 type fixture struct {
-	store *fakestore.Store
+	store store.Store
 	clk   *clock.FakeClock
 	pid   store.PrincipalID
 	cid   store.ConversationID
@@ -23,12 +25,10 @@ type fixture struct {
 func newFixture(t *testing.T, retentionSeconds *int64) *fixture {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
-	s, err := fakestore.New(fakestore.Options{
-		Clock:   clk,
-		BlobDir: t.TempDir(),
-	})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	ctx := context.Background()
@@ -348,12 +348,10 @@ func TestWorker_Retention_BoundaryAtPlusOne(t *testing.T) {
 // origin (2026-01-01) without coupling to the package-level helper.
 func newBoundaryFixture(t *testing.T, clk *clock.FakeClock, retentionSeconds *int64) *fixture {
 	t.Helper()
-	s, err := fakestore.New(fakestore.Options{
-		Clock:   clk,
-		BlobDir: t.TempDir(),
-	})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	ctx := context.Background()

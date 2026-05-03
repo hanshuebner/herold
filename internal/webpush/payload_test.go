@@ -2,24 +2,25 @@ package webpush
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
-func newTestStore(t *testing.T) *fakestore.Store {
+func newTestStore(t *testing.T) store.Store {
 	t.Helper()
-	s, err := fakestore.New(fakestore.Options{
-		Clock:   clock.NewFake(time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)),
-		BlobDir: t.TempDir(),
-	})
+	clk := clock.NewFake(time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC))
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
@@ -170,7 +171,7 @@ func TestTruncateUTF8(t *testing.T) {
 	}
 }
 
-func mustInsertPrincipal(t *testing.T, st *fakestore.Store, email string) store.PrincipalID {
+func mustInsertPrincipal(t *testing.T, st store.Store, email string) store.PrincipalID {
 	t.Helper()
 	p, err := st.Meta().InsertPrincipal(context.Background(), store.Principal{
 		Kind:           store.PrincipalKindUser,
@@ -182,7 +183,7 @@ func mustInsertPrincipal(t *testing.T, st *fakestore.Store, email string) store.
 	return p.ID
 }
 
-func mustInsertMailbox(t *testing.T, st *fakestore.Store, pid store.PrincipalID, name string) store.MailboxID {
+func mustInsertMailbox(t *testing.T, st store.Store, pid store.PrincipalID, name string) store.MailboxID {
 	t.Helper()
 	m, err := st.Meta().InsertMailbox(context.Background(), store.Mailbox{
 		PrincipalID: pid,

@@ -3,11 +3,13 @@ package protosend_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,8 +20,8 @@ import (
 	"github.com/hanshuebner/herold/internal/protosend"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
 
 // fakeQueue is a minimal Submitter that records every Submit call and
@@ -102,10 +104,12 @@ type sendHarness struct {
 func newSendHarness(t *testing.T) *sendHarness {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
+	t.Cleanup(func() { _ = fs.Close() })
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs,
 		Clock: clk,
@@ -134,6 +138,7 @@ func newSendHarness(t *testing.T) *sendHarness {
 		PrincipalID: p.ID,
 		Hash:        hash,
 		Name:        "alice-send",
+		ScopeJSON:   `["mail.send"]`,
 	})
 	if err != nil {
 		t.Fatalf("InsertAPIKey: %v", err)
@@ -644,10 +649,12 @@ func TestRateLimit_PerKey_429(t *testing.T) {
 func newSendHarnessWithRate(t *testing.T, rate int) *sendHarness {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
+	t.Cleanup(func() { _ = fs.Close() })
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs, Clock: clk,
 		Listeners: []testharness.ListenerSpec{
@@ -668,6 +675,7 @@ func newSendHarnessWithRate(t *testing.T, rate int) *sendHarness {
 	plain, hash := mintKey(t)
 	apiKey, err := fs.Meta().InsertAPIKey(context.Background(), store.APIKey{
 		PrincipalID: p.ID, Hash: hash, Name: "alice-send",
+		ScopeJSON: `["mail.send"]`,
 	})
 	if err != nil {
 		t.Fatalf("InsertAPIKey: %v", err)
@@ -787,10 +795,12 @@ func (panicQueue) Submit(ctx context.Context, msg queue.Submission) (queue.Envel
 
 func TestPanic_InHandler_Returns500_NotCrash(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fs, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
+	t.Cleanup(func() { _ = fs.Close() })
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs, Clock: clk,
 		Listeners: []testharness.ListenerSpec{
@@ -811,6 +821,7 @@ func TestPanic_InHandler_Returns500_NotCrash(t *testing.T) {
 	plain, hash := mintKey(t)
 	if _, err := fs.Meta().InsertAPIKey(context.Background(), store.APIKey{
 		PrincipalID: p.ID, Hash: hash, Name: "k",
+		ScopeJSON: `["mail.send"]`,
 	}); err != nil {
 		t.Fatalf("InsertAPIKey: %v", err)
 	}

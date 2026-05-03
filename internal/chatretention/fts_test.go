@@ -2,7 +2,9 @@ package chatretention_test
 
 import (
 	"context"
+	"crypto/rand"
 	"io"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,7 +12,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storefts"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // stringExtractor is a deterministic TextExtractor for tests; the chat
@@ -83,12 +85,10 @@ func drainFTS(
 // which eliminates all timing races without wall-clock polling.
 func TestWorker_HardDelete_RemovesFromFTSIndex(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	st, err := fakestore.New(fakestore.Options{
-		Clock:   clk,
-		BlobDir: t.TempDir(),
-	})
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	st, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
