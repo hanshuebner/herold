@@ -48,6 +48,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap/calendars/imip"
 	jmapchat "github.com/hanshuebner/herold/internal/protojmap/chat"
 	jmapcoach "github.com/hanshuebner/herold/internal/protojmap/coach"
+	jmapcontacts "github.com/hanshuebner/herold/internal/protojmap/contacts"
 	jmapllmtransparency "github.com/hanshuebner/herold/internal/protojmap/llmtransparency"
 	jmapmail "github.com/hanshuebner/herold/internal/protojmap/mail"
 	jmapcatsettings "github.com/hanshuebner/herold/internal/protojmap/mail/categorysettings"
@@ -2107,6 +2108,11 @@ func composeAdminAndUI(
 	// SeenAddress (REQ-MAIL-11e..m): recipient autocomplete history, exposed
 	// under urn:ietf:params:jmap:mail (no new capability URI needed).
 	jmapseenaddress.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-seenaddress"), clk)
+	// JMAP Contacts (REQ-PROTO-55): AddressBook/* and Contact/* method
+	// families. Registering here advertises CapabilityJMAPContacts in the
+	// JMAP session's primaryAccounts map so the suite SPA can resolve a
+	// contacts accountId for Contact/set ("Add Contact") and Contact/get.
+	jmapcontacts.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-contacts"), clk)
 	// JMAP PushSubscription (REQ-PROTO-120..122). The VAPID key
 	// reference is operator-supplied; an unconfigured deployment
 	// still advertises the capability but omits applicationServerKey
