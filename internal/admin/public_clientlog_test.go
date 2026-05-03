@@ -134,15 +134,28 @@ type captureLogger struct {
 	buf bytes.Buffer
 }
 
-func (cl *captureLogger) Logger() *slog.Logger {
-	return slog.New(slog.NewJSONHandler(&cl.buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-}
-
-// records returns all JSON log records captured so far.
-func (cl *captureLogger) records() []map[string]any {
+// Write satisfies io.Writer under cl.mu so the slog handler's writes are
+// serialised against records() readers. Without this, slog handler
+// goroutines write &cl.buf concurrently with the test goroutine reading
+// it, which the race detector flags (see CI run 25272291274).
+func (cl *captureLogger) Write(p []byte) (int, error) {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
-	dec := json.NewDecoder(bytes.NewReader(cl.buf.Bytes()))
+	return cl.buf.Write(p)
+}
+
+func (cl *captureLogger) Logger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(cl, &slog.HandlerOptions{Level: slog.LevelInfo}))
+}
+
+// records returns all JSON log records captured so far. Snapshot the
+// bytes under lock before decoding so a concurrent Write cannot mutate
+// the buffer's backing array while the json.Decoder is reading it.
+func (cl *captureLogger) records() []map[string]any {
+	cl.mu.Lock()
+	snapshot := append([]byte(nil), cl.buf.Bytes()...)
+	cl.mu.Unlock()
+	dec := json.NewDecoder(bytes.NewReader(snapshot))
 	var out []map[string]any
 	for {
 		var m map[string]any
