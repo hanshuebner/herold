@@ -343,6 +343,77 @@ func TestContact_Query_HasEmail(t *testing.T) {
 	}
 }
 
+func TestContact_Set_Create_DefaultsToDefaultAddressBook(t *testing.T) {
+	// Regression test for issue #62: when addressBookId is absent from a
+	// Contact/set create body, the server should auto-assign the
+	// principal's default address book instead of returning
+	// invalidProperties. The hover-card "Add Contact" button omits
+	// addressBookId to avoid a separate AddressBook/get round-trip.
+	f := setupFixture(t)
+	makeBook(t, f, "Personal") // IsDefault is set by makeBook
+
+	_, raw := f.invoke(t, "Contact/set", map[string]any{
+		"accountId": string(protojmap.AccountIDForPrincipal(f.pid)),
+		"create": map[string]any{
+			"new1": map[string]any{
+				"name":   map[string]any{"full": "Bob Builder"},
+				"emails": map[string]any{"primary": map[string]any{"address": "bob@example.test"}},
+			},
+		},
+	})
+	var setResp struct {
+		Created    map[string]map[string]any `json:"created"`
+		NotCreated map[string]any            `json:"notCreated"`
+	}
+	if err := json.Unmarshal(raw, &setResp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(setResp.NotCreated) != 0 {
+		t.Fatalf("unexpected notCreated: %+v", setResp.NotCreated)
+	}
+	if len(setResp.Created) != 1 {
+		t.Fatalf("want 1 created, got %d: %+v", len(setResp.Created), setResp.Created)
+	}
+	entry, ok := setResp.Created["new1"]
+	if !ok {
+		t.Fatalf("created.new1 missing: %+v", setResp.Created)
+	}
+	if entry["id"] == "" || entry["id"] == nil {
+		t.Errorf("created entry has no id: %+v", entry)
+	}
+}
+
+func TestContact_Set_Create_NoDefaultAddressBook_ReturnsError(t *testing.T) {
+	// When the principal has no default address book and addressBookId is
+	// absent, Contact/set should return notCreated with a clear error
+	// rather than an internal server fault.
+	f := setupFixture(t)
+	// No address book created — principal has none.
+
+	_, raw := f.invoke(t, "Contact/set", map[string]any{
+		"accountId": string(protojmap.AccountIDForPrincipal(f.pid)),
+		"create": map[string]any{
+			"new1": map[string]any{
+				"name":   map[string]any{"full": "Nameless"},
+				"emails": map[string]any{"primary": map[string]any{"address": "nameless@example.test"}},
+			},
+		},
+	})
+	var setResp struct {
+		Created    map[string]map[string]any `json:"created"`
+		NotCreated map[string]any            `json:"notCreated"`
+	}
+	if err := json.Unmarshal(raw, &setResp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(setResp.Created) != 0 {
+		t.Fatalf("unexpected created: %+v", setResp.Created)
+	}
+	if _, ok := setResp.NotCreated["new1"]; !ok {
+		t.Fatalf("expected notCreated.new1, got: %+v", setResp.NotCreated)
+	}
+}
+
 func TestContact_Changes_FromState(t *testing.T) {
 	f := setupFixture(t)
 	bookID := makeBook(t, f, "P")

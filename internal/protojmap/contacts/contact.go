@@ -385,41 +385,54 @@ func (h *handlerSet) createContact(
 		return store.Contact{}, &setError{Type: "invalidProperties", Description: err.Error()}, nil
 	}
 	abRaw, hasAB := probe["addressBookId"]
+	var ab store.AddressBook
 	if !hasAB {
-		return store.Contact{}, &setError{
-			Type: "invalidProperties", Properties: []string{"addressBookId"},
-			Description: "addressBookId is required",
-		}, nil
-	}
-	var abIDStr string
-	if err := json.Unmarshal(abRaw, &abIDStr); err != nil {
-		return store.Contact{}, &setError{
-			Type: "invalidProperties", Properties: []string{"addressBookId"},
-			Description: "addressBookId must be a string",
-		}, nil
-	}
-	abID, ok := addressBookIDFromJMAP(abIDStr)
-	if !ok {
-		return store.Contact{}, &setError{
-			Type: "invalidProperties", Properties: []string{"addressBookId"},
-			Description: "unknown addressBookId",
-		}, nil
-	}
-	ab, err := h.store.Meta().GetAddressBook(ctx, abID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		// addressBookId is absent: fall back to the principal's default
+		// address book so callers like the hover-card "Add Contact" button
+		// do not need a prior AddressBook/get round-trip.
+		defAB, err := h.store.Meta().DefaultAddressBook(ctx, pid)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return store.Contact{}, &setError{
+					Type: "invalidProperties", Properties: []string{"addressBookId"},
+					Description: "no default address book; provide addressBookId",
+				}, nil
+			}
+			return store.Contact{}, nil, fmt.Errorf("contacts: load default book: %w", err)
+		}
+		ab = defAB
+	} else {
+		var abIDStr string
+		if err := json.Unmarshal(abRaw, &abIDStr); err != nil {
 			return store.Contact{}, &setError{
 				Type: "invalidProperties", Properties: []string{"addressBookId"},
-				Description: "addressBookId references unknown address book",
+				Description: "addressBookId must be a string",
 			}, nil
 		}
-		return store.Contact{}, nil, fmt.Errorf("contacts: load book: %w", err)
-	}
-	if ab.PrincipalID != pid {
-		return store.Contact{}, &setError{
-			Type: "invalidProperties", Properties: []string{"addressBookId"},
-			Description: "addressBookId is not accessible to this principal",
-		}, nil
+		abID, ok := addressBookIDFromJMAP(abIDStr)
+		if !ok {
+			return store.Contact{}, &setError{
+				Type: "invalidProperties", Properties: []string{"addressBookId"},
+				Description: "unknown addressBookId",
+			}, nil
+		}
+		loaded, err := h.store.Meta().GetAddressBook(ctx, abID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return store.Contact{}, &setError{
+					Type: "invalidProperties", Properties: []string{"addressBookId"},
+					Description: "addressBookId references unknown address book",
+				}, nil
+			}
+			return store.Contact{}, nil, fmt.Errorf("contacts: load book: %w", err)
+		}
+		if loaded.PrincipalID != pid {
+			return store.Contact{}, &setError{
+				Type: "invalidProperties", Properties: []string{"addressBookId"},
+				Description: "addressBookId is not accessible to this principal",
+			}, nil
+		}
+		ab = loaded
 	}
 
 	// Strip JMAP-projected properties from the body before storing.
@@ -458,7 +471,7 @@ func (h *handlerSet) createContact(
 
 	row := store.Contact{
 		PrincipalID:   pid,
-		AddressBookID: abID,
+		AddressBookID: ab.ID,
 		UID:           card.UID,
 		DisplayName:   card.DisplayName(),
 		PrimaryEmail:  card.PrimaryEmail(),

@@ -101,6 +101,7 @@ import RecipientHoverCard from './RecipientHoverCard.svelte';
 // Use the REAL singleton so $derived(recipientHover.open) tracks it.
 import { recipientHover } from './recipient-hover.svelte';
 import { peekPerson, resolvePerson } from './person-resolver.svelte';
+import { jmap, strict } from '../jmap/client';
 import { chat } from '../chat/store.svelte';
 import { chatOverlay } from '../chat/overlay-store.svelte';
 import { newChatPicker } from '../chat/new-chat-picker.svelte';
@@ -221,5 +222,113 @@ describe('RecipientHoverCard handleChat (re #61)', () => {
     });
     expect(chatOverlay.openWindow).not.toHaveBeenCalled();
     expect(newChatPicker.open).not.toHaveBeenCalled();
+  });
+});
+
+describe('RecipientHoverCard handleAddContact (re #62)', () => {
+  /**
+   * Open the hover card for a person with no existing contactId and
+   * return the "Add Contact" button.
+   */
+  async function openCardAndFindAddButton() {
+    const person = {
+      email: 'bob@example.com',
+      displayName: 'Bob',
+      avatarUrl: null as string | null,
+      phones: [] as { type: string; number: string }[],
+      contactId: null as string | null, // no contact yet
+      principalId: null as string | null,
+    };
+    vi.mocked(peekPerson).mockReturnValue(person);
+    vi.mocked(resolvePerson).mockResolvedValue(person);
+    recipientHover.requestOpen(
+      {
+        anchor: document.createElement('button'),
+        email: 'bob@example.com',
+        capturedName: 'Bob',
+      },
+      { immediate: true },
+    );
+    return screen.findByRole('button', { name: 'contact.card.add' });
+  }
+
+  it('shows an error toast when server returns notCreated (re #62)', async () => {
+    // Simulate the server returning notCreated.new1 (e.g. no default
+    // address book, or any other server-side validation error).
+    const fakeResponse = {
+      responses: [
+        [
+          'Contact/set',
+          {
+            accountId: 'acc-1',
+            oldState: '0',
+            newState: '0',
+            created: {},
+            notCreated: {
+              new1: {
+                type: 'invalidProperties',
+                description: 'no default address book; provide addressBookId',
+              },
+            },
+            updated: {},
+            destroyed: [],
+          },
+          'c0',
+        ],
+      ],
+    };
+    vi.mocked(jmap.batch).mockResolvedValue(fakeResponse as never);
+    vi.mocked(strict).mockReturnValue(fakeResponse.responses as never);
+
+    render(RecipientHoverCard);
+    const addBtn = await openCardAndFindAddButton();
+    await fireEvent.click(addBtn);
+
+    await waitFor(() => {
+      expect(toast.show).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'error' }),
+      );
+    });
+  });
+
+  it('updates contactId when server successfully creates contact (re #62)', async () => {
+    const fakeResponse = {
+      responses: [
+        [
+          'Contact/set',
+          {
+            accountId: 'acc-1',
+            oldState: '0',
+            newState: '1',
+            created: {
+              new1: {
+                id: 'c-42',
+                addressBookId: 'ab-1',
+              },
+            },
+            notCreated: {},
+            updated: {},
+            destroyed: [],
+          },
+          'c0',
+        ],
+      ],
+    };
+    vi.mocked(jmap.batch).mockResolvedValue(fakeResponse as never);
+    vi.mocked(strict).mockReturnValue(fakeResponse.responses as never);
+
+    render(RecipientHoverCard);
+    const addBtn = await openCardAndFindAddButton();
+    await fireEvent.click(addBtn);
+
+    // After success the "Add Contact" button should be replaced by the
+    // "Edit Contact" button because person.contactId is now set.
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'contact.card.edit' })).not.toBeNull();
+    });
+    // No error toast expected on success.
+    expect(toast.show).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error' }),
+    );
   });
 });

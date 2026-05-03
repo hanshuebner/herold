@@ -267,7 +267,15 @@
       strict(responses);
       const args = responses[0]![1] as {
         created?: Record<string, { id: string } | null>;
+        notCreated?: Record<string, { type: string; description?: string } | null>;
       };
+      const notCreated = args.notCreated?.['new1'];
+      if (notCreated) {
+        const desc = notCreated.description ?? notCreated.type;
+        console.error('Add contact rejected by server', notCreated);
+        toast.show({ message: `Could not add contact: ${desc}`, kind: 'error' });
+        return;
+      }
       const created = args.created?.['new1'];
       if (created?.id) {
         person = { ...current, contactId: created.id };
