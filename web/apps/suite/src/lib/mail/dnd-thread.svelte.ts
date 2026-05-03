@@ -63,10 +63,16 @@ class ThreadDnd {
 
   /**
    * True when a drop on `targetMailboxId` should fire. The current
-   * mailbox view (REQ-UI-17) is *not* a valid target.
+   * mailbox view (REQ-UI-17) is *not* a valid target. Drafts is never
+   * a valid target: its contents are partial messages managed by the
+   * compose stack, not ordinary threads.
    */
   isValidTarget(targetMailboxId: string): boolean {
     if (!this.current || this.current.ids.length === 0) return false;
+    // Drafts may not receive dropped threads.
+    for (const m of mail.mailboxes.values()) {
+      if (m.id === targetMailboxId && m.role === 'drafts') return false;
+    }
     return this.currentMailboxId() !== targetMailboxId;
   }
 }

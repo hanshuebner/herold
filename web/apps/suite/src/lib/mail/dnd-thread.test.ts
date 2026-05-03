@@ -29,6 +29,7 @@ beforeEach(() => {
   mailMock.mailboxes = new Map([
     ['mb-inbox', { id: 'mb-inbox', role: 'inbox' }],
     ['mb-trash', { id: 'mb-trash', role: 'trash' }],
+    ['mb-drafts', { id: 'mb-drafts', role: 'drafts' }],
     ['mb-custom', { id: 'mb-custom', role: '' }],
   ]);
 });
@@ -90,6 +91,26 @@ describe('threadDnd.isValidTarget — active-mailbox rejection', () => {
     threadDnd.begin(['e1']);
     mailMock.listFolder = 'all';
     expect(threadDnd.isValidTarget('mb-inbox')).toBe(true);
+    expect(threadDnd.isValidTarget('mb-trash')).toBe(true);
+  });
+});
+
+describe('threadDnd.isValidTarget — Drafts rejection (re #51)', () => {
+  it('rejects Drafts as a drop target when dragging from inbox', () => {
+    threadDnd.begin(['e1']);
+    mailMock.listFolder = 'inbox';
+    expect(threadDnd.isValidTarget('mb-drafts')).toBe(false);
+  });
+
+  it('rejects Drafts as a drop target even when dragging from Drafts itself', () => {
+    threadDnd.begin(['e1']);
+    mailMock.listFolder = 'drafts';
+    expect(threadDnd.isValidTarget('mb-drafts')).toBe(false);
+  });
+
+  it('still accepts Trash as a drop target when dragging from inbox', () => {
+    threadDnd.begin(['e1']);
+    mailMock.listFolder = 'inbox';
     expect(threadDnd.isValidTarget('mb-trash')).toBe(true);
   });
 });

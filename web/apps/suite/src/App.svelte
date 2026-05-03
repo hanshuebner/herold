@@ -128,7 +128,6 @@
   }
   let inboxDropId = $derived(dropTargetIdForRole('inbox'));
   let sentDropId = $derived(dropTargetIdForRole('sent'));
-  let draftsDropId = $derived(dropTargetIdForRole('drafts'));
   let trashDropId = $derived(dropTargetIdForRole('trash'));
 
   function onMailboxDragOver(e: DragEvent, mailboxId: string | null): void {
@@ -378,11 +377,6 @@
         </li>
         <li
           class:active={router.matches('mail', 'folder', 'drafts')}
-          class:drag-over={threadDnd.current?.hoveredMailboxId === draftsDropId}
-          ondragenter={(e) => onMailboxDragOver(e, draftsDropId)}
-          ondragover={(e) => onMailboxDragOver(e, draftsDropId)}
-          ondragleave={() => onMailboxDragLeave(draftsDropId)}
-          ondrop={(e) => onMailboxDrop(e, draftsDropId)}
         >
           <button type="button" onclick={() => router.navigate('/mail/folder/drafts')}>
             <span>{t('sidebar.drafts')}</span>
