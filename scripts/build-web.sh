@@ -8,6 +8,7 @@
 # Layout produced inside internal/webspa/dist/:
 #   suite/   <- web/apps/suite/dist/* (Svelte consumer SPA)
 #   admin/   <- web/apps/admin/dist/* (Svelte operator admin SPA)
+#   manual/  <- per-chapter SSR HTML for the standalone manual
 #
 # This script intentionally fails loudly if pnpm is not installed and
 # if either build does not produce an index.html. The build is
@@ -33,25 +34,34 @@ fi
 echo ">>> pnpm install --frozen-lockfile (in web/)"
 pnpm --dir web install --frozen-lockfile
 
-# 2. Run the manual bundler to produce user.json and admin.json.
-#    Output goes to web/apps/suite/public/manual/ (user.json) and is
-#    served verbatim by Vite / embedded in the suite dist. The admin
-#    bundle is also produced here so the admin SPA build can consume it.
+# 2. Bundle the manual content into JSON.
+#    The bundler reads docs/manual/manifest.toml and all .mdoc source
+#    files, producing web/packages/manual/dist-data/{user,admin}.json.
+#    Each SPA fetches its audience JSON at runtime from the same-origin
+#    /manual/{audience}.json path. We mirror the JSON into both SPAs'
+#    Vite public/ trees so each build embeds only what it needs.
 MANUAL_MANIFEST="docs/manual/manifest.toml"
 MANUAL_CONTENT="docs/manual"
-MANUAL_OUT="web/apps/suite/public/manual"
+MANUAL_BUNDLE_DIR="web/packages/manual/dist-data"
+SUITE_PUBLIC_MANUAL="web/apps/suite/public/manual"
+ADMIN_PUBLIC_MANUAL="web/apps/admin/public/manual"
 
-echo ">>> bundle manual JSONs -> ${MANUAL_OUT}/"
-mkdir -p "${MANUAL_OUT}"
+echo ">>> bundle manual JSON -> ${MANUAL_BUNDLE_DIR}/"
+mkdir -p "${MANUAL_BUNDLE_DIR}"
 node web/packages/manual/scripts/bundle.mjs \
   --manifest "${MANUAL_MANIFEST}" \
   --content-root "${MANUAL_CONTENT}" \
-  --out-json "${MANUAL_OUT}"
+  --out-json "${MANUAL_BUNDLE_DIR}"
 
-if [ ! -f "${MANUAL_OUT}/user.json" ]; then
-  echo "build-web.sh: ${MANUAL_OUT}/user.json missing after bundle" >&2
+if [ ! -f "${MANUAL_BUNDLE_DIR}/user.json" ] || [ ! -f "${MANUAL_BUNDLE_DIR}/admin.json" ]; then
+  echo "build-web.sh: manual bundle JSON missing after bundle step" >&2
   exit 1
 fi
+
+mkdir -p "${SUITE_PUBLIC_MANUAL}" "${ADMIN_PUBLIC_MANUAL}"
+cp "${MANUAL_BUNDLE_DIR}/user.json"  "${SUITE_PUBLIC_MANUAL}/user.json"
+cp "${MANUAL_BUNDLE_DIR}/admin.json" "${ADMIN_PUBLIC_MANUAL}/admin.json"
+echo "build-web.sh: manual JSON copied to suite + admin public dirs"
 
 # 3. Build the suite SPA. Vite emits to web/apps/suite/dist/.
 echo ">>> pnpm --filter @herold/suite build"
@@ -98,13 +108,11 @@ cp -R "${ADMIN_SRC}/." "${ADMIN_DST}/"
 
 echo "build-web.sh: admin SPA installed at ${ADMIN_DST}/"
 
-# 6. Run the manual bundler in SSR mode. This uses the Markdoc bundler at
-#    web/packages/manual/scripts/bundle.mjs with --ssr to produce per-chapter
-#    static HTML pages. No Svelte runtime or Vite build is required for SSR;
-#    the bundler uses Markdoc's renderers.html() directly.
+# 7. Run the manual bundler in SSR mode to produce per-chapter static
+#    HTML pages for the standalone /manual/{user,admin}/ tree. The
+#    bundler uses Markdoc's renderers.html() directly; no Svelte
+#    runtime or Vite build is required for SSR.
 echo ">>> node web/packages/manual/scripts/bundle.mjs --ssr"
-MANUAL_SRC_MANIFEST="docs/manual/manifest.toml"
-MANUAL_CONTENT_ROOT="docs/manual"
 MANUAL_TMP_JSON="/tmp/herold-manual-build-json-$$"
 MANUAL_TMP_SSR="/tmp/herold-manual-build-ssr-$$"
 MANUAL_DST="internal/webspa/dist/manual"
@@ -112,8 +120,8 @@ MANUAL_DST="internal/webspa/dist/manual"
 mkdir -p "${MANUAL_TMP_JSON}" "${MANUAL_TMP_SSR}"
 
 node web/packages/manual/scripts/bundle.mjs \
-  --manifest "${MANUAL_SRC_MANIFEST}" \
-  --content-root "${MANUAL_CONTENT_ROOT}" \
+  --manifest "${MANUAL_MANIFEST}" \
+  --content-root "${MANUAL_CONTENT}" \
   --out-json "${MANUAL_TMP_JSON}" \
   --out-ssr "${MANUAL_TMP_SSR}" \
   --ssr
@@ -128,9 +136,10 @@ if [ ! -f "${MANUAL_TMP_SSR}/admin/index.html" ]; then
   exit 1
 fi
 
-# 7. Mirror the manual SSR output into internal/webspa/dist/manual/.
-#    We place the user/ and admin/ chapter trees directly, plus the shared
-#    manual.css and manual.js. The manual/ redirect index goes at the root.
+# 8. Mirror the manual SSR output into internal/webspa/dist/manual/.
+#    We place the user/ and admin/ chapter trees directly, plus the
+#    shared manual.css and manual.js. The manual/ redirect index goes
+#    at the root.
 echo ">>> copy manual SSR output -> ${MANUAL_DST}/"
 rm -rf "${MANUAL_DST}"
 mkdir -p "${MANUAL_DST}"

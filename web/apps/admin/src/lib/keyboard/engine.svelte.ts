@@ -1,5 +1,5 @@
 /**
- * Minimal keyboard shortcut engine for the admin SPA.
+ * Keyboard shortcut engine for the admin SPA.
  *
  * Mirrors the pattern from web/apps/suite/src/lib/keyboard/engine.svelte.ts
  * but without the coach integration (that is mail/suite-specific).
@@ -7,6 +7,10 @@
  * The global (always-on) layer is the only layer used in the admin SPA at
  * this stage. Per-view layering can be added as admin pages grow in
  * complexity.
+ *
+ * Two-key sequences with `g` prefix (e.g. `g d`, `g h`): a 1000ms timeout
+ * buffer. Pressing `g` starts the sequence; the next key completes it. The
+ * buffer is cleared on timeout or when the second key is consumed.
  *
  * Focus carve-outs: when the active element is an <input>/<textarea>/
  * contenteditable, single-key shortcuts do not fire. Escape and Mod+Enter
@@ -32,6 +36,8 @@ export interface Binding {
 class Engine {
   #global = new Map<string, Binding>();
   #attached = false;
+  #gPrefixActive = false;
+  #gPrefixTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Attach the document keydown listener. Idempotent. */
   init(): void {
@@ -54,12 +60,44 @@ class Engine {
 
   #handle(e: KeyboardEvent): void {
     if (this.#shouldSkipForFocus(e)) return;
+
+    // Two-key sequence: previous key was 'g'; this is the second key.
+    if (this.#gPrefixActive) {
+      const seqKey = `g ${e.key}`;
+      this.#clearGPrefix();
+      const binding = this.#global.get(seqKey);
+      if (binding) {
+        e.preventDefault();
+        binding.action(e);
+      }
+      return;
+    }
+
+    // Plain 'g' (no modifiers) starts a two-key prefix sequence.
+    if (e.key === 'g' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      this.#gPrefixActive = true;
+      this.#gPrefixTimer = setTimeout(() => {
+        this.#gPrefixActive = false;
+        this.#gPrefixTimer = null;
+      }, 1000);
+      e.preventDefault();
+      return;
+    }
+
     const key = this.#canonicalize(e);
     if (!key) return;
     const binding = this.#global.get(key);
     if (binding) {
       e.preventDefault();
       binding.action(e);
+    }
+  }
+
+  #clearGPrefix(): void {
+    this.#gPrefixActive = false;
+    if (this.#gPrefixTimer !== null) {
+      clearTimeout(this.#gPrefixTimer);
+      this.#gPrefixTimer = null;
     }
   }
 

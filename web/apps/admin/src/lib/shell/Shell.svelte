@@ -17,6 +17,7 @@
     { label: 'Audit', path: '/audit', segment: 'audit' },
     { label: 'Client logs', path: '/clientlog', segment: 'clientlog' },
     { label: 'Research', path: '/research', segment: 'research' },
+    { label: 'Help', path: '/help', segment: 'help' },
   ];
 
   interface Props {

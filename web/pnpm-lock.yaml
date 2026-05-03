@@ -20,6 +20,9 @@ importers:
       '@herold/design-system':
         specifier: workspace:*
         version: link:../../packages/design-system
+      '@herold/manual':
+        specifier: workspace:*
+        version: link:../../packages/manual
       bits-ui:
         specifier: ^2.18.0
         version: 2.18.0(@internationalized/date@3.12.1)(svelte@5.55.5)
@@ -36,6 +39,12 @@ importers:
       '@sveltejs/vite-plugin-svelte':
         specifier: ^5.0.0
         version: 5.1.1(svelte@5.55.5)(vite@6.4.2(@types/node@25.6.0))
+      '@testing-library/jest-dom':
+        specifier: ^6.9.1
+        version: 6.9.1
+      '@testing-library/svelte':
+        specifier: ^5.3.1
+        version: 5.3.1(svelte@5.55.5)(vite@6.4.2(@types/node@25.6.0))(vitest@4.1.5)
       '@tsconfig/svelte':
         specifier: ^5.0.4
         version: 5.0.8

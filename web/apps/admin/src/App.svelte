@@ -13,6 +13,7 @@
   import AuditView from './views/AuditView.svelte';
   import ClientlogView from './views/ClientlogView.svelte';
   import ResearchView from './views/ResearchView.svelte';
+  import HelpView from './views/HelpView.svelte';
   import NotFoundView from './views/NotFoundView.svelte';
 
   // Admin-global keyboard shortcuts.
@@ -50,6 +51,11 @@
     key: 'g r',
     description: 'Go to Research',
     action: () => router.navigate('/research'),
+  });
+  keyboard.registerGlobal({
+    key: 'g h',
+    description: 'Go to Help',
+    action: () => router.navigate('/help'),
   });
 
   /** The principal ID segment for /principals/:id routes. */
@@ -96,6 +102,8 @@
       <ClientlogView />
     {:else if router.matches('research')}
       <ResearchView />
+    {:else if router.matches('help')}
+      <HelpView />
     {:else}
       <NotFoundView />
     {/if}

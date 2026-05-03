@@ -13,7 +13,7 @@
    */
   import type { RenderableTreeNode } from '@markdoc/markdoc';
   import type { ManualChapter } from '../markdoc/bundle.js';
-  import { isTag, isText, children, attr, textContent, slugify } from '../markdoc/render.js';
+  import { isTag, isText, children as nodeChildren, attr, textContent, slugify } from '../markdoc/render.js';
   import Callout from './tags/Callout.svelte';
   import CodeGroup from './tags/CodeGroup.svelte';
   import IncludedCode from './tags/IncludedCode.svelte';
@@ -37,50 +37,50 @@
     {n}
   {:else if isTag(n)}
     {#if n.name === 'article' || n.name === 'document'}
-      {#each children(n) as child}
+      {#each nodeChildren(n) as child}
         {@render node(child)}
       {/each}
     {:else if n.name === 'h1'}
       {@const id = slugify(textContent(n))}
-      <h1 {id}>{#each children(n) as child}{@render node(child)}{/each}</h1>
+      <h1 {id}>{#each nodeChildren(n) as child}{@render node(child)}{/each}</h1>
     {:else if n.name === 'h2'}
       {@const id = slugify(textContent(n))}
-      <h2 {id}>{#each children(n) as child}{@render node(child)}{/each}</h2>
+      <h2 {id}>{#each nodeChildren(n) as child}{@render node(child)}{/each}</h2>
     {:else if n.name === 'h3'}
       {@const id = slugify(textContent(n))}
-      <h3 {id}>{#each children(n) as child}{@render node(child)}{/each}</h3>
+      <h3 {id}>{#each nodeChildren(n) as child}{@render node(child)}{/each}</h3>
     {:else if n.name === 'h4'}
       {@const id = slugify(textContent(n))}
-      <h4 {id}>{#each children(n) as child}{@render node(child)}{/each}</h4>
+      <h4 {id}>{#each nodeChildren(n) as child}{@render node(child)}{/each}</h4>
     {:else if n.name === 'h5'}
       {@const id = slugify(textContent(n))}
-      <h5 {id}>{#each children(n) as child}{@render node(child)}{/each}</h5>
+      <h5 {id}>{#each nodeChildren(n) as child}{@render node(child)}{/each}</h5>
     {:else if n.name === 'h6'}
       {@const id = slugify(textContent(n))}
-      <h6 {id}>{#each children(n) as child}{@render node(child)}{/each}</h6>
+      <h6 {id}>{#each nodeChildren(n) as child}{@render node(child)}{/each}</h6>
     {:else if n.name === 'p'}
-      <p>{#each children(n) as child}{@render node(child)}{/each}</p>
+      <p>{#each nodeChildren(n) as child}{@render node(child)}{/each}</p>
     {:else if n.name === 'strong'}
-      <strong>{#each children(n) as child}{@render node(child)}{/each}</strong>
+      <strong>{#each nodeChildren(n) as child}{@render node(child)}{/each}</strong>
     {:else if n.name === 'em'}
-      <em>{#each children(n) as child}{@render node(child)}{/each}</em>
+      <em>{#each nodeChildren(n) as child}{@render node(child)}{/each}</em>
     {:else if n.name === 'code'}
-      <code class="inline-code">{#each children(n) as child}{@render node(child)}{/each}</code>
+      <code class="inline-code">{#each nodeChildren(n) as child}{@render node(child)}{/each}</code>
     {:else if n.name === 'fence'}
       {@const lang = attr<string>(n, 'language') ?? 'text'}
-      {@const content = attr<string>(n, 'content') ?? children(n).filter(isText).join('')}
+      {@const content = attr<string>(n, 'content') ?? nodeChildren(n).filter(isText).join('')}
       <IncludedCode file="" {lang} {content} {t} />
     {:else if n.name === 'blockquote'}
-      <blockquote>{#each children(n) as child}{@render node(child)}{/each}</blockquote>
+      <blockquote>{#each nodeChildren(n) as child}{@render node(child)}{/each}</blockquote>
     {:else if n.name === 'ul'}
-      <ul>{#each children(n) as child}{@render node(child)}{/each}</ul>
+      <ul>{#each nodeChildren(n) as child}{@render node(child)}{/each}</ul>
     {:else if n.name === 'ol'}
-      <ol>{#each children(n) as child}{@render node(child)}{/each}</ol>
+      <ol>{#each nodeChildren(n) as child}{@render node(child)}{/each}</ol>
     {:else if n.name === 'li'}
-      <li>{#each children(n) as child}{@render node(child)}{/each}</li>
+      <li>{#each nodeChildren(n) as child}{@render node(child)}{/each}</li>
     {:else if n.name === 'a'}
       {@const href = attr<string>(n, 'href') ?? '#'}
-      <a {href}>{#each children(n) as child}{@render node(child)}{/each}</a>
+      <a {href}>{#each nodeChildren(n) as child}{@render node(child)}{/each}</a>
     {:else if n.name === 'img'}
       {@const src = attr<string>(n, 'src') ?? ''}
       {@const alt = attr<string>(n, 'alt') ?? ''}
@@ -90,33 +90,31 @@
     {:else if n.name === 'br'}
       <br />
     {:else if n.name === 'table'}
-      <table>{#each children(n) as child}{@render node(child)}{/each}</table>
+      <table>{#each nodeChildren(n) as child}{@render node(child)}{/each}</table>
     {:else if n.name === 'thead'}
-      <thead>{#each children(n) as child}{@render node(child)}{/each}</thead>
+      <thead>{#each nodeChildren(n) as child}{@render node(child)}{/each}</thead>
     {:else if n.name === 'tbody'}
-      <tbody>{#each children(n) as child}{@render node(child)}{/each}</tbody>
+      <tbody>{#each nodeChildren(n) as child}{@render node(child)}{/each}</tbody>
     {:else if n.name === 'tr'}
-      <tr>{#each children(n) as child}{@render node(child)}{/each}</tr>
+      <tr>{#each nodeChildren(n) as child}{@render node(child)}{/each}</tr>
     {:else if n.name === 'th'}
-      <th>{#each children(n) as child}{@render node(child)}{/each}</th>
+      <th>{#each nodeChildren(n) as child}{@render node(child)}{/each}</th>
     {:else if n.name === 'td'}
-      <td>{#each children(n) as child}{@render node(child)}{/each}</td>
+      <td>{#each nodeChildren(n) as child}{@render node(child)}{/each}</td>
     {:else if n.name === 'Callout'}
-      {@const calloutKids = children(n)}
       <Callout
         type={attr<'info' | 'warning' | 'caution'>(n, 'type')}
         title={attr<string>(n, 'title')}
         {t}
       >
         {#snippet children()}
-          {#each calloutKids as child}{@render node(child)}{/each}
+          {#each nodeChildren(n) as child}{@render node(child)}{/each}
         {/snippet}
       </Callout>
     {:else if n.name === 'CodeGroup'}
-      {@const groupKids = children(n)}
       <CodeGroup>
         {#snippet children()}
-          {#each groupKids as child}{@render node(child)}{/each}
+          {#each nodeChildren(n) as child}{@render node(child)}{/each}
         {/snippet}
       </CodeGroup>
     {:else if n.name === 'IncludedCode'}
@@ -132,7 +130,7 @@
       <Kbd keys={attr<string>(n, 'keys') ?? ''} />
     {:else}
       <!-- Unknown tag: render children so content is not silently dropped -->
-      {#each children(n) as child}{@render node(child)}{/each}
+      {#each nodeChildren(n) as child}{@render node(child)}{/each}
     {/if}
   {/if}
 {/snippet}
