@@ -7,10 +7,10 @@ audience: admin
 # Operating Herold
 
 Day-2 runbook for the operator who already has herold installed and
-running. For first-run install paths see [Installation](install.mdoc);
+running. For first-run install paths see [Installation](install);
 for application administration (domains, principals, mailboxes,
-aliases) see [Administering Herold](administer.mdoc); for the real-domain
-walkthrough see [Quickstart](../user/quickstart.mdoc).
+aliases) see [Administering Herold](administer); for the real-domain
+walkthrough see _Quickstart_.
 
 This document is the operator's reference. Every config knob, every
 operational lever, every common failure mode the operator hits in
@@ -36,7 +36,7 @@ holds none of it.
 This document covers the operator's side: system.toml plus the
 operational levers (TLS, DNS, observability, queue, plugins, OIDC
 federation). Day-to-day application administration is covered in
-[Administering Herold](administer.mdoc).
+[Administering Herold](administer).
 
 ## The web URLs herold exposes
 
@@ -328,7 +328,7 @@ spam-plugin family but is operationally distinct. Per-principal
 categoriser configuration is managed through the admin REST API
 (`GET /PUT /api/v1/principals/{pid}/categorisation`) and the CLI
 (`herold categorise prompt set` / `herold categorise list-categories`).
-See [Administering Herold](administer.mdoc) for worked examples.
+See [Administering Herold](administer) for worked examples.
 
 The deployment-wide defaults (endpoint, model, api_key_env) are
 configured in `system.toml` under `[categorise]`; the exact shape
@@ -424,7 +424,7 @@ A herold release pins one Suite revision: the in-tree `web/`
 workspace at the same git commit as the binary. Operators who want
 to ship a different Suite revision rebuild from a checkout pointed
 at that revision (or use the `asset_dir` override at runtime); see
-[Installation](install.mdoc) for the build pipeline.
+[Installation](install) for the build pipeline.
 
 ### `[server.ui]` - operator-facing web UI
 
@@ -680,7 +680,7 @@ herold diag dns-check example.com
 To deliver outbound mail through a relay (Gmail SMTP, AWS SES,
 SendGrid, a corporate MTA) instead of opening direct SMTP connections
 to the public internet, configure a smart host. The example
-[../user/examples/system.toml.smarthost](../user/examples/system.toml.smarthost)
+_../user/examples/system.toml.smarthost_
 shows the target shape per the REQ-FLOW-SMARTHOST spec landing in
 Wave 3.1.
 
@@ -1225,8 +1225,8 @@ Premature pragma-tuning is the wrong answer.
 ## Where to next
 
 - Application administration (domains, principals, mailboxes,
-  aliases, API keys, Sieve, audit log): [Administering Herold](administer.mdoc).
+  aliases, API keys, Sieve, audit log): [Administering Herold](administer).
 - Real-domain walkthrough (DNS records, ACME, DKIM, DMARC, MTA-STS):
-  [Quickstart](../user/quickstart.mdoc).
+  _Quickstart_.
 - The historical record (requirements, architecture, implementation):
   the `docs/design/` tree.

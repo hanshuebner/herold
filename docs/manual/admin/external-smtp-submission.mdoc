@@ -26,7 +26,7 @@ all mail through an external server.
 
 When an Identity has no external submission config, its outbound mail follows
 the normal path: herold's outbound queue, DKIM signing, and the delivery
-machinery described in [Operating Herold](operate.mdoc). When an Identity does
+machinery described in [Operating Herold](operate). When an Identity does
 carry external submission credentials, and the user composes a message selecting
 that Identity in the From picker, the JMAP EmailSubmission lands on the
 external server instead. The routing decision is made at submission time in

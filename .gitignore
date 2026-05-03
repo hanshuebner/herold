@@ -18,6 +18,14 @@ coverage.html
 .vscode/
 .idea/
 
+# A user's global .gitignore commonly excludes the emacs/etags `TAGS` and
+# `tags` files (see https://git-scm.com/docs/gitignore). That pattern also
+# matches our Markdoc tag-component directory at
+# web/packages/manual/src/components/tags/, silently dropping the files
+# from `git add`. Whitelist that path so the components are always tracked.
+!/web/packages/manual/src/components/tags/
+!/web/packages/manual/src/components/tags/*
+
 # Go fuzz corpus caches (seed corpora under testdata/fuzz/ are checked in;
 # the auto-generated corpus cache is not)
 /cache/fuzz/

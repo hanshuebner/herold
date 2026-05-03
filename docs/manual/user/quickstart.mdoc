@@ -13,8 +13,8 @@ MTA-STS, and TLS-RPT - what a deliverable mail server needs.
 
 If you have not already done the loopback quickstart, start there:
 the README at the repository root. For the operator runbook, see
-[Operating Herold](../admin/operate.mdoc). For application administration, see
-[Administering Herold](../admin/administer.mdoc).
+_Operating Herold_. For application administration, see
+_Administering Herold_.
 
 ## Prerequisites
 
@@ -208,7 +208,7 @@ port 9443).
 
 From an external mailbox (Gmail, iCloud, your mobile carrier), send
 an email to `you@example.com` (use a principal you've added - see
-[Administering Herold](../admin/administer.mdoc) for `herold principal create`).
+_Administering Herold_ for `herold principal create`).
 
 Verify it arrives:
 
@@ -318,7 +318,7 @@ fine; outbound direct delivery does not. Two routes around it:
 
 1. **Use a smart host.** Funnel outbound through SES / SendGrid /
    Gmail / a corporate relay. See
-   [examples/system.toml.smarthost](examples/system.toml.smarthost)
+   _examples/system.toml.smarthost_
    for the target config shape; smart-host implementation lands in
    Wave 3.1.
 2. **File a request with the provider.** AWS lifts the SES sandbox
@@ -379,7 +379,7 @@ Symptom: receivers' DMARC reports show `dkim=fail`. Causes:
 - DKIM TXT record body is wrong - copy-paste truncation is the
   classic. Re-emit with `herold dkim show <domain>` (not yet wired;
   the server returns 501 today -- see the DKIM section in
-  [Administering Herold](../admin/administer.mdoc) for status) and re-publish.
+  _Administering Herold_ for status) and re-publish.
 - DNS provider mangled the TXT body. Some providers split long TXT
   records on whitespace; herold's DKIM keys are 2048-bit and the TXT
   record is long. Concatenate quoted strings per RFC 6376.
@@ -389,8 +389,8 @@ Symptom: receivers' DMARC reports show `dkim=fail`. Causes:
 ## Where to next
 
 - Day-to-day operator runbook (queue triage, observability, signals,
-  performance tuning): [Operating Herold](../admin/operate.mdoc).
+  performance tuning): _Operating Herold_.
 - Application administration (principals, mailboxes, aliases, API
-  keys, Sieve, audit log): [Administering Herold](../admin/administer.mdoc).
+  keys, Sieve, audit log): _Administering Herold_.
 - The historical record (requirements, architecture, implementation):
   the `docs/design/` tree.

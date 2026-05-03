@@ -7,7 +7,7 @@ audience: admin
 # Administering Herold
 
 Application-administrator runbook. Distinct from
-[Operating Herold](operate.mdoc) (which covers the operator's surface:
+[Operating Herold](operate) (which covers the operator's surface:
 system.toml, TLS, signals, observability) - this document is for the
 administrator who manages the *application* layer: domains,
 principals, mailboxes, aliases, API keys, Sieve scripts, OIDC
@@ -455,7 +455,7 @@ or `file:/path` reference; inline secret values are rejected
 
 An admin can inspect any user's outbound queue (REQ-FLOW-* and
 REQ-ADM-12). The same `herold queue ...` commands documented in
-[Operating Herold](operate.mdoc) accept a `--principal` filter:
+[Operating Herold](operate) accept a `--principal` filter:
 
 ```bash
 herold queue list --principal 7        # principal id (numeric).
@@ -623,7 +623,7 @@ The admin surface, where it exists, covers:
 - **Set the edit window per Space.** How long after send a message
   remains editable / deletable.
 - **Disable video calls** (`[server.call] enabled = false`) - see
-  [Operating Herold](operate.mdoc) for the system.toml block.
+  [Operating Herold](operate) for the system.toml block.
 
 The chat / cal / contacts admin REST surface is wave-2.x, not yet
 fully wired. TODO(operator-doc): chat-cal-contacts-admin-cli-not-yet-wired.
@@ -633,8 +633,8 @@ calendar / contacts requirements when those land.
 
 ## Where to next
 
-- Day-2 operator runbook: [Operating Herold](operate.mdoc).
-- Real-domain walkthrough: [Quickstart](../user/quickstart.mdoc).
+- Day-2 operator runbook: [Operating Herold](operate).
+- Real-domain walkthrough: _Quickstart_.
 - The historical record: `docs/design/server/requirements/08-admin-and-management.md`
   for the full REST + CLI shape, `docs/design/server/requirements/02-identity-and-auth.md`
   for the OIDC flow.
