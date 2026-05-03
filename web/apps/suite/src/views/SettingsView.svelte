@@ -23,6 +23,7 @@
   import CategoriesForm from './settings/CategoriesForm.svelte';
   import FiltersForm from './settings/FiltersForm.svelte';
   import PrivacyForm from './settings/PrivacyForm.svelte';
+  import DiagnosticsForm from './settings/DiagnosticsForm.svelte';
   import { Capability } from '../lib/jmap/types';
   import { jmap } from '../lib/jmap/client';
   import { LOCALES, type Locale } from '../lib/i18n/i18n.svelte';
@@ -38,7 +39,7 @@
   sounds.hydrate();
 
   // Section order: Account, Security, Appearance, Mail, Categories, Filters,
-  // Notifications, API keys, Privacy, About.
+  // Notifications, API keys, Privacy, Diagnostics, About.
   type Section =
     | 'account'
     | 'security'
@@ -49,6 +50,7 @@
     | 'notifications'
     | 'api-keys'
     | 'privacy'
+    | 'diagnostics'
     | 'about';
 
   let hasCategorise = $derived(jmap.hasCapability(Capability.HeroldCategorise));
@@ -63,6 +65,7 @@
     { id: 'mail', label: 'Mail' },
     { id: 'api-keys', label: 'API keys' },
     { id: 'privacy', label: 'Privacy' },
+    { id: 'diagnostics', label: 'Diagnostics' },
     { id: 'about', label: 'About' },
   ];
 
@@ -597,6 +600,10 @@
 
       <h3>Autocomplete history</h3>
       <PrivacyForm />
+
+    {:else if activeSection === 'diagnostics'}
+      <h2>{t('settings.diagnostics.heading')}</h2>
+      <DiagnosticsForm />
 
     {:else if activeSection === 'about'}
       <h2>About</h2>

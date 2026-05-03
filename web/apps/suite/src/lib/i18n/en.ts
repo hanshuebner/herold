@@ -213,6 +213,11 @@ export const en = {
   'settings.avatar.upload.tooLarge':
     'Image is too large after compression. Try a smaller picture.',
 
+  // ── Diagnostics settings (REQ-CLOG-06) ───────────────────────────────
+  'settings.diagnostics.heading': 'Diagnostics',
+  'settings.diagnostics.telemetry.label':
+    'Send anonymous diagnostic logs to my mail-server operator',
+
   // ── Privacy settings ─────────────────────────────────────────────────
   'settings.privacy.avatarLookup.label':
     'Look up sender avatars from email metadata (Gravatar / X-Face / Face)',

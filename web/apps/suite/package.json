@@ -10,9 +10,13 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test --project=chromium",
+    "test:e2e:all": "playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium"
   },
   "dependencies": {
+    "@herold/clientlog": "workspace:*",
     "@herold/design-system": "workspace:*",
     "dompurify": "^3.2.0",
     "fflate": "^0.8.2",
@@ -28,6 +32,7 @@
     "qrcode-svg": "^1.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.48.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/svelte": "^5.3.1",

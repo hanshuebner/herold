@@ -18,6 +18,7 @@
   import { settings, applyTheme } from './lib/settings/settings.svelte';
   import { t } from './lib/i18n/i18n.svelte';
   import { confirm } from './lib/dialog/confirm.svelte';
+  import { getClientlog } from './lib/clientlog/clientlog.svelte';
   import { prompt } from './lib/dialog/prompt.svelte';
   import { mail } from './lib/mail/store.svelte';
   import { threadDnd } from './lib/mail/dnd-thread.svelte';
@@ -289,6 +290,11 @@
   });
 </script>
 
+<svelte:boundary
+  onerror={(err) => {
+    void getClientlog().logFatal(err);
+  }}
+>
 <AuthGate>
 <!-- Non-modal push-enable banner (REQ-PUSH-30): shown after 60s in-app. -->
 {#if showPushBanner}
@@ -483,6 +489,7 @@
   {/if}
 </Shell>
 </AuthGate>
+</svelte:boundary>
 
 <style>
   .sidebar-inner {
