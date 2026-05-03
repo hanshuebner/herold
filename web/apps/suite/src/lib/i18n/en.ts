@@ -266,6 +266,23 @@ export const en = {
   // ── Time ────────────────────────────────────────────────────────────
   'time.justNow': 'just now',
 
+  // ── Manual viewer (re #58) ───────────────────────────────────────────
+  'sidebar.help': 'Help',
+  'manual.loading': 'Loading help...',
+  'manual.loadError': 'Could not load the manual.',
+  'manual.empty': 'No help content available.',
+  'manual.toc.label': 'Table of contents',
+  'manual.onthispage.label': 'On this page',
+  'manual.search.placeholder': 'Search topics...',
+  'manual.search.label': 'Search manual',
+  'manual.search.noResults': 'No matching topics.',
+  'manual.callout.info': 'Note',
+  'manual.callout.warning': 'Warning',
+  'manual.callout.caution': 'Caution',
+  'manual.req.label': 'Requirement',
+  'manual.code.copy': 'Copy',
+  'manual.code.copied': 'Copied',
+
   // ── Common ──────────────────────────────────────────────────────────
   'common.cancel': 'Cancel',
   'common.confirm': 'Confirm',

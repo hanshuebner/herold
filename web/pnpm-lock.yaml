@@ -66,6 +66,9 @@ importers:
       '@herold/design-system':
         specifier: workspace:*
         version: link:../../packages/design-system
+      '@herold/manual':
+        specifier: workspace:*
+        version: link:../../packages/manual
       dompurify:
         specifier: ^3.2.0
         version: 3.4.1

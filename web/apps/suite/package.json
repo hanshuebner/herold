@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "bundle-manual": "mkdir -p public/manual && node ../../packages/manual/scripts/bundle.mjs --manifest ../../../../docs/manual/manifest.toml --content-root ../../../../docs/manual --out-json public/manual",
+    "dev": "pnpm run bundle-manual && vite",
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
@@ -18,6 +19,7 @@
   "dependencies": {
     "@herold/clientlog": "workspace:*",
     "@herold/design-system": "workspace:*",
+    "@herold/manual": "workspace:*",
     "dompurify": "^3.2.0",
     "fflate": "^0.8.2",
     "prosemirror-commands": "^1.6.0",

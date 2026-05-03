@@ -102,19 +102,21 @@
     {:else if n.name === 'td'}
       <td>{#each children(n) as child}{@render node(child)}{/each}</td>
     {:else if n.name === 'Callout'}
+      {@const calloutKids = children(n)}
       <Callout
         type={attr<'info' | 'warning' | 'caution'>(n, 'type')}
         title={attr<string>(n, 'title')}
         {t}
       >
         {#snippet children()}
-          {#each children(n) as child}{@render node(child)}{/each}
+          {#each calloutKids as child}{@render node(child)}{/each}
         {/snippet}
       </Callout>
     {:else if n.name === 'CodeGroup'}
+      {@const groupKids = children(n)}
       <CodeGroup>
         {#snippet children()}
-          {#each children(n) as child}{@render node(child)}{/each}
+          {#each groupKids as child}{@render node(child)}{/each}
         {/snippet}
       </CodeGroup>
     {:else if n.name === 'IncludedCode'}

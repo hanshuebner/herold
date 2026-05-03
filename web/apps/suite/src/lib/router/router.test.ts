@@ -50,4 +50,18 @@ describe('router', () => {
     router.navigate('chat');
     expect(window.location.hash).toBe('#/chat');
   });
+
+  it("matches('help') for /help and /help/:chapter", () => {
+    router.replace('/help');
+    expect(router.matches('help')).toBe(true);
+    router.replace('/help/intro');
+    expect(router.matches('help')).toBe(true);
+    expect(router.parts).toEqual(['help', 'intro']);
+  });
+
+  it("parts exposes chapter and section for /help/:chapter/:section", () => {
+    router.replace('/help/setup/install');
+    expect(router.parts).toEqual(['help', 'setup', 'install']);
+    expect(router.matches('help')).toBe(true);
+  });
 });

@@ -33,11 +33,31 @@ fi
 echo ">>> pnpm install --frozen-lockfile (in web/)"
 pnpm --dir web install --frozen-lockfile
 
-# 2. Build the suite SPA. Vite emits to web/apps/suite/dist/.
+# 2. Run the manual bundler to produce user.json and admin.json.
+#    Output goes to web/apps/suite/public/manual/ (user.json) and is
+#    served verbatim by Vite / embedded in the suite dist. The admin
+#    bundle is also produced here so the admin SPA build can consume it.
+MANUAL_MANIFEST="docs/manual/manifest.toml"
+MANUAL_CONTENT="docs/manual"
+MANUAL_OUT="web/apps/suite/public/manual"
+
+echo ">>> bundle manual JSONs -> ${MANUAL_OUT}/"
+mkdir -p "${MANUAL_OUT}"
+node web/packages/manual/scripts/bundle.mjs \
+  --manifest "${MANUAL_MANIFEST}" \
+  --content-root "${MANUAL_CONTENT}" \
+  --out-json "${MANUAL_OUT}"
+
+if [ ! -f "${MANUAL_OUT}/user.json" ]; then
+  echo "build-web.sh: ${MANUAL_OUT}/user.json missing after bundle" >&2
+  exit 1
+fi
+
+# 3. Build the suite SPA. Vite emits to web/apps/suite/dist/.
 echo ">>> pnpm --filter @herold/suite build"
 pnpm --dir web --filter @herold/suite build
 
-# 3. Mirror the suite build artefact into internal/webspa/dist/suite/.
+# 4. Mirror the suite build artefact into internal/webspa/dist/suite/.
 #    Drop the placeholder index.html from source control before the
 #    copy so a stale placeholder cannot survive the build. The
 #    .gitkeep in dist/ stays untouched.
@@ -58,11 +78,11 @@ cp -R "${SUITE_SRC}/." "${SUITE_DST}/"
 
 echo "build-web.sh: suite SPA installed at ${SUITE_DST}/"
 
-# 4. Build the admin SPA. Vite emits to web/apps/admin/dist/.
+# 5. Build the admin SPA. Vite emits to web/apps/admin/dist/.
 echo ">>> pnpm --filter @herold/admin build"
 pnpm --dir web --filter @herold/admin build
 
-# 5. Mirror the admin build artefact into internal/webspa/dist/admin/.
+# 6. Mirror the admin build artefact into internal/webspa/dist/admin/.
 ADMIN_SRC="web/apps/admin/dist"
 ADMIN_DST="internal/webspa/dist/admin"
 

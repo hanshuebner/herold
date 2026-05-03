@@ -25,6 +25,7 @@
   import { pushSubscription } from './lib/push/push-subscription.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
+  import HelpView from './views/HelpView.svelte';
   import SettingsView from './views/SettingsView.svelte';
   import NotFoundView from './views/NotFoundView.svelte';
   import SidebarChats from './lib/chat/SidebarChats.svelte';
@@ -295,6 +296,11 @@
     description: 'Go to Settings',
     action: () => router.navigate('/settings'),
   });
+  keyboard.registerGlobal({
+    key: 'g h',
+    description: 'Go to Help',
+    action: () => router.navigate('/help'),
+  });
 </script>
 
 <svelte:boundary
@@ -470,6 +476,25 @@
       {#if hasChatCap}
         <SidebarChats />
       {/if}
+
+      <div class="sidebar-bottom">
+        <button
+          type="button"
+          class="sidebar-bottom-link"
+          class:active={router.matches('help')}
+          onclick={() => router.navigate('/help')}
+        >
+          {t('sidebar.help')}
+        </button>
+        <button
+          type="button"
+          class="sidebar-bottom-link"
+          class:active={router.matches('settings')}
+          onclick={() => router.navigate('/settings')}
+        >
+          {t('settings.title')}
+        </button>
+      </div>
     </div>
   {/snippet}
 
@@ -479,6 +504,8 @@
     <ChatView />
   {:else if router.matches('settings')}
     <SettingsView />
+  {:else if router.matches('help')}
+    <HelpView />
   {:else}
     <NotFoundView />
   {/if}
@@ -647,6 +674,36 @@
   .mailbox-list.custom .add-row button {
     color: var(--interactive);
     font-weight: 500;
+  }
+
+  /* Sidebar bottom: settings + help links pinned to the bottom rail. */
+  .sidebar-bottom {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-01);
+    padding-top: var(--spacing-03);
+    border-top: 1px solid var(--border-subtle-01);
+  }
+  .sidebar-bottom-link {
+    display: flex;
+    align-items: center;
+    padding: var(--spacing-02) var(--spacing-04);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    min-height: var(--touch-min);
+    text-align: left;
+    font-size: var(--type-body-compact-01-size);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .sidebar-bottom-link:hover {
+    background: var(--layer-02);
+    color: var(--text-primary);
+  }
+  .sidebar-bottom-link.active {
+    background: var(--layer-02);
+    color: var(--text-primary);
+    font-weight: 600;
   }
 
   /* Push enable / SW update banners: fixed bottom-center strip. */

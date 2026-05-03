@@ -267,6 +267,23 @@ export const de = {
   // ── Zeit ────────────────────────────────────────────────────────────
   'time.justNow': 'gerade eben',
 
+  // ── Handbuch (re #58) ────────────────────────────────────────────────
+  'sidebar.help': 'Hilfe',
+  'manual.loading': 'Hilfe wird geladen...',
+  'manual.loadError': 'Handbuch konnte nicht geladen werden.',
+  'manual.empty': 'Kein Hilfeinhalt verfügbar.',
+  'manual.toc.label': 'Inhaltsverzeichnis',
+  'manual.onthispage.label': 'Auf dieser Seite',
+  'manual.search.placeholder': 'Themen suchen...',
+  'manual.search.label': 'Handbuch durchsuchen',
+  'manual.search.noResults': 'Keine passenden Themen.',
+  'manual.callout.info': 'Hinweis',
+  'manual.callout.warning': 'Warnung',
+  'manual.callout.caution': 'Vorsicht',
+  'manual.req.label': 'Anforderung',
+  'manual.code.copy': 'Kopieren',
+  'manual.code.copied': 'Kopiert',
+
   // ── Common ──────────────────────────────────────────────────────────
   'common.cancel': 'Abbrechen',
   'common.confirm': 'Bestätigen',

@@ -57,3 +57,9 @@ coverage.html
 /internal/webspa/dist/admin/
 /internal/webspa/dist/suite/
 /internal/webspa/dist/manual/
+
+# Manual bundle JSON: produced by scripts/build-web.sh and by the
+# bundle-manual scripts in the suite/admin dev loops. Not checked in.
+/web/apps/suite/public/manual/
+/web/apps/admin/public/manual/
+/web/packages/manual/dist-data/
