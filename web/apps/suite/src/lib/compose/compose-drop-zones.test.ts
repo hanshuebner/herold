@@ -10,12 +10,30 @@
  * full compose singleton. The drop-zone logic is exercised here as pure
  * state transitions; a manual browser test / E2E test covers the visual
  * affordance.
+ *
+ * Round-2 fix (re #67): the inline drop zone is always in the DOM; its
+ * visibility is toggled via CSS classes (.active) rather than a {#if}
+ * conditional.  When the element was conditionally rendered, inserting it
+ * into the DOM under the cursor caused the browser to synthesise a dragleave
+ * on the previously-covered element.  That dragleave bubbled to the modal
+ * and decremented dragDepth to 0, hiding the zone again -- an oscillation
+ * loop.  Keeping the element in the DOM (pointer-events: none at rest) means
+ * no DOM mutations occur during a drag and the spurious events are never
+ * generated.
+ *
+ * The state machine below models the always-in-DOM behaviour: zone handlers
+ * guard on dragActive so they match the CSS pointer-events: none state
+ * (events do not reach an element with pointer-events: none in real browsers).
  */
 import { describe, it, expect } from 'vitest';
 
 /**
  * Minimal reimplementation of the drag-depth state machine from
  * ComposeWindow.svelte so we can test it without mounting the component.
+ *
+ * Zone handlers guard on dragActive to model CSS pointer-events: none
+ * behaviour -- the inline drop zone is always in the DOM but only accepts
+ * drag events when dragActive is true (pointer-events: all).
  */
 function makeDragState() {
   let dragActive = false;
@@ -53,17 +71,24 @@ function makeDragState() {
       inlineZoneHover = false;
       attachZoneHover = false;
     },
+    // Zone handlers only fire when dragActive (models pointer-events: none at rest).
     onInlineZoneDragEnter() {
+      if (!dragActive) return;
       inlineZoneHover = true;
     },
-    onInlineZoneDragLeave() {
-      inlineZoneHover = false;
+    onInlineZoneDragLeave(relatedTargetInsideZone: boolean) {
+      if (!dragActive) return;
+      // Only clear hover when the cursor actually leaves the zone element,
+      // not when it moves to a child of the zone (relatedTarget check).
+      if (!relatedTargetInsideZone) inlineZoneHover = false;
     },
     onAttachZoneDragEnter() {
+      if (!dragActive) return;
       attachZoneHover = true;
     },
-    onAttachZoneDragLeave() {
-      attachZoneHover = false;
+    onAttachZoneDragLeave(relatedTargetInsideZone: boolean) {
+      if (!dragActive) return;
+      if (!relatedTargetInsideZone) attachZoneHover = false;
     },
     get dragActive() { return dragActive; },
     get inlineZoneHover() { return inlineZoneHover; },

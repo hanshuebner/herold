@@ -601,20 +601,28 @@
                 onView={(v) => (editorView = v)}
               />
             {/key}
-            {#if dragActive}
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div
-                class="inline-drop-zone"
-                class:hover={inlineZoneHover}
-                aria-label={t('compose.dropInline')}
-                ondragenter={onInlineZoneDragEnter}
-                ondragover={onInlineZoneDragOver}
-                ondragleave={onInlineZoneDragLeave}
-                ondrop={onInlineZoneDrop}
-              >
-                <span class="zone-label">{t('compose.dropInline')}</span>
-              </div>
-            {/if}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <!-- Always in DOM — see dragActive note below. Using {#if dragActive}
+                 to conditionally render this div causes the browser to fire a
+                 synthetic dragleave on the element that was previously under the
+                 cursor when the new overlay is inserted on top of it.  That
+                 dragleave bubbles to the modal and decrements dragDepth to 0,
+                 setting dragActive=false, removing the overlay, firing another
+                 dragenter on the editor — an oscillation loop.  Keeping the
+                 element in the DOM and toggling visibility via CSS avoids all
+                 DOM mutations during the drag and breaks the cycle. -->
+            <div
+              class="inline-drop-zone"
+              class:active={dragActive}
+              class:hover={inlineZoneHover}
+              aria-label={t('compose.dropInline')}
+              ondragenter={onInlineZoneDragEnter}
+              ondragover={onInlineZoneDragOver}
+              ondragleave={onInlineZoneDragLeave}
+              ondrop={onInlineZoneDrop}
+            >
+              <span class="zone-label">{t('compose.dropInline')}</span>
+            </div>
           </div>
           <ComposeToolbar view={editorView} {active} />
 
@@ -931,10 +939,12 @@
     position: relative;
   }
 
-  /* Inline drop zone: absolutely positioned over the editor; invisible
-     at rest and when no drag is active. Becomes a visually distinct
-     target only while dragActive is true (rendered conditionally in the
-     template above). */
+  /* Inline drop zone: absolutely positioned over the editor.
+     Always in the DOM (no {#if} conditional) to avoid DOM mutations
+     during a drag that would trigger spurious dragleave events and
+     destabilise the dragDepth counter.  At rest it is invisible and
+     non-interactive.  When dragActive becomes true the .active class
+     is toggled via CSS, not via a DOM insertion. */
   .inline-drop-zone {
     position: absolute;
     inset: 0;
@@ -942,17 +952,25 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    border: 2px dashed var(--interactive);
+    border: 2px dashed transparent;
     border-radius: var(--radius-md);
-    background: rgba(15, 98, 254, 0.08);
+    background: transparent;
     color: var(--interactive);
     font-weight: 600;
     font-size: var(--type-body-compact-01-size);
-    pointer-events: all;
-    transition: background var(--duration-fast-02) var(--easing-productive-enter),
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--duration-fast-02) var(--easing-productive-enter),
+      background var(--duration-fast-02) var(--easing-productive-enter),
       border-color var(--duration-fast-02) var(--easing-productive-enter);
   }
-  .inline-drop-zone.hover {
+  .inline-drop-zone.active {
+    pointer-events: all;
+    opacity: 1;
+    border-color: var(--interactive);
+    background: rgba(15, 98, 254, 0.08);
+  }
+  .inline-drop-zone.active.hover {
     background: rgba(15, 98, 254, 0.2);
     border-color: var(--interactive);
   }
