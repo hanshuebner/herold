@@ -1664,12 +1664,53 @@ class MailStore {
     }
   }
 
+  /**
+   * Ensure the `threads` map contains entries for every thread ID in the
+   * given list. Thread IDs already present are skipped; missing ones are
+   * fetched in a single `Thread/get` call. Only the thread membership
+   * record (id + emailIds) is fetched here — body content is not loaded.
+   *
+   * This is necessary for the drag-and-drop move path (re #52): the thread
+   * list renders one row per thread (`collapseThreads: true`), so only the
+   * representative email ID is known until the thread has been explicitly
+   * opened. Without pre-caching, `expandToThreadIds` cannot see the rest of
+   * the thread's emails and moves only the one representative message.
+   */
+  async #ensureThreadsCached(threadIds: string[]): Promise<void> {
+    const missing = threadIds.filter((tid) => !this.threads.has(tid));
+    if (missing.length === 0) return;
+    const accountId = this.mailAccountId;
+    if (!accountId) return;
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call('Thread/get', { accountId, ids: missing }, [Capability.Mail]);
+      });
+      const result = invocationArgs<{ list: Thread[] }>(responses[0]);
+      const nextThreads = new Map(this.threads);
+      for (const t of result.list) nextThreads.set(t.id, t);
+      this.threads = nextThreads;
+    } catch {
+      // Best-effort: if Thread/get fails the move will still proceed but
+      // will only cover the representative email for uncached threads.
+    }
+  }
+
   /** Bulk move: replace every id's mailboxIds with `{[targetId]: true}`.
    * Thread-scoped per REQ-MAIL-54: a thread move relocates every email
    * in the thread (including replies and the original message), not just
    * the one whose row the user dragged or right-clicked. */
   async bulkMoveToMailbox(ids: string[], targetId: string): Promise<void> {
     if (ids.length === 0) return;
+    // Fetch thread membership for any threads not already in the cache so
+    // expandToThreadIds can expand to all emails in the thread (re #52).
+    const threadIds = [
+      ...new Set(
+        ids
+          .map((id) => this.emails.get(id)?.threadId)
+          .filter((tid): tid is string => tid !== undefined),
+      ),
+    ];
+    await this.#ensureThreadsCached(threadIds);
     ids = expandToThreadIds(ids, this.threads, this.emails);
     const updates: Record<string, Record<string, unknown>> = {};
     const prevById = new Map<string, Record<string, true>>();
