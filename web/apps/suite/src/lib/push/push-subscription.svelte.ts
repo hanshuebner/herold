@@ -250,8 +250,16 @@ class PushSubscriptionStore {
     strict(responses);
 
     const result = responses[0]?.[1] as
-      | { created?: Record<string, { id: string }> }
+      | {
+          created?: Record<string, { id: string }>;
+          notCreated?: Record<string, { type: string; description?: string }>;
+        }
       | undefined;
+    const notCreated = result?.notCreated?.['push0'];
+    if (notCreated) {
+      const desc = notCreated.description ?? `Push registration failed: ${notCreated.type}`;
+      throw new Error(desc);
+    }
     const created = result?.created?.['push0'];
     if (created?.id) {
       this.#jmapSubscriptionId = created.id;

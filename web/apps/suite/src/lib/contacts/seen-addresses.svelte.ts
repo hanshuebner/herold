@@ -56,6 +56,7 @@ class SeenAddresses {
   /**
    * Destroy (remove) a single seen-address entry by id.
    * Issues `SeenAddress/set { destroy: [id] }`.
+   * Throws when the server returns notDestroyed so callers can show an error.
    */
   async destroy(id: string): Promise<void> {
     const accountId = this.#accountId();
@@ -68,8 +69,14 @@ class SeenAddresses {
       );
     });
     strict(responses);
-    // Optimistically remove from local list; the EventSource will reconcile
-    // if the server disagrees.
+    const result = responses[0]?.[1] as
+      | { notDestroyed?: Record<string, { type: string; description?: string }> }
+      | undefined;
+    const failure = result?.notDestroyed?.[id];
+    if (failure) {
+      throw new Error(failure.description ?? `Remove failed: ${failure.type}`);
+    }
+    // Remove from local list only after the server confirms the destroy.
     this.entries = this.entries.filter((e) => e.id !== id);
   }
 

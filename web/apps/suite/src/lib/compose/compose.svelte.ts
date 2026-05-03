@@ -1014,6 +1014,15 @@ class ComposeStore {
                 );
               });
               strict(result.responses);
+              const undoResult = result.responses[0]?.[1] as
+                | { notDestroyed?: Record<string, { type: string; description?: string }> }
+                | undefined;
+              const undoFailure = undoResult?.notDestroyed?.[submissionId];
+              if (undoFailure) {
+                throw new Error(
+                  undoFailure.description ?? `Could not cancel send: ${undoFailure.type}`,
+                );
+              }
               // Re-open compose with the full saved state (including reply context).
               // savedBody already carries the signature the user had on send;
               // appending again would duplicate it.

@@ -263,3 +263,75 @@ describe('pushSubscription.forgetDenial', () => {
     expect(ps.permissionState).toBe('default');
   });
 });
+
+describe('pushSubscription.subscribe — notCreated error handling (re #68)', () => {
+  let originalNotification: typeof Notification;
+
+  beforeEach(() => {
+    originalNotification = globalThis.Notification;
+    // @ts-expect-error partial mock
+    globalThis.Notification = {
+      permission: 'default',
+      requestPermission: vi.fn().mockResolvedValue('granted'),
+    };
+    globalThis.PushManager = class {} as unknown as typeof PushManager;
+    globalThis.ServiceWorkerRegistration = class {} as unknown as typeof ServiceWorkerRegistration;
+  });
+
+  afterEach(() => {
+    globalThis.Notification = originalNotification;
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  it('surfaces errorMessage and does not set subscribed=true when server returns notCreated', async () => {
+    const pushMgr = buildPushManagerMock();
+    const swReg = buildSwRegistrationMock(pushMgr);
+    Object.defineProperty(navigator, 'serviceWorker', {
+      value: {
+        register: vi.fn().mockResolvedValue(swReg),
+        ready: Promise.resolve(swReg),
+        addEventListener: vi.fn(),
+        getRegistration: vi.fn().mockResolvedValue(swReg),
+      },
+      configurable: true,
+    });
+
+    const mock = await import('../jmap/client') as unknown as {
+      jmap: { batch: ReturnType<typeof vi.fn> };
+      __setBatchImpl: (impl: unknown) => void;
+    };
+    mock.__setBatchImpl(() => ({
+      responses: [
+        [
+          'PushSubscription/set',
+          {
+            created: {},
+            notCreated: {
+              push0: {
+                type: 'invalidProperties',
+                description: 'subscription endpoint is invalid',
+              },
+            },
+          },
+          'c0',
+        ],
+      ],
+      sessionState: 'state-1',
+    }));
+
+    const { pushSubscription: ps } = await import('./push-subscription.svelte');
+    (ps as unknown as { busy: boolean }).busy = false;
+    (ps as unknown as { subscribed: boolean }).subscribed = false;
+    (ps as unknown as { errorMessage: string | null }).errorMessage = null;
+
+    await ps.subscribe();
+
+    // The store must NOT mark the subscription as successful.
+    expect(ps.subscribed).toBe(false);
+    // An error message must be surfaced.
+    expect(ps.errorMessage).toContain('subscription endpoint is invalid');
+
+    mock.__setBatchImpl(null);
+  });
+});

@@ -245,7 +245,7 @@ describe('seenAddresses.destroy', () => {
     mock.__setBatchImpl(() =>
       Promise.resolve({
         responses: [
-          ['SeenAddress/set', { destroyed: ['sa-1'] }, 'c0'],
+          ['SeenAddress/set', { destroyed: ['sa-1'], notDestroyed: {} }, 'c0'],
         ] as unknown[],
         sessionState: 'ss',
       }),
@@ -258,6 +258,37 @@ describe('seenAddresses.destroy', () => {
 
     const batchCall = vi.mocked(mock.jmap.batch).mock.calls[0];
     expect(batchCall).toBeDefined();
+  });
+
+  it('throws and preserves the local entry when the server returns notDestroyed (re #68)', async () => {
+    // Seed the store with one entry.
+    (seenAddresses as unknown as { entries: SeenAddress[] }).entries = [ALICE];
+    (seenAddresses as unknown as { status: string }).status = 'ready';
+
+    const mock = await getJmapMock();
+    mock.__setBatchImpl(() =>
+      Promise.resolve({
+        responses: [
+          [
+            'SeenAddress/set',
+            {
+              destroyed: [],
+              notDestroyed: {
+                'sa-1': { type: 'notFound', description: 'address not found' },
+              },
+            },
+            'c0',
+          ],
+        ] as unknown[],
+        sessionState: 'ss',
+      }),
+    );
+
+    await expect(seenAddresses.destroy('sa-1')).rejects.toThrow('address not found');
+
+    // The entry must NOT have been removed locally.
+    expect(seenAddresses.entries).toHaveLength(1);
+    expect(seenAddresses.entries[0]!.id).toBe('sa-1');
   });
 });
 

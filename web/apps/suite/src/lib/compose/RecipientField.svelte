@@ -19,6 +19,7 @@
   import { jmap, strict } from '../jmap/client';
   import { Capability } from '../jmap/types';
   import { auth } from '../auth/auth.svelte';
+  import { toast } from '../toast/toast.svelte';
   import {
     tryCommit,
     parsePaste,
@@ -357,10 +358,21 @@
         );
       });
       strict(responses);
+      const args = responses[0]![1] as {
+        notCreated?: Record<string, { type: string; description?: string } | null>;
+      };
+      const notCreated = args.notCreated?.['new1'];
+      if (notCreated) {
+        const desc = notCreated.description ?? notCreated.type;
+        console.error('saveToContacts rejected by server', notCreated);
+        toast.show({ message: `Could not save contact: ${desc}`, kind: 'error' });
+        return;
+      }
       // The server removes the matching SeenAddress row on the next state
       // advance (REQ-MAIL-11l). No local cleanup needed here.
     } catch (err) {
       console.error('saveToContacts failed', err);
+      toast.show({ message: 'Could not save contact', kind: 'error' });
     }
   }
 </script>
