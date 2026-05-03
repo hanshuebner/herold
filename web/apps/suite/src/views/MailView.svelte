@@ -1448,6 +1448,7 @@
     font-variant-numeric: tabular-nums;
     font-size: var(--type-body-compact-01-size);
     white-space: nowrap;
+    text-align: right;
   }
   .thread-row.unread .date {
     color: var(--text-secondary);
