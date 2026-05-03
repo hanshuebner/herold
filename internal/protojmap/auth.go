@@ -87,12 +87,20 @@ func SessionIDFromContext(ctx context.Context) string {
 //
 // On success the principal is attached to the request context. On
 // failure a 401 problem is written and the request short-circuits.
+//
+// The WWW-Authenticate challenge advertises only Bearer, not Basic,
+// even though the server accepts Basic credentials when they are sent
+// proactively. Advertising Basic triggers a native browser login dialog
+// in Firefox (RFC 7235 conformant behaviour); omitting it from the
+// challenge suppresses the dialog while leaving Basic-only clients
+// (Thunderbird, k-9 mail) unaffected because they send credentials
+// without waiting for a challenge.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		principal, key, sessID, ok := s.authenticate(ctx, r)
 		if !ok {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="jmap", Basic realm="jmap"`)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="jmap"`)
 			WriteJMAPError(w, http.StatusUnauthorized,
 				"unauthorized", "authentication required")
 			return

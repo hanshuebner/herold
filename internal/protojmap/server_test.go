@@ -196,8 +196,15 @@ func TestSession_RequiresAuth(t *testing.T) {
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", res.StatusCode)
 	}
-	if w := res.Header.Get("WWW-Authenticate"); !strings.Contains(w, "Bearer") {
-		t.Fatalf("WWW-Authenticate = %q, want Bearer challenge", w)
+	wwwAuth := res.Header.Get("WWW-Authenticate")
+	if !strings.Contains(wwwAuth, "Bearer") {
+		t.Fatalf("WWW-Authenticate = %q, want Bearer challenge", wwwAuth)
+	}
+	// Basic must not be advertised: browsers (Firefox in particular) show a
+	// native login dialog whenever Basic appears in a WWW-Authenticate
+	// challenge. The server still accepts Basic credentials sent proactively.
+	if strings.Contains(wwwAuth, "Basic") {
+		t.Fatalf("WWW-Authenticate = %q, must not advertise Basic (triggers browser login dialog)", wwwAuth)
 	}
 }
 
