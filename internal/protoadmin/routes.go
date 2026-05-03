@@ -176,6 +176,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Anonymous endpoint: no auth. CORS check is done inside the handler.
 	mux.HandleFunc("POST /api/v1/clientlog/public", s.handleClientLogPublic)
 	mux.HandleFunc("OPTIONS /api/v1/clientlog/public", s.handleClientLogPreflight)
+
+	// Client-log admin REST surfaces (REQ-ADM-23, REQ-ADM-230..233).
+	// Admin-listener-only; the public listener never exposes /api/v1/admin/*
+	// (REQ-OPS-ADMIN-LISTENER-01).
+	mux.HandleFunc("GET /api/v1/admin/clientlog", authAdmin(s.handleAdminListClientLog))
+	mux.HandleFunc("GET /api/v1/admin/clientlog/timeline", authAdmin(s.handleAdminClientLogTimeline))
+	mux.HandleFunc("POST /api/v1/admin/clientlog/livetail", authAdmin(s.handleAdminClientLogLivetailSet))
+	mux.HandleFunc("DELETE /api/v1/admin/clientlog/livetail/{session_id}", authAdmin(s.handleAdminClientLogLivetailClear))
+	mux.HandleFunc("GET /api/v1/admin/clientlog/stats", authAdmin(s.handleAdminClientLogStats))
 }
 
 // RegisterSelfServiceRoutes registers the self-service subset of the

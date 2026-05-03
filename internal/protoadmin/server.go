@@ -258,6 +258,14 @@ type ClientlogOptions struct {
 	// Emitter is the fan-out emitter for slog + OTLP. Nil defaults to the
 	// noop emitter. The production wiring passes a real ClientEmitter.
 	Emitter ClientlogEmitter
+	// LivetailDefaultDuration is the default lifetime for a live-tail
+	// session enabled via POST /api/v1/admin/clientlog/livetail
+	// (REQ-OPS-211, REQ-OPS-219). Zero value uses 15 minutes.
+	LivetailDefaultDuration time.Duration
+	// LivetailMaxDuration is the upper bound applied to caller-supplied
+	// durations on live-tail enable (REQ-OPS-211, REQ-OPS-219). Zero value
+	// uses 60 minutes.
+	LivetailMaxDuration time.Duration
 }
 
 // OAuthProviderOptions carries the resolved (decrypted) OAuth 2.0 client
@@ -301,6 +309,9 @@ type Server struct {
 	clientlogQueue         chan clientlogJob
 	clientlogPipeline      *clientlogPipeline
 	clientlogTelemetryGate TelemetryGate
+	// clientlog admin-surface fields (REQ-ADM-232).
+	clientlogLivetailDefault time.Duration
+	clientlogLivetailMax     time.Duration
 
 	mu        sync.Mutex
 	closed    bool
@@ -411,11 +422,13 @@ func NewServer(
 		rl:          newRateLimiter(clk, opts.RequestsPerMinutePerKey, time.Minute),
 		bootstrapRL: newRateLimiter(clk, opts.BootstrapPerWindow, opts.BootstrapWindow),
 
-		clientlogAuthRL:        newRateLimiter(clk, clo.AuthRateLimit, clo.AuthRateWindow),
-		clientlogPublicRL:      newRateLimiter(clk, clo.PublicRateLimit, clo.PublicRateWindow),
-		clientlogQueue:         clQueue,
-		clientlogPipeline:      pipeline,
-		clientlogTelemetryGate: gate,
+		clientlogAuthRL:          newRateLimiter(clk, clo.AuthRateLimit, clo.AuthRateWindow),
+		clientlogPublicRL:        newRateLimiter(clk, clo.PublicRateLimit, clo.PublicRateWindow),
+		clientlogQueue:           clQueue,
+		clientlogPipeline:        pipeline,
+		clientlogTelemetryGate:   gate,
+		clientlogLivetailDefault: clo.LivetailDefaultDuration,
+		clientlogLivetailMax:     clo.LivetailMaxDuration,
 	}
 	if opts.APIKeyLookup != nil {
 		s.apikeyLookup = opts.APIKeyLookup
