@@ -56,7 +56,7 @@ You will need:
 The quickstart binds herold to loopback ports only and uses SQLite for
 storage. No public DNS, no ACME, no smart host. For the real-domain
 walkthrough (DNS records, ACME, DKIM publication, MTA-STS) see
-[docs/user/quickstart-extended.md](./docs/user/quickstart-extended.md).
+[docs/manual/user/quickstart.mdoc](./docs/manual/user/quickstart.mdoc).
 
 The image ships a baked-in `system.toml` at `/etc/herold/system.toml`.
 Mail listeners (SMTP submission, IMAP, IMAPS) speak TLS using a
@@ -191,7 +191,7 @@ merge plan documented at `docs/design/server/notes/plan-tabard-merge-and-admin-r
 308-redirect to `/admin/`; bookmarks pointing at the old HTMX UI
 land on the SPA without breaking. On the quickstart loopback shape
 the admin listener speaks plain HTTP; in production it is
-loopback-only or fronted by ssh tunnel (see `docs/user/operate.md`).
+loopback-only or fronted by ssh tunnel (see `docs/manual/admin/operate.mdoc`).
 
 #### Suite web client (`/`)
 
@@ -294,9 +294,9 @@ docker run -d --name herold \
 
 For a real domain with public inbound, MX records, ACME-issued certs,
 and DKIM publication, follow
-[docs/user/quickstart-extended.md](./docs/user/quickstart-extended.md).
+[docs/manual/user/quickstart.mdoc](./docs/manual/user/quickstart.mdoc).
 A `docker compose` example with persistent volumes lives at
-[docs/user/examples/docker-compose.yml](./docs/user/examples/docker-compose.yml).
+[docs/manual/user/examples/docker-compose.yml](./docs/manual/user/examples/docker-compose.yml).
 
 ### (Optional) Outbound through a smart host
 
@@ -305,7 +305,7 @@ talk SMTP to the public internet, copy the smart-host example as your
 mounted `system.toml` and restart:
 
 ```bash
-cp docs/user/examples/system.toml.smarthost system.toml
+cp docs/manual/user/examples/system.toml.smarthost system.toml
 docker restart herold
 ```
 
@@ -319,7 +319,7 @@ per the REQ-FLOW-SMARTHOST spec.)
 The Docker image above is the recommended path. If you want to build
 from source - to hack on herold itself, run an unreleased commit, or
 run on a host without Docker - the equivalent loopback shape lives in
-`docs/user/examples/system.toml.quickstart` and uses paths under
+`docs/manual/user/examples/system.toml.quickstart` and uses paths under
 `./data` rather than `/var/lib/herold`.
 
 You will need:
@@ -333,7 +333,7 @@ You will need:
 git clone https://github.com/hanshuebner/herold.git
 cd herold
 
-cp docs/user/examples/system.toml.quickstart system.toml
+cp docs/manual/user/examples/system.toml.quickstart system.toml
 ./scripts/make-self-signed-cert.sh data mail.example.local
 
 make build                   # build-web + build-server, embeds the SPAs
@@ -363,17 +363,17 @@ use `go build -tags nofrontend ./cmd/herold`.
 
 User documentation (operator + admin facing):
 
-- [docs/user/install.md](./docs/user/install.md) - install paths
+- [docs/manual/admin/install.mdoc](./docs/manual/admin/install.mdoc) - install paths
   (source, Docker, Debian/RPM, Kubernetes), system resources, storage
   backend choice, first-run bootstrap.
-- [docs/user/operate.md](./docs/user/operate.md) - system.toml
+- [docs/manual/admin/operate.mdoc](./docs/manual/admin/operate.mdoc) - system.toml
   reference, TLS / ACME, DNS records, smart host, backup / restore,
   upgrades, observability, queue triage, plugin lifecycle, OIDC RP,
   common operational issues, signals, performance tuning.
-- [docs/user/administer.md](./docs/user/administer.md) - domains,
+- [docs/manual/admin/administer.mdoc](./docs/manual/admin/administer.mdoc) - domains,
   principals, mailboxes, aliases, API keys, Sieve, categorisation
   prompts, audit log, OIDC linkage.
-- [docs/user/quickstart-extended.md](./docs/user/quickstart-extended.md)
+- [docs/manual/user/quickstart.mdoc](./docs/manual/user/quickstart.mdoc)
   - real-domain walkthrough with DNS, ACME, DKIM, DMARC, MTA-STS,
   TLS-RPT.
 

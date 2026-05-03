@@ -269,7 +269,7 @@ describe('SettingsView external-submission hint', () => {
     render(SettingsView);
 
     expect(screen.getByText('system.toml')).toBeInTheDocument();
-    expect(screen.getByText('docs/operator/external-smtp-submission.md')).toBeInTheDocument();
+    expect(screen.getByText('docs/manual/admin/external-smtp-submission.mdoc')).toBeInTheDocument();
   });
 
   it('(b) when capability is absent: Configure external SMTP link is absent', () => {

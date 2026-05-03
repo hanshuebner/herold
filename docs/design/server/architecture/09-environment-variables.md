@@ -69,7 +69,7 @@ manager mandates its own variable naming. The design rule is:
 
 ## Where env vars are documented
 
-The single canonical reference table is in `docs/user/operate.md` under
+The single canonical reference table is in `docs/manual/admin/operate.mdoc` under
 "Environment variables reference". Every operator-facing env var has a row
 there. Keep the table sorted by variable name within each subsystem group.
 
@@ -90,7 +90,7 @@ Variables that exist solely for the test harness or developer convenience
 2. Classify: Required or Optional.
 3. If Optional: decide the default, decide the log level for the "using
    default" WARN/INFO.
-4. Add a row to the reference table in `docs/user/operate.md`.
+4. Add a row to the reference table in `docs/manual/admin/operate.mdoc`.
 5. If a TOML override knob is needed, follow the pattern in
    `[server.ui].signing_key_env`: the predefined name is the default; the TOML
    knob is named `<purpose>_env`; the WARN always names the predefined default.

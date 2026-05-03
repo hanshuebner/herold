@@ -283,7 +283,7 @@
             External SMTP submission (e.g. Gmail or Microsoft 365) is not enabled on this server.
             To allow routing outbound mail through an external provider, an operator can enable it
             in <code>system.toml</code> — see
-            <code>docs/operator/external-smtp-submission.md</code>.
+            <code>docs/manual/admin/external-smtp-submission.mdoc</code>.
           </p>
         {/if}
       {/if}

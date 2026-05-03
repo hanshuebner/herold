@@ -608,7 +608,7 @@ func (m WebhookBodyMode) String() string {
 
 // Default and ceiling for the per-subscription extracted-text cap.
 // The defaults are documented in the operator-facing recipe at
-// docs/user/examples/text-only-app-integration.md.
+// docs/manual/user/examples/text-only-app-integration.md.
 const (
 	// DefaultExtractedTextMaxBytes is the per-hook cap when the
 	// subscription does not specify one.  REQ-HOOK-EXTRACTED-01.

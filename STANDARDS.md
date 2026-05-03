@@ -130,7 +130,7 @@ The testing strategy in `docs/design/server/implementation/03-testing-strategy.m
 - Secrets never logged. Field allow-list in structured log fields; `slog` handlers strip known-secret keys.
 - No inline secrets in `system.toml`. Env var, file, or external KMS only.
 - Every feature parsing untrusted input has a security-review note in the PR description.
-- **Env var naming and documentation rules**: `HEROLD_<SUBSYSTEM>_<PURPOSE>` (SCREAMING_SNAKE_CASE); every operator-facing var documented in `docs/user/operate.md`; each classified as Required or Optional with a default. See `docs/design/server/architecture/09-environment-variables.md` for the full design rule.
+- **Env var naming and documentation rules**: `HEROLD_<SUBSYSTEM>_<PURPOSE>` (SCREAMING_SNAKE_CASE); every operator-facing var documented in `docs/manual/admin/operate.mdoc`; each classified as Required or Optional with a default. See `docs/design/server/architecture/09-environment-variables.md` for the full design rule.
 
 ## 10. Backwards compatibility and versioning
 

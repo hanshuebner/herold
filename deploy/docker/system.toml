@@ -15,7 +15,7 @@
 # in the README quickstart).
 #
 # For a real deployment, override /etc/herold/system.toml with a bind
-# mount and follow docs/user/quickstart-extended.md (DNS, ACME, DKIM,
+# mount and follow docs/manual/user/quickstart.mdoc (DNS, ACME, DKIM,
 # DMARC, MTA-STS).
 
 [server]
