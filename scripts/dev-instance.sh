@@ -216,16 +216,11 @@ EOF
 seed_instance() {
     local dir="$1" backend_url="$2" api_key="$3"
 
-    log "ensuring domain $SEED_DOMAIN exists"
-    # bootstrap auto-creates the admin's domain; ignore the conflict
-    # if domain add reports a duplicate.
-    HEROLD_API_KEY="$api_key" "$HEROLD_BIN" domain add "$SEED_DOMAIN" \
-        --server-url "$admin_url" \
-        --system-config "$dir/system.toml" \
-        --quiet \
-        >"$dir/domain-add.out" 2>"$dir/domain-add.err" \
-        || grep -q 'UNIQUE constraint\|already exists\|conflict' "$dir/domain-add.err" \
-        || { cat "$dir/domain-add.err" >&2; die "domain add failed"; }
+    # `herold bootstrap` already created admin@$SEED_DOMAIN, which
+    # implicitly registered $SEED_DOMAIN itself. Calling `domain add`
+    # afterwards races against the auto-create and surfaces a leaky
+    # 409 with the raw SQLite "UNIQUE constraint failed: domains.name
+    # (1555)" string, so we just skip it.
 
     for spec in "${SEED_PRINCIPALS[@]}"; do
         local local_part="${spec%%:*}" flag="${spec##*:}"
