@@ -80,6 +80,7 @@ vi.mock('../chat/store.svelte', () => ({
   chat: {
     findExistingDM: vi.fn(),
     createConversation: vi.fn(),
+    requestComposeFocus: vi.fn(),
   },
 }));
 
@@ -182,6 +183,7 @@ describe('RecipientHoverCard handleChat (re #61)', () => {
     await waitFor(() => {
       expect(chatOverlay.openWindow).toHaveBeenCalledWith('conv-existing');
     });
+    expect(chat.requestComposeFocus).toHaveBeenCalledWith('conv-existing');
     expect(chat.createConversation).not.toHaveBeenCalled();
     expect(newChatPicker.open).not.toHaveBeenCalled();
   });
@@ -203,6 +205,7 @@ describe('RecipientHoverCard handleChat (re #61)', () => {
     await waitFor(() => {
       expect(chatOverlay.openWindow).toHaveBeenCalledWith('conv-new');
     });
+    expect(chat.requestComposeFocus).toHaveBeenCalledWith('conv-new');
     // The generic new-chat picker must NOT have been opened (re #61).
     expect(newChatPicker.open).not.toHaveBeenCalled();
   });

@@ -179,6 +179,7 @@
     const existing = chat.findExistingDM(person.principalId);
     if (existing) {
       chatOverlay.openWindow(existing.id);
+      chat.requestComposeFocus(existing.id);
     } else {
       // No existing DM: create one directly with this principal rather
       // than opening the generic new-chat picker (re #61).
@@ -190,6 +191,7 @@
           members: [myId, person.principalId],
         });
         chatOverlay.openWindow(id);
+        chat.requestComposeFocus(id);
       } catch (err) {
         console.error('handleChat: createConversation failed', err);
         toast.show({ message: 'Could not open chat', kind: 'error' });
