@@ -33,10 +33,18 @@ export interface Principal {
   scopes: string[];
 }
 
+interface ClientlogBlock {
+  telemetry_enabled?: boolean;
+  livetail_until?: string | null;
+}
+
 interface ServerStatusResponse {
   principal_id: string;
   email: string;
   scopes: string[];
+  // clientlog block added by task #7's protoadmin extension (REQ-OPS-208/211).
+  // Present once the server-side extension ships; absent on older servers.
+  clientlog?: ClientlogBlock;
 }
 
 interface LoginRequest {
@@ -66,6 +74,12 @@ class Auth {
   principal = $state<Principal | null>(null);
   errorMessage = $state<string | null>(null);
 
+  // clientlog predicates read by the clientlog wrapper in main.ts.
+  // Defaults: telemetry enabled, no live-tail. Updated after a successful
+  // session probe or login when the server returns the clientlog block.
+  clientlogTelemetryEnabled = $state(true);
+  clientlogLivetailUntil = $state<number | null>(null);
+
   /**
    * Probe the session by hitting GET /api/v1/server/status.
    * A 200 means the herold_admin_session cookie is valid.
@@ -89,6 +103,7 @@ class Auth {
           email: body.email,
           scopes: body.scopes,
         };
+        this._applyClientlogBlock(body.clientlog);
         this.status = 'ready';
         return;
       }
@@ -132,6 +147,7 @@ class Auth {
         router.replace('/dashboard');
         return { ok: true, stepUpRequired: false, errorMessage: null };
       }
+
 
       if (response.status === 401) {
         let stepUpRequired = false;
@@ -190,6 +206,23 @@ class Auth {
       this.principal = null;
       this.status = 'unauthenticated';
       router.replace('/login');
+    }
+  }
+
+  /**
+   * Apply the optional clientlog block from the session response.
+   * Updates the predicates read by the clientlog wrapper (REQ-OPS-208/211).
+   */
+  private _applyClientlogBlock(block: ClientlogBlock | undefined): void {
+    if (!block) return;
+    if (typeof block.telemetry_enabled === 'boolean') {
+      this.clientlogTelemetryEnabled = block.telemetry_enabled;
+    }
+    if (block.livetail_until) {
+      const ms = new Date(block.livetail_until).getTime();
+      this.clientlogLivetailUntil = isNaN(ms) ? null : ms;
+    } else {
+      this.clientlogLivetailUntil = null;
     }
   }
 }

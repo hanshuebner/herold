@@ -15,6 +15,7 @@
     { label: 'Domains', path: '/domains', segment: 'domains' },
     { label: 'Queue', path: '/queue', segment: 'queue' },
     { label: 'Audit', path: '/audit', segment: 'audit' },
+    { label: 'Client logs', path: '/clientlog', segment: 'clientlog' },
     { label: 'Research', path: '/research', segment: 'research' },
   ];
 

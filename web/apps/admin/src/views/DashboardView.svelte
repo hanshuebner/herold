@@ -137,12 +137,67 @@
         {/if}
       {/if}
     </div>
+
+    <!-- Client-log stats card (REQ-ADM-233) -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Client logs</h2>
+        <button
+          type="button"
+          class="card-link"
+          onclick={() => router.navigate('/clientlog')}
+        >
+          View all
+        </button>
+      </div>
+
+      {#if dashboard.clientlogStatsError}
+        <p class="inline-error">{dashboard.clientlogStatsError}</p>
+      {:else if dashboard.clientlogStats}
+        <div class="stat-cols">
+          <div class="stat-col">
+            <h3 class="stat-col-title">Received</h3>
+            <dl class="stat-list">
+              {#each Object.entries(dashboard.clientlogStats.received_total) as [key, val] (key)}
+                <div class="stat-row">
+                  <dt class="stat-key">{key}</dt>
+                  <dd class="stat-val">{val}</dd>
+                </div>
+              {:else}
+                <div class="stat-row">
+                  <dt class="stat-key">none</dt>
+                  <dd class="stat-val">0</dd>
+                </div>
+              {/each}
+            </dl>
+          </div>
+          <div class="stat-col">
+            <h3 class="stat-col-title">Ring buffer</h3>
+            <dl class="stat-list">
+              {#each Object.entries(dashboard.clientlogStats.ring_buffer_rows) as [key, val] (key)}
+                <div class="stat-row">
+                  <dt class="stat-key">{key}</dt>
+                  <dd class="stat-val">{val}</dd>
+                </div>
+              {:else}
+                <div class="stat-row">
+                  <dt class="stat-key">none</dt>
+                  <dd class="stat-val">0</dd>
+                </div>
+              {/each}
+            </dl>
+          </div>
+        </div>
+      {:else if dashboard.status === 'ready'}
+        <p class="empty">No client-log data.</p>
+      {/if}
+    </div>
   </div>
 </div>
 
 <style>
   .dashboard {
-    max-width: 1100px;
+    max-width: 1200px;
   }
 
   .page-header {
@@ -328,6 +383,26 @@
   .empty {
     font-size: var(--type-body-compact-01-size);
     color: var(--text-helper);
+    margin: 0;
+  }
+
+  /* Client-log stats two-column layout */
+  .stat-cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-04);
+  }
+
+  .stat-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+  }
+
+  .stat-col-title {
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 600;
+    color: var(--text-secondary);
     margin: 0;
   }
 </style>

@@ -14,6 +14,9 @@ importers:
 
   apps/admin:
     dependencies:
+      '@herold/clientlog':
+        specifier: workspace:*
+        version: link:../../packages/clientlog
       '@herold/design-system':
         specifier: workspace:*
         version: link:../../packages/design-system
@@ -23,6 +26,9 @@ importers:
       qrcode-svg:
         specifier: ^1.1.0
         version: 1.1.0
+      source-map:
+        specifier: ^0.7.4
+        version: 0.7.6
     devDependencies:
       '@playwright/test':
         specifier: ^1.48.0
@@ -33,6 +39,9 @@ importers:
       '@tsconfig/svelte':
         specifier: ^5.0.4
         version: 5.0.8
+      '@vitest/coverage-v8':
+        specifier: ^4.1.5
+        version: 4.1.5(vitest@4.1.5)
       svelte:
         specifier: ^5.0.0
         version: 5.55.5
@@ -45,6 +54,9 @@ importers:
       vite:
         specifier: ^6.0.0
         version: 6.4.2(@types/node@25.6.0)
+      vitest:
+        specifier: ^4.1.5
+        version: 4.1.5(@types/node@25.6.0)(@vitest/coverage-v8@4.1.5)(happy-dom@20.9.0)(vite@6.4.2(@types/node@25.6.0))
 
   apps/suite:
     dependencies:
@@ -953,6 +965,10 @@ packages:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
 
+  source-map@0.7.6:
+    resolution: {integrity: sha512-i5uvt8C3ikiWeNZSVZNWcfZPItFQOsYTUAOkcUPGd8DqDy1uOUikjt5dG+uRlwyvR108Fb9DOd4GvXfT0N2/uQ==}
+    engines: {node: '>= 12'}
+
   stackback@0.0.2:
     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
 
@@ -1837,6 +1853,8 @@ snapshots:
   siginfo@2.0.0: {}
 
   source-map-js@1.2.1: {}
+
+  source-map@0.7.6: {}
 
   stackback@0.0.2: {}
 

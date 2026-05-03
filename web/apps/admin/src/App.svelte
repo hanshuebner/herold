@@ -11,6 +11,7 @@
   import QueueView from './views/QueueView.svelte';
   import QueueItemView from './views/QueueItemView.svelte';
   import AuditView from './views/AuditView.svelte';
+  import ClientlogView from './views/ClientlogView.svelte';
   import ResearchView from './views/ResearchView.svelte';
   import NotFoundView from './views/NotFoundView.svelte';
 
@@ -39,6 +40,11 @@
     key: 'g a',
     description: 'Go to Audit',
     action: () => router.navigate('/audit'),
+  });
+  keyboard.registerGlobal({
+    key: 'g l',
+    description: 'Go to Client logs',
+    action: () => router.navigate('/clientlog'),
   });
   keyboard.registerGlobal({
     key: 'g r',
@@ -86,6 +92,8 @@
       <QueueView />
     {:else if router.matches('audit')}
       <AuditView />
+    {:else if router.matches('clientlog')}
+      <ClientlogView />
     {:else if router.matches('research')}
       <ResearchView />
     {:else}

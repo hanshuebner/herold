@@ -1,10 +1,11 @@
 /**
  * Dashboard state class.
  *
- * Aggregates data from three parallel fetches:
- *   GET /api/v1/queue/stats  -> queue counts by state
- *   GET /api/v1/audit        -> recent audit log entries (limit=10)
- *   GET /api/v1/domains      -> local domain list
+ * Aggregates data from four parallel fetches:
+ *   GET /api/v1/queue/stats             -> queue counts by state
+ *   GET /api/v1/audit                   -> recent audit log entries (limit=10)
+ *   GET /api/v1/domains                 -> local domain list
+ *   GET /api/v1/admin/clientlog/stats   -> client-log counters (REQ-ADM-233)
  *
  * Uses Promise.allSettled so partial failures show degraded cards rather
  * than nuking the entire page.
@@ -13,6 +14,7 @@
  */
 
 import { apiGet } from '../api/client';
+import type { ClientlogStats } from '../clientlog/clientlog.svelte';
 
 export interface QueueStats {
   queued?: number;
@@ -52,6 +54,9 @@ class DashboardState {
   domains = $state<Domain[]>([]);
   domainsError = $state<string | null>(null);
 
+  clientlogStats = $state<ClientlogStats | null>(null);
+  clientlogStatsError = $state<string | null>(null);
+
   /** Total active queue items for the summary card. */
   queueTotal = $derived(
     (this.queueStats?.queued ?? 0) +
@@ -62,11 +67,13 @@ class DashboardState {
   async load(): Promise<void> {
     this.status = 'loading';
 
-    const [queueResult, auditResult, domainsResult] = await Promise.allSettled([
-      apiGet<QueueStats>('/api/v1/queue/stats'),
-      apiGet<{ entries: AuditEntry[] } | AuditEntry[]>('/api/v1/audit?limit=10'),
-      apiGet<Domain[]>('/api/v1/domains'),
-    ]);
+    const [queueResult, auditResult, domainsResult, clientlogResult] =
+      await Promise.allSettled([
+        apiGet<QueueStats>('/api/v1/queue/stats'),
+        apiGet<{ entries: AuditEntry[] } | AuditEntry[]>('/api/v1/audit?limit=10'),
+        apiGet<Domain[]>('/api/v1/domains'),
+        apiGet<ClientlogStats>('/api/v1/admin/clientlog/stats'),
+      ]);
 
     // Queue stats
     if (queueResult.status === 'fulfilled' && queueResult.value.ok && queueResult.value.data) {
@@ -103,6 +110,22 @@ class DashboardState {
         domainsResult.status === 'fulfilled'
           ? (domainsResult.value.errorMessage ?? 'Failed to load domains')
           : 'Network error loading domains';
+    }
+
+    // Client-log stats (REQ-ADM-233)
+    if (
+      clientlogResult.status === 'fulfilled' &&
+      clientlogResult.value.ok &&
+      clientlogResult.value.data
+    ) {
+      this.clientlogStats = clientlogResult.value.data;
+      this.clientlogStatsError = null;
+    } else {
+      this.clientlogStats = null;
+      this.clientlogStatsError =
+        clientlogResult.status === 'fulfilled'
+          ? (clientlogResult.value.errorMessage ?? 'Failed to load client-log stats')
+          : 'Network error loading client-log stats';
     }
 
     this.status = 'ready';

@@ -1,0 +1,9 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "",
+  "sources": ["src/views/ClientlogView.svelte", "src/lib/clientlog/clientlog.svelte.ts"],
+  "sourcesContent": [null, null],
+  "names": ["openRow", "load"],
+  "mappings": "AAAA,SAAS,OAAO,CAAC,GAAG,EAAE;IACpB,OAAO,GAAG,CAAC;AACX,CAAC;AAED,SAAS,IAAI,GAAG;IACd,OAAO,OAAO,CAAC,OAAO,EAAE,CAAC;AAC3B,CAAC"
+}
