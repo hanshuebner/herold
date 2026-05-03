@@ -1,14 +1,16 @@
 /**
- * Unit tests for MessageAccordion: attachment indicator in the header.
+ * Unit tests for MessageAccordion: attachment indicator in the header and
+ * label badges in the expanded message header (re #66).
  *
  * Verifies that the paperclip icon appears when the email has at least one
- * non-inline attachment, and is suppressed otherwise.
+ * non-inline attachment, and is suppressed otherwise. Also verifies that
+ * label badges are shown in the expanded header for custom-mailbox membership.
  */
 
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import MessageAccordion from './MessageAccordion.svelte';
-import type { Email, EmailBodyPart } from './types';
+import type { Email, EmailBodyPart, Mailbox } from './types';
 
 // ── module mocks ──────────────────────────────────────────────────────────────
 
@@ -32,19 +34,45 @@ vi.mock('../jmap/client', () => ({
   },
 }));
 
-vi.mock('./store.svelte', () => ({
-  mail: {
-    mailboxes: new Map(),
+// vi.mock() factories are hoisted by vitest so they run before module-level
+// variable initialisers.  Use vi.hoisted() to define shared state that both
+// the factory and the test body can access.
+const { mailMock } = vi.hoisted(() => {
+  const WORK_MBX = {
+    id: 'mbx-work',
+    name: 'Work',
+    role: null,
+    parentId: null,
+    sortOrder: 0,
+    totalEmails: 0,
+    unreadEmails: 0,
+    totalThreads: 0,
+    unreadThreads: 0,
+  } as import('./types').Mailbox;
+
+  // The mail store mock exposes customMailboxes and listFolder so that the
+  // emailLabels derived value in MessageAccordion can compute badge names.
+  // listFolder is mutable so individual tests can override it.
+  const mailMock = {
+    mailboxes: new Map([['mbx-work', WORK_MBX]]),
+    get customMailboxes(): import('./types').Mailbox[] {
+      return [WORK_MBX];
+    },
+    listFolder: 'inbox' as string,
     identities: new Map(),
-    trash: null,
+    trash: null as import('./types').Mailbox | null,
     setSeen: vi.fn(),
     toggleImportant: vi.fn(),
     unsnoozeEmail: vi.fn(),
     restoreFromTrash: vi.fn(),
     toggleReaction: vi.fn(),
     reportSpam: vi.fn(),
-  },
-}));
+  };
+
+  return { mailMock };
+});
+
+vi.mock('./store.svelte', () => ({ mail: mailMock }));
 
 vi.mock('./avatar-resolver.svelte', () => ({
   resolve: vi.fn().mockResolvedValue(null),
@@ -149,11 +177,12 @@ function makePart(overrides: Partial<EmailBodyPart>): EmailBodyPart {
 function makeEmail(overrides: {
   hasAttachment?: boolean;
   attachments?: Partial<EmailBodyPart>[];
+  mailboxIds?: Record<string, true>;
 }): Email {
   return {
     id: 'e1',
     threadId: 't1',
-    mailboxIds: {},
+    mailboxIds: overrides.mailboxIds ?? {},
     keywords: {},
     from: [{ name: 'Alice', email: 'alice@example.test' }],
     to: null,
@@ -169,9 +198,9 @@ function makeEmail(overrides: {
   } as unknown as Email;
 }
 
-function renderAccordion(email: Email) {
+function renderAccordion(email: Email, expanded = false) {
   return render(MessageAccordion, {
-    props: { email, expanded: false, onToggle: vi.fn() },
+    props: { email, expanded, onToggle: vi.fn() },
   });
 }
 
@@ -221,5 +250,39 @@ describe('MessageAccordion: attachment indicator in header', () => {
     const email = { ...base, attachments: undefined } as unknown as Email;
     renderAccordion(email);
     expect(screen.queryByLabelText('att.headerIcon.label')).not.toBeInTheDocument();
+  });
+});
+
+describe('MessageAccordion: label badges in expanded message header (re #66)', () => {
+  it('shows a label badge for a custom mailbox when the message is expanded', () => {
+    const email = makeEmail({ mailboxIds: { 'mbx-work': true } });
+    renderAccordion(email, true);
+    const badge = screen.getByText('Work');
+    expect(badge).toBeInTheDocument();
+    expect(badge.classList.contains('label-badge')).toBe(true);
+  });
+
+  it('does not show label badges when the message is collapsed', () => {
+    const email = makeEmail({ mailboxIds: { 'mbx-work': true } });
+    renderAccordion(email, false);
+    // Collapsed: the labels row must not be rendered at all.
+    expect(screen.queryByLabelText('Labels')).not.toBeInTheDocument();
+  });
+
+  it('does not show a badge when the email belongs to no custom mailbox', () => {
+    const email = makeEmail({ mailboxIds: {} });
+    renderAccordion(email, true);
+    expect(screen.queryByLabelText('Labels')).not.toBeInTheDocument();
+  });
+
+  it('suppresses the badge for the active list folder', () => {
+    // When listFolder matches the custom mailbox id, no badge should appear
+    // (the user is already browsing that label; showing it is redundant).
+    mailMock.listFolder = 'mbx-work';
+    const email = makeEmail({ mailboxIds: { 'mbx-work': true } });
+    renderAccordion(email, true);
+    expect(screen.queryByLabelText('Labels')).not.toBeInTheDocument();
+    // Restore so other tests are not affected.
+    mailMock.listFolder = 'inbox';
   });
 });
