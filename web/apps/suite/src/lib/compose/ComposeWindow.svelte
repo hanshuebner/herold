@@ -333,8 +333,15 @@
 
   // Inline zone handlers.
   function onInlineZoneDragEnter(e: DragEvent): void {
+    // Do NOT call stopPropagation here. The modal uses a depth counter
+    // (dragDepth) to keep dragActive=true while the cursor is anywhere
+    // inside the modal. When the cursor moves from a parent element into
+    // this zone, dragleave on the parent bubbles to the modal and
+    // decrements dragDepth. The balancing dragenter must also reach the
+    // modal to re-increment the counter. Stopping propagation here
+    // would leave dragDepth at 0, hide the zone, and cause the
+    // oscillation loop reported in issue #67.
     e.preventDefault();
-    e.stopPropagation();
     inlineZoneHover = true;
   }
   function onInlineZoneDragOver(e: DragEvent): void {
@@ -395,8 +402,10 @@
 
   // Attachment zone handlers.
   function onAttachZoneDragEnter(e: DragEvent): void {
+    // Do NOT call stopPropagation here — see onInlineZoneDragEnter for the
+    // full explanation. The modal depth counter must see this dragenter so
+    // dragDepth stays balanced with the dragleave from the parent element.
     e.preventDefault();
-    e.stopPropagation();
     attachZoneHover = true;
   }
   function onAttachZoneDragOver(e: DragEvent): void {

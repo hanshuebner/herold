@@ -139,6 +139,40 @@ describe('drag state machine (G15)', () => {
   });
 });
 
+describe('drag depth counter stays balanced when cursor moves into a drop zone (re #67)', () => {
+  // When cursor moves from a parent element (e.g. zone-container) to the
+  // inline-drop-zone, the browser fires:
+  //   1. dragleave on the parent -> bubbles to modal -> onModalDragLeave
+  //   2. dragenter on the inline zone -> bubbles to modal -> onModalDragEnter
+  //      (ONLY if the zone handler does NOT call stopPropagation)
+  // Without the balancing modal dragenter, dragDepth reaches 0 and
+  // dragActive is cleared, causing the zone to disappear and oscillate.
+
+  it('dragActive stays true when cursor enters inline zone after entering modal', () => {
+    const s = makeDragState();
+    s.onModalDragEnter(['Files']); // cursor enters modal, depth=1
+    // cursor moves from modal into a parent div (e.g. body-row):
+    s.onModalDragEnter(['Files']); // child dragenter bubbles up, depth=2
+    s.onModalDragLeave();          // parent dragleave bubbles up, depth=1
+    // cursor moves from body-row into inline zone:
+    s.onModalDragLeave();          // parent dragleave bubbles up, depth=0
+    s.onModalDragEnter(['Files']); // inline zone dragenter bubbles up (fix: no stopPropagation)
+    expect(s.dragActive).toBe(true);
+  });
+
+  it('dragActive stays true when cursor enters attach zone after entering modal', () => {
+    const s = makeDragState();
+    s.onModalDragEnter(['Files']); // cursor enters modal, depth=1
+    // cursor moves from modal into a parent div:
+    s.onModalDragEnter(['Files']); // child dragenter bubbles up, depth=2
+    s.onModalDragLeave();          // parent dragleave, depth=1
+    // cursor moves from parent into attach zone:
+    s.onModalDragLeave();          // parent dragleave, depth=0
+    s.onModalDragEnter(['Files']); // attach zone dragenter bubbles up (fix: no stopPropagation)
+    expect(s.dragActive).toBe(true);
+  });
+});
+
 describe('chip drag-data encoding (G15)', () => {
   it('encodes the attachment key as application/x-herold-compose-part', () => {
     // The chip's ondragstart calls:
