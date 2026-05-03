@@ -166,6 +166,11 @@
       });
     }
   });
+  // Auto-expand the label list while a thread drag is active (re #50).
+  // The custom-mailbox rows are absent from the DOM when moreOpen is false,
+  // so they cannot receive drop events. This derived flag keeps them rendered
+  // for the duration of any drag without mutating the manual toggle state.
+  let moreOpenEffective = $derived(moreOpen || threadDnd.current !== null);
 
   async function promptCreateMailbox(): Promise<void> {
     const name = await prompt.ask({
@@ -408,14 +413,14 @@
       <button
         type="button"
         class="more-toggle"
-        aria-expanded={moreOpen}
+        aria-expanded={moreOpenEffective}
         onclick={() => (moreOpen = !moreOpen)}
       >
-        <span aria-hidden="true">{moreOpen ? '▾' : '▸'}</span>
+        <span aria-hidden="true">{moreOpenEffective ? '▾' : '▸'}</span>
         {t('sidebar.labels')}
         <span class="count">{mail.customMailboxes.length}</span>
       </button>
-      {#if moreOpen}
+      {#if moreOpenEffective}
         <ul class="mailbox-list custom">
           {#each mail.customMailboxes as m (m.id)}
             <li
