@@ -97,7 +97,7 @@ vi.mock('../lib/i18n/i18n.svelte', () => ({
 // ---------------------------------------------------------------------------
 
 function mockFetch(bundle: ManualBundle | null, ok = true): void {
-  global.fetch = vi.fn().mockResolvedValue({
+  globalThis.fetch = vi.fn().mockResolvedValue({
     ok,
     status: ok ? 200 : 500,
     json: () => Promise.resolve(bundle),
@@ -131,7 +131,7 @@ describe('HelpView', () => {
 
   it('shows the loading state before fetch completes', async () => {
     // Never-resolving fetch so the loading state stays visible.
-    global.fetch = vi.fn().mockReturnValue(new Promise(() => {}));
+    globalThis.fetch = vi.fn().mockReturnValue(new Promise(() => {}));
     const { default: HelpView } = await import('./HelpView.svelte');
     render(HelpView);
 
