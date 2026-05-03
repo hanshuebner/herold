@@ -55,16 +55,18 @@ no preference.
 ```bash
 git clone https://github.com/hanshuebner/herold.git
 cd herold
-go build -trimpath -o ./herold ./cmd/herold
+make build
 ```
 
-The release build flags match what CI ships:
+`make build` runs the pnpm workspace build first (producing the Suite
+SPA assets), then compiles the herold binary with the correct flags and
+copies the result to `bin/herold`. This is the same path CI uses.
+
+When only Go code has changed and the SPA assets are already up to date,
+the shorter iteration loop skips the pnpm step:
 
 ```bash
-CGO_ENABLED=0 go build \
-  -trimpath -buildvcs=true \
-  -ldflags "-s -w" \
-  -o ./herold ./cmd/herold
+make build-server
 ```
 
 For the local CI lane (`fmt-check`, `vet`, `test`, `vulncheck`):
@@ -76,6 +78,28 @@ make ci-local
 `staticcheck` and dual-backend integration tests are separate targets
 (`make staticcheck`, `make interop-test`) or are run via the workflows
 in `.github/workflows/`.
+
+### Build customization
+
+The Makefile exposes several variables for non-standard environments:
+
+| Variable   | Default | Purpose                                                  |
+|------------|---------|----------------------------------------------------------|
+| `GO`       | `go`    | Path to the Go toolchain binary.                         |
+| `GOFLAGS`  | (empty) | Extra flags passed to every `go` invocation.             |
+| `FUZZTIME` | `30s`   | Per-target budget for `make fuzz-short`.                 |
+
+Example — build without the Node/pnpm toolchain (Go-only environments):
+
+```bash
+GOFLAGS="-tags nofrontend" make build-server
+```
+
+The `-tags nofrontend` build tag swaps in a stub embed, so the build
+succeeds without Node / pnpm in the environment. The resulting binary
+serves a placeholder page in place of the Suite SPA; it is suitable
+for Go-only CI environments and for backend development where the SPA
+is served separately via `[server.suite] asset_dir`.
 
 ### Suite SPA
 
