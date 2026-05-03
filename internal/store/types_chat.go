@@ -425,8 +425,7 @@ const (
 
 // ChatValidateEmoji enforces the per-key shape rule for a reactions
 // JSON map key: non-empty, ≤32 bytes, valid UTF-8, no embedded HTML
-// tags. Exposed for the metadata backends and the fakestore so the
-// rule lives in one place.
+// tags. Exposed for the metadata backends so the rule lives in one place.
 func ChatValidateEmoji(emoji string) error {
 	return chatValidateEmoji(emoji)
 }

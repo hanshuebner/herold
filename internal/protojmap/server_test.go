@@ -14,11 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // fixture holds the per-test server, store, fake clock, and a ready-
@@ -39,11 +41,11 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
-	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: "example.com", IsLocal: true}); err != nil {
 		t.Fatalf("seed domain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
@@ -650,11 +652,11 @@ func TestUpload_RoundTrip_BlobInStore(t *testing.T) {
 
 func TestUpload_TooLarge_413(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
-	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: "example.com", IsLocal: true}); err != nil {
 		t.Fatalf("seed domain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
@@ -895,11 +897,11 @@ func TestDownload_CrossAccount_NonMember_Forbidden(t *testing.T) {
 
 func TestDownload_RateLimit_Throttles(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
-	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: "example.com", IsLocal: true}); err != nil {
 		t.Fatalf("seed domain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)

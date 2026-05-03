@@ -7,26 +7,26 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
-func newStore(t *testing.T) *fakestore.Store {
+func newStore(t *testing.T) store.Store {
 	t.Helper()
-	s, err := fakestore.New(fakestore.Options{
-		Clock:   clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
-		BlobDir: t.TempDir(),
-	})
+	s, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
-func setup(t *testing.T) (*handlerSet, *fakestore.Store, store.Principal, store.Mailbox) {
+func setup(t *testing.T) (*handlerSet, store.Store, store.Principal, store.Mailbox) {
 	t.Helper()
 	st := newStore(t)
 	ctx := context.Background()
@@ -48,7 +48,7 @@ func setup(t *testing.T) (*handlerSet, *fakestore.Store, store.Principal, store.
 	return &handlerSet{store: st}, st, p, mb
 }
 
-func insertMsg(t *testing.T, st *fakestore.Store, mb store.Mailbox, msgID, inReplyTo, subject string) store.MessageID {
+func insertMsg(t *testing.T, st store.Store, mb store.Mailbox, msgID, inReplyTo, subject string) store.MessageID {
 	t.Helper()
 	uid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
 		Blob: store.BlobRef{Hash: "deadbeef" + msgID, Size: 1},
@@ -61,7 +61,7 @@ func insertMsg(t *testing.T, st *fakestore.Store, mb store.Mailbox, msgID, inRep
 	if err != nil {
 		t.Fatalf("insert message: %v", err)
 	}
-	// Find the row's MessageID by UID — fakestore assigns ids
+	// Find the row's MessageID by UID — the store assigns IDs
 	// monotonically and exposes them through ListMessages.
 	msgs, err := st.Meta().ListMessages(context.Background(), mb.ID, store.MessageFilter{
 		Limit: 1000, WithEnvelope: true,

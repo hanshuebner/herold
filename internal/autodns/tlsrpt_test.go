@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,7 +19,7 @@ import (
 	"github.com/hanshuebner/herold/internal/autodns"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // fakeQueueSubmitter records every Submit call.
@@ -42,14 +43,14 @@ func (f *fakeQueueSubmitter) snapshot() []autodns.ReportSubmission {
 	return out
 }
 
-// seedReporter builds the standard fakestore + reporter under a fixed
-// FakeClock and returns the bundle.
-func seedReporter(t *testing.T, queue *fakeQueueSubmitter, http *http.Client) (*autodns.Reporter, *fakestore.Store, *clock.FakeClock) {
+// seedReporter builds a SQLite-backed reporter under a fixed FakeClock
+// and returns the bundle.
+func seedReporter(t *testing.T, queue *fakeQueueSubmitter, http *http.Client) (*autodns.Reporter, store.Store, *clock.FakeClock) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	if err := fs.Meta().InsertDomain(t.Context(), store.Domain{
@@ -73,7 +74,7 @@ func seedReporter(t *testing.T, queue *fakeQueueSubmitter, http *http.Client) (*
 }
 
 // appendFailure inserts one row.
-func appendFailure(t *testing.T, fs *fakestore.Store, when time.Time) {
+func appendFailure(t *testing.T, fs store.Store, when time.Time) {
 	t.Helper()
 	f := store.TLSRPTFailure{
 		RecordedAt:           when,

@@ -26,7 +26,6 @@
 //
 //   - fakedns:    in-memory DNSResolver covering MX/A/AAAA/TXT/TLSA.
 //   - fakeplugin: in-process FakePlugin registry.
-//   - fakestore:  in-memory Store implementation (default when Options.Store is nil).
 //   - smtppeer:   scripted in-process SMTP responder.
 //   - corpus:     deterministic synthetic fixtures.
 package testharness

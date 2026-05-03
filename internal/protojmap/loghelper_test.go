@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -24,7 +25,8 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/protojmap"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // capturedRecord holds a single slog record's message, level, and all
@@ -130,11 +132,11 @@ func assertActivityTagged(t *testing.T, recs []capturedRecord) {
 // log line is emitted at debug and carries activity=access (REQ-OPS-86d).
 func TestRequestLog_AccessTagged(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
-	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: "example.com", IsLocal: true}); err != nil {
 		t.Fatalf("seed domain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
@@ -195,11 +197,11 @@ func TestRequestLog_AccessTagged(t *testing.T) {
 // the get record carries result_count.
 func TestDispatch_LogsMethodActivity(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
-	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: "example.com", IsLocal: true}); err != nil {
 		t.Fatalf("seed domain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
@@ -325,11 +327,11 @@ func TestDispatch_LogsMethodActivity(t *testing.T) {
 // method calls are tagged activity=audit (REQ-OPS-86 / brief).
 func TestDispatch_AuditActivityForIdentityMethods(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
-	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: "example.com", IsLocal: true}); err != nil {
 		t.Fatalf("seed domain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
@@ -392,11 +394,11 @@ func TestDispatch_AuditActivityForIdentityMethods(t *testing.T) {
 // records carry activity=poll at debug (REQ-OPS-86).
 func TestEventSource_PingTaggedPoll(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
-	if err := fs.SeedDomain(context.Background(), "example.com"); err != nil {
+	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: "example.com", IsLocal: true}); err != nil {
 		t.Fatalf("seed domain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)

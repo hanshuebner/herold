@@ -8,18 +8,20 @@ import (
 	"strings"
 	"testing"
 
+	"path/filepath"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/vapid"
 )
 
-// fixture builds the handler set + a fakestore + a known principal,
+// fixture builds the handler set + a store + a known principal,
 // returning everything the tests need to drive Execute directly.
 type fixture struct {
 	t       *testing.T
-	store   *fakestore.Store
+	store   store.Store
 	pid     store.PrincipalID
 	gh      *getHandler
 	sh      *setHandler
@@ -28,9 +30,9 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	st, err := fakestore.New(fakestore.Options{})
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clock.NewReal())
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	p, err := st.Meta().InsertPrincipal(context.Background(), store.Principal{

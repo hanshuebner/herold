@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -34,8 +35,8 @@ import (
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
 
 // testDataKey is a 32-byte key for sealing credentials in tests.
@@ -59,7 +60,7 @@ func alwaysUnreachableProbe(_ context.Context, _ store.IdentitySubmission) extsu
 // submissionHarness wraps the test harness for submission endpoint tests.
 type submissionHarness struct {
 	t       *testing.T
-	fs      *fakestore.Store
+	fs      store.Store
 	clk     *clock.FakeClock
 	srv     *protoadmin.Server
 	client  *http.Client
@@ -71,9 +72,9 @@ type submissionHarness struct {
 func newSubmissionHarness(t *testing.T, probe protoadmin.ExternalProbe) *submissionHarness {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs,
@@ -188,7 +189,7 @@ func (sh *submissionHarness) createUser(adminKey, email string) string {
 }
 
 // insertIdentity creates a JMAP identity for the given principal and returns
-// the identity id. Uses the fakestore directly to avoid routing through JMAP.
+// the identity id. Uses the store directly to avoid routing through JMAP.
 func (sh *submissionHarness) insertIdentity(principalID uint64, email string) string {
 	sh.t.Helper()
 	id := fmt.Sprintf("identity-%d", principalID)
@@ -484,9 +485,9 @@ func TestSubmission_RequiresSelfOnly_AdminForbidden(t *testing.T) {
 func TestSubmission_CSRF_CookieAuth(t *testing.T) {
 	// Build a harness with cookie auth enabled.
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	th, _ := testharness.Start(t, testharness.Options{
 		Store: fs,
@@ -655,9 +656,9 @@ func TestRequireSelfOnly_AllVerbs(t *testing.T) {
 // is configured.
 func TestPutSubmission_NoDataKey(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs,

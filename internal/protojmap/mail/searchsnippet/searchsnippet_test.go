@@ -8,20 +8,20 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
-func newStore(t *testing.T) *fakestore.Store {
+func newStore(t *testing.T) store.Store {
 	t.Helper()
-	s, err := fakestore.New(fakestore.Options{
-		Clock:   clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
-		BlobDir: t.TempDir(),
-	})
+	s, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s

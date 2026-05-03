@@ -12,13 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailarc"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailauth/keymgmt"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // TestSeal_ActivityTagged verifies that a successful Seal call emits a debug
@@ -26,9 +28,9 @@ import (
 func TestSeal_ActivityTagged(t *testing.T) {
 	observe.AssertActivityTagged(t, func(log *slog.Logger) {
 		clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-		fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+		fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 		if err != nil {
-			t.Fatalf("fakestore: %v", err)
+			t.Fatalf("storesqlite.Open: %v", err)
 		}
 		t.Cleanup(func() { _ = fs.Close() })
 
@@ -57,9 +59,9 @@ func TestSeal_ActivityTagged(t *testing.T) {
 func TestSeal_KeyGenerate_ActivityTagged(t *testing.T) {
 	observe.AssertActivityTagged(t, func(log *slog.Logger) {
 		clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-		fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+		fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 		if err != nil {
-			t.Fatalf("fakestore: %v", err)
+			t.Fatalf("storesqlite.Open: %v", err)
 		}
 		t.Cleanup(func() { _ = fs.Close() })
 

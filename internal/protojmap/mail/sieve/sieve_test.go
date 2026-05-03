@@ -7,10 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // newHandlers builds the handlerSet directly so tests can drive Execute
@@ -19,9 +21,9 @@ import (
 func newHandlers(t *testing.T) (*handlerSet, store.Store, store.Principal, context.Context) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	st, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -33,8 +34,8 @@ import (
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
 
 // --------------------------------------------------------------------------
@@ -54,7 +55,7 @@ type clientlogHarness struct {
 	client  *http.Client
 	baseURL string
 	clk     *clock.FakeClock
-	fs      *fakestore.Store
+	fs      store.Store
 }
 
 // newClientlogHarness builds a full HTTP test harness with a bootstrapped
@@ -64,9 +65,9 @@ func newClientlogHarness(t *testing.T) (*clientlogHarness, string) {
 	observe.RegisterClientlogMetrics()
 
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 
 	h, _ := testharness.Start(t, testharness.Options{
@@ -101,9 +102,9 @@ func newClientlogHarnessWithOpts(t *testing.T, clo protoadmin.ClientlogOptions) 
 	observe.RegisterClientlogMetrics()
 
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 
 	h, _ := testharness.Start(t, testharness.Options{

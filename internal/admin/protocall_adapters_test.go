@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"testing"
@@ -9,7 +10,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // TestCallSysmsgsAdapter_BumpsLastMessageAtAndMessageCount pins
@@ -23,9 +24,9 @@ import (
 func TestCallSysmsgsAdapter_BumpsLastMessageAtAndMessageCount(t *testing.T) {
 	ctx := context.Background()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	// Seed two principals + a DM conversation + memberships.
 	caller, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
@@ -147,9 +148,9 @@ func TestCallSysmsgsAdapter_BumpsLastMessageAtAndMessageCount(t *testing.T) {
 func TestCallChatPeersResolver_UnionExcludesSelfDedupes(t *testing.T) {
 	ctx := context.Background()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 
 	// Seed four principals: publisher + three peers (alice, bob,

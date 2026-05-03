@@ -6,6 +6,7 @@ package autodns_test
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -13,8 +14,8 @@ import (
 	"github.com/hanshuebner/herold/internal/autodns"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/observe"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness/fakeplugin"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
 
 // autodnsCaptureHandler captures every emitted log record for assertion.
@@ -225,9 +226,9 @@ func TestActivityTagged_AutoDNSNoDrift(t *testing.T) {
 func newPublisherWithLogger(t *testing.T, pluginName string, log *slog.Logger) (*autodns.Publisher, *dnsRecorder, *fakeplugin.Registry, *clock.FakeClock) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	rec, plug := newDNSRecorder(pluginName)

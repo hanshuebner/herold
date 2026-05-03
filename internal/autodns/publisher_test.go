@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,8 +15,8 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness/fakeplugin"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
 
 // presentCall captures the parameters of one dns.replace invocation
@@ -138,9 +139,9 @@ func itoa(n int64) string {
 func newPublisher(t *testing.T, pluginName string) (*autodns.Publisher, *dnsRecorder, *fakeplugin.Registry, *clock.FakeClock) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	rec, plug := newDNSRecorder(pluginName)
@@ -321,9 +322,9 @@ func TestPublisher_VerifyDomain_DriftDetected(t *testing.T) {
 
 func TestReporter_Append_PersistsViaStore(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	ctx := t.Context()

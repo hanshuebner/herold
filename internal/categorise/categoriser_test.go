@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,7 +20,7 @@ import (
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // fakeServer is the test double for the OpenAI-compatible endpoint.
@@ -61,15 +62,14 @@ func chatJSON(content string) string {
 	return string(b)
 }
 
-// makeStoreAndPrincipal returns a fakestore + a principal id for a
+// makeStoreAndPrincipal returns a SQLite store + a principal id for a
 // freshly inserted "alice@example.test" principal.
 func makeStoreAndPrincipal(t *testing.T) (store.Store, store.PrincipalID) {
 	t.Helper()
-	st, err := fakestore.New(fakestore.Options{
-		Clock: clock.NewFake(time.Date(2026, 4, 24, 0, 0, 0, 0, time.UTC)),
-	})
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 4, 24, 0, 0, 0, 0, time.UTC)))
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	p, err := st.Meta().InsertPrincipal(context.Background(), store.Principal{

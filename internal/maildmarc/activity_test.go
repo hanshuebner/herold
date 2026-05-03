@@ -4,24 +4,27 @@ package maildmarc_test
 // a valid activity attribute (REQ-OPS-86a).
 
 import (
+	"context"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/maildmarc"
 	"github.com/hanshuebner/herold/internal/observe"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // newIngestorForActivity returns an Ingestor wired to a recording logger so
 // AssertActivityTagged can inspect emitted records.
-func newIngestorForActivity(t *testing.T, log *slog.Logger) (*fakestore.Store, *maildmarc.Ingestor) {
+func newIngestorForActivity(t *testing.T, log *slog.Logger) (store.Store, *maildmarc.Ingestor) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	return fs, maildmarc.NewIngestor(fs.Meta(), log, clk)

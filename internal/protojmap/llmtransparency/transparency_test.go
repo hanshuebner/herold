@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // -- fake spam policy store -----------------------------------------------
@@ -29,20 +30,18 @@ func (f *fakeSpamPolicy) SetSpamPolicy(p protoadmin.SpamPolicy) { f.policy = p }
 
 // -- helpers ---------------------------------------------------------------
 
-func newTestStore(t *testing.T) *fakestore.Store {
+func newTestStore(t *testing.T) store.Store {
 	t.Helper()
-	s, err := fakestore.New(fakestore.Options{
-		Clock:   clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
-		BlobDir: t.TempDir(),
-	})
+	s, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
-func insertPrincipal(t *testing.T, st *fakestore.Store, email string) store.Principal {
+func insertPrincipal(t *testing.T, st store.Store, email string) store.Principal {
 	t.Helper()
 	p, err := st.Meta().InsertPrincipal(context.Background(), store.Principal{
 		Kind:           store.PrincipalKindUser,
@@ -54,7 +53,7 @@ func insertPrincipal(t *testing.T, st *fakestore.Store, email string) store.Prin
 	return p
 }
 
-func insertMailboxForPrincipal(t *testing.T, st *fakestore.Store, pid store.PrincipalID, name string) store.Mailbox {
+func insertMailboxForPrincipal(t *testing.T, st store.Store, pid store.PrincipalID, name string) store.Mailbox {
 	t.Helper()
 	mb, err := st.Meta().InsertMailbox(context.Background(), store.Mailbox{
 		PrincipalID: pid,
@@ -66,7 +65,7 @@ func insertMailboxForPrincipal(t *testing.T, st *fakestore.Store, pid store.Prin
 	return mb
 }
 
-func insertMessage(t *testing.T, st *fakestore.Store, mb store.Mailbox, msgIDHeader string) store.MessageID {
+func insertMessage(t *testing.T, st store.Store, mb store.Mailbox, msgIDHeader string) store.MessageID {
 	t.Helper()
 	_, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
 		PrincipalID: mb.PrincipalID,
@@ -75,7 +74,7 @@ func insertMessage(t *testing.T, st *fakestore.Store, mb store.Mailbox, msgIDHea
 			MessageID: msgIDHeader,
 		},
 		Size: 1024,
-	}, nil)
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
 	}
@@ -87,7 +86,7 @@ func insertMessage(t *testing.T, st *fakestore.Store, mb store.Mailbox, msgIDHea
 	return msg.ID
 }
 
-func setupHandlers(t *testing.T, spam *fakeSpamPolicy) (*handlerSet, *fakestore.Store, store.Principal) {
+func setupHandlers(t *testing.T, spam *fakeSpamPolicy) (*handlerSet, store.Store, store.Principal) {
 	t.Helper()
 	st := newTestStore(t)
 	p := insertPrincipal(t, st, "alice@example.test")
