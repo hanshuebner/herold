@@ -20,6 +20,16 @@ export const de = {
   'sidebar.delete': 'Löschen',
   'sidebar.chats': 'Chats',
   'sidebar.newChat': 'Neuer Chat',
+  'sidebar.createFolder.title': 'Neuer Ordner',
+  'sidebar.createFolder.label': 'Ordnername',
+  'sidebar.createFolder.confirm': 'Erstellen',
+  'sidebar.renameFolder.title': 'Ordner umbenennen',
+  'sidebar.renameFolder.label': 'Neuer Name',
+  'sidebar.renameFolder.confirm': 'Umbenennen',
+  'sidebar.deleteFolder.title': 'Ordner "{name}" löschen?',
+  'sidebar.deleteFolder.message':
+    'Enthaltene Nachrichten bleiben in anderen Ordnern erhalten (andernfalls werden sie in den Papierkorb verschoben).',
+  'sidebar.deleteFolder.confirm': 'Löschen',
 
   // ── Mail list ───────────────────────────────────────────────────────
   'list.refresh': 'Aktualisieren',

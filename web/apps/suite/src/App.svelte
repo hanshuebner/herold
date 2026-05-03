@@ -169,9 +169,9 @@
 
   async function promptCreateMailbox(): Promise<void> {
     const name = await prompt.ask({
-      title: 'New mailbox',
-      label: 'Mailbox name',
-      confirmLabel: 'Create',
+      title: t('sidebar.createFolder.title'),
+      label: t('sidebar.createFolder.label'),
+      confirmLabel: t('sidebar.createFolder.confirm'),
     });
     if (!name) return;
     const id = await mail.createMailbox(name);
@@ -179,21 +179,20 @@
   }
   async function promptRenameMailbox(id: string, current: string): Promise<void> {
     const next = await prompt.ask({
-      title: 'Rename mailbox',
-      label: 'New name',
+      title: t('sidebar.renameFolder.title'),
+      label: t('sidebar.renameFolder.label'),
       defaultValue: current,
-      confirmLabel: 'Rename',
+      confirmLabel: t('sidebar.renameFolder.confirm'),
     });
     if (!next || next === current) return;
     await mail.renameMailbox(id, next);
   }
   async function confirmDestroyMailbox(id: string, name: string): Promise<void> {
     const ok = await confirm.ask({
-      title: `Delete mailbox "${name}"?`,
-      message:
-        "Messages it contains will remain in any other mailboxes they're in (otherwise they go to Trash on the server).",
-      confirmLabel: 'Delete',
-      cancelLabel: 'Cancel',
+      title: t('sidebar.deleteFolder.title', { name }),
+      message: t('sidebar.deleteFolder.message'),
+      confirmLabel: t('sidebar.deleteFolder.confirm'),
+      cancelLabel: t('common.cancel'),
       kind: 'danger',
     });
     if (!ok) return;
