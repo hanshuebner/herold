@@ -40,11 +40,14 @@ package testharness
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -52,9 +55,9 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness/fakedns"
 	"github.com/hanshuebner/herold/internal/testharness/fakeplugin"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 	"github.com/hanshuebner/herold/internal/testharness/smtppeer"
 )
 
@@ -88,8 +91,10 @@ type ListenerSpec struct {
 // sensible default (in-memory store, fake clock anchored at 2026-01-01,
 // empty DNS, empty plugin registry, no listeners).
 type Options struct {
-	// Store is the store.Store backing the harness. Defaults to
-	// fakestore.New.
+	// Store is the store.Store backing the harness. Defaults to an
+	// in-memory SQLite store opened at t.TempDir()/test.db with WAL mode
+	// and all migrations applied. Tests that need explicit fakestore
+	// behaviour may still supply one here.
 	Store store.Store
 	// Clock is the clock injected into subsystems. Defaults to
 	// clock.NewFake(fakeClockAnchor).
@@ -233,14 +238,18 @@ func fillDefaults(t testing.TB, o Options) (Options, error) {
 		o.Plugins = fakeplugin.NewRegistry()
 	}
 	if o.Store == nil {
-		fs, err := fakestore.New(fakestore.Options{
-			Clock:   o.Clock,
-			BlobDir: t.TempDir(),
-		})
+		// Deterministic ChaCha8 stream seeded from RandSeed so UIDVALIDITY
+		// values are reproducible across runs.
+		seed := [32]byte{}
+		binary.LittleEndian.PutUint64(seed[:8], uint64(o.RandSeed))
+		rng := rand.NewChaCha8(seed)
+
+		dbPath := filepath.Join(t.TempDir(), "test.db")
+		sqliteStore, err := storesqlite.OpenWithRand(context.Background(), dbPath, o.Logger, o.Clock, rng)
 		if err != nil {
-			return Options{}, fmt.Errorf("fakestore: %w", err)
+			return Options{}, fmt.Errorf("storesqlite: %w", err)
 		}
-		o.Store = fs
+		o.Store = sqliteStore
 	}
 	return o, nil
 }

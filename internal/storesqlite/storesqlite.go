@@ -20,6 +20,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storeblobfs"
 )
@@ -190,7 +191,7 @@ func backfillTOTPFlags(ctx context.Context, s *Store, logger *slog.Logger) error
 	if len(todo) == 0 {
 		return nil
 	}
-	logger.Info("storesqlite: backfilling TOTP flags", "rows", len(todo))
+	logger.Info("storesqlite: backfilling TOTP flags", "activity", observe.ActivitySystem, "rows", len(todo))
 	s.writerMu.Lock()
 	defer s.writerMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -331,7 +332,7 @@ func applyMigrations(ctx context.Context, db *sql.DB, logger *slog.Logger) error
 		if applied[m.version] {
 			continue
 		}
-		logger.Debug("applying migration", "driver", "sqlite", "version", m.version, "name", m.name)
+		logger.Debug("applying migration", "activity", observe.ActivitySystem, "driver", "sqlite", "version", m.version, "name", m.name)
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("storesqlite: begin migration %d: %w", m.version, err)
