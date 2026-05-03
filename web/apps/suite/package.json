@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "bundle-manual": "mkdir -p public/manual && node ../../packages/manual/scripts/bundle.mjs --manifest ../../../../docs/manual/manifest.toml --content-root ../../../../docs/manual --out-json public/manual",
+    "bundle-manual": "mkdir -p public/manual && node ../../packages/manual/scripts/bundle.mjs --manifest ../../../docs/manual/manifest.toml --content-root ../../../docs/manual --out-json public/manual",
     "dev": "pnpm run bundle-manual && vite",
     "build": "vite build",
     "preview": "vite preview",
