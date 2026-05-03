@@ -175,13 +175,26 @@
 
   async function handleChat(): Promise<void> {
     if (!person?.principalId || !chatEnabled) return;
+    recipientHover.closeNow();
     const existing = chat.findExistingDM(person.principalId);
     if (existing) {
       chatOverlay.openWindow(existing.id);
     } else {
-      newChatPicker.open({ mode: 'dm' });
+      // No existing DM: create one directly with this principal rather
+      // than opening the generic new-chat picker (re #61).
+      const myId = auth.principalId;
+      if (!myId) return;
+      try {
+        const { id } = await chat.createConversation({
+          kind: 'dm',
+          members: [myId, person.principalId],
+        });
+        chatOverlay.openWindow(id);
+      } catch (err) {
+        console.error('handleChat: createConversation failed', err);
+        toast.show({ message: 'Could not open chat', kind: 'error' });
+      }
     }
-    recipientHover.closeNow();
   }
 
   function handleVideo(): void {
