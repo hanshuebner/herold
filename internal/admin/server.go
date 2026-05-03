@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1771,6 +1772,8 @@ func composeAdminAndUI(
 	adminSPA, err := webspa.NewAdmin(webspa.AdminOptions{
 		Logger:        logger.With("subsystem", "webspa.admin"),
 		AdminAssetDir: cfg.Server.AdminSPA.AssetDir,
+		ClientLog:     clientLogBootstrap(cfg),
+		BuildSHA:      buildSHA(),
 	})
 	if err != nil {
 		return composedHandlers{}, fmt.Errorf("admin: admin SPA: %w", err)
@@ -2274,6 +2277,8 @@ func composeAdminAndUI(
 			Logger:        logger.With("subsystem", "webspa.suite"),
 			SuiteAssetDir: cfg.Server.Suite.AssetDir,
 			PublicHost:    cfg.Server.Hostname,
+			ClientLog:     clientLogBootstrap(cfg),
+			BuildSHA:      buildSHA(),
 		})
 		if err != nil {
 			return composedHandlers{}, fmt.Errorf("admin: suite SPA: %w", err)
@@ -2360,6 +2365,43 @@ func resolveSessionSigningKey(cfg *sysconfig.Config) []byte {
 //
 // When no persistent signing key is configured, resolveSessionSigningKey
 // generates an ephemeral 32-byte key so cookie auth works out-of-the-box
+// clientLogBootstrap derives the bootstrap descriptor injected into the
+// SPA's <meta name="herold-clientlog"> tag (REQ-CLOG-12) from the resolved
+// [clientlog] config block. When the block is absent applyDefaults has
+// already set Enabled=true and the documented values from REQ-OPS-219, so
+// this helper is a pure projection.
+func clientLogBootstrap(cfg *sysconfig.Config) webspa.ClientLogBootstrap {
+	cl := cfg.ClientLog
+	const (
+		batchMaxEvents = 20
+		batchMaxAgeMS  = 5000
+		queueCap       = 200
+	)
+	return webspa.ClientLogBootstrap{
+		Enabled:                 cl.ClientLogEnabled(),
+		BatchMaxEvents:          batchMaxEvents,
+		BatchMaxAgeMS:           batchMaxAgeMS,
+		QueueCap:                queueCap,
+		TelemetryEnabledDefault: cl.TelemetryEnabledDefault(),
+	}
+}
+
+// buildSHA returns the VCS revision the binary was built from, or "dev"
+// when not available (build flags can override via -ldflags later).
+func buildSHA() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" && s.Value != "" {
+				if len(s.Value) > 12 {
+					return s.Value[:12]
+				}
+				return s.Value
+			}
+		}
+	}
+	return "dev"
+}
+
 // (fixes #6, #7: the public self-service endpoints returned 401 because
 // the empty signing key caused authenticateWithMode to skip cookie auth).
 func adminSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {

@@ -296,3 +296,62 @@ func TestPublicListener_ClientlogIngest(t *testing.T) {
 
 	_ = context.Background() // keep stdlib imports stable when callers prune
 }
+
+// TestPublicListener_SuiteIndexCarriesClientlogMetaTag is the regression
+// for a separate bug uncovered by live testing: webspa.New (and
+// webspa.NewAdmin) were called WITHOUT a ClientLog or BuildSHA option in
+// internal/admin/server.go, so the served index.html got a meta tag with
+// the Go zero-value bootstrap descriptor (enabled=false, every cap zero).
+// The SPA wrapper's kill-switch (REQ-CLOG-12) saw enabled=false and
+// installed no handlers; throwing an error in DevTools never reached the
+// server. The fix wires `clientLogBootstrap(cfg)` and `buildSHA()` into
+// both webspa option structs so the meta tag carries the values from the
+// resolved [clientlog] block.
+func TestPublicListener_SuiteIndexCarriesClientlogMetaTag(t *testing.T) {
+	addrs, done, cancel := startTestServerWithCookies(t)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatalf("server did not shut down")
+		}
+	})
+	publicAddr := addrs["public"]
+	if publicAddr == "" {
+		t.Fatalf("public listener not bound")
+	}
+
+	res, err := http.Get("http://" + publicAddr + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read /: %v", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET / status=%d body=%s", res.StatusCode, body)
+	}
+	html := string(body)
+
+	if !strings.Contains(html, `name="herold-clientlog"`) {
+		t.Fatalf("served HTML missing herold-clientlog meta tag (regression: bootstrap not wired through webspa.Options); html=%s",
+			html)
+	}
+	if !strings.Contains(html, `name="herold-build"`) {
+		t.Fatalf("served HTML missing herold-build meta tag")
+	}
+	// The defaults-only config (no [clientlog] block in the test TOML) MUST
+	// produce enabled=true per REQ-OPS-219. The earlier bug shipped
+	// enabled=false because the descriptor was a Go zero value.
+	if !strings.Contains(html, `"enabled":true`) {
+		t.Fatalf("served HTML carries clientlog meta with enabled!=true (regression: bootstrap zero-valued); html=%s",
+			html)
+	}
+	if !strings.Contains(html, `"telemetry_enabled_default":true`) {
+		t.Fatalf("served HTML carries clientlog meta with telemetry_enabled_default!=true (regression: defaults not applied); html=%s",
+			html)
+	}
+}
