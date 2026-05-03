@@ -26,6 +26,23 @@ const (
 	ctxKeyListener ctxKey = 10
 )
 
+// WithListenerTag returns an http.Handler that stamps tag into the request
+// context under ctxKeyListener before calling next. The routing layer in
+// admin/server.go uses this to mark requests arriving on the "public" listener
+// so clientlog handlers emit the correct Listener field in slog / OTLP records
+// (REQ-OPS-203, REQ-OPS-204).
+//
+// Usage:
+//
+//	selfServiceHandler := selfServiceSrv.SelfServiceHandler()
+//	publicMux.Handle("/api/v1/clientlog/", protoadmin.WithListenerTag("public", selfServiceHandler))
+func WithListenerTag(tag string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), ctxKeyListener, tag)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // requestID returns the request ID attached to ctx, or "" if none.
 func requestID(ctx context.Context) string {
 	if v, ok := ctx.Value(ctxKeyRequestID).(string); ok {

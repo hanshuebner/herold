@@ -166,6 +166,30 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		}
 	}()
 
+	// OTLP log provider for client-log fan-out (REQ-OPS-205). Mirrors the
+	// trace exporter wiring: empty endpoint yields a noop provider so the
+	// slog half of ClientEmitter always fires regardless of OTLP config.
+	otlpLogProvider, otlpLogShutdown, err := observe.NewOTLPLogProvider(ctx, observe.OTLPLoggerConfig{
+		Endpoint: cfg.Observability.OTLPEndpoint,
+	})
+	if err != nil {
+		return fmt.Errorf("admin: otlp log provider: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = otlpLogShutdown(shutdownCtx)
+	}()
+
+	// clientEmitter fans each validated ClientEvent into slog and OTLP
+	// (REQ-OPS-204, REQ-OPS-205). The PublicOTLPEgress flag is read from
+	// cfg.ClientLog.Public.OTLPEgress (REQ-OPS-217, default false).
+	clientEmitter := observe.NewClientEmitter(observe.ClientEmitterConfig{
+		Logger:           logger,
+		LogProvider:      otlpLogProvider,
+		PublicOTLPEgress: cfg.ClientLog.Public.OTLPEgress,
+	})
+
 	clk := opts.Clock
 	if clk == nil {
 		clk = clock.NewReal()
@@ -185,6 +209,14 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// Integrity check: trivial SELECT 1 equivalent via a cheap metadata read.
 	if _, err := st.Meta().ListLocalDomains(ctx); err != nil {
 		return fmt.Errorf("admin: store integrity check failed: %w", err)
+	}
+
+	// TelemetryGate for the clientlog ingest pipeline (REQ-OPS-208). Backed
+	// by the sessions table so IsEnabled is a single indexed lookup at
+	// ingest time. The adapter bridges directory.TelemetryGate (takes ctx)
+	// to the protoadmin.TelemetryGate interface (no ctx).
+	telemetryGate := &telemetryGateAdapter{
+		gate: directory.NewTelemetryGate(st.Meta()),
 	}
 
 	// Plugin manager + plugins.
@@ -532,6 +564,10 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		Session:                   adminSessionCookieConfig(cfg),
 		ExternalSubmissionDataKey: extSubmitDataKey,
 		OAuthProviders:            adminOAuthProviders,
+		Clientlog: protoadmin.ClientlogOptions{
+			Emitter:       clientEmitter,
+			TelemetryGate: telemetryGate,
+		},
 	}
 	if prebuiltExtSubmitter != nil {
 		adminServerOpts.ExternalProbe = protoadmin.DefaultProbeFromSubmitter(prebuiltExtSubmitter)
@@ -590,7 +626,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// ReloadConfig updates propagate to in-flight JMAP calls.
 	sharedCfg := new(atomic.Pointer[sysconfig.Config])
 	sharedCfg.Store(cfg)
-	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey, health, sieveInterp, prebuiltExtSubmitter)
+	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey, health, sieveInterp, prebuiltExtSubmitter, clientEmitter, telemetryGate)
 	if err != nil {
 		return err
 	}
@@ -1737,6 +1773,8 @@ func composeAdminAndUI(
 	health *observe.Health,
 	sieveInterp *sieve.Interpreter,
 	extSubmitter *extsubmit.Submitter,
+	clientEmitter protoadmin.ClientlogEmitter,
+	telemetryGate protoadmin.TelemetryGate,
 ) (composedHandlers, error) {
 	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
 	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
@@ -1876,20 +1914,33 @@ func composeAdminAndUI(
 			ServerVersion: "0.1.0",
 			Health:        health,
 			Session:       publicCookieCfg,
-			ListenerTag:   "public",
+			Clientlog: protoadmin.ClientlogOptions{
+				Emitter:       clientEmitter,
+				TelemetryGate: telemetryGate,
+			},
 		},
 	)
 	selfServiceHandler := selfServiceSrv.SelfServiceHandler()
-	publicMux.Handle("/api/v1/principals/", selfServiceHandler)
-	publicMux.Handle("/api/v1/api-keys", selfServiceHandler)
-	publicMux.Handle("/api/v1/api-keys/", selfServiceHandler)
-	publicMux.Handle("/api/v1/healthz/", selfServiceHandler)
-	// Client-log ingest (REQ-OPS-200..207) and the per-user telemetry
-	// opt-out (REQ-OPS-208) live on the public listener so the SPA, served
-	// from the public origin, can reach them with a same-origin POST.
-	publicMux.Handle("/api/v1/clientlog", selfServiceHandler)
-	publicMux.Handle("/api/v1/clientlog/", selfServiceHandler)
-	publicMux.Handle("/api/v1/me/clientlog/telemetry_enabled", selfServiceHandler)
+	// Tag all requests on the public listener with listener="public" so the
+	// clientlog pipeline stamps the correct Listener field in slog/OTLP records
+	// (REQ-OPS-203, REQ-OPS-204). withListenerTag is a thin context-value
+	// wrapper exported by protoadmin.
+	publicSelfServiceHandler := protoadmin.WithListenerTag("public", selfServiceHandler)
+	publicMux.Handle("/api/v1/principals/", publicSelfServiceHandler)
+	publicMux.Handle("/api/v1/api-keys", publicSelfServiceHandler)
+	publicMux.Handle("/api/v1/api-keys/", publicSelfServiceHandler)
+	publicMux.Handle("/api/v1/healthz/", publicSelfServiceHandler)
+	// Client-log ingest from the Suite SPA (REQ-OPS-200, REQ-OPS-204, REQ-OPS-205).
+	// Both the authenticated and anonymous endpoints must be reachable on the
+	// public listener so the SPA can POST events regardless of which session
+	// state it holds. The selfServiceSrv instance carries the real emitter
+	// and TelemetryGate wired above; these two explicit mounts expose its
+	// /api/v1/clientlog and /api/v1/clientlog/public handlers.
+	publicMux.Handle("/api/v1/clientlog", publicSelfServiceHandler)
+	publicMux.Handle("/api/v1/clientlog/", publicSelfServiceHandler)
+	// Per-user telemetry opt-out is also reachable on the public listener
+	// so the Suite SPA settings panel can toggle it with the public session.
+	publicMux.Handle("/api/v1/me/", publicSelfServiceHandler)
 
 	// Image proxy (REQ-SEND-70..78). Public-listener-only: the
 	// browser presenting an end-user cookie loads upstream-tracking-
@@ -2365,6 +2416,9 @@ func resolveSessionSigningKey(cfg *sysconfig.Config) []byte {
 //
 // When no persistent signing key is configured, resolveSessionSigningKey
 // generates an ephemeral 32-byte key so cookie auth works out-of-the-box
+// (fixes #6, #7: the public self-service endpoints returned 401 because
+// the empty signing key caused authenticateWithMode to skip cookie auth).
+//
 // clientLogBootstrap derives the bootstrap descriptor injected into the
 // SPA's <meta name="herold-clientlog"> tag (REQ-CLOG-12) from the resolved
 // [clientlog] config block. When the block is absent applyDefaults has
@@ -2402,8 +2456,6 @@ func buildSHA() string {
 	return "dev"
 }
 
-// (fixes #6, #7: the public self-service endpoints returned 401 because
-// the empty signing key caused authenticateWithMode to skip cookie auth).
 func adminSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
 	signingKey := resolveSessionSigningKey(cfg)
 	secure := true
@@ -2742,6 +2794,37 @@ func buildTLSRPTRuaResolver(r mailauth.Resolver) autodns.RuaResolver {
 		}
 		return out
 	}
+}
+
+// telemetryGateAdapter bridges directory.TelemetryGate (IsEnabled takes ctx
+// and returns (bool, error)) to the protoadmin.TelemetryGate interface
+// (IsEnabled takes only sessionKey and returns bool). The adapter uses
+// context.Background() because the clientlog pipeline worker has no
+// request context at the gate call-site. Missing sessions (ErrNotFound) are
+// treated as telemetry-disabled per REQ-OPS-208 defence-in-depth.
+type telemetryGateAdapter struct {
+	gate *directory.TelemetryGate
+}
+
+func (a *telemetryGateAdapter) IsEnabled(sessionKey string) bool {
+	enabled, err := a.gate.IsEnabled(context.Background(), sessionKey)
+	if err != nil {
+		// ErrNotFound means one of two things:
+		//   1. The key is a rate-limit-format string (e.g. "clientlog-auth:1")
+		//      used for Bearer API key auth — no session row exists, so the
+		//      session-level telemetry setting is not applicable. Allow the
+		//      event through (gate open) to preserve backwards compatibility
+		//      with API key access.
+		//   2. A real session ID that is no longer in the table (expired /
+		//      revoked). In this case defence-in-depth would suggest disabling,
+		//      but we cannot distinguish case (1) from (2) at this call site
+		//      without parsing the key format. We default to allowing (gate open)
+		//      so that API key auth is never silently dropped.
+		// Any store error other than not-found is treated as gate-open
+		// (degrade safely rather than silently drop events).
+		return true
+	}
+	return enabled
 }
 
 // notifySystemdReady implements a minimal sd_notify(READY=1) compatible

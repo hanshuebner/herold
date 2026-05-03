@@ -466,12 +466,19 @@ func (s *Server) Handler() http.Handler {
 
 // withListenerTag stamps ctxKeyListener with the configured Options.ListenerTag
 // (default "admin") so downstream handlers can record the originating listener.
+// If an outer wrapper has already set ctxKeyListener (e.g. WithListenerTag at
+// the public-mux mount site to mark requests as "public") the existing value
+// is preserved -- the inner default must not shadow the explicit outer tag.
 func (s *Server) withListenerTag(next http.Handler) http.Handler {
 	tag := s.opts.ListenerTag
 	if tag == "" {
 		tag = "admin"
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if existing, ok := r.Context().Value(ctxKeyListener).(string); ok && existing != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		ctx := context.WithValue(r.Context(), ctxKeyListener, tag)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

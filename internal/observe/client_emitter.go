@@ -110,6 +110,7 @@ func (e *ClientEmitter) emitSlog(ctx context.Context, ev ClientEvent) {
 		slog.String("source", "client"),
 		slog.String("app", ev.App),
 		slog.String("kind", ev.Kind),
+		slog.String("listener", ev.Listener),
 		slog.String("route", ev.Route),
 		slog.String("build", ev.BuildSHA),
 		slog.String("client_ts", ev.ClientTS.Format(time.RFC3339Nano)),
