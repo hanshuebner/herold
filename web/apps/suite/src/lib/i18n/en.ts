@@ -229,6 +229,22 @@ export const en = {
   'settings.privacy.avatarLookup.confirmEnable': 'Enable lookups',
   'settings.privacy.avatarLookup.confirmCancel': 'Keep local-only',
 
+  // ── Recipient hover card (REQ-MAIL-46) ──────────────────────────────
+  'contact.card.add': 'Add contact',
+  'contact.card.edit': 'Edit contact',
+  'contact.card.copy': 'Copy email address',
+  'contact.card.copied': 'Copied',
+  'contact.card.sendEmail': 'Send email',
+  'contact.card.chat': 'Chat',
+  'contact.card.video': 'Start video call',
+  'contact.card.calendar': 'Schedule event',
+  'contact.card.viewDetail': 'View detailed view',
+  'contact.phone.mobile': 'Mobile',
+  'contact.phone.work': 'Work',
+  'contact.phone.home': 'Home',
+  'contact.phone.fax': 'Fax',
+  'contact.phone.other': 'Other',
+
   // ── App switcher ────────────────────────────────────────────────────
   'app.mail': 'Mail',
   'app.calendar': 'Calendar',

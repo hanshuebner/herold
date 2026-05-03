@@ -43,6 +43,8 @@
   import { relativeTimeAgo } from './relative-time';
   import { llmTransparency } from '../llm/transparency.svelte';
   import LLMInspectModal from '../llm/LLMInspectModal.svelte';
+  import RecipientTrigger from './RecipientTrigger.svelte';
+  import { type Address } from './types';
 
   interface Props {
     email: Email;
@@ -84,16 +86,6 @@
     return { face, xFace };
   });
 
-  function formatRecipientSummary(email: Email): string {
-    const to = email.to ?? [];
-    const cc = email.cc ?? [];
-    const total = to.length + cc.length;
-    if (total === 0) return '';
-    const first = to[0]?.name?.trim() || to[0]?.email || cc[0]?.email || '';
-    if (total === 1) return `to ${first}`;
-    return `to ${first} and ${total - 1} other${total - 1 === 1 ? '' : 's'}`;
-  }
-
   function formatDateTime(iso: string): string {
     const d = new Date(iso);
     return d.toLocaleString(localeTag(), {
@@ -106,7 +98,13 @@
     });
   }
 
-  let recipientSummary = $derived(formatRecipientSummary(email));
+  function nonEmptyAddresses(addrs: Address[] | null | undefined): Address[] {
+    return (addrs ?? []).filter((a) => Boolean(a.email));
+  }
+
+  let toRecipients = $derived(nonEmptyAddresses(email.to));
+  let ccRecipients = $derived(nonEmptyAddresses(email.cc));
+  let bccRecipients = $derived(nonEmptyAddresses(email.bcc));
 
   // True when the message carries at least one non-inline attachment.
   // Used to surface a paperclip glyph in the accordion header next to the
@@ -359,28 +357,93 @@
 </script>
 
 <article class="message" class:expanded>
-  <button
-    type="button"
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
     class="header"
+    role="button"
+    tabindex="0"
     aria-expanded={expanded}
     onclick={() => onToggle?.(email.id)}
+    onkeydown={(e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        onToggle?.(email.id);
+      }
+    }}
   >
-    <Avatar
-      email={senderEmail}
-      fallbackInitial={initial}
-      size={32}
-      {ownIdentities}
-      messageHeaders={avatarMessageHeaders}
-    />
+    {#if expanded && senderEmail}
+      <RecipientTrigger
+        email={senderEmail}
+        capturedName={email.from?.[0]?.name ?? null}
+        messageHeaders={avatarMessageHeaders}
+      >
+        <Avatar
+          email={senderEmail}
+          fallbackInitial={initial}
+          size={32}
+          {ownIdentities}
+          messageHeaders={avatarMessageHeaders}
+        />
+      </RecipientTrigger>
+    {:else}
+      <Avatar
+        email={senderEmail}
+        fallbackInitial={initial}
+        size={32}
+        {ownIdentities}
+        messageHeaders={avatarMessageHeaders}
+      />
+    {/if}
     <span class="meta">
       <span class="from">
-        <span class="from-name">{senderName}</span>
-        {#if expanded && senderEmail && senderEmail !== senderName}
-          <span class="from-email">&lt;{senderEmail}&gt;</span>
+        {#if expanded && senderEmail}
+          <RecipientTrigger
+            email={senderEmail}
+            capturedName={email.from?.[0]?.name ?? null}
+            messageHeaders={avatarMessageHeaders}
+            inline
+          >
+            <span class="from-name">{senderName}</span>
+            {#if senderEmail !== senderName}
+              <span class="from-email">&lt;{senderEmail}&gt;</span>
+            {/if}
+          </RecipientTrigger>
+        {:else}
+          <span class="from-name">{senderName}</span>
         {/if}
       </span>
       {#if expanded}
-        <span class="recipients">{recipientSummary}</span>
+        {#if toRecipients.length > 0}
+          <span class="recipients-row" aria-label="To">
+            <span class="recipients-label">To:</span>
+            {#each toRecipients as r, i (r.email + i)}
+              <RecipientTrigger email={r.email} capturedName={r.name} inline>
+                <span class="recipient-chip-label">{r.name?.trim() || r.email}</span>
+              </RecipientTrigger>{#if i < toRecipients.length - 1},&nbsp;{/if}
+            {/each}
+          </span>
+        {/if}
+        {#if ccRecipients.length > 0}
+          <span class="recipients-row" aria-label="Cc">
+            <span class="recipients-label">Cc:</span>
+            {#each ccRecipients as r, i (r.email + i)}
+              <RecipientTrigger email={r.email} capturedName={r.name} inline>
+                <span class="recipient-chip-label">{r.name?.trim() || r.email}</span>
+              </RecipientTrigger>{#if i < ccRecipients.length - 1},&nbsp;{/if}
+            {/each}
+          </span>
+        {/if}
+        {#if bccRecipients.length > 0}
+          <span class="recipients-row" aria-label="Bcc">
+            <span class="recipients-label">Bcc:</span>
+            {#each bccRecipients as r, i (r.email + i)}
+              <RecipientTrigger email={r.email} capturedName={r.name} inline>
+                <span class="recipient-chip-label">{r.name?.trim() || r.email}</span>
+              </RecipientTrigger>{#if i < bccRecipients.length - 1},&nbsp;{/if}
+            {/each}
+          </span>
+        {/if}
       {:else}
         <span class="preview">{email.preview}</span>
       {/if}
@@ -393,7 +456,7 @@
         {formatDateTime(email.receivedAt)}{#if relativeAnnotation}&nbsp;<span class="date-relative">{relativeAnnotation}</span>{/if}
       </span>
     </span>
-  </button>
+  </div>
 
   {#if expanded}
     <div class="body">
@@ -747,13 +810,32 @@
     white-space: nowrap;
   }
 
-  .recipients,
   .preview {
     color: var(--text-secondary);
     font-size: var(--type-body-compact-01-size);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Per REQ-MAIL-46 the expanded header carries structured To: / Cc: /
+     Bcc: rows so each recipient becomes its own hover trigger. The rows
+     wrap on narrow viewports; the label sits flush left. */
+  .recipients-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--spacing-01);
+    color: var(--text-secondary);
+    font-size: var(--type-body-compact-01-size);
+  }
+  .recipients-label {
+    color: var(--text-helper);
+    font-weight: 500;
+    margin-right: var(--spacing-02);
+  }
+  .recipient-chip-label {
+    color: var(--text-secondary);
   }
 
   .header-right {

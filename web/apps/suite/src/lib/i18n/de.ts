@@ -230,6 +230,22 @@ export const de = {
   'settings.privacy.avatarLookup.confirmEnable': 'Suche aktivieren',
   'settings.privacy.avatarLookup.confirmCancel': 'Nur lokal bleiben',
 
+  // ── Kontakt-Hovercard (REQ-MAIL-46) ─────────────────────────────────
+  'contact.card.add': 'Kontakt hinzufügen',
+  'contact.card.edit': 'Kontakt bearbeiten',
+  'contact.card.copy': 'E-Mail-Adresse kopieren',
+  'contact.card.copied': 'Kopiert',
+  'contact.card.sendEmail': 'E-Mail senden',
+  'contact.card.chat': 'Chat',
+  'contact.card.video': 'Videoanruf starten',
+  'contact.card.calendar': 'Termin planen',
+  'contact.card.viewDetail': 'Detaillierte Ansicht anzeigen',
+  'contact.phone.mobile': 'Mobil',
+  'contact.phone.work': 'Arbeit',
+  'contact.phone.home': 'Privat',
+  'contact.phone.fax': 'Fax',
+  'contact.phone.other': 'Sonstige',
+
   // ── App switcher ────────────────────────────────────────────────────
   'app.mail': 'Mail',
   'app.calendar': 'Kalender',

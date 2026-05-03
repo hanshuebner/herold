@@ -46,9 +46,35 @@ const TTL_MS = 24 * 60 * 60 * 1000; // 24 h
 // Cache types
 // ---------------------------------------------------------------------------
 
+/**
+ * Phone number record. Type is the JSContact / Principal context label
+ * (e.g. "mobile", "work", "home", "fax"); the suite maps it to a
+ * localised phone-row label (REQ-MAIL-46a). When unrecognised the type
+ * is shown verbatim.
+ */
+export interface CachedPhone {
+  type: string;
+  number: string;
+}
+
+/**
+ * Cache entry shape. The extended fields (name, phones, contactId,
+ * principalId) are populated by the person-resolver (REQ-MAIL-46f); the
+ * legacy avatar resolver leaves them undefined. Both shapes coexist in
+ * `localStorage['herold:avatar:cache']` so a fresh card opens
+ * synchronously against the cached entry from a prior session.
+ */
 interface CacheEntry {
   url: string | null;
   ts: number;
+  /** Best display name observed for this address. */
+  name?: string | null;
+  /** Phone numbers from a matching JMAP Contact / hosted Principal. */
+  phones?: CachedPhone[];
+  /** JMAP Contact id when the address is a saved contact. */
+  contactId?: string | null;
+  /** Hosted Principal id when the address is a Herold user on this server. */
+  principalId?: string | null;
 }
 
 type CacheMap = Record<string, CacheEntry>;
@@ -258,7 +284,11 @@ async function lookupHostedPrincipalAvatar(
 }
 
 function writeCache(key: string, url: string | null): void {
-  memCache[key] = { url, ts: Date.now() };
+  // Preserve any extended fields previously written by the person-resolver
+  // (REQ-MAIL-46f) so updating only the avatar URL does not drop the
+  // display-name / phones / contact / principal payload from the cache.
+  const existing = memCache[key];
+  memCache[key] = { ...existing, url, ts: Date.now() };
   // Persist only positive entries.  A negative outcome (no avatar found)
   // is fragile — the sender's principal may have an avatar uploaded a
   // moment after we asked, and a 24-hour persisted null would mask the
@@ -292,6 +322,40 @@ export function _invalidateCacheEntry(email: string): void {
  */
 export function _setMemCache(cache: CacheMap): void {
   memCache = cache;
+}
+
+/**
+ * Read the full cache entry for an email — used by the person-resolver
+ * (REQ-MAIL-46f) to populate the hover card synchronously from cache
+ * before re-validating in the background. Returns null when no entry is
+ * cached or the entry is past its TTL.
+ */
+export function readCacheEntry(email: string): CacheEntry | null {
+  const key = email.toLowerCase().trim();
+  const entry = memCache[key];
+  if (!entry) return null;
+  if (isExpired(entry)) return null;
+  return entry;
+}
+
+/**
+ * Merge fields into the cache entry for an email. Caller is the
+ * person-resolver, which writes display name / phones / contact / principal
+ * flags alongside the avatar URL the legacy resolver writes. Persisted
+ * to localStorage so the card opens populated on the next session.
+ */
+export function writeCacheEntryFields(
+  email: string,
+  fields: Partial<Omit<CacheEntry, 'ts'>>,
+): void {
+  const key = email.toLowerCase().trim();
+  const existing = memCache[key] ?? { url: null, ts: 0 };
+  memCache[key] = {
+    ...existing,
+    ...fields,
+    ts: Date.now(),
+  };
+  saveCache(memCache);
 }
 
 /**
