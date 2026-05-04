@@ -487,24 +487,29 @@ func TestDispatcher_PersistsCursorOnShutdown(t *testing.T) {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 
-	// Drive Run until the gateway has seen a delivery.
-	deadline := time.Now().Add(3 * time.Second)
-	for len(gw.Calls()) == 0 {
+	// Drive Run until the dispatcher's tick has fully completed for at
+	// least one delivery: cursor advanced AND the gateway saw the call.
+	// Waiting on cursor advance only is not enough — we want to confirm
+	// the push really left the dispatcher. Waiting on gw.Calls() only is
+	// not enough either, because deliver is invoked from processChange
+	// BEFORE the cursor.Store at the end of tick, so the gateway can see
+	// the call before the cursor moves.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if disp.cursor.Load() > 0 && len(gw.Calls()) > 0 {
+			break
+		}
 		if time.Now().After(deadline) {
 			cancel()
 			<-done
-			t.Fatalf("first dispatcher did not deliver the push")
+			t.Fatalf("first dispatcher did not deliver and advance cursor (gw.Calls=%d, cursor=%d)",
+				len(gw.Calls()), disp.cursor.Load())
 		}
 		clk.Advance(20 * time.Millisecond)
 		time.Sleep(10 * time.Millisecond)
 	}
 
 	memCursor := disp.cursor.Load()
-	if memCursor == 0 {
-		cancel()
-		<-done
-		t.Fatalf("dispatcher in-memory cursor did not advance")
-	}
 
 	cancel()
 	<-done
