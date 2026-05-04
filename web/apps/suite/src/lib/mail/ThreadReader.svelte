@@ -5,7 +5,8 @@
   import ThreadToolbar from './ThreadToolbar.svelte';
   import ThreadReplyBar from './ThreadReplyBar.svelte';
   import { t } from '../i18n/i18n.svelte';
-  import type { Email, Mailbox } from './types';
+  import { labelForeground } from './label-color';
+  import type { Email } from './types';
 
   interface Props {
     threadId: string;
@@ -40,7 +41,7 @@
    * Rendered under the thread subject so badges are always visible
    * regardless of which messages are expanded (re #66, re #70).
    */
-  let threadLabels = $derived.by<string[]>(() => {
+  let threadLabels = $derived.by<{ name: string; color: string | null | undefined }[]>(() => {
     // Collect the union of all mailboxIds across thread messages.
     const seen = new Set<string>();
     for (const email of emails) {
@@ -49,13 +50,13 @@
       }
     }
     const activeFolder = mail.listFolder;
-    const labels: string[] = [];
+    const labels: { name: string; color: string | null | undefined }[] = [];
     for (const m of mail.customMailboxes) {
       if (!seen.has(m.id)) continue;
       if (m.id === activeFolder) continue;
-      labels.push(m.name);
+      labels.push({ name: m.name, color: m.color });
     }
-    return labels.sort((a, b) => a.localeCompare(b));
+    return labels.sort((a, b) => a.name.localeCompare(b.name));
   });
 
   /**
@@ -130,8 +131,13 @@
         <h1>{subject}</h1>
         {#if threadLabels.length > 0}
           <div class="thread-labels" aria-label="Labels">
-            {#each threadLabels as lname (lname)}
-              <span class="label-badge">{lname}</span>
+            {#each threadLabels as lbl (lbl.name)}
+              <span
+                class="label-badge"
+                style={lbl.color
+                  ? `background:${lbl.color};color:${labelForeground(lbl.color)};`
+                  : undefined}
+              >{lbl.name}</span>
             {/each}
           </div>
         {/if}
