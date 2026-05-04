@@ -9,7 +9,7 @@
   import RecipientField from './RecipientField.svelte';
   import { confirm } from '../dialog/confirm.svelte';
   import { t } from '../i18n/i18n.svelte';
-  import { EMPTY_ACTIVE, type ActiveState, applyImage } from './editor';
+  import { EMPTY_ACTIVE, type ActiveState, applyImage, removeImageBySrc } from './editor';
   import type { EditorView } from 'prosemirror-view';
   import { recipientToString } from './recipient-parse';
   import { hasExternalSubmission } from '../auth/capabilities';
@@ -383,21 +383,41 @@
   }
 
   async function handleInlineDrop(files: File[]): Promise<void> {
-    // Inline each image sequentially so the editor's cursor advances
-    // between insertions and every image receives a unique cid. A
-    // parallel Promise.all would interleave the addInlineImage calls
-    // but the applyImage steps must be serial — the cursor position
-    // is mutated by each insert and ProseMirror has no ordering
-    // semantics across concurrent dispatches.
+    // Phase 1 (synchronous): register each attachment and insert the
+    // image node immediately so the user sees a thumbnail during upload.
+    // The objectURL is created synchronously by startInlineImage before
+    // any network round-trip, so the editor can display the preview at
+    // once (issue #74).
+    //
+    // Insertions are serial so the cursor advances between images and
+    // each receives a unique cid. Parallel Promise.all would interleave
+    // the cursor mutations — ProseMirror has no ordering semantics across
+    // concurrent dispatches.
+    const pending: Array<{ key: string; objectURL: string; file: File }> = [];
     for (const file of files) {
-      const result = await compose.addInlineImage(file);
-      if (!result) continue;
-      // Insert <img src="<objectURL>" alt="<filename>"> at the current
-      // cursor in the ProseMirror editor. The objectURL is used for
-      // the in-composition preview; rewriteInlineImageURLs rewrites
-      // it to cid: on send/save.
-      applyImage(editorView, result.objectURL, file.name);
+      const started = compose.startInlineImage(file);
+      if (!started) continue;
+      // Insert <img src="<objectURL>" alt="<filename>"> immediately so
+      // the thumbnail appears before the upload finishes. The objectURL
+      // is a same-origin blob: URL valid for the lifetime of the tab.
+      // rewriteInlineImageURLs rewrites it to cid: on send/save.
+      applyImage(editorView, started.objectURL, file.name);
+      pending.push({ key: started.key, objectURL: started.objectURL, file });
     }
+
+    // Phase 2 (async): run uploads in parallel. On failure remove the
+    // placeholder image so the editor does not carry a broken reference.
+    await Promise.all(
+      pending.map(async ({ key, objectURL, file }) => {
+        const errMsg = await compose.uploadInlineImage(key, file);
+        if (errMsg) {
+          // Upload failed: retract the in-editor placeholder so the user
+          // does not see a stale blob: image. The chip in the attachment
+          // strip already shows the error text via its 'failed' status.
+          removeImageBySrc(editorView, objectURL);
+        }
+      }),
+    );
   }
 
   // Attachment zone handlers.

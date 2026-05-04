@@ -451,25 +451,21 @@ class ComposeStore {
   }
 
   /**
-   * Upload a single image as an inline attachment and return its
-   * Content-ID and blob-id once the upload completes. The caller (the
-   * compose toolbar Insert image action, issue #20) inserts an
-   * <img src="cid:<cid>"> node into the editor body. The inline part
-   * is added to the bodyStructure at send time with disposition:
-   * 'inline'.
+   * Synchronously register an inline image attachment and create a blob
+   * URL for immediate in-editor preview. Returns the key, cid, and
+   * objectURL so the caller can insert the image node before the upload
+   * begins. Returns null when the file exceeds the server's size limit or
+   * no mail account is available.
    *
-   * Resolves null on upload failure (a toast row already surfaces the
-   * error).
+   * Pair with uploadInlineImage(key, file) to complete the round-trip.
+   * The attachment chip shows 'Uploading...' until that resolves.
    */
-  async addInlineImage(
+  startInlineImage(
     file: File,
-  ): Promise<{ cid: string; objectURL: string } | null> {
-    const accountId = mail.mailAccountId;
-    if (!accountId) return null;
+  ): { key: string; cid: string; objectURL: string } | null {
+    if (!mail.mailAccountId) return null;
     const maxSize = jmap.maxUploadSize;
-    if (maxSize !== null && file.size > maxSize) {
-      return null;
-    }
+    if (maxSize !== null && file.size > maxSize) return null;
     const key = `att-${++this.#attachmentSeq}`;
     const cid = generateInlineCID(this.#attachmentSeq);
     const objectURL = URL.createObjectURL(file);
@@ -486,6 +482,21 @@ class ComposeStore {
       objectURL,
     };
     this.attachments = [...this.attachments, att];
+    return { key, cid, objectURL };
+  }
+
+  /**
+   * Complete the JMAP blob upload for an inline image previously
+   * registered via startInlineImage. Patches the attachment record to
+   * 'ready' on success or 'failed' on error. Returns the error message
+   * on failure so the caller can remove the placeholder from the editor,
+   * or null on success.
+   */
+  async uploadInlineImage(key: string, file: File): Promise<string | null> {
+    const accountId = mail.mailAccountId;
+    if (!accountId) return 'No mail account';
+    const att = this.attachments.find((a) => a.key === key);
+    if (!att) return 'Attachment not found';
     try {
       const result = await jmap.uploadBlob({
         accountId,
@@ -497,12 +508,37 @@ class ComposeStore {
         blobId: result.blobId,
         error: null,
       });
-      return { cid, objectURL };
+      return null;
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Upload failed';
       this.#patchAttachment(key, { status: 'failed', error: msg });
-      return null;
+      return msg;
     }
+  }
+
+  /**
+   * Upload a single image as an inline attachment and return its
+   * Content-ID and blob-id once the upload completes. The caller (the
+   * compose toolbar Insert image action, issue #20) inserts an
+   * <img src="cid:<cid>"> node into the editor body. The inline part
+   * is added to the bodyStructure at send time with disposition:
+   * 'inline'.
+   *
+   * Resolves null on upload failure (a toast row already surfaces the
+   * error).
+   *
+   * @deprecated Use startInlineImage + uploadInlineImage instead for
+   * immediate in-editor thumbnail feedback (issue #74).
+   */
+  async addInlineImage(
+    file: File,
+  ): Promise<{ cid: string; objectURL: string } | null> {
+    const started = this.startInlineImage(file);
+    if (!started) return null;
+    const { key, cid, objectURL } = started;
+    const err = await this.uploadInlineImage(key, file);
+    if (err) return null;
+    return { cid, objectURL };
   }
 
   /**
