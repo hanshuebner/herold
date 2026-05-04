@@ -1489,7 +1489,9 @@ func pgSnapshotPretrashMailboxes(ctx context.Context, tx pgx.Tx, msgID, trashMai
 		`DELETE FROM email_pretrash_mailboxes WHERE email_id = $1`, msgID); err != nil {
 		return err
 	}
-	// Insert current non-Trash memberships (exclude the Trash mailbox being added).
+	// Drain the SELECT into a slice before issuing INSERTs: pgx pins the
+	// connection while a Rows cursor is open, and tx.Exec on the same tx
+	// would fail with "conn busy" until the cursor is closed.
 	rows, err := tx.Query(ctx, `
 		SELECT mm.mailbox_id
 		  FROM message_mailboxes mm
@@ -1501,19 +1503,27 @@ func pgSnapshotPretrashMailboxes(ctx context.Context, tx pgx.Tx, msgID, trashMai
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	var mailboxIDs []int64
 	for rows.Next() {
 		var mbID int64
 		if err := rows.Scan(&mbID); err != nil {
+			rows.Close()
 			return err
 		}
+		mailboxIDs = append(mailboxIDs, mbID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, mbID := range mailboxIDs {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO email_pretrash_mailboxes (email_id, mailbox_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 			msgID, mbID); err != nil {
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 // pgReplayPretrashMailboxes restores the pre-trash mailbox memberships for msgID
