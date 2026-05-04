@@ -27,6 +27,8 @@ export const en = {
   'sidebar.renameFolder.title': 'Rename label',
   'sidebar.renameFolder.label': 'New name',
   'sidebar.renameFolder.confirm': 'Rename',
+  'sidebar.editFolder.confirm': 'Change',
+  'sidebar.editFolder.toastChanged': 'Changed',
   'sidebar.deleteFolder.title': 'Delete label "{name}"?',
   'sidebar.deleteFolder.message':
     "Messages it contains will remain in any other labels they're in (otherwise they go to Trash on the server).",
