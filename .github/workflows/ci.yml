@@ -181,11 +181,12 @@ jobs:
           --health-retries 10
     env:
       HEROLD_TEST_STORE: ${{ matrix.store }}
-      # HEROLD_PG_DSN is read by internal/storepg/storepg_test.go and the
-      # test/e2e fixtures. Aligning on this single name keeps the
-      # Postgres parity legs (storepg compliance + cross-backend e2e)
-      # actually exercised in CI per STANDARDS §1.8 / §8.4.
-      HEROLD_PG_DSN: postgres://herold:herold@localhost:5432/herold?sslmode=disable
+      # HEROLD_PG_DSN is set per-step on the postgres lane only -- exporting
+      # it on the sqlite lane caused test/e2e and storepg/diag-migrate to
+      # also exercise the postgres path against the leg's service container,
+      # duplicating coverage and (with cross-package parallelism) letting
+      # those packages step on each other's truncations.
+      HEROLD_PG_DSN_VALUE: postgres://herold:herold@localhost:5432/herold?sslmode=disable
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
@@ -230,20 +231,29 @@ jobs:
           done
           echo "postgres not ready after 30s" >&2
           exit 1
-      - name: test
-        # Serialize package execution on the postgres lane: every test
-        # package that touches postgres shares the same database, so
-        # cross-package parallelism (the default) lets storepg compliance
-        # tests and test/e2e fixtures step on each other (e.g. truncating
-        # a principal another package just inserted, then failing IMAP
-        # LOGIN). The sqlite lane uses per-package temp dirs and is safe
-        # to run in parallel.
+      - name: test (sqlite lane)
+        if: matrix.store == 'sqlite'
+        # HEROLD_PG_DSN intentionally unset so test/e2e and storepg /
+        # diag-migrate skip the postgres legs. Sqlite tests use per-package
+        # temp dirs so default cross-package parallelism is safe.
+        run: go test -race -count=1 ./...
+      - name: test (postgres lane, pg-touching packages serialised)
+        if: matrix.store == 'postgres'
+        env:
+          HEROLD_PG_DSN: ${{ env.HEROLD_PG_DSN_VALUE }}
+        # Run packages that open the shared postgres service one at a time
+        # (-p 1) so storepg compliance, internal/diag/migrate, and test/e2e
+        # do not truncate each other's rows (surfaced as "AUTHENTICATIONFAILED
+        # LOGIN failed", "conflict: already linked", etc.).
+        run: go test -race -count=1 -p 1 ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
+      - name: test (postgres lane, rest in parallel)
+        if: matrix.store == 'postgres'
+        # HEROLD_PG_DSN unset for this step: pg-touching packages above
+        # are excluded here, and the rest must not silently start hitting
+        # postgres.
         run: |
-          if [ "${{ matrix.store }}" = "postgres" ]; then
-            go test -race -count=1 -p 1 ./...
-          else
-            go test -race -count=1 ./...
-          fi
+          PKGS=$(go list ./... | grep -vE '^github.com/hanshuebner/herold/(internal/storepg|internal/diag/migrate|test/e2e)($|/)')
+          go test -race -count=1 $PKGS
 
   fuzz-short:
     name: fuzz (short)
