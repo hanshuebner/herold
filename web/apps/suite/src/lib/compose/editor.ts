@@ -223,6 +223,32 @@ export function removeLink(view: EditorView | null): void {
 }
 
 /**
+ * Remove all image nodes whose `src` attribute matches the given URL
+ * from the ProseMirror document. Used to retract a placeholder image
+ * when its JMAP blob upload fails (issue #74).
+ */
+export function removeImageBySrc(view: EditorView | null, src: string): void {
+  if (!view) return;
+  const { doc, tr } = view.state;
+  // Collect all positions of image nodes with this src in reverse order
+  // so that deleting earlier nodes does not shift positions of later ones.
+  const toDelete: Array<{ from: number; to: number }> = [];
+  doc.descendants((node, pos) => {
+    if (node.type.name === 'image' && node.attrs.src === src) {
+      toDelete.push({ from: pos, to: pos + node.nodeSize });
+    }
+  });
+  if (toDelete.length === 0) return;
+  // Apply deletes in reverse order so positions stay valid.
+  let transaction = tr;
+  for (let i = toDelete.length - 1; i >= 0; i--) {
+    const { from, to } = toDelete[i]!;
+    transaction = transaction.delete(from, to);
+  }
+  view.dispatch(transaction);
+}
+
+/**
  * Insert an image node at the current cursor position. The src is a
  * `cid:<content-id>` URL that points to an inline part attached to the
  * outbound message at send time (issue #20). Alt text describes the
