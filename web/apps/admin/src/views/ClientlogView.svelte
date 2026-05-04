@@ -406,12 +406,34 @@
           </div>
         {/if}
 
-        <!-- Breadcrumbs -->
-        {#if row.payload?.breadcrumbs && row.payload.breadcrumbs.length > 0}
+        <!-- Web Vitals (only for kind=vital) -->
+        {#if row.kind === 'vital' && row.payload?.raw?.vital}
+          {@const vital = row.payload.raw.vital}
+          <div class="vitals-section">
+            <h3 class="section-title">Web Vital</h3>
+            <dl class="detail-list">
+              <div class="detail-row">
+                <dt>Metric</dt>
+                <dd class="mono">{vital.name}</dd>
+              </div>
+              <div class="detail-row">
+                <dt>Value</dt>
+                <dd class="mono vital-value">{vital.value.toFixed(vital.name === 'CLS' ? 4 : 0)}{vital.name === 'CLS' ? '' : ' ms'}</dd>
+              </div>
+              <div class="detail-row">
+                <dt>ID</dt>
+                <dd class="mono small">{vital.id}</dd>
+              </div>
+            </dl>
+          </div>
+        {/if}
+
+        <!-- Breadcrumbs (stored at payload.raw.breadcrumbs in enriched envelope) -->
+        {#if row.payload?.raw?.breadcrumbs && row.payload.raw.breadcrumbs.length > 0}
           <div class="breadcrumbs-section">
             <h3 class="section-title">Breadcrumbs</h3>
             <ol class="breadcrumb-list">
-              {#each row.payload.breadcrumbs as bc, i (i)}
+              {#each row.payload.raw.breadcrumbs as bc, i (i)}
                 <li class="breadcrumb-item">
                   <span class="mono small bc-kind">{bc.kind}</span>
                   <span class="mono small bc-ts">{bc.ts}</span>
@@ -882,6 +904,21 @@
     white-space: pre-wrap;
     word-break: break-word;
     margin: 0;
+  }
+
+  /* Web Vitals */
+  .vitals-section {
+    border-top: 1px solid var(--border-subtle-01);
+    padding-top: var(--spacing-04);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-03);
+  }
+
+  .vital-value {
+    font-size: var(--type-heading-compact-01-size, 14px);
+    font-weight: 600;
+    color: var(--support-success);
   }
 
   /* Breadcrumbs */
