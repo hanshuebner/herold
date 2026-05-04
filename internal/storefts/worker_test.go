@@ -516,12 +516,25 @@ func TestWorker_PersistsCursorOnShutdown(t *testing.T) {
 	cancel()
 	<-done
 
+	// Capture the final in-memory cursor after Run has returned. The
+	// worker may have ticked again between the memCursor snapshot and
+	// the cancel, so the value flushed by the shutdown defer can be
+	// >= memCursor. The invariant we are guarding is that the
+	// persisted cursor reflects the final in-memory advance, not
+	// merely the one we observed earlier.
+	finalMem := w.Cursor()
+
 	persisted, err := fake.Meta().GetFTSCursor(seedCtx, cursorKey)
 	if err != nil {
 		t.Fatalf("GetFTSCursor post-shutdown: %v", err)
 	}
-	if persisted != memCursor {
-		t.Fatalf("post-shutdown persisted cursor = %d, in-memory cursor = %d", persisted, memCursor)
+	if persisted != finalMem {
+		t.Fatalf("post-shutdown persisted cursor = %d, final in-memory cursor = %d (memCursor snapshot was %d)",
+			persisted, finalMem, memCursor)
+	}
+	if persisted < memCursor {
+		t.Fatalf("post-shutdown persisted cursor = %d trailed observed in-memory cursor %d",
+			persisted, memCursor)
 	}
 
 	// Restart with a fresh worker and a fresh (non-wrapped) store.
@@ -537,10 +550,10 @@ func TestWorker_PersistsCursorOnShutdown(t *testing.T) {
 	for w2.Cursor() == 0 && time.Now().Before(deadline) {
 		clk.Advance(10 * time.Millisecond)
 	}
-	if w2.Cursor() != memCursor {
+	if w2.Cursor() != finalMem {
 		cancel2()
 		<-done2
-		t.Fatalf("restarted worker cursor = %d, want %d (no replay)", w2.Cursor(), memCursor)
+		t.Fatalf("restarted worker cursor = %d, want %d (no replay)", w2.Cursor(), finalMem)
 	}
 	cancel2()
 	<-done2

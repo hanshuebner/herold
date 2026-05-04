@@ -218,12 +218,23 @@ func TestIntake_PersistsCursorOnShutdown(t *testing.T) {
 	cancel()
 	<-done
 
+	// The intake may tick once more between the memCursor sample and
+	// the cancel, so the value flushed by the shutdown defer can be
+	// >= memCursor. Read the final in-memory cursor after Run has
+	// returned and assert against that.
+	finalMem := intake.Cursor()
+
 	persisted, err := fs.Meta().GetFTSCursor(context.Background(), cursorKey)
 	if err != nil {
 		t.Fatalf("GetFTSCursor post-shutdown: %v", err)
 	}
-	if persisted != memCursor {
-		t.Fatalf("post-shutdown persisted cursor = %d, in-memory cursor = %d (shutdown flush did not run)", persisted, memCursor)
+	if persisted != finalMem {
+		t.Fatalf("post-shutdown persisted cursor = %d, final in-memory cursor = %d (memCursor sample was %d) (shutdown flush did not run)",
+			persisted, finalMem, memCursor)
+	}
+	if persisted < memCursor {
+		t.Fatalf("post-shutdown persisted cursor = %d trailed observed in-memory cursor %d",
+			persisted, memCursor)
 	}
 
 	// Restart with the same cursor key on the unwrapped store. The
