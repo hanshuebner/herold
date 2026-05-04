@@ -9,10 +9,11 @@
  *   - Within tier: seen entries by lastUsedAt desc, contacts alphabetically.
  *   - Cap at limit.
  * Section 3: mergeFilter() with three sources (directory results).
+ * Section 4: reload() — forces re-fetch even when status is 'ready' (re #75).
  *
- * The actual JMAP load() path is integration territory and tested live.
+ * The actual JMAP load() / reload() path is integration territory and tested live.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { contacts, _internals_forTest, type ContactSuggestion } from './store.svelte';
 import type { SeenAddress } from './seen-addresses.svelte';
 
@@ -266,5 +267,41 @@ describe('mergeFilter: three sources (with directory)', () => {
   it('cap respected when total across all three sources exceeds limit', () => {
     const result = mergeFilter([C_ALICE, C_BOB], [SA_CAROL, SA_DAN], [D_EVE, D_FRANK], 'test', 3);
     expect(result).toHaveLength(3);
+  });
+});
+
+// ── Section 4: reload() resets status so a re-fetch can occur (re #75) ───────
+
+describe('contacts.reload (re #75)', () => {
+  it('resets status from ready to idle before fetching', () => {
+    // Force the store into 'ready' state — load() would be a no-op here.
+    (contacts as unknown as { status: string }).status = 'ready';
+
+    // Spy on #fetch indirectly: after calling reload(), status should no
+    // longer be 'ready' (it becomes 'loading' then 'error' because there
+    // is no real JMAP session in the test environment). The key assertion
+    // is that reload() did NOT return early — it started the fetch cycle.
+    const reloadPromise = contacts.reload();
+
+    // Immediately after calling reload(), status is either 'loading' (if
+    // #fetch has been entered) or still 'ready' only if reload returned
+    // early — the test asserts it is NOT still 'ready'.
+    const statusAfterCall = (contacts as unknown as { status: string }).status;
+    expect(statusAfterCall).not.toBe('ready');
+
+    // Let the promise resolve so the test does not leak async work.
+    return reloadPromise.catch(() => {
+      // JMAP will fail in the happy-dom environment (no real server), so
+      // a rejection is expected — we just don't want the test to error out.
+    });
+  });
+
+  it('load() is a no-op when status is ready (unlike reload)', () => {
+    (contacts as unknown as { status: string }).status = 'ready';
+    // load() should return immediately without changing status.
+    const loadPromise = contacts.load();
+    const statusAfterCall = (contacts as unknown as { status: string }).status;
+    expect(statusAfterCall).toBe('ready');
+    return loadPromise;
   });
 });

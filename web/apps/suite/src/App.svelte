@@ -24,8 +24,10 @@
   import { mail } from './lib/mail/store.svelte';
   import { threadDnd } from './lib/mail/dnd-thread.svelte';
   import { pushSubscription } from './lib/push/push-subscription.svelte';
+  import { contacts } from './lib/contacts/store.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
+  import ContactsView from './views/ContactsView.svelte';
   import HelpView from './views/HelpView.svelte';
   import SettingsView from './views/SettingsView.svelte';
   import NotFoundView from './views/NotFoundView.svelte';
@@ -81,6 +83,14 @@
         if (mail.identities.size === 0) {
           mail.loadIdentities().catch((err) => {
             console.error('initial identity load failed', err);
+          });
+        }
+        // Prime the contacts store at boot so the recipient hover card
+        // can detect existing contacts without waiting for the compose
+        // window to open first (re #75).
+        if (contacts.status === 'idle') {
+          contacts.load().catch((err) => {
+            console.error('initial contacts load failed', err);
           });
         }
         if (hasCap) {
@@ -510,6 +520,8 @@
     <MailView />
   {:else if router.matches('chat')}
     <ChatView />
+  {:else if router.matches('contacts')}
+    <ContactsView />
   {:else if router.matches('settings')}
     <SettingsView />
   {:else if router.matches('help')}

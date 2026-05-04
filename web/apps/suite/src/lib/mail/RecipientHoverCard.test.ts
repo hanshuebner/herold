@@ -35,7 +35,7 @@ vi.mock('./store.svelte', () => ({
 }));
 
 vi.mock('../contacts/store.svelte', () => ({
-  contacts: { load: vi.fn() },
+  contacts: { load: vi.fn(), reload: vi.fn() },
 }));
 
 vi.mock('../compose/compose.svelte', () => ({
