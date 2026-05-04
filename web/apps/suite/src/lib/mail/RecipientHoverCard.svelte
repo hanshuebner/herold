@@ -107,17 +107,22 @@
     const rect = anchor.getBoundingClientRect();
     const cardHeight = cardEl?.offsetHeight ?? 240;
     const cardWidth = cardEl?.offsetWidth ?? 320;
-    const margin = 8;
+    // Horizontal viewport margin only; vertical gap is zero so the card
+    // abuts the trigger directly. A zero gap prevents the mouse from
+    // leaving the hover surface while crossing from trigger to card,
+    // which would otherwise fire requestClose and allow a different
+    // trigger below the gap to open (re #75).
+    const hMargin = 8;
     const spaceBelow = window.innerHeight - rect.bottom;
     const placement: 'below' | 'above' =
-      spaceBelow < cardHeight + margin && rect.top > cardHeight + margin
+      spaceBelow < cardHeight && rect.top > cardHeight
         ? 'above'
         : 'below';
     const top =
-      placement === 'below' ? rect.bottom + margin : rect.top - cardHeight - margin;
+      placement === 'below' ? rect.bottom : rect.top - cardHeight;
     const left = Math.max(
-      margin,
-      Math.min(window.innerWidth - cardWidth - margin, rect.left),
+      hMargin,
+      Math.min(window.innerWidth - cardWidth - hMargin, rect.left),
     );
     position = { top, left, placement };
   }
@@ -281,8 +286,10 @@
       const created = args.created?.['new1'];
       if (created?.id) {
         person = { ...current, contactId: created.id };
-        // Ensure the suggestions cache picks up the new contact.
-        void contacts.load();
+        // Force a full reload so the suggestions cache reflects the newly
+        // created contact; contacts.load() is idempotent and would be a
+        // no-op here because the store is already in 'ready' state (re #75).
+        void contacts.reload();
       }
     } catch (err) {
       console.error('Add contact failed', err);

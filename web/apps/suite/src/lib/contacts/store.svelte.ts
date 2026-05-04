@@ -45,6 +45,21 @@ class Contacts {
   /** Idempotent: no-op when ready / loading. */
   async load(): Promise<void> {
     if (this.status === 'loading' || this.status === 'ready') return;
+    return this.#fetch();
+  }
+
+  /**
+   * Force a full reload regardless of current status. Call this after a
+   * contact is created / updated / destroyed so the suggestions cache
+   * reflects the server state (re #75).
+   */
+  async reload(): Promise<void> {
+    if (this.status === 'loading') return; // already in-flight
+    this.status = 'idle';
+    return this.#fetch();
+  }
+
+  async #fetch(): Promise<void> {
     const accountId = this.#accountId();
     if (!accountId) return;
     this.status = 'loading';
