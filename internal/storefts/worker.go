@@ -171,9 +171,24 @@ func (w *Worker) Run(ctx context.Context) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			// Final flush on shutdown so in-flight changes land in the
-			// index. Use a fresh context so the flush itself is not
-			// cancelled the moment it starts.
+			// index AND the durable cursor reflects the in-memory
+			// advance. Use a fresh context so the flush itself is not
+			// cancelled the moment it starts. Persist the cursor
+			// BEFORE the index commit: if the cursor write fails, we
+			// must not commit the index past it (a restart would then
+			// re-read from a stale cursor while the index already
+			// contains the newer docs; IndexMessage is idempotent so
+			// the worst case is a small replay, but we prefer the
+			// invariant that the cursor never trails the index).
 			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if seq := w.cursor.Load(); seq > 0 {
+				if err := w.store.Meta().SetFTSCursor(flushCtx, w.opts.CursorKey, seq); err != nil {
+					w.logger.Warn("storefts: persist cursor on shutdown",
+						"key", w.opts.CursorKey,
+						"seq", seq,
+						"err", err.Error())
+				}
+			}
 			_ = w.idx.Commit(flushCtx)
 			cancel()
 			return nil

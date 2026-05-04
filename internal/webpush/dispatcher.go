@@ -257,6 +257,11 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		return errors.New("webpush: dispatcher already running")
 	}
 	defer d.running.Store(false)
+	// Final flush on shutdown so the in-memory cursor lands on disk
+	// even when the in-loop SetFTSCursor lost its race with ctx
+	// cancellation. Uses a fresh, short-deadline ctx so the flush
+	// itself is not cancelled the moment it starts.
+	defer d.persistCursorOnShutdown()
 
 	if !d.vapid.Configured() {
 		d.logger.LogAttrs(ctx, slog.LevelInfo,
@@ -311,6 +316,25 @@ func (d *Dispatcher) Close(ctx context.Context) error {
 	_ = ctx
 	d.stopAllCoalesce()
 	return nil
+}
+
+// persistCursorOnShutdown writes the in-memory cursor to the durable
+// store using a fresh ctx, so the worker's last advance lands even
+// when the run ctx is already cancelled. Called from Run's defer
+// chain.
+func (d *Dispatcher) persistCursorOnShutdown() {
+	seq := d.cursor.Load()
+	if seq == 0 {
+		return
+	}
+	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.store.Meta().SetFTSCursor(flushCtx, d.cursorKey, seq); err != nil {
+		d.logger.LogAttrs(flushCtx, slog.LevelWarn, "webpush: persist cursor on shutdown",
+			slog.String("key", d.cursorKey),
+			slog.Uint64("seq", seq),
+			slog.String("err", err.Error()))
+	}
 }
 
 // tick reads one batch of change-feed entries, fans the relevant

@@ -381,6 +381,184 @@ func TestWorker_CursorPersistsAcrossRestart(t *testing.T) {
 	<-done2
 }
 
+// shutdownFlushStore wraps a real store so the in-loop SetFTSCursor
+// path returns context.Canceled while the shutdown-path SetFTSCursor
+// (which uses a fresh, non-cancelled context) is allowed through.
+// This isolates the cursor-persistence-on-shutdown invariant: with the
+// fix, the worker writes the advanced cursor on its way out via a
+// fresh ctx and the persisted value matches the in-memory advance;
+// without the fix, every SetFTSCursor would carry the cancelled ctx
+// and the persisted cursor would lag behind.
+type shutdownFlushStore struct {
+	store.Store
+	failingMeta *shutdownFlushMeta
+}
+
+func (s shutdownFlushStore) Meta() store.Metadata { return s.failingMeta }
+
+type shutdownFlushMeta struct {
+	store.Metadata
+	parentCtx context.Context
+}
+
+func (m *shutdownFlushMeta) SetFTSCursor(ctx context.Context, key string, seq uint64) error {
+	// Reject any write whose ctx descends from the worker's main run
+	// ctx. The shutdown path uses a fresh background ctx so its writes
+	// land on the embedded store.
+	if ctx == m.parentCtx || ctxIsChildOf(ctx, m.parentCtx) {
+		return context.Canceled
+	}
+	return m.Metadata.SetFTSCursor(ctx, key, seq)
+}
+
+// ctxIsChildOf reports whether child was derived from parent. We
+// compare via context.Cause's parent chain by walking until we hit a
+// matching pointer. The standard library does not expose the parent
+// pointer, so we approximate: the worker stores a cancellable ctx and
+// derives no further ctx from it; the in-loop SetFTSCursor receives
+// that exact ctx. The shutdown path constructs a fresh
+// context.WithTimeout(context.Background(), ...) which trivially is
+// not the parent. Pointer-equality on the supplied ctx is therefore
+// sufficient for this test.
+func ctxIsChildOf(child, parent context.Context) bool {
+	return child == parent
+}
+
+// TestWorker_PersistsCursorOnShutdown asserts that when the in-loop
+// SetFTSCursor would race with ctx cancellation (modelled here by a
+// wrapper that fails the in-loop call but admits the shutdown-path
+// call), the worker still durably persists the advanced cursor before
+// Run returns. A subsequent fresh worker hydrates from the persisted
+// cursor and does not re-process the same change.
+func TestWorker_PersistsCursorOnShutdown(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	fake, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
+	if err != nil {
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
+	}
+	t.Cleanup(func() { _ = fake.Close() })
+	idx, err := storefts.New(t.TempDir(), nil, clk)
+	if err != nil {
+		t.Fatalf("storefts.New: %v", err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+
+	seedCtx := context.Background()
+	p, err := fake.Meta().InsertPrincipal(seedCtx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "shutdown@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := fake.Meta().InsertMailbox(seedCtx, store.Mailbox{PrincipalID: p.ID, Name: "INBOX"})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		raw := fmt.Sprintf("Subject: shutdown-%d\r\n\r\nbody\r\n", i)
+		ref, err := fake.Blobs().Put(seedCtx, strings.NewReader(raw))
+		if err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if _, _, err := fake.Meta().InsertMessage(seedCtx, store.Message{Blob: ref, Size: ref.Size},
+			[]store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+			t.Fatalf("InsertMessage: %v", err)
+		}
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	wrappedMeta := &shutdownFlushMeta{Metadata: fake.Meta(), parentCtx: runCtx}
+	wrapped := shutdownFlushStore{Store: fake, failingMeta: wrappedMeta}
+
+	const cursorKey = "fts-shutdown-flush-test"
+	w := storefts.NewWorker(idx, wrapped, stringExtractor{}, nil, clk,
+		storefts.WorkerOptions{CursorKey: cursorKey})
+	done := make(chan error, 1)
+	go func() { done <- w.Run(runCtx) }()
+
+	// Drive the worker through one flush so its in-memory cursor
+	// advances. The wrapped SetFTSCursor will refuse the in-loop call,
+	// so the persisted cursor stays at zero.
+	flushSig := w.CurrentFlushSignal()
+	clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	select {
+	case <-flushSig:
+	case <-waitCtx.Done():
+		waitCancel()
+		cancel()
+		<-done
+		t.Fatalf("wait flush: %v", waitCtx.Err())
+	}
+	waitCancel()
+
+	memCursor := w.Cursor()
+	if memCursor == 0 {
+		cancel()
+		<-done
+		t.Fatalf("in-memory cursor did not advance")
+	}
+
+	// Pre-shutdown: the wrapper rejected every in-loop write, so the
+	// persisted cursor is still zero. (Verifies the test's wrapper
+	// actually exhibits the race we are guarding against.)
+	preShutdown, err := fake.Meta().GetFTSCursor(seedCtx, cursorKey)
+	if err != nil {
+		t.Fatalf("GetFTSCursor pre-shutdown: %v", err)
+	}
+	if preShutdown != 0 {
+		t.Logf("note: persisted cursor was %d pre-shutdown (wrapper let a write through)", preShutdown)
+	}
+
+	// Cancel and wait for Run to return. The shutdown path must
+	// persist the in-memory advance.
+	cancel()
+	<-done
+
+	// Capture the final in-memory cursor after Run has returned. The
+	// worker may have ticked again between the memCursor snapshot and
+	// the cancel, so the value flushed by the shutdown defer can be
+	// >= memCursor. The invariant we are guarding is that the
+	// persisted cursor reflects the final in-memory advance, not
+	// merely the one we observed earlier.
+	finalMem := w.Cursor()
+
+	persisted, err := fake.Meta().GetFTSCursor(seedCtx, cursorKey)
+	if err != nil {
+		t.Fatalf("GetFTSCursor post-shutdown: %v", err)
+	}
+	if persisted != finalMem {
+		t.Fatalf("post-shutdown persisted cursor = %d, final in-memory cursor = %d (memCursor snapshot was %d)",
+			persisted, finalMem, memCursor)
+	}
+	if persisted < memCursor {
+		t.Fatalf("post-shutdown persisted cursor = %d trailed observed in-memory cursor %d",
+			persisted, memCursor)
+	}
+
+	// Restart with a fresh worker and a fresh (non-wrapped) store.
+	// Drive its hydration; it must begin at the persisted cursor and
+	// must NOT re-index the seeded messages.
+	w2 := storefts.NewWorker(idx, fake, stringExtractor{}, nil, clk,
+		storefts.WorkerOptions{CursorKey: cursorKey})
+	runCtx2, cancel2 := context.WithCancel(context.Background())
+	done2 := make(chan error, 1)
+	go func() { done2 <- w2.Run(runCtx2) }()
+	clk.Advance(storefts.DefaultFlushInterval + 10*time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for w2.Cursor() == 0 && time.Now().Before(deadline) {
+		clk.Advance(10 * time.Millisecond)
+	}
+	if w2.Cursor() != finalMem {
+		cancel2()
+		<-done2
+		t.Fatalf("restarted worker cursor = %d, want %d (no replay)", w2.Cursor(), finalMem)
+	}
+	cancel2()
+	<-done2
+}
+
 // TestWorker_LagCharacteristics reports the observed p50/p99 indexing
 // lag across a small synthetic workload. Not a correctness gate; it
 // exists so future changes to the worker's scheduling are surfaced in

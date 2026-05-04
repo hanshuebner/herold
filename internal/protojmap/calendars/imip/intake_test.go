@@ -113,6 +113,185 @@ func deliverIMIP(t *testing.T, f *fixture, ics []byte) {
 	}
 }
 
+// shutdownFlushStore wraps a real store so the in-loop SetFTSCursor
+// path returns context.Canceled while the shutdown-path SetFTSCursor
+// (which uses a fresh background ctx) is allowed through. Models the
+// race the cursor-on-shutdown fix guards against.
+type shutdownFlushStore struct {
+	store.Store
+	failingMeta *shutdownFlushMeta
+}
+
+func (s shutdownFlushStore) Meta() store.Metadata { return s.failingMeta }
+
+type shutdownFlushMeta struct {
+	store.Metadata
+	parentCtx context.Context
+}
+
+func (m *shutdownFlushMeta) SetFTSCursor(ctx context.Context, key string, seq uint64) error {
+	if ctx == m.parentCtx {
+		return context.Canceled
+	}
+	return m.Metadata.SetFTSCursor(ctx, key, seq)
+}
+
+// TestIMIP_PersistsCursorOnShutdown asserts the worker's shutdown
+// defer flushes the in-memory cursor when the in-loop SetFTSCursor
+// lost its race with ctx cancellation. Restart with the same cursor
+// key must NOT re-apply the iMIP REQUEST (no second event row).
+func TestIMIP_PersistsCursorOnShutdown(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = fs.Close() })
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	ctx := context.Background()
+	p, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := fs.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+
+	// Seed one iMIP REQUEST.
+	ics := []byte("BEGIN:VCALENDAR\r\n" +
+		"VERSION:2.0\r\n" +
+		"METHOD:REQUEST\r\n" +
+		"BEGIN:VEVENT\r\n" +
+		"UID:shutdown-1@example.test\r\n" +
+		"DTSTAMP:20260101T000000Z\r\n" +
+		"DTSTART:20260315T100000Z\r\n" +
+		"DTEND:20260315T110000Z\r\n" +
+		"SUMMARY:Shutdown test\r\n" +
+		"ORGANIZER:mailto:organizer@example.test\r\n" +
+		"ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:alice@example.test\r\n" +
+		"SEQUENCE:0\r\n" +
+		"END:VEVENT\r\n" +
+		"END:VCALENDAR\r\n")
+	body := []byte("From: organizer@example.test\r\n" +
+		"To: alice@example.test\r\n" +
+		"Subject: Meeting invite\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: text/calendar; method=REQUEST; charset=utf-8\r\n" +
+		"\r\n" +
+		string(ics))
+	ref, err := fs.Blobs().Put(ctx, strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("put blob: %v", err)
+	}
+	if _, _, err := fs.Meta().InsertMessage(ctx, store.Message{
+		Size: ref.Size,
+		Blob: ref,
+		Envelope: store.Envelope{
+			From:    "organizer@example.test",
+			To:      "alice@example.test",
+			Subject: "Meeting invite",
+		},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+
+	const cursorKey = "calendars-imip-shutdown-test"
+	runCtx, cancel := context.WithCancel(context.Background())
+	wrapped := shutdownFlushStore{
+		Store:       fs,
+		failingMeta: &shutdownFlushMeta{Metadata: fs.Meta(), parentCtx: runCtx},
+	}
+	intake := imip.New(imip.Options{
+		Store:        wrapped,
+		Logger:       logger,
+		Clock:        clk,
+		PollInterval: 5 * time.Millisecond,
+		CursorKey:    cursorKey,
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- intake.Run(runCtx) }()
+
+	// Drive the worker until it has applied the REQUEST.
+	deadline := time.Now().Add(3 * time.Second)
+	var applied bool
+	for time.Now().Before(deadline) {
+		clk.Advance(5 * time.Millisecond)
+		rows, _ := fs.Meta().ListCalendarEvents(ctx, store.CalendarEventFilter{PrincipalID: &p.ID})
+		if len(rows) == 1 {
+			applied = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !applied {
+		cancel()
+		<-done
+		t.Fatalf("first intake did not apply the REQUEST")
+	}
+
+	memCursor := intake.Cursor()
+	if memCursor == 0 {
+		cancel()
+		<-done
+		t.Fatalf("first intake's in-memory cursor did not advance")
+	}
+
+	cancel()
+	<-done
+
+	// The intake may tick once more between the memCursor sample and
+	// the cancel, so the value flushed by the shutdown defer can be
+	// >= memCursor. Read the final in-memory cursor after Run has
+	// returned and assert against that.
+	finalMem := intake.Cursor()
+
+	persisted, err := fs.Meta().GetFTSCursor(ctx, cursorKey)
+	if err != nil {
+		t.Fatalf("GetFTSCursor post-shutdown: %v", err)
+	}
+	if persisted != finalMem {
+		t.Fatalf("post-shutdown persisted cursor = %d, final in-memory cursor = %d (memCursor sample was %d) (shutdown flush did not run)",
+			persisted, finalMem, memCursor)
+	}
+	if persisted < memCursor {
+		t.Fatalf("post-shutdown persisted cursor = %d trailed observed in-memory cursor %d",
+			persisted, memCursor)
+	}
+
+	// Restart with the same cursor key against the unwrapped store.
+	// The new worker must NOT re-apply the REQUEST (still exactly one
+	// row).
+	intake2 := imip.New(imip.Options{
+		Store:        fs,
+		Logger:       logger,
+		Clock:        clk,
+		PollInterval: 5 * time.Millisecond,
+		CursorKey:    cursorKey,
+	})
+	runCtx2, cancel2 := context.WithCancel(context.Background())
+	done2 := make(chan error, 1)
+	go func() { done2 <- intake2.Run(runCtx2) }()
+	for j := 0; j < 5; j++ {
+		clk.Advance(5 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel2()
+	<-done2
+
+	rows, _ := fs.Meta().ListCalendarEvents(ctx, store.CalendarEventFilter{PrincipalID: &p.ID})
+	if len(rows) != 1 {
+		t.Fatalf("after restart events = %d, want 1 (no double application)", len(rows))
+	}
+}
+
 func TestIMIP_Request_CreatesEventOnDefaultCalendar(t *testing.T) {
 	f := newFixture(t)
 	ics := []byte("BEGIN:VCALENDAR\r\n" +

@@ -370,6 +370,194 @@ func TestDispatcher_TypeFilter_SkipsNonMatching(t *testing.T) {
 	}
 }
 
+// shutdownFlushStore wraps a real store so the in-loop SetFTSCursor
+// path returns context.Canceled while the shutdown-path SetFTSCursor
+// (which uses a fresh background ctx) is allowed through. Models the
+// race the cursor-on-shutdown fix guards against.
+type shutdownFlushStore struct {
+	store.Store
+	failingMeta *shutdownFlushMeta
+}
+
+func (s shutdownFlushStore) Meta() store.Metadata { return s.failingMeta }
+
+type shutdownFlushMeta struct {
+	store.Metadata
+	parentCtx context.Context
+}
+
+func (m *shutdownFlushMeta) SetFTSCursor(ctx context.Context, key string, seq uint64) error {
+	if ctx == m.parentCtx {
+		return context.Canceled
+	}
+	return m.Metadata.SetFTSCursor(ctx, key, seq)
+}
+
+// TestDispatcher_PersistsCursorOnShutdown asserts that the Run loop's
+// shutdown defer flushes the in-memory cursor to disk when the
+// in-loop SetFTSCursor lost its race with ctx cancellation. A restart
+// with the same cursor key must NOT re-deliver the message that was
+// already pushed before shutdown.
+func TestDispatcher_PersistsCursorOnShutdown(t *testing.T) {
+	t.Parallel()
+	clk := clock.NewFake(time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC))
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	st, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
+	if err != nil {
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	priv, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("recipient key: %v", err)
+	}
+	auth := make([]byte, authSecretLen)
+	rand.Read(auth)
+
+	kp, err := vapid.Generate(nil)
+	if err != nil {
+		t.Fatalf("vapid.Generate: %v", err)
+	}
+	mgr := vapid.NewWithKey(kp)
+
+	gw := newGateway(http.StatusCreated)
+	t.Cleanup(gw.Close)
+
+	seedCtx := context.Background()
+	p, err := st.Meta().InsertPrincipal(seedCtx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := st.Meta().InsertMailbox(seedCtx, store.Mailbox{
+		PrincipalID: p.ID,
+		Name:        "INBOX",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	if _, err := st.Meta().InsertPushSubscription(seedCtx, store.PushSubscription{
+		PrincipalID:    p.ID,
+		DeviceClientID: "test-device",
+		URL:            gw.URL(),
+		P256DH:         priv.PublicKey().Bytes(),
+		Auth:           auth,
+		Verified:       true,
+		Types:          []string{"Email"},
+	}); err != nil {
+		t.Fatalf("InsertPushSubscription: %v", err)
+	}
+
+	const cursorKey = "webpush-shutdown-flush-test"
+	runCtx, cancel := context.WithCancel(context.Background())
+	wrapped := shutdownFlushStore{
+		Store:       st,
+		failingMeta: &shutdownFlushMeta{Metadata: st.Meta(), parentCtx: runCtx},
+	}
+	disp, err := New(Options{
+		Store:        wrapped,
+		VAPID:        mgr,
+		Clock:        clk,
+		Logger:       slog.Default(),
+		HTTPDoer:     gw.srv.Client(),
+		Hostname:     "example.test",
+		PollInterval: 20 * time.Millisecond,
+		CursorKey:    cursorKey,
+	})
+	if err != nil {
+		t.Fatalf("webpush.New: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- disp.Run(runCtx) }()
+
+	// Insert one message so the change-feed reader has something to
+	// process.
+	ref, err := st.Blobs().Put(seedCtx, strings.NewReader("body"))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	if _, _, err := st.Meta().InsertMessage(seedCtx, store.Message{
+		Blob: ref, Size: ref.Size,
+		Envelope: store.Envelope{From: "Bob <bob@example.test>", Subject: "hello"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	// Drive Run until the gateway has seen a delivery.
+	deadline := time.Now().Add(3 * time.Second)
+	for len(gw.Calls()) == 0 {
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("first dispatcher did not deliver the push")
+		}
+		clk.Advance(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	memCursor := disp.cursor.Load()
+	if memCursor == 0 {
+		cancel()
+		<-done
+		t.Fatalf("dispatcher in-memory cursor did not advance")
+	}
+
+	cancel()
+	<-done
+
+	persisted, err := st.Meta().GetFTSCursor(seedCtx, cursorKey)
+	if err != nil {
+		t.Fatalf("GetFTSCursor post-shutdown: %v", err)
+	}
+	// The in-memory cursor we sampled before cancel is a lower
+	// bound: the dispatcher may have ticked further while we were
+	// preparing to cancel. The shutdown flush must persist at least
+	// memCursor (and may persist more); without the fix, persisted
+	// would be 0.
+	finalMemCursor := disp.cursor.Load()
+	if persisted < memCursor {
+		t.Fatalf("post-shutdown persisted cursor = %d, sampled in-memory = %d (shutdown flush did not run)", persisted, memCursor)
+	}
+	if persisted != finalMemCursor {
+		t.Fatalf("post-shutdown persisted cursor = %d, final in-memory = %d (shutdown flush did not catch the latest advance)", persisted, finalMemCursor)
+	}
+
+	deliveriesAfterFirst := len(gw.Calls())
+
+	// Restart with the same cursor key against the unwrapped store.
+	// The new dispatcher must NOT re-deliver the existing message.
+	disp2, err := New(Options{
+		Store:        st,
+		VAPID:        mgr,
+		Clock:        clk,
+		Logger:       slog.Default(),
+		HTTPDoer:     gw.srv.Client(),
+		Hostname:     "example.test",
+		PollInterval: 20 * time.Millisecond,
+		CursorKey:    cursorKey,
+	})
+	if err != nil {
+		t.Fatalf("webpush.New (2): %v", err)
+	}
+	runCtx2, cancel2 := context.WithCancel(context.Background())
+	done2 := make(chan error, 1)
+	go func() { done2 <- disp2.Run(runCtx2) }()
+	for j := 0; j < 8; j++ {
+		clk.Advance(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel2()
+	<-done2
+
+	if got := len(gw.Calls()); got != deliveriesAfterFirst {
+		t.Fatalf("after restart deliveries = %d, want %d (no double delivery)", got, deliveriesAfterFirst)
+	}
+}
+
 // TestDispatcher_RunBlocksWithoutVAPID exercises the unconfigured-VAPID
 // short-circuit: the dispatcher's Run stays alive on ctx but never
 // reads the change feed.
