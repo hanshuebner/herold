@@ -42,7 +42,7 @@ func mapErr(err error) error {
 		switch se.Code() {
 		case sqlite3.SQLITE_CONSTRAINT_UNIQUE,
 			sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY:
-			return fmt.Errorf("%w: %s", store.ErrConflict, se.Error())
+			return store.ErrConflict
 		}
 	}
 	return err
@@ -105,7 +105,7 @@ func (m *metadata) InsertPrincipal(ctx context.Context, p store.Principal) (stor
 			p.TOTPSecret, p.QuotaBytes, int64(p.Flags), usMicros(now), usMicros(now),
 			nullable(telemetry))
 		if err != nil {
-			return mapErr(err)
+			return fmt.Errorf("principal %q: %w", strings.ToLower(p.CanonicalEmail), mapErr(err))
 		}
 		n, err := res.LastInsertId()
 		if err != nil {
@@ -227,7 +227,10 @@ func (m *metadata) InsertDomain(ctx context.Context, d store.Domain) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO domains (name, is_local, created_at_us) VALUES (?, ?, ?)`,
 			strings.ToLower(d.Name), boolToInt(d.IsLocal), usMicros(now))
-		return mapErr(err)
+		if err != nil {
+			return fmt.Errorf("domain %q: %w", strings.ToLower(d.Name), mapErr(err))
+		}
+		return nil
 	})
 }
 
@@ -305,7 +308,7 @@ func (m *metadata) InsertAlias(ctx context.Context, a store.Alias) (store.Alias,
 			strings.ToLower(a.LocalPart), strings.ToLower(a.Domain),
 			int64(a.TargetPrincipal), nullable(expiresUs), usMicros(now))
 		if err != nil {
-			return mapErr(err)
+			return fmt.Errorf("alias %s@%s: %w", strings.ToLower(a.LocalPart), strings.ToLower(a.Domain), mapErr(err))
 		}
 		n, err := res.LastInsertId()
 		if err != nil {
@@ -421,7 +424,10 @@ func (m *metadata) InsertOIDCProvider(ctx context.Context, p store.OIDCProvider)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			p.Name, p.IssuerURL, p.ClientID, p.ClientSecretRef,
 			strings.Join(p.Scopes, ","), boolToInt(p.AutoProvision), usMicros(now))
-		return mapErr(err)
+		if err != nil {
+			return fmt.Errorf("OIDC provider %q: %w", p.Name, mapErr(err))
+		}
+		return nil
 	})
 }
 
@@ -456,7 +462,10 @@ func (m *metadata) LinkOIDC(ctx context.Context, link store.OIDCLink) error {
 			VALUES (?, ?, ?, ?, ?)`,
 			int64(link.PrincipalID), link.ProviderName, link.Subject,
 			link.EmailAtProvider, usMicros(now))
-		return mapErr(err)
+		if err != nil {
+			return fmt.Errorf("OIDC link principal %d provider %q subject %q: %w", link.PrincipalID, link.ProviderName, link.Subject, mapErr(err))
+		}
+		return nil
 	})
 }
 
@@ -499,7 +508,7 @@ func (m *metadata) InsertAPIKey(ctx context.Context, k store.APIKey) (store.APIK
 			VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
 			int64(k.PrincipalID), k.Hash, k.Name, usMicros(now), scope, addrJSON, domJSON)
 		if err != nil {
-			return mapErr(err)
+			return fmt.Errorf("API key %q: %w", k.Name, mapErr(err))
 		}
 		n, err := res.LastInsertId()
 		if err != nil {
@@ -655,7 +664,7 @@ func (m *metadata) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.M
 			int64(mb.PrincipalID), int64(mb.ParentID), mb.Name, int64(mb.Attributes),
 			int64(mb.UIDValidity), usMicros(now), usMicros(now), color, int64(mb.SortOrder))
 		if err != nil {
-			return mapErr(err)
+			return fmt.Errorf("mailbox %q: %w", mb.Name, mapErr(err))
 		}
 		n, err := res.LastInsertId()
 		if err != nil {

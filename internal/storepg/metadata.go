@@ -38,9 +38,9 @@ func mapErr(err error) error {
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
 		case "23505":
-			return fmt.Errorf("%w: %s", store.ErrConflict, pgErr.Message)
+			return store.ErrConflict
 		case "23503":
-			return fmt.Errorf("%w: foreign key violation: %s", store.ErrConflict, pgErr.Message)
+			return fmt.Errorf("foreign key violation: %w", store.ErrConflict)
 		}
 	}
 	return err
@@ -83,7 +83,7 @@ func (m *metadata) InsertPrincipal(ctx context.Context, p store.Principal) (stor
 	now := m.s.clock.Now().UTC()
 	var id int64
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `
+		if err := tx.QueryRow(ctx, `
 			INSERT INTO principals (kind, canonical_email, display_name, password_hash,
 			  totp_secret, quota_bytes, flags, used_bytes, created_at_us, updated_at_us,
 			  clientlog_telemetry_enabled)
@@ -91,10 +91,13 @@ func (m *metadata) InsertPrincipal(ctx context.Context, p store.Principal) (stor
 			int32(p.Kind), strings.ToLower(p.CanonicalEmail), p.DisplayName, p.PasswordHash,
 			p.TOTPSecret, p.QuotaBytes, int64(p.Flags), usMicros(now), usMicros(now),
 			p.ClientlogTelemetryEnabled,
-		).Scan(&id)
+		).Scan(&id); err != nil {
+			return fmt.Errorf("principal %q: %w", strings.ToLower(p.CanonicalEmail), mapErr(err))
+		}
+		return nil
 	})
 	if err != nil {
-		return store.Principal{}, mapErr(err)
+		return store.Principal{}, err
 	}
 	p.ID = store.PrincipalID(id)
 	p.CreatedAt = now
@@ -188,7 +191,10 @@ func (m *metadata) InsertDomain(ctx context.Context, d store.Domain) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO domains (name, is_local, created_at_us) VALUES ($1, $2, $3)`,
 			strings.ToLower(d.Name), d.IsLocal, usMicros(now))
-		return mapErr(err)
+		if err != nil {
+			return fmt.Errorf("domain %q: %w", strings.ToLower(d.Name), mapErr(err))
+		}
+		return nil
 	})
 }
 
@@ -252,14 +258,17 @@ func (m *metadata) InsertAlias(ctx context.Context, a store.Alias) (store.Alias,
 		expiresUs = &x
 	}
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `
+		if err := tx.QueryRow(ctx, `
 			INSERT INTO aliases (local_part, domain, target_principal, expires_at_us, created_at_us)
 			VALUES ($1, $2, $3, $4, $5) RETURNING id`,
 			strings.ToLower(a.LocalPart), strings.ToLower(a.Domain),
-			int64(a.TargetPrincipal), expiresUs, usMicros(now)).Scan(&id)
+			int64(a.TargetPrincipal), expiresUs, usMicros(now)).Scan(&id); err != nil {
+			return fmt.Errorf("alias %s@%s: %w", strings.ToLower(a.LocalPart), strings.ToLower(a.Domain), mapErr(err))
+		}
+		return nil
 	})
 	if err != nil {
-		return store.Alias{}, mapErr(err)
+		return store.Alias{}, err
 	}
 	a.ID = store.AliasID(id)
 	a.LocalPart = strings.ToLower(a.LocalPart)
@@ -357,7 +366,10 @@ func (m *metadata) InsertOIDCProvider(ctx context.Context, p store.OIDCProvider)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			p.Name, p.IssuerURL, p.ClientID, p.ClientSecretRef,
 			strings.Join(p.Scopes, ","), p.AutoProvision, usMicros(now))
-		return mapErr(err)
+		if err != nil {
+			return fmt.Errorf("OIDC provider %q: %w", p.Name, mapErr(err))
+		}
+		return nil
 	})
 }
 
@@ -390,7 +402,10 @@ func (m *metadata) LinkOIDC(ctx context.Context, link store.OIDCLink) error {
 			VALUES ($1, $2, $3, $4, $5)`,
 			int64(link.PrincipalID), link.ProviderName, link.Subject,
 			link.EmailAtProvider, usMicros(now))
-		return mapErr(err)
+		if err != nil {
+			return fmt.Errorf("OIDC link principal %d provider %q subject %q: %w", link.PrincipalID, link.ProviderName, link.Subject, mapErr(err))
+		}
+		return nil
 	})
 }
 
@@ -422,14 +437,17 @@ func (m *metadata) InsertAPIKey(ctx context.Context, k store.APIKey) (store.APIK
 	addrJSON := encodeStringSliceJSON(k.AllowedFromAddresses)
 	domJSON := encodeStringSliceJSON(k.AllowedFromDomains)
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `
+		if err := tx.QueryRow(ctx, `
 			INSERT INTO api_keys (principal_id, hash, name, created_at_us, last_used_at_us,
 			                      scope_json, allowed_from_addresses_json, allowed_from_domains_json)
 			VALUES ($1, $2, $3, $4, 0, $5, $6, $7) RETURNING id`,
-			int64(k.PrincipalID), k.Hash, k.Name, usMicros(now), scope, addrJSON, domJSON).Scan(&id)
+			int64(k.PrincipalID), k.Hash, k.Name, usMicros(now), scope, addrJSON, domJSON).Scan(&id); err != nil {
+			return fmt.Errorf("API key %q: %w", k.Name, mapErr(err))
+		}
+		return nil
 	})
 	if err != nil {
-		return store.APIKey{}, mapErr(err)
+		return store.APIKey{}, err
 	}
 	k.ID = store.APIKeyID(id)
 	k.CreatedAt = now
@@ -565,7 +583,7 @@ func (m *metadata) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.M
 			VALUES ($1, $2, $3, $4, $5, 1, 0, $6, $7, $8, $9) RETURNING id`,
 			int64(mb.PrincipalID), int64(mb.ParentID), mb.Name, int64(mb.Attributes),
 			int64(mb.UIDValidity), usMicros(now), usMicros(now), color, int64(mb.SortOrder)).Scan(&id); err != nil {
-			return mapErr(err)
+			return fmt.Errorf("mailbox %q: %w", mb.Name, mapErr(err))
 		}
 		return appendStateChange(ctx, tx, mb.PrincipalID,
 			store.EntityKindMailbox, uint64(id), 0, store.ChangeOpCreated, now)
