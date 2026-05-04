@@ -62,4 +62,5 @@ coverage.html
 # bundle-manual scripts in the suite/admin dev loops. Not checked in.
 /web/apps/suite/public/manual/
 /web/apps/admin/public/manual/
+/web/apps/admin/public/help/
 /web/packages/manual/dist-data/

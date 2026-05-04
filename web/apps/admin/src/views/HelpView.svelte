@@ -62,10 +62,14 @@
   async function loadBundle(): Promise<void> {
     try {
       // The bundle is produced by `scripts/build-web.sh` into
-      // web/apps/admin/public/manual/admin.json and served verbatim by Vite
-      // at /admin/manual/admin.json (same-origin, no CORS).
-      // In production it is embedded in the herold binary under /admin/manual/.
-      const res = await fetch('/admin/manual/admin.json');
+      // web/apps/admin/public/help/bundle.json and served verbatim by Vite
+      // at /admin/help/bundle.json (same-origin, no CORS).
+      // In production it is embedded in the herold binary under /admin/help/.
+      //
+      // NOTE: /admin/manual/ is reserved for the standalone SSR manual on the
+      // admin listener, so the JSON bundle must live under a different path to
+      // avoid the route collision that would yield a 404.
+      const res = await fetch('/admin/help/bundle.json');
       if (!res.ok) {
         // Not crash-worthy: bundle may be absent in dev builds. Show a
         // friendly message and let the rest of the SPA keep working.

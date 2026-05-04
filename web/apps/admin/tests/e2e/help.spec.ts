@@ -90,7 +90,7 @@ function installDashboardRoutes(page: import('@playwright/test').Page): void {
  * Intercept the admin.json bundle fetch and return the fixture bundle.
  */
 function installBundleRoute(page: import('@playwright/test').Page): void {
-  void page.route('/admin/manual/admin.json', (route) =>
+  void page.route('/admin/help/bundle.json', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -155,7 +155,7 @@ test.describe('help', () => {
     installDashboardRoutes(page);
 
     // Bundle endpoint returns 404.
-    void page.route('/admin/manual/admin.json', (route) =>
+    void page.route('/admin/help/bundle.json', (route) =>
       route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"not found"}' }),
     );
 

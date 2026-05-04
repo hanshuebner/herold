@@ -212,7 +212,7 @@ describe('HelpView', () => {
     });
   });
 
-  it('fetches from /admin/manual/admin.json', async () => {
+  it('fetches from /admin/help/bundle.json', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
       json: () => Promise.resolve(FIXTURE_BUNDLE),
@@ -222,7 +222,7 @@ describe('HelpView', () => {
     render(HelpView);
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith('/admin/manual/admin.json');
+      expect(fetchSpy).toHaveBeenCalledWith('/admin/help/bundle.json');
     });
   });
 });

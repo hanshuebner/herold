@@ -44,7 +44,11 @@ MANUAL_MANIFEST="docs/manual/manifest.toml"
 MANUAL_CONTENT="docs/manual"
 MANUAL_BUNDLE_DIR="web/packages/manual/dist-data"
 SUITE_PUBLIC_MANUAL="web/apps/suite/public/manual"
-ADMIN_PUBLIC_MANUAL="web/apps/admin/public/manual"
+# The admin SPA fetches the bundle from /admin/help/bundle.json.
+# /admin/manual/ on the admin listener is reserved for the standalone SSR
+# manual (per-chapter HTML pages), so the JSON bundle must live under a
+# different path to avoid the route-collision 404.
+ADMIN_PUBLIC_HELP="web/apps/admin/public/help"
 
 echo ">>> bundle manual JSON -> ${MANUAL_BUNDLE_DIR}/"
 mkdir -p "${MANUAL_BUNDLE_DIR}"
@@ -58,10 +62,10 @@ if [ ! -f "${MANUAL_BUNDLE_DIR}/user.json" ] || [ ! -f "${MANUAL_BUNDLE_DIR}/adm
   exit 1
 fi
 
-mkdir -p "${SUITE_PUBLIC_MANUAL}" "${ADMIN_PUBLIC_MANUAL}"
+mkdir -p "${SUITE_PUBLIC_MANUAL}" "${ADMIN_PUBLIC_HELP}"
 cp "${MANUAL_BUNDLE_DIR}/user.json"  "${SUITE_PUBLIC_MANUAL}/user.json"
-cp "${MANUAL_BUNDLE_DIR}/admin.json" "${ADMIN_PUBLIC_MANUAL}/admin.json"
-echo "build-web.sh: manual JSON copied to suite + admin public dirs"
+cp "${MANUAL_BUNDLE_DIR}/admin.json" "${ADMIN_PUBLIC_HELP}/bundle.json"
+echo "build-web.sh: manual JSON copied to suite public/manual/ and admin public/help/"
 
 # 3. Build the suite SPA. Vite emits to web/apps/suite/dist/.
 echo ">>> pnpm --filter @herold/suite build"
