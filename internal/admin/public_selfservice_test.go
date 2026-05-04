@@ -61,6 +61,7 @@ hostname = "test.local"
 data_dir = %q
 run_as_user = ""
 run_as_group = ""
+port_report_file = %q
 
 [server.admin_tls]
 source = "file"
@@ -110,7 +111,7 @@ tls = "none"
 log_format = "text"
 log_level = "warn"
 metrics_bind = ""
-`, d, certPath, keyPath, filepath.Join(d, "db.sqlite"),
+`, d, filepath.Join(d, "ports.toml"), certPath, keyPath, filepath.Join(d, "db.sqlite"),
 		signingKeyEnvVar,
 		certPath, keyPath, certPath, keyPath)
 
@@ -351,6 +352,7 @@ hostname = "test.local"
 data_dir = %q
 run_as_user = ""
 run_as_group = ""
+port_report_file = %q
 
 [server.admin_tls]
 source = "file"
@@ -396,7 +398,7 @@ tls = "none"
 log_format = "text"
 log_level = "warn"
 metrics_bind = ""
-`, d, certPath, keyPath, filepath.Join(d, "db.sqlite"),
+`, d, filepath.Join(d, "ports.toml"), certPath, keyPath, filepath.Join(d, "db.sqlite"),
 		certPath, keyPath, certPath, keyPath)
 
 	cfgPath := filepath.Join(d, "system.toml")

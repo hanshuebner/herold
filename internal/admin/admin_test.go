@@ -40,12 +40,16 @@ func minimalConfigFixture(t *testing.T) (string, *sysconfig.Config) {
 	dir := t.TempDir()
 	certPath, keyPath := generateSelfSignedCert(t, dir, []string{"localhost"})
 	systomlPath := filepath.Join(dir, "system.toml")
+	// port_report_file is required whenever any listener uses port 0
+	// (REQ-OPS: sysconfig port-report-file validation). Point it into the
+	// temp dir so tests can discover kernel-assigned ports when needed.
 	toml := fmt.Sprintf(`
 [server]
 hostname = "test.local"
 data_dir = %q
 run_as_user = ""
 run_as_group = ""
+port_report_file = %q
 
 [server.admin_tls]
 source = "file"
@@ -91,7 +95,7 @@ tls = "none"
 log_format = "text"
 log_level = "warn"
 metrics_bind = ""
-`, dir, certPath, keyPath, filepath.Join(dir, "db.sqlite"),
+`, dir, filepath.Join(dir, "ports.toml"), certPath, keyPath, filepath.Join(dir, "db.sqlite"),
 		certPath, keyPath, certPath, keyPath)
 	if err := os.WriteFile(systomlPath, []byte(toml), 0o600); err != nil {
 		t.Fatalf("write system.toml: %v", err)

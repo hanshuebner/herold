@@ -183,6 +183,14 @@ type ServerConfig struct {
 	// operators running behind a reverse proxy or split-horizon DNS
 	// set this explicitly.
 	PublicBaseURL string `toml:"public_base_url,omitempty"`
+	// PortReportFile, when set, is the absolute path where herold writes
+	// the actual bound addresses of every listener after all listeners are
+	// up and before the server marks itself ready. The file uses TOML with
+	// one [[listener]] entry per configured listener, each carrying the
+	// kernel-assigned address (useful when any listener uses port 0).
+	// The file is written atomically (tmp + rename) and removed on graceful
+	// shutdown. Required when any [[listener]] address uses port 0.
+	PortReportFile string `toml:"port_report_file,omitempty"`
 }
 
 // SecretsConfig carries references to operator-supplied secrets used for
@@ -1998,6 +2006,13 @@ func Validate(c *Config) error {
 		seen[l.Name] = struct{}{}
 		if l.Address == "" {
 			return fmt.Errorf("sysconfig: [[listener]] %q: address is required", l.Name)
+		}
+		// port 0 asks the kernel to pick a free port; port_report_file
+		// is required in that case so callers can discover the actual port.
+		if _, portStr, splitErr := net.SplitHostPort(l.Address); splitErr == nil && portStr == "0" {
+			if c.Server.PortReportFile == "" {
+				return fmt.Errorf("sysconfig: listener %q uses port 0 but [server].port_report_file is unset", l.Name)
+			}
 		}
 		if _, ok := validProtocols[l.Protocol]; !ok {
 			return fmt.Errorf("sysconfig: [[listener]] %q: protocol %q not recognised", l.Name, l.Protocol)

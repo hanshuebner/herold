@@ -37,6 +37,7 @@ hostname = "test.local"
 data_dir = %q
 run_as_user = ""
 run_as_group = ""
+port_report_file = %q
 
 [server.admin_tls]
 source = "file"
@@ -69,7 +70,7 @@ tls = "none"
 log_format = "text"
 log_level = "warn"
 metrics_bind = ""
-`, dir, certPath, keyPath, assetDir, filepath.Join(dir, "db.sqlite"))
+`, dir, filepath.Join(dir, "ports.toml"), certPath, keyPath, assetDir, filepath.Join(dir, "db.sqlite"))
 
 	cfgPath := filepath.Join(dir, "system.toml")
 	if err := os.WriteFile(cfgPath, []byte(tomlContent), 0o600); err != nil {

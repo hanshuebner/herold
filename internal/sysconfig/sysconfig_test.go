@@ -2557,3 +2557,63 @@ tls = "starttls"
 		t.Errorf("error should name sweep_interval_seconds, got: %v", err)
 	}
 }
+
+// TestValidate_PortZeroRequiresReportFile asserts that a [[listener]] with
+// port 0 is rejected unless [server].port_report_file is also set, and that
+// setting port_report_file clears the error.
+func TestValidate_PortZeroRequiresReportFile(t *testing.T) {
+	const base = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "smtp-relay"
+address = "127.0.0.1:0"
+protocol = "smtp"
+tls = "starttls"
+`
+	// Without port_report_file: must error.
+	_, err := Parse([]byte(base))
+	if err == nil {
+		t.Fatal("expected port 0 without port_report_file to fail validation")
+	}
+	if !strings.Contains(err.Error(), "port_report_file") {
+		t.Errorf("error should mention port_report_file; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "smtp-relay") {
+		t.Errorf("error should name the listener; got: %v", err)
+	}
+
+	// With port_report_file set: must pass.
+	withReportFile := base + `
+[server.port_report_file]
+`
+	// The field is a string, not a table; use correct TOML.
+	const withFile = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+port_report_file = "/tmp/herold-ports.toml"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "smtp-relay"
+address = "127.0.0.1:0"
+protocol = "smtp"
+tls = "starttls"
+`
+	_ = withReportFile
+	if _, err := Parse([]byte(withFile)); err != nil {
+		t.Fatalf("port 0 with port_report_file set should pass; got: %v", err)
+	}
+}
