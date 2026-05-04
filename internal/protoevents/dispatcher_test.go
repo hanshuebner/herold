@@ -482,6 +482,246 @@ firstDone:
 	t.Fatalf("second dispatcher did not deliver mail.received")
 }
 
+// shutdownFlushStore wraps a real store so the in-loop SetFTSCursor
+// path returns context.Canceled while the shutdown-path SetFTSCursor
+// (which uses a fresh background ctx) is allowed through. Models the
+// race the cursor-on-shutdown fix guards against.
+type shutdownFlushStore struct {
+	store.Store
+	failingMeta *shutdownFlushMeta
+}
+
+func (s shutdownFlushStore) Meta() store.Metadata { return s.failingMeta }
+
+type shutdownFlushMeta struct {
+	store.Metadata
+	parentCtx context.Context
+}
+
+func (m *shutdownFlushMeta) SetFTSCursor(ctx context.Context, key string, seq uint64) error {
+	if ctx == m.parentCtx {
+		return context.Canceled
+	}
+	return m.Metadata.SetFTSCursor(ctx, key, seq)
+}
+
+// TestPerPrincipalCursors_PersistOnShutdown drives two principals'
+// change feeds, models the race where the in-loop SetFTSCursor returns
+// context.Canceled, then cancels and verifies BOTH per-principal
+// cursors land on disk via each goroutine's shutdown defer. Restart
+// then must not replay either principal's events.
+func TestPerPrincipalCursors_PersistOnShutdown(t *testing.T) {
+	t.Parallel()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	st, err := storesqlite.OpenWithRand(context.Background(), dbPath, nil, clk, rand.Reader)
+	if err != nil {
+		t.Fatalf("storesqlite.OpenWithRand: %v", err)
+	}
+	defer st.Close()
+
+	seedCtx := context.Background()
+	pA, err := st.Meta().InsertPrincipal(seedCtx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal A: %v", err)
+	}
+	pB, err := st.Meta().InsertPrincipal(seedCtx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "bob@example.com",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal B: %v", err)
+	}
+	mbA, err := st.Meta().InsertMailbox(seedCtx, store.Mailbox{PrincipalID: pA.ID, Name: "INBOX"})
+	if err != nil {
+		t.Fatalf("InsertMailbox A: %v", err)
+	}
+	mbB, err := st.Meta().InsertMailbox(seedCtx, store.Mailbox{PrincipalID: pB.ID, Name: "INBOX"})
+	if err != nil {
+		t.Fatalf("InsertMailbox B: %v", err)
+	}
+
+	deliveriesA := make(chan string, 16)
+	deliveriesB := make(chan string, 16)
+	inv := newFakeInvoker()
+	inv.Handle("bus", protoevents.MethodEventsPublish, func(_ context.Context, params any) error {
+		ev := params.(map[string]any)["event"].(map[string]any)
+		if ev["kind"] != string(protoevents.EventMailReceived) {
+			return nil
+		}
+		subject, _ := ev["subject"].(string)
+		payload, _ := ev["payload"].(map[string]any)
+		msgID, _ := payload["message_id"].(string)
+		switch subject {
+		case fmt.Sprintf("%d", pA.ID):
+			select {
+			case deliveriesA <- msgID:
+			default:
+			}
+		case fmt.Sprintf("%d", pB.ID):
+			select {
+			case deliveriesB <- msgID:
+			default:
+			}
+		}
+		return nil
+	})
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	wrapped := shutdownFlushStore{
+		Store:       st,
+		failingMeta: &shutdownFlushMeta{Metadata: st.Meta(), parentCtx: runCtx},
+	}
+	d, err := protoevents.New(protoevents.Options{
+		Store:                wrapped,
+		Plugins:              inv,
+		Logger:               discardLogger(),
+		Clock:                clk,
+		PluginNames:          []string{"bus"},
+		ChangeFeedPrincipals: []store.PrincipalID{pA.ID, pB.ID},
+		PollInterval:         20 * time.Millisecond,
+		MaxRetries:           1,
+		RetryBackoff:         time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	loopDone := make(chan struct{})
+	go func() {
+		_ = d.Run(runCtx)
+		close(loopDone)
+	}()
+
+	// Insert one message per principal so each goroutine advances its
+	// own cursor.
+	if _, _, err := st.Meta().InsertMessage(seedCtx, store.Message{Size: 1},
+		[]store.MessageMailbox{{MailboxID: mbA.ID}}); err != nil {
+		t.Fatalf("InsertMessage A: %v", err)
+	}
+	if _, _, err := st.Meta().InsertMessage(seedCtx, store.Message{Size: 1},
+		[]store.MessageMailbox{{MailboxID: mbB.ID}}); err != nil {
+		t.Fatalf("InsertMessage B: %v", err)
+	}
+
+	// Drive the FakeClock until both principals have surfaced their
+	// mail.received event.
+	deadline := time.Now().Add(3 * time.Second)
+	var sawA, sawB bool
+	for !sawA || !sawB {
+		if time.Now().After(deadline) {
+			cancel()
+			<-loopDone
+			t.Fatalf("timed out waiting for first-round deliveries (sawA=%v sawB=%v)", sawA, sawB)
+		}
+		clk.Advance(50 * time.Millisecond)
+		select {
+		case <-deliveriesA:
+			sawA = true
+		case <-deliveriesB:
+			sawB = true
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	// Cancel and wait for Run (and both per-principal goroutines) to
+	// return. The shutdown defer in each runChangeFeedLoop must
+	// persist its in-memory cursor via a fresh ctx.
+	cancel()
+	<-loopDone
+
+	keyA := fmt.Sprintf("events.changefeed.%d", pA.ID)
+	keyB := fmt.Sprintf("events.changefeed.%d", pB.ID)
+	curA, err := st.Meta().GetFTSCursor(seedCtx, keyA)
+	if err != nil {
+		t.Fatalf("GetFTSCursor A: %v", err)
+	}
+	curB, err := st.Meta().GetFTSCursor(seedCtx, keyB)
+	if err != nil {
+		t.Fatalf("GetFTSCursor B: %v", err)
+	}
+	if curA == 0 {
+		t.Errorf("principal A cursor not persisted on shutdown (got 0)")
+	}
+	if curB == 0 {
+		t.Errorf("principal B cursor not persisted on shutdown (got 0)")
+	}
+	if t.Failed() {
+		return
+	}
+
+	// Restart with a fresh dispatcher on the unwrapped store. Drain
+	// any leftover deliveries first.
+	for len(deliveriesA) > 0 {
+		<-deliveriesA
+	}
+	for len(deliveriesB) > 0 {
+		<-deliveriesB
+	}
+	inv2 := newFakeInvoker()
+	deliveriesA2 := make(chan string, 16)
+	deliveriesB2 := make(chan string, 16)
+	inv2.Handle("bus", protoevents.MethodEventsPublish, func(_ context.Context, params any) error {
+		ev := params.(map[string]any)["event"].(map[string]any)
+		if ev["kind"] != string(protoevents.EventMailReceived) {
+			return nil
+		}
+		subject, _ := ev["subject"].(string)
+		payload, _ := ev["payload"].(map[string]any)
+		msgID, _ := payload["message_id"].(string)
+		switch subject {
+		case fmt.Sprintf("%d", pA.ID):
+			select {
+			case deliveriesA2 <- msgID:
+			default:
+			}
+		case fmt.Sprintf("%d", pB.ID):
+			select {
+			case deliveriesB2 <- msgID:
+			default:
+			}
+		}
+		return nil
+	})
+	d2, err := protoevents.New(protoevents.Options{
+		Store:                st,
+		Plugins:              inv2,
+		Logger:               discardLogger(),
+		Clock:                clk,
+		PluginNames:          []string{"bus"},
+		ChangeFeedPrincipals: []store.PrincipalID{pA.ID, pB.ID},
+		PollInterval:         20 * time.Millisecond,
+		MaxRetries:           1,
+		RetryBackoff:         time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New (2): %v", err)
+	}
+
+	runCtx2, cancel2 := context.WithCancel(context.Background())
+	loopDone2 := make(chan struct{})
+	go func() {
+		_ = d2.Run(runCtx2)
+		close(loopDone2)
+	}()
+	// Give the second dispatcher several poll cycles to do nothing
+	// (no new messages, cursor honoured).
+	for i := 0; i < 8; i++ {
+		clk.Advance(50 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel2()
+	<-loopDone2
+
+	if got := len(deliveriesA2); got != 0 {
+		t.Errorf("principal A replayed %d events on restart (cursor lost)", got)
+	}
+	if got := len(deliveriesB2); got != 0 {
+		t.Errorf("principal B replayed %d events on restart (cursor lost)", got)
+	}
+}
+
 // TestEvent_IDIsULIDShape verifies the assigned ID is 26 chars from
 // the Crockford-Base32 alphabet, matching the ULID spec.
 func TestEvent_IDIsULIDShape(t *testing.T) {

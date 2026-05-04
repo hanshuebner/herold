@@ -213,6 +213,11 @@ func (d *Dispatcher) runEmitLoop(ctx context.Context) {
 // to its mail-flow event, and feeds the result into Emit. Cursor
 // persistence uses the cursors table keyed "events.changefeed.<pid>"
 // so a restart resumes from the last emitted change.
+//
+// On every return path (ctx cancellation, fatal error) the in-memory
+// cursor is flushed to the durable store via a fresh, short-deadline
+// ctx so an advance that raced with cancellation still lands on disk
+// and a restart does not replay events that the loop already emitted.
 func (d *Dispatcher) runChangeFeedLoop(ctx context.Context, pid store.PrincipalID) {
 	cursorKey := fmt.Sprintf("events.changefeed.%d", pid)
 	meta := d.opts.Store.Meta()
@@ -223,6 +228,23 @@ func (d *Dispatcher) runChangeFeedLoop(ctx context.Context, pid store.PrincipalI
 			"err", err, "pid", pid)
 	}
 	cursor := store.ChangeSeq(cur)
+	// On exit, persist whatever the in-memory cursor advanced to. We
+	// capture it by reference so each return path observes the latest
+	// value. The fresh ctx covers the case where ctx is already
+	// cancelled; without it the SetFTSCursor would fail immediately
+	// with context.Canceled and the in-loop advance would be lost.
+	defer func() {
+		if uint64(cursor) == 0 || uint64(cursor) == cur {
+			return
+		}
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := meta.SetFTSCursor(flushCtx, cursorKey, uint64(cursor)); err != nil {
+			d.opts.Logger.Warn("protoevents.changefeed.cursor_save_on_shutdown_failed",
+				"activity", observe.ActivityInternal,
+				"err", err, "pid", pid, "seq", uint64(cursor))
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():

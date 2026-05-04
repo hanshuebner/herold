@@ -122,6 +122,11 @@ func (i *Intake) Run(ctx context.Context) error {
 		return errors.New("imip: Intake already running")
 	}
 	defer i.running.Store(false)
+	// Final flush on shutdown so the in-memory cursor reflects on
+	// disk even when the in-loop SetFTSCursor lost its race with
+	// ctx cancellation. Uses a fresh, short-deadline ctx so the
+	// flush itself is not cancelled the moment it starts.
+	defer i.persistCursorOnShutdown()
 
 	if seq, err := i.store.Meta().GetFTSCursor(ctx, i.opts.CursorKey); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -177,6 +182,25 @@ func (i *Intake) Run(ctx context.Context) error {
 				)
 			}
 		}
+	}
+}
+
+// persistCursorOnShutdown writes the in-memory cursor to the durable
+// store using a fresh ctx, so the worker's last advance lands even when
+// the run ctx is already cancelled. Called from Run's defer chain.
+func (i *Intake) persistCursorOnShutdown() {
+	seq := i.cursor.Load()
+	if seq == 0 {
+		return
+	}
+	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := i.store.Meta().SetFTSCursor(flushCtx, i.opts.CursorKey, seq); err != nil {
+		i.logger.WarnContext(flushCtx, "imip: persist cursor on shutdown",
+			slog.String("key", i.opts.CursorKey),
+			slog.Uint64("seq", seq),
+			slog.Any("err", err),
+		)
 	}
 }
 
