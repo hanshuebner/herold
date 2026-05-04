@@ -638,14 +638,26 @@
     font-size: var(--type-body-compact-01-size);
     font-style: italic;
   }
-  /* The mailbox-row button fills the full row width; its count span is the
-     last child so justify-content: space-between places it at the right edge.
-     padding-right reserves space so the count is not obscured when the
-     absolutely-positioned action group fades in on hover. */
+  /* The mailbox-row button fills the full row width. The name span takes all
+     remaining space (flex:1) and the count uses margin-left:auto so it aligns
+     at the same right-edge position as the "Labels N" count on the more-toggle
+     header above (re #76). The action buttons are absolutely positioned and
+     fade in on hover, overlapping the count — the count is intentionally hidden
+     by them because the user is focused on rename/delete, not the number. */
   .mailbox-list.custom .mailbox-row {
     width: 100%;
-    justify-content: space-between;
-    padding-right: calc(2 * 28px + var(--spacing-01) + var(--spacing-04));
+    justify-content: flex-start;
+  }
+  .mailbox-list.custom .mailbox-row .name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .mailbox-list.custom .mailbox-row .count {
+    margin-left: auto;
+    flex-shrink: 0;
   }
   /* Action buttons are positioned absolutely over the right edge of the row.
      They start invisible and fade in on hover / focus-within so the count
