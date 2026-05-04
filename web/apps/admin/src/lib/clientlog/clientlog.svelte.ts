@@ -34,6 +34,45 @@ export interface Breadcrumb {
   msg?: string;
 }
 
+export interface VitalData {
+  name: string;
+  value: number;
+  id: string;
+}
+
+/** Shape of the raw original event nested inside the enriched payload. */
+export interface RawEvent {
+  v?: number;
+  kind?: string;
+  level?: string;
+  msg?: string;
+  client_ts?: string;
+  seq?: number;
+  page_id?: string;
+  session_id?: string;
+  app?: string;
+  build_sha?: string;
+  route?: string;
+  ua?: string;
+  breadcrumbs?: Breadcrumb[];
+  vital?: VitalData;
+  [key: string]: unknown;
+}
+
+/**
+ * Shape of the enriched payload stored in ring-buffer payload_json.
+ * The server wraps the original event in an envelope and stores it as
+ * { server_recv_ts, clock_skew_ms, listener, endpoint, raw: <original event> }.
+ */
+export interface ClientlogPayload {
+  server_recv_ts?: string;
+  clock_skew_ms?: number;
+  user_id?: string;
+  listener?: string;
+  endpoint?: string;
+  raw?: RawEvent;
+}
+
 export interface ClientlogRow {
   id: number;
   slice: string;
@@ -52,10 +91,7 @@ export interface ClientlogRow {
   ua: string;
   msg: string;
   stack?: string;
-  payload?: {
-    breadcrumbs?: Breadcrumb[];
-    [key: string]: unknown;
-  };
+  payload?: ClientlogPayload;
 }
 
 export interface TimelineEntry {
