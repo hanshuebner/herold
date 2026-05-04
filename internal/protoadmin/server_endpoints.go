@@ -337,8 +337,6 @@ func storeBackendName(st store.Store) string {
 	// without adding an explicit BackendName() method to every Store.
 	typeName := fmt.Sprintf("%T", st)
 	switch {
-	case strContains(typeName, "fakestore"):
-		return "fakestore"
 	case strContains(typeName, "storesqlite"):
 		return "sqlite"
 	case strContains(typeName, "storepg"):

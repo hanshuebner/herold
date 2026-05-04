@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // stubInner records calls and returns a configured outcome.
@@ -46,15 +47,15 @@ func discardLog() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// loopbackFixture seeds a fakestore with one local principal on
-// example.local and returns the adapter handles required to construct
+// loopbackFixture seeds an in-memory SQLite store with one local principal
+// on example.local and returns the adapter handles required to construct
 // a loopbackDeliverer.
-func loopbackFixture(t *testing.T) (*fakestore.Store, *directory.Directory, store.PrincipalID) {
+func loopbackFixture(t *testing.T) (store.Store, *directory.Directory, store.PrincipalID) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{
 		Name: "example.local", IsLocal: true,

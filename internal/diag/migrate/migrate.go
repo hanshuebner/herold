@@ -131,14 +131,11 @@ func Migrate(ctx context.Context, src, dst store.Store, opts MigrateOptions) (ba
 			return fmt.Errorf("migrate put blob %s: %w", hash, err)
 		}
 		// Cross-backend invariant: SQLite and Postgres both
-		// canonicalise CRLF and BLAKE3-hash. So when both endpoints
-		// use the same canonical hash, the new ref must match the
-		// source hash. fakestore uses SHA-256 in tests; we skip the
-		// strict check when either side is fakestore.
-		if srcBE.Kind() != "fakestore" && dstBE.Kind() != "fakestore" {
-			if ref.Hash != hash {
-				return fmt.Errorf("migrate: blob hash drift %s -> %s", hash, ref.Hash)
-			}
+		// canonicalise CRLF and BLAKE3-hash the result. When both
+		// endpoints use the same canonical hash the new ref must
+		// match the source hash exactly.
+		if ref.Hash != hash {
+			return fmt.Errorf("migrate: blob hash drift %s -> %s", hash, ref.Hash)
 		}
 		manifest.Blobs.Count++
 		manifest.Blobs.Bytes += size

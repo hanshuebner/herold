@@ -1734,8 +1734,8 @@ func incRef(ctx context.Context, tx pgx.Tx, hash string, size int64, now time.Ti
 
 // decRef decrements blob_refs.ref_count for hash, refusing to drive
 // it below zero. Wave 2.9.9 audit (Track A): the WHERE ref_count > 0
-// guard mirrors the fakestore in-memory clamp and the storesqlite
-// SQL-level guard. Postgres' bigint would otherwise underflow into
+// guard mirrors the storesqlite SQL-level guard. Postgres' bigint
+// would otherwise underflow into
 // negative territory on a duplicate hard-delete or a retention pass
 // racing a concurrent unref, which would in turn confuse the orphan-
 // blob sweeper into garbage-collecting a still-referenced blob. The

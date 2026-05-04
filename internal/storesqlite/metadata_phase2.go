@@ -1205,19 +1205,24 @@ func (m *metadata) ListDMARCReports(ctx context.Context, filter store.DMARCRepor
 }
 
 func (m *metadata) DMARCAggregate(ctx context.Context, domain string, since, until time.Time) ([]store.DMARCAggregateRow, error) {
-	rows, err := m.s.db.QueryContext(ctx, `
-		SELECT r.header_from, r.disposition,
+	q := `SELECT r.header_from, r.disposition,
 		       SUM(r.count) AS total,
 		       SUM(CASE WHEN r.spf_aligned = 1 THEN r.count ELSE 0 END) AS spf_pass,
 		       SUM(CASE WHEN r.dkim_aligned = 1 THEN r.count ELSE 0 END) AS dkim_pass
 		  FROM dmarc_rows r
 		  JOIN dmarc_reports_raw rep ON rep.id = r.report_id
-		 WHERE rep.domain = ?
-		   AND rep.date_begin_us >= ?
-		   AND rep.date_begin_us < ?
-		 GROUP BY r.header_from, r.disposition
-		 ORDER BY r.header_from, r.disposition`,
-		strings.ToLower(domain), usMicros(since), usMicros(until))
+		 WHERE rep.domain = ?`
+	args := []any{strings.ToLower(domain)}
+	if !since.IsZero() {
+		q += " AND rep.date_begin_us >= ?"
+		args = append(args, usMicros(since))
+	}
+	if !until.IsZero() {
+		q += " AND rep.date_begin_us < ?"
+		args = append(args, usMicros(until))
+	}
+	q += " GROUP BY r.header_from, r.disposition ORDER BY r.header_from, r.disposition"
+	rows, err := m.s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -1545,15 +1550,21 @@ func (m *metadata) AppendTLSRPTFailure(ctx context.Context, f store.TLSRPTFailur
 }
 
 func (m *metadata) ListTLSRPTFailures(ctx context.Context, policyDomain string, since, until time.Time) ([]store.TLSRPTFailure, error) {
-	rows, err := m.s.db.QueryContext(ctx, `
-		SELECT id, recorded_at_us, policy_domain, receiving_mta_hostname,
+	q := `SELECT id, recorded_at_us, policy_domain, receiving_mta_hostname,
 		       failure_type, failure_code, failure_detail_json
 		  FROM tlsrpt_failures
-		 WHERE policy_domain = ?
-		   AND recorded_at_us >= ?
-		   AND recorded_at_us < ?
-		 ORDER BY recorded_at_us ASC, id ASC`,
-		strings.ToLower(policyDomain), usMicros(since), usMicros(until))
+		 WHERE policy_domain = ?`
+	args := []any{strings.ToLower(policyDomain)}
+	if !since.IsZero() {
+		q += " AND recorded_at_us >= ?"
+		args = append(args, usMicros(since))
+	}
+	if !until.IsZero() {
+		q += " AND recorded_at_us < ?"
+		args = append(args, usMicros(until))
+	}
+	q += " ORDER BY recorded_at_us ASC, id ASC"
+	rows, err := m.s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, mapErr(err)
 	}

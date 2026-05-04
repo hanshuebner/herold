@@ -3,19 +3,20 @@ package coach
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
-// fixture drives the JMAP handler set with a fakestore.
+// fixture drives the JMAP handler set with an in-memory SQLite store.
 type fixture struct {
 	t    *testing.T
-	st   *fakestore.Store
+	st   store.Store
 	pid  store.PrincipalID
 	pid2 store.PrincipalID
 	clk  *clock.FakeClock
@@ -31,9 +32,9 @@ var t0 = time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	clk := clock.NewFake(t0)
-	st, err := fakestore.New(fakestore.Options{Clock: clk})
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore.New: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 

@@ -21,11 +21,13 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // fetchSessionDescriptor fetches GET /.well-known/jmap and returns the
@@ -70,10 +72,10 @@ func upsertSessionRow(ctx context.Context, t *testing.T, st store.Store, row sto
 	}
 }
 
-// newServerForFakeStore constructs a minimal protojmap.Server backed by
-// a fakestore. The server has no listeners; tests call exported test
+// newServerForStore constructs a minimal protojmap.Server backed by
+// the given store. The server has no listeners; tests call exported test
 // methods directly.
-func newServerForFakeStore(t *testing.T, fs store.Store, clk clock.Clock) *protojmap.Server {
+func newServerForStore(t *testing.T, fs store.Store, clk clock.Clock) *protojmap.Server {
 	t.Helper()
 	srv := protojmap.NewServer(fs, nil, nil, nil, clk, protojmap.Options{
 		DownloadRatePerSec: -1,
@@ -81,17 +83,17 @@ func newServerForFakeStore(t *testing.T, fs store.Store, clk clock.Clock) *proto
 	return srv
 }
 
-// newClientlogFixture constructs a fakestore, seeds a domain, creates a
+// newClientlogFixture constructs a store, seeds a domain, creates a
 // principal and returns the store, clock, principal ID, and server.
 func newClientlogFixture(t *testing.T) (store.Store, *clock.FakeClock, store.PrincipalID, *protojmap.Server) {
 	t.Helper()
 	ctx := context.Background()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(ctx, filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
-	if err := fs.SeedDomain(ctx, "example.com"); err != nil {
+	if err := fs.Meta().InsertDomain(ctx, store.Domain{Name: "example.com", IsLocal: true}); err != nil {
 		t.Fatalf("seed domain: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
@@ -99,7 +101,7 @@ func newClientlogFixture(t *testing.T) (store.Store, *clock.FakeClock, store.Pri
 	if err != nil {
 		t.Fatalf("create principal: %v", err)
 	}
-	srv := newServerForFakeStore(t, fs, clk)
+	srv := newServerForStore(t, fs, clk)
 	return fs, clk, pid, srv
 }
 

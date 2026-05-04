@@ -19,12 +19,12 @@ import (
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
-// cliTestEnv bundles an in-process protoadmin server backed by a
-// fakestore plus a seeded admin API key. The Wave 2.4 CLI tests share
-// this helper to avoid duplicating the boot dance.
+// cliTestEnv bundles an in-process protoadmin server backed by an
+// in-memory SQLite store plus a seeded admin API key. The Wave 2.4 CLI
+// tests share this helper to avoid duplicating the boot dance.
 type cliTestEnv struct {
 	t        *testing.T
 	clk      *clock.FakeClock
@@ -36,7 +36,7 @@ type cliTestEnv struct {
 	credPath string
 }
 
-// newCLITestEnv stands up a fakestore-backed protoadmin behind an
+// newCLITestEnv stands up an in-memory SQLite-backed protoadmin behind an
 // httptest.Server, seeds an admin principal + API key, and writes
 // credentials into a temp HOME so the CLI can pick them up. Options are
 // applied to the Options struct before NewServer is called so callers
@@ -44,9 +44,9 @@ type cliTestEnv struct {
 func newCLITestEnv(t *testing.T, optsMutator func(*protoadmin.Options)) *cliTestEnv {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)

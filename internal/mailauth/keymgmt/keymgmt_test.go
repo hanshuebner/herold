@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailauth/keymgmt"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // chachaReader is an unbounded deterministic byte source: a ChaCha20
@@ -57,12 +58,12 @@ func (r *chachaReader) Read(p []byte) (int, error) {
 // state between tests.
 func deterministicReader() io.Reader { return newChachaReader(0xdeadbeefcafebabe) }
 
-func newFixture(t *testing.T) (context.Context, *keymgmt.Manager, *fakestore.Store, *clock.FakeClock) {
+func newFixture(t *testing.T) (context.Context, *keymgmt.Manager, store.Store, *clock.FakeClock) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))

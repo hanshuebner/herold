@@ -13,7 +13,6 @@ import (
 	"github.com/hanshuebner/herold/internal/diag/restore"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storesqlite"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
 
 type byteReader struct {
@@ -381,11 +380,12 @@ func TestRestoreBundle_CategorisationConfig_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestRestoreBundle_FakestoreFresh_Restores covers the fakestore
-// adapter path.
-func TestRestoreBundle_FakestoreFresh_Restores(t *testing.T) {
+// TestRestoreBundle_SQLiteFresh_Restores_Domains confirms that a
+// sqlite -> sqlite round-trip preserves domain rows.
+func TestRestoreBundle_SQLiteFresh_Restores_Domains(t *testing.T) {
 	t.Parallel()
-	src, err := fakestore.New(fakestore.Options{})
+	dir := t.TempDir()
+	src, err := storesqlite.Open(context.Background(), filepath.Join(dir, "src.db"), nil, clock.NewReal())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +396,7 @@ func TestRestoreBundle_FakestoreFresh_Restores(t *testing.T) {
 	if _, err := backup.New(backup.Options{Store: src}).CreateBundle(context.Background(), bundle); err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
-	tgt, err := fakestore.New(fakestore.Options{})
+	tgt, err := storesqlite.Open(context.Background(), filepath.Join(dir, "tgt.db"), nil, clock.NewReal())
 	if err != nil {
 		t.Fatal(err)
 	}

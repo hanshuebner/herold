@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,16 +18,16 @@ import (
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // dkimTestHarness is a self-contained test harness for DKIM REST handler
-// tests. It owns an httptest.Server backed by a fakestore so the
-// DKIMKeyManager can be injected without fighting the testharness
+// tests. It owns an httptest.Server backed by an in-memory SQLite store so
+// the DKIMKeyManager can be injected without fighting the testharness
 // AttachAdmin "already attached" guard.
 type dkimTestHarness struct {
 	t        *testing.T
-	fs       *fakestore.Store
+	fs       store.Store
 	hs       *httptest.Server
 	client   *http.Client
 	adminKey string
@@ -35,7 +36,7 @@ type dkimTestHarness struct {
 
 // stubDKIMManager is a minimal DKIMKeyManager for handler tests.
 // GenerateKey upserts a key with selector "testsel-<domain>" directly into
-// the fakestore so the handler's subsequent GetActiveDKIMKey reads work.
+// the store so the handler's subsequent GetActiveDKIMKey reads work.
 type stubDKIMManager struct {
 	meta store.Metadata
 }
@@ -59,9 +60,9 @@ func (m *stubDKIMManager) PublishedRecord(_ context.Context, key store.DKIMKey) 
 func newDKIMTestHarness(t *testing.T, withManager bool) *dkimTestHarness {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)

@@ -43,7 +43,7 @@ type IntakeOptions struct {
 	RecipientPattern string
 
 	// CursorKey overrides DefaultIntakeCursorKey. Tests use this to
-	// isolate concurrent runs against the same fakestore.
+	// isolate concurrent runs against the same database.
 	CursorKey string
 
 	// BatchSize bounds the per-tick read from the change feed.

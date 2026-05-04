@@ -56,8 +56,7 @@ func TestCurrentSchemaVersionMatchesMaxMigration(t *testing.T) {
 			"  (1) bump CurrentSchemaVersion in internal/diag/backup/manifest.go\n"+
 			"  (2) add a comment block describing the migration\n"+
 			"  (3) extend TableNames if the migration adds tables\n"+
-			"  (4) extend rows.go, backend.go, adapter_sqlite.go,\n"+
-			"      adapter_fakestore.go, and testharness/fakestore/diag.go\n"+
+			"  (4) extend rows.go, backend.go, and adapter_sqlite.go\n"+
 			"      with the corresponding row type + dispatch cases\n"+
 			"See commit 3a32efe for a worked example.",
 			CurrentSchemaVersion, max)

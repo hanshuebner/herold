@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // fakeExternalSubmitter records Submit calls and returns a preset Outcome.
@@ -55,19 +57,17 @@ func (r *fakeExternalRouter) BumpIdentityPushState(_ context.Context, pid store.
 }
 
 // newExternalSetup builds a handlerSet wired with fakeExternalSubmitter and
-// fakeExternalRouter. It returns the handler, fakestore, principal, mailbox,
+// fakeExternalRouter. It returns the handler, store, principal, mailbox,
 // message id, the external submitter, and the external router for assertions.
 func newExternalSetup(t *testing.T, outcome extsubmit.Outcome) (
-	*handlerSet, *fakestore.Store, store.Principal, store.MessageID,
+	*handlerSet, store.Store, store.Principal, store.MessageID,
 	*fakeExternalSubmitter, *fakeExternalRouter,
 ) {
 	t.Helper()
-	st, err := fakestore.New(fakestore.Options{
-		Clock:   clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
-		BlobDir: t.TempDir(),
-	})
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()

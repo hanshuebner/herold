@@ -65,7 +65,7 @@ type Options struct {
 	// BatchSize bounds the per-tick read; <= 0 uses DefaultBatchSize.
 	BatchSize int
 	// CursorKey overrides DefaultCursorKey. Tests use this to
-	// isolate concurrent runs against the same fakestore.
+	// isolate concurrent runs against the same database.
 	CursorKey string
 }
 

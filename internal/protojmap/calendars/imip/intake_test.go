@@ -9,18 +9,20 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap/calendars/imip"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
-// fixture wires a fakestore with one principal and an INBOX mailbox.
+// fixture wires a store with one principal and an INBOX mailbox.
 // Mirrors the maildmarc intake_test.go scaffold: this lets the worker
 // observe iMIP messages on the global change feed without spinning up
 // the full testharness HTTP listeners.
 type fixture struct {
-	store  *fakestore.Store
+	store  store.Store
 	pid    store.PrincipalID
 	mailbx store.MailboxID
 	intake *imip.Intake
@@ -30,9 +32,9 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))

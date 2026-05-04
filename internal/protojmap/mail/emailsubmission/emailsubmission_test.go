@@ -10,16 +10,18 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // fakeSubmitter records every Submit call so tests can assert the
 // shape EmailSubmission/set hands the queue. Cancel iterates the
-// underlying fakestore the same way *queue.Queue.Cancel does so the
+// underlying store the same way *queue.Queue.Cancel does so the
 // JMAP destroy path observes the same semantics in tests.
 type fakeSubmitter struct {
 	mu      sync.Mutex
@@ -100,14 +102,12 @@ func (s stubResolver) IdentityEmail(_ context.Context, _ store.Principal, _ stri
 	return s.email, true
 }
 
-func newSetup(t *testing.T) (*handlerSet, *fakestore.Store, store.Principal, store.Mailbox, store.MessageID, *fakeSubmitter) {
+func newSetup(t *testing.T) (*handlerSet, store.Store, store.Principal, store.Mailbox, store.MessageID, *fakeSubmitter) {
 	t.Helper()
-	st, err := fakestore.New(fakestore.Options{
-		Clock:   clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
-		BlobDir: t.TempDir(),
-	})
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()

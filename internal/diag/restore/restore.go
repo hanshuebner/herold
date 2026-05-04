@@ -137,7 +137,7 @@ func (r *Restore) RestoreBundle(ctx context.Context, src string, mode Mode) (bac
 		}
 	}
 
-	if err := restoreBlobs(ctx, src, be.Blobs(), manifest); err != nil {
+	if err := restoreBlobs(ctx, src, be.Blobs()); err != nil {
 		return manifest, fmt.Errorf("restore: blobs: %w", err)
 	}
 
@@ -167,7 +167,7 @@ func restoreTable(ctx context.Context, sink backup.Sink, src, table string, mode
 // restoreBlobs copies every blob file from <src>/blobs/ into the
 // target store via Blobs.Put. Each blob is BLAKE3-verified during
 // the copy.
-func restoreBlobs(ctx context.Context, src string, blobs store.Blobs, manifest backup.Manifest) error {
+func restoreBlobs(ctx context.Context, src string, blobs store.Blobs) error {
 	root := filepath.Join(src, "blobs")
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -184,32 +184,24 @@ func restoreBlobs(ctx context.Context, src string, blobs store.Blobs, manifest b
 		if len(info.Name()) != 64 {
 			return nil
 		}
-		// Stream the file through Blobs.Put. The blob store
-		// re-canonicalises CRLF and re-hashes; for SQL-backed
-		// bundles BLAKE3 lines up. For fakestore bundles (SHA-256)
-		// the filename is treated as opaque and the new store
-		// computes its own hash. The manifest carries Backend so
-		// callers know what to expect.
+		// Stream the file through Blobs.Put. Both SQLite and Postgres
+		// backends use BLAKE3 hashing; verify content matches filename
+		// before ingesting into the target store to catch corruption.
 		f, err := os.Open(path)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		// Verify the file's BLAKE3 against its name when the
-		// producing backend was BLAKE3 (sqlite/postgres). Mismatch
-		// signals corruption and aborts.
-		if manifest.Backend != "fakestore" {
-			h := blake3.New()
-			if _, err := io.Copy(h, f); err != nil {
-				return err
-			}
-			got := hex.EncodeToString(h.Sum(nil))
-			if got != info.Name() {
-				return fmt.Errorf("restore: blob %s hash mismatch (got %s)", info.Name(), got)
-			}
-			if _, err := f.Seek(0, io.SeekStart); err != nil {
-				return err
-			}
+		h := blake3.New()
+		if _, err := io.Copy(h, f); err != nil {
+			return err
+		}
+		got := hex.EncodeToString(h.Sum(nil))
+		if got != info.Name() {
+			return fmt.Errorf("restore: blob %s hash mismatch (got %s)", info.Name(), got)
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return err
 		}
 		if _, err := blobs.Put(ctx, f); err != nil {
 			return fmt.Errorf("restore: put blob %s: %w", info.Name(), err)

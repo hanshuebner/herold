@@ -93,8 +93,7 @@ type ListenerSpec struct {
 type Options struct {
 	// Store is the store.Store backing the harness. Defaults to an
 	// in-memory SQLite store opened at t.TempDir()/test.db with WAL mode
-	// and all migrations applied. Tests that need explicit fakestore
-	// behaviour may still supply one here.
+	// and all migrations applied. Tests may supply an alternative store here.
 	Store store.Store
 	// Clock is the clock injected into subsystems. Defaults to
 	// clock.NewFake(fakeClockAnchor).

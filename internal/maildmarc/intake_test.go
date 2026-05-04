@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,13 +12,13 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/maildmarc"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // seedDMARCReportMessage inserts one principal + INBOX, persists the
 // supplied raw bytes as a blob, and inserts a Message row whose
 // envelope mirrors the raw headers. Returns the resulting Message.
-func seedDMARCReportMessage(t *testing.T, fs *fakestore.Store, recipient string, raw []byte) store.Message {
+func seedDMARCReportMessage(t *testing.T, fs store.Store, recipient string, raw []byte) store.Message {
 	t.Helper()
 	ctx := t.Context()
 	p, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
@@ -59,9 +60,9 @@ func seedDMARCReportMessage(t *testing.T, fs *fakestore.Store, recipient string,
 
 func TestIntake_PollsChangeFeed_FiltersByRecipientPattern(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -123,9 +124,9 @@ func TestIntake_PollsChangeFeed_FiltersByRecipientPattern(t *testing.T) {
 
 func TestIntake_AdvancesCursor(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk, BlobDir: t.TempDir()})
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))

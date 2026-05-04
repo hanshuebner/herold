@@ -1871,8 +1871,8 @@ func incRef(ctx context.Context, tx *sql.Tx, hash string, size int64, now time.T
 
 // decRef decrements blob_refs.ref_count for hash, refusing to drive
 // it below zero. Wave 2.9.9 audit (Track A): the WHERE ref_count > 0
-// guard is the SQL-level enforcement of the same invariant the
-// fakestore clamps in memory; without it a duplicate hard-delete or a
+// guard is the SQL-level enforcement that ref_count stays non-negative;
+// without it a duplicate hard-delete or a
 // retention pass that races a concurrent unref could underflow the
 // column on SQLite (signed INTEGER, so wrap-around to a negative
 // value) and confuse the orphan-blob sweeper into garbage-collecting

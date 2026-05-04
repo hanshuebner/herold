@@ -238,18 +238,8 @@ func writeOneBlob(ctx context.Context, blobs store.Blobs, dst, hash string) erro
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("blob close %s: %w", hash, err)
 	}
-	got := hex.EncodeToString(h.Sum(nil))
-	// SQL backends use BLAKE3-of-canonical-bytes. Fakestore uses
-	// SHA-256 of the canonical bytes — its hash naming convention
-	// produces a 64-hex string that does not match BLAKE3 of the same
-	// content. In a fakestore-only round-trip the hash never crosses
-	// a backend boundary, so we accept any 64-hex stand-in by
-	// comparing hash strings only when both sides agree on BLAKE3.
-	// Operators inspecting the bundle see the source's chosen hash
-	// in the file name. (Cross-backend migration uses identical
-	// canonical bytes; the verification in restore compares the
-	// content hash against the file name there.)
-	_ = got
+	// Verification happens in restore; here we just write the blob.
+	_ = hex.EncodeToString(h.Sum(nil))
 	return nil
 }
 
@@ -377,14 +367,7 @@ func VerifyBundle(ctx context.Context, dst string) (Manifest, error) {
 }
 
 // verifyBlobs walks the bundle's blobs/ tree and checks that each
-// file's content hashes (BLAKE3) to its filename. SHA-256-based
-// fakestore hashes won't verify under BLAKE3; we accept that gap by
-// only enforcing the check when the file's hash is present in the
-// manifest's Tables["blob_refs"] count and the underlying source
-// used BLAKE3. The simple rule we apply: if BLAKE3 hashes do not
-// match, log but do not fail when the bundle was produced by
-// "fakestore"; otherwise error. In practice operators use sqlite or
-// postgres bundles in the field.
+// file's content hashes (BLAKE3) to its filename.
 func verifyBlobs(ctx context.Context, dst string) error {
 	root := filepath.Join(dst, "blobs")
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -405,17 +388,8 @@ func verifyBlobs(ctx context.Context, dst string) error {
 }
 
 // VerifyBundleHashes reads every blob and compares its BLAKE3 to its
-// filename. Used in tests against bundles produced by SQL backends
-// (where the canonical hash is BLAKE3); skip when the manifest's
-// Backend is "fakestore" because that uses SHA-256 hashing.
+// filename. Both SQLite and Postgres backends use BLAKE3 hashing.
 func VerifyBundleHashes(ctx context.Context, dst string) error {
-	m, err := ReadManifest(dst)
-	if err != nil {
-		return err
-	}
-	if m.Backend == "fakestore" {
-		return nil
-	}
 	root := filepath.Join(dst, "blobs")
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {

@@ -11,9 +11,8 @@ import (
 // Backend is the storage capability the backup, restore, and migrate
 // packages drive. It abstracts the per-table row enumeration and
 // row-insert paths so the same orchestration code works across
-// SQLite, Postgres, and the in-memory fakestore. Each
-// store.Store-implementing backend ships an adapter that returns one
-// of these from BackendFor.
+// SQLite and Postgres. Each store.Store-implementing backend ships
+// an adapter that returns one of these from BackendFor.
 //
 // Snapshot semantics: BeginSnapshot opens a read-only transaction
 // (REPEATABLE READ on Postgres; BEGIN IMMEDIATE on SQLite WAL) so
@@ -27,8 +26,7 @@ import (
 // largest restored ID so subsequent application writes don't collide.
 // TruncateAll is the implementation behind ModeReplace.
 type Backend interface {
-	// Kind returns "sqlite", "postgres", or "fakestore". Recorded in
-	// the manifest.
+	// Kind returns "sqlite" or "postgres". Recorded in the manifest.
 	Kind() string
 
 	// SchemaVersion returns the highest applied migration version in

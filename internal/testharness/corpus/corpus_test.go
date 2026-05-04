@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness/corpus"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
 
 func TestDeterminismAcrossSeedRuns(t *testing.T) {
@@ -33,12 +34,10 @@ func TestDeterminismAcrossSeedRuns(t *testing.T) {
 }
 
 func TestSeedPopulatesStore(t *testing.T) {
-	fs, err := fakestore.New(fakestore.Options{
-		Clock:   clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
-		BlobDir: t.TempDir(),
-	})
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
 	if err != nil {
-		t.Fatalf("fakestore: %v", err)
+		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	defer fs.Close()
 	ps, mbs, msgs := corpus.Seed(t, fs, 42, 2, 5, 3)

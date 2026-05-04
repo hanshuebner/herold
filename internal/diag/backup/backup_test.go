@@ -13,7 +13,6 @@ import (
 	"github.com/hanshuebner/herold/internal/diag/backup"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storesqlite"
-	"github.com/hanshuebner/herold/internal/testharness/fakestore"
 )
 
 // seedSmallCorpus inserts a tiny but representative dataset into st.
@@ -83,20 +82,33 @@ func (br *byteReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// TestCreateBundle_RoundTrip seeds a fakestore, dumps it, and checks
-// the manifest counts plus per-table jsonl files exist.
+// openSQLite opens a fresh in-temp SQLite store and registers cleanup.
+func openSQLite(t *testing.T) store.Store {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := storesqlite.Open(context.Background(), filepath.Join(dir, "store.db"), nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
+}
+
+// TestCreateBundle_RoundTrip seeds a SQLite store, dumps it, and
+// checks the manifest counts plus per-table jsonl files exist.
 func TestCreateBundle_RoundTrip(t *testing.T) {
 	t.Parallel()
 	clk := clock.NewFake(time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC))
-	fs, err := fakestore.New(fakestore.Options{Clock: clk})
+	dir := t.TempDir()
+	st, err := storesqlite.Open(context.Background(), filepath.Join(dir, "store.db"), nil, clk)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fs.Close()
-	hashes := seedSmallCorpus(t, fs)
+	defer st.Close()
+	hashes := seedSmallCorpus(t, st)
 
 	dst := t.TempDir()
-	b := backup.New(backup.Options{Store: fs, Clock: clk})
+	b := backup.New(backup.Options{Store: st, Clock: clk})
 	m, err := b.CreateBundle(context.Background(), dst)
 	if err != nil {
 		t.Fatalf("CreateBundle: %v", err)
@@ -132,17 +144,13 @@ func TestCreateBundle_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestCreateBundle_Empty_ProducesValidBundle confirms an empty store
-// produces a valid manifest plus empty jsonl files.
+// TestCreateBundle_Empty_ProducesValidBundle confirms an empty SQLite
+// store produces a valid manifest plus empty jsonl files.
 func TestCreateBundle_Empty_ProducesValidBundle(t *testing.T) {
 	t.Parallel()
-	fs, err := fakestore.New(fakestore.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.Close()
+	st := openSQLite(t)
 	dst := t.TempDir()
-	b := backup.New(backup.Options{Store: fs})
+	b := backup.New(backup.Options{Store: st})
 	m, err := b.CreateBundle(context.Background(), dst)
 	if err != nil {
 		t.Fatalf("CreateBundle: %v", err)
@@ -310,12 +318,8 @@ func TestCreateBundle_ConsistentSnapshot_UnderConcurrentWrites(t *testing.T) {
 // confirm every field made it through.
 func TestCreateBundle_WebhookExtractedFields_RoundTrip(t *testing.T) {
 	t.Parallel()
-	fs, err := fakestore.New(fakestore.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.Close()
-	if _, err := fs.Meta().InsertWebhook(context.Background(), store.Webhook{
+	st := openSQLite(t)
+	if _, err := st.Meta().InsertWebhook(context.Background(), store.Webhook{
 		OwnerKind:             store.WebhookOwnerDomain,
 		OwnerID:               "app.example.com",
 		TargetKind:            store.WebhookTargetSynthetic,
@@ -330,7 +334,7 @@ func TestCreateBundle_WebhookExtractedFields_RoundTrip(t *testing.T) {
 		t.Fatalf("InsertWebhook: %v", err)
 	}
 	dst := t.TempDir()
-	b := backup.New(backup.Options{Store: fs})
+	b := backup.New(backup.Options{Store: st})
 	if _, err := b.CreateBundle(context.Background(), dst); err != nil {
 		t.Fatalf("CreateBundle: %v", err)
 	}
@@ -355,14 +359,10 @@ func TestCreateBundle_WebhookExtractedFields_RoundTrip(t *testing.T) {
 // expects VerifyBundle to surface the mismatch.
 func TestVerifyBundle_BadCount_FailsCleanly(t *testing.T) {
 	t.Parallel()
-	fs, err := fakestore.New(fakestore.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.Close()
-	seedSmallCorpus(t, fs)
+	st := openSQLite(t)
+	seedSmallCorpus(t, st)
 	dst := t.TempDir()
-	b := backup.New(backup.Options{Store: fs})
+	b := backup.New(backup.Options{Store: st})
 	if _, err := b.CreateBundle(context.Background(), dst); err != nil {
 		t.Fatalf("CreateBundle: %v", err)
 	}
