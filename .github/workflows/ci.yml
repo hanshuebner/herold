@@ -217,8 +217,12 @@ jobs:
           # connections. The service options block already runs
           # pg_isready inside the container; this guard ensures the
           # host-side test process does not race the bring-up.
+          # ubuntu-24.04-arm does not preinstall postgresql-client, so
+          # use a portable TCP probe (bash /dev/tcp) instead of
+          # pg_isready -- avoids the apt-get install round-trip.
           for i in $(seq 1 30); do
-            if pg_isready -h localhost -p 5432 -U herold >/dev/null 2>&1; then
+            if (exec 3<>/dev/tcp/localhost/5432) 2>/dev/null; then
+              exec 3>&-
               echo "postgres ready after ${i}s"
               exit 0
             fi
