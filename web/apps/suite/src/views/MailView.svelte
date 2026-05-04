@@ -462,6 +462,49 @@
     return pop;
   });
 
+  // When the thread reader is open, watch the thread emails' mailboxIds. If
+  // the current folder is a real mailbox-backed folder (inbox / sent / drafts
+  // / trash / custom mailbox id) and no thread email belongs to that mailbox
+  // anymore — e.g. after a Restore-from-Trash or Move-To-Mailbox operation
+  // moves it away — navigate back to the folder list automatically (re #29).
+  //
+  // Virtual folders (all, important, snoozed) are skipped: a message remains
+  // valid to view in those contexts regardless of its mailbox membership.
+  $effect(() => {
+    if (!threadId) return;
+
+    const currentFolder = mail.listFolder;
+    // "all", "important", "snoozed" are virtual — no single mailbox to check.
+    if (currentFolder === 'all' || currentFolder === 'important' || currentFolder === 'snoozed') return;
+
+    // Resolve the mailbox id for the current folder.
+    let mailboxId: string | null = null;
+    if (currentFolder === 'inbox') {
+      mailboxId = mail.inbox?.id ?? null;
+    } else if (currentFolder === 'trash') {
+      mailboxId = mail.trash?.id ?? null;
+    } else if (currentFolder === 'sent') {
+      mailboxId = mail.sent?.id ?? null;
+    } else if (currentFolder === 'drafts') {
+      mailboxId = mail.drafts?.id ?? null;
+    } else {
+      // Custom mailbox: listFolder IS the mailbox id.
+      mailboxId = currentFolder;
+    }
+    if (!mailboxId) return;
+
+    const emails = mail.threadEmails(threadId);
+    // While the thread is still loading, emails is empty — don't navigate yet.
+    if (emails.length === 0) return;
+
+    const stillInFolder = emails.some((e) => Boolean(e.mailboxIds[mailboxId!]));
+    if (!stillInFolder) {
+      untrack(() => {
+        router.navigate(folderHref(currentFolder));
+      });
+    }
+  });
+
   // Scroll the focused row into view whenever the index changes.
   let listEl = $state<HTMLUListElement | null>(null);
   $effect(() => {

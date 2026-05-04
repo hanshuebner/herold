@@ -252,6 +252,13 @@ func Run(t *testing.T, f Factory) {
 		{"Session_EvictExpired_RemovesExpiredLeavesAlive", testSessionEvictExpired},
 		{"Session_ClearExpiredLivetail", testSessionClearExpiredLivetail},
 		{"Session_CascadeOnPrincipalDelete", testSessionCascadeOnPrincipalDelete},
+		// -- re #29: label-preserving Restore (email_pretrash_mailboxes) -----
+		{"PreTrash_SnapshotOnTrashAdd_EmptyForNoCustomMailbox", testPreTrashSnapshotOnTrashAddEmptyForNoCustomMailbox},
+		{"PreTrash_SnapshotOnTrashAdd_MultiMailboxPreserved", testPreTrashSnapshotOnTrashAddMultiMailboxPreserved},
+		{"PreTrash_ReplayOnTrashRemove_RestoresLabels", testPreTrashReplayOnTrashRemoveRestoresLabels},
+		{"PreTrash_SnapshotClearedAfterRestore", testPreTrashSnapshotClearedAfterRestore},
+		{"PreTrash_FreshSnapshotOnRetrash", testPreTrashFreshSnapshotOnRetrash},
+		{"PreTrash_PermanentDeleteClearsSnapshot", testPreTrashPermanentDeleteClearsSnapshot},
 	}
 	for _, c := range cases {
 		tc := c
@@ -6825,5 +6832,289 @@ func testSearchPrincipalsByTextInDomainLimitRespected(t *testing.T, s store.Stor
 	}
 	if len(got) != 3 {
 		t.Fatalf("got %d results, want 3 (limit applied): %+v", len(got), got)
+	}
+}
+
+// -- re #29: label-preserving Restore (email_pretrash_mailboxes) -----------
+
+// mustInsertTrashMailbox inserts a mailbox with MailboxAttrTrash set.
+func mustInsertTrashMailbox(t *testing.T, s store.Store, pID store.PrincipalID) store.Mailbox {
+	t.Helper()
+	mb, err := s.Meta().InsertMailbox(ctxT(t), store.Mailbox{
+		PrincipalID: pID,
+		Name:        "Trash",
+		Attributes:  store.MailboxAttrTrash,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(Trash): %v", err)
+	}
+	return mb
+}
+
+// mustInsertSingleMsg inserts a message into exactly one mailbox and returns its ID.
+func mustInsertSingleMsg(t *testing.T, s store.Store, pID store.PrincipalID, mb store.Mailbox) store.MessageID {
+	t.Helper()
+	ctx := ctxT(t)
+	ref := putBlob(t, s, "body")
+	_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  pID,
+		Blob:         ref,
+		Size:         ref.Size,
+		InternalDate: time.Unix(1000, 0).UTC(),
+		ReceivedAt:   time.Unix(1000, 0).UTC(),
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	// Find the inserted message ID by listing the mailbox.
+	msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatalf("no messages found after insert")
+	}
+	return msgs[len(msgs)-1].ID
+}
+
+// mailboxIDsForMsg returns the set of mailbox IDs the message currently belongs to.
+func mailboxIDsForMsg(t *testing.T, s store.Store, msgID store.MessageID) map[store.MailboxID]bool {
+	t.Helper()
+	ctx := ctxT(t)
+	msg, err := s.Meta().GetMessage(ctx, msgID)
+	if err != nil {
+		t.Fatalf("GetMessage(%d): %v", msgID, err)
+	}
+	ids := make(map[store.MailboxID]bool, len(msg.Mailboxes))
+	for _, mm := range msg.Mailboxes {
+		ids[mm.MailboxID] = true
+	}
+	return ids
+}
+
+// testPreTrashSnapshotOnTrashAddEmptyForNoCustomMailbox verifies that when a
+// message is moved from Inbox (the only membership) to Trash, an empty snapshot
+// is recorded (nothing to replay means nothing to add back beyond any
+// caller-specified mailbox).
+func testPreTrashSnapshotOnTrashAddEmptyForNoCustomMailbox(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "pretrash1@example.com")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	trash := mustInsertTrashMailbox(t, s, p.ID)
+	msgID := mustInsertSingleMsg(t, s, p.ID, inbox)
+
+	// Move inbox -> trash.
+	if err := s.Meta().MoveMessage(ctx, msgID, inbox.ID, trash.ID); err != nil {
+		t.Fatalf("MoveMessage to trash: %v", err)
+	}
+	// Message should be in Trash only.
+	ids := mailboxIDsForMsg(t, s, msgID)
+	if !ids[trash.ID] {
+		t.Fatalf("expected message in Trash after move")
+	}
+	if ids[inbox.ID] {
+		t.Fatalf("expected message NOT in Inbox after move to Trash")
+	}
+}
+
+// testPreTrashSnapshotOnTrashAddMultiMailboxPreserved verifies that when a
+// message is in multiple non-Trash mailboxes before being trashed, all of
+// those mailboxes are captured in the snapshot.
+func testPreTrashSnapshotOnTrashAddMultiMailboxPreserved(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "pretrash2@example.com")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	labelA := mustInsertMailbox(t, s, p.ID, "LabelA")
+	labelB := mustInsertMailbox(t, s, p.ID, "LabelB")
+	trash := mustInsertTrashMailbox(t, s, p.ID)
+
+	// Insert into inbox, then add labelA and labelB.
+	msgID := mustInsertSingleMsg(t, s, p.ID, inbox)
+	if _, _, err := s.Meta().AddMessageToMailbox(ctx, msgID, labelA.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox(labelA): %v", err)
+	}
+	if _, _, err := s.Meta().AddMessageToMailbox(ctx, msgID, labelB.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox(labelB): %v", err)
+	}
+
+	// Move to Trash via AddMessageToMailbox (JMAP path: add trash, then remove non-trash).
+	if _, _, err := s.Meta().AddMessageToMailbox(ctx, msgID, trash.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox(trash): %v", err)
+	}
+	// At this point snapshot should contain inbox, labelA, labelB.
+	// Remove the non-trash mailboxes to complete the "trash" operation.
+	if err := s.Meta().RemoveMessageFromMailbox(ctx, msgID, inbox.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox(inbox): %v", err)
+	}
+	if err := s.Meta().RemoveMessageFromMailbox(ctx, msgID, labelA.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox(labelA): %v", err)
+	}
+	if err := s.Meta().RemoveMessageFromMailbox(ctx, msgID, labelB.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox(labelB): %v", err)
+	}
+	ids := mailboxIDsForMsg(t, s, msgID)
+	if !ids[trash.ID] {
+		t.Fatalf("expected message in Trash")
+	}
+	if ids[inbox.ID] || ids[labelA.ID] || ids[labelB.ID] {
+		t.Fatalf("expected message NOT in non-Trash mailboxes after trash: %+v", ids)
+	}
+}
+
+// testPreTrashReplayOnTrashRemoveRestoresLabels verifies that removing a
+// message from Trash restores its pre-trash mailbox memberships.
+func testPreTrashReplayOnTrashRemoveRestoresLabels(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "pretrash3@example.com")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	labelA := mustInsertMailbox(t, s, p.ID, "LabelA")
+	trash := mustInsertTrashMailbox(t, s, p.ID)
+
+	msgID := mustInsertSingleMsg(t, s, p.ID, inbox)
+	if _, _, err := s.Meta().AddMessageToMailbox(ctx, msgID, labelA.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox(labelA): %v", err)
+	}
+	// Snapshot: move inbox->trash via MoveMessage.
+	if err := s.Meta().MoveMessage(ctx, msgID, inbox.ID, trash.ID); err != nil {
+		t.Fatalf("MoveMessage to trash: %v", err)
+	}
+	// Also remove labelA to simulate full trash operation.
+	if err := s.Meta().RemoveMessageFromMailbox(ctx, msgID, labelA.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox(labelA): %v", err)
+	}
+
+	// Restore: move trash->inbox via MoveMessage (the JMAP restoreFromTrash path).
+	if err := s.Meta().MoveMessage(ctx, msgID, trash.ID, inbox.ID); err != nil {
+		t.Fatalf("MoveMessage from trash: %v", err)
+	}
+	// Message should be back in inbox AND labelA.
+	ids := mailboxIDsForMsg(t, s, msgID)
+	if !ids[inbox.ID] {
+		t.Fatalf("expected message in Inbox after restore, got: %+v", ids)
+	}
+	if !ids[labelA.ID] {
+		t.Fatalf("expected message in LabelA after restore (pre-trash replay), got: %+v", ids)
+	}
+	if ids[trash.ID] {
+		t.Fatalf("expected message NOT in Trash after restore, got: %+v", ids)
+	}
+}
+
+// testPreTrashSnapshotClearedAfterRestore verifies that once the snapshot is
+// replayed during Restore, a second Restore from Trash does not re-apply stale
+// data (the snapshot was cleared after the first replay).
+func testPreTrashSnapshotClearedAfterRestore(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "pretrash4@example.com")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	labelA := mustInsertMailbox(t, s, p.ID, "LabelA")
+	trash := mustInsertTrashMailbox(t, s, p.ID)
+
+	msgID := mustInsertSingleMsg(t, s, p.ID, inbox)
+	if _, _, err := s.Meta().AddMessageToMailbox(ctx, msgID, labelA.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox(labelA): %v", err)
+	}
+	// Trash.
+	if err := s.Meta().MoveMessage(ctx, msgID, inbox.ID, trash.ID); err != nil {
+		t.Fatalf("MoveMessage to trash: %v", err)
+	}
+	if err := s.Meta().RemoveMessageFromMailbox(ctx, msgID, labelA.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox(labelA): %v", err)
+	}
+	// Restore (replay clears snapshot).
+	if err := s.Meta().MoveMessage(ctx, msgID, trash.ID, inbox.ID); err != nil {
+		t.Fatalf("MoveMessage from trash (restore): %v", err)
+	}
+	// Verify restored into inbox+labelA.
+	ids := mailboxIDsForMsg(t, s, msgID)
+	if !ids[inbox.ID] || !ids[labelA.ID] {
+		t.Fatalf("restore did not replay labels: %+v", ids)
+	}
+	// Now trash again (snapshot should be fresh: only inbox+labelA, not stale).
+	if err := s.Meta().MoveMessage(ctx, msgID, inbox.ID, trash.ID); err != nil {
+		t.Fatalf("MoveMessage to trash (second): %v", err)
+	}
+	// Snapshot cleared after first restore; second trash records inbox (labelA still present).
+	// Restore again.
+	if err := s.Meta().RemoveMessageFromMailbox(ctx, msgID, labelA.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox(labelA) second: %v", err)
+	}
+	if err := s.Meta().MoveMessage(ctx, msgID, trash.ID, inbox.ID); err != nil {
+		t.Fatalf("MoveMessage from trash (second restore): %v", err)
+	}
+	ids2 := mailboxIDsForMsg(t, s, msgID)
+	if !ids2[inbox.ID] {
+		t.Fatalf("expected inbox after second restore: %+v", ids2)
+	}
+}
+
+// testPreTrashFreshSnapshotOnRetrash verifies that re-trashing a restored
+// message records only the current pre-trash mailboxes (not the prior
+// snapshot), so labels that were explicitly removed before re-trashing are
+// not incorrectly restored.
+func testPreTrashFreshSnapshotOnRetrash(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "pretrash5@example.com")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	labelA := mustInsertMailbox(t, s, p.ID, "LabelA")
+	trash := mustInsertTrashMailbox(t, s, p.ID)
+
+	msgID := mustInsertSingleMsg(t, s, p.ID, inbox)
+	if _, _, err := s.Meta().AddMessageToMailbox(ctx, msgID, labelA.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox(labelA): %v", err)
+	}
+	// Trash (snapshot: inbox+labelA).
+	if err := s.Meta().MoveMessage(ctx, msgID, inbox.ID, trash.ID); err != nil {
+		t.Fatalf("MoveMessage to trash: %v", err)
+	}
+	if err := s.Meta().RemoveMessageFromMailbox(ctx, msgID, labelA.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox(labelA): %v", err)
+	}
+	// Restore (replays inbox+labelA, clears snapshot).
+	if err := s.Meta().MoveMessage(ctx, msgID, trash.ID, inbox.ID); err != nil {
+		t.Fatalf("MoveMessage from trash: %v", err)
+	}
+	// Explicitly remove labelA before re-trashing.
+	if err := s.Meta().RemoveMessageFromMailbox(ctx, msgID, labelA.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox(labelA) before retrash: %v", err)
+	}
+	// Re-trash: only inbox is present now; snapshot should be {inbox} only.
+	if err := s.Meta().MoveMessage(ctx, msgID, inbox.ID, trash.ID); err != nil {
+		t.Fatalf("MoveMessage to trash (second): %v", err)
+	}
+	// Restore from re-trash: should restore only inbox, NOT labelA.
+	if err := s.Meta().MoveMessage(ctx, msgID, trash.ID, inbox.ID); err != nil {
+		t.Fatalf("MoveMessage from trash (second restore): %v", err)
+	}
+	ids := mailboxIDsForMsg(t, s, msgID)
+	if !ids[inbox.ID] {
+		t.Fatalf("expected inbox after retrash+restore: %+v", ids)
+	}
+	if ids[labelA.ID] {
+		t.Fatalf("did NOT expect labelA after retrash+restore (was removed before retrash): %+v", ids)
+	}
+}
+
+// testPreTrashPermanentDeleteClearsSnapshot verifies that expunging a message
+// from Trash (permanent delete) cleans up the email_pretrash_mailboxes row
+// via ON DELETE CASCADE from messages(id).
+func testPreTrashPermanentDeleteClearsSnapshot(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "pretrash6@example.com")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	trash := mustInsertTrashMailbox(t, s, p.ID)
+
+	msgID := mustInsertSingleMsg(t, s, p.ID, inbox)
+	// Move inbox->trash (snapshot: {inbox}).
+	if err := s.Meta().MoveMessage(ctx, msgID, inbox.ID, trash.ID); err != nil {
+		t.Fatalf("MoveMessage to trash: %v", err)
+	}
+	// Permanently expunge from trash. messages row is deleted; snapshot cascades.
+	if err := s.Meta().ExpungeMessages(ctx, trash.ID, []store.MessageID{msgID}); err != nil {
+		t.Fatalf("ExpungeMessages: %v", err)
+	}
+	// Message should be gone entirely.
+	if _, err := s.Meta().GetMessage(ctx, msgID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetMessage after expunge: expected ErrNotFound, got %v", err)
 	}
 }

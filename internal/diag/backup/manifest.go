@@ -178,7 +178,15 @@ const CurrentBackupVersion = 1
 //	(NULL when live-tail is inactive, REQ-OPS-211). Enables
 //	TelemetryGate.IsEnabled(sessionID) without a principal lookup on
 //	the hot path.
-const CurrentSchemaVersion = 39
+//
+// 40 — 0040_email_pretrash_mailboxes.sql. Pre-trash mailbox snapshot
+//
+//	for label-preserving Restore (re #29). Adds the
+//	email_pretrash_mailboxes table (email_id, mailbox_id, PRIMARY KEY)
+//	with ON DELETE CASCADE from messages(id). The server snapshots
+//	non-Trash memberships when a message gains a Trash membership and
+//	replays them on Restore, then clears the snapshot.
+const CurrentSchemaVersion = 40
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -254,6 +262,10 @@ var TableNames = []string{
 	// Phase 3 Wave 3.11 M:N message-mailbox membership (migration 0024).
 	// FK to messages(id) and mailboxes(id); restored after both parents.
 	"message_mailboxes",
+	// Pre-trash mailbox snapshot for label-preserving Restore (re #29,
+	// migration 0040). FK to messages(id) ON DELETE CASCADE; restored
+	// after message_mailboxes so FK to messages is satisfied.
+	"email_pretrash_mailboxes",
 	// Phase 3 Wave 3.9 email reactions (REQ-PROTO-100..103,
 	// REQ-FLOW-100..108, migration 0019). FK to messages(id); restored
 	// after messages are in place.

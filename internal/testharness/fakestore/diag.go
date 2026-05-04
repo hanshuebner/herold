@@ -127,6 +127,9 @@ func (s *Store) DiagSnapshot() *DiagDump {
 		dd.Tables["message_mailboxes"] = append(dd.Tables["message_mailboxes"],
 			s.msgMailboxes[k])
 	}
+	// email_pretrash_mailboxes: fakestore does not implement the pretrash
+	// snapshot, so this table is always empty in DiagSnapshot.
+	dd.Tables["email_pretrash_mailboxes"] = []any{}
 	for _, pid := range pids {
 		for _, c := range s.stateChanges[pid] {
 			dd.Tables["state_changes"] = append(dd.Tables["state_changes"], c)
@@ -627,6 +630,9 @@ func (s *Store) DiagInsert(table string, row any) error {
 	case "message_mailboxes":
 		mm := row.(store.MessageMailbox)
 		s.msgMailboxes[mmKey{mm.MessageID, mm.MailboxID}] = mm
+	case "email_pretrash_mailboxes":
+		// fakestore does not implement the pretrash snapshot; restore is a no-op.
+		_ = row
 	case "managed_rules":
 		mr := row.(store.ManagedRule)
 		s.managedRules[mr.ID] = mr
