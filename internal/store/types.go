@@ -283,6 +283,15 @@ type Envelope struct {
 	MessageID string
 	// InReplyTo is the decoded In-Reply-To header.
 	InReplyTo string
+	// References holds the raw References header value. This is used
+	// exclusively for thread resolution at ingest time: InsertMessage
+	// checks both InReplyTo and References to find an ancestor message
+	// in the same thread, so that messages related by References but not
+	// by a direct In-Reply-To pair still land in the same thread per
+	// RFC 8621 sec 8.1. Not surfaced on the IMAP ENVELOPE response (which
+	// has no References slot); the JMAP render path reads References from
+	// the blob directly.
+	References string
 	// Date is the parsed Date header; zero value if absent or unparsable.
 	Date time.Time
 }

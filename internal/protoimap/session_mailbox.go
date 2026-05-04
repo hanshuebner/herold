@@ -868,14 +868,15 @@ func parseEnvelope(raw []byte) store.Envelope {
 		return store.Envelope{}
 	}
 	env := store.Envelope{
-		Subject:   msg.Header.Get("Subject"),
-		From:      msg.Header.Get("From"),
-		To:        msg.Header.Get("To"),
-		Cc:        msg.Header.Get("Cc"),
-		Bcc:       msg.Header.Get("Bcc"),
-		ReplyTo:   msg.Header.Get("Reply-To"),
-		MessageID: strings.Trim(msg.Header.Get("Message-ID"), "<>"),
-		InReplyTo: strings.Trim(msg.Header.Get("In-Reply-To"), "<>"),
+		Subject:    msg.Header.Get("Subject"),
+		From:       msg.Header.Get("From"),
+		To:         msg.Header.Get("To"),
+		Cc:         msg.Header.Get("Cc"),
+		Bcc:        msg.Header.Get("Bcc"),
+		ReplyTo:    msg.Header.Get("Reply-To"),
+		MessageID:  strings.Trim(msg.Header.Get("Message-ID"), "<>"),
+		InReplyTo:  strings.Trim(msg.Header.Get("In-Reply-To"), "<>"),
+		References: msg.Header.Get("References"),
 	}
 	if ds := msg.Header.Get("Date"); ds != "" {
 		if t, err := mail.ParseDate(ds); err == nil {

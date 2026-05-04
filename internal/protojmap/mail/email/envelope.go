@@ -26,6 +26,17 @@ func buildEnvelopeFromParsed(m mailparse.Message) store.Envelope {
 	if len(m.Envelope.InReplyTo) > 0 {
 		env.InReplyTo = m.Envelope.InReplyTo[0]
 	}
+	// Store the raw References value so InsertMessage can use it for
+	// thread resolution via mailparse.ParseReferences. We re-bracket the
+	// already-normalized IDs because ParseReferences expects angle-bracket
+	// tokens.
+	if len(m.Envelope.References) > 0 {
+		parts := make([]string, len(m.Envelope.References))
+		for i, r := range m.Envelope.References {
+			parts[i] = "<" + r + ">"
+		}
+		env.References = strings.Join(parts, " ")
+	}
 	if m.Envelope.Date != "" {
 		if t, err := mail.ParseDate(m.Envelope.Date); err == nil {
 			env.Date = t.UTC()

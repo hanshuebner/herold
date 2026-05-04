@@ -39,6 +39,7 @@ func Run(t *testing.T, f Factory) {
 		{"MailboxConflict", testMailboxConflict},
 		{"MailboxConflict_ErrorStringIsClean", testMailboxConflictErrorStringIsClean},
 		{"InsertMessageAllocatesUIDAndModSeq", testInsertMessageAllocatesUIDAndModSeq},
+		{"InsertMessage_ThreadResolutionViaReferences", testInsertMessageThreadResolutionViaReferences},
 		{"UpdateFlagsBumpsModSeq", testUpdateFlagsBumpsModSeq},
 		{"UpdateFlagsUnchangedSince", testUpdateFlagsUnchangedSince},
 		{"UpdateFlagsKeywords", testUpdateFlagsKeywords},
@@ -692,6 +693,68 @@ func testInsertMessageAllocatesUIDAndModSeq(t *testing.T, s store.Store) {
 	}
 	if got.HighestModSeq != modseq2 {
 		t.Fatalf("HighestModSeq = %d, want %d", got.HighestModSeq, modseq2)
+	}
+}
+
+// testInsertMessageThreadResolutionViaReferences verifies that InsertMessage
+// assigns the same thread_id to three messages when the third message references
+// its ancestors only via the References header (no In-Reply-To). This is the
+// store-layer coverage for the RFC 8621 sec 8.1 / RFC 5256 sec 2.2 threading
+// requirement that was broken before migration 0041.
+func testInsertMessageThreadResolutionViaReferences(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "threading@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "msg-body-dummy")
+
+	insert := func(msgID, inReplyTo, references string) store.Message {
+		t.Helper()
+		_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID: p.ID,
+			Blob:        ref,
+			Size:        ref.Size,
+			Envelope: store.Envelope{
+				MessageID:  msgID,
+				InReplyTo:  inReplyTo,
+				References: references,
+			},
+		}, []store.MessageMailbox{{MailboxID: mb.ID}})
+		if err != nil {
+			t.Fatalf("InsertMessage %s: %v", msgID, err)
+		}
+		msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 1000, WithEnvelope: true})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		for _, m := range msgs {
+			if m.Envelope.MessageID == msgID {
+				return m
+			}
+		}
+		t.Fatalf("message %s not found after insert", msgID)
+		return store.Message{}
+	}
+
+	// msg1: thread root.
+	msg1 := insert("msg1@test", "", "")
+	// msg2: conventional reply via In-Reply-To.
+	msg2 := insert("msg2@test", "<msg1@test>", "<msg1@test>")
+	// msg3: references both ancestors via References only; In-Reply-To is absent.
+	// This is the failing scenario for the conformance suite.
+	msg3 := insert("msg3@test", "", "<msg1@test> <msg2@test>")
+
+	// All three must share the same effective thread key.
+	// The store uses thread_id == 0 to mean "key is the message id itself".
+	threadKey := func(m store.Message) uint64 {
+		if m.ThreadID != 0 {
+			return m.ThreadID
+		}
+		return uint64(m.ID)
+	}
+	k1, k2, k3 := threadKey(msg1), threadKey(msg2), threadKey(msg3)
+	if k1 != k2 || k2 != k3 {
+		t.Fatalf("thread keys diverge: msg1=%d msg2=%d msg3=%d; msg3 should be linked via References",
+			k1, k2, k3)
 	}
 }
 

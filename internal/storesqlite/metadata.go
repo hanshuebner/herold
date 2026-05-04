@@ -842,7 +842,7 @@ func scanMessageRow(row rowLike) (store.Message, error) {
 		&msg.Size, &thread,
 		&msg.Envelope.Subject, &msg.Envelope.From, &msg.Envelope.To,
 		&msg.Envelope.Cc, &msg.Envelope.Bcc, &msg.Envelope.ReplyTo,
-		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &envDateUs)
+		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &msg.Envelope.References, &envDateUs)
 	if err != nil {
 		return store.Message{}, mapErr(err)
 	}
@@ -951,8 +951,26 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message, targets
 			msg.Envelope.MessageID = mailparse.NormalizeMessageID(msg.Envelope.MessageID)
 		}
 		// Thread resolution against the principal's existing messages.
-		if msg.ThreadID == 0 && msg.Envelope.InReplyTo != "" {
+		// RFC 5256 sec 2.2 and RFC 8621 sec 8.1: check both In-Reply-To
+		// and References headers. References lists the full ancestry chain
+		// and is the authoritative source; In-Reply-To is a single-hop
+		// shortcut that may be the only reference present in some clients.
+		// We union them (In-Reply-To first for historical compat) and take
+		// the first match found.
+		if msg.ThreadID == 0 {
 			refs := mailparse.ParseReferences(msg.Envelope.InReplyTo)
+			// Append unique References entries after InReplyTo entries so
+			// that a direct In-Reply-To match wins when both are present.
+			seen := make(map[string]struct{}, len(refs))
+			for _, r := range refs {
+				seen[r] = struct{}{}
+			}
+			for _, r := range mailparse.ParseReferences(msg.Envelope.References) {
+				if _, dup := seen[r]; !dup {
+					refs = append(refs, r)
+					seen[r] = struct{}{}
+				}
+			}
 			for _, ref := range refs {
 				var ancestorID, ancestorThread int64
 				lookupErr := tx.QueryRowContext(ctx, `
@@ -981,13 +999,13 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message, targets
 			INSERT INTO messages (principal_id, blob_hash, blob_size,
 			  internal_date_us, received_at_us, size, thread_id,
 			  env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
-			  env_message_id, env_in_reply_to, env_date_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			  env_message_id, env_in_reply_to, env_references, env_date_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			pid, msg.Blob.Hash, msg.Blob.Size,
 			usMicros(msg.InternalDate), usMicros(msg.ReceivedAt), msg.Size, int64(msg.ThreadID),
 			msg.Envelope.Subject, msg.Envelope.From, msg.Envelope.To,
 			msg.Envelope.Cc, msg.Envelope.Bcc, msg.Envelope.ReplyTo,
-			msg.Envelope.MessageID, msg.Envelope.InReplyTo, usMicros(msg.Envelope.Date))
+			msg.Envelope.MessageID, msg.Envelope.InReplyTo, msg.Envelope.References, usMicros(msg.Envelope.Date))
 		if err != nil {
 			return mapErr(err)
 		}
@@ -1088,11 +1106,11 @@ func (m *metadata) ReplaceMessageBody(
 			UPDATE messages
 			   SET blob_hash = ?, blob_size = ?, size = ?,
 			       env_subject = ?, env_from = ?, env_to = ?, env_cc = ?, env_bcc = ?, env_reply_to = ?,
-			       env_message_id = ?, env_in_reply_to = ?, env_date_us = ?
+			       env_message_id = ?, env_in_reply_to = ?, env_references = ?, env_date_us = ?
 			 WHERE id = ?`,
 			ref.Hash, ref.Size, size,
 			env.Subject, env.From, env.To, env.Cc, env.Bcc, env.ReplyTo,
-			env.MessageID, env.InReplyTo, usMicros(env.Date),
+			env.MessageID, env.InReplyTo, env.References, usMicros(env.Date),
 			int64(id),
 		); err != nil {
 			return mapErr(err)
@@ -1164,7 +1182,7 @@ func (m *metadata) GetMessage(ctx context.Context, id store.MessageID) (store.Me
 		SELECT id, principal_id, blob_hash, blob_size, internal_date_us,
 		       received_at_us, size, thread_id,
 		       env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
-		       env_message_id, env_in_reply_to, env_date_us
+		       env_message_id, env_in_reply_to, env_references, env_date_us
 		  FROM messages WHERE id = ?`, int64(id))
 	msg, err := scanMessageRow(row)
 	if err != nil {
@@ -1195,7 +1213,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 		&msg.Size, &thread,
 		&msg.Envelope.Subject, &msg.Envelope.From, &msg.Envelope.To,
 		&msg.Envelope.Cc, &msg.Envelope.Bcc, &msg.Envelope.ReplyTo,
-		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &envDateUs,
+		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &msg.Envelope.References, &envDateUs,
 		// message_mailboxes
 		&mbox, &uid, &modseq, &flags, &keywords, &snoozedUs,
 	)
@@ -2486,7 +2504,7 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 			SELECT m.id, m.principal_id, m.blob_hash, m.blob_size, m.internal_date_us,
 			       m.received_at_us, m.size, m.thread_id,
 			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
-			       m.env_message_id, m.env_in_reply_to, m.env_date_us,
+			       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
 			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
 			  FROM messages m
 			  JOIN message_mailboxes mm ON mm.message_id = m.id
@@ -2498,7 +2516,7 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 			SELECT m.id, m.principal_id, m.blob_hash, m.blob_size, m.internal_date_us,
 			       m.received_at_us, m.size, m.thread_id,
 			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
-			       m.env_message_id, m.env_in_reply_to, m.env_date_us,
+			       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
 			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
 			  FROM messages m
 			  JOIN message_mailboxes mm ON mm.message_id = m.id
@@ -2772,7 +2790,7 @@ func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, li
 		SELECT m.id, m.principal_id, m.blob_hash, m.blob_size, m.internal_date_us,
 		       m.received_at_us, m.size, m.thread_id,
 		       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
-		       m.env_message_id, m.env_in_reply_to, m.env_date_us,
+		       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
 		       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
 		  FROM messages m
 		  JOIN message_mailboxes mm ON mm.message_id = m.id

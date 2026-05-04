@@ -186,7 +186,17 @@ const CurrentBackupVersion = 1
 //	with ON DELETE CASCADE from messages(id). The server snapshots
 //	non-Trash memberships when a message gains a Trash membership and
 //	replays them on Restore, then clears the snapshot.
-const CurrentSchemaVersion = 40
+//
+// 41 — 0041_messages_env_references.sql. Column-only migration: adds
+//
+//	messages.env_references TEXT NOT NULL DEFAULT '' to store the raw
+//	References header value. InsertMessage now uses both InReplyTo and
+//	References for thread resolution so RFC 8621 sec 8.1 threading
+//	(union of all ancestor message-ids) works correctly. Fixes
+//	Thread/get returning fragmented threads and the downstream failures
+//	in someInThreadHaveKeyword, noneInThreadHaveKeyword, and
+//	collapseThreads. No new tables.
+const CurrentSchemaVersion = 41
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

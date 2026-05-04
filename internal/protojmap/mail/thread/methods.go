@@ -152,9 +152,10 @@ func (h *handlerSet) listAllMessages(ctx context.Context, p store.Principal) ([]
 // back into Thread/get always resolves to a thread row.
 //
 // Thread assignment happens at ingest time: InsertMessage resolves
-// references via ParseReferences(env_in_reply_to) and looks up ancestor
-// messages by env_message_id in the same principal's mailboxes. The
-// resolved thread_id is persisted so this read path is a simple group-by.
+// references by checking both env_in_reply_to and env_references (per
+// RFC 5256 sec 2.2 and RFC 8621 sec 8.1) and looks up ancestor messages
+// by env_message_id in the same principal's mailboxes. The resolved
+// thread_id is persisted so this read path is a simple group-by.
 func (h *handlerSet) computeForPrincipal(ctx context.Context, p store.Principal) (map[store.MessageID]ThreadKey, map[ThreadKey][]store.Message, error) {
 	msgs, err := h.listAllMessages(ctx, p)
 	if err != nil {
