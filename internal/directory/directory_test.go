@@ -369,6 +369,34 @@ func TestActivityTagged_DeletePrincipal(t *testing.T) {
 	})
 }
 
+// TestCreatePrincipal_ProvisionDefaultAddressBook asserts that CreatePrincipal
+// inserts a default address book named "Personal" so JMAP Contacts clients
+// have a usable container immediately (re #62).
+func TestCreatePrincipal_ProvisionDefaultAddressBook(t *testing.T) {
+	ctx := context.Background()
+	dir, fs, _ := newDir(t)
+	pid, err := dir.CreatePrincipal(ctx, "alice@example.test", "correct-horse-staple")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ab, err := fs.Meta().DefaultAddressBook(ctx, pid)
+	if err != nil {
+		t.Fatalf("DefaultAddressBook: %v", err)
+	}
+	if ab.Name != "Personal" {
+		t.Errorf("default address book name = %q, want %q", ab.Name, "Personal")
+	}
+	if !ab.IsDefault {
+		t.Errorf("default address book IsDefault = false, want true")
+	}
+	if !ab.IsSubscribed {
+		t.Errorf("default address book IsSubscribed = false, want true")
+	}
+	if ab.PrincipalID != pid {
+		t.Errorf("default address book PrincipalID = %d, want %d", ab.PrincipalID, pid)
+	}
+}
+
 // TestActivityTagged_UpdatePassword asserts activity=audit on the
 // password-change audit record.
 func TestActivityTagged_UpdatePassword(t *testing.T) {
