@@ -197,7 +197,7 @@
       title: t('sidebar.renameFolder.title'),
       defaultName: current,
       defaultColor: mb?.color ?? undefined,
-      confirmLabel: t('sidebar.renameFolder.confirm'),
+      confirmLabel: t('sidebar.editFolder.confirm'),
     });
     if (!result) return;
     await mail.renameMailbox(id, result.name, result.color);
@@ -642,7 +642,7 @@
      remaining space (flex:1) and the count uses margin-left:auto so it aligns
      at the same right-edge position as the "Labels N" count on the more-toggle
      header above (re #76). The action buttons are absolutely positioned and
-     fade in on hover, overlapping the count — the count is intentionally hidden
+     fade in on hover, overlapping the count -- the count is intentionally hidden
      by them because the user is focused on rename/delete, not the number. */
   .mailbox-list.custom .mailbox-row {
     width: 100%;

@@ -14,7 +14,7 @@ import { jmap, strict } from '../jmap/client';
 import { auth } from '../auth/auth.svelte';
 import { sync } from '../jmap/sync.svelte';
 import { toast } from '../toast/toast.svelte';
-import { localeTag } from '../i18n/i18n.svelte';
+import { i18n, localeTag } from '../i18n/i18n.svelte';
 import { Capability, type Invocation } from '../jmap/types';
 import {
   EMAIL_BODY_PROPERTIES,
@@ -549,7 +549,7 @@ class MailStore {
         });
         return false;
       }
-      toast.show({ message: `Renamed to ${trimmed}` });
+      toast.show({ message: i18n.t('sidebar.editFolder.toastChanged') });
       return true;
     } catch (err) {
       const back = new Map(this.mailboxes);

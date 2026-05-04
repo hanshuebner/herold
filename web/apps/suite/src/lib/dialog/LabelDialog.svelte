@@ -10,18 +10,38 @@
   let name = $state('');
   let color = $state('#5d6d7e');
   let nameEl = $state<HTMLInputElement | null>(null);
+  // Track the values at dialog open so we can compute dirty state.
+  let initialName = $state('');
+  let initialColor = $state('#5d6d7e');
 
   // Reset fields when a new dialog opens.
   $effect(() => {
     if (ctx) {
-      name = ctx.defaultName ?? '';
-      color = ctx.defaultColor ?? randomLabelColor();
+      const n = ctx.defaultName ?? '';
+      const c = ctx.defaultColor ?? randomLabelColor();
+      name = n;
+      color = c;
+      initialName = n;
+      initialColor = c;
       requestAnimationFrame(() => {
         nameEl?.focus();
         nameEl?.select();
       });
     }
   });
+
+  /**
+   * The CTA is enabled when:
+   * - In create mode (no defaultName): the name field is non-empty.
+   * - In edit mode (defaultName provided): the name is non-empty AND at
+   *   least one of name or color differs from the saved values (dirty).
+   */
+  let ctaEnabled = $derived(
+    ctx?.defaultName !== undefined
+      ? name.trim().length > 0 &&
+          (name.trim() !== initialName || color !== initialColor)
+      : name.trim().length > 0,
+  );
 
   // Capture-phase Escape so we close before the global keyboard engine fires.
   $effect(() => {
@@ -102,7 +122,7 @@
         <button
           type="submit"
           class="btn-primary"
-          disabled={name.trim().length === 0}
+          disabled={!ctaEnabled}
         >
           {ctx.confirmLabel ?? 'OK'}
         </button>
