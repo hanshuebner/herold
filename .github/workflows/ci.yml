@@ -159,13 +159,12 @@ jobs:
         run: pnpm --filter @herold/admin test:e2e
 
   test:
-    name: test (${{ matrix.arch }} / ${{ matrix.store }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: test (arm64 / ${{ matrix.store }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
         store: [sqlite, postgres]
     services:
       postgres:
@@ -187,16 +186,16 @@ jobs:
       # Postgres parity legs (storepg compliance + cross-backend e2e)
       # actually exercised in CI per STANDARDS §1.8 / §8.4.
       HEROLD_PG_DSN: postgres://herold:herold@localhost:5432/herold?sslmode=disable
-      GOARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      # Cross-arch builds run under emulation only for build/vet; tests run
-      # native on amd64. We still build on arm64 to catch portability issues
-      # early (per docs/design/server/implementation/03-testing-strategy.md §CI matrix).
+      # Tests run native on arm64 (ubuntu-24.04-arm). The amd64 leg was
+      # dropped because the shared ubuntu-latest amd64 runner consistently
+      # exceeded the per-job timeout on `go test -race ./...`; arm64 native
+      # is faster and the production deploy targets are arm64.
       # Build with the default tag (which embeds the SPA placeholders
       # via go:embed) and then a second pass with -tags nofrontend so
       # the build-tag split (internal/webspa/embed_default.go vs
@@ -212,7 +211,7 @@ jobs:
       - name: build (nofrontend)
         run: go build -trimpath -tags nofrontend ./...
       - name: wait for postgres
-        if: matrix.arch == 'amd64' && matrix.store == 'postgres'
+        if: matrix.store == 'postgres'
         run: |
           # Poll until the service container is ready to accept
           # connections. The service options block already runs
@@ -228,7 +227,6 @@ jobs:
           echo "postgres not ready after 30s" >&2
           exit 1
       - name: test
-        if: matrix.arch == 'amd64'
         run: go test -race -count=1 ./...
 
   fuzz-short:
