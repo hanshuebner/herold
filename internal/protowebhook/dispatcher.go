@@ -133,8 +133,9 @@ type Dispatcher struct {
 	cursorKey     string
 	retrySchedule []time.Duration
 
-	cursor  atomic.Uint64
-	running atomic.Bool
+	cursor        atomic.Uint64
+	flushedCursor atomic.Uint64
+	running       atomic.Bool
 
 	wg sync.WaitGroup
 }
@@ -198,11 +199,41 @@ func (d *Dispatcher) Cursor() uint64 { return d.cursor.Load() }
 // Run consumes the change feed until ctx is cancelled. Returns nil on
 // graceful shutdown; non-nil on a fatal store error. Safe to call once
 // per Dispatcher; a second concurrent call returns an error.
+//
+// Cursor persistence guarantee: Run flushes the in-memory cursor to
+// disk before returning, even when ctx is already cancelled, so that a
+// caller that does cancel(); <-done can be certain the cursor is durable
+// by the time the receive on done completes.
 func (d *Dispatcher) Run(ctx context.Context) error {
 	if !d.running.CompareAndSwap(false, true) {
 		return errors.New("protowebhook: dispatcher already running")
 	}
 	defer d.running.Store(false)
+	// On shutdown: first drain in-flight deliveries, then flush the cursor.
+	// Defers run LIFO so we register flush before wg.Wait: flush runs last
+	// (first registered = last executed in LIFO), wg.Wait runs first.
+	//
+	// Flush any cursor advance that was not yet persisted (e.g. the
+	// SetFTSCursor call was interrupted by context cancellation).  A fresh
+	// context is used so the caller's cancellation cannot prevent the write.
+	defer func() {
+		if cur := d.cursor.Load(); cur > d.flushedCursor.Load() {
+			flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := d.store.Meta().SetFTSCursor(flushCtx, d.cursorKey, cur); err != nil {
+				d.logger.Warn("protowebhook: shutdown cursor flush",
+					"activity", observe.ActivityInternal,
+					"key", d.cursorKey,
+					"seq", cur,
+					"err", err.Error())
+			} else {
+				d.flushedCursor.Store(cur)
+			}
+		}
+	}()
+	// Wait for in-flight deliveries so the cursor flush above sees the
+	// final in-memory cursor position. Registered after the flush defer so
+	// it executes before the flush (LIFO order: last registered runs first).
 	defer d.wg.Wait()
 
 	// Hydrate the resume cursor.
@@ -213,6 +244,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		return fmt.Errorf("protowebhook: load cursor: %w", err)
 	} else {
 		d.cursor.Store(seq)
+		d.flushedCursor.Store(seq)
 	}
 
 	for {
@@ -251,6 +283,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 			d.cursor.Store(maxSeq)
 			if err := d.store.Meta().SetFTSCursor(ctx, d.cursorKey, maxSeq); err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					// The deferred shutdown flush will persist d.cursor.
 					return nil
 				}
 				d.logger.Warn("protowebhook: persist cursor",
@@ -258,6 +291,8 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 					"key", d.cursorKey,
 					"seq", maxSeq,
 					"err", err.Error())
+			} else {
+				d.flushedCursor.Store(maxSeq)
 			}
 		}
 	}
