@@ -231,7 +231,19 @@ jobs:
           echo "postgres not ready after 30s" >&2
           exit 1
       - name: test
-        run: go test -race -count=1 ./...
+        # Serialize package execution on the postgres lane: every test
+        # package that touches postgres shares the same database, so
+        # cross-package parallelism (the default) lets storepg compliance
+        # tests and test/e2e fixtures step on each other (e.g. truncating
+        # a principal another package just inserted, then failing IMAP
+        # LOGIN). The sqlite lane uses per-package temp dirs and is safe
+        # to run in parallel.
+        run: |
+          if [ "${{ matrix.store }}" = "postgres" ]; then
+            go test -race -count=1 -p 1 ./...
+          else
+            go test -race -count=1 ./...
+          fi
 
   fuzz-short:
     name: fuzz (short)
