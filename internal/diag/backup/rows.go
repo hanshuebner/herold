@@ -171,6 +171,7 @@ type MessageRow struct {
 	EnvReplyTo     string `json:"env_reply_to"`
 	EnvMessageID   string `json:"env_message_id"`
 	EnvInReplyTo   string `json:"env_in_reply_to"`
+	EnvReferences  string `json:"env_references"`
 	EnvDateUs      int64  `json:"env_date_us"`
 }
 

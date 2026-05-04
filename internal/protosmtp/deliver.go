@@ -749,14 +749,25 @@ func envelopeFromParsed(msg mailparse.Message) store.Envelope {
 		}
 		return strings.Join(parts, ", ")
 	}
+	// Build the References value: re-bracket the already-normalized IDs
+	// so mailparse.ParseReferences can recover them in InsertMessage.
+	var refs string
+	if len(msg.Envelope.References) > 0 {
+		parts := make([]string, len(msg.Envelope.References))
+		for i, r := range msg.Envelope.References {
+			parts[i] = "<" + r + ">"
+		}
+		refs = strings.Join(parts, " ")
+	}
 	return store.Envelope{
-		Subject:   msg.Envelope.Subject,
-		From:      join(msg.Envelope.From),
-		To:        join(msg.Envelope.To),
-		Cc:        join(msg.Envelope.Cc),
-		Bcc:       join(msg.Envelope.Bcc),
-		MessageID: msg.Envelope.MessageID,
-		InReplyTo: strings.Join(msg.Envelope.InReplyTo, " "),
+		Subject:    msg.Envelope.Subject,
+		From:       join(msg.Envelope.From),
+		To:         join(msg.Envelope.To),
+		Cc:         join(msg.Envelope.Cc),
+		Bcc:        join(msg.Envelope.Bcc),
+		MessageID:  msg.Envelope.MessageID,
+		InReplyTo:  strings.Join(msg.Envelope.InReplyTo, " "),
+		References: refs,
 	}
 }
 

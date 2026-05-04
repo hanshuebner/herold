@@ -118,9 +118,14 @@ func (i *importHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 }
 
 // relinkThreads walks createdIDs and, for each message whose InReplyTo
-// points to an ancestor that now exists in the store, updates the
-// thread_id to match the ancestor's thread. This fixes threading when
-// replies are imported before their originals.
+// or References points to an ancestor that now exists in the store,
+// updates the thread_id to match the ancestor's thread. This fixes
+// threading when replies are imported before their originals.
+//
+// We check both In-Reply-To and References (RFC 5256 sec 2.2) so that
+// messages that reference an ancestor only via References (common when
+// three or more messages form a chain and intermediate messages are
+// absent) still land in the same thread.
 func (i *importHandler) relinkThreads(ctx context.Context, pid store.PrincipalID, createdIDs []store.MessageID) error {
 	if len(createdIDs) == 0 {
 		return nil
@@ -130,14 +135,24 @@ func (i *importHandler) relinkThreads(ctx context.Context, pid store.PrincipalID
 		if err != nil {
 			continue // silently skip; best-effort
 		}
-		if msg.Envelope.InReplyTo == "" {
+		if msg.Envelope.InReplyTo == "" && msg.Envelope.References == "" {
 			continue
 		}
 		if msg.ThreadID != 0 && msg.ThreadID != uint64(msg.ID) {
 			continue // already properly threaded (ancestor was present at import time)
 		}
-		// Look up the ancestor by Message-ID.
+		// Union InReplyTo and References, InReplyTo first.
 		refs := mailparse.ParseReferences(msg.Envelope.InReplyTo)
+		seen := make(map[string]struct{}, len(refs))
+		for _, r := range refs {
+			seen[r] = struct{}{}
+		}
+		for _, r := range mailparse.ParseReferences(msg.Envelope.References) {
+			if _, dup := seen[r]; !dup {
+				refs = append(refs, r)
+				seen[r] = struct{}{}
+			}
+		}
 		for _, ref := range refs {
 			ancestor, err := i.h.store.Meta().GetMessageByMessageIDHeader(ctx, pid, ref)
 			if err != nil {

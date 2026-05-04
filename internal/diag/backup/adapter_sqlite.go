@@ -314,14 +314,14 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 			`SELECT id, principal_id, internal_date_us, received_at_us, size,
 			        blob_hash, blob_size, thread_id, env_subject, env_from,
 			        env_to, env_cc, env_bcc, env_reply_to, env_message_id,
-			        env_in_reply_to, env_date_us
+			        env_in_reply_to, env_references, env_date_us
 			   FROM messages ORDER BY id`,
 			func(rs *sql.Rows) (any, error) {
 				var r MessageRow
 				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.InternalDateUs, &r.ReceivedAtUs,
 					&r.Size, &r.BlobHash, &r.BlobSize, &r.ThreadID,
 					&r.EnvSubject, &r.EnvFrom, &r.EnvTo, &r.EnvCc, &r.EnvBcc,
-					&r.EnvReplyTo, &r.EnvMessageID, &r.EnvInReplyTo, &r.EnvDateUs); err != nil {
+					&r.EnvReplyTo, &r.EnvMessageID, &r.EnvInReplyTo, &r.EnvReferences, &r.EnvDateUs); err != nil {
 					return nil, err
 				}
 				return &r, nil
@@ -1212,12 +1212,13 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		_, err := s.tx.ExecContext(ctx,
 			`INSERT INTO messages (id, principal_id, internal_date_us, received_at_us,
 			   size, blob_hash, blob_size, thread_id, env_subject, env_from, env_to,
-			   env_cc, env_bcc, env_reply_to, env_message_id, env_in_reply_to, env_date_us)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   env_cc, env_bcc, env_reply_to, env_message_id, env_in_reply_to,
+			   env_references, env_date_us)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.PrincipalID, r.InternalDateUs, r.ReceivedAtUs,
 			r.Size, r.BlobHash, r.BlobSize, r.ThreadID,
 			r.EnvSubject, r.EnvFrom, r.EnvTo, r.EnvCc, r.EnvBcc, r.EnvReplyTo,
-			r.EnvMessageID, r.EnvInReplyTo, r.EnvDateUs)
+			r.EnvMessageID, r.EnvInReplyTo, r.EnvReferences, r.EnvDateUs)
 		return err
 	case "message_mailboxes":
 		r := row.(*MessageMailboxRow)

@@ -50,18 +50,24 @@ func setup(t *testing.T) (*handlerSet, store.Store, store.Principal, store.Mailb
 
 func insertMsg(t *testing.T, st store.Store, mb store.Mailbox, msgID, inReplyTo, subject string) store.MessageID {
 	t.Helper()
+	return insertMsgWithRefs(t, st, mb, msgID, inReplyTo, "", subject)
+}
+
+func insertMsgWithRefs(t *testing.T, st store.Store, mb store.Mailbox, msgID, inReplyTo, references, subject string) store.MessageID {
+	t.Helper()
 	uid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
 		Blob: store.BlobRef{Hash: "deadbeef" + msgID, Size: 1},
 		Envelope: store.Envelope{
-			Subject:   subject,
-			MessageID: msgID,
-			InReplyTo: inReplyTo,
+			Subject:    subject,
+			MessageID:  msgID,
+			InReplyTo:  inReplyTo,
+			References: references,
 		},
 	}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("insert message: %v", err)
 	}
-	// Find the row's MessageID by UID — the store assigns IDs
+	// Find the row's MessageID by UID -- the store assigns IDs
 	// monotonically and exposes them through ListMessages.
 	msgs, err := st.Meta().ListMessages(context.Background(), mb.ID, store.MessageFilter{
 		Limit: 1000, WithEnvelope: true,
@@ -101,6 +107,48 @@ func TestThread_Get_DerivedFromMessages(t *testing.T) {
 		want := renderEmailID(mid)
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %s in %s", want, got)
+		}
+	}
+}
+
+// TestThread_Get_ReferencesHeader verifies that thread assignment uses the
+// References header, not only In-Reply-To. This is the root-cause scenario
+// for the six RFC 8621 conformance failures: msg3 replies to msg1 only via
+// References (no In-Reply-To), and must still land in the same thread.
+//
+// RFC 5256 sec 2.2 and RFC 8621 sec 8.1 both mandate unioning
+// In-Reply-To and References for thread resolution.
+func TestThread_Get_ReferencesHeader(t *testing.T) {
+	h, st, p, mb := setup(t)
+	// msg1: the thread root (no references).
+	id1 := insertMsg(t, st, mb, "<m1@example.test>", "", "Original subject")
+	// msg2: replies to msg1 via In-Reply-To (conventional reply).
+	id2 := insertMsg(t, st, mb, "<m2@example.test>", "<m1@example.test>", "Re: Original subject")
+	// msg3: references both ancestors via References only; In-Reply-To is empty.
+	// This is the failing scenario: without References-based resolution,
+	// msg3 would become its own singleton thread instead of joining the existing thread.
+	id3 := insertMsgWithRefs(t, st, mb,
+		"<m3@example.test>", "",
+		"<m1@example.test> <m2@example.test>",
+		"Re: Original subject")
+	args, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
+	resp, mErr := getHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("Thread/get: %v", mErr)
+	}
+	g := resp.(getResponse)
+	if len(g.List) != 1 {
+		t.Fatalf("expected 1 thread (got %d threads): msg3 should have been linked via References", len(g.List))
+	}
+	thr := g.List[0]
+	if len(thr.EmailIDs) != 3 {
+		t.Fatalf("expected 3 emails in thread, got %d: %+v", len(thr.EmailIDs), thr.EmailIDs)
+	}
+	got := strings.Join(thr.EmailIDs, ",")
+	for _, mid := range []store.MessageID{id1, id2, id3} {
+		want := renderEmailID(mid)
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %s in thread email list %s", want, got)
 		}
 	}
 }
