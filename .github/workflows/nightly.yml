@@ -10,11 +10,12 @@ permissions:
 
 env:
   GO_VERSION: "1.25.x"
-  # Persistent self-hosted runner caches; mirror ci.yml so nightly runs
-  # reuse the same on-disk Go module / build caches as ci. See ci.yml for
-  # rationale (avoid actions/cache upload/download overhead).
-  GOMODCACHE: /home/runner/.cache/go-mod
-  GOCACHE: /home/runner/.cache/go-build
+  # No explicit cache-path env block. We do not use actions/cache on this
+  # runner because the data already lives on its disk between jobs; the
+  # upload/download to GitHub's cache service is pure overhead. Go defaults
+  # (~/.cache/go-build, ~/go/pkg/mod) live under the persistent runner
+  # user's $HOME, so they reuse state across jobs without any extra
+  # wiring. See ci.yml for the same rationale.
 
 jobs:
   fuzz-long:

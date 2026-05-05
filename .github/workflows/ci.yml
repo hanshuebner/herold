@@ -29,15 +29,12 @@ env:
   # supports Node 18+, but 20 is what package.json declares.
   NODE_VERSION: "20"
   PNPM_VERSION: "10"
-  # Persistent self-hosted runner caches. We do not use actions/cache on
-  # this runner because the data already lives on its disk between jobs;
-  # the upload/download to GitHub's cache service is pure overhead. Pin
-  # the tool-managed caches to fixed paths under the runner user's home so
-  # `go build` / `pnpm install` reuse them across jobs naturally. Mirrors
-  # the rationale in nightly.yml.
-  GOMODCACHE: /home/runner/.cache/go-mod
-  GOCACHE: /home/runner/.cache/go-build
-  npm_config_store_dir: /home/runner/.local/share/pnpm/store/v10
+  # No explicit cache-path env block. We do not use actions/cache on this
+  # runner because the data already lives on its disk between jobs; the
+  # upload/download to GitHub's cache service is pure overhead. The Go and
+  # pnpm tools default to paths under the persistent runner user's $HOME
+  # (~/.cache/go-build, ~/go/pkg/mod, ~/.local/share/pnpm/store/v10), so
+  # they reuse state across jobs without any extra wiring.
 
 jobs:
   # pre-commit job runs the full .pre-commit-config.yaml chain across all
@@ -374,9 +371,11 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           # Local on-disk buildx cache. The runner is a single persistent
           # host, so `type=local` reuses the layer cache across runs without
-          # the GHA cache-service round-trip that `type=gha` requires.
-          cache-from: type=local,src=/home/runner/.cache/docker-buildx
-          cache-to: type=local,dest=/home/runner/.cache/docker-buildx,mode=max
+          # the GHA cache-service round-trip that `type=gha` requires. Path
+          # is under the runner user's $HOME (`hans` on the configured
+          # self-hosted box).
+          cache-from: type=local,src=/home/hans/.cache/docker-buildx
+          cache-to: type=local,dest=/home/hans/.cache/docker-buildx,mode=max
           provenance: false
 
   jmaptest:
