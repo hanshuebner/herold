@@ -73,16 +73,18 @@ export const de = {
   'thread.couldNotLoad': 'Konversation konnte nicht geladen werden.',
   'thread.retry': 'Erneut versuchen',
   'thread.empty': 'Diese Konversation enthält keine Nachrichten.',
-  'thread.print': 'Konversation drucken',
+  'thread.print': 'Drucken',
   'thread.subject.none': '(kein Betreff)',
   'thread.back': 'Zurück zur Liste',
-  // Thread-scope toolbar actions (re #60)
-  'thread.archive': 'Konversation archivieren',
-  'thread.delete': 'Konversation löschen',
-  'thread.markUnread': 'Konversation als ungelesen markieren',
-  'thread.snooze': 'Konversation zurückstellen',
-  'thread.move': 'Konversation verschieben',
-  'thread.label': 'Konversation mit Labels versehen',
+  // Thread-scope toolbar actions (re #60). Labels intentionally do NOT
+  // repeat "Konversation" — the toolbar is the thread toolbar, the
+  // prefix is redundant and noisy in the UI.
+  'thread.archive': 'Archivieren',
+  'thread.delete': 'Löschen',
+  'thread.markUnread': 'Als ungelesen markieren',
+  'thread.snooze': 'Zurückstellen',
+  'thread.move': 'Verschieben',
+  'thread.label': 'Labels',
   'thread.moreActions': 'Weitere Aktionen',
 
   // ── Message actions (issue #17 tooltips) ─────────────────────────────
@@ -105,6 +107,7 @@ export const de = {
   'msg.reportPhishing': 'Phishing melden',
   'msg.blockSender': 'Absender blockieren',
   'msg.filterLike': 'Filter für ähnliche Nachrichten',
+  'msg.viewOriginal': 'Original anzeigen',
   'msg.imagesBlocked': 'Externe Bilder werden blockiert.',
   'msg.loadImages': 'Bilder laden',
   'msg.alwaysFrom': 'Immer von {sender}',

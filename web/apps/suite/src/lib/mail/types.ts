@@ -123,6 +123,12 @@ export interface Email {
    */
   reactions?: Record<string, string[]> | null;
   /**
+   * RFC 8621 §4.1.1 — the blob ID of the raw RFC 5322 message source.
+   * Used by the "View original" action to open the undecoded wire bytes
+   * in a new browser tab via the JMAP blob download endpoint.
+   */
+  blobId: string;
+  /**
    * Raw header values for list detection (REQ-MAIL-191). The suite
    * fetches `header:List-ID:asText` to determine mailing-list mail.
    */
@@ -183,6 +189,7 @@ export const EMAIL_BODY_PROPERTIES = [
   'inReplyTo',
   'references',
   'reactions',
+  'blobId',
   'header:List-ID:asText',
   'header:Face:asText',
   'header:X-Face:asText',

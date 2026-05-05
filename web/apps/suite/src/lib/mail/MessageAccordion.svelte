@@ -37,10 +37,9 @@
   import RestoreIcon from '../icons/RestoreIcon.svelte';
   import FilterIcon from '../icons/FilterIcon.svelte';
   import LabelIcon from '../icons/LabelIcon.svelte';
+  import ViewOriginalIcon from '../icons/ViewOriginalIcon.svelte';
   import { t, localeTag } from '../i18n/i18n.svelte';
   import { relativeTimeAgo } from './relative-time';
-  import { llmTransparency } from '../llm/transparency.svelte';
-  import LLMInspectModal from '../llm/LLMInspectModal.svelte';
   import RecipientTrigger from './RecipientTrigger.svelte';
   import { type Address } from './types';
 
@@ -299,11 +298,6 @@
     router.navigate('/settings/filters');
   }
 
-  // ── LLM classification inspect ────────────────────────────────────────
-
-  let llmInspectOpen = $state(false);
-  let hasLLMTransparency = $derived(llmTransparency.available);
-
   // ── Block sender confirmation ──────────────────────────────────────────
 
   let blockConfirmOpen = $state(false);
@@ -357,7 +351,7 @@
     overflowItem: () => { id: string; label: string; shortcut?: string; onclick: () => void } | null;
   };
 
-  function msgActionHandlers(): Record<string, { visible: boolean; label: string; shortcut?: string; onclick: () => void; icon: 'reply' | 'replyAll' | 'forward' | 'react' | 'move' | 'label' | 'markRead' | 'markImportant' | 'snooze' | 'restore' | 'filterLike'; ariaPressed?: boolean }> {
+  function msgActionHandlers(): Record<string, { visible: boolean; label: string; shortcut?: string; onclick: () => void; icon: 'reply' | 'replyAll' | 'forward' | 'react' | 'move' | 'label' | 'markRead' | 'markImportant' | 'snooze' | 'restore' | 'filterLike' | 'viewOriginal'; ariaPressed?: boolean }> {
     return {
       reply: {
         visible: true,
@@ -438,7 +432,43 @@
         onclick: handleFilterLike,
         icon: 'filterLike',
       },
+      viewOriginal: {
+        visible: !!email.blobId,
+        label: t('msg.viewOriginal'),
+        onclick: handleViewOriginal,
+        icon: 'viewOriginal',
+      },
     };
+  }
+
+  // ── View original ─────────────────────────────────────────────────────────
+  // Opens the raw RFC 5322 source in a new browser tab. Type=text/plain so
+  // the browser renders the bytes inline rather than downloading them
+  // (Chromium's default for message/rfc822 is to download). Filename is ASCII
+  // -sanitised since it ends up in a Content-Disposition header.
+
+  function sanitizeFilename(subject: string): string {
+    return subject
+      .replace(/[^a-zA-Z0-9 _-]/g, '_')
+      .replace(/\s+/g, '_')
+      .replace(/_{2,}/g, '_')
+      .slice(0, 80);
+  }
+
+  function handleViewOriginal(): void {
+    const accountId = auth.session?.primaryAccounts['urn:ietf:params:jmap:mail'];
+    if (!accountId || !email.blobId) return;
+    const rawSubject = (email.subject ?? 'message').trim() || 'message';
+    const name = `${sanitizeFilename(rawSubject)}.eml`;
+    const url = jmap.downloadUrl({
+      accountId,
+      blobId: email.blobId,
+      type: 'text/plain',
+      name,
+      disposition: 'inline',
+    });
+    if (!url) return;
+    window.open(url, '_blank', 'noopener');
   }
 
   /**
@@ -788,6 +818,17 @@
               <FilterIcon size={16} />
               <span class="pill-label">{action.label}</span>
             </button>
+          {:else if action.id === 'viewOriginal'}
+            <button
+              type="button"
+              class="pill"
+              aria-label={action.label}
+              title={action.label}
+              onclick={action.onclick}
+            >
+              <ViewOriginalIcon size={16} />
+              <span class="pill-label">{action.label}</span>
+            </button>
           {/if}
         {/each}
 
@@ -838,25 +879,9 @@
         </div>
       {/if}
 
-      <!-- LLM classification inspect per REQ-CAT-44 / REQ-FILT-66. -->
-      {#if hasLLMTransparency}
-        <button
-          type="button"
-          class="pill"
-          aria-label="Show classification"
-          title="Show how this message was classified"
-          onclick={() => (llmInspectOpen = true)}
-        >
-          Inspect
-        </button>
-      {/if}
     </div>
   {/if}
 </article>
-
-{#if llmInspectOpen}
-  <LLMInspectModal emailId={email.id} onClose={() => (llmInspectOpen = false)} />
-{/if}
 
 <style>
   .message {
