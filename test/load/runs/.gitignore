@@ -1,0 +1,4 @@
+# Load test run outputs are not committed.
+# Keep this file so git tracks the directory.
+*
+!.gitignore
