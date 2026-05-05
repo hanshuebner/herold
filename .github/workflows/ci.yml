@@ -336,7 +336,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      # No setup-qemu-action: this job builds only linux/arm64 natively
+      # on the arm64 self-hosted runner; cross-arch emulation is not used.
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
       - name: log in to ghcr.io
         if: github.event_name != 'pull_request'
@@ -372,9 +373,16 @@ jobs:
         with:
           context: .
           file: deploy/docker/Dockerfile
-          # Multi-arch build matches the binary release surface in
-          # release.yml. amd64 builds native; arm64 goes through QEMU.
-          platforms: linux/amd64,linux/arm64
+          # Build only linux/arm64 here. The self-hosted CI runner is
+          # arm64, so amd64 would require QEMU emulation -- which breaks
+          # esbuild (vite's bundler) inside the multi-stage Dockerfile
+          # with `runtime: lfstack.push invalid packing` (Go's amd64
+          # pointer-packing assumption is incompatible with QEMU on the
+          # arm64 host; ci run 25364986444 / job 74382336044). Multi-arch
+          # release images are produced by release.yml on tag pushes;
+          # this job exists for the per-commit `:main` / `:latest` /
+          # `:sha-...` tags and arm64 alone covers the deploy target.
+          platforms: linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.tags.outputs.tags }}
           # Local on-disk buildx cache. The runner is a single persistent
