@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/cursors"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
@@ -133,9 +134,8 @@ type Dispatcher struct {
 	cursorKey     string
 	retrySchedule []time.Duration
 
-	cursor        atomic.Uint64
-	flushedCursor atomic.Uint64
-	running       atomic.Bool
+	cursor  atomic.Uint64
+	running atomic.Bool
 
 	wg sync.WaitGroup
 }
@@ -210,27 +210,18 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	}
 	defer d.running.Store(false)
 	// On shutdown: first drain in-flight deliveries, then flush the cursor.
-	// Defers run LIFO so we register flush before wg.Wait: flush runs last
-	// (first registered = last executed in LIFO), wg.Wait runs first.
+	// Defers run LIFO so we register the cursor flush before wg.Wait:
+	// the flush runs last (first registered = last executed in LIFO) and
+	// sees the final in-memory cursor that the draining deliveries wrote.
 	//
-	// Flush any cursor advance that was not yet persisted (e.g. the
-	// SetFTSCursor call was interrupted by context cancellation).  A fresh
-	// context is used so the caller's cancellation cannot prevent the write.
-	defer func() {
-		if cur := d.cursor.Load(); cur > d.flushedCursor.Load() {
-			flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := d.store.Meta().SetFTSCursor(flushCtx, d.cursorKey, cur); err != nil {
-				d.logger.Warn("protowebhook: shutdown cursor flush",
-					"activity", observe.ActivityInternal,
-					"key", d.cursorKey,
-					"seq", cur,
-					"err", err.Error())
-			} else {
-				d.flushedCursor.Store(cur)
-			}
-		}
-	}()
+	// ShutdownFlusher uses a fresh context so a cancellation of ctx cannot
+	// prevent the write.
+	defer cursors.ShutdownFlusher{
+		Get:       d.cursor.Load,
+		Put:       func(ctx context.Context, seq uint64) error { return d.store.Meta().SetFTSCursor(ctx, d.cursorKey, seq) },
+		Logger:    d.logger,
+		Subsystem: "protowebhook",
+	}.Flush()
 	// Wait for in-flight deliveries so the cursor flush above sees the
 	// final in-memory cursor position. Registered after the flush defer so
 	// it executes before the flush (LIFO order: last registered runs first).
@@ -244,7 +235,6 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		return fmt.Errorf("protowebhook: load cursor: %w", err)
 	} else {
 		d.cursor.Store(seq)
-		d.flushedCursor.Store(seq)
 	}
 
 	for {
@@ -291,8 +281,6 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 					"key", d.cursorKey,
 					"seq", maxSeq,
 					"err", err.Error())
-			} else {
-				d.flushedCursor.Store(maxSeq)
 			}
 		}
 	}
