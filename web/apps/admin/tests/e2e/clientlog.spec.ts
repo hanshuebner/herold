@@ -16,6 +16,7 @@
  *   - Enable live-tail for a session
  *   - Disable live-tail for a session
  *   - Paginate with "Load more"
+ *   - Vital metric display (kind=vital detail pane shows Metric/Value/ID)
  */
 
 import { test, expect } from '@playwright/test';
@@ -26,6 +27,17 @@ import { test, expect } from '@playwright/test';
 
 const NOW = new Date().toISOString();
 
+/**
+ * makeRow builds a mock clientLogRowDTO as returned by GET
+ * /api/v1/admin/clientlog.
+ *
+ * The server stores events in an enrichedPayload envelope:
+ *   { server_recv_ts, clock_skew_ms, user_id, listener, endpoint,
+ *     raw: <original wire event> }
+ * Breadcrumbs are at payload.raw.breadcrumbs and vital data at
+ * payload.raw.vital -- NOT at the top-level payload (see
+ * clientlog_pipeline.go clientEventToRow / enrichedPayload).
+ */
 function makeRow(id: number, overrides: Record<string, unknown> = {}) {
   return {
     id,
@@ -45,13 +57,60 @@ function makeRow(id: number, overrides: Record<string, unknown> = {}) {
     ua: 'Mozilla/5.0 (vitest)',
     msg: `Error ${id}: something went wrong`,
     stack: `Error: something went wrong\n    at render (http://localhost:5174/admin/assets/index-abc123.js:42:17)\n    at mount (http://localhost:5174/admin/assets/index-abc123.js:10:5)`,
+    // payload mirrors the enrichedPayload envelope stored in the ring buffer.
+    // breadcrumbs and vital live under payload.raw, not at the top level.
     payload: {
-      breadcrumbs: [
-        { kind: 'route', ts: NOW, route: '/admin/dashboard' },
-        { kind: 'fetch', ts: NOW, method: 'GET', url_path: '/api/v1/server/status', status: 200 },
-      ],
+      server_recv_ts: NOW,
+      clock_skew_ms: 12,
+      user_id: 'user-1',
+      listener: 'admin',
+      endpoint: 'auth',
+      raw: {
+        v: 1,
+        kind: 'error',
+        level: 'error',
+        msg: `Error ${id}: something went wrong`,
+        breadcrumbs: [
+          { kind: 'route', ts: NOW, route: '/admin/dashboard' },
+          { kind: 'fetch', ts: NOW, method: 'GET', url_path: '/api/v1/server/status', status: 200 },
+        ],
+      },
     },
     ...overrides,
+  };
+}
+
+/** makeVitalRow builds a mock kind=vital row with metric data. */
+function makeVitalRow(id: number, name: string, value: number, vitalId: string) {
+  return {
+    id,
+    slice: 'auth',
+    server_ts: NOW,
+    client_ts: NOW,
+    clock_skew_ms: 5,
+    app: 'suite',
+    kind: 'vital',
+    level: 'info',
+    user_id: 'user-1',
+    session_id: 'sess-abc',
+    page_id: 'page-vital',
+    build_sha: 'abc123',
+    ua: 'Mozilla/5.0 (vitest)',
+    msg: `web vital: ${name}`,
+    payload: {
+      server_recv_ts: NOW,
+      clock_skew_ms: 5,
+      user_id: 'user-1',
+      listener: 'admin',
+      endpoint: 'auth',
+      raw: {
+        v: 1,
+        kind: 'vital',
+        level: 'info',
+        msg: `web vital: ${name}`,
+        vital: { name, value, id: vitalId },
+      },
+    },
   };
 }
 
@@ -437,5 +496,86 @@ test.describe('clientlog viewer', () => {
     await expect(page.getByText('Error 10: something went wrong')).toBeVisible({
       timeout: 3000,
     });
+  });
+
+  test('vital detail pane shows Metric / Value / ID for kind=vital rows', async ({ page }) => {
+    // REQ-OPS-202: kind=vital rows carry payload.raw.vital with name/value/id.
+    // The detail pane must render these in a "Web Vital" section.
+    // Regression test for issue #71 where the prior admin SPA had no
+    // rendering path for vital data and the TypeScript types were wrong.
+    const vitalRow = makeVitalRow(100, 'LCP', 1234, 'v-lcp-e2e-1');
+
+    void page.route('/api/v1/admin/clientlog*', (route) => {
+      if (route.request().url().includes('/stats')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(STATS),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ rows: [vitalRow], next_cursor: null }),
+      });
+    });
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Client logs' }).click();
+
+    // The vital row should appear in the list with the message "web vital: LCP".
+    await expect(page.getByText('web vital: LCP')).toBeVisible({ timeout: 5000 });
+
+    // Click the row to open the detail pane.
+    await page.getByText('web vital: LCP').click();
+    await expect(page.getByRole('heading', { name: 'Detail' })).toBeVisible({ timeout: 3000 });
+
+    // The "Web Vital" section heading must be visible.
+    await expect(page.getByRole('heading', { name: 'Web Vital', level: 3 })).toBeVisible({
+      timeout: 3000,
+    });
+
+    // Metric name: "LCP"
+    await expect(page.getByText('LCP')).toBeVisible();
+
+    // Value with unit: LCP is in ms, so "1234 ms".
+    await expect(page.getByText('1234 ms')).toBeVisible();
+
+    // Vital ID.
+    await expect(page.getByText('v-lcp-e2e-1')).toBeVisible();
+  });
+
+  test('vital detail pane shows dimensionless value for CLS', async ({ page }) => {
+    // CLS values are dimensionless (no " ms" suffix); verify the formatting branch.
+    const clsRow = makeVitalRow(101, 'CLS', 0.1234, 'v-cls-e2e-1');
+
+    void page.route('/api/v1/admin/clientlog*', (route) => {
+      if (route.request().url().includes('/stats')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(STATS),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ rows: [clsRow], next_cursor: null }),
+      });
+    });
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Client logs' }).click();
+    await expect(page.getByText('web vital: CLS')).toBeVisible({ timeout: 5000 });
+    await page.getByText('web vital: CLS').click();
+    await expect(page.getByRole('heading', { name: 'Web Vital', level: 3 })).toBeVisible({ timeout: 3000 });
+
+    // CLS: 4 decimal places, no " ms" suffix.
+    await expect(page.getByText('0.1234')).toBeVisible();
+    // Must NOT have " ms" after the CLS value.
+    const valueCell = page.locator('.vital-value');
+    await expect(valueCell).toBeVisible();
+    const valueText = await valueCell.textContent();
+    expect(valueText).not.toMatch(/ms/);
   });
 });
