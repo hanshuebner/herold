@@ -219,13 +219,18 @@ func TestIMIP_PersistsCursorOnShutdown(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- intake.Run(runCtx) }()
 
-	// Drive the worker until it has applied the REQUEST.
-	deadline := time.Now().Add(3 * time.Second)
+	// Drive the worker until BOTH signals are present: the REQUEST has
+	// been applied AND the cursor has advanced. processChange runs
+	// before cursor.Store inside the same tick, so observing only the
+	// store side can race ahead of the cursor write on a slow runner.
+	deadline := time.Now().Add(5 * time.Second)
 	var applied bool
+	var memCursor uint64
 	for time.Now().Before(deadline) {
 		clk.Advance(5 * time.Millisecond)
 		rows, _ := fs.Meta().ListCalendarEvents(ctx, store.CalendarEventFilter{PrincipalID: &p.ID})
-		if len(rows) == 1 {
+		memCursor = intake.Cursor()
+		if len(rows) == 1 && memCursor > 0 {
 			applied = true
 			break
 		}
@@ -234,14 +239,7 @@ func TestIMIP_PersistsCursorOnShutdown(t *testing.T) {
 	if !applied {
 		cancel()
 		<-done
-		t.Fatalf("first intake did not apply the REQUEST")
-	}
-
-	memCursor := intake.Cursor()
-	if memCursor == 0 {
-		cancel()
-		<-done
-		t.Fatalf("first intake's in-memory cursor did not advance")
+		t.Fatalf("first intake did not apply REQUEST and advance cursor (rows=?, cursor=%d)", memCursor)
 	}
 
 	cancel()
