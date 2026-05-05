@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/cursors"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -129,27 +130,6 @@ func (w *Worker) Cursor() uint64 {
 	return w.cursor.Load()
 }
 
-// persistCursorOnShutdown writes the in-memory cursor to the durable
-// store and flushes the index using a fresh ctx, so the worker's last
-// advance lands even when the run ctx is already cancelled. Called
-// from Run's defer chain. Persists the cursor BEFORE the index commit:
-// if the cursor write fails we still commit the index, because
-// IndexMessage is idempotent and a small replay on restart is
-// preferable to silently dropping freshly-indexed docs.
-func (w *Worker) persistCursorOnShutdown() {
-	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if seq := w.cursor.Load(); seq > 0 {
-		if err := w.store.Meta().SetFTSCursor(flushCtx, w.opts.CursorKey, seq); err != nil {
-			w.logger.Warn("storefts: persist cursor on shutdown",
-				"key", w.opts.CursorKey,
-				"seq", seq,
-				"err", err.Error())
-		}
-	}
-	_ = w.idx.Commit(flushCtx)
-}
-
 // Lag returns the wall-time delta between now and the ProducedAt of the
 // most recent change indexed. Zero if the worker has never processed a
 // change. Used by the metrics exporter to expose
@@ -182,7 +162,23 @@ func (w *Worker) Run(ctx context.Context) error {
 	// — ctx.Err() at the top, ReadChangeFeedForFTS returning canceled,
 	// processBatch returning canceled — and an inline shutdown branch
 	// could be bypassed by any of them).
-	defer w.persistCursorOnShutdown()
+	// Cursor is persisted BEFORE the index commit (LIFO order: index
+	// commit registered first runs last). If the cursor write fails the
+	// index still commits because IndexMessage is idempotent and a small
+	// replay on restart is preferable to silently dropping indexed docs.
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = w.idx.Commit(flushCtx)
+	}()
+	defer cursors.ShutdownFlusher{
+		Get: w.cursor.Load,
+		Put: func(ctx context.Context, seq uint64) error {
+			return w.store.Meta().SetFTSCursor(ctx, w.opts.CursorKey, seq)
+		},
+		Logger:    w.logger,
+		Subsystem: "storefts",
+	}.Flush()
 
 	// Hydrate the durable cursor. A missing row returns (0, nil) from
 	// the store, which starts the feed from the beginning; that is the
