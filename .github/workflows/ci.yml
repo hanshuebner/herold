@@ -398,12 +398,17 @@ jobs:
     name: jmap conformance (jmapio/jmap-test-suite)
     runs-on: self-hosted
     timeout-minutes: 25
-    # Advisory only for now. The suite has 5 Required failures tracked under
-    # REQ-STORE-36..39 (multi-mailbox membership) and REQ-PROTO-48 (Web Push
-    # VAPID dispatcher); failing the build on those would block every PR
-    # until those items land. Surface the result for visibility without
-    # gating. Drop continue-on-error once the deferred items close out.
-    continue-on-error: true
+    # First clean run on the self-hosted runner (ci run 25373519283 /
+    # job 74448831697) reported total=309 passed=304 failed=0 skipped=5
+    # required_failed=0 recommended_failed=0. The 5 skipped are
+    # cross-account Blob/copy + Email/copy (a feature herold has not
+    # implemented; the upstream suite skips when the server's session
+    # document does not advertise the relevant capability), and the
+    # historic deferred items called out in the previous comment
+    # (REQ-STORE-36..39, REQ-PROTO-48) no longer surface as Required
+    # failures. The suite CLI exits 0 on its own, so drop the
+    # continue-on-error gate; a future Required regression now breaks
+    # CI for real.
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: run jmaptest harness
