@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/cursors"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/vapid"
@@ -261,7 +262,12 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	// even when the in-loop SetFTSCursor lost its race with ctx
 	// cancellation. Uses a fresh, short-deadline ctx so the flush
 	// itself is not cancelled the moment it starts.
-	defer d.persistCursorOnShutdown()
+	defer cursors.ShutdownFlusher{
+		Get:       d.cursor.Load,
+		Put:       func(ctx context.Context, seq uint64) error { return d.store.Meta().SetFTSCursor(ctx, d.cursorKey, seq) },
+		Logger:    d.logger,
+		Subsystem: "webpush",
+	}.Flush()
 
 	if !d.vapid.Configured() {
 		d.logger.LogAttrs(ctx, slog.LevelInfo,
@@ -316,25 +322,6 @@ func (d *Dispatcher) Close(ctx context.Context) error {
 	_ = ctx
 	d.stopAllCoalesce()
 	return nil
-}
-
-// persistCursorOnShutdown writes the in-memory cursor to the durable
-// store using a fresh ctx, so the worker's last advance lands even
-// when the run ctx is already cancelled. Called from Run's defer
-// chain.
-func (d *Dispatcher) persistCursorOnShutdown() {
-	seq := d.cursor.Load()
-	if seq == 0 {
-		return
-	}
-	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := d.store.Meta().SetFTSCursor(flushCtx, d.cursorKey, seq); err != nil {
-		d.logger.LogAttrs(flushCtx, slog.LevelWarn, "webpush: persist cursor on shutdown",
-			slog.String("key", d.cursorKey),
-			slog.Uint64("seq", seq),
-			slog.String("err", err.Error()))
-	}
 }
 
 // tick reads one batch of change-feed entries, fans the relevant
