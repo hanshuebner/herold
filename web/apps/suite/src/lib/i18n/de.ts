@@ -26,6 +26,7 @@ export const de = {
   'sidebar.renameFolder.title': 'Label umbenennen',
   'sidebar.renameFolder.label': 'Neuer Name',
   'sidebar.renameFolder.confirm': 'Umbenennen',
+  'sidebar.editFolder.title': 'Label bearbeiten',
   'sidebar.editFolder.confirm': 'Ändern',
   'sidebar.editFolder.toastChanged': 'Geändert',
   'sidebar.deleteFolder.title': 'Label "{name}" löschen?',

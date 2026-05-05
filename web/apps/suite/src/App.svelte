@@ -194,7 +194,7 @@
   async function promptRenameMailbox(id: string, current: string): Promise<void> {
     const mb = mail.mailboxes.get(id);
     const result = await labelDialog.open({
-      title: t('sidebar.renameFolder.title'),
+      title: t('sidebar.editFolder.title'),
       defaultName: current,
       defaultColor: mb?.color ?? undefined,
       confirmLabel: t('sidebar.editFolder.confirm'),
