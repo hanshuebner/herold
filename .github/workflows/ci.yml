@@ -251,7 +251,11 @@ jobs:
         # HEROLD_PG_DSN intentionally unset so test/e2e and storepg /
         # diag-migrate skip the postgres legs. Sqlite tests use per-package
         # temp dirs so default cross-package parallelism is safe.
-        run: go test -race -count=1 ./...
+        # -timeout 20m: the default 10m is per test binary, and a few of
+        # the heavier packages (protoadmin ~8m, protoimap ~5m, protojmap
+        # ~3m) sit close to the limit under -race; allow headroom rather
+        # than chase per-test parallelism right now.
+        run: go test -race -count=1 -timeout 20m ./...
       - name: test (postgres lane, pg-touching packages serialised)
         if: matrix.store == 'postgres'
         env:
@@ -260,15 +264,19 @@ jobs:
         # (-p 1) so storepg compliance, internal/diag/migrate, and test/e2e
         # do not truncate each other's rows (surfaced as "AUTHENTICATIONFAILED
         # LOGIN failed", "conflict: already linked", etc.).
-        run: go test -race -count=1 -p 1 ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
+        run: go test -race -count=1 -timeout 20m -p 1 ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
       - name: test (postgres lane, rest in parallel)
         if: matrix.store == 'postgres'
         # HEROLD_PG_DSN unset for this step: pg-touching packages above
         # are excluded here, and the rest must not silently start hitting
         # postgres.
+        # -timeout 20m: same rationale as the sqlite lane -- the postgres
+        # lane is incidentally heavier (storesqlite + protoadmin run
+        # concurrently in this batch), and protoadmin tipped past 10m on
+        # ci run 25361758519.
         run: |
           PKGS=$(go list ./... | grep -vE '^github.com/hanshuebner/herold/(internal/storepg|internal/diag/migrate|test/e2e)($|/)')
-          go test -race -count=1 $PKGS
+          go test -race -count=1 -timeout 20m $PKGS
 
   fuzz-short:
     name: fuzz (short)
