@@ -188,29 +188,30 @@ func TestIntake_PersistsCursorOnShutdown(t *testing.T) {
 
 	// Drive the worker until it has ingested the report (the in-loop
 	// cursor write fails, but the in-memory cursor advances and the
-	// report row lands).
+	// report row lands). Wait for BOTH signals: the report row is
+	// visible AND intake.Cursor() has advanced. The worker writes the
+	// report row before bumping the in-memory cursor, so observing only
+	// the row is racy and the test would read Cursor()==0 if it sampled
+	// between the two writes.
 	deadline := time.Now().Add(3 * time.Second)
 	var ingested bool
+	var memCursor uint64
 	for time.Now().Before(deadline) {
 		clk.Advance(20 * time.Millisecond)
 		reports, _ := fs.Meta().ListDMARCReports(context.Background(), store.DMARCReportFilter{})
 		if len(reports) == 1 {
-			ingested = true
-			break
+			memCursor = intake.Cursor()
+			if memCursor != 0 {
+				ingested = true
+				break
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !ingested {
 		cancel()
 		<-done
-		t.Fatalf("first intake did not ingest the report")
-	}
-
-	memCursor := intake.Cursor()
-	if memCursor == 0 {
-		cancel()
-		<-done
-		t.Fatalf("first intake's in-memory cursor did not advance")
+		t.Fatalf("first intake did not ingest the report (cursor=%d)", memCursor)
 	}
 
 	// Cancel and wait for Run to return; the shutdown defer must
