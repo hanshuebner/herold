@@ -5,10 +5,13 @@
    * Loads the admin.json bundle (produced by `pnpm --filter @herold/manual run bundle`)
    * and renders it via the shared @herold/manual Manual component.
    *
-   * Route shape:
-   *   #/help              -> home chapter
-   *   #/help/{slug}       -> specific chapter
-   *   #/help/{slug}#{id}  -> chapter + heading anchor (hash from router.current)
+   * Route shape (mirrors the suite's HelpView):
+   *   #/help                  -> home chapter
+   *   #/help/{slug}           -> specific chapter
+   *   #/help/{slug}/{heading} -> chapter + heading anchor (heading id is a
+   *                              path segment, NOT a real URL fragment, so
+   *                              there is no double-hash and the router parses
+   *                              it cleanly).
    *
    * i18n: The admin SPA does not yet have an i18n system. The identity-fallback
    * `t = (k) => k` is passed so the Manual component uses its built-in English
@@ -27,27 +30,9 @@
   // See i18n note in the header comment above.
   const t = (key: string): string => key;
 
-  // Derive the chapter slug from the second path segment: /help/{slug}.
+  // parts: ['help'] | ['help', slug] | ['help', slug, headingId]
   const slug = $derived(router.parts[1] ?? null);
-
-  // Track the browser hash for sub-fragment anchors within a chapter.
-  // For deep-link URLs like #/help/install#section, the router holds the
-  // path (/help/install) and the sub-anchor lives in location.hash.
-  let locationHash: string = $state(window.location.hash);
-  $effect(() => {
-    function onHashChange() {
-      locationHash = window.location.hash;
-    }
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  });
-
-  // The sub-anchor is the part after the second # in the full hash string.
-  // e.g. "#/help/install#configuration" -> "configuration"
-  const activeHash = $derived((() => {
-    const idx = locationHash.indexOf('#', 1);
-    return idx >= 0 ? locationHash.slice(idx + 1) : undefined;
-  })());
+  const activeHash = $derived(router.parts[2]);
 
   // Bundle load state.
   let bundleStatus: 'loading' | 'ready' | 'error' = $state('loading');
@@ -86,14 +71,9 @@
   }
 
   function handleNavigate(targetSlug: string, targetHash?: string): void {
-    const path = `/help/${targetSlug}`;
-    if (targetHash) {
-      // Navigate to the chapter, then set the sub-anchor.
-      router.navigate(path);
-      window.location.hash = '#' + path + '#' + targetHash;
-    } else {
-      router.navigate(path);
-    }
+    const parts = ['help', targetSlug];
+    if (targetHash) parts.push(targetHash);
+    router.navigate('/' + parts.join('/'));
   }
 </script>
 

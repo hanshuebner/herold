@@ -212,6 +212,23 @@ describe('HelpView', () => {
     });
   });
 
+  it('renders the chapter when slug + heading are both in the path (#/help/install/configuration)', async () => {
+    mockFetchOk(FIXTURE_BUNDLE);
+    setHash('#/help/install/configuration');
+
+    const { default: HelpView } = await import('./HelpView.svelte');
+    render(HelpView);
+
+    // Heading id is a path segment, not a real URL fragment, so the chapter
+    // resolves cleanly to 'install' (regression: previously the admin SPA used
+    // a double-hash scheme that turned the slug into 'install#configuration'
+    // and fell back to the home chapter).
+    await waitFor(() => {
+      const article = document.querySelector('[data-slug="install"]');
+      expect(article).toBeInTheDocument();
+    });
+  });
+
   it('fetches from /admin/help/bundle.json', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
