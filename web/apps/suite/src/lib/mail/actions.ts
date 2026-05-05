@@ -49,6 +49,7 @@ export const MESSAGE_ACTIONS: ActionDef[] = [
   // Re "Filter messages like this": handleFilterLike in MessageAccordion builds
   // Sieve conditions from the *message* sender/subject/list-id — it is decidedly
   // per-message (each message can have a different sender), so it stays here.
+  { id: 'viewOriginal',  scope: 'message', labelKey: 'msg.viewOriginal',     iconName: 'ViewOriginalIcon' },
 ];
 
 // ── Thread-scope actions ───────────────────────────────────────────────────

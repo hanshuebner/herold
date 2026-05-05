@@ -127,6 +127,7 @@ function makeEmail(partial: Partial<Email> & { id: string }): Email {
     preview: 'Preview text',
     receivedAt: '2026-04-28T10:00:00Z',
     hasAttachment: false,
+    blobId: 'blob-stub',
     reactions: null,
     ...partial,
   };

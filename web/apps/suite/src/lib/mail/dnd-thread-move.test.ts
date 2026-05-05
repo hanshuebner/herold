@@ -81,6 +81,7 @@ function makeEmail(id: string, threadId: string, mailboxId: string): Email {
     preview: '',
     receivedAt: '2024-01-01T00:00:00Z',
     hasAttachment: false,
+    blobId: 'blob-stub',
   };
 }
 

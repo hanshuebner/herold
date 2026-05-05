@@ -74,16 +74,18 @@ export const en = {
   'thread.couldNotLoad': "Couldn't load thread.",
   'thread.retry': 'Retry',
   'thread.empty': 'Thread has no messages.',
-  'thread.print': 'Print thread',
+  'thread.print': 'Print',
   'thread.subject.none': '(no subject)',
   'thread.back': 'Back to list',
-  // Thread-scope toolbar actions (re #60)
-  'thread.archive': 'Archive thread',
-  'thread.delete': 'Delete thread',
-  'thread.markUnread': 'Mark thread unread',
-  'thread.snooze': 'Snooze thread',
-  'thread.move': 'Move thread',
-  'thread.label': 'Label thread',
+  // Thread-scope toolbar actions (re #60). Labels intentionally do NOT
+  // repeat "thread" — the toolbar is the thread toolbar, the prefix is
+  // redundant and noisy in the UI.
+  'thread.archive': 'Archive',
+  'thread.delete': 'Delete',
+  'thread.markUnread': 'Mark unread',
+  'thread.snooze': 'Snooze',
+  'thread.move': 'Move',
+  'thread.label': 'Label',
   'thread.moreActions': 'More actions',
 
   // ── Message actions (issue #17 tooltips) ─────────────────────────────
@@ -106,6 +108,7 @@ export const en = {
   'msg.reportPhishing': 'Report phishing',
   'msg.blockSender': 'Block sender',
   'msg.filterLike': 'Filter messages like this',
+  'msg.viewOriginal': 'View original',
   'msg.imagesBlocked': 'External images are blocked.',
   'msg.loadImages': 'Load images',
   'msg.alwaysFrom': 'Always from {sender}',
