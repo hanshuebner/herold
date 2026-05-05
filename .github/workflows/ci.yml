@@ -29,6 +29,15 @@ env:
   # supports Node 18+, but 20 is what package.json declares.
   NODE_VERSION: "20"
   PNPM_VERSION: "10"
+  # Persistent self-hosted runner caches. We do not use actions/cache on
+  # this runner because the data already lives on its disk between jobs;
+  # the upload/download to GitHub's cache service is pure overhead. Pin
+  # the tool-managed caches to fixed paths under the runner user's home so
+  # `go build` / `pnpm install` reuse them across jobs naturally. Mirrors
+  # the rationale in nightly.yml.
+  GOMODCACHE: /home/runner/.cache/go-mod
+  GOCACHE: /home/runner/.cache/go-build
+  npm_config_store_dir: /home/runner/.local/share/pnpm/store/v10
 
 jobs:
   # pre-commit job runs the full .pre-commit-config.yaml chain across all
@@ -46,7 +55,9 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          # Persistent self-hosted runner: GOMODCACHE / GOCACHE pinned at
+          # workflow level survive job runs naturally, no actions/cache needed.
+          cache: false
       - name: install Go tools used by pre-commit hooks
         run: |
           go install golang.org/x/tools/cmd/goimports@latest
@@ -65,8 +76,9 @@ jobs:
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
+          # Persistent self-hosted runner: pnpm store pinned via
+          # npm_config_store_dir at workflow level; actions/cache adds
+          # only upload/download overhead here.
       - name: pnpm install (workspace)
         run: pnpm --dir web install --frozen-lockfile
       - name: prep web placeholders
@@ -82,7 +94,9 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          # Persistent self-hosted runner: GOMODCACHE / GOCACHE pinned at
+          # workflow level survive job runs naturally, no actions/cache needed.
+          cache: false
       # go vet / staticcheck / govulncheck must compile the tree, which
       # means internal/webspa/embed_default.go's `//go:embed dist` has to
       # resolve. prep-web copies the tracked placeholders into
@@ -121,8 +135,9 @@ jobs:
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
+          # Persistent self-hosted runner: pnpm store pinned via
+          # npm_config_store_dir at workflow level; actions/cache adds
+          # only upload/download overhead here.
       - name: pnpm install (workspace)
         run: pnpm --dir web install --frozen-lockfile
       - name: build (suite SPA)
@@ -149,8 +164,9 @@ jobs:
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
+          # Persistent self-hosted runner: pnpm store pinned via
+          # npm_config_store_dir at workflow level; actions/cache adds
+          # only upload/download overhead here.
       - name: pnpm install (workspace)
         run: pnpm --dir web install --frozen-lockfile
       - name: install Playwright browsers (chromium only)
@@ -192,7 +208,9 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          # Persistent self-hosted runner: GOMODCACHE / GOCACHE pinned at
+          # workflow level survive job runs naturally, no actions/cache needed.
+          cache: false
       # Tests run native on arm64 (ubuntu-24.04-arm). The amd64 leg was
       # dropped because the shared self-hosted amd64 runner consistently
       # exceeded the per-job timeout on `go test -race ./...`; arm64 native
@@ -264,7 +282,9 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          # Persistent self-hosted runner: GOMODCACHE / GOCACHE pinned at
+          # workflow level survive job runs naturally, no actions/cache needed.
+          cache: false
       - name: run short fuzz on every fuzz target touched in this PR
         # 32 fuzz targets must finish inside the 15-minute job timeout.
         # 5s/target leaves headroom for per-target Go-compile overhead.
@@ -279,7 +299,9 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          # Persistent self-hosted runner: GOMODCACHE / GOCACHE pinned at
+          # workflow level survive job runs naturally, no actions/cache needed.
+          cache: false
       # Wiring for these suites is conformance-fuzz-engineer's surface.
       # Phase 0 lands the workflow; the test/interop tree is currently a
       # Python/Docker harness with no Go packages, so `go test ./test/interop/...`
@@ -350,10 +372,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.tags.outputs.tags }}
-          # GHA cache cuts the SPA + Go build from ~5min to seconds on
-          # incremental runs.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Local on-disk buildx cache. The runner is a single persistent
+          # host, so `type=local` reuses the layer cache across runs without
+          # the GHA cache-service round-trip that `type=gha` requires.
+          cache-from: type=local,src=/home/runner/.cache/docker-buildx
+          cache-to: type=local,dest=/home/runner/.cache/docker-buildx,mode=max
           provenance: false
 
   jmaptest:
