@@ -233,12 +233,6 @@
     recipientHover.closeNow();
   }
 
-  function handleViewDetail(): void {
-    if (!person?.contactId) return;
-    router.navigate(`/contacts/${encodeURIComponent(person.contactId)}`);
-    recipientHover.closeNow();
-  }
-
   async function handleAddContact(): Promise<void> {
     const current = person;
     if (!current || current.contactId) return;
@@ -416,16 +410,6 @@
       </ul>
     {/if}
 
-    {#if person.contactId}
-      <button
-        type="button"
-        class="detail-link"
-        onclick={handleViewDetail}
-      >
-        {t('contact.card.viewDetail')}
-      </button>
-    {/if}
-
     <div class="actions">
       <button type="button" class="primary" onclick={handleSendEmail}>
         {t('contact.card.sendEmail')}
@@ -578,16 +562,6 @@
     text-decoration: none;
   }
   .phone-number:hover {
-    text-decoration: underline;
-  }
-  .detail-link {
-    align-self: flex-start;
-    color: var(--interactive);
-    font-weight: 500;
-    font-size: var(--type-body-compact-01-size);
-    padding: var(--spacing-01) 0;
-  }
-  .detail-link:hover {
     text-decoration: underline;
   }
   .actions {
