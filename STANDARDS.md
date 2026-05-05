@@ -86,6 +86,7 @@ deploy/                  debian, rpm, docker, k8s
 - No `time.Sleep` in production code paths — use `time.NewTimer`/`time.After` with `ctx` selection. Tests use an injected clock.
 - No wall-clock reads in deterministic code. Time is injected via a `Clock` interface in `internal/observe` (or equivalent).
 - Deadlines on every network call (dial, read, write). No infinite hangs.
+- Workers with an in-memory change-feed cursor flush on shutdown via `cursors.ShutdownFlusher` (`internal/cursors`). Do not roll your own: hand-rolled flushes have repeatedly re-introduced the cancelled-context bug that the helper exists to prevent.
 
 ## 6. Error handling
 
