@@ -160,7 +160,7 @@ jobs:
 
   test:
     name: test (arm64 / ${{ matrix.store }})
-    runs-on: ubuntu-24.04-arm
+    runs-on: [self-hosted, arm64]
     timeout-minutes: 30
     strategy:
       fail-fast: false
