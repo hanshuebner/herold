@@ -153,6 +153,45 @@
   let editorView = $state<EditorView | null>(null);
   let active = $state<ActiveState>(EMPTY_ACTIVE);
 
+  /**
+   * Set of blob: objectURLs for inline images currently in 'uploading' state.
+   * Passed to RichEditor so it can render those images with a greyed-out
+   * overlay while the JMAP blob upload is in flight (issue #83).
+   */
+  let uploadingSrcs = $derived(
+    new Set(
+      compose.attachments
+        .filter((a) => a.inline && a.status === 'uploading' && a.objectURL)
+        .map((a) => a.objectURL as string),
+    ),
+  );
+
+  /**
+   * Non-inline attachments shown in the chip strip. Inline images are NOT
+   * listed here — they are already visible in the editor body (issue #83).
+   */
+  let nonInlineAttachments = $derived(
+    compose.attachments.filter((a) => !a.inline),
+  );
+
+  /**
+   * Called by RichEditor when the user removes an image node from the
+   * ProseMirror document (Delete/Backspace/Cut). We find the corresponding
+   * attachment by its objectURL or cid: src and remove it from
+   * compose.attachments so it is not included in the outbound MIME structure
+   * (issue #83).
+   */
+  function onImageRemoved(src: string): void {
+    const att = compose.attachments.find(
+      (a) =>
+        a.inline &&
+        (a.objectURL === src || (a.cid && `cid:${a.cid}` === src)),
+    );
+    if (att) {
+      compose.removeAttachment(att.key);
+    }
+  }
+
   // File picker — triggered by the toolbar Attach button. Always attaches
   // (never inlines) per REQ-ATT-01.
   let fileInput = $state<HTMLInputElement | null>(null);
@@ -619,6 +658,8 @@
                 onUpdate={onEditorUpdate}
                 onActiveChange={(a) => (active = a)}
                 onView={(v) => (editorView = v)}
+                {onImageRemoved}
+                {uploadingSrcs}
               />
             {/key}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -664,93 +705,43 @@
         </div>
       </div>
 
-      {#if compose.attachments.length > 0}
-        {@const attaches = compose.attachments.filter((a) => !a.inline)}
-        {@const inlines = compose.attachments.filter((a) => a.inline)}
-
-        {#if attaches.length > 0}
-          <div class="row attachments-row">
-            <span class="label">{t('compose.attached')}</span>
-            <ul class="attachments-list">
-              {#each attaches as a (a.key)}
-                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-                <li
-                  class:failed={a.status === 'failed'}
-                  draggable="true"
-                  ondragstart={(e) => onChipDragStart(e, a.key)}
-                >
-                  <span class="att-name">{a.name}</span>
-                  <span class="att-size">{formatSize(a.size)}</span>
-                  <span class="att-status">
-                    {#if a.status === 'uploading'}
-                      Uploading…
-                    {:else if a.status === 'failed'}
-                      {a.error ?? 'Upload failed'}
-                    {:else}
-                      Ready
-                    {/if}
-                  </span>
-                  <button
-                    type="button"
-                    class="att-remove"
-                    aria-label="Remove {a.name}"
-                    onclick={() => compose.removeAttachment(a.key)}
-                  >
-                    ×
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
-
-        {#if inlines.length > 0}
-          <div class="row attachments-row">
-            <span class="label">Inline</span>
-            <ul class="attachments-list">
-              {#each inlines as a (a.key)}
-                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-                <li
-                  class:failed={a.status === 'failed'}
-                  draggable="true"
-                  ondragstart={(e) => onChipDragStart(e, a.key)}
-                >
-                  {#if a.objectURL}
-                    <img class="att-thumb" src={a.objectURL} alt={a.name} />
+      <!-- Inline images are visible in the editor body and do NOT appear in
+           the attachment chip strip (issue #83). Only non-inline file
+           attachments are listed here. -->
+      {#if nonInlineAttachments.length > 0}
+        <div class="row attachments-row">
+          <span class="label">{t('compose.attached')}</span>
+          <ul class="attachments-list">
+            {#each nonInlineAttachments as a (a.key)}
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+              <li
+                class:failed={a.status === 'failed'}
+                draggable="true"
+                ondragstart={(e) => onChipDragStart(e, a.key)}
+              >
+                <span class="att-name">{a.name}</span>
+                <span class="att-size">{formatSize(a.size)}</span>
+                <span class="att-status">
+                  {#if a.status === 'uploading'}
+                    Uploading…
+                  {:else if a.status === 'failed'}
+                    {a.error ?? 'Upload failed'}
+                  {:else}
+                    Ready
                   {/if}
-                  <span class="att-name">{a.name}</span>
-                  <span class="att-size">{formatSize(a.size)}</span>
-                  <span class="att-status">
-                    {#if a.status === 'uploading'}
-                      Uploading…
-                    {:else if a.status === 'failed'}
-                      {a.error ?? 'Upload failed'}
-                    {:else}
-                      Inline
-                    {/if}
-                  </span>
-                  <button
-                    type="button"
-                    class="att-move"
-                    aria-label={t('compose.moveToAttachments')}
-                    title={t('compose.moveToAttachments')}
-                    onclick={() => void compose.flipToAttachment(a.key)}
-                  >
-                    &#x2913;
-                  </button>
-                  <button
-                    type="button"
-                    class="att-remove"
-                    aria-label="Remove {a.name}"
-                    onclick={() => compose.removeAttachment(a.key)}
-                  >
-                    ×
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
+                </span>
+                <button
+                  type="button"
+                  class="att-remove"
+                  aria-label="Remove {a.name}"
+                  onclick={() => compose.removeAttachment(a.key)}
+                >
+                  ×
+                </button>
+              </li>
+            {/each}
+          </ul>
+        </div>
       {/if}
     </div>
 
@@ -1112,17 +1103,6 @@
     border-radius: var(--radius-md);
     cursor: grab;
   }
-  /* Inline chips get a thumbnail column */
-  .attachments-list li:has(.att-thumb) {
-    grid-template-columns: auto 1fr auto auto auto auto;
-  }
-  .att-thumb {
-    width: 32px;
-    height: 32px;
-    object-fit: cover;
-    border-radius: var(--radius-sm);
-    flex-shrink: 0;
-  }
   .attachments-list li.failed {
     border-color: var(--support-error);
   }
@@ -1140,18 +1120,6 @@
   }
   .attachments-list li.failed .att-status {
     color: var(--support-error);
-  }
-  .att-move {
-    width: 24px;
-    height: 24px;
-    color: var(--text-helper);
-    border-radius: var(--radius-pill);
-    line-height: 1;
-    font-size: 14px;
-  }
-  .att-move:hover {
-    background: var(--layer-03);
-    color: var(--text-primary);
   }
   .att-remove {
     width: 24px;
