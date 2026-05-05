@@ -28,7 +28,13 @@
 
   onMount(() => {
     loadState = 'loading';
-    fetch('/manual/user.json')
+    // NOTE: /manual/ is reserved on the public listener for the standalone
+    // SSR manual handler (per-chapter HTML), which has longest-prefix priority
+    // over the suite SPA's static file tree.  Fetching from /manual/user.json
+    // would be intercepted and return 404 because the SSR handler does not
+    // serve JSON bundles.  We keep the bundle under /help/bundle.json (outside
+    // the reserved prefix) -- the same pattern used by the admin SPA.
+    fetch('/help/bundle.json')
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json() as Promise<ManualBundle>;
