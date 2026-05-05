@@ -7,6 +7,6 @@
 </script>
 
 <Icon label="Edit" {size}>
-  <path d="M14 4l6 6-10 10H4v-6z" />
-  <path d="M13 5l6 6" />
+  <!-- pencil: body + tip -->
+  <path d="M17.5 2.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 13.5-13.5z" />
 </Icon>
