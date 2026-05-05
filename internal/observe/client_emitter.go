@@ -45,6 +45,16 @@ type ClientEvent struct {
 	// UA is the User-Agent string, already capped.
 	UA string
 
+	// VitalName is the Web Vital metric name (e.g. "LCP", "FCP", "TTFB").
+	// Non-empty only when Kind=="vital".
+	VitalName string
+	// VitalValue is the measured Web Vital value in milliseconds (or the unit
+	// defined by the metric). Non-zero only when Kind=="vital".
+	VitalValue float64
+	// VitalID is the opaque attribution identifier for the vital measurement.
+	// Non-empty only when Kind=="vital".
+	VitalID string
+
 	// --- enrichment (added server-side, REQ-OPS-203) ---
 
 	// ServerRecvTS is the server wall clock at receipt.
@@ -122,6 +132,13 @@ func (e *ClientEmitter) emitSlog(ctx context.Context, ev ClientEvent) {
 	}
 	if ev.RequestID != "" {
 		attrs = append(attrs, slog.String("request_id", ev.RequestID))
+	}
+	if ev.Kind == "vital" && ev.VitalName != "" {
+		attrs = append(attrs,
+			slog.String("vital_name", ev.VitalName),
+			slog.Float64("value", ev.VitalValue),
+			slog.String("vital_id", ev.VitalID),
+		)
 	}
 
 	e.log.LogAttrs(ctx, lvl, ev.Msg, attrs...)
@@ -223,6 +240,13 @@ func (e *ClientEmitter) emitOTLP(ctx context.Context, ev ClientEvent) {
 		if ev.Stack != "" {
 			kvs = append(kvs, otellog.String("exception.stacktrace", ev.Stack))
 		}
+	}
+	if ev.Kind == "vital" && ev.VitalName != "" {
+		kvs = append(kvs,
+			otellog.String("vital.name", ev.VitalName),
+			otellog.Float64("vital.value", ev.VitalValue),
+			otellog.String("vital.id", ev.VitalID),
+		)
 	}
 	rec.AddAttributes(kvs...)
 

@@ -80,21 +80,24 @@ type wireEvent struct {
 }
 
 // wireNarrowEvent is the narrow (anonymous) event schema (REQ-OPS-207).
-// It excludes breadcrumbs, session_id, request_id, and vital. Unknown
-// fields are rejected (strict parsing via json.Decoder.DisallowUnknownFields).
+// It excludes breadcrumbs, session_id, and request_id. Vital is included so
+// that anonymous pre-auth clients (e.g. the suite SPA before login) can
+// report web vitals. Unknown fields are rejected (strict parsing via
+// json.Decoder.DisallowUnknownFields).
 type wireNarrowEvent struct {
-	V        int    `json:"v"`
-	Kind     string `json:"kind"`
-	Level    string `json:"level"`
-	Msg      string `json:"msg"`
-	Stack    string `json:"stack,omitempty"`
-	ClientTS string `json:"client_ts"`
-	Seq      int64  `json:"seq"`
-	PageID   string `json:"page_id"`
-	App      string `json:"app"`
-	BuildSHA string `json:"build_sha"`
-	Route    string `json:"route"`
-	UA       string `json:"ua"`
+	V        int        `json:"v"`
+	Kind     string     `json:"kind"`
+	Level    string     `json:"level"`
+	Msg      string     `json:"msg"`
+	Stack    string     `json:"stack,omitempty"`
+	ClientTS string     `json:"client_ts"`
+	Seq      int64      `json:"seq"`
+	PageID   string     `json:"page_id"`
+	App      string     `json:"app"`
+	BuildSHA string     `json:"build_sha"`
+	Route    string     `json:"route"`
+	UA       string     `json:"ua"`
+	Vital    *wireVital `json:"vital,omitempty"`
 }
 
 // wireBreadcrumb is the breadcrumb shape (REQ-OPS-202 — allow-listed fields only).

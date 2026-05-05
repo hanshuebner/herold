@@ -585,6 +585,70 @@ func TestClientEmitter_SessionIDOptional(t *testing.T) {
 	}
 }
 
+// TestClientEmitter_VitalSlogFields verifies that a kind=vital ClientEvent
+// with populated vital fields emits value, vital_name, and vital_id attrs in
+// the slog record (re #71).
+func TestClientEmitter_VitalSlogFields(t *testing.T) {
+	ev := makeTestEvent("vital", "info", false)
+	ev.VitalName = "LCP"
+	ev.VitalValue = 1234.5
+	ev.VitalID = "v1-abc"
+
+	records := captureLogRecords(t, func(l *slog.Logger) {
+		e := NewClientEmitter(ClientEmitterConfig{
+			Logger:      l,
+			LogProvider: noopLogProvider(),
+		})
+		e.Emit(context.Background(), ev)
+	})
+
+	if len(records) != 1 {
+		t.Fatalf("expected 1 slog record, got %d", len(records))
+	}
+	r := records[0]
+
+	if got, ok := r["vital_name"]; !ok || got != "LCP" {
+		t.Errorf("vital_name: got %v (present=%v), want LCP", got, ok)
+	}
+	if got, ok := r["value"]; !ok {
+		t.Error("value attr missing from slog record")
+	} else if got.(float64) != 1234.5 {
+		t.Errorf("value: got %v, want 1234.5", got)
+	}
+	if got, ok := r["vital_id"]; !ok || got != "v1-abc" {
+		t.Errorf("vital_id: got %v (present=%v), want v1-abc", got, ok)
+	}
+}
+
+// TestClientEmitter_VitalSlogFields_AbsentWhenNotVital verifies that the
+// vital attrs are not emitted for non-vital events.
+func TestClientEmitter_VitalSlogFields_AbsentWhenNotVital(t *testing.T) {
+	ev := makeTestEvent("log", "info", true)
+	// VitalName is empty so no vital attrs should appear.
+
+	records := captureLogRecords(t, func(l *slog.Logger) {
+		e := NewClientEmitter(ClientEmitterConfig{
+			Logger:      l,
+			LogProvider: noopLogProvider(),
+		})
+		e.Emit(context.Background(), ev)
+	})
+
+	if len(records) != 1 {
+		t.Fatalf("expected 1 slog record, got %d", len(records))
+	}
+	r := records[0]
+	if _, ok := r["vital_name"]; ok {
+		t.Error("vital_name should be absent for non-vital event")
+	}
+	if _, ok := r["value"]; ok {
+		t.Error("value should be absent for non-vital event")
+	}
+	if _, ok := r["vital_id"]; ok {
+		t.Error("vital_id should be absent for non-vital event")
+	}
+}
+
 // noopLogProvider returns a noop LoggerProvider for tests that don't need OTLP.
 func noopLogProvider() otellog.LoggerProvider {
 	return noop.NewLoggerProvider()
