@@ -195,7 +195,7 @@ func clientEventFromFull(ev *wireEvent, serverRecvTS time.Time, userID, listener
 	// Breadcrumbs are stored in the ring buffer as part of payload_json but
 	// are not surfaced in the ClientEvent struct (which is for slog/OTLP).
 
-	return observe.ClientEvent{
+	cev := observe.ClientEvent{
 		Kind:          ev.Kind,
 		Level:         ev.Level,
 		Msg:           msg,
@@ -215,6 +215,12 @@ func clientEventFromFull(ev *wireEvent, serverRecvTS time.Time, userID, listener
 		Endpoint:      "auth",
 		Authenticated: true,
 	}
+	if ev.Vital != nil {
+		cev.VitalName = ev.Vital.Name
+		cev.VitalValue = ev.Vital.Value
+		cev.VitalID = ev.Vital.ID
+	}
+	return cev
 }
 
 // clientEventFromNarrow builds a ClientEvent from the narrow (anonymous) wire schema.
@@ -234,7 +240,7 @@ func clientEventFromNarrow(ev *wireNarrowEvent, serverRecvTS time.Time, listener
 	clientIP := truncateClientIP(remoteAddr)
 	_ = clientIP // stored in ring buffer payload but not in ClientEvent
 
-	return observe.ClientEvent{
+	cev := observe.ClientEvent{
 		Kind:          ev.Kind,
 		Level:         ev.Level,
 		Msg:           msg,
@@ -254,6 +260,12 @@ func clientEventFromNarrow(ev *wireNarrowEvent, serverRecvTS time.Time, listener
 		Endpoint:      "public",
 		Authenticated: false,
 	}
+	if ev.Vital != nil {
+		cev.VitalName = ev.Vital.Name
+		cev.VitalValue = ev.Vital.Value
+		cev.VitalID = ev.Vital.ID
+	}
+	return cev
 }
 
 // clientEventToRow converts a ClientEvent back to a ring-buffer row for

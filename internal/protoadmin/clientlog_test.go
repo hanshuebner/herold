@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -732,5 +733,152 @@ func TestClientlogMetrics_Registered(t *testing.T) {
 	observe.RegisterClientlogMetrics()
 	if observe.ClientlogReceivedTotal == nil {
 		t.Fatal("ClientlogReceivedTotal is nil after RegisterClientlogMetrics")
+	}
+}
+
+// --------------------------------------------------------------------------
+// Vital value propagation (re #71)
+// --------------------------------------------------------------------------
+
+// capturingEmitter records every ClientEvent it receives. Thread-safe.
+type capturingEmitter struct {
+	mu     sync.Mutex
+	events []observe.ClientEvent
+}
+
+func (e *capturingEmitter) Emit(_ context.Context, ev observe.ClientEvent) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.events = append(e.events, ev)
+}
+
+func (e *capturingEmitter) captured() []observe.ClientEvent {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]observe.ClientEvent, len(e.events))
+	copy(out, e.events)
+	return out
+}
+
+func (e *capturingEmitter) waitFor(n int, deadline time.Duration) bool {
+	until := time.Now().Add(deadline)
+	for time.Now().Before(until) {
+		e.mu.Lock()
+		got := len(e.events)
+		e.mu.Unlock()
+		if got >= n {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// vitalAuthEventBody returns a kind=vital event body for the authenticated endpoint.
+func vitalAuthEventBody(name string, value float64, id string) map[string]any {
+	return map[string]any{
+		"events": []map[string]any{{
+			"v": 1, "kind": "vital", "level": "info",
+			"msg":       name,
+			"client_ts": "2026-01-01T00:00:00.000Z", "seq": 1, "page_id": "page-v",
+			"app": "suite", "build_sha": "abc123", "route": "/", "ua": "Mozilla/5.0",
+			"vital": map[string]any{
+				"name":  name,
+				"value": value,
+				"id":    id,
+			},
+		}},
+	}
+}
+
+// vitalPublicEventBody is the same but for the narrow (anonymous) endpoint.
+func vitalPublicEventBody(name string, value float64, id string) map[string]any {
+	return map[string]any{
+		"events": []map[string]any{{
+			"v": 1, "kind": "vital", "level": "info",
+			"msg":       name,
+			"client_ts": "2026-01-01T00:00:00.000Z", "seq": 1, "page_id": "page-v",
+			"app": "suite", "build_sha": "abc123", "route": "/", "ua": "Mozilla/5.0",
+			"vital": map[string]any{
+				"name":  name,
+				"value": value,
+				"id":    id,
+			},
+		}},
+	}
+}
+
+// TestClientlogAuth_VitalValuePropagated verifies that the vital payload
+// (name/value/id) arriving on the authenticated endpoint is copied into the
+// ClientEvent that reaches the emitter (re #71).
+func TestClientlogAuth_VitalValuePropagated(t *testing.T) {
+	observe.RegisterClientlogMetrics()
+	cap := &capturingEmitter{}
+	h, apiKey := newClientlogHarnessWithOpts(t, protoadmin.ClientlogOptions{
+		Emitter: cap,
+	})
+
+	res, body := h.post("/api/v1/clientlog", vitalAuthEventBody("LCP", 1234.5, "v1-auth"), nil, apiKey)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", res.StatusCode, body)
+	}
+
+	if !cap.waitFor(1, 500*time.Millisecond) {
+		t.Fatal("emitter did not receive the vital event within 500ms")
+	}
+	evs := cap.captured()
+	if len(evs) == 0 {
+		t.Fatal("no events captured")
+	}
+	ev := evs[0]
+	if ev.Kind != "vital" {
+		t.Errorf("kind: got %q, want vital", ev.Kind)
+	}
+	if ev.VitalName != "LCP" {
+		t.Errorf("VitalName: got %q, want LCP", ev.VitalName)
+	}
+	if ev.VitalValue != 1234.5 {
+		t.Errorf("VitalValue: got %v, want 1234.5", ev.VitalValue)
+	}
+	if ev.VitalID != "v1-auth" {
+		t.Errorf("VitalID: got %q, want v1-auth", ev.VitalID)
+	}
+}
+
+// TestClientlogPublic_VitalValuePropagated verifies that the vital payload
+// arriving on the anonymous (narrow) endpoint is copied into the ClientEvent
+// that reaches the emitter (re #71). This exercises the fix for the
+// wireNarrowEvent missing Vital field.
+func TestClientlogPublic_VitalValuePropagated(t *testing.T) {
+	observe.RegisterClientlogMetrics()
+	cap := &capturingEmitter{}
+	h, _ := newClientlogHarnessWithOpts(t, protoadmin.ClientlogOptions{
+		Emitter: cap,
+	})
+
+	res, body := h.post("/api/v1/clientlog/public", vitalPublicEventBody("FCP", 567.8, "v1-pub"), nil, "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", res.StatusCode, body)
+	}
+
+	if !cap.waitFor(1, 500*time.Millisecond) {
+		t.Fatal("emitter did not receive the public vital event within 500ms")
+	}
+	evs := cap.captured()
+	if len(evs) == 0 {
+		t.Fatal("no events captured")
+	}
+	ev := evs[0]
+	if ev.Kind != "vital" {
+		t.Errorf("kind: got %q, want vital", ev.Kind)
+	}
+	if ev.VitalName != "FCP" {
+		t.Errorf("VitalName: got %q, want FCP", ev.VitalName)
+	}
+	if ev.VitalValue != 567.8 {
+		t.Errorf("VitalValue: got %v, want 567.8", ev.VitalValue)
+	}
+	if ev.VitalID != "v1-pub" {
+		t.Errorf("VitalID: got %q, want v1-pub", ev.VitalID)
 	}
 }
