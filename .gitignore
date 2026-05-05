@@ -60,7 +60,10 @@ coverage.html
 
 # Manual bundle JSON: produced by scripts/build-web.sh and by the
 # bundle-manual scripts in the suite/admin dev loops. Not checked in.
+# Both SPAs now use /help/bundle.json (outside the /manual/ prefix which
+# is reserved for the standalone SSR manual handler).
 /web/apps/suite/public/manual/
+/web/apps/suite/public/help/
 /web/apps/admin/public/manual/
 /web/apps/admin/public/help/
 /web/packages/manual/dist-data/

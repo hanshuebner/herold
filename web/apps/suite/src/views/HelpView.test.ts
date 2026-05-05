@@ -129,6 +129,19 @@ describe('HelpView', () => {
     });
   });
 
+  it('fetches from /help/bundle.json (not /manual/user.json)', async () => {
+    // /manual/ on the public listener is reserved for the standalone SSR manual
+    // handler (longest-prefix priority).  The bundle must live outside that
+    // prefix -- /help/bundle.json -- to avoid a route-collision 404.
+    mockFetch(FIXTURE_BUNDLE);
+    const { default: HelpView } = await import('./HelpView.svelte');
+    render(HelpView);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith('/help/bundle.json');
+    });
+  });
+
   it('shows the loading state before fetch completes', async () => {
     // Never-resolving fetch so the loading state stays visible.
     globalThis.fetch = vi.fn().mockReturnValue(new Promise(() => {}));

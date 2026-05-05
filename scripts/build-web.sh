@@ -43,11 +43,16 @@ pnpm --dir web install --frozen-lockfile
 MANUAL_MANIFEST="docs/manual/manifest.toml"
 MANUAL_CONTENT="docs/manual"
 MANUAL_BUNDLE_DIR="web/packages/manual/dist-data"
-SUITE_PUBLIC_MANUAL="web/apps/suite/public/manual"
-# The admin SPA fetches the bundle from /admin/help/bundle.json.
-# /admin/manual/ on the admin listener is reserved for the standalone SSR
-# manual (per-chapter HTML pages), so the JSON bundle must live under a
-# different path to avoid the route-collision 404.
+# Both SPAs fetch their bundle from /help/bundle.json (audience-scoped by
+# listener: /help/bundle.json on the public listener for the suite SPA,
+# /admin/help/bundle.json on the admin listener for the admin SPA).
+#
+# /manual/ on the public listener and /admin/manual/ on the admin listener
+# are reserved for the standalone SSR manual handler (per-chapter HTML pages).
+# Go's longest-prefix mux gives those handlers priority over the SPA static
+# file tree, so placing the JSON bundle under /manual/ would yield a 404.
+# Keeping both bundles under /help/ avoids the route-collision entirely.
+SUITE_PUBLIC_HELP="web/apps/suite/public/help"
 ADMIN_PUBLIC_HELP="web/apps/admin/public/help"
 
 echo ">>> bundle manual JSON -> ${MANUAL_BUNDLE_DIR}/"
@@ -62,10 +67,10 @@ if [ ! -f "${MANUAL_BUNDLE_DIR}/user.json" ] || [ ! -f "${MANUAL_BUNDLE_DIR}/adm
   exit 1
 fi
 
-mkdir -p "${SUITE_PUBLIC_MANUAL}" "${ADMIN_PUBLIC_HELP}"
-cp "${MANUAL_BUNDLE_DIR}/user.json"  "${SUITE_PUBLIC_MANUAL}/user.json"
+mkdir -p "${SUITE_PUBLIC_HELP}" "${ADMIN_PUBLIC_HELP}"
+cp "${MANUAL_BUNDLE_DIR}/user.json"  "${SUITE_PUBLIC_HELP}/bundle.json"
 cp "${MANUAL_BUNDLE_DIR}/admin.json" "${ADMIN_PUBLIC_HELP}/bundle.json"
-echo "build-web.sh: manual JSON copied to suite public/manual/ and admin public/help/"
+echo "build-web.sh: manual JSON copied to suite public/help/ and admin public/help/"
 
 # 3. Build the suite SPA. Vite emits to web/apps/suite/dist/.
 echo ">>> pnpm --filter @herold/suite build"
