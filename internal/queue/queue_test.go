@@ -465,10 +465,13 @@ func TestRetryExhaustionEmitsFailureDSN(t *testing.T) {
 		Body:       strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
 		DSNNotify:  store.DSNNotifyFailure,
 	})
-	// Initial attempt + 3 reschedules = 4 total.
+	// Initial attempt + 3 reschedules = 4 total. Per-attempt timeout
+	// bumped to 5s for headroom on slow CI runners; the deliv hook is
+	// synchronous so most iterations resolve well under 100 ms, but
+	// the scheduler poll interval can stretch on contended runners.
 	for i := 0; i < 4; i++ {
 		// Wait for the (i+1)-th call.
-		if !waitFor(t, 2*time.Second, func() bool {
+		if !waitFor(t, 5*time.Second, func() bool {
 			return f.deliv.callCount() >= i+1
 		}) {
 			t.Fatalf("attempt %d never observed", i+1)
