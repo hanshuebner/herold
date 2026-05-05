@@ -13,7 +13,7 @@
    */
   import type { RenderableTreeNode } from '@markdoc/markdoc';
   import type { ManualChapter } from '../markdoc/bundle.js';
-  import { isTag, isText, children as nodeChildren, attr, textContent, slugify } from '../markdoc/render.js';
+  import { isTag, isText, children as nodeChildren, attr, textContent, slugify, resolveManualHref } from '../markdoc/render.js';
   import Callout from './tags/Callout.svelte';
   import CodeGroup from './tags/CodeGroup.svelte';
   import IncludedCode from './tags/IncludedCode.svelte';
@@ -79,7 +79,7 @@
     {:else if n.name === 'li'}
       <li>{#each nodeChildren(n) as child}{@render node(child)}{/each}</li>
     {:else if n.name === 'a'}
-      {@const href = attr<string>(n, 'href') ?? '#'}
+      {@const href = resolveManualHref(attr<string>(n, 'href'), chapter.slug)}
       <a {href}>{#each nodeChildren(n) as child}{@render node(child)}{/each}</a>
     {:else if n.name === 'img'}
       {@const src = attr<string>(n, 'src') ?? ''}

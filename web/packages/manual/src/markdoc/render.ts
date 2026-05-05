@@ -74,3 +74,44 @@ export function slugify(text: string): string {
     .replace(/-{2,}/g, '-')
     .replace(/^-|-$/g, '');
 }
+
+/**
+ * Rewrite a link href emitted by Markdoc to one that plays nicely with the
+ * suite/admin SPA's hash-based router.
+ *
+ * Markdoc sources write internal cross-references as bare slugs (e.g.
+ * `[Quickstart](quickstart)`) or same-page anchors (`[Build](#build)`).  The
+ * browser would otherwise resolve `quickstart` relative to the SPA's path
+ * portion, navigating away from the SPA, and a bare `#build` would clobber
+ * the SPA route encoded in the URL fragment.
+ *
+ * Rules:
+ *   - Absolute URL (has a scheme like `https:` or `mailto:`)  -> unchanged.
+ *   - Path-absolute (`/foo`)                                  -> unchanged.
+ *   - Same-page anchor (`#anchor`)                            -> `#/help/{currentSlug}/anchor`.
+ *   - Bare slug (`other-chapter`)                             -> `#/help/other-chapter`.
+ *   - Slug with anchor (`other-chapter#section`)              -> `#/help/other-chapter/section`.
+ *   - Empty / undefined                                       -> `#`.
+ */
+export function resolveManualHref(href: string | undefined, currentSlug: string): string {
+  if (!href) return '#';
+  // Absolute URL with scheme.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return href;
+  // Path-absolute escape hatch (operator-supplied paths).
+  if (href.startsWith('/')) return href;
+  // Same-page anchor.
+  if (href.startsWith('#')) {
+    const anchor = href.slice(1);
+    if (!anchor) return '#';
+    return `#/help/${currentSlug}/${anchor}`;
+  }
+  // Slug, optionally with an in-chapter anchor.
+  const hashIdx = href.indexOf('#');
+  if (hashIdx >= 0) {
+    const slug = href.slice(0, hashIdx);
+    const anchor = href.slice(hashIdx + 1);
+    if (!slug) return `#/help/${currentSlug}/${anchor}`;
+    return anchor ? `#/help/${slug}/${anchor}` : `#/help/${slug}`;
+  }
+  return `#/help/${href}`;
+}
