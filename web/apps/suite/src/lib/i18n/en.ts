@@ -76,6 +76,14 @@ export const en = {
   'thread.print': 'Print thread',
   'thread.subject.none': '(no subject)',
   'thread.back': 'Back to list',
+  // Thread-scope toolbar actions (re #60)
+  'thread.archive': 'Archive thread',
+  'thread.delete': 'Delete thread',
+  'thread.markUnread': 'Mark thread unread',
+  'thread.snooze': 'Snooze thread',
+  'thread.move': 'Move thread',
+  'thread.label': 'Label thread',
+  'thread.moreActions': 'More actions',
 
   // ── Message actions (issue #17 tooltips) ─────────────────────────────
   'msg.reply': 'Reply',
@@ -284,6 +292,17 @@ export const en = {
   'manual.req.label': 'Requirement',
   'manual.code.copy': 'Copy',
   'manual.code.copied': 'Copied',
+
+  // ── Message action settings (re #60) ────────────────────────────────
+  'settings.messageActions.title': 'Message actions',
+  'settings.messageActions.hint':
+    'Choose which actions appear directly in the toolbar. Drag rows to reorder. The first N are shown with text labels; the rest go into the overflow menu.',
+  'settings.messageActions.perMessage': 'Per-message actions',
+  'settings.messageActions.perThread': 'Thread actions',
+  'settings.messageActions.inToolbar': 'Show in toolbar',
+  'settings.messageActions.resetDefaults': 'Reset to defaults',
+  'settings.messageActions.visibleCount': 'Show {count} in toolbar',
+  'actions.moreActions': 'More actions',
 
   // ── Common ──────────────────────────────────────────────────────────
   'common.cancel': 'Cancel',

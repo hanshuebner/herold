@@ -75,6 +75,14 @@ export const de = {
   'thread.print': 'Konversation drucken',
   'thread.subject.none': '(kein Betreff)',
   'thread.back': 'Zurück zur Liste',
+  // Thread-scope toolbar actions (re #60)
+  'thread.archive': 'Konversation archivieren',
+  'thread.delete': 'Konversation löschen',
+  'thread.markUnread': 'Konversation als ungelesen markieren',
+  'thread.snooze': 'Konversation zurückstellen',
+  'thread.move': 'Konversation verschieben',
+  'thread.label': 'Konversation mit Labels versehen',
+  'thread.moreActions': 'Weitere Aktionen',
 
   // ── Message actions (issue #17 tooltips) ─────────────────────────────
   'msg.reply': 'Antworten',
@@ -285,6 +293,17 @@ export const de = {
   'manual.req.label': 'Anforderung',
   'manual.code.copy': 'Kopieren',
   'manual.code.copied': 'Kopiert',
+
+  // ── Nachrichtenaktionen-Einstellungen (re #60) ──────────────────────
+  'settings.messageActions.title': 'Nachrichtenaktionen',
+  'settings.messageActions.hint':
+    'Wähle, welche Aktionen direkt in der Symbolleiste erscheinen. Zeilen ziehen zum Neuanordnen. Die ersten N werden mit Textbeschriftungen angezeigt; der Rest kommt ins Überlaufmenü.',
+  'settings.messageActions.perMessage': 'Nachrichten-Aktionen',
+  'settings.messageActions.perThread': 'Konversations-Aktionen',
+  'settings.messageActions.inToolbar': 'In der Symbolleiste anzeigen',
+  'settings.messageActions.resetDefaults': 'Auf Standard zurücksetzen',
+  'settings.messageActions.visibleCount': '{count} in Symbolleiste anzeigen',
+  'actions.moreActions': 'Weitere Aktionen',
 
   // ── Common ──────────────────────────────────────────────────────────
   'common.cancel': 'Abbrechen',
