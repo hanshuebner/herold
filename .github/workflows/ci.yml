@@ -39,7 +39,7 @@ jobs:
   # heavier go-test matrix runs.
   pre-commit:
     name: pre-commit (run --all-files)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -75,7 +75,7 @@ jobs:
 
   lint:
     name: lint
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -111,7 +111,7 @@ jobs:
 
   web:
     name: web (build + check)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -138,7 +138,7 @@ jobs:
 
   web-e2e:
     name: web-e2e (admin SPA Playwright)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 15
     needs: web
     steps:
@@ -194,7 +194,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
       # Tests run native on arm64 (ubuntu-24.04-arm). The amd64 leg was
-      # dropped because the shared ubuntu-latest amd64 runner consistently
+      # dropped because the shared self-hosted amd64 runner consistently
       # exceeded the per-job timeout on `go test -race ./...`; arm64 native
       # is faster and the production deploy targets are arm64.
       # Build with the default tag (which embeds the SPA placeholders
@@ -257,7 +257,7 @@ jobs:
 
   fuzz-short:
     name: fuzz (short)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -272,7 +272,7 @@ jobs:
 
   conformance:
     name: conformance (imaptest + scripted-smtp + pigeonhole + mail-auth vectors)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -297,7 +297,7 @@ jobs:
 
   docker:
     name: docker (build + publish to ghcr)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: [lint, web, test]
     # On PRs we only build (no registry credentials, no push). On pushes
@@ -358,7 +358,7 @@ jobs:
 
   jmaptest:
     name: jmap conformance (jmapio/jmap-test-suite)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 25
     # Advisory only for now. The suite has 5 Required failures tracked under
     # REQ-STORE-36..39 (multi-mailbox membership) and REQ-PROTO-48 (Web Push

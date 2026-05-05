@@ -15,10 +15,11 @@ This file is the operating context the root agent reads first.
 
 - Any substantive implementation work in a subsystem goes to that subsystem's specialist agent (see `AGENTS.md`). The root agent does not implement SMTP parsers, IMAP state machines, or store schemas directly.
 - Cross-subsystem work: the root agent sketches the interface, delegates the two sides in parallel, then integrates.
-- Every substantive PR is reviewed by `reviewer`. Security-sensitive PRs also go to `security-reviewer`. Wire-parser PRs also go to `conformance-fuzz-engineer`.
+- The optional `reviewer`, `security-reviewer`, and `conformance-fuzz-engineer` agents from `STANDARDS.md` exist for explicit invocation but are NOT a merge gate during pre-release iteration.
 
 ## Hard rules (restated because they are frequently overlooked)
 
+- **No pull requests during pre-release iteration. None. At all.** The maintainer is the sole reviewer; the PR surface adds friction without value. Push commits directly to `main` once local verification is done (puppeteer for UI, tests for backend, both backends for store changes). If you want pre-merge CI gating, push to a feature branch, watch CI on that branch, then `git push origin <branch>:main` to fast-forward `main` — still no PR opened. CI runs on every push to `main` anyway; a failure on `main` is fixed forward, not reverted. Restated by the maintainer twice on 2026-05-05 after the agent kept opening PRs. This rule reverses only at release.
 - **No emojis anywhere.** Code, commits, CLI output, logs, docs — all plain ASCII.
 - **No CGO in the default build.** Pure-Go SQLite, Postgres, Bleve, NATS.
 - **Both SQLite and Postgres in CI.** Code that only works on one is not mergeable.

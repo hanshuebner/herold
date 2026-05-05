@@ -535,8 +535,9 @@ test.describe('clientlog viewer', () => {
       timeout: 3000,
     });
 
-    // Metric name: "LCP"
-    await expect(page.getByText('LCP')).toBeVisible();
+    // Metric name: "LCP" — exact-match so we hit the detail-pane cell, not
+    // the "web vital: LCP" row text in the list which also contains "LCP".
+    await expect(page.getByText('LCP', { exact: true })).toBeVisible();
 
     // Value with unit: LCP is in ms, so "1234 ms".
     await expect(page.getByText('1234 ms')).toBeVisible();

@@ -2,7 +2,7 @@ name: nightly
 
 on:
   schedule:
-    - cron: "17 3 * * *"
+    - cron: "17 0 * * *"
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,7 @@ env:
 jobs:
   fuzz-long:
     name: fuzz (long)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -27,7 +27,7 @@ jobs:
 
   load:
     name: load (REQ-NFR-01 targets)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -44,7 +44,7 @@ jobs:
 
   interop:
     name: interop (third-party deliverability canary)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -62,7 +62,7 @@ jobs:
 
   jmaptest-pin-check:
     name: jmaptest pin freshness
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 5
     # Fails when the JMAPTEST_SHA pin in test/interop/config/jmaptest/Dockerfile
     # is no longer the upstream master HEAD of jmapio/jmap-test-suite.
@@ -105,7 +105,7 @@ jobs:
 
   sbom-diff:
     name: sbom diff
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
