@@ -21,6 +21,9 @@
   import { managedRules, type RuleCondition } from '../settings/managed-rules.svelte';
   import { filterLike } from '../settings/filter-like.svelte';
   import { router } from '../router/router.svelte';
+  import { messageActionsPrefs } from './messageActionsPrefs.svelte';
+  import { MESSAGE_ACTIONS } from './actions';
+  import ActionOverflowMenu from './ActionOverflowMenu.svelte';
   import ReplyIcon from '../icons/ReplyIcon.svelte';
   import ReplyAllIcon from '../icons/ReplyAllIcon.svelte';
   import ForwardIcon from '../icons/ForwardIcon.svelte';
@@ -32,11 +35,6 @@
   import SnoozeIcon from '../icons/SnoozeIcon.svelte';
   import UnsnoozeIcon from '../icons/UnsnoozeIcon.svelte';
   import RestoreIcon from '../icons/RestoreIcon.svelte';
-  import MuteIcon from '../icons/MuteIcon.svelte';
-  import UnmuteIcon from '../icons/UnmuteIcon.svelte';
-  import SpamIcon from '../icons/SpamIcon.svelte';
-  import PhishingIcon from '../icons/PhishingIcon.svelte';
-  import BlockIcon from '../icons/BlockIcon.svelte';
   import FilterIcon from '../icons/FilterIcon.svelte';
   import LabelIcon from '../icons/LabelIcon.svelte';
   import { t, localeTag } from '../i18n/i18n.svelte';
@@ -269,19 +267,44 @@
     });
   });
 
-  // ── Mute thread ────────────────────────────────────────────────────────
+  // ── Filter messages like this ──────────────────────────────────────────
+  // Builds Sieve conditions from THIS MESSAGE's sender/subject/list-id.
+  // This is intentionally per-message scope (each message may have a
+  // different sender) — it stays in the message action row.
 
-  let isMuted = $derived(managedRules.isThreadMuted(email.threadId));
+  function handleFilterLike(): void {
+    // Strip common reply/forward prefixes from the subject before using it
+    // as a condition.
+    const rawSubject = email.subject ?? '';
+    const subject = rawSubject.replace(/^(re|fwd?|aw|sv):\s*/i, '').trim();
 
-  async function handleMuteToggle(): Promise<void> {
-    if (isMuted) {
-      await managedRules.unmuteThread(email.threadId);
-    } else {
-      await managedRules.muteThread(email.threadId);
+    const conditions: RuleCondition[] = [];
+    if (senderEmail) {
+      conditions.push({ field: 'from', op: 'equals', value: senderEmail });
     }
+    if (subject) {
+      conditions.push({ field: 'subject', op: 'contains', value: subject });
+    }
+    const listIdRaw = (email['header:List-ID:asText'] ?? '').trim();
+    if (listIdRaw) {
+      // List-ID format: "Name <list@example.com>" — extract the angle-bracket part.
+      const match = listIdRaw.match(/<([^>]+)>/);
+      const listId = match ? match[1]! : listIdRaw;
+      conditions.push({ field: 'from', op: 'wildcard-match', value: `*@${listId.split('.').slice(1).join('.')}` });
+    }
+
+    // Set the pending payload so FiltersForm picks it up on mount.
+    filterLike.set({ conditions });
+    // Navigate to the filters settings section.
+    router.navigate('/settings/filters');
   }
 
-  // ── Block sender ───────────────────────────────────────────────────────
+  // ── LLM classification inspect ────────────────────────────────────────
+
+  let llmInspectOpen = $state(false);
+  let hasLLMTransparency = $derived(llmTransparency.available);
+
+  // ── Block sender confirmation ──────────────────────────────────────────
 
   let blockConfirmOpen = $state(false);
   let blockError = $state<string | null>(null);
@@ -311,49 +334,144 @@
     }
   }
 
-  // ── Report spam / phishing ─────────────────────────────────────────────
+  // ── Per-message action toolbar (re #60) ───────────────────────────────
+  //
+  // Only message-scope actions live here. Thread-scope actions (mute,
+  // spam, phishing, block sender) were moved to the ThreadToolbar so they
+  // no longer appear redundantly under every message.
+  //
+  // The ordered list of action IDs comes from messageActionsPrefs. The
+  // first `visibleCount` IDs are rendered as labeled pills in the primary
+  // row; the rest go into the overflow menu.
+  //
+  // State-conditional actions (replyAll with multiple recipients, restore
+  // in Trash, snooze/unsnooze) retain their guards — a state-hidden action
+  // simply does not appear and the next preferred action takes its slot.
 
-  async function handleReportSpam(): Promise<void> {
-    await mail.reportSpam(email.id, 'spam');
+  type ActionHandler = {
+    /** Returns true if this action is currently applicable. */
+    visible: () => boolean;
+    /** Renders the button for a primary (labeled pill) slot. */
+    renderPrimary: () => { label: string; shortcut?: string; icon: unknown; onclick: () => void; ariaLabel?: string; ariaPressed?: boolean };
+    /** Returns an overflow menu item descriptor. */
+    overflowItem: () => { id: string; label: string; shortcut?: string; onclick: () => void } | null;
+  };
+
+  function msgActionHandlers(): Record<string, { visible: boolean; label: string; shortcut?: string; onclick: () => void; icon: 'reply' | 'replyAll' | 'forward' | 'react' | 'move' | 'label' | 'markRead' | 'markImportant' | 'snooze' | 'restore' | 'filterLike'; ariaPressed?: boolean }> {
+    return {
+      reply: {
+        visible: true,
+        label: t('msg.reply'),
+        shortcut: 'r',
+        onclick: () => compose.openReply(email),
+        icon: 'reply',
+      },
+      replyAll: {
+        visible: hasMultipleRecipients,
+        label: t('msg.replyAll'),
+        onclick: () => compose.openReplyAll(email),
+        icon: 'replyAll',
+      },
+      forward: {
+        visible: true,
+        label: t('msg.forward'),
+        shortcut: 'f',
+        onclick: () => compose.openForward(email),
+        icon: 'forward',
+      },
+      react: {
+        visible: true,
+        label: t('msg.react'),
+        shortcut: '+',
+        onclick: () => { pickerOpen = !pickerOpen; },
+        icon: 'react',
+        ariaPressed: pickerOpen,
+      },
+      moveMsg: {
+        visible: true,
+        label: t('msg.move'),
+        onclick: () => movePicker.open(email.id),
+        icon: 'move',
+      },
+      labelMsg: {
+        visible: true,
+        label: t('msg.label'),
+        onclick: () => labelPicker.open(email.id),
+        icon: 'label',
+      },
+      markRead: {
+        visible: true,
+        label: isSeen ? t('msg.markUnread') : t('msg.markRead'),
+        onclick: () => mail.setSeen(email.id, !isSeen),
+        icon: 'markRead',
+      },
+      markImportant: {
+        visible: true,
+        label: isImportant ? t('msg.unmarkImportant') : t('msg.markImportant'),
+        onclick: () => mail.toggleImportant(email.id),
+        icon: 'markImportant',
+        ariaPressed: isImportant,
+      },
+      snoozeMsg: {
+        visible: true,
+        label: isSnoozed ? t('msg.unsnooze') : t('msg.snooze'),
+        onclick: isSnoozed ? () => mail.unsnoozeEmail(email.id) : () => snoozePicker.open(email.id),
+        icon: 'snooze',
+      },
+      restore: {
+        visible: isInTrash,
+        label: t('msg.restore'),
+        onclick: () => {
+          void mail.restoreFromTrash(email.id);
+          if (window.history.length > 1) {
+            window.history.back();
+          } else {
+            const folder = mail.listFolder;
+            router.navigate(folder === 'inbox' ? '/mail' : `/mail/folder/${encodeURIComponent(folder)}`);
+          }
+        },
+        icon: 'restore',
+      },
+      filterLike: {
+        visible: true,
+        label: t('msg.filterLike'),
+        onclick: handleFilterLike,
+        icon: 'filterLike',
+      },
+    };
   }
 
-  async function handleReportPhishing(): Promise<void> {
-    await mail.reportSpam(email.id, 'phishing');
-  }
+  /**
+   * Resolved ordered list of applicable message actions based on current
+   * prefs and state. Each entry has everything needed to render both the
+   * primary pill and the overflow item.
+   */
+  let orderedMsgActions = $derived.by(() => {
+    const handlers = msgActionHandlers();
+    const prefs = messageActionsPrefs.message;
+    const result: Array<{
+      id: string;
+      label: string;
+      shortcut?: string;
+      onclick: () => void;
+      icon: string;
+      ariaPressed?: boolean;
+      isPrimary: boolean;
+    }> = [];
 
-  // ── LLM classification inspect ────────────────────────────────────────
-
-  let llmInspectOpen = $state(false);
-  let hasLLMTransparency = $derived(llmTransparency.available);
-
-  // ── Filter messages like this ──────────────────────────────────────────
-
-  function handleFilterLike(): void {
-    // Strip common reply/forward prefixes from the subject before using it
-    // as a condition.
-    const rawSubject = email.subject ?? '';
-    const subject = rawSubject.replace(/^(re|fwd?|aw|sv):\s*/i, '').trim();
-
-    const conditions: RuleCondition[] = [];
-    if (senderEmail) {
-      conditions.push({ field: 'from', op: 'equals', value: senderEmail });
+    let primaryCount = 0;
+    for (const id of prefs.order) {
+      const h = handlers[id];
+      if (!h || !h.visible) continue;
+      const isPrimary = primaryCount < prefs.visibleCount;
+      if (isPrimary) primaryCount++;
+      result.push({ id, label: h.label, shortcut: h.shortcut, onclick: h.onclick, icon: h.icon, ariaPressed: h.ariaPressed, isPrimary });
     }
-    if (subject) {
-      conditions.push({ field: 'subject', op: 'contains', value: subject });
-    }
-    const listIdRaw = (email['header:List-ID:asText'] ?? '').trim();
-    if (listIdRaw) {
-      // List-ID format: "Name <list@example.com>" — extract the angle-bracket part.
-      const match = listIdRaw.match(/<([^>]+)>/);
-      const listId = match ? match[1]! : listIdRaw;
-      conditions.push({ field: 'from', op: 'wildcard-match', value: `*@${listId.split('.').slice(1).join('.')}` });
-    }
+    return result;
+  });
 
-    // Set the pending payload so FiltersForm picks it up on mount.
-    filterLike.set({ conditions });
-    // Navigate to the filters settings section.
-    router.navigate('/settings/filters');
-  }
+  let primaryMsgActions = $derived(orderedMsgActions.filter((a) => a.isPrimary));
+  let overflowMsgActions = $derived(orderedMsgActions.filter((a) => !a.isPrimary));
 </script>
 
 <article class="message" class:expanded>
@@ -501,7 +619,7 @@
               onclick={() => (quotedExpanded = true)}
               aria-label="Show trimmed content"
             >
-              <span aria-hidden="true">···</span>
+              <span aria-hidden="true">...</span>
             </button>
           {/if}
         {/if}
@@ -519,216 +637,169 @@
         onAddReaction={handleChipAddReaction}
       />
 
-      <div class="actions">
-        <button
-          type="button"
-          class="pill icon-only"
-          aria-label={t('msg.reply')}
-          title={t('msg.reply')}
-          onclick={() => compose.openReply(email)}
-        >
-          <ReplyIcon size={18} />
-        </button>
-        {#if hasMultipleRecipients}
-          <button
-            type="button"
-            class="pill icon-only"
-            aria-label={t('msg.replyAll')}
-            title={t('msg.replyAll')}
-            onclick={() => compose.openReplyAll(email)}
-          >
-            <ReplyAllIcon size={18} />
-          </button>
-        {/if}
-        <button
-          type="button"
-          class="pill icon-only"
-          aria-label={t('msg.forward')}
-          title={t('msg.forward')}
-          onclick={() => compose.openForward(email)}
-        >
-          <ForwardIcon size={18} />
-        </button>
-        <!-- React button per REQ-MAIL-152. The `+` key also opens this
-             picker when the message is expanded (see keyboard layer above). -->
-        <div class="react-wrapper">
-          <button
-            type="button"
-            class="pill icon-only"
-            class:active={pickerOpen}
-            bind:this={reactButtonEl}
-            onclick={() => (pickerOpen = !pickerOpen)}
-            aria-label={t('msg.react')}
-            title={t('msg.react')}
-            aria-expanded={pickerOpen}
-            aria-haspopup="dialog"
-          >
-            <ReactIcon size={18} />
-          </button>
-          {#if pickerOpen}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="picker-anchor"
-              onkeydown={(e) => { if (e.key === 'Escape') pickerOpen = false; }}
-            >
-              <EmojiPicker
-                onSelect={handleReaction}
-                onClose={() => (pickerOpen = false)}
-              />
+      <!--
+        Per-message action toolbar (re #60).
+        Primary actions are shown as labeled pills (icon + text).
+        Overflow actions are hidden behind a "More actions" menu trigger.
+        Thread-scope actions (mute, spam, phishing, block, etc.) have been
+        moved to the persistent ThreadToolbar above the thread reader.
+      -->
+      <div class="actions" role="toolbar" aria-label="Message actions">
+        {#each primaryMsgActions as action (action.id)}
+          {#if action.id === 'react'}
+            <div class="react-wrapper">
+              <button
+                type="button"
+                class="pill"
+                class:active={pickerOpen}
+                bind:this={reactButtonEl}
+                onclick={action.onclick}
+                aria-label={action.label}
+                title={action.label}
+                aria-expanded={pickerOpen}
+                aria-haspopup="dialog"
+                aria-pressed={action.ariaPressed}
+              >
+                <ReactIcon size={16} />
+                <span class="pill-label">{action.label}</span>
+              </button>
+              {#if pickerOpen}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="picker-anchor"
+                  onkeydown={(e) => { if (e.key === 'Escape') pickerOpen = false; }}
+                >
+                  <EmojiPicker
+                    onSelect={handleReaction}
+                    onClose={() => (pickerOpen = false)}
+                  />
+                </div>
+              {/if}
             </div>
+          {:else if action.id === 'reply'}
+            <button
+              type="button"
+              class="pill"
+              aria-label={action.label}
+              title={action.label}
+              onclick={action.onclick}
+            >
+              <ReplyIcon size={16} />
+              <span class="pill-label">{action.label}</span>
+            </button>
+          {:else if action.id === 'replyAll'}
+            <button
+              type="button"
+              class="pill"
+              aria-label={action.label}
+              title={action.label}
+              onclick={action.onclick}
+            >
+              <ReplyAllIcon size={16} />
+              <span class="pill-label">{action.label}</span>
+            </button>
+          {:else if action.id === 'forward'}
+            <button
+              type="button"
+              class="pill"
+              aria-label={action.label}
+              title={action.label}
+              onclick={action.onclick}
+            >
+              <ForwardIcon size={16} />
+              <span class="pill-label">{action.label}</span>
+            </button>
+          {:else if action.id === 'moveMsg'}
+            <button
+              type="button"
+              class="pill"
+              aria-label={action.label}
+              title={action.label}
+              onclick={action.onclick}
+            >
+              <MoveIcon size={16} />
+              <span class="pill-label">{action.label}</span>
+            </button>
+          {:else if action.id === 'labelMsg'}
+            <button
+              type="button"
+              class="pill"
+              aria-label={action.label}
+              title={action.label}
+              onclick={action.onclick}
+            >
+              <LabelIcon size={16} />
+              <span class="pill-label">{action.label}</span>
+            </button>
+          {:else if action.id === 'markRead'}
+            <button
+              type="button"
+              class="pill"
+              aria-label={action.label}
+              title={action.label}
+              onclick={action.onclick}
+            >
+              {#if isSeen}<MarkUnreadIcon size={16} />{:else}<MarkReadIcon size={16} />{/if}
+              <span class="pill-label">{action.label}</span>
+            </button>
+          {:else if action.id === 'markImportant'}
+            <button
+              type="button"
+              class="pill"
+              class:active={isImportant}
+              aria-label={action.label}
+              aria-pressed={isImportant}
+              title={action.label}
+              onclick={action.onclick}
+            >
+              <ImportantIcon size={16} />
+              <span class="pill-label">{action.label}</span>
+            </button>
+          {:else if action.id === 'snoozeMsg'}
+            <button
+              type="button"
+              class="pill"
+              aria-label={action.label}
+              title={action.label}
+              onclick={action.onclick}
+            >
+              {#if isSnoozed}<UnsnoozeIcon size={16} />{:else}<SnoozeIcon size={16} />{/if}
+              <span class="pill-label">{action.label}</span>
+            </button>
+          {:else if action.id === 'restore'}
+            <button
+              type="button"
+              class="pill"
+              aria-label={action.label}
+              title={action.label}
+              onclick={action.onclick}
+            >
+              <RestoreIcon size={16} />
+              <span class="pill-label">{action.label}</span>
+            </button>
+          {:else if action.id === 'filterLike'}
+            <button
+              type="button"
+              class="pill"
+              aria-label={action.label}
+              title={action.label}
+              onclick={action.onclick}
+            >
+              <FilterIcon size={16} />
+              <span class="pill-label">{action.label}</span>
+            </button>
           {/if}
-        </div>
-        <button
-          type="button"
-          class="pill icon-only"
-          aria-label={t('msg.move')}
-          title={t('msg.move')}
-          onclick={() => movePicker.open(email.id)}
-        >
-          <MoveIcon size={18} />
-        </button>
-        <button
-          type="button"
-          class="pill icon-only"
-          aria-label={t('msg.label')}
-          title={t('msg.label')}
-          onclick={() => labelPicker.open(email.id)}
-        >
-          <LabelIcon size={18} />
-        </button>
-        <button
-          type="button"
-          class="pill icon-only"
-          aria-label={isSeen ? t('msg.markUnread') : t('msg.markRead')}
-          title={isSeen ? t('msg.markUnread') : t('msg.markRead')}
-          onclick={() => mail.setSeen(email.id, !isSeen)}
-        >
-          {#if isSeen}<MarkUnreadIcon size={18} />{:else}<MarkReadIcon size={18} />{/if}
-        </button>
-        <button
-          type="button"
-          class="pill icon-only"
-          class:active={isImportant}
-          aria-label={isImportant ? t('msg.unmarkImportant') : t('msg.markImportant')}
-          aria-pressed={isImportant}
-          title={isImportant ? t('msg.unmarkImportant') : t('msg.markImportant')}
-          onclick={() => mail.toggleImportant(email.id)}
-        >
-          <ImportantIcon size={18} />
-        </button>
-        {#if isSnoozed}
-          <button
-            type="button"
-            class="pill icon-only"
-            aria-label={t('msg.unsnooze')}
-            title={t('msg.unsnooze')}
-            onclick={() => mail.unsnoozeEmail(email.id)}
-          >
-            <UnsnoozeIcon size={18} />
-          </button>
-        {:else}
-          <button
-            type="button"
-            class="pill icon-only"
-            aria-label={t('msg.snooze')}
-            title={t('msg.snooze')}
-            onclick={() => snoozePicker.open(email.id)}
-          >
-            <SnoozeIcon size={18} />
-          </button>
-        {/if}
-        {#if isInTrash}
-          <button
-            type="button"
-            class="pill icon-only"
-            aria-label={t('msg.restore')}
-            title={t('msg.restore')}
-            onclick={() => {
-              void mail.restoreFromTrash(email.id);
-              // Return to the message list after restoring; the message is no
-              // longer in Trash so keeping the thread-reader open is confusing
-              // (re #29). Mirror the back() logic from ThreadToolbar.
-              if (window.history.length > 1) {
-                window.history.back();
-              } else {
-                const folder = mail.listFolder;
-                router.navigate(folder === 'inbox' ? '/mail' : `/mail/folder/${encodeURIComponent(folder)}`);
-              }
-            }}
-          >
-            <RestoreIcon size={18} />
-          </button>
-        {/if}
+        {/each}
 
-        <!-- Mute / Unmute thread per REQ-MAIL-160. -->
-        <button
-          type="button"
-          class="pill icon-only"
-          aria-label={isMuted ? t('msg.unmuteThread') : t('msg.muteThread')}
-          aria-pressed={isMuted}
-          title={isMuted ? t('msg.unmuteThread') : t('msg.muteThread')}
-          onclick={() => void handleMuteToggle()}
-        >
-          {#if isMuted}<UnmuteIcon size={18} />{:else}<MuteIcon size={18} />{/if}
-        </button>
-
-        <!-- Report spam per REQ-MAIL-135. -->
-        <button
-          type="button"
-          class="pill icon-only"
-          aria-label={t('msg.reportSpam')}
-          title={t('msg.reportSpam')}
-          onclick={() => void handleReportSpam()}
-        >
-          <SpamIcon size={18} />
-        </button>
-
-        <!-- Report phishing per REQ-MAIL-136. -->
-        <button
-          type="button"
-          class="pill icon-only"
-          aria-label={t('msg.reportPhishing')}
-          title={t('msg.reportPhishing')}
-          onclick={() => void handleReportPhishing()}
-        >
-          <PhishingIcon size={18} />
-        </button>
-
-        <!-- Block sender per REQ-MAIL-134. -->
-        {#if senderEmail}
-          <button
-            type="button"
-            class="pill icon-only"
-            aria-label={t('msg.blockSender')}
-            title={t('msg.blockSender')}
-            onclick={openBlockConfirm}
-          >
-            <BlockIcon size={18} />
-          </button>
-        {/if}
-
-        <!-- Filter messages like this per REQ-MAIL-138. -->
-        <button
-          type="button"
-          class="pill icon-only"
-          aria-label={t('msg.filterLike')}
-          title={t('msg.filterLike')}
-          onclick={handleFilterLike}
-        >
-          <FilterIcon size={18} />
-        </button>
-
-        <!-- LLM classification inspect per REQ-CAT-44 / REQ-FILT-66. -->
-        {#if hasLLMTransparency}
-          <button
-            type="button"
-            class="pill"
-            aria-label="Show classification"
-            title="Show how this message was classified"
-            onclick={() => (llmInspectOpen = true)}
-          >
-            Inspect
-          </button>
+        {#if overflowMsgActions.length > 0}
+          <ActionOverflowMenu
+            items={overflowMsgActions.map((a) => ({
+              id: a.id,
+              label: a.label,
+              shortcut: a.shortcut,
+              onclick: a.onclick,
+            }))}
+          />
         {/if}
       </div>
 
@@ -758,13 +829,26 @@
               onclick={() => void confirmBlock()}
               disabled={blockInProgress}
             >
-              {blockInProgress ? 'Blocking…' : 'Block sender'}
+              {blockInProgress ? 'Blocking...' : 'Block sender'}
             </button>
             <button type="button" class="pill" onclick={closeBlockConfirm}>
               Cancel
             </button>
           </div>
         </div>
+      {/if}
+
+      <!-- LLM classification inspect per REQ-CAT-44 / REQ-FILT-66. -->
+      {#if hasLLMTransparency}
+        <button
+          type="button"
+          class="pill"
+          aria-label="Show classification"
+          title="Show how this message was classified"
+          onclick={() => (llmInspectOpen = true)}
+        >
+          Inspect
+        </button>
       {/if}
     </div>
   {/if}
@@ -902,12 +986,15 @@
     background: var(--layer-02);
   }
 
+  /* Primary action row: labeled pills (icon + text). */
   .actions {
     display: flex;
     flex-wrap: wrap;
     gap: var(--spacing-03);
     padding: var(--spacing-04) 0 0;
+    align-items: center;
   }
+
   .pill {
     display: inline-flex;
     align-items: center;
@@ -930,14 +1017,11 @@
     color: var(--text-primary);
     border-color: var(--support-warning);
   }
-  /* Icon-only action buttons: square hit target, no horizontal padding
-     so the SVG sits centered inside the pill. The accessible name and
-     hover tooltip come from aria-label / title on the button. */
-  .pill.icon-only {
-    width: 36px;
-    min-height: 36px;
-    padding: 0;
-    justify-content: center;
+
+  /* Text label inside a labeled pill. */
+  .pill-label {
+    font-size: var(--type-body-compact-01-size);
+    white-space: nowrap;
   }
 
   /* The react wrapper positions the picker relative to the button. */
