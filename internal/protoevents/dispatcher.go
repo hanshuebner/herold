@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/cursors"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -228,23 +229,16 @@ func (d *Dispatcher) runChangeFeedLoop(ctx context.Context, pid store.PrincipalI
 			"err", err, "pid", pid)
 	}
 	cursor := store.ChangeSeq(cur)
-	// On exit, persist whatever the in-memory cursor advanced to. We
-	// capture it by reference so each return path observes the latest
-	// value. The fresh ctx covers the case where ctx is already
-	// cancelled; without it the SetFTSCursor would fail immediately
-	// with context.Canceled and the in-loop advance would be lost.
-	defer func() {
-		if uint64(cursor) == 0 || uint64(cursor) == cur {
-			return
-		}
-		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := meta.SetFTSCursor(flushCtx, cursorKey, uint64(cursor)); err != nil {
-			d.opts.Logger.Warn("protoevents.changefeed.cursor_save_on_shutdown_failed",
-				"activity", observe.ActivityInternal,
-				"err", err, "pid", pid, "seq", uint64(cursor))
-		}
-	}()
+	// On exit, persist whatever the in-memory cursor advanced to. cursor
+	// is captured by reference so each return path observes the latest
+	// value. ShutdownFlusher uses a fresh context so a cancellation of ctx
+	// cannot prevent the write.
+	defer cursors.ShutdownFlusher{
+		Get:       func() uint64 { return uint64(cursor) },
+		Put:       func(ctx context.Context, seq uint64) error { return meta.SetFTSCursor(ctx, cursorKey, seq) },
+		Logger:    d.opts.Logger,
+		Subsystem: "protoevents",
+	}.Flush()
 	for {
 		select {
 		case <-ctx.Done():
