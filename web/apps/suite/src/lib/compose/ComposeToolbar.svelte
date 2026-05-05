@@ -62,14 +62,14 @@
       });
       return;
     }
-    // Insert each picked image sequentially so the editor's cursor
-    // advances between insertions and every image receives its own
-    // <img> node + unique cid. A Promise.all would interleave
-    // addInlineImage calls and applyImage dispatches in unpredictable
-    // order.
+    // Insert each picked image sequentially using the two-phase approach
+    // (startInlineImage + uploadInlineImage) so the thumbnail appears in
+    // the editor immediately before the JMAP round-trip begins (issue #83).
+    // Serial insertion keeps ProseMirror cursor positions predictable.
+    const pending: Array<{ key: string; objectURL: string; file: File }> = [];
     for (const file of images) {
-      const result = await compose.addInlineImage(file);
-      if (!result) {
+      const started = compose.startInlineImage(file);
+      if (!started) {
         toast.show({
           message: `Image upload failed: ${file.name}`,
           kind: 'error',
@@ -77,10 +77,27 @@
         });
         continue;
       }
-      // Use the blob: URL for in-editor preview; persistDraft and
-      // send() rewrite it to cid:<cid> before the message goes to JMAP.
-      applyImage(view, result.objectURL, file.name);
+      // Insert immediately so the editor shows the thumbnail at once.
+      // The blob: URL is rewritten to cid: on send/save.
+      applyImage(view, started.objectURL, file.name);
+      pending.push({ key: started.key, objectURL: started.objectURL, file });
     }
+    // Run uploads in parallel; retract placeholder on failure.
+    await Promise.all(
+      pending.map(async ({ key, objectURL, file: f }) => {
+        const errMsg = await compose.uploadInlineImage(key, f);
+        if (errMsg) {
+          toast.show({
+            message: `Image upload failed: ${f.name}`,
+            kind: 'error',
+            timeoutMs: 4000,
+          });
+          // Remove the in-editor placeholder so the body stays consistent.
+          const { removeImageBySrc } = await import('./editor');
+          removeImageBySrc(view, objectURL);
+        }
+      }),
+    );
   }
 </script>
 

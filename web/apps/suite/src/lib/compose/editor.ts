@@ -4,6 +4,12 @@
  *
  * The Svelte wrapper (RichEditor.svelte) keeps a thin reactive bridge for
  * the toolbar; everything imperative lives here.
+ *
+ * Image lifecycle hooks (issue #83):
+ *   onImageRemoved — called with the src of each image node that disappears
+ *   from the document in a transaction (user Delete/Backspace/Cut). The
+ *   compose store uses this to drop the corresponding attachment record so
+ *   deleted inline images do not appear in the outbound MIME part list.
  */
 
 import {
@@ -145,11 +151,28 @@ function composeKeymap() {
   });
 }
 
+/**
+ * Collect all `src` attribute values of image nodes in a document.
+ * Used to diff before/after states to detect removed images (issue #83).
+ */
+export function collectImageSrcs(doc: Node): Set<string> {
+  const srcs = new Set<string>();
+  doc.descendants((node) => {
+    if (node.type.name === 'image') {
+      const src = node.attrs.src as string | undefined;
+      if (src) srcs.add(src);
+    }
+  });
+  return srcs;
+}
+
 export function createComposeEditor(
   target: HTMLElement,
   options: {
     initialHtml: string;
     onChange: (state: EditorStateType) => void;
+    /** Called with the src of each image node removed from the doc (issue #83). */
+    onImageRemoved?: (src: string) => void;
   },
 ): EditorView {
   const doc = htmlToDoc(options.initialHtml);
@@ -161,9 +184,20 @@ export function createComposeEditor(
   const view = new EditorView(target, {
     state,
     dispatchTransaction(tr: Transaction) {
-      const next = view.state.apply(tr);
+      const prev = view.state;
+      const next = prev.apply(tr);
       view.updateState(next);
       options.onChange(next);
+      // Detect image removals when doc changed and a removal callback exists.
+      if (options.onImageRemoved && tr.docChanged) {
+        const prevSrcs = collectImageSrcs(prev.doc);
+        const nextSrcs = collectImageSrcs(next.doc);
+        for (const src of prevSrcs) {
+          if (!nextSrcs.has(src)) {
+            options.onImageRemoved(src);
+          }
+        }
+      }
     },
   });
   return view;
