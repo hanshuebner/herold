@@ -466,17 +466,35 @@ func TestRetryExhaustionEmitsFailureDSN(t *testing.T) {
 		DSNNotify:  store.DSNNotifyFailure,
 	})
 	// Initial attempt + 3 reschedules = 4 total. Per-attempt timeout
-	// bumped to 5s for headroom on slow CI runners; the deliv hook is
-	// synchronous so most iterations resolve well under 100 ms, but
-	// the scheduler poll interval can stretch on contended runners.
+	// generous (5s) for headroom on slow / contended CI runners. We wait
+	// for two signals before advancing the clock: the deliv hook ran
+	// (callCount) AND the worker committed the attempt to the DB. The
+	// second signal closes a race where the test would otherwise advance
+	// the clock between the hook returning and the worker writing
+	// NextAttemptAt -- the worker reads clk.Now() when computing the
+	// next schedule, so racing it makes NextAttemptAt land at
+	// (advanced_now + 1min), a minute past the clock, and the scheduler
+	// then never picks the row up.
+	//
+	// The DB signal differs by iteration: a transient outcome calls
+	// RescheduleQueueItem (which increments attempts), and the terminal
+	// outcome on iteration 3 calls CompleteQueueItem (which sets
+	// state=Failed but leaves attempts unchanged). Tolerate either.
 	for i := 0; i < 4; i++ {
-		// Wait for the (i+1)-th call.
 		if !waitFor(t, 5*time.Second, func() bool {
-			return f.deliv.callCount() >= i+1
+			if f.deliv.callCount() < i+1 {
+				return false
+			}
+			rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+			if len(rows) == 0 {
+				return false
+			}
+			return rows[0].Attempts >= int32(i+1) || rows[0].State == store.QueueStateFailed
 		}) {
 			t.Fatalf("attempt %d never observed", i+1)
 		}
-		// After the call, advance to release the next schedule.
+		// After the worker commits, advance to release the next schedule.
+		// The advance is a no-op once the row is Failed.
 		f.clk.Advance(2 * time.Minute)
 	}
 	if !waitFor(t, 3*time.Second, func() bool {
