@@ -54,6 +54,25 @@
   function handleQuery(q: string): void {
     searchQuery = q;
   }
+
+  /**
+   * Scroll the heading with id === hash into view inside the center content
+   * pane whenever the hash prop changes.  The SPA router encodes the heading
+   * id as a path segment (not the real URL fragment), so the browser's native
+   * anchor-scroll mechanism is bypassed; we must scroll explicitly.
+   */
+  $effect(() => {
+    const targetId = hash;
+    if (!targetId) return;
+    // Use a microtask so the DOM has had one render cycle to render the
+    // chapter before we try to locate the heading element.
+    Promise.resolve().then(() => {
+      const el = document.getElementById(targetId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+  });
 </script>
 
 <div class="manual-layout" data-audience={bundle.audience}>

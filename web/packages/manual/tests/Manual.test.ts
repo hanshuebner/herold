@@ -5,7 +5,7 @@
  * of the Manual, ManualToc, ManualOnThisPage, ManualSearch, and ManualPage
  * components against a fixture bundle.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import type { ManualBundle } from '../src/markdoc/bundle.js';
 
@@ -195,6 +195,36 @@ describe('Manual component', () => {
     await fireEvent.input(searchInput, { target: { value: 'xyzzy-no-match' } });
 
     expect(screen.getByText('No matching topics.')).toBeInTheDocument();
+  });
+
+  it('scrolls to the heading element when hash prop is set', async () => {
+    // Install a mock for scrollIntoView so we can assert it is called.
+    const scrollIntoViewMock = vi.fn();
+    // happy-dom does not implement scrollIntoView; assign it on the prototype.
+    Element.prototype.scrollIntoView = scrollIntoViewMock;
+
+    const onNavigate = vi.fn();
+    const { default: Manual } = await import('../src/components/Manual.svelte');
+
+    // Render with the 'index' chapter and a hash matching the 'getting-started' h2.
+    render(Manual, {
+      props: {
+        bundle: FIXTURE_BUNDLE,
+        slug: 'index',
+        hash: 'getting-started',
+        onNavigate,
+      },
+    });
+
+    // The $effect fires asynchronously via Promise.resolve().then(...).
+    // Flush the microtask queue.
+    await Promise.resolve();
+
+    // The heading with id="getting-started" must have had scrollIntoView called.
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({
+      behavior: 'smooth',
+      block: 'start',
+    });
   });
 });
 
