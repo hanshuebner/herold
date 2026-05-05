@@ -382,11 +382,21 @@ func (sess *session) persistLLMRecord(
 	// way to get the store-assigned MessageID without changing InsertMessage's
 	// return type. The overhead is one indexed lookup per delivered message
 	// when LLM classification ran.
-	m, err := sess.srv.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, msgIDHeader)
+	//
+	// The store column env_message_id is normalised (angle brackets stripped,
+	// lower-cased per mailparse.NormalizeMessageID) at insert time, so we
+	// must normalise on lookup to match. Messages without a Message-ID header
+	// cannot be located here; skip silently rather than emitting a noisy
+	// per-delivery warning at scale.
+	normalisedID := mailparse.NormalizeMessageID(msgIDHeader)
+	if normalisedID == "" {
+		return
+	}
+	m, err := sess.srv.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, normalisedID)
 	if err != nil {
 		sess.log.WarnContext(ctx, "llm-transparency: lookup message ID for record",
 			slog.String("activity", observe.ActivityInternal),
-			slog.String("msg_id_header", msgIDHeader),
+			slog.String("msg_id_header", normalisedID),
 			slog.String("err", err.Error()))
 		return
 	}
