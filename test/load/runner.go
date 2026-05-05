@@ -80,8 +80,11 @@ func RunScenario(t testing.TB, sc Scenario, opts HarnessOpts) *RunResult {
 
 	h := newHarness(t, opts)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
+	// The scenario owns its own deadline (Scenario.Run wraps the per-run
+	// context with the scenario-specific TimeoutSeconds). The harness-level
+	// context is unbounded; the outer `go test -timeout=...` flag is the
+	// backstop for runaway scenarios.
+	ctx := context.Background()
 
 	r := sc.Run(ctx, h)
 

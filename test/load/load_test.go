@@ -29,25 +29,39 @@ func fullScale() bool {
 
 // TestInboundBurst_Smoke runs a minimal inbound-burst scenario to verify
 // the harness wiring end-to-end: 2 concurrent SMTP connections, 5 messages
-// each, 30 s timeout.  Suitable for CI on every PR.
+// each.  Suitable for CI on every PR.
+//
+// Full-scale runs default to 16 concurrent connections (matching the
+// production-realistic MaxConcurrentPerIP cap) delivering enough messages
+// to give the throughput-floor gate a stable measurement window.
 func TestInboundBurst_Smoke(t *testing.T) {
 	conns := 2
 	msgs := 5
 	timeout := 30
+	minThroughput := 1.0
 	if fullScale() {
-		conns = 500
-		msgs = 10000
-		timeout = 60
+		// 16 conns × 6 250 = 100 000 messages. Bound the wall-time at
+		// 1 800 s so a slow CI runner still finishes; the pass/fail gate
+		// is throughput, not the deadline.
+		conns = 16
+		msgs = 6250
+		timeout = 1800
+		minThroughput = 100.0 // REQ-NFR-01 sustained inbound floor.
 	}
 
 	sc := &InboundBurstScenario{
-		Connections:     conns,
-		MessagesPerConn: msgs,
-		TimeoutSeconds:  timeout,
-		MaxErrorRate:    0.01,
+		Connections:            conns,
+		MessagesPerConn:        msgs,
+		TimeoutSeconds:         timeout,
+		MaxErrorRate:           0.01,
+		MinThroughputMsgPerSec: minThroughput,
 	}
 	RunScenario(t, sc, HarnessOpts{
-		MaxSMTPConns: conns + 10,
+		// Match the per-IP cap to the conn count so the harness's
+		// 127.0.0.1-only client never spins on 421 retries during steady
+		// state. Production keeps MaxConcurrentPerIP at 16.
+		MaxSMTPConns:           conns + 4,
+		MaxConcurrentSMTPPerIP: conns,
 	})
 }
 

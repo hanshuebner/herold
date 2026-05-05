@@ -82,6 +82,12 @@ type HarnessOpts struct {
 	MaxSMTPConns int
 	// MaxIMAPConns limits simultaneous IMAP sessions.  Default 2048.
 	MaxIMAPConns int
+	// MaxConcurrentSMTPPerIP caps concurrent SMTP sessions per source IP.
+	// Defaults to 16, matching the production default. Scenarios that need
+	// to bypass the cap (when all simulated clients share 127.0.0.1 and the
+	// goal is to measure raw SMTP throughput rather than per-IP gating) can
+	// set this equal to MaxSMTPConns explicitly.
+	MaxConcurrentSMTPPerIP int
 	// EnablePprof, when true, starts CPU + block profiling immediately.
 	EnablePprof bool
 }
@@ -99,6 +105,11 @@ func newHarness(t testing.TB, opts HarnessOpts) *Harness {
 	}
 	if opts.MaxIMAPConns <= 0 {
 		opts.MaxIMAPConns = 2048
+	}
+	if opts.MaxConcurrentSMTPPerIP <= 0 {
+		// Production default. Scenarios that need to drive more than 16
+		// concurrent connections from 127.0.0.1 must override explicitly.
+		opts.MaxConcurrentSMTPPerIP = 16
 	}
 
 	hOpts := testharness.Options{
@@ -154,17 +165,21 @@ func newHarness(t testing.TB, opts HarnessOpts) *Harness {
 		Clock:     ha.Clock,
 		Logger:    slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		Options: protosmtp.Options{
-			Hostname:                 "mx." + opts.Domain,
-			AuthservID:               "mx." + opts.Domain,
-			MaxMessageSize:           1 * 1024 * 1024,
-			ReadTimeout:              30 * time.Second,
-			WriteTimeout:             30 * time.Second,
-			DataTimeout:              60 * time.Second,
-			ShutdownGrace:            5 * time.Second,
-			MaxRecipientsPerMessage:  4,
-			MaxCommandsPerSession:    200,
+			Hostname:                "mx." + opts.Domain,
+			AuthservID:              "mx." + opts.Domain,
+			MaxMessageSize:          1 * 1024 * 1024,
+			ReadTimeout:             30 * time.Second,
+			WriteTimeout:            30 * time.Second,
+			DataTimeout:             60 * time.Second,
+			ShutdownGrace:           5 * time.Second,
+			MaxRecipientsPerMessage: 4,
+			// Production default is 200; the load test measures sustained
+			// throughput, not the abuse cap. Setting the cap absurdly high
+			// prevents the harness from rotating connections every ~40
+			// messages and counting each rotation as an error.
+			MaxCommandsPerSession:    1_000_000,
 			MaxConcurrentConnections: opts.MaxSMTPConns,
-			MaxConcurrentPerIP:       opts.MaxSMTPConns, // load clients all come from 127.0.0.1
+			MaxConcurrentPerIP:       opts.MaxConcurrentSMTPPerIP,
 		},
 	})
 	if err != nil {

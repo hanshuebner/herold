@@ -16,19 +16,51 @@ type smtpClient struct {
 	r    *bufio.Reader
 }
 
-// dialSMTP opens a TCP connection to addr and reads the 220 greeting.
+// dialSMTP opens a TCP connection to addr and reads the greeting. If the
+// server greets with 421 (e.g. per-IP connection cap reached) the dial
+// is retried with a small backoff up to 30 s — this matches the
+// production reality where load comes from many IPs but the harness's
+// simulated load originates from a single 127.0.0.1.
 func dialSMTP(ctx context.Context, addr string) (*smtpClient, error) {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("dial smtp %s: %w", addr, err)
-	}
-	c := &smtpClient{conn: conn, r: bufio.NewReader(conn)}
-	if _, err := c.readReply(); err != nil {
+	deadline := time.Now().Add(30 * time.Second)
+	backoff := 25 * time.Millisecond
+	for {
+		var d net.Dialer
+		conn, err := d.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			if ctx.Err() != nil || time.Now().After(deadline) {
+				return nil, fmt.Errorf("dial smtp %s: %w", addr, err)
+			}
+			time.Sleep(backoff)
+			if backoff < 500*time.Millisecond {
+				backoff *= 2
+			}
+			continue
+		}
+		c := &smtpClient{conn: conn, r: bufio.NewReader(conn)}
+		code, err := c.readReply()
+		if err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("smtp greeting: %w", err)
+		}
+		if code == 220 {
+			return c, nil
+		}
 		_ = conn.Close()
-		return nil, fmt.Errorf("smtp greeting: %w", err)
+		// 421 is the documented "service not available, closing channel"
+		// reply that the per-IP cap emits. Treat any 4xx greeting as
+		// transient and retry until the deadline.
+		if code/100 != 4 {
+			return nil, fmt.Errorf("smtp greeting: unexpected code %d", code)
+		}
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			return nil, fmt.Errorf("smtp greeting: %d (transient, deadline reached)", code)
+		}
+		time.Sleep(backoff)
+		if backoff < 500*time.Millisecond {
+			backoff *= 2
+		}
 	}
-	return c, nil
 }
 
 // close tears down the connection.
