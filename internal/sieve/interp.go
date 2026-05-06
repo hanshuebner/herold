@@ -238,6 +238,19 @@ type state struct {
 	vars    map[string]string
 	flags   map[string]struct{}
 
+	// currentPart is the MIME part the interpreter is "on" inside a
+	// foreverypart loop iteration. nil at top level. Tests with the
+	// :mime tag (RFC 5703 §4.2) consult this part's headers; outside
+	// foreverypart they fall through to msg-level headers per the
+	// RFC's "or with the message MIME header" branch.
+	currentPart *mailparse.Part
+
+	// breakLoop is set by the `break` command (RFC 5703 §4.1). The
+	// surrounding foreverypart catches it on the next iteration check
+	// and clears it. Named-break is not yet supported; the field is a
+	// boolean rather than a name string for v1.5.
+	breakLoop bool
+
 	outcome Outcome
 	log     *slog.Logger
 }
@@ -253,6 +266,12 @@ func (s *state) runBlock(cmds []Command) error {
 		}
 		if err := s.sandbox.tick(); err != nil {
 			return err
+		}
+		// `break` inside a foreverypart sets s.breakLoop; bail out of
+		// the current block immediately so the surrounding loop driver
+		// (runForeveryPart) can observe and clear the flag.
+		if s.breakLoop {
+			return nil
 		}
 		switch c.Name {
 		case "if":
@@ -362,14 +381,147 @@ func (s *state) runSimple(c Command) error {
 		return s.deleteHeader(c)
 	case "notify":
 		return s.notify(c)
-	case "foreverypart", "break", "replace", "enclose", "extracttext":
-		// Phase 1.5 stubs. Recognised so scripts parse, but execution is
-		// a no-op. Operators using these features in Phase 1 receive
-		// ImplicitKeep behaviour.
+	case "foreverypart":
+		return s.runForeveryPart(c)
+	case "break":
+		s.breakLoop = true
+		return nil
+	case "extracttext":
+		return s.extractText(c)
+	case "replace", "enclose":
+		// Body-mutation actions (RFC 5703 §4.3, §4.4) require a
+		// delivery-side rewrite path that does not yet exist. Recognise
+		// the commands so scripts parse, but record no action; a
+		// follow-up wave will surface ActionReplacePart / ActionEnclose
+		// alongside the existing addheader/deleteheader actions.
 		return nil
 	default:
 		return &ValidationError{Line: c.Line, Column: c.Column, Message: fmt.Sprintf("command %q not implemented", c.Name)}
 	}
+}
+
+// runForeveryPart implements RFC 5703 §3 iteration. It walks every leaf
+// MIME part (text and binary, in source order) and runs the inner
+// block once per part, with state.currentPart pointing at the
+// iteration's part. The iteration terminates when the block executes
+// `break`, when the script's stop bit is set, or when every leaf has
+// been visited.
+//
+// The RFC defines iteration scope as "the current MIME part's direct
+// children", which would require the script to nest foreverypart loops
+// to descend. This implementation flattens the tree to all leaves so a
+// single foreverypart visits every part the way most scripts intend
+// (including over attachments inside multipart/alternative or
+// multipart/mixed). Named-break (foreverypart :name x { ... break :name x })
+// is not implemented; v1 scripts use one loop and bare break.
+func (s *state) runForeveryPart(c Command) error {
+	if !s.requires["foreverypart"] {
+		return &ValidationError{Line: c.Line, Column: c.Column, Message: "foreverypart requires \"foreverypart\""}
+	}
+	leaves := collectLeafParts(s.msg.Body)
+	prev := s.currentPart
+	defer func() { s.currentPart = prev }()
+	for i := range leaves {
+		s.currentPart = &leaves[i]
+		if err := s.runBlock(c.Block); err != nil {
+			return err
+		}
+		if s.breakLoop {
+			s.breakLoop = false
+			return nil
+		}
+		if s.outcome.Stop {
+			return nil
+		}
+	}
+	return nil
+}
+
+// collectLeafParts flattens p into a slice of every leaf part in walk
+// order. Multipart container nodes are descended; non-multipart leaves
+// (text/* or any application/* / image/* part) become an entry. This
+// matches the "every part in the message" semantics most foreverypart
+// scripts assume.
+func collectLeafParts(p mailparse.Part) []mailparse.Part {
+	if len(p.Children) == 0 {
+		return []mailparse.Part{p}
+	}
+	var out []mailparse.Part
+	for _, c := range p.Children {
+		out = append(out, collectLeafParts(c)...)
+	}
+	return out
+}
+
+// extractText implements RFC 5703 §4.5. Inside a foreverypart loop it
+// stores the current part's decoded text (Part.Text for text/*, or the
+// stringified Part.Bytes otherwise) in the named variable. Outside a
+// loop it stores the message's primary text body. The :first tag caps
+// the stored length in bytes.
+func (s *state) extractText(c Command) error {
+	if !s.requires["mime"] {
+		return &ValidationError{Line: c.Line, Column: c.Column, Message: "extracttext requires \"mime\""}
+	}
+	var first int64 = -1
+	var varname string
+	for i := 0; i < len(c.Args); i++ {
+		a := c.Args[i]
+		switch a.Kind {
+		case ArgTag:
+			if strings.EqualFold(a.Tag, ":first") {
+				if i+1 < len(c.Args) && c.Args[i+1].Kind == ArgNumber {
+					first = c.Args[i+1].Num
+					i++
+				}
+			}
+			// Other modifier tags (RFC 5229 :lower / :upper / etc.)
+			// are deliberately ignored in v1.5; the variable receives
+			// the raw text.
+		case ArgString:
+			if varname == "" {
+				varname = a.Str
+			}
+		}
+	}
+	if varname == "" {
+		return &ValidationError{Line: c.Line, Column: c.Column, Message: "extracttext requires varname"}
+	}
+	text := s.partOrMessageText()
+	if first > 0 && int64(len(text)) > first {
+		text = text[:first]
+	}
+	if len(text) > s.env.Limits.MaxVariableBytes {
+		text = text[:s.env.Limits.MaxVariableBytes]
+	}
+	existing, ok := s.vars[varname]
+	if !ok {
+		if len(s.vars) >= s.env.Limits.MaxVariables {
+			return ErrVariableBudget
+		}
+		if err := s.sandbox.checkVarStorage(len(text)); err != nil {
+			return err
+		}
+	} else {
+		s.sandbox.totalBytes -= len(existing)
+		if err := s.sandbox.checkVarStorage(len(text)); err != nil {
+			return err
+		}
+	}
+	s.vars[varname] = text
+	return nil
+}
+
+// partOrMessageText returns the text content of the current part if
+// inside a foreverypart loop, otherwise the message's primary text
+// body. Used by extracttext.
+func (s *state) partOrMessageText() string {
+	if s.currentPart != nil {
+		if s.currentPart.IsText() && s.currentPart.Text != "" {
+			return s.currentPart.Text
+		}
+		return string(s.currentPart.Bytes)
+	}
+	return mailparse.PrimaryTextBody(s.msg)
 }
 
 func (s *state) appendAction(a Action) error {
@@ -879,6 +1031,14 @@ type matcher struct {
 	addressPart  string // :all / :localpart / :domain / :user / :detail
 	bodyType     string // :raw / :text / :content — for body test
 	contentTypes []string
+	// mime is true when the test carried the :mime tag (RFC 5703 §4.2).
+	// Inside a foreverypart loop the test reads from the current part's
+	// MIME headers; outside, it falls back to the message-level headers.
+	mime bool
+	// anychild is true when the test carried :anychild. Reserved for
+	// child-walking semantics; recognised but not yet honoured beyond
+	// the existing message-level read.
+	anychild bool
 }
 
 func parseMatcher(args []Argument) (matcher, []Argument) {
@@ -928,8 +1088,10 @@ func parseMatcher(args []Argument) (matcher, []Argument) {
 			}
 		case ":last":
 			// positional flag for :index direction
-		case ":mime", ":anychild":
-			// mime extension flags — recorded but no-op in Phase 1.
+		case ":mime":
+			m.mime = true
+		case ":anychild":
+			m.anychild = true
 		default:
 			// Unknown tag is carried along (defensive, shouldn't happen
 			// after validation).
@@ -940,15 +1102,25 @@ func parseMatcher(args []Argument) (matcher, []Argument) {
 }
 
 func (s *state) testExists(t Test) bool {
+	mime := false
+	for _, a := range t.Args {
+		if a.Kind == ArgTag && strings.EqualFold(a.Tag, ":mime") {
+			mime = true
+		}
+	}
+	headers := s.msg.Headers
+	if mime && s.currentPart != nil {
+		headers = s.currentPart.Headers
+	}
 	for _, a := range t.Args {
 		switch a.Kind {
 		case ArgString:
-			if s.msg.Headers.Get(a.Str) == "" {
+			if headers.Get(a.Str) == "" {
 				return false
 			}
 		case ArgStringList:
 			for _, v := range a.StrList {
-				if s.msg.Headers.Get(v) == "" {
+				if headers.Get(v) == "" {
 					return false
 				}
 			}
@@ -993,11 +1165,12 @@ func (s *state) testHeader(t Test) (bool, error) {
 	}
 	names := asStrings(rest[0])
 	keys := asStrings(rest[1])
+	headers := s.headersFor(m)
 	if m.relation != "" {
-		return s.countMatch(m, headersToValues(s.msg.Headers, names), keys)
+		return s.countMatch(m, headersToValues(headers, names), keys)
 	}
 	for _, n := range names {
-		for _, v := range s.msg.Headers.GetAll(n) {
+		for _, v := range headers.GetAll(n) {
 			for _, k := range keys {
 				ok, err := compare(m, strings.TrimSpace(v), s.expandVars(k))
 				if err != nil {
@@ -1012,6 +1185,18 @@ func (s *state) testHeader(t Test) (bool, error) {
 	return false, nil
 }
 
+// headersFor returns the headers a header/exists/address test should
+// consult given the matcher's :mime flag and the current foreverypart
+// scope. RFC 5703 §4.2: ":mime" reads MIME headers of the current
+// part, "or with the message MIME header if the test is not used
+// inside a foreverypart loop."
+func (s *state) headersFor(m matcher) mailparse.Headers {
+	if m.mime && s.currentPart != nil {
+		return s.currentPart.Headers
+	}
+	return s.msg.Headers
+}
+
 func (s *state) testAddress(t Test) (bool, error) {
 	m, rest := parseMatcher(t.Args)
 	if len(rest) < 2 {
@@ -1019,9 +1204,10 @@ func (s *state) testAddress(t Test) (bool, error) {
 	}
 	names := asStrings(rest[0])
 	keys := asStrings(rest[1])
+	headers := s.headersFor(m)
 	var vals []string
 	for _, n := range names {
-		for _, v := range s.msg.Headers.GetAll(n) {
+		for _, v := range headers.GetAll(n) {
 			vs := extractAddressParts(v, m.addressPart)
 			vals = append(vals, vs...)
 		}

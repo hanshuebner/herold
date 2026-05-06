@@ -32,9 +32,13 @@
 //     encoded-character (5228), editheader (5293), duplicate (7352),
 //     spamtest/spamtestplus (5235), extlists (6134, :list placeholder),
 //     enotify (5435) mailto-only.
-//   - Deferred to Phase 1.5 with a parse-and-stub execution path
-//     (recognised by the parser and validator, interpreter records intent
-//     but does not fully evaluate): foreverypart (5703), mime (5703).
+//   - Phase 1.5: foreverypart (5703) iteration + break, extracttext
+//     (5703) into variables, and the :mime / :anychild flags on
+//     header / address / exists tests so scripts can read per-part
+//     MIME headers from inside a foreverypart loop. The body-mutation
+//     actions replace and enclose (5703 §4.3, §4.4) parse but emit no
+//     action; they need a delivery-side rewrite path that does not
+//     yet exist.
 //
 // ManageSieve (RFC 5804) lives in internal/protomanagesieve; this package
 // is intentionally transport-agnostic.
