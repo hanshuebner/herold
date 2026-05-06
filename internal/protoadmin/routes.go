@@ -163,6 +163,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// inside the handler by using principalFrom, not a {pid} path param).
 	mux.HandleFunc("PUT /api/v1/me/clientlog/telemetry_enabled", auth1(s.handlePutTelemetryEnabled))
 
+	// Mailbox listing + ACL management (REQ-PROTO-33, REQ-AUTH-63).
+	mux.HandleFunc("GET /api/v1/principals/{pid}/mailboxes", authAdmin(s.handleListPrincipalMailboxes))
+	mux.HandleFunc("GET /api/v1/principals/{pid}/mailboxes/{mailbox}/acl", authAdmin(s.handleGetMailboxACL))
+	mux.HandleFunc("PUT /api/v1/principals/{pid}/mailboxes/{mailbox}/acl/{grantee}", authAdmin(s.handlePutMailboxACL))
+	mux.HandleFunc("DELETE /api/v1/principals/{pid}/mailboxes/{mailbox}/acl/{grantee}", authAdmin(s.handleDeleteMailboxACL))
+
 	// Inbound attachment policy (REQ-FLOW-ATTPOL-01..02).
 	mux.HandleFunc("GET /api/v1/mailboxes/{addr}/attachment-policy", authAdmin(s.handleGetMailboxAttPol))
 	mux.HandleFunc("PUT /api/v1/mailboxes/{addr}/attachment-policy", authAdmin(s.handlePutMailboxAttPol))
