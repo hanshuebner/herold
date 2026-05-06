@@ -223,9 +223,9 @@ The upstream `jmapio/jmap-test-suite` runs ~300 tests across RFC 8620 (JMAP
 Core) and RFC 8621 (JMAP Mail) by speaking JMAP to a live server with a
 primary and a secondary test account.
 
-| Test                              | Status      | Notes                                              |
-|-----------------------------------|-------------|----------------------------------------------------|
-| test_jmap_compliance_baseline     | PASS (goal) | Runs the full upstream suite against herold:8080   |
+| Test                              | Status | Notes                                                              |
+|-----------------------------------|--------|--------------------------------------------------------------------|
+| test_jmap_compliance_baseline     | PASS   | Runs the full 309-test upstream suite against herold:8080. Required: 304/304 pass; Recommended: 5/5 pass. |
 
 Gated behind the `jmaptest` compose profile and the `jmaptest` pytest
 marker.  Does NOT run as part of `make interop`.
@@ -280,40 +280,16 @@ reproducibility — no `package-lock.json` exists upstream.
 To re-pin after an upstream change: fetch the new master SHA and update
 `JMAPTEST_SHA` in the Dockerfile build args.
 
-#### Known deferred failures
+#### Cross-account fixture
 
-A small number of tests are expected to fail until the corresponding
-herold roadmap items land.  They are NOT suppressed; they appear as
-`FAIL` in the run output and are tracked here:
-
-1. **`push-subscription/push-subscription-receives-notification`** (1 test)
-
-   Requires the VAPID Web Push delivery dispatcher (REQ-PROTO-48, Phase 3).
-   The subscription is created and stored correctly; the test just times
-   out waiting for an outbound encrypted POST that herold does not yet
-   send.
-
-#### Recently un-deferred (pending CI verification)
-
-The following entries were deferred-failures until Wave 3.11 (multi-mailbox
-membership, REQ-STORE-36..38) landed and are expected to pass on the next
-full interop run. If a run still reports these as failing, re-open this
-section and capture the discrepancy:
-
-- `email/get-mailbox-ids`
-- `email/set-update-add-mailbox`
-- `email/set-update-remove-mailbox`
-- `email/set-destroy-removes-from-all-mailboxes`
-
-Internal Go tests covering the same semantics (`TestEmailGet_MailboxIds_MultiMailbox`,
-`TestEmailSet_Create_MultiMailbox`, `TestEmailSet_Update_MultiMailbox`,
-`TestEmailSet_Destroy_MultiMailbox` in `internal/protojmap/mail/email/`) pass
-on both SQLite and Postgres.
-
-5 additional tests are skipped automatically because the primary user
-(alice) only has a single mail account; cross-account tests require a
-primary account with access to multiple accounts, which the interop
-fixture does not currently provide.
+The bootstrap script (`config/herold/bootstrap.sh`) grants alice
+RFC 4314 rights `lrswipkxte` on bob's INBOX via the admin REST ACL
+endpoint. This makes a second account visible in alice's JMAP session
+descriptor and unblocks the suite's cross-account `Blob/copy` and
+`Email/copy` cases. The grant is created once at first bootstrap; it
+survives across re-bootstraps as long as the herold data volume
+persists. `make interop-jmaptest` recreates the volume on every run,
+so each run re-establishes the grant from scratch.
 
 The nightly CI run should use at least `IMAPTEST_SECS=300`.
 
