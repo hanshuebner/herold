@@ -116,6 +116,57 @@ curl -sf \
     "${ADMIN_URL}/api/v1/principals" \
     || echo "bootstrap: bob principal creation returned error (may already exist)"
 
+# Step 5c: Grant alice access to bob's INBOX so the JMAP test suite's
+# cross-account Blob/copy and Email/copy tests have a second account
+# visible in alice's session. The grant is full RFC 4314 rights minus
+# admin (lrswipkxte): lookup, read, set-seen, write, insert, post,
+# create-mailbox, delete-mailbox, delete-message, expunge. The "a"
+# right (administer ACL) intentionally stays with bob.
+#
+# Unblocks the 5 cross-account jmaptest cases that previously skipped
+# with "No cross-account access available":
+#   binary/blob-copy-cross-account
+#   binary/blob-copy-not-found
+#   binary/blob-copy-response-structure
+#   email/copy-cross-account
+#   email/copy-not-found
+
+resolve_principal_id() {
+    local email="$1"
+    curl -sf \
+        -H "Authorization: Bearer ${API_KEY}" \
+        "${ADMIN_URL}/api/v1/principals" \
+        | jq -r ".items[] | select(.canonical_email==\"${email}\") | .id"
+}
+
+resolve_mailbox_id() {
+    local pid="$1" name="$2"
+    curl -sf \
+        -H "Authorization: Bearer ${API_KEY}" \
+        "${ADMIN_URL}/api/v1/principals/${pid}/mailboxes" \
+        | jq -r ".items[] | select(.name==\"${name}\") | .id"
+}
+
+ALICE_PID=$(resolve_principal_id "${ALICE_EMAIL}")
+BOB_PID=$(resolve_principal_id "${BOB_EMAIL}")
+if [ -z "${ALICE_PID}" ] || [ -z "${BOB_PID}" ]; then
+    echo "bootstrap: WARNING could not resolve principal ids (alice=${ALICE_PID}, bob=${BOB_PID}); skipping ACL grant"
+else
+    BOB_INBOX_ID=$(resolve_mailbox_id "${BOB_PID}" "INBOX")
+    if [ -z "${BOB_INBOX_ID}" ]; then
+        echo "bootstrap: WARNING could not resolve bob's INBOX id; skipping ACL grant"
+    else
+        echo "bootstrap: granting alice (pid=${ALICE_PID}) rights lrswipkxte on bob's INBOX (mailbox=${BOB_INBOX_ID})"
+        curl -sf \
+            -X PUT \
+            -H "Authorization: Bearer ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"rights":"lrswipkxte"}' \
+            "${ADMIN_URL}/api/v1/principals/${BOB_PID}/mailboxes/${BOB_INBOX_ID}/acl/${ALICE_PID}" \
+            || echo "bootstrap: ACL grant returned error"
+    fi
+fi
+
 # Step 6: Mark done and stop background server.
 touch "${BOOTSTRAP_DONE}"
 echo "bootstrap: setup complete"
