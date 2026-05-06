@@ -50,7 +50,8 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	targetPID, merr := resolveAccount(ctx, c.h.store.Meta(), req.AccountID, pid)
+	if merr != nil {
 		return nil, merr
 	}
 	since, ok := parseState(req.SinceState)
@@ -58,7 +59,7 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "unparseable sinceState")
 	}
 
-	newSeq, err := c.h.store.Meta().GetMaxChangeSeqForKind(ctx, pid, store.EntityKindMailbox)
+	newSeq, err := c.h.store.Meta().GetMaxChangeSeqForKind(ctx, targetPID, store.EntityKindMailbox)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -88,7 +89,7 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		if err := ctx.Err(); err != nil {
 			return nil, serverFail(err)
 		}
-		batch, ferr := c.h.store.Meta().ReadChangeFeed(ctx, pid, cursor, page)
+		batch, ferr := c.h.store.Meta().ReadChangeFeed(ctx, targetPID, cursor, page)
 		if ferr != nil {
 			return nil, serverFail(ferr)
 		}
