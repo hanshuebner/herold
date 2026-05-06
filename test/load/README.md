@@ -225,17 +225,16 @@ rather than `messages_fetched == messages_seeded`.
    appropriate gate for `fetch_throughput` (1 s spec target vs. the 60 s
    relaxed gate).
 
-2. **IMAP `ListMessages` 1 000-row cap.**  `internal/protoimap/session_mailbox.go`
+2. **IMAP `ListMessages` 1 000-row cap (#99).**  `internal/protoimap/session_mailbox.go`
    and `internal/protoimap/session_fetch.go` call
    `store.Meta().ListMessages(ctx, mb.ID, MessageFilter{WithEnvelope: true})`
    without a Limit; the store backends silently cap at 1 000.  Result:
    SELECT and FETCH against a mailbox with N > 1 000 messages return
    only the first 1 000 rows.  This is a real scaling bug against
    REQ-NFR-01 (1 TB mailboxes).  The full-scale fetch baseline is
-   pinned at this 1 000 ceiling until the IMAP path paginates.  Track
-   as a separate issue.
+   pinned at this 1 000 ceiling until the IMAP path paginates.
 
-3. **Inbound throughput gap on CAX21 vs. REQ-NFR-01.**  CAX21 sustains
+3. **Inbound throughput gap on CAX21 vs. REQ-NFR-01 (#100).**  CAX21 sustains
    ~45 msg/s where REQ-NFR-01 calls for 100 msg/s.  Likely culprits to
    profile (in priority order):
 
