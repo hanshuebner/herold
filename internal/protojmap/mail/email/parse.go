@@ -119,7 +119,7 @@ func (p *parseHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	if merr := requireOwnAccount(req.AccountID, pid); merr != nil {
 		return nil, merr
 	}
 

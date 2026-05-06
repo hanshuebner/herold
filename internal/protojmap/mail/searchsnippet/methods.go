@@ -127,23 +127,10 @@ type handlerSet struct {
 	store store.Store
 }
 
-func accountIDForPrincipal(p store.Principal) string {
-	return protojmap.AccountIDForPrincipal(p.ID)
-}
-
-// validateAccountID checks the inbound accountId against the
-// authenticated principal. An absent accountId is rejected with
-// "invalidArguments" per RFC 8620 §5.1; a mismatched one returns
-// "accountNotFound".
-func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodError {
-	if requested == "" {
-		return protojmap.NewMethodError("invalidArguments", "accountId is required")
-	}
-	if requested != accountIDForPrincipal(p) {
-		return protojmap.NewMethodError("accountNotFound",
-			"requested account is not accessible to the caller")
-	}
-	return nil
+// resolveAccount resolves the JMAP accountId to a target principal ID.
+// Supports cross-account access when the caller holds ACL on the foreign account.
+func resolveAccount(ctx context.Context, meta store.Metadata, callerP store.Principal, requested jmapID) (store.PrincipalID, *protojmap.MethodError) {
+	return protojmap.ResolveAccount(ctx, meta, callerP.ID, requested)
 }
 
 // parseEmailID parses a wire-form email id into a MessageID.
@@ -169,12 +156,13 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	if err := json.Unmarshal(args, &req); err != nil {
 		return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 	}
-	p, ok := principalFor(ctx)
+	callerP, ok := principalFor(ctx)
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
-		return nil, e
+	targetPID, merr := resolveAccount(ctx, g.h.store.Meta(), callerP, req.AccountID)
+	if merr != nil {
+		return nil, merr
 	}
 	var filter filterShape
 	if len(req.Filter) > 0 {
@@ -186,7 +174,7 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	subjectTerms := filter.extractSubjectTerms()
 	previewTerms := filter.extractPreviewTerms()
 	resp := getResponse{
-		AccountID: accountIDForPrincipal(p),
+		AccountID: req.AccountID,
 		Filter:    req.Filter,
 		// List is always an array; NotFound is null (nil) when empty per
 		// RFC 8621 §6 which requires notFound to be null or non-empty.
@@ -203,10 +191,9 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
-		// Authorisation: the message must belong to a mailbox the
-		// principal owns. We re-list the principal's mailboxes (cached
-		// per call would be a Wave 2.3 polish).
-		if !g.h.principalOwnsMailbox(ctx, p, msg.MailboxID) {
+		// Authorisation: the message's mailbox must be owned by targetPID
+		// and accessible to the caller (callerP).
+		if !g.h.principalCanSeeMailbox(ctx, callerP.ID, targetPID, msg.MailboxID) {
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
@@ -233,16 +220,38 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	return resp, nil
 }
 
-// principalOwnsMailbox returns whether p is the owner of mailboxID.
-// We do not consult the ACL surface here — SearchSnippet returns the
-// caller's own preview state, not shared mailbox content (Phase 3
-// extends this to ACL-readable mailboxes).
-func (h *handlerSet) principalOwnsMailbox(ctx context.Context, p store.Principal, mailboxID store.MailboxID) bool {
+// principalCanSeeMailbox returns whether callerPID can read from mailboxID,
+// which must be owned by targetPID. For the caller's own account, any
+// owned mailbox is visible. For foreign accounts, the caller must hold at
+// least the Lookup right via direct or "anyone" ACL row.
+func (h *handlerSet) principalCanSeeMailbox(ctx context.Context, callerPID, targetPID store.PrincipalID, mailboxID store.MailboxID) bool {
 	mb, err := h.store.Meta().GetMailboxByID(ctx, mailboxID)
 	if err != nil {
 		return false
 	}
-	return mb.PrincipalID == p.ID
+	if mb.PrincipalID != targetPID {
+		return false
+	}
+	if callerPID == targetPID {
+		return true
+	}
+	// Cross-account: check ACL for Lookup right.
+	rows, err := h.store.Meta().GetMailboxACL(ctx, mailboxID)
+	if err != nil {
+		return false
+	}
+	for _, r := range rows {
+		if r.Rights&store.ACLRightLookup == 0 {
+			continue
+		}
+		if r.PrincipalID == nil {
+			return true // "anyone" ACL row
+		}
+		if *r.PrincipalID == callerPID {
+			return true
+		}
+	}
+	return false
 }
 
 // previewText returns the message's body text, used as the basis for

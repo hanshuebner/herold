@@ -109,11 +109,12 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	targetPID, merr := resolveAccount(ctx, q.h.store.Meta(), req.AccountID, pid)
+	if merr != nil {
 		return nil, merr
 	}
 
-	state, err := currentState(ctx, q.h.store.Meta(), pid)
+	state, err := currentState(ctx, q.h.store.Meta(), targetPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -129,9 +130,9 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 	var gatherErr error
 	needAllForThread := filter != nil && filterNeedsThreadAgg(filter)
 	if needAllForThread {
-		allMessages, gatherErr = listPrincipalMessages(ctx, q.h.store.Meta(), pid)
+		allMessages, gatherErr = listPrincipalMessages(ctx, q.h.store.Meta(), targetPID)
 	} else {
-		allMessages, gatherErr = gatherCandidatesRaw(ctx, q.h.store, pid, filter)
+		allMessages, gatherErr = gatherCandidatesRaw(ctx, q.h.store, targetPID, filter)
 	}
 	if gatherErr != nil {
 		return nil, serverFail(gatherErr)
@@ -922,7 +923,8 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	targetPID, merr := resolveAccount(ctx, qc.h.store.Meta(), req.AccountID, pid)
+	if merr != nil {
 		return nil, merr
 	}
 
@@ -936,7 +938,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "unparseable sinceQueryState")
 	}
 
-	newSeq, err := qc.h.store.Meta().GetMaxChangeSeqForKind(ctx, pid, store.EntityKindEmail)
+	newSeq, err := qc.h.store.Meta().GetMaxChangeSeqForKind(ctx, targetPID, store.EntityKindEmail)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -964,7 +966,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		if err := ctx.Err(); err != nil {
 			return nil, serverFail(err)
 		}
-		batch, ferr := qc.h.store.Meta().ReadChangeFeed(ctx, pid, cursor, page)
+		batch, ferr := qc.h.store.Meta().ReadChangeFeed(ctx, targetPID, cursor, page)
 		if ferr != nil {
 			return nil, serverFail(ferr)
 		}
@@ -1002,7 +1004,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 
 	if since == newSeq {
 		if req.CalculateTotal {
-			candidates, err := gatherCandidates(ctx, qc.h.store, pid, filter)
+			candidates, err := gatherCandidates(ctx, qc.h.store, targetPID, filter)
 			if err != nil {
 				return nil, serverFail(err)
 			}
@@ -1014,7 +1016,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 	}
 
 	// Build the current filtered, sorted result set.
-	candidates, err := gatherCandidates(ctx, qc.h.store, pid, filter)
+	candidates, err := gatherCandidates(ctx, qc.h.store, targetPID, filter)
 	if err != nil {
 		return nil, serverFail(err)
 	}

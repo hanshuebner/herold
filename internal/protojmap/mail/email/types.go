@@ -1,6 +1,7 @@
 package email
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -297,10 +298,18 @@ func requirePrincipal(getter func() (store.PrincipalID, bool)) (store.PrincipalI
 	return pid, nil
 }
 
-// requireAccount validates the JMAP accountId against the principal.
-// An absent accountId is rejected with "invalidArguments" per RFC 8620
-// §5.1: every method that operates on an account MUST carry the field.
-func requireAccount(reqAccountID jmapID, pid store.PrincipalID) *protojmap.MethodError {
+// resolveAccount resolves the JMAP accountId: returns callerPID for
+// own-account or the foreign ownerPID when the caller holds ACL access.
+// Used for cross-account capable methods: Email/get, Email/query,
+// Email/changes.
+func resolveAccount(ctx context.Context, meta store.Metadata, reqAccountID jmapID, callerPID store.PrincipalID) (store.PrincipalID, *protojmap.MethodError) {
+	return protojmap.ResolveAccount(ctx, meta, callerPID, reqAccountID)
+}
+
+// requireOwnAccount validates that the JMAP accountId matches the
+// authenticated principal's own account. Used for personal-only JMAP
+// methods: Email/set, Email/import, Email/parse, Email/copy destination.
+func requireOwnAccount(reqAccountID jmapID, pid store.PrincipalID) *protojmap.MethodError {
 	if reqAccountID == "" {
 		return protojmap.NewMethodError("invalidArguments", "accountId is required")
 	}

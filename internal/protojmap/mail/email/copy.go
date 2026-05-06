@@ -36,10 +36,12 @@ type copyHandler struct{ h *handlerSet }
 
 func (c *copyHandler) Method() string { return "Email/copy" }
 
-// Execute supports intra-principal copy in v1 (the only case JMAP
-// clients drive against a single-account server). Cross-account copy
-// requires the shared-mailbox surface (Phase 3+) and is rejected with
-// "fromAccountNotFound".
+// Execute copies emails from fromAccountId to accountId. The destination
+// must be the caller's own account. The source may be a foreign account
+// that the caller can access via ACL (cross-account copy).
+//
+// RFC 8621 §4.7: fromAccountId defaults to accountId when absent.
+// RFC 8620 §6: fromAccountNotFound when the source account is not accessible.
 func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
 	pid, merr := principalFromCtx(ctx)
 	if merr != nil {
@@ -51,14 +53,23 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	// Destination must be caller's own account.
+	if merr := requireOwnAccount(req.AccountID, pid); merr != nil {
 		return nil, merr
 	}
-	if req.FromAccountID != "" && req.FromAccountID != protojmap.AccountIDForPrincipal(pid) {
-		return nil, protojmap.NewMethodError("fromAccountNotFound",
-			"cross-account copy is not supported in v1")
+	// Source account: default to own account if absent, otherwise resolve
+	// via ACL (cross-account copy from a shared account).
+	fromAccountID := req.FromAccountID
+	if fromAccountID == "" {
+		fromAccountID = protojmap.AccountIDForPrincipal(pid)
+	}
+	sourcePID, fromMerr := resolveAccount(ctx, c.h.store.Meta(), fromAccountID, pid)
+	if fromMerr != nil {
+		// RFC 8620 §6: use fromAccountNotFound for source-account errors.
+		return nil, protojmap.NewMethodError("fromAccountNotFound", fromMerr.Description)
 	}
 
+	// ifInState applies to the DESTINATION account state.
 	state, err := currentState(ctx, c.h.store.Meta(), pid)
 	if err != nil {
 		return nil, serverFail(err)
@@ -94,6 +105,8 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 			resp.NotCreated[key] = setError{Type: "notFound"}
 			continue
 		}
+		// Use pid (callerPID) for ACL enforcement when reading the source message,
+		// so the ACL check reflects the actual caller's permissions.
 		src, err := loadMessageForPrincipal(ctx, c.h.store.Meta(), pid, mid)
 		if err != nil {
 			if errors.Is(err, errMessageMissing) {
@@ -103,8 +116,7 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 			return nil, serverFail(err)
 		}
 		// Re-insert into the destination mailbox via the create path,
-		// re-using the source's blob (the blob store is content-
-		// addressed so the second InsertMessage shares the row).
+		// re-using the source's blob (content-addressed store).
 		in := emailCreateInput{
 			BlobID:     src.Blob.Hash,
 			MailboxIDs: entry.MailboxIDs,
@@ -121,7 +133,11 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 		}
 		resp.Created[key] = jm
 
-		if req.OnSuccess != nil && *req.OnSuccess {
+		// onSuccessDestroyOriginal only works when source == destination account
+		// (the ACL model doesn't grant us rights to expunge foreign messages
+		// unless the caller explicitly has the expunge right, which is separate
+		// from the read right used above).
+		if req.OnSuccess != nil && *req.OnSuccess && sourcePID == pid {
 			if err := c.h.store.Meta().ExpungeMessages(ctx, src.MailboxID, []store.MessageID{src.ID}); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return nil, serverFail(fmt.Errorf("email: copy onSuccess expunge: %w", err))
 			}
