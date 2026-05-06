@@ -8,10 +8,12 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
-// listAccessibleMailboxes returns every mailbox the principal owns or
-// can see via ACL. Mirrors the mailbox sub-package's accessor; we
-// duplicate a thin version here so the email handlers do not depend on
-// the mailbox package's internals.
+// listAccessibleMailboxes returns the mailboxes owned by pid. Cross-
+// account JMAP routing scopes message visibility per-accountId; the
+// cross-account branch of each Email/* handler resolves a foreign
+// targetPID and calls this with that PID, so we never need to mix
+// owned + shared into a single result. See mailbox/render.go for the
+// matching mailbox-side comment.
 func listAccessibleMailboxes(
 	ctx context.Context,
 	meta store.Metadata,
@@ -20,24 +22,6 @@ func listAccessibleMailboxes(
 	owned, err := meta.ListMailboxes(ctx, pid)
 	if err != nil {
 		return nil, fmt.Errorf("email: list mailboxes: %w", err)
-	}
-	shared, err := meta.ListMailboxesAccessibleBy(ctx, pid)
-	if err != nil {
-		return nil, fmt.Errorf("email: list shared mailboxes: %w", err)
-	}
-	if len(shared) == 0 {
-		return owned, nil
-	}
-	seen := make(map[store.MailboxID]struct{}, len(owned))
-	for _, mb := range owned {
-		seen[mb.ID] = struct{}{}
-	}
-	for _, mb := range shared {
-		if _, dup := seen[mb.ID]; dup {
-			continue
-		}
-		owned = append(owned, mb)
-		seen[mb.ID] = struct{}{}
 	}
 	return owned, nil
 }

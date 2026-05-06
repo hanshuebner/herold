@@ -36,12 +36,14 @@ type copyHandler struct{ h *handlerSet }
 
 func (c *copyHandler) Method() string { return "Email/copy" }
 
-// Execute copies emails from fromAccountId to accountId. The destination
-// must be the caller's own account. The source may be a foreign account
-// that the caller can access via ACL (cross-account copy).
+// Execute copies emails from fromAccountId to accountId. Both source
+// and destination may be foreign accounts the caller can access via
+// ACL; the caller is the auth principal, while the email row is
+// attributed to the destination account's owner.
 //
 // RFC 8621 §4.7: fromAccountId defaults to accountId when absent.
-// RFC 8620 §6: fromAccountNotFound when the source account is not accessible.
+// RFC 8620 §6: fromAccountNotFound when the source account is not
+// accessible; accountNotFound when the destination is not accessible.
 func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
 	pid, merr := principalFromCtx(ctx)
 	if merr != nil {
@@ -53,15 +55,20 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	// Destination must be caller's own account.
-	if merr := requireOwnAccount(req.AccountID, pid); merr != nil {
+	// Destination account: must be the caller's own OR a foreign account
+	// where the caller holds at least lookup. Per-mailbox insert rights
+	// are enforced by createEmail's mb.PrincipalID == destPID gate plus
+	// the caller having had to acquire the destination mailbox id from
+	// a Mailbox/get on the foreign account in the first place.
+	destPID, merr := resolveAccount(ctx, c.h.store.Meta(), req.AccountID, pid)
+	if merr != nil {
 		return nil, merr
 	}
-	// Source account: default to own account if absent, otherwise resolve
+	// Source account: default to destination if absent, otherwise resolve
 	// via ACL (cross-account copy from a shared account).
 	fromAccountID := req.FromAccountID
 	if fromAccountID == "" {
-		fromAccountID = protojmap.AccountIDForPrincipal(pid)
+		fromAccountID = req.AccountID
 	}
 	sourcePID, fromMerr := resolveAccount(ctx, c.h.store.Meta(), fromAccountID, pid)
 	if fromMerr != nil {
@@ -70,7 +77,7 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 	}
 
 	// ifInState applies to the DESTINATION account state.
-	state, err := currentState(ctx, c.h.store.Meta(), pid)
+	state, err := currentState(ctx, c.h.store.Meta(), destPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -115,15 +122,16 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 			}
 			return nil, serverFail(err)
 		}
-		// Re-insert into the destination mailbox via the create path,
-		// re-using the source's blob (content-addressed store).
+		// Re-insert into the destination account via createEmail, attributing
+		// the row to the destination owner (destPID) so per-account state and
+		// mailbox-ownership invariants hold.
 		in := emailCreateInput{
 			BlobID:     src.Blob.Hash,
 			MailboxIDs: entry.MailboxIDs,
 			Keywords:   entry.Keywords,
 			ReceivedAt: entry.ReceivedAt,
 		}
-		_, jm, serr, err := c.h.createEmail(ctx, pid, in)
+		_, jm, serr, err := c.h.createEmail(ctx, destPID, in)
 		if err != nil {
 			return nil, serverFail(err)
 		}
@@ -133,10 +141,10 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 		}
 		resp.Created[key] = jm
 
-		// onSuccessDestroyOriginal only works when source == destination account
-		// (the ACL model doesn't grant us rights to expunge foreign messages
-		// unless the caller explicitly has the expunge right, which is separate
-		// from the read right used above).
+		// onSuccessDestroyOriginal only works when source == caller's own
+		// account (the ACL model doesn't grant us rights to expunge foreign
+		// messages unless the caller explicitly has the expunge right, which
+		// is separate from the read right used above).
 		if req.OnSuccess != nil && *req.OnSuccess && sourcePID == pid {
 			if err := c.h.store.Meta().ExpungeMessages(ctx, src.MailboxID, []store.MessageID{src.ID}); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return nil, serverFail(fmt.Errorf("email: copy onSuccess expunge: %w", err))
@@ -147,7 +155,7 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 		}
 	}
 
-	newState, err := currentState(ctx, c.h.store.Meta(), pid)
+	newState, err := currentState(ctx, c.h.store.Meta(), destPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}

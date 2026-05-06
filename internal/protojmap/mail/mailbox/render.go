@@ -122,9 +122,14 @@ func rightsForPrincipal(
 	return rightsFromACL(combined), nil
 }
 
-// listAccessibleMailboxes returns every mailbox the principal can see:
-// the owned set (ListMailboxes) plus the ACL-shared set
-// (ListMailboxesAccessibleBy), de-duplicated by MailboxID.
+// listAccessibleMailboxes returns the mailboxes owned by pid. Cross-
+// account JMAP routing scopes mailbox visibility per-accountId: a
+// client that wants to see mailboxes from a foreign account issues a
+// separate request with that account's id, and the cross-account
+// branch in each handler queries ListMailboxesAccessibleBy filtered to
+// that owner. Lumping owned + shared into one accountId would violate
+// RFC 8621 §2 (mailboxes are per-Account) and would surface the same
+// foreign mailbox under both accountIds.
 func listAccessibleMailboxes(
 	ctx context.Context,
 	meta store.Metadata,
@@ -133,24 +138,6 @@ func listAccessibleMailboxes(
 	owned, err := meta.ListMailboxes(ctx, pid)
 	if err != nil {
 		return nil, fmt.Errorf("mailbox: list owned: %w", err)
-	}
-	shared, err := meta.ListMailboxesAccessibleBy(ctx, pid)
-	if err != nil {
-		return nil, fmt.Errorf("mailbox: list shared: %w", err)
-	}
-	if len(shared) == 0 {
-		return owned, nil
-	}
-	seen := make(map[store.MailboxID]struct{}, len(owned))
-	for _, mb := range owned {
-		seen[mb.ID] = struct{}{}
-	}
-	for _, mb := range shared {
-		if _, dup := seen[mb.ID]; dup {
-			continue
-		}
-		owned = append(owned, mb)
-		seen[mb.ID] = struct{}{}
 	}
 	return owned, nil
 }

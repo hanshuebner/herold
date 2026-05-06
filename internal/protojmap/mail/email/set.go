@@ -161,11 +161,17 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireOwnAccount(req.AccountID, pid); merr != nil {
+	// Resolve the target account. Email/set accepts a foreign accountId
+	// when the caller has at least lookup on a mailbox in that account;
+	// per-mailbox/per-message ACL is enforced inside the create/update/
+	// destroy helpers (createEmail's mb.PrincipalID == destPID gate, and
+	// loadMessageForPrincipal's ACL walk for update/destroy).
+	destPID, merr := resolveAccount(ctx, s.h.store.Meta(), req.AccountID, pid)
+	if merr != nil {
 		return nil, merr
 	}
 
-	state, err := currentState(ctx, s.h.store.Meta(), pid)
+	state, err := currentState(ctx, s.h.store.Meta(), destPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -194,7 +200,9 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 				continue
 			}
 		}
-		mid, jm, serr, err := s.h.createEmail(ctx, pid, in)
+		// New emails belong to the destination account's owner so the
+		// mailbox-ownership invariant inside createEmail is satisfied.
+		mid, jm, serr, err := s.h.createEmail(ctx, destPID, in)
 		if err != nil {
 			return nil, serverFail(err)
 		}
@@ -202,9 +210,10 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			resp.NotCreated[key] = *serr
 			continue
 		}
-		// Increment Thread state for each created email: a new message either
-		// starts a new thread or joins an existing one.
-		if _, terr := s.h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindThread); terr != nil {
+		// Increment Thread state for each created email in the destination
+		// account: a new message either starts a new thread or joins an
+		// existing one.
+		if _, terr := s.h.store.Meta().IncrementJMAPState(ctx, destPID, store.JMAPStateKindThread); terr != nil {
 			return nil, serverFail(terr)
 		}
 		creationRefs[key] = mid
@@ -221,6 +230,9 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 				continue
 			}
 		}
+		// updateEmail uses pid (the caller) so loadMessageForPrincipal's
+		// ACL walk gates updates against the caller's per-mailbox rights;
+		// the destination account is implicit in the message id.
 		serr, err := s.h.updateEmail(ctx, pid, mid, payload)
 		if err != nil {
 			return nil, serverFail(err)
@@ -253,7 +265,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 		resp.Destroyed = append(resp.Destroyed, raw)
 	}
 
-	newState, err := currentState(ctx, s.h.store.Meta(), pid)
+	newState, err := currentState(ctx, s.h.store.Meta(), destPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
