@@ -86,23 +86,23 @@ func currentThreadState(ctx context.Context, meta store.Metadata, pid store.Prin
 	return stateString(uint64(seq)), nil
 }
 
-func accountIDForPrincipal(p store.Principal) string {
-	return protojmap.AccountIDForPrincipal(p.ID)
-}
-
-// validateAccountID checks the inbound accountId against the
-// authenticated principal. An absent accountId is rejected with
-// "invalidArguments" per RFC 8620 §5.1; a mismatched one returns
-// "accountNotFound".
-func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodError {
-	if requested == "" {
-		return protojmap.NewMethodError("invalidArguments", "accountId is required")
+// resolveTargetPrincipal resolves the JMAP accountId to a store.Principal.
+// When accountId matches the caller's own account, the caller's Principal is
+// returned. When it is a foreign account, the caller must hold at least the
+// Lookup right on at least one of the foreign owner's mailboxes.
+func resolveTargetPrincipal(ctx context.Context, meta store.Metadata, callerP store.Principal, requested jmapID) (store.Principal, *protojmap.MethodError) {
+	targetPID, merr := protojmap.ResolveAccount(ctx, meta, callerP.ID, requested)
+	if merr != nil {
+		return store.Principal{}, merr
 	}
-	if requested != accountIDForPrincipal(p) {
-		return protojmap.NewMethodError("accountNotFound",
-			"requested account is not accessible to the caller")
+	if targetPID == callerP.ID {
+		return callerP, nil
 	}
-	return nil
+	targetP, err := meta.GetPrincipalByID(ctx, targetPID)
+	if err != nil {
+		return store.Principal{}, protojmap.NewMethodError("accountNotFound", "account "+requested+" not found")
+	}
+	return targetP, nil
 }
 
 // listAllMessages returns every message owned by p across every
@@ -228,23 +228,24 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	p, ok := principalFor(ctx)
+	callerP, ok := principalFor(ctx)
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
-		return nil, e
+	targetP, merr := resolveTargetPrincipal(ctx, g.h.store.Meta(), callerP, req.AccountID)
+	if merr != nil {
+		return nil, merr
 	}
-	state, err := currentThreadState(ctx, g.h.store.Meta(), p.ID)
+	state, err := currentThreadState(ctx, g.h.store.Meta(), targetP.ID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
-	_, threadToMsgs, err := g.h.computeForPrincipal(ctx, p)
+	_, threadToMsgs, err := g.h.computeForPrincipal(ctx, targetP)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
 	resp := getResponse{
-		AccountID: accountIDForPrincipal(p),
+		AccountID: req.AccountID,
 		State:     state,
 		List:      []jmapThread{},
 		NotFound:  []jmapID{},
@@ -293,19 +294,20 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 	if err := json.Unmarshal(args, &req); err != nil {
 		return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 	}
-	p, ok := principalFor(ctx)
+	callerP, ok := principalFor(ctx)
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
-		return nil, e
+	targetP, merr := resolveTargetPrincipal(ctx, c.h.store.Meta(), callerP, req.AccountID)
+	if merr != nil {
+		return nil, merr
 	}
-	now, err := currentThreadState(ctx, c.h.store.Meta(), p.ID)
+	now, err := currentThreadState(ctx, c.h.store.Meta(), targetP.ID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
 	resp := changesResponse{
-		AccountID: accountIDForPrincipal(p),
+		AccountID: req.AccountID,
 		OldState:  req.SinceState,
 		NewState:  now,
 		Created:   []jmapID{},
@@ -324,7 +326,7 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 	// Compute Thread changes from the Email change feed.
 	// We read Email change-feed entries after sinceSeq and classify
 	// the affected threads into created / updated / destroyed.
-	if err := c.computeThreadChanges(ctx, p, sinceSeq, &resp); err != nil {
+	if err := c.computeThreadChanges(ctx, targetP, sinceSeq, &resp); err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
 	return resp, nil

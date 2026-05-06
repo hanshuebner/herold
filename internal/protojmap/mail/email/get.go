@@ -55,11 +55,12 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	targetPID, merr := resolveAccount(ctx, g.h.store.Meta(), req.AccountID, pid)
+	if merr != nil {
 		return nil, merr
 	}
 
-	state, err := currentState(ctx, g.h.store.Meta(), pid)
+	state, err := currentState(ctx, g.h.store.Meta(), targetPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -77,7 +78,7 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 
 	if req.IDs == nil {
 		// Fetch all (rarely useful but spec-permitted).
-		all, err := listPrincipalMessages(ctx, g.h.store.Meta(), pid)
+		all, err := listPrincipalMessages(ctx, g.h.store.Meta(), targetPID)
 		if err != nil {
 			return nil, serverFail(err)
 		}

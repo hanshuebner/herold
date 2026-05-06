@@ -77,18 +77,34 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	targetPID, merr := resolveAccount(ctx, q.h.store.Meta(), req.AccountID, pid)
+	if merr != nil {
 		return nil, merr
 	}
 
-	state, err := currentState(ctx, q.h.store.Meta(), pid)
+	state, err := currentState(ctx, q.h.store.Meta(), targetPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
-	all, err := listAccessibleMailboxes(ctx, q.h.store.Meta(), pid)
-	if err != nil {
-		return nil, serverFail(err)
+
+	var all []store.Mailbox
+	if targetPID == pid {
+		all, err = listAccessibleMailboxes(ctx, q.h.store.Meta(), pid)
+		if err != nil {
+			return nil, serverFail(err)
+		}
+	} else {
+		shared, serr := q.h.store.Meta().ListMailboxesAccessibleBy(ctx, pid)
+		if serr != nil {
+			return nil, serverFail(serr)
+		}
+		for _, mb := range shared {
+			if mb.PrincipalID == targetPID {
+				all = append(all, mb)
+			}
+		}
 	}
+
 	matched := make([]store.Mailbox, 0, len(all))
 	for _, mb := range all {
 		if matchMailboxFilter(mb, req.Filter) {
@@ -286,7 +302,8 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	targetPID, merr := resolveAccount(ctx, qc.h.store.Meta(), req.AccountID, pid)
+	if merr != nil {
 		return nil, merr
 	}
 
@@ -295,7 +312,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "unparseable sinceQueryState")
 	}
 
-	newSeq, err := qc.h.store.Meta().GetMaxChangeSeqForKind(ctx, pid, store.EntityKindMailbox)
+	newSeq, err := qc.h.store.Meta().GetMaxChangeSeqForKind(ctx, targetPID, store.EntityKindMailbox)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -313,12 +330,34 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "sinceQueryState is in the future")
 	}
 
+	// mailboxesForTarget returns mailboxes visible to caller for targetPID.
+	mailboxesForTarget := func() ([]store.Mailbox, *protojmap.MethodError) {
+		if targetPID == pid {
+			mbs, serr := listAccessibleMailboxes(ctx, qc.h.store.Meta(), pid)
+			if serr != nil {
+				return nil, serverFail(serr)
+			}
+			return mbs, nil
+		}
+		shared, serr := qc.h.store.Meta().ListMailboxesAccessibleBy(ctx, pid)
+		if serr != nil {
+			return nil, serverFail(serr)
+		}
+		var out []store.Mailbox
+		for _, mb := range shared {
+			if mb.PrincipalID == targetPID {
+				out = append(out, mb)
+			}
+		}
+		return out, nil
+	}
+
 	if since == newSeq {
 		// No changes: return empty diff.
 		if req.CalculateTotal {
-			all, err := listAccessibleMailboxes(ctx, qc.h.store.Meta(), pid)
-			if err != nil {
-				return nil, serverFail(err)
+			all, merr2 := mailboxesForTarget()
+			if merr2 != nil {
+				return nil, merr2
 			}
 			var matched []store.Mailbox
 			for _, mb := range all {
@@ -343,7 +382,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		if err := ctx.Err(); err != nil {
 			return nil, serverFail(err)
 		}
-		batch, ferr := qc.h.store.Meta().ReadChangeFeed(ctx, pid, cursor, page)
+		batch, ferr := qc.h.store.Meta().ReadChangeFeed(ctx, targetPID, cursor, page)
 		if ferr != nil {
 			return nil, serverFail(ferr)
 		}
@@ -380,9 +419,9 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 	}
 
 	// Build the current filtered, sorted result set.
-	all, err := listAccessibleMailboxes(ctx, qc.h.store.Meta(), pid)
-	if err != nil {
-		return nil, serverFail(err)
+	all, merr3 := mailboxesForTarget()
+	if merr3 != nil {
+		return nil, merr3
 	}
 	matched := make([]store.Mailbox, 0, len(all))
 	for _, mb := range all {

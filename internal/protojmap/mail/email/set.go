@@ -161,7 +161,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	if merr := requireOwnAccount(req.AccountID, pid); merr != nil {
 		return nil, merr
 	}
 

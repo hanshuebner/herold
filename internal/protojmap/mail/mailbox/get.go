@@ -45,18 +45,33 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	targetPID, merr := resolveAccount(ctx, g.h.store.Meta(), req.AccountID, pid)
+	if merr != nil {
 		return nil, merr
 	}
 
-	state, err := currentState(ctx, g.h.store.Meta(), pid)
+	state, err := currentState(ctx, g.h.store.Meta(), targetPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
 
-	all, err := listAccessibleMailboxes(ctx, g.h.store.Meta(), pid)
-	if err != nil {
-		return nil, serverFail(err)
+	var all []store.Mailbox
+	if targetPID == pid {
+		all, err = listAccessibleMailboxes(ctx, g.h.store.Meta(), pid)
+		if err != nil {
+			return nil, serverFail(err)
+		}
+	} else {
+		// Cross-account: return only the foreign mailboxes accessible to the caller.
+		shared, serr := g.h.store.Meta().ListMailboxesAccessibleBy(ctx, pid)
+		if serr != nil {
+			return nil, serverFail(serr)
+		}
+		for _, mb := range shared {
+			if mb.PrincipalID == targetPID {
+				all = append(all, mb)
+			}
+		}
 	}
 
 	// Build a property allow-set when the client requested a subset.

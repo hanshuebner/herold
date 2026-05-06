@@ -81,16 +81,71 @@ func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p 
 	// has a place to read telemetry_enabled and livetail_until.
 	sessID := SessionIDFromContext(ctx)
 	caps[CapabilityClientLog] = s.buildClientLogCapability(ctx, sessID)
-	desc := sessionDescriptor{
-		Capabilities: caps,
-		Accounts: map[Id]accountDesc{
-			accountID: {
-				Name:                p.CanonicalEmail,
-				IsPersonal:          true,
-				IsReadOnly:          false,
-				AccountCapabilities: accountCaps,
-			},
+
+	accounts := map[Id]accountDesc{
+		accountID: {
+			Name:                p.CanonicalEmail,
+			IsPersonal:          true,
+			IsReadOnly:          false,
+			AccountCapabilities: accountCaps,
 		},
+	}
+
+	// Add secondary accounts: foreign principals whose mailboxes the
+	// caller can access via ACL (at least the Lookup right). PrimaryAccounts
+	// always points to the caller's own account; secondary accounts are
+	// additional entries in the accounts map (RFC 8620 §2).
+	shared, err := s.store.Meta().ListMailboxesAccessibleBy(ctx, p.ID)
+	if err == nil && len(shared) > 0 {
+		// Group accessible mailboxes by their owning principal.
+		ownerMailboxes := make(map[store.PrincipalID][]store.Mailbox)
+		for _, mb := range shared {
+			if mb.PrincipalID == p.ID {
+				continue // skip own mailboxes
+			}
+			ownerMailboxes[mb.PrincipalID] = append(ownerMailboxes[mb.PrincipalID], mb)
+		}
+		for ownerPID, mboxes := range ownerMailboxes {
+			owner, oerr := s.store.Meta().GetPrincipalByID(ctx, ownerPID)
+			if oerr != nil {
+				continue
+			}
+			// IsReadOnly is true when no mailbox in the foreign account grants
+			// any write-capable right (i, w, k, s, t, e).
+			writeRights := store.ACLRightInsert | store.ACLRightWrite |
+				store.ACLRightCreateMailbox | store.ACLRightSeen |
+				store.ACLRightDeleteMessage | store.ACLRightExpunge
+			readOnly := true
+			for _, mb := range mboxes {
+				rows, aclerr := s.store.Meta().GetMailboxACL(ctx, mb.ID)
+				if aclerr != nil {
+					continue
+				}
+				for _, row := range rows {
+					if row.PrincipalID == nil || *row.PrincipalID == p.ID {
+						if row.Rights&writeRights != 0 {
+							readOnly = false
+							break
+						}
+					}
+				}
+				if !readOnly {
+					break
+				}
+			}
+			ownerAccountID := AccountIDForPrincipal(ownerPID)
+			accounts[ownerAccountID] = accountDesc{
+				Name:                owner.CanonicalEmail,
+				IsPersonal:          false,
+				IsReadOnly:          readOnly,
+				AccountCapabilities: accountCaps,
+			}
+		}
+	}
+
+	desc := sessionDescriptor{
+		Capabilities:    caps,
+		Accounts:        accounts,
 		PrimaryAccounts: primary,
 		Username:        p.CanonicalEmail,
 		APIURL:          base + "/jmap",
@@ -172,6 +227,24 @@ func (s *Server) sessionState(ctx context.Context) string {
 				telInt = 1
 			}
 			fmt.Fprintf(h, "clog_tel=%d;clog_lt=%d;", telInt, lt)
+		}
+	}
+	// Mix in per-account state for every foreign account visible to this
+	// principal so a remote change invalidates the session state cache.
+	shared, serr := s.store.Meta().ListMailboxesAccessibleBy(ctx, p.ID)
+	if serr == nil {
+		seen := make(map[store.PrincipalID]struct{})
+		for _, mb := range shared {
+			if mb.PrincipalID == p.ID {
+				continue
+			}
+			if _, already := seen[mb.PrincipalID]; already {
+				continue
+			}
+			seen[mb.PrincipalID] = struct{}{}
+			if fst, ferr := s.store.Meta().GetJMAPStates(ctx, mb.PrincipalID); ferr == nil {
+				fmt.Fprintf(h, "faid=%d;mb=%d;em=%d;", fst.PrincipalID, fst.Mailbox, fst.Email)
+			}
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
