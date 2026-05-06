@@ -201,12 +201,15 @@ rows).  Both gates pass with headroom.
 
 ### fetch_throughput, sqlite
 
-| Runner               | Fetch duration | Fetch rate         | Notes                  |
-|----------------------|----------------|--------------------|------------------------|
-| MacBook Air M3       | 0.04 s / 100   | 2483 msg/s smoke   | full-scale TBD         |
-| Hetzner CAX21 (CI)   | TBD            | TBD                | Maintainer to capture  |
+| Runner               | Fetch duration | Fetch rate         | Notes                                       |
+|----------------------|----------------|--------------------|---------------------------------------------|
+| MacBook Air M3       | 0.038 s / 100   | 2 629 msg/s smoke  | full-scale: 0.062 s, 15 972 msg/s, see note |
+| Hetzner CAX21 (CI)   | TBD            | TBD                | Maintainer to capture                       |
 
-The 1 s spec target on full-scale is held back pending the baseline.
+Full-scale on M3 seeded 100 000 messages (703 s seed time) but FETCH
+returned only 1 000 rows. This is the IMAP server-side cap discussed
+in "Open questions"; until it's lifted, the gate is per-row throughput
+rather than `messages_fetched == messages_seeded`.
 
 ## Open questions
 
@@ -215,6 +218,16 @@ The 1 s spec target on full-scale is held back pending the baseline.
    Until both M3 and CAX21 numbers exist we cannot pick a hardware-
    appropriate gate for `fetch_throughput` (1 s spec target vs. the 60 s
    relaxed gate).
+
+2. **IMAP `ListMessages` 1 000-row cap.**  `internal/protoimap/session_mailbox.go`
+   and `internal/protoimap/session_fetch.go` call
+   `store.Meta().ListMessages(ctx, mb.ID, MessageFilter{WithEnvelope: true})`
+   without a Limit; the store backends silently cap at 1 000.  Result:
+   SELECT and FETCH against a mailbox with N > 1 000 messages return
+   only the first 1 000 rows.  This is a real scaling bug against
+   REQ-NFR-01 (1 TB mailboxes).  The full-scale fetch baseline is
+   pinned at this 1 000 ceiling until the IMAP path paginates.  Track
+   as a separate issue.
 
 2. **CI wiring.**  `nightly.yml:38-44` already has the conditional that
    stops printing "test/load not yet populated" once this branch lands.
