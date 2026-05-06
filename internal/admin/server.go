@@ -339,6 +339,12 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		return fmt.Errorf("admin: fts index: %w", err)
 	}
 	defer ftsIndex.Close()
+	// Replace the per-backend substring stub with the Bleve-backed
+	// Composite so JMAP Email/query and IMAP SEARCH read from the real
+	// index. The Composite preserves the backend's ReadChangeFeedForFTS
+	// (still SQL-bound on state_changes) so the worker below keeps its
+	// durable cursor on the relational feed.
+	st = ftsOverride{Store: st, fts: storefts.NewComposite(ftsIndex, st.FTS())}
 	ftsWorker := storefts.NewWorker(
 		ftsIndex,
 		st,
