@@ -190,14 +190,20 @@ recipe above.
 
 ### inbound_burst, sqlite
 
-| Runner               | Throughput       | Error rate | Wall-time | Notes                         |
-|----------------------|-----------------|------------|-----------|-------------------------------|
-| MacBook Air M3 (8 CPU, 16 GB) | 118.06 msg/s | 0.0 %  | 847 s     | 100 000 / 100 000 delivered   |
-| Hetzner CAX21 (CI)   | TBD             | TBD        | TBD       | Maintainer to capture         |
+| Runner                          | Throughput   | Error rate | Wall-time | Notes                              |
+|---------------------------------|--------------|------------|-----------|------------------------------------|
+| MacBook Air M3 (8 CPU, 16 GB)   | 118.06 msg/s | 0.0 %      |   847 s   | 100 000 / 100 000 delivered        |
+| Hetzner CAX21 (4 ARM CPU, 8 GB) |  45.18 msg/s | <0.01 %    | 1 800 s   | 81 360 / 100 000 (timed out)       |
 
 The M3 number is sustained over the full run (initial throughput is
 ~150 msg/s; tails to ~118 msg/s as the SQLite database grows past ~80 k
-rows).  Both gates pass with headroom.
+rows).
+
+CAX21 is roughly 2.6x slower than M3 and falls ~55 % short of the
+REQ-NFR-01 100 msg/s target.  The CI gate floor is set to 40 msg/s --
+10 % below CAX21's measured baseline -- so the harness still catches
+regressions on CAX21.  Closing the gap to REQ-NFR-01 is tracked
+separately; see "Open questions" §3.
 
 ### fetch_throughput, sqlite
 
@@ -228,6 +234,25 @@ rather than `messages_fetched == messages_seeded`.
    REQ-NFR-01 (1 TB mailboxes).  The full-scale fetch baseline is
    pinned at this 1 000 ceiling until the IMAP path paginates.  Track
    as a separate issue.
+
+3. **Inbound throughput gap on CAX21 vs. REQ-NFR-01.**  CAX21 sustains
+   ~45 msg/s where REQ-NFR-01 calls for 100 msg/s.  Likely culprits to
+   profile (in priority order):
+
+   - SQLite WAL serialisation -- 16 SMTP sessions through a single
+     writer connection, each delivery does a transactional insert plus
+     refcount + envelope index updates.
+   - LLM-transparency lookup -- `persistLLMRecord` does an indexed
+     lookup by Message-ID for every delivered message; with one extra
+     index hit per message, this is non-zero per delivery.
+   - DKIM / SPF / DMARC verification -- the harness wires real
+     verifiers against fakedns.  Verification is per-message and
+     synchronous in the delivery path.
+
+   Capture pprof on CAX21 (`HarnessOpts.EnablePprof = true`) to attribute
+   the time precisely.  Either close the gap (likely a single-batch
+   transaction reshape on the store side) or revise REQ-NFR-01's
+   reference hardware to match CAX21.
 
 2. **CI wiring.**  `nightly.yml:38-44` already has the conditional that
    stops printing "test/load not yet populated" once this branch lands.
