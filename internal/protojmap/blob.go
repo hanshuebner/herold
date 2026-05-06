@@ -46,34 +46,65 @@ type blobNotCopied struct {
 }
 
 func (h blobCopyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *MethodError) {
+	callerP, ok := PrincipalFromContext(ctx)
+	if !ok {
+		return nil, NewMethodError("forbidden", "no authenticated principal")
+	}
 	var req blobCopyRequest
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &req); err != nil {
 			return nil, NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	// RFC 8620 §6.3: same-account copy is rejected.
-	if req.FromAccountID == req.AccountID {
-		return nil, NewMethodError("invalidArguments",
-			"fromAccountId and accountId must differ; same-account blob copy is not permitted")
+	// RFC 8620 §6.3: resolve fromAccountId; use caller's own account when absent.
+	fromAccountID := req.FromAccountID
+	if fromAccountID == "" {
+		fromAccountID = AccountIDForPrincipal(callerP.ID)
 	}
-	// v1: cross-account blob copy between different principals is not
-	// implemented (each principal has an isolated blob namespace).
-	// Return notCopied for all blobIds.
+	_, fromMerr := ResolveAccount(ctx, h.store.Meta(), callerP.ID, fromAccountID)
+	if fromMerr != nil {
+		return nil, NewMethodError("fromAccountNotFound", fromMerr.Description)
+	}
+
+	// Resolve destination account: must be accessible to caller.
+	_, toMerr := ResolveAccount(ctx, h.store.Meta(), callerP.ID, req.AccountID)
+	if toMerr != nil {
+		return nil, NewMethodError("accountNotFound", toMerr.Description)
+	}
+
+	// The blob store is content-addressed (BLAKE3). A blob is globally
+	// addressable by its hash regardless of which principal uploaded it.
+	// "Copying" a blob from one account to another just means verifying
+	// that the hash exists in the store — the bytes are already there.
 	resp := blobCopyResponse{
 		FromAccountID: req.FromAccountID,
 		AccountID:     req.AccountID,
 	}
-	if len(req.BlobIDs) > 0 {
-		resp.NotCopied = make(map[Id]blobNotCopied, len(req.BlobIDs))
-		for _, bid := range req.BlobIDs {
-			resp.NotCopied[bid] = blobNotCopied{
-				Type:        "blobNotFound",
-				Description: "cross-account blob copy is not supported in v1",
-			}
+	for _, bid := range req.BlobIDs {
+		_, _, err := h.store.Blobs().Stat(ctx, bid)
+		if err != nil {
+			resp.NotCopied = initNotCopied(resp.NotCopied)
+			resp.NotCopied[bid] = blobNotCopied{Type: "blobNotFound"}
+			continue
 		}
+		resp.Copied = initCopied(resp.Copied)
+		resp.Copied[bid] = bid // content-addressed: same hash in destination
 	}
 	return resp, nil
+}
+
+func initCopied(m map[Id]Id) map[Id]Id {
+	if m == nil {
+		return make(map[Id]Id)
+	}
+	return m
+}
+
+func initNotCopied(m map[Id]blobNotCopied) map[Id]blobNotCopied {
+	if m == nil {
+		return make(map[Id]blobNotCopied)
+	}
+	return m
 }
 
 // uploadResponse is the body returned by POST /jmap/upload (RFC 8620
