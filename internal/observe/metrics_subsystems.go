@@ -264,9 +264,10 @@ func RegisterStoreMetrics() {
 var (
 	ftsMetricsOnce sync.Once
 
-	FTSIndexingLagSeconds   prometheus.GaugeFunc
-	FTSIndexedMessagesTotal prometheus.Counter
-	FTSQueryDuration        prometheus.Histogram
+	FTSIndexingLagSeconds       prometheus.GaugeFunc
+	FTSIndexedMessagesTotal     prometheus.Counter
+	FTSQueryDuration            prometheus.Histogram
+	FTSAttachmentExtractedTotal *prometheus.CounterVec
 
 	// ftsLagSource holds the live Worker.Lag source that
 	// FTSIndexingLagSeconds reads. Written exactly once via
@@ -308,10 +309,21 @@ func RegisterFTSMetrics(lagSource func() float64) {
 			Help:    "FTS query latency.",
 			Buckets: prometheus.DefBuckets,
 		})
+		// FTSAttachmentExtractedTotal counts attachment-extraction
+		// outcomes for the FTS worker. Closed label vocabulary:
+		//   format:  "html" | "text" | "docx" | "xlsx" | "pptx" |
+		//            "pdf" | "skipped"
+		//   outcome: "ok" | "truncated_attachment" |
+		//            "truncated_message" | "error"
+		FTSAttachmentExtractedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_fts_attachment_extracted_total",
+			Help: "Attachment-text extraction outcomes for the FTS worker, by format and outcome.",
+		}, []string{"format", "outcome"})
 		MustRegister(
 			FTSIndexingLagSeconds,
 			FTSIndexedMessagesTotal,
 			FTSQueryDuration,
+			FTSAttachmentExtractedTotal,
 		)
 	})
 }
