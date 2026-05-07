@@ -48,7 +48,7 @@ var SupportedExtensions = map[string]string{
 	"duplicate":                  "RFC 7352",
 	"extlists":                   "RFC 6134",
 	"foreverypart":               "RFC 5703",
-	"mime":                       "RFC 5703 (replace/enclose stub)",
+	"mime":                       "RFC 5703",
 	"spamtest":                   "RFC 5235",
 	"spamtestplus":               "RFC 5235",
 	"enotify":                    "RFC 5435 (mailto-only)",

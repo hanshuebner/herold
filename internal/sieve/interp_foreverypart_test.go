@@ -173,6 +173,53 @@ if exists :mime :anychild "X-Tracer" {
 	}
 }
 
+func TestInterp_Replace_EmitsActionWithSubject(t *testing.T) {
+	src := `require ["mime"];
+replace :subject "rewritten" "new body content";`
+	out := runScript(t, src, Environment{}, sampleMsg)
+	var found *Action
+	for i := range out.Actions {
+		if out.Actions[i].Kind == ActionReplace {
+			found = &out.Actions[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("replace did not emit ActionReplace; actions=%+v", out.Actions)
+	}
+	if found.ReplaceSubject != "rewritten" {
+		t.Errorf("ReplaceSubject = %q; want rewritten", found.ReplaceSubject)
+	}
+	if string(found.ReplaceBody) != "new body content" {
+		t.Errorf("ReplaceBody = %q; want %q", found.ReplaceBody, "new body content")
+	}
+}
+
+func TestInterp_Enclose_EmitsAction(t *testing.T) {
+	src := `require ["mime"];
+enclose :subject "[FLAGGED]" :headers ["X-Quarantine: yes"] "warning text";`
+	out := runScript(t, src, Environment{}, sampleMsg)
+	var found *Action
+	for i := range out.Actions {
+		if out.Actions[i].Kind == ActionEnclose {
+			found = &out.Actions[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("enclose did not emit ActionEnclose; actions=%+v", out.Actions)
+	}
+	if found.EncloseSubject != "[FLAGGED]" {
+		t.Errorf("EncloseSubject = %q; want [FLAGGED]", found.EncloseSubject)
+	}
+	if string(found.EncloseBody) != "warning text" {
+		t.Errorf("EncloseBody = %q; want %q", found.EncloseBody, "warning text")
+	}
+	if len(found.EncloseHeaders) != 1 || found.EncloseHeaders[0] != "X-Quarantine: yes" {
+		t.Errorf("EncloseHeaders = %v; want [X-Quarantine: yes]", found.EncloseHeaders)
+	}
+}
+
 func TestInterp_ExtractText_RequiresMime(t *testing.T) {
 	// extracttext without `require "mime"` must fail validation.
 	src := `require ["foreverypart"];

@@ -37,6 +37,17 @@ const (
 	ActionNotify
 	ActionAddHeader
 	ActionDeleteHeader
+	// ActionReplace replaces the message body with the action's payload
+	// (RFC 5703 §4.3). Inside foreverypart the RFC scopes replacement
+	// to the current part; this implementation records the action with
+	// the part index but the delivery rewrite applies all replacements
+	// to the message body in order, which suffices for the common
+	// "rewrite the whole message" use case and is documented in
+	// ApplyMutations.
+	ActionReplace
+	// ActionEnclose wraps the message in a new outer multipart with the
+	// action's headers and body (RFC 5703 §4.4).
+	ActionEnclose
 )
 
 // Action is one decision recorded by the interpreter.
@@ -70,6 +81,28 @@ type Action struct {
 	HeaderValue string
 	// Flag is the imap4flags target flag.
 	Flag string
+	// ReplaceBody carries the new body for ActionReplace. Includes
+	// any :subject / :from headers that the script set via the
+	// matching tags (RFC 5703 §4.3); the delivery rewrite renders
+	// them as Subject / From overrides on the resulting message.
+	ReplaceBody []byte
+	// ReplaceSubject overrides the message Subject when set via
+	// `replace :subject "..."`.
+	ReplaceSubject string
+	// ReplaceFrom overrides the message From: when set via
+	// `replace :from "..."`.
+	ReplaceFrom string
+	// EncloseBody carries the new body for ActionEnclose. The
+	// delivery rewrite wraps the original message in a multipart
+	// container whose first part is this body and whose second part
+	// is the original message bytes.
+	EncloseBody []byte
+	// EncloseSubject overrides the outer message Subject when set
+	// via `enclose :subject "..."`.
+	EncloseSubject string
+	// EncloseHeaders are operator-supplied additional headers to set
+	// on the outer enclosure (RFC 5703 §4.4 :headers).
+	EncloseHeaders []string
 }
 
 // Outcome is the interpreter's return value: the ordered list of actions
@@ -388,13 +421,10 @@ func (s *state) runSimple(c Command) error {
 		return nil
 	case "extracttext":
 		return s.extractText(c)
-	case "replace", "enclose":
-		// Body-mutation actions (RFC 5703 §4.3, §4.4) require a
-		// delivery-side rewrite path that does not yet exist. Recognise
-		// the commands so scripts parse, but record no action; a
-		// follow-up wave will surface ActionReplacePart / ActionEnclose
-		// alongside the existing addheader/deleteheader actions.
-		return nil
+	case "replace":
+		return s.replace(c)
+	case "enclose":
+		return s.enclose(c)
 	default:
 		return &ValidationError{Line: c.Line, Column: c.Column, Message: fmt.Sprintf("command %q not implemented", c.Name)}
 	}
@@ -893,6 +923,112 @@ func (s *state) deleteHeader(c Command) error {
 	if a.HeaderName == "" {
 		return &ValidationError{Line: c.Line, Column: c.Column, Message: "deleteheader requires a name"}
 	}
+	return s.appendAction(a)
+}
+
+// replace implements RFC 5703 §4.3. Syntax:
+//
+//	replace [":subject" string] [":from" string] [":mime"] string
+//
+// Inside foreverypart the RFC scopes the replacement to the current
+// part; the action is recorded with no part index and ApplyMutations
+// applies it to the message body. This matches the common scripted
+// rewrite use case (quarantine wrappers, signature stripping); a
+// future wave can extend the action with a part index for the
+// less-common per-leaf rewrite path.
+func (s *state) replace(c Command) error {
+	if !s.requires["mime"] {
+		return &ValidationError{Line: c.Line, Column: c.Column, Message: "replace requires \"mime\""}
+	}
+	a := Action{Kind: ActionReplace}
+	var bodyArg string
+	var bodySeen bool
+	for i := 0; i < len(c.Args); i++ {
+		arg := c.Args[i]
+		switch arg.Kind {
+		case ArgTag:
+			switch strings.ToLower(arg.Tag) {
+			case ":subject":
+				if i+1 < len(c.Args) && c.Args[i+1].Kind == ArgString {
+					a.ReplaceSubject = s.expandVars(c.Args[i+1].Str)
+					i++
+				}
+			case ":from":
+				if i+1 < len(c.Args) && c.Args[i+1].Kind == ArgString {
+					a.ReplaceFrom = s.expandVars(c.Args[i+1].Str)
+					i++
+				}
+			case ":mime":
+				// The :mime modifier signals that the replacement
+				// payload is itself a MIME entity (RFC 5703 §4.3).
+				// Either way the delivery rewrite stores the bytes
+				// verbatim; the flag is recorded for completeness but
+				// does not change behaviour.
+			}
+		case ArgString:
+			if !bodySeen {
+				bodyArg = s.expandVars(arg.Str)
+				bodySeen = true
+			}
+		}
+	}
+	if !bodySeen {
+		return &ValidationError{Line: c.Line, Column: c.Column, Message: "replace requires a body string"}
+	}
+	a.ReplaceBody = []byte(bodyArg)
+	return s.appendAction(a)
+}
+
+// enclose implements RFC 5703 §4.4. Syntax:
+//
+//	enclose [":subject" string] [":headers" string-list] string
+//
+// The action wraps the existing message in a multipart/mixed
+// container whose first leaf is the supplied body and whose second
+// leaf is the unmodified original message (rfc822 attachment style),
+// honouring the :subject override on the outer message and any extra
+// :headers verbatim.
+func (s *state) enclose(c Command) error {
+	if !s.requires["mime"] {
+		return &ValidationError{Line: c.Line, Column: c.Column, Message: "enclose requires \"mime\""}
+	}
+	a := Action{Kind: ActionEnclose}
+	var bodyArg string
+	var bodySeen bool
+	for i := 0; i < len(c.Args); i++ {
+		arg := c.Args[i]
+		switch arg.Kind {
+		case ArgTag:
+			switch strings.ToLower(arg.Tag) {
+			case ":subject":
+				if i+1 < len(c.Args) && c.Args[i+1].Kind == ArgString {
+					a.EncloseSubject = s.expandVars(c.Args[i+1].Str)
+					i++
+				}
+			case ":headers":
+				if i+1 < len(c.Args) {
+					switch c.Args[i+1].Kind {
+					case ArgString:
+						a.EncloseHeaders = append(a.EncloseHeaders, s.expandVars(c.Args[i+1].Str))
+					case ArgStringList:
+						for _, h := range c.Args[i+1].StrList {
+							a.EncloseHeaders = append(a.EncloseHeaders, s.expandVars(h))
+						}
+					}
+					i++
+				}
+			}
+		case ArgString:
+			if !bodySeen {
+				bodyArg = s.expandVars(arg.Str)
+				bodySeen = true
+			}
+		}
+	}
+	if !bodySeen {
+		return &ValidationError{Line: c.Line, Column: c.Column, Message: "enclose requires a body string"}
+	}
+	a.EncloseBody = []byte(bodyArg)
 	return s.appendAction(a)
 }
 

@@ -283,6 +283,31 @@ func (sess *session) deliverOne(
 		targets = []string{"INBOX"}
 	}
 
+	// REQ-PROTO-60..68: apply Sieve editheader (RFC 5293) and mime
+	// (RFC 5703 replace / enclose) body mutations before persistence.
+	// The interpreter has already recorded each action on outcome; the
+	// mutator is pure and the rewritten bytes get re-blobbed +
+	// re-parsed so the indexed message reflects what the script
+	// produced.
+	if mutated, err := sieve.ApplyMutations(finalBytes, outcome); err == nil && !bytes.Equal(mutated, finalBytes) {
+		newRef, blobErr := sess.srv.store.Blobs().Put(ctx, bytes.NewReader(mutated))
+		if blobErr != nil {
+			sess.log.WarnContext(ctx, "sieve mutation: re-blob failed; storing pre-mutation bytes",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("recipient", rc.addr),
+				slog.String("err", blobErr.Error()))
+		} else if newMsg, perr := mailparse.Parse(bytes.NewReader(mutated), mailparse.NewParseOptions()); perr != nil {
+			sess.log.WarnContext(ctx, "sieve mutation: re-parse failed; storing pre-mutation bytes",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("recipient", rc.addr),
+				slog.String("err", perr.Error()))
+		} else {
+			finalBytes = mutated
+			blobRef = newRef
+			msg = newMsg
+		}
+	}
+
 	// REQ-FLOW-104..107: try to consume the message as an inbound
 	// reaction email.  Runs AFTER spam classification (already in
 	// classification) and AFTER sieve (so the junk target is already
