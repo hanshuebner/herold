@@ -264,7 +264,12 @@ jobs:
         # (-p 1) so storepg compliance, internal/diag/migrate, and test/e2e
         # do not truncate each other's rows (surfaced as "AUTHENTICATIONFAILED
         # LOGIN failed", "conflict: already linked", etc.).
-        run: go test -race -count=1 -timeout 20m -p 1 ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
+        # -race intentionally dropped on the postgres lane: the sqlite
+        # lane runs the entire tree under the race detector already, and
+        # this lane's purpose is real-database integration coverage, not
+        # a second pass of race coverage. Skipping -race halves the
+        # postgres-lane wall clock without losing race-detector reach.
+        run: go test -count=1 -timeout 20m -p 1 ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
       - name: test (postgres lane, rest in parallel)
         if: matrix.store == 'postgres'
         # HEROLD_PG_DSN unset for this step: pg-touching packages above
@@ -274,9 +279,11 @@ jobs:
         # lane is incidentally heavier (storesqlite + protoadmin run
         # concurrently in this batch), and protoadmin tipped past 10m on
         # ci run 25361758519.
+        # -race dropped here too; see the rationale on the serialised
+        # step above. Race coverage is the sqlite lane's job.
         run: |
           PKGS=$(go list ./... | grep -vE '^github.com/hanshuebner/herold/(internal/storepg|internal/diag/migrate|test/e2e)($|/)')
-          go test -race -count=1 -timeout 20m $PKGS
+          go test -count=1 -timeout 20m $PKGS
 
   fuzz-short:
     name: fuzz (short)
