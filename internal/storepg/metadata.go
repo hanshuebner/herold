@@ -2551,6 +2551,190 @@ func (m *metadata) SetUserSieveScript(ctx context.Context, pid store.PrincipalID
 	})
 }
 
+// -- ManageSieve named scripts (RFC 5804) ----------------------------
+
+func (m *metadata) ListSieveScripts(ctx context.Context, pid store.PrincipalID) ([]store.NamedSieveScript, error) {
+	rows, err := m.s.pool.Query(ctx, `
+		SELECT name, is_active, updated_at_us
+		  FROM sieve_named_scripts
+		 WHERE principal_id = $1
+		 ORDER BY name ASC`, int64(pid))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.NamedSieveScript
+	for rows.Next() {
+		var name string
+		var active bool
+		var updatedUs int64
+		if err := rows.Scan(&name, &active, &updatedUs); err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, store.NamedSieveScript{
+			Name:      name,
+			IsActive:  active,
+			UpdatedAt: fromMicros(updatedUs),
+		})
+	}
+	return out, mapErr(rows.Err())
+}
+
+func (m *metadata) GetSieveScriptByName(ctx context.Context, pid store.PrincipalID, name string) (string, error) {
+	var script string
+	err := m.s.pool.QueryRow(ctx,
+		`SELECT script FROM sieve_named_scripts WHERE principal_id = $1 AND name = $2`,
+		int64(pid), name).Scan(&script)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", store.ErrNotFound
+		}
+		return "", mapErr(err)
+	}
+	return script, nil
+}
+
+func (m *metadata) PutSieveScriptByName(ctx context.Context, pid store.PrincipalID, name, text string) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO sieve_named_scripts (principal_id, name, script, is_active, updated_at_us)
+			VALUES ($1, $2, $3, FALSE, $4)
+			ON CONFLICT (principal_id, name) DO UPDATE
+			  SET script = EXCLUDED.script,
+			      updated_at_us = EXCLUDED.updated_at_us`,
+			int64(pid), name, text, usMicros(now)); err != nil {
+			return mapErr(err)
+		}
+		// If the upserted row is the active one, keep the legacy slot
+		// in sync.
+		var active bool
+		if err := tx.QueryRow(ctx,
+			`SELECT is_active FROM sieve_named_scripts WHERE principal_id = $1 AND name = $2`,
+			int64(pid), name).Scan(&active); err != nil {
+			return mapErr(err)
+		}
+		if active {
+			return upsertLegacySieveScriptPgTx(ctx, tx, pid, text, now)
+		}
+		return nil
+	})
+}
+
+func (m *metadata) DeleteSieveScriptByName(ctx context.Context, pid store.PrincipalID, name string) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var active bool
+		err := tx.QueryRow(ctx,
+			`SELECT is_active FROM sieve_named_scripts WHERE principal_id = $1 AND name = $2`,
+			int64(pid), name).Scan(&active)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return store.ErrNotFound
+			}
+			return mapErr(err)
+		}
+		if active {
+			return store.ErrConflict
+		}
+		_, err = tx.Exec(ctx,
+			`DELETE FROM sieve_named_scripts WHERE principal_id = $1 AND name = $2`,
+			int64(pid), name)
+		return mapErr(err)
+	})
+}
+
+func (m *metadata) RenameSieveScript(ctx context.Context, pid store.PrincipalID, oldName, newName string) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var srcActive bool
+		if err := tx.QueryRow(ctx,
+			`SELECT is_active FROM sieve_named_scripts WHERE principal_id = $1 AND name = $2`,
+			int64(pid), oldName).Scan(&srcActive); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return store.ErrNotFound
+			}
+			return mapErr(err)
+		}
+		var dstCount int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM sieve_named_scripts WHERE principal_id = $1 AND name = $2`,
+			int64(pid), newName).Scan(&dstCount); err != nil {
+			return mapErr(err)
+		}
+		if dstCount > 0 {
+			return store.ErrConflict
+		}
+		_, err := tx.Exec(ctx, `
+			UPDATE sieve_named_scripts
+			   SET name = $1, updated_at_us = $2
+			 WHERE principal_id = $3 AND name = $4`,
+			newName, usMicros(now), int64(pid), oldName)
+		return mapErr(err)
+	})
+}
+
+func (m *metadata) SetActiveSieveScript(ctx context.Context, pid store.PrincipalID, name string) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`UPDATE sieve_named_scripts SET is_active = FALSE WHERE principal_id = $1 AND is_active`,
+			int64(pid)); err != nil {
+			return mapErr(err)
+		}
+		if name == "" {
+			_, err := tx.Exec(ctx,
+				`DELETE FROM sieve_scripts WHERE principal_id = $1`, int64(pid))
+			return mapErr(err)
+		}
+		var script string
+		if err := tx.QueryRow(ctx,
+			`SELECT script FROM sieve_named_scripts WHERE principal_id = $1 AND name = $2`,
+			int64(pid), name).Scan(&script); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return store.ErrNotFound
+			}
+			return mapErr(err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE sieve_named_scripts
+			   SET is_active = TRUE, updated_at_us = $1
+			 WHERE principal_id = $2 AND name = $3`,
+			usMicros(now), int64(pid), name); err != nil {
+			return mapErr(err)
+		}
+		return upsertLegacySieveScriptPgTx(ctx, tx, pid, script, now)
+	})
+}
+
+func (m *metadata) GetActiveSieveScriptName(ctx context.Context, pid store.PrincipalID) (string, bool, error) {
+	var name string
+	err := m.s.pool.QueryRow(ctx,
+		`SELECT name FROM sieve_named_scripts WHERE principal_id = $1 AND is_active`,
+		int64(pid)).Scan(&name)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, mapErr(err)
+	}
+	return name, true, nil
+}
+
+func upsertLegacySieveScriptPgTx(ctx context.Context, tx pgx.Tx, pid store.PrincipalID, text string, now time.Time) error {
+	if text == "" {
+		_, err := tx.Exec(ctx,
+			`DELETE FROM sieve_scripts WHERE principal_id = $1`, int64(pid))
+		return mapErr(err)
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO sieve_scripts (principal_id, script, updated_at_us)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (principal_id) DO UPDATE
+		  SET script = EXCLUDED.script, updated_at_us = EXCLUDED.updated_at_us`,
+		int64(pid), text, usMicros(now))
+	return mapErr(err)
+}
+
 // -- JMAP snooze (REQ-PROTO-49) --------------------------------------
 
 func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, limit int) ([]store.Message, error) {

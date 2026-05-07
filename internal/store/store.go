@@ -460,6 +460,53 @@ type Metadata interface {
 	// then contains only the managed-rules preamble, or nothing).
 	SetUserSieveScript(ctx context.Context, pid PrincipalID, text string) error
 
+	// -- ManageSieve named scripts (RFC 5804) -------------------------
+	//
+	// The methods below operate on the multi-script set ManageSieve
+	// exposes. They are independent of GetSieveScript / SetSieveScript:
+	// the runtime delivery path continues to read the legacy single-
+	// script slot, and SetActiveSieveScript copies the chosen named
+	// script's text into that slot so the runtime never sees a
+	// partially-migrated state.
+
+	// ListSieveScripts returns every named script for pid in stable
+	// (name-ascending) order. Empty slice + nil error means the
+	// principal has no scripts.
+	ListSieveScripts(ctx context.Context, pid PrincipalID) ([]NamedSieveScript, error)
+
+	// GetSieveScriptByName returns the named script's text. Returns
+	// ErrNotFound when no script with that name exists for pid.
+	GetSieveScriptByName(ctx context.Context, pid PrincipalID, name string) (string, error)
+
+	// PutSieveScriptByName upserts (pid, name) → text. The active
+	// flag is preserved on update; on insert the new row is inactive.
+	// Use SetActiveSieveScript to flip the active script.
+	PutSieveScriptByName(ctx context.Context, pid PrincipalID, name, text string) error
+
+	// DeleteSieveScriptByName removes the named script. ErrConflict is
+	// returned when the named script is currently active (the caller
+	// must SETACTIVE "" or SETACTIVE another name first); ErrNotFound
+	// is returned when no such script exists.
+	DeleteSieveScriptByName(ctx context.Context, pid PrincipalID, name string) error
+
+	// RenameSieveScript renames a script for pid. ErrNotFound is
+	// returned when oldName does not exist; ErrConflict is returned
+	// when newName already exists. The active flag (if oldName was
+	// active) is preserved.
+	RenameSieveScript(ctx context.Context, pid PrincipalID, oldName, newName string) error
+
+	// SetActiveSieveScript flips the active script for pid to name.
+	// An empty name clears the active script (no script runs at
+	// delivery). Both legs synchronously update the legacy
+	// sieve_scripts slot so the runtime path's GetSieveScript reflects
+	// the change immediately. ErrNotFound is returned when the
+	// requested name does not exist.
+	SetActiveSieveScript(ctx context.Context, pid PrincipalID, name string) error
+
+	// GetActiveSieveScriptName returns the name of the currently-
+	// active script, or ("", false, nil) when none is active.
+	GetActiveSieveScriptName(ctx context.Context, pid PrincipalID) (string, bool, error)
+
 	// -- Phase 2 outbound queue ---------------------------------------
 
 	// EnqueueMessage inserts one queue row and increments the body

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -388,6 +389,9 @@ func (ses *session) handlePUTSCRIPT(ctx context.Context, c *Command) error {
 	}
 	name := c.Args[0]
 	body := c.Literals[0]
+	if name == "" {
+		return ses.writeNO("", "PUTSCRIPT requires non-empty script name")
+	}
 	// RFC 5804 §2.6 / REQ-PROTO-51: parse + validate using the
 	// runtime interpreter's own grammar.
 	script, perr := sieve.Parse(body)
@@ -397,7 +401,7 @@ func (ses *session) handlePUTSCRIPT(ctx context.Context, c *Command) error {
 	if verr := sieve.Validate(script); verr != nil {
 		return ses.writeNOQuotedScriptName(name, verr.Error())
 	}
-	if err := ses.s.store.Meta().SetSieveScript(ctx, ses.pid, string(body)); err != nil {
+	if err := ses.s.store.Meta().PutSieveScriptByName(ctx, ses.pid, name, string(body)); err != nil {
 		return ses.writeNO("", "store write failed")
 	}
 	ses.logger.Info("PUTSCRIPT",
@@ -437,11 +441,6 @@ func (ses *session) handleCHECKSCRIPT(ctx context.Context, c *Command) error {
 // GETSCRIPT / DELETESCRIPT / LISTSCRIPTS / SETACTIVE / RENAMESCRIPT
 // -----------------------------------------------------------------------------
 
-// scriptSlotName is the implicit single-script slot name we expose
-// while the store models exactly one script per principal. The
-// Phase-2 follow-up that adds named scripts will retire this.
-const scriptSlotName = "active"
-
 func (ses *session) handleGETSCRIPT(ctx context.Context, c *Command) error {
 	if err := ses.requireAuth(); err != nil {
 		return nil
@@ -452,13 +451,14 @@ func (ses *session) handleGETSCRIPT(ctx context.Context, c *Command) error {
 	if len(c.Args) < 1 {
 		return ses.writeNO("", "GETSCRIPT requires <name>")
 	}
-	ses.logger.Debug("GETSCRIPT", "activity", observe.ActivityAccess, "script_name", c.Args[0])
-	body, err := ses.s.store.Meta().GetSieveScript(ctx, ses.pid)
+	name := c.Args[0]
+	ses.logger.Debug("GETSCRIPT", "activity", observe.ActivityAccess, "script_name", name)
+	body, err := ses.s.store.Meta().GetSieveScriptByName(ctx, ses.pid, name)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ses.writeNO("NONEXISTENT", "no script for that name")
+		}
 		return ses.writeNO("", "GETSCRIPT failed")
-	}
-	if body == "" {
-		return ses.writeNO("NONEXISTENT", "no script for that name")
 	}
 	// Server response for a successful GETSCRIPT is the script
 	// literal followed by the OK terminator (RFC 5804 §2.5).
@@ -487,12 +487,20 @@ func (ses *session) handleDELETESCRIPT(ctx context.Context, c *Command) error {
 	if len(c.Args) < 1 {
 		return ses.writeNO("", "DELETESCRIPT requires <name>")
 	}
-	if err := ses.s.store.Meta().SetSieveScript(ctx, ses.pid, ""); err != nil {
+	name := c.Args[0]
+	if err := ses.s.store.Meta().DeleteSieveScriptByName(ctx, ses.pid, name); err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return ses.writeNO("NONEXISTENT", "no such script")
+		case errors.Is(err, store.ErrConflict):
+			// RFC 5804 §2.10: deleting the active script must fail.
+			return ses.writeNO("ACTIVE", "cannot delete active script")
+		}
 		return ses.writeNO("", "DELETESCRIPT failed")
 	}
 	ses.logger.Info("DELETESCRIPT",
 		"activity", observe.ActivityUser,
-		"script_name", c.Args[0],
+		"script_name", name,
 		"principal_id", ses.pid)
 	return ses.writeOK("DELETESCRIPT completed")
 }
@@ -505,23 +513,26 @@ func (ses *session) handleLISTSCRIPTS(ctx context.Context, c *Command) error {
 		return nil
 	}
 	ses.logger.Debug("LISTSCRIPTS", "activity", observe.ActivityAccess)
-	body, err := ses.s.store.Meta().GetSieveScript(ctx, ses.pid)
+	scripts, err := ses.s.store.Meta().ListSieveScripts(ctx, ses.pid)
 	if err != nil {
 		return ses.writeNO("", "LISTSCRIPTS failed")
 	}
-	if body != "" {
-		// One script per principal — emit it as the implicit
-		// "active" slot, marked ACTIVE per RFC 5804 §2.4.
-		if err := ses.writeLine(fmt.Sprintf("%s ACTIVE", quoteString(scriptSlotName))); err != nil {
+	for _, s := range scripts {
+		var line string
+		if s.IsActive {
+			line = fmt.Sprintf("%s ACTIVE", quoteString(s.Name))
+		} else {
+			line = quoteString(s.Name)
+		}
+		if err := ses.writeLine(line); err != nil {
 			return err
 		}
 	}
 	return ses.writeOK("LISTSCRIPTS completed")
 }
 
-// handleSETACTIVE: with a single-script slot, SETACTIVE on the slot
-// name is a no-op success. SETACTIVE "" deletes the active script
-// (RFC 5804 §2.8 explicitly allows this form).
+// handleSETACTIVE flips the active script per RFC 5804 §2.8.
+// SETACTIVE "" deactivates whichever script is currently active.
 func (ses *session) handleSETACTIVE(ctx context.Context, c *Command) error {
 	if err := ses.requireAuth(); err != nil {
 		return nil
@@ -533,22 +544,11 @@ func (ses *session) handleSETACTIVE(ctx context.Context, c *Command) error {
 		return ses.writeNO("", "SETACTIVE requires <name>")
 	}
 	name := c.Args[0]
-	if name == "" {
-		// Disable the active script.
-		if err := ses.s.store.Meta().SetSieveScript(ctx, ses.pid, ""); err != nil {
-			return ses.writeNO("", "SETACTIVE failed")
+	if err := ses.s.store.Meta().SetActiveSieveScript(ctx, ses.pid, name); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ses.writeNO("NONEXISTENT", "no such script")
 		}
-		ses.logger.Info("SETACTIVE deactivated script",
-			"activity", observe.ActivityUser,
-			"principal_id", ses.pid)
-		return ses.writeOK("SETACTIVE completed")
-	}
-	body, err := ses.s.store.Meta().GetSieveScript(ctx, ses.pid)
-	if err != nil || body == "" {
-		return ses.writeNO("NONEXISTENT", "no such script")
-	}
-	if name != scriptSlotName {
-		return ses.writeNO("NONEXISTENT", "no such script")
+		return ses.writeNO("", "SETACTIVE failed")
 	}
 	ses.logger.Info("SETACTIVE",
 		"activity", observe.ActivityUser,
@@ -557,10 +557,6 @@ func (ses *session) handleSETACTIVE(ctx context.Context, c *Command) error {
 	return ses.writeOK("SETACTIVE completed")
 }
 
-// handleRENAMESCRIPT: with a single slot, rename is purely cosmetic —
-// the slot name is fixed to scriptSlotName. We accept any rename
-// targeting the active slot and short-circuit. A future multi-script
-// implementation will rewire this.
 func (ses *session) handleRENAMESCRIPT(ctx context.Context, c *Command) error {
 	if err := ses.requireAuth(); err != nil {
 		return nil
@@ -571,14 +567,23 @@ func (ses *session) handleRENAMESCRIPT(ctx context.Context, c *Command) error {
 	if len(c.Args) < 2 {
 		return ses.writeNO("", "RENAMESCRIPT requires <old> <new>")
 	}
-	body, err := ses.s.store.Meta().GetSieveScript(ctx, ses.pid)
-	if err != nil || body == "" {
-		return ses.writeNO("NONEXISTENT", "no such script")
+	oldName, newName := c.Args[0], c.Args[1]
+	if newName == "" {
+		return ses.writeNO("", "RENAMESCRIPT requires non-empty new name")
+	}
+	if err := ses.s.store.Meta().RenameSieveScript(ctx, ses.pid, oldName, newName); err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return ses.writeNO("NONEXISTENT", "no such script")
+		case errors.Is(err, store.ErrConflict):
+			return ses.writeNO("ALREADYEXISTS", "script with new name already exists")
+		}
+		return ses.writeNO("", "RENAMESCRIPT failed")
 	}
 	ses.logger.Info("RENAMESCRIPT",
 		"activity", observe.ActivityUser,
-		"old_name", c.Args[0],
-		"new_name", c.Args[1],
+		"old_name", oldName,
+		"new_name", newName,
 		"principal_id", ses.pid)
 	return ses.writeOK("RENAMESCRIPT completed")
 }

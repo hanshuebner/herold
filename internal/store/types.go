@@ -150,6 +150,25 @@ type Principal struct {
 	UpdatedAt time.Time
 }
 
+// NamedSieveScript is one entry in the per-principal multi-script
+// table ManageSieve (RFC 5804) operates on. The runtime delivery
+// path uses the legacy GetSieveScript / SetSieveScript single-slot
+// API; SetActiveSieveScript synchronously copies the chosen script
+// into that slot.
+type NamedSieveScript struct {
+	// Name is the operator-visible script identifier (RFC 5804
+	// scriptname-string).
+	Name string
+	// IsActive is true when this script is the one
+	// SetActiveSieveScript has currently flipped active. Exactly one
+	// row per principal can carry this flag; the store enforces the
+	// invariant via a partial unique index.
+	IsActive bool
+	// UpdatedAt is the instant of the last PUTSCRIPT / RENAMESCRIPT
+	// / SETACTIVE that touched this row.
+	UpdatedAt time.Time
+}
+
 // Alias maps an email address to a target Principal. See REQ-STORE
 // (aliases table in docs/design/server/architecture/02-storage-architecture.md §Schema).
 type Alias struct {

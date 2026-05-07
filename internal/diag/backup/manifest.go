@@ -196,7 +196,18 @@ const CurrentBackupVersion = 1
 //	Thread/get returning fragmented threads and the downstream failures
 //	in someInThreadHaveKeyword, noneInThreadHaveKeyword, and
 //	collapseThreads. No new tables.
-const CurrentSchemaVersion = 41
+//
+// 42 — 0042_sieve_named_scripts.sql. ManageSieve named-script storage
+//
+//	(RFC 5804 §2.4..§2.10). Adds sieve_named_scripts
+//	(principal_id, name, script, is_active, updated_at_us) with
+//	composite PK (principal_id, name) and a partial unique index
+//	on (principal_id) WHERE is_active to enforce the at-most-one
+//	active script invariant. Backfills a "default" row from the
+//	legacy sieve_scripts table; the legacy single-slot table remains
+//	the runtime delivery path's read source, kept in sync via
+//	SetActiveSieveScript.
+const CurrentSchemaVersion = 42
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

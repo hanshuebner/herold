@@ -322,9 +322,9 @@ func TestPUTSCRIPT_ValidScript_Persists(t *testing.T) {
 	if !strings.HasPrefix(strings.ToUpper(resp), "OK") {
 		t.Fatalf("PUTSCRIPT: %v", resp)
 	}
-	persisted, err := f.ha.Store.Meta().GetSieveScript(context.Background(), f.pid)
+	persisted, err := f.ha.Store.Meta().GetSieveScriptByName(context.Background(), f.pid, "active")
 	if err != nil {
-		t.Fatalf("GetSieveScript: %v", err)
+		t.Fatalf("GetSieveScriptByName: %v", err)
 	}
 	if persisted != body {
 		t.Fatalf("persisted script mismatch:\nwant=%q\ngot =%q", body, persisted)
@@ -348,12 +348,12 @@ func TestPUTSCRIPT_InvalidScript_NOWithDiagnostic(t *testing.T) {
 		t.Fatalf("NO should echo script name: %v", resp)
 	}
 	// Confirm nothing was persisted.
-	persisted, err := f.ha.Store.Meta().GetSieveScript(context.Background(), f.pid)
+	scripts, err := f.ha.Store.Meta().ListSieveScripts(context.Background(), f.pid)
 	if err != nil {
-		t.Fatalf("GetSieveScript: %v", err)
+		t.Fatalf("ListSieveScripts: %v", err)
 	}
-	if persisted != "" {
-		t.Fatalf("script should NOT be persisted on parse error: %q", persisted)
+	if len(scripts) != 0 {
+		t.Fatalf("script should NOT be persisted on parse error: %#v", scripts)
 	}
 }
 
@@ -368,19 +368,19 @@ func TestCHECKSCRIPT_ParseOnly_NoPersist(t *testing.T) {
 	if !strings.HasPrefix(strings.ToUpper(resp), "OK") {
 		t.Fatalf("CHECKSCRIPT: %v", resp)
 	}
-	persisted, err := f.ha.Store.Meta().GetSieveScript(context.Background(), f.pid)
+	scripts, err := f.ha.Store.Meta().ListSieveScripts(context.Background(), f.pid)
 	if err != nil {
-		t.Fatalf("GetSieveScript: %v", err)
+		t.Fatalf("ListSieveScripts: %v", err)
 	}
-	if persisted != "" {
-		t.Fatalf("CHECKSCRIPT must not persist: %q", persisted)
+	if len(scripts) != 0 {
+		t.Fatalf("CHECKSCRIPT must not persist: %#v", scripts)
 	}
 }
 
 func TestGETSCRIPT_ReturnsLiteral(t *testing.T) {
 	f := newFixture(t)
 	body := validSieveScript
-	if err := f.ha.Store.Meta().SetSieveScript(context.Background(), f.pid, body); err != nil {
+	if err := f.ha.Store.Meta().PutSieveScriptByName(context.Background(), f.pid, "active", body); err != nil {
 		t.Fatalf("seed script: %v", err)
 	}
 	c := authedClient(t, f)
@@ -410,22 +410,144 @@ func TestGETSCRIPT_ReturnsLiteral(t *testing.T) {
 
 func TestDELETESCRIPT_RemovesActive(t *testing.T) {
 	f := newFixture(t)
-	if err := f.ha.Store.Meta().SetSieveScript(context.Background(), f.pid, validSieveScript); err != nil {
+	// Seed an *inactive* script so DELETESCRIPT is allowed (RFC 5804
+	// §2.10 forbids deleting the active script). The test name's
+	// "Active" refers to the slot under the legacy single-slot model;
+	// keep the same shape, but exercise the named-script API.
+	if err := f.ha.Store.Meta().PutSieveScriptByName(context.Background(), f.pid, "draft", validSieveScript); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	c := authedClient(t, f)
 	defer c.conn.Close()
-	c.write("DELETESCRIPT \"active\"\r\n")
+	c.write("DELETESCRIPT \"draft\"\r\n")
 	resp := c.readLine()
 	if !strings.HasPrefix(strings.ToUpper(resp), "OK") {
 		t.Fatalf("DELETESCRIPT: %v", resp)
 	}
-	persisted, err := f.ha.Store.Meta().GetSieveScript(context.Background(), f.pid)
+	scripts, err := f.ha.Store.Meta().ListSieveScripts(context.Background(), f.pid)
 	if err != nil {
-		t.Fatalf("GetSieveScript: %v", err)
+		t.Fatalf("ListSieveScripts: %v", err)
 	}
-	if persisted != "" {
-		t.Fatalf("expected empty after DELETESCRIPT, got %q", persisted)
+	if len(scripts) != 0 {
+		t.Fatalf("expected no scripts after DELETESCRIPT, got %#v", scripts)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Multi-named-script flow (RFC 5804)
+// -----------------------------------------------------------------------------
+
+// TestNamedScripts_FullFlow drives PUTSCRIPT + LISTSCRIPTS + SETACTIVE
+// + GETSCRIPT + RENAMESCRIPT + DELETESCRIPT against multiple named
+// scripts in one session. Verifies (a) LISTSCRIPTS emits both names in
+// alphabetical order with ACTIVE marker only on the active one,
+// (b) DELETESCRIPT on the active script returns NO (ACTIVE),
+// (c) RENAMESCRIPT to an existing name returns NO (ALREADYEXISTS),
+// (d) SETACTIVE "" deactivates without erroring.
+func TestNamedScripts_FullFlow(t *testing.T) {
+	f := newFixture(t)
+	c := authedClient(t, f)
+	defer c.conn.Close()
+
+	const a = `keep;`
+	const b = `discard;`
+	c.write(fmt.Sprintf("PUTSCRIPT \"alpha\" {%d+}\r\n%s\r\n", len(a), a))
+	if r := c.readLine(); !strings.HasPrefix(strings.ToUpper(r), "OK") {
+		t.Fatalf("PUTSCRIPT alpha: %v", r)
+	}
+	c.write(fmt.Sprintf("PUTSCRIPT \"bravo\" {%d+}\r\n%s\r\n", len(b), b))
+	if r := c.readLine(); !strings.HasPrefix(strings.ToUpper(r), "OK") {
+		t.Fatalf("PUTSCRIPT bravo: %v", r)
+	}
+
+	// LISTSCRIPTS before SETACTIVE: both names, no ACTIVE marker.
+	c.write("LISTSCRIPTS\r\n")
+	var lines []string
+	for {
+		line := c.readLine()
+		if strings.HasPrefix(strings.ToUpper(line), "OK") || strings.HasPrefix(strings.ToUpper(line), "NO") {
+			break
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("LISTSCRIPTS pre-active: %v", lines)
+	}
+	if !strings.Contains(lines[0], "alpha") || !strings.Contains(lines[1], "bravo") {
+		t.Fatalf("LISTSCRIPTS order: %v", lines)
+	}
+	for _, l := range lines {
+		if strings.Contains(strings.ToUpper(l), "ACTIVE") {
+			t.Fatalf("no script should be active yet: %q", l)
+		}
+	}
+
+	// SETACTIVE "alpha"; LISTSCRIPTS now marks it.
+	c.write("SETACTIVE \"alpha\"\r\n")
+	if r := c.readLine(); !strings.HasPrefix(strings.ToUpper(r), "OK") {
+		t.Fatalf("SETACTIVE alpha: %v", r)
+	}
+	c.write("LISTSCRIPTS\r\n")
+	lines = lines[:0]
+	for {
+		line := c.readLine()
+		if strings.HasPrefix(strings.ToUpper(line), "OK") || strings.HasPrefix(strings.ToUpper(line), "NO") {
+			break
+		}
+		lines = append(lines, line)
+	}
+	var alphaLine, bravoLine string
+	for _, l := range lines {
+		switch {
+		case strings.Contains(l, "alpha"):
+			alphaLine = l
+		case strings.Contains(l, "bravo"):
+			bravoLine = l
+		}
+	}
+	if !strings.Contains(strings.ToUpper(alphaLine), "ACTIVE") {
+		t.Fatalf("alpha should be ACTIVE after SETACTIVE: %q", alphaLine)
+	}
+	if strings.Contains(strings.ToUpper(bravoLine), "ACTIVE") {
+		t.Fatalf("bravo should not be ACTIVE: %q", bravoLine)
+	}
+
+	// DELETESCRIPT on the active script: NO (ACTIVE).
+	c.write("DELETESCRIPT \"alpha\"\r\n")
+	r := c.readLine()
+	if !strings.HasPrefix(strings.ToUpper(r), "NO") || !strings.Contains(strings.ToUpper(r), "ACTIVE") {
+		t.Fatalf("DELETESCRIPT active: want NO (ACTIVE), got %q", r)
+	}
+
+	// RENAMESCRIPT to existing: NO (ALREADYEXISTS).
+	c.write("RENAMESCRIPT \"alpha\" \"bravo\"\r\n")
+	r = c.readLine()
+	if !strings.HasPrefix(strings.ToUpper(r), "NO") || !strings.Contains(strings.ToUpper(r), "ALREADYEXISTS") {
+		t.Fatalf("RENAMESCRIPT to existing: want NO (ALREADYEXISTS), got %q", r)
+	}
+
+	// RENAMESCRIPT happy path on the active script — active flag follows.
+	c.write("RENAMESCRIPT \"alpha\" \"primary\"\r\n")
+	if r := c.readLine(); !strings.HasPrefix(strings.ToUpper(r), "OK") {
+		t.Fatalf("RENAMESCRIPT alpha->primary: %v", r)
+	}
+	if name, ok, err := f.ha.Store.Meta().GetActiveSieveScriptName(context.Background(), f.pid); err != nil || !ok || name != "primary" {
+		t.Fatalf("active after rename = (%q, %v, %v); want (\"primary\", true, nil)", name, ok, err)
+	}
+
+	// SETACTIVE "" deactivates.
+	c.write("SETACTIVE \"\"\r\n")
+	if r := c.readLine(); !strings.HasPrefix(strings.ToUpper(r), "OK") {
+		t.Fatalf("SETACTIVE empty: %v", r)
+	}
+	if _, ok, _ := f.ha.Store.Meta().GetActiveSieveScriptName(context.Background(), f.pid); ok {
+		t.Fatalf("expected no active script after SETACTIVE empty")
+	}
+
+	// DELETESCRIPT on now-inactive script: OK.
+	c.write("DELETESCRIPT \"primary\"\r\n")
+	if r := c.readLine(); !strings.HasPrefix(strings.ToUpper(r), "OK") {
+		t.Fatalf("DELETESCRIPT primary after deactivate: %v", r)
 	}
 }
 
@@ -544,12 +666,12 @@ func TestActivityTagging_CHECKSCRIPT(t *testing.T) {
 func TestActivityTagging_DELETESCRIPT(t *testing.T) {
 	observe.AssertActivityTagged(t, func(log *slog.Logger) {
 		f := newFixtureWithLogger(t, log)
-		if err := f.ha.Store.Meta().SetSieveScript(context.Background(), f.pid, validSieveScript); err != nil {
+		if err := f.ha.Store.Meta().PutSieveScriptByName(context.Background(), f.pid, "draft", validSieveScript); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 		c := authedClient(t, f)
 		defer c.conn.Close()
-		c.write("DELETESCRIPT \"active\"\r\n")
+		c.write("DELETESCRIPT \"draft\"\r\n")
 		resp := c.readLine()
 		if !strings.HasPrefix(strings.ToUpper(resp), "OK") {
 			t.Fatalf("DELETESCRIPT: %v", resp)

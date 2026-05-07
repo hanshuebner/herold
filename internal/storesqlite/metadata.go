@@ -2778,6 +2778,204 @@ func (m *metadata) SetUserSieveScript(ctx context.Context, pid store.PrincipalID
 	})
 }
 
+// -- ManageSieve named scripts (RFC 5804) ----------------------------
+
+func (m *metadata) ListSieveScripts(ctx context.Context, pid store.PrincipalID) ([]store.NamedSieveScript, error) {
+	rows, err := m.s.db.QueryContext(ctx, `
+		SELECT name, is_active, updated_at_us
+		  FROM sieve_named_scripts
+		 WHERE principal_id = ?
+		 ORDER BY name ASC`, int64(pid))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.NamedSieveScript
+	for rows.Next() {
+		var name string
+		var active int64
+		var updUs int64
+		if err := rows.Scan(&name, &active, &updUs); err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, store.NamedSieveScript{
+			Name:      name,
+			IsActive:  active != 0,
+			UpdatedAt: fromMicros(updUs),
+		})
+	}
+	return out, mapErr(rows.Err())
+}
+
+func (m *metadata) GetSieveScriptByName(ctx context.Context, pid store.PrincipalID, name string) (string, error) {
+	var script string
+	err := m.s.db.QueryRowContext(ctx,
+		`SELECT script FROM sieve_named_scripts WHERE principal_id = ? AND name = ?`,
+		int64(pid), name).Scan(&script)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", store.ErrNotFound
+		}
+		return "", mapErr(err)
+	}
+	return script, nil
+}
+
+func (m *metadata) PutSieveScriptByName(ctx context.Context, pid store.PrincipalID, name, text string) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO sieve_named_scripts (principal_id, name, script, is_active, updated_at_us)
+			VALUES (?, ?, ?, 0, ?)
+			ON CONFLICT(principal_id, name) DO UPDATE
+			  SET script = excluded.script,
+			      updated_at_us = excluded.updated_at_us`,
+			int64(pid), name, text, usMicros(now))
+		if err != nil {
+			return mapErr(err)
+		}
+		// If the upserted row is the active one, sync the legacy slot
+		// so the runtime delivery path picks up the new text on the
+		// next GetSieveScript.
+		var isActive int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT is_active FROM sieve_named_scripts WHERE principal_id = ? AND name = ?`,
+			int64(pid), name).Scan(&isActive); err != nil {
+			return mapErr(err)
+		}
+		if isActive != 0 {
+			return upsertLegacySieveScriptTx(ctx, tx, pid, text, now)
+		}
+		return nil
+	})
+}
+
+func (m *metadata) DeleteSieveScriptByName(ctx context.Context, pid store.PrincipalID, name string) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		var isActive int64
+		err := tx.QueryRowContext(ctx,
+			`SELECT is_active FROM sieve_named_scripts WHERE principal_id = ? AND name = ?`,
+			int64(pid), name).Scan(&isActive)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return store.ErrNotFound
+			}
+			return mapErr(err)
+		}
+		if isActive != 0 {
+			// RFC 5804 §2.10: cannot delete the active script.
+			return store.ErrConflict
+		}
+		_, err = tx.ExecContext(ctx,
+			`DELETE FROM sieve_named_scripts WHERE principal_id = ? AND name = ?`,
+			int64(pid), name)
+		return mapErr(err)
+	})
+}
+
+func (m *metadata) RenameSieveScript(ctx context.Context, pid store.PrincipalID, oldName, newName string) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		// Source must exist.
+		var srcActive int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT is_active FROM sieve_named_scripts WHERE principal_id = ? AND name = ?`,
+			int64(pid), oldName).Scan(&srcActive); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return store.ErrNotFound
+			}
+			return mapErr(err)
+		}
+		// Target must not exist.
+		var dstCount int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sieve_named_scripts WHERE principal_id = ? AND name = ?`,
+			int64(pid), newName).Scan(&dstCount); err != nil {
+			return mapErr(err)
+		}
+		if dstCount > 0 {
+			return store.ErrConflict
+		}
+		_, err := tx.ExecContext(ctx, `
+			UPDATE sieve_named_scripts
+			   SET name = ?, updated_at_us = ?
+			 WHERE principal_id = ? AND name = ?`,
+			newName, usMicros(now), int64(pid), oldName)
+		return mapErr(err)
+	})
+}
+
+func (m *metadata) SetActiveSieveScript(ctx context.Context, pid store.PrincipalID, name string) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		// Clear current active flag for this principal.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE sieve_named_scripts SET is_active = 0 WHERE principal_id = ? AND is_active = 1`,
+			int64(pid)); err != nil {
+			return mapErr(err)
+		}
+		if name == "" {
+			// SETACTIVE "" clears the active script (RFC 5804 §2.8).
+			// Also drop the legacy slot so the runtime sees no script.
+			_, err := tx.ExecContext(ctx,
+				`DELETE FROM sieve_scripts WHERE principal_id = ?`, int64(pid))
+			return mapErr(err)
+		}
+		// Verify the named row exists, then mark active and copy text
+		// into the legacy slot.
+		var script string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT script FROM sieve_named_scripts WHERE principal_id = ? AND name = ?`,
+			int64(pid), name).Scan(&script); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return store.ErrNotFound
+			}
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sieve_named_scripts
+			   SET is_active = 1, updated_at_us = ?
+			 WHERE principal_id = ? AND name = ?`,
+			usMicros(now), int64(pid), name); err != nil {
+			return mapErr(err)
+		}
+		return upsertLegacySieveScriptTx(ctx, tx, pid, script, now)
+	})
+}
+
+func (m *metadata) GetActiveSieveScriptName(ctx context.Context, pid store.PrincipalID) (string, bool, error) {
+	var name string
+	err := m.s.db.QueryRowContext(ctx,
+		`SELECT name FROM sieve_named_scripts WHERE principal_id = ? AND is_active = 1`,
+		int64(pid)).Scan(&name)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, mapErr(err)
+	}
+	return name, true, nil
+}
+
+// upsertLegacySieveScriptTx writes text into the legacy single-script
+// sieve_scripts table inside an open tx. Used by the named-script
+// methods to keep the runtime delivery path in sync with the active
+// script. An empty text deletes the legacy row.
+func upsertLegacySieveScriptTx(ctx context.Context, tx *sql.Tx, pid store.PrincipalID, text string, now time.Time) error {
+	if text == "" {
+		_, err := tx.ExecContext(ctx,
+			`DELETE FROM sieve_scripts WHERE principal_id = ?`, int64(pid))
+		return mapErr(err)
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO sieve_scripts (principal_id, script, updated_at_us)
+		VALUES (?, ?, ?)
+		ON CONFLICT(principal_id) DO UPDATE
+		  SET script = excluded.script, updated_at_us = excluded.updated_at_us`,
+		int64(pid), text, usMicros(now))
+	return mapErr(err)
+}
+
 // -- JMAP snooze (REQ-PROTO-49) --------------------------------------
 
 func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, limit int) ([]store.Message, error) {

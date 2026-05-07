@@ -70,6 +70,15 @@ func Run(t *testing.T, f Factory) {
 		{"SieveScript_SetGetRoundtrip", testSieveScriptRoundtrip},
 		{"SieveScript_Overwrite", testSieveScriptOverwrite},
 		{"SieveScript_CascadeOnDeletePrincipal", testSieveScriptCascade},
+		// ManageSieve named-script API (RFC 5804).
+		{"NamedSieve_ListEmpty", testNamedSieveListEmpty},
+		{"NamedSieve_PutGetList", testNamedSievePutGetList},
+		{"NamedSieve_GetByName_NotFound", testNamedSieveGetNotFound},
+		{"NamedSieve_SetActive_SyncsLegacySlot", testNamedSieveSetActive},
+		{"NamedSieve_DeleteActive_Conflicts", testNamedSieveDeleteActive},
+		{"NamedSieve_Rename", testNamedSieveRename},
+		{"NamedSieve_Rename_PreservesActive", testNamedSieveRenamePreservesActive},
+		{"NamedSieve_PutOverwritesActive_SyncsLegacy", testNamedSievePutActiveSyncs},
 		{"ListAliases_ByDomain", testListAliasesByDomain},
 		{"DeleteAlias_NotFoundWhenAbsent", testDeleteAliasNotFound},
 		{"DeleteDomain_NotFoundWhenAbsent", testDeleteDomainNotFound},
@@ -1799,6 +1808,224 @@ func testSieveScriptCascade(t *testing.T, s store.Store) {
 	}
 	if got != "" {
 		t.Fatalf("script survived DeletePrincipal: %q", got)
+	}
+}
+
+func testNamedSieveListEmpty(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "nse@example.com")
+	got, err := s.Meta().ListSieveScripts(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListSieveScripts: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected no scripts, got %#v", got)
+	}
+	name, ok, err := s.Meta().GetActiveSieveScriptName(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetActiveSieveScriptName: %v", err)
+	}
+	if ok || name != "" {
+		t.Fatalf("expected no active script, got (%q, %v)", name, ok)
+	}
+}
+
+func testNamedSievePutGetList(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "nspg@example.com")
+	if err := s.Meta().PutSieveScriptByName(ctx, p.ID, "alpha", "keep;"); err != nil {
+		t.Fatalf("Put alpha: %v", err)
+	}
+	if err := s.Meta().PutSieveScriptByName(ctx, p.ID, "bravo", `discard;`); err != nil {
+		t.Fatalf("Put bravo: %v", err)
+	}
+	body, err := s.Meta().GetSieveScriptByName(ctx, p.ID, "alpha")
+	if err != nil {
+		t.Fatalf("GetByName alpha: %v", err)
+	}
+	if body != "keep;" {
+		t.Fatalf("alpha body = %q, want %q", body, "keep;")
+	}
+	scripts, err := s.Meta().ListSieveScripts(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(scripts) != 2 {
+		t.Fatalf("List len = %d, want 2", len(scripts))
+	}
+	// Result is name-sorted.
+	if scripts[0].Name != "alpha" || scripts[1].Name != "bravo" {
+		t.Fatalf("List order: %#v", scripts)
+	}
+	// Neither is active until SETACTIVE.
+	for _, sc := range scripts {
+		if sc.IsActive {
+			t.Fatalf("script %q unexpectedly active", sc.Name)
+		}
+	}
+	// Re-Put updates text but leaves activeness alone (still inactive).
+	if err := s.Meta().PutSieveScriptByName(ctx, p.ID, "alpha", `keep; stop;`); err != nil {
+		t.Fatalf("re-Put alpha: %v", err)
+	}
+	body, err = s.Meta().GetSieveScriptByName(ctx, p.ID, "alpha")
+	if err != nil {
+		t.Fatalf("GetByName alpha after re-Put: %v", err)
+	}
+	if body != "keep; stop;" {
+		t.Fatalf("alpha after re-Put = %q", body)
+	}
+}
+
+func testNamedSieveGetNotFound(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "nsgn@example.com")
+	if _, err := s.Meta().GetSieveScriptByName(ctx, p.ID, "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetSieveScriptByName: want ErrNotFound, got %v", err)
+	}
+	if err := s.Meta().DeleteSieveScriptByName(ctx, p.ID, "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DeleteSieveScriptByName: want ErrNotFound, got %v", err)
+	}
+	if err := s.Meta().SetActiveSieveScript(ctx, p.ID, "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetActiveSieveScript: want ErrNotFound, got %v", err)
+	}
+}
+
+func testNamedSieveSetActive(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "nssa@example.com")
+	if err := s.Meta().PutSieveScriptByName(ctx, p.ID, "primary", `keep;`); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	// Before SETACTIVE the legacy slot is empty.
+	if got, err := s.Meta().GetSieveScript(ctx, p.ID); err != nil || got != "" {
+		t.Fatalf("legacy slot before activate = (%q, %v); want empty", got, err)
+	}
+	if err := s.Meta().SetActiveSieveScript(ctx, p.ID, "primary"); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
+	// Legacy slot now mirrors the named script's text.
+	if got, err := s.Meta().GetSieveScript(ctx, p.ID); err != nil || got != "keep;" {
+		t.Fatalf("legacy slot after activate = (%q, %v); want %q", got, err, "keep;")
+	}
+	name, ok, err := s.Meta().GetActiveSieveScriptName(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetActiveName: %v", err)
+	}
+	if !ok || name != "primary" {
+		t.Fatalf("active = (%q, %v); want (\"primary\", true)", name, ok)
+	}
+	scripts, err := s.Meta().ListSieveScripts(ctx, p.ID)
+	if err != nil || len(scripts) != 1 || !scripts[0].IsActive {
+		t.Fatalf("List after activate: %#v err=%v", scripts, err)
+	}
+	// SETACTIVE "" deactivates and clears the legacy slot.
+	if err := s.Meta().SetActiveSieveScript(ctx, p.ID, ""); err != nil {
+		t.Fatalf("SetActive(empty): %v", err)
+	}
+	if got, _ := s.Meta().GetSieveScript(ctx, p.ID); got != "" {
+		t.Fatalf("legacy slot after deactivate = %q; want empty", got)
+	}
+	_, ok, _ = s.Meta().GetActiveSieveScriptName(ctx, p.ID)
+	if ok {
+		t.Fatalf("expected no active script after deactivate")
+	}
+}
+
+func testNamedSieveDeleteActive(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "nsda@example.com")
+	if err := s.Meta().PutSieveScriptByName(ctx, p.ID, "live", `keep;`); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := s.Meta().SetActiveSieveScript(ctx, p.ID, "live"); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
+	if err := s.Meta().DeleteSieveScriptByName(ctx, p.ID, "live"); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("Delete active: want ErrConflict, got %v", err)
+	}
+	// Deactivate then delete works.
+	if err := s.Meta().SetActiveSieveScript(ctx, p.ID, ""); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+	if err := s.Meta().DeleteSieveScriptByName(ctx, p.ID, "live"); err != nil {
+		t.Fatalf("Delete after deactivate: %v", err)
+	}
+	if _, err := s.Meta().GetSieveScriptByName(ctx, p.ID, "live"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetByName after delete: want ErrNotFound, got %v", err)
+	}
+}
+
+func testNamedSieveRename(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "nsrn@example.com")
+	if err := s.Meta().PutSieveScriptByName(ctx, p.ID, "old", `keep;`); err != nil {
+		t.Fatalf("Put old: %v", err)
+	}
+	if err := s.Meta().PutSieveScriptByName(ctx, p.ID, "other", `discard;`); err != nil {
+		t.Fatalf("Put other: %v", err)
+	}
+	// Conflict: target name exists.
+	if err := s.Meta().RenameSieveScript(ctx, p.ID, "old", "other"); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("Rename to existing: want ErrConflict, got %v", err)
+	}
+	// Source missing.
+	if err := s.Meta().RenameSieveScript(ctx, p.ID, "ghost", "fresh"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Rename missing: want ErrNotFound, got %v", err)
+	}
+	// Happy path.
+	if err := s.Meta().RenameSieveScript(ctx, p.ID, "old", "new"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if _, err := s.Meta().GetSieveScriptByName(ctx, p.ID, "old"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Get old after rename: want ErrNotFound, got %v", err)
+	}
+	body, err := s.Meta().GetSieveScriptByName(ctx, p.ID, "new")
+	if err != nil || body != "keep;" {
+		t.Fatalf("Get new = (%q, %v); want (\"keep;\", nil)", body, err)
+	}
+}
+
+func testNamedSieveRenamePreservesActive(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "nsra@example.com")
+	if err := s.Meta().PutSieveScriptByName(ctx, p.ID, "first", `keep;`); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := s.Meta().SetActiveSieveScript(ctx, p.ID, "first"); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
+	if err := s.Meta().RenameSieveScript(ctx, p.ID, "first", "renamed"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	name, ok, err := s.Meta().GetActiveSieveScriptName(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetActiveName: %v", err)
+	}
+	if !ok || name != "renamed" {
+		t.Fatalf("active after rename = (%q, %v); want (\"renamed\", true)", name, ok)
+	}
+	// Legacy slot still reflects the renamed script's text.
+	if got, _ := s.Meta().GetSieveScript(ctx, p.ID); got != "keep;" {
+		t.Fatalf("legacy slot after rename = %q; want %q", got, "keep;")
+	}
+}
+
+func testNamedSievePutActiveSyncs(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "nspa@example.com")
+	if err := s.Meta().PutSieveScriptByName(ctx, p.ID, "live", `keep;`); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := s.Meta().SetActiveSieveScript(ctx, p.ID, "live"); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
+	// Re-PUT the active script: legacy slot must follow.
+	const updated = `keep; stop;`
+	if err := s.Meta().PutSieveScriptByName(ctx, p.ID, "live", updated); err != nil {
+		t.Fatalf("re-Put active: %v", err)
+	}
+	if got, _ := s.Meta().GetSieveScript(ctx, p.ID); got != updated {
+		t.Fatalf("legacy slot after re-Put = %q; want %q", got, updated)
 	}
 }
 
