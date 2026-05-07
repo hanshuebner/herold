@@ -4,12 +4,16 @@
  * - Attachment indicator in the header: verifies that the paperclip icon
  *   appears when the email has at least one non-inline attachment, and is
  *   suppressed otherwise.
- * - No per-message label badges (re #66, re #70): label display was moved
- *   to ThreadReader.svelte's thread-level header so badges are always
- *   visible regardless of accordion expansion state. MessageAccordion no
- *   longer renders label badges at all.
- * - Restore from trash navigation (re #29): clicking the Restore button
- *   calls restoreFromTrash and then navigates back.
+ * - No per-message label badges (re #66, re #70): label display lives on
+ *   ThreadReader.svelte's thread-level header so badges are always visible
+ *   regardless of accordion expansion state. MessageAccordion no longer
+ *   renders label badges at all.
+ * - Restore from trash via the per-message header kebab (re #29, re #98):
+ *   the bottom action row was removed; restore now lives in the kebab.
+ *   Test opens the kebab then clicks the menu item.
+ * - No bottom action row (re #98): the per-message action toolbar was
+ *   removed in favour of thread-level actions plus reply / reply-all /
+ *   forward in the fixed reply bar.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -109,26 +113,6 @@ vi.mock('../settings/settings.svelte', () => ({
   },
 }));
 
-vi.mock('../compose/compose.svelte', () => ({
-  compose: {
-    openReply: vi.fn(),
-    openReplyAll: vi.fn(),
-    openForward: vi.fn(),
-  },
-}));
-
-vi.mock('./move-picker.svelte', () => ({
-  movePicker: { open: vi.fn() },
-}));
-
-vi.mock('./label-picker.svelte', () => ({
-  labelPicker: { open: vi.fn() },
-}));
-
-vi.mock('./snooze-picker.svelte', () => ({
-  snoozePicker: { open: vi.fn() },
-}));
-
 vi.mock('./reaction-confirm.svelte', () => ({
   reactionConfirm: { needsConfirm: () => false },
 }));
@@ -137,39 +121,10 @@ vi.mock('../keyboard/engine.svelte', () => ({
   keyboard: { pushLayer: () => () => undefined },
 }));
 
-vi.mock('../settings/managed-rules.svelte', () => ({
-  managedRules: {
-    isThreadMuted: () => false,
-    muteThread: vi.fn(),
-    unmuteThread: vi.fn(),
-    blockSender: vi.fn(),
-  },
-}));
+vi.mock('../settings/managed-rules.svelte', () => ({}));
 
 vi.mock('../settings/filter-like.svelte', () => ({
   filterLike: { set: vi.fn() },
-}));
-
-// messageActionsPrefs: return a mock that surfaces all message-scope
-// actions as primary (visibleCount = full length) so test assertions can
-// use getByLabelText on any button. The real store defaults to 4 visible;
-// unit tests for that behaviour live in messageActionsPrefs.test.ts.
-// Note: vi.mock factories are hoisted; no module-level variables can be
-// referenced from them — use literal values only.
-vi.mock('./messageActionsPrefs.svelte', () => ({
-  messageActionsPrefs: {
-    get message() {
-      const order = [
-        'reply', 'replyAll', 'forward', 'react',
-        'moveMsg', 'labelMsg', 'markRead', 'markImportant',
-        'snoozeMsg', 'restore', 'filterLike',
-      ];
-      return { order, visibleCount: order.length };
-    },
-    get thread() {
-      return { order: [], visibleCount: 4 };
-    },
-  },
 }));
 
 vi.mock('../router/router.svelte', () => ({
@@ -314,7 +269,7 @@ describe('MessageAccordion: no per-message label badges (re #66, re #70)', () =>
   });
 });
 
-describe('MessageAccordion: restore from trash navigates back (re #29)', () => {
+describe('MessageAccordion: restore from trash via header kebab (re #29, re #98)', () => {
   beforeEach(() => {
     mailMock.trash = TRASH_MBX;
     mailMock.listFolder = 'trash';
@@ -323,14 +278,18 @@ describe('MessageAccordion: restore from trash navigates back (re #29)', () => {
     vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
   });
 
-  it('calls restoreFromTrash then history.back when history is available', async () => {
-    // Simulate a real browser with navigation history (length > 1).
+  it('opens the kebab and calls restoreFromTrash then history.back when history is available', async () => {
     Object.defineProperty(window.history, 'length', { value: 3, configurable: true });
 
     const email = makeEmail({ mailboxIds: { [TRASH_MBX.id]: true } });
     renderAccordion(email, /* expanded */ true);
 
-    const btn = screen.getByLabelText('msg.restore');
+    // Open the per-message overflow menu.
+    const trigger = screen.getByLabelText('actions.moreActions');
+    await fireEvent.click(trigger);
+
+    // Menu items render after open; click the restore item.
+    const btn = screen.getByText('msg.restore');
     await fireEvent.click(btn);
 
     expect(mailMock.restoreFromTrash).toHaveBeenCalledWith('e1');
@@ -339,13 +298,15 @@ describe('MessageAccordion: restore from trash navigates back (re #29)', () => {
 
   it('falls back to router.navigate when history length is 1', async () => {
     const { router } = await import('../router/router.svelte');
-    // No history to go back to — the fallback path uses router.navigate.
     Object.defineProperty(window.history, 'length', { value: 1, configurable: true });
 
     const email = makeEmail({ mailboxIds: { [TRASH_MBX.id]: true } });
     renderAccordion(email, /* expanded */ true);
 
-    const btn = screen.getByLabelText('msg.restore');
+    const trigger = screen.getByLabelText('actions.moreActions');
+    await fireEvent.click(trigger);
+
+    const btn = screen.getByText('msg.restore');
     await fireEvent.click(btn);
 
     expect(mailMock.restoreFromTrash).toHaveBeenCalledWith('e1');
@@ -353,51 +314,54 @@ describe('MessageAccordion: restore from trash navigates back (re #29)', () => {
   });
 });
 
-// ── Primary / overflow toolbar rendering (re #60) ─────────────────────────────
+// ── No per-message bottom action toolbar (re #98) ────────────────────────────
 //
-// The mock for messageActionsPrefs makes all actions primary (visibleCount =
-// full order length). These tests verify that when only a subset is primary,
-// the primary actions render as labeled pills and overflow actions are grouped
-// behind the overflow trigger (not directly in the DOM as buttons).
+// The per-message action row was removed: reply / reply-all / forward live
+// in the fixed reply bar; mute / spam / phishing / block / archive / etc.
+// live in ThreadToolbar; rare per-message verbs (filterLike, viewOriginal,
+// restore-in-trash) live in the small header kebab.
 
-describe('MessageAccordion: prefs-driven primary/overflow split (re #60)', () => {
+describe('MessageAccordion: no bottom action row (re #98)', () => {
   beforeEach(() => {
     mailMock.trash = null;
     mailMock.listFolder = 'inbox';
   });
 
-  it('renders configured primary actions as labeled pills when expanded', () => {
-    // With all actions as primary (the mock default), we expect at least
-    // Reply and Forward buttons to be present.
+  it('does not render reply / reply-all / forward inside the message body', () => {
     const email = makeEmail({});
     renderAccordion(email, /* expanded */ true);
 
-    // Primary reply and forward should appear as labeled pill buttons.
-    expect(screen.getByLabelText('msg.reply')).toBeInTheDocument();
-    expect(screen.getByLabelText('msg.forward')).toBeInTheDocument();
-  });
-
-  it('does not render action buttons when the accordion is collapsed', () => {
-    const email = makeEmail({});
-    renderAccordion(email, /* expanded */ false);
-
-    // Action buttons only appear in the expanded body — not when collapsed.
+    // Reply / forward live in the ThreadReplyBar, not under each message.
     expect(screen.queryByLabelText('msg.reply')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('msg.replyAll')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('msg.forward')).not.toBeInTheDocument();
   });
 
-  it('renders a "More actions" overflow trigger when there are overflow items', () => {
-    // Temporarily override the messageActionsPrefs mock to put most actions
-    // in overflow (only reply is primary).
-    // We cannot re-mock at describe level; instead we spy on the module getter.
-    // This verifies the overflow trigger renders when overflow items exist.
-    // Since the mock makes all items primary, this test confirms the opposite:
-    // the trigger does NOT render when there are no overflow items.
+  it('does not render thread-level actions under the message', () => {
     const email = makeEmail({});
     renderAccordion(email, /* expanded */ true);
 
-    // With all items primary (mock visibleCount = order.length), there should
-    // be no overflow trigger in the DOM.
+    // These all live in ThreadToolbar.
+    expect(screen.queryByLabelText('msg.muteThread')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('msg.reportSpam')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('msg.reportPhishing')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('msg.blockSender')).not.toBeInTheDocument();
+  });
+
+  it('exposes a per-message kebab in the header when expanded', () => {
+    // filterLike is always available; viewOriginal needs blobId; restore
+    // needs trash-membership. The kebab should always render when at
+    // least one item applies — filterLike alone is enough.
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ true);
+
+    expect(screen.getByLabelText('actions.moreActions')).toBeInTheDocument();
+  });
+
+  it('does not render the kebab when collapsed', () => {
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ false);
+
     expect(screen.queryByLabelText('actions.moreActions')).not.toBeInTheDocument();
   });
 });

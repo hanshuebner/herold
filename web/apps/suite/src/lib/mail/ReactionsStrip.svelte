@@ -74,11 +74,13 @@
 {/if}
 
 <style>
+  /* Inline strip rendered next to the date in the message header
+     (re #98). Compact spacing so it doesn't push the date off the
+     right edge on narrow viewports. */
   .reactions {
-    display: flex;
+    display: inline-flex;
     flex-wrap: wrap;
-    gap: var(--spacing-02);
-    padding: var(--spacing-03) 0 0;
+    gap: var(--spacing-01);
   }
 
   .chip {

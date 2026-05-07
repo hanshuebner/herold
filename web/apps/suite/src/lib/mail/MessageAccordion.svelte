@@ -7,10 +7,6 @@
   import { htmlHasExternalImages } from './sanitize';
   import { splitQuotedText } from './quoted';
   import { emailHtmlBody, emailTextBody, type Email } from './types';
-  import { compose } from '../compose/compose.svelte';
-  import { movePicker } from './move-picker.svelte';
-  import { labelPicker } from './label-picker.svelte';
-  import { snoozePicker } from './snooze-picker.svelte';
   import { mail } from './store.svelte';
   import { settings } from '../settings/settings.svelte';
   import { jmap } from '../jmap/client';
@@ -18,26 +14,11 @@
   import { reactionConfirm } from './reaction-confirm.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
   import { untrack } from 'svelte';
-  import { managedRules, type RuleCondition } from '../settings/managed-rules.svelte';
+  import type { RuleCondition } from '../settings/managed-rules.svelte';
   import { filterLike } from '../settings/filter-like.svelte';
   import { router } from '../router/router.svelte';
-  import { messageActionsPrefs } from './messageActionsPrefs.svelte';
-  import { MESSAGE_ACTIONS } from './actions';
   import ActionOverflowMenu from './ActionOverflowMenu.svelte';
-  import ReplyIcon from '../icons/ReplyIcon.svelte';
-  import ReplyAllIcon from '../icons/ReplyAllIcon.svelte';
-  import ForwardIcon from '../icons/ForwardIcon.svelte';
   import ReactIcon from '../icons/ReactIcon.svelte';
-  import MoveIcon from '../icons/MoveIcon.svelte';
-  import MarkReadIcon from '../icons/MarkReadIcon.svelte';
-  import MarkUnreadIcon from '../icons/MarkUnreadIcon.svelte';
-  import ImportantIcon from '../icons/ImportantIcon.svelte';
-  import SnoozeIcon from '../icons/SnoozeIcon.svelte';
-  import UnsnoozeIcon from '../icons/UnsnoozeIcon.svelte';
-  import RestoreIcon from '../icons/RestoreIcon.svelte';
-  import FilterIcon from '../icons/FilterIcon.svelte';
-  import LabelIcon from '../icons/LabelIcon.svelte';
-  import ViewOriginalIcon from '../icons/ViewOriginalIcon.svelte';
   import { t, localeTag } from '../i18n/i18n.svelte';
   import { relativeTimeAgo } from './relative-time';
   import RecipientTrigger from './RecipientTrigger.svelte';
@@ -124,23 +105,14 @@
     `(${relativeTimeAgo(new Date(email.receivedAt))})`,
   );
 
-  // Show the Reply-all button only when there's somebody to add to Cc:
-  // multiple To recipients, or any Cc recipient at all.
-  let hasMultipleRecipients = $derived(
-    (email.to?.length ?? 0) > 1 || (email.cc?.length ?? 0) > 0,
-  );
-
   // True when the email currently lives in the Trash mailbox — drives
-  // the per-message Restore button visibility.
+  // the per-message Restore overflow item visibility (re #98). Restore
+  // is also offered at thread scope in ThreadToolbar.
   let isInTrash = $derived.by(() => {
     const t = mail.trash;
     if (!t) return false;
     return Boolean(email.mailboxIds[t.id]);
   });
-
-  let isSeen = $derived(Boolean(email.keywords.$seen));
-  let isImportant = $derived(Boolean(email.keywords.$important));
-  let isSnoozed = $derived(Boolean(email.snoozedUntil));
 
   // Build a cid -> downloadUrl map from the email's attachments. Inline
   // images referenced by Content-ID land in the body as `cid:<id>`; the
@@ -186,11 +158,14 @@
     return out;
   });
 
-  // ── Reactions ──────────────────────────────────────────────────────────
+  // ── Reactions (Gmail-style: anchored to the message header) ────────────
+  //
+  // Per re #98 the reactions surface lives in the message title row, not
+  // in a row below the body. Visible state for the picker is gated on the
+  // accordion being expanded so the picker only opens for the active
+  // message.
 
-  // Controls visibility of the emoji picker floating near the React button.
   let pickerOpen = $state(false);
-
   let reactButtonEl = $state<HTMLButtonElement | null>(null);
 
   /**
@@ -266,10 +241,13 @@
     });
   });
 
-  // ── Filter messages like this ──────────────────────────────────────────
-  // Builds Sieve conditions from THIS MESSAGE's sender/subject/list-id.
-  // This is intentionally per-message scope (each message may have a
-  // different sender) — it stays in the message action row.
+  // ── Per-message overflow menu (re #98) ─────────────────────────────────
+  // The per-message action row was removed; only the actions that depend
+  // on a single message's identity (filterLike from THIS sender/subject,
+  // viewOriginal of THIS rfc822 source, restore THIS message from trash)
+  // remain reachable from the message header via a small kebab menu.
+  // Other message-scope verbs (mark unread, snooze, mark important, move,
+  // label) now apply at thread scope via ThreadToolbar.
 
   function handleFilterLike(): void {
     // Strip common reply/forward prefixes from the subject before using it
@@ -298,155 +276,6 @@
     router.navigate('/settings/filters');
   }
 
-  // ── Block sender confirmation ──────────────────────────────────────────
-
-  let blockConfirmOpen = $state(false);
-  let blockError = $state<string | null>(null);
-  let blockInProgress = $state(false);
-
-  function openBlockConfirm(): void {
-    blockError = null;
-    blockConfirmOpen = true;
-  }
-
-  function closeBlockConfirm(): void {
-    blockConfirmOpen = false;
-    blockError = null;
-  }
-
-  async function confirmBlock(): Promise<void> {
-    if (!senderEmail) return;
-    blockInProgress = true;
-    blockError = null;
-    try {
-      await managedRules.blockSender(senderEmail);
-      blockConfirmOpen = false;
-    } catch (err) {
-      blockError = err instanceof Error ? err.message : 'Block failed';
-    } finally {
-      blockInProgress = false;
-    }
-  }
-
-  // ── Per-message action toolbar (re #60) ───────────────────────────────
-  //
-  // Only message-scope actions live here. Thread-scope actions (mute,
-  // spam, phishing, block sender) were moved to the ThreadToolbar so they
-  // no longer appear redundantly under every message.
-  //
-  // The ordered list of action IDs comes from messageActionsPrefs. The
-  // first `visibleCount` IDs are rendered as labeled pills in the primary
-  // row; the rest go into the overflow menu.
-  //
-  // State-conditional actions (replyAll with multiple recipients, restore
-  // in Trash, snooze/unsnooze) retain their guards — a state-hidden action
-  // simply does not appear and the next preferred action takes its slot.
-
-  type ActionHandler = {
-    /** Returns true if this action is currently applicable. */
-    visible: () => boolean;
-    /** Renders the button for a primary (labeled pill) slot. */
-    renderPrimary: () => { label: string; shortcut?: string; icon: unknown; onclick: () => void; ariaLabel?: string; ariaPressed?: boolean };
-    /** Returns an overflow menu item descriptor. */
-    overflowItem: () => { id: string; label: string; shortcut?: string; onclick: () => void } | null;
-  };
-
-  function msgActionHandlers(): Record<string, { visible: boolean; label: string; shortcut?: string; onclick: () => void; icon: 'reply' | 'replyAll' | 'forward' | 'react' | 'move' | 'label' | 'markRead' | 'markImportant' | 'snooze' | 'restore' | 'filterLike' | 'viewOriginal'; ariaPressed?: boolean }> {
-    return {
-      reply: {
-        visible: true,
-        label: t('msg.reply'),
-        shortcut: 'r',
-        onclick: () => compose.openReply(email),
-        icon: 'reply',
-      },
-      replyAll: {
-        visible: hasMultipleRecipients,
-        label: t('msg.replyAll'),
-        onclick: () => compose.openReplyAll(email),
-        icon: 'replyAll',
-      },
-      forward: {
-        visible: true,
-        label: t('msg.forward'),
-        shortcut: 'f',
-        onclick: () => compose.openForward(email),
-        icon: 'forward',
-      },
-      react: {
-        visible: true,
-        label: t('msg.react'),
-        shortcut: '+',
-        onclick: () => { pickerOpen = !pickerOpen; },
-        icon: 'react',
-        ariaPressed: pickerOpen,
-      },
-      moveMsg: {
-        visible: true,
-        label: t('msg.move'),
-        onclick: () => movePicker.open(email.id),
-        icon: 'move',
-      },
-      labelMsg: {
-        visible: true,
-        label: t('msg.label'),
-        onclick: () => labelPicker.open(email.id),
-        icon: 'label',
-      },
-      markRead: {
-        visible: true,
-        label: isSeen ? t('msg.markUnread') : t('msg.markRead'),
-        onclick: () => mail.setSeen(email.id, !isSeen),
-        icon: 'markRead',
-      },
-      markImportant: {
-        visible: true,
-        label: isImportant ? t('msg.unmarkImportant') : t('msg.markImportant'),
-        onclick: () => mail.toggleImportant(email.id),
-        icon: 'markImportant',
-        ariaPressed: isImportant,
-      },
-      snoozeMsg: {
-        visible: true,
-        label: isSnoozed ? t('msg.unsnooze') : t('msg.snooze'),
-        onclick: isSnoozed ? () => mail.unsnoozeEmail(email.id) : () => snoozePicker.open(email.id),
-        icon: 'snooze',
-      },
-      restore: {
-        visible: isInTrash,
-        label: t('msg.restore'),
-        onclick: () => {
-          void mail.restoreFromTrash(email.id);
-          if (window.history.length > 1) {
-            window.history.back();
-          } else {
-            const folder = mail.listFolder;
-            router.navigate(folder === 'inbox' ? '/mail' : `/mail/folder/${encodeURIComponent(folder)}`);
-          }
-        },
-        icon: 'restore',
-      },
-      filterLike: {
-        visible: true,
-        label: t('msg.filterLike'),
-        onclick: handleFilterLike,
-        icon: 'filterLike',
-      },
-      viewOriginal: {
-        visible: !!email.blobId,
-        label: t('msg.viewOriginal'),
-        onclick: handleViewOriginal,
-        icon: 'viewOriginal',
-      },
-    };
-  }
-
-  // ── View original ─────────────────────────────────────────────────────────
-  // Opens the raw RFC 5322 source in a new browser tab. Type=text/plain so
-  // the browser renders the bytes inline rather than downloading them
-  // (Chromium's default for message/rfc822 is to download). Filename is ASCII
-  // -sanitised since it ends up in a Content-Disposition header.
-
   function sanitizeFilename(subject: string): string {
     return subject
       .replace(/[^a-zA-Z0-9 _-]/g, '_')
@@ -471,37 +300,31 @@
     window.open(url, '_blank', 'noopener');
   }
 
-  /**
-   * Resolved ordered list of applicable message actions based on current
-   * prefs and state. Each entry has everything needed to render both the
-   * primary pill and the overflow item.
-   */
-  let orderedMsgActions = $derived.by(() => {
-    const handlers = msgActionHandlers();
-    const prefs = messageActionsPrefs.message;
-    const result: Array<{
-      id: string;
-      label: string;
-      shortcut?: string;
-      onclick: () => void;
-      icon: string;
-      ariaPressed?: boolean;
-      isPrimary: boolean;
-    }> = [];
-
-    let primaryCount = 0;
-    for (const id of prefs.order) {
-      const h = handlers[id];
-      if (!h || !h.visible) continue;
-      const isPrimary = primaryCount < prefs.visibleCount;
-      if (isPrimary) primaryCount++;
-      result.push({ id, label: h.label, shortcut: h.shortcut, onclick: h.onclick, icon: h.icon, ariaPressed: h.ariaPressed, isPrimary });
+  function handleRestore(): void {
+    void mail.restoreFromTrash(email.id);
+    if (window.history.length > 1) {
+      window.history.back();
+    } else {
+      const folder = mail.listFolder;
+      router.navigate(folder === 'inbox' ? '/mail' : `/mail/folder/${encodeURIComponent(folder)}`);
     }
-    return result;
-  });
+  }
 
-  let primaryMsgActions = $derived(orderedMsgActions.filter((a) => a.isPrimary));
-  let overflowMsgActions = $derived(orderedMsgActions.filter((a) => !a.isPrimary));
+  // Rarely-used per-message actions kept reachable via the header kebab.
+  // Conditional items (restore in trash, viewOriginal when blobId is known)
+  // drop out cleanly when not applicable; if nothing applies the kebab
+  // hides itself entirely.
+  let overflowItems = $derived.by(() => {
+    const items: { id: string; label: string; onclick: () => void }[] = [];
+    if (isInTrash) {
+      items.push({ id: 'restore', label: t('msg.restore'), onclick: handleRestore });
+    }
+    items.push({ id: 'filterLike', label: t('msg.filterLike'), onclick: handleFilterLike });
+    if (email.blobId) {
+      items.push({ id: 'viewOriginal', label: t('msg.viewOriginal'), onclick: handleViewOriginal });
+    }
+    return items;
+  });
 </script>
 
 <article class="message" class:expanded>
@@ -600,6 +423,61 @@
       {#if hasNonInlineAttachment}
         <span class="attachment-icon" aria-label={t('att.headerIcon.label')}>&#128206;</span>
       {/if}
+
+      <!--
+        Reactions live in the message header per re #98 (Gmail-style).
+        Existing reaction chips render first, followed by the small "react"
+        trigger that opens the emoji picker. Both are click-through to
+        avoid toggling the accordion when interacting with reactions.
+      -->
+      {#if expanded}
+        <span
+          class="reactions-anchor"
+          onclick={(e) => e.stopPropagation()}
+          onkeydown={(e) => e.stopPropagation()}
+          role="presentation"
+        >
+          <ReactionsStrip
+            emailId={email.id}
+            reactions={email.reactions}
+            principalId={auth.principalId}
+            onAddReaction={handleChipAddReaction}
+          />
+          <span class="react-wrapper">
+            <button
+              type="button"
+              class="header-icon-btn"
+              class:active={pickerOpen}
+              bind:this={reactButtonEl}
+              onclick={() => { pickerOpen = !pickerOpen; }}
+              aria-label={t('msg.react')}
+              title={t('msg.react')}
+              aria-expanded={pickerOpen}
+              aria-haspopup="dialog"
+              aria-pressed={pickerOpen}
+            >
+              <ReactIcon size={16} />
+            </button>
+            {#if pickerOpen}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="picker-anchor"
+                onkeydown={(e) => { if (e.key === 'Escape') pickerOpen = false; }}
+              >
+                <EmojiPicker
+                  onSelect={handleReaction}
+                  onClose={() => (pickerOpen = false)}
+                />
+              </div>
+            {/if}
+          </span>
+
+          {#if overflowItems.length > 0}
+            <ActionOverflowMenu items={overflowItems} />
+          {/if}
+        </span>
+      {/if}
+
       <span class="date">
         {formatDateTime(email.receivedAt)}{#if relativeAnnotation}&nbsp;<span class="date-relative">{relativeAnnotation}</span>{/if}
       </span>
@@ -658,227 +536,6 @@
       {/if}
 
       <AttachmentList {email} />
-
-      <!-- Reactions strip: shown whenever reactions exist on the message. -->
-      <ReactionsStrip
-        emailId={email.id}
-        reactions={email.reactions}
-        principalId={auth.principalId}
-        onAddReaction={handleChipAddReaction}
-      />
-
-      <!--
-        Per-message action toolbar (re #60).
-        Primary actions are shown as labeled pills (icon + text).
-        Overflow actions are hidden behind a "More actions" menu trigger.
-        Thread-scope actions (mute, spam, phishing, block, etc.) have been
-        moved to the persistent ThreadToolbar above the thread reader.
-      -->
-      <div class="actions" role="toolbar" aria-label="Message actions">
-        {#each primaryMsgActions as action (action.id)}
-          {#if action.id === 'react'}
-            <div class="react-wrapper">
-              <button
-                type="button"
-                class="pill"
-                class:active={pickerOpen}
-                bind:this={reactButtonEl}
-                onclick={action.onclick}
-                aria-label={action.label}
-                title={action.label}
-                aria-expanded={pickerOpen}
-                aria-haspopup="dialog"
-                aria-pressed={action.ariaPressed}
-              >
-                <ReactIcon size={16} />
-                <span class="pill-label">{action.label}</span>
-              </button>
-              {#if pickerOpen}
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div
-                  class="picker-anchor"
-                  onkeydown={(e) => { if (e.key === 'Escape') pickerOpen = false; }}
-                >
-                  <EmojiPicker
-                    onSelect={handleReaction}
-                    onClose={() => (pickerOpen = false)}
-                  />
-                </div>
-              {/if}
-            </div>
-          {:else if action.id === 'reply'}
-            <button
-              type="button"
-              class="pill"
-              aria-label={action.label}
-              title={action.label}
-              onclick={action.onclick}
-            >
-              <ReplyIcon size={16} />
-              <span class="pill-label">{action.label}</span>
-            </button>
-          {:else if action.id === 'replyAll'}
-            <button
-              type="button"
-              class="pill"
-              aria-label={action.label}
-              title={action.label}
-              onclick={action.onclick}
-            >
-              <ReplyAllIcon size={16} />
-              <span class="pill-label">{action.label}</span>
-            </button>
-          {:else if action.id === 'forward'}
-            <button
-              type="button"
-              class="pill"
-              aria-label={action.label}
-              title={action.label}
-              onclick={action.onclick}
-            >
-              <ForwardIcon size={16} />
-              <span class="pill-label">{action.label}</span>
-            </button>
-          {:else if action.id === 'moveMsg'}
-            <button
-              type="button"
-              class="pill"
-              aria-label={action.label}
-              title={action.label}
-              onclick={action.onclick}
-            >
-              <MoveIcon size={16} />
-              <span class="pill-label">{action.label}</span>
-            </button>
-          {:else if action.id === 'labelMsg'}
-            <button
-              type="button"
-              class="pill"
-              aria-label={action.label}
-              title={action.label}
-              onclick={action.onclick}
-            >
-              <LabelIcon size={16} />
-              <span class="pill-label">{action.label}</span>
-            </button>
-          {:else if action.id === 'markRead'}
-            <button
-              type="button"
-              class="pill"
-              aria-label={action.label}
-              title={action.label}
-              onclick={action.onclick}
-            >
-              {#if isSeen}<MarkUnreadIcon size={16} />{:else}<MarkReadIcon size={16} />{/if}
-              <span class="pill-label">{action.label}</span>
-            </button>
-          {:else if action.id === 'markImportant'}
-            <button
-              type="button"
-              class="pill"
-              class:active={isImportant}
-              aria-label={action.label}
-              aria-pressed={isImportant}
-              title={action.label}
-              onclick={action.onclick}
-            >
-              <ImportantIcon size={16} />
-              <span class="pill-label">{action.label}</span>
-            </button>
-          {:else if action.id === 'snoozeMsg'}
-            <button
-              type="button"
-              class="pill"
-              aria-label={action.label}
-              title={action.label}
-              onclick={action.onclick}
-            >
-              {#if isSnoozed}<UnsnoozeIcon size={16} />{:else}<SnoozeIcon size={16} />{/if}
-              <span class="pill-label">{action.label}</span>
-            </button>
-          {:else if action.id === 'restore'}
-            <button
-              type="button"
-              class="pill"
-              aria-label={action.label}
-              title={action.label}
-              onclick={action.onclick}
-            >
-              <RestoreIcon size={16} />
-              <span class="pill-label">{action.label}</span>
-            </button>
-          {:else if action.id === 'filterLike'}
-            <button
-              type="button"
-              class="pill"
-              aria-label={action.label}
-              title={action.label}
-              onclick={action.onclick}
-            >
-              <FilterIcon size={16} />
-              <span class="pill-label">{action.label}</span>
-            </button>
-          {:else if action.id === 'viewOriginal'}
-            <button
-              type="button"
-              class="pill"
-              aria-label={action.label}
-              title={action.label}
-              onclick={action.onclick}
-            >
-              <ViewOriginalIcon size={16} />
-              <span class="pill-label">{action.label}</span>
-            </button>
-          {/if}
-        {/each}
-
-        {#if overflowMsgActions.length > 0}
-          <ActionOverflowMenu
-            items={overflowMsgActions.map((a) => ({
-              id: a.id,
-              label: a.label,
-              shortcut: a.shortcut,
-              onclick: a.onclick,
-            }))}
-          />
-        {/if}
-      </div>
-
-      <!-- Block sender confirmation modal (inline). -->
-      {#if blockConfirmOpen}
-        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-        <div
-          class="block-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Block sender"
-          tabindex="-1"
-          onkeydown={(e) => { if (e.key === 'Escape') closeBlockConfirm(); }}
-        >
-          <p class="block-modal-body">
-            Block all messages from <strong>{senderEmail}</strong>?
-            Existing messages stay; future messages go to Trash.
-            You can unblock them later in Settings &rarr; Filters.
-          </p>
-          {#if blockError}
-            <p class="block-modal-error" role="alert">{blockError}</p>
-          {/if}
-          <div class="block-modal-actions">
-            <button
-              type="button"
-              class="pill"
-              onclick={() => void confirmBlock()}
-              disabled={blockInProgress}
-            >
-              {blockInProgress ? 'Blocking...' : 'Block sender'}
-            </button>
-            <button type="button" class="pill" onclick={closeBlockConfirm}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      {/if}
-
     </div>
   {/if}
 </article>
@@ -960,10 +617,12 @@
 
   .header-right {
     display: inline-flex;
-    align-items: baseline;
-    gap: var(--spacing-02);
+    align-items: center;
+    gap: var(--spacing-03);
     align-self: flex-start;
     padding-top: var(--spacing-01);
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
   .attachment-icon {
     color: var(--text-helper);
@@ -981,6 +640,51 @@
   .date-relative {
     color: var(--text-placeholder);
     font-size: var(--type-body-compact-01-size);
+  }
+
+  /* Reactions strip + react button + per-message kebab live in a single
+     anchor span inside the message header (re #98). Click-through is
+     stopped here so interacting with reactions doesn't fold the
+     accordion. */
+  .reactions-anchor {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-02);
+  }
+
+  /* Compact icon button used in the message header (react trigger).
+     Kept visually quiet so it does not compete with the date. */
+  .header-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-pill);
+    color: var(--text-secondary);
+    background: transparent;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter),
+      color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .header-icon-btn:hover {
+    background: var(--layer-02);
+    color: var(--text-primary);
+  }
+  .header-icon-btn.active {
+    background: var(--support-warning);
+    color: var(--text-primary);
+  }
+
+  /* The react wrapper positions the picker relative to the button. */
+  .react-wrapper {
+    position: relative;
+    display: inline-flex;
+  }
+  .picker-anchor {
+    position: absolute;
+    top: calc(100% + var(--spacing-02));
+    right: 0;
+    z-index: 200;
   }
 
   .body {
@@ -1009,56 +713,6 @@
   }
   .image-banner button:hover {
     background: var(--layer-02);
-  }
-
-  /* Primary action row: labeled pills (icon + text). */
-  .actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--spacing-03);
-    padding: var(--spacing-04) 0 0;
-    align-items: center;
-  }
-
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--spacing-02);
-    padding: var(--spacing-02) var(--spacing-04);
-    background: var(--layer-01);
-    color: var(--text-primary);
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-pill);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 500;
-    min-height: 32px;
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-  }
-  .pill:hover {
-    background: var(--layer-02);
-  }
-  .pill.active {
-    background: var(--support-warning);
-    color: var(--text-primary);
-    border-color: var(--support-warning);
-  }
-
-  /* Text label inside a labeled pill. */
-  .pill-label {
-    font-size: var(--type-body-compact-01-size);
-    white-space: nowrap;
-  }
-
-  /* The react wrapper positions the picker relative to the button. */
-  .react-wrapper {
-    position: relative;
-    display: inline-flex;
-  }
-  .picker-anchor {
-    position: absolute;
-    bottom: calc(100% + var(--spacing-02));
-    left: 0;
-    z-index: 200;
   }
 
   .text-body {
@@ -1100,33 +754,6 @@
     font-style: italic;
   }
 
-  /* Block-sender confirmation inline modal. */
-  .block-modal {
-    margin-top: var(--spacing-04);
-    padding: var(--spacing-04);
-    background: var(--layer-01);
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-md);
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-03);
-  }
-  .block-modal-body {
-    color: var(--text-primary);
-    font-size: var(--type-body-compact-01-size);
-    margin: 0;
-  }
-  .block-modal-error {
-    color: var(--support-error);
-    font-size: var(--type-body-compact-01-size);
-    margin: 0;
-  }
-  .block-modal-actions {
-    display: flex;
-    gap: var(--spacing-03);
-    flex-wrap: wrap;
-  }
-
   @media (max-width: 560px) {
     .header {
       grid-template-columns: 28px 1fr auto;
@@ -1136,27 +763,18 @@
     .body {
       padding: 0 var(--spacing-04) var(--spacing-04);
     }
-    .actions {
-      flex-wrap: wrap;
-    }
-    .pill {
-      padding: var(--spacing-01) var(--spacing-03);
-    }
   }
 
-  /* Print: drop every interactive control inside the message — the
-     per-message action bar, the external-image banner buttons, the
-     react picker / button, the trimmed-content toggle, and the inline
-     block-sender modal — so the printout shows only the message
-     content. The header avatar / button styling stays since it
-     carries the from / date / recipients metadata the reader expects
-     on paper. */
+  /* Print: drop interactive controls inside the message — the external
+     -image banner buttons, the react wrapper, and the trimmed-content
+     toggle — so the printout shows only the message content. The header
+     avatar / button styling stays since it carries the from / date /
+     recipients metadata the reader expects on paper. */
   @media print {
-    .actions,
     .image-banner,
     .react-wrapper,
-    .quoted-toggle,
-    .block-modal {
+    .header-icon-btn,
+    .quoted-toggle {
       display: none !important;
     }
   }

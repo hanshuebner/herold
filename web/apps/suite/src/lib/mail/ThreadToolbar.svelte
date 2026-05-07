@@ -6,13 +6,10 @@
    * on the *whole thread* via the bulk-op helpers (REQ-MAIL-51..54
    * thread expansion); the seed id is the thread's most-recent email.
    *
-   * Part 1 of re #60 scope-separation: thread-scope actions that previously
-   * appeared redundantly under each message (Mute thread, Report spam,
-   * Report phishing, Block sender) now live here exclusively.
-   *
-   * Part 2 of re #60: primary actions shown with text labels; overflow
-   * in a "More actions" menu. Order and visible count come from
-   * messageActionsPrefs.thread.
+   * Per re #98 actions live exclusively at thread scope. The per-message
+   * action row was removed; reactions moved into the message header;
+   * reply / forward live in the fixed reply bar at the bottom. The toolbar
+   * uses the THREAD_ACTIONS registry directly with a fixed visible count.
    */
   import { mail } from './store.svelte';
   import { router } from '../router/router.svelte';
@@ -20,11 +17,12 @@
   import { labelPicker } from './label-picker.svelte';
   import { snoozePicker } from './snooze-picker.svelte';
   import { managedRules } from '../settings/managed-rules.svelte';
-  import { messageActionsPrefs } from './messageActionsPrefs.svelte';
+  import { THREAD_ACTIONS, DEFAULT_THREAD_VISIBLE } from './actions';
   import ActionOverflowMenu from './ActionOverflowMenu.svelte';
   import { t } from '../i18n/i18n.svelte';
   import ArchiveIcon from '../icons/ArchiveIcon.svelte';
   import TrashIcon from '../icons/TrashIcon.svelte';
+  import RestoreIcon from '../icons/RestoreIcon.svelte';
   import MarkUnreadIcon from '../icons/MarkUnreadIcon.svelte';
   import SnoozeIcon from '../icons/SnoozeIcon.svelte';
   import MoveIcon from '../icons/MoveIcon.svelte';
@@ -80,6 +78,14 @@
 
   function deleteThread(): void {
     void mail.bulkDelete([latest.id]);
+    back();
+  }
+
+  // Restore the thread out of Trash. Mirrors the previous per-message
+  // restore (re #29) at thread scope: restoring the latest email rehomes
+  // the conversation; the user is sent back to the listing afterwards.
+  function restoreThread(): void {
+    void mail.restoreFromTrash(latest.id);
     back();
   }
 
@@ -140,11 +146,12 @@
     }
   }
 
-  // ── Thread action descriptors for the prefs-driven toolbar ────────────
+  // ── Thread action descriptors ─────────────────────────────────────────
 
   type ThreadActionKey =
     | 'archive'
     | 'deleteThread'
+    | 'restoreThread'
     | 'markUnread'
     | 'snoozeThread'
     | 'moveThread'
@@ -160,7 +167,6 @@
     label: string;
     shortcut?: string;
     onclick: () => void;
-    iconId: ThreadActionKey;
     ariaPressed?: boolean;
   }
 
@@ -170,86 +176,80 @@
       label: t('thread.archive'),
       shortcut: 'e',
       onclick: archive,
-      iconId: 'archive',
     },
     deleteThread: {
       visible: !isInTrash,
       label: t('thread.delete'),
       shortcut: '#',
       onclick: deleteThread,
-      iconId: 'deleteThread',
+    },
+    restoreThread: {
+      visible: isInTrash,
+      label: t('thread.restore'),
+      onclick: restoreThread,
     },
     markUnread: {
       visible: true,
       label: t('thread.markUnread'),
       shortcut: 'u',
       onclick: markUnread,
-      iconId: 'markUnread',
     },
     snoozeThread: {
       visible: true,
       label: t('thread.snooze'),
       onclick: snooze,
-      iconId: 'snoozeThread',
     },
     moveThread: {
       visible: true,
       label: t('thread.move'),
       onclick: move,
-      iconId: 'moveThread',
     },
     labelThread: {
       visible: true,
       label: t('thread.label'),
       onclick: applyLabels,
-      iconId: 'labelThread',
     },
     muteThread: {
       visible: true,
       label: isMuted ? t('msg.unmuteThread') : t('msg.muteThread'),
       onclick: () => void handleMuteToggle(),
-      iconId: 'muteThread',
       ariaPressed: isMuted,
     },
     reportSpam: {
       visible: true,
       label: t('msg.reportSpam'),
       onclick: () => void handleReportSpam(),
-      iconId: 'reportSpam',
     },
     reportPhishing: {
       visible: true,
       label: t('msg.reportPhishing'),
       onclick: () => void handleReportPhishing(),
-      iconId: 'reportPhishing',
     },
     blockSender: {
       visible: Boolean(senderEmail),
       label: t('msg.blockSender'),
       onclick: openBlockConfirm,
-      iconId: 'blockSender',
     },
     print: {
       visible: true,
       label: t('thread.print'),
       onclick: onPrint,
-      iconId: 'print',
     },
   }));
 
   let orderedThreadActions = $derived.by(() => {
-    const prefs = messageActionsPrefs.thread;
     const result: Array<{
-      id: string;
+      id: ThreadActionKey;
       desc: ThreadActionDesc;
       isPrimary: boolean;
     }> = [];
 
     let primaryCount = 0;
-    for (const id of prefs.order) {
-      const desc = allThreadActions[id as ThreadActionKey];
+    for (const def of THREAD_ACTIONS) {
+      const id = def.id as ThreadActionKey;
+      const desc = allThreadActions[id];
       if (!desc || !desc.visible) continue;
-      const isPrimary = primaryCount < prefs.visibleCount;
+      const isPrimary = primaryCount < DEFAULT_THREAD_VISIBLE;
       if (isPrimary) primaryCount++;
       result.push({ id, desc, isPrimary });
     }
@@ -290,6 +290,8 @@
         <ArchiveIcon size={16} />
       {:else if id === 'deleteThread'}
         <TrashIcon size={16} />
+      {:else if id === 'restoreThread'}
+        <RestoreIcon size={16} />
       {:else if id === 'markUnread'}
         <MarkUnreadIcon size={16} />
       {:else if id === 'snoozeThread'}
@@ -403,7 +405,9 @@
     color: var(--text-primary);
   }
 
-  /* Primary thread action buttons: compact labeled pills. */
+  /* Primary thread action buttons: compact labeled pills.
+     The fixed reply bar at the bottom of the reader uses the same
+     visual language so the two action surfaces feel like one set. */
   .action-btn {
     display: inline-flex;
     align-items: center;

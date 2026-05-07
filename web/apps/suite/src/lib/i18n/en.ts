@@ -77,30 +77,27 @@ export const en = {
   'thread.print': 'Print',
   'thread.subject.none': '(no subject)',
   'thread.back': 'Back to list',
-  // Thread-scope toolbar actions (re #60). Labels intentionally do NOT
-  // repeat "thread" — the toolbar is the thread toolbar, the prefix is
+  // Thread-scope toolbar actions (re #60, re #98). Labels intentionally do
+  // NOT repeat "thread" — the toolbar is the thread toolbar, the prefix is
   // redundant and noisy in the UI.
   'thread.archive': 'Archive',
   'thread.delete': 'Delete',
+  'thread.restore': 'Restore from trash',
   'thread.markUnread': 'Mark unread',
   'thread.snooze': 'Snooze',
   'thread.move': 'Move',
   'thread.label': 'Label',
   'thread.moreActions': 'More actions',
 
-  // ── Message actions (issue #17 tooltips) ─────────────────────────────
+  // ── Message-scope strings ────────────────────────────────────────────
+  // Per re #98 the per-message action toolbar was removed; reply / forward
+  // live in the fixed reply bar; muteThread / reportSpam / reportPhishing /
+  // blockSender are reachable from the ThreadToolbar; restore / filterLike
+  // / viewOriginal remain reachable from the per-message header kebab.
   'msg.reply': 'Reply',
   'msg.replyAll': 'Reply all',
   'msg.forward': 'Forward',
   'msg.react': 'React',
-  'msg.move': 'Move to label',
-  'msg.label': 'Apply labels',
-  'msg.markRead': 'Mark as read',
-  'msg.markUnread': 'Mark as unread',
-  'msg.markImportant': 'Mark important',
-  'msg.unmarkImportant': 'Unmark important',
-  'msg.snooze': 'Snooze',
-  'msg.unsnooze': 'Wake up now',
   'msg.restore': 'Restore from trash',
   'msg.muteThread': 'Mute thread',
   'msg.unmuteThread': 'Unmute thread',
@@ -304,15 +301,9 @@ export const en = {
   'manual.code.copy': 'Copy',
   'manual.code.copied': 'Copied',
 
-  // ── Message action settings (re #60) ────────────────────────────────
-  'settings.messageActions.title': 'Message actions',
-  'settings.messageActions.hint':
-    'Choose which actions appear directly in the toolbar. Drag rows to reorder. The first N are shown with text labels; the rest go into the overflow menu.',
-  'settings.messageActions.perMessage': 'Per-message actions',
-  'settings.messageActions.perThread': 'Thread actions',
-  'settings.messageActions.inToolbar': 'Show in toolbar',
-  'settings.messageActions.resetDefaults': 'Reset to defaults',
-  'settings.messageActions.visibleCount': 'Show {count} in toolbar',
+  // ── Action toolbar overflow trigger ─────────────────────────────────
+  // Used by ActionOverflowMenu in both the thread toolbar (re #60) and
+  // the per-message header kebab (re #98).
   'actions.moreActions': 'More actions',
 
   // ── Common ──────────────────────────────────────────────────────────

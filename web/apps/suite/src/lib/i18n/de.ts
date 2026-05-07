@@ -76,30 +76,28 @@ export const de = {
   'thread.print': 'Drucken',
   'thread.subject.none': '(kein Betreff)',
   'thread.back': 'Zurück zur Liste',
-  // Thread-scope toolbar actions (re #60). Labels intentionally do NOT
-  // repeat "Konversation" — the toolbar is the thread toolbar, the
+  // Thread-scope toolbar actions (re #60, re #98). Labels intentionally
+  // do NOT repeat "Konversation" — the toolbar is the thread toolbar, the
   // prefix is redundant and noisy in the UI.
   'thread.archive': 'Archivieren',
   'thread.delete': 'Löschen',
+  'thread.restore': 'Aus Papierkorb wiederherstellen',
   'thread.markUnread': 'Als ungelesen markieren',
   'thread.snooze': 'Zurückstellen',
   'thread.move': 'Verschieben',
   'thread.label': 'Labels',
   'thread.moreActions': 'Weitere Aktionen',
 
-  // ── Message actions (issue #17 tooltips) ─────────────────────────────
+  // ── Message-scope strings ────────────────────────────────────────────
+  // Siehe re #98: die per-Nachricht-Symbolleiste wurde entfernt; Antworten
+  // / Weiterleiten leben in der festen Antwortleiste; muteThread /
+  // reportSpam / reportPhishing / blockSender sind über die Konversations-
+  // -Symbolleiste erreichbar; restore / filterLike / viewOriginal bleiben
+  // im Drei-Punkte-Menü im Nachrichtenkopf.
   'msg.reply': 'Antworten',
   'msg.replyAll': 'Allen antworten',
   'msg.forward': 'Weiterleiten',
   'msg.react': 'Reagieren',
-  'msg.move': 'Verschieben',
-  'msg.label': 'Labels zuweisen',
-  'msg.markRead': 'Als gelesen markieren',
-  'msg.markUnread': 'Als ungelesen markieren',
-  'msg.markImportant': 'Als wichtig markieren',
-  'msg.unmarkImportant': 'Wichtig-Markierung aufheben',
-  'msg.snooze': 'Zurückstellen',
-  'msg.unsnooze': 'Jetzt aufwecken',
   'msg.restore': 'Aus Papierkorb wiederherstellen',
   'msg.muteThread': 'Konversation stummschalten',
   'msg.unmuteThread': 'Stummschaltung aufheben',
@@ -305,15 +303,9 @@ export const de = {
   'manual.code.copy': 'Kopieren',
   'manual.code.copied': 'Kopiert',
 
-  // ── Nachrichtenaktionen-Einstellungen (re #60) ──────────────────────
-  'settings.messageActions.title': 'Nachrichtenaktionen',
-  'settings.messageActions.hint':
-    'Wähle, welche Aktionen direkt in der Symbolleiste erscheinen. Zeilen ziehen zum Neuanordnen. Die ersten N werden mit Textbeschriftungen angezeigt; der Rest kommt ins Überlaufmenü.',
-  'settings.messageActions.perMessage': 'Nachrichten-Aktionen',
-  'settings.messageActions.perThread': 'Konversations-Aktionen',
-  'settings.messageActions.inToolbar': 'In der Symbolleiste anzeigen',
-  'settings.messageActions.resetDefaults': 'Auf Standard zurücksetzen',
-  'settings.messageActions.visibleCount': '{count} in Symbolleiste anzeigen',
+  // ── Drei-Punkte-Menü ────────────────────────────────────────────────
+  // Wird vom ActionOverflowMenu in der Konversations-Symbolleiste
+  // (re #60) und im Nachrichtenkopf (re #98) verwendet.
   'actions.moreActions': 'Weitere Aktionen',
 
   // ── Common ──────────────────────────────────────────────────────────

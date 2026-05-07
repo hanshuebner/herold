@@ -24,7 +24,6 @@
   import FiltersForm from './settings/FiltersForm.svelte';
   import PrivacyForm from './settings/PrivacyForm.svelte';
   import DiagnosticsForm from './settings/DiagnosticsForm.svelte';
-  import MessageActionsForm from './settings/MessageActionsForm.svelte';
   import { Capability } from '../lib/jmap/types';
   import { jmap } from '../lib/jmap/client';
   import { LOCALES, type Locale } from '../lib/i18n/i18n.svelte';
@@ -40,7 +39,7 @@
   sounds.hydrate();
 
   // Section order: Account, Security, Appearance, Mail, Categories, Filters,
-  // Notifications, Message Actions, API keys, Privacy, Diagnostics, About.
+  // Notifications, API keys, Privacy, Diagnostics, About.
   type Section =
     | 'account'
     | 'security'
@@ -49,7 +48,6 @@
     | 'categories'
     | 'filters'
     | 'notifications'
-    | 'message-actions'
     | 'api-keys'
     | 'privacy'
     | 'diagnostics'
@@ -80,8 +78,6 @@
         if (hasManagedRules) result.push({ id: 'filters', label: 'Filters' });
         // Notifications section always shown (in-app sounds; push if available).
         result.push({ id: 'notifications', label: 'Notifications' });
-        // Message actions customisation section (re #60).
-        result.push({ id: 'message-actions', label: t('settings.messageActions.title') });
       }
     }
     return result;
@@ -546,10 +542,6 @@
       {:else}
         <p class="muted">Push notifications are not available on this server.</p>
       {/if}
-
-    {:else if activeSection === 'message-actions'}
-      <h2>{t('settings.messageActions.title')}</h2>
-      <MessageActionsForm />
 
     {:else if activeSection === 'api-keys'}
       <h2>API keys</h2>
