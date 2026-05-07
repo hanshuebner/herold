@@ -196,6 +196,10 @@ export const en = {
   'cat.recategorise.notAvailable': 'Not available on this server.',
   'cat.recategorise.inProgress':
     'Re-categorisation in progress -- results will update automatically.',
+  'cat.recategorise.runTitle': 'Re-categorise recent inbox',
+  'cat.recategorise.disabledTitle': 'Bulk re-categorisation is not enabled on this server',
+  'cat.disclosure.defaultNotLoaded': '(Default prompt -- not yet loaded.)',
+  'cat.prompt.resetTitle': 'Revert to the shipped default prompt',
 
   // ── Settings ────────────────────────────────────────────────────────
   'settings.title': 'Settings',
@@ -310,4 +314,243 @@ export const en = {
   'common.cancel': 'Cancel',
   'common.confirm': 'Confirm',
   'common.save': 'Save',
+  'common.saving': 'Saving...',
+  'common.loading': 'Loading...',
+  'common.retry': 'Retry',
+  'common.revert': 'Revert',
+  'common.remove': 'Remove',
+  'common.create': 'Create',
+  'common.copy': 'Copy',
+  'common.copied': 'Copied',
+  'common.close': 'Close',
+  'common.back': 'Back',
+
+  // ── Settings: section headings (re #97) ──────────────────────────────
+  'settings.about': 'About',
+  'settings.notifications': 'Notifications',
+  'settings.apiKeys': 'API keys',
+  'settings.privacy.heading': 'Privacy',
+  'settings.categories.heading': 'Categories',
+  'settings.filters.heading': 'Filters',
+
+  // ── Settings: account section (re #97) ───────────────────────────────
+  'settings.account.signedInAs': 'Signed in as',
+  'settings.account.signOut': 'Sign out',
+  'settings.account.identitiesHeading': 'Identities & signatures',
+  'settings.account.noIdentities': 'No identities loaded yet.',
+  'settings.account.authFailedTitle': 'Authentication failed — click to re-authenticate',
+  'settings.account.unreachableTitle': 'External server unreachable — click to review config',
+  'settings.account.authFailedBadge': 'Auth failed',
+  'settings.account.unreachableBadge': 'Unreachable',
+  'settings.account.externalBadge': 'External',
+  'settings.account.externalBadgeTitle': 'External SMTP configured — click to edit',
+  'settings.account.configureExternal': 'Configure external SMTP',
+  'settings.account.configureExternalTitle': 'Configure external SMTP submission',
+  'settings.account.extSubHint':
+    'External SMTP submission (e.g. Gmail or Microsoft 365) is not enabled on this server. To allow routing outbound mail through an external provider, an operator can enable it in {systemToml} — see {docPath}.',
+
+  // ── Settings: appearance section (re #97) ────────────────────────────
+  'settings.appearance.themeHint':
+    'System follows your OS-level preference and updates live when you toggle it.',
+
+  // ── Settings: mail section (re #97) ──────────────────────────────────
+  'settings.mail.undoSendWindow': 'Undo-send window',
+  'settings.mail.undoSendOff': 'Off (sends immediately)',
+  'settings.mail.undoSendValue': '{seconds}s',
+  'settings.mail.undoSendAria': 'Seconds before send',
+  'settings.mail.undoSendHint':
+    "When set, sends are held server-side; the toast's Undo cancels delivery.",
+  'settings.mail.swipeLeft': 'Swipe-left action',
+  'settings.mail.swipeRight': 'Swipe-right action',
+  'settings.mail.swipeTouch': '(touch)',
+  'settings.mail.swipe.archive': 'Archive',
+  'settings.mail.swipe.snooze': 'Snooze',
+  'settings.mail.swipe.delete': 'Delete',
+  'settings.mail.swipe.markRead': 'Mark read',
+  'settings.mail.swipe.label': 'Label…',
+  'settings.mail.swipe.none': 'None',
+  'settings.mail.vacationHeading': 'Vacation auto-reply',
+  'settings.mail.sieveHeading': 'Sieve filtering',
+  'settings.mail.spamHeading': 'Spam classifier',
+  'settings.mail.spamHint':
+    "The prompt used when classifying your inbound mail as spam. Your messages are sent to herold's configured classifier endpoint along with this prompt.",
+  'settings.mail.spamLoading': 'Loading…',
+  'settings.mail.spamLoadError': 'Could not load',
+  'settings.mail.spamModelLabel': 'Model',
+  'settings.mail.spamNoPrompt': 'No spam prompt configured.',
+  'settings.mail.coachHeading': 'Shortcut coach',
+  'settings.mail.coachLabel': 'Show coach hints',
+
+  // ── Settings: notifications section (re #97) ─────────────────────────
+  'settings.notifications.soundsLabel': 'Notification sounds',
+  'settings.notifications.soundsHint':
+    'Play a sound when a new message or call arrives while this tab is open.',
+  'settings.notifications.soundsAria': 'Notification sounds',
+  'settings.notifications.pushLabel': 'Push notifications',
+  'settings.notifications.pushDeniedHint':
+    'Notifications are off. You can re-enable them in your browser settings.',
+  'settings.notifications.pushForget': 'Forget my decision',
+  'settings.notifications.pushOnHint': 'Notifications are on.',
+  'settings.notifications.pushUpdating': 'Updating…',
+  'settings.notifications.pushDisable': 'Disable notifications',
+  'settings.notifications.pushOffHint':
+    'Get notified about new mail and messages when this tab is closed.',
+  'settings.notifications.pushEnabling': 'Enabling…',
+  'settings.notifications.pushEnable': 'Enable notifications',
+  'settings.notifications.forgetAllLabel': 'Forget all subscriptions',
+  'settings.notifications.forgetAllHint':
+    'Removes all notification subscriptions for your account. Useful when decommissioning a device.',
+  'settings.notifications.forgetAllButton': 'Forget all notification subscriptions',
+  'settings.notifications.unavailable': 'Push notifications are not available on this server.',
+
+  // ── Settings: privacy section (re #97) ───────────────────────────────
+  'settings.privacy.externalImagesLabel': 'External images',
+  'settings.privacy.externalImagesAria': 'External-image loading',
+  'settings.privacy.externalImages.never': 'Never',
+  'settings.privacy.externalImages.perSender': 'Per sender',
+  'settings.privacy.externalImages.always': 'Always',
+  'settings.privacy.externalImagesHint':
+    "External images can act as read receipts. {neverEm} blocks them by default; {perSenderEm} only loads from senders you've allowed.",
+  'settings.privacy.allowedSendersHeading': 'Allowed senders',
+  'settings.privacy.allowedSendersEmpty':
+    'No senders allowed yet. Use "Always from <sender>" in the reading pane to add one.',
+  'settings.privacy.autocompleteHeading': 'Autocomplete history',
+  'settings.privacy.seenAddressesLabel': 'Remember recently-used addresses',
+  'settings.privacy.seenAddressesHint':
+    'Herold keeps a per-account history of addresses you have corresponded with to supplement the recipient autocomplete. Turning this off purges the history immediately and stops new entries from being added.',
+
+  // ── Settings: about section (re #97) ─────────────────────────────────
+  'settings.about.heroldVersion': 'Herold version',
+  'settings.about.jmapApiUrl': 'JMAP API URL',
+  'settings.about.eventSourceUrl': 'EventSource URL',
+  'settings.about.sessionState': 'Session state',
+  'settings.about.capabilitiesHeading': 'Server capabilities',
+  'settings.about.noSession': 'No session.',
+
+  // ── Settings: nav aria + body (re #97) ───────────────────────────────
+  'settings.sectionsAria': 'Settings sections',
+
+  // ── Identity edit forms (re #97) ─────────────────────────────────────
+  'settings.identity.signatureLabel': 'Signature (plain text)',
+  'settings.identity.signatureSaved': 'Signature saved',
+  'settings.identity.signatureNoAccount': 'No Mail account on this session',
+
+  // ── Vacation form (re #97) ──────────────────────────────────────────
+  'settings.vacation.loadFailed': 'Failed to load vacation response',
+  'settings.vacation.noAccount': 'No Mail account on this session',
+  'settings.vacation.saveFailed': 'Save failed',
+  'settings.vacation.saveFailedReason': 'Save failed: {reason}',
+  'settings.vacation.enabled': 'Vacation auto-reply enabled',
+  'settings.vacation.disabled': 'Vacation auto-reply disabled',
+  'settings.vacation.autoReply': 'Auto-reply',
+  'settings.vacation.activeFrom': 'Active from',
+  'settings.vacation.activeFromHint': 'Leave blank to start immediately when enabled.',
+  'settings.vacation.activeUntil': 'Active until',
+  'settings.vacation.activeUntilHint': 'Leave blank for no end date.',
+  'settings.vacation.subject': 'Subject',
+  'settings.vacation.subjectPlaceholder': 'Out of office',
+  'settings.vacation.body': 'Body',
+
+  // ── Security form (re #97) ──────────────────────────────────────────
+  'settings.security.loadingSession': 'Loading session...',
+  'settings.security.loadingAria': 'Loading security settings',
+  'settings.security.intro':
+    'This page lets you manage the credentials and second-factor settings for your account. Use it to change your password or to enrol a time-based one-time password (TOTP) authenticator app for two-factor authentication.',
+  'settings.security.introHint':
+    'Two-factor authentication adds a second verification step at sign-in. Once enabled, your authenticator app will be required in addition to your password. Disabling it requires your current password to confirm.',
+  'settings.security.changePassword': 'Change password',
+  'settings.security.currentPassword': 'Current password',
+  'settings.security.newPassword': 'New password',
+  'settings.security.confirmNewPassword': 'Confirm new password',
+  'settings.security.changePwSubmit': 'Change password',
+  'settings.security.passwordMismatch': 'New passwords do not match.',
+  'settings.security.passwordTooShort': 'New password must be at least 12 characters.',
+  'settings.security.sessionNotReady': 'Session not ready. Please reload.',
+  'settings.security.passwordChanged': 'Password changed.',
+  'settings.security.currentPasswordWrong': 'Current password is wrong.',
+  'settings.security.twoFactorHeading': 'Two-factor authentication',
+  'settings.security.twoFactorEnabled': 'Two-factor authentication is enabled.',
+  'settings.security.twoFactorDisabled': 'Two-factor authentication is not enabled.',
+  'settings.security.disable2faLabel': 'Current password to disable 2FA',
+  'settings.security.disabling': 'Disabling...',
+  'settings.security.disable2fa': 'Disable 2FA',
+  'settings.security.disable2faTitle': 'Disable two-factor authentication?',
+  'settings.security.disable2faMessage': 'This reduces your account security.',
+  'settings.security.disable2faConfirm': 'Disable',
+  'settings.security.twoFactorDisabledToast': 'Two-factor authentication disabled.',
+  'settings.security.starting': 'Starting...',
+  'settings.security.enable2fa': 'Enable two-factor authentication',
+  'settings.security.scanHint':
+    'Scan the QR code with your authenticator app, then enter the 6-digit code to confirm.',
+  'settings.security.qrAriaLabel': 'TOTP QR code',
+  'settings.security.manualEntryKey': 'Manual entry key',
+  'settings.security.totpSecretAria': 'TOTP secret key',
+  'settings.security.provisioningUri': 'Provisioning URI',
+  'settings.security.provisioningUriAria': 'TOTP provisioning URI',
+  'settings.security.codePlaceholder': '6-digit code',
+  'settings.security.codeAria': 'Authenticator code',
+  'settings.security.confirming': 'Confirming...',
+  'settings.security.confirmEnroll': 'Confirm',
+  'settings.security.twoFactorEnabledToast': 'Two-factor authentication enabled.',
+
+  // ── API keys form (re #97) ──────────────────────────────────────────
+  'settings.apiKeys.intro1':
+    'API keys let scripts and external programs authenticate against this account using {bearer}. They are optional -- nothing in the web suite needs one. Create a key only if you want to drive JMAP or the REST API from outside the browser.',
+  'settings.apiKeys.intro2':
+    'Each key carries a fixed scope: tighten it to the smallest set of permissions the script actually needs (for example, {mailSend} for an outbound bot). Keys appear only once at creation time -- copy them then; they cannot be retrieved later.',
+  'settings.apiKeys.copyNow': 'Copy this key now. It will not be shown again.',
+  'settings.apiKeys.newKeyAria': 'New API key',
+  'settings.apiKeys.savedKey': 'I have saved this key',
+  'settings.apiKeys.heading.new': 'New API key',
+  'settings.apiKeys.label': 'Label',
+  'settings.apiKeys.labelPlaceholder': 'e.g. my-script',
+  'settings.apiKeys.scopes': 'Scopes',
+  'settings.apiKeys.scopesHint':
+    'Select the permissions this key grants. Leave empty for mail.send only (default).',
+  'settings.apiKeys.creating': 'Creating...',
+  'settings.apiKeys.create': 'Create key',
+  'settings.apiKeys.createNew': 'Create new key',
+  'settings.apiKeys.loadingAria': 'Loading API keys',
+  'settings.apiKeys.empty': 'No API keys yet.',
+  'settings.apiKeys.createdAt': 'Created {date}',
+  'settings.apiKeys.lastUsed': 'Last used {date}',
+  'settings.apiKeys.revoke': 'Revoke',
+  'settings.apiKeys.revokeTitle': 'Revoke this API key?',
+  'settings.apiKeys.revokeMessage': 'Any applications using it will stop working immediately.',
+  'settings.apiKeys.revoked': 'API key revoked.',
+  'settings.apiKeys.scope.endUser': 'End-user',
+  'settings.apiKeys.scope.mailSend': 'Mail: send',
+  'settings.apiKeys.scope.mailReceive': 'Mail: receive',
+  'settings.apiKeys.scope.chatRead': 'Chat: read',
+  'settings.apiKeys.scope.chatWrite': 'Chat: write',
+  'settings.apiKeys.scope.calRead': 'Calendar: read',
+  'settings.apiKeys.scope.calWrite': 'Calendar: write',
+  'settings.apiKeys.scope.contactsRead': 'Contacts: read',
+  'settings.apiKeys.scope.contactsWrite': 'Contacts: write',
+
+  // ── Diagnostics form (re #97) ───────────────────────────────────────
+  'settings.diagnostics.saveError': 'Could not save setting.',
+
+  // ── Login (re #97) ──────────────────────────────────────────────────
+  'login.email': 'Email address',
+  'login.password': 'Password',
+  'login.totpCode': 'Authenticator code',
+  'login.totpPlaceholder': '6-digit code',
+  'login.signingIn': 'Signing in...',
+  'login.signIn': 'Sign in',
+  'login.signInFailed': 'Sign-in failed.',
+
+  // ── Chat view (re #97) ──────────────────────────────────────────────
+  'chat.unavailable': 'Chat is not configured on this server',
+  'chat.startVideoCall': 'Start video call',
+  'chat.callButton': 'Call',
+  'chat.unknownCaller': 'Unknown caller',
+  'chat.selectConversation': 'Select a conversation to start chatting',
+
+  // ── Contacts view (re #97) ──────────────────────────────────────────
+  'contact.view.loading': 'Loading…',
+  'contact.view.couldNotLoad': 'Could not load contact.',
+  'contact.view.title': 'Contact',
+  'contact.view.emailHeading': 'Email',
+  'contact.view.phoneHeading': 'Phone',
 } as const;

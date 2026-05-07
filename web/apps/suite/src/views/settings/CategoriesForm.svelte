@@ -19,6 +19,7 @@
   import { untrack } from 'svelte';
   import { categorySettings } from '../../lib/settings/category-settings.svelte';
   import { llmTransparency } from '../../lib/llm/transparency.svelte';
+  import { t } from '../../lib/i18n/i18n.svelte';
 
   $effect(() => {
     if (categorySettings.loadStatus === 'idle') {
@@ -68,28 +69,27 @@
 </script>
 
 {#if categorySettings.loadStatus === 'loading' || categorySettings.loadStatus === 'idle'}
-  <p class="hint">Loading...</p>
+  <p class="hint">{t('common.loading')}</p>
 {:else if categorySettings.loadStatus === 'error'}
   <p class="error" role="alert">{categorySettings.loadError}</p>
-  <button type="button" onclick={() => void categorySettings.load(true)}>Retry</button>
+  <button type="button" onclick={() => void categorySettings.load(true)}>{t('common.retry')}</button>
 {:else}
   {#if categorySettings.recategorising}
     <div class="progress-banner" role="status">
-      Re-categorisation in progress -- results will update automatically.
+      {t('cat.recategorise.inProgress')}
     </div>
   {/if}
 
   <!-- REQ-CAT-45: transparency at rest -- show the current effective prompt. -->
   <section class="form-section">
-    <h3>How your mail is classified</h3>
+    <h3>{t('cat.disclosure.heading')}</h3>
     <p class="hint">
-      This is the prompt used to categorise your mail. Your messages are sent to
-      herold's configured classifier endpoint along with this prompt.
+      {t('cat.disclosure.hint')}
     </p>
     {#if effectivePrompt}
       <pre class="prompt-display">{effectivePrompt}</pre>
     {:else}
-      <p class="hint">(Default prompt -- not yet loaded.)</p>
+      <p class="hint">{t('cat.disclosure.defaultNotLoaded')}</p>
     {/if}
     {#if disclosureNote}
       <div class="disclosure-note" role="note">
@@ -100,59 +100,54 @@
 
   <!-- REQ-CAT-41: prompt editor. -->
   <section class="form-section">
-    <h3>Classification prompt</h3>
+    <h3>{t('cat.prompt.heading')}</h3>
     <p class="hint">
-      The prompt used by the LLM to classify your mail into categories.
-      Editing this changes how future mail (and re-categorised mail) is
-      classified. Max 32 KB.
+      {t('cat.prompt.hint')}
     </p>
     <textarea
       rows="8"
       bind:value={promptDraft}
-      aria-label="Classification prompt"
+      aria-label={t('cat.prompt.heading')}
       maxlength="32768"
     ></textarea>
     <div class="action-row">
       <button type="button" class="primary" onclick={() => void savePrompt()}>
-        Save prompt
+        {t('cat.prompt.save')}
       </button>
       <button
         type="button"
         onclick={() => void resetPrompt()}
-        title="Revert to the shipped default prompt"
+        title={t('cat.prompt.resetTitle')}
       >
-        Reset to default
+        {t('cat.prompt.reset')}
       </button>
     </div>
   </section>
 
   <!-- REQ-CAT-40: derived categories, read-only. -->
   <section class="form-section">
-    <h3>Current categories</h3>
+    <h3>{t('cat.currentCategories')}</h3>
     <p class="hint">
-      These are the categories the LLM is currently using, derived from the
-      prompt above. Edit the prompt to change them.
+      {t('cat.currentCategories.hint')}
     </p>
     {#if categorySettings.derivedCategories.length > 0}
-      <ul class="chip-list" aria-label="Current categories">
+      <ul class="chip-list" aria-label={t('cat.currentCategories')}>
         {#each categorySettings.derivedCategories as name (name)}
           <li class="chip">{name}</li>
         {/each}
       </ul>
     {:else}
       <p class="hint empty-state">
-        No categories yet. Categories will appear here after the next message
-        is classified.
+        {t('cat.currentCategories.empty')}
       </p>
     {/if}
   </section>
 
   <!-- REQ-CAT-30: bulk re-categorisation. -->
   <section class="form-section">
-    <h3>Re-categorise inbox</h3>
+    <h3>{t('cat.recategorise.heading')}</h3>
     <p class="hint">
-      Run the classifier on your recent inbox (up to 1000 messages). Results
-      appear as the job progresses in the background.
+      {t('cat.recategorise.hint')}
     </p>
     <div class="action-row">
       <button
@@ -161,13 +156,13 @@
         onclick={() => void recategorise()}
         disabled={!categorySettings.bulkRecategoriseEnabled || categorySettings.recategorising}
         title={categorySettings.bulkRecategoriseEnabled
-          ? 'Re-categorise recent inbox'
-          : 'Bulk re-categorisation is not enabled on this server'}
+          ? t('cat.recategorise.runTitle')
+          : t('cat.recategorise.disabledTitle')}
       >
-        {categorySettings.recategorising ? 'Running...' : 'Re-categorise inbox'}
+        {categorySettings.recategorising ? t('cat.recategorise.running') : t('cat.recategorise.run')}
       </button>
       {#if !categorySettings.bulkRecategoriseEnabled}
-        <span class="hint">Not available on this server.</span>
+        <span class="hint">{t('cat.recategorise.notAvailable')}</span>
       {/if}
     </div>
   </section>

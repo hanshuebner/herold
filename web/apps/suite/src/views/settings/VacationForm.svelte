@@ -9,6 +9,7 @@
   import { Capability } from '../../lib/jmap/types';
   import { mail } from '../../lib/mail/store.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
+  import { t } from '../../lib/i18n/i18n.svelte';
 
   interface VacationResponse {
     id: string;
@@ -42,7 +43,7 @@
     const accountId = mail.mailAccountId;
     if (!accountId) {
       status = 'error';
-      error = 'No Mail account on this session';
+      error = t('settings.vacation.noAccount');
       return;
     }
     status = 'loading';
@@ -67,7 +68,7 @@
       status = 'ready';
     } catch (err) {
       status = 'error';
-      error = err instanceof Error ? err.message : 'Failed to load vacation response';
+      error = err instanceof Error ? err.message : t('settings.vacation.loadFailed');
     }
   }
 
@@ -101,7 +102,7 @@
       const fail = result.notUpdated?.singleton;
       if (fail) {
         toast.show({
-          message: fail.description ?? `Save failed: ${fail.type}`,
+          message: fail.description ?? t('settings.vacation.saveFailedReason', { reason: fail.type }),
           kind: 'error',
           timeoutMs: 6000,
         });
@@ -109,12 +110,12 @@
       }
       toast.show({
         message: isEnabled
-          ? 'Vacation auto-reply enabled'
-          : 'Vacation auto-reply disabled',
+          ? t('settings.vacation.enabled')
+          : t('settings.vacation.disabled'),
       });
     } catch (err) {
       toast.show({
-        message: err instanceof Error ? err.message : 'Save failed',
+        message: err instanceof Error ? err.message : t('settings.vacation.saveFailed'),
         kind: 'error',
         timeoutMs: 6000,
       });
@@ -142,13 +143,13 @@
 </script>
 
 {#if status === 'loading' || status === 'idle'}
-  <p class="hint">Loading…</p>
+  <p class="hint">{t('common.loading')}</p>
 {:else if status === 'error'}
   <p class="error" role="alert">{error}</p>
-  <button type="button" onclick={() => void load()}>Retry</button>
+  <button type="button" onclick={() => void load()}>{t('common.retry')}</button>
 {:else}
   <div class="row">
-    <span class="label">Auto-reply</span>
+    <span class="label">{t('settings.vacation.autoReply')}</span>
     <label class="switch">
       <input type="checkbox" bind:checked={isEnabled} />
       <span class="track" aria-hidden="true"></span>
@@ -156,44 +157,44 @@
   </div>
 
   <div class="row vertical">
-    <span class="label">Active from</span>
+    <span class="label">{t('settings.vacation.activeFrom')}</span>
     <input
       type="datetime-local"
       bind:value={fromDate}
       disabled={!isEnabled}
     />
-    <p class="hint">Leave blank to start immediately when enabled.</p>
+    <p class="hint">{t('settings.vacation.activeFromHint')}</p>
   </div>
 
   <div class="row vertical">
-    <span class="label">Active until</span>
+    <span class="label">{t('settings.vacation.activeUntil')}</span>
     <input
       type="datetime-local"
       bind:value={toDate}
       disabled={!isEnabled}
     />
-    <p class="hint">Leave blank for no end date.</p>
+    <p class="hint">{t('settings.vacation.activeUntilHint')}</p>
   </div>
 
   <div class="row vertical">
-    <span class="label">Subject</span>
+    <span class="label">{t('settings.vacation.subject')}</span>
     <input
       type="text"
-      placeholder="Out of office"
+      placeholder={t('settings.vacation.subjectPlaceholder')}
       bind:value={subject}
       disabled={!isEnabled}
     />
   </div>
 
   <div class="row vertical">
-    <span class="label">Body</span>
+    <span class="label">{t('settings.vacation.body')}</span>
     <textarea rows="5" bind:value={textBody} disabled={!isEnabled}></textarea>
   </div>
 
   <div class="row">
     <span class="label"></span>
     <button type="button" class="primary" onclick={() => void save()} disabled={saving}>
-      {saving ? 'Saving…' : 'Save'}
+      {saving ? t('common.saving') : t('common.save')}
     </button>
   </div>
 {/if}

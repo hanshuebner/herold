@@ -8,6 +8,7 @@
   import { mail } from '../../lib/mail/store.svelte';
   import { Capability, type Invocation } from '../../lib/jmap/types';
   import { toast } from '../../lib/toast/toast.svelte';
+  import { t } from '../../lib/i18n/i18n.svelte';
   import type { Identity } from '../../lib/mail/types';
 
   interface Props {
@@ -33,7 +34,7 @@
     if (!dirty || saving) return;
     const accountId = mail.mailAccountId;
     if (!accountId) {
-      error = 'No Mail account on this session';
+      error = t('settings.identity.signatureNoAccount');
       return;
     }
     saving = true;
@@ -67,7 +68,7 @@
       if (cur) next.set(identity.id, { ...cur, textSignature: draft });
       mail.identities = next;
       savedValue = draft;
-      toast.show({ message: 'Signature saved', timeoutMs: 3000 });
+      toast.show({ message: t('settings.identity.signatureSaved'), timeoutMs: 3000 });
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -100,7 +101,7 @@
   </div>
 
   <label class="textarea-label">
-    <span class="label-text">Signature (plain text)</span>
+    <span class="label-text">{t('settings.identity.signatureLabel')}</span>
     <textarea
       bind:value={draft}
       rows="4"
@@ -115,10 +116,10 @@
 
   <div class="actions">
     <button type="button" class="ghost" onclick={revert} disabled={!dirty || saving}>
-      Revert
+      {t('common.revert')}
     </button>
     <button type="submit" class="primary" disabled={!dirty || saving}>
-      {saving ? 'Saving…' : 'Save'}
+      {saving ? t('common.saving') : t('common.save')}
     </button>
   </div>
 </form>

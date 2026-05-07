@@ -78,10 +78,10 @@
 
   <div class="actions">
     <button type="button" class="ghost" onclick={revert} disabled={!dirty || saving}>
-      Revert
+      {t('common.revert')}
     </button>
     <button type="submit" class="primary" disabled={!dirty || saving}>
-      {saving ? 'Saving...' : t('settings.save')}
+      {saving ? t('common.saving') : t('settings.save')}
     </button>
   </div>
 </form>

@@ -196,6 +196,11 @@ export const de = {
   'cat.recategorise.notAvailable': 'Auf diesem Server nicht verfügbar.',
   'cat.recategorise.inProgress':
     'Neu-Klassifizierung läuft -- Ergebnisse werden automatisch aktualisiert.',
+  'cat.recategorise.runTitle': 'Aktuellen Posteingang neu klassifizieren',
+  'cat.recategorise.disabledTitle':
+    'Massen-Neu-Klassifizierung ist auf diesem Server nicht aktiviert',
+  'cat.disclosure.defaultNotLoaded': '(Standard-Prompt -- noch nicht geladen.)',
+  'cat.prompt.resetTitle': 'Auf den ausgelieferten Standard-Prompt zurücksetzen',
 
   // ── Settings ────────────────────────────────────────────────────────
   'settings.title': 'Einstellungen',
@@ -312,4 +317,248 @@ export const de = {
   'common.cancel': 'Abbrechen',
   'common.confirm': 'Bestätigen',
   'common.save': 'Speichern',
+  'common.saving': 'Wird gespeichert...',
+  'common.loading': 'Wird geladen...',
+  'common.retry': 'Erneut versuchen',
+  'common.revert': 'Zurücksetzen',
+  'common.remove': 'Entfernen',
+  'common.create': 'Erstellen',
+  'common.copy': 'Kopieren',
+  'common.copied': 'Kopiert',
+  'common.close': 'Schließen',
+  'common.back': 'Zurück',
+
+  // ── Einstellungen: Bereichsüberschriften (re #97) ────────────────────
+  'settings.about': 'Über',
+  'settings.notifications': 'Benachrichtigungen',
+  'settings.apiKeys': 'API-Schlüssel',
+  'settings.privacy.heading': 'Datenschutz',
+  'settings.categories.heading': 'Kategorien',
+  'settings.filters.heading': 'Filter',
+
+  // ── Einstellungen: Konto-Bereich (re #97) ────────────────────────────
+  'settings.account.signedInAs': 'Angemeldet als',
+  'settings.account.signOut': 'Abmelden',
+  'settings.account.identitiesHeading': 'Identitäten & Signaturen',
+  'settings.account.noIdentities': 'Noch keine Identitäten geladen.',
+  'settings.account.authFailedTitle':
+    'Authentifizierung fehlgeschlagen — klicken zum erneuten Anmelden',
+  'settings.account.unreachableTitle':
+    'Externer Server nicht erreichbar — klicken zum Überprüfen der Konfiguration',
+  'settings.account.authFailedBadge': 'Anmeldung fehlgeschlagen',
+  'settings.account.unreachableBadge': 'Nicht erreichbar',
+  'settings.account.externalBadge': 'Extern',
+  'settings.account.externalBadgeTitle':
+    'Externer SMTP-Versand konfiguriert — klicken zum Bearbeiten',
+  'settings.account.configureExternal': 'Externen SMTP einrichten',
+  'settings.account.configureExternalTitle': 'Externen SMTP-Versand einrichten',
+  'settings.account.extSubHint':
+    'Externer SMTP-Versand (z. B. Gmail oder Microsoft 365) ist auf diesem Server nicht aktiviert. Um ausgehende Mail über einen externen Anbieter zu leiten, kann ein Operator dies in {systemToml} aktivieren — siehe {docPath}.',
+
+  // ── Einstellungen: Darstellung (re #97) ──────────────────────────────
+  'settings.appearance.themeHint':
+    'System folgt der Systemeinstellung und passt sich live an, wenn Sie sie umschalten.',
+
+  // ── Einstellungen: Mail-Bereich (re #97) ─────────────────────────────
+  'settings.mail.undoSendWindow': 'Senden-rückgängig-Zeitfenster',
+  'settings.mail.undoSendOff': 'Aus (sofortiger Versand)',
+  'settings.mail.undoSendValue': '{seconds} s',
+  'settings.mail.undoSendAria': 'Sekunden vor dem Versand',
+  'settings.mail.undoSendHint':
+    'Wenn aktiv, werden Nachrichten serverseitig zurückgehalten; der Toast-Knopf "Rückgängig" bricht den Versand ab.',
+  'settings.mail.swipeLeft': 'Aktion bei Wischen nach links',
+  'settings.mail.swipeRight': 'Aktion bei Wischen nach rechts',
+  'settings.mail.swipeTouch': '(Touch)',
+  'settings.mail.swipe.archive': 'Archivieren',
+  'settings.mail.swipe.snooze': 'Zurückstellen',
+  'settings.mail.swipe.delete': 'Löschen',
+  'settings.mail.swipe.markRead': 'Als gelesen markieren',
+  'settings.mail.swipe.label': 'Label…',
+  'settings.mail.swipe.none': 'Keine',
+  'settings.mail.vacationHeading': 'Abwesenheits-Auto-Antwort',
+  'settings.mail.sieveHeading': 'Sieve-Filter',
+  'settings.mail.spamHeading': 'Spam-Klassifizierer',
+  'settings.mail.spamHint':
+    'Der Prompt, der zur Klassifizierung Ihrer eingehenden Nachrichten als Spam verwendet wird. Ihre Nachrichten werden zusammen mit diesem Prompt an den konfigurierten Klassifizierungs-Endpunkt von Herold gesendet.',
+  'settings.mail.spamLoading': 'Wird geladen…',
+  'settings.mail.spamLoadError': 'Konnte nicht geladen werden',
+  'settings.mail.spamModelLabel': 'Modell',
+  'settings.mail.spamNoPrompt': 'Kein Spam-Prompt konfiguriert.',
+  'settings.mail.coachHeading': 'Tastaturkürzel-Hilfe',
+  'settings.mail.coachLabel': 'Hinweise einblenden',
+
+  // ── Einstellungen: Benachrichtigungen (re #97) ───────────────────────
+  'settings.notifications.soundsLabel': 'Benachrichtigungstöne',
+  'settings.notifications.soundsHint':
+    'Einen Ton abspielen, wenn eine neue Nachricht oder ein Anruf eingeht und dieser Tab geöffnet ist.',
+  'settings.notifications.soundsAria': 'Benachrichtigungstöne',
+  'settings.notifications.pushLabel': 'Push-Benachrichtigungen',
+  'settings.notifications.pushDeniedHint':
+    'Benachrichtigungen sind aus. Sie können sie in den Browser-Einstellungen wieder aktivieren.',
+  'settings.notifications.pushForget': 'Entscheidung verwerfen',
+  'settings.notifications.pushOnHint': 'Benachrichtigungen sind an.',
+  'settings.notifications.pushUpdating': 'Wird aktualisiert…',
+  'settings.notifications.pushDisable': 'Benachrichtigungen deaktivieren',
+  'settings.notifications.pushOffHint':
+    'Erhalten Sie Benachrichtigungen über neue Nachrichten und Anrufe, auch wenn dieser Tab geschlossen ist.',
+  'settings.notifications.pushEnabling': 'Wird aktiviert…',
+  'settings.notifications.pushEnable': 'Benachrichtigungen aktivieren',
+  'settings.notifications.forgetAllLabel': 'Alle Abonnements verwerfen',
+  'settings.notifications.forgetAllHint':
+    'Entfernt alle Benachrichtigungs-Abonnements für Ihr Konto. Nützlich beim Außerbetriebnehmen eines Geräts.',
+  'settings.notifications.forgetAllButton': 'Alle Benachrichtigungs-Abonnements verwerfen',
+  'settings.notifications.unavailable':
+    'Push-Benachrichtigungen sind auf diesem Server nicht verfügbar.',
+
+  // ── Einstellungen: Datenschutz (re #97) ──────────────────────────────
+  'settings.privacy.externalImagesLabel': 'Externe Bilder',
+  'settings.privacy.externalImagesAria': 'Laden externer Bilder',
+  'settings.privacy.externalImages.never': 'Nie',
+  'settings.privacy.externalImages.perSender': 'Pro Absender',
+  'settings.privacy.externalImages.always': 'Immer',
+  'settings.privacy.externalImagesHint':
+    'Externe Bilder können als Lesebestätigungen dienen. {neverEm} blockiert sie standardmäßig; {perSenderEm} lädt nur von Absendern, die Sie freigegeben haben.',
+  'settings.privacy.allowedSendersHeading': 'Freigegebene Absender',
+  'settings.privacy.allowedSendersEmpty':
+    'Noch keine Absender freigegeben. Verwenden Sie "Immer von <Absender>" im Lesebereich, um einen hinzuzufügen.',
+  'settings.privacy.autocompleteHeading': 'Autovervollständigungs-Verlauf',
+  'settings.privacy.seenAddressesLabel': 'Kürzlich verwendete Adressen merken',
+  'settings.privacy.seenAddressesHint':
+    'Herold merkt sich pro Konto die Adressen, mit denen Sie korrespondiert haben, um die Empfänger-Autovervollständigung zu ergänzen. Wenn Sie dies deaktivieren, wird der Verlauf sofort gelöscht und es werden keine neuen Einträge mehr hinzugefügt.',
+
+  // ── Einstellungen: Über (re #97) ─────────────────────────────────────
+  'settings.about.heroldVersion': 'Herold-Version',
+  'settings.about.jmapApiUrl': 'JMAP-API-URL',
+  'settings.about.eventSourceUrl': 'EventSource-URL',
+  'settings.about.sessionState': 'Sitzungsstatus',
+  'settings.about.capabilitiesHeading': 'Server-Funktionen',
+  'settings.about.noSession': 'Keine Sitzung.',
+
+  // ── Einstellungen: Navigation (re #97) ───────────────────────────────
+  'settings.sectionsAria': 'Einstellungs-Bereiche',
+
+  // ── Identitäts-Bearbeitungsformulare (re #97) ────────────────────────
+  'settings.identity.signatureLabel': 'Signatur (reiner Text)',
+  'settings.identity.signatureSaved': 'Signatur gespeichert',
+  'settings.identity.signatureNoAccount': 'Kein Mail-Konto in dieser Sitzung',
+
+  // ── Abwesenheits-Formular (re #97) ───────────────────────────────────
+  'settings.vacation.loadFailed': 'Abwesenheits-Antwort konnte nicht geladen werden',
+  'settings.vacation.noAccount': 'Kein Mail-Konto in dieser Sitzung',
+  'settings.vacation.saveFailed': 'Speichern fehlgeschlagen',
+  'settings.vacation.saveFailedReason': 'Speichern fehlgeschlagen: {reason}',
+  'settings.vacation.enabled': 'Abwesenheits-Auto-Antwort aktiviert',
+  'settings.vacation.disabled': 'Abwesenheits-Auto-Antwort deaktiviert',
+  'settings.vacation.autoReply': 'Auto-Antwort',
+  'settings.vacation.activeFrom': 'Aktiv ab',
+  'settings.vacation.activeFromHint': 'Leer lassen, um sofort beim Aktivieren zu starten.',
+  'settings.vacation.activeUntil': 'Aktiv bis',
+  'settings.vacation.activeUntilHint': 'Leer lassen für kein Ablaufdatum.',
+  'settings.vacation.subject': 'Betreff',
+  'settings.vacation.subjectPlaceholder': 'Außer Haus',
+  'settings.vacation.body': 'Nachricht',
+
+  // ── Sicherheits-Formular (re #97) ────────────────────────────────────
+  'settings.security.loadingSession': 'Sitzung wird geladen...',
+  'settings.security.loadingAria': 'Sicherheits-Einstellungen werden geladen',
+  'settings.security.intro':
+    'Auf dieser Seite verwalten Sie die Anmeldedaten und die Zwei-Faktor-Einstellungen Ihres Kontos. Verwenden Sie sie, um Ihr Passwort zu ändern oder eine TOTP-Authenticator-App für die Zwei-Faktor-Authentifizierung einzurichten.',
+  'settings.security.introHint':
+    'Die Zwei-Faktor-Authentifizierung fügt beim Anmelden einen zweiten Verifikationsschritt hinzu. Wenn aktiviert, wird zusätzlich zum Passwort die Authenticator-App benötigt. Zum Deaktivieren ist das aktuelle Passwort erforderlich.',
+  'settings.security.changePassword': 'Passwort ändern',
+  'settings.security.currentPassword': 'Aktuelles Passwort',
+  'settings.security.newPassword': 'Neues Passwort',
+  'settings.security.confirmNewPassword': 'Neues Passwort bestätigen',
+  'settings.security.changePwSubmit': 'Passwort ändern',
+  'settings.security.passwordMismatch': 'Die neuen Passwörter stimmen nicht überein.',
+  'settings.security.passwordTooShort': 'Das neue Passwort muss mindestens 12 Zeichen lang sein.',
+  'settings.security.sessionNotReady': 'Sitzung noch nicht bereit. Bitte neu laden.',
+  'settings.security.passwordChanged': 'Passwort geändert.',
+  'settings.security.currentPasswordWrong': 'Das aktuelle Passwort ist falsch.',
+  'settings.security.twoFactorHeading': 'Zwei-Faktor-Authentifizierung',
+  'settings.security.twoFactorEnabled': 'Zwei-Faktor-Authentifizierung ist aktiviert.',
+  'settings.security.twoFactorDisabled': 'Zwei-Faktor-Authentifizierung ist nicht aktiviert.',
+  'settings.security.disable2faLabel': 'Aktuelles Passwort zum Deaktivieren von 2FA',
+  'settings.security.disabling': 'Wird deaktiviert...',
+  'settings.security.disable2fa': '2FA deaktivieren',
+  'settings.security.disable2faTitle': 'Zwei-Faktor-Authentifizierung deaktivieren?',
+  'settings.security.disable2faMessage': 'Dies verringert die Sicherheit Ihres Kontos.',
+  'settings.security.disable2faConfirm': 'Deaktivieren',
+  'settings.security.twoFactorDisabledToast': 'Zwei-Faktor-Authentifizierung deaktiviert.',
+  'settings.security.starting': 'Wird gestartet...',
+  'settings.security.enable2fa': 'Zwei-Faktor-Authentifizierung aktivieren',
+  'settings.security.scanHint':
+    'Scannen Sie den QR-Code mit Ihrer Authenticator-App und geben Sie dann den 6-stelligen Code zur Bestätigung ein.',
+  'settings.security.qrAriaLabel': 'TOTP-QR-Code',
+  'settings.security.manualEntryKey': 'Schlüssel zur manuellen Eingabe',
+  'settings.security.totpSecretAria': 'TOTP-Geheimnis',
+  'settings.security.provisioningUri': 'Provisioning-URI',
+  'settings.security.provisioningUriAria': 'TOTP-Provisioning-URI',
+  'settings.security.codePlaceholder': '6-stelliger Code',
+  'settings.security.codeAria': 'Authenticator-Code',
+  'settings.security.confirming': 'Wird bestätigt...',
+  'settings.security.confirmEnroll': 'Bestätigen',
+  'settings.security.twoFactorEnabledToast': 'Zwei-Faktor-Authentifizierung aktiviert.',
+
+  // ── API-Schlüssel-Formular (re #97) ──────────────────────────────────
+  'settings.apiKeys.intro1':
+    'Mit API-Schlüsseln können sich Skripte und externe Programme über {bearer} bei diesem Konto authentifizieren. Sie sind optional -- nichts in der Web-Suite benötigt einen. Erstellen Sie nur dann einen Schlüssel, wenn Sie JMAP oder die REST-API von außerhalb des Browsers ansprechen möchten.',
+  'settings.apiKeys.intro2':
+    'Jeder Schlüssel hat einen festen Berechtigungsumfang: Beschränken Sie ihn auf die kleinste Menge an Berechtigungen, die das Skript tatsächlich benötigt (z. B. {mailSend} für einen ausgehenden Bot). Schlüssel werden nur ein einziges Mal beim Erstellen angezeigt -- kopieren Sie sie dann; sie können später nicht abgerufen werden.',
+  'settings.apiKeys.copyNow': 'Kopieren Sie diesen Schlüssel jetzt. Er wird nicht erneut angezeigt.',
+  'settings.apiKeys.newKeyAria': 'Neuer API-Schlüssel',
+  'settings.apiKeys.savedKey': 'Ich habe diesen Schlüssel gespeichert',
+  'settings.apiKeys.heading.new': 'Neuer API-Schlüssel',
+  'settings.apiKeys.label': 'Bezeichnung',
+  'settings.apiKeys.labelPlaceholder': 'z. B. mein-skript',
+  'settings.apiKeys.scopes': 'Berechtigungen',
+  'settings.apiKeys.scopesHint':
+    'Wählen Sie die Berechtigungen aus, die dieser Schlüssel gewährt. Leer lassen für nur mail.send (Standard).',
+  'settings.apiKeys.creating': 'Wird erstellt...',
+  'settings.apiKeys.create': 'Schlüssel erstellen',
+  'settings.apiKeys.createNew': 'Neuen Schlüssel erstellen',
+  'settings.apiKeys.loadingAria': 'API-Schlüssel werden geladen',
+  'settings.apiKeys.empty': 'Noch keine API-Schlüssel.',
+  'settings.apiKeys.createdAt': 'Erstellt {date}',
+  'settings.apiKeys.lastUsed': 'Zuletzt verwendet {date}',
+  'settings.apiKeys.revoke': 'Widerrufen',
+  'settings.apiKeys.revokeTitle': 'Diesen API-Schlüssel widerrufen?',
+  'settings.apiKeys.revokeMessage':
+    'Anwendungen, die ihn verwenden, funktionieren danach sofort nicht mehr.',
+  'settings.apiKeys.revoked': 'API-Schlüssel widerrufen.',
+  'settings.apiKeys.scope.endUser': 'Endbenutzer',
+  'settings.apiKeys.scope.mailSend': 'Mail: senden',
+  'settings.apiKeys.scope.mailReceive': 'Mail: empfangen',
+  'settings.apiKeys.scope.chatRead': 'Chat: lesen',
+  'settings.apiKeys.scope.chatWrite': 'Chat: schreiben',
+  'settings.apiKeys.scope.calRead': 'Kalender: lesen',
+  'settings.apiKeys.scope.calWrite': 'Kalender: schreiben',
+  'settings.apiKeys.scope.contactsRead': 'Kontakte: lesen',
+  'settings.apiKeys.scope.contactsWrite': 'Kontakte: schreiben',
+
+  // ── Diagnose-Formular (re #97) ───────────────────────────────────────
+  'settings.diagnostics.saveError': 'Einstellung konnte nicht gespeichert werden.',
+
+  // ── Anmeldung (re #97) ───────────────────────────────────────────────
+  'login.email': 'E-Mail-Adresse',
+  'login.password': 'Passwort',
+  'login.totpCode': 'Authenticator-Code',
+  'login.totpPlaceholder': '6-stelliger Code',
+  'login.signingIn': 'Anmeldung läuft...',
+  'login.signIn': 'Anmelden',
+  'login.signInFailed': 'Anmeldung fehlgeschlagen.',
+
+  // ── Chat-Ansicht (re #97) ────────────────────────────────────────────
+  'chat.unavailable': 'Chat ist auf diesem Server nicht konfiguriert',
+  'chat.startVideoCall': 'Videoanruf starten',
+  'chat.callButton': 'Anrufen',
+  'chat.unknownCaller': 'Unbekannter Anrufer',
+  'chat.selectConversation': 'Wählen Sie eine Unterhaltung, um zu chatten',
+
+  // ── Kontakt-Ansicht (re #97) ─────────────────────────────────────────
+  'contact.view.loading': 'Wird geladen…',
+  'contact.view.couldNotLoad': 'Kontakt konnte nicht geladen werden.',
+  'contact.view.title': 'Kontakt',
+  'contact.view.emailHeading': 'E-Mail',
+  'contact.view.phoneHeading': 'Telefon',
 } as const;

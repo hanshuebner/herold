@@ -58,28 +58,21 @@
   let hasLLMTransparency = $derived(jmap.hasCapability(Capability.HeroldLLMTransparency));
   let hasPush = $derived(jmap.hasCapability(Capability.HeroldPush));
 
-  let sectionsBase: { id: Section; label: string }[] = [
-    { id: 'account', label: 'Account' },
-    { id: 'security', label: 'Security' },
-    { id: 'appearance', label: 'Appearance' },
-    { id: 'mail', label: 'Mail' },
-    { id: 'api-keys', label: 'API keys' },
-    { id: 'privacy', label: 'Privacy' },
-    { id: 'diagnostics', label: 'Diagnostics' },
-    { id: 'about', label: 'About' },
-  ];
-
-  let SECTIONS = $derived.by(() => {
-    const result: { id: Section; label: string }[] = [];
-    for (const s of sectionsBase) {
-      result.push(s);
-      if (s.id === 'mail') {
-        if (hasCategorise) result.push({ id: 'categories', label: 'Categories' });
-        if (hasManagedRules) result.push({ id: 'filters', label: 'Filters' });
-        // Notifications section always shown (in-app sounds; push if available).
-        result.push({ id: 'notifications', label: 'Notifications' });
-      }
-    }
+  let SECTIONS = $derived.by<{ id: Section; label: string }[]>(() => {
+    const result: { id: Section; label: string }[] = [
+      { id: 'account', label: t('settings.account') },
+      { id: 'security', label: t('settings.security') },
+      { id: 'appearance', label: t('settings.appearance') },
+      { id: 'mail', label: t('settings.mail') },
+    ];
+    if (hasCategorise) result.push({ id: 'categories', label: t('settings.categories.heading') });
+    if (hasManagedRules) result.push({ id: 'filters', label: t('settings.filters.heading') });
+    // Notifications section always shown (in-app sounds; push if available).
+    result.push({ id: 'notifications', label: t('settings.notifications') });
+    result.push({ id: 'api-keys', label: t('settings.apiKeys') });
+    result.push({ id: 'privacy', label: t('settings.privacy.heading') });
+    result.push({ id: 'diagnostics', label: t('settings.diagnostics.heading') });
+    result.push({ id: 'about', label: t('settings.about') });
     return result;
   });
 
@@ -169,14 +162,14 @@
   });
 
   // ── Helpers / labels for the form rows ────────────────────────────────
-  const SWIPE_OPTIONS = [
-    { value: 'archive', label: 'Archive' },
-    { value: 'snooze', label: 'Snooze' },
-    { value: 'delete', label: 'Delete' },
-    { value: 'mark_read', label: 'Mark read' },
-    { value: 'label', label: 'Label…' },
-    { value: 'none', label: 'None' },
-  ] as const;
+  let SWIPE_OPTIONS = $derived([
+    { value: 'archive', label: t('settings.mail.swipe.archive') },
+    { value: 'snooze', label: t('settings.mail.swipe.snooze') },
+    { value: 'delete', label: t('settings.mail.swipe.delete') },
+    { value: 'mark_read', label: t('settings.mail.swipe.markRead') },
+    { value: 'label', label: t('settings.mail.swipe.label') },
+    { value: 'none', label: t('settings.mail.swipe.none') },
+  ] as const);
 
   let capabilityList = $derived(
     auth.session ? Object.keys(auth.session.capabilities).sort() : [],
@@ -187,8 +180,8 @@
 </script>
 
 <div class="settings-shell">
-  <nav class="side-nav" aria-label="Settings sections">
-    <h1>Settings</h1>
+  <nav class="side-nav" aria-label={t('settings.sectionsAria')}>
+    <h1>{t('settings.title')}</h1>
     <ul>
       {#each SECTIONS as section (section.id)}
         <li>
@@ -206,23 +199,23 @@
 
   <section class="content" aria-label={SECTIONS.find((s) => s.id === activeSection)?.label}>
     {#if activeSection === 'account'}
-      <h2>Account</h2>
+      <h2>{t('settings.account')}</h2>
 
       <div class="row">
-        <span class="label">Signed in as</span>
+        <span class="label">{t('settings.account.signedInAs')}</span>
         <span class="value">{auth.session?.username ?? '—'}</span>
         <button
           type="button"
           class="signout-btn"
           onclick={() => void auth.logout()}
         >
-          Sign out
+          {t('settings.account.signOut')}
         </button>
       </div>
 
-      <h3>Identities &amp; signatures</h3>
+      <h3>{t('settings.account.identitiesHeading')}</h3>
       {#if identitiesArray.length === 0}
-        <p class="muted">No identities loaded yet.</p>
+        <p class="muted">{t('settings.account.noIdentities')}</p>
       {:else}
         {#each identitiesArray as identity (identity.id)}
           {#if showExtSub}
@@ -242,19 +235,21 @@
                       class="badge badge-alert"
                       onclick={() => openEditDialog(identity, true)}
                       title={subState === 'auth-failed'
-                        ? 'Authentication failed — click to re-authenticate'
-                        : 'External server unreachable — click to review config'}
+                        ? t('settings.account.authFailedTitle')
+                        : t('settings.account.unreachableTitle')}
                     >
-                      {subState === 'auth-failed' ? 'Auth failed' : 'Unreachable'}
+                      {subState === 'auth-failed'
+                        ? t('settings.account.authFailedBadge')
+                        : t('settings.account.unreachableBadge')}
                     </button>
                   {:else}
                     <button
                       type="button"
                       class="badge badge-external"
                       onclick={() => openEditDialog(identity, true)}
-                      title="External SMTP configured — click to edit"
+                      title={t('settings.account.externalBadgeTitle')}
                     >
-                      External
+                      {t('settings.account.externalBadge')}
                     </button>
                   {/if}
                 {:else}
@@ -262,9 +257,9 @@
                     type="button"
                     class="badge-link"
                     onclick={() => openEditDialog(identity, true)}
-                    title="Configure external SMTP submission"
+                    title={t('settings.account.configureExternalTitle')}
                   >
-                    Configure external SMTP
+                    {t('settings.account.configureExternal')}
                   </button>
                 {/if}
               </div>
@@ -280,10 +275,10 @@
         {/each}
         {#if !showExtSub}
           <p class="hint ext-sub-hint">
-            External SMTP submission (e.g. Gmail or Microsoft 365) is not enabled on this server.
-            To allow routing outbound mail through an external provider, an operator can enable it
-            in <code>system.toml</code> — see
-            <code>docs/manual/admin/external-smtp-submission.mdoc</code>.
+            {@html t('settings.account.extSubHint', {
+              systemToml: '<code>system.toml</code>',
+              docPath: '<code>docs/manual/admin/external-smtp-submission.mdoc</code>',
+            })}
           </p>
         {/if}
       {/if}
@@ -297,7 +292,7 @@
       {/if}
 
     {:else if activeSection === 'security'}
-      <h2>Security</h2>
+      <h2>{t('settings.security')}</h2>
       <SecurityForm />
 
     {:else if activeSection === 'appearance'}
@@ -319,7 +314,7 @@
           {/each}
         </div>
         <p class="hint">
-          System follows your OS-level preference and updates live when you toggle it.
+          {t('settings.appearance.themeHint')}
         </p>
       </div>
 
@@ -341,10 +336,10 @@
       </div>
 
     {:else if activeSection === 'mail'}
-      <h2>Mail</h2>
+      <h2>{t('settings.mail')}</h2>
 
       <div class="row vertical">
-        <span class="label">Undo-send window</span>
+        <span class="label">{t('settings.mail.undoSendWindow')}</span>
         <div class="undo">
           <input
             type="range"
@@ -356,21 +351,21 @@
               settings.setUndoWindowSec(
                 parseInt((e.currentTarget as HTMLInputElement).value, 10),
               )}
-            aria-label="Seconds before send"
+            aria-label={t('settings.mail.undoSendAria')}
           />
           <span class="undo-value">
             {settings.undoWindowSec === 0
-              ? 'Off (sends immediately)'
-              : `${settings.undoWindowSec}s`}
+              ? t('settings.mail.undoSendOff')
+              : t('settings.mail.undoSendValue', { seconds: settings.undoWindowSec })}
           </span>
         </div>
         <p class="hint">
-          When set, sends are held server-side; the toast's Undo cancels delivery.
+          {t('settings.mail.undoSendHint')}
         </p>
       </div>
 
       <div class="row vertical">
-        <span class="label">Swipe-left action <span class="muted">(touch)</span></span>
+        <span class="label">{t('settings.mail.swipeLeft')} <span class="muted">{t('settings.mail.swipeTouch')}</span></span>
         <select
           value={settings.swipeLeft}
           onchange={(e) =>
@@ -391,7 +386,7 @@
       </div>
 
       <div class="row vertical">
-        <span class="label">Swipe-right action <span class="muted">(touch)</span></span>
+        <span class="label">{t('settings.mail.swipeRight')} <span class="muted">{t('settings.mail.swipeTouch')}</span></span>
         <select
           value={settings.swipeRight}
           onchange={(e) =>
@@ -411,27 +406,26 @@
         </select>
       </div>
 
-      <h3>Vacation auto-reply</h3>
+      <h3>{t('settings.mail.vacationHeading')}</h3>
       <VacationForm />
 
-      <h3>Sieve filtering</h3>
+      <h3>{t('settings.mail.sieveHeading')}</h3>
       <SieveForm />
 
       {#if hasLLMTransparency}
-        <h3>Spam classifier</h3>
+        <h3>{t('settings.mail.spamHeading')}</h3>
         <p class="hint">
-          The prompt used when classifying your inbound mail as spam.
-          Your messages are sent to herold's configured classifier endpoint along with this prompt.
+          {t('settings.mail.spamHint')}
         </p>
         {#if llmTransparency.loadStatus === 'loading' || llmTransparency.loadStatus === 'idle'}
-          <p class="muted">Loading…</p>
+          <p class="muted">{t('settings.mail.spamLoading')}</p>
         {:else if llmTransparency.loadStatus === 'error'}
-          <p class="muted">{llmTransparency.loadError ?? 'Could not load'}</p>
+          <p class="muted">{llmTransparency.loadError ?? t('settings.mail.spamLoadError')}</p>
         {:else if llmTransparency.data?.spamPrompt}
           <pre class="prompt-display">{llmTransparency.data.spamPrompt}</pre>
           {#if llmTransparency.data.spamModel}
             <div class="row">
-              <span class="label">Model</span>
+              <span class="label">{t('settings.mail.spamModelLabel')}</span>
               <span class="value mono">{llmTransparency.data.spamModel}</span>
             </div>
           {/if}
@@ -441,13 +435,13 @@
             </div>
           {/if}
         {:else}
-          <p class="muted">No spam prompt configured.</p>
+          <p class="muted">{t('settings.mail.spamNoPrompt')}</p>
         {/if}
       {/if}
 
-      <h3>Shortcut coach</h3>
+      <h3>{t('settings.mail.coachHeading')}</h3>
       <div class="row">
-        <span class="label">Show coach hints</span>
+        <span class="label">{t('settings.mail.coachLabel')}</span>
         <label class="switch">
           <input
             type="checkbox"
@@ -460,22 +454,22 @@
       </div>
 
     {:else if activeSection === 'categories'}
-      <h2>Categories</h2>
+      <h2>{t('settings.categories.heading')}</h2>
       <CategoriesForm />
 
     {:else if activeSection === 'filters'}
-      <h2>Filters</h2>
+      <h2>{t('settings.filters.heading')}</h2>
       <FiltersForm />
 
     {:else if activeSection === 'notifications'}
-      <h2>Notifications</h2>
+      <h2>{t('settings.notifications')}</h2>
 
       <div class="row vertical">
-        <span class="label">Notification sounds</span>
+        <span class="label">{t('settings.notifications.soundsLabel')}</span>
         <p class="hint">
-          Play a sound when a new message or call arrives while this tab is open.
+          {t('settings.notifications.soundsHint')}
         </p>
-        <label class="switch" aria-label="Notification sounds">
+        <label class="switch" aria-label={t('settings.notifications.soundsAria')}>
           <input
             type="checkbox"
             checked={sounds.enabled}
@@ -487,29 +481,31 @@
 
       {#if hasPush}
         <div class="row vertical">
-          <span class="label">Push notifications</span>
+          <span class="label">{t('settings.notifications.pushLabel')}</span>
           {#if pushSubscription.permissionState === 'denied'}
             <p class="hint">
-              Notifications are off. You can re-enable them in your browser settings.
+              {t('settings.notifications.pushDeniedHint')}
             </p>
             <button
               type="button"
               onclick={() => pushSubscription.forgetDenial()}
             >
-              Forget my decision
+              {t('settings.notifications.pushForget')}
             </button>
           {:else if pushSubscription.subscribed}
-            <p class="hint">Notifications are on.</p>
+            <p class="hint">{t('settings.notifications.pushOnHint')}</p>
             <button
               type="button"
               onclick={() => void pushSubscription.unsubscribe()}
               disabled={pushSubscription.busy}
             >
-              {pushSubscription.busy ? 'Updating…' : 'Disable notifications'}
+              {pushSubscription.busy
+                ? t('settings.notifications.pushUpdating')
+                : t('settings.notifications.pushDisable')}
             </button>
           {:else}
             <p class="hint">
-              Get notified about new mail and messages when this tab is closed.
+              {t('settings.notifications.pushOffHint')}
             </p>
             <button
               type="button"
@@ -517,7 +513,9 @@
               onclick={() => void pushSubscription.subscribe()}
               disabled={pushSubscription.busy}
             >
-              {pushSubscription.busy ? 'Enabling…' : 'Enable notifications'}
+              {pushSubscription.busy
+                ? t('settings.notifications.pushEnabling')
+                : t('settings.notifications.pushEnable')}
             </button>
           {/if}
           {#if pushSubscription.errorMessage}
@@ -526,33 +524,32 @@
         </div>
 
         <div class="row vertical">
-          <span class="label">Forget all subscriptions</span>
+          <span class="label">{t('settings.notifications.forgetAllLabel')}</span>
           <p class="hint">
-            Removes all notification subscriptions for your account.
-            Useful when decommissioning a device.
+            {t('settings.notifications.forgetAllHint')}
           </p>
           <button
             type="button"
             onclick={() => void pushSubscription.destroyAll()}
             disabled={pushSubscription.busy}
           >
-            Forget all notification subscriptions
+            {t('settings.notifications.forgetAllButton')}
           </button>
         </div>
       {:else}
-        <p class="muted">Push notifications are not available on this server.</p>
+        <p class="muted">{t('settings.notifications.unavailable')}</p>
       {/if}
 
     {:else if activeSection === 'api-keys'}
-      <h2>API keys</h2>
+      <h2>{t('settings.apiKeys')}</h2>
       <ApiKeysForm />
 
     {:else if activeSection === 'privacy'}
-      <h2>Privacy</h2>
+      <h2>{t('settings.privacy.heading')}</h2>
 
       <div class="row vertical">
-        <span class="label">External images</span>
-        <div class="segmented" role="radiogroup" aria-label="External-image loading">
+        <span class="label">{t('settings.privacy.externalImagesLabel')}</span>
+        <div class="segmented" role="radiogroup" aria-label={t('settings.privacy.externalImagesAria')}>
           {#each ['never', 'per-sender', 'always'] as const as choice}
             <button
               type="button"
@@ -562,24 +559,25 @@
               onclick={() => settings.setImageLoadDefault(choice)}
             >
               {choice === 'never'
-                ? 'Never'
+                ? t('settings.privacy.externalImages.never')
                 : choice === 'per-sender'
-                  ? 'Per sender'
-                  : 'Always'}
+                  ? t('settings.privacy.externalImages.perSender')
+                  : t('settings.privacy.externalImages.always')}
             </button>
           {/each}
         </div>
         <p class="hint">
-          External images can act as read receipts. <em>Never</em> blocks them by default;
-          <em>Per sender</em> only loads from senders you've allowed.
+          {@html t('settings.privacy.externalImagesHint', {
+            neverEm: `<em>${t('settings.privacy.externalImages.never')}</em>`,
+            perSenderEm: `<em>${t('settings.privacy.externalImages.perSender')}</em>`,
+          })}
         </p>
       </div>
 
       {#if settings.imageLoadDefault === 'per-sender'}
-        <h3>Allowed senders</h3>
+        <h3>{t('settings.privacy.allowedSendersHeading')}</h3>
         {#if settings.imageAllowList.length === 0}
-          <p class="muted">No senders allowed yet. Use "Always from &lt;sender&gt;" in
-            the reading pane to add one.</p>
+          <p class="muted">{t('settings.privacy.allowedSendersEmpty')}</p>
         {:else}
           <ul class="list">
             {#each settings.imageAllowList as sender (sender)}
@@ -590,7 +588,7 @@
                   class="link"
                   onclick={() => settings.removeImageAllowedSender(sender)}
                 >
-                  Remove
+                  {t('common.remove')}
                 </button>
               </li>
             {/each}
@@ -598,7 +596,7 @@
         {/if}
       {/if}
 
-      <h3>Autocomplete history</h3>
+      <h3>{t('settings.privacy.autocompleteHeading')}</h3>
       <PrivacyForm />
 
     {:else if activeSection === 'diagnostics'}
@@ -606,27 +604,27 @@
       <DiagnosticsForm />
 
     {:else if activeSection === 'about'}
-      <h2>About</h2>
+      <h2>{t('settings.about')}</h2>
       <div class="row">
-        <span class="label">Herold version</span>
+        <span class="label">{t('settings.about.heroldVersion')}</span>
         <span class="value mono">{APP_VERSION}</span>
       </div>
       <div class="row">
-        <span class="label">JMAP API URL</span>
+        <span class="label">{t('settings.about.jmapApiUrl')}</span>
         <span class="value mono">{auth.session?.apiUrl ?? '—'}</span>
       </div>
       <div class="row">
-        <span class="label">EventSource URL</span>
+        <span class="label">{t('settings.about.eventSourceUrl')}</span>
         <span class="value mono">{auth.session?.eventSourceUrl ?? '—'}</span>
       </div>
       <div class="row">
-        <span class="label">Session state</span>
+        <span class="label">{t('settings.about.sessionState')}</span>
         <span class="value mono">{auth.session?.state ?? '—'}</span>
       </div>
 
-      <h3>Server capabilities</h3>
+      <h3>{t('settings.about.capabilitiesHeading')}</h3>
       {#if capabilityList.length === 0}
-        <p class="muted">No session.</p>
+        <p class="muted">{t('settings.about.noSession')}</p>
       {:else}
         <ul class="caps">
           {#each capabilityList as cap (cap)}

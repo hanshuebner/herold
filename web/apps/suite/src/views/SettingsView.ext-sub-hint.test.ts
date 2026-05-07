@@ -96,11 +96,23 @@ vi.mock('../lib/jmap/client', () => ({
   strict: vi.fn(() => ({ request: vi.fn() })),
 }));
 
-vi.mock('../lib/i18n/i18n.svelte', () => ({
-  t: (key: string) => key,
-  LOCALES: ['en', 'de'],
-  localeTag: () => 'en',
-}));
+vi.mock('../lib/i18n/i18n.svelte', async () => {
+  // Use the real English catalogue so component output matches what the user
+  // sees, rather than the bare keys. Tests below assert on user-visible strings.
+  const { en } = await import('../lib/i18n/en');
+  return {
+    t: (key: string, params?: Record<string, string | number>): string => {
+      const raw = (en as Record<string, string>)[key] ?? key;
+      if (!params) return raw;
+      return raw.replace(/\{(\w+)\}/g, (_m, name: string) => {
+        const v = params[name];
+        return v === undefined ? `{${name}}` : String(v);
+      });
+    },
+    LOCALES: ['en', 'de'],
+    localeTag: () => 'en',
+  };
+});
 
 vi.mock('../lib/llm/transparency.svelte', () => ({
   llmTransparency: {

@@ -50,6 +50,8 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
       'settings.save': 'Save',
       'settings.saved': 'Settings saved',
       'settings.saveFailed': 'Could not save settings',
+      'common.revert': 'Revert',
+      'common.saving': 'Saving...',
     };
     return map[key] ?? key;
   },
