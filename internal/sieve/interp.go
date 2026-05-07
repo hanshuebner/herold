@@ -1035,9 +1035,11 @@ type matcher struct {
 	// Inside a foreverypart loop the test reads from the current part's
 	// MIME headers; outside, it falls back to the message-level headers.
 	mime bool
-	// anychild is true when the test carried :anychild. Reserved for
-	// child-walking semantics; recognised but not yet honoured beyond
-	// the existing message-level read.
+	// anychild is true when the test carried :anychild (RFC 5703 §4.2).
+	// header / address / exists tests with this flag walk every
+	// descendant part of the iteration scope (the current foreverypart
+	// part, or the message body at top level) and pass if any source
+	// matches.
 	anychild bool
 }
 
@@ -1103,30 +1105,48 @@ func parseMatcher(args []Argument) (matcher, []Argument) {
 
 func (s *state) testExists(t Test) bool {
 	mime := false
+	anychild := false
 	for _, a := range t.Args {
-		if a.Kind == ArgTag && strings.EqualFold(a.Tag, ":mime") {
+		if a.Kind != ArgTag {
+			continue
+		}
+		switch strings.ToLower(a.Tag) {
+		case ":mime":
 			mime = true
+		case ":anychild":
+			anychild = true
 		}
 	}
-	headers := s.msg.Headers
-	if mime && s.currentPart != nil {
-		headers = s.currentPart.Headers
-	}
+	sources := s.allHeadersFor(matcher{mime: mime, anychild: anychild})
+	// Per RFC 5228 §5.9, exists is true when ALL named headers exist.
+	// With :anychild, "exists" becomes "exists in any of the sources",
+	// so every named header must be present in at least one source.
 	for _, a := range t.Args {
 		switch a.Kind {
 		case ArgString:
-			if headers.Get(a.Str) == "" {
+			if !headerPresentIn(sources, a.Str) {
 				return false
 			}
 		case ArgStringList:
 			for _, v := range a.StrList {
-				if headers.Get(v) == "" {
+				if !headerPresentIn(sources, v) {
 					return false
 				}
 			}
 		}
 	}
 	return true
+}
+
+// headerPresentIn reports whether name appears in any of the supplied
+// header sources. Used by testExists with :anychild semantics.
+func headerPresentIn(sources []mailparse.Headers, name string) bool {
+	for _, h := range sources {
+		if h.Get(name) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *state) testSize(t Test) (bool, error) {
@@ -1165,19 +1185,25 @@ func (s *state) testHeader(t Test) (bool, error) {
 	}
 	names := asStrings(rest[0])
 	keys := asStrings(rest[1])
-	headers := s.headersFor(m)
+	sources := s.allHeadersFor(m)
 	if m.relation != "" {
-		return s.countMatch(m, headersToValues(headers, names), keys)
+		var all []string
+		for _, h := range sources {
+			all = append(all, headersToValues(h, names)...)
+		}
+		return s.countMatch(m, all, keys)
 	}
-	for _, n := range names {
-		for _, v := range headers.GetAll(n) {
-			for _, k := range keys {
-				ok, err := compare(m, strings.TrimSpace(v), s.expandVars(k))
-				if err != nil {
-					return false, err
-				}
-				if ok {
-					return true, nil
+	for _, headers := range sources {
+		for _, n := range names {
+			for _, v := range headers.GetAll(n) {
+				for _, k := range keys {
+					ok, err := compare(m, strings.TrimSpace(v), s.expandVars(k))
+					if err != nil {
+						return false, err
+					}
+					if ok {
+						return true, nil
+					}
 				}
 			}
 		}
@@ -1197,6 +1223,37 @@ func (s *state) headersFor(m matcher) mailparse.Headers {
 	return s.msg.Headers
 }
 
+// allHeadersFor returns every header source a test should evaluate
+// against given m. Without :anychild it returns a single-element slice
+// (the part-or-message headers chosen by headersFor). With :anychild
+// (RFC 5703 §4.2) it returns the primary source plus the headers of
+// every descendant MIME part — the test passes if ANY source matches.
+// The traversal root is the current foreverypart part if set; else the
+// whole message body.
+func (s *state) allHeadersFor(m matcher) []mailparse.Headers {
+	out := []mailparse.Headers{s.headersFor(m)}
+	if !m.anychild {
+		return out
+	}
+	root := s.msg.Body
+	if s.currentPart != nil {
+		root = *s.currentPart
+	}
+	for _, c := range root.Children {
+		collectAllHeaders(c, &out)
+	}
+	return out
+}
+
+// collectAllHeaders walks every node under p (including p itself) and
+// appends each node's Headers to out. Used by :anychild.
+func collectAllHeaders(p mailparse.Part, out *[]mailparse.Headers) {
+	*out = append(*out, p.Headers)
+	for _, c := range p.Children {
+		collectAllHeaders(c, out)
+	}
+}
+
 func (s *state) testAddress(t Test) (bool, error) {
 	m, rest := parseMatcher(t.Args)
 	if len(rest) < 2 {
@@ -1204,12 +1261,14 @@ func (s *state) testAddress(t Test) (bool, error) {
 	}
 	names := asStrings(rest[0])
 	keys := asStrings(rest[1])
-	headers := s.headersFor(m)
+	sources := s.allHeadersFor(m)
 	var vals []string
-	for _, n := range names {
-		for _, v := range headers.GetAll(n) {
-			vs := extractAddressParts(v, m.addressPart)
-			vals = append(vals, vs...)
+	for _, headers := range sources {
+		for _, n := range names {
+			for _, v := range headers.GetAll(n) {
+				vs := extractAddressParts(v, m.addressPart)
+				vals = append(vals, vs...)
+			}
 		}
 	}
 	if m.relation != "" {

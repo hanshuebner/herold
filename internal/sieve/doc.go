@@ -35,10 +35,11 @@
 //   - Phase 1.5: foreverypart (5703) iteration + break, extracttext
 //     (5703) into variables, and the :mime / :anychild flags on
 //     header / address / exists tests so scripts can read per-part
-//     MIME headers from inside a foreverypart loop. The body-mutation
-//     actions replace and enclose (5703 §4.3, §4.4) parse but emit no
-//     action; they need a delivery-side rewrite path that does not
-//     yet exist.
+//     MIME headers from inside a foreverypart loop. :anychild walks
+//     every descendant part of the iteration scope and passes if any
+//     matches. The body-mutation actions replace and enclose (5703
+//     §4.3, §4.4) parse but emit no action; they need a delivery-side
+//     rewrite path that does not yet exist.
 //
 // ManageSieve (RFC 5804) lives in internal/protomanagesieve; this package
 // is intentionally transport-agnostic.

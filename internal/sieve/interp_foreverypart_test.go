@@ -135,6 +135,44 @@ foreverypart {
 	}
 }
 
+func TestInterp_HeaderAnychild_MatchesDescendant(t *testing.T) {
+	// Without foreverypart and without :anychild, :mime falls through
+	// to the message-level headers (where X-Tracer is absent), so the
+	// test must NOT match. With :anychild, the test sees every
+	// descendant part's headers and the leaf-only X-Tracer matches.
+	src := `require ["mime", "fileinto"];
+if header :mime :anychild :contains "X-Tracer" "alpha" {
+  fileinto "ANYCHILD-HIT";
+}`
+	out := runScript(t, src, Environment{}, multipartMsg)
+	hit := false
+	for _, a := range out.Actions {
+		if a.Kind == ActionFileInto && a.Mailbox == "ANYCHILD-HIT" {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatalf(":anychild should match X-Tracer on the HTML attachment leaf; actions=%+v", out.Actions)
+	}
+}
+
+func TestInterp_ExistsAnychild_MatchesDescendant(t *testing.T) {
+	src := `require ["mime", "fileinto"];
+if exists :mime :anychild "X-Tracer" {
+  fileinto "EXISTS-ANYCHILD";
+}`
+	out := runScript(t, src, Environment{}, multipartMsg)
+	hit := false
+	for _, a := range out.Actions {
+		if a.Kind == ActionFileInto && a.Mailbox == "EXISTS-ANYCHILD" {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatalf("exists :anychild should find X-Tracer on a leaf; actions=%+v", out.Actions)
+	}
+}
+
 func TestInterp_ExtractText_RequiresMime(t *testing.T) {
 	// extracttext without `require "mime"` must fail validation.
 	src := `require ["foreverypart"];
