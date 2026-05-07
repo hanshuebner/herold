@@ -103,6 +103,13 @@ type Action struct {
 	// EncloseHeaders are operator-supplied additional headers to set
 	// on the outer enclosure (RFC 5703 §4.4 :headers).
 	EncloseHeaders []string
+	// ReplacePartPath identifies the MIME part the replacement
+	// targets when ActionReplace was emitted from inside a
+	// foreverypart loop. The path is the index sequence from
+	// msg.Body.Children — e.g. [0,1] means msg.Body.Children[0].Children[1].
+	// Empty (nil) means "rewrite the whole message body" (top-level
+	// replace), which is the original Phase 1.5 behaviour.
+	ReplacePartPath []int
 }
 
 // Outcome is the interpreter's return value: the ordered list of actions
@@ -260,6 +267,13 @@ func (in *Interpreter) Evaluate(ctx context.Context, script *Script, msg mailpar
 	return st.outcome, nil
 }
 
+// loopFrame tracks one active foreverypart loop. Pushed on entry by
+// runForeveryPart and popped on exit; named-break consults the stack
+// to decide which frame to terminate.
+type loopFrame struct {
+	name string
+}
+
 // state is the per-evaluation mutable bag.
 type state struct {
 	ctx      context.Context
@@ -278,11 +292,31 @@ type state struct {
 	// RFC's "or with the message MIME header" branch.
 	currentPart *mailparse.Part
 
-	// breakLoop is set by the `break` command (RFC 5703 §4.1). The
-	// surrounding foreverypart catches it on the next iteration check
-	// and clears it. Named-break is not yet supported; the field is a
-	// boolean rather than a name string for v1.5.
-	breakLoop bool
+	// loopStack tracks active foreverypart frames from outermost (0)
+	// to innermost (len-1). Each frame carries its :name (or "" for
+	// anonymous) so a nested `break :name x` can find and exit the
+	// matching outer loop. The runForeveryPart loop pushes on entry
+	// and pops on exit; runBlock honours brokenLoopName / brokenAny
+	// signals between frames.
+	loopStack []loopFrame
+
+	// currentPath is the index sequence from msg.Body that locates
+	// state.currentPart in the MIME tree. nil at top level. replace
+	// inside a foreverypart loop copies this path onto the emitted
+	// Action so ApplyMutations can target only the iterated leaf
+	// instead of rewriting the whole message body.
+	currentPath []int
+
+	// brokenLoopName names the loop a `break :name x` is unwinding
+	// to; the matching foreverypart pops its frame and clears it.
+	// Empty when the most recent break was unnamed (innermost-only).
+	brokenLoopName string
+
+	// brokenAny is set by any break — named or anonymous — so runBlock
+	// returns immediately. The surrounding runForeveryPart inspects
+	// brokenLoopName to decide whether to clear the flag (we're at the
+	// targeted frame) or propagate (an outer frame is the target).
+	brokenAny bool
 
 	outcome Outcome
 	log     *slog.Logger
@@ -300,10 +334,11 @@ func (s *state) runBlock(cmds []Command) error {
 		if err := s.sandbox.tick(); err != nil {
 			return err
 		}
-		// `break` inside a foreverypart sets s.breakLoop; bail out of
+		// `break` inside a foreverypart sets brokenAny; bail out of
 		// the current block immediately so the surrounding loop driver
-		// (runForeveryPart) can observe and clear the flag.
-		if s.breakLoop {
+		// (runForeveryPart) can observe the brokenLoopName and decide
+		// whether to clear or propagate.
+		if s.brokenAny {
 			return nil
 		}
 		switch c.Name {
@@ -417,8 +452,7 @@ func (s *state) runSimple(c Command) error {
 	case "foreverypart":
 		return s.runForeveryPart(c)
 	case "break":
-		s.breakLoop = true
-		return nil
+		return s.runBreak(c)
 	case "extracttext":
 		return s.extractText(c)
 	case "replace":
@@ -430,34 +464,68 @@ func (s *state) runSimple(c Command) error {
 	}
 }
 
-// runForeveryPart implements RFC 5703 §3 iteration. It walks every leaf
-// MIME part (text and binary, in source order) and runs the inner
-// block once per part, with state.currentPart pointing at the
-// iteration's part. The iteration terminates when the block executes
-// `break`, when the script's stop bit is set, or when every leaf has
-// been visited.
+// runForeveryPart implements RFC 5703 §3 iteration. It walks every
+// descendant of the iteration scope in depth-first order — leaves
+// AND multipart container nodes — and runs the inner block once per
+// part, with state.currentPart pointing at the iteration's part.
 //
-// The RFC defines iteration scope as "the current MIME part's direct
-// children", which would require the script to nest foreverypart loops
-// to descend. This implementation flattens the tree to all leaves so a
-// single foreverypart visits every part the way most scripts intend
-// (including over attachments inside multipart/alternative or
-// multipart/mixed). Named-break (foreverypart :name x { ... break :name x })
-// is not implemented; v1 scripts use one loop and bare break.
+// Iteration scope: at top level, the message body and its descendants;
+// inside a nested foreverypart, the descendants of the outer loop's
+// currentPart. This matches the Pigeonhole reading of the RFC's "MIME
+// part in the current iteration scope" which is what most operator
+// scripts expect — a single foreverypart visits every part regardless
+// of nesting depth.
+//
+// Names: foreverypart accepts `:name <string>`. The frame is pushed on
+// the loop stack so `break :name <string>` can target this loop or any
+// outer one. The frame is popped on exit even when the loop body errors.
 func (s *state) runForeveryPart(c Command) error {
 	if !s.requires["foreverypart"] {
 		return &ValidationError{Line: c.Line, Column: c.Column, Message: "foreverypart requires \"foreverypart\""}
 	}
-	leaves := collectLeafParts(s.msg.Body)
-	prev := s.currentPart
-	defer func() { s.currentPart = prev }()
-	for i := range leaves {
-		s.currentPart = &leaves[i]
+	loopName := readNameTag(c.Args)
+	scope := s.msg.Body
+	if s.currentPart != nil {
+		scope = *s.currentPart
+	}
+	walked := collectDescendantPathParts(scope, s.currentPath)
+	if len(walked) == 0 {
+		// Non-multipart scope: the leaf body itself is the only part
+		// in the iteration scope. RFC 5703 §3 doesn't specify this
+		// edge case explicitly; iterating once preserves Phase 1.5
+		// behaviour and matches operator intuition for "scan the only
+		// body".
+		walked = []walkedPart{{part: scope, path: append([]int{}, s.currentPath...)}}
+	}
+	s.loopStack = append(s.loopStack, loopFrame{name: loopName})
+	defer func() {
+		s.loopStack = s.loopStack[:len(s.loopStack)-1]
+	}()
+	prevPart := s.currentPart
+	prevPath := s.currentPath
+	defer func() {
+		s.currentPart = prevPart
+		s.currentPath = prevPath
+	}()
+	for i := range walked {
+		s.currentPart = &walked[i].part
+		s.currentPath = walked[i].path
 		if err := s.runBlock(c.Block); err != nil {
 			return err
 		}
-		if s.breakLoop {
-			s.breakLoop = false
+		if s.brokenAny {
+			// A named break that targets THIS frame clears the flag;
+			// a named break that targets an outer frame propagates;
+			// an anonymous break terminates this (innermost) frame.
+			if s.brokenLoopName == "" || s.brokenLoopName == loopName {
+				s.brokenAny = false
+				s.brokenLoopName = ""
+				return nil
+			}
+			// Targeting an outer loop: leave brokenAny set so the
+			// outer runBlock bails too. The outer runForeveryPart
+			// will inspect its own loopName when it observes the
+			// flag.
 			return nil
 		}
 		if s.outcome.Stop {
@@ -467,18 +535,69 @@ func (s *state) runForeveryPart(c Command) error {
 	return nil
 }
 
-// collectLeafParts flattens p into a slice of every leaf part in walk
-// order. Multipart container nodes are descended; non-multipart leaves
-// (text/* or any application/* / image/* part) become an entry. This
-// matches the "every part in the message" semantics most foreverypart
-// scripts assume.
-func collectLeafParts(p mailparse.Part) []mailparse.Part {
-	if len(p.Children) == 0 {
-		return []mailparse.Part{p}
+// runBreak implements RFC 5703 §3.1. `break` (no name) terminates the
+// innermost foreverypart loop; `break :name <string>` terminates the
+// loop whose `:name` value matches. Calling break outside any loop or
+// with a name that does not match any active loop is a runtime error
+// per the RFC.
+func (s *state) runBreak(c Command) error {
+	if len(s.loopStack) == 0 {
+		return &ValidationError{Line: c.Line, Column: c.Column, Message: "break outside foreverypart"}
 	}
-	var out []mailparse.Part
-	for _, c := range p.Children {
-		out = append(out, collectLeafParts(c)...)
+	name := readNameTag(c.Args)
+	if name != "" {
+		found := false
+		for _, frame := range s.loopStack {
+			if frame.name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return &ValidationError{Line: c.Line, Column: c.Column, Message: fmt.Sprintf("break :name %q has no matching foreverypart", name)}
+		}
+	}
+	s.brokenAny = true
+	s.brokenLoopName = name
+	return nil
+}
+
+// readNameTag scans cmd args for `:name <string>` and returns the
+// string value, or "" when no :name tag is present.
+func readNameTag(args []Argument) string {
+	for i := 0; i < len(args); i++ {
+		if args[i].Kind != ArgTag {
+			continue
+		}
+		if !strings.EqualFold(args[i].Tag, ":name") {
+			continue
+		}
+		if i+1 < len(args) && args[i+1].Kind == ArgString {
+			return args[i+1].Str
+		}
+	}
+	return ""
+}
+
+// walkedPart is a (part, path) pair produced by collectDescendantPathParts.
+// path is the index sequence from msg.Body to part, used by replace
+// inside foreverypart to target only the iterated leaf.
+type walkedPart struct {
+	part mailparse.Part
+	path []int
+}
+
+// collectDescendantPathParts is the path-aware variant of the
+// foreverypart walker. It returns every descendant of p in
+// depth-first pre-order along with the path that locates each
+// descendant relative to msg.Body — base is the path from msg.Body
+// to p, and each yielded entry's path is base + the child indices.
+func collectDescendantPathParts(p mailparse.Part, base []int) []walkedPart {
+	var out []walkedPart
+	for i, c := range p.Children {
+		path := append(append([]int{}, base...), i)
+		out = append(out, walkedPart{part: c, path: path})
+		out = append(out, collectDescendantPathParts(c, path)...)
 	}
 	return out
 }
@@ -976,6 +1095,13 @@ func (s *state) replace(c Command) error {
 		return &ValidationError{Line: c.Line, Column: c.Column, Message: "replace requires a body string"}
 	}
 	a.ReplaceBody = []byte(bodyArg)
+	if len(s.currentPath) > 0 {
+		// Replace inside foreverypart targets the iterated leaf.
+		// Outside any loop the path is empty and ApplyMutations
+		// rewrites the message body (the original Phase 1.5
+		// behaviour).
+		a.ReplacePartPath = append([]int{}, s.currentPath...)
+	}
 	return s.appendAction(a)
 }
 

@@ -173,6 +173,59 @@ if exists :mime :anychild "X-Tracer" {
 	}
 }
 
+func TestInterp_Replace_InsideForeverypart_RecordsPath(t *testing.T) {
+	// Inside foreverypart, the replace action records the part path
+	// so ApplyMutations can rewrite the iterated leaf instead of the
+	// whole message body. The test checks the emitted Action carries
+	// a non-empty ReplacePartPath; the byte-level rewrite is exercised
+	// by mutations_test.go.
+	src := `require ["foreverypart", "mime"];
+foreverypart {
+  if header :mime :contains "Content-Type" "text/html" {
+    replace "[scrubbed html]";
+  }
+}`
+	out := runScript(t, src, Environment{}, multipartMsg)
+	var found *Action
+	for i := range out.Actions {
+		if out.Actions[i].Kind == ActionReplace {
+			found = &out.Actions[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected ActionReplace; actions=%+v", out.Actions)
+	}
+	if len(found.ReplacePartPath) == 0 {
+		t.Fatalf("ActionReplace.ReplacePartPath must be non-empty inside foreverypart; got %v", found)
+	}
+	if string(found.ReplaceBody) != "[scrubbed html]" {
+		t.Errorf("ReplaceBody = %q; want [scrubbed html]", found.ReplaceBody)
+	}
+}
+
+func TestInterp_Replace_TopLevel_EmptyPath(t *testing.T) {
+	// Outside foreverypart, the replace action records an empty path
+	// so ApplyMutations rewrites the whole body (Phase 1.5
+	// behaviour preserved).
+	src := `require ["mime"];
+replace "new body";`
+	out := runScript(t, src, Environment{}, multipartMsg)
+	var found *Action
+	for i := range out.Actions {
+		if out.Actions[i].Kind == ActionReplace {
+			found = &out.Actions[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected ActionReplace")
+	}
+	if len(found.ReplacePartPath) != 0 {
+		t.Fatalf("top-level replace must have empty path; got %v", found.ReplacePartPath)
+	}
+}
+
 func TestInterp_Replace_EmitsActionWithSubject(t *testing.T) {
 	src := `require ["mime"];
 replace :subject "rewritten" "new body content";`
@@ -217,6 +270,178 @@ enclose :subject "[FLAGGED]" :headers ["X-Quarantine: yes"] "warning text";`
 	}
 	if len(found.EncloseHeaders) != 1 || found.EncloseHeaders[0] != "X-Quarantine: yes" {
 		t.Errorf("EncloseHeaders = %v; want [X-Quarantine: yes]", found.EncloseHeaders)
+	}
+}
+
+// nestedMultipartMsg has a multipart/mixed root containing one
+// multipart/alternative inner container (with text/plain + text/html
+// children) and one binary attachment. Used to exercise nested
+// foreverypart re-scoping.
+const nestedMultipartMsg = "From: alice@example.com\r\n" +
+	"To: bob@example.com\r\n" +
+	"Subject: Nested\r\n" +
+	"MIME-Version: 1.0\r\n" +
+	"Content-Type: multipart/mixed; boundary=\"OUTER\"\r\n" +
+	"\r\n" +
+	"--OUTER\r\n" +
+	"Content-Type: multipart/alternative; boundary=\"INNER\"\r\n" +
+	"\r\n" +
+	"--INNER\r\n" +
+	"Content-Type: text/plain; charset=utf-8\r\n" +
+	"\r\n" +
+	"plain alt\r\n" +
+	"--INNER\r\n" +
+	"Content-Type: text/html; charset=utf-8\r\n" +
+	"\r\n" +
+	"<p>html alt</p>\r\n" +
+	"--INNER--\r\n" +
+	"--OUTER\r\n" +
+	"Content-Type: application/pdf\r\n" +
+	"Content-Disposition: attachment; filename=\"x.pdf\"\r\n" +
+	"\r\n" +
+	"pdfbody\r\n" +
+	"--OUTER--\r\n"
+
+func TestInterp_ForeveryPart_VisitsContainerNodes(t *testing.T) {
+	// New iteration scope includes multipart container nodes (not
+	// just leaves) — header :mime "Content-Type" matches those too.
+	src := `require ["foreverypart", "mime", "fileinto"];
+foreverypart {
+  if header :mime :contains "Content-Type" "multipart/alternative" {
+    fileinto "FOUND-CONTAINER";
+  }
+}`
+	out := runScript(t, src, Environment{}, nestedMultipartMsg)
+	hit := false
+	for _, a := range out.Actions {
+		if a.Kind == ActionFileInto && a.Mailbox == "FOUND-CONTAINER" {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatalf("foreverypart should visit multipart container nodes; actions=%+v", out.Actions)
+	}
+}
+
+func TestInterp_ForeveryPart_NestedScope(t *testing.T) {
+	// A nested foreverypart re-scopes to the outer's currentPart.
+	// Outer iterates over [multipart/alternative, text/plain (alt),
+	// text/html (alt), application/pdf]. The inner foreverypart fires
+	// only when the outer's currentPart has children — that is, on
+	// the multipart/alternative iteration. Inner sees [text/plain,
+	// text/html]; we count those as INNER hits.
+	src := `require ["foreverypart", "mime", "fileinto"];
+foreverypart {
+  if header :mime :contains "Content-Type" "multipart/alternative" {
+    foreverypart {
+      fileinto "INNER";
+    }
+  }
+}`
+	out := runScript(t, src, Environment{}, nestedMultipartMsg)
+	innerCount := 0
+	for _, a := range out.Actions {
+		if a.Kind == ActionFileInto && a.Mailbox == "INNER" {
+			innerCount++
+		}
+	}
+	if innerCount != 2 {
+		t.Fatalf("nested foreverypart should iterate over the multipart/alternative's two leaves; got %d", innerCount)
+	}
+}
+
+func TestInterp_NamedBreak_TerminatesOuter(t *testing.T) {
+	// `break :name outer` from the inner loop terminates the outer
+	// loop on the FIRST iteration. The outer loop visits four parts;
+	// without the break, the inner loop would fire for each. With
+	// the break, INNER fires once (during the first outer iteration)
+	// and the outer loop exits.
+	src := `require ["foreverypart", "fileinto"];
+foreverypart :name "outer" {
+  foreverypart :name "inner" {
+    fileinto "INNER";
+    break :name "outer";
+  }
+  fileinto "OUTER-AFTER-INNER";
+}`
+	out := runScript(t, src, Environment{}, nestedMultipartMsg)
+	innerCount := 0
+	outerAfterCount := 0
+	for _, a := range out.Actions {
+		if a.Kind != ActionFileInto {
+			continue
+		}
+		switch a.Mailbox {
+		case "INNER":
+			innerCount++
+		case "OUTER-AFTER-INNER":
+			outerAfterCount++
+		}
+	}
+	if innerCount != 1 {
+		t.Fatalf("named break should terminate the outer after first inner iteration; INNER=%d", innerCount)
+	}
+	if outerAfterCount != 0 {
+		t.Fatalf("named break to outer must skip the post-inner statement; got %d", outerAfterCount)
+	}
+}
+
+func TestInterp_BareBreak_TerminatesInnermost(t *testing.T) {
+	// A bare `break` should exit the inner loop only; the outer keeps
+	// going.
+	src := `require ["foreverypart", "fileinto"];
+foreverypart :name "outer" {
+  foreverypart :name "inner" {
+    fileinto "INNER";
+    break;
+  }
+  fileinto "OUTER";
+}`
+	out := runScript(t, src, Environment{}, nestedMultipartMsg)
+	outerCount := 0
+	for _, a := range out.Actions {
+		if a.Kind == ActionFileInto && a.Mailbox == "OUTER" {
+			outerCount++
+		}
+	}
+	if outerCount == 0 {
+		t.Fatalf("bare break should not terminate outer loop; actions=%+v", out.Actions)
+	}
+}
+
+func TestInterp_Break_OutsideLoop_Errors(t *testing.T) {
+	src := `require ["foreverypart"];
+break;`
+	script, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := Validate(script); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	in := NewInterpreter()
+	_, err = in.Evaluate(t.Context(), script, buildMessage(t, sampleMsg), Environment{})
+	if err == nil {
+		t.Fatalf("break outside foreverypart must error")
+	}
+}
+
+func TestInterp_NamedBreak_UnknownName_Errors(t *testing.T) {
+	src := `require ["foreverypart"];
+foreverypart :name "outer" {
+  break :name "nonexistent";
+}`
+	script, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := Validate(script); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	in := NewInterpreter()
+	_, err = in.Evaluate(t.Context(), script, buildMessage(t, multipartMsg), Environment{})
+	if err == nil {
+		t.Fatalf("break :name on unknown loop must error")
 	}
 }
 

@@ -137,11 +137,30 @@ func applyDeleteHeader(headerSection []byte, name string) []byte {
 	return out.Bytes()
 }
 
-// applyReplace overwrites the message body with a.ReplaceBody and
-// honours :subject / :from overrides on the outer headers. The
-// existing header section's Subject and From are replaced by the
-// override values when set.
+// applyReplace overwrites a target body with a.ReplaceBody. When
+// ReplacePartPath is empty the target is the message body (the
+// original Phase 1.5 top-level behaviour, which also applies the
+// :subject / :from overrides on the outer headers). When the path is
+// non-empty the replace was emitted from inside a foreverypart loop
+// and targets only the named MIME part — the path indexes into
+// msg.Body.Children, with each successive index descending one level.
+//
+// Per-leaf replace works by locating the part's body in raw via a
+// boundary-aware walk that tracks each multipart's boundary string
+// and the order of its children. The whole-message Subject / From
+// overrides are NOT honoured for per-leaf replace; they apply only
+// to top-level rewrites where the script is replacing the whole
+// message body and the outer headers come along.
 func applyReplace(raw []byte, a Action) []byte {
+	if len(a.ReplacePartPath) > 0 {
+		out, ok := replacePartByPath(raw, a.ReplacePartPath, a.ReplaceBody)
+		if ok {
+			return out
+		}
+		// Path lookup failed (target part not found): fall through to
+		// top-level replace as a defensive degraded mode rather than
+		// dropping the script's intent.
+	}
 	headerEnd := findHeaderEnd(raw)
 	if headerEnd < 0 {
 		return raw
@@ -160,6 +179,196 @@ func applyReplace(raw []byte, a Action) []byte {
 	}
 	out = append(out, body...)
 	return out
+}
+
+// replacePartByPath rewrites the byte range corresponding to the part
+// at path inside raw. The path is an index sequence:
+// path[0] indexes the children of the message-level multipart,
+// path[1] the children of THAT part, and so on. Returns (newRaw, true)
+// on success; (raw, false) when the path cannot be resolved (e.g. raw
+// is not multipart, or an index is out of range, or the message uses
+// boundaries the walker cannot recognise).
+//
+// The walker recognises CRLF "--<boundary>" lines that delimit MIME
+// parts; it does not parse Content-Transfer-Encoding or otherwise
+// decode part bodies. The replacement is inserted verbatim with a
+// fresh "Content-Type: text/plain" header, preserving the surrounding
+// part order and the parent multipart's boundary string.
+func replacePartByPath(raw []byte, path []int, replacement []byte) ([]byte, bool) {
+	headerEnd := findHeaderEnd(raw)
+	if headerEnd < 0 {
+		return raw, false
+	}
+	headers := raw[:headerEnd]
+	body := raw[headerEnd:]
+	boundary := readBoundary(headers)
+	if boundary == "" {
+		return raw, false
+	}
+	newBody, ok := replacePartInMultipart(body, boundary, path, replacement)
+	if !ok {
+		return raw, false
+	}
+	out := append([]byte{}, headers...)
+	out = append(out, newBody...)
+	return out, true
+}
+
+// replacePartInMultipart walks a multipart body delimited by boundary
+// and rewrites the part at path. path[0] selects which child of THIS
+// multipart to descend into; if len(path) == 1, that child is the
+// target and gets replaced wholesale (headers + body) with a
+// freshly-rendered text/plain part containing replacement. Otherwise
+// the function recurses into the chosen child's nested multipart.
+func replacePartInMultipart(body []byte, boundary string, path []int, replacement []byte) ([]byte, bool) {
+	if len(path) == 0 {
+		return body, false
+	}
+	delim := []byte("--" + boundary)
+	parts := splitMultipart(body, boundary)
+	idx := path[0]
+	if idx < 0 || idx >= len(parts) {
+		return body, false
+	}
+	if len(path) == 1 {
+		// Replace this child entirely.
+		newPart := buildReplacementPart(replacement)
+		return assembleMultipart(parts, idx, newPart, delim), true
+	}
+	// Descend: the targeted child must itself be a multipart with its
+	// own boundary in its headers.
+	child := parts[idx]
+	childHeaderEnd := findHeaderEnd(child)
+	if childHeaderEnd < 0 {
+		return body, false
+	}
+	childHeaders := child[:childHeaderEnd]
+	childBody := child[childHeaderEnd:]
+	childBoundary := readBoundary(childHeaders)
+	if childBoundary == "" {
+		return body, false
+	}
+	newChildBody, ok := replacePartInMultipart(childBody, childBoundary, path[1:], replacement)
+	if !ok {
+		return body, false
+	}
+	newChild := append([]byte{}, childHeaders...)
+	newChild = append(newChild, newChildBody...)
+	return assembleMultipart(parts, idx, newChild, delim), true
+}
+
+// splitMultipart returns the per-part byte slices between
+// "--<boundary>" delimiters in body. The slices INCLUDE the part's
+// headers and body but NOT the surrounding boundary lines. The
+// preamble (text before the first boundary) and the closing
+// "--<boundary>--" are dropped.
+func splitMultipart(body []byte, boundary string) [][]byte {
+	delim := []byte("\r\n--" + boundary)
+	closer := []byte("\r\n--" + boundary + "--")
+	// Strip everything up to and including the first delimiter.
+	start := bytes.Index(body, []byte("--"+boundary))
+	if start < 0 {
+		return nil
+	}
+	// Position cursor at start of the first part (after the boundary
+	// line's CRLF).
+	first := body[start:]
+	if i := bytes.Index(first, []byte("\r\n")); i >= 0 {
+		first = first[i+2:]
+	}
+	var parts [][]byte
+	cursor := first
+	for {
+		closeIdx := bytes.Index(cursor, closer)
+		delimIdx := bytes.Index(cursor, delim)
+		// Whichever boundary comes FIRST determines this part. The
+		// closer ends iteration; a plain delim continues to the next.
+		switch {
+		case closeIdx < 0 && delimIdx < 0:
+			// Malformed: no terminator found. Treat the rest as the
+			// last part.
+			parts = append(parts, append([]byte{}, cursor...))
+			return parts
+		case closeIdx >= 0 && (delimIdx < 0 || closeIdx <= delimIdx):
+			parts = append(parts, append([]byte{}, cursor[:closeIdx]...))
+			return parts
+		default:
+			parts = append(parts, append([]byte{}, cursor[:delimIdx]...))
+			next := cursor[delimIdx+len(delim):]
+			if j := bytes.Index(next, []byte("\r\n")); j >= 0 {
+				next = next[j+2:]
+			}
+			cursor = next
+		}
+	}
+}
+
+// assembleMultipart builds a fresh multipart body with parts[idx]
+// swapped for newPart. The leading preamble and trailing closer are
+// emitted in the canonical RFC 2046 form.
+func assembleMultipart(parts [][]byte, idx int, newPart, delim []byte) []byte {
+	var out bytes.Buffer
+	for i, p := range parts {
+		out.Write(delim)
+		out.WriteString("\r\n")
+		if i == idx {
+			out.Write(newPart)
+		} else {
+			out.Write(p)
+		}
+		if !bytes.HasSuffix(out.Bytes(), []byte("\r\n")) {
+			out.WriteString("\r\n")
+		}
+	}
+	out.Write(delim)
+	out.WriteString("--\r\n")
+	return out.Bytes()
+}
+
+// buildReplacementPart returns the byte form of a freshly-rendered
+// text/plain MIME leaf carrying replacement as its body.
+func buildReplacementPart(replacement []byte) []byte {
+	var out bytes.Buffer
+	out.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+	out.WriteString("\r\n")
+	out.Write(replacement)
+	if !bytes.HasSuffix(replacement, []byte("\r\n")) {
+		out.WriteString("\r\n")
+	}
+	return out.Bytes()
+}
+
+// readBoundary extracts the boundary parameter from a Content-Type
+// header in the supplied header section. Returns "" when no
+// Content-Type carries a boundary.
+func readBoundary(headerSection []byte) string {
+	ct := readHeader(headerSection, "Content-Type")
+	if ct == "" {
+		return ""
+	}
+	// Find boundary= parameter; strip surrounding quotes if any.
+	lower := strings.ToLower(ct)
+	idx := strings.Index(lower, "boundary=")
+	if idx < 0 {
+		return ""
+	}
+	rest := ct[idx+len("boundary="):]
+	if rest == "" {
+		return ""
+	}
+	if rest[0] == '"' {
+		end := strings.IndexByte(rest[1:], '"')
+		if end < 0 {
+			return ""
+		}
+		return rest[1 : 1+end]
+	}
+	// Bare boundary token: ends at next ; or whitespace.
+	end := strings.IndexAny(rest, "; \t")
+	if end < 0 {
+		return rest
+	}
+	return rest[:end]
 }
 
 // applyEnclose wraps raw in a multipart/mixed container whose first

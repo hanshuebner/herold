@@ -149,6 +149,118 @@ func TestApplyMutations_AddThenDeleteSameHeader(t *testing.T) {
 	}
 }
 
+func TestApplyMutations_Replace_PerLeaf_TopLevelMultipart(t *testing.T) {
+	// A replace with ReplacePartPath = [1] targets the second leaf of
+	// the message-level multipart. The first leaf (and the headers
+	// of the outer message) must be preserved verbatim.
+	const raw = "From: alice@example.com\r\n" +
+		"Subject: outer\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"BND\"\r\n" +
+		"\r\n" +
+		"--BND\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"first leaf body\r\n" +
+		"--BND\r\n" +
+		"Content-Type: application/x-evil\r\n" +
+		"\r\n" +
+		"malicious payload\r\n" +
+		"--BND--\r\n"
+	out := Outcome{Actions: []Action{{
+		Kind:            ActionReplace,
+		ReplaceBody:     []byte("[scrubbed]"),
+		ReplacePartPath: []int{1},
+	}}}
+	got, err := ApplyMutations([]byte(raw), out)
+	if err != nil {
+		t.Fatalf("ApplyMutations: %v", err)
+	}
+	gs := string(got)
+	if !strings.Contains(gs, "first leaf body") {
+		t.Errorf("first leaf must survive per-leaf replace: %q", gs)
+	}
+	if strings.Contains(gs, "malicious payload") {
+		t.Errorf("targeted leaf must be removed: %q", gs)
+	}
+	if !strings.Contains(gs, "[scrubbed]") {
+		t.Errorf("replacement body must land in the targeted slot: %q", gs)
+	}
+	if strings.Contains(gs, "application/x-evil") {
+		t.Errorf("targeted leaf's Content-Type must be replaced: %q", gs)
+	}
+	// The outer Subject must be unchanged.
+	if !strings.Contains(gs, "Subject: outer") {
+		t.Errorf("outer Subject must be preserved: %q", gs)
+	}
+}
+
+func TestApplyMutations_Replace_PerLeaf_NestedMultipart(t *testing.T) {
+	// ReplacePartPath = [0, 1] targets the second leaf inside the
+	// first child of the outer multipart — i.e. the text/html part
+	// inside multipart/alternative.
+	const raw = "Subject: nested\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"OUT\"\r\n" +
+		"\r\n" +
+		"--OUT\r\n" +
+		"Content-Type: multipart/alternative; boundary=\"IN\"\r\n" +
+		"\r\n" +
+		"--IN\r\n" +
+		"Content-Type: text/plain\r\n" +
+		"\r\n" +
+		"plain alt\r\n" +
+		"--IN\r\n" +
+		"Content-Type: text/html\r\n" +
+		"\r\n" +
+		"<p>html alt</p>\r\n" +
+		"--IN--\r\n" +
+		"--OUT\r\n" +
+		"Content-Type: application/pdf\r\n" +
+		"\r\n" +
+		"pdfbody\r\n" +
+		"--OUT--\r\n"
+	out := Outcome{Actions: []Action{{
+		Kind:            ActionReplace,
+		ReplaceBody:     []byte("[stripped html]"),
+		ReplacePartPath: []int{0, 1},
+	}}}
+	got, err := ApplyMutations([]byte(raw), out)
+	if err != nil {
+		t.Fatalf("ApplyMutations: %v", err)
+	}
+	gs := string(got)
+	if !strings.Contains(gs, "plain alt") {
+		t.Errorf("sibling leaf must survive: %q", gs)
+	}
+	if !strings.Contains(gs, "pdfbody") {
+		t.Errorf("outer-sibling pdf leaf must survive: %q", gs)
+	}
+	if strings.Contains(gs, "<p>html alt</p>") {
+		t.Errorf("targeted html leaf must be replaced: %q", gs)
+	}
+	if !strings.Contains(gs, "[stripped html]") {
+		t.Errorf("replacement body must land: %q", gs)
+	}
+}
+
+func TestApplyMutations_Replace_PerLeaf_OutOfRange_FallsBackToTopLevel(t *testing.T) {
+	// When the path doesn't resolve, applyReplace degrades to the
+	// top-level body rewrite rather than dropping the script's
+	// intent.
+	out := Outcome{Actions: []Action{{
+		Kind:            ActionReplace,
+		ReplaceBody:     []byte("fallback"),
+		ReplacePartPath: []int{99},
+	}}}
+	got, err := ApplyMutations([]byte(baseRawMsg), out)
+	if err != nil {
+		t.Fatalf("ApplyMutations: %v", err)
+	}
+	if !strings.Contains(string(got), "fallback") {
+		t.Errorf("fallback must rewrite the body: %q", got)
+	}
+}
+
 func TestApplyMutations_NoHeaderBoundary_Errors(t *testing.T) {
 	in := "no separator here at all"
 	out := Outcome{Actions: []Action{{Kind: ActionAddHeader, HeaderName: "X", HeaderValue: "y"}}}

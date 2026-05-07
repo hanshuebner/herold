@@ -32,17 +32,23 @@
 //     encoded-character (5228), editheader (5293), duplicate (7352),
 //     spamtest/spamtestplus (5235), extlists (6134, :list placeholder),
 //     enotify (5435) mailto-only.
-//   - Phase 1.5: foreverypart (5703) iteration + break, extracttext
-//     (5703) into variables, and the :mime / :anychild flags on
-//     header / address / exists tests so scripts can read per-part
-//     MIME headers from inside a foreverypart loop. :anychild walks
-//     every descendant part of the iteration scope and passes if any
-//     matches. replace and enclose (5703 §4.3, §4.4) emit
-//     ActionReplace / ActionEnclose; ApplyMutations renders the
-//     resulting bytes against the original raw message and the SMTP
-//     delivery path re-blobs + re-parses the result before storage.
-//     editheader (RFC 5293) addheader / deleteheader land through the
-//     same ApplyMutations pipeline.
+//   - Phase 1.5+: foreverypart (5703) iterates over every descendant
+//     of the current iteration scope (depth-first, leaves AND multipart
+//     container nodes), with nested foreverypart re-scoping to the
+//     outer loop's currentPart. :name on foreverypart and break :name
+//     let scripts target outer loops from inside nested ones.
+//     extracttext (5703) writes into variables; :first caps the
+//     stored length. The :mime / :anychild flags on header / address
+//     / exists tests route the lookup to the current part's headers
+//     (and, with :anychild, to every descendant part's headers as
+//     well). replace and enclose (5703 §4.3, §4.4) emit ActionReplace
+//     / ActionEnclose; replace inside foreverypart targets only the
+//     iterated leaf via a recorded part-path, while top-level replace
+//     rewrites the message body. ApplyMutations renders the resulting
+//     bytes against the original raw message and the SMTP delivery
+//     path re-blobs + re-parses the result before storage. editheader
+//     (RFC 5293) addheader / deleteheader land through the same
+//     ApplyMutations pipeline.
 //
 // ManageSieve (RFC 5804) lives in internal/protomanagesieve; this package
 // is intentionally transport-agnostic.
