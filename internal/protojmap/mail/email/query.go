@@ -735,7 +735,7 @@ func buildFTSQuery(f *emailFilter) store.Query {
 	// Body: is handled via blob-parsing (buildFilterData / filterData.blobBodyText)
 	// rather than FTS, so it is intentionally omitted here.
 	if f.Cc != nil {
-		q.To = append(q.To, *f.Cc)
+		q.Cc = []string{*f.Cc}
 	}
 	return q
 }

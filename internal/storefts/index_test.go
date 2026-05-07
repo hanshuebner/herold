@@ -132,6 +132,63 @@ func TestIndexQuery_BodyTerm(t *testing.T) {
 	}
 }
 
+// TestIndexQuery_CcFilter pins the regression where Index.Query built
+// no Bleve conjunct for the cc field (q.Cc was indexed but never read
+// at query time), so JMAP Email/query with a cc filter silently
+// returned [].
+func TestIndexQuery_CcFilter(t *testing.T) {
+	idx := newIndex(t)
+	ctx := context.Background()
+	principalID := store.PrincipalID(7)
+	mailboxID := store.MailboxID(3)
+
+	// Two messages: one with eve in cc only (must match q.Cc), and
+	// one with eve in to only (must NOT match q.Cc).
+	cases := []struct {
+		id store.MessageID
+		to string
+		cc string
+	}{
+		{1, "alice@example.com", "eve@example.com"},
+		{2, "eve@example.com", "alice@example.com"},
+	}
+	for _, c := range cases {
+		msg := store.Message{
+			ID:           c.id,
+			MailboxID:    mailboxID,
+			UID:          store.UID(c.id),
+			InternalDate: time.Date(2026, 5, int(c.id), 12, 0, 0, 0, time.UTC),
+			Envelope: store.Envelope{
+				Subject: "subject " + string(rune('a'-1+c.id)),
+				From:    "carol@example.com",
+				To:      c.to,
+				Cc:      c.cc,
+			},
+		}
+		if err := idx.IndexMessageFull(ctx, principalID, msg, "body"); err != nil {
+			t.Fatalf("index %d: %v", c.id, err)
+		}
+	}
+	if err := idx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	hits, err := idx.Query(ctx, principalID, store.Query{Cc: []string{"eve"}})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	got := map[store.MessageID]bool{}
+	for _, h := range hits {
+		got[h.MessageID] = true
+	}
+	if !got[1] {
+		t.Errorf("Cc filter must match message 1 (eve in cc): got %+v", hits)
+	}
+	if got[2] {
+		t.Errorf("Cc filter must NOT match message 2 (eve in to only): got %+v", hits)
+	}
+}
+
 func TestIndexQuery_FromFilter(t *testing.T) {
 	idx := newIndex(t)
 	principalID, _, _ := seedIndex(t, idx)

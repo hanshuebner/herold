@@ -128,6 +128,7 @@ func collectTerms(q store.Query) []string {
 	out = append(out, q.Subject...)
 	out = append(out, q.From...)
 	out = append(out, q.To...)
+	out = append(out, q.Cc...)
 	out = append(out, q.Body...)
 	out = append(out, q.AttachmentName...)
 	// Deduplicate to keep WHERE clauses short.

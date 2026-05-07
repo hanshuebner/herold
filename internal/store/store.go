@@ -1647,11 +1647,12 @@ type Query struct {
 	MailboxID MailboxID
 	// Text is a free-text search across all indexed fields.
 	Text string
-	// Subject, From, To, Body, AttachmentName are per-field term lists.
-	// Nil or empty slices are ignored.
+	// Subject, From, To, Cc, Body, AttachmentName are per-field term
+	// lists. Nil or empty slices are ignored.
 	Subject        []string
 	From           []string
 	To             []string
+	Cc             []string
 	Body           []string
 	AttachmentName []string
 	// Limit caps the result set. 0 means "backend default" (typically

@@ -512,6 +512,7 @@ func (i *Index) Query(
 	conjuncts = appendFieldQueries(conjuncts, fieldSubject, q.Subject)
 	conjuncts = appendFieldQueries(conjuncts, fieldFrom, q.From)
 	conjuncts = appendFieldQueries(conjuncts, fieldTo, q.To)
+	conjuncts = appendFieldQueries(conjuncts, fieldCc, q.Cc)
 	conjuncts = appendFieldQueries(conjuncts, fieldBody, q.Body)
 	conjuncts = appendFieldQueries(conjuncts, fieldAttachmentName, q.AttachmentName)
 
