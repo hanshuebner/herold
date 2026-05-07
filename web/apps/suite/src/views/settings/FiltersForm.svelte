@@ -26,6 +26,7 @@
     type ActionKind,
   } from '../../lib/settings/managed-rules.svelte';
   import { filterLike } from '../../lib/settings/filter-like.svelte';
+  import { t } from '../../lib/i18n/i18n.svelte';
 
   $effect(() => {
     if (managedRules.loadStatus === 'idle') {
@@ -113,28 +114,28 @@
 
   // ── Conditions ───────────────────────────────────────────────────────────
 
-  const CONDITION_FIELDS: { value: ConditionField; label: string }[] = [
-    { value: 'from', label: 'From' },
-    { value: 'to', label: 'To' },
-    { value: 'subject', label: 'Subject' },
-    { value: 'from-domain', label: 'From domain' },
-    { value: 'has-attachment', label: 'Has attachment' },
-    { value: 'thread-id', label: 'Thread ID' },
-  ];
+  let CONDITION_FIELDS = $derived<{ value: ConditionField; label: string }[]>([
+    { value: 'from', label: t('settings.filters.field.from') },
+    { value: 'to', label: t('settings.filters.field.to') },
+    { value: 'subject', label: t('settings.filters.field.subject') },
+    { value: 'from-domain', label: t('settings.filters.field.fromDomain') },
+    { value: 'has-attachment', label: t('settings.filters.field.hasAttachment') },
+    { value: 'thread-id', label: t('settings.filters.field.threadId') },
+  ]);
 
-  const CONDITION_OPS: { value: ConditionOp; label: string }[] = [
-    { value: 'contains', label: 'contains' },
-    { value: 'equals', label: 'equals' },
-    { value: 'wildcard-match', label: 'matches wildcard' },
-  ];
+  let CONDITION_OPS = $derived<{ value: ConditionOp; label: string }[]>([
+    { value: 'contains', label: t('settings.filters.op.contains') },
+    { value: 'equals', label: t('settings.filters.op.equals') },
+    { value: 'wildcard-match', label: t('settings.filters.op.wildcard') },
+  ]);
 
-  const ACTION_KINDS: { value: ActionKind; label: string }[] = [
-    { value: 'skip-inbox', label: 'Skip inbox (archive on arrival)' },
-    { value: 'mark-read', label: 'Mark as read' },
-    { value: 'apply-label', label: 'Apply label' },
-    { value: 'delete', label: 'Move to Trash' },
-    { value: 'forward', label: 'Forward to address' },
-  ];
+  let ACTION_KINDS = $derived<{ value: ActionKind; label: string }[]>([
+    { value: 'skip-inbox', label: t('settings.filters.action.skipInbox') },
+    { value: 'mark-read', label: t('settings.filters.action.markRead') },
+    { value: 'apply-label', label: t('settings.filters.action.applyLabel') },
+    { value: 'delete', label: t('settings.filters.action.delete') },
+    { value: 'forward', label: t('settings.filters.action.forward') },
+  ]);
 
   function addCondition(): void {
     editConditions = [...editConditions, { field: 'from', op: 'contains', value: '' }];
@@ -190,31 +191,30 @@
 
   function validate(): boolean {
     if (editConditions.length === 0) {
-      validationError = 'At least one condition is required.';
+      validationError = t('settings.filters.errMinCondition');
       return false;
     }
     if (editActions.length === 0) {
-      validationError = 'At least one action is required.';
+      validationError = t('settings.filters.errMinAction');
       return false;
     }
     if (hasDeleteApplyLabelConflict(editActions)) {
-      validationError =
-        '"Move to Trash" and "Apply label" cannot be combined: the delete action short-circuits and the label is never applied.';
+      validationError = t('settings.filters.errDeleteApplyLabel');
       return false;
     }
     for (const c of editConditions) {
       if (c.field !== 'has-attachment' && !c.value.trim()) {
-        validationError = 'All condition values must be non-empty.';
+        validationError = t('settings.filters.errEmptyValue');
         return false;
       }
     }
     for (const a of editActions) {
       if (a.kind === 'forward' && !String(a.params?.to ?? '').trim()) {
-        validationError = 'Forward address is required.';
+        validationError = t('settings.filters.errForwardRequired');
         return false;
       }
       if (a.kind === 'apply-label' && !String(a.params?.label ?? '').trim()) {
-        validationError = 'Label name is required for Apply label action.';
+        validationError = t('settings.filters.errLabelRequired');
         return false;
       }
     }
@@ -243,13 +243,13 @@
         const created = await managedRules.create(payload);
         if (created) {
           cancelEditor();
-          toast.show({ message: 'Filter created' });
+          toast.show({ message: t('settings.filters.created') });
         }
       } else if (editorMode === 'edit' && editingRuleId) {
         const ok = await managedRules.update(editingRuleId, payload);
         if (ok) {
           cancelEditor();
-          toast.show({ message: 'Filter updated' });
+          toast.show({ message: t('settings.filters.updated') });
         }
       }
     } finally {
@@ -323,24 +323,27 @@
   // ── Summary helpers ───────────────────────────────────────────────────────
 
   function conditionSummary(conditions: RuleCondition[]): string {
-    if (conditions.length === 0) return '(no conditions)';
+    if (conditions.length === 0) return t('settings.filters.summaryNoConditions');
     return conditions
       .map((c) => {
-        if (c.field === 'has-attachment') return 'has attachment';
+        if (c.field === 'has-attachment') return t('settings.filters.summaryHasAttachment');
         const fieldLabel =
           CONDITION_FIELDS.find((f) => f.value === c.field)?.label ?? c.field;
-        return `${fieldLabel} ${c.op} "${c.value}"`;
+        const opLabel = CONDITION_OPS.find((o) => o.value === c.op)?.label ?? c.op;
+        return `${fieldLabel} ${opLabel} "${c.value}"`;
       })
       .join(', ');
   }
 
   function actionSummary(actions: RuleAction[]): string {
-    if (actions.length === 0) return '(no actions)';
+    if (actions.length === 0) return t('settings.filters.summaryNoActions');
     return actions
       .map((a) => {
         const label = ACTION_KINDS.find((k) => k.value === a.kind)?.label ?? a.kind;
-        if (a.kind === 'apply-label') return `Apply label: ${a.params?.label ?? '?'}`;
-        if (a.kind === 'forward') return `Forward to: ${a.params?.to ?? '?'}`;
+        if (a.kind === 'apply-label')
+          return t('settings.filters.summaryApplyLabel', { label: String(a.params?.label ?? '?') });
+        if (a.kind === 'forward')
+          return t('settings.filters.summaryForward', { to: String(a.params?.to ?? '?') });
         return label;
       })
       .join(', ');
@@ -351,30 +354,27 @@
 </script>
 
 {#if managedRules.loadStatus === 'loading' || managedRules.loadStatus === 'idle'}
-  <p class="hint">Loading filters…</p>
+  <p class="hint">{t('settings.filters.loading')}</p>
 {:else if managedRules.loadStatus === 'error'}
   <p class="error" role="alert">{managedRules.loadError}</p>
-  <button type="button" onclick={() => void managedRules.load(true)}>Retry</button>
+  <button type="button" onclick={() => void managedRules.load(true)}>{t('common.retry')}</button>
 {:else}
   <!-- ── Filters list ─────────────────────────────────────────────────── -->
 
   <section class="form-section">
     <div class="section-header">
-      <h3>Filters</h3>
+      <h3>{t('settings.filters.heading2')}</h3>
       <button type="button" class="small-btn" onclick={() => openCreate()}>
-        Create filter
+        {t('settings.filters.create')}
       </button>
     </div>
 
     <p class="hint">
-      Filters run on incoming mail in order (lowest order first). AND combines
-      multiple conditions. The raw Sieve editor in "Mail" settings works
-      alongside these structured filters; both sources coexist without
-      interfering.
+      {t('settings.filters.intro')}
     </p>
 
     {#if filterRules.length === 0}
-      <p class="muted">No filters yet.</p>
+      <p class="muted">{t('settings.filters.empty')}</p>
     {:else}
       <ul class="rule-list">
         {#each filterRules as rule, i (rule.id)}
@@ -383,7 +383,7 @@
               <button
                 type="button"
                 class="icon-btn"
-                aria-label="Move filter up"
+                aria-label={t('settings.filters.moveUp')}
                 disabled={i === 0}
                 onclick={() => void moveRuleUp(rule)}
               >
@@ -392,7 +392,7 @@
               <button
                 type="button"
                 class="icon-btn"
-                aria-label="Move filter down"
+                aria-label={t('settings.filters.moveDown')}
                 disabled={i === filterRules.length - 1}
                 onclick={() => void moveRuleDown(rule)}
               >
@@ -400,7 +400,7 @@
               </button>
             </div>
 
-            <label class="switch" title={rule.enabled ? 'Enabled' : 'Disabled'}>
+            <label class="switch" title={rule.enabled ? t('settings.filters.enabled') : t('settings.filters.disabled')}>
               <input
                 type="checkbox"
                 checked={rule.enabled}
@@ -414,9 +414,12 @@
             </label>
 
             <div class="rule-summary">
-              <span class="rule-name">{rule.name || '(unnamed)'}</span>
+              <span class="rule-name">{rule.name || t('settings.filters.unnamed')}</span>
               <span class="rule-detail">
-                If {conditionSummary(rule.conditions)} &rarr; {actionSummary(rule.actions)}
+                {t('settings.filters.summaryIf', {
+                  conditions: conditionSummary(rule.conditions),
+                  actions: actionSummary(rule.actions),
+                })}
               </span>
             </div>
 
@@ -426,23 +429,23 @@
                 class="small-btn"
                 onclick={() => openEdit(rule)}
               >
-                Edit
+                {t('settings.filters.editBtn')}
               </button>
               {#if deleteConfirmId === rule.id}
                 <span class="confirm-delete">
-                  Delete this filter?
+                  {t('settings.filters.confirmDelete')}
                   <button type="button" class="small-btn danger" onclick={() => void confirmDelete()}>
-                    Delete
+                    {t('settings.filters.deleteBtn')}
                   </button>
                   <button type="button" class="small-btn" onclick={cancelDelete}>
-                    Cancel
+                    {t('common.cancel')}
                   </button>
                 </span>
               {:else}
                 <button
                   type="button"
                   class="icon-btn danger"
-                  aria-label="Delete filter"
+                  aria-label={t('settings.filters.deleteAria')}
                   disabled={deletingId === rule.id}
                   onclick={() => requestDelete(rule.id)}
                 >
@@ -460,35 +463,35 @@
 
   {#if editorMode !== 'none'}
     <section class="form-section editor">
-      <h3>{editorMode === 'create' ? 'Create filter' : 'Edit filter'}</h3>
+      <h3>{editorMode === 'create' ? t('settings.filters.create') : t('settings.filters.edit')}</h3>
 
       <div class="field-row">
         <label>
-          <span class="field-label">Name <span class="muted">(optional)</span></span>
+          <span class="field-label">{t('settings.filters.nameLabel')} <span class="muted">{t('settings.filters.nameOptional')}</span></span>
           <input
             type="text"
             bind:value={editName}
-            placeholder="My filter"
+            placeholder={t('settings.filters.namePlaceholder')}
             autocomplete="off"
           />
         </label>
         <label class="inline-check">
           <input type="checkbox" bind:checked={editEnabled} />
-          <span>Enabled</span>
+          <span>{t('settings.filters.enabledCheckbox')}</span>
         </label>
       </div>
 
       <!-- Conditions -->
       <div class="subsection">
         <div class="subsection-header">
-          <span class="subsection-title">Conditions (AND combined)</span>
+          <span class="subsection-title">{t('settings.filters.conditionsHeading')}</span>
           <button type="button" class="small-btn" onclick={addCondition}>
-            Add condition
+            {t('settings.filters.addCondition')}
           </button>
         </div>
 
         {#if editConditions.length === 0}
-          <p class="muted">No conditions — matches all mail.</p>
+          <p class="muted">{t('settings.filters.noConditions')}</p>
         {:else}
           <ul class="cond-list">
             {#each editConditions as cond, i (i)}
@@ -497,7 +500,7 @@
                   value={cond.field}
                   onchange={(e) =>
                     setConditionField(i, (e.currentTarget as HTMLSelectElement).value as ConditionField)}
-                  aria-label="Condition field"
+                  aria-label={t('settings.filters.conditionField')}
                 >
                   {#each CONDITION_FIELDS as f (f.value)}
                     <option value={f.value}>{f.label}</option>
@@ -509,7 +512,7 @@
                     value={cond.op}
                     onchange={(e) =>
                       setConditionOp(i, (e.currentTarget as HTMLSelectElement).value as ConditionOp)}
-                    aria-label="Condition operator"
+                    aria-label={t('settings.filters.conditionOperator')}
                   >
                     {#each CONDITION_OPS as op (op.value)}
                       <option value={op.value}>{op.label}</option>
@@ -521,17 +524,17 @@
                     value={cond.value}
                     oninput={(e) =>
                       setConditionValue(i, (e.currentTarget as HTMLInputElement).value)}
-                    placeholder={cond.field === 'from' ? 'user@example.com or *@example.com' : ''}
-                    aria-label="Condition value"
+                    placeholder={cond.field === 'from' ? t('settings.filters.fromPlaceholder') : ''}
+                    aria-label={t('settings.filters.conditionValue')}
                   />
                 {:else}
-                  <span class="cond-bool">(boolean — matches messages with attachments)</span>
+                  <span class="cond-bool">{t('settings.filters.boolHasAttachment')}</span>
                 {/if}
 
                 <button
                   type="button"
                   class="icon-btn danger"
-                  aria-label="Remove condition"
+                  aria-label={t('settings.filters.removeCondition')}
                   onclick={() => removeCondition(i)}
                 >
                   &#10005;
@@ -545,14 +548,14 @@
       <!-- Actions -->
       <div class="subsection">
         <div class="subsection-header">
-          <span class="subsection-title">Actions</span>
+          <span class="subsection-title">{t('settings.filters.actionsHeading')}</span>
           <button type="button" class="small-btn" onclick={addAction}>
-            Add action
+            {t('settings.filters.addAction')}
           </button>
         </div>
 
         {#if editActions.length === 0}
-          <p class="muted">No actions — filter matches but does nothing.</p>
+          <p class="muted">{t('settings.filters.noActions')}</p>
         {:else}
           <ul class="action-list">
             {#each editActions as action, i (i)}
@@ -561,7 +564,7 @@
                   value={action.kind}
                   onchange={(e) =>
                     setActionKind(i, (e.currentTarget as HTMLSelectElement).value as ActionKind)}
-                  aria-label="Action kind"
+                  aria-label={t('settings.filters.actionKind')}
                 >
                   {#each ACTION_KINDS as k (k.value)}
                     <option value={k.value}>{k.label}</option>
@@ -574,8 +577,8 @@
                     value={String(action.params?.label ?? '')}
                     oninput={(e) =>
                       setActionParam(i, 'label', (e.currentTarget as HTMLInputElement).value)}
-                    placeholder="Label name"
-                    aria-label="Label name"
+                    placeholder={t('settings.filters.labelName')}
+                    aria-label={t('settings.filters.labelName')}
                   />
                 {:else if action.kind === 'forward'}
                   <input
@@ -583,15 +586,15 @@
                     value={String(action.params?.to ?? '')}
                     oninput={(e) =>
                       setActionParam(i, 'to', (e.currentTarget as HTMLInputElement).value)}
-                    placeholder="forward@example.com"
-                    aria-label="Forward address"
+                    placeholder={t('settings.filters.forwardPlaceholder')}
+                    aria-label={t('settings.filters.forwardAddress')}
                   />
                 {/if}
 
                 <button
                   type="button"
                   class="icon-btn danger"
-                  aria-label="Remove action"
+                  aria-label={t('settings.filters.removeAction')}
                   onclick={() => removeAction(i)}
                 >
                   &#10005;
@@ -615,11 +618,13 @@
           onclick={() => void runTest()}
           disabled={testRunning || editConditions.length === 0}
         >
-          {testRunning ? 'Testing…' : 'Test against existing mail'}
+          {testRunning ? t('settings.filters.testing') : t('settings.filters.test')}
         </button>
         {#if testCount !== null}
           <span class="test-result">
-            Matches {testCount} thread{testCount === 1 ? '' : 's'} in your mailbox.
+            {testCount === 1
+              ? t('settings.filters.testResultOne', { count: testCount })
+              : t('settings.filters.testResult', { count: testCount })}
           </span>
         {/if}
       </div>
@@ -632,10 +637,14 @@
           onclick={() => void saveRule()}
           disabled={saving}
         >
-          {saving ? 'Saving…' : editorMode === 'create' ? 'Create filter' : 'Save filter'}
+          {saving
+            ? t('common.saving')
+            : editorMode === 'create'
+              ? t('settings.filters.create')
+              : t('settings.filters.save')}
         </button>
         <button type="button" onclick={cancelEditor}>
-          Cancel
+          {t('common.cancel')}
         </button>
       </div>
     </section>
@@ -644,14 +653,13 @@
   <!-- ── Blocked senders ────────────────────────────────────────────────── -->
 
   <section class="form-section">
-    <h3>Blocked senders</h3>
+    <h3>{t('settings.filters.blockedHeading')}</h3>
     <p class="hint">
-      Messages from blocked senders are moved to Trash on arrival. To block a
-      sender, use the "Block sender" option in the per-message menu.
+      {t('settings.filters.blockedHint')}
     </p>
 
     {#if blockedSenderRules.length === 0}
-      <p class="muted">No senders blocked.</p>
+      <p class="muted">{t('settings.filters.blockedEmpty')}</p>
     {:else}
       <ul class="blocked-list">
         {#each blockedSenderRules as rule (rule.id)}
@@ -663,7 +671,7 @@
               class="small-btn"
               onclick={() => void managedRules.unblockSender(addr ?? '')}
             >
-              Unblock
+              {t('settings.filters.unblock')}
             </button>
           </li>
         {/each}

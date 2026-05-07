@@ -10,6 +10,7 @@
   import { Capability } from '../../lib/jmap/types';
   import { mail } from '../../lib/mail/store.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
+  import { t } from '../../lib/i18n/i18n.svelte';
 
   interface SieveScript {
     id: string;
@@ -40,7 +41,7 @@
     const accountId = mail.mailAccountId;
     if (!accountId) {
       status = 'error';
-      error = 'No Mail account on this session';
+      error = t('settings.sieve.noAccount');
       return;
     }
     status = 'loading';
@@ -78,7 +79,7 @@
       status = 'ready';
     } catch (err) {
       status = 'error';
-      error = err instanceof Error ? err.message : 'Failed to load Sieve script';
+      error = err instanceof Error ? err.message : t('settings.sieve.loadFailed');
     }
   }
 
@@ -147,7 +148,7 @@
           validationErrors = failure.sieveValidationErrors;
         }
         toast.show({
-          message: failure.description ?? `Save failed: ${failure.type}`,
+          message: failure.description ?? t('settings.sieve.saveFailedReason', { reason: failure.type }),
           kind: 'error',
           timeoutMs: 6000,
         });
@@ -157,10 +158,10 @@
       const updated = result.updated?.[scriptId ?? ''];
       if (created) scriptId = created.id;
       else if (updated) scriptId = updated.id;
-      toast.show({ message: 'Sieve script saved' });
+      toast.show({ message: t('settings.sieve.saved') });
     } catch (err) {
       toast.show({
-        message: err instanceof Error ? err.message : 'Save failed',
+        message: err instanceof Error ? err.message : t('settings.sieve.saveFailed'),
         kind: 'error',
         timeoutMs: 6000,
       });
@@ -171,34 +172,30 @@
 </script>
 
 {#if status === 'loading' || status === 'idle'}
-  <p class="hint">Loading…</p>
+  <p class="hint">{t('common.loading')}</p>
 {:else if status === 'error'}
   <p class="error" role="alert">{error}</p>
-  <button type="button" onclick={() => void load()}>Retry</button>
+  <button type="button" onclick={() => void load()}>{t('common.retry')}</button>
 {:else}
   <p class="hint">
-    Sieve scripts run server-side on incoming mail. Phase 1 ships a single
-    active script per account; the editor below is the raw RFC 5228 / 9007
-    source. See <a
-      href="https://datatracker.ietf.org/doc/html/rfc5228"
-      target="_blank"
-      rel="noopener noreferrer">RFC 5228</a
-    > for the language.
+    {@html t('settings.sieve.intro', {
+      rfcLink: `<a href="https://datatracker.ietf.org/doc/html/rfc5228" target="_blank" rel="noopener noreferrer">${t('settings.sieve.rfcLinkLabel')}</a>`,
+    })}
   </p>
 
   <div class="row vertical">
-    <span class="label">Name</span>
+    <span class="label">{t('settings.sieve.name')}</span>
     <input
       type="text"
       bind:value={scriptName}
-      placeholder="default"
+      placeholder={t('settings.sieve.namePlaceholder')}
       autocomplete="off"
       spellcheck="false"
     />
   </div>
 
   <div class="row vertical">
-    <span class="label">Script</span>
+    <span class="label">{t('settings.sieve.script')}</span>
     <textarea
       class="sieve-body"
       bind:value={body}
@@ -211,7 +208,7 @@
 
   {#if validationErrors.length > 0}
     <div class="validation" role="alert">
-      <p>Sieve validation errors:</p>
+      <p>{t('settings.sieve.validationHeading')}</p>
       <ul>
         {#each validationErrors as e}
           <li>
@@ -225,7 +222,7 @@
   <div class="row">
     <span class="label"></span>
     <button type="button" class="primary" onclick={() => void save()} disabled={saving}>
-      {saving ? 'Saving…' : 'Save'}
+      {saving ? t('common.saving') : t('common.save')}
     </button>
   </div>
 {/if}

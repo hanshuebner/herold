@@ -20,6 +20,7 @@
    */
 
   import { onDestroy } from 'svelte';
+  import { t } from '../../lib/i18n/i18n.svelte';
 
   interface Props {
     open: boolean;
@@ -84,7 +85,7 @@
     } catch (err) {
       console.error('AvatarCaptureDialog: getUserMedia failed', err);
       cameraError =
-        err instanceof Error ? err.message : 'Camera unavailable';
+        err instanceof Error ? err.message : t('settings.avatar.capture.cameraUnavailable');
       mediaStream = null;
     }
   }
@@ -113,7 +114,7 @@
     canvas.height = h;
     const ctx = canvas.getContext('2d');
     if (!ctx) {
-      cameraError = 'Snapshot failed: no 2D context';
+      cameraError = t('settings.avatar.capture.snapshotFailedNoCtx');
       phase = 'choose';
       return;
     }
@@ -134,7 +135,7 @@
             'AvatarCaptureDialog: canvas.toBlob returned null (canvas tainted or quota?)',
             { width: w, height: h },
           );
-          cameraError = 'Snapshot failed: empty canvas';
+          cameraError = t('settings.avatar.capture.snapshotFailedEmpty');
           phase = 'choose';
           return;
         }
@@ -195,7 +196,7 @@
     revokeSourceUrl();
     if (blob.size === 0) {
       console.error('[AvatarCapture] empty blob', { type: blob.type });
-      cameraError = 'Could not decode image: the file is empty';
+      cameraError = t('settings.avatar.capture.emptyFile');
       phase = 'choose';
       return;
     }
@@ -240,8 +241,8 @@
       URL.revokeObjectURL(url);
       cameraError =
         err instanceof Error
-          ? `Could not decode image: ${err.message}`
-          : 'Could not decode image';
+          ? t('settings.avatar.capture.decodeFailedReason', { reason: err.message })
+          : t('settings.avatar.capture.decodeFailed');
       phase = 'choose';
     }
   }
@@ -437,13 +438,13 @@
     class="modal-backdrop"
     role="dialog"
     aria-modal="true"
-    aria-label="Choose profile picture"
+    aria-label={t('settings.avatar.capture.title')}
     tabindex="-1"
     onkeydown={(e) => { if (e.key === 'Escape') handleCancel(); }}
   >
     <div class="modal">
       {#if phase === 'choose'}
-        <h3 class="title">Choose profile picture</h3>
+        <h3 class="title">{t('settings.avatar.capture.title')}</h3>
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="dropzone"
@@ -452,14 +453,14 @@
           ondragover={onDragOver}
           ondragleave={onDragLeave}
         >
-          <p>Drag an image here, or pick a source:</p>
+          <p>{t('settings.avatar.capture.dropPrompt')}</p>
           <div class="source-buttons">
             <button type="button" class="primary" onclick={pickFile}>
-              Choose file
+              {t('settings.avatar.capture.chooseFile')}
             </button>
             {#if cameraSupported}
               <button type="button" class="secondary" onclick={() => void startCamera()}>
-                Take photo
+                {t('settings.avatar.capture.takePhoto')}
               </button>
             {/if}
           </div>
@@ -478,11 +479,11 @@
         />
         <div class="actions">
           <button type="button" class="secondary" onclick={handleCancel}>
-            Cancel
+            {t('common.cancel')}
           </button>
         </div>
       {:else if phase === 'preview-camera'}
-        <h3 class="title">Take photo</h3>
+        <h3 class="title">{t('settings.avatar.capture.takePhotoTitle')}</h3>
         <div class="camera-wrap">
           <!-- svelte-ignore a11y_media_has_caption -->
           <video
@@ -495,20 +496,20 @@
         </div>
         <div class="actions">
           <button type="button" class="secondary" onclick={() => { stopCamera(); phase = 'choose'; }}>
-            Back
+            {t('settings.avatar.capture.back')}
           </button>
           <button type="button" class="primary" onclick={shutter}>
-            Snapshot
+            {t('settings.avatar.capture.snapshot')}
           </button>
         </div>
       {:else if phase === 'crop' && sourceUrl}
-        <h3 class="title">Crop your picture</h3>
+        <h3 class="title">{t('settings.avatar.capture.cropTitle')}</h3>
         <div class="crop-stage">
           <img
             bind:this={imgEl}
             class="crop-img"
             src={sourceUrl}
-            alt="Source"
+            alt={t('settings.avatar.capture.sourceAlt')}
             draggable="false"
           />
           {#if overlayRect}
@@ -578,13 +579,13 @@
         </div>
         <div class="actions">
           <button type="button" class="secondary" onclick={handleCancel}>
-            Cancel
+            {t('common.cancel')}
           </button>
           <button type="button" class="ghost" onclick={resetCrop}>
-            Reset
+            {t('settings.avatar.capture.reset')}
           </button>
           <button type="button" class="primary" onclick={confirmCrop}>
-            Use this
+            {t('settings.avatar.capture.useThis')}
           </button>
         </div>
       {/if}

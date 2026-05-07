@@ -15,6 +15,7 @@
   import { hasExternalSubmission } from '../../lib/auth/capabilities';
   import { submissionStore } from '../../lib/identities/identity-submission.svelte';
   import IdentitySubmissionSection from './IdentitySubmissionSection.svelte';
+  import { t } from '../../lib/i18n/i18n.svelte';
   import type { Identity } from '../../lib/mail/types';
 
   interface Props {
@@ -78,13 +79,13 @@
 >
   <header class="dialog-header">
     <h3 id="dialog-title-{identity.id}" class="dialog-title">
-      Edit identity
+      {t('settings.identityEdit.title')}
     </h3>
     <button
       type="button"
       class="close"
       onclick={onclose}
-      aria-label="Close"
+      aria-label={t('common.close')}
     >
       ×
     </button>
