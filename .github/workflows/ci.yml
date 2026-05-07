@@ -307,20 +307,13 @@ jobs:
           # Persistent self-hosted runner: GOMODCACHE / GOCACHE pinned at
           # workflow level survive job runs naturally, no actions/cache needed.
           cache: false
-      # Wiring for these suites is conformance-fuzz-engineer's surface.
-      # Phase 0 lands the workflow; the test/interop tree is currently a
-      # Python/Docker harness with no Go packages, so `go test ./test/interop/...`
-      # exits with "no packages to test" (1). Treat the missing-Go-package
-      # state as pass; once Phase 1 wires in imaptest / Postfix-Exim /
-      # Pigeonhole / mail-auth vectors, drop the guard and let `go test`
-      # run the suite directly.
+      # The Go conformance package under test/interop/scripted runs an
+      # in-process scripted SMTP corpus and Dovecot's imaptest when its
+      # binary is on PATH. The Python/Docker interop tree is exercised
+      # by the nightly interop job (separate workflow); this lane keeps
+      # the per-PR feedback loop fast.
       - name: run conformance
-        run: |
-          if find test/interop -name '*.go' | head -1 | grep -q .; then
-            go test -count=1 ./test/interop/...
-          else
-            echo "test/interop has no Go packages yet (Phase 0 placeholder); skipping."
-          fi
+        run: go test -count=1 ./test/interop/...
 
   docker:
     name: docker (build + publish to ghcr)
