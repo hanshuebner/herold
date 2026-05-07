@@ -231,9 +231,9 @@
   </div>
 
   {#if loadStatus === 'loading'}
-    <p class="state-msg">Loading&hellip;</p>
+    <p class="state-msg">{t('contact.view.loading')}</p>
   {:else if loadStatus === 'error'}
-    <p class="state-msg error">Could not load contact.</p>
+    <p class="state-msg error">{t('contact.view.couldNotLoad')}</p>
     <button type="button" class="back-link" onclick={() => router.navigate('/mail')}>
       {t('sidebar.inbox')}
     </button>
@@ -288,7 +288,7 @@
       {:else}
         <!-- Read view with Edit button -->
         <div class="read-header">
-          <h1 class="contact-name">{contact.name || contact.emails[0] || 'Contact'}</h1>
+          <h1 class="contact-name">{contact.name || contact.emails[0] || t('contact.view.title')}</h1>
           <button
             type="button"
             class="btn-edit"
@@ -299,7 +299,7 @@
         </div>
         {#if contact.emails.length > 0}
           <section class="section">
-            <h2 class="section-title">Email</h2>
+            <h2 class="section-title">{t('contact.view.emailHeading')}</h2>
             <ul class="addr-list">
               {#each contact.emails as email (email)}
                 <li><a href="mailto:{email}">{email}</a></li>
@@ -309,7 +309,7 @@
         {/if}
         {#if contact.phones.length > 0}
           <section class="section">
-            <h2 class="section-title">{t('contact.phone.other')}</h2>
+            <h2 class="section-title">{t('contact.view.phoneHeading')}</h2>
             <ul class="addr-list">
               {#each contact.phones as p (`${p.type}:${p.number}`)}
                 <li>

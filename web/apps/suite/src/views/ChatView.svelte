@@ -21,6 +21,7 @@
   import { toast } from '../lib/toast/toast.svelte';
   import { Capability } from '../lib/jmap/types';
   import { sounds } from '../lib/notifications/sounds.svelte';
+  import { t } from '../lib/i18n/i18n.svelte';
   import ConversationList from '../lib/chat/ConversationList.svelte';
   import MessageList from '../lib/chat/MessageList.svelte';
   import ChatCompose from '../lib/chat/ChatCompose.svelte';
@@ -140,7 +141,7 @@
     // Resolve caller display name from the conversation.
     // For a DM, conv.name is the other participant's display name (server-computed).
     const conv = chat.conversations.get(frame.conversationId);
-    incomingCallerName = conv?.name ?? 'Unknown caller';
+    incomingCallerName = conv?.name ?? t('chat.unknownCaller');
 
     callId = inboundCallId;
     callPhase = 'incoming';
@@ -156,7 +157,7 @@
 <div class="chat-view">
   {#if !chatAvailable}
     <div class="unavailable">
-      <p>Chat is not configured on this server</p>
+      <p>{t('chat.unavailable')}</p>
     </div>
   {:else}
     <div class="conv-panel">
@@ -180,12 +181,12 @@
             <button
               type="button"
               class="call-btn"
-              aria-label="Start video call"
-              title="Start video call"
+              aria-label={t('chat.startVideoCall')}
+              title={t('chat.startVideoCall')}
               onclick={() => startCall(activeConversation!.id)}
               disabled={callPhase !== 'idle'}
             >
-              Call
+              {t('chat.callButton')}
             </button>
           {/if}
         </header>
@@ -201,7 +202,7 @@
         />
       {:else}
         <div class="no-selection">
-          <p>Select a conversation to start chatting</p>
+          <p>{t('chat.selectConversation')}</p>
         </div>
       {/if}
     </div>

@@ -25,24 +25,24 @@
     ApiError,
     UnauthenticatedError,
   } from '../../lib/api/client';
-  import { localeTag } from '../../lib/i18n/i18n.svelte';
+  import { localeTag, t } from '../../lib/i18n/i18n.svelte';
 
   // End-user scopes available for key creation. Sorted to match AllEndUserScopes
   // canonical order (auth/scope.go). Admin and webhook.publish are deliberately
   // omitted: the former requires AllowAdminScope acknowledgement that belongs on
   // the admin surface; the latter is an operator-issued scope for transactional
   // senders.
-  const END_USER_SCOPES: { value: string; label: string }[] = [
-    { value: 'end-user', label: 'End-user' },
-    { value: 'mail.send', label: 'Mail: send' },
-    { value: 'mail.receive', label: 'Mail: receive' },
-    { value: 'chat.read', label: 'Chat: read' },
-    { value: 'chat.write', label: 'Chat: write' },
-    { value: 'cal.read', label: 'Calendar: read' },
-    { value: 'cal.write', label: 'Calendar: write' },
-    { value: 'contacts.read', label: 'Contacts: read' },
-    { value: 'contacts.write', label: 'Contacts: write' },
-  ];
+  let END_USER_SCOPES = $derived<{ value: string; label: string }[]>([
+    { value: 'end-user', label: t('settings.apiKeys.scope.endUser') },
+    { value: 'mail.send', label: t('settings.apiKeys.scope.mailSend') },
+    { value: 'mail.receive', label: t('settings.apiKeys.scope.mailReceive') },
+    { value: 'chat.read', label: t('settings.apiKeys.scope.chatRead') },
+    { value: 'chat.write', label: t('settings.apiKeys.scope.chatWrite') },
+    { value: 'cal.read', label: t('settings.apiKeys.scope.calRead') },
+    { value: 'cal.write', label: t('settings.apiKeys.scope.calWrite') },
+    { value: 'contacts.read', label: t('settings.apiKeys.scope.contactsRead') },
+    { value: 'contacts.write', label: t('settings.apiKeys.scope.contactsWrite') },
+  ]);
 
   interface APIKeyDTO {
     id: number;
@@ -103,17 +103,17 @@
 
   async function revokeKey(id: number): Promise<void> {
     const ok = await confirm.ask({
-      title: 'Revoke this API key?',
-      message: 'Any applications using it will stop working immediately.',
-      confirmLabel: 'Revoke',
-      cancelLabel: 'Cancel',
+      title: t('settings.apiKeys.revokeTitle'),
+      message: t('settings.apiKeys.revokeMessage'),
+      confirmLabel: t('settings.apiKeys.revoke'),
+      cancelLabel: t('common.cancel'),
       kind: 'danger',
     });
     if (!ok) return;
     try {
       await del<void>(`/api/v1/api-keys/${String(id)}`);
       keys = keys.filter((k) => k.id !== id);
-      toast.show({ message: 'API key revoked.', timeoutMs: 4000 });
+      toast.show({ message: t('settings.apiKeys.revoked'), timeoutMs: 4000 });
     } catch (err) {
       toast.show({ message: errorMessage(err), kind: 'error', timeoutMs: 0 });
     }
@@ -162,7 +162,7 @@
     if (creating) return;
     const pid = auth.principalId;
     if (!pid) {
-      createError = 'Session not ready. Please reload.';
+      createError = t('settings.security.sessionNotReady');
       return;
     }
     createError = null;
@@ -226,16 +226,12 @@
      the web suite never need to create one. -->
 <div class="intro">
   <p>
-    API keys let scripts and external programs authenticate against this
-    account using <code>Authorization: Bearer hk_...</code>. They are
-    optional -- nothing in the web suite needs one. Create a key only if
-    you want to drive JMAP or the REST API from outside the browser.
+    {@html t('settings.apiKeys.intro1', {
+      bearer: '<code>Authorization: Bearer hk_...</code>',
+    })}
   </p>
   <p class="intro-hint">
-    Each key carries a fixed scope: tighten it to the smallest set of
-    permissions the script actually needs (for example, <code>mail.send</code>
-    for an outbound bot). Keys appear only once at creation time -- copy
-    them then; they cannot be retrieved later.
+    {@html t('settings.apiKeys.intro2', { mailSend: '<code>mail.send</code>' })}
   </p>
 </div>
 
@@ -243,7 +239,7 @@
 {#if revealToken}
   <div class="reveal-panel">
     <p class="reveal-warning">
-      Copy this key now. It will not be shown again.
+      {t('settings.apiKeys.copyNow')}
     </p>
     <div class="reveal-row">
       <input
@@ -252,15 +248,15 @@
         readonly
         value={revealToken}
         onclick={(e) => (e.currentTarget as HTMLInputElement).select()}
-        aria-label="New API key"
+        aria-label={t('settings.apiKeys.newKeyAria')}
       />
       <button type="button" class="btn-secondary" onclick={copyToken}>
-        {revealCopied ? 'Copied' : 'Copy'}
+        {revealCopied ? t('common.copied') : t('common.copy')}
       </button>
     </div>
     <div class="reveal-actions">
       <button type="button" class="btn-primary" onclick={dismissReveal}>
-        I have saved this key
+        {t('settings.apiKeys.savedKey')}
       </button>
     </div>
   </div>
@@ -269,23 +265,23 @@
 <!-- Create form (inline collapsible) -->
 {#if createOpen}
   <form class="create-form" onsubmit={createKey} novalidate>
-    <h3>New API key</h3>
+    <h3>{t('settings.apiKeys.heading.new')}</h3>
 
     <div class="field">
-      <label for="key-label" class="label">Label</label>
+      <label for="key-label" class="label">{t('settings.apiKeys.label')}</label>
       <input
         id="key-label"
         type="text"
         class="input"
-        placeholder="e.g. my-script"
+        placeholder={t('settings.apiKeys.labelPlaceholder')}
         bind:value={createLabel}
         disabled={creating}
       />
     </div>
 
     <div class="field">
-      <span class="label">Scopes</span>
-      <p class="hint">Select the permissions this key grants. Leave empty for mail.send only (default).</p>
+      <span class="label">{t('settings.apiKeys.scopes')}</span>
+      <p class="hint">{t('settings.apiKeys.scopesHint')}</p>
       <div class="scope-grid">
         {#each END_USER_SCOPES as scope (scope.value)}
           <label class="check-label">
@@ -307,37 +303,37 @@
 
     <div class="form-actions">
       <button type="button" class="btn-secondary" onclick={cancelCreate} disabled={creating}>
-        Cancel
+        {t('common.cancel')}
       </button>
       <button type="submit" class="btn-primary" disabled={creating}>
-        {creating ? 'Creating...' : 'Create key'}
+        {creating ? t('settings.apiKeys.creating') : t('settings.apiKeys.create')}
       </button>
     </div>
   </form>
 {:else}
   <div class="list-header">
     <button type="button" class="btn-primary" onclick={openCreate}>
-      Create new key
+      {t('settings.apiKeys.createNew')}
     </button>
   </div>
 {/if}
 
 <!-- Key list -->
 {#if listLoading}
-  <div class="spinner" role="status" aria-label="Loading API keys"></div>
+  <div class="spinner" role="status" aria-label={t('settings.apiKeys.loadingAria')}></div>
 {:else if listError}
   <p class="form-error" role="alert">{listError}</p>
 {:else if keys.length === 0}
-  <p class="muted">No API keys yet.</p>
+  <p class="muted">{t('settings.apiKeys.empty')}</p>
 {:else}
   <div class="keys-list">
     {#each keys as key (key.id)}
       <div class="key-row">
         <div class="key-info">
           <span class="key-name">{key.label}</span>
-          <span class="key-meta">Created {formatDate(key.created_at)}</span>
+          <span class="key-meta">{t('settings.apiKeys.createdAt', { date: formatDate(key.created_at) })}</span>
           {#if key.last_used_at}
-            <span class="key-meta">Last used {formatDate(key.last_used_at)}</span>
+            <span class="key-meta">{t('settings.apiKeys.lastUsed', { date: formatDate(key.last_used_at) })}</span>
           {/if}
         </div>
         <button
@@ -345,7 +341,7 @@
           class="btn-revoke"
           onclick={() => void revokeKey(key.id)}
         >
-          Revoke
+          {t('settings.apiKeys.revoke')}
         </button>
       </div>
     {/each}

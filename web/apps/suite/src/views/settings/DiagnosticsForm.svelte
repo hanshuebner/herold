@@ -54,7 +54,7 @@
       // Revert optimistic update.
       localValue = null;
       errorMessage =
-        err instanceof Error ? err.message : 'Could not save setting.';
+        err instanceof Error ? err.message : t('settings.diagnostics.saveError');
     } finally {
       busy = false;
     }

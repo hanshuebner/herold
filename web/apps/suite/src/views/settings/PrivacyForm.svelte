@@ -26,6 +26,7 @@
     setAvatarEmailMetadataEnabled,
     clearAvatarCache,
   } from '../../lib/mail/avatar-resolver.svelte';
+  import { t } from '../../lib/i18n/i18n.svelte';
 
   let saving = $state(false);
   let error = $state<string | null>(null);
@@ -131,14 +132,12 @@
 
 <div class="row">
   <div class="label-group">
-    <span class="label">Remember recently-used addresses</span>
+    <span class="label">{t('settings.privacy.seenAddressesLabel')}</span>
     <p class="hint">
-      Herold keeps a per-account history of addresses you have corresponded
-      with to supplement the recipient autocomplete. Turning this off purges
-      the history immediately and stops new entries from being added.
+      {t('settings.privacy.seenAddressesHint')}
     </p>
   </div>
-  <label class="switch" aria-label="Remember recently-used addresses">
+  <label class="switch" aria-label={t('settings.privacy.seenAddressesLabel')}>
     <input
       type="checkbox"
       checked={seenAddressesEnabled}
@@ -155,14 +154,12 @@
 
 <div class="row">
   <div class="label-group">
-    <span class="label">Look up sender avatars from email metadata (Gravatar / X-Face / Face)</span>
+    <span class="label">{t('settings.privacy.avatarLookup.label')}</span>
     <p class="hint">
-      When enabled, the suite contacts Gravatar with a one-way hash of each
-      sender's email address to fetch their picture. Disable to keep all
-      sender lookups local-only.
+      {t('settings.privacy.avatarLookup.hint')}
     </p>
   </div>
-  <label class="switch" aria-label="Look up sender avatars from email metadata">
+  <label class="switch" aria-label={t('settings.privacy.avatarLookup.label')}>
     <input
       type="checkbox"
       checked={avatarLookupEnabled}
@@ -178,23 +175,20 @@
     class="confirm-modal"
     role="dialog"
     aria-modal="true"
-    aria-label="Look up sender pictures from the public web?"
+    aria-label={t('settings.privacy.avatarLookup.confirmTitle')}
     tabindex="-1"
     onkeydown={(e) => { if (e.key === 'Escape') cancelAvatarConfirm(); }}
   >
-    <p class="confirm-title">Look up sender pictures from the public web?</p>
+    <p class="confirm-title">{t('settings.privacy.avatarLookup.confirmTitle')}</p>
     <p class="confirm-body">
-      When enabled, the suite contacts Gravatar with a one-way hash of each
-      sender's email address to fetch their picture. The sender does not see
-      this lookup, but Gravatar's logs do. The sender's email never leaves
-      your device in plaintext. You can turn this off any time.
+      {t('settings.privacy.avatarLookup.confirmBody')}
     </p>
     <div class="confirm-actions">
       <button type="button" class="btn-primary" onclick={confirmAvatarEnable}>
-        Enable lookups
+        {t('settings.privacy.avatarLookup.confirmEnable')}
       </button>
       <button type="button" class="btn-secondary" onclick={cancelAvatarConfirm}>
-        Keep local-only
+        {t('settings.privacy.avatarLookup.confirmCancel')}
       </button>
     </div>
   </div>

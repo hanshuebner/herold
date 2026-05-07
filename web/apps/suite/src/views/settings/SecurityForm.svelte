@@ -16,6 +16,7 @@
   import { toast } from '../../lib/toast/toast.svelte';
   import { confirm } from '../../lib/dialog/confirm.svelte';
   import { get, put, post, del, ApiError, UnauthenticatedError } from '../../lib/api/client';
+  import { t } from '../../lib/i18n/i18n.svelte';
 
   // --- Principal fetch ---
 
@@ -60,17 +61,17 @@
     pwError = null;
 
     if (pwNew !== pwConfirm) {
-      pwError = 'New passwords do not match.';
+      pwError = t('settings.security.passwordMismatch');
       return;
     }
     if (pwNew.length < 12) {
-      pwError = 'New password must be at least 12 characters.';
+      pwError = t('settings.security.passwordTooShort');
       return;
     }
 
     const pid = auth.principalId;
     if (!pid) {
-      pwError = 'Session not ready. Please reload.';
+      pwError = t('settings.security.sessionNotReady');
       return;
     }
 
@@ -80,13 +81,13 @@
         current_password: pwCurrent,
         new_password: pwNew,
       });
-      toast.show({ message: 'Password changed.', timeoutMs: 4000 });
+      toast.show({ message: t('settings.security.passwordChanged'), timeoutMs: 4000 });
       pwCurrent = '';
       pwNew = '';
       pwConfirm = '';
     } catch (err) {
       if (err instanceof UnauthenticatedError) {
-        pwError = 'Current password is wrong.';
+        pwError = t('settings.security.currentPasswordWrong');
       } else {
         pwError = errorMessage(err);
       }
@@ -159,7 +160,7 @@
       totpSecret = null;
       totpQrSvg = null;
       totpCode = '';
-      toast.show({ message: 'Two-factor authentication enabled.', timeoutMs: 4000 });
+      toast.show({ message: t('settings.security.twoFactorEnabledToast'), timeoutMs: 4000 });
     } catch (err) {
       totpConfirmError = errorMessage(err);
     } finally {
@@ -170,10 +171,10 @@
   async function disableTOTP(): Promise<void> {
     if (!totpDisablePassword) return;
     const ok = await confirm.ask({
-      title: 'Disable two-factor authentication?',
-      message: 'This reduces your account security.',
-      confirmLabel: 'Disable',
-      cancelLabel: 'Cancel',
+      title: t('settings.security.disable2faTitle'),
+      message: t('settings.security.disable2faMessage'),
+      confirmLabel: t('settings.security.disable2faConfirm'),
+      cancelLabel: t('common.cancel'),
       kind: 'danger',
     });
     if (!ok) return;
@@ -187,7 +188,7 @@
       });
       if (principal) principal = { ...principal, totp_enabled: false };
       totpDisablePassword = '';
-      toast.show({ message: 'Two-factor authentication disabled.', timeoutMs: 4000 });
+      toast.show({ message: t('settings.security.twoFactorDisabledToast'), timeoutMs: 4000 });
     } catch (err) {
       totpDisableError = errorMessage(err);
     } finally {
@@ -205,9 +206,9 @@
 </script>
 
 {#if !auth.principalId}
-  <p class="muted">Loading session...</p>
+  <p class="muted">{t('settings.security.loadingSession')}</p>
 {:else if principalLoading}
-  <div class="spinner" role="status" aria-label="Loading security settings"></div>
+  <div class="spinner" role="status" aria-label={t('settings.security.loadingAria')}></div>
 {:else if principalError}
   <p class="form-error" role="alert">{principalError}</p>
 {:else}
@@ -215,22 +216,18 @@
   <!-- Introductory copy -->
   <div class="intro">
     <p>
-      This page lets you manage the credentials and second-factor settings for
-      your account. Use it to change your password or to enrol a time-based
-      one-time password (TOTP) authenticator app for two-factor authentication.
+      {t('settings.security.intro')}
     </p>
     <p class="intro-hint">
-      Two-factor authentication adds a second verification step at sign-in.
-      Once enabled, your authenticator app will be required in addition to your
-      password. Disabling it requires your current password to confirm.
+      {t('settings.security.introHint')}
     </p>
   </div>
 
   <!-- Change password -->
-  <h3>Change password</h3>
+  <h3>{t('settings.security.changePassword')}</h3>
   <form class="sec-form" onsubmit={changePassword} novalidate>
     <div class="field">
-      <label for="sec-pw-current" class="label">Current password</label>
+      <label for="sec-pw-current" class="label">{t('settings.security.currentPassword')}</label>
       <input
         id="sec-pw-current"
         type="password"
@@ -243,7 +240,7 @@
     </div>
 
     <div class="field">
-      <label for="sec-pw-new" class="label">New password</label>
+      <label for="sec-pw-new" class="label">{t('settings.security.newPassword')}</label>
       <input
         id="sec-pw-new"
         type="password"
@@ -256,7 +253,7 @@
     </div>
 
     <div class="field">
-      <label for="sec-pw-confirm" class="label">Confirm new password</label>
+      <label for="sec-pw-confirm" class="label">{t('settings.security.confirmNewPassword')}</label>
       <input
         id="sec-pw-confirm"
         type="password"
@@ -274,22 +271,22 @@
 
     <div class="form-actions">
       <button type="submit" class="btn-primary" disabled={pwSaving || !pwCurrent || !pwNew || !pwConfirm}>
-        {pwSaving ? 'Saving...' : 'Change password'}
+        {pwSaving ? t('common.saving') : t('settings.security.changePwSubmit')}
       </button>
     </div>
   </form>
 
   <!-- Two-factor authentication -->
-  <h3>Two-factor authentication</h3>
+  <h3>{t('settings.security.twoFactorHeading')}</h3>
 
   {#if totpEnabled}
     <!-- Enrolled state -->
     <div class="totp-status totp-on">
-      Two-factor authentication is enabled.
+      {t('settings.security.twoFactorEnabled')}
     </div>
 
     <div class="field totp-disable-form">
-      <label for="sec-totp-disable-pw" class="label">Current password to disable 2FA</label>
+      <label for="sec-totp-disable-pw" class="label">{t('settings.security.disable2faLabel')}</label>
       <div class="input-row">
         <input
           id="sec-totp-disable-pw"
@@ -305,7 +302,7 @@
           onclick={disableTOTP}
           disabled={totpLoading || !totpDisablePassword}
         >
-          {totpLoading ? 'Disabling...' : 'Disable 2FA'}
+          {totpLoading ? t('settings.security.disabling') : t('settings.security.disable2fa')}
         </button>
       </div>
       {#if totpDisableError}
@@ -315,7 +312,7 @@
   {:else}
     <!-- Not enrolled state -->
     <div class="totp-status">
-      Two-factor authentication is not enabled.
+      {t('settings.security.twoFactorDisabled')}
     </div>
 
     {#if !totpProvisioningUri}
@@ -326,7 +323,7 @@
           onclick={startEnroll}
           disabled={totpLoading}
         >
-          {totpLoading ? 'Starting...' : 'Enable two-factor authentication'}
+          {totpLoading ? t('settings.security.starting') : t('settings.security.enable2fa')}
         </button>
       </div>
       {#if totpConfirmError}
@@ -336,11 +333,11 @@
       <!-- Enrolment flow: QR + secret + confirm code -->
       <div class="totp-enroll">
         <p class="hint">
-          Scan the QR code with your authenticator app, then enter the 6-digit code to confirm.
+          {t('settings.security.scanHint')}
         </p>
 
         {#if totpQrSvg}
-          <div class="totp-qr" aria-label="TOTP QR code">
+          <div class="totp-qr" aria-label={t('settings.security.qrAriaLabel')}>
             <!-- eslint-disable-next-line svelte/no-at-html-tags -->
             {@html totpQrSvg}
           </div>
@@ -348,20 +345,20 @@
 
         {#if totpSecret}
           <div class="field">
-            <span class="label">Manual entry key</span>
+            <span class="label">{t('settings.security.manualEntryKey')}</span>
             <input
               type="text"
               class="input mono"
               readonly
               value={totpSecret}
               onclick={(e) => (e.currentTarget as HTMLInputElement).select()}
-              aria-label="TOTP secret key"
+              aria-label={t('settings.security.totpSecretAria')}
             />
           </div>
         {/if}
 
         <div class="field">
-          <label for="sec-totp-uri" class="label">Provisioning URI</label>
+          <label for="sec-totp-uri" class="label">{t('settings.security.provisioningUri')}</label>
           <input
             id="sec-totp-uri"
             type="text"
@@ -369,7 +366,7 @@
             readonly
             value={totpProvisioningUri}
             onclick={(e) => (e.currentTarget as HTMLInputElement).select()}
-            aria-label="TOTP provisioning URI"
+            aria-label={t('settings.security.provisioningUriAria')}
           />
         </div>
 
@@ -380,10 +377,10 @@
             inputmode="numeric"
             autocomplete="one-time-code"
             pattern="[0-9]*"
-            placeholder="6-digit code"
+            placeholder={t('settings.security.codePlaceholder')}
             bind:value={totpCode}
             disabled={totpLoading}
-            aria-label="Authenticator code"
+            aria-label={t('settings.security.codeAria')}
           />
           <button
             type="button"
@@ -391,7 +388,7 @@
             onclick={confirmEnroll}
             disabled={totpLoading || !totpCode}
           >
-            {totpLoading ? 'Confirming...' : 'Confirm'}
+            {totpLoading ? t('settings.security.confirming') : t('settings.security.confirmEnroll')}
           </button>
         </div>
 
