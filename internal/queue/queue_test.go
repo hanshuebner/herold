@@ -468,22 +468,24 @@ func TestRetryExhaustionEmitsFailureDSN(t *testing.T) {
 		DSNNotify:  store.DSNNotifyFailure,
 	})
 	// Initial attempt + 3 reschedules = 4 total. Per-attempt timeout
-	// generous (5s) for headroom on slow / contended CI runners. We wait
-	// for two signals before advancing the clock: the deliv hook ran
-	// (callCount) AND the worker committed the attempt to the DB. The
-	// second signal closes a race where the test would otherwise advance
-	// the clock between the hook returning and the worker writing
-	// NextAttemptAt -- the worker reads clk.Now() when computing the
-	// next schedule, so racing it makes NextAttemptAt land at
-	// (advanced_now + 1min), a minute past the clock, and the scheduler
-	// then never picks the row up.
+	// 15s for headroom on slow / contended CI runners (the self-hosted
+	// arm64 runner has tipped over 5s on heavily-loaded runs even after
+	// the scheduler-clock race fix). We wait for two signals before
+	// advancing the clock: the deliv hook ran (callCount) AND the
+	// worker committed the attempt to the DB. The second signal closes
+	// a race where the test would otherwise advance the clock between
+	// the hook returning and the worker writing NextAttemptAt -- the
+	// worker reads clk.Now() when computing the next schedule, so
+	// racing it makes NextAttemptAt land at (advanced_now + 1min), a
+	// minute past the clock, and the scheduler then never picks the
+	// row up.
 	//
 	// The DB signal differs by iteration: a transient outcome calls
 	// RescheduleQueueItem (which increments attempts), and the terminal
 	// outcome on iteration 3 calls CompleteQueueItem (which sets
 	// state=Failed but leaves attempts unchanged). Tolerate either.
 	for i := 0; i < 4; i++ {
-		if !waitFor(t, 5*time.Second, func() bool {
+		if !waitFor(t, 15*time.Second, func() bool {
 			if f.deliv.callCount() < i+1 {
 				return false
 			}
