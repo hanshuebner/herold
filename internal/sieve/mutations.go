@@ -14,17 +14,21 @@ import (
 // order so a script that adds a header then encloses gets the header
 // inside the inner part of the enclosure, matching script intent.
 //
-// The function never returns an error for absence (a script with no
-// editheader/mime actions yields raw unchanged). It returns an error
-// only when raw cannot be split into a header section + body — i.e.
-// when the input is not a well-formed RFC 5322 message.
-func ApplyMutations(raw []byte, outcome Outcome) ([]byte, error) {
-	if !hasMutations(outcome) {
-		return raw, nil
+// changed is true exactly when the function rewrote raw — i.e. when
+// outcome carries at least one header- or body-edit action. Callers
+// gate the re-blob and re-parse work on this flag rather than doing a
+// memcmp against the original raw bytes; the memcmp is O(message size)
+// and the SMTP delivery path runs the gate per recipient.
+//
+// err is non-nil only when raw cannot be split into a header section
+// + body — i.e. when the input is not a well-formed RFC 5322 message.
+func ApplyMutations(raw []byte, outcome Outcome) (out []byte, changed bool, err error) {
+	if !HasMutations(outcome) {
+		return raw, false, nil
 	}
 	headerEnd := findHeaderEnd(raw)
 	if headerEnd < 0 {
-		return nil, fmt.Errorf("sieve: ApplyMutations: no header/body separator")
+		return nil, false, fmt.Errorf("sieve: ApplyMutations: no header/body separator")
 	}
 	headerSection := raw[:headerEnd]
 	body := raw[headerEnd:]
@@ -49,13 +53,14 @@ func ApplyMutations(raw []byte, outcome Outcome) ([]byte, error) {
 			combined = applyEnclose(combined, a)
 		}
 	}
-	return combined, nil
+	return combined, true, nil
 }
 
-// hasMutations reports whether outcome carries any header- or
-// body-edit action; ApplyMutations short-circuits when false to avoid
-// the parse + rebuild round trip.
-func hasMutations(outcome Outcome) bool {
+// HasMutations reports whether outcome carries any header- or
+// body-edit action. The SMTP delivery path consults this before
+// calling ApplyMutations so a script with no editheader/mime actions
+// skips the rewrite codepath without a memcmp against raw.
+func HasMutations(outcome Outcome) bool {
 	for _, a := range outcome.Actions {
 		switch a.Kind {
 		case ActionAddHeader, ActionDeleteHeader, ActionReplace, ActionEnclose:

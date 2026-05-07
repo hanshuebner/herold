@@ -13,12 +13,36 @@ const baseRawMsg = "From: alice@example.com\r\n" +
 
 func TestApplyMutations_NoOp_WhenNoMutationActions(t *testing.T) {
 	out := Outcome{Actions: []Action{{Kind: ActionFileInto, Mailbox: "Inbox"}}}
-	got, err := ApplyMutations([]byte(baseRawMsg), out)
+	got, changed, err := ApplyMutations([]byte(baseRawMsg), out)
 	if err != nil {
 		t.Fatalf("ApplyMutations: %v", err)
 	}
+	if changed {
+		t.Fatalf("changed must be false when outcome has no mutation actions")
+	}
 	if string(got) != baseRawMsg {
 		t.Fatalf("expected raw unchanged, got %q", got)
+	}
+	// HasMutations must agree so the SMTP delivery path's gate stays
+	// in sync with ApplyMutations' fast-path.
+	if HasMutations(out) {
+		t.Fatalf("HasMutations must report false for non-mutation actions")
+	}
+}
+
+func TestApplyMutations_ChangedFlag_TrueOnEditheader(t *testing.T) {
+	out := Outcome{Actions: []Action{{
+		Kind: ActionAddHeader, HeaderName: "X-Tracer", HeaderValue: "alpha",
+	}}}
+	_, changed, err := ApplyMutations([]byte(baseRawMsg), out)
+	if err != nil {
+		t.Fatalf("ApplyMutations: %v", err)
+	}
+	if !changed {
+		t.Fatalf("changed must be true when an editheader action fires")
+	}
+	if !HasMutations(out) {
+		t.Fatalf("HasMutations must report true for ActionAddHeader")
 	}
 }
 
@@ -28,7 +52,7 @@ func TestApplyMutations_AddHeaderPrepends(t *testing.T) {
 		HeaderName:  "X-Tracer",
 		HeaderValue: "alpha",
 	}}}
-	got, err := ApplyMutations([]byte(baseRawMsg), out)
+	got, _, err := ApplyMutations([]byte(baseRawMsg), out)
 	if err != nil {
 		t.Fatalf("ApplyMutations: %v", err)
 	}
@@ -51,7 +75,7 @@ func TestApplyMutations_DeleteHeader_RemovesAllInstances(t *testing.T) {
 		"\r\n" +
 		"body\r\n"
 	out := Outcome{Actions: []Action{{Kind: ActionDeleteHeader, HeaderName: "X-Spam"}}}
-	got, err := ApplyMutations([]byte(in), out)
+	got, _, err := ApplyMutations([]byte(in), out)
 	if err != nil {
 		t.Fatalf("ApplyMutations: %v", err)
 	}
@@ -71,7 +95,7 @@ func TestApplyMutations_DeleteHeader_ContinuationLines(t *testing.T) {
 		"\r\n" +
 		"body\r\n"
 	out := Outcome{Actions: []Action{{Kind: ActionDeleteHeader, HeaderName: "X-Long"}}}
-	got, err := ApplyMutations([]byte(in), out)
+	got, _, err := ApplyMutations([]byte(in), out)
 	if err != nil {
 		t.Fatalf("ApplyMutations: %v", err)
 	}
@@ -87,7 +111,7 @@ func TestApplyMutations_Replace_ReplacesBodyAndOverridesSubject(t *testing.T) {
 		ReplaceSubject: "new subject",
 		ReplaceFrom:    "rewriter@example.com",
 	}}}
-	got, err := ApplyMutations([]byte(baseRawMsg), out)
+	got, _, err := ApplyMutations([]byte(baseRawMsg), out)
 	if err != nil {
 		t.Fatalf("ApplyMutations: %v", err)
 	}
@@ -115,7 +139,7 @@ func TestApplyMutations_Enclose_WrapsInMultipart(t *testing.T) {
 		EncloseBody:    []byte("WARNING: this message was scanned and flagged."),
 		EncloseSubject: "[FLAGGED] original",
 	}}}
-	got, err := ApplyMutations([]byte(baseRawMsg), out)
+	got, _, err := ApplyMutations([]byte(baseRawMsg), out)
 	if err != nil {
 		t.Fatalf("ApplyMutations: %v", err)
 	}
@@ -140,7 +164,7 @@ func TestApplyMutations_AddThenDeleteSameHeader(t *testing.T) {
 		{Kind: ActionAddHeader, HeaderName: "X-Marker", HeaderValue: "second"},
 		{Kind: ActionDeleteHeader, HeaderName: "X-Marker"},
 	}}
-	got, err := ApplyMutations([]byte(baseRawMsg), out)
+	got, _, err := ApplyMutations([]byte(baseRawMsg), out)
 	if err != nil {
 		t.Fatalf("ApplyMutations: %v", err)
 	}
@@ -172,7 +196,7 @@ func TestApplyMutations_Replace_PerLeaf_TopLevelMultipart(t *testing.T) {
 		ReplaceBody:     []byte("[scrubbed]"),
 		ReplacePartPath: []int{1},
 	}}}
-	got, err := ApplyMutations([]byte(raw), out)
+	got, _, err := ApplyMutations([]byte(raw), out)
 	if err != nil {
 		t.Fatalf("ApplyMutations: %v", err)
 	}
@@ -224,7 +248,7 @@ func TestApplyMutations_Replace_PerLeaf_NestedMultipart(t *testing.T) {
 		ReplaceBody:     []byte("[stripped html]"),
 		ReplacePartPath: []int{0, 1},
 	}}}
-	got, err := ApplyMutations([]byte(raw), out)
+	got, _, err := ApplyMutations([]byte(raw), out)
 	if err != nil {
 		t.Fatalf("ApplyMutations: %v", err)
 	}
@@ -252,7 +276,7 @@ func TestApplyMutations_Replace_PerLeaf_OutOfRange_FallsBackToTopLevel(t *testin
 		ReplaceBody:     []byte("fallback"),
 		ReplacePartPath: []int{99},
 	}}}
-	got, err := ApplyMutations([]byte(baseRawMsg), out)
+	got, _, err := ApplyMutations([]byte(baseRawMsg), out)
 	if err != nil {
 		t.Fatalf("ApplyMutations: %v", err)
 	}
@@ -264,7 +288,7 @@ func TestApplyMutations_Replace_PerLeaf_OutOfRange_FallsBackToTopLevel(t *testin
 func TestApplyMutations_NoHeaderBoundary_Errors(t *testing.T) {
 	in := "no separator here at all"
 	out := Outcome{Actions: []Action{{Kind: ActionAddHeader, HeaderName: "X", HeaderValue: "y"}}}
-	_, err := ApplyMutations([]byte(in), out)
+	_, _, err := ApplyMutations([]byte(in), out)
 	if err == nil {
 		t.Fatalf("expected error on malformed input")
 	}

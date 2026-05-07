@@ -285,26 +285,36 @@ func (sess *session) deliverOne(
 
 	// REQ-PROTO-60..68: apply Sieve editheader (RFC 5293) and mime
 	// (RFC 5703 replace / enclose) body mutations before persistence.
-	// The interpreter has already recorded each action on outcome; the
-	// mutator is pure and the rewritten bytes get re-blobbed +
-	// re-parsed so the indexed message reflects what the script
-	// produced.
-	if mutated, err := sieve.ApplyMutations(finalBytes, outcome); err == nil && !bytes.Equal(mutated, finalBytes) {
-		newRef, blobErr := sess.srv.store.Blobs().Put(ctx, bytes.NewReader(mutated))
-		if blobErr != nil {
-			sess.log.WarnContext(ctx, "sieve mutation: re-blob failed; storing pre-mutation bytes",
+	// HasMutations gates the rewrite so a recipient whose Sieve script
+	// has no editheader/mime actions skips ApplyMutations + the
+	// per-recipient re-blob and re-parse entirely. The mutator is
+	// pure; when it does fire the rewritten bytes are re-blobbed and
+	// re-parsed so the FTS indexer, IMAP FETCH, and JMAP Email/get
+	// all see the rewritten message.
+	if sieve.HasMutations(outcome) {
+		mutated, changed, err := sieve.ApplyMutations(finalBytes, outcome)
+		if err != nil {
+			sess.log.WarnContext(ctx, "sieve mutation: apply failed; storing pre-mutation bytes",
 				slog.String("activity", observe.ActivitySystem),
 				slog.String("recipient", rc.addr),
-				slog.String("err", blobErr.Error()))
-		} else if newMsg, perr := mailparse.Parse(bytes.NewReader(mutated), mailparse.NewParseOptions()); perr != nil {
-			sess.log.WarnContext(ctx, "sieve mutation: re-parse failed; storing pre-mutation bytes",
-				slog.String("activity", observe.ActivitySystem),
-				slog.String("recipient", rc.addr),
-				slog.String("err", perr.Error()))
-		} else {
-			finalBytes = mutated
-			blobRef = newRef
-			msg = newMsg
+				slog.String("err", err.Error()))
+		} else if changed {
+			newRef, blobErr := sess.srv.store.Blobs().Put(ctx, bytes.NewReader(mutated))
+			if blobErr != nil {
+				sess.log.WarnContext(ctx, "sieve mutation: re-blob failed; storing pre-mutation bytes",
+					slog.String("activity", observe.ActivitySystem),
+					slog.String("recipient", rc.addr),
+					slog.String("err", blobErr.Error()))
+			} else if newMsg, perr := mailparse.Parse(bytes.NewReader(mutated), mailparse.NewParseOptions()); perr != nil {
+				sess.log.WarnContext(ctx, "sieve mutation: re-parse failed; storing pre-mutation bytes",
+					slog.String("activity", observe.ActivitySystem),
+					slog.String("recipient", rc.addr),
+					slog.String("err", perr.Error()))
+			} else {
+				finalBytes = mutated
+				blobRef = newRef
+				msg = newMsg
+			}
 		}
 	}
 
