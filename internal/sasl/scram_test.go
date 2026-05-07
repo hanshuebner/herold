@@ -192,6 +192,132 @@ func TestSCRAMSHA256PLUS(t *testing.T) {
 	}
 }
 
+// TestSCRAMSHA256PLUS_MissingEndpoint asserts that a -PLUS mechanism
+// rejects a client-final-message when the server context carries no
+// tls-server-end-point binding (e.g. a non-TLS connection that
+// somehow advertised PLUS — defence in depth against advert/runtime
+// drift).
+func TestSCRAMSHA256PLUS_MissingEndpoint(t *testing.T) {
+	user := "alice@example.test"
+	pass := "correct-horse-staple"
+	salt := []byte("0123456789abcdef")
+	creds := sasl.DeriveSCRAMCredentials(pass, salt, 4096)
+	lookup := &stubPWLookup{
+		creds: map[string]sasl.SCRAMCredentials{user: creds},
+		pids:  map[string]sasl.PrincipalID{user: 42},
+	}
+	m := sasl.NewSCRAMSHA256(nil, lookup, true)
+	gs2 := "p=tls-server-end-point,,"
+	clientFirst := gs2 + "n=" + user + ",r=cnonce"
+	if _, _, err := m.Start(context.Background(), []byte(clientFirst)); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	cbind := base64.StdEncoding.EncodeToString([]byte(gs2))
+	clientFinal := fmt.Sprintf("c=%s,r=cnonce_does_not_match,p=AAAA", cbind)
+	_, _, err := m.Next(context.Background(), []byte(clientFinal))
+	if err == nil {
+		t.Fatalf("expected error on PLUS without endpoint")
+	}
+}
+
+// TestSCRAMSHA256PLUS_CbindMismatch asserts that a client which fakes
+// a tls-server-end-point hash different from the one the server
+// captured at TLS handshake time gets rejected with
+// ErrChannelBindingMismatch — the core RFC 5929 invariant.
+func TestSCRAMSHA256PLUS_CbindMismatch(t *testing.T) {
+	user := "alice@example.test"
+	pass := "correct-horse-staple"
+	salt := []byte("0123456789abcdef")
+	creds := sasl.DeriveSCRAMCredentials(pass, salt, 4096)
+	lookup := &stubPWLookup{
+		creds: map[string]sasl.SCRAMCredentials{user: creds},
+		pids:  map[string]sasl.PrincipalID{user: 42},
+	}
+	m := sasl.NewSCRAMSHA256(nil, lookup, true)
+
+	serverEP := []byte("server-side-real-endpoint-hash")
+	ctx := sasl.WithTLSServerEndpoint(context.Background(), serverEP)
+	cNonce := "cnonce123"
+	gs2 := "p=tls-server-end-point,,"
+	clientFirst := gs2 + "n=" + user + ",r=" + cNonce
+	serverFirst, _, err := m.Start(ctx, []byte(clientFirst))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	combinedNonce := parseAttrs(string(serverFirst))["r"]
+	// Lie about the channel binding: append a different EP hash.
+	bogusEP := []byte("attacker-fabricated-different-hash")
+	cbind := base64.StdEncoding.EncodeToString(append([]byte(gs2), bogusEP...))
+	cfWithoutProof := fmt.Sprintf("c=%s,r=%s", cbind, combinedNonce)
+	// Doesn't matter if the proof is right; cbind check fails first.
+	clientFinal := cfWithoutProof + ",p=AAAA"
+	_, _, err = m.Next(ctx, []byte(clientFinal))
+	if err == nil {
+		t.Fatalf("expected channel-binding mismatch")
+	}
+	if !errors.Is(err, sasl.ErrChannelBindingMismatch) {
+		t.Fatalf("err = %v; want ErrChannelBindingMismatch", err)
+	}
+}
+
+// TestSCRAMSHA256PLUS_NonPLUSGS2Flag asserts that a client which selects
+// the -PLUS mechanism but sends "n," or "y," in the gs2 header is
+// rejected at Start, preserving the policy invariant that PLUS clients
+// must commit to channel binding.
+func TestSCRAMSHA256PLUS_NonPLUSGS2Flag(t *testing.T) {
+	cases := []struct {
+		name  string
+		flag  string
+		ctxEP []byte
+	}{
+		{"n-flag-on-PLUS", "n,,", []byte("real-ep")},
+		{"y-flag-on-PLUS", "y,,", []byte("real-ep")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := &stubPWLookup{
+				creds: map[string]sasl.SCRAMCredentials{
+					"u": sasl.DeriveSCRAMCredentials("p", []byte("0123456789abcdef"), 4096),
+				},
+				pids: map[string]sasl.PrincipalID{"u": 1},
+			}
+			m := sasl.NewSCRAMSHA256(nil, lookup, true)
+			ctx := sasl.WithTLSServerEndpoint(context.Background(), tc.ctxEP)
+			cf := tc.flag + "n=u,r=cnonce"
+			_, _, err := m.Start(ctx, []byte(cf))
+			if err == nil {
+				t.Fatalf("expected channel-binding mismatch on %s", tc.name)
+			}
+			if !errors.Is(err, sasl.ErrChannelBindingMismatch) {
+				t.Fatalf("err = %v; want ErrChannelBindingMismatch", err)
+			}
+		})
+	}
+}
+
+// TestSCRAMSHA256_BarePMechanism_RejectsPFlag asserts the inverse: a
+// client that selects the bare SCRAM-SHA-256 mechanism but sends a
+// "p=" gs2 flag is rejected — without this guard, an attacker on a
+// downgrade-prone path could trick the server into computing channel
+// binding against a fake EP value.
+func TestSCRAMSHA256_BarePMechanism_RejectsPFlag(t *testing.T) {
+	lookup := &stubPWLookup{
+		creds: map[string]sasl.SCRAMCredentials{
+			"u": sasl.DeriveSCRAMCredentials("p", []byte("0123456789abcdef"), 4096),
+		},
+		pids: map[string]sasl.PrincipalID{"u": 1},
+	}
+	m := sasl.NewSCRAMSHA256(nil, lookup, false)
+	cf := "p=tls-server-end-point,,n=u,r=cnonce"
+	_, _, err := m.Start(context.Background(), []byte(cf))
+	if err == nil {
+		t.Fatalf("expected channel-binding mismatch on bare mechanism")
+	}
+	if !errors.Is(err, sasl.ErrChannelBindingMismatch) {
+		t.Fatalf("err = %v; want ErrChannelBindingMismatch", err)
+	}
+}
+
 // parseAttrs is the test-side sibling of the server's parser.
 func parseAttrs(s string) map[string]string {
 	out := make(map[string]string)
