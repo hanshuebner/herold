@@ -128,12 +128,13 @@ type fixture struct {
 }
 
 type fixtureOpts struct {
-	concurrency  int
-	perHost      int
-	pollInterval time.Duration
-	retry        queue.RetryPolicy
-	signer       queue.Signer
-	skipRun      bool
+	concurrency       int
+	perHost           int
+	pollInterval      time.Duration
+	retry             queue.RetryPolicy
+	signer            queue.Signer
+	skipRun           bool
+	delayDSNThreshold time.Duration
 }
 
 func newFixture(t *testing.T, opts fixtureOpts) *fixture {
@@ -150,18 +151,19 @@ func newFixture(t *testing.T, opts fixtureOpts) *fixture {
 		opts.pollInterval = 50 * time.Millisecond
 	}
 	q := queue.New(queue.Options{
-		Store:          st,
-		Deliverer:      deliv,
-		Signer:         opts.signer,
-		Logger:         discardLogger(),
-		Clock:          clk,
-		Concurrency:    opts.concurrency,
-		PerHostMax:     opts.perHost,
-		Retry:          opts.retry,
-		PollInterval:   opts.pollInterval,
-		Hostname:       "mail.test.example",
-		DSNFromAddress: "postmaster@mail.test.example",
-		ShutdownGrace:  2 * time.Second,
+		Store:             st,
+		Deliverer:         deliv,
+		Signer:            opts.signer,
+		Logger:            discardLogger(),
+		Clock:             clk,
+		Concurrency:       opts.concurrency,
+		PerHostMax:        opts.perHost,
+		Retry:             opts.retry,
+		PollInterval:      opts.pollInterval,
+		Hostname:          "mail.test.example",
+		DSNFromAddress:    "postmaster@mail.test.example",
+		ShutdownGrace:     2 * time.Second,
+		DelayDSNThreshold: opts.delayDSNThreshold,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	f := &fixture{
@@ -1019,6 +1021,162 @@ func TestDeliver_ExternalSubmissionItem(t *testing.T) {
 		stats := mustStats(t, f)
 		t.Fatalf("expected item Failed AND deliverer untouched; stats: %+v, deliv calls: %d",
 			stats, f.deliv.callCount())
+	}
+}
+
+// TestDelayDSN_EmittedAfterThreshold drives a row through enough
+// transient retries to cross the configured delay threshold and asserts
+// that exactly one DSNKindDelay row appears in the queue. Subsequent
+// retries must NOT emit additional delay DSNs (the IdempotencyKey
+// dedup is the regression check).
+func TestDelayDSN_EmittedAfterThreshold(t *testing.T) {
+	f := newFixture(t, fixtureOpts{
+		concurrency: 4,
+		perHost:     2,
+		retry: queue.RetryPolicy{Schedule: []time.Duration{
+			time.Minute, time.Minute, time.Minute, time.Minute,
+		}},
+		// Threshold below the first retry delay so the second attempt
+		// crosses it. 30 seconds vs the 1-minute retry delay is plenty
+		// of headroom against fakestore CreatedAt rounding.
+		delayDSNThreshold: 30 * time.Second,
+	})
+	f.deliv.hooks = func(req queue.DeliveryRequest, _ int) (queue.DeliveryOutcome, error) {
+		// DSNs go via alice@local.test; let those succeed so the row
+		// shows up in QueueStateCompleted instead of looping.
+		if strings.HasPrefix(req.Recipient, "alice@") {
+			return queue.DeliveryOutcome{Status: queue.DeliveryStatusSuccess}, nil
+		}
+		return queue.DeliveryOutcome{
+			Status:       queue.DeliveryStatusTransient,
+			Code:         421,
+			EnhancedCode: "4.4.1",
+			Detail:       "no answer from host",
+		}, nil
+	}
+	envID := f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test"},
+		Body:       strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
+		// DSNNotifyNone follows the receiver default (delay-deliver),
+		// matching REQ-FLOW-76's "always send a delay-then-failure DSN"
+		// guidance.
+	})
+	// Wait for the first attempt.
+	if !waitFor(t, 2*time.Second, func() bool {
+		return f.deliv.callCount() >= 1
+	}) {
+		t.Fatalf("first attempt never observed")
+	}
+	// Advance the clock past the threshold so the second attempt
+	// triggers a delay DSN.
+	f.clk.Advance(2 * time.Minute)
+	if !waitFor(t, 2*time.Second, func() bool {
+		return f.deliv.callCount() >= 2
+	}) {
+		t.Fatalf("second attempt never observed")
+	}
+	// Locate the delay DSN row.
+	var dsnRow store.QueueItem
+	if !waitFor(t, 3*time.Second, func() bool {
+		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{})
+		for _, r := range rows {
+			if r.RcptTo == "alice@local.test" && r.MailFrom == "" && r.IdempotencyKey != "" &&
+				strings.HasPrefix(r.IdempotencyKey, "dsn:delay:") {
+				dsnRow = r
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatalf("delay DSN never enqueued for envelope %s", envID)
+	}
+	// Read body and assert delay-specific fields.
+	rdr, err := f.store.Blobs().Get(f.ctx, dsnRow.BodyBlobHash)
+	if err != nil {
+		t.Fatalf("get dsn body: %v", err)
+	}
+	defer rdr.Close()
+	body, err := io.ReadAll(rdr)
+	if err != nil {
+		t.Fatalf("read dsn body: %v", err)
+	}
+	bodyStr := string(body)
+	for _, want := range []string{
+		"Subject: Delivery Status Notification (Delay)",
+		"Action: delayed",
+		"Status: 4.4.1",
+		"Diagnostic-Code: smtp; 421 4.4.1 no answer from host",
+		"Will-Retry-Until:",
+	} {
+		if !strings.Contains(bodyStr, want) {
+			t.Errorf("delay DSN body missing %q\n--BODY--\n%s\n--END--", want, bodyStr)
+		}
+	}
+	// Drive several more transient retries; the dedup key must keep
+	// the count at one delay DSN.
+	for i := 0; i < 3; i++ {
+		f.clk.Advance(2 * time.Minute)
+		_ = waitFor(t, 1*time.Second, func() bool {
+			return f.deliv.callCount() >= 3+i
+		})
+	}
+	delayCount := 0
+	rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{})
+	for _, r := range rows {
+		if strings.HasPrefix(r.IdempotencyKey, "dsn:delay:") {
+			delayCount++
+		}
+	}
+	if delayCount != 1 {
+		t.Fatalf("expected exactly 1 delay DSN; got %d", delayCount)
+	}
+}
+
+// TestDelayDSN_SuppressedByNotifyNever ensures NOTIFY=NEVER on the
+// original submission blocks delay DSN emission even past the
+// threshold (RFC 3461 §4.1).
+func TestDelayDSN_SuppressedByNotifyNever(t *testing.T) {
+	f := newFixture(t, fixtureOpts{
+		concurrency: 4,
+		perHost:     2,
+		retry: queue.RetryPolicy{Schedule: []time.Duration{
+			time.Minute, time.Minute,
+		}},
+		delayDSNThreshold: 30 * time.Second,
+	})
+	f.deliv.hooks = func(req queue.DeliveryRequest, _ int) (queue.DeliveryOutcome, error) {
+		return queue.DeliveryOutcome{
+			Status:       queue.DeliveryStatusTransient,
+			Code:         421,
+			EnhancedCode: "4.4.1",
+			Detail:       "no answer",
+		}, nil
+	}
+	f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test"},
+		Body:       strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
+		DSNNotify:  store.DSNNotifyNever,
+	})
+	if !waitFor(t, 2*time.Second, func() bool {
+		return f.deliv.callCount() >= 1
+	}) {
+		t.Fatalf("first attempt never observed")
+	}
+	f.clk.Advance(2 * time.Minute)
+	if !waitFor(t, 2*time.Second, func() bool {
+		return f.deliv.callCount() >= 2
+	}) {
+		t.Fatalf("second attempt never observed")
+	}
+	// Give the delay DSN a chance to (incorrectly) appear.
+	time.Sleep(150 * time.Millisecond)
+	rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{})
+	for _, r := range rows {
+		if strings.HasPrefix(r.IdempotencyKey, "dsn:delay:") {
+			t.Fatalf("NOTIFY=NEVER must suppress delay DSN; found %+v", r)
+		}
 	}
 }
 

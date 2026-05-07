@@ -22,10 +22,11 @@ import (
 
 // Default Options values.
 const (
-	defaultConcurrency   = 32
-	defaultPerHostMax    = 4
-	defaultPollInterval  = 5 * time.Second
-	defaultShutdownGrace = 30 * time.Second
+	defaultConcurrency       = 32
+	defaultPerHostMax        = 4
+	defaultPollInterval      = 5 * time.Second
+	defaultShutdownGrace     = 30 * time.Second
+	defaultDelayDSNThreshold = 4 * time.Hour
 	// staleInflightFactor multiplies PollInterval to compute the
 	// startup recovery threshold for inflight rows.
 	staleInflightFactor = 5
@@ -69,6 +70,14 @@ type Options struct {
 	// and the DSN message-id. Required for clean DSN headers; if
 	// empty the orchestrator uses "localhost".
 	Hostname string
+	// DelayDSNThreshold is the wall-clock age at which a still-deferred
+	// row generates a DSNKindDelay notification per RFC 3461 §4.1.
+	// 0 falls back to defaultDelayDSNThreshold (4h, matching
+	// Postfix/Sendmail operator defaults). Idempotency is enforced via
+	// the dsn:delay:<id>:<rcpt> key on EnqueueMessage so the threshold
+	// fires at most once per row regardless of how many transient
+	// retries the row sees afterwards.
+	DelayDSNThreshold time.Duration
 }
 
 // Submission is the single-call enqueue payload. The caller hands one
@@ -124,12 +133,13 @@ type Submission struct {
 // lives in store.Metadata's queue surface. In-memory state is limited
 // to the concurrency semaphores, per-host map, and worker counter.
 type Queue struct {
-	opts          Options
-	clk           clock.Clock
-	pollInterval  time.Duration
-	shutdownGrace time.Duration
-	dsnFrom       string
-	hostname      string
+	opts              Options
+	clk               clock.Clock
+	pollInterval      time.Duration
+	shutdownGrace     time.Duration
+	dsnFrom           string
+	hostname          string
+	delayDSNThreshold time.Duration
 
 	totalSem *semaphore.Weighted
 
@@ -191,19 +201,24 @@ func New(opts Options) *Queue {
 	if dsnFrom == "" {
 		dsnFrom = "postmaster@" + hostname
 	}
+	delayThr := opts.DelayDSNThreshold
+	if delayThr <= 0 {
+		delayThr = defaultDelayDSNThreshold
+	}
 	// Make sure Concurrency drives PerHostMax bound.
 	if perHost > conc {
 		perHost = conc
 	}
 	q := &Queue{
-		opts:          opts,
-		clk:           clk,
-		pollInterval:  poll,
-		shutdownGrace: grace,
-		dsnFrom:       dsnFrom,
-		hostname:      hostname,
-		totalSem:      semaphore.NewWeighted(int64(conc)),
-		hostSem:       make(map[string]*hostBucket),
+		opts:              opts,
+		clk:               clk,
+		pollInterval:      poll,
+		shutdownGrace:     grace,
+		dsnFrom:           dsnFrom,
+		hostname:          hostname,
+		delayDSNThreshold: delayThr,
+		totalSem:          semaphore.NewWeighted(int64(conc)),
+		hostSem:           make(map[string]*hostBucket),
 		// wakeCh is a 1-capacity buffered channel used by Submit (and
 		// any future event source that adds work) to fast-poll the
 		// scheduler instead of waiting up to pollInterval. Sends are
@@ -673,7 +688,10 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 			slog.String("body_hash", item.BodyBlobHash),
 			slog.Any("err", err))
 		// Treat as transient failure and reschedule.
-		q.handleTransient(ctx, item, "blob read error: "+err.Error())
+		q.handleTransient(ctx, item, DeliveryOutcome{
+			Status: DeliveryStatusTransient,
+			Detail: "blob read error: " + err.Error(),
+		})
 		return
 	}
 
@@ -727,12 +745,15 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 				slog.Any("err", hErr))
 		}
 	case DeliveryStatusTransient:
-		q.handleTransient(ctx, item, outcomeToErrMsg(outcome))
+		q.handleTransient(ctx, item, outcome)
 	default:
 		q.opts.Logger.ErrorContext(ctx, "queue: deliverer returned unknown status",
 			slog.String("activity", observe.ActivityInternal),
 			slog.Uint64("id", uint64(item.ID)))
-		q.handleTransient(ctx, item, "deliverer returned unknown status")
+		q.handleTransient(ctx, item, DeliveryOutcome{
+			Status: DeliveryStatusTransient,
+			Detail: "deliverer returned unknown status",
+		})
 	}
 }
 
@@ -802,7 +823,8 @@ func (q *Queue) handlePermanent(ctx context.Context, item store.QueueItem, outco
 	}
 }
 
-func (q *Queue) handleTransient(ctx context.Context, item store.QueueItem, errMsg string) {
+func (q *Queue) handleTransient(ctx context.Context, item store.QueueItem, outcome DeliveryOutcome) {
+	errMsg := outcomeToErrMsg(outcome)
 	delay, ok := q.opts.Retry.Next(item.Attempts)
 	if !ok {
 		// Schedule exhausted: escalate to permanent.
@@ -821,14 +843,23 @@ func (q *Queue) handleTransient(ctx context.Context, item store.QueueItem, errMs
 			slog.String("detail", errMsg),
 		)
 		if shouldEmitFailureDSN(item.DSNNotify) {
-			outcome := DeliveryOutcome{
+			failOutcome := DeliveryOutcome{
 				Status:       DeliveryStatusPermanent,
 				Detail:       "retry schedule exhausted: " + errMsg,
 				EnhancedCode: "5.4.7",
 			}
-			q.emitDSN(ctx, item, outcome, DSNKindFailure)
+			q.emitDSN(ctx, item, failOutcome, DSNKindFailure)
 		}
 		return
+	}
+	// Delay DSN: when the row has been deferred past the configured
+	// threshold, emit a DSNKindDelay so the original sender knows the
+	// message is still in flight (RFC 3461 §4.1, REQ-FLOW-76). The
+	// idempotency key on emitDSN dedups across subsequent retries so
+	// only one delay DSN fires per (row, recipient) tuple.
+	if shouldEmitDelayDSN(item.DSNNotify) &&
+		q.clk.Now().Sub(item.CreatedAt) >= q.delayDSNThreshold {
+		q.emitDSN(ctx, item, outcome, DSNKindDelay)
 	}
 	next := q.clk.Now().Add(delay)
 	q.opts.Logger.WarnContext(ctx, "queue: delivery transient failure; rescheduled",
@@ -844,6 +875,25 @@ func (q *Queue) handleTransient(ctx context.Context, item store.QueueItem, errMs
 			slog.Uint64("id", uint64(item.ID)),
 			slog.Any("err", err))
 	}
+}
+
+// deliveryDeadline returns the wall-clock instant at which the queue
+// will give up retrying item, computed from the row's CreatedAt plus
+// the total of the configured retry schedule. Surfaces in the
+// Will-Retry-Until field of delay DSNs (RFC 3464 §2.3.10).
+func (q *Queue) deliveryDeadline(item store.QueueItem) time.Time {
+	sched := q.opts.Retry.Schedule
+	if sched == nil {
+		sched = DefaultRetrySchedule
+	}
+	var total time.Duration
+	for _, d := range sched {
+		total += d
+	}
+	if item.CreatedAt.IsZero() {
+		return q.clk.Now().Add(total)
+	}
+	return item.CreatedAt.Add(total)
 }
 
 // emitDSN renders a DSN and enqueues it as a new queue row addressed
@@ -872,6 +922,10 @@ func (q *Queue) emitDSN(ctx context.Context, item store.QueueItem, outcome Deliv
 			statusCode = "5.0.0"
 		}
 	}
+	var willRetryUntil time.Time
+	if kind == DSNKindDelay {
+		willRetryUntil = q.deliveryDeadline(item)
+	}
 	dsn, err := buildDSN(dsnInput{
 		Kind:            kind,
 		ReportingMTA:    "dns; " + q.hostname,
@@ -884,6 +938,7 @@ func (q *Queue) emitDSN(ctx context.Context, item store.QueueItem, outcome Deliv
 		StatusCode:      statusCode,
 		OriginalHeaders: headers,
 		Now:             q.clk.Now(),
+		WillRetryUntil:  willRetryUntil,
 	})
 	if err != nil {
 		q.opts.Logger.ErrorContext(ctx, "queue: build DSN failed",

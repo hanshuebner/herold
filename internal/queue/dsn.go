@@ -309,3 +309,20 @@ func shouldEmitSuccessDSN(notify store.DSNNotifyFlags) bool {
 	}
 	return notify&store.DSNNotifySuccess != 0
 }
+
+// shouldEmitDelayDSN reports whether a delayed-delivery DSN should be
+// emitted for a row that is still being retried past the configured
+// delay threshold. RFC 3461 §4.1: NEVER suppresses; an explicit DELAY
+// flag requests the DSN; absent NOTIFY (DSNNotifyNone) follows the
+// receiver default which the type comment fixes as delay-deliver,
+// matching REQ-FLOW-76's "delay-then-failure" guidance and the
+// operator expectation set by Postfix and Sendmail.
+func shouldEmitDelayDSN(notify store.DSNNotifyFlags) bool {
+	if notify&store.DSNNotifyNever != 0 {
+		return false
+	}
+	if notify == store.DSNNotifyNone {
+		return true
+	}
+	return notify&store.DSNNotifyDelay != 0
+}

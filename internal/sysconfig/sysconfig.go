@@ -711,6 +711,13 @@ type QueueConfig struct {
 	// queue default (derived from Concurrency). Must be >= 0 and <=
 	// Concurrency when both are non-zero.
 	PerHostMax int `toml:"per_host_max,omitempty"`
+	// DelayDSNThreshold is the wall-clock age at which a still-deferred
+	// row generates an RFC 3461 NOTIFY=DELAY notification to the
+	// original sender. 0 uses the queue default (4h, matching Postfix
+	// and Sendmail operator practice). Idempotency: at most one delay
+	// DSN per (queue row, recipient) tuple regardless of how many
+	// transient retries follow.
+	DelayDSNThreshold Duration `toml:"delay_dsn_threshold,omitempty"`
 }
 
 // SnoozeConfig tunes the JMAP snooze wake-up worker (REQ-PROTO-49).
