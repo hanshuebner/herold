@@ -1211,7 +1211,7 @@ const (
 
 // Valid protocol / tls / lifecycle / plugin-type / log level sets.
 var (
-	validProtocols     = map[string]struct{}{"smtp": {}, "smtp-submission": {}, "imap": {}, "imaps": {}, "admin": {}}
+	validProtocols     = map[string]struct{}{"smtp": {}, "smtp-submission": {}, "imap": {}, "imaps": {}, "admin": {}, "managesieve": {}}
 	validListenerKinds = map[string]struct{}{
 		ListenerKindPublic: {},
 		ListenerKindAdmin:  {},

@@ -585,6 +585,29 @@ tls = "starttls"
 	}
 }
 
+func TestValidate_ManageSieveProtocol(t *testing.T) {
+	const ok = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "managesieve"
+address = ":4190"
+protocol = "managesieve"
+tls = "starttls"
+`
+	_, err := Parse([]byte(ok))
+	if err != nil {
+		t.Fatalf("managesieve protocol must validate; got %v", err)
+	}
+}
+
 func TestValidate_ListenerCertKeyPairing(t *testing.T) {
 	const bad = `
 [server]

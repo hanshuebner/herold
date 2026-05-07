@@ -43,6 +43,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protocall"
 	"github.com/hanshuebner/herold/internal/protochat"
 	"github.com/hanshuebner/herold/internal/protoimap"
+	"github.com/hanshuebner/herold/internal/protomanagesieve"
 	"github.com/hanshuebner/herold/internal/protoimg"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/protojmap/calendars/imip"
@@ -417,6 +418,25 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	)
 	defer imapServer.Close()
 
+	// ManageSieve (RFC 5804) listener — wired only when at least one
+	// [[listener]] is declared with protocol = "managesieve". The
+	// server is constructed unconditionally so bindOneAddress can
+	// route the connection without a nil check; an unbound server is
+	// inert.
+	mssvServer := protomanagesieve.NewServer(
+		st,
+		dir,
+		tlsStore,
+		clk,
+		logger.With("subsystem", "managesieve"),
+		nil, // PasswordLookup: PLAIN auth via directory; SCRAM not yet
+		nil, // TokenVerifier: OAUTHBEARER deferred
+		protomanagesieve.Options{
+			ServerName: cfg.Server.Hostname,
+		},
+	)
+	defer mssvServer.Close()
+
 	// autodns.Reporter (TLS-RPT aggregate reports, REQ-OPS-60..65).
 	// Constructed before the outbound queue so the queue's SMTP client
 	// can receive a non-nil reporter for per-failure Append calls.
@@ -651,7 +671,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	}()
 
 	// Bind listeners.
-	boundListeners, err := bindListeners(ctx, cfg, logger, tlsStore, smtpServer, imapServer, bundle, opts)
+	boundListeners, err := bindListeners(ctx, cfg, logger, tlsStore, smtpServer, imapServer, mssvServer, bundle, opts)
 	if err != nil {
 		return err
 	}
@@ -1379,6 +1399,7 @@ func bindListeners(
 	tlsStore *heroldtls.Store,
 	smtpServer *protosmtp.Server,
 	imapServer *protoimap.Server,
+	mssvServer *protomanagesieve.Server,
 	bundle composedHandlers,
 	opts StartOpts,
 ) (*boundListenerSet, error) {
@@ -1390,7 +1411,7 @@ func bindListeners(
 			adminBinds = append(adminBinds, l)
 			continue
 		}
-		lns, fns, canonical, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, bundle, opts)
+		lns, fns, canonical, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, mssvServer, bundle, opts)
 		if err != nil {
 			set.Close()
 			return nil, err
@@ -1404,7 +1425,7 @@ func bindListeners(
 		}
 	}
 	for _, l := range adminBinds {
-		lns, fns, canonical, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, bundle, opts)
+		lns, fns, canonical, err := bindOne(ctx, cfg, logger, l, tlsStore, smtpServer, imapServer, mssvServer, bundle, opts)
 		if err != nil {
 			set.Close()
 			return nil, err
@@ -1438,6 +1459,7 @@ func bindOne(
 	tlsStore *heroldtls.Store,
 	smtpServer *protosmtp.Server,
 	imapServer *protoimap.Server,
+	mssvServer *protomanagesieve.Server,
 	bundle composedHandlers,
 	opts StartOpts,
 ) ([]net.Listener, []listenerServeFn, string, error) {
@@ -1456,7 +1478,7 @@ func bindOne(
 		}
 	}
 	for _, addr := range addrs {
-		ln, fn, resolvedAddr, err := bindOneAddress(ctx, cfg, logger, l, addr, tlsStore, smtpServer, imapServer, bundle, opts, len(listeners) == 0)
+		ln, fn, resolvedAddr, err := bindOneAddress(ctx, cfg, logger, l, addr, tlsStore, smtpServer, imapServer, mssvServer, bundle, opts, len(listeners) == 0)
 		if err != nil {
 			closeAll()
 			return nil, nil, "", err
@@ -1488,6 +1510,7 @@ func bindOneAddress(
 	tlsStore *heroldtls.Store,
 	smtpServer *protosmtp.Server,
 	imapServer *protoimap.Server,
+	mssvServer *protomanagesieve.Server,
 	bundle composedHandlers,
 	opts StartOpts,
 	publishAddr bool,
@@ -1536,6 +1559,10 @@ func bindOneAddress(
 	case "imaps":
 		return ln, func(ctx context.Context) error {
 			return imapServer.Serve(ctx, ln, protoimap.ListenerModeImplicit993)
+		}, resolvedAddr, nil
+	case "managesieve":
+		return ln, func(ctx context.Context) error {
+			return mssvServer.Serve(ctx, ln)
 		}, resolvedAddr, nil
 	case "admin":
 		spec := l
