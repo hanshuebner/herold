@@ -20,9 +20,9 @@ func TestMailparseExtractor_AttachmentText(t *testing.T) {
   </w:body>
 </w:document>`)
 	msg := buildMultipart(t, multipartParts{
-		Plain: "plain-tracer-token-eta",
+		Plain:          "plain-tracer-token-eta",
 		HTMLAttachment: `<html><body><p>html-tracer-token-rho</p></body></html>`,
-		DOCX:  docx,
+		DOCX:           docx,
 	})
 
 	e := NewMailparseExtractor()

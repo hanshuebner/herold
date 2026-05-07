@@ -37,11 +37,11 @@ type confExpect struct {
 }
 
 type confExpectedAction struct {
-	kind     ActionKind
-	mailbox  string
-	address  string
-	header   string
-	flag     string
+	kind           ActionKind
+	mailbox        string
+	address        string
+	header         string
+	flag           string
 	hasReplaceBody string
 }
 
@@ -77,14 +77,14 @@ const confMultipartMsg = "From: alice@example.com\r\n" +
 var pigeonholeCorpus = []confCase{
 	// RFC 5228 §2.3: keep is the default action when no other is taken.
 	{
-		name: "rfc5228/2.3-implicit-keep",
+		name:   "rfc5228/2.3-implicit-keep",
 		script: `require ["fileinto"];`,
 		rawMsg: confSampleMsg,
 		expect: confExpect{implicitKeep: true},
 	},
 	// RFC 5228 §4.1: discard cancels implicit keep.
 	{
-		name: "rfc5228/4.1-discard-cancels-implicit-keep",
+		name:   "rfc5228/4.1-discard-cancels-implicit-keep",
 		script: `discard;`,
 		rawMsg: confSampleMsg,
 		expect: confExpect{
