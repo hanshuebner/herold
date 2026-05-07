@@ -123,7 +123,6 @@ func applyDeleteHeader(headerSection []byte, name string) []byte {
 		// Blank line -> end of header section; preserve and stop.
 		if bytes.Equal(line, []byte("\r\n")) {
 			out.Write(line)
-			headerSection = headerSection[len(line):]
 			break
 		}
 		// Field line: check the name.
