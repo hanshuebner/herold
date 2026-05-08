@@ -1438,9 +1438,14 @@
   .row-star.flagged {
     color: var(--support-warning);
   }
+  /* Hover gives a background highlight only; the foreground colour
+     stays bound to the actual flagged state. Previously hover also
+     forced the warning colour, so an unflagged star looked active
+     under the cursor and a freshly-unflagged star kept its old
+     yellow until the cursor moved away — both reported as
+     confusing. */
   .row-star:hover {
     background: var(--layer-03);
-    color: var(--support-warning);
   }
   .row-activate {
     display: grid;
