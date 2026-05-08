@@ -290,7 +290,12 @@
     font-size: var(--type-body-compact-01-size);
     margin: 0;
   }
-  .hint a {
+  /* The <a> here lives inside an {@html ...} interpolation (the
+     translated string injects the rfc link), so Svelte's scoper
+     cannot see it at compile time. :global on the descendant
+     keeps the parent .hint scoped while letting the rule match
+     the unscoped injected child. */
+  .hint :global(a) {
     color: var(--interactive);
   }
   .error {

@@ -371,7 +371,12 @@
     font-size: var(--type-body-compact-01-size);
     line-height: var(--type-body-compact-01-line);
   }
-  .intro code {
+  /* The <code> elements live inside an {@html ...} interpolation
+     (see the t() calls above), so Svelte's CSS scoper cannot see
+     them at compile time. :global on the descendant keeps the
+     parent .intro scoped while letting the rule match the
+     unscoped injected children. */
+  .intro :global(code) {
     font-family: var(--font-mono);
     font-size: 0.95em;
     background: var(--layer-02);
