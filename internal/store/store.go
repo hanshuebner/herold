@@ -232,6 +232,22 @@ type Metadata interface {
 	// re-linking is transparent to IMAP clients.
 	UpdateMessageThreadID(ctx context.Context, msgID MessageID, threadID uint64) error
 
+	// MarkMessageInternalizePending sets the per-message
+	// internalize_pending flag to 1. Importers call this for every
+	// message that has an external HTML image reference, telling the
+	// JMAP Email/get path to rewrite the body on first read
+	// (17-external-images.md REQ-EXTIMG-91 / REQ-EXTIMG-97). Returns
+	// ErrNotFound when msgID is absent.
+	MarkMessageInternalizePending(ctx context.Context, msgID MessageID) error
+
+	// ClearMessageInternalizePending sets the flag back to 0 without
+	// touching the body. Called by the on-demand rewrite path after a
+	// rewrite attempt — successful or not — to prevent retry storms
+	// (REQ-EXTIMG-94). ReplaceMessageBody clears the flag implicitly
+	// in the same transaction; this method is for the failure /
+	// no-op cases. Returns ErrNotFound when msgID is absent.
+	ClearMessageInternalizePending(ctx context.Context, msgID MessageID) error
+
 	// UpdateMailboxModseqAndAppendChange is the low-level escape hatch
 	// used by protocol code that has already computed a multi-row
 	// mutation and needs to advance HighestModSeq and append a

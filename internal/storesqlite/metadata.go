@@ -65,6 +65,15 @@ func fromMicros(us int64) time.Time {
 	return time.UnixMicro(us).UTC()
 }
 
+// boolToInt64 maps a Go bool to the {0,1} encoding the SQLite schema
+// uses for boolean-shaped columns (no native BOOL type in modernc).
+func boolToInt64(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // runTx begins a transaction with the writer lock held, runs fn, and
 // commits or rolls back. Retries on SQLITE_BUSY are already handled by
 // the 30s busy_timeout PRAGMA.
@@ -838,11 +847,13 @@ func scanMessageRow(row rowLike) (store.Message, error) {
 	var blobSize int64
 	var thread int64
 	var envDateUs int64
+	var pending int64
 	err := row.Scan(&id, &pid, &msg.Blob.Hash, &blobSize, &idUs, &rcvUs,
 		&msg.Size, &thread,
 		&msg.Envelope.Subject, &msg.Envelope.From, &msg.Envelope.To,
 		&msg.Envelope.Cc, &msg.Envelope.Bcc, &msg.Envelope.ReplyTo,
-		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &msg.Envelope.References, &envDateUs)
+		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &msg.Envelope.References, &envDateUs,
+		&pending)
 	if err != nil {
 		return store.Message{}, mapErr(err)
 	}
@@ -853,6 +864,7 @@ func scanMessageRow(row rowLike) (store.Message, error) {
 	msg.Blob.Size = blobSize
 	msg.ThreadID = uint64(thread)
 	msg.Envelope.Date = fromMicros(envDateUs)
+	msg.InternalizePending = pending != 0
 	return msg, nil
 }
 
@@ -1180,13 +1192,15 @@ func (m *metadata) insertMessageTx(
 			INSERT INTO messages (principal_id, blob_hash, blob_size,
 			  internal_date_us, received_at_us, size, thread_id,
 			  env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
-			  env_message_id, env_in_reply_to, env_references, env_date_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			  env_message_id, env_in_reply_to, env_references, env_date_us,
+			  internalize_pending)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			pid, msg.Blob.Hash, msg.Blob.Size,
 			usMicros(msg.InternalDate), usMicros(msg.ReceivedAt), msg.Size, int64(msg.ThreadID),
 			msg.Envelope.Subject, msg.Envelope.From, msg.Envelope.To,
 			msg.Envelope.Cc, msg.Envelope.Bcc, msg.Envelope.ReplyTo,
-			msg.Envelope.MessageID, msg.Envelope.InReplyTo, msg.Envelope.References, usMicros(msg.Envelope.Date))
+			msg.Envelope.MessageID, msg.Envelope.InReplyTo, msg.Envelope.References, usMicros(msg.Envelope.Date),
+			boolToInt64(msg.InternalizePending))
 		if err != nil {
 			return mapErr(err)
 		}
@@ -1282,12 +1296,17 @@ func (m *metadata) ReplaceMessageBody(
 				return store.ErrQuotaExceeded
 			}
 		}
-		// Update the messages row with the new blob + envelope.
+		// Update the messages row with the new blob + envelope. Clear
+		// internalize_pending in the same statement so the on-demand
+		// rewrite path (REQ-EXTIMG-93) doesn't need a follow-up
+		// transaction; live-mail callers were already storing 0 here
+		// so the explicit reset is a no-op for them.
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE messages
 			   SET blob_hash = ?, blob_size = ?, size = ?,
 			       env_subject = ?, env_from = ?, env_to = ?, env_cc = ?, env_bcc = ?, env_reply_to = ?,
-			       env_message_id = ?, env_in_reply_to = ?, env_references = ?, env_date_us = ?
+			       env_message_id = ?, env_in_reply_to = ?, env_references = ?, env_date_us = ?,
+			       internalize_pending = 0
 			 WHERE id = ?`,
 			ref.Hash, ref.Size, size,
 			env.Subject, env.From, env.To, env.Cc, env.Bcc, env.ReplyTo,
@@ -1363,7 +1382,8 @@ func (m *metadata) GetMessage(ctx context.Context, id store.MessageID) (store.Me
 		SELECT id, principal_id, blob_hash, blob_size, internal_date_us,
 		       received_at_us, size, thread_id,
 		       env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
-		       env_message_id, env_in_reply_to, env_references, env_date_us
+		       env_message_id, env_in_reply_to, env_references, env_date_us,
+		       internalize_pending
 		  FROM messages WHERE id = ?`, int64(id))
 	msg, err := scanMessageRow(row)
 	if err != nil {
@@ -1437,6 +1457,40 @@ func (m *metadata) UpdateMessageThreadID(ctx context.Context, msgID store.Messag
 		`UPDATE messages SET thread_id = ? WHERE id = ?`,
 		int64(threadID), int64(msgID))
 	return mapErr(err)
+}
+
+func (m *metadata) MarkMessageInternalizePending(ctx context.Context, msgID store.MessageID) error {
+	res, err := m.s.db.ExecContext(ctx,
+		`UPDATE messages SET internalize_pending = 1 WHERE id = ?`,
+		int64(msgID))
+	if err != nil {
+		return mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("storesqlite: rows affected: %w", err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (m *metadata) ClearMessageInternalizePending(ctx context.Context, msgID store.MessageID) error {
+	res, err := m.s.db.ExecContext(ctx,
+		`UPDATE messages SET internalize_pending = 0 WHERE id = ?`,
+		int64(msgID))
+	if err != nil {
+		return mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("storesqlite: rows affected: %w", err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 func (m *metadata) UpdateMessageFlags(

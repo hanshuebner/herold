@@ -56,6 +56,7 @@ func Run(t *testing.T, f Factory) {
 		{"QueryEmailFast_Pagination", testQueryEmailFastPagination},
 		{"QueryEmailFast_Filters", testQueryEmailFastFilters},
 		{"ListThreadsByKeys", testListThreadsByKeys},
+		{"InternalizePending_Lifecycle", testInternalizePendingLifecycle},
 		{"QuotaEnforcement", testQuotaEnforcement},
 		{"DeleteMailboxCascades", testDeleteMailboxCascades},
 		{"BlobRoundTrip", testBlobRoundTrip},
@@ -1486,6 +1487,121 @@ func testQueryEmailFastFilters(t *testing.T, s store.Store) {
 	// In Inbox we now have ids[0..4]; the largest (size 1004) is ids[4].
 	if r.IDs[0] != ids[4] {
 		t.Fatalf("SortBy size DESC IDs[0] = %d, want %d", r.IDs[0], ids[4])
+	}
+}
+
+// testInternalizePendingLifecycle covers the on-demand external-image
+// internalization flag (17-external-images.md REQ-EXTIMG-93..97):
+//
+//   - InsertMessage with InternalizePending=true persists the flag and
+//     GetMessage returns it.
+//   - MarkMessageInternalizePending sets the flag on an already-stored
+//     message; ClearMessageInternalizePending unsets it.
+//   - ReplaceMessageBody clears the flag in the same transaction so
+//     the on-demand JMAP path doesn't need a follow-up call.
+//   - The flag is per-message; touching one message does not affect
+//     siblings.
+//   - Mark/Clear on a missing id returns ErrNotFound.
+func testInternalizePendingLifecycle(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "internalize@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	// Two messages: one inserted with the flag set, one without.
+	flaggedRef := putBlob(t, s, "flagged-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:        p.ID,
+		Blob:               flaggedRef,
+		Size:               flaggedRef.Size,
+		InternalizePending: true,
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage flagged: %v", err)
+	}
+	plainRef := putBlob(t, s, "plain-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID,
+		Blob:        plainRef,
+		Size:        plainRef.Size,
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage plain: %v", err)
+	}
+
+	listed, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("listed %d messages, want 2", len(listed))
+	}
+	var flaggedID, plainID store.MessageID
+	for _, m := range listed {
+		if m.Blob.Hash == flaggedRef.Hash {
+			flaggedID = m.ID
+		} else {
+			plainID = m.ID
+		}
+	}
+	if flaggedID == 0 || plainID == 0 {
+		t.Fatalf("could not identify both messages: flaggedID=%d plainID=%d", flaggedID, plainID)
+	}
+
+	// GetMessage returns the persisted flag for the flagged row.
+	got, err := s.Meta().GetMessage(ctx, flaggedID)
+	if err != nil {
+		t.Fatalf("GetMessage flagged: %v", err)
+	}
+	if !got.InternalizePending {
+		t.Fatalf("flagged message: InternalizePending = false, want true")
+	}
+	got, err = s.Meta().GetMessage(ctx, plainID)
+	if err != nil {
+		t.Fatalf("GetMessage plain: %v", err)
+	}
+	if got.InternalizePending {
+		t.Fatalf("plain message: InternalizePending = true, want false")
+	}
+
+	// MarkMessageInternalizePending flips the plain row's flag on.
+	if err := s.Meta().MarkMessageInternalizePending(ctx, plainID); err != nil {
+		t.Fatalf("MarkMessageInternalizePending: %v", err)
+	}
+	got, _ = s.Meta().GetMessage(ctx, plainID)
+	if !got.InternalizePending {
+		t.Fatalf("after Mark, InternalizePending = false")
+	}
+	// Other message untouched.
+	got, _ = s.Meta().GetMessage(ctx, flaggedID)
+	if !got.InternalizePending {
+		t.Fatalf("Mark on plainID should not affect flaggedID")
+	}
+
+	// ClearMessageInternalizePending flips the flagged row's flag off.
+	if err := s.Meta().ClearMessageInternalizePending(ctx, flaggedID); err != nil {
+		t.Fatalf("ClearMessageInternalizePending: %v", err)
+	}
+	got, _ = s.Meta().GetMessage(ctx, flaggedID)
+	if got.InternalizePending {
+		t.Fatalf("after Clear, InternalizePending = true")
+	}
+
+	// ReplaceMessageBody clears the flag implicitly. plainID is still
+	// flagged from the Mark call above; replacing its body must clear it.
+	newRef := putBlob(t, s, "rewritten-body-with-different-content")
+	env := got.Envelope
+	if err := s.Meta().ReplaceMessageBody(ctx, plainID, newRef, newRef.Size, env); err != nil {
+		t.Fatalf("ReplaceMessageBody: %v", err)
+	}
+	got, _ = s.Meta().GetMessage(ctx, plainID)
+	if got.InternalizePending {
+		t.Fatalf("ReplaceMessageBody must clear InternalizePending")
+	}
+
+	// Mark / Clear on an unknown id surface ErrNotFound.
+	if err := s.Meta().MarkMessageInternalizePending(ctx, 99999999); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Mark missing: err=%v, want ErrNotFound", err)
+	}
+	if err := s.Meta().ClearMessageInternalizePending(ctx, 99999999); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Clear missing: err=%v, want ErrNotFound", err)
 	}
 }
 

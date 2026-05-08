@@ -1,0 +1,21 @@
+-- 0043_messages_internalize_pending.sql — add internalize_pending column.
+--
+-- REQ-EXTIMG-91 / REQ-EXTIMG-97: gmail-import (and any future bulk
+-- importer) marks messages with this flag instead of synchronously
+-- prefetching every external image. The first JMAP Email/get on a
+-- flagged message triggers the rewriter; on completion the flag is
+-- cleared. Live SMTP delivery never sets it — that path either
+-- internalizes at delivery (live mode=internalize) or stores
+-- verbatim (live mode=passthrough).
+--
+-- Encoded as a small int rather than a boolean so future states
+-- (rewrite_failed_recoverable, etc.) can be added without another
+-- migration. Values today: 0 = not pending (default), 1 = pending
+-- (rewrite at first read).
+--
+-- Existing rows default to 0; this matches the live-delivery
+-- behaviour for already-stored messages. No backfill needed.
+--
+-- Forward-only. Mirrors storepg 0043.
+
+ALTER TABLE messages ADD COLUMN internalize_pending INTEGER NOT NULL DEFAULT 0;

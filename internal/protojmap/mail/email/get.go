@@ -201,6 +201,14 @@ func (g *getHandler) renderOne(
 	if !needBody {
 		return renderEmailMetadata(m), nil
 	}
+	// On-demand external-image internalization for importer-flagged
+	// messages (17-external-images.md REQ-EXTIMG-93). The first read
+	// after import runs the rewriter; subsequent reads see the
+	// rewritten body and the cleared flag. Synchronous from the
+	// caller's perspective; bounded by extImg.PerMessageTimeout.
+	if m.InternalizePending {
+		m = g.h.maybeInternalizeOnDemand(ctx, m)
+	}
 	parser := g.h.parseFn
 	if parser == nil {
 		parser = defaultParseFn

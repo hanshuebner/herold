@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/email"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/mailbox"
@@ -22,8 +23,30 @@ import (
 // Register entry points; this top-level helper exists so the boot
 // path has a single hook for the two big types.
 func Register(reg *protojmap.CapabilityRegistry, st store.Store, logger *slog.Logger, clk clock.Clock) {
+	RegisterWithOptions(reg, st, logger, clk, RegisterOptions{})
+}
+
+// RegisterOptions plumbs optional dependencies into the per-datatype
+// handlers. Today only Email/* observes them (extimg drives the
+// on-demand external-image rewriter at first read).
+type RegisterOptions struct {
+	// ExtImg drives on-demand external-image internalization for
+	// importer-flagged messages (17-external-images.md REQ-EXTIMG-93).
+	// Zero-value disables the path; the renderer treats flagged
+	// messages as if the operator had selected mode = passthrough.
+	ExtImg extimg.Config
+}
+
+// RegisterWithOptions is Register with the optional config bag.
+func RegisterWithOptions(
+	reg *protojmap.CapabilityRegistry,
+	st store.Store,
+	logger *slog.Logger,
+	clk clock.Clock,
+	opts RegisterOptions,
+) {
 	mailbox.Register(reg, st, logger, clk)
-	email.Register(reg, st, logger, clk)
+	email.RegisterWithOptions(reg, st, logger, clk, email.RegisterOptions{ExtImg: opts.ExtImg})
 	// Per RFC 8621 §1, the JMAP Mail capability descriptor advertises
 	// per-account hints (mayCreateTopLevelMailbox, maxMailboxesPerEmail,
 	// emailQuerySortOptions). v1 publishes a conservative descriptor:

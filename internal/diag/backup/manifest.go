@@ -207,7 +207,15 @@ const CurrentBackupVersion = 1
 //	legacy sieve_scripts table; the legacy single-slot table remains
 //	the runtime delivery path's read source, kept in sync via
 //	SetActiveSieveScript.
-const CurrentSchemaVersion = 42
+//
+// 43 — 0043_messages_internalize_pending.sql. On-demand external
+//
+//	image internalization for imported mail
+//	(17-external-images.md REQ-EXTIMG-90..99). Adds
+//	messages.internalize_pending: 0 = not pending (default,
+//	covers every existing row), 1 = pending (rewrite at first
+//	JMAP Email/get, then clear).
+const CurrentSchemaVersion = 43
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

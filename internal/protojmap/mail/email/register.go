@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/mailreact"
 	"github.com/hanshuebner/herold/internal/protojmap"
@@ -22,6 +23,12 @@ type handlerSet struct {
 	// (REQ-FLOW-100..103). Nil disables cross-server propagation
 	// (e.g. tests that only exercise local-path behaviour).
 	reactionMailer *mailreact.Mailer
+	// extImg drives the on-demand external-image internalization
+	// triggered when an Email/get arrives for an importer-flagged
+	// message (17-external-images.md REQ-EXTIMG-93). Zero value
+	// disables the path; the renderer treats InternalizePending
+	// messages as if the operator had selected mode = passthrough.
+	extImg extimg.Config
 }
 
 // RegisterOptions carries optional configuration for the Email/* handler
@@ -34,6 +41,11 @@ type RegisterOptions struct {
 	// LocalDomainFn is required when ReactionMailer is non-nil. Returns
 	// true when domain is locally served.
 	LocalDomainFn func(ctx context.Context, domain string) bool
+	// ExtImg drives on-demand external-image internalization at first
+	// Email/get for messages flagged by an importer
+	// (17-external-images.md REQ-EXTIMG-93). Zero-value disables the
+	// path.
+	ExtImg extimg.Config
 }
 
 // Register installs the Email/* handlers under the JMAP Mail
@@ -57,6 +69,7 @@ func RegisterWithOptions(reg *protojmap.CapabilityRegistry, st store.Store, logg
 		clk:            clk,
 		parseFn:        defaultParseFn,
 		reactionMailer: ropts.ReactionMailer,
+		extImg:         ropts.ExtImg,
 	}
 	reg.Register(protojmap.CapabilityMail, &getHandler{h: h})
 	reg.Register(protojmap.CapabilityMail, &changesHandler{h: h})

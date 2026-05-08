@@ -62,6 +62,16 @@ type Options struct {
 	// huge batches grow the in-memory buffer and lengthen rollback
 	// surface on a per-batch failure. Zero applies the default of 500.
 	BatchSize int
+	// InternalizeImports controls whether imported messages with
+	// external HTML image references are flagged for on-demand
+	// rewrite at first JMAP Email/get
+	// (17-external-images.md REQ-EXTIMG-91/-92):
+	//   - "" or "on_demand" (default): flag eligible messages
+	//   - "off": never flag; reads behave like passthrough mode
+	//
+	// Bulk-fetching at import time is deliberately not offered; the
+	// requirement document explains why.
+	InternalizeImports string
 }
 
 // Result is the per-job summary returned by Run. Counts are populated
@@ -908,12 +918,46 @@ func (imp *Importer) prepareOneMessage(
 		Blob:         ref,
 		Envelope:     envelope,
 	}
+	// REQ-EXTIMG-91 / REQ-EXTIMG-93: flag for on-demand rewrite at
+	// first read when the body looks like HTML with at least one
+	// external http(s) reference. Cheap substring scan; false
+	// positives just trigger a no-op rewrite at first read; false
+	// negatives leave the message unrewritten (no privacy harm).
+	if imp.shouldFlagOnDemand() && hasExternalHTMLImage(raw.Body) {
+		msg.InternalizePending = true
+	}
 	return preparedMessage{
 		msg:        msg,
 		targets:    targets,
 		byteOffset: raw.ByteOffset,
 		dedupKey:   ref.Hash,
 	}, prepDecisionInsert, nil
+}
+
+// shouldFlagOnDemand reports whether the importer should set
+// InternalizePending on eligible messages. Operator policy is set
+// through Options.InternalizeImports; default (empty / "on_demand")
+// flags, "off" suppresses.
+func (imp *Importer) shouldFlagOnDemand() bool {
+	switch imp.Options.InternalizeImports {
+	case "", "on_demand":
+		return true
+	case "off":
+		return false
+	}
+	return true
+}
+
+// hasExternalHTMLImage is the cheap heuristic that gates the pending
+// flag: substring scan for an <img tag and an http URL anywhere in
+// the body. The on-demand pass parses the body precisely and may
+// find no actual external refs (CSS-only images, false positives in
+// quoted text, etc.), in which case it clears the flag and the cost
+// is one parse — orders of magnitude cheaper than the alternative
+// of parsing every imported message at import time.
+func hasExternalHTMLImage(body []byte) bool {
+	return bytes.Contains(body, []byte("<img")) &&
+		(bytes.Contains(body, []byte("http://")) || bytes.Contains(body, []byte("https://")))
 }
 
 // parseEnvelopeOnly extracts the store.Envelope summary by reading

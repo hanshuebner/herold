@@ -158,9 +158,84 @@ allow_private = false
 on_modification = "strip"   # strip | keep
 arc_seal        = false     # reserved; not implemented in this iteration
 
+[external_images.imports]
+internalize_imports = "on_demand"  # on_demand | off
+                                   # default: on_demand
+                                   # imported messages flagged for
+                                   # one-shot rewrite at first read
+
 [external_images.audit]
 log_fetches = false
 ```
+
+## On-demand internalization for imported mail
+
+*(Added 2026-05-08 after the maintainer asked whether Gmail-import
+messages should also be internalized, and pushed me to challenge the
+naive answer. Bulk-fetching at import time has three problems:
+the privacy gain is asymmetric — for archived mail the sender
+already received the original tracking pixel, so re-fetching only
+leaks "this user is migrating" without denying the sender any
+information; the async fetch window is itself a privacy hole during
+which messages live in the DB with their original URLs; and 100k+
+parallel fetches from one IP look like scraping to upstream CDNs.
+The on-demand-at-first-read alternative spends fetches only on
+messages the user actually engages with, exactly when the user
+would have triggered a fetch via "show images" anyway, so engagement
+maps 1:1 to internalization cost.)*
+
+The on-demand path applies to **any** message that lands without
+having gone through the live-delivery `internalize` rewriter — most
+commonly imported mail, but also messages stored under a previously-
+configured `passthrough` policy that the operator later switched to
+`internalize`. Messages already-internalized at delivery (or stored
+under `passthrough` with no flag set) are unaffected.
+
+| ID | Requirement |
+|----|-------------|
+| REQ-EXTIMG-90 | Inbound message importers (Gmail Takeout, future IMAP-mirror imports) MUST NOT bulk-fetch external images at import time. Imported messages land verbatim. |
+| REQ-EXTIMG-91 | When the operator policy is `internalize_imports = "on_demand"` (default) and the importer detects HTML body content with at least one external `http(s)://` reference, the imported message is flagged with a per-message `internalize_pending` marker. The detection is a fast substring scan; precise URL extraction is deferred to the read-time pass (REQ-EXTIMG-93). |
+| REQ-EXTIMG-92 | Operators MAY disable on-demand internalization with `internalize_imports = "off"`. Imported messages then never carry the marker; reads behave identically to the live `passthrough` path. |
+| REQ-EXTIMG-93 | The first JMAP `Email/get` (or any read path that materialises body content for the user) for a message carrying `internalize_pending` triggers a one-shot synchronous internalization: fetch every external image through the same SSRF-aware fetcher and limits used at delivery (REQ-EXTIMG-20..37), rewrite the HTML, replace the stored body blob via `Metadata.ReplaceMessageBody`, clear the marker. The user waits for the rewrite — bounded by the existing per-message timeout (REQ-EXTIMG-24, default 60 s). |
+| REQ-EXTIMG-94 | The marker is cleared even when the rewrite makes no changes (every fetch failed, parser refused the HTML, etc.). Subsequent reads MUST NOT re-attempt the rewrite. The cost-of-engagement budget is "one fetch attempt per message per import"; an operator-driven retry hatch is reserved for a future iteration. |
+| REQ-EXTIMG-95 | When the rewritten body would push the principal over `quota_bytes` (a fetched-images-heavy newsletter could add many MiB), the rewrite is abandoned, the marker is cleared, and a WARN log records the over-quota outcome with the message id. The user sees the original-URL body. |
+| REQ-EXTIMG-96 | The rewrite uses the same DKIM disposition as live `internalize` (REQ-EXTIMG-41..44). For imported mail this is a no-op: the import path does not preserve original DKIM signatures across the rewrite, and the server-stamped `Authentication-Results` records the import-time verdict (typically `dkim=none` for archive imports). |
+| REQ-EXTIMG-97 | The marker lives on the message metadata so `Email/get` can route on it without first hitting the body blob. A small integer column on `messages` (`internalize_pending`, default 0) is sufficient; the migration adds it as a non-NULL column with default 0 so existing rows do not need backfill. |
+| REQ-EXTIMG-98 | The on-demand pass is observable: a per-message INFO log line (mode = `on_demand`, candidates, internalized, failed, wall-ms) and a `extimg_on_demand_total{outcome=...}` Prometheus counter mirror the live-delivery audit (REQ-EXTIMG-80..82). |
+| REQ-EXTIMG-99 | Quota cost: the rewritten body's size is recorded in the principal's quota at the moment of the rewrite, replacing the original body's size contribution. There is no separate "pending image quota"; storage scales with engagement, not with archive size. |
+
+### What this gives operators
+
+Default install: an operator who runs `herold import gmail` on a
+200k-message archive sees imports complete at the speed of pure
+metadata insertion — no per-message HTTP fetch latency. Over the
+following days/weeks/months the user's actual reads quietly
+internalize the messages they engage with. Senders see a fetch from
+the operator's IP only when (and if) the user actually opens that
+specific message — which is the same moment the user would have
+triggered a fetch via "show images" anyway, so internalization adds
+no new fetch signal compared to the user opening the message in
+"passthrough" mode and clicking the existing button.
+
+For the user, the experience is: imported messages render with
+"show images" still gated until first open; on first open the body
+is rewritten and cached; every subsequent open is fast and
+externally-silent. The first-open latency is bounded by the
+per-message rewrite budget (60 s default).
+
+### Out of scope (future iterations)
+
+- **Retry hatch** for messages whose first-read rewrite failed
+  (network was flaky, sender's CDN was down). REQ-EXTIMG-94 makes
+  this explicit. A per-message admin endpoint to re-flag is the
+  obvious shape; defer until someone asks.
+- **Bulk re-internalize** when the operator switches policy from
+  `passthrough` to `internalize`. The on-demand path covers this
+  organically as users re-read affected messages, but a one-shot
+  "rewrite everything in this principal" admin command is a
+  reasonable future addition.
+- **Per-domain `internalize_imports`** — defer until an operator
+  asks. The config schema permits a `per_domain` extension later.
 
 ## Out of scope
 

@@ -516,6 +516,14 @@ type Message struct {
 	// touching the blob).
 	Envelope Envelope
 
+	// InternalizePending is set when the message was inserted by an
+	// importer that intentionally skipped delivery-time external-image
+	// internalization (17-external-images.md REQ-EXTIMG-91). The first
+	// JMAP Email/get on the message runs the rewriter, replaces the
+	// stored body, and clears the flag (REQ-EXTIMG-93..94). False for
+	// every message stored by live SMTP delivery.
+	InternalizePending bool
+
 	// -- Multi-mailbox membership (REQ-STORE-36) -----------------------
 
 	// Mailboxes is the full set of per-(message, mailbox) rows for this

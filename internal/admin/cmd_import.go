@@ -15,6 +15,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	gmail "github.com/hanshuebner/herold/internal/import/gmail"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
 // newImportCmd registers `herold import <vendor>`. The umbrella verb
@@ -81,12 +82,13 @@ The --source path must be an extracted Takeout directory (run
 				Principal: principal,
 				Logger:    importProgressLogger(g, cmd.ErrOrStderr()),
 				Options: gmail.Options{
-					Source:         source,
-					Locale:         gmail.Locale(localeFlag),
-					DryRun:         dryRun,
-					SkipMail:       skipMail,
-					SkipSettings:   skipSettings,
-					FreshPrincipal: fresh,
+					Source:             source,
+					Locale:             gmail.Locale(localeFlag),
+					DryRun:             dryRun,
+					SkipMail:           skipMail,
+					SkipSettings:       skipSettings,
+					FreshPrincipal:     fresh,
+					InternalizeImports: importImagesPolicy(cfg),
 				},
 			}
 			res, err := imp.Run(ctx)
@@ -104,6 +106,21 @@ The --source path must be an extracted Takeout directory (run
 	c.Flags().BoolVar(&skipSettings, "no-settings", false, "skip filters/blocked/forwarding/delegated")
 	c.Flags().BoolVar(&fresh, "fresh", false, "assert the target principal has no existing messages; skip the start-up dedup scan")
 	return c
+}
+
+// importImagesPolicy reads the operator's external-image import
+// policy. The default (live mode "internalize") flags eligible
+// imported messages for on-demand rewrite at first JMAP read
+// (17-external-images.md REQ-EXTIMG-91/-93). Operators who do not
+// want any rewrite — bulk or on-demand — set
+// [external_images] mode = "passthrough" in system.toml; we map
+// that to InternalizeImports="off". A future per-policy knob
+// (REQ-EXTIMG-92) can decouple them; today they share the toggle.
+func importImagesPolicy(cfg *sysconfig.Config) string {
+	if cfg != nil && cfg.ExternalImages.Mode == sysconfig.ExternalImagesModePassthrough {
+		return "off"
+	}
+	return "on_demand"
 }
 
 // importProgressLogger returns the slog.Logger the importer writes

@@ -2242,7 +2242,10 @@ func composeAdminAndUI(
 	// REQ-PROTO-56). The top-level jmapmail.Register bundles all three;
 	// Thread, SearchSnippet, and VacationResponse have separate entry
 	// points because jmapmail.Register does not include them.
-	jmapmail.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-mail"), clk)
+	jmapmail.RegisterWithOptions(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-mail"), clk,
+		jmapmail.RegisterOptions{
+			ExtImg: extimg.FromSysConfig(cfg.ExternalImages, cfg.Server.Hostname),
+		})
 	// Thread/get + Thread/changes (REQ-PROTO-41).
 	jmapthread.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-thread"), clk)
 	// SearchSnippet/get (REQ-PROTO-41 / REQ-PROTO-47).
