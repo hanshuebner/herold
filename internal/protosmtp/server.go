@@ -16,6 +16,7 @@ import (
 	"github.com/hanshuebner/herold/internal/categorise"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailarc"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/maildkim"
@@ -185,6 +186,11 @@ type Server struct {
 	bouncePoster  BouncePoster
 	subQueue      SubmissionQueue
 	webhookDisp   WebhookDispatcher
+	// extImg is the operator policy for inbound HTML external-image
+	// internalization (17-external-images.md). Zero value means
+	// passthrough (no rewrite). Read on every inbound message; SIGHUP
+	// reload swaps the embedded Config without restart.
+	extImg extimg.Config
 
 	// lifecycle
 	ctx       context.Context
@@ -238,7 +244,11 @@ type Config struct {
 	// recipient. Optional; nil collapses the post-acceptance refusal
 	// to "drop, audit, no DSN" with a warn-level log line.
 	BouncePoster BouncePoster
-	Options      Options
+	// ExtImg configures the inbound HTML external-image rewriter
+	// (17-external-images.md REQ-EXTIMG-01..82). Zero value means
+	// passthrough; the rewriter pipeline is a no-op.
+	ExtImg  extimg.Config
+	Options Options
 }
 
 // New constructs a Server. Logger and Clock default to slog.Default /
@@ -304,6 +314,7 @@ func New(cfg Config) (*Server, error) {
 		rcptPluginNm:  cfg.RcptPluginName,
 		rcptPluginFor: rcptFirst,
 		bouncePoster:  cfg.BouncePoster,
+		extImg:        cfg.ExtImg,
 	}
 	// Register the inbound attachment-policy collector set; idempotent.
 	observe.RegisterSMTPAttachmentPolicyMetrics()

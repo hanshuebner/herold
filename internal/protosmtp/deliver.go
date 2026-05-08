@@ -12,6 +12,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/categorise"
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
@@ -84,6 +85,22 @@ func (sess *session) finishMessage(body []byte) {
 	// Assemble the raw message bytes we will store (prepend Received
 	// and Authentication-Results headers).
 	finalBytes := sess.assembleStoredBytes(body, authStr)
+
+	// REQ-EXTIMG-02: external-image internalization. Inbound only —
+	// outbound submission keeps body-fidelity to the recipient's MX.
+	// On any rewrite failure we keep the original bytes (REQ-EXTIMG-61).
+	if sess.mode == RelayIn && sess.srv.extImg.Mode == extimg.ModeInternalize {
+		verdict := dkimVerdictFromAuth(authResults.DKIM)
+		rewritten, sum, ierr := extimg.Internalize(ctx, finalBytes, sess.srv.extImg, verdict)
+		if ierr == nil && sum.Modified {
+			finalBytes = rewritten
+			// Re-parse so deliverOne / Sieve see the rewritten body.
+			if msg2, perr := mailparse.Parse(bytes.NewReader(finalBytes), mailparse.NewParseOptions()); perr == nil {
+				msg = msg2
+			}
+		}
+		sess.logExtImgOutcome(ctx, sum, ierr)
+	}
 
 	// Persist the blob once; every recipient × mailbox refers to the
 	// same BlobRef.

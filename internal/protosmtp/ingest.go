@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
@@ -161,6 +162,34 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 			Score:   classification.Score,
 			Engine:  s.spamPlug,
 		}
+	}
+
+	// REQ-EXTIMG-02: external-image internalization. Same hook as the
+	// SMTP DATA path; ingest is always inbound so no mode check.
+	if s.extImg.Mode == extimg.ModeInternalize {
+		verdict := dkimVerdictFromAuth(authResults.DKIM)
+		rewritten, sum, ierr := extimg.Internalize(ctx, finalBytes, s.extImg, verdict)
+		if ierr == nil && sum.Modified {
+			finalBytes = rewritten
+			if msg2, perr := mailparse.Parse(bytes.NewReader(finalBytes), mailparse.NewParseOptions()); perr == nil {
+				msg = msg2
+			}
+		}
+		// Server-level log (no session here; emit directly).
+		level := slog.LevelInfo
+		msgText := "ingest: extimg rewrite"
+		if ierr != nil {
+			level = slog.LevelWarn
+			msgText = "ingest: extimg error"
+		}
+		s.log.LogAttrs(ctx, level, msgText,
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("subsystem", "protosmtp"),
+			slog.String("source", source),
+			slog.Bool("modified", sum.Modified),
+			slog.Int("candidates", sum.Candidates),
+			slog.Int("internalized", sum.Internalized),
+			slog.Int("failed", sum.Failed))
 	}
 
 	// Persist the blob once; every recipient references the same BlobRef.

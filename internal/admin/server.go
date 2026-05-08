@@ -30,6 +30,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/linkpreview"
 	"github.com/hanshuebner/herold/internal/mailarc"
@@ -420,6 +421,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		RcptResolver:           rcptResolverInst,
 		RcptPluginName:         cfg.SMTP.Inbound.DirectoryResolveRcptPlugin,
 		RcptPluginFirstDomains: cfg.SMTP.Inbound.PluginFirstForDomains,
+		ExtImg:                 extimg.FromSysConfig(cfg.ExternalImages, cfg.Server.Hostname),
 	})
 	if err != nil {
 		return fmt.Errorf("admin: protosmtp: %w", err)

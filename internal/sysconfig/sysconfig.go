@@ -18,13 +18,14 @@ import (
 // Config is the parsed representation of /etc/herold/system.toml (REQ-OPS-01..08).
 // Unknown keys at parse time are errors.
 type Config struct {
-	Server        ServerConfig        `toml:"server"`
-	Acme          *AcmeConfig         `toml:"acme,omitempty"`
-	Listener      []ListenerConfig    `toml:"listener"`
-	Plugin        []PluginConfig      `toml:"plugin"`
-	SMTP          SMTPConfig          `toml:"smtp,omitempty"`
-	Hooks         HooksConfig         `toml:"hooks,omitempty"`
-	Observability ObservabilityConfig `toml:"observability"`
+	Server         ServerConfig         `toml:"server"`
+	Acme           *AcmeConfig          `toml:"acme,omitempty"`
+	Listener       []ListenerConfig     `toml:"listener"`
+	Plugin         []PluginConfig       `toml:"plugin"`
+	SMTP           SMTPConfig           `toml:"smtp,omitempty"`
+	Hooks          HooksConfig          `toml:"hooks,omitempty"`
+	ExternalImages ExternalImagesConfig `toml:"external_images,omitempty"`
+	Observability  ObservabilityConfig  `toml:"observability"`
 	// Log holds the multi-sink logging configuration (REQ-OPS-80..86).
 	// The legacy [observability] block is translated into a single
 	// [[log.sink]] entry at parse time by translateLegacyObservability.
@@ -126,6 +127,119 @@ type SMTPInboundConfig struct {
 	// directory.resolve_rcpt (REQ-PLUG-32). Zero applies the 2s
 	// default; values above the 5s hard cap are rejected at Validate.
 	ResolveRcptTimeout Duration `toml:"resolve_rcpt_timeout,omitempty"`
+}
+
+// ExternalImagesMode selects the operator-wide policy for handling
+// HTML mail's external image references. See docs/design/server/
+// requirements/17-external-images.md REQ-EXTIMG-01..05.
+type ExternalImagesMode string
+
+const (
+	// ExternalImagesModeInternalize is the default: prefetch every
+	// external image at delivery, attach as inline parts, rewrite
+	// references to cid:. Sender sees one delivery-time fetch from
+	// the operator's IP; user sees zero per-open fetches.
+	// (REQ-EXTIMG-02 / REQ-EXTIMG-05)
+	ExternalImagesModeInternalize ExternalImagesMode = "internalize"
+	// ExternalImagesModePassthrough leaves bodies unchanged. The
+	// suite's "show images" gating is the user's privacy fence.
+	// DKIM signatures are preserved unchanged. (REQ-EXTIMG-03)
+	ExternalImagesModePassthrough ExternalImagesMode = "passthrough"
+)
+
+// ExternalImagesConfig is the operator-facing configuration for the
+// external-image internalization pipeline (17-external-images.md).
+// Zero value matches "internalize" with the documented defaults.
+type ExternalImagesConfig struct {
+	// Mode selects the operator-wide policy (REQ-EXTIMG-01).
+	// Empty = internalize.
+	Mode ExternalImagesMode `toml:"mode,omitempty"`
+
+	// Limits caps fetcher behaviour (REQ-EXTIMG-21..27).
+	Limits ExternalImagesLimits `toml:"limits,omitempty"`
+
+	// Network configures the SSRF guard surface (REQ-EXTIMG-30..37).
+	Network ExternalImagesNetwork `toml:"network,omitempty"`
+
+	// DKIM controls disposition of inbound DKIM signatures when the
+	// rewriter modifies the body (REQ-EXTIMG-40..47).
+	DKIM ExternalImagesDKIM `toml:"dkim,omitempty"`
+
+	// Audit configures observability output (REQ-EXTIMG-80..82).
+	Audit ExternalImagesAudit `toml:"audit,omitempty"`
+}
+
+// ExternalImagesLimits enforces fetcher resource caps. Zero values
+// fall back to the documented defaults applied by the extimg package.
+// See REQ-EXTIMG-21..27.
+type ExternalImagesLimits struct {
+	// MaxPerImageBytes truncates a single fetch beyond this size.
+	// Default 5 MiB. (REQ-EXTIMG-21)
+	MaxPerImageBytes int64 `toml:"max_per_image_bytes,omitempty"`
+	// MaxPerMessageImages caps the number of fetch candidates per
+	// message; the rest stay as their original URL. Default 100.
+	// (REQ-EXTIMG-22)
+	MaxPerMessageImages int `toml:"max_per_message_images,omitempty"`
+	// MaxPerMessageBytes caps cumulative fetched bytes per message.
+	// Default 50 MiB. (REQ-EXTIMG-23)
+	MaxPerMessageBytes int64 `toml:"max_per_message_bytes,omitempty"`
+	// PerImageConnectTimeout bounds the dial. Default 5s.
+	// (REQ-EXTIMG-24)
+	PerImageConnectTimeout Duration `toml:"per_image_connect_timeout,omitempty"`
+	// PerImageTotalTimeout bounds dial + headers + body read.
+	// Default 30s. (REQ-EXTIMG-24)
+	PerImageTotalTimeout Duration `toml:"per_image_total_timeout,omitempty"`
+	// PerMessageTimeout caps the wall-clock budget for the whole
+	// message rewrite. Default 60s. (REQ-EXTIMG-24)
+	PerMessageTimeout Duration `toml:"per_message_timeout,omitempty"`
+	// ConcurrentFetches bounds in-flight fetches per message.
+	// Default 8. (REQ-EXTIMG-20)
+	ConcurrentFetches int `toml:"concurrent_fetches,omitempty"`
+	// RequireHTTPS refuses http:// references. Default true.
+	// (REQ-EXTIMG-25)
+	RequireHTTPS *bool `toml:"require_https,omitempty"`
+	// FollowRedirectsMax bounds redirect chain length, validated at
+	// every hop (REQ-EXTIMG-26). Default 3.
+	FollowRedirectsMax int `toml:"follow_redirects_max,omitempty"`
+}
+
+// ExternalImagesNetwork configures the SSRF guard. The defaults
+// refuse the full set of IANA special-purpose ranges (IPv4 + IPv6).
+// Operators MAY extend the deny list; AllowPrivate is the only
+// loosening knob. See REQ-EXTIMG-30..37.
+type ExternalImagesNetwork struct {
+	// DenyCIDRs extends the built-in deny list with operator-specific
+	// blocks. (REQ-EXTIMG-33)
+	DenyCIDRs []string `toml:"deny_cidrs,omitempty"`
+	// AllowPrivate flips the built-in RFC-1918 / loopback fence off
+	// for operators with legitimate internal-fetch needs. Documented
+	// as dangerous. (REQ-EXTIMG-33)
+	AllowPrivate bool `toml:"allow_private,omitempty"`
+}
+
+// ExternalImagesDKIM selects what happens to DKIM signatures on a
+// rewritten body. See REQ-EXTIMG-40..47.
+type ExternalImagesDKIM struct {
+	// OnModification: "strip" (default) drops the now-invalid
+	// DKIM-Signature and any inbound Authentication-Results headers,
+	// emitting a server-stamped Authentication-Results recording the
+	// pre-rewrite verdict. "keep" leaves the broken signature in
+	// place; useful only for debugging.
+	// (REQ-EXTIMG-41..43)
+	OnModification string `toml:"on_modification,omitempty"`
+	// ARCSeal is reserved for a future iteration that will emit
+	// ARC-Authentication-Results / ARC-Message-Signature / ARC-Seal
+	// headers. Currently must remain false; non-false values fail
+	// at Validate to surface premature use. (REQ-EXTIMG-47)
+	ARCSeal bool `toml:"arc_seal,omitempty"`
+}
+
+// ExternalImagesAudit toggles observability output (REQ-EXTIMG-80..82).
+type ExternalImagesAudit struct {
+	// LogFetches emits one structured record per fetch with URL hash
+	// (sha256 prefix; never the URL itself), bytes, status, duration,
+	// resolved IP. Off by default. (REQ-EXTIMG-82)
+	LogFetches bool `toml:"log_fetches,omitempty"`
 }
 
 // ServerConfig carries process-wide settings.
@@ -1402,6 +1516,45 @@ func applyDefaults(c *Config) {
 	if c.Server.ImageProxy.PerUserConcurrent == 0 {
 		c.Server.ImageProxy.PerUserConcurrent = 8
 	}
+	// External-image internalization defaults
+	// (17-external-images.md REQ-EXTIMG-05/-20..27/-46). The
+	// rewriter package consults these knobs at runtime so an empty
+	// [external_images] block ships the documented defaults.
+	if c.ExternalImages.Mode == "" {
+		c.ExternalImages.Mode = ExternalImagesModeInternalize
+	}
+	el := &c.ExternalImages.Limits
+	if el.MaxPerImageBytes == 0 {
+		el.MaxPerImageBytes = 5 * 1024 * 1024
+	}
+	if el.MaxPerMessageImages == 0 {
+		el.MaxPerMessageImages = 100
+	}
+	if el.MaxPerMessageBytes == 0 {
+		el.MaxPerMessageBytes = 50 * 1024 * 1024
+	}
+	if el.PerImageConnectTimeout == 0 {
+		el.PerImageConnectTimeout = Duration(5 * time.Second)
+	}
+	if el.PerImageTotalTimeout == 0 {
+		el.PerImageTotalTimeout = Duration(30 * time.Second)
+	}
+	if el.PerMessageTimeout == 0 {
+		el.PerMessageTimeout = Duration(60 * time.Second)
+	}
+	if el.ConcurrentFetches == 0 {
+		el.ConcurrentFetches = 8
+	}
+	if el.RequireHTTPS == nil {
+		t := true
+		el.RequireHTTPS = &t
+	}
+	if el.FollowRedirectsMax == 0 {
+		el.FollowRedirectsMax = 3
+	}
+	if c.ExternalImages.DKIM.OnModification == "" {
+		c.ExternalImages.DKIM.OnModification = "strip"
+	}
 	// Chat ephemeral channel (REQ-CHAT-40..46). Defaults match the
 	// architecture document; operators get a working server without
 	// any TOML. Toggling Enabled to false unmounts the upgrade
@@ -1740,6 +1893,45 @@ func Validate(c *Config) error {
 	}
 	if ip.PerUserPerMinute < 0 || ip.PerUserOriginPerMinute < 0 || ip.PerUserConcurrent < 0 {
 		return errors.New("sysconfig: [server.image_proxy] rate-limit knobs must be >= 0")
+	}
+	// External-image internalization (17-external-images.md
+	// REQ-EXTIMG-01/-21..27/-33/-41/-47).
+	ei := &c.ExternalImages
+	switch ei.Mode {
+	case "", ExternalImagesModeInternalize, ExternalImagesModePassthrough:
+		// ok
+	default:
+		return fmt.Errorf("sysconfig: [external_images] mode %q must be %q or %q",
+			ei.Mode, ExternalImagesModeInternalize, ExternalImagesModePassthrough)
+	}
+	if ei.Limits.MaxPerImageBytes < 0 ||
+		ei.Limits.MaxPerMessageImages < 0 ||
+		ei.Limits.MaxPerMessageBytes < 0 ||
+		ei.Limits.ConcurrentFetches < 0 ||
+		ei.Limits.FollowRedirectsMax < 0 {
+		return errors.New("sysconfig: [external_images.limits] knobs must be >= 0")
+	}
+	if ei.Limits.MaxPerMessageBytes > 0 && ei.Limits.MaxPerImageBytes > 0 &&
+		ei.Limits.MaxPerImageBytes > ei.Limits.MaxPerMessageBytes {
+		return fmt.Errorf("sysconfig: [external_images.limits] max_per_image_bytes %d exceeds max_per_message_bytes %d",
+			ei.Limits.MaxPerImageBytes, ei.Limits.MaxPerMessageBytes)
+	}
+	for _, raw := range ei.Network.DenyCIDRs {
+		if _, _, err := net.ParseCIDR(raw); err != nil {
+			return fmt.Errorf("sysconfig: [external_images.network] deny_cidrs %q: %w", raw, err)
+		}
+	}
+	switch ei.DKIM.OnModification {
+	case "", "strip", "keep":
+		// ok
+	default:
+		return fmt.Errorf("sysconfig: [external_images.dkim] on_modification %q must be \"strip\" or \"keep\"",
+			ei.DKIM.OnModification)
+	}
+	// REQ-EXTIMG-47: ARC sealing reserved; refuse premature use so an
+	// operator who flips the knob does not get silent no-op.
+	if ei.DKIM.ARCSeal {
+		return errors.New("sysconfig: [external_images.dkim] arc_seal is reserved for a future iteration; must be false")
 	}
 	// Chat ephemeral channel (REQ-CHAT-40..46). Sanity-bound the
 	// knobs so an operator typo doesn't produce a non-functional
