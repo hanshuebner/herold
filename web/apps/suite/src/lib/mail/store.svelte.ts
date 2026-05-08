@@ -474,9 +474,11 @@ class MailStore {
       });
       strict(responses);
       const result = invocationArgs<{
+        newState?: string;
         created?: Record<string, Mailbox> | null;
         notCreated?: Record<string, { type: string; description?: string }>;
       }>(responses[0]);
+      this.#captureMailboxSetNewState(result);
       const failure = result.notCreated?.new;
       if (failure) {
         toast.show({
@@ -534,8 +536,10 @@ class MailStore {
       });
       strict(responses);
       const result = invocationArgs<{
+        newState?: string;
         notUpdated?: Record<string, { type: string; description?: string }>;
       }>(responses[0]);
+      this.#captureMailboxSetNewState(result);
       const failure = result.notUpdated?.[id];
       if (failure) {
         // Roll back.
@@ -594,9 +598,11 @@ class MailStore {
       });
       strict(responses);
       const result = invocationArgs<{
+        newState?: string;
         destroyed?: string[] | null;
         notDestroyed?: Record<string, { type: string; description?: string }>;
       }>(responses[0]);
+      this.#captureMailboxSetNewState(result);
       const failure = result.notDestroyed?.[id];
       if (failure) {
         toast.show({
@@ -1408,9 +1414,11 @@ class MailStore {
       });
       strict(responses);
       const result = invocationArgs<{
+        newState?: string;
         destroyed?: string[] | null;
         notDestroyed?: Record<string, { type: string; description?: string }>;
       }>(responses[0]);
+      this.#captureEmailSetNewState(result);
       const destroyed = (result.destroyed ?? []).length;
       const failed = result.notDestroyed
         ? Object.keys(result.notDestroyed).length
@@ -1502,9 +1510,11 @@ class MailStore {
     });
     strict(responses);
     const result = invocationArgs<{
+      newState?: string;
       updated?: Record<string, unknown> | null;
       notUpdated?: Record<string, { type: string; description?: string }>;
     }>(responses[0]);
+    this.#captureEmailSetNewState(result);
     const updated = Object.keys(result.updated ?? {});
     const failed: Record<string, string> = {};
     for (const [id, info] of Object.entries(result.notUpdated ?? {})) {
@@ -1579,9 +1589,11 @@ class MailStore {
       });
       strict(responses);
       const result = invocationArgs<{
+        newState?: string;
         destroyed?: string[] | null;
         notDestroyed?: Record<string, { type: string; description?: string }>;
       }>(responses[0]);
+      this.#captureEmailSetNewState(result);
       const destroyed = (result.destroyed ?? []).length;
       const failed = result.notDestroyed
         ? Object.keys(result.notDestroyed).length
@@ -2245,9 +2257,11 @@ class MailStore {
     });
     strict(responses);
     const result = invocationArgs<{
+      newState?: string;
       updated?: Record<string, unknown> | null;
       notUpdated?: Record<string, { type: string; description?: string }>;
     }>(responses[0]);
+    this.#captureEmailSetNewState(result);
     const failure = result.notUpdated?.[emailId];
     if (failure) {
       throw new Error(failure.description ?? failure.type);
@@ -2256,6 +2270,34 @@ class MailStore {
     // server-computed; refresh them after every successful Email/set
     // so the counts in App.svelte don't drift out of sync. Issue #24.
     this.#refreshMailboxesSoon();
+  }
+
+  /**
+   * Capture the post-mutation Email state from a Foo/set response so the
+   * EventSource StateChange handler dedupes the event we triggered
+   * ourselves. Without this, every Email/set bumps the server's Email
+   * state, the eventsource emits a StateChange a moment later, the
+   * handler at #onEmailStateChange sees newState !== this.emailState,
+   * and runs refreshFolder — which clears listEmailIds and re-fetches
+   * the list, producing a visible flicker on every star / archive /
+   * delete. The optimistic patch already updated the UI; the spurious
+   * refresh adds nothing.
+   *
+   * The newState field is mandatory in JMAP Foo/set responses (RFC 8620
+   * §5.3) but old servers may not echo it; the callers fall through to
+   * the legacy refresh-on-StateChange path when newState is absent.
+   */
+  #captureEmailSetNewState(result: { newState?: string }): void {
+    if (typeof result.newState === 'string' && result.newState !== '') {
+      this.emailState = result.newState;
+    }
+  }
+
+  /** Same as #captureEmailSetNewState but for Mailbox/set responses. */
+  #captureMailboxSetNewState(result: { newState?: string }): void {
+    if (typeof result.newState === 'string' && result.newState !== '') {
+      this.mailboxState = result.newState;
+    }
   }
 
   /**
