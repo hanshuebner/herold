@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -335,6 +336,20 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	}
 
 	// FTS worker: storefts.Index + TextExtractor + Worker.
+	//
+	// Operator escape hatches (env vars):
+	//   HEROLD_FTS_DISABLE=1            — skip the worker entirely
+	//                                     (useful while diagnosing memory
+	//                                     issues during a large bulk
+	//                                     re-index after import).
+	//   HEROLD_FTS_BATCH_SIZE=N         — cap docs per Bleve batch
+	//                                     (default storefts.DefaultBatchSize).
+	//                                     Each pending doc holds up to
+	//                                     PerMessageMaxBytes of extracted
+	//                                     text plus Bleve tokenizer state,
+	//                                     so a smaller N caps peak heap.
+	//   HEROLD_FTS_FLUSH_INTERVAL_MS=N  — wall-clock commit deadline.
+	ftsDisabled := os.Getenv("HEROLD_FTS_DISABLE") == "1"
 	ftsIndex, err := storefts.New(filepath.Join(cfg.Server.DataDir, "fts"), logger.With("subsystem", "fts"), clk)
 	if err != nil {
 		return fmt.Errorf("admin: fts index: %w", err)
@@ -346,13 +361,24 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// (still SQL-bound on state_changes) so the worker below keeps its
 	// durable cursor on the relational feed.
 	st = ftsOverride{Store: st, fts: storefts.NewComposite(ftsIndex, st.FTS())}
+	ftsOpts := storefts.WorkerOptions{}
+	if v := os.Getenv("HEROLD_FTS_BATCH_SIZE"); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+			ftsOpts.BatchSize = n
+		}
+	}
+	if v := os.Getenv("HEROLD_FTS_FLUSH_INTERVAL_MS"); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+			ftsOpts.FlushInterval = time.Duration(n) * time.Millisecond
+		}
+	}
 	ftsWorker := storefts.NewWorker(
 		ftsIndex,
 		st,
 		storefts.NewMailparseExtractor(),
 		logger.With("subsystem", "fts"),
 		clk,
-		storefts.WorkerOptions{},
+		ftsOpts,
 	)
 
 	// REQ-DIR-RCPT-01..12: directory.resolve_rcpt RCPT-time hook. When
@@ -736,14 +762,21 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	observe.RegisterExtSubMetrics()
 
 	// FTS worker goroutine — registered on the lifecycle group so
-	// shutdown drains it.
-	g.Go(func() error {
-		if err := ftsWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
-			logger.LogAttrs(context.Background(), slog.LevelWarn, "fts worker exited", slog.String("err", err.Error()))
-			return err
-		}
-		return nil
-	})
+	// shutdown drains it. Skipped when HEROLD_FTS_DISABLE=1; in that
+	// mode IMAP SEARCH and JMAP Email/query lose body-text matching but
+	// the rest of the server runs (useful as an escape hatch during
+	// post-import re-index when peak memory exceeds the host).
+	if ftsDisabled {
+		logger.Warn("fts worker disabled by HEROLD_FTS_DISABLE; body-text search will not return results until re-enabled")
+	} else {
+		g.Go(func() error {
+			if err := ftsWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.LogAttrs(context.Background(), slog.LevelWarn, "fts worker exited", slog.String("err", err.Error()))
+				return err
+			}
+			return nil
+		})
+	}
 
 	// ACME lifecycle goroutines: HTTP-01 challenge listener + renewal loop.
 	if acmeClient != nil {
@@ -1293,6 +1326,19 @@ func currentConfigPath() string {
 }
 
 func openStore(ctx context.Context, cfg *sysconfig.Config, logger *slog.Logger, clk clock.Clock) (store.Store, error) {
+	return openStoreWithBulk(ctx, cfg, logger, clk, false)
+}
+
+// openStoreBulk opens the store in a configuration tuned for bulk
+// inserts: the SQLite backend uses synchronous=OFF, a 256 MiB cache,
+// and a higher wal_autocheckpoint. The Postgres backend ignores the
+// flag (its commit cost is dominated by network round-trips, not
+// fsync). Used by `herold import gmail` (REQ-IMPORT-29 / REQ-IMPORT-34).
+func openStoreBulk(ctx context.Context, cfg *sysconfig.Config, logger *slog.Logger, clk clock.Clock) (store.Store, error) {
+	return openStoreWithBulk(ctx, cfg, logger, clk, true)
+}
+
+func openStoreWithBulk(ctx context.Context, cfg *sysconfig.Config, logger *slog.Logger, clk clock.Clock, bulk bool) (store.Store, error) {
 	switch cfg.Server.Storage.Backend {
 	case "sqlite":
 		if err := os.MkdirAll(filepath.Dir(cfg.Server.Storage.SQLite.Path), 0o750); err != nil {
@@ -1303,6 +1349,7 @@ func openStore(ctx context.Context, cfg *sysconfig.Config, logger *slog.Logger, 
 			storesqlite.Options{
 				CacheSize:         cfg.Server.Storage.SQLite.CacheSize,
 				WALAutocheckpoint: cfg.Server.Storage.SQLite.WALAutocheckpoint,
+				BulkImport:        bulk,
 			})
 	case "postgres":
 		blobDir := cfg.Server.Storage.Postgres.BlobDir

@@ -27,10 +27,11 @@ import (
 // present blob as refcount 1 and returns 0 for absent blobs. GC exposes
 // a callback so the caller (Metadata) can decide what is still live.
 type Store struct {
-	dir    string
-	clock  clock.Clock
-	tmpDir string
-	mu     sync.Mutex // guards tmp-file name collisions; not on disk access
+	dir       string
+	clock     clock.Clock
+	tmpDir    string
+	skipFsync bool       // set by SetSkipFsync; tested in Put.
+	mu        sync.Mutex // guards tmp-file name collisions; not on disk access
 }
 
 // New returns a Store rooted at dir. The directory and its tmp subdir
@@ -46,6 +47,17 @@ func New(dir string, c clock.Clock) *Store {
 		clock:  c,
 		tmpDir: filepath.Join(dir, "tmp"),
 	}
+}
+
+// SetSkipFsync turns off the per-blob fsync that Put normally performs
+// before promoting the temp file to its content-addressed name. Used by
+// the bulk gmail importer when the operator has opted in to bulk-import
+// pragmas (see storesqlite.Options.BulkImport): a host crash can leave
+// recently-written blobs un-flushed and on import re-run the dedup
+// re-creates them. Default is on (fsync per blob), matching the safety
+// posture of the rest of the store.
+func (s *Store) SetSkipFsync(skip bool) {
+	s.skipFsync = skip
 }
 
 // Put streams r to a new blob, computing its BLAKE3 hash in flight and
@@ -83,9 +95,11 @@ func (s *Store) Put(ctx context.Context, r io.Reader) (store.BlobRef, error) {
 		_ = f.Close()
 		return store.BlobRef{}, fmt.Errorf("storeblobfs: write: %w", copyErr)
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return store.BlobRef{}, fmt.Errorf("storeblobfs: fsync: %w", err)
+	if !s.skipFsync {
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return store.BlobRef{}, fmt.Errorf("storeblobfs: fsync: %w", err)
+		}
 	}
 	if err := f.Close(); err != nil {
 		return store.BlobRef{}, fmt.Errorf("storeblobfs: close: %w", err)

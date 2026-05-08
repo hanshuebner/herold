@@ -132,6 +132,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newSpamCmd())
 	root.AddCommand(newHookCmd())
 	root.AddCommand(newDiagCmd())
+	root.AddCommand(newImportCmd())
 	root.AddCommand(newPluginCmd())
 	root.AddCommand(newVAPIDCmd())
 	root.AddCommand(newContactsCmd())

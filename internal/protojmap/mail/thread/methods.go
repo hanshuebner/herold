@@ -239,10 +239,6 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
-	_, threadToMsgs, err := g.h.computeForPrincipal(ctx, p)
-	if err != nil {
-		return nil, protojmap.NewMethodError("serverFail", err.Error())
-	}
 	resp := getResponse{
 		AccountID: accountIDForPrincipal(p),
 		State:     state,
@@ -250,7 +246,20 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		NotFound:  []jmapID{},
 	}
 	if req.IDs == nil {
-		// Return all threads.
+		// Return all threads. The full enumeration path is rare (the
+		// suite always passes specific ids); we keep it correct via the
+		// legacy whole-account scan, but cap output so a runaway client
+		// cannot pull a 100k-row response into memory. Per RFC 8620
+		// §5.1 the cap surfaces as a tooLarge MethodError.
+		_, threadToMsgs, err := g.h.computeForPrincipal(ctx, p)
+		if err != nil {
+			return nil, protojmap.NewMethodError("serverFail", err.Error())
+		}
+		const allThreadsCap = 50_000
+		if len(threadToMsgs) > allThreadsCap {
+			return nil, protojmap.NewMethodError("requestTooLarge",
+				"Thread/get with ids:null exceeds the per-call cap; pass specific ids")
+		}
 		for k, msgs := range threadToMsgs {
 			sortThreadMessages(msgs)
 			t := jmapThread{ID: renderThreadID(k), EmailIDs: make([]jmapID, 0, len(msgs))}
@@ -261,25 +270,77 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		}
 		return resp, nil
 	}
+
+	// Targeted lookup: parse the requested ids, resolve them in one
+	// SQL pass, render only the threads that resolved. Avoids the
+	// per-call full-account scan listAllMessages performs.
+	keys, keyToWire, notFound := parseRequestedThreadIDs(*req.IDs)
+	resp.NotFound = append(resp.NotFound, notFound...)
+
+	var threadRows map[uint64][]store.ThreadMessageRow
+	if len(keys) > 0 {
+		threadRows, err = g.h.store.Meta().ListThreadsByKeys(ctx, p.ID, keys)
+		if err != nil {
+			return nil, protojmap.NewMethodError("serverFail", err.Error())
+		}
+	}
+
 	for _, id := range *req.IDs {
 		k, ok := parseThreadID(id)
 		if !ok {
+			continue // already in NotFound from the parse pass
+		}
+		rows, hit := threadRows[uint64(k)]
+		if !hit {
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
-		msgs, ok := threadToMsgs[k]
-		if !ok {
-			resp.NotFound = append(resp.NotFound, id)
-			continue
-		}
-		sortThreadMessages(msgs)
-		t := jmapThread{ID: id, EmailIDs: make([]jmapID, 0, len(msgs))}
-		for _, m := range msgs {
-			t.EmailIDs = append(t.EmailIDs, renderEmailID(m.ID))
+		sortThreadRows(rows)
+		t := jmapThread{ID: keyToWire[uint64(k)], EmailIDs: make([]jmapID, 0, len(rows))}
+		for _, r := range rows {
+			t.EmailIDs = append(t.EmailIDs, renderEmailID(r.MessageID))
 		}
 		resp.List = append(resp.List, t)
 	}
 	return resp, nil
+}
+
+// parseRequestedThreadIDs walks the wire-form id list, decoding each
+// entry to its ThreadKey. Unparseable entries are returned in notFound
+// for the caller to merge into the response. keyToWire preserves the
+// caller-supplied wire form so the response echoes the exact id the
+// client used (RFC 8620 §5.1: ids in /list are the same strings the
+// client passed in /ids), even when the client mixed bare-numeric and
+// "tN" forms.
+func parseRequestedThreadIDs(in []jmapID) (keys []uint64, keyToWire map[uint64]jmapID, notFound []jmapID) {
+	keys = make([]uint64, 0, len(in))
+	keyToWire = make(map[uint64]jmapID, len(in))
+	for _, id := range in {
+		k, ok := parseThreadID(id)
+		if !ok {
+			notFound = append(notFound, id)
+			continue
+		}
+		key := uint64(k)
+		if _, dup := keyToWire[key]; dup {
+			continue
+		}
+		keys = append(keys, key)
+		keyToWire[key] = id
+	}
+	return keys, keyToWire, notFound
+}
+
+// sortThreadRows sorts thread membership rows by ReceivedAt ASC with a
+// stable MessageID tiebreak (RFC 8621 §8.1). Mirrors sortThreadMessages
+// for the row-shaped result of ListThreadsByKeys.
+func sortThreadRows(rows []store.ThreadMessageRow) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].ReceivedAt.Equal(rows[j].ReceivedAt) {
+			return rows[i].MessageID < rows[j].MessageID
+		}
+		return rows[i].ReceivedAt.Before(rows[j].ReceivedAt)
+	})
 }
 
 // -- Thread/changes ---------------------------------------------------
@@ -389,24 +450,32 @@ func (c changesHandler) computeThreadChanges(
 		return nil
 	}
 
-	// Load all current threads to classify creates vs updates vs destroys.
-	_, threadToMsgs, err := c.h.computeForPrincipal(ctx, p)
+	// Resolve only the affected threads via the targeted SQL lookup.
+	// The legacy path called computeForPrincipal here, which loaded
+	// every message in the account on every Thread/changes call —
+	// constant ~1.4 s overhead even when the change feed window
+	// touched a single thread.
+	keys := make([]uint64, 0, len(affectedThreads))
+	for tk := range affectedThreads {
+		keys = append(keys, uint64(tk))
+	}
+	threadRows, err := c.h.store.Meta().ListThreadsByKeys(ctx, p.ID, keys)
 	if err != nil {
 		return err
 	}
 
 	for tk := range affectedThreads {
 		tid := renderThreadID(tk)
-		msgs, exists := threadToMsgs[tk]
-		if !exists {
+		rows, exists := threadRows[uint64(tk)]
+		if !exists || len(rows) == 0 {
 			// Thread has no surviving messages → destroyed.
 			resp.Destroyed = append(resp.Destroyed, tid)
 			continue
 		}
 		// Thread is "created" if ALL its current messages are in newMsgIDs.
 		allNew := true
-		for _, m := range msgs {
-			if _, isNew := newMsgIDs[m.ID]; !isNew {
+		for _, r := range rows {
+			if _, isNew := newMsgIDs[r.MessageID]; !isNew {
 				allNew = false
 				break
 			}

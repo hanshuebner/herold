@@ -10,7 +10,7 @@ import (
 // without applying migrations. Exposed for tests that need to inject
 // state into the schema (e.g. a forged future migration record).
 func OpenRaw(path string) (*sql.DB, error) {
-	return sql.Open("sqlite", buildDSN(path))
+	return sql.Open("sqlite", buildDSN(path, Options{}))
 }
 
 // DB exposes the underlying *sql.DB of a Store for white-box tests that

@@ -124,6 +124,34 @@ type Metadata interface {
 	// and ModSeq for backward-compatibility with single-mailbox callers.
 	InsertMessage(ctx context.Context, msg Message, targets []MessageMailbox) (UID, ModSeq, error)
 
+	// InsertMessages inserts a batch of messages in a single
+	// transaction so the underlying SQLite WAL fsync (or Postgres COMMIT
+	// round-trip) amortises across the batch instead of firing per
+	// message. All-or-nothing: if any item fails the entire batch rolls
+	// back. Same atomic semantics as InsertMessage applied N times in a
+	// row, just under a shared transaction.
+	//
+	// Returns one result per item in the same order. The result's
+	// (UID, ModSeq) are taken from the item's first target — matching
+	// the single-target convention of InsertMessage's return shape.
+	//
+	// Used by the bulk gmail importer (REQ-IMPORT-29). Real-time
+	// SMTP / JMAP delivery callers should keep using InsertMessage one
+	// at a time so a single bad message doesn't take down a batch's
+	// worth of unrelated delivery work.
+	InsertMessages(ctx context.Context, items []InsertMessageItem, opts InsertMessagesOptions) ([]InsertMessageResult, error)
+
+	// RethreadPrincipal walks every message of principalID in
+	// internal-date order and assigns thread_id by looking up each
+	// message's In-Reply-To / References headers against the
+	// principal's own message-id index. Used after a bulk import where
+	// InsertMessages was called with SkipThreading=true.
+	//
+	// Single transaction, single fsync at end. Returns the count of
+	// messages whose thread_id was changed (0 means no work was needed
+	// because every message already had a thread_id).
+	RethreadPrincipal(ctx context.Context, principalID PrincipalID) (int, error)
+
 	// AddMessageToMailbox adds an existing message (by msgID) to
 	// mailboxID, allocating a fresh UID and ModSeq for that mailbox.
 	// Returns the allocated UID and ModSeq. Returns ErrNotFound if msgID
@@ -240,6 +268,72 @@ type Metadata interface {
 		principalID PrincipalID,
 		kind EntityKind,
 	) (ChangeSeq, error)
+
+	// GetMaxChangeSeqForPrincipal returns the highest Seq in the
+	// change feed for the principal across all entity kinds, or 0
+	// when the principal has no rows. Used by the JMAP eventsource
+	// handler to prime its cursor at connect time so it does not
+	// re-walk the entire historical feed (which on a freshly-imported
+	// mailbox is 100k+ rows and emits a StateChange per coalesce
+	// window for every batch — visible to clients as a sustained
+	// burst of /changes calls for several minutes after each restart).
+	GetMaxChangeSeqForPrincipal(
+		ctx context.Context,
+		principalID PrincipalID,
+	) (ChangeSeq, error)
+
+	// QueryEmailFast runs the SQL-pushable subset of the JMAP
+	// Email/query plan: filter by mailbox membership, received-at and
+	// size ranges; sort by a numeric column; paginate; optionally
+	// count. Returns the matched message IDs (in sort order) along
+	// with their thread IDs in a parallel slice; the JMAP layer uses
+	// the thread IDs to apply collapseThreads without round-tripping
+	// to the store. Total is meaningful only when CalculateTotal is
+	// set, in which case it is the COUNT(*) for the same WHERE clause.
+	//
+	// This call is the principal-scoped fast path that replaces the
+	// "list every accessible message, filter in Go, sort in Go,
+	// paginate in Go" loop in the JMAP query handler. Predicates the
+	// store cannot evaluate (hasAttachment, body, non-cached headers,
+	// thread-keyword aggregation) are not representable in
+	// EmailQueryFastOpts; the JMAP layer must keep the slow path for
+	// those.
+	//
+	// Pagination semantics mirror RFC 8620 §5.5 with two narrowings:
+	// negative Position is rejected (caller falls back), and Anchor
+	// is not supported (caller falls back). When Limit is 0, no row
+	// cap is applied beyond the store's internal hard limit.
+	QueryEmailFast(
+		ctx context.Context,
+		principalID PrincipalID,
+		opts EmailQueryFastOpts,
+	) (EmailQueryFastResult, error)
+
+	// ListThreadsByKeys returns the per-message thread-membership rows
+	// for the supplied thread keys, scoped to principalID. The result
+	// is grouped by key; each value is the list of (MessageID,
+	// ReceivedAt) pairs for messages in that thread, in unspecified
+	// order (JMAP Thread/get sorts before rendering).
+	//
+	// Key semantics mirror the JMAP wire form: threaded messages match
+	// when their stored thread_id is in keys; un-threaded messages
+	// (thread_id == 0) match when their MessageID is in keys, with the
+	// returned Key set equal to the MessageID. Both branches collapse
+	// into the same map slot when an un-threaded message id equals a
+	// real thread_id, which is consistent with how the email renderer
+	// emits thread ids (render.go: zero thread_id → "t<message_id>").
+	//
+	// Used by JMAP Thread/get (fetch the requested threads) and
+	// Thread/changes (classify thread set-membership after a change
+	// feed pass) to avoid the per-call full-account envelope scan
+	// the legacy listAllMessages path performed.
+	//
+	// Empty keys returns an empty map without executing SQL.
+	ListThreadsByKeys(
+		ctx context.Context,
+		principalID PrincipalID,
+		keys []uint64,
+	) (map[uint64][]ThreadMessageRow, error)
 
 	// InsertAlias creates an alias mapping. Returns ErrConflict on
 	// duplicate (local_part, domain).
@@ -402,6 +496,15 @@ type Metadata interface {
 	// ascending, subject to the filter's cursor + limit. The returned
 	// slice is always a fresh copy safe for the caller to mutate.
 	ListMessages(ctx context.Context, mailboxID MailboxID, filter MessageFilter) ([]Message, error)
+
+	// CountMessages returns the total and unread (\Seen-not-set) message
+	// counts for mailboxID, computed by a single SQL aggregate against
+	// message_mailboxes. Hits the (mailbox_id, uid) index. Used by
+	// JMAP Mailbox/get to populate totalEmails / unreadEmails without
+	// decoding every Message row — at the scale of a freshly-imported
+	// Gmail archive (100k+ rows in the largest folder) the row-decode
+	// path turns Mailbox/get into a multi-second CPU hog.
+	CountMessages(ctx context.Context, mailboxID MailboxID) (total, unread int64, err error)
 
 	// SetMailboxSubscribed toggles the MailboxAttrSubscribed bit on the
 	// mailbox and bumps UpdatedAt. Returns ErrNotFound if the mailbox
@@ -1366,6 +1469,17 @@ type Metadata interface {
 	// the first matching message, or ErrNotFound. Used by the inbound
 	// reaction handler to locate the original email by its Message-ID.
 	GetMessageByMessageIDHeader(ctx context.Context, principalID PrincipalID, msgIDHeader string) (Message, error)
+
+	// ListPrincipalBlobHashes returns the distinct blob_hash values
+	// owned by principalID in arbitrary order. Used by the bulk gmail
+	// importer to seed a content-addressed dedup set
+	// (REQ-IMPORT-05). The hash is the canonical-CRLF BLAKE3 of the
+	// message bytes (REQ-STORE-10), the same key BlobRef.Hash carries.
+	// Content-hash dedup is correct in the face of senders that reuse
+	// Message-ID headers across distinct messages (notably spam).
+	// Not for user-facing callers — the result can be large
+	// (one entry per unique message blob) on big mailboxes.
+	ListPrincipalBlobHashes(ctx context.Context, principalID PrincipalID) ([]string, error)
 
 	// -- Phase 3 Wave 3.10 ShortcutCoachStat (REQ-PROTO-110..112) --------
 

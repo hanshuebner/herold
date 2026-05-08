@@ -59,38 +59,22 @@ func renderMailbox(
 	}, nil
 }
 
-// countMessages walks the mailbox's messages with a keyset cursor and
-// returns (total, unread). Bounded by a per-page limit; iterates until
-// a short page is returned by ListMessages.
+// countMessages returns (total, unread) for mailboxID via a single
+// SQL aggregate (Metadata.CountMessages). The earlier implementation
+// paginated through ListMessages decoding every Message struct,
+// which on a freshly-imported Gmail mailbox (100k+ rows in the
+// largest folder, called once per mailbox per Mailbox/get) made the
+// suite's polling pin multiple cores.
 func countMessages(
 	ctx context.Context,
 	meta store.Metadata,
 	mailboxID store.MailboxID,
 ) (total, unread int64, err error) {
-	const page = 1000
-	var cursor store.UID
-	for {
-		if err := ctx.Err(); err != nil {
-			return 0, 0, err
-		}
-		batch, ferr := meta.ListMessages(ctx, mailboxID, store.MessageFilter{
-			AfterUID: cursor,
-			Limit:    page,
-		})
-		if ferr != nil {
-			return 0, 0, fmt.Errorf("mailbox: count messages: %w", ferr)
-		}
-		for _, m := range batch {
-			total++
-			if m.Flags&store.MessageFlagSeen == 0 {
-				unread++
-			}
-			cursor = m.UID
-		}
-		if len(batch) < page {
-			return total, unread, nil
-		}
+	t, u, cerr := meta.CountMessages(ctx, mailboxID)
+	if cerr != nil {
+		return 0, 0, fmt.Errorf("mailbox: count messages: %w", cerr)
 	}
+	return t, u, nil
 }
 
 // rightsForPrincipal returns the JMAP myRights envelope for pid against

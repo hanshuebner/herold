@@ -123,6 +123,17 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 		return nil, protojmap.NewMethodError("invalidArguments", ferr.Error())
 	}
 
+	// Fast path: when the filter is fully SQL-pushable (typically the
+	// suite's "open mailbox" call: inMailbox + receivedAt sort + limit,
+	// optionally collapseThreads), evaluate the query at the storage
+	// layer instead of loading every accessible message into memory.
+	// See fastquery.go for the full pushability rules.
+	if fastResp, used, ferr := tryFastEmailQuery(ctx, q.h.store, pid, req, filter, state); ferr != nil {
+		return nil, serverFail(ferr)
+	} else if used {
+		return fastResp, nil
+	}
+
 	// For thread keyword filters we need all messages to do cross-thread
 	// aggregation. Gather all principal messages regardless.
 	var allMessages []store.Message

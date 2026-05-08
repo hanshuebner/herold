@@ -736,6 +736,64 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message, targets
 	var firstUID store.UID
 	var firstModSeq store.ModSeq
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		uid, modseq, err := m.insertMessageTx(ctx, tx, msg, targets, now, false)
+		if err != nil {
+			return err
+		}
+		firstUID = uid
+		firstModSeq = modseq
+		return nil
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return firstUID, firstModSeq, nil
+}
+
+// InsertMessages is the bulk path; see store.Metadata.InsertMessages.
+func (m *metadata) InsertMessages(ctx context.Context, items []store.InsertMessageItem, opts store.InsertMessagesOptions) ([]store.InsertMessageResult, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	for i, it := range items {
+		if len(it.Targets) == 0 {
+			return nil, fmt.Errorf("storepg: InsertMessages: item %d has no targets", i)
+		}
+	}
+	now := m.s.clock.Now().UTC()
+	results := make([]store.InsertMessageResult, len(items))
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		for i, it := range items {
+			uid, modseq, err := m.insertMessageTx(ctx, tx, it.Message, it.Targets, now, opts.SkipThreading)
+			if err != nil {
+				return fmt.Errorf("storepg: InsertMessages item %d: %w", i, err)
+			}
+			results[i] = store.InsertMessageResult{UID: uid, ModSeq: modseq}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// insertMessageTx is the per-item body shared by InsertMessage and
+// InsertMessages. The caller owns the tx lifecycle.
+//
+// skipThreading bypasses the per-message thread-resolution lookup
+// (used by the bulk gmail importer; see RethreadPrincipal).
+func (m *metadata) insertMessageTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	msg store.Message,
+	targets []store.MessageMailbox,
+	now time.Time,
+	skipThreading bool,
+) (store.UID, store.ModSeq, error) {
+	var firstUID store.UID
+	var firstModSeq store.ModSeq
+	err := func() error {
 		// Resolve principal: caller should set msg.PrincipalID; fall back
 		// to the first target's mailbox owner for backward compat.
 		pid := int64(msg.PrincipalID)
@@ -764,7 +822,7 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message, targets
 		// shortcut that may be the only reference present in some clients.
 		// We union them (In-Reply-To first for historical compat) and take
 		// the first match found.
-		if msg.ThreadID == 0 {
+		if msg.ThreadID == 0 && !skipThreading {
 			refs := mailparse.ParseReferences(msg.Envelope.InReplyTo)
 			// Append unique References entries after InReplyTo entries so
 			// that a direct In-Reply-To match wins when both are present.
@@ -868,11 +926,109 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message, targets
 			return mapErr(err)
 		}
 		return incRef(ctx, tx, msg.Blob.Hash, msg.Blob.Size, now)
-	})
+	}()
 	if err != nil {
 		return 0, 0, err
 	}
 	return firstUID, firstModSeq, nil
+}
+
+// RethreadPrincipal scans every message of pid in internal-date order
+// and assigns thread_id from the principal's own message-id index.
+// See store.Metadata for the contract.
+func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID) (int, error) {
+	type row struct {
+		id        int64
+		messageID string
+		inReplyTo string
+		refs      string
+		threadID  int64
+	}
+	const selectQ = `
+		SELECT id, env_message_id, env_in_reply_to, env_references, thread_id
+		  FROM messages
+		 WHERE principal_id = $1
+		 ORDER BY internal_date_us ASC, id ASC`
+	rs, err := m.s.pool.Query(ctx, selectQ, int64(pid))
+	if err != nil {
+		return 0, fmt.Errorf("storepg: rethread select: %w", err)
+	}
+	rows := make([]row, 0, 1024)
+	for rs.Next() {
+		var r row
+		if err := rs.Scan(&r.id, &r.messageID, &r.inReplyTo, &r.refs, &r.threadID); err != nil {
+			rs.Close()
+			return 0, fmt.Errorf("storepg: rethread scan: %w", err)
+		}
+		rows = append(rows, r)
+	}
+	if err := rs.Err(); err != nil {
+		rs.Close()
+		return 0, fmt.Errorf("storepg: rethread rows: %w", err)
+	}
+	rs.Close()
+
+	byID := make(map[string]int, len(rows))
+	for i, r := range rows {
+		if r.messageID != "" {
+			byID[r.messageID] = i
+		}
+	}
+
+	newThread := make([]int64, len(rows))
+	for i := range rows {
+		newThread[i] = rows[i].threadID
+	}
+	for i, r := range rows {
+		if newThread[i] != 0 {
+			continue
+		}
+		var resolved int64
+		all := mailparse.ParseReferences(r.inReplyTo)
+		seen := make(map[string]struct{}, len(all))
+		for _, ref := range all {
+			seen[ref] = struct{}{}
+		}
+		for _, ref := range mailparse.ParseReferences(r.refs) {
+			if _, dup := seen[ref]; !dup {
+				all = append(all, ref)
+				seen[ref] = struct{}{}
+			}
+		}
+		for _, ref := range all {
+			if idx, ok := byID[ref]; ok && idx != i {
+				if newThread[idx] != 0 {
+					resolved = newThread[idx]
+				} else {
+					resolved = rows[idx].id
+				}
+				break
+			}
+		}
+		if resolved == 0 {
+			resolved = r.id
+		}
+		newThread[i] = resolved
+	}
+
+	updated := 0
+	err = m.runTx(ctx, func(tx pgx.Tx) error {
+		for i, r := range rows {
+			if newThread[i] == r.threadID {
+				continue
+			}
+			if _, err := tx.Exec(ctx, `UPDATE messages SET thread_id = $1 WHERE id = $2`,
+				newThread[i], r.id); err != nil {
+				return fmt.Errorf("storepg: rethread update id=%d: %w", r.id, err)
+			}
+			updated++
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return updated, nil
 }
 
 func (m *metadata) ReplaceMessageBody(
@@ -1710,6 +1866,20 @@ func (m *metadata) GetMaxChangeSeqForKind(
 	return store.ChangeSeq(seq), nil
 }
 
+func (m *metadata) GetMaxChangeSeqForPrincipal(
+	ctx context.Context,
+	principalID store.PrincipalID,
+) (store.ChangeSeq, error) {
+	var seq int64
+	err := m.s.pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(seq), 0) FROM state_changes WHERE principal_id = $1`,
+		int64(principalID)).Scan(&seq)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return store.ChangeSeq(seq), nil
+}
+
 // -- helpers ----------------------------------------------------------
 
 func appendStateChange(
@@ -2287,6 +2457,22 @@ func (m *metadata) GetMailboxByName(ctx context.Context, pid store.PrincipalID, 
 	return scanMailbox(row)
 }
 
+// CountMessages computes (total, unread) for a mailbox in one SQL
+// aggregate. See store.Metadata for the contract.
+func (m *metadata) CountMessages(ctx context.Context, mailboxID store.MailboxID) (int64, int64, error) {
+	const q = `
+		SELECT
+			COUNT(*) AS total,
+			COALESCE(SUM(CASE WHEN (flags & 1) = 0 THEN 1 ELSE 0 END), 0) AS unread
+		FROM message_mailboxes
+		WHERE mailbox_id = $1`
+	var total, unread int64
+	if err := m.s.pool.QueryRow(ctx, q, int64(mailboxID)).Scan(&total, &unread); err != nil {
+		return 0, 0, fmt.Errorf("storepg: count messages: %w", err)
+	}
+	return total, unread, nil
+}
+
 func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, filter store.MessageFilter) ([]store.Message, error) {
 	limit := filter.Limit
 	if limit <= 0 || limit > 1000 {
@@ -2335,6 +2521,174 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 			return nil, err
 		}
 		out = append(out, msg)
+	}
+	return out, rows.Err()
+}
+
+// queryEmailFastHardLimit is the per-call ceiling on returned rows when
+// the caller passes Limit == 0. It is large enough to satisfy
+// "give me every id" callers (collapseThreads over-fetch, full-account
+// scans by power users) but small enough that a runaway client cannot
+// pin a connection on a 10M-row result.
+const queryEmailFastHardLimit = 200_000
+
+func (m *metadata) QueryEmailFast(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	opts store.EmailQueryFastOpts,
+) (store.EmailQueryFastResult, error) {
+	if opts.Position < 0 {
+		return store.EmailQueryFastResult{},
+			fmt.Errorf("storepg: QueryEmailFast: negative position %d", opts.Position)
+	}
+	limit := opts.Limit
+	if limit <= 0 || limit > queryEmailFastHardLimit {
+		limit = queryEmailFastHardLimit
+	}
+
+	var (
+		where []string
+		args  []any
+	)
+	ph := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	where = append(where, "m.principal_id = "+ph(int64(principalID)))
+
+	if opts.InMailbox != nil {
+		where = append(where, "mm.mailbox_id = "+ph(int64(*opts.InMailbox)))
+	}
+	if len(opts.InMailboxOtherThan) > 0 {
+		phs := make([]string, len(opts.InMailboxOtherThan))
+		for i, id := range opts.InMailboxOtherThan {
+			phs[i] = ph(int64(id))
+		}
+		where = append(where, "mm.mailbox_id NOT IN ("+strings.Join(phs, ",")+")")
+	}
+	if opts.Before != nil {
+		where = append(where, "m.received_at_us < "+ph(usMicros(*opts.Before)))
+	}
+	if opts.After != nil {
+		where = append(where, "m.received_at_us > "+ph(usMicros(*opts.After)))
+	}
+	if opts.MinSize != nil {
+		where = append(where, "m.size >= "+ph(*opts.MinSize))
+	}
+	if opts.MaxSize != nil {
+		where = append(where, "m.size <= "+ph(*opts.MaxSize))
+	}
+	whereClause := strings.Join(where, " AND ")
+
+	sortCol := "m.received_at_us"
+	switch opts.SortBy {
+	case store.EmailQueryFastSortSentAt:
+		sortCol = "m.env_date_us"
+	case store.EmailQueryFastSortSize:
+		sortCol = "m.size"
+	case store.EmailQueryFastSortID:
+		sortCol = "m.id"
+	case "", store.EmailQueryFastSortReceivedAt:
+		sortCol = "m.received_at_us"
+	default:
+		return store.EmailQueryFastResult{},
+			fmt.Errorf("storepg: QueryEmailFast: unsupported sort %q", opts.SortBy)
+	}
+	dir := "DESC"
+	if opts.SortAscending {
+		dir = "ASC"
+	}
+
+	listSQL := "SELECT m.id, m.thread_id FROM messages m " +
+		"JOIN message_mailboxes mm ON mm.message_id = m.id " +
+		"WHERE " + whereClause +
+		" ORDER BY " + sortCol + " " + dir + ", m.id " + dir +
+		" LIMIT " + ph(int64(limit)) + " OFFSET " + ph(int64(opts.Position))
+
+	rows, err := m.s.pool.Query(ctx, listSQL, args...)
+	if err != nil {
+		return store.EmailQueryFastResult{}, mapErr(err)
+	}
+	defer rows.Close()
+	out := store.EmailQueryFastResult{
+		IDs:       make([]store.MessageID, 0, 64),
+		ThreadIDs: make([]uint64, 0, 64),
+	}
+	for rows.Next() {
+		var id, tid int64
+		if err := rows.Scan(&id, &tid); err != nil {
+			return store.EmailQueryFastResult{}, fmt.Errorf("storepg: QueryEmailFast scan: %w", err)
+		}
+		out.IDs = append(out.IDs, store.MessageID(id))
+		out.ThreadIDs = append(out.ThreadIDs, uint64(tid))
+	}
+	if err := rows.Err(); err != nil {
+		return store.EmailQueryFastResult{}, mapErr(err)
+	}
+
+	if opts.CalculateTotal {
+		// COUNT shares the same WHERE; rebuild args list since the list
+		// query consumed the LIMIT/OFFSET placeholders too.
+		countSQL := "SELECT COUNT(*) FROM messages m " +
+			"JOIN message_mailboxes mm ON mm.message_id = m.id " +
+			"WHERE " + whereClause
+		// Strip the trailing LIMIT/OFFSET args (last two we appended).
+		countArgs := args[:len(args)-2]
+		var n int64
+		if err := m.s.pool.QueryRow(ctx, countSQL, countArgs...).Scan(&n); err != nil {
+			return store.EmailQueryFastResult{}, mapErr(err)
+		}
+		out.Total = int(n)
+	}
+	return out, nil
+}
+
+func (m *metadata) ListThreadsByKeys(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	keys []uint64,
+) (map[uint64][]store.ThreadMessageRow, error) {
+	if len(keys) == 0 {
+		return map[uint64][]store.ThreadMessageRow{}, nil
+	}
+	args := make([]any, 0, 1+len(keys)*2)
+	ph := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	pidPh := ph(int64(principalID))
+	threadPhs := make([]string, len(keys))
+	for i, k := range keys {
+		threadPhs[i] = ph(int64(k))
+	}
+	idPhs := make([]string, len(keys))
+	for i, k := range keys {
+		idPhs[i] = ph(int64(k))
+	}
+	q := "SELECT " +
+		"  CASE WHEN thread_id = 0 THEN id ELSE thread_id END AS k, " +
+		"  id, received_at_us " +
+		"FROM messages " +
+		"WHERE principal_id = " + pidPh +
+		"  AND ( thread_id IN (" + strings.Join(threadPhs, ",") + ") " +
+		"     OR (thread_id = 0 AND id IN (" + strings.Join(idPhs, ",") + ")) )"
+	rows, err := m.s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make(map[uint64][]store.ThreadMessageRow, len(keys))
+	for rows.Next() {
+		var k, id, recUs int64
+		if err := rows.Scan(&k, &id, &recUs); err != nil {
+			return nil, fmt.Errorf("storepg: ListThreadsByKeys scan: %w", err)
+		}
+		key := uint64(k)
+		out[key] = append(out[key], store.ThreadMessageRow{
+			Key:        key,
+			MessageID:  store.MessageID(id),
+			ReceivedAt: fromMicros(recUs),
+		})
 	}
 	return out, rows.Err()
 }

@@ -34,6 +34,20 @@ The principle: settings are the place users go to *change* defaults. They are no
 | REQ-SET-21 | The panel is split into sections (left-side nav): Account / Appearance / Mail / Privacy / Vacation / About. |
 | REQ-SET-22 | Section "About" shows the suite version, the connected JMAP server URL and version, the active capability set (with a footnote showing which features are gated by which capability), and a link to the source. |
 
+## Import from Gmail
+
+Self-service entry point for the Gmail Takeout importer. Server contract is
+in `../../server/requirements/16-import.md` (REQ-IMPORT-70..74).
+
+| ID | Requirement |
+|----|-------------|
+| REQ-SET-IMPORT-1 | The Settings panel exposes an "Import from Gmail" entry under section `Account` (or a new `Import` section if Account grows further). The entry is hidden if the server does not advertise the `urn:herold:params:jmap:import` capability. |
+| REQ-SET-IMPORT-2 | The flow is a three-step wizard: (1) **Upload** — file picker for the Takeout `.tgz` / `.zip`, capped at the server-advertised `import.max_archive_size_bytes` (REQ-IMPORT-71); (2) **Preview** — renders the dry-run plan returned by the server (counts of messages by destination mailbox, new mailboxes that would be created, count of filters / blocked addresses / forwarding addresses / send-as identities, and the first 20 untranslatable filter rules with their original Gmail query text); (3) **Confirm** — user clicks "Import" and the wizard switches to a live progress view polling `GET /api/v1/import/jobs/{id}` once per second. The user may navigate away; returning to Settings resumes the progress view. |
+| REQ-SET-IMPORT-3 | Imported **forwarding addresses** are surfaced as a list with a separate "Create forwarding rules" call-to-action that hands off to the existing forwarding settings UI; the importer never creates active forwarding rules on its own (REQ-IMPORT-45 / REQ-IMPORT-74). The same display pattern applies to imported send-as identities — they appear as disabled `Identity` rows with a "Set up sending" affordance per identity. |
+| REQ-SET-IMPORT-4 | The **locale** of the takeout is auto-detected by the server (REQ-IMPORT-14). The wizard surfaces the detected locale as a confirmation step ("This takeout looks like it was exported from a German Gmail account — `de-DE`. Continue?") with an override dropdown listing the locales in REQ-IMPORT-13. This is the only locale-related touchpoint the user sees; everything downstream is canonicalised. |
+| REQ-SET-IMPORT-5 | Errors (parse failures, oversize archive, quota exceeded mid-import) surface inline with the actionable next step. Quota-exceeded shows the current quota and the principal admin email; oversize shows the configured limit and links to the operator-facing CLI path for larger imports. Per-message parse errors are NOT shown inline (the count would dwarf the UI); the user gets a "X messages skipped — view details" link that opens the error list paginated. |
+| REQ-SET-IMPORT-6 | The wizard is keyboard-accessible (REQ-KEY-* applies). Drag-and-drop upload is offered as a convenience; the file picker is the primary path. |
+
 ## Cut for v1
 
 The following are intentionally cut. Each is a defensible decision; the cut keeps the surface area small.

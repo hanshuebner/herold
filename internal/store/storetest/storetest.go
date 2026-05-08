@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -40,11 +41,21 @@ func Run(t *testing.T, f Factory) {
 		{"MailboxConflict_ErrorStringIsClean", testMailboxConflictErrorStringIsClean},
 		{"InsertMessageAllocatesUIDAndModSeq", testInsertMessageAllocatesUIDAndModSeq},
 		{"InsertMessage_ThreadResolutionViaReferences", testInsertMessageThreadResolutionViaReferences},
+		{"InsertMessages_Batch", testInsertMessagesBatch},
+		{"CountMessages", testCountMessages},
+		{"InsertMessages_SkipThreading", testInsertMessagesSkipThreading},
+		{"RethreadPrincipal", testRethreadPrincipal},
+		{"ListPrincipalBlobHashes", testListPrincipalBlobHashes},
 		{"UpdateFlagsBumpsModSeq", testUpdateFlagsBumpsModSeq},
 		{"UpdateFlagsUnchangedSince", testUpdateFlagsUnchangedSince},
 		{"UpdateFlagsKeywords", testUpdateFlagsKeywords},
 		{"ExpungeMessages", testExpungeMessages},
 		{"ChangeFeedMonotonic", testChangeFeedMonotonic},
+		{"GetMaxChangeSeqForPrincipal", testGetMaxChangeSeqForPrincipal},
+		{"QueryEmailFast_Basic", testQueryEmailFastBasic},
+		{"QueryEmailFast_Pagination", testQueryEmailFastPagination},
+		{"QueryEmailFast_Filters", testQueryEmailFastFilters},
+		{"ListThreadsByKeys", testListThreadsByKeys},
 		{"QuotaEnforcement", testQuotaEnforcement},
 		{"DeleteMailboxCascades", testDeleteMailboxCascades},
 		{"BlobRoundTrip", testBlobRoundTrip},
@@ -658,6 +669,261 @@ func testMailboxConflictErrorStringIsClean(t *testing.T, s store.Store) {
 	}
 }
 
+func testCountMessages(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "count@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	// Empty mailbox: zero / zero.
+	total, unread, err := s.Meta().CountMessages(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("CountMessages empty: %v", err)
+	}
+	if total != 0 || unread != 0 {
+		t.Errorf("empty mailbox: got total=%d unread=%d, want 0/0", total, unread)
+	}
+
+	// Insert three messages: two unread, one with \Seen flag set.
+	for i, flags := range []store.MessageFlags{0, 0, store.MessageFlagSeen} {
+		ref := putBlob(t, s, fmt.Sprintf("body-%d", i))
+		_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID:  p.ID,
+			Blob:         ref,
+			Size:         ref.Size,
+			InternalDate: time.Unix(4000+int64(i), 0).UTC(),
+			ReceivedAt:   time.Unix(4000+int64(i), 0).UTC(),
+			Envelope:     store.Envelope{MessageID: fmt.Sprintf("c-%d@x", i)},
+		}, []store.MessageMailbox{{MailboxID: mb.ID, Flags: flags}})
+		if err != nil {
+			t.Fatalf("InsertMessage[%d]: %v", i, err)
+		}
+	}
+	total, unread, err = s.Meta().CountMessages(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("CountMessages 3-msg: %v", err)
+	}
+	if total != 3 {
+		t.Errorf("total = %d, want 3", total)
+	}
+	if unread != 2 {
+		t.Errorf("unread = %d, want 2 (two messages without \\Seen)", unread)
+	}
+}
+
+func testInsertMessagesBatch(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "batch@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	const n = 5
+	items := make([]store.InsertMessageItem, n)
+	for i := 0; i < n; i++ {
+		ref := putBlob(t, s, fmt.Sprintf("body-%d", i))
+		items[i] = store.InsertMessageItem{
+			Message: store.Message{
+				PrincipalID:  p.ID,
+				Blob:         ref,
+				Size:         ref.Size,
+				InternalDate: time.Unix(1000+int64(i), 0).UTC(),
+				ReceivedAt:   time.Unix(1000+int64(i), 0).UTC(),
+				Envelope:     store.Envelope{MessageID: fmt.Sprintf("batch-%d@x", i)},
+			},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}},
+		}
+	}
+	results, err := s.Meta().InsertMessages(ctx, items, store.InsertMessagesOptions{})
+	if err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+	if len(results) != n {
+		t.Fatalf("results len = %d, want %d", len(results), n)
+	}
+	// UIDs must be 1..n in order; ModSeqs must be strictly increasing.
+	for i, r := range results {
+		if r.UID != store.UID(i+1) {
+			t.Errorf("UID[%d] = %d, want %d", i, r.UID, i+1)
+		}
+		if i > 0 && r.ModSeq <= results[i-1].ModSeq {
+			t.Errorf("ModSeq not strictly increasing: %d then %d", results[i-1].ModSeq, r.ModSeq)
+		}
+	}
+	// Mailbox must be advanced to UIDNext = n+1.
+	gotMb, err := s.Meta().GetMailboxByID(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxByID: %v", err)
+	}
+	if gotMb.UIDNext != store.UID(n+1) {
+		t.Errorf("UIDNext = %d, want %d", gotMb.UIDNext, n+1)
+	}
+}
+
+func testInsertMessagesSkipThreading(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "skip-thread@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	// One root + one reply. With SkipThreading both should land with
+	// thread_id=0; without it the reply would inherit the root's
+	// thread.
+	root := store.InsertMessageItem{
+		Message: store.Message{
+			PrincipalID:  p.ID,
+			Blob:         putBlob(t, s, "root"),
+			Size:         4,
+			InternalDate: time.Unix(1000, 0).UTC(),
+			ReceivedAt:   time.Unix(1000, 0).UTC(),
+			Envelope:     store.Envelope{MessageID: "root@x"},
+		},
+		Targets: []store.MessageMailbox{{MailboxID: mb.ID}},
+	}
+	reply := store.InsertMessageItem{
+		Message: store.Message{
+			PrincipalID:  p.ID,
+			Blob:         putBlob(t, s, "reply"),
+			Size:         5,
+			InternalDate: time.Unix(2000, 0).UTC(),
+			ReceivedAt:   time.Unix(2000, 0).UTC(),
+			Envelope:     store.Envelope{MessageID: "reply@x", InReplyTo: "<root@x>"},
+		},
+		Targets: []store.MessageMailbox{{MailboxID: mb.ID}},
+	}
+	if _, err := s.Meta().InsertMessages(ctx, []store.InsertMessageItem{root, reply},
+		store.InsertMessagesOptions{SkipThreading: true}); err != nil {
+		t.Fatalf("InsertMessages SkipThreading: %v", err)
+	}
+	// Both messages should have thread_id == 0 in the store.
+	mboxes, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	for _, msg := range mboxes {
+		if msg.ThreadID != 0 {
+			t.Errorf("with SkipThreading, message %d thread_id = %d, want 0", msg.ID, msg.ThreadID)
+		}
+	}
+}
+
+func testRethreadPrincipal(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "rethread@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	// Bulk-insert root + reply with SkipThreading.
+	items := []store.InsertMessageItem{
+		{
+			Message: store.Message{
+				PrincipalID:  p.ID,
+				Blob:         putBlob(t, s, "rt-root"),
+				Size:         7,
+				InternalDate: time.Unix(1000, 0).UTC(),
+				ReceivedAt:   time.Unix(1000, 0).UTC(),
+				Envelope:     store.Envelope{MessageID: "rt-root@x"},
+			},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}},
+		},
+		{
+			Message: store.Message{
+				PrincipalID:  p.ID,
+				Blob:         putBlob(t, s, "rt-reply"),
+				Size:         8,
+				InternalDate: time.Unix(2000, 0).UTC(),
+				ReceivedAt:   time.Unix(2000, 0).UTC(),
+				Envelope:     store.Envelope{MessageID: "rt-reply@x", InReplyTo: "<rt-root@x>"},
+			},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}},
+		},
+		{
+			Message: store.Message{
+				PrincipalID:  p.ID,
+				Blob:         putBlob(t, s, "rt-orphan"),
+				Size:         9,
+				InternalDate: time.Unix(3000, 0).UTC(),
+				ReceivedAt:   time.Unix(3000, 0).UTC(),
+				Envelope:     store.Envelope{MessageID: "rt-orphan@x"},
+			},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}},
+		},
+	}
+	if _, err := s.Meta().InsertMessages(ctx, items,
+		store.InsertMessagesOptions{SkipThreading: true}); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	n, err := s.Meta().RethreadPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("RethreadPrincipal: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("RethreadPrincipal n = %d, want 3", n)
+	}
+
+	got, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d msgs, want 3", len(got))
+	}
+	// Build a map by Message-ID so the assertions don't depend on insert order.
+	byMID := make(map[string]store.Message, 3)
+	for _, m := range got {
+		byMID[m.Envelope.MessageID] = m
+	}
+	rootRow := byMID["rt-root@x"]
+	replyRow := byMID["rt-reply@x"]
+	orphanRow := byMID["rt-orphan@x"]
+	if rootRow.ThreadID != uint64(rootRow.ID) {
+		t.Errorf("root thread_id = %d, want self id %d", rootRow.ThreadID, rootRow.ID)
+	}
+	if replyRow.ThreadID != rootRow.ThreadID {
+		t.Errorf("reply thread_id = %d, want root thread_id %d", replyRow.ThreadID, rootRow.ThreadID)
+	}
+	if orphanRow.ThreadID != uint64(orphanRow.ID) {
+		t.Errorf("orphan thread_id = %d, want self id %d", orphanRow.ThreadID, orphanRow.ID)
+	}
+}
+
+func testListPrincipalBlobHashes(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "blobs@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	// Insert three messages with distinct bodies (so distinct blob
+	// hashes) plus one whose body is identical to the first (the same
+	// blob is referenced by two messages).
+	bodies := []string{"body-A", "body-B", "body-C", "body-A"}
+	wantHashes := map[string]bool{}
+	for i, body := range bodies {
+		ref := putBlob(t, s, body)
+		wantHashes[ref.Hash] = true
+		_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID:  p.ID,
+			Blob:         ref,
+			Size:         ref.Size,
+			InternalDate: time.Unix(3000+int64(i), 0).UTC(),
+			ReceivedAt:   time.Unix(3000+int64(i), 0).UTC(),
+			Envelope:     store.Envelope{MessageID: fmt.Sprintf("hash-%d@x", i)},
+		}, []store.MessageMailbox{{MailboxID: mb.ID}})
+		if err != nil {
+			t.Fatalf("InsertMessage[%d]: %v", i, err)
+		}
+	}
+	got, err := s.Meta().ListPrincipalBlobHashes(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListPrincipalBlobHashes: %v", err)
+	}
+	// Three distinct hashes (body-A, body-B, body-C); the duplicate
+	// body-A row shares its blob hash with the first.
+	if len(got) != 3 {
+		t.Errorf("got %d distinct hashes, want 3 (got=%v)", len(got), got)
+	}
+	for _, h := range got {
+		if !wantHashes[h] {
+			t.Errorf("unexpected hash %q in result (want set: %v)", h, wantHashes)
+		}
+	}
+}
+
 func testInsertMessageAllocatesUIDAndModSeq(t *testing.T, s store.Store) {
 	ctx := ctxT(t)
 	p := mustInsertPrincipal(t, s, "msg@example.com")
@@ -958,6 +1224,352 @@ func testChangeFeedMonotonic(t *testing.T, s store.Store) {
 		if c.Seq <= cursor {
 			t.Fatalf("paginated feed includes Seq %d <= cursor %d", c.Seq, cursor)
 		}
+	}
+}
+
+// testGetMaxChangeSeqForPrincipal exercises the principal-wide max-seq
+// lookup the JMAP eventsource handler uses to prime its cursor on
+// connect. Empty principals must return 0 (so a fresh subscription
+// starts at the beginning of the feed); after writes the value must
+// equal the highest Seq returned by ReadChangeFeed across all kinds.
+func testGetMaxChangeSeqForPrincipal(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "maxseq@example.com")
+	// Empty principal: must be 0 (no rows in state_changes).
+	seq, err := s.Meta().GetMaxChangeSeqForPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetMaxChangeSeqForPrincipal empty: %v", err)
+	}
+	if seq != 0 {
+		t.Fatalf("empty principal max seq = %d, want 0", seq)
+	}
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	for i := 0; i < 4; i++ {
+		ref := putBlob(t, s, "ms-"+string(rune('0'+i)))
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+	}
+	feed, err := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed: %v", err)
+	}
+	if len(feed) == 0 {
+		t.Fatalf("expected non-empty feed")
+	}
+	want := feed[len(feed)-1].Seq
+	got, err := s.Meta().GetMaxChangeSeqForPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetMaxChangeSeqForPrincipal: %v", err)
+	}
+	if got != want {
+		t.Fatalf("max seq = %d, want %d (last feed entry)", got, want)
+	}
+	// A second principal must not contaminate the first principal's
+	// value: pid scoping is the whole point of this lookup.
+	other := mustInsertPrincipal(t, s, "other-maxseq@example.com")
+	otherSeq, err := s.Meta().GetMaxChangeSeqForPrincipal(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("GetMaxChangeSeqForPrincipal other: %v", err)
+	}
+	if otherSeq != 0 {
+		t.Fatalf("unrelated principal max seq = %d, want 0", otherSeq)
+	}
+}
+
+// fastQuerySeed inserts n messages into a single mailbox with
+// monotonically increasing ReceivedAt and Size, so a sort by either
+// property in DESC order produces the same id sequence in reverse.
+// Returns the message IDs in insertion order (oldest first). Insert
+// returns the per-mailbox UID, not the global MessageID, so we recover
+// the IDs by listing the mailbox in UID-ascending order at the end.
+func fastQuerySeed(t *testing.T, s store.Store, p store.Principal, mb store.Mailbox, n int, sizeBase int64) []store.MessageID {
+	t.Helper()
+	ctx := ctxT(t)
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < n; i++ {
+		ref := putBlob(t, s, "fq-"+strconv.Itoa(i))
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID: p.ID,
+			Blob:        ref,
+			Size:        sizeBase + int64(i),
+			ReceivedAt:  base.Add(time.Duration(i) * time.Hour),
+		}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+			t.Fatalf("InsertMessage %d: %v", i, err)
+		}
+	}
+	listed, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: n + 1})
+	if err != nil {
+		t.Fatalf("ListMessages seed: %v", err)
+	}
+	if len(listed) != n {
+		t.Fatalf("ListMessages seed: got %d rows, want %d", len(listed), n)
+	}
+	out := make([]store.MessageID, 0, n)
+	for _, m := range listed {
+		out = append(out, m.ID)
+	}
+	return out
+}
+
+// testQueryEmailFastBasic exercises the unfiltered, single-mailbox
+// fast path (the dominant Email/query case in the suite). The default
+// sort is receivedAt DESC, so the most recently seeded message must
+// come first.
+func testQueryEmailFastBasic(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "fq-basic@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ids := fastQuerySeed(t, s, p, mb, 5, 1024)
+
+	r, err := s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox:      &mb.ID,
+		Limit:          10,
+		CalculateTotal: true,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast: %v", err)
+	}
+	if r.Total != 5 {
+		t.Fatalf("Total = %d, want 5", r.Total)
+	}
+	if len(r.IDs) != 5 {
+		t.Fatalf("len(IDs) = %d, want 5", len(r.IDs))
+	}
+	if len(r.IDs) != len(r.ThreadIDs) {
+		t.Fatalf("IDs/ThreadIDs len mismatch: %d vs %d", len(r.IDs), len(r.ThreadIDs))
+	}
+	// receivedAt DESC: most recently inserted first.
+	for i := 0; i < 5; i++ {
+		want := ids[4-i]
+		if r.IDs[i] != want {
+			t.Fatalf("IDs[%d] = %d, want %d (DESC by receivedAt)", i, r.IDs[i], want)
+		}
+	}
+}
+
+// testQueryEmailFastPagination covers Position + Limit, the page-by-
+// row contract the JMAP fast path relies on. Negative Position must
+// be rejected so the slow-path fallback can take over.
+func testQueryEmailFastPagination(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "fq-page@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ids := fastQuerySeed(t, s, p, mb, 10, 1024)
+
+	// receivedAt DESC, Position=2, Limit=3 -> ids[7], ids[6], ids[5].
+	r, err := s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox: &mb.ID,
+		Position:  2,
+		Limit:     3,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast paged: %v", err)
+	}
+	want := []store.MessageID{ids[7], ids[6], ids[5]}
+	if len(r.IDs) != len(want) {
+		t.Fatalf("len(IDs) = %d, want %d", len(r.IDs), len(want))
+	}
+	for i, id := range want {
+		if r.IDs[i] != id {
+			t.Fatalf("paged IDs[%d] = %d, want %d", i, r.IDs[i], id)
+		}
+	}
+
+	// SortAscending = true: ids[0..2].
+	asc, err := s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox:     &mb.ID,
+		SortAscending: true,
+		Limit:         3,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast asc: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if asc.IDs[i] != ids[i] {
+			t.Fatalf("asc IDs[%d] = %d, want %d", i, asc.IDs[i], ids[i])
+		}
+	}
+
+	// Negative Position -> error.
+	if _, err := s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox: &mb.ID,
+		Position:  -1,
+	}); err == nil {
+		t.Fatalf("QueryEmailFast: expected error for negative position")
+	}
+}
+
+// testQueryEmailFastFilters covers the SQL-pushable predicates that
+// the JMAP filter translates: Before/After (received-at range),
+// MinSize/MaxSize, InMailboxOtherThan, and the principal_id fence
+// (foreign principals' rows are invisible).
+func testQueryEmailFastFilters(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "fq-filt@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	other := mustInsertMailbox(t, s, p.ID, "Archive")
+	ids := fastQuerySeed(t, s, p, mb, 6, 1000) // sizes 1000..1005, ts t0..t5h
+
+	// Move ids[5] to a different mailbox via Move so InMailbox/=mb returns 5.
+	if err := s.Meta().MoveMessage(ctx, ids[5], mb.ID, other.ID); err != nil {
+		t.Fatalf("MoveMessage: %v", err)
+	}
+
+	mbInbox := mb.ID
+	r, err := s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox: &mbInbox,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast filtered mb: %v", err)
+	}
+	if len(r.IDs) != 5 {
+		t.Fatalf("filtered len(IDs) = %d, want 5 (one moved out)", len(r.IDs))
+	}
+
+	// MinSize: keep only sizes >= 1003 (i.e. ids[3], ids[4] in inbox).
+	var min int64 = 1003
+	r, err = s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox: &mbInbox,
+		MinSize:   &min,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast MinSize: %v", err)
+	}
+	if len(r.IDs) != 2 {
+		t.Fatalf("MinSize len(IDs) = %d, want 2 (ids[3..4])", len(r.IDs))
+	}
+
+	// Before: keep only receivedAt < t3h (ids[0..2]).
+	before := time.Date(2026, 1, 1, 3, 0, 0, 0, time.UTC)
+	r, err = s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox: &mbInbox,
+		Before:    &before,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast Before: %v", err)
+	}
+	if len(r.IDs) != 3 {
+		t.Fatalf("Before len(IDs) = %d, want 3", len(r.IDs))
+	}
+
+	// InMailboxOtherThan with no InMailbox: principal-wide minus 'other'.
+	r, err = s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailboxOtherThan: []store.MailboxID{other.ID},
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast OtherThan: %v", err)
+	}
+	if len(r.IDs) != 5 {
+		t.Fatalf("OtherThan len(IDs) = %d, want 5", len(r.IDs))
+	}
+
+	// Principal fence: another principal seeing nothing.
+	stranger := mustInsertPrincipal(t, s, "fq-stranger@example.com")
+	r, err = s.Meta().QueryEmailFast(ctx, stranger.ID, store.EmailQueryFastOpts{})
+	if err != nil {
+		t.Fatalf("QueryEmailFast stranger: %v", err)
+	}
+	if len(r.IDs) != 0 {
+		t.Fatalf("stranger len(IDs) = %d, want 0", len(r.IDs))
+	}
+
+	// Sort by size DESC: largest first.
+	r, err = s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox: &mbInbox,
+		SortBy:    store.EmailQueryFastSortSize,
+		Limit:     2,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast SortBy size: %v", err)
+	}
+	// In Inbox we now have ids[0..4]; the largest (size 1004) is ids[4].
+	if r.IDs[0] != ids[4] {
+		t.Fatalf("SortBy size DESC IDs[0] = %d, want %d", r.IDs[0], ids[4])
+	}
+}
+
+// testListThreadsByKeys covers the two semantic branches the JMAP
+// Thread/get / Thread/changes layer relies on: (a) messages whose
+// stored thread_id equals one of the keys, and (b) un-threaded
+// messages (thread_id == 0) whose own MessageID equals one of the
+// keys. Empty input must return an empty map without touching SQL.
+// Cross-principal isolation must hold.
+func testListThreadsByKeys(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "tk@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	// Seed three messages, then bind two of them into the same thread
+	// via UpdateMessageThreadID (mirrors the post-import re-thread sweep).
+	ids := fastQuerySeed(t, s, p, mb, 3, 1024)
+	rootID := ids[0]
+	if err := s.Meta().UpdateMessageThreadID(ctx, ids[0], uint64(rootID)); err != nil {
+		t.Fatalf("UpdateMessageThreadID root: %v", err)
+	}
+	if err := s.Meta().UpdateMessageThreadID(ctx, ids[1], uint64(rootID)); err != nil {
+		t.Fatalf("UpdateMessageThreadID reply: %v", err)
+	}
+	// ids[2] keeps thread_id = 0 → its key falls back to its MessageID.
+
+	// Empty input is a no-op.
+	got, err := s.Meta().ListThreadsByKeys(ctx, p.ID, nil)
+	if err != nil {
+		t.Fatalf("ListThreadsByKeys empty: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ListThreadsByKeys empty: got %d entries, want 0", len(got))
+	}
+
+	// Threaded key returns both messages.
+	got, err = s.Meta().ListThreadsByKeys(ctx, p.ID, []uint64{uint64(rootID)})
+	if err != nil {
+		t.Fatalf("ListThreadsByKeys threaded: %v", err)
+	}
+	if len(got[uint64(rootID)]) != 2 {
+		t.Fatalf("threaded key: got %d rows, want 2", len(got[uint64(rootID)]))
+	}
+
+	// Un-threaded key (the message id of the un-threaded message) returns one.
+	got, err = s.Meta().ListThreadsByKeys(ctx, p.ID, []uint64{uint64(ids[2])})
+	if err != nil {
+		t.Fatalf("ListThreadsByKeys unthreaded: %v", err)
+	}
+	if len(got[uint64(ids[2])]) != 1 {
+		t.Fatalf("unthreaded key: got %d rows, want 1", len(got[uint64(ids[2])]))
+	}
+	if got[uint64(ids[2])][0].MessageID != ids[2] {
+		t.Fatalf("unthreaded key: row MessageID = %d, want %d",
+			got[uint64(ids[2])][0].MessageID, ids[2])
+	}
+
+	// Mixed batch: both keys returned in one call.
+	got, err = s.Meta().ListThreadsByKeys(ctx, p.ID, []uint64{uint64(rootID), uint64(ids[2])})
+	if err != nil {
+		t.Fatalf("ListThreadsByKeys mixed: %v", err)
+	}
+	if len(got[uint64(rootID)]) != 2 || len(got[uint64(ids[2])]) != 1 {
+		t.Fatalf("mixed: rootID=%d unthreaded=%d, want 2 / 1",
+			len(got[uint64(rootID)]), len(got[uint64(ids[2])]))
+	}
+
+	// Unknown key returns no rows under that key (no error).
+	got, err = s.Meta().ListThreadsByKeys(ctx, p.ID, []uint64{99999})
+	if err != nil {
+		t.Fatalf("ListThreadsByKeys unknown: %v", err)
+	}
+	if _, hit := got[99999]; hit {
+		t.Fatalf("unknown key: should be absent, got %d rows", len(got[99999]))
+	}
+
+	// Cross-principal fence: another principal must not see these rows.
+	stranger := mustInsertPrincipal(t, s, "tk-stranger@example.com")
+	got, err = s.Meta().ListThreadsByKeys(ctx, stranger.ID, []uint64{uint64(rootID), uint64(ids[2])})
+	if err != nil {
+		t.Fatalf("ListThreadsByKeys stranger: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("stranger: got %d entries, want 0 (principal fence)", len(got))
 	}
 }
 

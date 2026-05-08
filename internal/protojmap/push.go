@@ -122,7 +122,50 @@ func (s *Server) runEventSource(
 	// LISTEN/NOTIFY-style trigger over the same reader.
 	const pollInterval = 100 * time.Millisecond
 
+	// Prime cursor to the current max seq across all kinds for this
+	// principal so we do not re-walk the entire historical change feed
+	// on connect. The client already has authoritative state via the
+	// /Foo/get and /Foo/changes calls it issues against the same JMAP
+	// session; replaying old changes here just produces a sustained
+	// burst of StateChange events (one per coalesce window per 256-row
+	// batch) that the client answers with /changes calls. On a freshly
+	// imported mailbox that historical feed is 100k+ rows long. We
+	// best-effort the priming: if the lookup fails we fall back to 0
+	// and accept the noise rather than refusing the subscription.
 	var cursor store.ChangeSeq
+	if seq, err := s.store.Meta().GetMaxChangeSeqForPrincipal(ctx, p.ID); err == nil {
+		cursor = seq
+	} else {
+		log.Warn("eventsource.prime_cursor_failed",
+			"activity", "internal",
+			"err", err,
+			"principal_id", uint64(p.ID),
+		)
+	}
+
+	// Emit one initial StateChange immediately after priming so the
+	// client has authoritative current state for every subscribed type
+	// without having to wait for the next change. This also closes the
+	// race in which a change lands between the client's last /Foo/get
+	// and the server priming its cursor — the initial event re-asserts
+	// state, the client compares against its cache, and refetches only
+	// if they differ. closeafter=state is satisfied by this event.
+	if ev, err := s.buildStateChange(ctx, p, types); err == nil {
+		if err := writeSSEStateChange(w, ev); err != nil {
+			return err
+		}
+		flusher.Flush()
+		if closeAfterState {
+			return nil
+		}
+	} else {
+		log.Warn("eventsource.initial_state_failed",
+			"activity", "internal",
+			"err", err,
+			"principal_id", uint64(p.ID),
+		)
+	}
+
 	pendingChanged := false
 	// flushTimer starts as a nil channel so select skips it; a real
 	// timer is created on the first matched change via s.clk.After

@@ -1,10 +1,12 @@
 package storesqlite
 
 import (
+	"context"
 	"database/sql"
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
@@ -31,6 +33,7 @@ type Store struct {
 	meta       *metadata
 	fts        *ftsStub
 	randReader io.Reader
+	bulkImport bool // when true, Close runs PRAGMA wal_checkpoint(TRUNCATE) before closing the DB
 
 	closeOnce sync.Once
 	closeErr  error
@@ -50,8 +53,23 @@ func (s *Store) FTS() store.FTS { return s.fts }
 
 // Close releases DB and blob resources. Safe to call multiple times;
 // only the first call does work.
+//
+// In BulkImport mode the autocheckpoint pragma is disabled so the WAL
+// can grow monotonically during the import; Close runs an explicit
+// PRAGMA wal_checkpoint(TRUNCATE) before closing so the next process
+// to open the file does not have to walk a multi-GB WAL.
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
+		if s.bulkImport && s.db != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if _, err := s.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+				if s.logger != nil {
+					s.logger.Warn("storesqlite: final wal_checkpoint failed",
+						"err", err.Error())
+				}
+			}
+		}
 		s.closeErr = s.db.Close()
 	})
 	return s.closeErr

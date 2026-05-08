@@ -315,6 +315,121 @@ type Envelope struct {
 	Date time.Time
 }
 
+// InsertMessageItem is one entry in a batched InsertMessages call.
+// See store.Metadata.InsertMessages for the contract.
+type InsertMessageItem struct {
+	// Message is the mailbox-independent metadata.
+	Message Message
+	// Targets is the per-(message, mailbox) state, one entry per
+	// mailbox membership.
+	Targets []MessageMailbox
+}
+
+// InsertMessageResult is the per-item return shape of InsertMessages.
+// The UID and ModSeq are sampled from the first target (mirroring the
+// InsertMessage single-item return).
+type InsertMessageResult struct {
+	UID    UID
+	ModSeq ModSeq
+}
+
+// InsertMessagesOptions controls per-batch behaviour for the bulk
+// InsertMessages path. Zero value matches the per-message
+// InsertMessage semantics.
+type InsertMessagesOptions struct {
+	// SkipThreading skips the per-message thread-resolution lookup
+	// (an indexed SELECT against the messages table whose cost grows
+	// with the table size; non-trivial during large imports). Imported
+	// messages land with thread_id = 0; the operator runs
+	// RethreadPrincipal at end-of-import to compute threads in one
+	// amortised pass.
+	SkipThreading bool
+}
+
+// EmailQueryFastSort selects the column the SQL fast path orders by.
+// Only numeric columns are supported; text-collation sorts (subject,
+// from, to) require ICU-aware ORDER BY which the SQL backends do not
+// guarantee, so the JMAP layer must keep the Go-side sort path for
+// those properties.
+type EmailQueryFastSort string
+
+const (
+	// EmailQueryFastSortReceivedAt sorts by the message's received-at
+	// timestamp (the JMAP "receivedAt" property).
+	EmailQueryFastSortReceivedAt EmailQueryFastSort = "receivedAt"
+	// EmailQueryFastSortSentAt sorts by the envelope Date header
+	// (the JMAP "sentAt" property).
+	EmailQueryFastSortSentAt EmailQueryFastSort = "sentAt"
+	// EmailQueryFastSortSize sorts by the message body size.
+	EmailQueryFastSortSize EmailQueryFastSort = "size"
+	// EmailQueryFastSortID sorts by the message primary key (mostly a
+	// stable tiebreak; rarely useful as a primary sort).
+	EmailQueryFastSortID EmailQueryFastSort = "id"
+)
+
+// EmailQueryFastOpts is the SQL-pushable subset of the JMAP Email/query
+// FilterCondition + sort + pagination. See Metadata.QueryEmailFast for
+// the full contract; predicates not representable here (hasAttachment,
+// body, non-cached headers, thread-keyword aggregation, FTS text)
+// require the JMAP layer's slow path.
+//
+// All filter pointers are optional; nil means "no constraint".
+type EmailQueryFastOpts struct {
+	// InMailbox restricts results to a single mailbox membership. When
+	// nil, the query spans every mailbox owned by the principal (shared
+	// mailboxes via ACL are NOT included; the JMAP layer must fall
+	// back to the slow path when the user can see ACL-shared mailboxes
+	// and the filter is account-wide).
+	InMailbox *MailboxID
+	// InMailboxOtherThan excludes the listed mailboxes from the result
+	// set. Combined with InMailbox via AND.
+	InMailboxOtherThan []MailboxID
+	// Before bounds received-at strictly less than this instant.
+	Before *time.Time
+	// After bounds received-at strictly greater than this instant.
+	After *time.Time
+	// MinSize, MaxSize bound the body size in bytes (inclusive).
+	MinSize *int64
+	MaxSize *int64
+	// SortBy selects the ORDER BY column. Empty defaults to
+	// EmailQueryFastSortReceivedAt.
+	SortBy EmailQueryFastSort
+	// SortAscending picks ASC over DESC. Default is descending (matches
+	// the suite's "newest first" inbox view).
+	SortAscending bool
+	// Position is the zero-based row offset. Negative is rejected.
+	Position int
+	// Limit caps the number of returned rows. 0 means no caller-supplied
+	// cap; the store applies an internal ceiling.
+	Limit int
+	// CalculateTotal additionally runs a COUNT(*) over the same WHERE
+	// clause and populates EmailQueryFastResult.Total.
+	CalculateTotal bool
+}
+
+// ThreadMessageRow is one membership row returned by
+// Metadata.ListThreadsByKeys. The store flattens the threaded /
+// un-threaded distinction at SQL level: the Key field equals the
+// stored thread_id when nonzero, or the message id otherwise.
+// JMAP Thread/get groups rows by Key and sorts by ReceivedAt + ID
+// to render the thread-membership list.
+type ThreadMessageRow struct {
+	Key        uint64
+	MessageID  MessageID
+	ReceivedAt time.Time
+}
+
+// EmailQueryFastResult is the response from Metadata.QueryEmailFast.
+// IDs and ThreadIDs are parallel slices of the same length; ThreadIDs[i]
+// is the thread_id of the message with id IDs[i] (0 when the message
+// has not yet been threaded). Total is meaningful only when the request
+// set CalculateTotal.
+type EmailQueryFastResult struct {
+	IDs       []MessageID
+	ThreadIDs []uint64
+	Total     int
+}
+
 // MessageMailbox holds the per-(message, mailbox) state as required by
 // RFC 9051 §2.3.1.1 and REQ-STORE-36..38. One row in this struct
 // corresponds to one row in the message_mailboxes join table.

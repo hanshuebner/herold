@@ -1,5 +1,30 @@
 # 00 — Scope and non-goals
 
+**2026-05-08** (rev 11): Gmail Takeout import promoted to phase-2 scope.
+Driven by the maintainer's own takeout: a fraction of plausible adopters
+are migrating from Gmail and the "start using herold" path without an
+importer is a forwarding rule plus a slow drip of new mail. New
+requirements file `server/requirements/16-import.md` (REQ-IMPORT-01..86)
+covers ingestion of the Takeout artefacts (mbox + a small set of JSON
+setting files: filters, blocked addresses, forwarding addresses,
+delegated send-as addresses), translation of Gmail filters into a
+single `imported-from-gmail` Sieve script (inactive by default for user
+review), and pass-through of `X-Gmail-Labels` / `X-GM-THRID` into
+herold's mailbox and thread model. The five default Gmail categories
+(Primary / Social / Promotions / Updates / Forums) map 1:1 onto the
+`$category-*` keywords already defined for the LLM categoriser
+(REQ-FILT-201). **Localization is load-bearing:** Takeout is fully
+localized in the Google UI language, so the importer ships a
+locale-string table covering at least 24 locales (`en`, `de`, `fr`,
+`es`, `it`, `nl`, `pt`, `pl`, `cs`, `sv`, `da`, `no`, `fi`, `ja`, `ko`,
+`zh-CN`, `zh-TW`, `ru`, `tr`, `el`, `he`, `ar`, `hi`, plus regional
+variants) with auto-detection from the archive contents (REQ-IMPORT-10..15).
+CLI surface `herold import gmail` (REQ-ADM-15x amended) plus admin REST
+`/api/v1/import/jobs`; Suite settings exposes the same as a self-service
+wizard (REQ-SET-IMPORT-1..6) for users to import their own Gmail without
+operator help. Imported forwarding rules and delegated send-as identities
+are imported as **data, not policy** — the user opts in per rule.
+
 **2026-04-28** (rev 10): three product-design rules promoted to top-level
 goals (G14, G15, G16). G14 — LLM transparency: every place herold uses an
 LLM to act on a user's content (spam classification, automatic

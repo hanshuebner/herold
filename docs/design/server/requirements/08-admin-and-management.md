@@ -30,6 +30,7 @@ Grouped by resource. Every resource supports `GET list`, `GET /<id>`, `POST crea
 - **REQ-ADM-20** `/api/v1/server/config` — effective config (redacted secrets). `/api/v1/server/reload` — POST triggers SIGHUP-equivalent reload.
 - **REQ-ADM-21** `/api/v1/server/health` — liveness + readiness; unauthenticated.
 - **REQ-ADM-22** `/api/v1/server/stats` — high-level stats. Prometheus metrics on separate `/metrics` endpoint.
+- **REQ-ADM-22a** `/api/v1/import/jobs` — Gmail Takeout import jobs. `POST` creates a job (admin scope, can target any principal); `GET /{id}` returns state + counters; `GET /{id}/errors` paginates per-message errors; `POST /{id}/cancel` aborts. Full contract in `requirements/16-import.md` (REQ-IMPORT-60..65). The same endpoints are mirrored on the public listener under `user` scope, restricted to `principal == self`, for the Suite's self-service import flow (REQ-IMPORT-70..74).
 - **REQ-ADM-23** Client-log surfaces (back the operator view of REQ-OPS-200..220):
   - **REQ-ADM-230** `GET /api/v1/admin/clientlog` — paginated read of the ring buffer. Filters: `slice` (`auth`|`public`, default `auth`), `app` (`suite`|`admin`), `kind`, `level`, `since`, `until`, `user`, `session_id`, `request_id`, `route`, `text` (substring match on `msg`/`stack`). Cursor pagination per REQ-ADM-40. Response carries the enriched record (client + server timestamps, computed `clock_skew_ms`, redacted fields visible as `***`).
   - **REQ-ADM-231** `GET /api/v1/admin/clientlog/timeline?request_id=<id>` — joined view of all server log records and client-log records carrying the same `X-Request-Id`, sorted by effective time. Implements the cross-source correlation surface (REQ-OPS-213).
@@ -73,6 +74,7 @@ The CLI is a thin wrapper around the REST API by default (via local UNIX socket 
 - `herold cert {list,show,renew,add-manual}`
 - `herold server {reload,status,config-check,version}`
 - `herold mail {import,export,inspect <msgid>}`
+- `herold import gmail --principal <email> [--archive <path>|--directory <path>] [--locale <tag>] [--dry-run] [--resume <job-id>] [--no-settings] [--no-mail]` — Google Takeout import. Full requirements in `requirements/16-import.md` (REQ-IMPORT-60..65). The Gmail-specific subcommand sits under a generic `herold import <vendor>` namespace so future importers (Outlook PST, Apple Mail mbox, generic Maildir) can extend the same surface without name churn.
 - `herold diag {backup,restore,fsck,collect}` (collect = support bundle)
 
 ### Ergonomics

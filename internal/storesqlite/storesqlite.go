@@ -38,6 +38,24 @@ type Options struct {
 	// WALAutocheckpoint overrides PRAGMA wal_autocheckpoint. Zero = leave
 	// the SQLite default (1000 pages).
 	WALAutocheckpoint int
+	// BulkImport, when true, opens the database in a configuration tuned
+	// for one-shot bulk inserts (the gmail importer is the canonical
+	// caller). The effects:
+	//
+	//   - synchronous = OFF (skip the WAL fsync at each commit)
+	//   - wal_autocheckpoint raised to 10000 pages so checkpoints don't
+	//     stall the import loop every few seconds
+	//   - cache_size raised to 256 MiB so the b-tree pages and
+	//     change-feed pages stay hot
+	//
+	// Trade-off: synchronous=OFF means a host-OS crash or power loss
+	// during the import may corrupt the database. Process-level crashes
+	// (kill -9, panic) remain safe — SQLite still flushes when the
+	// process exits cleanly. Operators MUST run a fresh-DB or
+	// known-recoverable target when using this mode; the importer's
+	// idempotency lets a re-run pick up where a crashed run left off,
+	// which is the standard recovery path.
+	BulkImport bool
 }
 
 // Open opens (or creates) a SQLite-backed store at path. The blob
@@ -86,7 +104,7 @@ func OpenWithOptions(ctx context.Context, path string, logger *slog.Logger, c cl
 		rs = rand.Reader
 	}
 
-	dsn := buildDSN(path)
+	dsn := buildDSN(path, opts)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("storesqlite: open: %w", err)
@@ -115,6 +133,9 @@ func OpenWithOptions(ctx context.Context, path string, logger *slog.Logger, c cl
 
 	blobDir := filepath.Clean(path) + ".blobs"
 	blobs := storeblobfs.New(blobDir, c)
+	if opts.BulkImport {
+		blobs.SetSkipFsync(true)
+	}
 
 	s := &Store{
 		db:         db,
@@ -123,6 +144,7 @@ func OpenWithOptions(ctx context.Context, path string, logger *slog.Logger, c cl
 		clock:      c,
 		blobs:      blobs,
 		randReader: rs,
+		bulkImport: opts.BulkImport,
 	}
 	s.meta = &metadata{s: s}
 	s.fts = &ftsStub{s: s}
@@ -215,14 +237,23 @@ func backfillTOTPFlags(ctx context.Context, s *Store, logger *slog.Logger) error
 // buildDSN composes the URI-form DSN consumed by modernc.org/sqlite. We
 // set the PRAGMAs the architecture spec mandates via the _pragma URL
 // parameter; the modernc driver runs them before the first query.
-func buildDSN(path string) string {
-	// Use file: so URI parameters are parsed.
+//
+// BulkImport mode replaces synchronous=NORMAL with synchronous=OFF and
+// raises cache_size to 256 MiB; see Options.BulkImport for the
+// rationale and the corruption trade-off.
+func buildDSN(path string, opts Options) string {
+	sync := "NORMAL"
+	cacheKB := 65536
+	if opts.BulkImport {
+		sync = "OFF"
+		cacheKB = 262144
+	}
 	q := []string{
 		"_pragma=journal_mode(WAL)",
-		"_pragma=synchronous(NORMAL)",
+		"_pragma=synchronous(" + sync + ")",
 		"_pragma=foreign_keys(ON)",
 		"_pragma=busy_timeout(30000)",
-		"_pragma=cache_size(-65536)",
+		fmt.Sprintf("_pragma=cache_size(-%d)", cacheKB),
 		"_pragma=temp_store(MEMORY)",
 	}
 	return "file:" + path + "?" + strings.Join(q, "&")
@@ -234,19 +265,35 @@ func buildDSN(path string) string {
 // opts overrides cache_size and wal_autocheckpoint when non-zero.
 func applyPragmas(ctx context.Context, db *sql.DB, opts Options) error {
 	cacheSize := -65536
+	if opts.BulkImport {
+		cacheSize = -262144
+	}
 	if opts.CacheSize != 0 {
 		cacheSize = opts.CacheSize
 	}
+	sync := "NORMAL"
+	if opts.BulkImport {
+		sync = "OFF"
+	}
 	pragmas := []string{
 		"PRAGMA journal_mode = WAL",
-		"PRAGMA synchronous = NORMAL",
+		"PRAGMA synchronous = " + sync,
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA busy_timeout = 30000",
 		fmt.Sprintf("PRAGMA cache_size = %d", cacheSize),
 		"PRAGMA temp_store = MEMORY",
 	}
-	if opts.WALAutocheckpoint != 0 {
-		pragmas = append(pragmas, fmt.Sprintf("PRAGMA wal_autocheckpoint = %d", opts.WALAutocheckpoint))
+	walAutocheckpoint := opts.WALAutocheckpoint
+	if opts.BulkImport && walAutocheckpoint == 0 {
+		// BulkImport disables autocheckpoint entirely so the import
+		// loop is never stalled mid-batch by SQLite folding the WAL
+		// into the main DB. Trade-off: the WAL grows monotonically
+		// during the import (potentially several GB on a 13 GB
+		// takeout) and is collapsed by an explicit
+		// PRAGMA wal_checkpoint(TRUNCATE) on Store.Close.
+		pragmas = append(pragmas, "PRAGMA wal_autocheckpoint = 0")
+	} else if walAutocheckpoint != 0 {
+		pragmas = append(pragmas, fmt.Sprintf("PRAGMA wal_autocheckpoint = %d", walAutocheckpoint))
 	}
 	for _, p := range pragmas {
 		if _, err := db.ExecContext(ctx, p); err != nil {

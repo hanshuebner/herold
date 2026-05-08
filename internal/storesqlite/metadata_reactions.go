@@ -147,3 +147,34 @@ func (m *metadata) GetMessageByMessageIDHeader(
 	}
 	return m.GetMessage(ctx, store.MessageID(msgID))
 }
+
+// ListPrincipalBlobHashes returns every distinct blob_hash owned by
+// principalID. Bulk-importer entry point; see store.Metadata for the
+// contract.
+func (m *metadata) ListPrincipalBlobHashes(
+	ctx context.Context,
+	principalID store.PrincipalID,
+) ([]string, error) {
+	const q = `
+		SELECT DISTINCT blob_hash FROM messages
+		WHERE principal_id = ?
+		  AND blob_hash IS NOT NULL
+		  AND blob_hash != ''`
+	rows, err := m.s.db.QueryContext(ctx, q, int64(principalID))
+	if err != nil {
+		return nil, fmt.Errorf("storesqlite: list principal blob hashes: %w", err)
+	}
+	defer rows.Close()
+	out := make([]string, 0, 1024)
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, fmt.Errorf("storesqlite: list principal blob hashes scan: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storesqlite: list principal blob hashes rows: %w", err)
+	}
+	return out, nil
+}
