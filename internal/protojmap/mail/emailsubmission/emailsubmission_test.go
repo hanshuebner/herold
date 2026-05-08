@@ -109,7 +109,6 @@ func newSetup(t *testing.T) (*handlerSet, store.Store, store.Principal, store.Ma
 	if err != nil {
 		t.Fatalf("storesqlite.Open: %v", err)
 	}
-	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()
 	p, _ := st.Meta().InsertPrincipal(ctx, store.Principal{
 		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
@@ -142,6 +141,15 @@ func newSetup(t *testing.T) (*handlerSet, store.Store, store.Principal, store.Ma
 		clk:      clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 		identity: stubResolver{email: "alice@example.test"},
 	}
+	// Drain background goroutines (currently seed-on-send) before
+	// closing the store so the t.TempDir RemoveAll is not racing
+	// further writes into the temp directory. Cleanup runs in LIFO,
+	// so this single registration both waits and closes in the
+	// required order.
+	t.Cleanup(func() {
+		h.Wait()
+		_ = st.Close()
+	})
 	return h, st, p, mb, mid, sub
 }
 

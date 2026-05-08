@@ -69,7 +69,6 @@ func newExternalSetup(t *testing.T, outcome extsubmit.Outcome) (
 	if err != nil {
 		t.Fatalf("storesqlite.Open: %v", err)
 	}
-	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()
 	p, _ := st.Meta().InsertPrincipal(ctx, store.Principal{
 		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
@@ -107,6 +106,12 @@ func newExternalSetup(t *testing.T, outcome extsubmit.Outcome) (
 		externalSubmit: extSub,
 		externalRouter: extRouter,
 	}
+	// Drain background goroutines before closing the store; see
+	// newSetup in emailsubmission_test.go for rationale.
+	t.Cleanup(func() {
+		h.Wait()
+		_ = st.Close()
+	})
 	return h, st, p, mid, extSub, extRouter
 }
 

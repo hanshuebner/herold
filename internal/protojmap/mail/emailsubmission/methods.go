@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/auth/sendpolicy"
@@ -40,6 +41,32 @@ type handlerSet struct {
 	identity       IdentityResolver
 	externalSubmit ExternalSubmitter // nil when external submission is disabled
 	externalRouter ExternalRouter    // nil when external submission is disabled
+
+	// bgWG tracks fire-and-forget goroutines launched by /set
+	// (currently the seed-on-send recipient persistence in
+	// seedRecipientsOnSend). Tests call Wait() before closing the store
+	// so cleanup is deterministic — without it those goroutines write
+	// to the store after t.Cleanup ran Close, racing the t.TempDir
+	// RemoveAll. Production shutdown should call Wait() too once the
+	// server lifecycle owns this handler.
+	bgWG sync.WaitGroup
+}
+
+// Wait blocks until every fire-and-forget goroutine the handler
+// launched (currently only the seed-on-send writer) has returned.
+// Tests call this before tearing down the store; production shutdown
+// should follow once the server takes ownership of handler lifecycle.
+func (h *handlerSet) Wait() { h.bgWG.Wait() }
+
+// goBackground launches f as a fire-and-forget goroutine tracked by
+// h.bgWG. Use this instead of bare `go` so Wait() can drain on
+// shutdown / test teardown.
+func (h *handlerSet) goBackground(f func()) {
+	h.bgWG.Add(1)
+	go func() {
+		defer h.bgWG.Done()
+		f()
+	}()
 }
 
 func stateString(seq int64) string { return strconv.FormatInt(seq, 10) }
@@ -931,7 +958,11 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 	// recipient the principal has sent to. Fire-and-forget — a seeding
 	// failure never blocks the submission response. We use a background
 	// context so the seeding is not cancelled if the HTTP request ends.
-	go s.h.seedRecipientsOnSend(context.Background(), p, msg, recipients)
+	// Routed through goBackground so server shutdown / test teardown
+	// can drain it via h.Wait() before closing the store.
+	s.h.goBackground(func() {
+		s.h.seedRecipientsOnSend(context.Background(), p, msg, recipients)
+	})
 
 	rows, _ := s.h.store.Meta().ListQueueItems(ctx, store.QueueFilter{EnvelopeID: envID})
 	return rowToJMAP(rows, in.IdentityID, in.EmailID, threadID), nil
@@ -1024,9 +1055,12 @@ func (h *handlerSet) processCreateExternal(
 			Description: fmt.Sprintf("persist ext submission: %s", err)}
 	}
 
-	// Seed-on-send (REQ-MAIL-11g): fire-and-forget.
+	// Seed-on-send (REQ-MAIL-11g): fire-and-forget. Drained via
+	// h.Wait() at shutdown / test teardown.
 	if msg, mErr := h.store.Meta().GetMessage(ctx, emailMsgID); mErr == nil {
-		go h.seedRecipientsOnSend(context.Background(), p, msg, recipients)
+		h.goBackground(func() {
+			h.seedRecipientsOnSend(context.Background(), p, msg, recipients)
+		})
 	}
 
 	return externalRowToJMAP(row), nil
