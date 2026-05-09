@@ -61,6 +61,17 @@ type Options struct {
 	AllowPlainLoginWithoutTLS bool
 	// ServerName advertised in the greeting and ID response.
 	ServerName string
+	// DefaultCommandDeadline is the wall-clock budget applied to every
+	// IMAP command (REQ-PERF-DEADLINE-01). Default 1 s when zero.
+	// Bypassed for principals carrying
+	// PrincipalFlagBypassResponseDeadline (REQ-PERF-DEADLINE-21).
+	DefaultCommandDeadline time.Duration
+	// CommandDeadlines overrides DefaultCommandDeadline for specific
+	// IMAP verbs (REQ-PERF-DEADLINE-20). Keys are the uppercase command
+	// verb without the "IMAP:" prefix that operators write in
+	// system.toml — the server maps both forms to the same lookup
+	// table.
+	CommandDeadlines map[string]time.Duration
 }
 
 // IMAP server caps. Defaults are chosen to match the REQ-PROTO-31
@@ -185,6 +196,9 @@ func NewServer(
 	}
 	if opts.MaxConnectionsPerIP == 0 {
 		opts.MaxConnectionsPerIP = defaultMaxConnectionsPerIP
+	}
+	if opts.DefaultCommandDeadline <= 0 {
+		opts.DefaultCommandDeadline = time.Second
 	}
 	// Register the IMAP collector set on Server construction. Idempotent
 	// across many Server instances sharing one process Registry (tests).

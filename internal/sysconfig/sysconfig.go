@@ -36,6 +36,41 @@ type Config struct {
 	// bootstrap meta tag carries enabled:false so the SPA wrapper installs
 	// no handlers (REQ-CLOG-12).
 	ClientLog ClientLogConfig `toml:"clientlog,omitempty"`
+	// Performance holds the response-time budget configuration
+	// (REQ-PERF-DEADLINE-20..23). Default deadline applies to every
+	// JMAP method and IMAP command; per-method/command overrides live
+	// under [performance.method_deadline].
+	Performance PerformanceConfig `toml:"performance,omitempty"`
+}
+
+// PerformanceConfig configures the response-time budget enforced by
+// the JMAP and IMAP dispatchers (REQ-PERF-RESP). The principal flag
+// `bypass_response_deadline` overrides this for trusted accounts; it
+// is set per-principal, not in this file.
+//
+// Example:
+//
+//	[performance]
+//	default_deadline = "1s"
+//
+//	[performance.method_deadline]
+//	"Email/import"     = "30s"
+//	"Email/set"        = "5s"
+//	"IMAP:APPEND"      = "30s"
+//	"IMAP:FETCH"       = "5s"
+type PerformanceConfig struct {
+	// DefaultDeadline is the wall-clock budget applied to every JMAP
+	// method invocation and every IMAP command when no method-specific
+	// override is configured. Default 1000ms when zero.
+	DefaultDeadline time.Duration `toml:"default_deadline,omitempty"`
+	// MethodDeadline overrides DefaultDeadline for specific operations.
+	// JMAP method names use the RFC 8620 Type/methodName form
+	// ("Email/query"). IMAP commands use the prefix "IMAP:" followed by
+	// the uppercase verb ("IMAP:FETCH"). Unknown keys at parse time
+	// are not rejected so future methods can be configured ahead of
+	// their handler landing; the dispatcher ignores entries it does
+	// not recognise.
+	MethodDeadline map[string]time.Duration `toml:"method_deadline,omitempty"`
 }
 
 // HooksConfig groups ingress-hook subsystems (SES inbound, future

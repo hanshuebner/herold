@@ -88,6 +88,14 @@ const (
 	// can remain opaque to the store and so enrolment state is cheap to
 	// query without decoding the secret envelope.
 	PrincipalFlagTOTPEnabled
+	// PrincipalFlagBypassResponseDeadline exempts this principal from the
+	// per-method response-time deadline enforced by the JMAP and IMAP
+	// dispatchers (REQ-PERF-DEADLINE-21). Granted to operator accounts
+	// running legitimately slow workloads (large bulk imports, archival
+	// queries against external resources). Does NOT relax the un-indexed
+	// scan ban (REQ-PERF-INDEX-08): that is a correctness rule, not a
+	// performance gate.
+	PrincipalFlagBypassResponseDeadline
 )
 
 // Has reports whether f includes mask (every bit in mask is set in f).

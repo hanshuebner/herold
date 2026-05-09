@@ -140,6 +140,16 @@ type Options struct {
 	WriteTimeout time.Duration
 	// ShutdownDrain bounds the graceful-shutdown window. Defaults 10s.
 	ShutdownDrain time.Duration
+	// DefaultMethodDeadline is the wall-clock budget applied to every
+	// JMAP method handler.Execute call (REQ-PERF-DEADLINE-01). Default
+	// 1 s when zero. Bypassed for principals carrying
+	// PrincipalFlagBypassResponseDeadline (REQ-PERF-DEADLINE-21).
+	DefaultMethodDeadline time.Duration
+	// MethodDeadlines overrides DefaultMethodDeadline for specific
+	// JMAP methods (REQ-PERF-DEADLINE-20). Keys are the RFC 8620
+	// Type/methodName form; entries for unknown methods are tolerated
+	// (the dispatcher only consults the map for methods it dispatches).
+	MethodDeadlines map[string]time.Duration
 }
 
 // Server is the JMAP Core handle. One *Server serves any number of
@@ -228,6 +238,9 @@ func NewServer(
 	}
 	if opts.ShutdownDrain <= 0 {
 		opts.ShutdownDrain = 10 * time.Second
+	}
+	if opts.DefaultMethodDeadline <= 0 {
+		opts.DefaultMethodDeadline = time.Second
 	}
 	s := &Server{
 		store:     st,

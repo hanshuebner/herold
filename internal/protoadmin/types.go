@@ -63,6 +63,9 @@ func principalFlagsToStrings(f store.PrincipalFlags) []string {
 	if f.Has(store.PrincipalFlagTOTPEnabled) {
 		out = append(out, "totp_enabled")
 	}
+	if f.Has(store.PrincipalFlagBypassResponseDeadline) {
+		out = append(out, "bypass_response_deadline")
+	}
 	return out
 }
 
@@ -76,6 +79,8 @@ func principalFlagsFromStrings(in []string) (store.PrincipalFlags, bool) {
 			f |= store.PrincipalFlagIgnoreDownloadLimits
 		case "admin":
 			f |= store.PrincipalFlagAdmin
+		case "bypass_response_deadline":
+			f |= store.PrincipalFlagBypassResponseDeadline
 		case "totp_enabled":
 			// Clients may not set totp_enabled directly; it is toggled by
 			// the TOTP confirm/disable endpoints.

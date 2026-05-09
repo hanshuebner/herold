@@ -11,7 +11,12 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/observe"
+	"github.com/hanshuebner/herold/internal/store"
 )
+
+// bypassDeadlineFlag aliases store.PrincipalFlagBypassResponseDeadline
+// at the package boundary so applyMethodDeadline reads cleanly.
+const bypassDeadlineFlag = store.PrincipalFlagBypassResponseDeadline
 
 // handleAPI is POST /jmap. Decodes the request envelope, validates the
 // "using" capability list, runs each method call in order with
@@ -136,9 +141,28 @@ func (s *Server) dispatchOneMulti(ctx context.Context, log *slog.Logger, call In
 		s.logMethodCall(ctx, log, call, nil, refErr)
 		return []Invocation{errorInvocation(call.CallID, refErr)}
 	}
+	methodCtx, cancel := s.applyMethodDeadline(ctx, call.Name)
+	if cancel != nil {
+		defer cancel()
+	}
 	start := time.Now()
-	resp, mErr := handler.Execute(ctx, args)
-	observeJMAPMethodOutcome(ctx, call.Name, mErr, time.Since(start))
+	resp, mErr := handler.Execute(methodCtx, args)
+	if mErr == nil && errors.Is(methodCtx.Err(), context.DeadlineExceeded) {
+		// The handler returned without an error but the deadline tripped
+		// while it was running; promote to a method-level error so the
+		// client observes the timeout.
+		mErr = NewMethodError("serverFail", "method exceeded response deadline")
+	} else if mErr != nil && errors.Is(methodCtx.Err(), context.DeadlineExceeded) {
+		// Surface the deadline as the canonical reason whenever the
+		// handler also reported failure: the underlying ctx cancellation
+		// is the real cause and "serverFail / deadline" is the right
+		// label for both metrics and the wire response.
+		mErr = NewMethodError("serverFail", "method exceeded response deadline")
+	}
+	if mErr != nil && errors.Is(methodCtx.Err(), context.DeadlineExceeded) {
+		s.logDeadlineExceeded(ctx, log, call.Name, time.Since(start))
+	}
+	observeJMAPMethodOutcome(methodCtx, call.Name, mErr, time.Since(start))
 	if mErr != nil {
 		s.logMethodCall(ctx, log, call, nil, mErr)
 		return []Invocation{errorInvocation(call.CallID, mErr)}
@@ -157,6 +181,39 @@ func (s *Server) dispatchOneMulti(ctx context.Context, log *slog.Logger, call In
 	}
 	s.logMethodCall(ctx, log, call, respBytes, nil)
 	return []Invocation{{Name: call.Name, Args: respBytes, CallID: call.CallID}}
+}
+
+// applyMethodDeadline returns a ctx scoped to the deadline that applies
+// to method (REQ-PERF-DEADLINE-01..23). Resolution order: principal
+// flag (PrincipalFlagBypassResponseDeadline) returns ctx unchanged
+// with a nil cancel; per-method override beats the default. Returns
+// (ctx, nil) when no deadline is enforced; (ctx', cancel) otherwise.
+func (s *Server) applyMethodDeadline(ctx context.Context, method string) (context.Context, context.CancelFunc) {
+	if p, ok := PrincipalFromContext(ctx); ok && p.Flags.Has(bypassDeadlineFlag) {
+		return ctx, nil
+	}
+	d := s.opts.DefaultMethodDeadline
+	if override, ok := s.opts.MethodDeadlines[method]; ok && override > 0 {
+		d = override
+	}
+	if d <= 0 {
+		return ctx, nil
+	}
+	return context.WithTimeout(ctx, d)
+}
+
+// logDeadlineExceeded emits the single WARN log entry per REQ-PERF-DEADLINE-12.
+func (s *Server) logDeadlineExceeded(ctx context.Context, log *slog.Logger, method string, elapsed time.Duration) {
+	attrs := []slog.Attr{
+		slog.String("subsystem", "perf-deadline"),
+		slog.String("protocol", "jmap"),
+		slog.String("method", method),
+		slog.Int64("elapsed_ms", elapsed.Milliseconds()),
+	}
+	if p, ok := PrincipalFromContext(ctx); ok {
+		attrs = append(attrs, slog.Uint64("principal_id", uint64(p.ID)))
+	}
+	log.LogAttrs(ctx, slog.LevelWarn, "response deadline exceeded", attrs...)
 }
 
 // observeJMAPMethodOutcome records the per-method duration histogram and

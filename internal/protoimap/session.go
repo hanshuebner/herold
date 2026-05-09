@@ -35,17 +35,18 @@ const (
 // session is one IMAP connection. All per-connection state lives here; the
 // server keeps a set of pointers for shutdown fan-out.
 type session struct {
-	s         *Server
-	conn      net.Conn
-	br        *bufio.Reader
-	resp      *respWriter
-	remote    string
-	tlsActive bool
-	state     sessionState
-	logger    *slog.Logger
-	pid       store.PrincipalID
-	bucket    *tokenBucket
-	cmdCount  int
+	s              *Server
+	conn           net.Conn
+	br             *bufio.Reader
+	resp           *respWriter
+	remote         string
+	tlsActive      bool
+	state          sessionState
+	logger         *slog.Logger
+	pid            store.PrincipalID
+	bypassDeadline bool // PrincipalFlagBypassResponseDeadline cached at login time
+	bucket         *tokenBucket
+	cmdCount       int
 
 	// serverEndpoint is the RFC 5929 tls-server-end-point binding bytes
 	// for the active TLS connection (zero-length when TLS is not up).
@@ -182,14 +183,33 @@ func (ses *session) readLiteral(size int64, nonSync bool) ([]byte, error) {
 // error only for fatal protocol faults (which end the session); per-IMAP
 // "NO" / "BAD" results are written to the client as tagged responses and
 // the handler returns nil.
-func (ses *session) dispatch(ctx context.Context, c *Command) (err error) {
+//
+// Per REQ-PERF-DEADLINE-01..11 the handler runs under a per-command
+// deadline. On expiry the deferred trailer writes a tagged NO [INUSE]
+// to the client, suppresses the inner error (so the session continues),
+// and records the outcome on herold_imap_command_duration_seconds.
+func (ses *session) dispatch(parentCtx context.Context, c *Command) (err error) {
 	// Record the command on a bounded label set: only the verbs the
 	// dispatch table understands are passed through; everything else
 	// rolls up to "unknown" so cardinality is fixed.
 	cmdLabel := imapCommandLabel(c.Op)
 	observe.IMAPCommandsTotal.WithLabelValues(cmdLabel).Inc()
+	ctx, cancel := ses.applyCommandDeadline(parentCtx, cmdLabel)
+	if cancel != nil {
+		defer cancel()
+	}
 	start := time.Now()
 	defer func() {
+		// On deadline expiry write a tagged NO [INUSE] to the client and
+		// clear err so the session continues. The inner err might be the
+		// handler's report of cancellation, a write failure that happens
+		// after the deadline, or nil if the handler observed the ctx
+		// cancellation before doing more work.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			ses.logDeadlineExceeded(parentCtx, cmdLabel, time.Since(start))
+			_ = ses.resp.taggedNO(c.Tag, "INUSE", "deadline exceeded")
+			err = nil
+		}
 		observeIMAPCommandOutcome(ctx, cmdLabel, err, time.Since(start))
 	}()
 	switch c.Op {
@@ -412,6 +432,7 @@ func (ses *session) handleLOGIN(ctx context.Context, c *Command) error {
 	}
 	ses.pid = pid
 	ses.state = stateAuthed
+	ses.cachePrincipalFlags(ctx, pid)
 	// Narrow the session logger to include the authenticated principal so
 	// all subsequent records carry principal_id (STANDARDS §7, REQ-OPS-86).
 	ses.logger = ses.logger.With("principal_id", pid)
@@ -420,6 +441,21 @@ func (ses *session) handleLOGIN(ctx context.Context, c *Command) error {
 		"username", c.LoginUser,
 	)
 	return ses.resp.taggedOK(c.Tag, "CAPABILITY "+ses.capabilityString(), "LOGIN completed")
+}
+
+// cachePrincipalFlags reads the authenticated principal's flag bitfield
+// once at login time so the per-command deadline path does not pay a
+// store round-trip per command. A failed lookup leaves the cache at
+// the zero value (no bypass), which is the safe default.
+func (ses *session) cachePrincipalFlags(ctx context.Context, pid store.PrincipalID) {
+	p, err := ses.s.store.Meta().GetPrincipalByID(ctx, pid)
+	if err != nil {
+		ses.logger.Warn("protoimap: principal flag fetch failed",
+			"activity", "internal",
+			"err", err.Error())
+		return
+	}
+	ses.bypassDeadline = p.Flags.Has(store.PrincipalFlagBypassResponseDeadline)
 }
 
 func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
@@ -507,6 +543,7 @@ func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
 	}
 	ses.pid = pid
 	ses.state = stateAuthed
+	ses.cachePrincipalFlags(ctx, pid)
 	// Narrow the session logger to include the authenticated principal so
 	// all subsequent records carry principal_id (STANDARDS §7, REQ-OPS-86).
 	ses.logger = ses.logger.With("principal_id", pid)
@@ -551,6 +588,36 @@ func (ses *session) makeMechanism(name string) (sasl.Mechanism, error) {
 		return sasl.NewXOAUTH2(ses.s.tokens), nil
 	}
 	return nil, fmt.Errorf("mechanism %q not supported", name)
+}
+
+// applyCommandDeadline returns a ctx scoped to the deadline that
+// applies to cmd (REQ-PERF-DEADLINE-01..23). Resolution: the
+// session-cached bypass flag wins; otherwise the per-command override
+// from CommandDeadlines beats DefaultCommandDeadline. Returns
+// (parentCtx, nil) when no deadline is enforced.
+func (ses *session) applyCommandDeadline(parentCtx context.Context, cmd string) (context.Context, context.CancelFunc) {
+	if ses.bypassDeadline {
+		return parentCtx, nil
+	}
+	d := ses.s.opts.DefaultCommandDeadline
+	if override, ok := ses.s.opts.CommandDeadlines[cmd]; ok && override > 0 {
+		d = override
+	}
+	if d <= 0 {
+		return parentCtx, nil
+	}
+	return context.WithTimeout(parentCtx, d)
+}
+
+// logDeadlineExceeded emits the single WARN entry per REQ-PERF-DEADLINE-12.
+func (ses *session) logDeadlineExceeded(ctx context.Context, cmd string, elapsed time.Duration) {
+	ses.logger.LogAttrs(ctx, slog.LevelWarn, "response deadline exceeded",
+		slog.String("subsystem", "perf-deadline"),
+		slog.String("protocol", "imap"),
+		slog.String("command", cmd),
+		slog.Int64("elapsed_ms", elapsed.Milliseconds()),
+		slog.Uint64("principal_id", uint64(ses.pid)),
+	)
 }
 
 // observeIMAPCommandOutcome records the per-command duration histogram
