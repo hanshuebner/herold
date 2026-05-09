@@ -149,7 +149,11 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 	}
 
 	// Pre-compute blob-based filter data (hasAttachment, non-standard headers).
-	fd := buildFilterData(ctx, q.h.store.Blobs(), allMessages, filter)
+	// ftsNarrowed reflects whether allMessages came from gatherCandidatesRaw's
+	// FTS path; the thread-aggregation branch above runs a full scan and so
+	// must re-validate body: and text: against blob-parsed text.
+	ftsNarrowed := !needAllForThread && filter != nil && filterHasTextPredicate(filter)
+	fd := buildFilterData(ctx, q.h.store.Blobs(), allMessages, filter, ftsNarrowed)
 	matched := filterMessagesWithCtxAndAttachments(allMessages, filter, allMessages, fd)
 	sortMessages(matched, req.Sort)
 
@@ -258,13 +262,22 @@ func filterNeedsThreadAgg(f *emailFilter) bool {
 // or nil map means the corresponding predicate falls back to a safe
 // default.
 type filterData struct {
+	// ftsNarrowed reports whether the candidate set was produced by a
+	// storefts.Index.Query rather than a full account scan. When true,
+	// matchConditionWithAttachments trusts that text: and body: predicates
+	// are already satisfied by every candidate and skips the per-message
+	// blob substring re-check. The full-scan thread-aggregation path
+	// (Email/query with someInThreadHaveKeyword / noneInThreadHaveKeyword)
+	// sets this false and pays for blob parsing.
+	ftsNarrowed bool
 	// attachments maps message ID to whether the message has >=1 attachment.
 	attachments map[store.MessageID]bool
 	// blobHeaders maps message ID to a map of lowercased header name ->
 	// first value. Populated only when the filter uses a non-standard header.
 	blobHeaders map[store.MessageID]map[string]string
 	// blobBodyText maps message ID to the extracted plain-text body.
-	// Populated when the filter has a body: condition.
+	// Populated only when the filter has a body: or text: condition AND the
+	// candidate set was NOT FTS-narrowed (i.e. the thread-agg full-scan path).
 	blobBodyText map[store.MessageID]string
 }
 
@@ -294,18 +307,24 @@ func filterMessagesWithCtxAndAttachments(candidates []store.Message, f *emailFil
 }
 
 // buildFilterData pre-computes blob-based predicates for all msgs
-// when the filter requires it. Returns nil when no blob parsing is needed.
-func buildFilterData(ctx context.Context, blobs store.Blobs, msgs []store.Message, f *emailFilter) *filterData {
+// when the filter requires it. Returns nil when no blob parsing is
+// needed. ftsNarrowed reports whether msgs was already filtered through
+// storefts; when true, body: and text: predicates do not require blob
+// parsing because the FTS index already validated them.
+func buildFilterData(ctx context.Context, blobs store.Blobs, msgs []store.Message, f *emailFilter, ftsNarrowed bool) *filterData {
 	if f == nil {
 		return nil
 	}
 	needAtt := filterNeedsAttachment(f)
 	headerName := filterNeedsNonStandardHeader(f)
-	needBody := filterNeedsBodyBlobParse(f)
+	needBody := filterNeedsBodyBlobParse(f) && !ftsNarrowed
 	if !needAtt && headerName == "" && !needBody {
+		if ftsNarrowed {
+			return &filterData{ftsNarrowed: true}
+		}
 		return nil
 	}
-	fd := &filterData{}
+	fd := &filterData{ftsNarrowed: ftsNarrowed}
 	if needAtt {
 		fd.attachments = make(map[store.MessageID]bool, len(msgs))
 	}
@@ -600,9 +619,14 @@ func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.
 			return false
 		}
 	}
-	// Body predicate: matched against blob-extracted plain-text body when
-	// filterData.blobBodyText is available (populated by buildFilterData).
-	if f.Body != nil {
+	// Body predicate (RFC 8621 §4.4.1). Three cases:
+	//   - ftsNarrowed: the FTS index already validated body matches; skip.
+	//   - blobBodyText populated: thread-agg full-scan path; check against
+	//     the blob-parsed plain text.
+	//   - neither: defensive fallback (no fd at all). Reject — the caller
+	//     should always hand fd in for body: filters via the Email/query
+	//     Execute path.
+	if f.Body != nil && !(fd != nil && fd.ftsNarrowed) {
 		term := strings.ToLower(*f.Body)
 		bodyText := ""
 		if fd != nil && fd.blobBodyText != nil {
@@ -615,8 +639,8 @@ func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.
 	// text: predicate (RFC 8621 §4.4.1): matches any searchable part of
 	// the message — subject, from, to, cc, bcc, and body. Envelope fields
 	// are checked directly; body text is checked against blobBodyText when
-	// available.
-	if f.Text != nil {
+	// the candidate set was not already FTS-narrowed.
+	if f.Text != nil && !(fd != nil && fd.ftsNarrowed) {
 		term := strings.ToLower(*f.Text)
 		env := m.Envelope
 		matched := strings.Contains(strings.ToLower(env.Subject), term) ||
@@ -635,19 +659,20 @@ func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.
 }
 
 // gatherCandidatesRaw returns the candidate message set for filter f
-// without thread aggregation. Text predicates are routed through FTS when
-// possible, but when the filter also requires body blob parsing (e.g.
-// text:, body:) we use a full scan so body content can be matched in the
-// post-filter pass.
+// without thread aggregation. Every text-bearing predicate (text:, body:,
+// subject:, from:, to:, cc:) is routed through storefts.Index.Query;
+// the FTS document mapping covers fieldBody with IncludeInAll=true so
+// body content matching does not require blob parsing. When the filter
+// has no text-bearing predicate at all (e.g. a flag-only filter) the
+// fallback returns the principal's full envelope-only message list,
+// which is bounded by SQLite indexes — not a blob-parsing scan.
 func gatherCandidatesRaw(
 	ctx context.Context,
 	st store.Store,
 	pid store.PrincipalID,
 	f *emailFilter,
 ) ([]store.Message, error) {
-	if f != nil && filterHasTextPredicate(f) && !filterNeedsBodyBlobParse(f) {
-		// Pure envelope-field text predicates (from:, to:, cc:, bcc:,
-		// subject:) with no body: component can use FTS to narrow the set.
+	if f != nil && filterHasTextPredicate(f) {
 		fts := buildFTSQuery(f)
 		hits, err := st.FTS().Query(ctx, pid, fts)
 		if err != nil {
@@ -677,9 +702,7 @@ func gatherCandidates(
 }
 
 // filterHasTextPredicate reports whether f (or any nested condition) has
-// an envelope-field text predicate that should be routed through FTS.
-// The body: predicate is excluded — it requires blob parsing and is
-// handled by filterNeedsBodyBlobParse / filterData.blobBodyText.
+// a text-bearing predicate that should be routed through FTS.
 func filterHasTextPredicate(f *emailFilter) bool {
 	if f == nil {
 		return false
@@ -696,13 +719,19 @@ func filterHasTextPredicate(f *emailFilter) bool {
 		return false
 	}
 	return f.Text != nil || f.From != nil || f.To != nil || f.Cc != nil ||
-		f.Bcc != nil || f.Subject != nil
+		f.Bcc != nil || f.Subject != nil || f.Body != nil
 }
 
 // filterNeedsBodyBlobParse reports whether f (or any nested condition)
-// has a body: or text: predicate that requires blob-level text extraction.
-// text: is included because it matches the full message including body (RFC
-// 8621 §4.4.1), and the FTS stub does not index body content.
+// has a body: or text: predicate. The FTS index covers body content via
+// fieldBody (storefts/index.go: IncludeInAll=true), so the FTS path in
+// gatherCandidatesRaw is the primary route for these predicates. This
+// function only matters on the thread-aggregation full-scan branch
+// (Email/query with someInThreadHaveKeyword / noneInThreadHaveKeyword),
+// where buildFilterData populates blobBodyText so matchCondition can
+// re-validate body: / text: against the per-message blob. The
+// non-thread-agg path passes ftsNarrowed=true to buildFilterData, which
+// gates this need off.
 func filterNeedsBodyBlobParse(f *emailFilter) bool {
 	if f == nil {
 		return false
@@ -743,10 +772,11 @@ func buildFTSQuery(f *emailFilter) store.Query {
 	if f.To != nil {
 		q.To = []string{*f.To}
 	}
-	// Body: is handled via blob-parsing (buildFilterData / filterData.blobBodyText)
-	// rather than FTS, so it is intentionally omitted here.
 	if f.Cc != nil {
 		q.Cc = []string{*f.Cc}
+	}
+	if f.Body != nil {
+		q.Body = []string{*f.Body}
 	}
 	return q
 }

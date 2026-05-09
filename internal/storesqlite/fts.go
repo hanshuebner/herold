@@ -3,6 +3,7 @@ package storesqlite
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -14,17 +15,34 @@ import (
 // dependency on Bleve. Production deployments replace this via
 // storefts.New and a thin composed Store; see internal/storefts/doc.go.
 //
-// Indexing is a no-op for IndexMessage / RemoveMessage: the stub reads
-// directly from the messages table on Query.
+// IndexMessage records the caller-supplied text in a per-message map so
+// body: and text: queries can substring-match it; without the map a
+// body: filter would only see envelope columns. The map is in-memory
+// only — the stub is for tests, not production.
 type ftsStub struct {
 	s *Store
+
+	mu       sync.Mutex
+	bodyText map[store.MessageID]string
 }
 
 func (f *ftsStub) IndexMessage(ctx context.Context, msg store.Message, text string) error {
+	if text == "" {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.bodyText == nil {
+		f.bodyText = make(map[store.MessageID]string)
+	}
+	f.bodyText[msg.ID] = strings.ToLower(text)
 	return nil
 }
 
 func (f *ftsStub) RemoveMessage(ctx context.Context, id store.MessageID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.bodyText, id)
 	return nil
 }
 
@@ -67,16 +85,88 @@ func (f *ftsStub) Query(ctx context.Context, principalID store.PrincipalID, q st
 		return nil, err
 	}
 	defer rows.Close()
+	var envelopeHits []store.MessageRef
+	envelopeHitSet := map[store.MessageID]struct{}{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		mid := store.MessageID(id)
+		envelopeHits = append(envelopeHits, store.MessageRef{
+			MessageID: mid,
+			Score:     1,
+		})
+		envelopeHitSet[mid] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Augment with body-text matches recorded by IndexMessage. Production
+	// FTS (Bleve) indexes body content with IncludeInAll=true so a body:
+	// or text: filter sees body matches; the stub mirrors that for tests.
+	bodyHits, err := f.queryBodyText(ctx, principalID, q, envelopeHitSet)
+	if err != nil {
+		return nil, err
+	}
+	return append(envelopeHits, bodyHits...), nil
+}
+
+// queryBodyText returns message IDs whose IndexMessage-supplied text
+// contains every body-relevant query term. The match is conjunctive
+// across q.Text, q.Body, and q.Subject/From/To/Cc terms, mirroring the
+// envelope-side AND in Query. Skipped IDs already present in `seen` are
+// not returned again.
+func (f *ftsStub) queryBodyText(ctx context.Context, principalID store.PrincipalID, q store.Query, seen map[store.MessageID]struct{}) ([]store.MessageRef, error) {
+	terms := collectTerms(q)
+	if len(terms) == 0 {
+		return nil, nil
+	}
+	f.mu.Lock()
+	candidates := make(map[store.MessageID]string, len(f.bodyText))
+	for k, v := range f.bodyText {
+		candidates[k] = v
+	}
+	f.mu.Unlock()
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	// Filter to messages owned by principalID (and matching mailbox if set).
+	where := []string{"principal_id = ?"}
+	args := []any{int64(principalID)}
+	if q.MailboxID != 0 {
+		where = append(where, "EXISTS (SELECT 1 FROM message_mailboxes mm WHERE mm.message_id = id AND mm.mailbox_id = ?)")
+		args = append(args, int64(q.MailboxID))
+	}
+	rows, err := f.s.db.QueryContext(ctx, "SELECT id FROM messages WHERE "+strings.Join(where, " AND "), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	var out []store.MessageRef
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		out = append(out, store.MessageRef{
-			MessageID: store.MessageID(id),
-			Score:     1,
-		})
+		mid := store.MessageID(id)
+		if _, ok := seen[mid]; ok {
+			continue
+		}
+		text, ok := candidates[mid]
+		if !ok {
+			continue
+		}
+		matched := true
+		for _, term := range terms {
+			if !strings.Contains(text, strings.ToLower(term)) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			out = append(out, store.MessageRef{MessageID: mid, Score: 1})
+		}
 	}
 	return out, rows.Err()
 }
