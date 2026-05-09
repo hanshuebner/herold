@@ -73,10 +73,10 @@ func TestWorker_ByteBudgetFlushesEarly(t *testing.T) {
 	// Doc count is generously above the message count we will insert; the
 	// byte budget is the only ceiling that can fire mid-batch.
 	const (
-		docBudget   = 1000
-		byteBudget  = 4096
-		bodyBytes   = 1024
-		messages    = 8
+		docBudget  = 1000
+		byteBudget = 4096
+		bodyBytes  = 1024
+		messages   = 8
 	)
 	w := storefts.NewWorker(idx, st, stringExtractor{}, nil, clk, storefts.WorkerOptions{
 		BatchSize:     docBudget,
