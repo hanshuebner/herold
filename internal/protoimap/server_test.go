@@ -105,6 +105,9 @@ func newFixture(t *testing.T, fo fxOpts) *fixture {
 			IdleMaxDuration:           30 * time.Minute,
 			AllowPlainLoginWithoutTLS: fo.allowPlainLogin,
 			ServerName:                "herold",
+			// Tests are not deadline tests; raise from the 1s default to
+			// keep slow CI hardware (arm64) from tripping LOGIN/APPEND.
+			DefaultCommandDeadline: 30 * time.Second,
 		},
 	)
 	mode := protoimap.ListenerModeSTARTTLS

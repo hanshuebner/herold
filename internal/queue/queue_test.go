@@ -1064,8 +1064,10 @@ func TestDelayDSN_EmittedAfterThreshold(t *testing.T) {
 		// matching REQ-FLOW-76's "always send a delay-then-failure DSN"
 		// guidance.
 	})
-	// Wait for the first attempt.
-	if !waitFor(t, 2*time.Second, func() bool {
+	// Wait for the first attempt. Slow CI hardware (arm64) can take
+	// several seconds to schedule the first delivery; mirror the
+	// per-attempt budget bumped in TestRetryExhaustionEmitsFailureDSN.
+	if !waitFor(t, 15*time.Second, func() bool {
 		return f.deliv.callCount() >= 1
 	}) {
 		t.Fatalf("first attempt never observed")
@@ -1073,7 +1075,7 @@ func TestDelayDSN_EmittedAfterThreshold(t *testing.T) {
 	// Advance the clock past the threshold so the second attempt
 	// triggers a delay DSN.
 	f.clk.Advance(2 * time.Minute)
-	if !waitFor(t, 2*time.Second, func() bool {
+	if !waitFor(t, 15*time.Second, func() bool {
 		return f.deliv.callCount() >= 2
 	}) {
 		t.Fatalf("second attempt never observed")

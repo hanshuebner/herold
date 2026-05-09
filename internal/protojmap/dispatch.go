@@ -203,8 +203,11 @@ func (s *Server) applyMethodDeadline(ctx context.Context, method string) (contex
 }
 
 // logDeadlineExceeded emits the single WARN log entry per REQ-PERF-DEADLINE-12.
+// Tagged activity=user (REQ-OPS-86a) since the record is always emitted
+// against a caller-issued JMAP method.
 func (s *Server) logDeadlineExceeded(ctx context.Context, log *slog.Logger, method string, elapsed time.Duration) {
 	attrs := []slog.Attr{
+		slog.String("activity", observe.ActivityUser),
 		slog.String("subsystem", "perf-deadline"),
 		slog.String("protocol", "jmap"),
 		slog.String("method", method),

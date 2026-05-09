@@ -610,8 +610,11 @@ func (ses *session) applyCommandDeadline(parentCtx context.Context, cmd string) 
 }
 
 // logDeadlineExceeded emits the single WARN entry per REQ-PERF-DEADLINE-12.
+// Tagged activity=user (REQ-OPS-86a) since the record is always emitted
+// against a caller-issued IMAP command.
 func (ses *session) logDeadlineExceeded(ctx context.Context, cmd string, elapsed time.Duration) {
 	ses.logger.LogAttrs(ctx, slog.LevelWarn, "response deadline exceeded",
+		slog.String("activity", observe.ActivityUser),
 		slog.String("subsystem", "perf-deadline"),
 		slog.String("protocol", "imap"),
 		slog.String("command", cmd),

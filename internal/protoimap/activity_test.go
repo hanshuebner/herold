@@ -102,6 +102,9 @@ func buildActivityServerWithClock(
 			MaxCommandsPerSession: 1000,
 			IdleMaxDuration:       5 * time.Second,
 			ServerName:            "herold-test",
+			// Tests are not deadline tests; raise from the 1s default to
+			// keep slow CI hardware (arm64) from tripping LOGIN/APPEND.
+			DefaultCommandDeadline: 30 * time.Second,
 		},
 	)
 	ha.AttachIMAP("imaps", srv, protoimap.ListenerModeImplicit993)
