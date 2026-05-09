@@ -30,6 +30,16 @@ mkdir -p "${LOGS_DIR}"
 echo "interop: run_id=${RUN_ID}"
 echo "interop: logs at ${LOGS_DIR}"
 
+# EXIT trap: restore ownership of the bind-mounted ./logs tree even
+# on hard failure so a future actions/checkout `clean: true` doesn't
+# EACCES on root-owned junit.xml. See run-jmaptest.sh for full
+# rationale.
+restore_logs_ownership() {
+    docker run --rm -v "${SCRIPT_DIR}/logs:/logs" alpine \
+        chown -R "$(id -u):$(id -g)" /logs >/dev/null 2>&1 || true
+}
+trap restore_logs_ownership EXIT
+
 BULK_MARKER=""
 if [[ "${1:-}" == "--bulk" ]]; then
     BULK_MARKER="-m bulk"
@@ -220,6 +230,8 @@ collect_all_logs
 # Tear down.
 docker compose --profile runner down --remove-orphans --volumes \
     2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
+
+# Chown is handled by the EXIT trap registered above.
 
 echo ""
 echo "interop: run complete (exit=${PYTEST_EXIT})"

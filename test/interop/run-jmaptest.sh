@@ -38,6 +38,15 @@ echo "interop-jmaptest: run_id=${RUN_ID}"
 echo "interop-jmaptest: logs at ${LOGS_DIR}"
 echo "interop-jmaptest: filter=${JMAPTEST_FILTER:-<all>} timeout=${JMAPTEST_TIMEOUT}s"
 
+# EXIT trap: even on hard failure (set -e abort, ctrl-c) restore
+# ownership of the bind-mounted ./logs tree so a future
+# actions/checkout `clean: true` doesn't EACCES.
+restore_logs_ownership() {
+    docker run --rm -v "${SCRIPT_DIR}/logs:/logs" alpine \
+        chown -R "$(id -u):$(id -g)" /logs >/dev/null 2>&1 || true
+}
+trap restore_logs_ownership EXIT
+
 # Clean up any stale compose state from previous runs.
 clean_compose_state() {
     docker compose down --remove-orphans --volumes 2>/dev/null || true
@@ -157,6 +166,9 @@ collect_all_logs
 
 docker compose --profile jmaptest down --remove-orphans --volumes \
     2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
+
+# Chown is handled by the EXIT trap registered above so it runs on
+# success AND hard failure paths.
 
 echo ""
 echo "interop-jmaptest: run complete (exit=${PYTEST_EXIT})"

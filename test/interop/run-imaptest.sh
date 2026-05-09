@@ -33,6 +33,16 @@ echo "interop-imaptest: run_id=${RUN_ID}"
 echo "interop-imaptest: logs at ${LOGS_DIR}"
 echo "interop-imaptest: secs=${IMAPTEST_SECS}"
 
+# EXIT trap: restore ownership of the bind-mounted ./logs tree even
+# on hard failure so a future actions/checkout `clean: true` doesn't
+# EACCES on root-owned junit.xml. See run-jmaptest.sh for full
+# rationale.
+restore_logs_ownership() {
+    docker run --rm -v "${SCRIPT_DIR}/logs:/logs" alpine \
+        chown -R "$(id -u):$(id -g)" /logs >/dev/null 2>&1 || true
+}
+trap restore_logs_ownership EXIT
+
 # Clean up any stale compose state from previous runs.
 clean_compose_state() {
     docker compose down --remove-orphans --volumes 2>/dev/null || true
@@ -187,6 +197,8 @@ collect_all_logs
 
 docker compose --profile imaptest down --remove-orphans --volumes \
     2>&1 | tee -a "${LOGS_DIR}/compose.log" || true
+
+# Chown is handled by the EXIT trap registered above.
 
 echo ""
 echo "interop-imaptest: run complete (exit=${PYTEST_EXIT})"
