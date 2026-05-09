@@ -315,13 +315,22 @@ func runFastCollapsed(
 			break
 		}
 		for i, id := range r.IDs {
-			tid := r.ThreadIDs[i]
-			if tid != 0 {
-				if _, dup := seenThreads[tid]; dup {
-					continue
-				}
-				seenThreads[tid] = struct{}{}
+			// Mirror threadIDForMessage's fallback: a row with thread_id
+			// == 0 (importer never linked it to an ancestor) is rendered
+			// to the JMAP wire as `t<id>`. Two such rows can therefore
+			// collide on the wire-side threadId — e.g. a thread-starter
+			// with thread_id=0 plus its replies whose thread_id was set
+			// to the starter's id at insert time. Without folding the
+			// fallback into the dedup key the fast path would emit both
+			// (issue #105: collapseThreads conformance failure).
+			key := r.ThreadIDs[i]
+			if key == 0 {
+				key = uint64(id)
 			}
+			if _, dup := seenThreads[key]; dup {
+				continue
+			}
+			seenThreads[key] = struct{}{}
 			reps = append(reps, id)
 			if len(reps) >= want {
 				break
