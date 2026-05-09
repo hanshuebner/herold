@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -43,13 +44,14 @@ func renderEmailMetadata(m store.Message) jmapEmail {
 		mailboxIDs[jmapIDFromMailbox(m.MailboxID)] = true
 	}
 	out := jmapEmail{
-		ID:         jmapIDFromMessage(m.ID),
-		BlobID:     m.Blob.Hash,
-		ThreadID:   threadIDForMessage(m),
-		MailboxIDs: mailboxIDs,
-		Keywords:   keywordsFromMessage(m),
-		Size:       m.Size,
-		ReceivedAt: rfc3339UTC(m.ReceivedAt),
+		ID:                 jmapIDFromMessage(m.ID),
+		BlobID:             m.Blob.Hash,
+		ThreadID:           threadIDForMessage(m),
+		MailboxIDs:         mailboxIDs,
+		Keywords:           keywordsFromMessage(m),
+		Size:               m.Size,
+		ReceivedAt:         rfc3339UTC(m.ReceivedAt),
+		InternalizePending: m.InternalizePending,
 	}
 	if m.SnoozedUntil != nil {
 		s := rfc3339UTC(*m.SnoozedUntil)
@@ -146,6 +148,28 @@ func renderFull(
 		return out, nil
 	}
 	bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, truncateAt, m.Blob.Hash)
+	if m.InternalizePending {
+		// REQ-EXTIMG-BG-10: replace external image references in every
+		// HTML body part with a placeholder data URI until the
+		// background internalize-worker rewrites the blob. Failures
+		// fall through silently — the user sees the original HTML
+		// rather than a refused render.
+		for _, p := range htmlParts {
+			if p.PartID == nil {
+				continue
+			}
+			bv, ok := values[*p.PartID]
+			if !ok {
+				continue
+			}
+			rewritten, err := extimg.RewriteForPlaceholder([]byte(bv.Value))
+			if err != nil {
+				continue
+			}
+			bv.Value = string(rewritten)
+			values[*p.PartID] = bv
+		}
+	}
 	out.BodyStructure = bs
 	out.BodyValues = values
 	out.TextBody = textParts

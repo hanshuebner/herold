@@ -187,14 +187,15 @@ func (g *getHandler) renderOne(
 	if !needBody {
 		return renderEmailMetadata(m), nil
 	}
-	// On-demand external-image internalization for importer-flagged
-	// messages (17-external-images.md REQ-EXTIMG-93). The first read
-	// after import runs the rewriter; subsequent reads see the
-	// rewritten body and the cleared flag. Synchronous from the
-	// caller's perspective; bounded by extImg.PerMessageTimeout.
-	if m.InternalizePending {
-		m = g.h.maybeInternalizeOnDemand(ctx, m)
-	}
+	// External-image internalization runs out-of-band in the
+	// internalizeworker (REQ-EXTIMG-BG-01). Email/get does not block
+	// on the rewrite anymore; instead, when the message still carries
+	// InternalizePending, renderFull replaces external image src
+	// attributes with a placeholder data URI (REQ-EXTIMG-BG-10) so the
+	// user sees the body now without leaking open-rate before the
+	// worker catches up. The wire object also carries
+	// internalizePending=true so the SPA can show a "images being
+	// processed" indicator (REQ-EXTIMG-BG-20).
 	parser := g.h.parseFn
 	if parser == nil {
 		parser = defaultParseFn

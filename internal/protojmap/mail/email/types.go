@@ -104,6 +104,15 @@ type jmapEmail struct {
 	HasAttachment bool       `json:"hasAttachment"`
 	Preview       string     `json:"preview,omitempty"`
 
+	// InternalizePending mirrors the metadata-store flag (REQ-EXTIMG-93,
+	// REQ-EXTIMG-BG-20). True when the message body still has external
+	// images that the background worker has not yet rewritten; in that
+	// state the rendered HTML body's external-image src attributes are
+	// replaced with a placeholder so the user does not leak open-rate
+	// before the worker catches up. The SPA reads this field to show a
+	// non-modal "Images are being processed" indicator.
+	InternalizePending bool `json:"internalizePending,omitempty"`
+
 	// HeaderProperties holds the decoded values for dynamic header
 	// property accessors (RFC 8621 §4.1.2.4) — keys like
 	// "header:Subject:asText". Serialised directly into the JSON object
@@ -115,33 +124,34 @@ type jmapEmail struct {
 // fields so that MarshalJSON can merge in HeaderProperties without
 // reflection.
 type jmapEmailWire struct {
-	ID            jmapID               `json:"id"`
-	BlobID        string               `json:"blobId"`
-	ThreadID      jmapID               `json:"threadId"`
-	MailboxIDs    map[jmapID]bool      `json:"mailboxIds"`
-	Keywords      map[string]bool      `json:"keywords"`
-	Size          int64                `json:"size"`
-	ReceivedAt    string               `json:"receivedAt"`
-	SnoozedUntil  *string              `json:"snoozedUntil"`
-	Reactions     map[string][]string  `json:"reactions,omitempty"`
-	From          []jmapAddress        `json:"from,omitempty"`
-	To            []jmapAddress        `json:"to,omitempty"`
-	Cc            []jmapAddress        `json:"cc,omitempty"`
-	Bcc           []jmapAddress        `json:"bcc,omitempty"`
-	ReplyTo       []jmapAddress        `json:"replyTo,omitempty"`
-	Sender        []jmapAddress        `json:"sender,omitempty"`
-	Subject       string               `json:"subject"`
-	MessageID     []string             `json:"messageId,omitempty"`
-	InReplyTo     []string             `json:"inReplyTo,omitempty"`
-	References    []string             `json:"references,omitempty"`
-	SentAt        string               `json:"sentAt,omitempty"`
-	BodyStructure *bodyPart            `json:"bodyStructure,omitempty"`
-	BodyValues    map[string]bodyValue `json:"bodyValues,omitempty"`
-	TextBody      []bodyPart           `json:"textBody,omitempty"`
-	HTMLBody      []bodyPart           `json:"htmlBody,omitempty"`
-	Attachments   []bodyPart           `json:"attachments,omitempty"`
-	HasAttachment bool                 `json:"hasAttachment"`
-	Preview       string               `json:"preview,omitempty"`
+	ID                 jmapID               `json:"id"`
+	BlobID             string               `json:"blobId"`
+	ThreadID           jmapID               `json:"threadId"`
+	MailboxIDs         map[jmapID]bool      `json:"mailboxIds"`
+	Keywords           map[string]bool      `json:"keywords"`
+	Size               int64                `json:"size"`
+	ReceivedAt         string               `json:"receivedAt"`
+	SnoozedUntil       *string              `json:"snoozedUntil"`
+	Reactions          map[string][]string  `json:"reactions,omitempty"`
+	From               []jmapAddress        `json:"from,omitempty"`
+	To                 []jmapAddress        `json:"to,omitempty"`
+	Cc                 []jmapAddress        `json:"cc,omitempty"`
+	Bcc                []jmapAddress        `json:"bcc,omitempty"`
+	ReplyTo            []jmapAddress        `json:"replyTo,omitempty"`
+	Sender             []jmapAddress        `json:"sender,omitempty"`
+	Subject            string               `json:"subject"`
+	MessageID          []string             `json:"messageId,omitempty"`
+	InReplyTo          []string             `json:"inReplyTo,omitempty"`
+	References         []string             `json:"references,omitempty"`
+	SentAt             string               `json:"sentAt,omitempty"`
+	BodyStructure      *bodyPart            `json:"bodyStructure,omitempty"`
+	BodyValues         map[string]bodyValue `json:"bodyValues,omitempty"`
+	TextBody           []bodyPart           `json:"textBody,omitempty"`
+	HTMLBody           []bodyPart           `json:"htmlBody,omitempty"`
+	Attachments        []bodyPart           `json:"attachments,omitempty"`
+	HasAttachment      bool                 `json:"hasAttachment"`
+	Preview            string               `json:"preview,omitempty"`
+	InternalizePending bool                 `json:"internalizePending,omitempty"`
 }
 
 // MarshalJSON serialises jmapEmail, merging HeaderProperties keys
@@ -149,33 +159,34 @@ type jmapEmailWire struct {
 // (e.g. `"header:Subject:asText": "..."`) per RFC 8621 §4.1.2.4.
 func (e jmapEmail) MarshalJSON() ([]byte, error) {
 	wire := jmapEmailWire{
-		ID:            e.ID,
-		BlobID:        e.BlobID,
-		ThreadID:      e.ThreadID,
-		MailboxIDs:    e.MailboxIDs,
-		Keywords:      e.Keywords,
-		Size:          e.Size,
-		ReceivedAt:    e.ReceivedAt,
-		SnoozedUntil:  e.SnoozedUntil,
-		Reactions:     e.Reactions,
-		From:          e.From,
-		To:            e.To,
-		Cc:            e.Cc,
-		Bcc:           e.Bcc,
-		ReplyTo:       e.ReplyTo,
-		Sender:        e.Sender,
-		Subject:       e.Subject,
-		MessageID:     e.MessageID,
-		InReplyTo:     e.InReplyTo,
-		References:    e.References,
-		SentAt:        e.SentAt,
-		BodyStructure: e.BodyStructure,
-		BodyValues:    e.BodyValues,
-		TextBody:      e.TextBody,
-		HTMLBody:      e.HTMLBody,
-		Attachments:   e.Attachments,
-		HasAttachment: e.HasAttachment,
-		Preview:       e.Preview,
+		ID:                 e.ID,
+		BlobID:             e.BlobID,
+		ThreadID:           e.ThreadID,
+		MailboxIDs:         e.MailboxIDs,
+		Keywords:           e.Keywords,
+		Size:               e.Size,
+		ReceivedAt:         e.ReceivedAt,
+		SnoozedUntil:       e.SnoozedUntil,
+		Reactions:          e.Reactions,
+		From:               e.From,
+		To:                 e.To,
+		Cc:                 e.Cc,
+		Bcc:                e.Bcc,
+		ReplyTo:            e.ReplyTo,
+		Sender:             e.Sender,
+		Subject:            e.Subject,
+		MessageID:          e.MessageID,
+		InReplyTo:          e.InReplyTo,
+		References:         e.References,
+		SentAt:             e.SentAt,
+		BodyStructure:      e.BodyStructure,
+		BodyValues:         e.BodyValues,
+		TextBody:           e.TextBody,
+		HTMLBody:           e.HTMLBody,
+		Attachments:        e.Attachments,
+		HasAttachment:      e.HasAttachment,
+		Preview:            e.Preview,
+		InternalizePending: e.InternalizePending,
 	}
 	if len(e.HeaderProperties) == 0 {
 		return json.Marshal(wire)
