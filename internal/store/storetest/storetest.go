@@ -57,6 +57,7 @@ func Run(t *testing.T, f Factory) {
 		{"QueryEmailFast_Filters", testQueryEmailFastFilters},
 		{"ListThreadsByKeys", testListThreadsByKeys},
 		{"InternalizePending_Lifecycle", testInternalizePendingLifecycle},
+		{"InternalizePending_ListAndCount", testInternalizePendingListAndCount},
 		{"QuotaEnforcement", testQuotaEnforcement},
 		{"DeleteMailboxCascades", testDeleteMailboxCascades},
 		{"BlobRoundTrip", testBlobRoundTrip},
@@ -1602,6 +1603,109 @@ func testInternalizePendingLifecycle(t *testing.T, s store.Store) {
 	}
 	if err := s.Meta().ClearMessageInternalizePending(ctx, 99999999); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Clear missing: err=%v, want ErrNotFound", err)
+	}
+}
+
+// testInternalizePendingListAndCount exercises the bulk-lookup APIs the
+// extimg-internalize-worker (REQ-EXTIMG-BG-03..04) calls to drain the
+// importer-flagged backlog out-of-band.
+//
+//   - ListMessagesWithInternalizePending returns ascending MessageIDs
+//     filtered by id > afterID, capped by limit. A second call with the
+//     last returned id as afterID continues from that point.
+//   - CountInternalizePending is principal-scoped: a message owned by
+//     another principal does not bump the count.
+func testInternalizePendingListAndCount(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ip-list@example.com")
+	other := mustInsertPrincipal(t, s, "ip-other@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	mbOther := mustInsertMailbox(t, s, other.ID, "INBOX")
+
+	// Six messages on the principal: three flagged, three not.
+	for i := 0; i < 6; i++ {
+		ref := putBlob(t, s, fmt.Sprintf("body-%d", i))
+		flagged := i%2 == 0
+		_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID:        p.ID,
+			Blob:               ref,
+			Size:               ref.Size,
+			InternalizePending: flagged,
+		}, []store.MessageMailbox{{MailboxID: mb.ID}})
+		if err != nil {
+			t.Fatalf("InsertMessage: %v", err)
+		}
+	}
+	// One flagged message on a different principal.
+	otherRef := putBlob(t, s, "other-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:        other.ID,
+		Blob:               otherRef,
+		Size:               otherRef.Size,
+		InternalizePending: true,
+	}, []store.MessageMailbox{{MailboxID: mbOther.ID}}); err != nil {
+		t.Fatalf("InsertMessage other: %v", err)
+	}
+
+	// List with beforeID=0 (sentinel: no upper bound) returns all
+	// 4 pending rows (3 on principal + 1 on other) in DESCENDING
+	// order — newest first per REQ-EXTIMG-BG-03.
+	got, err := s.Meta().ListMessagesWithInternalizePending(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("ListMessagesWithInternalizePending: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("got %d ids, want 4 (3 on principal, 1 on other): %v", len(got), got)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i] >= got[i-1] {
+			t.Fatalf("ids not descending: %v", got)
+		}
+	}
+
+	// Pagination: limit=2 takes the two newest, then continue with
+	// beforeID = last returned id (lowest of the batch).
+	page1, err := s.Meta().ListMessagesWithInternalizePending(ctx, 0, 2)
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("page1 = %v, want 2 ids", page1)
+	}
+	if page1[1] >= page1[0] {
+		t.Fatalf("page1 not descending: %v", page1)
+	}
+	page2, err := s.Meta().ListMessagesWithInternalizePending(ctx, page1[len(page1)-1], 10)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(page2) == 0 || page2[0] >= page1[len(page1)-1] {
+		t.Fatalf("page2 = %v after page1 last %d: cursor not advanced", page2, page1[len(page1)-1])
+	}
+
+	// Limit 0 returns no rows (and no error).
+	none, err := s.Meta().ListMessagesWithInternalizePending(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("limit=0: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("limit=0: got %v, want empty", none)
+	}
+
+	// CountInternalizePending is principal-scoped.
+	countP, err := s.Meta().CountInternalizePending(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("CountInternalizePending p: %v", err)
+	}
+	if countP != 3 {
+		t.Fatalf("count(p) = %d, want 3", countP)
+	}
+	countOther, err := s.Meta().CountInternalizePending(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("CountInternalizePending other: %v", err)
+	}
+	if countOther != 1 {
+		t.Fatalf("count(other) = %d, want 1", countOther)
 	}
 }
 

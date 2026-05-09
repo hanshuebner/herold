@@ -248,6 +248,24 @@ type Metadata interface {
 	// no-op cases. Returns ErrNotFound when msgID is absent.
 	ClearMessageInternalizePending(ctx context.Context, msgID MessageID) error
 
+	// ListMessagesWithInternalizePending returns up to limit MessageIDs
+	// in DESCENDING order (newest first) with id < beforeID, scanning
+	// only rows with internalize_pending = 1. Pass beforeID = 0 to
+	// start from the newest pending message; the implementation treats
+	// the zero value as a sentinel for "no upper bound" (effectively
+	// MAX_INT64). Used by the internalize-worker (REQ-EXTIMG-BG-03)
+	// to drain the importer-flagged backlog off the request path,
+	// freshest-first so newly-arrived mail is rewritten before older
+	// archive rows.
+	ListMessagesWithInternalizePending(ctx context.Context, beforeID MessageID, limit int) ([]MessageID, error)
+
+	// CountInternalizePending returns the number of messages owned by
+	// principalID with internalize_pending = 1. Used by the JMAP
+	// session capability descriptor (REQ-EXTIMG-BG-04) so the suite
+	// SPA can show a "images being processed" notice during the
+	// import-drain phase.
+	CountInternalizePending(ctx context.Context, principalID PrincipalID) (uint64, error)
+
 	// UpdateMailboxModseqAndAppendChange is the low-level escape hatch
 	// used by protocol code that has already computed a multi-row
 	// mutation and needs to advance HighestModSeq and append a
