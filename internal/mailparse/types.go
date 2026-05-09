@@ -168,8 +168,11 @@ type Part struct {
 	Filename                string
 	Children                []Part
 	Text                    string
-	Bytes                   []byte
-	DecodeErrors            []string
+	// Bytes is the decoded raw content of a non-text leaf. The slice
+	// aliases enmime's per-part decoded buffer; callers MUST treat it as
+	// read-only.
+	Bytes        []byte
+	DecodeErrors []string
 }
 
 // IsText reports whether the part's media type is textual.

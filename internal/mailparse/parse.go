@@ -391,6 +391,12 @@ func convertPart(src *enmime.Part, opts *ParseOptions, depth int, pc *partCounte
 
 	// Assign content for leaves. enmime populates Content with the decoded,
 	// charset-converted bytes for text parts and raw decoded bytes for non-text.
+	// Non-text parts alias enmime's per-part Content slice rather than copying
+	// — Content is freshly allocated per part inside enmime, the surrounding
+	// envelope tree drops out of scope when Parse returns, and callers must
+	// treat Part.Bytes as read-only. The previous defensive copy doubled the
+	// transient peak allocation for attachment-heavy mail with no semantic
+	// benefit.
 	if src.FirstChild == nil {
 		if p.IsText() {
 			text := string(src.Content)
@@ -403,7 +409,7 @@ func convertPart(src *enmime.Part, opts *ParseOptions, depth int, pc *partCounte
 			}
 			p.Text = text
 		} else {
-			p.Bytes = append([]byte(nil), src.Content...)
+			p.Bytes = src.Content
 		}
 	}
 
