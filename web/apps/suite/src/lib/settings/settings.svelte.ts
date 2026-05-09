@@ -162,10 +162,20 @@ class Settings {
   /** True when this sender's images should be auto-loaded. */
   isImageAllowed(senderEmail: string | null | undefined): boolean {
     if (this.#imageLoadDefault === 'always') return true;
+    // The per-sender allow-list is an explicit "I trust this sender"
+    // override. It fires in BOTH 'never' and 'per-sender' modes so the
+    // "Always from X" button persists as the user expects (issue
+    // #101: clicking the button stored the entry but the early-out at
+    // 'never' mode never consulted it). The pre-#101 code only honoured
+    // the allow-list in 'per-sender' mode, which left the button as a
+    // no-op for the default-mode user — no UX hint that they also had
+    // to flip the global setting first.
+    const lower = senderEmail?.toLowerCase();
+    if (lower && this.#imageAllowList.includes(lower)) return true;
     if (this.#imageLoadDefault === 'never') return false;
-    // per-sender mode: check the allow-list.
-    if (!senderEmail) return false;
-    return this.#imageAllowList.includes(senderEmail.toLowerCase());
+    // per-sender mode: only the allow-list grants access (already
+    // checked above; falling through means no match).
+    return false;
   }
 
   addImageAllowedSender(senderEmail: string): void {

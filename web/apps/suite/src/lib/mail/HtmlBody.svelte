@@ -12,9 +12,15 @@
    *     IP / cookies don't reach the sender.
    *   - srcdoc carries an inline CSP (default-src 'none'; img-src 'self'
    *     data:; style-src 'unsafe-inline').
-   *   - sandbox="allow-same-origin" with NO allow-scripts: scripts in
-   *     mail are inert; the parent can still read contentDocument to
-   *     auto-size the iframe.
+   *   - sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+   *     with NO allow-scripts: scripts in mail are inert; the parent
+   *     can still read contentDocument to auto-size the iframe. The
+   *     two allow-popups tokens are required for <a target="_blank">
+   *     clicks to open a real top-level browser tab — without them
+   *     the browser silently blocks the navigation, which the user
+   *     sees as "links don't open" (issue #103). allow-popups-to-
+   *     escape-sandbox ensures the new tab is NOT itself sandboxed,
+   *     so the destination page works normally.
    *
    * G16 inline-image overlay (REQ-ATT-26):
    *   After the iframe loads we scan its contentDocument for <img> elements
@@ -171,7 +177,7 @@
 <div class="frame-wrapper" bind:this={wrapperEl}>
   <iframe
     bind:this={frameEl}
-    sandbox="allow-same-origin"
+    sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
     {srcdoc}
     referrerpolicy="no-referrer"
     loading="lazy"

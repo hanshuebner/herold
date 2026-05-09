@@ -229,12 +229,22 @@
     return pop;
   });
 
-  // Reading marks the message as read: when this accordion is expanded
-  // and the email is currently unread, flip $seen. untrack() keeps the
-  // setSeen write from re-fueling this effect via the keywords read.
+  // Reading marks the message as read: on the first mount of this
+  // accordion in expanded state with $seen=false, flip $seen=true.
+  // Latch fires-once-per-mount: without the latch, a user who
+  // explicitly clicks "Mark unread" while the accordion is still
+  // expanded triggers a $seen=false patch, which this effect would
+  // immediately re-flip to $seen=true — manifesting as a 4-call
+  // Email/set race ($seen=null → $seen=true → repeat) and the user-
+  // visible bug "Mark unread doesn't stick" (issue #102). Closing
+  // and re-opening the thread remounts the component, which is the
+  // correct trigger to re-evaluate auto-read.
+  let autoReadDone = false;
   $effect(() => {
     if (!expanded) return;
+    if (autoReadDone) return;
     if (email.keywords.$seen) return;
+    autoReadDone = true;
     const id = email.id;
     untrack(() => {
       void mail.setSeen(id, true);
