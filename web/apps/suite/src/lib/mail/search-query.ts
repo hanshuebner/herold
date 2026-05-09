@@ -21,12 +21,31 @@ export interface FilterOperator {
 
 export interface ParsedQuery {
   filter: FilterCondition | FilterOperator;
+  /**
+   * True when the parsed query opts in to searching the principal's
+   * Trash and/or Junk mailboxes — via `in:trash`, `in:junk`,
+   * `in:anywhere`, or the equivalent `label:Trash` / `label:Junk`
+   * shorthands. Per REQ-SRC-06/07, the default search scope excludes
+   * Trash + Junk; this flag tells `runSearch` to skip that exclusion.
+   */
+  includesTrashOrJunk: boolean;
 }
 
 export interface ParseContext {
   /** Resolve `label:<name>` → mailbox id, if available. */
   mailboxes: Map<string, Mailbox>;
 }
+
+/** Roles that the `in:` operator resolves to a mailbox id by matching `Mailbox.role`. */
+const ROLE_BY_KEYWORD: Record<string, string> = {
+  inbox: 'inbox',
+  trash: 'trash',
+  junk: 'junk',
+  spam: 'junk',
+  sent: 'sent',
+  drafts: 'drafts',
+  archive: 'archive',
+};
 
 /**
  * UI-side projection of a single recognised query token. The search
@@ -79,6 +98,8 @@ function chipLabel(op: string, val: string): string {
       return `older than ${val}`;
     case 'label':
       return `label ${val}`;
+    case 'in':
+      return `in ${val}`;
     case 'list':
       return `list ${val}`;
     case 'filename':
@@ -91,14 +112,42 @@ function chipLabel(op: string, val: string): string {
 /** Parse a suite search-query string into a JMAP filter shape. */
 export function parseQuery(input: string, ctx: ParseContext): ParsedQuery {
   const trimmed = input.trim();
-  if (!trimmed) return { filter: { text: '' } };
+  if (!trimmed) return { filter: { text: '' }, includesTrashOrJunk: false };
   const tokens = tokenize(trimmed);
-  const conditions = tokens
-    .map((tok) => parseToken(tok, ctx))
-    .filter((c): c is FilterCondition => c !== null);
-  if (conditions.length === 0) return { filter: { text: trimmed } };
-  if (conditions.length === 1) return { filter: conditions[0]! };
-  return { filter: { operator: 'AND', conditions } };
+  let includesTrashOrJunk = false;
+  const conditions: FilterCondition[] = [];
+  for (const tok of tokens) {
+    const parsed = parseToken(tok, ctx);
+    if (parsed === null) continue;
+    if (parsed === ANYWHERE_SENTINEL) {
+      // `in:anywhere` contributes no condition but disables the
+      // trash/junk exclusion (REQ-SRC-07).
+      includesTrashOrJunk = true;
+      continue;
+    }
+    if (conditionMentionsTrashOrJunk(parsed, ctx.mailboxes)) {
+      includesTrashOrJunk = true;
+    }
+    conditions.push(parsed);
+  }
+  if (conditions.length === 0) {
+    return { filter: { text: trimmed }, includesTrashOrJunk };
+  }
+  if (conditions.length === 1) return { filter: conditions[0]!, includesTrashOrJunk };
+  return { filter: { operator: 'AND', conditions }, includesTrashOrJunk };
+}
+
+/** Sentinel returned by `parseToken` for `in:anywhere`. */
+const ANYWHERE_SENTINEL = Object.freeze({ __sentinel: 'anywhere' }) as unknown as FilterCondition;
+
+function conditionMentionsTrashOrJunk(
+  c: FilterCondition,
+  mailboxes: Map<string, Mailbox>,
+): boolean {
+  const id = c['inMailbox'];
+  if (typeof id !== 'string') return false;
+  const m = mailboxes.get(id);
+  return m?.role === 'trash' || m?.role === 'junk';
 }
 
 function tokenize(input: string): string[] {
@@ -156,6 +205,24 @@ function mapOperator(
       // that no email satisfies. JMAP doesn't have a "false" sentinel, so
       // approximate with a clearly impossible inMailbox.
       return { inMailbox: '__unknown_label__' };
+    }
+    case 'in': {
+      // `in:` operator (REQ-SRC-10) — system-role scope. `anywhere` is a
+      // special token that contributes no filter condition but signals
+      // to runSearch that the trash/junk exclusion should be skipped
+      // (REQ-SRC-07).
+      const lower = value.toLowerCase();
+      if (lower === 'anywhere' || lower === 'all') return ANYWHERE_SENTINEL;
+      const role = ROLE_BY_KEYWORD[lower];
+      if (!role) {
+        // Unknown role — match nothing.
+        return { inMailbox: '__unknown_in__' };
+      }
+      for (const m of ctx.mailboxes.values()) {
+        if (m.role === role) return { inMailbox: m.id };
+      }
+      // No mailbox of that role exists for this principal — match nothing.
+      return { inMailbox: '__unknown_in__' };
     }
     case 'has':
       if (value === 'attachment') return { hasAttachment: true };

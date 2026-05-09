@@ -64,24 +64,28 @@ describe('parseQuery — operator surface', () => {
         operator: 'AND',
         conditions: [{ text: 'hello' }, { text: 'world' }],
       },
+      includesTrashOrJunk: false,
     });
   });
 
   it('from: → JMAP from filter', () => {
     expect(parseQuery('from:alice@x.test', ctx)).toEqual({
       filter: { from: 'alice@x.test' },
+      includesTrashOrJunk: false,
     });
   });
 
   it('has:attachment → hasAttachment: true', () => {
     expect(parseQuery('has:attachment', ctx)).toEqual({
       filter: { hasAttachment: true },
+      includesTrashOrJunk: false,
     });
   });
 
   it('is:unread → notKeyword $seen', () => {
     expect(parseQuery('is:unread', ctx)).toEqual({
       filter: { notKeyword: '$seen' },
+      includesTrashOrJunk: false,
     });
   });
 
@@ -101,12 +105,14 @@ describe('parseQuery — operator surface', () => {
     m.set('mb-work', mb);
     expect(parseQuery('label:work', { mailboxes: m })).toEqual({
       filter: { inMailbox: 'mb-work' },
+      includesTrashOrJunk: false,
     });
   });
 
   it('unknown operator falls through to a text filter', () => {
     expect(parseQuery('weird:thing', ctx)).toEqual({
       filter: { text: 'weird:thing' },
+      includesTrashOrJunk: false,
     });
   });
 
@@ -116,5 +122,70 @@ describe('parseQuery — operator surface', () => {
       operator: 'AND',
       conditions: [{ from: 'alice' }, { hasAttachment: true }],
     });
+  });
+});
+
+describe('parseQuery — in: operator and trash/junk opt-in (REQ-SRC-06/07)', () => {
+  function ctxWithRoles(): { mailboxes: Map<string, Mailbox> } {
+    const mb = (id: string, name: string, role: string | null): Mailbox => ({
+      id,
+      name,
+      role,
+      parentId: null,
+      sortOrder: 0,
+      totalEmails: 0,
+      unreadEmails: 0,
+      totalThreads: 0,
+      unreadThreads: 0,
+    });
+    const m = new Map<string, Mailbox>();
+    m.set('mb-inbox', mb('mb-inbox', 'Inbox', 'inbox'));
+    m.set('mb-trash', mb('mb-trash', 'Trash', 'trash'));
+    m.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
+    m.set('mb-sent', mb('mb-sent', 'Sent', 'sent'));
+    return { mailboxes: m };
+  }
+
+  it('bare text query does not opt into trash/junk', () => {
+    const r = parseQuery('milfsdating', ctxWithRoles());
+    expect(r.includesTrashOrJunk).toBe(false);
+    expect(r.filter).toEqual({ text: 'milfsdating' });
+  });
+
+  it('in:trash resolves to the trash mailbox and opts in', () => {
+    const r = parseQuery('in:trash', ctxWithRoles());
+    expect(r.includesTrashOrJunk).toBe(true);
+    expect(r.filter).toEqual({ inMailbox: 'mb-trash' });
+  });
+
+  it('in:junk resolves to the junk mailbox and opts in', () => {
+    const r = parseQuery('in:junk', ctxWithRoles());
+    expect(r.includesTrashOrJunk).toBe(true);
+    expect(r.filter).toEqual({ inMailbox: 'mb-junk' });
+  });
+
+  it('in:spam is an alias for in:junk', () => {
+    const r = parseQuery('in:spam', ctxWithRoles());
+    expect(r.includesTrashOrJunk).toBe(true);
+    expect(r.filter).toEqual({ inMailbox: 'mb-junk' });
+  });
+
+  it('in:anywhere contributes no condition but opts in', () => {
+    const r = parseQuery('milfsdating in:anywhere', ctxWithRoles());
+    expect(r.includesTrashOrJunk).toBe(true);
+    // Sentinel was filtered out, only the text term remains.
+    expect(r.filter).toEqual({ text: 'milfsdating' });
+  });
+
+  it('in:inbox does NOT opt into trash/junk', () => {
+    const r = parseQuery('in:inbox', ctxWithRoles());
+    expect(r.includesTrashOrJunk).toBe(false);
+    expect(r.filter).toEqual({ inMailbox: 'mb-inbox' });
+  });
+
+  it('label:Junk opts in via name resolution', () => {
+    const r = parseQuery('label:Junk', ctxWithRoles());
+    expect(r.includesTrashOrJunk).toBe(true);
+    expect(r.filter).toEqual({ inMailbox: 'mb-junk' });
   });
 });

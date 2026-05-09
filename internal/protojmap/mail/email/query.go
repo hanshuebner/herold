@@ -757,32 +757,63 @@ func filterNeedsBodyBlobParse(f *emailFilter) bool {
 // buildFTSQuery projects the text-bearing predicates onto the
 // store.Query envelope. Non-text predicates are applied later in
 // matchCondition; the FTS pass narrows the candidate set.
+//
+// Walks into FilterOperator AND-trees so that a query like
+// `{ AND: [{text:"foo"}, {inMailboxOtherThan:[…]}] }` still routes the
+// text predicate through FTS. Without this walk, top-level AND filters
+// would degrade FTS to an empty-text query (returning an unrelated
+// candidate set) and the AND-tree's inMailbox / inMailboxOtherThan
+// predicates would be the only effective filter.
 func buildFTSQuery(f *emailFilter) store.Query {
 	q := store.Query{}
-	if f.InMailbox != nil {
+	mergeFTSQuery(&q, f)
+	return q
+}
+
+func mergeFTSQuery(q *store.Query, f *emailFilter) {
+	if f == nil {
+		return
+	}
+	if f.Operator != "" {
+		// Only AND is safe to fold into a single FTS query — OR / NOT
+		// would change the candidate set's meaning. The non-AND
+		// branches still go through FTS by virtue of their inner text
+		// predicates being detected here, but the produced query then
+		// reflects only the union of text terms; matchCondition
+		// re-validates per-message.
+		if strings.EqualFold(f.Operator, "AND") {
+			for _, raw := range f.Conditions {
+				var sub emailFilter
+				if err := json.Unmarshal(raw, &sub); err == nil {
+					mergeFTSQuery(q, &sub)
+				}
+			}
+		}
+		return
+	}
+	if f.InMailbox != nil && q.MailboxID == 0 {
 		if id, ok := mailboxIDFromJMAP(*f.InMailbox); ok {
 			q.MailboxID = id
 		}
 	}
-	if f.Text != nil {
+	if f.Text != nil && q.Text == "" {
 		q.Text = *f.Text
 	}
 	if f.Subject != nil {
-		q.Subject = []string{*f.Subject}
+		q.Subject = append(q.Subject, *f.Subject)
 	}
 	if f.From != nil {
-		q.From = []string{*f.From}
+		q.From = append(q.From, *f.From)
 	}
 	if f.To != nil {
-		q.To = []string{*f.To}
+		q.To = append(q.To, *f.To)
 	}
 	if f.Cc != nil {
-		q.Cc = []string{*f.Cc}
+		q.Cc = append(q.Cc, *f.Cc)
 	}
 	if f.Body != nil {
-		q.Body = []string{*f.Body}
+		q.Body = append(q.Body, *f.Body)
 	}
-	return q
 }
 
 func messageHasKeyword(m store.Message, kw string) bool {

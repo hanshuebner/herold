@@ -11,12 +11,14 @@ Find threads by free text, by structured criteria, or by both.
 | REQ-SRC-03 | Search results display as a thread list, sorted by `receivedAt` descending. |
 | REQ-SRC-04 | The result count is shown ("about N results"); for large result sets the count may be approximate (`Email/query` `calculateTotal` may not return exact). |
 | REQ-SRC-05 | Clicking a result opens the thread; the back action returns to the same result list, scrolled to the same row. |
+| REQ-SRC-06 | Default search scope **excludes** the principal's Trash and Junk mailboxes. The suite injects `inMailboxOtherThan: [<trash-id>, <junk-id>]` into every `Email/query` filter unless the user has opted in explicitly (REQ-SRC-07). Rationale: searching unread mail for a known phrase should not surface phishing / spam the user has already filtered away or marked for deletion. |
+| REQ-SRC-07 | The user opts in to searching Trash and Junk **only explicitly**, via the `in:` operator (`in:trash`, `in:junk`, `in:anywhere`) or the equivalent `label:Trash` / `label:Junk` shorthands. When ANY of those operators appears in the parsed query, REQ-SRC-06's exclusion is dropped — the user's explicit scope wins. There is no settings toggle or "include trash" checkbox; the operator is the only opt-in. |
 
 ## Fielded search
 
 | ID | Requirement |
 |----|-------------|
-| REQ-SRC-10 | The suite parses Gmail-compatible operators: `from:`, `to:`, `subject:`, `label:`, `has:attachment`, `is:unread`, `is:starred`, `is:snoozed`, `before:`, `after:`. |
+| REQ-SRC-10 | The suite parses Gmail-compatible operators: `from:`, `to:`, `subject:`, `label:`, `in:`, `has:attachment`, `is:unread`, `is:starred`, `is:snoozed`, `before:`, `after:`. The `in:` operator scopes by system role (`in:inbox`, `in:trash`, `in:junk`, `in:sent`, `in:drafts`) or by the literal value `in:anywhere` (no scope; equivalent to "search everything including Trash and Junk", REQ-SRC-07). The `label:` operator targets named mailboxes (custom labels and roled folders alike). |
 | REQ-SRC-11 | Operator suggestions appear as the user types (autocomplete). |
 | REQ-SRC-12 | The suite translates the parsed query into a structured `Email/query` filter. The user-visible syntax stays Gmail-compatible to preserve muscle memory; the wire-level filter is JMAP. |
 

@@ -24,7 +24,7 @@ import {
   type Mailbox,
   type Thread,
 } from './types';
-import { parseQuery } from './search-query';
+import { parseQuery, type FilterCondition, type FilterOperator } from './search-query';
 import { sounds } from '../notifications/sounds.svelte';
 import { shouldPlayMailCue } from '../notifications/cue-gates';
 import { router } from '../router/router.svelte';
@@ -293,14 +293,20 @@ class MailStore {
       const accountId = this.mailAccountId;
       if (!accountId) throw new Error('No Mail account on this session');
 
-      const { filter } = parseQuery(query, { mailboxes: this.mailboxes });
+      const { filter, includesTrashOrJunk } = parseQuery(query, { mailboxes: this.mailboxes });
+      // REQ-SRC-06/07: default scope excludes Trash + Junk; the user opts
+      // in explicitly via `in:trash` / `in:junk` / `in:anywhere` /
+      // `label:Trash` / `label:Junk`.
+      const scopedFilter = includesTrashOrJunk
+        ? filter
+        : applyTrashJunkExclusion(filter, this.mailboxes);
 
       const { responses } = await jmap.batch((b) => {
         const q = b.call(
           'Email/query',
           {
             accountId,
-            filter,
+            filter: scopedFilter,
             sort: [{ property: 'receivedAt', isAscending: false }],
             collapseThreads: true,
             limit: 50,
@@ -2423,6 +2429,27 @@ const SYSTEM_ROLES: ReadonlySet<string> = new Set([
 export function isSystemRole(role: string | null | undefined): boolean {
   if (!role) return false;
   return SYSTEM_ROLES.has(role.toLowerCase());
+}
+
+/**
+ * Wrap `parsed` with `inMailboxOtherThan: [<trash>, <junk>]` so the
+ * default search scope excludes those mailboxes (REQ-SRC-06). Returns
+ * the original filter unchanged when neither role exists for this
+ * principal — there's nothing to exclude.
+ */
+export function applyTrashJunkExclusion(
+  parsed: FilterCondition | FilterOperator,
+  mailboxes: Map<string, Mailbox>,
+): FilterCondition | FilterOperator {
+  const exclude: string[] = [];
+  for (const m of mailboxes.values()) {
+    if (m.role === 'trash' || m.role === 'junk') exclude.push(m.id);
+  }
+  if (exclude.length === 0) return parsed;
+  return {
+    operator: 'AND',
+    conditions: [parsed, { inMailboxOtherThan: exclude }],
+  };
 }
 
 function formatSnoozeTarget(d: Date): string {
