@@ -289,6 +289,24 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	var acmeHTTPChallenger *acme.HTTPChallenger
 	var acmeTLSALPNChallenger *acme.TLSALPNChallenger
 	observe.RegisterTLSCertMetrics()
+	// Memstats logger: a permanent slog history of runtime.MemStats so
+	// we can reconstruct a memory event after the fact instead of needing
+	// to be actively pprof'ing when it happens. Default 60 s interval is
+	// quiet enough to leave on permanently. Override with
+	// HEROLD_MEMSTATS_INTERVAL_SEC.
+	memstatsInterval := 60 * time.Second
+	if v := os.Getenv("HEROLD_MEMSTATS_INTERVAL_SEC"); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+			memstatsInterval = time.Duration(n) * time.Second
+		}
+	}
+	observe.StartMemStatsLogger(ctx, logger.With("subsystem", "memstats"), memstatsInterval)
+	// Heap-dump escape hatch: SIGUSR1 writes a heap profile to
+	// $TMPDIR/herold-heap-<UTC-timestamp>.pprof. Useful when the admin
+	// /debug/pprof/heap endpoint is unreachable. SIGUSR1 has no kernel
+	// behaviour and is unused by herold's other signal handlers
+	// (SIGHUP=reload, SIGINT/SIGTERM=shutdown).
+	observe.StartHeapDumpOnSignal(ctx, logger.With("subsystem", "memstats"), "", syscall.SIGUSR1)
 	if cfg.Acme != nil {
 		health.MarkACMERequired()
 		acmeHTTPChallenger = acme.NewHTTPChallenger()
@@ -1984,6 +2002,13 @@ func composeAdminAndUI(
 	// mount ensures scrapes also work when MetricsBind is empty or the
 	// admin listener is the only HTTP surface.
 	adminMux.Handle("/metrics", observe.MetricsHandler())
+	// /debug/pprof/* on the admin listener so operators can grab live
+	// heap, allocs, goroutine, mutex, block, cpu profiles via
+	// `go tool pprof http://<admin-host>/debug/pprof/<kind>`. Admin
+	// scope only — never on the public listener (the matching 404 guard
+	// is registered on publicMux below). No standalone auth on these
+	// endpoints; they inherit whatever wraps the admin mux.
+	observe.PprofMux(adminMux)
 	// Standalone manual -- public, no auth. Served at /admin/manual/ on
 	// the admin listener so operators can browse the manual while logged
 	// into the admin UI. The same manualSPA instance is reused on the
@@ -2045,6 +2070,12 @@ func composeAdminAndUI(
 	// 200 with the SPA shell, leaking the metrics surface path to
 	// browser clients.
 	publicMux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	// /debug/pprof/* mirrors the metrics-listener guard: admin-only,
+	// explicit 404 on the public mux so the SPA catch-all does not
+	// inadvertently route a profile request to the SPA shell.
+	publicMux.HandleFunc("/debug/pprof/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
 
