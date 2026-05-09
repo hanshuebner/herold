@@ -3,7 +3,6 @@ package gmail
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -58,10 +57,6 @@ func NewMboxReader(r io.Reader) *MboxReader {
 	return &MboxReader{br: bufio.NewReaderSize(r, 1<<16)}
 }
 
-// errSentinelEOF marks "no more messages" — surfaced as io.EOF to the
-// caller from Next().
-var errSentinelEOF = errors.New("gmail: end of mbox")
-
 // Next reads the next message and returns it. On end-of-stream Next
 // returns (zero MboxMessage, io.EOF). On a malformed header it returns
 // a non-EOF error.
@@ -70,7 +65,7 @@ func (m *MboxReader) Next() (MboxMessage, error) {
 		return MboxMessage{}, io.EOF
 	}
 
-	startOffset := m.offset
+	var startOffset int64
 	// Read the opening "From " line. There may be leading blank lines
 	// between messages (Takeout sometimes emits one); skip them.
 	var fromLine string
