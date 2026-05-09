@@ -6,6 +6,7 @@
     filterMailboxesByName,
   } from './move-picker.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
+  import { t } from '../i18n/i18n.svelte';
   import type { Mailbox } from './types';
 
   let candidates = $derived.by<Mailbox[]>(() => {
@@ -118,11 +119,11 @@
     <div class="filter-row">
       <input
         type="text"
-        placeholder="Filter mailboxes…"
+        placeholder={t('mailbox.filter.placeholder')}
         bind:value={filter}
         bind:this={inputEl}
         onkeydown={onKey}
-        aria-label="Filter mailboxes"
+        aria-label={t('mailbox.filter.aria')}
         autocomplete="off"
       />
     </div>

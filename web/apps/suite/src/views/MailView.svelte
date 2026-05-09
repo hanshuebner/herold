@@ -797,14 +797,14 @@
 
     {#if mail.searchHistory.length > 0}
       <div class="search-history" aria-label="Recent searches">
-        <span class="history-label">Recent:</span>
+        <span class="history-label">{t('search.history.label')}</span>
         {#each mail.searchHistory.slice(0, 6) as q (q)}
           <button
             type="button"
             class="history-chip"
             onclick={() =>
               router.navigate(`/mail/search/${encodeURIComponent(q)}`)}
-            title="Re-run search"
+            title={t('search.history.rerun')}
           >
             {q}
           </button>
@@ -813,22 +813,22 @@
           type="button"
           class="history-clear"
           onclick={() => mail.clearSearchHistory()}
-          aria-label="Clear search history"
-          title="Clear history"
+          aria-label={t('search.history.clearAria')}
+          title={t('search.history.clearTitle')}
         >
-          Clear
+          {t('search.history.clear')}
         </button>
       </div>
     {/if}
 
     {#if mail.searchLoadStatus === 'idle' || mail.searchLoadStatus === 'loading'}
-      <div class="state">Searching…</div>
+      <div class="state">{t('search.searching')}</div>
     {:else if mail.searchLoadStatus === 'error'}
       <div class="state error">
-        <p>Search failed.</p>
+        <p>{t('search.failed')}</p>
         {#if mail.searchError}<p class="detail">{mail.searchError}</p>{/if}
         <button type="button" onclick={() => mail.runSearch(mail.searchQuery)}>
-          Retry
+          {t('list.retry')}
         </button>
       </div>
     {:else if mail.searchEmails.length === 0}
@@ -1132,8 +1132,8 @@
     {/if}
   {:else}
     <header>
-      <h1>Not found</h1>
-      <p class="lead">No mail folder at that URL.</p>
+      <h1>{t('mail.notFound.title')}</h1>
+      <p class="lead">{t('mail.notFound.lead')}</p>
     </header>
   {/if}
 </div>

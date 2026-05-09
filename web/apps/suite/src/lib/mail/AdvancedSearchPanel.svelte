@@ -2,6 +2,7 @@
   import { mail } from './store.svelte';
   import { emptyFields, fieldsToQuery, queryToFields } from './advanced-search';
   import type { AdvancedSearchFields } from './advanced-search';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     /** The current raw query string from the URL (used to pre-populate fields). */
@@ -82,7 +83,7 @@
         <input
           type="text"
           class="input"
-          placeholder="Sender name or address"
+          placeholder={t('search.advanced.from.placeholder')}
           bind:value={fields.from}
           autocomplete="off"
           spellcheck="false"
@@ -94,7 +95,7 @@
         <input
           type="text"
           class="input"
-          placeholder="Recipient name or address"
+          placeholder={t('search.advanced.to.placeholder')}
           bind:value={fields.to}
           autocomplete="off"
           spellcheck="false"
@@ -108,7 +109,7 @@
         <input
           type="text"
           class="input"
-          placeholder="Subject contains"
+          placeholder={t('search.advanced.subject.placeholder')}
           bind:value={fields.subject}
           autocomplete="off"
           spellcheck="false"
@@ -120,7 +121,7 @@
         <input
           type="text"
           class="input"
-          placeholder="Body contains"
+          placeholder={t('search.advanced.body.placeholder')}
           bind:value={fields.body}
           autocomplete="off"
           spellcheck="false"

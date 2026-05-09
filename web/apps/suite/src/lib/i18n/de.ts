@@ -52,6 +52,27 @@ export const de = {
   'mail.threadReader.internalizePending.body':
     'Externe Bilder in dieser Nachricht werden noch im Hintergrund internalisiert. Sie erscheinen vorerst als Platzhalter; aktualisieren Sie kurz, um sie zu sehen.',
 
+  // ── Suche (re #97) ───────────────────────────────────────────────────
+  'search.history.label': 'Zuletzt:',
+  'search.history.rerun': 'Suche erneut ausführen',
+  'search.history.clear': 'Löschen',
+  'search.history.clearTitle': 'Verlauf löschen',
+  'search.history.clearAria': 'Suchverlauf löschen',
+  'search.searching': 'Suche läuft…',
+  'search.failed': 'Suche fehlgeschlagen.',
+  'search.advanced.from.placeholder': 'Absendername oder Adresse',
+  'search.advanced.to.placeholder': 'Empfängername oder Adresse',
+  'search.advanced.subject.placeholder': 'Betreff enthält',
+  'search.advanced.body.placeholder': 'Text enthält',
+
+  // ── Postfach-Auswahl ─────────────────────────────────────────────────
+  'mailbox.filter.placeholder': 'Postfächer filtern…',
+  'mailbox.filter.aria': 'Postfächer filtern',
+
+  // ── Fallback bei nicht gefundenem Postfach ───────────────────────────
+  'mail.notFound.title': 'Nicht gefunden',
+  'mail.notFound.lead': 'Unter dieser URL gibt es kein Postfach.',
+
   // ── Selection chooser (issue #10) ────────────────────────────────────
   'select.all': 'Alle',
   'select.none': 'Keine',

@@ -53,6 +53,27 @@ export const en = {
   'mail.threadReader.internalizePending.body':
     'External images in this message are still being internalized in the background. They appear as placeholders for now; refresh in a moment to see them.',
 
+  // ── Search (re #97) ──────────────────────────────────────────────────
+  'search.history.label': 'Recent:',
+  'search.history.rerun': 'Re-run search',
+  'search.history.clear': 'Clear',
+  'search.history.clearTitle': 'Clear history',
+  'search.history.clearAria': 'Clear search history',
+  'search.searching': 'Searching…',
+  'search.failed': 'Search failed.',
+  'search.advanced.from.placeholder': 'Sender name or address',
+  'search.advanced.to.placeholder': 'Recipient name or address',
+  'search.advanced.subject.placeholder': 'Subject contains',
+  'search.advanced.body.placeholder': 'Body contains',
+
+  // ── Mailbox picker ───────────────────────────────────────────────────
+  'mailbox.filter.placeholder': 'Filter mailboxes…',
+  'mailbox.filter.aria': 'Filter mailboxes',
+
+  // ── Mail-route fallback ──────────────────────────────────────────────
+  'mail.notFound.title': 'Not found',
+  'mail.notFound.lead': 'No mail folder at that URL.',
+
   // ── Selection chooser (issue #10) ────────────────────────────────────
   'select.all': 'All',
   'select.none': 'None',
