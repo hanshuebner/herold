@@ -154,7 +154,12 @@ If steps 1–4 succeed but the transaction fails, the blob is orphaned. GC clean
 ### Attachment text extraction
 
 Attached content indexed for common formats (REQ-STORE-60):
-- **PDF**: text layer via `github.com/ledongthuc/pdf` or `rsc.io/pdf`. No OCR.
+- **PDF**: text layer via the `pdftotext` (poppler-utils) subprocess
+  wrapper specified in `docs/design/server/requirements/20-pdf-extraction-isolation.md`
+  (REQ-PDFEX-*). No in-process PDF parsing — the prior pure-Go pdf
+  library was removed after pathological input drove its allocator
+  past 100 GiB resident. Disabled by default in the stopgap window
+  (REQ-PDFEX-110) until the subprocess wrapper ships. No OCR.
 - **DOCX/XLSX/PPTX**: unzip + parse OOXML XML; our own helper (small).
 - **Plain text / CSV / Markdown / HTML**: stdlib + `golang.org/x/net/html`.
 - **Archives (zip, tar)**: unpacked recursively (bounded depth). Non-archive files inside indexed.

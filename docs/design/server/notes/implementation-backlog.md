@@ -81,6 +81,36 @@ nothing slips between "documented" and "implemented" by being invisible.
   side wants a fresh agent (`import-implementor` if the role exists,
   otherwise a Gmail-takeout extension).
 
+### Isolated PDF extraction (subprocess + pdftotext)
+
+- Status: `backlog`
+- Requirements: `docs/design/server/requirements/20-pdf-extraction-isolation.md`
+  (REQ-PDFEX-01..112).
+- Size: **M**. New package `internal/storefts/pdfextract/` wrapping
+  `os/exec` calls to the system `pdftotext` (poppler-utils). Removes
+  the in-process `github.com/ledongthuc/pdf` import from
+  `internal/storefts/attachments.go`. New `[fts.extract.pdf]` appconfig
+  block with `enabled / binary_path / timeout_ms / max_input_bytes /
+  max_output_bytes / max_memory_bytes`. New `herold admin diag pdftotext`
+  probe subcommand and a `herold admin diag fts reindex --kind
+  pdf-attachments` subcommand for catching up messages that were
+  skipped during the stopgap window.
+- Dependencies: a stopgap commit lands FIRST that disables in-process
+  PDF extraction (REQ-PDFEX-110); this lets the FTS worker advance past
+  the message that pinned 100 GiB during the original incident.
+  Container image build (REQ-PDFEX-71) needs poppler-utils added.
+- Decomposition: (1) stopgap disable-PDF commit + cursor advance;
+  (2) `pdfextract` package with executor + rlimit + timeout; (3) appconfig
+  wiring + reload behaviour; (4) `admin diag pdftotext` probe;
+  (5) `admin diag fts reindex --kind pdf-attachments` for backfill;
+  (6) container image change.
+- Risk: **low-medium**. The subprocess plumbing is well-trodden Go
+  (`os/exec` + `context.WithTimeout` + `Setrlimit`), the choice of
+  pdftotext is mature, and the failure modes are bounded by OS
+  primitives rather than library trust. The macOS-`RLIMIT_AS`-is-soft
+  caveat is documented as an open question but does not gate landing
+  on Linux operators.
+
 ### Direct archive ingestion for Gmail Takeout (.tgz / .zip / multipart .zip)
 
 - Status: `backlog`
