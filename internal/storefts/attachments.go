@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/jaytaylor/html2text"
@@ -102,6 +103,12 @@ func extractAttachmentText(p mailparse.Part, maxBytes int) (text string, format 
 // uses panic for some malformed-input branches and would otherwise
 // crash the FTS worker. Recovering converts that into a normal error
 // so the worker logs and moves on.
+//
+// The parse is wrapped in withSilencedStdout because ledongthuc/pdf
+// fmt.Printfs "DEBUG: pdf.keyword(<<). Skip dict" and similar noise
+// directly to stdout for several malformed-input branches; without
+// suppression these flood the operator's terminal once per malformed
+// PDF in the FTS backlog.
 func extractPDFText(blob []byte, maxBytes int) (out string, err error) {
 	if len(blob) == 0 {
 		return "", nil
@@ -112,37 +119,72 @@ func extractPDFText(blob []byte, maxBytes int) (out string, err error) {
 			err = fmt.Errorf("storefts: pdf parse panic: %v", r)
 		}
 	}()
-	r, err := pdf.NewReader(bytes.NewReader(blob), int64(len(blob)))
-	if err != nil {
-		return "", fmt.Errorf("storefts: pdf reader: %w", err)
-	}
-	rd, err := r.GetPlainText()
-	if err != nil {
-		return "", fmt.Errorf("storefts: pdf text: %w", err)
-	}
-	limit := maxBytes
-	if limit <= 0 {
-		limit = defaultPerAttachmentMaxBytes
-	}
-	buf := make([]byte, 0, 4096)
-	tmp := make([]byte, 4096)
-	for len(buf) < limit {
-		n, rerr := rd.Read(tmp)
-		if n > 0 {
-			room := limit - len(buf)
-			if n > room {
-				n = room
+	withSilencedStdout(func() {
+		var rd io.Reader
+		var r *pdf.Reader
+		r, err = pdf.NewReader(bytes.NewReader(blob), int64(len(blob)))
+		if err != nil {
+			err = fmt.Errorf("storefts: pdf reader: %w", err)
+			return
+		}
+		rd, err = r.GetPlainText()
+		if err != nil {
+			err = fmt.Errorf("storefts: pdf text: %w", err)
+			return
+		}
+		limit := maxBytes
+		if limit <= 0 {
+			limit = defaultPerAttachmentMaxBytes
+		}
+		buf := make([]byte, 0, 4096)
+		tmp := make([]byte, 4096)
+		for len(buf) < limit {
+			n, rerr := rd.Read(tmp)
+			if n > 0 {
+				room := limit - len(buf)
+				if n > room {
+					n = room
+				}
+				buf = append(buf, tmp[:n]...)
 			}
-			buf = append(buf, tmp[:n]...)
+			if rerr == io.EOF {
+				break
+			}
+			if rerr != nil {
+				err = fmt.Errorf("storefts: pdf read: %w", rerr)
+				return
+			}
 		}
-		if rerr == io.EOF {
-			break
-		}
-		if rerr != nil {
-			return "", fmt.Errorf("storefts: pdf read: %w", rerr)
-		}
+		out = string(buf)
+	})
+	return out, err
+}
+
+// withSilencedStdout redirects os.Stdout to the OS null device for the
+// duration of fn, then restores it. Used to swallow ledongthuc/pdf's
+// chatter (fmt.Printf to stdout from several malformed-input branches);
+// no upstream API exists to redirect or disable it.
+//
+// Race note: os.Stdout is a process-wide handle and the swap is not
+// goroutine-safe. herold's structured logs go to stderr via slog and
+// nothing in the steady-state server writes to stdout, so the FTS
+// worker's PDF parses are the only callers. If a future code path
+// needs to print to stdout concurrently with FTS extraction this
+// helper must be revisited.
+//
+// On the rare failure to open /dev/null the helper falls back to
+// running fn unsuppressed — better noisy logs than a missed extraction.
+func withSilencedStdout(fn func()) {
+	devnull, oerr := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if oerr != nil {
+		fn()
+		return
 	}
-	return string(buf), nil
+	defer devnull.Close()
+	saved := os.Stdout
+	os.Stdout = devnull
+	defer func() { os.Stdout = saved }()
+	fn()
 }
 
 // extractOOXMLText walks every XML file inside an OOXML zip and
