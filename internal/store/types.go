@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"time"
 )
 
@@ -290,6 +291,26 @@ const (
 	MessageFlagRecent
 )
 
+// SystemKeywordFlag maps a JMAP-wire system keyword (e.g. "$seen",
+// "$flagged", "$answered", "$draft") to its MessageFlags bit. Returns
+// (0, false) for non-system keywords (custom labels stored in the
+// per-(message, mailbox) keywords list). Compare is case-insensitive
+// per RFC 8621 keyword semantics. Centralised here so the JMAP filter
+// translator and both store backends agree on the mapping.
+func SystemKeywordFlag(kw string) (MessageFlags, bool) {
+	switch strings.ToLower(kw) {
+	case "$seen":
+		return MessageFlagSeen, true
+	case "$answered":
+		return MessageFlagAnswered, true
+	case "$flagged":
+		return MessageFlagFlagged, true
+	case "$draft":
+		return MessageFlagDraft, true
+	}
+	return 0, false
+}
+
 // Envelope is the cached RFC 5322 envelope summary used by IMAP STATUS /
 // FETCH ENVELOPE (RFC 3501 §7.4.2) and JMAP Email properties without
 // re-parsing the blob body.
@@ -399,6 +420,19 @@ type EmailQueryFastOpts struct {
 	// MinSize, MaxSize bound the body size in bytes (inclusive).
 	MinSize *int64
 	MaxSize *int64
+	// HasKeyword requires the message to carry the given keyword
+	// (matched per-(message, mailbox) on the join row that produced the
+	// hit). Empty string means "no constraint".
+	//
+	// System keywords ($seen, $answered, $flagged, $draft) are mapped to
+	// the message_mailboxes.flags bitmask; everything else is compared
+	// against the lowercased CSV in message_mailboxes.keywords_csv.
+	// The caller must lowercase the keyword before passing it here; the
+	// JMAP layer's filter walker already does so via messageHasKeyword.
+	HasKeyword string
+	// NotKeyword forbids the given keyword on the matched
+	// (message, mailbox) row. Same encoding rules as HasKeyword.
+	NotKeyword string
 	// SortBy selects the ORDER BY column. Empty defaults to
 	// EmailQueryFastSortReceivedAt.
 	SortBy EmailQueryFastSort

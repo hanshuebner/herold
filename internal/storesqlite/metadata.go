@@ -2919,6 +2919,29 @@ func (m *metadata) QueryEmailFast(
 		where = append(where, "m.size <= ?")
 		args = append(args, *opts.MaxSize)
 	}
+	if opts.HasKeyword != "" {
+		if bit, ok := store.SystemKeywordFlag(opts.HasKeyword); ok {
+			where = append(where, "(mm.flags & ?) != 0")
+			args = append(args, int64(bit))
+		} else {
+			// instr-with-comma-padding avoids a substring false match
+			// (e.g. "$cat" matching "$category-foo"). keywords_csv is
+			// stored lowercase (UpdateMessageFlags lowercases on insert);
+			// lowercase the probe here so the JMAP layer can pass through
+			// the wire-form keyword unchanged.
+			where = append(where, "instr(',' || mm.keywords_csv || ',', ?) > 0")
+			args = append(args, ","+strings.ToLower(opts.HasKeyword)+",")
+		}
+	}
+	if opts.NotKeyword != "" {
+		if bit, ok := store.SystemKeywordFlag(opts.NotKeyword); ok {
+			where = append(where, "(mm.flags & ?) = 0")
+			args = append(args, int64(bit))
+		} else {
+			where = append(where, "instr(',' || mm.keywords_csv || ',', ?) = 0")
+			args = append(args, ","+strings.ToLower(opts.NotKeyword)+",")
+		}
+	}
 	whereClause := strings.Join(where, " AND ")
 
 	sortCol := "m.received_at_us"

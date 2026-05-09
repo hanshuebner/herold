@@ -401,6 +401,83 @@ func TestEmail_Get_NilIDs_Refused(t *testing.T) {
 	}
 }
 
+// TestEmail_Query_HasKeyword_FastPath exercises the SQL pushdown for
+// hasKeyword and notKeyword filters (issue #104). Before the pushdown
+// the suite's "Important" tab fell through to the slow path's
+// listPrincipalMessages, which loaded every message owned by the
+// principal and filtered in Go — fatal at 278k+ rows. The fast path
+// must return the matching ids for both a custom keyword and a system
+// flag without changing the wire-form Email/query result.
+func TestEmail_Query_HasKeyword_FastPath(t *testing.T) {
+	f := setupFixture(t)
+
+	// Three messages: one with $important, one with $seen, one plain.
+	important := f.insertMessage(t,
+		"From: a@example.test\r\nTo: b@example.test\r\nSubject: imp\r\n\r\nbody",
+		"imp", "a@example.test", "b@example.test", []string{"$important"}, "")
+	seen := f.insertMessage(t,
+		"From: a@example.test\r\nTo: b@example.test\r\nSubject: seen\r\n\r\nbody",
+		"seen", "a@example.test", "b@example.test", nil, "")
+	plain := f.insertMessage(t,
+		"From: a@example.test\r\nTo: b@example.test\r\nSubject: plain\r\n\r\nbody",
+		"plain", "a@example.test", "b@example.test", nil, "")
+
+	// Apply $seen via UpdateMessageFlags so the system-flag bitmask
+	// path is exercised end to end.
+	if _, err := f.srv.Store.Meta().UpdateMessageFlags(context.Background(),
+		seen.ID, f.inbox.ID, store.MessageFlagSeen, 0, nil, nil, 0); err != nil {
+		t.Fatalf("set $seen: %v", err)
+	}
+
+	// hasKeyword "$important" — only the $important-tagged row.
+	_, raw := f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter":    map[string]any{"hasKeyword": "$important"},
+	})
+	var resp struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal hasKeyword: %v: %s", err, raw)
+	}
+	want := fmt.Sprintf("%d", important.ID)
+	if len(resp.IDs) != 1 || resp.IDs[0] != want {
+		t.Fatalf("hasKeyword $important ids = %v, want [%s] (raw=%s)", resp.IDs, want, raw)
+	}
+
+	// hasKeyword "$seen" — only the row whose system flag bit is set.
+	_, raw = f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter":    map[string]any{"hasKeyword": "$seen"},
+	})
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal hasKeyword $seen: %v: %s", err, raw)
+	}
+	want = fmt.Sprintf("%d", seen.ID)
+	if len(resp.IDs) != 1 || resp.IDs[0] != want {
+		t.Fatalf("hasKeyword $seen ids = %v, want [%s] (raw=%s)", resp.IDs, want, raw)
+	}
+
+	// notKeyword "$important" — every row that is NOT tagged.
+	_, raw = f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter":    map[string]any{"notKeyword": "$important"},
+	})
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal notKeyword: %v: %s", err, raw)
+	}
+	if len(resp.IDs) != 2 {
+		t.Fatalf("notKeyword $important len(ids) = %d, want 2 (raw=%s)", len(resp.IDs), raw)
+	}
+	importantStr := fmt.Sprintf("%d", important.ID)
+	for _, id := range resp.IDs {
+		if id == importantStr {
+			t.Fatalf("notKeyword $important returned $important id %s (raw=%s)", id, raw)
+		}
+	}
+	_ = plain // referenced for clarity that the third row exists in the fixture
+}
+
 // TestEmail_Query_ThreadKeywordFilter_Refused asserts that
 // someInThreadHaveKeyword and noneInThreadHaveKeyword filters are
 // refused with unsupportedFilter per REQ-PERF-INDEX-03.

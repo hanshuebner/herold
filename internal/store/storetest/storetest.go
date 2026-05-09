@@ -55,6 +55,7 @@ func Run(t *testing.T, f Factory) {
 		{"QueryEmailFast_Basic", testQueryEmailFastBasic},
 		{"QueryEmailFast_Pagination", testQueryEmailFastPagination},
 		{"QueryEmailFast_Filters", testQueryEmailFastFilters},
+		{"QueryEmailFast_Keywords", testQueryEmailFastKeywords},
 		{"ListThreadsByKeys", testListThreadsByKeys},
 		{"InternalizePending_Lifecycle", testInternalizePendingLifecycle},
 		{"InternalizePending_ListAndCount", testInternalizePendingListAndCount},
@@ -1488,6 +1489,158 @@ func testQueryEmailFastFilters(t *testing.T, s store.Store) {
 	// In Inbox we now have ids[0..4]; the largest (size 1004) is ids[4].
 	if r.IDs[0] != ids[4] {
 		t.Fatalf("SortBy size DESC IDs[0] = %d, want %d", r.IDs[0], ids[4])
+	}
+}
+
+// testQueryEmailFastKeywords covers the SQL-pushable hasKeyword /
+// notKeyword predicates the JMAP layer translates from
+// FilterCondition.hasKeyword / FilterCondition.notKeyword. The two
+// translations exercised are:
+//
+//  1. system keywords ($seen / $flagged / $answered / $draft) map to
+//     the message_mailboxes.flags bitmask;
+//  2. custom keywords ($important, $category-foo, …) match against
+//     keywords_csv with comma-padding so $cat does not match
+//     $category-foo (issue #104 regression).
+//
+// The case-insensitive contract from messageHasKeyword (slow path) is
+// preserved: the store lowercases on insert and the fast path
+// lowercases the probe.
+func testQueryEmailFastKeywords(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "fq-kw@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ids := fastQuerySeed(t, s, p, mb, 5, 1024)
+
+	// ids[0] gets $seen via UpdateMessageFlags (system flag path).
+	if _, err := s.Meta().UpdateMessageFlags(ctx, ids[0], mb.ID,
+		store.MessageFlagSeen, 0, nil, nil, 0); err != nil {
+		t.Fatalf("set $seen: %v", err)
+	}
+	// ids[1] gets the custom $important keyword.
+	if _, err := s.Meta().UpdateMessageFlags(ctx, ids[1], mb.ID,
+		0, 0, []string{"$important"}, nil, 0); err != nil {
+		t.Fatalf("set $important: %v", err)
+	}
+	// ids[2] gets $category-foo, a longer string that must NOT match a
+	// hasKeyword=$cat probe (the comma-padding guard).
+	if _, err := s.Meta().UpdateMessageFlags(ctx, ids[2], mb.ID,
+		0, 0, []string{"$category-foo"}, nil, 0); err != nil {
+		t.Fatalf("set $category-foo: %v", err)
+	}
+	// ids[3] gets $important via the mixed-case form to exercise the
+	// case-insensitive compare.
+	if _, err := s.Meta().UpdateMessageFlags(ctx, ids[3], mb.ID,
+		0, 0, []string{"$Important"}, nil, 0); err != nil {
+		t.Fatalf("set $Important: %v", err)
+	}
+	mbInbox := mb.ID
+
+	// hasKeyword = "$seen" — only ids[0] (system flag).
+	r, err := s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox:  &mbInbox,
+		HasKeyword: "$seen",
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast hasKeyword $seen: %v", err)
+	}
+	if len(r.IDs) != 1 || r.IDs[0] != ids[0] {
+		t.Fatalf("hasKeyword $seen IDs = %v, want [%d]", r.IDs, ids[0])
+	}
+
+	// notKeyword = "$seen" — every other message in the mailbox.
+	r, err = s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox:  &mbInbox,
+		NotKeyword: "$seen",
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast notKeyword $seen: %v", err)
+	}
+	if len(r.IDs) != 4 {
+		t.Fatalf("notKeyword $seen len(IDs) = %d, want 4", len(r.IDs))
+	}
+	for _, id := range r.IDs {
+		if id == ids[0] {
+			t.Fatalf("notKeyword $seen returned $seen-bearing id %d", id)
+		}
+	}
+
+	// hasKeyword = "$important" — ids[1] and ids[3] (case-insensitive).
+	r, err = s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox:  &mbInbox,
+		HasKeyword: "$important",
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast hasKeyword $important: %v", err)
+	}
+	if len(r.IDs) != 2 {
+		t.Fatalf("hasKeyword $important len(IDs) = %d, want 2", len(r.IDs))
+	}
+	gotSet := map[store.MessageID]bool{}
+	for _, id := range r.IDs {
+		gotSet[id] = true
+	}
+	if !gotSet[ids[1]] || !gotSet[ids[3]] {
+		t.Fatalf("hasKeyword $important IDs = %v, want %d and %d", r.IDs, ids[1], ids[3])
+	}
+
+	// hasKeyword = "$Important" (uppercase probe) must yield the same
+	// rows: the comparison is case-insensitive end to end.
+	r, err = s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox:  &mbInbox,
+		HasKeyword: "$Important",
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast hasKeyword $Important: %v", err)
+	}
+	if len(r.IDs) != 2 {
+		t.Fatalf("hasKeyword $Important len(IDs) = %d, want 2 (case-insensitive)", len(r.IDs))
+	}
+
+	// hasKeyword = "$cat" must NOT match the $category-foo row: the
+	// comma-padding instr() / position() form prevents the substring
+	// false positive that bit a naive `LIKE '%$cat%'` translation.
+	r, err = s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox:  &mbInbox,
+		HasKeyword: "$cat",
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast hasKeyword $cat: %v", err)
+	}
+	if len(r.IDs) != 0 {
+		t.Fatalf("hasKeyword $cat len(IDs) = %d, want 0 (must not match $category-foo)", len(r.IDs))
+	}
+
+	// notKeyword = "$important" — every message that does NOT carry it,
+	// i.e. ids[0], ids[2], ids[4].
+	r, err = s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox:  &mbInbox,
+		NotKeyword: "$important",
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast notKeyword $important: %v", err)
+	}
+	if len(r.IDs) != 3 {
+		t.Fatalf("notKeyword $important len(IDs) = %d, want 3", len(r.IDs))
+	}
+	for _, id := range r.IDs {
+		if id == ids[1] || id == ids[3] {
+			t.Fatalf("notKeyword $important returned $important-bearing id %d", id)
+		}
+	}
+
+	// CalculateTotal flag composes with hasKeyword: the COUNT(*) shares
+	// the same WHERE clause and must also see the keyword filter.
+	r, err = s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox:      &mbInbox,
+		HasKeyword:     "$important",
+		CalculateTotal: true,
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast hasKeyword + CalculateTotal: %v", err)
+	}
+	if r.Total != 2 {
+		t.Fatalf("CalculateTotal with hasKeyword $important = %d, want 2", r.Total)
 	}
 }
 

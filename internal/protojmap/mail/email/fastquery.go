@@ -160,8 +160,19 @@ func mergeFilterIntoOpts(f *emailFilter, opts *store.EmailQueryFastOpts) bool {
 		f.NoneInThreadHaveKeyword != nil {
 		return false
 	}
-	if f.HasKeyword != nil || f.NotKeyword != nil {
-		return false
+	// hasKeyword / notKeyword are SQL-pushable: system keywords map to
+	// the message_mailboxes.flags bitmask, custom keywords (e.g.
+	// "$important", "$category-foo") match against keywords_csv. See
+	// store.SystemKeywordFlag and Metadata.QueryEmailFast for the
+	// per-backend translation. Issue #104: the Important tab's
+	// `{ hasKeyword: "$important" }` request used to fall through to the
+	// slow path's listPrincipalMessages, blowing past the 1s deadline
+	// on a 278k-message account.
+	if f.HasKeyword != nil {
+		opts.HasKeyword = *f.HasKeyword
+	}
+	if f.NotKeyword != nil {
+		opts.NotKeyword = *f.NotKeyword
 	}
 	if f.HasAttachment != nil {
 		return false
