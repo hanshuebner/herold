@@ -190,6 +190,7 @@ func NewServer(
 	// across many Server instances sharing one process Registry (tests).
 	observe.RegisterIMAPMetrics()
 	observe.RegisterStoreMetrics()
+	observe.RegisterRequestShapeMetrics()
 	return &Server{
 		store:     st,
 		dir:       dir,

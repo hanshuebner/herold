@@ -16,8 +16,12 @@ import (
 
 	"path/filepath"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storesqlite"
@@ -341,6 +345,49 @@ func TestDispatch_CoreEcho_RoundTrip(t *testing.T) {
 	if echoed["hello"] != "world" {
 		t.Fatalf("echo lost field: %v", echoed)
 	}
+}
+
+// TestDispatch_RecordsMethodDuration drives one Core/echo and asserts
+// that herold_jmap_method_duration_seconds{method="Core/echo",
+// outcome="ok"} sample count advanced. Proves REQ-PERF-METRIC-01 wiring
+// is live.
+func TestDispatch_RecordsMethodDuration(t *testing.T) {
+	observe.RegisterJMAPMetrics()
+	before := jmapHistSampleCount(t, observe.JMAPMethodDuration.WithLabelValues("Core/echo", "ok"))
+
+	f := newFixture(t)
+	args := json.RawMessage(`{"hello":"world"}`)
+	res, _, raw := f.jmapPost(
+		[]protojmap.CapabilityID{protojmap.CapabilityCore},
+		[]protojmap.Invocation{
+			{Name: "Core/echo", Args: args, CallID: "c0"},
+		},
+	)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.StatusCode, raw)
+	}
+
+	after := jmapHistSampleCount(t, observe.JMAPMethodDuration.WithLabelValues("Core/echo", "ok"))
+	if after <= before {
+		t.Fatalf("herold_jmap_method_duration_seconds{method=Core/echo,outcome=ok}: before=%v after=%v; want strict increase", before, after)
+	}
+}
+
+// jmapHistSampleCount returns the SampleCount for a histogram observer.
+func jmapHistSampleCount(t *testing.T, obs prometheus.Observer) uint64 {
+	t.Helper()
+	m, ok := obs.(prometheus.Metric)
+	if !ok {
+		t.Fatalf("observer is not a prometheus.Metric: %T", obs)
+	}
+	dm := &dto.Metric{}
+	if err := m.Write(dm); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	if dm.Histogram == nil {
+		t.Fatalf("metric is not a histogram")
+	}
+	return dm.Histogram.GetSampleCount()
 }
 
 func TestDispatch_BackReferences_Resolved(t *testing.T) {

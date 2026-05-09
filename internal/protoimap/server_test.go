@@ -17,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
@@ -259,6 +261,43 @@ func TestIMAPMetrics_CommandIncrementsCounter(t *testing.T) {
 	if after <= before {
 		t.Fatalf("herold_imap_commands_total{command=CAPABILITY}: before=%v after=%v; want strict increase", before, after)
 	}
+}
+
+// TestIMAPMetrics_CommandDurationRecorded drives one CAPABILITY command
+// and asserts the herold_imap_command_duration_seconds histogram
+// recorded a sample with outcome="ok". Proves REQ-PERF-METRIC-02 wiring.
+func TestIMAPMetrics_CommandDurationRecorded(t *testing.T) {
+	observe.RegisterIMAPMetrics()
+	before := histSampleCount(t, observe.IMAPCommandDuration.WithLabelValues("CAPABILITY", "ok"))
+
+	f := newFixture(t, fxOpts{})
+	c := f.dial(t)
+	defer c.close()
+	_ = c.send("a1", "CAPABILITY")
+
+	after := histSampleCount(t, observe.IMAPCommandDuration.WithLabelValues("CAPABILITY", "ok"))
+	if after <= before {
+		t.Fatalf("herold_imap_command_duration_seconds{command=CAPABILITY,outcome=ok}: before=%v after=%v; want strict increase", before, after)
+	}
+}
+
+// histSampleCount returns the SampleCount on a histogram observer,
+// looked up from its dto representation. Wraps the prometheus client
+// machinery that testutil.ToFloat64 does not expose for histograms.
+func histSampleCount(t *testing.T, obs prometheus.Observer) uint64 {
+	t.Helper()
+	m, ok := obs.(prometheus.Metric)
+	if !ok {
+		t.Fatalf("observer is not a prometheus.Metric: %T", obs)
+	}
+	dm := &dto.Metric{}
+	if err := m.Write(dm); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	if dm.Histogram == nil {
+		t.Fatalf("metric is not a histogram")
+	}
+	return dm.Histogram.GetSampleCount()
 }
 
 func TestCAPABILITY_AfterLoginOverTLS(t *testing.T) {

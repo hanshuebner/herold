@@ -182,12 +182,16 @@ func (ses *session) readLiteral(size int64, nonSync bool) ([]byte, error) {
 // error only for fatal protocol faults (which end the session); per-IMAP
 // "NO" / "BAD" results are written to the client as tagged responses and
 // the handler returns nil.
-func (ses *session) dispatch(ctx context.Context, c *Command) error {
+func (ses *session) dispatch(ctx context.Context, c *Command) (err error) {
 	// Record the command on a bounded label set: only the verbs the
 	// dispatch table understands are passed through; everything else
 	// rolls up to "unknown" so cardinality is fixed.
 	cmdLabel := imapCommandLabel(c.Op)
 	observe.IMAPCommandsTotal.WithLabelValues(cmdLabel).Inc()
+	start := time.Now()
+	defer func() {
+		observeIMAPCommandOutcome(ctx, cmdLabel, err, time.Since(start))
+	}()
 	switch c.Op {
 	case "CAPABILITY":
 		return ses.handleCAPABILITY(c)
@@ -548,6 +552,45 @@ func (ses *session) makeMechanism(name string) (sasl.Mechanism, error) {
 	}
 	return nil, fmt.Errorf("mechanism %q not supported", name)
 }
+
+// observeIMAPCommandOutcome records the per-command duration histogram
+// and the cross-protocol shape counters per REQ-PERF-METRIC-02..04.
+// The outcome label derives from the dispatch error and the request
+// context: a cancelled deadline maps to "deadline_exceeded", an
+// un-indexed-scan refusal maps to "unindexed_refused" (set once
+// REQ-PERF-IMPL-04 lands), any other fatal protocol error maps to
+// "error", and a clean return (including per-command tagged NO/BAD,
+// which the handlers write themselves and report nil) maps to "ok".
+func observeIMAPCommandOutcome(ctx context.Context, cmd string, err error, dur time.Duration) {
+	if observe.IMAPCommandDuration == nil {
+		return
+	}
+	outcome := "ok"
+	switch {
+	case err == nil:
+		// outcome stays "ok"
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		outcome = "deadline_exceeded"
+		if observe.RequestDeadlineExceededTotal != nil {
+			observe.RequestDeadlineExceededTotal.WithLabelValues("imap", cmd).Inc()
+		}
+	case errors.Is(err, errIMAPUnindexedScan):
+		outcome = "unindexed_refused"
+		if observe.RequestUnindexedRefusedTotal != nil {
+			observe.RequestUnindexedRefusedTotal.WithLabelValues("imap", cmd).Inc()
+		}
+	default:
+		outcome = "error"
+	}
+	observe.IMAPCommandDuration.WithLabelValues(cmd, outcome).Observe(dur.Seconds())
+}
+
+// errIMAPUnindexedScan is the sentinel a future REQ-PERF-IMPL-04 commit
+// will return from a SEARCH whose criteria cannot be reached through
+// FTS, so observeIMAPCommandOutcome can label the metric correctly.
+// Defined now so the metric vocabulary is fixed before the feature
+// lands.
+var errIMAPUnindexedScan = errors.New("imap: unindexed scan refused")
 
 // imapCommandLabel folds an arbitrary command opcode into the bounded
 // label set the herold_imap_commands_total metric expects. Unknown

@@ -8,6 +8,9 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/hanshuebner/herold/internal/observe"
 )
 
 // handleAPI is POST /jmap. Decodes the request envelope, validates the
@@ -133,7 +136,9 @@ func (s *Server) dispatchOneMulti(ctx context.Context, log *slog.Logger, call In
 		s.logMethodCall(ctx, log, call, nil, refErr)
 		return []Invocation{errorInvocation(call.CallID, refErr)}
 	}
+	start := time.Now()
 	resp, mErr := handler.Execute(ctx, args)
+	observeJMAPMethodOutcome(ctx, call.Name, mErr, time.Since(start))
 	if mErr != nil {
 		s.logMethodCall(ctx, log, call, nil, mErr)
 		return []Invocation{errorInvocation(call.CallID, mErr)}
@@ -153,6 +158,44 @@ func (s *Server) dispatchOneMulti(ctx context.Context, log *slog.Logger, call In
 	s.logMethodCall(ctx, log, call, respBytes, nil)
 	return []Invocation{{Name: call.Name, Args: respBytes, CallID: call.CallID}}
 }
+
+// observeJMAPMethodOutcome records the per-method duration histogram and
+// the cross-protocol shape counters per REQ-PERF-METRIC-01..04. The
+// outcome label is derived from the JMAP error type and the request
+// context: a cancelled deadline maps to "deadline_exceeded", a refusal
+// for an un-indexed scan maps to "unindexed_refused" (set once
+// REQ-PERF-IMPL-04 lands), any other method-level error maps to
+// "error", and a successful return maps to "ok".
+func observeJMAPMethodOutcome(ctx context.Context, method string, mErr *MethodError, dur time.Duration) {
+	if observe.JMAPMethodDuration == nil {
+		return
+	}
+	outcome := "ok"
+	switch {
+	case mErr == nil:
+		// outcome stays "ok"
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		outcome = "deadline_exceeded"
+		if observe.RequestDeadlineExceededTotal != nil {
+			observe.RequestDeadlineExceededTotal.WithLabelValues("jmap", method).Inc()
+		}
+	case mErr.Type == jmapUnindexedScanType:
+		outcome = "unindexed_refused"
+		if observe.RequestUnindexedRefusedTotal != nil {
+			observe.RequestUnindexedRefusedTotal.WithLabelValues("jmap", method).Inc()
+		}
+	default:
+		outcome = "error"
+	}
+	observe.JMAPMethodDuration.WithLabelValues(method, outcome).Observe(dur.Seconds())
+}
+
+// jmapUnindexedScanType is the JMAP method-level error type emitted when
+// REQ-PERF-INDEX-* refuses a request for an un-indexed scan. Defined
+// here so observeJMAPMethodOutcome can recognise the outcome label
+// without forcing a circular dependency on the eventual handler-side
+// emitter.
+const jmapUnindexedScanType = "unindexedScan"
 
 // logMethodCall emits the per-method structured log record per REQ-OPS-86d.
 // respArgs is the marshaled response (nil on error paths). mErr is non-nil

@@ -15,6 +15,7 @@ import (
 	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
@@ -247,6 +248,11 @@ func NewServer(
 	}
 	s.sessionResolver = opts.SessionResolver
 	s.sessionCookieConfig = opts.SessionCookieConfig
+	// Register the JMAP method-duration histogram and the cross-protocol
+	// request-shape counters. Both registrations are sync.Once-guarded so
+	// constructing many servers in tests is safe.
+	observe.RegisterJMAPMetrics()
+	observe.RegisterRequestShapeMetrics()
 	// Register the JMAP Core capability + the canonical Core/echo
 	// method (RFC 8620 §4). Parallel agents register the Mail
 	// capability + its handlers via Registry().

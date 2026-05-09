@@ -139,11 +139,12 @@ func RegisterSMTPAttachmentPolicyMetrics() {
 }
 
 // IMAP session-scoped metrics. Label vocabulary:
-//   - outcome (sessions_total): "ok" | "error" | "panic".
-//   - command (commands_total): the IMAP command verb (CAPABILITY,
-//     LOGIN, SELECT, FETCH, ...). The verb set is enumerated by the
-//     dispatch table; unknown verbs fall back to "unknown" so cardinality
-//     stays bounded.
+//   - outcome (sessions_total, command_duration_seconds): "ok" | "error" |
+//     "panic" | "deadline_exceeded" | "unindexed_refused".
+//   - command (commands_total, command_duration_seconds): the IMAP command
+//     verb (CAPABILITY, LOGIN, SELECT, FETCH, ...). The verb set is
+//     enumerated by the dispatch table; unknown verbs fall back to
+//     "unknown" so cardinality stays bounded.
 var (
 	imapMetricsOnce sync.Once
 
@@ -152,6 +153,7 @@ var (
 	IMAPIdleActive      prometheus.Gauge
 	IMAPFetchBytesTotal prometheus.Counter
 	IMAPCommandsTotal   *prometheus.CounterVec
+	IMAPCommandDuration *prometheus.HistogramVec
 )
 
 // RegisterIMAPMetrics registers the IMAP collector set; idempotent.
@@ -177,12 +179,76 @@ func RegisterIMAPMetrics() {
 			Name: "herold_imap_commands_total",
 			Help: "Total IMAP commands dispatched, by command verb.",
 		}, []string{"command"})
+		IMAPCommandDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "herold_imap_command_duration_seconds",
+			Help:    "IMAP command latency, by command verb and outcome (REQ-PERF-METRIC-02).",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"command", "outcome"})
 		MustRegister(
 			IMAPSessionsActive,
 			IMAPSessionsTotal,
 			IMAPIdleActive,
 			IMAPFetchBytesTotal,
 			IMAPCommandsTotal,
+			IMAPCommandDuration,
+		)
+	})
+}
+
+// JMAP method-scoped metrics. Label vocabulary:
+//   - method (method_duration_seconds): the JMAP method name in
+//     RFC 8620 Type/methodName form (Email/query, Mailbox/get, ...).
+//     Bounded by the registered handler set; unknown methods do not
+//     reach the dispatcher's instrumented path.
+//   - outcome (method_duration_seconds): "ok" | "error" |
+//     "deadline_exceeded" | "unindexed_refused". The latter two are
+//     emitted once REQ-PERF-IMPL-03 / REQ-PERF-IMPL-04 land; until
+//     then only "ok" and "error" appear.
+var (
+	jmapMetricsOnce sync.Once
+
+	JMAPMethodDuration *prometheus.HistogramVec
+)
+
+// RegisterJMAPMetrics registers the JMAP collector set; idempotent.
+func RegisterJMAPMetrics() {
+	jmapMetricsOnce.Do(func() {
+		JMAPMethodDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "herold_jmap_method_duration_seconds",
+			Help:    "JMAP method latency, by method name and outcome (REQ-PERF-METRIC-01).",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"method", "outcome"})
+		MustRegister(JMAPMethodDuration)
+	})
+}
+
+// Cross-protocol request-shape counters. Label vocabulary:
+//   - protocol: "jmap" | "imap".
+//   - op: the JMAP method name (Type/methodName) or the uppercase IMAP
+//     verb. Same bounded vocabulary as the duration histograms.
+var (
+	requestShapeMetricsOnce sync.Once
+
+	RequestDeadlineExceededTotal *prometheus.CounterVec
+	RequestUnindexedRefusedTotal *prometheus.CounterVec
+)
+
+// RegisterRequestShapeMetrics registers the cross-protocol counters used
+// by the response-time-budget enforcement (REQ-PERF-METRIC-03..04).
+// Idempotent.
+func RegisterRequestShapeMetrics() {
+	requestShapeMetricsOnce.Do(func() {
+		RequestDeadlineExceededTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_request_deadline_exceeded_total",
+			Help: "Total requests that exceeded the configured deadline, by protocol and op (REQ-PERF-METRIC-03).",
+		}, []string{"protocol", "op"})
+		RequestUnindexedRefusedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_request_unindexed_refused_total",
+			Help: "Total requests refused because they would have required an un-indexed scan, by protocol and op (REQ-PERF-METRIC-04).",
+		}, []string{"protocol", "op"})
+		MustRegister(
+			RequestDeadlineExceededTotal,
+			RequestUnindexedRefusedTotal,
 		)
 	})
 }
