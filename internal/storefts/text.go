@@ -137,6 +137,14 @@ func (e *MailparseExtractor) appendAttachmentText(b *strings.Builder, parts []ma
 			// stays scoped to handler outcomes.
 			continue
 		}
+		if format == formatPDFDisabled {
+			// In-process PDF extraction is off (REQ-PDFEX-110 stopgap).
+			// Bump the metric so operators can see the rate, then drop
+			// the part. Format label is "pdf" so dashboards continue to
+			// roll up cleanly when the subprocess wrapper re-enables.
+			recordExtraction("pdf", "disabled")
+			continue
+		}
 		if text == "" {
 			recordExtraction(format, "ok")
 			continue

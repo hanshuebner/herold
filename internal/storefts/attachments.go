@@ -6,11 +6,9 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/jaytaylor/html2text"
-	"github.com/ledongthuc/pdf"
 
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
@@ -79,113 +77,28 @@ func extractAttachmentText(p mailparse.Part, maxBytes int) (text string, format 
 		out, trunc := capString(t, maxBytes)
 		return out, "pptx", trunc, nil
 	case ct == "application/pdf":
-		t, err := extractPDFText(p.Bytes, maxBytes)
-		if err != nil {
-			return "", "pdf", false, err
-		}
-		// extractPDFText already enforces maxBytes during the read, so
-		// the returned string is at most maxBytes long; trunc is true
-		// when the reader was cut short.
-		trunc := maxBytes > 0 && len(t) >= maxBytes
-		return t, "pdf", trunc, nil
+		// In-process PDF extraction is disabled per REQ-PDFEX-110: a single
+		// pathological PDF in production drove the prior pure-Go parser past
+		// 100 GiB resident heap (verified via /debug/pprof/heap; 100% of
+		// in-use bytes were one goroutine stuck in pdf.(*buffer).readArray).
+		// The full fix is the subprocess + pdftotext wrapper specified in
+		// docs/design/server/requirements/20-pdf-extraction-isolation.md;
+		// this stopgap routes every PDF to "disabled" so the FTS worker
+		// advances past such messages instead of pinning the process.
+		// Sentinel format value is consumed by appendAttachmentText to emit
+		// the right metric.
+		return "", formatPDFDisabled, false, nil
 	default:
 		return "", "skipped", false, nil
 	}
 }
 
-// extractPDFText reads the text layer of a PDF blob and returns up to
-// maxBytes of plain text. Encrypted PDFs and malformed structures
-// surface as errors; the caller records them in the format=pdf,
-// outcome=error counter and skips the attachment. Per the architecture
-// spec we do not OCR images or rasterised pages.
-//
-// A defensive recover() is wrapped around the parse: ledongthuc/pdf
-// uses panic for some malformed-input branches and would otherwise
-// crash the FTS worker. Recovering converts that into a normal error
-// so the worker logs and moves on.
-//
-// The parse is wrapped in withSilencedStdout because ledongthuc/pdf
-// fmt.Printfs "DEBUG: pdf.keyword(<<). Skip dict" and similar noise
-// directly to stdout for several malformed-input branches; without
-// suppression these flood the operator's terminal once per malformed
-// PDF in the FTS backlog.
-func extractPDFText(blob []byte, maxBytes int) (out string, err error) {
-	if len(blob) == 0 {
-		return "", nil
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			out = ""
-			err = fmt.Errorf("storefts: pdf parse panic: %v", r)
-		}
-	}()
-	withSilencedStdout(func() {
-		var rd io.Reader
-		var r *pdf.Reader
-		r, err = pdf.NewReader(bytes.NewReader(blob), int64(len(blob)))
-		if err != nil {
-			err = fmt.Errorf("storefts: pdf reader: %w", err)
-			return
-		}
-		rd, err = r.GetPlainText()
-		if err != nil {
-			err = fmt.Errorf("storefts: pdf text: %w", err)
-			return
-		}
-		limit := maxBytes
-		if limit <= 0 {
-			limit = defaultPerAttachmentMaxBytes
-		}
-		buf := make([]byte, 0, 4096)
-		tmp := make([]byte, 4096)
-		for len(buf) < limit {
-			n, rerr := rd.Read(tmp)
-			if n > 0 {
-				room := limit - len(buf)
-				if n > room {
-					n = room
-				}
-				buf = append(buf, tmp[:n]...)
-			}
-			if rerr == io.EOF {
-				break
-			}
-			if rerr != nil {
-				err = fmt.Errorf("storefts: pdf read: %w", rerr)
-				return
-			}
-		}
-		out = string(buf)
-	})
-	return out, err
-}
-
-// withSilencedStdout redirects os.Stdout to the OS null device for the
-// duration of fn, then restores it. Used to swallow ledongthuc/pdf's
-// chatter (fmt.Printf to stdout from several malformed-input branches);
-// no upstream API exists to redirect or disable it.
-//
-// Race note: os.Stdout is a process-wide handle and the swap is not
-// goroutine-safe. herold's structured logs go to stderr via slog and
-// nothing in the steady-state server writes to stdout, so the FTS
-// worker's PDF parses are the only callers. If a future code path
-// needs to print to stdout concurrently with FTS extraction this
-// helper must be revisited.
-//
-// On the rare failure to open /dev/null the helper falls back to
-// running fn unsuppressed — better noisy logs than a missed extraction.
-func withSilencedStdout(fn func()) {
-	devnull, oerr := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if oerr != nil {
-		fn()
-		return
-	}
-	defer devnull.Close()
-	saved := os.Stdout
-	os.Stdout = devnull
-	defer func() { os.Stdout = saved }()
-	fn()
-}
+// formatPDFDisabled is the sentinel format value returned by
+// extractAttachmentText for application/pdf parts during the stopgap
+// window (REQ-PDFEX-110). appendAttachmentText emits the metric and
+// drops the part. Replaced by the subprocess wrapper specified in
+// docs/design/server/requirements/20-pdf-extraction-isolation.md.
+const formatPDFDisabled = "pdf-disabled"
 
 // extractOOXMLText walks every XML file inside an OOXML zip and
 // concatenates the character data of every element whose local name is

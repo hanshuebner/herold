@@ -3,7 +3,6 @@ package storefts
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -127,55 +126,42 @@ func TestExtractAttachmentText_XLSX(t *testing.T) {
 	}
 }
 
-func TestExtractAttachmentText_PDF(t *testing.T) {
-	pdfBytes, err := base64.StdEncoding.DecodeString(syntheticPDFBase64)
-	if err != nil {
-		t.Fatalf("decode synthetic pdf: %v", err)
-	}
-	p := mailparse.Part{
-		ContentType: "application/pdf",
-		Bytes:       pdfBytes,
-	}
-	got, format, _, err := extractAttachmentText(p, 0)
-	if err != nil {
-		t.Fatalf("extractAttachmentText: %v", err)
-	}
-	if format != "pdf" {
-		t.Errorf("format = %q; want pdf", format)
-	}
-	if !strings.Contains(got, "pdf-tracer-token-omega") {
-		t.Errorf("PDF text extraction missing token; got %q", got)
-	}
-}
-
-func TestExtractAttachmentText_PDF_Empty(t *testing.T) {
-	p := mailparse.Part{
-		ContentType: "application/pdf",
-		Bytes:       nil,
-	}
-	got, format, _, err := extractAttachmentText(p, 0)
-	if err != nil {
-		t.Fatalf("extractAttachmentText: %v", err)
-	}
-	if format != "pdf" {
-		t.Errorf("format = %q; want pdf", format)
-	}
-	if got != "" {
-		t.Errorf("expected empty extraction, got %q", got)
-	}
-}
-
-func TestExtractAttachmentText_PDF_Malformed(t *testing.T) {
-	p := mailparse.Part{
-		ContentType: "application/pdf",
-		Bytes:       []byte("this is not a pdf"),
-	}
-	_, format, _, err := extractAttachmentText(p, 0)
-	if err == nil {
-		t.Fatalf("expected error for malformed PDF")
-	}
-	if format != "pdf" {
-		t.Errorf("format = %q; want pdf", format)
+// TestExtractAttachmentText_PDF_DisabledStopgap pins the REQ-PDFEX-110
+// stopgap contract: every application/pdf part returns the
+// formatPDFDisabled sentinel with no error and no extracted text,
+// regardless of input shape (valid, empty, or malformed). The
+// subprocess wrapper specified in 20-pdf-extraction-isolation.md
+// replaces this behaviour. The earlier per-shape PDF tests
+// (valid synthetic, empty bytes, malformed bytes) are subsumed here
+// because the disabled path makes them indistinguishable.
+func TestExtractAttachmentText_PDF_DisabledStopgap(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		bytes []byte
+	}{
+		{"empty", nil},
+		{"malformed", []byte("this is not a pdf")},
+		{"non-empty-arbitrary", []byte("%PDF-1.4 ... fake")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := mailparse.Part{
+				ContentType: "application/pdf",
+				Bytes:       tc.bytes,
+			}
+			got, format, trunc, err := extractAttachmentText(p, 0)
+			if err != nil {
+				t.Fatalf("extractAttachmentText: %v", err)
+			}
+			if format != formatPDFDisabled {
+				t.Errorf("format = %q; want %q", format, formatPDFDisabled)
+			}
+			if got != "" {
+				t.Errorf("expected empty extraction; got %q", got)
+			}
+			if trunc {
+				t.Errorf("trunc = true; want false")
+			}
+		})
 	}
 }
 
@@ -279,13 +265,6 @@ func buildSyntheticXLSX(t *testing.T, sharedStringsXML string) []byte {
 		"xl/sharedStrings.xml": sharedStringsXML,
 	})
 }
-
-// syntheticPDFBase64 is a minimal valid PDF (1.4) carrying the literal
-// string "pdf-tracer-token-omega" as its single page's text content.
-// 630 bytes uncompressed; the structure is hand-rolled (catalog, pages
-// tree, single page, Helvetica font, content stream) so the test does
-// not depend on a binary fixture file or a runtime PDF generator dep.
-const syntheticPDFBase64 = "JVBERi0xLjQKJcTl8uUKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhIC9FbmNvZGluZyAvV2luQW5zaUVuY29kaW5nID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNTQgPj4Kc3RyZWFtCkJUCi9GMSAxMiBUZgo3MiA3MjAgVGQKKHBkZi10cmFjZXItdG9rZW4tb21lZ2EpIFRqCkVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDE1IDAwMDAwIG4gCjAwMDAwMDAwNjQgMDAwMDAgbiAKMDAwMDAwMDEyMSAwMDAwMCBuIAowMDAwMDAwMjQ3IDAwMDAwIG4gCjAwMDAwMDAzNDQgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0NDcKJSVFT0YK"
 
 func zipBytes(t *testing.T, files map[string]string) []byte {
 	t.Helper()
