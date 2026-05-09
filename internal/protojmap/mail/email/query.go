@@ -134,25 +134,29 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 		return fastResp, nil
 	}
 
-	// For thread keyword filters we need all messages to do cross-thread
-	// aggregation. Gather all principal messages regardless.
-	var allMessages []store.Message
-	var gatherErr error
-	needAllForThread := filter != nil && filterNeedsThreadAgg(filter)
-	if needAllForThread {
-		allMessages, gatherErr = listPrincipalMessages(ctx, q.h.store.Meta(), pid)
-	} else {
-		allMessages, gatherErr = gatherCandidatesRaw(ctx, q.h.store, pid, filter)
+	// Thread-keyword aggregation (someInThreadHaveKeyword /
+	// noneInThreadHaveKeyword) requires walking every message in every
+	// thread the principal can see; herold does not yet have a
+	// thread-membership index in storefts so the only implementation
+	// would be an un-indexed scan. REQ-PERF-INDEX-03 refuses the
+	// filter rather than serving it slowly. The replacement is a
+	// thread-flag index in a follow-up commit, after which this
+	// guard relaxes.
+	if filter != nil && filterNeedsThreadAgg(filter) {
+		return nil, protojmap.NewUnindexedScanError("unsupportedFilter",
+			"Email/query someInThreadHaveKeyword / noneInThreadHaveKeyword "+
+				"are not supported; the underlying thread-flag index is not yet built")
 	}
+	allMessages, gatherErr := gatherCandidatesRaw(ctx, q.h.store, pid, filter)
 	if gatherErr != nil {
 		return nil, serverFail(gatherErr)
 	}
 
 	// Pre-compute blob-based filter data (hasAttachment, non-standard headers).
-	// ftsNarrowed reflects whether allMessages came from gatherCandidatesRaw's
-	// FTS path; the thread-aggregation branch above runs a full scan and so
-	// must re-validate body: and text: against blob-parsed text.
-	ftsNarrowed := !needAllForThread && filter != nil && filterHasTextPredicate(filter)
+	// ftsNarrowed is true whenever allMessages came from gatherCandidatesRaw's
+	// FTS path; with REQ-PERF-INDEX-03 refusing thread-keyword filters above,
+	// the FTS path is the only path the handler reaches.
+	ftsNarrowed := filter != nil && filterHasTextPredicate(filter)
 	fd := buildFilterData(ctx, q.h.store.Blobs(), allMessages, filter, ftsNarrowed)
 	matched := filterMessagesWithCtxAndAttachments(allMessages, filter, allMessages, fd)
 	sortMessages(matched, req.Sort)

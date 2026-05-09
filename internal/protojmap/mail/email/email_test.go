@@ -374,6 +374,58 @@ func TestEmail_Query_TextPredicate_BackedByFTS(t *testing.T) {
 	}
 }
 
+// TestEmail_Get_NilIDs_Refused asserts that Email/get with ids: null
+// returns a method-level error per REQ-PERF-INDEX-04. The wire type is
+// requestTooLarge (RFC 8621-canonical); the internal kind classifier
+// is unindexedScan so the request is counted on
+// herold_request_unindexed_refused_total. The check here is on the
+// wire shape only; the metric is exercised in protojmap-level tests.
+func TestEmail_Get_NilIDs_Refused(t *testing.T) {
+	f := setupFixture(t)
+	name, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       nil,
+	})
+	if name != "error" {
+		t.Fatalf("expected method-level error, got %q (raw=%s)", name, raw)
+	}
+	var got struct {
+		Type        string `json:"type"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if got.Type != "requestTooLarge" {
+		t.Fatalf("type = %q, want requestTooLarge (raw=%s)", got.Type, raw)
+	}
+}
+
+// TestEmail_Query_ThreadKeywordFilter_Refused asserts that
+// someInThreadHaveKeyword and noneInThreadHaveKeyword filters are
+// refused with unsupportedFilter per REQ-PERF-INDEX-03.
+func TestEmail_Query_ThreadKeywordFilter_Refused(t *testing.T) {
+	f := setupFixture(t)
+	for _, predicate := range []string{"someInThreadHaveKeyword", "noneInThreadHaveKeyword"} {
+		name, raw := f.invoke(t, "Email/query", map[string]any{
+			"accountId": protojmap.AccountIDForPrincipal(f.pid),
+			"filter":    map[string]any{predicate: "$flagged"},
+		})
+		if name != "error" {
+			t.Fatalf("%s: expected method-level error, got %q (raw=%s)", predicate, name, raw)
+		}
+		var got struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("%s: unmarshal: %v: %s", predicate, err, raw)
+		}
+		if got.Type != "unsupportedFilter" {
+			t.Fatalf("%s: type = %q, want unsupportedFilter (raw=%s)", predicate, got.Type, raw)
+		}
+	}
+}
+
 func TestEmail_Changes_FromState(t *testing.T) {
 	f := setupFixture(t)
 	// Read initial state.

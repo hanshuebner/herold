@@ -20,7 +20,24 @@ type MethodError struct {
 	// Properties names the request fields that triggered the error
 	// (used by "invalidArguments"). Optional.
 	Properties []string `json:"properties,omitempty"`
+	// kind is an internal classifier consumed by the dispatch metric
+	// path so an un-indexed-scan refusal increments the
+	// herold_request_unindexed_refused_total counter while the wire
+	// type stays RFC-canonical (requestTooLarge / unsupportedFilter).
+	// Not serialised; lower-case to keep it out of MarshalJSON's tag
+	// scan.
+	kind methodErrorKind `json:"-"`
 }
+
+// methodErrorKind is the internal classification surface for metric
+// outcome derivation. Distinct from MethodError.Type, which is the
+// RFC-visible token; kind is private to the herold dispatcher.
+type methodErrorKind uint8
+
+const (
+	methodErrorKindGeneric methodErrorKind = iota
+	methodErrorKindUnindexedScan
+)
 
 // MarshalJSON renders the error per RFC 8620 §3.6.2. We declare an
 // explicit MarshalJSON so future fields land naturally under one
@@ -34,6 +51,22 @@ func (e *MethodError) MarshalJSON() ([]byte, error) {
 // NewMethodError is a convenience constructor.
 func NewMethodError(typ, description string) *MethodError {
 	return &MethodError{Type: typ, Description: description}
+}
+
+// NewUnindexedScanError builds a MethodError tagged for the
+// herold_request_unindexed_refused_total counter (REQ-PERF-METRIC-04).
+// The wire `type` stays RFC-canonical (typically "requestTooLarge" or
+// "unsupportedFilter") so JMAP clients receive a recognised error;
+// the internal kind field tells the dispatcher's metric path that
+// this is the un-indexed-scan refusal shape rather than a generic
+// failure.
+func NewUnindexedScanError(typ, description string) *MethodError {
+	return &MethodError{Type: typ, Description: description, kind: methodErrorKindUnindexedScan}
+}
+
+// IsUnindexedScan reports whether e was produced by NewUnindexedScanError.
+func (e *MethodError) IsUnindexedScan() bool {
+	return e != nil && e.kind == methodErrorKindUnindexedScan
 }
 
 // problemBase is the URI prefix for JMAP transport-level error type

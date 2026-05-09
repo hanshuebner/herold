@@ -76,28 +76,14 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 		propertiesNeedBody(req.Properties)
 
 	if req.IDs == nil {
-		// Fetch all (rarely useful but spec-permitted).
-		all, err := listPrincipalMessages(ctx, g.h.store.Meta(), pid)
-		if err != nil {
-			return nil, serverFail(err)
-		}
-		ids := make([]store.MessageID, len(all))
-		for i, m := range all {
-			ids[i] = m.ID
-		}
-		batchReactions, err := g.h.store.Meta().BatchListEmailReactions(ctx, ids)
-		if err != nil {
-			return nil, serverFail(fmt.Errorf("email: load reactions: %w", err))
-		}
-		for _, m := range all {
-			rendered, err := g.renderOne(ctx, m, needBody, req.MaxBodyValueBytes, req.Properties)
-			if err != nil {
-				return nil, serverFail(err)
-			}
-			rendered.Reactions = reactionsToWire(batchReactions[m.ID])
-			resp.List = append(resp.List, rendered)
-		}
-		return resp, nil
+		// RFC 8621 §4.2 permits ids:null to mean "return all"; herold
+		// refuses because servicing it would require an un-indexed
+		// scan over every accessible message (REQ-PERF-INDEX-04).
+		// Clients that need to walk the corpus page through Email/query
+		// with explicit Limit + Position.
+		return nil, protojmap.NewUnindexedScanError("requestTooLarge",
+			"Email/get with ids=null is not supported; pass an explicit list of ids "+
+				"or page through Email/query")
 	}
 
 	// Collect valid MessageIDs first so we can batch-fetch reactions.

@@ -218,11 +218,11 @@ func (s *Server) logDeadlineExceeded(ctx context.Context, log *slog.Logger, meth
 
 // observeJMAPMethodOutcome records the per-method duration histogram and
 // the cross-protocol shape counters per REQ-PERF-METRIC-01..04. The
-// outcome label is derived from the JMAP error type and the request
-// context: a cancelled deadline maps to "deadline_exceeded", a refusal
-// for an un-indexed scan maps to "unindexed_refused" (set once
-// REQ-PERF-IMPL-04 lands), any other method-level error maps to
-// "error", and a successful return maps to "ok".
+// outcome label is derived from the JMAP error and the request
+// context: a cancelled deadline maps to "deadline_exceeded", an
+// un-indexed-scan refusal (NewUnindexedScanError) maps to
+// "unindexed_refused", any other method-level error maps to "error",
+// and a successful return maps to "ok".
 func observeJMAPMethodOutcome(ctx context.Context, method string, mErr *MethodError, dur time.Duration) {
 	if observe.JMAPMethodDuration == nil {
 		return
@@ -236,7 +236,7 @@ func observeJMAPMethodOutcome(ctx context.Context, method string, mErr *MethodEr
 		if observe.RequestDeadlineExceededTotal != nil {
 			observe.RequestDeadlineExceededTotal.WithLabelValues("jmap", method).Inc()
 		}
-	case mErr.Type == jmapUnindexedScanType:
+	case mErr.IsUnindexedScan():
 		outcome = "unindexed_refused"
 		if observe.RequestUnindexedRefusedTotal != nil {
 			observe.RequestUnindexedRefusedTotal.WithLabelValues("jmap", method).Inc()
@@ -246,13 +246,6 @@ func observeJMAPMethodOutcome(ctx context.Context, method string, mErr *MethodEr
 	}
 	observe.JMAPMethodDuration.WithLabelValues(method, outcome).Observe(dur.Seconds())
 }
-
-// jmapUnindexedScanType is the JMAP method-level error type emitted when
-// REQ-PERF-INDEX-* refuses a request for an un-indexed scan. Defined
-// here so observeJMAPMethodOutcome can recognise the outcome label
-// without forcing a circular dependency on the eventual handler-side
-// emitter.
-const jmapUnindexedScanType = "unindexedScan"
 
 // logMethodCall emits the per-method structured log record per REQ-OPS-86d.
 // respArgs is the marshaled response (nil on error paths). mErr is non-nil
