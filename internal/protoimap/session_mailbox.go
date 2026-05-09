@@ -162,7 +162,7 @@ func (ses *session) handleSELECT(ctx context.Context, c *Command, readOnly bool)
 	if err := ses.requireRights(ctx, mb, store.ACLRightLookup|store.ACLRightRead); err != nil {
 		return ses.resp.taggedNO(c.Tag, "NOPERM", "insufficient rights to SELECT mailbox")
 	}
-	msgs, err := ses.s.store.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{WithEnvelope: true})
+	msgs, err := listAllMessages(ctx, ses.s.store.Meta(), mb.ID, true)
 	if err != nil {
 		return ses.resp.taggedNO(c.Tag, "", "select failed")
 	}
@@ -639,7 +639,7 @@ func (ses *session) handleLIST(ctx context.Context, c *Command, lsub bool) error
 // landed on the wire; a missing STATUS line just means the client falls
 // back to a separate STATUS round-trip.
 func (ses *session) emitListStatus(ctx context.Context, mb store.Mailbox, items []string) {
-	msgs, err := ses.s.store.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{})
+	msgs, err := listAllMessages(ctx, ses.s.store.Meta(), mb.ID, false)
 	if err != nil {
 		return
 	}
@@ -702,7 +702,7 @@ func (ses *session) handleSTATUS(ctx context.Context, c *Command) error {
 	if err := ses.requireRights(ctx, mb, store.ACLRightLookup|store.ACLRightRead); err != nil {
 		return ses.resp.taggedNO(c.Tag, "NOPERM", "insufficient rights for STATUS")
 	}
-	msgs, err := ses.s.store.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{WithEnvelope: true})
+	msgs, err := listAllMessages(ctx, ses.s.store.Meta(), mb.ID, true)
 	if err != nil {
 		return ses.resp.taggedNO(c.Tag, "", "status failed")
 	}

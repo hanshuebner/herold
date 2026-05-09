@@ -463,7 +463,7 @@ func (ses *session) reloadSelected(ctx context.Context) error {
 	if id == 0 {
 		return nil
 	}
-	msgs, err := ses.s.store.Meta().ListMessages(ctx, id, store.MessageFilter{WithEnvelope: true})
+	msgs, err := listAllMessages(ctx, ses.s.store.Meta(), id, true)
 	if err != nil {
 		return err
 	}
