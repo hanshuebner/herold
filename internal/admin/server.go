@@ -368,6 +368,11 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			ftsOpts.BatchSize = n
 		}
 	}
+	if v := os.Getenv("HEROLD_FTS_MAX_BATCH_BYTES"); v != "" {
+		if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
+			ftsOpts.MaxBatchBytes = n
+		}
+	}
 	if v := os.Getenv("HEROLD_FTS_FLUSH_INTERVAL_MS"); v != "" {
 		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
 			ftsOpts.FlushInterval = time.Duration(n) * time.Millisecond

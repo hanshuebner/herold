@@ -16,12 +16,18 @@ import (
 )
 
 // Attachment-extraction defaults. Source: docs/design/server/architecture/
-// 02-storage-architecture.md §FTS — "per-attachment max text size
-// (default 5 MB) + per-message max total extracted text (default 20 MB).
-// Exceeding: silently truncated with a counter."
+// 02-storage-architecture.md §FTS — per-attachment + per-message ceilings,
+// silently truncated with a counter when exceeded.
+//
+// Lowered 2026-05-09 from 5 MiB / 20 MiB to 256 KiB / 1 MiB after the FTS
+// indexer was observed pinning 144 GiB resident: the old ceilings were
+// speculative, search relevance for plain-text body indexing is dominated
+// by the first few KiB of an attachment, and the old per-message ceiling
+// (20 MiB × thousands of pending docs in a Bleve batch) was the dominant
+// term in the worker's resident memory.
 const (
-	defaultPerAttachmentMaxBytes = 5 * 1024 * 1024
-	defaultPerMessageMaxBytes    = 20 * 1024 * 1024
+	defaultPerAttachmentMaxBytes = 256 * 1024
+	defaultPerMessageMaxBytes    = 1 * 1024 * 1024
 )
 
 // extractAttachmentText routes a single attachment Part to the format

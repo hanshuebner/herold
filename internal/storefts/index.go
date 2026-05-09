@@ -96,8 +96,9 @@ type Index struct {
 
 	idx bleve.Index
 
-	mu      sync.Mutex
-	pending *bleve.Batch
+	mu           sync.Mutex
+	pending      *bleve.Batch
+	pendingBytes int // sum of indexed body-text bytes in the pending batch
 }
 
 // New opens (or creates) a Bleve index at dir/bleve. The directory is
@@ -263,6 +264,7 @@ func (i *Index) IndexMessageFull(
 	if err := i.pending.Index(docIDFor(msg.ID), doc); err != nil {
 		return fmt.Errorf("storefts: batch.Index: %w", err)
 	}
+	i.pendingBytes += len(text)
 	return nil
 }
 
@@ -337,6 +339,7 @@ func (i *Index) IndexChatMessage(ctx context.Context, msg store.ChatMessage) err
 	if err := i.pending.Index(chatDocIDFor(msg.ID), doc); err != nil {
 		return fmt.Errorf("storefts: batch.Index chat: %w", err)
 	}
+	i.pendingBytes += len(msg.BodyText)
 	return nil
 }
 
@@ -452,6 +455,7 @@ func (i *Index) Commit(ctx context.Context) error {
 	i.mu.Lock()
 	batch := i.pending
 	i.pending = nil
+	i.pendingBytes = 0
 	i.mu.Unlock()
 	if batch == nil || batch.Size() == 0 {
 		return nil
@@ -471,6 +475,17 @@ func (i *Index) PendingSize() int {
 		return 0
 	}
 	return i.pending.Size()
+}
+
+// PendingBytes returns the cumulative body-text byte count of the pending
+// batch. The worker pairs it with PendingSize to flush on whichever ceiling
+// trips first; the byte ceiling exists because Bleve retains every doc's
+// field values in memory until the batch flushes, so a 2000-doc batch of
+// large messages can hold many GiB before the doc-count threshold trips.
+func (i *Index) PendingBytes() int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.pendingBytes
 }
 
 // Query runs q against principalID's documents and returns hits in

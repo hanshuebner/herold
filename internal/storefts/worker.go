@@ -15,21 +15,33 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
-// Default WorkerOptions values. Derived from docs/design/server/notes/spike-fts-cadence.md
-// — peak throughput at batch=2000, sub-second visibility at 500 ms commit
-// ceiling. Exported so tests and operator diag can use the same defaults
-// without a second source of truth.
+// Default WorkerOptions values. Originally derived from
+// docs/design/server/notes/spike-fts-cadence.md (peak throughput at
+// batch=2000, sub-second visibility at 500 ms commit ceiling). Lowered
+// 2026-05-09 after a 144 GiB resident incident: the spike measured
+// throughput on small synthetic docs but did not bound peak memory; a
+// real corpus with multi-MiB extracted bodies can hold many GiB in a
+// single 2000-doc Bleve batch before the doc-count ceiling trips. The
+// new default pairs a smaller doc-count ceiling with a hard byte ceiling
+// (DefaultMaxBatchBytes) so neither dimension can run away.
 const (
-	DefaultBatchSize     = 2000
+	DefaultBatchSize     = 500
+	DefaultMaxBatchBytes = 256 * 1024 * 1024
 	DefaultFlushInterval = 500 * time.Millisecond
 	DefaultCursorKey     = "fts"
 )
 
 // WorkerOptions tunes the single async indexing worker. Zero fields fall
-// back to the spike-recommended defaults (2000 / 500 ms / "fts").
+// back to the recommended defaults (500 / 256 MiB / 500 ms / "fts").
 type WorkerOptions struct {
 	// BatchSize is the document-count ceiling that triggers a commit.
 	BatchSize int
+	// MaxBatchBytes is the cumulative body-text byte ceiling that
+	// triggers a commit. Bleve retains every doc's field values in the
+	// pending batch until it flushes, so a doc-count-only ceiling lets
+	// a backlog of large messages pin many GiB of resident memory.
+	// Whichever of BatchSize or MaxBatchBytes trips first wins.
+	MaxBatchBytes int64
 	// FlushInterval is the wall-time ceiling, measured from the first
 	// un-flushed change in the current batch, that triggers a commit.
 	FlushInterval time.Duration
@@ -99,6 +111,9 @@ func NewWorker(
 	}
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = DefaultBatchSize
+	}
+	if opts.MaxBatchBytes <= 0 {
+		opts.MaxBatchBytes = DefaultMaxBatchBytes
 	}
 	if opts.FlushInterval <= 0 {
 		opts.FlushInterval = DefaultFlushInterval
@@ -259,9 +274,15 @@ func (w *Worker) processBatch(ctx context.Context, changes []store.FTSChange) er
 		if c.ProducedAt.After(lastProduced) {
 			lastProduced = c.ProducedAt
 		}
-		// Flush on size OR time ceiling. Size is authoritative via the
-		// pending batch; time is the flush-interval wall clock.
+		// Flush on doc count OR byte budget OR time ceiling. Doc count
+		// and bytes both come from the pending batch; time is the
+		// flush-interval wall clock. Byte budget exists because Bleve
+		// retains every doc's field values until commit and large bodies
+		// dominate the doc-count ceiling.
 		if w.idx.PendingSize() >= w.opts.BatchSize {
+			break
+		}
+		if int64(w.idx.PendingBytes()) >= w.opts.MaxBatchBytes {
 			break
 		}
 		if !w.clock.Now().Before(deadline) {

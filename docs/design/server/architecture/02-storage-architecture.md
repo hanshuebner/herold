@@ -159,7 +159,7 @@ Attached content indexed for common formats (REQ-STORE-60):
 - **Plain text / CSV / Markdown / HTML**: stdlib + `golang.org/x/net/html`.
 - **Archives (zip, tar)**: unpacked recursively (bounded depth). Non-archive files inside indexed.
 
-Extraction bounded: per-attachment max text size (default 5 MB) + per-message max total extracted text (default 20 MB). Exceeding: silently truncated with a counter.
+Extraction bounded: per-attachment max text size (default 256 KiB) + per-message max total extracted text (default 1 MiB). Exceeding: silently truncated with a counter. The Bleve pending batch is bounded both by document count (default 500) **and** by cumulative body-text bytes (default 256 MiB) so a backlog of large messages cannot pin many GiB of resident memory while waiting for the doc-count ceiling to trip; whichever ceiling fires first commits the batch. (Originally 5 MiB / 20 MiB / 2000-doc batch; lowered 2026-05-09 after the indexer was observed pinning 144 GiB resident on a real corpus.)
 
 Extraction runs in the async indexing worker, not in the delivery hot path.
 
