@@ -129,9 +129,28 @@ func (p *PresenceTracker) ListSubscribed(principals []store.PrincipalID) []Prese
 // CancelOffline, or Drain so long-lived servers do not accumulate
 // timers; graceWindow is bounded so a self-fire eventually clears
 // each entry.
+//
+// Shutdown race: a connection goroutine may call ScheduleOffline
+// AFTER Server.Shutdown has already run Drain (the chatConn unwind
+// path schedules an offline transition once cc.run returns, which is
+// after Server.Shutdown's c.shutdown nudge but concurrent with
+// Drain). If the supplied ctx is already cancelled at registration
+// time we skip the timer entirely — the callback would short-circuit
+// on ctx.Err() in graceWindow seconds anyway, but that delay would
+// pin the connWG via the wg counter and stall Server.Shutdown for the
+// full graceWindow (re #19).
 func (p *PresenceTracker) ScheduleOffline(ctx context.Context, pid store.PrincipalID, onExpire func(now time.Time)) {
 	po := &pendingOffline{ctx: ctx}
 	p.mu.Lock()
+	// Re-check ctx under the tracker lock so a Drain that ran AFTER
+	// Server.Shutdown's cancel cannot miss us: if cancel + Drain both
+	// completed before we acquired the lock, our pending entry would
+	// otherwise survive Drain and pin presence.Wait until graceWindow
+	// elapsed. The mutex serialises us against Drain's snapshot.
+	if ctx.Err() != nil {
+		p.mu.Unlock()
+		return
+	}
 	if existing, ok := p.pending[pid]; ok {
 		delete(p.pending, pid)
 		go p.stopAndAccount(existing)
