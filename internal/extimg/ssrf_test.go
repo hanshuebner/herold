@@ -56,9 +56,9 @@ func TestValidateURL_Schemes(t *testing.T) {
 		wantErr bool
 	}{
 		{"https://example.com/x.png", false},
-		{"http://example.com/x.png", true},  // RequireHTTPS
-		{"file:///etc/passwd", true},        // bad scheme
-		{"gopher://example.com/", true},     // bad scheme
+		{"http://example.com/x.png", true},      // RequireHTTPS
+		{"file:///etc/passwd", true},            // bad scheme
+		{"gopher://example.com/", true},         // bad scheme
 		{"https://user:pw@example.com/x", true}, // userinfo
 		{"https://example.com:9999/x", true},    // bad port
 		{"https://:/", true},                    // no host

@@ -294,14 +294,14 @@ var _ = portCompat // referenced by future per-port allowlist plumbing
 // address inside them is unsuitable as a fetch destination regardless
 // of operator policy: TEST-NETs, multicast, broadcast, reserved-future.
 var defaultDenyV4Always = []netip.Prefix{
-	netipFrom4("0.0.0.0/8"),         // "this network"
-	netipFrom4("192.0.0.0/24"),      // IETF protocol assignments
-	netipFrom4("192.0.2.0/24"),      // TEST-NET-1
-	netipFrom4("198.18.0.0/15"),     // benchmarking (RFC 2544)
-	netipFrom4("198.51.100.0/24"),   // TEST-NET-2
-	netipFrom4("203.0.113.0/24"),    // TEST-NET-3
-	netipFrom4("224.0.0.0/4"),       // multicast
-	netipFrom4("240.0.0.0/4"),       // future use / reserved
+	netipFrom4("0.0.0.0/8"),          // "this network"
+	netipFrom4("192.0.0.0/24"),       // IETF protocol assignments
+	netipFrom4("192.0.2.0/24"),       // TEST-NET-1
+	netipFrom4("198.18.0.0/15"),      // benchmarking (RFC 2544)
+	netipFrom4("198.51.100.0/24"),    // TEST-NET-2
+	netipFrom4("203.0.113.0/24"),     // TEST-NET-3
+	netipFrom4("224.0.0.0/4"),        // multicast
+	netipFrom4("240.0.0.0/4"),        // future use / reserved
 	netipFrom4("255.255.255.255/32"), // limited broadcast
 }
 
@@ -309,12 +309,12 @@ var defaultDenyV4Always = []netip.Prefix{
 // Operators with legitimate internal-fetch needs may opt out via
 // Config.AllowPrivate (REQ-EXTIMG-33).
 var defaultDenyV4Private = []netip.Prefix{
-	netipFrom4("10.0.0.0/8"),        // RFC 1918
-	netipFrom4("100.64.0.0/10"),     // CGNAT (RFC 6598)
-	netipFrom4("127.0.0.0/8"),       // loopback
-	netipFrom4("169.254.0.0/16"),    // link-local + AWS metadata
-	netipFrom4("172.16.0.0/12"),     // RFC 1918
-	netipFrom4("192.168.0.0/16"),    // RFC 1918
+	netipFrom4("10.0.0.0/8"),     // RFC 1918
+	netipFrom4("100.64.0.0/10"),  // CGNAT (RFC 6598)
+	netipFrom4("127.0.0.0/8"),    // loopback
+	netipFrom4("169.254.0.0/16"), // link-local + AWS metadata
+	netipFrom4("172.16.0.0/12"),  // RFC 1918
+	netipFrom4("192.168.0.0/16"), // RFC 1918
 }
 
 // defaultDenyV6Always are IPv6 ranges refused unconditionally. The
@@ -323,19 +323,19 @@ var defaultDenyV4Private = []netip.Prefix{
 // ::ffff:127.0.0.1 and bypass the v4 checks. Multicast and discard
 // are also unconditional.
 var defaultDenyV6Always = []netip.Prefix{
-	netipFrom6("::/128"),            // unspecified
-	netipFrom6("::ffff:0:0/96"),     // IPv4-mapped (bypass guard)
-	netipFrom6("64:ff9b::/96"),      // NAT64
-	netipFrom6("100::/64"),          // discard-only
-	netipFrom6("2001::/23"),         // IETF protocol assignments
-	netipFrom6("2001:db8::/32"),     // documentation
-	netipFrom6("ff00::/8"),          // multicast
+	netipFrom6("::/128"),        // unspecified
+	netipFrom6("::ffff:0:0/96"), // IPv4-mapped (bypass guard)
+	netipFrom6("64:ff9b::/96"),  // NAT64
+	netipFrom6("100::/64"),      // discard-only
+	netipFrom6("2001::/23"),     // IETF protocol assignments
+	netipFrom6("2001:db8::/32"), // documentation
+	netipFrom6("ff00::/8"),      // multicast
 }
 
 // defaultDenyV6Private are loopback, link-local, ULA — refused unless
 // AllowPrivate is set (REQ-EXTIMG-33).
 var defaultDenyV6Private = []netip.Prefix{
-	netipFrom6("::1/128"),           // loopback
-	netipFrom6("fc00::/7"),          // ULA
-	netipFrom6("fe80::/10"),         // link-local
+	netipFrom6("::1/128"),   // loopback
+	netipFrom6("fc00::/7"),  // ULA
+	netipFrom6("fe80::/10"), // link-local
 }
