@@ -44,6 +44,13 @@ export const de = {
   'list.empty.folder': '{name} ist leer.',
   'list.couldNotLoad': '{name} konnte nicht geladen werden.',
   'list.dragMessageCount': '{count} Nachrichten verschieben',
+  // Hinweis "Bilder werden verarbeitet" (REQ-EXTIMG-BG-30).
+  'mail.list.internalizePending.tooltip':
+    'Bilder werden im Hintergrund verarbeitet. Aktualisieren Sie kurz, um sie zu sehen.',
+  // Banner im Konversationslesefenster (REQ-EXTIMG-BG-31).
+  'mail.threadReader.internalizePending.heading': 'Bilder werden verarbeitet',
+  'mail.threadReader.internalizePending.body':
+    'Externe Bilder in dieser Nachricht werden noch im Hintergrund internalisiert. Sie erscheinen vorerst als Platzhalter; aktualisieren Sie kurz, um sie zu sehen.',
 
   // ── Selection chooser (issue #10) ────────────────────────────────────
   'select.all': 'Alle',
@@ -538,6 +545,13 @@ export const de = {
   'settings.privacy.seenAddressesLabel': 'Kürzlich verwendete Adressen merken',
   'settings.privacy.seenAddressesHint':
     'Herold merkt sich pro Konto die Adressen, mit denen Sie korrespondiert haben, um die Empfänger-Autovervollständigung zu ergänzen. Wenn Sie dies deaktivieren, wird der Verlauf sofort gelöscht und es werden keine neuen Einträge mehr hinzugefügt.',
+  // Status der Bildverarbeitung (REQ-EXTIMG-BG-32).
+  'settings.privacy.imageProcessing.heading': 'Bildverarbeitung',
+  'settings.privacy.imageProcessing.pending':
+    '{count} Nachricht wartet auf die Internalisierung externer Bilder.',
+  'settings.privacy.imageProcessing.pending.other':
+    '{count} Nachrichten warten auf die Internalisierung externer Bilder.',
+  'settings.privacy.imageProcessing.asOf': 'Stand: {time}.',
 
   // ── Einstellungen: Über (re #97) ─────────────────────────────────────
   'settings.about.heroldVersion': 'Herold-Version',

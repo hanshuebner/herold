@@ -146,6 +146,17 @@ export interface Email {
    * resolver can signal "X-Face present" in future versions.
    */
   'header:X-Face:asText'?: string | null;
+  /**
+   * Herold extension (REQ-EXTIMG-BG-20): true while the message body is
+   * waiting for the background-internalize worker to rewrite its external
+   * image references. Email/get serves placeholder data URIs in place of
+   * external `<img src>` while this flag is set; the SPA surfaces a badge
+   * (mailbox row) and a banner (thread reader) so the user understands why
+   * the images have not loaded yet. Optional because the property is only
+   * populated when callers include `internalizePending` in the requested
+   * properties projection.
+   */
+  internalizePending?: boolean;
 }
 
 /** The properties projection the suite requests for list rendering. */
@@ -161,6 +172,7 @@ export const EMAIL_LIST_PROPERTIES = [
   'receivedAt',
   'hasAttachment',
   'snoozedUntil',
+  'internalizePending',
 ] as const;
 
 /** The properties projection the suite requests for thread / reading-pane rendering. */
@@ -193,6 +205,7 @@ export const EMAIL_BODY_PROPERTIES = [
   'header:List-ID:asText',
   'header:Face:asText',
   'header:X-Face:asText',
+  'internalizePending',
 ] as const;
 
 /**

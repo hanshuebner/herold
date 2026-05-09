@@ -93,6 +93,18 @@ export const Capability = {
   HeroldManagedRules: 'https://netzhansa.com/jmap/managed-rules',
   HeroldLLMTransparency: 'https://netzhansa.com/jmap/llm-transparency',
   /**
+   * Per-principal external-image internalization backlog (REQ-EXTIMG-BG-21).
+   * The capability value is `{ pending_messages: uint64, as_of: rfc3339 }`
+   * (the REQ-EXTIMG-BG-21 spec also reserves `total_messages` but the
+   * current backend only emits the two fields above; the SPA reads what
+   * is on the wire).
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/registry.go CapabilityInternalizeStatus.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldInternalizeStatus: 'urn:netzhansa:params:jmap:internalize-status',
+  /**
    * External SMTP submission per Identity (REQ-AUTH-EXT-SUBMIT-05).
    * Advertised when [server.external_submission].enabled is true.
    * The suite shows the submission-config UI only when this capability

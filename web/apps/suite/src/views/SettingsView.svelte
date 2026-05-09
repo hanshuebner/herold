@@ -23,6 +23,7 @@
   import CategoriesForm from './settings/CategoriesForm.svelte';
   import FiltersForm from './settings/FiltersForm.svelte';
   import PrivacyForm from './settings/PrivacyForm.svelte';
+  import ImageProcessingForm from './settings/ImageProcessingForm.svelte';
   import DiagnosticsForm from './settings/DiagnosticsForm.svelte';
   import { Capability } from '../lib/jmap/types';
   import { jmap } from '../lib/jmap/client';
@@ -595,6 +596,8 @@
           </ul>
         {/if}
       {/if}
+
+      <ImageProcessingForm />
 
       <h3>{t('settings.privacy.autocompleteHeading')}</h3>
       <PrivacyForm />

@@ -60,6 +60,17 @@
   });
 
   /**
+   * REQ-EXTIMG-BG-31: when any message in the rendered thread still carries
+   * `internalizePending = true`, show a non-modal banner above the body so
+   * the user understands why placeholder icons appear in place of the
+   * external images. Cleared automatically when the push event fires and
+   * the suite re-fetches the affected Email object (REQ-EXTIMG-BG-33).
+   */
+  let anyInternalizePending = $derived(
+    emails.some((e) => e.internalizePending === true),
+  );
+
+  /**
    * Per docs/requirements/09-ui-layout.md REQ-UI-20: collapsed except the
    * latest unread message — or the latest if all are read.
    */
@@ -142,6 +153,12 @@
           </div>
         {/if}
       </header>
+      {#if anyInternalizePending}
+        <div class="internalize-pending-banner" role="status" aria-live="polite">
+          <strong>{t('mail.threadReader.internalizePending.heading')}</strong>
+          <span>{t('mail.threadReader.internalizePending.body')}</span>
+        </div>
+      {/if}
       <div class="messages">
         {#each emails as email (email.id)}
           <MessageAccordion {email} expanded={expanded.has(email.id)} onToggle={toggle} />
@@ -199,6 +216,27 @@
     font-size: var(--type-body-compact-01-size);
     font-weight: 500;
     white-space: nowrap;
+  }
+
+  /* Non-modal banner shown above the message bodies when any message in
+     the thread is still waiting for the background-internalize worker
+     (REQ-EXTIMG-BG-31). The banner clears automatically on the push
+     event that follows the worker's rewrite (REQ-EXTIMG-BG-33). */
+  .internalize-pending-banner {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-01);
+    padding: var(--spacing-03) var(--spacing-05);
+    margin: var(--spacing-04) var(--spacing-05) 0;
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    font-size: var(--type-body-compact-01-size);
+  }
+  .internalize-pending-banner strong {
+    color: var(--text-primary);
+    font-weight: 600;
   }
 
   @media print {

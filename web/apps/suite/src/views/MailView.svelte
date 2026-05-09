@@ -25,6 +25,7 @@
   import MoveIcon from '../lib/icons/MoveIcon.svelte';
   import LabelIcon from '../lib/icons/LabelIcon.svelte';
   import CategoryIcon from '../lib/icons/CategoryIcon.svelte';
+  import ImageIcon from '../lib/icons/ImageIcon.svelte';
 
   const ROLED_FOLDERS = new Set<FolderID>([
     'inbox',
@@ -869,6 +870,13 @@
                       : undefined}
                   >{lbl.name}</span>
                 {/each}
+                {#if email.internalizePending}
+                  <span
+                    class="internalize-pending-badge"
+                    title={t('mail.list.internalizePending.tooltip')}
+                    aria-label={t('mail.list.internalizePending.tooltip')}
+                  ><ImageIcon size={14} /></span>
+                {/if}
                 <span class="subject">{email.subject || '(no subject)'}</span>
                 <span class="preview"> — {email.preview}</span>
               </span>
@@ -1093,6 +1101,13 @@
                       : undefined}
                   >{lbl.name}</span>
                 {/each}
+                {#if email.internalizePending}
+                  <span
+                    class="internalize-pending-badge"
+                    title={t('mail.list.internalizePending.tooltip')}
+                    aria-label={t('mail.list.internalizePending.tooltip')}
+                  ><ImageIcon size={14} /></span>
+                {/if}
                 <span class="subject">{email.subject || '(no subject)'}</span>
                 <span class="preview"> — {email.preview}</span>
               </span>
@@ -1606,6 +1621,19 @@
     font-size: var(--type-body-compact-01-size);
     font-weight: 500;
     white-space: nowrap;
+    vertical-align: middle;
+  }
+
+  /* External-image internalize-pending badge (REQ-EXTIMG-BG-30): small
+     icon shown next to the label badges when the body still carries
+     placeholder data URIs in place of the message's external images. The
+     icon disappears as soon as the background worker rewrites the body
+     and the push handler refreshes the row (REQ-EXTIMG-BG-22 / 33). */
+  .internalize-pending-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-right: var(--spacing-02);
+    color: var(--text-helper);
     vertical-align: middle;
   }
 

@@ -45,6 +45,13 @@ export const en = {
   'list.empty.folder': '{name} is empty.',
   'list.couldNotLoad': "Couldn't load {name}.",
   'list.dragMessageCount': 'Move {count} messages',
+  // External-image internalize-pending badge (REQ-EXTIMG-BG-30).
+  'mail.list.internalizePending.tooltip':
+    'Images are being processed in the background. Refresh in a moment to see them.',
+  // Thread-reader internalize-pending banner (REQ-EXTIMG-BG-31).
+  'mail.threadReader.internalizePending.heading': 'Images are being processed',
+  'mail.threadReader.internalizePending.body':
+    'External images in this message are still being internalized in the background. They appear as placeholders for now; refresh in a moment to see them.',
 
   // ── Selection chooser (issue #10) ────────────────────────────────────
   'select.all': 'All',
@@ -531,6 +538,13 @@ export const en = {
   'settings.privacy.seenAddressesLabel': 'Remember recently-used addresses',
   'settings.privacy.seenAddressesHint':
     'Herold keeps a per-account history of addresses you have corresponded with to supplement the recipient autocomplete. Turning this off purges the history immediately and stops new entries from being added.',
+  // Image processing backlog status (REQ-EXTIMG-BG-32).
+  'settings.privacy.imageProcessing.heading': 'Image processing',
+  'settings.privacy.imageProcessing.pending':
+    '{count} message is waiting for external images to be internalized.',
+  'settings.privacy.imageProcessing.pending.other':
+    '{count} messages are waiting for external images to be internalized.',
+  'settings.privacy.imageProcessing.asOf': 'Counted {time}.',
 
   // ── Settings: about section (re #97) ─────────────────────────────────
   'settings.about.heroldVersion': 'Herold version',

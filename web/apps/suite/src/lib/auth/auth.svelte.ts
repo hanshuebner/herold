@@ -239,6 +239,31 @@ class Auth {
     this.scopes = [];
     this.status = 'unauthenticated';
   }
+
+  /**
+   * Re-fetch the JMAP session descriptor without disturbing the auth
+   * state machine. Used by stores that want to refresh derived
+   * capability values (e.g. the per-principal internalize-pending count
+   * in REQ-EXTIMG-BG-32) when a server-side push event implies the
+   * descriptor's contents may have changed.
+   *
+   * Best-effort: 401 transitions to unauthenticated via the existing
+   * unauth signal; any other failure is silently swallowed because the
+   * existing session descriptor remains a valid fallback.
+   */
+  async refreshSession(): Promise<void> {
+    if (this.status !== 'ready') return;
+    try {
+      const session = await jmap.bootstrap();
+      this.session = session;
+    } catch (err) {
+      if (err instanceof UnauthenticatedError) {
+        this.signalUnauthenticated();
+        return;
+      }
+      // Non-fatal: keep using the existing session descriptor.
+    }
+  }
 }
 
 export const auth = new Auth();
