@@ -145,31 +145,110 @@ class MailStore {
 
   async #onEmailStateChange(newState: string): Promise<void> {
     if (newState === this.emailState) return;
-    // First-iteration sync: the cheapest correct thing is to refresh
-    // every view we already have ready — the active list slice plus
-    // every cached-ready thread. The thread refresh is what surfaces
-    // a freshly-arrived reply in the open ThreadReader without the
-    // user reloading the page; without it the thread cache stays
-    // 'ready' and loadThread short-circuits.
+    // Compute the delta via Email/changes so we can scope the refetch
+    // to views actually affected. Without this scoping, every backend
+    // mutation (extimg internalize, fts indexer, etc.) fans out into
+    // refreshFolder + Thread/get + Email/get for every cached thread,
+    // generating O(open-threads) requests per state advance during
+    // worker churn. With the delta in hand we only refresh threads
+    // whose emailIds intersect, and we only re-run the folder query
+    // when a creation or destruction may have changed list membership.
+    //
+    // Fall back to the blanket refresh when the server can't compute
+    // the delta (no prior state, sinceState too old → cannotCalculate-
+    // Changes) so correctness is preserved at the cost of a one-time
+    // burst on first load.
+
+    const sinceState = this.emailState;
+    const accountId = this.mailAccountId;
 
     // Snapshot known email ids before the refresh so we can detect arrivals.
     const knownEmailIds = new Set(this.emails.keys());
 
-    const tasks: Promise<unknown>[] = [];
-    if (this.listLoadStatus === 'ready') {
-      tasks.push(
-        this.refreshFolder().catch((err) => {
-          console.error('list refresh after state change failed', err);
-        }),
-      );
+    let delta: {
+      created: Set<string>;
+      updated: Set<string>;
+      destroyed: Set<string>;
+    } | null = null;
+    if (accountId && sinceState) {
+      try {
+        const { responses } = await jmap.batch((b) => {
+          b.call(
+            'Email/changes',
+            { accountId, sinceState },
+            [Capability.Mail],
+          );
+        });
+        strict(responses);
+        const args = invocationArgs<{
+          created: string[];
+          updated: string[];
+          destroyed: string[];
+        }>(responses[0]);
+        delta = {
+          created: new Set(args.created),
+          updated: new Set(args.updated),
+          destroyed: new Set(args.destroyed),
+        };
+      } catch (err) {
+        // cannotCalculateChanges or transport error — fall back to a
+        // full refresh below.
+        console.warn(
+          'Email/changes unavailable; falling back to full refresh',
+          err,
+        );
+      }
     }
+
+    const tasks: Promise<unknown>[] = [];
+
+    // Folder list refresh:
+    //   - delta unavailable → blanket refresh (correctness floor).
+    //   - creations or destroys → list membership may have changed.
+    //   - updates only → list shape unchanged; per-row data refreshed
+    //     transparently when the Email/get below repopulates `emails`.
+    if (this.listLoadStatus === 'ready') {
+      const listMayHaveChanged =
+        delta === null || delta.created.size > 0 || delta.destroyed.size > 0;
+      if (listMayHaveChanged) {
+        tasks.push(
+          this.refreshFolder().catch((err) => {
+            console.error('list refresh after state change failed', err);
+          }),
+        );
+      }
+    }
+
+    // Thread refresh:
+    //   - delta unavailable → refresh every cached-ready thread.
+    //   - delta + creations → still refresh every cached-ready thread
+    //     since a created email might be a new reply in any of them
+    //     (Thread membership isn't in the delta; learning it would
+    //     need an extra Email/get for thread_id only).
+    //   - delta with only updates/destroys → refresh only threads
+    //     whose emailIds intersect the changed set.
+    const refreshAllThreads =
+      delta === null || delta.created.size > 0;
     for (const [tid, status] of this.threadLoadStatus) {
       if (status !== 'ready') continue;
-      tasks.push(
-        this.refreshThread(tid).catch((err) => {
-          console.error('thread refresh after state change failed', err);
-        }),
-      );
+      let needsRefresh = refreshAllThreads;
+      if (!needsRefresh && delta !== null) {
+        const thread = this.threads.get(tid);
+        if (!thread) continue;
+        for (const eid of thread.emailIds) {
+          if (delta.updated.has(eid) || delta.destroyed.has(eid)) {
+            needsRefresh = true;
+            break;
+          }
+        }
+      }
+      if (needsRefresh) {
+        tasks.push(
+          this.refreshThread(tid).catch((err) => {
+            console.error('thread refresh after state change failed', err);
+          }),
+        );
+      }
     }
     if (tasks.length > 0) await Promise.all(tasks);
     this.emailState = newState;
