@@ -17,6 +17,11 @@ type CapabilityID string
 const (
 	// CapabilityCore is the JMAP Core capability (RFC 8620 §4.1).
 	CapabilityCore CapabilityID = "urn:ietf:params:jmap:core"
+	// CapabilityInternalizeStatus carries the per-principal extimg
+	// backlog state injected at session-bootstrap time (REQ-EXTIMG-BG-21).
+	// Not registered in the static capability map; buildSessionDescriptor
+	// computes the value per request via the live store count.
+	CapabilityInternalizeStatus CapabilityID = "urn:netzhansa:params:jmap:internalize-status"
 	// CapabilityMail is the JMAP Mail capability (RFC 8621 §1).
 	// Defined here as a string constant only; protojmap does not
 	// register handlers for it. The Mail-implementor agent registers

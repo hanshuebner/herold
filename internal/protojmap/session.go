@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -81,6 +82,12 @@ func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p 
 	// has a place to read telemetry_enabled and livetail_until.
 	sessID := SessionIDFromContext(ctx)
 	caps[CapabilityClientLog] = s.buildClientLogCapability(ctx, sessID)
+	// Inject the per-principal extimg-internalize-backlog state
+	// (REQ-EXTIMG-BG-21). The SPA reads this on bootstrap to decide
+	// whether to render the "Images are being processed" notice.
+	// Failures fall through silently — the SPA degrades to "no notice"
+	// rather than refusing to bootstrap on a transient store hiccup.
+	caps[CapabilityInternalizeStatus] = s.buildInternalizeStatusCapability(ctx, p)
 	desc := sessionDescriptor{
 		Capabilities: caps,
 		Accounts: map[Id]accountDesc{
@@ -98,6 +105,30 @@ func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p 
 		UploadURL:       base + "/jmap/upload/{accountId}",
 		EventSourceURL:  base + "/jmap/eventsource?types={types}&closeafter={closeafter}&ping={ping}",
 		State:           s.sessionState(ctx),
+	}
+	return desc
+}
+
+// internalizeStatusDesc is the typed capability value carrying the
+// per-principal extimg-internalize backlog state (REQ-EXTIMG-BG-21).
+// Lower-case JSON tags so the SPA can decode without renaming.
+type internalizeStatusDesc struct {
+	PendingMessages uint64 `json:"pending_messages"`
+	AsOf            string `json:"as_of"`
+}
+
+// buildInternalizeStatusCapability returns the typed capability value
+// for the requesting principal. A failed count surfaces as
+// pending_messages = 0 so the SPA renders no notice — the steady-
+// state shape — rather than blocking session bootstrap on a store
+// transient.
+func (s *Server) buildInternalizeStatusCapability(ctx context.Context, p store.Principal) internalizeStatusDesc {
+	desc := internalizeStatusDesc{
+		AsOf: s.clk.Now().UTC().Format(time.RFC3339),
+	}
+	n, err := s.store.Meta().CountInternalizePending(ctx, p.ID)
+	if err == nil {
+		desc.PendingMessages = n
 	}
 	return desc
 }
