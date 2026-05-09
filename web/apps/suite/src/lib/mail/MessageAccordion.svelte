@@ -499,9 +499,9 @@
       {#if html}
         {#if hasExternalImages && !loadImages}
           <div class="image-banner" role="status">
-            <span>External images are blocked.</span>
+            <span>{t('msg.imagesBlocked')}</span>
             <button type="button" onclick={() => (perMessageOverride = true)}>
-              Load images
+              {t('msg.loadImages')}
             </button>
             {#if email.from?.[0]?.email}
               <button
@@ -512,7 +512,7 @@
                   perMessageOverride = true;
                 }}
               >
-                Always from {email.from?.[0]?.email}
+                {t('msg.alwaysFrom', { sender: email.from?.[0]?.email ?? '' })}
               </button>
             {/if}
           </div>
