@@ -123,7 +123,7 @@ type Runtime struct {
 // jmapMethodDeadlinesFromConfig extracts the JMAP-method entries from
 // the unified [performance.method_deadline] map. Keys without the
 // "IMAP:" prefix are taken to be JMAP method names verbatim.
-func jmapMethodDeadlinesFromConfig(m map[string]time.Duration) map[string]time.Duration {
+func jmapMethodDeadlinesFromConfig(m map[string]sysconfig.Duration) map[string]time.Duration {
 	if len(m) == 0 {
 		return nil
 	}
@@ -132,7 +132,7 @@ func jmapMethodDeadlinesFromConfig(m map[string]time.Duration) map[string]time.D
 		if strings.HasPrefix(k, "IMAP:") {
 			continue
 		}
-		out[k] = v
+		out[k] = v.AsDuration()
 	}
 	return out
 }
@@ -141,7 +141,7 @@ func jmapMethodDeadlinesFromConfig(m map[string]time.Duration) map[string]time.D
 // the unified [performance.method_deadline] map. Keys are expected to
 // be "IMAP:<VERB>"; the prefix is stripped so the protoimap dispatcher
 // can look up by raw verb.
-func imapCommandDeadlinesFromConfig(m map[string]time.Duration) map[string]time.Duration {
+func imapCommandDeadlinesFromConfig(m map[string]sysconfig.Duration) map[string]time.Duration {
 	if len(m) == 0 {
 		return nil
 	}
@@ -150,7 +150,7 @@ func imapCommandDeadlinesFromConfig(m map[string]time.Duration) map[string]time.
 		if !strings.HasPrefix(k, "IMAP:") {
 			continue
 		}
-		out[strings.TrimPrefix(k, "IMAP:")] = v
+		out[strings.TrimPrefix(k, "IMAP:")] = v.AsDuration()
 	}
 	return out
 }
@@ -500,7 +500,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		nil, // TokenVerifier: OIDC SASL not in Phase 1 exit scope
 		protoimap.Options{
 			ServerName:             cfg.Server.Hostname,
-			DefaultCommandDeadline: cfg.Performance.DefaultDeadline,
+			DefaultCommandDeadline: cfg.Performance.DefaultDeadline.AsDuration(),
 			CommandDeadlines:       imapCommandDeadlinesFromConfig(cfg.Performance.MethodDeadline),
 		},
 	)
@@ -2309,7 +2309,7 @@ func composeAdminAndUI(
 	jmapSrv := protojmap.NewServer(st, dir, tlsStore, logger.With("subsystem", "jmap"), clk, protojmap.Options{
 		SessionResolver:       publicSessionWithScopeResolver,
 		SessionCookieConfig:   &publicCookieCfg,
-		DefaultMethodDeadline: cfg.Performance.DefaultDeadline,
+		DefaultMethodDeadline: cfg.Performance.DefaultDeadline.AsDuration(),
 		MethodDeadlines:       jmapMethodDeadlinesFromConfig(cfg.Performance.MethodDeadline),
 	})
 	// JMAP Mail core handlers: Mailbox/* + Email/* + Sieve/* +

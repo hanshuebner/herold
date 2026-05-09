@@ -61,8 +61,10 @@ type Config struct {
 type PerformanceConfig struct {
 	// DefaultDeadline is the wall-clock budget applied to every JMAP
 	// method invocation and every IMAP command when no method-specific
-	// override is configured. Default 1000ms when zero.
-	DefaultDeadline time.Duration `toml:"default_deadline,omitempty"`
+	// override is configured. Default 1000ms when zero. Wrapped in
+	// the local Duration type so go-toml decodes the TOML string
+	// ("1s", "30s") via UnmarshalText.
+	DefaultDeadline Duration `toml:"default_deadline,omitempty"`
 	// MethodDeadline overrides DefaultDeadline for specific operations.
 	// JMAP method names use the RFC 8620 Type/methodName form
 	// ("Email/query"). IMAP commands use the prefix "IMAP:" followed by
@@ -70,7 +72,7 @@ type PerformanceConfig struct {
 	// are not rejected so future methods can be configured ahead of
 	// their handler landing; the dispatcher ignores entries it does
 	// not recognise.
-	MethodDeadline map[string]time.Duration `toml:"method_deadline,omitempty"`
+	MethodDeadline map[string]Duration `toml:"method_deadline,omitempty"`
 }
 
 // HooksConfig groups ingress-hook subsystems (SES inbound, future
