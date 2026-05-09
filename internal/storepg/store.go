@@ -30,7 +30,30 @@ type Store struct {
 	fts        *ftsStub
 	randReader io.Reader
 
+	// internalizeNotify mirrors the storesqlite hook for the
+	// extimg-internalize-worker (REQ-EXTIMG-BG-08). Mark / Insert paths
+	// call it after a row commits with internalize_pending = 1.
+	internalizeNotifyMu sync.RWMutex
+	internalizeNotify   func()
+
 	closeOnce sync.Once
+}
+
+// SetInternalizeNotifyHook registers fn as the wake-up callback. See
+// storesqlite.Store.SetInternalizeNotifyHook for the contract.
+func (s *Store) SetInternalizeNotifyHook(fn func()) {
+	s.internalizeNotifyMu.Lock()
+	s.internalizeNotify = fn
+	s.internalizeNotifyMu.Unlock()
+}
+
+func (s *Store) fireInternalizeNotify() {
+	s.internalizeNotifyMu.RLock()
+	fn := s.internalizeNotify
+	s.internalizeNotifyMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // Meta returns the metadata repository.

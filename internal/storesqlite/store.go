@@ -35,8 +35,40 @@ type Store struct {
 	randReader io.Reader
 	bulkImport bool // when true, Close runs PRAGMA wal_checkpoint(TRUNCATE) before closing the DB
 
+	// internalizeNotify is called (non-blocking, best-effort) after a
+	// row commits with internalize_pending = 1. The internalize-worker
+	// (REQ-EXTIMG-BG-08) registers its Notify here at startup so a
+	// freshly-imported message wakes the drain loop without a polling
+	// delay. Nil during normal test setup; set via
+	// SetInternalizeNotifyHook.
+	internalizeNotifyMu sync.RWMutex
+	internalizeNotify   func()
+
 	closeOnce sync.Once
 	closeErr  error
+}
+
+// SetInternalizeNotifyHook registers fn as the wake-up callback for
+// the extimg-internalize-worker. Mark / Insert paths call fn after
+// committing a row with internalize_pending = 1. Pass nil to unregister
+// (used at shutdown so the worker's channel is not held alive by the
+// store).
+func (s *Store) SetInternalizeNotifyHook(fn func()) {
+	s.internalizeNotifyMu.Lock()
+	s.internalizeNotify = fn
+	s.internalizeNotifyMu.Unlock()
+}
+
+// fireInternalizeNotify invokes the registered hook with a snapshot of
+// the current pointer so concurrent SetInternalizeNotifyHook callers do
+// not race the wake-up.
+func (s *Store) fireInternalizeNotify() {
+	s.internalizeNotifyMu.RLock()
+	fn := s.internalizeNotify
+	s.internalizeNotifyMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // Meta returns the metadata repository.

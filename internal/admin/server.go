@@ -31,6 +31,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/extimg"
+	"github.com/hanshuebner/herold/internal/extimg/internalizeworker"
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/linkpreview"
 	"github.com/hanshuebner/herold/internal/mailarc"
@@ -440,6 +441,21 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		ftsOpts,
 	)
 
+	// External-image internalize worker (REQ-EXTIMG-BG-01). Drains the
+	// importer-flagged backlog out-of-band so JMAP Email/get does not
+	// block on per-message image fetches. The wake hook is registered
+	// on the underlying storesqlite / storepg Store via a wrapper that
+	// exposes SetInternalizeNotifyHook through ftsOverride; ftsOverride
+	// embeds store.Store so the type assertion walks one level down.
+	extimgWorker := internalizeworker.New(
+		st,
+		extimg.FromSysConfig(cfg.ExternalImages, cfg.Server.Hostname),
+		logger.With("subsystem", "extimg-worker"),
+		clk,
+		internalizeworker.Options{},
+	)
+	registerInternalizeNotify(st, extimgWorker.Notify)
+
 	// REQ-DIR-RCPT-01..12: directory.resolve_rcpt RCPT-time hook. When
 	// [smtp.inbound.directory_resolve_rcpt_plugin] is non-empty, the
 	// SMTP server consults the named plugin at RCPT TO time before
@@ -839,6 +855,15 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			return nil
 		})
 	}
+
+	// External-image internalize worker (REQ-EXTIMG-BG-01). Runs from
+	// startup so the importer-flagged backlog drains while the user
+	// browses; freshly-arrived mail wakes the loop via the notify
+	// hook registered at construction.
+	g.Go(func() error {
+		extimgWorker.Run(gctx)
+		return nil
+	})
 
 	// ACME lifecycle goroutines: HTTP-01 challenge listener + renewal loop.
 	if acmeClient != nil {

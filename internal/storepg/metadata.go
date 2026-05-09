@@ -748,6 +748,9 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message, targets
 	if err != nil {
 		return 0, 0, err
 	}
+	if msg.InternalizePending {
+		m.s.fireInternalizeNotify()
+	}
 	return firstUID, firstModSeq, nil
 }
 
@@ -763,6 +766,7 @@ func (m *metadata) InsertMessages(ctx context.Context, items []store.InsertMessa
 	}
 	now := m.s.clock.Now().UTC()
 	results := make([]store.InsertMessageResult, len(items))
+	anyPending := false
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
 		for i, it := range items {
 			uid, modseq, err := m.insertMessageTx(ctx, tx, it.Message, it.Targets, now, opts.SkipThreading)
@@ -770,11 +774,17 @@ func (m *metadata) InsertMessages(ctx context.Context, items []store.InsertMessa
 				return fmt.Errorf("storepg: InsertMessages item %d: %w", i, err)
 			}
 			results[i] = store.InsertMessageResult{UID: uid, ModSeq: modseq}
+			if it.Message.InternalizePending {
+				anyPending = true
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	if anyPending {
+		m.s.fireInternalizeNotify()
 	}
 	return results, nil
 }
@@ -1470,6 +1480,7 @@ func (m *metadata) MarkMessageInternalizePending(ctx context.Context, msgID stor
 	if res.RowsAffected() == 0 {
 		return store.ErrNotFound
 	}
+	m.s.fireInternalizeNotify()
 	return nil
 }
 
