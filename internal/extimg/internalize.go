@@ -48,19 +48,28 @@ type DKIMVerdict struct {
 // Returned alongside the rewritten bytes so the ingest path can stash
 // it in the message's audit field.
 type AuditSummary struct {
-	Mode               Mode
-	Modified           bool
-	HTMLPartsScanned   int
-	Candidates         int
-	Internalized       int
-	Failed             int
-	FailureCounts      map[FetchOutcome]int
-	OriginalSize       int
-	RewrittenSize      int
-	WallClock          time.Duration
-	ParseError         string // non-empty when parse failed
-	NotEligibleReason  string // non-empty when message was eligible-but-skipped
-	TruncatedAtImage   int    // REQ-EXTIMG-22; 0 = not truncated
+	Mode              Mode
+	Modified          bool
+	HTMLPartsScanned  int
+	Candidates        int
+	Internalized      int
+	Failed            int
+	FailureCounts     map[FetchOutcome]int
+	OriginalSize      int
+	RewrittenSize     int
+	WallClock         time.Duration
+	ParseError        string // non-empty when parse failed
+	NotEligibleReason string // non-empty when message was eligible-but-skipped
+	TruncatedAtImage  int    // REQ-EXTIMG-22; 0 = not truncated
+	// Placeholdered is the count of candidate URLs that survived the
+	// fetch pass (typically because the origin returned an error or the
+	// fetcher rejected the response) and were rewritten to the inline
+	// placeholder data URI before the message body was rebuilt. Distinct
+	// from Failed: Failed counts attempted-but-failed fetches; this
+	// counts how many of those URLs were replaced in the stored body.
+	// Equals Failed in the success path; 0 when the placeholder pass is
+	// skipped (parse failure, no candidates, passthrough mode).
+	Placeholdered int
 }
 
 // Internalize is the top-level entry. raw is the wire bytes accepted
@@ -148,10 +157,13 @@ func Internalize(
 		inlines = append(inlines, inlinePart{cid: cid, ct: r.ContentType, body: r.Bytes})
 		sum.Internalized++
 	}
+	// Pre-REQ-EXTIMG-BG-14 the all-fail case (len(inlines) == 0) bailed
+	// out with the original bytes. We now fall through to rebuildMessage
+	// so the placeholder pass below can de-fang the surviving external
+	// URLs in the stored body. NotEligibleReason is set as an audit
+	// breadcrumb but does not change the rebuild path.
 	if len(inlines) == 0 {
 		sum.NotEligibleReason = "no_successful_fetches"
-		sum.WallClock = time.Since(start)
-		return raw, sum, nil
 	}
 
 	rewrittenHTML, err := rewriteHTML([]byte(env.HTML), cidMap)
@@ -159,6 +171,22 @@ func Internalize(
 		sum.ParseError = err.Error()
 		sum.WallClock = time.Since(start)
 		return raw, sum, nil
+	}
+
+	// Failed-fetch URLs survive rewriteHTML unchanged because cidMap
+	// only carries successful fetches. Replace them now with the
+	// placeholder data URI so the stored body contains no external
+	// fetchable references after a partial-success internalize. Without
+	// this, AdminPanel privacy gating would be the sole protection
+	// against the still-external URLs leaking on render — and any path
+	// that bypasses the SPA gate (Email/get with bodyValues, blob
+	// download of the raw source, IMAP FETCH) would expose them.
+	// (REQ-EXTIMG-BG-14)
+	if sum.Failed > 0 {
+		if placeheld, perr := RewriteForPlaceholder(rewrittenHTML); perr == nil {
+			rewrittenHTML = placeheld
+			sum.Placeholdered = sum.Failed
+		}
 	}
 
 	// Rebuild the message via enmime.Builder. The Builder produces a
@@ -204,10 +232,10 @@ func fetchAllBudgeted(
 	out := make([]FetchResult, len(cands))
 	sem := make(chan struct{}, cfg.ConcurrentFetches)
 	var (
-		wg          sync.WaitGroup
-		mu          sync.Mutex
-		usedBytes   int64
-		messageCap  = cfg.MaxPerMessageBytes
+		wg         sync.WaitGroup
+		mu         sync.Mutex
+		usedBytes  int64
+		messageCap = cfg.MaxPerMessageBytes
 	)
 	for i, c := range cands {
 		i, c := i, c

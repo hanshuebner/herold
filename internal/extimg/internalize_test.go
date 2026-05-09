@@ -281,10 +281,13 @@ func TestInternalize_NoHTML(t *testing.T) {
 	}
 }
 
-// TestInternalize_FailedFetchPreservesURL covers REQ-EXTIMG-60: when
-// the fetch fails the original URL stays in the rewritten body so the
-// suite's per-image escape hatch still has something to load.
-func TestInternalize_FailedFetchPreservesURL(t *testing.T) {
+// TestInternalize_FailedFetchPlaceholdered covers REQ-EXTIMG-BG-14:
+// when every fetch fails, the failed URLs are replaced with the
+// inline placeholder data URI in the stored body. Pre-BG-14 the
+// original URLs were preserved; BG-14 trades user-recoverability of
+// images for permanent privacy guarantees against origins that won't
+// serve the operator's IP (e.g. CF Bot-Fight gating).
+func TestInternalize_FailedFetchPlaceholdered(t *testing.T) {
 	// Pick an unreachable port — connect refused → fetch fails.
 	cfg := testFetcherCfg(t, nil)
 	// Drop timeouts so the test isn't slow.
@@ -311,11 +314,91 @@ func TestInternalize_FailedFetchPreservesURL(t *testing.T) {
 	if sum.Internalized != 0 {
 		t.Fatalf("expected no internalization, got %d", sum.Internalized)
 	}
-	// Output should equal raw because no successful fetch → nothing to do.
-	if sum.Modified {
-		t.Fatalf("nothing fetched: should not modify")
+	if sum.Failed != 1 {
+		t.Fatalf("expected 1 failed fetch, got %d", sum.Failed)
 	}
-	_ = out
+	if sum.Placeholdered != 1 {
+		t.Fatalf("expected Placeholdered=1, got %d", sum.Placeholdered)
+	}
+	if !sum.Modified {
+		t.Fatalf("Modified must be true: body was placeholderified")
+	}
+	// The original URL must NOT appear in the rewritten body.
+	if strings.Contains(string(out), url) {
+		t.Fatalf("original URL leaked into rewritten body: %q", url)
+	}
+	// The placeholder must appear.
+	if !strings.Contains(string(out), PlaceholderDataURI) {
+		t.Fatalf("placeholder data URI not found in rewritten body")
+	}
+}
+
+// TestInternalize_PartialSuccessPlaceholdersFailures covers the
+// mixed case (some fetches succeed, some fail) — the original report
+// behind REQ-EXTIMG-BG-14: t3125 had 3 attachments internalized and
+// 15 spacer.png URLs that the origin 403'd. Successful fetches
+// become cid: refs; failures become placeholders.
+func TestInternalize_PartialSuccessPlaceholdersFailures(t *testing.T) {
+	// One reachable httptest server returns a valid PNG; the failing
+	// URL points at a closed loopback port.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		// Smallest valid PNG (1x1 transparent).
+		w.Write([]byte{
+			0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+			0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+			0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+			0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+			0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+			0x54, 0x78, 0x9C, 0x62, 0x00, 0x01, 0x00, 0x00,
+			0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+			0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+			0x42, 0x60, 0x82,
+		})
+	}))
+	defer srv.Close()
+	cfg := testFetcherCfg(t, srv)
+	cfg.PerImageConnectTimeout = 200 * time.Millisecond
+	cfg.PerImageTotalTimeout = 500 * time.Millisecond
+	cfg.PerMessageTimeout = 2 * time.Second
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := l.Addr().(*net.TCPAddr)
+	l.Close()
+	failURL := fmt.Sprintf("http://127.0.0.1:%d/missing.png", addr.Port)
+
+	raw := buildTestMessage(t, []string{srv.URL + "/ok.png", failURL})
+	out, sum, err := Internalize(context.Background(), raw, cfg, DKIMVerdict{})
+	if err != nil {
+		t.Fatalf("Internalize: %v", err)
+	}
+	if sum.Internalized != 1 {
+		t.Fatalf("Internalized: want 1, got %d", sum.Internalized)
+	}
+	if sum.Failed != 1 {
+		t.Fatalf("Failed: want 1, got %d", sum.Failed)
+	}
+	if sum.Placeholdered != 1 {
+		t.Fatalf("Placeholdered: want 1, got %d", sum.Placeholdered)
+	}
+	if !sum.Modified {
+		t.Fatalf("Modified must be true")
+	}
+	// The failing URL must be gone.
+	if strings.Contains(string(out), failURL) {
+		t.Fatalf("failing URL %q survived in rewritten body", failURL)
+	}
+	// The placeholder must be present (for the failing URL).
+	if !strings.Contains(string(out), PlaceholderDataURI) {
+		t.Fatalf("placeholder data URI not found in rewritten body")
+	}
+	// At least one cid: should be present (for the successful URL).
+	if !strings.Contains(string(out), "cid:") {
+		t.Fatalf("expected at least one cid: reference, got body: %q", string(out)[:min(400, len(out))])
+	}
 }
 
 // TestInternalize_BlockedHostNotFetched verifies the SSRF guard
