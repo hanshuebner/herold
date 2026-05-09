@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
@@ -236,6 +237,28 @@ func renderFullWithProperties(
 
 	// Populate body parts.
 	bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, truncateAt, m.Blob.Hash)
+	if m.InternalizePending {
+		// REQ-EXTIMG-BG-10: replace external image references in every
+		// HTML body part with a placeholder data URI until the
+		// background internalize-worker rewrites the blob. Failures
+		// fall through silently — the user sees the original HTML
+		// rather than a refused render.
+		for _, p := range htmlParts {
+			if p.PartID == nil {
+				continue
+			}
+			bv, ok := values[*p.PartID]
+			if !ok {
+				continue
+			}
+			rewritten, rerr := extimg.RewriteForPlaceholder([]byte(bv.Value))
+			if rerr != nil {
+				continue
+			}
+			bv.Value = string(rewritten)
+			values[*p.PartID] = bv
+		}
+	}
 	out.BodyStructure = bs
 	out.BodyValues = values
 	out.TextBody = textParts
