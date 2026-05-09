@@ -474,6 +474,16 @@
   $effect(() => {
     if (!threadId) return;
 
+    // Skip when the thread was opened from a search-results view: the
+    // user's listFolder is unrelated to where this thread actually
+    // lives (a Junk-mailbox hit on a search submitted from Inbox would
+    // otherwise auto-bounce back to /mail before the reader renders).
+    const cameFromSearch = mail.searchEmailIds.some((id) => {
+      const e = mail.emails.get(id);
+      return e?.threadId === threadId;
+    });
+    if (cameFromSearch) return;
+
     const currentFolder = mail.listFolder;
     // "all", "important", "snoozed" are virtual — no single mailbox to check.
     if (currentFolder === 'all' || currentFolder === 'important' || currentFolder === 'snoozed') return;

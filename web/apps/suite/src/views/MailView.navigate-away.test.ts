@@ -193,6 +193,7 @@ describe('MailView: auto-navigate away when thread email leaves current folder (
   beforeEach(() => {
     navigate.mockClear();
     mailMock.threadEmails.mockClear();
+    mailMock.searchEmailIds = [];
   });
 
   it('navigates to the trash folder when no thread email is in trash anymore', () => {
@@ -282,5 +283,26 @@ describe('MailView: auto-navigate away when thread email leaves current folder (
     render(MailView);
 
     expect(navigate).toHaveBeenCalledWith('/mail/folder/mbx-work');
+  });
+
+  // Regression: clicking a search-result whose thread lives outside
+  // the listFolder (e.g. a Junk hit while listFolder is still 'inbox')
+  // used to bounce the user back to the inbox before the reader
+  // rendered, dropping the search query in the process.
+  it('does NOT navigate when the thread was opened from search', () => {
+    mailMock.listFolder = 'inbox';
+    mailMock.searchEmailIds = ['email-1'];
+    mailMock.threadEmails.mockReturnValue([
+      {
+        id: 'email-1',
+        threadId: 'thread-1',
+        mailboxIds: { 'mbx-junk': true }, // junk only, NOT in inbox
+        keywords: { $seen: true },
+      } as unknown as Email,
+    ]);
+
+    render(MailView);
+
+    expect(navigate).not.toHaveBeenCalled();
   });
 });
