@@ -750,6 +750,31 @@ export const de = {
   'chat.unknownCaller': 'Unbekannter Anrufer',
   'chat.selectConversation': 'Wählen Sie eine Unterhaltung, um zu chatten',
 
+  // ── Chat-Oberfläche (re #97) ─────────────────────────────────────────
+  // ChatCompose
+  'chat.composeAria': 'Chat verfassen',
+  'chat.composeEditorAria': 'Nachrichteneditor',
+  'chat.send': 'Nachricht senden',
+  // MessageList
+  'chat.reactions': 'Reaktionen',
+  'chat.addReaction': 'Reaktion hinzufügen',
+  'chat.newMessages': 'Neue Nachrichten',
+  // VideoCall
+  'chat.videoCall': 'Videoanruf',
+  'chat.remoteVideo': 'Gegenseite',
+  'chat.yourCamera': 'Ihre Kamera',
+  'chat.callControls': 'Anrufsteuerung',
+  'chat.hangUp': 'Auflegen',
+  // IncomingCall
+  'chat.incomingVideoCall': 'Eingehender Videoanruf',
+  'chat.acceptCall': 'Anruf annehmen',
+  'chat.declineCall': 'Anruf ablehnen',
+  // ChatOverlayHost
+  'chat.windows': 'Chat-Fenster',
+  // SidebarChats
+  'chat.loadingConversations': 'Unterhaltungen werden geladen',
+  'chat.discardChatWith': 'Chat mit {name} verwerfen',
+
   // ── Kontakt-Ansicht (re #97) ─────────────────────────────────────────
   'contact.view.loading': 'Wird geladen…',
   'contact.view.couldNotLoad': 'Kontakt konnte nicht geladen werden.',

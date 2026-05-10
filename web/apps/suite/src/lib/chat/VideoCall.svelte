@@ -16,6 +16,7 @@
   import { untrack } from 'svelte';
   import { chatWs } from './chat-ws.svelte';
   import { toast } from '../toast/toast.svelte';
+  import { t } from '../i18n/i18n.svelte';
   import type { TurnCredential } from './types';
 
   interface Props {
@@ -363,7 +364,7 @@
   class="call-overlay"
   role="dialog"
   aria-modal="true"
-  aria-label="Video call"
+  aria-label={t('chat.videoCall')}
 >
   <!-- Remote video (full area) -->
   <video
@@ -371,7 +372,7 @@
     class="remote-video"
     autoplay
     playsinline
-    aria-label="Remote video"
+    aria-label={t('chat.remoteVideo')}
   ></video>
 
   <!-- Local video (small overlay) -->
@@ -381,7 +382,7 @@
     autoplay
     muted
     playsinline
-    aria-label="Your camera"
+    aria-label={t('chat.yourCamera')}
   ></video>
 
   <!-- Status bar -->
@@ -398,7 +399,7 @@
   </div>
 
   <!-- Controls -->
-  <div class="controls" aria-label="Call controls">
+  <div class="controls" aria-label={t('chat.callControls')}>
     <button
       type="button"
       class="ctrl-btn"
@@ -432,7 +433,7 @@
     <button
       type="button"
       class="ctrl-btn hangup"
-      aria-label="Hang up (h)"
+      aria-label={`${t('chat.hangUp')} (h)`}
       onclick={() => void hangup()}
     >
       Hang Up

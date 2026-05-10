@@ -9,6 +9,7 @@
   import { chatWs } from './chat-ws.svelte';
   import { toast } from '../toast/toast.svelte';
   import { sounds } from '../notifications/sounds.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     callId: string;
@@ -60,11 +61,11 @@
   class="incoming-call"
   role="dialog"
   aria-modal="true"
-  aria-label="Incoming video call"
+  aria-label={t('chat.incomingVideoCall')}
 >
   <div class="card">
     <p class="caller">{callerName}</p>
-    <p class="label">Incoming video call</p>
+    <p class="label">{t('chat.incomingVideoCall')}</p>
     <p class="timeout" aria-live="polite">
       Auto-decline in {timeLeft}s
     </p>
@@ -73,7 +74,7 @@
         type="button"
         class="accept-btn"
         onclick={accept}
-        aria-label="Accept call"
+        aria-label={t('chat.acceptCall')}
       >
         Accept
       </button>
@@ -81,7 +82,7 @@
         type="button"
         class="decline-btn"
         onclick={decline}
-        aria-label="Decline call"
+        aria-label={t('chat.declineCall')}
       >
         Decline
       </button>

@@ -740,6 +740,31 @@ export const en = {
   'chat.unknownCaller': 'Unknown caller',
   'chat.selectConversation': 'Select a conversation to start chatting',
 
+  // ── Chat surface (re #97) ───────────────────────────────────────────
+  // ChatCompose
+  'chat.composeAria': 'Chat compose',
+  'chat.composeEditorAria': 'Message compose area',
+  'chat.send': 'Send message',
+  // MessageList
+  'chat.reactions': 'Reactions',
+  'chat.addReaction': 'Add reaction',
+  'chat.newMessages': 'New messages',
+  // VideoCall
+  'chat.videoCall': 'Video call',
+  'chat.remoteVideo': 'Remote video',
+  'chat.yourCamera': 'Your camera',
+  'chat.callControls': 'Call controls',
+  'chat.hangUp': 'Hang up',
+  // IncomingCall
+  'chat.incomingVideoCall': 'Incoming video call',
+  'chat.acceptCall': 'Accept call',
+  'chat.declineCall': 'Decline call',
+  // ChatOverlayHost
+  'chat.windows': 'Chat windows',
+  // SidebarChats
+  'chat.loadingConversations': 'Loading conversations',
+  'chat.discardChatWith': 'Discard chat with {name}',
+
   // ── Contacts view (re #97) ──────────────────────────────────────────
   'contact.view.loading': 'Loading…',
   'contact.view.couldNotLoad': 'Could not load contact.',

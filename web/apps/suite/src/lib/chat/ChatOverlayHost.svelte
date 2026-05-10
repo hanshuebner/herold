@@ -14,6 +14,7 @@
 
   import { chatOverlay } from './overlay-store.svelte';
   import { router } from '../router/router.svelte';
+  import { t } from '../i18n/i18n.svelte';
   import ChatOverlayWindow from './ChatOverlayWindow.svelte';
 
   // Suppress the overlay window only for the conversation the user is
@@ -33,7 +34,7 @@
 </script>
 
 {#if visibleWindows.length > 0}
-  <div class="overlay-host" aria-label="Chat windows" role="region">
+  <div class="overlay-host" aria-label={t('chat.windows')} role="region">
     {#each visibleWindows as win (win.key)}
       <ChatOverlayWindow
         windowKey={win.key}

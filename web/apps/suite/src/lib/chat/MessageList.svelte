@@ -29,6 +29,7 @@
   import EmojiPicker from '../mail/EmojiPicker.svelte';
   import Lightbox from '../preview/Lightbox.svelte';
   import Avatar from '../avatar/Avatar.svelte';
+  import { t } from '../i18n/i18n.svelte';
   import type { Message, Conversation } from './types';
 
   interface Props {
@@ -622,7 +623,7 @@
 
                 <!-- Reactions -->
                 {#if Object.keys(msg.reactions).length > 0}
-                  <div class="reactions" aria-label="Reactions">
+                  <div class="reactions" aria-label={t('chat.reactions')}>
                     {#each Object.entries(msg.reactions).filter(([, rs]) => rs.length > 0) as [emoji, reactors] (emoji)}
                       {@const myReaction = auth.principalId ? reactors.includes(auth.principalId) : false}
                       <button
@@ -646,7 +647,7 @@
                     <button
                       type="button"
                       class="react-btn"
-                      aria-label="Add reaction"
+                      aria-label={t('chat.addReaction')}
                       onclick={() => {
                         showPickerFor = showPickerFor === msg.id ? null : msg.id;
                       }}
@@ -668,7 +669,7 @@
           {/if}
         </div>
         {#if dividerVisible && dividerAnchorId === msg.id}
-          <div class="new-divider" role="separator" aria-label="New messages" bind:this={dividerEl}>
+          <div class="new-divider" role="separator" aria-label={t('chat.newMessages')} bind:this={dividerEl}>
             <span class="new-divider-label">New</span>
           </div>
         {/if}

@@ -89,7 +89,7 @@
   </div>
 
   {#if chat.conversationsStatus === 'loading'}
-    <div class="chats-loading" aria-label="Loading conversations">
+    <div class="chats-loading" aria-label={t('chat.loadingConversations')}>
       <span class="loading-dot"></span>
       <span class="loading-dot"></span>
       <span class="loading-dot"></span>
@@ -136,7 +136,7 @@
           <button
             type="button"
             class="discard-btn"
-            aria-label="Discard chat with {conv.name}"
+            aria-label={t('chat.discardChatWith', { name: conv.name })}
             title="Discard chat"
             onclick={(ev) => {
               ev.stopPropagation();

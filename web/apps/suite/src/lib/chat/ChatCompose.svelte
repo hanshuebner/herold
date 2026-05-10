@@ -42,6 +42,7 @@
   import { auth } from '../auth/auth.svelte';
   import { toast } from '../toast/toast.svelte';
   import { Capability } from '../jmap/types';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     conversationId: string;
@@ -289,12 +290,12 @@
   }
 </script>
 
-<div class="compose-wrap" role="group" aria-label="Chat compose">
+<div class="compose-wrap" role="group" aria-label={t('chat.composeAria')}>
   <div
     bind:this={host}
     class="compose-editor"
     class:uploading
-    aria-label="Message compose area"
+    aria-label={t('chat.composeEditorAria')}
   ></div>
 
   {#if uploadError}
@@ -305,11 +306,11 @@
     <button
       type="button"
       class="send-btn"
-      aria-label="Send message (Enter)"
+      aria-label={`${t('chat.send')} (Enter)`}
       onclick={handleSend}
       disabled={uploading}
     >
-      Send
+      {t('compose.send')}
     </button>
   </div>
 </div>
