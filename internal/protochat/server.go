@@ -747,7 +747,23 @@ func (c *chatConn) shutdown(code closeCode, reason string) {
 		// fails and we proceed. We deliberately don't queue this
 		// through writeQ — backpressure-driven shutdowns may have
 		// a full queue, and the close frame must reach the peer.
+		// Bound the close-frame write with a 2s deadline so a
+		// peer whose TCP receive buffer is full cannot pin this
+		// closeOnce critical section indefinitely; reset to the
+		// zero deadline afterwards to keep the contract clean
+		// even though no normal write is expected post-shutdown.
+		_ = c.netConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		_ = writeCloseFrame(c.netConn, code, reason)
+		_ = c.netConn.SetWriteDeadline(time.Time{})
+		// Force the in-flight readFrame call inside readPump to
+		// error out immediately so connWG.Wait() in Server.Shutdown
+		// can return before the drain window expires. The existing
+		// nerr.Timeout() branch in readPump's error classifier
+		// handles the resulting net.Error cleanly, so this change
+		// introduces no new error path. The final c.netConn.Close()
+		// at the end of run() still runs after the pumps exit,
+		// preserving FIN ordering.
+		_ = c.netConn.SetReadDeadline(time.Unix(1, 0))
 		close(c.closeCh)
 		if c.cancel != nil {
 			c.cancel()
