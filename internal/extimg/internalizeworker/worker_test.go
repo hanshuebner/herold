@@ -215,13 +215,24 @@ func TestWorker_BumpsInternalizeStatusOncePerBatch(t *testing.T) {
 	defer cancel()
 	go w.Run(runCtx)
 
+	// Poll on the actual post-condition (InternalizeStatus advanced)
+	// rather than on a proxy (CountInternalizePending == 0). The
+	// per-batch bump runs in runBatch AFTER the fan-out goroutines
+	// finish clearing the InternalizePending flag, and uses the same
+	// runCtx that we are about to cancel. If we cancel as soon as
+	// pending hits 0, runBatch's IncrementJMAPState call sees
+	// context.Canceled and skips the bump (CI 25632909606 / arm64
+	// sqlite caught exactly that race). Waiting for the bump itself
+	// to land before cancelling is the correct synchronisation.
 	deadline := time.Now().Add(3 * time.Second)
+	var postStates store.JMAPStates
 	for time.Now().Before(deadline) {
-		n, err := st.Meta().CountInternalizePending(ctx, p.ID)
+		s, err := st.Meta().GetJMAPStates(ctx, p.ID)
 		if err != nil {
-			t.Fatalf("CountInternalizePending: %v", err)
+			t.Fatalf("GetJMAPStates poll: %v", err)
 		}
-		if n == 0 {
+		if s.InternalizeStatus > preStates.InternalizeStatus {
+			postStates = s
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -230,12 +241,10 @@ func TestWorker_BumpsInternalizeStatusOncePerBatch(t *testing.T) {
 		t.Fatalf("worker did not drain backlog: pending = %d, want 0", n)
 	}
 	cancel()
-	// Allow the post-batch bump to land before reading.
-	time.Sleep(50 * time.Millisecond)
 
-	postStates, err := st.Meta().GetJMAPStates(ctx, p.ID)
-	if err != nil {
-		t.Fatalf("GetJMAPStates post: %v", err)
+	if postStates.InternalizeStatus == 0 {
+		// Loop exited via deadline without observing the bump.
+		t.Fatalf("InternalizeStatus did not advance within 3s (REQ-EXTIMG-BG-INTERNAL-21)")
 	}
 	if got, want := postStates.InternalizeStatus-preStates.InternalizeStatus, int64(1); got != want {
 		t.Fatalf("InternalizeStatus advanced by %d, want %d (REQ-EXTIMG-BG-INTERNAL-21: one bump per non-empty batch)", got, want)
