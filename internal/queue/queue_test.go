@@ -1064,21 +1064,38 @@ func TestDelayDSN_EmittedAfterThreshold(t *testing.T) {
 		// matching REQ-FLOW-76's "always send a delay-then-failure DSN"
 		// guidance.
 	})
-	// Wait for the first attempt. Slow CI hardware (arm64) can take
-	// several seconds to schedule the first delivery; mirror the
-	// per-attempt budget bumped in TestRetryExhaustionEmitsFailureDSN.
-	if !waitFor(t, 15*time.Second, func() bool {
-		return f.deliv.callCount() >= 1
-	}) {
-		t.Fatalf("first attempt never observed")
+	// waitDeferred blocks until the original envelope's row has been
+	// rescheduled to QueueStateDeferred with Attempts==want. This is the
+	// only safe synchronisation point before f.clk.Advance: callCount
+	// merely indicates the deliverer hook ran, not that the worker has
+	// reached RescheduleQueueItem. If the test advances the fake clock
+	// while the worker is still mid-Deliver, the row's next_attempt_at
+	// is computed off the post-advance clock (e.g. now+1m past the
+	// 2m-advance landing point), and the scheduler's fake-clock After
+	// waiter never fires again — wedging the queue. Observing the
+	// Deferred state proves the worker has finalised the prior attempt
+	// and the scheduler has returned to its select with a pollInterval
+	// After waiter that the next Advance can fire.
+	waitDeferred := func(want int32) bool {
+		return waitFor(t, 15*time.Second, func() bool {
+			rows, _ := f.store.Meta().ListQueueItems(f.ctx,
+				store.QueueFilter{EnvelopeID: envID})
+			return len(rows) == 1 &&
+				rows[0].State == store.QueueStateDeferred &&
+				rows[0].Attempts == want
+		})
+	}
+	if !waitDeferred(1) {
+		t.Fatalf("first attempt never deferred for envelope %s", envID)
 	}
 	// Advance the clock past the threshold so the second attempt
 	// triggers a delay DSN.
 	f.clk.Advance(2 * time.Minute)
-	if !waitFor(t, 15*time.Second, func() bool {
-		return f.deliv.callCount() >= 2
-	}) {
-		t.Fatalf("second attempt never observed")
+	if !waitDeferred(2) {
+		t.Fatalf("second attempt never deferred for envelope %s", envID)
+	}
+	if got := f.deliv.callCount(); got < 2 {
+		t.Fatalf("expected at least 2 deliver calls; got %d", got)
 	}
 	// Locate the delay DSN row.
 	var dsnRow store.QueueItem
@@ -1118,12 +1135,26 @@ func TestDelayDSN_EmittedAfterThreshold(t *testing.T) {
 		}
 	}
 	// Drive several more transient retries; the dedup key must keep
-	// the count at one delay DSN.
-	for i := 0; i < 3; i++ {
+	// the count at one delay DSN. We synchronise on the row's Attempts
+	// counter (set transactionally inside RescheduleQueueItem) rather
+	// than callCount so the next f.clk.Advance never races a still-in-
+	// flight worker. The retry schedule has 4 entries; after the 4th
+	// reschedule the next attempt exhausts the schedule and the row
+	// transitions to QueueStateFailed instead of Deferred.
+	for _, want := range []int32{3, 4} {
 		f.clk.Advance(2 * time.Minute)
-		_ = waitFor(t, 1*time.Second, func() bool {
-			return f.deliv.callCount() >= 3+i
-		})
+		if !waitDeferred(want) {
+			t.Fatalf("attempt %d never deferred for envelope %s", want+1, envID)
+		}
+	}
+	// Final advance: schedule exhausts and the row should reach Failed.
+	f.clk.Advance(2 * time.Minute)
+	if !waitFor(t, 15*time.Second, func() bool {
+		rows, _ := f.store.Meta().ListQueueItems(f.ctx,
+			store.QueueFilter{EnvelopeID: envID})
+		return len(rows) == 1 && rows[0].State == store.QueueStateFailed
+	}) {
+		t.Fatalf("envelope %s never reached Failed state after schedule exhausted", envID)
 	}
 	delayCount := 0
 	rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{})
