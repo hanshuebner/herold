@@ -59,9 +59,25 @@ type Worker struct {
 	opts     Options
 	notifyCh chan struct{}
 
-	mu             sync.Mutex
-	cursor         store.MessageID
+	mu sync.Mutex
+	// cursor is the (received_at_us, message_id) "before" pair the
+	// next ListMessagesWithInternalizePendingByReceivedAt call uses.
+	// Zero values are the "start from newest" sentinel
+	// (REQ-EXTIMG-BG-INTERNAL-80..81). Replaces the prior
+	// id-only cursor: a one-shot bulk import puts the freshest mail
+	// behind years-old archive rows in id order, so the worker now
+	// keys on received_at_us with id as the secondary tie-breaker.
+	cursor         pendingCursor
 	processedTotal uint64
+}
+
+// pendingCursor is the worker's in-memory iteration cursor for the
+// (received_at_us DESC, id DESC) sweep. (0, 0) means "start from the
+// newest pending message" -- the store treats the zero values as
+// max-int64 sentinels.
+type pendingCursor struct {
+	ReceivedAtUs int64
+	ID           store.MessageID
 }
 
 // New constructs a Worker. logger and clk fall back to slog.Default()
@@ -260,7 +276,8 @@ const (
 func (w *Worker) runBatch(ctx context.Context) bool {
 	start := w.clock.Now()
 	cursorBefore := w.snapshotCursor()
-	ids, err := w.store.Meta().ListMessagesWithInternalizePending(ctx, cursorBefore, w.opts.BatchSize)
+	refs, err := w.store.Meta().ListMessagesWithInternalizePendingByReceivedAt(
+		ctx, cursorBefore.ReceivedAtUs, cursorBefore.ID, w.opts.BatchSize)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return true
@@ -269,7 +286,7 @@ func (w *Worker) runBatch(ctx context.Context) bool {
 			slog.String("err", err.Error()))
 		return true
 	}
-	if len(ids) == 0 {
+	if len(refs) == 0 {
 		return true
 	}
 	// Fan out. Use a small semaphore so we never exceed Concurrency
@@ -280,10 +297,10 @@ func (w *Worker) runBatch(ctx context.Context) bool {
 	// per-result counts -- without holding any per-message lock
 	// during the fan-out.
 	sem := make(chan struct{}, w.opts.Concurrency)
-	outcomesCh := make(chan processOutcome, len(ids))
+	outcomesCh := make(chan processOutcome, len(refs))
 	var wg sync.WaitGroup
 fanout:
-	for _, id := range ids {
+	for _, ref := range refs {
 		select {
 		case <-ctx.Done():
 			break fanout
@@ -294,7 +311,7 @@ fanout:
 			defer wg.Done()
 			defer func() { <-sem }()
 			outcomesCh <- w.processOne(ctx, id)
-		}(id)
+		}(ref.ID)
 	}
 	wg.Wait()
 	close(outcomesCh)
@@ -350,27 +367,51 @@ fanout:
 				slog.String("err", err.Error()))
 		}
 	}
-	// Advance the cursor to the lowest id of the batch (the rows are
-	// returned descending, so ids[len-1] is the lowest).
-	cursorAfter := ids[len(ids)-1]
+	// Advance the cursor to the lowest (received_at_us, id) of the
+	// batch. Rows are returned descending on (received_at_us, id), so
+	// the last item is the lowest. The next iteration's
+	// ListMessagesWithInternalizePendingByReceivedAt call will return
+	// rows strictly smaller than this pair.
+	last := refs[len(refs)-1]
+	cursorAfter := pendingCursor{ReceivedAtUs: last.ReceivedAtUs, ID: last.ID}
 	w.advanceCursor(cursorAfter)
 
-	// REQ-EXTIMG-BG-INTERNAL-50: emit one INFO line per non-empty
-	// processed batch so the operator has a steady signal that
-	// progress is occurring. Use the injected clock for elapsed
-	// rather than time.Since so fakes deliver a predictable value.
+	// REQ-EXTIMG-BG-INTERNAL-50 / -83: emit one INFO line per
+	// non-empty processed batch so the operator has a steady signal
+	// that progress is occurring. The cursor's primary key
+	// (received_at_us) is logged as RFC3339 so the operator can read
+	// the worker's progress as "drained from 2026-05-09 down to
+	// 2026-05-08" rather than as opaque microsecond timestamps; the
+	// id tie-breaker is logged as a secondary attr. Use the injected
+	// clock for elapsed rather than time.Since so fakes deliver a
+	// predictable value.
 	elapsed := w.clock.Now().Sub(start)
 	w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: batch summary",
-		slog.Int("batch_size", len(ids)),
+		slog.Int("batch_size", len(refs)),
 		slog.Int("principals", len(seen)),
 		slog.Int("ok", okCount),
 		slog.Int("no_change", noChangeCount),
 		slog.Int("failed", failedCount),
 		slog.Int64("elapsed_ms", elapsed.Milliseconds()),
-		slog.Uint64("cursor_before", uint64(cursorBefore)),
-		slog.Uint64("cursor_after", uint64(cursorAfter)),
+		slog.String("received_at_before", formatReceivedAt(cursorBefore.ReceivedAtUs)),
+		slog.String("received_at_after", formatReceivedAt(cursorAfter.ReceivedAtUs)),
+		slog.Uint64("tiebreak_id_before", uint64(cursorBefore.ID)),
+		slog.Uint64("tiebreak_id_after", uint64(cursorAfter.ID)),
 	)
 	return false
+}
+
+// formatReceivedAt renders a received_at_us cursor value as an
+// RFC3339 timestamp for the batch-summary log line
+// (REQ-EXTIMG-BG-INTERNAL-83). The zero sentinel ("start from newest"
+// before any rows have been read, or "no row had a header date") is
+// rendered as the literal "newest" so the log reads naturally on the
+// first batch of a fresh sweep.
+func formatReceivedAt(us int64) string {
+	if us == 0 {
+		return "newest"
+	}
+	return time.UnixMicro(us).UTC().Format(time.RFC3339)
 }
 
 // processOne runs the rewrite for a single message. Errors are
@@ -447,13 +488,13 @@ func (w *Worker) internalize(ctx context.Context, m store.Message) (processResul
 	return resultOK, nil
 }
 
-func (w *Worker) snapshotCursor() store.MessageID {
+func (w *Worker) snapshotCursor() pendingCursor {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.cursor
 }
 
-func (w *Worker) advanceCursor(to store.MessageID) {
+func (w *Worker) advanceCursor(to pendingCursor) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.cursor = to
@@ -462,7 +503,7 @@ func (w *Worker) advanceCursor(to store.MessageID) {
 func (w *Worker) resetCursor() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.cursor = 0
+	w.cursor = pendingCursor{}
 }
 
 func (w *Worker) bumpProcessed() {

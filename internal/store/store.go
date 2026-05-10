@@ -253,11 +253,35 @@ type Metadata interface {
 	// only rows with internalize_pending = 1. Pass beforeID = 0 to
 	// start from the newest pending message; the implementation treats
 	// the zero value as a sentinel for "no upper bound" (effectively
-	// MAX_INT64). Used by the internalize-worker (REQ-EXTIMG-BG-03)
-	// to drain the importer-flagged backlog off the request path,
-	// freshest-first so newly-arrived mail is rewritten before older
-	// archive rows.
+	// MAX_INT64). Used by tests that need deterministic id ordering;
+	// production callers (the extimg internalize-worker) moved to
+	// ListMessagesWithInternalizePendingByReceivedAt
+	// (REQ-EXTIMG-BG-INTERNAL-80..81) so newly-arrived mail wins on
+	// received_at_us rather than on the message-id assigned at insert
+	// time -- the two diverge during a bulk import.
 	ListMessagesWithInternalizePending(ctx context.Context, beforeID MessageID, limit int) ([]MessageID, error)
+
+	// ListMessagesWithInternalizePendingByReceivedAt returns up to
+	// `limit` PendingMessageRefs where internalize_pending = 1 AND
+	// (received_at_us, id) lexicographically less than (beforeReceivedAtUs,
+	// beforeMessageID), ordered DESC. Pass beforeReceivedAtUs = 0
+	// (treated as the maximum sentinel by the implementation) and
+	// beforeMessageID = 0 to start from the most-recent pending
+	// message. The worker maintains an in-memory cursor as the
+	// (received_at_us, id) pair of the lowest item from the previous
+	// batch (the rows are returned descending so the last item is the
+	// lowest cursor value).
+	//
+	// REQ-EXTIMG-BG-INTERNAL-80..81. Production caller (the extimg
+	// internalize-worker) uses this method; the legacy id-ordered
+	// ListMessagesWithInternalizePending stays for tests that need
+	// deterministic id ordering.
+	ListMessagesWithInternalizePendingByReceivedAt(
+		ctx context.Context,
+		beforeReceivedAtUs int64,
+		beforeMessageID MessageID,
+		limit int,
+	) ([]PendingMessageRef, error)
 
 	// CountInternalizePending returns the number of messages owned by
 	// principalID with internalize_pending = 1. Used by the JMAP
@@ -1822,6 +1846,23 @@ type MessageRef struct {
 	// Score is the backend-defined relevance score; higher is more
 	// relevant. Comparable only within a single Query call.
 	Score float64
+}
+
+// PendingMessageRef pairs a MessageID with the received_at_us
+// timestamp used as the primary cursor key by the
+// ListMessagesWithInternalizePendingByReceivedAt iterator
+// (REQ-EXTIMG-BG-INTERNAL-81). The internalize-worker uses both
+// fields: received_at_us drives the "newest mail first" ordering and
+// the MessageID is the tie-breaker / row identifier passed to
+// downstream Get/Replace/Clear methods. Other ordered iterators may
+// reuse the type as their needs grow.
+type PendingMessageRef struct {
+	// ID is the messages.id row identifier.
+	ID MessageID
+	// ReceivedAtUs is the row's received_at_us value (Unix
+	// microseconds). Zero when the message had no header date and the
+	// importer / live receiver could not infer one.
+	ReceivedAtUs int64
 }
 
 // Query is the structured FTS query accepted by FTS.Query. Fields are

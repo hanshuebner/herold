@@ -64,6 +64,7 @@ func Run(t *testing.T, f Factory) {
 		{"ListThreadsByKeys", testListThreadsByKeys},
 		{"InternalizePending_Lifecycle", testInternalizePendingLifecycle},
 		{"InternalizePending_ListAndCount", testInternalizePendingListAndCount},
+		{"ListMessagesWithInternalizePendingByReceivedAt_OrdersByReceivedAt", testListMessagesWithInternalizePendingByReceivedAtOrdersByReceivedAt},
 		{"QuotaEnforcement", testQuotaEnforcement},
 		{"DeleteMailboxCascades", testDeleteMailboxCascades},
 		{"BlobRoundTrip", testBlobRoundTrip},
@@ -1987,6 +1988,139 @@ func testInternalizePendingListAndCount(t *testing.T, s store.Store) {
 	}
 	if total != 4 {
 		t.Fatalf("total = %d, want 4 (3 on principal + 1 on other)", total)
+	}
+}
+
+// testListMessagesWithInternalizePendingByReceivedAtOrdersByReceivedAt
+// exercises REQ-EXTIMG-BG-INTERNAL-68 / -81: the new bulk-lookup
+// returns pending rows in DESCENDING received_at_us order with id as
+// the secondary tie-breaker, and the (received_at_us, id) cursor pair
+// paginates correctly across multiple calls.
+//
+// Three messages are seeded so that id-DESC and received_at-DESC
+// disagree:
+//
+//	id=1  received 2018-01-01  (oldest by date, lowest id)
+//	id=2  received 2026-01-01  (newest by date, middle id)
+//	id=3  received 2020-01-01  (middle by date, highest id)
+//
+// Expected order under the new method: [id=2, id=3, id=1].
+func testListMessagesWithInternalizePendingByReceivedAtOrdersByReceivedAt(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ip-byrecv@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	receivedAt := []time.Time{
+		time.Date(2018, 1, 1, 0, 0, 0, 0, time.UTC), // seed-pos 0 -> oldest
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), // seed-pos 1 -> newest
+		time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), // seed-pos 2 -> middle
+	}
+	hashes := make([]string, len(receivedAt))
+	for i, ts := range receivedAt {
+		ref := putBlob(t, s, fmt.Sprintf("body-%d", i))
+		hashes[i] = ref.Hash
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID:        p.ID,
+			Blob:               ref,
+			Size:               ref.Size,
+			ReceivedAt:         ts,
+			InternalDate:       ts,
+			InternalizePending: true,
+		}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+			t.Fatalf("InsertMessage[%d]: %v", i, err)
+		}
+	}
+	// Recover the assigned MessageIDs by mapping each seed body's
+	// blob hash to its row id via ListMessages.
+	listed, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(listed) != len(receivedAt) {
+		t.Fatalf("ListMessages: got %d, want %d", len(listed), len(receivedAt))
+	}
+	ids := make([]store.MessageID, len(receivedAt))
+	for _, m := range listed {
+		for i, h := range hashes {
+			if m.Blob.Hash == h {
+				ids[i] = m.ID
+			}
+		}
+	}
+	for i, id := range ids {
+		if id == 0 {
+			t.Fatalf("seed-pos %d: id was not recovered from ListMessages", i)
+		}
+	}
+
+	// Single-call ordering with the "start from newest" sentinel.
+	got, err := s.Meta().ListMessagesWithInternalizePendingByReceivedAt(ctx, 0, 0, 10)
+	if err != nil {
+		t.Fatalf("ListMessagesWithInternalizePendingByReceivedAt: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d refs, want 3: %#v", len(got), got)
+	}
+	// Expected ID ordering: newest (seed-pos 1, 2026), middle
+	// (seed-pos 2, 2020), oldest (seed-pos 0, 2018).
+	wantOrder := []store.MessageID{ids[1], ids[2], ids[0]}
+	for i, ref := range got {
+		if ref.ID != wantOrder[i] {
+			t.Fatalf("position %d: id=%d, want %d (full order: %#v)", i, ref.ID, wantOrder[i], got)
+		}
+	}
+	// Each ref's ReceivedAtUs MUST match the seeded value (within
+	// microsecond rounding). This catches a backend that drops the
+	// timestamp on the projection. Map the returned id back to its
+	// seed position so the assertion is robust regardless of the
+	// concrete MessageID values the backend hands out.
+	posByID := make(map[store.MessageID]int, len(ids))
+	for i, id := range ids {
+		posByID[id] = i
+	}
+	for i, ref := range got {
+		want := receivedAt[posByID[ref.ID]]
+		if got := time.UnixMicro(ref.ReceivedAtUs).UTC(); !got.Equal(want) {
+			t.Fatalf("position %d (id=%d): ReceivedAtUs = %s, want %s",
+				i, ref.ID, got, want)
+		}
+	}
+
+	// Pagination companion: limit=1 walks the same three messages
+	// in the same order, advancing the cursor to the previous row's
+	// (ReceivedAtUs, ID) pair on each call.
+	var cursor store.PendingMessageRef
+	for i, wantID := range wantOrder {
+		page, err := s.Meta().ListMessagesWithInternalizePendingByReceivedAt(
+			ctx, cursor.ReceivedAtUs, cursor.ID, 1)
+		if err != nil {
+			t.Fatalf("page %d: %v", i, err)
+		}
+		if len(page) != 1 {
+			t.Fatalf("page %d: got %d refs, want 1", i, len(page))
+		}
+		if page[0].ID != wantID {
+			t.Fatalf("page %d: id=%d, want %d", i, page[0].ID, wantID)
+		}
+		cursor = page[0]
+	}
+	// One more page must be empty.
+	final, err := s.Meta().ListMessagesWithInternalizePendingByReceivedAt(
+		ctx, cursor.ReceivedAtUs, cursor.ID, 1)
+	if err != nil {
+		t.Fatalf("final page: %v", err)
+	}
+	if len(final) != 0 {
+		t.Fatalf("final page: got %d refs, want 0 (cursor exhausted): %#v", len(final), final)
+	}
+
+	// Limit 0 returns no rows (and no error).
+	none, err := s.Meta().ListMessagesWithInternalizePendingByReceivedAt(ctx, 0, 0, 0)
+	if err != nil {
+		t.Fatalf("limit=0: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("limit=0: got %v, want empty", none)
 	}
 }
 

@@ -233,7 +233,16 @@ const CurrentBackupVersion = 1
 //	jmap_states.internalize_status_state, bumped once per
 //	processed worker batch via IncrementJMAPState; surfaced over
 //	EventSource as the InternalizeStatus type.
-const CurrentSchemaVersion = 45
+//
+// 46 — 0046_internalize_pending_received_at_index.sql. Partial covering
+//
+//	index supporting newest-first iteration of pending rows by
+//	received_at_us, tie-broken on id (REQ-EXTIMG-BG-INTERNAL-80..82).
+//	Index-only migration: no schema column changes. Supports the new
+//	ListMessagesWithInternalizePendingByReceivedAt store method that
+//	the extimg internalize-worker calls in place of the legacy
+//	id-ordered ListMessagesWithInternalizePending.
+const CurrentSchemaVersion = 46
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

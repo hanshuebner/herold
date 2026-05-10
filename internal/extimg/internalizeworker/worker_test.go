@@ -306,6 +306,11 @@ func TestWorker_BatchSummaryLogged(t *testing.T) {
 	}
 
 	const seed = 5
+	// Seed each message with a distinct non-zero ReceivedAt so the
+	// batch summary's received_at_after attr renders as an
+	// RFC3339 timestamp (not the "newest" sentinel that means "no row
+	// has a header date yet"). REQ-EXTIMG-BG-INTERNAL-83.
+	baseReceived := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < seed; i++ {
 		ref, err := st.Blobs().Put(ctx, stringsReader("From: a@x\r\nTo: b@x\r\n\r\nbody"))
 		if err != nil {
@@ -315,6 +320,8 @@ func TestWorker_BatchSummaryLogged(t *testing.T) {
 			PrincipalID:        p.ID,
 			Blob:               ref,
 			Size:               ref.Size,
+			ReceivedAt:         baseReceived.Add(time.Duration(i) * time.Hour),
+			InternalDate:       baseReceived.Add(time.Duration(i) * time.Hour),
 			InternalizePending: true,
 		}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
 			t.Fatalf("InsertMessage[%d]: %v", i, err)
@@ -382,10 +389,148 @@ func TestWorker_BatchSummaryLogged(t *testing.T) {
 	if got := intAttr("elapsed_ms"); got < 0 {
 		t.Fatalf("elapsed_ms = %d, want >= 0", got)
 	}
-	// principals, cursor_before, cursor_after must be present.
-	for _, name := range []string{"principals", "cursor_before", "cursor_after"} {
+	// principals + the new received_at / tiebreak_id attrs
+	// (REQ-EXTIMG-BG-INTERNAL-83) must be present. The cursor_before /
+	// cursor_after attrs from the prior id-only iteration are gone.
+	for _, name := range []string{
+		"principals",
+		"received_at_before",
+		"received_at_after",
+		"tiebreak_id_before",
+		"tiebreak_id_after",
+	} {
 		if _, ok := rec[name]; !ok {
 			t.Fatalf("missing attr %q in batch summary record: %v", name, rec)
 		}
+	}
+	// The first batch starts from the "newest" sentinel; the
+	// renderer prints the literal "newest" rather than an
+	// 1970-01-01 timestamp.
+	if got := rec["received_at_before"]; got != "newest" {
+		t.Fatalf("received_at_before = %v, want %q (REQ-EXTIMG-BG-INTERNAL-83 sentinel rendering)", got, "newest")
+	}
+	// The "after" cursor is whichever row was iterated last; for
+	// the seeded rows this is a non-zero RFC3339 timestamp.
+	if got := rec["received_at_after"]; got == "newest" || got == "" {
+		t.Fatalf("received_at_after = %v, want a non-sentinel RFC3339 timestamp", got)
+	}
+}
+
+// TestWorker_NewestByReceivedAtFirst exercises
+// REQ-EXTIMG-BG-INTERNAL-69 / -80: the worker iterates pending rows in
+// descending received_at_us order even when that order disagrees with
+// id-DESC. The seeded rows are arranged so id-DESC would process the
+// older row first; the worker MUST process the newer (by header date)
+// row first. Probe via "which message had its flag cleared first" --
+// run a single one-row batch and check that the newer-by-received_at
+// row is the one whose flag was cleared. The older row's flag must
+// still be 1.
+func TestWorker_NewestByReceivedAtFirst(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"), nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID,
+		Name:        "INBOX",
+		Attributes:  store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+
+	// Seed the NEWER message (by header date) FIRST so it gets the
+	// LOWER row id; then the OLDER message gets the HIGHER row id.
+	// id-DESC iteration would pick the older row first; received_at
+	// DESC iteration MUST pick the newer row first. The two rules
+	// only diverge when this insertion order holds.
+	newRef, err := st.Blobs().Put(ctx, stringsReader("From: a@x\r\nTo: b@x\r\n\r\nbody-new"))
+	if err != nil {
+		t.Fatalf("Blobs.Put new: %v", err)
+	}
+	if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:        p.ID,
+		Blob:               newRef,
+		Size:               newRef.Size,
+		ReceivedAt:         time.Date(2020, 6, 1, 0, 0, 0, 0, time.UTC),
+		InternalDate:       time.Date(2020, 6, 1, 0, 0, 0, 0, time.UTC),
+		InternalizePending: true,
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage new: %v", err)
+	}
+	oldRef, err := st.Blobs().Put(ctx, stringsReader("From: c@x\r\nTo: d@x\r\n\r\nbody-old"))
+	if err != nil {
+		t.Fatalf("Blobs.Put old: %v", err)
+	}
+	if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:        p.ID,
+		Blob:               oldRef,
+		Size:               oldRef.Size,
+		ReceivedAt:         time.Date(2018, 6, 1, 0, 0, 0, 0, time.UTC),
+		InternalDate:       time.Date(2018, 6, 1, 0, 0, 0, 0, time.UTC),
+		InternalizePending: true,
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage old: %v", err)
+	}
+	// Recover the assigned MessageIDs via ListMessages -- InsertMessage
+	// returns the per-mailbox UID, not the row id.
+	listed, err := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	var newID, oldID store.MessageID
+	for _, m := range listed {
+		switch m.Blob.Hash {
+		case newRef.Hash:
+			newID = m.ID
+		case oldRef.Hash:
+			oldID = m.ID
+		}
+	}
+	if newID == 0 || oldID == 0 {
+		t.Fatalf("could not recover seeded MessageIDs: newID=%d, oldID=%d, listed=%#v", newID, oldID, listed)
+	}
+	if !(oldID > newID) {
+		t.Fatalf("test setup invariant violated: oldID=%d, newID=%d -- old must have a HIGHER id so id-DESC and received_at-DESC disagree",
+			oldID, newID)
+	}
+
+	// BatchSize=1 so the worker processes exactly one row per
+	// runBatch call. The worker MUST pick the 2020 (newer) row.
+	w := internalizeworker.New(st, extimg.Config{Mode: extimg.ModePassthrough}, nil, clk, internalizeworker.Options{
+		Concurrency:      1,
+		BatchSize:        1,
+		IdlePollInterval: 1 * time.Hour,
+	})
+	if empty := w.RunBatchForTest(ctx); empty {
+		t.Fatalf("RunBatchForTest returned empty=true; expected one row to be processed")
+	}
+
+	// The newer row must have had its flag cleared; the older row
+	// must still be pending.
+	newMsg, err := st.Meta().GetMessage(ctx, newID)
+	if err != nil {
+		t.Fatalf("GetMessage new: %v", err)
+	}
+	if newMsg.InternalizePending {
+		t.Fatalf("newer (2020) row was not processed first: InternalizePending = true (REQ-EXTIMG-BG-INTERNAL-80 regression)")
+	}
+	oldMsg, err := st.Meta().GetMessage(ctx, oldID)
+	if err != nil {
+		t.Fatalf("GetMessage old: %v", err)
+	}
+	if !oldMsg.InternalizePending {
+		t.Fatalf("older (2018) row was unexpectedly processed; the worker iterated id-DESC instead of received_at-DESC")
 	}
 }

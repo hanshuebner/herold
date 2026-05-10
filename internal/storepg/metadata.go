@@ -1528,6 +1528,61 @@ func (m *metadata) ListMessagesWithInternalizePending(ctx context.Context, befor
 	return out, rows.Err()
 }
 
+// ListMessagesWithInternalizePendingByReceivedAt iterates the pending
+// rows in descending (received_at_us, id) order. The lexicographic
+// "less than" predicate is expanded manually rather than relying on
+// Postgres's row-value comparison so the SQL shape stays identical to
+// the SQLite implementation. Zero sentinels map to math.MaxInt64 so
+// the first call (beforeReceivedAtUs=0, beforeMessageID=0) returns
+// the most-recent pending row first.
+//
+// REQ-EXTIMG-BG-INTERNAL-81. The companion partial covering index
+// idx_messages_internalize_pending_received_at (migration 0046)
+// supplies the order without a sequential scan over messages.
+func (m *metadata) ListMessagesWithInternalizePendingByReceivedAt(
+	ctx context.Context,
+	beforeReceivedAtUs int64,
+	beforeMessageID store.MessageID,
+	limit int,
+) ([]store.PendingMessageRef, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	upperReceived := beforeReceivedAtUs
+	if upperReceived == 0 {
+		upperReceived = math.MaxInt64
+	}
+	upperID := int64(beforeMessageID)
+	if upperID == 0 {
+		upperID = math.MaxInt64
+	}
+	rows, err := m.s.pool.Query(ctx, `
+		SELECT id, received_at_us
+		FROM messages
+		WHERE internalize_pending = 1
+		  AND (received_at_us < $1
+		       OR (received_at_us = $2 AND id < $3))
+		ORDER BY received_at_us DESC, id DESC
+		LIMIT $4`,
+		upperReceived, upperReceived, upperID, limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make([]store.PendingMessageRef, 0, limit)
+	for rows.Next() {
+		var id, receivedAt int64
+		if err := rows.Scan(&id, &receivedAt); err != nil {
+			return nil, fmt.Errorf("storepg: list pending by received_at: scan: %w", err)
+		}
+		out = append(out, store.PendingMessageRef{
+			ID:           store.MessageID(id),
+			ReceivedAtUs: receivedAt,
+		})
+	}
+	return out, rows.Err()
+}
+
 func (m *metadata) CountInternalizePending(ctx context.Context, principalID store.PrincipalID) (uint64, error) {
 	var n int64
 	if err := m.s.pool.QueryRow(ctx,
