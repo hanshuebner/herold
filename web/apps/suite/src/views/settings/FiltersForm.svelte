@@ -25,7 +25,6 @@
     type ConditionOp,
     type ActionKind,
   } from '../../lib/settings/managed-rules.svelte';
-  import { filterLike } from '../../lib/settings/filter-like.svelte';
   import { t } from '../../lib/i18n/i18n.svelte';
 
   $effect(() => {
@@ -33,18 +32,6 @@
       untrack(() => {
         void managedRules.load();
       });
-    }
-  });
-
-  // Consume a pending "Filter messages like this" payload from MessageAccordion.
-  // Reading filterLike.pending registers it as a dependency so this effect
-  // re-runs when MessageAccordion sets a new payload.
-  $effect(() => {
-    if (filterLike.pending) {
-      const payload = untrack(() => filterLike.consume());
-      if (payload) {
-        untrack(() => openCreate(payload));
-      }
     }
   });
 
@@ -71,22 +58,12 @@
   let saving = $state(false);
   let deletingId = $state<string | null>(null);
 
-  // ── Pre-populate support ─────────────────────────────────────────────────
+  // ── Open editor in create mode ───────────────────────────────────────────
 
-  // External callers (MessageAccordion "Filter messages like this") can set
-  // this to pre-populate the editor with derived conditions.
-  interface PrePopulatePayload {
-    conditions: RuleCondition[];
-  }
-
-  // Expose a function to pre-populate the form. Components that use this
-  // component can call filtersForm.openCreate(payload).
-  export function openCreate(payload?: PrePopulatePayload): void {
+  function openCreate(): void {
     editName = '';
     editEnabled = true;
-    editConditions = payload?.conditions?.length
-      ? payload.conditions.map((c) => ({ ...c }))
-      : [{ field: 'from', op: 'contains', value: '' }];
+    editConditions = [{ field: 'from', op: 'contains', value: '' }];
     editActions = [{ kind: 'skip-inbox' }];
     validationError = null;
     testCount = null;

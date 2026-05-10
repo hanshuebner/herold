@@ -220,14 +220,6 @@ vi.mock('../lib/settings/managed-rules.svelte', () => ({
   buildEmailQueryFilter: vi.fn().mockReturnValue({}),
 }));
 
-vi.mock('../lib/settings/filter-like.svelte', () => ({
-  filterLike: {
-    senders: [],
-    addSender: vi.fn(),
-    removeSender: vi.fn(),
-  },
-}));
-
 vi.mock('../lib/contacts/seen-addresses.svelte', () => ({
   seenAddresses: {
     status: 'ready',
