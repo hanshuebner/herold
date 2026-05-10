@@ -510,7 +510,10 @@ func TestHeartbeat_NoPongWithinTimeout_ClosesConnection(t *testing.T) {
 	c := h.connect(1)
 	// Refuse to respond to pings — drain raw frames and discard.
 	// After PongTimeout elapses with no pong, the server closes.
+	// Signal each observed ping on gotPing so the test can advance
+	// the FakeClock deterministically; signal the close on gotClose.
 	gotClose := make(chan closeCode, 1)
+	gotPing := make(chan struct{}, 4)
 	go func() {
 		for {
 			op, payload, err := c.readNext()
@@ -522,15 +525,31 @@ func TestHeartbeat_NoPongWithinTimeout_ClosesConnection(t *testing.T) {
 				gotClose <- code
 				return
 			}
-			// Ignore pings — do NOT respond.
+			if op == opPing {
+				select {
+				case gotPing <- struct{}{}:
+				default:
+					// Already a pending ping notification queued; drop
+					// the duplicate. Test only needs to observe ≥1.
+				}
+			}
+			// Ignore other ops — do NOT respond.
 		}
 	}()
-	// Drive the FakeClock so that ping fires and pong-timeout
-	// elapses. Each ping resets — we need the gap between the
-	// last pong and now to exceed pongTimeout.
-	h.clk.Advance(50 * time.Millisecond)  // first ping
-	time.Sleep(20 * time.Millisecond)     // let read pump observe
-	h.clk.Advance(200 * time.Millisecond) // exceed timeout
+	// Drive the FakeClock so the ping fires, then wait for the read
+	// pump to actually observe it before exceeding pong-timeout. The
+	// previous version of this test used a 20 ms wall-clock sleep as
+	// the barrier; under -race CPU contention 20 ms isn't always
+	// enough, which produced an intermittent pre-commit flake on
+	// 2026-05-10. Replacing the sleep with a channel synchronisation
+	// makes the sequence deterministic regardless of host load.
+	h.clk.Advance(50 * time.Millisecond) // first ping
+	select {
+	case <-gotPing:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("test client never observed a ping after 2s")
+	}
+	h.clk.Advance(200 * time.Millisecond) // exceed pong-timeout
 
 	select {
 	case code := <-gotClose:
