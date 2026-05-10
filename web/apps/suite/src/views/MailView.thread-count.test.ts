@@ -212,6 +212,14 @@ vi.mock('../lib/i18n/i18n.svelte', () => ({
       'list.retry': 'Retry',
       'list.emptyTrash': 'Empty Trash',
       'list.couldNotLoad': 'Could not load',
+      'mail.row.threadCountAria': `${String(args?.count ?? 0)} message`,
+      'mail.row.threadCountAria.other': `${String(args?.count ?? 0)} messages`,
+      'mail.row.selectAria': 'Select message',
+      'mail.row.starAria': 'Star',
+      'mail.row.unstarAria': 'Unstar',
+      'mail.list.actionsAria': 'List actions',
+      'mail.list.threadsAria': `${String(args?.name ?? '')} threads`,
+      'att.headerIcon.label': 'Has attachment',
     };
     return map[key] ?? key;
   },

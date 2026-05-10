@@ -52,6 +52,39 @@ export const de = {
   'mail.threadReader.internalizePending.body':
     'Externe Bilder in dieser Nachricht werden noch im Hintergrund internalisiert. Sie erscheinen vorerst als Platzhalter; aktualisieren Sie kurz, um sie zu sehen.',
 
+  // ── MailView-Oberflächen (re #97) ────────────────────────────────────
+  // Suchroute: Überschrift + Echo der leeren Anfrage, Zurück-Link,
+  // ARIA-Bezeichnungen für Erkennungs-Strip / Verlaufs-Strip /
+  // Ergebnisliste sowie den "Keine Treffer"-Zustand.
+  'mail.search.heading': 'Suche:',
+  'mail.search.empty': '(leer)',
+  'mail.search.backToInbox': '← Zurück zum Posteingang',
+  'mail.search.recognisedQueryAria': 'Erkannte Suchanfrage',
+  'mail.search.recentSearchesAria': 'Letzte Suchen',
+  'mail.search.resultsAria': 'Suchergebnisse',
+  'mail.search.noMatches': 'Keine Treffer.',
+  // Aktionsleiste / Kategorien-Tab-Streifen / Thread-Listbox sowie
+  // dazugehörige Zähler-Badges.
+  'mail.list.actionsAria': 'Listen-Aktionen',
+  'mail.list.threadsAria': 'Konversationen in {name}',
+  'mail.list.tabsAria': 'Posteingang-Kategorien',
+  'mail.list.tabUnreadAria': '{count} ungelesen',
+  'mail.list.tabPrimary': 'Primär',
+  'mail.list.emptyTab': 'Keine Nachrichten in {name}.',
+  // Steuerelemente in der Zeile: Auswahl-Checkbox, Stern-Schalter,
+  // Thread-Anzahl-Badge und der inline-Anhangshinweis (Büroklammer
+  // neben dem Betreff). Der Thread-Anzahl-Badge wird über .other
+  // pluralisiert.
+  'mail.row.selectAria': 'Nachricht auswählen',
+  'mail.row.starAria': 'Markieren',
+  'mail.row.unstarAria': 'Markierung aufheben',
+  'mail.row.threadCountAria': '{count} Nachricht',
+  'mail.row.threadCountAria.other': '{count} Nachrichten',
+  // Label-Route Platzhalter (Label-Ansicht-Abfragen kommen nach dem
+  // Posteingang).
+  'mail.label.heading': 'Label: {name}',
+  'mail.label.lead': 'Die Label-Ansicht folgt nach dem Posteingang.',
+
   // ── Suche (re #97) ───────────────────────────────────────────────────
   'search.history.label': 'Zuletzt:',
   'search.history.rerun': 'Suche erneut ausführen',

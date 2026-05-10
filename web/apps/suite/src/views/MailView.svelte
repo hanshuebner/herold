@@ -777,15 +777,16 @@
   {:else if isSearchRoute}
     <header class="list-header">
       <h1>
-        Search: <span class="query-echo">{searchQuery || '(empty)'}</span>
+        {t('mail.search.heading')}
+        <span class="query-echo">{searchQuery || t('mail.search.empty')}</span>
       </h1>
       <button type="button" class="back" onclick={() => router.navigate('/mail')}>
-        ← Back to inbox
+        {t('mail.search.backToInbox')}
       </button>
     </header>
 
     {#if searchQuery}
-      <div class="search-chips" aria-label="Recognised query">
+      <div class="search-chips" aria-label={t('mail.search.recognisedQueryAria')}>
         {#each decodeChips(searchQuery) as chip, i (i + chip.raw)}
           <span class="chip" class:text={chip.operator === 'text'}>
             {#if chip.operator !== 'text'}<span class="op">{chip.operator}</span>{/if}
@@ -796,7 +797,7 @@
     {/if}
 
     {#if mail.searchHistory.length > 0}
-      <div class="search-history" aria-label="Recent searches">
+      <div class="search-history" aria-label={t('mail.search.recentSearchesAria')}>
         <span class="history-label">{t('search.history.label')}</span>
         {#each mail.searchHistory.slice(0, 6) as q (q)}
           <button
@@ -832,9 +833,9 @@
         </button>
       </div>
     {:else if mail.searchEmails.length === 0}
-      <div class="state">No matches.</div>
+      <div class="state">{t('mail.search.noMatches')}</div>
     {:else}
-      <ul class="thread-list" role="listbox" aria-label="Search results">
+      <ul class="thread-list" role="listbox" aria-label={t('mail.search.resultsAria')}>
         {#each mail.searchEmails as email, i (email.id)}
           <li
             class="thread-row search"
@@ -846,7 +847,7 @@
               type="button"
               class="row-star"
               class:flagged={isFlagged(email)}
-              aria-label={isFlagged(email) ? 'Unstar' : 'Star'}
+              aria-label={isFlagged(email) ? t('mail.row.unstarAria') : t('mail.row.starAria')}
               aria-pressed={isFlagged(email)}
               onclick={(e) => {
                 e.stopPropagation();
@@ -868,7 +869,12 @@
               <span class="from">
                 <span class="from-text">{senderLabel(email)}</span>
                 {#if threadMessageCount(email) > 1}
-                  <span class="thread-count" aria-label="{threadMessageCount(email)} messages">{threadMessageCount(email)}</span>
+                  <span
+                    class="thread-count"
+                    aria-label={t('mail.row.threadCountAria.other', {
+                      count: threadMessageCount(email),
+                    })}
+                  >{threadMessageCount(email)}</span>
                 {/if}
               </span>
               <span class="subject-and-preview">
@@ -891,7 +897,7 @@
                 <span class="preview"> — {email.preview}</span>
               </span>
               <span class="attachment" aria-hidden={!email.hasAttachment}>
-                {#if email.hasAttachment}<span aria-label="Has attachment">📎</span>{/if}
+                {#if email.hasAttachment}<span aria-label={t('att.headerIcon.label')}>📎</span>{/if}
               </span>
               <span class="date">{formatDate(email.receivedAt)}</span>
             </button>
@@ -901,8 +907,8 @@
     {/if}
   {:else if label}
     <header>
-      <h1>Label: {label}</h1>
-      <p class="lead">Label-view querying arrives after inbox.</p>
+      <h1>{t('mail.label.heading', { name: label })}</h1>
+      <p class="lead">{t('mail.label.lead')}</p>
     </header>
   {:else if isListRoute}
     <!-- Issue #25 / #27: the mailbox name shows in the sidebar; we
@@ -910,7 +916,7 @@
          controls (Empty trash, Refresh) into the always-visible
          list-toolbar so the toolbar height is constant whether or not
          a selection is active. -->
-    <div class="list-toolbar" role="toolbar" aria-label="List actions">
+    <div class="list-toolbar" role="toolbar" aria-label={t('mail.list.actionsAria')}>
       {#if effectiveListEmails.length > 0}
         <SelectChooser />
       {/if}
@@ -998,7 +1004,7 @@
     </div>
 
     {#if showTabs}
-      <nav class="tab-strip" aria-label="Inbox categories">
+      <nav class="tab-strip" aria-label={t('mail.list.tabsAria')}>
         {#each categorySettings.derivedCategories as name (name)}
           {@const tabKey = name.toLowerCase() === 'primary' ? null : name}
           {@const isActive = activeTabName === tabKey}
@@ -1012,7 +1018,7 @@
           >
             {name}
             {#if unread > 0}
-              <span class="tab-badge" aria-label="{unread} unread">{unread}</span>
+              <span class="tab-badge" aria-label={t('mail.list.tabUnreadAria', { count: unread })}>{unread}</span>
             {/if}
           </button>
         {/each}
@@ -1030,7 +1036,7 @@
     {:else if effectiveListEmails.length === 0}
       <div class="state">
         {#if showTabs && mail.listEmails.length > 0}
-          No messages in {activeTabName ?? 'Primary'}.
+          {t('mail.list.emptyTab', { name: activeTabName ?? t('mail.list.tabPrimary') })}
         {:else}
           {emptyMessage(folder)}
         {/if}
@@ -1039,7 +1045,7 @@
       <ul
         class="thread-list"
         role="listbox"
-        aria-label="{folderLabel} threads"
+        aria-label={t('mail.list.threadsAria', { name: folderLabel })}
         aria-multiselectable="true"
         bind:this={listEl}
       >
@@ -1068,7 +1074,7 @@
             <input
               type="checkbox"
               class="row-check"
-              aria-label="Select message"
+              aria-label={t('mail.row.selectAria')}
               checked={mail.listSelectedIds.has(email.id)}
               onchange={() => mail.toggleSelected(email.id)}
               onclick={(e) => e.stopPropagation()}
@@ -1077,7 +1083,7 @@
               type="button"
               class="row-star"
               class:flagged={isFlagged(email)}
-              aria-label={isFlagged(email) ? 'Unstar' : 'Star'}
+              aria-label={isFlagged(email) ? t('mail.row.unstarAria') : t('mail.row.starAria')}
               aria-pressed={isFlagged(email)}
               onclick={(e) => {
                 e.stopPropagation();
@@ -1099,7 +1105,12 @@
               <span class="from">
                 <span class="from-text">{senderLabel(email)}</span>
                 {#if threadMessageCount(email) > 1}
-                  <span class="thread-count" aria-label="{threadMessageCount(email)} messages">{threadMessageCount(email)}</span>
+                  <span
+                    class="thread-count"
+                    aria-label={t('mail.row.threadCountAria.other', {
+                      count: threadMessageCount(email),
+                    })}
+                  >{threadMessageCount(email)}</span>
                 {/if}
               </span>
               <span class="subject-and-preview">
@@ -1122,7 +1133,7 @@
                 <span class="preview"> — {email.preview}</span>
               </span>
               <span class="attachment" aria-hidden={!email.hasAttachment}>
-                {#if email.hasAttachment}<span aria-label="Has attachment">📎</span>{/if}
+                {#if email.hasAttachment}<span aria-label={t('att.headerIcon.label')}>📎</span>{/if}
               </span>
               <span class="date">{formatDate(email.receivedAt)}</span>
             </button>

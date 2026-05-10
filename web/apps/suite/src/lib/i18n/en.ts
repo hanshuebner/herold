@@ -53,6 +53,37 @@ export const en = {
   'mail.threadReader.internalizePending.body':
     'External images in this message are still being internalized in the background. They appear as placeholders for now; refresh in a moment to see them.',
 
+  // ── MailView surfaces (re #97) ──────────────────────────────────────
+  // Search route: heading + empty-query echo, back link, ARIA labels for
+  // the chip-recogniser strip / history strip / results listbox, and the
+  // "no matches" empty state.
+  'mail.search.heading': 'Search:',
+  'mail.search.empty': '(empty)',
+  'mail.search.backToInbox': '← Back to inbox',
+  'mail.search.recognisedQueryAria': 'Recognised query',
+  'mail.search.recentSearchesAria': 'Recent searches',
+  'mail.search.resultsAria': 'Search results',
+  'mail.search.noMatches': 'No matches.',
+  // List-toolbar / category-tab strip / threads listbox ARIA labels and
+  // their associated count badges.
+  'mail.list.actionsAria': 'List actions',
+  'mail.list.threadsAria': '{name} threads',
+  'mail.list.tabsAria': 'Inbox categories',
+  'mail.list.tabUnreadAria': '{count} unread',
+  'mail.list.tabPrimary': 'Primary',
+  'mail.list.emptyTab': 'No messages in {name}.',
+  // Per-row controls: select checkbox, star toggle, thread-count badge,
+  // and the inline attachment indicator (paperclip glyph next to the
+  // subject). The thread-count badge is pluralised via the .other key.
+  'mail.row.selectAria': 'Select message',
+  'mail.row.starAria': 'Star',
+  'mail.row.unstarAria': 'Unstar',
+  'mail.row.threadCountAria': '{count} message',
+  'mail.row.threadCountAria.other': '{count} messages',
+  // Label-route placeholder (label-view querying lands after inbox).
+  'mail.label.heading': 'Label: {name}',
+  'mail.label.lead': 'Label-view querying arrives after inbox.',
+
   // ── Search (re #97) ──────────────────────────────────────────────────
   'search.history.label': 'Recent:',
   'search.history.rerun': 'Re-run search',
