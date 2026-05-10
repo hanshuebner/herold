@@ -15,6 +15,7 @@
   import { prompt } from '../dialog/prompt.svelte';
   import { compose } from './compose.svelte';
   import { toast } from '../toast/toast.svelte';
+  import { t } from '../i18n/i18n.svelte';
   import ImageIcon from '../icons/ImageIcon.svelte';
 
   interface Props {
@@ -32,10 +33,10 @@
       return;
     }
     const url = await prompt.ask({
-      title: 'Insert link',
+      title: t('composeToolbar.linkPrompt.title'),
       label: 'URL',
       placeholder: 'https://example.com',
-      confirmLabel: 'Insert',
+      confirmLabel: t('composeToolbar.linkPrompt.confirm'),
     });
     if (!url) {
       view.focus();
@@ -56,7 +57,7 @@
     const images = files.filter((f) => f.type.startsWith('image/'));
     if (images.length === 0) {
       toast.show({
-        message: 'Pick image files (PNG, JPEG, GIF, WebP).',
+        message: t('composeToolbar.imageBadType'),
         kind: 'error',
         timeoutMs: 4000,
       });
@@ -71,7 +72,7 @@
       const started = compose.startInlineImage(file);
       if (!started) {
         toast.show({
-          message: `Image upload failed: ${file.name}`,
+          message: t('composeToolbar.imageUploadFailed', { name: file.name }),
           kind: 'error',
           timeoutMs: 4000,
         });
@@ -88,7 +89,7 @@
         const errMsg = await compose.uploadInlineImage(key, f);
         if (errMsg) {
           toast.show({
-            message: `Image upload failed: ${f.name}`,
+            message: t('composeToolbar.imageUploadFailed', { name: f.name }),
             kind: 'error',
             timeoutMs: 4000,
           });
@@ -101,14 +102,14 @@
   }
 </script>
 
-<div class="toolbar" role="toolbar" aria-label="Formatting">
+<div class="toolbar" role="toolbar" aria-label={t('composeToolbar.aria')}>
   <button
     type="button"
     class="tool"
     class:on={active.strong}
     aria-pressed={active.strong}
-    aria-label="Bold"
-    title="Bold (Mod+B)"
+    aria-label={t('composeToolbar.bold')}
+    title={`${t('composeToolbar.bold')} (Mod+B)`}
     onclick={() => applyBold(view)}
   >
     <span class="glyph"><b>B</b></span>
@@ -118,8 +119,8 @@
     class="tool"
     class:on={active.em}
     aria-pressed={active.em}
-    aria-label="Italic"
-    title="Italic (Mod+I)"
+    aria-label={t('composeToolbar.italic')}
+    title={`${t('composeToolbar.italic')} (Mod+I)`}
     onclick={() => applyItalic(view)}
   >
     <span class="glyph"><i>I</i></span>
@@ -129,8 +130,8 @@
     class="tool"
     class:on={active.underline}
     aria-pressed={active.underline}
-    aria-label="Underline"
-    title="Underline (Mod+U)"
+    aria-label={t('composeToolbar.underline')}
+    title={`${t('composeToolbar.underline')} (Mod+U)`}
     onclick={() => applyUnderline(view)}
   >
     <span class="glyph"><u>U</u></span>
@@ -143,8 +144,8 @@
     class="tool"
     class:on={active.bulletList}
     aria-pressed={active.bulletList}
-    aria-label="Bulleted list"
-    title="Bulleted list"
+    aria-label={t('composeToolbar.bulletList')}
+    title={t('composeToolbar.bulletList')}
     onclick={() => applyBulletList(view)}
   >
     <span class="glyph">• —</span>
@@ -154,8 +155,8 @@
     class="tool"
     class:on={active.orderedList}
     aria-pressed={active.orderedList}
-    aria-label="Numbered list"
-    title="Numbered list"
+    aria-label={t('composeToolbar.orderedList')}
+    title={t('composeToolbar.orderedList')}
     onclick={() => applyOrderedList(view)}
   >
     <span class="glyph">1.</span>
@@ -165,8 +166,8 @@
     class="tool"
     class:on={active.blockquote}
     aria-pressed={active.blockquote}
-    aria-label="Blockquote"
-    title="Blockquote"
+    aria-label={t('composeToolbar.blockquote')}
+    title={t('composeToolbar.blockquote')}
     onclick={() => applyBlockquote(view)}
   >
     <span class="glyph">”</span>
@@ -179,8 +180,8 @@
     class="tool"
     class:on={active.link}
     aria-pressed={active.link}
-    aria-label={active.link ? 'Remove link' : 'Add link'}
-    title="Link (Mod+K)"
+    aria-label={active.link ? t('composeToolbar.linkRemove') : t('composeToolbar.linkAdd')}
+    title={`${t('composeToolbar.linkAdd')} (Mod+K)`}
     onclick={promptLink}
   >
     <span class="glyph">⎘</span>
@@ -189,8 +190,8 @@
   <button
     type="button"
     class="tool"
-    aria-label="Insert image"
-    title="Insert image"
+    aria-label={t('composeToolbar.image')}
+    title={t('composeToolbar.image')}
     onclick={pickImage}
   >
     <ImageIcon size={18} />

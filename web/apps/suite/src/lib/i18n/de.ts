@@ -170,6 +170,22 @@ export const de = {
   'compose.discardConfirm.confirm': 'Verwerfen',
   'compose.discardConfirm.cancel': 'Weiter bearbeiten',
 
+  // ── Formatierungsleiste im Editor (re #97) ──────────────────────────
+  'composeToolbar.aria': 'Formatierung',
+  'composeToolbar.bold': 'Fett',
+  'composeToolbar.italic': 'Kursiv',
+  'composeToolbar.underline': 'Unterstrichen',
+  'composeToolbar.bulletList': 'Aufzählung',
+  'composeToolbar.orderedList': 'Nummerierte Liste',
+  'composeToolbar.blockquote': 'Zitatblock',
+  'composeToolbar.linkAdd': 'Link einfügen',
+  'composeToolbar.linkRemove': 'Link entfernen',
+  'composeToolbar.linkPrompt.title': 'Link einfügen',
+  'composeToolbar.linkPrompt.confirm': 'Einfügen',
+  'composeToolbar.image': 'Bild einfügen',
+  'composeToolbar.imageBadType': 'Bitte Bilddateien auswählen (PNG, JPEG, GIF, WebP).',
+  'composeToolbar.imageUploadFailed': 'Hochladen fehlgeschlagen: {name}',
+
   // ── Attachment list ──────────────────────────────────────────────────
   'att.attachments': '{count} Anhang',
   'att.attachments.other': '{count} Anhänge',

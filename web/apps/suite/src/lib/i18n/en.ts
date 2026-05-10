@@ -170,6 +170,22 @@ export const en = {
   'compose.discardConfirm.confirm': 'Discard',
   'compose.discardConfirm.cancel': 'Keep editing',
 
+  // ── Compose formatting toolbar (re #97) ─────────────────────────────
+  'composeToolbar.aria': 'Formatting',
+  'composeToolbar.bold': 'Bold',
+  'composeToolbar.italic': 'Italic',
+  'composeToolbar.underline': 'Underline',
+  'composeToolbar.bulletList': 'Bulleted list',
+  'composeToolbar.orderedList': 'Numbered list',
+  'composeToolbar.blockquote': 'Blockquote',
+  'composeToolbar.linkAdd': 'Add link',
+  'composeToolbar.linkRemove': 'Remove link',
+  'composeToolbar.linkPrompt.title': 'Insert link',
+  'composeToolbar.linkPrompt.confirm': 'Insert',
+  'composeToolbar.image': 'Insert image',
+  'composeToolbar.imageBadType': 'Pick image files (PNG, JPEG, GIF, WebP).',
+  'composeToolbar.imageUploadFailed': 'Image upload failed: {name}',
+
   // ── Attachment list ──────────────────────────────────────────────────
   'att.attachments': '{count} attachment',
   'att.attachments.other': '{count} attachments',
