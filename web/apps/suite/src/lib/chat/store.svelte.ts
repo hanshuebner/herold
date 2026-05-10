@@ -756,9 +756,16 @@ class ChatStore {
   // ------------------------------------------------------------------
 
   async #syncConversationChanges(
-    _newState: string,
+    newState: string,
     accountId: string,
   ): Promise<void> {
+    // Server-side buildStateChange (internal/protojmap/push.go) re-publishes
+    // the current state of every subscribed type on every push, so an
+    // Email-only mutation also fires this handler with newState ===
+    // #conversationState. Without this guard, every email-side state
+    // advance fans out into a Conversation/changes batch even when the
+    // user has no chat activity.
+    if (newState === this.#conversationState) return;
     if (!this.#conversationState) {
       // No prior state; do a full reload.
       await this.loadConversations();
@@ -849,6 +856,10 @@ class ChatStore {
     // Conversation/changes, so the user sees that something arrived;
     // every subsequent push diffs correctly and auto-pops as expected.
     const openId = this.openConversationId;
+    // See #syncConversationChanges: every push carries the current state
+    // for every subscribed type, so this handler runs on Email-only
+    // pushes too. Skip when nothing actually moved.
+    if (newState === this.#messageState) return;
     if (!this.#messageState) {
       this.#messageState = newState;
       return;
@@ -1005,6 +1016,10 @@ class ChatStore {
     newState: string,
     accountId: string,
   ): Promise<void> {
+    // See #syncConversationChanges: every push carries the current state
+    // for every subscribed type, so this handler runs on Email-only
+    // pushes too. Skip when nothing actually moved.
+    if (newState === this.#membershipState) return;
     if (!this.#membershipState) {
       // First Membership state push of the session: nothing to diff
       // against, so seed the baseline and pull the caller's full

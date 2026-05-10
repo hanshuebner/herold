@@ -415,4 +415,99 @@ describe('ChatStore EventSource sync — back-reference shape', () => {
       }
     }
   });
+
+  it('chat handlers no-op when pushed newState equals the cached state', async () => {
+    // Server-side buildStateChange (internal/protojmap/push.go) re-publishes
+    // the current state of every subscribed type on every push, so an
+    // Email-only mutation also lands in these chat handlers with the same
+    // state value. Without a newState===oldState early-return, every
+    // email-side state advance would issue three Foo/changes batches
+    // (Conversation + Membership + Message) plus six follow-up Foo/gets,
+    // even with zero chat activity. This was the dominant load in the
+    // flashing-inbox flood.
+    const { jmap } = jmapMod;
+
+    // Drive each handler through a successful /changes round-trip so the
+    // cached state ends at a known value, regardless of what prior tests
+    // in this describe block left in the chat singleton's private state
+    // fields. (beforeEach intentionally does not clear those fields, per
+    // its comment, because the singleton's sync.on registrations only
+    // run once at module import.)
+    const knownStates = {
+      Conversation: 'KNOWN_CONV',
+      Message: 'KNOWN_MSG',
+      Membership: 'KNOWN_MEM',
+    };
+
+    captureNextBatch(jmap as never, {
+      'Conversation/changes': [
+        {
+          accountId: 'acc1',
+          oldState: 'whatever',
+          newState: knownStates.Conversation,
+          hasMoreChanges: false,
+          created: [],
+          updated: [],
+          destroyed: [],
+        },
+      ],
+      'Conversation/get': [
+        { state: knownStates.Conversation, list: [], notFound: [] },
+        { state: knownStates.Conversation, list: [], notFound: [] },
+      ],
+    });
+    await syncHandlers.get('Conversation')!(knownStates.Conversation, 'acc1');
+
+    captureNextBatch(jmap as never, {
+      'Message/changes': [
+        {
+          accountId: 'acc1',
+          oldState: 'whatever',
+          newState: knownStates.Message,
+          hasMoreChanges: false,
+          created: [],
+          updated: [],
+          destroyed: [],
+        },
+      ],
+      'Message/get': [
+        { state: knownStates.Message, list: [], notFound: [] },
+        { state: knownStates.Message, list: [], notFound: [] },
+      ],
+    });
+    await syncHandlers.get('Message')!(knownStates.Message, 'acc1');
+
+    captureNextBatch(jmap as never, {
+      'Membership/changes': [
+        {
+          accountId: 'acc1',
+          oldState: 'whatever',
+          newState: knownStates.Membership,
+          hasMoreChanges: false,
+          created: [],
+          updated: [],
+          destroyed: [],
+        },
+      ],
+      'Membership/get': [
+        { state: knownStates.Membership, list: [] },
+        { state: knownStates.Membership, list: [] },
+      ],
+    });
+    await syncHandlers.get('Membership')!(knownStates.Membership, 'acc1');
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Now every cached state is at the known value. Re-pushing the same
+    // state for each type must produce zero further jmap.batch calls.
+    vi.mocked(jmap.batch).mockClear();
+    await syncHandlers.get('Conversation')!(knownStates.Conversation, 'acc1');
+    await syncHandlers.get('Message')!(knownStates.Message, 'acc1');
+    await syncHandlers.get('Membership')!(knownStates.Membership, 'acc1');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(vi.mocked(jmap.batch)).not.toHaveBeenCalled();
+  });
 });

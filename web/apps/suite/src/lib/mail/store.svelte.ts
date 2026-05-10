@@ -153,14 +153,26 @@ class MailStore {
     // worker churn. With the delta in hand we only refresh threads
     // whose emailIds intersect, and we only re-run the folder query
     // when a creation or destruction may have changed list membership.
-    //
-    // Fall back to the blanket refresh when the server can't compute
-    // the delta (no prior state, sinceState too old → cannotCalculate-
-    // Changes) so correctness is preserved at the cost of a one-time
-    // burst on first load.
 
     const sinceState = this.emailState;
     const accountId = this.mailAccountId;
+
+    // No baseline yet — typically because the initial inbox load
+    // hasn't finished (or failed with a deadline-exceeded). Seed the
+    // baseline from this push so the next push can be diffed via
+    // Email/changes; don't fire any refresh here. The user-driven
+    // load (or its retry) will populate the cache and overwrite this
+    // state in lockstep with the data it returns.
+    //
+    // Without this seed, the previous behaviour was: every push
+    // falls through to the blanket refreshFolder + refresh-every-
+    // cached-thread path, piling on concurrent requests against a
+    // server that already showed it could not keep up. That was the
+    // observed flashing-inbox loop after a failed initial load.
+    if (!sinceState) {
+      this.emailState = newState;
+      return;
+    }
 
     // Snapshot known email ids before the refresh so we can detect arrivals.
     const knownEmailIds = new Set(this.emails.keys());
@@ -170,7 +182,7 @@ class MailStore {
       updated: Set<string>;
       destroyed: Set<string>;
     } | null = null;
-    if (accountId && sinceState) {
+    if (accountId) {
       try {
         const { responses } = await jmap.batch((b) => {
           b.call(
