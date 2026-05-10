@@ -1188,25 +1188,58 @@ func TestDelayDSN_SuppressedByNotifyNever(t *testing.T) {
 			Detail:       "no answer",
 		}, nil
 	}
-	f.submit(t, queue.Submission{
+	envID := f.submit(t, queue.Submission{
 		MailFrom:   "alice@local.test",
 		Recipients: []string{"bob@dest.test"},
 		Body:       strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
 		DSNNotify:  store.DSNNotifyNever,
 	})
-	if !waitFor(t, 2*time.Second, func() bool {
-		return f.deliv.callCount() >= 1
-	}) {
-		t.Fatalf("first attempt never observed")
+	// Synchronise on QueueStateDeferred + Attempts counter rather than
+	// callCount: the latter increments at the START of Deliver, before
+	// the worker has reached RescheduleQueueItem, so a fake-clock
+	// Advance triggered off callCount can race the worker's mid-flight
+	// reschedule and wedge the queue. Same fix pattern as
+	// TestDelayDSN_EmittedAfterThreshold (commit c1929e2).
+	waitDeferred := func(want int32) bool {
+		return waitFor(t, 15*time.Second, func() bool {
+			rows, _ := f.store.Meta().ListQueueItems(f.ctx,
+				store.QueueFilter{EnvelopeID: envID})
+			return len(rows) == 1 &&
+				rows[0].State == store.QueueStateDeferred &&
+				rows[0].Attempts == want
+		})
+	}
+	if !waitDeferred(1) {
+		t.Fatalf("first attempt never deferred for envelope %s", envID)
 	}
 	f.clk.Advance(2 * time.Minute)
-	if !waitFor(t, 2*time.Second, func() bool {
-		return f.deliv.callCount() >= 2
-	}) {
-		t.Fatalf("second attempt never observed")
+	if !waitDeferred(2) {
+		t.Fatalf("second attempt never deferred for envelope %s", envID)
 	}
-	// Give the delay DSN a chance to (incorrectly) appear.
-	time.Sleep(150 * time.Millisecond)
+	// Give the delay DSN a chance to (incorrectly) appear. We poll for
+	// up to 1 s instead of a single Sleep so a slow-but-correct path
+	// isn't misclassified as "no DSN appeared yet" — if the delay DSN
+	// is going to be enqueued, it would be by RescheduleQueueItem
+	// transactionally and so already visible after waitDeferred(2).
+	// The 1 s window is just a defence-in-depth budget.
+	if !waitFor(t, 1*time.Second, func() bool {
+		// Returning true would mean a delay DSN was enqueued — which
+		// is the failure mode we're guarding against. So we want this
+		// pred to STAY false; waitFor returns false on timeout, which
+		// is the success outcome here. We spin specifically so an
+		// in-flight DSN insert has time to surface.
+		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{})
+		for _, r := range rows {
+			if strings.HasPrefix(r.IdempotencyKey, "dsn:delay:") {
+				return true
+			}
+		}
+		return false
+	}) {
+		// pred stayed false for the full window — no DSN appeared.
+		// That is the expected outcome under NOTIFY=NEVER.
+		return
+	}
 	rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{})
 	for _, r := range rows {
 		if strings.HasPrefix(r.IdempotencyKey, "dsn:delay:") {
