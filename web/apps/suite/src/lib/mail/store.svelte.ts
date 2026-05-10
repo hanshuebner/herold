@@ -2521,10 +2521,23 @@ export function isSystemRole(role: string | null | undefined): boolean {
 }
 
 /**
- * Wrap `parsed` with `inMailboxOtherThan: [<trash>, <junk>]` so the
+ * Splice `inMailboxOtherThan: [<trash>, <junk>]` into `parsed` so the
  * default search scope excludes those mailboxes (REQ-SRC-06). Returns
  * the original filter unchanged when neither role exists for this
  * principal — there's nothing to exclude.
+ *
+ * When `parsed` is itself a flat FilterCondition (no `operator` key),
+ * the exclusion is spliced in directly: a single FilterCondition with
+ * multiple keys is implicitly AND-ed per RFC 8621 §5.5, and the flat
+ * shape is what the server's fast-pushability gate
+ * (`internal/protojmap/mail/email/fastquery.go:mergeFilterIntoOpts`)
+ * recognises. Wrapping with `{operator: 'AND', conditions: [...]}`
+ * dropped every default-scoped search to the slow `listPrincipalMessages`
+ * path even for trivially indexable predicates such as `before:` —
+ * see REQ-PERF-INDEX-09 and the matching server-side flatten in
+ * REQ-PERF-INDEX-10. When `parsed` is already a FilterOperator
+ * (`{operator, conditions}`), we wrap with AND because we cannot
+ * push a sibling key into the operator shape.
  */
 export function applyTrashJunkExclusion(
   parsed: FilterCondition | FilterOperator,
@@ -2535,6 +2548,9 @@ export function applyTrashJunkExclusion(
     if (m.role === 'trash' || m.role === 'junk') exclude.push(m.id);
   }
   if (exclude.length === 0) return parsed;
+  if (!('operator' in parsed)) {
+    return { ...parsed, inMailboxOtherThan: exclude };
+  }
   return {
     operator: 'AND',
     conditions: [parsed, { inMailboxOtherThan: exclude }],
