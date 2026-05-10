@@ -758,8 +758,14 @@ func (ses *session) handleIDLE(ctx context.Context, c *Command) error {
 	var cursor store.ChangeSeq // start from current highest-observed
 
 	// Get the starting cursor so we only report new events.
+	// Use ReadChangeFeedAll so the IMAP IDLE / FETCH path observes
+	// every modseq-bumping mutation, including the extimg
+	// internalize-worker's cause = 'background' rewrites
+	// (REQ-EXTIMG-BG-INTERNAL-13). The user-only filter on the default
+	// ReadChangeFeed is a JMAP-side optimisation that would, on this
+	// path, hide CONDSTORE-relevant byte deltas.
 	rcfTimer := observe.StartStoreOp("read_change_feed")
-	changes, err := ses.s.store.Meta().ReadChangeFeed(idleCtx, ses.pid, 0, 10000)
+	changes, err := ses.s.store.Meta().ReadChangeFeedAll(idleCtx, ses.pid, 0, 10000)
 	rcfTimer.Done()
 	if err == nil && len(changes) > 0 {
 		cursor = changes[len(changes)-1].Seq
@@ -786,7 +792,10 @@ func (ses *session) handleIDLE(ctx context.Context, c *Command) error {
 			return io.EOF
 		}
 		rcfTimer := observe.StartStoreOp("read_change_feed")
-		changes, err := ses.s.store.Meta().ReadChangeFeed(idleCtx, ses.pid, cursor, 1024)
+		// ReadChangeFeedAll: IMAP IDLE must observe every cause
+		// (REQ-EXTIMG-BG-INTERNAL-13). See the connect-time call site
+		// above for the rationale.
+		changes, err := ses.s.store.Meta().ReadChangeFeedAll(idleCtx, ses.pid, cursor, 1024)
 		rcfTimer.Done()
 		if err != nil {
 			continue

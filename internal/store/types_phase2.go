@@ -1011,6 +1011,12 @@ type JMAPStates struct {
 	// on every UpsertSeenAddress, DestroySeenAddress, or
 	// PurgeSeenAddressesByPrincipal call.
 	SeenAddress int64
+	// InternalizeStatus is the extimg internalize-worker's per-batch
+	// counter (REQ-EXTIMG-BG-INTERNAL-20). Bumped once per non-empty
+	// processed batch; the EventSource push surfaces this advance as
+	// the InternalizeStatus type so the SPA refreshes the
+	// urn:netzhansa:params:jmap:internalize-status session capability.
+	InternalizeStatus int64
 	// UpdatedAt is the instant of the most recent increment.
 	UpdatedAt time.Time
 }

@@ -1317,7 +1317,7 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			ppid, mb, em, th, ide, es, vr, sv, ab, ct, cal, ce int64
 			conv, msgChat, memb                                int64
 			pushSub, coach, catSettings, managedRule           int64
-			seenAddr                                           int64
+			seenAddr, internalizeStatus                        int64
 			updatedUs                                          int64
 		)
 		err := tx.QueryRow(ctx, `
@@ -1329,36 +1329,38 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			       push_subscription_state, shortcut_coach_state,
 			       category_settings_state, managed_rule_state,
 			       seen_address_state,
+			       internalize_status_state,
 			       updated_at_us
 			  FROM jmap_states WHERE principal_id = $1`, int64(pid)).Scan(
 			&ppid, &mb, &em, &th, &ide, &es, &vr, &sv, &ab, &ct, &cal, &ce,
 			&conv, &msgChat, &memb, &pushSub, &coach, &catSettings, &managedRule,
-			&seenAddr, &updatedUs)
+			&seenAddr, &internalizeStatus, &updatedUs)
 		if err != nil {
 			return mapErr(err)
 		}
 		out = store.JMAPStates{
-			PrincipalID:      store.PrincipalID(ppid),
-			Mailbox:          mb,
-			Email:            em,
-			Thread:           th,
-			Identity:         ide,
-			EmailSubmission:  es,
-			VacationResponse: vr,
-			Sieve:            sv,
-			AddressBook:      ab,
-			Contact:          ct,
-			Calendar:         cal,
-			CalendarEvent:    ce,
-			Conversation:     conv,
-			ChatMessage:      msgChat,
-			Membership:       memb,
-			PushSubscription: pushSub,
-			ShortcutCoach:    coach,
-			CategorySettings: catSettings,
-			ManagedRule:      managedRule,
-			SeenAddress:      seenAddr,
-			UpdatedAt:        fromMicros(updatedUs),
+			PrincipalID:       store.PrincipalID(ppid),
+			Mailbox:           mb,
+			Email:             em,
+			Thread:            th,
+			Identity:          ide,
+			EmailSubmission:   es,
+			VacationResponse:  vr,
+			Sieve:             sv,
+			AddressBook:       ab,
+			Contact:           ct,
+			Calendar:          cal,
+			CalendarEvent:     ce,
+			Conversation:      conv,
+			ChatMessage:       msgChat,
+			Membership:        memb,
+			PushSubscription:  pushSub,
+			ShortcutCoach:     coach,
+			CategorySettings:  catSettings,
+			ManagedRule:       managedRule,
+			SeenAddress:       seenAddr,
+			InternalizeStatus: internalizeStatus,
+			UpdatedAt:         fromMicros(updatedUs),
 		}
 		return nil
 	})
@@ -1436,6 +1438,8 @@ func jmapStateColumnPG(kind store.JMAPStateKind) (string, error) {
 		return "managed_rule_state", nil
 	case store.JMAPStateKindSeenAddress:
 		return "seen_address_state", nil
+	case store.JMAPStateKindInternalizeStatus:
+		return "internalize_status_state", nil
 	default:
 		return "", fmt.Errorf("storepg: unknown JMAPStateKind %d", kind)
 	}

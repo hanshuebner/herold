@@ -294,7 +294,14 @@ func walkChangeFeed(
 		if err := ctx.Err(); err != nil {
 			return nil, nil, nil, err
 		}
-		batch, ferr := meta.ReadChangeFeed(ctx, pid, cursor, page)
+		// ReadChangeFeedAll: include background-cause rows
+		// (REQ-EXTIMG-BG-INTERNAL-14). The walker filters on
+		// EntityKind below, so background rows produced by the extimg
+		// internalize-worker on the Email kind are skipped naturally;
+		// the explicit opt-in keeps this consumer aligned with the
+		// architecture table even if a future producer were to write
+		// background rows for the SeenAddress kind.
+		batch, ferr := meta.ReadChangeFeedAll(ctx, pid, cursor, page)
 		if ferr != nil {
 			return nil, nil, nil, ferr
 		}

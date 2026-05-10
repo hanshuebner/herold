@@ -1136,7 +1136,12 @@ func (m *metadata) ReplaceMessageBody(
 				newModSeq, usMicros(now), mb); err != nil {
 				return mapErr(err)
 			}
-			if err := appendStateChange(ctx, tx, store.PrincipalID(pid),
+			// REQ-EXTIMG-BG-INTERNAL-15: tag the worker's body rewrite
+			// as cause = 'background' so JMAP Email/changes and the
+			// EventSource push loop suppress it. IMAP CONDSTORE /
+			// FETCH still observe the modseq advance and the row via
+			// ReadChangeFeedAll.
+			if err := appendStateChangeBackground(ctx, tx, store.PrincipalID(pid),
 				store.EntityKindEmail, uint64(id), uint64(mb),
 				store.ChangeOpUpdated, now); err != nil {
 				return err
@@ -1858,6 +1863,20 @@ func pgReplayPretrashMailboxes(ctx context.Context, tx pgx.Tx, msgID int64, now 
 	return nil
 }
 
+func (m *metadata) AppendStateChange(ctx context.Context, change store.StateChange) error {
+	now := m.s.clock.Now().UTC()
+	cause := change.Cause
+	if cause == "" {
+		cause = store.ChangeCauseUser
+	}
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		_, err := appendStateChangeSeqWithCause(ctx, tx, change.PrincipalID,
+			change.Kind, change.EntityID, change.ParentEntityID, change.Op,
+			cause, now)
+		return err
+	})
+}
+
 func (m *metadata) UpdateMailboxModseqAndAppendChange(
 	ctx context.Context,
 	mailboxID store.MailboxID,
@@ -1888,8 +1907,13 @@ func (m *metadata) UpdateMailboxModseqAndAppendChange(
 		if parentEntityID == 0 {
 			parentEntityID = uint64(mailboxID)
 		}
-		seq, err := appendStateChangeSeq(ctx, tx, store.PrincipalID(pid), change.Kind,
-			change.EntityID, parentEntityID, change.Op, now)
+		// Honour the caller-supplied Cause; default to user.
+		cause := change.Cause
+		if cause == "" {
+			cause = store.ChangeCauseUser
+		}
+		seq, err := appendStateChangeSeqWithCause(ctx, tx, store.PrincipalID(pid), change.Kind,
+			change.EntityID, parentEntityID, change.Op, cause, now)
 		if err != nil {
 			return err
 		}
@@ -1910,14 +1934,46 @@ func (m *metadata) ReadChangeFeed(
 	fromSeq store.ChangeSeq,
 	max int,
 ) ([]store.StateChange, error) {
+	return m.readChangeFeed(ctx, principalID, fromSeq, max, true /* userOnly */)
+}
+
+func (m *metadata) ReadChangeFeedAll(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	fromSeq store.ChangeSeq,
+	max int,
+) ([]store.StateChange, error) {
+	return m.readChangeFeed(ctx, principalID, fromSeq, max, false /* userOnly */)
+}
+
+func (m *metadata) readChangeFeed(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	fromSeq store.ChangeSeq,
+	max int,
+	userOnly bool,
+) ([]store.StateChange, error) {
 	if max <= 0 {
 		max = 1000
 	}
-	rows, err := m.s.pool.Query(ctx, `
-		SELECT seq, principal_id, entity_kind, entity_id, parent_entity_id, op, produced_at_us
-		  FROM state_changes
-		 WHERE principal_id = $1 AND seq > $2
-		 ORDER BY seq ASC LIMIT $3`, int64(principalID), int64(fromSeq), max)
+	// User-cause filter (REQ-EXTIMG-BG-INTERNAL-11). Mirrors the
+	// storesqlite implementation; see the doc comment there for the
+	// rationale.
+	var rows pgx.Rows
+	var err error
+	if userOnly {
+		rows, err = m.s.pool.Query(ctx, `
+			SELECT seq, principal_id, entity_kind, entity_id, parent_entity_id, op, cause, produced_at_us
+			  FROM state_changes
+			 WHERE principal_id = $1 AND seq > $2 AND cause = 'user'
+			 ORDER BY seq ASC LIMIT $3`, int64(principalID), int64(fromSeq), max)
+	} else {
+		rows, err = m.s.pool.Query(ctx, `
+			SELECT seq, principal_id, entity_kind, entity_id, parent_entity_id, op, cause, produced_at_us
+			  FROM state_changes
+			 WHERE principal_id = $1 AND seq > $2
+			 ORDER BY seq ASC LIMIT $3`, int64(principalID), int64(fromSeq), max)
+	}
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -1925,10 +1981,10 @@ func (m *metadata) ReadChangeFeed(
 	var out []store.StateChange
 	for rows.Next() {
 		var seq, pid int64
-		var kind string
+		var kind, cause string
 		var op int16
 		var eid, peid, prodUs int64
-		if err := rows.Scan(&seq, &pid, &kind, &eid, &peid, &op, &prodUs); err != nil {
+		if err := rows.Scan(&seq, &pid, &kind, &eid, &peid, &op, &cause, &prodUs); err != nil {
 			return nil, mapErr(err)
 		}
 		out = append(out, store.StateChange{
@@ -1938,6 +1994,7 @@ func (m *metadata) ReadChangeFeed(
 			EntityID:       uint64(eid),
 			ParentEntityID: uint64(peid),
 			Op:             store.ChangeOp(op),
+			Cause:          store.ChangeCause(cause),
 			ProducedAt:     fromMicros(prodUs),
 		})
 	}
@@ -1949,9 +2006,11 @@ func (m *metadata) GetMaxChangeSeqForKind(
 	principalID store.PrincipalID,
 	kind store.EntityKind,
 ) (store.ChangeSeq, error) {
+	// User-cause filter (REQ-EXTIMG-BG-INTERNAL-10).
 	var seq int64
 	err := m.s.pool.QueryRow(ctx,
-		`SELECT COALESCE(MAX(seq), 0) FROM state_changes WHERE principal_id = $1 AND entity_kind = $2`,
+		`SELECT COALESCE(MAX(seq), 0) FROM state_changes
+		 WHERE principal_id = $1 AND entity_kind = $2 AND cause = 'user'`,
 		int64(principalID), string(kind)).Scan(&seq)
 	if err != nil {
 		return 0, mapErr(err)
@@ -1975,20 +2034,49 @@ func (m *metadata) GetMaxChangeSeqForPrincipal(
 
 // -- helpers ----------------------------------------------------------
 
+// appendStateChange appends a user-cause state-change row. ~25 call
+// sites use this directly; the variant appendStateChangeBackground
+// exists for the extimg internalize-worker (the only v1 background
+// producer; REQ-EXTIMG-BG-INTERNAL-15). Each writer site declares its
+// cause explicitly -- there is no ambient inference.
 func appendStateChange(
 	ctx context.Context, tx pgx.Tx, principalID store.PrincipalID,
 	kind store.EntityKind, entityID uint64, parentEntityID uint64,
 	op store.ChangeOp, now time.Time,
 ) error {
-	_, err := appendStateChangeSeq(ctx, tx, principalID, kind, entityID, parentEntityID, op, now)
+	_, err := appendStateChangeSeqWithCause(ctx, tx, principalID, kind, entityID, parentEntityID, op, store.ChangeCauseUser, now)
 	return err
 }
 
-func appendStateChangeSeq(
+// appendStateChangeBackground is the cause = 'background' variant used
+// by the extimg internalize-worker (REQ-EXTIMG-BG-INTERNAL-03/-15). The
+// row is invisible to the default ReadChangeFeed and to
+// GetMaxChangeSeqForKind; IMAP IDLE / FTS / seen-address read it via
+// ReadChangeFeedAll. Adding a new caller requires a follow-up REQ that
+// justifies the classification.
+func appendStateChangeBackground(
 	ctx context.Context, tx pgx.Tx, principalID store.PrincipalID,
 	kind store.EntityKind, entityID uint64, parentEntityID uint64,
 	op store.ChangeOp, now time.Time,
+) error {
+	_, err := appendStateChangeSeqWithCause(ctx, tx, principalID, kind, entityID, parentEntityID, op, store.ChangeCauseBackground, now)
+	return err
+}
+
+// appendStateChangeSeqWithCause writes one state-change row, assigning
+// the next per-principal sequence atomically and returning it. The
+// public surface is the cause-typed pair appendStateChange (user) and
+// appendStateChangeBackground; UpdateMailboxModseqAndAppendChange uses
+// this helper directly so it can honour the caller-supplied
+// StateChange.Cause without re-shimming.
+func appendStateChangeSeqWithCause(
+	ctx context.Context, tx pgx.Tx, principalID store.PrincipalID,
+	kind store.EntityKind, entityID uint64, parentEntityID uint64,
+	op store.ChangeOp, cause store.ChangeCause, now time.Time,
 ) (store.ChangeSeq, error) {
+	if cause == "" {
+		cause = store.ChangeCauseUser
+	}
 	var next int64
 	err := tx.QueryRow(ctx,
 		`SELECT COALESCE(MAX(seq), 0)+1 FROM state_changes WHERE principal_id = $1`,
@@ -1998,9 +2086,9 @@ func appendStateChangeSeq(
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO state_changes (principal_id, seq, entity_kind, entity_id,
-		  parent_entity_id, op, produced_at_us) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		  parent_entity_id, op, cause, produced_at_us) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		int64(principalID), next, string(kind), int64(entityID),
-		int64(parentEntityID), int16(op), usMicros(now))
+		int64(parentEntityID), int16(op), string(cause), usMicros(now))
 	if err != nil {
 		return 0, mapErr(err)
 	}

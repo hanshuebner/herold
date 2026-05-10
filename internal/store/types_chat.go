@@ -404,6 +404,18 @@ const (
 	// Bumped on every UpsertSeenAddress, DestroySeenAddress, or
 	// PurgeSeenAddressesByPrincipal call.
 	JMAPStateKindSeenAddress
+	// JMAPStateKindInternalizeStatus tracks the per-principal extimg
+	// internalize-worker's processed-batch counter
+	// (REQ-EXTIMG-BG-INTERNAL-20..23). Bumped exactly once per non-empty
+	// processed worker batch via IncrementJMAPState. Surfaced over the
+	// EventSource push channel as the InternalizeStatus type so the
+	// suite SPA can refresh the urn:netzhansa:params:jmap:internalize-status
+	// session capability without per-message Email-state churn during a
+	// backlog drain. The underlying column is
+	// jmap_states.internalize_status_state. Defined alongside the chat
+	// iota chain so the contiguous-iota invariant is preserved (the
+	// jmap_states column ordering follows this enum order).
+	JMAPStateKindInternalizeStatus
 )
 
 // Chat-side server-enforced caps. CHECK constraints in SQL would

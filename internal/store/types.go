@@ -658,6 +658,14 @@ const (
 	// "PushSubscription" via EventSource see their own administrative
 	// changes (other devices that the same user logged in from).
 	EntityKindPushSubscription EntityKind = "push_subscription"
+	// EntityKindInternalizeStatus is the synthetic kind the extimg
+	// internalize-worker writes to drive the EventSource push channel
+	// (REQ-EXTIMG-BG-INTERNAL-20..23). It carries no entity row and is
+	// produced exactly once per non-empty processed worker batch as a
+	// cause = 'user' marker so the push loop arms its flush timer; the
+	// underlying state value the SPA reads is
+	// jmap_states.internalize_status_state, surfaced via collectStateMap.
+	EntityKindInternalizeStatus EntityKind = "internalize_status"
 	// EntityKindSeenAddress is a `SeenAddress` row (REQ-MAIL-11e..m).
 	// The feed carries (Kind, EntityID = SeenAddressID, ParentEntityID = 0, Op).
 	// Clients that watch SeenAddress via EventSource observe their own
@@ -686,9 +694,34 @@ const (
 	ChangeOpDestroyed
 )
 
+// ChangeCause classifies a StateChange row by who drove the mutation.
+// See REQ-EXTIMG-BG-INTERNAL-01 and
+// docs/design/server/architecture/05-sync-and-state.md "Cause
+// classification". The store backend stores cause as an open enum
+// (TEXT) so additional values (e.g. 'replication', 'maintenance') can
+// be added without a schema change.
+type ChangeCause string
+
+// ChangeCause values. Treat unset (empty string) as ChangeCauseUser.
+const (
+	// ChangeCauseUser is the default for any user-attributable
+	// mutation: JMAP /set, IMAP STORE/EXPUNGE/APPEND/COPY/MOVE,
+	// delivery, admin operations. JMAP /changes and EventSource react
+	// to these.
+	ChangeCauseUser ChangeCause = "user"
+	// ChangeCauseBackground tags mutations driven by an in-process
+	// background worker that rewrites stored bytes without changing
+	// what the user can observe. v1 producer: extimg internalize-worker
+	// (REQ-EXTIMG-BG-INTERNAL-15). JMAP /changes and EventSource
+	// suppress these; IMAP IDLE / FETCH and the FTS / seen-address
+	// indexers see them via ReadChangeFeedAll.
+	ChangeCauseBackground ChangeCause = "background"
+)
+
 // StateChange is one entry in a principal's monotonic state-change feed.
 // Consumers (IMAP IDLE, JMAP push, FTS worker) read ranges of this feed
-// with ReadChangeFeed to observe committed mutations.
+// with ReadChangeFeed (cause = 'user' only) or ReadChangeFeedAll (every
+// cause) to observe committed mutations.
 //
 // The row is intentionally datatype-agnostic. The triple (Kind,
 // EntityID, ParentEntityID) names the affected entity; per-type sync
@@ -718,6 +751,13 @@ type StateChange struct {
 	ParentEntityID uint64
 	// Op classifies the mutation (created / updated / destroyed).
 	Op ChangeOp
+	// Cause classifies who drove the mutation
+	// (REQ-EXTIMG-BG-INTERNAL-01). Default ChangeCauseUser; the empty
+	// string is treated as user. The JMAP /changes and EventSource
+	// read paths filter on cause = 'user' so a background worker
+	// rewrite does not provoke a /changes round-trip; IMAP IDLE / FTS
+	// / seen-address read every cause via ReadChangeFeedAll.
+	Cause ChangeCause
 	// ProducedAt is the instant the mutation's transaction committed,
 	// captured from the injected Clock (not the wall clock).
 	ProducedAt time.Time

@@ -266,6 +266,16 @@ type Metadata interface {
 	// import-drain phase.
 	CountInternalizePending(ctx context.Context, principalID PrincipalID) (uint64, error)
 
+	// AppendStateChange writes a single change-feed row directly,
+	// honouring the supplied PrincipalID, Kind, EntityID,
+	// ParentEntityID, Op and Cause. It is intended for synthetic /
+	// non-entity-bound rows -- v1 use site is the extimg
+	// internalize-worker driving the InternalizeStatus push channel
+	// (REQ-EXTIMG-BG-INTERNAL-22). The store assigns Seq atomically;
+	// callers do not pre-compute it. Cause defaults to user when the
+	// caller leaves it empty.
+	AppendStateChange(ctx context.Context, change StateChange) error
+
 	// UpdateMailboxModseqAndAppendChange is the low-level escape hatch
 	// used by protocol code that has already computed a multi-row
 	// mutation and needs to advance HighestModSeq and append a
@@ -280,11 +290,33 @@ type Metadata interface {
 
 	// ReadChangeFeed returns up to max StateChange entries with Seq
 	// strictly greater than fromSeq, in ascending Seq order, for the
-	// given principal. When the feed end is reached the returned slice
-	// is shorter than max (possibly empty). Consumers persist the last
-	// observed Seq as their cursor; see ReadChangeFeedForFTS for the
-	// cross-principal variant used by the FTS worker.
+	// given principal. Default cause filter: cause = 'user' only. JMAP
+	// /changes / EventSource and any consumer that mirrors the
+	// user-visible state of an entity must call this method;
+	// ReadChangeFeedAll is the explicit opt-in for consumers (IMAP
+	// IDLE, FTS, seen-address) that need every cause. Un-migrated
+	// callers therefore fail closed (less data, not more) per
+	// REQ-EXTIMG-BG-INTERNAL-11. When the feed end is reached the
+	// returned slice is shorter than max (possibly empty); consumers
+	// persist the last observed Seq as their cursor. See
+	// ReadChangeFeedForFTS for the cross-principal variant used by the
+	// FTS worker.
 	ReadChangeFeed(
+		ctx context.Context,
+		principalID PrincipalID,
+		fromSeq ChangeSeq,
+		max int,
+	) ([]StateChange, error)
+
+	// ReadChangeFeedAll is the cause-blind read used by IMAP IDLE
+	// (CONDSTORE / FETCH must observe every byte-level mutation), the
+	// FTS-feed reader, and the seen-address indexer
+	// (REQ-EXTIMG-BG-INTERNAL-13/-14). The returned rows include
+	// cause = 'background' entries written by the extimg
+	// internalize-worker (REQ-EXTIMG-BG-INTERNAL-15) alongside the
+	// regular cause = 'user' rows; otherwise the read shape is
+	// identical to ReadChangeFeed.
+	ReadChangeFeedAll(
 		ctx context.Context,
 		principalID PrincipalID,
 		fromSeq ChangeSeq,
@@ -293,7 +325,10 @@ type Metadata interface {
 
 	// GetMaxChangeSeqForKind returns the highest Seq in the change feed
 	// for the given principal and entity kind, or 0 when no matching row
-	// exists. Used by JMAP Foo/changes and Foo/set to derive per-type
+	// exists. Filters cause = 'user' only (REQ-EXTIMG-BG-INTERNAL-10):
+	// background-cause writes from the extimg internalize-worker do not
+	// advance the JMAP-visible state, mirroring the ReadChangeFeed
+	// default. Used by JMAP Foo/changes and Foo/set to derive per-type
 	// state strings directly from the change feed, so that mutations made
 	// outside the JMAP layer (e.g. IMAP APPEND, principal provisioning)
 	// are reflected in state strings without a separate counter.

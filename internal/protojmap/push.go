@@ -193,16 +193,35 @@ func (s *Server) runEventSource(
 				)
 				continue
 			}
-			matched := false
+			// Per REQ-EXTIMG-BG-INTERNAL-12: only arm the flush timer
+			// when a polled change is user-visible (a kind the
+			// subscription cares about AND cause = 'user'). A polling
+			// cycle that sees only cause = 'background' rows
+			// (extimg internalize-worker, REQ-EXTIMG-BG-INTERNAL-15)
+			// advances the cursor silently -- no SSE event, no
+			// /changes round-trip on the SPA. The production poller
+			// already filters cause = 'user' at the SQL layer; this
+			// loop-side guard is defence-in-depth and the seam tests
+			// drive against (a synthetic poller can surface
+			// background rows and we still suppress the flush). The
+			// InternalizeStatus type is treated as user-visible: it
+			// is the dedicated push channel introduced by
+			// REQ-EXTIMG-BG-INTERNAL-22 and is not pollable from the
+			// change feed (it has no EntityKind row), so it surfaces
+			// only via the row-based jmap_states snapshot in
+			// collectStateMap.
+			matchedUserVisible := false
 			for _, c := range changes {
 				if c.Seq > cursor {
 					cursor = c.Seq
 				}
 				if matchesEventSourceType(types, c.Kind) {
-					matched = true
+					if c.Cause == "" || c.Cause == store.ChangeCauseUser {
+						matchedUserVisible = true
+					}
 				}
 			}
-			if matched && !pendingChanged {
+			if matchedUserVisible && !pendingChanged {
 				pendingChanged = true
 				flushTimer = s.clk.After(s.opts.PushCoalesceWindow)
 			}
@@ -308,8 +327,13 @@ func (s *Server) collectStateMap(ctx context.Context, p store.Principal, types m
 	}
 
 	// jmap_states-derived types — only fetch the row when at least one
-	// row-based subscriber needs it.
-	rowTypes := []string{"Identity", "EmailSubmission", "VacationResponse"}
+	// row-based subscriber needs it. InternalizeStatus joins this set
+	// per REQ-EXTIMG-BG-INTERNAL-22: the extimg internalize-worker
+	// bumps jmap_states.internalize_status_state once per processed
+	// batch and writes a paired EntityKindInternalizeStatus state_changes
+	// row that arms the push flush; the SPA then refreshes the
+	// urn:netzhansa:params:jmap:internalize-status session capability.
+	rowTypes := []string{"Identity", "EmailSubmission", "VacationResponse", "InternalizeStatus"}
 	rowNeeded := false
 	for _, t := range rowTypes {
 		if matchesEventSourceTypeName(types, t) {
@@ -330,6 +354,9 @@ func (s *Server) collectStateMap(ctx context.Context, p store.Principal, types m
 		}
 		if matchesEventSourceTypeName(types, "VacationResponse") {
 			out["VacationResponse"] = strconv.FormatInt(st.VacationResponse, 10)
+		}
+		if matchesEventSourceTypeName(types, "InternalizeStatus") {
+			out["InternalizeStatus"] = strconv.FormatInt(st.InternalizeStatus, 10)
 		}
 	}
 	return out, nil
@@ -412,6 +439,8 @@ func entityKindToJMAPType(k store.EntityKind) string {
 		return "Message"
 	case store.EntityKindMembership:
 		return "Membership"
+	case store.EntityKindInternalizeStatus:
+		return "InternalizeStatus"
 	default:
 		return ""
 	}

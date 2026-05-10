@@ -2,9 +2,31 @@ package protojmap
 
 import (
 	"context"
+	"log/slog"
+	"net/http"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// RunEventSourceForTest exposes the unexported runEventSource push loop
+// so a test can swap in a synthetic poller and assert the
+// REQ-EXTIMG-BG-INTERNAL-12 / -62 invariant: a polling cycle that
+// surfaces only cause = 'background' rows advances the cursor without
+// arming the SSE flush timer.
+func (s *Server) RunEventSourceForTest(
+	ctx context.Context,
+	log *slog.Logger,
+	w http.ResponseWriter,
+	flusher http.Flusher,
+	p store.Principal,
+	types map[string]struct{},
+	closeAfterState bool,
+	ping time.Duration,
+	poll func(ctx context.Context, pid store.PrincipalID, fromSeq store.ChangeSeq, max int) ([]store.StateChange, error),
+) error {
+	return s.runEventSource(ctx, log, w, flusher, p, types, closeAfterState, ping, changeFeedPoller(poll))
+}
 
 // HashAPIKeyForTest exposes the package-internal hash function so the
 // test fixture can mint API keys without going through protoadmin's

@@ -1,0 +1,24 @@
+-- 0045_jmap_states_internalize_status.sql -- per-principal pending-count
+-- push channel for the extimg internalize-worker.
+--
+-- See REQ-EXTIMG-BG-INTERNAL-20..23 and the Cause-classification section of
+-- docs/design/server/architecture/05-sync-and-state.md.
+--
+-- After REQ-EXTIMG-BG-INTERNAL-01 reclassified the worker's row writes as
+-- cause = 'background', the JMAP Email state stops advancing on rewrites
+-- and the SPA no longer sees a per-rewrite push. The settings-panel
+-- "Image processing" section still needs to react when the pending count
+-- moves -- the worker does *some* work, the user wants to see the count
+-- shrink.
+--
+-- This migration grows jmap_states with a dedicated counter
+-- (`internalize_status_state`) bumped via the existing IncrementJMAPState
+-- API once per processed worker batch. The EventSource push loop
+-- subscribes via the new `JMAPStateKindInternalizeStatus` kind; the SPA
+-- refreshes the session capability descriptor on receipt.
+--
+-- The column defaults to 0 so existing rows are valid post-migration.
+--
+-- Forward-only.
+
+ALTER TABLE jmap_states ADD COLUMN internalize_status_state BIGINT NOT NULL DEFAULT 0;

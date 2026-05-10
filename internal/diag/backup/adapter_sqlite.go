@@ -390,12 +390,12 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 	case "state_changes":
 		return enumerate(ctx, s.tx,
 			`SELECT id, principal_id, seq, entity_kind, entity_id,
-			        parent_entity_id, op, produced_at_us
+			        parent_entity_id, op, cause, produced_at_us
 			   FROM state_changes ORDER BY id`,
 			func(rs *sql.Rows) (any, error) {
 				var r StateChangeRow
 				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.Seq, &r.EntityKind,
-					&r.EntityID, &r.ParentEntityID, &r.Op, &r.ProducedAtUs); err != nil {
+					&r.EntityID, &r.ParentEntityID, &r.Op, &r.Cause, &r.ProducedAtUs); err != nil {
 					return nil, err
 				}
 				return &r, nil
@@ -565,14 +565,16 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 			`SELECT principal_id, mailbox_state, email_state, thread_state,
 			        identity_state, email_submission_state, vacation_response_state,
 			        updated_at_us, shortcut_coach_state, category_settings_state,
-			        managed_rule_state, seen_address_state
+			        managed_rule_state, seen_address_state,
+			        internalize_status_state
 			   FROM jmap_states ORDER BY principal_id`,
 			func(rs *sql.Rows) (any, error) {
 				var r JMAPStateRow
 				if err := rs.Scan(&r.PrincipalID, &r.MailboxState, &r.EmailState,
 					&r.ThreadState, &r.IdentityState, &r.EmailSubmissionState,
 					&r.VacationResponseState, &r.UpdatedAtUs, &r.ShortcutCoachState,
-					&r.CategorySettingsState, &r.ManagedRuleState, &r.SeenAddressState); err != nil {
+					&r.CategorySettingsState, &r.ManagedRuleState, &r.SeenAddressState,
+					&r.InternalizeStatusState); err != nil {
 					return nil, err
 				}
 				return &r, nil
@@ -1261,12 +1263,16 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		return err
 	case "state_changes":
 		r := row.(*StateChangeRow)
+		cause := r.Cause
+		if cause == "" {
+			cause = "user"
+		}
 		_, err := s.tx.ExecContext(ctx,
 			`INSERT INTO state_changes (id, principal_id, seq, entity_kind, entity_id,
-			   parent_entity_id, op, produced_at_us)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			   parent_entity_id, op, cause, produced_at_us)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.PrincipalID, r.Seq, r.EntityKind, r.EntityID,
-			r.ParentEntityID, r.Op, r.ProducedAtUs)
+			r.ParentEntityID, r.Op, cause, r.ProducedAtUs)
 		return err
 	case "audit_log":
 		r := row.(*AuditLogRow)
@@ -1382,12 +1388,12 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			`INSERT INTO jmap_states (principal_id, mailbox_state, email_state, thread_state,
 			   identity_state, email_submission_state, vacation_response_state, updated_at_us,
 			   shortcut_coach_state, category_settings_state, managed_rule_state,
-			   seen_address_state)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   seen_address_state, internalize_status_state)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.PrincipalID, r.MailboxState, r.EmailState, r.ThreadState,
 			r.IdentityState, r.EmailSubmissionState, r.VacationResponseState, r.UpdatedAtUs,
 			r.ShortcutCoachState, r.CategorySettingsState, r.ManagedRuleState,
-			r.SeenAddressState)
+			r.SeenAddressState, r.InternalizeStatusState)
 		return err
 	case "jmap_email_submissions":
 		r := row.(*JMAPEmailSubmissionRow)

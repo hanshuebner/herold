@@ -214,7 +214,13 @@ type StateChangeRow struct {
 	EntityID       int64  `json:"entity_id"`
 	ParentEntityID int64  `json:"parent_entity_id"`
 	Op             int64  `json:"op"`
-	ProducedAtUs   int64  `json:"produced_at_us"`
+	// Cause classifies the mutation (REQ-EXTIMG-BG-INTERNAL-01).
+	// 'user' or 'background'; defaults to 'user' on legacy bundles
+	// (the omitempty tag preserves backwards compatibility for
+	// pre-migration backups, and the storesqlite/storepg writer
+	// substitutes 'user' on empty input).
+	Cause        string `json:"cause,omitempty"`
+	ProducedAtUs int64  `json:"produced_at_us"`
 }
 
 type AuditLogRow struct {
@@ -375,6 +381,11 @@ type JMAPStateRow struct {
 	// the SeenAddress datatype (REQ-MAIL-11e..m). Zero for rows
 	// written before migration 0030.
 	SeenAddressState int64 `json:"seen_address_state,omitempty"`
+	// InternalizeStatusState is the migration-0045 JMAP state counter
+	// for the extimg internalize-worker's per-batch processed counter
+	// (REQ-EXTIMG-BG-INTERNAL-20). Zero for rows written before
+	// migration 0045.
+	InternalizeStatusState int64 `json:"internalize_status_state,omitempty"`
 }
 
 type JMAPEmailSubmissionRow struct {

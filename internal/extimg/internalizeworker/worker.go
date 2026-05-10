@@ -140,8 +140,10 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 // runBatch pulls one batch from the store, fans the work out to
-// `Concurrency` goroutines, waits for completion, and advances the
-// cursor. Returns true when the batch was empty (caller should park).
+// `Concurrency` goroutines, waits for completion, bumps the per-principal
+// InternalizeStatus state once per affected principal
+// (REQ-EXTIMG-BG-INTERNAL-21), and advances the cursor. Returns true
+// when the batch was empty (caller should park).
 func (w *Worker) runBatch(ctx context.Context) bool {
 	cursor := w.snapshotCursor()
 	ids, err := w.store.Meta().ListMessagesWithInternalizePending(ctx, cursor, w.opts.BatchSize)
@@ -158,7 +160,11 @@ func (w *Worker) runBatch(ctx context.Context) bool {
 	}
 	// Fan out. Use a small semaphore so we never exceed Concurrency
 	// in flight; a per-message cancellation propagates from ctx.
+	// Each goroutine reports the affected principal back via
+	// principalsCh so the post-batch bump can fire once per principal
+	// without holding any per-message lock during the fan-out.
 	sem := make(chan struct{}, w.opts.Concurrency)
+	principalsCh := make(chan store.PrincipalID, len(ids))
 	var wg sync.WaitGroup
 fanout:
 	for _, id := range ids {
@@ -171,10 +177,55 @@ fanout:
 		go func(id store.MessageID) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			w.processOne(ctx, id)
+			if pid, ok := w.processOne(ctx, id); ok {
+				principalsCh <- pid
+			}
 		}(id)
 	}
 	wg.Wait()
+	close(principalsCh)
+	// Collect distinct affected principals. The InternalizeStatus
+	// counter advances once per principal per batch
+	// (REQ-EXTIMG-BG-INTERNAL-21) regardless of whether individual
+	// rewrites succeeded -- the count surface only reflects "the
+	// worker did *some* work" on this principal's mailbox.
+	seen := make(map[store.PrincipalID]struct{}, 4)
+	for pid := range principalsCh {
+		if pid == 0 {
+			continue
+		}
+		seen[pid] = struct{}{}
+	}
+	for pid := range seen {
+		// Bump the per-principal state counter and emit a paired
+		// EntityKindInternalizeStatus user-cause state_changes row.
+		// The row is what arms the EventSource flush timer; the
+		// counter is what the SPA reads via collectStateMap.
+		// REQ-EXTIMG-BG-INTERNAL-22.
+		if _, err := w.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindInternalizeStatus); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				break
+			}
+			w.logger.LogAttrs(ctx, slog.LevelWarn, "extimg-worker: bump internalize-status failed",
+				slog.Uint64("principal_id", uint64(pid)),
+				slog.String("err", err.Error()))
+			continue
+		}
+		change := store.StateChange{
+			PrincipalID: pid,
+			Kind:        store.EntityKindInternalizeStatus,
+			Op:          store.ChangeOpUpdated,
+			Cause:       store.ChangeCauseUser,
+		}
+		if err := w.store.Meta().AppendStateChange(ctx, change); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				break
+			}
+			w.logger.LogAttrs(ctx, slog.LevelWarn, "extimg-worker: append internalize-status change failed",
+				slog.Uint64("principal_id", uint64(pid)),
+				slog.String("err", err.Error()))
+		}
+	}
 	// Advance the cursor to the lowest id of the batch (the rows are
 	// returned descending, so ids[len-1] is the lowest).
 	w.advanceCursor(ids[len(ids)-1])
@@ -183,19 +234,26 @@ fanout:
 
 // processOne runs the rewrite for a single message. Errors are
 // swallowed to the log; the cursor advances regardless so a poison
-// blob never wedges the worker.
-func (w *Worker) processOne(ctx context.Context, id store.MessageID) {
+// blob never wedges the worker. Returns the message's principal id
+// and ok = true when the worker did *some* work on this row (whether
+// the rewrite succeeded, no-changed out, or failed with the flag
+// cleared) so runBatch can aggregate the distinct affected
+// principals for the per-batch InternalizeStatus bump
+// (REQ-EXTIMG-BG-INTERNAL-21). ok = false when the row was already
+// gone (expunged) or already cleared by a competing path -- those
+// are no-ops the count surface should not credit the worker for.
+func (w *Worker) processOne(ctx context.Context, id store.MessageID) (store.PrincipalID, bool) {
 	w.bumpProcessed()
 	m, err := w.store.Meta().GetMessage(ctx, id)
 	if err != nil {
 		// Message gone (expunged) — clear the flag if it still
 		// exists, otherwise just move on.
 		_ = w.store.Meta().ClearMessageInternalizePending(ctx, id)
-		return
+		return 0, false
 	}
 	if !m.InternalizePending {
 		// Already cleared by another path.
-		return
+		return 0, false
 	}
 	if err := w.internalize(ctx, m); err != nil {
 		w.logger.LogAttrs(ctx, slog.LevelWarn, "extimg-worker: rewrite failed",
@@ -206,6 +264,7 @@ func (w *Worker) processOne(ctx context.Context, id store.MessageID) {
 		// failure is on the existing extimg metric.
 		_ = w.store.Meta().ClearMessageInternalizePending(ctx, m.ID)
 	}
+	return m.PrincipalID, true
 }
 
 // internalize loads the blob, runs extimg.Internalize, and replaces

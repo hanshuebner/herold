@@ -52,6 +52,11 @@ func Run(t *testing.T, f Factory) {
 		{"ExpungeMessages", testExpungeMessages},
 		{"ChangeFeedMonotonic", testChangeFeedMonotonic},
 		{"GetMaxChangeSeqForPrincipal", testGetMaxChangeSeqForPrincipal},
+		// REQ-EXTIMG-BG-INTERNAL-60..61: cause classification splits
+		// the change feed between user-only JMAP / EventSource readers
+		// and cause-blind IMAP IDLE / FTS / seen-address readers.
+		{"StateChange_BackgroundInvisibleToJMAP", testStateChangeBackgroundInvisibleToJMAP},
+		{"StateChange_BackgroundVisibleToReadChangeFeedAll", testStateChangeBackgroundVisibleToReadChangeFeedAll},
 		{"QueryEmailFast_Basic", testQueryEmailFastBasic},
 		{"QueryEmailFast_Pagination", testQueryEmailFastPagination},
 		{"QueryEmailFast_Filters", testQueryEmailFastFilters},
@@ -1227,6 +1232,117 @@ func testChangeFeedMonotonic(t *testing.T, s store.Store) {
 		if c.Seq <= cursor {
 			t.Fatalf("paginated feed includes Seq %d <= cursor %d", c.Seq, cursor)
 		}
+	}
+}
+
+// testStateChangeBackgroundInvisibleToJMAP asserts that a state-change
+// row written with cause = 'background' (REQ-EXTIMG-BG-INTERNAL-15)
+// does NOT advance GetMaxChangeSeqForKind for the affected entity kind
+// and is invisible to the default ReadChangeFeed read path. JMAP
+// /changes / EventSource therefore see no advance for the user-visible
+// state, mirroring the architecture-doc table in
+// docs/design/server/architecture/05-sync-and-state.md "Cause
+// classification".
+func testStateChangeBackgroundInvisibleToJMAP(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "bgcause-jmap@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	// Pin baselines after the principal-provisioning writes.
+	preMax, err := s.Meta().GetMaxChangeSeqForKind(ctx, p.ID, store.EntityKindEmail)
+	if err != nil {
+		t.Fatalf("GetMaxChangeSeqForKind pre: %v", err)
+	}
+	preFeed, err := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed pre: %v", err)
+	}
+	// Synthesize a background-cause row directly via AppendStateChange.
+	// In production this is what the storesqlite / storepg
+	// ReplaceMessageBody implementations do internally for the extimg
+	// internalize-worker.
+	bg := store.StateChange{
+		PrincipalID:    p.ID,
+		Kind:           store.EntityKindEmail,
+		EntityID:       42,
+		ParentEntityID: uint64(mb.ID),
+		Op:             store.ChangeOpUpdated,
+		Cause:          store.ChangeCauseBackground,
+	}
+	if err := s.Meta().AppendStateChange(ctx, bg); err != nil {
+		t.Fatalf("AppendStateChange background: %v", err)
+	}
+	// JMAP-side reads must not observe the background row.
+	postMax, err := s.Meta().GetMaxChangeSeqForKind(ctx, p.ID, store.EntityKindEmail)
+	if err != nil {
+		t.Fatalf("GetMaxChangeSeqForKind post: %v", err)
+	}
+	if postMax != preMax {
+		t.Fatalf("GetMaxChangeSeqForKind advanced on background write: pre=%d post=%d", preMax, postMax)
+	}
+	postFeed, err := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed post: %v", err)
+	}
+	if len(postFeed) != len(preFeed) {
+		t.Fatalf("ReadChangeFeed surfaced background row: pre=%d post=%d", len(preFeed), len(postFeed))
+	}
+	for _, c := range postFeed {
+		if c.Cause == store.ChangeCauseBackground {
+			t.Fatalf("ReadChangeFeed returned a cause=background row: %+v", c)
+		}
+	}
+}
+
+// testStateChangeBackgroundVisibleToReadChangeFeedAll asserts the same
+// row from testStateChangeBackgroundInvisibleToJMAP IS visible to
+// ReadChangeFeedAll. IMAP IDLE and the FTS / seen-address readers route
+// through this method so byte-level mutations driven by the worker land
+// in the indexes (REQ-EXTIMG-BG-INTERNAL-13/-14/-61).
+func testStateChangeBackgroundVisibleToReadChangeFeedAll(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "bgcause-imap@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	// Establish a starting cursor so we can pin to the new row.
+	startFeed, err := s.Meta().ReadChangeFeedAll(ctx, p.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeedAll baseline: %v", err)
+	}
+	var startCursor store.ChangeSeq
+	if len(startFeed) > 0 {
+		startCursor = startFeed[len(startFeed)-1].Seq
+	}
+	bg := store.StateChange{
+		PrincipalID:    p.ID,
+		Kind:           store.EntityKindEmail,
+		EntityID:       1234,
+		ParentEntityID: uint64(mb.ID),
+		Op:             store.ChangeOpUpdated,
+		Cause:          store.ChangeCauseBackground,
+	}
+	if err := s.Meta().AppendStateChange(ctx, bg); err != nil {
+		t.Fatalf("AppendStateChange background: %v", err)
+	}
+	tail, err := s.Meta().ReadChangeFeedAll(ctx, p.ID, startCursor, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeedAll tail: %v", err)
+	}
+	if len(tail) != 1 {
+		t.Fatalf("ReadChangeFeedAll tail len = %d, want 1", len(tail))
+	}
+	got := tail[0]
+	if got.Cause != store.ChangeCauseBackground {
+		t.Fatalf("tail cause = %q, want %q", got.Cause, store.ChangeCauseBackground)
+	}
+	if got.Kind != store.EntityKindEmail || got.EntityID != 1234 {
+		t.Fatalf("tail row mismatch: %+v", got)
+	}
+	// And the user-only read still hides it.
+	tailUser, err := s.Meta().ReadChangeFeed(ctx, p.ID, startCursor, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed tail: %v", err)
+	}
+	if len(tailUser) != 0 {
+		t.Fatalf("ReadChangeFeed tail surfaced background row: %+v", tailUser)
 	}
 }
 

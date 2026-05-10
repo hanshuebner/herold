@@ -215,7 +215,25 @@ const CurrentBackupVersion = 1
 //	messages.internalize_pending: 0 = not pending (default,
 //	covers every existing row), 1 = pending (rewrite at first
 //	JMAP Email/get, then clear).
-const CurrentSchemaVersion = 43
+//
+// 44 — 0044_state_change_cause.sql. Cause classification for the
+//
+//	state-change feed (REQ-EXTIMG-BG-INTERNAL-01..03,
+//	docs/design/server/architecture/05-sync-and-state.md "Cause
+//	classification"). Adds state_changes.cause TEXT NOT NULL
+//	DEFAULT 'user' plus the partial index
+//	idx_state_changes_principal_kind_seq_user. Existing rows
+//	back-fill to 'user'; v1 'background' producer is the extimg
+//	internalize-worker.
+//
+// 45 — 0045_jmap_states_internalize_status.sql. Pending-count push
+//
+//	channel for the extimg internalize-worker
+//	(REQ-EXTIMG-BG-INTERNAL-20..23). Adds
+//	jmap_states.internalize_status_state, bumped once per
+//	processed worker batch via IncrementJMAPState; surfaced over
+//	EventSource as the InternalizeStatus type.
+const CurrentSchemaVersion = 45
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
