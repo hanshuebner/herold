@@ -1551,6 +1551,16 @@ func (m *metadata) CountInternalizePending(ctx context.Context, principalID stor
 	return uint64(n), nil
 }
 
+func (m *metadata) CountInternalizePendingTotal(ctx context.Context) (uint64, error) {
+	row := m.s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM messages WHERE internalize_pending = 1`)
+	var n int64
+	if err := row.Scan(&n); err != nil {
+		return 0, mapErr(err)
+	}
+	return uint64(n), nil
+}
+
 func (m *metadata) UpdateMessageFlags(
 	ctx context.Context,
 	id store.MessageID,

@@ -1,7 +1,10 @@
 package internalizeworker_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -269,3 +272,120 @@ func TestWorker_BumpsInternalizeStatusOncePerBatch(t *testing.T) {
 // reads a literal as an io.Reader without pulling the strings import
 // into multiple call sites.
 func stringsReader(s string) *strings.Reader { return strings.NewReader(s) }
+
+// TestWorker_BatchSummaryLogged exercises REQ-EXTIMG-BG-INTERNAL-50 / -67:
+// the worker emits exactly one INFO line per non-empty processed batch
+// with msg = "extimg-worker: batch summary" and the per-result and
+// cursor attrs the operator monitors. Drives the worker directly via
+// the runBatch test-export so the assertion captures only one batch's
+// log output (not the start-up banner, the idle-park line, or the
+// progress-beacon line) with no concurrency hazard.
+func TestWorker_BatchSummaryLogged(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"), nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID,
+		Name:        "INBOX",
+		Attributes:  store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+
+	const seed = 5
+	for i := 0; i < seed; i++ {
+		ref, err := st.Blobs().Put(ctx, stringsReader("From: a@x\r\nTo: b@x\r\n\r\nbody"))
+		if err != nil {
+			t.Fatalf("Blobs.Put: %v", err)
+		}
+		if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID:        p.ID,
+			Blob:               ref,
+			Size:               ref.Size,
+			InternalizePending: true,
+		}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+			t.Fatalf("InsertMessage[%d]: %v", i, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	w := internalizeworker.New(st, extimg.Config{Mode: extimg.ModePassthrough}, logger, clk, internalizeworker.Options{
+		Concurrency:      2,
+		BatchSize:        seed * 2, // > 5 so a single batch drains every row.
+		IdlePollInterval: 1 * time.Hour,
+	})
+	if empty := w.RunBatchForTest(ctx); empty {
+		t.Fatalf("RunBatchForTest returned empty=true; expected the batch to process %d rows", seed)
+	}
+
+	// Parse every JSON record and assert exactly one carries the
+	// batch-summary message with the expected attrs.
+	var summaries []map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal(line, &rec); err != nil {
+			t.Fatalf("unmarshal log line %q: %v", string(line), err)
+		}
+		if rec["msg"] == "extimg-worker: batch summary" {
+			summaries = append(summaries, rec)
+		}
+	}
+	if got := len(summaries); got != 1 {
+		t.Fatalf("got %d batch-summary lines, want 1; full log:\n%s", got, buf.String())
+	}
+	rec := summaries[0]
+	if rec["level"] != "INFO" {
+		t.Fatalf("batch-summary level = %v, want INFO", rec["level"])
+	}
+	// Numeric attrs come back as float64 from encoding/json.
+	intAttr := func(name string) int64 {
+		t.Helper()
+		v, ok := rec[name]
+		if !ok {
+			t.Fatalf("missing attr %q in batch summary record: %v", name, rec)
+		}
+		f, ok := v.(float64)
+		if !ok {
+			t.Fatalf("attr %q is %T, want number: %v", name, v, v)
+		}
+		return int64(f)
+	}
+	if got := intAttr("batch_size"); got != int64(seed) {
+		t.Fatalf("batch_size = %d, want %d", got, seed)
+	}
+	if got := intAttr("ok"); got < 0 {
+		t.Fatalf("ok = %d, want >= 0", got)
+	}
+	if got := intAttr("no_change"); got < 0 {
+		t.Fatalf("no_change = %d, want >= 0", got)
+	}
+	if got := intAttr("failed"); got < 0 {
+		t.Fatalf("failed = %d, want >= 0", got)
+	}
+	if got := intAttr("elapsed_ms"); got < 0 {
+		t.Fatalf("elapsed_ms = %d, want >= 0", got)
+	}
+	// principals, cursor_before, cursor_after must be present.
+	for _, name := range []string{"principals", "cursor_before", "cursor_after"} {
+		if _, ok := rec[name]; !ok {
+			t.Fatalf("missing attr %q in batch summary record: %v", name, rec)
+		}
+	}
+}

@@ -266,6 +266,15 @@ type Metadata interface {
 	// import-drain phase.
 	CountInternalizePending(ctx context.Context, principalID PrincipalID) (uint64, error)
 
+	// CountInternalizePendingTotal returns the number of rows with
+	// internalize_pending = 1 across every principal. Used by the
+	// internalize-worker observability surface (REQ-EXTIMG-BG-INTERNAL-52)
+	// so the operator sees the backlog magnitude at boot and via the
+	// periodic progress beacon. Cheaper than per-principal aggregation
+	// at scale: a single SELECT COUNT(*) over the partial index, no
+	// principal enumeration.
+	CountInternalizePendingTotal(ctx context.Context) (uint64, error)
+
 	// AppendStateChange writes a single change-feed row directly,
 	// honouring the supplied PrincipalID, Kind, EntityID,
 	// ParentEntityID, Op and Cause. It is intended for synthetic /

@@ -39,6 +39,13 @@ type Options struct {
 	// loop when no notification has fired (REQ-EXTIMG-BG-09).
 	// Default 5 minutes.
 	IdlePollInterval time.Duration
+	// ProgressLogInterval controls the period of the sustained-progress
+	// beacon (REQ-EXTIMG-BG-INTERNAL-52). Default 60 s. The goroutine
+	// emits one INFO line per tick carrying pending_count_total,
+	// processed_total, and processed_since_start_per_min so the operator
+	// sees forward motion even when individual batch lines have rolled
+	// out of the log window.
+	ProgressLogInterval time.Duration
 }
 
 // Worker drains the internalize_pending backlog. Construct via New;
@@ -75,6 +82,9 @@ func New(st store.Store, cfg extimg.Config, logger *slog.Logger, clk clock.Clock
 	if opts.IdlePollInterval <= 0 {
 		opts.IdlePollInterval = 5 * time.Minute
 	}
+	if opts.ProgressLogInterval <= 0 {
+		opts.ProgressLogInterval = 60 * time.Second
+	}
 	return &Worker{
 		store:    st,
 		cfg:      cfg,
@@ -101,16 +111,41 @@ func (w *Worker) Notify() {
 // across multiple invocations would race the cursor; only one Run
 // goroutine should be live per Worker instance.
 func (w *Worker) Run(ctx context.Context) {
+	// REQ-EXTIMG-BG-INTERNAL-52: report the initial backlog magnitude
+	// at boot so the operator sees how much work is queued. A failure
+	// is logged and ignored; the worker still starts.
+	startedAt := w.clock.Now()
+	pendingTotal, err := w.store.Meta().CountInternalizePendingTotal(ctx)
+	if err != nil {
+		w.logger.LogAttrs(ctx, slog.LevelWarn, "extimg-worker: count pending at start failed",
+			slog.String("err", err.Error()))
+		pendingTotal = 0
+	}
 	w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: started",
 		slog.Int("concurrency", w.opts.Concurrency),
 		slog.Int("batch_size", w.opts.BatchSize),
 		slog.Duration("idle_poll", w.opts.IdlePollInterval),
+		slog.Duration("progress_log_interval", w.opts.ProgressLogInterval),
+		slog.Uint64("pending_count_total", pendingTotal),
 	)
+
+	// REQ-EXTIMG-BG-INTERNAL-52: sustained-progress beacon. The
+	// goroutine exits on ctx cancellation; runProgressLogger blocks
+	// until then so the parent waits for it via the WaitGroup before
+	// returning -- no goroutine leak past Run's return.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		w.runProgressLogger(ctx, startedAt)
+	}()
+
 	// First pass: drain whatever is pending at startup.
 	w.resetCursor()
 	for {
 		empty := w.runBatch(ctx)
 		if ctx.Err() != nil {
+			wg.Wait()
 			w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: stopped",
 				slog.Uint64("processed_total", w.snapshotProcessed()))
 			return
@@ -127,17 +162,95 @@ func (w *Worker) Run(ctx context.Context) {
 			}
 			continue
 		}
+		// REQ-EXTIMG-BG-INTERNAL-51: the batch was empty; the worker
+		// is about to park on the notify channel or the safety-net
+		// tick. Emit one INFO line so the operator can distinguish
+		// "idle and waiting" from "stalled".
+		w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: idle, parking",
+			slog.Uint64("processed_total", w.snapshotProcessed()))
 		// Batch was empty: park on notify or the safety-net tick.
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return
 		case <-w.notifyCh:
+			w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: woke",
+				slog.String("wake_source", "notify"))
 			w.resetCursor()
 		case <-w.clock.After(w.opts.IdlePollInterval):
+			w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: woke",
+				slog.String("wake_source", "idle_poll"))
 			w.resetCursor()
 		}
 	}
 }
+
+// runProgressLogger ticks every ProgressLogInterval and emits a
+// pending_count_total / processed_total / processed_since_start_per_min
+// beacon (REQ-EXTIMG-BG-INTERNAL-52). Exits on ctx cancellation.
+func (w *Worker) runProgressLogger(ctx context.Context, startedAt time.Time) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.clock.After(w.opts.ProgressLogInterval):
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		processed := w.snapshotProcessed()
+		// Use a fresh, short-lived context for the count query so a
+		// long-running outer ctx cancellation does not block the
+		// log line. The outer select already aborted before reaching
+		// this point on ctx.Done().
+		pending, err := w.store.Meta().CountInternalizePendingTotal(ctx)
+		if err != nil {
+			w.logger.LogAttrs(ctx, slog.LevelWarn, "extimg-worker: count pending in progress beacon failed",
+				slog.String("err", err.Error()))
+			pending = 0
+		}
+		elapsed := w.clock.Now().Sub(startedAt)
+		var perMin float64
+		if elapsed > 0 {
+			perMin = float64(processed) / elapsed.Minutes()
+		}
+		w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: progress",
+			slog.Uint64("pending_count_total", pending),
+			slog.Uint64("processed_total", processed),
+			slog.Float64("processed_since_start_per_min", perMin),
+		)
+	}
+}
+
+// processOutcome records the per-message result aggregated by runBatch
+// (REQ-EXTIMG-BG-INTERNAL-50) and reported on the batch-summary log
+// line. The PrincipalID is the row's owner when the worker did *some*
+// work (whether the rewrite succeeded, no-changed out, or failed with
+// the flag cleared); 0 when the row was already gone or already
+// cleared by a competing path -- those are no-ops the count surface
+// should not credit the worker for.
+type processOutcome struct {
+	PrincipalID store.PrincipalID
+	Result      processResult
+}
+
+type processResult int
+
+const (
+	// resultSkipped: row gone (expunged) or already cleared by a
+	// competing path before the worker reached it. Not counted in any
+	// of ok / no_change / failed.
+	resultSkipped processResult = iota
+	// resultOK: extimg.Internalize returned Modified=true and the
+	// rewritten body was committed via ReplaceMessageBody.
+	resultOK
+	// resultNoChange: extimg.Internalize returned Modified=false; the
+	// flag was cleared without writing a new body.
+	resultNoChange
+	// resultFailed: rewrite returned an error; the flag was cleared so
+	// the message does not requeue forever (REQ-EXTIMG-BG-01).
+	resultFailed
+)
 
 // runBatch pulls one batch from the store, fans the work out to
 // `Concurrency` goroutines, waits for completion, bumps the per-principal
@@ -145,8 +258,9 @@ func (w *Worker) Run(ctx context.Context) {
 // (REQ-EXTIMG-BG-INTERNAL-21), and advances the cursor. Returns true
 // when the batch was empty (caller should park).
 func (w *Worker) runBatch(ctx context.Context) bool {
-	cursor := w.snapshotCursor()
-	ids, err := w.store.Meta().ListMessagesWithInternalizePending(ctx, cursor, w.opts.BatchSize)
+	start := w.clock.Now()
+	cursorBefore := w.snapshotCursor()
+	ids, err := w.store.Meta().ListMessagesWithInternalizePending(ctx, cursorBefore, w.opts.BatchSize)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return true
@@ -160,11 +274,13 @@ func (w *Worker) runBatch(ctx context.Context) bool {
 	}
 	// Fan out. Use a small semaphore so we never exceed Concurrency
 	// in flight; a per-message cancellation propagates from ctx.
-	// Each goroutine reports the affected principal back via
-	// principalsCh so the post-batch bump can fire once per principal
-	// without holding any per-message lock during the fan-out.
+	// Each goroutine reports its outcome back via outcomesCh so the
+	// post-batch bump can fire once per principal -- and the batch
+	// summary log line (REQ-EXTIMG-BG-INTERNAL-50) can roll up the
+	// per-result counts -- without holding any per-message lock
+	// during the fan-out.
 	sem := make(chan struct{}, w.opts.Concurrency)
-	principalsCh := make(chan store.PrincipalID, len(ids))
+	outcomesCh := make(chan processOutcome, len(ids))
 	var wg sync.WaitGroup
 fanout:
 	for _, id := range ids {
@@ -177,24 +293,32 @@ fanout:
 		go func(id store.MessageID) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if pid, ok := w.processOne(ctx, id); ok {
-				principalsCh <- pid
-			}
+			outcomesCh <- w.processOne(ctx, id)
 		}(id)
 	}
 	wg.Wait()
-	close(principalsCh)
-	// Collect distinct affected principals. The InternalizeStatus
-	// counter advances once per principal per batch
-	// (REQ-EXTIMG-BG-INTERNAL-21) regardless of whether individual
-	// rewrites succeeded -- the count surface only reflects "the
-	// worker did *some* work" on this principal's mailbox.
+	close(outcomesCh)
+	// Collect per-result counts and distinct affected principals.
+	// The InternalizeStatus counter advances once per principal per
+	// batch (REQ-EXTIMG-BG-INTERNAL-21) regardless of whether
+	// individual rewrites succeeded -- the count surface only
+	// reflects "the worker did *some* work" on this principal's
+	// mailbox.
+	var okCount, noChangeCount, failedCount int
 	seen := make(map[store.PrincipalID]struct{}, 4)
-	for pid := range principalsCh {
-		if pid == 0 {
+	for o := range outcomesCh {
+		switch o.Result {
+		case resultOK:
+			okCount++
+		case resultNoChange:
+			noChangeCount++
+		case resultFailed:
+			failedCount++
+		}
+		if o.PrincipalID == 0 {
 			continue
 		}
-		seen[pid] = struct{}{}
+		seen[o.PrincipalID] = struct{}{}
 	}
 	for pid := range seen {
 		// Bump the per-principal state counter and emit a paired
@@ -228,78 +352,99 @@ fanout:
 	}
 	// Advance the cursor to the lowest id of the batch (the rows are
 	// returned descending, so ids[len-1] is the lowest).
-	w.advanceCursor(ids[len(ids)-1])
+	cursorAfter := ids[len(ids)-1]
+	w.advanceCursor(cursorAfter)
+
+	// REQ-EXTIMG-BG-INTERNAL-50: emit one INFO line per non-empty
+	// processed batch so the operator has a steady signal that
+	// progress is occurring. Use the injected clock for elapsed
+	// rather than time.Since so fakes deliver a predictable value.
+	elapsed := w.clock.Now().Sub(start)
+	w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: batch summary",
+		slog.Int("batch_size", len(ids)),
+		slog.Int("principals", len(seen)),
+		slog.Int("ok", okCount),
+		slog.Int("no_change", noChangeCount),
+		slog.Int("failed", failedCount),
+		slog.Int64("elapsed_ms", elapsed.Milliseconds()),
+		slog.Uint64("cursor_before", uint64(cursorBefore)),
+		slog.Uint64("cursor_after", uint64(cursorAfter)),
+	)
 	return false
 }
 
 // processOne runs the rewrite for a single message. Errors are
 // swallowed to the log; the cursor advances regardless so a poison
-// blob never wedges the worker. Returns the message's principal id
-// and ok = true when the worker did *some* work on this row (whether
-// the rewrite succeeded, no-changed out, or failed with the flag
-// cleared) so runBatch can aggregate the distinct affected
-// principals for the per-batch InternalizeStatus bump
-// (REQ-EXTIMG-BG-INTERNAL-21). ok = false when the row was already
-// gone (expunged) or already cleared by a competing path -- those
-// are no-ops the count surface should not credit the worker for.
-func (w *Worker) processOne(ctx context.Context, id store.MessageID) (store.PrincipalID, bool) {
+// blob never wedges the worker. Returns the per-message outcome so
+// runBatch can aggregate the distinct affected principals for the
+// per-batch InternalizeStatus bump (REQ-EXTIMG-BG-INTERNAL-21) and
+// the per-result counts for the batch-summary log line
+// (REQ-EXTIMG-BG-INTERNAL-50).
+func (w *Worker) processOne(ctx context.Context, id store.MessageID) processOutcome {
 	w.bumpProcessed()
 	m, err := w.store.Meta().GetMessage(ctx, id)
 	if err != nil {
 		// Message gone (expunged) — clear the flag if it still
 		// exists, otherwise just move on.
 		_ = w.store.Meta().ClearMessageInternalizePending(ctx, id)
-		return 0, false
+		return processOutcome{Result: resultSkipped}
 	}
 	if !m.InternalizePending {
 		// Already cleared by another path.
-		return 0, false
+		return processOutcome{PrincipalID: m.PrincipalID, Result: resultSkipped}
 	}
-	if err := w.internalize(ctx, m); err != nil {
+	res, ierr := w.internalize(ctx, m)
+	if ierr != nil {
 		w.logger.LogAttrs(ctx, slog.LevelWarn, "extimg-worker: rewrite failed",
 			slog.Uint64("message_id", uint64(m.ID)),
-			slog.String("err", err.Error()))
+			slog.String("err", ierr.Error()))
 		// Clear the flag so the message does not re-queue forever
 		// (REQ-EXTIMG-BG-01). The user sees the original body; the
 		// failure is on the existing extimg metric.
 		_ = w.store.Meta().ClearMessageInternalizePending(ctx, m.ID)
+		return processOutcome{PrincipalID: m.PrincipalID, Result: resultFailed}
 	}
-	return m.PrincipalID, true
+	return processOutcome{PrincipalID: m.PrincipalID, Result: res}
 }
 
 // internalize loads the blob, runs extimg.Internalize, and replaces
 // the body. Modelled on the legacy maybeInternalizeOnDemand path
-// (REQ-EXTIMG-93..98) without the Email/get glue.
-func (w *Worker) internalize(ctx context.Context, m store.Message) error {
+// (REQ-EXTIMG-93..98) without the Email/get glue. Returns the
+// per-message result so processOne can roll it up into the batch
+// summary (REQ-EXTIMG-BG-INTERNAL-50).
+func (w *Worker) internalize(ctx context.Context, m store.Message) (processResult, error) {
 	rc, err := w.store.Blobs().Get(ctx, m.Blob.Hash)
 	if err != nil {
-		return err
+		return resultFailed, err
 	}
 	raw, rerr := io.ReadAll(rc)
 	rc.Close()
 	if rerr != nil {
-		return rerr
+		return resultFailed, rerr
 	}
 	rewritten, sum, ierr := extimg.Internalize(ctx, raw, w.cfg, extimg.DKIMVerdict{})
 	if ierr != nil {
-		return ierr
+		return resultFailed, ierr
 	}
 	if !sum.Modified {
 		// Nothing to do — clear the flag and move on.
-		return w.store.Meta().ClearMessageInternalizePending(ctx, m.ID)
+		if err := w.store.Meta().ClearMessageInternalizePending(ctx, m.ID); err != nil {
+			return resultFailed, err
+		}
+		return resultNoChange, nil
 	}
 	ref, err := w.store.Blobs().Put(ctx, bytesReader(rewritten))
 	if err != nil {
-		return err
+		return resultFailed, err
 	}
 	if err := w.store.Meta().ReplaceMessageBody(ctx, m.ID, ref, int64(len(rewritten)), m.Envelope); err != nil {
-		return err
+		return resultFailed, err
 	}
 	w.logger.LogAttrs(ctx, slog.LevelDebug, "extimg-worker: rewrite ok",
 		slog.Uint64("message_id", uint64(m.ID)),
 		slog.Int("internalized", sum.Internalized),
 	)
-	return nil
+	return resultOK, nil
 }
 
 func (w *Worker) snapshotCursor() store.MessageID {

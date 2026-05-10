@@ -1976,6 +1976,18 @@ func testInternalizePendingListAndCount(t *testing.T, s store.Store) {
 	if countOther != 1 {
 		t.Fatalf("count(other) = %d, want 1", countOther)
 	}
+
+	// CountInternalizePendingTotal is principal-agnostic: it sums across
+	// every principal so the worker observability surface
+	// (REQ-EXTIMG-BG-INTERNAL-52) sees the full backlog magnitude at
+	// boot.
+	total, err := s.Meta().CountInternalizePendingTotal(ctx)
+	if err != nil {
+		t.Fatalf("CountInternalizePendingTotal: %v", err)
+	}
+	if total != 4 {
+		t.Fatalf("total = %d, want 4 (3 on principal + 1 on other)", total)
+	}
 }
 
 // testListThreadsByKeys covers the two semantic branches the JMAP

@@ -1538,6 +1538,15 @@ func (m *metadata) CountInternalizePending(ctx context.Context, principalID stor
 	return uint64(n), nil
 }
 
+func (m *metadata) CountInternalizePendingTotal(ctx context.Context) (uint64, error) {
+	var n int64
+	if err := m.s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM messages WHERE internalize_pending = 1`).Scan(&n); err != nil {
+		return 0, mapErr(err)
+	}
+	return uint64(n), nil
+}
+
 // AddMessageToMailbox adds an existing message to mailboxID.
 func (m *metadata) AddMessageToMailbox(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID) (store.UID, store.ModSeq, error) {
 	now := m.s.clock.Now().UTC()
