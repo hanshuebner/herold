@@ -35,10 +35,6 @@ type Options struct {
 	// store round-trip. Default 64. A small batch keeps the
 	// notify-driven cursor reset responsive on a fresh import wave.
 	BatchSize int
-	// IdlePollInterval is the safety-net interval for waking the
-	// loop when no notification has fired (REQ-EXTIMG-BG-09).
-	// Default 5 minutes.
-	IdlePollInterval time.Duration
 	// ProgressLogInterval controls the period of the sustained-progress
 	// beacon (REQ-EXTIMG-BG-INTERNAL-52). Default 60 s. The goroutine
 	// emits one INFO line per tick carrying pending_count_total,
@@ -95,9 +91,6 @@ func New(st store.Store, cfg extimg.Config, logger *slog.Logger, clk clock.Clock
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 64
 	}
-	if opts.IdlePollInterval <= 0 {
-		opts.IdlePollInterval = 5 * time.Minute
-	}
 	if opts.ProgressLogInterval <= 0 {
 		opts.ProgressLogInterval = 60 * time.Second
 	}
@@ -140,7 +133,6 @@ func (w *Worker) Run(ctx context.Context) {
 	w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: started",
 		slog.Int("concurrency", w.opts.Concurrency),
 		slog.Int("batch_size", w.opts.BatchSize),
-		slog.Duration("idle_poll", w.opts.IdlePollInterval),
 		slog.Duration("progress_log_interval", w.opts.ProgressLogInterval),
 		slog.Uint64("pending_count_total", pendingTotal),
 	)
@@ -179,23 +171,28 @@ func (w *Worker) Run(ctx context.Context) {
 			continue
 		}
 		// REQ-EXTIMG-BG-INTERNAL-51: the batch was empty; the worker
-		// is about to park on the notify channel or the safety-net
-		// tick. Emit one INFO line so the operator can distinguish
-		// "idle and waiting" from "stalled".
+		// is about to park on the notify channel. Emit one INFO line
+		// so the operator can distinguish "idle and waiting" from
+		// "stalled".
 		w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: idle, parking",
 			slog.Uint64("processed_total", w.snapshotProcessed()))
-		// Batch was empty: park on notify or the safety-net tick.
+		// Batch was empty: park on notify. The original safety-net
+		// idle_poll wake (REQ-EXTIMG-BG-09) was removed 2026-05-10
+		// after the buffered notify channel proved reliable in
+		// production -- a missed notification would have required
+		// the channel buffer to be already-set when a fresh
+		// MarkMessageInternalizePending fired AND the worker to
+		// finish the prior batch without consulting the buffer
+		// before parking. The select in the !empty branch above
+		// drains the buffer before each batch, so by the time the
+		// worker reaches this park the buffer is empty; a fresh
+		// poke always wakes it.
 		select {
 		case <-ctx.Done():
 			wg.Wait()
 			return
 		case <-w.notifyCh:
-			w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: woke",
-				slog.String("wake_source", "notify"))
-			w.resetCursor()
-		case <-w.clock.After(w.opts.IdlePollInterval):
-			w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: woke",
-				slog.String("wake_source", "idle_poll"))
+			w.logger.LogAttrs(ctx, slog.LevelInfo, "extimg-worker: woke")
 			w.resetCursor()
 		}
 	}

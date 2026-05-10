@@ -67,9 +67,8 @@ func TestWorker_DrainsBacklog(t *testing.T) {
 	// Worker in passthrough mode: Internalize is a no-op, the
 	// worker clears the flag on every row it sees.
 	w := internalizeworker.New(st, extimg.Config{Mode: extimg.ModePassthrough}, nil, clk, internalizeworker.Options{
-		Concurrency:      2,
-		BatchSize:        16,
-		IdlePollInterval: 10 * time.Millisecond,
+		Concurrency: 2,
+		BatchSize:   16,
 	})
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -115,9 +114,8 @@ func TestWorker_NotifyResetsCursor(t *testing.T) {
 	})
 
 	w := internalizeworker.New(st, extimg.Config{Mode: extimg.ModePassthrough}, nil, clk, internalizeworker.Options{
-		Concurrency:      2,
-		BatchSize:        16,
-		IdlePollInterval: 1 * time.Hour, // safety net silenced; only Notify wakes the loop
+		Concurrency: 2,
+		BatchSize:   16,
 	})
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -210,9 +208,8 @@ func TestWorker_BumpsInternalizeStatusOncePerBatch(t *testing.T) {
 
 	// Big batch so a single processed pass clears every row.
 	w := internalizeworker.New(st, extimg.Config{Mode: extimg.ModePassthrough}, nil, clk, internalizeworker.Options{
-		Concurrency:      4,
-		BatchSize:        seed * 2, // > 50 -> one round draws all rows.
-		IdlePollInterval: 1 * time.Hour,
+		Concurrency: 4,
+		BatchSize:   seed * 2, // > 50 -> one round draws all rows.
 	})
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -331,9 +328,8 @@ func TestWorker_BatchSummaryLogged(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	w := internalizeworker.New(st, extimg.Config{Mode: extimg.ModePassthrough}, logger, clk, internalizeworker.Options{
-		Concurrency:      2,
-		BatchSize:        seed * 2, // > 5 so a single batch drains every row.
-		IdlePollInterval: 1 * time.Hour,
+		Concurrency: 2,
+		BatchSize:   seed * 2, // > 5 so a single batch drains every row.
 	})
 	if empty := w.RunBatchForTest(ctx); empty {
 		t.Fatalf("RunBatchForTest returned empty=true; expected the batch to process %d rows", seed)
@@ -509,9 +505,8 @@ func TestWorker_NewestByReceivedAtFirst(t *testing.T) {
 	// BatchSize=1 so the worker processes exactly one row per
 	// runBatch call. The worker MUST pick the 2020 (newer) row.
 	w := internalizeworker.New(st, extimg.Config{Mode: extimg.ModePassthrough}, nil, clk, internalizeworker.Options{
-		Concurrency:      1,
-		BatchSize:        1,
-		IdlePollInterval: 1 * time.Hour,
+		Concurrency: 1,
+		BatchSize:   1,
 	})
 	if empty := w.RunBatchForTest(ctx); empty {
 		t.Fatalf("RunBatchForTest returned empty=true; expected one row to be processed")
