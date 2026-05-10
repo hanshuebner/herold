@@ -401,6 +401,18 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	// would be silently dropped because byPrinc[pid] would still be
 	// empty. Registering first makes h.connect synchronization tight.
 	cc := s.newChatConn(pid, netConn, brw.Reader)
+	// Derive cc.ctx / cc.cancel from the merged (server, request) ctx
+	// BEFORE publishing the conn into s.conns. Server.Shutdown
+	// snapshots s.conns and calls c.shutdown on each entry; that
+	// shutdown reads c.cancel and (if non-nil) calls it. If we
+	// register the conn first and initialise the cancel later inside
+	// run(), Shutdown can race the WithCancel write — observed under
+	// -race on CI 25631651900 (arm64 / linux). Initialising before
+	// publication makes the field publication-safe by construction.
+	connCtx, connCancel := mergedContext(s.ctx, r.Context())
+	cc.ctx, cc.cancel = context.WithCancel(connCtx)
+	defer cc.cancel()
+	defer connCancel()
 	s.connsMu.Lock()
 	s.conns[cc] = struct{}{}
 	s.connsMu.Unlock()
@@ -444,16 +456,12 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 
 	// Track the connection's run() lifetime on the server-level
 	// WaitGroup so Shutdown can wait for it to drain. The Add must
-	// happen before run() to be observable by Shutdown's wait. We
-	// derive cc.ctx from the merged (server, request) context so a
-	// server-wide cancel drains every connection independently of the
-	// http.Server's own shutdown.
+	// happen before run() to be observable by Shutdown's wait.
+	// cc.ctx / cc.cancel were initialised above (pre-publication).
 	s.connWG.Add(1)
 	defer s.connWG.Done()
 
-	connCtx, connCancel := mergedContext(s.ctx, r.Context())
-	defer connCancel()
-	cc.run(connCtx)
+	cc.run()
 
 	s.unregisterChatConn(cc)
 	s.releaseReservation(pid)
@@ -716,12 +724,11 @@ func (c *chatConn) Send(f ServerFrame) error {
 // Principal implements Sender.
 func (c *chatConn) Principal() store.PrincipalID { return c.pid }
 
-// run blocks until the connection terminates. The ctx parameter is
-// the request context (ties to the http.Server lifetime); cc.ctx is
-// derived so an internal shutdown also fires through cancel().
-func (c *chatConn) run(ctx context.Context) {
-	c.ctx, c.cancel = context.WithCancel(ctx)
-	defer c.cancel()
+// run blocks until the connection terminates. cc.ctx / cc.cancel
+// MUST be initialised by the caller (handleUpgrade) before the conn
+// is published into s.conns, so a concurrent Server.Shutdown does
+// not race the WithCancel write.
+func (c *chatConn) run() {
 	c.lastPong.Store(c.srv.clk.Now().UnixNano())
 
 	var wg sync.WaitGroup
