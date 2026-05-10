@@ -117,23 +117,21 @@ export const de = {
   'thread.moreActions': 'Weitere Aktionen',
 
   // ── Message-scope strings ────────────────────────────────────────────
-  // Siehe re #98: die per-Nachricht-Symbolleiste wurde entfernt; Antworten
-  // / Weiterleiten leben in der festen Antwortleiste; muteThread /
-  // reportSpam / reportPhishing / blockSender sind über die Konversations-
-  // -Symbolleiste erreichbar; restore / filterLike / viewOriginal bleiben
-  // im Drei-Punkte-Menü im Nachrichtenkopf.
+  // Siehe re #98: die gesamte per-Nachricht-Aktionsfläche wurde entfernt.
+  // Antworten / Weiterleiten leben in der festen Antwortleiste; Konversa-
+  // tions-Verben (Stummschalten, Spam, Phishing, blockieren, Wiederher-
+  // stellen, archivieren, ungelesen markieren, Snooze, verschieben, Label,
+  // Drucken) leben in der Konversations-Symbolleiste; Reaktionen sind in
+  // der Titelzeile der Nachricht.
   'msg.reply': 'Antworten',
   'msg.replyAll': 'Allen antworten',
   'msg.forward': 'Weiterleiten',
   'msg.react': 'Reagieren',
-  'msg.restore': 'Aus Papierkorb wiederherstellen',
   'msg.muteThread': 'Konversation stummschalten',
   'msg.unmuteThread': 'Stummschaltung aufheben',
   'msg.reportSpam': 'Spam melden',
   'msg.reportPhishing': 'Phishing melden',
   'msg.blockSender': 'Absender blockieren',
-  'msg.filterLike': 'Filter für ähnliche Nachrichten',
-  'msg.viewOriginal': 'Original anzeigen',
   'msg.imagesBlocked': 'Externe Bilder werden blockiert.',
   'msg.loadImages': 'Bilder laden',
   'msg.alwaysFrom': 'Immer von {sender}',

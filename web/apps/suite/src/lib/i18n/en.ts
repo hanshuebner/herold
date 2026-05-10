@@ -118,22 +118,20 @@ export const en = {
   'thread.moreActions': 'More actions',
 
   // ── Message-scope strings ────────────────────────────────────────────
-  // Per re #98 the per-message action toolbar was removed; reply / forward
-  // live in the fixed reply bar; muteThread / reportSpam / reportPhishing /
-  // blockSender are reachable from the ThreadToolbar; restore / filterLike
-  // / viewOriginal remain reachable from the per-message header kebab.
+  // Per re #98 the per-message action surface was removed entirely:
+  // reply / reply-all / forward live in the fixed reply bar; thread verbs
+  // (muteThread, reportSpam, reportPhishing, blockSender, restore, archive,
+  // mark-unread, snooze, move, label, print) live in the ThreadToolbar;
+  // reactions live inline with the message title row.
   'msg.reply': 'Reply',
   'msg.replyAll': 'Reply all',
   'msg.forward': 'Forward',
   'msg.react': 'React',
-  'msg.restore': 'Restore from trash',
   'msg.muteThread': 'Mute thread',
   'msg.unmuteThread': 'Unmute thread',
   'msg.reportSpam': 'Report spam',
   'msg.reportPhishing': 'Report phishing',
   'msg.blockSender': 'Block sender',
-  'msg.filterLike': 'Filter messages like this',
-  'msg.viewOriginal': 'View original',
   'msg.imagesBlocked': 'External images are blocked.',
   'msg.loadImages': 'Load images',
   'msg.alwaysFrom': 'Always from {sender}',

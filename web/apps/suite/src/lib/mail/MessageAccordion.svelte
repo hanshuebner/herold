@@ -14,10 +14,6 @@
   import { reactionConfirm } from './reaction-confirm.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
   import { untrack } from 'svelte';
-  import type { RuleCondition } from '../settings/managed-rules.svelte';
-  import { filterLike } from '../settings/filter-like.svelte';
-  import { router } from '../router/router.svelte';
-  import ActionOverflowMenu from './ActionOverflowMenu.svelte';
   import ReactIcon from '../icons/ReactIcon.svelte';
   import { t, localeTag } from '../i18n/i18n.svelte';
   import { relativeTimeAgo } from './relative-time';
@@ -104,15 +100,6 @@
   let relativeAnnotation = $derived(
     `(${relativeTimeAgo(new Date(email.receivedAt))})`,
   );
-
-  // True when the email currently lives in the Trash mailbox — drives
-  // the per-message Restore overflow item visibility (re #98). Restore
-  // is also offered at thread scope in ThreadToolbar.
-  let isInTrash = $derived.by(() => {
-    const t = mail.trash;
-    if (!t) return false;
-    return Boolean(email.mailboxIds[t.id]);
-  });
 
   // Build a cid -> downloadUrl map from the email's attachments. Inline
   // images referenced by Content-ID land in the body as `cid:<id>`; the
@@ -251,90 +238,12 @@
     });
   });
 
-  // ── Per-message overflow menu (re #98) ─────────────────────────────────
-  // The per-message action row was removed; only the actions that depend
-  // on a single message's identity (filterLike from THIS sender/subject,
-  // viewOriginal of THIS rfc822 source, restore THIS message from trash)
-  // remain reachable from the message header via a small kebab menu.
-  // Other message-scope verbs (mark unread, snooze, mark important, move,
-  // label) now apply at thread scope via ThreadToolbar.
-
-  function handleFilterLike(): void {
-    // Strip common reply/forward prefixes from the subject before using it
-    // as a condition.
-    const rawSubject = email.subject ?? '';
-    const subject = rawSubject.replace(/^(re|fwd?|aw|sv):\s*/i, '').trim();
-
-    const conditions: RuleCondition[] = [];
-    if (senderEmail) {
-      conditions.push({ field: 'from', op: 'equals', value: senderEmail });
-    }
-    if (subject) {
-      conditions.push({ field: 'subject', op: 'contains', value: subject });
-    }
-    const listIdRaw = (email['header:List-ID:asText'] ?? '').trim();
-    if (listIdRaw) {
-      // List-ID format: "Name <list@example.com>" — extract the angle-bracket part.
-      const match = listIdRaw.match(/<([^>]+)>/);
-      const listId = match ? match[1]! : listIdRaw;
-      conditions.push({ field: 'from', op: 'wildcard-match', value: `*@${listId.split('.').slice(1).join('.')}` });
-    }
-
-    // Set the pending payload so FiltersForm picks it up on mount.
-    filterLike.set({ conditions });
-    // Navigate to the filters settings section.
-    router.navigate('/settings/filters');
-  }
-
-  function sanitizeFilename(subject: string): string {
-    return subject
-      .replace(/[^a-zA-Z0-9 _-]/g, '_')
-      .replace(/\s+/g, '_')
-      .replace(/_{2,}/g, '_')
-      .slice(0, 80);
-  }
-
-  function handleViewOriginal(): void {
-    const accountId = auth.session?.primaryAccounts['urn:ietf:params:jmap:mail'];
-    if (!accountId || !email.blobId) return;
-    const rawSubject = (email.subject ?? 'message').trim() || 'message';
-    const name = `${sanitizeFilename(rawSubject)}.eml`;
-    const url = jmap.downloadUrl({
-      accountId,
-      blobId: email.blobId,
-      type: 'text/plain',
-      name,
-      disposition: 'inline',
-    });
-    if (!url) return;
-    window.open(url, '_blank', 'noopener');
-  }
-
-  function handleRestore(): void {
-    void mail.restoreFromTrash(email.id);
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      const folder = mail.listFolder;
-      router.navigate(folder === 'inbox' ? '/mail' : `/mail/folder/${encodeURIComponent(folder)}`);
-    }
-  }
-
-  // Rarely-used per-message actions kept reachable via the header kebab.
-  // Conditional items (restore in trash, viewOriginal when blobId is known)
-  // drop out cleanly when not applicable; if nothing applies the kebab
-  // hides itself entirely.
-  let overflowItems = $derived.by(() => {
-    const items: { id: string; label: string; onclick: () => void }[] = [];
-    if (isInTrash) {
-      items.push({ id: 'restore', label: t('msg.restore'), onclick: handleRestore });
-    }
-    items.push({ id: 'filterLike', label: t('msg.filterLike'), onclick: handleFilterLike });
-    if (email.blobId) {
-      items.push({ id: 'viewOriginal', label: t('msg.viewOriginal'), onclick: handleViewOriginal });
-    }
-    return items;
-  });
+  // ── Per-message actions removed (re #98) ───────────────────────────────
+  // The per-message kebab/dropdown was removed entirely: the actions there
+  // were either thread-scoped duplicates (restore is in ThreadToolbar) or
+  // rarely-used verbs (filterLike, viewOriginal) that the maintainer judged
+  // not worth a per-message surface. The remaining message-scope concept is
+  // reactions, which live inline with the message title row above.
 </script>
 
 <article class="message" class:expanded>
@@ -481,10 +390,6 @@
               </div>
             {/if}
           </span>
-
-          {#if overflowItems.length > 0}
-            <ActionOverflowMenu items={overflowItems} />
-          {/if}
         </span>
       {/if}
 
@@ -652,10 +557,9 @@
     font-size: var(--type-body-compact-01-size);
   }
 
-  /* Reactions strip + react button + per-message kebab live in a single
-     anchor span inside the message header (re #98). Click-through is
-     stopped here so interacting with reactions doesn't fold the
-     accordion. */
+  /* Reactions strip + react button live in a single anchor span inside
+     the message header (re #98). Click-through is stopped here so
+     interacting with reactions doesn't fold the accordion. */
   .reactions-anchor {
     display: inline-flex;
     align-items: center;

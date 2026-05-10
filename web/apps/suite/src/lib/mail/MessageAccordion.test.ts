@@ -8,16 +8,16 @@
  *   ThreadReader.svelte's thread-level header so badges are always visible
  *   regardless of accordion expansion state. MessageAccordion no longer
  *   renders label badges at all.
- * - Restore from trash via the per-message header kebab (re #29, re #98):
- *   the bottom action row was removed; restore now lives in the kebab.
- *   Test opens the kebab then clicks the menu item.
- * - No bottom action row (re #98): the per-message action toolbar was
- *   removed in favour of thread-level actions plus reply / reply-all /
- *   forward in the fixed reply bar.
+ * - No per-message action surface (re #98): the per-message action
+ *   toolbar AND the per-message header kebab were both removed. Reply /
+ *   reply-all / forward live in the fixed reply bar; thread-scoped verbs
+ *   (archive, delete, mark unread, snooze, move, label, mute, spam,
+ *   phishing, block, restore, print) live in ThreadToolbar; reactions
+ *   live inline with the message title row.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { render, screen } from '@testing-library/svelte';
 import MessageAccordion from './MessageAccordion.svelte';
 import type { Email, EmailBodyPart } from './types';
 
@@ -119,16 +119,6 @@ vi.mock('./reaction-confirm.svelte', () => ({
 
 vi.mock('../keyboard/engine.svelte', () => ({
   keyboard: { pushLayer: () => () => undefined },
-}));
-
-vi.mock('../settings/managed-rules.svelte', () => ({}));
-
-vi.mock('../settings/filter-like.svelte', () => ({
-  filterLike: { set: vi.fn() },
-}));
-
-vi.mock('../router/router.svelte', () => ({
-  router: { navigate: vi.fn() },
 }));
 
 vi.mock('../llm/transparency.svelte', () => ({
@@ -269,59 +259,15 @@ describe('MessageAccordion: no per-message label badges (re #66, re #70)', () =>
   });
 });
 
-describe('MessageAccordion: restore from trash via header kebab (re #29, re #98)', () => {
-  beforeEach(() => {
-    mailMock.trash = TRASH_MBX;
-    mailMock.listFolder = 'trash';
-    mailMock.restoreFromTrash.mockClear();
-    mailMock.restoreFromTrash.mockResolvedValue(undefined);
-    vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
-  });
-
-  it('opens the kebab and calls restoreFromTrash then history.back when history is available', async () => {
-    Object.defineProperty(window.history, 'length', { value: 3, configurable: true });
-
-    const email = makeEmail({ mailboxIds: { [TRASH_MBX.id]: true } });
-    renderAccordion(email, /* expanded */ true);
-
-    // Open the per-message overflow menu.
-    const trigger = screen.getByLabelText('actions.moreActions');
-    await fireEvent.click(trigger);
-
-    // Menu items render after open; click the restore item.
-    const btn = screen.getByText('msg.restore');
-    await fireEvent.click(btn);
-
-    expect(mailMock.restoreFromTrash).toHaveBeenCalledWith('e1');
-    expect(window.history.back).toHaveBeenCalled();
-  });
-
-  it('falls back to router.navigate when history length is 1', async () => {
-    const { router } = await import('../router/router.svelte');
-    Object.defineProperty(window.history, 'length', { value: 1, configurable: true });
-
-    const email = makeEmail({ mailboxIds: { [TRASH_MBX.id]: true } });
-    renderAccordion(email, /* expanded */ true);
-
-    const trigger = screen.getByLabelText('actions.moreActions');
-    await fireEvent.click(trigger);
-
-    const btn = screen.getByText('msg.restore');
-    await fireEvent.click(btn);
-
-    expect(mailMock.restoreFromTrash).toHaveBeenCalledWith('e1');
-    expect(router.navigate).toHaveBeenCalledWith('/mail/folder/trash');
-  });
-});
-
-// ── No per-message bottom action toolbar (re #98) ────────────────────────────
+// ── No per-message action surface (re #98) ──────────────────────────────────
 //
-// The per-message action row was removed: reply / reply-all / forward live
-// in the fixed reply bar; mute / spam / phishing / block / archive / etc.
-// live in ThreadToolbar; rare per-message verbs (filterLike, viewOriginal,
-// restore-in-trash) live in the small header kebab.
+// The per-message action row AND the per-message header kebab were both
+// removed: reply / reply-all / forward live in the fixed reply bar; thread
+// verbs (mute, spam, phishing, block, archive, mark-unread, snooze, move,
+// label, restore, print) live in ThreadToolbar; reactions live in the
+// message title row above.
 
-describe('MessageAccordion: no bottom action row (re #98)', () => {
+describe('MessageAccordion: no per-message action surface (re #98)', () => {
   beforeEach(() => {
     mailMock.trash = null;
     mailMock.listFolder = 'inbox';
@@ -348,19 +294,24 @@ describe('MessageAccordion: no bottom action row (re #98)', () => {
     expect(screen.queryByLabelText('msg.blockSender')).not.toBeInTheDocument();
   });
 
-  it('exposes a per-message kebab in the header when expanded', () => {
-    // filterLike is always available; viewOriginal needs blobId; restore
-    // needs trash-membership. The kebab should always render when at
-    // least one item applies — filterLike alone is enough.
+  it('does not render a per-message kebab when expanded', () => {
+    // The kebab was removed entirely (re #98). filterLike / viewOriginal /
+    // restore-in-trash were the kebab items; restore is now thread-only,
+    // and filterLike / viewOriginal were judged not worth a per-message
+    // surface.
     const email = makeEmail({});
     renderAccordion(email, /* expanded */ true);
 
-    expect(screen.getByLabelText('actions.moreActions')).toBeInTheDocument();
+    expect(screen.queryByLabelText('actions.moreActions')).not.toBeInTheDocument();
   });
 
-  it('does not render the kebab when collapsed', () => {
-    const email = makeEmail({});
-    renderAccordion(email, /* expanded */ false);
+  it('does not render the kebab when in trash either', () => {
+    // Even in trash there is no per-message kebab — restore is offered at
+    // thread scope by ThreadToolbar.
+    mailMock.trash = TRASH_MBX;
+    mailMock.listFolder = 'trash';
+    const email = makeEmail({ mailboxIds: { [TRASH_MBX.id]: true } });
+    renderAccordion(email, /* expanded */ true);
 
     expect(screen.queryByLabelText('actions.moreActions')).not.toBeInTheDocument();
   });
