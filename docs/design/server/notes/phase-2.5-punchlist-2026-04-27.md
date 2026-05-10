@@ -17,7 +17,7 @@ one engineer at 100% per `02-phasing.md:148`.
 |---|---|---|---|---|
 | 1 | Conformance test suites passing | IN-PROGRESS | conformance-fuzz-engineer | 2 weeks |
 | 2 | Fuzz targets on every wire parser + week-long campaign | IN-PROGRESS | conformance-fuzz-engineer | 0.5 week |
-| 3 | Load testing at REQ-NFR-01 (100 msg/s, 1 k IDLE) | NOT-STARTED | conformance-fuzz-engineer | 1.5 weeks |
+| 3 | Load testing at REQ-NFR-01 (40 msg/s on CAX21, 1 k IDLE) | NOT-STARTED | conformance-fuzz-engineer | 1.5 weeks |
 | 4 | 1 TB mailbox benchmark | NOT-STARTED | storage-implementor + conformance-fuzz-engineer | 1 week |
 | 5 | Operator manual (`operate.md`) | DONE | doc-author | 0 |
 | 6 | Admin reference (`administer.md`) | IN-PROGRESS | doc-author | 0.25 week |
@@ -75,7 +75,7 @@ campaign scheduled — nightly tops out at ~24h cumulative.
 **Estimate:** 0.5 week (two `Fuzz*` files + a release-branch fuzz
 workflow). **Owner:** `conformance-fuzz-engineer`.
 
-### 3. Load testing at REQ-NFR-01 (100 msg/s, 1 k IDLE) — NOT-STARTED
+### 3. Load testing at REQ-NFR-01 (40 msg/s on CAX21, 1 k IDLE) — NOT-STARTED
 
 **Evidence:** `test/load/` does not exist; nightly job bails
 (`nightly.yml:38-44`: "test/load not yet populated"). Scenarios

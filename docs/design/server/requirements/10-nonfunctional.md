@@ -11,6 +11,7 @@ These are design targets, not promises; we verify during phase testing (see `imp
 | Dimension | Target |
 |---|---|
 | Inbound SMTP acceptance latency excluding spam LLM call (p50) | ≤ 50 ms |
+| Inbound SMTP sustained throughput on reference CAX21 hardware | ≥ 40 msg/s |
 | Inbound end-to-end including LLM classification (p50 / p95) | ≤ 600 ms / ≤ 2 s |
 | IMAP FETCH flags/headers (1000 messages, p50) | ≤ 100 ms |
 | IMAP IDLE notification latency after delivery | ≤ 1 s |
@@ -22,7 +23,7 @@ These are design targets, not promises; we verify during phase testing (see `imp
 | System config reload | ≤ 1 s |
 | Application config change (e.g. add user) | ≤ 100 ms |
 
-- **REQ-NFR-01** The server MUST meet these targets on the reference hardware with a realistic corpus (see phase 1 benchmark harness).
+- **REQ-NFR-01** The server MUST meet these targets on the reference hardware with a realistic corpus (see phase 1 benchmark harness). The reference hardware is a Hetzner CAX21 (4 vCPU Ampere Altra, 8 GB RAM, NVMe). Earlier informal targets cited "100 msg/s peak" — that figure came from the SQLite-driver saturation spike (`docs/design/server/notes/spike-sqlite-driver.md`) on a workstation-class machine, not from this REQ. The operational inbound-SMTP target on reference hardware is **40 msg/s sustained**, which comfortably covers the actual scope target of ~10k inbound + ~10k outbound messages/day with 4× peak headroom (`docs/design/00-scope.md` §Target scale: ~15 msg/min average).
 - **REQ-NFR-02** No single request/connection/session may consume more than a bounded share of CPU and memory; configurable caps per protocol.
 - **REQ-NFR-03** Under sustained overload, the server MUST degrade gracefully: reject early with 4xx (SMTP) or 429/503 (HTTP), never accept work it cannot complete.
 
