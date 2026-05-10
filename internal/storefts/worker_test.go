@@ -264,15 +264,35 @@ func TestWorker_Lag(t *testing.T) {
 	h := newWorkerHarness(t, storefts.WorkerOptions{})
 	_, mb := h.seedPrincipalAndMailbox(t, "carol@example.test")
 
+	// Capture the producedAt timestamp the change-feed entry will carry
+	// (the metadata store stamps it with the harness's fake clock at
+	// InsertMessage commit).
+	producedAt := h.clk.Now()
 	h.insertMessage(t, mb, "lag test", "some body")
 	// Advance by 2 seconds before the worker flushes so the measured
-	// lag is ≥ 2 s.
+	// lag is non-trivial (≥ 2 s).
 	h.clk.Advance(2 * time.Second)
 	h.flushOnce(t)
 
+	// The lag IS exactly clk.Now() - producedAt: Lag() reports the
+	// delta between the worker's clock and the most recent processed
+	// ProducedAt. flushOnce may advance the fake clock by a variable
+	// amount (one or more FlushInterval ticks depending on how many
+	// poll iterations the worker needs to commit, and that count is
+	// faster on sqlite than postgres — observed 1.02 s of extra
+	// advance on the postgres CI lane). Asserting against an absolute
+	// [2s, 3s] window ratchets up flake risk every time the storage
+	// backend's commit latency drifts; asserting equality with
+	// `clk.Now() - producedAt` is deterministic regardless of how
+	// many ticks flushOnce needed.
+	expected := h.clk.Now().Sub(producedAt)
+	if expected < 2*time.Second {
+		t.Fatalf("test setup error: clock did not advance by ≥ 2 s before measurement, got %v", expected)
+	}
 	lag := h.worker.Lag()
-	if lag < 2*time.Second || lag > 3*time.Second {
-		t.Fatalf("lag %v outside expected [2s,3s] window", lag)
+	if lag != expected {
+		t.Fatalf("lag = %v, want exactly %v (clk.Now()=%v, producedAt=%v)",
+			lag, expected, h.clk.Now(), producedAt)
 	}
 }
 
