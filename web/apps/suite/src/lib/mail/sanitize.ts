@@ -20,6 +20,10 @@
 import DOMPurify from 'dompurify';
 
 import { t } from '../i18n/i18n.svelte';
+import {
+  INTERNALIZE_PLACEHOLDER_PREFIX,
+  isInternalizePlaceholder,
+} from './internalize-placeholder';
 
 export interface SanitizeOptions {
   /** When true, http(s) <img src> rewrites through the image proxy. */
@@ -115,6 +119,18 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
     img.removeAttribute('src');
     img.setAttribute('alt', alt || '[inline image]');
     img.setAttribute('data-herold-blocked', 'cid');
+    return;
+  }
+  // Server-emitted internalize placeholder (REQ-EXTIMG-BG-INTERNAL-40):
+  // Email/get rewrites every external <img src> to a self-contained
+  // 1x1 transparent GIF data URI when the message row carries
+  // InternalizePending = true. Without this pass-through the http(s)-
+  // only allowlist below strips the src and the user sees the broken-
+  // image icon (the failure mode reported on 2026-05-10 against
+  // pending Google-receipt mail). The allowlist is the literal
+  // placeholder prefix only, so user-supplied bodies cannot smuggle
+  // inline images past the external-fetch gate.
+  if (isInternalizePlaceholder(src)) {
     return;
   }
   if (!/^https?:/i.test(src)) {
@@ -220,6 +236,23 @@ function wrapInIframeDocument(body: string): string {
   }
   a { color: #0f62fe; }
   img { max-width: 100%; height: auto; }
+  /*
+   * Server-emitted internalize placeholder (REQ-EXTIMG-BG-INTERNAL-41).
+   * The selector matches the literal prefix of extimg.PlaceholderDataURI
+   * only -- never a generic data: selector -- so user-supplied bodies
+   * cannot leverage this style for their own data URIs. Sized to a
+   * visible gray box so the user opening an image-heavy email sees
+   * *where* the images will land while the worker drains, instead of
+   * the 1x1 transparent GIF collapsing the layout and orphaning the
+   * "Bilder werden verarbeitet" banner.
+   */
+  img[src^="${INTERNALIZE_PLACEHOLDER_PREFIX}"] {
+    display: block;
+    min-height: 6em;
+    width: 100%;
+    max-width: 100%;
+    background: #f4f4f4;
+  }
   blockquote {
     border-left: 3px solid #c6c6c6;
     margin: 0 0 0 8px;

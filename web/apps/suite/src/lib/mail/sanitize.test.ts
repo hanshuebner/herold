@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { sanitizeHtml, htmlHasExternalImages } from './sanitize';
+import { INTERNALIZE_PLACEHOLDER_PREFIX } from './internalize-placeholder';
 
 function bodyOf(srcdoc: string): string {
   const m = srcdoc.match(/<body>([\s\S]*?)<\/body>/);
@@ -87,6 +88,50 @@ describe('sanitizeHtml — external image gating', () => {
     const html = '<img src="javascript:alert(1)" alt="x">';
     const body = bodyOf(sanitizeHtml(html, { loadImages: true }));
     expect(body).not.toContain('javascript:');
+  });
+});
+
+describe('sanitizeHtml — internalize placeholder pass-through (REQ-EXTIMG-BG-INTERNAL-40 / -65)', () => {
+  it('passes the server-emitted placeholder data URI through unchanged', () => {
+    const placeholder =
+      'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
+    const html = `<img src="${placeholder}" alt="x">`;
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).toContain(`src="${placeholder}"`);
+    // No referrerpolicy / loading attrs are added: there is nothing
+    // to fetch for an inline data URI.
+    expect(body).not.toContain('referrerpolicy');
+    expect(body).not.toContain('loading="lazy"');
+    // The block-images banner machinery must not flag the placeholder
+    // as a blocked external image.
+    expect(body).not.toContain('data-herold-blocked');
+  });
+
+  it('still strips a non-placeholder data: image src (allowlist is the literal prefix only)', () => {
+    const html = '<img src="data:image/png;base64,abc" alt="x">';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).not.toContain('data:image/png');
+    expect(body).not.toContain('src=');
+  });
+});
+
+describe('sanitizeHtml — internalize placeholder visible box (REQ-EXTIMG-BG-INTERNAL-41 / -66)', () => {
+  it('iframe stylesheet contains the literal selector and a non-zero min-height', () => {
+    // Use a benign body; the assertion is on the wrapping <style>, not on the body.
+    const out = sanitizeHtml('<p>hi</p>', { loadImages: false });
+    expect(out).toContain(
+      `img[src^="${INTERNALIZE_PLACEHOLDER_PREFIX}"]`,
+    );
+    // String-match the rule's min-height; explicitly assert the value
+    // is not the CSS no-op `0`. Splitting the assertion into "selector
+    // present" + "min-height is non-zero" guards against a future
+    // refactor that drops the rule body but keeps the selector.
+    const styleMatch = out.match(
+      /img\[src\^="data:image\/gif;base64,R0lGODlhAQABAIAAAP"\][^}]*\{([^}]*)\}/,
+    );
+    expect(styleMatch).not.toBeNull();
+    const ruleBody = styleMatch?.[1] ?? '';
+    expect(ruleBody).toMatch(/min-height\s*:\s*([1-9][0-9.]*)\s*(em|px|rem|%)/);
   });
 });
 
