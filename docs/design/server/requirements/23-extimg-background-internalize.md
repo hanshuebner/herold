@@ -46,7 +46,7 @@ pipeline).
 
 | ID | Requirement |
 |----|-------------|
-| REQ-EXTIMG-BG-10 | When Email/get renders the body of a message with `InternalizePending = true`, every external `<img>` `src` (and `<source srcset>` and CSS `url(...)`) in the rendered HTML is rewritten to a herold-local placeholder before the body is returned to the client. The placeholder is a 1x1 transparent PNG served from a known data URI, embedded in the suite asset bundle. The user sees no external image until the worker rewrites the blob; first-render does not leak the recipient's IP or open-rate to the image origin. |
+| REQ-EXTIMG-BG-10 | When Email/get renders the body of a message with `InternalizePending = true`, every external `<img>` `src` (and `<source srcset>` and CSS `url(...)`) in the rendered HTML is rewritten to a herold-local placeholder before the body is returned to the client. The placeholder is a 1x1 transparent GIF emitted from the server-side constant `extimg.PlaceholderDataURI` (`internal/extimg/placeholder.go`); identical bytes on every emission. The user sees no external image until the worker rewrites the blob; first-render does not leak the recipient's IP or open-rate to the image origin. |
 | REQ-EXTIMG-BG-11 | The placeholder rewrite reuses `extimg.RewriteForPlaceholder` (a new helper in `internal/extimg/`) that walks the HTML the same way `extimg.Internalize` walks it, but emits the placeholder data URI in place of every external src instead of fetching. The signature is `RewriteForPlaceholder(raw []byte) ([]byte, AuditSummary, error)`; same shape as `Internalize` so the rendering pipeline can swap them by mode. |
 | REQ-EXTIMG-BG-12 | Inline images (CID-referenced, data: URIs, blob: URIs) are NOT rewritten -- they were never an external-tracking risk. Plain text, multipart/alternative text parts, and DKIM-verified passthrough images are also not rewritten (the latter because the importer would not have flagged them). |
 | REQ-EXTIMG-BG-13 | The placeholder rewrite is cheap (a single HTML walk, no I/O) and is included in Email/get's normal time budget. There is no separate deadline for the rewrite. |
@@ -103,6 +103,41 @@ section splits them.)*
 | REQ-EXTIMG-BG-INTERNAL-31 | The mail-store's `#onEmailStateChange` (`web/apps/suite/src/lib/mail/store.svelte.ts`) drops its `void auth.refreshSession();` line and the comment block referencing REQ-EXTIMG-BG-33 is rewritten to point at REQ-EXTIMG-BG-INTERNAL-32. |
 | REQ-EXTIMG-BG-INTERNAL-32 | When the worker finishes processing a message it clears the row's `InternalizePending` flag. The badge / banner clears the next time the user-driven `Email/get` re-fetches that row — there is no longer a server-driven push to force per-Email re-fetch. The settings-panel "Image processing" section updates promptly via the `InternalizeStatus` push. *Replaces REQ-EXTIMG-BG-33.* |
 
+### SPA placeholder rendering
+
+| ID | Requirement |
+|----|-------------|
+| REQ-EXTIMG-BG-INTERNAL-40 | The suite SPA's sanitiser (`web/apps/suite/src/lib/mail/sanitize.ts:rewriteImage`) MUST allow the server-emitted placeholder data URI through unchanged. Without this, the existing scheme allowlist (http(s) only) strips the `src` and the browser renders a broken-image icon with the original `alt` text in its place — the failure mode reported on 2026-05-10 against pending Google-receipt mail. The narrowed allowlist for inbound `data:` is `^data:image/gif;base64,R0lGODlh` (the literal prefix of `extimg.PlaceholderDataURI`); any other inbound `data:image/...` is still stripped, preserving the constraint that user-supplied bodies cannot smuggle inline images past the external-fetch gate. |
+| REQ-EXTIMG-BG-INTERNAL-41 | When the SPA renders an `<img>` whose `src` is the placeholder data URI, the iframe stylesheet sizes the placeholder to a visible gray box (`min-height: 6em`, `width: 100%` of the parent's content box, `background: var(--bx-color-layer-02)` or equivalent muted token, optional centred icon glyph). Rationale: the user opening an image-heavy email should see *where* the images will land while the worker drains; a 1x1 transparent placeholder collapses the layout and makes the "Bilder werden verarbeitet" banner visually orphaned. The CSS rule MUST match the literal placeholder prefix only (`img[src^="data:image/gif;base64,R0lGODlhAQABAIAAAP"]`), never a generic `img[src^="data:"]`, so styling never applies to user-supplied data URIs. |
+
+### Worker observability
+
+| ID | Requirement |
+|----|-------------|
+| REQ-EXTIMG-BG-INTERNAL-50 | The internalize-worker emits one INFO line per processed batch with attrs `{ batch_size, principals, ok, no_change, failed, elapsed_ms, cursor_before, cursor_after }`. This replaces the current state where a healthy worker logs only the one-shot "started" line and the operator has no signal that progress is occurring. DEBUG-level per-message lines are retained for fine-grained traces. |
+| REQ-EXTIMG-BG-INTERNAL-51 | The worker emits one INFO line on each idle-park transition (batch returned empty, parking until the notify channel or the safety-net tick fires) and one on each wake-up (with the wake source: `notify` or `idle_poll`). Without these, the operator cannot distinguish "worker is idle and waiting" from "worker has stalled". |
+| REQ-EXTIMG-BG-INTERNAL-52 | The `extimg-worker: started` line carries the initial `pending_count` (a single `CountInternalizePending` call summed across principals on startup) so the operator sees the backlog magnitude at boot. A subsequent INFO line every `progress_log_interval` (default 60 s) re-emits the current `pending_count` and the worker's processed-since-start total — a sustained-progress beacon when individual batch lines are too noisy or have rolled out of the log window. |
+
+### Worker prioritisation
+
+*(Added 2026-05-10. The original REQ-EXTIMG-BG-03 specified
+"DESCENDING order (newest first)" by message id, with the rationale
+that "freshly-arrived mail is searchable / image-rewritten as soon as
+the user opens it". For live SMTP delivery message-id and received-at
+are correlated and the rule does what its rationale says. For a one-
+shot bulk import they are anti-correlated: the maintainer's freshly-
+imported mailbox put a 2026-05-08 receipt at message id 2156 and an
+8-year-old archive entry at message id 126,324, so the worker — doing
+exactly what BG-03 says — was processing 2018 mail first and queued
+the user's freshest mail last behind 60k+ years-old messages.)*
+
+| ID | Requirement |
+|----|-------------|
+| REQ-EXTIMG-BG-INTERNAL-80 | The worker processes pending messages in DESCENDING `received_at_us` order (most-recent mail by header date first), tie-broken on DESCENDING `message_id`. Supersedes REQ-EXTIMG-BG-03's "DESCENDING order by id" — the underlying intent ("newest first") is preserved with a definition of "newest" that matches what the user sees in the inbox. |
+| REQ-EXTIMG-BG-INTERNAL-81 | A new metadata method `ListMessagesWithInternalizePendingByReceivedAt(ctx, beforeReceivedAtUs int64, beforeMessageID MessageID, limit int) ([]MessageRef, error)` returns up to `limit` `(MessageID, ReceivedAtUs)` pairs where `internalize_pending = 1` AND `(received_at_us, id) < (beforeReceivedAtUs, beforeMessageID)` lexicographically, ordered DESC. Pass `beforeReceivedAtUs = 0` (or sentinel max-int64) and `beforeMessageID = 0` to start from the most-recent pending message. The worker maintains an in-memory cursor as the `(receivedAtUs, id)` of the lowest item in the prior batch. The existing `ListMessagesWithInternalizePending(ctx, beforeMessageID, limit)` is retained for tests that need id-ordered iteration; production callers move to the new method. |
+| REQ-EXTIMG-BG-INTERNAL-82 | Migrations on both backends add a partial covering index over `(principal_id, received_at_us DESC, id DESC)` restricted to `internalize_pending = 1`. The existing partial index over `(internalize_pending = 1)` may stay for the legacy id-ordered method; pick whichever the storage-implementor judges cheaper to maintain. The cost: one index-row per pending message, dropped as the flag clears. At the maintainer's 62k-pending peak the index is ~few-MB; at a hypothetical future 10M-row backlog the index is ~hundreds-of-MB and worth re-evaluating then. |
+| REQ-EXTIMG-BG-INTERNAL-83 | The worker's batch-summary log line (REQ-INTERNAL-50) replaces `cursor_before` / `cursor_after` with `received_at_before` / `received_at_after` (RFC3339 timestamps) so the operator can read the worker's progress as "drained from 2026-05-09 down to 2026-05-08" rather than as opaque message ids. The cursor's tie-breaker `message_id` is logged as a secondary attr only. |
+
 ### Test strategy (additions)
 
 | ID | Requirement |
@@ -112,6 +147,11 @@ section splits them.)*
 | REQ-EXTIMG-BG-INTERNAL-62 | TestEventSource_BackgroundChurnNoPush: drive the push loop with synthetic background-only changes; assert no SSE event is emitted and the cursor advances silently. |
 | REQ-EXTIMG-BG-INTERNAL-63 | TestInternalizeWorker_BumpsInternalizeStatusOncePerBatch: queue 50 pending messages, run one drain pass, assert `JMAPStateKindInternalizeStatus` advanced exactly once. |
 | REQ-EXTIMG-BG-INTERNAL-64 | TestSpaSync_InternalizeStatusTriggersSessionRefresh: drive the suite SPA's sync layer with a synthetic `InternalizeStatus` push; assert `auth.refreshSession()` was called and the Email-state path was *not* triggered. |
+| REQ-EXTIMG-BG-INTERNAL-65 | TestSanitize_PlaceholderDataUriPassesThrough (vitest): feed `<img src="data:image/gif;base64,R0lGODlhAQABAIAAAP/...">` to `sanitizeHtml`; assert the resulting `<img>` retains its `data:` `src` and does not gain the `data-herold-blocked` attribute. Companion test: a non-placeholder `data:image/png;base64,...` is still stripped (the allowlist is the literal placeholder prefix only). |
+| REQ-EXTIMG-BG-INTERNAL-66 | TestSanitize_PlaceholderRendersVisibleBox (vitest): assert the iframe stylesheet contains the literal selector `img[src^="data:image/gif;base64,R0lGODlhAQABAIAAAP"]` and that it sets a non-zero `min-height`. The selector test is a string match against the served stylesheet — guarding against a future refactor that breaks the link between server constant and SPA selector. |
+| REQ-EXTIMG-BG-INTERNAL-67 | TestInternalizeWorker_BatchSummaryLogged (Go): seed 5 pending messages, run one batch, capture the worker's slog output via a buffered handler; assert exactly one INFO line with the `batch.summary` message and the expected attrs (`batch_size=5`, `ok>=0`, `failed>=0`, `elapsed_ms>=0`). |
+| REQ-EXTIMG-BG-INTERNAL-68 | TestListMessagesWithInternalizePendingByReceivedAt_OrdersByReceivedAt (storetest): seed three pending messages — id=1 received 2018, id=2 received 2026, id=3 received 2020. Call the new list method with `beforeReceivedAtUs=0, beforeMessageID=0, limit=10`; assert the order is `[id=2, id=3, id=1]`. Companion: pagination test with `limit=1` and the cursor advancing through the same three messages in the same order. |
+| REQ-EXTIMG-BG-INTERNAL-69 | TestInternalizeWorker_NewestByReceivedAtFirst (Go): seed two pending messages where the message-id ordering and the received-at ordering disagree (id=10 received 2020, id=20 received 2018). Run one batch with `BatchSize=1`. Assert the worker processed `id=10` first (received 2020 wins on received_at_us DESC) — guarding the prioritisation rule against a future regression that re-introduces id-DESC iteration. |
 
 ### Migration ordering
 
