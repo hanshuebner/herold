@@ -129,6 +129,24 @@ func (f *FakeClock) Now() time.Time {
 	return f.now
 }
 
+// NumWaiters returns the number of After-style waiters currently
+// registered against the fake clock. Tests use this to synchronise
+// against production goroutines that register their timer lazily on
+// first iteration: poll NumWaiters until it reaches the expected
+// count, then call Advance. Without this barrier, an Advance racing
+// the goroutine's first After call leaves the just-registered waiter
+// armed for `now+d` (post-advance), and no further wake-up is
+// scheduled until the next Advance — which the test typically gates
+// on a signal that the racing waiter was supposed to produce.
+//
+// AfterFunc-style timers are not counted: they are observed by their
+// callback running, which is its own synchronisation primitive.
+func (f *FakeClock) NumWaiters() int {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return len(f.waiters)
+}
+
 // After registers a waiter whose channel fires once the fake clock has
 // advanced past now+d. The returned channel is buffered size 1 so firing
 // never blocks a concurrent Advance.

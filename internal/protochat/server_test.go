@@ -537,12 +537,27 @@ func TestHeartbeat_NoPongWithinTimeout_ClosesConnection(t *testing.T) {
 		}
 	}()
 	// Drive the FakeClock so the ping fires, then wait for the read
-	// pump to actually observe it before exceeding pong-timeout. The
-	// previous version of this test used a 20 ms wall-clock sleep as
-	// the barrier; under -race CPU contention 20 ms isn't always
-	// enough, which produced an intermittent pre-commit flake on
-	// 2026-05-10. Replacing the sleep with a channel synchronisation
-	// makes the sequence deterministic regardless of host load.
+	// pump to actually observe it before exceeding pong-timeout.
+	//
+	// Earlier iterations of this test used a 20 ms wall-clock sleep
+	// before Advance(50ms), then a channel signal after — both flaked
+	// under -race CPU contention. Root cause: writePump registers its
+	// pingTimer with clk.After(pingInterval) only on first iteration;
+	// if Advance runs before that registration, the just-registered
+	// waiter has deadline `now+50ms` (post-advance), no firing happens,
+	// and the test deadlocks waiting for a ping that needs another
+	// Advance to fire.
+	//
+	// Synchronise on the FakeClock's own waiter count instead: poll
+	// until the writePump has registered its pingTimer, THEN Advance.
+	// That makes the sequence deterministic regardless of host load.
+	waiterDeadline := time.Now().Add(2 * time.Second)
+	for h.clk.NumWaiters() == 0 {
+		if time.Now().After(waiterDeadline) {
+			t.Fatalf("writePump never registered its pingTimer within 2s")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	h.clk.Advance(50 * time.Millisecond) // first ping
 	select {
 	case <-gotPing:
