@@ -49,12 +49,25 @@ func writeProbeFailed(w http.ResponseWriter, r *http.Request, outcome extsubmit.
 
 // resolveIdentityOwner looks up the JMAP identity by id and returns its
 // owning PrincipalID. Returns ErrNotFound when the identity does not exist.
+//
+// The literal id "default" is the per-principal synthesised identity and
+// has no row in jmap_identities. Callers that need to act on the default
+// identity must short-circuit before calling this function (the
+// submission table FKs jmap_identities, so the default cannot persist a
+// submission row at all).
 func resolveIdentityOwner(ctx context.Context, meta store.Metadata, identityID string) (store.PrincipalID, error) {
 	identity, err := meta.GetJMAPIdentity(ctx, identityID)
 	if err != nil {
 		return 0, err
 	}
 	return identity.PrincipalID, nil
+}
+
+// isSyntheticDefault reports whether identityID refers to the per-
+// principal synthesised default identity (no row in jmap_identities;
+// id is the literal "default" by JMAP-wire convention).
+func isSyntheticDefault(identityID string) bool {
+	return identityID == "default"
 }
 
 // handleGetSubmission implements GET /api/v1/identities/{id}/submission.
@@ -67,7 +80,23 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, "invalid_id", "identity id is required", "")
 		return
 	}
-	caller, _ := principalFrom(r.Context())
+	caller, callerOK := principalFrom(r.Context())
+
+	// Synthesised default identity ("default" id, no row in
+	// jmap_identities). It always reports as not configured: the
+	// FK in identity_submission references jmap_identities so the
+	// default cannot persist a submission row. Returning 200
+	// {configured:false} (instead of a 404) lets the SPA render the
+	// per-row badge without polling forever.
+	if isSyntheticDefault(identityID) {
+		if !callerOK {
+			writeProblem(w, r, http.StatusUnauthorized, "unauthenticated", "session required", "")
+			return
+		}
+		_ = caller
+		writeJSON(w, http.StatusOK, submissionGetResponse{Configured: false})
+		return
+	}
 
 	ownerID, err := resolveIdentityOwner(r.Context(), s.store.Meta(), identityID)
 	if err != nil {
@@ -120,6 +149,17 @@ func (s *Server) handlePutSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	caller, _ := principalFrom(r.Context())
+
+	// External submission requires a persisted Identity (the table FKs
+	// jmap_identities). The synthesised default identity is not
+	// persisted, so reject the PUT with a clear 422 and surface the
+	// constraint to the caller.
+	if isSyntheticDefault(identityID) {
+		writeProblem(w, r, http.StatusUnprocessableEntity, "synthetic_default_unsupported",
+			"the default identity has no persistent row; create a custom Identity to configure external SMTP submission",
+			identityID)
+		return
+	}
 
 	ownerID, err := resolveIdentityOwner(r.Context(), s.store.Meta(), identityID)
 	if err != nil {
@@ -244,7 +284,19 @@ func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) 
 		writeProblem(w, r, http.StatusBadRequest, "invalid_id", "identity id is required", "")
 		return
 	}
-	caller, _ := principalFrom(r.Context())
+	caller, callerOK := principalFrom(r.Context())
+
+	// Synthetic default never has a submission row to delete; treat
+	// DELETE as idempotent no-op rather than 404.
+	if isSyntheticDefault(identityID) {
+		if !callerOK {
+			writeProblem(w, r, http.StatusUnauthorized, "unauthenticated", "session required", "")
+			return
+		}
+		_ = caller
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 
 	ownerID, err := resolveIdentityOwner(r.Context(), s.store.Meta(), identityID)
 	if err != nil {

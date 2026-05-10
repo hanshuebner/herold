@@ -253,6 +253,49 @@ func TestGetSubmission_NoConfig(t *testing.T) {
 	}
 }
 
+// TestGetSubmission_SyntheticDefault_NotFound_RegressionLoopFix verifies
+// that GET /api/v1/identities/default/submission returns
+// 200 {configured:false} rather than 404. The synthesised default
+// identity ("default" id, no row in jmap_identities) cannot persist
+// a submission row because identity_submission FKs jmap_identities,
+// so the truthful state is "configured = false". A 404 here causes
+// the suite's submissionStore to enter status='error' and the
+// SettingsView $effect that polls identities to retry forever (live
+// repro: 16 000+ requests in seconds against admin@example.local).
+func TestGetSubmission_SyntheticDefault_NotFound_RegressionLoopFix(t *testing.T) {
+	sh := newSubmissionHarness(t, alwaysOKProbe)
+	_, adminKey := sh.bootstrap("admin@example.com")
+
+	res, buf := sh.doRequest("GET", "/api/v1/identities/default/submission", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET default submission: status %d: %s", res.StatusCode, buf)
+	}
+	var got struct {
+		Configured bool `json:"configured"`
+	}
+	if err := json.Unmarshal(buf, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Configured {
+		t.Errorf("configured: got true; want false (synthetic default cannot persist a row)")
+	}
+}
+
+// TestPutSubmission_SyntheticDefault_Rejected verifies that PUT
+// against the synthetic default returns 422 with a clear reason.
+// The schema FKs jmap_identities; the default has no row there, so
+// any attempt to persist must fail at the application layer with a
+// helpful error rather than a SQLite FK violation deeper in.
+func TestPutSubmission_SyntheticDefault_Rejected(t *testing.T) {
+	sh := newSubmissionHarness(t, alwaysOKProbe)
+	_, adminKey := sh.bootstrap("admin@example.com")
+
+	res, buf := sh.doRequest("PUT", "/api/v1/identities/default/submission", adminKey, putSubmissionBody())
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("PUT default submission: status %d: %s", res.StatusCode, buf)
+	}
+}
+
 // TestPutSubmission_Password_OK verifies that PUT with a passing probe
 // returns 204 and persists the row.
 func TestPutSubmission_Password_OK(t *testing.T) {

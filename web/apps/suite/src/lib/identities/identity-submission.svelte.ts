@@ -117,11 +117,19 @@ export class IdentitySubmissionHandle {
    * Fetch the submission status from the server.
    * If a fetch is already in flight, this is a no-op.
    * If the entry is already 'ready' and not stale, this is a no-op.
+   * If the entry has terminally errored, this is also a no-op — the
+   * caller must use refresh() to retry. Without this guard, a $effect
+   * that reads the entry's status (any callsite of submissionStore
+   * indirectly does, since _entry is reactive) would re-run on every
+   * patch and call load() again, looping forever against a 4xx
+   * response. Caching the failure breaks that cycle; sync.on('Identity')
+   * still invalidates entries on a JMAP push and clears the error.
    */
   async load(): Promise<void> {
     const entry = this.#store._entry(this.identityId);
     if (entry.status === 'loading') return;
     if (entry.status === 'ready') return;
+    if (entry.status === 'error') return;
     await this.#fetch();
   }
 
