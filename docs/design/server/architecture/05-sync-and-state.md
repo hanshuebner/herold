@@ -21,6 +21,8 @@ state_changes(
   parent_entity_id  u64,            -- optional containing-entity id
                                     --   (e.g. mailbox-id for an email)
   op                smallint,       -- 1=created, 2=updated, 3=destroyed
+  cause             text,           -- 'user' (default) or 'background';
+                                    --   see "Cause classification" below
   produced_at       timestamp
 )
 ```
@@ -44,6 +46,42 @@ What this means for the implementation:
 - `EntityKind` values (Go `EntityKind` aka SQL `entity_kind`) are the canonical JMAP datatype names. v1: `mailbox`, `email`, `email_submission`, `identity`, `vacation_response`. Phase 2 adds (without schema change, per the open-enum design): `sieve`, `calendar`, `calendar_event`, `address_book`, `contact`, `conversation`, `message`, `membership`. The `parent_entity_id` column carries an optional containing-entity id — for `email` rows it carries the mailbox so per-mailbox IMAP IDLE filters can dispatch without a join; for `message` (chat) rows it carries the conversation so per-conversation chat fanout can dispatch without a join; mailbox-scope and conversation-scope rows leave it zero.
 - Adding a new entity kind is additive: extend the open enum (no SQL change; it is a `TEXT` column), add the kind's tables, register a JMAP datatype handler. No migration of `state_changes` rows.
 - Consumers (broadcaster, JMAP push filter, IDLE filter) MUST dispatch on `entity_kind` (string match) and on `(kind, op)` pairs, not on schema-typed columns, so unknown future kinds flow through without code changes in the dispatch path. Concretely: the FTS worker filters `change.Kind == EntityKindEmail`; the IMAP IDLE broadcaster filters `change.Kind == EntityKindEmail || EntityKindMailbox` with `change.ParentEntityID == selected mailbox`.
+
+### Cause classification
+
+Not every state-change row reflects a mutation the user can observe. The
+extimg internalize-worker (REQ-EXTIMG-BG-01) rewrites stored bodies to
+swap external-image URLs for cached blobs; the same visible message
+arrives at the user's screen before and after the rewrite, but the row
+is touched and the change-feed is appended. JMAP / EventSource clients
+should not refetch in that case (the answer they already have is
+unchanged); IMAP CONDSTORE / FETCH and FTS clients still must (the FETCH
+BODY answer is byte-different; the indexable text changed).
+
+`cause` carries that classification:
+
+- `'user'` (default) — JMAP `/set`, IMAP `STORE` / `EXPUNGE` / `APPEND` /
+  `COPY` / `MOVE`, delivery, admin operations.
+- `'background'` — in-process worker rewrites. v1 producer: extimg
+  internalize-worker only (REQ-EXTIMG-BG-INTERNAL-15).
+
+Consumers split on cause:
+
+| Consumer | Cause filter | Why |
+|---|---|---|
+| JMAP `Foo/state`, `Foo/changes`, `Foo/queryChanges` | `'user'` only | The user-visible state must not advance for opaque body rewrites; otherwise every push triggers a `/changes` round-trip to learn that nothing the SPA cares about changed. |
+| EventSource push loop | `'user'` only | A `'background'`-only polling cycle advances the cursor silently and emits no SSE event. |
+| IMAP IDLE / FETCH | both causes | `FETCH BODY` is byte-different after a rewrite; CONDSTORE `HIGHESTMODSEQ` advances on any modseq change. |
+| FTS indexer | both causes | A body rewrite changes the indexable text. |
+| Seen-address indexer | both causes | A body rewrite does not change addresses, but the indexer's identity-map de-dupes the no-op pass cheaply. |
+
+The pending count surfaced by the
+`urn:netzhansa:params:jmap:internalize-status` session capability
+advances via a separate `JMAPStateKindInternalizeStatus` counter on the
+`jmap_states` row, bumped once per worker batch
+(REQ-EXTIMG-BG-INTERNAL-21). EventSource subscribers see one
+`InternalizeStatus` push per batch; the SPA refreshes the session
+descriptor on receipt.
 
 ## Producers: who writes to the feed
 

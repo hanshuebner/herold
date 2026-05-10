@@ -58,7 +58,7 @@ pipeline).
 |----|-------------|
 | REQ-EXTIMG-BG-20 | The Email JMAP object gains a non-RFC field `internalizePending` (boolean). `true` whenever the underlying message row has `internalize_pending = 1`. The field is exposed only when the requested properties include `internalizePending` or `*`. |
 | REQ-EXTIMG-BG-21 | The session descriptor at `/.well-known/jmap` grows a non-RFC capability `urn:netzhansa:params:jmap:internalize-status` shaped as `{ pending_messages: uint64, total_messages: uint64, as_of: rfc3339 }`. Principal-scoped: `pending_messages` and `total_messages` are computed per the requesting principal (REQ-EXTIMG-BG-04 above). The capability is forward-compatible with REQ-FTS-PROGRESS-10's transport pattern. |
-| REQ-EXTIMG-BG-22 | A push event of the existing JMAP state-change shape fires whenever the worker rewrites a message; the affected `Email` state advances so any open SPA mailbox view re-fetches and the badge clears. The push channel is the same `eventSourceUrl` already used for Email state changes; no new channel. |
+| REQ-EXTIMG-BG-22 | *Superseded by REQ-EXTIMG-BG-INTERNAL-22 (2026-05-10): the original wording advanced Email state per worker rewrite, which produced a sustained ~5 Hz `Email/changes` storm during backlog drains. The replacement classifies worker writes as `cause = 'background'` and pushes the pending-count signal over a separate `InternalizeStatus` channel.* |
 
 ## Suite SPA surface
 
@@ -67,7 +67,58 @@ pipeline).
 | REQ-EXTIMG-BG-30 | The mailbox-list row for a message with `internalizePending = true` carries a small badge (icon + tooltip "Images are being processed in the background. Refresh in a moment to see them.") to the right of the subject. The badge is locale-aware. |
 | REQ-EXTIMG-BG-31 | The thread reader for a message with `internalizePending = true` shows the same notice as a non-modal banner above the body. The body itself renders with the placeholders from REQ-EXTIMG-BG-10 in place of external images. |
 | REQ-EXTIMG-BG-32 | The settings panel adds an "Image processing" section showing `pending_messages / total_messages` from the JMAP capability. Hidden when `pending_messages == 0` (the steady state). Mirrors REQ-FTS-PROGRESS-21. |
-| REQ-EXTIMG-BG-33 | The badge and banner clear automatically when the push event fires and the SPA re-fetches the affected Email object. No explicit "refresh" button is needed; the user sees the images appear once the worker catches up. |
+| REQ-EXTIMG-BG-33 | *Superseded by REQ-EXTIMG-BG-INTERNAL-32 (2026-05-10): the badge no longer clears via a server-driven Email-state push; it clears the next time the user-driven `Email/get` re-fetches the row (and the row's `internalizePending` flag has been cleared). The settings-panel pending count refreshes promptly via the new `InternalizeStatus` push.* |
+
+## Internal change-feed classification
+
+*(Added 2026-05-10. The change-feed is the single source of truth for
+both user-facing JMAP `/changes` and internal consumers — IMAP CONDSTORE,
+FTS, seen-address. The two have different needs: JMAP / EventSource
+should only react to mutations the user can observe; the internal
+consumers must see every mutation that affected the data they index.
+Until now the two were conflated and worker rewrites drove both. This
+section splits them.)*
+
+| ID | Requirement |
+|----|-------------|
+| REQ-EXTIMG-BG-INTERNAL-01 | `state_changes` grows a `cause TEXT NOT NULL DEFAULT 'user'` column. Defined values: `'user'` (any user-driven mutation: JMAP `/set`, IMAP `STORE` / `EXPUNGE` / `APPEND` / `COPY` / `MOVE`, delivery, admin), `'background'` (in-process worker that rewrites stored data without changing what the user can observe). Open enum (TEXT) for forward-compatibility with future causes. |
+| REQ-EXTIMG-BG-INTERNAL-02 | Migrations add the column and a partial index `(principal_id, entity_kind, seq) WHERE cause = 'user'`. The pre-existing full index is retained for IMAP / FTS scans. Existing rows back-fill to `'user'`. |
+| REQ-EXTIMG-BG-INTERNAL-03 | The `Metadata` writer surface gains a `appendStateChangeBackground` variant. The default `appendStateChange` continues to write `cause = 'user'`. Each writer site declares its cause explicitly — no ambient inference, no caller writes `'background'` without a code-review reason. |
+| REQ-EXTIMG-BG-INTERNAL-10 | `GetMaxChangeSeqForKind` filters `cause = 'user'`. All current callers (JMAP `Foo/state`, `Foo/changes`, `Foo/queryChanges`, EventSource `collectStateMap`) get the user-visible state with no per-caller change. |
+| REQ-EXTIMG-BG-INTERNAL-11 | `ReadChangeFeed` defaults to `cause = 'user'`. A sibling `ReadChangeFeedAll` (or an explicit cause-set option on the same primitive) is used by IMAP IDLE in `internal/protoimap/session_store_search.go`, the FTS feed reader (`storesqlite/fts.go`, `storepg/fts.go`), and the seen-address indexer (`internal/protojmap/mail/seenaddress/seenaddress.go`). The default fails closed: a missed call site sees less data, never more. |
+| REQ-EXTIMG-BG-INTERNAL-12 | The EventSource push loop arms its flush timer only when at least one polled change has `cause = 'user'`. A polling cycle that sees only `'background'` advances the cursor silently — no SSE event, no `Foo/changes` round-trip provoked on the SPA. |
+| REQ-EXTIMG-BG-INTERNAL-13 | IMAP IDLE / CONDSTORE behaviour is unchanged: every change-feed entry for the selected mailbox emits its untagged response, including worker rewrites. `mailboxes.highest_modseq` and `message_mailboxes.modseq` continue to advance because `ReplaceMessageBody` bumps them on the message-side tables, independent of `cause`. |
+| REQ-EXTIMG-BG-INTERNAL-14 | The FTS-indexer feed reader and seen-address indexer opt in to both causes so a body rewrite triggers re-indexing. |
+| REQ-EXTIMG-BG-INTERNAL-15 | The `extimg` internalize-worker is the only v1 producer of `cause = 'background'`. Adding a new internal writer requires a follow-up REQ that justifies the classification. |
+
+### Pending-count push channel
+
+| ID | Requirement |
+|----|-------------|
+| REQ-EXTIMG-BG-INTERNAL-20 | A new `JMAPStateKindInternalizeStatus` is added to `internal/store/types_phase2.go`; `jmap_states` grows an `internalize_status_state INTEGER NOT NULL DEFAULT 0` column. Bumped via the existing `IncrementJMAPState` API. |
+| REQ-EXTIMG-BG-INTERNAL-21 | The internalize-worker calls `IncrementJMAPState(JMAPStateKindInternalizeStatus)` once per non-empty processed batch (after `wg.Wait()`, before the cursor advances), aggregated per affected principal. The bump signals "the worker did some work" — not "every rewrite committed". |
+| REQ-EXTIMG-BG-INTERNAL-22 | EventSource `collectStateMap` registers `InternalizeStatus` alongside `Identity` / `EmailSubmission` / `VacationResponse` in the row-based section. Subscribed clients see one `InternalizeStatus` push per worker batch. *Replaces REQ-EXTIMG-BG-22's "advance Email state" mechanism end-to-end.* |
+| REQ-EXTIMG-BG-INTERNAL-23 | `buildInternalizeStatusCapability` (`internal/protojmap/session.go`) keeps its current shape and remains the data source. The push only signals "the count may have moved"; the SPA re-fetches the capability via `auth.refreshSession()` to read the new value. |
+| REQ-EXTIMG-BG-INTERNAL-30 | Suite `App.svelte` adds `'InternalizeStatus'` to `sync.start(types)`. A `sync.on('InternalizeStatus', () => auth.refreshSession())` handler lives next to the existing capability-refresh handlers. |
+| REQ-EXTIMG-BG-INTERNAL-31 | The mail-store's `#onEmailStateChange` (`web/apps/suite/src/lib/mail/store.svelte.ts`) drops its `void auth.refreshSession();` line and the comment block referencing REQ-EXTIMG-BG-33 is rewritten to point at REQ-EXTIMG-BG-INTERNAL-32. |
+| REQ-EXTIMG-BG-INTERNAL-32 | When the worker finishes processing a message it clears the row's `InternalizePending` flag. The badge / banner clears the next time the user-driven `Email/get` re-fetches that row — there is no longer a server-driven push to force per-Email re-fetch. The settings-panel "Image processing" section updates promptly via the `InternalizeStatus` push. *Replaces REQ-EXTIMG-BG-33.* |
+
+### Test strategy (additions)
+
+| ID | Requirement |
+|----|-------------|
+| REQ-EXTIMG-BG-INTERNAL-60 | TestStateChange_BackgroundInvisibleToJMAP: writing a row with `ChangeCauseBackground` does not advance `GetMaxChangeSeqForKind` and is invisible to a default `ReadChangeFeed`. |
+| REQ-EXTIMG-BG-INTERNAL-61 | TestStateChange_BackgroundVisibleToIMAP: the same row IS visible to `ReadChangeFeedAll` and `mailboxes.highest_modseq` has advanced. |
+| REQ-EXTIMG-BG-INTERNAL-62 | TestEventSource_BackgroundChurnNoPush: drive the push loop with synthetic background-only changes; assert no SSE event is emitted and the cursor advances silently. |
+| REQ-EXTIMG-BG-INTERNAL-63 | TestInternalizeWorker_BumpsInternalizeStatusOncePerBatch: queue 50 pending messages, run one drain pass, assert `JMAPStateKindInternalizeStatus` advanced exactly once. |
+| REQ-EXTIMG-BG-INTERNAL-64 | TestSpaSync_InternalizeStatusTriggersSessionRefresh: drive the suite SPA's sync layer with a synthetic `InternalizeStatus` push; assert `auth.refreshSession()` was called and the Email-state path was *not* triggered. |
+
+### Migration ordering
+
+| ID | Requirement |
+|----|-------------|
+| REQ-EXTIMG-BG-INTERNAL-70 | The two migrations land in one commit so the schema-version invariant test never sees a half-migrated state. Existing data back-fills to `cause = 'user'` and `internalize_status_state = 0`. |
+| REQ-EXTIMG-BG-INTERNAL-71 | Go-side change set lands in dependency order: (1) schema + writer plumbing; (2) reader filters; (3) push-loop guard + InternalizeStatus state column wiring; (4) extimg worker writes `'background'` and bumps InternalizeStatus per batch; (5) SPA sync handler + Email handler drop refreshSession. Steps 1-4 ride a single backend commit; step 5 is one frontend commit. |
 
 ## Implementation order
 
