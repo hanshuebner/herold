@@ -201,7 +201,18 @@ func (w *Worker) Run(ctx context.Context) {
 // runProgressLogger ticks every ProgressLogInterval and emits a
 // pending_count_total / processed_total / processed_since_start_per_min
 // beacon (REQ-EXTIMG-BG-INTERNAL-52). Exits on ctx cancellation.
+//
+// Suppressed when the worker is fully idle: pending == 0 AND the
+// processed counter has not advanced since the prior tick. An idle
+// system would otherwise emit the same all-zeroes log line every
+// ProgressLogInterval forever, which is the noise the maintainer
+// flagged on 2026-05-10. The first tick after startup always logs
+// (so the operator sees the worker is alive and confirms the
+// configured interval); subsequent ticks suppress while idle and
+// resume the moment a batch advances processed.
 func (w *Worker) runProgressLogger(ctx context.Context, startedAt time.Time) {
+	var lastProcessed uint64
+	first := true
 	for {
 		select {
 		case <-ctx.Done():
@@ -222,6 +233,14 @@ func (w *Worker) runProgressLogger(ctx context.Context, startedAt time.Time) {
 				slog.String("err", err.Error()))
 			pending = 0
 		}
+		// Suppress the all-zeroes idle line: pending == 0 AND
+		// processed has not advanced AND we have logged at least
+		// once already. This collapses indefinitely-idle systems to
+		// a single log line per quiet stretch instead of one per
+		// minute.
+		if !first && pending == 0 && processed == lastProcessed {
+			continue
+		}
 		elapsed := w.clock.Now().Sub(startedAt)
 		var perMin float64
 		if elapsed > 0 {
@@ -232,6 +251,8 @@ func (w *Worker) runProgressLogger(ctx context.Context, startedAt time.Time) {
 			slog.Uint64("processed_total", processed),
 			slog.Float64("processed_since_start_per_min", perMin),
 		)
+		lastProcessed = processed
+		first = false
 	}
 }
 
