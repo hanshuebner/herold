@@ -24,6 +24,10 @@
   import { mail } from './lib/mail/store.svelte';
   import { threadDnd } from './lib/mail/dnd-thread.svelte';
   import { pushSubscription } from './lib/push/push-subscription.svelte';
+  // Side-effect: registers a sync.on('InternalizeStatus') handler that
+  // refreshes the session descriptor whenever the background internalize-
+  // worker bumps the count (REQ-EXTIMG-BG-INTERNAL-30).
+  import './lib/extimg/internalize-status-sync';
   import { contacts } from './lib/contacts/store.svelte';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
@@ -61,9 +65,13 @@
       const hasCap = auth.session
         ? Capability.HeroldChat in (auth.session.capabilities ?? {})
         : false;
+      // 'InternalizeStatus' subscribes to the new push channel that
+      // signals "the extimg worker bumped the pending count"
+      // (REQ-EXTIMG-BG-INTERNAL-22 / -30). It's always subscribed
+      // because the capability is principal-scoped, not chat-gated.
       const types = hasCap
-        ? ['Email', 'Mailbox', 'Thread', 'Conversation', 'Message', 'Membership', 'SeenAddress']
-        : ['Email', 'Mailbox', 'Thread', 'SeenAddress'];
+        ? ['Email', 'Mailbox', 'Thread', 'Conversation', 'Message', 'Membership', 'SeenAddress', 'InternalizeStatus']
+        : ['Email', 'Mailbox', 'Thread', 'SeenAddress', 'InternalizeStatus'];
       sync.start(types);
 
       untrack(() => {

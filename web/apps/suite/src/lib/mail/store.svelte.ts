@@ -265,14 +265,12 @@ class MailStore {
     if (tasks.length > 0) await Promise.all(tasks);
     this.emailState = newState;
 
-    // REQ-EXTIMG-BG-33: when the background-internalize worker rewrites a
-    // message it advances the per-principal Email state, which lands here
-    // as a state-change event. Re-fetch the JMAP session descriptor so
-    // the settings → privacy "Image processing" section's pending count
-    // (REQ-EXTIMG-BG-32) reflects the latest backlog without a manual
-    // page reload. Fire-and-forget; failures are swallowed by
-    // refreshSession() and the user keeps the previous descriptor.
-    void auth.refreshSession();
+    // REQ-EXTIMG-BG-INTERNAL-32: the settings → privacy "Image processing"
+    // section's pending count (REQ-EXTIMG-BG-32) is no longer refreshed
+    // here. The background-internalize worker writes its state-change
+    // rows with cause = 'background', so they no longer reach this
+    // handler. The pending count refreshes on the dedicated
+    // InternalizeStatus push subscription wired up in App.svelte.
 
     // After the refresh, find emails that were not in the cache before
     // and evaluate the mail-cue gate for each. Play at most one cue per
