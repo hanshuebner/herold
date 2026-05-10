@@ -1,0 +1,31 @@
+-- 0047_messages_principal_received_at_index.sql -- non-partial covering
+-- index supporting Email/query date-range filters and the inbox's
+-- received_at_us-ordered list page.
+--
+-- See REQ-PERF-INDEX-09 and docs/design/server/requirements/21-response-
+-- time-and-indexed-access.md.
+--
+-- Background: a `before:2009-01-01` Email/query against the maintainer's
+-- 278k-message corpus produced "method exceeded response deadline" on
+-- 2026-05-10. The query plan showed a temp B-tree sort: the full
+-- filtered set was materialised before the ORDER BY, because the only
+-- available principal-scoped index was idx_messages_principal_id (a
+-- single column), which carried the principal scan but not the sort
+-- order. The partial index added by 0046 only matches
+-- internalize_pending=1 rows.
+--
+-- A non-partial covering index over (principal_id, received_at_us DESC,
+-- id DESC) lets the planner walk the index in already-sorted order and
+-- stop at the Limit boundary -- O(limit) instead of O(N log N).
+--
+-- The index also supports the inbox's no-filter list page and any
+-- future range query keyed on received_at_us.
+--
+-- Cost: one index entry per row across all messages. The size is the
+-- price of the search-path's deterministic O(limit) response time per
+-- REQ-PERF-INDEX-01.
+--
+-- Forward-only. Mirrors storesqlite 0047.
+
+CREATE INDEX IF NOT EXISTS idx_messages_principal_received_at
+  ON messages(principal_id, received_at_us DESC, id DESC);

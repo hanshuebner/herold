@@ -242,7 +242,16 @@ const CurrentBackupVersion = 1
 //	ListMessagesWithInternalizePendingByReceivedAt store method that
 //	the extimg internalize-worker calls in place of the legacy
 //	id-ordered ListMessagesWithInternalizePending.
-const CurrentSchemaVersion = 46
+//
+// Migration 0047 (REQ-PERF-INDEX-09) adds a non-partial covering index
+//
+//	idx_messages_principal_received_at on
+//	messages(principal_id, received_at_us DESC, id DESC). Eliminates
+//	the temp B-tree sort that Email/query date-range filters
+//	(before / after / newer_than / older_than) and the inbox no-filter
+//	list page were producing on the maintainer's 278k-message corpus.
+//	Index-only migration: no schema column changes.
+const CurrentSchemaVersion = 47
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
