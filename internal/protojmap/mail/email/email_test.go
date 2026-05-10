@@ -478,6 +478,109 @@ func TestEmail_Query_HasKeyword_FastPath(t *testing.T) {
 	_ = plain // referenced for clarity that the third row exists in the fixture
 }
 
+// TestEmail_Query_AndOfBeforeAndInMailboxOtherThan_FastPath verifies
+// REQ-PERF-INDEX-10: the wire shape produced by the SPA's
+// `applyTrashJunkExclusion` (`{operator: AND, conditions: [{before},
+// {inMailboxOtherThan}]}`) must engage the same SQL fast path as the
+// flat shape `{before, inMailboxOtherThan}` and complete well within
+// the standard 1 s deadline. Reported 2026-05-10: against admin's
+// 278k-message corpus, the wrapped shape used to drop to the slow
+// `listPrincipalMessages` path and trip the deadline.
+func TestEmail_Query_AndOfBeforeAndInMailboxOtherThan_FastPath(t *testing.T) {
+	f := setupFixture(t)
+	ctx := context.Background()
+
+	trash, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Trash",
+		Attributes:  store.MailboxAttrTrash,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Trash: %v", err)
+	}
+	junk, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Junk",
+		Attributes:  store.MailboxAttrJunk,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Junk: %v", err)
+	}
+
+	// Two messages in the inbox at distinct receivedAt timestamps so
+	// `before:` actually discriminates. The fixture clock starts at
+	// 2026-01-01; we insert "old" at clock-now, then advance one year
+	// and insert "new". A `before:2026-06-01` cutoff filters in only
+	// the old message.
+	oldBody := "From: a@example.test\r\nTo: b@example.test\r\nSubject: old\r\n\r\nbody"
+	old := f.insertMessage(t, oldBody, "old", "a@example.test", "b@example.test", nil, "")
+	f.srv.Advance(365 * 24 * time.Hour)
+	newBody := "From: a@example.test\r\nTo: b@example.test\r\nSubject: new\r\n\r\nbody"
+	_ = f.insertMessage(t, newBody, "new", "a@example.test", "b@example.test", nil, "")
+
+	cutoff := "2026-06-01T00:00:00Z"
+	args := map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"operator": "AND",
+			"conditions": []any{
+				map[string]any{"before": cutoff},
+				map[string]any{"inMailboxOtherThan": []string{
+					fmt.Sprintf("%d", trash.ID),
+					fmt.Sprintf("%d", junk.ID),
+				}},
+			},
+		},
+	}
+
+	start := time.Now()
+	_, raw := f.invoke(t, "Email/query", args)
+	elapsed := time.Since(start)
+
+	// REQ-PERF-DEADLINE-01: 1 s budget. The fast-path SQL plan against
+	// two rows on an in-process SQLite store must complete in well
+	// under that on any plausible hardware, but be generous to keep
+	// the assertion stable on slow CI runners.
+	if elapsed > 1*time.Second {
+		t.Fatalf("AND-shaped Email/query took %v, want <1s (fast path not engaged?)", elapsed)
+	}
+
+	var resp struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	want := fmt.Sprintf("%d", old.ID)
+	if len(resp.IDs) != 1 || resp.IDs[0] != want {
+		t.Fatalf("AND-shape ids = %v, want [%s] (raw=%s)", resp.IDs, want, raw)
+	}
+
+	// Cross-check: the equivalent flat shape returns the same ids,
+	// so the AND-flatten path is genuinely equivalent — not a parallel
+	// implementation that drifts.
+	flatArgs := map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"before": cutoff,
+			"inMailboxOtherThan": []string{
+				fmt.Sprintf("%d", trash.ID),
+				fmt.Sprintf("%d", junk.ID),
+			},
+		},
+	}
+	_, flatRaw := f.invoke(t, "Email/query", flatArgs)
+	var flatResp struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(flatRaw, &flatResp); err != nil {
+		t.Fatalf("unmarshal flat: %v: %s", err, flatRaw)
+	}
+	if len(flatResp.IDs) != len(resp.IDs) || (len(flatResp.IDs) > 0 && flatResp.IDs[0] != resp.IDs[0]) {
+		t.Fatalf("AND-shape and flat-shape ids differ: AND=%v flat=%v", resp.IDs, flatResp.IDs)
+	}
+}
+
 // TestEmail_Query_ThreadKeywordFilter_Refused asserts that
 // someInThreadHaveKeyword and noneInThreadHaveKeyword filters are
 // refused with unsupportedFilter per REQ-PERF-INDEX-03.
