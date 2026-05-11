@@ -1069,6 +1069,31 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		})
 	}
 
+	// Identity verification GC sweeper (REQ-IDENT-35). Clears expired
+	// verification token trios on every tick and destroys unverified
+	// Identity rows older than the operator-configured purge window
+	// (default 7d). Only started when identity_creation.enabled is
+	// true; otherwise the verification flow is inert and the sweeper
+	// has no work.
+	if cfg.Server.IdentityCreation.IsEnabled() {
+		ivSweeper := identityverify.NewSweeper(identityverify.SweeperOptions{
+			Store:                st,
+			Logger:               logger.With("subsystem", "identityverify-sweeper"),
+			Clock:                clk,
+			Auditor:              identityVerifyAuditor{st: st},
+			Interval:             cfg.Server.IdentityCreation.GCIntervalDuration(),
+			UnverifiedPurgeAfter: cfg.Server.IdentityCreation.UnverifiedPurgeAfterDuration(),
+		})
+		g.Go(func() error {
+			if err := ivSweeper.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.LogAttrs(context.Background(), slog.LevelWarn,
+					"identityverify sweeper exited", slog.String("err", err.Error()))
+				return err
+			}
+			return nil
+		})
+	}
+
 	// OAuth token refresh sweeper (REQ-AUTH-EXT-SUBMIT-02, Phase 6).
 	// Only started when external_submission.enabled = true; the sweeper
 	// queries identity_submission rows whose refresh_due_us <= now and

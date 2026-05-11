@@ -468,6 +468,12 @@ type IdentityCreationConfig struct {
 	// resends in any trailing 24h window (REQ-IDENT-36). Must be > 0.
 	// Default 5.
 	ResendDailyCap int `toml:"resend_daily_cap,omitempty"`
+	// GCInterval is the cadence at which the verification-token GC
+	// sweeper runs (REQ-IDENT-35). Accepts standard Go durations.
+	// Default "6h" -- the spec's "periodic GC pass (default every 6
+	// hours)". Sub-minute values are clamped to one minute in the
+	// sweeper to avoid pinning a write transaction.
+	GCInterval string `toml:"gc_interval,omitempty"`
 }
 
 // DirectoryAutocompleteMode is the typed enum for the compose To-field
@@ -1928,6 +1934,9 @@ func applyIdentityCreationDefaults(ic *IdentityCreationConfig, hostname string) 
 	if ic.ResendDailyCap == 0 {
 		ic.ResendDailyCap = 5
 	}
+	if ic.GCInterval == "" {
+		ic.GCInterval = "6h"
+	}
 }
 
 // parseIdentityCreationDuration parses the unverified_purge_after duration
@@ -2736,6 +2745,20 @@ func validateIdentityCreation(ic *IdentityCreationConfig) error {
 		return fmt.Errorf("sysconfig: [server.identity_creation] resend_daily_cap %d must be > 0",
 			ic.ResendDailyCap)
 	}
+	// GC interval: optional but must parse as a positive duration when
+	// non-empty (defaultsApplied substitutes "6h" so a parsed value is
+	// guaranteed here).
+	if ic.GCInterval != "" {
+		gd, err := time.ParseDuration(ic.GCInterval)
+		if err != nil {
+			return fmt.Errorf("sysconfig: [server.identity_creation] gc_interval %q: %v",
+				ic.GCInterval, err)
+		}
+		if gd <= 0 {
+			return fmt.Errorf("sysconfig: [server.identity_creation] gc_interval %q must be a positive duration",
+				ic.GCInterval)
+		}
+	}
 	return nil
 }
 
@@ -2745,6 +2768,20 @@ func validateIdentityCreation(ic *IdentityCreationConfig) error {
 // parses as a positive value.
 func (ic IdentityCreationConfig) UnverifiedPurgeAfterDuration() time.Duration {
 	d, _ := parseIdentityCreationDuration(ic.UnverifiedPurgeAfter)
+	return d
+}
+
+// GCIntervalDuration returns the parsed GCInterval as a time.Duration.
+// Falls back to 6h when unparseable; the sweeper itself clamps
+// pathologically small values up to a minimum to protect the store.
+func (ic IdentityCreationConfig) GCIntervalDuration() time.Duration {
+	if ic.GCInterval == "" {
+		return 6 * time.Hour
+	}
+	d, err := time.ParseDuration(ic.GCInterval)
+	if err != nil || d <= 0 {
+		return 6 * time.Hour
+	}
 	return d
 }
 
