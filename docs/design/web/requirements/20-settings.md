@@ -84,6 +84,37 @@ The Account section's identity area becomes a **list of identities** (one row pe
 |----|-------------|
 | REQ-SET-IDENT-40 | The `mail.identities` cache is updated optimistically on every `Identity/set` create / update / destroy in this flow, mirroring the existing pattern (REQ-SET-03a). The cache is the source of truth for the compose From picker (REQ-MAIL-12, REQ-MAIL-12a) and for the avatar-resolver tier 1 (REQ-MAIL-44); both surfaces MUST reflect verification changes within one push round-trip. |
 
+## Tagged addresses (v1)
+
+Server-side counterpart: `../../server/requirements/24-tagged-addresses.md` (REQ-TAG-01..91). This section specifies the SPA surfaces for the tagged-address feature: the in-Settings management view and the cross-references to the per-message banner (REQ-MAIL-12c in `02-mail-basics.md`).
+
+The feature ships under the JMAP capability `https://netzhansa.com/jmap/tagged-addresses` advertised by the server when `[server.tagged_addresses].enabled = true`. When the capability is absent, the Settings section below is hidden and the per-message banner does not render.
+
+### Management list
+
+| ID | Requirement |
+|----|-------------|
+| REQ-SET-TAG-01 | A new Settings section "Tagged addresses" is added under section `Mail` (or its own top-level section if the layout grows further). The section lists every `TaggedAddressFilter` belonging to the principal (across all of their verified Identities), one row per filter. Each row shows: the base Identity's email + `+suffix` rendered together as a single chip (e.g. "alice+amazon@example.local"), the filter action ("Label as Shopping", "Label as Shopping + archive", "Label as Shopping + archive + mark read"), and an edit / delete affordance. |
+| REQ-SET-TAG-02 | **Sort order**: by base Identity (alphabetical by email), then within each Identity by suffix (alphabetical). Filters are NOT user-reorderable — order does not affect routing semantics (each filter applies to its own unique `(identity, suffix)` pair). |
+| REQ-SET-TAG-03 | **Edit row** opens an inline editor (or dialog on narrow viewports) exposing: the action (radio choice between `label`, `label_archive`, `label_archive_read`), the label name (text field with typeahead over existing mailboxes/labels), and a "Convert to Sieve" button. Save issues `TaggedAddressFilter/set update` and re-renders the row optimistically. The suffix and base Identity are NOT editable — to change those, the user must delete and recreate. |
+| REQ-SET-TAG-04 | **Delete row** prompts "Stop auto-sorting mail to +<suffix>? Future mail will go to your inbox as normal." On confirm, issues `TaggedAddressFilter/set destroy` and also resets the per-suffix dismissal state (REQ-TAG-61 on the server is atomic with the destroy). The row disappears. Mail that has already been auto-sorted is unaffected — only future routing changes. |
+| REQ-SET-TAG-05 | **Convert to Sieve** action on a row issues `POST /api/v1/tagged-address-filters/{id}/convert-to-sieve` (REQ-TAG-50). On success the row disappears from the list and a toast confirms "Filter copied to your Sieve script. Edit it in Settings → Mail → Filtering." On failure (Sieve validation error from the server), the row stays in the list and the failure surfaces inline. |
+| REQ-SET-TAG-06 | **Dismissals view**. Below the filters list, a collapsed "Dismissed suffixes" subsection lists every `(base_identity, suffix)` the user has dismissed via the per-message banner (REQ-MAIL-12c). Each row offers a single "Allow prompts again" action that DELETEs the dismissal (REQ-TAG-62). The subsection is collapsed by default and exposes a count chip ("3 dismissed"); empty list hides the subsection entirely. |
+| REQ-SET-TAG-07 | **Cap visibility**. When the principal is within 10 of the server-side filter cap (`max_filters_per_principal`, default 100), the section header shows an inline notice "98 of 100 filter slots used". At the cap, the Settings panel does NOT block deletions or `Convert to Sieve`; only new filter creation (via the banner) is rejected by the server, and the banner surfaces the cap-reached error inline. |
+
+### Empty state
+
+| ID | Requirement |
+|----|-------------|
+| REQ-SET-TAG-10 | An empty filters list shows a short explanatory block: "Tagged addresses let you give out variants of your email — like alice+amazon@example.local — and auto-sort future replies into folders. When you open a message addressed to a tagged variant, the suite will offer to set up a filter." This block hides itself once the user has ≥ 1 filter. |
+
+### Interactions
+
+| ID | Requirement |
+|----|-------------|
+| REQ-SET-TAG-20 | The Settings section refreshes via `TaggedAddressFilter/changes` and `Identity/changes` (the latter also fires on dismissal mutations per REQ-TAG-72). Optimistic updates on local mutations; reconciled by the next push event. |
+| REQ-SET-TAG-21 | **Cross-link from the banner.** The per-message banner's filter-creating actions deep-link into the Settings section after success: a small "Manage tagged addresses" link appears in the success toast for 6 seconds. |
+
 ## Import from Gmail
 
 Self-service entry point for the Gmail Takeout importer. Server contract is
