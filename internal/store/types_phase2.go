@@ -1242,6 +1242,22 @@ type JMAPIdentity struct {
 	UpdatedAtUs int64
 }
 
+// VerificationResendStats is the per-Identity resend bookkeeping
+// surfaced by Metadata.GetVerificationResendStats. The fields drive the
+// rate-limit gate documented in REQ-IDENT-36:
+//   - cooldown: now - LastIssuedAtUs >= configured cooldown.
+//   - daily cap: WindowCount < configured cap unless WindowStartedAtUs
+//     is older than 24h (in which case the window resets at the next
+//     issuance).
+//
+// All three fields are zero for an identity row whose verification has
+// never been triggered.
+type VerificationResendStats struct {
+	LastIssuedAtUs    int64
+	WindowStartedAtUs int64
+	WindowCount       int
+}
+
 // -- LLM categorisation (REQ-FILT-200..231) --------------------------
 
 // MaxDerivedCategoryEntries is the server-side cap on the number of

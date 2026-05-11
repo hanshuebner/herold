@@ -291,7 +291,17 @@ const CurrentBackupVersion = 1
 //	PRIMARY KEY (principal_id, base_identity_id, suffix). Same FK
 //	cascade semantics as 0050. The 500-dismissal cap lives in the
 //	store helpers.
-const CurrentSchemaVersion = 51
+//
+// 52 — 0052_identity_verify_resend.sql (REQ-IDENT-36).
+//
+//	Adds three resend rate-limit bookkeeping columns to
+//	jmap_identities: verify_last_issued_at_us (cooldown anchor),
+//	verify_window_started_at_us / verify_window_count (24h daily-cap
+//	window). All three are populated atomically by the dispatcher
+//	on every token issuance. The columns survive a successful
+//	verify so the daily cap cannot be evaded by burning the first
+//	verification and re-creating.
+const CurrentSchemaVersion = 52
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

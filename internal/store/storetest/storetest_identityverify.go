@@ -522,3 +522,168 @@ func testIdentityVerifyInvalidInputs(t *testing.T, s store.Store) {
 		t.Fatalf("GetByCode nil: err = %v, want ErrInvalidArgument", err)
 	}
 }
+
+// testIdentityVerifyIssueInitialisesResendStats asserts that the first
+// IssueIdentityVerificationToken on a row populates the resend
+// bookkeeping (REQ-IDENT-36): last_issued and window_started are set to
+// the store's current clock, and window_count is exactly 1.
+func testIdentityVerifyIssueInitialisesResendStats(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "iv-issue-stats@example.com")
+	id := insertUnverifiedIdentity(t, s, p.ID, "issuestats")
+
+	stats0, err := s.Meta().GetVerificationResendStats(ctx, id)
+	if err != nil {
+		t.Fatalf("GetVerificationResendStats pre-issue: %v", err)
+	}
+	if stats0.LastIssuedAtUs != 0 || stats0.WindowStartedAtUs != 0 || stats0.WindowCount != 0 {
+		t.Fatalf("pre-issue stats not zero: %+v", stats0)
+	}
+
+	tok := vh32("first-token")
+	code := vh32("100000")
+	exp := time.Now().UTC().Add(24 * time.Hour).UnixMicro()
+	if err := s.Meta().IssueIdentityVerificationToken(ctx, id, tok, code, exp); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	stats1, err := s.Meta().GetVerificationResendStats(ctx, id)
+	if err != nil {
+		t.Fatalf("GetVerificationResendStats post-issue: %v", err)
+	}
+	if stats1.LastIssuedAtUs == 0 {
+		t.Fatalf("post-issue LastIssuedAtUs not set")
+	}
+	if stats1.WindowStartedAtUs != stats1.LastIssuedAtUs {
+		t.Fatalf("post-issue window_started %d != last_issued %d",
+			stats1.WindowStartedAtUs, stats1.LastIssuedAtUs)
+	}
+	if stats1.WindowCount != 1 {
+		t.Fatalf("post-issue window_count = %d, want 1", stats1.WindowCount)
+	}
+
+	// Missing identity row -> ErrNotFound.
+	if _, err := s.Meta().GetVerificationResendStats(ctx, "iv-missing-stats"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetVerificationResendStats missing: err = %v, want ErrNotFound", err)
+	}
+}
+
+// testIdentityVerifyRotateCooldownFires asserts that a Rotate inside
+// the configured cooldown window returns ErrRateLimited (REQ-IDENT-36
+// component (a)). With the test factory's fixed FakeClock, the rotate
+// call always lands at the same instant as the issue, so any positive
+// cooldown is violated.
+func testIdentityVerifyRotateCooldownFires(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "iv-cooldown@example.com")
+	id := insertUnverifiedIdentity(t, s, p.ID, "cooldown")
+
+	tok1 := vh32("cool-token-1")
+	code1 := vh32("110001")
+	exp := time.Now().UTC().Add(24 * time.Hour).UnixMicro()
+	if err := s.Meta().IssueIdentityVerificationToken(ctx, id, tok1, code1, exp); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	// Rotate with cooldown=60s. Because the test clock does not
+	// advance, the rotate call is "now-issue == 0 < 60s" and the
+	// gate must fire.
+	err := s.Meta().RotateIdentityVerificationToken(ctx, id,
+		vh32("cool-token-2"), vh32("110002"), exp+1,
+		60*time.Second, 5)
+	if !errors.Is(err, store.ErrRateLimited) {
+		t.Fatalf("Rotate inside cooldown: err = %v, want ErrRateLimited", err)
+	}
+	// The original token must remain in place — the rate-limit
+	// rejection must not have rotated the trio.
+	got, err := s.Meta().GetJMAPIdentity(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !bytes.Equal(got.VerificationTokenHash, tok1) {
+		t.Fatalf("rejected Rotate still mutated the token")
+	}
+	// Counter must remain at 1.
+	stats, _ := s.Meta().GetVerificationResendStats(ctx, id)
+	if stats.WindowCount != 1 {
+		t.Fatalf("rejected Rotate bumped window_count: %d", stats.WindowCount)
+	}
+}
+
+// testIdentityVerifyRotateDailyCapFires asserts that with cooldown=0
+// (disabled) the Rotate call increments WindowCount and rejects with
+// ErrRateLimited once the post-increment count would exceed dailyCap
+// (REQ-IDENT-36 component (b)). Set the cap to 2 so only one rotate
+// is allowed after the initial issue.
+func testIdentityVerifyRotateDailyCapFires(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "iv-cap@example.com")
+	id := insertUnverifiedIdentity(t, s, p.ID, "cap")
+
+	tok1 := vh32("cap-token-1")
+	code1 := vh32("120001")
+	exp := time.Now().UTC().Add(24 * time.Hour).UnixMicro()
+	if err := s.Meta().IssueIdentityVerificationToken(ctx, id, tok1, code1, exp); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	// First rotate: count goes from 1 -> 2, still <= cap=2.
+	if err := s.Meta().RotateIdentityVerificationToken(ctx, id,
+		vh32("cap-token-2"), vh32("120002"), exp+1, 0, 2); err != nil {
+		t.Fatalf("first Rotate (under cap): %v", err)
+	}
+	stats, _ := s.Meta().GetVerificationResendStats(ctx, id)
+	if stats.WindowCount != 2 {
+		t.Fatalf("after first rotate: window_count = %d, want 2", stats.WindowCount)
+	}
+	// Second rotate: would push count to 3 > cap=2 -> ErrRateLimited.
+	err := s.Meta().RotateIdentityVerificationToken(ctx, id,
+		vh32("cap-token-3"), vh32("120003"), exp+2, 0, 2)
+	if !errors.Is(err, store.ErrRateLimited) {
+		t.Fatalf("second Rotate (over cap): err = %v, want ErrRateLimited", err)
+	}
+	// Counter must remain at 2 (the rejected rotate did not commit).
+	stats2, _ := s.Meta().GetVerificationResendStats(ctx, id)
+	if stats2.WindowCount != 2 {
+		t.Fatalf("after rejected rotate: window_count = %d, want 2", stats2.WindowCount)
+	}
+}
+
+// testIdentityVerifyRotateZeroCapDisabled asserts that dailyCap=0
+// disables the daily-cap arm of the gate. With cooldown=0 too, the
+// rotate succeeds regardless of how many prior issuances exist (within
+// 24h, since the window does not advance).
+func testIdentityVerifyRotateZeroCapDisabled(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "iv-disabled@example.com")
+	id := insertUnverifiedIdentity(t, s, p.ID, "disabled")
+
+	tok := vh32("disabled-token")
+	code := vh32("130000")
+	exp := time.Now().UTC().Add(24 * time.Hour).UnixMicro()
+	if err := s.Meta().IssueIdentityVerificationToken(ctx, id, tok, code, exp); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		err := s.Meta().RotateIdentityVerificationToken(ctx, id,
+			vh32("disabled-rotate-"+strconv.Itoa(i)),
+			vh32("130"+strconv.Itoa(100+i)),
+			exp+int64(i)+1, 0, 0)
+		if err != nil {
+			t.Fatalf("Rotate #%d with cap=0: %v", i, err)
+		}
+	}
+	stats, _ := s.Meta().GetVerificationResendStats(ctx, id)
+	if stats.WindowCount != 11 {
+		t.Fatalf("window_count = %d, want 11 (1 issue + 10 rotates)", stats.WindowCount)
+	}
+}
+
+// testIdentityVerifyRotateNotFoundOnMissingRow asserts that Rotate on
+// an absent identity id returns ErrNotFound.
+func testIdentityVerifyRotateNotFoundOnMissingRow(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	err := s.Meta().RotateIdentityVerificationToken(ctx, "iv-rotate-missing",
+		vh32("x"), vh32("y"), time.Now().UTC().Add(24*time.Hour).UnixMicro(),
+		0, 0)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Rotate missing: err = %v, want ErrNotFound", err)
+	}
+}

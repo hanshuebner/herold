@@ -32,15 +32,131 @@ func (m *metadata) IssueIdentityVerificationToken(ctx context.Context, identityI
 			return fmt.Errorf("jmap identity %q already has a live verification token: %w",
 				identityID, store.ErrConflict)
 		}
+		nowUs := usMicros(m.s.clock.Now().UTC())
 		tag, err := tx.Exec(ctx, `
 			UPDATE jmap_identities
 			   SET verification_token_hash = $1,
 			       verification_code_hash = $2,
 			       verification_token_expires_at_us = $3,
-			       updated_at_us = $4
-			 WHERE id = $5`,
+			       verify_last_issued_at_us = $4,
+			       verify_window_started_at_us = $5,
+			       verify_window_count = 1,
+			       updated_at_us = $6
+			 WHERE id = $7`,
 			tokenHash, codeHash, expiresAtUs,
-			usMicros(m.s.clock.Now().UTC()), identityID)
+			nowUs, nowUs, nowUs, identityID)
+		if err != nil {
+			return mapErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// GetVerificationResendStats — see storesqlite counterpart for design.
+func (m *metadata) GetVerificationResendStats(ctx context.Context, identityID string) (store.VerificationResendStats, error) {
+	var (
+		lastIssued    *int64
+		windowStarted *int64
+		windowCount   *int64
+	)
+	err := m.s.pool.QueryRow(ctx, `
+		SELECT verify_last_issued_at_us,
+		       verify_window_started_at_us,
+		       verify_window_count
+		  FROM jmap_identities WHERE id = $1`, identityID).Scan(
+		&lastIssued, &windowStarted, &windowCount)
+	if err != nil {
+		return store.VerificationResendStats{}, mapErr(err)
+	}
+	out := store.VerificationResendStats{}
+	if lastIssued != nil {
+		out.LastIssuedAtUs = *lastIssued
+	}
+	if windowStarted != nil {
+		out.WindowStartedAtUs = *windowStarted
+	}
+	if windowCount != nil {
+		out.WindowCount = int(*windowCount)
+	}
+	return out, nil
+}
+
+// RotateIdentityVerificationToken — see storesqlite counterpart for design.
+func (m *metadata) RotateIdentityVerificationToken(
+	ctx context.Context,
+	identityID string,
+	tokenHash, codeHash []byte,
+	expiresAtUs int64,
+	cooldown time.Duration,
+	dailyCap int,
+) error {
+	if err := validateVerificationInputs(tokenHash, codeHash, expiresAtUs); err != nil {
+		return err
+	}
+	if cooldown < 0 {
+		cooldown = 0
+	}
+	if dailyCap < 0 {
+		dailyCap = 0
+	}
+	now := m.s.clock.Now().UTC()
+	nowUs := usMicros(now)
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var (
+			lastIssued    *int64
+			windowStarted *int64
+			windowCount   *int64
+		)
+		err := tx.QueryRow(ctx, `
+			SELECT verify_last_issued_at_us,
+			       verify_window_started_at_us,
+			       verify_window_count
+			  FROM jmap_identities WHERE id = $1`, identityID).Scan(
+			&lastIssued, &windowStarted, &windowCount)
+		if err != nil {
+			return mapErr(err)
+		}
+
+		if cooldown > 0 && lastIssued != nil && *lastIssued > 0 {
+			cooldownEnds := *lastIssued + cooldown.Microseconds()
+			if nowUs < cooldownEnds {
+				return fmt.Errorf("verification resend cooldown not yet elapsed: %w", store.ErrRateLimited)
+			}
+		}
+
+		newWindowStartedUs := nowUs
+		newWindowCount := int64(1)
+		if windowStarted != nil && *windowStarted > 0 {
+			windowAge := now.Sub(time.UnixMicro(*windowStarted))
+			if windowAge < 24*time.Hour {
+				newWindowStartedUs = *windowStarted
+				prior := int64(0)
+				if windowCount != nil {
+					prior = *windowCount
+				}
+				newWindowCount = prior + 1
+			}
+		}
+		if dailyCap > 0 && newWindowCount > int64(dailyCap) {
+			return fmt.Errorf("verification resend daily cap exhausted: %w", store.ErrRateLimited)
+		}
+
+		tag, err := tx.Exec(ctx, `
+			UPDATE jmap_identities
+			   SET verification_token_hash = $1,
+			       verification_code_hash = $2,
+			       verification_token_expires_at_us = $3,
+			       verify_last_issued_at_us = $4,
+			       verify_window_started_at_us = $5,
+			       verify_window_count = $6,
+			       updated_at_us = $7
+			 WHERE id = $8`,
+			tokenHash, codeHash, expiresAtUs,
+			nowUs, newWindowStartedUs, newWindowCount,
+			nowUs, identityID)
 		if err != nil {
 			return mapErr(err)
 		}

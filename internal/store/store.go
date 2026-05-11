@@ -42,6 +42,14 @@ var (
 	// when the principal already holds
 	// MaxTaggedAddressDismissalsPerPrincipal rows (REQ-TAG-11).
 	ErrTooManyDismissals = errors.New("store: too many dismissals")
+
+	// ErrRateLimited is returned by RotateIdentityVerificationToken
+	// when the resend rate limit (cooldown or daily cap, REQ-IDENT-36)
+	// would be violated. Callers surface this as HTTP 429 with a
+	// Retry-After header. The store consults its own clock to compute
+	// the window state; the cooldown/cap thresholds are supplied as
+	// arguments so the operator's tunables flow in from sysconfig.
+	ErrRateLimited = errors.New("store: rate limited")
 )
 
 // Store is the composite handle every subsystem consumes to reach
@@ -1063,6 +1071,40 @@ type Metadata interface {
 	// (the longer 7-day GC of unverified rows is a separate pass).
 	// Order is ascending verification_token_expires_at_us.
 	ListExpiredVerificationTokens(ctx context.Context, before time.Time) ([]JMAPIdentity, error)
+
+	// GetVerificationResendStats returns the per-Identity resend
+	// bookkeeping used by the rate-limit gate (REQ-IDENT-36):
+	//   - LastIssuedAtUs is the unix-micros instant the most recent
+	//     verification token was issued (zero before first issuance).
+	//   - WindowStartedAtUs is the unix-micros anchor of the active
+	//     24h resend-count window (zero before first issuance).
+	//   - WindowCount is the number of issuances inside the active
+	//     window (zero before first issuance).
+	// Returns ErrNotFound when the identity row is missing.
+	GetVerificationResendStats(ctx context.Context, identityID string) (VerificationResendStats, error)
+
+	// RotateIdentityVerificationToken replaces the verification trio
+	// on the identity row AND updates the resend bookkeeping in a
+	// single transaction (REQ-IDENT-36, REQ-IDENT-37). The store
+	// computes the new window state using its injected clock:
+	//   - if (now - window_started) >= 24h, the window resets
+	//     (window_started=now, window_count=1).
+	//   - otherwise, window_count is incremented.
+	// The rate-limit gate is consulted atomically inside the
+	// transaction:
+	//   - if (now - last_issued) < cooldown, returns ErrRateLimited.
+	//   - if (incoming window_count) > dailyCap, returns ErrRateLimited.
+	// Pass cooldown=0 / dailyCap=0 to disable that arm of the gate;
+	// negative values are treated as zero. Returns ErrNotFound when
+	// the identity row is missing.
+	RotateIdentityVerificationToken(
+		ctx context.Context,
+		identityID string,
+		tokenHash, codeHash []byte,
+		expiresAtUs int64,
+		cooldown time.Duration,
+		dailyCap int,
+	) error
 
 	// -- Tagged addresses (REQ-TAG-10..11, REQ-TAG-30..32) ------------
 

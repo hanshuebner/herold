@@ -150,6 +150,15 @@ func Run(t *testing.T, f Factory) {
 		{"IdentityVerify_ListUnverifiedOlderThan", testIdentityVerifyListUnverifiedOlderThan},
 		{"IdentityVerify_ListExpiredTokens", testIdentityVerifyListExpiredTokens},
 		{"IdentityVerify_FullLifecycle", testIdentityVerifyFullLifecycle},
+		// REQ-IDENT-36: resend rate-limit bookkeeping. The clock is
+		// pinned by the test factory; window-rollover behaviour (the
+		// 24h reset) is exercised in backend-specific tests that own
+		// the FakeClock.
+		{"IdentityVerify_Issue_InitialisesResendStats", testIdentityVerifyIssueInitialisesResendStats},
+		{"IdentityVerify_Rotate_CooldownFires", testIdentityVerifyRotateCooldownFires},
+		{"IdentityVerify_Rotate_DailyCapFires", testIdentityVerifyRotateDailyCapFires},
+		{"IdentityVerify_Rotate_ZeroCapDisabled", testIdentityVerifyRotateZeroCapDisabled},
+		{"IdentityVerify_Rotate_NotFoundOnMissingRow", testIdentityVerifyRotateNotFoundOnMissingRow},
 		{"IdentityVerify_InvalidInputs", testIdentityVerifyInvalidInputs},
 		// -- REQ-TAG-10..11 / 30..32 tagged addresses ---------------
 		{"TaggedAddressFilter_InsertGet_Roundtrip", testTaggedAddressFilterInsertGetRoundTrip},
