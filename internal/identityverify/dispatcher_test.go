@@ -437,3 +437,175 @@ func TestDispatcher_Trigger_ResendRotatesAndAuditsTwice(t *testing.T) {
 		t.Fatalf("audit entries: got %d, want 2", len(aud.entries))
 	}
 }
+
+// newDispatcherWithResendLimits builds a dispatcher whose rate-limit
+// knobs match the spec defaults (60s cooldown, 5/day cap). Returns a
+// clock-aware setup the resend tests can advance directly.
+func newDispatcherWithResendLimits(t *testing.T, cooldown time.Duration, dailyCap int) (*Dispatcher, *fakeSubmitter, *fakeAuditor, store.Store, *clock.FakeClock) {
+	t.Helper()
+	clk := clock.NewFake(time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC))
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	sub := &fakeSubmitter{}
+	aud := &fakeAuditor{}
+	d := New(Options{
+		Store:          st,
+		Submitter:      sub,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:          clk,
+		Hostname:       "mail.example.com",
+		VerifierFrom:   "postmaster@example.com",
+		Auditor:        aud,
+		ResendCooldown: cooldown,
+		ResendDailyCap: dailyCap,
+	})
+	return d, sub, aud, st, clk
+}
+
+func mustInsertResendRow(t *testing.T, st store.Store, id string) store.JMAPIdentity {
+	t.Helper()
+	ctx := context.Background()
+	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.com", IsLocal: true}); err != nil &&
+		!errors.Is(err, store.ErrConflict) {
+		t.Fatalf("InsertDomain: %v", err)
+	}
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice-" + id + "@example.com",
+		DisplayName: "Alice",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	row := store.JMAPIdentity{
+		ID: id, PrincipalID: p.ID, Email: "alice@external.test", MayDelete: true,
+	}
+	if err := st.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	return row
+}
+
+// TestDispatcher_Resend_CooldownGate exercises REQ-IDENT-36(a). A
+// resend within the configured cooldown is rejected with
+// store.ErrRateLimited and produces an audit entry tagged
+// identity.resend (REQ-IDENT-90) with the rate_limited classification.
+// After the clock advances past the cooldown, the resend succeeds and
+// a new envelope is enqueued.
+func TestDispatcher_Resend_CooldownGate(t *testing.T) {
+	d, sub, aud, st, clk := newDispatcherWithResendLimits(t, 60*time.Second, 5)
+	ctx := context.Background()
+	row := mustInsertResendRow(t, st, "iv-resend-cd")
+
+	first, err := d.Trigger(ctx, row)
+	if err != nil {
+		t.Fatalf("initial Trigger: %v", err)
+	}
+	if first.Token == "" {
+		t.Fatalf("initial Trigger returned empty token")
+	}
+
+	// Inside cooldown -> ErrRateLimited.
+	clk.Advance(30 * time.Second)
+	_, err = d.Resend(ctx, row)
+	if !errors.Is(err, store.ErrRateLimited) {
+		t.Fatalf("Resend inside cooldown: err = %v, want ErrRateLimited", err)
+	}
+	if len(sub.calls) != 1 {
+		t.Fatalf("rejected Resend triggered a submission: %d", len(sub.calls))
+	}
+	// Audit log: initial success + cooldown-failure entry.
+	if len(aud.entries) != 2 {
+		t.Fatalf("audit entries: got %d, want 2", len(aud.entries))
+	}
+	gotAction := aud.entries[1].Action
+	if gotAction != "identity.resend" {
+		t.Fatalf("rejected resend audit action = %q, want identity.resend", gotAction)
+	}
+	if aud.entries[1].Outcome != store.OutcomeFailure {
+		t.Fatalf("rejected resend audit outcome = %v, want failure", aud.entries[1].Outcome)
+	}
+	if aud.entries[1].Metadata["classification"] != "rate_limited" {
+		t.Fatalf("rejected resend classification = %q, want rate_limited",
+			aud.entries[1].Metadata["classification"])
+	}
+
+	// Step past cooldown -> Resend succeeds.
+	clk.Advance(31 * time.Second) // total 61s elapsed since initial issue
+	second, err := d.Resend(ctx, row)
+	if err != nil {
+		t.Fatalf("Resend post-cooldown: %v", err)
+	}
+	if second.Token == first.Token {
+		t.Fatalf("Resend produced identical token; entropy reuse?")
+	}
+	if len(sub.calls) != 2 {
+		t.Fatalf("successful Resend did not submit: %d", len(sub.calls))
+	}
+	// Audit: initial + rate-limited failure + successful resend = 3.
+	if len(aud.entries) != 3 {
+		t.Fatalf("audit entries: got %d, want 3", len(aud.entries))
+	}
+	if aud.entries[2].Action != "identity.resend" {
+		t.Fatalf("success resend action = %q, want identity.resend", aud.entries[2].Action)
+	}
+	if aud.entries[2].Outcome != store.OutcomeSuccess {
+		t.Fatalf("success resend outcome = %v, want success", aud.entries[2].Outcome)
+	}
+}
+
+// TestDispatcher_Resend_DailyCapGate exercises REQ-IDENT-36(b). With
+// cooldown disabled (0) and a daily cap of 3, the initial Trigger
+// burns one slot; two further resends are permitted, the third must
+// fail with store.ErrRateLimited.
+func TestDispatcher_Resend_DailyCapGate(t *testing.T) {
+	d, sub, _, st, clk := newDispatcherWithResendLimits(t, 0, 3)
+	ctx := context.Background()
+	row := mustInsertResendRow(t, st, "iv-resend-cap")
+
+	if _, err := d.Trigger(ctx, row); err != nil {
+		t.Fatalf("initial Trigger: %v", err)
+	}
+	// Two successful resends (count -> 2, 3).
+	for i := 0; i < 2; i++ {
+		clk.Advance(10 * time.Second)
+		if _, err := d.Resend(ctx, row); err != nil {
+			t.Fatalf("Resend #%d: %v", i+1, err)
+		}
+	}
+	// Third resend pushes count to 4 > cap=3 -> ErrRateLimited.
+	clk.Advance(10 * time.Second)
+	_, err := d.Resend(ctx, row)
+	if !errors.Is(err, store.ErrRateLimited) {
+		t.Fatalf("Resend over cap: err = %v, want ErrRateLimited", err)
+	}
+	// Three successful submissions (initial + two resends), the
+	// fourth was rejected before the queue submit.
+	if len(sub.calls) != 3 {
+		t.Fatalf("submissions: got %d, want 3", len(sub.calls))
+	}
+}
+
+// TestDispatcher_Trigger_AuditUsesVerifySendAction confirms that the
+// initial (non-resend) path emits the "identity.verify.send" action
+// while the resend path emits "identity.resend" -- the operator-side
+// audit-log filter relies on this split (REQ-IDENT-90).
+func TestDispatcher_Trigger_AuditUsesVerifySendAction(t *testing.T) {
+	d, _, aud, st, _ := newDispatcherWithResendLimits(t, 0, 0)
+	ctx := context.Background()
+	row := mustInsertResendRow(t, st, "iv-action")
+	if _, err := d.Trigger(ctx, row); err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	if len(aud.entries) != 1 || aud.entries[0].Action != "identity.verify.send" {
+		t.Fatalf("initial Trigger audit action = %v", aud.entries)
+	}
+	if _, err := d.Resend(ctx, row); err != nil {
+		t.Fatalf("Resend: %v", err)
+	}
+	if len(aud.entries) != 2 || aud.entries[1].Action != "identity.resend" {
+		t.Fatalf("Resend audit action = %v", aud.entries)
+	}
+}

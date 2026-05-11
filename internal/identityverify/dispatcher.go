@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -77,6 +78,15 @@ type Options struct {
 	// dropped. Production wires the metadata store; tests may inject
 	// a recorder.
 	Auditor Auditor
+	// ResendCooldown is the minimum interval between two consecutive
+	// user-initiated resends on the same Identity (REQ-IDENT-36(a)).
+	// Zero disables the cooldown arm of the gate; tests rely on this
+	// to assert the daily-cap arm in isolation.
+	ResendCooldown time.Duration
+	// ResendDailyCap is the hard per-Identity ceiling on verification
+	// token issuances inside a trailing 24h window
+	// (REQ-IDENT-36(b)). Zero disables the daily-cap arm of the gate.
+	ResendDailyCap int
 }
 
 // Dispatcher generates the verification token+code pair, persists the
@@ -132,19 +142,48 @@ func (d *Dispatcher) Validate() error {
 // link" failure on the callback endpoint, and the user can resend
 // from the SPA.
 func (d *Dispatcher) Trigger(ctx context.Context, row store.JMAPIdentity) (Tokens, error) {
+	return d.dispatch(ctx, row, false)
+}
+
+// Resend is the user-initiated resend entry point (REQ-IDENT-36,
+// REQ-IDENT-37). Distinct from Trigger in that:
+//   - the store call is RotateIdentityVerificationToken, not
+//     IssueIdentityVerificationToken, so a live token is silently
+//     replaced rather than rejected.
+//   - the rate-limit gate (cooldown + daily cap) is consulted inside
+//     the store transaction. Caller surfaces store.ErrRateLimited as
+//     HTTP 429 with Retry-After.
+//   - the audit-log entry's action is "identity.resend" (REQ-IDENT-90)
+//     so operators can distinguish a user-initiated rotation from the
+//     initial dispatch.
+//
+// Returns store.ErrRateLimited when the gate fires; the caller is
+// responsible for translating that into the HTTP surface and is free
+// to call GetVerificationResendStats to compute Retry-After.
+func (d *Dispatcher) Resend(ctx context.Context, row store.JMAPIdentity) (Tokens, error) {
+	return d.dispatch(ctx, row, true)
+}
+
+// dispatch is the shared body of Trigger and Resend. The isResend flag
+// chooses between IssueIdentityVerificationToken (initial path,
+// guarded by ErrConflict against a live token) and
+// RotateIdentityVerificationToken (resend path, applies the rate-limit
+// gate). Both paths share the token+code generation, the audit-log
+// emission, and the outbound-queue submission.
+func (d *Dispatcher) dispatch(ctx context.Context, row store.JMAPIdentity, isResend bool) (Tokens, error) {
 	if err := d.Validate(); err != nil {
-		d.logFailure(ctx, row.ID, "config_invalid", err)
+		d.logFailure(ctx, row.ID, "config_invalid", err, isResend)
 		return Tokens{}, err
 	}
 
 	token, tokenBytes, err := GenerateToken()
 	if err != nil {
-		d.logFailure(ctx, row.ID, "token_generation_failed", err)
+		d.logFailure(ctx, row.ID, "token_generation_failed", err, isResend)
 		return Tokens{}, err
 	}
 	code, err := GenerateCode()
 	if err != nil {
-		d.logFailure(ctx, row.ID, "code_generation_failed", err)
+		d.logFailure(ctx, row.ID, "code_generation_failed", err, isResend)
 		return Tokens{}, err
 	}
 
@@ -160,9 +199,28 @@ func (d *Dispatcher) Trigger(ctx context.Context, row store.JMAPIdentity) (Token
 
 	now := d.opts.Clock.Now()
 	expiresAt := now.Add(TokenTTL).UnixMicro()
-	if err := d.opts.Store.Meta().IssueIdentityVerificationToken(
-		ctx, row.ID, tokenHash[:], codeHash[:], expiresAt); err != nil {
-		d.logFailure(ctx, row.ID, "token_persist_failed", err)
+	if isResend {
+		err = d.opts.Store.Meta().RotateIdentityVerificationToken(
+			ctx, row.ID, tokenHash[:], codeHash[:], expiresAt,
+			d.opts.ResendCooldown, d.opts.ResendDailyCap)
+	} else {
+		err = d.opts.Store.Meta().IssueIdentityVerificationToken(
+			ctx, row.ID, tokenHash[:], codeHash[:], expiresAt)
+	}
+	if err != nil {
+		// Rate-limit is a normal user-visible outcome on the resend
+		// path; surface it without the alarmist error-level log line
+		// (the handler will log with INFO and emit a metric).
+		if errors.Is(err, store.ErrRateLimited) {
+			d.audit(ctx, row, store.OutcomeFailure, "rate_limited",
+				map[string]string{
+					"identity_id":    row.ID,
+					"classification": "rate_limited",
+					"result":         "rate_limited",
+				}, isResend)
+			return Tokens{}, err
+		}
+		d.logFailure(ctx, row.ID, "token_persist_failed", err, isResend)
 		return Tokens{}, err
 	}
 
@@ -186,7 +244,7 @@ func (d *Dispatcher) Trigger(ctx context.Context, row store.JMAPIdentity) (Token
 		Now:            now,
 	})
 	if err != nil {
-		d.logFailure(ctx, row.ID, "compose_failed", err)
+		d.logFailure(ctx, row.ID, "compose_failed", err, isResend)
 		return Tokens{}, err
 	}
 
@@ -207,7 +265,7 @@ func (d *Dispatcher) Trigger(ctx context.Context, row store.JMAPIdentity) (Token
 	}
 	envID, err := d.opts.Submitter.Submit(ctx, sub)
 	if err != nil {
-		d.logFailure(ctx, row.ID, "queue_submit_failed", err)
+		d.logFailure(ctx, row.ID, "queue_submit_failed", err, isResend)
 		return Tokens{}, err
 	}
 
@@ -218,13 +276,14 @@ func (d *Dispatcher) Trigger(ctx context.Context, row store.JMAPIdentity) (Token
 		slog.String("message_id", composed.MessageID),
 		slog.String("recipient", row.Email),
 		slog.String("verifier_from", d.opts.VerifierFrom),
+		slog.Bool("resend", isResend),
 	)
 	d.audit(ctx, row, store.OutcomeSuccess, "queued", map[string]string{
 		"envelope_id": string(envID),
 		"message_id":  composed.MessageID,
 		"recipient":   row.Email,
 		"result":      "queued",
-	})
+	}, isResend)
 	return Tokens{Token: token, Code: code}, nil
 }
 
@@ -245,13 +304,14 @@ func (d *Dispatcher) resolveInitiator(ctx context.Context, pid store.PrincipalID
 
 // logFailure writes a structured failure line and audit entry for one
 // dispatch attempt that bailed before queue submission.
-func (d *Dispatcher) logFailure(ctx context.Context, identityID, classification string, err error) {
+func (d *Dispatcher) logFailure(ctx context.Context, identityID, classification string, err error, isResend bool) {
 	if d.opts.Logger != nil {
 		d.opts.Logger.ErrorContext(ctx, "identityverify.dispatch_failed",
 			slog.String("subsystem", "identityverify"),
 			slog.String("identity_id", identityID),
 			slog.String("classification", classification),
 			slog.String("err", errMsg(err)),
+			slog.Bool("resend", isResend),
 		)
 	}
 	d.audit(ctx, store.JMAPIdentity{ID: identityID}, store.OutcomeFailure,
@@ -259,18 +319,22 @@ func (d *Dispatcher) logFailure(ctx context.Context, identityID, classification 
 			"identity_id":    identityID,
 			"classification": classification,
 			"result":         "failure",
-		})
+		}, isResend)
 }
 
-// audit writes an identity.verify.send entry via the configured
-// Auditor. When the auditor is nil the entry is dropped (the slog
-// line still survives in the structured log).
+// audit writes an identity.verify.send or identity.resend entry via
+// the configured Auditor (REQ-IDENT-90). The "identity.resend" action
+// surfaces user-initiated rotations distinctly from the initial
+// dispatch so operators can tail just the user-driven traffic. When
+// the auditor is nil the entry is dropped (the slog line still
+// survives in the structured log).
 func (d *Dispatcher) audit(
 	ctx context.Context,
 	row store.JMAPIdentity,
 	outcome store.AuditOutcome,
 	message string,
 	meta map[string]string,
+	isResend bool,
 ) {
 	if d.opts.Auditor == nil {
 		return
@@ -284,11 +348,15 @@ func (d *Dispatcher) audit(
 	if row.PrincipalID != 0 {
 		meta["principal_id"] = fmt.Sprintf("%d", row.PrincipalID)
 	}
+	action := "identity.verify.send"
+	if isResend {
+		action = "identity.resend"
+	}
 	entry := store.AuditLogEntry{
 		At:        d.opts.Clock.Now(),
 		ActorKind: store.ActorSystem,
 		ActorID:   "system",
-		Action:    "identity.verify.send",
+		Action:    action,
 		Subject:   fmt.Sprintf("identity:%s", row.ID),
 		Outcome:   outcome,
 		Message:   message,
