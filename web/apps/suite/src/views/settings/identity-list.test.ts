@@ -19,6 +19,7 @@ import type { Identity } from '../../lib/mail/types';
 
 vi.mock('../../lib/auth/capabilities', () => ({
   hasExternalSubmission: vi.fn(() => false),
+  hasIdentityVerification: vi.fn(() => true),
 }));
 
 // `mail` store: shape only what IdentityList uses.
@@ -63,13 +64,14 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
       'settings.account.noIdentities': 'No identities loaded yet.',
       'settings.identityList.heading': 'Identities',
       'settings.identityList.addBtn': 'Add identity',
-      'settings.identityList.addStubTooltip': 'Coming in next PR',
+      'settings.identityList.addTooltip': 'Add a new sending identity',
       'settings.identityList.chip.verified': 'Verified',
       'settings.identityList.chip.verifying': 'Verification pending',
       'settings.identityList.chip.unverified': 'Unverified',
       'settings.identityList.verifyBtn': 'Verify',
       'settings.identityList.resendBtn': 'Resend',
-      'settings.identityList.verifyStubTooltip': 'Coming in next PR',
+      'settings.identityList.verifyTooltip': 'Enter the verification code',
+      'settings.identityList.resendTooltip': 'Send the verification email again',
       'settings.identityList.defaultRadioDisabledTitle':
         'Only verified identities can be the default.',
       'settings.identityList.defaultRadioAria': `Set ${params?.email ?? ''} as default`,
@@ -152,12 +154,63 @@ describe('IdentityList', () => {
     expect(rows.length).toBe(4);
   });
 
-  it('renders the "Add identity" button with a Coming-in-next-PR tooltip', () => {
+  it('renders the "Add identity" button when the identity-verification capability is present', () => {
     seedIdentities(VERIFIED_DEFAULT);
     const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
     const btn = container.querySelector('[data-testid="identity-add-btn"]');
     expect(btn).not.toBeNull();
-    expect(btn?.getAttribute('title')).toBe('Coming in next PR');
+    expect(btn?.getAttribute('title')).toBe('Add a new sending identity');
+  });
+
+  it('hides the "Add identity" button when the identity-verification capability is absent', async () => {
+    const mod = await import('../../lib/auth/capabilities');
+    vi.mocked(mod.hasIdentityVerification).mockReturnValueOnce(false);
+    seedIdentities(VERIFIED_DEFAULT);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const btn = container.querySelector('[data-testid="identity-add-btn"]');
+    expect(btn).toBeNull();
+  });
+
+  it('invokes onadd when the Add identity button is clicked', async () => {
+    seedIdentities(VERIFIED_DEFAULT);
+    const onadd = vi.fn();
+    const { container } = render(IdentityList, {
+      props: { onedit: vi.fn(), onadd },
+    });
+    const btn = container.querySelector(
+      '[data-testid="identity-add-btn"]',
+    ) as HTMLButtonElement | null;
+    expect(btn).not.toBeNull();
+    await fireEvent.click(btn!);
+    expect(onadd).toHaveBeenCalledTimes(1);
+  });
+
+  it('invokes onverify when the Verify button is clicked on an unverified row', async () => {
+    seedIdentities(UNVERIFIED);
+    const onverify = vi.fn();
+    const { container } = render(IdentityList, {
+      props: { onedit: vi.fn(), onverify },
+    });
+    const btn = container.querySelector(
+      '[data-testid="identity-verify-btn"]',
+    ) as HTMLButtonElement | null;
+    expect(btn).not.toBeNull();
+    await fireEvent.click(btn!);
+    expect(onverify).toHaveBeenCalledWith(UNVERIFIED);
+  });
+
+  it('invokes onresend when the Resend button is clicked on a pending row', async () => {
+    seedIdentities(PENDING);
+    const onresend = vi.fn();
+    const { container } = render(IdentityList, {
+      props: { onedit: vi.fn(), onresend },
+    });
+    const btn = container.querySelector(
+      '[data-testid="identity-resend-btn"]',
+    ) as HTMLButtonElement | null;
+    expect(btn).not.toBeNull();
+    await fireEvent.click(btn!);
+    expect(onresend).toHaveBeenCalledWith(PENDING);
   });
 
   it('renders the verifying chip on verification-pending rows', () => {

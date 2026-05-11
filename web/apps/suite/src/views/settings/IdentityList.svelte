@@ -22,7 +22,10 @@
   import { mail } from '../../lib/mail/store.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
   import { t } from '../../lib/i18n/i18n.svelte';
-  import { hasExternalSubmission } from '../../lib/auth/capabilities';
+  import {
+    hasExternalSubmission,
+    hasIdentityVerification,
+  } from '../../lib/auth/capabilities';
   import { submissionStore } from '../../lib/identities/identity-submission.svelte';
   import {
     identityStatus,
@@ -37,13 +40,21 @@
   interface Props {
     /** Callback fired when the user clicks a row (anywhere except the radio). */
     onedit: (identity: Identity) => void;
+    /** Optional: open the add-identity wizard (REQ-SET-IDENT-30). */
+    onadd?: () => void;
+    /** Optional: open the verify dialog for `identity` (REQ-SET-IDENT-20). */
+    onverify?: (identity: Identity) => void;
+    /** Optional: trigger the verification-email resend for `identity`
+     *  (REQ-IDENT-36). When omitted, the Resend button stays inert. */
+    onresend?: (identity: Identity) => void | Promise<void>;
   }
-  let { onedit }: Props = $props();
+  let { onedit, onadd, onverify, onresend }: Props = $props();
 
   let identitiesArray = $derived(Array.from(mail.identities.values()));
   let sorted = $derived(sortIdentities(identitiesArray));
   let defaultId = $derived(resolveDefault(identitiesArray));
   let showExtSub = $derived(hasExternalSubmission());
+  let showAddBtn = $derived(hasIdentityVerification());
 
   function submissionSummary(id: string): SubmissionSummary | null {
     if (!showExtSub) return null;
@@ -92,41 +103,41 @@
     onedit(identity);
   }
 
-  // REQ-SET-IDENT-05: the Add-identity wizard lands in task #21.
-  // TODO(#21,REQ-SET-IDENT-30): wire to the wizard. For now the button
-  // is rendered disabled with a "Coming in next PR" tooltip so the
-  // layout is complete.
+  // REQ-SET-IDENT-05: open the Add-identity wizard. The wizard mount is
+  // owned by SettingsView so the dialog state survives across re-renders
+  // of the list; if the parent did not wire `onadd` the button is
+  // hidden via the `showAddBtn` capability gate already.
   function onAddIdentity(): void {
-    // eslint-disable-next-line no-console
-    console.log('[identity-list] Add-identity wizard not yet implemented (task #21)');
+    onadd?.();
   }
 
-  // REQ-SET-IDENT-20: verify dialog ships in task #21.
-  // TODO(#21,REQ-SET-IDENT-20): open the verify dialog. Stubbed here so
-  // unverified / pending rows display a placeholder action.
+  // REQ-SET-IDENT-20: open the verify dialog for an unverified row.
   function onVerify(identity: Identity): void {
-    // eslint-disable-next-line no-console
-    console.log('[identity-list] Verify flow not yet implemented (task #21)', identity.id);
+    onverify?.(identity);
   }
 
+  // REQ-IDENT-36: trigger the verification-email resend for a pending
+  // row. The actual REST call lives in the parent; this component
+  // only forwards the click.
   function onResend(identity: Identity): void {
-    // eslint-disable-next-line no-console
-    console.log('[identity-list] Resend flow not yet implemented (task #21)', identity.id);
+    void onresend?.(identity);
   }
 </script>
 
 <div class="identity-list" data-testid="identity-list">
   <header class="list-header">
     <h3>{t('settings.identityList.heading')}</h3>
-    <button
-      type="button"
-      class="add-btn"
-      onclick={onAddIdentity}
-      title={t('settings.identityList.addStubTooltip')}
-      data-testid="identity-add-btn"
-    >
-      + {t('settings.identityList.addBtn')}
-    </button>
+    {#if showAddBtn}
+      <button
+        type="button"
+        class="add-btn"
+        onclick={onAddIdentity}
+        title={t('settings.identityList.addTooltip')}
+        data-testid="identity-add-btn"
+      >
+        + {t('settings.identityList.addBtn')}
+      </button>
+    {/if}
   </header>
 
   {#if sorted.length === 0}
@@ -204,7 +215,7 @@
                     e.stopPropagation();
                     onResend(identity);
                   }}
-                  title={t('settings.identityList.verifyStubTooltip')}
+                  title={t('settings.identityList.resendTooltip')}
                   data-testid="identity-resend-btn"
                 >
                   {t('settings.identityList.resendBtn')}
@@ -220,7 +231,7 @@
                     e.stopPropagation();
                     onVerify(identity);
                   }}
-                  title={t('settings.identityList.verifyStubTooltip')}
+                  title={t('settings.identityList.verifyTooltip')}
                   data-testid="identity-verify-btn"
                 >
                   {t('settings.identityList.verifyBtn')}

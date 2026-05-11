@@ -16,6 +16,7 @@ import { render, screen } from '@testing-library/svelte';
 
 vi.mock('../lib/auth/capabilities', () => ({
   hasExternalSubmission: vi.fn(() => false),
+  hasIdentityVerification: vi.fn(() => true),
 }));
 
 // ── Singleton store mocks ─────────────────────────────────────────────────

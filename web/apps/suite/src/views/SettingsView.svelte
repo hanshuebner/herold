@@ -14,6 +14,8 @@
   import { router } from '../lib/router/router.svelte';
   import IdentityList from './settings/IdentityList.svelte';
   import IdentityEditDialog from './settings/IdentityEditDialog.svelte';
+  import IdentityVerifyDialog from './settings/IdentityVerifyDialog.svelte';
+  import AddIdentityWizard from './settings/AddIdentityWizard.svelte';
   import SecurityForm from './settings/SecurityForm.svelte';
   import ApiKeysForm from './settings/ApiKeysForm.svelte';
   import VacationForm from './settings/VacationForm.svelte';
@@ -32,6 +34,13 @@
   import { sounds } from '../lib/notifications/sounds.svelte';
   import { hasExternalSubmission } from '../lib/auth/capabilities';
   import { submissionStore } from '../lib/identities/identity-submission.svelte';
+  import {
+    postVerifyResend,
+    retryAfterOf,
+  } from '../lib/api/identity-verify';
+  import { domainOf } from '../lib/identities/wizard-validators';
+  import { ApiError } from '../lib/api/client';
+  import { toast } from '../lib/toast/toast.svelte';
   import type { Identity } from '../lib/mail/types';
 
   // Hydrate the sounds toggle from localStorage on mount.
@@ -115,6 +124,90 @@
   function closeEditDialog(): void {
     editDialogIdentity = null;
     editDialogScrollToSubmission = false;
+  }
+
+  // ── Add-identity wizard (REQ-SET-IDENT-30) ───────────────────────────────
+
+  let showAddWizard = $state(false);
+
+  function openAddWizard(): void {
+    showAddWizard = true;
+  }
+
+  function closeAddWizard(): void {
+    showAddWizard = false;
+  }
+
+  /**
+   * The set of email domains hosted on this herold. Derived from the
+   * principal's username plus the verified identities already in the
+   * cache — the synthesised default identity is verified-by-construction
+   * (REQ-IDENT-02), and any other verified identity whose row carries
+   * no external-submission record is hosted-by-construction.
+   *
+   * The wizard's Step 3 uses this set to decide whether to offer the
+   * "Configure external SMTP" pane (REQ-SET-IDENT-32). For a legacy
+   * server where this derivation underestimates the hosted set, the
+   * fallback is "treat as external" — i.e. show Step 3 — which the
+   * user can skip if it does not apply.
+   */
+  let hostedDomains = $derived.by<Set<string>>(() => {
+    const set = new Set<string>();
+    const principalEmail = auth.session?.username;
+    if (principalEmail) {
+      const dom = domainOf(principalEmail);
+      if (dom !== null) set.add(dom);
+    }
+    return set;
+  });
+
+  // ── Verify dialog (REQ-SET-IDENT-20..21) ────────────────────────────────
+
+  let verifyDialogIdentity = $state<Identity | null>(null);
+
+  function openVerifyDialog(identity: Identity): void {
+    verifyDialogIdentity = identity;
+  }
+
+  function closeVerifyDialog(): void {
+    verifyDialogIdentity = null;
+  }
+
+  /**
+   * Trigger the verification-email resend for `identity` (REQ-IDENT-36).
+   * On a 429 the suite surfaces the Retry-After countdown via the toast
+   * subsystem ("Try again in 47 s"); other failures surface as a plain
+   * error toast. Used by the inline Resend button on each
+   * verification-pending row in IdentityList.
+   */
+  async function resendVerificationFromList(identity: Identity): Promise<void> {
+    try {
+      await postVerifyResend(identity.id);
+      toast.show({
+        message: t('settings.identityVerify.resendOk'),
+        timeoutMs: 4000,
+      });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 429) {
+        const seconds = retryAfterOf(err);
+        if (seconds !== null && seconds > 0) {
+          toast.show({
+            message: t('settings.identityVerify.resendRateLimited', { seconds }),
+            kind: 'error',
+            timeoutMs: 6000,
+          });
+        } else {
+          toast.show({
+            message: t('settings.identityVerify.resendRateLimitedShort'),
+            kind: 'error',
+            timeoutMs: 6000,
+          });
+        }
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.show({ message: msg, kind: 'error', timeoutMs: 6000 });
+    }
   }
 
   // Handle the ?identity=<id>&action=reauth route param set by the
@@ -213,8 +306,15 @@
       <!-- REQ-SET-IDENT-01..08: identity list with three-state chips,
            default radio, and click-to-edit. Per-identity forms (avatar,
            display name, signature, submission) live inside the edit
-           dialog (REQ-SET-IDENT-10). -->
-      <IdentityList onedit={(id) => openEditDialog(id, false)} />
+           dialog (REQ-SET-IDENT-10). The add wizard / verify dialog
+           are mounted below by this view; the list forwards user
+           intent via the onadd / onverify / onresend callbacks. -->
+      <IdentityList
+        onedit={(id) => openEditDialog(id, false)}
+        onadd={openAddWizard}
+        onverify={openVerifyDialog}
+        onresend={resendVerificationFromList}
+      />
 
       {#if !showExtSub}
         <p class="hint ext-sub-hint">
@@ -230,6 +330,20 @@
           identity={editDialogIdentity}
           onclose={closeEditDialog}
           scrollToSubmission={editDialogScrollToSubmission}
+        />
+      {/if}
+
+      {#if showAddWizard}
+        <AddIdentityWizard
+          {hostedDomains}
+          onclose={closeAddWizard}
+        />
+      {/if}
+
+      {#if verifyDialogIdentity}
+        <IdentityVerifyDialog
+          identity={verifyDialogIdentity}
+          onclose={closeVerifyDialog}
         />
       {/if}
 
