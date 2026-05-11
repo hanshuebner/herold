@@ -34,6 +34,56 @@ The principle: settings are the place users go to *change* defaults. They are no
 | REQ-SET-21 | The panel is split into sections (left-side nav): Account / Appearance / Mail / Privacy / Vacation / About. |
 | REQ-SET-22 | Section "About" shows the suite version, the connected JMAP server URL and version, the active capability set (with a footnote showing which features are gated by which capability), and a link to the source. |
 
+## Identity maintenance (v1)
+
+Server-side counterpart: `../../server/requirements/02-identity-and-auth.md` § Identity creation and verification (v1) (REQ-IDENT-01..91). This section specifies how the suite exposes Identity creation, editing, verification, and removal in the Settings panel.
+
+The Account section's identity area becomes a **list of identities** (one row per identity) plus an "Add identity" button. The existing inline display of name + signature + avatar disappears in favour of per-identity edit dialogs reached from the list — the current cramped layout is replaced with explicit per-identity isolation.
+
+### List
+
+| ID | Requirement |
+|----|-------------|
+| REQ-SET-IDENT-01 | The Account section renders one row per `Identity` returned by `Identity/get`. Each row shows: a default-selector radio button (REQ-SET-IDENT-04), the avatar thumbnail (REQ-SET-03b), the display name (REQ-SET-03a) with the email in subdued type below, a verification-status chip (REQ-SET-IDENT-02), and an external-submission badge (REQ-MAIL-SUBMIT-04) when applicable. Clicking anywhere on the row (except the radio button) opens the per-identity edit dialog (REQ-SET-IDENT-10). |
+| REQ-SET-IDENT-02 | **Verification-status chip.** Three states surface on each row: (a) **Verified** — no chip (silent normal); (b) **Verification pending** — yellow chip "Verification pending" + a "Resend" button (subject to REQ-IDENT-36 rate limit); (c) **Unverified** — red chip "Unverified" + a primary "Verify" button that opens the verify dialog (REQ-SET-IDENT-22). The pending state is entered the moment `Identity/set { create }` returns a row with `verifiedAt = null` AND a token is live server-side; it transitions to unverified when the token expires (server emits an `Identity/changes` push at expiry). The synthesised default identity has no chip — it is verified-by-construction (REQ-IDENT-02). |
+| REQ-SET-IDENT-03 | **Sort order.** Identities are sorted: (1) the default identity first, (2) other verified identities alphabetically by email, (3) pending identities by `createdAt` descending, (4) unverified identities last. The order is stable across refreshes; the user cannot reorder via drag (default selection is the only ordering knob — REQ-SET-IDENT-04). |
+| REQ-SET-IDENT-04 | **Default-identity selector.** Each row carries a radio button at the leading edge. Exactly one is selected at any time; selecting a different row issues `Identity/set update { <new>: { ... }, <old>: { ... } }` to flip the herold-namespaced extension property `Identity.isDefault` (server-side: REQ-IDENT-70, TBD). Only verified identities are selectable as default; the radio is disabled on unverified / pending rows. Switching default also flips the compose-default for future composes (REQ-MAIL-12) and is reflected in the `mail.identities` cache immediately. |
+| REQ-SET-IDENT-05 | **Add-identity affordance.** A primary "Add identity" button sits above the list. Clicking opens the add-identity wizard (REQ-SET-IDENT-30). The button is hidden when the JMAP session does not advertise `https://netzhansa.com/jmap/identity-verification` (server-side opt-out). |
+| REQ-SET-IDENT-06 | **Layout responsiveness.** On wide screens the list renders in a single column with full-width rows. On mobile the rows compress (display name on top line, email + chip below, kebab on the right for resend / verify / edit). The edit dialog (REQ-SET-IDENT-10) takes full screen on mobile. |
+
+### Edit dialog (per-identity)
+
+| ID | Requirement |
+|----|-------------|
+| REQ-SET-IDENT-10 | The per-identity edit dialog (extending the existing `IdentityEditDialog.svelte` used today for external-submission setup) hosts the full editor for ONE identity at a time: avatar editor (REQ-SET-03b), display-name field (REQ-SET-03a), signature editor (REQ-SET-03), X-Face opt-in (REQ-MAIL-45), and the external-submission section (REQ-MAIL-SUBMIT-01..06). The dialog is reached from the list by clicking the row or by deep-linking via `?identity=<id>` (REQ-MAIL-SUBMIT-06's re-auth path already uses this). Closing the dialog returns the user to the list with no scroll loss. |
+| REQ-SET-IDENT-11 | The dialog operates on a working copy of the identity's editable fields; the user MUST click "Save" to commit. Unsaved changes prompt on close ("Discard unsaved changes?"). Optimistic save: on success the list updates immediately; on `Identity/set` rejection the dialog re-opens with the offending field highlighted. |
+| REQ-SET-IDENT-12 | **Remove identity** action lives at the bottom of the dialog, visually de-emphasised, with a confirmation modal: "Remove <name> <<email>>? Mail already sent from this identity is unaffected. This cannot be undone." On confirm the dialog closes and the row disappears from the list (`Identity/set { destroy }`). The synthesised default identity has no Remove button. |
+| REQ-SET-IDENT-13 | The dialog adapts based on verification state. For an unverified or pending Identity, all editable fields except the email itself are available — the user can prep avatar/signature/name before verification completes — but the external-submission section is hidden until `verifiedAt` is set (mirrors the server-side constraint at REQ-IDENT-60: an unverified Identity cannot send, so submission setup is moot). |
+
+### Verification flow (in-dialog and standalone)
+
+| ID | Requirement |
+|----|-------------|
+| REQ-SET-IDENT-20 | **Verify dialog.** Opens from the "Verify" button on an unverified row (REQ-SET-IDENT-02) and from the "Verify" inline link in the compose From picker (REQ-MAIL-12). Renders the Identity's email and a two-input form: "I clicked the link in the verification email" (no action — the link does the work) and "or enter the 6-digit code from the email" with a code-input field. The code input POSTs to `/api/v1/identities/{id}/verify` (server-side: REQ-IDENT-41); success closes the dialog and emits a success toast ("Verified <email>"). Failure shows an inline error and re-renders the field. |
+| REQ-SET-IDENT-21 | **Resend** button inside the verify dialog. Subject to the server-side rate-limit (REQ-IDENT-36); on `429 Too Many Requests` the suite renders the `Retry-After` countdown inline ("Try again in 47 s"). |
+| REQ-SET-IDENT-22 | **Link-redirect arrival.** When the user clicks the verification link in the email, the server validates and redirects to `/#/settings` (REQ-IDENT-40). On arrival the suite detects the just-verified state via the JMAP `Identity/changes` push and renders a success toast ("Verified <email>") — no special URL parameter is needed because the row's `verifiedAt` transition is the canonical signal. If the user is not logged in when they click the link, the server-rendered confirmation page handles the success message; the suite is bypassed entirely in that case. |
+| REQ-SET-IDENT-23 | **Failure UX from email.** When the server-rendered page returns a failure (token invalid / expired / consumed — REQ-IDENT-40), the user lands on a static HTML page with a "Go to Settings" button. From Settings, the suite shows the row in its current state (unverified — token is gone) so the user can hit Resend. |
+
+### Add-identity wizard
+
+| ID | Requirement |
+|----|-------------|
+| REQ-SET-IDENT-30 | The add-identity wizard is a dialog with three steps. **Step 1 — Address.** Email + optional display name. The email is validated against the operator's domain policy (REQ-IDENT-20): an external domain that the policy rejects is surfaced with an explanatory inline error ("This server does not allow Identities for example.com — contact your administrator"). |
+| REQ-SET-IDENT-31 | **Step 2 — Verification pending.** On step 1 submit, `Identity/set { create }` is issued. The wizard transitions to a pending pane showing the email, a "Resend" button (with the same rate-limit handling as REQ-SET-IDENT-21), and a code-input field. The user may close the wizard; the Identity row exists in the list in the pending state, and verification can be completed later from there (REQ-SET-IDENT-20). |
+| REQ-SET-IDENT-32 | **Step 3 — Optional configuration.** After successful verification, the wizard offers a "Configure external SMTP" step IF the new Identity's domain is not hosted on this herold. Skipping leads directly to the list. For hosted-domain Identities, the wizard terminates at success (no submission step). |
+| REQ-SET-IDENT-33 | **Cancel.** Cancelling step 1 closes the wizard cleanly (no row created). Cancelling at step 2 (after `Identity/set { create }` has committed) leaves the unverified row in the list; an inline notice on the cancel button warns "Closing will keep this identity in 'Verification pending' state — you can verify later from Settings". |
+
+### Cache coherence
+
+| ID | Requirement |
+|----|-------------|
+| REQ-SET-IDENT-40 | The `mail.identities` cache is updated optimistically on every `Identity/set` create / update / destroy in this flow, mirroring the existing pattern (REQ-SET-03a). The cache is the source of truth for the compose From picker (REQ-MAIL-12, REQ-MAIL-12a) and for the avatar-resolver tier 1 (REQ-MAIL-44); both surfaces MUST reflect verification changes within one push round-trip. |
+
 ## Import from Gmail
 
 Self-service entry point for the Gmail Takeout importer. Server contract is

@@ -168,6 +168,98 @@ Scope boundary against the deferred broader spec (next section): this section ad
 
 When the broader "external mail accounts" feature (next section) lands, every existing `Identity` with submission credentials is migrated by the deployment to the corresponding external account, and its `submit_*` fields move under `account.smtp_submission`. The migration is one-way and idempotent. v1 implementations need not consider the migration — it is the deferred feature's job to write it.
 
+## Identity creation and verification (v1)
+
+*(Added 2026-05-11: a v1 surface for user-driven creation of additional `Identity` rows on the principal's local account. Every newly-created Identity passes through an email-verification step before it can be used to send, regardless of whether the email's domain is hosted on this herold. Web-side counterpart: `../../web/requirements/20-settings.md` § Identity maintenance (v1).)*
+
+Scope: this section covers creating, verifying, listing, and removing `Identity` rows on the principal's existing local JMAP account. It does NOT cover external transport (the deferred § External transport identities below) — that is a separate feature with its own JMAP-account boundary. An Identity created here MAY later acquire external SMTP submission credentials (§ External SMTP submission per Identity); the two surfaces compose.
+
+The synthesised default identity (id `"default"`, derived from the principal row's canonical email) is implicitly verified at provisioning time and is unaffected by the requirements below — it cannot be unverified, re-verified, or destroyed.
+
+### Identity record extensions
+
+- **REQ-IDENT-01** Every persisted `jmap_identities` row gains a verification trio: `{verified_at_us: int64 | NULL, verification_token_hash: bytes | NULL, verification_token_expires_at_us: int64 | NULL}`. `verified_at_us` is the wall-clock instant the identity was verified; NULL means unverified. The token columns are NULL when no verification is in flight. Stored per REQ-STORE-*. Schema migration is forward-only and additive.
+- **REQ-IDENT-02** The synthesised default identity (id `"default"`) is treated as verified-by-construction: code paths that read `verifiedAt` for a synthesised default return the principal's `created_at` (or any non-NULL sentinel) and writes are rejected. No row, no token, no JMAP `Identity/set { update }` against the default's verification fields.
+
+### JMAP wire surface
+
+- **REQ-IDENT-10** The JMAP `Identity` object gains one herold-namespaced extension property: `verifiedAt: UTCDate | null`. Present on every `Identity/get` response and every `Identity/changes` row.
+- **REQ-IDENT-11** A new server-level capability `https://netzhansa.com/jmap/identity-verification` is advertised in the JMAP session descriptor when `[server.identity_creation].enabled = true` (default true). Clients ignoring the capability MUST tolerate the `verifiedAt` property; it is additive and never blocks normal field access.
+- **REQ-IDENT-12** `Identity/set { create }` creates the row with `verified_at_us = NULL` and triggers the server-driven verification flow (REQ-IDENT-30+). The server-side response carries the freshly-created `Identity` with `verifiedAt = null`; the suite is responsible for surfacing the pending state. There is NO synchronous "verify now" path on the wire — verification is always asynchronous, gated by the email round-trip.
+- **REQ-IDENT-13** `Identity/set { update }` MAY NOT toggle `verifiedAt`: any client attempt is rejected with `invalidProperties { verifiedAt }`. Verification transitions only via the email-link callback or the admin CLI (REQ-IDENT-50).
+- **REQ-IDENT-14** `Identity/set { destroy }` is permitted on unverified Identities at any time. For verified Identities, the existing JMAP-level rules apply (default cannot be destroyed; see REQ-AUTH-EXT-SUBMIT-08 for cascade behaviour with submission credentials).
+
+### Domain policy (operator-side gate)
+
+- **REQ-IDENT-20** Operators MAY restrict which email domains a principal can create new Identities for via `[server.identity_creation].external_domains` in `system.toml`. Values: `allow_all` (default), `allowlist`, or `deny_all`. In `allowlist` mode, `[server.identity_creation].external_domain_allowlist` is a list of bare domain names (e.g. `["gmail.com", "company.com"]`).
+- **REQ-IDENT-21** Domain classification: an email's domain is "hosted" if it appears in the server's domain list (the same set surfaced by `Meta().ListLocalDomains`); otherwise "external". Hosted-domain Identity creation is always permitted regardless of the `external_domains` knob; the policy applies only to external domains.
+- **REQ-IDENT-22** A rejected creation (policy or any other reason) MUST surface as a JMAP `setError { type: "forbiddenFrom" | "invalidProperties", description }` with enough context for the suite to render a precise error. Audit-log every rejection per REQ-IDENT-90.
+
+### Verification email flow
+
+- **REQ-IDENT-30** On `Identity/set { create }`, after the row is committed in the unverified state, the server enqueues one outbound verification message to the new Identity's email address. Sender (envelope MAIL FROM + header From) is `[server.identity_creation].verifier_from`; default `postmaster@<canonical hosted domain>` per RFC 5321 §4.5.1. Operator MAY override to `noreply@<host>` or any locally-hosted address. The verification message is queued via the same outbound queue as user mail (REQ-FLOW-*); deliverability follows the operator's normal posture for the canonical domain.
+- **REQ-IDENT-31** Token shape: 32 random bytes generated from a CSPRNG, encoded base64url (43 ASCII characters, no padding). Stored on the row as `verification_token_hash = SHA-256(token)`; the raw token exists in memory only between generation and email-write. A separate 6-digit numeric code is derived from the same generation (REQ-IDENT-32); both are independent inputs that resolve to the same verification.
+- **REQ-IDENT-32** Code shape: 6 decimal digits, ASCII, leading zeros preserved. Stored as `verification_code_hash = SHA-256(code)` on the row. The numeric code is included in the email body for users whose mail clients break the click-link (text-mode readers, link-rewriting MTAs). Either input (link or code) verifies the Identity; one consumes the other (token rows are single-use).
+- **REQ-IDENT-33** Email body. Plain-text + HTML alternative. Subject: localised "Verify your email address" (the principal's preferred-locale, falling back to operator default). Body: a short explanatory paragraph, the click-link (`https://<host>/verify-identity?token=<token>`), and the 6-digit code on its own line. The body identifies the requesting principal (`Initiated by: <principal canonical email>`) so the recipient can detect an unsolicited verification. Final composition is plain RFC 5322 mail, DKIM-signed by the canonical-domain key (REQ-DKIM-*), and dispatched via the standard outbound queue.
+- **REQ-IDENT-34** Token TTL: 24 hours from issue. After expiry, both link and code are inert; the verification row remains but the suite renders the Identity as unverified with a "Resend" affordance (REQ-IDENT-41).
+- **REQ-IDENT-35** Unverified-identity cleanup: a periodic GC pass (default every 6 hours) destroys any Identity row whose `verified_at_us IS NULL` AND `created_at_us < now - 7d`. Token columns are purged on a tighter cadence (any token whose `verification_token_expires_at_us < now` is wiped at the next GC pass even if the Identity row is retained). The 7-day window is configurable via `[server.identity_creation].unverified_purge_after`.
+- **REQ-IDENT-36** Resend rate-limit. A user-initiated resend on the same Identity is rejected if any of: (a) the most recent token issue was less than 60s ago; (b) the count of token issues for this Identity in the trailing 24 h ≥ 5. The hard daily limit is per-Identity, NOT per-principal, so a user with multiple in-flight Identities is independently rate-limited on each. Limits are configurable via `[server.identity_creation].resend_cooldown_seconds` (default 60) and `[server.identity_creation].resend_daily_cap` (default 5). Rejected resends surface as `tooManyRequests` with `Retry-After` set.
+- **REQ-IDENT-37** Resend rotates the token. Every successful resend invalidates the previous link and code by overwriting the stored hashes; the new token also resets `verification_token_expires_at_us` to `now + 24h`. The user's most recently delivered email is always the only one that works.
+
+### Verification callback
+
+- **REQ-IDENT-40** `GET /verify-identity?token=<token>` is mounted on the **public listener** (port serving the suite SPA). The handler:
+  - Hash the supplied token; look up the matching Identity row by `verification_token_hash`.
+  - Reject if not found, expired, or already consumed: 400 with a server-rendered HTML page ("This verification link is invalid or has expired. Please request a new one from Settings.").
+  - On success: set `verified_at_us = now`, NULL the token columns, commit, and **302 redirect** to `/#/settings`. The suite reads the freshly-verified Identity via the JMAP `Identity` state push and surfaces a toast on arrival.
+- **REQ-IDENT-41** Code entry: `POST /api/v1/identities/{id}/verify` on the public listener (CSRF-checked, self-only). Body: `{code: "123456"}`. Same successful-verification semantics as the link callback; same error shape on failure. Used by the suite's "have a code" input.
+- **REQ-IDENT-42** Verification is idempotent on a verified Identity: a second valid token/code redeem returns 200 / 304 (no-op) so the user can refresh the link page safely. An invalid token on an already-verified row returns 400 (the row is verified, but this token is not the active token; treat as "the most recently delivered link is the only valid one"). Distinguishing the two cases is for diagnostics, not for the user-visible page.
+- **REQ-IDENT-43** Audit. Every callback (success and failure) emits an audit-log entry tagged `identity.verify.{success,failure}` with the Identity id, the requesting principal, the result class, and the user-agent / source IP. Tokens are never logged (the row stores only the hash).
+
+### Admin CLI
+
+- **REQ-IDENT-50** `herold identity verify <identity-id>` immediately sets `verified_at_us = now` and clears any pending token. The CLI ignores the verification email round-trip; intended for incident recovery, bootstrap of import flows, or operator-assisted setup when email delivery to the target is broken. Audit-logged as `identity.verify.admin` with the operator's principal id.
+- **REQ-IDENT-51** `herold identity unverify <identity-id>` reverts a verified Identity to unverified (sets `verified_at_us = NULL`); used to revoke a compromised identity. Audit-logged. Refused for the synthesised default identity.
+- **REQ-IDENT-52** `herold identity list [--principal <id>]` lists Identities with verification status. Useful for operators to inspect pending verifications.
+
+### Send-side gating
+
+- **REQ-IDENT-60** When a JMAP `EmailSubmission/set` references an Identity whose `verified_at_us IS NULL`, the server rejects with a `SetError { type: "forbiddenFrom", description: "identity is not verified", properties: ["identityId"] }`. The submission is dropped; no message enters the outbound queue, no DKIM signing happens, no external SMTP attempt happens.
+- **REQ-IDENT-61** The suite's compose UI MUST surface unverified Identities visibly so the user does not discover the rejection at send time. The wire-level rejection in REQ-IDENT-60 is a defence-in-depth gate, not the primary UX path.
+- **REQ-IDENT-62** For external-domain Identities (REQ-IDENT-21) that are verified but lack external SMTP submission credentials (REQ-AUTH-EXT-SUBMIT-01), the server still rejects `EmailSubmission/set` with a distinct error: `forbiddenFrom { description: "external identity requires submission configuration" }`. Rationale: sending via herold's outbound queue with herold's DKIM signature would fail DMARC alignment for the external domain. The suite reflects this in the From picker by disabling the row with a "Configure external SMTP" prompt (REQ-MAIL-SUBMIT-05c, web side).
+
+### Configuration knobs
+
+```toml
+[server.identity_creation]
+# Master switch. When false, Identity/set { create } returns
+# forbidden and the suite hides the "Add identity" affordance.
+enabled = true
+
+# Sender address for verification messages. Default postmaster on
+# the canonical hosted domain. MUST be locally hosted so DKIM signs
+# under a key herold controls.
+verifier_from = "postmaster@example.local"
+
+# External domain policy.
+external_domains = "allow_all"  # allow_all | allowlist | deny_all
+external_domain_allowlist = []  # only consulted when mode = "allowlist"
+
+# Lifecycles.
+unverified_purge_after = "7d"
+resend_cooldown_seconds = 60
+resend_daily_cap = 5
+```
+
+### Audit and observability
+
+- **REQ-IDENT-90** Every state transition emits a structured audit event: `identity.create`, `identity.verify.success`, `identity.verify.failure`, `identity.verify.admin`, `identity.unverify`, `identity.destroy`, `identity.resend`, `identity.purge`. Each carries the principal id, the Identity id, the Identity email (canonicalised), and the result class. Verification tokens are never logged.
+- **REQ-IDENT-91** Metrics: counters for `identity_create_total{domain_class=hosted|external}`, `identity_verify_total{result=success|expired|invalid}`, `identity_resend_total`, `identity_purge_total`. Histograms for verification time-to-verify (created → verified). Surfaces on the operator metrics endpoint.
+
+### Migration to deferred external accounts
+
+When the broader "external mail accounts" feature lands (next section), Identities created by this v1 flow continue to live on the local JMAP account. External accounts add their own JMAP-account-scoped Identities orthogonally; no migration of v1 Identities is required. The user MAY end up with overlapping Identities (e.g. `hans@gmail.com` on both the local account via this flow + the deferred external Gmail account); the deferred feature is responsible for surfacing the overlap to the user, not for collapsing the rows.
+
 ## External transport identities (deferred)
 
 *(Added 2026-04-29: scopes a future "external mail accounts" feature where a herold principal aggregates one or more external IMAP+SMTP accounts. Spec-only; not scheduled for v1 implementation. Web-side counterpart: `../../web/requirements/02-mail-basics.md` § External mail accounts.)*
