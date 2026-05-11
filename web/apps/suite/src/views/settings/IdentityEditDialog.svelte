@@ -93,11 +93,19 @@
   let saving = $state(false);
   let saveError = $state<string | null>(null);
 
+  // Reset the working copy when the `identity` prop changes. Note the
+  // careful avoidance of self-referential reads in the effect body —
+  // assigning `savedValue = draft` would track `draft` as a dep, which
+  // would re-run the effect on every keystroke and reset the input back
+  // to the initial value (subtle Svelte 5 footgun, see web/CLAUDE.md
+  // "Patterns to avoid").
   $effect(() => {
-    replyToDraft = addressesToInput(identity.replyTo ?? null);
-    bccDraft = addressesToInput(identity.bcc ?? null);
-    replyToSaved = replyToDraft;
-    bccSaved = bccDraft;
+    const r = addressesToInput(identity.replyTo ?? null);
+    const b = addressesToInput(identity.bcc ?? null);
+    replyToDraft = r;
+    replyToSaved = r;
+    bccDraft = b;
+    bccSaved = b;
   });
 
   let replyToValid = $derived(isValidEmail(replyToDraft));
