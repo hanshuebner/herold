@@ -1070,6 +1070,29 @@ func (m *metadata) LastReadAt(ctx context.Context, principalID store.PrincipalID
 	return out, fromMicros(joinedUs), nil
 }
 
+// FirstReceivedToForBlob returns the non-empty received_to for the
+// first message_mailboxes row matching principalID's ownership of a
+// message stored under blobHash. Returns ("", nil) when no such row
+// exists. REQ-FLOW-33 / REQ-FLOW-34.
+func (m *metadata) FirstReceivedToForBlob(ctx context.Context, principalID store.PrincipalID, blobHash string) (string, error) {
+	var rt string
+	err := m.s.pool.QueryRow(ctx, `
+		SELECT mm.received_to
+		  FROM message_mailboxes mm
+		  JOIN messages m ON m.id = mm.message_id
+		 WHERE m.principal_id = $1 AND m.blob_hash = $2 AND mm.received_to <> ''
+		 ORDER BY mm.mailbox_id ASC
+		 LIMIT 1`,
+		int64(principalID), blobHash).Scan(&rt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", mapErr(err)
+	}
+	return rt, nil
+}
+
 func (m *metadata) ChatPrincipalCanReadBlob(ctx context.Context, principalID store.PrincipalID, blobHash string) (bool, error) {
 	// Substring scan against attachments_json AND body_html. attachments_json
 	// is BYTEA in postgres; convert to text via convert_from for the LIKE.

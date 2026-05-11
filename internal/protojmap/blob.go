@@ -395,6 +395,24 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
+	// REQ-FLOW-34: when the blob is a full message blob owned by the
+	// principal, prepend the synthetic X-Herold-Recipient header
+	// derived from the per-recipient received_to. The receipt of the
+	// principal's own mailbox row gates this; non-owner downloads
+	// (chat fanout above) do NOT receive the header. The lookup is a
+	// single indexed query against messages.blob_hash for the
+	// principal; FirstReceivedToForBlob returns "" when the blob is
+	// not a message blob or no inbound-origin membership exists, in
+	// which case Inject is a no-op and the stream stays unchanged.
+	var injectHeader string
+	if ownerPID == p.ID && isLikelyBlobHash(blobID) {
+		rt, lerr := s.store.Meta().FirstReceivedToForBlob(r.Context(), p.ID, blobID)
+		if lerr != nil {
+			s.log.Warn("download.received_to_lookup_failed", "err", lerr, "blob", blobID)
+		} else {
+			injectHeader = rt
+		}
+	}
 	log := loggerFromContext(r.Context(), s.log)
 	log.Info("download",
 		"activity", "user",
@@ -404,6 +422,43 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		"size_bytes", size,
 		"content_type", contentType,
 	)
+	if injectHeader != "" {
+		// Buffer the body so we can prepend the header and adjust
+		// Content-Length. The 64MiB ceiling matches renderFull's
+		// inbound parse budget; larger blobs fall back to streaming
+		// without injection (the principal's MUA still sees the
+		// message correctly — the synthetic header is informational
+		// per REQ-FLOW-34).
+		const injectCeiling = int64(64 << 20)
+		if size <= injectCeiling {
+			buf := make([]byte, 0, int(size))
+			body, rerr := io.ReadAll(io.LimitReader(rc, injectCeiling))
+			if rerr != nil {
+				s.log.Warn("download.read_for_inject_failed", "err", rerr, "blob", blobID)
+				w.Header().Set("Content-Type", contentType)
+				w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+				if name != "" {
+					w.Header().Set("Content-Disposition",
+						fmt.Sprintf(`%s; filename=%q`, disposition, name))
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			_ = buf
+			body = mailparse.InjectXHeroldRecipient(body, injectHeader)
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			if name != "" {
+				w.Header().Set("Content-Disposition",
+					fmt.Sprintf(`%s; filename=%q`, disposition, name))
+			}
+			w.WriteHeader(http.StatusOK)
+			if _, err := w.Write(body); err != nil {
+				s.log.Warn("download.copy_failed", "err", err, "blob", blobID)
+			}
+			return
+		}
+	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	if name != "" {

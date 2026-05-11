@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -247,9 +248,21 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 		return "", fmt.Errorf("queue: Store is nil")
 	}
 
+	// REQ-FLOW-35: strip the herold-internal X-Herold-Recipient header
+	// from the user-supplied body before persisting the blob. The
+	// header is injected at render time (REQ-FLOW-34) and must never
+	// leak into a relayed / DKIM-signed outbound message. We read the
+	// body fully so the strip operates on bytes; the queue path reads
+	// the body once anyway when persisting the blob.
+	bodyBytes, err := io.ReadAll(msg.Body)
+	if err != nil {
+		return "", fmt.Errorf("queue: read body: %w", err)
+	}
+	bodyBytes = mailparse.StripXHeroldRecipient(bodyBytes)
+
 	// Persist body + (optional) headers blobs first; refcounts move
 	// to the queue rows below.
-	bodyRef, err := q.opts.Store.Blobs().Put(ctx, msg.Body)
+	bodyRef, err := q.opts.Store.Blobs().Put(ctx, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", fmt.Errorf("queue: persist body: %w", err)
 	}

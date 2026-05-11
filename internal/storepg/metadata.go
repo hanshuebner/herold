@@ -913,10 +913,10 @@ func (m *metadata) insertMessageTx(
 			}
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO message_mailboxes
-				  (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us)
-				VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				  (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, received_to)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 				mid, int64(t.MailboxID), int64(allocUID), int64(allocModSeq),
-				int64(t.Flags), strings.Join(t.Keywords, ","), snoozedArg); err != nil {
+				int64(t.Flags), strings.Join(t.Keywords, ","), snoozedArg, t.ReceivedTo); err != nil {
 				return mapErr(err)
 			}
 			if _, err := tx.Exec(ctx, `
@@ -1257,6 +1257,7 @@ func (m *metadata) loadMailboxes(ctx context.Context, msg *store.Message, mailbo
 			msg.Flags = mm.Flags
 			msg.Keywords = mm.Keywords
 			msg.SnoozedUntil = mm.SnoozedUntil
+			msg.ReceivedTo = mm.ReceivedTo
 			break
 		}
 	}
@@ -1276,6 +1277,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 	var mbox, uid, modseq, flags int64
 	var keywords string
 	var snoozedUs *int64
+	var receivedTo string
 	err := row.Scan(
 		&id, &pid, &idUs, &rcvUs,
 		&msg.Size, &msg.Blob.Hash, &blobSize, &thread,
@@ -1283,7 +1285,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 		&msg.Envelope.Cc, &msg.Envelope.Bcc, &msg.Envelope.ReplyTo,
 		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &msg.Envelope.References, &envDateUs,
 		// message_mailboxes columns
-		&mbox, &uid, &modseq, &flags, &keywords, &snoozedUs,
+		&mbox, &uid, &modseq, &flags, &keywords, &snoozedUs, &receivedTo,
 	)
 	if err != nil {
 		return store.Message{}, mapErr(err)
@@ -1306,6 +1308,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 		t := fromMicros(*snoozedUs)
 		msg.SnoozedUntil = &t
 	}
+	msg.ReceivedTo = receivedTo
 	mm := store.MessageMailbox{
 		MessageID:    msg.ID,
 		MailboxID:    msg.MailboxID,
@@ -1314,6 +1317,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 		Flags:        msg.Flags,
 		Keywords:     msg.Keywords,
 		SnoozedUntil: msg.SnoozedUntil,
+		ReceivedTo:   msg.ReceivedTo,
 	}
 	msg.Mailboxes = []store.MessageMailbox{mm}
 	return msg, nil
@@ -1735,10 +1739,11 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, fromM
 		var srcFlags int64
 		var srcKeywords string
 		var snoozedUs *int64
+		var srcReceivedTo string
 		err := tx.QueryRow(ctx, `
-			SELECT flags, keywords_csv, snoozed_until_us
+			SELECT flags, keywords_csv, snoozed_until_us, received_to
 			  FROM message_mailboxes WHERE message_id = $1 AND mailbox_id = $2`,
-			int64(msgID), int64(fromMailboxID)).Scan(&srcFlags, &srcKeywords, &snoozedUs)
+			int64(msgID), int64(fromMailboxID)).Scan(&srcFlags, &srcKeywords, &snoozedUs, &srcReceivedTo)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.ErrNotFound
 		}
@@ -1771,13 +1776,15 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, fromM
 		if snoozedUs != nil {
 			snoozedArg = *snoozedUs
 		}
-		// Insert new membership in target.
+		// Insert new membership in target. REQ-FLOW-33: preserve the
+		// envelope received_to from the source membership so a move
+		// keeps the per-recipient render annotation.
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO message_mailboxes
-			  (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			  (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, received_to)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 			int64(msgID), int64(targetMailboxID), newUID, newModseq,
-			srcFlags, srcKeywords, snoozedArg); err != nil {
+			srcFlags, srcKeywords, snoozedArg, srcReceivedTo); err != nil {
 			return mapErr(err)
 		}
 		// Delete source membership.
@@ -2738,7 +2745,7 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 			       m.size, m.blob_hash, m.blob_size, m.thread_id,
 			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
 			       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
-			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
+			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.received_to
 			  FROM messages m
 			  JOIN message_mailboxes mm ON mm.message_id = m.id AND mm.mailbox_id = $1
 			 WHERE mm.uid > $2 AND m.internal_date_us < $4
@@ -2750,7 +2757,7 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 			       m.size, m.blob_hash, m.blob_size, m.thread_id,
 			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
 			       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
-			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
+			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.received_to
 			  FROM messages m
 			  JOIN message_mailboxes mm ON mm.message_id = m.id AND mm.mailbox_id = $1
 			 WHERE mm.uid > $2
@@ -3368,7 +3375,7 @@ func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, li
 		       m.size, m.blob_hash, m.blob_size, m.thread_id,
 		       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
 		       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
-		       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us
+		       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.received_to
 		  FROM messages m
 		  JOIN message_mailboxes mm ON mm.message_id = m.id
 		 WHERE mm.snoozed_until_us IS NOT NULL

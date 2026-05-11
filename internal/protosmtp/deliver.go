@@ -381,6 +381,12 @@ func (sess *session) deliverOne(
 			MailboxID: mb.ID,
 			Flags:     msgFlags,
 			Keywords:  msgKeywords,
+			// REQ-FLOW-33: record the envelope RCPT TO that produced
+			// this fan-out row, in the canonical lower-cased form
+			// (matching directory.canonicalizeEmail). Render-time
+			// consumers (REQ-FLOW-34) read this to inject the
+			// X-Herold-Recipient header.
+			ReceivedTo: strings.ToLower(rc.addr),
 		}
 		insertTimer := observe.StartStoreOp("insert_message")
 		_, _, ierr := sess.srv.store.Meta().InsertMessage(ctx, storeMsg, []store.MessageMailbox{target})

@@ -176,9 +176,11 @@ type MessageRow struct {
 }
 
 // MessageMailboxRow mirrors one row of the message_mailboxes join table
-// introduced in migration 0024 (Wave 3.11 M:N membership). Each row
-// records the per-(message, mailbox) state: IMAP UID, CONDSTORE modseq,
-// flags, keywords, and the optional snooze deadline.
+// introduced in migration 0024 (Wave 3.11 M:N membership) and extended
+// by migration 0049 (REQ-FLOW-33 received_to). Each row records the
+// per-(message, mailbox) state: IMAP UID, CONDSTORE modseq, flags,
+// keywords, the optional snooze deadline, and the envelope RCPT TO
+// that produced the fan-out row (empty for non-inbound origins).
 type MessageMailboxRow struct {
 	MessageID      int64  `json:"message_id"`
 	MailboxID      int64  `json:"mailbox_id"`

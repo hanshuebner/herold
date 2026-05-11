@@ -11,6 +11,7 @@ import (
 
 	imap "github.com/emersion/go-imap/v2"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -233,7 +234,14 @@ func (ses *session) fetchBlob(ctx context.Context, m store.Message) ([]byte, err
 	if _, err := io.Copy(&buf, rc); err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	// REQ-FLOW-34: prepend the synthetic X-Herold-Recipient header
+	// at render time when the per-mailbox row carries an envelope
+	// received_to. The header is NOT persisted in the blob (which
+	// stays content-addressed and dedup-friendly across fan-out
+	// recipients per REQ-FLOW-30). A legacy / non-fan-out membership
+	// has ReceivedTo == "" and InjectXHeroldRecipient returns the
+	// raw bytes unchanged.
+	return mailparse.InjectXHeroldRecipient(buf.Bytes(), m.ReceivedTo), nil
 }
 
 // extractSection returns the requested section of the raw message body

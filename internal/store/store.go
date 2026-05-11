@@ -1464,6 +1464,21 @@ type Metadata interface {
 	// re-validate to keep the predicate sargable).
 	ChatPrincipalCanReadBlob(ctx context.Context, principalID PrincipalID, blobHash string) (bool, error)
 
+	// FirstReceivedToForBlob returns the canonical envelope RCPT TO
+	// (REQ-FLOW-33) for the first message_mailboxes row that ties
+	// principalID's owned message blob (matched by blobHash) to one
+	// of their mailboxes with a non-empty received_to. Returns the
+	// empty string when no such row exists — pre-feature memberships,
+	// non-inbound origins (Email/set, copy, move from non-fanout
+	// sources), or a blob that does not belong to a message owned by
+	// principalID. The caller (the /jmap/download handler) uses this
+	// to inject the synthetic X-Herold-Recipient header into a
+	// full-message blob being streamed back to the principal
+	// (REQ-FLOW-34). blobHash MUST be a hex-encoded BLAKE3 digest;
+	// implementations may rely on a direct equality lookup and do
+	// not re-validate the input.
+	FirstReceivedToForBlob(ctx context.Context, principalID PrincipalID, blobHash string) (string, error)
+
 	// SetLastRead advances the per-membership LastReadMessageID
 	// pointer (REQ-CHAT-30) to msgID, bumps ModSeq, and appends a
 	// (EntityKindMembership, ChangeOpUpdated) state-change row. Returns

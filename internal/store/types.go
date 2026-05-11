@@ -507,8 +507,10 @@ type MessageMailbox struct {
 	// in the form accepted by the local listener. Empty string is the
 	// explicit "unknown / pre-feature" sentinel: the render path treats
 	// it as "do not inject the X-Herold-Recipient header" (REQ-FLOW-34).
-	// Caller-side wiring lands in task #17; existing call sites pass
-	// the zero value, which the store stores as the empty-string default.
+	// Inbound SMTP fan-out (task #17) populates this on each new row;
+	// existing call sites that do not pass the value store the empty
+	// default. Outbound submissions strip the header before persist
+	// (REQ-FLOW-35).
 	ReceivedTo string
 }
 
@@ -546,6 +548,13 @@ type Message struct {
 	Keywords []string
 	// SnoozedUntil is the snooze deadline for MailboxID.
 	SnoozedUntil *time.Time
+	// ReceivedTo is the envelope RCPT TO that produced the per-mailbox
+	// membership in MailboxID (REQ-FLOW-33). Empty when the membership
+	// pre-dates the feature or was created outside the inbound delivery
+	// path. Render-time consumers (Email/get, IMAP FETCH BODY[], blob
+	// download) read this to inject the `X-Herold-Recipient` header
+	// (REQ-FLOW-34).
+	ReceivedTo string
 
 	// -- Mailbox-independent fields ------------------------------------
 

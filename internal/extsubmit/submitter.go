@@ -1,13 +1,16 @@
 package extsubmit
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protosmtp/session"
 	"github.com/hanshuebner/herold/internal/secrets"
@@ -325,8 +328,18 @@ func (s *Submitter) Submit(ctx context.Context, sub store.IdentitySubmission, en
 		}
 	}
 
-	// DATA.
-	mtaID, err := sess.Data(env.Body)
+	// DATA. REQ-FLOW-35: strip the herold-internal X-Herold-Recipient
+	// header from the body before relaying it to the external smart
+	// host. The header is per-recipient and herold-internal; leaking
+	// it would expose local routing metadata.
+	bodyBytes, rerr := io.ReadAll(env.Body)
+	if rerr != nil {
+		out.State = OutcomeUnreachable
+		out.Diagnostic = fmt.Sprintf("read body: %s", rerr.Error())
+		return out
+	}
+	bodyBytes = mailparse.StripXHeroldRecipient(bodyBytes)
+	mtaID, err := sess.Data(bytes.NewReader(bodyBytes))
 	if err != nil {
 		// err text already includes the SMTP code.
 		if strings.HasPrefix(err.Error(), "DATA final:") {

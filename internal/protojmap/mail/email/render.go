@@ -141,6 +141,13 @@ func renderFull(
 	if err != nil {
 		return jmapEmail{}, fmt.Errorf("email: read blob: %w", err)
 	}
+	// REQ-FLOW-34: prepend X-Herold-Recipient at render time so the
+	// header is part of the parsed top-level part. The header is not
+	// persisted into the dedup-shared blob; ReceivedTo is empty for
+	// pre-feature memberships and for mailbox memberships that did
+	// not originate from inbound delivery, in which case Inject is a
+	// no-op.
+	body = mailparse.InjectXHeroldRecipient(body, m.ReceivedTo)
 	parsed, err := parser(bytes.NewReader(body))
 	if err != nil {
 		// Treat parse errors as "metadata-only render"; clients still

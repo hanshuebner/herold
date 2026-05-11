@@ -230,6 +230,11 @@ func renderFullWithProperties(
 		return jmapEmail{}, fmt.Errorf("email: read blob: %w", err)
 	}
 
+	// REQ-FLOW-34: inject the synthetic X-Herold-Recipient header so
+	// header property accessors and body parts see it. No-op when
+	// ReceivedTo is empty (pre-feature / non-inbound membership).
+	rawBody = mailparse.InjectXHeroldRecipient(rawBody, m.ReceivedTo)
+
 	parsed, err := parser(bytes.NewReader(rawBody))
 	if err != nil {
 		return out, nil
