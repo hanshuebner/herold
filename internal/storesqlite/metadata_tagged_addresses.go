@@ -315,6 +315,32 @@ func (m *metadata) ListTaggedAddressDismissalsForPrincipal(ctx context.Context, 
 	return out, rows.Err()
 }
 
+// LookupTaggedAddressFilterForRecipient joins jmap_identities and
+// tagged_address_filters to find the filter (if any) that matches an
+// inbound recipient's (baseEmail, suffix) pair under principalID. See
+// the store.Metadata interface docstring for the full contract.
+//
+// The join is by jmap_identities.email (case-insensitive); the row's
+// verified_at_us is NOT consulted here because the verification gate
+// lives at filter-creation (REQ-IDENT-60 in REST/JMAP), not at delivery
+// time. Once a filter exists it routes mail regardless of subsequent
+// verification state — the v1 spec offers no admin-action to unverify an
+// already-verified identity, and a stuck-unverified identity cannot
+// have produced a filter in the first place.
+func (m *metadata) LookupTaggedAddressFilterForRecipient(ctx context.Context, principalID store.PrincipalID, baseEmail, suffix string) (store.TaggedAddressFilter, error) {
+	row := m.s.db.QueryRowContext(ctx,
+		`SELECT f.id, f.principal_id, f.base_identity_id, f.suffix,
+		         f.action, f.label_name, f.created_at_us, f.updated_at_us
+		    FROM tagged_address_filters AS f
+		    JOIN jmap_identities        AS i ON i.id = f.base_identity_id
+		   WHERE f.principal_id = ?
+		     AND lower(i.email) = ?
+		     AND f.suffix      = ?
+		   LIMIT 1`,
+		int64(principalID), strings.ToLower(baseEmail), strings.ToLower(suffix))
+	return scanTaggedAddressFilter(row)
+}
+
 func (m *metadata) HasTaggedAddressFilterOrDismissal(ctx context.Context, principalID store.PrincipalID, baseIdentityID, suffix string) (bool, bool, error) {
 	lower := strings.ToLower(suffix)
 	var hasFilter, hasDismissal int64

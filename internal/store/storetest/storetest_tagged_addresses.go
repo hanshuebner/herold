@@ -675,3 +675,98 @@ func testTaggedAddressInvalidInputs(t *testing.T, s store.Store) {
 		t.Fatalf("InsertDismissal(empty base) = %v, want ErrInvalidArgument", err)
 	}
 }
+
+// testTaggedAddressLookupForRecipient exercises
+// Metadata.LookupTaggedAddressFilterForRecipient — the join between
+// jmap_identities (by lower(email)) and tagged_address_filters
+// (by suffix) that the inbound pipeline runs once per +-tagged
+// recipient at delivery time. REQ-TAG-20 step 2.
+func testTaggedAddressLookupForRecipient(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "tag-look@example.com")
+	// Identity owns the address alice@example.test (stored verbatim).
+	identityID := "tag-id-lookup"
+	if err := s.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID:          identityID,
+		PrincipalID: p.ID,
+		Email:       "alice@example.test",
+		MayDelete:   true,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	// Filter on suffix "amazon" -> label "Shopping".
+	if err := s.Meta().InsertTaggedAddressFilter(ctx, store.TaggedAddressFilter{
+		PrincipalID:    p.ID,
+		BaseIdentityID: identityID,
+		Suffix:         "amazon",
+		Action:         store.TaggedAddressActionLabelArchive,
+		LabelName:      "Shopping",
+	}); err != nil {
+		t.Fatalf("Insert filter: %v", err)
+	}
+
+	// Match: exact base email + exact suffix.
+	got, err := s.Meta().LookupTaggedAddressFilterForRecipient(ctx, p.ID, "alice@example.test", "amazon")
+	if err != nil {
+		t.Fatalf("Lookup(exact): %v", err)
+	}
+	if got.BaseIdentityID != identityID || got.LabelName != "Shopping" {
+		t.Fatalf("Lookup(exact) = %+v", got)
+	}
+	if got.Action != store.TaggedAddressActionLabelArchive {
+		t.Fatalf("Action = %q, want %q", got.Action, store.TaggedAddressActionLabelArchive)
+	}
+
+	// Match: case-insensitive on both base email and suffix.
+	got, err = s.Meta().LookupTaggedAddressFilterForRecipient(ctx, p.ID, "Alice@Example.TEST", "AMAZON")
+	if err != nil {
+		t.Fatalf("Lookup(case-fold): %v", err)
+	}
+	if got.LabelName != "Shopping" {
+		t.Fatalf("Lookup(case-fold).Label = %q", got.LabelName)
+	}
+
+	// Miss: wrong suffix.
+	if _, err := s.Meta().LookupTaggedAddressFilterForRecipient(ctx, p.ID, "alice@example.test", "newsletter"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Lookup(wrong suffix) = %v, want ErrNotFound", err)
+	}
+	// Miss: wrong base email (no identity matches).
+	if _, err := s.Meta().LookupTaggedAddressFilterForRecipient(ctx, p.ID, "ghost@example.test", "amazon"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Lookup(wrong base) = %v, want ErrNotFound", err)
+	}
+	// Miss: filter exists under a different principal — must NOT leak.
+	other := mustInsertPrincipal(t, s, "other@example.com")
+	if _, err := s.Meta().LookupTaggedAddressFilterForRecipient(ctx, other.ID, "alice@example.test", "amazon"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Lookup(cross-principal) = %v, want ErrNotFound", err)
+	}
+
+	// Two identities, two filters: the lookup picks the one whose
+	// base_email matches. Insert a second identity owning a different
+	// address with an unrelated filter on the same suffix string; the
+	// lookup for alice's address must still return alice's filter.
+	otherIdent := "tag-id-lookup-2"
+	if err := s.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID:          otherIdent,
+		PrincipalID: p.ID,
+		Email:       "bob-alias@example.test",
+		MayDelete:   true,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity(other): %v", err)
+	}
+	if err := s.Meta().InsertTaggedAddressFilter(ctx, store.TaggedAddressFilter{
+		PrincipalID:    p.ID,
+		BaseIdentityID: otherIdent,
+		Suffix:         "amazon",
+		Action:         store.TaggedAddressActionLabel,
+		LabelName:      "Wrong",
+	}); err != nil {
+		t.Fatalf("Insert other filter: %v", err)
+	}
+	got, err = s.Meta().LookupTaggedAddressFilterForRecipient(ctx, p.ID, "alice@example.test", "amazon")
+	if err != nil {
+		t.Fatalf("Lookup(disambiguate): %v", err)
+	}
+	if got.LabelName != "Shopping" {
+		t.Fatalf("Lookup disambiguated to wrong identity: got %+v", got)
+	}
+}

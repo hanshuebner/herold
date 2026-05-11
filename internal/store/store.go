@@ -1180,6 +1180,30 @@ type Metadata interface {
 	// suffix yet).
 	HasTaggedAddressFilterOrDismissal(ctx context.Context, principalID PrincipalID, baseIdentityID, suffix string) (hasFilter, hasDismissal bool, err error)
 
+	// LookupTaggedAddressFilterForRecipient returns the tagged-address
+	// filter that matches an inbound recipient (REQ-TAG-20 step 2). The
+	// caller has already split the envelope RCPT TO into (baseEmail,
+	// suffix) via the taggedaddr package; this method finds the Identity
+	// row whose email matches baseEmail (case-insensitively) AND owns a
+	// tagged_address_filters row with the given suffix for principalID.
+	//
+	// The lookup joins jmap_identities and tagged_address_filters in a
+	// single round trip — the inbound pipeline runs this once per local
+	// recipient with a `+`-suffix on every delivered message, so the
+	// query must be index-friendly. Both indexes already exist:
+	// idx_jmap_identities_principal (scoping the email scan) and
+	// idx_tagged_address_filters_principal_identity (scoping the suffix
+	// match).
+	//
+	// Returns ErrNotFound when no Identity carries baseEmail or no
+	// filter matches the (Identity, suffix) tuple. The synthesised
+	// default identity is NEVER returned because it has no
+	// jmap_identities row (REQ-TAG-10 stores base_identity_id as a real
+	// FK; tag filters against the default identity are unrepresentable
+	// without first materialising the row, which the REST/JMAP create
+	// path does on demand).
+	LookupTaggedAddressFilterForRecipient(ctx context.Context, principalID PrincipalID, baseEmail, suffix string) (TaggedAddressFilter, error)
+
 	// MaterializeDefaultIdentity ensures that a real jmap_identities row
 	// exists for the principal's synthesised default identity
 	// (REQ-AUTH-EXT-SUBMIT-01). The default identity is normally a

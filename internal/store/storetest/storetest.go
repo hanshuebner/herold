@@ -177,6 +177,7 @@ func Run(t *testing.T, f Factory) {
 		{"TaggedAddress_HasFilterOrDismissal", testTaggedAddressHasFilterOrDismissal},
 		{"TaggedAddress_IdentityCascade", testTaggedAddressIdentityCascade},
 		{"TaggedAddress_InvalidInputs", testTaggedAddressInvalidInputs},
+		{"TaggedAddress_LookupForRecipient", testTaggedAddressLookupForRecipient},
 		// -- Wave 2.5 (REQ-PROTO-53/56/57; REQ-STORE-34/35) --------
 		{"Mailbox_Color_RoundTrip", testMailboxColorRoundTrip},
 		{"Mailbox_Color_RejectsInvalidFormat", testMailboxColorRejectsInvalid},
