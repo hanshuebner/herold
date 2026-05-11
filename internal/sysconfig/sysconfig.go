@@ -296,22 +296,27 @@ type ServerConfig struct {
 	// the scope check; this is the dev-only "trust the operator"
 	// posture). Production deployments MUST leave DevMode off and
 	// configure both listeners explicitly.
-	DevMode               bool                        `toml:"dev_mode,omitempty"`
-	AdminTLS              AdminTLSConfig              `toml:"admin_tls"`
-	Storage               StorageConfig               `toml:"storage"`
-	Snooze                SnoozeConfig                `toml:"snooze,omitempty"`
-	UI                    UIConfig                    `toml:"ui,omitempty"`
-	ImageProxy            ImageProxyConfig            `toml:"image_proxy,omitempty"`
-	Chat                  ChatConfig                  `toml:"chat,omitempty"`
-	Call                  CallConfig                  `toml:"call,omitempty"`
-	TURN                  TURNConfig                  `toml:"turn,omitempty"`
-	SmartHost             SmartHostConfig             `toml:"smart_host,omitempty"`
-	Suite                 SuiteConfig                 `toml:"suite,omitempty"`
-	AdminSPA              AdminSPAConfig              `toml:"admin_spa,omitempty"`
-	Push                  PushConfig                  `toml:"push,omitempty"`
-	Queue                 QueueConfig                 `toml:"queue,omitempty"`
-	Secrets               SecretsConfig               `toml:"secrets,omitempty"`
-	ExternalSubmission    ExternalSubmissionConfig    `toml:"external_submission,omitempty"`
+	DevMode            bool                     `toml:"dev_mode,omitempty"`
+	AdminTLS           AdminTLSConfig           `toml:"admin_tls"`
+	Storage            StorageConfig            `toml:"storage"`
+	Snooze             SnoozeConfig             `toml:"snooze,omitempty"`
+	UI                 UIConfig                 `toml:"ui,omitempty"`
+	ImageProxy         ImageProxyConfig         `toml:"image_proxy,omitempty"`
+	Chat               ChatConfig               `toml:"chat,omitempty"`
+	Call               CallConfig               `toml:"call,omitempty"`
+	TURN               TURNConfig               `toml:"turn,omitempty"`
+	SmartHost          SmartHostConfig          `toml:"smart_host,omitempty"`
+	Suite              SuiteConfig              `toml:"suite,omitempty"`
+	AdminSPA           AdminSPAConfig           `toml:"admin_spa,omitempty"`
+	Push               PushConfig               `toml:"push,omitempty"`
+	Queue              QueueConfig              `toml:"queue,omitempty"`
+	Secrets            SecretsConfig            `toml:"secrets,omitempty"`
+	ExternalSubmission ExternalSubmissionConfig `toml:"external_submission,omitempty"`
+	// IdentityCreation configures the principal-initiated Identity
+	// creation and email verification surface (REQ-IDENT-10..36). An
+	// omitted section yields a fully working default-enabled
+	// configuration.
+	IdentityCreation      IdentityCreationConfig      `toml:"identity_creation,omitempty"`
 	DirectoryAutocomplete DirectoryAutocompleteConfig `toml:"directory_autocomplete,omitempty"`
 	// TrashRetention configures the email trash retention sweeper
 	// (REQ-STORE-90). Defaults match the trashretention package
@@ -386,6 +391,82 @@ type ExternalSubmissionConfig struct {
 	// concurrent refreshes when many OAuth identities are due at once;
 	// raising it above 16 provides diminishing returns for typical deployments.
 	SweeperWorkers int `toml:"sweeper_workers,omitempty"`
+}
+
+// IdentityCreationExternalDomainsMode selects the external-domain policy for
+// principal-initiated Identity creation (REQ-IDENT-20). External domains are
+// any domain not in Meta().ListLocalDomains; hosted domains are always
+// permitted regardless of this knob.
+type IdentityCreationExternalDomainsMode string
+
+const (
+	// IdentityCreationExternalDomainsAllowAll lets a principal create an
+	// Identity for any external domain. The default; matches the most
+	// permissive posture and keeps operator-controlled deployments out of
+	// the way of users who already own their domain elsewhere.
+	IdentityCreationExternalDomainsAllowAll IdentityCreationExternalDomainsMode = "allow_all"
+	// IdentityCreationExternalDomainsAllowlist restricts creation to the
+	// external domains explicitly listed in ExternalDomainAllowlist. The
+	// allowlist MUST be non-empty when this mode is selected.
+	IdentityCreationExternalDomainsAllowlist IdentityCreationExternalDomainsMode = "allowlist"
+	// IdentityCreationExternalDomainsDenyAll refuses creation of any
+	// external-domain Identity. Hosted-domain identities remain permitted.
+	IdentityCreationExternalDomainsDenyAll IdentityCreationExternalDomainsMode = "deny_all"
+)
+
+// IdentityCreationConfig configures the principal-initiated Identity
+// creation and email verification surface (REQ-IDENT-10..36). The whole
+// section is optional; an omitted block produces a fully working
+// configuration with sensible defaults (enabled, allow-all external
+// domains, 7-day unverified purge window, 60s resend cooldown, 5/day
+// resend cap).
+//
+// Example (system.toml):
+//
+//	[server.identity_creation]
+//	enabled = true
+//	verifier_from = "postmaster@example.local"
+//	external_domains = "allow_all"                # allow_all | allowlist | deny_all
+//	external_domain_allowlist = ["gmail.com"]     # only when external_domains = "allowlist"
+//	unverified_purge_after = "7d"
+//	resend_cooldown_seconds = 60
+//	resend_daily_cap = 5
+type IdentityCreationConfig struct {
+	// Enabled is the master switch for principal-initiated Identity
+	// creation and the matching JMAP capability advertisement
+	// (REQ-IDENT-11). Defaults to true; set to false explicitly to
+	// hide the "Add identity" affordance and refuse Identity/set { create }
+	// at the JMAP boundary. The pointer encoding lets us distinguish an
+	// omitted key (default-true) from an explicit `enabled = false`.
+	Enabled *bool `toml:"enabled,omitempty"`
+	// VerifierFrom is the sender address embedded in the envelope MAIL FROM
+	// and header From of outbound verification messages (REQ-IDENT-30). MUST
+	// be a locally-hosted address so DKIM signs under a key herold controls.
+	// Defaults to "postmaster@<server.hostname>" per RFC 5321 §4.5.1.
+	VerifierFrom string `toml:"verifier_from,omitempty"`
+	// ExternalDomains selects the external-domain Identity creation policy
+	// (REQ-IDENT-20). One of "allow_all" (default), "allowlist", or
+	// "deny_all". Hosted-domain creation is always permitted independent
+	// of this knob.
+	ExternalDomains IdentityCreationExternalDomainsMode `toml:"external_domains,omitempty"`
+	// ExternalDomainAllowlist enumerates the external domains a principal
+	// may create an Identity for when ExternalDomains == "allowlist".
+	// Bare domain names ("gmail.com", "company.com"); lowercase ASCII.
+	// Ignored in any other mode; required (non-empty) in allowlist mode.
+	ExternalDomainAllowlist []string `toml:"external_domain_allowlist,omitempty"`
+	// UnverifiedPurgeAfter is the maximum age of an unverified Identity row
+	// before the background GC destroys it (REQ-IDENT-35). Accepts standard
+	// Go durations plus a "d"-suffix shorthand (e.g. "7d" == 168h). Default
+	// "7d".
+	UnverifiedPurgeAfter string `toml:"unverified_purge_after,omitempty"`
+	// ResendCooldownSeconds is the minimum interval between two consecutive
+	// verification-message resends on the same Identity (REQ-IDENT-36).
+	// Must be > 0. Default 60.
+	ResendCooldownSeconds int `toml:"resend_cooldown_seconds,omitempty"`
+	// ResendDailyCap is the hard per-Identity ceiling on verification-message
+	// resends in any trailing 24h window (REQ-IDENT-36). Must be > 0.
+	// Default 5.
+	ResendDailyCap int `toml:"resend_daily_cap,omitempty"`
 }
 
 // DirectoryAutocompleteMode is the typed enum for the compose To-field
@@ -1406,6 +1487,13 @@ var (
 		DirectoryAutocompleteModeDomain: {},
 		DirectoryAutocompleteModeOff:    {},
 	}
+
+	// Identity-creation external-domain policy modes (REQ-IDENT-20).
+	validIdentityCreationExternalDomainsModes = map[IdentityCreationExternalDomainsMode]struct{}{
+		IdentityCreationExternalDomainsAllowAll:  {},
+		IdentityCreationExternalDomainsAllowlist: {},
+		IdentityCreationExternalDomainsDenyAll:   {},
+	}
 )
 
 // Load reads path, parses it strictly, applies defaults, and validates.
@@ -1676,6 +1764,11 @@ func applyDefaults(c *Config) {
 	if c.Server.DirectoryAutocomplete.Mode == "" {
 		c.Server.DirectoryAutocomplete.Mode = DirectoryAutocompleteModeDomain
 	}
+	// Identity creation (REQ-IDENT-10..36). Defaults are applied here so
+	// a missing [server.identity_creation] block and an empty block behave
+	// identically: enabled, allow-all external domains, 7-day purge,
+	// 60s resend cooldown, 5/day cap.
+	applyIdentityCreationDefaults(&c.Server.IdentityCreation, c.Server.Hostname)
 	// Trash retention sweeper (REQ-STORE-90). Defaults mirror the
 	// trashretention package constants so a missing block and an empty
 	// block behave the same: 30-day retention, 1-hour sweep interval.
@@ -1741,6 +1834,54 @@ func applyClientLogDefaults(cl *ClientLogConfig) {
 	if cl.Public.BodyMaxBytes == 0 {
 		cl.Public.BodyMaxBytes = 8192 // 8 KiB
 	}
+}
+
+// applyIdentityCreationDefaults populates the documented default values for
+// the [server.identity_creation] block (REQ-IDENT-10..36) when fields are
+// absent. Called once after parse; idempotent. hostname is the canonical
+// server hostname (cfg.Server.Hostname) used to construct the default
+// verifier_from address when none is supplied.
+func applyIdentityCreationDefaults(ic *IdentityCreationConfig, hostname string) {
+	if ic.Enabled == nil {
+		t := true
+		ic.Enabled = &t
+	}
+	if ic.VerifierFrom == "" && hostname != "" {
+		ic.VerifierFrom = "postmaster@" + hostname
+	}
+	if ic.ExternalDomains == "" {
+		ic.ExternalDomains = IdentityCreationExternalDomainsAllowAll
+	}
+	if ic.UnverifiedPurgeAfter == "" {
+		ic.UnverifiedPurgeAfter = "7d"
+	}
+	if ic.ResendCooldownSeconds == 0 {
+		ic.ResendCooldownSeconds = 60
+	}
+	if ic.ResendDailyCap == 0 {
+		ic.ResendDailyCap = 5
+	}
+}
+
+// parseIdentityCreationDuration parses the unverified_purge_after duration
+// value (REQ-IDENT-35). Accepts standard Go durations (time.ParseDuration)
+// plus a single trailing "d" suffix as a 24-hour multiplier ("7d" == 168h),
+// since operators write retention windows in days and time.ParseDuration
+// does not natively understand "d". Returns an error for unparseable input
+// or non-positive durations.
+func parseIdentityCreationDuration(s string) (time.Duration, error) {
+	v := strings.TrimSpace(s)
+	if v == "" {
+		return 0, errors.New("empty duration")
+	}
+	if strings.HasSuffix(v, "d") && !strings.ContainsAny(v[:len(v)-1], "hms") {
+		days, err := time.ParseDuration(v[:len(v)-1] + "h")
+		if err != nil {
+			return 0, err
+		}
+		return days * 24, nil
+	}
+	return time.ParseDuration(v)
 }
 
 // applySmartHostDefaults populates the smart-host knobs that have a
@@ -2432,11 +2573,110 @@ func Validate(c *Config) error {
 		return fmt.Errorf("sysconfig: [server.directory_autocomplete] mode %q not recognised (want \"all\", \"domain\", or \"off\")",
 			c.Server.DirectoryAutocomplete.Mode)
 	}
+	// Identity creation (REQ-IDENT-10..36). Verifier_from is checked for
+	// shape only here; the "must be locally hosted" check (REQ-IDENT-30) is
+	// deferred to runtime first-use because ListLocalDomains lives in the
+	// store and is not available during config parse.
+	if err := validateIdentityCreation(&c.Server.IdentityCreation); err != nil {
+		return err
+	}
 	// Client-log ingest (REQ-OPS-219).
 	if err := validateClientLog(&c.ClientLog); err != nil {
 		return err
 	}
 	return nil
+}
+
+// validateIdentityCreation checks semantic constraints on the
+// [server.identity_creation] block (REQ-IDENT-10..36). applyDefaults has
+// already run, so every knob has a non-zero value when the operator
+// omitted it.
+//
+// The "verifier_from MUST be a locally-hosted address" check
+// (REQ-IDENT-30) is deferred to a runtime sanity-check at first use:
+// ListLocalDomains lives in the store and is not available during config
+// parse, and operators legitimately bring up the server before the
+// domain list has been seeded. The runtime check logs a startup warning
+// and refuses to advertise the identity-verification capability if the
+// verifier_from domain is not hosted.
+func validateIdentityCreation(ic *IdentityCreationConfig) error {
+	// VerifierFrom shape: must contain exactly one "@" and a non-empty
+	// localpart and domain. The locally-hosted-domain check happens at
+	// runtime.
+	if ic.VerifierFrom != "" {
+		at := strings.IndexByte(ic.VerifierFrom, '@')
+		if at <= 0 || at == len(ic.VerifierFrom)-1 || strings.IndexByte(ic.VerifierFrom[at+1:], '@') >= 0 {
+			return fmt.Errorf("sysconfig: [server.identity_creation] verifier_from %q is not a valid email address",
+				ic.VerifierFrom)
+		}
+	}
+	// External domain policy enum.
+	if _, ok := validIdentityCreationExternalDomainsModes[ic.ExternalDomains]; !ok {
+		return fmt.Errorf("sysconfig: [server.identity_creation] external_domains %q not recognised (want \"allow_all\", \"allowlist\", or \"deny_all\")",
+			ic.ExternalDomains)
+	}
+	// Allowlist mode requires at least one entry; entries must be
+	// lowercase ASCII bare domain names.
+	if ic.ExternalDomains == IdentityCreationExternalDomainsAllowlist {
+		if len(ic.ExternalDomainAllowlist) == 0 {
+			return errors.New("sysconfig: [server.identity_creation] external_domains=\"allowlist\" requires external_domain_allowlist to be non-empty")
+		}
+		for _, d := range ic.ExternalDomainAllowlist {
+			if d == "" {
+				return errors.New("sysconfig: [server.identity_creation] external_domain_allowlist contains an empty entry")
+			}
+			if d != strings.ToLower(d) {
+				return fmt.Errorf("sysconfig: [server.identity_creation] external_domain_allowlist entry %q must be lowercase ASCII",
+					d)
+			}
+			if strings.ContainsAny(d, " \t\r\n@/") {
+				return fmt.Errorf("sysconfig: [server.identity_creation] external_domain_allowlist entry %q is not a bare domain name",
+					d)
+			}
+		}
+	}
+	// Unverified-purge duration: required to parse as a strictly positive
+	// duration. Accept the "d"-suffix shorthand.
+	dur, err := parseIdentityCreationDuration(ic.UnverifiedPurgeAfter)
+	if err != nil {
+		return fmt.Errorf("sysconfig: [server.identity_creation] unverified_purge_after %q: %v",
+			ic.UnverifiedPurgeAfter, err)
+	}
+	if dur <= 0 {
+		return fmt.Errorf("sysconfig: [server.identity_creation] unverified_purge_after %q must be a positive duration",
+			ic.UnverifiedPurgeAfter)
+	}
+	// Resend rate-limit knobs must be strictly positive: a zero cooldown
+	// or daily cap collapses the limiter and would let an unverified
+	// Identity flood the outbound queue.
+	if ic.ResendCooldownSeconds <= 0 {
+		return fmt.Errorf("sysconfig: [server.identity_creation] resend_cooldown_seconds %d must be > 0",
+			ic.ResendCooldownSeconds)
+	}
+	if ic.ResendDailyCap <= 0 {
+		return fmt.Errorf("sysconfig: [server.identity_creation] resend_daily_cap %d must be > 0",
+			ic.ResendDailyCap)
+	}
+	return nil
+}
+
+// UnverifiedPurgeAfterDuration returns the parsed UnverifiedPurgeAfter
+// value as a time.Duration. Callers MUST invoke this only on a config
+// that has already passed Validate; Validate guarantees the duration
+// parses as a positive value.
+func (ic IdentityCreationConfig) UnverifiedPurgeAfterDuration() time.Duration {
+	d, _ := parseIdentityCreationDuration(ic.UnverifiedPurgeAfter)
+	return d
+}
+
+// IsEnabled reports whether identity creation is on. Encapsulates the
+// pointer-default behaviour: a nil Enabled means the operator omitted
+// the key, which defaults to true (REQ-IDENT-11). Use after applyDefaults
+// has run; in that case Enabled is non-nil and the explicit dereference
+// is fine, but the helper makes call sites resilient to a hypothetical
+// caller that constructs an IdentityCreationConfig directly.
+func (ic IdentityCreationConfig) IsEnabled() bool {
+	return ic.Enabled == nil || *ic.Enabled
 }
 
 // validateClientLog checks semantic constraints on the [clientlog] block.

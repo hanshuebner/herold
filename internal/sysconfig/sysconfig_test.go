@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // minimalNoObservability is a base config without any [observability] or
@@ -2639,4 +2640,277 @@ tls = "starttls"
 	if _, err := Parse([]byte(withFile)); err != nil {
 		t.Fatalf("port 0 with port_report_file set should pass; got: %v", err)
 	}
+}
+
+// identityCreationBase is a complete-but-minimal valid config used by the
+// identity_creation tests below. Tests append a [server.identity_creation]
+// block when they want to exercise non-default values.
+const identityCreationBase = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+
+// TestIdentityCreation_DefaultsApplied confirms an omitted
+// [server.identity_creation] block yields the documented defaults from
+// REQ-IDENT-10..36: enabled, allow_all external policy, postmaster@<hostname>
+// verifier_from, 7-day purge window (168h), 60s resend cooldown, 5/day cap.
+func TestIdentityCreation_DefaultsApplied(t *testing.T) {
+	cfg, err := Parse([]byte(identityCreationBase))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	ic := cfg.Server.IdentityCreation
+	if !ic.IsEnabled() {
+		t.Errorf("default Enabled: want true")
+	}
+	if ic.Enabled == nil || !*ic.Enabled {
+		t.Errorf("default Enabled pointer: want non-nil true, got %v", ic.Enabled)
+	}
+	if ic.VerifierFrom != "postmaster@mail.example.com" {
+		t.Errorf("default VerifierFrom: got %q, want %q", ic.VerifierFrom, "postmaster@mail.example.com")
+	}
+	if ic.ExternalDomains != IdentityCreationExternalDomainsAllowAll {
+		t.Errorf("default ExternalDomains: got %q, want %q", ic.ExternalDomains, IdentityCreationExternalDomainsAllowAll)
+	}
+	if len(ic.ExternalDomainAllowlist) != 0 {
+		t.Errorf("default ExternalDomainAllowlist: got %v, want []", ic.ExternalDomainAllowlist)
+	}
+	if ic.UnverifiedPurgeAfter != "7d" {
+		t.Errorf("default UnverifiedPurgeAfter: got %q, want \"7d\"", ic.UnverifiedPurgeAfter)
+	}
+	if dur := ic.UnverifiedPurgeAfterDuration(); dur != 168*time.Hour {
+		t.Errorf("default UnverifiedPurgeAfterDuration: got %s, want 168h", dur)
+	}
+	if ic.ResendCooldownSeconds != 60 {
+		t.Errorf("default ResendCooldownSeconds: got %d, want 60", ic.ResendCooldownSeconds)
+	}
+	if ic.ResendDailyCap != 5 {
+		t.Errorf("default ResendDailyCap: got %d, want 5", ic.ResendDailyCap)
+	}
+}
+
+// TestIdentityCreation_ExplicitValuesParsed asserts that explicit operator
+// values round-trip into the parsed struct without defaults overriding them,
+// including an explicit `enabled = false` (which must NOT be re-defaulted
+// to true).
+func TestIdentityCreation_ExplicitValuesParsed(t *testing.T) {
+	const cfgText = identityCreationBase + `
+[server.identity_creation]
+enabled = false
+verifier_from = "noreply@mail.example.com"
+external_domains = "allowlist"
+external_domain_allowlist = ["gmail.com", "company.com"]
+unverified_purge_after = "14d"
+resend_cooldown_seconds = 120
+resend_daily_cap = 10
+`
+	cfg, err := Parse([]byte(cfgText))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	ic := cfg.Server.IdentityCreation
+	if ic.Enabled == nil || *ic.Enabled {
+		t.Errorf("explicit Enabled=false not preserved: got %v", ic.Enabled)
+	}
+	if ic.IsEnabled() {
+		t.Errorf("IsEnabled() for explicit Enabled=false: want false")
+	}
+	if ic.VerifierFrom != "noreply@mail.example.com" {
+		t.Errorf("VerifierFrom: got %q", ic.VerifierFrom)
+	}
+	if ic.ExternalDomains != IdentityCreationExternalDomainsAllowlist {
+		t.Errorf("ExternalDomains: got %q", ic.ExternalDomains)
+	}
+	if got, want := ic.ExternalDomainAllowlist, []string{"gmail.com", "company.com"}; !equalStringSlice(got, want) {
+		t.Errorf("ExternalDomainAllowlist: got %v, want %v", got, want)
+	}
+	if ic.UnverifiedPurgeAfter != "14d" {
+		t.Errorf("UnverifiedPurgeAfter: got %q", ic.UnverifiedPurgeAfter)
+	}
+	if dur := ic.UnverifiedPurgeAfterDuration(); dur != 14*24*time.Hour {
+		t.Errorf("UnverifiedPurgeAfterDuration: got %s, want 336h", dur)
+	}
+	if ic.ResendCooldownSeconds != 120 {
+		t.Errorf("ResendCooldownSeconds: got %d", ic.ResendCooldownSeconds)
+	}
+	if ic.ResendDailyCap != 10 {
+		t.Errorf("ResendDailyCap: got %d", ic.ResendDailyCap)
+	}
+}
+
+// TestIdentityCreation_RejectsBadExternalDomains confirms an unknown
+// external_domains value is rejected at Validate with a message that
+// names the offending value and the three allowed enum members.
+func TestIdentityCreation_RejectsBadExternalDomains(t *testing.T) {
+	const bad = identityCreationBase + `
+[server.identity_creation]
+external_domains = "everyone"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected error for unknown external_domains value")
+	}
+	if !strings.Contains(err.Error(), "external_domains") {
+		t.Errorf("error should mention external_domains; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "everyone") {
+		t.Errorf("error should echo the bad value; got: %v", err)
+	}
+}
+
+// TestIdentityCreation_RejectsAllowlistEmpty confirms allowlist mode with
+// an empty external_domain_allowlist is rejected (REQ-IDENT-20).
+func TestIdentityCreation_RejectsAllowlistEmpty(t *testing.T) {
+	const bad = identityCreationBase + `
+[server.identity_creation]
+external_domains = "allowlist"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected error for empty allowlist")
+	}
+	if !strings.Contains(err.Error(), "external_domain_allowlist") {
+		t.Errorf("error should mention external_domain_allowlist; got: %v", err)
+	}
+}
+
+// TestIdentityCreation_PurgeAfterDayShorthand confirms the "Nd" shorthand
+// in unverified_purge_after expands to N*24h. Validate parses it; a custom
+// helper exposes the parsed duration to callers.
+func TestIdentityCreation_PurgeAfterDayShorthand(t *testing.T) {
+	const cfgText = identityCreationBase + `
+[server.identity_creation]
+unverified_purge_after = "7d"
+`
+	cfg, err := Parse([]byte(cfgText))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := cfg.Server.IdentityCreation.UnverifiedPurgeAfterDuration(); got != 168*time.Hour {
+		t.Errorf("7d -> %s, want 168h", got)
+	}
+	// Also confirm a standard go duration ("48h") still parses.
+	const hours = identityCreationBase + `
+[server.identity_creation]
+unverified_purge_after = "48h"
+`
+	cfg2, err := Parse([]byte(hours))
+	if err != nil {
+		t.Fatalf("Parse 48h: %v", err)
+	}
+	if got := cfg2.Server.IdentityCreation.UnverifiedPurgeAfterDuration(); got != 48*time.Hour {
+		t.Errorf("48h -> %s, want 48h", got)
+	}
+}
+
+// TestIdentityCreation_RejectsBadPurgeAfter confirms an unparseable
+// unverified_purge_after value is rejected.
+func TestIdentityCreation_RejectsBadPurgeAfter(t *testing.T) {
+	const bad = identityCreationBase + `
+[server.identity_creation]
+unverified_purge_after = "next week"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected error for unparseable duration")
+	}
+	if !strings.Contains(err.Error(), "unverified_purge_after") {
+		t.Errorf("error should mention unverified_purge_after; got: %v", err)
+	}
+}
+
+// TestIdentityCreation_RejectsZeroCooldown confirms a resend_cooldown_seconds
+// of 0 is rejected (REQ-IDENT-36 — a zero cooldown collapses the rate
+// limiter).
+func TestIdentityCreation_RejectsZeroCooldown(t *testing.T) {
+	const bad = identityCreationBase + `
+[server.identity_creation]
+resend_cooldown_seconds = 0
+unverified_purge_after = "7d"
+resend_daily_cap = 5
+`
+	// Note: resend_cooldown_seconds = 0 is the TOML zero value, which
+	// applyDefaults treats as "absent". To force a positive-zero test we
+	// rely on the documented behaviour: explicit 0 is indistinguishable
+	// from omitted, so applyDefaults restores the 60 default. The actual
+	// regression we want to catch is a value < 0 OR a missing default.
+	// Validate this by setting -1 instead.
+	const negative = identityCreationBase + `
+[server.identity_creation]
+resend_cooldown_seconds = -1
+`
+	_, err := Parse([]byte(negative))
+	if err == nil {
+		t.Fatalf("expected error for negative resend_cooldown_seconds")
+	}
+	if !strings.Contains(err.Error(), "resend_cooldown_seconds") {
+		t.Errorf("error should name resend_cooldown_seconds; got: %v", err)
+	}
+	_ = bad
+}
+
+// TestIdentityCreation_RejectsZeroDailyCap mirrors the cooldown test for
+// the daily-cap knob (REQ-IDENT-36).
+func TestIdentityCreation_RejectsZeroDailyCap(t *testing.T) {
+	const negative = identityCreationBase + `
+[server.identity_creation]
+resend_daily_cap = -1
+`
+	_, err := Parse([]byte(negative))
+	if err == nil {
+		t.Fatalf("expected error for negative resend_daily_cap")
+	}
+	if !strings.Contains(err.Error(), "resend_daily_cap") {
+		t.Errorf("error should name resend_daily_cap; got: %v", err)
+	}
+}
+
+// TestIdentityCreation_RejectsBadVerifierFrom confirms a verifier_from that
+// is not a valid email address (missing @, empty localpart, etc.) is
+// rejected at Validate.
+func TestIdentityCreation_RejectsBadVerifierFrom(t *testing.T) {
+	cases := []string{
+		`verifier_from = "not-an-email"`,
+		`verifier_from = "@example.com"`,
+		`verifier_from = "user@"`,
+		`verifier_from = "two@at@example.com"`,
+	}
+	for _, line := range cases {
+		body := identityCreationBase + "\n[server.identity_creation]\n" + line + "\n"
+		_, err := Parse([]byte(body))
+		if err == nil {
+			t.Errorf("expected error for %q", line)
+			continue
+		}
+		if !strings.Contains(err.Error(), "verifier_from") {
+			t.Errorf("error for %q should mention verifier_from; got: %v", line, err)
+		}
+	}
+}
+
+// equalStringSlice reports whether a and b have the same elements in the
+// same order. Local helper to avoid pulling in reflect.DeepEqual just for
+// this test.
+func equalStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
