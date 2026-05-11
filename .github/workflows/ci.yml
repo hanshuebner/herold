@@ -234,7 +234,16 @@ jobs:
   test:
     name: test (arm64 / ${{ matrix.store }})
     runs-on: [self-hosted, arm64]
-    timeout-minutes: 30
+    # 45 min: the sqlite lane runs the entire tree under -race, and the
+    # cumulative cost of compliance suites (storesqlite, storepg,
+    # protoadmin ~8m, protoimap ~5m, protojmap ~3m, plus identity-
+    # verification + tagged-address storetest compliance landed on
+    # 2026-05-11) pushed the lane past 30m on the arm64 self-hosted
+    # runner. The postgres lane stays comfortably under 15m because it
+    # drops -race and parallelises non-pg packages; the sqlite lane is
+    # the bottleneck. Investigate per-package runtime before bumping
+    # further.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
