@@ -33,6 +33,7 @@ import (
 	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/extimg/internalizeworker"
 	"github.com/hanshuebner/herold/internal/extsubmit"
+	"github.com/hanshuebner/herold/internal/identityverify"
 	"github.com/hanshuebner/herold/internal/linkpreview"
 	"github.com/hanshuebner/herold/internal/mailarc"
 	"github.com/hanshuebner/herold/internal/mailauth"
@@ -2375,13 +2376,44 @@ func composeAdminAndUI(
 	// Identity + EmailSubmission (REQ-PROTO-41, REQ-PROTO-42,
 	// REQ-PROTO-57, REQ-PROTO-58). Identity Register returns the
 	// provider that EmailSubmission's Register needs to resolve
-	// per-identity send-from addresses. The verification-trigger hook
-	// (REQ-IDENT-30) is wired by task #14 (mail composer); for now it
-	// stays nil so creates commit unverified rows without enqueuing
-	// email. The external-domain policy hook (REQ-IDENT-20) reads
+	// per-identity send-from addresses.
+	//
+	// The verification-trigger hook (REQ-IDENT-30) is wired below
+	// when identity_creation.enabled is true: it generates the
+	// per-identity token + 6-digit code, persists their sha256
+	// hashes with a 24h expiry, composes the multipart/alternative
+	// verification email, and hands it to the outbound queue (DKIM-
+	// signed under the canonical domain). A nil hook disables the
+	// email round-trip; the row still commits unverified, and the
+	// REST resend endpoint (REQ-IDENT-41) can be used later.
+	//
+	// The external-domain policy hook (REQ-IDENT-20) reads
 	// [server.identity_creation].external_domains; the allowlist mode
 	// matches the lowercased domain against the configured set.
+	var identityVerifyTrigger jmapidentity.VerificationTrigger
+	if cfg.Server.IdentityCreation.Enabled == nil || *cfg.Server.IdentityCreation.Enabled {
+		ivDispatcher := identityverify.New(identityverify.Options{
+			Store:        st,
+			Submitter:    outboundQ,
+			Logger:       logger.With("subsystem", "identityverify"),
+			Clock:        clk,
+			Hostname:     cfg.Server.Hostname,
+			VerifierFrom: cfg.Server.IdentityCreation.VerifierFrom,
+			Auditor:      identityVerifyAuditor{st: st},
+		})
+		if err := ivDispatcher.Validate(); err != nil {
+			logger.Warn("identity verification dispatcher disabled (validation failed)",
+				slog.String("subsystem", "identityverify"),
+				slog.String("err", err.Error()))
+		} else {
+			identityVerifyTrigger = func(ctx context.Context, row store.JMAPIdentity) error {
+				_, err := ivDispatcher.Trigger(ctx, row)
+				return err
+			}
+		}
+	}
 	identityOpts := jmapidentity.Options{
+		VerificationTrigger: identityVerifyTrigger,
 		ExternalDomainPolicy: buildIdentityExternalDomainPolicy(
 			cfg.Server.IdentityCreation),
 	}
@@ -3205,6 +3237,20 @@ func (a *telemetryGateAdapter) IsEnabled(sessionKey string) bool {
 //   - allowlist: permit only domains in ExternalDomainAllowlist
 //     (lowercased, ASCII).
 //   - deny_all: refuse every external domain.
+//
+// identityVerifyAuditor adapts the metadata-store audit-log surface
+// to the identityverify.Auditor interface so the dispatcher can emit
+// identity.verify.send entries on the queued-message path
+// (REQ-IDENT-43 / REQ-IDENT-90) without taking a dependency on the
+// store package's verbose signature.
+type identityVerifyAuditor struct {
+	st store.Store
+}
+
+func (a identityVerifyAuditor) Append(ctx context.Context, entry store.AuditLogEntry) error {
+	return a.st.Meta().AppendAuditLog(ctx, entry)
+}
+
 func buildIdentityExternalDomainPolicy(ic sysconfig.IdentityCreationConfig) func(string) bool {
 	switch ic.ExternalDomains {
 	case sysconfig.IdentityCreationExternalDomainsDenyAll:
