@@ -1793,26 +1793,34 @@ func scanJMAPIdentity(row rowLike) (store.JMAPIdentity, error) {
 		avatarBlobHash                    sql.NullString
 		avatarBlobSize                    sql.NullInt64
 		xfaceEnabled                      int64
+		verifiedAtUs                      sql.NullInt64
+		verificationTokenHash             []byte
+		verificationCodeHash              []byte
+		verificationTokenExpiresAtUs      sql.NullInt64
 	)
 	err := row.Scan(&id, &principalID, &name, &email, &replyTo, &bcc,
 		&textSig, &htmlSig, &mayDelete, &createdAtUs, &updatedAtUs, &signature,
-		&avatarBlobHash, &avatarBlobSize, &xfaceEnabled)
+		&avatarBlobHash, &avatarBlobSize, &xfaceEnabled,
+		&verifiedAtUs, &verificationTokenHash, &verificationCodeHash,
+		&verificationTokenExpiresAtUs)
 	if err != nil {
 		return store.JMAPIdentity{}, mapErr(err)
 	}
 	out := store.JMAPIdentity{
-		ID:            id,
-		PrincipalID:   store.PrincipalID(principalID),
-		Name:          name,
-		Email:         email,
-		ReplyToJSON:   replyTo,
-		BccJSON:       bcc,
-		TextSignature: textSig,
-		HTMLSignature: htmlSig,
-		MayDelete:     mayDelete != 0,
-		CreatedAtUs:   createdAtUs,
-		UpdatedAtUs:   updatedAtUs,
-		XFaceEnabled:  xfaceEnabled != 0,
+		ID:                    id,
+		PrincipalID:           store.PrincipalID(principalID),
+		Name:                  name,
+		Email:                 email,
+		ReplyToJSON:           replyTo,
+		BccJSON:               bcc,
+		TextSignature:         textSig,
+		HTMLSignature:         htmlSig,
+		MayDelete:             mayDelete != 0,
+		CreatedAtUs:           createdAtUs,
+		UpdatedAtUs:           updatedAtUs,
+		XFaceEnabled:          xfaceEnabled != 0,
+		VerificationTokenHash: nullableBytes(verificationTokenHash),
+		VerificationCodeHash:  nullableBytes(verificationCodeHash),
 	}
 	if signature.Valid {
 		v := signature.String
@@ -1824,13 +1832,21 @@ func scanJMAPIdentity(row rowLike) (store.JMAPIdentity, error) {
 	if avatarBlobSize.Valid {
 		out.AvatarBlobSize = avatarBlobSize.Int64
 	}
+	if verifiedAtUs.Valid {
+		out.VerifiedAtUs = verifiedAtUs.Int64
+	}
+	if verificationTokenExpiresAtUs.Valid {
+		out.VerificationTokenExpiresAtUs = verificationTokenExpiresAtUs.Int64
+	}
 	return out, nil
 }
 
 const jmapIdentitySelectColumns = `
 	id, principal_id, name, email, reply_to_json, bcc_json,
 	text_signature, html_signature, may_delete, created_at_us, updated_at_us,
-	signature, avatar_blob_hash, avatar_blob_size, xface_enabled`
+	signature, avatar_blob_hash, avatar_blob_size, xface_enabled,
+	verified_at_us, verification_token_hash, verification_code_hash,
+	verification_token_expires_at_us`
 
 func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
 	if row.ID == "" {
@@ -1869,16 +1885,35 @@ func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 		if row.AvatarBlobHash != "" {
 			avatarHash = row.AvatarBlobHash
 		}
+		var verifiedAt any
+		if row.VerifiedAtUs != 0 {
+			verifiedAt = row.VerifiedAtUs
+		}
+		var tokenHashArg any
+		if len(row.VerificationTokenHash) != 0 {
+			tokenHashArg = row.VerificationTokenHash
+		}
+		var codeHashArg any
+		if len(row.VerificationCodeHash) != 0 {
+			codeHashArg = row.VerificationCodeHash
+		}
+		var tokenExpArg any
+		if row.VerificationTokenExpiresAtUs != 0 {
+			tokenExpArg = row.VerificationTokenExpiresAtUs
+		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO jmap_identities
 			  (id, principal_id, name, email, reply_to_json, bcc_json,
 			   text_signature, html_signature, may_delete, created_at_us, updated_at_us,
-			   signature, avatar_blob_hash, avatar_blob_size, xface_enabled)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   signature, avatar_blob_hash, avatar_blob_size, xface_enabled,
+			   verified_at_us, verification_token_hash, verification_code_hash,
+			   verification_token_expires_at_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			row.ID, int64(row.PrincipalID), row.Name, row.Email,
 			replyTo, bcc, row.TextSignature, row.HTMLSignature,
 			boolToInt(row.MayDelete), row.CreatedAtUs, row.UpdatedAtUs, sig,
-			avatarHash, row.AvatarBlobSize, boolToInt(row.XFaceEnabled))
+			avatarHash, row.AvatarBlobSize, boolToInt(row.XFaceEnabled),
+			verifiedAt, tokenHashArg, codeHashArg, tokenExpArg)
 		return mapErr(err)
 	})
 }

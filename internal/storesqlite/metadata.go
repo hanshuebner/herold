@@ -875,7 +875,8 @@ func scanMessageMailboxRow(row rowLike) (store.MessageMailbox, error) {
 	var mid, mbox, uid, modseq, flags int64
 	var keywords string
 	var snoozedUs sql.NullInt64
-	err := row.Scan(&mid, &mbox, &uid, &modseq, &flags, &keywords, &snoozedUs)
+	var receivedTo string
+	err := row.Scan(&mid, &mbox, &uid, &modseq, &flags, &keywords, &snoozedUs, &receivedTo)
 	if err != nil {
 		return store.MessageMailbox{}, mapErr(err)
 	}
@@ -891,6 +892,7 @@ func scanMessageMailboxRow(row rowLike) (store.MessageMailbox, error) {
 		t := fromMicros(snoozedUs.Int64)
 		mm.SnoozedUntil = &t
 	}
+	mm.ReceivedTo = receivedTo
 	return mm, nil
 }
 
@@ -899,7 +901,7 @@ func scanMessageMailboxRow(row rowLike) (store.MessageMailbox, error) {
 // mailboxID (or the first entry when mailboxID == 0).
 func (m *metadata) loadMailboxes(ctx context.Context, msg *store.Message, mailboxID store.MailboxID) error {
 	rows, err := m.s.db.QueryContext(ctx, `
-		SELECT message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us
+		SELECT message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, received_to
 		  FROM message_mailboxes
 		 WHERE message_id = ?
 		 ORDER BY mailbox_id`,

@@ -3,6 +3,7 @@ package storesqlite_test
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +156,214 @@ func TestMigration0005StateChangeGeneric(t *testing.T) {
 		if migrated[i] != want[i] {
 			t.Fatalf("row %d = %#v, want %#v", i, migrated[i], want[i])
 		}
+	}
+}
+
+// TestMigration0048IdentityVerificationColumns verifies that migration
+// 0048 leaves the existing jmap_identities columns intact, adds the
+// verification trio + verified_at_us in their nullable / NULL-default
+// form, and that a row inserted before migration 0048 surfaces with
+// VerifiedAtUs == 0 and the three token columns as nil (i.e. the
+// pre-feature unverified sentinel).
+func TestMigration0048IdentityVerificationColumns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.db")
+
+	// Open through the production Open so every migration has been
+	// applied (the test runs against the live migration set; we are
+	// asserting the column shape rather than the migration SQL in
+	// isolation).
+	s, err := storesqlite.Open(context.Background(), path, nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// Probe the schema via PRAGMA table_info.
+	raw, err := storesqlite.OpenRaw(path)
+	if err != nil {
+		t.Fatalf("OpenRaw: %v", err)
+	}
+	defer raw.Close()
+	rows, err := raw.Query(`PRAGMA table_info(jmap_identities)`)
+	if err != nil {
+		t.Fatalf("PRAGMA: %v", err)
+	}
+	defer rows.Close()
+	got := map[string]string{} // colname -> type
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[name] = typ
+	}
+	for _, c := range []string{
+		"verified_at_us",
+		"verification_token_hash",
+		"verification_code_hash",
+		"verification_token_expires_at_us",
+	} {
+		if _, ok := got[c]; !ok {
+			t.Fatalf("column %q missing from jmap_identities", c)
+		}
+	}
+
+	// Insert an identity through the public surface and verify the
+	// new fields backfill to the unverified-pre-feature sentinel.
+	ctx := context.Background()
+	p, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "mig0048@example.com",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID:          "mig-iv",
+		PrincipalID: p.ID,
+		Email:       "mig0048@example.com",
+		MayDelete:   true,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	row, err := s.Meta().GetJMAPIdentity(ctx, "mig-iv")
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity: %v", err)
+	}
+	if row.VerifiedAtUs != 0 {
+		t.Fatalf("new row VerifiedAtUs = %d, want 0 (pre-feature)", row.VerifiedAtUs)
+	}
+	if row.VerificationTokenHash != nil || row.VerificationCodeHash != nil ||
+		row.VerificationTokenExpiresAtUs != 0 {
+		t.Fatalf("new row carries spurious verification fields: %+v", row)
+	}
+}
+
+// TestMigration0049ReceivedToDefaultsAndRoundTrip verifies that
+// migration 0049 adds message_mailboxes.received_to TEXT NOT NULL with
+// an empty-string default (REQ-FLOW-33), that existing-pattern inserts
+// (no received_to in the caller-side VALUES) backfill to the empty
+// sentinel, and that a manual UPDATE setting a real RCPT TO survives
+// a subsequent Read through the typed store API. The full caller-side
+// wiring lands in task #17; this test exercises the schema column only.
+func TestMigration0049ReceivedToDefaultsAndRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.db")
+	s, err := storesqlite.Open(context.Background(), path, nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// PRAGMA-level schema check via OpenRaw (a separate sql.DB handle
+	// against the same file). The migration has already been applied
+	// by the production Open above.
+	raw, err := storesqlite.OpenRaw(path)
+	if err != nil {
+		t.Fatalf("OpenRaw: %v", err)
+	}
+	defer raw.Close()
+	rows, err := raw.Query(`PRAGMA table_info(message_mailboxes)`)
+	if err != nil {
+		t.Fatalf("PRAGMA: %v", err)
+	}
+	defer rows.Close()
+	var sawReceivedTo bool
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if name != "received_to" {
+			continue
+		}
+		sawReceivedTo = true
+		if typ != "TEXT" {
+			t.Fatalf("received_to type = %q, want TEXT", typ)
+		}
+		if notNull != 1 {
+			t.Fatalf("received_to NOT NULL = %d, want 1", notNull)
+		}
+	}
+	if !sawReceivedTo {
+		t.Fatal("received_to column missing from message_mailboxes")
+	}
+
+	// InsertMessage with the existing call-site shape (no
+	// ReceivedTo). The store-side default '' must apply.
+	p, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "mig0049@example.com",
+		QuotaBytes:     1 << 30,
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := s.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "INBOX",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	ref, err := s.Blobs().Put(context.Background(), strings.NewReader("Subject: hi\r\n\r\nbody"))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	_, _, err = s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		Blob:         ref,
+		Size:         ref.Size,
+		InternalDate: time.Unix(1000, 0).UTC(),
+		ReceivedAt:   time.Unix(1000, 0).UTC(),
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	// The fan-out row must exist with received_to='' (backfill / DEFAULT).
+	var msgID, mboxID int64
+	var receivedTo string
+	if err := raw.QueryRow(
+		`SELECT message_id, mailbox_id, received_to
+		   FROM message_mailboxes
+		  LIMIT 1`).Scan(&msgID, &mboxID, &receivedTo); err != nil {
+		t.Fatalf("post-insert read: %v", err)
+	}
+	if receivedTo != "" {
+		t.Fatalf("new row received_to = %q, want '' (pre-feature sentinel)", receivedTo)
+	}
+
+	// Manual UPDATE setting a real RCPT TO; this simulates what task
+	// #17 will do at the caller-side wiring step. NB: the production
+	// Open holds a separate sql.DB pool on the same file. SQLite's
+	// busy_timeout PRAGMA on the production pool absorbs the write
+	// contention here even though raw is a second connection.
+	if _, err := raw.Exec(
+		`UPDATE message_mailboxes
+		    SET received_to = ?
+		  WHERE message_id = ? AND mailbox_id = ?`,
+		"alice+filter@example.com", msgID, mboxID); err != nil {
+		t.Fatalf("manual UPDATE: %v", err)
+	}
+
+	// The value must round-trip through the public read path.
+	msg, err := s.Meta().GetMessage(ctx, store.MessageID(msgID))
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if len(msg.Mailboxes) != 1 {
+		t.Fatalf("Mailboxes len = %d, want 1", len(msg.Mailboxes))
+	}
+	if got := msg.Mailboxes[0].ReceivedTo; got != "alice+filter@example.com" {
+		t.Fatalf("ReceivedTo round-trip: got %q, want %q", got, "alice+filter@example.com")
 	}
 }
 

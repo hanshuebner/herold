@@ -502,6 +502,14 @@ type MessageMailbox struct {
 	// Keywords contains "$snoozed". Enforced at the store boundary;
 	// direct callers use SetSnooze.
 	SnoozedUntil *time.Time
+	// ReceivedTo is the envelope RCPT TO that produced this fan-out row
+	// (REQ-FLOW-33). One canonicalised address, post-alias-expansion,
+	// in the form accepted by the local listener. Empty string is the
+	// explicit "unknown / pre-feature" sentinel: the render path treats
+	// it as "do not inject the X-Herold-Recipient header" (REQ-FLOW-34).
+	// Caller-side wiring lands in task #17; existing call sites pass
+	// the zero value, which the store stores as the empty-string default.
+	ReceivedTo string
 }
 
 // Message is the mailbox-independent metadata for a delivered message.

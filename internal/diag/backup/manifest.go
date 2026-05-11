@@ -251,7 +251,28 @@ const CurrentBackupVersion = 1
 //	(before / after / newer_than / older_than) and the inbox no-filter
 //	list page were producing on the maintainer's 278k-message corpus.
 //	Index-only migration: no schema column changes.
-const CurrentSchemaVersion = 47
+//
+// 48 — 0048_identity_verification.sql (REQ-IDENT-01..91). Adds the
+//
+//	verification trio plus a verified-state index to jmap_identities:
+//	verified_at_us (NULL when unverified), verification_token_hash
+//	(sha256 of raw token), verification_code_hash (sha256 of raw 6-digit
+//	code), verification_token_expires_at_us. Index
+//	idx_jmap_identities_verified_created supports the GC pass.
+//	Forward-only column adds; existing rows backfill to NULL/NULL/
+//	NULL/NULL (i.e. pre-feature unverified) — first JMAP read of these
+//	rows will surface verifiedAt = null and the suite is expected to
+//	resend on first interaction.
+//
+// 49 — 0049_message_mailboxes_received_to.sql (REQ-FLOW-33..35). Adds
+//
+//	message_mailboxes.received_to TEXT NOT NULL DEFAULT '' so the
+//	per-recipient fan-out row remembers the envelope RCPT TO that
+//	produced it. Empty string is the pre-feature / unknown sentinel
+//	the render path treats as "do not inject the X-Herold-Recipient
+//	header" (REQ-FLOW-34). Caller-side wiring of the actual envelope
+//	address lands in task #17.
+const CurrentSchemaVersion = 49
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

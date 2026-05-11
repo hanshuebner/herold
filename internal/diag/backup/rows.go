@@ -187,6 +187,11 @@ type MessageMailboxRow struct {
 	Flags          int64  `json:"flags"`
 	KeywordsCSV    string `json:"keywords_csv"`
 	SnoozedUntilUs *int64 `json:"snoozed_until_us,omitempty"`
+	// ReceivedTo is the envelope RCPT TO captured by the receiving
+	// listener (REQ-FLOW-33, migration 0049). Empty on rows that pre-
+	// date migration 0049 and on the synthesised default for backfilled
+	// rows.
+	ReceivedTo string `json:"received_to,omitempty"`
 }
 
 // EmailPretrashMailboxRow mirrors one row of the email_pretrash_mailboxes
@@ -416,6 +421,12 @@ type JMAPIdentityRow struct {
 	AvatarBlobHash string `json:"avatar_blob_hash,omitempty"`
 	AvatarBlobSize int64  `json:"avatar_blob_size,omitempty"`
 	XFaceEnabled   bool   `json:"xface_enabled,omitempty"`
+	// Identity verification (REQ-IDENT-01, migration 0048). Backup
+	// preserves verified_at_us because it is durable per-row state. The
+	// token / code hashes are short-lived (24h TTL) and have no value
+	// post-restore — they are intentionally NOT backed up so the suite
+	// re-issues on first interaction with an in-flight unverified row.
+	VerifiedAtUs *int64 `json:"verified_at_us,omitempty"`
 }
 
 type TLSRPTFailureRow struct {

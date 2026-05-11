@@ -1213,7 +1213,7 @@ func boolToInt16(b bool) int16 {
 // otherwise the first entry is used.
 func (m *metadata) loadMailboxes(ctx context.Context, msg *store.Message, mailboxID store.MailboxID) error {
 	rows, err := m.s.pool.Query(ctx, `
-		SELECT message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us
+		SELECT message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, received_to
 		  FROM message_mailboxes
 		 WHERE message_id = $1
 		 ORDER BY mailbox_id`, int64(msg.ID))
@@ -1225,15 +1225,17 @@ func (m *metadata) loadMailboxes(ctx context.Context, msg *store.Message, mailbo
 		var mid, mbox, uid, modseq, flags int64
 		var keywords string
 		var snoozedUs *int64
-		if err := rows.Scan(&mid, &mbox, &uid, &modseq, &flags, &keywords, &snoozedUs); err != nil {
+		var receivedTo string
+		if err := rows.Scan(&mid, &mbox, &uid, &modseq, &flags, &keywords, &snoozedUs, &receivedTo); err != nil {
 			return mapErr(err)
 		}
 		mm := store.MessageMailbox{
-			MessageID: store.MessageID(mid),
-			MailboxID: store.MailboxID(mbox),
-			UID:       store.UID(uid),
-			ModSeq:    store.ModSeq(modseq),
-			Flags:     store.MessageFlags(flags),
+			MessageID:  store.MessageID(mid),
+			MailboxID:  store.MailboxID(mbox),
+			UID:        store.UID(uid),
+			ModSeq:     store.ModSeq(modseq),
+			Flags:      store.MessageFlags(flags),
+			ReceivedTo: receivedTo,
 		}
 		if keywords != "" {
 			mm.Keywords = strings.Split(keywords, ",")

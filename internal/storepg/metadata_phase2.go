@@ -1700,26 +1700,34 @@ func scanJMAPIdentityPG(row pgx.Row) (store.JMAPIdentity, error) {
 		avatarBlobHash                    *string
 		avatarBlobSize                    *int64
 		xfaceEnabled                      bool
+		verifiedAtUs                      *int64
+		verificationTokenHash             []byte
+		verificationCodeHash              []byte
+		verificationTokenExpiresAtUs      *int64
 	)
 	err := row.Scan(&id, &principalID, &name, &email, &replyTo, &bcc,
 		&textSig, &htmlSig, &mayDelete, &createdAtUs, &updatedAtUs, &signature,
-		&avatarBlobHash, &avatarBlobSize, &xfaceEnabled)
+		&avatarBlobHash, &avatarBlobSize, &xfaceEnabled,
+		&verifiedAtUs, &verificationTokenHash, &verificationCodeHash,
+		&verificationTokenExpiresAtUs)
 	if err != nil {
 		return store.JMAPIdentity{}, mapErr(err)
 	}
 	out := store.JMAPIdentity{
-		ID:            id,
-		PrincipalID:   store.PrincipalID(principalID),
-		Name:          name,
-		Email:         email,
-		ReplyToJSON:   replyTo,
-		BccJSON:       bcc,
-		TextSignature: textSig,
-		HTMLSignature: htmlSig,
-		MayDelete:     mayDelete,
-		CreatedAtUs:   createdAtUs,
-		UpdatedAtUs:   updatedAtUs,
-		XFaceEnabled:  xfaceEnabled,
+		ID:                    id,
+		PrincipalID:           store.PrincipalID(principalID),
+		Name:                  name,
+		Email:                 email,
+		ReplyToJSON:           replyTo,
+		BccJSON:               bcc,
+		TextSignature:         textSig,
+		HTMLSignature:         htmlSig,
+		MayDelete:             mayDelete,
+		CreatedAtUs:           createdAtUs,
+		UpdatedAtUs:           updatedAtUs,
+		XFaceEnabled:          xfaceEnabled,
+		VerificationTokenHash: nilIfEmptyBytes(verificationTokenHash),
+		VerificationCodeHash:  nilIfEmptyBytes(verificationCodeHash),
 	}
 	if signature != nil {
 		v := *signature
@@ -1731,13 +1739,31 @@ func scanJMAPIdentityPG(row pgx.Row) (store.JMAPIdentity, error) {
 	if avatarBlobSize != nil {
 		out.AvatarBlobSize = *avatarBlobSize
 	}
+	if verifiedAtUs != nil {
+		out.VerifiedAtUs = *verifiedAtUs
+	}
+	if verificationTokenExpiresAtUs != nil {
+		out.VerificationTokenExpiresAtUs = *verificationTokenExpiresAtUs
+	}
 	return out, nil
+}
+
+// nilIfEmptyBytes mirrors the SQLite nullableBytes contract: a zero-length
+// byte slice (which the pgx driver returns for a NULL BYTEA column) maps
+// to a nil slice on the Go side so callers can use len() == 0 ambiguously.
+func nilIfEmptyBytes(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }
 
 const jmapIdentitySelectColumnsPG = `
 	id, principal_id, name, email, reply_to_json, bcc_json,
 	text_signature, html_signature, may_delete, created_at_us, updated_at_us,
-	signature, avatar_blob_hash, avatar_blob_size, xface_enabled`
+	signature, avatar_blob_hash, avatar_blob_size, xface_enabled,
+	verified_at_us, verification_token_hash, verification_code_hash,
+	verification_token_expires_at_us`
 
 func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
 	if row.ID == "" {
@@ -1766,17 +1792,36 @@ func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 	if row.AvatarBlobHash != "" {
 		avatarHash = row.AvatarBlobHash
 	}
+	var verifiedAt any
+	if row.VerifiedAtUs != 0 {
+		verifiedAt = row.VerifiedAtUs
+	}
+	var tokenHashArg any
+	if len(row.VerificationTokenHash) != 0 {
+		tokenHashArg = row.VerificationTokenHash
+	}
+	var codeHashArg any
+	if len(row.VerificationCodeHash) != 0 {
+		codeHashArg = row.VerificationCodeHash
+	}
+	var tokenExpArg any
+	if row.VerificationTokenExpiresAtUs != 0 {
+		tokenExpArg = row.VerificationTokenExpiresAtUs
+	}
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO jmap_identities
 			  (id, principal_id, name, email, reply_to_json, bcc_json,
 			   text_signature, html_signature, may_delete, created_at_us, updated_at_us,
-			   signature, avatar_blob_hash, avatar_blob_size, xface_enabled)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+			   signature, avatar_blob_hash, avatar_blob_size, xface_enabled,
+			   verified_at_us, verification_token_hash, verification_code_hash,
+			   verification_token_expires_at_us)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
 			row.ID, int64(row.PrincipalID), row.Name, row.Email,
 			replyTo, bcc, row.TextSignature, row.HTMLSignature,
 			row.MayDelete, row.CreatedAtUs, row.UpdatedAtUs, sig,
-			avatarHash, row.AvatarBlobSize, row.XFaceEnabled)
+			avatarHash, row.AvatarBlobSize, row.XFaceEnabled,
+			verifiedAt, tokenHashArg, codeHashArg, tokenExpArg)
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {

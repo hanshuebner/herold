@@ -1217,6 +1217,25 @@ type JMAPIdentity struct {
 	// (REQ-SET-03b). When true, createEmail looks up this identity by
 	// From address and prepends both headers derived from the avatar blob.
 	XFaceEnabled bool
+	// VerifiedAtUs is the unix-micros instant the identity passed the
+	// email verification round-trip (REQ-IDENT-01). Zero means
+	// unverified. The synthesised default identity is verified-by-
+	// construction at read time and is not stored in this table, so a
+	// zero on a persisted row always means "verification pending".
+	VerifiedAtUs int64
+	// VerificationTokenHash is sha256(raw verification token); nil when
+	// no verification is in flight (post-verify or after the 24h TTL is
+	// GC'd, REQ-IDENT-34/35). The raw token only exists in memory
+	// between CSPRNG generation and the verification email write.
+	VerificationTokenHash []byte
+	// VerificationCodeHash is sha256(raw 6-digit code) carried in the
+	// verification email body for clients that cannot follow links
+	// (REQ-IDENT-32). nil when no verification is in flight.
+	VerificationCodeHash []byte
+	// VerificationTokenExpiresAtUs is the unix-micros instant the
+	// current token + code expire (REQ-IDENT-34, 24h after issue).
+	// Zero when no verification is in flight.
+	VerificationTokenExpiresAtUs int64
 	// CreatedAtUs / UpdatedAtUs are unix-micros timestamps maintained
 	// by the store on insert / update.
 	CreatedAtUs int64

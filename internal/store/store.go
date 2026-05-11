@@ -975,6 +975,74 @@ type Metadata interface {
 	// ErrNotFound when the row is missing.
 	DeleteJMAPIdentity(ctx context.Context, id string) error
 
+	// -- Phase 2 Identity verification (REQ-IDENT-01..91) ------------
+
+	// IssueIdentityVerificationToken writes the verification trio
+	// (token hash, code hash, expiry) on the identity row in a single
+	// atomic UPDATE (REQ-IDENT-30..32). Refused with ErrConflict when
+	// a token is already live on the row; the caller uses
+	// ResetIdentityVerificationToken for the resend path. Returns
+	// ErrNotFound when the identity row is missing.
+	IssueIdentityVerificationToken(ctx context.Context, identityID string, tokenHash, codeHash []byte, expiresAtUs int64) error
+
+	// ResetIdentityVerificationToken overwrites the verification trio
+	// on the identity row (REQ-IDENT-37, resend rotates the token).
+	// Distinct from IssueIdentityVerificationToken in that the
+	// previous token, if any, is silently replaced rather than rejected.
+	// Caller enforces the rate-limit (REQ-IDENT-36). Returns ErrNotFound
+	// when the identity row is missing.
+	ResetIdentityVerificationToken(ctx context.Context, identityID string, tokenHash, codeHash []byte, expiresAtUs int64) error
+
+	// MarkIdentityVerified sets verified_at_us = now and clears the
+	// verification trio on the identity row (REQ-IDENT-40..43). The
+	// transition is idempotent at the wire layer; this store method
+	// always writes verified_at_us and clears the token columns. Returns
+	// ErrNotFound when the identity row is missing.
+	MarkIdentityVerified(ctx context.Context, identityID string) error
+
+	// ClearIdentityVerificationToken clears the verification trio on
+	// the identity row without touching verified_at_us. Used after a
+	// successful verification (called inside MarkIdentityVerified for
+	// callers that want to keep the operations distinct) and by the GC
+	// pass for expired tokens whose Identity row is still inside the
+	// 7-day unverified-purge window (REQ-IDENT-35). Returns ErrNotFound
+	// when the identity row is missing.
+	ClearIdentityVerificationToken(ctx context.Context, identityID string) error
+
+	// GetIdentityByVerificationTokenHash returns the identity row whose
+	// verification_token_hash matches tokenHash exactly (REQ-IDENT-40).
+	// The match is global because the link callback only carries the
+	// raw token, not the identity id. Returns ErrNotFound when no row
+	// matches; callers MUST treat that case identically to a token-
+	// expired or already-verified state for user-facing error rendering.
+	GetIdentityByVerificationTokenHash(ctx context.Context, tokenHash []byte) (JMAPIdentity, error)
+
+	// GetIdentityByVerificationCodeHash returns the identity row
+	// identified by identityID iff its verification_code_hash matches
+	// codeHash (REQ-IDENT-41). The lookup is identity-scoped so that
+	// 6-digit codes may repeat across identities without ambiguity;
+	// the URL the suite uses for the code-entry endpoint carries the
+	// identity id. Returns ErrNotFound when the identity is missing or
+	// the code does not match.
+	GetIdentityByVerificationCodeHash(ctx context.Context, identityID string, codeHash []byte) (JMAPIdentity, error)
+
+	// ListUnverifiedIdentitiesOlderThan returns identity rows whose
+	// verified_at_us IS NULL AND created_at_us < before (REQ-IDENT-35).
+	// Used by the GC pass to destroy stale unverified identities after
+	// the 7-day window. Results are not strictly bounded but in normal
+	// operation the count is tiny (single-digit per principal). Order
+	// is ascending created_at_us.
+	ListUnverifiedIdentitiesOlderThan(ctx context.Context, before time.Time) ([]JMAPIdentity, error)
+
+	// ListExpiredVerificationTokens returns identity rows whose
+	// verification_token_expires_at_us IS NOT NULL AND
+	// verification_token_expires_at_us < before (REQ-IDENT-35). The
+	// caller wipes the verification trio via
+	// ClearIdentityVerificationToken; the Identity row itself remains
+	// (the longer 7-day GC of unverified rows is a separate pass).
+	// Order is ascending verification_token_expires_at_us.
+	ListExpiredVerificationTokens(ctx context.Context, before time.Time) ([]JMAPIdentity, error)
+
 	// MaterializeDefaultIdentity ensures that a real jmap_identities row
 	// exists for the principal's synthesised default identity
 	// (REQ-AUTH-EXT-SUBMIT-01). The default identity is normally a

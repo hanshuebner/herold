@@ -329,13 +329,13 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 	case "message_mailboxes":
 		return enumerate(ctx, s.tx,
 			`SELECT message_id, mailbox_id, uid, modseq, flags, keywords_csv,
-			        snoozed_until_us
+			        snoozed_until_us, received_to
 			   FROM message_mailboxes ORDER BY message_id, mailbox_id`,
 			func(rs *sql.Rows) (any, error) {
 				var r MessageMailboxRow
 				var snooze sql.NullInt64
 				if err := rs.Scan(&r.MessageID, &r.MailboxID, &r.UID, &r.ModSeq,
-					&r.Flags, &r.KeywordsCSV, &snooze); err != nil {
+					&r.Flags, &r.KeywordsCSV, &snooze, &r.ReceivedTo); err != nil {
 					return nil, err
 				}
 				if snooze.Valid {
@@ -598,22 +598,28 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 			`SELECT id, principal_id, name, email, reply_to_json, bcc_json,
 			        text_signature, html_signature, may_delete,
 			        created_at_us, updated_at_us,
-			        avatar_blob_hash, avatar_blob_size, xface_enabled
+			        avatar_blob_hash, avatar_blob_size, xface_enabled,
+			        verified_at_us
 			   FROM jmap_identities ORDER BY id`,
 			func(rs *sql.Rows) (any, error) {
 				var r JMAPIdentityRow
 				var md, xf int64
 				var avatarHash sql.NullString
+				var verifiedAt sql.NullInt64
 				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.Name, &r.Email,
 					&r.ReplyToJSON, &r.BccJSON, &r.TextSignature, &r.HTMLSignature,
 					&md, &r.CreatedAtUs, &r.UpdatedAtUs,
-					&avatarHash, &r.AvatarBlobSize, &xf); err != nil {
+					&avatarHash, &r.AvatarBlobSize, &xf, &verifiedAt); err != nil {
 					return nil, err
 				}
 				r.MayDelete = md != 0
 				r.XFaceEnabled = xf != 0
 				if avatarHash.Valid {
 					r.AvatarBlobHash = avatarHash.String
+				}
+				if verifiedAt.Valid {
+					v := verifiedAt.Int64
+					r.VerifiedAtUs = &v
 				}
 				return &r, nil
 			}, fn)
@@ -1230,10 +1236,10 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		}
 		_, err := s.tx.ExecContext(ctx,
 			`INSERT INTO message_mailboxes (message_id, mailbox_id, uid, modseq,
-			   flags, keywords_csv, snoozed_until_us)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			   flags, keywords_csv, snoozed_until_us, received_to)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.MessageID, r.MailboxID, r.UID, r.ModSeq,
-			r.Flags, r.KeywordsCSV, snooze)
+			r.Flags, r.KeywordsCSV, snooze, r.ReceivedTo)
 		return err
 	case "email_pretrash_mailboxes":
 		r := row.(*EmailPretrashMailboxRow)
@@ -1410,15 +1416,19 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 		if r.AvatarBlobHash != "" {
 			avatarHash = r.AvatarBlobHash
 		}
+		var verifiedAt any
+		if r.VerifiedAtUs != nil {
+			verifiedAt = *r.VerifiedAtUs
+		}
 		_, err := s.tx.ExecContext(ctx,
 			`INSERT INTO jmap_identities (id, principal_id, name, email, reply_to_json,
 			   bcc_json, text_signature, html_signature, may_delete, created_at_us, updated_at_us,
-			   avatar_blob_hash, avatar_blob_size, xface_enabled)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   avatar_blob_hash, avatar_blob_size, xface_enabled, verified_at_us)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.PrincipalID, r.Name, r.Email, r.ReplyToJSON, r.BccJSON,
 			r.TextSignature, r.HTMLSignature, boolToInt(r.MayDelete),
 			r.CreatedAtUs, r.UpdatedAtUs,
-			avatarHash, r.AvatarBlobSize, boolToInt(r.XFaceEnabled))
+			avatarHash, r.AvatarBlobSize, boolToInt(r.XFaceEnabled), verifiedAt)
 		return err
 	case "tlsrpt_failures":
 		r := row.(*TLSRPTFailureRow)

@@ -139,6 +139,17 @@ func Run(t *testing.T, f Factory) {
 		{"JMAPIdentity_Update_RoundTrips", testJMAPIdentityUpdateRoundtrips},
 		{"JMAPIdentity_Delete_NotFoundAfter", testJMAPIdentityDeleteNotFoundAfter},
 		{"JMAPIdentity_Signature_RoundTrip", testJMAPIdentitySignatureRoundTrip},
+		// -- REQ-IDENT-01..91 Identity verification ---------------
+		{"IdentityVerify_Issue_RoundTrip", testIdentityVerifyIssueRoundTrip},
+		{"IdentityVerify_Issue_RejectsLiveToken", testIdentityVerifyIssueRejectsLiveToken},
+		{"IdentityVerify_Reset_Rotates", testIdentityVerifyResetRotates},
+		{"IdentityVerify_Mark_ClearsAndIdempotent", testIdentityVerifyMarkClearsAndIdempotent},
+		{"IdentityVerify_Clear_LeavesVerifiedAtAlone", testIdentityVerifyClearLeavesVerifiedAtAlone},
+		{"IdentityVerify_LookupByCode_IsIdentityScoped", testIdentityVerifyLookupByCodeIsIdentityScoped},
+		{"IdentityVerify_ListUnverifiedOlderThan", testIdentityVerifyListUnverifiedOlderThan},
+		{"IdentityVerify_ListExpiredTokens", testIdentityVerifyListExpiredTokens},
+		{"IdentityVerify_FullLifecycle", testIdentityVerifyFullLifecycle},
+		{"IdentityVerify_InvalidInputs", testIdentityVerifyInvalidInputs},
 		// -- Wave 2.5 (REQ-PROTO-53/56/57; REQ-STORE-34/35) --------
 		{"Mailbox_Color_RoundTrip", testMailboxColorRoundTrip},
 		{"Mailbox_Color_RejectsInvalidFormat", testMailboxColorRejectsInvalid},
