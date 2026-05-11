@@ -1000,6 +1000,15 @@ type Metadata interface {
 	// ErrNotFound when the identity row is missing.
 	MarkIdentityVerified(ctx context.Context, identityID string) error
 
+	// UnmarkIdentityVerified clears verified_at_us (sets it to NULL) on
+	// the identity row (REQ-IDENT-51). Used by the admin CLI to revert a
+	// verified Identity to unverified — for example, to revoke a
+	// compromised identity. Does NOT touch the verification token trio:
+	// callers that want to also clear a pending token call
+	// ClearIdentityVerificationToken separately. Returns ErrNotFound when
+	// the identity row is missing.
+	UnmarkIdentityVerified(ctx context.Context, identityID string) error
+
 	// ClearIdentityVerificationToken clears the verification trio on
 	// the identity row without touching verified_at_us. Used after a
 	// successful verification (called inside MarkIdentityVerified for

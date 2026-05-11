@@ -144,6 +144,7 @@ func Run(t *testing.T, f Factory) {
 		{"IdentityVerify_Issue_RejectsLiveToken", testIdentityVerifyIssueRejectsLiveToken},
 		{"IdentityVerify_Reset_Rotates", testIdentityVerifyResetRotates},
 		{"IdentityVerify_Mark_ClearsAndIdempotent", testIdentityVerifyMarkClearsAndIdempotent},
+		{"IdentityVerify_Unmark_ClearsVerifiedAt", testIdentityVerifyUnmarkClearsVerifiedAt},
 		{"IdentityVerify_Clear_LeavesVerifiedAtAlone", testIdentityVerifyClearLeavesVerifiedAtAlone},
 		{"IdentityVerify_LookupByCode_IsIdentityScoped", testIdentityVerifyLookupByCodeIsIdentityScoped},
 		{"IdentityVerify_ListUnverifiedOlderThan", testIdentityVerifyListUnverifiedOlderThan},

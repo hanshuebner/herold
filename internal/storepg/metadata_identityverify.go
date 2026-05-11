@@ -97,6 +97,25 @@ func (m *metadata) MarkIdentityVerified(ctx context.Context, identityID string) 
 	})
 }
 
+func (m *metadata) UnmarkIdentityVerified(ctx context.Context, identityID string) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		now := usMicros(m.s.clock.Now().UTC())
+		tag, err := tx.Exec(ctx, `
+			UPDATE jmap_identities
+			   SET verified_at_us = NULL,
+			       updated_at_us = $1
+			 WHERE id = $2`,
+			now, identityID)
+		if err != nil {
+			return mapErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
 func (m *metadata) ClearIdentityVerificationToken(ctx context.Context, identityID string) error {
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		now := usMicros(m.s.clock.Now().UTC())

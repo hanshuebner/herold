@@ -218,6 +218,71 @@ func testIdentityVerifyMarkClearsAndIdempotent(t *testing.T, s store.Store) {
 	}
 }
 
+func testIdentityVerifyUnmarkClearsVerifiedAt(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "iv-unmark@example.com")
+	id := insertUnverifiedIdentity(t, s, p.ID, "unmark")
+
+	tok := vh32("unmark-token")
+	code := vh32("210210")
+	exp := time.Now().UTC().Add(24 * time.Hour).UnixMicro()
+	if err := s.Meta().IssueIdentityVerificationToken(ctx, id, tok, code, exp); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if err := s.Meta().MarkIdentityVerified(ctx, id); err != nil {
+		t.Fatalf("MarkIdentityVerified: %v", err)
+	}
+	got, err := s.Meta().GetJMAPIdentity(ctx, id)
+	if err != nil {
+		t.Fatalf("Get post-mark: %v", err)
+	}
+	if got.VerifiedAtUs == 0 {
+		t.Fatalf("VerifiedAtUs not set after Mark")
+	}
+
+	// Unmark clears verified_at_us; verification trio (already cleared
+	// by Mark) stays cleared.
+	if err := s.Meta().UnmarkIdentityVerified(ctx, id); err != nil {
+		t.Fatalf("UnmarkIdentityVerified: %v", err)
+	}
+	got, err = s.Meta().GetJMAPIdentity(ctx, id)
+	if err != nil {
+		t.Fatalf("Get post-unmark: %v", err)
+	}
+	if got.VerifiedAtUs != 0 {
+		t.Fatalf("VerifiedAtUs not cleared after Unmark: %d", got.VerifiedAtUs)
+	}
+
+	// Unmark is idempotent on an already-unverified row.
+	if err := s.Meta().UnmarkIdentityVerified(ctx, id); err != nil {
+		t.Fatalf("UnmarkIdentityVerified idempotent: %v", err)
+	}
+
+	// Unmark on a missing row returns ErrNotFound.
+	if err := s.Meta().UnmarkIdentityVerified(ctx, "iv-missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Unmark missing: err = %v, want ErrNotFound", err)
+	}
+
+	// Unmark does not touch the verification trio. Re-issue a fresh
+	// token (the previous Mark cleared everything), then Unmark and
+	// confirm the live token survives.
+	tok2 := vh32("unmark-token-2")
+	code2 := vh32("210211")
+	if err := s.Meta().IssueIdentityVerificationToken(ctx, id, tok2, code2, exp); err != nil {
+		t.Fatalf("Issue 2: %v", err)
+	}
+	if err := s.Meta().UnmarkIdentityVerified(ctx, id); err != nil {
+		t.Fatalf("Unmark with live token: %v", err)
+	}
+	got, err = s.Meta().GetJMAPIdentity(ctx, id)
+	if err != nil {
+		t.Fatalf("Get post-unmark-with-token: %v", err)
+	}
+	if !bytes.Equal(got.VerificationTokenHash, tok2) {
+		t.Fatalf("Unmark mutated VerificationTokenHash: %x vs %x", got.VerificationTokenHash, tok2)
+	}
+}
+
 func testIdentityVerifyClearLeavesVerifiedAtAlone(t *testing.T, s store.Store) {
 	ctx := ctxT(t)
 	p := mustInsertPrincipal(t, s, "iv-clear@example.com")

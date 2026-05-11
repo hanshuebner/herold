@@ -119,6 +119,32 @@ func (m *metadata) MarkIdentityVerified(ctx context.Context, identityID string) 
 	})
 }
 
+// UnmarkIdentityVerified clears verified_at_us on the identity row
+// (REQ-IDENT-51). Used by the admin CLI to revert a verified Identity
+// to unverified. Does not touch the verification token trio.
+func (m *metadata) UnmarkIdentityVerified(ctx context.Context, identityID string) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		now := usMicros(m.s.clock.Now().UTC())
+		res, err := tx.ExecContext(ctx, `
+			UPDATE jmap_identities
+			   SET verified_at_us = NULL,
+			       updated_at_us = ?
+			 WHERE id = ?`,
+			now, identityID)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
 // ClearIdentityVerificationToken nulls the verification trio without
 // touching verified_at_us. Used by the GC pass that purges expired
 // tokens whose Identity rows are still inside the 7-day window.
