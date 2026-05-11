@@ -857,6 +857,51 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 		return jmapEmailSubmission{}, &setError{Type: "invalidProperties", Properties: []string{"identityId"},
 			Description: "no such identity"}
 	}
+	// REQ-IDENT-60 / REQ-IDENT-62 send-side gates. Run BEFORE any work
+	// (envelope build, sendpolicy check, blob read, DKIM, dispatch) so
+	// a rejected submission never reaches the queue or external relay.
+	// The synthesised default identity (id "default") is verified-by-
+	// construction per REQ-IDENT-02 and skips the gate. Persistent
+	// identities are looked up; a zero VerifiedAtUs trips REQ-IDENT-60
+	// and an external-domain identity without a submission row trips
+	// REQ-IDENT-62.
+	if in.IdentityID != "default" {
+		row, err := s.h.store.Meta().GetJMAPIdentity(ctx, in.IdentityID)
+		if err != nil {
+			return jmapEmailSubmission{}, &setError{Type: "invalidProperties",
+				Properties:  []string{"identityId"},
+				Description: "no such identity"}
+		}
+		if row.VerifiedAtUs == 0 {
+			return jmapEmailSubmission{}, &setError{
+				Type:        "forbiddenFrom",
+				Description: "identity is not verified",
+				Properties:  []string{"identityId"},
+			}
+		}
+		// REQ-IDENT-62: external-domain identities require an external
+		// SMTP submission row. Without one, herold would sign the
+		// outbound mail with its own DKIM key over an external From
+		// domain and fail DMARC alignment at every recipient.
+		isLocal, lookupErr := s.h.isLocalDomain(ctx, domainOf(row.Email))
+		if lookupErr != nil {
+			return jmapEmailSubmission{}, &setError{Type: "serverFail",
+				Description: fmt.Sprintf("local-domain lookup: %s", lookupErr)}
+		}
+		if !isLocal {
+			if _, err := s.h.store.Meta().GetIdentitySubmission(ctx, in.IdentityID); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					return jmapEmailSubmission{}, &setError{
+						Type:        "forbiddenFrom",
+						Description: "external identity requires submission configuration",
+						Properties:  []string{"identityId"},
+					}
+				}
+				return jmapEmailSubmission{}, &setError{Type: "serverFail",
+					Description: fmt.Sprintf("identity submission lookup: %s", err)}
+			}
+		}
+	}
 	mailFrom, recipients, perr := buildEnvelope(in.Envelope, identityEmail, msg)
 	if perr != nil {
 		return jmapEmailSubmission{}, perr
@@ -1293,4 +1338,25 @@ func domainOf(email string) string {
 		return ""
 	}
 	return strings.ToLower(email[at+1:])
+}
+
+// isLocalDomain reports whether dom (lowercased, no trailing dot) is
+// listed in the store as a local (hosted) domain. An empty dom returns
+// false; the REQ-IDENT-62 gate then treats the identity as external,
+// which is the conservative default — a malformed identity email never
+// gets to dispatch.
+func (h *handlerSet) isLocalDomain(ctx context.Context, dom string) (bool, error) {
+	if dom == "" {
+		return false, nil
+	}
+	domains, err := h.store.Meta().ListLocalDomains(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, d := range domains {
+		if strings.EqualFold(d.Name, dom) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
