@@ -318,6 +318,7 @@ type ServerConfig struct {
 	// configuration.
 	IdentityCreation      IdentityCreationConfig      `toml:"identity_creation,omitempty"`
 	DirectoryAutocomplete DirectoryAutocompleteConfig `toml:"directory_autocomplete,omitempty"`
+	TaggedAddresses       TaggedAddressesConfig       `toml:"tagged_addresses,omitempty"`
 	// TrashRetention configures the email trash retention sweeper
 	// (REQ-STORE-90). Defaults match the trashretention package
 	// constants: 30 days, 1-hour sweep interval.
@@ -504,6 +505,58 @@ type DirectoryAutocompleteConfig struct {
 	// "domain": suggest only principals sharing the caller's email domain (default).
 	// "off": disable autocomplete; the JMAP capability is not advertised.
 	Mode DirectoryAutocompleteMode `toml:"mode,omitempty"`
+}
+
+// TaggedAddressesConfig controls the tagged-address (sub-addressing) feature
+// described in docs/design/server/requirements/24-tagged-addresses.md.
+// The feature lets a user hand out sub-addressed variants of one of their
+// email addresses (alice+amazon@..., alice+newsletters@...) and have inbound
+// mail to each variant routed to a label of their choice, optionally
+// skipping the inbox and/or marked read.
+//
+// When the section is omitted entirely, the feature is enabled with the
+// documented default caps (100 filters, 500 dismissals per principal). Set
+// Enabled = false to suppress the JMAP capability advertisement and skip
+// the inbound pipeline's tag-filter evaluation; all sub-addressed mail
+// falls through to Sieve unchanged in that case (REQ-TAG-20).
+//
+// The caps are enforced at filter-create / dismissal-create time
+// (REQ-TAG-11). They are read at request time from the live cfg via the
+// reload-safe sysconfig pointer so a SIGHUP-driven adjustment takes effect
+// without a restart. Flipping Enabled at runtime does NOT retract the JMAP
+// capability from already-issued sessions until they reconnect — same
+// semantics as [server.external_submission].
+//
+// Example (system.toml):
+//
+//	[server.tagged_addresses]
+//	enabled = true
+//	max_filters_per_principal = 100
+//	max_dismissals_per_principal = 500
+type TaggedAddressesConfig struct {
+	// Enabled is the master switch for the tagged-address feature. Pointer
+	// so an absent section can be distinguished from an explicit `false`;
+	// the default (when nil) is true. When false the JMAP capability is
+	// not advertised and the inbound pipeline skips REQ-TAG-20 evaluation.
+	Enabled *bool `toml:"enabled,omitempty"`
+	// MaxFiltersPerPrincipal caps the total tagged_address_filters rows a
+	// single principal may hold across all their identities. Must be > 0;
+	// defaults to 100 (REQ-TAG-11).
+	MaxFiltersPerPrincipal int `toml:"max_filters_per_principal,omitempty"`
+	// MaxDismissalsPerPrincipal caps the total tagged_address_dismissals
+	// rows a single principal may hold. Must be > 0; defaults to 500
+	// (REQ-TAG-11).
+	MaxDismissalsPerPrincipal int `toml:"max_dismissals_per_principal,omitempty"`
+}
+
+// TaggedAddressesEnabled reports whether the tagged-address feature is
+// enabled, treating an absent Enabled field (nil) as the documented
+// default of true.
+func (c *TaggedAddressesConfig) TaggedAddressesEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 // OAuthProviderConfig is the per-provider OAuth 2.0 client configuration for
@@ -1769,6 +1822,20 @@ func applyDefaults(c *Config) {
 	// identically: enabled, allow-all external domains, 7-day purge,
 	// 60s resend cooldown, 5/day cap.
 	applyIdentityCreationDefaults(&c.Server.IdentityCreation, c.Server.Hostname)
+	// Tagged addresses (REQ-TAG-*): default-enabled with the documented
+	// per-principal caps. An absent section produces a fully-functional
+	// configuration (enabled=true, caps=100/500); an empty section behaves
+	// the same.
+	if c.Server.TaggedAddresses.Enabled == nil {
+		t := true
+		c.Server.TaggedAddresses.Enabled = &t
+	}
+	if c.Server.TaggedAddresses.MaxFiltersPerPrincipal == 0 {
+		c.Server.TaggedAddresses.MaxFiltersPerPrincipal = 100
+	}
+	if c.Server.TaggedAddresses.MaxDismissalsPerPrincipal == 0 {
+		c.Server.TaggedAddresses.MaxDismissalsPerPrincipal = 500
+	}
 	// Trash retention sweeper (REQ-STORE-90). Defaults mirror the
 	// trashretention package constants so a missing block and an empty
 	// block behave the same: 30-day retention, 1-hour sweep interval.
@@ -2579,6 +2646,18 @@ func Validate(c *Config) error {
 	// store and is not available during config parse.
 	if err := validateIdentityCreation(&c.Server.IdentityCreation); err != nil {
 		return err
+	}
+	// Tagged-address caps (REQ-TAG-11). Both caps must be positive even
+	// when enabled=false so a future flip to enabled=true does not surface
+	// a silent zero-cap configuration; the feature being off does not
+	// excuse a malformed cap.
+	if c.Server.TaggedAddresses.MaxFiltersPerPrincipal <= 0 {
+		return fmt.Errorf("sysconfig: [server.tagged_addresses] max_filters_per_principal %d must be > 0",
+			c.Server.TaggedAddresses.MaxFiltersPerPrincipal)
+	}
+	if c.Server.TaggedAddresses.MaxDismissalsPerPrincipal <= 0 {
+		return fmt.Errorf("sysconfig: [server.tagged_addresses] max_dismissals_per_principal %d must be > 0",
+			c.Server.TaggedAddresses.MaxDismissalsPerPrincipal)
 	}
 	// Client-log ingest (REQ-OPS-219).
 	if err := validateClientLog(&c.ClientLog); err != nil {

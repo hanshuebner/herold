@@ -136,6 +136,16 @@ const (
 	// by CapabilityJMAPChat and CapabilityJMAPCategorise.
 	// Implemented under internal/protojmap/llmtransparency.
 	CapabilityLLMTransparency CapabilityID = "https://netzhansa.com/jmap/llm-transparency"
+
+	// CapabilityTaggedAddresses is the tagged-address (sub-addressing)
+	// capability (REQ-TAG-70). Advertised when
+	// [server.tagged_addresses].enabled is true. Signals to JMAP clients
+	// that the TaggedAddressFilter datatype (TaggedAddressFilter/get,
+	// /set, /changes) is available and that the server honours per-suffix
+	// routing rules at delivery time (REQ-TAG-20). The capability carries
+	// an empty per-server descriptor in v1; the per-principal caps live in
+	// sysconfig and are read at request time by the method handlers.
+	CapabilityTaggedAddresses CapabilityID = "https://netzhansa.com/jmap/tagged-addresses"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

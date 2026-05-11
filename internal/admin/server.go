@@ -2435,6 +2435,22 @@ func composeAdminAndUI(
 			slog.String("subsystem", "jmap-directory-autocomplete"),
 			slog.String("mode", string(cfg.Server.DirectoryAutocomplete.Mode)))
 	}
+	// Tagged addresses (REQ-TAG-70). The capability is advertised when
+	// [server.tagged_addresses].enabled is true (captured at boot like
+	// external-submission: a SIGHUP that flips enabled=false does not
+	// retract the capability from already-issued sessions). The
+	// per-principal caps live in sysconfig and are read at request time
+	// by the future TaggedAddressFilter/set handler via cfgPtr.Load();
+	// this Phase wires only the capability emission and the boot-time
+	// log line so the SPA can detect support.
+	if cfg.Server.TaggedAddresses.TaggedAddressesEnabled() {
+		jmapSrv.Registry().RegisterCapabilityDescriptor(
+			protojmap.CapabilityTaggedAddresses, struct{}{})
+		logger.Info("tagged-addresses enabled",
+			slog.String("subsystem", "jmap-tagged-addresses"),
+			slog.Int("max_filters", cfg.Server.TaggedAddresses.MaxFiltersPerPrincipal),
+			slog.Int("max_dismissals", cfg.Server.TaggedAddresses.MaxDismissalsPerPrincipal))
+	}
 	// SeenAddress (REQ-MAIL-11e..m): recipient autocomplete history, exposed
 	// under urn:ietf:params:jmap:mail (no new capability URI needed).
 	jmapseenaddress.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-seenaddress"), clk)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2486,6 +2487,162 @@ func TestDirectoryAutocomplete_InvalidMode(t *testing.T) {
 				t.Errorf("error should quote the bad value %q: %v", bad, err)
 			}
 		})
+	}
+}
+
+// TestTaggedAddresses_SectionOmitted verifies that omitting the section
+// entirely yields enabled=true and the documented default caps
+// (REQ-TAG-11, 100/500).
+func TestTaggedAddresses_SectionOmitted(t *testing.T) {
+	cfg, err := Parse([]byte(minimalNoObs))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !cfg.Server.TaggedAddresses.TaggedAddressesEnabled() {
+		t.Errorf("default enabled: got false, want true")
+	}
+	if got, want := cfg.Server.TaggedAddresses.MaxFiltersPerPrincipal, 100; got != want {
+		t.Errorf("default max_filters_per_principal: got %d, want %d", got, want)
+	}
+	if got, want := cfg.Server.TaggedAddresses.MaxDismissalsPerPrincipal, 500; got != want {
+		t.Errorf("default max_dismissals_per_principal: got %d, want %d", got, want)
+	}
+}
+
+// TestTaggedAddresses_SectionPresentNoFields verifies that an empty section
+// behaves the same as the section being absent: enabled=true and defaults
+// for both caps.
+func TestTaggedAddresses_SectionPresentNoFields(t *testing.T) {
+	const tomlSrc = minimalNoObs + `
+[server.tagged_addresses]
+`
+	cfg, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !cfg.Server.TaggedAddresses.TaggedAddressesEnabled() {
+		t.Errorf("empty-section enabled: got false, want true")
+	}
+	if got, want := cfg.Server.TaggedAddresses.MaxFiltersPerPrincipal, 100; got != want {
+		t.Errorf("empty-section max_filters_per_principal: got %d, want %d", got, want)
+	}
+	if got, want := cfg.Server.TaggedAddresses.MaxDismissalsPerPrincipal, 500; got != want {
+		t.Errorf("empty-section max_dismissals_per_principal: got %d, want %d", got, want)
+	}
+}
+
+// TestTaggedAddresses_ParsesExplicitValues verifies that explicit
+// non-default values round-trip through Parse unchanged.
+func TestTaggedAddresses_ParsesExplicitValues(t *testing.T) {
+	const tomlSrc = minimalNoObs + `
+[server.tagged_addresses]
+enabled = true
+max_filters_per_principal = 42
+max_dismissals_per_principal = 1234
+`
+	cfg, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !cfg.Server.TaggedAddresses.TaggedAddressesEnabled() {
+		t.Errorf("enabled: got false, want true")
+	}
+	if got, want := cfg.Server.TaggedAddresses.MaxFiltersPerPrincipal, 42; got != want {
+		t.Errorf("max_filters_per_principal: got %d, want %d", got, want)
+	}
+	if got, want := cfg.Server.TaggedAddresses.MaxDismissalsPerPrincipal, 1234; got != want {
+		t.Errorf("max_dismissals_per_principal: got %d, want %d", got, want)
+	}
+}
+
+// TestTaggedAddresses_DisabledWithDefaultCaps verifies that enabled=false
+// is accepted and that the caps still receive their defaults; the feature
+// being off does not excuse a zero-cap configuration.
+func TestTaggedAddresses_DisabledWithDefaultCaps(t *testing.T) {
+	const tomlSrc = minimalNoObs + `
+[server.tagged_addresses]
+enabled = false
+`
+	cfg, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.TaggedAddresses.TaggedAddressesEnabled() {
+		t.Errorf("enabled: got true, want false")
+	}
+	if got, want := cfg.Server.TaggedAddresses.MaxFiltersPerPrincipal, 100; got != want {
+		t.Errorf("disabled default max_filters_per_principal: got %d, want %d", got, want)
+	}
+	if got, want := cfg.Server.TaggedAddresses.MaxDismissalsPerPrincipal, 500; got != want {
+		t.Errorf("disabled default max_dismissals_per_principal: got %d, want %d", got, want)
+	}
+}
+
+// TestTaggedAddresses_RejectsNonPositiveFilters verifies that a negative
+// max_filters_per_principal is rejected at Validate.
+func TestTaggedAddresses_RejectsNonPositiveFilters(t *testing.T) {
+	cases := []int{-1, -100}
+	for _, bad := range cases {
+		bad := bad
+		t.Run(strconv.Itoa(bad), func(t *testing.T) {
+			tomlSrc := minimalNoObs + "\n[server.tagged_addresses]\nmax_filters_per_principal = " + strconv.Itoa(bad) + "\n"
+			_, err := Parse([]byte(tomlSrc))
+			if err == nil {
+				t.Fatalf("expected error for max_filters_per_principal = %d, got nil", bad)
+			}
+			if !strings.Contains(err.Error(), "tagged_addresses") {
+				t.Errorf("error should mention tagged_addresses: %v", err)
+			}
+			if !strings.Contains(err.Error(), "max_filters_per_principal") {
+				t.Errorf("error should mention max_filters_per_principal: %v", err)
+			}
+		})
+	}
+}
+
+// TestTaggedAddresses_RejectsNonPositiveDismissals verifies that a negative
+// max_dismissals_per_principal is rejected at Validate.
+func TestTaggedAddresses_RejectsNonPositiveDismissals(t *testing.T) {
+	cases := []int{-1, -500}
+	for _, bad := range cases {
+		bad := bad
+		t.Run(strconv.Itoa(bad), func(t *testing.T) {
+			tomlSrc := minimalNoObs + "\n[server.tagged_addresses]\nmax_dismissals_per_principal = " + strconv.Itoa(bad) + "\n"
+			_, err := Parse([]byte(tomlSrc))
+			if err == nil {
+				t.Fatalf("expected error for max_dismissals_per_principal = %d, got nil", bad)
+			}
+			if !strings.Contains(err.Error(), "tagged_addresses") {
+				t.Errorf("error should mention tagged_addresses: %v", err)
+			}
+			if !strings.Contains(err.Error(), "max_dismissals_per_principal") {
+				t.Errorf("error should mention max_dismissals_per_principal: %v", err)
+			}
+		})
+	}
+}
+
+// TestTaggedAddresses_ZeroBecomesDefault pins the behaviour that an explicit
+// `= 0` for either cap is treated as "use the documented default" rather
+// than failing validation. The schema uses bare `int`, so the default-filler
+// cannot distinguish absent-int from explicit-zero; this test documents the
+// resulting semantics. A future refactor that switches to *int would change
+// this and should update the test accordingly.
+func TestTaggedAddresses_ZeroBecomesDefault(t *testing.T) {
+	const tomlSrc = minimalNoObs + `
+[server.tagged_addresses]
+max_filters_per_principal = 0
+max_dismissals_per_principal = 0
+`
+	cfg, err := Parse([]byte(tomlSrc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got, want := cfg.Server.TaggedAddresses.MaxFiltersPerPrincipal, 100; got != want {
+		t.Errorf("zero-as-absent max_filters_per_principal: got %d, want %d", got, want)
+	}
+	if got, want := cfg.Server.TaggedAddresses.MaxDismissalsPerPrincipal, 500; got != want {
+		t.Errorf("zero-as-absent max_dismissals_per_principal: got %d, want %d", got, want)
 	}
 }
 
