@@ -758,7 +758,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// ReloadConfig updates propagate to in-flight JMAP calls.
 	sharedCfg := new(atomic.Pointer[sysconfig.Config])
 	sharedCfg.Store(cfg)
-	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer.Handler(), smtpServer, hookSigningKey, health, sieveInterp, prebuiltExtSubmitter, clientEmitter, telemetryGate)
+	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer, smtpServer, hookSigningKey, health, sieveInterp, prebuiltExtSubmitter, clientEmitter, telemetryGate)
 	if err != nil {
 		return err
 	}
@@ -2027,7 +2027,7 @@ func composeAdminAndUI(
 	ftsIndex *storefts.Index,
 	tlsStore *heroldtls.Store,
 	outboundQ *queue.Queue,
-	adminHandler http.Handler,
+	adminServer *protoadmin.Server,
 	smtpSrv *protosmtp.Server,
 	webhookSigningKey []byte,
 	health *observe.Health,
@@ -2040,6 +2040,7 @@ func composeAdminAndUI(
 	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
 	// FTS worker writes to; jmapchat.RegisterWithFTS below uses it so
 	// Message/query routes free-text filters through SearchChatMessages.
+	adminHandler := adminServer.Handler()
 	var bundle composedHandlers
 
 	// Public-listener session resolver (Phase 3c-iii). Built as a
@@ -2391,15 +2392,18 @@ func composeAdminAndUI(
 	// [server.identity_creation].external_domains; the allowlist mode
 	// matches the lowercased domain against the configured set.
 	var identityVerifyTrigger jmapidentity.VerificationTrigger
+	var ivResender *identityverify.Dispatcher
 	if cfg.Server.IdentityCreation.Enabled == nil || *cfg.Server.IdentityCreation.Enabled {
 		ivDispatcher := identityverify.New(identityverify.Options{
-			Store:        st,
-			Submitter:    outboundQ,
-			Logger:       logger.With("subsystem", "identityverify"),
-			Clock:        clk,
-			Hostname:     cfg.Server.Hostname,
-			VerifierFrom: cfg.Server.IdentityCreation.VerifierFrom,
-			Auditor:      identityVerifyAuditor{st: st},
+			Store:          st,
+			Submitter:      outboundQ,
+			Logger:         logger.With("subsystem", "identityverify"),
+			Clock:          clk,
+			Hostname:       cfg.Server.Hostname,
+			VerifierFrom:   cfg.Server.IdentityCreation.VerifierFrom,
+			Auditor:        identityVerifyAuditor{st: st},
+			ResendCooldown: time.Duration(cfg.Server.IdentityCreation.ResendCooldownSeconds) * time.Second,
+			ResendDailyCap: cfg.Server.IdentityCreation.ResendDailyCap,
 		})
 		if err := ivDispatcher.Validate(); err != nil {
 			logger.Warn("identity verification dispatcher disabled (validation failed)",
@@ -2410,7 +2414,19 @@ func composeAdminAndUI(
 				_, err := ivDispatcher.Trigger(ctx, row)
 				return err
 			}
+			ivResender = ivDispatcher
 		}
+	}
+	// Wire the resend dispatcher into both protoadmin instances so the
+	// public listener (where the suite SPA POSTs) and the admin
+	// listener both serve POST /api/v1/identities/{id}/verify-request
+	// (REQ-IDENT-36). Nil resender disables the endpoint (503).
+	if ivResender != nil {
+		cooldown := time.Duration(cfg.Server.IdentityCreation.ResendCooldownSeconds) * time.Second
+		cap := cfg.Server.IdentityCreation.ResendDailyCap
+		adapter := ivResenderAdapter{d: ivResender}
+		adminServer.SetVerificationResender(adapter, cooldown, cap)
+		selfServiceSrv.SetVerificationResender(adapter, cooldown, cap)
 	}
 	identityOpts := jmapidentity.Options{
 		VerificationTrigger: identityVerifyTrigger,
@@ -3249,6 +3265,20 @@ type identityVerifyAuditor struct {
 
 func (a identityVerifyAuditor) Append(ctx context.Context, entry store.AuditLogEntry) error {
 	return a.st.Meta().AppendAuditLog(ctx, entry)
+}
+
+// ivResenderAdapter narrows the *identityverify.Dispatcher.Resend
+// signature down to the (ctx, row) -> error shape that protoadmin's
+// VerificationResender interface expects. The dispatcher's full
+// signature returns Tokens (for tests); production REST callers only
+// need the error.
+type ivResenderAdapter struct {
+	d *identityverify.Dispatcher
+}
+
+func (a ivResenderAdapter) Resend(ctx context.Context, row store.JMAPIdentity) error {
+	_, err := a.d.Resend(ctx, row)
+	return err
 }
 
 func buildIdentityExternalDomainPolicy(ic sysconfig.IdentityCreationConfig) func(string) bool {

@@ -169,6 +169,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// (and so unit tests that attach only the admin listener can
 	// exercise the link path without a separate public-mux harness).
 	mux.HandleFunc("POST /api/v1/identities/{id}/verify", auth1(s.handleVerifyIdentityCode))
+	mux.HandleFunc("POST /api/v1/identities/{id}/verify-request", auth1(s.handleVerifyIdentityRequest))
 	mux.HandleFunc("GET /verify-identity", s.handleVerifyIdentityLink)
 
 	// Per-user client-log telemetry opt-out (REQ-OPS-208, REQ-CLOG-06).
@@ -278,6 +279,11 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	// "have a code" input POSTs a 6-digit code lifted from the
 	// verification email body.
 	mux.HandleFunc("POST /api/v1/identities/{id}/verify", auth1(s.handleVerifyIdentityCode))
+	// User-initiated resend (REQ-IDENT-36): rotates the trio, applies
+	// the cooldown / daily-cap rate-limit gate, and enqueues a fresh
+	// verification email. Rejected resends surface as 429 with
+	// Retry-After.
+	mux.HandleFunc("POST /api/v1/identities/{id}/verify-request", auth1(s.handleVerifyIdentityRequest))
 	// The link callback is mounted OUTSIDE /api/v1/* so the URL
 	// embedded in the verification email stays short. No auth gate:
 	// the token IS the auth (CSPRNG-generated, single-use, sha256'd

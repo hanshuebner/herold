@@ -224,6 +224,22 @@ type Options struct {
 	// (REQ-AUTH-EXT-SUBMIT-03). Used by the OAuth start/callback endpoints.
 	OAuthProviders map[string]OAuthProviderOptions
 
+	// VerificationResender drives POST /api/v1/identities/{id}/verify-request
+	// (REQ-IDENT-36, REQ-IDENT-41 resend surface). It rotates the
+	// per-Identity verification token+code, enqueues the email, and
+	// applies the cooldown / daily-cap rate-limit gate. Nil disables
+	// the resend endpoint (returns 503). Production wiring passes a
+	// *identityverify.Dispatcher; tests inject a fake.
+	VerificationResender VerificationResender
+	// VerificationResendCooldown / VerificationResendDailyCap mirror
+	// the dispatcher's tunables (sourced from sysconfig). The
+	// handler reads them to compute Retry-After on a 429 response.
+	// Zero on either disables the corresponding arm of the gate (the
+	// store dispatch already honours that semantics; here the handler
+	// only needs them for Retry-After math).
+	VerificationResendCooldown time.Duration
+	VerificationResendDailyCap int
+
 	// Clientlog overrides rate-limits, queue size, and the telemetry gate
 	// used by the clientlog ingest endpoints. Zero values retain the defaults
 	// from REQ-OPS-216. Intended for use in tests and sysconfig wiring.
@@ -443,6 +459,21 @@ func NewServer(
 		}
 	}
 	return s
+}
+
+// SetVerificationResender installs the resender used by POST
+// /api/v1/identities/{id}/verify-request (REQ-IDENT-36). Wiring is
+// post-construction because the dispatcher needs the outbound queue
+// and clock that are themselves built after protoadmin.NewServer in
+// admin/server.go's StartServer flow. Calling with a nil resender
+// disables the endpoint (returns 503). Cooldown / dailyCap are the
+// operator-configured limits the handler echoes back in 429 responses
+// as Retry-After; passing zero leaves the gate disabled on that arm
+// (the dispatcher's own knobs are independent).
+func (s *Server) SetVerificationResender(r VerificationResender, cooldown time.Duration, dailyCap int) {
+	s.opts.VerificationResender = r
+	s.opts.VerificationResendCooldown = cooldown
+	s.opts.VerificationResendDailyCap = dailyCap
 }
 
 // Handler returns the REST mux wrapped with server-wide middleware. It

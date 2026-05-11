@@ -36,6 +36,36 @@ func writeProblem(w http.ResponseWriter, r *http.Request, status int, typeSlug, 
 	_ = json.NewEncoder(w).Encode(doc)
 }
 
+// writeProblemWithExtras renders an RFC 7807 problem document with
+// additional top-level fields merged in. Used by handlers that need to
+// surface structured error metadata (e.g. retry_after_seconds) beyond
+// the spec's required type/title/status/detail/instance set. The
+// extras map keys MUST NOT collide with the standard fields; collisions
+// are silently dropped.
+func writeProblemWithExtras(w http.ResponseWriter, r *http.Request, status int, typeSlug, title, detail string, extras map[string]any) {
+	body := map[string]any{
+		"type":   problemTypeBase + typeSlug,
+		"title":  title,
+		"status": status,
+	}
+	if detail != "" {
+		body["detail"] = detail
+	}
+	if r != nil {
+		body["instance"] = r.URL.Path
+	}
+	for k, v := range extras {
+		switch k {
+		case "type", "title", "status", "detail", "instance":
+			continue
+		}
+		body[k] = v
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
 // writeJSON serialises a JSON response with the given status.
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
