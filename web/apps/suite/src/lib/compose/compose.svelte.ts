@@ -45,6 +45,7 @@ import {
   recipientToString,
   type Recipient,
 } from './recipient-parse';
+import { selectReplyIdentity } from './reply-identity';
 
 export type { Recipient };
 
@@ -128,6 +129,17 @@ class ComposeStore {
   replyContext = $state<ReplyContext>({ ...EMPTY_REPLY });
 
   /**
+   * The Identity selected as the compose's From. Set by the reply /
+   * reply-all / forward entry points via the REQ-MAIL-12a match
+   * algorithm (`selectReplyIdentity`), and by openWith for paths that
+   * already know the identity. null means "use mail.primaryIdentity"
+   * — the persistDraft / send paths fall back to that as the legacy
+   * behaviour. The From picker (not yet implemented) will write here
+   * when the user changes the From mid-compose.
+   */
+  selectedIdentity = $state<Identity | null>(null);
+
+  /**
    * Attachments queued for the in-progress message. Each entry tracks
    * its own upload state so the UI can render uploading / failed / ready
    * affordances without blocking the rest of the compose.
@@ -191,6 +203,7 @@ class ComposeStore {
     this.replyContext = { ...EMPTY_REPLY };
     this.editingDraftId = null;
     this.attachments = [];
+    this.selectedIdentity = null;
     this.status = 'editing';
     this.#ensureAccountReady();
   }
@@ -217,6 +230,13 @@ class ComposeStore {
     skipHook?: boolean;
     /** Skip signature appending — body already carries the user's edited signature. */
     skipSignature?: boolean;
+    /**
+     * Pre-selected From identity — set by openReply / openReplyAll /
+     * openForward after the REQ-MAIL-12a match. null falls back to
+     * `mail.primaryIdentity` at send time, matching the prior
+     * behaviour for fresh composes and draft re-opens.
+     */
+    identity?: Identity | null;
   }): void {
     if (!args.skipHook && !this.#runBeforeOpen()) return;
     this.to = args.to;
@@ -227,9 +247,16 @@ class ComposeStore {
     this.ccRecipients = parseStringToRecipients(this.cc);
     this.bccRecipients = parseStringToRecipients(this.bcc);
     this.subject = args.subject;
+    this.selectedIdentity = args.identity ?? null;
+    // The signature comes from the matched identity (when provided)
+    // so a reply / forward picks up the From identity's sig, not the
+    // primary identity's. Fresh compose paths still get the primary
+    // sig because args.identity is undefined and primaryIdentity is
+    // the fallback.
+    const sigIdentity = this.selectedIdentity ?? mail.primaryIdentity;
     this.body = args.skipSignature
       ? args.body
-      : appendSignature(args.body, mail.primaryIdentity);
+      : appendSignature(args.body, sigIdentity);
     this.replyContext = args.replyContext ?? { ...EMPTY_REPLY };
     this.errorMessage = null;
     this.ccBccVisible = Boolean(this.cc || this.bcc);
@@ -282,6 +309,7 @@ class ComposeStore {
         inReplyTo: parent.messageId ?? null,
         references: mergeReferences(parent),
       },
+      identity: this.#matchIdentity(parent),
     });
   }
 
@@ -324,6 +352,7 @@ class ComposeStore {
         inReplyTo: parent.messageId ?? null,
         references: mergeReferences(parent),
       },
+      identity: this.#matchIdentity(parent),
     });
   }
 
@@ -370,7 +399,28 @@ class ComposeStore {
         inReplyTo: parent.messageId ?? null,
         references: mergeReferences(parent),
       },
+      identity: this.#matchIdentity(parent),
     });
+  }
+
+  /**
+   * Run the REQ-MAIL-12a reply-identity match against `parent` using
+   * the current `mail.identities` cache. Returns `mail.primaryIdentity`
+   * as the terminal fallback (REQ-MAIL-12); when there is no primary
+   * identity at all the result is null and openWith falls through to
+   * primaryIdentity at send time anyway.
+   *
+   * Centralising the call here keeps openReply / openReplyAll /
+   * openForward identical in shape — REQ-MAIL-12a applies to all three
+   * — and gives unit tests a single seam to mock against the compose
+   * singleton when verifying wiring (the algorithm itself is unit-
+   * tested directly against `selectReplyIdentity`).
+   */
+  #matchIdentity(parent: Email): Identity | null {
+    const fallback = mail.primaryIdentity;
+    if (!fallback) return null;
+    const identities = Array.from(mail.identities.values());
+    return selectReplyIdentity(parent, identities, fallback);
   }
 
   /**
@@ -644,6 +694,7 @@ class ComposeStore {
     this.replyContext = { ...EMPTY_REPLY };
     this.editingDraftId = null;
     this.attachments = [];
+    this.selectedIdentity = null;
     this.#snapshot = null;
   }
 
@@ -699,7 +750,11 @@ class ComposeStore {
     if (!mail.primaryIdentity || !mail.drafts) {
       await this.#ensureAccountReady();
     }
-    const identity = mail.primaryIdentity;
+    // Prefer the selected identity (set by the reply-identity match)
+    // and fall back to primary. The reply-identity match runs once at
+    // compose-open per REQ-MAIL-12a; from then on this field is the
+    // authoritative From for the in-progress draft.
+    const identity = this.selectedIdentity ?? mail.primaryIdentity;
     const drafts = mail.drafts;
     if (!identity || !drafts) return false;
 
@@ -818,7 +873,11 @@ class ComposeStore {
     if (!mail.primaryIdentity || !mail.drafts) {
       await this.#ensureAccountReady();
     }
-    const identity = mail.primaryIdentity;
+    // Prefer the selected identity (set by REQ-MAIL-12a's reply match
+    // at compose-open) and fall back to primary. The compose's From
+    // picker (future work) writes to the same `selectedIdentity`
+    // cell, so this path is the single point that consumes it.
+    const identity = this.selectedIdentity ?? mail.primaryIdentity;
     const drafts = mail.drafts;
     const sentMailbox = mail.sent;
     if (!identity) {

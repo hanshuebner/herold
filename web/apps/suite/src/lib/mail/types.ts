@@ -22,6 +22,22 @@ export interface Identity {
   avatarBlobId?: string | null;
   /** Herold extension: whether to embed an X-Face / Face header on outbound mail. */
   xFaceEnabled?: boolean;
+  /**
+   * Herold extension: ISO 8601 timestamp at which the user proved
+   * ownership of the identity's email (REQ-IDENT-10). Drives the
+   * verified-gate in compose's reply-identity match (REQ-MAIL-12a) and
+   * the picker's disabled state for unverified identities (REQ-MAIL-12).
+   *
+   * Tri-state semantics, deliberately:
+   *   - field absent (undefined)  → server has not yet shipped the
+   *     property; the suite treats the identity as verified for
+   *     legacy compatibility. Once the server emits it, the gate
+   *     becomes effective without further suite changes.
+   *   - explicit null             → server says "not verified"; the
+   *     identity cannot be the result of the reply-identity match.
+   *   - ISO timestamp string      → verified.
+   */
+  verifiedAt?: string | null;
 }
 
 export interface Mailbox {
@@ -147,6 +163,15 @@ export interface Email {
    */
   'header:X-Face:asText'?: string | null;
   /**
+   * Synthetic per-recipient header injected by herold at Email/get
+   * render time per REQ-FLOW-34. Carries the canonical RCPT TO that
+   * produced this fan-out row, which the compose-side reply-identity
+   * match consumes (REQ-MAIL-12a step 2). Absent on outbound messages
+   * (REQ-FLOW-35) and on legacy / imported mail; the match degrades
+   * to the To/Cc scan when missing.
+   */
+  'header:X-Herold-Recipient:asText'?: string | null;
+  /**
    * Herold extension (REQ-EXTIMG-BG-20): true while the message body is
    * waiting for the background-internalize worker to rewrite its external
    * image references. Email/get serves placeholder data URIs in place of
@@ -205,6 +230,7 @@ export const EMAIL_BODY_PROPERTIES = [
   'header:List-ID:asText',
   'header:Face:asText',
   'header:X-Face:asText',
+  'header:X-Herold-Recipient:asText',
   'internalizePending',
 ] as const;
 
