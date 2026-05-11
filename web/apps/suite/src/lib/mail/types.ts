@@ -38,6 +38,36 @@ export interface Identity {
    *   - ISO timestamp string      → verified.
    */
   verifiedAt?: string | null;
+  /**
+   * Herold extension: ISO 8601 timestamp at which an
+   * `Identity/set { create }` last issued a fresh verification token
+   * that has not yet expired (REQ-IDENT-30..36 server-side,
+   * REQ-SET-IDENT-02 in the suite). Used to distinguish the
+   * "verification pending" chip (token live, awaiting click/code) from
+   * the "unverified" chip (no live token).
+   *
+   * Tri-state semantics, same shape as verifiedAt:
+   *   - field absent (undefined)  → server has not yet shipped the
+   *     property; the suite treats the identity as "unverified" when
+   *     verifiedAt is null and "verified" when verifiedAt is set.
+   *   - explicit null             → server says "no live token";
+   *     combined with a null verifiedAt this is the unverified state.
+   *   - ISO timestamp string      → token live; combined with a null
+   *     verifiedAt this is the verification-pending state.
+   */
+  verificationPendingSince?: string | null;
+  /**
+   * Herold extension: marks the user's default From identity
+   * (REQ-SET-IDENT-04). Exactly one Identity per principal carries
+   * `isDefault: true`; the suite enforces the singleton invariant
+   * client-side via the `setDefaultIdentity` action which clears the
+   * previous default in the same `Identity/set update` batch.
+   *
+   * When the field is absent the suite falls back to "first verified
+   * identity in the list" per REQ-SET-02 for legacy compatibility
+   * (the server-side extension lands separately under REQ-IDENT-70).
+   */
+  isDefault?: boolean | null;
 }
 
 export interface Mailbox {

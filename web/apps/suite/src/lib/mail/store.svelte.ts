@@ -849,6 +849,66 @@ class MailStore {
   }
 
   /**
+   * Promote `identityId` to be the principal's default From identity
+   * per REQ-SET-IDENT-04. Issues a single `Identity/set update` that
+   * flips `isDefault: true` on the new default and `isDefault: false`
+   * on the previous default (if any). Mirrors the change into the
+   * local identities cache so the compose From picker reflects the
+   * new default without a refetch.
+   *
+   * Server-side property landing as part of REQ-IDENT-70 (TBD). Until
+   * the server emits / honours `isDefault`, the optimistic cache update
+   * lets the SPA exercise the UI flow; the server will surface a
+   * `notUpdated` entry which the caller can map to a toast.
+   */
+  async setDefaultIdentity(identityId: string): Promise<void> {
+    const accountId = this.mailAccountId;
+    if (!accountId) throw new Error('No Mail account on this session');
+
+    // Compute the previous-default id so we can clear it in the same
+    // batch — keeping the "exactly one default" invariant locally.
+    let prevDefault: string | null = null;
+    for (const cur of this.identities.values()) {
+      if (cur.isDefault && cur.id !== identityId) {
+        prevDefault = cur.id;
+        break;
+      }
+    }
+
+    const update: Record<string, { isDefault: boolean }> = {
+      [identityId]: { isDefault: true },
+    };
+    if (prevDefault) update[prevDefault] = { isDefault: false };
+
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Identity/set',
+        { accountId, update },
+        [Capability.Submission],
+      );
+    });
+    strict(responses);
+
+    const result = invocationArgs<{
+      notUpdated?: Record<string, { type: string; description?: string }>;
+    }>(responses[0]);
+    const failure = result.notUpdated?.[identityId];
+    if (failure) {
+      throw new Error(failure.description ?? failure.type);
+    }
+
+    // Optimistic mirror: clear the previous-default flag and set the new one.
+    const next = new Map(this.identities);
+    if (prevDefault) {
+      const prev = next.get(prevDefault);
+      if (prev) next.set(prevDefault, { ...prev, isDefault: false });
+    }
+    const cur = next.get(identityId);
+    if (cur) next.set(identityId, { ...cur, isDefault: true });
+    this.identities = next;
+  }
+
+  /**
    * Update the `xFaceEnabled` extension property for the identity identified
    * by `identityId` via `Identity/set update`. Mirrors the change into the
    * local identities cache immediately.
