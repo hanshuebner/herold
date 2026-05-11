@@ -103,8 +103,38 @@ export function initClientlog(): Clientlog {
     isAuthenticated,
     livetailUntil,
     telemetryEnabled,
+    // Cookie-authenticated POSTs on herold's public listener require
+    // X-CSRF-Token. Without this, every flush against /api/v1/clientlog
+    // returns 403 csrf_required and the SPA cannot report errors —
+    // exactly what was masking the state_unsafe_mutation bug on /settings.
+    authHeaders: (): Record<string, string> => {
+      const token = readCsrfCookie();
+      const headers: Record<string, string> = {};
+      if (token !== '') {
+        headers['X-CSRF-Token'] = token;
+      }
+      return headers;
+    },
   });
   return _instance;
+}
+
+/** Read the herold_public_csrf cookie value. Empty string when absent
+ *  (e.g. before login). Matches the parser in lib/api/client.ts so
+ *  there is one canonical cookie name. */
+function readCsrfCookie(): string {
+  try {
+    const pairs = document.cookie.split(';');
+    for (const pair of pairs) {
+      const [name, value] = pair.trim().split('=');
+      if (name === 'herold_public_csrf' && value !== undefined) {
+        return decodeURIComponent(value);
+      }
+    }
+  } catch {
+    // Some test environments throw on document.cookie access.
+  }
+  return '';
 }
 
 /**

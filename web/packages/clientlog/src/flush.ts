@@ -35,6 +35,15 @@ export interface FlushContext {
   endpoints: { authenticated: string; anonymous: string };
   queue: Queue;
   originalConsole: Pick<Console, 'error'>;
+  /**
+   * Optional callback that returns extra headers to attach to the
+   * authenticated-endpoint flush request. Used by the suite to send
+   * the X-CSRF-Token header that the herold public listener requires
+   * on cookie-authenticated mutating requests. Called per flush so a
+   * rotating token (cookie rewrite) is always read fresh. Anonymous
+   * flushes do not include these headers.
+   */
+  authHeaders?: () => Record<string, string>;
 }
 
 const AUTH_RETRY_DELAYS = [1000, 5000, 30000];
@@ -124,6 +133,7 @@ async function fetchFlush(
   originalConsole: Pick<Console, 'error'>,
   fetchFn: typeof globalThis.fetch,
   setTimeoutFn: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>,
+  authHeaders: (() => Record<string, string>) | undefined,
   attempt: number,
 ): Promise<void> {
   try {
@@ -131,7 +141,7 @@ async function fetchFlush(
       method: 'POST',
       body,
       keepalive: true,
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildFlushHeaders(isAuth, authHeaders),
     });
     if (res.status >= 500 && isAuth && attempt < AUTH_RETRY_DELAYS.length) {
       const delay = AUTH_RETRY_DELAYS[attempt] ?? 30000;
@@ -144,6 +154,7 @@ async function fetchFlush(
             originalConsole,
             fetchFn,
             setTimeoutFn,
+            authHeaders,
             attempt + 1,
           ),
         delay,
@@ -161,6 +172,7 @@ async function fetchFlush(
             originalConsole,
             fetchFn,
             setTimeoutFn,
+            authHeaders,
             attempt + 1,
           ),
         delay,
@@ -168,6 +180,22 @@ async function fetchFlush(
     }
     // anon endpoint: drop on first failure (REQ architecture §flush)
   }
+}
+
+/**
+ * Compose the Content-Type header with any extra headers requested
+ * for the authenticated endpoint (e.g. X-CSRF-Token). Anonymous
+ * endpoint requests never include the extra headers.
+ */
+function buildFlushHeaders(
+  isAuth: boolean,
+  authHeaders: (() => Record<string, string>) | undefined,
+): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (isAuth && authHeaders !== undefined) {
+    Object.assign(headers, authHeaders());
+  }
+  return headers;
 }
 
 export interface FlusherOptions {
@@ -232,7 +260,16 @@ export function createFlusher(opts: FlusherOptions): Flusher {
     const { events, endpoint, isAuth } = collectEvents();
     if (events.length === 0) return;
     const body = buildBody(events);
-    void fetchFlush(endpoint, body, isAuth, ctx.originalConsole, fetchFn, setTimeoutFn, 0);
+    void fetchFlush(
+      endpoint,
+      body,
+      isAuth,
+      ctx.originalConsole,
+      fetchFn,
+      setTimeoutFn,
+      ctx.authHeaders,
+      0,
+    );
   }
 
   async function flushSync(overrideEvents?: CapturedEvent[]): Promise<void> {
@@ -257,7 +294,7 @@ export function createFlusher(opts: FlusherOptions): Flusher {
         method: 'POST',
         body,
         keepalive: true,
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildFlushHeaders(auth, ctx.authHeaders),
       });
     } catch {
       // logFatal errors must not throw back to caller

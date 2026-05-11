@@ -48,6 +48,15 @@ export interface ClientlogConfig {
    * When absent, the wrapper reads the meta tag itself.
    */
   bootstrap?: BootstrapDescriptor;
+  /**
+   * Optional callback returning extra HTTP headers to attach to flushes
+   * against the AUTHENTICATED endpoint. Use this to send the
+   * X-CSRF-Token header that herold's public listener requires on
+   * cookie-authenticated mutating requests. Called per flush so a
+   * rotated cookie is always read fresh. The anonymous endpoint flush
+   * never includes these headers (it is not cookie-authenticated).
+   */
+  authHeaders?: () => Record<string, string>;
 }
 
 export interface Clientlog {
@@ -160,6 +169,7 @@ export function install(cfg: ClientlogConfig): Clientlog {
         endpoints: cfg.endpoints,
         queue,
         originalConsole: { error: console.error.bind(console) },
+        authHeaders: cfg.authHeaders,
       },
       fetchFn: globalThis.fetch.bind(globalThis),
       sendBeaconFn: (url, data) => navigator.sendBeacon(url, data),

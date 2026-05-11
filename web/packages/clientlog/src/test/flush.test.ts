@@ -155,6 +155,95 @@ describe('pre-auth to post-auth endpoint switch', () => {
   });
 });
 
+describe('authHeaders integration (CSRF on authenticated endpoint)', () => {
+  // Regression for the 403 csrf_required failures on
+  // POST /api/v1/clientlog: when the suite is logged in, every flush
+  // against the authenticated endpoint requires X-CSRF-Token because
+  // it is a cookie-authenticated mutating request. Without the
+  // header, the public listener returns 403 and the SPA's logFatal /
+  // batched diagnostic events are silently dropped — which was
+  // masking the actual state_unsafe_mutation crash on /settings.
+
+  it('attaches authHeaders to authenticated-endpoint flushes', async () => {
+    instance = install(
+      makeConfig({
+        isAuthenticated: () => true,
+        authHeaders: () => ({ 'X-CSRF-Token': 'csrf-from-cookie' }),
+      }),
+    );
+    console.warn('auth event');
+    clock.advance(5000);
+    await Promise.resolve();
+    expect(fakeFetch.calls.length).toBeGreaterThanOrEqual(1);
+    expect(fakeFetch.calls[0]!.headers['x-csrf-token']).toBe('csrf-from-cookie');
+    expect(fakeFetch.calls[0]!.headers['content-type']).toBe('application/json');
+  });
+
+  it('does NOT attach authHeaders to anonymous-endpoint flushes', async () => {
+    instance = install(
+      makeConfig({
+        isAuthenticated: () => false,
+        authHeaders: () => ({ 'X-CSRF-Token': 'should-not-appear' }),
+      }),
+    );
+    console.warn('anon event');
+    clock.advance(5000);
+    await Promise.resolve();
+    expect(fakeFetch.calls.length).toBeGreaterThanOrEqual(1);
+    expect(fakeFetch.calls[0]!.url).toBe('/api/v1/clientlog/public');
+    expect(fakeFetch.calls[0]!.headers['x-csrf-token']).toBeUndefined();
+  });
+
+  it('reads authHeaders fresh on every flush (rotated tokens)', async () => {
+    let token = 'first';
+    instance = install(
+      makeConfig({
+        isAuthenticated: () => true,
+        authHeaders: () => ({ 'X-CSRF-Token': token }),
+      }),
+    );
+    console.warn('first event');
+    clock.advance(5000);
+    await Promise.resolve();
+    expect(fakeFetch.calls[0]!.headers['x-csrf-token']).toBe('first');
+
+    // Token rotates between flushes (e.g. cookie rewritten by the
+    // server after a session refresh).
+    token = 'second';
+    console.warn('second event');
+    clock.advance(5000);
+    await Promise.resolve();
+    expect(fakeFetch.calls[1]!.headers['x-csrf-token']).toBe('second');
+  });
+
+  it('attaches authHeaders to the synchronous logFatal flush', async () => {
+    instance = install(
+      makeConfig({
+        isAuthenticated: () => true,
+        authHeaders: () => ({ 'X-CSRF-Token': 'sync-csrf' }),
+      }),
+    );
+    await instance.logFatal(new Error('boom'), { synchronous: true });
+    // logFatal triggers an immediate flushSync; no clock.advance needed.
+    expect(fakeFetch.calls.length).toBeGreaterThanOrEqual(1);
+    const last = fakeFetch.calls[fakeFetch.calls.length - 1]!;
+    expect(last.url).toBe('/api/v1/clientlog');
+    expect(last.headers['x-csrf-token']).toBe('sync-csrf');
+  });
+
+  it('works without authHeaders (backward compatible)', async () => {
+    // Existing consumers that have not yet adopted authHeaders must
+    // continue to flush successfully (against servers that do not
+    // require CSRF, or anonymous endpoints).
+    instance = install(makeConfig({ isAuthenticated: () => true }));
+    console.warn('event');
+    clock.advance(5000);
+    await Promise.resolve();
+    expect(fakeFetch.calls.length).toBeGreaterThanOrEqual(1);
+    expect(fakeFetch.calls[0]!.headers['x-csrf-token']).toBeUndefined();
+  });
+});
+
 describe('drop counter synthetic warning', () => {
   it('prepends synthetic warning when events were dropped', async () => {
     // Use a very small queue to trigger drops
