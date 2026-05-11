@@ -272,7 +272,26 @@ const CurrentBackupVersion = 1
 //	the render path treats as "do not inject the X-Herold-Recipient
 //	header" (REQ-FLOW-34). Caller-side wiring of the actual envelope
 //	address lands in task #17.
-const CurrentSchemaVersion = 49
+//
+// 50 — 0050_tagged_address_filters.sql (REQ-TAG-10..11, REQ-TAG-30..32).
+//
+//	Adds the tagged_address_filters table (id, principal_id,
+//	base_identity_id, suffix, action, label_name, created_at_us,
+//	updated_at_us) with UNIQUE(principal_id, base_identity_id,
+//	suffix) and a (principal_id, base_identity_id) fan-out index.
+//	FK to principals(id) and jmap_identities(id) both ON DELETE
+//	CASCADE so identity destruction takes the filter rows with it.
+//	The 100-filter per-principal cap lives in the store helpers,
+//	not the schema.
+//
+// 51 — 0051_tagged_address_dismissals.sql (REQ-TAG-10, REQ-TAG-60..62).
+//
+//	Adds the tagged_address_dismissals table (principal_id,
+//	base_identity_id, suffix, dismissed_at_us) with composite
+//	PRIMARY KEY (principal_id, base_identity_id, suffix). Same FK
+//	cascade semantics as 0050. The 500-dismissal cap lives in the
+//	store helpers.
+const CurrentSchemaVersion = 51
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -400,6 +419,11 @@ var TableNames = []string{
 	// Per-principal seen-addresses history (REQ-MAIL-11e..m, migration 0030).
 	// FK to principals(id); restored after principals.
 	"seen_addresses",
+	// Tagged-address (sub-addressing) filters and dismissals
+	// (REQ-TAG-10..11, migrations 0050 + 0051). FKs to principals(id)
+	// AND jmap_identities(id) — both parents are restored above.
+	"tagged_address_filters",
+	"tagged_address_dismissals",
 	"blob_refs",
 	// Server-side session rows (REQ-OPS-208, REQ-CLOG-06, migration 0039).
 	// FK to principals(id) ON DELETE CASCADE; restored after principals.

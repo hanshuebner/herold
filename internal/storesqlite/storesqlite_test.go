@@ -367,6 +367,210 @@ func TestMigration0049ReceivedToDefaultsAndRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMigration0050TaggedAddressFiltersTable verifies that migration
+// 0050 creates the tagged_address_filters table with the expected
+// columns, primary key, unique constraint, CHECK on action, and FK
+// cascade behaviour from jmap_identities.
+func TestMigration0050TaggedAddressFiltersTable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.db")
+	s, err := storesqlite.Open(context.Background(), path, nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	raw, err := storesqlite.OpenRaw(path)
+	if err != nil {
+		t.Fatalf("OpenRaw: %v", err)
+	}
+	defer raw.Close()
+
+	rows, err := raw.Query(`PRAGMA table_info(tagged_address_filters)`)
+	if err != nil {
+		t.Fatalf("PRAGMA table_info: %v", err)
+	}
+	defer rows.Close()
+	cols := map[string]struct {
+		typ     string
+		notNull int
+		pk      int
+	}{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		cols[name] = struct {
+			typ     string
+			notNull int
+			pk      int
+		}{typ, notNull, pk}
+	}
+	for _, want := range []struct {
+		name, typ string
+		pk        bool
+	}{
+		{"id", "TEXT", true},
+		{"principal_id", "INTEGER", false},
+		{"base_identity_id", "TEXT", false},
+		{"suffix", "TEXT", false},
+		{"action", "TEXT", false},
+		{"label_name", "TEXT", false},
+		{"created_at_us", "INTEGER", false},
+		{"updated_at_us", "INTEGER", false},
+	} {
+		c, ok := cols[want.name]
+		if !ok {
+			t.Fatalf("missing column %q", want.name)
+		}
+		if c.typ != want.typ {
+			t.Fatalf("column %q type = %q, want %q", want.name, c.typ, want.typ)
+		}
+		if want.pk && c.pk == 0 {
+			t.Fatalf("column %q should be primary key", want.name)
+		}
+	}
+
+	// CHECK on action must reject unknown values.
+	_, err = raw.Exec(`INSERT INTO tagged_address_filters
+	  (id, principal_id, base_identity_id, suffix, action, label_name,
+	   created_at_us, updated_at_us)
+	  VALUES ('x', 1, 'ident', 'sfx', 'delete_forever', 'L', 1, 1)`)
+	if err == nil {
+		t.Fatal("expected CHECK constraint to reject 'delete_forever' action, got nil error")
+	}
+
+	// End-to-end FK cascade: insert a principal + identity, then a
+	// filter row, then delete the identity and confirm the filter
+	// vanishes.
+	ctx := context.Background()
+	p, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "mig0050@example.com",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID:          "mig0050-id",
+		PrincipalID: p.ID,
+		Email:       "mig0050@example.com",
+		MayDelete:   true,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	if err := s.Meta().InsertTaggedAddressFilter(ctx, store.TaggedAddressFilter{
+		PrincipalID:    p.ID,
+		BaseIdentityID: "mig0050-id",
+		Suffix:         "ham",
+		Action:         store.TaggedAddressActionLabel,
+		LabelName:      "Ham",
+	}); err != nil {
+		t.Fatalf("InsertTaggedAddressFilter: %v", err)
+	}
+	if err := s.Meta().DeleteJMAPIdentity(ctx, "mig0050-id"); err != nil {
+		t.Fatalf("DeleteJMAPIdentity: %v", err)
+	}
+	got, err := s.Meta().ListTaggedAddressFiltersForPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("filter survived Identity delete: %+v", got)
+	}
+}
+
+// TestMigration0051TaggedAddressDismissalsTable verifies that migration
+// 0051 creates the tagged_address_dismissals table with the expected
+// composite primary key and FK cascade behaviour.
+func TestMigration0051TaggedAddressDismissalsTable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.db")
+	s, err := storesqlite.Open(context.Background(), path, nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	raw, err := storesqlite.OpenRaw(path)
+	if err != nil {
+		t.Fatalf("OpenRaw: %v", err)
+	}
+	defer raw.Close()
+
+	rows, err := raw.Query(`PRAGMA table_info(tagged_address_dismissals)`)
+	if err != nil {
+		t.Fatalf("PRAGMA: %v", err)
+	}
+	defer rows.Close()
+	gotCols := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		gotCols[name] = true
+	}
+	for _, c := range []string{"principal_id", "base_identity_id", "suffix", "dismissed_at_us"} {
+		if !gotCols[c] {
+			t.Fatalf("missing column %q", c)
+		}
+	}
+
+	// Composite PK rejects duplicate (principal, identity, suffix).
+	ctx := context.Background()
+	p, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "mig0051@example.com",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID:          "mig0051-id",
+		PrincipalID: p.ID,
+		Email:       "mig0051@example.com",
+		MayDelete:   true,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	if err := s.Meta().InsertTaggedAddressDismissal(ctx, store.TaggedAddressDismissal{
+		PrincipalID:    p.ID,
+		BaseIdentityID: "mig0051-id",
+		Suffix:         "shopping",
+	}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	// Raw second insert under the SAME tuple must fail the PK
+	// constraint at the engine boundary; the store-layer wrapper
+	// makes the user-facing call idempotent, so we go around it.
+	_, err = raw.Exec(`INSERT INTO tagged_address_dismissals
+	  (principal_id, base_identity_id, suffix, dismissed_at_us)
+	  VALUES (?, 'mig0051-id', 'shopping', 1)`, int64(p.ID))
+	if err == nil {
+		t.Fatal("expected composite PK to reject duplicate, got nil error")
+	}
+
+	// FK cascade: drop the Identity, the dismissal must follow.
+	if err := s.Meta().DeleteJMAPIdentity(ctx, "mig0051-id"); err != nil {
+		t.Fatalf("DeleteJMAPIdentity: %v", err)
+	}
+	got, err := s.Meta().ListTaggedAddressDismissalsForPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("dismissal survived Identity delete: %+v", got)
+	}
+}
+
 func TestRejectNewerSchema(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "meta.db")

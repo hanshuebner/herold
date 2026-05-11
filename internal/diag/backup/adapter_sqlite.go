@@ -964,6 +964,31 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "tagged_address_filters":
+		return enumerate(ctx, s.tx,
+			`SELECT id, principal_id, base_identity_id, suffix, action, label_name,
+			        created_at_us, updated_at_us
+			   FROM tagged_address_filters ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r TaggedAddressFilterRow
+				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.BaseIdentityID, &r.Suffix,
+					&r.Action, &r.LabelName, &r.CreatedAtUs, &r.UpdatedAtUs); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
+	case "tagged_address_dismissals":
+		return enumerate(ctx, s.tx,
+			`SELECT principal_id, base_identity_id, suffix, dismissed_at_us
+			   FROM tagged_address_dismissals
+			  ORDER BY principal_id, base_identity_id, suffix`,
+			func(rs *sql.Rows) (any, error) {
+				var r TaggedAddressDismissalRow
+				if err := rs.Scan(&r.PrincipalID, &r.BaseIdentityID, &r.Suffix, &r.DismissedAtUs); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
 	case "blob_refs":
 		return enumerate(ctx, s.tx,
 			`SELECT hash, size, ref_count, last_change_us FROM blob_refs ORDER BY hash`,
@@ -1667,6 +1692,24 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.PrincipalID, r.Email, r.DisplayName,
 			r.FirstSeenAtUs, r.LastUsedAtUs, r.SendCount, r.ReceivedCount)
+		return err
+	case "tagged_address_filters":
+		r := row.(*TaggedAddressFilterRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO tagged_address_filters
+			   (id, principal_id, base_identity_id, suffix, action, label_name,
+			    created_at_us, updated_at_us)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.PrincipalID, r.BaseIdentityID, r.Suffix,
+			r.Action, r.LabelName, r.CreatedAtUs, r.UpdatedAtUs)
+		return err
+	case "tagged_address_dismissals":
+		r := row.(*TaggedAddressDismissalRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO tagged_address_dismissals
+			   (principal_id, base_identity_id, suffix, dismissed_at_us)
+			 VALUES (?, ?, ?, ?)`,
+			r.PrincipalID, r.BaseIdentityID, r.Suffix, r.DismissedAtUs)
 		return err
 	case "blob_refs":
 		r := row.(*BlobRefRow)

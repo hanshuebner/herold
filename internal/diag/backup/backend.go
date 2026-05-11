@@ -232,6 +232,10 @@ func rowsForTable(table string) (any, bool) {
 		return &LLMClassificationRow{}, true
 	case "seen_addresses":
 		return &SeenAddressRow{}, true
+	case "tagged_address_filters":
+		return &TaggedAddressFilterRow{}, true
+	case "tagged_address_dismissals":
+		return &TaggedAddressDismissalRow{}, true
 	case "sessions":
 		return &SessionRow{}, true
 	case "clientlog":

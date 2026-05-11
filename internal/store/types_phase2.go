@@ -1451,3 +1451,74 @@ type IdentitySubmission struct {
 	// UpdatedAt is the instant of the most recent write.
 	UpdatedAt time.Time
 }
+
+// -- Tagged addresses (REQ-TAG-10..11, REQ-TAG-30..32) ----------------
+
+// TaggedAddressActionLabel files matching mail into the target mailbox
+// without suppressing the implicit Inbox keep (REQ-TAG-30).
+const TaggedAddressActionLabel = "label"
+
+// TaggedAddressActionLabelArchive files into the target mailbox AND
+// suppresses the implicit Inbox keep (REQ-TAG-30).
+const TaggedAddressActionLabelArchive = "label_archive"
+
+// TaggedAddressActionLabelArchiveRead is label_archive plus the
+// \Seen flag (REQ-TAG-30).
+const TaggedAddressActionLabelArchiveRead = "label_archive_read"
+
+// MaxTaggedAddressFiltersPerPrincipal is the hard cap on
+// tagged_address_filters rows per principal (REQ-TAG-11). Hitting this
+// cap on insert returns ErrTooManyFilters.
+const MaxTaggedAddressFiltersPerPrincipal = 100
+
+// MaxTaggedAddressDismissalsPerPrincipal is the hard cap on
+// tagged_address_dismissals rows per principal (REQ-TAG-11). Hitting
+// this cap on insert returns ErrTooManyDismissals.
+const MaxTaggedAddressDismissalsPerPrincipal = 500
+
+// TaggedAddressFilter is one row in the tagged_address_filters table.
+// Each row binds a (principal, base Identity, suffix) tuple to a filing
+// action and a target mailbox/label name. The base Identity is the
+// Identity whose address minus the +suffix matches the recipient; the
+// suffix is the lower-cased canonical form (REQ-TAG-02). Label-name
+// resolution and existence checks live in the application layer
+// (REQ-TAG-32); the store treats the column verbatim.
+type TaggedAddressFilter struct {
+	// ID is the opaque primary key. Caller may leave empty on Insert;
+	// the store generates a random opaque hex id when ID == "".
+	ID string
+	// PrincipalID is the owning principal.
+	PrincipalID PrincipalID
+	// BaseIdentityID is the jmap_identities.id of the Identity whose
+	// base address (minus +suffix) matches the recipient.
+	BaseIdentityID string
+	// Suffix is the lower-cased canonical sub-address suffix
+	// (REQ-TAG-02). Storage normalises to lower-case on Insert.
+	Suffix string
+	// Action is one of TaggedAddressActionLabel,
+	// TaggedAddressActionLabelArchive,
+	// TaggedAddressActionLabelArchiveRead (REQ-TAG-30).
+	Action string
+	// LabelName is the target mailbox/label name. Verbatim string;
+	// existence + case-canonicalisation enforced by the caller.
+	LabelName string
+	// CreatedAt / UpdatedAt are the row lifecycle timestamps.
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// TaggedAddressDismissal is one row in the tagged_address_dismissals
+// table. The user has explicitly chosen to ignore a (base Identity,
+// suffix) combination; the SPA banner-gate read consults this row so
+// the prompt does not reappear. The inbound delivery pipeline never
+// consults this table (REQ-TAG-20 step 3).
+type TaggedAddressDismissal struct {
+	// PrincipalID is the owning principal.
+	PrincipalID PrincipalID
+	// BaseIdentityID is the jmap_identities.id the dismissal targets.
+	BaseIdentityID string
+	// Suffix is the lower-cased canonical sub-address suffix.
+	Suffix string
+	// DismissedAt is the instant the user pressed dismiss.
+	DismissedAt time.Time
+}

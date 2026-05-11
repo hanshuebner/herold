@@ -708,6 +708,32 @@ type ClientLogRow struct {
 	PayloadJSON string  `json:"payload_json"`
 }
 
+// TaggedAddressFilterRow mirrors the tagged_address_filters table
+// introduced in migration 0050 (REQ-TAG-10..11, REQ-TAG-30..32). One
+// row per (principal, base Identity, suffix) binding to a filing
+// action and target label name.
+type TaggedAddressFilterRow struct {
+	ID             string `json:"id"`
+	PrincipalID    int64  `json:"principal_id"`
+	BaseIdentityID string `json:"base_identity_id"`
+	Suffix         string `json:"suffix"`
+	Action         string `json:"action"`
+	LabelName      string `json:"label_name"`
+	CreatedAtUs    int64  `json:"created_at_us"`
+	UpdatedAtUs    int64  `json:"updated_at_us"`
+}
+
+// TaggedAddressDismissalRow mirrors the tagged_address_dismissals
+// table introduced in migration 0051 (REQ-TAG-10, REQ-TAG-60..62).
+// One row per (principal, base Identity, suffix) the user has
+// explicitly dismissed; used only by the SPA banner gate.
+type TaggedAddressDismissalRow struct {
+	PrincipalID    int64  `json:"principal_id"`
+	BaseIdentityID string `json:"base_identity_id"`
+	Suffix         string `json:"suffix"`
+	DismissedAtUs  int64  `json:"dismissed_at_us"`
+}
+
 // PushSubscriptionRow mirrors the push_subscription table introduced
 // in migration 0017 (Phase 3 Wave 3.8a, REQ-PROTO-120..122). The
 // JMAP keys.p256dh / keys.auth byte slices are persisted verbatim;

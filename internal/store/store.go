@@ -30,6 +30,18 @@ var (
 	// uniqueness or optimistic-concurrency collisions) so callers can
 	// surface the difference to clients.
 	ErrInvalidArgument = errors.New("store: invalid argument")
+
+	// ErrTooManyFilters is returned by InsertTaggedAddressFilter when
+	// the principal already holds MaxTaggedAddressFiltersPerPrincipal
+	// rows (REQ-TAG-11). Distinct from ErrQuotaExceeded so the JMAP /
+	// REST surface can map this to a `too_many_filters` error token
+	// without conflating it with the storage quota.
+	ErrTooManyFilters = errors.New("store: too many filters")
+
+	// ErrTooManyDismissals is returned by InsertTaggedAddressDismissal
+	// when the principal already holds
+	// MaxTaggedAddressDismissalsPerPrincipal rows (REQ-TAG-11).
+	ErrTooManyDismissals = errors.New("store: too many dismissals")
 )
 
 // Store is the composite handle every subsystem consumes to reach
@@ -1051,6 +1063,80 @@ type Metadata interface {
 	// (the longer 7-day GC of unverified rows is a separate pass).
 	// Order is ascending verification_token_expires_at_us.
 	ListExpiredVerificationTokens(ctx context.Context, before time.Time) ([]JMAPIdentity, error)
+
+	// -- Tagged addresses (REQ-TAG-10..11, REQ-TAG-30..32) ------------
+
+	// GetTaggedAddressFilter returns the filter row for the
+	// (principalID, baseIdentityID, suffix) tuple. The suffix is
+	// matched case-insensitively after lower-casing both sides
+	// (REQ-TAG-02). Returns ErrNotFound when no match exists.
+	GetTaggedAddressFilter(ctx context.Context, principalID PrincipalID, baseIdentityID, suffix string) (TaggedAddressFilter, error)
+
+	// ListTaggedAddressFiltersForPrincipal returns every filter row
+	// owned by principalID, ordered by (base_identity_id, suffix) for
+	// stable SPA rendering. Returns an empty slice (nil) and nil error
+	// when the principal has no filters.
+	ListTaggedAddressFiltersForPrincipal(ctx context.Context, principalID PrincipalID) ([]TaggedAddressFilter, error)
+
+	// InsertTaggedAddressFilter creates a new tagged_address_filters
+	// row from f. The store generates a random opaque ID when f.ID is
+	// empty, normalises f.Suffix to lower-case, and stamps
+	// CreatedAt / UpdatedAt to the store clock. Returns ErrConflict on
+	// duplicate (principal, base_identity, suffix) and ErrTooManyFilters
+	// when the principal already holds
+	// MaxTaggedAddressFiltersPerPrincipal rows (REQ-TAG-11). Returns
+	// ErrInvalidArgument when f.Action is not one of the allowed
+	// TaggedAddressAction* constants.
+	InsertTaggedAddressFilter(ctx context.Context, f TaggedAddressFilter) error
+
+	// UpdateTaggedAddressFilter changes the action + label_name on the
+	// filter row identified by id and bumps updated_at. Only those two
+	// columns are mutable; suffix / base_identity / principal are
+	// immutable identity columns. Returns ErrNotFound when the row is
+	// missing and ErrInvalidArgument when action is not one of the
+	// allowed TaggedAddressAction* constants.
+	UpdateTaggedAddressFilter(ctx context.Context, id, action, labelName string) error
+
+	// DeleteTaggedAddressFilter removes the filter row identified by id
+	// and atomically deletes any matching tagged_address_dismissals
+	// row for the same (principal, base_identity, suffix) tuple per
+	// REQ-TAG-61. Returns the deleted row's (suffix, baseIdentityID,
+	// principalID) so the caller can emit the appropriate Identity/
+	// changes push event without a second read. Returns ErrNotFound
+	// when the filter row is missing; the dismissal-side delete is
+	// best-effort and is not an error if no dismissal exists.
+	DeleteTaggedAddressFilter(ctx context.Context, id string) (suffix, baseIdentityID string, principalID PrincipalID, err error)
+
+	// InsertTaggedAddressDismissal creates a new
+	// tagged_address_dismissals row from d. The store normalises
+	// d.Suffix to lower-case and stamps DismissedAt to the store clock.
+	// Idempotent on duplicate (principal, base_identity, suffix):
+	// returns nil. Returns ErrTooManyDismissals when the principal
+	// already holds MaxTaggedAddressDismissalsPerPrincipal rows
+	// (REQ-TAG-11).
+	InsertTaggedAddressDismissal(ctx context.Context, d TaggedAddressDismissal) error
+
+	// DeleteTaggedAddressDismissal removes the dismissal row identified
+	// by (principalID, baseIdentityID, suffix). Idempotent: no error if
+	// no row matches. The suffix is lower-cased before comparison
+	// (REQ-TAG-02).
+	DeleteTaggedAddressDismissal(ctx context.Context, principalID PrincipalID, baseIdentityID, suffix string) error
+
+	// ListTaggedAddressDismissalsForPrincipal returns every dismissal
+	// row owned by principalID, ordered by (base_identity_id, suffix)
+	// for stable SPA rendering. Returns an empty slice (nil) and nil
+	// error when the principal has no dismissals.
+	ListTaggedAddressDismissalsForPrincipal(ctx context.Context, principalID PrincipalID) ([]TaggedAddressDismissal, error)
+
+	// HasTaggedAddressFilterOrDismissal reports whether the
+	// (principalID, baseIdentityID, suffix) tuple matches an existing
+	// filter row, a dismissal row, or both. Used by the SPA banner gate
+	// to decide whether to surface the per-message prompt without
+	// loading the full rows. The suffix is lower-cased before
+	// comparison (REQ-TAG-02). Returns no error when both flags are
+	// false (i.e., the user has neither registered nor dismissed the
+	// suffix yet).
+	HasTaggedAddressFilterOrDismissal(ctx context.Context, principalID PrincipalID, baseIdentityID, suffix string) (hasFilter, hasDismissal bool, err error)
 
 	// MaterializeDefaultIdentity ensures that a real jmap_identities row
 	// exists for the principal's synthesised default identity
