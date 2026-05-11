@@ -767,6 +767,114 @@ class MailStore {
   }
 
   /**
+   * Create a new Identity via `Identity/set { create }`
+   * (REQ-SET-IDENT-30 step 1). The server commits the row in the
+   * unverified state and asynchronously dispatches a verification
+   * email (REQ-IDENT-30); the suite's wizard then transitions to
+   * the verification-pending pane.
+   *
+   * Returns the freshly-created `Identity` row on success. On a
+   * `setError` (forbiddenFrom, invalidProperties), throws an Error
+   * whose `.message` is the server-provided description so the
+   * wizard can surface it inline with the offending field
+   * highlighted (REQ-SET-IDENT-30).
+   *
+   * The created row is mirrored into the local identities cache
+   * (REQ-SET-IDENT-40); the cache reads as "verification pending"
+   * because `verifiedAt` is null on a freshly-created row, and
+   * `verificationPendingSince` is set by the server.
+   */
+  async createIdentity(email: string, name: string): Promise<Identity> {
+    const accountId = this.mailAccountId;
+    if (!accountId) throw new Error('No Mail account on this session');
+
+    const trimmedEmail = email.trim();
+    const trimmedName = name.trim();
+    if (trimmedEmail === '') throw new Error('email is required');
+
+    const clientID = 'new';
+    const props: Record<string, unknown> = { email: trimmedEmail };
+    // The server treats name as optional; empty-string falls back to
+    // the local-part on the wire.
+    if (trimmedName !== '') props.name = trimmedName;
+
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Identity/set',
+        {
+          accountId,
+          create: { [clientID]: props },
+        },
+        [Capability.Submission],
+      );
+    });
+    strict(responses);
+
+    const result = invocationArgs<{
+      created?: Record<string, Identity>;
+      notCreated?: Record<string, { type: string; description?: string }>;
+    }>(responses[0]);
+
+    const failure = result.notCreated?.[clientID];
+    if (failure) {
+      // Surface the server-side description so the wizard can render
+      // it inline (REQ-SET-IDENT-30). The forbiddenFrom case carries
+      // a domain-policy explanation; invalidProperties carries the
+      // RFC 5321 syntactic complaint.
+      throw new Error(failure.description ?? failure.type);
+    }
+    const created = result.created?.[clientID];
+    if (!created) {
+      throw new Error('Identity/set did not echo the created row');
+    }
+
+    // Mirror into the cache so the row renders in the list as
+    // verification-pending without waiting for a JMAP push.
+    const next = new Map(this.identities);
+    next.set(created.id, created);
+    this.identities = next;
+    return created;
+  }
+
+  /**
+   * Destroy an existing Identity via `Identity/set { destroy }`.
+   * Used by the wizard's Cancel-at-step-2 path when the user wants
+   * to discard the just-created pending identity (REQ-SET-IDENT-33).
+   * Mirrors the destroy into the local cache; throws an Error
+   * carrying the server's `notDestroyed` description on failure.
+   */
+  async destroyIdentity(identityId: string): Promise<void> {
+    const accountId = this.mailAccountId;
+    if (!accountId) throw new Error('No Mail account on this session');
+
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Identity/set',
+        {
+          accountId,
+          destroy: [identityId],
+        },
+        [Capability.Submission],
+      );
+    });
+    strict(responses);
+
+    const result = invocationArgs<{
+      destroyed?: string[] | null;
+      notDestroyed?: Record<string, { type: string; description?: string }>;
+    }>(responses[0]);
+
+    const failure = result.notDestroyed?.[identityId];
+    if (failure) {
+      throw new Error(failure.description ?? failure.type);
+    }
+
+    const next = new Map(this.identities);
+    next.delete(identityId);
+    this.identities = next;
+  }
+
+  /**
    * Update the display name of the identity identified by `identityId`
    * via `Identity/set update`, then mirror the change into the local
    * identities cache so compose / reply flows pick up the new name

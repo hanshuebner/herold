@@ -355,7 +355,7 @@ export const de = {
   // Identitäten-Liste (REQ-SET-IDENT-01..08, re #20)
   'settings.identityList.heading': 'Identitäten',
   'settings.identityList.addBtn': 'Identität hinzufügen',
-  'settings.identityList.addStubTooltip': 'Folgt im nächsten PR',
+  'settings.identityList.addTooltip': 'Neue Absende-Identität hinzufügen',
   'settings.identityList.defaultRadioAria':
     '{email} als Standard festlegen',
   'settings.identityList.defaultRadioDisabledTitle':
@@ -365,13 +365,97 @@ export const de = {
   'settings.identityList.chip.verifying': 'Verifikation ausstehend',
   'settings.identityList.chip.unverified': 'Nicht verifiziert',
   'settings.identityList.verifyBtn': 'Verifizieren',
-  'settings.identityList.verifyStubTooltip': 'Folgt im nächsten PR',
+  'settings.identityList.verifyTooltip': 'Bestätigungscode eingeben',
   'settings.identityList.resendBtn': 'Erneut senden',
+  'settings.identityList.resendTooltip': 'Bestätigungs-E-Mail erneut senden',
   'settings.identityList.externalDisabledTitle':
     'Externer SMTP-Versand ist für diese Identität nicht konfiguriert.',
   'settings.identityList.defaultChanged': 'Standard-Identität aktualisiert',
   'settings.identityList.defaultChangeFailed':
     'Standard-Identität konnte nicht geändert werden',
+
+  // Identitäten-Assistent (REQ-SET-IDENT-30..33, re #21)
+  'settings.identityWizard.title': 'Identität hinzufügen',
+  'settings.identityWizard.close': 'Schließen',
+  'settings.identityWizard.cancel': 'Abbrechen',
+  'settings.identityWizard.next': 'Weiter',
+  'settings.identityWizard.back': 'Zurück',
+  'settings.identityWizard.done': 'Fertig',
+  'settings.identityWizard.skip': 'Überspringen',
+  'settings.identityWizard.create': 'Erstellen',
+  'settings.identityWizard.creating': 'Erstelle…',
+  'settings.identityWizard.step1Title': 'Adresse',
+  'settings.identityWizard.step1Intro':
+    'Geben Sie die E-Mail-Adresse an, für die diese Identität gelten soll. Wir senden eine Bestätigungsnachricht; Sie geben den 6-stelligen Code ein oder folgen dem Link in der Nachricht.',
+  'settings.identityWizard.emailLabel': 'E-Mail-Adresse',
+  'settings.identityWizard.emailHelper':
+    'Die Adresse, von der aus Sie senden möchten.',
+  'settings.identityWizard.emailInvalid': 'Gültige E-Mail-Adresse eingeben.',
+  'settings.identityWizard.displayNameLabel': 'Anzeigename (optional)',
+  'settings.identityWizard.displayNameHelper':
+    'Wird Empfängern neben der E-Mail-Adresse angezeigt.',
+  'settings.identityWizard.domainBlocked':
+    'Dieser Server erlaubt keine Identitäten für {domain} — bitte wenden Sie sich an Ihre Administrator:in.',
+  'settings.identityWizard.step2Title': 'Adresse bestätigen',
+  'settings.identityWizard.step2Intro':
+    'Wir haben eine Bestätigungs-E-Mail an {email} gesendet. Klicken Sie auf den Link in der Nachricht oder geben Sie den 6-stelligen Code unten ein.',
+  'settings.identityWizard.codeLabel': 'Bestätigungscode',
+  'settings.identityWizard.codeHelper':
+    '6 Ziffern — führende Nullen einschließen. Codes laufen nach 24 Stunden ab.',
+  'settings.identityWizard.codeInvalid': 'Genau 6 Ziffern eingeben.',
+  'settings.identityWizard.codeWrong': 'Code stimmt nicht. Bitte E-Mail prüfen und erneut versuchen.',
+  'settings.identityWizard.verify': 'Verifizieren',
+  'settings.identityWizard.verifying': 'Verifiziere…',
+  'settings.identityWizard.resend': 'E-Mail erneut senden',
+  'settings.identityWizard.resending': 'Sende erneut…',
+  'settings.identityWizard.resendOk': 'Bestätigungs-E-Mail erneut gesendet.',
+  'settings.identityWizard.resendRateLimited': 'In {seconds} s erneut versuchen.',
+  'settings.identityWizard.resendRateLimitedShort':
+    'Bitte vor erneutem Senden warten.',
+  'settings.identityWizard.cancelPendingNotice':
+    'Beim Schließen bleibt die Identität in der „Verifikation ausstehend"-Liste — Sie können die Verifikation später in den Einstellungen abschließen.',
+  'settings.identityWizard.discardPending': 'Verwerfen',
+  'settings.identityWizard.keepPending': 'Ausstehend lassen',
+  'settings.identityWizard.step3Title': 'Externes SMTP konfigurieren',
+  'settings.identityWizard.step3Intro':
+    'Diese Identität nutzt eine externe Domain. Konfigurieren Sie SMTP-Zugangsdaten, damit ausgehende E-Mails über {domain} gesendet werden.',
+  'settings.identityWizard.step3SkipNote':
+    'Sie können den SMTP-Versand später im Identitäten-Editor konfigurieren.',
+  'settings.identityWizard.smtpHost': 'SMTP-Host',
+  'settings.identityWizard.smtpPort': 'Port',
+  'settings.identityWizard.smtpUser': 'Benutzername',
+  'settings.identityWizard.smtpPassword': 'Passwort',
+  'settings.identityWizard.smtpSecurity': 'Sicherheit',
+  'settings.identityWizard.smtpSecurityStartTLS': 'STARTTLS',
+  'settings.identityWizard.smtpSecurityImplicit': 'Implizites TLS',
+  'settings.identityWizard.smtpSecurityNone': 'Keine (Klartext)',
+  'settings.identityWizard.smtpHostRequired': 'Host wird benötigt.',
+  'settings.identityWizard.smtpUserRequired': 'Benutzername wird benötigt.',
+  'settings.identityWizard.smtpPasswordRequired': 'Passwort wird benötigt.',
+  'settings.identityWizard.smtpPortInvalid':
+    'Port muss zwischen 1 und 65535 liegen.',
+  'settings.identityWizard.smtpSaveError':
+    'SMTP-Einstellungen konnten nicht gespeichert werden: {message}',
+  'settings.identityWizard.successToast': '{email} verifiziert',
+  'settings.identityWizard.createdToast':
+    'Bestätigungs-E-Mail an {email} gesendet',
+
+  // Verifizierungs-Dialog (REQ-SET-IDENT-20..21, re #21)
+  'settings.identityVerify.title': 'Identität verifizieren',
+  'settings.identityVerify.close': 'Schließen',
+  'settings.identityVerify.intro':
+    'Wir haben eine Bestätigungsnachricht an {email} gesendet. Klicken Sie auf den Link in der Nachricht oder geben Sie den 6-stelligen Code unten ein.',
+  'settings.identityVerify.codeLabel': 'Bestätigungscode',
+  'settings.identityVerify.verify': 'Verifizieren',
+  'settings.identityVerify.verifying': 'Verifiziere…',
+  'settings.identityVerify.resend': 'E-Mail erneut senden',
+  'settings.identityVerify.resending': 'Sende erneut…',
+  'settings.identityVerify.resendOk': 'Bestätigungs-E-Mail erneut gesendet.',
+  'settings.identityVerify.resendRateLimited': 'In {seconds} s erneut versuchen.',
+  'settings.identityVerify.resendRateLimitedShort':
+    'Bitte vor erneutem Senden warten.',
+  'settings.identityVerify.successToast': '{email} verifiziert',
+  'settings.identityVerify.cancel': 'Abbrechen',
 
   // Filter-Formular (re #97)
   'settings.filters.loading': 'Filter werden geladen…',

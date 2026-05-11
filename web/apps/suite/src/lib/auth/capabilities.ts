@@ -62,6 +62,19 @@ export function directoryAutocompleteMode(): 'all' | 'domain' | null {
 }
 
 /**
+ * True when the server advertises the identity-verification capability
+ * (`https://netzhansa.com/jmap/identity-verification`), i.e.
+ * `[server.identity_creation].enabled = true` in the operator config.
+ *
+ * When false, the suite hides the Add-identity affordance and the
+ * Verify / Resend buttons on pending / unverified rows
+ * (REQ-SET-IDENT-05).
+ */
+export function hasIdentityVerification(): boolean {
+  return jmap.hasCapability(Capability.HeroldIdentityVerification);
+}
+
+/**
  * Seconds threshold under which a chat message's timestamp is hidden
  * because the previous message in the same day-group is recent enough.
  * Sourced from the chat capability descriptor; defaults to 120 (2

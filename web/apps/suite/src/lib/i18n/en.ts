@@ -349,7 +349,7 @@ export const en = {
   // Identity list (REQ-SET-IDENT-01..08, re #20)
   'settings.identityList.heading': 'Identities',
   'settings.identityList.addBtn': 'Add identity',
-  'settings.identityList.addStubTooltip': 'Coming in next PR',
+  'settings.identityList.addTooltip': 'Add a new sending identity',
   'settings.identityList.defaultRadioAria': 'Set {email} as default',
   'settings.identityList.defaultRadioDisabledTitle':
     'Only verified identities can be the default.',
@@ -358,12 +358,91 @@ export const en = {
   'settings.identityList.chip.verifying': 'Verification pending',
   'settings.identityList.chip.unverified': 'Unverified',
   'settings.identityList.verifyBtn': 'Verify',
-  'settings.identityList.verifyStubTooltip': 'Coming in next PR',
+  'settings.identityList.verifyTooltip': 'Enter the verification code',
   'settings.identityList.resendBtn': 'Resend',
+  'settings.identityList.resendTooltip': 'Send the verification email again',
   'settings.identityList.externalDisabledTitle':
     'External SMTP submission is not configured for this identity.',
   'settings.identityList.defaultChanged': 'Default identity updated',
   'settings.identityList.defaultChangeFailed': 'Could not change default identity',
+
+  // Add-identity wizard (REQ-SET-IDENT-30..33, re #21)
+  'settings.identityWizard.title': 'Add identity',
+  'settings.identityWizard.close': 'Close',
+  'settings.identityWizard.cancel': 'Cancel',
+  'settings.identityWizard.next': 'Next',
+  'settings.identityWizard.back': 'Back',
+  'settings.identityWizard.done': 'Done',
+  'settings.identityWizard.skip': 'Skip',
+  'settings.identityWizard.create': 'Create',
+  'settings.identityWizard.creating': 'Creating…',
+  'settings.identityWizard.step1Title': 'Address',
+  'settings.identityWizard.step1Intro':
+    'Tell us which email address this identity is for. We will send a confirmation message and ask you to enter the 6-digit code or click the link in the message.',
+  'settings.identityWizard.emailLabel': 'Email address',
+  'settings.identityWizard.emailHelper':
+    'The address you want to be able to send from.',
+  'settings.identityWizard.emailInvalid': 'Enter a valid email address.',
+  'settings.identityWizard.displayNameLabel': 'Display name (optional)',
+  'settings.identityWizard.displayNameHelper':
+    'Shown to recipients alongside the email address.',
+  'settings.identityWizard.domainBlocked':
+    'This server does not allow identities for {domain} — contact your administrator.',
+  'settings.identityWizard.step2Title': 'Confirm your address',
+  'settings.identityWizard.step2Intro':
+    'We sent a confirmation email to {email}. Either click the link in the email, or enter the 6-digit code below.',
+  'settings.identityWizard.codeLabel': 'Verification code',
+  'settings.identityWizard.codeHelper':
+    '6 digits — leading zeros included. Codes expire after 24 hours.',
+  'settings.identityWizard.codeInvalid': 'Enter exactly 6 digits.',
+  'settings.identityWizard.codeWrong': 'That code did not match. Check the email and try again.',
+  'settings.identityWizard.verify': 'Verify',
+  'settings.identityWizard.verifying': 'Verifying…',
+  'settings.identityWizard.resend': 'Resend email',
+  'settings.identityWizard.resending': 'Resending…',
+  'settings.identityWizard.resendOk': 'Verification email sent again.',
+  'settings.identityWizard.resendRateLimited': 'Try again in {seconds} s.',
+  'settings.identityWizard.resendRateLimitedShort': 'Wait before resending.',
+  'settings.identityWizard.cancelPendingNotice':
+    'Closing keeps this identity in the "Verification pending" state — you can verify later from Settings.',
+  'settings.identityWizard.discardPending': 'Discard',
+  'settings.identityWizard.keepPending': 'Keep pending',
+  'settings.identityWizard.step3Title': 'Configure external SMTP',
+  'settings.identityWizard.step3Intro':
+    'This identity uses an external domain. Configure SMTP submission credentials so outbound mail is sent through {domain}.',
+  'settings.identityWizard.step3SkipNote':
+    'You can configure SMTP submission later from the identity edit dialog.',
+  'settings.identityWizard.smtpHost': 'SMTP host',
+  'settings.identityWizard.smtpPort': 'Port',
+  'settings.identityWizard.smtpUser': 'Username',
+  'settings.identityWizard.smtpPassword': 'Password',
+  'settings.identityWizard.smtpSecurity': 'Security',
+  'settings.identityWizard.smtpSecurityStartTLS': 'STARTTLS',
+  'settings.identityWizard.smtpSecurityImplicit': 'Implicit TLS',
+  'settings.identityWizard.smtpSecurityNone': 'None (plain)',
+  'settings.identityWizard.smtpHostRequired': 'Host is required.',
+  'settings.identityWizard.smtpUserRequired': 'Username is required.',
+  'settings.identityWizard.smtpPasswordRequired': 'Password is required.',
+  'settings.identityWizard.smtpPortInvalid': 'Port must be between 1 and 65535.',
+  'settings.identityWizard.smtpSaveError': 'Could not save SMTP settings: {message}',
+  'settings.identityWizard.successToast': 'Verified {email}',
+  'settings.identityWizard.createdToast': 'Verification email sent to {email}',
+
+  // Verify dialog (REQ-SET-IDENT-20..21, re #21)
+  'settings.identityVerify.title': 'Verify identity',
+  'settings.identityVerify.close': 'Close',
+  'settings.identityVerify.intro':
+    'We sent a verification message to {email}. Click the link in the message, or enter the 6-digit code below.',
+  'settings.identityVerify.codeLabel': 'Verification code',
+  'settings.identityVerify.verify': 'Verify',
+  'settings.identityVerify.verifying': 'Verifying…',
+  'settings.identityVerify.resend': 'Resend email',
+  'settings.identityVerify.resending': 'Resending…',
+  'settings.identityVerify.resendOk': 'Verification email sent again.',
+  'settings.identityVerify.resendRateLimited': 'Try again in {seconds} s.',
+  'settings.identityVerify.resendRateLimitedShort': 'Wait before resending.',
+  'settings.identityVerify.successToast': 'Verified {email}',
+  'settings.identityVerify.cancel': 'Cancel',
 
   // Filters form (re #97)
   'settings.filters.loading': 'Loading filters…',

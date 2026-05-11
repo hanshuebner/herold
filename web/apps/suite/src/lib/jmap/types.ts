@@ -125,6 +125,17 @@ export const Capability = {
    * Both sides MUST be updated together if the URI changes.
    */
   HeroldDirectoryAutocomplete: 'https://netzhansa.com/jmap/directory-autocomplete',
+  /**
+   * Principal-initiated identity verification (REQ-IDENT-11).
+   * Advertised when [server.identity_creation].enabled = true.
+   * When the capability is absent, the suite hides the "Add identity"
+   * affordance and the verify/resend buttons (REQ-SET-IDENT-05).
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/registry.go CapabilityIdentityVerification.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldIdentityVerification: 'https://netzhansa.com/jmap/identity-verification',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];
