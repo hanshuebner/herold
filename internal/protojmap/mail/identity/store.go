@@ -112,6 +112,11 @@ func (s *Store) defaultRecordLocked(p store.Principal) identityRecord {
 		AvatarBlobSize: p.AvatarBlobSize,
 		XFaceEnabled:   p.XFaceEnabled,
 		UpdatedAt:      p.UpdatedAt,
+		// REQ-IDENT-02: the synthesised default identity is
+		// verified-by-construction; verifiedAt is the principal's
+		// CreatedAt. No row in jmap_identities means no per-row
+		// verification flow ever runs against the default.
+		VerifiedAt: p.CreatedAt,
 	}
 	if ovr, ok := s.defaultOverrides[p.ID]; ok && ovr != nil {
 		// Apply non-empty override fields atop the principal-row default.
@@ -288,6 +293,13 @@ func persistedToRecord(r store.JMAPIdentity) identityRecord {
 		AvatarBlobSize: r.AvatarBlobSize,
 		XFaceEnabled:   r.XFaceEnabled,
 		UpdatedAt:      time.UnixMicro(r.UpdatedAtUs).UTC(),
+	}
+	// REQ-IDENT-01: VerifiedAtUs == 0 means "verification pending".
+	// Convert to a zero time.Time so jmapIdentity.VerifiedAt encodes as
+	// JSON null on the wire. Non-zero values reflect the wall-clock
+	// instant the verification round-trip completed.
+	if r.VerifiedAtUs != 0 {
+		rec.VerifiedAt = time.UnixMicro(r.VerifiedAtUs).UTC()
 	}
 	if r.Signature != nil {
 		v := *r.Signature

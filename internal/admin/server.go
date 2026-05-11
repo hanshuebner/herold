@@ -2368,8 +2368,30 @@ func composeAdminAndUI(
 	// Identity + EmailSubmission (REQ-PROTO-41, REQ-PROTO-42,
 	// REQ-PROTO-57, REQ-PROTO-58). Identity Register returns the
 	// provider that EmailSubmission's Register needs to resolve
-	// per-identity send-from addresses.
-	jmapIdentityStore := jmapidentity.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-identity"), clk)
+	// per-identity send-from addresses. The verification-trigger hook
+	// (REQ-IDENT-30) is wired by task #14 (mail composer); for now it
+	// stays nil so creates commit unverified rows without enqueuing
+	// email. The external-domain policy hook (REQ-IDENT-20) reads
+	// [server.identity_creation].external_domains; the allowlist mode
+	// matches the lowercased domain against the configured set.
+	identityOpts := jmapidentity.Options{
+		ExternalDomainPolicy: buildIdentityExternalDomainPolicy(
+			cfg.Server.IdentityCreation),
+	}
+	jmapIdentityStore := jmapidentity.RegisterWithOptions(
+		jmapSrv.Registry(), st,
+		logger.With("subsystem", "jmap-identity"), clk, identityOpts)
+	// REQ-IDENT-11: advertise the herold-namespaced identity-verification
+	// capability when [server.identity_creation].enabled is true (default
+	// true). The descriptor is empty for v1; the verifiedAt property is
+	// always present on Identity objects regardless of advertisement,
+	// matching REQ-IDENT-10's "additive, never blocks normal field access".
+	if cfg.Server.IdentityCreation.Enabled == nil || *cfg.Server.IdentityCreation.Enabled {
+		jmapSrv.Registry().RegisterCapabilityDescriptor(
+			protojmap.CapabilityIdentityVerification, struct{}{})
+		logger.Info("identity verification enabled",
+			slog.String("subsystem", "jmap-identity"))
+	}
 	// External SMTP submission (REQ-AUTH-EXT-SUBMIT-05): wire the
 	// extsubmit.Submitter when [server.external_submission].enabled is true.
 	// The Submitter was pre-built in StartServer (Phase-4 fix) so the same
@@ -3147,6 +3169,39 @@ func (a *telemetryGateAdapter) IsEnabled(sessionKey string) bool {
 // notifySystemdReady implements a minimal sd_notify(READY=1) compatible
 // with systemd Type=notify without pulling in the coreos/go-systemd
 // dependency. If NOTIFY_SOCKET is unset (development, container without
+// buildIdentityExternalDomainPolicy returns the DomainPolicy closure
+// that the JMAP Identity handler consults when an Identity/set { create }
+// payload targets a non-hosted domain (REQ-IDENT-20). The closure is
+// pure — it captures the resolved IdentityCreationConfig at boot, so a
+// SIGHUP reload that changes the mode requires the existing admin
+// reload path to rebuild this closure. Hosted domains never reach this
+// hook; the handler always permits them.
+//
+// Modes:
+//   - allow_all (default): permit every external domain.
+//   - allowlist: permit only domains in ExternalDomainAllowlist
+//     (lowercased, ASCII).
+//   - deny_all: refuse every external domain.
+func buildIdentityExternalDomainPolicy(ic sysconfig.IdentityCreationConfig) func(string) bool {
+	switch ic.ExternalDomains {
+	case sysconfig.IdentityCreationExternalDomainsDenyAll:
+		return func(string) bool { return false }
+	case sysconfig.IdentityCreationExternalDomainsAllowlist:
+		allow := make(map[string]struct{}, len(ic.ExternalDomainAllowlist))
+		for _, d := range ic.ExternalDomainAllowlist {
+			allow[strings.ToLower(d)] = struct{}{}
+		}
+		return func(dom string) bool {
+			_, ok := allow[strings.ToLower(dom)]
+			return ok
+		}
+	default:
+		// allow_all (the documented default; also chosen when the
+		// section is omitted entirely thanks to applyDefaults).
+		return func(string) bool { return true }
+	}
+}
+
 // systemd, tests) this is a no-op.
 func notifySystemdReady(logger *slog.Logger) {
 	sock := os.Getenv("NOTIFY_SOCKET")

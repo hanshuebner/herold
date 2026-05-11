@@ -107,6 +107,17 @@ const (
 	// additional properties defined for v1).
 	CapabilityExternalSubmission CapabilityID = "https://netzhansa.com/jmap/external-submission"
 
+	// CapabilityIdentityVerification is the JMAP Identity verification
+	// capability (REQ-IDENT-10..14). Advertised when
+	// [server.identity_creation].enabled is true (default true). When
+	// advertised, every Identity object carries the herold-namespaced
+	// "verifiedAt" extension property (UTCDate or null) and Identity/set
+	// { create } triggers the email verification round-trip. Clients
+	// ignoring the capability MUST still tolerate the verifiedAt
+	// property: it is additive and never blocks normal field access.
+	// The capability carries an empty per-server descriptor for v1.
+	CapabilityIdentityVerification CapabilityID = "https://netzhansa.com/jmap/identity-verification"
+
 	// CapabilityDirectoryAutocomplete is the compose-window address
 	// autocomplete capability. Advertised when
 	// [server.directory_autocomplete].mode != "off". The Directory/search

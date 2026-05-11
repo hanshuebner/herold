@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -83,6 +84,16 @@ type handlerSet struct {
 	store    store.Store
 	identity *Store
 	domains  func(ctx context.Context) (map[string]struct{}, error)
+	logger   *slog.Logger
+	// verificationTrigger fires after Identity/set { create } commits
+	// (REQ-IDENT-30). May be nil; the create call then leaves the row
+	// unverified without enqueuing an email.
+	verificationTrigger VerificationTrigger
+	// externalDomain reports whether the given external (non-hosted)
+	// domain is permitted by operator policy (REQ-IDENT, the
+	// external_domains knob). May be nil; the legacy hosted-only
+	// behaviour applies then.
+	externalDomain DomainPolicy
 }
 
 // makeDomainsFn returns a closure that lists the locally-hosted domains.
@@ -305,15 +316,25 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			return nil, protojmap.NewMethodError("serverFail", derr.Error())
 		}
 		if _, hosted := domains[dom]; !hosted {
-			if resp.NotCreated == nil {
-				resp.NotCreated = make(map[string]setError)
+			// REQ-IDENT-12 / [server.identity_creation].external_domains:
+			// hosted domains are always allowed; external domains follow
+			// the operator's policy hook. A nil policy preserves the
+			// legacy hosted-only behaviour.
+			permitted := false
+			if s.h.externalDomain != nil {
+				permitted = s.h.externalDomain(dom)
 			}
-			resp.NotCreated[clientID] = setError{
-				Type:        "forbiddenFrom",
-				Description: fmt.Sprintf("domain %q is not hosted by this server", dom),
-				Properties:  []string{"email"},
+			if !permitted {
+				if resp.NotCreated == nil {
+					resp.NotCreated = make(map[string]setError)
+				}
+				resp.NotCreated[clientID] = setError{
+					Type:        "forbiddenFrom",
+					Description: "domain not permitted by server policy",
+					Properties:  []string{"email"},
+				}
+				continue
 			}
-			continue
 		}
 		// Validate and resolve avatarBlobId if supplied.
 		var avatarHash string
@@ -340,6 +361,12 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			AvatarBlobHash: avatarHash,
 			AvatarBlobSize: avatarSize,
 			XFaceEnabled:   in.XFaceEnabled,
+			// REQ-IDENT-12: the row is committed in the unverified
+			// state. VerifiedAt is the zero value, which the
+			// recordToPersisted projection drops (the persisted
+			// VerifiedAtUs stays 0) and toJMAP encodes as wire-form
+			// JSON null. Verification flips this only via the email
+			// callback (REQ-IDENT-40) or the admin CLI (REQ-IDENT-50).
 		}
 		if in.Signature != nil {
 			v := *in.Signature
@@ -349,6 +376,23 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		// incRef the avatar blob after the row is committed.
 		if avatarHash != "" {
 			_ = s.h.store.Meta().IncRefBlob(ctx, avatarHash, avatarSize)
+		}
+		// REQ-IDENT-30: fire the verification-trigger hook so the
+		// composer (task #14) can enqueue the verification email. The
+		// trigger runs in this goroutine but MUST NOT block on SMTP;
+		// failures are logged and we still report the create as
+		// successful — the suite surfaces a Resend affordance
+		// (REQ-IDENT-41) for users to retry.
+		if s.h.verificationTrigger != nil {
+			row := recordToPersisted(created)
+			row.VerifiedAtUs = 0
+			if err := s.h.verificationTrigger(ctx, row); err != nil {
+				s.h.logger.Warn("identity verification trigger failed",
+					slog.String("subsystem", "jmap-identity"),
+					slog.String("identity_id", row.ID),
+					slog.Uint64("principal_id", uint64(p.ID)),
+					slog.String("err", err.Error()))
+			}
 		}
 		if resp.Created == nil {
 			resp.Created = make(map[string]jmapIdentity)
@@ -539,6 +583,18 @@ func decodePatch(ctx context.Context, st store.Store, raw json.RawMessage) (iden
 				Type:        "invalidProperties",
 				Description: "email is immutable",
 				Properties:  []string{"email"},
+			}
+		case "verifiedAt":
+			// REQ-IDENT-13: clients cannot toggle verifiedAt. The
+			// transition only happens via the verification email
+			// callback (REQ-IDENT-40) or the admin CLI
+			// (REQ-IDENT-50). Reject the entire update payload so
+			// the client surfaces the conflict instead of silently
+			// dropping the other fields it sent.
+			return identityPatch{}, &setError{
+				Type:        "invalidProperties",
+				Description: "verifiedAt is server-managed",
+				Properties:  []string{"verifiedAt"},
 			}
 		case "id", "mayDelete":
 			return identityPatch{}, &setError{

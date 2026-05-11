@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,16 @@ type jmapID = string
 type emailAddress struct {
 	Name  string `json:"name,omitempty"`
 	Email string `json:"email"`
+}
+
+// jmapDateTime is a thin wrapper around time.Time whose JSON encoding
+// is the JMAP UTCDate form (RFC 8620 §1.4: RFC 3339 with second
+// precision, UTC offset "Z"). A nil pointer marshals as JSON null per
+// the wire contract for verifiedAt (REQ-IDENT-10).
+type jmapDateTime time.Time
+
+func (t jmapDateTime) MarshalJSON() ([]byte, error) {
+	return json.Marshal(time.Time(t).UTC().Format("2006-01-02T15:04:05Z"))
 }
 
 // jmapIdentity is the wire-form Identity object (RFC 8621 §7.1) plus
@@ -42,6 +53,14 @@ type jmapIdentity struct {
 	// When true and AvatarBlobId is non-null, createEmail prepends those
 	// headers derived from the avatar. Default false.
 	XFaceEnabled bool `json:"xFaceEnabled"`
+	// VerifiedAt is the herold extension property (REQ-IDENT-10)
+	// carrying the wall-clock instant the identity was verified, or
+	// JSON null for unverified identities. Synthesised defaults (id
+	// "default") are verified-by-construction and emit verifiedAt =
+	// principal CreatedAt (REQ-IDENT-02). The field is ALWAYS emitted
+	// (no omitempty) so clients can discriminate "verified at <ts>"
+	// from "unverified" on a single read.
+	VerifiedAt *jmapDateTime `json:"verifiedAt"`
 }
 
 // identityRecord is the in-memory representation backing an Identity.
@@ -69,6 +88,11 @@ type identityRecord struct {
 	XFaceEnabled bool
 	MayDelete    bool
 	UpdatedAt    time.Time
+	// VerifiedAt is the wall-clock instant this identity was verified
+	// (REQ-IDENT-01). Zero means the identity is unverified. The
+	// synthesised default identity treats the principal's CreatedAt as
+	// the verification instant (REQ-IDENT-02).
+	VerifiedAt time.Time
 }
 
 func (r identityRecord) toJMAP() jmapIdentity {
@@ -94,6 +118,14 @@ func (r identityRecord) toJMAP() jmapIdentity {
 		v := r.AvatarBlobHash
 		avatarBlobId = &v
 	}
+	// verifiedAt is null on the wire when the identity is unverified
+	// (zero VerifiedAt). The synthesised default sets VerifiedAt to the
+	// principal's CreatedAt at read time (REQ-IDENT-02).
+	var verifiedAt *jmapDateTime
+	if !r.VerifiedAt.IsZero() {
+		v := jmapDateTime(r.VerifiedAt)
+		verifiedAt = &v
+	}
 	return jmapIdentity{
 		ID:            renderID(r.ID),
 		Name:          r.Name,
@@ -106,6 +138,7 @@ func (r identityRecord) toJMAP() jmapIdentity {
 		MayDelete:     r.MayDelete,
 		AvatarBlobId:  avatarBlobId,
 		XFaceEnabled:  r.XFaceEnabled,
+		VerifiedAt:    verifiedAt,
 	}
 }
 

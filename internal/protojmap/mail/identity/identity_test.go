@@ -3,6 +3,9 @@ package identity
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +52,7 @@ func newHandlers(t *testing.T) (*handlerSet, store.Store, store.Principal) {
 		store:    st,
 		identity: NewStoreWith(st, clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))),
 		domains:  makeDomainsFn(st),
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}, st, p
 }
 
@@ -188,6 +192,320 @@ func TestIdentity_Get_IncludesSignature(t *testing.T) {
 	js, _ := json.Marshal(resp)
 	if !strings.Contains(string(js), `"signature":"Cheers,\nAlice"`) {
 		t.Fatalf("default signature missing in response: %s", js)
+	}
+}
+
+// -- REQ-IDENT-10..14: verifiedAt extension property ---------------
+
+// TestIdentity_Get_DefaultVerifiedAtMatchesPrincipalCreatedAt verifies
+// REQ-IDENT-02: the synthesised default identity is verified-by-
+// construction and emits verifiedAt equal to the owning principal's
+// CreatedAt. The wire form is the JMAP UTCDate ("YYYY-MM-DDTHH:MM:SSZ").
+func TestIdentity_Get_DefaultVerifiedAtMatchesPrincipalCreatedAt(t *testing.T) {
+	h, st, p := newHandlers(t)
+	// Re-read the principal so CreatedAt reflects what the store
+	// assigned at insert time, not the zero-valued probe sent in.
+	got, err := st.Meta().GetPrincipalByID(context.Background(), p.ID)
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"ids":       []string{"default"},
+	})
+	resp, mErr := getHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("Identity/get: %v", mErr)
+	}
+	gr, ok := resp.(getResponse)
+	if !ok {
+		t.Fatalf("unexpected response shape: %T", resp)
+	}
+	if len(gr.List) != 1 {
+		t.Fatalf("expected one identity in response, got %d", len(gr.List))
+	}
+	row := gr.List[0]
+	if row.VerifiedAt == nil {
+		t.Fatalf("default identity verifiedAt is nil; want principal CreatedAt")
+	}
+	wantStr := got.CreatedAt.UTC().Format("2006-01-02T15:04:05Z")
+	gotJSON, _ := json.Marshal(row.VerifiedAt)
+	// Marshaled value is a JSON string ("..."); compare unquoted.
+	if string(gotJSON) != "\""+wantStr+"\"" {
+		t.Fatalf("default verifiedAt = %s; want %q", gotJSON, wantStr)
+	}
+}
+
+// TestIdentity_Get_PersistedRowVerifiedAtIsNull verifies REQ-IDENT-12:
+// a freshly created persistent identity row reports verifiedAt = JSON
+// null until the email round-trip flips verified_at_us.
+func TestIdentity_Get_PersistedRowVerifiedAtIsNull(t *testing.T) {
+	h, _, p := newHandlers(t)
+	// Create a new persisted identity via Identity/set.
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"alt": map[string]any{
+				"name":  "Alice Persona",
+				"email": "alice@example.test",
+			},
+		},
+	})
+	createResp, mErr := setHandler{h: h}.executeAs(p, createArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/set create: %v", mErr)
+	}
+	created := createResp.(setResponse).Created["alt"]
+	if created.VerifiedAt != nil {
+		t.Fatalf("create response: verifiedAt should be null on a fresh row, got non-nil")
+	}
+	// Read back via Identity/get to confirm the JSON wire shape.
+	getArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"ids":       []string{created.ID},
+	})
+	getResp, mErr := getHandler{h: h}.executeAs(p, getArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/get: %v", mErr)
+	}
+	js, _ := json.Marshal(getResp)
+	if !strings.Contains(string(js), `"verifiedAt":null`) {
+		t.Fatalf("expected verifiedAt:null in get response: %s", js)
+	}
+}
+
+// TestIdentity_Changes_CarriesVerifiedAt verifies REQ-IDENT-10:
+// Identity/changes lists every changed identity by id; downstream
+// Identity/get reads carry the verifiedAt property. Identity/changes
+// itself returns only ids, not full objects (RFC 8620 §5.2), but the
+// state-driven read it triggers must surface verifiedAt — which is what
+// the wire-shape test above already covers for /get. This test exercises
+// /changes specifically to make sure the state-counter path keeps
+// returning the new identity in updated[].
+func TestIdentity_Changes_CarriesVerifiedAt(t *testing.T) {
+	h, st, p := newHandlers(t)
+	ctx := context.Background()
+	before, err := st.Meta().GetJMAPStates(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetJMAPStates: %v", err)
+	}
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"alt": map[string]any{
+				"name":  "Alice Persona",
+				"email": "alice@example.test",
+			},
+		},
+	})
+	createResp, mErr := setHandler{h: h}.executeAs(p, createArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/set create: %v", mErr)
+	}
+	created := createResp.(setResponse).Created["alt"]
+	args, _ := json.Marshal(map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(p.ID),
+		"sinceState": stateString(before.Identity),
+	})
+	resp, mErr := changesHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("Identity/changes: %v", mErr)
+	}
+	cr := resp.(changesResponse)
+	found := false
+	for _, id := range cr.Updated {
+		if id == created.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected new identity id %q in updated[]: %+v", created.ID, cr.Updated)
+	}
+	// Now Identity/get on the same id and verify verifiedAt: null.
+	getArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"ids":       []string{created.ID},
+	})
+	getResp, mErr := getHandler{h: h}.executeAs(p, getArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/get: %v", mErr)
+	}
+	js, _ := json.Marshal(getResp)
+	if !strings.Contains(string(js), `"verifiedAt":null`) {
+		t.Fatalf("expected verifiedAt:null after /changes read-through: %s", js)
+	}
+}
+
+// TestIdentity_Set_Update_RejectsVerifiedAt verifies REQ-IDENT-13: any
+// client attempt to toggle verifiedAt via Identity/set { update } is
+// rejected with invalidProperties { verifiedAt }.
+func TestIdentity_Set_Update_RejectsVerifiedAt(t *testing.T) {
+	h, _, p := newHandlers(t)
+	updateArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"update": map[string]any{
+			"default": map[string]any{
+				"verifiedAt": "2030-01-01T00:00:00Z",
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, updateArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/set: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	se, ok := sresp.NotUpdated["default"]
+	if !ok {
+		t.Fatalf("expected notUpdated[default]; got: %+v", sresp)
+	}
+	if se.Type != "invalidProperties" {
+		t.Fatalf("notUpdated type = %q; want invalidProperties", se.Type)
+	}
+	if len(se.Properties) != 1 || se.Properties[0] != "verifiedAt" {
+		t.Fatalf("notUpdated properties = %v; want [\"verifiedAt\"]", se.Properties)
+	}
+	if se.Description != "verifiedAt is server-managed" {
+		t.Fatalf("notUpdated description = %q; want \"verifiedAt is server-managed\"",
+			se.Description)
+	}
+}
+
+// TestIdentity_Set_Create_FiresVerificationTrigger verifies REQ-IDENT-30:
+// the hook is invoked with the freshly-created row after commit, and a
+// hook error does NOT roll the create back — the suite must surface a
+// Resend affordance (REQ-IDENT-41) instead.
+func TestIdentity_Set_Create_FiresVerificationTrigger(t *testing.T) {
+	h, _, p := newHandlers(t)
+	var captured []store.JMAPIdentity
+	h.verificationTrigger = func(_ context.Context, row store.JMAPIdentity) error {
+		captured = append(captured, row)
+		return errors.New("simulated SMTP failure")
+	}
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"alt": map[string]any{
+				"name":  "Alice Persona",
+				"email": "alice@example.test",
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, createArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/set create: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	if _, ok := sresp.Created["alt"]; !ok {
+		t.Fatalf("expected create success despite trigger failure: %+v", sresp.NotCreated)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("expected trigger to fire once; got %d", len(captured))
+	}
+	if captured[0].PrincipalID != p.ID {
+		t.Fatalf("trigger row.PrincipalID = %d; want %d", captured[0].PrincipalID, p.ID)
+	}
+	if captured[0].Email != "alice@example.test" {
+		t.Fatalf("trigger row.Email = %q; want alice@example.test", captured[0].Email)
+	}
+	if captured[0].VerifiedAtUs != 0 {
+		t.Fatalf("trigger row.VerifiedAtUs = %d; want 0 (unverified)", captured[0].VerifiedAtUs)
+	}
+}
+
+// TestIdentity_Set_Create_AllowAllExternalDomain verifies REQ-IDENT-20:
+// when the policy hook permits the external domain, Identity/set { create }
+// accepts the row even though the domain is not in ListLocalDomains.
+func TestIdentity_Set_Create_AllowAllExternalDomain(t *testing.T) {
+	h, _, p := newHandlers(t)
+	h.externalDomain = func(string) bool { return true }
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"ext": map[string]any{
+				"name":  "Alice External",
+				"email": "alice@elsewhere.test",
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("Identity/set: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	if _, ok := sresp.Created["ext"]; !ok {
+		t.Fatalf("expected create success for external allow-all policy: %+v", sresp.NotCreated)
+	}
+	if got := sresp.Created["ext"]; got.VerifiedAt != nil {
+		t.Fatalf("external create should be unverified; got verifiedAt = %v", got.VerifiedAt)
+	}
+}
+
+// TestIdentity_Set_Create_DenyAllExternalDomain verifies the deny_all
+// path: a hosted domain still works (alice@example.test), but a
+// foreign domain is rejected with forbiddenFrom.
+func TestIdentity_Set_Create_DenyAllExternalDomain(t *testing.T) {
+	h, _, p := newHandlers(t)
+	h.externalDomain = func(string) bool { return false }
+	// Hosted-domain creates still work.
+	hostedArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"local": map[string]any{
+				"name":  "Alice Local",
+				"email": "alice@example.test",
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, hostedArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/set hosted: %v", mErr)
+	}
+	if _, ok := resp.(setResponse).Created["local"]; !ok {
+		t.Fatalf("hosted create rejected unexpectedly: %+v", resp.(setResponse).NotCreated)
+	}
+	// External domain is denied.
+	extArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"ext": map[string]any{
+				"name":  "Alice External",
+				"email": "alice@elsewhere.test",
+			},
+		},
+	})
+	extResp, mErr := setHandler{h: h}.executeAs(p, extArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/set external: %v", mErr)
+	}
+	se, ok := extResp.(setResponse).NotCreated["ext"]
+	if !ok {
+		t.Fatalf("expected notCreated[ext]; got: %+v", extResp.(setResponse).Created)
+	}
+	if se.Type != "forbiddenFrom" {
+		t.Fatalf("notCreated type = %q; want forbiddenFrom", se.Type)
+	}
+	if se.Description != "domain not permitted by server policy" {
+		t.Fatalf("notCreated description = %q; want \"domain not permitted by server policy\"",
+			se.Description)
+	}
+}
+
+// TestIdentity_CapabilityRegisteredWhenEnabled verifies REQ-IDENT-11:
+// the CapabilityIdentityVerification URI is advertised in the JMAP
+// session descriptor's capabilities map. The admin server is the
+// canonical caller of RegisterCapabilityDescriptor; this test exercises
+// the same registry surface directly so the capability constant is
+// covered by go test before the admin-server build is run.
+func TestIdentity_CapabilityRegisteredWhenEnabled(t *testing.T) {
+	reg := protojmap.NewCapabilityRegistry()
+	reg.RegisterCapabilityDescriptor(protojmap.CapabilityIdentityVerification, struct{}{})
+	if !reg.HasCapability(protojmap.CapabilityIdentityVerification) {
+		t.Fatal("CapabilityIdentityVerification should be registered")
+	}
+	caps := reg.Capabilities()
+	if _, ok := caps[protojmap.CapabilityIdentityVerification]; !ok {
+		t.Fatalf("CapabilityIdentityVerification missing from caps map: %v", caps)
 	}
 }
 
