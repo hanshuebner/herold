@@ -35,6 +35,19 @@ class IdentitySubmissionStore {
   /** Whether the JMAP sync handler has been registered. */
   #syncRegistered = false;
 
+  /** Default entry for an identity we have never queried. Shared so
+   *  every caller observes the same reference; never mutated. Reading
+   *  `handle.status` / `.data` / `.error` for an unseen identity must
+   *  NOT write to #entries (Svelte 5 forbids state mutation inside a
+   *  reactive read — `state_unsafe_mutation`). Entries are added to
+   *  #entries by _patch, which is only reached from the async
+   *  load()/refresh() path. */
+  static readonly #defaultEntry: SubmissionEntry = {
+    status: 'idle',
+    data: null,
+    error: null,
+  };
+
   /** Register the JMAP push handler for Identity state changes. Idempotent. */
   #ensureSyncHandler(): void {
     if (this.#syncRegistered) return;
@@ -58,14 +71,16 @@ class IdentitySubmissionStore {
     return new IdentitySubmissionHandle(identityId, this);
   }
 
-  /** Internal: get or create the entry for an identity. */
+  /** Internal: return the cached entry for an identity, or the shared
+   *  immutable default. Pure read — never mutates #entries. The
+   *  earlier version of this method created a fresh idle entry when
+   *  one was missing and assigned it back to #entries, which broke
+   *  any caller that reached _entry from a Svelte 5 reactive read
+   *  context (state_unsafe_mutation: navigating to /settings blanked
+   *  the page because handle.data read here mutated state during the
+   *  render pass). Entry creation now happens only inside _patch. */
   _entry(identityId: string): SubmissionEntry {
-    let entry = this.#entries.get(identityId);
-    if (!entry) {
-      entry = { status: 'idle', data: null, error: null };
-      this.#entries = new Map(this.#entries).set(identityId, entry);
-    }
-    return entry;
+    return this.#entries.get(identityId) ?? IdentitySubmissionStore.#defaultEntry;
   }
 
   /** Internal: update fields on an entry and trigger reactivity. */
