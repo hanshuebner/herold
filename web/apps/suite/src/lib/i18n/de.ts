@@ -335,6 +335,43 @@ export const de = {
 
   // Identitäts-Bearbeitungs-Dialog (re #97)
   'settings.identityEdit.title': 'Identität bearbeiten',
+  'settings.identityEdit.discardConfirm':
+    'Ungespeicherte Änderungen verwerfen?',
+  'settings.identityEdit.saveAll': 'Speichern',
+  'settings.identityEdit.cancel': 'Abbrechen',
+  'settings.identityEdit.replyTo': 'Antwort-an-Adresse',
+  'settings.identityEdit.replyToHelper':
+    'Optional. Wenn gesetzt, gehen Antworten an diese Adresse statt an die Von-Adresse.',
+  'settings.identityEdit.bcc': 'Bcc-Adresse (Auto-Bcc beim Senden)',
+  'settings.identityEdit.bccHelper':
+    'Optional. Jede aus dieser Identität gesendete Nachricht wird still an diese Adresse kopiert.',
+  'settings.identityEdit.signaturePlain': 'Signatur (Klartext)',
+  'settings.identityEdit.signatureHtml': 'Signatur (HTML)',
+  'settings.identityEdit.signatureHtmlHelper':
+    'Rohes HTML, das an ausgehende HTML-Nachrichten angehängt wird. Leer lassen, um auf die Klartext-Signatur zurückzugreifen.',
+  'settings.identityEdit.invalidEmail':
+    'Gültige E-Mail-Adresse eingeben oder leer lassen.',
+
+  // Identitäten-Liste (REQ-SET-IDENT-01..08, re #20)
+  'settings.identityList.heading': 'Identitäten',
+  'settings.identityList.addBtn': 'Identität hinzufügen',
+  'settings.identityList.addStubTooltip': 'Folgt im nächsten PR',
+  'settings.identityList.defaultRadioAria':
+    '{email} als Standard festlegen',
+  'settings.identityList.defaultRadioDisabledTitle':
+    'Nur verifizierte Identitäten können Standard sein.',
+  'settings.identityList.editRowAria': '{email} bearbeiten',
+  'settings.identityList.chip.verified': 'Verifiziert',
+  'settings.identityList.chip.verifying': 'Verifikation ausstehend',
+  'settings.identityList.chip.unverified': 'Nicht verifiziert',
+  'settings.identityList.verifyBtn': 'Verifizieren',
+  'settings.identityList.verifyStubTooltip': 'Folgt im nächsten PR',
+  'settings.identityList.resendBtn': 'Erneut senden',
+  'settings.identityList.externalDisabledTitle':
+    'Externer SMTP-Versand ist für diese Identität nicht konfiguriert.',
+  'settings.identityList.defaultChanged': 'Standard-Identität aktualisiert',
+  'settings.identityList.defaultChangeFailed':
+    'Standard-Identität konnte nicht geändert werden',
 
   // Filter-Formular (re #97)
   'settings.filters.loading': 'Filter werden geladen…',

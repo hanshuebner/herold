@@ -12,9 +12,7 @@
   import { auth } from '../lib/auth/auth.svelte';
   import { mail } from '../lib/mail/store.svelte';
   import { router } from '../lib/router/router.svelte';
-  import IdentitySignatureForm from './settings/IdentitySignatureForm.svelte';
-  import IdentityDisplayNameForm from './settings/IdentityDisplayNameForm.svelte';
-  import IdentityAvatarForm from './settings/IdentityAvatarForm.svelte';
+  import IdentityList from './settings/IdentityList.svelte';
   import IdentityEditDialog from './settings/IdentityEditDialog.svelte';
   import SecurityForm from './settings/SecurityForm.svelte';
   import ApiKeysForm from './settings/ApiKeysForm.svelte';
@@ -88,8 +86,6 @@
   function selectSection(id: Section): void {
     router.navigate(`/settings/${id}`);
   }
-
-  let identitiesArray = $derived(Array.from(mail.identities.values()));
 
   // Lazy-load identities when the user opens settings — they are needed
   // for Account section and may not have been fetched yet (e.g. straight
@@ -214,74 +210,19 @@
         </button>
       </div>
 
-      <h3>{t('settings.account.identitiesHeading')}</h3>
-      {#if identitiesArray.length === 0}
-        <p class="muted">{t('settings.account.noIdentities')}</p>
-      {:else}
-        {#each identitiesArray as identity (identity.id)}
-          {#if showExtSub}
-            {@const subHandle = submissionStore.forIdentity(identity.id)}
-            {@const subData = subHandle.data}
-            {@const subState = subData?.state}
-            {@const isAlert = subState === 'auth-failed' || subState === 'unreachable'}
-            <div class="identity-row-wrapper">
-              <div class="identity-badge-row">
-                <span class="identity-label">
-                  {identity.name ? `${identity.name} <${identity.email}>` : identity.email}
-                </span>
-                {#if subData?.configured}
-                  {#if isAlert}
-                    <button
-                      type="button"
-                      class="badge badge-alert"
-                      onclick={() => openEditDialog(identity, true)}
-                      title={subState === 'auth-failed'
-                        ? t('settings.account.authFailedTitle')
-                        : t('settings.account.unreachableTitle')}
-                    >
-                      {subState === 'auth-failed'
-                        ? t('settings.account.authFailedBadge')
-                        : t('settings.account.unreachableBadge')}
-                    </button>
-                  {:else}
-                    <button
-                      type="button"
-                      class="badge badge-external"
-                      onclick={() => openEditDialog(identity, true)}
-                      title={t('settings.account.externalBadgeTitle')}
-                    >
-                      {t('settings.account.externalBadge')}
-                    </button>
-                  {/if}
-                {:else}
-                  <button
-                    type="button"
-                    class="badge-link"
-                    onclick={() => openEditDialog(identity, true)}
-                    title={t('settings.account.configureExternalTitle')}
-                  >
-                    {t('settings.account.configureExternal')}
-                  </button>
-                {/if}
-              </div>
-              <IdentityAvatarForm {identity} />
-              <IdentityDisplayNameForm {identity} />
-              <IdentitySignatureForm {identity} />
-            </div>
-          {:else}
-            <IdentityAvatarForm {identity} />
-            <IdentityDisplayNameForm {identity} />
-            <IdentitySignatureForm {identity} />
-          {/if}
-        {/each}
-        {#if !showExtSub}
-          <p class="hint ext-sub-hint">
-            {@html t('settings.account.extSubHint', {
-              systemToml: '<code>system.toml</code>',
-              docPath: '<code>docs/manual/admin/external-smtp-submission.mdoc</code>',
-            })}
-          </p>
-        {/if}
+      <!-- REQ-SET-IDENT-01..08: identity list with three-state chips,
+           default radio, and click-to-edit. Per-identity forms (avatar,
+           display name, signature, submission) live inside the edit
+           dialog (REQ-SET-IDENT-10). -->
+      <IdentityList onedit={(id) => openEditDialog(id, false)} />
+
+      {#if !showExtSub}
+        <p class="hint ext-sub-hint">
+          {@html t('settings.account.extSubHint', {
+            systemToml: '<code>system.toml</code>',
+            docPath: '<code>docs/manual/admin/external-smtp-submission.mdoc</code>',
+          })}
+        </p>
       {/if}
 
       {#if editDialogIdentity}
@@ -931,89 +872,9 @@
     }
   }
 
-  /* External submission identity badges (REQ-MAIL-SUBMIT-04) */
-  .identity-row-wrapper {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-02);
-  }
-
-  .identity-badge-row {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-03);
-    flex-wrap: wrap;
-  }
-
-  .identity-label {
-    font-size: var(--type-body-compact-01-size);
-    color: var(--text-secondary);
-    font-weight: 500;
-    word-break: break-all;
-    flex: 1;
-  }
-
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px var(--spacing-02);
-    border-radius: var(--radius-pill);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    cursor: pointer;
-    border: none;
-    transition: filter var(--duration-fast-02) var(--easing-productive-enter);
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
-  .badge-external {
-    background: color-mix(in srgb, var(--interactive) 15%, transparent);
-    color: var(--interactive);
-    border: 1px solid color-mix(in srgb, var(--interactive) 40%, transparent);
-  }
-
-  .badge-external:hover {
-    filter: brightness(1.1);
-  }
-
-  .badge-alert {
-    background: color-mix(in srgb, var(--support-warning) 15%, transparent);
-    color: color-mix(in srgb, var(--support-warning) 90%, var(--text-primary));
-    border: 1px solid color-mix(in srgb, var(--support-warning) 50%, transparent);
-    animation: pulse-alert 2s ease-in-out infinite;
-  }
-
-  .badge-alert:hover {
-    filter: brightness(1.05);
-  }
-
-  .badge-link {
-    font-size: var(--type-body-compact-01-size);
-    color: var(--interactive);
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 2px var(--spacing-02);
-    border-radius: var(--radius-sm);
-    flex-shrink: 0;
-  }
-
-  .badge-link:hover {
-    text-decoration: underline;
-  }
-
-  @keyframes pulse-alert {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.7; }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .badge-alert {
-      animation: none;
-    }
-  }
+  /* Identity-row external-submission badges moved to IdentityList.svelte
+     (REQ-SET-IDENT-01..08); the per-row markup that owned these classes
+     no longer lives in SettingsView. */
 
   .signout-btn {
     padding: var(--spacing-02) var(--spacing-04);

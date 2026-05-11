@@ -276,20 +276,26 @@ describe('SettingsView external-submission hint', () => {
     expect(screen.getByText('docs/manual/admin/external-smtp-submission.mdoc')).toBeInTheDocument();
   });
 
-  it('(b) when capability is absent: Configure external SMTP link is absent', () => {
+  it('(b) when capability is absent: identity list still renders the row', () => {
+    // After the REQ-SET-IDENT-01 refactor the per-row "Configure
+    // external SMTP" link moved into the edit dialog; the list always
+    // renders the row regardless of capability. The hint section sits
+    // beneath the list and explains why submission is unavailable.
     vi.mocked(hasExternalSubmission).mockReturnValue(false);
 
-    render(SettingsView);
+    const { container } = render(SettingsView);
 
-    expect(screen.queryByText('Configure external SMTP')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-testid="identity-list"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="identity-row"]')).not.toBeNull();
   });
 
-  it('(a) when capability is present: Configure external SMTP link is visible', () => {
+  it('(a) when capability is present: identity list renders the row', () => {
     vi.mocked(hasExternalSubmission).mockReturnValue(true);
 
-    render(SettingsView);
+    const { container } = render(SettingsView);
 
-    expect(screen.getByText('Configure external SMTP')).toBeInTheDocument();
+    expect(container.querySelector('[data-testid="identity-list"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="identity-row"]')).not.toBeNull();
   });
 
   it('(a) when capability is present: hint text is absent', () => {

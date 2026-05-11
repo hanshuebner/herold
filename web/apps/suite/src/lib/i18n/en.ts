@@ -331,6 +331,39 @@ export const en = {
 
   // Identity edit dialog (re #97)
   'settings.identityEdit.title': 'Edit identity',
+  'settings.identityEdit.discardConfirm': 'Discard unsaved changes?',
+  'settings.identityEdit.saveAll': 'Save',
+  'settings.identityEdit.cancel': 'Cancel',
+  'settings.identityEdit.replyTo': 'Reply-To address',
+  'settings.identityEdit.replyToHelper':
+    'Optional. When set, replies are directed here instead of the From address.',
+  'settings.identityEdit.bcc': 'Bcc address (auto-bcc on send)',
+  'settings.identityEdit.bccHelper':
+    'Optional. Every message sent from this identity is silently copied to this address.',
+  'settings.identityEdit.signaturePlain': 'Signature (plain text)',
+  'settings.identityEdit.signatureHtml': 'Signature (HTML)',
+  'settings.identityEdit.signatureHtmlHelper':
+    'Raw HTML appended to outbound HTML messages. Leave blank to fall back to the plain-text signature.',
+  'settings.identityEdit.invalidEmail': 'Enter a valid email address or leave blank.',
+
+  // Identity list (REQ-SET-IDENT-01..08, re #20)
+  'settings.identityList.heading': 'Identities',
+  'settings.identityList.addBtn': 'Add identity',
+  'settings.identityList.addStubTooltip': 'Coming in next PR',
+  'settings.identityList.defaultRadioAria': 'Set {email} as default',
+  'settings.identityList.defaultRadioDisabledTitle':
+    'Only verified identities can be the default.',
+  'settings.identityList.editRowAria': 'Edit {email}',
+  'settings.identityList.chip.verified': 'Verified',
+  'settings.identityList.chip.verifying': 'Verification pending',
+  'settings.identityList.chip.unverified': 'Unverified',
+  'settings.identityList.verifyBtn': 'Verify',
+  'settings.identityList.verifyStubTooltip': 'Coming in next PR',
+  'settings.identityList.resendBtn': 'Resend',
+  'settings.identityList.externalDisabledTitle':
+    'External SMTP submission is not configured for this identity.',
+  'settings.identityList.defaultChanged': 'Default identity updated',
+  'settings.identityList.defaultChangeFailed': 'Could not change default identity',
 
   // Filters form (re #97)
   'settings.filters.loading': 'Loading filters…',
