@@ -2238,6 +2238,13 @@ func composeAdminAndUI(
 	// previously drove a runaway retry loop in submissionStore.
 	publicMux.Handle("/api/v1/identities/", publicSelfServiceHandler)
 	publicMux.Handle("/api/v1/oauth/external-submission/callback", publicSelfServiceHandler)
+	// Identity verification link callback (REQ-IDENT-40). Mounted
+	// OUTSIDE /api/v1/* so the URL embedded in the verification email
+	// stays short. Server-rendered: a successful redeem 302-redirects
+	// to /#/settings; failure renders a static HTML page that links
+	// back to the SPA. The handler itself has no auth gate — the
+	// token IS the auth.
+	publicMux.Handle("/verify-identity", publicSelfServiceHandler)
 
 	// Image proxy (REQ-SEND-70..78). Public-listener-only: the
 	// browser presenting an end-user cookie loads upstream-tracking-

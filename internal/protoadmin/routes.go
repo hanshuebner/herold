@@ -158,6 +158,19 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// the opaque state token. REQ-MAIL-SUBMIT-02, REQ-AUTH-EXT-SUBMIT-03.
 	mux.HandleFunc("GET /api/v1/oauth/external-submission/callback", auth1(s.handleOAuthCallback))
 
+	// Identity verification (REQ-IDENT-40..43).
+	// The code POST is self-only and CSRF-checked. The link callback
+	// is mounted at the root path "/verify-identity" so the URL
+	// embedded in the verification email stays short; the handler
+	// has no auth gate because the token IS the auth. The same route
+	// is also registered in RegisterSelfServiceRoutes so the public
+	// listener can serve it; this admin-listener registration exists
+	// so the route table is symmetric with the rest of the surface
+	// (and so unit tests that attach only the admin listener can
+	// exercise the link path without a separate public-mux harness).
+	mux.HandleFunc("POST /api/v1/identities/{id}/verify", auth1(s.handleVerifyIdentityCode))
+	mux.HandleFunc("GET /verify-identity", s.handleVerifyIdentityLink)
+
 	// Per-user client-log telemetry opt-out (REQ-OPS-208, REQ-CLOG-06).
 	// Self-service: the caller may only modify their own flag (enforced
 	// inside the handler by using principalFrom, not a {pid} path param).
@@ -258,6 +271,20 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/identities/{id}/submission/oauth/start", auth1(s.handleOAuthStart))
 	// Fixed callback path — no identity id in URL (identity id in state token).
 	mux.HandleFunc("GET /api/v1/oauth/external-submission/callback", auth1(s.handleOAuthCallback))
+
+	// Identity verification (REQ-IDENT-40..43).
+	//
+	// The code-entry POST is self-only and CSRF-checked: the suite's
+	// "have a code" input POSTs a 6-digit code lifted from the
+	// verification email body.
+	mux.HandleFunc("POST /api/v1/identities/{id}/verify", auth1(s.handleVerifyIdentityCode))
+	// The link callback is mounted OUTSIDE /api/v1/* so the URL
+	// embedded in the verification email stays short. No auth gate:
+	// the token IS the auth (CSPRNG-generated, single-use, sha256'd
+	// in the store). admin/server.go MUST mount this handler on
+	// publicMux at the same path; the /api/v1/* prefix mount does
+	// NOT cover it.
+	mux.HandleFunc("GET /verify-identity", s.handleVerifyIdentityLink)
 
 	// Client-log ingest from the Suite SPA (public listener), both endpoints
 	// (REQ-OPS-200, architecture §Endpoint mounting).
