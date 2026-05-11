@@ -2228,6 +2228,16 @@ func composeAdminAndUI(
 	// Per-user telemetry opt-out is also reachable on the public listener
 	// so the Suite SPA settings panel can toggle it with the public session.
 	publicMux.Handle("/api/v1/me/", publicSelfServiceHandler)
+	// External SMTP submission per-Identity credentials and the OAuth
+	// initiation / callback. The routes themselves are registered inside
+	// RegisterSelfServiceRoutes; this mount is what makes them reachable
+	// on the public listener (port 8080) where the suite SPA runs. Without
+	// it, every GET/PUT/DELETE /api/v1/identities/{id}/submission falls
+	// through to the stdlib catch-all and returns a plaintext 404 — which
+	// the SPA can't distinguish from "identity not found" and which
+	// previously drove a runaway retry loop in submissionStore.
+	publicMux.Handle("/api/v1/identities/", publicSelfServiceHandler)
+	publicMux.Handle("/api/v1/oauth/external-submission/callback", publicSelfServiceHandler)
 
 	// Image proxy (REQ-SEND-70..78). Public-listener-only: the
 	// browser presenting an end-user cookie loads upstream-tracking-
