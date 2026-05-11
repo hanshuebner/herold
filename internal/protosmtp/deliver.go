@@ -267,6 +267,13 @@ func (sess *session) deliverOne(
 	authResults mailauth.AuthResults,
 	classification spam.Classification,
 ) (bool, error) {
+	// REQ-TAG-20 step 2: evaluate the tagged-address filter BEFORE
+	// Sieve. The effect (extra mailbox, suppress-implicit-keep,
+	// mark-seen) is folded into the Sieve outcome below so a later
+	// Sieve action (fileinto, discard, setflag) can still augment or
+	// override the filing decision per REQ-TAG-22.
+	tagEffect, tagHit := sess.resolveTaggedAddress(ctx, rc)
+
 	// Run sieve.
 	outcome, serr := sess.runSieve(ctx, rc, msg, authResults, classification)
 	if serr != nil {
@@ -278,8 +285,26 @@ func (sess *session) deliverOne(
 			slog.String("err", serr.Error()))
 		outcome = sieve.Outcome{ImplicitKeep: true}
 	}
+	// REQ-TAG-30 / REQ-TAG-31: the tag filter's "suppress implicit
+	// keep" is applied to the Sieve outcome before target resolution.
+	// resolveSieveTargets then honours ActionFileInto et al on top, so
+	// a Sieve `fileinto "Inbox"` still puts the message in Inbox per
+	// REQ-TAG-31 last sentence.
+	if tagHit {
+		outcome = tagEffect.applyTaggedFilterPreSieve(outcome)
+	}
 	// Decide target mailboxes.
 	targets, discarded, rejected, rejectReason := resolveSieveTargets(outcome)
+
+	// REQ-TAG-22: a Sieve `discard` still wins. If Sieve discards AND
+	// produced no fileinto, the tag-filter's filing is dropped along
+	// with the message. Otherwise the tag-filter's label is added to
+	// the targets the sieve outcome contributed.
+	if tagHit && !(discarded && len(targets) == 0) {
+		if !contains(targets, tagEffect.labelName) {
+			targets = append(targets, tagEffect.labelName)
+		}
+	}
 
 	if rejected {
 		// RFC 5429 reject: in a relay-in context, emit the message to
@@ -362,6 +387,11 @@ func (sess *session) deliverOne(
 		}
 		// Propagate sieve-added flags onto system flags where possible.
 		msgFlags := sieveFlagsFromOutcome(outcome)
+		// REQ-TAG-30 label_archive_read: OR Seen onto every mailbox
+		// membership row. Idempotent with a Sieve setflag "\Seen".
+		if tagHit {
+			msgFlags |= tagEffect.extraSeenFlag()
+		}
 		// REQ-FILT-200: only categorise messages destined for the
 		// inbox, after Sieve fileinto + spam classification. Spam
 		// suppresses the call. Categorisation NEVER blocks delivery

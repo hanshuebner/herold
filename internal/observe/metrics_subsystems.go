@@ -1145,3 +1145,30 @@ func RegisterWebPushMetrics(subsSource, cooldownSource func() float64) {
 		)
 	})
 }
+
+// Tagged-addresses metrics (REQ-TAG-91). Label vocabulary is the closed
+// set of action tokens enumerated in REQ-TAG-30: `label`,
+// `label_archive`, `label_archive_read`. The inbound pipeline
+// increments the match counter every time a delivery hit a filter row;
+// the create counters (filter / dismissal) are incremented by the
+// REST + JMAP create paths.
+var (
+	taggedAddressMetricsOnce sync.Once
+
+	TaggedAddressFilterMatchTotal *prometheus.CounterVec
+)
+
+// RegisterTaggedAddressMetrics registers the tagged-address collector
+// set; idempotent so test fixtures sharing one process Registry stay
+// race- and panic-free.
+func RegisterTaggedAddressMetrics() {
+	taggedAddressMetricsOnce.Do(func() {
+		TaggedAddressFilterMatchTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_tagged_address_filter_match_total",
+			Help: "Tagged-address filter matches at inbound delivery time, by action.",
+		}, []string{"action"})
+		MustRegister(
+			TaggedAddressFilterMatchTotal,
+		)
+	})
+}

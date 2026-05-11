@@ -191,6 +191,13 @@ type Server struct {
 	// passthrough (no rewrite). Read on every inbound message; SIGHUP
 	// reload swaps the embedded Config without restart.
 	extImg extimg.Config
+	// taggedAddrEnabled is the master switch for the inbound
+	// tagged-address pipeline (REQ-TAG-20, [server.tagged_addresses]
+	// enabled). When false, +-suffixed mail falls through to Sieve
+	// unchanged — no LookupTaggedAddressFilterForRecipient probe,
+	// no action filing, no flag injection. Default true so a fresh
+	// build picks up the feature without operator config.
+	taggedAddrEnabled bool
 
 	// lifecycle
 	ctx       context.Context
@@ -247,8 +254,15 @@ type Config struct {
 	// ExtImg configures the inbound HTML external-image rewriter
 	// (17-external-images.md REQ-EXTIMG-01..82). Zero value means
 	// passthrough; the rewriter pipeline is a no-op.
-	ExtImg  extimg.Config
-	Options Options
+	ExtImg extimg.Config
+	// TaggedAddressesEnabled mirrors
+	// sysconfig.TaggedAddressesConfig.Enabled (REQ-TAG-20). Pointer so
+	// an absent config can be distinguished from an explicit false:
+	// nil -> feature on (documented default), &false -> feature off.
+	// When off, the inbound pipeline never probes
+	// tagged_address_filters; +-suffixed mail goes straight to Sieve.
+	TaggedAddressesEnabled *bool
+	Options                Options
 }
 
 // New constructs a Server. Logger and Clock default to slog.Default /
@@ -280,6 +294,7 @@ func New(cfg Config) (*Server, error) {
 	// across many Server instances sharing one process Registry (tests).
 	observe.RegisterSMTPMetrics()
 	observe.RegisterStoreMetrics()
+	observe.RegisterTaggedAddressMetrics()
 	ctx, cancel := context.WithCancel(context.Background())
 	rcptFirst := make(map[string]struct{}, len(cfg.RcptPluginFirstDomains))
 	for _, d := range cfg.RcptPluginFirstDomains {
@@ -289,32 +304,40 @@ func New(cfg Config) (*Server, error) {
 		}
 		rcptFirst[d] = struct{}{}
 	}
+	// Tagged-addresses default: ON when the operator left the section
+	// out (nil) per the documented default in
+	// sysconfig.TaggedAddressesConfig.
+	tagEnabled := true
+	if cfg.TaggedAddressesEnabled != nil {
+		tagEnabled = *cfg.TaggedAddressesEnabled
+	}
 	s := &Server{
-		store:         cfg.Store,
-		dir:           cfg.Directory,
-		dkim:          cfg.DKIM,
-		spf:           cfg.SPF,
-		dmarc:         cfg.DMARC,
-		arc:           cfg.ARC,
-		spam:          cfg.Spam,
-		sieve:         cfg.Sieve,
-		categorise:    cfg.Categorise,
-		tls:           cfg.TLS,
-		resolver:      cfg.Resolver,
-		clk:           clk,
-		log:           log,
-		passLk:        cfg.SCRAMLookup,
-		spamPlug:      plug,
-		opts:          opts,
-		ctx:           ctx,
-		cancel:        cancel,
-		connSem:       make(chan struct{}, opts.MaxConcurrentConnections),
-		perIP:         make(map[string]int),
-		rcptResolver:  cfg.RcptResolver,
-		rcptPluginNm:  cfg.RcptPluginName,
-		rcptPluginFor: rcptFirst,
-		bouncePoster:  cfg.BouncePoster,
-		extImg:        cfg.ExtImg,
+		store:             cfg.Store,
+		dir:               cfg.Directory,
+		dkim:              cfg.DKIM,
+		spf:               cfg.SPF,
+		dmarc:             cfg.DMARC,
+		arc:               cfg.ARC,
+		spam:              cfg.Spam,
+		sieve:             cfg.Sieve,
+		categorise:        cfg.Categorise,
+		tls:               cfg.TLS,
+		resolver:          cfg.Resolver,
+		clk:               clk,
+		log:               log,
+		passLk:            cfg.SCRAMLookup,
+		spamPlug:          plug,
+		opts:              opts,
+		ctx:               ctx,
+		cancel:            cancel,
+		connSem:           make(chan struct{}, opts.MaxConcurrentConnections),
+		perIP:             make(map[string]int),
+		rcptResolver:      cfg.RcptResolver,
+		rcptPluginNm:      cfg.RcptPluginName,
+		rcptPluginFor:     rcptFirst,
+		bouncePoster:      cfg.BouncePoster,
+		extImg:            cfg.ExtImg,
+		taggedAddrEnabled: tagEnabled,
 	}
 	// Register the inbound attachment-policy collector set; idempotent.
 	observe.RegisterSMTPAttachmentPolicyMetrics()
