@@ -13,7 +13,6 @@ package identityverify
 // backend exercises the same behaviour (see sweeper_storetest.go).
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -311,5 +310,3 @@ func (nullStore) Meta() store.Metadata { return nil }
 func (nullStore) Blobs() store.Blobs   { return nil }
 func (nullStore) FTS() store.FTS       { return nil }
 func (nullStore) Close() error         { return nil }
-
-var _ = bytes.MinRead // unused-import guard for refactors
