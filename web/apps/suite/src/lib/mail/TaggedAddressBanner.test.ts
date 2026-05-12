@@ -200,6 +200,9 @@ describe('TaggedAddressBanner', () => {
     expect(labelDialogMock.open).toHaveBeenCalledTimes(1);
     const openArgs = labelDialogMock.open.mock.calls[0]![0]!;
     expect(openArgs.defaultName).toBe('Amazon');
+    // REQ-MAIL-12c: the banner opts out of the dirty-check so the
+    // user can confirm the suggested default name in a single click.
+    expect(openArgs.requireDirty).toBe(false);
     // Let the dialog promise resolve.
     await Promise.resolve();
     await Promise.resolve();

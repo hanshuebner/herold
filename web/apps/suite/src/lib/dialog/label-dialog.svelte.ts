@@ -16,6 +16,17 @@ export interface LabelDialogRequest {
   defaultColor?: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  /**
+   * When true (the historical edit-mode default) AND `defaultName` is
+   * supplied, the confirm button stays disabled until the user changes
+   * the name or colour from the pre-filled values. When false, the
+   * confirm button is enabled as soon as the name is non-empty —
+   * matches the "suggested default the user MAY edit" semantics
+   * required by REQ-MAIL-12c's tagged-address banner flow. Defaults to
+   * true (undefined treated as true) for backward compatibility with
+   * the settings rename / edit callsites.
+   */
+  requireDirty?: boolean;
 }
 
 export interface LabelDialogResult {

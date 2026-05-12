@@ -74,4 +74,18 @@ describe('labelDialog.open', () => {
     expect(labelDialog.pending?.defaultName).toBe('My Label');
     expect(labelDialog.pending?.defaultColor).toBe('#123456');
   });
+
+  it('carries requireDirty through to the pending state (re #29)', () => {
+    // REQ-MAIL-12c's tagged-address banner opts out of the dirty
+    // check so a user can confirm the suffix-capitalised default
+    // name in one click. The component reads pending.requireDirty
+    // when deciding whether to gate the CTA on dirty-state.
+    void labelDialog.open({
+      title: 'Label mail to +shop',
+      defaultName: 'Shop',
+      confirmLabel: 'Create rule',
+      requireDirty: false,
+    });
+    expect(labelDialog.pending?.requireDirty).toBe(false);
+  });
 });

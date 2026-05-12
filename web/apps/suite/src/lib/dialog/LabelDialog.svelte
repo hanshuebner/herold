@@ -32,12 +32,20 @@
 
   /**
    * The CTA is enabled when:
-   * - In create mode (no defaultName): the name field is non-empty.
-   * - In edit mode (defaultName provided): the name is non-empty AND at
-   *   least one of name or color differs from the saved values (dirty).
+   * - In create mode (no defaultName), OR when the caller opted out of
+   *   the dirty check (`requireDirty: false`): the name field is non-empty.
+   * - In edit mode (defaultName provided, requireDirty default-true):
+   *   the name is non-empty AND at least one of name or color differs
+   *   from the saved values (dirty).
+   *
+   * REQ-MAIL-12c's tagged-address banner passes `requireDirty: false`
+   * because the pre-filled suffix-capitalised name is a suggestion the
+   * user MAY accept verbatim; the banner-driven flow MUST allow a
+   * one-click confirm. Settings rename / edit keep the historical
+   * dirty-required semantics.
    */
   let ctaEnabled = $derived(
-    ctx?.defaultName !== undefined
+    ctx?.defaultName !== undefined && ctx?.requireDirty !== false
       ? name.trim().length > 0 &&
           (name.trim() !== initialName || color !== initialColor)
       : name.trim().length > 0,

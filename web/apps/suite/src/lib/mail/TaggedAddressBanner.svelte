@@ -82,6 +82,11 @@
       title: t(titleKey, { suffix: v.suffix }),
       defaultName: capitalise(v.suffix),
       confirmLabel: t('mail.taggedBanner.dialog.confirm'),
+      // REQ-MAIL-12c: the suffix-capitalised default name is a
+      // suggestion the user MAY accept verbatim. Bypass the shared
+      // dialog's edit-mode dirty check so the confirm button is
+      // enabled the moment the dialog opens with a non-empty name.
+      requireDirty: false,
     });
     if (!result) return;
     try {
