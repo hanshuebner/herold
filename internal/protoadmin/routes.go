@@ -177,6 +177,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// inside the handler by using principalFrom, not a {pid} path param).
 	mux.HandleFunc("PUT /api/v1/me/clientlog/telemetry_enabled", auth1(s.handlePutTelemetryEnabled))
 
+	// Tagged-address dismissals + Convert-to-Sieve (REQ-TAG-50..62, REQ-TAG-90).
+	// All four endpoints are self-only (gated by principalFrom inside the
+	// handler). They are also registered on the public listener via
+	// RegisterSelfServiceRoutes so the suite SPA can reach them.
+	mux.HandleFunc("POST /api/v1/tagged-address-dismissals", auth1(s.handleCreateTaggedAddressDismissal))
+	mux.HandleFunc("GET /api/v1/tagged-address-dismissals", auth1(s.handleListTaggedAddressDismissals))
+	mux.HandleFunc("DELETE /api/v1/tagged-address-dismissals/{base_identity_id}/{suffix}", auth1(s.handleDeleteTaggedAddressDismissal))
+	mux.HandleFunc("POST /api/v1/tagged-address-filters/{id}/convert-to-sieve", auth1(s.handleConvertTaggedAddressFilterToSieve))
+
 	// Inbound attachment policy (REQ-FLOW-ATTPOL-01..02).
 	mux.HandleFunc("GET /api/v1/mailboxes/{addr}/attachment-policy", authAdmin(s.handleGetMailboxAttPol))
 	mux.HandleFunc("PUT /api/v1/mailboxes/{addr}/attachment-policy", authAdmin(s.handlePutMailboxAttPol))
@@ -298,6 +307,16 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("OPTIONS /api/v1/clientlog", s.handleClientLogPreflight)
 	mux.HandleFunc("POST /api/v1/clientlog/public", s.handleClientLogPublic)
 	mux.HandleFunc("OPTIONS /api/v1/clientlog/public", s.handleClientLogPreflight)
+
+	// Tagged-address dismissals + Convert-to-Sieve (REQ-TAG-50..62).
+	// Self-only by ownership check inside each handler; admin
+	// impersonation is not supported (consistent with the JMAP wire
+	// surface for TaggedAddressFilter and the rest of the user-state
+	// REST surfaces).
+	mux.HandleFunc("POST /api/v1/tagged-address-dismissals", auth1(s.handleCreateTaggedAddressDismissal))
+	mux.HandleFunc("GET /api/v1/tagged-address-dismissals", auth1(s.handleListTaggedAddressDismissals))
+	mux.HandleFunc("DELETE /api/v1/tagged-address-dismissals/{base_identity_id}/{suffix}", auth1(s.handleDeleteTaggedAddressDismissal))
+	mux.HandleFunc("POST /api/v1/tagged-address-filters/{id}/convert-to-sieve", auth1(s.handleConvertTaggedAddressFilterToSieve))
 }
 
 // SelfServiceHandler returns the self-service route set wrapped in the
@@ -309,10 +328,13 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 //
 // Recommended mount points (longest-prefix wins in Go's stdlib mux):
 //
-//	publicMux.Handle("/api/v1/principals/", selfServiceHandler)
-//	publicMux.Handle("/api/v1/api-keys",    selfServiceHandler)
-//	publicMux.Handle("/api/v1/api-keys/",   selfServiceHandler)
-//	publicMux.Handle("/api/v1/healthz/",    selfServiceHandler)
+//	publicMux.Handle("/api/v1/principals/",            selfServiceHandler)
+//	publicMux.Handle("/api/v1/api-keys",               selfServiceHandler)
+//	publicMux.Handle("/api/v1/api-keys/",              selfServiceHandler)
+//	publicMux.Handle("/api/v1/healthz/",               selfServiceHandler)
+//	publicMux.Handle("/api/v1/tagged-address-dismissals", selfServiceHandler)
+//	publicMux.Handle("/api/v1/tagged-address-dismissals/", selfServiceHandler)
+//	publicMux.Handle("/api/v1/tagged-address-filters/", selfServiceHandler)
 func (s *Server) SelfServiceHandler() http.Handler {
 	mux := http.NewServeMux()
 	s.RegisterSelfServiceRoutes(mux)

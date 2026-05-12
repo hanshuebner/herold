@@ -2273,6 +2273,17 @@ func composeAdminAndUI(
 	// back to the SPA. The handler itself has no auth gate — the
 	// token IS the auth.
 	publicMux.Handle("/verify-identity", publicSelfServiceHandler)
+	// Tagged-address dismissals + Convert-to-Sieve REST surface
+	// (REQ-TAG-50..62). Mounted on the public listener so the suite
+	// SPA can reach the dismissal banner gate and the one-way
+	// "convert filter to Sieve" power-user operation without paying
+	// the admin-listener TLS handshake. Both prefixes are needed
+	// because the dismissal collection sits at the plain path
+	// /api/v1/tagged-address-dismissals AND below it (DELETE has a
+	// {base_identity_id}/{suffix} suffix).
+	publicMux.Handle("/api/v1/tagged-address-dismissals", publicSelfServiceHandler)
+	publicMux.Handle("/api/v1/tagged-address-dismissals/", publicSelfServiceHandler)
+	publicMux.Handle("/api/v1/tagged-address-filters/", publicSelfServiceHandler)
 
 	// Image proxy (REQ-SEND-70..78). Public-listener-only: the
 	// browser presenting an end-user cookie loads upstream-tracking-
