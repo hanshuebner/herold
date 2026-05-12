@@ -592,3 +592,56 @@ jobs:
           path: test/interop/logs/
           if-no-files-found: warn
           retention-days: 14
+  binaries:
+    name: binaries (linux/darwin x amd64/arm64)
+    # Only build artefacts for non-PR events: push to main and manual
+    # dispatches. PR CI runs are gated for correctness by the test and
+    # web jobs above; cross-compiling every PR commit doubles runner
+    # load with no consumer.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [lint, web, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, darwin]
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      # Build the suite + admin + manual artefacts once; the embedded
+      # FS tree is byte-identical regardless of target platform. Only
+      # the Go binary is platform-specific.
+      - name: build-web
+        run: ./scripts/build-web.sh
+      - name: build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -buildvcs=true -ldflags "-s -w" \
+            -o dist/herold-${{ matrix.os }}-${{ matrix.arch }} ./cmd/herold
+          for p in plugins/herold-*; do
+            [ -d "$p" ] || continue
+            name=$(basename "$p")
+            go build -trimpath -buildvcs=true -ldflags "-s -w" \
+              -o dist/${name}-${{ matrix.os }}-${{ matrix.arch }} ./$p
+          done
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: herold-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          retention-days: 30
