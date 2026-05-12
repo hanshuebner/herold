@@ -353,70 +353,128 @@ func mergeRequireAndPrepend(existing, fragment string) string {
 	return sb.String()
 }
 
-// splitLeadingRequire returns the extension list from the first
-// `require [...];` statement (if any) and the body after that
-// statement. If the script does not start with a require statement,
-// returns (nil, original).
+// splitLeadingRequire returns the extension list from every leading
+// `require ...;` statement (if any) and the body that follows them.
+// If the script has no leading require, returns (nil, original).
 //
-// The split is line-based (the Sieve grammar is statement-terminated by
-// ';' but the canonical formatting we emit uses one statement per line
-// for the require). We tolerate either form: a multi-line array, a
-// single-string require, or a missing require entirely. Anything we
-// cannot confidently parse falls through to "no require found".
+// sieve.Parse collapses every leading require declaration into the
+// Script.Requires slice — that flat slice is the union of extensions
+// to fold into the new merged require line. We walk the source text
+// separately to find the byte index of the LAST leading semicolon so
+// the returned body strips every consumed require statement (the
+// parser does not surface that byte offset itself).
+//
+// When Parse fails we fall through to "no require found"; the caller's
+// validation pass will surface the underlying error to the user.
 func splitLeadingRequire(script string) ([]string, string) {
 	parsed, err := sieve.Parse([]byte(script))
-	if err != nil || parsed == nil || len(parsed.Commands) == 0 {
+	if err != nil || parsed == nil || len(parsed.Requires) == 0 {
 		return nil, script
 	}
-	first := parsed.Commands[0]
-	if first.Name != "require" {
+	exts := append([]string{}, parsed.Requires...)
+	endIdx := indexOfLastLeadingRequireEnd(script)
+	if endIdx < 0 {
 		return nil, script
 	}
-	exts := requireExtensions(first)
-	if len(exts) == 0 {
-		return nil, script
-	}
-	// Find the end of the first require statement in the source text.
-	// The semicolon terminates the statement; everything after the
-	// matching ';' is the body. Quoted strings are skipped so a
-	// semicolon embedded in a string literal does not split the
-	// statement.
-	idx := indexOfRequireEnd(script)
-	if idx < 0 {
-		return nil, script
-	}
-	body := script[idx+1:]
-	// Trim one leading newline so the merged output does not stack
-	// blank lines.
+	body := script[endIdx+1:]
 	body = strings.TrimPrefix(body, "\n")
 	return exts, body
 }
 
-// requireExtensions returns the string list passed to a require
-// command. Sieve's require accepts either a single string or a
-// string-list literal; we accept both.
-func requireExtensions(c sieve.Command) []string {
-	for _, arg := range c.Args {
-		switch arg.Kind {
-		case sieve.ArgString:
-			return []string{arg.Str}
-		case sieve.ArgStringList:
-			out := make([]string, 0, len(arg.StrList))
-			out = append(out, arg.StrList...)
-			return out
+// indexOfLastLeadingRequireEnd walks the script from the start,
+// consuming whitespace, line comments (#...\n), block comments
+// (/* ... */), and `require ...;` statements, until it hits the first
+// non-require statement. Returns the byte index of the ';' that ended
+// the LAST consumed require statement, or -1 when no leading require
+// was found.
+func indexOfLastLeadingRequireEnd(s string) int {
+	i := 0
+	lastEnd := -1
+	for i < len(s) {
+		// Skip whitespace.
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
+			i++
 		}
+		// Skip line comment.
+		if i < len(s) && s[i] == '#' {
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		// Skip block comment.
+		if i+1 < len(s) && s[i] == '/' && s[i+1] == '*' {
+			i += 2
+			for i+1 < len(s) && !(s[i] == '*' && s[i+1] == '/') {
+				i++
+			}
+			if i+1 < len(s) {
+				i += 2
+			}
+			continue
+		}
+		// Try to match the "require" identifier (case-insensitive per
+		// RFC 5228 §2.10).
+		if !hasPrefixFold(s[i:], "require") {
+			return lastEnd
+		}
+		// Make sure the next char is not an identifier continuation
+		// (so we don't match "requiresomething").
+		next := i + len("require")
+		if next < len(s) && isIdentByte(s[next]) {
+			return lastEnd
+		}
+		// Find the terminator ';' starting at next.
+		semi := indexOfStatementEnd(s, next)
+		if semi < 0 {
+			return lastEnd
+		}
+		lastEnd = semi
+		i = semi + 1
 	}
-	return nil
+	return lastEnd
 }
 
-// indexOfRequireEnd finds the byte index of the semicolon terminating
-// the script's first statement, skipping over double-quoted string
-// literals so embedded ';' bytes do not confuse the scan. Returns -1
-// when no terminator is found before end-of-input.
-func indexOfRequireEnd(s string) int {
+// hasPrefixFold reports whether s begins with prefix under ASCII
+// case-folding. Sieve identifiers are case-insensitive per RFC 5228
+// §2.10.
+func hasPrefixFold(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		a, b := s[i], prefix[i]
+		if a >= 'A' && a <= 'Z' {
+			a += 'a' - 'A'
+		}
+		if b >= 'A' && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		if a != b {
+			return false
+		}
+	}
+	return true
+}
+
+// isIdentByte reports whether c is a valid Sieve identifier
+// continuation byte. Identifiers are ASCII letters / digits /
+// underscore per RFC 5228 §2.10.
+func isIdentByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_'
+}
+
+// indexOfStatementEnd scans forward from i for the ';' that ends the
+// current statement, skipping double-quoted strings (their embedded
+// ';' bytes are not statement terminators). Returns -1 when no
+// terminator is found before end-of-input.
+func indexOfStatementEnd(s string, i int) int {
 	inString := false
 	escape := false
-	for i := 0; i < len(s); i++ {
+	for ; i < len(s); i++ {
 		c := s[i]
 		if escape {
 			escape = false

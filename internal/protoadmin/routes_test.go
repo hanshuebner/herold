@@ -77,6 +77,11 @@ func TestRegisterSelfServiceRoutes_ExpectedPathsArePresent(t *testing.T) {
 		{"DELETE", "/api/v1/principals/1/oidc-links/someprovider"},
 		// Spam-classifier feedback signal (Wave 3.15).
 		{"POST", "/api/v1/spam-feedback"},
+		// Tagged-address dismissals + Convert-to-Sieve (REQ-TAG-50..62).
+		{"POST", "/api/v1/tagged-address-dismissals"},
+		{"GET", "/api/v1/tagged-address-dismissals"},
+		{"DELETE", "/api/v1/tagged-address-dismissals/some-id/amazon"},
+		{"POST", "/api/v1/tagged-address-filters/filter-1/convert-to-sieve"},
 	}
 
 	for _, tc := range cases {
