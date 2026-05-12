@@ -22,6 +22,7 @@
   import SieveForm from './settings/SieveForm.svelte';
   import CategoriesForm from './settings/CategoriesForm.svelte';
   import FiltersForm from './settings/FiltersForm.svelte';
+  import TaggedAddressesForm from './settings/TaggedAddressesForm.svelte';
   import PrivacyForm from './settings/PrivacyForm.svelte';
   import ImageProcessingForm from './settings/ImageProcessingForm.svelte';
   import DiagnosticsForm from './settings/DiagnosticsForm.svelte';
@@ -55,6 +56,7 @@
     | 'mail'
     | 'categories'
     | 'filters'
+    | 'tagged-addresses'
     | 'notifications'
     | 'api-keys'
     | 'privacy'
@@ -63,6 +65,7 @@
 
   let hasCategorise = $derived(jmap.hasCapability(Capability.HeroldCategorise));
   let hasManagedRules = $derived(jmap.hasCapability(Capability.HeroldManagedRules));
+  let hasTaggedAddresses = $derived(jmap.hasCapability(Capability.HeroldTaggedAddresses));
   let hasLLMTransparency = $derived(jmap.hasCapability(Capability.HeroldLLMTransparency));
   let hasPush = $derived(jmap.hasCapability(Capability.HeroldPush));
 
@@ -75,6 +78,8 @@
     ];
     if (hasCategorise) result.push({ id: 'categories', label: t('settings.categories.heading') });
     if (hasManagedRules) result.push({ id: 'filters', label: t('settings.filters.heading') });
+    if (hasTaggedAddresses)
+      result.push({ id: 'tagged-addresses', label: t('settings.taggedAddresses.heading') });
     // Notifications section always shown (in-app sounds; push if available).
     result.push({ id: 'notifications', label: t('settings.notifications') });
     result.push({ id: 'api-keys', label: t('settings.apiKeys') });
@@ -516,6 +521,10 @@
     {:else if activeSection === 'filters'}
       <h2>{t('settings.filters.heading')}</h2>
       <FiltersForm />
+
+    {:else if activeSection === 'tagged-addresses'}
+      <h2>{t('settings.taggedAddresses.heading')}</h2>
+      <TaggedAddressesForm />
 
     {:else if activeSection === 'notifications'}
       <h2>{t('settings.notifications')}</h2>
