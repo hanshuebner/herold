@@ -20,6 +20,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/sasl"
+	"github.com/hanshuebner/herold/internal/taggedaddr"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
 
@@ -777,6 +778,39 @@ func (sess *session) runRcptResolutionChain(entry *rcptEntry) rcptResolveOutcome
 	if !errors.Is(err, directory.ErrNotFound) && !errors.Is(err, directory.ErrInvalidEmail) {
 		sess.writeReply("451 4.3.0 directory lookup failed")
 		return rcptOutcomeRefused
+	}
+
+	// Step 2b: RFC 5233 sub-addressing fallback (REQ-TAG-01, REQ-TAG-20).
+	// When the master switch is on AND the local-part contains '+',
+	// strip the suffix and retry the directory lookup with the base
+	// local-part. The directory has only the bare `alice` registered;
+	// the suffix governs filing at delivery time, not RCPT-time
+	// acceptance, so a literal lookup of `alice+test` would otherwise
+	// reject the recipient before the inbound pipeline can apply
+	// tagged-address routing.
+	//
+	// The fallback is gated on taggedAddrEnabled so disabling the
+	// feature restores the pre-fix behaviour (RCPT rejects
+	// sub-addresses). It runs BEFORE the plugin step because the
+	// plugin already gets the original recipient via entry.addr in
+	// applyResolveRcpt; we MUST NOT remap the plugin's view of the
+	// address. We also preserve entry.addr (with suffix) for the
+	// downstream taggedaddr.Split at deliver time (REQ-TAG-20 step 1).
+	if sess.srv.taggedAddrEnabled && errors.Is(err, directory.ErrNotFound) {
+		baseLocal, suffix, _ := taggedaddr.Split(entry.addr)
+		if suffix != "" && baseLocal != "" {
+			pid2, err2 := dir.ResolveAddress(sess.ctx, baseLocal, entry.domain)
+			if err2 == nil {
+				entry.principalID = pid2
+				entry.decisionSource = "internal"
+				return rcptOutcomeAccept
+			}
+			if !errors.Is(err2, directory.ErrNotFound) && !errors.Is(err2, directory.ErrInvalidEmail) {
+				sess.writeReply("451 4.3.0 directory lookup failed")
+				return rcptOutcomeRefused
+			}
+			// fall through to plugin / 550 below with the original err.
+		}
 	}
 
 	// Step 3: plugin (when not already consulted plugin-first).
