@@ -487,23 +487,49 @@ func TestDispatcher_PersistsCursorOnShutdown(t *testing.T) {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 
-	// Drive Run until the dispatcher's tick has fully completed for at
-	// least one delivery: cursor advanced AND the gateway saw the call.
-	// Waiting on cursor advance only is not enough — we want to confirm
-	// the push really left the dispatcher. Waiting on gw.Calls() only is
-	// not enough either, because deliver is invoked from processChange
-	// BEFORE the cursor.Store at the end of tick, so the gateway can see
-	// the call before the cursor moves.
+	// Snapshot the post-insert change-feed tip. The dispatcher's tick
+	// reads changes up to here, delivers the pushable Email change, and
+	// only THEN calls cursor.Store(maxSeq). Therefore observing
+	// cursor.Load() >= insertTip is a strictly-after barrier: the tick
+	// that delivered our message has fully completed — including the
+	// in-memory cursor advance and the (wrapped-and-cancelled) in-loop
+	// SetFTSCursor — and the gateway has seen the POST. Polling on
+	// cursor>0 && gw.Calls>0 was racy: those two signals could come
+	// from different ticks (cursor.Store of an earlier non-pushable
+	// batch + deliver mid-flight of a later batch), letting the test
+	// break out before the in-flight tick reached cursor.Store. With a
+	// strictly-after barrier the only thing left for the Run loop to do
+	// is to observe ctx.Done() and fall into the defer chain, so the
+	// shutdown flush sees the same cursor value the test sampled.
+	feedChanges, err := st.FTS().ReadChangeFeedForFTS(seedCtx, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeedForFTS (probe): %v", err)
+	}
+	if len(feedChanges) == 0 {
+		t.Fatalf("change feed empty post-insert; setup did not emit state_changes")
+	}
+	var insertTip uint64
+	for _, c := range feedChanges {
+		if c.Seq > insertTip {
+			insertTip = c.Seq
+		}
+	}
+
+	// Drive Run until the dispatcher's tick that processed our insert
+	// has fully completed. cursor.Load() >= insertTip is the strictly-
+	// after barrier; gw.Calls() > 0 is a redundant sanity check that
+	// the Email actually went out the door (BuildPayload / rule
+	// evaluation could in theory have dropped it).
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if disp.cursor.Load() > 0 && len(gw.Calls()) > 0 {
+		if disp.cursor.Load() >= insertTip && len(gw.Calls()) > 0 {
 			break
 		}
 		if time.Now().After(deadline) {
 			cancel()
 			<-done
-			t.Fatalf("first dispatcher did not deliver and advance cursor (gw.Calls=%d, cursor=%d)",
-				len(gw.Calls()), disp.cursor.Load())
+			t.Fatalf("first dispatcher did not deliver and advance cursor past tip=%d (gw.Calls=%d, cursor=%d)",
+				insertTip, len(gw.Calls()), disp.cursor.Load())
 		}
 		clk.Advance(20 * time.Millisecond)
 		time.Sleep(10 * time.Millisecond)
