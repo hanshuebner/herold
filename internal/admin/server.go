@@ -60,6 +60,7 @@ import (
 	jmapidentity "github.com/hanshuebner/herold/internal/protojmap/mail/identity"
 	jmapsearchsnippet "github.com/hanshuebner/herold/internal/protojmap/mail/searchsnippet"
 	jmapseenaddress "github.com/hanshuebner/herold/internal/protojmap/mail/seenaddress"
+	jmaptaggedaddress "github.com/hanshuebner/herold/internal/protojmap/mail/taggedaddress"
 	jmapthread "github.com/hanshuebner/herold/internal/protojmap/mail/thread"
 	jmapvacation "github.com/hanshuebner/herold/internal/protojmap/mail/vacation"
 	jmappush "github.com/hanshuebner/herold/internal/protojmap/push"
@@ -2517,8 +2518,18 @@ func composeAdminAndUI(
 	// this Phase wires only the capability emission and the boot-time
 	// log line so the SPA can detect support.
 	if cfg.Server.TaggedAddresses.TaggedAddressesEnabled() {
-		jmapSrv.Registry().RegisterCapabilityDescriptor(
-			protojmap.CapabilityTaggedAddresses, struct{}{})
+		// jmaptaggedaddress.Register installs the TaggedAddressFilter
+		// get / set / changes handlers and also (re-)registers the
+		// capability descriptor under the same URI the gate-only path
+		// previously emitted. The caps closure reads cfgPtr on every
+		// request so a SIGHUP-driven cap adjustment takes effect
+		// without a restart (REQ-TAG-86).
+		jmaptaggedaddress.Register(jmapSrv.Registry(), st,
+			logger.With("subsystem", "jmap-tagged-addresses"), clk,
+			func() (int, int) {
+				live := cfgPtr.Load().Server.TaggedAddresses
+				return live.MaxFiltersPerPrincipal, live.MaxDismissalsPerPrincipal
+			})
 		logger.Info("tagged-addresses enabled",
 			slog.String("subsystem", "jmap-tagged-addresses"),
 			slog.Int("max_filters", cfg.Server.TaggedAddresses.MaxFiltersPerPrincipal),
