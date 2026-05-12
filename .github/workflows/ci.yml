@@ -497,7 +497,7 @@ jobs:
           fi
           echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
           echo "image=${image}" >> "${GITHUB_OUTPUT}"
-      - name: build (and push when not a PR)
+      - name: build (load into local daemon)
         uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
         with:
           context: .
@@ -512,7 +512,12 @@ jobs:
           # this job exists for the per-commit `:main` / `:latest` /
           # `:sha-...` tags and arm64 alone covers the deploy target.
           platforms: linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          # Load into the local daemon so the smoke-test step can run
+          # the image. Pushing to ghcr happens only after smoke passes,
+          # in the dedicated push step below. load: true requires
+          # single-platform, which matches the linux/arm64 build here.
+          load: true
+          push: false
           tags: ${{ steps.tags.outputs.tags }}
           # Local on-disk buildx cache. The runner is a single persistent
           # host, so `type=local` reuses the layer cache across runs without
@@ -522,6 +527,28 @@ jobs:
           cache-from: type=local,src=/home/hans/.cache/docker-buildx
           cache-to: type=local,dest=/home/hans/.cache/docker-buildx,mode=max
           provenance: false
+      - name: smoke-test the built image
+        # Pick the first tag (the sha-<commit> tag is always present)
+        # and drive the README quickstart against it: bootstrap admin,
+        # ensure domain registered, send mail via SMTP relay, verify
+        # receipt via IMAPS. Gates the push step below: a broken image
+        # never reaches ghcr.
+        run: |
+          first_tag=$(echo "${{ steps.tags.outputs.tags }}" | cut -d, -f1)
+          echo "smoke-test: using local image ${first_tag}"
+          ./scripts/smoke-docker.sh "${first_tag}"
+      - name: push to ghcr (only after smoke passes)
+        if: github.event_name != 'pull_request'
+        run: |
+          # The build step loaded a single image into the local daemon
+          # under every requested tag (docker/build-push-action tags
+          # the loaded image with all `tags:` values). docker push
+          # each one in turn.
+          IFS=',' read -ra TAGS <<< "${{ steps.tags.outputs.tags }}"
+          for t in "${TAGS[@]}"; do
+            echo "pushing ${t}"
+            docker push "${t}"
+          done
 
   jmaptest:
     name: jmap conformance (jmapio/jmap-test-suite)
