@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -349,6 +350,80 @@ func TestDismissals_CapEnforced(t *testing.T) {
 	}
 	if ct := res.Header.Get("Content-Type"); ct != "application/problem+json" {
 		t.Errorf("Content-Type = %q; want application/problem+json", ct)
+	}
+}
+
+// TestDismissals_PostCreate_MaterialisesDefaultIdentity exercises Gap 1
+// for the REST surface (parallel to the JMAP test
+// TestSet_DefaultIdentityMaterialisesRow). The principal's default
+// identity is unmaterialised — no jmap_identities row exists. A POST
+// with base_identity_id="default" must succeed by materialising the
+// row on demand; the response echoes the materialised numeric id (not
+// the literal "default"); a subsequent GET surfaces the same id.
+//
+// Before the fix the handler called GetJMAPIdentity("default") which
+// returns ErrNotFound and the request 404s.
+func TestDismissals_PostCreate_MaterialisesDefaultIdentity(t *testing.T) {
+	h := newDismissalHarness(t)
+	// Note: do NOT call insertIdentity; we want the synthesised
+	// default identity to have NO jmap_identities row at the start.
+
+	res, buf := h.doRequest("POST", "/api/v1/tagged-address-dismissals", h.adminKey,
+		map[string]any{
+			"base_identity_id": "default",
+			"suffix":           "amazon",
+		})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("POST: %d: %s (want 201)", res.StatusCode, buf)
+	}
+	var out struct {
+		BaseIdentityID string `json:"base_identity_id"`
+		Suffix         string `json:"suffix"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+	if out.BaseIdentityID == "default" {
+		t.Fatalf("response base_identity_id must be materialised numeric id, not %q", out.BaseIdentityID)
+	}
+	// The materialised id is numeric.
+	if _, err := strconv.ParseUint(out.BaseIdentityID, 10, 64); err != nil {
+		t.Fatalf("materialised id is not numeric: %q (%v)", out.BaseIdentityID, err)
+	}
+	if out.Suffix != "amazon" {
+		t.Errorf("suffix = %q; want amazon", out.Suffix)
+	}
+	// The jmap_identities row now exists.
+	row, err := h.fs.Meta().GetJMAPIdentity(context.Background(), out.BaseIdentityID)
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity(%q): %v", out.BaseIdentityID, err)
+	}
+	if uint64(row.PrincipalID) != h.adminPID {
+		t.Errorf("materialised identity owned by pid %d; want %d", row.PrincipalID, h.adminPID)
+	}
+	// A subsequent GET lists the dismissal with the same id.
+	res2, buf2 := h.doRequest("GET", "/api/v1/tagged-address-dismissals", h.adminKey, nil)
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("GET: %d: %s", res2.StatusCode, buf2)
+	}
+	var listOut struct {
+		Dismissals []struct {
+			BaseIdentityID string `json:"base_identity_id"`
+			Suffix         string `json:"suffix"`
+		} `json:"dismissals"`
+	}
+	if err := json.Unmarshal(buf2, &listOut); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(listOut.Dismissals) != 1 {
+		t.Fatalf("dismissals = %d; want 1", len(listOut.Dismissals))
+	}
+	if listOut.Dismissals[0].BaseIdentityID != out.BaseIdentityID {
+		t.Errorf("GET base_identity_id = %q; want materialised %q",
+			listOut.Dismissals[0].BaseIdentityID, out.BaseIdentityID)
+	}
+	if listOut.Dismissals[0].Suffix != "amazon" {
+		t.Errorf("GET suffix = %q; want amazon", listOut.Dismissals[0].Suffix)
 	}
 }
 

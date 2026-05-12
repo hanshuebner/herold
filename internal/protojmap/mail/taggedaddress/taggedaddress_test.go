@@ -311,6 +311,127 @@ func TestSet_RejectsUnverifiedIdentity(t *testing.T) {
 	}
 }
 
+// TestSet_DefaultIdentityMaterialisesRow exercises Gap 1: a /set
+// create whose baseIdentityId is the wire-form literal "default" must
+// succeed by materialising the synthesised default identity. Without
+// the fix, GetJMAPIdentity returns ErrNotFound and the create is
+// rejected with invalidProperties even though the principal owns the
+// identity by construction (REQ-TAG-72 + REQ-IDENT-*).
+//
+// Assertions:
+//   - The create succeeds (Created non-empty, no NotCreated entry).
+//   - The returned baseIdentityId is a numeric materialised id, NOT
+//     the literal "default".
+//   - A jmap_identities row now exists for that id.
+//   - The tagged_address_filters row references the materialised id.
+func TestSet_DefaultIdentityMaterialisesRow(t *testing.T) {
+	// Build a fresh principal with NO jmap_identities row inserted —
+	// the default identity is purely synthesised at this point. We
+	// cannot use newHandlers() because it pre-inserts a verified
+	// identity row.
+	st := newStore(t)
+	ctx := context.Background()
+	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("insert domain: %v", err)
+	}
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "carol@example.test",
+		DisplayName:    "Carol",
+	})
+	if err != nil {
+		t.Fatalf("insert principal: %v", err)
+	}
+	h := &handlerSet{
+		store:  st,
+		clk:    clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		caps: func() (int, int) {
+			return store.MaxTaggedAddressFiltersPerPrincipal,
+				store.MaxTaggedAddressDismissalsPerPrincipal
+		},
+	}
+
+	args, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"create": map[string]any{
+			"c1": map[string]any{
+				"baseIdentityId": "default",
+				"suffix":         "amazon",
+				"action":         store.TaggedAddressActionLabel,
+				"labelName":      "Shopping",
+			},
+		},
+	})
+	r, merr := setHandler{h: h}.executeAs(p, args)
+	if merr != nil {
+		t.Fatalf("set: %v", merr)
+	}
+	resp := r.(setResponse)
+	if len(resp.NotCreated) != 0 {
+		t.Fatalf("unexpected notCreated: %+v", resp.NotCreated)
+	}
+	rec, ok := resp.Created["c1"]
+	if !ok {
+		t.Fatalf("c1 not created: %+v", resp)
+	}
+	if rec.BaseIdentityID == "default" {
+		t.Fatalf("baseIdentityId must NOT be the literal \"default\" after materialisation, got %q", rec.BaseIdentityID)
+	}
+	// The materialised id is a decimal numeric string.
+	if _, err := strconv.ParseUint(rec.BaseIdentityID, 10, 64); err != nil {
+		t.Fatalf("materialised baseIdentityId is not numeric: %q (%v)", rec.BaseIdentityID, err)
+	}
+	// The jmap_identities row now exists.
+	row, err := st.Meta().GetJMAPIdentity(ctx, rec.BaseIdentityID)
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity(%q) after materialisation: %v", rec.BaseIdentityID, err)
+	}
+	if row.PrincipalID != p.ID {
+		t.Fatalf("materialised row owned by pid %d; want %d", row.PrincipalID, p.ID)
+	}
+	if row.MayDelete {
+		t.Fatalf("materialised default identity must have may_delete=false")
+	}
+	// The filter row references the materialised id.
+	filters, err := st.Meta().ListTaggedAddressFiltersForPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListTaggedAddressFiltersForPrincipal: %v", err)
+	}
+	if len(filters) != 1 {
+		t.Fatalf("filters = %d; want 1", len(filters))
+	}
+	if filters[0].BaseIdentityID != rec.BaseIdentityID {
+		t.Fatalf("filter row base_identity_id = %q; want materialised %q", filters[0].BaseIdentityID, rec.BaseIdentityID)
+	}
+
+	// A second /set against the same "default" wire-form must
+	// idempotently re-use the same materialised id (no second row).
+	args2, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"create": map[string]any{
+			"c2": map[string]any{
+				"baseIdentityId": "default",
+				"suffix":         "newsletters",
+				"action":         store.TaggedAddressActionLabel,
+				"labelName":      "News",
+			},
+		},
+	})
+	r2, merr2 := setHandler{h: h}.executeAs(p, args2)
+	if merr2 != nil {
+		t.Fatalf("second set: %v", merr2)
+	}
+	resp2 := r2.(setResponse)
+	rec2, ok := resp2.Created["c2"]
+	if !ok {
+		t.Fatalf("c2 not created: %+v", resp2)
+	}
+	if rec2.BaseIdentityID != rec.BaseIdentityID {
+		t.Fatalf("second create returned different materialised id: %q vs %q", rec2.BaseIdentityID, rec.BaseIdentityID)
+	}
+}
+
 func TestSet_CapEnforced(t *testing.T) {
 	h, _, p, identityID := newHandlers(t)
 	// Lower the cap to 2 to keep the test cheap.

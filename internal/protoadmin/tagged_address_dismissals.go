@@ -112,6 +112,22 @@ func (s *Server) handleCreateTaggedAddressDismissal(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// The wire-form id "default" denotes the caller's synthesised
+	// default identity. It is owned by the principal by construction
+	// but has no jmap_identities row until first referenced; the
+	// tagged_address_dismissals FK requires a real row, so we
+	// materialise it on demand and rewrite the body in place so the
+	// rest of the handler (insert + response echo) uses the persisted
+	// numeric id rather than the literal "default".
+	if body.BaseIdentityID == "default" {
+		matID, mErr := s.store.Meta().MaterializeDefaultIdentity(ctx, caller.ID)
+		if mErr != nil {
+			s.writeStoreError(w, r, mErr)
+			return
+		}
+		body.BaseIdentityID = matID
+	}
+
 	// Verify the identity exists AND belongs to the caller. The store
 	// FK enforces existence, but we surface ownership as 404 rather
 	// than letting the insert fall through with a foreign-key error.
@@ -248,6 +264,18 @@ func (s *Server) handleDeleteTaggedAddressDismissal(w http.ResponseWriter, r *ht
 		writeProblem(w, r, http.StatusBadRequest, "invalid_suffix",
 			err.Error(), "")
 		return
+	}
+	// Symmetry with the POST path: a tab whose cache still holds the
+	// pre-materialisation "default" wire-form id MUST be able to
+	// delete its dismissal. Materialise on demand and rewrite to the
+	// persisted numeric id before the store lookup / delete.
+	if baseIdentityID == "default" {
+		matID, mErr := s.store.Meta().MaterializeDefaultIdentity(ctx, caller.ID)
+		if mErr != nil {
+			s.writeStoreError(w, r, mErr)
+			return
+		}
+		baseIdentityID = matID
 	}
 
 	// Probe for the row before deleting so we know whether to emit an

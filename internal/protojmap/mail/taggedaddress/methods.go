@@ -390,6 +390,21 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			}
 			continue
 		}
+		// The wire-form id "default" denotes the synthesised default
+		// identity, which is owned by the principal-by-construction
+		// (REQ-IDENT-*) but has no jmap_identities row until first
+		// referenced. Tagged-filter rows reference jmap_identities by
+		// FK, so we materialise the row on demand and rewrite the
+		// effective base id to the persisted numeric id before the
+		// store insert (see internal/protojmap/mail/identity/store.go
+		// for the canonical "default" special-case pattern).
+		if *in.BaseIdentityID == "default" {
+			matID, mErr := s.h.store.Meta().MaterializeDefaultIdentity(ctx, p.ID)
+			if mErr != nil {
+				return nil, protojmap.NewMethodError("serverFail", mErr.Error())
+			}
+			*in.BaseIdentityID = matID
+		}
 		// Verify the identity belongs to this principal.
 		ident, err := s.h.store.Meta().GetJMAPIdentity(ctx, *in.BaseIdentityID)
 		if err != nil || ident.PrincipalID != p.ID {
