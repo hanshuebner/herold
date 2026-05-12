@@ -200,6 +200,18 @@ export const de = {
   'compose.discardConfirm.message': 'Der Entwurf geht verloren.',
   'compose.discardConfirm.confirm': 'Verwerfen',
   'compose.discardConfirm.cancel': 'Weiter bearbeiten',
+  'compose.from.picker.aria': 'Absender-Identität',
+  'compose.from.picker.open': 'Absender-Identität ändern',
+  'compose.from.chip.verifying': 'Bestätigung ausstehend',
+  'compose.from.chip.unverified': 'Nicht bestätigt',
+  'compose.from.chip.external': 'Externer SMTP fehlt',
+  'compose.from.disabled.unverified': 'Bestätigen Sie diese Adresse, bevor Sie damit senden können.',
+  'compose.from.disabled.verifying': 'Warte auf Bestätigung dieser Adresse.',
+  'compose.from.disabled.external': 'Richten Sie externe SMTP-Übermittlung ein, bevor Sie von dieser Adresse senden.',
+  'compose.from.sendDisabled.unverified': 'Bestätigen Sie diese Identität, bevor Sie senden.',
+  'compose.from.sendDisabled.verifying': 'Diese Identität wartet auf Bestätigung — Senden noch nicht möglich.',
+  'compose.from.sendDisabled.external': 'Externe SMTP-Übermittlung ist für diese Identität nicht eingerichtet.',
+  'compose.from.sendDisabled.noIdentity': 'Keine Identität zum Senden verfügbar.',
 
   // ── Formatierungsleiste im Editor (re #97) ──────────────────────────
   'composeToolbar.aria': 'Formatierung',

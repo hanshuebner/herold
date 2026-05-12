@@ -198,6 +198,18 @@ export const en = {
   'compose.discardConfirm.message': 'Your draft will be lost.',
   'compose.discardConfirm.confirm': 'Discard',
   'compose.discardConfirm.cancel': 'Keep editing',
+  'compose.from.picker.aria': 'From identity',
+  'compose.from.picker.open': 'Change From identity',
+  'compose.from.chip.verifying': 'Verification pending',
+  'compose.from.chip.unverified': 'Unverified',
+  'compose.from.chip.external': 'External SMTP missing',
+  'compose.from.disabled.unverified': 'Verify this address before you can send from it.',
+  'compose.from.disabled.verifying': 'Waiting for verification of this address.',
+  'compose.from.disabled.external': 'Set up external SMTP submission before you can send from this address.',
+  'compose.from.sendDisabled.unverified': 'Verify this identity before sending.',
+  'compose.from.sendDisabled.verifying': 'This identity is awaiting verification — cannot send yet.',
+  'compose.from.sendDisabled.external': 'External SMTP submission is not configured for this identity.',
+  'compose.from.sendDisabled.noIdentity': 'No identity available to send from.',
 
   // ── Compose formatting toolbar (re #97) ─────────────────────────────
   'composeToolbar.aria': 'Formatting',

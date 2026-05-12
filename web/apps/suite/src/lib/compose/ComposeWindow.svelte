@@ -7,6 +7,7 @@
   import RichEditor from './RichEditor.svelte';
   import ComposeToolbar from './ComposeToolbar.svelte';
   import RecipientField from './RecipientField.svelte';
+  import FromPicker from './FromPicker.svelte';
   import { confirm } from '../dialog/confirm.svelte';
   import { t } from '../i18n/i18n.svelte';
   import { EMPTY_ACTIVE, type ActiveState, applyImage, removeImageBySrc } from './editor';
@@ -14,6 +15,9 @@
   import { recipientToString } from './recipient-parse';
   import { hasExternalSubmission } from '../auth/capabilities';
   import { submissionStore } from '../identities/identity-submission.svelte';
+  import type { Identity } from '../mail/types';
+  import type { SubmissionSummary } from '../identities/identity-status';
+  import { composeFromGating, shouldShowFromPicker } from './from-picker';
 
   // Per-compose keyboard layer: Mod+Enter sends, Escape closes.
   // Both pass through input-focus carve-outs (see keyboard engine
@@ -92,21 +96,80 @@
     });
   });
 
-  let identity = $derived(mail.primaryIdentity);
+  // Resolve the currently selected From identity. Three layers of
+  // fallback (REQ-MAIL-12 / REQ-MAIL-12a):
+  //   1. compose.selectedIdentity — set by openReply / openReplyAll /
+  //      openForward (reply-match) and by this picker on user pick.
+  //   2. mail.primaryIdentity — for fresh composes and openDraft (the
+  //      historical default-from behaviour, REQ-MAIL-12 step 4).
+  //   3. null — degrade to the muted "From" placeholder until the
+  //      identity cache primes.
+  let identity = $derived<Identity | null>(
+    compose.selectedIdentity ?? mail.primaryIdentity,
+  );
 
-  // External submission indicator (REQ-MAIL-SUBMIT-05).
-  // Cosmetic only — shows a small marker next to the From identity when
-  // it has external submission configured.
+  // Identity list snapshot for the picker. Reactive on mail.identities
+  // size so the picker re-renders when a new identity is added or an
+  // existing one's verification state flips. composeFromSort is pure
+  // so we can recompute on every read without amortisation games.
+  let identitiesList = $derived(Array.from(mail.identities.values()));
+
+  // External-submission capability gates both the [ext] cosmetic
+  // indicator and the per-identity submission lookup. When absent
+  // we resolve to null so the disabled-row gate degrades to
+  // verification-only (matches IdentityList.svelte).
   let showExtSub = $derived(hasExternalSubmission());
-  let extSubHandle = $derived(
-    identity && showExtSub ? submissionStore.forIdentity(identity.id) : null,
+
+  /**
+   * Resolve a per-identity submission summary for the picker. Returns
+   * null when the capability is off or when no submission record exists
+   * (the local-outbound case). The store handle .load() is called
+   * lazily — submissionStore.forIdentity is cheap; the load() call
+   * gates internally on the entry's load status so calling it on
+   * every read of the data is safe.
+   */
+  function submissionResolver(id: string): SubmissionSummary | null {
+    if (!showExtSub) return null;
+    const handle = submissionStore.forIdentity(id);
+    void handle.load();
+    const data = handle.data;
+    if (!data) return null;
+    return { configured: data.configured === true, state: data.state ?? null };
+  }
+
+  /** Whether the [ext] cosmetic indicator should render for an identity. */
+  function externalConfigured(id: string): boolean {
+    if (!showExtSub) return false;
+    return submissionStore.forIdentity(id).data?.configured === true;
+  }
+
+  // Send-button gating based on the From identity's state (REQ-MAIL-12).
+  // The gating verdict drives both the disabled flag and the inline
+  // explanation banner the user sees when Send is blocked.
+  let fromGating = $derived(
+    composeFromGating(identity, identity ? submissionResolver(identity.id) : null),
   );
-  $effect(() => {
-    if (extSubHandle) void extSubHandle.load();
-  });
-  let identityHasExternalConfig = $derived(
-    extSubHandle?.data?.configured === true,
+  let fromGatingMessage = $derived(
+    fromGating.allowed
+      ? null
+      : fromGating.reason === 'no-identity'
+        ? t('compose.from.sendDisabled.noIdentity')
+        : fromGating.reason === 'unverified'
+          ? t('compose.from.sendDisabled.unverified')
+          : fromGating.reason === 'verifying'
+            ? t('compose.from.sendDisabled.verifying')
+            : t('compose.from.sendDisabled.external'),
   );
+
+  // Whether to render the dropdown or fall back to static text. The
+  // single-identity case keeps the row uncluttered per REQ-MAIL-12.
+  let showPicker = $derived(
+    shouldShowFromPicker(identitiesList, submissionResolver),
+  );
+
+  function onPickIdentity(picked: Identity): void {
+    compose.selectedIdentity = picked;
+  }
 
   // Auto-save the draft after a short period of typing inactivity so a
   // closed-tab / reload does not lose the user's work. We track every
@@ -221,6 +284,11 @@
   // visible characters; the editor renders one or more empty <p> tags
   // even when nothing has been typed.
   async function sendWithWarn(): Promise<void> {
+    // From identity must pass the gating verdict (REQ-MAIL-12).
+    if (!fromGating.allowed) {
+      compose.errorMessage = fromGatingMessage ?? 'Cannot send from this identity';
+      return;
+    }
     // Recipient fields have stranded unparsed text (REQ-MAIL-11d).
     if (hasRecipientWarnings) {
       compose.errorMessage = 'Fix recipient warnings before sending';
@@ -554,23 +622,39 @@
     </header>
 
     <div class="fields">
-      <div class="row">
+      <div class="row from-row">
         <span class="label">{t('compose.from')}</span>
-        <span class="from-display">
-          {#if identity}
-            {identity.name ? `${identity.name} <${identity.email}>` : identity.email}
-            {#if identityHasExternalConfig}
-              <span
-                class="ext-sub-indicator"
-                title="Mail sent via external SMTP"
-                aria-label="External SMTP"
-              >[ext]</span>
+        {#if showPicker}
+          <FromPicker
+            identities={identitiesList}
+            selected={identity}
+            {submissionResolver}
+            {externalConfigured}
+            onSelect={onPickIdentity}
+            disabled={compose.status === 'sending'}
+          />
+        {:else}
+          <span class="from-display" data-testid="from-static">
+            {#if identity}
+              {identity.name ? `${identity.name} <${identity.email}>` : identity.email}
+              {#if externalConfigured(identity.id)}
+                <span
+                  class="ext-sub-indicator"
+                  title="Mail sent via external SMTP"
+                  aria-label="External SMTP"
+                >[ext]</span>
+              {/if}
+            {:else}
+              <span class="muted">Loading identity…</span>
             {/if}
-          {:else}
-            <span class="muted">Loading identity…</span>
-          {/if}
-        </span>
+          </span>
+        {/if}
       </div>
+      {#if fromGatingMessage}
+        <p class="from-gating-banner" role="status" data-testid="from-gating-banner">
+          {fromGatingMessage}
+        </p>
+      {/if}
 
       <div class="row recipient-row">
         <RecipientField
@@ -779,12 +863,16 @@
         type="button"
         class="send"
         onclick={sendWithWarn}
-        disabled={compose.status === 'sending' || compose.attachmentsBusy || hasRecipientWarnings}
+        disabled={compose.status === 'sending'
+          || compose.attachmentsBusy
+          || hasRecipientWarnings
+          || !fromGating.allowed}
         title={compose.attachmentsBusy
           ? 'Attachments still uploading'
           : hasRecipientWarnings
             ? 'Fix recipient warnings before sending'
-            : ''}
+            : fromGatingMessage ?? ''}
+        data-testid="compose-send"
       >
         {compose.status === 'sending' ? t('compose.sending') : t('compose.send')}
       </button>
@@ -1040,6 +1128,26 @@
     padding: var(--spacing-01) var(--spacing-05);
     color: var(--support-warning);
     font-size: var(--type-body-compact-01-size);
+  }
+
+  /* Inline explanation banner under the From row when the selected
+     identity is not allowed to send (REQ-MAIL-12). Distinct from
+     .error so it does not steal the alert role; this is a hint, not a
+     blocking error. */
+  .from-gating-banner {
+    margin: 0;
+    padding: var(--spacing-02) var(--spacing-05);
+    background: color-mix(in srgb, var(--support-warning) 10%, transparent);
+    border-left: 3px solid var(--support-warning);
+    color: color-mix(in srgb, var(--support-warning) 90%, var(--text-primary));
+    font-size: var(--type-body-compact-01-size);
+  }
+
+  /* The From row needs the picker (which is flex:1) to share the row
+     baseline with the label. Override the .row gap so the picker can
+     stretch but the label stays compact. */
+  .from-row {
+    align-items: center;
   }
 
   /* Recipient rows use RecipientField which draws its own border; suppress
