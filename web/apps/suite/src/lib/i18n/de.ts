@@ -934,4 +934,96 @@ export const de = {
   'contact.view.title': 'Kontakt',
   'contact.view.emailHeading': 'E-Mail',
   'contact.view.phoneHeading': 'Telefon',
+
+  // ── Einstellungen → Adress-Tags (re #30, REQ-SET-TAG-01..21) ───────
+  'settings.taggedAddresses': 'Adress-Tags',
+  'settings.taggedAddresses.heading': 'Adress-Tags',
+  'settings.taggedAddresses.intro':
+    'Mit Adress-Tags können Sie Varianten Ihrer Adresse vergeben – z. B. alice+amazon@example.local – und Antworten automatisch in Ordner einsortieren lassen. Beim Öffnen einer Nachricht an eine getaggte Variante bietet die Suite an, einen Filter einzurichten.',
+  'settings.taggedAddresses.unavailable':
+    'Dieser Server unterstützt die Adress-Tag-Funktion nicht.',
+  'settings.taggedAddresses.loading': 'Filter werden geladen…',
+  'settings.taggedAddresses.refresh': 'Aktualisieren',
+  'settings.taggedAddresses.filtersHeading': 'Filter',
+  'settings.taggedAddresses.empty':
+    'Noch keine Adress-Tag-Filter. Öffnen Sie eine Nachricht an eine getaggte Variante Ihrer Adresse, um einen Filter einzurichten.',
+  'settings.taggedAddresses.addFilter': 'Filter hinzufügen',
+  'settings.taggedAddresses.col.address': 'Adresse',
+  'settings.taggedAddresses.col.action': 'Aktion',
+  'settings.taggedAddresses.col.label': 'Label',
+  'settings.taggedAddresses.col.created': 'Angelegt',
+  'settings.taggedAddresses.col.dismissedAt': 'Abgelehnt',
+  'settings.taggedAddresses.col.actions': 'Aktionen',
+  'settings.taggedAddresses.action.label': 'Als {label} kennzeichnen',
+  'settings.taggedAddresses.action.labelArchive': 'Als {label} kennzeichnen + archivieren',
+  'settings.taggedAddresses.action.labelArchiveRead':
+    'Als {label} kennzeichnen + archivieren + als gelesen markieren',
+  'settings.taggedAddresses.row.edit': 'Bearbeiten',
+  'settings.taggedAddresses.row.delete': 'Löschen',
+  'settings.taggedAddresses.row.convert': 'In Sieve umwandeln',
+  'settings.taggedAddresses.row.editAria': 'Filter für {address} bearbeiten',
+  'settings.taggedAddresses.row.deleteAria': 'Filter für {address} löschen',
+  'settings.taggedAddresses.row.convertAria': 'Filter für {address} in Sieve umwandeln',
+  'settings.taggedAddresses.capNotice': '{used} von {cap} Filterplätzen belegt',
+  'settings.taggedAddresses.capReached':
+    'Sie haben das Konto-Limit von {cap} Filtern erreicht. Bitte einen bestehenden Filter löschen oder in Sieve umwandeln.',
+  'settings.taggedAddresses.dismissalsHeading': 'Abgelehnte Suffixe',
+  'settings.taggedAddresses.dismissalsIntro':
+    'Getaggte Varianten, deren Banner Sie ignoriert haben. Reaktivieren Sie eine Zeile, um beim nächsten Eingang erneut nach einem Filter gefragt zu werden.',
+  'settings.taggedAddresses.dismissalsEmpty': 'Keine abgelehnten Suffixe.',
+  'settings.taggedAddresses.dismissalsCount': '{count} abgelehnt',
+  'settings.taggedAddresses.dismissalsToggle': 'Abgelehnte Suffixe anzeigen',
+  'settings.taggedAddresses.dismissalsCapNotice': '{used} von {cap} Ablehnungs-Plätzen belegt',
+  'settings.taggedAddresses.row.undismiss': 'Wieder anbieten',
+  'settings.taggedAddresses.row.undismissAria': 'Banner für {address} wieder anbieten',
+  'settings.taggedAddresses.dialog.titleAdd': 'Adress-Tag-Filter hinzufügen',
+  'settings.taggedAddresses.dialog.titleEdit': 'Adress-Tag-Filter bearbeiten',
+  'settings.taggedAddresses.dialog.identity': 'Basis-Identität',
+  'settings.taggedAddresses.dialog.identityHint':
+    'Mail an {address} mit einem +Suffix wird von diesem Filter abgefangen.',
+  'settings.taggedAddresses.dialog.suffix': 'Suffix (nach dem +)',
+  'settings.taggedAddresses.dialog.suffixHint':
+    'Nur Kleinbuchstaben, kein @ und keine Leerzeichen. Der Server normalisiert die Schreibweise beim Speichern.',
+  'settings.taggedAddresses.dialog.suffixPlaceholder': 'amazon',
+  'settings.taggedAddresses.dialog.action': 'Aktion',
+  'settings.taggedAddresses.dialog.actionLabel': 'Label anwenden',
+  'settings.taggedAddresses.dialog.actionLabelArchive': 'Label anwenden und archivieren',
+  'settings.taggedAddresses.dialog.actionLabelArchiveRead':
+    'Label anwenden, archivieren und als gelesen markieren',
+  'settings.taggedAddresses.dialog.labelName': 'Label-Name',
+  'settings.taggedAddresses.dialog.labelNameHint':
+    'Passende Nachrichten landen in dem angegebenen Label.',
+  'settings.taggedAddresses.dialog.labelPlaceholder': 'Shopping',
+  'settings.taggedAddresses.dialog.cancel': 'Abbrechen',
+  'settings.taggedAddresses.dialog.save': 'Filter speichern',
+  'settings.taggedAddresses.dialog.create': 'Filter erstellen',
+  'settings.taggedAddresses.dialog.saving': 'Wird gespeichert…',
+  'settings.taggedAddresses.dialog.noVerifiedIdentities':
+    'Sie haben keine verifizierten Identitäten. Bitte verifizieren Sie eine Identität im Konto-Bereich, bevor Sie Adress-Tag-Filter anlegen.',
+  'settings.taggedAddresses.confirmDelete.title': 'Filter löschen',
+  'settings.taggedAddresses.confirmDelete.body':
+    'Mail an {address} nicht mehr automatisch sortieren? Künftige Mails landen ganz normal im Posteingang. Bereits einsortierte Mails bleiben unverändert.',
+  'settings.taggedAddresses.confirmDelete.confirm': 'Filter löschen',
+  'settings.taggedAddresses.confirmDelete.cancel': 'Filter behalten',
+  'settings.taggedAddresses.confirmConvert.title': 'In Sieve umwandeln',
+  'settings.taggedAddresses.confirmConvert.body':
+    'Den Filter für {address} in ein Sieve-Skriptfragment umwandeln? Dies ist eine Einbahnstraße: die verwaltete Filterzeile verschwindet und eine entsprechende Sieve-Regel wird in Ihr Skript eingefügt.',
+  'settings.taggedAddresses.confirmConvert.confirm': 'In Sieve umwandeln',
+  'settings.taggedAddresses.confirmConvert.cancel': 'Verwaltet lassen',
+  'settings.taggedAddresses.toast.created': 'Filter angelegt.',
+  'settings.taggedAddresses.toast.updated': 'Filter aktualisiert.',
+  'settings.taggedAddresses.toast.deleted': 'Filter gelöscht.',
+  'settings.taggedAddresses.toast.converted':
+    'Filter in Ihr Sieve-Skript übernommen. Bearbeiten Sie es unter Einstellungen → Mail → Sieve.',
+  'settings.taggedAddresses.toast.undismissed': 'Banner für {address} wieder aktiviert.',
+  'settings.taggedAddresses.toast.failed': 'Aktion fehlgeschlagen: {error}',
+  'settings.taggedAddresses.error.suffixEmpty': 'Das Suffix darf nicht leer sein.',
+  'settings.taggedAddresses.error.suffixTooLong': 'Das Suffix darf höchstens 64 Bytes lang sein.',
+  'settings.taggedAddresses.error.suffixWhitespace':
+    'Das Suffix darf keine Leerzeichen enthalten.',
+  'settings.taggedAddresses.error.suffixForbidden':
+    'Das Suffix darf keine Steuerzeichen und kein @ enthalten.',
+  'settings.taggedAddresses.error.labelEmpty': 'Der Label-Name darf nicht leer sein.',
+  'settings.taggedAddresses.error.labelTooLong':
+    'Der Label-Name darf höchstens 255 Bytes lang sein.',
 } as const;
