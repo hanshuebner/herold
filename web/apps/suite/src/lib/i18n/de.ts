@@ -52,6 +52,26 @@ export const de = {
   'mail.threadReader.internalizePending.body':
     'Externe Bilder in dieser Nachricht werden noch im Hintergrund internalisiert. Sie erscheinen vorerst als Platzhalter; aktualisieren Sie kurz, um sie zu sehen.',
 
+  // ── Banner für getaggte Adressen (REQ-MAIL-12c) ──────────────────────
+  // Banner über dem Nachrichtentext bietet vier Aktionen für erstmals
+  // gesehene Sub-Adressen.
+  'mail.taggedBanner.heading': 'Post an +{suffix}.',
+  'mail.taggedBanner.lead': 'Auto-Sortierung für künftige Nachrichten einrichten?',
+  'mail.taggedBanner.action.label': 'Etikett',
+  'mail.taggedBanner.action.labelArchive': 'Etikett + archivieren',
+  'mail.taggedBanner.action.labelArchiveRead': 'Etikett + archivieren + als gelesen markieren',
+  'mail.taggedBanner.action.dismiss': 'Künftige Post an +{suffix} ignorieren',
+  'mail.taggedBanner.dialog.title.label': 'Post an +{suffix} etikettieren',
+  'mail.taggedBanner.dialog.title.labelArchive':
+    'Post an +{suffix} etikettieren und archivieren',
+  'mail.taggedBanner.dialog.title.labelArchiveRead':
+    'Post an +{suffix} etikettieren, archivieren und als gelesen markieren',
+  'mail.taggedBanner.dialog.confirm': 'Regel anlegen',
+  'mail.taggedBanner.toast.filterCreated': 'Regel für +{suffix} angelegt',
+  'mail.taggedBanner.toast.dismissed': 'Künftige Post an +{suffix} fragt nicht erneut',
+  'mail.taggedBanner.toast.filterFailed': 'Regel konnte nicht angelegt werden',
+  'mail.taggedBanner.toast.dismissFailed': 'Ignorier-Markierung konnte nicht gespeichert werden',
+
   // ── MailView-Oberflächen (re #97) ────────────────────────────────────
   // Suchroute: Überschrift + Echo der leeren Anfrage, Zurück-Link,
   // ARIA-Bezeichnungen für Erkennungs-Strip / Verlaufs-Strip /

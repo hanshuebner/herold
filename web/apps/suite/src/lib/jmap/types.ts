@@ -136,6 +136,17 @@ export const Capability = {
    * Both sides MUST be updated together if the URI changes.
    */
   HeroldIdentityVerification: 'https://netzhansa.com/jmap/identity-verification',
+  /**
+   * Tagged-address filters and dismissals (REQ-TAG-70).
+   * Advertised when [server.tagged_addresses].enabled = true. When
+   * absent, the suite hides the per-message banner (REQ-MAIL-12c) and
+   * the Settings → Tagged addresses surface.
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/registry.go CapabilityTaggedAddresses.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldTaggedAddresses: 'https://netzhansa.com/jmap/tagged-addresses',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

@@ -53,6 +53,29 @@ export const en = {
   'mail.threadReader.internalizePending.body':
     'External images in this message are still being internalized in the background. They appear as placeholders for now; refresh in a moment to see them.',
 
+  // ── Tagged-address banner (REQ-MAIL-12c) ─────────────────────────────
+  // Banner above the message body offering four actions on first-seen
+  // sub-addressed mail. The headline interpolates the +suffix so the
+  // user sees exactly which tag drives the prompt.
+  'mail.taggedBanner.heading': 'Mail to +{suffix}.',
+  'mail.taggedBanner.lead': 'Set up auto-sorting for future messages?',
+  'mail.taggedBanner.action.label': 'Label',
+  'mail.taggedBanner.action.labelArchive': 'Label + archive',
+  'mail.taggedBanner.action.labelArchiveRead': 'Label + archive + mark read',
+  'mail.taggedBanner.action.dismiss': 'Ignore future mail to +{suffix}',
+  // Label-name editor pre-populated with the suffix capitalised. Title
+  // changes per action so the user knows what they are about to commit.
+  'mail.taggedBanner.dialog.title.label': 'Label mail to +{suffix}',
+  'mail.taggedBanner.dialog.title.labelArchive': 'Label and archive mail to +{suffix}',
+  'mail.taggedBanner.dialog.title.labelArchiveRead':
+    'Label, archive, and mark read mail to +{suffix}',
+  'mail.taggedBanner.dialog.confirm': 'Create rule',
+  // Toast messages on action completion (REQ-MAIL-12c).
+  'mail.taggedBanner.toast.filterCreated': 'Rule created for +{suffix}',
+  'mail.taggedBanner.toast.dismissed': 'Future mail to +{suffix} will not prompt again',
+  'mail.taggedBanner.toast.filterFailed': 'Could not create rule',
+  'mail.taggedBanner.toast.dismissFailed': 'Could not save dismissal',
+
   // ── MailView surfaces (re #97) ──────────────────────────────────────
   // Search route: heading + empty-query echo, back link, ARIA labels for
   // the chip-recogniser strip / history strip / results listbox, and the

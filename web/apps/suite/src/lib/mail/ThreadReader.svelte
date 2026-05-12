@@ -4,6 +4,7 @@
   import MessageAccordion from './MessageAccordion.svelte';
   import ThreadToolbar from './ThreadToolbar.svelte';
   import ThreadReplyBar from './ThreadReplyBar.svelte';
+  import TaggedAddressBanner from './TaggedAddressBanner.svelte';
   import { t } from '../i18n/i18n.svelte';
   import { labelForeground } from './label-color';
   import type { Email } from './types';
@@ -159,6 +160,10 @@
           <span>{t('mail.threadReader.internalizePending.body')}</span>
         </div>
       {/if}
+      <!-- REQ-MAIL-12c: per-message tagged-address banner. Anchored to
+           the latest message in the thread so the suffix matches the
+           message the user just opened. -->
+      <TaggedAddressBanner email={latest} />
       <div class="messages">
         {#each emails as email (email.id)}
           <MessageAccordion {email} expanded={expanded.has(email.id)} onToggle={toggle} />
