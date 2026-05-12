@@ -19,13 +19,22 @@ FROM node:${NODE_VERSION}-bookworm-slim AS web-build
 WORKDIR /src
 RUN --mount=type=cache,target=/root/.npm \
     npm install -g pnpm@${PNPM_VERSION:-10}
-COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml web/tsconfig.base.json ./web/
-COPY web/apps ./web/apps
-COPY web/packages ./web/packages
+# Use scripts/build-web.sh as the single source of truth for the web
+# build. The script handles three concerns the previous inline build
+# missed: (1) bundling docs/manual/ into JSON consumed by the SPAs at
+# runtime, (2) running the Markdoc SSR pass to produce the standalone
+# /manual/ chapter tree, and (3) copying all three dists into
+# internal/webspa/dist/{suite,admin,manual}/ so the //go:embed
+# directive in the build stage picks them up. The prior inline
+# pnpm-build sequence skipped the manual steps, which made the
+# resulting image crash at startup with "embedded manual dist missing
+# index.html" (see scripts/build-web.sh for the full eight-step
+# pipeline).
+COPY web ./web
+COPY docs/manual ./docs/manual
+COPY scripts/build-web.sh ./scripts/build-web.sh
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
-    pnpm --dir web install --frozen-lockfile
-RUN pnpm --dir web --filter @herold/suite build \
- && pnpm --dir web --filter @herold/admin build
+    chmod +x ./scripts/build-web.sh && ./scripts/build-web.sh
 
 FROM golang:${GO_VERSION}-bookworm AS build
 WORKDIR /src
@@ -37,11 +46,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 COPY . .
 
-# Mirror what scripts/build-web.sh does: drop the SPA dist artefacts
-# into internal/webspa/dist/ so the //go:embed directive resolves with
-# real Vite output, not the placeholder shells.
-COPY --from=web-build /src/web/apps/suite/dist ./internal/webspa/dist/suite
-COPY --from=web-build /src/web/apps/admin/dist ./internal/webspa/dist/admin
+# scripts/build-web.sh in the web-build stage has already written
+# the three dist trees (suite, admin, manual) into
+# internal/webspa/dist/. Copy the whole subtree so the //go:embed
+# directive resolves with real Vite + Markdoc output, not the
+# placeholder shells.
+COPY --from=web-build /src/internal/webspa/dist ./internal/webspa/dist
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \

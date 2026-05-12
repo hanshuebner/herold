@@ -1,0 +1,14 @@
+.git
+.github
+.claude
+.cache
+data
+*.log
+node_modules
+**/node_modules
+**/dist
+internal/webspa/dist/*/
+!internal/webspa/dist/.gitkeep
+web/apps/*/dist
+web/packages/*/dist
+test/interop/logs
