@@ -427,6 +427,102 @@ func TestDismissals_PostCreate_MaterialisesDefaultIdentity(t *testing.T) {
 	}
 }
 
+// TestDismissals_PostCreate_BumpsIdentityState exercises Gap 3: a
+// successful POST that inserts a row MUST advance the principal's
+// JMAP Identity state token so the SPA's Identity/changes push
+// invalidates other tabs' caches (REQ-TAG-72). The state monotonically
+// increases by one; idempotent re-POSTs (already-dismissed) MUST NOT
+// advance the state.
+func TestDismissals_PostCreate_BumpsIdentityState(t *testing.T) {
+	h := newDismissalHarness(t)
+	identityID := h.insertIdentity(h.adminPID, "admin@example.com")
+	ctx := context.Background()
+
+	stateBefore, err := h.fs.Meta().GetJMAPStates(ctx, store.PrincipalID(h.adminPID))
+	if err != nil {
+		t.Fatalf("GetJMAPStates before: %v", err)
+	}
+
+	body := map[string]any{
+		"base_identity_id": identityID,
+		"suffix":           "amazon",
+	}
+	res, buf := h.doRequest("POST", "/api/v1/tagged-address-dismissals", h.adminKey, body)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("POST: %d: %s", res.StatusCode, buf)
+	}
+
+	stateAfter, err := h.fs.Meta().GetJMAPStates(ctx, store.PrincipalID(h.adminPID))
+	if err != nil {
+		t.Fatalf("GetJMAPStates after: %v", err)
+	}
+	if !(stateAfter.Identity > stateBefore.Identity) {
+		t.Fatalf("Identity state did not advance: before=%d after=%d", stateBefore.Identity, stateAfter.Identity)
+	}
+
+	// Idempotent re-POST returns 200 and MUST NOT advance the state
+	// further (the user's view did not change).
+	res2, _ := h.doRequest("POST", "/api/v1/tagged-address-dismissals", h.adminKey, body)
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("second POST: %d (want 200)", res2.StatusCode)
+	}
+	stateIdempotent, err := h.fs.Meta().GetJMAPStates(ctx, store.PrincipalID(h.adminPID))
+	if err != nil {
+		t.Fatalf("GetJMAPStates idempotent: %v", err)
+	}
+	if stateIdempotent.Identity != stateAfter.Identity {
+		t.Fatalf("idempotent re-POST advanced Identity state: %d -> %d",
+			stateAfter.Identity, stateIdempotent.Identity)
+	}
+}
+
+// TestDismissals_Delete_BumpsIdentityState exercises Gap 3 on the
+// DELETE path. A delete that actually removed a row advances the
+// state; an idempotent delete on a missing row does NOT advance it.
+func TestDismissals_Delete_BumpsIdentityState(t *testing.T) {
+	h := newDismissalHarness(t)
+	identityID := h.insertIdentity(h.adminPID, "admin@example.com")
+	ctx := context.Background()
+
+	res, _ := h.doRequest("POST", "/api/v1/tagged-address-dismissals", h.adminKey,
+		map[string]any{"base_identity_id": identityID, "suffix": "shopping"})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("seed POST: %d", res.StatusCode)
+	}
+
+	stateBefore, err := h.fs.Meta().GetJMAPStates(ctx, store.PrincipalID(h.adminPID))
+	if err != nil {
+		t.Fatalf("GetJMAPStates before DELETE: %v", err)
+	}
+	delPath := "/api/v1/tagged-address-dismissals/" + identityID + "/shopping"
+	res2, _ := h.doRequest("DELETE", delPath, h.adminKey, nil)
+	if res2.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE: %d", res2.StatusCode)
+	}
+	stateAfter, err := h.fs.Meta().GetJMAPStates(ctx, store.PrincipalID(h.adminPID))
+	if err != nil {
+		t.Fatalf("GetJMAPStates after DELETE: %v", err)
+	}
+	if !(stateAfter.Identity > stateBefore.Identity) {
+		t.Fatalf("Identity state did not advance on DELETE: before=%d after=%d",
+			stateBefore.Identity, stateAfter.Identity)
+	}
+
+	// Second DELETE: idempotent — no row removed, no state bump.
+	res3, _ := h.doRequest("DELETE", delPath, h.adminKey, nil)
+	if res3.StatusCode != http.StatusNoContent {
+		t.Fatalf("second DELETE: %d", res3.StatusCode)
+	}
+	stateIdempotent, err := h.fs.Meta().GetJMAPStates(ctx, store.PrincipalID(h.adminPID))
+	if err != nil {
+		t.Fatalf("GetJMAPStates idempotent: %v", err)
+	}
+	if stateIdempotent.Identity != stateAfter.Identity {
+		t.Fatalf("idempotent DELETE advanced Identity state: %d -> %d",
+			stateAfter.Identity, stateIdempotent.Identity)
+	}
+}
+
 // auditEntriesFor returns the audit_log rows whose action equals the
 // supplied value. Tests use it to assert audit-side effects of the
 // REST handlers (REQ-TAG-90).

@@ -208,6 +208,18 @@ func (s *Server) handleCreateTaggedAddressDismissal(w http.ResponseWriter, r *ht
 				"base_identity_id": body.BaseIdentityID,
 				"suffix":           suffix,
 			})
+		// REQ-TAG-72: dismissal mutations bump the JMAP Identity state
+		// token so the SPA's Identity/changes push invalidates the
+		// per-tab cache for other tabs / clients. Best-effort: a
+		// failure here is logged but does not invalidate the user's
+		// mutation, which has already landed (mirrors the audit-log
+		// error pattern).
+		if _, err := s.store.Meta().IncrementJMAPState(ctx, caller.ID,
+			store.JMAPStateKindIdentity); err != nil {
+			s.logger.WarnContext(ctx, "tagged_address_dismissals.create: state bump failed",
+				"err", err.Error(),
+				"principal_id", uint64(caller.ID))
+		}
 		writeJSON(w, http.StatusCreated, resp)
 		return
 	}
@@ -299,6 +311,18 @@ func (s *Server) handleDeleteTaggedAddressDismissal(w http.ResponseWriter, r *ht
 				"base_identity_id": baseIdentityID,
 				"suffix":           lower,
 			})
+		// REQ-TAG-72: bump JMAP Identity state on a destroy that
+		// actually removed a row so the SPA's Identity/changes push
+		// invalidates other tabs' caches. Idempotent re-DELETE on a
+		// missing row does NOT advance the state (the user's view did
+		// not change). Best-effort error handling parallels the
+		// create branch above.
+		if _, err := s.store.Meta().IncrementJMAPState(ctx, caller.ID,
+			store.JMAPStateKindIdentity); err != nil {
+			s.logger.WarnContext(ctx, "tagged_address_dismissals.destroy: state bump failed",
+				"err", err.Error(),
+				"principal_id", uint64(caller.ID))
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
