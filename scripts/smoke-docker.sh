@@ -87,27 +87,41 @@ docker run -d --name "$NAME" \
   -p "127.0.0.1:${PORT_ADMIN}:9443" \
   "$IMAGE" >/dev/null
 
-wait_tcp() {
-  local label="$1" port="$2" max="$3"
+# Wait for the server to be fully ready inside the container, not just
+# for Docker's userspace port proxy to accept connections. The proxy
+# accepts the moment `-p` is wired up, BEFORE the server has finished
+# applying migrations or binding listeners. If the smoke script
+# proceeds to `docker exec ... bootstrap` at that point the bootstrap
+# subprocess opens the same SQLite DB concurrently with the server's
+# in-progress migration application -- the migration runner reads
+# schema_migrations and the live ALTER TABLE state in two separate
+# operations, so it races and hits "duplicate column" errors.
+#
+# `herold: ready` is the server's last startup log line, emitted after
+# all listeners are bound (see internal/admin/server.go). Polling
+# `docker logs` for that string is unambiguous: once present, every
+# subsequent CLI invocation can open the store without racing.
+wait_ready() {
+  local max="$1"
   local i
   for i in $(seq 1 "$max"); do
-    if (echo > "/dev/tcp/127.0.0.1/${port}") >/dev/null 2>&1; then
-      echo "smoke: ${label} listener up after ${i}s"
+    if docker logs "$NAME" 2>&1 | grep -q '"msg":"herold: ready"'; then
+      echo "smoke: server reports ready after ${i}s"
       return 0
     fi
     if ! docker ps --filter "name=^${NAME}\$" --format '{{.Names}}' | grep -q "^${NAME}\$"; then
-      echo "smoke: container exited during ${label} startup" >&2
+      echo "smoke: container exited during startup" >&2
       return 1
     fi
     sleep 1
   done
-  echo "smoke: timeout waiting for ${label} on port ${port}" >&2
+  echo "smoke: timeout waiting for 'herold: ready' log line" >&2
+  echo "smoke: last container logs:" >&2
+  docker logs "$NAME" 2>&1 | tail -30 >&2
   return 1
 }
 
-wait_tcp admin "${PORT_ADMIN}" 60
-wait_tcp smtp  "${PORT_SMTP}"  30
-wait_tcp imaps "${PORT_IMAPS}" 30
+wait_ready 90
 
 echo "smoke: bootstrapping admin principal..."
 docker exec "$NAME" /usr/local/bin/herold bootstrap \
