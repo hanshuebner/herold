@@ -138,3 +138,29 @@ func listAccessibleMailboxes(
 	}
 	return owned, nil
 }
+
+// listMailboxesForAccount returns the mailboxes the caller can see in
+// the requested owner account (REQ-PROTO-33). When caller == owner this
+// is the caller's own listing (owned + ACL-shared from third parties).
+// When caller != owner, it is only the mailboxes owned by `owner` that
+// the caller has Lookup right on (direct ACL row or "anyone").
+func listMailboxesForAccount(
+	ctx context.Context,
+	meta store.Metadata,
+	callerPID, ownerPID store.PrincipalID,
+) ([]store.Mailbox, error) {
+	if callerPID == ownerPID {
+		return listAccessibleMailboxes(ctx, meta, callerPID)
+	}
+	shared, err := meta.ListMailboxesAccessibleBy(ctx, callerPID)
+	if err != nil {
+		return nil, fmt.Errorf("mailbox: list shared: %w", err)
+	}
+	out := make([]store.Mailbox, 0, len(shared))
+	for _, mb := range shared {
+		if mb.PrincipalID == ownerPID {
+			out = append(out, mb)
+		}
+	}
+	return out, nil
+}

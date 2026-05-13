@@ -150,7 +150,7 @@ type setHandler struct{ h *handlerSet }
 func (s *setHandler) Method() string { return "Email/set" }
 
 func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := principalFromCtx(ctx)
+	callerPID, merr := principalFromCtx(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -161,11 +161,12 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	ownerPID, merr := resolveAccount(ctx, s.h.store.Meta(), callerPID, req.AccountID)
+	if merr != nil {
 		return nil, merr
 	}
 
-	state, err := currentState(ctx, s.h.store.Meta(), pid)
+	state, err := currentState(ctx, s.h.store.Meta(), ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -194,7 +195,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 				continue
 			}
 		}
-		mid, jm, serr, err := s.h.createEmail(ctx, pid, in)
+		mid, jm, serr, err := s.h.createEmail(ctx, callerPID, ownerPID, in)
 		if err != nil {
 			return nil, serverFail(err)
 		}
@@ -203,8 +204,9 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			continue
 		}
 		// Increment Thread state for each created email: a new message either
-		// starts a new thread or joins an existing one.
-		if _, terr := s.h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindThread); terr != nil {
+		// starts a new thread or joins an existing one. State counters
+		// belong to the owning account, not the caller.
+		if _, terr := s.h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindThread); terr != nil {
 			return nil, serverFail(terr)
 		}
 		creationRefs[key] = mid
@@ -221,7 +223,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 				continue
 			}
 		}
-		serr, err := s.h.updateEmail(ctx, pid, mid, payload)
+		serr, err := s.h.updateEmail(ctx, callerPID, ownerPID, mid, payload)
 		if err != nil {
 			return nil, serverFail(err)
 		}
@@ -242,7 +244,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 				continue
 			}
 		}
-		serr, err := s.h.destroyEmail(ctx, pid, mid)
+		serr, err := s.h.destroyEmail(ctx, callerPID, ownerPID, mid)
 		if err != nil {
 			return nil, serverFail(err)
 		}
@@ -253,7 +255,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 		resp.Destroyed = append(resp.Destroyed, raw)
 	}
 
-	newState, err := currentState(ctx, s.h.store.Meta(), pid)
+	newState, err := currentState(ctx, s.h.store.Meta(), ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -278,7 +280,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 // extension lands later.
 func (h *handlerSet) createEmail(
 	ctx context.Context,
-	pid store.PrincipalID,
+	callerPID, ownerPID store.PrincipalID,
 	in emailCreateInput,
 ) (store.MessageID, jmapEmail, *setError, error) {
 	hasBlob := in.BlobID != ""
@@ -341,11 +343,26 @@ func (h *handlerSet) createEmail(
 			}
 			return 0, jmapEmail{}, nil, err
 		}
-		if mb.PrincipalID != pid {
+		if mb.PrincipalID != ownerPID {
 			return 0, jmapEmail{}, &setError{
 				Type:        "forbidden",
-				Description: "target mailbox is not owned by this principal",
+				Description: "target mailbox is not owned by the requested account",
 			}, nil
+		}
+		if callerPID != ownerPID {
+			// Cross-account create requires Insert right on the target
+			// mailbox (REQ-PROTO-33 / REQ-AUTH-63). Lookup-only callers
+			// see the mailbox in /get but cannot append.
+			rights, rerr := aclRightsForCaller(ctx, h.store.Meta(), callerPID, mb)
+			if rerr != nil {
+				return 0, jmapEmail{}, nil, rerr
+			}
+			if rights&store.ACLRightInsert == 0 {
+				return 0, jmapEmail{}, &setError{
+					Type:        "forbidden",
+					Description: "caller lacks insert right on target mailbox",
+				}, nil
+			}
 		}
 		targetMailboxIDs = append(targetMailboxIDs, id)
 	}
@@ -447,7 +464,7 @@ func (h *handlerSet) createEmail(
 	}
 
 	msg := store.Message{
-		PrincipalID:  pid,
+		PrincipalID:  ownerPID,
 		Flags:        flags,
 		Keywords:     customKW,
 		InternalDate: receivedAt,
@@ -474,8 +491,8 @@ func (h *handlerSet) createEmail(
 	msg.ModSeq = modseq
 	// InsertMessage does not return the assigned MessageID. We resolve
 	// it from the change feed: the most recent EntityKindEmail /
-	// ChangeOpCreated entry for this principal carries it.
-	mid, err := mostRecentEmailCreatedID(ctx, h.store.Meta(), pid)
+	// ChangeOpCreated entry for the owning principal carries it.
+	mid, err := mostRecentEmailCreatedID(ctx, h.store.Meta(), ownerPID)
 	if err != nil {
 		return 0, jmapEmail{}, nil, fmt.Errorf("email: resolve id: %w", err)
 	}
@@ -514,16 +531,43 @@ func (h *handlerSet) createEmail(
 // half-applied state visible to a concurrent JMAP/IMAP reader.
 func (h *handlerSet) updateEmail(
 	ctx context.Context,
-	pid store.PrincipalID,
+	callerPID, ownerPID store.PrincipalID,
 	id store.MessageID,
 	raw json.RawMessage,
 ) (*setError, error) {
-	m, err := loadMessageForPrincipal(ctx, h.store.Meta(), pid, id)
+	m, err := loadMessageForPrincipal(ctx, h.store.Meta(), callerPID, id)
 	if err != nil {
 		if errors.Is(err, errMessageMissing) {
 			return &setError{Type: "notFound"}, nil
 		}
 		return nil, err
+	}
+	if m.PrincipalID != ownerPID {
+		// Cross-account guard: the message must live in the requested
+		// account.
+		return &setError{Type: "notFound"}, nil
+	}
+	// Cross-account write: caller must hold at least Write or Seen rights
+	// on the message's mailbox to mutate flags. Stricter bits (Insert,
+	// DeleteMessage, Expunge) are checked at the mutation site below.
+	if callerPID != ownerPID {
+		mb, mberr := h.store.Meta().GetMailboxByID(ctx, m.MailboxID)
+		if mberr != nil {
+			return &setError{Type: "notFound"}, nil
+		}
+		rights, rerr := aclRightsForCaller(ctx, h.store.Meta(), callerPID, mb)
+		if rerr != nil {
+			return nil, rerr
+		}
+		const mutateMask = store.ACLRightWrite | store.ACLRightSeen |
+			store.ACLRightDeleteMessage | store.ACLRightExpunge |
+			store.ACLRightInsert
+		if rights&mutateMask == 0 {
+			return &setError{
+				Type:        "forbidden",
+				Description: "caller lacks write rights on the message's mailbox",
+			}, nil
+		}
 	}
 
 	// Decode a generic object so we can find both the structural
@@ -599,7 +643,7 @@ func (h *handlerSet) updateEmail(
 				Description: "mailboxIds must contain at least one true entry",
 			}, nil
 		}
-		if serr, err := h.applyMailboxDiff(ctx, pid, m, currentMBIDs, desired); err != nil || serr != nil {
+		if serr, err := h.applyMailboxDiff(ctx, callerPID, ownerPID, m, currentMBIDs, desired); err != nil || serr != nil {
 			return serr, err
 		}
 	} else {
@@ -642,18 +686,18 @@ func (h *handlerSet) updateEmail(
 				Description: "cannot remove all mailbox memberships",
 			}, nil
 		}
-		if serr, err := h.applyMailboxDiff(ctx, pid, m, currentMBIDs, desired); err != nil || serr != nil {
+		if serr, err := h.applyMailboxDiff(ctx, callerPID, ownerPID, m, currentMBIDs, desired); err != nil || serr != nil {
 			return serr, err
 		}
 	}
 
 	// REQ-PROTO-101: handle reactions/<emoji>/<principalId> patch keys.
-	reactionAdds, reactionRemoves, serr := decodeReactionPatches(obj, pid)
+	reactionAdds, reactionRemoves, serr := decodeReactionPatches(obj, callerPID)
 	if serr != nil {
 		return serr, nil
 	}
 	if len(reactionAdds) > 0 || len(reactionRemoves) > 0 {
-		if serr, err := h.applyReactionPatches(ctx, pid, m, reactionAdds, reactionRemoves); err != nil {
+		if serr, err := h.applyReactionPatches(ctx, callerPID, m, reactionAdds, reactionRemoves); err != nil {
 			return nil, fmt.Errorf("email: reaction patch: %w", err)
 		} else if serr != nil {
 			return serr, nil
@@ -732,14 +776,14 @@ func (h *handlerSet) updateEmail(
 		if snoozeAct.kind == snoozeUnchanged {
 			// Truly empty patch — RFC 8620 §5.3 "succeeds with empty
 			// change" so we report Updated=null.
-			if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
+			if _, err := h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindEmail); err != nil {
 				return nil, fmt.Errorf("email: bump state: %w", err)
 			}
 			return nil, nil
 		}
 		// Snooze action already updated the message; bump state and
 		// return.
-		if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
+		if _, err := h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindEmail); err != nil {
 			return nil, fmt.Errorf("email: bump state: %w", err)
 		}
 		return nil, nil
@@ -751,7 +795,7 @@ func (h *handlerSet) updateEmail(
 		}
 		return nil, fmt.Errorf("email: update flags: %w", err)
 	}
-	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
+	if _, err := h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindEmail); err != nil {
 		return nil, fmt.Errorf("email: bump state: %w", err)
 	}
 	return nil, nil
@@ -1064,7 +1108,7 @@ func applyPatch(
 // fails.
 func (h *handlerSet) applyMailboxDiff(
 	ctx context.Context,
-	pid store.PrincipalID,
+	callerPID, ownerPID store.PrincipalID,
 	m store.Message,
 	currentIDs, desiredIDs map[store.MailboxID]struct{},
 ) (*setError, error) {
@@ -1095,11 +1139,23 @@ func (h *handlerSet) applyMailboxDiff(
 			}
 			return nil, fmt.Errorf("email: add mailbox: get mailbox: %w", err)
 		}
-		if mb.PrincipalID != pid {
+		if mb.PrincipalID != ownerPID {
 			return &setError{
 				Type:        "forbidden",
-				Description: "target mailbox is not owned by this principal",
+				Description: "target mailbox is not owned by the requested account",
 			}, nil
+		}
+		if callerPID != ownerPID {
+			rights, rerr := aclRightsForCaller(ctx, h.store.Meta(), callerPID, mb)
+			if rerr != nil {
+				return nil, rerr
+			}
+			if rights&store.ACLRightInsert == 0 {
+				return &setError{
+					Type:        "forbidden",
+					Description: "caller lacks insert right on target mailbox",
+				}, nil
+			}
 		}
 	}
 
@@ -1195,15 +1251,46 @@ func (h *handlerSet) applyMailboxDiff(
 // RemoveMessageFromMailbox contracts.
 func (h *handlerSet) destroyEmail(
 	ctx context.Context,
-	pid store.PrincipalID,
+	callerPID, ownerPID store.PrincipalID,
 	id store.MessageID,
 ) (*setError, error) {
-	m, err := loadMessageForPrincipal(ctx, h.store.Meta(), pid, id)
+	m, err := loadMessageForPrincipal(ctx, h.store.Meta(), callerPID, id)
 	if err != nil {
 		if errors.Is(err, errMessageMissing) {
 			return &setError{Type: "notFound"}, nil
 		}
 		return nil, err
+	}
+	if m.PrincipalID != ownerPID {
+		return &setError{Type: "notFound"}, nil
+	}
+	// Cross-account destroy requires DeleteMessage or Expunge rights on
+	// each mailbox the message belongs to (REQ-PROTO-33 / REQ-AUTH-63).
+	if callerPID != ownerPID {
+		const expungeMask = store.ACLRightDeleteMessage | store.ACLRightExpunge
+		seen := make(map[store.MailboxID]struct{})
+		for _, mm := range m.Mailboxes {
+			seen[mm.MailboxID] = struct{}{}
+		}
+		if len(seen) == 0 {
+			seen[m.MailboxID] = struct{}{}
+		}
+		for mbID := range seen {
+			mb, mberr := h.store.Meta().GetMailboxByID(ctx, mbID)
+			if mberr != nil {
+				return &setError{Type: "notFound"}, nil
+			}
+			rights, rerr := aclRightsForCaller(ctx, h.store.Meta(), callerPID, mb)
+			if rerr != nil {
+				return nil, rerr
+			}
+			if rights&expungeMask == 0 {
+				return &setError{
+					Type:        "forbidden",
+					Description: "caller lacks delete/expunge rights on the message's mailbox",
+				}, nil
+			}
+		}
 	}
 	// Collect all mailbox memberships. GetMessage (called inside
 	// loadMessageForPrincipal) populates m.Mailboxes for the M:N case.
@@ -1223,11 +1310,11 @@ func (h *handlerSet) destroyEmail(
 			return nil, fmt.Errorf("email: expunge from mailbox %d: %w", mbID, err)
 		}
 	}
-	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
+	if _, err := h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindEmail); err != nil {
 		return nil, fmt.Errorf("email: bump state: %w", err)
 	}
 	// Thread membership changed: bump Thread state so Thread/changes reflects the deletion.
-	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindThread); err != nil {
+	if _, err := h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindThread); err != nil {
 		return nil, fmt.Errorf("email: bump thread state: %w", err)
 	}
 	return nil, nil

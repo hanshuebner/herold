@@ -127,23 +127,15 @@ type handlerSet struct {
 	store store.Store
 }
 
-func accountIDForPrincipal(p store.Principal) string {
-	return protojmap.AccountIDForPrincipal(p.ID)
-}
-
-// validateAccountID checks the inbound accountId against the
-// authenticated principal. An absent accountId is rejected with
-// "invalidArguments" per RFC 8620 §5.1; a mismatched one returns
-// "accountNotFound".
-func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodError {
-	if requested == "" {
-		return protojmap.NewMethodError("invalidArguments", "accountId is required")
-	}
-	if requested != accountIDForPrincipal(p) {
-		return protojmap.NewMethodError("accountNotFound",
-			"requested account is not accessible to the caller")
-	}
-	return nil
+// resolveAccount maps the JMAP accountId to the owning principal.
+// Implements REQ-PROTO-33: a caller with ACL on another principal's
+// mailbox can route SearchSnippet/get through that owner's account.
+func (h *handlerSet) resolveAccount(
+	ctx context.Context,
+	p store.Principal,
+	requested jmapID,
+) (store.PrincipalID, *protojmap.MethodError) {
+	return protojmap.ResolveAccount(ctx, h.store.Meta(), p.ID, requested)
 }
 
 // parseEmailID parses a wire-form email id into a MessageID.
@@ -173,7 +165,8 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
+	ownerPID, e := g.h.resolveAccount(ctx, p, req.AccountID)
+	if e != nil {
 		return nil, e
 	}
 	var filter filterShape
@@ -186,7 +179,7 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	subjectTerms := filter.extractSubjectTerms()
 	previewTerms := filter.extractPreviewTerms()
 	resp := getResponse{
-		AccountID: accountIDForPrincipal(p),
+		AccountID: string(req.AccountID),
 		Filter:    req.Filter,
 		// List is always an array; NotFound is null (nil) when empty per
 		// RFC 8621 §6 which requires notFound to be null or non-empty.
@@ -203,10 +196,15 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
-		// Authorisation: the message must belong to a mailbox the
-		// principal owns. We re-list the principal's mailboxes (cached
-		// per call would be a Wave 2.3 polish).
-		if !g.h.principalOwnsMailbox(ctx, p, msg.MailboxID) {
+		// Authorisation: message must live in the requested owner
+		// account, and the caller must have ACL Lookup access to its
+		// mailbox (REQ-PROTO-33). Same-account fast-path: principal
+		// owns the mailbox.
+		if msg.PrincipalID != ownerPID {
+			resp.NotFound = append(resp.NotFound, id)
+			continue
+		}
+		if !g.h.callerCanReadMailbox(ctx, p.ID, msg.MailboxID) {
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
@@ -233,16 +231,33 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	return resp, nil
 }
 
-// principalOwnsMailbox returns whether p is the owner of mailboxID.
-// We do not consult the ACL surface here — SearchSnippet returns the
-// caller's own preview state, not shared mailbox content (Phase 3
-// extends this to ACL-readable mailboxes).
-func (h *handlerSet) principalOwnsMailbox(ctx context.Context, p store.Principal, mailboxID store.MailboxID) bool {
+// callerCanReadMailbox returns whether callerPID has Lookup right on
+// mailboxID via a direct ACL row, an "anyone" row, or direct
+// ownership. Implements REQ-PROTO-33.
+func (h *handlerSet) callerCanReadMailbox(ctx context.Context, callerPID store.PrincipalID, mailboxID store.MailboxID) bool {
 	mb, err := h.store.Meta().GetMailboxByID(ctx, mailboxID)
 	if err != nil {
 		return false
 	}
-	return mb.PrincipalID == p.ID
+	if mb.PrincipalID == callerPID {
+		return true
+	}
+	rows, err := h.store.Meta().GetMailboxACL(ctx, mailboxID)
+	if err != nil {
+		return false
+	}
+	for _, r := range rows {
+		if r.PrincipalID == nil {
+			if r.Rights&store.ACLRightLookup != 0 {
+				return true
+			}
+			continue
+		}
+		if *r.PrincipalID == callerPID && r.Rights&store.ACLRightLookup != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // previewText returns the message's body text, used as the basis for

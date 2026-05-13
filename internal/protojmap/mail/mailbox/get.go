@@ -34,7 +34,7 @@ type getResponseFiltered struct {
 }
 
 func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := requirePrincipal(ctx)
+	callerPID, merr := requirePrincipal(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -45,16 +45,17 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	ownerPID, merr := resolveAccount(ctx, g.h.store.Meta(), callerPID, req.AccountID)
+	if merr != nil {
 		return nil, merr
 	}
 
-	state, err := currentState(ctx, g.h.store.Meta(), pid)
+	state, err := currentState(ctx, g.h.store.Meta(), ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
 
-	all, err := listAccessibleMailboxes(ctx, g.h.store.Meta(), pid)
+	all, err := listMailboxesForAccount(ctx, g.h.store.Meta(), callerPID, ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -78,7 +79,7 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 	}
 
 	appendRendered := func(mb store.Mailbox) *protojmap.MethodError {
-		rendered, err := renderMailbox(ctx, g.h.store.Meta(), pid, mb)
+		rendered, err := renderMailbox(ctx, g.h.store.Meta(), callerPID, mb)
 		if err != nil {
 			return serverFail(err)
 		}

@@ -67,7 +67,7 @@ func (q *queryHandler) Method() string { return "Mailbox/query" }
 // sorts in memory, then pages. The mailbox count per principal is
 // bounded (~tens) so the in-memory pass fits.
 func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := requirePrincipal(ctx)
+	callerPID, merr := requirePrincipal(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -77,15 +77,16 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	ownerPID, merr := resolveAccount(ctx, q.h.store.Meta(), callerPID, req.AccountID)
+	if merr != nil {
 		return nil, merr
 	}
 
-	state, err := currentState(ctx, q.h.store.Meta(), pid)
+	state, err := currentState(ctx, q.h.store.Meta(), ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
-	all, err := listAccessibleMailboxes(ctx, q.h.store.Meta(), pid)
+	all, err := listMailboxesForAccount(ctx, q.h.store.Meta(), callerPID, ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -275,7 +276,7 @@ type queryChangesHandler struct{ h *handlerSet }
 func (queryChangesHandler) Method() string { return "Mailbox/queryChanges" }
 
 func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := requirePrincipal(ctx)
+	callerPID, merr := requirePrincipal(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -286,7 +287,8 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	ownerPID, merr := resolveAccount(ctx, qc.h.store.Meta(), callerPID, req.AccountID)
+	if merr != nil {
 		return nil, merr
 	}
 
@@ -295,7 +297,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "unparseable sinceQueryState")
 	}
 
-	newSeq, err := qc.h.store.Meta().GetMaxChangeSeqForKind(ctx, pid, store.EntityKindMailbox)
+	newSeq, err := qc.h.store.Meta().GetMaxChangeSeqForKind(ctx, ownerPID, store.EntityKindMailbox)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -316,7 +318,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 	if since == newSeq {
 		// No changes: return empty diff.
 		if req.CalculateTotal {
-			all, err := listAccessibleMailboxes(ctx, qc.h.store.Meta(), pid)
+			all, err := listMailboxesForAccount(ctx, qc.h.store.Meta(), callerPID, ownerPID)
 			if err != nil {
 				return nil, serverFail(err)
 			}
@@ -343,7 +345,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		if err := ctx.Err(); err != nil {
 			return nil, serverFail(err)
 		}
-		batch, ferr := qc.h.store.Meta().ReadChangeFeed(ctx, pid, cursor, page)
+		batch, ferr := qc.h.store.Meta().ReadChangeFeed(ctx, ownerPID, cursor, page)
 		if ferr != nil {
 			return nil, serverFail(ferr)
 		}
@@ -380,7 +382,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 	}
 
 	// Build the current filtered, sorted result set.
-	all, err := listAccessibleMailboxes(ctx, qc.h.store.Meta(), pid)
+	all, err := listMailboxesForAccount(ctx, qc.h.store.Meta(), callerPID, ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}

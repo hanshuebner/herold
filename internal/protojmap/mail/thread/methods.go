@@ -86,23 +86,14 @@ func currentThreadState(ctx context.Context, meta store.Metadata, pid store.Prin
 	return stateString(uint64(seq)), nil
 }
 
-func accountIDForPrincipal(p store.Principal) string {
-	return protojmap.AccountIDForPrincipal(p.ID)
-}
-
-// validateAccountID checks the inbound accountId against the
-// authenticated principal. An absent accountId is rejected with
-// "invalidArguments" per RFC 8620 §5.1; a mismatched one returns
-// "accountNotFound".
-func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodError {
-	if requested == "" {
-		return protojmap.NewMethodError("invalidArguments", "accountId is required")
-	}
-	if requested != accountIDForPrincipal(p) {
-		return protojmap.NewMethodError("accountNotFound",
-			"requested account is not accessible to the caller")
-	}
-	return nil
+// resolveAccount maps the JMAP accountId to the owning principal,
+// returning ownerPID for downstream queries (REQ-PROTO-33).
+func (h *handlerSet) resolveAccount(
+	ctx context.Context,
+	p store.Principal,
+	requested jmapID,
+) (store.PrincipalID, *protojmap.MethodError) {
+	return protojmap.ResolveAccount(ctx, h.store.Meta(), p.ID, requested)
 }
 
 // listAllMessages returns every message owned by p across every
@@ -110,8 +101,12 @@ func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodErr
 // messages" iterator; we fan out across the principal's mailboxes. The
 // caller is single-threaded JMAP so the cost is bounded by the
 // principal's mailbox + message count.
-func (h *handlerSet) listAllMessages(ctx context.Context, p store.Principal) ([]store.Message, error) {
-	mboxes, err := h.store.Meta().ListMailboxes(ctx, p.ID)
+//
+// For cross-account use the caller passes ownerPID alongside callerPID;
+// the iterator is scoped to mailboxes owned by ownerPID and visible to
+// callerPID via ACL.
+func (h *handlerSet) listAllMessages(ctx context.Context, callerPID, ownerPID store.PrincipalID) ([]store.Message, error) {
+	mboxes, err := h.accessibleMailboxes(ctx, callerPID, ownerPID)
 	if err != nil {
 		return nil, err
 	}
@@ -141,9 +136,30 @@ func (h *handlerSet) listAllMessages(ctx context.Context, p store.Principal) ([]
 	return all, nil
 }
 
+// accessibleMailboxes returns the mailbox set for the requested
+// (callerPID, ownerPID) routing. For caller == owner it is the owned
+// mailbox list; otherwise it is the ACL-shared subset owned by
+// ownerPID and visible to callerPID.
+func (h *handlerSet) accessibleMailboxes(ctx context.Context, callerPID, ownerPID store.PrincipalID) ([]store.Mailbox, error) {
+	if callerPID == ownerPID {
+		return h.store.Meta().ListMailboxes(ctx, ownerPID)
+	}
+	shared, err := h.store.Meta().ListMailboxesAccessibleBy(ctx, callerPID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.Mailbox, 0, len(shared))
+	for _, mb := range shared {
+		if mb.PrincipalID == ownerPID {
+			out = append(out, mb)
+		}
+	}
+	return out, nil
+}
+
 // computeForPrincipal returns the (msg→thread, thread→[msgs]) maps for
-// p's whole account. The inner slice keeps full store.Message values so
-// callers can sort by receivedAt without extra lookups.
+// the requested account. The inner slice keeps full store.Message
+// values so callers can sort by receivedAt without extra lookups.
 //
 // v1 keys threads by store.Message.ThreadID (falling back to MessageID
 // when ThreadID is 0). This matches Email/get's threadIDForMessage --
@@ -156,8 +172,8 @@ func (h *handlerSet) listAllMessages(ctx context.Context, p store.Principal) ([]
 // RFC 5256 sec 2.2 and RFC 8621 sec 8.1) and looks up ancestor messages
 // by env_message_id in the same principal's mailboxes. The resolved
 // thread_id is persisted so this read path is a simple group-by.
-func (h *handlerSet) computeForPrincipal(ctx context.Context, p store.Principal) (map[store.MessageID]ThreadKey, map[ThreadKey][]store.Message, error) {
-	msgs, err := h.listAllMessages(ctx, p)
+func (h *handlerSet) computeForPrincipal(ctx context.Context, callerPID, ownerPID store.PrincipalID) (map[store.MessageID]ThreadKey, map[ThreadKey][]store.Message, error) {
+	msgs, err := h.listAllMessages(ctx, callerPID, ownerPID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -232,15 +248,16 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
+	ownerPID, e := g.h.resolveAccount(ctx, p, req.AccountID)
+	if e != nil {
 		return nil, e
 	}
-	state, err := currentThreadState(ctx, g.h.store.Meta(), p.ID)
+	state, err := currentThreadState(ctx, g.h.store.Meta(), ownerPID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
 	resp := getResponse{
-		AccountID: accountIDForPrincipal(p),
+		AccountID: string(req.AccountID),
 		State:     state,
 		List:      []jmapThread{},
 		NotFound:  []jmapID{},
@@ -251,7 +268,7 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		// legacy whole-account scan, but cap output so a runaway client
 		// cannot pull a 100k-row response into memory. Per RFC 8620
 		// §5.1 the cap surfaces as a tooLarge MethodError.
-		_, threadToMsgs, err := g.h.computeForPrincipal(ctx, p)
+		_, threadToMsgs, err := g.h.computeForPrincipal(ctx, p.ID, ownerPID)
 		if err != nil {
 			return nil, protojmap.NewMethodError("serverFail", err.Error())
 		}
@@ -279,10 +296,15 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 
 	var threadRows map[uint64][]store.ThreadMessageRow
 	if len(keys) > 0 {
-		threadRows, err = g.h.store.Meta().ListThreadsByKeys(ctx, p.ID, keys)
+		threadRows, err = g.h.store.Meta().ListThreadsByKeys(ctx, ownerPID, keys)
 		if err != nil {
 			return nil, protojmap.NewMethodError("serverFail", err.Error())
 		}
+	}
+	// Cross-account: drop rows whose mailbox is not visible to the
+	// caller (REQ-PROTO-33). Same-account: pass through.
+	if p.ID != ownerPID && threadRows != nil {
+		threadRows = g.h.filterThreadRowsByACL(ctx, p.ID, ownerPID, threadRows)
 	}
 
 	for _, id := range *req.IDs {
@@ -331,6 +353,54 @@ func parseRequestedThreadIDs(in []jmapID) (keys []uint64, keyToWire map[uint64]j
 	return keys, keyToWire, notFound
 }
 
+// filterThreadRowsByACL drops thread membership rows whose message
+// lives in a mailbox not visible to callerPID via ACL (REQ-PROTO-33).
+// When all rows in a thread are filtered out the thread key is removed
+// entirely so the caller sees it as a not-found id.
+func (h *handlerSet) filterThreadRowsByACL(
+	ctx context.Context,
+	callerPID, ownerPID store.PrincipalID,
+	in map[uint64][]store.ThreadMessageRow,
+) map[uint64][]store.ThreadMessageRow {
+	visible, err := h.accessibleMailboxes(ctx, callerPID, ownerPID)
+	if err != nil {
+		return map[uint64][]store.ThreadMessageRow{}
+	}
+	mbSet := make(map[store.MailboxID]struct{}, len(visible))
+	for _, mb := range visible {
+		mbSet[mb.ID] = struct{}{}
+	}
+	out := make(map[uint64][]store.ThreadMessageRow, len(in))
+	for k, rows := range in {
+		kept := make([]store.ThreadMessageRow, 0, len(rows))
+		for _, r := range rows {
+			m, gerr := h.store.Meta().GetMessage(ctx, r.MessageID)
+			if gerr != nil {
+				continue
+			}
+			matched := false
+			for _, mm := range m.Mailboxes {
+				if _, ok := mbSet[mm.MailboxID]; ok {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				if _, ok := mbSet[m.MailboxID]; ok {
+					matched = true
+				}
+			}
+			if matched {
+				kept = append(kept, r)
+			}
+		}
+		if len(kept) > 0 {
+			out[k] = kept
+		}
+	}
+	return out
+}
+
 // sortThreadRows sorts thread membership rows by ReceivedAt ASC with a
 // stable MessageID tiebreak (RFC 8621 §8.1). Mirrors sortThreadMessages
 // for the row-shaped result of ListThreadsByKeys.
@@ -358,15 +428,16 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
+	ownerPID, e := c.h.resolveAccount(ctx, p, req.AccountID)
+	if e != nil {
 		return nil, e
 	}
-	now, err := currentThreadState(ctx, c.h.store.Meta(), p.ID)
+	now, err := currentThreadState(ctx, c.h.store.Meta(), ownerPID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
 	resp := changesResponse{
-		AccountID: accountIDForPrincipal(p),
+		AccountID: string(req.AccountID),
 		OldState:  req.SinceState,
 		NewState:  now,
 		Created:   []jmapID{},
@@ -385,7 +456,7 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 	// Compute Thread changes from the Email change feed.
 	// We read Email change-feed entries after sinceSeq and classify
 	// the affected threads into created / updated / destroyed.
-	if err := c.computeThreadChanges(ctx, p, sinceSeq, &resp); err != nil {
+	if err := c.computeThreadChanges(ctx, p.ID, ownerPID, sinceSeq, &resp); err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
 	return resp, nil
@@ -402,12 +473,12 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 //     "updated".
 func (c changesHandler) computeThreadChanges(
 	ctx context.Context,
-	p store.Principal,
+	callerPID, ownerPID store.PrincipalID,
 	sinceSeq store.ChangeSeq,
 	resp *changesResponse,
 ) error {
 	const maxEntries = 1000
-	feed, err := c.h.store.Meta().ReadChangeFeed(ctx, p.ID, sinceSeq, maxEntries)
+	feed, err := c.h.store.Meta().ReadChangeFeed(ctx, ownerPID, sinceSeq, maxEntries)
 	if err != nil {
 		return err
 	}
@@ -459,9 +530,12 @@ func (c changesHandler) computeThreadChanges(
 	for tk := range affectedThreads {
 		keys = append(keys, uint64(tk))
 	}
-	threadRows, err := c.h.store.Meta().ListThreadsByKeys(ctx, p.ID, keys)
+	threadRows, err := c.h.store.Meta().ListThreadsByKeys(ctx, ownerPID, keys)
 	if err != nil {
 		return err
+	}
+	if callerPID != ownerPID {
+		threadRows = c.h.filterThreadRowsByACL(ctx, callerPID, ownerPID, threadRows)
 	}
 
 	for tk := range affectedThreads {

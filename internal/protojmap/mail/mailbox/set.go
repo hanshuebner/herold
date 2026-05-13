@@ -72,7 +72,7 @@ type setHandler struct{ h *handlerSet }
 func (s *setHandler) Method() string { return "Mailbox/set" }
 
 func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := requirePrincipal(ctx)
+	callerPID, merr := requirePrincipal(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -82,11 +82,12 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	ownerPID, merr := resolveAccount(ctx, s.h.store.Meta(), callerPID, req.AccountID)
+	if merr != nil {
 		return nil, merr
 	}
 
-	state, err := currentState(ctx, s.h.store.Meta(), pid)
+	state, err := currentState(ctx, s.h.store.Meta(), ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -117,7 +118,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 				continue
 			}
 		}
-		mb, serr, err := s.h.createMailbox(ctx, pid, in, creationRefs)
+		mb, serr, err := s.h.createMailbox(ctx, callerPID, ownerPID, in, creationRefs)
 		if err != nil {
 			return nil, serverFail(err)
 		}
@@ -126,7 +127,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			continue
 		}
 		creationRefs[key] = mb.ID
-		rendered, err := renderMailbox(ctx, s.h.store.Meta(), pid, mb)
+		rendered, err := renderMailbox(ctx, s.h.store.Meta(), callerPID, mb)
 		if err != nil {
 			return nil, serverFail(err)
 		}
@@ -139,7 +140,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			resp.NotUpdated[raw] = setError{Type: "notFound"}
 			continue
 		}
-		serr, err := s.h.updateMailbox(ctx, pid, mid, payload)
+		serr, err := s.h.updateMailbox(ctx, callerPID, ownerPID, mid, payload)
 		if err != nil {
 			return nil, serverFail(err)
 		}
@@ -153,7 +154,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 	// RFC 8621 §2.5: when destroying both a parent and its children in the
 	// same /set call, the server MUST process children before parents. Sort
 	// the destroy list topologically so no child appears after its parent.
-	sortedDestroy, notFoundRaws := sortDestroyTopologically(ctx, req.Destroy, creationRefs, s.h.store.Meta(), pid)
+	sortedDestroy, notFoundRaws := sortDestroyTopologically(ctx, req.Destroy, creationRefs, s.h.store.Meta(), ownerPID)
 	for _, raw := range notFoundRaws {
 		resp.NotDestroyed[raw] = setError{Type: "notFound"}
 	}
@@ -163,7 +164,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			resp.NotDestroyed[raw] = setError{Type: "notFound"}
 			continue
 		}
-		serr, err := s.h.destroyMailbox(ctx, pid, mid, req.OnDestroyRem)
+		serr, err := s.h.destroyMailbox(ctx, callerPID, ownerPID, mid, req.OnDestroyRem)
 		if err != nil {
 			return nil, serverFail(err)
 		}
@@ -174,7 +175,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 		resp.Destroyed = append(resp.Destroyed, raw)
 	}
 
-	newState, err := currentState(ctx, s.h.store.Meta(), pid)
+	newState, err := currentState(ctx, s.h.store.Meta(), ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -306,9 +307,17 @@ func resolveID(raw jmapID, creationRefs map[string]store.MailboxID) (store.Mailb
 }
 
 // createMailbox — handlerSet method so other files can reach it.
+//
+// callerPID is the principal whose ACL rights are enforced when the
+// create lands under an existing parent. ownerPID is the owning
+// principal of the account the mailbox is created in (REQ-PROTO-33).
+// For a foreign account a top-level create (no parentId) requires the
+// caller's ACL admin on at least one mailbox in the account — without
+// any parent there is nothing to enforce against, so the v1 surface
+// refuses it. Same-account creates fast-path to the original behaviour.
 func (h *handlerSet) createMailbox(
 	ctx context.Context,
-	pid store.PrincipalID,
+	callerPID, ownerPID store.PrincipalID,
 	in mailboxCreateInput,
 	creationRefs map[string]store.MailboxID,
 ) (store.Mailbox, *setError, error) {
@@ -328,7 +337,7 @@ func (h *handlerSet) createMailbox(
 				Description: "parentId references unknown mailbox",
 			}, nil
 		}
-		parent, err := loadMailboxForPrincipal(ctx, h.store.Meta(), pid, pid2)
+		parent, err := loadMailboxForPrincipal(ctx, h.store.Meta(), callerPID, pid2)
 		if err != nil {
 			if errors.Is(err, errMailboxMissing) {
 				return store.Mailbox{}, &setError{
@@ -338,7 +347,13 @@ func (h *handlerSet) createMailbox(
 			}
 			return store.Mailbox{}, nil, err
 		}
-		rights, err := rightsForPrincipal(ctx, h.store.Meta(), pid, parent)
+		if parent.PrincipalID != ownerPID {
+			return store.Mailbox{}, &setError{
+				Type: "invalidProperties", Properties: []string{"parentId"},
+				Description: "parent mailbox is not in the target account",
+			}, nil
+		}
+		rights, err := rightsForPrincipal(ctx, h.store.Meta(), callerPID, parent)
 		if err != nil {
 			return store.Mailbox{}, nil, err
 		}
@@ -349,6 +364,14 @@ func (h *handlerSet) createMailbox(
 			}, nil
 		}
 		parentID = parent.ID
+	} else if callerPID != ownerPID {
+		// Top-level create in a foreign account: there is no parent
+		// mailbox to enforce ACL against. Refuse rather than implicitly
+		// granting account-level admin.
+		return store.Mailbox{}, &setError{
+			Type:        "forbidden",
+			Description: "top-level mailbox creation in a shared account requires a parentId",
+		}, nil
 	}
 
 	attrs := store.MailboxAttributes(0)
@@ -360,7 +383,7 @@ func (h *handlerSet) createMailbox(
 				Description: "unknown role",
 			}, nil
 		}
-		owned, err := h.store.Meta().ListMailboxes(ctx, pid)
+		owned, err := h.store.Meta().ListMailboxes(ctx, ownerPID)
 		if err != nil {
 			return store.Mailbox{}, nil, err
 		}
@@ -396,7 +419,7 @@ func (h *handlerSet) createMailbox(
 	}
 
 	mb, err := h.store.Meta().InsertMailbox(ctx, store.Mailbox{
-		PrincipalID: pid,
+		PrincipalID: ownerPID,
 		ParentID:    parentID,
 		Name:        in.Name,
 		Attributes:  attrs,
@@ -413,7 +436,7 @@ func (h *handlerSet) createMailbox(
 		}
 		return store.Mailbox{}, nil, fmt.Errorf("mailbox: insert: %w", err)
 	}
-	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindMailbox); err != nil {
+	if _, err := h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindMailbox); err != nil {
 		return store.Mailbox{}, nil, fmt.Errorf("mailbox: bump state: %w", err)
 	}
 	return mb, nil, nil
@@ -421,18 +444,21 @@ func (h *handlerSet) createMailbox(
 
 func (h *handlerSet) updateMailbox(
 	ctx context.Context,
-	pid store.PrincipalID,
+	callerPID, ownerPID store.PrincipalID,
 	id store.MailboxID,
 	raw json.RawMessage,
 ) (*setError, error) {
-	mb, err := loadMailboxForPrincipal(ctx, h.store.Meta(), pid, id)
+	mb, err := loadMailboxForPrincipal(ctx, h.store.Meta(), callerPID, id)
 	if err != nil {
 		if errors.Is(err, errMailboxMissing) {
 			return &setError{Type: "notFound"}, nil
 		}
 		return nil, err
 	}
-	rights, err := rightsForPrincipal(ctx, h.store.Meta(), pid, mb)
+	if mb.PrincipalID != ownerPID {
+		return &setError{Type: "notFound"}, nil
+	}
+	rights, err := rightsForPrincipal(ctx, h.store.Meta(), callerPID, mb)
 	if err != nil {
 		return nil, err
 	}
@@ -504,7 +530,7 @@ func (h *handlerSet) updateMailbox(
 					Description: "parentId references an unknown mailbox",
 				}, nil
 			}
-			parent, err := loadMailboxForPrincipal(ctx, h.store.Meta(), pid, targetID)
+			parent, err := loadMailboxForPrincipal(ctx, h.store.Meta(), callerPID, targetID)
 			if err != nil {
 				if errors.Is(err, errMailboxMissing) {
 					return &setError{
@@ -514,7 +540,13 @@ func (h *handlerSet) updateMailbox(
 				}
 				return nil, fmt.Errorf("mailbox: load parent: %w", err)
 			}
-			parentRights, err := rightsForPrincipal(ctx, h.store.Meta(), pid, parent)
+			if parent.PrincipalID != ownerPID {
+				return &setError{
+					Type: "invalidProperties", Properties: []string{"parentId"},
+					Description: "parent mailbox is not in the target account",
+				}, nil
+			}
+			parentRights, err := rightsForPrincipal(ctx, h.store.Meta(), callerPID, parent)
 			if err != nil {
 				return nil, err
 			}
@@ -602,7 +634,7 @@ func (h *handlerSet) updateMailbox(
 		}
 	}
 
-	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindMailbox); err != nil {
+	if _, err := h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindMailbox); err != nil {
 		return nil, fmt.Errorf("mailbox: bump state: %w", err)
 	}
 	return nil, nil
@@ -631,18 +663,21 @@ func validJMAPColor(s string) bool {
 
 func (h *handlerSet) destroyMailbox(
 	ctx context.Context,
-	pid store.PrincipalID,
+	callerPID, ownerPID store.PrincipalID,
 	id store.MailboxID,
 	onDestroyRem *bool,
 ) (*setError, error) {
-	mb, err := loadMailboxForPrincipal(ctx, h.store.Meta(), pid, id)
+	mb, err := loadMailboxForPrincipal(ctx, h.store.Meta(), callerPID, id)
 	if err != nil {
 		if errors.Is(err, errMailboxMissing) {
 			return &setError{Type: "notFound"}, nil
 		}
 		return nil, err
 	}
-	rights, err := rightsForPrincipal(ctx, h.store.Meta(), pid, mb)
+	if mb.PrincipalID != ownerPID {
+		return &setError{Type: "notFound"}, nil
+	}
+	rights, err := rightsForPrincipal(ctx, h.store.Meta(), callerPID, mb)
 	if err != nil {
 		return nil, err
 	}
@@ -655,7 +690,7 @@ func (h *handlerSet) destroyMailbox(
 	// refuse here — the caller is responsible for ordering destroys so
 	// that children are destroyed before parents. The error type is
 	// "mailboxHasChild" per the RFC.
-	allMailboxes, err := h.store.Meta().ListMailboxes(ctx, pid)
+	allMailboxes, err := h.store.Meta().ListMailboxes(ctx, ownerPID)
 	if err != nil {
 		return nil, fmt.Errorf("mailbox: list for children check: %w", err)
 	}
@@ -688,7 +723,7 @@ func (h *handlerSet) destroyMailbox(
 		}
 		return nil, fmt.Errorf("mailbox: delete: %w", err)
 	}
-	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindMailbox); err != nil {
+	if _, err := h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindMailbox); err != nil {
 		return nil, fmt.Errorf("mailbox: bump state: %w", err)
 	}
 	return nil, nil

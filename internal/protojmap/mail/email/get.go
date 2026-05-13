@@ -45,7 +45,7 @@ type getHandler struct{ h *handlerSet }
 func (g *getHandler) Method() string { return "Email/get" }
 
 func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := principalFromCtx(ctx)
+	callerPID, merr := principalFromCtx(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -56,11 +56,12 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	ownerPID, merr := resolveAccount(ctx, g.h.store.Meta(), callerPID, req.AccountID)
+	if merr != nil {
 		return nil, merr
 	}
 
-	state, err := currentState(ctx, g.h.store.Meta(), pid)
+	state, err := currentState(ctx, g.h.store.Meta(), ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -102,13 +103,23 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			entries = append(entries, entry{raw: raw})
 			continue
 		}
-		m, err := loadMessageForPrincipal(ctx, g.h.store.Meta(), pid, mid)
+		m, err := loadMessageForPrincipal(ctx, g.h.store.Meta(), callerPID, mid)
 		if err != nil {
 			if errors.Is(err, errMessageMissing) {
 				entries = append(entries, entry{raw: raw})
 				continue
 			}
 			return nil, serverFail(err)
+		}
+		// Cross-account guard: the message must live in a mailbox owned
+		// by the requested account; otherwise it does not exist for the
+		// purposes of this Email/get call (RFC 8621 §4.2 + REQ-PROTO-33).
+		if callerPID != ownerPID {
+			mb, mberr := g.h.store.Meta().GetMailboxByID(ctx, m.MailboxID)
+			if mberr != nil || mb.PrincipalID != ownerPID {
+				entries = append(entries, entry{raw: raw})
+				continue
+			}
 		}
 		entries = append(entries, entry{raw: raw, mid: mid, msg: m, ok: true})
 		validIDs = append(validIDs, mid)

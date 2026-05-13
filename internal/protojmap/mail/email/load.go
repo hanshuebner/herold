@@ -42,6 +42,32 @@ func listAccessibleMailboxes(
 	return owned, nil
 }
 
+// listMailboxesForAccount returns the mailboxes the caller can see in
+// the requested owner account (REQ-PROTO-33). For caller == owner this
+// is the union of owned + ACL-shared. For caller != owner this is only
+// the mailboxes owned by `owner` that the caller has Lookup right on
+// via a direct ACL row or an "anyone" row.
+func listMailboxesForAccount(
+	ctx context.Context,
+	meta store.Metadata,
+	callerPID, ownerPID store.PrincipalID,
+) ([]store.Mailbox, error) {
+	if callerPID == ownerPID {
+		return listAccessibleMailboxes(ctx, meta, callerPID)
+	}
+	shared, err := meta.ListMailboxesAccessibleBy(ctx, callerPID)
+	if err != nil {
+		return nil, fmt.Errorf("email: list shared mailboxes: %w", err)
+	}
+	out := make([]store.Mailbox, 0, len(shared))
+	for _, mb := range shared {
+		if mb.PrincipalID == ownerPID {
+			out = append(out, mb)
+		}
+	}
+	return out, nil
+}
+
 // loadMessageForPrincipal returns the message if it lives in a mailbox
 // the principal can access. ErrNotFound is mapped to errMessageMissing
 // so the JMAP wire form can render "notFound" without leaking the
@@ -90,18 +116,51 @@ func loadMessageForPrincipal(
 // errMessageMissing is the unified "looks like never existed" error.
 var errMessageMissing = errors.New("email: not found or not visible")
 
-// listPrincipalMessages returns every message in every mailbox the
-// principal can see. Primarily used by Email/changes and the
-// metadata-fallback Email/query path. The implementation is keyset-
-// paged per mailbox so a principal with millions of messages does not
-// hold the whole list in memory at once at the storage layer; the
-// returned slice is bounded only by the caller.
-func listPrincipalMessages(
+// aclRightsForCaller returns the combined ACLRights mask for callerPID
+// against mb. The owning principal sees every right; non-owners receive
+// the OR of their direct ACL row and any "anyone" row. Used by the
+// cross-account create/update/destroy paths to gate operations on
+// specific ACL bits (Insert / Write / Seen / DeleteMessage / Expunge).
+func aclRightsForCaller(
 	ctx context.Context,
 	meta store.Metadata,
-	pid store.PrincipalID,
+	callerPID store.PrincipalID,
+	mb store.Mailbox,
+) (store.ACLRights, error) {
+	if mb.PrincipalID == callerPID {
+		return store.ACLRightsAll, nil
+	}
+	rows, err := meta.GetMailboxACL(ctx, mb.ID)
+	if err != nil {
+		return 0, fmt.Errorf("email: read acl: %w", err)
+	}
+	var combined store.ACLRights
+	for _, r := range rows {
+		if r.PrincipalID == nil {
+			combined |= r.Rights
+			continue
+		}
+		if *r.PrincipalID == callerPID {
+			combined |= r.Rights
+		}
+	}
+	return combined, nil
+}
+
+// listAccountMessages returns every message the caller can see in the
+// requested owner account (REQ-PROTO-33). callerPID and ownerPID are
+// the same for the caller's own account (the prior listPrincipalMessages
+// path); for a foreign account it scopes to mailboxes owned by
+// ownerPID and visible to callerPID via ACL. The implementation is
+// keyset-paged per mailbox so a principal with millions of messages
+// does not hold the whole list in memory at once at the storage layer;
+// the returned slice is bounded only by the caller.
+func listAccountMessages(
+	ctx context.Context,
+	meta store.Metadata,
+	callerPID, ownerPID store.PrincipalID,
 ) ([]store.Message, error) {
-	mailboxes, err := listAccessibleMailboxes(ctx, meta, pid)
+	mailboxes, err := listMailboxesForAccount(ctx, meta, callerPID, ownerPID)
 	if err != nil {
 		return nil, err
 	}

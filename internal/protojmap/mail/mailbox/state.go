@@ -8,18 +8,20 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
-// currentState returns the JMAP state string for the principal's
-// Mailbox datatype. The state string is the decimal encoding of the
-// maximum change-feed seq for EntityKindMailbox entries for this
-// principal (0 when no mailbox mutations have been recorded yet).
+// currentState returns the JMAP state string for the requested
+// account's Mailbox datatype (REQ-PROTO-33). The state string is the
+// decimal encoding of the maximum change-feed seq for EntityKindMailbox
+// entries for the owning principal (0 when no mailbox mutations have
+// been recorded yet). For a foreign account this is the owner's state,
+// so a remote mutation invalidates the caller's cache.
 //
 // Using the change-feed seq directly (rather than a separate
 // jmap_states counter) means that mailbox mutations made outside the
 // JMAP layer — e.g. auto-provisioned folders during CreatePrincipal,
 // IMAP renames — are visible in Mailbox/changes without a separate
 // bookkeeping pass.
-func currentState(ctx context.Context, meta store.Metadata, pid store.PrincipalID) (string, error) {
-	seq, err := meta.GetMaxChangeSeqForKind(ctx, pid, store.EntityKindMailbox)
+func currentState(ctx context.Context, meta store.Metadata, ownerPID store.PrincipalID) (string, error) {
+	seq, err := meta.GetMaxChangeSeqForKind(ctx, ownerPID, store.EntityKindMailbox)
 	if err != nil {
 		return "", fmt.Errorf("mailbox currentState: %w", err)
 	}

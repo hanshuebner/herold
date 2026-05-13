@@ -39,7 +39,7 @@ func (c *changesHandler) Method() string { return "Mailbox/changes" }
 // the JMAP layer (IMAP renames, provisioning) — advances the state
 // and is reflected in the changes response.
 func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := requirePrincipal(ctx)
+	callerPID, merr := requirePrincipal(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -50,7 +50,8 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	ownerPID, merr := resolveAccount(ctx, c.h.store.Meta(), callerPID, req.AccountID)
+	if merr != nil {
 		return nil, merr
 	}
 	since, ok := parseState(req.SinceState)
@@ -58,7 +59,7 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "unparseable sinceState")
 	}
 
-	newSeq, err := c.h.store.Meta().GetMaxChangeSeqForKind(ctx, pid, store.EntityKindMailbox)
+	newSeq, err := c.h.store.Meta().GetMaxChangeSeqForKind(ctx, ownerPID, store.EntityKindMailbox)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -88,7 +89,7 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		if err := ctx.Err(); err != nil {
 			return nil, serverFail(err)
 		}
-		batch, ferr := c.h.store.Meta().ReadChangeFeed(ctx, pid, cursor, page)
+		batch, ferr := c.h.store.Meta().ReadChangeFeed(ctx, ownerPID, cursor, page)
 		if ferr != nil {
 			return nil, serverFail(ferr)
 		}
@@ -124,13 +125,40 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		}
 	}
 
+	// Cross-account: filter Created/Updated to mailboxes the caller can
+	// currently see via ACL. Destroyed entries pass through so the
+	// caller can drop stale ids from its cache. Same-account: no filter.
+	visible := map[store.MailboxID]struct{}{}
+	if callerPID != ownerPID {
+		visibleSet, lerr := listMailboxesForAccount(ctx, c.h.store.Meta(), callerPID, ownerPID)
+		if lerr != nil {
+			return nil, serverFail(lerr)
+		}
+		for _, mb := range visibleSet {
+			visible[mb.ID] = struct{}{}
+		}
+	}
+	keep := func(id store.MailboxID) bool {
+		if callerPID == ownerPID {
+			return true
+		}
+		_, ok := visible[id]
+		return ok
+	}
 	for id := range created {
-		resp.Created = append(resp.Created, jmapIDFromMailbox(id))
+		if keep(id) {
+			resp.Created = append(resp.Created, jmapIDFromMailbox(id))
+		}
 	}
 	for id := range updated {
-		resp.Updated = append(resp.Updated, jmapIDFromMailbox(id))
+		if keep(id) {
+			resp.Updated = append(resp.Updated, jmapIDFromMailbox(id))
+		}
 	}
 	for id := range destroyed {
+		// Destroyed entries pass through unconditionally: the caller
+		// must be able to drop a stale id once it leaves the visible set
+		// (revoked ACL, deleted mailbox).
 		resp.Destroyed = append(resp.Destroyed, jmapIDFromMailbox(id))
 	}
 

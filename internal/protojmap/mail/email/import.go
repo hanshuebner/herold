@@ -51,7 +51,7 @@ type importHandler struct{ h *handlerSet }
 func (i *importHandler) Method() string { return "Email/import" }
 
 func (i *importHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := principalFromCtx(ctx)
+	callerPID, merr := principalFromCtx(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -61,11 +61,12 @@ func (i *importHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	ownerPID, merr := resolveAccount(ctx, i.h.store.Meta(), callerPID, req.AccountID)
+	if merr != nil {
 		return nil, merr
 	}
 
-	state, err := currentState(ctx, i.h.store.Meta(), pid)
+	state, err := currentState(ctx, i.h.store.Meta(), ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -84,7 +85,7 @@ func (i *importHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 
 	var createdIDs []store.MessageID
 	for key, entry := range req.Emails {
-		jm, serr, err := i.importOne(ctx, pid, entry)
+		jm, serr, err := i.importOne(ctx, callerPID, ownerPID, entry)
 		if err != nil {
 			return nil, serverFail(err)
 		}
@@ -105,11 +106,11 @@ func (i *importHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 	// fails because the ancestor is not yet present. After all emails are
 	// inserted, walk the created messages and re-link any whose InReplyTo
 	// ancestor now exists.
-	if err := i.relinkThreads(ctx, pid, createdIDs); err != nil {
+	if err := i.relinkThreads(ctx, ownerPID, createdIDs); err != nil {
 		return nil, serverFail(err)
 	}
 
-	newState, err := currentState(ctx, i.h.store.Meta(), pid)
+	newState, err := currentState(ctx, i.h.store.Meta(), ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -182,7 +183,7 @@ func (i *importHandler) relinkThreads(ctx context.Context, pid store.PrincipalID
 // the source of truth, not a synthetic envelope payload).
 func (i *importHandler) importOne(
 	ctx context.Context,
-	pid store.PrincipalID,
+	callerPID, ownerPID store.PrincipalID,
 	in importEntry,
 ) (jmapEmail, *setError, error) {
 	if in.BlobID == "" {
@@ -225,11 +226,23 @@ func (i *importHandler) importOne(
 			}
 			return jmapEmail{}, nil, err
 		}
-		if mb.PrincipalID != pid {
+		if mb.PrincipalID != ownerPID {
 			return jmapEmail{}, &setError{
 				Type:        "forbidden",
-				Description: "mailboxIds includes a mailbox not owned by the requesting principal",
+				Description: "mailboxIds includes a mailbox not in the requested account",
 			}, nil
+		}
+		if callerPID != ownerPID {
+			rights, rerr := aclRightsForCaller(ctx, i.h.store.Meta(), callerPID, mb)
+			if rerr != nil {
+				return jmapEmail{}, nil, rerr
+			}
+			if rights&store.ACLRightInsert == 0 {
+				return jmapEmail{}, &setError{
+					Type:        "forbidden",
+					Description: "caller lacks insert right on target mailbox",
+				}, nil
+			}
 		}
 		mailboxIDs = append(mailboxIDs, id)
 	}
@@ -286,7 +299,7 @@ func (i *importHandler) importOne(
 	}
 	flags, customKW := flagsAndKeywordsFromJMAP(in.Keywords)
 	msg := store.Message{
-		PrincipalID:  pid,
+		PrincipalID:  ownerPID,
 		InternalDate: receivedAt,
 		ReceivedAt:   receivedAt,
 		Size:         ref.Size,
@@ -312,17 +325,17 @@ func (i *importHandler) importOne(
 	}
 	msg.UID = uid
 	msg.ModSeq = modseq
-	mid, err := mostRecentEmailCreatedID(ctx, i.h.store.Meta(), pid)
+	mid, err := mostRecentEmailCreatedID(ctx, i.h.store.Meta(), ownerPID)
 	if err != nil {
 		return jmapEmail{}, nil, fmt.Errorf("email: resolve id: %w", err)
 	}
 	msg.ID = mid
 
-	if _, err := i.h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
+	if _, err := i.h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindEmail); err != nil {
 		return jmapEmail{}, nil, fmt.Errorf("email: bump state: %w", err)
 	}
 	// Thread membership changed: bump Thread state.
-	if _, err := i.h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindThread); err != nil {
+	if _, err := i.h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindThread); err != nil {
 		return jmapEmail{}, nil, fmt.Errorf("email: bump thread state: %w", err)
 	}
 	return renderEmailMetadata(msg), nil, nil

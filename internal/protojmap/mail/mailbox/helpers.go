@@ -20,21 +20,21 @@ func requirePrincipal(ctx context.Context) (store.PrincipalID, *protojmap.Method
 	return p.ID, nil
 }
 
-// requireAccount validates the JMAP accountId against the authenticated
-// principal. v1 maps one principal -> one account; cross-principal
-// access is rejected with "accountNotFound" per RFC 8620 §3.6.2.
+// resolveAccount maps a JMAP accountId to the owning principal,
+// returning the owner pid alongside the caller's pid so handlers can
+// route queries against the foreign account while still enforcing
+// per-mailbox ACL on behalf of the caller. Implements REQ-PROTO-33.
 //
-// An absent accountId is rejected with "invalidArguments" per RFC 8620
-// §5.1: every method that operates on an account MUST carry the field.
-func requireAccount(reqAccountID jmapID, pid store.PrincipalID) *protojmap.MethodError {
-	if reqAccountID == "" {
-		return protojmap.NewMethodError("invalidArguments", "accountId is required")
-	}
-	if reqAccountID != protojmap.AccountIDForPrincipal(pid) {
-		return protojmap.NewMethodError("accountNotFound",
-			"account "+reqAccountID+" is not accessible to this principal")
-	}
-	return nil
+// Empty accountId yields "invalidArguments"; an inaccessible or
+// malformed accountId yields "accountNotFound". The owner==caller fast
+// path is handled inside protojmap.ResolveAccount.
+func resolveAccount(
+	ctx context.Context,
+	meta store.Metadata,
+	callerPID store.PrincipalID,
+	reqAccountID jmapID,
+) (store.PrincipalID, *protojmap.MethodError) {
+	return protojmap.ResolveAccount(ctx, meta, callerPID, reqAccountID)
 }
 
 // serverFail wraps an internal Go error into a JMAP method-error

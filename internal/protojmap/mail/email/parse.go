@@ -109,7 +109,7 @@ type parseHandler struct{ h *handlerSet }
 func (p *parseHandler) Method() string { return "Email/parse" }
 
 func (p *parseHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := principalFromCtx(ctx)
+	callerPID, merr := principalFromCtx(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -119,7 +119,7 @@ func (p *parseHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	if _, merr := resolveAccount(ctx, p.h.store.Meta(), callerPID, req.AccountID); merr != nil {
 		return nil, merr
 	}
 

@@ -41,7 +41,7 @@ func (c *copyHandler) Method() string { return "Email/copy" }
 // requires the shared-mailbox surface (Phase 3+) and is rejected with
 // "fromAccountNotFound".
 func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := principalFromCtx(ctx)
+	callerPID, merr := principalFromCtx(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -51,15 +51,24 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	// Destination account: must be accessible to caller; ownerPID will
+	// receive the new message rows.
+	dstOwner, merr := resolveAccount(ctx, c.h.store.Meta(), callerPID, req.AccountID)
+	if merr != nil {
 		return nil, merr
 	}
-	if req.FromAccountID != "" && req.FromAccountID != protojmap.AccountIDForPrincipal(pid) {
-		return nil, protojmap.NewMethodError("fromAccountNotFound",
-			"cross-account copy is not supported in v1")
+	// Source account: resolves the same way; empty defaults to caller's
+	// own account.
+	srcAccountID := req.FromAccountID
+	if srcAccountID == "" {
+		srcAccountID = protojmap.AccountIDForPrincipal(callerPID)
+	}
+	srcOwner, fmerr := resolveAccount(ctx, c.h.store.Meta(), callerPID, srcAccountID)
+	if fmerr != nil {
+		return nil, protojmap.NewMethodError("fromAccountNotFound", fmerr.Description)
 	}
 
-	state, err := currentState(ctx, c.h.store.Meta(), pid)
+	state, err := currentState(ctx, c.h.store.Meta(), dstOwner)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -94,13 +103,18 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 			resp.NotCreated[key] = setError{Type: "notFound"}
 			continue
 		}
-		src, err := loadMessageForPrincipal(ctx, c.h.store.Meta(), pid, mid)
+		src, err := loadMessageForPrincipal(ctx, c.h.store.Meta(), callerPID, mid)
 		if err != nil {
 			if errors.Is(err, errMessageMissing) {
 				resp.NotCreated[key] = setError{Type: "notFound"}
 				continue
 			}
 			return nil, serverFail(err)
+		}
+		// Source ownership: the message must live in the source account.
+		if src.PrincipalID != srcOwner {
+			resp.NotCreated[key] = setError{Type: "notFound"}
+			continue
 		}
 		// Re-insert into the destination mailbox via the create path,
 		// re-using the source's blob (the blob store is content-
@@ -111,7 +125,7 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 			Keywords:   entry.Keywords,
 			ReceivedAt: entry.ReceivedAt,
 		}
-		_, jm, serr, err := c.h.createEmail(ctx, pid, in)
+		_, jm, serr, err := c.h.createEmail(ctx, callerPID, dstOwner, in)
 		if err != nil {
 			return nil, serverFail(err)
 		}
@@ -122,16 +136,32 @@ func (c *copyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 		resp.Created[key] = jm
 
 		if req.OnSuccess != nil && *req.OnSuccess {
+			// onSuccessDestroyOriginal requires DeleteMessage / Expunge
+			// rights on the source mailbox when caller != srcOwner.
+			if callerPID != srcOwner {
+				mb, mberr := c.h.store.Meta().GetMailboxByID(ctx, src.MailboxID)
+				if mberr != nil {
+					return nil, serverFail(mberr)
+				}
+				rights, rerr := aclRightsForCaller(ctx, c.h.store.Meta(), callerPID, mb)
+				if rerr != nil {
+					return nil, serverFail(rerr)
+				}
+				if rights&(store.ACLRightDeleteMessage|store.ACLRightExpunge) == 0 {
+					// Quietly skip the destroy; the copy already succeeded.
+					continue
+				}
+			}
 			if err := c.h.store.Meta().ExpungeMessages(ctx, src.MailboxID, []store.MessageID{src.ID}); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return nil, serverFail(fmt.Errorf("email: copy onSuccess expunge: %w", err))
 			}
-			if _, err := c.h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmail); err != nil {
+			if _, err := c.h.store.Meta().IncrementJMAPState(ctx, srcOwner, store.JMAPStateKindEmail); err != nil {
 				return nil, serverFail(err)
 			}
 		}
 	}
 
-	newState, err := currentState(ctx, c.h.store.Meta(), pid)
+	newState, err := currentState(ctx, c.h.store.Meta(), dstOwner)
 	if err != nil {
 		return nil, serverFail(err)
 	}

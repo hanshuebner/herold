@@ -38,7 +38,7 @@ func (c *changesHandler) Method() string { return "Email/changes" }
 // from IMAP STORE / delivery are included without a separate
 // bookkeeping pass.
 func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := principalFromCtx(ctx)
+	callerPID, merr := principalFromCtx(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -48,7 +48,8 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	ownerPID, merr := resolveAccount(ctx, c.h.store.Meta(), callerPID, req.AccountID)
+	if merr != nil {
 		return nil, merr
 	}
 	since, ok := parseState(req.SinceState)
@@ -56,7 +57,7 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "unparseable sinceState")
 	}
 
-	newSeq, err := c.h.store.Meta().GetMaxChangeSeqForKind(ctx, pid, store.EntityKindEmail)
+	newSeq, err := c.h.store.Meta().GetMaxChangeSeqForKind(ctx, ownerPID, store.EntityKindEmail)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -86,7 +87,7 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		if err := ctx.Err(); err != nil {
 			return nil, serverFail(err)
 		}
-		batch, ferr := c.h.store.Meta().ReadChangeFeed(ctx, pid, cursor, page)
+		batch, ferr := c.h.store.Meta().ReadChangeFeed(ctx, ownerPID, cursor, page)
 		if ferr != nil {
 			return nil, serverFail(ferr)
 		}
@@ -122,11 +123,35 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		}
 	}
 
+	// Cross-account: filter Created/Updated to messages currently
+	// visible to the caller (REQ-PROTO-33). Destroyed entries pass
+	// through unconditionally so the caller can drop stale ids from
+	// its cache (the original mailbox may have been outside the caller
+	// before the destroy too, but conservative pass-through keeps the
+	// state machine honest).
+	keep := func(id store.MessageID) bool {
+		if callerPID == ownerPID {
+			return true
+		}
+		m, lerr := loadMessageForPrincipal(ctx, c.h.store.Meta(), callerPID, id)
+		if lerr != nil {
+			return false
+		}
+		mb, mberr := c.h.store.Meta().GetMailboxByID(ctx, m.MailboxID)
+		if mberr != nil {
+			return false
+		}
+		return mb.PrincipalID == ownerPID
+	}
 	for id := range created {
-		resp.Created = append(resp.Created, jmapIDFromMessage(id))
+		if keep(id) {
+			resp.Created = append(resp.Created, jmapIDFromMessage(id))
+		}
 	}
 	for id := range updated {
-		resp.Updated = append(resp.Updated, jmapIDFromMessage(id))
+		if keep(id) {
+			resp.Updated = append(resp.Updated, jmapIDFromMessage(id))
+		}
 	}
 	for id := range destroyed {
 		resp.Destroyed = append(resp.Destroyed, jmapIDFromMessage(id))

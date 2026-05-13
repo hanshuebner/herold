@@ -46,32 +46,48 @@ type blobNotCopied struct {
 }
 
 func (h blobCopyHandler) Execute(ctx context.Context, args json.RawMessage) (any, *MethodError) {
+	callerP, ok := PrincipalFromContext(ctx)
+	if !ok {
+		return nil, NewMethodError("forbidden", "no authenticated principal")
+	}
 	var req blobCopyRequest
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &req); err != nil {
 			return nil, NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	// RFC 8620 §6.3: same-account copy is rejected.
-	if req.FromAccountID == req.AccountID {
-		return nil, NewMethodError("invalidArguments",
-			"fromAccountId and accountId must differ; same-account blob copy is not permitted")
+	// RFC 8620 §6.3: resolve fromAccountId; empty defaults to caller's
+	// own account.
+	fromAccountID := req.FromAccountID
+	if fromAccountID == "" {
+		fromAccountID = AccountIDForPrincipal(callerP.ID)
 	}
-	// v1: cross-account blob copy between different principals is not
-	// implemented (each principal has an isolated blob namespace).
-	// Return notCopied for all blobIds.
+	if _, fromMerr := ResolveAccount(ctx, h.store.Meta(), callerP.ID, fromAccountID); fromMerr != nil {
+		return nil, NewMethodError("fromAccountNotFound", fromMerr.Description)
+	}
+	if _, toMerr := ResolveAccount(ctx, h.store.Meta(), callerP.ID, req.AccountID); toMerr != nil {
+		return nil, NewMethodError("accountNotFound", toMerr.Description)
+	}
+	// The blob store is content-addressed (BLAKE3): a blob is globally
+	// addressable by its hash regardless of which principal uploaded
+	// it. Copying between accounts becomes a Stat-existence check; the
+	// bytes are already there.
 	resp := blobCopyResponse{
 		FromAccountID: req.FromAccountID,
 		AccountID:     req.AccountID,
 	}
-	if len(req.BlobIDs) > 0 {
-		resp.NotCopied = make(map[Id]blobNotCopied, len(req.BlobIDs))
-		for _, bid := range req.BlobIDs {
-			resp.NotCopied[bid] = blobNotCopied{
-				Type:        "blobNotFound",
-				Description: "cross-account blob copy is not supported in v1",
+	for _, bid := range req.BlobIDs {
+		if _, _, serr := h.store.Blobs().Stat(ctx, bid); serr != nil {
+			if resp.NotCopied == nil {
+				resp.NotCopied = make(map[Id]blobNotCopied, len(req.BlobIDs))
 			}
+			resp.NotCopied[bid] = blobNotCopied{Type: "blobNotFound"}
+			continue
 		}
+		if resp.Copied == nil {
+			resp.Copied = make(map[Id]Id, len(req.BlobIDs))
+		}
+		resp.Copied[bid] = bid
 	}
 	return resp, nil
 }

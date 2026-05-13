@@ -99,7 +99,7 @@ func (q *queryHandler) Method() string { return "Email/query" }
 
 // Execute applies the filter, then sorts, then pages.
 func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := principalFromCtx(ctx)
+	callerPID, merr := principalFromCtx(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -109,11 +109,12 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	ownerPID, merr := resolveAccount(ctx, q.h.store.Meta(), callerPID, req.AccountID)
+	if merr != nil {
 		return nil, merr
 	}
 
-	state, err := currentState(ctx, q.h.store.Meta(), pid)
+	state, err := currentState(ctx, q.h.store.Meta(), ownerPID)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -127,11 +128,15 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 	// suite's "open mailbox" call: inMailbox + receivedAt sort + limit,
 	// optionally collapseThreads), evaluate the query at the storage
 	// layer instead of loading every accessible message into memory.
-	// See fastquery.go for the full pushability rules.
-	if fastResp, used, ferr := tryFastEmailQuery(ctx, q.h.store, pid, req, filter, state); ferr != nil {
-		return nil, serverFail(ferr)
-	} else if used {
-		return fastResp, nil
+	// Cross-account queries fall through to the slow path because the
+	// fast path's SQL fence is principal-scoped and ACL-shared mailboxes
+	// would be excluded by it.
+	if callerPID == ownerPID {
+		if fastResp, used, ferr := tryFastEmailQuery(ctx, q.h.store, callerPID, req, filter, state); ferr != nil {
+			return nil, serverFail(ferr)
+		} else if used {
+			return fastResp, nil
+		}
 	}
 
 	// Thread-keyword aggregation (someInThreadHaveKeyword /
@@ -147,7 +152,7 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 			"Email/query someInThreadHaveKeyword / noneInThreadHaveKeyword "+
 				"are not supported; the underlying thread-flag index is not yet built")
 	}
-	allMessages, gatherErr := gatherCandidatesRaw(ctx, q.h.store, pid, filter)
+	allMessages, gatherErr := gatherCandidatesRaw(ctx, q.h.store, callerPID, ownerPID, filter)
 	if gatherErr != nil {
 		return nil, serverFail(gatherErr)
 	}
@@ -668,41 +673,48 @@ func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.
 // the FTS document mapping covers fieldBody with IncludeInAll=true so
 // body content matching does not require blob parsing. When the filter
 // has no text-bearing predicate at all (e.g. a flag-only filter) the
-// fallback returns the principal's full envelope-only message list,
+// fallback returns the requested account's full envelope-only message
+// list (REQ-PROTO-33: scoped to ownerPID, filtered by callerPID's ACL),
 // which is bounded by SQLite indexes — not a blob-parsing scan.
 func gatherCandidatesRaw(
 	ctx context.Context,
 	st store.Store,
-	pid store.PrincipalID,
+	callerPID, ownerPID store.PrincipalID,
 	f *emailFilter,
 ) ([]store.Message, error) {
 	if f != nil && filterHasTextPredicate(f) {
 		fts := buildFTSQuery(f)
-		hits, err := st.FTS().Query(ctx, pid, fts)
+		hits, err := st.FTS().Query(ctx, ownerPID, fts)
 		if err != nil {
 			return nil, err
 		}
 		out := make([]store.Message, 0, len(hits))
 		for _, h := range hits {
-			m, err := loadMessageForPrincipal(ctx, st.Meta(), pid, h.MessageID)
+			m, err := loadMessageForPrincipal(ctx, st.Meta(), callerPID, h.MessageID)
 			if err != nil {
 				continue
+			}
+			if callerPID != ownerPID {
+				mb, mberr := st.Meta().GetMailboxByID(ctx, m.MailboxID)
+				if mberr != nil || mb.PrincipalID != ownerPID {
+					continue
+				}
 			}
 			out = append(out, m)
 		}
 		return out, nil
 	}
-	return listPrincipalMessages(ctx, st.Meta(), pid)
+	return listAccountMessages(ctx, st.Meta(), callerPID, ownerPID)
 }
 
 // gatherCandidates is the legacy entry point used by queryChanges.
 func gatherCandidates(
 	ctx context.Context,
 	st store.Store,
-	pid store.PrincipalID,
+	callerPID, ownerPID store.PrincipalID,
 	f *emailFilter,
 ) ([]store.Message, error) {
-	return gatherCandidatesRaw(ctx, st, pid, f)
+	return gatherCandidatesRaw(ctx, st, callerPID, ownerPID, f)
 }
 
 // filterHasTextPredicate reports whether f (or any nested condition) has
@@ -987,7 +999,7 @@ type queryChangesHandler struct{ h *handlerSet }
 func (queryChangesHandler) Method() string { return "Email/queryChanges" }
 
 func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
-	pid, merr := principalFromCtx(ctx)
+	callerPID, merr := principalFromCtx(ctx)
 	if merr != nil {
 		return nil, merr
 	}
@@ -998,7 +1010,8 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
-	if merr := requireAccount(req.AccountID, pid); merr != nil {
+	ownerPID, merr := resolveAccount(ctx, qc.h.store.Meta(), callerPID, req.AccountID)
+	if merr != nil {
 		return nil, merr
 	}
 
@@ -1012,7 +1025,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "unparseable sinceQueryState")
 	}
 
-	newSeq, err := qc.h.store.Meta().GetMaxChangeSeqForKind(ctx, pid, store.EntityKindEmail)
+	newSeq, err := qc.h.store.Meta().GetMaxChangeSeqForKind(ctx, ownerPID, store.EntityKindEmail)
 	if err != nil {
 		return nil, serverFail(err)
 	}
@@ -1040,7 +1053,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 		if err := ctx.Err(); err != nil {
 			return nil, serverFail(err)
 		}
-		batch, ferr := qc.h.store.Meta().ReadChangeFeed(ctx, pid, cursor, page)
+		batch, ferr := qc.h.store.Meta().ReadChangeFeed(ctx, ownerPID, cursor, page)
 		if ferr != nil {
 			return nil, serverFail(ferr)
 		}
@@ -1078,7 +1091,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 
 	if since == newSeq {
 		if req.CalculateTotal {
-			candidates, err := gatherCandidates(ctx, qc.h.store, pid, filter)
+			candidates, err := gatherCandidates(ctx, qc.h.store, callerPID, ownerPID, filter)
 			if err != nil {
 				return nil, serverFail(err)
 			}
@@ -1090,7 +1103,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 	}
 
 	// Build the current filtered, sorted result set.
-	candidates, err := gatherCandidates(ctx, qc.h.store, pid, filter)
+	candidates, err := gatherCandidates(ctx, qc.h.store, callerPID, ownerPID, filter)
 	if err != nil {
 		return nil, serverFail(err)
 	}
