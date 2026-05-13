@@ -269,6 +269,19 @@ func TestIMAPMetrics_CommandIncrementsCounter(t *testing.T) {
 // TestIMAPMetrics_CommandDurationRecorded drives one CAPABILITY command
 // and asserts the herold_imap_command_duration_seconds histogram
 // recorded a sample with outcome="ok". Proves REQ-PERF-METRIC-02 wiring.
+//
+// Barrier: the duration histogram is recorded in a deferred call inside
+// dispatch() that runs AFTER the handler has written the tagged OK to
+// the wire (the duration must include the response write). Sampling the
+// histogram immediately after readUntilTag therefore races the server's
+// deferred Observe(), and on a busy scheduler the test can observe the
+// response while the server is still between bw.Flush() returning and
+// the defer executing. Issue a second command (NOOP) and wait for its
+// tagged OK before sampling: the session run-loop is strictly sequential
+// (a single goroutine reading commands and dispatching them in order),
+// so dispatch(NOOP) cannot start until dispatch(CAPABILITY)'s defers
+// have fully run. Reading "a2 OK" is a strictly-after barrier proving
+// the CAPABILITY metric has been recorded.
 func TestIMAPMetrics_CommandDurationRecorded(t *testing.T) {
 	observe.RegisterIMAPMetrics()
 	before := histSampleCount(t, observe.IMAPCommandDuration.WithLabelValues("CAPABILITY", "ok"))
@@ -277,6 +290,9 @@ func TestIMAPMetrics_CommandDurationRecorded(t *testing.T) {
 	c := f.dial(t)
 	defer c.close()
 	_ = c.send("a1", "CAPABILITY")
+	// Strictly-after barrier: the next dispatched command's response
+	// proves the previous command's deferred Observe() has executed.
+	_ = c.send("a2", "NOOP")
 
 	after := histSampleCount(t, observe.IMAPCommandDuration.WithLabelValues("CAPABILITY", "ok"))
 	if after <= before {
