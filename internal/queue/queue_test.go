@@ -497,8 +497,24 @@ func TestRetryExhaustionEmitsFailureDSN(t *testing.T) {
 		}) {
 			t.Fatalf("attempt %d never observed", i+1)
 		}
-		// After the worker commits, advance to release the next schedule.
-		// The advance is a no-op once the row is Failed.
+		// Barrier: wait for the scheduler to be parked on clk.After
+		// again before advancing. The hook + DB barrier above proves
+		// the worker goroutine completed its reschedule, but the
+		// SCHEDULER goroutine runs independently and has a window
+		// between its previous select exit and the next clk.After
+		// call (loop iteration: claim -> dispatch -> select). An
+		// Advance landing in that window leaves the just-registered
+		// clk.After waiter armed for now+pollInterval (post-advance)
+		// and fires nothing, since RescheduleQueueItem does not signal
+		// wakeCh (only Submit / emitDSN do, queue.go:392 + 1111). The
+		// row stays deferred and the test times out at i+1. Polling
+		// NumWaiters before advancing closes that window. See clock.go
+		// NumWaiters doc for the canonical pattern.
+		if !waitFor(t, 5*time.Second, func() bool {
+			return f.clk.NumWaiters() >= 1
+		}) {
+			t.Fatalf("scheduler never re-armed clk.After after attempt %d", i+1)
+		}
 		f.clk.Advance(2 * time.Minute)
 	}
 	if !waitFor(t, 3*time.Second, func() bool {
