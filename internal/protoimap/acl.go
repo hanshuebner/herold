@@ -36,79 +36,43 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/aclcodec"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
-// rightsLetterTable is the canonical RFC 4314 §2.1 vocabulary in the
-// order the spec lists them. The order matters for canonical wire-form
-// output (GETACL / MYRIGHTS / LISTRIGHTS): a deterministic letter
-// sequence simplifies test assertions and matches typical Cyrus/Dovecot
-// rendering.
-var rightsLetterTable = []struct {
-	letter byte
-	bit    store.ACLRights
-}{
-	{'l', store.ACLRightLookup},
-	{'r', store.ACLRightRead},
-	{'s', store.ACLRightSeen},
-	{'w', store.ACLRightWrite},
-	{'i', store.ACLRightInsert},
-	{'p', store.ACLRightPost},
-	{'k', store.ACLRightCreateMailbox},
-	{'x', store.ACLRightDeleteMailbox},
-	{'t', store.ACLRightDeleteMessage},
-	{'e', store.ACLRightExpunge},
-	{'a', store.ACLRightAdmin},
-}
-
 // encodeRights renders a rights mask as the canonical RFC 4314 letter
-// sequence. The letters appear in the lrswipkxtea order regardless of
-// the bit positions in the mask, so test assertions stay stable as new
-// bits are added.
+// sequence. Delegates to internal/aclcodec so the IMAP wire and the
+// admin REST surface never disagree on which bit maps to which letter.
 func encodeRights(r store.ACLRights) string {
-	var sb strings.Builder
-	for _, e := range rightsLetterTable {
-		if r&e.bit != 0 {
-			sb.WriteByte(e.letter)
-		}
-	}
-	return sb.String()
+	return aclcodec.Encode(r)
 }
 
 // decodeRights parses an RFC 4314 §2.2 modifyrights string. Leading
 // "+" or "-" prefixes are stripped by the caller before decoding (this
 // helper just maps letters → mask). Unknown letters return an error so
 // SETACL surfaces "BAD" rather than silently dropping bits.
+//
+// RFC 4314 §2.1.1 obsoleted "c" / "d" virtual rights. We accept them
+// as aliases on input so older clients keep working: c → k|x, d → x|t|e
+// (the obsolete "create" and "delete" composites). The expansion is
+// done in this wrapper so the shared aclcodec package can reject
+// unknown letters strictly for the REST surface, which does not need
+// the RFC 2086 back-compat hooks.
 func decodeRights(s string) (store.ACLRights, error) {
-	var out store.ACLRights
+	expanded := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		matched := false
-		for _, e := range rightsLetterTable {
-			if e.letter == c {
-				out |= e.bit
-				matched = true
-				break
-			}
+		switch s[i] {
+		case 'c':
+			expanded = append(expanded, 'k', 'x')
+		case 'd':
+			expanded = append(expanded, 'x', 't', 'e')
+		default:
+			expanded = append(expanded, s[i])
 		}
-		if !matched {
-			// RFC 4314 §2.1.1 obsoleted "c" / "d" virtual rights.
-			// We accept them as aliases on input so older clients
-			// keep working: c → k|x, d → x|t|e (the obsolete
-			// "create" and "delete" composites). New scripts SHOULD
-			// use the modern letters; SETACL persists the expanded
-			// composite, not the alias.
-			switch c {
-			case 'c':
-				out |= store.ACLRightCreateMailbox | store.ACLRightDeleteMailbox
-			case 'd':
-				out |= store.ACLRightDeleteMailbox |
-					store.ACLRightDeleteMessage |
-					store.ACLRightExpunge
-			default:
-				return 0, fmt.Errorf("protoimap: unknown ACL right %q", c)
-			}
-		}
+	}
+	out, err := aclcodec.Decode(string(expanded))
+	if err != nil {
+		return 0, fmt.Errorf("protoimap: %w", err)
 	}
 	return out, nil
 }
@@ -422,9 +386,9 @@ func (ses *session) handleLISTRIGHTS(ctx context.Context, c *Command) error {
 	required := "lr"
 	optionalBits := store.ACLRightsAll &^ (store.ACLRightLookup | store.ACLRightRead)
 	var optional []string
-	for _, e := range rightsLetterTable {
-		if optionalBits&e.bit != 0 {
-			optional = append(optional, string(e.letter))
+	for _, e := range aclcodec.LetterTable {
+		if optionalBits&e.Bit != 0 {
+			optional = append(optional, string(e.Letter))
 		}
 	}
 	parts := []string{

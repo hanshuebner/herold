@@ -186,6 +186,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/tagged-address-dismissals/{base_identity_id}/{suffix}", auth1(s.handleDeleteTaggedAddressDismissal))
 	mux.HandleFunc("POST /api/v1/tagged-address-filters/{id}/convert-to-sieve", auth1(s.handleConvertTaggedAddressFilterToSieve))
 
+	// Mailbox ACL administration (REQ-PROTO-33, REQ-AUTH-63). The
+	// matching IMAP wire surface lives in internal/protoimap/acl.go;
+	// the REST endpoints below are the admin-facing way to grant /
+	// inspect / revoke ACL rows without driving an IMAP session.
+	mux.HandleFunc("GET /api/v1/principals/{pid}/mailboxes", authAdmin(s.handleListPrincipalMailboxes))
+	mux.HandleFunc("GET /api/v1/principals/{pid}/mailboxes/{mailbox}/acl", authAdmin(s.handleGetMailboxACL))
+	mux.HandleFunc("PUT /api/v1/principals/{pid}/mailboxes/{mailbox}/acl/{grantee}", authAdmin(s.handlePutMailboxACL))
+	mux.HandleFunc("DELETE /api/v1/principals/{pid}/mailboxes/{mailbox}/acl/{grantee}", authAdmin(s.handleDeleteMailboxACL))
+
 	// Inbound attachment policy (REQ-FLOW-ATTPOL-01..02).
 	mux.HandleFunc("GET /api/v1/mailboxes/{addr}/attachment-policy", authAdmin(s.handleGetMailboxAttPol))
 	mux.HandleFunc("PUT /api/v1/mailboxes/{addr}/attachment-policy", authAdmin(s.handlePutMailboxAttPol))
