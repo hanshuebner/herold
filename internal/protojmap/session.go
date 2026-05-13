@@ -88,16 +88,26 @@ func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p 
 	// Failures fall through silently — the SPA degrades to "no notice"
 	// rather than refusing to bootstrap on a transient store hiccup.
 	caps[CapabilityInternalizeStatus] = s.buildInternalizeStatusCapability(ctx, p)
-	desc := sessionDescriptor{
-		Capabilities: caps,
-		Accounts: map[Id]accountDesc{
-			accountID: {
-				Name:                p.CanonicalEmail,
-				IsPersonal:          true,
-				IsReadOnly:          false,
-				AccountCapabilities: accountCaps,
-			},
+	accounts := map[Id]accountDesc{
+		accountID: {
+			Name:                p.CanonicalEmail,
+			IsPersonal:          true,
+			IsReadOnly:          false,
+			AccountCapabilities: accountCaps,
 		},
+	}
+	// REQ-PROTO-33: surface every foreign account the caller can reach
+	// via mailbox ACL as a secondary entry in `accounts`. RFC 8620 §2:
+	// `accounts` carries every account visible to the user; primary/
+	// secondary is encoded by membership (or absence) in
+	// `primaryAccounts`. Failures fall through silently — a transient
+	// store hiccup must not 500 session bootstrap. Per-mailbox ACL is
+	// re-checked by the mail/* handlers; this surface is purely the
+	// discovery hint.
+	s.appendSecondaryAccounts(ctx, accounts, accountCaps, p.ID)
+	desc := sessionDescriptor{
+		Capabilities:    caps,
+		Accounts:        accounts,
 		PrimaryAccounts: primary,
 		Username:        p.CanonicalEmail,
 		APIURL:          base + "/jmap",
@@ -107,6 +117,68 @@ func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p 
 		State:           s.sessionState(ctx),
 	}
 	return desc
+}
+
+// appendSecondaryAccounts walks the caller's accessible-mailbox set,
+// groups by owner principal, and emits one accounts[] entry per
+// foreign owner (REQ-PROTO-33). IsReadOnly is true when no mailbox in
+// the foreign account grants any write-capable bit (i, w, k, s, t, e).
+// Anyone-rows count toward the rights mask alongside direct rows.
+func (s *Server) appendSecondaryAccounts(
+	ctx context.Context,
+	accounts map[Id]accountDesc,
+	accountCaps map[CapabilityID]any,
+	callerPID store.PrincipalID,
+) {
+	shared, err := s.store.Meta().ListMailboxesAccessibleBy(ctx, callerPID)
+	if err != nil || len(shared) == 0 {
+		return
+	}
+	ownerMailboxes := make(map[store.PrincipalID][]store.Mailbox)
+	for _, mb := range shared {
+		if mb.PrincipalID == callerPID {
+			continue
+		}
+		ownerMailboxes[mb.PrincipalID] = append(ownerMailboxes[mb.PrincipalID], mb)
+	}
+	const writeRights = store.ACLRightInsert | store.ACLRightWrite |
+		store.ACLRightCreateMailbox | store.ACLRightSeen |
+		store.ACLRightDeleteMessage | store.ACLRightExpunge
+	for ownerPID, mboxes := range ownerMailboxes {
+		owner, oerr := s.store.Meta().GetPrincipalByID(ctx, ownerPID)
+		if oerr != nil {
+			continue
+		}
+		readOnly := true
+		for _, mb := range mboxes {
+			rows, aerr := s.store.Meta().GetMailboxACL(ctx, mb.ID)
+			if aerr != nil {
+				continue
+			}
+			for _, row := range rows {
+				if row.PrincipalID != nil && *row.PrincipalID != callerPID {
+					continue
+				}
+				if row.Rights&writeRights != 0 {
+					readOnly = false
+					break
+				}
+			}
+			if !readOnly {
+				break
+			}
+		}
+		ownerAccountID := AccountIDForPrincipal(ownerPID)
+		if _, dup := accounts[ownerAccountID]; dup {
+			continue
+		}
+		accounts[ownerAccountID] = accountDesc{
+			Name:                owner.CanonicalEmail,
+			IsPersonal:          false,
+			IsReadOnly:          readOnly,
+			AccountCapabilities: accountCaps,
+		}
+	}
 }
 
 // internalizeStatusDesc is the typed capability value carrying the
@@ -203,6 +275,26 @@ func (s *Server) sessionState(ctx context.Context) string {
 				telInt = 1
 			}
 			fmt.Fprintf(h, "clog_tel=%d;clog_lt=%d;", telInt, lt)
+		}
+	}
+	// REQ-PROTO-33: mix in per-foreign-account state digests so a
+	// mutation in any visible secondary account invalidates the
+	// session-state hash and the client re-fetches the session
+	// descriptor (e.g. when an ACL grant adds a new account).
+	if shared, ferr := s.store.Meta().ListMailboxesAccessibleBy(ctx, p.ID); ferr == nil {
+		seen := make(map[store.PrincipalID]struct{}, len(shared))
+		for _, mb := range shared {
+			if mb.PrincipalID == p.ID {
+				continue
+			}
+			if _, dup := seen[mb.PrincipalID]; dup {
+				continue
+			}
+			seen[mb.PrincipalID] = struct{}{}
+			if fst, fserr := s.store.Meta().GetJMAPStates(ctx, mb.PrincipalID); fserr == nil {
+				fmt.Fprintf(h, "fa=%d;mb=%d;em=%d;",
+					fst.PrincipalID, fst.Mailbox, fst.Email)
+			}
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
