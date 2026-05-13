@@ -8,52 +8,25 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
-// listAccessibleMailboxes returns every mailbox the principal owns or
-// can see via ACL. Mirrors the mailbox sub-package's accessor; we
-// duplicate a thin version here so the email handlers do not depend on
-// the mailbox package's internals.
-func listAccessibleMailboxes(
-	ctx context.Context,
-	meta store.Metadata,
-	pid store.PrincipalID,
-) ([]store.Mailbox, error) {
-	owned, err := meta.ListMailboxes(ctx, pid)
-	if err != nil {
-		return nil, fmt.Errorf("email: list mailboxes: %w", err)
-	}
-	shared, err := meta.ListMailboxesAccessibleBy(ctx, pid)
-	if err != nil {
-		return nil, fmt.Errorf("email: list shared mailboxes: %w", err)
-	}
-	if len(shared) == 0 {
-		return owned, nil
-	}
-	seen := make(map[store.MailboxID]struct{}, len(owned))
-	for _, mb := range owned {
-		seen[mb.ID] = struct{}{}
-	}
-	for _, mb := range shared {
-		if _, dup := seen[mb.ID]; dup {
-			continue
-		}
-		owned = append(owned, mb)
-		seen[mb.ID] = struct{}{}
-	}
-	return owned, nil
-}
-
-// listMailboxesForAccount returns the mailboxes the caller can see in
-// the requested owner account (REQ-PROTO-33). For caller == owner this
-// is the union of owned + ACL-shared. For caller != owner this is only
-// the mailboxes owned by `owner` that the caller has Lookup right on
-// via a direct ACL row or an "anyone" row.
+// listMailboxesForAccount returns the mailboxes that belong to the
+// requested owner account and that the caller can see (REQ-PROTO-33).
+// Per RFC 8620 §2, each JMAP accountId scopes the response: alice's own
+// account returns only her own mailboxes, never mailboxes she sees by
+// ACL on bob — those appear under bob's accountId as a secondary
+// account on her session instead. For caller != owner the result is
+// further filtered to the mailboxes the caller has Lookup right on
+// (direct ACL row or "anyone").
 func listMailboxesForAccount(
 	ctx context.Context,
 	meta store.Metadata,
 	callerPID, ownerPID store.PrincipalID,
 ) ([]store.Mailbox, error) {
 	if callerPID == ownerPID {
-		return listAccessibleMailboxes(ctx, meta, callerPID)
+		owned, err := meta.ListMailboxes(ctx, ownerPID)
+		if err != nil {
+			return nil, fmt.Errorf("email: list mailboxes: %w", err)
+		}
+		return owned, nil
 	}
 	shared, err := meta.ListMailboxesAccessibleBy(ctx, callerPID)
 	if err != nil {
