@@ -10,7 +10,7 @@
   - 2,000 concurrent IDLE, goroutine-per-session (`REQ-PROTO-31`).
   - Mailboxes up to 1 TB (`docs/implementation/02-phasing.md` Phase 2.5).
   - `CONDSTORE`/`QRESYNC` are load-bearing for Apple Mail (`REQ-PROTO-32`).
-  - Shared mailboxes + `ACL` in Phase 2 (`REQ-PROTO-33`).
+  - Shared mailboxes + `ACL` in Phase 2 (`REQ-PROTO-33`) — IMAP wire surface, JMAP cross-account routing, and protoadmin REST endpoints all in-tree as of 2026-05-13.
 
 ## Coverage matrix
 
@@ -50,7 +50,7 @@ Evidence rows refer to `emersion/go-imap/v2/imapserver` unless noted. "const onl
 | CONDSTORE | 7162 | **missing** | **no `condstore.go`, no `SessionCondStore`, no `MODSEQ` on writer/session API, not in `capability.go`.** Const exists in top-level `v2` only. |
 | QRESYNC | 7162 | **missing** | **no QRESYNC handler, no `VANISHED` writer, no `SelectOptions.QResync`.** Const exists in top-level `v2` only. |
 | NOTIFY | 5465 | **missing** | **no `notify.go`, no `SessionNotify`, no subscription or event filter implementation in `imapserver`.** Const exists in top-level `v2` only. In scope per REQ-PROTO-34 (Phase 2). |
-| ACL | 4314 | missing | no `acl.go`, no `SessionACL`; Phase 2 per `REQ-PROTO-33`. |
+| ACL | 4314 | missing in upstream — implemented in-tree | no `acl.go` or `SessionACL` in `imapserver`; our `internal/protoimap/acl.go` implements `SETACL`/`DELETEACL`/`GETACL`/`MYRIGHTS`/`LISTRIGHTS` end-to-end with `lrswipkxtea` codec in `internal/aclcodec`. Closes the IMAP half of `REQ-PROTO-33`. |
 | QUOTA / QUOTA=RES-STORAGE | 9208 | const only | no `quota.go`; bring our own. |
 | METADATA / METADATA-SERVER | 5464 | const only | no `metadata.go`. |
 | OBJECTID | 8474 | const only | no `objectid.go`. |

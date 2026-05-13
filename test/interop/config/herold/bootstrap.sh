@@ -116,6 +116,27 @@ curl -sf \
     "${ADMIN_URL}/api/v1/principals" \
     || echo "bootstrap: bob principal creation returned error (may already exist)"
 
+# Step 5c: Grant alice an ACL row (lrswipkxte) on bob's INBOX so the
+# jmaptest suite exercises cross-account routing (REQ-PROTO-33).
+# Without this row alice has no secondary accounts and the cross-account
+# Mailbox/get + Email/* paths are silently skipped.
+BOB_PID=$(curl -sf \
+    -H "Authorization: Bearer ${API_KEY}" \
+    "${ADMIN_URL}/api/v1/principals" \
+    | jq -r ".items[] | select(.canonical_email==\"${BOB_EMAIL}\") | .id" 2>/dev/null || true)
+if [ -z "${BOB_PID}" ]; then
+    echo "bootstrap: WARNING could not resolve bob's principal id; skipping ACL grant"
+else
+    echo "bootstrap: granting alice lrswipkxte on bob's INBOX (bob_pid=${BOB_PID})"
+    curl -sf \
+        -X PUT \
+        -H "Authorization: Bearer ${API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d '{"rights":"lrswipkxte"}' \
+        "${ADMIN_URL}/api/v1/principals/${BOB_PID}/mailboxes/INBOX/acl/${ALICE_EMAIL}" \
+        || echo "bootstrap: ACL grant returned error"
+fi
+
 # Step 6: Mark done and stop background server.
 touch "${BOOTSTRAP_DONE}"
 echo "bootstrap: setup complete"

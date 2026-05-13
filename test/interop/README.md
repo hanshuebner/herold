@@ -310,10 +310,14 @@ Internal Go tests covering the same semantics (`TestEmailGet_MailboxIds_MultiMai
 `TestEmailSet_Destroy_MultiMailbox` in `internal/protojmap/mail/email/`) pass
 on both SQLite and Postgres.
 
-5 additional tests are skipped automatically because the primary user
-(alice) only has a single mail account; cross-account tests require a
-primary account with access to multiple accounts, which the interop
-fixture does not currently provide.
+Cross-account JMAP routing (REQ-PROTO-33) is exercised by the bootstrap
+fixture granting alice an ACL row (`lrswipkxte`) on bob's `INBOX` via
+`PUT /api/v1/principals/{bob_pid}/mailboxes/INBOX/acl/alice@herold.test`.
+With that grant, the cross-account tests that previously self-skipped
+("primary account has access to multiple accounts" precondition) are now
+run against herold's `ResolveAccount` path and reach the
+`Mailbox/get`, `Email/{get,query,changes,set,copy}`, `Thread/get`, and
+`SearchSnippet/get` foreign-account handlers.
 
 The nightly CI run should use at least `IMAPTEST_SECS=300`.
 
