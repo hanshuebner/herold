@@ -100,7 +100,7 @@ func TestIdentity_Set_AcceptsLocalDomain(t *testing.T) {
 		"create": map[string]any{
 			"work": map[string]any{
 				"name":          "Alice At Work",
-				"email":         "alice@example.test",
+				"email":         "alice.work@example.test",
 				"textSignature": "Sent from work",
 			},
 		},
@@ -247,7 +247,7 @@ func TestIdentity_Get_PersistedRowVerifiedAtIsNull(t *testing.T) {
 		"create": map[string]any{
 			"alt": map[string]any{
 				"name":  "Alice Persona",
-				"email": "alice@example.test",
+				"email": "alice.persona@example.test",
 			},
 		},
 	})
@@ -294,7 +294,7 @@ func TestIdentity_Changes_CarriesVerifiedAt(t *testing.T) {
 		"create": map[string]any{
 			"alt": map[string]any{
 				"name":  "Alice Persona",
-				"email": "alice@example.test",
+				"email": "alice.persona@example.test",
 			},
 		},
 	})
@@ -387,7 +387,7 @@ func TestIdentity_Set_Create_FiresVerificationTrigger(t *testing.T) {
 		"create": map[string]any{
 			"alt": map[string]any{
 				"name":  "Alice Persona",
-				"email": "alice@example.test",
+				"email": "alice.persona@example.test",
 			},
 		},
 	})
@@ -405,8 +405,8 @@ func TestIdentity_Set_Create_FiresVerificationTrigger(t *testing.T) {
 	if captured[0].PrincipalID != p.ID {
 		t.Fatalf("trigger row.PrincipalID = %d; want %d", captured[0].PrincipalID, p.ID)
 	}
-	if captured[0].Email != "alice@example.test" {
-		t.Fatalf("trigger row.Email = %q; want alice@example.test", captured[0].Email)
+	if captured[0].Email != "alice.persona@example.test" {
+		t.Fatalf("trigger row.Email = %q; want alice.persona@example.test", captured[0].Email)
 	}
 	if captured[0].VerifiedAtUs != 0 {
 		t.Fatalf("trigger row.VerifiedAtUs = %d; want 0 (unverified)", captured[0].VerifiedAtUs)
@@ -453,7 +453,7 @@ func TestIdentity_Set_Create_DenyAllExternalDomain(t *testing.T) {
 		"create": map[string]any{
 			"local": map[string]any{
 				"name":  "Alice Local",
-				"email": "alice@example.test",
+				"email": "alice.local@example.test",
 			},
 		},
 	})
@@ -518,7 +518,7 @@ func TestIdentity_Set_AcceptsSignature(t *testing.T) {
 		"create": map[string]any{
 			"alt": map[string]any{
 				"name":      "Alice Personal",
-				"email":     "alice@example.test",
+				"email":     "alice.personal@example.test",
 				"signature": "Best,\nA.",
 			},
 		},
@@ -567,5 +567,255 @@ func TestIdentity_Set_AcceptsSignature(t *testing.T) {
 	js3, _ := json.Marshal(resp3)
 	if strings.Contains(string(js3), `"signature":"Updated"`) {
 		t.Fatalf("signature did not clear: %s", js3)
+	}
+}
+
+// -- REQ-IDENT-70: isDefault extension property --------------------
+
+// createIdentity is a test helper that issues an Identity/set { create }
+// and returns the created jmapIdentity object.
+func createIdentity(t *testing.T, h *handlerSet, p store.Principal, clientID, name, email string) jmapIdentity {
+	t.Helper()
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			clientID: map[string]any{"name": name, "email": email},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("Identity/set create %s: %v", clientID, mErr)
+	}
+	created, ok := resp.(setResponse).Created[clientID]
+	if !ok {
+		t.Fatalf("create %s rejected: %+v", clientID, resp.(setResponse).NotCreated)
+	}
+	return created
+}
+
+// TestIdentity_DecodePatch_AcceptsIsDefault verifies decodePatch reads
+// the herold isDefault extension property instead of rejecting it as an
+// unknown property (REQ-IDENT-70).
+func TestIdentity_DecodePatch_AcceptsIsDefault(t *testing.T) {
+	_, st, _ := newHandlers(t)
+	patch, perr := decodePatch(context.Background(), st, json.RawMessage(`{"isDefault":true}`))
+	if perr != nil {
+		t.Fatalf("decodePatch rejected isDefault: %+v", perr)
+	}
+	if !patch.hasIsDefault || !patch.isDefault {
+		t.Fatalf("patch = %+v; want hasIsDefault && isDefault", patch)
+	}
+	patch, perr = decodePatch(context.Background(), st, json.RawMessage(`{"isDefault":false}`))
+	if perr != nil {
+		t.Fatalf("decodePatch rejected isDefault:false: %+v", perr)
+	}
+	if !patch.hasIsDefault || patch.isDefault {
+		t.Fatalf("patch = %+v; want hasIsDefault && !isDefault", patch)
+	}
+	// A non-boolean value is invalidProperties { isDefault }.
+	if _, perr = decodePatch(context.Background(), st, json.RawMessage(`{"isDefault":"yes"}`)); perr == nil {
+		t.Fatal("decodePatch accepted a non-boolean isDefault")
+	} else if perr.Type != "invalidProperties" ||
+		len(perr.Properties) != 1 || perr.Properties[0] != "isDefault" {
+		t.Fatalf("setError = %+v; want invalidProperties [isDefault]", perr)
+	}
+}
+
+// TestIdentity_Get_EmitsIsDefault verifies REQ-IDENT-70: every Identity
+// in an Identity/get response carries isDefault, and with no persisted
+// row flagged the synthesised default is the default.
+func TestIdentity_Get_EmitsIsDefault(t *testing.T) {
+	h, _, p := newHandlers(t)
+	createIdentity(t, h, p, "alt", "Alice Alt", "alice.alt@example.test")
+	args, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
+	resp, mErr := getHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("Identity/get: %v", mErr)
+	}
+	gr := resp.(getResponse)
+	if len(gr.List) != 2 {
+		t.Fatalf("expected 2 identities, got %d", len(gr.List))
+	}
+	defaults := 0
+	for _, row := range gr.List {
+		if row.IsDefault {
+			defaults++
+			if row.ID != "default" {
+				t.Fatalf("default identity = %s, want \"default\"", row.ID)
+			}
+		}
+	}
+	if defaults != 1 {
+		t.Fatalf("expected exactly one isDefault identity, got %d", defaults)
+	}
+	// isDefault must always be emitted, even for the non-default row.
+	js, _ := json.Marshal(resp)
+	if strings.Count(string(js), `"isDefault"`) != 2 {
+		t.Fatalf("isDefault not emitted on every identity: %s", js)
+	}
+}
+
+// TestIdentity_Set_IsDefault_SwitchesAtomically verifies REQ-IDENT-70:
+// setting isDefault:true on a custom identity moves the default off the
+// synthesised default; the single-default invariant holds.
+func TestIdentity_Set_IsDefault_SwitchesAtomically(t *testing.T) {
+	h, _, p := newHandlers(t)
+	alt := createIdentity(t, h, p, "alt", "Alice Alt", "alice.alt@example.test")
+
+	updateArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"update": map[string]any{
+			alt.ID: map[string]any{"isDefault": true},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, updateArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/set update: %v", mErr)
+	}
+	updated := resp.(setResponse).Updated[alt.ID]
+	if updated == nil || !updated.IsDefault {
+		t.Fatalf("updated alt identity is not the default: %+v", updated)
+	}
+	// Re-read: exactly the custom row is default now.
+	getArgs, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
+	getResp, _ := getHandler{h: h}.executeAs(p, getArgs)
+	defaults := map[string]bool{}
+	n := 0
+	for _, row := range getResp.(getResponse).List {
+		defaults[row.ID] = row.IsDefault
+		if row.IsDefault {
+			n++
+		}
+	}
+	if n != 1 || !defaults[alt.ID] {
+		t.Fatalf("expected only %s default; got %v", alt.ID, defaults)
+	}
+}
+
+// TestIdentity_Set_IsDefaultFalse_FallsBackToSynthesisedDefault verifies
+// the chosen REQ-IDENT-70 edge-case rule: setting isDefault:false on the
+// current default falls back to the synthesised default identity rather
+// than leaving the principal with zero defaults.
+func TestIdentity_Set_IsDefaultFalse_FallsBackToSynthesisedDefault(t *testing.T) {
+	h, _, p := newHandlers(t)
+	alt := createIdentity(t, h, p, "alt", "Alice Alt", "alice.alt@example.test")
+	// Make alt the default.
+	mkUpdate := func(id string, isDefault bool) (any, *protojmap.MethodError) {
+		args, _ := json.Marshal(map[string]any{
+			"accountId": protojmap.AccountIDForPrincipal(p.ID),
+			"update": map[string]any{
+				id: map[string]any{"isDefault": isDefault},
+			},
+		})
+		return setHandler{h: h}.executeAs(p, args)
+	}
+	if _, mErr := mkUpdate(alt.ID, true); mErr != nil {
+		t.Fatalf("set alt default: %v", mErr)
+	}
+	// Now clear it: the synthesised default takes over.
+	resp, mErr := mkUpdate(alt.ID, false)
+	if mErr != nil {
+		t.Fatalf("clear alt default: %v", mErr)
+	}
+	updated := resp.(setResponse).Updated[alt.ID]
+	if updated == nil || updated.IsDefault {
+		t.Fatalf("alt should no longer be default: %+v", updated)
+	}
+	getArgs, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
+	getResp, _ := getHandler{h: h}.executeAs(p, getArgs)
+	n := 0
+	for _, row := range getResp.(getResponse).List {
+		if row.IsDefault {
+			n++
+			if row.ID != "default" {
+				t.Fatalf("fallback default = %s, want \"default\"", row.ID)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly one default after fallback, got %d", n)
+	}
+}
+
+// TestIdentity_Set_IsDefault_BumpsState verifies REQ-IDENT-70: an
+// isDefault mutation bumps the principal's Identity JMAP state counter.
+func TestIdentity_Set_IsDefault_BumpsState(t *testing.T) {
+	h, st, p := newHandlers(t)
+	alt := createIdentity(t, h, p, "alt", "Alice Alt", "alice.alt@example.test")
+	before, err := st.Meta().GetJMAPStates(context.Background(), p.ID)
+	if err != nil {
+		t.Fatalf("GetJMAPStates: %v", err)
+	}
+	updateArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"update": map[string]any{
+			alt.ID: map[string]any{"isDefault": true},
+		},
+	})
+	_, mErr := setHandler{h: h}.executeAs(p, updateArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/set: %v", mErr)
+	}
+	after, err := st.Meta().GetJMAPStates(context.Background(), p.ID)
+	if err != nil {
+		t.Fatalf("GetJMAPStates: %v", err)
+	}
+	if after.Identity <= before.Identity {
+		t.Fatalf("identity state not bumped: before=%d after=%d", before.Identity, after.Identity)
+	}
+}
+
+// -- Task 2: duplicate-email rejection -----------------------------
+
+// TestIdentity_Set_Create_RejectsDuplicateOfDefaultEmail verifies that
+// Identity/set { create } rejects a create whose email matches the
+// principal's synthesised default identity.
+func TestIdentity_Set_Create_RejectsDuplicateOfDefaultEmail(t *testing.T) {
+	h, _, p := newHandlers(t)
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"dup": map[string]any{"name": "Dup", "email": "alice@example.test"},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("Identity/set: %v", mErr)
+	}
+	se, ok := resp.(setResponse).NotCreated["dup"]
+	if !ok {
+		t.Fatalf("expected notCreated[dup]; got created: %+v", resp.(setResponse).Created)
+	}
+	if se.Type != "invalidProperties" ||
+		len(se.Properties) != 1 || se.Properties[0] != "email" {
+		t.Fatalf("setError = %+v; want invalidProperties [email]", se)
+	}
+	if se.Description != "an identity with this email already exists" {
+		t.Fatalf("description = %q", se.Description)
+	}
+}
+
+// TestIdentity_Set_Create_RejectsDuplicateOfCustomEmail verifies that a
+// second create with the same email as an existing custom identity is
+// rejected, and that the comparison is case-insensitive.
+func TestIdentity_Set_Create_RejectsDuplicateOfCustomEmail(t *testing.T) {
+	h, _, p := newHandlers(t)
+	createIdentity(t, h, p, "first", "Alice Alt", "alice.alt@example.test")
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"second": map[string]any{"name": "Dup", "email": "Alice.Alt@Example.Test"},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("Identity/set: %v", mErr)
+	}
+	se, ok := resp.(setResponse).NotCreated["second"]
+	if !ok {
+		t.Fatalf("expected notCreated[second]; got created: %+v", resp.(setResponse).Created)
+	}
+	if se.Type != "invalidProperties" || len(se.Properties) != 1 || se.Properties[0] != "email" {
+		t.Fatalf("setError = %+v; want invalidProperties [email]", se)
 	}
 }

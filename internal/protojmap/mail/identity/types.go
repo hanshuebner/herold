@@ -61,6 +61,12 @@ type jmapIdentity struct {
 	// (no omitempty) so clients can discriminate "verified at <ts>"
 	// from "unverified" on a single read.
 	VerifiedAt *jmapDateTime `json:"verifiedAt"`
+	// IsDefault is the herold extension property (REQ-IDENT-70):
+	// exactly one identity per principal is the default. The field is
+	// ALWAYS emitted (no omitempty), true for the default and false for
+	// the rest. The suite's From picker and compose-default selector
+	// key off it (web REQ-SET-IDENT-04).
+	IsDefault bool `json:"isDefault"`
 }
 
 // identityRecord is the in-memory representation backing an Identity.
@@ -93,6 +99,11 @@ type identityRecord struct {
 	// synthesised default identity treats the principal's CreatedAt as
 	// the verification instant (REQ-IDENT-02).
 	VerifiedAt time.Time
+	// IsDefault marks this identity as the principal's default
+	// (REQ-IDENT-70). The Store sets it while building the snapshot:
+	// exactly one record per principal carries it. The synthesised
+	// default (id 0) is default whenever no persisted row is flagged.
+	IsDefault bool
 }
 
 func (r identityRecord) toJMAP() jmapIdentity {
@@ -139,6 +150,7 @@ func (r identityRecord) toJMAP() jmapIdentity {
 		AvatarBlobId:  avatarBlobId,
 		XFaceEnabled:  r.XFaceEnabled,
 		VerifiedAt:    verifiedAt,
+		IsDefault:     r.IsDefault,
 	}
 }
 

@@ -1797,12 +1797,13 @@ func scanJMAPIdentity(row rowLike) (store.JMAPIdentity, error) {
 		verificationTokenHash             []byte
 		verificationCodeHash              []byte
 		verificationTokenExpiresAtUs      sql.NullInt64
+		isDefault                         int64
 	)
 	err := row.Scan(&id, &principalID, &name, &email, &replyTo, &bcc,
 		&textSig, &htmlSig, &mayDelete, &createdAtUs, &updatedAtUs, &signature,
 		&avatarBlobHash, &avatarBlobSize, &xfaceEnabled,
 		&verifiedAtUs, &verificationTokenHash, &verificationCodeHash,
-		&verificationTokenExpiresAtUs)
+		&verificationTokenExpiresAtUs, &isDefault)
 	if err != nil {
 		return store.JMAPIdentity{}, mapErr(err)
 	}
@@ -1821,6 +1822,7 @@ func scanJMAPIdentity(row rowLike) (store.JMAPIdentity, error) {
 		XFaceEnabled:          xfaceEnabled != 0,
 		VerificationTokenHash: nullableBytes(verificationTokenHash),
 		VerificationCodeHash:  nullableBytes(verificationCodeHash),
+		IsDefault:             isDefault != 0,
 	}
 	if signature.Valid {
 		v := signature.String
@@ -1846,7 +1848,7 @@ const jmapIdentitySelectColumns = `
 	text_signature, html_signature, may_delete, created_at_us, updated_at_us,
 	signature, avatar_blob_hash, avatar_blob_size, xface_enabled,
 	verified_at_us, verification_token_hash, verification_code_hash,
-	verification_token_expires_at_us`
+	verification_token_expires_at_us, is_default`
 
 func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
 	if row.ID == "" {
@@ -1907,13 +1909,14 @@ func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 			   text_signature, html_signature, may_delete, created_at_us, updated_at_us,
 			   signature, avatar_blob_hash, avatar_blob_size, xface_enabled,
 			   verified_at_us, verification_token_hash, verification_code_hash,
-			   verification_token_expires_at_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   verification_token_expires_at_us, is_default)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			row.ID, int64(row.PrincipalID), row.Name, row.Email,
 			replyTo, bcc, row.TextSignature, row.HTMLSignature,
 			boolToInt(row.MayDelete), row.CreatedAtUs, row.UpdatedAtUs, sig,
 			avatarHash, row.AvatarBlobSize, boolToInt(row.XFaceEnabled),
-			verifiedAt, tokenHashArg, codeHashArg, tokenExpArg)
+			verifiedAt, tokenHashArg, codeHashArg, tokenExpArg,
+			boolToInt(row.IsDefault))
 		return mapErr(err)
 	})
 }
@@ -1993,6 +1996,53 @@ func (m *metadata) DeleteJMAPIdentity(ctx context.Context, id string) error {
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
 			`DELETE FROM jmap_identities WHERE id = ?`, id)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// SetDefaultJMAPIdentity enforces the single-default invariant
+// (REQ-IDENT-70): one transaction clears is_default on every row owned
+// by principalID, then sets it on the chosen overlay row. The
+// synthesised default's wire id ("default") leaves every row cleared,
+// which makes the synthesised default the principal's default.
+func (m *metadata) SetDefaultJMAPIdentity(ctx context.Context, principalID store.PrincipalID, identityID string) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		if identityID != "default" {
+			var ownerID int64
+			err := tx.QueryRowContext(ctx,
+				`SELECT principal_id FROM jmap_identities WHERE id = ?`,
+				identityID).Scan(&ownerID)
+			if errors.Is(err, sql.ErrNoRows) {
+				return store.ErrNotFound
+			}
+			if err != nil {
+				return mapErr(err)
+			}
+			if store.PrincipalID(ownerID) != principalID {
+				return store.ErrNotFound
+			}
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE jmap_identities SET is_default = 0 WHERE principal_id = ?`,
+			int64(principalID)); err != nil {
+			return mapErr(err)
+		}
+		if identityID == "default" {
+			return nil
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE jmap_identities SET is_default = 1 WHERE id = ?`,
+			identityID)
 		if err != nil {
 			return mapErr(err)
 		}

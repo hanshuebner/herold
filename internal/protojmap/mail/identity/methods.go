@@ -336,6 +336,23 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 				continue
 			}
 		}
+		// Reject a create whose email duplicates an identity the
+		// principal already owns (the synthesised default or any custom
+		// row). Comparison is case-insensitive on the full addr-spec,
+		// matching how the rest of the identity code lowercases the
+		// domain; the local-part is preserved by senders but a
+		// case-insensitive compare is the safe, user-facing choice.
+		if dup := s.h.identity.hasIdentityWithEmail(ctx, p, in.Email); dup {
+			if resp.NotCreated == nil {
+				resp.NotCreated = make(map[string]setError)
+			}
+			resp.NotCreated[clientID] = setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"email"},
+				Description: "an identity with this email already exists",
+			}
+			continue
+		}
 		// Validate and resolve avatarBlobId if supplied.
 		var avatarHash string
 		var avatarSize int64
@@ -576,6 +593,18 @@ func decodePatch(ctx context.Context, st store.Store, raw json.RawMessage) (iden
 					Type:        "invalidProperties",
 					Properties:  []string{"xFaceEnabled"},
 					Description: fmt.Sprintf("xFaceEnabled: %v", err),
+				}
+			}
+		case "isDefault":
+			// REQ-IDENT-70: the herold Identity.isDefault extension.
+			// The single-default invariant is enforced in the Store via
+			// Metadata.SetDefaultJMAPIdentity.
+			out.hasIsDefault = true
+			if err := json.Unmarshal(v, &out.isDefault); err != nil {
+				return identityPatch{}, &setError{
+					Type:        "invalidProperties",
+					Properties:  []string{"isDefault"},
+					Description: fmt.Sprintf("isDefault: %v", err),
 				}
 			}
 		case "email":

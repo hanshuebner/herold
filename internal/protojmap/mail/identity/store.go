@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +65,14 @@ func NewStoreWith(st store.Store, clk clock.Clock) *Store {
 
 // listForPrincipal returns the principal's identities: the default
 // (possibly overlaid) plus any custom rows, in id order.
+//
+// REQ-IDENT-70: exactly one record carries IsDefault. A persisted row
+// flagged is_default wins; when no persisted row is flagged the
+// synthesised default (id 0) is the principal's default. The
+// single-default invariant is enforced at write time by
+// Metadata.SetDefaultJMAPIdentity, so at most one custom row should
+// ever be flagged; if a stale double-flag is observed the first row in
+// id order wins and the rest are reported false.
 func (s *Store) listForPrincipal(ctx context.Context, p store.Principal) []identityRecord {
 	s.mu.RLock()
 	def := s.defaultRecordLocked(p)
@@ -72,6 +81,22 @@ func (s *Store) listForPrincipal(ctx context.Context, p store.Principal) []ident
 	out := make([]identityRecord, 0, 1+len(custom))
 	out = append(out, def)
 	out = append(out, custom...)
+	seen := false
+	for i := range out {
+		if out[i].ID == 0 {
+			// The synthesised default is resolved after the loop.
+			out[i].IsDefault = false
+			continue
+		}
+		if out[i].IsDefault && !seen {
+			seen = true
+			continue
+		}
+		out[i].IsDefault = false
+	}
+	if !seen {
+		out[0].IsDefault = true
+	}
 	return out
 }
 
@@ -230,9 +255,16 @@ func (s *Store) update(ctx context.Context, p store.Principal, id uint64, patch 
 			// latest values so a transient store error is not fatal.
 			_ = s.st.Meta().UpdatePrincipal(ctx, updateP)
 		}
+		// REQ-IDENT-70: isDefault on the synthesised default identity.
+		if patch.hasIsDefault {
+			if !s.applyIsDefault(ctx, p, 0, patch.isDefault) {
+				return identityRecord{}, false
+			}
+		}
 		s.mu.RLock()
 		out := s.defaultRecordLocked(updateP)
 		s.mu.RUnlock()
+		out.IsDefault = s.resolveIsDefault(ctx, p, 0)
 		return out, true
 	}
 	if s.st == nil {
@@ -252,7 +284,79 @@ func (s *Store) update(ctx context.Context, p store.Principal, id uint64, patch 
 	if err := s.st.Meta().UpdateJMAPIdentity(ctx, updated); err != nil {
 		return identityRecord{}, false
 	}
+	// REQ-IDENT-70: isDefault is enforced by SetDefaultJMAPIdentity in a
+	// single transaction (UpdateJMAPIdentity above never touches the
+	// is_default column).
+	if patch.hasIsDefault {
+		if !s.applyIsDefault(ctx, p, id, patch.isDefault) {
+			return identityRecord{}, false
+		}
+	}
+	rec.IsDefault = s.resolveIsDefault(ctx, p, id)
 	return rec, true
+}
+
+// applyIsDefault enforces the REQ-IDENT-70 single-default invariant for
+// a /set update of the isDefault property on the identity with the
+// given internal id (0 == the synthesised default).
+//
+//   - isDefault:true makes this identity the principal's default.
+//   - isDefault:false is accepted; when this identity is currently the
+//     default it falls back to the synthesised default (id 0), which
+//     never leaves the principal with zero defaults. When this identity
+//     is not currently the default it is a no-op.
+//
+// Returns false only on a store error.
+func (s *Store) applyIsDefault(ctx context.Context, p store.Principal, id uint64, want bool) bool {
+	if s.st == nil {
+		// No persistence: the synthesised default is always the default
+		// and there are no overlay rows, so true on id 0 / false anywhere
+		// is consistent without a write.
+		return true
+	}
+	if want {
+		if err := s.st.Meta().SetDefaultJMAPIdentity(ctx, p.ID, renderID(id)); err != nil {
+			return false
+		}
+		return true
+	}
+	// isDefault:false. Only act when this identity is the current
+	// default; otherwise the request is already satisfied.
+	if s.resolveIsDefault(ctx, p, id) {
+		if err := s.st.Meta().SetDefaultJMAPIdentity(ctx, p.ID, "default"); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// hasIdentityWithEmail reports whether the principal already owns an
+// identity (the synthesised default or any persisted custom row) whose
+// email equals the given addr-spec, compared case-insensitively. Used
+// by Identity/set { create } to reject duplicate-email creation.
+func (s *Store) hasIdentityWithEmail(ctx context.Context, p store.Principal, email string) bool {
+	want := strings.ToLower(strings.TrimSpace(email))
+	if want == "" {
+		return false
+	}
+	for _, rec := range s.listForPrincipal(ctx, p) {
+		if strings.ToLower(strings.TrimSpace(rec.Email)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveIsDefault reports whether the identity with the given internal
+// id (0 == synthesised default) is currently the principal's default
+// (REQ-IDENT-70).
+func (s *Store) resolveIsDefault(ctx context.Context, p store.Principal, id uint64) bool {
+	for _, rec := range s.listForPrincipal(ctx, p) {
+		if rec.ID == id {
+			return rec.IsDefault
+		}
+	}
+	return false
 }
 
 // destroy removes the record with the given id for p. Returns ok=false
@@ -292,6 +396,7 @@ func persistedToRecord(r store.JMAPIdentity) identityRecord {
 		AvatarBlobHash: r.AvatarBlobHash,
 		AvatarBlobSize: r.AvatarBlobSize,
 		XFaceEnabled:   r.XFaceEnabled,
+		IsDefault:      r.IsDefault,
 		UpdatedAt:      time.UnixMicro(r.UpdatedAtUs).UTC(),
 	}
 	// REQ-IDENT-01: VerifiedAtUs == 0 means "verification pending".
@@ -338,6 +443,7 @@ func recordToPersisted(r identityRecord) store.JMAPIdentity {
 		AvatarBlobHash: r.AvatarBlobHash,
 		AvatarBlobSize: r.AvatarBlobSize,
 		XFaceEnabled:   r.XFaceEnabled,
+		IsDefault:      r.IsDefault,
 	}
 	if r.Signature != nil {
 		v := *r.Signature
@@ -511,6 +617,13 @@ type identityPatch struct {
 	avatarBlobSize  int64
 	hasXFaceEnabled bool
 	xFaceEnabled    bool
+	// hasIsDefault is true when the patch included isDefault (REQ-IDENT-70).
+	// isDefault carries the requested value. The Store applies it via
+	// Metadata.SetDefaultJMAPIdentity rather than applyTo so the
+	// single-default invariant is enforced in one transaction; applyTo
+	// therefore does not touch identityRecord.IsDefault.
+	hasIsDefault bool
+	isDefault    bool
 }
 
 func (p identityPatch) applyTo(r *identityRecord) {

@@ -139,6 +139,7 @@ func Run(t *testing.T, f Factory) {
 		{"JMAPIdentity_Update_RoundTrips", testJMAPIdentityUpdateRoundtrips},
 		{"JMAPIdentity_Delete_NotFoundAfter", testJMAPIdentityDeleteNotFoundAfter},
 		{"JMAPIdentity_Signature_RoundTrip", testJMAPIdentitySignatureRoundTrip},
+		{"JMAPIdentity_SetDefault_SingleDefaultInvariant", testJMAPIdentitySetDefaultSingleDefaultInvariant},
 		// -- REQ-IDENT-01..91 Identity verification ---------------
 		{"IdentityVerify_Issue_RoundTrip", testIdentityVerifyIssueRoundTrip},
 		{"IdentityVerify_Issue_RejectsLiveToken", testIdentityVerifyIssueRejectsLiveToken},
@@ -4748,6 +4749,89 @@ func testJMAPIdentityDeleteNotFoundAfter(t *testing.T, s store.Store) {
 	}
 	if err := s.Meta().DeleteJMAPIdentity(ctx, "200"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Delete twice: err = %v, want ErrNotFound", err)
+	}
+}
+
+// testJMAPIdentitySetDefaultSingleDefaultInvariant exercises
+// SetDefaultJMAPIdentity (REQ-IDENT-70): at most one persisted row per
+// principal carries is_default, switching the default clears the prior
+// one in the same transaction, and the synthesised default's wire id
+// ("default") clears every row.
+func testJMAPIdentitySetDefaultSingleDefaultInvariant(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ji-def@example.com")
+	q := mustInsertPrincipal(t, s, "ji-def-other@example.com")
+	for _, row := range []store.JMAPIdentity{
+		{ID: "300", PrincipalID: p.ID, Email: "a@example.com", MayDelete: true},
+		{ID: "301", PrincipalID: p.ID, Email: "b@example.com", MayDelete: true},
+		{ID: "400", PrincipalID: q.ID, Email: "c@example.com", MayDelete: true},
+	} {
+		if err := s.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+			t.Fatalf("Insert %s: %v", row.ID, err)
+		}
+	}
+	// Fresh rows are never the default.
+	for _, id := range []string{"300", "301", "400"} {
+		got, err := s.Meta().GetJMAPIdentity(ctx, id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", id, err)
+		}
+		if got.IsDefault {
+			t.Fatalf("identity %s: IsDefault = true on a fresh row", id)
+		}
+	}
+	// Make 300 the default.
+	if err := s.Meta().SetDefaultJMAPIdentity(ctx, p.ID, "300"); err != nil {
+		t.Fatalf("SetDefaultJMAPIdentity 300: %v", err)
+	}
+	assertDefault := func(want string) {
+		t.Helper()
+		rows, err := s.Meta().ListJMAPIdentities(ctx, p.ID)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		n := 0
+		for _, r := range rows {
+			if r.IsDefault {
+				n++
+				if r.ID != want {
+					t.Fatalf("default = %s, want %s", r.ID, want)
+				}
+			}
+		}
+		if want == "" && n != 0 {
+			t.Fatalf("expected zero flagged rows, got %d", n)
+		}
+		if want != "" && n != 1 {
+			t.Fatalf("expected exactly one flagged row, got %d", n)
+		}
+	}
+	assertDefault("300")
+	// Switching to 301 clears 300 in the same transaction.
+	if err := s.Meta().SetDefaultJMAPIdentity(ctx, p.ID, "301"); err != nil {
+		t.Fatalf("SetDefaultJMAPIdentity 301: %v", err)
+	}
+	assertDefault("301")
+	// The synthesised default's wire id clears every persisted row.
+	if err := s.Meta().SetDefaultJMAPIdentity(ctx, p.ID, "default"); err != nil {
+		t.Fatalf("SetDefaultJMAPIdentity default: %v", err)
+	}
+	assertDefault("")
+	// q's row is untouched throughout.
+	got, err := s.Meta().GetJMAPIdentity(ctx, "400")
+	if err != nil {
+		t.Fatalf("Get 400: %v", err)
+	}
+	if got.IsDefault {
+		t.Fatalf("identity 400 (other principal) became default")
+	}
+	// A non-existent row, or a row owned by another principal, is
+	// ErrNotFound.
+	if err := s.Meta().SetDefaultJMAPIdentity(ctx, p.ID, "999"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetDefaultJMAPIdentity missing: err = %v, want ErrNotFound", err)
+	}
+	if err := s.Meta().SetDefaultJMAPIdentity(ctx, p.ID, "400"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetDefaultJMAPIdentity foreign: err = %v, want ErrNotFound", err)
 	}
 }
 

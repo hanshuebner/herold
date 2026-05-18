@@ -429,6 +429,10 @@ type JMAPIdentityRow struct {
 	// post-restore — they are intentionally NOT backed up so the suite
 	// re-issues on first interaction with an in-flight unverified row.
 	VerifiedAtUs *int64 `json:"verified_at_us,omitempty"`
+	// IsDefault is the herold Identity.isDefault extension (REQ-IDENT-70,
+	// migration 0053). Durable per-row state: backed up so the default
+	// pointer survives a backup/restore round-trip.
+	IsDefault bool `json:"is_default,omitempty"`
 }
 
 type TLSRPTFailureRow struct {

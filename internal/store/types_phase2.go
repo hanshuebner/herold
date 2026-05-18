@@ -1240,6 +1240,13 @@ type JMAPIdentity struct {
 	// by the store on insert / update.
 	CreatedAtUs int64
 	UpdatedAtUs int64
+	// IsDefault backs the herold JMAP Identity.isDefault extension
+	// property (REQ-IDENT-70). True for the one persisted row that is
+	// the principal's default identity. The single-default invariant is
+	// enforced by Metadata.SetDefaultJMAPIdentity. When no persisted row
+	// owned by the principal carries IsDefault, the synthesised
+	// "default" identity (which has no row) is the default.
+	IsDefault bool
 }
 
 // VerificationResendStats is the per-Identity resend bookkeeping

@@ -301,7 +301,16 @@ const CurrentBackupVersion = 1
 //	on every token issuance. The columns survive a successful
 //	verify so the daily cap cannot be evaded by burning the first
 //	verification and re-creating.
-const CurrentSchemaVersion = 52
+//
+// 53 — 0053_identity_is_default.sql (REQ-IDENT-70).
+//
+//	Adds is_default to jmap_identities, backing the herold JMAP
+//	Identity.isDefault extension property. Exactly one identity per
+//	principal is the default; the store's SetDefaultJMAPIdentity
+//	enforces the single-default invariant in one transaction. The
+//	synthesised "default" identity has no row and is the default
+//	whenever no persisted row owned by the principal is flagged.
+const CurrentSchemaVersion = 53
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

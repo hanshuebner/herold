@@ -995,6 +995,18 @@ type Metadata interface {
 	// ErrNotFound when the row is missing.
 	DeleteJMAPIdentity(ctx context.Context, id string) error
 
+	// SetDefaultJMAPIdentity makes the identity owned by principalID the
+	// principal's default, enforcing the single-default invariant
+	// (REQ-IDENT-70). In one transaction it clears is_default on every
+	// persisted jmap_identities row owned by the principal and, when
+	// identityID is a persisted overlay row, sets is_default on that
+	// row. Passing the synthesised default's wire id ("default") clears
+	// every persisted row's flag, which makes the synthesised default
+	// the principal's default (it has no row). Returns ErrNotFound when
+	// identityID names a persisted row that does not exist or is not
+	// owned by principalID.
+	SetDefaultJMAPIdentity(ctx context.Context, principalID PrincipalID, identityID string) error
+
 	// -- Phase 2 Identity verification (REQ-IDENT-01..91) ------------
 
 	// IssueIdentityVerificationToken writes the verification trio
