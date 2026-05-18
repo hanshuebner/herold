@@ -51,6 +51,17 @@ Dev loop, web-only:
 pnpm -C web dev --filter @herold/suite   # or --filter @herold/admin
 ```
 
+Manual dev loop (editing `docs/manual/*.mdoc`):
+
+```bash
+make manual                              # serves http://localhost:8000/
+```
+
+`make manual` (or `pnpm --filter @herold/manual dev`) builds the
+manual to standalone SSR HTML, serves it, watches `docs/manual/`, and
+live-reloads the browser on every `.mdoc` save. Pure Node -- no Vite,
+no SPA build, no herold binary. See `web/packages/manual/README.md`.
+
 ## Admin SPA e2e tests
 
 The admin SPA has a Playwright e2e suite under
