@@ -26,6 +26,7 @@
   import { t } from '../../lib/i18n/i18n.svelte';
   import type { Identity } from '../../lib/mail/types';
   import Button from '@herold/design-system/Button.svelte';
+  import CodeInput from '../../lib/identities/CodeInput.svelte';
 
   interface Props {
     identity: Identity;
@@ -36,6 +37,11 @@
 
   let code = $state('');
   let codeError = $state<string | null>(null);
+  /** The `code` value at the moment `codeError` was last set. The
+   *  inline error clears only once the user edits the code away from
+   *  this snapshot — a wrong-but-syntactically-valid code keeps its
+   *  error visible until it is actually changed. */
+  let codeAtError = $state('');
   let verifying = $state(false);
   let resending = $state(false);
   /** Countdown remaining (seconds) until the next resend is permitted. */
@@ -64,9 +70,8 @@
   async function onVerifyClick(): Promise<void> {
     codeError = null;
     if (!isValidCode(code)) {
-      codeError = t('settings.identityVerify.codeLabel');
-      // Use a more precise message:
       codeError = t('settings.identityWizard.codeInvalid');
+      codeAtError = code;
       return;
     }
     verifying = true;
@@ -90,6 +95,7 @@
       } else {
         codeError = err instanceof Error ? err.message : String(err);
       }
+      codeAtError = code;
     } finally {
       verifying = false;
     }
@@ -122,12 +128,11 @@
     }
   }
 
-  function onCodeInput(value: string): void {
-    // Strip non-digits + cap to 6 chars; preserves leading zeros.
-    const stripped = value.replace(/\D/g, '').slice(0, 6);
-    code = stripped;
-    if (codeError && isValidCode(stripped)) codeError = null;
-  }
+  // Clear the inline error once the user edits the code away from the
+  // value that produced it. A wrong-but-valid code keeps its error.
+  $effect(() => {
+    if (codeError && code !== codeAtError) codeError = null;
+  });
 
   function onBackdropClick(e: MouseEvent): void {
     if (e.target === e.currentTarget) close();
@@ -188,26 +193,23 @@
         void onVerifyClick();
       }}
     >
-      <label class="field-label">
-        <span class="label-text">{t('settings.identityVerify.codeLabel')}</span>
-        <input
-          type="text"
-          inputmode="numeric"
-          autocomplete="one-time-code"
-          maxlength="6"
-          pattern="[0-9]*"
-          value={code}
-          oninput={(e) => onCodeInput((e.target as HTMLInputElement).value)}
+      <div class="field-label">
+        <span class="label-text" id="verify-code-label-{identity.id}">
+          {t('settings.identityVerify.codeLabel')}
+        </span>
+        <CodeInput
+          bind:value={code}
           disabled={verifying}
-          aria-invalid={!!codeError}
-          data-testid="identity-verify-code"
+          invalid={!!codeError}
+          ariaLabel={t('settings.identityVerify.codeLabel')}
+          testid="identity-verify-code"
         />
         {#if codeError}
           <span class="error" role="alert" data-testid="identity-verify-code-error">
             {codeError}
           </span>
         {/if}
-      </label>
+      </div>
 
       <div class="actions">
         <Button
@@ -345,29 +347,6 @@
   .label-text {
     color: var(--text-secondary);
     font-size: var(--type-body-compact-01-size);
-  }
-
-  input[type='text'] {
-    background: var(--background);
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-sm);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: var(--type-body-01-size);
-    line-height: var(--type-body-01-line);
-    letter-spacing: 0.2em;
-    padding: var(--spacing-03);
-    text-align: center;
-  }
-
-  input[type='text']:focus {
-    outline: none;
-    border-color: var(--focus);
-    box-shadow: 0 0 0 1px var(--focus);
-  }
-
-  input[type='text'][aria-invalid='true'] {
-    border-color: var(--support-error);
   }
 
   .actions {

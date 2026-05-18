@@ -44,6 +44,8 @@
   } from '../../lib/identities/wizard-validators';
   import { t } from '../../lib/i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
+  import CodeInput from '../../lib/identities/CodeInput.svelte';
+  import { IdentitySetError } from '../../lib/mail/store.svelte';
   import type { Identity } from '../../lib/mail/types';
   import type {
     SubmitSecurity,
@@ -74,6 +76,9 @@
   let createdIdentity = $state<Identity | null>(null);
   let code = $state('');
   let codeError = $state<string | null>(null);
+  /** `code` value at the moment `codeError` was last set; the inline
+   *  error clears only once the user edits the code away from it. */
+  let codeAtError = $state('');
   let verifying = $state(false);
   let resending = $state(false);
   let cooldown = $state(0);
@@ -164,26 +169,43 @@
       codeError = null;
       resendNotice = null;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Detect the forbiddenFrom shape — the server's setError carries
-      // "domain not permitted" / similar. We render the explicit
-      // domain-blocked message when the message looks like it.
       const dom = domainOf(email);
-      if (dom && /domain|forbidden/i.test(msg)) {
-        createError = t('settings.identityWizard.domainBlocked', { domain: dom });
+      if (err instanceof IdentitySetError) {
+        // The client already validated email syntax before submit, so
+        // an invalidProperties error naming `email` is the duplicate
+        // case — surface a localized message (re #21).
+        if (
+          err.type === 'invalidProperties' &&
+          err.properties.includes('email')
+        ) {
+          createError = t('settings.identityWizard.emailExists');
+        } else if (
+          dom &&
+          (err.type === 'forbiddenFrom' || /domain|forbidden/i.test(err.message))
+        ) {
+          createError = t('settings.identityWizard.domainBlocked', { domain: dom });
+        } else {
+          // Unrecognized setError: generic fallback.
+          createError = t('settings.identityWizard.createFailed');
+        }
       } else {
-        createError = msg;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (dom && /domain|forbidden/i.test(msg)) {
+          createError = t('settings.identityWizard.domainBlocked', { domain: dom });
+        } else {
+          createError = t('settings.identityWizard.createFailed');
+        }
       }
     } finally {
       creating = false;
     }
   }
 
-  function onCodeInput(value: string): void {
-    const stripped = value.replace(/\D/g, '').slice(0, 6);
-    code = stripped;
-    if (codeError && isValidCode(stripped)) codeError = null;
-  }
+  // Clear the inline code error once the user edits the code away from
+  // the value that produced it (a wrong-but-valid code keeps its error).
+  $effect(() => {
+    if (codeError && code !== codeAtError) codeError = null;
+  });
 
   let verifyDisabled = $derived(verifying || !isValidCode(code));
   let resendDisabled = $derived(resending || cooldown > 0);
@@ -193,6 +215,7 @@
     codeError = null;
     if (!isValidCode(code)) {
       codeError = t('settings.identityWizard.codeInvalid');
+      codeAtError = code;
       return;
     }
     verifying = true;
@@ -223,6 +246,7 @@
       } else {
         codeError = err instanceof Error ? err.message : String(err);
       }
+      codeAtError = code;
     } finally {
       verifying = false;
     }
@@ -419,19 +443,14 @@
             void onVerify();
           }}
         >
-          <label class="field-label">
+          <div class="field-label">
             <span class="label-text">{t('settings.identityWizard.codeLabel')}</span>
-            <input
-              type="text"
-              inputmode="numeric"
-              autocomplete="one-time-code"
-              maxlength="6"
-              pattern="[0-9]*"
-              value={code}
-              oninput={(e) => onCodeInput((e.target as HTMLInputElement).value)}
+            <CodeInput
+              bind:value={code}
               disabled={verifying}
-              aria-invalid={!!codeError}
-              data-testid="identity-wizard-code"
+              invalid={!!codeError}
+              ariaLabel={t('settings.identityWizard.codeLabel')}
+              testid="identity-wizard-code"
             />
             <span class="helper">{t('settings.identityWizard.codeHelper')}</span>
             {#if codeError}
@@ -439,7 +458,7 @@
                 {codeError}
               </span>
             {/if}
-          </label>
+          </div>
 
           <div class="actions">
             <Button
@@ -744,12 +763,6 @@
     font-size: var(--type-body-01-size);
     line-height: var(--type-body-01-line);
     padding: var(--spacing-03);
-  }
-
-  input[data-testid='identity-wizard-code'] {
-    font-family: var(--font-mono);
-    letter-spacing: 0.2em;
-    text-align: center;
   }
 
   input:focus,

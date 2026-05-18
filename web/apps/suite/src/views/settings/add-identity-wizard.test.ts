@@ -48,24 +48,40 @@ vi.mock('../../lib/identities/identity-submission.svelte', () => {
   };
 });
 
-vi.mock('../../lib/mail/store.svelte', () => ({
-  mail: {
-    identities: new Map<string, Identity>(),
-    loadIdentities: vi.fn(async () => undefined),
-    createIdentity: vi.fn(async (email: string, name: string) => ({
-      id: 'new-identity',
-      name,
-      email,
-      replyTo: null,
-      bcc: null,
-      textSignature: '',
-      htmlSignature: '',
-      mayDelete: true,
-      verifiedAt: null,
-      verificationPendingSince: '2026-05-11T00:00:00Z',
-    } as Identity)),
-  },
-}));
+// Stub the mail store. IdentitySetError is a pure structured-error
+// type the wizard needs for `instanceof` checks; the class is defined
+// inside the factory because vi.mock is hoisted above module scope.
+vi.mock('../../lib/mail/store.svelte', () => {
+  class IdentitySetError extends Error {
+    readonly type: string;
+    readonly properties: string[];
+    constructor(type: string, description?: string, properties: string[] = []) {
+      super(description ?? type);
+      this.name = 'IdentitySetError';
+      this.type = type;
+      this.properties = properties;
+    }
+  }
+  return {
+    IdentitySetError,
+    mail: {
+      identities: new Map<string, Identity>(),
+      loadIdentities: vi.fn(async () => undefined),
+      createIdentity: vi.fn(async (email: string, name: string) => ({
+        id: 'new-identity',
+        name,
+        email,
+        replyTo: null,
+        bcc: null,
+        textSignature: '',
+        htmlSignature: '',
+        mayDelete: true,
+        verifiedAt: null,
+        verificationPendingSince: '2026-05-11T00:00:00Z',
+      } as Identity)),
+    },
+  };
+});
 
 vi.mock('../../lib/toast/toast.svelte', () => ({
   toast: { show: vi.fn(), dismiss: vi.fn(), current: null },
@@ -88,6 +104,10 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
       'settings.identityWizard.displayNameLabel': 'Display name (optional)',
       'settings.identityWizard.displayNameHelper': 'Name helper.',
       'settings.identityWizard.domainBlocked': `Blocked: ${params?.domain ?? ''}`,
+      'settings.identityWizard.emailExists':
+        'An identity with this email address already exists.',
+      'settings.identityWizard.createFailed':
+        'Could not create the identity. Please try again.',
       'settings.identityWizard.step2Title': 'Confirm',
       'settings.identityWizard.step2Intro': `Sent to ${params?.email ?? ''}.`,
       'settings.identityWizard.codeLabel': 'Verification code',
@@ -129,7 +149,7 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
 
 // ── Imports after mocks ───────────────────────────────────────────────────
 
-const { mail } = await import('../../lib/mail/store.svelte');
+const { mail, IdentitySetError } = await import('../../lib/mail/store.svelte');
 const { postVerifyCode, postVerifyResend } = await import(
   '../../lib/api/identity-verify'
 );
@@ -140,6 +160,28 @@ const { toast } = await import('../../lib/toast/toast.svelte');
 import AddIdentityWizard from './AddIdentityWizard.svelte';
 
 const HOSTED = new Set(['example.local']);
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Fill the step-2 six-box CodeInput one digit per box, mirroring how a
+ * user types the verification code.
+ */
+async function typeWizardCode(
+  container: HTMLElement,
+  digits: string,
+): Promise<void> {
+  const boxes = Array.from(
+    container.querySelectorAll<HTMLInputElement>(
+      '[data-testid^="identity-wizard-code-"]',
+    ),
+  );
+  for (let i = 0; i < digits.length && i < boxes.length; i++) {
+    const box = boxes[i]!;
+    box.value = digits[i]!;
+    await fireEvent.input(box);
+  }
+}
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 
@@ -234,6 +276,60 @@ describe('AddIdentityWizard', () => {
     });
   });
 
+  it('maps an invalidProperties/email setError to the localized duplicate message (re #21)', async () => {
+    // The server rejects a create for an already-registered email with
+    // a structured invalidProperties error naming `email`. The wizard
+    // must surface a localized string, not the raw English description.
+    vi.mocked(mail.createIdentity).mockRejectedValueOnce(
+      new IdentitySetError(
+        'invalidProperties',
+        'an identity with this email already exists',
+        ['email'],
+      ),
+    );
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    const emailInput = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(emailInput, { target: { value: 'alice@example.local' } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-next-step1"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      const err = container.querySelector('[data-testid="identity-wizard-create-error"]');
+      expect(err?.textContent).toContain('already exists');
+    });
+    // The raw English server description must not leak through.
+    const err = container.querySelector('[data-testid="identity-wizard-create-error"]');
+    expect(err?.textContent).not.toContain('an identity with this email');
+  });
+
+  it('falls back to a generic message for an unrecognized setError', async () => {
+    vi.mocked(mail.createIdentity).mockRejectedValueOnce(
+      new IdentitySetError('serverFail', 'internal allocator error'),
+    );
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    const emailInput = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(emailInput, { target: { value: 'alice2@example.local' } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-next-step1"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      const err = container.querySelector('[data-testid="identity-wizard-create-error"]');
+      expect(err?.textContent).toContain('Could not create the identity');
+    });
+  });
+
   it('closes immediately on Step 1 cancel (no identity created)', async () => {
     const onclose = vi.fn();
     const { container } = render(AddIdentityWizard, {
@@ -301,10 +397,7 @@ describe('AddIdentityWizard', () => {
         container.querySelector('[data-testid="identity-wizard-step-2"]'),
       ).not.toBeNull();
     });
-    const codeInput = container.querySelector(
-      '[data-testid="identity-wizard-code"]',
-    ) as HTMLInputElement;
-    await fireEvent.input(codeInput, { target: { value: '123456' } });
+    await typeWizardCode(container, '123456');
     await fireEvent.click(
       container.querySelector(
         '[data-testid="identity-wizard-verify"]',
@@ -361,10 +454,7 @@ describe('AddIdentityWizard', () => {
         container.querySelector('[data-testid="identity-wizard-step-2"]'),
       ).not.toBeNull();
     });
-    const codeInput = container.querySelector(
-      '[data-testid="identity-wizard-code"]',
-    ) as HTMLInputElement;
-    await fireEvent.input(codeInput, { target: { value: '654321' } });
+    await typeWizardCode(container, '654321');
     await fireEvent.click(
       container.querySelector(
         '[data-testid="identity-wizard-verify"]',
@@ -419,10 +509,7 @@ describe('AddIdentityWizard', () => {
         container.querySelector('[data-testid="identity-wizard-step-2"]'),
       ).not.toBeNull();
     });
-    const codeInput = container.querySelector(
-      '[data-testid="identity-wizard-code"]',
-    ) as HTMLInputElement;
-    await fireEvent.input(codeInput, { target: { value: '654321' } });
+    await typeWizardCode(container, '654321');
     await fireEvent.click(
       container.querySelector(
         '[data-testid="identity-wizard-verify"]',

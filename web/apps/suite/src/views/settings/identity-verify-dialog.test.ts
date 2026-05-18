@@ -85,6 +85,26 @@ const PENDING: Identity = {
   verificationPendingSince: '2026-05-09T00:00:00Z',
 };
 
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Fill the six-box CodeInput by typing one digit per box. Mirrors how
+ * a user enters the code; auto-advance moves focus between boxes.
+ * Pass fewer than six digits to leave the trailing boxes empty.
+ */
+async function typeCode(container: HTMLElement, digits: string): Promise<void> {
+  const boxes = Array.from(
+    container.querySelectorAll<HTMLInputElement>(
+      '[data-testid^="identity-verify-code-"]',
+    ),
+  );
+  for (let i = 0; i < digits.length && i < boxes.length; i++) {
+    const box = boxes[i]!;
+    box.value = digits[i]!;
+    await fireEvent.input(box);
+  }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe('IdentityVerifyDialog', () => {
@@ -109,26 +129,28 @@ describe('IdentityVerifyDialog', () => {
     ) as HTMLButtonElement;
     expect(verifyBtn.disabled).toBe(true);
 
-    const input = container.querySelector(
-      '[data-testid="identity-verify-code"]',
-    ) as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: '123' } });
+    await typeCode(container, '123');
     expect(verifyBtn.disabled).toBe(true);
 
-    await fireEvent.input(input, { target: { value: '123456' } });
+    await typeCode(container, '123456');
     expect(verifyBtn.disabled).toBe(false);
   });
 
-  it('strips non-digits and caps at 6 characters', async () => {
+  it('fills every box from a pasted six-digit code', async () => {
     const { container } = render(IdentityVerifyDialog, {
       props: { identity: PENDING, onclose: vi.fn() },
     });
-    const input = container.querySelector(
-      '[data-testid="identity-verify-code"]',
-    ) as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: 'ab12c34de5678f' } });
-    // 12345678 → first 6 digits → 123456.
-    expect(input.value).toBe('123456');
+    const boxes = Array.from(
+      container.querySelectorAll<HTMLInputElement>(
+        '[data-testid^="identity-verify-code-"]',
+      ),
+    );
+    expect(boxes).toHaveLength(6);
+    const dt = new DataTransfer();
+    dt.setData('text', 'ab12c34de5678f');
+    await fireEvent.paste(boxes[0]!, { clipboardData: dt });
+    // 12345678 → first 6 digits → one digit per box.
+    expect(boxes.map((b) => b.value).join('')).toBe('123456');
   });
 
   it('calls postVerifyCode + closes + emits toast on success', async () => {
@@ -136,10 +158,7 @@ describe('IdentityVerifyDialog', () => {
     const { container } = render(IdentityVerifyDialog, {
       props: { identity: PENDING, onclose },
     });
-    const input = container.querySelector(
-      '[data-testid="identity-verify-code"]',
-    ) as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: '123456' } });
+    await typeCode(container, '123456');
     const verifyBtn = container.querySelector(
       '[data-testid="identity-verify-submit"]',
     ) as HTMLButtonElement;
@@ -162,10 +181,7 @@ describe('IdentityVerifyDialog', () => {
     const { container } = render(IdentityVerifyDialog, {
       props: { identity: PENDING, onclose },
     });
-    const input = container.querySelector(
-      '[data-testid="identity-verify-code"]',
-    ) as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: '999999' } });
+    await typeCode(container, '999999');
     const verifyBtn = container.querySelector(
       '[data-testid="identity-verify-submit"]',
     ) as HTMLButtonElement;
