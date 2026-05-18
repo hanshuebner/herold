@@ -383,6 +383,12 @@ export const de = {
     'Rohes HTML, das an ausgehende HTML-Nachrichten angehängt wird. Leer lassen, um auf die Klartext-Signatur zurückzugreifen.',
   'settings.identityEdit.invalidEmail':
     'Gültige E-Mail-Adresse eingeben oder leer lassen.',
+  'settings.identityEdit.back': 'Zurück zu den Identitäten',
+  'settings.identityEdit.notFound': 'Diese Identität wurde nicht gefunden.',
+  'settings.identityEdit.saving': 'Wird gespeichert…',
+  'settings.identityEdit.saved': 'Gespeichert',
+  'settings.identityEdit.saveFailed': 'Speichern fehlgeschlagen',
+  'settings.identityEdit.replyToHeading': 'Antwort-an und Bcc',
 
   // Identitäten-Liste (REQ-SET-IDENT-01..08, re #20)
   'settings.identityList.heading': 'Identitäten',
@@ -393,6 +399,10 @@ export const de = {
   'settings.identityList.defaultRadioDisabledTitle':
     'Nur verifizierte Identitäten können Standard sein.',
   'settings.identityList.editRowAria': '{email} bearbeiten',
+  'settings.identityList.editBtn': 'Bearbeiten',
+  'settings.identityList.defaultColumn': 'Standard',
+  'settings.identityList.identityColumn': 'Identität',
+  'settings.identityList.defaultBadge': 'Standard',
   'settings.identityList.chip.verified': 'Verifiziert',
   'settings.identityList.chip.verifying': 'Verifikation ausstehend',
   'settings.identityList.chip.unverified': 'Nicht verifiziert',

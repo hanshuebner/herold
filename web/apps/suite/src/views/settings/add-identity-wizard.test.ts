@@ -135,6 +135,7 @@ const { postVerifyCode, postVerifyResend } = await import(
 );
 const { putSubmission } = await import('../../lib/api/identity-submission');
 const { ApiError } = await import('../../lib/api/client');
+const { toast } = await import('../../lib/toast/toast.svelte');
 
 import AddIdentityWizard from './AddIdentityWizard.svelte';
 
@@ -246,9 +247,10 @@ describe('AddIdentityWizard', () => {
     expect(vi.mocked(mail.createIdentity)).not.toHaveBeenCalled();
   });
 
-  it('shows the cancel-pending notice on first Step 2 cancel click', async () => {
+  it('closes immediately on the first Step 2 cancel click and shows a toast', async () => {
+    const onclose = vi.fn();
     const { container } = render(AddIdentityWizard, {
-      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+      props: { hostedDomains: HOSTED, onclose },
     });
     const emailInput = container.querySelector(
       '[data-testid="identity-wizard-email"]',
@@ -268,10 +270,16 @@ describe('AddIdentityWizard', () => {
       '[data-testid="identity-wizard-cancel-step2"]',
     ) as HTMLButtonElement;
     await fireEvent.click(cancel);
-    const notice = container.querySelector(
-      '[data-testid="identity-wizard-cancel-notice"]',
+    // First click closes — no two-click confirmation.
+    expect(onclose).toHaveBeenCalledOnce();
+    // The "stays pending" message is surfaced as a toast, not inline.
+    expect(vi.mocked(toast.show)).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Closing keeps it pending.' }),
     );
-    expect(notice).not.toBeNull();
+    // The old inline notice element no longer exists.
+    expect(
+      container.querySelector('[data-testid="identity-wizard-cancel-notice"]'),
+    ).toBeNull();
   });
 
   it('closes after verification on a hosted-domain identity', async () => {

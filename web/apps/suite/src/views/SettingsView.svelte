@@ -13,7 +13,7 @@
   import { mail } from '../lib/mail/store.svelte';
   import { router } from '../lib/router/router.svelte';
   import IdentityList from './settings/IdentityList.svelte';
-  import IdentityEditDialog from './settings/IdentityEditDialog.svelte';
+  import IdentityEditPage from './settings/IdentityEditPage.svelte';
   import IdentityVerifyDialog from './settings/IdentityVerifyDialog.svelte';
   import AddIdentityWizard from './settings/AddIdentityWizard.svelte';
   import SecurityForm from './settings/SecurityForm.svelte';
@@ -35,6 +35,7 @@
   import { sounds } from '../lib/notifications/sounds.svelte';
   import { hasExternalSubmission } from '../lib/auth/capabilities';
   import { submissionStore } from '../lib/identities/identity-submission.svelte';
+  import Button from '@herold/design-system/Button.svelte';
   import {
     postVerifyResend,
     retryAfterOf,
@@ -108,28 +109,42 @@
     if (mail.identities.size === 0) void mail.loadIdentities();
   });
 
-  // ── Identity edit dialog (external submission) ──────────────────────────
+  // ── Identity editor sub-page (REQ-SET-IDENT-10) ─────────────────────────
+  //
+  // The editor is a dedicated sub-page at /#/settings/identities/:id, not
+  // a modal. Navigation drives it; there is no local "open dialog" state.
 
   let showExtSub = $derived(hasExternalSubmission());
 
-  /** The identity currently open in the edit dialog, or null when closed. */
-  let editDialogIdentity = $state<Identity | null>(null);
-  /** Whether the edit dialog should scroll to the submission section on open. */
-  let editDialogScrollToSubmission = $state(false);
+  /** Whether the editor sub-page should scroll to the submission section. */
+  let editScrollToSubmission = $state(false);
 
-  function openEditDialog(identity: Identity, scrollToSubmission = false): void {
-    editDialogIdentity = identity;
-    editDialogScrollToSubmission = scrollToSubmission;
-    // Pre-load the submission status for this identity.
-    if (showExtSub) {
-      void submissionStore.forIdentity(identity.id).load();
+  /** The identity id taken from the /settings/identities/:id route, if any. */
+  let editIdentityId = $derived(
+    router.parts[1] === 'identities' ? (router.parts[2] ?? null) : null,
+  );
+
+  /** The Identity object the editor sub-page renders, or null. */
+  let editIdentity = $derived<Identity | null>(
+    editIdentityId ? (mail.identities.get(editIdentityId) ?? null) : null,
+  );
+
+  function navigateToEditor(identity: Identity): void {
+    router.navigate(`/settings/identities/${identity.id}`);
+  }
+
+  function closeEditor(): void {
+    editScrollToSubmission = false;
+    router.navigate('/settings/account');
+  }
+
+  // Pre-load the submission status when the editor route opens, so the
+  // external-submission section renders without a per-section lazy load.
+  $effect(() => {
+    if (editIdentityId && showExtSub) {
+      void submissionStore.forIdentity(editIdentityId).load();
     }
-  }
-
-  function closeEditDialog(): void {
-    editDialogIdentity = null;
-    editDialogScrollToSubmission = false;
-  }
+  });
 
   // ── Add-identity wizard (REQ-SET-IDENT-30) ───────────────────────────────
 
@@ -216,7 +231,9 @@
   }
 
   // Handle the ?identity=<id>&action=reauth route param set by the
-  // compose failure toast's "Re-authenticate" button.
+  // compose failure toast's "Re-authenticate" button. The deep link now
+  // navigates to the identity editor sub-page (REQ-MAIL-SUBMIT-04) and
+  // requests a scroll to the submission section.
   $effect(() => {
     const identityParam = router.getParam('identity');
     const actionParam = router.getParam('action');
@@ -224,15 +241,16 @@
       identityParam &&
       actionParam === 'reauth' &&
       activeSection === 'account' &&
-      showExtSub
+      showExtSub &&
+      editIdentityId !== identityParam
     ) {
       const identity = mail.identities.get(identityParam);
-      if (identity && editDialogIdentity?.id !== identityParam) {
-        openEditDialog(identity, true);
-        // Clear the params from the URL so a back-navigation does not
-        // re-open the dialog.
+      if (identity) {
+        // Clear the params first so a back-navigation does not re-trigger.
         router.setParam('identity', null);
         router.setParam('action', null);
+        editScrollToSubmission = true;
+        router.navigate(`/settings/identities/${identityParam}`);
       }
     }
   });
@@ -293,29 +311,48 @@
   </nav>
 
   <section class="content" aria-label={SECTIONS.find((s) => s.id === activeSection)?.label}>
-    {#if activeSection === 'account'}
+    {#if activeSection === 'account' && editIdentityId}
+      <!-- REQ-SET-IDENT-10: the per-identity editor is a dedicated
+           sub-page at /#/settings/identities/:id, rendered inside the
+           settings content column. -->
+      {#if editIdentity}
+        <IdentityEditPage
+          identity={editIdentity}
+          onback={closeEditor}
+          scrollToSubmission={editScrollToSubmission}
+        />
+      {:else}
+        <header class="editor-missing-header">
+          <Button variant="ghost" compact onclick={closeEditor}>
+            {t('settings.identityEdit.back')}
+          </Button>
+        </header>
+        <p class="muted">{t('settings.identityEdit.notFound')}</p>
+      {/if}
+
+    {:else if activeSection === 'account'}
       <h2>{t('settings.account')}</h2>
 
       <div class="row">
         <span class="label">{t('settings.account.signedInAs')}</span>
         <span class="value">{auth.session?.username ?? '—'}</span>
-        <button
-          type="button"
-          class="signout-btn"
+        <Button
+          variant="danger"
+          compact
           onclick={() => void auth.logout()}
         >
           {t('settings.account.signOut')}
-        </button>
+        </Button>
       </div>
 
-      <!-- REQ-SET-IDENT-01..08: identity list with three-state chips,
-           default radio, and click-to-edit. Per-identity forms (avatar,
-           display name, signature, submission) live inside the edit
-           dialog (REQ-SET-IDENT-10). The add wizard / verify dialog
-           are mounted below by this view; the list forwards user
-           intent via the onadd / onverify / onresend callbacks. -->
+      <!-- REQ-SET-IDENT-01..08: identity list with verification status
+           labels, a default radio, and an explicit per-row edit button.
+           The editor opens as a dedicated sub-page (REQ-SET-IDENT-10).
+           The add wizard / verify dialog are mounted below by this
+           view; the list forwards user intent via the onadd / onverify
+           / onresend callbacks. -->
       <IdentityList
-        onedit={(id) => openEditDialog(id, false)}
+        onedit={navigateToEditor}
         onadd={openAddWizard}
         onverify={openVerifyDialog}
         onresend={resendVerificationFromList}
@@ -328,14 +365,6 @@
             docPath: '<code>docs/manual/admin/external-smtp-submission.mdoc</code>',
           })}
         </p>
-      {/if}
-
-      {#if editDialogIdentity}
-        <IdentityEditDialog
-          identity={editDialogIdentity}
-          onclose={closeEditDialog}
-          scrollToSubmission={editDialogScrollToSubmission}
-        />
       {/if}
 
       {#if showAddWizard}
@@ -811,6 +840,11 @@
     margin-top: var(--spacing-04);
   }
 
+  .editor-missing-header {
+    display: flex;
+    margin-bottom: var(--spacing-04);
+  }
+
   .segmented {
     display: inline-flex;
     border: 1px solid var(--border-subtle-01);
@@ -997,21 +1031,6 @@
 
   /* Identity-row external-submission badges moved to IdentityList.svelte
      (REQ-SET-IDENT-01..08); the per-row markup that owned these classes
-     no longer lives in SettingsView. */
-
-  .signout-btn {
-    padding: var(--spacing-02) var(--spacing-04);
-    background: var(--layer-02);
-    color: var(--text-primary);
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-md);
-    min-height: var(--touch-min);
-    font-size: var(--type-body-compact-01-size);
-    flex-shrink: 0;
-  }
-  .signout-btn:hover {
-    background: var(--support-error);
-    color: var(--text-on-color);
-    border-color: var(--support-error);
-  }
+     no longer lives in SettingsView. The sign-out button now uses the
+     shared design-system Button (danger variant). */
 </style>

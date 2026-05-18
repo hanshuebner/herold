@@ -380,6 +380,12 @@ export const en = {
   'settings.identityEdit.signatureHtmlHelper':
     'Raw HTML appended to outbound HTML messages. Leave blank to fall back to the plain-text signature.',
   'settings.identityEdit.invalidEmail': 'Enter a valid email address or leave blank.',
+  'settings.identityEdit.back': 'Back to identities',
+  'settings.identityEdit.notFound': 'That identity could not be found.',
+  'settings.identityEdit.saving': 'Saving…',
+  'settings.identityEdit.saved': 'Saved',
+  'settings.identityEdit.saveFailed': 'Could not save',
+  'settings.identityEdit.replyToHeading': 'Reply-To and Bcc',
 
   // Identity list (REQ-SET-IDENT-01..08, re #20)
   'settings.identityList.heading': 'Identities',
@@ -389,6 +395,10 @@ export const en = {
   'settings.identityList.defaultRadioDisabledTitle':
     'Only verified identities can be the default.',
   'settings.identityList.editRowAria': 'Edit {email}',
+  'settings.identityList.editBtn': 'Edit',
+  'settings.identityList.defaultColumn': 'Default',
+  'settings.identityList.identityColumn': 'Identity',
+  'settings.identityList.defaultBadge': 'Default',
   'settings.identityList.chip.verified': 'Verified',
   'settings.identityList.chip.verifying': 'Verification pending',
   'settings.identityList.chip.unverified': 'Unverified',

@@ -27,6 +27,8 @@
   import { identityAvatarUrl } from '../../lib/mail/identity-avatar';
   import type { Identity } from '../../lib/mail/types';
   import AvatarCaptureDialog from './AvatarCaptureDialog.svelte';
+  import Button from '@herold/design-system/Button.svelte';
+  import type { AutosaveController } from './autosave.svelte';
   import {
     AVATAR_MAX_BYTES,
     uploadAndApplyAvatar,
@@ -35,8 +37,10 @@
 
   interface Props {
     identity: Identity;
+    /** Shared autosave indicator controller owned by the editor page. */
+    autosave: AutosaveController;
   }
-  let { identity }: Props = $props();
+  let { identity, autosave }: Props = $props();
 
   // ── State ──────────────────────────────────────────────────────────────
 
@@ -85,17 +89,7 @@
 
   async function pickExisting(blobId: string): Promise<void> {
     pickerOpen = false;
-    try {
-      await mail.updateIdentityAvatar(identity.id, blobId);
-    } catch (err) {
-      toast.show({
-        message: t('settings.avatar.upload.failed', {
-          reason: err instanceof Error ? err.message : String(err),
-        }),
-        kind: 'error',
-        timeoutMs: 6000,
-      });
-    }
+    await autosave.run(() => mail.updateIdentityAvatar(identity.id, blobId));
   }
 
   async function handleCaptureConfirm(blob: Blob): Promise<void> {
@@ -133,17 +127,7 @@
   }
 
   async function removeAvatar(): Promise<void> {
-    try {
-      await mail.updateIdentityAvatar(identity.id, null);
-    } catch (err) {
-      toast.show({
-        message: t('settings.avatar.upload.failed', {
-          reason: err instanceof Error ? err.message : String(err),
-        }),
-        kind: 'error',
-        timeoutMs: 6000,
-      });
-    }
+    await autosave.run(() => mail.updateIdentityAvatar(identity.id, null));
   }
 
 </script>
@@ -173,16 +157,16 @@
     <span class="control-title">{t('settings.avatar.title')}</span>
     <div class="buttons">
       <div class="picker-wrap">
-        <button
-          type="button"
-          class="ghost"
-          onclick={() => { pickerOpen = !pickerOpen; }}
+        <Button
+          variant="ghost"
+          compact
           disabled={uploading}
-          aria-expanded={pickerOpen}
-          aria-haspopup="true"
+          ariaExpanded={pickerOpen}
+          ariaHaspopup={true}
+          onclick={() => { pickerOpen = !pickerOpen; }}
         >
           {t('settings.avatar.change')}
-        </button>
+        </Button>
 
         {#if pickerOpen}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -245,14 +229,14 @@
       </div>
 
       {#if identity.avatarBlobId}
-        <button
-          type="button"
-          class="ghost danger"
-          onclick={() => void removeAvatar()}
+        <Button
+          variant="danger"
+          compact
           disabled={uploading}
+          onclick={() => void removeAvatar()}
         >
           {t('settings.avatar.remove')}
-        </button>
+        </Button>
       {/if}
     </div>
   </div>
@@ -355,30 +339,6 @@
     align-items: center;
     gap: var(--spacing-03);
     flex-wrap: wrap;
-  }
-
-  .ghost {
-    padding: var(--spacing-02) var(--spacing-04);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    min-height: var(--touch-min);
-    color: var(--text-secondary);
-    font-size: var(--type-body-compact-01-size);
-  }
-
-  .ghost:hover:not(:disabled) {
-    background: var(--layer-02);
-    color: var(--text-primary);
-  }
-
-  .ghost:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .ghost.danger:hover:not(:disabled) {
-    background: rgba(250, 77, 86, 0.12);
-    color: var(--support-error);
   }
 
   /* ── Picker popover ── */

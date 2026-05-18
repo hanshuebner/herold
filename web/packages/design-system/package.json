@@ -3,8 +3,14 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Herold web design tokens (colour / typography / spacing / motion) and base styles, shared by the suite and admin SPAs.",
+  "description": "Herold web design tokens (colour / typography / spacing / motion), base styles, and shared components, shared by the suite and admin SPAs.",
+  "svelte": "./src/index.ts",
   "exports": {
+    ".": {
+      "svelte": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./Button.svelte": "./src/Button.svelte",
     "./index.css": "./src/index.css",
     "./tokens.css": "./src/tokens/tokens.css",
     "./reset.css": "./src/reset.css",
@@ -13,5 +19,11 @@
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.0.0",
     "@fontsource/ibm-plex-sans": "^5.0.0"
+  },
+  "peerDependencies": {
+    "svelte": "^5.0.0"
+  },
+  "devDependencies": {
+    "svelte": "^5.0.0"
   }
 }

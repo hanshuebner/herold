@@ -3,15 +3,21 @@
    * Identity list in the Account section of Settings.
    *
    * REQ-SET-IDENT-01..08: one row per Identity, with a default-selector
-   * radio at the leading edge, the avatar thumbnail, the display name /
-   * email, the three-state verification chip, and an external-submission
-   * disabled treatment for unverified / mis-configured external rows.
+   * radio at the leading edge under a "Standard" column header, the
+   * avatar thumbnail, the display name / email, the verification status
+   * label, and an external-submission disabled treatment for unverified
+   * / mis-configured external rows.
    *
-   * Clicking anywhere on the row (except the radio) opens the per-identity
-   * edit dialog (REQ-SET-IDENT-10) via the `onedit` callback. The radio
-   * promotes the row to default via `mail.setDefaultIdentity` (REQ-SET-
-   * IDENT-04). An "Add identity" button sits above the list; for v1 it
-   * is rendered as a disabled stub — the wizard ships in task #21.
+   * The row itself is a plain presentational container: it is NOT
+   * click-to-edit. Editing is an explicit per-row pencil button at the
+   * trailing edge that fires `onedit`. The radio promotes the row to
+   * default via `mail.setDefaultIdentity` (REQ-SET-IDENT-04); the
+   * default row also carries a static "Standard" badge.
+   *
+   * Verification state ("nicht verifiziert" / "Verifikation ausstehend")
+   * renders as a flat, non-interactive status label — never a button.
+   * Only the verify / resend affordances are buttons (shared
+   * design-system Button).
    *
    * For external-submission state we read the per-identity store; if the
    * external-submission capability is absent (`hasExternalSubmission()`
@@ -36,9 +42,11 @@
     type SubmissionSummary,
   } from '../../lib/identities/identity-status';
   import { identityAvatarUrl } from '../../lib/mail/identity-avatar';
+  import Button from '@herold/design-system/Button.svelte';
+  import EditIcon from '../../lib/icons/EditIcon.svelte';
 
   interface Props {
-    /** Callback fired when the user clicks a row (anywhere except the radio). */
+    /** Callback fired when the user clicks a row's edit button. */
     onedit: (identity: Identity) => void;
     /** Optional: open the add-identity wizard (REQ-SET-IDENT-30). */
     onadd?: () => void;
@@ -88,21 +96,6 @@
     }
   }
 
-  function onRowClick(identity: Identity, event: MouseEvent | KeyboardEvent): void {
-    // Don't propagate clicks on interactive child elements (radio, buttons).
-    const target = event.target as HTMLElement | null;
-    if (target?.closest('input,button,a')) return;
-    onedit(identity);
-  }
-
-  function onRowKey(identity: Identity, event: KeyboardEvent): void {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    const target = event.target as HTMLElement | null;
-    if (target?.closest('input,button,a')) return;
-    event.preventDefault();
-    onedit(identity);
-  }
-
   // REQ-SET-IDENT-05: open the Add-identity wizard. The wizard mount is
   // owned by SettingsView so the dialog state survives across re-renders
   // of the list; if the parent did not wire `onadd` the button is
@@ -128,21 +121,26 @@
   <header class="list-header">
     <h3>{t('settings.identityList.heading')}</h3>
     {#if showAddBtn}
-      <button
-        type="button"
-        class="add-btn"
-        onclick={onAddIdentity}
+      <Button
+        variant="primary"
+        compact
         title={t('settings.identityList.addTooltip')}
-        data-testid="identity-add-btn"
+        testid="identity-add-btn"
+        onclick={onAddIdentity}
       >
         + {t('settings.identityList.addBtn')}
-      </button>
+      </Button>
     {/if}
   </header>
 
   {#if sorted.length === 0}
     <p class="muted">{t('settings.account.noIdentities')}</p>
   {:else}
+    <div class="rows-header" aria-hidden="true">
+      <span class="col-default">{t('settings.identityList.defaultColumn')}</span>
+      <span class="col-spacer"></span>
+      <span class="col-identity">{t('settings.identityList.identityColumn')}</span>
+    </div>
     <ul class="rows" role="list">
       {#each sorted as identity (identity.id)}
         {@const status = identityStatus(identity)}
@@ -150,7 +148,6 @@
         {@const disabled = isExternalWithoutSubmission(identity, sub)}
         {@const isDefault = defaultId?.id === identity.id}
         {@const avatarUrl = identityAvatarUrl(identity)}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
         <li
           class="row"
           class:disabled
@@ -159,17 +156,7 @@
           data-identity-id={identity.id}
           data-identity-status={status}
         >
-          <!-- Whole-row clickable wrapper. The radio and action buttons
-               stop their own clicks from bubbling so they don't open
-               the edit dialog. -->
-          <div
-            class="row-body"
-            role="button"
-            tabindex="0"
-            aria-label={t('settings.identityList.editRowAria', { email: identity.email })}
-            onclick={(e) => onRowClick(identity, e)}
-            onkeydown={(e) => onRowKey(identity, e)}
-          >
+          <div class="row-body">
             <label class="radio-wrap" title={canBeDefault(identity)
               ? ''
               : t('settings.identityList.defaultRadioDisabledTitle')}>
@@ -183,7 +170,6 @@
                   email: identity.email,
                 })}
                 onchange={() => void onRadioChange(identity)}
-                onclick={(e) => e.stopPropagation()}
                 data-testid="identity-default-radio"
               />
             </label>
@@ -197,7 +183,14 @@
             </div>
 
             <div class="meta">
-              <span class="name">{identity.name || identity.email}</span>
+              <span class="name-row">
+                <span class="name">{identity.name || identity.email}</span>
+                {#if isDefault}
+                  <span class="default-badge" data-testid="identity-default-badge">
+                    {t('settings.identityList.defaultBadge')}
+                  </span>
+                {/if}
+              </span>
               {#if identity.name}
                 <span class="email mono">{identity.email}</span>
               {/if}
@@ -205,43 +198,51 @@
 
             <div class="status">
               {#if status === 'verifying'}
-                <span class="chip chip-verifying" data-testid="identity-chip">
+                <span class="status-label status-verifying" data-testid="identity-chip">
+                  <span class="status-dot" aria-hidden="true"></span>
                   {t('settings.identityList.chip.verifying')}
                 </span>
-                <button
-                  type="button"
-                  class="action ghost"
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    onResend(identity);
-                  }}
+                <Button
+                  variant="secondary"
+                  compact
                   title={t('settings.identityList.resendTooltip')}
-                  data-testid="identity-resend-btn"
+                  testid="identity-resend-btn"
+                  onclick={() => onResend(identity)}
                 >
                   {t('settings.identityList.resendBtn')}
-                </button>
+                </Button>
               {:else if status === 'unverified'}
-                <span class="chip chip-unverified" data-testid="identity-chip">
+                <span class="status-label status-unverified" data-testid="identity-chip">
+                  <span class="status-dot" aria-hidden="true"></span>
                   {t('settings.identityList.chip.unverified')}
                 </span>
-                <button
-                  type="button"
-                  class="action primary"
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    onVerify(identity);
-                  }}
+                <Button
+                  variant="primary"
+                  compact
                   title={t('settings.identityList.verifyTooltip')}
-                  data-testid="identity-verify-btn"
+                  testid="identity-verify-btn"
+                  onclick={() => onVerify(identity)}
                 >
                   {t('settings.identityList.verifyBtn')}
-                </button>
+                </Button>
               {:else}
-                <!-- REQ-SET-IDENT-02: verified rows have no chip
+                <!-- REQ-SET-IDENT-02: verified rows have no status label
                      (silent normal) — render an empty status cell so
                      the layout grid still aligns. -->
                 <span class="chip-spacer" aria-hidden="true"></span>
               {/if}
+
+              <Button
+                variant="ghost"
+                compact
+                ariaLabel={t('settings.identityList.editRowAria', { email: identity.email })}
+                title={t('settings.identityList.editBtn')}
+                testid="identity-edit-btn"
+                onclick={() => onedit(identity)}
+              >
+                {#snippet icon()}<EditIcon size={16} />{/snippet}
+                {t('settings.identityList.editBtn')}
+              </Button>
             </div>
           </div>
         </li>
@@ -272,18 +273,24 @@
     color: var(--text-secondary);
   }
 
-  .add-btn {
-    padding: var(--spacing-02) var(--spacing-04);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    min-height: var(--touch-min);
-    font-size: var(--type-body-compact-01-size);
+  /* Column headers align with the row-body grid: radio | avatar | meta. */
+  .rows-header {
+    display: grid;
+    grid-template-columns: 24px 40px 1fr;
+    gap: var(--spacing-04);
+    padding: 0 var(--spacing-04);
   }
 
-  .add-btn:hover {
-    filter: brightness(1.1);
+  .rows-header span {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-helper);
+  }
+
+  .col-default {
+    text-align: center;
   }
 
   .rows {
@@ -299,11 +306,6 @@
     background: var(--layer-01);
     border: 1px solid var(--border-subtle-01);
     border-radius: var(--radius-md);
-    transition: border-color var(--duration-fast-02) var(--easing-productive-enter);
-  }
-
-  .row:hover:not(.disabled) {
-    border-color: var(--interactive);
   }
 
   .row.default {
@@ -317,26 +319,12 @@
 
   .row-body {
     display: grid;
-    grid-template-columns: auto auto 1fr auto;
+    grid-template-columns: 24px auto 1fr auto;
     align-items: center;
     gap: var(--spacing-04);
     padding: var(--spacing-03) var(--spacing-04);
     width: 100%;
     text-align: left;
-    background: transparent;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-    border-radius: var(--radius-md);
-  }
-
-  .row.disabled .row-body {
-    cursor: default;
-  }
-
-  .row-body:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: -2px;
   }
 
   .radio-wrap {
@@ -345,6 +333,17 @@
     justify-content: center;
     width: 24px;
     height: 24px;
+  }
+
+  .radio-wrap input[type='radio'] {
+    accent-color: var(--interactive);
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+  }
+
+  .radio-wrap input[type='radio']:disabled {
+    cursor: not-allowed;
   }
 
   .avatar-wrap {
@@ -379,11 +378,33 @@
     min-width: 0;
   }
 
+  .name-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+    min-width: 0;
+  }
+
   .name {
     color: var(--text-primary);
     font-weight: 600;
     font-size: var(--type-body-01-size);
     word-break: break-word;
+  }
+
+  /* Static, non-interactive "default" badge on the current default row. */
+  .default-badge {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 1px var(--spacing-02);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--interactive) 18%, transparent);
+    color: var(--interactive);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
   }
 
   .email {
@@ -403,60 +424,40 @@
     flex-shrink: 0;
   }
 
-  .chip {
+  /* Verification state is a flat, non-interactive label — never a
+     button. Muted text + a small status dot, no border, no fill. */
+  .status-label {
     display: inline-flex;
     align-items: center;
-    padding: 2px var(--spacing-02);
-    border-radius: var(--radius-pill);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    gap: var(--spacing-02);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
     white-space: nowrap;
+    color: var(--text-helper);
   }
 
-  .chip-verifying {
-    background: color-mix(in srgb, var(--support-warning) 15%, transparent);
-    color: color-mix(in srgb, var(--support-warning) 90%, var(--text-primary));
-    border: 1px solid color-mix(in srgb, var(--support-warning) 50%, transparent);
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
   }
 
-  .chip-unverified {
-    background: color-mix(in srgb, var(--support-error) 15%, transparent);
+  .status-verifying .status-dot {
+    background: var(--support-warning);
+  }
+
+  .status-unverified {
     color: var(--support-error);
-    border: 1px solid color-mix(in srgb, var(--support-error) 50%, transparent);
+  }
+
+  .status-unverified .status-dot {
+    background: var(--support-error);
   }
 
   .chip-spacer {
     display: inline-block;
     min-width: 1px;
-  }
-
-  .action {
-    padding: var(--spacing-01) var(--spacing-03);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    font-size: var(--type-body-compact-01-size);
-    min-height: 28px;
-  }
-
-  .action.primary {
-    background: var(--interactive);
-    color: var(--text-on-color);
-  }
-
-  .action.primary:hover {
-    filter: brightness(1.1);
-  }
-
-  .action.ghost {
-    color: var(--text-secondary);
-    background: transparent;
-    border: 1px solid var(--border-subtle-01);
-  }
-
-  .action.ghost:hover {
-    background: var(--layer-02);
-    color: var(--text-primary);
   }
 
   .muted {
@@ -466,7 +467,7 @@
 
   @media (max-width: 640px) {
     .row-body {
-      grid-template-columns: auto auto 1fr;
+      grid-template-columns: 24px auto 1fr;
       grid-template-rows: auto auto;
     }
     .status {

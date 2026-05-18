@@ -14,13 +14,14 @@
    * Cancel semantics (REQ-SET-IDENT-33):
    *   - Cancelling Step 1 closes the wizard cleanly (no `Identity/set
    *     { create }` was issued yet).
-   *   - Cancelling Step 2 (after create has committed) leaves the
-   *     unverified row in the list. The cancel button surfaces an
-   *     explanatory notice "Closing will keep this identity in
-   *     'Verification pending' state".
+   *   - Cancelling Step 2 (after create has committed) closes the
+   *     wizard immediately on the first click and surfaces an
+   *     explanatory toast: the unverified row stays in the
+   *     "Verification pending" list and verification can be finished
+   *     later from Settings.
    *   - Cancelling Step 3 closes the wizard; the identity is verified
    *     but no external SMTP is configured (the user can finish later
-   *     from the identity edit dialog).
+   *     from the identity editor).
    */
 
   import { mail } from '../../lib/mail/store.svelte';
@@ -42,6 +43,7 @@
     isHostedDomain,
   } from '../../lib/identities/wizard-validators';
   import { t } from '../../lib/i18n/i18n.svelte';
+  import Button from '@herold/design-system/Button.svelte';
   import type { Identity } from '../../lib/mail/types';
   import type {
     SubmitSecurity,
@@ -87,7 +89,6 @@
   let smtpSaving = $state(false);
 
   let closing = $state(false);
-  let showCancelNotice = $state(false);
 
   // Tick down the resend cooldown once per second.
   $effect(() => {
@@ -126,15 +127,18 @@
   }
 
   /**
-   * Cancel button handler. On Step 2 (after create committed), the
-   * first click surfaces an inline notice; the second click closes.
-   * REQ-SET-IDENT-33: the row stays in the list in verification-
-   * pending state.
+   * Cancel button handler. Closes the wizard immediately on the first
+   * click (Item 9 — no two-click confirmation). When cancelling Step 2
+   * after the identity row was created, a toast explains that the row
+   * stays in the "Verification pending" list and verification can be
+   * finished later from Settings (REQ-SET-IDENT-33).
    */
   function requestCancel(): void {
-    if (step === 2 && createdIdentity && !showCancelNotice) {
-      showCancelNotice = true;
-      return;
+    if (step === 2 && createdIdentity) {
+      toast.show({
+        message: t('settings.identityWizard.cancelPendingNotice'),
+        timeoutMs: 7000,
+      });
     }
     close();
   }
@@ -380,25 +384,24 @@
           {/if}
 
           <div class="actions">
-            <button
-              type="button"
-              class="ghost"
-              onclick={close}
+            <Button
+              variant="ghost"
               disabled={creating}
-              data-testid="identity-wizard-cancel-step1"
+              testid="identity-wizard-cancel-step1"
+              onclick={close}
             >
               {t('settings.identityWizard.cancel')}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="primary"
               type="submit"
-              class="primary"
               disabled={!canCreate}
-              data-testid="identity-wizard-next-step1"
+              testid="identity-wizard-next-step1"
             >
               {creating
                 ? t('settings.identityWizard.creating')
                 : t('settings.identityWizard.create')}
-            </button>
+            </Button>
           </div>
         </form>
       </section>
@@ -439,46 +442,39 @@
           </label>
 
           <div class="actions">
-            <button
-              type="button"
-              class="ghost"
-              onclick={requestCancel}
+            <Button
+              variant="ghost"
               disabled={verifying}
-              data-testid="identity-wizard-cancel-step2"
+              testid="identity-wizard-cancel-step2"
+              onclick={requestCancel}
             >
               {t('settings.identityWizard.cancel')}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="primary"
               type="submit"
-              class="primary"
               disabled={verifyDisabled}
-              data-testid="identity-wizard-verify"
+              testid="identity-wizard-verify"
             >
               {verifying
                 ? t('settings.identityWizard.verifying')
                 : t('settings.identityWizard.verify')}
-            </button>
+            </Button>
           </div>
-
-          {#if showCancelNotice}
-            <p class="notice" role="note" data-testid="identity-wizard-cancel-notice">
-              {t('settings.identityWizard.cancelPendingNotice')}
-            </p>
-          {/if}
         </form>
 
         <div class="resend-row">
-          <button
-            type="button"
-            class="ghost"
-            onclick={() => void onResend()}
+          <Button
+            variant="secondary"
+            compact
             disabled={resendDisabled}
-            data-testid="identity-wizard-resend"
+            testid="identity-wizard-resend"
+            onclick={() => void onResend()}
           >
             {resending
               ? t('settings.identityWizard.resending')
               : t('settings.identityWizard.resend')}
-          </button>
+          </Button>
           {#if cooldown > 0}
             <span class="resend-cooldown" data-testid="identity-wizard-cooldown">
               {t('settings.identityWizard.resendRateLimited', { seconds: cooldown })}
@@ -600,25 +596,24 @@
           {/if}
 
           <div class="actions">
-            <button
-              type="button"
-              class="ghost"
-              onclick={onStep3Skip}
+            <Button
+              variant="ghost"
               disabled={smtpSaving}
-              data-testid="identity-wizard-skip-step3"
+              testid="identity-wizard-skip-step3"
+              onclick={onStep3Skip}
             >
               {t('settings.identityWizard.skip')}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="primary"
               type="submit"
-              class="primary"
               disabled={smtpSaveDisabled}
-              data-testid="identity-wizard-save-step3"
+              testid="identity-wizard-save-step3"
             >
               {smtpSaving
                 ? t('settings.identityWizard.creating')
                 : t('settings.identityWizard.done')}
-            </button>
+            </Button>
           </div>
         </form>
       </section>
@@ -789,38 +784,6 @@
     color: var(--text-helper);
   }
 
-  .primary,
-  .ghost {
-    padding: var(--spacing-02) var(--spacing-04);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    min-height: var(--touch-min);
-  }
-
-  .primary {
-    background: var(--interactive);
-    color: var(--text-on-color);
-  }
-
-  .primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-
-  .primary:disabled,
-  .ghost:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .ghost {
-    color: var(--text-secondary);
-  }
-
-  .ghost:hover:not(:disabled) {
-    background: var(--layer-02);
-    color: var(--text-primary);
-  }
-
   .error {
     color: var(--support-error);
     font-size: var(--type-body-compact-01-size);
@@ -833,15 +796,6 @@
     border-left: 3px solid var(--support-error);
     color: var(--support-error);
     font-size: var(--type-body-compact-01-size);
-  }
-
-  .notice {
-    margin: var(--spacing-02) 0 0;
-    color: var(--text-helper);
-    font-size: var(--type-body-compact-01-size);
-    background: var(--layer-01);
-    border-radius: var(--radius-sm);
-    padding: var(--spacing-02) var(--spacing-03);
   }
 
   @keyframes fade-in {

@@ -76,6 +76,10 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
         'Only verified identities can be the default.',
       'settings.identityList.defaultRadioAria': `Set ${params?.email ?? ''} as default`,
       'settings.identityList.editRowAria': `Edit ${params?.email ?? ''}`,
+      'settings.identityList.editBtn': 'Edit',
+      'settings.identityList.defaultColumn': 'Default',
+      'settings.identityList.identityColumn': 'Identity',
+      'settings.identityList.defaultBadge': 'Default',
       'settings.identityList.defaultChanged': 'Default identity updated',
       'settings.identityList.defaultChangeFailed':
         'Could not change default identity',
@@ -313,19 +317,39 @@ describe('IdentityList', () => {
     });
   });
 
-  it('opens the edit dialog when the row body is clicked', async () => {
+  it('opens the editor when the per-row edit button is clicked', async () => {
     seedIdentities(VERIFIED_DEFAULT);
     const onedit = vi.fn();
     const { container } = render(IdentityList, { props: { onedit } });
+    const editBtn = container.querySelector(
+      '[data-identity-id="1"] [data-testid="identity-edit-btn"]',
+    ) as HTMLButtonElement;
+    expect(editBtn).not.toBeNull();
+    await fireEvent.click(editBtn);
+    expect(onedit).toHaveBeenCalledWith(VERIFIED_DEFAULT);
+  });
+
+  it('renders an explicit edit button on every row', () => {
+    seedIdentities(VERIFIED_DEFAULT, UNVERIFIED);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const editBtns = container.querySelectorAll(
+      '[data-testid="identity-edit-btn"]',
+    );
+    expect(editBtns.length).toBe(2);
+  });
+
+  it('the row body is not a click target (no role=button, no onclick)', () => {
+    seedIdentities(VERIFIED_DEFAULT);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
     const rowBody = container.querySelector(
       '[data-identity-id="1"] .row-body',
     ) as HTMLElement;
     expect(rowBody).not.toBeNull();
-    await fireEvent.click(rowBody);
-    expect(onedit).toHaveBeenCalledWith(VERIFIED_DEFAULT);
+    expect(rowBody.getAttribute('role')).toBeNull();
+    expect(rowBody.getAttribute('tabindex')).toBeNull();
   });
 
-  it('does not open the edit dialog when the radio is clicked', async () => {
+  it('does not open the editor when the radio is clicked', async () => {
     seedIdentities(VERIFIED_DEFAULT, VERIFIED_SECOND);
     const onedit = vi.fn();
     const { container } = render(IdentityList, { props: { onedit } });
@@ -336,7 +360,7 @@ describe('IdentityList', () => {
     expect(onedit).not.toHaveBeenCalled();
   });
 
-  it('does not open the edit dialog when the Verify button is clicked', async () => {
+  it('does not open the editor when the Verify button is clicked', async () => {
     seedIdentities(UNVERIFIED);
     const onedit = vi.fn();
     const { container } = render(IdentityList, { props: { onedit } });
@@ -346,6 +370,35 @@ describe('IdentityList', () => {
     expect(verifyBtn).not.toBeNull();
     await fireEvent.click(verifyBtn);
     expect(onedit).not.toHaveBeenCalled();
+  });
+
+  it('renders a static Standard badge on the default row only', () => {
+    seedIdentities(VERIFIED_DEFAULT, VERIFIED_SECOND);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const defaultBadge = container.querySelector(
+      '[data-identity-id="1"] [data-testid="identity-default-badge"]',
+    );
+    const nonDefaultBadge = container.querySelector(
+      '[data-identity-id="2"] [data-testid="identity-default-badge"]',
+    );
+    expect(defaultBadge).not.toBeNull();
+    expect(nonDefaultBadge).toBeNull();
+  });
+
+  it('renders the Default column header above the radio column', () => {
+    seedIdentities(VERIFIED_DEFAULT);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const header = container.querySelector('.rows-header .col-default');
+    expect(header?.textContent?.trim()).toBe('Default');
+  });
+
+  it('verification status renders as a non-interactive label, not a button', () => {
+    seedIdentities(UNVERIFIED);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const chip = container.querySelector('[data-testid="identity-chip"]');
+    expect(chip).not.toBeNull();
+    // The status label is a <span>, never a <button>.
+    expect(chip?.tagName).toBe('SPAN');
   });
 
   it('shows the Resend button on a verifying row', () => {

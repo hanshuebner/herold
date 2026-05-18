@@ -9,6 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
+import { AutosaveController } from './autosave.svelte';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -114,7 +115,7 @@ describe('IdentityAvatarForm: picker tile behaviour', () => {
   it('clicking an existing tile calls updateIdentityAvatar with that blobId without uploading', async () => {
     resetIdentities('blob-alice', null);
     const identity = makeIdentity({ avatarBlobId: 'blob-alice' });
-    render(IdentityAvatarForm, { props: { identity } });
+    render(IdentityAvatarForm, { props: { identity, autosave: new AutosaveController() } });
 
     const changeBtn = screen.getByRole('button', { name: 'settings.avatar.change' });
     await fireEvent.click(changeBtn);
@@ -137,7 +138,7 @@ describe('IdentityAvatarForm: picker tile behaviour', () => {
   it('deduplicates tiles: two identities with the same blobId render as one tile', async () => {
     resetIdentities('blob-shared', 'blob-shared');
     const identity = makeIdentity({ avatarBlobId: 'blob-shared' });
-    render(IdentityAvatarForm, { props: { identity } });
+    render(IdentityAvatarForm, { props: { identity, autosave: new AutosaveController() } });
 
     const changeBtn = screen.getByRole('button', { name: 'settings.avatar.change' });
     await fireEvent.click(changeBtn);
@@ -150,7 +151,7 @@ describe('IdentityAvatarForm: picker tile behaviour', () => {
   it('shows the "pick new" tile that opens the capture dialog', async () => {
     resetIdentities();
     const identity = makeIdentity();
-    render(IdentityAvatarForm, { props: { identity } });
+    render(IdentityAvatarForm, { props: { identity, autosave: new AutosaveController() } });
 
     const changeBtn = screen.getByRole('button', { name: 'settings.avatar.change' });
     await fireEvent.click(changeBtn);
@@ -168,13 +169,13 @@ describe('IdentityAvatarForm: Remove button', () => {
 
   it('is absent when identity has no avatar', () => {
     const identity = makeIdentity({ avatarBlobId: null });
-    render(IdentityAvatarForm, { props: { identity } });
+    render(IdentityAvatarForm, { props: { identity, autosave: new AutosaveController() } });
     expect(screen.queryByRole('button', { name: 'settings.avatar.remove' })).toBeNull();
   });
 
   it('appears when identity has an avatar and calls updateIdentityAvatar(null)', async () => {
     const identity = makeIdentity({ avatarBlobId: 'blob-abc' });
-    render(IdentityAvatarForm, { props: { identity } });
+    render(IdentityAvatarForm, { props: { identity, autosave: new AutosaveController() } });
 
     const removeBtn = screen.getByRole('button', { name: 'settings.avatar.remove' });
     expect(removeBtn).toBeInTheDocument();
