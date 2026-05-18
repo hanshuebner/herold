@@ -2480,6 +2480,12 @@ func Validate(c *Config) error {
 		if l.TLS == "none" && (l.CertFile != "" || l.KeyFile != "") {
 			return fmt.Errorf("sysconfig: [[listener]] %q: cert_file/key_file set but tls=\"none\"", l.Name)
 		}
+		// proxy_protocol decoding is wired only for HTTP listeners
+		// (issue #106); SMTP/IMAP listeners do not yet honour it, so
+		// reject the flag there rather than silently ignoring it.
+		if l.ProxyProtocol && l.Protocol != "admin" {
+			return fmt.Errorf("sysconfig: [[listener]] %q: proxy_protocol is currently supported only on HTTP listeners (protocol = \"admin\")", l.Name)
+		}
 		// REQ-OPS-ADMIN-LISTENER-01: HTTP listeners (Protocol=="admin")
 		// carry a Kind in {public, admin}. Non-HTTP listeners must
 		// leave Kind empty.

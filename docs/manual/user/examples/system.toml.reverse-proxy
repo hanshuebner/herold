@@ -57,20 +57,28 @@ enabled = true
 
 # --- Web listeners: plaintext, loopback-only. The proxy upstreams
 # --- to these. They are unreachable from outside the host.
+#
+# proxy_protocol = true: herold decodes the PROXY-protocol header the
+# reverse proxy prepends, so logs and rate limiters see the real
+# client IP and the request is treated as HTTPS. Such a listener
+# REJECTS any connection without a PROXY header -- the proxy must be
+# configured to send one (see Caddyfile.example).
 
 [[listener]]
-name     = "public"
-address  = "127.0.0.1:8080"
-protocol = "admin"
-kind     = "public"
-tls      = "none"
+name           = "public"
+address        = "127.0.0.1:8080"
+protocol       = "admin"
+kind           = "public"
+tls            = "none"
+proxy_protocol = true
 
 [[listener]]
-name     = "admin"
-address  = "127.0.0.1:9443"
-protocol = "admin"
-kind     = "admin"
-tls      = "none"
+name           = "admin"
+address        = "127.0.0.1:9443"
+protocol       = "admin"
+kind           = "admin"
+tls            = "none"
+proxy_protocol = true
 
 # --- Mail listeners: bound on the public interface, direct (NOT
 # --- proxied). No cert_file / key_file: the certificate is served

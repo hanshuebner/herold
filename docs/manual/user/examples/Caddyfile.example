@@ -4,11 +4,16 @@
 # admin manual chapter "Reverse Proxy and TLS" for the full rationale.
 #
 # Caddy binds :80 and :443, obtains and renews the certificates for
-# the hostnames below (HTTP-01 / TLS-ALPN-01), upstreams plaintext to
-# herold's loopback web listeners, and redirects HTTP to HTTPS
-# automatically. WebSocket upgrades (/chat/ws) and text/event-stream
-# responses (JMAP push) are handled transparently by reverse_proxy -
-# no extra directives are needed.
+# the hostnames below (HTTP-01 / TLS-ALPN-01), upstreams to herold's
+# loopback web listeners, and redirects HTTP to HTTPS automatically.
+# WebSocket upgrades (/chat/ws) and text/event-stream responses (JMAP
+# push) are handled transparently by reverse_proxy.
+#
+# The `proxy_protocol v2` transport option prepends a PROXY-protocol
+# header to each upstream connection so herold sees the real client
+# IP. It must be paired with `proxy_protocol = true` on the matching
+# herold listener (see system.toml.reverse-proxy); each side requires
+# the other.
 #
 # Edit every hostname and the admin-vhost IP allowlist before use.
 
@@ -18,7 +23,11 @@
 # the static SPA files. Upstream is herold's kind = "public" listener.
 webmail.example.com {
 	encode zstd gzip
-	reverse_proxy 127.0.0.1:8080
+	reverse_proxy 127.0.0.1:8080 {
+		transport http {
+			proxy_protocol v2
+		}
+	}
 }
 
 # Admin SPA and admin REST. herold's kind = "admin" listener is
@@ -31,7 +40,11 @@ admin.example.com {
 	@blocked not remote_ip 203.0.113.0/24 198.51.100.7
 	respond @blocked 403
 
-	reverse_proxy 127.0.0.1:9443
+	reverse_proxy 127.0.0.1:9443 {
+		transport http {
+			proxy_protocol v2
+		}
+	}
 }
 
 # MTA-STS policy host. The policy is static text, so Caddy serves it

@@ -36,6 +36,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.100.0
 	github.com/jaytaylor/html2text v0.0.0-20230321000545-74c2419ad056
 	github.com/nats-io/nats.go v1.51.0
+	github.com/pires/go-proxyproto v0.12.0
 	github.com/prometheus/client_model v0.6.2
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.19.0

@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pires/go-proxyproto"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hanshuebner/herold/internal/acme"
@@ -1728,6 +1729,17 @@ func bindOneAddress(
 	case "admin":
 		spec := l
 		handler := pickHTTPHandler(cfg, l, bundle)
+		if l.ProxyProtocol {
+			// The listener is fronted by a TLS-terminating reverse
+			// proxy that prepends a PROXY-protocol header (issue
+			// #106). Decode the header so r.RemoteAddr carries the
+			// real client IP, and mark the request as TLS so the
+			// handlers that derive an external scheme from r.TLS
+			// (the OAuth redirect_uri builder, the clientlog origin)
+			// emit https rather than the plaintext loopback hop.
+			ln = proxyProtocolListener(ln)
+			handler = forwardedHTTPSHandler(handler)
+		}
 		return ln, func(ctx context.Context) error {
 			return serveAdmin(ctx, ln, spec, tlsStore, handler, logger)
 		}, resolvedAddr, nil
@@ -1895,6 +1907,38 @@ func serveAdmin(
 		logger.LogAttrs(ctx, slog.LevelWarn, "admin listener exited", slog.String("err", err.Error()))
 	}
 	return err
+}
+
+// proxyProtocolListener wraps ln so accepted connections are decoded
+// as HAProxy PROXY protocol (v1 and v2) and the decoded client
+// address surfaces via Conn.RemoteAddr -- and therefore as
+// http.Request.RemoteAddr. The REQUIRE policy rejects any connection
+// that does not send a PROXY header: a proxy_protocol listener is
+// loopback-bound and reachable only by the reverse proxy, so a
+// missing header is a misdirected or spoofing client (issue #106).
+func proxyProtocolListener(ln net.Listener) net.Listener {
+	return &proxyproto.Listener{
+		Listener:          ln,
+		ReadHeaderTimeout: 10 * time.Second,
+		ConnPolicy: func(proxyproto.ConnPolicyOptions) (proxyproto.Policy, error) {
+			return proxyproto.REQUIRE, nil
+		},
+	}
+}
+
+// forwardedHTTPSHandler marks every request as having arrived over
+// TLS. A proxy_protocol listener is plaintext on the loopback hop but
+// fronted by a TLS-terminating proxy; setting r.TLS non-nil makes the
+// handlers that derive an external scheme from r.TLS emit https. No
+// handler reads r.TLS sub-fields, so an empty ConnectionState is
+// sufficient (issue #106).
+func forwardedHTTPSHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil {
+			r.TLS = &tls.ConnectionState{}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // pluginInvoker adapts *plugin.Manager to spam.PluginInvoker.

@@ -3071,3 +3071,71 @@ func equalStringSlice(a, b []string) bool {
 	}
 	return true
 }
+
+func TestValidate_ProxyProtocol_AcceptedOnHTTPListener(t *testing.T) {
+	// issue #106: proxy_protocol is valid on an HTTP (protocol="admin")
+	// listener fronted by a reverse proxy.
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "public"
+address = "127.0.0.1:8080"
+protocol = "admin"
+kind = "public"
+tls = "none"
+proxy_protocol = true
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:9443"
+protocol = "admin"
+kind = "admin"
+tls = "none"
+proxy_protocol = true
+`
+	parsed, err := Parse([]byte(cfg))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !parsed.Listener[0].ProxyProtocol {
+		t.Error("expected ProxyProtocol to be true on the parsed listener")
+	}
+}
+
+func TestValidate_ProxyProtocol_RejectedOnNonHTTPListener(t *testing.T) {
+	// issue #106: proxy_protocol decoding is wired only for HTTP
+	// listeners; setting it on an SMTP/IMAP listener must be rejected
+	// rather than silently ignored.
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "smtp"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+proxy_protocol = true
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal("expected error for proxy_protocol on a non-HTTP listener")
+	}
+	if !strings.Contains(err.Error(), "proxy_protocol") {
+		t.Errorf("error should mention proxy_protocol, got: %v", err)
+	}
+}

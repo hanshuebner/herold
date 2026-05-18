@@ -160,10 +160,11 @@ Every listener is a separate `[[listener]]` table. Required fields:
 `starttls`, `implicit`).
 
 Optional fields: `auth_required` (forces SASL on submission listeners),
-`proxy_protocol` (accepts the HAProxy PROXY protocol header),
-`cert_file` and `key_file` (per-listener cert override; both or
-neither), `kind` (`public` or `admin` for HTTP listeners; required in
-production -- see below).
+`proxy_protocol` (decodes the HAProxy PROXY-protocol header so the
+real client IP reaches herold from behind a reverse proxy; see
+below), `cert_file` and `key_file` (per-listener cert override; both
+or neither), `kind` (`public` or `admin` for HTTP listeners; required
+in production -- see below).
 
 #### Listener kinds: public vs admin (REQ-OPS-ADMIN-LISTENER-01..03)
 
@@ -253,6 +254,24 @@ Note: ManageSieve and JMAP do not have dedicated `protocol` values in
 the current schema; ManageSieve runs as a separate process surface
 TODO(operator-doc): managesieve-listener-shape, and JMAP is mounted
 on the admin listener.
+
+#### PROXY protocol (`proxy_protocol`)
+
+`proxy_protocol = true` makes the listener decode a HAProxy
+PROXY-protocol header (v1 and v2) prepended by an upstream reverse
+proxy. The decoded address becomes the request's remote address, so
+logs, the audit trail, and rate limiters see the real client IP
+rather than the proxy's loopback address; herold also treats such a
+request as HTTPS for scheme-derived URLs.
+
+A `proxy_protocol = true` listener rejects any connection that does
+not carry a PROXY header -- this is deliberate, so a client that
+bypasses the proxy cannot spoof an address. Enable it only on a
+listener actually fronted by a proxy configured to send the header.
+
+It is currently supported only on HTTP listeners (`protocol =
+"admin"`); the validator rejects it elsewhere. The full reverse-proxy
+topology is covered in _Reverse Proxy and TLS_.
 
 ### `[[plugin]]` - out-of-process plugin declarations
 

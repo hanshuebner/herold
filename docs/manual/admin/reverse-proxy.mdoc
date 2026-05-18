@@ -99,6 +99,14 @@ relative to a direct-HTTPS deployment are:
   OIDC callback are correct behind the proxy.
 - Set the `public` and `admin` listeners to `tls = "none"` and bind
   them to `127.0.0.1` (ports 8080 and 9443 in the example).
+- Set `proxy_protocol = true` on those two listeners. herold then
+  decodes the PROXY-protocol header the proxy prepends, so request
+  logs, the audit log, and the rate limiters see the real client IP
+  instead of `127.0.0.1`, and the request is treated as HTTPS so
+  scheme-derived URLs (the OAuth `redirect_uri`) are correct. A
+  `proxy_protocol = true` listener **rejects any connection that
+  arrives without a PROXY header**, so enable it only once the proxy
+  is configured to send one (Step 2).
 - Leave `[server.ui] secure_cookies` at its default of `true`. The
   browser reaches the proxy over HTTPS, so the `Secure` flag is
   correct even though herold's own listener is plaintext on loopback.
@@ -136,6 +144,12 @@ Whatever proxy you choose, three things must be right:
   `proxy_set_header Upgrade`/`Connection` and `proxy_buffering off`.
 - **Generous timeouts.** The JMAP EventSource connection is
   long-lived; a short proxy read timeout will sever it repeatedly.
+- **Send the PROXY-protocol header upstream**, to match the
+  `proxy_protocol = true` listeners from Step 1. In Caddy this is the
+  `proxy_protocol v2` transport option (see `Caddyfile.example`);
+  nginx uses `proxy_protocol on` in the `stream` block or
+  `proxy_set_header` is not enough -- it must be the real PROXY
+  header. Without it, herold rejects every connection.
 
 ## Applying it: native and Docker
 
@@ -166,18 +180,21 @@ herold container's name instead of `127.0.0.1`.
 
 ## Common operational issues
 
-### Client IP is lost on the web surface
+### Every web request fails after enabling proxy_protocol
 
-herold's `[[listener]]` config has a `proxy_protocol` option, but it
-is **not yet wired** - enabling it has no effect, and herold does not
-parse `X-Forwarded-For` either. Behind the proxy, every web request
-reaches herold with a remote address of `127.0.0.1`. That degrades
-request and audit logging, the per-user image-proxy rate limiter, and
-any IP-based abuse defense - **for the web surface only**. The mail
-listeners (25/465/587/993/143) are not proxied in this topology, so
-SMTP and IMAP client IPs are unaffected. Wiring PROXY-protocol
-decoding on the HTTP listeners is tracked in
-[issue #106](https://github.com/hanshuebner/herold/issues/106).
+A listener with `proxy_protocol = true` requires the PROXY-protocol
+header on every connection and rejects any connection without one.
+The two ways to hit this:
+
+- The proxy is not configured to send the header. Add the
+  `proxy_protocol` transport option (Step 2).
+- You opened the loopback port directly (`curl 127.0.0.1:8080`)
+  rather than through the proxy -- a direct connection sends no
+  header and is rejected. That is the intended anti-spoof behaviour;
+  test through the proxy's hostname instead.
+
+Enable `proxy_protocol = true` and the proxy's header together, never
+one without the other.
 
 ### DNS-01 is not an option
 
