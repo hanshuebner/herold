@@ -1,0 +1,128 @@
+# Herold - system.toml for the reverse-proxy topology.
+#
+# This is the shape described in the admin manual chapter "Reverse
+# Proxy and TLS". A reverse proxy (Caddy, nginx, Traefik) terminates
+# HTTPS for the web UIs and obtains their certificates; herold's own
+# web listeners run plaintext on the loopback interface behind it.
+#
+# herold still needs an ACME client of its own for the mail-protocol
+# certificates (SMTP/IMAP/submission TLS), which a web proxy cannot
+# own. To keep the two ACME clients off each other's ports, herold's
+# ACME is configured for the DNS-01 challenge here - it then needs
+# neither port 80 nor port 443.
+#
+# Companion file: Caddyfile.example in this directory.
+#
+# Edit before use: every hostname, the ACME email, the DNS plugin
+# choice, and the secret env vars.
+
+[server]
+# MX / HELO name. herold's ACME client issues the mail-protocol
+# certificate for THIS name. Keep it distinct from the webmail
+# hostname so the two ACME clients never request the same SAN set.
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+# Externally-visible origin of the Suite SPA, as seen by the browser
+# through the proxy. Used for generated links and the OIDC callback.
+public_base_url = "https://webmail.example.com"
+
+run_as_user  = "herold"
+run_as_group = "herold"
+shutdown_grace = "30s"
+
+[server.admin_tls]
+# Not consulted at runtime - the admin listener below is tls = "none"
+# - but the validator still requires source plus a populated file
+# pair. Point at any throwaway pair, e.g. one made with
+# scripts/make-self-signed-cert.sh.
+source    = "file"
+cert_file = "/var/lib/herold/admin.crt"
+key_file  = "/var/lib/herold/admin.key"
+
+[server.ui]
+# Keep the default. The browser reaches the proxy over HTTPS, so the
+# Secure cookie flag is correct even though herold's own web listener
+# is plaintext on loopback.
+secure_cookies = true
+
+[server.storage]
+backend = "sqlite"
+
+[server.storage.sqlite]
+path = "/var/lib/herold/herold.sqlite"
+
+[server.suite]
+enabled = true
+
+# --- Web listeners: plaintext, loopback-only. The proxy upstreams
+# --- to these. They are unreachable from outside the host.
+
+[[listener]]
+name     = "public"
+address  = "127.0.0.1:8080"
+protocol = "admin"
+kind     = "public"
+tls      = "none"
+
+[[listener]]
+name     = "admin"
+address  = "127.0.0.1:9443"
+protocol = "admin"
+kind     = "admin"
+tls      = "none"
+
+# --- Mail listeners: bound on the public interface, direct (NOT
+# --- proxied). No cert_file / key_file: the certificate is served
+# --- from the TLS store by SNI for [server] hostname, populated by
+# --- herold's ACME client below.
+
+[[listener]]
+name     = "smtp-relay"
+address  = "0.0.0.0:25"
+protocol = "smtp"
+tls      = "starttls"
+
+[[listener]]
+name          = "smtp-submission"
+address       = "0.0.0.0:587"
+protocol      = "smtp-submission"
+tls           = "starttls"
+auth_required = true
+
+[[listener]]
+name     = "imaps"
+address  = "0.0.0.0:993"
+protocol = "imaps"
+tls      = "implicit"
+
+[[listener]]
+name     = "imap"
+address  = "0.0.0.0:143"
+protocol = "imap"
+tls      = "starttls"
+
+# --- herold's own ACME: DNS-01, so it never contends for port 80 or
+# --- 443. It issues only the mail-protocol / MTA-STS certificates.
+# --- The reverse proxy issues the webmail / admin certificates.
+
+[acme]
+email          = "ops@example.com"
+directory_url  = "https://acme-v02.api.letsencrypt.org/directory"
+challenge_type = "dns-01"
+dns_plugin     = "cloudflare"
+
+# DNS provider plugin for the DNS-01 challenge. First-party plugins:
+# herold-dns-cloudflare, herold-dns-route53, herold-dns-hetzner,
+# herold-dns-manual. Swap path and options to match your provider.
+[[plugin]]
+name      = "cloudflare"
+path      = "/usr/lib/herold/plugins/herold-dns-cloudflare"
+type      = "dns"
+lifecycle = "long-running"
+options.api_token_env = "$CF_API_TOKEN"
+
+[observability]
+log_format   = "json"
+log_level    = "info"
+metrics_bind = "127.0.0.1:9090"

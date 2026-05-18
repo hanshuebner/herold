@@ -12,8 +12,8 @@ REQ-FLOW-ATTPOL-01..02, REQ-HOOK-EXTRACTED-01..03 (see
 shape; implementation tracks the spec.
 
 If you have not stood up Herold on a real domain yet, do
-[quickstart-extended.md](../quickstart-extended.md) first - this
-recipe assumes a working install with public MX and DKIM published.
+[Going Live](../../admin/going-live.mdoc) first - this recipe assumes
+a working install with public MX and DKIM published.
 
 ## What you build
 
@@ -62,7 +62,7 @@ declaration, an attachment policy, a webhook subscription.
 - Working Herold install with `app.example.com` added as a domain and
   DKIM published (`herold admin domain add app.example.com` then
   publish the printed selector record). See
-  [quickstart-extended.md](../quickstart-extended.md).
+  [Going Live](../../admin/going-live.mdoc).
 - Your application reachable over HTTPS at `app.internal` from the
   Herold host. The validator and webhook URLs in this recipe assume
   this hostname; substitute your own.
@@ -604,9 +604,10 @@ no attachments listed.
 
 - [system.toml.smarthost](system.toml.smarthost) - smart-host
   recipes for SES, SendGrid, Mailgun, Gmail relay, corp MTA.
-- [../administer.md](../administer.md) - principal, domain, alias,
-  API key, hook CRUD reference.
-- [../operate.md](../operate.md) - audit log, metrics, alerting.
+- [Administering Herold](../../admin/administer.mdoc) - principal,
+  domain, alias, API key, hook CRUD reference.
+- [Operating Herold](../../admin/operate.mdoc) - audit log, metrics,
+  alerting.
 - `docs/design/server/requirements/11-plugins.md` REQ-DIR-RCPT-* - the
   plugin contract this recipe builds on.
 - `docs/design/server/requirements/12-http-mail-api.md` REQ-HOOK-* and

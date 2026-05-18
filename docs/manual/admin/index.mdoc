@@ -7,18 +7,43 @@ audience: admin
 # Admin Manual
 
 This section of the manual is for operators and administrators: people who
-install, configure, and maintain a Herold deployment. It covers everything from
-first-time installation through day-to-day operation, application
-administration, and troubleshooting.
+install, configure, and maintain a Herold deployment. End users looking for
+help with their account should see the _User section_ instead.
 
-End users looking for help with their account should see the
-_User section_ instead.
+## Pick a path
 
-## Getting started
+The admin manual is organised around three things you might be trying to do.
 
-Start with [Installation](install), which covers build paths, storage
-backend selection, and the first-run bootstrap. After installation, the
-[Operating Herold](operate) chapter is the day-2 reference for
-system.toml, TLS, observability, and the outbound queue. Application-level
-management (domains, principals, aliases, API keys) is in
-[Administering Herold](administer).
+### Evaluate Herold
+
+You want to see what Herold does before committing to a deployment. Run the
+throwaway, loopback-only Docker instance in the user manual's _Quickstart_:
+no DNS, no certificates, no internet exposure - just the mail server and the
+web client on one machine. Nothing in this chapter is needed for that.
+
+### Deploy Herold for production
+
+You are standing up a real server for a domain you control. Follow, in order:
+
+1. [Installation](install) - build paths, storage backend, first-run bootstrap.
+2. [Going Live](going-live) - DNS records, ACME certificates, DKIM, DMARC,
+   MTA-STS, and the first public inbound test.
+3. [Reverse Proxy and TLS](reverse-proxy) - if you intend to front the web
+   UIs with nginx, Caddy, or Traefik. Read this _before_ configuring ACME in
+   _Going Live_: the proxy and Herold's own ACME client must be kept off each
+   other's ports, and that decision changes the config you write.
+
+### Run Herold day to day
+
+The server is up and you are operating it.
+
+- [Configuration Reference](configure) - the complete `system.toml` schema
+  and environment-variable reference.
+- [Operating Herold](operate) - the day-2 runbook: TLS renewal, backup and
+  restore, upgrades, observability, queue triage, plugins, troubleshooting.
+- [Administering Herold](administer) - application-level management: domains,
+  principals, mailboxes, aliases, API keys, Sieve, the audit log.
+
+Two further chapters cover narrower topics: [External SMTP Submission](external-smtp-submission)
+for relaying through Herold from other systems, and the
+[Manual Test Runbook](manual-test-runbook) for release verification.

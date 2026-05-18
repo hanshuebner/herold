@@ -390,11 +390,11 @@ mail is filtered correctly.
 
 ---
 
-## 4. docs/manual/user/quickstart.mdoc -- real-domain end-to-end
+## 4. docs/manual/admin/going-live.mdoc -- real-domain end-to-end
 
 ### 4.1 DNS records
 
-**Source:** `docs/manual/user/quickstart.mdoc` Step 1.
+**Source:** `docs/manual/admin/going-live.mdoc` Step 1.
 
 Publish the four-record minimum at the registrar:
 
@@ -422,7 +422,7 @@ respected.
 
 ### 4.2 DKIM key generation and publication
 
-**Source:** `docs/manual/user/quickstart.mdoc` Step 3.
+**Source:** `docs/manual/admin/going-live.mdoc` Step 3.
 
 **Note:** the inline `herold dkim show / generate` CLI is not yet
 wired in Wave 3 (returns 501 today). Until it lands, exercise the
@@ -464,7 +464,7 @@ serve over HTTPS on the same account.
 
 ### 4.4 First inbound test
 
-**Source:** `docs/manual/user/quickstart.mdoc` Step 5.
+**Source:** `docs/manual/admin/going-live.mdoc` Step 5.
 
 **Pre-conditions:** A/AAAA + MX + SPF + DKIM published; cert issued;
 herold bound to standard ports; at least one principal (e.g.
@@ -494,7 +494,7 @@ TLS; the SPF + DKIM verification recorded in the
 
 ### 4.5 DMARC publication and report monitoring
 
-**Source:** `docs/manual/user/quickstart.mdoc` Step 6.
+**Source:** `docs/manual/admin/going-live.mdoc` Step 6.
 
 Publish:
 
@@ -524,7 +524,7 @@ the report matches the herold host's public IP; `disposition` is
 
 ### 4.6 MTA-STS policy publication
 
-**Source:** `docs/manual/user/quickstart.mdoc` Step 7.
+**Source:** `docs/manual/admin/going-live.mdoc` Step 7.
 
 Publish the TXT:
 
@@ -561,7 +561,7 @@ log the policy fetch and refuse to fall back to plaintext.
 
 ### 4.7 TLS-RPT
 
-**Source:** `docs/manual/user/quickstart.mdoc` Step 7 / TLS-RPT.
+**Source:** `docs/manual/admin/going-live.mdoc` Step 7 / TLS-RPT.
 
 Publish:
 

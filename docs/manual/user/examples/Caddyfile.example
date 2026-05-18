@@ -1,0 +1,47 @@
+# Herold - Caddyfile for the reverse-proxy topology.
+#
+# Companion to system.toml.reverse-proxy in this directory; see the
+# admin manual chapter "Reverse Proxy and TLS" for the full rationale.
+#
+# Caddy binds :80 and :443, obtains and renews the certificates for
+# the hostnames below (HTTP-01 / TLS-ALPN-01), upstreams plaintext to
+# herold's loopback web listeners, and redirects HTTP to HTTPS
+# automatically. WebSocket upgrades (/chat/ws) and text/event-stream
+# responses (JMAP push) are handled transparently by reverse_proxy -
+# no extra directives are needed.
+#
+# Edit every hostname and the admin-vhost IP allowlist before use.
+
+# Webmail: the whole public web surface - the Suite SPA plus JMAP,
+# the chat WebSocket, the send API, and Web Push. The SPA talks to
+# JMAP on its own origin, so the proxy must carry all of it, not just
+# the static SPA files. Upstream is herold's kind = "public" listener.
+webmail.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+}
+
+# Admin SPA and admin REST. herold's kind = "admin" listener is
+# loopback-by-default on purpose ("invisible to scanners"). Exposing
+# it on a public hostname is a posture change, so gate it. The
+# allowlist below is the minimum; an SSH tunnel or VPN is stronger.
+admin.example.com {
+	encode zstd gzip
+
+	@blocked not remote_ip 203.0.113.0/24 198.51.100.7
+	respond @blocked 403
+
+	reverse_proxy 127.0.0.1:9443
+}
+
+# MTA-STS policy host. The policy is static text, so Caddy serves it
+# directly rather than proxying to herold - one fewer moving part.
+# Keep the mx line in sync with your published MX record.
+mta-sts.example.com {
+	header /.well-known/mta-sts.txt Content-Type "text/plain"
+	respond /.well-known/mta-sts.txt `version: STSv1
+mode: enforce
+mx: mail.example.com
+max_age: 604800`
+	respond 404
+}

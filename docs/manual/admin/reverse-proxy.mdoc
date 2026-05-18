@@ -1,0 +1,208 @@
+---
+title: Reverse Proxy and TLS
+slug: reverse-proxy
+audience: admin
+---
+
+# Reverse Proxy and TLS
+
+By default herold terminates HTTPS itself: the `kind = "public"` and
+`kind = "admin"` listeners bind port 443 directly and serve the Suite
+SPA, JMAP, and the admin UI over TLS. Many operators instead want a
+reverse proxy (Caddy, nginx, Traefik) in front of the web UIs - to
+serve other web apps on the same host, to put the webmail and admin
+SPAs on separate hostnames, to add access controls, or simply to keep
+certificate management in a familiar tool.
+
+This chapter describes how to do that. It applies equally to a
+native install and to the Docker image: the port contention it
+resolves is the same either way.
+
+## The problem: two ACME clients
+
+A reverse proxy that obtains its own Let's Encrypt certificates and
+herold both want the same scarce resources, and they collide in three
+places:
+
+- **Port 80** - herold's ACME HTTP-01 challenge listener binds `:80`;
+  a proxy doing HTTP-01 wants `:80` too.
+- **Port 443** - herold's public listener serves the SPA and JMAP on
+  `:443`, and the TLS-ALPN-01 challenge also reuses `:443`; the proxy
+  wants `:443` to terminate TLS.
+- **Rate limits** - two ACME clients under the same registered domain
+  share Let's Encrypt's per-domain issuance budget, and if they ever
+  request a certificate for the *same* set of names they burn the
+  duplicate-certificate limit.
+
+The instinct is to disable herold's ACME client and let the proxy own
+all certificates. That does not work, because **herold's ACME client
+cannot be removed**. It does not just serve the web listeners - it
+issues the certificates for:
+
+- SMTP STARTTLS (25), submission (587), implicit TLS (465)
+- IMAP (993 implicit, 143 STARTTLS) and ManageSieve
+- the `mta-sts.<domain>` policy host
+- DANE: herold's auto-DNS publishes the `TLSA` record from the MX
+  certificate's key, so certificate rotation and the DNS record must
+  stay coupled inside herold
+
+A web reverse proxy cannot meaningfully own the STARTTLS certificates
+for the mail protocols. So herold keeps an ACME client no matter
+what; the task is only to stop it fighting the proxy.
+
+## The solution: separate the two ACME clients onto different planes
+
+Give the proxy ports 80 and 443 and the HTTP-based challenges; move
+herold's ACME to the **DNS-01** challenge.
+
+- The reverse proxy binds `:80` and `:443`, terminates TLS for the
+  web hostnames (`webmail.example.com`, `admin.example.com`,
+  `mta-sts.example.com`), and solves ACME with HTTP-01 / TLS-ALPN-01.
+- herold's `public` and `admin` HTTP listeners become `tls = "none"`
+  and bind `127.0.0.1`. The proxy upstreams to them.
+- herold's `[acme]` block is set to `challenge_type = "dns-01"` with a
+  DNS provider plugin. herold then needs **no inbound port** for ACME:
+  it keeps issuing every mail-protocol and MTA-STS certificate, all
+  validated through DNS.
+
+The chicken-and-egg dissolves because the two ACME clients now live on
+different planes - one in HTTP, one in DNS - and issue for disjoint
+sets of hostnames, so neither port contention nor the
+duplicate-certificate limit can bite. DANE stays entirely inside
+herold: the MX certificate and its `TLSA` record rotate together,
+untouched by the proxy.
+
+```
+                          :80  :443
+   Internet  ----------->  proxy  --- ACME HTTP-01 ---> Let's Encrypt
+                            |          (webmail / admin / mta-sts certs)
+              127.0.0.1:8080|  (public listener, plaintext)
+              127.0.0.1:9443|  (admin listener,  plaintext)
+                            v
+                          herold --- ACME DNS-01 ---> Let's Encrypt
+   Internet --- 25/465/587/993/143 -->  (mail.example.com cert, via DNS plugin)
+```
+
+Use a webmail hostname **distinct from the MX name** -
+`webmail.example.com`, not the `mail.example.com` you set as
+`[server] hostname`. That is what keeps the proxy's certificate names
+and herold's certificate names from overlapping.
+
+## Step 1: herold configuration
+
+A complete example is in
+`docs/manual/user/examples/system.toml.reverse-proxy`. The changes
+relative to a direct-HTTPS deployment are:
+
+- Set `[server] public_base_url` to the externally-visible webmail
+  URL, e.g. `https://webmail.example.com`, so generated links and the
+  OIDC callback are correct behind the proxy.
+- Set the `public` and `admin` listeners to `tls = "none"` and bind
+  them to `127.0.0.1` (ports 8080 and 9443 in the example).
+- Leave `[server.ui] secure_cookies` at its default of `true`. The
+  browser reaches the proxy over HTTPS, so the `Secure` flag is
+  correct even though herold's own listener is plaintext on loopback.
+- Keep the mail listeners (25/465/587/993/143) bound on the public
+  interface. Omit `cert_file` / `key_file` on them: the certificate
+  is served from the TLS store by SNI for `[server] hostname`,
+  populated by the ACME client.
+- Set `[acme] challenge_type = "dns-01"` and `dns_plugin = "..."`,
+  and declare the matching `[[plugin]]` block. First-party DNS
+  plugins: `herold-dns-cloudflare`, `herold-dns-route53`,
+  `herold-dns-hetzner`, `herold-dns-manual`.
+
+The pivotal precondition is the DNS-01 move: it requires your DNS to
+be hosted somewhere herold has a plugin for, with an API token. If
+that is not possible, see _Common operational issues_ below.
+
+## Step 2: the reverse proxy
+
+A worked Caddy configuration is in
+`docs/manual/user/examples/Caddyfile.example`. Caddy is a good fit -
+it obtains and renews certificates automatically and proxies
+WebSocket and Server-Sent Events transparently - but nginx or Traefik
+work equally well.
+
+Whatever proxy you choose, three things must be right:
+
+- **Proxy the whole public web surface, not just the SPA.** The Suite
+  SPA talks to JMAP on its own origin, so the proxy's webmail vhost
+  must also carry `/jmap`, `/.well-known/jmap`, the chat WebSocket at
+  `/chat/ws`, the send API, and the Web Push endpoints. You cannot
+  proxy only the static SPA files.
+- **Pass WebSocket upgrades and SSE through.** `/chat/ws` needs the
+  `Upgrade` handshake; JMAP push is `text/event-stream` and must not
+  be buffered. Caddy does both automatically; nginx needs explicit
+  `proxy_set_header Upgrade`/`Connection` and `proxy_buffering off`.
+- **Generous timeouts.** The JMAP EventSource connection is
+  long-lived; a short proxy read timeout will sever it repeatedly.
+
+## Applying it: native and Docker
+
+**Native install.** Replace `/etc/herold/system.toml` with the
+reverse-proxy shape, set the DNS plugin's API token in the
+environment herold runs under (the systemd unit, typically), install
+and start the proxy, and `SIGHUP` herold to reload.
+
+**Docker.** The image's baked-in config binds `0.0.0.0` inside the
+container; the loopback restriction comes from how you publish ports.
+For this topology, publish only the mail ports to the host and
+publish the web ports to the host loopback for the proxy to reach:
+
+```
+docker run -d --name herold \
+  -v "$(pwd)/herold-data:/var/lib/herold" \
+  -v "$(pwd)/system.toml.reverse-proxy:/etc/herold/system.toml:ro" \
+  -p 25:25 -p 465:465 -p 587:587 -p 993:993 -p 143:143 \
+  -p 127.0.0.1:8080:8080 \
+  -p 127.0.0.1:9443:9443 \
+  ghcr.io/hanshuebner/herold:latest
+```
+
+The proxy then runs on the host (or its own container) and upstreams
+to `127.0.0.1:8080` / `127.0.0.1:9443`. If the proxy also runs in a
+container, put both on a shared Docker network and upstream to the
+herold container's name instead of `127.0.0.1`.
+
+## Common operational issues
+
+### Client IP is lost on the web surface
+
+herold's `[[listener]]` config has a `proxy_protocol` option, but it
+is **not yet wired** - enabling it has no effect, and herold does not
+parse `X-Forwarded-For` either. Behind the proxy, every web request
+reaches herold with a remote address of `127.0.0.1`. That degrades
+request and audit logging, the per-user image-proxy rate limiter, and
+any IP-based abuse defense - **for the web surface only**. The mail
+listeners (25/465/587/993/143) are not proxied in this topology, so
+SMTP and IMAP client IPs are unaffected. Wiring PROXY-protocol
+decoding on the HTTP listeners is tracked in
+[issue #106](https://github.com/hanshuebner/herold/issues/106).
+
+### DNS-01 is not an option
+
+If your DNS provider has no herold plugin and cannot be scripted, the
+two ACME clients cannot be cleanly separated. The realistic fallback
+is to make the proxy issue *all* certificates - including the
+mail-protocol ones - and point herold's listeners at the resulting
+files with `cert_file` / `key_file` (certificate source `file`),
+disabling herold's ACME entirely. The cost is that DANE `TLSA`
+rollover is then split across two systems and must be coordinated by
+hand; do this only if you do not use DANE.
+
+### Admin UI exposure
+
+herold's `admin` listener is loopback-by-default deliberately.
+Publishing it on a public hostname is a posture change. Restrict the
+admin vhost with an IP allowlist at the proxy, or - stronger - leave
+the admin listener reachable only over an SSH tunnel or VPN and proxy
+only the webmail hostname.
+
+## Where to next
+
+- First-time public deployment, including the DNS records and the
+  DKIM / DMARC / MTA-STS setup this chapter assumes: _Going Live_.
+- The `[acme]`, `[[listener]]`, and `[[plugin]]` schema in full:
+  _Configuration Reference_.
+- Certificate lifecycle, renewal, and ACME troubleshooting once the
+  server is running: _Operating Herold_.

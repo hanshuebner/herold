@@ -25,6 +25,21 @@ home = "index"
   title = "Installation"
 
   [[admin.chapters]]
+  slug  = "going-live"
+  file  = "admin/going-live.mdoc"
+  title = "Going Live"
+
+  [[admin.chapters]]
+  slug  = "reverse-proxy"
+  file  = "admin/reverse-proxy.mdoc"
+  title = "Reverse Proxy and TLS"
+
+  [[admin.chapters]]
+  slug  = "configure"
+  file  = "admin/configure.mdoc"
+  title = "Configuration Reference"
+
+  [[admin.chapters]]
   slug  = "operate"
   file  = "admin/operate.mdoc"
   title = "Operating Herold"

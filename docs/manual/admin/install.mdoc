@@ -11,7 +11,7 @@ system resources to budget, the storage backend choice, and the
 first-run bootstrap. It is operator-facing; for the day-2 runbook see
 [Operating Herold](operate), for application-administration see
 [Administering Herold](administer), and for the real-domain
-walkthrough see _Quickstart_.
+walkthrough see _Going Live_.
 
 ## Choose a deployment shape
 
@@ -453,8 +453,8 @@ available; route end users and operators to different URLs:
   `herold_public_csrf` cookie. The SPA's JMAP handshake then
   completes and the mailbox loads. End-users self-serve password
   changes, TOTP enrolment, and API-key management at `/#/settings`.
-  See [Operating Herold](operate) "The web URLs herold exposes" for
-  details.
+  See [Configuration Reference](configure) "The web URLs herold
+  exposes" for details.
 - **Operator UI** (Svelte admin SPA): `http(s)://<admin host>/admin/`
   on the admin listener. The SPA's login form posts to
   `POST /api/v1/auth/login` and receives the `herold_admin_session`
@@ -465,18 +465,20 @@ available; route end users and operators to different URLs:
 - **IMAP / SMTP / JMAP**: standard ports 143 (IMAP+STARTTLS), 993
   (IMAPS), 587 (submission STARTTLS), 465 (submission implicit
   TLS), and 8080 (admin REST + JMAP) -- or the loopback quickstart
-  ports 1143 / 1993 / 1587 / 1025 / 8080. See the README quickstart
-  for the desktop-client walkthrough and
-  [Operating Herold](operate) for the production listener layout.
+  ports 1143 / 1993 / 1587 / 1025 / 8080. See the user manual
+  _Quickstart_ for the desktop-client walkthrough and
+  [Configuration Reference](configure) for the production listener
+  layout.
 
 ## Where to next
 
-- Day-2 operation, system.toml reference, TLS / DNS / observability
-  runbook: [Operating Herold](operate).
+- Day-2 operation, TLS / DNS / observability runbook:
+  [Operating Herold](operate).
+- The complete system.toml schema and every tunable:
+  [Configuration Reference](configure).
 - Application administration (domains, principals, mailboxes,
   aliases, API keys, Sieve, audit log): [Administering Herold](administer).
 - Real-domain walkthrough (DNS records, ACME, DKIM publication,
-  DMARC, MTA-STS, TLS-RPT):
-  _Quickstart_.
+  DMARC, MTA-STS, TLS-RPT): _Going Live_.
 - Spec / requirements / architecture (the historical record): the
   `docs/design/` tree.
