@@ -5,6 +5,7 @@
    */
   import { labelDialog } from './label-dialog.svelte';
   import { randomLabelColor } from '../mail/label-color';
+  import Button from '@herold/design-system/Button.svelte';
 
   let ctx = $derived(labelDialog.pending);
   let name = $state('');
@@ -119,21 +120,17 @@
             title="Label color"
           />
           <span class="color-swatch" style="background:{color};" aria-hidden="true"></span>
-          <button type="button" class="btn-random" onclick={pickRandom}>Random</button>
+          <Button variant="secondary" compact onclick={pickRandom}>Random</Button>
         </div>
       </div>
 
       <div class="actions">
-        <button type="button" class="btn-secondary" onclick={cancel}>
+        <Button variant="secondary" onclick={cancel}>
           {ctx.cancelLabel ?? 'Cancel'}
-        </button>
-        <button
-          type="submit"
-          class="btn-primary"
-          disabled={!ctaEnabled}
-        >
+        </Button>
+        <Button type="submit" variant="primary" disabled={!ctaEnabled}>
           {ctx.confirmLabel ?? 'OK'}
-        </button>
+        </Button>
       </div>
     </form>
   </div>
@@ -238,62 +235,10 @@
     flex-shrink: 0;
   }
 
-  .btn-random {
-    padding: var(--spacing-02) var(--spacing-04);
-    border-radius: var(--radius-pill);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 600;
-    background: var(--layer-03);
-    color: var(--text-primary);
-    border: 1px solid var(--border-subtle-01);
-    cursor: pointer;
-  }
-
-  .btn-random:hover {
-    background: var(--layer-01);
-  }
-
   .actions {
     display: flex;
     justify-content: flex-end;
     gap: var(--spacing-03);
     margin-top: var(--spacing-02);
-  }
-
-  .btn-primary,
-  .btn-secondary {
-    padding: var(--spacing-02) var(--spacing-05);
-    border-radius: var(--radius-pill);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 600;
-    min-height: var(--touch-min);
-    transition:
-      background var(--duration-fast-02) var(--easing-productive-enter),
-      filter var(--duration-fast-02) var(--easing-productive-enter);
-  }
-
-  .btn-primary {
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border: 1px solid transparent;
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-
-  .btn-primary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .btn-secondary {
-    background: var(--layer-01);
-    color: var(--text-primary);
-    border: 1px solid var(--border-subtle-01);
-  }
-
-  .btn-secondary:hover {
-    background: var(--layer-03);
   }
 </style>

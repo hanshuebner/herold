@@ -5,15 +5,21 @@
    * top of Shell so it overlays everything else.
    */
   import { confirm } from './confirm.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   let ctx = $derived(confirm.pending);
-  let confirmBtn = $state<HTMLButtonElement | null>(null);
 
   // Focus the primary action when the dialog opens so Enter confirms
-  // and Escape (handled below) cancels.
+  // and Escape (handled below) cancels. The shared Button does not
+  // expose a bindable element ref, so reach for it by test hook.
   $effect(() => {
     if (ctx) {
-      requestAnimationFrame(() => confirmBtn?.focus());
+      requestAnimationFrame(() => {
+        const el = document.querySelector<HTMLButtonElement>(
+          '[data-testid="confirm-dialog-confirm"]',
+        );
+        el?.focus();
+      });
     }
   });
 
@@ -49,21 +55,16 @@
       {/if}
       <p id="cd-message" class="body">{ctx.message}</p>
       <div class="actions">
-        <button
-          type="button"
-          class="btn-secondary"
-          onclick={() => confirm.decide(false)}
-        >
+        <Button variant="secondary" onclick={() => confirm.decide(false)}>
           {ctx.cancelLabel ?? 'Cancel'}
-        </button>
-        <button
-          type="button"
-          class={ctx.kind === 'danger' ? 'btn-danger' : 'btn-primary'}
-          bind:this={confirmBtn}
+        </Button>
+        <Button
+          variant={ctx.kind === 'danger' ? 'danger' : 'primary'}
+          testid="confirm-dialog-confirm"
           onclick={() => confirm.decide(true)}
         >
           {ctx.confirmLabel ?? 'OK'}
-        </button>
+        </Button>
       </div>
     </div>
   </div>
@@ -123,44 +124,5 @@
     justify-content: flex-end;
     gap: var(--spacing-03);
     margin-top: var(--spacing-02);
-  }
-
-  .btn-primary,
-  .btn-secondary,
-  .btn-danger {
-    padding: var(--spacing-02) var(--spacing-05);
-    border-radius: var(--radius-pill);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 600;
-    min-height: var(--touch-min);
-    transition: background var(--duration-fast-02) var(--easing-productive-enter),
-      filter var(--duration-fast-02) var(--easing-productive-enter);
-  }
-
-  .btn-primary {
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border: 1px solid transparent;
-  }
-  .btn-primary:hover {
-    filter: brightness(1.1);
-  }
-
-  .btn-danger {
-    background: var(--support-error);
-    color: var(--text-on-color);
-    border: 1px solid transparent;
-  }
-  .btn-danger:hover {
-    filter: brightness(0.9);
-  }
-
-  .btn-secondary {
-    background: var(--layer-01);
-    color: var(--text-primary);
-    border: 1px solid var(--border-subtle-01);
-  }
-  .btn-secondary:hover {
-    background: var(--layer-03);
   }
 </style>
