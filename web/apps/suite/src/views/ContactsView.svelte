@@ -16,6 +16,7 @@
   import { router } from '../lib/router/router.svelte';
   import { toast } from '../lib/toast/toast.svelte';
   import { t } from '../lib/i18n/i18n.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   // The contact id is the second route segment: /contacts/<id>.
   let contactId = $derived(decodeURIComponent(router.parts[1] ?? ''));
@@ -268,34 +269,21 @@
             />
           </div>
           <div class="form-actions">
-            <button
-              type="submit"
-              class="btn-primary"
-              disabled={saving}
-            >
+            <Button type="submit" variant="primary" disabled={saving}>
               {t('contact.view.save')}
-            </button>
-            <button
-              type="button"
-              class="btn-secondary"
-              disabled={saving}
-              onclick={cancelEdit}
-            >
+            </Button>
+            <Button variant="secondary" disabled={saving} onclick={cancelEdit}>
               {t('contact.view.cancel')}
-            </button>
+            </Button>
           </div>
         </form>
       {:else}
         <!-- Read view with Edit button -->
         <div class="read-header">
           <h1 class="contact-name">{contact.name || contact.emails[0] || t('contact.view.title')}</h1>
-          <button
-            type="button"
-            class="btn-edit"
-            onclick={startEdit}
-          >
+          <Button variant="secondary" compact onclick={startEdit}>
             {t('contact.view.edit')}
-          </button>
+          </Button>
         </div>
         {#if contact.emails.length > 0}
           <section class="section">
@@ -369,22 +357,6 @@
     font-size: var(--type-heading-03-size);
     line-height: var(--type-heading-03-line);
     margin: 0;
-    color: var(--text-primary);
-  }
-  .btn-edit {
-    flex: 0 0 auto;
-    height: 32px;
-    padding: 0 var(--spacing-04);
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-pill);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 500;
-    color: var(--text-secondary);
-    background: transparent;
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-  }
-  .btn-edit:hover {
-    background: var(--layer-02);
     color: var(--text-primary);
   }
   .section {
@@ -468,41 +440,5 @@
     display: flex;
     gap: var(--spacing-03);
     align-items: center;
-  }
-  .btn-primary {
-    height: 36px;
-    padding: 0 var(--spacing-05);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    font-size: var(--type-body-compact-01-size);
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-  }
-  .btn-primary:hover:not(:disabled) {
-    background: var(--interactive-hover, var(--interactive));
-  }
-  .btn-primary:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-  .btn-secondary {
-    height: 36px;
-    padding: 0 var(--spacing-04);
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-pill);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 500;
-    color: var(--text-secondary);
-    background: transparent;
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-  }
-  .btn-secondary:hover:not(:disabled) {
-    background: var(--layer-02);
-    color: var(--text-primary);
-  }
-  .btn-secondary:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
   }
 </style>

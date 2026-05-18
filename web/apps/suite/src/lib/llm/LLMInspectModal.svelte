@@ -9,6 +9,7 @@
    */
   import { llmTransparency } from './transparency.svelte';
   import type { MessageLLMInspect } from './transparency.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   interface Props {
     emailId: string;
@@ -153,7 +154,7 @@
     </div>
 
     <div class="modal-footer">
-      <button type="button" class="primary" onclick={onClose}>Close</button>
+      <Button variant="primary" onclick={onClose}>Close</Button>
     </div>
   </div>
 </div>
@@ -325,17 +326,5 @@
   .error {
     color: var(--support-error);
     margin: 0;
-  }
-
-  .primary {
-    padding: var(--spacing-02) var(--spacing-05);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    min-height: var(--touch-min);
-  }
-  .primary:hover {
-    filter: brightness(1.1);
   }
 </style>
