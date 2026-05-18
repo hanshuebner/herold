@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "validate": "node scripts/validate.mjs",
-    "bundle": "node scripts/bundle.mjs"
+    "bundle": "node scripts/bundle.mjs",
+    "dev": "node scripts/dev.mjs"
   },
   "dependencies": {
     "@herold/design-system": "workspace:*",

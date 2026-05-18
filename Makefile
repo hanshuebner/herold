@@ -10,7 +10,7 @@ BUILDFLAGS := -buildvcs=true $(LDFLAGS)
 PKGS := ./...
 FUZZTIME ?= 30s
 
-.PHONY: all build build-server build-web build-plugins prep-web test test-server test-web \
+.PHONY: all build build-server build-web build-plugins prep-web manual test test-server test-web \
         test-short lint vet staticcheck vulncheck \
         fmt fmt-check fuzz-short tidy ci-local clean docker \
         interop interop-bulk interop-imaptest interop-jmaptest interop-clean \
@@ -60,6 +60,15 @@ prep-web:
 	  cp internal/webspa/placeholder/manual/user/index.html internal/webspa/dist/manual/user/index.html
 	@[ -f internal/webspa/dist/manual/admin/index.html ] || \
 	  cp internal/webspa/placeholder/manual/admin/index.html internal/webspa/dist/manual/admin/index.html
+
+# `manual` builds the operator/user manual to standalone SSR HTML and
+# serves it at http://localhost:8000/ with live reload: editing any
+# docs/manual/*.mdoc file rebuilds and refreshes connected browsers.
+# Pure Node -- no SPA build, no herold binary. Requires a one-time
+# `pnpm -C web install` so the Markdoc dependency is present. Override
+# the port with MANUAL_PORT.
+manual:
+	cd web/packages/manual && node scripts/dev.mjs
 
 build-plugins:
 	@for p in plugins/herold-*; do \

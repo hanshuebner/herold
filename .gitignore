@@ -68,3 +68,4 @@ coverage.html
 /web/apps/admin/public/manual/
 /web/apps/admin/public/help/
 /web/packages/manual/dist-data/
+/web/packages/manual/dist-dev/
