@@ -82,6 +82,13 @@
     flex: 1;
     display: flex;
     min-height: 0;
+    /* Hard containment: no descendant (a wide email table, a long
+       unbreakable string, an over-sized image) may widen the app
+       shell. Without this, content that escapes its own pane's
+       overflow scrolls the whole layout and pushes the sidebar off
+       the left edge. The content pane keeps min-width:0 so it can
+       still shrink; this clip is the final backstop. */
+    overflow: hidden;
   }
   .sidebar {
     flex: 0 0 240px;

@@ -1219,10 +1219,17 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    /* min-width:0 lets the frame shrink below the intrinsic width of
+       a wide email body; the thread reader contains its own overflow
+       so wide content scrolls within the content pane instead of
+       widening the message-list column / app shell (re wide-content
+       layout bug). */
+    min-width: 0;
   }
   .thread-frame :global(.thread-reader) {
     flex: 1;
     min-height: 0;
+    min-width: 0;
   }
 
   header {

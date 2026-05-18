@@ -182,10 +182,14 @@
     background: var(--background);
     overflow: hidden;
   }
-  /* The middle region scrolls; toolbar + reply bar stay pinned. */
+  /* The middle region scrolls; toolbar + reply bar stay pinned.
+     min-width:0 keeps the scroll region from being widened by a wide
+     message body, so wide content scrolls inside .scroll instead of
+     stretching the whole reader / app layout. */
   .scroll {
     flex: 1;
     overflow: auto;
+    min-width: 0;
   }
   header {
     padding: var(--spacing-05);
