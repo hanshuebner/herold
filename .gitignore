@@ -39,6 +39,7 @@ coverage.html
 /data/
 /tmp/
 /plugins/**/plugins/
+/.coquill
 
 # Container bind mounts
 /deploy/docker/data/
