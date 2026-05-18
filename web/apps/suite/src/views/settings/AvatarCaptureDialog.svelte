@@ -21,6 +21,7 @@
 
   import { onDestroy } from 'svelte';
   import { t } from '../../lib/i18n/i18n.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   interface Props {
     open: boolean;
@@ -455,13 +456,13 @@
         >
           <p>{t('settings.avatar.capture.dropPrompt')}</p>
           <div class="source-buttons">
-            <button type="button" class="primary" onclick={pickFile}>
+            <Button variant="primary" onclick={pickFile}>
               {t('settings.avatar.capture.chooseFile')}
-            </button>
+            </Button>
             {#if cameraSupported}
-              <button type="button" class="secondary" onclick={() => void startCamera()}>
+              <Button variant="secondary" onclick={() => void startCamera()}>
                 {t('settings.avatar.capture.takePhoto')}
-              </button>
+              </Button>
             {/if}
           </div>
           {#if cameraError}
@@ -478,9 +479,9 @@
           aria-hidden="true"
         />
         <div class="actions">
-          <button type="button" class="secondary" onclick={handleCancel}>
+          <Button variant="secondary" onclick={handleCancel}>
             {t('common.cancel')}
-          </button>
+          </Button>
         </div>
       {:else if phase === 'preview-camera'}
         <h3 class="title">{t('settings.avatar.capture.takePhotoTitle')}</h3>
@@ -495,12 +496,12 @@
           ></video>
         </div>
         <div class="actions">
-          <button type="button" class="secondary" onclick={() => { stopCamera(); phase = 'choose'; }}>
+          <Button variant="secondary" onclick={() => { stopCamera(); phase = 'choose'; }}>
             {t('settings.avatar.capture.back')}
-          </button>
-          <button type="button" class="primary" onclick={shutter}>
+          </Button>
+          <Button variant="primary" onclick={shutter}>
             {t('settings.avatar.capture.snapshot')}
-          </button>
+          </Button>
         </div>
       {:else if phase === 'crop' && sourceUrl}
         <h3 class="title">{t('settings.avatar.capture.cropTitle')}</h3>
@@ -578,15 +579,15 @@
           {/if}
         </div>
         <div class="actions">
-          <button type="button" class="secondary" onclick={handleCancel}>
+          <Button variant="secondary" onclick={handleCancel}>
             {t('common.cancel')}
-          </button>
-          <button type="button" class="ghost" onclick={resetCrop}>
+          </Button>
+          <Button variant="ghost" onclick={resetCrop}>
             {t('settings.avatar.capture.reset')}
-          </button>
-          <button type="button" class="primary" onclick={confirmCrop}>
+          </Button>
+          <Button variant="primary" onclick={confirmCrop}>
             {t('settings.avatar.capture.useThis')}
-          </button>
+          </Button>
         </div>
       {/if}
     </div>
@@ -744,38 +745,6 @@
     display: flex;
     justify-content: flex-end;
     gap: var(--spacing-03);
-  }
-
-  .primary,
-  .secondary,
-  .ghost {
-    padding: var(--spacing-02) var(--spacing-04);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    min-height: var(--touch-min);
-    font-size: var(--type-body-compact-01-size);
-    cursor: pointer;
-  }
-
-  .primary {
-    background: var(--interactive);
-    color: var(--text-on-color);
-  }
-  .primary:hover {
-    background: var(--interactive-hover, var(--interactive));
-    filter: brightness(1.05);
-  }
-
-  .secondary,
-  .ghost {
-    background: transparent;
-    color: var(--text-secondary);
-    border: 1px solid var(--border-subtle-02);
-  }
-  .secondary:hover,
-  .ghost:hover {
-    background: var(--layer-02);
-    color: var(--text-primary);
   }
 
   .sr-only {

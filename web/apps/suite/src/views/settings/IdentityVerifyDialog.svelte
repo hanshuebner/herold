@@ -25,6 +25,7 @@
   import { isValidCode } from '../../lib/identities/wizard-validators';
   import { t } from '../../lib/i18n/i18n.svelte';
   import type { Identity } from '../../lib/mail/types';
+  import Button from '@herold/design-system/Button.svelte';
 
   interface Props {
     identity: Identity;
@@ -209,40 +210,38 @@
       </label>
 
       <div class="actions">
-        <button
-          type="button"
-          class="ghost"
+        <Button
+          variant="secondary"
           onclick={close}
           disabled={verifying}
-          data-testid="identity-verify-cancel"
+          testid="identity-verify-cancel"
         >
           {t('settings.identityVerify.cancel')}
-        </button>
-        <button
+        </Button>
+        <Button
           type="submit"
-          class="primary"
+          variant="primary"
           disabled={verifyDisabled}
-          data-testid="identity-verify-submit"
+          testid="identity-verify-submit"
         >
           {verifying
             ? t('settings.identityVerify.verifying')
             : t('settings.identityVerify.verify')}
-        </button>
+        </Button>
       </div>
     </form>
 
     <div class="resend-row">
-      <button
-        type="button"
-        class="ghost"
+      <Button
+        variant="ghost"
         onclick={() => void onResendClick()}
         disabled={resendDisabled}
-        data-testid="identity-verify-resend"
+        testid="identity-verify-resend"
       >
         {resending
           ? t('settings.identityVerify.resending')
           : t('settings.identityVerify.resend')}
-      </button>
+      </Button>
       {#if cooldown > 0}
         <span class="resend-cooldown" data-testid="identity-verify-cooldown">
           {t('settings.identityVerify.resendRateLimited', { seconds: cooldown })}
@@ -389,38 +388,6 @@
   .resend-notice {
     font-size: var(--type-body-compact-01-size);
     color: var(--text-helper);
-  }
-
-  .primary,
-  .ghost {
-    padding: var(--spacing-02) var(--spacing-04);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    min-height: var(--touch-min);
-  }
-
-  .primary {
-    background: var(--interactive);
-    color: var(--text-on-color);
-  }
-
-  .primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-
-  .primary:disabled,
-  .ghost:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .ghost {
-    color: var(--text-secondary);
-  }
-
-  .ghost:hover:not(:disabled) {
-    background: var(--layer-02);
-    color: var(--text-primary);
   }
 
   .error {

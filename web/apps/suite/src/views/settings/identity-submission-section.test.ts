@@ -160,7 +160,7 @@ describe('IdentitySubmissionSection', () => {
     await fireEvent.input(hostInput, { target: { value: 'smtp.example.com' } });
 
     // Submit the form.
-    const saveBtn = screen.getByText('Save and test connection');
+    const saveBtn = screen.getByRole('button', { name: 'Save and test connection' });
     await fireEvent.click(saveBtn);
 
     expect(putSubmission).toHaveBeenCalledWith('ident-1', expect.objectContaining({
@@ -188,7 +188,7 @@ describe('IdentitySubmissionSection', () => {
     const hostInput = screen.getByPlaceholderText('smtp.gmail.com');
     await fireEvent.input(hostInput, { target: { value: 'smtp.example.com' } });
 
-    const saveBtn = screen.getByText('Save and test connection');
+    const saveBtn = screen.getByRole('button', { name: 'Save and test connection' });
     await fireEvent.click(saveBtn);
 
     // The inline error should be visible.
@@ -219,7 +219,7 @@ describe('IdentitySubmissionSection', () => {
     const hostInput = screen.getByPlaceholderText('smtp.gmail.com');
     await fireEvent.input(hostInput, { target: { value: 'smtp.example.com' } });
 
-    const saveBtn = screen.getByText('Save and test connection');
+    const saveBtn = screen.getByRole('button', { name: 'Save and test connection' });
     await fireEvent.click(saveBtn);
 
     // Toggle back to "Use this server" (effectively cancelling).

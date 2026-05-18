@@ -34,6 +34,7 @@
     type SuffixError,
   } from '../../lib/settings/tagged-addresses';
   import type { Identity } from '../../lib/mail/types';
+  import Button from '@herold/design-system/Button.svelte';
 
   interface Props {
     /** Null = create mode; a filter row = edit mode (REQ-SET-TAG-03). */
@@ -360,27 +361,26 @@
     {/if}
 
     <div class="actions">
-      <button
-        type="button"
-        class="ghost"
+      <Button
+        variant="secondary"
         onclick={close}
         disabled={saving}
-        data-testid="tagged-address-filter-dialog-cancel"
+        testid="tagged-address-filter-dialog-cancel"
       >
         {t('settings.taggedAddresses.dialog.cancel')}
-      </button>
-      <button
+      </Button>
+      <Button
         type="submit"
-        class="primary"
+        variant="primary"
         disabled={!canSave}
-        data-testid="tagged-address-filter-dialog-save"
+        testid="tagged-address-filter-dialog-save"
       >
         {saving
           ? t('settings.taggedAddresses.dialog.saving')
           : isEdit
             ? t('settings.taggedAddresses.dialog.save')
             : t('settings.taggedAddresses.dialog.create')}
-      </button>
+      </Button>
     </div>
   </form>
 </div>
@@ -541,34 +541,5 @@
     justify-content: flex-end;
     gap: var(--spacing-03);
     padding-top: var(--spacing-03);
-  }
-  .ghost,
-  .primary {
-    padding: var(--spacing-03) var(--spacing-05);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    min-height: var(--touch-min);
-    font-size: var(--type-body-compact-01-size);
-  }
-  .ghost {
-    background: transparent;
-    color: var(--text-secondary);
-    border: 1px solid var(--border-subtle-01);
-  }
-  .ghost:hover:not(:disabled) {
-    background: var(--layer-03);
-    color: var(--text-primary);
-  }
-  .primary {
-    background: var(--interactive);
-    color: var(--text-on-color);
-  }
-  .primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-  .primary:disabled,
-  .ghost:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 </style>

@@ -32,6 +32,7 @@
   import { confirm } from '../../lib/dialog/confirm.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
   import type { Identity } from '../../lib/mail/types';
+  import Button from '@herold/design-system/Button.svelte';
 
   interface Props {
     identity: Identity;
@@ -268,22 +269,20 @@
             submission automatically:
           </p>
           <div class="oauth-buttons">
-            <button
-              type="button"
-              class="btn-oauth"
+            <Button
+              variant="secondary"
               onclick={() => void startOAuthFlow('gmail')}
               disabled={oauthStarting !== null || saving}
             >
               {oauthStarting === 'gmail' ? 'Starting...' : 'Sign in with Google'}
-            </button>
-            <button
-              type="button"
-              class="btn-oauth"
+            </Button>
+            <Button
+              variant="secondary"
               onclick={() => void startOAuthFlow('m365')}
               disabled={oauthStarting !== null || saving}
             >
               {oauthStarting === 'm365' ? 'Starting...' : 'Sign in with Microsoft'}
-            </button>
+            </Button>
           </div>
           {#if oauthError}
             <p class="form-error" role="alert">{oauthError}</p>
@@ -390,26 +389,25 @@
 
           <div class="form-actions">
             {#if isConfigured}
-              <button
-                type="button"
-                class="btn-remove"
+              <Button
+                variant="danger"
                 onclick={() => void remove()}
                 disabled={removing || saving}
               >
                 {removing ? 'Removing...' : 'Remove external configuration'}
-              </button>
+              </Button>
             {/if}
             <span class="spacer"></span>
-            <button
+            <Button
               type="submit"
-              class="btn-primary"
+              variant="primary"
               disabled={saving || removing || authMethod === 'oauth2'}
               title={authMethod === 'oauth2'
                 ? 'Use the OAuth buttons above to configure OAuth 2.0'
                 : ''}
             >
               {saving ? 'Saving and testing...' : 'Save and test connection'}
-            </button>
+            </Button>
           </div>
         </form>
       </div>
@@ -507,29 +505,6 @@
     display: flex;
     gap: var(--spacing-03);
     flex-wrap: wrap;
-  }
-
-  .btn-oauth {
-    padding: var(--spacing-02) var(--spacing-05);
-    background: var(--layer-02);
-    color: var(--text-primary);
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-md);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 500;
-    min-height: var(--touch-min);
-    cursor: pointer;
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-    white-space: nowrap;
-  }
-
-  .btn-oauth:hover:not(:disabled) {
-    background: var(--layer-03);
-  }
-
-  .btn-oauth:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
   }
 
   .or-divider {
@@ -661,52 +636,6 @@
 
   .spacer {
     flex: 1;
-  }
-
-  .btn-primary {
-    padding: var(--spacing-02) var(--spacing-05);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border-radius: var(--radius-md);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 600;
-    min-height: var(--touch-min);
-    cursor: pointer;
-    border: none;
-    transition: filter var(--duration-fast-02) var(--easing-productive-enter);
-    white-space: nowrap;
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-
-  .btn-primary:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .btn-remove {
-    padding: var(--spacing-02) var(--spacing-04);
-    background: none;
-    color: var(--support-error);
-    border: 1px solid var(--support-error);
-    border-radius: var(--radius-md);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 500;
-    min-height: var(--touch-min);
-    cursor: pointer;
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-    white-space: nowrap;
-  }
-
-  .btn-remove:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--support-error) 10%, transparent);
-  }
-
-  .btn-remove:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
   }
 
   .revert-hint {

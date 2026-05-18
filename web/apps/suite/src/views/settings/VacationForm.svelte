@@ -10,6 +10,7 @@
   import { mail } from '../../lib/mail/store.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
   import { t } from '../../lib/i18n/i18n.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   interface VacationResponse {
     id: string;
@@ -146,7 +147,7 @@
   <p class="hint">{t('common.loading')}</p>
 {:else if status === 'error'}
   <p class="error" role="alert">{error}</p>
-  <button type="button" onclick={() => void load()}>{t('common.retry')}</button>
+  <Button variant="secondary" onclick={() => void load()}>{t('common.retry')}</Button>
 {:else}
   <div class="row">
     <span class="label">{t('settings.vacation.autoReply')}</span>
@@ -193,9 +194,9 @@
 
   <div class="row">
     <span class="label"></span>
-    <button type="button" class="primary" onclick={() => void save()} disabled={saving}>
+    <Button variant="primary" onclick={() => void save()} disabled={saving}>
       {saving ? t('common.saving') : t('common.save')}
-    </button>
+    </Button>
   </div>
 {/if}
 
@@ -284,22 +285,6 @@
   }
   .switch input:checked + .track::before {
     transform: translateX(20px);
-  }
-
-  .primary {
-    padding: var(--spacing-03) var(--spacing-05);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    min-height: var(--touch-min);
-  }
-  .primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-  .primary:disabled {
-    opacity: 0.5;
-    cursor: progress;
   }
 
   .hint {

@@ -27,6 +27,7 @@
     clearAvatarCache,
   } from '../../lib/mail/avatar-resolver.svelte';
   import { t } from '../../lib/i18n/i18n.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   let saving = $state(false);
   let error = $state<string | null>(null);
@@ -184,12 +185,12 @@
       {t('settings.privacy.avatarLookup.confirmBody')}
     </p>
     <div class="confirm-actions">
-      <button type="button" class="btn-primary" onclick={confirmAvatarEnable}>
+      <Button variant="primary" onclick={confirmAvatarEnable}>
         {t('settings.privacy.avatarLookup.confirmEnable')}
-      </button>
-      <button type="button" class="btn-secondary" onclick={cancelAvatarConfirm}>
+      </Button>
+      <Button variant="secondary" onclick={cancelAvatarConfirm}>
         {t('settings.privacy.avatarLookup.confirmCancel')}
-      </button>
+      </Button>
     </div>
   </div>
 {/if}

@@ -26,6 +26,7 @@
     type ActionKind,
   } from '../../lib/settings/managed-rules.svelte';
   import { t } from '../../lib/i18n/i18n.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   $effect(() => {
     if (managedRules.loadStatus === 'idle') {
@@ -334,16 +335,18 @@
   <p class="hint">{t('settings.filters.loading')}</p>
 {:else if managedRules.loadStatus === 'error'}
   <p class="error" role="alert">{managedRules.loadError}</p>
-  <button type="button" onclick={() => void managedRules.load(true)}>{t('common.retry')}</button>
+  <Button variant="secondary" onclick={() => void managedRules.load(true)}>
+    {t('common.retry')}
+  </Button>
 {:else}
   <!-- ── Filters list ─────────────────────────────────────────────────── -->
 
   <section class="form-section">
     <div class="section-header">
       <h3>{t('settings.filters.heading2')}</h3>
-      <button type="button" class="small-btn" onclick={() => openCreate()}>
+      <Button variant="secondary" compact onclick={() => openCreate()}>
         {t('settings.filters.create')}
-      </button>
+      </Button>
     </div>
 
     <p class="hint">
@@ -401,22 +404,18 @@
             </div>
 
             <div class="rule-actions">
-              <button
-                type="button"
-                class="small-btn"
-                onclick={() => openEdit(rule)}
-              >
+              <Button variant="secondary" compact onclick={() => openEdit(rule)}>
                 {t('settings.filters.editBtn')}
-              </button>
+              </Button>
               {#if deleteConfirmId === rule.id}
                 <span class="confirm-delete">
                   {t('settings.filters.confirmDelete')}
-                  <button type="button" class="small-btn danger" onclick={() => void confirmDelete()}>
+                  <Button variant="danger" compact onclick={() => void confirmDelete()}>
                     {t('settings.filters.deleteBtn')}
-                  </button>
-                  <button type="button" class="small-btn" onclick={cancelDelete}>
+                  </Button>
+                  <Button variant="secondary" compact onclick={cancelDelete}>
                     {t('common.cancel')}
-                  </button>
+                  </Button>
                 </span>
               {:else}
                 <button
@@ -462,9 +461,9 @@
       <div class="subsection">
         <div class="subsection-header">
           <span class="subsection-title">{t('settings.filters.conditionsHeading')}</span>
-          <button type="button" class="small-btn" onclick={addCondition}>
+          <Button variant="secondary" compact onclick={addCondition}>
             {t('settings.filters.addCondition')}
-          </button>
+          </Button>
         </div>
 
         {#if editConditions.length === 0}
@@ -526,9 +525,9 @@
       <div class="subsection">
         <div class="subsection-header">
           <span class="subsection-title">{t('settings.filters.actionsHeading')}</span>
-          <button type="button" class="small-btn" onclick={addAction}>
+          <Button variant="secondary" compact onclick={addAction}>
             {t('settings.filters.addAction')}
-          </button>
+          </Button>
         </div>
 
         {#if editActions.length === 0}
@@ -589,14 +588,14 @@
 
       <!-- Test against existing mail -->
       <div class="test-row">
-        <button
-          type="button"
-          class="small-btn"
+        <Button
+          variant="secondary"
+          compact
           onclick={() => void runTest()}
           disabled={testRunning || editConditions.length === 0}
         >
           {testRunning ? t('settings.filters.testing') : t('settings.filters.test')}
-        </button>
+        </Button>
         {#if testCount !== null}
           <span class="test-result">
             {testCount === 1
@@ -608,21 +607,16 @@
 
       <!-- Save / cancel -->
       <div class="action-row">
-        <button
-          type="button"
-          class="primary"
-          onclick={() => void saveRule()}
-          disabled={saving}
-        >
+        <Button variant="primary" onclick={() => void saveRule()} disabled={saving}>
           {saving
             ? t('common.saving')
             : editorMode === 'create'
               ? t('settings.filters.create')
               : t('settings.filters.save')}
-        </button>
-        <button type="button" onclick={cancelEditor}>
+        </Button>
+        <Button variant="secondary" onclick={cancelEditor}>
           {t('common.cancel')}
-        </button>
+        </Button>
       </div>
     </section>
   {/if}
@@ -643,13 +637,13 @@
           {@const addr = blockedSenderAddress(rule)}
           <li class="blocked-row">
             <span class="blocked-addr">{addr ?? rule.name}</span>
-            <button
-              type="button"
-              class="small-btn"
+            <Button
+              variant="secondary"
+              compact
               onclick={() => void managedRules.unblockSender(addr ?? '')}
             >
               {t('settings.filters.unblock')}
-            </button>
+            </Button>
           </li>
         {/each}
       </ul>
@@ -1001,57 +995,5 @@
   .icon-btn.danger:hover:not(:disabled) {
     background: var(--support-error);
     color: var(--text-on-color);
-  }
-
-  .small-btn {
-    padding: var(--spacing-01) var(--spacing-03);
-    border-radius: var(--radius-md);
-    background: var(--layer-02);
-    color: var(--text-primary);
-    font-size: var(--type-body-compact-01-size);
-    min-height: var(--touch-min);
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-    white-space: nowrap;
-  }
-  .small-btn:hover:not(:disabled) {
-    background: var(--layer-03);
-  }
-  .small-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-  .small-btn.danger:hover:not(:disabled) {
-    background: var(--support-error);
-    color: var(--text-on-color);
-  }
-
-  .primary {
-    padding: var(--spacing-03) var(--spacing-05);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    min-height: var(--touch-min);
-  }
-  .primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-  .primary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  button:not(.icon-btn):not(.small-btn):not(.primary) {
-    padding: var(--spacing-02) var(--spacing-04);
-    border-radius: var(--radius-md);
-    background: var(--layer-02);
-    color: var(--text-secondary);
-    font-size: var(--type-body-compact-01-size);
-    min-height: var(--touch-min);
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-  }
-  button:not(.icon-btn):not(.small-btn):not(.primary):hover {
-    background: var(--layer-03);
-    color: var(--text-primary);
   }
 </style>

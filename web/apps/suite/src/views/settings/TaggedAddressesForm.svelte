@@ -37,6 +37,7 @@
   import { toast } from '../../lib/toast/toast.svelte';
   import { t } from '../../lib/i18n/i18n.svelte';
   import TaggedAddressFilterDialog from './TaggedAddressFilterDialog.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   // Identities feed both the email-for sort and the row labels. The
   // settings panel already lazy-loads them when the Account section
@@ -221,15 +222,15 @@
             {t('settings.taggedAddresses.capNotice', { used: filterCount, cap: FILTER_CAP })}
           </span>
         {/if}
-        <button
-          type="button"
-          class="primary"
+        <Button
+          variant="primary"
+          compact
           onclick={openCreate}
           disabled={capReached}
-          data-testid="tagged-addresses-add"
+          testid="tagged-addresses-add"
         >
           {t('settings.taggedAddresses.addFilter')}
-        </button>
+        </Button>
       </div>
     </header>
 
@@ -271,39 +272,39 @@
               <td>{filter.labelName}</td>
               <td>{formatDate(filter.createdAt)}</td>
               <td class="row-actions">
-                <button
-                  type="button"
-                  class="ghost"
+                <Button
+                  variant="secondary"
+                  compact
                   onclick={() => openEdit(filter)}
-                  aria-label={t('settings.taggedAddresses.row.editAria', {
+                  ariaLabel={t('settings.taggedAddresses.row.editAria', {
                     address: rowAddress(filter),
                   })}
-                  data-testid={`tagged-addresses-filter-edit-${filter.id}`}
+                  testid={`tagged-addresses-filter-edit-${filter.id}`}
                 >
                   {t('settings.taggedAddresses.row.edit')}
-                </button>
-                <button
-                  type="button"
-                  class="ghost"
+                </Button>
+                <Button
+                  variant="secondary"
+                  compact
                   onclick={() => void onConvert(filter)}
-                  aria-label={t('settings.taggedAddresses.row.convertAria', {
+                  ariaLabel={t('settings.taggedAddresses.row.convertAria', {
                     address: rowAddress(filter),
                   })}
-                  data-testid={`tagged-addresses-filter-convert-${filter.id}`}
+                  testid={`tagged-addresses-filter-convert-${filter.id}`}
                 >
                   {t('settings.taggedAddresses.row.convert')}
-                </button>
-                <button
-                  type="button"
-                  class="ghost danger"
+                </Button>
+                <Button
+                  variant="danger"
+                  compact
                   onclick={() => void onDelete(filter)}
-                  aria-label={t('settings.taggedAddresses.row.deleteAria', {
+                  ariaLabel={t('settings.taggedAddresses.row.deleteAria', {
                     address: rowAddress(filter),
                   })}
-                  data-testid={`tagged-addresses-filter-delete-${filter.id}`}
+                  testid={`tagged-addresses-filter-delete-${filter.id}`}
                 >
                   {t('settings.taggedAddresses.row.delete')}
-                </button>
+                </Button>
               </td>
             </tr>
           {/each}
@@ -363,17 +364,17 @@
                     <td class="address mono">{dismissalAddress(dismissal)}</td>
                     <td>{formatDate(dismissal.dismissed_at)}</td>
                     <td class="row-actions">
-                      <button
-                        type="button"
-                        class="ghost"
+                      <Button
+                        variant="secondary"
+                        compact
                         onclick={() => void onUndismiss(dismissal)}
-                        aria-label={t('settings.taggedAddresses.row.undismissAria', {
+                        ariaLabel={t('settings.taggedAddresses.row.undismissAria', {
                           address: dismissalAddress(dismissal),
                         })}
-                        data-testid={`tagged-addresses-dismissal-undismiss-${dismissal.base_identity_id}-${dismissal.suffix}`}
+                        testid={`tagged-addresses-dismissal-undismiss-${dismissal.base_identity_id}-${dismissal.suffix}`}
                       >
                         {t('settings.taggedAddresses.row.undismiss')}
-                      </button>
+                      </Button>
                     </td>
                   </tr>
                 {/each}
@@ -518,37 +519,4 @@
     justify-content: flex-end;
   }
 
-  .ghost,
-  .primary {
-    padding: var(--spacing-02) var(--spacing-04);
-    border-radius: var(--radius-pill);
-    min-height: var(--touch-min);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 600;
-  }
-  .ghost {
-    background: transparent;
-    color: var(--text-secondary);
-    border: 1px solid var(--border-subtle-01);
-  }
-  .ghost:hover {
-    background: var(--layer-03);
-    color: var(--text-primary);
-  }
-  .ghost.danger:hover {
-    background: var(--support-error);
-    color: var(--text-on-color);
-    border-color: var(--support-error);
-  }
-  .primary {
-    background: var(--interactive);
-    color: var(--text-on-color);
-  }
-  .primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-  .primary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
 </style>

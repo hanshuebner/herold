@@ -26,6 +26,7 @@
     UnauthenticatedError,
   } from '../../lib/api/client';
   import { localeTag, t } from '../../lib/i18n/i18n.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   // End-user scopes available for key creation. Sorted to match AllEndUserScopes
   // canonical order (auth/scope.go). Admin and webhook.publish are deliberately
@@ -250,14 +251,14 @@
         onclick={(e) => (e.currentTarget as HTMLInputElement).select()}
         aria-label={t('settings.apiKeys.newKeyAria')}
       />
-      <button type="button" class="btn-secondary" onclick={copyToken}>
+      <Button variant="secondary" onclick={copyToken}>
         {revealCopied ? t('common.copied') : t('common.copy')}
-      </button>
+      </Button>
     </div>
     <div class="reveal-actions">
-      <button type="button" class="btn-primary" onclick={dismissReveal}>
+      <Button variant="primary" onclick={dismissReveal}>
         {t('settings.apiKeys.savedKey')}
-      </button>
+      </Button>
     </div>
   </div>
 {/if}
@@ -302,19 +303,19 @@
     {/if}
 
     <div class="form-actions">
-      <button type="button" class="btn-secondary" onclick={cancelCreate} disabled={creating}>
+      <Button variant="secondary" onclick={cancelCreate} disabled={creating}>
         {t('common.cancel')}
-      </button>
-      <button type="submit" class="btn-primary" disabled={creating}>
+      </Button>
+      <Button type="submit" variant="primary" disabled={creating}>
         {creating ? t('settings.apiKeys.creating') : t('settings.apiKeys.create')}
-      </button>
+      </Button>
     </div>
   </form>
 {:else}
   <div class="list-header">
-    <button type="button" class="btn-primary" onclick={openCreate}>
+    <Button variant="primary" onclick={openCreate}>
       {t('settings.apiKeys.createNew')}
-    </button>
+    </Button>
   </div>
 {/if}
 
@@ -336,13 +337,9 @@
             <span class="key-meta">{t('settings.apiKeys.lastUsed', { date: formatDate(key.last_used_at) })}</span>
           {/if}
         </div>
-        <button
-          type="button"
-          class="btn-revoke"
-          onclick={() => void revokeKey(key.id)}
-        >
+        <Button variant="danger" compact onclick={() => void revokeKey(key.id)}>
           {t('settings.apiKeys.revoke')}
-        </button>
+        </Button>
       </div>
     {/each}
   </div>
@@ -568,67 +565,4 @@
     .spinner { animation: none; }
   }
 
-  /* Buttons */
-  .btn-primary {
-    padding: var(--spacing-03) var(--spacing-06);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border-radius: var(--radius-md);
-    font-family: var(--font-sans);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 600;
-    min-height: var(--touch-min);
-    cursor: pointer;
-    border: none;
-    transition: filter var(--duration-fast-02) var(--easing-productive-enter),
-      opacity var(--duration-fast-02) var(--easing-productive-enter);
-    white-space: nowrap;
-  }
-  .btn-primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-  .btn-primary:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .btn-secondary {
-    padding: var(--spacing-03) var(--spacing-06);
-    background: var(--layer-02);
-    color: var(--text-primary);
-    border-radius: var(--radius-md);
-    font-family: var(--font-sans);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 500;
-    min-height: var(--touch-min);
-    cursor: pointer;
-    border: 1px solid var(--border-subtle-01);
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-    white-space: nowrap;
-  }
-  .btn-secondary:hover:not(:disabled) {
-    background: var(--layer-03);
-  }
-  .btn-secondary:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .btn-revoke {
-    padding: var(--spacing-02) var(--spacing-04);
-    background: none;
-    color: var(--support-error);
-    border-radius: var(--radius-md);
-    font-family: var(--font-sans);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 500;
-    cursor: pointer;
-    border: 1px solid var(--support-error);
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-    flex-shrink: 0;
-    white-space: nowrap;
-  }
-  .btn-revoke:hover {
-    background: color-mix(in srgb, var(--support-error) 10%, transparent);
-  }
 </style>

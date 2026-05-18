@@ -17,6 +17,7 @@
   import { confirm } from '../../lib/dialog/confirm.svelte';
   import { get, put, post, del, ApiError, UnauthenticatedError } from '../../lib/api/client';
   import { t } from '../../lib/i18n/i18n.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   // --- Principal fetch ---
 
@@ -270,9 +271,13 @@
     {/if}
 
     <div class="form-actions">
-      <button type="submit" class="btn-primary" disabled={pwSaving || !pwCurrent || !pwNew || !pwConfirm}>
+      <Button
+        type="submit"
+        variant="primary"
+        disabled={pwSaving || !pwCurrent || !pwNew || !pwConfirm}
+      >
         {pwSaving ? t('common.saving') : t('settings.security.changePwSubmit')}
-      </button>
+      </Button>
     </div>
   </form>
 
@@ -296,14 +301,13 @@
           bind:value={totpDisablePassword}
           disabled={totpLoading}
         />
-        <button
-          type="button"
-          class="btn-danger"
+        <Button
+          variant="danger"
           onclick={disableTOTP}
           disabled={totpLoading || !totpDisablePassword}
         >
           {totpLoading ? t('settings.security.disabling') : t('settings.security.disable2fa')}
-        </button>
+        </Button>
       </div>
       {#if totpDisableError}
         <p class="form-error" role="alert">{totpDisableError}</p>
@@ -317,14 +321,9 @@
 
     {#if !totpProvisioningUri}
       <div class="form-actions">
-        <button
-          type="button"
-          class="btn-primary"
-          onclick={startEnroll}
-          disabled={totpLoading}
-        >
+        <Button variant="primary" onclick={startEnroll} disabled={totpLoading}>
           {totpLoading ? t('settings.security.starting') : t('settings.security.enable2fa')}
-        </button>
+        </Button>
       </div>
       {#if totpConfirmError}
         <p class="form-error" role="alert">{totpConfirmError}</p>
@@ -382,14 +381,13 @@
             disabled={totpLoading}
             aria-label={t('settings.security.codeAria')}
           />
-          <button
-            type="button"
-            class="btn-primary"
+          <Button
+            variant="primary"
             onclick={confirmEnroll}
             disabled={totpLoading || !totpCode}
           >
             {totpLoading ? t('settings.security.confirming') : t('settings.security.confirmEnroll')}
-          </button>
+          </Button>
         </div>
 
         {#if totpConfirmError}
@@ -574,50 +572,4 @@
     margin: 0;
   }
 
-  /* Shared buttons */
-  .btn-primary {
-    padding: var(--spacing-03) var(--spacing-06);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border-radius: var(--radius-md);
-    font-family: var(--font-sans);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 600;
-    min-height: var(--touch-min);
-    cursor: pointer;
-    border: none;
-    transition: filter var(--duration-fast-02) var(--easing-productive-enter),
-      opacity var(--duration-fast-02) var(--easing-productive-enter);
-    white-space: nowrap;
-  }
-  .btn-primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-  .btn-primary:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .btn-danger {
-    padding: var(--spacing-03) var(--spacing-05);
-    background: var(--support-error);
-    color: var(--text-on-color);
-    border-radius: var(--radius-md);
-    font-family: var(--font-sans);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 600;
-    min-height: var(--touch-min);
-    cursor: pointer;
-    border: none;
-    transition: filter var(--duration-fast-02) var(--easing-productive-enter),
-      opacity var(--duration-fast-02) var(--easing-productive-enter);
-    white-space: nowrap;
-  }
-  .btn-danger:hover:not(:disabled) {
-    filter: brightness(0.9);
-  }
-  .btn-danger:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
 </style>

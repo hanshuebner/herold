@@ -20,6 +20,7 @@
   import { categorySettings } from '../../lib/settings/category-settings.svelte';
   import { llmTransparency } from '../../lib/llm/transparency.svelte';
   import { t } from '../../lib/i18n/i18n.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   $effect(() => {
     if (categorySettings.loadStatus === 'idle') {
@@ -72,7 +73,9 @@
   <p class="hint">{t('common.loading')}</p>
 {:else if categorySettings.loadStatus === 'error'}
   <p class="error" role="alert">{categorySettings.loadError}</p>
-  <button type="button" onclick={() => void categorySettings.load(true)}>{t('common.retry')}</button>
+  <Button variant="secondary" onclick={() => void categorySettings.load(true)}>
+    {t('common.retry')}
+  </Button>
 {:else}
   {#if categorySettings.recategorising}
     <div class="progress-banner" role="status">
@@ -111,16 +114,16 @@
       maxlength="32768"
     ></textarea>
     <div class="action-row">
-      <button type="button" class="primary" onclick={() => void savePrompt()}>
+      <Button variant="primary" onclick={() => void savePrompt()}>
         {t('cat.prompt.save')}
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
+        variant="secondary"
         onclick={() => void resetPrompt()}
         title={t('cat.prompt.resetTitle')}
       >
         {t('cat.prompt.reset')}
-      </button>
+      </Button>
     </div>
   </section>
 
@@ -150,9 +153,8 @@
       {t('cat.recategorise.hint')}
     </p>
     <div class="action-row">
-      <button
-        type="button"
-        class="primary"
+      <Button
+        variant="primary"
         onclick={() => void recategorise()}
         disabled={!categorySettings.bulkRecategoriseEnabled || categorySettings.recategorising}
         title={categorySettings.bulkRecategoriseEnabled
@@ -160,7 +162,7 @@
           : t('cat.recategorise.disabledTitle')}
       >
         {categorySettings.recategorising ? t('cat.recategorise.running') : t('cat.recategorise.run')}
-      </button>
+      </Button>
       {#if !categorySettings.bulkRecategoriseEnabled}
         <span class="hint">{t('cat.recategorise.notAvailable')}</span>
       {/if}
@@ -250,36 +252,6 @@
     align-items: center;
     gap: var(--spacing-03);
     flex-wrap: wrap;
-  }
-
-  .primary {
-    padding: var(--spacing-03) var(--spacing-05);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    min-height: var(--touch-min);
-  }
-  .primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-  .primary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  button:not(.primary) {
-    padding: var(--spacing-02) var(--spacing-04);
-    border-radius: var(--radius-md);
-    background: var(--layer-02);
-    color: var(--text-secondary);
-    font-size: var(--type-body-compact-01-size);
-    min-height: var(--touch-min);
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-  }
-  button:not(.primary):hover {
-    background: var(--layer-03);
-    color: var(--text-primary);
   }
 
   .prompt-display {
