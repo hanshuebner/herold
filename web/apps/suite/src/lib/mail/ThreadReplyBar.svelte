@@ -21,6 +21,7 @@
   import ReplyIcon from '../icons/ReplyIcon.svelte';
   import ReplyAllIcon from '../icons/ReplyAllIcon.svelte';
   import ForwardIcon from '../icons/ForwardIcon.svelte';
+  import Button from '@herold/design-system/Button.svelte';
   import type { Email } from './types';
 
   interface Props {
@@ -46,25 +47,41 @@
 </script>
 
 <div class="reply-bar" role="toolbar" aria-label={t('msg.reply')}>
-  <button type="button" class="action-btn" aria-label={t('msg.reply')} title={t('msg.reply')} onclick={reply}>
-    <ReplyIcon size={16} />
-    <span class="btn-label">{t('msg.reply')}</span>
-  </button>
+  <Button
+    variant="ghost"
+    compact
+    ariaLabel={t('msg.reply')}
+    title={t('msg.reply')}
+    onclick={reply}
+  >
+    {#snippet icon()}<ReplyIcon size={16} />{/snippet}
+    {t('msg.reply')}
+  </Button>
   {#if hasMultipleRecipients}
-    <button type="button" class="action-btn" aria-label={t('msg.replyAll')} title={t('msg.replyAll')} onclick={replyAll}>
-      <ReplyAllIcon size={16} />
-      <span class="btn-label">{t('msg.replyAll')}</span>
-    </button>
+    <Button
+      variant="ghost"
+      compact
+      ariaLabel={t('msg.replyAll')}
+      title={t('msg.replyAll')}
+      onclick={replyAll}
+    >
+      {#snippet icon()}<ReplyAllIcon size={16} />{/snippet}
+      {t('msg.replyAll')}
+    </Button>
   {/if}
-  <button type="button" class="action-btn" aria-label={t('msg.forward')} title={t('msg.forward')} onclick={forward}>
-    <ForwardIcon size={16} />
-    <span class="btn-label">{t('msg.forward')}</span>
-  </button>
+  <Button
+    variant="ghost"
+    compact
+    ariaLabel={t('msg.forward')}
+    title={t('msg.forward')}
+    onclick={forward}
+  >
+    {#snippet icon()}<ForwardIcon size={16} />{/snippet}
+    {t('msg.forward')}
+  </Button>
 </div>
 
 <style>
-  /* Mirror ThreadToolbar's container styling so the bottom CTAs feel
-     like a peer of the top toolbar (re #98). */
   .reply-bar {
     display: flex;
     align-items: center;
@@ -74,33 +91,6 @@
     border-top: 1px solid var(--border-subtle-01);
     flex-shrink: 0;
     flex-wrap: wrap;
-  }
-
-  /* Same pill shape and colours as ThreadToolbar's .action-btn.
-     Kept in sync deliberately — these two surfaces should read as one
-     family of buttons, not two competing visual systems. */
-  .action-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--spacing-02);
-    padding: var(--spacing-01) var(--spacing-03);
-    border-radius: var(--radius-pill);
-    color: var(--text-secondary);
-    background: transparent;
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 500;
-    min-height: 32px;
-    transition: background var(--duration-fast-02) var(--easing-productive-enter),
-      color var(--duration-fast-02) var(--easing-productive-enter);
-  }
-  .action-btn:hover {
-    background: var(--layer-02);
-    color: var(--text-primary);
-  }
-
-  .btn-label {
-    font-size: var(--type-body-compact-01-size);
-    white-space: nowrap;
   }
 
   @media print {

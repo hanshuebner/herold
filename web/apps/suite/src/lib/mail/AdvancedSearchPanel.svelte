@@ -3,6 +3,7 @@
   import { emptyFields, fieldsToQuery, queryToFields } from './advanced-search';
   import type { AdvancedSearchFields } from './advanced-search';
   import { t } from '../i18n/i18n.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   interface Props {
     /** The current raw query string from the URL (used to pre-populate fields). */
@@ -185,16 +186,8 @@
       </label>
 
       <div class="actions">
-        <button
-          type="button"
-          class="btn-clear"
-          onclick={handleClear}
-        >
-          Clear
-        </button>
-        <button type="submit" class="btn-search">
-          Search
-        </button>
+        <Button variant="ghost" onclick={handleClear}>Clear</Button>
+        <Button type="submit" variant="primary">Search</Button>
       </div>
     </div>
   </form>
@@ -346,34 +339,5 @@
     display: flex;
     gap: var(--spacing-03);
     align-items: center;
-  }
-
-  .btn-clear {
-    padding: var(--spacing-02) var(--spacing-05);
-    border-radius: var(--radius-pill);
-    color: var(--text-secondary);
-    font-size: var(--type-body-compact-01-size);
-    min-height: var(--touch-min);
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-  }
-
-  .btn-clear:hover {
-    background: var(--layer-02);
-    color: var(--text-primary);
-  }
-
-  .btn-search {
-    padding: var(--spacing-02) var(--spacing-05);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    font-size: var(--type-body-compact-01-size);
-    min-height: var(--touch-min);
-    transition: filter var(--duration-fast-02) var(--easing-productive-enter);
-  }
-
-  .btn-search:hover {
-    filter: brightness(1.1);
   }
 </style>

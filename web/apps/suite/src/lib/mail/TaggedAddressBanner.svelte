@@ -36,6 +36,7 @@
   import { toast } from '../toast/toast.svelte';
   import { t } from '../i18n/i18n.svelte';
   import { untrack } from 'svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   interface Props {
     /** The message whose X-Herold-Recipient drives the banner. */
@@ -143,38 +144,38 @@
       <span>{t('mail.taggedBanner.lead')}</span>
     </div>
     <div class="actions">
-      <button
-        type="button"
-        class="btn-primary"
-        data-testid="tagged-banner-label"
+      <Button
+        variant="primary"
+        compact
+        testid="tagged-banner-label"
         onclick={() => void applyFilter('label')}
       >
         {t('mail.taggedBanner.action.label')}
-      </button>
-      <button
-        type="button"
-        class="btn-primary"
-        data-testid="tagged-banner-label-archive"
+      </Button>
+      <Button
+        variant="primary"
+        compact
+        testid="tagged-banner-label-archive"
         onclick={() => void applyFilter('label_archive')}
       >
         {t('mail.taggedBanner.action.labelArchive')}
-      </button>
-      <button
-        type="button"
-        class="btn-primary"
-        data-testid="tagged-banner-label-archive-read"
+      </Button>
+      <Button
+        variant="primary"
+        compact
+        testid="tagged-banner-label-archive-read"
         onclick={() => void applyFilter('label_archive_read')}
       >
         {t('mail.taggedBanner.action.labelArchiveRead')}
-      </button>
-      <button
-        type="button"
-        class="btn-secondary"
-        data-testid="tagged-banner-dismiss"
+      </Button>
+      <Button
+        variant="secondary"
+        compact
+        testid="tagged-banner-dismiss"
         onclick={() => void dismiss()}
       >
         {t('mail.taggedBanner.action.dismiss', { suffix: visibility.suffix })}
-      </button>
+      </Button>
     </div>
   </section>
 {/if}
@@ -209,38 +210,5 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--spacing-03);
-  }
-
-  .btn-primary,
-  .btn-secondary {
-    padding: var(--spacing-02) var(--spacing-04);
-    border-radius: var(--radius-pill);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 600;
-    min-height: var(--touch-min);
-    cursor: pointer;
-    transition:
-      background var(--duration-fast-02) var(--easing-productive-enter),
-      filter var(--duration-fast-02) var(--easing-productive-enter);
-  }
-
-  .btn-primary {
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border: 1px solid transparent;
-  }
-
-  .btn-primary:hover {
-    filter: brightness(1.1);
-  }
-
-  .btn-secondary {
-    background: var(--layer-03);
-    color: var(--text-primary);
-    border: 1px solid var(--border-subtle-01);
-  }
-
-  .btn-secondary:hover {
-    background: var(--layer-01);
   }
 </style>

@@ -29,6 +29,7 @@
   import { t } from '../i18n/i18n.svelte';
   import { toast } from '../toast/toast.svelte';
   import Avatar from '../avatar/Avatar.svelte';
+  import Button from '@herold/design-system/Button.svelte';
   import CopyIcon from '../icons/CopyIcon.svelte';
   import PhoneIcon from '../icons/PhoneIcon.svelte';
   import ChatIcon from '../icons/ChatIcon.svelte';
@@ -411,9 +412,11 @@
     {/if}
 
     <div class="actions">
-      <button type="button" class="primary" onclick={handleSendEmail}>
-        {t('contact.card.sendEmail')}
-      </button>
+      <div class="primary-slot">
+        <Button variant="primary" onclick={handleSendEmail}>
+          {t('contact.card.sendEmail')}
+        </Button>
+      </div>
       <button
         type="button"
         class="secondary"
@@ -570,19 +573,12 @@
     align-items: center;
     margin-top: var(--spacing-02);
   }
-  .primary {
+  .primary-slot {
     flex: 1 1 auto;
-    height: 36px;
-    padding: 0 var(--spacing-04);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    font-size: var(--type-body-compact-01-size);
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+    display: flex;
   }
-  .primary:hover {
-    background: var(--interactive-hover, var(--interactive));
+  .primary-slot :global(.ds-btn) {
+    width: 100%;
   }
   .secondary {
     width: 36px;

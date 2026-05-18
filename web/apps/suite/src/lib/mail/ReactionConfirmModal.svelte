@@ -7,6 +7,7 @@
    * people via outbound reaction email.
    */
   import { reactionConfirm } from './reaction-confirm.svelte';
+  import Button from '@herold/design-system/Button.svelte';
 
   let dontAskAgain = $state(false);
   let ctx = $derived(reactionConfirm.pending);
@@ -33,12 +34,12 @@
         Don't ask again for this list
       </label>
       <div class="actions">
-        <button type="button" class="btn-secondary" onclick={() => ctx?.onCancel()}>
+        <Button variant="secondary" onclick={() => ctx?.onCancel()}>
           Cancel
-        </button>
-        <button type="button" class="btn-primary" onclick={() => ctx?.onConfirm(dontAskAgain)}>
+        </Button>
+        <Button variant="primary" onclick={() => ctx?.onConfirm(dontAskAgain)}>
           Send reaction
-        </button>
+        </Button>
       </div>
     </div>
   </div>
@@ -105,35 +106,5 @@
     justify-content: flex-end;
     gap: var(--spacing-03);
     margin-top: var(--spacing-02);
-  }
-
-  .btn-secondary,
-  .btn-primary {
-    padding: var(--spacing-02) var(--spacing-05);
-    border-radius: var(--radius-md);
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 500;
-    min-height: 32px;
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-  }
-
-  .btn-secondary {
-    background: var(--layer-01);
-    color: var(--text-primary);
-    border: 1px solid var(--border-subtle-01);
-  }
-
-  .btn-secondary:hover {
-    background: var(--layer-03);
-  }
-
-  .btn-primary {
-    background: var(--interactive);
-    color: var(--text-on-color);
-    border: 1px solid transparent;
-  }
-
-  .btn-primary:hover {
-    opacity: 0.9;
   }
 </style>
