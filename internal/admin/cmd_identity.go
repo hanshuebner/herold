@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sort"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/cliout"
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/identityverify"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -23,7 +25,7 @@ import (
 const defaultIdentityID = "default"
 
 // newIdentityCmd assembles the `herold identity` admin sub-command tree
-// (verify / unverify / list). Documents REQ-IDENT-50..52.
+// (verify / unverify / list / reissue-code). Documents REQ-IDENT-50..52.
 //
 // These commands open the store directly from --system-config rather
 // than going through the admin REST surface. Identity verification is
@@ -33,15 +35,22 @@ const defaultIdentityID = "default"
 func newIdentityCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "identity",
-		Short: "Identity verification management (verify, unverify, list)",
+		Short: "Identity verification management (verify, unverify, list, reissue-code)",
 		Long: "Operator-side admin surface for the per-principal Identity " +
 			"verification flow (REQ-IDENT-50..52). Used for incident " +
 			"recovery, bootstrap of import flows, and operator-assisted " +
-			"setup when email delivery to the target is broken.",
+			"setup when email delivery to the target is broken.\n\n" +
+			"Subcommands:\n" +
+			"  verify        mark a JMAP Identity verified\n" +
+			"  unverify      revert a JMAP Identity to unverified\n" +
+			"  list          list JMAP Identities with verification status\n" +
+			"  reissue-code  issue a fresh verification code and print it " +
+			"(testing aid)",
 	}
 	c.AddCommand(newIdentityVerifyCmd())
 	c.AddCommand(newIdentityUnverifyCmd())
 	c.AddCommand(newIdentityListCmd())
+	c.AddCommand(newIdentityReissueCodeCmd())
 	return c
 }
 
@@ -108,6 +117,110 @@ func newIdentityListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&principalRef, "principal", "",
 		"restrict listing to one principal (email or numeric id)")
 	return cmd
+}
+
+// newIdentityReissueCodeCmd implements a testing aid: it re-issues the
+// verification token + 6-digit code on an unverified Identity row and
+// prints the plaintext code (and token / link) to stdout.
+//
+// The live verification flow stores only sha256 hashes of the token and
+// code (migration 0048), so an in-flight code can never be recovered.
+// This command therefore generates a *fresh* token+code pair, persists
+// the new hashes and a fresh 24h expiry, and prints the plaintext so a
+// tester has a usable code without having to receive the email.
+func newIdentityReissueCodeCmd() *cobra.Command {
+	var operatorRef string
+	cmd := &cobra.Command{
+		Use:   "reissue-code <identity-id>",
+		Short: "issue a fresh verification code and print it (testing aid)",
+		Long: "Generates a fresh verification token + 6-digit code for the " +
+			"unverified Identity row identified by <identity-id>, persists " +
+			"the new sha256 hashes and a fresh 24h expiry, and prints the " +
+			"plaintext code, token, and verification link to stdout.\n\n" +
+			"Because the live verification flow stores only the hashes, an " +
+			"in-flight code cannot be recovered; this command always " +
+			"re-issues. Intended for testing the verification flow without " +
+			"receiving the verification email.\n\n" +
+			"Audit-logged as identity.reissue-code.admin. Refused on the " +
+			"synthesised default identity (id \"default\") because it has " +
+			"no row and is verified by construction. Refused on an " +
+			"already-verified Identity because re-issuing a code there is " +
+			"meaningless; unverify it first if you intend to re-test.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runIdentityReissueCode(cmd, args[0], operatorRef)
+		},
+	}
+	cmd.Flags().StringVar(&operatorRef, "operator", "",
+		"operator principal (email or numeric id) recorded in the audit log; "+
+			"defaults to a system actor when unset")
+	return cmd
+}
+
+// runIdentityReissueCode wires the reissue-code testing aid.
+func runIdentityReissueCode(cmd *cobra.Command, identityID, operatorRef string) error {
+	if identityID == defaultIdentityID {
+		return errors.New("identity reissue-code: the default identity is verified by construction; nothing to re-issue")
+	}
+	g := globals(cmd.Context())
+	cfg, err := requireConfig(g)
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	clk := clock.NewReal()
+	st, err := openStore(ctx, cfg, discardLogger(), clk)
+	if err != nil {
+		return fmt.Errorf("identity reissue-code: open store: %w", err)
+	}
+	defer st.Close()
+
+	row, err := st.Meta().GetJMAPIdentity(ctx, identityID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("identity reissue-code: identity %q not found", identityID)
+		}
+		return fmt.Errorf("identity reissue-code: lookup: %w", err)
+	}
+	if row.VerifiedAtUs != 0 {
+		return fmt.Errorf("identity reissue-code: identity %q is already verified; "+
+			"unverify it first if you intend to re-test", identityID)
+	}
+
+	// Generate a fresh token + code via the identityverify package; the
+	// live flow (identityverify.Dispatcher) does exactly this. Persist
+	// sha256 hashes of the ASCII forms and a fresh 24h expiry.
+	token, _, err := identityverify.GenerateToken()
+	if err != nil {
+		return fmt.Errorf("identity reissue-code: generate token: %w", err)
+	}
+	code, err := identityverify.GenerateCode()
+	if err != nil {
+		return fmt.Errorf("identity reissue-code: generate code: %w", err)
+	}
+	tokenHash := sha256.Sum256([]byte(token))
+	codeHash := sha256.Sum256([]byte(code))
+	expiresAtUs := clk.Now().Add(identityverify.TokenTTL).UnixMicro()
+
+	// ResetIdentityVerificationToken overwrites the verification trio
+	// without rejecting a live token and without the resend rate-limit
+	// gate — the right path for an operator-driven re-issue.
+	if err := st.Meta().ResetIdentityVerificationToken(
+		ctx, identityID, tokenHash[:], codeHash[:], expiresAtUs); err != nil {
+		return fmt.Errorf("identity reissue-code: %w", err)
+	}
+
+	emitIdentityAudit(ctx, st, clk, "identity.reissue-code.admin", row, operatorRef,
+		fmt.Sprintf("verification code re-issued for identity %s by admin CLI", identityID))
+
+	w := cmd.OutOrStdout()
+	link := "https://" + cfg.Server.Hostname + "/verify-identity?token=" + token
+	fmt.Fprintf(w, "identity:   %s %s\n", row.ID, row.Email)
+	fmt.Fprintf(w, "code:       %s\n", code)
+	fmt.Fprintf(w, "token:      %s\n", token)
+	fmt.Fprintf(w, "link:       %s\n", link)
+	fmt.Fprintf(w, "expires-at: %s\n", cliout.FormatTimeValue(time.UnixMicro(expiresAtUs).UTC()))
+	return nil
 }
 
 // runIdentityVerify wires REQ-IDENT-50.

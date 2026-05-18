@@ -221,6 +221,7 @@ The synthesised default identity (id `"default"`, derived from the principal row
 - **REQ-IDENT-50** `herold identity verify <identity-id>` immediately sets `verified_at_us = now` and clears any pending token. The CLI ignores the verification email round-trip; intended for incident recovery, bootstrap of import flows, or operator-assisted setup when email delivery to the target is broken. Audit-logged as `identity.verify.admin` with the operator's principal id.
 - **REQ-IDENT-51** `herold identity unverify <identity-id>` reverts a verified Identity to unverified (sets `verified_at_us = NULL`); used to revoke a compromised identity. Audit-logged. Refused for the synthesised default identity.
 - **REQ-IDENT-52** `herold identity list [--principal <id>]` lists Identities with verification status. Useful for operators to inspect pending verifications.
+- `herold identity reissue-code <identity-id>` is a testing aid: it generates a fresh verification token + 6-digit code for an unverified Identity, persists the new sha256 hashes and a fresh 24h expiry (via `ResetIdentityVerificationToken`), and prints the plaintext code, token, and `/verify-identity?token=...` link to stdout. Because the live flow stores only the hashes (migration 0048), an in-flight code can never be recovered, so the command always re-issues. Audit-logged as `identity.reissue-code.admin`. Refused on the synthesised default identity and on an already-verified Identity (unverify it first to re-test).
 
 ### Send-side gating
 

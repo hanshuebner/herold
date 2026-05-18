@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"strconv"
 	"strings"
 	"testing"
@@ -383,5 +384,213 @@ func TestCLIIdentityList_VerifiedColumn(t *testing.T) {
 	}
 	if !sawUnverifiedNo {
 		t.Errorf("expected unverified row to show 'no'; stdout:\n%s", stdout)
+	}
+}
+
+// parseReissueCode extracts the value following a "<label>:" prefix in
+// the reissue-code command's "label: value" stdout lines.
+func parseReissueCode(t *testing.T, stdout, label string) string {
+	t.Helper()
+	for _, ln := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(ln, label+":") {
+			return strings.TrimSpace(strings.TrimPrefix(ln, label+":"))
+		}
+	}
+	t.Fatalf("reissue-code output missing %q line; stdout:\n%s", label, stdout)
+	return ""
+}
+
+// TestCLIIdentityReissueCode_Persistent: happy-path re-issue on a
+// persisted unverified identity. The printed code's sha256 must match
+// the persisted verification_code_hash, and a fresh 24h expiry must be
+// written.
+func TestCLIIdentityReissueCode_Persistent(t *testing.T) {
+	t.Parallel()
+	cfgPath, _ := minimalConfigFixture(t)
+	st := openIdentityTestStore(t, cfgPath)
+	p := seedPrincipalDirect(t, st, "alice@test.local")
+	id := seedIdentityRow(t, st, p.ID, "ident-reissue", "alice+r@example.com")
+
+	stdout, _, err := runIdentity(t, cfgPath, "identity", "reissue-code", id)
+	if err != nil {
+		t.Fatalf("identity reissue-code: %v", err)
+	}
+
+	code := parseReissueCode(t, stdout, "code")
+	token := parseReissueCode(t, stdout, "token")
+	if len(code) != 6 {
+		t.Errorf("expected 6-digit code, got %q", code)
+	}
+	if token == "" {
+		t.Errorf("expected non-empty token")
+	}
+	if !strings.Contains(stdout, "/verify-identity?token=") {
+		t.Errorf("expected verification link in output; stdout:\n%s", stdout)
+	}
+
+	row, err := st.Meta().GetJMAPIdentity(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity: %v", err)
+	}
+	wantCodeHash := sha256.Sum256([]byte(code))
+	if !bytes.Equal(row.VerificationCodeHash, wantCodeHash[:]) {
+		t.Errorf("persisted code hash does not match printed code")
+	}
+	wantTokenHash := sha256.Sum256([]byte(token))
+	if !bytes.Equal(row.VerificationTokenHash, wantTokenHash[:]) {
+		t.Errorf("persisted token hash does not match printed token")
+	}
+	if row.VerificationTokenExpiresAtUs == 0 {
+		t.Errorf("expected fresh expiry on the row, got 0")
+	}
+	if row.VerifiedAtUs != 0 {
+		t.Errorf("reissue-code must not verify the identity; VerifiedAtUs=%d", row.VerifiedAtUs)
+	}
+
+	entries, err := st.Meta().ListAuditLog(context.Background(), store.AuditLogFilter{
+		Action: "identity.reissue-code.admin",
+	})
+	if err != nil {
+		t.Fatalf("ListAuditLog: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 audit entry, got %d", len(entries))
+	}
+	if entries[0].Subject != "identity:"+id {
+		t.Errorf("audit subject: got %q, want identity:%s", entries[0].Subject, id)
+	}
+	if entries[0].Metadata["email"] != "alice+r@example.com" {
+		t.Errorf("audit metadata email: got %q", entries[0].Metadata["email"])
+	}
+}
+
+// TestCLIIdentityReissueCode_RotatesCode: a second re-issue produces a
+// fresh code and overwrites the persisted hash.
+func TestCLIIdentityReissueCode_RotatesCode(t *testing.T) {
+	t.Parallel()
+	cfgPath, _ := minimalConfigFixture(t)
+	st := openIdentityTestStore(t, cfgPath)
+	p := seedPrincipalDirect(t, st, "alice@test.local")
+	id := seedIdentityRow(t, st, p.ID, "ident-rotate", "alice+rot@example.com")
+
+	out1, _, err := runIdentity(t, cfgPath, "identity", "reissue-code", id)
+	if err != nil {
+		t.Fatalf("first reissue-code: %v", err)
+	}
+	out2, _, err := runIdentity(t, cfgPath, "identity", "reissue-code", id)
+	if err != nil {
+		t.Fatalf("second reissue-code: %v", err)
+	}
+
+	token1 := parseReissueCode(t, out1, "token")
+	token2 := parseReissueCode(t, out2, "token")
+	if token1 == token2 {
+		t.Errorf("expected the token to rotate between re-issues")
+	}
+
+	row, err := st.Meta().GetJMAPIdentity(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity: %v", err)
+	}
+	want := sha256.Sum256([]byte(parseReissueCode(t, out2, "code")))
+	if !bytes.Equal(row.VerificationCodeHash, want[:]) {
+		t.Errorf("persisted hash must match the most recent re-issue")
+	}
+}
+
+// TestCLIIdentityReissueCode_WithOperator: --operator resolves to
+// ActorPrincipal/<pid> in the audit log.
+func TestCLIIdentityReissueCode_WithOperator(t *testing.T) {
+	t.Parallel()
+	cfgPath, _ := minimalConfigFixture(t)
+	st := openIdentityTestStore(t, cfgPath)
+	op := seedPrincipalDirect(t, st, "admin@test.local")
+	user := seedPrincipalDirect(t, st, "user@test.local")
+	id := seedIdentityRow(t, st, user.ID, "ident-op", "user+op@example.com")
+
+	if _, _, err := runIdentity(t, cfgPath, "identity", "reissue-code", id,
+		"--operator", "admin@test.local"); err != nil {
+		t.Fatalf("identity reissue-code --operator: %v", err)
+	}
+
+	entries, err := st.Meta().ListAuditLog(context.Background(), store.AuditLogFilter{
+		Action: "identity.reissue-code.admin",
+	})
+	if err != nil {
+		t.Fatalf("ListAuditLog: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 audit entry, got %d", len(entries))
+	}
+	if entries[0].ActorKind != store.ActorPrincipal {
+		t.Errorf("ActorKind: got %v, want ActorPrincipal", entries[0].ActorKind)
+	}
+	wantID := strconv.FormatUint(uint64(op.ID), 10)
+	if entries[0].ActorID != wantID {
+		t.Errorf("ActorID: got %q, want %q", entries[0].ActorID, wantID)
+	}
+}
+
+// TestCLIIdentityReissueCode_AlreadyVerifiedRejected: re-issuing a code
+// for an already-verified identity is meaningless and is refused.
+func TestCLIIdentityReissueCode_AlreadyVerifiedRejected(t *testing.T) {
+	t.Parallel()
+	cfgPath, _ := minimalConfigFixture(t)
+	st := openIdentityTestStore(t, cfgPath)
+	p := seedPrincipalDirect(t, st, "alice@test.local")
+	id := seedIdentityRow(t, st, p.ID, "ident-verified", "alice+v@example.com")
+	if err := st.Meta().MarkIdentityVerified(context.Background(), id); err != nil {
+		t.Fatalf("MarkIdentityVerified seed: %v", err)
+	}
+
+	_, _, err := runIdentity(t, cfgPath, "identity", "reissue-code", id)
+	if err == nil {
+		t.Fatal("expected error re-issuing code for a verified identity")
+	}
+	if !strings.Contains(err.Error(), "already verified") {
+		t.Fatalf("expected 'already verified' message, got: %v", err)
+	}
+
+	entries, err := st.Meta().ListAuditLog(context.Background(), store.AuditLogFilter{
+		Action: "identity.reissue-code.admin",
+	})
+	if err != nil {
+		t.Fatalf("ListAuditLog: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected 0 audit entries on verified-reject, got %d", len(entries))
+	}
+}
+
+// TestCLIIdentityReissueCode_DefaultIsRejected: the synthesised default
+// identity has no row and is verified by construction.
+func TestCLIIdentityReissueCode_DefaultIsRejected(t *testing.T) {
+	t.Parallel()
+	cfgPath, _ := minimalConfigFixture(t)
+	st := openIdentityTestStore(t, cfgPath)
+	seedPrincipalDirect(t, st, "alice@test.local")
+
+	_, _, err := runIdentity(t, cfgPath, "identity", "reissue-code", "default")
+	if err == nil {
+		t.Fatal("expected error re-issuing code for 'default' identity")
+	}
+	if !strings.Contains(err.Error(), "verified by construction") {
+		t.Fatalf("expected 'verified by construction' message, got: %v", err)
+	}
+}
+
+// TestCLIIdentityReissueCode_NotFound: clear operator-facing error for
+// an unknown identity id.
+func TestCLIIdentityReissueCode_NotFound(t *testing.T) {
+	t.Parallel()
+	cfgPath, _ := minimalConfigFixture(t)
+	openIdentityTestStore(t, cfgPath)
+
+	_, _, err := runIdentity(t, cfgPath, "identity", "reissue-code", "ghost")
+	if err == nil {
+		t.Fatal("expected error for missing identity")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected 'not found' in error, got: %v", err)
 	}
 }
