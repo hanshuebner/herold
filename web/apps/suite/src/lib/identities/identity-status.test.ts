@@ -125,14 +125,26 @@ describe('sortIdentities', () => {
   });
   const unv = makeIdentity('6', 'u@x.test', { verifiedAt: null });
 
-  it('places default identity first', () => {
-    const out = sortIdentities([verA, unv, def, pending1]);
-    expect(out[0]).toBe(def);
+  it('does not special-case the default identity — it sorts within the verified group by email', () => {
+    // default@x.test sorts after a@x.test and b@x.test alphabetically
+    // even though it carries isDefault: true.
+    const out = sortIdentities([verB, verA, def]);
+    expect(out.map((i) => i.email)).toEqual(['a@x.test', 'b@x.test', 'default@x.test']);
   });
 
-  it('places verified identities alphabetically by email after the default', () => {
-    const out = sortIdentities([verB, verA, def]);
-    expect(out.map((i) => i.email)).toEqual(['default@x.test', 'a@x.test', 'b@x.test']);
+  it('keeps the default identity list position stable regardless of isDefault', () => {
+    const withDefault = sortIdentities([verA, verB, def]);
+    const notDefault = sortIdentities([
+      verA,
+      verB,
+      makeIdentity('1', 'default@x.test', { verifiedAt: '2026-01-01T00:00:00Z' }),
+    ]);
+    expect(withDefault.map((i) => i.email)).toEqual(notDefault.map((i) => i.email));
+  });
+
+  it('places verified identities alphabetically by email', () => {
+    const out = sortIdentities([verB, verA]);
+    expect(out.map((i) => i.email)).toEqual(['a@x.test', 'b@x.test']);
   });
 
   it('places pending identities after verified, sorted id descending', () => {
@@ -143,7 +155,9 @@ describe('sortIdentities', () => {
 
   it('places unverified identities last', () => {
     const out = sortIdentities([unv, verA, pending1, def]);
-    expect(out.map((i) => i.id)).toEqual(['1', '2', '4', '6']);
+    // verified group (def 'default@x.test', verA 'a@x.test') sorts by
+    // email -> a@ then default@; then pending; then unverified.
+    expect(out.map((i) => i.id)).toEqual(['2', '1', '4', '6']);
   });
 
   it('does not mutate the input array', () => {

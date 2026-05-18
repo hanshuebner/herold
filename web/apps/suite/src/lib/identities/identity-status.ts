@@ -102,30 +102,33 @@ export function isExternalWithoutSubmission(
 
 /**
  * Stable sort for the identity list per REQ-SET-IDENT-03:
- *   (1) default identity first,
- *   (2) other verified identities alphabetically by email,
- *   (3) pending identities by createdAt descending — the suite has no
+ *   (1) verified identities alphabetically by email,
+ *   (2) pending identities by createdAt descending — the suite has no
  *       createdAt field on Identity yet, so we fall back to id (which
  *       is the server-issued allocator order, monotonically increasing)
  *       descending so newer pending rows surface first,
- *   (4) unverified identities last, alphabetically by email so the
+ *   (3) unverified identities last, alphabetically by email so the
  *       order is stable.
+ *
+ * The default identity is NOT special-cased: it sorts within the
+ * verified group by email like any other verified identity. Which row
+ * is the default is conveyed by the static "Standard" badge, not by
+ * list position — so changing the default never reorders the list.
  *
  * Returns a new array; does not mutate the input.
  */
 export function sortIdentities(identities: Identity[]): Identity[] {
   const rank = (id: Identity): number => {
-    if (id.isDefault) return 0;
     const s = identityStatus(id);
-    if (s === 'verified') return 1;
-    if (s === 'verifying') return 2;
-    return 3;
+    if (s === 'verified') return 0;
+    if (s === 'verifying') return 1;
+    return 2;
   };
   return [...identities].sort((a, b) => {
     const ra = rank(a);
     const rb = rank(b);
     if (ra !== rb) return ra - rb;
-    if (ra === 2) {
+    if (ra === 1) {
       // Pending: id descending (proxy for createdAt descending).
       return b.id.localeCompare(a.id);
     }
