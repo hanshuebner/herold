@@ -98,7 +98,7 @@ key_file  = "./data/admin.key"
 [[listener]]
 name = "imaps"
 address = "localhost:1993"
-protocol = "imaps"
+protocol = "imap"
 tls = "implicit"
 cert_file = "./data/admin.crt"
 key_file  = "./data/admin.key"

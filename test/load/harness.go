@@ -118,7 +118,7 @@ func newHarness(t testing.TB, opts HarnessOpts) *Harness {
 		Clock: clock.NewReal(),
 		Listeners: []testharness.ListenerSpec{
 			{Name: "smtp", Protocol: "smtp"},
-			{Name: "imaps", Protocol: "imaps"},
+			{Name: "imaps", Protocol: "imap"},
 		},
 	}
 	ha, _ := testharness.Start(t, hOpts)

@@ -81,9 +81,9 @@ type ListenerSpec struct {
 	// reach specific sockets (e.g. two admin listeners on different auth
 	// policies). Names must be unique within an Options.
 	Name string
-	// Protocol is one of "smtp", "smtp-submission", "imap", "imaps",
-	// "http". The harness does not currently branch on the value in
-	// Wave 0; it is recorded so later waves can attach the right handler.
+	// Protocol is one of "smtp", "smtp-submission", "imap", "http".
+	// The harness does not currently branch on the value in Wave 0;
+	// it is recorded so later waves can attach the right handler.
 	Protocol string
 }
 

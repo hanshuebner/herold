@@ -66,7 +66,7 @@ key_file  = "/var/lib/herold/admin.key"
 [[listener]]
 name = "imaps"
 address = "0.0.0.0:1993"
-protocol = "imaps"
+protocol = "imap"
 tls = "implicit"
 cert_file = "/var/lib/herold/admin.crt"
 key_file  = "/var/lib/herold/admin.key"

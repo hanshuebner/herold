@@ -3169,3 +3169,58 @@ tls = "none"
 		t.Errorf("error should explain the admin->http rename, got: %v", err)
 	}
 }
+
+func TestValidate_LegacyImapsProtocol_RejectedWithHint(t *testing.T) {
+	// The "imaps" protocol value was removed; implicit-TLS IMAP is now
+	// protocol = "imap" with tls = "implicit". An old config must fail
+	// with a message that names the replacement.
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "imaps"
+address = ":993"
+protocol = "imaps"
+tls = "implicit"
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal(`expected error for removed protocol = "imaps"`)
+	}
+	if !strings.Contains(err.Error(), `"imap"`) || !strings.Contains(err.Error(), "implicit") {
+		t.Errorf("error should point to imap + tls=implicit, got: %v", err)
+	}
+}
+
+func TestValidate_ImapImplicitTLS_Accepted(t *testing.T) {
+	// Implicit-TLS IMAP is protocol = "imap" with tls = "implicit";
+	// this is the supported replacement for the removed "imaps".
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "imaps"
+address = ":993"
+protocol = "imap"
+tls = "implicit"
+cert_file = "/c"
+key_file = "/d"
+`
+	if _, err := Parse([]byte(cfg)); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}

@@ -156,8 +156,14 @@ for <= 200 mailboxes; Postgres for heavier deployments. To switch,
 
 Every listener is a separate `[[listener]]` table. Required fields:
 `name` (unique), `address` (`host:port`), `protocol` (one of `smtp`,
-`smtp-submission`, `imap`, `imaps`, `http`), `tls` (one of `none`,
+`smtp-submission`, `imap`, `http`), `tls` (one of `none`,
 `starttls`, `implicit`).
+
+`protocol` and `tls` are orthogonal: the protocol value names the
+wire protocol, and `tls` selects its TLS posture. Implicit-TLS IMAP
+on port 993 is `protocol = "imap"` with `tls = "implicit"` -- there
+is no separate `imaps` protocol. Likewise implicit-TLS submission on
+465 is `protocol = "smtp-submission"` with `tls = "implicit"`.
 
 Optional fields: `auth_required` (forces SASL on submission listeners),
 `proxy_protocol` (decodes the HAProxy PROXY-protocol header so the
@@ -222,7 +228,7 @@ tls = "starttls"
 [[listener]]
 name = "imaps"
 address = "0.0.0.0:993"
-protocol = "imaps"
+protocol = "imap"
 tls = "implicit"
 
 # Public HTTP listener: SPA + JMAP + chat WS + send API + call creds +

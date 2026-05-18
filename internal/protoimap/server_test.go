@@ -59,7 +59,6 @@ func newFixture(t *testing.T, fo fxOpts) *fixture {
 	proto := "imap"
 	if fo.implicitTLS {
 		name = "imaps"
-		proto = "imaps"
 	}
 	ha, _ := testharness.Start(t, testharness.Options{
 		Listeners: []testharness.ListenerSpec{{Name: name, Protocol: proto}},

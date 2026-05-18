@@ -60,7 +60,7 @@ key_file  = "/etc/herold/tls/herold.key"
 [[listener]]
 name     = "imaps"
 address  = "[::]:993"
-protocol = "imaps"
+protocol = "imap"
 tls      = "implicit"
 cert_file = "/etc/herold/tls/herold.crt"
 key_file  = "/etc/herold/tls/herold.key"

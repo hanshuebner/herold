@@ -1502,7 +1502,7 @@ const (
 
 // Valid protocol / tls / lifecycle / plugin-type / log level sets.
 var (
-	validProtocols     = map[string]struct{}{"smtp": {}, "smtp-submission": {}, "imap": {}, "imaps": {}, "http": {}, "managesieve": {}}
+	validProtocols     = map[string]struct{}{"smtp": {}, "smtp-submission": {}, "imap": {}, "http": {}, "managesieve": {}}
 	validListenerKinds = map[string]struct{}{
 		ListenerKindPublic: {},
 		ListenerKindAdmin:  {},
@@ -2470,6 +2470,9 @@ func Validate(c *Config) error {
 		if _, ok := validProtocols[l.Protocol]; !ok {
 			if l.Protocol == "admin" {
 				return fmt.Errorf("sysconfig: [[listener]] %q: protocol \"admin\" was renamed to \"http\" for HTTP listeners; update the [[listener]] block", l.Name)
+			}
+			if l.Protocol == "imaps" {
+				return fmt.Errorf("sysconfig: [[listener]] %q: protocol \"imaps\" was removed; use protocol = \"imap\" with tls = \"implicit\"", l.Name)
 			}
 			return fmt.Errorf("sysconfig: [[listener]] %q: protocol %q not recognised", l.Name, l.Protocol)
 		}

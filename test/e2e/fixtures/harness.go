@@ -103,7 +103,7 @@ func Build(t *testing.T, opts Opts) *Fixture {
 	harnessOpts := testharness.Options{
 		Listeners: []testharness.ListenerSpec{
 			{Name: "smtp", Protocol: "smtp"},
-			{Name: "imaps", Protocol: "imaps"},
+			{Name: "imaps", Protocol: "imap"},
 		},
 	}
 	if opts.Store != nil {

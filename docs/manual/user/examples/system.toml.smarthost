@@ -64,7 +64,7 @@ tls = "starttls"
 [[listener]]
 name = "imaps"
 address = "0.0.0.0:993"
-protocol = "imaps"
+protocol = "imap"
 tls = "implicit"
 
 # Public HTTP listener (REQ-OPS-ADMIN-LISTENER-01).  JMAP, chat WS,

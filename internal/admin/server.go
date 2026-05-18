@@ -1711,16 +1711,15 @@ func bindOneAddress(
 			return smtpServer.Serve(ctx, ln, mode)
 		}, resolvedAddr, nil
 	case "imap":
+		// tls = "implicit" selects implicit-TLS IMAP (port 993,
+		// historically protocol = "imap"); "starttls"/"none" serve
+		// the STARTTLS variant.
 		mode := protoimap.ListenerModeSTARTTLS
 		if l.TLS == "implicit" {
 			mode = protoimap.ListenerModeImplicit993
 		}
 		return ln, func(ctx context.Context) error {
 			return imapServer.Serve(ctx, ln, mode)
-		}, resolvedAddr, nil
-	case "imaps":
-		return ln, func(ctx context.Context) error {
-			return imapServer.Serve(ctx, ln, protoimap.ListenerModeImplicit993)
 		}, resolvedAddr, nil
 	case "managesieve":
 		return ln, func(ctx context.Context) error {

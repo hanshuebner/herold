@@ -125,7 +125,7 @@ func buildActivityServerWithClock(
 func TestActivityTagging_LOGINFailure(t *testing.T) {
 	observe.AssertActivityTagged(t, func(log *slog.Logger) {
 		ha, _ := testharness.Start(t, testharness.Options{
-			Listeners: []testharness.ListenerSpec{{Name: "imaps", Protocol: "imaps"}},
+			Listeners: []testharness.ListenerSpec{{Name: "imaps", Protocol: "imap"}},
 		})
 		f := buildActivityServer(t, ha, log)
 		c := f.dialImplicitTLS(t)
@@ -144,7 +144,7 @@ func TestActivityTagging_LOGINFailure(t *testing.T) {
 func TestActivityTagging_APPENDSuccess(t *testing.T) {
 	observe.AssertActivityTagged(t, func(log *slog.Logger) {
 		ha, _ := testharness.Start(t, testharness.Options{
-			Listeners: []testharness.ListenerSpec{{Name: "imaps", Protocol: "imaps"}},
+			Listeners: []testharness.ListenerSpec{{Name: "imaps", Protocol: "imap"}},
 		})
 		f := buildActivityServer(t, ha, log)
 		c := f.dialImplicitTLS(t)
@@ -175,7 +175,7 @@ func TestActivityTagging_APPENDSuccess(t *testing.T) {
 func TestActivityTagging_IDLEPollTick(t *testing.T) {
 	observe.AssertActivityTagged(t, func(log *slog.Logger) {
 		ha, _ := testharness.Start(t, testharness.Options{
-			Listeners: []testharness.ListenerSpec{{Name: "imaps", Protocol: "imaps"}},
+			Listeners: []testharness.ListenerSpec{{Name: "imaps", Protocol: "imap"}},
 		})
 		fakeClock := clock.NewFake(time.Now())
 		f := buildActivityServerWithClock(

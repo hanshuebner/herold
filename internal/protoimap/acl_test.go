@@ -49,7 +49,7 @@ func newACLFixture(t *testing.T) *aclFixture {
 	t.Helper()
 	name := "imaps"
 	ha, _ := testharness.Start(t, testharness.Options{
-		Listeners: []testharness.ListenerSpec{{Name: name, Protocol: "imaps"}},
+		Listeners: []testharness.ListenerSpec{{Name: name, Protocol: "imap"}},
 	})
 	ctx := context.Background()
 	if err := ha.Store.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
