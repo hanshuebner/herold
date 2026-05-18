@@ -1105,7 +1105,7 @@ type AdminTLSConfig struct {
 //     invisible to internet scanners (REQ-OPS-ADMIN-LISTENER-02).
 //
 // For non-HTTP protocols (smtp, imap, etc.) Kind is left empty; the
-// validator only reads Kind when Protocol == "admin" (which is the
+// validator only reads Kind when Protocol == "http" (which is the
 // legacy single-HTTP-listener shape) or when DevMode is on.
 type ListenerConfig struct {
 	Name          string `toml:"name"`
@@ -1488,7 +1488,7 @@ func looksLikeSecretKey(k string) bool {
 }
 
 // Listener kinds (REQ-OPS-ADMIN-LISTENER-01..03). Only HTTP listeners
-// (Protocol == "admin") carry a Kind; non-HTTP listeners (smtp / imap
+// (Protocol == "http") carry a Kind; non-HTTP listeners (smtp / imap
 // etc.) leave Kind empty.
 const (
 	// ListenerKindPublic serves the SPA mount + JMAP + chat WS + send
@@ -1502,7 +1502,7 @@ const (
 
 // Valid protocol / tls / lifecycle / plugin-type / log level sets.
 var (
-	validProtocols     = map[string]struct{}{"smtp": {}, "smtp-submission": {}, "imap": {}, "imaps": {}, "admin": {}, "managesieve": {}}
+	validProtocols     = map[string]struct{}{"smtp": {}, "smtp-submission": {}, "imap": {}, "imaps": {}, "http": {}, "managesieve": {}}
 	validListenerKinds = map[string]struct{}{
 		ListenerKindPublic: {},
 		ListenerKindAdmin:  {},
@@ -2468,6 +2468,9 @@ func Validate(c *Config) error {
 			}
 		}
 		if _, ok := validProtocols[l.Protocol]; !ok {
+			if l.Protocol == "admin" {
+				return fmt.Errorf("sysconfig: [[listener]] %q: protocol \"admin\" was renamed to \"http\" for HTTP listeners; update the [[listener]] block", l.Name)
+			}
 			return fmt.Errorf("sysconfig: [[listener]] %q: protocol %q not recognised", l.Name, l.Protocol)
 		}
 		if _, ok := validTLSModes[l.TLS]; !ok {
@@ -2483,13 +2486,13 @@ func Validate(c *Config) error {
 		// proxy_protocol decoding is wired only for HTTP listeners
 		// (issue #106); SMTP/IMAP listeners do not yet honour it, so
 		// reject the flag there rather than silently ignoring it.
-		if l.ProxyProtocol && l.Protocol != "admin" {
-			return fmt.Errorf("sysconfig: [[listener]] %q: proxy_protocol is currently supported only on HTTP listeners (protocol = \"admin\")", l.Name)
+		if l.ProxyProtocol && l.Protocol != "http" {
+			return fmt.Errorf("sysconfig: [[listener]] %q: proxy_protocol is currently supported only on HTTP listeners (protocol = \"http\")", l.Name)
 		}
-		// REQ-OPS-ADMIN-LISTENER-01: HTTP listeners (Protocol=="admin")
+		// REQ-OPS-ADMIN-LISTENER-01: HTTP listeners (Protocol=="http")
 		// carry a Kind in {public, admin}. Non-HTTP listeners must
 		// leave Kind empty.
-		if l.Protocol == "admin" {
+		if l.Protocol == "http" {
 			if l.Kind == "" {
 				// Wave 3.6 compatibility: an HTTP listener without an
 				// explicit kind is treated as the legacy single-mount

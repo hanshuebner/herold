@@ -21,7 +21,7 @@ func TestStart_NoLeakedGoroutines(t *testing.T) {
 		srv, cleanup := testharness.Start(t, testharness.Options{
 			Listeners: []testharness.ListenerSpec{
 				{Name: "smtp", Protocol: "smtp"},
-				{Name: "admin", Protocol: "admin"},
+				{Name: "admin", Protocol: "http"},
 			},
 		})
 		if _, ok := srv.ListenerAddr("smtp"); !ok {

@@ -82,7 +82,7 @@ type ListenerSpec struct {
 	// policies). Names must be unique within an Options.
 	Name string
 	// Protocol is one of "smtp", "smtp-submission", "imap", "imaps",
-	// "admin". The harness does not currently branch on the value in
+	// "http". The harness does not currently branch on the value in
 	// Wave 0; it is recorded so later waves can attach the right handler.
 	Protocol string
 }
@@ -377,7 +377,7 @@ func (s *Server) DialAdmin(ctx context.Context) (*http.Client, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, st := range s.listeners {
-		if st.spec.Protocol != "admin" {
+		if st.spec.Protocol != "http" {
 			continue
 		}
 		if st.handler == nil {

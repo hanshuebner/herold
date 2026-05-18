@@ -74,7 +74,7 @@ func newResendHarness(t *testing.T, cooldown time.Duration, dailyCap int, withRe
 	}
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs, Clock: clk,
-		Listeners: []testharness.ListenerSpec{{Name: "admin", Protocol: "admin"}},
+		Listeners: []testharness.ListenerSpec{{Name: "admin", Protocol: "http"}},
 	})
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)

@@ -1569,7 +1569,7 @@ func bindListeners(
 	// Bind HTTP listeners last per REQ-OPS lifecycle.
 	var adminBinds []sysconfig.ListenerConfig
 	for _, l := range cfg.Listener {
-		if l.Protocol == "admin" {
+		if l.Protocol == "http" {
 			adminBinds = append(adminBinds, l)
 			continue
 		}
@@ -1726,7 +1726,7 @@ func bindOneAddress(
 		return ln, func(ctx context.Context) error {
 			return mssvServer.Serve(ctx, ln)
 		}, resolvedAddr, nil
-	case "admin":
+	case "http":
 		spec := l
 		handler := pickHTTPHandler(cfg, l, bundle)
 		if l.ProxyProtocol {

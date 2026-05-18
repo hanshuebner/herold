@@ -156,7 +156,7 @@ for <= 200 mailboxes; Postgres for heavier deployments. To switch,
 
 Every listener is a separate `[[listener]]` table. Required fields:
 `name` (unique), `address` (`host:port`), `protocol` (one of `smtp`,
-`smtp-submission`, `imap`, `imaps`, `admin`), `tls` (one of `none`,
+`smtp-submission`, `imap`, `imaps`, `http`), `tls` (one of `none`,
 `starttls`, `implicit`).
 
 Optional fields: `auth_required` (forces SASL on submission listeners),
@@ -168,7 +168,7 @@ in production -- see below).
 
 #### Listener kinds: public vs admin (REQ-OPS-ADMIN-LISTENER-01..03)
 
-HTTP listeners (`protocol = "admin"`) carry a `kind` field that
+HTTP listeners (`protocol = "http"`) carry a `kind` field that
 partitions the suite's HTTP surface into two roles:
 
 - **`kind = "public"`** -- internet-facing. Serves the Suite SPA
@@ -230,7 +230,7 @@ tls = "implicit"
 [[listener]]
 name = "public"
 address = "0.0.0.0:443"
-protocol = "admin"
+protocol = "http"
 kind = "public"
 tls = "implicit"
 cert_file = "/etc/herold/admin.crt"
@@ -243,7 +243,7 @@ key_file  = "/etc/herold/admin.key"
 [[listener]]
 name = "admin"
 address = "127.0.0.1:9443"
-protocol = "admin"
+protocol = "http"
 kind = "admin"
 tls = "implicit"
 cert_file = "/etc/herold/admin.crt"

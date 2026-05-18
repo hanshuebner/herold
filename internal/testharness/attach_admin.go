@@ -18,7 +18,7 @@ import (
 )
 
 // AttachAdmin binds a protoadmin.Server to the named listener. The
-// listener must have Protocol == "admin". Calling AttachAdmin twice on
+// listener must have Protocol == "http". Calling AttachAdmin twice on
 // the same listener panics.
 //
 // Returns an error when the listener is unknown or already attached.

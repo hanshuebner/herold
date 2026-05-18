@@ -80,7 +80,7 @@ func newSubmissionHarness(t *testing.T, probe protoadmin.ExternalProbe) *submiss
 		Store: fs,
 		Clock: clk,
 		Listeners: []testharness.ListenerSpec{
-			{Name: "admin", Protocol: "admin"},
+			{Name: "admin", Protocol: "http"},
 		},
 	})
 	dir := directory.New(fs.Meta(), nil, clk, nil)
@@ -536,7 +536,7 @@ func TestSubmission_CSRF_CookieAuth(t *testing.T) {
 		Store: fs,
 		Clock: clk,
 		Listeners: []testharness.ListenerSpec{
-			{Name: "admin", Protocol: "admin"},
+			{Name: "admin", Protocol: "http"},
 		},
 	})
 	dir := directory.New(fs.Meta(), nil, clk, nil)
@@ -707,7 +707,7 @@ func TestPutSubmission_NoDataKey(t *testing.T) {
 		Store: fs,
 		Clock: clk,
 		Listeners: []testharness.ListenerSpec{
-			{Name: "admin", Protocol: "admin"},
+			{Name: "admin", Protocol: "http"},
 		},
 	})
 	dir := directory.New(fs.Meta(), nil, clk, nil)

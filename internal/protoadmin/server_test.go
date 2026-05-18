@@ -55,7 +55,7 @@ func newHarness(t *testing.T) *harness {
 		Store: fs,
 		Clock: clk,
 		Listeners: []testharness.ListenerSpec{
-			{Name: "admin", Protocol: "admin"},
+			{Name: "admin", Protocol: "http"},
 		},
 	})
 	dir := directory.New(fs.Meta(), nil, clk, nil)

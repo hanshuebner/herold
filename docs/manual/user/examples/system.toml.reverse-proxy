@@ -67,7 +67,7 @@ enabled = true
 [[listener]]
 name           = "public"
 address        = "127.0.0.1:8080"
-protocol       = "admin"
+protocol       = "http"
 kind           = "public"
 tls            = "none"
 proxy_protocol = true
@@ -75,7 +75,7 @@ proxy_protocol = true
 [[listener]]
 name           = "admin"
 address        = "127.0.0.1:9443"
-protocol       = "admin"
+protocol       = "http"
 kind           = "admin"
 tls            = "none"
 proxy_protocol = true

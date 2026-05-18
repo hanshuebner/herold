@@ -34,7 +34,7 @@ tls = "starttls"
 [[listener]]
 name = "public"
 address = "0.0.0.0:443"
-protocol = "admin"
+protocol = "http"
 kind = "public"
 tls = "implicit"
 cert_file = "/etc/herold/admin.crt"
@@ -43,7 +43,7 @@ key_file  = "/etc/herold/admin.key"
 [[listener]]
 name = "admin"
 address = "127.0.0.1:9443"
-protocol = "admin"
+protocol = "http"
 kind = "admin"
 tls = "implicit"
 cert_file = "/etc/herold/admin.crt"
@@ -71,7 +71,7 @@ tls = "starttls"
 [[listener]]
 name = "public"
 address = "0.0.0.0:443"
-protocol = "admin"
+protocol = "http"
 kind = "public"
 tls = "implicit"
 cert_file = "/etc/herold/admin.crt"
@@ -80,7 +80,7 @@ key_file  = "/etc/herold/admin.key"
 [[listener]]
 name = "admin"
 address = "127.0.0.1:9443"
-protocol = "admin"
+protocol = "http"
 kind = "admin"
 tls = "implicit"
 cert_file = "/etc/herold/admin.crt"
@@ -833,7 +833,7 @@ tls = "starttls"
 [[listener]]
 name = "public"
 address = "0.0.0.0:443"
-protocol = "admin"
+protocol = "http"
 kind = "public"
 tls = "implicit"
 cert_file = "/a"
@@ -842,7 +842,7 @@ key_file = "/b"
 [[listener]]
 name = "new-one"
 address = ":4190"
-protocol = "admin"
+protocol = "http"
 kind = "admin"
 tls = "implicit"
 cert_file = "/a"
@@ -886,7 +886,7 @@ key_file = "/b"
 [[listener]]
 name = "admin"
 address = ":443"
-protocol = "admin"
+protocol = "http"
 tls = "implicit"
 cert_file = "/a"
 key_file = "/b"
@@ -915,7 +915,7 @@ key_file = "/b"
 [[listener]]
 name = "admin"
 address = "127.0.0.1:8080"
-protocol = "admin"
+protocol = "http"
 tls = "none"
 `
 	cfg, err := Parse([]byte(dev))
@@ -944,7 +944,7 @@ key_file = "/b"
 [[listener]]
 name = "public"
 address = "0.0.0.0:443"
-protocol = "admin"
+protocol = "http"
 kind = "public"
 tls = "implicit"
 cert_file = "/a"
@@ -1629,7 +1629,7 @@ func TestAdminRESTURL(t *testing.T) {
 		{
 			name: "tls_none_produces_http",
 			listeners: []ListenerConfig{
-				{Kind: "admin", Address: "127.0.0.1:9080", Protocol: "admin", TLS: "none"},
+				{Kind: "admin", Address: "127.0.0.1:9080", Protocol: "http", TLS: "none"},
 			},
 			wantURL: "http://127.0.0.1:9080",
 			wantOK:  true,
@@ -1637,7 +1637,7 @@ func TestAdminRESTURL(t *testing.T) {
 		{
 			name: "tls_starttls_produces_https",
 			listeners: []ListenerConfig{
-				{Kind: "admin", Address: "127.0.0.1:9443", Protocol: "admin", TLS: "starttls"},
+				{Kind: "admin", Address: "127.0.0.1:9443", Protocol: "http", TLS: "starttls"},
 			},
 			wantURL: "https://127.0.0.1:9443",
 			wantOK:  true,
@@ -1645,7 +1645,7 @@ func TestAdminRESTURL(t *testing.T) {
 		{
 			name: "tls_implicit_produces_https",
 			listeners: []ListenerConfig{
-				{Kind: "admin", Address: "127.0.0.1:9443", Protocol: "admin", TLS: "implicit"},
+				{Kind: "admin", Address: "127.0.0.1:9443", Protocol: "http", TLS: "implicit"},
 			},
 			wantURL: "https://127.0.0.1:9443",
 			wantOK:  true,
@@ -1654,7 +1654,7 @@ func TestAdminRESTURL(t *testing.T) {
 			// 0.0.0.0 is not loopback, so tls=none triggers the cleartext warning.
 			name: "wildcard_ipv4_translates_to_loopback",
 			listeners: []ListenerConfig{
-				{Kind: "admin", Address: "0.0.0.0:9080", Protocol: "admin", TLS: "none"},
+				{Kind: "admin", Address: "0.0.0.0:9080", Protocol: "http", TLS: "none"},
 			},
 			wantURL:      "http://127.0.0.1:9080",
 			wantOK:       true,
@@ -1664,7 +1664,7 @@ func TestAdminRESTURL(t *testing.T) {
 			// [::] is not loopback, so tls=none triggers the cleartext warning.
 			name: "wildcard_ipv6_translates_to_loopback",
 			listeners: []ListenerConfig{
-				{Kind: "admin", Address: "[::]:9080", Protocol: "admin", TLS: "none"},
+				{Kind: "admin", Address: "[::]:9080", Protocol: "http", TLS: "none"},
 			},
 			wantURL:      "http://[::1]:9080",
 			wantOK:       true,
@@ -1673,7 +1673,7 @@ func TestAdminRESTURL(t *testing.T) {
 		{
 			name: "explicit_hostname_passed_through",
 			listeners: []ListenerConfig{
-				{Kind: "admin", Address: "mail.example.com:9443", Protocol: "admin", TLS: "implicit"},
+				{Kind: "admin", Address: "mail.example.com:9443", Protocol: "http", TLS: "implicit"},
 			},
 			wantURL: "https://mail.example.com:9443",
 			wantOK:  true,
@@ -1681,7 +1681,7 @@ func TestAdminRESTURL(t *testing.T) {
 		{
 			name: "no_admin_listener_returns_false",
 			listeners: []ListenerConfig{
-				{Kind: "public", Address: "0.0.0.0:443", Protocol: "admin", TLS: "implicit"},
+				{Kind: "public", Address: "0.0.0.0:443", Protocol: "http", TLS: "implicit"},
 			},
 			wantURL: "",
 			wantOK:  false,
@@ -1695,9 +1695,9 @@ func TestAdminRESTURL(t *testing.T) {
 		{
 			name: "first_admin_listener_wins",
 			listeners: []ListenerConfig{
-				{Kind: "public", Address: "0.0.0.0:443", Protocol: "admin", TLS: "implicit"},
-				{Kind: "admin", Address: "127.0.0.1:9080", Protocol: "admin", TLS: "none"},
-				{Kind: "admin", Address: "127.0.0.1:9443", Protocol: "admin", TLS: "implicit"},
+				{Kind: "public", Address: "0.0.0.0:443", Protocol: "http", TLS: "implicit"},
+				{Kind: "admin", Address: "127.0.0.1:9080", Protocol: "http", TLS: "none"},
+				{Kind: "admin", Address: "127.0.0.1:9443", Protocol: "http", TLS: "implicit"},
 			},
 			wantURL: "http://127.0.0.1:9080",
 			wantOK:  true,
@@ -1708,7 +1708,7 @@ func TestAdminRESTURL(t *testing.T) {
 			// in cleartext.
 			name: "tls_none_non_loopback_warns",
 			listeners: []ListenerConfig{
-				{Kind: "admin", Address: "0.0.0.0:9080", Protocol: "admin", TLS: "none"},
+				{Kind: "admin", Address: "0.0.0.0:9080", Protocol: "http", TLS: "none"},
 			},
 			wantURL:      "http://127.0.0.1:9080",
 			wantOK:       true,
@@ -1718,7 +1718,7 @@ func TestAdminRESTURL(t *testing.T) {
 			// Malformed address must not panic; returns ("", nil, false).
 			name: "malformed_address_returns_false",
 			listeners: []ListenerConfig{
-				{Kind: "admin", Address: "notanaddress", Protocol: "admin", TLS: "none"},
+				{Kind: "admin", Address: "notanaddress", Protocol: "http", TLS: "none"},
 			},
 			wantURL: "",
 			wantOK:  false,
@@ -1729,7 +1729,7 @@ func TestAdminRESTURL(t *testing.T) {
 			// deterministic across machines.
 			name: "localhost_pins_to_ipv4_loopback",
 			listeners: []ListenerConfig{
-				{Kind: "admin", Address: "localhost:9443", Protocol: "admin", TLS: "none"},
+				{Kind: "admin", Address: "localhost:9443", Protocol: "http", TLS: "none"},
 			},
 			wantURL: "http://127.0.0.1:9443",
 			wantOK:  true,
@@ -2106,7 +2106,7 @@ tls      = "starttls"
 [[listener]]
 name     = "public"
 address  = "0.0.0.0:443"
-protocol = "admin"
+protocol = "http"
 kind     = "public"
 tls      = "implicit"
 cert_file = "/etc/herold/admin.crt"
@@ -2115,7 +2115,7 @@ key_file  = "/etc/herold/admin.key"
 [[listener]]
 name     = "admin"
 address  = "127.0.0.1:9443"
-protocol = "admin"
+protocol = "http"
 kind     = "admin"
 tls      = "implicit"
 cert_file = "/etc/herold/admin.crt"
@@ -2167,7 +2167,7 @@ tls      = "starttls"
 [[listener]]
 name     = "public"
 address  = "0.0.0.0:443"
-protocol = "admin"
+protocol = "http"
 kind     = "public"
 tls      = "implicit"
 cert_file = "/etc/herold/admin.crt"
@@ -2176,7 +2176,7 @@ key_file  = "/etc/herold/admin.key"
 [[listener]]
 name     = "admin"
 address  = "127.0.0.1:9443"
-protocol = "admin"
+protocol = "http"
 kind     = "admin"
 tls      = "implicit"
 cert_file = "/etc/herold/admin.crt"
@@ -2217,7 +2217,7 @@ tls      = "starttls"
 [[listener]]
 name     = "public"
 address  = "0.0.0.0:443"
-protocol = "admin"
+protocol = "http"
 kind     = "public"
 tls      = "implicit"
 cert_file = "/etc/herold/admin.crt"
@@ -2226,7 +2226,7 @@ key_file  = "/etc/herold/admin.key"
 [[listener]]
 name     = "admin"
 address  = "127.0.0.1:9443"
-protocol = "admin"
+protocol = "http"
 kind     = "admin"
 tls      = "implicit"
 cert_file = "/etc/herold/admin.crt"
@@ -3073,7 +3073,7 @@ func equalStringSlice(a, b []string) bool {
 }
 
 func TestValidate_ProxyProtocol_AcceptedOnHTTPListener(t *testing.T) {
-	// issue #106: proxy_protocol is valid on an HTTP (protocol="admin")
+	// issue #106: proxy_protocol is valid on an HTTP (protocol="http")
 	// listener fronted by a reverse proxy.
 	const cfg = `
 [server]
@@ -3088,7 +3088,7 @@ key_file = "/b"
 [[listener]]
 name = "public"
 address = "127.0.0.1:8080"
-protocol = "admin"
+protocol = "http"
 kind = "public"
 tls = "none"
 proxy_protocol = true
@@ -3096,7 +3096,7 @@ proxy_protocol = true
 [[listener]]
 name = "admin"
 address = "127.0.0.1:9443"
-protocol = "admin"
+protocol = "http"
 kind = "admin"
 tls = "none"
 proxy_protocol = true
@@ -3137,5 +3137,35 @@ proxy_protocol = true
 	}
 	if !strings.Contains(err.Error(), "proxy_protocol") {
 		t.Errorf("error should mention proxy_protocol, got: %v", err)
+	}
+}
+
+func TestValidate_LegacyAdminProtocol_RejectedWithHint(t *testing.T) {
+	// issue #107: the HTTP listener protocol value "admin" was renamed
+	// to "http". An old config must fail with a message that names the
+	// rename rather than a bare "not recognised".
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "public"
+address = "127.0.0.1:8080"
+protocol = "admin"
+kind = "public"
+tls = "none"
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal(`expected error for legacy protocol = "admin"`)
+	}
+	if !strings.Contains(err.Error(), "renamed") || !strings.Contains(err.Error(), `"http"`) {
+		t.Errorf("error should explain the admin->http rename, got: %v", err)
 	}
 }

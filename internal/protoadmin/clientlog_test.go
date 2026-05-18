@@ -74,7 +74,7 @@ func newClientlogHarness(t *testing.T) (*clientlogHarness, string) {
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs, Clock: clk,
 		Listeners: []testharness.ListenerSpec{
-			{Name: "admin", Protocol: "admin"},
+			{Name: "admin", Protocol: "http"},
 		},
 	})
 	dir := directory.New(fs.Meta(), nil, clk, nil)
@@ -111,7 +111,7 @@ func newClientlogHarnessWithOpts(t *testing.T, clo protoadmin.ClientlogOptions) 
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs, Clock: clk,
 		Listeners: []testharness.ListenerSpec{
-			{Name: "admin", Protocol: "admin"},
+			{Name: "admin", Protocol: "http"},
 		},
 	})
 	dir := directory.New(fs.Meta(), nil, clk, nil)

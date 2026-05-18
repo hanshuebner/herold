@@ -71,5 +71,5 @@ key_file  = "/etc/herold/tls/herold.key"
 [[listener]]
 name     = "admin"
 address  = "[::]:8080"
-protocol = "admin"
+protocol = "http"
 tls      = "none"

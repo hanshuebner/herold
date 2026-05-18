@@ -77,7 +77,7 @@ func newOAuthHarness(t *testing.T) *oauthHarness {
 		Store: fs,
 		Clock: clk,
 		Listeners: []testharness.ListenerSpec{
-			{Name: "admin", Protocol: "admin"},
+			{Name: "admin", Protocol: "http"},
 		},
 	})
 	dir := directory.New(fs.Meta(), nil, clk, nil)
@@ -368,7 +368,7 @@ func TestOAuthStart_MissingClientSecret(t *testing.T) {
 		Store: fs,
 		Clock: clk,
 		Listeners: []testharness.ListenerSpec{
-			{Name: "admin", Protocol: "admin"},
+			{Name: "admin", Protocol: "http"},
 		},
 	})
 	dir := directory.New(fs.Meta(), nil, clk, nil)

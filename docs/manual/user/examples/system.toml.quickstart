@@ -111,7 +111,7 @@ key_file  = "./data/admin.key"
 [[listener]]
 name = "public"
 address = "localhost:8080"
-protocol = "admin"
+protocol = "http"
 kind = "public"
 tls = "none"
 
@@ -125,7 +125,7 @@ tls = "none"
 name = "admin"
 # The port number does not imply the scheme; with tls = "none" this listener is plain HTTP.
 address = "localhost:9443"
-protocol = "admin"
+protocol = "http"
 kind = "admin"
 tls = "none"
 
