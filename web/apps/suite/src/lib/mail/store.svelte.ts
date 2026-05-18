@@ -47,6 +47,24 @@ export type FolderID = string;
 
 const ROLED_FOLDERS = new Set(['inbox', 'sent', 'drafts', 'trash']);
 
+/**
+ * Structured error thrown by Identity/set actions (create / destroy)
+ * when the server returns a `setError`. Carries the machine-readable
+ * `type` and the offending `properties` so callers can map known
+ * cases (e.g. a duplicate email) to localized strings instead of
+ * surfacing the raw English `description`.
+ */
+export class IdentitySetError extends Error {
+  readonly type: string;
+  readonly properties: string[];
+  constructor(type: string, description: string | undefined, properties: string[] = []) {
+    super(description ?? type);
+    this.name = 'IdentitySetError';
+    this.type = type;
+    this.properties = properties;
+  }
+}
+
 const SEARCH_HISTORY_MAX = 12;
 const SEARCH_HISTORY_KEY = 'herold.suite.search.history';
 
@@ -812,16 +830,24 @@ class MailStore {
 
     const result = invocationArgs<{
       created?: Record<string, Identity>;
-      notCreated?: Record<string, { type: string; description?: string }>;
+      notCreated?: Record<
+        string,
+        { type: string; description?: string; properties?: string[] }
+      >;
     }>(responses[0]);
 
     const failure = result.notCreated?.[clientID];
     if (failure) {
-      // Surface the server-side description so the wizard can render
-      // it inline (REQ-SET-IDENT-30). The forbiddenFrom case carries
-      // a domain-policy explanation; invalidProperties carries the
-      // RFC 5321 syntactic complaint.
-      throw new Error(failure.description ?? failure.type);
+      // Surface a STRUCTURED error so the wizard can map known cases
+      // (e.g. invalidProperties on `email` = duplicate) to localized
+      // strings (REQ-SET-IDENT-30). The forbiddenFrom case carries a
+      // domain-policy explanation; invalidProperties carries the RFC
+      // 5321 syntactic complaint or the duplicate-email message.
+      throw new IdentitySetError(
+        failure.type,
+        failure.description,
+        failure.properties ?? [],
+      );
     }
     const created = result.created?.[clientID];
     if (!created) {
@@ -861,17 +887,43 @@ class MailStore {
 
     const result = invocationArgs<{
       destroyed?: string[] | null;
-      notDestroyed?: Record<string, { type: string; description?: string }>;
+      notDestroyed?: Record<
+        string,
+        { type: string; description?: string; properties?: string[] }
+      >;
     }>(responses[0]);
 
     const failure = result.notDestroyed?.[identityId];
     if (failure) {
-      throw new Error(failure.description ?? failure.type);
+      throw new IdentitySetError(
+        failure.type,
+        failure.description,
+        failure.properties ?? [],
+      );
     }
 
     const next = new Map(this.identities);
     next.delete(identityId);
     this.identities = next;
+  }
+
+  /**
+   * Delete the identity identified by `identityId`. Thin wrapper over
+   * `destroyIdentity` used by the per-row kebab menu in the Settings
+   * identity list (re #20). The synthesized "default" identity (id
+   * "default", `mayDelete: false`) is not deletable — the server
+   * refuses the destroy and the kebab hides the menu item — but we
+   * guard here too so a stale UI cannot issue a doomed request. On
+   * success the row is dropped from the local cache optimistically.
+   */
+  async deleteIdentity(identityId: string): Promise<void> {
+    if (identityId === 'default') {
+      throw new IdentitySetError(
+        'forbidden',
+        'the default identity cannot be deleted',
+      );
+    }
+    await this.destroyIdentity(identityId);
   }
 
   /**

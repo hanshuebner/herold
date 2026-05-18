@@ -4,7 +4,12 @@
  * Issue #40: duplicate emailIds in Thread must not reach the each-key.
  */
 import { describe, it, expect } from 'vitest';
-import { allVisibleSelected, expandToThreadIds, resolveThreadEmails } from './store.svelte';
+import {
+  allVisibleSelected,
+  expandToThreadIds,
+  resolveThreadEmails,
+  IdentitySetError,
+} from './store.svelte';
 import type { Email } from './types';
 
 describe('allVisibleSelected', () => {
@@ -178,5 +183,35 @@ describe('expandToThreadIds', () => {
     ]);
     // Seed is the middle reply — output still reflects thread storage order.
     expect(expandToThreadIds(['e2'], threads, emails)).toEqual(['e1', 'e2', 'e3']);
+  });
+});
+
+// re #21: Identity/set actions throw a structured IdentitySetError so
+// the wizard can map known cases (duplicate email) to localized text.
+describe('IdentitySetError', () => {
+  it('carries the setError type and offending properties', () => {
+    const err = new IdentitySetError(
+      'invalidProperties',
+      'an identity with this email already exists',
+      ['email'],
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('IdentitySetError');
+    expect(err.type).toBe('invalidProperties');
+    expect(err.properties).toEqual(['email']);
+    expect(err.message).toBe('an identity with this email already exists');
+  });
+
+  it('falls back to the type as message when no description is given', () => {
+    const err = new IdentitySetError('forbiddenFrom', undefined);
+    expect(err.message).toBe('forbiddenFrom');
+    expect(err.properties).toEqual([]);
+  });
+
+  it('lets a caller recognise the duplicate-email case', () => {
+    const err = new IdentitySetError('invalidProperties', 'dup', ['email']);
+    const isDuplicate =
+      err.type === 'invalidProperties' && err.properties.includes('email');
+    expect(isDuplicate).toBe(true);
   });
 });
