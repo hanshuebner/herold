@@ -415,6 +415,14 @@ export const de = {
   'settings.identityList.defaultChanged': 'Standard-Identität aktualisiert',
   'settings.identityList.defaultChangeFailed':
     'Standard-Identität konnte nicht geändert werden',
+  'settings.identityList.rowMenuAria': 'Aktionen für {email}',
+  'settings.identityList.deleteBtn': 'Löschen',
+  'settings.identityList.deleteConfirmTitle': 'Diese Identität löschen?',
+  'settings.identityList.deleteConfirmMessage':
+    'Die Identität {email} löschen? Sie können dann nicht mehr von dieser Adresse senden. Dies kann nicht rückgängig gemacht werden.',
+  'settings.identityList.deleteConfirm': 'Identität löschen',
+  'settings.identityList.deleted': 'Identität {email} gelöscht',
+  'settings.identityList.deleteFailed': 'Identität konnte nicht gelöscht werden',
 
   // Identitäten-Assistent (REQ-SET-IDENT-30..33, re #21)
   'settings.identityWizard.title': 'Identität hinzufügen',
@@ -438,6 +446,10 @@ export const de = {
     'Wird Empfängern neben der E-Mail-Adresse angezeigt.',
   'settings.identityWizard.domainBlocked':
     'Dieser Server erlaubt keine Identitäten für {domain} — bitte wenden Sie sich an Ihre Administrator:in.',
+  'settings.identityWizard.emailExists':
+    'Für diese E-Mail-Adresse existiert bereits eine Identität.',
+  'settings.identityWizard.createFailed':
+    'Identität konnte nicht erstellt werden. Bitte erneut versuchen.',
   'settings.identityWizard.step2Title': 'Adresse bestätigen',
   'settings.identityWizard.step2Intro':
     'Wir haben eine Bestätigungs-E-Mail an {email} gesendet. Klicken Sie auf den Link in der Nachricht oder geben Sie den 6-stelligen Code unten ein.',

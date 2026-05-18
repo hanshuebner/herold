@@ -27,6 +27,7 @@ vi.mock('../../lib/mail/store.svelte', () => ({
   mail: {
     identities: new Map<string, Identity>(),
     setDefaultIdentity: vi.fn(async () => undefined),
+    deleteIdentity: vi.fn(async () => undefined),
   },
 }));
 
@@ -35,6 +36,14 @@ vi.mock('../../lib/toast/toast.svelte', () => ({
     show: vi.fn(),
     dismiss: vi.fn(),
     current: null,
+  },
+}));
+
+vi.mock('../../lib/dialog/confirm.svelte', () => ({
+  confirm: {
+    ask: vi.fn(async () => true),
+    pending: null,
+    decide: vi.fn(),
   },
 }));
 
@@ -83,6 +92,14 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
       'settings.identityList.defaultChanged': 'Default identity updated',
       'settings.identityList.defaultChangeFailed':
         'Could not change default identity',
+      'settings.identityList.rowMenuAria': `Actions for ${params?.email ?? ''}`,
+      'settings.identityList.deleteBtn': 'Delete',
+      'settings.identityList.deleteConfirmTitle': 'Delete this identity?',
+      'settings.identityList.deleteConfirmMessage': `Delete the identity ${params?.email ?? ''}?`,
+      'settings.identityList.deleteConfirm': 'Delete identity',
+      'settings.identityList.deleted': `Identity ${params?.email ?? ''} deleted`,
+      'settings.identityList.deleteFailed': 'Could not delete the identity',
+      'settings.identityWizard.cancel': 'Cancel',
     };
     return map[key] ?? key;
   },
@@ -92,6 +109,7 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
 
 const { mail } = await import('../../lib/mail/store.svelte');
 const { toast } = await import('../../lib/toast/toast.svelte');
+const { confirm } = await import('../../lib/dialog/confirm.svelte');
 
 import IdentityList from './IdentityList.svelte';
 
@@ -317,25 +335,152 @@ describe('IdentityList', () => {
     });
   });
 
-  it('opens the editor when the per-row edit button is clicked', async () => {
-    seedIdentities(VERIFIED_DEFAULT);
+  it('opens the editor when the kebab menu Edit item is clicked (re #20)', async () => {
+    seedIdentities(VERIFIED_SECOND);
     const onedit = vi.fn();
     const { container } = render(IdentityList, { props: { onedit } });
-    const editBtn = container.querySelector(
-      '[data-identity-id="1"] [data-testid="identity-edit-btn"]',
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="2"] [data-testid="identity-row-menu-trigger"]',
+      ) as HTMLButtonElement,
+    );
+    const editItem = container.querySelector(
+      '[data-identity-id="2"] [data-testid="identity-row-menu-edit"]',
     ) as HTMLButtonElement;
-    expect(editBtn).not.toBeNull();
-    await fireEvent.click(editBtn);
-    expect(onedit).toHaveBeenCalledWith(VERIFIED_DEFAULT);
+    expect(editItem).not.toBeNull();
+    await fireEvent.click(editItem);
+    expect(onedit).toHaveBeenCalledWith(VERIFIED_SECOND);
   });
 
-  it('renders an explicit edit button on every row', () => {
+  it('renders a per-row kebab menu trigger on every row (re #20)', () => {
     seedIdentities(VERIFIED_DEFAULT, UNVERIFIED);
     const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
-    const editBtns = container.querySelectorAll(
-      '[data-testid="identity-edit-btn"]',
+    const triggers = container.querySelectorAll(
+      '[data-testid="identity-row-menu-trigger"]',
     );
-    expect(editBtns.length).toBe(2);
+    expect(triggers.length).toBe(2);
+  });
+
+  it('the kebab menu is closed until its trigger is clicked', async () => {
+    seedIdentities(VERIFIED_SECOND);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    expect(
+      container.querySelector('[data-testid="identity-row-menu"]'),
+    ).toBeNull();
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="2"] [data-testid="identity-row-menu-trigger"]',
+      ) as HTMLButtonElement,
+    );
+    expect(
+      container.querySelector('[data-testid="identity-row-menu"]'),
+    ).not.toBeNull();
+  });
+
+  it('hides the Delete item for an identity whose mayDelete is false (re #20)', async () => {
+    // The synthesized default identity (id "default") cannot be deleted.
+    const synthDefault = makeIdentity('default', 'alice@example.local', {
+      name: 'Alice',
+      verifiedAt: '2026-01-01T00:00:00Z',
+      isDefault: true,
+      mayDelete: false,
+    });
+    seedIdentities(synthDefault);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="default"] [data-testid="identity-row-menu-trigger"]',
+      ) as HTMLButtonElement,
+    );
+    expect(
+      container.querySelector('[data-testid="identity-row-menu-edit"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="identity-row-menu-delete"]'),
+    ).toBeNull();
+  });
+
+  it('shows the Delete item for a deletable identity (re #20)', async () => {
+    seedIdentities(VERIFIED_SECOND);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="2"] [data-testid="identity-row-menu-trigger"]',
+      ) as HTMLButtonElement,
+    );
+    expect(
+      container.querySelector('[data-testid="identity-row-menu-delete"]'),
+    ).not.toBeNull();
+  });
+
+  it('confirms then calls deleteIdentity when Delete is chosen (re #20)', async () => {
+    vi.mocked(confirm.ask).mockResolvedValueOnce(true);
+    seedIdentities(VERIFIED_SECOND);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="2"] [data-testid="identity-row-menu-trigger"]',
+      ) as HTMLButtonElement,
+    );
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="2"] [data-testid="identity-row-menu-delete"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(vi.mocked(confirm.ask)).toHaveBeenCalled();
+      expect(vi.mocked(mail.deleteIdentity)).toHaveBeenCalledWith('2');
+    });
+    expect(vi.mocked(toast.show)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('deleted'),
+      }),
+    );
+  });
+
+  it('does not call deleteIdentity when the confirm dialog is cancelled (re #20)', async () => {
+    vi.mocked(confirm.ask).mockResolvedValueOnce(false);
+    seedIdentities(VERIFIED_SECOND);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="2"] [data-testid="identity-row-menu-trigger"]',
+      ) as HTMLButtonElement,
+    );
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="2"] [data-testid="identity-row-menu-delete"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(vi.mocked(confirm.ask)).toHaveBeenCalled();
+    });
+    expect(vi.mocked(mail.deleteIdentity)).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an error toast when deleteIdentity rejects (re #20)', async () => {
+    vi.mocked(confirm.ask).mockResolvedValueOnce(true);
+    vi.mocked(mail.deleteIdentity).mockRejectedValueOnce(new Error('boom'));
+    seedIdentities(VERIFIED_SECOND);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="2"] [data-testid="identity-row-menu-trigger"]',
+      ) as HTMLButtonElement,
+    );
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="2"] [data-testid="identity-row-menu-delete"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(vi.mocked(toast.show)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Could not delete the identity',
+          kind: 'error',
+        }),
+      );
+    });
   });
 
   it('the row body is not a click target (no role=button, no onclick)', () => {

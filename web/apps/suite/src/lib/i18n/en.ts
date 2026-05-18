@@ -410,6 +410,14 @@ export const en = {
     'External SMTP submission is not configured for this identity.',
   'settings.identityList.defaultChanged': 'Default identity updated',
   'settings.identityList.defaultChangeFailed': 'Could not change default identity',
+  'settings.identityList.rowMenuAria': 'Actions for {email}',
+  'settings.identityList.deleteBtn': 'Delete',
+  'settings.identityList.deleteConfirmTitle': 'Delete this identity?',
+  'settings.identityList.deleteConfirmMessage':
+    'Delete the identity {email}? You will no longer be able to send from this address. This cannot be undone.',
+  'settings.identityList.deleteConfirm': 'Delete identity',
+  'settings.identityList.deleted': 'Identity {email} deleted',
+  'settings.identityList.deleteFailed': 'Could not delete the identity',
 
   // Add-identity wizard (REQ-SET-IDENT-30..33, re #21)
   'settings.identityWizard.title': 'Add identity',
@@ -433,6 +441,10 @@ export const en = {
     'Shown to recipients alongside the email address.',
   'settings.identityWizard.domainBlocked':
     'This server does not allow identities for {domain} — contact your administrator.',
+  'settings.identityWizard.emailExists':
+    'An identity with this email address already exists.',
+  'settings.identityWizard.createFailed':
+    'Could not create the identity. Please try again.',
   'settings.identityWizard.step2Title': 'Confirm your address',
   'settings.identityWizard.step2Intro':
     'We sent a confirmation email to {email}. Either click the link in the email, or enter the 6-digit code below.',

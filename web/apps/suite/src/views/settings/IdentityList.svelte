@@ -27,6 +27,7 @@
   import type { Identity } from '../../lib/mail/types';
   import { mail } from '../../lib/mail/store.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
+  import { confirm } from '../../lib/dialog/confirm.svelte';
   import { t } from '../../lib/i18n/i18n.svelte';
   import {
     hasExternalSubmission,
@@ -43,7 +44,6 @@
   } from '../../lib/identities/identity-status';
   import { identityAvatarUrl } from '../../lib/mail/identity-avatar';
   import Button from '@herold/design-system/Button.svelte';
-  import EditIcon from '../../lib/icons/EditIcon.svelte';
 
   interface Props {
     /** Callback fired when the user clicks a row's edit button. */
@@ -114,6 +114,79 @@
   // only forwards the click.
   function onResend(identity: Identity): void {
     void onresend?.(identity);
+  }
+
+  // ── Per-row overflow (kebab) menu (re #20) ──────────────────────────
+  //
+  // Each row carries a kebab trigger that opens a small dropdown with
+  // "Edit" and "Delete". Only one menu is open at a time; it closes on
+  // outside click, Escape, or item selection.
+  let openMenuId = $state<string | null>(null);
+
+  function toggleMenu(id: string): void {
+    openMenuId = openMenuId === id ? null : id;
+  }
+
+  function closeMenu(): void {
+    openMenuId = null;
+  }
+
+  function onMenuKeyDown(e: KeyboardEvent): void {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeMenu();
+    }
+  }
+
+  // Close any open menu on an outside click.
+  $effect(() => {
+    if (openMenuId === null) return;
+    function onDocClick(e: MouseEvent): void {
+      const target = e.target as HTMLElement;
+      if (target.closest('[data-identity-row-menu]')) return;
+      closeMenu();
+    }
+    document.addEventListener('click', onDocClick, true);
+    return () => document.removeEventListener('click', onDocClick, true);
+  });
+
+  function onEditFromMenu(identity: Identity): void {
+    closeMenu();
+    onedit(identity);
+  }
+
+  /**
+   * Delete an identity from the kebab menu. Confirms first, then issues
+   * `Identity/set { destroy }` via the store (which optimistically
+   * drops the row). The synthesized default (mayDelete false) never
+   * reaches here — the menu item is hidden for it.
+   */
+  async function onDeleteFromMenu(identity: Identity): Promise<void> {
+    closeMenu();
+    const ok = await confirm.ask({
+      title: t('settings.identityList.deleteConfirmTitle'),
+      message: t('settings.identityList.deleteConfirmMessage', {
+        email: identity.email,
+      }),
+      confirmLabel: t('settings.identityList.deleteConfirm'),
+      cancelLabel: t('settings.identityWizard.cancel'),
+      kind: 'danger',
+    });
+    if (!ok) return;
+    try {
+      await mail.deleteIdentity(identity.id);
+      toast.show({
+        message: t('settings.identityList.deleted', { email: identity.email }),
+        timeoutMs: 3000,
+      });
+    } catch (err) {
+      toast.show({
+        message: t('settings.identityList.deleteFailed'),
+        kind: 'error',
+        timeoutMs: 5000,
+      });
+      console.error('deleteIdentity failed', err);
+    }
   }
 </script>
 
@@ -232,17 +305,56 @@
                 <span class="chip-spacer" aria-hidden="true"></span>
               {/if}
 
-              <Button
-                variant="ghost"
-                compact
-                ariaLabel={t('settings.identityList.editRowAria', { email: identity.email })}
-                title={t('settings.identityList.editBtn')}
-                testid="identity-edit-btn"
-                onclick={() => onedit(identity)}
-              >
-                {#snippet icon()}<EditIcon size={16} />{/snippet}
-                {t('settings.identityList.editBtn')}
-              </Button>
+              <div class="row-menu" data-identity-row-menu>
+                <button
+                  type="button"
+                  class="kebab-trigger"
+                  aria-haspopup="menu"
+                  aria-expanded={openMenuId === identity.id}
+                  aria-label={t('settings.identityList.rowMenuAria', {
+                    email: identity.email,
+                  })}
+                  title={t('settings.identityList.rowMenuAria', {
+                    email: identity.email,
+                  })}
+                  data-testid="identity-row-menu-trigger"
+                  onclick={() => toggleMenu(identity.id)}
+                >
+                  <span class="kebab-dots" aria-hidden="true">&#x22EE;</span>
+                </button>
+
+                {#if openMenuId === identity.id}
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <div
+                    class="row-menu-dropdown"
+                    role="menu"
+                    tabindex="-1"
+                    data-testid="identity-row-menu"
+                    onkeydown={onMenuKeyDown}
+                  >
+                    <button
+                      type="button"
+                      class="row-menu-item"
+                      role="menuitem"
+                      data-testid="identity-row-menu-edit"
+                      onclick={() => onEditFromMenu(identity)}
+                    >
+                      {t('settings.identityList.editBtn')}
+                    </button>
+                    {#if identity.mayDelete}
+                      <button
+                        type="button"
+                        class="row-menu-item danger"
+                        role="menuitem"
+                        data-testid="identity-row-menu-delete"
+                        onclick={() => void onDeleteFromMenu(identity)}
+                      >
+                        {t('settings.identityList.deleteBtn')}
+                      </button>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
             </div>
           </div>
         </li>
@@ -302,15 +414,18 @@
     gap: var(--spacing-02);
   }
 
+  /* Rows use the white surface token (--layer-02) so the row text
+     reads with full contrast (re #20). --layer-02 is #ffffff in the
+     light theme and a lighter raised grey in the dark theme. */
   .row {
-    background: var(--layer-01);
+    background: var(--layer-02);
     border: 1px solid var(--border-subtle-01);
     border-radius: var(--radius-md);
   }
 
   .row.default {
     border-color: color-mix(in srgb, var(--interactive) 60%, transparent);
-    background: color-mix(in srgb, var(--interactive) 4%, var(--layer-01));
+    background: color-mix(in srgb, var(--interactive) 4%, var(--layer-02));
   }
 
   .row.disabled {
@@ -458,6 +573,74 @@
   .chip-spacer {
     display: inline-block;
     min-width: 1px;
+  }
+
+  /* Per-row kebab (overflow) menu (re #20). */
+  .row-menu {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .kebab-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--text-secondary);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter),
+      color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+
+  .kebab-trigger:hover {
+    background: var(--layer-01);
+    color: var(--text-primary);
+  }
+
+  .kebab-dots {
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .row-menu-dropdown {
+    position: absolute;
+    top: calc(100% + var(--spacing-02));
+    right: 0;
+    z-index: 300;
+    min-width: 160px;
+    background: var(--layer-02);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    display: flex;
+    flex-direction: column;
+    padding: var(--spacing-02) 0;
+  }
+
+  .row-menu-item {
+    display: flex;
+    align-items: center;
+    padding: var(--spacing-02) var(--spacing-04);
+    color: var(--text-primary);
+    font-size: var(--type-body-compact-01-size);
+    text-align: left;
+    width: 100%;
+    min-height: var(--touch-min);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+
+  .row-menu-item:hover {
+    background: var(--layer-01);
+  }
+
+  .row-menu-item.danger {
+    color: var(--support-error);
+  }
+
+  .row-menu-item.danger:hover {
+    background: color-mix(in srgb, var(--support-error) 12%, transparent);
   }
 
   .muted {
