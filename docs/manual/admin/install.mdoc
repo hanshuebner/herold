@@ -86,17 +86,25 @@ switching backends after install.
 
 {%# REQ-OPS-40 #%}
 
-Any internet-facing deployment needs TLS for IMAP, JMAP, the web
-surfaces, and MTA-STS. Herold has a built-in ACME client: configure
-`[acme]` in `system.toml` with a contact email and herold obtains and
-renews certificates from Let's Encrypt automatically (HTTP-01,
-TLS-ALPN-01, or DNS-01 via a DNS-provider plugin).
+Every listener that terminates TLS -- the mail ports, JMAP, and the web
+surfaces -- needs a certificate. Herold takes it from one of two
+sources, set per listener:
 
-If you manage certificates elsewhere -- cert-manager, an internal PKI, a
-wildcard certificate -- give each listener an explicit `cert_file` and
-`key_file` instead.
+- **ACME.** Herold's built-in client obtains and renews certificates
+  from Let's Encrypt. You pre-provision nothing: the first certificate
+  is fetched on first start. The HTTP-01 challenge is answered over
+  plain HTTP on port 80, so no certificate is needed to bootstrap one
+  -- the common worry that "the cert must exist before the server
+  starts" does not apply. TLS-ALPN-01 and DNS-01 (via a DNS-provider
+  plugin) are also supported. This is the right choice for an
+  internet-facing standalone or Docker deployment.
+- **Files.** Herold loads a `cert_file` and `key_file` you supply. Use
+  this when certificates come from somewhere else -- an internal PKI, a
+  wildcard certificate, a reverse proxy that passes mail TLS through to
+  herold, or cert-manager under [Kubernetes](#kubernetes).
 
-_Going Live_ has the full ACME and DNS walkthrough.
+Configure ACME under `[acme]` in `system.toml`; _Going Live_ has the
+full walkthrough, including binding the privileged ports.
 
 ## Install with Docker
 
@@ -290,6 +298,26 @@ With a domain and a user in place: {%# REQ-DEPLOY-COLOC-01..05 #%}
 
 The server reports readiness on `GET /api/v1/healthz/ready` once every
 listener, the store, and all plugins are up. {%# REQ-OPS-110, REQ-OPS-111 #%}
+
+## Kubernetes
+
+Kubernetes is not a first-class target yet -- there is no Helm chart and
+no published manifests. Herold runs under Kubernetes today as a plain
+container; the one thing to get right is TLS.
+
+An ingress can terminate HTTPS for the web SPAs, but it cannot terminate
+the mail protocols: SMTP and IMAP STARTTLS are in-band upgrades that an
+L4 load balancer cannot unwrap. The supported shape is therefore:
+
+- Expose the mail ports with a `Service` of type `LoadBalancer` doing
+  L4 TLS **passthrough** -- the herold pod terminates mail TLS itself.
+- Issue certificates with cert-manager into a `Secret`, mount the
+  `Secret` into the pod as files, and point every listener at the
+  **Files** certificate source (see [TLS](#tls)). Leave the built-in
+  ACME client off; cert-manager owns issuance.
+- Front the web SPAs with an ingress, or pass them through the same way.
+
+A Helm chart packaging this is planned.
 
 ## Where to next
 

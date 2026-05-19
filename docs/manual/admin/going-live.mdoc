@@ -137,9 +137,21 @@ forward:
    `tcp/80` and `tcp/443` to it.
 
 With the `[acme]` block in place and the challenge method configured
-above, herold will provision the cert at startup and renew automatically.
-Use `herold cert status` to verify the issued cert and its remaining
-lifetime once the server starts.
+above, herold provisions the cert on first start -- nothing is
+pre-provisioned, and the HTTP-01 challenge is answered over plain HTTP
+on port 80 -- and renews it automatically thereafter. Use `herold cert
+status` to verify the issued cert and its remaining lifetime once the
+server starts.
+
+### Certificates from elsewhere
+
+If your certificates come from something other than herold's ACME
+client -- an internal PKI, a wildcard certificate, or cert-manager
+under Kubernetes -- omit the `[acme]` block and give each listener an
+explicit `cert_file` and `key_file` instead (the per-listener `file`
+source described in _Installation_). herold loads them at startup. The
+DKIM, DMARC, and MTA-STS steps below are unchanged; only the
+certificate source differs.
 
 ## Step 3 - DKIM key
 
