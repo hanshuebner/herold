@@ -108,8 +108,14 @@ type Server struct {
 	allowEmptyOrigin bool
 	peers            PeersResolver
 
-	connsMu     sync.Mutex
-	conns       map[*chatConn]struct{}
+	connsMu sync.Mutex
+	conns   map[*chatConn]struct{}
+	// connsClosed is set true by Shutdown, under connsMu, in the same
+	// critical section that snapshots conns for the drain loop.
+	// handleUpgrade checks it under connsMu before publishing a conn
+	// and incrementing connWG, so no connection is admitted (or
+	// counted in connWG) after Shutdown has taken its snapshot.
+	connsClosed bool
 	perPrinc    map[store.PrincipalID]int
 	totalActive atomic.Int64
 
@@ -233,7 +239,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	// Pull every connection's read/write pump down. shutdown() is
 	// idempotent so a connection already on its way out is unaffected.
+	//
+	// Closing admission and snapshotting the live set happen in one
+	// connsMu critical section: handleUpgrade publishes a conn and
+	// increments connWG under the same lock gated on connsClosed, so
+	// after this block every conn counted in connWG is also in `conns`
+	// and will be nudged by the drain loop below. That removes the
+	// connWG Add/Wait race and guarantees Wait() cannot stall on a
+	// connection the drain loop never saw.
 	s.connsMu.Lock()
+	s.connsClosed = true
 	conns := make([]*chatConn, 0, len(s.conns))
 	for c := range s.conns {
 		conns = append(conns, c)
@@ -414,8 +429,26 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	defer cc.cancel()
 	defer connCancel()
 	s.connsMu.Lock()
+	if s.connsClosed {
+		s.connsMu.Unlock()
+		// Server.Shutdown has already closed admission and snapshotted
+		// the connection set. Publishing now would count this conn in
+		// connWG without it appearing in Shutdown's drain loop, so its
+		// readPump would never be nudged and connWG.Wait() would
+		// stall. Abort the upgrade cleanly: the conn is not yet
+		// broadcaster-registered and the ctx cancels are deferred.
+		s.releaseReservation(pid)
+		_ = netConn.Close()
+		return
+	}
 	s.conns[cc] = struct{}{}
+	// connWG.Add happens here, under connsMu and gated on connsClosed,
+	// so it can never race Server.Shutdown's connWG.Wait (the
+	// documented WaitGroup hazard) and every counted conn is also in
+	// Shutdown's drain snapshot. The matching Done is deferred below.
+	s.connWG.Add(1)
 	s.connsMu.Unlock()
+	defer s.connWG.Done()
 	observe.ProtochatConnectionsTotal.Inc()
 	observe.ProtochatConnectionsCurrent.Inc()
 	cc.id = s.broadcaster.Register(pid, cc)
@@ -454,13 +487,9 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track the connection's run() lifetime on the server-level
-	// WaitGroup so Shutdown can wait for it to drain. The Add must
-	// happen before run() to be observable by Shutdown's wait.
-	// cc.ctx / cc.cancel were initialised above (pre-publication).
-	s.connWG.Add(1)
-	defer s.connWG.Done()
-
+	// connWG was incremented at publication time (under connsMu,
+	// alongside the s.conns insert) so Shutdown's drain snapshot and
+	// connWG count stay consistent; see the publication block above.
 	cc.run()
 
 	s.unregisterChatConn(cc)
