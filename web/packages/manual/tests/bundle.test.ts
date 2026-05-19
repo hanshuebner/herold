@@ -329,7 +329,9 @@ describe('bundle SSR mode', () => {
     const html = readFileSync(indexPath, 'utf8');
     expect(html.length).toBeGreaterThan(0);
     expect(html).toContain('<!doctype html>');
-    expect(html).toContain('<html lang="en">');
+    // data-theme="system" makes the standalone manual follow the
+    // browser's prefers-color-scheme instead of the dark default.
+    expect(html).toContain('<html lang="en" data-theme="system">');
   });
 
   it('user chapter HTML contains the chapter title in <title>', () => {
