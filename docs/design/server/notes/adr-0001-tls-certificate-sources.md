@@ -168,14 +168,15 @@ Neutral:
 
 ## Implementation status
 
-Decided here; code not yet landed. Follow-up work:
+Decided here; tracked as GitHub issues.
 
-1. Deferred-listener behaviour for `acme`-source listeners with no
-   certificate yet (refuse handshake / withhold `STARTTLS` advertisement).
-2. Remove the baked-in self-signed certificate and the `openssl` step from
-   `deploy/docker/Dockerfile`.
-3. Set `tls = "none"` on the mail listeners in `deploy/docker/system.toml`
-   (quickstart config).
-4. fsnotify-based file watching in the `file` certificate source, with
-   hot-reload into the SNI store.
-5. (Optional, k8s-motivated) PROXY protocol support on the mail listeners.
+1. Withhold `STARTTLS` advertisement until a certificate is available --
+   issue #108. (Handshake-first listeners already refuse cleanly:
+   `tls.Store.Get` returns `ErrNoCertificate`.)
+2. Remove the baked-in self-signed certificate from the Docker image and
+   run the quickstart container plaintext on loopback -- issue #109
+   (covers `deploy/docker/Dockerfile` and `deploy/docker/system.toml`).
+3. fsnotify-based file watching in the `file` certificate source, with
+   hot-reload into the SNI store -- issue #110.
+4. PROXY protocol support on the mail listeners -- issue #111. Optional,
+   k8s-motivated; deferred behind 1-3.
