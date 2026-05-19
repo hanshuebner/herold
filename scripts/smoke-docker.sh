@@ -20,15 +20,19 @@
 #   - bash (uses /dev/tcp for readiness probes)
 #
 # What the script does, mirroring the README quickstart:
-#   1. Pick six free host ports (SMTP / submission / IMAP / IMAPS /
-#      public HTTP / admin HTTP).
+#   1. Pick five free host ports (SMTP / submission / IMAP / public
+#      HTTP / admin HTTP).
 #   2. docker run the image with those ports mapped to the container's
-#      1025 / 1587 / 1143 / 1993 / 8080 / 9443.
+#      1025 / 1587 / 1143 / 8080 / 9443.
 #   3. Wait for the admin and SMTP listeners to accept TCP.
 #   4. docker exec the bootstrap to create admin@example.local.
 #   5. docker exec to add the example.local domain.
 #   6. Send a uniquely-marked test message via the loopback SMTP relay.
-#   7. Verify via IMAPS that the message landed in INBOX.
+#   7. Verify via plain IMAP that the message landed in INBOX.
+#
+# The baked-in quickstart system.toml runs every listener plaintext on
+# loopback (ADR-0001 / issue #109): no self-signed certificate is shipped
+# in the image, so neither implicit-TLS IMAPS nor STARTTLS is offered.
 #
 # On any failure the container is removed via an EXIT trap so the
 # script is safe to retry without manual cleanup.
@@ -61,7 +65,6 @@ s.close()
 PORT_SMTP=$(free_port)
 PORT_SUBMISSION=$(free_port)
 PORT_IMAP=$(free_port)
-PORT_IMAPS=$(free_port)
 PORT_PUBLIC=$(free_port)
 PORT_ADMIN=$(free_port)
 
@@ -76,13 +79,12 @@ cleanup() {
 trap cleanup EXIT
 
 echo "smoke: image=${IMAGE} container=${NAME}"
-echo "smoke: ports SMTP=${PORT_SMTP} submission=${PORT_SUBMISSION} IMAP=${PORT_IMAP} IMAPS=${PORT_IMAPS} public=${PORT_PUBLIC} admin=${PORT_ADMIN}"
+echo "smoke: ports SMTP=${PORT_SMTP} submission=${PORT_SUBMISSION} IMAP=${PORT_IMAP} public=${PORT_PUBLIC} admin=${PORT_ADMIN}"
 
 docker run -d --name "$NAME" \
   -p "127.0.0.1:${PORT_SMTP}:1025" \
   -p "127.0.0.1:${PORT_SUBMISSION}:1587" \
   -p "127.0.0.1:${PORT_IMAP}:1143" \
-  -p "127.0.0.1:${PORT_IMAPS}:1993" \
   -p "127.0.0.1:${PORT_PUBLIC}:8080" \
   -p "127.0.0.1:${PORT_ADMIN}:9443" \
   "$IMAGE" >/dev/null
@@ -183,26 +185,21 @@ for line in text.splitlines():
 print("smoke: SMTP transaction OK")
 '
 
-echo "smoke: verifying receipt via IMAPS on port ${PORT_IMAPS}..."
-PORT_IMAPS_ENV="$PORT_IMAPS" PASSWORD_ENV="$PASSWORD" MARKER_ENV="$MARKER" python3 - <<'PYEOF'
+echo "smoke: verifying receipt via IMAP on port ${PORT_IMAP}..."
+PORT_IMAP_ENV="$PORT_IMAP" PASSWORD_ENV="$PASSWORD" MARKER_ENV="$MARKER" python3 - <<'PYEOF'
 import imaplib
 import os
-import ssl
 import sys
 import time
 
-port = int(os.environ["PORT_IMAPS_ENV"])
+port = int(os.environ["PORT_IMAP_ENV"])
 password = os.environ["PASSWORD_ENV"]
 marker = os.environ["MARKER_ENV"]
-
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
 
 last_err = None
 for attempt in range(30):
     try:
-        m = imaplib.IMAP4_SSL("127.0.0.1", port, ssl_context=ctx)
+        m = imaplib.IMAP4("127.0.0.1", port)
         try:
             m.login("admin@example.local", password)
             m.select("INBOX")
