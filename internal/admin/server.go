@@ -313,9 +313,17 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	sieveInterp := sieve.NewInterpreter()
 
 	// TLS store.
-	tlsStore, err := buildTLSStore(cfg, logger)
+	tlsStore, tlsWatchEntries, err := buildTLSStore(cfg, logger)
 	if err != nil {
 		return err
+	}
+
+	// File-cert watcher: start if any file-source certs are configured.
+	// Stopped on shutdown via the errgroup gctx path below (registered
+	// after gctx is created).
+	tlsCertWatcher, err := heroldtls.StartFileWatcher(tlsStore, tlsWatchEntries, logger.With("subsystem", "tls"))
+	if err != nil {
+		return fmt.Errorf("admin: tls cert watcher: %w", err)
 	}
 
 	// Health tracker: created early so the ACME wiring and protoadmin
@@ -791,6 +799,17 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// surface. The group's ctx is derived from the StartServer ctx so
 	// any goroutine returning a non-nil error cancels its peers.
 	g, gctx := errgroup.WithContext(ctx)
+
+	// TLS cert file watcher shutdown: stop when the server context cancels.
+	// tlsCertWatcher is nil when no file-source certs are configured.
+	if tlsCertWatcher != nil {
+		cw := tlsCertWatcher
+		g.Go(func() error {
+			<-gctx.Done()
+			cw.Stop()
+			return nil
+		})
+	}
 
 	// Suite-level server lifecycles (protocall reaper, protochat
 	// connection drain). Wave 2.9.5 Track B closed the gap where
@@ -1480,19 +1499,26 @@ func openStoreWithBulk(ctx context.Context, cfg *sysconfig.Config, logger *slog.
 	}
 }
 
-func buildTLSStore(cfg *sysconfig.Config, logger *slog.Logger) (*heroldtls.Store, error) {
+func buildTLSStore(cfg *sysconfig.Config, logger *slog.Logger) (*heroldtls.Store, []heroldtls.WatchEntry, error) {
 	store := heroldtls.NewStore()
 	var fallback *tls.Certificate
+	var watchEntries []heroldtls.WatchEntry
+
 	// Admin TLS: file source loads immediately; acme source defers to the
 	// ACME client which populates the store after account registration.
 	switch cfg.Server.AdminTLS.Source {
 	case "file":
 		cert, err := heroldtls.LoadFromFile(cfg.Server.AdminTLS.CertFile, cfg.Server.AdminTLS.KeyFile)
 		if err != nil {
-			return nil, fmt.Errorf("admin: admin_tls load: %w", err)
+			return nil, nil, fmt.Errorf("admin: admin_tls load: %w", err)
 		}
 		fallback = cert
 		store.SetDefault(cert)
+		// Watch this pair; reload -> SetDefault (Hostname is empty).
+		watchEntries = append(watchEntries, heroldtls.WatchEntry{
+			CertFile: cfg.Server.AdminTLS.CertFile,
+			KeyFile:  cfg.Server.AdminTLS.KeyFile,
+		})
 	case "acme":
 		// Populated later by the ACME client. Log so the operator
 		// knows the store starts empty and will be filled on first
@@ -1506,16 +1532,24 @@ func buildTLSStore(cfg *sysconfig.Config, logger *slog.Logger) (*heroldtls.Store
 		}
 		cert, err := heroldtls.LoadFromFile(l.CertFile, l.KeyFile)
 		if err != nil {
-			return nil, fmt.Errorf("admin: listener %q cert: %w", l.Name, err)
+			return nil, nil, fmt.Errorf("admin: listener %q cert: %w", l.Name, err)
 		}
 		store.Add(cfg.Server.Hostname, cert)
+		e := heroldtls.WatchEntry{
+			CertFile: l.CertFile,
+			KeyFile:  l.KeyFile,
+			Hostname: cfg.Server.Hostname,
+		}
 		if fallback == nil {
 			store.SetDefault(cert)
 			fallback = cert
+			// This entry is the fallback: reload also calls SetDefault.
+			e.SetFallback = true
 		}
+		watchEntries = append(watchEntries, e)
 	}
 	_ = logger
-	return store, nil
+	return store, watchEntries, nil
 }
 
 // listenerServeFn is the shape of one bound listener's serve loop. It

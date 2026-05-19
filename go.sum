@@ -99,6 +99,8 @@ github.com/emersion/go-imap/v2 v2.0.0-beta.8 h1:5IXZK1E33DyeP526320J3RS7eFlCYGFg
 github.com/emersion/go-imap/v2 v2.0.0-beta.8/go.mod h1:dhoFe2Q0PwLrMD7oZw8ODuaD0vLYPe5uj2wcOMnvh48=
 github.com/emersion/go-msgauth v0.7.0 h1:vj2hMn6KhFtW41kshIBTXvp6KgYSqpA/ZN9Pv4g1INc=
 github.com/emersion/go-msgauth v0.7.0/go.mod h1:mmS9I6HkSovrNgq0HNXTeu8l3sRAAuQ9RMvbM4KU7Ck=
+github.com/fsnotify/fsnotify v1.10.1 h1:b0/UzAf9yR5rhf3RPm9gf3ehBPpf0oZKIjtpKrx59Ho=
+github.com/fsnotify/fsnotify v1.10.1/go.mod h1:TLheqan6HD6GBK6PrDWyDPBaEV8LspOxvPSjC+bVfgo=
 github.com/go-jose/go-jose/v4 v4.1.4 h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz3kA=
 github.com/go-jose/go-jose/v4 v4.1.4/go.mod h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=
 github.com/go-logr/logr v1.2.2/go.mod h1:jdQByPbusPIv2/zmleS9BjJVeZ6kBagPoEUsqbVz/1A=
