@@ -667,14 +667,14 @@ function emitSsr(bundle, outDir) {
     const onThisPageHtml = buildOnThisPageHtml(ch.outline);
 
     const page = `<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="system">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(ch.title)} - Herold Manual</title>
 <link rel="stylesheet" href="/manual.css">
 </head>
-<body class="manual-page">
+<body class="manual-page${onThisPageHtml ? '' : ' manual-page--no-otp'}">
 <nav class="manual-nav" aria-label="Manual navigation">
 <div class="manual-nav-header">
 <a href="/manual/" class="manual-home-link">Herold Manual</a>
@@ -694,13 +694,13 @@ ${tocHtml}
 <article class="manual-content">
 ${contentHtml}
 </article>
+</main>
 ${onThisPageHtml ? `<nav class="manual-on-this-page" aria-label="On this page">
 <h2>On this page</h2>
 <ul>
 ${onThisPageHtml}
 </ul>
 </nav>` : ''}
-</main>
 <script src="/manual.js" type="module"></script>
 </body>
 </html>`;
@@ -964,8 +964,22 @@ body.manual-page {
   grid-column: 2;
   grid-row: 1;
   padding: var(--spacing-08) var(--spacing-09);
-  max-width: 800px;
+  min-width: 0;
   overflow-x: hidden;
+}
+
+/* The main column fills its grid track so the page fills the window;
+   the prose itself stays at a readable line length, centred in the
+   track rather than left-aligned against an empty gap. */
+.manual-content {
+  max-width: 80ch;
+  margin-inline: auto;
+}
+
+/* Pages with no headings have no on-this-page rail; drop the third
+   grid track so the main column fills the freed space. */
+.manual-page--no-otp {
+  grid-template-columns: var(--manual-sidebar-width) 1fr;
 }
 
 .manual-content h1,
@@ -1113,7 +1127,7 @@ body.manual-page {
     border-right: none;
     border-bottom: 1px solid var(--border-subtle-01);
   }
-  .manual-main { grid-column: 1; padding: 1rem; max-width: none; }
+  .manual-main { grid-column: 1; padding: 1rem; }
   .manual-on-this-page { display: none; }
 }
 `;
