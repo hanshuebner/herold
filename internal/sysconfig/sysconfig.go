@@ -1083,8 +1083,11 @@ func (d Duration) MarshalText() ([]byte, error) {
 func (d Duration) AsDuration() time.Duration { return time.Duration(d) }
 
 // AdminTLSConfig controls the cert used for the admin HTTPS surface.
-// source may be "file" (cert_file + key_file required) or "acme"
-// (uses the deployment-level [acme] account).
+// source may be:
+//   - "none" -- no TLS; all admin/JMAP/public listeners must have tls="none".
+//     Use this for the loopback quickstart where every listener runs plaintext.
+//   - "file" -- cert_file + key_file required.
+//   - "acme" -- uses the deployment-level [acme] account.
 type AdminTLSConfig struct {
 	Source      string `toml:"source"`
 	CertFile    string `toml:"cert_file,omitempty"`
@@ -2415,7 +2418,10 @@ func Validate(c *Config) error {
 	// Admin TLS
 	switch c.Server.AdminTLS.Source {
 	case "":
-		return errors.New("sysconfig: [server.admin_tls] source is required (use \"file\" or \"acme\")")
+		return errors.New("sysconfig: [server.admin_tls] source is required (use \"none\", \"file\", or \"acme\")")
+	case "none":
+		// All listeners run plaintext. No cert needed. Valid for the loopback
+		// quickstart where tls = "none" on every listener (ADR-0001 section 2).
 	case "file":
 		if c.Server.AdminTLS.CertFile == "" || c.Server.AdminTLS.KeyFile == "" {
 			return errors.New("sysconfig: [server.admin_tls] source=\"file\" requires cert_file and key_file")
@@ -2425,7 +2431,7 @@ func Validate(c *Config) error {
 			return errors.New("sysconfig: [server.admin_tls] source=\"acme\" requires an [acme] block")
 		}
 	default:
-		return fmt.Errorf("sysconfig: [server.admin_tls] source %q not recognised (want \"file\" or \"acme\")", c.Server.AdminTLS.Source)
+		return fmt.Errorf("sysconfig: [server.admin_tls] source %q not recognised (want \"none\", \"file\", or \"acme\")", c.Server.AdminTLS.Source)
 	}
 	// [acme] block validation.
 	if c.Acme != nil {

@@ -59,19 +59,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -ldflags "-s -w" \
       -o /out/herold ./cmd/herold
 
-# admin_tls.source = "file" requires a cert+key pair to load at boot;
-# the SMTP submission, IMAP, and IMAPS listeners in
-# deploy/docker/system.toml also reference these files for their
-# STARTTLS / implicit-TLS upgrade. Bake a throwaway self-signed cert
-# into the image so the container boots end-to-end without any
-# external file mounts. Operators with a real domain replace this by
-# bind-mounting their own cert + key over /var/lib/herold/admin.{crt,key}.
-RUN openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-      -subj "/CN=mail.example.local" \
-      -addext "subjectAltName=DNS:mail.example.local,DNS:localhost,IP:127.0.0.1,IP:::1" \
-      -keyout /out/admin.key -out /out/admin.crt \
- && chmod 0644 /out/admin.crt /out/admin.key
-
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 LABEL org.opencontainers.image.title="herold"
 LABEL org.opencontainers.image.source="https://github.com/hanshuebner/herold"
@@ -80,30 +67,25 @@ LABEL org.opencontainers.image.licenses="MIT"
 WORKDIR /var/lib/herold
 COPY --from=build /out/herold /usr/local/bin/herold
 COPY deploy/docker/system.toml /etc/herold/system.toml
-COPY --from=build --chown=nonroot:nonroot /out/admin.crt /var/lib/herold/admin.crt
-COPY --from=build --chown=nonroot:nonroot /out/admin.key /var/lib/herold/admin.key
 USER nonroot:nonroot
 
 # Volume layout:
-#   /var/lib/herold  - SQLite DB, blob tree, FTS index, queue state,
-#                      throwaway self-signed admin.crt / admin.key.
+#   /var/lib/herold  - SQLite DB, blob tree, FTS index, queue state.
 #                      Mount a named volume or host path here for
 #                      persistent state; leave unmounted for an
 #                      ephemeral, container-private testing run.
 #   /etc/herold      - System configuration. The image ships a default
-#                      system.toml at /etc/herold/system.toml that
-#                      enables STARTTLS on the SMTP submission and IMAP
-#                      listeners (using the throwaway cert) and leaves
-#                      the admin / public HTTP listeners on plain TCP
-#                      for loopback testing. Bind-mount over it for a
-#                      real deployment.
+#                      system.toml at /etc/herold/system.toml that runs
+#                      all listeners plaintext on loopback for a
+#                      no-DNS quickstart. Bind-mount over it for a real
+#                      deployment.
 VOLUME ["/var/lib/herold"]
 
 # Quickstart listener ports (matches the baked-in system.toml). For a
 # real deployment with the standard SMTP / IMAP / HTTPS ports, override
 # system.toml and publish 25 / 465 / 587 / 143 / 993 / 4190 / 443 / 80
 # instead.
-EXPOSE 1025 1587 1143 1993 8080 9443 9090
+EXPOSE 1025 1587 1143 8080 9443 9090
 
 ENV HEROLD_SYSTEM_CONFIG=/etc/herold/system.toml
 # Default PID file lives at /var/run/herold.pid which the nonroot user

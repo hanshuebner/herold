@@ -587,6 +587,52 @@ tls = "starttls"
 	}
 }
 
+func TestValidate_AdminTLSNoneSource(t *testing.T) {
+	// ADR-0001 section 2: source="none" must be accepted for the loopback
+	// quickstart where every listener runs tls="none" and no cert is needed.
+	const plaintext = `
+[server]
+hostname = "mail.example.local"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "none"
+
+[[listener]]
+name = "smtp"
+address = "0.0.0.0:1025"
+protocol = "smtp"
+tls = "none"
+
+[[listener]]
+name = "imap"
+address = "0.0.0.0:1143"
+protocol = "imap"
+tls = "none"
+
+[[listener]]
+name = "public"
+address = "0.0.0.0:8080"
+protocol = "http"
+kind = "public"
+tls = "none"
+
+[[listener]]
+name = "admin"
+address = "0.0.0.0:9443"
+protocol = "http"
+kind = "admin"
+tls = "none"
+`
+	cfg, err := Parse([]byte(plaintext))
+	if err != nil {
+		t.Fatalf("source=\"none\" must be accepted for plaintext quickstart; got: %v", err)
+	}
+	if cfg.Server.AdminTLS.Source != "none" {
+		t.Errorf("expected source=none, got %q", cfg.Server.AdminTLS.Source)
+	}
+}
+
 func TestValidate_ManageSieveProtocol(t *testing.T) {
 	const ok = `
 [server]

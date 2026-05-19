@@ -1,6 +1,7 @@
 package tls
 
 import (
+	"context"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -125,7 +126,7 @@ func (w *FileWatcher) run() {
 			if !ok {
 				return
 			}
-			w.logger.LogAttrs(nil, slog.LevelWarn, "tls filewatcher: watcher error",
+			w.logger.LogAttrs(context.TODO(), slog.LevelWarn, "tls filewatcher: watcher error",
 				slog.String("err", err.Error()))
 
 		case now := <-ticker.C:
@@ -145,7 +146,7 @@ func (w *FileWatcher) run() {
 func (w *FileWatcher) reload(e WatchEntry) {
 	cert, err := LoadFromFile(e.CertFile, e.KeyFile)
 	if err != nil {
-		w.logger.LogAttrs(nil, slog.LevelWarn, "tls filewatcher: reload failed; keeping previous certificate",
+		w.logger.LogAttrs(context.TODO(), slog.LevelWarn, "tls filewatcher: reload failed; keeping previous certificate",
 			slog.String("cert_file", e.CertFile),
 			slog.String("key_file", e.KeyFile),
 			slog.String("err", err.Error()))
@@ -165,7 +166,7 @@ func (w *FileWatcher) reload(e WatchEntry) {
 	if cert.Leaf != nil {
 		expiry = cert.Leaf.NotAfter.UTC().Format(time.RFC3339)
 	}
-	w.logger.LogAttrs(nil, slog.LevelInfo, "tls filewatcher: certificate reloaded",
+	w.logger.LogAttrs(context.TODO(), slog.LevelInfo, "tls filewatcher: certificate reloaded",
 		slog.String("cert_file", e.CertFile),
 		slog.String("key_file", e.KeyFile),
 		slog.String("hostname", e.Hostname),

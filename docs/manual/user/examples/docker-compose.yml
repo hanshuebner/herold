@@ -37,9 +37,8 @@ services:
       # - ./system.toml:/etc/herold/system.toml:ro
     ports:
       - "127.0.0.1:1025:1025"   # smtp-relay
-      - "127.0.0.1:1587:1587"   # smtp-submission (STARTTLS)
-      - "127.0.0.1:1143:1143"   # imap (STARTTLS)
-      - "127.0.0.1:1993:1993"   # imaps (implicit TLS)
+      - "127.0.0.1:1587:1587"   # smtp-submission
+      - "127.0.0.1:1143:1143"   # imap
       - "127.0.0.1:8080:8080"   # public HTTP / Suite SPA / JMAP
       - "127.0.0.1:9443:9443"   # admin HTTP / admin SPA / admin REST
       - "127.0.0.1:9090:9090"   # /metrics (loopback by default)
