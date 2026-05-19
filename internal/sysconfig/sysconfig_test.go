@@ -3156,10 +3156,10 @@ proxy_protocol = true
 	}
 }
 
-func TestValidate_ProxyProtocol_RejectedOnNonHTTPListener(t *testing.T) {
-	// issue #106: proxy_protocol decoding is wired only for HTTP
-	// listeners; setting it on an SMTP/IMAP listener must be rejected
-	// rather than silently ignored.
+func TestValidate_ProxyProtocol_AcceptedOnMailListeners(t *testing.T) {
+	// issue #111: proxy_protocol = true is now valid on smtp, imap,
+	// smtp-submission, and managesieve listeners (L4 load-balancer
+	// / Kubernetes TLS-passthrough shape).
 	const cfg = `
 [server]
 hostname = "mail.example.com"
@@ -3176,13 +3176,37 @@ address = ":25"
 protocol = "smtp"
 tls = "starttls"
 proxy_protocol = true
+
+[[listener]]
+name = "imap"
+address = ":143"
+protocol = "imap"
+tls = "starttls"
+proxy_protocol = true
+
+[[listener]]
+name = "public"
+address = "127.0.0.1:8080"
+protocol = "http"
+kind = "public"
+tls = "none"
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:9080"
+protocol = "http"
+kind = "admin"
+tls = "none"
 `
-	_, err := Parse([]byte(cfg))
-	if err == nil {
-		t.Fatal("expected error for proxy_protocol on a non-HTTP listener")
+	parsed, err := Parse([]byte(cfg))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "proxy_protocol") {
-		t.Errorf("error should mention proxy_protocol, got: %v", err)
+	if !parsed.Listener[0].ProxyProtocol {
+		t.Error("expected ProxyProtocol to be true on the smtp listener")
+	}
+	if !parsed.Listener[1].ProxyProtocol {
+		t.Error("expected ProxyProtocol to be true on the imap listener")
 	}
 }
 

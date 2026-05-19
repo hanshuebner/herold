@@ -12,6 +12,35 @@ import (
 	"time"
 )
 
+// startRawProxyProtocolServer binds a loopback TCP listener wrapped exactly
+// as a proxy_protocol mail listener is wired in bindOneAddress (issue #111).
+// It accepts one connection, writes the conn.RemoteAddr() string to the
+// client, then closes the connection. Returns the dial address and a stop
+// func.
+func startRawProxyProtocolServer(t *testing.T) (addr string, stop func()) {
+	t.Helper()
+	base, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ln := proxyProtocolListener(base)
+	dialAddr := base.Addr().String()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = fmt.Fprint(conn, conn.RemoteAddr().String())
+	}()
+	return dialAddr, func() {
+		_ = ln.Close()
+		<-done
+	}
+}
+
 // startProxyProtocolServer binds a loopback listener wrapped exactly as a
 // proxy_protocol = true admin listener is wired in bindOneAddress, and serves
 // a handler that echoes the request's RemoteAddr and TLS state. It returns the
@@ -101,5 +130,37 @@ func TestProxyProtocolListener_RejectsMissingHeader(t *testing.T) {
 	if resp, err := http.ReadResponse(bufio.NewReader(conn), nil); err == nil {
 		resp.Body.Close()
 		t.Fatalf("connection without a PROXY header was served (status %d); want rejected", resp.StatusCode)
+	}
+}
+
+// TestProxyProtocolListener_MailProtocol_DecodesClientAddr verifies that
+// proxyProtocolListener works for raw (non-HTTP) mail protocol connections:
+// the accepted conn.RemoteAddr() returns the address from the PROXY header
+// rather than the loopback dialer address. This mirrors the HTTP test above
+// but exercises the path used by SMTP, IMAP, and ManageSieve listeners
+// (issue #111).
+func TestProxyProtocolListener_MailProtocol_DecodesClientAddr(t *testing.T) {
+	addr, stop := startRawProxyProtocolServer(t)
+	defer stop()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// PROXY v1 header announcing a real client address, as an upstream
+	// L4 load balancer would inject for a mail protocol connection.
+	if _, err := io.WriteString(conn, "PROXY TCP4 203.0.113.42 10.0.0.1 12345 25\r\n"); err != nil {
+		t.Fatalf("write proxy header: %v", err)
+	}
+
+	got, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read remote addr: %v", err)
+	}
+	if !strings.Contains(string(got), "203.0.113.42:12345") {
+		t.Errorf("RemoteAddr not taken from PROXY header: %q", string(got))
 	}
 }

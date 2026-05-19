@@ -1731,6 +1731,16 @@ func bindOneAddress(
 		slog.String("tls", l.TLS),
 		slog.String("addr", resolvedAddr),
 	)
+	// For mail protocol listeners with proxy_protocol = true, wrap
+	// the listener so conn.RemoteAddr() returns the decoded real
+	// client address. The protocol servers call conn.RemoteAddr()
+	// directly and need no further change (issue #111).
+	if l.ProxyProtocol {
+		switch l.Protocol {
+		case "smtp", "smtp-submission", "imap", "managesieve":
+			ln = proxyProtocolListener(ln)
+		}
+	}
 	switch l.Protocol {
 	case "smtp":
 		return ln, func(ctx context.Context) error {

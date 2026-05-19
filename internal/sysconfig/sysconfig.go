@@ -2492,11 +2492,18 @@ func Validate(c *Config) error {
 		if l.TLS == "none" && (l.CertFile != "" || l.KeyFile != "") {
 			return fmt.Errorf("sysconfig: [[listener]] %q: cert_file/key_file set but tls=\"none\"", l.Name)
 		}
-		// proxy_protocol decoding is wired only for HTTP listeners
-		// (issue #106); SMTP/IMAP listeners do not yet honour it, so
-		// reject the flag there rather than silently ignoring it.
-		if l.ProxyProtocol && l.Protocol != "http" {
-			return fmt.Errorf("sysconfig: [[listener]] %q: proxy_protocol is currently supported only on HTTP listeners (protocol = \"http\")", l.Name)
+		// proxy_protocol is supported on HTTP, SMTP, IMAP, and
+		// ManageSieve listeners (issues #106, #111). The listener
+		// wrapper makes conn.RemoteAddr() return the decoded client
+		// address transparently, so no protocol-specific change is
+		// needed. Any other protocol value is rejected.
+		if l.ProxyProtocol {
+			switch l.Protocol {
+			case "http", "smtp", "smtp-submission", "imap", "managesieve":
+				// allowed
+			default:
+				return fmt.Errorf("sysconfig: [[listener]] %q: proxy_protocol is not supported on protocol %q", l.Name, l.Protocol)
+			}
 		}
 		// REQ-OPS-ADMIN-LISTENER-01: HTTP listeners (Protocol=="http")
 		// carry a Kind in {public, admin}. Non-HTTP listeners must

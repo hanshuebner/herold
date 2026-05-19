@@ -1013,8 +1013,9 @@ func TestSTARTTLS_WithheldUntilCertAvailable(t *testing.T) {
 	closeFn()
 
 	// --- phase 2: load a certificate, STARTTLS must now be advertised ---
-	_, clientCfg := newTestTLSStore(t) // generates cert; we apply it to our store below
+	newTestTLSStore(t) // generates cert; we apply it to our store below
 	// Replicate the cert-generation steps to get a cert we can add to emptyTLSStore.
+	var clientCfg *tls.Config
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("gen key: %v", err)
