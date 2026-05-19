@@ -372,8 +372,12 @@ func (ses *session) capabilityString() string {
 }
 
 func (ses *session) startTLSAllowed() bool {
-	// STARTTLS is meaningful only on plaintext listeners.
-	return !ses.tlsActive && ses.s.tlsStore != nil
+	// STARTTLS is meaningful only on plaintext listeners that have at least
+	// one usable certificate. An ACME-sourced store that is still pending
+	// its first certificate must not advertise STARTTLS: a client that
+	// honours the advertisement and issues STARTTLS would hit a hard
+	// handshake failure instead of a clean NO (ADR-0001, issue #108).
+	return !ses.tlsActive && ses.s.tlsStore != nil && ses.s.tlsStore.HasAny()
 }
 
 func (ses *session) handleCAPABILITY(c *Command) error {
@@ -389,6 +393,13 @@ func (ses *session) handleSTARTTLS(ctx context.Context, c *Command) error {
 	}
 	if ses.s.tlsStore == nil {
 		return ses.resp.taggedNO(c.Tag, "", "TLS not available")
+	}
+	// Certificate may not yet be available (e.g. ACME still pending).
+	// Return a clean NO rather than sending OK and letting the handshake
+	// fail; once a certificate is provisioned the advertisement appears
+	// in CAPABILITY and clients can retry (ADR-0001, issue #108).
+	if !ses.s.tlsStore.HasAny() {
+		return ses.resp.taggedNO(c.Tag, "", "TLS not available: no certificate provisioned yet")
 	}
 	if err := ses.resp.taggedOK(c.Tag, "", "Begin TLS negotiation now"); err != nil {
 		return err

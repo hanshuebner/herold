@@ -246,6 +246,84 @@ func TestCAPABILITY_BeforeLogin(t *testing.T) {
 	}
 }
 
+// TestCAPABILITY_EmptyTLSStore verifies that STARTTLS is withheld from the
+// CAPABILITY response when the TLS store holds no certificate (ACME pending
+// / bootstrap window). Once a certificate is added the capability must
+// appear. REQ-PROTO-04, ADR-0001, issue #108.
+func TestCAPABILITY_EmptyTLSStore(t *testing.T) {
+	// Build a fixture with an empty TLS store (no certificate added yet).
+	ha, _ := testharness.Start(t, testharness.Options{
+		Listeners: []testharness.ListenerSpec{{Name: "imap", Protocol: "imap"}},
+	})
+	ctx := context.Background()
+	if err := ha.Store.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("insert domain: %v", err)
+	}
+	dir := directory.New(ha.Store.Meta(), ha.Logger, ha.Clock, rand.Reader)
+	emptyTLSStore := heroldtls.NewStore() // no certificate loaded
+	srv := protoimap.NewServer(
+		ha.Store, dir, emptyTLSStore, ha.Clock, ha.Logger, nil, nil,
+		protoimap.Options{
+			MaxConnections:         16,
+			MaxCommandsPerSession:  100,
+			ServerName:             "herold",
+			DefaultCommandDeadline: 30 * time.Second,
+		},
+	)
+	ha.AttachIMAP("imap", srv, protoimap.ListenerModeSTARTTLS)
+	t.Cleanup(func() { _ = srv.Close() })
+
+	// Dial and consume greeting.
+	conn, err := ha.DialIMAPByName(ctx, "imap")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	cl := &client{t: t, conn: conn, br: bufio.NewReader(conn)}
+	cl.readLine() // greeting
+
+	// With an empty store STARTTLS must not appear in CAPABILITY.
+	lines := cl.send("a1", "CAPABILITY")
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "STARTTLS") {
+		t.Fatalf("STARTTLS advertised with empty TLS store, want omitted: %v", lines)
+	}
+
+	// STARTTLS command itself must return a clean NO, not a handshake failure.
+	resp := cl.send("a2", "STARTTLS")
+	last := resp[len(resp)-1]
+	if !strings.Contains(last, "NO") {
+		t.Fatalf("expected NO on STARTTLS with empty store, got: %v", last)
+	}
+
+	// Now add a certificate to the store and verify CAPABILITY starts advertising STARTTLS.
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(2),
+		Subject:               pkix.Name{CommonName: "mail.example.test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("cert: %v", err)
+	}
+	cert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv}
+	emptyTLSStore.SetDefault(&cert)
+
+	// A fresh CAPABILITY after the cert is provisioned must list STARTTLS.
+	lines2 := cl.send("a3", "CAPABILITY")
+	if !strings.Contains(strings.Join(lines2, "\n"), "STARTTLS") {
+		t.Fatalf("STARTTLS missing after certificate provisioned: %v", lines2)
+	}
+}
+
 // TestIMAPMetrics_CommandIncrementsCounter drives one CAPABILITY command
 // and asserts the herold_imap_commands_total{command="CAPABILITY"}
 // counter advanced by at least one. Proves the dispatch-level metric
