@@ -125,7 +125,7 @@ func (ses *session) capabilityLines() []string {
 		`"MAXREDIRECTS" "5"`,
 		`"NOTIFY" "mailto"`,
 	}
-	if !ses.tlsActive && ses.s.tlsStore != nil {
+	if !ses.tlsActive && ses.s.tlsStore != nil && ses.s.tlsStore.HasAny() {
 		out = append(out, `"STARTTLS"`)
 	}
 	return out

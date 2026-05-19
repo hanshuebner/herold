@@ -182,6 +182,13 @@ func (ses *session) handleSTARTTLS(ctx context.Context, c *Command) error {
 	if ses.s.tlsStore == nil {
 		return ses.writeNO("", "TLS not available")
 	}
+	// Advertise and accept STARTTLS only when a certificate is actually
+	// available. During the ACME bootstrap window the store exists but
+	// HasAny() is false; proceeding to the handshake would cause a hard
+	// TLS failure for the client (re #108).
+	if !ses.s.tlsStore.HasAny() {
+		return ses.writeNO("", "TLS not available")
+	}
 	if err := ses.writeOK("Begin TLS negotiation now"); err != nil {
 		return err
 	}

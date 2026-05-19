@@ -260,6 +260,134 @@ func TestCAPABILITY_AdvertisesSieveExtensions_FromInterpreter(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// STARTTLS advertisement gating on certificate availability (re #108)
+// -----------------------------------------------------------------------------
+
+// newFixtureEmptyTLSStore is like newFixture but the TLS store starts empty
+// (no certificate loaded yet, simulating the ACME bootstrap window). The
+// returned *heroldtls.Store is exposed so the test can add a cert later.
+func newFixtureEmptyTLSStore(t *testing.T) (*fixture, *heroldtls.Store) {
+	t.Helper()
+	name := "managesieve"
+	ha, _ := testharness.Start(t, testharness.Options{
+		Listeners: []testharness.ListenerSpec{{Name: name, Protocol: "managesieve"}},
+	})
+	ctx := context.Background()
+	if err := ha.Store.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("insert domain: %v", err)
+	}
+	dir := directory.New(ha.Store.Meta(), ha.Logger, ha.Clock, rand.Reader)
+	password := "correct-horse-staple-battery"
+	pid, err := dir.CreatePrincipal(ctx, "alice@example.test", password)
+	if err != nil {
+		t.Fatalf("create principal: %v", err)
+	}
+	// Empty store: no certificate yet.
+	tlsStore := heroldtls.NewStore()
+	srv := protomanagesieve.NewServer(
+		ha.Store, dir, tlsStore, ha.Clock, ha.Logger, nil, nil,
+		protomanagesieve.Options{
+			ServerName:  "herold",
+			IdleTimeout: time.Minute,
+		},
+	)
+	ha.AttachManageSieve(name, srv)
+	t.Cleanup(func() { _ = srv.Close() })
+	f := &fixture{
+		ha: ha, srv: srv, name: name,
+		pid: pid, password: password,
+		dir: dir,
+	}
+	return f, tlsStore
+}
+
+// TestSTARTTLS_NotAdvertised_WhenNoTLSCert checks that STARTTLS is absent
+// from the capability response when the TLS store exists but holds no
+// certificate (ACME bootstrap window).
+func TestSTARTTLS_NotAdvertised_WhenNoTLSCert(t *testing.T) {
+	f, _ := newFixtureEmptyTLSStore(t)
+	c := f.dial(t)
+	defer c.conn.Close()
+
+	c.write("CAPABILITY\r\n")
+	resp := c.consumeUntilStatus()
+	joined := strings.Join(resp, "\n")
+	if strings.Contains(joined, "STARTTLS") {
+		t.Fatalf("STARTTLS must not be advertised when no certificate is available: %v", resp)
+	}
+}
+
+// TestSTARTTLS_NotAdvertised_WhenNoTLSCert_Greeting checks that STARTTLS is
+// absent from the initial greeting when no certificate is loaded.
+func TestSTARTTLS_NotAdvertised_WhenNoTLSCert_Greeting(t *testing.T) {
+	f, _ := newFixtureEmptyTLSStore(t)
+	// dial() already drains the greeting into consumeUntilStatus; we
+	// need to capture raw lines. Open a raw connection instead.
+	conn, err := f.ha.DialManageSieveByName(context.Background(), f.name)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	c := &client{t: t, conn: conn, br: bufio.NewReader(conn)}
+	resp := c.consumeUntilStatus()
+	joined := strings.Join(resp, "\n")
+	if strings.Contains(joined, "STARTTLS") {
+		t.Fatalf("STARTTLS must not appear in greeting when no certificate is available: %v", resp)
+	}
+}
+
+// TestSTARTTLS_Advertised_AfterCertAdded checks that once a certificate is
+// loaded into the store the CAPABILITY response includes STARTTLS.
+func TestSTARTTLS_Advertised_AfterCertAdded(t *testing.T) {
+	f, tlsStore := newFixtureEmptyTLSStore(t)
+
+	// Confirm absent before cert.
+	conn, err := f.ha.DialManageSieveByName(context.Background(), f.name)
+	if err != nil {
+		t.Fatalf("dial pre-cert: %v", err)
+	}
+	c := &client{t: t, conn: conn, br: bufio.NewReader(conn)}
+	resp := c.consumeUntilStatus()
+	if strings.Contains(strings.Join(resp, "\n"), "STARTTLS") {
+		t.Fatalf("STARTTLS must be absent before cert: %v", resp)
+	}
+	conn.Close()
+
+	// Add a certificate to the store.
+	if err := ensureSharedTestCert(); err != nil {
+		t.Fatalf("shared test cert: %v", err)
+	}
+	tlsStore.SetDefault(sharedTestCert)
+
+	// New connection should now advertise STARTTLS.
+	conn2, err := f.ha.DialManageSieveByName(context.Background(), f.name)
+	if err != nil {
+		t.Fatalf("dial post-cert: %v", err)
+	}
+	defer conn2.Close()
+	c2 := &client{t: t, conn: conn2, br: bufio.NewReader(conn2)}
+	resp2 := c2.consumeUntilStatus()
+	if !strings.Contains(strings.Join(resp2, "\n"), "STARTTLS") {
+		t.Fatalf("STARTTLS must be advertised after cert is added: %v", resp2)
+	}
+}
+
+// TestSTARTTLS_NO_WhenNoCert checks that a STARTTLS command issued while
+// no certificate is available returns a clean NO rather than a hard
+// handshake failure.
+func TestSTARTTLS_NO_WhenNoCert(t *testing.T) {
+	f, _ := newFixtureEmptyTLSStore(t)
+	c := f.dial(t)
+	defer c.conn.Close()
+
+	c.write("STARTTLS\r\n")
+	resp := c.readLine()
+	if !strings.HasPrefix(strings.ToUpper(resp), "NO") {
+		t.Fatalf("expected NO when no cert available, got %q", resp)
+	}
+}
+
+// -----------------------------------------------------------------------------
 // STARTTLS gating
 // -----------------------------------------------------------------------------
 
