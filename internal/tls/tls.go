@@ -80,6 +80,16 @@ func (s *Store) SetDefault(cert *tls.Certificate) {
 	s.fallback = cert
 }
 
+// HasAny reports whether the store holds at least one usable certificate --
+// either a named host entry or the fallback. Protocol listeners use this to
+// determine whether TLS bootstrap has completed (e.g. to decide whether to
+// advertise STARTTLS). See ADR-0001 and issue #108.
+func (s *Store) HasAny() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.byHost) > 0 || s.fallback != nil
+}
+
 // SetALPNChallenger registers the provider consulted for tls-alpn-01
 // challenges (RFC 8737). When set, Get checks the provider first for any
 // ClientHello that includes "acme-tls/1" in SupportedProtos; if the

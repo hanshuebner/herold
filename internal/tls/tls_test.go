@@ -160,6 +160,35 @@ func TestStoreSNI(t *testing.T) {
 	}
 }
 
+func TestStoreHasAny(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath := generateCert(t, dir, []string{"mail.example.test"})
+	cert, err := LoadFromFile(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("LoadFromFile: %v", err)
+	}
+
+	// Empty store -> false.
+	s := NewStore()
+	if s.HasAny() {
+		t.Fatal("empty store: HasAny() = true, want false")
+	}
+
+	// After Add with a hostname -> true.
+	s2 := NewStore()
+	s2.Add("mail.example.test", cert)
+	if !s2.HasAny() {
+		t.Fatal("after Add(host, cert): HasAny() = false, want true")
+	}
+
+	// Fresh store after SetDefault -> true.
+	s3 := NewStore()
+	s3.SetDefault(cert)
+	if !s3.HasAny() {
+		t.Fatal("after SetDefault(cert): HasAny() = false, want true")
+	}
+}
+
 func TestTLSConfig_Intermediate(t *testing.T) {
 	s := NewStore()
 	cfg := TLSConfig(s, Intermediate, []string{"smtp", "h2"})
