@@ -935,6 +935,133 @@ func TestPanic_InHandler_Does_Not_Kill_Server(t *testing.T) {
 	mustOK(t, cli2, 221)
 }
 
+// TestSTARTTLS_WithheldUntilCertAvailable verifies ADR-0001 / issue #108:
+// STARTTLS must not be advertised in EHLO when the TLS store is empty, and
+// a STARTTLS command issued during that window must receive a 454 rather
+// than a mid-handshake failure. Once a certificate is loaded into the store
+// the advertisement appears and the command succeeds.
+func TestSTARTTLS_WithheldUntilCertAvailable(t *testing.T) {
+	// Build an SMTP server backed by a TLS store that starts empty.
+	ha, _ := testharness.Start(t, testharness.Options{
+		Listeners: []testharness.ListenerSpec{{Name: "smtp", Protocol: "smtp"}},
+	})
+	if err := ha.Store.Meta().InsertDomain(context.Background(), store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("insert domain: %v", err)
+	}
+	dir := directory.New(ha.Store.Meta(), ha.Logger, ha.Clock, rand.Reader)
+	_, err := dir.CreatePrincipal(context.Background(), "alice@example.test", "correct-horse-staple-battery")
+	if err != nil {
+		t.Fatalf("create principal: %v", err)
+	}
+
+	// Empty TLS store: no certificates yet.
+	emptyTLSStore := heroldtls.NewStore()
+
+	resolver := newResolverAdapter(ha.DNS)
+	srv, err := protosmtp.New(protosmtp.Config{
+		Store:     ha.Store,
+		Directory: dir,
+		DKIM:      maildkim.New(resolver, ha.Logger, ha.Clock),
+		SPF:       mailspf.New(resolver, ha.Clock),
+		DMARC:     maildmarc.New(resolver),
+		ARC:       mailarc.New(resolver),
+		TLS:       emptyTLSStore,
+		Resolver:  resolver,
+		Clock:     ha.Clock,
+		Logger:    ha.Logger,
+		Options: protosmtp.Options{
+			Hostname:                 "mx.example.test",
+			MaxConcurrentConnections: 8,
+			MaxConcurrentPerIP:       4,
+			ReadTimeout:              5 * time.Second,
+			WriteTimeout:             5 * time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close(context.Background()) })
+	ha.AttachSMTP("smtp", srv, protosmtp.RelayIn)
+
+	dial := func(t *testing.T) (*smtpClient, func()) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		c, err := ha.DialSMTPByName(ctx, "smtp")
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		return newSMTPClient(c), func() { _ = c.Close() }
+	}
+
+	// --- phase 1: store is empty, STARTTLS must not appear in EHLO ---
+	cli, closeFn := dial(t)
+	defer closeFn()
+	mustOK(t, cli, 220)
+	cli.send(t, "EHLO client.example.test")
+	_, ehlo := cli.readReply(t)
+	if strings.Contains(ehlo, "STARTTLS") {
+		t.Fatalf("STARTTLS advertised with empty TLS store:\n%s", ehlo)
+	}
+
+	// STARTTLS command while no cert is available must return 454.
+	cli.send(t, "STARTTLS")
+	code, text := cli.readReply(t)
+	if code != 454 {
+		t.Fatalf("expected 454 on STARTTLS with empty store, got %d %s", code, text)
+	}
+	closeFn()
+
+	// --- phase 2: load a certificate, STARTTLS must now be advertised ---
+	_, clientCfg := newTestTLSStore(t) // generates cert; we apply it to our store below
+	// Replicate the cert-generation steps to get a cert we can add to emptyTLSStore.
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(2),
+		Subject:               pkix.Name{CommonName: "mx.example.test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"mx.example.test"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("cert: %v", err)
+	}
+	leaf, _ := x509.ParseCertificate(der)
+	tlsCert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv, Leaf: leaf}
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	clientCfg = &tls.Config{RootCAs: pool, ServerName: "mx.example.test"}
+
+	// Add the certificate; HasAny() now returns true.
+	emptyTLSStore.SetDefault(&tlsCert)
+
+	cli2, closeFn2 := dial(t)
+	defer closeFn2()
+	mustOK(t, cli2, 220)
+	cli2.send(t, "EHLO client.example.test")
+	_, ehlo2 := cli2.readReply(t)
+	if !strings.Contains(ehlo2, "STARTTLS") {
+		t.Fatalf("STARTTLS missing from EHLO after cert loaded:\n%s", ehlo2)
+	}
+
+	// STARTTLS should now work end-to-end.
+	cli2.send(t, "STARTTLS")
+	mustOK(t, cli2, 220)
+	tlsConn := tls.Client(cli2.conn, clientCfg)
+	if err := tlsConn.HandshakeContext(context.Background()); err != nil {
+		t.Fatalf("tls handshake after cert loaded: %v", err)
+	}
+	tlsConn.Close()
+}
+
 // --- verifiers -------------------------------------------------------
 
 func assertMessageInMailbox(t *testing.T, f *fixture, pid store.PrincipalID, mbName, subjectSubstr, bodySubstr string) {

@@ -338,7 +338,7 @@ func (sess *session) cmdEHLO(rest string) bool {
 // advertise what we implement.
 func (sess *session) ehloExtensions() []string {
 	var out []string
-	if sess.mode != SubmissionImplicitTLS && !sess.tlsEstablished && sess.srv.tls != nil {
+	if sess.mode != SubmissionImplicitTLS && !sess.tlsEstablished && sess.srv.tls != nil && sess.srv.tls.HasAny() {
 		out = append(out, "STARTTLS")
 	}
 	switch sess.mode {
@@ -392,7 +392,7 @@ func (sess *session) cmdSTARTTLS(rest string) bool {
 		sess.writeReply("501 5.5.4 STARTTLS takes no arguments")
 		return false
 	}
-	if sess.srv.tls == nil {
+	if sess.srv.tls == nil || !sess.srv.tls.HasAny() {
 		sess.writeReply("454 4.7.0 TLS not available")
 		return false
 	}
