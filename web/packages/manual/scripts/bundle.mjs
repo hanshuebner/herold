@@ -465,6 +465,27 @@ function slugify(text) {
     .replace(/^-|-$/g, '');
 }
 
+/**
+ * SSR heading node schema: render `## Foo` as `<h2 id="foo">` so the
+ * on-this-page rail and same-document `#anchor` links resolve. The id
+ * is the slugified heading text -- the same transform extractOutline()
+ * applies, so the rail's hrefs and these ids always agree.
+ *
+ * @type {import('@markdoc/markdoc').Schema}
+ */
+const ssrHeadingNode = {
+  children: ['inline'],
+  attributes: { level: { type: Number, required: true } },
+  transform(node, config) {
+    const children = node.transformChildren(config);
+    const level = node.attributes['level'];
+    const text = children
+      .map((c) => collectText(/** @type {import('@markdoc/markdoc').RenderableTreeNode} */ (c)))
+      .join('');
+    return new Markdoc.Tag(`h${level}`, { id: slugify(text) }, children);
+  },
+};
+
 // ---------------------------------------------------------------------------
 // File reading
 // ---------------------------------------------------------------------------
@@ -636,7 +657,7 @@ async function main() {
  */
 function emitSsr(bundle, outDir) {
   const ssrTags = buildSsrTagSchemas(Markdoc);
-  const ssrConfig = { tags: ssrTags };
+  const ssrConfig = { tags: ssrTags, nodes: { heading: ssrHeadingNode } };
 
   mkdirSync(join(outDir, bundle.audience), { recursive: true });
 
