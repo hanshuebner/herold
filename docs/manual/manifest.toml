@@ -58,3 +58,8 @@ home = "index"
   slug  = "manual-test-runbook"
   file  = "admin/manual-test-runbook.mdoc"
   title = "Manual Test Runbook"
+
+  [[admin.chapters]]
+  slug  = "advanced-builds"
+  file  = "admin/advanced-builds.mdoc"
+  title = "Advanced Build Options"

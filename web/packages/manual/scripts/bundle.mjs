@@ -1033,6 +1033,29 @@ body.manual-page {
 
 .manual-content li { margin-bottom: 0.25em; }
 
+/* Tables */
+.manual-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1.5em;
+  font-size: 0.92em;
+}
+
+.manual-content th,
+.manual-content td {
+  text-align: left;
+  padding: 0.5em 0.75em;
+  border-bottom: 1px solid var(--border-subtle-01);
+  vertical-align: top;
+}
+
+.manual-content thead th {
+  border-bottom: 2px solid var(--border-strong-01);
+  font-weight: 600;
+}
+
+.manual-content tbody tr:hover { background: var(--layer-02); }
+
 /* Callout component */
 .callout {
   padding: var(--spacing-05);

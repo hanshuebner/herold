@@ -6,479 +6,238 @@ audience: admin
 
 # Installing Herold
 
-This document walks through the install paths herold supports, the
-system resources to budget, the storage backend choice, and the
-first-run bootstrap. It is operator-facing; for the day-2 runbook see
-[Operating Herold](operate), for application-administration see
-[Administering Herold](administer), and for the real-domain
-walkthrough see _Going Live_.
+Herold is a single static binary. This guide covers the two ways to run
+it that are supported today -- a Docker container or a build from source
+-- and walks through the first-run bootstrap that takes you from an
+installed binary to a working mailbox.
 
-## Choose a deployment shape
+For day-2 operation see [Operating Herold](operate); for domain and user
+administration see [Administering Herold](administer); for the
+real-domain DNS walkthrough see _Going Live_.
 
-Herold is a single static binary plus optional first-party plugins.
-The supported deployment shapes are:
+## What you need
 
-- **From source.** `go build ./cmd/herold` produces a single binary
-  the operator drops into `/usr/local/bin` (or anywhere in `$PATH`).
-- **Docker.** A multi-stage `Dockerfile` under `deploy/docker/`
-  produces a distroless `nonroot` runtime image. Suitable for
-  Compose, Nomad, plain `docker run`.
-- **Debian / RPM packages.** Not yet available. Debian `.deb` and
-  RPM packaging are roadmap items tracked under REQ-OPS-150. Until
-  then, use the source build or the Docker image.
-- **Kubernetes.** Kubernetes manifests are a roadmap item tracked
-  under REQ-OPS-152. Until then, use the Docker image with a
-  bind-mounted volume and a manually managed config file.
+Herold runs on a single Linux host. Recommended sizing:
 
-Pick whichever matches your existing platform discipline. Herold has
-no preference.
+| Dimension | Minimum | Recommended | Notes                            |
+|-----------|---------|-------------|----------------------------------|
+| CPU       | 2 vCPU  | 8 vCPU      | LLM spam scoring dominates at scale |
+| RAM       | 4 GB    | 32 GB       | The full-text index benefits from RAM |
+| Disk      | 50 GB   | 1 TB+ NVMe  | Mail volume, search index, ACME state |
+| Network   | 10 Mbps | 100 Mbps    | Outbound bursts plus IMAP IDLE   |
 
-## From source
+The minimum is comfortable for a personal server with a handful of
+mailboxes. Scale RAM with the size of the search index and disk with
+mail volume; CPU rarely saturates outside spam classification, which is
+a call to a separate plugin rather than herold's own work.
 
-### Prerequisites
+Herold does not encrypt data at rest. If you need disk-level
+confidentiality, run on an encrypted filesystem (LUKS, ZFS native
+encryption).
 
-- Go 1.25 or newer (the floor at planning time; bumped to current
-  stable at each phase kickoff per `STANDARDS.md` section 2). On
-  Debian, `apt-get install golang-go` ships Go 1.24, which is one
-  minor below the floor. The `go.mod` file pins the toolchain
-  (`go 1.25.0`), so a build invoked with Go 1.24 will transparently
-  fetch the right version from `proxy.golang.org` on first use.
-  Operators on air-gapped hosts must install Go 1.25+ directly from
-  `go.dev/dl/`.
-- git. Required to clone the repository and invoked by `go build`
-  for VCS stamping when building from a checkout.
-- A POSIX system. Linux is the primary target; macOS works for
-  development. Windows is build-only - it is not a supported runtime
-  target (REQ-OPS-153).
-- No CGO toolchain. Herold's default build is pure Go. The SQLite
-  driver is `modernc.org/sqlite`; Postgres is `pgx/v5`; FTS is
-  `blevesearch/bleve`; events go via pure-Go NATS. `CGO_ENABLED=0`
-  is the supported configuration; a `cgo` build tag may exist for
-  benchmarking but is not shipped (`STANDARDS.md` section 1.12).
+## Install
 
-### Build
+Both paths start from a checkout of the repository:
 
 ```bash
 git clone https://github.com/hanshuebner/herold.git
 cd herold
-make build
 ```
 
-`make build` runs the pnpm workspace build first (producing the Suite
-SPA assets), then compiles the herold binary with the correct flags and
-copies the result to `bin/herold`. This is the same path CI uses.
+### Docker
 
-When only Go code has changed and the SPA assets are already up to date,
-the shorter iteration loop skips the pnpm step:
+Build the runtime image:
 
 ```bash
-make build-server
+docker build -f deploy/docker/Dockerfile -t herold .
 ```
 
-For the local CI lane (`fmt-check`, `vet`, `test`, `vulncheck`):
+The result is a small distroless image. It runs as a non-root user,
+supports a read-only root filesystem, and embeds no secrets -- those
+come from environment variables or mounted files referenced from
+`system.toml`. {%# REQ-OPS-151 #%}
 
-```bash
-make ci-local
-```
+The image expects two mounts:
 
-`staticcheck` and dual-backend integration tests are separate targets
-(`make staticcheck`, `make interop-test`) or are run via the workflows
-in `.github/workflows/`.
+- `/etc/herold/system.toml` -- the system config, mounted read-only.
+- `/var/lib/herold/` -- the data directory, mounted read-write.
 
-### Build customization
+Plugin binaries, if you use any, go in a directory you mount and point
+at from `system.toml`.
 
-The Makefile exposes several variables for non-standard environments:
-
-| Variable   | Default | Purpose                                                  |
-|------------|---------|----------------------------------------------------------|
-| `GO`       | `go`    | Path to the Go toolchain binary.                         |
-| `GOFLAGS`  | (empty) | Extra flags passed to every `go` invocation.             |
-| `FUZZTIME` | `30s`   | Per-target budget for `make fuzz-short`.                 |
-
-Example - build without the Node/pnpm toolchain (Go-only environments):
-
-```bash
-GOFLAGS="-tags nofrontend" make build-server
-```
-
-The `-tags nofrontend` build tag swaps in a stub embed, so the build
-succeeds without Node / pnpm in the environment. The resulting binary
-serves a placeholder page in place of the Suite SPA; it is suitable
-for Go-only CI environments and for backend development where the SPA
-is served separately via `[server.suite] asset_dir`.
-
-### Suite SPA
-
-Herold embeds the consumer Suite SPA (HTML/JS/CSS) and serves it on
-the public HTTP listener at `/` (REQ-DEPLOY-COLOC-01..05). The default
-source build embeds a placeholder index.html that documents the
-install step; release builds bake the matching Suite build into the
-binary.
-
-The Suite source lives in-tree under `web/` (Svelte 5 + Vite + pnpm
-workspace). The build pipeline that produces the embedded `dist`
-output and the operator paths for replacing it at runtime are
-documented in the build & operate guide; the historical
-`install-tabard.sh` / `embed-tabard.sh` scripts were retired and the
-config block was renamed from `[server.tabard]` to `[server.suite]`
-when the Suite source was folded into this repo. See
-`docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md` for
-the migration record.
-
-For now, three operator paths exist:
-
-1. **Embedded path** (default). `pnpm --filter @herold/suite build`
-   produces `web/apps/suite/dist`, which `internal/webspa/embed_default.go`
-   embeds via `go:embed` at compile time. A plain `go build` against a
-   freshly built workspace yields a single binary with the SPA inside.
-
-2. **Backend-only path** (CI for the Go-only lane). Pass
-   `-tags nofrontend` to `go build` to swap in a placeholder embed
-   that contains a stub `index.html` only. Useful when the Node
-   toolchain is not available in the build environment.
-
-3. **Development hot-reload path**. Leave the binary alone and point
-   the running server at a freshly built Suite dist via `system.toml`:
-
-   ```toml
-   [server.suite]
-   asset_dir = "/abs/path/to/web/apps/suite/dist"
-   ```
-
-   The override reads from disk on every request, so a `pnpm build`
-   in the workspace appears at the next browser refresh without
-   rebuilding herold. The path is resolved at server start
-   (relative paths are taken from the working directory, the same
-   convention as `data_dir` and `cert_file`); the directory MUST
-   contain `index.html` at startup or the server refuses to start
-   with a clear error.
-
-### Where the binary expects things
-
-By default:
-
-- **System config:** `/etc/herold/system.toml`. Override via
-  `--system-config <path>` or the `HEROLD_SYSTEM_CONFIG` environment
-  variable (REQ-OPS-02).
-- **Data directory:** the `[server] data_dir` value in `system.toml`.
-  The server creates the directory if it does not exist; SQLite's
-  `*.sqlite` file, the blob tree, the FTS index, the queue state, and
-  the ACME account material all live underneath. Plugins typically
-  live in `<data_dir>/plugins/` though their path is configured per
-  plugin block.
-- **PID file:** `/var/run/herold.pid` (override via
-  `HEROLD_PID_FILE`). The PID file is what `herold server reload`
-  reads to find the running server.
-- **Credentials file:** `~/.herold/credentials.toml`. Written by
-  `herold bootstrap` so subsequent CLI invocations from the same
-  shell can find the admin REST URL and bearer token without flags.
-
-The binary is a single static executable; there are no runtime
-dependencies beyond a working filesystem and network stack.
-
-## Docker
-
-### Pull or build the image
-
-The `deploy/docker/Dockerfile` is a multi-stage build with a
-distroless `nonroot` runtime. From a checkout:
-
-```bash
-docker build -f deploy/docker/Dockerfile -t herold:dev .
-```
-
-(Once the publish pipeline lands, an official image will be available
-on a public registry; until then, build from source.)
-
-### One-command stack
-
-The example compose file at
-_`docs/manual/user/examples/docker-compose.yml`_
-runs herold against SQLite, with the admin HTTP surface exposed on
-loopback only and no Postgres / NATS / Ollama dependencies. It is the
-shape recommended for the README quickstart:
+The example Compose file bundled with the manual runs herold against
+SQLite with everything on loopback -- the shape to start with:
 
 ```bash
 docker compose -f docs/manual/user/examples/docker-compose.yml up -d
 ```
 
-For a development stack with Postgres, NATS, Ollama (for the LLM spam
-plugin), and MailHog as a throwaway external SMTP target, see the
-in-tree compose file at `deploy/docker/docker-compose.yml`. That one
-is intentionally heavier and not aimed at the quickstart.
+It declares the standard ports:
 
-### Volume and port layout
+| Port      | Purpose                                          |
+|-----------|--------------------------------------------------|
+| 25        | Inbound SMTP from other mail servers             |
+| 465, 587  | Authenticated mail submission                    |
+| 143, 993  | IMAP (993 is implicit TLS)                       |
+| 4190      | ManageSieve                                      |
+| 8080      | HTTP: webmail, JMAP, the admin API and UI, health checks |
 
-The image expects:
+### From source
 
-- `/etc/herold/system.toml` mounted read-only - the system config.
-- `/var/lib/herold/` mounted read-write - the data directory.
-- Plugin binaries at `/usr/lib/herold/plugins/` (bundled in official
-  packages; absent in the distroless image, so add a sidecar mount or
-  bind a host directory if you need plugins).
+You need:
 
-Default exposed ports (adjust freely in the compose file):
+- **Go 1.25 or newer.** `go.mod` pins the toolchain, so an older `go`
+  command transparently fetches the right version on the first build.
+  Air-gapped hosts must install Go 1.25+ from `go.dev/dl/` directly.
+- **git** -- to clone the repository (already done above).
+- A **Linux or macOS** host. Linux is the runtime target; macOS works
+  for development.
 
-| Port | Listener     | Purpose                                  |
-|------|--------------|------------------------------------------|
-| 25   | smtp-relay   | Inbound SMTP from the public internet    |
-| 587  | smtp-submission | Authenticated submission              |
-| 465  | smtp-submission (implicit TLS) | SMTPS submission       |
-| 143  | imap         | IMAP + STARTTLS                          |
-| 993  | imaps        | IMAPS (implicit TLS)                     |
-| 4190 | managesieve  | ManageSieve                              |
-| 8080 | admin        | Admin REST + UI + JMAP + healthz         |
-| 9090 | metrics      | Prometheus `/metrics` (loopback default) |
+No C compiler is required: herold's default build is pure Go.
 
-{% callout type="warning" title="Note" %}
-The metrics listener (REQ-OPS-90, STANDARDS section 7) defaults to
-loopback and the `/metrics` handler does not perform authentication.
-If you publish a non-loopback `metrics_bind`, front it with TLS +
-auth at a reverse proxy.
-{% /callout %}
+```bash
+make build
+```
 
-### Container security posture
+`make build` builds the web assets, compiles the binary, and writes it
+to `bin/herold`. Copy that onto your `$PATH` -- `/usr/local/bin` is the
+usual home. The binary has no runtime dependencies beyond a filesystem
+and a network stack.
 
-- Runs as `nonroot:nonroot`.
-- Read-only root filesystem supported (REQ-OPS-151); only the data
-  directory needs to be writable.
-- No embedded secrets in the image. Secrets come from env vars,
-  bind-mounted files, or systemd `LoadCredential` / Docker / K8s
-  secrets, referenced from `system.toml` as `$VAR` or `file:/path`.
+For Go-only hosts with no Node toolchain, build customization, and
+serving the web UI from disk during development, see
+[Advanced Build Options](advanced-builds).
 
-## Debian / RPM packages
+## Where herold keeps things
 
-Debian `.deb` and RPM packaging are roadmap items tracked under
-REQ-OPS-150. No package artifacts exist today. Install from source
-or use the Docker image.
+{%# REQ-OPS-02 #%}
 
-## Kubernetes
+| Path | What | Override |
+|------|------|----------|
+| `/etc/herold/system.toml` | System config | `--system-config`, `HEROLD_SYSTEM_CONFIG` |
+| `[server] data_dir` | Database, blobs, search index, queue, ACME state | set in `system.toml` |
+| `/var/run/herold.pid` | PID file, read by `herold server reload` | `HEROLD_PID_FILE` |
+| `~/.herold/credentials.toml` | Admin API URL and token, written by `herold bootstrap` | -- |
 
-Kubernetes manifests are a roadmap item tracked under REQ-OPS-152.
-No manifests exist today. Use the Docker image with a bind-mounted
-volume and a manually managed `system.toml`.
-
-Cluster topology is explicitly out of scope for herold v1, which is
-a single-node design (see `docs/design/00-scope.md`, non-goal NG2).
-There is no supported clustering mode. Operators requiring horizontal
-scale should run multiple independent herold instances with disjoint
-domain assignments rather than a shared clustered topology.
-
-## Required system resources
-
-Sized for the v1 scale target (1k mailboxes, 100 domains, 10k+10k
-msg/day, ~10 TB total per node - see `docs/design/00-scope.md`
-"Target scale (v1)"). Recommended minimum on bare metal or a hosted
-VM:
-
-| Dimension | Minimum    | Recommended | Notes                            |
-|-----------|------------|-------------|----------------------------------|
-| CPU       | 2 vCPU     | 8 vCPU      | LLM spam call dominates at scale |
-| RAM       | 4 GB       | 32 GB       | Bleve FTS benefits from RAM      |
-| Disk      | 50 GB      | 1 TB+ NVMe  | Mail volume + FTS + ACME state   |
-| Network   | 10 Mbps    | 100 Mbps    | Outbound burst + IMAP IDLE       |
-
-The scale target assumes provisioned hardware (8 vCPU, 32 GB RAM,
-NVMe). At the bottom end (2 vCPU / 4 GB / 50 GB) herold runs fine for
-a personal mail server with a handful of mailboxes. Above that, scale
-RAM with FTS index size and disk with mail volume; CPU rarely
-saturates outside spam classification (which is a plugin call to a
-local Ollama or a remote OpenAI-compatible endpoint, not on-CPU
-herold work).
-
-Encryption at rest is **not implemented** in herold (NG10). Operators
-who need disk-level confidentiality run on LUKS / ZFS native
-encryption / FileVault.
-
-## TLS
-
-Production deployments must use TLS for IMAPS, JMAP, the admin
-surface, and the MTA-STS vhost. Two cert sources (REQ-OPS-40):
-
-1. **ACME** (default for internet-facing). Configured under `[acme]`
-   in `system.toml`; the herold ACME client supports HTTP-01,
-   TLS-ALPN-01, and DNS-01 (the latter via DNS-provider plugin -
-   first-party plugins ship for Cloudflare, Route53, Hetzner, and a
-   manual / webhook generic).
-2. **File-based.** Operator-supplied `cert_file` / `key_file` per
-   listener. For environments with cert-manager, an internal PKI, or
-   a wildcard cert from elsewhere.
-
-ACME is live as of Wave 3.3. Configure `[acme]` in `system.toml` with
-`email` and optionally `directory_url` (defaults to Let's Encrypt
-production). See [Operating Herold](operate) for the full TLS / ACME
-runbook and `herold cert status` to inspect issued certificates.
-
-For the development quickstart on loopback only, `tls = "none"` on the
-admin listener is acceptable and the example compose file uses that
-shape.
+Herold creates the data directory if it does not exist.
 
 ## Storage backend
 
-Pick at install (REQ-STORE / REQ-OPS-03 extension):
+{%# REQ-STORE #%}
 
-- **SQLite** (default, zero-dep). Pure-Go `modernc.org/sqlite`. The
-  right choice for <= 200 mailboxes, single-host deployments, and
-  every quickstart. The DB file lives at `<data_dir>/herold.sqlite`
-  by default. WAL is enabled; concurrent reads do not block writes.
-- **Postgres** (for heavier deployments). Pure-Go `pgx/v5`. The right
-  choice when you have 200+ mailboxes, sustained high-concurrency
-  writes (large-mailbox clients doing concurrent heavy writes), or an
-  existing Postgres operations practice. Configure via
-  `[server.storage] backend = "postgres"` and a `postgres.dsn`.
+Herold stores metadata in **SQLite** by default -- pure Go, zero
+dependencies, and the right choice for a single host up to a couple of
+hundred mailboxes. The database file lives at `<data_dir>/herold.sqlite`.
 
-The two backends are first-class. CI runs every integration test
-against both. Code that works on only one is not mergeable
-(`STANDARDS.md` section 1.8).
+For larger deployments, or where you already operate Postgres, set
+`[server.storage] backend = "postgres"` with a connection string. Both
+backends are fully supported. The [Configuration Reference](configure)
+has the settings, and [Operating Herold](operate) covers switching
+backends after install.
 
-To switch backends after install, use `herold diag migrate`:
+## TLS
 
-```bash
-herold diag migrate \
-  --to-backend postgres \
-  --to-dsn "postgres://herold:secret@localhost:5432/herold?sslmode=disable" \
-  --to-blob-dir /var/lib/herold/blobs
-```
+{%# REQ-OPS-40 #%}
 
-The migration is offline: stop the server, run the migrate, point
-`system.toml` at the new backend, start the server. See
-[Operating Herold](operate) "Upgrades and migration" for detail.
+Any internet-facing deployment needs TLS for IMAP, JMAP, the web
+surfaces, and MTA-STS. Herold has a built-in ACME client: configure
+`[acme]` in `system.toml` with a contact email and herold obtains and
+renews certificates from Let's Encrypt automatically (HTTP-01,
+TLS-ALPN-01, or DNS-01 via a DNS-provider plugin).
 
-## First-run bootstrap
+If you manage certificates elsewhere -- cert-manager, an internal PKI, a
+wildcard certificate -- give each listener an explicit `cert_file` and
+`key_file` instead.
 
-After the binary is installed and `system.toml` is in place, start the
-server and bootstrap the first admin principal.
+_Going Live_ has the full ACME and DNS walkthrough. For a loopback-only
+trial, `tls = "none"` on the listener is acceptable, and the example
+Compose file uses that shape.
+
+## First run
+
+With the binary installed and `system.toml` in place, start the server
+and bootstrap the first administrator.
 
 ### Start the server
-
-Source / package install:
 
 ```bash
 herold server start --system-config /etc/herold/system.toml
 ```
 
-Or under systemd:
+Herold binds the configured listeners, opens the store, applies any
+pending schema migrations, starts configured plugins, and reports ready
+on `GET /api/v1/healthz/ready`. {%# REQ-OPS-110, REQ-OPS-111 #%}
 
-```bash
-systemctl start herold
-```
-
-The server binds every listener declared in `system.toml`, opens the
-store, applies pending schema migrations, starts every declared
-plugin, and reports `ok` on `GET /api/v1/healthz/ready` once
-everything is up (REQ-OPS-110, REQ-OPS-111). This endpoint is served
-on both the public listener (default port 8080) and the admin
-listener (default port 9443).
-
-### Validate the config without starting
+To validate a config file without starting the server:
 
 ```bash
 herold server config-check /etc/herold/system.toml
 ```
 
-Exits 0 on success. On validation failure exits 2 with an actionable
-message naming the offending key (REQ-OPS-06).
+It exits non-zero with an actionable message naming the offending key on
+failure. {%# REQ-OPS-06 #%}
 
-### Bootstrap the admin principal
+### Create the administrator
 
-The bootstrap command creates the very first principal and prints a
-one-time API key the operator stores.
+`herold bootstrap` creates the first principal -- an administrator --
+and prints an API key:
 
 ```bash
-herold bootstrap --email admin@example.com --password 'change-me-now'
+herold bootstrap --email admin@example.com
 ```
 
-Flags:
+With no `--password` herold generates a strong one and prints it.
+**Capture the password and the API key now**: the password is stored
+Argon2id-hashed and the key SHA-256-hashed, so neither can be read back
+from the server afterwards.
 
-- `--email <addr>` - required. The admin's canonical email.
-- `--password <str>` - optional. If omitted, the server generates a
-  20-character random password and prints it.
-- `--save-credentials=true` - default. Writes the API key and
-  `--server-url` (if given) to `~/.herold/credentials.toml`. Subsequent
-  `herold` CLI calls authenticate against the admin REST without
-  needing `--api-key` flags.
-- `--server-url <url>` - recorded in the saved credentials file (e.g.
-  `https://127.0.0.1:8080`).
+`bootstrap` writes the API key to `~/.herold/credentials.toml`, so
+subsequent `herold` commands in the same shell authenticate without
+flags. It refuses to run once any principal exists.
 
-Behaviour:
-
-- Refuses to run if any principal already exists in the store. Exits
-  10 (`ExitBootstrapAlreadyDone`) in that case.
-- Marks the created principal as admin (`PrincipalFlagAdmin`) so the
-  printed API key can run admin-gated REST mutations (domain add,
-  principal create, etc.). Subsequent principals are non-admin by
-  default; admin is granted via `PATCH /api/v1/principals/{pid}`.
-- Stores the password Argon2id-hashed and the API key SHA-256-hashed.
-  Neither value is recoverable from the server after the command
-  returns. Capture them now.
-
-### Add the first hosted domain
+### Add your first domain
 
 ```bash
 herold domain add example.com
 ```
 
-Once the domain is registered, herold:
+Herold generates DKIM keys for the domain and assembles the DNS records
+it needs -- DKIM, SPF, DMARC, MTA-STS, and TLS reporting. With a DNS
+plugin configured it publishes them automatically; otherwise it prints
+the records for you to publish by hand. _Going Live_ walks through this
+in full. {%# REQ-OPS-60 #%}
 
-- Generates DKIM keys for the domain (per-domain, per-selector).
-- Builds the set of DNS records the domain needs (DKIM TXT,
-  `_mta-sts` TXT, `_smtp._tls` TXT, `_dmarc` TXT, SPF TXT) and, if a
-  DNS plugin is configured, publishes them via the plugin
-  (REQ-OPS-60). With no DNS plugin, herold falls back to "emit record
-  text, operator publishes manually" mode and prints the records.
-
-### Add the first user principal
-
-User principal management lives in
-[Administering Herold](administer). The minimum:
+### Add a user
 
 ```bash
-herold principal create user1@example.com --password 'change-me-now'
+herold principal create user1@example.com
 ```
 
-### Connect a client
+User management -- aliases, mailboxes, API keys, granting admin -- is
+covered in [Administering Herold](administer).
 
-With a domain and a principal in place, three client surfaces are
-available; route end users and operators to different URLs:
+### Sign in
 
-- **The Suite consumer SPA**: `http(s)://<public host>/`. Loads the
-  assets baked into the binary via `//go:embed` (built by
-  `make build-web` from the in-tree `web/apps/suite` workspace), or
-  served from a developer dist tree pointed at by `[server.suite].asset_dir`.
-  When no session cookie is present the SPA renders its own inline
-  login form (the legacy server-rendered `/login` page was retired
-  in the Phase 3 protoui cutover), posts JSON to
-  `POST /api/v1/auth/login`, and receives the `herold_public_session`
-  cookie (`Path=/`, end-user scope) plus the non-HttpOnly
-  `herold_public_csrf` cookie. The SPA's JMAP handshake then
-  completes and the mailbox loads. End-users self-serve password
-  changes, TOTP enrolment, and API-key management at `/#/settings`.
-  See [Configuration Reference](configure) "The web URLs herold
-  exposes" for details.
-- **Operator UI** (Svelte admin SPA): `http(s)://<admin host>/admin/`
-  on the admin listener. The SPA's login form posts to
-  `POST /api/v1/auth/login` and receives the `herold_admin_session`
-  cookie (`[admin]` scope after TOTP step-up). Legacy `/ui/*` URLs
-  308-redirect to `/admin/`; that shim covers any operator
-  bookmarks left over from before the Phase 3b cutover documented
-  at `docs/design/server/notes/plan-tabard-merge-and-admin-rewrite.md`.
-- **IMAP / SMTP / JMAP**: standard ports 143 (IMAP+STARTTLS), 993
-  (IMAPS), 587 (submission STARTTLS), 465 (submission implicit
-  TLS), and 8080 (admin REST + JMAP) -- or the loopback quickstart
-  ports 1143 / 1993 / 1587 / 1025 / 8080. See the user manual
-  _Quickstart_ for the desktop-client walkthrough and
-  [Configuration Reference](configure) for the production listener
-  layout.
+With a domain and a user in place: {%# REQ-DEPLOY-COLOC-01..05 #%}
+
+- **Webmail** -- the Suite app at `https://<your host>/`. Users sign in
+  on the page that loads and get mail, calendar, contacts, and chat.
+  Password changes, two-factor enrolment, and API keys live under
+  `/#/settings`.
+- **Operator UI** -- the admin app at `/admin/`. The admin listener
+  binds loopback by default; reach it over an SSH tunnel, or expose it
+  through a [reverse proxy](reverse-proxy).
+- **IMAP / SMTP / JMAP** -- the standard ports above. The user manual
+  _Quickstart_ has a desktop-client walkthrough.
 
 ## Where to next
 
-- Day-2 operation, TLS / DNS / observability runbook:
-  [Operating Herold](operate).
-- The complete system.toml schema and every tunable:
-  [Configuration Reference](configure).
-- Application administration (domains, principals, mailboxes,
-  aliases, API keys, Sieve, audit log): [Administering Herold](administer).
-- Real-domain walkthrough (DNS records, ACME, DKIM publication,
-  DMARC, MTA-STS, TLS-RPT): _Going Live_.
-- Spec / requirements / architecture (the historical record): the
-  `docs/design/` tree.
+- [Operating Herold](operate) -- the day-2 runbook: TLS renewal, backup
+  and restore, upgrades, observability, troubleshooting.
+- [Configuration Reference](configure) -- every `system.toml` setting.
+- [Administering Herold](administer) -- domains, users, aliases, API
+  keys, Sieve filters, the audit log.
+- _Going Live_ -- taking a real domain live: DNS records, ACME, DKIM,
+  DMARC, MTA-STS.
+- [Advanced Build Options](advanced-builds) -- Go-only builds, build
+  customization, serving the web UI from disk.

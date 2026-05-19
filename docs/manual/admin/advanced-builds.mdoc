@@ -1,0 +1,72 @@
+---
+title: Advanced Build Options
+slug: advanced-builds
+audience: admin
+---
+
+# Advanced Build Options
+
+The [Installation](install) guide covers the standard `make build`. This
+chapter collects the non-standard build paths: building without the Node
+toolchain, build customization, serving the web UI from disk during
+development, and the local CI checks.
+
+None of this is needed to install and run herold. Reach for it only when
+the standard build does not fit your environment.
+
+## Building without the Node toolchain
+
+`make build` runs the pnpm workspace build to produce the web assets,
+then compiles the binary. On a host with no Node or pnpm -- a Go-only CI
+runner, for instance -- skip the web step with the `nofrontend` build
+tag:
+
+```bash
+GOFLAGS="-tags nofrontend" make build-server
+```
+
+`make build-server` compiles only the Go binary; use it whenever the web
+assets are already current and only Go code has changed. The
+`nofrontend` tag swaps in a stub for the embedded web assets, so the
+build succeeds with no Node in the environment. The resulting binary
+serves a placeholder page in place of the Suite app -- suitable for
+backend development and Go-only CI, not for production.
+
+## Build customization
+
+`make` exposes a few variables for non-standard environments:
+
+| Variable   | Default | Purpose                                      |
+|------------|---------|----------------------------------------------|
+| `GO`       | `go`    | Path to the Go toolchain binary.             |
+| `GOFLAGS`  | (empty) | Extra flags passed to every `go` invocation. |
+| `FUZZTIME` | `30s`   | Per-target budget for `make fuzz-short`.     |
+
+## Serving the web UI from disk
+
+A release binary embeds the Suite app at compile time and serves it from
+the public listener at `/`. During frontend development you can point a
+running server at a freshly built dist tree instead, so a `pnpm build`
+appears on the next browser refresh with no herold rebuild:
+
+```toml
+[server.suite]
+asset_dir = "/abs/path/to/web/apps/suite/dist"
+```
+
+The override is read from disk on every request. The path is resolved at
+server start -- relative paths are taken from the working directory, the
+same convention as `data_dir` -- and the directory must contain
+`index.html`, or the server refuses to start with a clear error.
+
+## Local CI checks
+
+The local CI lane mirrors what runs in continuous integration:
+
+```bash
+make ci-local
+```
+
+This runs the formatting checks, `go vet`, the test suite, and
+`vulncheck`. `staticcheck` and the dual-backend integration tests are
+separate targets (`make staticcheck`, `make interop-test`).
