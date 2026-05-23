@@ -1,0 +1,480 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Aligned with go.mod's `go 1.25.0` directive. Several direct deps
+  # (golang.org/x/sync, golang.org/x/crypto, golang.org/x/oauth2,
+  # github.com/coreos/go-oidc/v3, github.com/jackc/pgx/v5, the
+  # otel/otlptrace exporters) already require Go 1.25 at module level,
+  # so the CI floor must match. Per STANDARDS the floor moves with the
+  # current stable.
+  GO_VERSION: "1.25.x"
+  # Node + pnpm versions for the web/ workspace. Node 20 LTS is the floor.
+  NODE_VERSION: "20"
+  PNPM_VERSION: "10"
+
+jobs:
+  # pre-commit job runs the full .pre-commit-config.yaml chain across all
+  # files. Keeps .pre-commit-config.yaml and the rest of CI in lockstep:
+  # any check available locally is enforced here, so `make install-hooks`
+  # contributors see exactly what CI sees.
+  pre-commit:
+    name: pre-commit (run --all-files)
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: install Go tools used by pre-commit hooks
+        run: |
+          go install golang.org/x/tools/cmd/goimports@latest
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The svelte-check pre-commit hook runs `pnpm --dir web run check`,
+      # so pre-commit needs Node + pnpm on PATH and the workspace
+      # dependencies installed.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: pnpm install (workspace)
+        run: pnpm --dir web install --frozen-lockfile
+      - name: prep web placeholders
+        run: make prep-web
+      - uses: pre-commit/action@v3.0.1
+
+  lint:
+    name: lint
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # go vet / staticcheck / govulncheck must compile the tree, which
+      # means internal/webspa/embed_default.go's `//go:embed dist` has
+      # to resolve. prep-web copies the tracked placeholders into
+      # internal/webspa/dist/ when the directory is empty.
+      - name: prep web placeholders
+        run: make prep-web
+      - name: gofmt
+        run: |
+          diff=$(gofmt -l .)
+          if [ -n "$diff" ]; then
+            echo "gofmt needs to be run on:"; echo "$diff"; exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@v1.3.1
+        with:
+          version: latest
+          install-go: false
+      - name: govulncheck
+        uses: golang/govulncheck-action@v1.0.4
+        with:
+          go-version-input: ${{ env.GO_VERSION }}
+          go-package: ./...
+
+  # x86_64 confidence lane: catches ARM-only drift before users do.
+  # Pure-Go correctness bugs surface on ARM (weaker memory order), so
+  # this lane is for "is the world still sane on the platform 95% of
+  # operators run". Hard-fail blocks merge.
+  confidence-x86:
+    name: confidence (x86_64 sanity smoke)
+    runs-on: [self-hosted, herold, amd64]
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: herold
+          POSTGRES_PASSWORD: herold
+          POSTGRES_DB: herold
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: prep web placeholders
+        run: make prep-web
+      - name: build (default + nofrontend)
+        run: |
+          go build -trimpath ./...
+          go build -trimpath -tags nofrontend ./...
+      - name: vet
+        run: go vet ./...
+      - name: parser tests (high non-arch-related signal density)
+        run: |
+          go test -count=1 -timeout 5m \
+            ./internal/maildkim/... ./internal/mailspf/... \
+            ./internal/maildmarc/... ./internal/mailarc/... \
+            ./internal/sieve/... ./internal/protosmtp/... \
+            ./internal/protoimap/... ./internal/protojmap/...
+      - name: storage smoke (sqlite migrations + round-trip)
+        env:
+          HEROLD_TEST_STORE: sqlite
+        run: go test -count=1 -timeout 3m ./internal/diag/migrate/...
+      - name: wait for postgres
+        run: |
+          for i in $(seq 1 30); do
+            if (exec 3<>/dev/tcp/localhost/5432) 2>/dev/null; then
+              exec 3>&-; echo "postgres ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "postgres not ready after 30s" >&2
+          exit 1
+      - name: postgres smoke + e2e happy path
+        env:
+          HEROLD_PG_DSN: postgres://herold:herold@localhost:5432/herold?sslmode=disable
+        run: |
+          go test -count=1 -timeout 5m -p 1 \
+            ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
+
+  web:
+    name: web (build + check)
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: pnpm install (workspace)
+        run: pnpm --dir web install --frozen-lockfile
+      - name: build (suite SPA)
+        run: pnpm --dir web run build
+      - name: check (svelte-check etc)
+        run: pnpm --dir web run check
+      # `test` and `lint` are no-ops today (no package defines them);
+      # `pnpm --recursive --if-present` keeps that future-proof.
+      - name: test
+        run: pnpm --dir web run test
+      - name: lint
+        run: pnpm --dir web run lint
+
+  web-e2e:
+    name: web-e2e (admin SPA Playwright)
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 15
+    needs: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: pnpm install (workspace)
+        run: pnpm --dir web install --frozen-lockfile
+      - name: install Playwright browsers (chromium only)
+        run: pnpm --filter @herold/admin test:e2e:install
+      - name: run admin e2e tests (chromium)
+        run: pnpm --filter @herold/admin test:e2e
+
+  test:
+    name: test (arm64 / ${{ matrix.store }})
+    runs-on: [self-hosted, herold, arm64]
+    # 45 min: the sqlite lane historically ran the entire tree under
+    # -race and hit ~37 min wall on the arm64 self-hosted runner. The
+    # lane is now split into a race-on subset (.github/race-packages.txt)
+    # and a no-race remainder so the detector cost is paid only on
+    # concurrency-heavy packages.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        store: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: herold
+          POSTGRES_PASSWORD: herold
+          POSTGRES_DB: herold
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      HEROLD_TEST_STORE: ${{ matrix.store }}
+      # HEROLD_PG_DSN set per-step on the postgres lane only -- exporting
+      # it on the sqlite lane caused test/e2e and storepg/diag-migrate
+      # to also exercise the postgres path against the leg's service
+      # container, duplicating coverage.
+      HEROLD_PG_DSN_VALUE: postgres://herold:herold@localhost:5432/herold?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Build with the default tag (which embeds the SPA placeholders
+      # via go:embed) and a second pass with -tags nofrontend so the
+      # build-tag split cannot regress without CI catching it.
+      - name: prep web placeholders
+        run: make prep-web
+      - name: build (embedded)
+        run: go build -trimpath ./...
+      - name: build (nofrontend)
+        run: go build -trimpath -tags nofrontend ./...
+      - name: wait for postgres
+        if: matrix.store == 'postgres'
+        run: |
+          for i in $(seq 1 30); do
+            if (exec 3<>/dev/tcp/localhost/5432) 2>/dev/null; then
+              exec 3>&-; echo "postgres ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "postgres not ready after 30s" >&2
+          exit 1
+      - name: compute sqlite race / fast package lists
+        if: matrix.store == 'sqlite'
+        run: |
+          set -euo pipefail
+          PATTERNS=$(grep -v '^[[:space:]]*#' .github/race-packages.txt \
+            | grep -v '^[[:space:]]*$' \
+            | sed 's|^|./|')
+          RACE=$(echo "$PATTERNS" | xargs -r go list 2>/dev/null | sort -u)
+          if [ -z "$RACE" ]; then
+            echo "race lane: race-packages.txt produced no packages" >&2
+            exit 1
+          fi
+          ALL=$(go list ./... | sort -u)
+          NORACE=$(comm -23 <(echo "$ALL") <(echo "$RACE"))
+          printf '%s\n' "$RACE"   > /tmp/race-pkgs.txt
+          printf '%s\n' "$NORACE" > /tmp/norace-pkgs.txt
+          echo "race lane: $(wc -l </tmp/race-pkgs.txt | tr -d ' ') packages"
+          echo "fast lane: $(wc -l </tmp/norace-pkgs.txt | tr -d ' ') packages"
+      - name: test (sqlite lane, race subset)
+        if: matrix.store == 'sqlite'
+        run: |
+          set -euo pipefail
+          PKGS=$(tr '\n' ' ' </tmp/race-pkgs.txt)
+          go test -race -count=1 -timeout 30m $PKGS
+      - name: test (sqlite lane, fast subset)
+        if: matrix.store == 'sqlite'
+        run: |
+          set -euo pipefail
+          PKGS=$(tr '\n' ' ' </tmp/norace-pkgs.txt)
+          go test -count=1 -timeout 15m $PKGS
+      - name: test (postgres lane, pg-touching packages serialised)
+        if: matrix.store == 'postgres'
+        env:
+          HEROLD_PG_DSN: ${{ env.HEROLD_PG_DSN_VALUE }}
+        run: go test -count=1 -timeout 20m -p 1 ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
+      - name: test (postgres lane, rest in parallel)
+        if: matrix.store == 'postgres'
+        run: |
+          PKGS=$(go list ./... | grep -vE '^github.com/hanshuebner/herold/(internal/storepg|internal/diag/migrate|test/e2e)($|/)')
+          go test -count=1 -timeout 20m $PKGS
+
+  fuzz-short:
+    name: fuzz (short)
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: run short fuzz on every fuzz target touched in this PR
+        # 32 fuzz targets must finish inside the 15-minute job timeout.
+        # 5s/target leaves headroom for per-target Go-compile overhead.
+        run: make fuzz-short FUZZTIME=5s
+
+  conformance:
+    name: conformance (imaptest + scripted-smtp + pigeonhole + mail-auth vectors)
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # The Go conformance package under test/interop/scripted runs an
+      # in-process scripted SMTP corpus and Dovecot's imaptest when its
+      # binary is on PATH. The Python/Docker interop tree is exercised
+      # by the nightly interop job.
+      - name: run conformance
+        run: go test -count=1 ./test/interop/...
+
+  docker:
+    name: docker (build + publish to codeberg registry)
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 30
+    needs: [lint, web, test]
+    # On PRs we only build (no registry credentials, no push). On pushes
+    # to main and on git tags we additionally push to the Codeberg
+    # container registry so users can `docker pull
+    # codeberg.org/${{ github.repository }}:latest`.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: log in to codeberg.org registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: codeberg.org
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: derive image tags
+        id: tags
+        run: |
+          # Lower-case the image owner because OCI registries reject
+          # uppercase repository segments and github.repository preserves
+          # the case the user typed.
+          repo="${GITHUB_REPOSITORY,,}"
+          image="codeberg.org/${repo}"
+          tags="${image}:sha-${GITHUB_SHA::12}"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            tags="${tags},${image}:main,${image}:latest"
+          fi
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            ver="${GITHUB_REF#refs/tags/}"
+            tags="${tags},${image}:${ver},${image}:latest"
+          fi
+          echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+      - name: build (load into local daemon)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          # arm64 only here. The self-hosted CI runner is arm64, so
+          # amd64 would require QEMU emulation -- which breaks esbuild
+          # (vite's bundler) inside the multi-stage Dockerfile. Multi-
+          # arch release images are produced by release.yml on tag
+          # pushes; this job exists for the per-commit :main / :latest
+          # / :sha-... tags.
+          platforms: linux/arm64
+          # Load into the local daemon so the smoke-test step can run
+          # the image. Pushing happens only after smoke passes, in the
+          # dedicated push step below.
+          load: true
+          push: false
+          tags: ${{ steps.tags.outputs.tags }}
+          # Ephemeral runner: buildx cache lives only for the duration
+          # of this job. We rely on docker pull from the snapshot for
+          # base layers; the per-job context layers rebuild from scratch.
+          # If this proves too slow once we have data, switch to
+          # type=registry,ref=codeberg.org/.../buildcache or similar.
+          provenance: false
+      - name: smoke-test the built image
+        run: |
+          first_tag=$(echo "${{ steps.tags.outputs.tags }}" | cut -d, -f1)
+          echo "smoke-test: using local image ${first_tag}"
+          ./scripts/smoke-docker.sh "${first_tag}"
+      - name: push to codeberg.org registry (only after smoke passes)
+        if: github.event_name != 'pull_request'
+        run: |
+          IFS=',' read -ra TAGS <<< "${{ steps.tags.outputs.tags }}"
+          for t in "${TAGS[@]}"; do
+            echo "pushing ${t}"
+            docker push "${t}"
+          done
+
+  jmaptest:
+    name: jmap conformance (jmapio/jmap-test-suite)
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: run jmaptest harness
+        run: make interop-jmaptest
+      - name: upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jmaptest-logs
+          path: test/interop/logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  binaries:
+    name: binaries (linux/darwin x amd64/arm64)
+    # Only build artefacts for non-PR events: push to main and manual
+    # dispatches. PR CI runs are gated for correctness by the test and
+    # web jobs above; cross-compiling every PR commit doubles runner
+    # load with no consumer.
+    if: github.event_name != 'pull_request'
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 30
+    needs: [lint, web, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, darwin]
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # Build the suite + admin + manual artefacts once; the embedded
+      # FS tree is byte-identical regardless of target platform. Only
+      # the Go binary is platform-specific.
+      - name: build-web
+        run: ./scripts/build-web.sh
+      - name: build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -buildvcs=true -ldflags "-s -w" \
+            -o dist/herold-${{ matrix.os }}-${{ matrix.arch }} ./cmd/herold
+          for p in plugins/herold-*; do
+            [ -d "$p" ] || continue
+            name=$(basename "$p")
+            go build -trimpath -buildvcs=true -ldflags "-s -w" \
+              -o dist/${name}-${{ matrix.os }}-${{ matrix.arch }} ./$p
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: herold-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          retention-days: 30

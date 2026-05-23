@@ -1,0 +1,117 @@
+name: nightly
+
+on:
+  schedule:
+    # 22:15 UTC: gives fuzz-long (6h budget) and load (3h budget) a
+    # clear lane through the night.
+    - cron: "15 22 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25.x"
+
+jobs:
+  fuzz-long:
+    name: fuzz (long)
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: run long fuzz on every registered fuzz target
+        run: make fuzz-short FUZZTIME=45m
+
+  load:
+    name: load (REQ-NFR-01 targets)
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: run load scenarios
+        run: |
+          if [ -d test/load ]; then go test -count=1 -timeout=2h ./test/load/...; else
+            echo "test/load not yet populated"; fi
+
+  interop:
+    name: interop (third-party deliverability canary)
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: run interop canary
+        run: |
+          if [ -d test/interop-external ]; then go test -count=1 ./test/interop-external/...; else
+            echo "test/interop-external not yet populated"; fi
+
+  jmaptest-pin-check:
+    name: jmaptest pin freshness
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 5
+    # Fails when JMAPTEST_SHA in test/interop/config/jmaptest/Dockerfile
+    # is no longer the upstream master HEAD of jmapio/jmap-test-suite.
+    steps:
+      - uses: actions/checkout@v4
+      - name: compare pinned SHA against upstream master
+        run: |
+          set -euo pipefail
+          DOCKERFILE=test/interop/config/jmaptest/Dockerfile
+          PINNED=$(grep -E '^ARG JMAPTEST_SHA=' "${DOCKERFILE}" \
+                   | head -1 \
+                   | sed -E 's/^ARG JMAPTEST_SHA=([0-9a-f]+).*/\1/')
+          if [ -z "${PINNED}" ]; then
+            echo "ERROR: could not parse JMAPTEST_SHA from ${DOCKERFILE}"
+            exit 2
+          fi
+          UPSTREAM=$(curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/jmapio/jmap-test-suite/commits/master \
+              | sed -nE 's/^[[:space:]]*"sha":[[:space:]]*"([0-9a-f]+)".*/\1/p' \
+              | head -1)
+          if [ -z "${UPSTREAM}" ]; then
+            echo "ERROR: could not fetch upstream master SHA"
+            exit 2
+          fi
+          echo "pinned SHA:   ${PINNED}"
+          echo "upstream SHA: ${UPSTREAM}"
+          if [ "${PINNED}" != "${UPSTREAM}" ]; then
+            echo ""
+            echo "FAIL: jmap-test-suite pin is stale."
+            echo "Update JMAPTEST_SHA in ${DOCKERFILE} to ${UPSTREAM}"
+            echo "and re-run the suite (make interop-jmaptest) to pick up"
+            echo "any new conformance tests."
+            exit 1
+          fi
+          echo "OK: pin matches upstream master."
+
+  sbom-diff:
+    name: sbom diff
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cdx.json

@@ -1,0 +1,72 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  GO_VERSION: "1.25.x"
+  NODE_VERSION: "20"
+  PNPM_VERSION: "10"
+
+jobs:
+  release:
+    runs-on: [self-hosted, herold, arm64]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, darwin]
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # Build the Suite SPA once and reuse the artefacts across the
+      # GOOS/GOARCH cross-builds. The dist tree is byte-identical
+      # regardless of target platform; only the Go binary is platform-
+      # specific.
+      - name: build-web
+        run: ./scripts/build-web.sh
+      - name: build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -buildvcs=true -ldflags "-s -w" \
+            -o dist/herold-${{ matrix.os }}-${{ matrix.arch }} ./cmd/herold
+          for p in plugins/herold-*; do
+            name=$(basename "$p")
+            go build -trimpath -buildvcs=true -ldflags "-s -w" \
+              -o dist/${name}-${{ matrix.os }}-${{ matrix.arch }} ./$p
+          done
+      - name: sbom
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: dist/sbom-${{ matrix.os }}-${{ matrix.arch }}.cdx.json
+      - name: cosign sign
+        uses: sigstore/cosign-installer@v3
+      - name: sign artefacts
+        run: |
+          for f in dist/*; do
+            cosign sign-blob --yes --output-signature "$f.sig" --output-certificate "$f.pem" "$f"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: herold-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*

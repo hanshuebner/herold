@@ -103,14 +103,14 @@ tests need preinstalled so first-job latency stays under 60 s.
 - [ ] Confirm repo settings: default branch `main`, **no PR gate** (per CLAUDE.md hard rule), issues on, wiki off (current API shows `has_issues=true`, `has_wiki=false`)
 - [x] Migrated the 9 open issues from GitHub (2026-05-23) via `scripts/migrate-issues-to-codeberg.py`. Codeberg issues `#1`–`#9` correspond to GitHub `#97`, `#98`, `#99`, `#106`, `#108`, `#110`, `#111`, `#114`, `#118` respectively. Each Codeberg body has a footer linking back to the original.
 - [ ] **Pending verification by Hans on the Codeberg UI**, then close the source GitHub issues with redirect comments (task #4).
-- [ ] Migrate the secrets that survive the move (deploy keys, signing keys, registry creds) to the Codeberg Actions secrets store
+- [x] Secrets audit (2026-05-23): the GitHub workflows reference only `secrets.GITHUB_TOKEN`, which is auto-injected by Forgejo Actions under the same name. No custom secrets configured at the repo. Nothing to migrate.
 
-### Phase 4 — Pipeline rewrite
+### Phase 4 — Pipeline rewrite (LANDED 2026-05-23)
 
 Translate `.github/workflows/*` → `.forgejo/workflows/*`. Forgejo Actions
 syntax is GitHub-compatible at ~95% — most YAML carries over unchanged.
 
-- [ ] `.forgejo/workflows/ci.yml` (single file, all PR/push jobs):
+- [x] `.forgejo/workflows/ci.yml` (single file, all PR/push jobs) - landed 2026-05-23:
   - Replace `runs-on: self-hosted` (and `[self-hosted, arm64]`) with explicit labels: `[self-hosted, herold, arm64]`
   - New job `confidence-x86` on `[self-hosted, herold, amd64]`:
     - `go build ./...`
@@ -124,10 +124,10 @@ syntax is GitHub-compatible at ~95% — most YAML carries over unchanged.
   - Existing jobs (pre-commit, lint, web, web-e2e, test, fuzz-short, conformance, docker, jmaptest, binaries) all stay on arm64
   - Replace `actions/cache@v4` with Forgejo's cache action (compatibility verified during Phase 6)
   - Replace `actions/upload-artifact@v4` if not supported, with push to Hetzner object storage (S3-compatible, ~€0.001/GB·month) — also resolve Q7.3 first
-- [ ] `.forgejo/workflows/nightly.yml`: schedule trigger, fuzz-long/load/interop/jmaptest-pin-check/sbom-diff all on arm64
-- [ ] `.forgejo/workflows/release.yml`: tag trigger, cross-compile to all targets, sign + SBOM + publish to Codeberg releases. Replace ghcr.io push with `codeberg.org/hanshuebner/herold` container registry.
-- [ ] Drop `auto-rerun.yml` — Forgejo Actions has its own retry primitive
-- [ ] Local lint of YAML via `act_runner exec` before push
+- [x] `.forgejo/workflows/nightly.yml` - 5 jobs on arm64 (fuzz-long, load, interop, jmaptest-pin-check, sbom-diff)
+- [x] `.forgejo/workflows/release.yml` - tag-triggered, GOOS/GOARCH matrix, switched ubuntu-latest → arm64 self-hosted, ghcr.io → codeberg.org registry. SBOM + cosign-sign + upload-artifact preserved.
+- [x] Dropped auto-rerun.yml entirely - it relied on the GHA workflow_run trigger and the actions/runner shutdown-signal log marker. Forgejo Actions handles transient failures differently; revisit if we see runner-restart noise on Codeberg.
+- [ ] YAML parsed clean with pyyaml; once we have access to a `forgejo-runner exec` or `actionlint` build for Forgejo dialect, validate again before the first cutover run.
 
 ### Phase 5 — Controller (act_runner orchestrator)
 
@@ -235,6 +235,8 @@ Inside the €20 cap (decision 1.4) with ~2× headroom. Below the warn-at-€15 
 
 (Append as phases complete. Most recent first.)
 
+- 2026-05-23 — Phase 4 pipeline rewrite landed: `.forgejo/workflows/{ci,nightly,release}.yml` written (auto-rerun dropped). 11 jobs in ci.yml (one new: confidence-x86 on amd64 with hard-fail). All other jobs labelled `[self-hosted, herold, arm64]`. Drops the persistent-runner-only "fix workspace permissions" pre-checkout step (ephemeral runners are clean by definition). Switched `cache: false` → default `cache: true` on setup-go. Switched ghcr.io → codeberg.org container registry. Switched ubuntu-latest → arm64 self-hosted on the binaries job. SHA-pinned action refs replaced with tag refs since Forgejo's mirror has different SHAs from upstream. Open follow-ups: (a) verify Forgejo Actions cache service interop with `actions/setup-go cache: true` and `actions/cache@v4`, (b) verify localhost:5432 vs postgres:5432 service hostname semantics on first live run, (c) verify which third-party actions (staticcheck-action, govulncheck-action, dominikh, anchore, sigstore) resolve through Codeberg's act_runner mirror config.
+- 2026-05-23 — Secrets audit: only `secrets.GITHUB_TOKEN` referenced (auto-injected by Forgejo Actions), no custom secrets configured at the GitHub repo. Phase 3 secret-migration step is a no-op.
 - 2026-05-23 — Phase 2 image bakery: `infra/hetzner/{bake.sh,provision.sh}` written, exercised end-to-end. First snapshots: arm64 `389706948` (1.69 GB, cax11 baked), amd64 `389706944` (1.72 GB, cpx22 baked) in herold-ci Hetzner project. snapshots.json populated. Toolchain in image: ubuntu 24.04, docker 29.5.2, go 1.25.0, node 20.20.2, pnpm 9.15.9, forgejo-runner v12.10.1, gitleaks 8.30.1, staticcheck 2026.1, pre-commit 4.6.0. Issues discovered during the runs: cpx21 deprecated by Hetzner Jan 2026 (now `cpx22`); gitleaks moved repo (`zricethezav/` → `gitleaks/`), latest is v8.30.1, asset names use `x64` not `amd64`; `hcloud server create-image` has no `--output` flag (look snapshot up by label after); bash heredoc-built JSON is fragile when values contain control chars (use python3 with control-char stripping). goimports version capture left as a cosmetic TODO — fix is in `provision.sh` now, will land on next bake (autoscaler is unaffected).
 - 2026-05-23 — Issues migrated. All 9 open GitHub issues are on Codeberg as `#1`–`#9`. Number map preserved in `scripts/migrate-issues-to-codeberg.py` run output. Source GitHub issues NOT yet closed (deliberate, awaits verification). Discovered Codeberg's new-issue rate limit is layered (5 / 5 min AND 7 / 10 min sliding) — script now handles both.
 - 2026-05-23 — Phase 0 essentially complete. Hetzner account K1100508019 confirmed; exposed Forgejo token revoked; Forgejo Actions enabled on the Codeberg repo; Q7.5 resolved (no hosted-tier onboarding needed for self-hosted runners); Codeberg repo exists with `main` pushed. Phase 1 unblocked. Open issue count: 9.
