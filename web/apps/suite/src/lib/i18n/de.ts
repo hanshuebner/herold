@@ -653,6 +653,7 @@ export const de = {
   'app.chat': 'Chat',
   'app.admin': 'Server-Verwaltung',
   'app.switch': 'Suite-Komponente wechseln',
+  'shell.profile.menu': 'Konto-Menü',
 
   // ── Zeit ────────────────────────────────────────────────────────────
   'time.justNow': 'gerade eben',

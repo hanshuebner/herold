@@ -644,6 +644,7 @@ export const en = {
   'app.chat': 'Chat',
   'app.admin': 'Server admin',
   'app.switch': 'Switch suite component',
+  'shell.profile.menu': 'Account menu',
 
   // ── Time ────────────────────────────────────────────────────────────
   'time.justNow': 'just now',

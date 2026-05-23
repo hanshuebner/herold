@@ -1,9 +1,9 @@
 <script lang="ts">
   import SearchIcon from '../icons/SearchIcon.svelte';
   import HelpIcon from '../icons/HelpIcon.svelte';
-  import SettingsIcon from '../icons/SettingsIcon.svelte';
   import FilterIcon from '../icons/FilterIcon.svelte';
   import AppSwitcherMenu from './AppSwitcherMenu.svelte';
+  import ProfileMenu from './ProfileMenu.svelte';
   import AdvancedSearchPanel from '../mail/AdvancedSearchPanel.svelte';
   import { sync } from '../../lib/jmap/sync.svelte';
   import { router } from '../../lib/router/router.svelte';
@@ -119,14 +119,7 @@
     >
       <HelpIcon size={20} />
     </button>
-    <button
-      type="button"
-      class="icon-btn"
-      aria-label="Settings"
-      onclick={() => router.navigate('/settings')}
-    >
-      <SettingsIcon size={20} />
-    </button>
+    <ProfileMenu />
   </div>
 </header>
 

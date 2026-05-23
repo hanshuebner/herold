@@ -512,14 +512,8 @@
         >
           {t('sidebar.help')}
         </button>
-        <button
-          type="button"
-          class="sidebar-bottom-link"
-          class:active={router.matches('settings')}
-          onclick={() => router.navigate('/settings')}
-        >
-          {t('settings.title')}
-        </button>
+        <!-- Settings entry deliberately omitted: it lives in the
+             ProfileMenu dropdown in the global bar (issue #117). -->
       </div>
     </div>
   {/snippet}
