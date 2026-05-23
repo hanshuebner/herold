@@ -10,6 +10,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
+	"net/mail"
 	"net/textproto"
 	"strings"
 	"time"
@@ -668,19 +669,19 @@ func bodyValueFor(bv map[string]emailBodyValue, partID string) (string, bool) {
 }
 
 // formatAddresses formats a slice of jmapAddress as an RFC 5322
-// address-list string. Non-ASCII display names are encoded with RFC 2047.
+// address-list string. (*net/mail.Address).String() is used for each
+// entry so that display names containing specials (e.g. "@", ",", "<")
+// are correctly quoted or RFC 2047-encoded, and display names that equal
+// the address (a common autocomplete pattern) do not produce a malformed
+// `addr <addr>` pair that lenient parsers split into two addresses.
 func formatAddresses(addrs []emailAddress) string {
 	parts := make([]string, 0, len(addrs))
 	for _, a := range addrs {
 		if a.Email == "" {
 			continue
 		}
-		if a.Name == "" {
-			parts = append(parts, a.Email)
-		} else {
-			encoded := mime.QEncoding.Encode("utf-8", a.Name)
-			parts = append(parts, fmt.Sprintf("%s <%s>", encoded, a.Email))
-		}
+		m := mail.Address{Name: a.Name, Address: a.Email}
+		parts = append(parts, m.String())
 	}
 	return strings.Join(parts, ", ")
 }
