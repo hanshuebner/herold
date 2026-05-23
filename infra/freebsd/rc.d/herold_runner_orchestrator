@@ -43,7 +43,7 @@
 # ------------------------------
 #
 #   herold_runner_orchestrator_enable="NO"
-#   herold_runner_orchestrator_user="_herold-orch"
+#   herold_runner_orchestrator_runas="_herold-orch"
 #   herold_runner_orchestrator_envfile="/usr/local/etc/herold-runner-orchestrator.env"
 #   herold_runner_orchestrator_log="/var/log/herold-runner-orchestrator.log"
 #   herold_runner_orchestrator_args="--log json"
@@ -58,7 +58,7 @@ desc="Codeberg Forgejo Actions runner orchestrator (herold-ci)"
 load_rc_config "$name"
 
 : ${herold_runner_orchestrator_enable:="NO"}
-: ${herold_runner_orchestrator_user:="_herold-orch"}
+: ${herold_runner_orchestrator_runas:="_herold-orch"}
 : ${herold_runner_orchestrator_envfile:="/usr/local/etc/herold-runner-orchestrator.env"}
 : ${herold_runner_orchestrator_log:="/var/log/herold-runner-orchestrator.log"}
 : ${herold_runner_orchestrator_args:="--log json"}
@@ -76,7 +76,7 @@ pidfile="/var/run/${name}.pid"
 #   -o <log>            redirect stdout+stderr to the log file
 command="/usr/sbin/daemon"
 command_args="-f -p ${pidfile} -t ${name} -r -R 30 \
-    -u ${herold_runner_orchestrator_user} \
+    -u ${herold_runner_orchestrator_runas} \
     -o ${herold_runner_orchestrator_log} \
     ${procname} ${herold_runner_orchestrator_args}"
 
@@ -88,8 +88,8 @@ herold_runner_orchestrator_prestart() {
     # Ensure the log file exists and is writable by the service user
     # (daemon -o appends; touch+chown is idempotent and safe to re-run).
     if [ ! -e "${herold_runner_orchestrator_log}" ]; then
-        install -m 0640 -o "${herold_runner_orchestrator_user}" \
-            -g "${herold_runner_orchestrator_user}" /dev/null \
+        install -m 0640 -o "${herold_runner_orchestrator_runas}" \
+            -g "${herold_runner_orchestrator_runas}" /dev/null \
             "${herold_runner_orchestrator_log}" || return 1
     fi
 
