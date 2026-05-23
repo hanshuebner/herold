@@ -161,7 +161,11 @@
   /* Brand area: fixed-width left column that aligns with the nav
      sidebar below it. The right border provides the visual separation
      between the brand and the search bar that mirrors the sidebar
-     border seen in the content area. */
+     border seen in the content area.
+     overflow stays visible because the AppSwitcherMenu popover is
+     position: absolute inside this column and would otherwise be
+     clipped (issue #116). The brand wordmark itself enforces its own
+     ellipsis below. */
   .brand-area {
     flex: 0 0 240px;
     display: flex;
@@ -169,11 +173,11 @@
     height: 100%;
     border-right: 1px solid var(--border-subtle-01);
     gap: 0;
-    overflow: hidden;
   }
 
   .brand {
     flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     height: 100%;
