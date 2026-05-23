@@ -49,7 +49,10 @@ export interface FullEvent {
 
 /**
  * Narrow event schema (anonymous endpoint, REQ-OPS-207).
- * Strict subset: no breadcrumbs, no request_id, no session_id, no vital.
+ * Strict subset: no breadcrumbs, no request_id, no session_id.
+ * `vital` is included so that pre-auth Web Vitals (FCP, TTFB, and the
+ * LCP/CLS values that fire before login completes) carry their measured
+ * value through to the admin log.
  */
 export interface NarrowEvent {
   v: 1;
@@ -64,6 +67,7 @@ export interface NarrowEvent {
   build_sha: string;
   route: string;
   ua: string;
+  vital?: VitalPayload;
 }
 
 export type WireEvent = FullEvent | NarrowEvent;

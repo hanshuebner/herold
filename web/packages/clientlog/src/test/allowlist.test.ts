@@ -9,12 +9,24 @@
  * -- no message bodies, contact data, search queries, URL query strings, etc.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { installFakeClock, installFakeFetch, installFakeBeacon, installFakeUuid } from './fakes.js';
 import type { FakeClock, FakeFetch, FakeBeacon, FakeUuid } from './fakes.js';
 import { install } from '../index.js';
 import { _resetForTest } from '../breadcrumbs.js';
 import type { FullEvent, Breadcrumb } from '../schema.js';
+
+// Capture the web-vitals subscription callbacks so tests can drive them.
+type VitalCb = (m: { value: number; id: string }) => void;
+const vitalCallbacks: Partial<Record<'LCP' | 'INP' | 'CLS' | 'FCP' | 'TTFB', VitalCb>> = {};
+
+vi.mock('web-vitals', () => ({
+  onLCP: (cb: VitalCb) => { vitalCallbacks.LCP = cb; },
+  onINP: (cb: VitalCb) => { vitalCallbacks.INP = cb; },
+  onCLS: (cb: VitalCb) => { vitalCallbacks.CLS = cb; },
+  onFCP: (cb: VitalCb) => { vitalCallbacks.FCP = cb; },
+  onTTFB: (cb: VitalCb) => { vitalCallbacks.TTFB = cb; },
+}));
 
 let clock: FakeClock;
 let fakeFetch: FakeFetch;
@@ -112,6 +124,32 @@ describe('narrow schema on anonymous endpoint', () => {
     expect(ev!['session_id']).toBeUndefined();
     expect(ev!['breadcrumbs']).toBeUndefined();
     expect(ev!['request_id']).toBeUndefined();
+
+    instance.shutdown();
+  });
+
+  it('preserves vital payload on anon events so pre-auth web vitals carry their value (re #71)', async () => {
+    const instance = install({
+      app: 'suite',
+      buildSha: 'sha',
+      endpoints: { authenticated: '/api/v1/clientlog', anonymous: '/api/v1/clientlog/public' },
+      isAuthenticated: () => false, // anon
+      livetailUntil: () => null,
+      telemetryEnabled: () => true,
+      bootstrap: { enabled: true, batch_max_events: 100, batch_max_age_ms: 5000, queue_cap: 200, telemetry_enabled_default: true },
+    });
+
+    // Simulate the web-vitals library reporting an FCP measurement before login.
+    vitalCallbacks.FCP?.({ value: 1234.5, id: 'v1-anon' });
+    clock.advance(5000);
+    await Promise.resolve();
+
+    const call = fakeFetch.calls.find((c) => c.url === '/api/v1/clientlog/public');
+    expect(call).toBeDefined();
+    const body = JSON.parse(call!.body) as { events: Record<string, unknown>[] };
+    const ev = body.events.find((e) => e['kind'] === 'vital');
+    expect(ev).toBeDefined();
+    expect(ev!['vital']).toEqual({ name: 'FCP', value: 1234.5, id: 'v1-anon' });
 
     instance.shutdown();
   });

@@ -92,6 +92,7 @@ function toNarrowEvent(ev: CapturedEvent, ctx: FlushContext): NarrowEvent {
     ua: ctx.getUa().slice(0, 256),
   };
   if (ev.stack !== undefined) base.stack = ev.stack;
+  if (ev.vital !== undefined) base.vital = ev.vital;
   return base;
 }
 
