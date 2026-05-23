@@ -209,7 +209,7 @@ jobs:
     runs-on: [self-hosted, herold, arm64]
     # 45 min: the sqlite lane historically ran the entire tree under
     # -race and hit ~37 min wall on the arm64 self-hosted runner. The
-    # lane is now split into a race-on subset (.github/race-packages.txt)
+    # lane is now split into a race-on subset (test/race-packages.txt)
     # and a no-race remainder so the detector cost is paid only on
     # concurrency-heavy packages.
     timeout-minutes: 45
@@ -266,7 +266,7 @@ jobs:
         if: matrix.store == 'sqlite'
         run: |
           set -euo pipefail
-          PATTERNS=$(grep -v '^[[:space:]]*#' .github/race-packages.txt \
+          PATTERNS=$(grep -v '^[[:space:]]*#' test/race-packages.txt \
             | grep -v '^[[:space:]]*$' \
             | sed 's|^|./|')
           RACE=$(echo "$PATTERNS" | xargs -r go list 2>/dev/null | sort -u)

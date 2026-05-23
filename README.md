@@ -59,7 +59,7 @@ docker run --rm --name herold \
   -p 127.0.0.1:1993:1993 \
   -p 127.0.0.1:8080:8080 \
   -p 127.0.0.1:9443:9443 \
-  ghcr.io/hanshuebner/herold:latest
+  codeberg.org/hanshuebner/herold:latest
 ```
 
 In a second terminal, bootstrap the first admin principal and add a
