@@ -472,3 +472,168 @@ func TestEmailSubmission_Set_AllowedFrom_CanonicalAddress(t *testing.T) {
 		t.Fatalf("expected 1 submit, got %d", len(sub.calls))
 	}
 }
+
+// -- dedupRecipients unit tests ------------------------------------------
+
+// TestDedupRecipients_SameCase verifies that an exact duplicate is dropped.
+func TestDedupRecipients_SameCase(t *testing.T) {
+	got := dedupRecipients([]string{"a@example.com", "a@example.com"})
+	if len(got) != 1 || got[0] != "a@example.com" {
+		t.Fatalf("got %v, want [a@example.com]", got)
+	}
+}
+
+// TestDedupRecipients_DifferentCase verifies case-insensitive dedup;
+// the first occurrence's casing is preserved.
+func TestDedupRecipients_DifferentCase(t *testing.T) {
+	got := dedupRecipients([]string{"A@Example.Com", "a@example.com"})
+	if len(got) != 1 || got[0] != "A@Example.Com" {
+		t.Fatalf("got %v, want [A@Example.Com]", got)
+	}
+}
+
+// TestDedupRecipients_Whitespace verifies that surrounding whitespace is
+// trimmed for the purpose of comparison (the original string is preserved).
+func TestDedupRecipients_Whitespace(t *testing.T) {
+	got := dedupRecipients([]string{"a@example.com", "  a@example.com  "})
+	if len(got) != 1 || got[0] != "a@example.com" {
+		t.Fatalf("got %v, want [a@example.com]", got)
+	}
+}
+
+// TestDedupRecipients_EmptyDropped verifies that empty entries are dropped.
+func TestDedupRecipients_EmptyDropped(t *testing.T) {
+	got := dedupRecipients([]string{"a@example.com", "", "  ", "b@example.com"})
+	if len(got) != 2 {
+		t.Fatalf("got %v, want 2 entries", got)
+	}
+}
+
+// TestDedupRecipients_OrderPreserved verifies first-occurrence order.
+func TestDedupRecipients_OrderPreserved(t *testing.T) {
+	got := dedupRecipients([]string{"a@example.com", "b@example.com", "a@example.com", "c@example.com"})
+	want := []string{"a@example.com", "b@example.com", "c@example.com"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("index %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// -- integration: duplicate envelope.rcptTo → exactly one queue row -------
+
+// TestEmailSubmission_Set_DedupsEnvelopeRcptTo_SameCase submits with the
+// same recipient address twice in envelope.rcptTo and asserts that exactly
+// one queue row (and one Recipients entry) is created.
+func TestEmailSubmission_Set_DedupsEnvelopeRcptTo_SameCase(t *testing.T) {
+	h, st, p, _, mid, sub := newSetup(t)
+	ctx := context.Background()
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+				"envelope": map[string]any{
+					"mailFrom": map[string]any{"email": "alice@example.test"},
+					"rcptTo": []map[string]any{
+						{"email": "bob@example.test"},
+						{"email": "bob@example.test"},
+					},
+				},
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("EmailSubmission/set: %v", mErr)
+	}
+	js, _ := json.Marshal(resp)
+	if !strings.Contains(string(js), `"created"`) {
+		t.Fatalf("expected created: %s", js)
+	}
+	if len(sub.calls) != 1 {
+		t.Fatalf("expected 1 Submit call, got %d", len(sub.calls))
+	}
+	if len(sub.calls[0].Recipients) != 1 {
+		t.Fatalf("expected 1 recipient, got %d: %v", len(sub.calls[0].Recipients), sub.calls[0].Recipients)
+	}
+	// Exactly one queue row should exist.
+	rows, err := st.Meta().ListQueueItems(ctx, store.QueueFilter{EnvelopeID: sub.envs[0]})
+	if err != nil {
+		t.Fatalf("ListQueueItems: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 queue row, got %d", len(rows))
+	}
+}
+
+// TestEmailSubmission_Set_DedupsEnvelopeRcptTo_DifferentCase verifies that
+// case-insensitive dedup works via the full handler path.
+func TestEmailSubmission_Set_DedupsEnvelopeRcptTo_DifferentCase(t *testing.T) {
+	h, _, p, _, mid, sub := newSetup(t)
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+				"envelope": map[string]any{
+					"mailFrom": map[string]any{"email": "alice@example.test"},
+					"rcptTo": []map[string]any{
+						{"email": "Bob@Example.Test"},
+						{"email": "bob@example.test"},
+					},
+				},
+			},
+		},
+	})
+	_, mErr := (setHandler{h: h}).executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("EmailSubmission/set: %v", mErr)
+	}
+	if len(sub.calls) != 1 {
+		t.Fatalf("expected 1 Submit call, got %d", len(sub.calls))
+	}
+	if len(sub.calls[0].Recipients) != 1 {
+		t.Fatalf("expected 1 recipient after case-insensitive dedup, got %d: %v",
+			len(sub.calls[0].Recipients), sub.calls[0].Recipients)
+	}
+	// First-occurrence casing is preserved.
+	if sub.calls[0].Recipients[0] != "Bob@Example.Test" {
+		t.Fatalf("expected first-occurrence casing Bob@Example.Test, got %q", sub.calls[0].Recipients[0])
+	}
+}
+
+// TestEmailSubmission_Set_DedupsEnvelopeRcptTo_WithWhitespace verifies that
+// the surrounding-whitespace normalization applies through the handler.
+func TestEmailSubmission_Set_DedupsEnvelopeRcptTo_WithWhitespace(t *testing.T) {
+	h, _, p, _, mid, sub := newSetup(t)
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+				"envelope": map[string]any{
+					"mailFrom": map[string]any{"email": "alice@example.test"},
+					"rcptTo": []map[string]any{
+						{"email": "bob@example.test"},
+						{"email": " bob@example.test "},
+					},
+				},
+			},
+		},
+	})
+	_, mErr2 := (setHandler{h: h}).executeAs(p, args)
+	if mErr2 != nil {
+		t.Fatalf("EmailSubmission/set: %v", mErr2)
+	}
+	if len(sub.calls[0].Recipients) != 1 {
+		t.Fatalf("expected 1 recipient, got %d: %v",
+			len(sub.calls[0].Recipients), sub.calls[0].Recipients)
+	}
+}

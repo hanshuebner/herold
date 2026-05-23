@@ -1247,6 +1247,12 @@ func (s setHandler) processDestroy(ctx context.Context, p store.Principal, id jm
 // JMAP create object's optional envelope, falling back to the
 // identity's email and the message's To/Cc/Bcc when no envelope is
 // supplied. Returns a setError when neither source yields recipients.
+//
+// Recipients are deduplicated case-insensitively (first occurrence wins)
+// before being returned so that duplicate RCPT addresses — which can arise
+// when the display name equals the email address and the header parser
+// splits the entry in two — do not produce duplicate queue rows (RFC 5321
+// §3.3 treats duplicate RCPT as a single delivery).
 func buildEnvelope(env *jmapEnvelope, identityEmail string, msg store.Message) (string, []string, *setError) {
 	if env != nil {
 		mailFrom := env.MailFrom.Email
@@ -1263,7 +1269,7 @@ func buildEnvelope(env *jmapEnvelope, identityEmail string, msg store.Message) (
 			return "", nil, &setError{Type: "invalidProperties",
 				Properties: []string{"envelope"}, Description: "envelope has no recipients"}
 		}
-		return mailFrom, recipients, nil
+		return mailFrom, dedupRecipients(recipients), nil
 	}
 	// Derive from headers.
 	recipients := extractAddrs(msg.Envelope.To)
@@ -1273,7 +1279,27 @@ func buildEnvelope(env *jmapEnvelope, identityEmail string, msg store.Message) (
 		return "", nil, &setError{Type: "invalidProperties",
 			Properties: []string{"envelope"}, Description: "no recipients in headers"}
 	}
-	return identityEmail, recipients, nil
+	return identityEmail, dedupRecipients(recipients), nil
+}
+
+// dedupRecipients removes duplicate entries from a recipient list,
+// comparing case-insensitively on the trimmed address. The first
+// occurrence's original casing is preserved. Empty entries are dropped.
+func dedupRecipients(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, r := range in {
+		key := strings.ToLower(strings.TrimSpace(r))
+		if key == "" {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, r) // preserve original casing of first occurrence
+	}
+	return out
 }
 
 // extractAddrs pulls bare addr-spec values out of a comma-separated
