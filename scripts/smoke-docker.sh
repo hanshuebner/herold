@@ -185,13 +185,43 @@ for line in text.splitlines():
 print("smoke: SMTP transaction OK")
 '
 
-# IMAP receipt verification deliberately skipped. The quickstart image
-# runs plaintext on loopback (no self-signed cert; ADR-0001 / issue
-# #109), and herold's IMAP server refuses plain LOGIN without TLS by
-# default (REQ-PROTO-12). Re-enable once issue #114 lands a per-listener
-# or loopback-aware allow-plain-auth knob and the quickstart config
-# turns it on -- then this block should verify the message arrived in
-# INBOX via imaplib.IMAP4 on PORT_IMAP / port 1143.
-echo "smoke: IMAP receipt verification SKIPPED (see issue #114)"
+echo "smoke: verifying receipt via IMAP on port ${PORT_IMAP}..."
+PORT_IMAP_ENV="$PORT_IMAP" PASSWORD_ENV="$PASSWORD" MARKER_ENV="$MARKER" python3 - <<'PYEOF'
+import imaplib
+import os
+import sys
+import time
+
+port = int(os.environ["PORT_IMAP_ENV"])
+password = os.environ["PASSWORD_ENV"]
+marker = os.environ["MARKER_ENV"]
+
+last_err = None
+for attempt in range(30):
+    try:
+        m = imaplib.IMAP4("127.0.0.1", port)
+        try:
+            m.login("admin@example.local", password)
+            m.select("INBOX")
+            typ, data = m.search(None, '(SUBJECT "%s")' % marker)
+            if typ != "OK":
+                raise RuntimeError("IMAP SEARCH typ=%s" % typ)
+            ids = data[0].split()
+            if ids:
+                print("smoke: IMAP message found, count=%d" % len(ids))
+                m.logout()
+                sys.exit(0)
+        finally:
+            try:
+                m.logout()
+            except Exception:
+                pass
+    except Exception as exc:
+        last_err = exc
+    time.sleep(1)
+
+print("smoke: IMAP message NOT found after retries (last error: %r)" % last_err, file=sys.stderr)
+sys.exit(1)
+PYEOF
 
 echo "smoke: PASS"

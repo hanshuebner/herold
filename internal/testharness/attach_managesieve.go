@@ -44,7 +44,7 @@ func (s *Server) AttachManageSieve(name string, srv *protomanagesieve.Server) {
 	go func() {
 		defer s.wg.Done()
 		defer close(st.managed)
-		_ = srv.Serve(s.ctx, st.ln)
+		_ = srv.Serve(s.ctx, st.ln, protomanagesieve.ListenerOptions{})
 	}()
 }
 

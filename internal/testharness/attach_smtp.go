@@ -74,7 +74,7 @@ func (s *Server) AttachSMTP(name string, srv *protosmtp.Server, mode protosmtp.L
 	// feed into the server so the client sees a real greeting.
 	select {
 	case pre := <-handoffCh:
-		srv.HandleConn(pre, mode)
+		srv.HandleConn(pre, protosmtp.ListenerOptions{Mode: mode})
 	default:
 	}
 
@@ -82,7 +82,7 @@ func (s *Server) AttachSMTP(name string, srv *protosmtp.Server, mode protosmtp.L
 	go func() {
 		defer s.wg.Done()
 		defer close(st.managed)
-		_ = srv.Serve(s.ctx, st.ln, mode)
+		_ = srv.Serve(s.ctx, st.ln, protosmtp.ListenerOptions{Mode: mode})
 	}()
 }
 

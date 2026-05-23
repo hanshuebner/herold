@@ -3210,6 +3210,147 @@ tls = "none"
 	}
 }
 
+func TestValidate_AllowPlainAuth_AcceptedOnPlainSubmissionListener(t *testing.T) {
+	// issue #114: allow_plain_auth is valid on imap / smtp-submission /
+	// managesieve listeners with tls = "none" (loopback / container
+	// quickstart posture).
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "none"
+
+[[listener]]
+name = "smtp-submission"
+address = "127.0.0.1:1587"
+protocol = "smtp-submission"
+tls = "none"
+auth_required = true
+allow_plain_auth = true
+
+[[listener]]
+name = "imap"
+address = "127.0.0.1:1143"
+protocol = "imap"
+tls = "none"
+allow_plain_auth = true
+
+[[listener]]
+name = "managesieve"
+address = "127.0.0.1:4190"
+protocol = "managesieve"
+tls = "none"
+allow_plain_auth = true
+
+[[listener]]
+name = "public"
+address = "127.0.0.1:8080"
+protocol = "http"
+kind = "public"
+tls = "none"
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:9443"
+protocol = "http"
+kind = "admin"
+tls = "none"
+`
+	parsed, err := Parse([]byte(cfg))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !parsed.Listener[0].AllowPlainAuth {
+		t.Error("expected AllowPlainAuth to be true on the smtp-submission listener")
+	}
+	if !parsed.Listener[1].AllowPlainAuth {
+		t.Error("expected AllowPlainAuth to be true on the imap listener")
+	}
+	if !parsed.Listener[2].AllowPlainAuth {
+		t.Error("expected AllowPlainAuth to be true on the managesieve listener")
+	}
+}
+
+func TestValidate_AllowPlainAuth_RejectedOnRelayListener(t *testing.T) {
+	// issue #114: allow_plain_auth has no meaning on a port-25 relay
+	// listener (AUTH is not offered there) and the validator must reject
+	// the flag so an operator typo does not silently no-op.
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "none"
+
+[[listener]]
+name = "smtp"
+address = ":25"
+protocol = "smtp"
+tls = "none"
+allow_plain_auth = true
+
+[[listener]]
+name = "public"
+address = "127.0.0.1:8080"
+protocol = "http"
+kind = "public"
+tls = "none"
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:9443"
+protocol = "http"
+kind = "admin"
+tls = "none"
+`
+	if _, err := Parse([]byte(cfg)); err == nil || !strings.Contains(err.Error(), "allow_plain_auth is not supported") {
+		t.Fatalf("expected protocol rejection, got: %v", err)
+	}
+}
+
+func TestValidate_AllowPlainAuth_RejectedWhenTLSEnabled(t *testing.T) {
+	// issue #114: allow_plain_auth is only meaningful on a tls = "none"
+	// listener; pairing it with starttls/implicit is operator error.
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "none"
+
+[[listener]]
+name = "smtp-submission"
+address = ":587"
+protocol = "smtp-submission"
+tls = "starttls"
+cert_file = "/a"
+key_file = "/b"
+auth_required = true
+allow_plain_auth = true
+
+[[listener]]
+name = "public"
+address = "127.0.0.1:8080"
+protocol = "http"
+kind = "public"
+tls = "none"
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:9443"
+protocol = "http"
+kind = "admin"
+tls = "none"
+`
+	if _, err := Parse([]byte(cfg)); err == nil || !strings.Contains(err.Error(), "allow_plain_auth requires tls = \"none\"") {
+		t.Fatalf("expected tls-none rejection, got: %v", err)
+	}
+}
+
 func TestValidate_LegacyAdminProtocol_RejectedWithHint(t *testing.T) {
 	// issue #107: the HTTP listener protocol value "admin" was renamed
 	// to "http". An old config must fail with a message that names the

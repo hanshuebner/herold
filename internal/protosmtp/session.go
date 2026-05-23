@@ -75,6 +75,9 @@ type session struct {
 	cancel          context.CancelFunc
 	serverEndpoint  []byte // RFC 5929 tls-server-end-point channel binding
 	submissionAllow bool   // true when this listener accepts RCPT for non-local domains after AUTH
+	// allowPlainAuth opts this session into accepting SASL PLAIN /
+	// LOGIN over cleartext on a SubmissionSTARTTLS listener (issue #114).
+	allowPlainAuth bool
 }
 
 // envelope accumulates MAIL FROM + RCPT TO state for one in-flight
@@ -132,19 +135,20 @@ type rcptEntry struct {
 // served, captured by the GetCertificate wrapper in server.go so we can
 // derive the RFC 5929 channel binding without re-parsing the on-wire
 // state.
-func (s *Server) runSession(raw net.Conn, mode ListenerMode, remoteIP string, implicit *tls.Conn, implicitLeaf *x509.Certificate) {
+func (s *Server) runSession(raw net.Conn, mode ListenerMode, allowPlainAuth bool, remoteIP string, implicit *tls.Conn, implicitLeaf *x509.Certificate) {
 	sessCtx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 
 	sid := newSessionID()
 	sess := &session{
-		srv:      s,
-		mode:     mode,
-		conn:     raw,
-		remoteIP: remoteIP,
-		ctx:      sessCtx,
-		cancel:   cancel,
-		sessID:   sid,
+		srv:            s,
+		mode:           mode,
+		conn:           raw,
+		remoteIP:       remoteIP,
+		ctx:            sessCtx,
+		cancel:         cancel,
+		sessID:         sid,
+		allowPlainAuth: allowPlainAuth,
 		log: s.log.With(
 			slog.String("subsystem", "protosmtp"),
 			slog.String("session_id", sid),
@@ -369,7 +373,7 @@ func (sess *session) ehloExtensions() []string {
 // advertising a wire extension we cannot honour.
 func (sess *session) authMechanismList() []string {
 	var out []string
-	if sess.tlsEstablished {
+	if sess.tlsEstablished || sess.allowPlainAuth {
 		out = append(out, "PLAIN", "LOGIN")
 	}
 	if sess.srv.passLk != nil {
@@ -545,12 +549,12 @@ func (sess *session) cmdAUTH(rest string) bool {
 func (sess *session) buildMechanism(name string) (sasl.Mechanism, bool) {
 	switch name {
 	case "PLAIN":
-		if !sess.tlsEstablished {
+		if !sess.tlsEstablished && !sess.allowPlainAuth {
 			return nil, false
 		}
 		return sasl.NewPLAIN(sess.srv.dir), true
 	case "LOGIN":
-		if !sess.tlsEstablished {
+		if !sess.tlsEstablished && !sess.allowPlainAuth {
 			return nil, false
 		}
 		return sasl.NewLOGIN(sess.srv.dir), true

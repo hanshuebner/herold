@@ -51,6 +51,17 @@ const (
 	SubmissionImplicitTLS
 )
 
+// ListenerOptions configures a single bound listener. Separate from
+// Options because these fields are per-listener.
+type ListenerOptions struct {
+	Mode ListenerMode
+	// AllowPlainAuth opts this listener into accepting SASL PLAIN /
+	// LOGIN over cleartext on a SubmissionSTARTTLS listener that has
+	// not yet upgraded. Set by the validator only for plaintext
+	// loopback listeners (issue #114).
+	AllowPlainAuth bool
+}
+
 // String returns the lower-case identifier used in logs / metrics
 // labels.
 func (m ListenerMode) String() string {
@@ -396,7 +407,8 @@ func (s *Server) SetWebhookDispatcher(d WebhookDispatcher) {
 // Intended for harnesses that pre-accept a TCP connection (e.g. when
 // handing over from a shim accept loop to the real server). Subject
 // to the same concurrency / IP caps as Serve.
-func (s *Server) HandleConn(conn net.Conn, mode ListenerMode) {
+func (s *Server) HandleConn(conn net.Conn, lopts ListenerOptions) {
+	mode := lopts.Mode
 	if conn == nil {
 		return
 	}
@@ -453,7 +465,7 @@ func (s *Server) HandleConn(conn net.Conn, mode ListenerMode) {
 			implicit = tlsConn
 			implicitLeaf = cap.Leaf()
 		}
-		s.runSession(conn, mode, remoteIP, implicit, implicitLeaf)
+		s.runSession(conn, mode, lopts.AllowPlainAuth, remoteIP, implicit, implicitLeaf)
 	}()
 }
 
@@ -465,7 +477,8 @@ func (s *Server) HandleConn(conn net.Conn, mode ListenerMode) {
 // (per-source cap); when either is exhausted the conn is closed
 // immediately with a 421. Returns ln.Accept's terminal error (wrapped
 // as net.ErrClosed when the listener is intentionally closed).
-func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) error {
+func (s *Server) Serve(ctx context.Context, ln net.Listener, lopts ListenerOptions) error {
+	mode := lopts.Mode
 	if ln == nil {
 		return errors.New("protosmtp: nil listener")
 	}
@@ -561,7 +574,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) 
 				startTLS = tlsConn
 				startTLSLeaf = cap.Leaf()
 			}
-			s.runSession(c, mode, rip, startTLS, startTLSLeaf)
+			s.runSession(c, mode, lopts.AllowPlainAuth, rip, startTLS, startTLSLeaf)
 		}(conn, remoteIP)
 	}
 }

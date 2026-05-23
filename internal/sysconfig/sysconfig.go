@@ -1118,8 +1118,17 @@ type ListenerConfig struct {
 	TLS           string `toml:"tls"`
 	AuthRequired  bool   `toml:"auth_required,omitempty"`
 	ProxyProtocol bool   `toml:"proxy_protocol,omitempty"`
-	CertFile      string `toml:"cert_file,omitempty"`
-	KeyFile       string `toml:"key_file,omitempty"`
+	// AllowPlainAuth opts a plaintext mail listener into accepting
+	// PLAIN / LOGIN SASL authentication without TLS. Default false:
+	// PLAIN / LOGIN are refused on cleartext sockets per RFC 8314 /
+	// REQ-PROTO-12. Only meaningful for imap, smtp-submission, and
+	// managesieve listeners with tls = "none"; the validator rejects
+	// the flag in any other combination. Intended for the loopback /
+	// container quickstart posture (issue #114), where the listener
+	// is reachable only from trusted callers.
+	AllowPlainAuth bool   `toml:"allow_plain_auth,omitempty"`
+	CertFile       string `toml:"cert_file,omitempty"`
+	KeyFile        string `toml:"key_file,omitempty"`
 }
 
 // AcmeConfig configures the ACME client (REQ-OPS-50..55).
@@ -2503,6 +2512,22 @@ func Validate(c *Config) error {
 				// allowed
 			default:
 				return fmt.Errorf("sysconfig: [[listener]] %q: proxy_protocol is not supported on protocol %q", l.Name, l.Protocol)
+			}
+		}
+		// allow_plain_auth opts a plaintext mail listener into accepting
+		// SASL PLAIN / LOGIN over cleartext. Only meaningful on imap,
+		// smtp-submission, and managesieve listeners with tls = "none"
+		// (issue #114). Any other combination is operator error and is
+		// rejected.
+		if l.AllowPlainAuth {
+			switch l.Protocol {
+			case "imap", "smtp-submission", "managesieve":
+				// allowed
+			default:
+				return fmt.Errorf("sysconfig: [[listener]] %q: allow_plain_auth is not supported on protocol %q", l.Name, l.Protocol)
+			}
+			if l.TLS != "none" {
+				return fmt.Errorf("sysconfig: [[listener]] %q: allow_plain_auth requires tls = \"none\"", l.Name)
 			}
 		}
 		// REQ-OPS-ADMIN-LISTENER-01: HTTP listeners (Protocol=="http")

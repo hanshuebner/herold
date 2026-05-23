@@ -119,10 +119,19 @@ func NewServer(
 	}
 }
 
+// ListenerOptions configures a single bound listener. Separate from
+// Options because these fields are per-listener.
+type ListenerOptions struct {
+	// AllowPlainAuth opts this listener into accepting SASL PLAIN /
+	// LOGIN over cleartext. Set by the validator only for plaintext
+	// loopback listeners (issue #114).
+	AllowPlainAuth bool
+}
+
 // Serve accepts connections from ln until ctx is cancelled or ln is
 // closed. The ManageSieve listener is plaintext-on-accept; STARTTLS is
 // the per-session TLS upgrade.
-func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+func (s *Server) Serve(ctx context.Context, ln net.Listener, lopts ListenerOptions) error {
 	if tcp, ok := ln.(*net.TCPListener); ok {
 		_ = tcp.SetDeadline(time.Time{})
 	}
@@ -200,14 +209,14 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 						<-sem
 					}
 				}()
-				s.handle(ctx, c)
+				s.handle(ctx, c, lopts)
 			}(c, rip)
 		}
 	}
 }
 
 // handle wraps the per-session lifecycle with logging + perIP cleanup.
-func (s *Server) handle(ctx context.Context, c net.Conn) {
+func (s *Server) handle(ctx context.Context, c net.Conn, lopts ListenerOptions) {
 	defer func() {
 		if r := recover(); r != nil {
 			// Panic recovery: internal/error per the activity guide (REQ-OPS-86).
@@ -218,7 +227,7 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 		}
 		_ = c.Close()
 	}()
-	ses := newSession(s, c, false)
+	ses := newSession(s, c, false, lopts.AllowPlainAuth)
 	s.mu.Lock()
 	s.sessions[ses] = struct{}{}
 	s.mu.Unlock()

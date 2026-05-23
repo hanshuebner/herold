@@ -1744,7 +1744,7 @@ func bindOneAddress(
 	switch l.Protocol {
 	case "smtp":
 		return ln, func(ctx context.Context) error {
-			return smtpServer.Serve(ctx, ln, protosmtp.RelayIn)
+			return smtpServer.Serve(ctx, ln, protosmtp.ListenerOptions{Mode: protosmtp.RelayIn})
 		}, resolvedAddr, nil
 	case "smtp-submission":
 		mode := protosmtp.SubmissionSTARTTLS
@@ -1752,7 +1752,7 @@ func bindOneAddress(
 			mode = protosmtp.SubmissionImplicitTLS
 		}
 		return ln, func(ctx context.Context) error {
-			return smtpServer.Serve(ctx, ln, mode)
+			return smtpServer.Serve(ctx, ln, protosmtp.ListenerOptions{Mode: mode, AllowPlainAuth: l.AllowPlainAuth})
 		}, resolvedAddr, nil
 	case "imap":
 		// tls = "implicit" selects implicit-TLS IMAP (port 993,
@@ -1763,11 +1763,11 @@ func bindOneAddress(
 			mode = protoimap.ListenerModeImplicit993
 		}
 		return ln, func(ctx context.Context) error {
-			return imapServer.Serve(ctx, ln, mode)
+			return imapServer.Serve(ctx, ln, protoimap.ListenerOptions{Mode: mode, AllowPlainAuth: l.AllowPlainAuth})
 		}, resolvedAddr, nil
 	case "managesieve":
 		return ln, func(ctx context.Context) error {
-			return mssvServer.Serve(ctx, ln)
+			return mssvServer.Serve(ctx, ln, protomanagesieve.ListenerOptions{AllowPlainAuth: l.AllowPlainAuth})
 		}, resolvedAddr, nil
 	case "http":
 		spec := l

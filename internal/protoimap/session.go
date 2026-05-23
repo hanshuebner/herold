@@ -41,6 +41,7 @@ type session struct {
 	resp           *respWriter
 	remote         string
 	tlsActive      bool
+	allowPlainAuth bool // per-listener override of Options.AllowPlainLoginWithoutTLS (issue #114)
 	state          sessionState
 	logger         *slog.Logger
 	pid            store.PrincipalID
@@ -87,15 +88,16 @@ type selectedMailbox struct {
 	knownKeywords map[string]struct{}
 }
 
-func newSession(s *Server, c net.Conn, tlsActive bool) *session {
+func newSession(s *Server, c net.Conn, tlsActive, allowPlainAuth bool) *session {
 	ses := &session{
-		s:         s,
-		conn:      c,
-		br:        bufio.NewReaderSize(c, 16*1024),
-		resp:      newRespWriter(c),
-		remote:    c.RemoteAddr().String(),
-		tlsActive: tlsActive,
-		state:     stateNotAuthed,
+		s:              s,
+		conn:           c,
+		br:             bufio.NewReaderSize(c, 16*1024),
+		resp:           newRespWriter(c),
+		remote:         c.RemoteAddr().String(),
+		tlsActive:      tlsActive,
+		allowPlainAuth: allowPlainAuth,
+		state:          stateNotAuthed,
 		// Pre-scope subsystem, remote_addr so per-event records only add
 		// activity and event-specific attrs (STANDARDS §7, REQ-OPS-86).
 		// principal_id is added by handleLOGIN / handleAUTHENTICATE via
@@ -362,13 +364,22 @@ func (ses *session) capabilityString() string {
 		// SCRAM does not require TLS; OAuth tokens arguably also refuse
 		// over cleartext but we advertise them under the same gate.
 		caps = append(caps, "AUTH=SCRAM-SHA-256")
-		if ses.s.opts.AllowPlainLoginWithoutTLS {
+		if ses.plainAuthAllowed() {
 			caps = append(caps, "AUTH=PLAIN", "AUTH=LOGIN")
 		} else {
 			caps = append(caps, "LOGINDISABLED")
 		}
 	}
 	return strings.Join(caps, " ")
+}
+
+// plainAuthAllowed reports whether PLAIN / LOGIN authentication is
+// permitted on this session. PLAIN / LOGIN over cleartext is refused
+// by default (REQ-PROTO-12); operators may opt a specific plaintext
+// listener in via the per-listener allow_plain_auth flag (issue #114),
+// or the whole server in via Options.AllowPlainLoginWithoutTLS.
+func (ses *session) plainAuthAllowed() bool {
+	return ses.allowPlainAuth || ses.s.opts.AllowPlainLoginWithoutTLS
 }
 
 func (ses *session) startTLSAllowed() bool {
@@ -429,7 +440,7 @@ func (ses *session) handleLOGIN(ctx context.Context, c *Command) error {
 	if ses.state != stateNotAuthed {
 		return ses.resp.taggedBAD(c.Tag, "", "already authenticated")
 	}
-	if !ses.tlsActive && !ses.s.opts.AllowPlainLoginWithoutTLS {
+	if !ses.tlsActive && !ses.plainAuthAllowed() {
 		return ses.resp.taggedNO(c.Tag, "PRIVACYREQUIRED", "LOGIN refused without TLS")
 	}
 	ctx = directory.WithAuthSource(ctx, ses.remote)
@@ -568,12 +579,12 @@ func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
 func (ses *session) makeMechanism(name string) (sasl.Mechanism, error) {
 	switch name {
 	case "PLAIN":
-		if !ses.tlsActive && !ses.s.opts.AllowPlainLoginWithoutTLS {
+		if !ses.tlsActive && !ses.plainAuthAllowed() {
 			return nil, errors.New("PLAIN requires TLS")
 		}
 		return sasl.NewPLAIN(ses.s.dir), nil
 	case "LOGIN":
-		if !ses.tlsActive && !ses.s.opts.AllowPlainLoginWithoutTLS {
+		if !ses.tlsActive && !ses.plainAuthAllowed() {
 			return nil, errors.New("LOGIN requires TLS")
 		}
 		return sasl.NewLOGIN(ses.s.dir), nil

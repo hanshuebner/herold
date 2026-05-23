@@ -35,10 +35,13 @@ type session struct {
 	br        *bufio.Reader
 	bw        *bufio.Writer
 	tlsActive bool
-	state     sessionState
-	logger    *slog.Logger
-	pid       store.PrincipalID
-	remote    string
+	// allowPlainAuth opts this session into accepting SASL PLAIN /
+	// LOGIN over cleartext (issue #114).
+	allowPlainAuth bool
+	state          sessionState
+	logger         *slog.Logger
+	pid            store.PrincipalID
+	remote         string
 
 	// serverEndpoint is the RFC 5929 tls-server-end-point binding for
 	// SCRAM-SHA-256-PLUS. Populated after STARTTLS or on implicit-TLS
@@ -46,7 +49,7 @@ type session struct {
 	serverEndpoint []byte
 }
 
-func newSession(s *Server, c net.Conn, tlsActive bool) *session {
+func newSession(s *Server, c net.Conn, tlsActive, allowPlainAuth bool) *session {
 	remote := c.RemoteAddr().String()
 	// Pre-scope the session logger with subsystem and remote so every log
 	// record emitted by this session carries them without repetition
@@ -56,14 +59,15 @@ func newSession(s *Server, c net.Conn, tlsActive bool) *session {
 		"remote", remote,
 	)
 	return &session{
-		s:         s,
-		conn:      c,
-		br:        bufio.NewReaderSize(c, 16*1024),
-		bw:        bufio.NewWriter(c),
-		tlsActive: tlsActive,
-		state:     stateUnauth,
-		logger:    logger,
-		remote:    remote,
+		s:              s,
+		conn:           c,
+		br:             bufio.NewReaderSize(c, 16*1024),
+		bw:             bufio.NewWriter(c),
+		tlsActive:      tlsActive,
+		allowPlainAuth: allowPlainAuth,
+		state:          stateUnauth,
+		logger:         logger,
+		remote:         remote,
 	}
 }
 
@@ -133,23 +137,20 @@ func (ses *session) capabilityLines() []string {
 
 // saslMechs returns the SASL mechanism names appropriate for the
 // session's current TLS state. PLAIN / LOGIN over cleartext are
-// refused (RFC 5804 §1.5 mandates STARTTLS first).
+// refused (RFC 5804 §1.5 mandates STARTTLS first) unless the listener
+// opted into the loopback-plaintext posture via allow_plain_auth
+// (issue #114).
 func (ses *session) saslMechs() []string {
 	mechs := []string{}
-	if ses.tlsActive {
-		mechs = append(mechs, "PLAIN", "LOGIN", "SCRAM-SHA-256")
-		if ses.s.passwords != nil && len(ses.serverEndpoint) > 0 {
-			mechs = append(mechs, "SCRAM-SHA-256-PLUS")
-		}
-		if ses.s.tokens != nil {
-			mechs = append(mechs, "OAUTHBEARER", "XOAUTH2")
-		}
-	} else {
-		// SCRAM does not require TLS but PLAIN / LOGIN do.
-		mechs = append(mechs, "SCRAM-SHA-256")
-		if ses.s.tokens != nil {
-			mechs = append(mechs, "OAUTHBEARER", "XOAUTH2")
-		}
+	if ses.tlsActive || ses.allowPlainAuth {
+		mechs = append(mechs, "PLAIN", "LOGIN")
+	}
+	mechs = append(mechs, "SCRAM-SHA-256")
+	if ses.tlsActive && ses.s.passwords != nil && len(ses.serverEndpoint) > 0 {
+		mechs = append(mechs, "SCRAM-SHA-256-PLUS")
+	}
+	if ses.s.tokens != nil {
+		mechs = append(mechs, "OAUTHBEARER", "XOAUTH2")
 	}
 	return mechs
 }
@@ -384,12 +385,12 @@ func (ses *session) readScriptLiteral(size int64, sync bool) ([]byte, error) {
 func (ses *session) makeMechanism(name string) (sasl.Mechanism, error) {
 	switch strings.ToUpper(name) {
 	case "PLAIN":
-		if !ses.tlsActive {
+		if !ses.tlsActive && !ses.allowPlainAuth {
 			return nil, errors.New("PLAIN requires TLS")
 		}
 		return sasl.NewPLAIN(ses.s.dir), nil
 	case "LOGIN":
-		if !ses.tlsActive {
+		if !ses.tlsActive && !ses.allowPlainAuth {
 			return nil, errors.New("LOGIN requires TLS")
 		}
 		return sasl.NewLOGIN(ses.s.dir), nil

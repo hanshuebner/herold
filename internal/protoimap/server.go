@@ -31,6 +31,19 @@ const (
 	ListenerModeSTARTTLS
 )
 
+// ListenerOptions configures a single bound listener. Separate from
+// Options because these fields are per-listener (a server may carry
+// both a loopback listener with AllowPlainAuth and a public listener
+// without).
+type ListenerOptions struct {
+	Mode ListenerMode
+	// AllowPlainAuth opts this listener into accepting LOGIN /
+	// AUTHENTICATE PLAIN / LOGIN over cleartext, complementing the
+	// server-wide Options.AllowPlainLoginWithoutTLS. Set by the
+	// validator only for plaintext loopback listeners (issue #114).
+	AllowPlainAuth bool
+}
+
 // Options is the server's runtime configuration.
 type Options struct {
 	// MaxConnections caps simultaneous sessions per listener. Zero
@@ -222,7 +235,7 @@ func NewServer(
 // Serve accepts connections from ln, spawning one goroutine per session,
 // until ctx is canceled or ln.Close is called. Returns ctx.Err() on
 // cancel; never returns nil.
-func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) error {
+func (s *Server) Serve(ctx context.Context, ln net.Listener, lopts ListenerOptions) error {
 	// Clear any previously-installed accept deadline (the testharness sets
 	// a short deadline on its stand-in accept loop before handing the
 	// listener off to us).
@@ -314,13 +327,14 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, mode ListenerMode) 
 						<-sem
 					}
 				}()
-				s.handle(ctx, c, mode)
+				s.handle(ctx, c, lopts)
 			}(c, remoteIP)
 		}
 	}
 }
 
-func (s *Server) handle(ctx context.Context, c net.Conn, mode ListenerMode) {
+func (s *Server) handle(ctx context.Context, c net.Conn, lopts ListenerOptions) {
+	mode := lopts.Mode
 	outcome := "ok"
 	observe.IMAPSessionsActive.Inc()
 	defer func() {
@@ -354,7 +368,7 @@ func (s *Server) handle(ctx context.Context, c net.Conn, mode ListenerMode) {
 		c = tlsConn
 		implicitLeaf = cap.Leaf()
 	}
-	ses := newSession(s, c, mode == ListenerModeImplicit993)
+	ses := newSession(s, c, mode == ListenerModeImplicit993, lopts.AllowPlainAuth)
 	if implicitLeaf != nil {
 		if cb, err := sasl.TLSServerEndpoint(implicitLeaf); err == nil {
 			ses.serverEndpoint = cb

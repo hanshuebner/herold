@@ -47,7 +47,7 @@ func (s *Server) AttachIMAP(name string, srv *protoimap.Server, mode protoimap.L
 	go func() {
 		defer s.wg.Done()
 		defer close(st.managed)
-		_ = srv.Serve(s.ctx, st.ln, mode)
+		_ = srv.Serve(s.ctx, st.ln, protoimap.ListenerOptions{Mode: mode})
 	}()
 }
 

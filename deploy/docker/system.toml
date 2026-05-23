@@ -48,12 +48,20 @@ address = "0.0.0.0:1587"
 protocol = "smtp-submission"
 tls = "none"
 auth_required = true
+# Submission must accept SASL PLAIN / LOGIN over the loopback hop --
+# this listener is reachable only from the host's 127.0.0.1 via the
+# Docker port forward, so cleartext auth is the documented loopback
+# posture (issue #114).
+allow_plain_auth = true
 
 [[listener]]
 name = "imap"
 address = "0.0.0.0:1143"
 protocol = "imap"
 tls = "none"
+# Same rationale as smtp-submission above: IMAP LOGIN over the
+# loopback hop is the documented quickstart auth path (issue #114).
+allow_plain_auth = true
 
 [[listener]]
 name = "public"
