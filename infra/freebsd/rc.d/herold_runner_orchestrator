@@ -1,0 +1,109 @@
+#!/bin/sh
+#
+# PROVIDE: herold_runner_orchestrator
+# REQUIRE: NETWORKING DAEMON LOGIN
+# KEYWORD: shutdown
+#
+# rc(8) service script for cmd/herold-runner-orchestrator. Reconciles
+# Codeberg Forgejo Actions queued jobs with Hetzner Cloud VMs. See
+# docs/codeberg-migration.md for the big picture.
+#
+# Install
+# -------
+#
+#   1. Build the binary on a Go-capable host (laptop is fine):
+#        GOOS=freebsd GOARCH=amd64 \
+#          go build -o herold-runner-orchestrator \
+#          ./cmd/herold-runner-orchestrator/
+#      Copy it to /usr/local/bin/herold-runner-orchestrator on the
+#      FreeBSD VM and chmod 755.
+#
+#   2. Create an unprivileged service user (one-shot):
+#        pw user add _herold-orch -d /nonexistent -s /usr/sbin/nologin \
+#          -c "herold runner orchestrator"
+#
+#   3. Drop credentials into an env file owned by that user:
+#        install -m 0600 -o _herold-orch -g _herold-orch /dev/null \
+#          /usr/local/etc/herold-runner-orchestrator.env
+#        # then edit and add:
+#        #   HCLOUD_TOKEN=...
+#        #   ORCHESTRATOR_CODEBERG_TOKEN=...
+#
+#   4. Copy this script into place:
+#        install -m 0755 -o root -g wheel \
+#          infra/freebsd/rc.d/herold_runner_orchestrator \
+#          /usr/local/etc/rc.d/
+#
+#   5. Enable + start:
+#        sysrc herold_runner_orchestrator_enable=YES
+#        service herold_runner_orchestrator start
+#        tail -F /var/log/herold-runner-orchestrator.log
+#
+# rc.conf knobs (defaults shown)
+# ------------------------------
+#
+#   herold_runner_orchestrator_enable="NO"
+#   herold_runner_orchestrator_user="_herold-orch"
+#   herold_runner_orchestrator_envfile="/usr/local/etc/herold-runner-orchestrator.env"
+#   herold_runner_orchestrator_log="/var/log/herold-runner-orchestrator.log"
+#   herold_runner_orchestrator_args="--log json"
+#
+
+. /etc/rc.subr
+
+name="herold_runner_orchestrator"
+rcvar="${name}_enable"
+desc="Codeberg Forgejo Actions runner orchestrator (herold-ci)"
+
+load_rc_config "$name"
+
+: ${herold_runner_orchestrator_enable:="NO"}
+: ${herold_runner_orchestrator_user:="_herold-orch"}
+: ${herold_runner_orchestrator_envfile:="/usr/local/etc/herold-runner-orchestrator.env"}
+: ${herold_runner_orchestrator_log:="/var/log/herold-runner-orchestrator.log"}
+: ${herold_runner_orchestrator_args:="--log json"}
+
+procname="/usr/local/bin/herold-runner-orchestrator"
+pidfile="/var/run/${name}.pid"
+
+# daemon(8) wraps the binary so:
+#   -f                  detach (background)
+#   -p <pidfile>        write pid for service(8) to find later
+#   -t "<title>"        process title (ps shows this)
+#   -r                  restart if the child dies
+#   -R 30               wait 30 s between restarts
+#   -u <user>           drop privileges before exec
+#   -o <log>            redirect stdout+stderr to the log file
+command="/usr/sbin/daemon"
+command_args="-f -p ${pidfile} -t ${name} -r -R 30 \
+    -u ${herold_runner_orchestrator_user} \
+    -o ${herold_runner_orchestrator_log} \
+    ${procname} ${herold_runner_orchestrator_args}"
+
+required_files="${herold_runner_orchestrator_envfile} ${procname}"
+
+start_precmd="${name}_prestart"
+
+herold_runner_orchestrator_prestart() {
+    # Ensure the log file exists and is writable by the service user
+    # (daemon -o appends; touch+chown is idempotent and safe to re-run).
+    if [ ! -e "${herold_runner_orchestrator_log}" ]; then
+        install -m 0640 -o "${herold_runner_orchestrator_user}" \
+            -g "${herold_runner_orchestrator_user}" /dev/null \
+            "${herold_runner_orchestrator_log}" || return 1
+    fi
+
+    # Source the env file so HCLOUD_TOKEN and ORCHESTRATOR_CODEBERG_TOKEN
+    # propagate into daemon(8) -> the orchestrator binary. set -a marks
+    # everything sourced as exported so the eval'd command line inherits.
+    if [ -r "${herold_runner_orchestrator_envfile}" ]; then
+        set -a
+        . "${herold_runner_orchestrator_envfile}"
+        set +a
+    else
+        warn "env file ${herold_runner_orchestrator_envfile} unreadable; aborting start"
+        return 1
+    fi
+}
+
+run_rc_command "$1"

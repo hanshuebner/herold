@@ -142,11 +142,12 @@ them pick up exactly one job and self-terminate, then deletes the VM.
 - [x] Per-spawn one-shot registration token via `POST /repos/.../actions/runners/registration-token`. cloud-init registers + starts `forgejo-runner.service` (systemd unit) on the new VM.
 - [x] Snapshot discovery is dynamic — `image list --selector "herold-ci=runner,arch=$ARCH"` picks the newest, so weekly bakes auto-roll forward without touching the orchestrator.
 - [x] Config via env + flags: HCLOUD_TOKEN, ORCHESTRATOR_CODEBERG_TOKEN, --repo, --location, --arm-type, --amd-type, --max-arm, --max-amd, --poll, --vm-max-lifetime, --ssh-key.
-- [ ] **Live deploy on the FreeBSD VM** (next concrete step on Hans):
-  - scp the `freebsd-amd64` binary in
-  - drop a Codeberg token (`read:repository write:repository`-ish; scope to be verified) and Hetzner token into pass(1) / 1Password
-  - write `/usr/local/etc/rc.d/herold-runner-orchestrator` (rc_var via env file)
-  - `service herold-runner-orchestrator start`
+- [ ] **Live deploy on the FreeBSD VM** (next concrete step on Hans). Step-by-step is in `infra/freebsd/rc.d/herold_runner_orchestrator`'s header comment; the short version:
+  - cross-compile `GOOS=freebsd GOARCH=amd64 go build ./cmd/herold-runner-orchestrator/` and scp to `/usr/local/bin/`
+  - create the `_herold-orch` service user (`pw user add ...`)
+  - drop Hetzner + Codeberg tokens into `/usr/local/etc/herold-runner-orchestrator.env` (mode 0600, owned by `_herold-orch`)
+  - install `infra/freebsd/rc.d/herold_runner_orchestrator` to `/usr/local/etc/rc.d/`
+  - `sysrc herold_runner_orchestrator_enable=YES && service herold_runner_orchestrator start`
 - [ ] **First live workflow run** — push a trivial commit to Codeberg, watch the orchestrator log spawn a VM, watch the workflow turn green. Loop until it works.
 - [ ] Snapshot retention reaper (Phase 2 leftover): delete bake snapshots older than 4 weeks.
 - [ ] Cron + alarm for the weekly bake on the FreeBSD VM (Phase 2 leftover).
