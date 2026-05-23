@@ -785,12 +785,20 @@ func (c *chatConn) shutdown(code closeCode, reason string) {
 		// a full queue, and the close frame must reach the peer.
 		// Bound the close-frame write with a 2s deadline so a
 		// peer whose TCP receive buffer is full cannot pin this
-		// closeOnce critical section indefinitely; reset to the
-		// zero deadline afterwards to keep the contract clean
-		// even though no normal write is expected post-shutdown.
+		// closeOnce critical section indefinitely.
 		_ = c.netConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		_ = writeCloseFrame(c.netConn, code, reason)
-		_ = c.netConn.SetWriteDeadline(time.Time{})
+		// After the close-frame attempt, set the write deadline to a
+		// past instant (NOT the zero / no-deadline value) so a
+		// writePump goroutine already parked inside writeFrame with
+		// its own SetWriteDeadline(writeTimeout) gets preempted and
+		// any subsequent write fails immediately. Without this, a
+		// writePump blocked on a full TCP send buffer would pin
+		// cc.run's wg.Wait and stall Server.Shutdown's connWG.Wait
+		// until the application-side writeTimeout elapsed — observed
+		// on CI run 26327157787 as a 3-s DeadlineExceeded against
+		// the test-side 24-hour writeTimeout.
+		_ = c.netConn.SetWriteDeadline(time.Unix(1, 0))
 		// Force the in-flight readFrame call inside readPump to
 		// error out immediately so connWG.Wait() in Server.Shutdown
 		// can return before the drain window expires. The existing
