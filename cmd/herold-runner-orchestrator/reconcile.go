@@ -142,60 +142,24 @@ func (o *orchestrator) tick(ctx context.Context) {
 	}
 }
 
-// queuedJobsByArch returns a count of arch-distinguishable jobs the
-// repo currently has waiting for a runner. We treat a job as
-// "consuming a runner" if it is queued OR in_progress without a
-// matching online runner. The naive in_progress count would let us
-// over-spawn, but in practice Codeberg only marks a job in_progress
-// after a runner has claimed it, so this approximation is fine for v1.
+// queuedJobsByArch counts queued / waiting jobs per arch using Forgejo's
+// label-search endpoint. We query once per pool with the full label
+// set we expect the workflow to use, so server-side filtering does
+// all the matching and we just count.
 func (o *orchestrator) queuedJobsByArch(ctx context.Context) (map[string]int, error) {
-	runs, err := o.cb.listQueuedRuns(ctx)
-	if err != nil {
-		return nil, err
-	}
 	out := map[string]int{}
-	for _, r := range runs {
-		jobs, err := o.cb.listJobs(ctx, r.ID)
+	for _, arch := range []string{"arm64", "amd64"} {
+		labels := []string{"self-hosted", "herold", arch}
+		jobs, err := o.cb.listJobsWithLabels(ctx, labels)
 		if err != nil {
-			o.log.Warn("listJobs failed; skipping run", "run", r.ID, "err", err)
-			continue
+			return nil, fmt.Errorf("listJobsWithLabels(%s): %w", arch, err)
 		}
-		for _, j := range jobs {
-			if j.Status != "queued" {
-				continue
-			}
-			arch := pickArchFromLabels(j.Labels)
-			if arch == "" {
-				o.log.Debug("queued job with no recognised arch label",
-					"job", j.ID, "labels", strings.Join(j.Labels, ","))
-				continue
-			}
-			out[arch]++
+		out[arch] = len(jobs)
+		if len(jobs) > 0 {
+			o.log.Debug("queued jobs", "arch", arch, "count", len(jobs))
 		}
 	}
 	return out, nil
-}
-
-func pickArchFromLabels(labels []string) string {
-	hasSelfHosted := false
-	hasHerold := false
-	arch := ""
-	for _, l := range labels {
-		switch l {
-		case "self-hosted":
-			hasSelfHosted = true
-		case "herold":
-			hasHerold = true
-		case "arm64":
-			arch = "arm64"
-		case "amd64":
-			arch = "amd64"
-		}
-	}
-	if !hasSelfHosted || !hasHerold {
-		return ""
-	}
-	return arch
 }
 
 func (o *orchestrator) poolMax(arch string) int {

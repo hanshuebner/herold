@@ -8,14 +8,18 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // codebergClient is a thin wrapper around the Forgejo Actions REST API
-// exposed at codeberg.org/api/v1/.... We only need a handful of calls:
-//   - queued workflow runs (so we know what to scale up for)
-//   - jobs of a run (to read the runs-on labels)
-//   - currently-registered runners (so we know who is already in the pool)
-//   - one-shot registration token (handed to a new VM via cloud-init)
+// exposed at codeberg.org/api/v1/.... Three calls do the work the
+// orchestrator needs:
+//   - listJobsWithLabels : find queued jobs matching a pool's labels
+//   - listRunners        : see who is already registered + busy
+//   - registrationToken  : one-shot token for a new VM's cloud-init
+//
+// Paths and verbs match Codeberg's published swagger
+// (https://codeberg.org/swagger.v1.json).
 type codebergClient struct {
 	base   string // e.g. "https://codeberg.org"
 	token  string
@@ -51,93 +55,68 @@ func (c *codebergClient) do(ctx context.Context, method, path string, query url.
 	return json.NewDecoder(resp.Body).Decode(into)
 }
 
-// workflowRun is the trimmed shape of an Actions workflow run entry.
-// Forgejo follows the GitHub-compatible schema closely enough that
-// only the few fields we read are pinned here; unknown fields are
-// ignored by encoding/json.
-type workflowRun struct {
-	ID         int64  `json:"id"`
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
-	HeadBranch string `json:"head_branch"`
-	WorkflowID int64  `json:"workflow_id"`
-	Name       string `json:"name"`
+// job mirrors Forgejo's ActionRunJob shape (the fields we actually
+// read). RunsOn carries the runs-on label list which is what we
+// already filtered by on the server side, so it's effectively echo
+// here; we still keep it for log lines.
+type job struct {
+	ID     int64    `json:"id"`
+	Status string   `json:"status"`
+	Name   string   `json:"name"`
+	RunsOn []string `json:"runs_on"`
 }
 
-type listRunsResponse struct {
-	TotalCount   int           `json:"total_count"`
-	WorkflowRuns []workflowRun `json:"workflow_runs"`
+type listJobsResponse struct {
+	Jobs []job `json:"jobs"`
 }
 
-// listQueuedRuns returns workflow runs reported as not-yet-completed
-// (queued + waiting). The API status filter is exposed by Forgejo's
-// /actions/runs endpoint; we ask for "queued" explicitly. A second
-// call for "waiting" catches runs that are blocked on env approval —
-// not currently used by herold's workflows but cheap to cover.
-func (c *codebergClient) listQueuedRuns(ctx context.Context) ([]workflowRun, error) {
-	var out []workflowRun
-	for _, status := range []string{"queued", "waiting", "in_progress"} {
-		q := url.Values{"status": []string{status}, "per_page": []string{"50"}}
-		var resp listRunsResponse
-		err := c.do(ctx, "GET", "/repos/"+c.repo+"/actions/runs", q, &resp)
-		if err != nil {
-			return nil, fmt.Errorf("listRuns(status=%s): %w", status, err)
+// listJobsWithLabels returns jobs whose runs-on label set matches the
+// requested labels (server-side filter on /actions/runners/jobs).
+// Forgejo does not expose a status filter on this endpoint, so we
+// trim to "queued" / "waiting" client-side. A returned job is one
+// our pool should be ready to claim.
+func (c *codebergClient) listJobsWithLabels(ctx context.Context, labels []string) ([]job, error) {
+	q := url.Values{}
+	if len(labels) > 0 {
+		q.Set("labels", strings.Join(labels, ","))
+	}
+	var resp listJobsResponse
+	err := c.do(ctx, "GET",
+		"/repos/"+c.repo+"/actions/runners/jobs",
+		q, &resp)
+	if err != nil {
+		return nil, err
+	}
+	out := resp.Jobs[:0]
+	for _, j := range resp.Jobs {
+		switch j.Status {
+		case "queued", "waiting":
+			out = append(out, j)
 		}
-		out = append(out, resp.WorkflowRuns...)
 	}
 	return out, nil
 }
 
-type job struct {
-	ID         int64    `json:"id"`
-	RunID      int64    `json:"run_id"`
-	Status     string   `json:"status"`     // "queued" | "in_progress" | "completed"
-	Conclusion string   `json:"conclusion"` // when completed
-	Labels     []string `json:"labels"`
-	RunnerName string   `json:"runner_name"`
-}
-
-type listJobsResponse struct {
-	TotalCount int   `json:"total_count"`
-	Jobs       []job `json:"jobs"`
-}
-
-// listJobs returns the per-job entries for a run. Each entry carries
-// the runs-on label list which is what we use to route a queued job
-// to the right arch pool.
-func (c *codebergClient) listJobs(ctx context.Context, runID int64) ([]job, error) {
-	var resp listJobsResponse
-	err := c.do(ctx, "GET",
-		fmt.Sprintf("/repos/%s/actions/runs/%d/jobs", c.repo, runID),
-		nil, &resp)
-	if err != nil {
-		return nil, fmt.Errorf("listJobs(run=%d): %w", runID, err)
-	}
-	return resp.Jobs, nil
-}
-
+// runner mirrors Forgejo's ActionRunner.
 type runner struct {
 	ID     int64    `json:"id"`
 	Name   string   `json:"name"`
-	Status string   `json:"status"` // "online" | "offline"
-	Busy   bool     `json:"busy"`
+	Status string   `json:"status"`
 	Labels []string `json:"labels"`
 }
 
 type listRunnersResponse struct {
-	TotalCount int      `json:"total_count"`
-	Runners    []runner `json:"runners"`
+	Runners []runner `json:"runners"`
 }
 
-// listRunners returns the runners currently registered to the repo.
-// We don't differentiate between fresh and stale at this layer; the
-// reconciler treats only runners that arch-match our pool labels as
-// candidates.
+// listRunners returns runners currently registered to the repo.
+// Used by the reaper to drop ghost registrations whose VM no longer
+// exists.
 func (c *codebergClient) listRunners(ctx context.Context) ([]runner, error) {
 	var resp listRunnersResponse
 	err := c.do(ctx, "GET",
 		"/repos/"+c.repo+"/actions/runners",
-		url.Values{"per_page": []string{"50"}}, &resp)
+		nil, &resp)
 	if err != nil {
 		return nil, err
 	}
@@ -146,13 +125,13 @@ func (c *codebergClient) listRunners(ctx context.Context) ([]runner, error) {
 
 // registrationToken returns a fresh one-shot token a new VM can use
 // with `forgejo-runner register` to attach itself to this repo.
-// Tokens expire (typically ~1 hour for the issuer's window); we
-// generate a fresh one per spawn.
+// Forgejo exposes this as GET (no body) at
+// /repos/.../actions/runners/registration-token.
 func (c *codebergClient) registrationToken(ctx context.Context) (string, error) {
 	var resp struct {
 		Token string `json:"token"`
 	}
-	err := c.do(ctx, "POST",
+	err := c.do(ctx, "GET",
 		"/repos/"+c.repo+"/actions/runners/registration-token",
 		nil, &resp)
 	if err != nil {
