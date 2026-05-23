@@ -129,26 +129,28 @@ syntax is GitHub-compatible at ~95% — most YAML carries over unchanged.
 - [x] Dropped auto-rerun.yml entirely - it relied on the GHA workflow_run trigger and the actions/runner shutdown-signal log marker. Forgejo Actions handles transient failures differently; revisit if we see runner-restart noise on Codeberg.
 - [ ] YAML parsed clean with pyyaml; once we have access to a `forgejo-runner exec` or `actionlint` build for Forgejo dialect, validate again before the first cutover run.
 
-### Phase 5 — Controller (act_runner orchestrator)
+### Phase 5 — Controller (act_runner orchestrator) (CODE LANDED 2026-05-23, AWAITING LIVE DEPLOY)
 
 The orchestrator polls Forgejo for queued Actions runs, spawns ephemeral
 Hetzner VMs each running `act_runner --once` with the correct label, lets
 them pick up exactly one job and self-terminate, then deletes the VM.
 
-- [ ] Pick tooling:
-  - **5a.** Existing OSS orchestrator if one fits (survey: `forgejo-runner-autoscaler`, `act_runner` operator, or testflows-style adaptations)
-  - **5b.** Custom Go controller (~200 lines; expected outcome — no clean fit exists at this date)
-- [ ] **Build from source for FreeBSD/amd64.** Whichever tool we pick must compile cleanly with `GOOS=freebsd GOARCH=amd64 go build ...`. No CGO.
-- [ ] Config:
-  - `HETZNER_TOKEN`
-  - `CODEBERG_TOKEN` (org-scoped to Herold; minimum permissions: read repo, list workflow runs)
-  - Runner registration token (from Codeberg org/runner settings)
-  - Pool definitions: snapshot ID per pool, instance type (CAX21 for ARM, CX22 for x86), labels, min/max, idle-timeout
-  - Poll interval (default 15 s)
-- [ ] FreeBSD service: `/usr/local/etc/rc.d/herold-orchestrator`
-- [ ] Logging: stdout → `/var/log/herold-orchestrator/`, rotated daily
-- [ ] Scale-down policy: keep VMs alive until T+50 min from creation, then GC on next idle tick — absorbs follow-up jobs into the same billing hour
-- [ ] Race protection: each spawned VM gets a one-time ephemeral registration token; if it doesn't register within 5 min, controller deletes it
+- [x] Picked: **5b** (custom Go controller). 811 lines across 5 files in `cmd/herold-runner-orchestrator/`. No clean off-the-shelf fit for Forgejo Actions + Hetzner at this date.
+- [x] Builds clean for linux/amd64, freebsd/amd64, darwin/arm64. No CGO.
+- [x] Stateless reconciler: derives truth from Hetzner + Codeberg APIs each tick; restartable; no local state file.
+- [x] Reconciliation pass: list queued workflow jobs (by `runs-on` labels) → list current owned VMs in Hetzner → spawn deficit up to per-arch cap; reap VMs that are off or past vm-max-lifetime; sweep ghost runner registrations on Codeberg whose VM no longer exists.
+- [x] Per-spawn one-shot registration token via `POST /repos/.../actions/runners/registration-token`. cloud-init registers + starts `forgejo-runner.service` (systemd unit) on the new VM.
+- [x] Snapshot discovery is dynamic — `image list --selector "herold-ci=runner,arch=$ARCH"` picks the newest, so weekly bakes auto-roll forward without touching the orchestrator.
+- [x] Config via env + flags: HCLOUD_TOKEN, ORCHESTRATOR_CODEBERG_TOKEN, --repo, --location, --arm-type, --amd-type, --max-arm, --max-amd, --poll, --vm-max-lifetime, --ssh-key.
+- [ ] **Live deploy on the FreeBSD VM** (next concrete step on Hans):
+  - scp the `freebsd-amd64` binary in
+  - drop a Codeberg token (`read:repository write:repository`-ish; scope to be verified) and Hetzner token into pass(1) / 1Password
+  - write `/usr/local/etc/rc.d/herold-runner-orchestrator` (rc_var via env file)
+  - `service herold-runner-orchestrator start`
+- [ ] **First live workflow run** — push a trivial commit to Codeberg, watch the orchestrator log spawn a VM, watch the workflow turn green. Loop until it works.
+- [ ] Snapshot retention reaper (Phase 2 leftover): delete bake snapshots older than 4 weeks.
+- [ ] Cron + alarm for the weekly bake on the FreeBSD VM (Phase 2 leftover).
+- [ ] Scale-down: the current policy is "reap at vm_max_lifetime = 60 min regardless". The plan's "T+50min keepalive to absorb subsequent jobs" idea would be richer but adds state; deferred until we have real workload data.
 
 ### Phase 6 — Validation
 
@@ -235,6 +237,8 @@ Inside the €20 cap (decision 1.4) with ~2× headroom. Below the warn-at-€15 
 
 (Append as phases complete. Most recent first.)
 
+- 2026-05-23 — Phase 5 controller code landed: `cmd/herold-runner-orchestrator/` (811 lines, 5 files, no CGO, builds for linux/amd64 + freebsd/amd64 + darwin/arm64). Custom Go reconciler that polls Codeberg's Forgejo Actions API + Hetzner Cloud API every 15 s; spawns ephemeral VMs from the labelled snapshots on demand; reaps VMs by max-lifetime; sweeps ghost runner registrations. Next: live deploy on the FreeBSD VM + first end-to-end Codeberg workflow run.
+- 2026-05-23 — Phase 7 cutover (brought forward at maintainer's request). `.github/workflows/*` deleted; `.github/race-packages.txt` moved to `test/race-packages.txt`; `.forgejo/workflows/ci.yml` reference updated; README badge + AGENTS.md issue URL pointed at Codeberg; `main` + 5 feature branches pushed to `codeberg.org/hanshuebner/herold`; GitHub repo archived (read-only) with description + homepage redirecting to Codeberg.
 - 2026-05-23 — Phase 4 pipeline rewrite landed: `.forgejo/workflows/{ci,nightly,release}.yml` written (auto-rerun dropped). 11 jobs in ci.yml (one new: confidence-x86 on amd64 with hard-fail). All other jobs labelled `[self-hosted, herold, arm64]`. Drops the persistent-runner-only "fix workspace permissions" pre-checkout step (ephemeral runners are clean by definition). Switched `cache: false` → default `cache: true` on setup-go. Switched ghcr.io → codeberg.org container registry. Switched ubuntu-latest → arm64 self-hosted on the binaries job. SHA-pinned action refs replaced with tag refs since Forgejo's mirror has different SHAs from upstream. Open follow-ups: (a) verify Forgejo Actions cache service interop with `actions/setup-go cache: true` and `actions/cache@v4`, (b) verify localhost:5432 vs postgres:5432 service hostname semantics on first live run, (c) verify which third-party actions (staticcheck-action, govulncheck-action, dominikh, anchore, sigstore) resolve through Codeberg's act_runner mirror config.
 - 2026-05-23 — Secrets audit: only `secrets.GITHUB_TOKEN` referenced (auto-injected by Forgejo Actions), no custom secrets configured at the GitHub repo. Phase 3 secret-migration step is a no-op.
 - 2026-05-23 — Phase 2 image bakery: `infra/hetzner/{bake.sh,provision.sh}` written, exercised end-to-end. First snapshots: arm64 `389706948` (1.69 GB, cax11 baked), amd64 `389706944` (1.72 GB, cpx22 baked) in herold-ci Hetzner project. snapshots.json populated. Toolchain in image: ubuntu 24.04, docker 29.5.2, go 1.25.0, node 20.20.2, pnpm 9.15.9, forgejo-runner v12.10.1, gitleaks 8.30.1, staticcheck 2026.1, pre-commit 4.6.0. Issues discovered during the runs: cpx21 deprecated by Hetzner Jan 2026 (now `cpx22`); gitleaks moved repo (`zricethezav/` → `gitleaks/`), latest is v8.30.1, asset names use `x64` not `amd64`; `hcloud server create-image` has no `--output` flag (look snapshot up by label after); bash heredoc-built JSON is fragile when values contain control chars (use python3 with control-char stripping). goimports version capture left as a cosmetic TODO — fix is in `provision.sh` now, will land on next bake (autoscaler is unaffected).

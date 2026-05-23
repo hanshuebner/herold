@@ -35,6 +35,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/route53 v1.62.6
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.100.0
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/hetznercloud/hcloud-go/v2 v2.41.2
 	github.com/jaytaylor/html2text v0.0.0-20230321000545-74c2419ad056
 	github.com/nats-io/nats.go v1.51.0
 	github.com/pires/go-proxyproto v0.12.0
