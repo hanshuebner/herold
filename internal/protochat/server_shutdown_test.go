@@ -43,6 +43,10 @@ func TestShutdown_DrainsBlockedReadPump(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
+	// Shutdown's ctx deadline is the meaningful gate for the regression:
+	// under the bug it sits on connWG.Wait() until the ctx fires. Set
+	// it to 3 s so the bug surfaces as DeadlineExceeded with a clear
+	// elapsed≈3 s; the fix exits in well under 100 ms.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -52,24 +56,24 @@ func TestShutdown_DrainsBlockedReadPump(t *testing.T) {
 		errCh <- h.srv.Shutdown(ctx)
 	}()
 
+	// The select-after deadline must be strictly larger than the
+	// Shutdown ctx deadline so a slow-but-correct drain cannot trip the
+	// wrong branch. chatConn.shutdown writes a close frame with a 2 s
+	// write deadline, and under -race on CI runner contention the
+	// goroutine-scheduling chain (Shutdown -> shutdown(cc) ->
+	// SetReadDeadline -> readFrame wakeup -> wg.Wait -> connWG.Done)
+	// accumulates dozens to a couple hundred ms on top. 6 s gives
+	// generous headroom above the 3 s ctx without papering over a real
+	// regression (CI run 26324597014 surfaced the prior 2.5 s ceiling
+	// as a margin flake).
 	select {
 	case err := <-errCh:
 		elapsed := time.Since(start)
 		if errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("Shutdown returned DeadlineExceeded after %v: drain stalled on blocked readPump", elapsed)
 		}
-		// nil or any non-DeadlineExceeded error is acceptable; the
-		// regression we guard against is the drain timing out, not
-		// the precise wall-clock latency. The 3s ctx deadline above
-		// is the only meaningful gate: under the fix the typical
-		// elapsed is ~1 ms and under the bug it would be 3 s. No
-		// finer ceiling is asserted because under -race CPU
-		// contention the goroutine-scheduling chain
-		// (Shutdown -> shutdown(cc) -> SetReadDeadline ->
-		// readFrame wakeup -> connWG.Done) accumulates dozens of ms
-		// without a real regression.
 		_ = elapsed
-	case <-time.After(2500 * time.Millisecond):
-		t.Fatalf("Shutdown did not return within 2.5s; readPump likely still blocked")
+	case <-time.After(6 * time.Second):
+		t.Fatalf("Shutdown did not return within 6s; readPump likely still blocked")
 	}
 }
