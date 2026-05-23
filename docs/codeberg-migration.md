@@ -87,21 +87,12 @@ independent; 4 and 5 are easier sequenced (4 first) but can overlap.
 Goal: one snapshot per architecture, refreshed weekly, with everything the
 tests need preinstalled so first-job latency stays under 60 s.
 
-- [ ] `infra/hetzner/bake.sh` — shell-driven bakery (no Packer needed):
-  - Boot a tiny CAX11 (or CX22 for x86) from Ubuntu 24.04 LTS
-  - SSH in, run a provisioning script that installs:
-    - Docker (rootful) + docker compose v2
-    - Go matching `go.mod` (currently 1.23.x)
-    - Node LTS + pnpm matching `web/package.json`
-    - act_runner binary (architecture-appropriate)
-    - Common test images preloaded via `docker pull`: postgres:16, redis:7, the project's Dockerfiles' base images
-    - pre-commit + the binaries it invokes (gofmt, goimports, staticcheck, gitleaks)
-  - Shut down, snapshot, delete the VM
-  - Update `infra/hetzner/snapshots.json` with new snapshot ID
-- [ ] Repeat for x86
-- [ ] Wire as cron on the FreeBSD VM: `0 4 * * 1` (Monday 04:00 local)
-- [ ] Cron alarm: non-zero exit emails hans@huebner.org
-- [ ] Verify after first bake: boot one VM from each snapshot, sanity-check `go version`, `docker --version`, `act_runner --version`
+- [x] `infra/hetzner/bake.sh` (179 lines) + `infra/hetzner/provision.sh` (~150 lines) — shell-driven bakery; runs from any unix host with `hcloud`, `ssh`, `scp`, `python3`. Defensively unsets `HCLOUD_TOKEN`, uses `--context herold-ci`, labels snapshots `herold-ci=runner` `arch=$ARCH`, looks the new snapshot up by label, writes `infra/hetzner/snapshots.json` (gitignored). Bake instance types: `cax11` (arm64) / `cpx22` (amd64). Provisioner installs Docker + Go + Node + pnpm + forgejo-runner + linter toolchain + preloads postgres:16, nats:2-alpine, mailhog.
+- [x] First successful bake 2026-05-23: snapshots `389706944` (amd64) and `389706948` (arm64) in herold-ci project.
+- [ ] Wire as cron on the FreeBSD VM: `0 4 * * 1` (Monday 04:00 local). Cron invocation: `cd /path/to/repo && BAKE_SSH_KEY_PATH=/var/lib/herold-ci/.ssh/id_rsa SNAPSHOTS_FILE=/var/lib/herold-ci/snapshots.json infra/hetzner/bake.sh arm64 && ... amd64`.
+- [ ] Cron alarm: non-zero exit emails hans@huebner.org (FreeBSD `MAILTO=` in crontab).
+- [ ] Snapshot retention reaper: delete bake-labelled snapshots older than 4 weeks (so we keep the last ~4 bakes per arch as fallbacks).
+- [ ] Verify after first bake: boot one VM from each snapshot, sanity-check `go version`, `docker --version`, `forgejo-runner --version`.
 
 ### Phase 3 — Repo on Codeberg
 
@@ -244,6 +235,7 @@ Inside the €20 cap (decision 1.4) with ~2× headroom. Below the warn-at-€15 
 
 (Append as phases complete. Most recent first.)
 
+- 2026-05-23 — Phase 2 image bakery: `infra/hetzner/{bake.sh,provision.sh}` written, exercised end-to-end. First snapshots: arm64 `389706948` (1.69 GB, cax11 baked), amd64 `389706944` (1.72 GB, cpx22 baked) in herold-ci Hetzner project. snapshots.json populated. Toolchain in image: ubuntu 24.04, docker 29.5.2, go 1.25.0, node 20.20.2, pnpm 9.15.9, forgejo-runner v12.10.1, gitleaks 8.30.1, staticcheck 2026.1, pre-commit 4.6.0. Issues discovered during the runs: cpx21 deprecated by Hetzner Jan 2026 (now `cpx22`); gitleaks moved repo (`zricethezav/` → `gitleaks/`), latest is v8.30.1, asset names use `x64` not `amd64`; `hcloud server create-image` has no `--output` flag (look snapshot up by label after); bash heredoc-built JSON is fragile when values contain control chars (use python3 with control-char stripping). goimports version capture left as a cosmetic TODO — fix is in `provision.sh` now, will land on next bake (autoscaler is unaffected).
 - 2026-05-23 — Issues migrated. All 9 open GitHub issues are on Codeberg as `#1`–`#9`. Number map preserved in `scripts/migrate-issues-to-codeberg.py` run output. Source GitHub issues NOT yet closed (deliberate, awaits verification). Discovered Codeberg's new-issue rate limit is layered (5 / 5 min AND 7 / 10 min sliding) — script now handles both.
 - 2026-05-23 — Phase 0 essentially complete. Hetzner account K1100508019 confirmed; exposed Forgejo token revoked; Forgejo Actions enabled on the Codeberg repo; Q7.5 resolved (no hosted-tier onboarding needed for self-hosted runners); Codeberg repo exists with `main` pushed. Phase 1 unblocked. Open issue count: 9.
 - 2026-05-23 — §1 decisions locked: personal namespace, hard cutover, fresh runners, €20 cap, every-push triggers, x86-only confidence lane.
