@@ -75,6 +75,11 @@ export function sanitizeHtml(raw: string, options: SanitizeOptions): string {
     RETURN_DOM_FRAGMENT: true,
   }) as DocumentFragment;
 
+  // Auto-link plain-text URLs and mailto addresses in text nodes
+  // (issue #103). Runs before the anchor rewrite below so the new
+  // <a> elements pick up target/rel in the same pass.
+  linkifyTextNodes(fragment);
+
   // Anchor rewriting: every <a> opens in a new tab with no referrer leak.
   for (const a of fragment.querySelectorAll('a')) {
     a.setAttribute('target', '_blank');
@@ -96,6 +101,132 @@ export function sanitizeHtml(raw: string, options: SanitizeOptions): string {
   wrap.appendChild(fragment);
   const cleanBody = wrap.innerHTML;
   return wrapInIframeDocument(cleanBody);
+}
+
+// Tags whose text content is treated as opaque -- we never rewrite
+// text inside them. <a> guards against double-linking an existing
+// anchor; <code>/<pre>/<kbd>/<samp>/<tt> preserve typewritten text
+// verbatim; <script>/<style> are already excluded by the sanitiser
+// but we keep them in the list as a defensive measure.
+const LINKIFY_SKIP_ANCESTORS = new Set([
+  'A',
+  'CODE',
+  'PRE',
+  'KBD',
+  'SAMP',
+  'TT',
+  'SCRIPT',
+  'STYLE',
+]);
+
+// URL/mailto pattern matched in text nodes. The match is greedy up to
+// whitespace and angle-bracket / quote terminators only; closing
+// punctuation like ")" or "." stays in the match and is shed by
+// trimTrailingPunctuation below in a balance-aware way.
+//
+// - "https?://" requires the scheme prefix.
+// - bare "www." paths are linkified with an implicit https:// prefix.
+// - "mailto:..." plain-text addresses linkify as mailto links.
+// - bare addresses (foo@example.com) are intentionally NOT linkified
+//   to avoid false positives in plain-text quoting like "On X wrote:
+//   alice@example.com said". A user copying the address out is the
+//   safer default.
+const LINKIFY_RE = /(?:https?:\/\/|www\.)[^\s<>"'`]+|mailto:[^\s<>"'`]+/gi;
+
+// Mail clients commonly wrap URLs in punctuation ("see
+// https://example.com.") and we strip the trailing dot/comma so the
+// link target is correct. Closing brackets are also dropped when
+// unmatched, but kept when they balance an opening bracket inside the
+// URL (Wikipedia-style "https://x/wiki/Foo_(bar)").
+function trimTrailingPunctuation(url: string): { kept: string; dropped: string } {
+  let kept = url;
+  let dropped = '';
+  for (;;) {
+    const last = kept.charAt(kept.length - 1);
+    if (last === '') break;
+    if ('.,;:!?>'.includes(last)) {
+      dropped = last + dropped;
+      kept = kept.slice(0, -1);
+      continue;
+    }
+    if (last === ')' || last === ']' || last === '}') {
+      const open = last === ')' ? '(' : last === ']' ? '[' : '{';
+      const opens = (kept.match(new RegExp('\\' + open, 'g')) ?? []).length;
+      const closes = (kept.match(new RegExp('\\' + last, 'g')) ?? []).length;
+      if (closes > opens) {
+        dropped = last + dropped;
+        kept = kept.slice(0, -1);
+        continue;
+      }
+    }
+    break;
+  }
+  return { kept, dropped };
+}
+
+function hasSkippedAncestor(node: Node): boolean {
+  for (let p: Node | null = node.parentNode; p; p = p.parentNode) {
+    if (p.nodeType === 1 /* ELEMENT_NODE */) {
+      if (LINKIFY_SKIP_ANCESTORS.has((p as Element).tagName)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function linkifyTextNodes(root: ParentNode): void {
+  // Collect text nodes first so the live tree mutation does not
+  // confuse the walker. Using TreeWalker rather than recursion
+  // because a typed iteration over text nodes is straightforward
+  // and matches the DOM stdlib idiom.
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const targets: Text[] = [];
+  let current: Node | null = walker.nextNode();
+  while (current) {
+    const t = current as Text;
+    if (t.nodeValue && LINKIFY_RE.test(t.nodeValue) && !hasSkippedAncestor(t)) {
+      targets.push(t);
+    }
+    LINKIFY_RE.lastIndex = 0;
+    current = walker.nextNode();
+  }
+  for (const node of targets) {
+    linkifyOneTextNode(node);
+  }
+}
+
+function linkifyOneTextNode(node: Text): void {
+  const text = node.nodeValue ?? '';
+  const frag = document.createDocumentFragment();
+  let lastIndex = 0;
+  LINKIFY_RE.lastIndex = 0;
+  for (;;) {
+    const m = LINKIFY_RE.exec(text);
+    if (!m) break;
+    const start = m.index;
+    const raw = m[0];
+    const { kept, dropped } = trimTrailingPunctuation(raw);
+    if (start > lastIndex) {
+      frag.appendChild(document.createTextNode(text.slice(lastIndex, start)));
+    }
+    const a = document.createElement('a');
+    let href = kept;
+    if (kept.toLowerCase().startsWith('www.')) {
+      href = 'https://' + kept;
+    }
+    a.setAttribute('href', href);
+    a.textContent = kept;
+    frag.appendChild(a);
+    if (dropped) {
+      frag.appendChild(document.createTextNode(dropped));
+    }
+    lastIndex = start + raw.length;
+  }
+  if (lastIndex < text.length) {
+    frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+  }
+  node.parentNode?.replaceChild(frag, node);
 }
 
 function rewriteImage(img: Element, options: SanitizeOptions): void {

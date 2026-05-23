@@ -144,6 +144,52 @@ describe('sanitizeHtml — anchor rewrite', () => {
   });
 });
 
+describe('sanitizeHtml — linkify plain-text URLs (issue #103)', () => {
+  it('wraps bare https URLs in anchors', () => {
+    const body = bodyOf(sanitizeHtml('<p>see https://example.test/path for more</p>', { loadImages: false }));
+    expect(body).toContain('<a href="https://example.test/path"');
+    expect(body).toContain('target="_blank"');
+    expect(body).toContain('rel="noopener noreferrer"');
+    expect(body).toContain('>https://example.test/path</a>');
+  });
+
+  it('promotes bare www. URLs to https://', () => {
+    const body = bodyOf(sanitizeHtml('<p>visit www.example.test/page</p>', { loadImages: false }));
+    expect(body).toContain('<a href="https://www.example.test/page"');
+    expect(body).toContain('>www.example.test/page</a>');
+  });
+
+  it('strips trailing sentence punctuation from the link', () => {
+    const body = bodyOf(sanitizeHtml('<p>See https://example.test/path.</p>', { loadImages: false }));
+    expect(body).toContain('<a href="https://example.test/path"');
+    expect(body).toContain('>https://example.test/path</a>.');
+  });
+
+  it('keeps a closing paren that balances an opening one inside the URL', () => {
+    const body = bodyOf(sanitizeHtml('<p>See https://en.wikipedia.org/wiki/Foo_(disambiguation) for more</p>', { loadImages: false }));
+    expect(body).toContain('<a href="https://en.wikipedia.org/wiki/Foo_(disambiguation)"');
+  });
+
+  it('does not double-link a URL already inside an <a>', () => {
+    const body = bodyOf(sanitizeHtml('<a href="https://x.test/">https://x.test/</a>', { loadImages: false }));
+    expect((body.match(/<a /g) ?? []).length).toBe(1);
+  });
+
+  it('does not linkify inside <code> or <pre>', () => {
+    const body = bodyOf(sanitizeHtml('<p><code>see https://example.test/code</code> <pre>https://example.test/pre</pre></p>', { loadImages: false }));
+    expect(body).not.toContain('<a href="https://example.test/code"');
+    expect(body).not.toContain('<a href="https://example.test/pre"');
+  });
+
+  it('linkifies mailto: but not bare addresses', () => {
+    const body = bodyOf(sanitizeHtml('<p>contact mailto:hi@example.test or hi@example.test</p>', { loadImages: false }));
+    expect(body).toContain('<a href="mailto:hi@example.test"');
+    // The bare second address must not get its own anchor; the only <a>
+    // in the body is the explicit mailto: above.
+    expect((body.match(/<a /g) ?? []).length).toBe(1);
+  });
+});
+
 describe('sanitizeHtml — quoted-history collapse', () => {
   it('wraps a top-level <blockquote> in <details>', () => {
     const html =
