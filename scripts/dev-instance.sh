@@ -204,9 +204,23 @@ tls = "none"
 enabled = true
 
 [observability]
-log_format = "json"
-log_level = "info"
 metrics_bind = "127.0.0.1:0"
+
+# Two-sink dev logging: human-readable console on stderr for the
+# terminal that holds the dev-instance, and an append-only debug
+# JSON file under <datadir>/herold.jsonl for retroactive triage.
+# Relative paths resolve against [server] data_dir, so the JSON log
+# follows the tempdir lifetime of this instance automatically.
+[[log.sink]]
+target = "stderr"
+format = "console"
+level  = "info"
+activities = { deny = ["poll", "access"] }
+
+[[log.sink]]
+target = "herold.jsonl"
+format = "json"
+level  = "debug"
 EOF
 }
 

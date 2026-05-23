@@ -1971,20 +1971,54 @@ log_modules = { smtp = "trace" }
 	}
 }
 
-// TestLogSink_RejectRelativePath verifies that relative file targets are rejected.
-func TestLogSink_RejectRelativePath(t *testing.T) {
+// TestLogSink_RelativePathResolvesToDataDir verifies that a relative file
+// target is joined onto [server] data_dir and made absolute at parse time.
+func TestLogSink_RelativePathResolvesToDataDir(t *testing.T) {
+	// minimalNoObs sets data_dir = "/var/lib/herold"; the relative target
+	// "logs/herold.jsonl" resolves to "/var/lib/herold/logs/herold.jsonl".
 	toml := minimalNoObs + `
 [[log.sink]]
-target = "relative/path.log"
+target = "logs/herold.jsonl"
 format = "json"
 level  = "info"
 `
-	_, err := Parse([]byte(toml))
-	if err == nil {
-		t.Fatal("expected error for relative path, got nil")
+	cfg, err := Parse([]byte(toml))
+	if err != nil {
+		t.Fatalf("expected resolution to succeed, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "absolute") {
-		t.Errorf("error should mention absolute path, got: %v", err)
+	want := "/var/lib/herold/logs/herold.jsonl"
+	var got string
+	for _, s := range cfg.Log.Sink {
+		if s.Format == "json" && s.Level == "info" {
+			got = s.Target
+		}
+	}
+	if got != want {
+		t.Errorf("resolved sink target: got %q, want %q", got, want)
+	}
+}
+
+// TestLogSink_AbsoluteTargetUnchanged verifies that an absolute file target
+// is not rewritten by the data_dir resolution pass.
+func TestLogSink_AbsoluteTargetUnchanged(t *testing.T) {
+	toml := minimalNoObs + `
+[[log.sink]]
+target = "/var/log/herold/audit.jsonl"
+format = "json"
+level  = "info"
+`
+	cfg, err := Parse([]byte(toml))
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	var got string
+	for _, s := range cfg.Log.Sink {
+		if s.Format == "json" && s.Level == "info" {
+			got = s.Target
+		}
+	}
+	if got != "/var/log/herold/audit.jsonl" {
+		t.Errorf("absolute target rewritten: got %q", got)
 	}
 }
 

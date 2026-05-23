@@ -1209,8 +1209,12 @@ type LogConfig struct {
 //	format = "json"
 //	level  = "debug"
 type LogSinkConfig struct {
-	// Target is one of "stderr", "stdout", or an absolute filesystem path.
-	// Relative paths and "/dev/null" are rejected at Validate.
+	// Target is one of "stderr", "stdout", or a filesystem path. A
+	// path is resolved at parse time: relative paths are joined onto
+	// Server.DataDir, then made absolute against the process's CWD,
+	// so the same TOML works under systemd / Docker (where CWD may be
+	// "/") and a dev launch (where CWD is the repo root). "/dev/null"
+	// is rejected.
 	Target string `toml:"target"`
 	// Format selects the rendering: "json", "console", or "auto" (default).
 	// "auto" resolves to "console" when Target is a TTY at process start,
@@ -1654,6 +1658,32 @@ func applyDefaults(c *Config) {
 			c.Log.Sink[i].Level = "info"
 		}
 	}
+	// Resolve relative file targets against data_dir, then bake in the
+	// current working directory if data_dir is itself relative. This
+	// freezes the log path at parse time so the same TOML works under
+	// systemd (CWD=/), Docker, and a dev invocation that launches the
+	// binary from a parent directory with --system-config
+	// data/system.toml. The validator below still rejects any target
+	// that is neither stderr/stdout nor absolute -- a path that stays
+	// relative after this pass means data_dir was empty (Validate also
+	// rejects that, with a clearer message) or filepath.Abs failed.
+	if c.Server.DataDir != "" {
+		for i := range c.Log.Sink {
+			t := c.Log.Sink[i].Target
+			if t == "" || t == "stderr" || t == "stdout" {
+				continue
+			}
+			if filepath.IsAbs(t) {
+				continue
+			}
+			joined := filepath.Join(c.Server.DataDir, t)
+			if abs, err := filepath.Abs(joined); err == nil {
+				c.Log.Sink[i].Target = abs
+			} else {
+				c.Log.Sink[i].Target = joined
+			}
+		}
+	}
 	if c.Server.Storage.Backend == "" {
 		c.Server.Storage.Backend = "sqlite"
 	}
@@ -2017,8 +2047,12 @@ func validateLogSinks(sinks []LogSinkConfig) error {
 			return fmt.Errorf("sysconfig: %s: target is required", label)
 		}
 		if s.Target != "stderr" && s.Target != "stdout" {
-			if !strings.HasPrefix(s.Target, "/") {
-				return fmt.Errorf("sysconfig: %s: target must be \"stderr\", \"stdout\", or an absolute path", label)
+			// applyDefaults resolved relative paths against data_dir
+			// and then to absolute via filepath.Abs; a relative target
+			// reaching the validator means data_dir was empty (caught
+			// separately) or filepath.Abs failed.
+			if !filepath.IsAbs(s.Target) {
+				return fmt.Errorf("sysconfig: %s: target must be \"stderr\", \"stdout\", or a filesystem path (relative paths resolve against [server] data_dir)", label)
 			}
 			if s.Target == "/dev/null" {
 				return fmt.Errorf("sysconfig: %s: target \"/dev/null\" is not permitted", label)
