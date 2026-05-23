@@ -420,3 +420,46 @@ describe('MessageAccordion: self-authored card treatment', () => {
     expect(screen.queryByText('mail.thread.fromYou')).not.toBeInTheDocument();
   });
 });
+
+// ── auto-read latch (issue #102) ─────────────────────────────────────────
+describe('MessageAccordion auto-read latch', () => {
+  beforeEach(() => {
+    mailMock.setSeen.mockClear();
+  });
+
+  it('does not call setSeen when opening an already-seen message', async () => {
+    const email = makeEmail({});
+    (email as { keywords: Record<string, true> }).keywords = { $seen: true };
+    renderAccordion(email, /* expanded */ true);
+    // Allow the $effect to flush.
+    await Promise.resolve();
+    expect(mailMock.setSeen).not.toHaveBeenCalled();
+  });
+
+  it('calls setSeen exactly once when opening an unread message', async () => {
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ true);
+    await Promise.resolve();
+    expect(mailMock.setSeen).toHaveBeenCalledTimes(1);
+    expect(mailMock.setSeen).toHaveBeenCalledWith('e1', true);
+  });
+
+  it('latches on first expansion so a later $seen flip cannot re-trigger', async () => {
+    // The bug: open already-seen → effect short-circuits without
+    // setting the latch → user marks unread → keywords change re-runs
+    // the effect → autoReadDone is still false → fires setSeen(_, true)
+    // racing the user's setSeen(_, false). The fix sets the latch
+    // unconditionally on first expansion.
+    const email = makeEmail({});
+    (email as { keywords: Record<string, true> }).keywords = { $seen: true };
+    const { rerender } = renderAccordion(email, /* expanded */ true);
+    await Promise.resolve();
+    expect(mailMock.setSeen).not.toHaveBeenCalled();
+
+    // Simulate Mark unread: keywords change from { $seen: true } to {}.
+    const flippedEmail = { ...email, keywords: {} };
+    await rerender({ email: flippedEmail, expanded: true, onToggle: vi.fn() });
+    await Promise.resolve();
+    expect(mailMock.setSeen).not.toHaveBeenCalled();
+  });
+});
