@@ -68,14 +68,21 @@ pidfile="/var/run/${name}.pid"
 
 # daemon(8) wraps the binary so:
 #   -f                  detach (background)
-#   -p <pidfile>        write pid for service(8) to find later
+#   -P <pidfile>        write the SUPERVISOR pid (the long-lived parent
+#                       that owns -r/-R restart logic). rc.subr's
+#                       `service stop` SIGTERMs the supervisor, which
+#                       cleanly kills the child and removes the
+#                       pidfile. Using -p instead would write the
+#                       child's pid; `service stop` would kill the
+#                       child but the supervisor would immediately
+#                       respawn it, leaving the service unstoppable.
 #   -t "<title>"        process title (ps shows this)
 #   -r                  restart if the child dies
 #   -R 30               wait 30 s between restarts
 #   -u <user>           drop privileges before exec
 #   -o <log>            redirect stdout+stderr to the log file
 command="/usr/sbin/daemon"
-command_args="-f -p ${pidfile} -t ${name} -r -R 30 \
+command_args="-f -P ${pidfile} -t ${name} -r -R 30 \
     -u ${herold_runner_orchestrator_runas} \
     -o ${herold_runner_orchestrator_log} \
     ${procname} ${herold_runner_orchestrator_args}"
