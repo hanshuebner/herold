@@ -127,52 +127,79 @@ func (i *importHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 // messages that reference an ancestor only via References (common when
 // three or more messages form a chain and intermediate messages are
 // absent) still land in the same thread.
+//
+// The pass iterates to a fixed point so the order in which createdIDs
+// is presented does not affect the outcome. A chain
+// starter <- reply1 <- reply2 where reply2 is relinked first sees
+// reply1's still-unthreaded state (thread_id == reply1.id) and would,
+// in a single pass, land reply2 in reply1's thread but reply1
+// subsequently land in starter's thread -- leaving reply2 disconnected
+// from starter (issue surfaced as 4 jmaptest threading failures on
+// CI run 26329115049, only after Go's randomised map iteration walked
+// the Email/import request in unfavourable order). Looping until no
+// updates land closes that transitive gap; the loop is bounded by the
+// chain depth so at most len(createdIDs) passes occur.
 func (i *importHandler) relinkThreads(ctx context.Context, pid store.PrincipalID, createdIDs []store.MessageID) error {
 	if len(createdIDs) == 0 {
 		return nil
 	}
-	for _, mid := range createdIDs {
-		msg, err := i.h.store.Meta().GetMessage(ctx, mid)
-		if err != nil {
-			continue // silently skip; best-effort
-		}
-		if msg.Envelope.InReplyTo == "" && msg.Envelope.References == "" {
-			continue
-		}
-		if msg.ThreadID != 0 && msg.ThreadID != uint64(msg.ID) {
-			continue // already properly threaded (ancestor was present at import time)
-		}
-		// Union InReplyTo and References, InReplyTo first.
-		refs := mailparse.ParseReferences(msg.Envelope.InReplyTo)
-		seen := make(map[string]struct{}, len(refs))
-		for _, r := range refs {
-			seen[r] = struct{}{}
-		}
-		for _, r := range mailparse.ParseReferences(msg.Envelope.References) {
-			if _, dup := seen[r]; !dup {
-				refs = append(refs, r)
-				seen[r] = struct{}{}
-			}
-		}
-		for _, ref := range refs {
-			ancestor, err := i.h.store.Meta().GetMessageByMessageIDHeader(ctx, pid, ref)
+	for pass := 0; pass <= len(createdIDs); pass++ {
+		changed := false
+		for _, mid := range createdIDs {
+			msg, err := i.h.store.Meta().GetMessage(ctx, mid)
 			if err != nil {
+				continue // silently skip; best-effort
+			}
+			if msg.Envelope.InReplyTo == "" && msg.Envelope.References == "" {
 				continue
 			}
-			// Determine the thread key for the ancestor.
-			var ancestorThread uint64
-			if ancestor.ThreadID != 0 {
-				ancestorThread = ancestor.ThreadID
-			} else {
-				ancestorThread = uint64(ancestor.ID)
+			// Already linked to a different message? Maybe, but still
+			// re-check: the previously-resolved ancestor may itself
+			// have been relinked in an earlier iteration of this pass
+			// and now points further up the chain.
+			currentThread := msg.ThreadID
+			if currentThread == 0 {
+				currentThread = uint64(msg.ID)
 			}
-			if ancestorThread == uint64(mid) {
-				continue // would create a self-link
+			// Union InReplyTo and References, InReplyTo first.
+			refs := mailparse.ParseReferences(msg.Envelope.InReplyTo)
+			seen := make(map[string]struct{}, len(refs))
+			for _, r := range refs {
+				seen[r] = struct{}{}
 			}
-			if err := i.h.store.Meta().UpdateMessageThreadID(ctx, mid, ancestorThread); err != nil {
-				return err
+			for _, r := range mailparse.ParseReferences(msg.Envelope.References) {
+				if _, dup := seen[r]; !dup {
+					refs = append(refs, r)
+					seen[r] = struct{}{}
+				}
 			}
-			break
+			for _, ref := range refs {
+				ancestor, err := i.h.store.Meta().GetMessageByMessageIDHeader(ctx, pid, ref)
+				if err != nil {
+					continue
+				}
+				// Determine the thread key for the ancestor.
+				var ancestorThread uint64
+				if ancestor.ThreadID != 0 {
+					ancestorThread = ancestor.ThreadID
+				} else {
+					ancestorThread = uint64(ancestor.ID)
+				}
+				if ancestorThread == uint64(mid) {
+					continue // would create a self-link
+				}
+				if ancestorThread == currentThread {
+					break // nothing to do; we already track this thread
+				}
+				if err := i.h.store.Meta().UpdateMessageThreadID(ctx, mid, ancestorThread); err != nil {
+					return err
+				}
+				changed = true
+				break
+			}
+		}
+		if !changed {
+			return nil
 		}
 	}
 	return nil

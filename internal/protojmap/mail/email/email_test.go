@@ -691,6 +691,135 @@ func TestEmail_Import_FromUploadedBlob(t *testing.T) {
 	}
 }
 
+// TestEmail_Import_ThreeMessageChain_StableThread reproduces the
+// out-of-order Email/import threading bug surfaced by jmaptest on
+// CI run 26329115049: a 3-message chain (starter <- reply1 <-
+// reply2) imported in one Email/import batch could land each
+// message in a different thread because relinkThreads ran in Go
+// map iteration order, and a single pass missed the transitive
+// link when the leaf was processed before the middle. The fix
+// loops relinkThreads to a fixed point.
+//
+// The test runs the import many times to cover the random map-
+// iteration order (Go randomises map ranges on every invocation,
+// and a 3-element map produces 6 possible orders; ~50% of those
+// triggered the bug in single-pass relink).
+func TestEmail_Import_ThreeMessageChain_StableThread(t *testing.T) {
+	const iters = 30
+	for i := 0; i < iters; i++ {
+		t.Run(fmt.Sprintf("iter-%d", i), func(t *testing.T) {
+			f := setupFixture(t)
+			receivedAt := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)
+
+			starter := "From: a@example.test\r\n" +
+				"To: b@example.test\r\n" +
+				"Subject: Project Alpha\r\n" +
+				"Message-ID: <chain-001@test>\r\n" +
+				"Date: Tue, 01 Apr 2026 10:00:00 +0000\r\n" +
+				"\r\nstarter body"
+			reply1 := "From: b@example.test\r\n" +
+				"To: a@example.test\r\n" +
+				"Subject: Re: Project Alpha\r\n" +
+				"Message-ID: <chain-002@test>\r\n" +
+				"In-Reply-To: <chain-001@test>\r\n" +
+				"References: <chain-001@test>\r\n" +
+				"Date: Tue, 01 Apr 2026 11:00:00 +0000\r\n" +
+				"\r\nfirst reply"
+			reply2 := "From: a@example.test\r\n" +
+				"To: b@example.test\r\n" +
+				"Subject: Re: Project Alpha\r\n" +
+				"Message-ID: <chain-003@test>\r\n" +
+				"In-Reply-To: <chain-002@test>\r\n" +
+				"References: <chain-001@test> <chain-002@test>\r\n" +
+				"Date: Tue, 01 Apr 2026 12:00:00 +0000\r\n" +
+				"\r\nsecond reply"
+
+			refStarter := f.putBlob(t, starter)
+			refReply1 := f.putBlob(t, reply1)
+			refReply2 := f.putBlob(t, reply2)
+
+			_, raw := f.invoke(t, "Email/import", map[string]any{
+				"accountId": protojmap.AccountIDForPrincipal(f.pid),
+				"emails": map[string]any{
+					"starter": map[string]any{
+						"blobId":     refStarter.Hash,
+						"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+						"keywords":   map[string]bool{},
+						"receivedAt": receivedAt,
+					},
+					"reply1": map[string]any{
+						"blobId":     refReply1.Hash,
+						"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+						"keywords":   map[string]bool{},
+						"receivedAt": receivedAt,
+					},
+					"reply2": map[string]any{
+						"blobId":     refReply2.Hash,
+						"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+						"keywords":   map[string]bool{},
+						"receivedAt": receivedAt,
+					},
+				},
+			})
+			var resp struct {
+				Created map[string]map[string]any `json:"created"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				t.Fatalf("unmarshal: %v: %s", err, raw)
+			}
+			if len(resp.Created) != 3 {
+				t.Fatalf("expected 3 created, got %d: %v", len(resp.Created), resp.Created)
+			}
+			ids := []string{}
+			byKey := map[string]string{}
+			for _, key := range []string{"starter", "reply1", "reply2"} {
+				m, ok := resp.Created[key]
+				if !ok {
+					t.Fatalf("missing %q in created: %v", key, resp.Created)
+				}
+				idStr, _ := m["id"].(string)
+				if idStr == "" {
+					t.Fatalf("%s: no id in created entry: %v", key, m)
+				}
+				ids = append(ids, idStr)
+				byKey[key] = idStr
+			}
+			// Query Email/get for the canonical post-import (post-relink)
+			// threadId. The import response carries the pre-relink value
+			// which differs while relinkThreads is still converging; the
+			// jmaptest suite (and any real client) reads threadId here.
+			_, gotRaw := f.invoke(t, "Email/get", map[string]any{
+				"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+				"ids":        ids,
+				"properties": []string{"threadId"},
+			})
+			var got struct {
+				List []struct {
+					ID       string `json:"id"`
+					ThreadID string `json:"threadId"`
+				} `json:"list"`
+			}
+			if err := json.Unmarshal(gotRaw, &got); err != nil {
+				t.Fatalf("unmarshal Email/get: %v: %s", err, gotRaw)
+			}
+			threadByID := make(map[string]string, len(got.List))
+			for _, e := range got.List {
+				threadByID[e.ID] = e.ThreadID
+			}
+			starterTID := threadByID[byKey["starter"]]
+			if starterTID == "" {
+				t.Fatalf("starter has no threadId: %v", threadByID)
+			}
+			if got := threadByID[byKey["reply1"]]; got != starterTID {
+				t.Errorf("reply1 threadId = %s, want %s (starter)", got, starterTID)
+			}
+			if got := threadByID[byKey["reply2"]]; got != starterTID {
+				t.Errorf("reply2 threadId = %s, want %s (starter)", got, starterTID)
+			}
+		})
+	}
+}
+
 func TestEmail_Parse_HeadersWithoutImport(t *testing.T) {
 	f := setupFixture(t)
 	body := "From: parsed@example.test\r\nTo: rx@example.test\r\nSubject: parse-me\r\nMessage-ID: <msg-1@example.test>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nhello"
