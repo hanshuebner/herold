@@ -284,6 +284,60 @@ func TestPrincipals_CRUD(t *testing.T) {
 	}
 }
 
+// TestCreatePrincipal_RandomPassword asserts the random_password
+// field on POST /api/v1/principals: the server mints a password,
+// embeds it in the response as generated_password, and rejects
+// requests that pair random_password with an explicit password
+// (issue #115).
+func TestCreatePrincipal_RandomPassword(t *testing.T) {
+	h := newHarness(t)
+	_, adminKey := h.bootstrap("admin@example.com")
+
+	// Happy path: random_password = true mints a password.
+	res, buf := h.doRequest("POST", "/api/v1/principals", adminKey, map[string]any{
+		"email":           "alice@example.com",
+		"random_password": true,
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", res.StatusCode, buf)
+	}
+	var out struct {
+		ID                uint64 `json:"id"`
+		Email             string `json:"canonical_email"`
+		GeneratedPassword string `json:"generated_password"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+	if out.ID == 0 {
+		t.Errorf("expected non-zero id")
+	}
+	if out.Email != "alice@example.com" {
+		t.Errorf("email: got %q", out.Email)
+	}
+	if len(out.GeneratedPassword) < 12 {
+		t.Errorf("generated_password too short: %q (len %d)", out.GeneratedPassword, len(out.GeneratedPassword))
+	}
+
+	// Mutual exclusion: password + random_password is rejected.
+	res, buf = h.doRequest("POST", "/api/v1/principals", adminKey, map[string]any{
+		"email":           "bob@example.com",
+		"password":        "correct-horse-battery-staple",
+		"random_password": true,
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("password+random: status %d, want 400: %s", res.StatusCode, buf)
+	}
+
+	// Missing both is also rejected.
+	res, buf = h.doRequest("POST", "/api/v1/principals", adminKey, map[string]any{
+		"email": "carol@example.com",
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("no password: status %d, want 400: %s", res.StatusCode, buf)
+	}
+}
+
 // TestCreatePrincipal_ProvisionesDefaultMailboxes asserts that
 // POST /api/v1/principals immediately creates the six standard
 // mailboxes for the new user, with the correct Attributes bits, so

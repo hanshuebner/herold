@@ -1,6 +1,8 @@
 package protoadmin
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +12,19 @@ import (
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// generateRandomPassword returns a 20-character base64url password
+// (15 random bytes encoded without padding -- 20 ASCII characters,
+// ~120 bits of entropy). Used by handleCreatePrincipal when the
+// caller asks the server to mint a password (issue #115); the same
+// shape as the bootstrap CLI's helper in internal/admin.
+func generateRandomPassword() (string, error) {
+	var b [15]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b[:]), nil
+}
 
 // parsePID reads the {pid} path parameter and returns it as a
 // PrincipalID. On failure the caller returns immediately after the
@@ -25,13 +40,27 @@ func parsePID(w http.ResponseWriter, r *http.Request) (store.PrincipalID, bool) 
 	return store.PrincipalID(n), true
 }
 
-// createPrincipalRequest is the POST /principals body.
+// createPrincipalRequest is the POST /principals body. Exactly one of
+// Password or RandomPassword must be supplied: an explicit password
+// from the operator, or a server-generated random password returned
+// in the response (issue #115).
 type createPrincipalRequest struct {
-	Email       string   `json:"email"`
-	Password    string   `json:"password"`
-	DisplayName string   `json:"display_name,omitempty"`
-	QuotaBytes  int64    `json:"quota_bytes,omitempty"`
-	Flags       []string `json:"flags,omitempty"`
+	Email          string   `json:"email"`
+	Password       string   `json:"password,omitempty"`
+	RandomPassword bool     `json:"random_password,omitempty"`
+	DisplayName    string   `json:"display_name,omitempty"`
+	QuotaBytes     int64    `json:"quota_bytes,omitempty"`
+	Flags          []string `json:"flags,omitempty"`
+}
+
+// createPrincipalResponse wraps the principal DTO with the
+// server-generated password, if one was generated. The field is
+// returned only when RandomPassword was set on the request, so a
+// PATCH or GET never carries it. JSON struct embedding flattens the
+// principalDTO fields alongside generated_password.
+type createPrincipalResponse struct {
+	principalDTO
+	GeneratedPassword string `json:"generated_password,omitempty"`
 }
 
 func (s *Server) handleListPrincipals(w http.ResponseWriter, r *http.Request) {
@@ -88,10 +117,32 @@ func (s *Server) handleCreatePrincipal(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &req) {
 		return
 	}
-	if req.Email == "" || req.Password == "" {
+	if req.Email == "" {
 		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
-			"email and password are required", "")
+			"email is required", "")
 		return
+	}
+	if req.Password != "" && req.RandomPassword {
+		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+			"password and random_password are mutually exclusive", "")
+		return
+	}
+	if req.Password == "" && !req.RandomPassword {
+		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+			"one of password or random_password is required", "")
+		return
+	}
+	password := req.Password
+	var generated string
+	if req.RandomPassword {
+		pw, err := generateRandomPassword()
+		if err != nil {
+			writeProblem(w, r, http.StatusInternalServerError, "internal_error",
+				"generate password: "+err.Error(), "")
+			return
+		}
+		password = pw
+		generated = pw
 	}
 	flags, ok := principalFlagsFromStrings(req.Flags)
 	if !ok {
@@ -99,7 +150,7 @@ func (s *Server) handleCreatePrincipal(w http.ResponseWriter, r *http.Request) {
 			"unknown flag", "")
 		return
 	}
-	pid, err := s.dir.CreatePrincipal(r.Context(), req.Email, req.Password)
+	pid, err := s.dir.CreatePrincipal(r.Context(), req.Email, password)
 	if err != nil {
 		s.writeDirectoryError(w, r, err)
 		return
@@ -126,7 +177,10 @@ func (s *Server) handleCreatePrincipal(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("principal:%d", p.ID),
 		store.OutcomeSuccess, "", map[string]string{"email": p.CanonicalEmail})
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/principals/%d", p.ID))
-	writeJSON(w, http.StatusCreated, toPrincipalDTO(p))
+	writeJSON(w, http.StatusCreated, createPrincipalResponse{
+		principalDTO:      toPrincipalDTO(p),
+		GeneratedPassword: generated,
+	})
 }
 
 func (s *Server) handleGetPrincipal(w http.ResponseWriter, r *http.Request) {

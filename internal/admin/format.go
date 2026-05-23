@@ -213,7 +213,7 @@ func writePrincipalHuman(w io.Writer, out map[string]any) error {
 	if v, ok := out["quota_bytes"].(float64); ok && v > 0 {
 		quota = cliout.HumanBytes(int64(v))
 	}
-	cliout.KV(w, [][2]string{
+	rows := [][2]string{
 		{"id", fval(out, "id")},
 		{"email", sval(out, "canonical_email")},
 		{"display_name", sval(out, "display_name")},
@@ -222,7 +222,14 @@ func writePrincipalHuman(w io.Writer, out map[string]any) error {
 		{"totp_enabled", bval(out, "totp_enabled")},
 		{"created_at", tval(out, "created_at")},
 		{"updated_at", tval(out, "updated_at")},
-	})
+	}
+	// generated_password is present only on the create response when the
+	// server minted a random password (issue #115). Surface it at the
+	// bottom so it is visible separately from the persistent fields.
+	if pw := sval(out, "generated_password"); pw != "" {
+		rows = append(rows, [2]string{"generated_password", pw})
+	}
+	cliout.KV(w, rows)
 	return nil
 }
 
