@@ -335,11 +335,12 @@ jobs:
         # HEROLD_PG_DSN intentionally unset so test/e2e and storepg /
         # diag-migrate skip the postgres legs. Sqlite tests use per-package
         # temp dirs so default cross-package parallelism is safe.
-        # -timeout 20m: the default 10m is per test binary, and a few of
+        # -timeout 30m: the default 10m is per test binary, and a few of
         # the heavier packages (protoadmin ~8m, protoimap ~5m, protojmap
-        # ~3m) sit close to the limit under -race; allow headroom rather
-        # than chase per-test parallelism right now.
-        run: go test -race -count=1 -timeout 20m ./...
+        # ~3m) sit close to the limit under -race; storesqlite's
+        # TestCompliance has been observed at 19m41s on a loaded runner
+        # (re #113), so the previous 20m margin was too thin.
+        run: go test -race -count=1 -timeout 30m ./...
       - name: test (postgres lane, pg-touching packages serialised)
         if: matrix.store == 'postgres'
         env:
