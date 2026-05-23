@@ -75,6 +75,10 @@ const { mailMock } = vi.hoisted(() => {
       return [];
     },
     loadThread: vi.fn().mockResolvedValue(undefined),
+    openThreadId: null as string | null,
+    setOpenThread: vi.fn(),
+    pendingArrivalsForThread: () => [],
+    dismissPendingArrivals: vi.fn(),
   };
 
   return { mailMock };

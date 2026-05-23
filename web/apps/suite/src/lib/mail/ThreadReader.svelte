@@ -5,6 +5,8 @@
   import ThreadToolbar from './ThreadToolbar.svelte';
   import ThreadReplyBar from './ThreadReplyBar.svelte';
   import TaggedAddressBanner from './TaggedAddressBanner.svelte';
+  import ThreadNewReplyBanner from './ThreadNewReplyBanner.svelte';
+  import { keyboard } from '../keyboard/engine.svelte';
   import { t } from '../i18n/i18n.svelte';
   import { labelForeground } from './label-color';
   import type { Email } from './types';
@@ -25,8 +27,78 @@
     });
   });
 
+  // Register the currently-open thread with the store so the Email/changes
+  // handler can populate `pendingArrivals` for it (issue #118). Cleared
+  // on unmount and when the threadId prop changes; the store also wipes
+  // any stale banner entries for other threads when the open thread
+  // changes.
+  $effect(() => {
+    const tid = threadId;
+    mail.setOpenThread(tid);
+    return () => {
+      if (mail.openThreadId === tid) mail.setOpenThread(null);
+    };
+  });
+
+  let scrollContainerEl = $state<HTMLDivElement | null>(null);
+
+  /**
+   * Expand `emailId`, scroll its accordion into view at the top of the
+   * scroll region, and return focus to the compose pane if it is open.
+   * Wired to the new-reply banner's "Show new reply" action and the
+   * thread-view `n` shortcut (issue #118).
+   */
+  async function showNewReply(emailId: string): Promise<void> {
+    const next = new Set(expanded);
+    next.add(emailId);
+    expanded = next;
+    // Defer one frame so the accordion's expanded body lays out before
+    // we scroll it into view.
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    const container = scrollContainerEl;
+    if (!container) return;
+    const target = container.querySelector<HTMLElement>(
+      `[data-email-id="${CSS.escape(emailId)}"]`,
+    );
+    target?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+
+  /**
+   * While a new-reply banner is up, push an `n` shortcut that triggers
+   * Show new reply (issue #118 open questions). The binding lives in a
+   * dedicated layer so it disappears the moment the banner is dismissed
+   * or no replies are pending.
+   */
+  $effect(() => {
+    if (pendingArrivals.length === 0) return;
+    const tid = threadId;
+    const pop = keyboard.pushLayer([
+      {
+        key: 'n',
+        description: 'Show new reply',
+        action: () => {
+          const arrivals = mail.pendingArrivalsForThread(tid);
+          const latestArrival = arrivals[arrivals.length - 1];
+          if (!latestArrival) return;
+          const id = latestArrival.id;
+          mail.dismissPendingArrivals(tid);
+          void showNewReply(id);
+        },
+      },
+    ]);
+    return pop;
+  });
+
   let status = $derived(mail.threadStatus(threadId));
   let emails = $derived(mail.threadEmails(threadId));
+  let pendingArrivals = $derived(mail.pendingArrivalsForThread(threadId));
+  /** First email in display order that is a pending arrival, if any. */
+  let firstPendingArrivalId = $derived.by<string | null>(() => {
+    if (pendingArrivals.length === 0) return null;
+    const set = new Set(pendingArrivals.map((e) => e.id));
+    for (const e of emails) if (set.has(e.id)) return e.id;
+    return null;
+  });
   let subject = $derived(emails[0]?.subject || t('thread.subject.none'));
 
   // Most recent email — what reply / reply-all / forward target by
@@ -138,7 +210,7 @@
     <div class="state">{t('thread.empty')}</div>
   {:else}
     <ThreadToolbar {threadId} {latest} onPrint={() => void printThread()} />
-    <div class="scroll">
+    <div class="scroll" bind:this={scrollContainerEl}>
       <header>
         <h1>{subject}</h1>
         {#if threadLabels.length > 0}
@@ -166,7 +238,15 @@
       <TaggedAddressBanner email={latest} />
       <div class="messages">
         {#each emails as email (email.id)}
-          <MessageAccordion {email} expanded={expanded.has(email.id)} onToggle={toggle} />
+          {#if email.id === firstPendingArrivalId}
+            <ThreadNewReplyBanner
+              {threadId}
+              onShow={(id) => void showNewReply(id)}
+            />
+          {/if}
+          <div data-email-id={email.id}>
+            <MessageAccordion {email} expanded={expanded.has(email.id)} onToggle={toggle} />
+          </div>
         {/each}
       </div>
     </div>

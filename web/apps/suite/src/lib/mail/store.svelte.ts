@@ -28,6 +28,7 @@ import { parseQuery, type FilterCondition, type FilterOperator } from './search-
 import { sounds } from '../notifications/sounds.svelte';
 import { shouldPlayMailCue } from '../notifications/cue-gates';
 import { router } from '../router/router.svelte';
+import { buildSelfEmailSet, isFromSelf } from './identity-match';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -125,6 +126,23 @@ class MailStore {
   /** Per-thread load status keyed by threadId. */
   threadLoadStatus = $state(new Map<string, LoadStatus>());
   threadLoadError = $state(new Map<string, string>());
+
+  /**
+   * Id of the thread currently rendered by ThreadReader, or null when no
+   * thread reader is mounted. Set by ThreadReader on mount and cleared on
+   * unmount; consulted by the Email/changes handler to decide whether a
+   * fresh arrival should populate `pendingArrivals`. See issue #118.
+   */
+  openThreadId = $state<string | null>(null);
+
+  /**
+   * Per-thread set of email ids that arrived via push while the user was
+   * reading that thread. Rendered as an inline "new reply" banner in
+   * ThreadReader (re #118). Cleared by an explicit user dismiss; the
+   * `openThreadId` setter also wipes entries for threads other than the
+   * one currently open so banners don't leak across navigations.
+   */
+  pendingArrivals = $state(new Map<string, Set<string>>());
 
   /** Most recent search query string (raw, user-typed). */
   searchQuery = $state('');
@@ -305,6 +323,89 @@ class MailStore {
         }
       }
     }
+
+    // Record fresh arrivals in the currently-open thread so ThreadReader
+    // can surface a "new reply" banner (issue #118). Skip messages the
+    // user sent themselves (replying to your own thread shouldn't ping
+    // you about your own reply).
+    if (knownEmailIds.size > 0 && this.openThreadId !== null) {
+      this.#recordPendingArrivals(knownEmailIds, delta);
+    }
+  }
+
+  #recordPendingArrivals(
+    knownEmailIds: Set<string>,
+    delta: { created: Set<string>; updated: Set<string>; destroyed: Set<string> } | null,
+  ): void {
+    const open = this.openThreadId;
+    if (open === null) return;
+    const candidates = new Set<string>();
+    if (delta) {
+      for (const id of delta.created) candidates.add(id);
+    } else {
+      for (const id of this.emails.keys()) {
+        if (!knownEmailIds.has(id)) candidates.add(id);
+      }
+    }
+    if (candidates.size === 0) return;
+    const selfEmails = buildSelfEmailSet(this.identities.values());
+    const arrivals: string[] = [];
+    for (const id of candidates) {
+      const email = this.emails.get(id);
+      if (!email) continue;
+      if (email.threadId !== open) continue;
+      if (isFromSelf(email, selfEmails)) continue;
+      arrivals.push(id);
+    }
+    if (arrivals.length === 0) return;
+    const next = new Map(this.pendingArrivals);
+    const merged = new Set(next.get(open) ?? []);
+    for (const id of arrivals) merged.add(id);
+    next.set(open, merged);
+    this.pendingArrivals = next;
+  }
+
+  /**
+   * Mark `threadId` as the thread the user is currently reading. Pass
+   * null when leaving the reader. Wipes pending-arrival entries for
+   * threads other than the one being opened so a banner from a previous
+   * thread doesn't follow the user across navigations.
+   */
+  setOpenThread(threadId: string | null): void {
+    if (this.openThreadId === threadId) return;
+    this.openThreadId = threadId;
+    if (this.pendingArrivals.size === 0) return;
+    if (threadId === null) {
+      this.pendingArrivals = new Map();
+      return;
+    }
+    const keep = this.pendingArrivals.get(threadId);
+    if (keep === undefined) {
+      this.pendingArrivals = new Map();
+      return;
+    }
+    this.pendingArrivals = new Map([[threadId, keep]]);
+  }
+
+  /** Resolved Email rows pending arrival in `threadId`, chronological. */
+  pendingArrivalsForThread(threadId: string): Email[] {
+    const ids = this.pendingArrivals.get(threadId);
+    if (!ids || ids.size === 0) return [];
+    const out: Email[] = [];
+    for (const id of ids) {
+      const e = this.emails.get(id);
+      if (e) out.push(e);
+    }
+    out.sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
+    return out;
+  }
+
+  /** Drop the pending-arrival entry for `threadId` (user dismissed banner). */
+  dismissPendingArrivals(threadId: string): void {
+    if (!this.pendingArrivals.has(threadId)) return;
+    const next = new Map(this.pendingArrivals);
+    next.delete(threadId);
+    this.pendingArrivals = next;
   }
 
   async #onMailboxStateChange(newState: string): Promise<void> {

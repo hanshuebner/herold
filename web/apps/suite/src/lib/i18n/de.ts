@@ -52,6 +52,17 @@ export const de = {
   'mail.threadReader.internalizePending.body':
     'Externe Bilder in dieser Nachricht werden noch im Hintergrund internalisiert. Sie erscheinen vorerst als Platzhalter; aktualisieren Sie kurz, um sie zu sehen.',
 
+  // Banner für neu eingetroffene Antwort (issue #118): inline angezeigt,
+  // damit der Leser nicht beim Verfassen einer eigenen Antwort von einer
+  // neu eingetroffenen Nachricht überrascht wird. Bleibt sichtbar bis
+  // ausdrücklich bestätigt.
+  'mail.threadReader.newReply.aria': 'Hinweis auf neue Antwort',
+  'mail.threadReader.newReply.one.heading': 'Neue Antwort von {sender}',
+  'mail.threadReader.newReply.many.heading': '{count} neue Antworten',
+  'mail.threadReader.newReply.show': 'Neue Antwort anzeigen',
+  'mail.threadReader.newReply.dismiss': 'Verstanden',
+  'mail.threadReader.newReply.more': '+{count} weitere',
+
   // ── Banner für getaggte Adressen (REQ-MAIL-12c) ──────────────────────
   // Banner über dem Nachrichtentext bietet vier Aktionen für erstmals
   // gesehene Sub-Adressen.

@@ -99,6 +99,10 @@ const { mailMock, WORK_MBX, PERSONAL_MBX } = vi.hoisted(() => {
       return [EMAIL_A, EMAIL_B];
     },
     loadThread: vi.fn().mockResolvedValue(undefined),
+    openThreadId: null as string | null,
+    setOpenThread: vi.fn(),
+    pendingArrivalsForThread: () => [],
+    dismissPendingArrivals: vi.fn(),
   };
 
   return { mailMock, WORK_MBX, PERSONAL_MBX };

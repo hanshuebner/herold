@@ -53,6 +53,17 @@ export const en = {
   'mail.threadReader.internalizePending.body':
     'External images in this message are still being internalized in the background. They appear as placeholders for now; refresh in a moment to see them.',
 
+  // Thread-reader new-reply banner (issue #118): inline non-modal banner
+  // shown above a freshly-arrived reply so the user is not blindsided by
+  // a new message while composing a reply themselves. Persists until
+  // explicitly dismissed.
+  'mail.threadReader.newReply.aria': 'New reply notification',
+  'mail.threadReader.newReply.one.heading': 'New reply from {sender}',
+  'mail.threadReader.newReply.many.heading': '{count} new replies',
+  'mail.threadReader.newReply.show': 'Show new reply',
+  'mail.threadReader.newReply.dismiss': 'Got it',
+  'mail.threadReader.newReply.more': '+{count} more',
+
   // ── Tagged-address banner (REQ-MAIL-12c) ─────────────────────────────
   // Banner above the message body offering four actions on first-seen
   // sub-addressed mail. The headline interpolates the +suffix so the
