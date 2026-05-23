@@ -485,7 +485,14 @@ func TestRetryExhaustionEmitsFailureDSN(t *testing.T) {
 	// outcome on iteration 3 calls CompleteQueueItem (which sets
 	// state=Failed but leaves attempts unchanged). Tolerate either.
 	for i := 0; i < 4; i++ {
-		if !waitFor(t, 15*time.Second, func() bool {
+		// 30 s per attempt: under -race plus heavy cross-package
+		// parallelism on the self-hosted arm64 runner the scheduler
+		// goroutine has been observed starved well past 15 s (CI run
+		// 26329115049 surfaced attempt 2 never observed at exactly
+		// 15 s). The NumWaiters barrier below addresses the FakeClock
+		// re-arm race documented in f10160e; this larger margin is the
+		// separate goroutine-scheduling tolerance.
+		if !waitFor(t, 30*time.Second, func() bool {
 			if f.deliv.callCount() < i+1 {
 				return false
 			}
