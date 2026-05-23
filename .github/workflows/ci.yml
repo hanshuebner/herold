@@ -234,15 +234,15 @@ jobs:
   test:
     name: test (arm64 / ${{ matrix.store }})
     runs-on: [self-hosted, arm64]
-    # 45 min: the sqlite lane runs the entire tree under -race, and the
-    # cumulative cost of compliance suites (storesqlite, storepg,
-    # protoadmin ~8m, protoimap ~5m, protojmap ~3m, plus identity-
-    # verification + tagged-address storetest compliance landed on
-    # 2026-05-11) pushed the lane past 30m on the arm64 self-hosted
-    # runner. The postgres lane stays comfortably under 15m because it
-    # drops -race and parallelises non-pg packages; the sqlite lane is
-    # the bottleneck. Investigate per-package runtime before bumping
-    # further.
+    # 45 min: the sqlite lane historically ran the entire tree under
+    # -race and hit ~37 min wall on the arm64 self-hosted runner. The
+    # lane is now split into a race-on subset (see
+    # .github/race-packages.txt) and a no-race remainder so the
+    # detector cost is paid only on concurrency-heavy packages.
+    # Expected wall: ~20 min sequential, well under the cap; the cap
+    # is left at 45 min for headroom while the new split beds in.
+    # Postgres lane is unchanged and still finishes comfortably under
+    # 15 min.
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -330,17 +330,62 @@ jobs:
           done
           echo "postgres not ready after 30s" >&2
           exit 1
-      - name: test (sqlite lane)
+      - name: compute sqlite race / fast package lists
+        if: matrix.store == 'sqlite'
+        # The sqlite lane splits the tree into a race-on subset and a
+        # fast (no-race) remainder so the race-detector cost is paid
+        # only where it actually catches races. Race overhead is huge:
+        # storesqlite alone measures 33x slower under -race locally
+        # (10.8 s -> 354 s). The canonical race-on list lives in
+        # .github/race-packages.txt; add a package there when its
+        # production code spawns goroutines, holds shared mutex
+        # state, or is exercised through testharness / admin /
+        # protoadmin. The postgres lane still runs the entire tree
+        # without -race, so functional coverage of every package is
+        # preserved -- only race coverage is narrowed to the list.
+        run: |
+          set -euo pipefail
+          PATTERNS=$(grep -v '^[[:space:]]*#' .github/race-packages.txt \
+            | grep -v '^[[:space:]]*$' \
+            | sed 's|^|./|')
+          RACE=$(echo "$PATTERNS" | xargs -r go list 2>/dev/null | sort -u)
+          if [ -z "$RACE" ]; then
+            echo "race lane: race-packages.txt produced no packages" >&2
+            exit 1
+          fi
+          ALL=$(go list ./... | sort -u)
+          NORACE=$(comm -23 <(echo "$ALL") <(echo "$RACE"))
+          printf '%s\n' "$RACE"   > /tmp/race-pkgs.txt
+          printf '%s\n' "$NORACE" > /tmp/norace-pkgs.txt
+          echo "race lane: $(wc -l </tmp/race-pkgs.txt | tr -d ' ') packages"
+          echo "fast lane: $(wc -l </tmp/norace-pkgs.txt | tr -d ' ') packages"
+      - name: test (sqlite lane, race subset)
         if: matrix.store == 'sqlite'
         # HEROLD_PG_DSN intentionally unset so test/e2e and storepg /
-        # diag-migrate skip the postgres legs. Sqlite tests use per-package
-        # temp dirs so default cross-package parallelism is safe.
-        # -timeout 30m: the default 10m is per test binary, and a few of
-        # the heavier packages (protoadmin ~8m, protoimap ~5m, protojmap
-        # ~3m) sit close to the limit under -race; storesqlite's
-        # TestCompliance has been observed at 19m41s on a loaded runner
-        # (re #113), so the previous 20m margin was too thin.
-        run: go test -race -count=1 -timeout 30m ./...
+        # diag-migrate skip the postgres legs. Sqlite tests use
+        # per-package temp dirs so default cross-package parallelism
+        # is safe.
+        # -timeout 30m: storesqlite's TestCompliance has been observed
+        # at 19m41s on a loaded runner (re #113); the heavier packages
+        # (protoadmin, protoimap, protojmap) also push the limit when
+        # they run under -race. 30m absorbs the margin without papering
+        # over a regression.
+        run: |
+          set -euo pipefail
+          PKGS=$(tr '\n' ' ' </tmp/race-pkgs.txt)
+          go test -race -count=1 -timeout 30m $PKGS
+      - name: test (sqlite lane, fast subset)
+        if: matrix.store == 'sqlite'
+        # Everything not listed in .github/race-packages.txt runs here
+        # without -race. These packages are leaf parsers, codecs, DTO
+        # helpers, and other code without their own goroutines; their
+        # functional coverage is on the postgres lane too. The 15m
+        # timeout is comfortable: this subset finishes in single-digit
+        # minutes locally.
+        run: |
+          set -euo pipefail
+          PKGS=$(tr '\n' ' ' </tmp/norace-pkgs.txt)
+          go test -count=1 -timeout 15m $PKGS
       - name: test (postgres lane, pg-touching packages serialised)
         if: matrix.store == 'postgres'
         env:

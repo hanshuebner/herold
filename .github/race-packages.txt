@@ -1,0 +1,95 @@
+# Packages whose tests are run under -race on the sqlite CI lane.
+#
+# The sqlite lane previously ran `go test -race ./...` against the
+# entire tree. The race detector adds 5-30x overhead per memory access,
+# and storesqlite alone went from 11 s to 354 s on a local benchmark
+# (33x) -- the full sqlite job ran ~37 min.
+#
+# To keep race coverage where it matters without paying that price
+# tree-wide, the sqlite lane is now split: packages listed here run
+# with -race, the rest run without (the postgres lane still covers the
+# full tree without race, so functional coverage is unaffected).
+#
+# Add a package here when its production code spawns goroutines, uses
+# channels, holds shared mutex state, or is exercised through a test
+# harness that does (testharness, admin, protoadmin). Lines are Go
+# import paths (relative to the module root). A trailing "/..." means
+# "this package and every subpackage" -- the same syntax `go list`
+# uses. Lines starting with `#` and blank lines are ignored.
+#
+# Keep this list in sync with the structural changes that introduce
+# concurrency. STANDARDS §5 (the "fresh-context shutdown flush" rule)
+# already implies new worker goroutines belong here.
+
+# Servers and listener stacks. Each runs many concurrent sessions and
+# carries worker pools (queue + writer pumps + push channels).
+internal/admin
+internal/protoadmin
+internal/protochat
+internal/protoimap
+internal/protosmtp
+internal/protomanagesieve
+internal/protologin
+internal/protocall
+internal/protosend
+internal/protojmap/...
+
+# Outbound delivery, retry, DSN; scheduler + worker pool.
+internal/queue
+internal/autodns
+
+# Background workers with shared cursor / change-feed state.
+internal/webpush
+internal/maildmarc
+internal/storefts
+internal/protoevents
+internal/protowebhook
+internal/snooze
+internal/extsubmit
+
+# Storage engines: writer / reader serialisation, sqlite WAL, pg
+# connection pool. Compliance suite exercises concurrent access.
+internal/storesqlite
+internal/storepg
+
+# Out-of-process plugin supervisor (process lifecycle, JSON-RPC stdio).
+internal/plugin
+internal/sesinbound
+
+# Test harness that spins up the full listener set; every integration
+# test goes through it, so race coverage of the harness covers most
+# concurrent paths in one shot.
+internal/testharness
+
+# Observability registry (counters / collectors are concurrent by
+# definition) and the fake clock used to drive scheduler tests.
+internal/observe
+internal/clock
+
+# Identity verification flow (sends mail via the outbound queue + a
+# background reissue-code timer).
+internal/identityverify
+
+# Directory rate limiters / circuit breaker have shared mutex state.
+internal/directory
+
+# Per-user OIDC federation (RP) holds token / state cache under mutex.
+internal/directoryoidc
+
+# ACME client: background renewal + HTTP/TLS-ALPN challenge handlers.
+internal/acme
+
+# External-image internaliser: per-message worker pool that rewrites
+# inline image references against the proxy cache.
+internal/extimg
+internal/extimg/internalizeworker
+
+# Link-preview fetcher: bounded-concurrency outbound HTTP.
+internal/linkpreview
+
+# SMTP peer used by interop tests; spawns goroutines while delivering.
+internal/testharness/smtppeer
+
+# Sqlite snapshot adapter (diag/backup) uses sync primitives to gate
+# its concurrent reader.
+internal/diag/backup
