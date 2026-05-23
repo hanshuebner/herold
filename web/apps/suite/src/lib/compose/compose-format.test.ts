@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { _internals_forTest } from './compose.svelte';
+import { isFromSelf } from '../mail/identity-match';
 import type { Email } from '../mail/types';
 
 const {
@@ -19,7 +20,6 @@ const {
   htmlToPlainText,
   escapeHtml,
   computeReplyAllCc,
-  isOwnMessage,
   computeOwnMessageReplyAllCc,
   formatBytes,
   appendSignature,
@@ -29,6 +29,10 @@ const {
   buildBodyStructure,
   buildAttachmentParts,
 } = _internals_forTest;
+
+// isOwnMessage is now isFromSelf in identity-match.ts; alias for test
+// readability so existing describe blocks need no renaming.
+const isOwnMessage = isFromSelf;
 
 const ID_NO_SIG = {
   id: 'i1',

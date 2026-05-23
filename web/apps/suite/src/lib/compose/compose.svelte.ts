@@ -45,6 +45,7 @@ import {
   recipientToString,
   type Recipient,
 } from './recipient-parse';
+import { buildSelfEmailSet, isFromSelf } from '../mail/identity-match';
 import { selectReplyIdentity } from './reply-identity';
 
 export type { Recipient };
@@ -277,7 +278,7 @@ class ComposeStore {
   async openReply(parent: Email): Promise<void> {
     // Defensive: if identities have not loaded yet (race between
     // landing on a thread URL and the auth-ready prime), wait for
-    // them. Without identities populated, isOwnMessage cannot detect
+    // them. Without identities populated, isFromSelf cannot detect
     // an own-sent message and the To field would silently fall back
     // to the user's own address. App.svelte primes them on auth-ready
     // already; this guard catches the degenerate timing.
@@ -288,14 +289,11 @@ class ComposeStore {
         console.warn('openReply: identity load failed', err);
       }
     }
-    const selfEmails = new Set<string>();
-    for (const id of mail.identities.values()) {
-      selfEmails.add(id.email.toLowerCase());
-    }
+    const selfEmails = buildSelfEmailSet(mail.identities.values());
     // When replying to a message the user themselves sent, the logical
     // recipient is the people who received that message (parent.to),
     // not the user's own From address (REQ-MAIL-30).
-    const ownMessage = isOwnMessage(parent, selfEmails);
+    const ownMessage = isFromSelf(parent, selfEmails);
     const to = ownMessage
       ? (parent.to ?? []).map(addressToString).join(', ')
       : addressToString(parent.from?.[0]);
@@ -324,11 +322,8 @@ class ComposeStore {
    * addresses (REQ-MAIL-31).
    */
   openReplyAll(parent: Email): void {
-    const selfEmails = new Set<string>();
-    for (const id of mail.identities.values()) {
-      selfEmails.add(id.email.toLowerCase());
-    }
-    const ownMessage = isOwnMessage(parent, selfEmails);
+    const selfEmails = buildSelfEmailSet(mail.identities.values());
+    const ownMessage = isFromSelf(parent, selfEmails);
     let to: string;
     let cc: Address[];
     if (ownMessage) {
@@ -1270,17 +1265,6 @@ function computeReplyAllCc(parent: Email, selfEmails: Set<string>): Address[] {
 }
 
 /**
- * True when the message was authored by the user: the first From
- * address matches one of the user's Identity emails (case-insensitive).
- * Used to detect outbound/sent messages so Reply / Reply-all addresses
- * the original recipients rather than the user themselves.
- */
-function isOwnMessage(parent: Email, selfEmails: Set<string>): boolean {
-  const fromEmail = parent.from?.[0]?.email?.toLowerCase() ?? '';
-  return fromEmail !== '' && selfEmails.has(fromEmail);
-}
-
-/**
  * Compute the Cc address list for reply-all on a message the user sent.
  * In this case the original Cc is preserved as-is, minus own-identity
  * addresses. The To list is NOT included in Cc (it becomes the To field
@@ -1679,7 +1663,7 @@ export const _internals_forTest = {
   escapeHtml,
   plainTextToHtml,
   computeReplyAllCc,
-  isOwnMessage,
+  isOwnMessage: isFromSelf,
   computeOwnMessageReplyAllCc,
   formatBytes,
   appendSignature,
