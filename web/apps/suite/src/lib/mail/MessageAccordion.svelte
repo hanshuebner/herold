@@ -19,6 +19,7 @@
   import { relativeTimeAgo } from './relative-time';
   import RecipientTrigger from './RecipientTrigger.svelte';
   import { type Address } from './types';
+  import { buildSelfEmailSet, isFromSelf } from './identity-match';
 
   interface Props {
     email: Email;
@@ -49,6 +50,12 @@
 
   // Identity list for the avatar resolver's own-identity tier.
   let ownIdentities = $derived(Array.from(mail.identities.values()));
+
+  // True when this message was sent by the signed-in user. Drives the
+  // self-card visual treatment (tinted background + left accent border)
+  // and the "You" sender label in place of the From name / email pair.
+  let selfEmailSet = $derived(buildSelfEmailSet(mail.identities.values()));
+  let isSelf = $derived(isFromSelf(email, selfEmailSet));
 
   // Parse Face/X-Face headers from this email for avatar resolver tier-2.
   let avatarMessageHeaders = $derived.by<
@@ -246,7 +253,7 @@
   // reactions, which live inline with the message title row above.
 </script>
 
-<article class="message" class:expanded>
+<article class="message" class:expanded class:self={isSelf}>
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
@@ -294,13 +301,13 @@
             messageHeaders={avatarMessageHeaders}
             inline
           >
-            <span class="from-name">{senderName}</span>
-            {#if senderEmail !== senderName}
+            <span class="from-name">{isSelf ? t('mail.thread.fromYou') : senderName}</span>
+            {#if !isSelf && senderEmail !== senderName}
               <span class="from-email">&lt;{senderEmail}&gt;</span>
             {/if}
           </RecipientTrigger>
         {:else}
-          <span class="from-name">{senderName}</span>
+          <span class="from-name">{isSelf ? t('mail.thread.fromYou') : senderName}</span>
         {/if}
       </span>
       {#if expanded}
@@ -459,6 +466,21 @@
   .message {
     border-bottom: 1px solid var(--border-subtle-01);
   }
+
+  /* Self-authored card: faint tinted background + 3px left accent border.
+   * Uses the --interactive token (Carbon blue) which adapts to both dark
+   * and light themes. The padding-left on .header is reduced by 3px to
+   * keep text alignment identical to non-self cards. This rule must not
+   * interfere with class:expanded or any selection/unread state; it is a
+   * purely additive background + border treatment. */
+  .message.self {
+    background: color-mix(in srgb, var(--interactive) 4%, transparent);
+    border-left: 3px solid var(--interactive);
+  }
+  .message.self .header {
+    padding-left: calc(var(--spacing-05) - 3px);
+  }
+
   .header {
     display: grid;
     grid-template-columns: auto 1fr auto;
@@ -673,6 +695,9 @@
       grid-template-columns: 28px 1fr auto;
       padding: var(--spacing-03) var(--spacing-04);
       gap: var(--spacing-02);
+    }
+    .message.self .header {
+      padding-left: calc(var(--spacing-04) - 3px);
     }
     .body {
       padding: 0 var(--spacing-04) var(--spacing-04);

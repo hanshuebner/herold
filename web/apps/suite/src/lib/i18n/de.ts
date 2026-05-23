@@ -169,6 +169,9 @@ export const de = {
   'thread.label': 'Labels',
   'thread.moreActions': 'Weitere Aktionen',
 
+  // ── Thread reader: selbst verfasste Karte ────────────────────────────
+  'mail.thread.fromYou': 'Du',
+
   // ── Message-scope strings ────────────────────────────────────────────
   // Siehe re #98: die gesamte per-Nachricht-Aktionsfläche wurde entfernt.
   // Antworten / Weiterleiten leben in der festen Antwortleiste; Konversa-

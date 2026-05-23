@@ -171,6 +171,11 @@ export const en = {
   'thread.label': 'Label',
   'thread.moreActions': 'More actions',
 
+  // ── Thread reader: self-authored card treatment ──────────────────────
+  // Displayed in place of the sender name when the From address belongs to
+  // one of the user's own identities (Change A / Change B in thread UX).
+  'mail.thread.fromYou': 'You',
+
   // ── Message-scope strings ────────────────────────────────────────────
   // Per re #98 the per-message action surface was removed entirely:
   // reply / reply-all / forward live in the fixed reply bar; thread verbs

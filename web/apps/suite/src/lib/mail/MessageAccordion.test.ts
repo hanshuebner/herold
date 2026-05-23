@@ -16,7 +16,7 @@
  *   live inline with the message title row.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import MessageAccordion from './MessageAccordion.svelte';
 import type { Email, EmailBodyPart } from './types';
@@ -24,6 +24,8 @@ import type { Email, EmailBodyPart } from './types';
 // ── module mocks ──────────────────────────────────────────────────────────────
 
 vi.mock('../i18n/i18n.svelte', () => ({
+  // Return the key unchanged so tests can assert on the i18n key, not a
+  // hardcoded English string. This validates the correct key is used.
   t: (key: string) => key,
   localeTag: () => 'en',
 }));
@@ -162,13 +164,14 @@ function makeEmail(overrides: {
   hasAttachment?: boolean;
   attachments?: Partial<EmailBodyPart>[];
   mailboxIds?: Record<string, true>;
+  from?: Array<{ name: string | null; email: string }>;
 }): Email {
   return {
     id: 'e1',
     threadId: 't1',
     mailboxIds: overrides.mailboxIds ?? {},
     keywords: {},
-    from: [{ name: 'Alice', email: 'alice@example.test' }],
+    from: overrides.from ?? [{ name: 'Alice', email: 'alice@example.test' }],
     to: null,
     cc: null,
     subject: 'Test subject',
@@ -314,5 +317,106 @@ describe('MessageAccordion: no per-message action surface (re #98)', () => {
     renderAccordion(email, /* expanded */ true);
 
     expect(screen.queryByLabelText('actions.moreActions')).not.toBeInTheDocument();
+  });
+});
+
+// ── Self-authored card treatment ─────────────────────────────────────────────
+//
+// When the message From address is one of the user's own identities:
+//   A) The <article> carries the .self class (visual tint + border).
+//   B) The sender label shows the i18n key 'mail.thread.fromYou' (not
+//      a hardcoded "You" — the mock t() returns the key so we assert on
+//      the key, proving the translation path is exercised).
+
+describe('MessageAccordion: self-authored card treatment', () => {
+  const SELF_EMAIL = 'self@example.test';
+
+  const selfIdentity: import('./types').Identity = {
+    id: 'ident-self',
+    name: 'Self User',
+    email: SELF_EMAIL,
+    replyTo: null,
+    bcc: null,
+    textSignature: '',
+    htmlSignature: '',
+    mayDelete: false,
+  };
+
+  beforeEach(() => {
+    mailMock.trash = null;
+    mailMock.listFolder = 'inbox';
+    // Reset identities to empty between tests.
+    mailMock.identities = new Map();
+  });
+
+  afterEach(() => {
+    mailMock.identities = new Map();
+  });
+
+  it('does NOT add .self class when From is not in the identity set', () => {
+    // No identities loaded — alice@example.test is not self.
+    const email = makeEmail({
+      from: [{ name: 'Alice', email: 'alice@example.test' }],
+    });
+    const { container } = renderAccordion(email);
+    const article = container.querySelector('article.message');
+    expect(article).not.toHaveClass('self');
+  });
+
+  it('adds .self class when From matches a user identity', () => {
+    mailMock.identities = new Map([[selfIdentity.id, selfIdentity]]);
+    const email = makeEmail({
+      from: [{ name: 'Self User', email: SELF_EMAIL }],
+    });
+    const { container } = renderAccordion(email);
+    const article = container.querySelector('article.message');
+    expect(article).toHaveClass('self');
+  });
+
+  it('adds .self class for a case-insensitive From match', () => {
+    mailMock.identities = new Map([[selfIdentity.id, selfIdentity]]);
+    const email = makeEmail({
+      from: [{ name: 'Self', email: 'SELF@EXAMPLE.TEST' }],
+    });
+    const { container } = renderAccordion(email);
+    expect(container.querySelector('article.message')).toHaveClass('self');
+  });
+
+  it('shows the fromYou i18n key in the collapsed sender label when self', () => {
+    // The t() mock returns the key verbatim; asserting on the key proves
+    // the component uses the translation path rather than a hardcoded literal.
+    mailMock.identities = new Map([[selfIdentity.id, selfIdentity]]);
+    const email = makeEmail({
+      from: [{ name: 'Self User', email: SELF_EMAIL }],
+    });
+    renderAccordion(email, /* expanded */ false);
+    expect(screen.getByText('mail.thread.fromYou')).toBeInTheDocument();
+  });
+
+  it('shows the fromYou i18n key in the expanded sender label when self', () => {
+    mailMock.identities = new Map([[selfIdentity.id, selfIdentity]]);
+    const email = makeEmail({
+      from: [{ name: 'Self User', email: SELF_EMAIL }],
+    });
+    renderAccordion(email, /* expanded */ true);
+    expect(screen.getByText('mail.thread.fromYou')).toBeInTheDocument();
+  });
+
+  it('does NOT show the sender name when self (collapsed)', () => {
+    mailMock.identities = new Map([[selfIdentity.id, selfIdentity]]);
+    const email = makeEmail({
+      from: [{ name: 'Self User', email: SELF_EMAIL }],
+    });
+    renderAccordion(email, /* expanded */ false);
+    expect(screen.queryByText('Self User')).not.toBeInTheDocument();
+  });
+
+  it('shows normal sender name when From is not self', () => {
+    const email = makeEmail({
+      from: [{ name: 'Alice', email: 'alice@example.test' }],
+    });
+    renderAccordion(email, /* expanded */ false);
+    expect(screen.getByText('Alice')).toBeInTheDocument();
+    expect(screen.queryByText('mail.thread.fromYou')).not.toBeInTheDocument();
   });
 });
