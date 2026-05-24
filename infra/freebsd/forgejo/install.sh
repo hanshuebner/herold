@@ -104,10 +104,26 @@ else
     service forgejo start
 fi
 
-# --- 5. bootstrap admin user --------------------------------------------------
+# --- 5. wait for the daemon to be fully ready --------------------------------
 
-# Give the daemon a moment to open its SQLite db before invoking the CLI.
-sleep 3
+# On first start with an empty SQLite, Forgejo runs schema migrations
+# before it starts answering HTTP. /api/v1/version is the cheapest
+# endpoint that requires the schema to be present, so once it returns
+# 200 we know the daemon is past migrations and the CLI can read the
+# DB without "no such table" errors.
+log "waiting for forgejo HTTP to come up (post-migration)"
+ready=0
+for i in $(seq 1 60); do
+    if curl -sf -o /dev/null -m 2 http://127.0.0.1:3001/api/v1/version; then
+        log "forgejo HTTP responsive after ${i}s"
+        ready=1
+        break
+    fi
+    sleep 1
+done
+[ "$ready" = 1 ] || die "forgejo did not become responsive within 60s; check /var/log/forgejo/ and 'service forgejo status'"
+
+# --- 6. bootstrap admin user --------------------------------------------------
 
 if sudo -u git "$FORGEJO_BIN" --config "$APP_INI" admin user list 2>/dev/null \
    | awk 'NR > 1 { print $2 }' \
