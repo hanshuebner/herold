@@ -103,8 +103,8 @@ fi
 if ! grep -qE '^HCLOUD_TOKEN=[^[:space:]]+' "$ENV_FILE"; then
     die "$ENV_FILE: HCLOUD_TOKEN is empty - fill it in"
 fi
-if ! grep -qE '^ORCHESTRATOR_CODEBERG_TOKEN=[^[:space:]]+' "$ENV_FILE"; then
-    die "$ENV_FILE: ORCHESTRATOR_CODEBERG_TOKEN is empty - fill it in"
+if ! grep -qE '^ORCHESTRATOR_FORGEJO_TOKEN=[^[:space:]]+' "$ENV_FILE"; then
+    die "$ENV_FILE: ORCHESTRATOR_FORGEJO_TOKEN is empty - fill it in"
 fi
 
 # Tighten ownership/mode in case prior runs left it loose.
