@@ -45,9 +45,12 @@ jobs:
           go install golang.org/x/tools/cmd/goimports@latest
           go install honnef.co/go/tools/cmd/staticcheck@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      # No actions/setup-python: actions/python-versions does not ship
+      # a linux/arm64 build of 3.12, and setup-python@v5 hard-fails on
+      # ARM with "version '3.12' with architecture 'arm64' was not
+      # found". The snapshot already has python3.12 + python3-pip +
+      # python3-venv installed (provision.sh) so pre-commit/action's
+      # `pip install pre-commit` works against the system interpreter.
       # The svelte-check pre-commit hook runs `pnpm --dir web run check`,
       # so pre-commit needs Node + pnpm on PATH and the workspace
       # dependencies installed.
@@ -142,10 +145,15 @@ jobs:
         env:
           HEROLD_TEST_STORE: sqlite
         run: go test -count=1 -timeout 3m ./internal/diag/migrate/...
+      # In Forgejo Actions / act_runner container mode the service
+      # container is reachable from the job container as its service
+      # name (`postgres`) over the workflow-private docker network,
+      # NOT as `localhost`. The `ports:` mapping is for host-mode
+      # runners (e.g. GitHub-hosted) and has no effect here.
       - name: wait for postgres
         run: |
           for i in $(seq 1 30); do
-            if (exec 3<>/dev/tcp/localhost/5432) 2>/dev/null; then
+            if (exec 3<>/dev/tcp/postgres/5432) 2>/dev/null; then
               exec 3>&-; echo "postgres ready after ${i}s"; exit 0
             fi
             sleep 1
@@ -154,7 +162,7 @@ jobs:
           exit 1
       - name: postgres smoke + e2e happy path
         env:
-          HEROLD_PG_DSN: postgres://herold:herold@localhost:5432/herold?sslmode=disable
+          HEROLD_PG_DSN: postgres://herold:herold@postgres:5432/herold?sslmode=disable
         run: |
           go test -count=1 -timeout 5m -p 1 \
             ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
@@ -236,7 +244,13 @@ jobs:
       # it on the sqlite lane caused test/e2e and storepg/diag-migrate
       # to also exercise the postgres path against the leg's service
       # container, duplicating coverage.
-      HEROLD_PG_DSN_VALUE: postgres://herold:herold@localhost:5432/herold?sslmode=disable
+      #
+      # Hostname is the service name `postgres`, not `localhost`: in
+      # act_runner container mode the workflow's job container shares
+      # a private docker network with the service container and reaches
+      # it by service-name DNS. `ports:` in the service block applies
+      # to host-mode runners only.
+      HEROLD_PG_DSN_VALUE: postgres://herold:herold@postgres:5432/herold?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -255,7 +269,7 @@ jobs:
         if: matrix.store == 'postgres'
         run: |
           for i in $(seq 1 30); do
-            if (exec 3<>/dev/tcp/localhost/5432) 2>/dev/null; then
+            if (exec 3<>/dev/tcp/postgres/5432) 2>/dev/null; then
               exec 3>&-; echo "postgres ready after ${i}s"; exit 0
             fi
             sleep 1
@@ -415,6 +429,14 @@ jobs:
     name: jmap conformance (jmapio/jmap-test-suite)
     runs-on: [self-hosted, herold, arm64]
     timeout-minutes: 25
+    # The jmaptest harness needs `docker compose`, which is not present
+    # inside the act_runner job container (the runner runs jobs inside
+    # node:22-bookworm by default). The forward fix is to put act_runner
+    # in host-mode (see docs/forgejo-migration.md, Phase 5 follow-ups);
+    # until that lands the harness only runs in the nightly lane, which
+    # has the same constraint and will hit the same error -- so for now
+    # we gate this whole job off the push/PR path entirely.
+    if: ${{ false }}
     steps:
       - uses: actions/checkout@v4
       - name: run jmaptest harness
