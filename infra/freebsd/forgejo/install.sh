@@ -30,7 +30,12 @@ set -eu
 
 REPO_ROOT="$(pwd)"
 TEMPLATE="$REPO_ROOT/infra/freebsd/forgejo/app.ini.template"
-APP_INI="/usr/local/etc/forgejo/app.ini"
+# The FreeBSD forgejo pkg expects FORGEJO_CUSTOM=/usr/local/etc/forgejo,
+# which makes Forgejo load $FORGEJO_CUSTOM/conf/app.ini. The pkg ships
+# a sample there with CHANGE_ME placeholders; we overwrite with our
+# rendered template.
+APP_INI="/usr/local/etc/forgejo/conf/app.ini"
+LEGACY_APP_INI="/usr/local/etc/forgejo/app.ini"
 DATA_DIR="/var/db/forgejo"
 LOG_DIR="/var/log/forgejo"
 ADMIN_USER="hanshuebner"
@@ -70,6 +75,32 @@ chown -R git:git "$DATA_DIR" "$LOG_DIR"
 chmod 750 "$DATA_DIR" "$LOG_DIR"
 
 # --- 3. app.ini ---------------------------------------------------------------
+
+# One-time migration: prior versions of this script wrote to
+# /usr/local/etc/forgejo/app.ini, but Forgejo's FORGEJO_CUSTOM
+# convention puts the config at $FORGEJO_CUSTOM/conf/app.ini. If a
+# rendered file is sitting at the legacy path, move it to the canonical
+# one (overwriting the pkg's CHANGE_ME sample). If the legacy file
+# itself is the unsubstituted sample, just remove it.
+if [ -f "$LEGACY_APP_INI" ]; then
+    if grep -q 'CHANGE_ME' "$LEGACY_APP_INI" 2>/dev/null; then
+        log "removing pkg sample at legacy path $LEGACY_APP_INI"
+        rm -f "$LEGACY_APP_INI"
+    else
+        log "migrating rendered config $LEGACY_APP_INI -> $APP_INI"
+        mkdir -p "$(dirname "$APP_INI")"
+        mv -f "$LEGACY_APP_INI" "$APP_INI"
+        chown root:git "$APP_INI"
+        chmod 640 "$APP_INI"
+    fi
+fi
+
+# A CHANGE_ME-laden file at the canonical path is the pkg sample;
+# treat it as if no config existed and render ours over it.
+if [ -f "$APP_INI" ] && grep -q 'CHANGE_ME' "$APP_INI"; then
+    log "$APP_INI is the pkg sample (CHANGE_ME placeholders); rendering ours over it"
+    rm -f "$APP_INI"
+fi
 
 if [ -f "$APP_INI" ]; then
     log "app.ini already exists; leaving its secrets in place"
