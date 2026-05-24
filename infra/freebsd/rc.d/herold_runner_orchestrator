@@ -78,6 +78,11 @@ load_rc_config "$name"
 procname="daemon"
 pidfile="/var/run/${name}.pid"
 
+# Path to the orchestrator binary that daemon(8) will exec. Kept
+# separate from procname (which is now "daemon" for ps matching;
+# see comment above).
+_orchestrator_binary="/usr/local/bin/herold-runner-orchestrator"
+
 # daemon(8) wraps the binary so:
 #   -f                  detach (background)
 #   -P <pidfile>        write the SUPERVISOR pid (the long-lived parent
@@ -97,7 +102,7 @@ command="/usr/sbin/daemon"
 command_args="-f -P ${pidfile} -t ${name} -r -R 30 \
     -u ${herold_runner_orchestrator_runas} \
     -o ${herold_runner_orchestrator_log} \
-    ${procname} ${herold_runner_orchestrator_args}"
+    ${_orchestrator_binary} ${herold_runner_orchestrator_args}"
 
 required_files="${herold_runner_orchestrator_envfile}"
 
