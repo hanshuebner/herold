@@ -269,9 +269,32 @@ jobs:
       HEROLD_PG_DSN_VALUE: postgres://herold:herold@postgres:5432/herold?sslmode=disable
     steps:
       - uses: actions/checkout@v4
+      # setup-go's built-in cache (cache: true, the default) keys on
+      # `go.sum` + OS/arch/go-version only -- the `matrix.store` value
+      # is NOT in the key. Both lanes (sqlite, postgres) therefore
+      # resolve to the same cache entry. Run #17's postgres lane
+      # hung on `tar -cf cache.tgz` mid-cache-save while sqlite was
+      # the parallel lane still finishing, which lines up with the
+      # two saves racing on the same key. Disable the built-in cache
+      # here and use an explicit actions/cache@v4 step below with
+      # matrix.store mixed into the key so the lanes don't fight.
+      # Other jobs (lint, confidence-x86, fuzz, conformance) keep
+      # the built-in cache because they don't run concurrently with
+      # a sibling that targets the same key.
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: cache go module + build cache (per matrix.store)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ matrix.store }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ matrix.store }}-
+            go-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-
       # Build with the default tag (which embeds the SPA placeholders
       # via go:embed) and a second pass with -tags nofrontend so the
       # build-tag split cannot regress without CI catching it.
