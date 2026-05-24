@@ -89,6 +89,10 @@ JWT_SECRET = __JWT_SECRET__
 DEFAULT_BRANCH = main
 ENABLE_PUSH_CREATE_USER = false
 ENABLE_PUSH_CREATE_ORG = false
+; Forgejo's default SCRIPT_TYPE is "bash", which FreeBSD does not
+; ship in base. Use /bin/sh instead (works for the git hooks
+; Forgejo generates).
+SCRIPT_TYPE = sh
 
 [ui]
 DEFAULT_THEME = forgejo-auto

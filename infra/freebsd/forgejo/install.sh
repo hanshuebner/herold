@@ -70,7 +70,19 @@ if ! id -u git >/dev/null 2>&1; then
 fi
 
 log "ensuring $DATA_DIR and $LOG_DIR exist with git ownership"
-mkdir -p "$DATA_DIR/data" "$DATA_DIR/indexers" "$LOG_DIR"
+# forgejo doctor (run from the rc.d at startup) treats some of these
+# as REQUIRED and refuses to start if they don't exist. The
+# forgejo-repositories one in particular cannot be created lazily.
+mkdir -p \
+    "$DATA_DIR" \
+    "$DATA_DIR/data" \
+    "$DATA_DIR/data/forgejo-repositories" \
+    "$DATA_DIR/data/attachments" \
+    "$DATA_DIR/data/avatars" \
+    "$DATA_DIR/data/repo-avatars" \
+    "$DATA_DIR/data/sessions" \
+    "$DATA_DIR/indexers" \
+    "$LOG_DIR"
 chown -R git:git "$DATA_DIR" "$LOG_DIR"
 chmod 750 "$DATA_DIR" "$LOG_DIR"
 
