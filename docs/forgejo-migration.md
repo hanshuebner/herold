@@ -156,15 +156,32 @@ them pick up exactly one job and self-terminate, then deletes the VM.
 - [x] Per-spawn one-shot registration token via `POST /repos/.../actions/runners/registration-token`. cloud-init registers + starts `forgejo-runner.service` (systemd unit) on the new VM.
 - [x] Snapshot discovery is dynamic — `image list --selector "herold-ci=runner,arch=$ARCH"` picks the newest, so weekly bakes auto-roll forward without touching the orchestrator.
 - [x] Config via env + flags: HCLOUD_TOKEN, ORCHESTRATOR_CODEBERG_TOKEN, --repo, --location, --arm-type, --amd-type, --max-arm, --max-amd, --poll, --vm-max-lifetime, --ssh-key.
-- [ ] **Live deploy on the FreeBSD VM** (next concrete step on Hans). Step-by-step is in `infra/freebsd/rc.d/herold_runner_orchestrator`'s header comment; the short version:
-  - cross-compile `GOOS=freebsd GOARCH=amd64 go build ./cmd/herold-runner-orchestrator/` and scp to `/usr/local/bin/`
-  - create the `_herold-orch` service user (`pw user add ...`)
-  - drop Hetzner + Codeberg tokens into `/usr/local/etc/herold-runner-orchestrator.env` (mode 0600, owned by `_herold-orch`)
-  - install `infra/freebsd/rc.d/herold_runner_orchestrator` to `/usr/local/etc/rc.d/`
-  - `sysrc herold_runner_orchestrator_enable=YES && service herold_runner_orchestrator start`
-- [ ] **First live workflow run** — push a trivial commit to Codeberg, watch the orchestrator log spawn a VM, watch the workflow turn green. Loop until it works.
-- [ ] Snapshot retention reaper (Phase 2 leftover): delete bake snapshots older than 4 weeks.
-- [ ] Cron + alarm for the weekly bake on the FreeBSD VM (Phase 2 leftover).
+- [x] **Live deploy on outpost.netzhansa.com** (Debian 13, replaces the
+      original FreeBSD plan). Driven by Ansible from a sibling repo,
+      `netzhansa-infra/roles/orchestrator` + `playbooks/orchestrator.yml`.
+      The role cross-compiles `GOOS=linux GOARCH=amd64 go build
+      ./cmd/herold-runner-orchestrator/` on the control node, ships it
+      to `/usr/local/bin/`, creates the `herold-orch` system user,
+      drops the env file at `/etc/herold-runner-orchestrator.env`
+      (mode 0600), installs the systemd unit, and manages start/enable
+      via `orchestrator_active`.
+- [x] **First live workflow run** — pushed 2026-05-24 (run #11 on
+      `code.netzhansa.com/hanshuebner/herold`). Orchestrator spawned
+      5 ephemeral VMs (1 amd64 + 4 arm64) within ~3 minutes. Several
+      green jobs (lint, web build, web-e2e Playwright, fuzz-short,
+      conformance). Open failures being chased in the run-#11 thread.
+- [x] Snapshot retention reaper (Phase 2 leftover): implemented in
+      `netzhansa-infra/roles/runner-bakery/files/retention.py`, keeps
+      newest N per arch (default 4), runs after every bake cycle.
+- [x] Weekly bake on outpost (Phase 2 leftover): implemented in
+      `netzhansa-infra/roles/runner-bakery` as a systemd timer
+      (`herold-runner-bake.timer`, Mon 04:00 local + 30 min jitter).
+      Default `bakery_active=false` so the role applies cleanly
+      without firing a 20-min Hetzner build; first manual smoke is
+      `systemctl start herold-runner-bake.service`.
+- [ ] Failure alarm for the weekly bake: outpost has no MTA, so the
+      cron-MAILTO trick used on FreeBSD does not work. Tracked under
+      Phase 8 as the snapshot-freshness alarm.
 - [ ] Scale-down: the current policy is "reap at vm_max_lifetime = 60 min regardless". The plan's "T+50min keepalive to absorb subsequent jobs" idea would be richer but adds state; deferred until we have real workload data.
 
 ### Phase 6 — Validation
@@ -194,14 +211,22 @@ Hard cutover per decision 1.2 — same-day, no mirror window.
 
 ### Phase 8 — Hygiene
 
-- [ ] Snapshot freshness alarm: no successful bake in 10 days → email
+- [ ] Snapshot freshness alarm: no successful bake in 10 days → notify.
+      Outpost has no MTA installed (intentionally; Hetzner-firewall-
+      only policy), so this needs to be a webhook ping rather than
+      cron MAILTO. Provisional design: a separate systemd timer on
+      outpost that runs daily, checks `mtime` of
+      `/var/lib/runner-bakery/snapshots.json` and `systemctl --failed
+      herold-runner-bake.service`, and posts to a webhook (or writes
+      to syslog at err level and relies on the operator looking at
+      `journalctl -p err`).
 - [ ] Weekly cost review (15 min)
 - [ ] Runbook in `docs/operations/`:
   - Add a new runner pool
   - Refresh a snapshot manually
   - Debug a stuck VM (it's still alive at Hetzner but not running act_runner)
   - Rotate Hetzner token
-  - Rotate Codeberg token
+  - Rotate Forgejo PAT
 - [ ] Append incident notes to §8 of this doc
 
 ## 4. Risks and mitigations
@@ -252,6 +277,39 @@ Inside the €20 cap (decision 1.4) with ~2× headroom. Below the warn-at-€15 
 
 (Append as phases complete. Most recent first.)
 
+- 2026-05-24 — Bakery role landed on outpost
+  (`netzhansa-infra/roles/runner-bakery`). Installs hcloud CLI v1.55.0,
+  copies `infra/hetzner/{bake,provision}.sh`, sets up a dedicated
+  ed25519 keypair registered in herold-ci as `outpost-bakery`, drops
+  `bake-cycle.sh` (both arches + retention), `retention.py` (keep
+  newest 4 per arch), and a systemd `.service`+`.timer` pair scheduled
+  for Mon 04:00 local with 30 min jitter. Default `bakery_active=false`
+  so the role applies cleanly. Smoke fire is `systemctl start
+  herold-runner-bake.service`; flip `bakery_active=true` after that
+  succeeds.
+- 2026-05-24 — Run #11 (first ever end-to-end CI run on outpost).
+  Orchestrator spawned 5 ephemeral VMs (1 amd64, 4 arm64) from the
+  2026-05-23 snapshots, jobs distributed across them and started
+  executing within ~3 minutes. Green: lint, web build, web-e2e
+  Playwright, fuzz-short, conformance. Red: pre-commit (failure at
+  `actions/setup-python@v5`, 1 s — looks like the v5 action variant
+  is incompatible with this forgejo-runner / node20 combo); test
+  (arm64 / postgres) 2m36s; confidence (x86_64) 6m4s; jmap
+  conformance 14s. Hard cutover validated: the orchestrator's
+  spawn/reconcile/reap loop, the snapshot-based bootstrap, the
+  third-party action mirror (staticcheck-action, govulncheck-action
+  and Playwright all worked), and the postgres service container all
+  function end-to-end. Failure dives pending admin-PAT for log
+  access.
+- 2026-05-24 — Outpost cutover: web stack relocated from the FreeBSD
+  Hetzner VM to the new Debian 13 host `outpost.netzhansa.com`.
+  Forgejo + the orchestrator both moved over. Bakery follow-up landed
+  in the same evening (see entry above). The FreeBSD VM is now slated
+  for full decommissioning (see `netzhansa-infra/docs/outpost-migration.md`
+  Phase G). The `infra/freebsd/` subtree was removed from this repo
+  in commit `6b84842`; orchestrator-on-FreeBSD content in the Phase 5
+  checklist above has been rewritten to point at the Ansible role
+  that replaces it.
 - 2026-05-24 — Phase 9: self-hosted Forgejo at `code.netzhansa.com` live. Apache vhost on the AWS host fronts HTTPS to the FreeBSD VM's `127.0.0.1:3001`; Forgejo built-in SSH on `0.0.0.0:2222`. `infra/freebsd/forgejo/{install.sh,app.ini.template}` checked in. Bootstrap snags: pkg's config path is `$FORGEJO_CUSTOM/conf/app.ini`, not `$FORGEJO_CUSTOM/app.ini`; `forgejo doctor check` requires `/var/db/forgejo/data/forgejo-repositories` to exist pre-start; install.sh now creates all required subdirs and waits for `/api/v1/version` to come up post-migration. SSH key length minimum raised from default 3072 to 2048 in app.ini.
 - 2026-05-24 — Phase 9 prep: discovered Codeberg's `/repos/.../actions/*` namespace returns router-level 404 (alpha gating), not 403. Polling-based orchestration cannot work against Codeberg today. Pivoted plan to self-hosted Forgejo (this same project, just a different code host).
 - 2026-05-24 — Orchestrator rename: `codeberg*` → `forgejo*` throughout `cmd/herold-runner-orchestrator/`. `--codeberg` flag → `--forgejo`. Env vars `ORCHESTRATOR_CODEBERG_*` → `ORCHESTRATOR_FORGEJO_*`. Default URL `https://codeberg.org` → `https://code.netzhansa.com`. cloud-init's instance URL is now templated via `--instance "{{.Instance}}"` so a single binary works against any Forgejo host. File rename `cmd/herold-runner-orchestrator/codeberg.go` → `forgejo.go`, doc rename `docs/codeberg-migration.md` → `docs/forgejo-migration.md`.
