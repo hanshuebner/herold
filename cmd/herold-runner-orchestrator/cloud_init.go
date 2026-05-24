@@ -50,12 +50,21 @@ CFGEOF
 
 # Register exactly once. Forgejo's register subcommand writes
 # /var/lib/forgejo-runner/.runner that the daemon then reads.
+#
+# The ":host" suffix on every label tells act_runner to run matching
+# jobs directly on this VM's host OS instead of inside a default
+# node:22-bookworm container. The bake snapshot already has docker,
+# go, node, pnpm, python3.12 + pip, pre-commit, Playwright deps, and
+# the other toolchain CI needs (see infra/hetzner/provision.sh), so
+# host-mode is the cheapest way to unblock jobs that need docker
+# (docker-build, jmap conformance) and to make localhost:5432-style
+# service mappings work the way GitHub-hosted runners do.
 /usr/local/bin/forgejo-runner register \
   --instance "{{.Instance}}" \
   --token "{{.RegistrationToken}}" \
   --no-interactive \
   --name "{{.Name}}" \
-  --labels "self-hosted,herold,{{.Arch}}" \
+  --labels "self-hosted:host,herold:host,{{.Arch}}:host" \
   --config /etc/forgejo-runner/config.yaml
 
 cat >/etc/systemd/system/forgejo-runner.service <<'SVCEOF'
