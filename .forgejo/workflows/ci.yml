@@ -334,25 +334,25 @@ jobs:
         run: go test -count=1 ./test/interop/...
 
   docker:
-    name: docker (build + publish to codeberg registry)
+    name: docker (build + publish to code.netzhansa.com registry)
     runs-on: [self-hosted, herold, arm64]
     timeout-minutes: 30
     needs: [lint, web, test]
     # On PRs we only build (no registry credentials, no push). On pushes
-    # to main and on git tags we additionally push to the Codeberg
-    # container registry so users can `docker pull
-    # codeberg.org/${{ github.repository }}:latest`.
+    # to main and on git tags we additionally push to the
+    # code.netzhansa.com (self-hosted Forgejo) container registry so
+    # users can `docker pull code.netzhansa.com/${{ github.repository }}:latest`.
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: log in to codeberg.org registry
+      - name: log in to code.netzhansa.com registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: codeberg.org
+          registry: code.netzhansa.com
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: derive image tags
@@ -362,7 +362,7 @@ jobs:
           # uppercase repository segments and github.repository preserves
           # the case the user typed.
           repo="${GITHUB_REPOSITORY,,}"
-          image="codeberg.org/${repo}"
+          image="code.netzhansa.com/${repo}"
           tags="${image}:sha-${GITHUB_SHA::12}"
           if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
             tags="${tags},${image}:main,${image}:latest"
@@ -395,14 +395,14 @@ jobs:
           # of this job. We rely on docker pull from the snapshot for
           # base layers; the per-job context layers rebuild from scratch.
           # If this proves too slow once we have data, switch to
-          # type=registry,ref=codeberg.org/.../buildcache or similar.
+          # type=registry,ref=code.netzhansa.com/.../buildcache or similar.
           provenance: false
       - name: smoke-test the built image
         run: |
           first_tag=$(echo "${{ steps.tags.outputs.tags }}" | cut -d, -f1)
           echo "smoke-test: using local image ${first_tag}"
           ./scripts/smoke-docker.sh "${first_tag}"
-      - name: push to codeberg.org registry (only after smoke passes)
+      - name: push to code.netzhansa.com registry (only after smoke passes)
         if: github.event_name != 'pull_request'
         run: |
           IFS=',' read -ra TAGS <<< "${{ steps.tags.outputs.tags }}"

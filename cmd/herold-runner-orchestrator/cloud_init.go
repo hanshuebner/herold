@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net/url"
 	"text/template"
 )
 
@@ -21,9 +22,9 @@ var cloudInitTmpl = template.Must(template.New("cloudinit").Parse(`#!/usr/bin/en
 set -euxo pipefail
 
 # Wait for the network. Forgejo registration needs HTTPS to
-# codeberg.org, and cloud-init can fire before resolved is ready.
+# {{.Host}}, and cloud-init can fire before resolved is ready.
 for _ in $(seq 1 30); do
-  if getent hosts codeberg.org >/dev/null; then break; fi
+  if getent hosts {{.Host}} >/dev/null; then break; fi
   sleep 1
 done
 
@@ -50,7 +51,7 @@ CFGEOF
 # Register exactly once. Forgejo's register subcommand writes
 # /var/lib/forgejo-runner/.runner that the daemon then reads.
 /usr/local/bin/forgejo-runner register \
-  --instance "https://codeberg.org" \
+  --instance "{{.Instance}}" \
   --token "{{.RegistrationToken}}" \
   --no-interactive \
   --name "{{.Name}}" \
@@ -84,10 +85,17 @@ systemctl enable --now forgejo-runner.service
 type cloudInitParams struct {
 	Name              string
 	Arch              string
+	Instance          string // Forgejo base URL the runner registers against
+	Host              string // Hostname derived from Instance, used in the DNS-wait probe
 	RegistrationToken string
 }
 
 func renderCloudInit(p cloudInitParams) ([]byte, error) {
+	if p.Host == "" && p.Instance != "" {
+		if u, err := url.Parse(p.Instance); err == nil && u.Host != "" {
+			p.Host = u.Hostname()
+		}
+	}
 	var buf bytes.Buffer
 	if err := cloudInitTmpl.Execute(&buf, p); err != nil {
 		return nil, err

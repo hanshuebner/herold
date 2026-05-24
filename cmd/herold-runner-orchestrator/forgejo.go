@@ -11,24 +11,25 @@ import (
 	"strings"
 )
 
-// codebergClient is a thin wrapper around the Forgejo Actions REST API
-// exposed at codeberg.org/api/v1/.... Three calls do the work the
-// orchestrator needs:
+// forgejoClient is a thin wrapper around the Forgejo Actions REST API
+// exposed by any Forgejo instance at /api/v1/.... Three calls do the
+// work the orchestrator needs:
 //   - listJobsWithLabels : find queued jobs matching a pool's labels
 //   - listRunners        : see who is already registered + busy
 //   - registrationToken  : one-shot token for a new VM's cloud-init
 //
-// Paths and verbs match Codeberg's published swagger
-// (https://codeberg.org/swagger.v1.json).
-type codebergClient struct {
-	base   string // e.g. "https://codeberg.org"
+// Paths and verbs match the upstream Forgejo swagger
+// (any-instance/swagger.v1.json), confirmed against our self-hosted
+// instance at code.netzhansa.com.
+type forgejoClient struct {
+	base   string // e.g. "https://code.netzhansa.com"
 	token  string
 	repo   string // "owner/name"
 	http   *http.Client
 	logger *slog.Logger
 }
 
-func (c *codebergClient) do(ctx context.Context, method, path string, query url.Values, into any) error {
+func (c *forgejoClient) do(ctx context.Context, method, path string, query url.Values, into any) error {
 	u := c.base + "/api/v1" + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
@@ -75,7 +76,7 @@ type listJobsResponse struct {
 // Forgejo does not expose a status filter on this endpoint, so we
 // trim to "queued" / "waiting" client-side. A returned job is one
 // our pool should be ready to claim.
-func (c *codebergClient) listJobsWithLabels(ctx context.Context, labels []string) ([]job, error) {
+func (c *forgejoClient) listJobsWithLabels(ctx context.Context, labels []string) ([]job, error) {
 	q := url.Values{}
 	if len(labels) > 0 {
 		q.Set("labels", strings.Join(labels, ","))
@@ -112,7 +113,7 @@ type listRunnersResponse struct {
 // listRunners returns runners currently registered to the repo.
 // Used by the reaper to drop ghost registrations whose VM no longer
 // exists.
-func (c *codebergClient) listRunners(ctx context.Context) ([]runner, error) {
+func (c *forgejoClient) listRunners(ctx context.Context) ([]runner, error) {
 	var resp listRunnersResponse
 	err := c.do(ctx, "GET",
 		"/repos/"+c.repo+"/actions/runners",
@@ -127,7 +128,7 @@ func (c *codebergClient) listRunners(ctx context.Context) ([]runner, error) {
 // with `forgejo-runner register` to attach itself to this repo.
 // Forgejo exposes this as GET (no body) at
 // /repos/.../actions/runners/registration-token.
-func (c *codebergClient) registrationToken(ctx context.Context) (string, error) {
+func (c *forgejoClient) registrationToken(ctx context.Context) (string, error) {
 	var resp struct {
 		Token string `json:"token"`
 	}
@@ -143,9 +144,10 @@ func (c *codebergClient) registrationToken(ctx context.Context) (string, error) 
 	return resp.Token, nil
 }
 
-// deleteRunner removes a runner record from Codeberg. Used when we
-// scrap a VM that registered but no longer reports online.
-func (c *codebergClient) deleteRunner(ctx context.Context, runnerID int64) error {
+// deleteRunner removes a runner record from the Forgejo instance.
+// Used when we scrap a VM that registered but no longer reports
+// online.
+func (c *forgejoClient) deleteRunner(ctx context.Context, runnerID int64) error {
 	return c.do(ctx, "DELETE",
 		fmt.Sprintf("/repos/%s/actions/runners/%d", c.repo, runnerID),
 		nil, nil)

@@ -1,7 +1,16 @@
-# Codeberg migration plan
+# Off-GitHub migration plan (Codeberg → self-hosted Forgejo)
 
-Status: decisions locked 2026-05-23; ready for Phase 0 execution
-Author: Hans + Claude (planning session 2026-05-23)
+Status: code-host is now `code.netzhansa.com` (self-hosted Forgejo on
+Hans's FreeBSD VM); first end-to-end CI run pending. The original plan
+targeted Codeberg as the destination; mid-execution we discovered that
+Codeberg's Forgejo Actions REST API namespace is gated off (404 on
+`/repos/.../actions/*`), which made polling-based autoscaling
+impossible. We pivoted to a self-hosted Forgejo instance that exposes
+the full Actions API. The plan + execution log below documents the
+whole journey, Codeberg phase included; the **most recent execution-log
+entries cover the pivot to self-hosted**.
+
+Author: Hans + Claude (initial planning 2026-05-23)
 Owner during execution: Hans
 
 ## Goal
@@ -238,6 +247,9 @@ Inside the €20 cap (decision 1.4) with ~2× headroom. Below the warn-at-€15 
 
 (Append as phases complete. Most recent first.)
 
+- 2026-05-24 — Phase 9: self-hosted Forgejo at `code.netzhansa.com` live. Apache vhost on the AWS host fronts HTTPS to the FreeBSD VM's `127.0.0.1:3001`; Forgejo built-in SSH on `0.0.0.0:2222`. `infra/freebsd/forgejo/{install.sh,app.ini.template}` checked in. Bootstrap snags: pkg's config path is `$FORGEJO_CUSTOM/conf/app.ini`, not `$FORGEJO_CUSTOM/app.ini`; `forgejo doctor check` requires `/var/db/forgejo/data/forgejo-repositories` to exist pre-start; install.sh now creates all required subdirs and waits for `/api/v1/version` to come up post-migration. SSH key length minimum raised from default 3072 to 2048 in app.ini.
+- 2026-05-24 — Phase 9 prep: discovered Codeberg's `/repos/.../actions/*` namespace returns router-level 404 (alpha gating), not 403. Polling-based orchestration cannot work against Codeberg today. Pivoted plan to self-hosted Forgejo (this same project, just a different code host).
+- 2026-05-24 — Orchestrator rename: `codeberg*` → `forgejo*` throughout `cmd/herold-runner-orchestrator/`. `--codeberg` flag → `--forgejo`. Env vars `ORCHESTRATOR_CODEBERG_*` → `ORCHESTRATOR_FORGEJO_*`. Default URL `https://codeberg.org` → `https://code.netzhansa.com`. cloud-init's instance URL is now templated via `--instance "{{.Instance}}"` so a single binary works against any Forgejo host. File rename `cmd/herold-runner-orchestrator/codeberg.go` → `forgejo.go`, doc rename `docs/codeberg-migration.md` → `docs/forgejo-migration.md`.
 - 2026-05-23 — Phase 5 controller code landed: `cmd/herold-runner-orchestrator/` (811 lines, 5 files, no CGO, builds for linux/amd64 + freebsd/amd64 + darwin/arm64). Custom Go reconciler that polls Codeberg's Forgejo Actions API + Hetzner Cloud API every 15 s; spawns ephemeral VMs from the labelled snapshots on demand; reaps VMs by max-lifetime; sweeps ghost runner registrations. Next: live deploy on the FreeBSD VM + first end-to-end Codeberg workflow run.
 - 2026-05-23 — Phase 7 cutover (brought forward at maintainer's request). `.github/workflows/*` deleted; `.github/race-packages.txt` moved to `test/race-packages.txt`; `.forgejo/workflows/ci.yml` reference updated; README badge + AGENTS.md issue URL pointed at Codeberg; `main` + 5 feature branches pushed to `codeberg.org/hanshuebner/herold`; GitHub repo archived (read-only) with description + homepage redirecting to Codeberg.
 - 2026-05-23 — Phase 4 pipeline rewrite landed: `.forgejo/workflows/{ci,nightly,release}.yml` written (auto-rerun dropped). 11 jobs in ci.yml (one new: confidence-x86 on amd64 with hard-fail). All other jobs labelled `[self-hosted, herold, arm64]`. Drops the persistent-runner-only "fix workspace permissions" pre-checkout step (ephemeral runners are clean by definition). Switched `cache: false` → default `cache: true` on setup-go. Switched ghcr.io → codeberg.org container registry. Switched ubuntu-latest → arm64 self-hosted on the binaries job. SHA-pinned action refs replaced with tag refs since Forgejo's mirror has different SHAs from upstream. Open follow-ups: (a) verify Forgejo Actions cache service interop with `actions/setup-go cache: true` and `actions/cache@v4`, (b) verify localhost:5432 vs postgres:5432 service hostname semantics on first live run, (c) verify which third-party actions (staticcheck-action, govulncheck-action, dominikh, anchore, sigstore) resolve through Codeberg's act_runner mirror config.

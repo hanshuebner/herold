@@ -1,9 +1,9 @@
 // herold-runner-orchestrator keeps ephemeral Forgejo Actions runners
-// attached to a Codeberg repo just in time. On every tick it polls
-// Codeberg for queued workflow jobs, polls Hetzner for currently
-// spawned VMs, and reconciles the gap: spawning new VMs from the
-// labelled snapshots and reaping VMs that are off or past their
-// max lifetime.
+// attached to a Forgejo repo just in time. On every tick it polls
+// the Forgejo instance for queued workflow jobs, polls Hetzner for
+// currently spawned VMs, and reconciles the gap: spawning new VMs
+// from the labelled snapshots and reaping VMs that are off or past
+// their max lifetime.
 //
 // Designed to run on a small always-on host (the maintainer's FreeBSD
 // VM in the design doc). Stateless: a restart picks up where it left
@@ -26,38 +26,38 @@ import (
 )
 
 type config struct {
-	hetznerToken    string
-	codebergToken   string
-	codebergRepo    string
-	codebergBaseURL string
-	sshKeyName      string
-	location        string
-	armServerType   string
-	amdServerType   string
-	maxPerPoolArm   int
-	maxPerPoolAmd   int
-	pollInterval    time.Duration
-	vmMaxLifetime   time.Duration
-	logFormat       string
+	hetznerToken   string
+	forgejoToken   string
+	forgejoRepo    string
+	forgejoBaseURL string
+	sshKeyName     string
+	location       string
+	armServerType  string
+	amdServerType  string
+	maxPerPoolArm  int
+	maxPerPoolAmd  int
+	pollInterval   time.Duration
+	vmMaxLifetime  time.Duration
+	logFormat      string
 }
 
 func loadConfig() (config, error) {
 	c := config{
-		codebergBaseURL: "https://codeberg.org",
-		armServerType:   "cax21",
-		amdServerType:   "cpx22",
-		location:        "nbg1",
-		maxPerPoolArm:   4,
-		maxPerPoolAmd:   2,
-		pollInterval:    15 * time.Second,
-		vmMaxLifetime:   60 * time.Minute,
-		logFormat:       "text",
+		forgejoBaseURL: "https://code.netzhansa.com",
+		armServerType:  "cax21",
+		amdServerType:  "cpx22",
+		location:       "nbg1",
+		maxPerPoolArm:  4,
+		maxPerPoolAmd:  2,
+		pollInterval:   15 * time.Second,
+		vmMaxLifetime:  60 * time.Minute,
+		logFormat:      "text",
 	}
 
-	flag.StringVar(&c.codebergRepo, "repo", envOr("ORCHESTRATOR_CODEBERG_REPO", "hanshuebner/herold"),
-		"target Codeberg repo (owner/name)")
-	flag.StringVar(&c.codebergBaseURL, "codeberg", envOr("ORCHESTRATOR_CODEBERG_URL", c.codebergBaseURL),
-		"Codeberg base URL")
+	flag.StringVar(&c.forgejoRepo, "repo", envOr("ORCHESTRATOR_FORGEJO_REPO", "hanshuebner/herold"),
+		"target Forgejo repo (owner/name)")
+	flag.StringVar(&c.forgejoBaseURL, "forgejo", envOr("ORCHESTRATOR_FORGEJO_URL", c.forgejoBaseURL),
+		"Forgejo base URL")
 	flag.StringVar(&c.sshKeyName, "ssh-key", envOr("ORCHESTRATOR_SSH_KEY_NAME", ""),
 		"hcloud SSH key name to inject (empty = first available)")
 	flag.StringVar(&c.location, "location", envOr("ORCHESTRATOR_LOCATION", c.location),
@@ -82,16 +82,16 @@ func loadConfig() (config, error) {
 	if c.hetznerToken == "" {
 		c.hetznerToken = os.Getenv("ORCHESTRATOR_HETZNER_TOKEN")
 	}
-	c.codebergToken = os.Getenv("ORCHESTRATOR_CODEBERG_TOKEN")
+	c.forgejoToken = os.Getenv("ORCHESTRATOR_FORGEJO_TOKEN")
 
 	if c.hetznerToken == "" {
 		return c, fmt.Errorf("HCLOUD_TOKEN or ORCHESTRATOR_HETZNER_TOKEN env var required")
 	}
-	if c.codebergToken == "" {
-		return c, fmt.Errorf("ORCHESTRATOR_CODEBERG_TOKEN env var required")
+	if c.forgejoToken == "" {
+		return c, fmt.Errorf("ORCHESTRATOR_FORGEJO_TOKEN env var required")
 	}
-	if !strings.Contains(c.codebergRepo, "/") {
-		return c, fmt.Errorf("--repo must be owner/name (got %q)", c.codebergRepo)
+	if !strings.Contains(c.forgejoRepo, "/") {
+		return c, fmt.Errorf("--repo must be owner/name (got %q)", c.forgejoRepo)
 	}
 	return c, nil
 }
@@ -141,7 +141,8 @@ func main() {
 	}
 	log := makeLogger(cfg.logFormat)
 	log.Info("orchestrator starting",
-		"repo", cfg.codebergRepo,
+		"forgejo", cfg.forgejoBaseURL,
+		"repo", cfg.forgejoRepo,
 		"location", cfg.location,
 		"arm_type", cfg.armServerType,
 		"amd_type", cfg.amdServerType,
@@ -152,10 +153,10 @@ func main() {
 	)
 
 	hc := hcloud.NewClient(hcloud.WithToken(cfg.hetznerToken))
-	cb := &codebergClient{
-		base:   cfg.codebergBaseURL,
-		token:  cfg.codebergToken,
-		repo:   cfg.codebergRepo,
+	fj := &forgejoClient{
+		base:   cfg.forgejoBaseURL,
+		token:  cfg.forgejoToken,
+		repo:   cfg.forgejoRepo,
 		http:   &http.Client{Timeout: 20 * time.Second},
 		logger: log,
 	}
@@ -163,7 +164,7 @@ func main() {
 	orch := &orchestrator{
 		cfg: cfg,
 		hc:  hc,
-		cb:  cb,
+		fj:  fj,
 		log: log,
 	}
 

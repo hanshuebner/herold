@@ -57,6 +57,7 @@ type spawnVMArgs struct {
 	Location          string
 	SSHKeyName        string
 	SnapshotID        int64
+	Instance          string // Forgejo base URL the spawned runner registers against
 	RegistrationToken string
 }
 
@@ -64,6 +65,7 @@ func spawnVM(ctx context.Context, hc *hcloud.Client, a spawnVMArgs) (*hcloud.Ser
 	userData, err := renderCloudInit(cloudInitParams{
 		Name:              a.Name,
 		Arch:              a.Arch,
+		Instance:          a.Instance,
 		RegistrationToken: a.RegistrationToken,
 	})
 	if err != nil {

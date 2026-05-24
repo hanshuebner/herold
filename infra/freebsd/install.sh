@@ -88,11 +88,10 @@ if [ ! -e "$ENV_FILE" ]; then
 # Hetzner Cloud Read+Write API token for the herold-ci project.
 HCLOUD_TOKEN=
 
-# Codeberg / Forgejo personal access token. Needs at least the
-# repository read scope and the actions-runner registration write
-# scope (verify exact Codeberg scope names against the live API on
-# first deploy).
-ORCHESTRATOR_CODEBERG_TOKEN=
+# Forgejo personal access token (e.g. issued by the self-hosted
+# instance at code.netzhansa.com). Needs at least read+write
+# repository and read+write actions / runner scopes.
+ORCHESTRATOR_FORGEJO_TOKEN=
 EOF
     chown "$SVC_USER:$SVC_USER" "$ENV_FILE"
     chmod 0600 "$ENV_FILE"

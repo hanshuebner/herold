@@ -12,7 +12,7 @@ import (
 type orchestrator struct {
 	cfg config
 	hc  *hcloud.Client
-	cb  *codebergClient
+	fj  *forgejoClient
 	log interface {
 		Info(msg string, args ...any)
 		Warn(msg string, args ...any)
@@ -38,7 +38,7 @@ func (o *orchestrator) run(ctx context.Context) error {
 }
 
 // tick is the single reconciliation pass. It is intentionally one
-// flat function so the failure modes (Codeberg unreachable, Hetzner
+// flat function so the failure modes (Forgejo unreachable, Hetzner
 // unreachable, no snapshot for arch) each log + skip the affected
 // slice without aborting the rest of the pass.
 func (o *orchestrator) tick(ctx context.Context) {
@@ -48,7 +48,7 @@ func (o *orchestrator) tick(ctx context.Context) {
 	queuedPerArch, err := o.queuedJobsByArch(tickCtx)
 	if err != nil {
 		o.log.Warn("queue probe failed; skipping spawn this tick", "err", err)
-		// Carry on to the reaper -- it doesn't need Codeberg.
+		// Carry on to the reaper -- it doesn't need Forgejo.
 		queuedPerArch = nil
 	}
 
@@ -88,11 +88,11 @@ func (o *orchestrator) tick(ctx context.Context) {
 
 	// Ghost-runner cleanup: a runner that registered against the repo
 	// but has no matching VM in Hetzner (the VM was reaped before the
-	// runner cleanly deregistered) becomes dead weight in the Codeberg
+	// runner cleanly deregistered) becomes dead weight in the Forgejo
 	// UI and counts toward "online" in some scheduling code paths.
 	// Match by name: cloud-init's --name flag matches the VM name we
 	// pass to hcloud.
-	runners, err := o.cb.listRunners(tickCtx)
+	runners, err := o.fj.listRunners(tickCtx)
 	if err != nil {
 		o.log.Warn("runner list failed; skipping ghost cleanup", "err", err)
 	} else {
@@ -104,7 +104,7 @@ func (o *orchestrator) tick(ctx context.Context) {
 				continue
 			}
 			o.log.Info("removing ghost runner registration", "id", r.ID, "name", r.Name)
-			if err := o.cb.deleteRunner(tickCtx, r.ID); err != nil {
+			if err := o.fj.deleteRunner(tickCtx, r.ID); err != nil {
 				o.log.Warn("ghost runner delete failed", "id", r.ID, "err", err)
 			}
 		}
@@ -150,7 +150,7 @@ func (o *orchestrator) queuedJobsByArch(ctx context.Context) (map[string]int, er
 	out := map[string]int{}
 	for _, arch := range []string{"arm64", "amd64"} {
 		labels := []string{"self-hosted", "herold", arch}
-		jobs, err := o.cb.listJobsWithLabels(ctx, labels)
+		jobs, err := o.fj.listJobsWithLabels(ctx, labels)
 		if err != nil {
 			return nil, fmt.Errorf("listJobsWithLabels(%s): %w", arch, err)
 		}
@@ -189,7 +189,7 @@ func (o *orchestrator) spawnOne(ctx context.Context, arch string) error {
 	if err != nil {
 		return fmt.Errorf("snapshot lookup: %w", err)
 	}
-	token, err := o.cb.registrationToken(ctx)
+	token, err := o.fj.registrationToken(ctx)
 	if err != nil {
 		return fmt.Errorf("registration token: %w", err)
 	}
@@ -202,6 +202,7 @@ func (o *orchestrator) spawnOne(ctx context.Context, arch string) error {
 		Location:          o.cfg.location,
 		SSHKeyName:        o.cfg.sshKeyName,
 		SnapshotID:        snapshotID,
+		Instance:          o.cfg.forgejoBaseURL,
 		RegistrationToken: token,
 	})
 	if err != nil {
