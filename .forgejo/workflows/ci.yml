@@ -45,22 +45,27 @@ jobs:
           go install golang.org/x/tools/cmd/goimports@latest
           go install honnef.co/go/tools/cmd/staticcheck@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      # No actions/setup-python: actions/python-versions does not ship
-      # a linux/arm64 build of 3.12, and setup-python@v5 hard-fails on
-      # ARM with "version '3.12' with architecture 'arm64' was not
-      # found". The bake snapshot has python3.12 + pip + venv but the
-      # act_runner job container is node:22-bookworm, which only ships
-      # python3 (no `python` alias, no pip). pre-commit/action@v3.0.1's
-      # composite script invokes `python -m pip install pre-commit`, so
-      # we apt-install both bits here. ~30s per job, cached by apt
-      # within the same VM. The forward fix is host-mode runners (where
-      # the snapshot's tooling is directly visible); see
-      # docs/forgejo-migration.md Phase 5 follow-ups.
-      - name: install python toolchain for pre-commit/action
+      # The act_runner job container is node:22-bookworm: python3 yes,
+      # python alias no, pip no. pre-commit/action@v3.0.1 invokes
+      # `python -m pip install pre-commit` which trips over BOTH gaps
+      # (no `python`, no pip), then PEP 668 / "externally-managed-
+      # environment" on top of that. Easier than patching the action:
+      # install python3-pip + python-is-python3 + pre-commit directly.
+      # PIP_BREAK_SYSTEM_PACKAGES bypasses PEP 668 system-wide. ~30 s
+      # per job; cached by apt within the VM lifetime.
+      #
+      # The forward fix remains host-mode runners (where the bake
+      # snapshot's pre-commit + pip + python3.12 are directly
+      # visible). See docs/forgejo-migration.md Phase 5 follow-ups.
+      - name: install pre-commit toolchain (apt + pip)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          PIP_BREAK_SYSTEM_PACKAGES: "1"
         run: |
-          export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
-          apt-get install -y --no-install-recommends python3-pip python-is-python3
+          apt-get install -y --no-install-recommends \
+            python3-pip python-is-python3
+          python3 -m pip install --quiet pre-commit
       # The svelte-check pre-commit hook runs `pnpm --dir web run check`,
       # so pre-commit needs Node + pnpm on PATH and the workspace
       # dependencies installed.
@@ -74,7 +79,8 @@ jobs:
         run: pnpm --dir web install --frozen-lockfile
       - name: prep web placeholders
         run: make prep-web
-      - uses: pre-commit/action@v3.0.1
+      - name: pre-commit run --all-files
+        run: pre-commit run --all-files --show-diff-on-failure --color always
 
   lint:
     name: lint
