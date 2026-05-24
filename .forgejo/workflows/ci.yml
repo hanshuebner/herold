@@ -110,19 +110,14 @@ jobs:
     name: confidence (x86_64 sanity smoke)
     runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 10
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: herold
-          POSTGRES_PASSWORD: herold
-          POSTGRES_DB: herold
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+    # No `services:` block: act_runner host-mode does not start
+    # workflow service containers (confirmed in run #21: no
+    # `docker create image=postgres:16` shows up in the log, and
+    # the wait-for-postgres step then times out). The runner VMs
+    # all have docker installed (the bake snapshot), so we launch
+    # postgres ourselves in a step and `localhost:5432` is reachable
+    # via the published port. The VM is ephemeral and reaped after
+    # the job, so we don't bother with explicit teardown.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -147,11 +142,16 @@ jobs:
         env:
           HEROLD_TEST_STORE: sqlite
         run: go test -count=1 -timeout 3m ./internal/diag/migrate/...
-      # Host-mode runners (see cmd/herold-runner-orchestrator/
-      # cloud_init.go) publish the service container's `ports:` to
-      # the VM's localhost the same way GitHub-hosted runners do, so
-      # `localhost:5432` is reachable from the job and acts like a
-      # regular forwarded port.
+      - name: start postgres (manual, act_runner host-mode ignores services:)
+        run: |
+          docker run -d --name postgres --rm \
+            -p 5432:5432 \
+            -e POSTGRES_USER=herold \
+            -e POSTGRES_PASSWORD=herold \
+            -e POSTGRES_DB=herold \
+            --health-cmd pg_isready \
+            --health-interval=5s --health-timeout=5s --health-retries=10 \
+            postgres:16
       - name: wait for postgres
         run: |
           for i in $(seq 1 30); do
@@ -161,6 +161,7 @@ jobs:
             sleep 1
           done
           echo "postgres not ready after 30s" >&2
+          docker logs postgres 2>&1 | tail -40 >&2 || true
           exit 1
       - name: postgres smoke + e2e happy path
         env:
@@ -227,19 +228,10 @@ jobs:
       fail-fast: false
       matrix:
         store: [sqlite, postgres]
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: herold
-          POSTGRES_PASSWORD: herold
-          POSTGRES_DB: herold
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+    # No `services:` block: act_runner host-mode does not start
+    # workflow service containers. Postgres is launched manually
+    # in a per-matrix step below (sqlite lane skips it). See the
+    # confidence-x86 job for the same pattern + rationale.
     env:
       HEROLD_TEST_STORE: ${{ matrix.store }}
       # HEROLD_PG_DSN set per-step on the postgres lane only -- exporting
@@ -284,6 +276,17 @@ jobs:
         run: go build -trimpath ./...
       - name: build (nofrontend)
         run: go build -trimpath -tags nofrontend ./...
+      - name: start postgres (postgres matrix lane only)
+        if: matrix.store == 'postgres'
+        run: |
+          docker run -d --name postgres --rm \
+            -p 5432:5432 \
+            -e POSTGRES_USER=herold \
+            -e POSTGRES_PASSWORD=herold \
+            -e POSTGRES_DB=herold \
+            --health-cmd pg_isready \
+            --health-interval=5s --health-timeout=5s --health-retries=10 \
+            postgres:16
       - name: wait for postgres
         if: matrix.store == 'postgres'
         run: |
@@ -294,6 +297,7 @@ jobs:
             sleep 1
           done
           echo "postgres not ready after 30s" >&2
+          docker logs postgres 2>&1 | tail -40 >&2 || true
           exit 1
       - name: compute sqlite race / fast package lists
         if: matrix.store == 'sqlite'
