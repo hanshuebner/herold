@@ -51,6 +51,13 @@ jobs:
       # found". The snapshot already has python3.12 + python3-pip +
       # python3-venv installed (provision.sh) so pre-commit/action's
       # `pip install pre-commit` works against the system interpreter.
+      #
+      # But: pre-commit/action@v3.0.1's composite script invokes `python`
+      # (no -3), and node:22-bookworm (the act_runner job container)
+      # only ships `python3`. Add the alias so the composite shell
+      # script finds the interpreter.
+      - name: alias python -> python3 for pre-commit/action
+        run: ln -sf "$(command -v python3)" /usr/local/bin/python
       # The svelte-check pre-commit hook runs `pnpm --dir web run check`,
       # so pre-commit needs Node + pnpm on PATH and the workspace
       # dependencies installed.
