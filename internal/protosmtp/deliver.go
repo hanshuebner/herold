@@ -445,9 +445,15 @@ func (sess *session) deliverOne(
 		// principal's SeenAddress history when the sender is not spam,
 		// not a mailing list, not an identity or contact of the principal,
 		// and the principal has seen_addresses_enabled = true.
-		// Fire-and-forget — seeding never blocks delivery.
+		// Synchronous, on the session ctx -- the prior `go ... context.
+		// Background()` variant outlived the session, kept SQLite handles
+		// open into t.TempDir cleanup, and panicked the test logger when
+		// it tried to warn on a closing store (issue #10). The lookup is
+		// 3-4 fast SQLite queries and the function returns early when
+		// the principal has the feature off, so the per-DATA cost is
+		// invisible in practice.
 		if rc.principalID != 0 && classification.Verdict != spam.Spam {
-			go seedFromAddress(context.Background(), sess.srv.store, sess.srv.log,
+			seedFromAddress(ctx, sess.srv.store, sess.srv.log,
 				rc.principalID, sess.envelope.mailFrom, msg)
 		}
 	}
