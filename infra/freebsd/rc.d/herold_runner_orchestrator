@@ -92,6 +92,20 @@ required_files="${herold_runner_orchestrator_envfile} ${procname}"
 start_precmd="${name}_prestart"
 
 herold_runner_orchestrator_prestart() {
+    # Clear stale pidfile. daemon(8) refuses to start ("process already
+    # running, pid: -1") if /var/run/<name>.pid exists from a previous
+    # supervisor that didn't get to clean up (e.g. SIGKILL, crash
+    # mid-startup, the -1 sentinel daemon writes during its fork
+    # window). The file is mode 600 root, so plain test is enough.
+    if [ -f "${pidfile}" ]; then
+        local _stale_pid
+        _stale_pid=$(cat "${pidfile}" 2>/dev/null)
+        if [ -z "${_stale_pid}" ] || ! kill -0 "${_stale_pid}" 2>/dev/null; then
+            warn "removing stale pidfile ${pidfile} (had pid '${_stale_pid}')"
+            rm -f "${pidfile}"
+        fi
+    fi
+
     # Ensure the log file exists and is writable by the service user
     # (daemon -o appends; touch+chown is idempotent and safe to re-run).
     if [ ! -e "${herold_runner_orchestrator_log}" ]; then
@@ -100,7 +114,7 @@ herold_runner_orchestrator_prestart() {
             "${herold_runner_orchestrator_log}" || return 1
     fi
 
-    # Source the env file so HCLOUD_TOKEN and ORCHESTRATOR_CODEBERG_TOKEN
+    # Source the env file so HCLOUD_TOKEN and ORCHESTRATOR_FORGEJO_TOKEN
     # propagate into daemon(8) -> the orchestrator binary. set -a marks
     # everything sourced as exported so the eval'd command line inherits.
     if [ -r "${herold_runner_orchestrator_envfile}" ]; then
