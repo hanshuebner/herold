@@ -99,7 +99,7 @@ command_args="-f -P ${pidfile} -t ${name} -r -R 30 \
     -o ${herold_runner_orchestrator_log} \
     ${procname} ${herold_runner_orchestrator_args}"
 
-required_files="${herold_runner_orchestrator_envfile} ${procname}"
+required_files="${herold_runner_orchestrator_envfile}"
 
 start_precmd="${name}_prestart"
 
