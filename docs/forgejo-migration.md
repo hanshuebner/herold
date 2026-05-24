@@ -1,14 +1,19 @@
 # Off-GitHub migration plan (Codeberg → self-hosted Forgejo)
 
-Status: code-host is now `code.netzhansa.com` (self-hosted Forgejo on
-Hans's FreeBSD VM); first end-to-end CI run pending. The original plan
-targeted Codeberg as the destination; mid-execution we discovered that
-Codeberg's Forgejo Actions REST API namespace is gated off (404 on
-`/repos/.../actions/*`), which made polling-based autoscaling
-impossible. We pivoted to a self-hosted Forgejo instance that exposes
-the full Actions API. The plan + execution log below documents the
-whole journey, Codeberg phase included; the **most recent execution-log
-entries cover the pivot to self-hosted**.
+Status: **complete (historical record)**. The code host is
+`code.netzhansa.com`. The original plan targeted Codeberg, then
+pivoted to self-hosted Forgejo on Hans's FreeBSD VM, and ultimately
+moved to `outpost.netzhansa.com` (Debian) on 2026-05-24. Ongoing
+configuration for the Debian host lives in a sibling repo,
+`netzhansa-infra` (at `code.netzhansa.com/hanshuebner/netzhansa-infra`).
+The `infra/freebsd/` directory referenced throughout the older entries
+below has been removed -- the FreeBSD VM is scheduled for retirement.
+`infra/hetzner/` (the runner-VM bakery) is still active and used by
+`cmd/herold-runner-orchestrator/`.
+
+The plan + execution log below documents the whole journey including
+the Codeberg phase and the self-hosted FreeBSD interlude; it's kept
+for context only.
 
 Author: Hans + Claude (initial planning 2026-05-23)
 Owner during execution: Hans
