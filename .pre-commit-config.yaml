@@ -134,6 +134,9 @@ repos:
         entry: bash -c 'go test -race -count=1 -short ./internal/diag/backup/... ./internal/diag/migrate/...' --
         language: system
         pass_filenames: false
+        # Skip when no Go source / module file is staged; rc.d /
+        # docs / yaml-only commits don't need the diag round-trip.
+        files: '\.go$|^go\.(mod|sum)$'
 
       # Race-detector lane on the highest-concurrency-density packages.
       # Targeted (~17s on a warm cache) so the per-commit cost is bounded;
@@ -147,6 +150,9 @@ repos:
           bash -c 'go test -race -count=1 -short ./internal/linkpreview/... ./internal/webpush/... ./internal/storefts/... ./internal/protocall/... ./internal/protochat/... ./internal/protojmap/push/...' --
         language: system
         pass_filenames: false
+        # Skip when no Go source / module file is staged. See the
+        # same filter on diag-fast-tests above.
+        files: '\.go$|^go\.(mod|sum)$'
 
       # svelte-check runs the same TypeScript / Svelte typing checks
       # CI's "web (build + check)" job runs. Catches local typos like
