@@ -94,7 +94,15 @@ func (o *orchestrator) tick(ctx context.Context) {
 	// pass to hcloud.
 	runners, err := o.fj.listRunners(tickCtx)
 	if err != nil {
-		o.log.Warn("runner list failed; skipping ghost cleanup", "err", err)
+		// Some Forgejo versions don't expose the repo-level /actions/runners
+		// route. Treat that as "no list available" silently (debug-level)
+		// so we don't spam a warning every tick. The pool still works
+		// because spawning + reaping don't depend on it.
+		if isNotFound(err) {
+			o.log.Debug("runner list endpoint not exposed; ghost cleanup disabled")
+		} else {
+			o.log.Warn("runner list failed; skipping ghost cleanup", "err", err)
+		}
 	} else {
 		for _, r := range runners {
 			if !strings.HasPrefix(r.Name, "herold-runner-") {

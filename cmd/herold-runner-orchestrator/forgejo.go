@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -29,6 +30,18 @@ type forgejoClient struct {
 	logger *slog.Logger
 }
 
+// httpErr is the typed error returned by do() for any non-2xx
+// response. Callers can errors.As against it to special-case status
+// codes (e.g. 404 fall-through on optional endpoints).
+type httpErr struct {
+	method, url, body string
+	code              int
+}
+
+func (e *httpErr) Error() string {
+	return fmt.Sprintf("%s %s -> HTTP %d: %s", e.method, e.url, e.code, e.body)
+}
+
 func (c *forgejoClient) do(ctx context.Context, method, path string, query url.Values, into any) error {
 	u := c.base + "/api/v1" + path
 	if len(query) > 0 {
@@ -47,13 +60,19 @@ func (c *forgejoClient) do(ctx context.Context, method, path string, query url.V
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("%s %s -> HTTP %d: %s", method, u, resp.StatusCode, string(body))
+		return &httpErr{method: method, url: u, body: string(body), code: resp.StatusCode}
 	}
 	if into == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(into)
+}
+
+// isNotFound reports whether err is a 404 returned by do().
+func isNotFound(err error) bool {
+	var he *httpErr
+	return errors.As(err, &he) && he.code == 404
 }
 
 // job mirrors Forgejo's ActionRunJob shape (the fields we actually
@@ -67,29 +86,28 @@ type job struct {
 	RunsOn []string `json:"runs_on"`
 }
 
-type listJobsResponse struct {
-	Jobs []job `json:"jobs"`
-}
-
 // listJobsWithLabels returns jobs whose runs-on label set matches the
 // requested labels (server-side filter on /actions/runners/jobs).
 // Forgejo does not expose a status filter on this endpoint, so we
 // trim to "queued" / "waiting" client-side. A returned job is one
 // our pool should be ready to claim.
+//
+// Forgejo's response is a bare array of ActionRunJob, not a wrapped
+// object - confirmed against code.netzhansa.com running Forgejo 14.0.5.
 func (c *forgejoClient) listJobsWithLabels(ctx context.Context, labels []string) ([]job, error) {
 	q := url.Values{}
 	if len(labels) > 0 {
 		q.Set("labels", strings.Join(labels, ","))
 	}
-	var resp listJobsResponse
+	var jobs []job
 	err := c.do(ctx, "GET",
 		"/repos/"+c.repo+"/actions/runners/jobs",
-		q, &resp)
+		q, &jobs)
 	if err != nil {
 		return nil, err
 	}
-	out := resp.Jobs[:0]
-	for _, j := range resp.Jobs {
+	out := jobs[:0]
+	for _, j := range jobs {
 		switch j.Status {
 		case "queued", "waiting":
 			out = append(out, j)
@@ -106,22 +124,24 @@ type runner struct {
 	Labels []string `json:"labels"`
 }
 
-type listRunnersResponse struct {
-	Runners []runner `json:"runners"`
-}
-
 // listRunners returns runners currently registered to the repo.
 // Used by the reaper to drop ghost registrations whose VM no longer
 // exists.
+//
+// Some Forgejo versions (14.0.5 confirmed on code.netzhansa.com) do
+// not expose this route at the repo level - they return 404. Ghost
+// cleanup is best-effort; an empty list + warning is the right
+// degradation. Spawning works regardless because the registration-
+// token endpoint is still reachable.
 func (c *forgejoClient) listRunners(ctx context.Context) ([]runner, error) {
-	var resp listRunnersResponse
+	var runners []runner
 	err := c.do(ctx, "GET",
 		"/repos/"+c.repo+"/actions/runners",
-		nil, &resp)
+		nil, &runners)
 	if err != nil {
 		return nil, err
 	}
-	return resp.Runners, nil
+	return runners, nil
 }
 
 // registrationToken returns a fresh one-shot token a new VM can use
