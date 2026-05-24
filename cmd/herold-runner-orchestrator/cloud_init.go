@@ -37,7 +37,21 @@ log:
 runner:
   file: /var/lib/forgejo-runner/.runner
   capacity: 1
-  envs: {}
+  # In host-mode, act_runner does not import the daemon process's
+  # environment for the job; jobs run with an empty env unless we
+  # set it here. actions/setup-go invocation of "go env" then dies
+  # with:
+  #   build cache is required, but could not be located:
+  #   GOCACHE is not defined and neither $XDG_CACHE_HOME nor $HOME
+  #   are defined
+  # because Go uses $HOME to derive the default $GOCACHE. The
+  # snapshot installs the Go toolchain at /usr/local/go and the
+  # pre-baked pre-commit venv exports its binary via
+  # /usr/local/bin/pre-commit (a symlink), so a baseline PATH plus
+  # an explicit HOME is enough for jobs to find everything.
+  envs:
+    HOME: /root
+    PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin:/root/go/bin
   fetch_timeout: 5s
   fetch_interval: 2s
 container:
