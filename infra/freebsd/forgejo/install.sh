@@ -35,7 +35,7 @@ DATA_DIR="/var/db/forgejo"
 LOG_DIR="/var/log/forgejo"
 ADMIN_USER="hanshuebner"
 ADMIN_EMAIL="hans@huebner.org"
-FORGEJO_BIN="/usr/local/bin/forgejo"
+FORGEJO_BIN="/usr/local/sbin/forgejo"
 
 log() { printf '[forgejo-install %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
