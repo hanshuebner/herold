@@ -202,11 +202,24 @@ No C compiler is required: herold's default build is pure Go.
 2. **Place your `system.toml`** (see [The system
    config](#the-system-config)) at `/etc/herold/system.toml`, and make
    sure its `data_dir` points somewhere the herold process can write.
+   You can start with a copy of the example configuration:
+
+   ```
+   cp docs/manual/user/examples/system.toml.quickstart data/system.toml
+   ```
+
+   You'll also need a TLS certificate.  For experimentation, create one with the supplied script:
+
+   ```
+   ./scripts/make-self-signed-cert.sh data/ mail.example.local
+   ```
+
+
 
 3. **Start the server:**
 
    ```bash
-   herold server start --system-config /etc/herold/system.toml
+   bin/herold server start --system-config data/system.toml
    ```
 
    For an unattended host, run herold under a service manager
@@ -237,7 +250,7 @@ On a **source install**, run the `herold` commands below directly. On a
 To validate a config file without starting the server:
 
 ```bash
-herold server config-check /etc/herold/system.toml
+bin/herold server config-check data/system.toml
 ```
 
 It exits non-zero with an actionable message naming the offending key on
@@ -249,7 +262,7 @@ failure. {%# REQ-OPS-06 #%}
 and prints an API key:
 
 ```bash
-herold bootstrap --email admin@example.com
+bin/herold --system-config data/system.toml bootstrap --email admin@example.com
 ```
 
 With no `--password` herold generates a strong one and prints it.
@@ -261,22 +274,12 @@ from the server afterwards.
 subsequent `herold` commands in the same shell authenticate without
 flags. It refuses to run once any principal exists.
 
-### Add your first domain
-
-```bash
-herold domain add example.com
-```
-
-Herold generates DKIM keys for the domain and assembles the DNS records
-it needs -- DKIM, SPF, DMARC, MTA-STS, and TLS reporting. With a DNS
-plugin configured it publishes them automatically; otherwise it prints
-the records for you to publish by hand. _Going Live_ walks through this
-in full. {%# REQ-OPS-60 #%}
+The domain that the administrator email address is under is automatically added to the system during bootstrapping.
 
 ### Add a user
 
 ```bash
-herold principal create user1@example.com
+bin/herold --system-config data/system.toml principal create user1@example.com
 ```
 
 User management -- aliases, mailboxes, API keys, granting admin -- is
