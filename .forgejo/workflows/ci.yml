@@ -144,6 +144,12 @@ jobs:
         run: go test -count=1 -timeout 3m ./internal/diag/migrate/...
       - name: start postgres (manual, act_runner host-mode ignores services:)
         run: |
+          # vm_max_lifetime=120m means the same runner serves multiple
+          # jobs back-to-back; a stale `postgres` container from an
+          # earlier job collides on the name. Remove unconditionally
+          # before starting; the new container --rm's itself when we
+          # stop it in the cleanup step.
+          docker rm -f postgres 2>/dev/null || true
           docker run -d --name postgres --rm \
             -p 5432:5432 \
             -e POSTGRES_USER=herold \
@@ -169,6 +175,9 @@ jobs:
         run: |
           go test -count=1 -timeout 5m -p 1 \
             ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
+      - name: stop postgres
+        if: always()
+        run: docker rm -f postgres 2>/dev/null || true
 
   web:
     name: web (build + check)
@@ -279,6 +288,10 @@ jobs:
       - name: start postgres (postgres matrix lane only)
         if: matrix.store == 'postgres'
         run: |
+          # vm_max_lifetime=120m means the same runner serves multiple
+          # jobs back-to-back; a stale `postgres` container from an
+          # earlier job collides on the name.
+          docker rm -f postgres 2>/dev/null || true
           docker run -d --name postgres --rm \
             -p 5432:5432 \
             -e POSTGRES_USER=herold \
@@ -339,6 +352,9 @@ jobs:
         run: |
           PKGS=$(go list ./... | grep -vE '^github.com/hanshuebner/herold/(internal/storepg|internal/diag/migrate|test/e2e)($|/)')
           go test -count=1 -timeout 20m $PKGS
+      - name: stop postgres
+        if: always() && matrix.store == 'postgres'
+        run: docker rm -f postgres 2>/dev/null || true
 
   fuzz-short:
     name: fuzz (short)
