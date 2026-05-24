@@ -66,7 +66,7 @@ jobs:
           for f in dist/*; do
             cosign sign-blob --yes --output-signature "$f.sig" --output-certificate "$f.pem" "$f"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v3
         with:
           name: herold-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/*

@@ -482,7 +482,7 @@ jobs:
         run: make interop-jmaptest
       - name: upload artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: jmaptest-logs
           path: test/interop/logs/
@@ -534,7 +534,7 @@ jobs:
             go build -trimpath -buildvcs=true -ldflags "-s -w" \
               -o dist/${name}-${{ matrix.os }}-${{ matrix.arch }} ./$p
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v3
         with:
           name: herold-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/*
