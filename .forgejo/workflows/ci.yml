@@ -48,16 +48,19 @@ jobs:
       # No actions/setup-python: actions/python-versions does not ship
       # a linux/arm64 build of 3.12, and setup-python@v5 hard-fails on
       # ARM with "version '3.12' with architecture 'arm64' was not
-      # found". The snapshot already has python3.12 + python3-pip +
-      # python3-venv installed (provision.sh) so pre-commit/action's
-      # `pip install pre-commit` works against the system interpreter.
-      #
-      # But: pre-commit/action@v3.0.1's composite script invokes `python`
-      # (no -3), and node:22-bookworm (the act_runner job container)
-      # only ships `python3`. Add the alias so the composite shell
-      # script finds the interpreter.
-      - name: alias python -> python3 for pre-commit/action
-        run: ln -sf "$(command -v python3)" /usr/local/bin/python
+      # found". The bake snapshot has python3.12 + pip + venv but the
+      # act_runner job container is node:22-bookworm, which only ships
+      # python3 (no `python` alias, no pip). pre-commit/action@v3.0.1's
+      # composite script invokes `python -m pip install pre-commit`, so
+      # we apt-install both bits here. ~30s per job, cached by apt
+      # within the same VM. The forward fix is host-mode runners (where
+      # the snapshot's tooling is directly visible); see
+      # docs/forgejo-migration.md Phase 5 follow-ups.
+      - name: install python toolchain for pre-commit/action
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y --no-install-recommends python3-pip python-is-python3
       # The svelte-check pre-commit hook runs `pnpm --dir web run check`,
       # so pre-commit needs Node + pnpm on PATH and the workspace
       # dependencies installed.
