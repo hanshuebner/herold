@@ -83,17 +83,25 @@ CFGEOF
 
 cat >/etc/systemd/system/forgejo-runner.service <<'SVCEOF'
 [Unit]
-Description=Forgejo Actions runner (herold-ci, ephemeral)
+Description=Forgejo Actions runner (herold-ci, ephemeral, one-shot)
 After=network-online.target docker.service
 Wants=network-online.target docker.service
 
 [Service]
 Type=simple
 WorkingDirectory=/var/lib/forgejo-runner
-ExecStart=/usr/local/bin/forgejo-runner daemon --config /etc/forgejo-runner/config.yaml
-Restart=on-failure
-RestartSec=5
-# Pick up the daemon's stdout cleanly in journalctl.
+# --once: daemon exits cleanly after a single job. The VM then
+# powers itself off via ExecStopPost and the orchestrator's
+# reaper picks up the off-state VM at the next tick. Eliminates
+# the mid-job-reap-at-max-lifetime class of bug we hit in
+# run #19 and #24.
+ExecStart=/usr/local/bin/forgejo-runner daemon --once --config /etc/forgejo-runner/config.yaml
+# Shutdown unconditionally after the daemon exits -- success
+# (job processed) and failure (crash) both terminate the VM so
+# we never leak a half-broken runner. The orchestrator deletes
+# the off-state VM and spawns a fresh one for the next job.
+ExecStopPost=/sbin/shutdown -h now
+# No Restart= -- once the daemon exits, the VM is going away.
 StandardOutput=journal
 StandardError=journal
 
