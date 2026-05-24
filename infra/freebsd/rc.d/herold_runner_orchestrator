@@ -63,7 +63,19 @@ load_rc_config "$name"
 : ${herold_runner_orchestrator_log:="/var/log/herold-runner-orchestrator.log"}
 : ${herold_runner_orchestrator_args:="--log json"}
 
-procname="/usr/local/bin/herold-runner-orchestrator"
+# procname is what rc.subr matches against ps's command= column when
+# verifying the pidfile. We launch the orchestrator under daemon(8)
+# with -r/-R for crash-restart, so the pidfile (via -P) contains the
+# SUPERVISOR's PID, not the orchestrator binary's. The supervisor's
+# command is "daemon: herold_runner_orchestrator[<child>] (daemon)";
+# rc.subr splits on whitespace and matches the first token against
+# the basename of procname plus a few common decorations. With
+# procname=daemon the case "daemon:" matches via ${_procnamebn}:,
+# so service status/stop find the supervisor correctly. Using the
+# orchestrator binary path here looked at the child process which
+# the pidfile doesn't reference, and made service status report
+# "not running" even when the supervisor was alive.
+procname="daemon"
 pidfile="/var/run/${name}.pid"
 
 # daemon(8) wraps the binary so:
