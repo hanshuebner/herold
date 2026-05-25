@@ -268,10 +268,18 @@ func (h *handler) upsert(ctx context.Context, in sdk.DNSPresentParams, action r5
 		effective = r53types.ChangeActionUpsert
 	}
 
+	// Route53 expects the Name field to be the fully-qualified record
+	// name. ACME's DNS01 challenger passes `name = "_acme-challenge"`
+	// (relative to the certificate domain in `zone`); without
+	// composition Route53 canonicalises the bare name to "_acme-challenge."
+	// at the DNS root, which is not in the hosted zone and gets
+	// rejected with `InvalidChangeBatch: not permitted in zone ...`.
+	recordName := composeRecordName(in.Name, in.Zone)
+
 	change := r53types.Change{
 		Action: effective,
 		ResourceRecordSet: &r53types.ResourceRecordSet{
-			Name: aws.String(in.Name),
+			Name: aws.String(recordName),
 			Type: rrType,
 			TTL:  aws.Int64(ttl),
 			ResourceRecords: []r53types.ResourceRecord{
@@ -283,7 +291,34 @@ func (h *handler) upsert(ctx context.Context, in sdk.DNSPresentParams, action r5
 		return sdk.DNSPresentResult{}, err
 	}
 	h.waitForPropagation(ctx)
-	return sdk.DNSPresentResult{ID: encodeID(hzID, in.Name, in.RecordType, value)}, nil
+	// Encode the composed FQDN into the id so DNSCleanup looks the
+	// record up by the exact name we just wrote.
+	return sdk.DNSPresentResult{ID: encodeID(hzID, recordName, in.RecordType, value)}, nil
+}
+
+// composeRecordName turns the caller's (name, zone) pair into the
+// fully-qualified DNS name Route53 expects. It is a no-op when name
+// is already an FQDN within zone, and a join when name is relative.
+// Trailing dots in either input are normalised away.
+//
+//	name="_acme-challenge", zone="mx.netzhansa.com"
+//	    -> "_acme-challenge.mx.netzhansa.com"
+//	name="_acme-challenge.mx.netzhansa.com", zone="mx.netzhansa.com"
+//	    -> "_acme-challenge.mx.netzhansa.com"
+//	name="@", zone="netzhansa.com" -> "netzhansa.com"
+func composeRecordName(name, zone string) string {
+	name = strings.TrimSuffix(strings.TrimSpace(name), ".")
+	zone = strings.TrimSuffix(strings.TrimSpace(zone), ".")
+	if zone == "" {
+		return name
+	}
+	if name == "" || name == "@" {
+		return zone
+	}
+	if name == zone || strings.HasSuffix(strings.ToLower(name), "."+strings.ToLower(zone)) {
+		return name
+	}
+	return name + "." + zone
 }
 
 func (h *handler) DNSCleanup(ctx context.Context, in sdk.DNSCleanupParams) error {
