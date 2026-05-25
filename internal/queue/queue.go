@@ -280,6 +280,22 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 		return "", err
 	}
 
+	// Stash the signing intent BEFORE writing any queue row. The worker
+	// poll runs every PollInterval (50 ms in tests, 5 s in prod) and
+	// can pick up the row the instant EnqueueMessage returns -- if
+	// rememberSigning happened after the loop, the worker would race
+	// past lookupSigning's empty result and deliver unsigned. Writing
+	// the sidecar first means the row is never visible without its
+	// intent record (issue #11).
+	q.rememberSigning(envID, signingIntent{
+		Sign:          msg.Sign,
+		Domain:        msg.SigningDomain,
+		REQUIRETLS:    msg.REQUIRETLS,
+		MailFrom:      msg.MailFrom,
+		DSNNotify:     msg.DSNNotify,
+		DSNEnvelopeID: msg.DSNEnvelopeID,
+	})
+
 	now := q.clk.Now()
 	// REQ-PROTO-58 / REQ-FLOW-63: when SendAt is set in the future the
 	// row's NextAttemptAt is bumped to that instant so the scheduler
@@ -377,18 +393,7 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 		slog.Uint64("first_row_id", uint64(firstID)),
 	)
 
-	// Stash the signing intent so the worker can recover it. The
-	// sidecar is best-effort; on cold restart the body is already in
-	// canonical form and the worker skips signing if the sidecar is
-	// absent.
-	q.rememberSigning(envID, signingIntent{
-		Sign:          msg.Sign,
-		Domain:        msg.SigningDomain,
-		REQUIRETLS:    msg.REQUIRETLS,
-		MailFrom:      msg.MailFrom,
-		DSNNotify:     msg.DSNNotify,
-		DSNEnvelopeID: msg.DSNEnvelopeID,
-	})
+	// Signing intent was registered before the row writes; just wake.
 	q.wake()
 	return envID, nil
 }
