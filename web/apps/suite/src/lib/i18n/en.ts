@@ -139,6 +139,19 @@ export const en = {
   'mail.notFound.title': 'Not found',
   'mail.notFound.lead': 'No mail folder at that URL.',
 
+  // ── JMAP setError types (issue #17) ──────────────────────────────────
+  // Surfaced when an Email/set update lands in `notUpdated`. Without
+  // these, the raw type code (`notFound`, `forbidden`, ...) leaks into
+  // the toast as a user-visible English string.
+  'mail.setError.notFound':           'That message no longer exists.',
+  'mail.setError.forbidden':          'You do not have permission for that action.',
+  'mail.setError.invalidProperties':  'The change was rejected as invalid.',
+  'mail.setError.overQuota':          'Your mailbox is over quota.',
+  'mail.setError.tooManyMailboxes':   'Too many mailboxes for one message.',
+  'mail.setError.mailboxHasChild':    'That mailbox has sub-mailboxes; remove them first.',
+  'mail.setError.serverFail':         'The server returned an error.',
+  'mail.setError.unknown':            'Something went wrong.',
+
   // ── Selection chooser (issue #10) ────────────────────────────────────
   'select.all': 'All',
   'select.none': 'None',

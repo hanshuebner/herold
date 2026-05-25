@@ -1952,7 +1952,7 @@ class MailStore {
     const updated = Object.keys(result.updated ?? {});
     const failed: Record<string, string> = {};
     for (const [id, info] of Object.entries(result.notUpdated ?? {})) {
-      failed[id] = info.description ?? info.type;
+      failed[id] = setErrorToUserMessage(info);
     }
     // Refresh sidebar mailbox counts after a bulk mutation. Issue #24.
     this.#refreshMailboxesSoon();
@@ -2721,7 +2721,7 @@ class MailStore {
     this.#captureEmailSetNewState(result);
     const failure = result.notUpdated?.[emailId];
     if (failure) {
-      throw new Error(failure.description ?? failure.type);
+      throw new Error(setErrorToUserMessage(failure));
     }
     // Sidebar mailbox counters (totalEmails / unreadEmails) are
     // server-computed; refresh them after every successful Email/set
@@ -2934,6 +2934,33 @@ function formatSnoozeTarget(d: Date): string {
 function errMessage(err: unknown, fallback: string): string {
   if (err instanceof Error) return err.message || fallback;
   return fallback;
+}
+
+/** Render a JMAP `setError` into a user-facing message.
+ *
+ * The server-supplied `description` field (when present and human-
+ * readable) wins. Otherwise we look up a localised string keyed on
+ * the `type` enum value (`mail.setError.<type>`), so users see
+ * "Diese Nachricht gibt es nicht mehr." instead of the raw
+ * "notFound" code that the JMAP wire format uses. Falls back to a
+ * generic "Something went wrong" key when the type is unknown
+ * (issue #17).
+ */
+function setErrorToUserMessage(info: { type: string; description?: string }): string {
+  if (info.description && info.description.length > 0) {
+    return info.description;
+  }
+  const knownKeys: Record<string, string> = {
+    notFound: 'mail.setError.notFound',
+    forbidden: 'mail.setError.forbidden',
+    invalidProperties: 'mail.setError.invalidProperties',
+    overQuota: 'mail.setError.overQuota',
+    tooManyMailboxes: 'mail.setError.tooManyMailboxes',
+    mailboxHasChild: 'mail.setError.mailboxHasChild',
+    serverFail: 'mail.setError.serverFail',
+  };
+  const key = knownKeys[info.type] ?? 'mail.setError.unknown';
+  return i18n.t(key);
 }
 
 /**

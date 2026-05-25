@@ -137,6 +137,19 @@ export const de = {
   'mail.notFound.title': 'Nicht gefunden',
   'mail.notFound.lead': 'Unter dieser URL gibt es kein Postfach.',
 
+  // ── JMAP setError-Typen (issue #17) ─────────────────────────────────
+  // Wird angezeigt, wenn ein Email/set-Update als `notUpdated`
+  // zurückkommt. Ohne diese Strings würde der Server-Fehlercode
+  // (`notFound`, `forbidden`, …) wortwörtlich im Toast erscheinen.
+  'mail.setError.notFound':           'Diese Nachricht gibt es nicht mehr.',
+  'mail.setError.forbidden':          'Dafür fehlen dir die Rechte.',
+  'mail.setError.invalidProperties':  'Die Änderung wurde als ungültig abgelehnt.',
+  'mail.setError.overQuota':          'Dein Postfach hat das Speicher­limit erreicht.',
+  'mail.setError.tooManyMailboxes':   'Zu viele Postfächer für diese Nachricht.',
+  'mail.setError.mailboxHasChild':    'Dieser Ordner hat Unter­ordner; bitte erst löschen.',
+  'mail.setError.serverFail':         'Der Server hat einen Fehler gemeldet.',
+  'mail.setError.unknown':            'Da ging etwas schief.',
+
   // ── Selection chooser (issue #10) ────────────────────────────────────
   'select.all': 'Alle',
   'select.none': 'Keine',
