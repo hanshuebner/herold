@@ -73,6 +73,9 @@ The model: local identity is primary. A user MAY associate 0–N external OIDC i
 - **REQ-AUTH-41** SHOULD support **WebAuthn / FIDO2** as a second factor for the admin UI (phase 2; v1 may be TOTP-only).
 - **REQ-AUTH-42** 2FA applies to: admin UI login, JMAP primary-password login. Does NOT apply to: IMAP/SMTP submission with app passwords (by design).
 - **REQ-AUTH-43** Recovery codes: ten one-time codes generated on enrollment, hashed like passwords.
+- **REQ-AUTH-44** TOTP enrollment MUST be mandatory for principals with the `admin` or `superadmin` role. The admin-login flow MUST refuse to issue an `admin`-scoped session for a principal that does not have TOTP enrolled, returning a step-up error pointing the operator at the enrollment endpoint. The granting-admin path (PATCH `/principals/{id}` to add `admin`) MUST refuse to grant the role until the target principal has TOTP enrolled, OR MUST simultaneously force enrollment on next sign-in via a one-time enrollment ticket (operator choice; default = refuse). The bootstrap superadmin is the sole exception: the password + API key minted by `herold bootstrap` are usable once for the express purpose of enrolling TOTP, after which the same enforcement applies on every subsequent sign-in.
+  - Rationale: an admin listener fronted by a reverse proxy on the public internet has no IP allowlist by default; mandatory 2FA is what makes the admin surface safe to expose.
+  - Implementation note: the existing login handler already enforces TOTP **when enrolled** (REQ-AUTH-SCOPE-03); this requirement closes the gap where a principal with the admin role but no TOTP can still sign in.
 
 ### OAuth 2 bearer-token verification (for HTTP surfaces)
 
@@ -97,7 +100,7 @@ Stalwart has a fine-grained permission matrix with ~80 permissions and role inhe
 
 - **REQ-AUTH-70** IMAP and SMTP submission sessions are stateful per-connection. No shared session cache across reconnects.
 - **REQ-AUTH-71** JMAP sessions use short-lived bearer tokens (default 1h) with refresh tokens (default 30 days, bound to IP optionally). Refresh tokens are revocable.
-- **REQ-AUTH-72** Admin UI sessions use httpOnly + Secure + SameSite=Strict cookies, 1h idle timeout, absolute 12h max.
+- **REQ-AUTH-72** Admin UI sessions use httpOnly + Secure + SameSite=Strict cookies. Default idle timeout 1h, default absolute lifetime 8h, hard ceiling 12h. Both timeouts MUST be operator-configurable under `[server.ui] session.admin_idle_ttl` and `[server.ui] session.admin_absolute_ttl`; configured values above the 12h ceiling are rejected at config-load time. The login handler MUST refuse to issue a session with TTL above the configured `admin_absolute_ttl`.
 - **REQ-AUTH-73** All session tokens verifiable offline (signed JWT or signed opaque token). No per-request DB lookup for hot path auth, but revocation list checked once per minute per session.
 
 ## Domain ownership and delegated admin
