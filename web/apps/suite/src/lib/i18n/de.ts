@@ -227,6 +227,13 @@ export const de = {
   'msg.kebab.markUnreadFromHere': 'Ab hier als ungelesen markieren',
   'msg.kebab.delete': 'Diese Nachricht löschen',
   'msg.kebab.download': 'Nachricht herunterladen',
+  'msg.kebab.showOriginal': 'Original anzeigen',
+  'msg.rawSource.title': 'Original-Nachrichtenquelltext',
+  'msg.rawSource.copy': 'Kopieren',
+  'msg.rawSource.copied': 'Kopiert',
+  'msg.rawSource.close': 'Schließen',
+  'msg.rawSource.loading': 'Quelltext wird geladen…',
+  'msg.rawSource.error': 'Quelltext konnte nicht geladen werden',
 
   // ── Compose ─────────────────────────────────────────────────────────
   'compose.title.new': 'Neue Nachricht',

@@ -406,6 +406,22 @@ describe('MessageAccordion: per-message kebab menu (conservative slice)', () => 
       '/jmap/download/acct1/BLOB42/My%20great%20message.eml',
     );
   });
+
+  it('Show original kebab item opens the raw-source modal', async () => {
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ true);
+
+    // Modal is not in the DOM before the kebab is opened.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+    await fireEvent.click(screen.getByText('msg.kebab.showOriginal'));
+
+    // Modal mounts with role=dialog and the localised title.
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toBeInTheDocument();
+    expect(dialog).toHaveAttribute('aria-labelledby', 'rsm-title');
+  });
 });
 
 // ── Self-authored card treatment ─────────────────────────────────────────────

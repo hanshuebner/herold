@@ -16,6 +16,7 @@
   import { untrack } from 'svelte';
   import ReactIcon from '../icons/ReactIcon.svelte';
   import MessageKebabMenu, { type KebabItem } from './MessageKebabMenu.svelte';
+  import RawSourceModal from './RawSourceModal.svelte';
   import { emlDownloadFilename } from './download-filename';
   import { t, localeTag } from '../i18n/i18n.svelte';
   import { relativeTimeAgo } from './relative-time';
@@ -282,7 +283,8 @@
 
   // REQ-MAIL-141: download URL + suggested filename for the raw RFC 5322
   // blob. Null when the JMAP session is not yet bootstrapped — the kebab
-  // item is omitted in that window.
+  // item is omitted in that window. REQ-MAIL-142 (Show original) reuses
+  // the same downloadEmlInfo.href as the fetch URL for the modal.
   let downloadEmlInfo = $derived.by<{ href: string; filename: string } | null>(() => {
     const accountId = auth.session?.primaryAccounts['urn:ietf:params:jmap:mail'];
     if (!accountId || !email.blobId) return null;
@@ -300,6 +302,13 @@
     if (!href) return null;
     return { href, filename };
   });
+
+  // REQ-MAIL-142: raw RFC 5322 modal open state.
+  let showOriginalOpen = $state(false);
+
+  function showOriginal(): void {
+    showOriginalOpen = true;
+  }
 
   let kebabItems = $derived.by<KebabItem[]>(() => {
     const items: KebabItem[] = [];
@@ -341,6 +350,14 @@
         label: t('msg.kebab.download'),
         href: downloadEmlInfo.href,
         download: downloadEmlInfo.filename,
+      });
+    }
+    // REQ-MAIL-142.
+    if (downloadEmlInfo) {
+      items.push({
+        id: 'showOriginal',
+        label: t('msg.kebab.showOriginal'),
+        onclick: showOriginal,
       });
     }
     return items;
@@ -559,6 +576,12 @@
     </div>
   {/if}
 </article>
+
+<RawSourceModal
+  open={showOriginalOpen}
+  sourceUrl={downloadEmlInfo?.href ?? null}
+  onClose={() => (showOriginalOpen = false)}
+/>
 
 <style>
   .message {

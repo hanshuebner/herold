@@ -230,6 +230,13 @@ export const en = {
   'msg.kebab.markUnreadFromHere': 'Mark unread from here',
   'msg.kebab.delete': 'Delete this message',
   'msg.kebab.download': 'Download message',
+  'msg.kebab.showOriginal': 'Show original',
+  'msg.rawSource.title': 'Original message source',
+  'msg.rawSource.copy': 'Copy',
+  'msg.rawSource.copied': 'Copied',
+  'msg.rawSource.close': 'Close',
+  'msg.rawSource.loading': 'Loading raw source…',
+  'msg.rawSource.error': 'Failed to load raw source',
 
   // ── Compose ─────────────────────────────────────────────────────────
   'compose.title.new': 'New message',
