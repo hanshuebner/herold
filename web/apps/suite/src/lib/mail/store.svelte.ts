@@ -627,6 +627,15 @@ class MailStore {
     return this.#mailboxByRole('junk');
   }
 
+  /** The Mailbox row whose `role` is `'archive'`, if any. RFC 8621 §4.2
+   * requires every Email to be in at least one mailbox, so archiving
+   * must MOVE the message to this mailbox rather than just removing
+   * the inbox membership.
+   */
+  get archive(): Mailbox | null {
+    return this.#mailboxByRole('archive');
+  }
+
   /** The first available Identity — used as the default From for compose. */
   get primaryIdentity(): Identity | null {
     for (const id of this.identities.values()) return id;
@@ -1950,12 +1959,29 @@ class MailStore {
     return { updated, failed };
   }
 
-  /** Bulk archive: remove the inbox mailbox from every id. Inbox-only.
-   * Thread-scoped per REQ-MAIL-51: every email in each affected thread
-   * is archived together, regardless of which row the user clicked. */
+  /** Bulk archive: move the email out of Inbox and into Archive.
+   * Inbox-only. Thread-scoped per REQ-MAIL-51: every email in each
+   * affected thread is archived together, regardless of which row the
+   * user clicked.
+   *
+   * The naive "just remove the inbox membership" patch fails on the
+   * server with `invalidProperties: cannot remove all mailbox
+   * memberships` because RFC 8621 §4.2 requires every Email to be in
+   * at least one mailbox. We therefore add the Archive mailbox in the
+   * same patch -- atomic from the JMAP /set perspective.
+   */
   async bulkArchive(ids: string[]): Promise<void> {
     const inbox = this.inbox;
+    const archive = this.archive;
     if (!inbox || ids.length === 0) return;
+    if (!archive) {
+      toast.show({
+        message: 'Cannot archive: no Archive folder exists on this account.',
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return;
+    }
     ids = expandToThreadIds(ids, this.threads, this.emails);
     const updates: Record<string, Record<string, unknown>> = {};
     const prevById = new Map<string, Record<string, true>>();
@@ -1964,8 +1990,14 @@ class MailStore {
       if (!e) continue;
       if (!e.mailboxIds[inbox.id]) continue;
       prevById.set(id, { ...e.mailboxIds });
-      updates[id] = { [`mailboxIds/${inbox.id}`]: null };
-      const next: Record<string, true> = { ...e.mailboxIds };
+      // RFC 8621 §4.2: at least one mailbox membership must remain.
+      // Patch both keys in one /set update so the server sees a
+      // valid post-patch membership set in a single atomic apply.
+      updates[id] = {
+        [`mailboxIds/${inbox.id}`]: null,
+        [`mailboxIds/${archive.id}`]: true,
+      };
+      const next: Record<string, true> = { ...e.mailboxIds, [archive.id]: true };
       delete next[inbox.id];
       this.#patchEmail(id, { mailboxIds: next });
     }
