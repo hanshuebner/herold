@@ -114,12 +114,20 @@
     }
   }
 
-  async function handleReportSpam(): Promise<void> {
-    await mail.reportSpam(latest.id, 'spam');
+  // Match the archive / delete / markUnread pattern: kick the server
+  // call off in the background and navigate back to the listing
+  // immediately. The optimistic patch in mail.reportSpam already
+  // removes the message from the list view, so back() takes the user
+  // somewhere sensible; the undo toast that reportSpam shows is
+  // global, so the user can still undo from the listing.
+  function handleReportSpam(): void {
+    void mail.reportSpam(latest.id, 'spam');
+    back();
   }
 
-  async function handleReportPhishing(): Promise<void> {
-    await mail.reportSpam(latest.id, 'phishing');
+  function handleReportPhishing(): void {
+    void mail.reportSpam(latest.id, 'phishing');
+    back();
   }
 
   function openBlockConfirm(): void {
