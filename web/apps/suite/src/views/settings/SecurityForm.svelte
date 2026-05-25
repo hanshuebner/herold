@@ -520,18 +520,22 @@
   }
 
   .totp-qr {
+    /* qrcode-svg emits a <svg width="320" height="320"> with no
+     * viewBox -- the inner <rect> coords are in absolute "user
+     * units" mapped 1:1 to those 320 px. A CSS-driven shrink would
+     * clip the content rather than scale it. We render at natural
+     * size (320 px) so every QR module gets ~5.6 px and the code
+     * stays scannable for Google Authenticator + the iOS camera
+     * (see SecurityForm's startEnroll() comment on the qrcode-svg
+     * params). The panel has room: .totp-enroll caps at 480 px.
+     */
     display: inline-block;
     background: #fff;
     padding: var(--spacing-03);
     border-radius: var(--radius-md);
-    width: 200px;
-    height: 200px;
-    overflow: hidden;
   }
   :global(.totp-qr svg) {
     display: block;
-    width: 100%;
-    height: 100%;
   }
 
   .totp-confirm-row {
