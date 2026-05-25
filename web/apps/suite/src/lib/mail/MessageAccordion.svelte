@@ -271,6 +271,14 @@
     void mail.deleteEmail(email.id);
   }
 
+  function reportSpam(): void {
+    void mail.reportSpam(email.id, 'spam');
+  }
+
+  function reportPhishing(): void {
+    void mail.reportPhishing(email.id);
+  }
+
   let kebabItems = $derived.by<KebabItem[]>(() => {
     const items: KebabItem[] = [];
     // REQ-MAIL-133.
@@ -291,6 +299,18 @@
       label: t('msg.kebab.delete'),
       danger: true,
       onclick: deleteMessage,
+    });
+    // REQ-MAIL-135.
+    items.push({
+      id: 'reportSpam',
+      label: t('msg.reportSpam'),
+      onclick: reportSpam,
+    });
+    // REQ-MAIL-136.
+    items.push({
+      id: 'reportPhishing',
+      label: t('msg.reportPhishing'),
+      onclick: reportPhishing,
     });
     return items;
   });

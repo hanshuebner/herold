@@ -92,6 +92,7 @@ const { mailMock, WORK_MBX, TRASH_MBX } = vi.hoisted(() => {
     restoreFromTrash: vi.fn().mockResolvedValue(undefined),
     toggleReaction: vi.fn(),
     reportSpam: vi.fn(),
+    reportPhishing: vi.fn(),
   };
 
   return { mailMock, WORK_MBX, TRASH_MBX };
@@ -283,6 +284,8 @@ describe('MessageAccordion: per-message kebab menu (conservative slice)', () => 
     mailMock.setSeen.mockClear();
     mailMock.markUnreadFromHere.mockClear();
     mailMock.deleteEmail.mockClear();
+    mailMock.reportSpam.mockClear();
+    mailMock.reportPhishing.mockClear();
   });
 
   it('does not render reply / reply-all / forward inside the message body', () => {
@@ -356,6 +359,26 @@ describe('MessageAccordion: per-message kebab menu (conservative slice)', () => 
     await fireEvent.click(screen.getByText('msg.kebab.delete'));
 
     expect(mailMock.deleteEmail).toHaveBeenCalledWith(email.id);
+  });
+
+  it('Report spam item calls mail.reportSpam(emailId, "spam")', async () => {
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ true);
+
+    await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+    await fireEvent.click(screen.getByText('msg.reportSpam'));
+
+    expect(mailMock.reportSpam).toHaveBeenCalledWith(email.id, 'spam');
+  });
+
+  it('Report phishing item calls mail.reportPhishing(emailId)', async () => {
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ true);
+
+    await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+    await fireEvent.click(screen.getByText('msg.reportPhishing'));
+
+    expect(mailMock.reportPhishing).toHaveBeenCalledWith(email.id);
   });
 });
 
