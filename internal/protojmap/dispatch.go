@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -280,13 +281,22 @@ func (s *Server) logMethodCall(ctx context.Context, log *slog.Logger, call Invoc
 		}
 	}
 
-	// Emit method-family-specific count attrs from the response.
+	// Emit method-family-specific count attrs from the response. The
+	// returned `partialFailure` flag is true when a `/set` response
+	// carries any non-empty notCreated / notUpdated / notDestroyed map;
+	// it bumps the log level so an operator can grep for "WARN" without
+	// missing the silent-200-with-failures shape (issue #15).
+	var partialFailure bool
 	if len(respArgs) > 0 && mErr == nil {
-		attrs = appendMethodCountAttrs(attrs, call.Name, respArgs)
+		attrs, partialFailure = appendMethodCountAttrs(attrs, call.Name, respArgs)
 	}
 
 	if mErr != nil {
 		attrs = append(attrs, slog.String("error", mErr.Type))
+	}
+
+	if partialFailure && level < slog.LevelWarn {
+		level = slog.LevelWarn
 	}
 
 	log.LogAttrs(ctx, level, call.Name, attrs...)
@@ -311,17 +321,27 @@ func methodActivity(method string) string {
 // body and appends them as slog.Attr values. The method name determines
 // which response shape to decode.
 //
-//   - */set responses carry created, updated, destroyed maps; we log counts.
+//   - */set responses carry created/updated/destroyed maps AND the
+//     not* counterparts; we log all six counts and -- when any of the
+//     three "not" maps is non-empty -- a sample of the failure
+//     types (`set_error_types`) so the cause is on the same log line.
+//     The returned bool is true in that case so logMethodCall can bump
+//     the level to WARN; this is the "silent 200 with per-item
+//     failures" surface that issue #15 fixes.
 //   - */query responses carry ids (the result list) and limit; we log counts.
 //   - */get responses carry list; we log the count of returned objects
 //     alongside the id_count from the request args (added by caller above).
-func appendMethodCountAttrs(attrs []slog.Attr, method string, resp json.RawMessage) []slog.Attr {
+func appendMethodCountAttrs(attrs []slog.Attr, method string, resp json.RawMessage) ([]slog.Attr, bool) {
+	partialFailure := false
 	switch {
 	case strings.HasSuffix(method, "/set"):
 		var s struct {
-			Created   map[string]json.RawMessage `json:"created"`
-			Updated   map[string]json.RawMessage `json:"updated"`
-			Destroyed []string                   `json:"destroyed"`
+			Created      map[string]json.RawMessage `json:"created"`
+			Updated      map[string]json.RawMessage `json:"updated"`
+			Destroyed    []string                   `json:"destroyed"`
+			NotCreated   map[string]json.RawMessage `json:"notCreated"`
+			NotUpdated   map[string]json.RawMessage `json:"notUpdated"`
+			NotDestroyed map[string]json.RawMessage `json:"notDestroyed"`
 		}
 		if json.Unmarshal(resp, &s) == nil {
 			attrs = append(attrs,
@@ -329,6 +349,21 @@ func appendMethodCountAttrs(attrs []slog.Attr, method string, resp json.RawMessa
 				slog.Int("updated", len(s.Updated)),
 				slog.Int("destroyed", len(s.Destroyed)),
 			)
+			if n := len(s.NotCreated) + len(s.NotUpdated) + len(s.NotDestroyed); n > 0 {
+				partialFailure = true
+				attrs = append(attrs,
+					slog.Int("not_created", len(s.NotCreated)),
+					slog.Int("not_updated", len(s.NotUpdated)),
+					slog.Int("not_destroyed", len(s.NotDestroyed)),
+				)
+				// Sample the failure types so the cause is on the same
+				// log line as the counts. The output is the set of
+				// distinct setError.Type values (sorted, deduplicated)
+				// -- typically 1-2 entries even for large batches.
+				if types := sampleSetErrorTypes(s.NotCreated, s.NotUpdated, s.NotDestroyed); len(types) > 0 {
+					attrs = append(attrs, slog.Any("set_error_types", types))
+				}
+			}
 		}
 	case strings.HasSuffix(method, "/query"):
 		var q struct {
@@ -349,7 +384,36 @@ func appendMethodCountAttrs(attrs []slog.Attr, method string, resp json.RawMessa
 			attrs = append(attrs, slog.Int("result_count", len(g.List)))
 		}
 	}
-	return attrs
+	return attrs, partialFailure
+}
+
+// sampleSetErrorTypes returns the distinct `type` values from the
+// merged not* maps in a /set response, sorted for deterministic log
+// output. Carries the failure CAUSE onto the same log line as the
+// counts so operators can diagnose without re-fetching the JSON body.
+// Output size is naturally bounded by the small set of setError types
+// (notFound, invalidProperties, forbidden, ...).
+func sampleSetErrorTypes(maps ...map[string]json.RawMessage) []string {
+	seen := make(map[string]struct{}, 4)
+	for _, m := range maps {
+		for _, v := range m {
+			var probe struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(v, &probe) == nil && probe.Type != "" {
+				seen[probe.Type] = struct{}{}
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for t := range seen {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // MultipleInvocations may be returned by a MethodHandler.Execute

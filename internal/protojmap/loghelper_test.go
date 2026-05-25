@@ -323,6 +323,106 @@ func TestDispatch_LogsMethodActivity(t *testing.T) {
 	assertActivityTagged(t, records.snapshot())
 }
 
+// TestDispatch_LogsPartialSetFailureAtWARN verifies issue #15: a
+// JMAP /set response that carries entries in notCreated/notUpdated/
+// notDestroyed must be logged at WARN level (so operators can grep
+// for it) with not_* counts and a sample of setError.Type values on
+// the same line. Before the fix the dispatcher only counted
+// created/updated/destroyed and logged at INFO regardless of
+// per-item failures, making "0 archived, 2 failed" toasts invisible
+// in the server log.
+func TestDispatch_LogsPartialSetFailureAtWARN(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{Name: "example.com", IsLocal: true}); err != nil {
+		t.Fatalf("seed domain: %v", err)
+	}
+	dir := directory.New(fs.Meta(), nil, clk, nil)
+	pid, err := dir.CreatePrincipal(context.Background(), "edith@example.com", "correct-horse-battery-staple-1")
+	if err != nil {
+		t.Fatalf("create principal: %v", err)
+	}
+	apiKey, _, err := createAPIKey(context.Background(), fs, pid)
+	if err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+
+	recLog, records := newRecordingLogger()
+	srv := protojmap.NewServer(fs, dir, nil, recLog, clk, protojmap.Options{
+		MaxCallsInRequest:  4,
+		DownloadRatePerSec: -1,
+	})
+
+	// Synthesise the exact response shape an Email/set produces when
+	// all the per-item updates fail: zero successes, two notUpdated
+	// entries each with a setError. This is the "0 archived, 2 failed"
+	// toast surface from the user report on issue #15.
+	const cap = protojmap.CapabilityID("urn:test:partial-failure")
+	setResp := map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(pid),
+		"oldState":  "1",
+		"newState":  "1",
+		"created":   map[string]any{},
+		"updated":   map[string]any{},
+		"destroyed": []string{},
+		"notUpdated": map[string]any{
+			"M1": map[string]any{"type": "notFound", "description": "no such message"},
+			"M2": map[string]any{"type": "notFound"},
+		},
+		"notCreated":   map[string]any{},
+		"notDestroyed": map[string]any{},
+	}
+	srv.Registry().Register(cap, &fakeHandler{method: "FakeType/set", resp: setResp})
+
+	httpd := httptest.NewServer(srv.Handler())
+	t.Cleanup(httpd.Close)
+
+	accountID := protojmap.AccountIDForPrincipal(pid)
+	f := &fixture{t: t, srv: srv, httpd: httpd, apiKey: apiKey}
+	f.jmapPost(
+		[]protojmap.CapabilityID{cap},
+		[]protojmap.Invocation{{
+			Name: "FakeType/set",
+			Args: json.RawMessage(fmt.Sprintf(
+				`{"accountId":%q,"update":{"M1":{"keywords/$archive":true},"M2":{"keywords/$archive":true}}}`,
+				accountID)),
+			CallID: "s1",
+		}},
+	)
+
+	var setRec *capturedRecord
+	for _, rec := range records.snapshot() {
+		if rec.Message == "FakeType/set" {
+			r := rec
+			setRec = &r
+			break
+		}
+	}
+	if setRec == nil {
+		t.Fatalf("FakeType/set log record missing")
+	}
+
+	if setRec.Level != slog.LevelWarn {
+		t.Errorf("partial /set failure should log at WARN; got level=%v", setRec.Level)
+	}
+	if v := setRec.Attrs["not_updated"].Int64(); v != 2 {
+		t.Errorf("not_updated attr = %d, want 2", v)
+	}
+	if v := setRec.Attrs["updated"].Int64(); v != 0 {
+		t.Errorf("updated attr = %d, want 0", v)
+	}
+	types, ok := setRec.Attrs["set_error_types"].Any().([]string)
+	if !ok {
+		t.Fatalf("set_error_types attr missing or wrong type: %v", setRec.Attrs["set_error_types"])
+	}
+	if len(types) != 1 || types[0] != "notFound" {
+		t.Errorf("set_error_types = %v, want [notFound]", types)
+	}
+}
+
 // TestDispatch_AuditActivityForIdentityMethods verifies that Identity/*
 // method calls are tagged activity=audit (REQ-OPS-86 / brief).
 func TestDispatch_AuditActivityForIdentityMethods(t *testing.T) {
