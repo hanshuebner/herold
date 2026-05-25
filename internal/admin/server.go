@@ -38,6 +38,7 @@ import (
 	"github.com/hanshuebner/herold/internal/linkpreview"
 	"github.com/hanshuebner/herold/internal/mailarc"
 	"github.com/hanshuebner/herold/internal/mailauth"
+	"github.com/hanshuebner/herold/internal/mailauth/keymgmt"
 	"github.com/hanshuebner/herold/internal/maildkim"
 	"github.com/hanshuebner/herold/internal/maildmarc"
 	"github.com/hanshuebner/herold/internal/mailspf"
@@ -700,12 +701,25 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// protoadmin so the JSON login endpoint at POST /api/v1/auth/login
 	// issues a cookie that requireAuth can subsequently verify
 	// (REQ-AUTH-SESSION-REST, REQ-AUTH-CSRF).
+	// DKIM key manager backs POST/GET /api/v1/domains/{name}/dkim. Without
+	// it those endpoints return 501; herold dkim generate / dkim show then
+	// fail, and the bootstrap-time DKIM mint cannot run. A second manager
+	// instance is fine -- keymgmt.Manager is stateless wrt the store, so
+	// it composes with the queue's signer (see buildDKIMSigner in queue.go).
+	adminDKIMManager := keymgmt.NewManager(
+		st.Meta(),
+		logger.With("subsystem", "dkim-keymgmt-admin"),
+		clk,
+		nil,
+	)
+
 	adminServerOpts := protoadmin.Options{
 		ServerVersion:             "0.1.0",
 		Health:                    health,
 		Session:                   adminSessionCookieConfig(cfg),
 		ExternalSubmissionDataKey: extSubmitDataKey,
 		OAuthProviders:            adminOAuthProviders,
+		DKIMKeyManager:            adminDKIMManager,
 		Clientlog: protoadmin.ClientlogOptions{
 			Emitter:       clientEmitter,
 			TelemetryGate: telemetryGate,
