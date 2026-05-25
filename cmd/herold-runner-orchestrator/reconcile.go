@@ -98,7 +98,7 @@ func (o *orchestrator) tick(ctx context.Context) {
 	// don't burn Hetzner hourly billing on dormant runners
 	// between development sessions. The next push pays a cold-boot
 	// (~5 min snapshot boot + register) but that's cheaper than
-	// keeping ~5 cax21s alive overnight.
+	// keeping ~5 cax31s alive overnight.
 	//
 	// idleSince entries are reset whenever there is any work, so a
 	// brief gap inside an active dev session doesn't trip a reap.

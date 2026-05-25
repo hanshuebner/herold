@@ -45,7 +45,7 @@ type config struct {
 func loadConfig() (config, error) {
 	c := config{
 		forgejoBaseURL: "https://code.netzhansa.com",
-		armServerType:  "cax21",
+		armServerType:  "cax31",
 		amdServerType:  "cpx22",
 		location:       "nbg1",
 		maxPerPoolArm:  4,

@@ -231,7 +231,10 @@ jobs:
     # -race and hit ~37 min wall on the arm64 self-hosted runner. The
     # lane is now split into a race-on subset (test/race-packages.txt)
     # and a no-race remainder so the detector cost is paid only on
-    # concurrency-heavy packages.
+    # concurrency-heavy packages. The arm64 runner pool was also
+    # bumped from cax21 (4 vCPU) to cax31 (8 vCPU) to halve the
+    # detector wall time; the 45 min cap is left in place as
+    # headroom for the worst-case package.
     timeout-minutes: 45
     strategy:
       fail-fast: false
