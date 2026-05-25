@@ -72,15 +72,30 @@ func spawnVM(ctx context.Context, hc *hcloud.Client, a spawnVMArgs) (*hcloud.Ser
 		return nil, fmt.Errorf("render cloud-init: %w", err)
 	}
 
-	var sshKey *hcloud.SSHKey
+	// SSH keys: a named key wins; otherwise inject every key in the
+	// project. Hetzner refuses to generate a root password (and
+	// therefore skips the "new server" email Hans gets per spawn) as
+	// long as at least one SSH key is provided.
+	var sshKeys []*hcloud.SSHKey
 	if a.SSHKeyName != "" {
-		sshKey, _, err = hc.SSHKey.GetByName(ctx, a.SSHKeyName)
+		one, _, err := hc.SSHKey.GetByName(ctx, a.SSHKeyName)
 		if err != nil {
 			return nil, fmt.Errorf("get ssh key %q: %w", a.SSHKeyName, err)
 		}
-		if sshKey == nil {
+		if one == nil {
 			return nil, fmt.Errorf("ssh key %q not found", a.SSHKeyName)
 		}
+		sshKeys = []*hcloud.SSHKey{one}
+	} else {
+		all, err := hc.SSHKey.All(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list ssh keys: %w", err)
+		}
+		if len(all) == 0 {
+			return nil, fmt.Errorf("no SSH keys in project; upload at least one " +
+				"(otherwise Hetzner emails the root password for every spawn)")
+		}
+		sshKeys = all
 	}
 
 	opts := hcloud.ServerCreateOpts{
@@ -94,9 +109,7 @@ func spawnVM(ctx context.Context, hc *hcloud.Client, a spawnVMArgs) (*hcloud.Ser
 			"arch":       a.Arch,
 			"spawned_at": time.Now().UTC().Format("20060102T150405Z"),
 		},
-	}
-	if sshKey != nil {
-		opts.SSHKeys = []*hcloud.SSHKey{sshKey}
+		SSHKeys: sshKeys,
 	}
 
 	result, _, err := hc.Server.Create(ctx, opts)

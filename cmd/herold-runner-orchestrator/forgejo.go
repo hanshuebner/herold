@@ -124,6 +124,43 @@ type runner struct {
 	Labels []string `json:"labels"`
 }
 
+// workflowRun is the minimal slice of Forgejo's ActionWorkflowRun we
+// need to decide whether the system is "busy" right now (= any
+// non-terminal run exists for the repo).
+type workflowRun struct {
+	ID     int64  `json:"id"`
+	Status string `json:"status"`
+}
+
+type workflowRunsResponse struct {
+	WorkflowRuns []workflowRun `json:"workflow_runs"`
+	TotalCount   int           `json:"total_count"`
+}
+
+// listActiveRuns returns workflow_runs that are currently running.
+// Combined with listJobsWithLabels (which already picks up queued/
+// waiting jobs) this lets the orchestrator's idle-reaper decide
+// whether there is any active CI work in the repo before scaling
+// the pool down to zero.
+//
+// Forgejo's /actions/runs endpoint accepts a `status` query, but
+// "running" is the only spelling for in-flight runs we have
+// confirmed against the live instance (success/failure/cancelled
+// are terminal; "running" covers the rest).
+func (c *forgejoClient) listActiveRuns(ctx context.Context) ([]workflowRun, error) {
+	q := url.Values{}
+	q.Set("status", "running")
+	q.Set("limit", "10") // we only need to know if >0
+	var resp workflowRunsResponse
+	err := c.do(ctx, "GET",
+		"/repos/"+c.repo+"/actions/runs",
+		q, &resp)
+	if err != nil {
+		return nil, err
+	}
+	return resp.WorkflowRuns, nil
+}
+
 // listRunners returns runners currently registered to the repo.
 // Used by the reaper to drop ghost registrations whose VM no longer
 // exists.

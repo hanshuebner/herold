@@ -19,6 +19,13 @@ type orchestrator struct {
 		Error(msg string, args ...any)
 		Debug(msg string, args ...any)
 	}
+	// idleSince tracks the wall-clock time each VM was first observed
+	// while the repo had no queued or active CI work. Entries are
+	// cleared whenever there's work to do. A VM whose idleSince entry
+	// exceeds cfg.vmMaxIdle gets reaped so we don't burn billing on
+	// dormant runners between development sessions. Single-tick
+	// access from run() so no synchronisation needed.
+	idleSince map[int64]time.Time
 }
 
 func (o *orchestrator) run(ctx context.Context) error {
@@ -84,6 +91,74 @@ func (o *orchestrator) tick(ctx context.Context) {
 			continue
 		}
 		liveVMNames[v.Name] = true
+	}
+
+	// Idle reaper: when the repo has no queued AND no running CI
+	// work for cfg.vmMaxIdle, scale the pool back to zero so we
+	// don't burn Hetzner hourly billing on dormant runners
+	// between development sessions. The next push pays a cold-boot
+	// (~5 min snapshot boot + register) but that's cheaper than
+	// keeping ~5 cax21s alive overnight.
+	//
+	// idleSince entries are reset whenever there is any work, so a
+	// brief gap inside an active dev session doesn't trip a reap.
+	totalQueued := 0
+	for _, n := range queuedPerArch {
+		totalQueued += n
+	}
+	hasWork := totalQueued > 0
+	if !hasWork {
+		activeRuns, runsErr := o.fj.listActiveRuns(tickCtx)
+		switch {
+		case runsErr != nil:
+			// Treat probe failure as "has work" so we don't reap
+			// blind on a transient Forgejo glitch.
+			o.log.Debug("listActiveRuns failed; assuming work in flight", "err", runsErr)
+			hasWork = true
+		case len(activeRuns) > 0:
+			hasWork = true
+		}
+	}
+	if hasWork {
+		// Anything happening means we don't idle-reap; clear the
+		// per-VM idle clocks so the next idle window starts fresh.
+		if len(o.idleSince) > 0 {
+			o.idleSince = map[int64]time.Time{}
+		}
+	} else {
+		seen := map[int64]bool{}
+		for _, v := range vms {
+			if !liveVMNames[v.Name] {
+				// Already reaped by the lifetime/off branch above.
+				continue
+			}
+			seen[v.ID] = true
+			if _, ok := o.idleSince[v.ID]; !ok {
+				o.idleSince[v.ID] = now
+				continue
+			}
+			idleFor := now.Sub(o.idleSince[v.ID])
+			if idleFor <= o.cfg.vmMaxIdle {
+				continue
+			}
+			o.log.Info("idle-reaping VM",
+				"id", v.ID, "name", v.Name, "arch", v.Labels["arch"],
+				"idle_for", idleFor.Truncate(time.Second),
+				"max", o.cfg.vmMaxIdle)
+			if err := deleteVM(tickCtx, o.hc, v); err != nil {
+				o.log.Warn("idle reap delete failed", "id", v.ID, "err", err)
+				continue
+			}
+			delete(o.idleSince, v.ID)
+			delete(liveVMNames, v.Name)
+		}
+		// Garbage-collect entries for VMs that no longer exist (eg
+		// reaped above by the lifetime branch).
+		for id := range o.idleSince {
+			if !seen[id] {
+				delete(o.idleSince, id)
+			}
+		}
 	}
 
 	// Ghost-runner cleanup: a runner that registered against the repo

@@ -38,6 +38,7 @@ type config struct {
 	maxPerPoolAmd  int
 	pollInterval   time.Duration
 	vmMaxLifetime  time.Duration
+	vmMaxIdle      time.Duration
 	logFormat      string
 }
 
@@ -51,6 +52,7 @@ func loadConfig() (config, error) {
 		maxPerPoolAmd:  2,
 		pollInterval:   15 * time.Second,
 		vmMaxLifetime:  60 * time.Minute,
+		vmMaxIdle:      60 * time.Minute,
 		logFormat:      "text",
 	}
 
@@ -74,6 +76,8 @@ func loadConfig() (config, error) {
 		"reconciliation poll interval")
 	flag.DurationVar(&c.vmMaxLifetime, "vm-max-lifetime", envDuration("ORCHESTRATOR_VM_MAX_LIFETIME", c.vmMaxLifetime),
 		"reap VMs older than this even if still busy")
+	flag.DurationVar(&c.vmMaxIdle, "vm-max-idle", envDuration("ORCHESTRATOR_VM_MAX_IDLE", c.vmMaxIdle),
+		"reap VMs that have been idle (no queued/running CI work in the repo) for longer than this")
 	flag.StringVar(&c.logFormat, "log", envOr("ORCHESTRATOR_LOG_FORMAT", c.logFormat),
 		"log format: text or json")
 	flag.Parse()
@@ -150,6 +154,7 @@ func main() {
 		"max_amd", cfg.maxPerPoolAmd,
 		"poll", cfg.pollInterval,
 		"vm_max_lifetime", cfg.vmMaxLifetime,
+		"vm_max_idle", cfg.vmMaxIdle,
 	)
 
 	hc := hcloud.NewClient(hcloud.WithToken(cfg.hetznerToken))
@@ -162,10 +167,11 @@ func main() {
 	}
 
 	orch := &orchestrator{
-		cfg: cfg,
-		hc:  hc,
-		fj:  fj,
-		log: log,
+		cfg:       cfg,
+		hc:        hc,
+		fj:        fj,
+		log:       log,
+		idleSince: map[int64]time.Time{},
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(),
