@@ -14,6 +14,35 @@ import (
 	"github.com/jhillyerd/enmime"
 )
 
+// TestGenerateMessageID_HostnameLeak: when the caller supplies an
+// empty hostname, the generator must NOT fall back to "localhost" --
+// that string then leaks into outbound Message-ID headers and trips
+// spam heuristics. Production callers always pass the configured
+// [server] hostname; the empty string is a programming error and we
+// keep the "localhost" sentinel only to avoid emitting a malformed
+// "<...@>" header. Test guards both shapes.
+func TestGenerateMessageID_HostnameApplied(t *testing.T) {
+	id := generateMessageID("mx.example.com")
+	if !strings.HasSuffix(id, "@mx.example.com>") {
+		t.Errorf("generateMessageID dropped the hostname: %q does not end with @mx.example.com>", id)
+	}
+	if !strings.HasPrefix(id, "<") || !strings.HasSuffix(id, ">") {
+		t.Errorf("generateMessageID must wrap in angle brackets: %q", id)
+	}
+}
+
+// TestGenerateMessageID_NoLeakedLocalhost guards against the previous
+// behaviour where production paths were calling generateMessageID("")
+// (because the hostname was not plumbed through Email/set's handler)
+// and the resulting Message-IDs ended in "@localhost". A real
+// hostname round-trip MUST never produce "localhost".
+func TestGenerateMessageID_NoLeakedLocalhost(t *testing.T) {
+	id := generateMessageID("mx.netzhansa.com")
+	if strings.Contains(id, "localhost") {
+		t.Errorf("Message-ID contains 'localhost' even with a real hostname: %q", id)
+	}
+}
+
 // TestFormatAddresses_EmptyName formats a bare addr-spec when the display
 // name is the empty string.
 func TestFormatAddresses_EmptyName(t *testing.T) {

@@ -2492,7 +2492,8 @@ func composeAdminAndUI(
 	// points because jmapmail.Register does not include them.
 	jmapmail.RegisterWithOptions(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-mail"), clk,
 		jmapmail.RegisterOptions{
-			ExtImg: extimg.FromSysConfig(cfg.ExternalImages, cfg.Server.Hostname),
+			ExtImg:   extimg.FromSysConfig(cfg.ExternalImages, cfg.Server.Hostname),
+			Hostname: cfg.Server.Hostname,
 		})
 	// Thread/get + Thread/changes (REQ-PROTO-41).
 	jmapthread.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-thread"), clk)

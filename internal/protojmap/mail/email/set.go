@@ -402,7 +402,7 @@ func (h *handlerSet) createEmail(
 		// canonicalised through Blobs.Put below, just like the blob
 		// path; from that point the two paths are identical.
 		var buildErr error
-		body, buildErr = buildEmailFromProperties(ctx, h.store.Blobs(), in, h.clk.Now(), "")
+		body, buildErr = buildEmailFromProperties(ctx, h.store.Blobs(), in, h.clk.Now(), h.hostname)
 		if buildErr != nil {
 			return 0, jmapEmail{}, nil, fmt.Errorf("email: build from properties: %w", buildErr)
 		}
@@ -883,7 +883,7 @@ func (h *handlerSet) rebuildEmailBody(
 		}, nil
 	}
 
-	body, err := buildEmailFromProperties(ctx, h.store.Blobs(), in, h.clk.Now(), "")
+	body, err := buildEmailFromProperties(ctx, h.store.Blobs(), in, h.clk.Now(), h.hostname)
 	if err != nil {
 		return nil, fmt.Errorf("email: rebuild body: %w", err)
 	}

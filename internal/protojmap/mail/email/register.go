@@ -19,6 +19,12 @@ type handlerSet struct {
 	logger  *slog.Logger
 	clk     clock.Clock
 	parseFn parseFn
+	// hostname is [server] hostname; used as the right-hand side of
+	// auto-generated Message-ID headers. Empty falls back to the
+	// "localhost" sentinel in generateMessageID, which leaks into
+	// outbound Message-IDs and triggers spam heuristics on some
+	// receivers.
+	hostname string
 	// reactionMailer sends outbound cross-server reaction emails
 	// (REQ-FLOW-100..103). Nil disables cross-server propagation
 	// (e.g. tests that only exercise local-path behaviour).
@@ -46,6 +52,12 @@ type RegisterOptions struct {
 	// (17-external-images.md REQ-EXTIMG-93). Zero-value disables the
 	// path.
 	ExtImg extimg.Config
+	// Hostname is [server] hostname; used as the right-hand side of
+	// auto-generated Message-ID headers (the JMAP setHandler path that
+	// composes RFC 5322 from properties). Empty triggers the
+	// "localhost" sentinel, which leaks into outbound mail; production
+	// callers MUST set this.
+	Hostname string
 }
 
 // Register installs the Email/* handlers under the JMAP Mail
@@ -68,6 +80,7 @@ func RegisterWithOptions(reg *protojmap.CapabilityRegistry, st store.Store, logg
 		logger:         logger,
 		clk:            clk,
 		parseFn:        defaultParseFn,
+		hostname:       ropts.Hostname,
 		reactionMailer: ropts.ReactionMailer,
 		extImg:         ropts.ExtImg,
 	}

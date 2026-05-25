@@ -35,6 +35,11 @@ type RegisterOptions struct {
 	// Zero-value disables the path; the renderer treats flagged
 	// messages as if the operator had selected mode = passthrough.
 	ExtImg extimg.Config
+	// Hostname is [server] hostname; used as the right-hand side of
+	// auto-generated Message-ID headers in the JMAP Email/set path.
+	// Empty leaks the "localhost" sentinel into outbound mail
+	// (see email.RegisterOptions.Hostname for the underlying gate).
+	Hostname string
 }
 
 // RegisterWithOptions is Register with the optional config bag.
@@ -46,7 +51,10 @@ func RegisterWithOptions(
 	opts RegisterOptions,
 ) {
 	mailbox.Register(reg, st, logger, clk)
-	email.RegisterWithOptions(reg, st, logger, clk, email.RegisterOptions{ExtImg: opts.ExtImg})
+	email.RegisterWithOptions(reg, st, logger, clk, email.RegisterOptions{
+		ExtImg:   opts.ExtImg,
+		Hostname: opts.Hostname,
+	})
 	// Per RFC 8621 §1, the JMAP Mail capability descriptor advertises
 	// per-account hints (mayCreateTopLevelMailbox, maxMailboxesPerEmail,
 	// emailQuerySortOptions). v1 publishes a conservative descriptor:
