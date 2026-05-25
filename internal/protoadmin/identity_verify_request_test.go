@@ -19,7 +19,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,7 +30,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/storesqlite"
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/testharness"
 )
 
@@ -67,11 +66,7 @@ type resendHarness struct {
 func newResendHarness(t *testing.T, cooldown time.Duration, dailyCap int, withResender bool) *resendHarness {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC))
-	fs, err := storesqlite.Open(context.Background(),
-		filepath.Join(t.TempDir(), "store.db"), nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
+	fs := sqlitetest.Open(t, clk)
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs, Clock: clk,
 		Listeners: []testharness.ListenerSpec{{Name: "admin", Protocol: "http"}},

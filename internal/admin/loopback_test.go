@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,7 +13,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/storesqlite"
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 )
 
 // stubInner records calls and returns a configured outcome.
@@ -53,10 +52,7 @@ func discardLog() *slog.Logger {
 func loopbackFixture(t *testing.T) (store.Store, *directory.Directory, store.PrincipalID) {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
+	fs := sqlitetest.Open(t, clk)
 	if err := fs.Meta().InsertDomain(context.Background(), store.Domain{
 		Name: "example.local", IsLocal: true,
 	}); err != nil {

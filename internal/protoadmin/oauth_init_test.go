@@ -26,15 +26,13 @@ import (
 	"testing"
 	"time"
 
-	"path/filepath"
-
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/storesqlite"
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/testharness"
 )
 
@@ -69,10 +67,7 @@ func newOAuthHarness(t *testing.T) *oauthHarness {
 	t.Cleanup(fakeSv.Close)
 
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
+	fs := sqlitetest.Open(t, clk)
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs,
 		Clock: clk,
@@ -360,10 +355,7 @@ func TestOAuthStart_UnknownProvider(t *testing.T) {
 // ClientSecret is empty returns 503 oauth_provider_not_configured.
 func TestOAuthStart_MissingClientSecret(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
+	fs := sqlitetest.Open(t, clk)
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs,
 		Clock: clk,

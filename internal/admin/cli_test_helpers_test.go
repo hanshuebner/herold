@@ -19,7 +19,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/storesqlite"
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 )
 
 // cliTestEnv bundles an in-process protoadmin server backed by an
@@ -44,10 +44,7 @@ type cliTestEnv struct {
 func newCLITestEnv(t *testing.T, optsMutator func(*protoadmin.Options)) *cliTestEnv {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC))
-	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
+	fs := sqlitetest.Open(t, clk)
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)
 	opts := protoadmin.Options{

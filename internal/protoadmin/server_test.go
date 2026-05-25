@@ -21,15 +21,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"path/filepath"
-
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/storesqlite"
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/testharness"
 )
 
@@ -47,10 +45,7 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
+	fs := sqlitetest.Open(t, clk)
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs,
 		Clock: clk,
@@ -937,10 +932,7 @@ func TestPanic_InHandler_Returns500_NotCrash(t *testing.T) {
 	// normally catch goroutine panics, but the admin middleware
 	// catches them earlier and emits a typed 500.
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
+	fs := sqlitetest.Open(t, clk)
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)
 	srv := protoadmin.NewServer(fs, dir, rp, nil, clk, protoadmin.Options{})

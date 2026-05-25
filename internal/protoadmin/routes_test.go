@@ -9,10 +9,8 @@ package protoadmin_test
 // returns 401 for lack of auth); routes that are absent return 404 or 405.
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -20,7 +18,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/protoadmin"
-	"github.com/hanshuebner/herold/internal/storesqlite"
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 )
 
 // probeStatus sends a request with the given method and path to mux via
@@ -39,10 +37,7 @@ func probeStatus(mux http.Handler, method, path string) int {
 func TestRegisterSelfServiceRoutes_ExpectedPathsArePresent(t *testing.T) {
 	t.Parallel()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
+	fs := sqlitetest.Open(t, clk)
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)
 	srv := protoadmin.NewServer(fs, dir, rp, nil, clk, protoadmin.Options{})
@@ -99,10 +94,7 @@ func TestRegisterSelfServiceRoutes_ExpectedPathsArePresent(t *testing.T) {
 func TestRegisterSelfServiceRoutes_AdminOnlyPathsAbsent(t *testing.T) {
 	t.Parallel()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
+	fs := sqlitetest.Open(t, clk)
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)
 	srv := protoadmin.NewServer(fs, dir, rp, nil, clk, protoadmin.Options{})

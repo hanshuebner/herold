@@ -24,7 +24,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -35,7 +34,7 @@ import (
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/storesqlite"
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/testharness"
 )
 
@@ -72,10 +71,7 @@ type submissionHarness struct {
 func newSubmissionHarness(t *testing.T, probe protoadmin.ExternalProbe) *submissionHarness {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
+	fs := sqlitetest.Open(t, clk)
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs,
 		Clock: clk,
@@ -528,10 +524,7 @@ func TestSubmission_RequiresSelfOnly_AdminForbidden(t *testing.T) {
 func TestSubmission_CSRF_CookieAuth(t *testing.T) {
 	// Build a harness with cookie auth enabled.
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
+	fs := sqlitetest.Open(t, clk)
 	th, _ := testharness.Start(t, testharness.Options{
 		Store: fs,
 		Clock: clk,
@@ -699,10 +692,7 @@ func TestRequireSelfOnly_AllVerbs(t *testing.T) {
 // is configured.
 func TestPutSubmission_NoDataKey(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fs, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
+	fs := sqlitetest.Open(t, clk)
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs,
 		Clock: clk,
