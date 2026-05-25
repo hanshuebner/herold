@@ -47,7 +47,6 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -55,7 +54,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/storesqlite"
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/testharness/fakedns"
 	"github.com/hanshuebner/herold/internal/testharness/fakeplugin"
 	"github.com/hanshuebner/herold/internal/testharness/smtppeer"
@@ -242,13 +241,10 @@ func fillDefaults(t testing.TB, o Options) (Options, error) {
 		seed := [32]byte{}
 		binary.LittleEndian.PutUint64(seed[:8], uint64(o.RandSeed))
 		rng := rand.NewChaCha8(seed)
-
-		dbPath := filepath.Join(t.TempDir(), "test.db")
-		sqliteStore, err := storesqlite.OpenWithRand(context.Background(), dbPath, o.Logger, o.Clock, rng)
-		if err != nil {
-			return Options{}, fmt.Errorf("storesqlite: %w", err)
-		}
-		o.Store = sqliteStore
+		// sqlitetest.OpenWithRand restores a per-process pre-migrated
+		// template so the per-test migration cost (~1.6s under -race)
+		// is paid only once per test binary instead of once per Start.
+		o.Store = sqlitetest.OpenWithRand(t, o.Clock, rng)
 	}
 	return o, nil
 }
