@@ -22,7 +22,13 @@
     id: string;
     label: string;
     danger?: boolean;
-    onclick: () => void;
+    /** When present, the item renders as `<a href download>` (semantic
+     *  download link) instead of a button. Right-click "save link as",
+     *  middle-click new tab, and the browser's native save dialog all
+     *  work without synthetic clicks. The menu still closes on click. */
+    href?: string;
+    download?: string;
+    onclick?: () => void;
   }
 
   interface Props {
@@ -43,7 +49,7 @@
   }
 
   function handleItemClick(item: KebabItem): void {
-    item.onclick();
+    item.onclick?.();
     close();
   }
 
@@ -101,15 +107,28 @@
       onkeydown={handleKeydown}
     >
       {#each items as item (item.id)}
-        <button
-          type="button"
-          class="kebab-item"
-          class:danger={item.danger}
-          role="menuitem"
-          onclick={() => handleItemClick(item)}
-        >
-          <span class="kebab-item-label">{item.label}</span>
-        </button>
+        {#if item.href !== undefined}
+          <a
+            class="kebab-item"
+            class:danger={item.danger}
+            role="menuitem"
+            href={item.href}
+            download={item.download}
+            onclick={() => handleItemClick(item)}
+          >
+            <span class="kebab-item-label">{item.label}</span>
+          </a>
+        {:else}
+          <button
+            type="button"
+            class="kebab-item"
+            class:danger={item.danger}
+            role="menuitem"
+            onclick={() => handleItemClick(item)}
+          >
+            <span class="kebab-item-label">{item.label}</span>
+          </button>
+        {/if}
       {/each}
     </div>
   {/if}
@@ -177,6 +196,7 @@
     border: none;
     font-size: var(--type-body-compact-01-size);
     text-align: left;
+    text-decoration: none;
     width: 100%;
     min-height: var(--touch-min);
     cursor: pointer;

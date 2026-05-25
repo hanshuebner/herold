@@ -226,6 +226,7 @@ export const de = {
   'msg.kebab.markUnread': 'Als ungelesen markieren',
   'msg.kebab.markUnreadFromHere': 'Ab hier als ungelesen markieren',
   'msg.kebab.delete': 'Diese Nachricht löschen',
+  'msg.kebab.download': 'Nachricht herunterladen',
 
   // ── Compose ─────────────────────────────────────────────────────────
   'compose.title.new': 'Neue Nachricht',

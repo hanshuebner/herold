@@ -16,6 +16,7 @@
   import { untrack } from 'svelte';
   import ReactIcon from '../icons/ReactIcon.svelte';
   import MessageKebabMenu, { type KebabItem } from './MessageKebabMenu.svelte';
+  import { emlDownloadFilename } from './download-filename';
   import { t, localeTag } from '../i18n/i18n.svelte';
   import { relativeTimeAgo } from './relative-time';
   import RecipientTrigger from './RecipientTrigger.svelte';
@@ -279,6 +280,27 @@
     void mail.reportPhishing(email.id);
   }
 
+  // REQ-MAIL-141: download URL + suggested filename for the raw RFC 5322
+  // blob. Null when the JMAP session is not yet bootstrapped — the kebab
+  // item is omitted in that window.
+  let downloadEmlInfo = $derived.by<{ href: string; filename: string } | null>(() => {
+    const accountId = auth.session?.primaryAccounts['urn:ietf:params:jmap:mail'];
+    if (!accountId || !email.blobId) return null;
+    const filename = emlDownloadFilename({
+      subject: email.subject,
+      blobId: email.blobId,
+      emailId: email.id,
+    });
+    const href = jmap.downloadUrl({
+      accountId,
+      blobId: email.blobId,
+      type: 'message/rfc822',
+      name: filename,
+    });
+    if (!href) return null;
+    return { href, filename };
+  });
+
   let kebabItems = $derived.by<KebabItem[]>(() => {
     const items: KebabItem[] = [];
     // REQ-MAIL-133.
@@ -312,6 +334,15 @@
       label: t('msg.reportPhishing'),
       onclick: reportPhishing,
     });
+    // REQ-MAIL-141. Anchor-style item — browser handles the save dialog.
+    if (downloadEmlInfo) {
+      items.push({
+        id: 'download',
+        label: t('msg.kebab.download'),
+        href: downloadEmlInfo.href,
+        download: downloadEmlInfo.filename,
+      });
+    }
     return items;
   });
 </script>

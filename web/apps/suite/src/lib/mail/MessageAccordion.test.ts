@@ -41,7 +41,15 @@ vi.mock('../auth/auth.svelte', () => ({
 
 vi.mock('../jmap/client', () => ({
   jmap: {
-    downloadUrl: () => null,
+    downloadUrl: (args: {
+      accountId: string;
+      blobId: string;
+      type?: string;
+      name?: string;
+    }) =>
+      `/jmap/download/${args.accountId}/${args.blobId}/${encodeURIComponent(
+        args.name ?? '',
+      )}`,
   },
 }));
 
@@ -168,16 +176,19 @@ function makeEmail(overrides: {
   attachments?: Partial<EmailBodyPart>[];
   mailboxIds?: Record<string, true>;
   from?: Array<{ name: string | null; email: string }>;
+  subject?: string;
+  blobId?: string;
 }): Email {
   return {
     id: 'e1',
     threadId: 't1',
+    blobId: overrides.blobId ?? 'blob-stub',
     mailboxIds: overrides.mailboxIds ?? {},
     keywords: {},
     from: overrides.from ?? [{ name: 'Alice', email: 'alice@example.test' }],
     to: null,
     cc: null,
-    subject: 'Test subject',
+    subject: overrides.subject ?? 'Test subject',
     preview: 'preview text',
     receivedAt: '2026-04-30T10:00:00Z',
     hasAttachment: overrides.hasAttachment ?? false,
@@ -379,6 +390,21 @@ describe('MessageAccordion: per-message kebab menu (conservative slice)', () => 
     await fireEvent.click(screen.getByText('msg.reportPhishing'));
 
     expect(mailMock.reportPhishing).toHaveBeenCalledWith(email.id);
+  });
+
+  it('Download item renders as an anchor with href and download attributes', async () => {
+    const email = makeEmail({ subject: 'My great message', blobId: 'BLOB42' });
+    renderAccordion(email, /* expanded */ true);
+
+    await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+    const link = screen.getByRole('menuitem', { name: 'msg.kebab.download' });
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('download', 'My great message.eml');
+    expect(link).toHaveAttribute(
+      'href',
+      // The mocked downloadUrl returns `/jmap/download/{acct}/{blob}/{encName}`.
+      '/jmap/download/acct1/BLOB42/My%20great%20message.eml',
+    );
   });
 });
 
