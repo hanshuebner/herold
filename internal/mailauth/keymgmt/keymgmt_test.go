@@ -227,12 +227,13 @@ func TestPublishedRecord_Ed25519_Format(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode p=: %v", err)
 	}
-	pub, err := x509.ParsePKIXPublicKey(der)
-	if err != nil {
-		t.Fatalf("parse SPKI: %v", err)
-	}
-	if _, ok := pub.(ed25519.PublicKey); !ok {
-		t.Fatalf("public key is not ed25519: %T", pub)
+	// RFC 8463 §3 says the Ed25519 p= value is the RAW 32-byte public
+	// key, not a SubjectPublicKeyInfo wrapper. Verifiers that follow
+	// the spec (Gmail, Microsoft, Apple) report "no key" on an SPKI-
+	// wrapped p=, which is the bug this test guards against.
+	if len(der) != ed25519.PublicKeySize {
+		t.Fatalf("ed25519 p= must decode to %d raw bytes per RFC 8463; got %d (%x)",
+			ed25519.PublicKeySize, len(der), der)
 	}
 	// Round-trip: the parsed PEM private key's public matches.
 	block, _ := pem.Decode([]byte(key.PrivateKeyPEM))
@@ -248,7 +249,7 @@ func TestPublishedRecord_Ed25519_Format(t *testing.T) {
 		t.Fatalf("priv key not ed25519: %T", priv)
 	}
 	pubFromPriv := edPriv.Public().(ed25519.PublicKey)
-	if !bytes.Equal(pubFromPriv, pub.(ed25519.PublicKey)) {
+	if !bytes.Equal(pubFromPriv, ed25519.PublicKey(der)) {
 		t.Fatalf("ed25519 public mismatch between private and TXT")
 	}
 }

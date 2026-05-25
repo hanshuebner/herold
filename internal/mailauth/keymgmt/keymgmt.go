@@ -238,15 +238,32 @@ func encodePrivatePEM(priv crypto.Signer) (string, error) {
 	return string(pem.EncodeToMemory(&pem.Block{Type: PEMTypePrivateKey, Bytes: der})), nil
 }
 
-// encodePublicB64 returns the base64 SubjectPublicKeyInfo that lands in
-// the DNS TXT p= tag. The DKIM RFCs (6376 §3.6.1, 8463 §3) require the
-// SPKI form for both rsa and ed25519.
+// encodePublicB64 returns the base64-encoded `p=` payload that lands in
+// the DKIM DNS TXT record. The encoding differs by algorithm:
+//
+//   - RSA (RFC 6376 §3.6.1): SubjectPublicKeyInfo (PKIX), which is what
+//     `x509.MarshalPKIXPublicKey` produces.
+//   - Ed25519 (RFC 8463 §3): the **raw 32-byte public key**, NOT
+//     SubjectPublicKeyInfo / PKCS#8. Verifiers that follow RFC 8463
+//     (Gmail, Microsoft, Apple) treat an SPKI-wrapped Ed25519 `p=` as
+//     "no key" and return `dkim=neutral`.
+//
+// Earlier revisions of this function emitted SPKI for both algorithms;
+// outbound mail from herold therefore got `dkim=neutral (no key)` at
+// Gmail. The fix splits the encoding by alg.
 func encodePublicB64(pub crypto.PublicKey) (string, error) {
-	der, err := x509.MarshalPKIXPublicKey(pub)
-	if err != nil {
-		return "", err
+	switch k := pub.(type) {
+	case ed25519.PublicKey:
+		// Raw 32-byte key per RFC 8463 §3. An ed25519.PublicKey is
+		// already []byte of len 32.
+		return base64.StdEncoding.EncodeToString(k), nil
+	default:
+		der, err := x509.MarshalPKIXPublicKey(pub)
+		if err != nil {
+			return "", err
+		}
+		return base64.StdEncoding.EncodeToString(der), nil
 	}
-	return base64.StdEncoding.EncodeToString(der), nil
 }
 
 // newSelector returns "herold<unix-millis>". The prefix advertises the
