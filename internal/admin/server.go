@@ -716,7 +716,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	adminServerOpts := protoadmin.Options{
 		ServerVersion:             "0.1.0",
 		Health:                    health,
-		Session:                   adminSessionCookieConfig(cfg),
+		Session:                   adminSessionCookieConfig(cfg, logger),
 		ExternalSubmissionDataKey: extSubmitDataKey,
 		OAuthProviders:            adminOAuthProviders,
 		DKIMKeyManager:            adminDKIMManager,
@@ -736,35 +736,26 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		clk,
 		adminServerOpts,
 	)
-	// REQ-AUTH-SESSION-REST: when no signing key is configured (typical
-	// zero-config / Docker quickstart scenario), both the admin and public
-	// cookie configs fall back to an ephemeral random key generated at
-	// startup. Sessions issued with the ephemeral key are invalidated on
-	// restart, which is acceptable for a development deployment. Operators
-	// wanting session continuity across restarts set HEROLD_UI_SESSION_KEY
-	// to a value of at least 32 bytes. The [server.ui].signing_key_env TOML
-	// knob is a back-compat override that names an alternative env var; most
-	// operators can ignore it and use HEROLD_UI_SESSION_KEY directly.
+	// REQ-AUTH-SESSION-REST + issue #14: when neither
+	// [server.ui].signing_key_env nor HEROLD_UI_SESSION_KEY is set, the
+	// signing key is persisted to <data_dir>/secrets/ui-session-key on
+	// first start and read back on every subsequent start. Sessions
+	// therefore survive restarts without the operator wiring an env
+	// var (the env path stays available as an override -- k8s secret
+	// injection, external vault, etc).
 	//
-	// Logged at WARN (not INFO) so an operator scanning logs after their
-	// users complain about being logged out on every restart sees the
-	// cause without trawling INFO traffic.
+	// The one remaining footgun is "env is set but too short": we ignore
+	// the value (falls through to the persisted path) but want the
+	// operator to notice the misconfiguration.
 	effectiveEnv := cfg.Server.UI.SigningKeyEnv
 	if effectiveEnv == "" {
 		effectiveEnv = defaultSessionKeyEnv
 	}
-	if v := os.Getenv(effectiveEnv); len(v) < 32 {
-		if len(v) == 0 {
-			logger.Warn("session-cookie signing key not configured; " +
-				"using ephemeral random key (admin and public sessions invalidated on every restart). " +
-				"Set " + defaultSessionKeyEnv + " to a 32+ byte value for a persistent key.")
-		} else {
-			logger.Warn("session-cookie signing key too short; "+
-				"using ephemeral random key (sessions invalidated on every restart)",
-				"env", effectiveEnv,
-				"min_bytes", 32,
-				"got_bytes", len(v))
-		}
+	if v := os.Getenv(effectiveEnv); len(v) > 0 && len(v) < 32 {
+		logger.Warn("session-cookie signing key env var is set but too short; ignoring it and using the persisted key under data_dir",
+			"env", effectiveEnv,
+			"min_bytes", 32,
+			"got_bytes", len(v))
 	}
 	// Parent mux composition (Phase 2 Wave 2.4): the admin HTTP
 	// listener serves both the REST surface (protoadmin under
@@ -2176,7 +2167,7 @@ func composeAdminAndUI(
 	// the deleted internal/protoui package. The cookie config is the
 	// same one protologin uses when issuing the cookie, so HMAC
 	// verification succeeds.
-	publicCookieCfg := publicSessionCookieConfig(cfg)
+	publicCookieCfg := publicSessionCookieConfig(cfg, logger)
 	publicSessionResolver := func(r *http.Request) (store.PrincipalID, bool) {
 		return authsession.ResolveSession(r, publicCookieCfg, st, clk)
 	}
@@ -2925,6 +2916,12 @@ func adminListenerHint(w http.ResponseWriter, _ *http.Request) {
 // log line emitted when the key is absent names this variable directly.
 const defaultSessionKeyEnv = "HEROLD_UI_SESSION_KEY"
 
+// sessionKeyFilename is the basename of the persisted session signing key
+// under <data_dir>/secrets/. The file holds 32 raw bytes (mode 0600,
+// owned by the run-as user) and is created on first start when no env var
+// override is configured.
+const sessionKeyFilename = "ui-session-key"
+
 // resolveSessionSigningKey returns the HMAC-SHA256 signing key to use for
 // session cookies. Resolution order:
 //
@@ -2932,17 +2929,21 @@ const defaultSessionKeyEnv = "HEROLD_UI_SESSION_KEY"
 //     that env var. This is the back-compat path for operators who wired the
 //     old knob; the key must be >= 32 bytes.
 //  2. Otherwise read the predefined env var HEROLD_UI_SESSION_KEY.
-//  3. If neither yields a usable key, generate a fresh cryptographically-random
-//     32-byte key for this process lifetime.
+//  3. Otherwise persist a key under <data_dir>/secrets/ui-session-key and
+//     return that on every subsequent boot. This is the production-default
+//     path: session cookies survive restarts without the operator needing
+//     to wire an env var (issue #14). The file is created on first start
+//     with mode 0600 and re-read on every later start.
+//  4. Only when persistence itself fails (unwritable data_dir, missing
+//     filesystem permissions) does the function fall back to a fresh
+//     ephemeral key; this is logged at WARN so the operator notices.
 //
-// Callers that need an admin key and a public key MUST call this function
-// independently for each; the two keys are intentionally different so cookies
-// issued on one listener are not accepted on the other (REQ-AUTH-COOKIE-SCOPE).
-//
-// A randomly-generated key means sessions are invalidated when the process
-// restarts. This is acceptable for development deployments and the default
-// Docker quickstart; operators wanting session continuity set HEROLD_UI_SESSION_KEY.
-func resolveSessionSigningKey(cfg *sysconfig.Config) []byte {
+// The persisted file is shared between the admin and public listeners.
+// Cross-listener isolation is enforced by distinct cookie names (`herold_admin_session`
+// vs `herold_public_session`, REQ-AUTH-COOKIE-PATH), not by separate
+// signing keys -- the env-var path also shares one key between the two
+// listeners, and we keep that shape for consistency.
+func resolveSessionSigningKey(cfg *sysconfig.Config, logger *slog.Logger) []byte {
 	// Step 1: honour the explicit TOML override (back-compat).
 	if env := cfg.Server.UI.SigningKeyEnv; env != "" {
 		if v := os.Getenv(env); len(v) >= 32 {
@@ -2953,9 +2954,14 @@ func resolveSessionSigningKey(cfg *sysconfig.Config) []byte {
 	if v := os.Getenv(defaultSessionKeyEnv); len(v) >= 32 {
 		return []byte(v)
 	}
-	// Step 3: No usable configured key: generate a fresh ephemeral one. Each
-	// call returns a different key, so the admin and public configs diverge
-	// intentionally.
+	// Step 3: persist + reuse a key under data_dir.
+	if key, err := loadOrCreatePersistedSessionKey(cfg.Server.DataDir); err == nil {
+		return key
+	} else if logger != nil {
+		logger.Warn("session-cookie signing key persistence failed; falling back to ephemeral random key (sessions will be invalidated on every restart)",
+			"data_dir", cfg.Server.DataDir, "err", err)
+	}
+	// Step 4: ephemeral fallback.
 	var key [32]byte
 	if _, err := rand.Read(key[:]); err != nil {
 		// rand.Read failing is OS-level catastrophic; panic rather than
@@ -2963,6 +2969,37 @@ func resolveSessionSigningKey(cfg *sysconfig.Config) []byte {
 		panic("admin: failed to generate ephemeral session signing key: " + err.Error())
 	}
 	return key[:]
+}
+
+// loadOrCreatePersistedSessionKey reads <data_dir>/secrets/ui-session-key
+// when present (and >= 32 bytes), or creates it with 32 fresh random bytes
+// on first call. The file is 0600 and the parent directory 0700; the
+// run-as user owns both because the herold process is the only thing that
+// reads or writes inside data_dir.
+//
+// Returns an error when data_dir is empty or when the file/directory
+// cannot be created (filesystem readonly, permission denied, ...);
+// callers fall back to an ephemeral key in that case.
+func loadOrCreatePersistedSessionKey(dataDir string) ([]byte, error) {
+	if dataDir == "" {
+		return nil, errors.New("data_dir is empty")
+	}
+	dir := filepath.Join(dataDir, "secrets")
+	path := filepath.Join(dir, sessionKeyFilename)
+	if data, err := os.ReadFile(path); err == nil && len(data) >= 32 {
+		return data, nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	var key [32]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		return nil, fmt.Errorf("rand.Read: %w", err)
+	}
+	if err := os.WriteFile(path, key[:], 0o600); err != nil {
+		return nil, fmt.Errorf("write %s: %w", path, err)
+	}
+	return key[:], nil
 }
 
 // adminSessionCookieConfig extracts the admin-listener cookie parameters
@@ -3014,8 +3051,8 @@ func buildSHA() string {
 	return "dev"
 }
 
-func adminSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
-	signingKey := resolveSessionSigningKey(cfg)
+func adminSessionCookieConfig(cfg *sysconfig.Config, logger *slog.Logger) authsession.SessionConfig {
+	signingKey := resolveSessionSigningKey(cfg, logger)
 	secure := true
 	if cfg.Server.UI.SecureCookies != nil {
 		secure = *cfg.Server.UI.SecureCookies
@@ -3055,8 +3092,8 @@ func adminSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
 //
 // When no persistent signing key is configured, resolveSessionSigningKey
 // generates an ephemeral 32-byte key (fixes #6, #7).
-func publicSessionCookieConfig(cfg *sysconfig.Config) authsession.SessionConfig {
-	signingKey := resolveSessionSigningKey(cfg)
+func publicSessionCookieConfig(cfg *sysconfig.Config, logger *slog.Logger) authsession.SessionConfig {
+	signingKey := resolveSessionSigningKey(cfg, logger)
 	secure := true
 	if cfg.Server.UI.SecureCookies != nil {
 		secure = *cfg.Server.UI.SecureCookies
