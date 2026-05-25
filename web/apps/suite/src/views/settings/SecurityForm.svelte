@@ -124,14 +124,37 @@
       totpSecret = result.secret;
       totpProvisioningUri = result.provisioning_uri;
       try {
-        const qr = new QRCode({
+        // qrcode-svg params tuned for reliable phone-camera scanning:
+      //
+      //  - padding: 4 -- the QR spec's required quiet zone is four
+      //    modules; scanners (Google Authenticator, iOS camera)
+      //    refuse codes with less.
+      //  - width/height: 320 -- a typical otpauth URI is ~120-160
+      //    chars, which lands at QR version 6-8 (41-49 modules) on
+      //    `ecl: L`. Adding the 8-module quiet zone gives ~49-57
+      //    modules to draw; 320 keeps every module at >=5.6 CSS
+      //    pixels, the practical lower bound for camera capture at
+      //    ~25 cm focus distance.
+      //  - ecl: L -- screen-rendered QRs do not need DKIM-style
+      //    damage tolerance; L keeps the symbol version (and thus
+      //    module density) as low as the content allows, which
+      //    gives larger modules at the same canvas size.
+      //
+      // qrcode-svg emits fractional `x`/`y` rects when the canvas
+      // does not divide cleanly into the module count, paired with
+      // `shape-rendering: crispEdges`. That combination produces
+      // either merged or hair-line-separated modules under the
+      // camera's sub-pixel sampling, which is exactly the failure
+      // mode reported when GA + the iOS camera refused the prior
+      // 200/M/padding-2 QR.
+      const qr = new QRCode({
           content: result.provisioning_uri,
-          width: 200,
-          height: 200,
+          width: 320,
+          height: 320,
           color: '#000000',
           background: '#ffffff',
-          ecl: 'M',
-          padding: 2,
+          ecl: 'L',
+          padding: 4,
         });
         totpQrSvg = qr.svg();
       } catch {
