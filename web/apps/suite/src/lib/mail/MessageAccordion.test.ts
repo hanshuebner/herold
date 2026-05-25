@@ -8,16 +8,16 @@
  *   ThreadReader.svelte's thread-level header so badges are always visible
  *   regardless of accordion expansion state. MessageAccordion no longer
  *   renders label badges at all.
- * - No per-message action surface (re #98): the per-message action
- *   toolbar AND the per-message header kebab were both removed. Reply /
- *   reply-all / forward live in the fixed reply bar; thread-scoped verbs
- *   (archive, delete, mark unread, snooze, move, label, mute, spam,
- *   phishing, block, restore, print) live in ThreadToolbar; reactions
- *   live inline with the message title row.
+ * - Per-message kebab menu (conservative-slice restore of re #98): the
+ *   kebab is back inside the message header, expanded-only, and carries
+ *   the verbs documented in 02-mail-basics.md § Per-message context menu.
+ *   Reply / reply-all / forward stay in the fixed reply bar; thread-only
+ *   verbs (archive, snooze, move, label, mute, block sender, restore)
+ *   live in ThreadToolbar.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { render, screen, fireEvent } from '@testing-library/svelte';
 import MessageAccordion from './MessageAccordion.svelte';
 import type { Email, EmailBodyPart } from './types';
 
@@ -262,18 +262,23 @@ describe('MessageAccordion: no per-message label badges (re #66, re #70)', () =>
   });
 });
 
-// ── No per-message action surface (re #98) ──────────────────────────────────
+// ── Per-message kebab menu (conservative slice; re #98) ────────────────────
 //
-// The per-message action row AND the per-message header kebab were both
-// removed: reply / reply-all / forward live in the fixed reply bar; thread
-// verbs (mute, spam, phishing, block, archive, mark-unread, snooze, move,
-// label, restore, print) live in ThreadToolbar; reactions live in the
-// message title row above.
+// The kebab is back inside the message header (expanded-only). The
+// conservative slice in v1 — see docs/design/web/requirements/02-mail-basics.md
+// § Per-message context menu — carries verbs that have an inherently
+// per-message use case (download .eml, show original, print this message)
+// or whose thread-scoped variant is wrong for multi-sender threads
+// (delete one msg, mark one msg unread, mark unread from here, report
+// spam, report phishing, filter messages like this). Reply / reply-all /
+// forward stay in the fixed reply bar; block sender + mute thread stay
+// in ThreadToolbar.
 
-describe('MessageAccordion: no per-message action surface (re #98)', () => {
+describe('MessageAccordion: per-message kebab menu (conservative slice)', () => {
   beforeEach(() => {
     mailMock.trash = null;
     mailMock.listFolder = 'inbox';
+    mailMock.setSeen.mockClear();
   });
 
   it('does not render reply / reply-all / forward inside the message body', () => {
@@ -286,37 +291,47 @@ describe('MessageAccordion: no per-message action surface (re #98)', () => {
     expect(screen.queryByLabelText('msg.forward')).not.toBeInTheDocument();
   });
 
-  it('does not render thread-level actions under the message', () => {
+  it('does not render thread-only verbs anywhere on the message', () => {
+    // Block sender + mute thread are ThreadToolbar-only per the v1
+    // conservative slice; they must not surface on the message header
+    // or inside the kebab menu.
     const email = makeEmail({});
     renderAccordion(email, /* expanded */ true);
-
-    // These all live in ThreadToolbar.
     expect(screen.queryByLabelText('msg.muteThread')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('msg.reportSpam')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('msg.reportPhishing')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('msg.blockSender')).not.toBeInTheDocument();
   });
 
-  it('does not render a per-message kebab when expanded', () => {
-    // The kebab was removed entirely (re #98). filterLike / viewOriginal /
-    // restore-in-trash were the kebab items; restore is now thread-only,
-    // and filterLike / viewOriginal were judged not worth a per-message
-    // surface.
+  it('does not render the kebab when the message is collapsed', () => {
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ false);
+    expect(screen.queryByLabelText('msg.kebab.openLabel')).not.toBeInTheDocument();
+  });
+
+  it('renders the kebab trigger when the message is expanded', () => {
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ true);
+    expect(screen.getByLabelText('msg.kebab.openLabel')).toBeInTheDocument();
+  });
+
+  it('opens the menu on trigger click and shows the Mark unread item', async () => {
     const email = makeEmail({});
     renderAccordion(email, /* expanded */ true);
 
-    expect(screen.queryByLabelText('actions.moreActions')).not.toBeInTheDocument();
+    // Menu is closed by default; items are absent until the trigger is clicked.
+    expect(screen.queryByText('msg.kebab.markUnread')).not.toBeInTheDocument();
+
+    await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+    expect(screen.getByText('msg.kebab.markUnread')).toBeInTheDocument();
   });
 
-  it('does not render the kebab when in trash either', () => {
-    // Even in trash there is no per-message kebab — restore is offered at
-    // thread scope by ThreadToolbar.
-    mailMock.trash = TRASH_MBX;
-    mailMock.listFolder = 'trash';
-    const email = makeEmail({ mailboxIds: { [TRASH_MBX.id]: true } });
+  it('Mark unread item calls mail.setSeen(emailId, false)', async () => {
+    const email = makeEmail({});
     renderAccordion(email, /* expanded */ true);
 
-    expect(screen.queryByLabelText('actions.moreActions')).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+    await fireEvent.click(screen.getByText('msg.kebab.markUnread'));
+
+    expect(mailMock.setSeen).toHaveBeenCalledWith(email.id, false);
   });
 });
 

@@ -15,6 +15,7 @@
   import { keyboard } from '../keyboard/engine.svelte';
   import { untrack } from 'svelte';
   import ReactIcon from '../icons/ReactIcon.svelte';
+  import MessageKebabMenu, { type KebabItem } from './MessageKebabMenu.svelte';
   import { t, localeTag } from '../i18n/i18n.svelte';
   import { relativeTimeAgo } from './relative-time';
   import RecipientTrigger from './RecipientTrigger.svelte';
@@ -248,12 +249,30 @@
     });
   });
 
-  // ── Per-message actions removed (re #98) ───────────────────────────────
-  // The per-message kebab/dropdown was removed entirely: the actions there
-  // were either thread-scoped duplicates (restore is in ThreadToolbar) or
-  // rarely-used verbs (filterLike, viewOriginal) that the maintainer judged
-  // not worth a per-message surface. The remaining message-scope concept is
-  // reactions, which live inline with the message title row above.
+  // ── Per-message kebab menu (conservative slice, restored from re #98) ──
+  // The kebab carries verbs that have an inherently per-message use case
+  // (download .eml, show original, print this message) or whose
+  // thread-scoped variant is wrong for multi-sender threads (delete one
+  // msg, mark one msg unread, mark unread from here, report spam / phishing,
+  // filter messages like this). Reply / forward live in the fixed reply
+  // bar; block sender stays thread-only; report illegal and translate are
+  // deferred. See docs/design/web/requirements/02-mail-basics.md
+  // § Per-message context menu.
+
+  function markUnread(): void {
+    void mail.setSeen(email.id, false);
+  }
+
+  let kebabItems = $derived.by<KebabItem[]>(() => {
+    const items: KebabItem[] = [];
+    // REQ-MAIL-133.
+    items.push({
+      id: 'markUnread',
+      label: t('msg.kebab.markUnread'),
+      onclick: markUnread,
+    });
+    return items;
+  });
 </script>
 
 <article class="message" class:expanded class:self={isSelf}>
@@ -406,6 +425,10 @@
       <span class="date">
         {formatDateTime(email.receivedAt)}{#if relativeAnnotation}&nbsp;<span class="date-relative">{relativeAnnotation}</span>{/if}
       </span>
+
+      {#if expanded}
+        <MessageKebabMenu items={kebabItems} />
+      {/if}
     </span>
   </div>
 

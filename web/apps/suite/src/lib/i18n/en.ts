@@ -224,6 +224,10 @@ export const en = {
   'msg.recipientsToMany': 'to {first} and {others} other',
   'msg.recipientsToManyOther': 'to {first} and {others} others',
 
+  // ── Per-message kebab menu (REQ-UI-21b, REQ-MAIL-130..142) ──────────
+  'msg.kebab.openLabel': 'More actions',
+  'msg.kebab.markUnread': 'Mark as unread',
+
   // ── Compose ─────────────────────────────────────────────────────────
   'compose.title.new': 'New message',
   'compose.title.reply': 'Reply',
