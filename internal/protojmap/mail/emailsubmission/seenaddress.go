@@ -2,10 +2,17 @@ package emailsubmission
 
 import (
 	"context"
+	"mime"
 	"strings"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// dnDecoder is a package-level RFC 2047 word decoder used by
+// parseDisplayNames. mime.WordDecoder is goroutine-safe by virtue of
+// being effectively stateless once constructed; sharing one instance
+// avoids per-call allocation.
+var dnDecoder = new(mime.WordDecoder)
 
 // seedRecipientsOnSend upserts a SeenAddress row for every unique
 // recipient in the recipients slice, subject to the exclusions defined
@@ -125,6 +132,12 @@ func addressHasContact(
 // name from a comma-separated header value. The format accepted is the
 // common RFC 5322 form: "Display Name <addr@example>" or plain
 // "addr@example". When no display name is present, the value is "".
+//
+// Names are RFC 2047 decoded (issue #16): the outbound message's
+// To/Cc/Bcc headers Q-encode any non-ASCII display name, and the raw
+// `=?utf-8?q?...?=` form would otherwise be stored as the SeenAddress
+// name and appear in the autocomplete dropdown instead of the
+// human-readable rendering.
 func parseDisplayNames(header string) map[string]string {
 	out := make(map[string]string)
 	if header == "" {
@@ -147,10 +160,25 @@ func parseDisplayNames(header string) map[string]string {
 			if len(name) >= 2 && name[0] == '"' && name[len(name)-1] == '"' {
 				name = name[1 : len(name)-1]
 			}
-			out[strings.ToLower(addr)] = name
+			out[strings.ToLower(addr)] = decodeDisplayName(name)
 		} else if strings.Contains(part, "@") {
 			out[strings.ToLower(part)] = ""
 		}
 	}
 	return out
+}
+
+// decodeDisplayName runs name through mime.WordDecoder so an RFC 2047
+// Q-encoded or B-encoded display name like `=?utf-8?q?Hans_H=C3=BCbner?=`
+// is normalised to its UTF-8 form ("Hans Hübner") before being stored
+// as a SeenAddress / contact name. Returns name unchanged when no
+// encoded-word is present or when decoding fails.
+func decodeDisplayName(name string) string {
+	if name == "" || !strings.Contains(name, "=?") {
+		return name
+	}
+	if decoded, err := dnDecoder.DecodeHeader(name); err == nil {
+		return decoded
+	}
+	return name
 }
