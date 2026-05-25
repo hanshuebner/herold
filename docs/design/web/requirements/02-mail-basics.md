@@ -163,23 +163,38 @@ The compose body is a ProseMirror editor (`../implementation/01-tech-stack.md`).
 
 ## Per-message context menu
 
-The three-dot menu surfaced from each message header in the reading-pane accordion (`09-ui-layout.md` REQ-UI-21b). Items grouped by purpose; separators in the table indicate grouping.
+The three-dot menu surfaced from each message header in the reading-pane accordion (`09-ui-layout.md` REQ-UI-21b).
 
-| ID | Action | Behaviour |
-|----|--------|-----------|
-| REQ-MAIL-130 | Reply | Opens compose pre-populated as `30-32` describe; per-message scope (just this message, not the whole thread). |
-| REQ-MAIL-131 | Forward | Opens compose populated with the message body and headers per REQ-MAIL-32. |
-| REQ-MAIL-132 | Delete | Moves the **message** to Trash via `Email/set` (`mailboxIds: { <trash>: true }`). Does NOT delete the rest of the thread. Optimistic with Undo. |
-| REQ-MAIL-133 | Mark as unread | Sets `keywords/$seen: null` on this message only. The thread shows unread again if any of its messages is unread. |
-| REQ-MAIL-134 | Block sender | Adds the message's `From` address to the user's block list. Future messages from that address are filtered (Sieve rule auto-generated; see `04-filters.md`). Confirmation dialog before applying. |
-| REQ-MAIL-135 | Report spam | Marks the message `$junk` and moves to the Spam mailbox. Sends a feedback signal to herold's spam classifier (REQ-FILT-220-style mechanism). The message's sender is NOT auto-blocked (the user can do that explicitly via REQ-MAIL-134). |
-| REQ-MAIL-136 | Report phishing | Same as report-spam, plus an additional flag indicating phishing rather than generic spam. Herold may forward the report to upstream (operator policy). |
-| REQ-MAIL-137 | Report illegal content | Surfaces a confirmation modal explaining the operator-side handling, then sends a report payload to herold's admin queue. Operator policy governs further escalation. Hidden if the operator hasn't enabled illegal-content reporting in herold's policy. |
-| REQ-MAIL-138 | Filter messages like this | Opens the filter editor (`04-filters.md`) pre-populated with conditions derived from the message: From address (or domain), subject prefix, list-id (if present). User picks the action. |
-| REQ-MAIL-139 | Translate | Cut for v1. The action is hidden until the suite ships translation. (Hidden, not greyed-out — invisible.) |
-| REQ-MAIL-140 | Print | Opens the browser print dialog scoped to this message's rendered body (with sender / date / subject header). |
-| REQ-MAIL-141 | Download message | Downloads the raw RFC 5322 source as `<subject>.eml` via `Blob/download` of the email's blob. |
-| REQ-MAIL-142 | Show original | Opens a modal showing the raw RFC 5322 source (headers + body). Read-only, monospace, copy-to-clipboard affordance. Useful for debugging delivery and authentication. |
+The kebab carries a deliberately narrow conservative slice in v1: the verbs that have an inherently per-message use case (download .eml, show original raw source, per-message print) plus the verbs whose thread-scoped variant is a poor fit for multi-sender threads (delete one message, mark one message unread, "mark unread from here", report spam / phishing on one message). The semantics for **every** item below are still specified — items not in the kebab surface either live in the fixed reply bar (reply, forward), in the thread toolbar (block sender), or are deferred (report illegal, translate).
+
+**Kebab surface (v1), in order:**
+
+1. Mark as unread (REQ-MAIL-133)
+2. Mark unread from here (REQ-MAIL-133a)
+3. Delete this message (REQ-MAIL-132)
+4. Report spam (REQ-MAIL-135)
+5. Report phishing (REQ-MAIL-136)
+6. Filter messages like this (REQ-MAIL-138) — gated on REQ-FLT-32
+7. Print this message (REQ-MAIL-140)
+8. Download .eml (REQ-MAIL-141)
+9. Show original (REQ-MAIL-142)
+
+| ID | Action | Surface | Behaviour |
+|----|--------|---------|-----------|
+| REQ-MAIL-130 | Reply | **Fixed reply bar only — NOT in kebab.** | Opens compose pre-populated as `30-32` describe. The fixed reply bar at the thread bottom is anchored on the latest message; replying to a mid-thread message is not a v1 surface. |
+| REQ-MAIL-131 | Forward | **Fixed reply bar only — NOT in kebab.** | Opens compose populated with the message body and headers per REQ-MAIL-32. Same surface rule as REQ-MAIL-130. |
+| REQ-MAIL-132 | Delete | Kebab. | Moves the **message** to Trash via `Email/set` (`mailboxIds: { <trash>: true }`). Does NOT delete the rest of the thread. Optimistic with Undo. |
+| REQ-MAIL-133 | Mark as unread | Kebab. | Sets `keywords/$seen: null` on this message only. The thread shows unread again if any of its messages is unread. Optimistic with Undo. |
+| REQ-MAIL-133a | Mark unread from here | Kebab. | Anchored on the chosen message: sets `keywords/$seen: null` on every email in the same thread whose `receivedAt >= anchor.receivedAt`. Issued as one batched `Email/set` update over the filtered email-ids. Optimistic with Undo (the Undo restores the previous `$seen` value on each affected email). Gmail-distinctive workflow for managing long threads — when a thread has piled up unread replies after the point the user last read, this re-flags them all in one click. |
+| REQ-MAIL-134 | Block sender | **Thread toolbar only — NOT in kebab.** | Adds the message's `From` address to the user's block list. Future messages from that address are filtered (Sieve rule auto-generated; see `04-filters.md`). Confirmation dialog before applying. Per-message scope would be redundant in single-sender threads and an attractive nuisance in multi-sender threads (the wrong sender is one click away); the thread toolbar's confirm-dialog is the only entry point in v1. |
+| REQ-MAIL-135 | Report spam | Kebab. | Marks the message `$junk` and moves to the Spam mailbox. Sends a feedback signal to herold's spam classifier (REQ-FILT-220-style mechanism). The message's sender is NOT auto-blocked (the user can do that explicitly via REQ-MAIL-134). |
+| REQ-MAIL-136 | Report phishing | Kebab. | Same as report-spam, plus an additional flag indicating phishing rather than generic spam. Herold may forward the report to upstream (operator policy). |
+| REQ-MAIL-137 | Report illegal content | **Deferred — NOT in kebab (v1).** | Semantics: confirmation modal explaining operator-side handling, then sends a report payload to herold's admin queue. Operator policy governs further escalation. Deferred until the server-side admin-queue endpoint and operator-policy gating ship; the kebab does not render this item in v1. |
+| REQ-MAIL-138 | Filter messages like this | Kebab, gated on REQ-FLT-32. | Opens the filter editor (`04-filters.md`) pre-populated with conditions derived from the message: From address, From domain (alternate seed; user picks one in the editor), subject (with `Re:`/`Fwd:` prefix stripped), list-id (when the message carries a `List-Id` header). Until REQ-FLT-32 (`FiltersForm.svelte` seed-conditions support) ships, the kebab item is hidden. |
+| REQ-MAIL-139 | Translate | **Cut for v1 — NOT in kebab.** | The action is hidden until the suite ships translation. (Hidden, not greyed-out — invisible.) |
+| REQ-MAIL-140 | Print this message | Kebab. | Opens a same-origin popup window containing only this message's header (sender / date / subject) and rendered body, then calls `window.print()` on the popup. The popup-window approach isolates the print surface from the surrounding thread and the sandboxed reader iframe — scoped `@media print` CSS interacts poorly with the sandbox boundary and was rejected. The thread-scoped browser print dialog (REQ-UI-19d) is the separate thread-level affordance. |
+| REQ-MAIL-141 | Download .eml | Kebab. | Downloads the raw RFC 5322 source as `<sanitised-subject>.eml` via the JMAP blob-download URL of the email's `blobId`. Filename: subject truncated to 80 characters with path separators stripped; fallback `message-<short-id>.eml` when subject is empty. The download is an anchor with the `download` attribute — no JavaScript fetch — so the browser handles the save dialog natively. |
+| REQ-MAIL-142 | Show original | Kebab. | Opens a modal showing the raw RFC 5322 source (headers + body). Read-only, monospace, copy-to-clipboard affordance with a transient "Copied" toast. Useful for debugging delivery and authentication. Fetches the same blob URL as REQ-MAIL-141 with `text/plain` rendering. |
 
 ## Below-message actions
 

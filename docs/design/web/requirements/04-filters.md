@@ -8,7 +8,7 @@ Filters are user-authored rules that act on incoming mail: apply a label, archiv
 
 | ID | Requirement |
 |----|-------------|
-| REQ-FLT-01 | A filter can match on: From address, To address, Subject (contains / equals), Has-attachment (boolean). |
+| REQ-FLT-01 | A filter can match on: From address, From domain, To address, Subject (contains / equals), List-Id (equals; matches the `List-Id` header per RFC 2919), Has-attachment (boolean). The condition-field enum carried in `FiltersForm.svelte` and in the Sieve compiler is the closed set `from` \| `from-domain` \| `to` \| `subject` \| `list-id` \| `has-attachment` \| `thread-id`. |
 | REQ-FLT-02 | Multiple conditions combine with AND logic. (OR support is post-v1.) |
 | REQ-FLT-03 | Address-field conditions support a wildcard (`*`). |
 
@@ -37,3 +37,4 @@ Filters are user-authored rules that act on incoming mail: apply a label, archiv
 |----|-------------|
 | REQ-FLT-30 | The filter editor expresses conditions and actions in a structured form, not raw Sieve. The Sieve compilation is internal. |
 | REQ-FLT-31 | The filter list shows each filter's conditions and actions in human-readable form, plus enabled/disabled state. |
+| REQ-FLT-32 | **Seed conditions.** `FiltersForm.svelte` accepts an optional seed-conditions list when its create flow is invoked from an external call site (notably the per-message kebab's "Filter messages like this", `02-mail-basics.md` REQ-MAIL-138). When the seed list is present, the editor opens with those conditions pre-populated and the default empty single-condition row (`from contains ''`) is replaced; the user may edit, add, or remove conditions before saving. When the seed list is absent (the existing entry point from Settings → Filters → New), the editor opens with the existing empty default. The seed conditions use the same shape as filter-rule conditions (`{field, op, value}`), constrained to the closed enum from REQ-FLT-01. The call site is responsible for deriving the seeds — e.g. for "Filter messages like this", From address, From domain, Subject (with `Re:` / `Fwd:` prefix stripped), and List-Id (when present) are candidates; the seed list typically contains one or two entries and the user picks among them or adds others. The entry-point contract for navigation is implementation-defined (URL search parameter on `/settings/filters/new` is the expected mechanism); the suite never serialises filter contents into a URL beyond the seed conditions themselves. |
