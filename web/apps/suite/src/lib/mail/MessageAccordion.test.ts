@@ -422,6 +422,40 @@ describe('MessageAccordion: per-message kebab menu (conservative slice)', () => 
     expect(dialog).toBeInTheDocument();
     expect(dialog).toHaveAttribute('aria-labelledby', 'rsm-title');
   });
+
+  it('Print kebab item opens a popup window and triggers print', async () => {
+    const docOpen = vi.fn();
+    const docWrite = vi.fn();
+    const docClose = vi.fn();
+    const focus = vi.fn();
+    const printSpy = vi.fn();
+    const popup = {
+      document: { open: docOpen, write: docWrite, close: docClose },
+      focus,
+      print: printSpy,
+    };
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
+    vi.useFakeTimers();
+    try {
+      const email = makeEmail({});
+      renderAccordion(email, /* expanded */ true);
+
+      await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+      await fireEvent.click(screen.getByText('msg.kebab.print'));
+
+      expect(openSpy).toHaveBeenCalledWith('', '_blank', expect.stringContaining('width=820'));
+      expect(docWrite).toHaveBeenCalled();
+      const firstCall = docWrite.mock.calls[0];
+      expect(firstCall).toBeDefined();
+      const written = firstCall![0] as string;
+      expect(written).toContain('<title>Test subject</title>');
+      vi.runAllTimers();
+      expect(printSpy).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
 });
 
 // ── Self-authored card treatment ─────────────────────────────────────────────

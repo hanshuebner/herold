@@ -18,6 +18,8 @@
   import MessageKebabMenu, { type KebabItem } from './MessageKebabMenu.svelte';
   import RawSourceModal from './RawSourceModal.svelte';
   import { emlDownloadFilename } from './download-filename';
+  import { sanitizeHtml } from './sanitize';
+  import { printMessage } from './print-message';
   import { t, localeTag } from '../i18n/i18n.svelte';
   import { relativeTimeAgo } from './relative-time';
   import RecipientTrigger from './RecipientTrigger.svelte';
@@ -310,6 +312,24 @@
     showOriginalOpen = true;
   }
 
+  // REQ-MAIL-140: print this message via a popup window. Sanitises the
+  // body with loadImages=true at click time so the printed copy shows
+  // inline images regardless of the per-message image-blocking state.
+  function printThisMessage(): void {
+    const sanitised = html
+      ? sanitizeHtml(html, { loadImages: true, cidMap })
+      : null;
+    printMessage({
+      subject: email.subject ?? '',
+      date: formatDateTime(email.receivedAt),
+      from: email.from ?? [],
+      to: email.to ?? [],
+      cc: email.cc ?? [],
+      html: sanitised,
+      text,
+    });
+  }
+
   let kebabItems = $derived.by<KebabItem[]>(() => {
     const items: KebabItem[] = [];
     // REQ-MAIL-133.
@@ -360,6 +380,12 @@
         onclick: showOriginal,
       });
     }
+    // REQ-MAIL-140.
+    items.push({
+      id: 'print',
+      label: t('msg.kebab.print'),
+      onclick: printThisMessage,
+    });
     return items;
   });
 </script>

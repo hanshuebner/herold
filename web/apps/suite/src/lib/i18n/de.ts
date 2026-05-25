@@ -228,6 +228,7 @@ export const de = {
   'msg.kebab.delete': 'Diese Nachricht löschen',
   'msg.kebab.download': 'Nachricht herunterladen',
   'msg.kebab.showOriginal': 'Original anzeigen',
+  'msg.kebab.print': 'Diese Nachricht drucken',
   'msg.rawSource.title': 'Original-Nachrichtenquelltext',
   'msg.rawSource.copy': 'Kopieren',
   'msg.rawSource.copied': 'Kopiert',

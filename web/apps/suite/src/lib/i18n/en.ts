@@ -231,6 +231,7 @@ export const en = {
   'msg.kebab.delete': 'Delete this message',
   'msg.kebab.download': 'Download message',
   'msg.kebab.showOriginal': 'Show original',
+  'msg.kebab.print': 'Print this message',
   'msg.rawSource.title': 'Original message source',
   'msg.rawSource.copy': 'Copy',
   'msg.rawSource.copied': 'Copied',
