@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   allVisibleSelected,
   expandToThreadIds,
+  pickEmailsToMarkUnreadFromHere,
   resolveThreadEmails,
   IdentitySetError,
 } from './store.svelte';
@@ -183,6 +184,89 @@ describe('expandToThreadIds', () => {
     ]);
     // Seed is the middle reply — output still reflects thread storage order.
     expect(expandToThreadIds(['e2'], threads, emails)).toEqual(['e1', 'e2', 'e3']);
+  });
+});
+
+// ── pickEmailsToMarkUnreadFromHere (REQ-MAIL-133a) ──────────────────────────
+//
+// Gmail-style "Mark unread from here": anchor on the chosen message, flip
+// $seen=null on every email in the thread whose receivedAt >= anchor's
+// receivedAt AND that is currently $seen=true.
+
+function makeSeenEmail(id: string, receivedAt: string, seen: boolean): Email {
+  return {
+    ...makeEmail(id),
+    receivedAt,
+    keywords: seen ? { $seen: true } : {},
+  };
+}
+
+describe('pickEmailsToMarkUnreadFromHere', () => {
+  it('returns ids of messages received at or after the anchor that are currently seen', () => {
+    const threadEmails: Email[] = [
+      makeSeenEmail('e1', '2026-01-01T10:00:00Z', true),
+      makeSeenEmail('e2', '2026-01-02T10:00:00Z', true),
+      makeSeenEmail('e3', '2026-01-03T10:00:00Z', true),
+      makeSeenEmail('e4', '2026-01-04T10:00:00Z', true),
+    ];
+    // Anchor on e2 — expect e2, e3, e4 (everything at-or-after the anchor).
+    expect(pickEmailsToMarkUnreadFromHere(threadEmails, 'e2')).toEqual([
+      'e2', 'e3', 'e4',
+    ]);
+  });
+
+  it('skips already-unread messages', () => {
+    const threadEmails: Email[] = [
+      makeSeenEmail('e1', '2026-01-01T10:00:00Z', true),
+      makeSeenEmail('e2', '2026-01-02T10:00:00Z', false), // already unread
+      makeSeenEmail('e3', '2026-01-03T10:00:00Z', true),
+    ];
+    expect(pickEmailsToMarkUnreadFromHere(threadEmails, 'e1')).toEqual(['e1', 'e3']);
+  });
+
+  it('includes the anchor when the anchor itself is currently seen', () => {
+    const threadEmails: Email[] = [
+      makeSeenEmail('e1', '2026-01-01T10:00:00Z', true),
+      makeSeenEmail('e2', '2026-01-02T10:00:00Z', true),
+    ];
+    expect(pickEmailsToMarkUnreadFromHere(threadEmails, 'e2')).toEqual(['e2']);
+  });
+
+  it('omits the anchor when the anchor is already unread, but still picks later ones', () => {
+    const threadEmails: Email[] = [
+      makeSeenEmail('e1', '2026-01-01T10:00:00Z', true),
+      makeSeenEmail('e2', '2026-01-02T10:00:00Z', false), // anchor — already unread
+      makeSeenEmail('e3', '2026-01-03T10:00:00Z', true),
+    ];
+    expect(pickEmailsToMarkUnreadFromHere(threadEmails, 'e2')).toEqual(['e3']);
+  });
+
+  it('returns an empty list when the anchor id is not in the thread', () => {
+    const threadEmails: Email[] = [
+      makeSeenEmail('e1', '2026-01-01T10:00:00Z', true),
+    ];
+    expect(pickEmailsToMarkUnreadFromHere(threadEmails, 'unknown')).toEqual([]);
+  });
+
+  it('returns an empty list for an empty thread', () => {
+    expect(pickEmailsToMarkUnreadFromHere([], 'e1')).toEqual([]);
+  });
+
+  it('skips emails with an unparseable receivedAt', () => {
+    const threadEmails: Email[] = [
+      makeSeenEmail('e1', '2026-01-01T10:00:00Z', true),
+      makeSeenEmail('e2', 'not a date', true),
+      makeSeenEmail('e3', '2026-01-03T10:00:00Z', true),
+    ];
+    expect(pickEmailsToMarkUnreadFromHere(threadEmails, 'e1')).toEqual(['e1', 'e3']);
+  });
+
+  it('returns an empty list when the anchor receivedAt is unparseable', () => {
+    const threadEmails: Email[] = [
+      makeSeenEmail('e1', 'not a date', true),
+      makeSeenEmail('e2', '2026-01-02T10:00:00Z', true),
+    ];
+    expect(pickEmailsToMarkUnreadFromHere(threadEmails, 'e1')).toEqual([]);
   });
 });
 

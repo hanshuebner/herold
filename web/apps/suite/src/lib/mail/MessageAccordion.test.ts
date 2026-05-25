@@ -85,6 +85,8 @@ const { mailMock, WORK_MBX, TRASH_MBX } = vi.hoisted(() => {
     identities: new Map(),
     trash: null as import('./types').Mailbox | null,
     setSeen: vi.fn(),
+    markUnreadFromHere: vi.fn(),
+    deleteEmail: vi.fn(),
     toggleImportant: vi.fn(),
     unsnoozeEmail: vi.fn(),
     restoreFromTrash: vi.fn().mockResolvedValue(undefined),
@@ -279,6 +281,8 @@ describe('MessageAccordion: per-message kebab menu (conservative slice)', () => 
     mailMock.trash = null;
     mailMock.listFolder = 'inbox';
     mailMock.setSeen.mockClear();
+    mailMock.markUnreadFromHere.mockClear();
+    mailMock.deleteEmail.mockClear();
   });
 
   it('does not render reply / reply-all / forward inside the message body', () => {
@@ -332,6 +336,26 @@ describe('MessageAccordion: per-message kebab menu (conservative slice)', () => 
     await fireEvent.click(screen.getByText('msg.kebab.markUnread'));
 
     expect(mailMock.setSeen).toHaveBeenCalledWith(email.id, false);
+  });
+
+  it('Mark unread from here item calls mail.markUnreadFromHere(threadId, emailId)', async () => {
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ true);
+
+    await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+    await fireEvent.click(screen.getByText('msg.kebab.markUnreadFromHere'));
+
+    expect(mailMock.markUnreadFromHere).toHaveBeenCalledWith(email.threadId, email.id);
+  });
+
+  it('Delete item calls mail.deleteEmail(emailId)', async () => {
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ true);
+
+    await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+    await fireEvent.click(screen.getByText('msg.kebab.delete'));
+
+    expect(mailMock.deleteEmail).toHaveBeenCalledWith(email.id);
   });
 });
 

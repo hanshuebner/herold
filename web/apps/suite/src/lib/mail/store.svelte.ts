@@ -2138,6 +2138,60 @@ class MailStore {
     return this.bulkSetSeen(ids, seen);
   }
 
+  /**
+   * Mark this message and every later message in the same thread as unread
+   * (REQ-MAIL-133a). The anchor is the chosen message; emails whose
+   * `receivedAt >= anchor.receivedAt` AND currently `$seen=true` are flipped
+   * to unread. Optimistic with Undo: the undo restores each affected email's
+   * prior `keywords` map.
+   */
+  async markUnreadFromHere(threadId: string, anchorEmailId: string): Promise<void> {
+    const ids = pickEmailsToMarkUnreadFromHere(this.threadEmails(threadId), anchorEmailId);
+    if (ids.length === 0) return;
+
+    const updates: Record<string, Record<string, unknown>> = {};
+    const prevById = new Map<string, Record<string, true | undefined>>();
+    for (const id of ids) {
+      const e = this.emails.get(id);
+      if (!e) continue;
+      prevById.set(id, { ...e.keywords });
+      updates[id] = { 'keywords/$seen': null };
+      const nextKeywords: Record<string, true | undefined> = { ...e.keywords };
+      delete nextKeywords.$seen;
+      this.#patchEmail(id, { keywords: nextKeywords });
+    }
+    if (Object.keys(updates).length === 0) return;
+
+    try {
+      const { failed } = await this.#emailSetUpdateBulk(updates);
+      this.#summarizeBulk('marked unread', Object.keys(updates).length, failed, async () => {
+        const undoUpdates: Record<string, Record<string, unknown>> = {};
+        for (const [id, prev] of prevById) {
+          undoUpdates[id] = { 'keywords/$seen': prev.$seen ? true : null };
+          this.#patchEmail(id, { keywords: prev });
+        }
+        try {
+          await this.#emailSetUpdateBulk(undoUpdates);
+        } catch (err) {
+          toast.show({
+            message: errMessage(err, 'Undo failed'),
+            kind: 'error',
+            timeoutMs: 6000,
+          });
+        }
+      });
+    } catch (err) {
+      for (const [id, prev] of prevById) {
+        this.#patchEmail(id, { keywords: prev });
+      }
+      toast.show({
+        message: errMessage(err, 'Mark unread failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
   /** Bulk mark-read / mark-unread: set $seen on every id. */
   async bulkSetSeen(ids: string[], seen: boolean): Promise<void> {
     if (ids.length === 0) return;
@@ -2991,6 +3045,31 @@ export function resolveThreadEmails(emailIds: string[], emails: Map<string, Emai
 export function allVisibleSelected(visibleIds: string[], selected: Set<string>): boolean {
   if (visibleIds.length === 0) return false;
   return visibleIds.every((id) => selected.has(id));
+}
+
+/**
+ * Pure helper for `markUnreadFromHere` (REQ-MAIL-133a). Given the list of
+ * emails in a thread and an anchor email id, returns the ids that should
+ * be flipped to `$seen=null`: emails whose `receivedAt >= anchor.receivedAt`
+ * AND that are currently `$seen=true`. Anchor itself is included when it
+ * is currently seen. Emails with unparseable timestamps are skipped.
+ */
+export function pickEmailsToMarkUnreadFromHere(
+  threadEmails: readonly Email[],
+  anchorEmailId: string,
+): string[] {
+  const anchor = threadEmails.find((e) => e.id === anchorEmailId);
+  if (!anchor) return [];
+  const anchorTime = new Date(anchor.receivedAt).getTime();
+  if (!Number.isFinite(anchorTime)) return [];
+  const ids: string[] = [];
+  for (const e of threadEmails) {
+    if (!e.keywords.$seen) continue;
+    const t = new Date(e.receivedAt).getTime();
+    if (!Number.isFinite(t)) continue;
+    if (t >= anchorTime) ids.push(e.id);
+  }
+  return ids;
 }
 
 /**

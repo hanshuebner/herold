@@ -263,6 +263,14 @@
     void mail.setSeen(email.id, false);
   }
 
+  function markUnreadFromHere(): void {
+    void mail.markUnreadFromHere(email.threadId, email.id);
+  }
+
+  function deleteMessage(): void {
+    void mail.deleteEmail(email.id);
+  }
+
   let kebabItems = $derived.by<KebabItem[]>(() => {
     const items: KebabItem[] = [];
     // REQ-MAIL-133.
@@ -270,6 +278,19 @@
       id: 'markUnread',
       label: t('msg.kebab.markUnread'),
       onclick: markUnread,
+    });
+    // REQ-MAIL-133a.
+    items.push({
+      id: 'markUnreadFromHere',
+      label: t('msg.kebab.markUnreadFromHere'),
+      onclick: markUnreadFromHere,
+    });
+    // REQ-MAIL-132.
+    items.push({
+      id: 'delete',
+      label: t('msg.kebab.delete'),
+      danger: true,
+      onclick: deleteMessage,
     });
     return items;
   });
