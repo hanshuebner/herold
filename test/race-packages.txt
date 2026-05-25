@@ -47,9 +47,18 @@ internal/protowebhook
 internal/snooze
 internal/extsubmit
 
-# Storage engines: writer / reader serialisation, sqlite WAL, pg
-# connection pool. Compliance suite exercises concurrent access.
-internal/storesqlite
+# Storage engines: pg connection pool. Compliance suite exercises
+# concurrent access.
+#
+# internal/storesqlite is deliberately *not* in this list. The race
+# detector slowed its compliance suite from 38 s to 917 s on the
+# 4-vCPU cax21 lane (24x), making it the single largest contributor
+# to the sqlite job's wall time. The package's production code is a
+# single-writer SQLite store; its concurrency surface is exercised
+# transitively under -race by testharness, protoadmin, protoimap and
+# protojmap, which all sit on top of it. The remaining functional
+# coverage runs in the fast subset of this same lane (without -race)
+# and on the postgres lane (without -race).
 internal/storepg
 
 # Out-of-process plugin supervisor (process lifecycle, JSON-RPC stdio).
