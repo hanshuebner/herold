@@ -2540,6 +2540,82 @@ func TestEmailSet_Update_MailboxIds_PreservesSeen(t *testing.T) {
 	}
 }
 
+// TestEmailSet_Update_MailboxMoveAndKeyword_InOnePatch is the issue
+// #17 spam-report regression. The Suite's reportSpam() sends a single
+// Email/set update with BOTH a full mailboxIds replacement AND a
+// keywords/$junk add. Before the refresh-after-applyMailboxDiff fix,
+// updateEmail processed the mailbox patch first (moving the message
+// from inbox to junk), then called UpdateMessageFlags against the
+// stale m.MailboxID (still pointing at inbox), and the now-deleted
+// inbox membership row produced ErrNotFound -> setError{notFound},
+// which surfaced in the suite as a "notFound" toast.
+func TestEmailSet_Update_MailboxMoveAndKeyword_InOnePatch(t *testing.T) {
+	f := setupFixture(t)
+	ctx := context.Background()
+
+	junk, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Junk",
+		Attributes:  store.MailboxAttrJunk,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Junk: %v", err)
+	}
+
+	body := "From: spam@example.test\r\nTo: b@example.test\r\nSubject: spam\r\n\r\nbody"
+	m := f.insertMessage(t, body, "spam", "spam@example.test", "b@example.test", nil, "")
+
+	emailID := fmt.Sprintf("%d", m.ID)
+	junkKey := fmt.Sprintf("%d", junk.ID)
+
+	// One patch combining the full mailbox replacement (inbox -> junk)
+	// and a $junk keyword add. This is the exact shape reportSpam()
+	// sends.
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			emailID: map[string]any{
+				"mailboxIds":     map[string]bool{junkKey: true},
+				"keywords/$junk": true,
+			},
+		},
+	})
+	var resp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if failure := resp.NotUpdated[emailID]; failure != nil {
+		t.Fatalf("update rejected: %v (this is the spam-melden notFound regression)", failure)
+	}
+	if _, ok := resp.Updated[emailID]; !ok {
+		t.Fatalf("update not applied: %s", raw)
+	}
+
+	// Verify the post-move state: message lives in junk, with $junk
+	// keyword on the new membership.
+	got, err := f.srv.Store.Meta().GetMessage(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMessage after move+keyword: %v", err)
+	}
+	if len(got.Mailboxes) != 1 || got.Mailboxes[0].MailboxID != junk.ID {
+		t.Fatalf("post-patch mailboxes = %+v, want exactly junk %d", got.Mailboxes, junk.ID)
+	}
+	mm := got.Mailboxes[0]
+	hasJunk := false
+	for _, kw := range mm.Keywords {
+		if kw == "$junk" {
+			hasJunk = true
+			break
+		}
+	}
+	if !hasJunk {
+		t.Errorf("$junk keyword missing from junk membership: keywords=%v", mm.Keywords)
+	}
+}
+
 // TestEmailSet_Update_MailboxIds_PreservesCustomKeywords is the same
 // regression check for non-system custom keywords (RFC 5788). A custom
 // keyword set on the source membership must survive a move.

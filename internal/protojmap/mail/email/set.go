@@ -646,6 +646,20 @@ func (h *handlerSet) updateEmail(
 		if serr, err := h.applyMailboxDiff(ctx, callerPID, ownerPID, m, currentMBIDs, desired); err != nil || serr != nil {
 			return serr, err
 		}
+		// applyMailboxDiff has mutated message_mailboxes (insert + delete).
+		// `m` is a value, so its convenience fields (MailboxID, UID,
+		// ModSeq, Flags, Keywords, SnoozedUntil) still point at the
+		// pre-move source mailbox -- which no longer has a
+		// message_mailboxes row. Subsequent UpdateMessageFlags /
+		// SetSnooze calls below target m.MailboxID and would fail with
+		// ErrNotFound (the "spam melden -> notFound toast" bug). Refresh
+		// m from the store so the rest of updateEmail sees the post-move
+		// state.
+		if refreshed, refErr := refreshMessageAfterMailboxChange(ctx, h.store.Meta(), m.ID); refErr != nil {
+			return nil, fmt.Errorf("email: refresh after mailbox patch: %w", refErr)
+		} else {
+			m = refreshed
+		}
 	} else {
 		// Incremental patch: mailboxIds/<id>: true|null keys.
 		// Build the desired set starting from current, then add/remove.
@@ -688,6 +702,13 @@ func (h *handlerSet) updateEmail(
 		}
 		if serr, err := h.applyMailboxDiff(ctx, callerPID, ownerPID, m, currentMBIDs, desired); err != nil || serr != nil {
 			return serr, err
+		}
+		// See full-replacement branch above for why this refresh is
+		// required after applyMailboxDiff.
+		if refreshed, refErr := refreshMessageAfterMailboxChange(ctx, h.store.Meta(), m.ID); refErr != nil {
+			return nil, fmt.Errorf("email: refresh after mailbox patch: %w", refErr)
+		} else {
+			m = refreshed
 		}
 	}
 
@@ -1097,6 +1118,23 @@ func applyPatch(
 			*clearKW = append(*clearKW, name)
 		}
 	}
+}
+
+// refreshMessageAfterMailboxChange reloads the message row + its
+// message_mailboxes memberships after applyMailboxDiff has mutated
+// the membership set. The mutating path (MoveMessage / AddMessage /
+// RemoveMessage in the store) does not touch the in-memory store.Message
+// the JMAP handler holds; the convenience fields MailboxID / UID /
+// ModSeq / Flags / Keywords / SnoozedUntil still point at the pre-move
+// source mailbox, which no longer has a message_mailboxes row.
+//
+// Without this refresh, subsequent UpdateMessageFlags / SetSnooze calls
+// in updateEmail target the stale (msgID, source-mailbox) tuple and
+// fail with ErrNotFound -- the "spam melden -> notFound toast" bug
+// reported as issue #17. The keyword + mailbox patches arrive in the
+// same Email/set update; archive (mailbox-only) was unaffected.
+func refreshMessageAfterMailboxChange(ctx context.Context, meta store.Metadata, id store.MessageID) (store.Message, error) {
+	return meta.GetMessage(ctx, id)
 }
 
 // applyMailboxDiff reconciles a message's current mailbox membership set
