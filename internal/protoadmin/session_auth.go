@@ -159,6 +159,22 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Mandatory TOTP for admin role (REQ-AUTH-44, issue #12): an admin
+	// principal without TOTP enrolled CANNOT obtain an admin-scoped
+	// session via the password-login endpoint. The only path to
+	// enrolling TOTP without an existing TOTP code is via the
+	// bootstrap API key (slice 6); password login refuses here so
+	// the public-facing admin vhost is safe to expose without an IP
+	// allowlist.
+	if p.Flags.Has(store.PrincipalFlagAdmin) && !p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
+		s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.admin_totp_missing",
+			"activity", observe.ActivityAudit,
+			"principal_id", pid)
+		s.auditLoginFailure(r, p.CanonicalEmail, pid, "admin role requires TOTP enrollment")
+		writeLoginProblemTOTPEnrollmentRequired(w, r)
+		return
+	}
+
 	// TOTP step-up (REQ-AUTH-SCOPE-03): admin listener requires a TOTP
 	// code for 2FA-enabled principals before issuing admin-scoped cookie.
 	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
@@ -409,6 +425,27 @@ func writeLoginProblemStepUp(w http.ResponseWriter, r *http.Request) {
 		"status":           http.StatusUnauthorized,
 		"detail":           "This account requires a TOTP code; supply totp_code and re-submit.",
 		"step_up_required": true,
+	})
+}
+
+// writeLoginProblemTOTPEnrollmentRequired writes a 401 problem with both
+// step_up_required and totp_enrollment_required set (REQ-AUTH-44, issue
+// #12). Returned to admin principals that authenticate with a correct
+// password but have not yet enrolled TOTP — the admin scope requires it.
+// The enroll_url extension points the client at the enrollment endpoint,
+// which is reachable via the bootstrap API key for the first-time
+// superadmin path (slice 6).
+func writeLoginProblemTOTPEnrollmentRequired(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"type":                     "about:blank",
+		"title":                    "TOTP enrollment required",
+		"status":                   http.StatusUnauthorized,
+		"detail":                   "The admin role requires TOTP enrollment before password sign-in is permitted.",
+		"step_up_required":         true,
+		"totp_enrollment_required": true,
+		"enroll_url":               "/api/v1/totp/enroll",
 	})
 }
 

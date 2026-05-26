@@ -216,10 +216,19 @@ func TestPublicJSONLogin_BadCreds_Returns401(t *testing.T) {
 	}
 }
 
-// TestAdminJSONLogin_StillWorks_Regression guards that the admin listener's
-// JSON login endpoint (internal/protoadmin/session_auth.go) is unaffected
-// by the Phase 3c-i changes.
-func TestAdminJSONLogin_StillWorks_Regression(t *testing.T) {
+// TestAdminJSONLogin_NoTOTP_RefusedWithEnrollmentHint guards the
+// REQ-AUTH-44 gate on the admin listener's JSON login endpoint
+// (internal/protoadmin/session_auth.go). After issue #12 slice 4, an
+// admin principal that has not yet enrolled TOTP CANNOT obtain an
+// admin-scoped session via password sign-in. The regression here is
+// the previous version (Phase 3c-i, pre-slice-4) that allowed
+// password-only sign-in on the admin listener; this test would have
+// passed with the old contract and must FAIL there now.
+//
+// The positive twin (login succeeds after TOTP enrollment) lives in
+// internal/protoadmin/session_auth_test.go, with direct access to the
+// directory for in-process TOTP enrollment.
+func TestAdminJSONLogin_NoTOTP_RefusedWithEnrollmentHint(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
 		cancel()
@@ -250,21 +259,28 @@ func TestAdminJSONLogin_StillWorks_Regression(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("admin login regression: status=%d body=%s, want 200",
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("admin login without TOTP: status=%d body=%s, want 401",
 			resp.StatusCode, body)
 	}
+	var detail map[string]any
+	if err := json.Unmarshal(body, &detail); err != nil {
+		t.Fatalf("problem detail unmarshal: %v body=%s", err, body)
+	}
+	if detail["step_up_required"] != true {
+		t.Errorf("step_up_required not true: %v", detail)
+	}
+	if detail["totp_enrollment_required"] != true {
+		t.Errorf("totp_enrollment_required not true: %v", detail)
+	}
+	if detail["enroll_url"] != "/api/v1/totp/enroll" {
+		t.Errorf("enroll_url=%v, want /api/v1/totp/enroll", detail["enroll_url"])
+	}
 
-	// Admin session cookie must be present in Set-Cookie headers.
-	// Checking headers directly because the test transport is plain HTTP
-	// and the cookie jar silently discards Secure cookies.
-	var gotAdminSession bool
+	// No admin session cookie may be set when the gate refuses.
 	for _, c := range resp.Cookies() {
 		if c.Name == "herold_admin_session" {
-			gotAdminSession = true
+			t.Errorf("herold_admin_session must NOT be set when the TOTP gate refuses")
 		}
-	}
-	if !gotAdminSession {
-		t.Error("herold_admin_session not set after admin login")
 	}
 }

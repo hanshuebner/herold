@@ -175,11 +175,13 @@ func TestTelemetryEnabled_UnknownField_Returns400(t *testing.T) {
 func TestTelemetryEnabled_SessionCookie_UpdatesLiveRow(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("telemetry-session@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("telemetry-session@example.com")
 
 	// Login to establish a session row. The default effective flag is true
-	// (defaultTelemetryEnabled = true in handleLogin).
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	// (defaultTelemetryEnabled = true in handleLogin). Admin principals
+	// must complete TOTP enrollment before password sign-in is permitted
+	// (REQ-AUTH-44).
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
 	csrf := sh.csrfToken()

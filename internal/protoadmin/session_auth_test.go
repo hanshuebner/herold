@@ -92,9 +92,68 @@ func newSessionHarness(t *testing.T) *sessionHarness {
 	return &sessionHarness{harness: h, cookieJar: jar, cookieJarClient: cookieClient}
 }
 
+// bootstrapAdminAndEnrollTOTP creates the first admin principal via
+// bootstrap AND enrolls + confirms TOTP for it, returning the secret
+// so callers can mint fresh codes for doLoginWithTOTP. After slice 4
+// of issue #12, admin principals MUST have TOTP enrolled before
+// password sign-in is permitted, so every test that exercises the
+// password-login + cookie path needs this helper. The original
+// bootstrapWithPassword is retained for the negative-path tests that
+// specifically verify the no-TOTP rejection behaviour.
+//
+// Returns (email, password, apiKey, totpSecret).
+func (sh *sessionHarness) bootstrapAdminAndEnrollTOTP(email string) (string, string, string, string) {
+	sh.t.Helper()
+	em, pw, key := sh.bootstrapWithPassword(email)
+	ctx := context.Background()
+	pid, err := sh.dir.Authenticate(ctx, em, pw)
+	if err != nil {
+		sh.t.Fatalf("Authenticate (for TOTP enrollment): %v", err)
+	}
+	secret, _, err := sh.dir.EnrollTOTP(ctx, pid)
+	if err != nil {
+		sh.t.Fatalf("EnrollTOTP: %v", err)
+	}
+	code, err := otpGenerateCode(secret, sh.clk.Now())
+	if err != nil {
+		sh.t.Fatalf("otpGenerateCode (enrollment): %v", err)
+	}
+	if err := sh.dir.ConfirmTOTP(ctx, pid, code); err != nil {
+		sh.t.Fatalf("ConfirmTOTP: %v", err)
+	}
+	// Advance one second so the next code generated for login is a
+	// different time-step than the enrollment code (avoids the
+	// directory's anti-replay window).
+	sh.clk.Advance(time.Second)
+	return em, pw, key, secret
+}
+
+// doLoginWithTOTP wraps doLogin with a fresh TOTP code generated from
+// the secret at the harness's current clock. Use this in tests that
+// have an admin principal with TOTP enrolled (the common case after
+// slice 4 of issue #12). The optional extra map is merged with the
+// totp_code so callers can still pass redirect targets or other
+// per-test login-body fields.
+func (sh *sessionHarness) doLoginWithTOTP(email, password, totpSecret string, extra map[string]any) (int, map[string]any) {
+	sh.t.Helper()
+	code, err := otpGenerateCode(totpSecret, sh.clk.Now())
+	if err != nil {
+		sh.t.Fatalf("otpGenerateCode (login): %v", err)
+	}
+	merged := map[string]any{"totp_code": code}
+	for k, v := range extra {
+		merged[k] = v
+	}
+	return sh.doLogin(email, password, merged)
+}
+
 // bootstrapWithPassword creates the first admin principal via bootstrap and
 // returns (email, password, apiKey). The password is the auto-generated one
-// returned by the bootstrap endpoint.
+// returned by the bootstrap endpoint. After slice 4 of issue #12, the
+// principal carries the admin flag but NO TOTP enrollment, so calling
+// /api/v1/auth/login on it returns 401 step-up-required. Use
+// bootstrapAdminAndEnrollTOTP for the common case; this remains the
+// no-TOTP factory for the negative-path tests.
 func (sh *sessionHarness) bootstrapWithPassword(email string) (string, string, string) {
 	sh.t.Helper()
 	b, _ := json.Marshal(map[string]any{
@@ -217,9 +276,9 @@ func TestSessionAuth_BearerOnlyStillWorks(t *testing.T) {
 func TestSessionAuth_Login_SetsCookiesAndReturnsScopes(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("login-scope@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("login-scope@example.com")
 
-	code, body := sh.doLogin(email, password, nil)
+	code, body := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: status=%d body=%v", code, body)
 	}
@@ -258,9 +317,9 @@ func TestSessionAuth_Login_SetsCookiesAndReturnsScopes(t *testing.T) {
 func TestSessionAuth_CookieGET_NoCSRF_Succeeds(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("cookie-get@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("cookie-get@example.com")
 
-	code, _ := sh.doLogin(email, password, nil)
+	code, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -276,9 +335,9 @@ func TestSessionAuth_CookieGET_NoCSRF_Succeeds(t *testing.T) {
 func TestSessionAuth_CookiePOST_WithoutCSRF_Returns403(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("no-csrf@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("no-csrf@example.com")
 
-	code, _ := sh.doLogin(email, password, nil)
+	code, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -297,9 +356,9 @@ func TestSessionAuth_CookiePOST_WithoutCSRF_Returns403(t *testing.T) {
 func TestSessionAuth_CookiePOST_WithCSRF_Succeeds(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("with-csrf@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("with-csrf@example.com")
 
-	code, _ := sh.doLogin(email, password, nil)
+	code, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -319,9 +378,9 @@ func TestSessionAuth_CookiePOST_WithCSRF_Succeeds(t *testing.T) {
 func TestSessionAuth_CookiePOST_CSRFMismatch_Returns403(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("csrf-mismatch@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("csrf-mismatch@example.com")
 
-	code, _ := sh.doLogin(email, password, nil)
+	code, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -340,9 +399,9 @@ func TestSessionAuth_CookiePOST_CSRFMismatch_Returns403(t *testing.T) {
 func TestSessionAuth_GetWithExtraCSRF_OK(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("extra-csrf@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("extra-csrf@example.com")
 
-	code, _ := sh.doLogin(email, password, nil)
+	code, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -362,10 +421,10 @@ func TestSessionAuth_GetWithExtraCSRF_OK(t *testing.T) {
 func TestSessionAuth_Logout_ClearsCookiesThenReturns401(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("logout-user@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("logout-user@example.com")
 
 	// Login.
-	code, _ := sh.doLogin(email, password, nil)
+	code, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -526,9 +585,9 @@ func TestSessionAuth_Login_BadCredentials_AuditsFailure(t *testing.T) {
 func TestSessionAuth_Logout_AuditRecordCarriesPrincipal(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("auditlogout@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("auditlogout@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 	if code, _ := sh.doWithCookie("POST", "/api/v1/auth/logout", nil, sh.csrfToken()); code != http.StatusNoContent {
@@ -557,9 +616,9 @@ func TestSessionAuth_Logout_AuditRecordCarriesPrincipal(t *testing.T) {
 func TestWhoAmI_WithValidSession(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("whoami-ok@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("whoami-ok@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
 
@@ -598,9 +657,9 @@ func TestWhoAmI_WithoutCredentials(t *testing.T) {
 func TestWhoAmI_AfterLogout(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("whoami-logout@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("whoami-logout@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
 	// whoami OK while session is live.
@@ -645,9 +704,9 @@ func TestWhoAmI_BearerAuth(t *testing.T) {
 func TestServerStatus_IncludesPrincipalInfo(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("status-principal@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("status-principal@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
 
@@ -668,5 +727,51 @@ func TestServerStatus_IncludesPrincipalInfo(t *testing.T) {
 	scopes, _ := out["scopes"].([]interface{})
 	if len(scopes) == 0 {
 		t.Fatalf("server/status scopes empty: %v", out)
+	}
+}
+
+// TestSessionAuth_AdminWithoutTOTP_RefusedAtLogin asserts the
+// REQ-AUTH-44 gate (issue #12 slice 4): an admin principal that has
+// authenticated correctly but does NOT have TOTP enrolled is refused
+// the admin-scoped session and steered toward enrollment. The bootstrap
+// path leaves the superadmin in this exact state until they enroll.
+func TestSessionAuth_AdminWithoutTOTP_RefusedAtLogin(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	email, password, _ := sh.bootstrapWithPassword("admin-no-totp@example.com")
+
+	code, body := sh.doLogin(email, password, nil)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("admin login without TOTP: status=%d, want 401", code)
+	}
+	if body["step_up_required"] != true {
+		t.Errorf("step_up_required not true: %v", body)
+	}
+	if body["totp_enrollment_required"] != true {
+		t.Errorf("totp_enrollment_required not true: %v", body)
+	}
+	if body["enroll_url"] != "/api/v1/totp/enroll" {
+		t.Errorf("enroll_url=%v, want /api/v1/totp/enroll", body["enroll_url"])
+	}
+	if sh.sessionCookiePresent() {
+		t.Errorf("session cookie should not be set when TOTP enrollment is required")
+	}
+}
+
+// TestSessionAuth_AdminWithTOTP_LoginSucceeds is the positive twin of
+// the gate test above: once the admin principal completes TOTP
+// enrollment + confirmation, the password+TOTP login mints the
+// expected admin-scoped session.
+func TestSessionAuth_AdminWithTOTP_LoginSucceeds(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin-with-totp@example.com")
+
+	code, body := sh.doLoginWithTOTP(email, password, secret, nil)
+	if code != http.StatusOK {
+		t.Fatalf("admin login after enrollment: status=%d body=%v, want 200", code, body)
+	}
+	if !sh.sessionCookiePresent() {
+		t.Errorf("session cookie missing after successful TOTP login")
 	}
 }
