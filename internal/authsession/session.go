@@ -33,8 +33,22 @@ type SessionConfig struct {
 	// CSRFCookieName is the HTTP cookie name carrying the CSRF token
 	// for the double-submit pattern. Defaults to "herold_ui_csrf".
 	CSRFCookieName string
-	// TTL bounds session lifetime. Defaults to 24 h.
+	// TTL bounds the absolute session lifetime — the cookie's max-age
+	// and the encoded ExpiresAt. Defaults to 24 h when zero. The
+	// admin-listener wiring uses sysconfig's AdminAbsoluteTTL here
+	// (REQ-AUTH-72, issue #12); the public-listener wiring uses
+	// SessionTTL.
 	TTL time.Duration
+	// IdleTTL is the per-session inactivity window for sliding-renewal
+	// enforcement (REQ-AUTH-72, issue #12). Zero disables idle
+	// enforcement — every request inside the absolute TTL is accepted
+	// without touching the last-seen-at marker. Non-zero values mean
+	// authenticated handlers update the session row's last-seen-at on
+	// every request, and the next request that arrives more than
+	// IdleTTL after the previous one is rejected as expired. The
+	// admin-listener wiring sets this from sysconfig's AdminIdleTTL;
+	// the public listener leaves it at zero.
+	IdleTTL time.Duration
 	// SecureCookies, when true, sets the Secure flag on all UI cookies.
 	// Production deployments MUST set this true; the dev knob is the
 	// only way to disable it.

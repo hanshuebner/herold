@@ -3074,8 +3074,13 @@ func adminSessionCookieConfig(cfg *sysconfig.Config, logger *slog.Logger) authse
 		SigningKey:     signingKey,
 		CookieName:     cookieName,
 		CSRFCookieName: csrfName,
-		TTL:            cfg.Server.UI.SessionTTL.AsDuration(),
-		SecureCookies:  secure,
+		// REQ-AUTH-72 (issue #12): the admin listener gets its own
+		// absolute + idle TTL pair, separate from the public-listener
+		// SessionTTL. applyDefaults has set both to spec values (8h /
+		// 1h) when the operator omitted them.
+		TTL:           cfg.Server.UI.AdminAbsoluteTTL.AsDuration(),
+		IdleTTL:       cfg.Server.UI.AdminIdleTTL.AsDuration(),
+		SecureCookies: secure,
 	}
 }
 

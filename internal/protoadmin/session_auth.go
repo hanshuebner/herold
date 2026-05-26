@@ -190,11 +190,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Issue the session. Admin listener -> admin scope only
-	// (REQ-AUTH-SCOPE-01..03).
+	// (REQ-AUTH-SCOPE-01..03). The TTL is the admin-listener absolute
+	// lifetime (REQ-AUTH-72, sysconfig.UIConfig.AdminAbsoluteTTL,
+	// default 8 h, ceiling 12 h, plumbed via adminSessionCookieConfig).
+	// applyDefaults guarantees a non-zero TTL; the fallback here is a
+	// belt-and-braces 8 h for any caller that builds Options directly
+	// (e.g. in-process tests) and forgets the wiring — never the
+	// pre-spec 24 h.
 	sessScopes := auth.NewScopeSet(auth.ScopeAdmin)
 	ttl := s.opts.Session.TTL
 	if ttl <= 0 {
-		ttl = 24 * time.Hour
+		ttl = 8 * time.Hour
 	}
 	sess := authsession.Session{
 		PrincipalID: pid,
