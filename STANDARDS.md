@@ -74,7 +74,7 @@ deploy/                  debian, rpm, docker, k8s
 - TypeScript everywhere; no JS-only files.
 - npm package namespace is `@herold/*`. Internal workspace deps use the `workspace:*` protocol — never floating versions.
 - pnpm install always runs with `--frozen-lockfile` in CI; lockfile bumps are explicit PR commits.
-- The `nofrontend` build tag is a hard contract: every Go change to `internal/webspa` MUST compile under both `go build ./...` and `go build -tags nofrontend ./...`. The build-tag split (`embed_default.go` vs `embed_stub.go`) is exercised by the `web` and `test` jobs in `.github/workflows/ci.yml`.
+- The `nofrontend` build tag is a hard contract: every Go change to `internal/webspa` MUST compile under both `go build ./...` and `go build -tags nofrontend ./...`. The build-tag split (`embed_default.go` vs `embed_stub.go`) is exercised by the `web` and `test` jobs in `.forgejo/workflows/ci.yml`.
 - The committed `internal/webspa/dist/{suite,admin}/index.html` placeholders satisfy `//go:embed` for source-only builds. Real SPA artefacts are produced by `make build-web` and are not committed; `web/apps/*/dist/` and `internal/webspa/dist/*/assets/` are in `.gitignore`.
 - Frontend code is content-blind on the wire: it never sends or stores message bodies, addresses, or search queries unencrypted to anything other than the same-origin herold backend.
 
