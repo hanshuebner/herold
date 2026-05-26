@@ -5,7 +5,13 @@
  *   1. DOMPurify drops unsafe tags / attributes / URL schemes.
  *   2. Anchors get target="_blank" rel="noopener noreferrer".
  *   3. Images:
- *      - cid: → blocked (inline images use the same opt-in as external).
+ *      - cid: → resolved via the per-message attachment map (blocked
+ *        when no map entry exists).
+ *      - data:image/<raster>: → passed through (inline raster images
+ *        are common for logos / signatures; they issue no network
+ *        request so they bypass nothing the external-image gate
+ *        protects against). data:image/svg+xml is explicitly excluded
+ *        because SVG can carry scripts and external references.
  *      - http(s): when loadImages=false → src removed, alt swapped.
  *      - http(s): when loadImages=true  → rewritten to /proxy/image (REQ-SEC-07).
  *      - Anything else → src removed.
@@ -58,6 +64,13 @@ const FORBID_ATTR = [
   'onkeydown', 'onkeyup', 'onsubmit', 'onchange', 'oninput',
   'formaction', 'srcdoc',
 ];
+
+// Inline raster image data URIs we accept on <img src>. The trailing
+// [;,] anchors the mediatype boundary so that data:image/svg+xml or a
+// crafted "data:image/png-something-evil" cannot match. Matching is
+// case-insensitive because MIME types are case-insensitive per RFC 2045.
+const INLINE_IMAGE_DATA_URI =
+  /^data:image\/(?:png|jpeg|jpg|gif|webp|bmp|x-icon|vnd\.microsoft\.icon|tiff|avif|apng|heic|heif)[;,]/i;
 
 /** Quick check before sanitising — used to decide whether to show the banner. */
 export function htmlHasExternalImages(html: string): boolean {
@@ -262,6 +275,17 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
   // placeholder prefix only, so user-supplied bodies cannot smuggle
   // inline images past the external-fetch gate.
   if (isInternalizePlaceholder(src)) {
+    return;
+  }
+  // Inline raster data URIs are passed through unchanged. They make
+  // no network request (so the external-image gate has nothing to
+  // gate) and cannot execute script when used as <img src>. Mail
+  // commonly uses them for logos and signature graphics — stripping
+  // them is what produced the broken-image icon reported on
+  // 2026-05-26. SVG is excluded: it can embed <script> and external
+  // references, so it does not satisfy the "inert payload" property
+  // the rest of the allowlist relies on.
+  if (INLINE_IMAGE_DATA_URI.test(src)) {
     return;
   }
   if (!/^https?:/i.test(src)) {

@@ -107,11 +107,81 @@ describe('sanitizeHtml — internalize placeholder pass-through (REQ-EXTIMG-BG-I
     expect(body).not.toContain('data-herold-blocked');
   });
 
-  it('still strips a non-placeholder data: image src (allowlist is the literal prefix only)', () => {
-    const html = '<img src="data:image/png;base64,abc" alt="x">';
+  it('passes the server-emitted placeholder through even when loadImages=true', () => {
+    const placeholder =
+      'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
+    const html = `<img src="${placeholder}" alt="x">`;
+    const body = bodyOf(sanitizeHtml(html, { loadImages: true }));
+    expect(body).toContain(`src="${placeholder}"`);
+    // loadImages=true must NOT route the placeholder through /proxy/image —
+    // the placeholder is local content, not an external resource to fetch.
+    expect(body).not.toContain('/proxy/image');
+  });
+});
+
+describe('sanitizeHtml — inline raster data: URIs', () => {
+  it('passes a base64 PNG data URI through unchanged (issue: broken inline logos)', () => {
+    const html = '<img src="data:image/png;base64,iVBORw0KGgo=" alt="logo">';
     const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
-    expect(body).not.toContain('data:image/png');
+    expect(body).toContain('src="data:image/png;base64,iVBORw0KGgo="');
+    expect(body).not.toContain('data-herold-blocked');
+  });
+
+  it('passes JPEG / GIF / WebP / AVIF data URIs through', () => {
+    for (const mime of ['image/jpeg', 'image/gif', 'image/webp', 'image/avif']) {
+      const html = `<img src="data:${mime};base64,AAAA" alt="x">`;
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      expect(body).toContain(`src="data:${mime};base64,AAAA"`);
+    }
+  });
+
+  it('treats data: URIs even when loadImages=false (they are inline, not external)', () => {
+    const html = '<img src="data:image/png;base64,AAAA" alt="x">';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).toContain('src="data:image/png;base64,AAAA"');
+    expect(body).not.toContain('data-herold-blocked');
+  });
+
+  it('does NOT proxy a data: URI when loadImages=true', () => {
+    const html = '<img src="data:image/png;base64,AAAA" alt="x">';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: true }));
+    expect(body).not.toContain('/proxy/image');
+    expect(body).toContain('src="data:image/png;base64,AAAA"');
+  });
+
+  it('blocks data:image/svg+xml (SVG can contain scripts and external refs)', () => {
+    const html = '<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" alt="x">';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).not.toContain('data:image/svg');
     expect(body).not.toContain('src=');
+  });
+
+  it('blocks non-image data: URIs', () => {
+    const html = '<img src="data:text/html;base64,PHNjcmlwdD4=" alt="x">';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).not.toContain('data:text/html');
+    expect(body).not.toContain('src=');
+  });
+
+  it('blocks crafted boundary tricks like image/png-evil', () => {
+    // Without the [;,] boundary anchor in the regex, "image/png-evil" could
+    // match the "image/png" prefix; the boundary forces a real mediatype end.
+    const html = '<img src="data:image/png-evil;base64,AAAA" alt="x">';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).not.toContain('data:image/png-evil');
+    expect(body).not.toContain('src=');
+  });
+
+  it('accepts data: URIs with mediatype parameters before ;base64', () => {
+    const html = '<img src="data:image/png;charset=utf-8;base64,AAAA" alt="x">';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).toContain('src="data:image/png;charset=utf-8;base64,AAAA"');
+  });
+
+  it('accepts URL-encoded (non-base64) data: URIs', () => {
+    const html = '<img src="data:image/gif,GIF89a%01%00" alt="x">';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).toContain('src="data:image/gif,GIF89a%01%00"');
   });
 });
 
