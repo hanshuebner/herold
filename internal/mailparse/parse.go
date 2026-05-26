@@ -92,7 +92,11 @@ func Parse(r io.Reader, opts ParseOptions) (Message, error) {
 		}
 	}
 
-	env, enerr := enmime.ReadEnvelope(bytes.NewReader(raw))
+	// Normalize multipart boundaries whose values end in `-`. enmime
+	// substring-matches delimiters and trips when one boundary's `--<B>`
+	// is a substring of another's. See normalizeTrailingDashBoundaries.
+	parseInput := normalizeTrailingDashBoundaries(raw)
+	env, enerr := enmime.ReadEnvelope(bytes.NewReader(parseInput))
 	if enerr != nil {
 		return Message{}, &ParseError{
 			Reason:    ReasonMalformed,
@@ -128,7 +132,11 @@ func Parse(r io.Reader, opts ParseOptions) (Message, error) {
 		if terr := checkTruncation(env, counter.index); terr != nil {
 			return Message{}, terr
 		}
-		if terr := checkRawBoundariesRecursive(raw, env.Root, counter.index); terr != nil {
+		// Use parseInput (post-boundary-normalization) here: env.Root's
+		// boundary values may have been rewritten in normalize, and we
+		// need to look for the rewritten markers in the bytes we actually
+		// parsed.
+		if terr := checkRawBoundariesRecursive(parseInput, env.Root, counter.index); terr != nil {
 			return Message{}, terr
 		}
 	}
