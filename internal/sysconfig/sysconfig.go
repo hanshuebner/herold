@@ -966,8 +966,22 @@ type UIConfig struct {
 	CSRFCookieName string `toml:"csrf_cookie_name,omitempty"`
 	// SessionTTL bounds session lifetime; zero applies the default
 	// of 24 hours. Sliding renewal extends the deadline on each
-	// authenticated request.
+	// authenticated request. Consumed by the public-listener login
+	// path (internal/protologin). The admin listener uses
+	// AdminIdleTTL + AdminAbsoluteTTL instead (REQ-AUTH-72).
 	SessionTTL Duration `toml:"session_ttl,omitempty"`
+	// AdminIdleTTL is the inactivity window for admin-listener
+	// sessions (REQ-AUTH-72, issue #12). When the time since the
+	// session's last authenticated request exceeds this value the
+	// next request is rejected and the cookie cleared. Zero applies
+	// the default of 1 hour. Capped at 12 hours; Validate rejects a
+	// larger value. AdminIdleTTL MUST NOT exceed AdminAbsoluteTTL.
+	AdminIdleTTL Duration `toml:"admin_idle_ttl,omitempty"`
+	// AdminAbsoluteTTL is the maximum lifetime of an admin-listener
+	// session, irrespective of activity (REQ-AUTH-72, issue #12).
+	// Zero applies the default of 8 hours. Capped at 12 hours;
+	// Validate rejects a larger value.
+	AdminAbsoluteTTL Duration `toml:"admin_absolute_ttl,omitempty"`
 	// SecureCookies, when nil, applies the secure-by-default policy
 	// (true). Set explicitly to false only for development.
 	SecureCookies *bool `toml:"secure_cookies,omitempty"`
@@ -1709,6 +1723,13 @@ func applyDefaults(c *Config) {
 	if c.Server.UI.SessionTTL == 0 {
 		c.Server.UI.SessionTTL = Duration(24 * time.Hour)
 	}
+	// Admin-listener session TTL defaults (REQ-AUTH-72, issue #12).
+	if c.Server.UI.AdminIdleTTL == 0 {
+		c.Server.UI.AdminIdleTTL = Duration(1 * time.Hour)
+	}
+	if c.Server.UI.AdminAbsoluteTTL == 0 {
+		c.Server.UI.AdminAbsoluteTTL = Duration(8 * time.Hour)
+	}
 	if c.Server.UI.SecureCookies == nil {
 		t := true
 		c.Server.UI.SecureCookies = &t
@@ -2174,6 +2195,22 @@ func Validate(c *Config) error {
 	// applyDefaults.
 	if c.Server.Snooze.PollInterval > 0 && c.Server.Snooze.PollInterval < Duration(5*time.Second) {
 		return fmt.Errorf("sysconfig: [server.snooze] poll_interval %s below 5s floor", c.Server.Snooze.PollInterval.AsDuration())
+	}
+	// Admin-listener session TTLs (REQ-AUTH-72, issue #12). Both knobs
+	// have a 12-hour hard ceiling; the idle TTL must not exceed the
+	// absolute TTL or the idle gate could never trip before the
+	// absolute deadline arrives. Both fields have been defaulted by
+	// applyDefaults at this point, so a zero here would be a coding
+	// bug rather than operator config.
+	const adminSessionTTLCeiling = 12 * time.Hour
+	if dur := c.Server.UI.AdminIdleTTL.AsDuration(); dur > adminSessionTTLCeiling {
+		return fmt.Errorf("sysconfig: [server.ui] admin_idle_ttl %s exceeds the 12h ceiling", dur)
+	}
+	if dur := c.Server.UI.AdminAbsoluteTTL.AsDuration(); dur > adminSessionTTLCeiling {
+		return fmt.Errorf("sysconfig: [server.ui] admin_absolute_ttl %s exceeds the 12h ceiling", dur)
+	}
+	if idle, abs := c.Server.UI.AdminIdleTTL.AsDuration(), c.Server.UI.AdminAbsoluteTTL.AsDuration(); idle > abs {
+		return fmt.Errorf("sysconfig: [server.ui] admin_idle_ttl %s exceeds admin_absolute_ttl %s", idle, abs)
 	}
 	// Image proxy (REQ-SEND-70..78). Catch operator typos that would
 	// otherwise produce a silently-disabled feature: negative budgets
