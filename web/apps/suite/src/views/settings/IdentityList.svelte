@@ -8,11 +8,20 @@
    * label, and an external-submission disabled treatment for unverified
    * / mis-configured external rows.
    *
-   * The row itself is a plain presentational container: it is NOT
-   * click-to-edit. Editing is an explicit per-row pencil button at the
-   * trailing edge that fires `onedit`. The radio promotes the row to
-   * default via `mail.setDefaultIdentity` (REQ-SET-IDENT-04); the
-   * default row also carries a static "Standard" badge.
+   * Each row is split into two regions (re #18):
+   *   - A non-clickable radio column at the leading edge that promotes
+   *     the row to default via `mail.setDefaultIdentity`
+   *     (REQ-SET-IDENT-04); the default row also carries a static
+   *     "Standard" badge.
+   *   - A click-to-edit card body that fires `onedit` on click and on
+   *     Enter / Space when keyboard-focused. The kebab menu's Edit item
+   *     remains available as the explicit invocation; the row click is
+   *     the discoverable shortcut.
+   *
+   * Interactive controls inside the card body (Verify / Resend buttons,
+   * the kebab trigger) call `event.stopPropagation()` on their click
+   * handlers so they fire their own behaviour without also opening the
+   * editor.
    *
    * Verification state ("nicht verifiziert" / "Verifikation ausstehend")
    * renders as a flat, non-interactive status label — never a button.
@@ -155,6 +164,15 @@
     onedit(identity);
   }
 
+  // re #18: card body is the click-to-edit surface. Enter / Space on the
+  // focused card open the editor; mouse click on the card does the same.
+  function onCardKeydown(e: KeyboardEvent, identity: Identity): void {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onedit(identity);
+    }
+  }
+
   /**
    * Delete an identity from the kebab menu. Confirms first, then issues
    * `Identity/set { destroy }` via the store (which optimistically
@@ -229,24 +247,33 @@
           data-identity-id={identity.id}
           data-identity-status={status}
         >
-          <div class="row-body">
-            <label class="radio-wrap" title={canBeDefault(identity)
-              ? ''
-              : t('settings.identityList.defaultRadioDisabledTitle')}>
-              <input
-                type="radio"
-                name="default-identity"
-                value={identity.id}
-                checked={isDefault}
-                disabled={!canBeDefault(identity)}
-                aria-label={t('settings.identityList.defaultRadioAria', {
-                  email: identity.email,
-                })}
-                onchange={() => void onRadioChange(identity)}
-                data-testid="identity-default-radio"
-              />
-            </label>
+          <label class="radio-col" title={canBeDefault(identity)
+            ? ''
+            : t('settings.identityList.defaultRadioDisabledTitle')}>
+            <input
+              type="radio"
+              name="default-identity"
+              value={identity.id}
+              checked={isDefault}
+              disabled={!canBeDefault(identity)}
+              aria-label={t('settings.identityList.defaultRadioAria', {
+                email: identity.email,
+              })}
+              onchange={() => void onRadioChange(identity)}
+              data-testid="identity-default-radio"
+            />
+          </label>
 
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <div
+            class="card-body"
+            role="button"
+            tabindex="0"
+            aria-label={t('settings.identityList.editRowAria', { email: identity.email })}
+            data-testid="identity-card-body"
+            onclick={() => onedit(identity)}
+            onkeydown={(e) => onCardKeydown(e, identity)}
+          >
             <div class="avatar-wrap" aria-hidden="true">
               {#if avatarUrl}
                 <img src={avatarUrl} alt="" class="avatar" />
@@ -280,7 +307,7 @@
                   compact
                   title={t('settings.identityList.resendTooltip')}
                   testid="identity-resend-btn"
-                  onclick={() => onResend(identity)}
+                  onclick={(e) => { e.stopPropagation(); onResend(identity); }}
                 >
                   {t('settings.identityList.resendBtn')}
                 </Button>
@@ -294,7 +321,7 @@
                   compact
                   title={t('settings.identityList.verifyTooltip')}
                   testid="identity-verify-btn"
-                  onclick={() => onVerify(identity)}
+                  onclick={(e) => { e.stopPropagation(); onVerify(identity); }}
                 >
                   {t('settings.identityList.verifyBtn')}
                 </Button>
@@ -318,7 +345,7 @@
                     email: identity.email,
                   })}
                   data-testid="identity-row-menu-trigger"
-                  onclick={() => toggleMenu(identity.id)}
+                  onclick={(e) => { e.stopPropagation(); toggleMenu(identity.id); }}
                 >
                   <span class="kebab-dots" aria-hidden="true">&#x22EE;</span>
                 </button>
@@ -337,7 +364,7 @@
                       class="row-menu-item"
                       role="menuitem"
                       data-testid="identity-row-menu-edit"
-                      onclick={() => onEditFromMenu(identity)}
+                      onclick={(e) => { e.stopPropagation(); onEditFromMenu(identity); }}
                     >
                       {t('settings.identityList.editBtn')}
                     </button>
@@ -347,7 +374,7 @@
                         class="row-menu-item danger"
                         role="menuitem"
                         data-testid="identity-row-menu-delete"
-                        onclick={() => void onDeleteFromMenu(identity)}
+                        onclick={(e) => { e.stopPropagation(); void onDeleteFromMenu(identity); }}
                       >
                         {t('settings.identityList.deleteBtn')}
                       </button>
@@ -385,10 +412,10 @@
     color: var(--text-secondary);
   }
 
-  /* Column headers align with the row-body grid: radio | avatar | meta. */
+  /* Column headers align with the row layout: radio column | card body. */
   .rows-header {
     display: grid;
-    grid-template-columns: 24px 40px 1fr;
+    grid-template-columns: 24px 1fr;
     gap: var(--spacing-04);
     padding: 0 var(--spacing-04);
   }
@@ -414,51 +441,73 @@
     gap: var(--spacing-02);
   }
 
-  /* Rows use the white surface token (--layer-02) so the row text
-     reads with full contrast (re #20). --layer-02 is #ffffff in the
-     light theme and a lighter raised grey in the dark theme. */
+  /* The row is a two-column grid (re #18): the radio column lives
+     OUTSIDE the click-to-edit card body so a click on the default
+     selector cannot also open the editor. The card body carries the
+     surface treatment (background + border + radius) so the radio
+     column reads as a flat selector to the left of the card. */
   .row {
-    background: var(--layer-02);
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-md);
+    display: grid;
+    grid-template-columns: 24px 1fr;
+    align-items: center;
+    gap: var(--spacing-04);
   }
 
-  .row.default {
-    border-color: color-mix(in srgb, var(--interactive) 60%, transparent);
-    background: color-mix(in srgb, var(--interactive) 4%, var(--layer-02));
-  }
-
-  .row.disabled {
+  .row.disabled .card-body {
     opacity: 0.55;
   }
 
-  .row-body {
-    display: grid;
-    grid-template-columns: 24px auto 1fr auto;
-    align-items: center;
-    gap: var(--spacing-04);
-    padding: var(--spacing-03) var(--spacing-04);
-    width: 100%;
-    text-align: left;
-  }
-
-  .radio-wrap {
+  .radio-col {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 24px;
     height: 24px;
+    /* No background / border — the radio is a flat selector beside
+       the card, not part of the click-to-edit surface. */
   }
 
-  .radio-wrap input[type='radio'] {
+  .radio-col input[type='radio'] {
     accent-color: var(--interactive);
     width: 18px;
     height: 18px;
     cursor: pointer;
   }
 
-  .radio-wrap input[type='radio']:disabled {
+  .radio-col input[type='radio']:disabled {
     cursor: not-allowed;
+  }
+
+  .card-body {
+    display: grid;
+    grid-template-columns: 40px 1fr auto;
+    align-items: center;
+    gap: var(--spacing-04);
+    padding: var(--spacing-03) var(--spacing-04);
+    width: 100%;
+    text-align: left;
+    background: var(--layer-02);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition:
+      background var(--duration-fast-02) var(--easing-productive-enter),
+      border-color var(--duration-fast-02) var(--easing-productive-enter),
+      box-shadow var(--duration-fast-02) var(--easing-productive-enter);
+  }
+
+  .card-body:hover {
+    background: color-mix(in srgb, var(--interactive) 4%, var(--layer-02));
+  }
+
+  .card-body:focus-visible {
+    outline: 2px solid var(--interactive);
+    outline-offset: 2px;
+  }
+
+  .row.default .card-body {
+    border-color: color-mix(in srgb, var(--interactive) 60%, transparent);
+    background: color-mix(in srgb, var(--interactive) 4%, var(--layer-02));
   }
 
   .avatar-wrap {
@@ -649,8 +698,8 @@
   }
 
   @media (max-width: 640px) {
-    .row-body {
-      grid-template-columns: 24px auto 1fr;
+    .card-body {
+      grid-template-columns: 40px 1fr;
       grid-template-rows: auto auto;
     }
     .status {

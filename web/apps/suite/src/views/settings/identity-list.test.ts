@@ -483,15 +483,63 @@ describe('IdentityList', () => {
     });
   });
 
-  it('the row body is not a click target (no role=button, no onclick)', () => {
+  // ── re #18: row body is the click-to-edit surface ─────────────────────
+  //
+  // The card area carries role=button + onclick that fires `onedit`; the
+  // radio sits OUTSIDE the card (its own column) so a click on the
+  // default-selector never also opens the editor. Interactive children
+  // inside the card (status buttons, kebab) stopPropagation so they only
+  // fire their own handlers.
+
+  it('renders the row body as a click target (role=button, focusable)', () => {
     seedIdentities(VERIFIED_DEFAULT);
     const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
-    const rowBody = container.querySelector(
-      '[data-identity-id="1"] .row-body',
+    const card = container.querySelector(
+      '[data-identity-id="1"] [data-testid="identity-card-body"]',
     ) as HTMLElement;
-    expect(rowBody).not.toBeNull();
-    expect(rowBody.getAttribute('role')).toBeNull();
-    expect(rowBody.getAttribute('tabindex')).toBeNull();
+    expect(card).not.toBeNull();
+    expect(card.getAttribute('role')).toBe('button');
+    expect(card.getAttribute('tabindex')).toBe('0');
+  });
+
+  it('opens the editor when the card body is clicked (re #18)', async () => {
+    seedIdentities(VERIFIED_SECOND);
+    const onedit = vi.fn();
+    const { container } = render(IdentityList, { props: { onedit } });
+    const card = container.querySelector(
+      '[data-identity-id="2"] [data-testid="identity-card-body"]',
+    ) as HTMLElement;
+    expect(card).not.toBeNull();
+    await fireEvent.click(card);
+    expect(onedit).toHaveBeenCalledWith(VERIFIED_SECOND);
+  });
+
+  it('opens the editor when Enter is pressed on the focused card body (re #18)', async () => {
+    seedIdentities(VERIFIED_SECOND);
+    const onedit = vi.fn();
+    const { container } = render(IdentityList, { props: { onedit } });
+    const card = container.querySelector(
+      '[data-identity-id="2"] [data-testid="identity-card-body"]',
+    ) as HTMLElement;
+    await fireEvent.keyDown(card, { key: 'Enter' });
+    expect(onedit).toHaveBeenCalledWith(VERIFIED_SECOND);
+  });
+
+  it('places the radio outside the card body (re #18)', () => {
+    seedIdentities(VERIFIED_DEFAULT);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const row = container.querySelector('[data-identity-id="1"]') as HTMLElement;
+    const radio = row.querySelector(
+      '[data-testid="identity-default-radio"]',
+    ) as HTMLElement;
+    const card = row.querySelector(
+      '[data-testid="identity-card-body"]',
+    ) as HTMLElement;
+    expect(radio).not.toBeNull();
+    expect(card).not.toBeNull();
+    // The radio must NOT be a descendant of the card body, so clicking
+    // the radio cannot also fire the card's onclick handler.
+    expect(card.contains(radio)).toBe(false);
   });
 
   it('does not open the editor when the radio is clicked', async () => {
@@ -514,6 +562,17 @@ describe('IdentityList', () => {
     ) as HTMLButtonElement;
     expect(verifyBtn).not.toBeNull();
     await fireEvent.click(verifyBtn);
+    expect(onedit).not.toHaveBeenCalled();
+  });
+
+  it('does not open the editor when the kebab trigger is clicked (re #18)', async () => {
+    seedIdentities(VERIFIED_SECOND);
+    const onedit = vi.fn();
+    const { container } = render(IdentityList, { props: { onedit } });
+    const kebab = container.querySelector(
+      '[data-identity-id="2"] [data-testid="identity-row-menu-trigger"]',
+    ) as HTMLButtonElement;
+    await fireEvent.click(kebab);
     expect(onedit).not.toHaveBeenCalled();
   });
 
