@@ -136,9 +136,13 @@ type Deliverer interface {
 }
 
 // Signer is satisfied by the mail-auth subsystem (DKIM + optional ARC).
-// A nil Signer on Options is allowed and means "no signing"; any
-// Submission with Sign=true is enqueued unsigned and the worker
-// renders the body verbatim.
+// A nil Signer on Options is permitted only when no submission asks
+// for Sign=true; a Sign=true row routed through a Queue with a nil
+// Signer is failed as permanent. Signers that return a non-nil error
+// also fail the row as permanent (modulo context cancellation, which
+// routes to transient) — the submitter explicitly asked for a
+// signature, and silently delivering unsigned is exactly the
+// deliverability footgun re #20 closed.
 //
 // The Sign method is pure: given (domain, message), it returns a fresh
 // byte slice with the appropriate signature header(s) prepended. The

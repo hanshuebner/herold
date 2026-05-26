@@ -116,6 +116,20 @@ func (s *recordingSigner) Sign(ctx context.Context, domain string, message []byt
 	return out, nil
 }
 
+// failingSigner returns the same error from every Sign call. Used to
+// verify the queue worker classifies signer failures as permanent (or
+// transient for context errors) without falling through to an unsigned
+// delivery — re #20.
+type failingSigner struct {
+	err   error
+	calls atomic.Int32
+}
+
+func (s *failingSigner) Sign(ctx context.Context, domain string, message []byte) ([]byte, error) {
+	s.calls.Add(1)
+	return nil, s.err
+}
+
 type fixture struct {
 	t      *testing.T
 	clk    *clock.FakeClock
@@ -705,6 +719,123 @@ func TestSignerInvoked(t *testing.T) {
 	}
 	if !bytes.Contains(calls[0].Message, []byte("X-Test-Signed: local.test")) {
 		t.Fatalf("delivered body lacks signing header: %q", calls[0].Message)
+	}
+}
+
+// TestSignerFailureIsPermanentNotUnsignedDelivery is the regression
+// guard for re #20: when Sign=true and the signer returns a non-context
+// error, the queue must classify the row as a permanent failure and
+// must NOT call the deliverer with an unsigned body.
+func TestSignerFailureIsPermanentNotUnsignedDelivery(t *testing.T) {
+	signer := &failingSigner{err: errors.New("no active DKIM key for domain mx.example")}
+	f := newFixture(t, fixtureOpts{
+		concurrency: 4,
+		perHost:     2,
+		signer:      signer,
+	})
+	envID := f.submit(t, queue.Submission{
+		MailFrom:      "postmaster@mx.example",
+		Recipients:    []string{"bob@dest.test"},
+		Body:          strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
+		Sign:          true,
+		SigningDomain: "mx.example",
+	})
+
+	if !waitFor(t, 3*time.Second, func() bool {
+		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+		return len(rows) == 1 && rows[0].State == store.QueueStateFailed
+	}) {
+		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+		t.Fatalf("row never reached failed state; rows=%+v", rows)
+	}
+	if got := f.deliv.callCount(); got != 0 {
+		calls := f.deliv.callsCopy()
+		t.Fatalf("deliverer must not be called when signer fails; got %d call(s): %+v", got, calls)
+	}
+	if signer.calls.Load() != 1 {
+		t.Fatalf("signer call count: got %d want 1", signer.calls.Load())
+	}
+	rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+	if !strings.Contains(rows[0].LastError, "signer failure") {
+		t.Errorf("last_error must mention signer failure; got %q", rows[0].LastError)
+	}
+}
+
+// TestSignTrueWithNilSignerIsPermanent guards the second arm of re #20:
+// Sign=true against a Queue wired with no Signer at all is itself a
+// configuration error; the row must fail permanent rather than ship
+// unsigned to the wire.
+func TestSignTrueWithNilSignerIsPermanent(t *testing.T) {
+	f := newFixture(t, fixtureOpts{
+		concurrency: 4,
+		perHost:     2,
+		// No signer wired.
+	})
+	envID := f.submit(t, queue.Submission{
+		MailFrom:      "postmaster@mx.example",
+		Recipients:    []string{"bob@dest.test"},
+		Body:          strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
+		Sign:          true,
+		SigningDomain: "mx.example",
+	})
+
+	if !waitFor(t, 3*time.Second, func() bool {
+		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+		return len(rows) == 1 && rows[0].State == store.QueueStateFailed
+	}) {
+		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+		t.Fatalf("row never reached failed state; rows=%+v", rows)
+	}
+	if got := f.deliv.callCount(); got != 0 {
+		t.Fatalf("deliverer must not be called when no Signer is configured; got %d call(s)", got)
+	}
+	rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+	if !strings.Contains(rows[0].LastError, "no Signer configured") {
+		t.Errorf("last_error must mention missing Signer; got %q", rows[0].LastError)
+	}
+}
+
+// TestSignerContextErrorIsTransient checks that a context-cancellation
+// during signing routes the row to transient retry, not permanent —
+// shutdown / per-attempt deadlines should not blackhole the envelope.
+func TestSignerContextErrorIsTransient(t *testing.T) {
+	signer := &failingSigner{err: context.Canceled}
+	f := newFixture(t, fixtureOpts{
+		concurrency: 4,
+		perHost:     2,
+		signer:      signer,
+	})
+	envID := f.submit(t, queue.Submission{
+		MailFrom:      "postmaster@mx.example",
+		Recipients:    []string{"bob@dest.test"},
+		Body:          strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
+		Sign:          true,
+		SigningDomain: "mx.example",
+	})
+
+	// Wait until the signer was invoked AND the row has been
+	// rescheduled at least once (Attempts > 0) or the LastError reflects
+	// the signer-interrupted message. The row must NOT be in failed
+	// state yet — that would be the permanent-classify regression.
+	if !waitFor(t, 3*time.Second, func() bool {
+		if signer.calls.Load() < 1 {
+			return false
+		}
+		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+		if len(rows) != 1 {
+			return false
+		}
+		return strings.Contains(rows[0].LastError, "signer interrupted")
+	}) {
+		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+		t.Fatalf("row never observed signer-interrupted reschedule; rows=%+v signer.calls=%d", rows, signer.calls.Load())
+	}
+	if got := f.deliv.callCount(); got != 0 {
+		t.Fatalf("deliverer must not be called when signer is interrupted; got %d call(s)", got)
+	}
+	rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+	if rows[0].State == store.QueueStateFailed {
+		t.Errorf("row must not be failed on ctx-cancel; got state=%s last_error=%q", rows[0].State, rows[0].LastError)
 	}
 }
 
