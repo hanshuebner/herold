@@ -310,7 +310,16 @@ const CurrentBackupVersion = 1
 //	enforces the single-default invariant in one transaction. The
 //	synthesised "default" identity has no row and is the default
 //	whenever no persisted row owned by the principal is flagged.
-const CurrentSchemaVersion = 53
+//
+// 54 — 0054_sessions_last_seen_at.sql (REQ-AUTH-72, issue #12).
+//
+//	Adds last_seen_at_us to sessions, backing the admin listener's
+//	idle-timeout enforcement. The resolver touches last_seen_at on
+//	every accepted request and rejects the session when
+//	(now - last_seen_at) exceeds SessionConfig.IdleTTL. Existing
+//	rows are backfilled from created_at_us so the column appearing
+//	does not retroactively expire any live session.
+const CurrentSchemaVersion = 54
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

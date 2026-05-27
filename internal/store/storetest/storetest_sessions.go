@@ -196,6 +196,87 @@ func testSessionUpdateTelemetryNotFound(t *testing.T, s store.Store) {
 	}
 }
 
+// testSessionUpsertSetsLastSeen verifies that a freshly upserted session
+// carries LastSeenAt = CreatedAt when the caller does not set the field
+// explicitly (the store fills the gap so the idle clock starts at
+// session birth, not at the SQL DEFAULT 0).
+func testSessionUpsertSetsLastSeen(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	pid := mustInsertPrincipal(t, s, "session-lastseen-fresh@example.test").ID
+
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	row := store.SessionRow{
+		SessionID:                 "csrf-lastseen-fresh",
+		PrincipalID:               pid,
+		CreatedAt:                 now,
+		ExpiresAt:                 now.Add(8 * time.Hour),
+		ClientlogTelemetryEnabled: true,
+	}
+	if err := s.Meta().UpsertSession(ctx, row); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	got, err := s.Meta().GetSession(ctx, row.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if !got.LastSeenAt.Equal(now) {
+		t.Errorf("LastSeenAt = %v; want %v (= CreatedAt)", got.LastSeenAt, now)
+	}
+}
+
+// testSessionUpdateLastSeenAdvances verifies that UpdateSessionLastSeen
+// pushes the LastSeenAt column forward and that subsequent GetSession
+// reads see the new value. Models the resolver's per-request touch.
+func testSessionUpdateLastSeenAdvances(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	pid := mustInsertPrincipal(t, s, "session-lastseen-advance@example.test").ID
+
+	born := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	row := store.SessionRow{
+		SessionID:                 "csrf-lastseen-advance",
+		PrincipalID:               pid,
+		CreatedAt:                 born,
+		ExpiresAt:                 born.Add(8 * time.Hour),
+		ClientlogTelemetryEnabled: true,
+	}
+	if err := s.Meta().UpsertSession(ctx, row); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	later := born.Add(45 * time.Minute)
+	if err := s.Meta().UpdateSessionLastSeen(ctx, row.SessionID, later.UnixMicro()); err != nil {
+		t.Fatalf("UpdateSessionLastSeen: %v", err)
+	}
+	got, err := s.Meta().GetSession(ctx, row.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession after touch: %v", err)
+	}
+	if !got.LastSeenAt.Equal(later) {
+		t.Errorf("LastSeenAt after touch = %v; want %v", got.LastSeenAt, later)
+	}
+	if !got.CreatedAt.Equal(born) {
+		t.Errorf("CreatedAt should not have shifted; got %v want %v", got.CreatedAt, born)
+	}
+	if !got.ExpiresAt.Equal(born.Add(8 * time.Hour)) {
+		t.Errorf("ExpiresAt should not have shifted; got %v", got.ExpiresAt)
+	}
+}
+
+// testSessionUpdateLastSeenNotFound verifies that UpdateSessionLastSeen
+// returns ErrNotFound when the session does not exist (already evicted
+// or never created). The resolver depends on this signal to treat the
+// session as logged out rather than silently swallowing the touch.
+func testSessionUpdateLastSeenNotFound(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	err := s.Meta().UpdateSessionLastSeen(ctx, "no-such-session-lastseen", 0)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("UpdateSessionLastSeen unknown: got %v; want ErrNotFound", err)
+	}
+}
+
 // testSessionEvictExpired verifies that EvictExpiredSessions removes rows
 // whose ExpiresAt is in the past and leaves rows whose ExpiresAt is in the
 // future.

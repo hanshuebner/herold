@@ -956,6 +956,16 @@ type SessionRow struct {
 	// goroutine or VACUUM handles that. Readers treat expired rows as
 	// not-found.
 	ExpiresAt time.Time
+	// LastSeenAt is the timestamp of the most recent authenticated
+	// request that resolved this session (REQ-AUTH-72, issue #12 slice
+	// 3). Backs the admin listener's idle-timeout enforcement: the
+	// session resolver compares (now - LastSeenAt) against
+	// SessionConfig.IdleTTL on every accepted request and rejects the
+	// session when the gap exceeds the configured window. The same
+	// resolver path also bumps LastSeenAt forward, sliding the deadline.
+	// Public-listener sessions write the column but never consult it
+	// because their SessionConfig.IdleTTL is zero (no idle gate).
+	LastSeenAt time.Time
 	// ClientlogTelemetryEnabled is the effective resolved telemetry flag
 	// at session creation / last refresh. Always non-nil (computed from
 	// the principal's override and the system default passed by the

@@ -35,11 +35,29 @@ func ResolveSession(r *http.Request, cfg SessionConfig, st store.Store, clk cloc
 // Returns (principalID, scopeSet, true) when:
 //   - a cookie named cfg.CookieName is present on r,
 //   - DecodeSession validates the HMAC and the cookie is not expired,
-//   - the principal exists in st and PrincipalFlagDisabled is clear.
+//   - the principal exists in st and PrincipalFlagDisabled is clear,
+//   - if cfg.IdleTTL > 0, the session row's LastSeenAt is within the
+//     idle window (REQ-AUTH-72, issue #12 slice 3).
 //
 // Returns (0, nil, false) in every other case. The scope set is the value
 // stamped at login time; it is immutable for the cookie's lifetime
 // (REQ-AUTH-SCOPE-01: rotating scopes requires logging out and back in).
+//
+// Idle-timeout enforcement (when cfg.IdleTTL > 0):
+//   - GetSession(sessionID) looks up the persisted row by CSRFToken
+//     (which doubles as the session row PK at write time).
+//   - When the row is missing the session is treated as not-found.
+//   - When (now - row.LastSeenAt) > cfg.IdleTTL the session is
+//     rejected and the row is deleted so the cookie cannot be revived
+//     by simply resending it.
+//   - Otherwise the row is touched via UpdateSessionLastSeen(now),
+//     sliding the idle deadline forward. The touch is best-effort:
+//     a touch failure does NOT reject the request (logged-out vs
+//     just-took-a-bit-longer would be indistinguishable to the user).
+//
+// When cfg.IdleTTL == 0 (the public-listener default) the resolver
+// behaves exactly as before: no row lookup, no touch — the HMAC and
+// absolute-expiry check on the cookie are sufficient.
 //
 // The function is pure in the sense that it takes store and clock as
 // parameters rather than capturing server state, so it can be used from any
@@ -60,5 +78,26 @@ func ResolveSessionWithScope(r *http.Request, cfg SessionConfig, st store.Store,
 	if p.Flags.Has(store.PrincipalFlagDisabled) {
 		return 0, nil, false
 	}
+
+	if cfg.IdleTTL > 0 {
+		ctx := r.Context()
+		row, err := st.Meta().GetSession(ctx, sess.CSRFToken)
+		if err != nil {
+			// Row missing means the session was deleted (logout) or
+			// expired+evicted. Either way the cookie is no longer valid.
+			return 0, nil, false
+		}
+		now := clk.Now()
+		if !row.LastSeenAt.IsZero() && now.Sub(row.LastSeenAt) > cfg.IdleTTL {
+			// Idle gate trips: remove the row so a future request with
+			// the same cookie cannot resurrect the session.
+			_ = st.Meta().DeleteSession(ctx, sess.CSRFToken)
+			return 0, nil, false
+		}
+		// Touch is best-effort; a transient store failure does not
+		// reject the in-flight request.
+		_ = st.Meta().UpdateSessionLastSeen(ctx, sess.CSRFToken, now.UnixMicro())
+	}
+
 	return sess.PrincipalID, sess.Scopes, true
 }

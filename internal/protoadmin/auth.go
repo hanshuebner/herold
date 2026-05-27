@@ -255,6 +255,32 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
 		return store.Principal{}, nil, false
 	}
+	// Idle-timeout gate (REQ-AUTH-72, issue #12 slice 3). Only fires
+	// when the configured idle TTL is non-zero — public-listener
+	// callers leave IdleTTL=0 and skip the row lookup entirely.
+	if idleTTL := s.opts.Session.IdleTTL; idleTTL > 0 {
+		row, err := s.store.Meta().GetSession(ctx, sess.CSRFToken)
+		if err != nil {
+			// Row missing => session was deleted (logout) or evicted.
+			observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
+			return store.Principal{}, nil, false
+		}
+		now := s.clk.Now()
+		if !row.LastSeenAt.IsZero() && now.Sub(row.LastSeenAt) > idleTTL {
+			// Drop the row so the same cookie can't resurrect the
+			// session on a later request.
+			_ = s.store.Meta().DeleteSession(ctx, sess.CSRFToken)
+			observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
+			return store.Principal{}, nil, false
+		}
+		// Best-effort touch; failures are logged but don't reject the
+		// in-flight request.
+		if err := s.store.Meta().UpdateSessionLastSeen(ctx, sess.CSRFToken, now.UnixMicro()); err != nil {
+			s.loggerFrom(ctx).Warn("protoadmin.auth.session_touch_failed",
+				"activity", observe.ActivityInternal,
+				"err", err)
+		}
+	}
 	observe.AuthAttemptsTotal.WithLabelValues("session", "ok").Inc()
 	return p, scopes, true
 }

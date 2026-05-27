@@ -2014,6 +2014,15 @@ type Metadata interface {
 	// Upsert.
 	UpdateSessionTelemetry(ctx context.Context, sessionID string, enabled bool) error
 
+	// UpdateSessionLastSeen sets the last_seen_at_us column on an
+	// existing session row to atMicros (REQ-AUTH-72, issue #12 slice 3).
+	// Returns ErrNotFound when the session does not exist. Called by
+	// the session resolver on every accepted authenticated request to
+	// slide the idle-timeout deadline forward. atMicros is taken as a
+	// trusted "now" from the caller so the store layer stays free of
+	// clock dependencies.
+	UpdateSessionLastSeen(ctx context.Context, sessionID string, atMicros int64) error
+
 	// EvictExpiredSessions deletes all session rows whose expires_at_us
 	// is <= nowMicros. Returns the number of rows deleted. Intended for
 	// a periodic background sweeper; safe to call concurrently.

@@ -48,6 +48,13 @@ type sessionHarness struct {
 }
 
 func newSessionHarness(t *testing.T) *sessionHarness {
+	return newSessionHarnessWithIdleTTL(t, 0)
+}
+
+// newSessionHarnessWithIdleTTL is the slice-3 variant that lets a test
+// configure the admin-listener idle gate. Pass idleTTL=0 to disable the
+// gate (current behaviour for tests that don't exercise it).
+func newSessionHarnessWithIdleTTL(t *testing.T, idleTTL time.Duration) *sessionHarness {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	fs := sqlitetest.Open(t, clk)
@@ -69,6 +76,7 @@ func newSessionHarness(t *testing.T) *sessionHarness {
 			CookieName:     "herold_admin_session",
 			CSRFCookieName: "herold_admin_csrf",
 			TTL:            24 * time.Hour,
+			IdleTTL:        idleTTL,
 			SecureCookies:  false,
 		},
 	})
@@ -888,5 +896,95 @@ func TestBootstrapSuperadmin_TOTPEnrollmentViaAPIKey(t *testing.T) {
 	}
 	if !sh.sessionCookiePresent() {
 		t.Errorf("session cookie missing after bootstrap-superadmin enrollment + login")
+	}
+}
+
+// TestSessionAuth_IdleGate_RejectsStaleCookie asserts the slice 3 idle
+// gate: when SessionConfig.IdleTTL is set, an authenticated request
+// that arrives more than IdleTTL after the last-seen tick is rejected
+// and the session row is deleted so the same cookie cannot resurrect
+// the session on a later (also-late) request.
+func TestSessionAuth_IdleGate_RejectsStaleCookie(t *testing.T) {
+	t.Parallel()
+	const idleTTL = 30 * time.Minute
+	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("idle-gate@example.com")
+
+	// Login mints a fresh session row with LastSeenAt = now.
+	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
+	if loginCode != http.StatusOK {
+		t.Fatalf("login: status=%d", loginCode)
+	}
+
+	// Inside the idle window, the cookie still works and slides the
+	// deadline forward.
+	sh.clk.Advance(idleTTL - time.Minute)
+	code, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
+	if code != http.StatusOK {
+		t.Fatalf("GET inside idle window: status=%d, want 200", code)
+	}
+
+	// Past the idle window relative to the LAST touch above, the gate
+	// trips.
+	sh.clk.Advance(idleTTL + time.Minute)
+	staleCode, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
+	if staleCode != http.StatusUnauthorized {
+		t.Fatalf("GET past idle window: status=%d, want 401", staleCode)
+	}
+	// A second request with the same cookie still fails — the session
+	// row was deleted, so even rolling the clock back wouldn't help.
+	staleCode2, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
+	if staleCode2 != http.StatusUnauthorized {
+		t.Fatalf("GET after idle trip + retry: status=%d, want 401", staleCode2)
+	}
+}
+
+// TestSessionAuth_IdleGate_TouchSlidesDeadline confirms the sliding-
+// renewal behaviour: a sequence of requests each spaced inside the
+// idle window keeps the session live indefinitely (up to the absolute
+// TTL, which this test doesn't exercise).
+func TestSessionAuth_IdleGate_TouchSlidesDeadline(t *testing.T) {
+	t.Parallel()
+	const idleTTL = 30 * time.Minute
+	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("idle-slide@example.com")
+
+	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
+	if loginCode != http.StatusOK {
+		t.Fatalf("login: status=%d", loginCode)
+	}
+
+	// Five hops, each at idleTTL - 1 minute past the previous one, so
+	// the cumulative wall-clock advance is well past one bare idleTTL.
+	for i := 0; i < 5; i++ {
+		sh.clk.Advance(idleTTL - time.Minute)
+		code, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
+		if code != http.StatusOK {
+			t.Fatalf("hop %d: status=%d, want 200", i, code)
+		}
+	}
+}
+
+// TestSessionAuth_NoIdleGate_WhenIdleTTLZero asserts the public-
+// listener compatibility shape: when SessionConfig.IdleTTL is zero,
+// the resolver does NOT touch the session row, so cookies remain
+// usable for as long as the cookie's absolute expiry allows even
+// after the user has been silent for hours.
+func TestSessionAuth_NoIdleGate_WhenIdleTTLZero(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t) // IdleTTL=0
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("no-idle@example.com")
+
+	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
+	if loginCode != http.StatusOK {
+		t.Fatalf("login: status=%d", loginCode)
+	}
+
+	// Advance way past any reasonable idle window. The cookie remains
+	// valid because cfg.IdleTTL = 0 skips the row lookup + touch.
+	sh.clk.Advance(6 * time.Hour)
+	code, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
+	if code != http.StatusOK {
+		t.Errorf("GET after long idle with IdleTTL=0: status=%d, want 200", code)
 	}
 }

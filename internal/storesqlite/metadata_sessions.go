@@ -17,21 +17,30 @@ func (m *metadata) UpsertSession(ctx context.Context, s store.SessionRow) error 
 		v := usMicros(*s.ClientlogLivetailUntil)
 		livetailUs = &v
 	}
+	// last_seen_at defaults to CreatedAt for fresh inserts so a brand
+	// new session starts the idle clock at its own birth.
+	lastSeenAt := s.LastSeenAt
+	if lastSeenAt.IsZero() {
+		lastSeenAt = s.CreatedAt
+	}
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO sessions
 			  (session_id, principal_id, created_at_us, expires_at_us,
+			   last_seen_at_us,
 			   clientlog_telemetry_enabled, clientlog_livetail_until_us)
-			VALUES (?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(session_id) DO UPDATE SET
 			  principal_id                = excluded.principal_id,
 			  expires_at_us               = excluded.expires_at_us,
+			  last_seen_at_us             = excluded.last_seen_at_us,
 			  clientlog_telemetry_enabled = excluded.clientlog_telemetry_enabled,
 			  clientlog_livetail_until_us = excluded.clientlog_livetail_until_us`,
 			s.SessionID,
 			int64(s.PrincipalID),
 			usMicros(s.CreatedAt),
 			usMicros(s.ExpiresAt),
+			usMicros(lastSeenAt),
 			boolToInt(s.ClientlogTelemetryEnabled),
 			livetailUs,
 		)
@@ -42,22 +51,24 @@ func (m *metadata) UpsertSession(ctx context.Context, s store.SessionRow) error 
 func (m *metadata) GetSession(ctx context.Context, sessionID string) (store.SessionRow, error) {
 	row := m.s.db.QueryRowContext(ctx, `
 		SELECT session_id, principal_id, created_at_us, expires_at_us,
+		       last_seen_at_us,
 		       clientlog_telemetry_enabled, clientlog_livetail_until_us
 		  FROM sessions
 		 WHERE session_id = ?`, sessionID)
 	var s store.SessionRow
 	var principalID int64
-	var createdUs, expiresUs int64
+	var createdUs, expiresUs, lastSeenUs int64
 	var telemetryInt int64
 	var livetailUs sql.NullInt64
 	err := row.Scan(&s.SessionID, &principalID, &createdUs, &expiresUs,
-		&telemetryInt, &livetailUs)
+		&lastSeenUs, &telemetryInt, &livetailUs)
 	if err != nil {
 		return store.SessionRow{}, mapErr(err)
 	}
 	s.PrincipalID = store.PrincipalID(principalID)
 	s.CreatedAt = fromMicros(createdUs)
 	s.ExpiresAt = fromMicros(expiresUs)
+	s.LastSeenAt = fromMicros(lastSeenUs)
 	s.ClientlogTelemetryEnabled = telemetryInt != 0
 	if livetailUs.Valid {
 		t := fromMicros(livetailUs.Int64)
@@ -88,6 +99,24 @@ func (m *metadata) UpdateSessionTelemetry(ctx context.Context, sessionID string,
 			   SET clientlog_telemetry_enabled = ?
 			 WHERE session_id = ?`,
 			boolToInt(enabled), sessionID)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (m *metadata) UpdateSessionLastSeen(ctx context.Context, sessionID string, atMicros int64) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE sessions
+			   SET last_seen_at_us = ?
+			 WHERE session_id = ?`,
+			atMicros, sessionID)
 		if err != nil {
 			return mapErr(err)
 		}
