@@ -285,6 +285,67 @@ herold principal revoke-admin user@example.com
 Both verbs are read-modify-write wrappers around
 `PATCH /api/v1/principals/{id}` with the `flags` array.
 
+### Mandatory TOTP for the admin role (REQ-AUTH-44)
+
+The admin REST surface refuses to mint an admin-scoped session for a
+principal that does not have TOTP enrolled (issue #12). Two gates
+implement this:
+
+- **At sign-in:** `POST /api/v1/auth/login` on the admin listener
+  returns `401` with `step_up_required` and `totp_enrollment_required`
+  in the problem-detail extensions whenever the authenticating
+  principal carries `PrincipalFlagAdmin` and lacks
+  `PrincipalFlagTOTPEnabled`. The response includes an `enroll_url`
+  pointing the client at the enrollment endpoint.
+- **At grant:** `PATCH /api/v1/principals/{id}` refuses to flip the
+  admin flag on a target principal that has not enrolled TOTP. The
+  response is `409` with `totp_enrollment_required` and a
+  target-scoped `enroll_url`. The CLI `principal grant-admin`
+  surfaces the same error.
+
+Consequence: an internet-exposed `admin.<host>` vhost no longer
+relies on an IP allowlist for safety. The combination of mandatory
+TOTP + the new 8-hour absolute session ceiling (`admin_absolute_ttl`
+in `[server.ui]`) keeps the public exposure within the spec.
+
+#### Bootstrap superadmin: first-time TOTP enrollment
+
+`herold bootstrap` mints both an initial password and an initial
+Bearer API key. The Bearer key is the credential the first-time
+superadmin uses to reach `/api/v1/principals/{pid}/totp/enroll`
+**without** a TOTP code — Bearer auth bypasses the password-login
+gate entirely. After the matching `/totp/confirm` flips
+`FlagTOTPEnabled`, password+TOTP sign-in starts working.
+
+The end-to-end flow:
+
+```bash
+# 1. Bootstrap.
+curl -X POST http://admin.example.com/api/v1/bootstrap \
+     -H 'Content-Type: application/json' \
+     -d '{"email":"admin@example.com","display_name":"Bootstrap"}'
+# Response:
+#   { "principal_id": 1, "initial_password": "...",
+#     "initial_api_key": "..." }
+
+# 2. Enroll TOTP via the Bearer key.
+curl -X POST http://admin.example.com/api/v1/principals/1/totp/enroll \
+     -H "Authorization: Bearer $KEY"
+# Response: { "secret": "...", "provisioning_uri": "otpauth://..." }
+
+# 3. Configure the authenticator app, then confirm with the first code:
+curl -X POST http://admin.example.com/api/v1/principals/1/totp/confirm \
+     -H "Authorization: Bearer $KEY" \
+     -H 'Content-Type: application/json' \
+     -d '{"code":"123456"}'
+# Response: 204
+
+# 4. From now on, password+TOTP sign-in works through the SPA / JSON
+#    login endpoint. The bootstrap key remains a permanent admin
+#    Bearer token under the current contract; narrowing it to a
+#    one-shot enrollment ticket is tracked in a follow-up issue.
+```
+
 ## Mailboxes
 
 A mailbox is a folder inside a principal's account: INBOX, Sent,

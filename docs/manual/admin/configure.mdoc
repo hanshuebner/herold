@@ -456,9 +456,23 @@ at that revision (or use the `asset_dir` override at runtime); see
 cookie_name = "herold_ui_session"
 csrf_cookie_name = "herold_ui_csrf"
 session_ttl = "24h"
+# Admin listener session lifetimes (REQ-AUTH-72, issue #12). Both knobs
+# default to the values below and have a 12h hard ceiling enforced at
+# config load; the public listener continues to use session_ttl above.
+admin_idle_ttl     = "1h"
+admin_absolute_ttl = "8h"
 secure_cookies = true            # production must keep this true.
 # signing_key_env = "MY_CUSTOM_VAR"   # override only; see note below.
 ```
+
+**Admin-listener session lifetime.** The admin SPA's cookie now has
+two distinct limits: `admin_idle_ttl` is the inactivity window (idle
+gate; default 1 h) and `admin_absolute_ttl` is the cap on overall
+session lifetime regardless of activity (default 8 h). Both fields
+accept any positive duration; Validate rejects values above the 12-
+hour hard ceiling and rejects an idle TTL larger than the absolute
+TTL. These replace the pre-spec 24-hour fallback that the admin
+listener was using.
 
 **Session-cookie signing key.** By default herold reads the env var
 `HEROLD_UI_SESSION_KEY` (see the [Environment variables reference](#environment-variables-reference)
