@@ -3,6 +3,7 @@ package protoadmin
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +13,24 @@ import (
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// writeAdminGrantProblemTOTPEnrollmentRequired writes a 409 problem
+// detail with totp_enrollment_required=true and an enroll_url scoped
+// to the target principal. Used by handlePatchPrincipal when a caller
+// tries to add the admin flag to a principal that has not enrolled
+// TOTP (REQ-AUTH-44, issue #12 slice 5).
+func writeAdminGrantProblemTOTPEnrollmentRequired(w http.ResponseWriter, _ *http.Request, targetID store.PrincipalID) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(http.StatusConflict)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"type":                     "about:blank",
+		"title":                    "TOTP enrollment required on grant target",
+		"status":                   http.StatusConflict,
+		"detail":                   "The target principal must enroll TOTP before being granted the admin role.",
+		"totp_enrollment_required": true,
+		"enroll_url":               fmt.Sprintf("/api/v1/principals/%d/totp/enroll", targetID),
+	})
+}
 
 // generateRandomPassword returns a 20-character base64url password
 // (15 random bytes encoded without padding -- 20 ASCII characters,
@@ -249,6 +268,16 @@ func (s *Server) handlePatchPrincipal(w http.ResponseWriter, r *http.Request) {
 		if !okFlags {
 			writeProblem(w, r, http.StatusBadRequest, "validation_failed",
 				"unknown flag", "")
+			return
+		}
+		// Mandatory TOTP for admin grants (REQ-AUTH-44, issue #12 slice
+		// 5): the admin flag MUST NOT be conferred on a principal that
+		// has not enrolled TOTP. Without this, a logged-in admin could
+		// promote a password-only account and that account would only
+		// trip the login-time gate AFTER the privilege escalation was
+		// already accepted by the store. The grant itself refuses.
+		if flags&store.PrincipalFlagAdmin != 0 && !p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
+			writeAdminGrantProblemTOTPEnrollmentRequired(w, r, p.ID)
 			return
 		}
 		// Preserve TOTPEnabled; clients cannot flip it through PATCH.

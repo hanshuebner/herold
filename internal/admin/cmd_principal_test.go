@@ -97,6 +97,15 @@ func TestCLIPrincipalQuota_BadValue(t *testing.T) {
 func TestCLIPrincipalGrantRevokeAdmin(t *testing.T) {
 	env := newCLITestEnv(t, nil)
 	p := seedPrincipal(t, env, "candidate@test.local")
+	// REQ-AUTH-44 (issue #12 slice 5): the admin grant is refused when
+	// the target principal has not enrolled TOTP. Mark TOTP enabled in
+	// the store directly — the test exercises the CLI command surface
+	// and the HTTP gate, not the directory's enrollment flow.
+	p.Flags |= store.PrincipalFlagTOTPEnabled
+	if err := env.store.Meta().UpdatePrincipal(context.Background(), p); err != nil {
+		t.Fatalf("UpdatePrincipal (mark TOTP enabled): %v", err)
+	}
+
 	if _, _, err := env.run("principal", "grant-admin", "candidate@test.local"); err != nil {
 		t.Fatalf("grant-admin: %v", err)
 	}
@@ -116,6 +125,23 @@ func TestCLIPrincipalGrantRevokeAdmin(t *testing.T) {
 	}
 	if got.Flags.Has(store.PrincipalFlagAdmin) {
 		t.Fatalf("expected admin flag cleared; flags=%v", got.Flags)
+	}
+}
+
+// TestCLIPrincipalGrantAdmin_RefusedWithoutTOTP asserts that the CLI
+// `principal grant-admin` command surfaces the HTTP gate's 409 to the
+// caller (REQ-AUTH-44, issue #12 slice 5). Without this surfacing an
+// operator running the command against a no-TOTP candidate would see
+// "success" while the server quietly refused.
+func TestCLIPrincipalGrantAdmin_RefusedWithoutTOTP(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	seedPrincipal(t, env, "no-totp@test.local")
+	_, _, err := env.run("principal", "grant-admin", "no-totp@test.local")
+	if err == nil {
+		t.Fatalf("grant-admin without TOTP: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "TOTP") && !strings.Contains(err.Error(), "totp") {
+		t.Errorf("grant-admin error should mention TOTP; got %v", err)
 	}
 }
 
