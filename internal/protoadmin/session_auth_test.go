@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -773,5 +774,119 @@ func TestSessionAuth_AdminWithTOTP_LoginSucceeds(t *testing.T) {
 	}
 	if !sh.sessionCookiePresent() {
 		t.Errorf("session cookie missing after successful TOTP login")
+	}
+}
+
+// TestBootstrapSuperadmin_TOTPEnrollmentViaAPIKey is the end-to-end
+// integration test for the bootstrap-to-first-login flow under issue
+// #12 slice 6 (interpretation 1): the bootstrap API key is the
+// Bearer credential that lets the first-time superadmin reach the
+// per-principal TOTP enrollment endpoints WITHOUT a TOTP code,
+// because Bearer auth on /api/v1/principals/{pid}/totp/enroll and
+// /totp/confirm bypasses the password-login gate (slice 4) that
+// would otherwise block any sign-in attempt.
+//
+// Flow under test:
+//  1. Bootstrap → (pid, password, apiKey).
+//  2. Password-login without TOTP code → 401 step_up_required +
+//     totp_enrollment_required (slice 4 gate, verified explicitly).
+//  3. POST /api/v1/principals/{pid}/totp/enroll  with Bearer apiKey
+//     → 200 + secret.
+//  4. POST /api/v1/principals/{pid}/totp/confirm with first code
+//     and Bearer apiKey → 204.
+//  5. Password+TOTP login → 200, admin-scoped session cookie set.
+//
+// A follow-up issue tracks the optional narrowing of the bootstrap
+// API key to a one-shot ticket scoped to /totp/* and auto-revoked
+// after the first successful confirm. The flow above remains
+// usable in either model; this test pins the user-visible
+// happy-path behaviour.
+func TestBootstrapSuperadmin_TOTPEnrollmentViaAPIKey(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+
+	// 1. Bootstrap.
+	const email = "bootstrap-superadmin@example.com"
+	bootBody, _ := json.Marshal(map[string]any{
+		"email":        email,
+		"display_name": "Bootstrap Superadmin",
+	})
+	req, _ := http.NewRequest("POST", sh.baseURL+"/api/v1/bootstrap", bytes.NewReader(bootBody))
+	req.Header.Set("Content-Type", "application/json")
+	bootRes, err := sh.cookieJarClient.Do(req)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	defer bootRes.Body.Close()
+	bootRaw, _ := io.ReadAll(bootRes.Body)
+	if bootRes.StatusCode != http.StatusCreated {
+		t.Fatalf("bootstrap: status=%d body=%s, want 201", bootRes.StatusCode, bootRaw)
+	}
+	var bootResp struct {
+		PrincipalID     uint64 `json:"principal_id"`
+		InitialPassword string `json:"initial_password"`
+		InitialAPIKey   string `json:"initial_api_key"`
+	}
+	if err := json.Unmarshal(bootRaw, &bootResp); err != nil {
+		t.Fatalf("bootstrap unmarshal: %v body=%s", err, bootRaw)
+	}
+	if bootResp.PrincipalID == 0 || bootResp.InitialPassword == "" || bootResp.InitialAPIKey == "" {
+		t.Fatalf("bootstrap response missing fields: %+v", bootResp)
+	}
+
+	// 2. Password login without TOTP — slice 4 gate refuses.
+	gateCode, gateBody := sh.doLogin(email, bootResp.InitialPassword, nil)
+	if gateCode != http.StatusUnauthorized {
+		t.Fatalf("pre-enrollment password login: status=%d, want 401", gateCode)
+	}
+	if gateBody["totp_enrollment_required"] != true {
+		t.Fatalf("pre-enrollment gate: totp_enrollment_required not true: %v", gateBody)
+	}
+
+	// 3. Use the Bearer API key to enroll TOTP. The Bearer path does
+	// not go through the password-login gate at all — Bearer is the
+	// "ticket" interpretation 1 leans on.
+	enrollRes, enrollRaw := sh.doRequest("POST",
+		fmt.Sprintf("/api/v1/principals/%d/totp/enroll", bootResp.PrincipalID),
+		bootResp.InitialAPIKey, nil)
+	if enrollRes.StatusCode != http.StatusOK {
+		t.Fatalf("totp/enroll via Bearer apiKey: status=%d body=%s, want 200",
+			enrollRes.StatusCode, enrollRaw)
+	}
+	var enrollResp struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.Unmarshal(enrollRaw, &enrollResp); err != nil {
+		t.Fatalf("enroll unmarshal: %v body=%s", err, enrollRaw)
+	}
+	if enrollResp.Secret == "" {
+		t.Fatalf("enroll response missing secret: %s", enrollRaw)
+	}
+
+	// 4. Confirm with the first valid TOTP code, again via Bearer.
+	firstCode, err := otpGenerateCode(enrollResp.Secret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode (first): %v", err)
+	}
+	confirmRes, confirmRaw := sh.doRequest("POST",
+		fmt.Sprintf("/api/v1/principals/%d/totp/confirm", bootResp.PrincipalID),
+		bootResp.InitialAPIKey, map[string]any{"code": firstCode})
+	if confirmRes.StatusCode != http.StatusNoContent {
+		t.Fatalf("totp/confirm via Bearer apiKey: status=%d body=%s, want 204",
+			confirmRes.StatusCode, confirmRaw)
+	}
+
+	// Advance one second so the next generated code lands in a fresh
+	// time-step (anti-replay window).
+	sh.clk.Advance(time.Second)
+
+	// 5. Password + TOTP login now succeeds — slice 4 gate passes
+	// because the FlagTOTPEnabled bit is set by step 4.
+	loginCode, _ := sh.doLoginWithTOTP(email, bootResp.InitialPassword, enrollResp.Secret, nil)
+	if loginCode != http.StatusOK {
+		t.Fatalf("post-enrollment login: status=%d, want 200", loginCode)
+	}
+	if !sh.sessionCookiePresent() {
+		t.Errorf("session cookie missing after bootstrap-superadmin enrollment + login")
 	}
 }
