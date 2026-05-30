@@ -64,7 +64,7 @@ func newTestServer(t *testing.T) (*httptest.Server, store.Store, *directory.Dire
 		SigningKey:     testSigningKey,
 		CookieName:     "herold_public_session",
 		CSRFCookieName: "herold_public_csrf",
-		TTL:            24 * time.Hour,
+		TTL:            7 * 24 * time.Hour,
 		SecureCookies:  false,
 	}
 
@@ -260,5 +260,73 @@ func TestMe_AfterLogin_ReturnsPrincipalID(t *testing.T) {
 	}
 	if scopes, _ := body["scopes"].([]interface{}); len(scopes) == 0 {
 		t.Errorf("/auth/me missing scopes: %v", body)
+	}
+}
+
+// TestLogin_ReturnsSessionExpiresAt asserts the login response body carries a
+// session_expires_at field that the SPA can use to schedule a client-side
+// timer for immediate UI feedback at expiry (otherwise the UI only updates
+// on the next user-triggered request).
+func TestLogin_ReturnsSessionExpiresAt(t *testing.T) {
+	t.Parallel()
+	ts, _, _, email, password := newTestServer(t)
+
+	client := &http.Client{}
+	code, body := doLogin(t, client, ts.URL, email, password, nil)
+	if code != http.StatusOK {
+		t.Fatalf("login: status=%d, body=%v", code, body)
+	}
+	rawExp, ok := body["session_expires_at"].(string)
+	if !ok {
+		t.Fatalf("login response missing session_expires_at string: %v", body)
+	}
+	gotExp, err := time.Parse(time.RFC3339, rawExp)
+	if err != nil {
+		t.Fatalf("session_expires_at not RFC3339: %v (raw=%q)", err, rawExp)
+	}
+	// The protologin test fixture uses a fake clock pinned at
+	// 2026-01-01 12:00 UTC and the new public-listener default TTL is
+	// one week; the login handler must add the TTL to the clock's Now.
+	wantExp := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC).Add(7 * 24 * time.Hour)
+	if !gotExp.Equal(wantExp) {
+		t.Errorf("session_expires_at: got %s, want %s", gotExp, wantExp)
+	}
+}
+
+// TestMe_ReturnsSessionExpiresAt asserts /auth/me carries the same
+// session_expires_at as the login response so a Suite SPA reload also
+// resolves the expiry without re-issuing credentials.
+func TestMe_ReturnsSessionExpiresAt(t *testing.T) {
+	t.Parallel()
+	ts, _, _, email, password := newTestServer(t)
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	if code, _ := doLogin(t, client, ts.URL, email, password, nil); code != http.StatusOK {
+		t.Fatalf("login: status=%d", code)
+	}
+	resp, err := client.Get(ts.URL + "/api/v1/auth/me")
+	if err != nil {
+		t.Fatalf("GET /auth/me: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/auth/me: status=%d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	rawExp, ok := body["session_expires_at"].(string)
+	if !ok {
+		t.Fatalf("/auth/me missing session_expires_at: %v", body)
+	}
+	gotExp, err := time.Parse(time.RFC3339, rawExp)
+	if err != nil {
+		t.Fatalf("session_expires_at not RFC3339: %v", err)
+	}
+	wantExp := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC).Add(7 * 24 * time.Hour)
+	if !gotExp.Equal(wantExp) {
+		t.Errorf("/auth/me session_expires_at: got %s, want %s", gotExp, wantExp)
 	}
 }

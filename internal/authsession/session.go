@@ -34,8 +34,8 @@ type SessionConfig struct {
 	// for the double-submit pattern. Defaults to "herold_ui_csrf".
 	CSRFCookieName string
 	// TTL bounds the absolute session lifetime — the cookie's max-age
-	// and the encoded ExpiresAt. Defaults to 24 h when zero. The
-	// admin-listener wiring uses sysconfig's AdminAbsoluteTTL here
+	// and the encoded ExpiresAt. Defaults to one week (168h) when zero.
+	// The admin-listener wiring uses sysconfig's AdminAbsoluteTTL here
 	// (REQ-AUTH-72, issue #12); the public-listener wiring uses
 	// SessionTTL.
 	TTL time.Duration

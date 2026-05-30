@@ -455,7 +455,7 @@ at that revision (or use the `asset_dir` override at runtime); see
 [server.ui]
 cookie_name = "herold_ui_session"
 csrf_cookie_name = "herold_ui_csrf"
-session_ttl = "24h"
+session_ttl = "168h"            # one week (default).
 # Admin listener session lifetimes (REQ-AUTH-72, issue #12). Both knobs
 # default to the values below and have a 12h hard ceiling enforced at
 # config load; the public listener continues to use session_ttl above.

@@ -965,7 +965,7 @@ type UIConfig struct {
 	// "herold_ui_csrf").
 	CSRFCookieName string `toml:"csrf_cookie_name,omitempty"`
 	// SessionTTL bounds session lifetime; zero applies the default
-	// of 24 hours. Sliding renewal extends the deadline on each
+	// of one week (168h). Sliding renewal extends the deadline on each
 	// authenticated request. Consumed by the public-listener login
 	// path (internal/protologin). The admin listener uses
 	// AdminIdleTTL + AdminAbsoluteTTL instead (REQ-AUTH-72).
@@ -1721,7 +1721,7 @@ func applyDefaults(c *Config) {
 		c.Server.UI.CSRFCookieName = "herold_ui_csrf"
 	}
 	if c.Server.UI.SessionTTL == 0 {
-		c.Server.UI.SessionTTL = Duration(24 * time.Hour)
+		c.Server.UI.SessionTTL = Duration(7 * 24 * time.Hour)
 	}
 	// Admin-listener session TTL defaults (REQ-AUTH-72, issue #12).
 	if c.Server.UI.AdminIdleTTL == 0 {

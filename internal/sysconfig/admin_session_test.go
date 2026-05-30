@@ -47,6 +47,38 @@ func TestParse_AdminSessionTTLDefaults(t *testing.T) {
 	}
 }
 
+// TestParse_PublicSessionTTLDefault pins the public-listener session lifetime
+// default at one week. The admin listener uses AdminIdleTTL/AdminAbsoluteTTL
+// instead; the public default is deliberately longer because the consumer
+// Suite session is a long-lived day-to-day mail/calendar workspace, and a
+// 24-hour forced re-login is operator hostility, not security (see issue
+// for the matching SPA-side expiry handler).
+func TestParse_PublicSessionTTLDefault(t *testing.T) {
+	cfg, err := Parse([]byte(adminSessionTTLBare))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got, want := cfg.Server.UI.SessionTTL.AsDuration(), 7*24*time.Hour; got != want {
+		t.Errorf("default session_ttl: got %s, want %s", got, want)
+	}
+}
+
+// TestParse_PublicSessionTTLExplicit asserts an operator-supplied value
+// survives the defaulting path unchanged.
+func TestParse_PublicSessionTTLExplicit(t *testing.T) {
+	const explicit = adminSessionTTLBare + `
+[server.ui]
+session_ttl = "48h"
+`
+	cfg, err := Parse([]byte(explicit))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got, want := cfg.Server.UI.SessionTTL.AsDuration(), 48*time.Hour; got != want {
+		t.Errorf("session_ttl: got %s, want %s", got, want)
+	}
+}
+
 func TestParse_AdminSessionTTLExplicit(t *testing.T) {
 	const explicit = adminSessionTTLBare + `
 [server.ui]

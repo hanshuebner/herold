@@ -34,10 +34,18 @@ type loginRequest struct {
 }
 
 // loginResponse is the JSON body returned on a successful login.
+//
+// SessionExpiresAt is the absolute deadline encoded into the just-issued
+// session cookie, in RFC 3339 UTC form. The Suite SPA uses it to schedule
+// a client-side timer that transitions the auth state machine to
+// 'unauthenticated' the moment the session expires, so the LoginView appears
+// without waiting for the user's next interaction (the cookie itself is
+// HttpOnly and cannot be inspected from JS).
 type loginResponse struct {
-	PrincipalID uint64       `json:"principal_id"`
-	Email       string       `json:"email"`
-	Scopes      []auth.Scope `json:"scopes"`
+	PrincipalID      uint64       `json:"principal_id"`
+	Email            string       `json:"email"`
+	Scopes           []auth.Scope `json:"scopes"`
+	SessionExpiresAt string       `json:"session_expires_at"`
 }
 
 // handleLogin handles POST /api/v1/auth/login.
@@ -122,7 +130,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ttl := s.opts.Session.TTL
 	if ttl <= 0 {
-		ttl = 24 * time.Hour
+		ttl = 7 * 24 * time.Hour
 	}
 	sess := authsession.Session{
 		PrincipalID: pid,
@@ -131,6 +139,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Scopes:      sessScopes,
 	}
 	authsession.WriteSessionCookie(w, s.opts.Session, sess)
+	sessionExpiresAt := sess.ExpiresAt.UTC().Format(time.RFC3339)
 
 	// Audit the success. Attach the principal to the context so the record
 	// carries actor=principal/<id> (REQ-ADM-300).
@@ -151,9 +160,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(loginResponse{
-		PrincipalID: uint64(p.ID),
-		Email:       p.CanonicalEmail,
-		Scopes:      sessScopes.Slice(),
+		PrincipalID:      uint64(p.ID),
+		Email:            p.CanonicalEmail,
+		Scopes:           sessScopes.Slice(),
+		SessionExpiresAt: sessionExpiresAt,
 	})
 }
 

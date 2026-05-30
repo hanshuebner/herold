@@ -10,17 +10,21 @@ package protologin
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
 // meResponse is the JSON body returned on a successful /auth/me lookup.
-// Mirrors loginResponse so the Suite can use a single type for both.
+// Mirrors loginResponse so the Suite can use a single type for both —
+// including session_expires_at so a page reload still has enough state to
+// schedule the client-side expiry timer.
 type meResponse struct {
-	PrincipalID uint64       `json:"principal_id"`
-	Email       string       `json:"email"`
-	Scopes      []auth.Scope `json:"scopes"`
+	PrincipalID      uint64       `json:"principal_id"`
+	Email            string       `json:"email"`
+	Scopes           []auth.Scope `json:"scopes"`
+	SessionExpiresAt string       `json:"session_expires_at"`
 }
 
 // handleMe handles GET /api/v1/auth/me.
@@ -49,8 +53,9 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(meResponse{
-		PrincipalID: uint64(p.ID),
-		Email:       p.CanonicalEmail,
-		Scopes:      sess.Scopes.Slice(),
+		PrincipalID:      uint64(p.ID),
+		Email:            p.CanonicalEmail,
+		Scopes:           sess.Scopes.Slice(),
+		SessionExpiresAt: sess.ExpiresAt.UTC().Format(time.RFC3339),
 	})
 }
