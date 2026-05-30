@@ -49,6 +49,14 @@ interface AuthMeResponse {
   principal_id: number;
   email: string;
   scopes: string[];
+  /**
+   * Absolute session deadline as an RFC 3339 UTC timestamp. The SPA arms a
+   * setTimeout against this so the LoginView appears the moment the cookie
+   * expires, instead of only on the user's next interaction. Optional in
+   * the type because older server builds (and the pre-fix wire format) omit
+   * it; when absent the SPA falls back to its reactive 401 handler.
+   */
+  session_expires_at?: string;
 }
 
 class Auth {
@@ -73,6 +81,50 @@ class Auth {
   needsStepUp = $state(false);
 
   /**
+   * Absolute session deadline reported by the server (from the login
+   * response or from GET /auth/me). Drives the expiry timer below. Null
+   * when the server build omits the field — in that case the SPA falls
+   * back to its reactive 401 handler.
+   */
+  sessionExpiresAt = $state<Date | null>(null);
+
+  /**
+   * Handle for the pending expiry timer. setTimeout returns `number` in the
+   * browser and `Timeout` in node; both clearTimeout overloads accept either,
+   * so we widen to unknown rather than picking one.
+   */
+  #expiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Arm a setTimeout that calls signalUnauthenticated() exactly when the
+   * session cookie expires. Idempotent: calling twice cancels the previous
+   * timer. If the deadline is already in the past we transition immediately;
+   * if expiresAt is null we just clear any pending timer (used by logout
+   * and by the no-session_expires_at fallback).
+   *
+   * setTimeout's effective maximum is 2^31-1 ms (~24.8 days); one week is
+   * comfortably below that.
+   */
+  #scheduleSessionExpiry(expiresAt: Date | null): void {
+    if (this.#expiryTimer !== null) {
+      clearTimeout(this.#expiryTimer);
+      this.#expiryTimer = null;
+    }
+    if (expiresAt === null) {
+      return;
+    }
+    const delayMs = expiresAt.getTime() - Date.now();
+    if (delayMs <= 0) {
+      this.signalUnauthenticated();
+      return;
+    }
+    this.#expiryTimer = setTimeout(() => {
+      this.#expiryTimer = null;
+      this.signalUnauthenticated();
+    }, delayMs);
+  }
+
+  /**
    * Resolve the current principal's ID from GET /api/v1/auth/me.
    *
    * This is a non-throwing helper: on failure (e.g. 401 race between
@@ -86,9 +138,31 @@ class Auth {
       // uint64 values (> 2^53 rounds to the wrong integer).
       this.principalId = String(me.principal_id);
       this.scopes = me.scopes ?? [];
+      this.#applyExpiry(me.session_expires_at);
     } catch {
       // Non-fatal: security forms degrade gracefully when principalId is null.
     }
+  }
+
+  /**
+   * Parse an optional RFC 3339 timestamp from the server and arm (or clear)
+   * the expiry timer. Invalid or missing timestamps clear any pending timer
+   * and leave sessionExpiresAt at null so the reactive 401 path takes over.
+   */
+  #applyExpiry(raw: string | undefined): void {
+    if (!raw) {
+      this.sessionExpiresAt = null;
+      this.#scheduleSessionExpiry(null);
+      return;
+    }
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) {
+      this.sessionExpiresAt = null;
+      this.#scheduleSessionExpiry(null);
+      return;
+    }
+    this.sessionExpiresAt = parsed;
+    this.#scheduleSessionExpiry(parsed);
   }
 
   /**
@@ -164,11 +238,14 @@ class Auth {
 
     if (response.status === 200) {
       this.needsStepUp = false;
-      // Capture principal_id and scopes from the login response body.
+      // Capture principal_id, scopes, and session_expires_at from the login
+      // response body. The expiry handler arms the timer that triggers the
+      // UI transition without waiting for the user's next interaction.
       try {
         const body = (await response.json()) as AuthMeResponse;
         this.principalId = String(body.principal_id);
         this.scopes = body.scopes ?? [];
+        this.#applyExpiry(body.session_expires_at);
       } catch {
         // Ignore parse errors; loadMe() in bootstrap() will populate it.
       }
@@ -222,6 +299,8 @@ class Auth {
     this.session = null;
     this.principalId = null;
     this.scopes = [];
+    this.sessionExpiresAt = null;
+    this.#scheduleSessionExpiry(null);
     this.status = 'unauthenticated';
   }
 
@@ -237,6 +316,8 @@ class Auth {
     this.session = null;
     this.principalId = null;
     this.scopes = [];
+    this.sessionExpiresAt = null;
+    this.#scheduleSessionExpiry(null);
     this.status = 'unauthenticated';
   }
 
