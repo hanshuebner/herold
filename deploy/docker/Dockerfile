@@ -15,7 +15,10 @@ ARG GO_VERSION=1.25
 ARG NODE_VERSION=20
 ARG PNPM_VERSION=10
 
-FROM node:${NODE_VERSION}-bookworm-slim AS web-build
+# web-build runs on the build host architecture so that esbuild (used by
+# Vite internally) executes natively and is never emulated. The JS/HTML
+# output is architecture-independent; only the Go binary is target-specific.
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS web-build
 WORKDIR /src
 RUN --mount=type=cache,target=/root/.npm \
     npm install -g pnpm@${PNPM_VERSION:-10}
@@ -36,8 +39,17 @@ COPY scripts/build-web.sh ./scripts/build-web.sh
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     chmod +x ./scripts/build-web.sh && ./scripts/build-web.sh
 
-FROM golang:${GO_VERSION}-bookworm AS build
+# build stage also runs on the build host architecture. Go cross-compilation
+# (CGO_ENABLED=0, pure-Go deps) handles targeting the final platform without
+# any emulation. TARGETOS and TARGETARCH are injected by buildx and forwarded
+# to the go build invocation via GOOS/GOARCH.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS build
 WORKDIR /src
+
+# Declare the build-target variables. ARG before FROM is scoped to the global
+# section; re-declare here so they are visible inside this stage.
+ARG TARGETOS
+ARG TARGETARCH
 
 COPY go.mod go.sum* ./
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -55,7 +67,8 @@ COPY --from=web-build /src/internal/webspa/dist ./internal/webspa/dist
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -buildvcs=true \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -buildvcs=true \
       -ldflags "-s -w" \
       -o /out/herold ./cmd/herold
 

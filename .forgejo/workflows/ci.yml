@@ -394,24 +394,30 @@ jobs:
     runs-on: [self-hosted, herold, arm64]
     timeout-minutes: 30
     needs: [lint, web, test]
-    # On PRs we only build (no registry credentials, no push). On pushes
-    # to main and on git tags we additionally push to the
-    # code.netzhansa.com (self-hosted Forgejo) container registry so
-    # users can `docker pull code.netzhansa.com/${{ github.repository }}:latest`.
+    # On PRs we build both platforms (linux/amd64 and linux/arm64) without
+    # pushing so that a broken amd64 leg fails CI before it reaches the
+    # registry. On pushes to main and on git tags we additionally push a
+    # multi-arch manifest to the code.netzhansa.com container registry so
+    # both amd64 and arm64 operators can `docker pull` the same tag.
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+      # docker-container driver is required for multi-platform builds that
+      # produce a manifest list. The default docker driver supports only a
+      # single platform at a time when using --load.
       - uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
       # Forgejo's container registry rejected the auto-injected
       # GITHUB_TOKEN in run #22 with 401 Unauthorized (the token does
       # not currently carry write:package scope even when the
       # workflow declares `permissions: packages: write`). Use a
       # dedicated REGISTRY_TOKEN secret holding a Forgejo PAT with
-      # write:package. The login + push steps below skip cleanly
-      # when the secret isn't set so a fresh checkout still gets a
-      # green CI on the build-only path.
+      # write:package. The login step skips cleanly when the secret
+      # isn't set so a fresh fork still gets a green CI on the
+      # build-only path.
       - name: log in to code.netzhansa.com registry
         if: github.event_name != 'pull_request' && env.REGISTRY_TOKEN != ''
         env:
@@ -439,45 +445,63 @@ jobs:
           fi
           echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
           echo "image=${image}" >> "${GITHUB_OUTPUT}"
-      - name: build (load into local daemon)
+      # Step 1: build the native arm64 image and load it into the local
+      # daemon so the smoke-test can run it. `load: true` only works for
+      # a single platform, so we build arm64 here and build the full
+      # multi-arch image (with push) separately below.
+      #
+      # The Dockerfile pins web-build and build stages to $BUILDPLATFORM
+      # (arm64 on this runner) so esbuild and Go both run natively.  The
+      # Go build stage uses GOOS/GOARCH cross-compilation for the target
+      # platform, so no QEMU emulation is needed even for the amd64 leg.
+      - name: build arm64 image (load for smoke-test)
+        id: build-arm64
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/docker/Dockerfile
-          # arm64 only here. The self-hosted CI runner is arm64, so
-          # amd64 would require QEMU emulation -- which breaks esbuild
-          # (vite's bundler) inside the multi-stage Dockerfile. Multi-
-          # arch release images are produced by release.yml on tag
-          # pushes; this job exists for the per-commit :main / :latest
-          # / :sha-... tags.
           platforms: linux/arm64
-          # Load into the local daemon so the smoke-test step can run
-          # the image. Pushing happens only after smoke passes, in the
-          # dedicated push step below.
           load: true
           push: false
           tags: ${{ steps.tags.outputs.tags }}
-          # Ephemeral runner: buildx cache lives only for the duration
-          # of this job. We rely on docker pull from the snapshot for
-          # base layers; the per-job context layers rebuild from scratch.
-          # If this proves too slow once we have data, switch to
-          # type=registry,ref=code.netzhansa.com/.../buildcache or similar.
           provenance: false
-      - name: smoke-test the built image
+      - name: smoke-test the native image
         run: |
           first_tag=$(echo "${{ steps.tags.outputs.tags }}" | cut -d, -f1)
           echo "smoke-test: using local image ${first_tag}"
           ./scripts/smoke-docker.sh "${first_tag}"
-      - name: push to code.netzhansa.com registry (only after smoke passes)
+      # Step 2a (push path): build both platforms and push the multi-arch
+      # manifest list to the registry. Buildx reuses cached layers from
+      # the arm64 build above. Runs only after smoke passes and only when
+      # the REGISTRY_TOKEN secret is available.
+      - name: build + push multi-arch image (linux/amd64 + linux/arm64)
         if: github.event_name != 'pull_request' && env.REGISTRY_TOKEN != ''
         env:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-        run: |
-          IFS=',' read -ra TAGS <<< "${{ steps.tags.outputs.tags }}"
-          for t in "${TAGS[@]}"; do
-            echo "pushing ${t}"
-            docker push "${t}"
-          done
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          load: false
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
+      # Step 2b (PR path): build both platforms without pushing so a
+      # broken amd64 cross-compilation fails CI before it reaches the
+      # registry. No load (multi-platform + load is unsupported), but
+      # the build itself exercises the full Dockerfile for both arches.
+      - name: build multi-arch image (PR validation, no push)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          load: false
+          push: false
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
       - name: warn if REGISTRY_TOKEN is missing
         if: github.event_name != 'pull_request' && env.REGISTRY_TOKEN == ''
         env:
