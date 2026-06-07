@@ -278,17 +278,35 @@ func TestSubmitTransientThenSuccess(t *testing.T) {
 		Recipients: []string{"bob@dest.test"},
 		Body:       strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
 	})
-	// Wait for transient outcome to be observed.
-	if !waitFor(t, 2*time.Second, func() bool {
+	// Wait for transient outcome to be observed. The generous margin is
+	// the goroutine-scheduling tolerance for the heavily-parallel -race
+	// arm64 CI runner (see the sibling barrier-test comment).
+	if !waitFor(t, 30*time.Second, func() bool {
 		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
 		return len(rows) == 1 && rows[0].State == store.QueueStateDeferred && rows[0].Attempts == 1
 	}) {
 		t.Fatalf("never observed deferred state")
 	}
 
+	// Barrier: the worker's reschedule (proven by the deferred state
+	// above) runs independently of the SCHEDULER goroutine, which has a
+	// window between its previous select exit and the next clk.After
+	// call. An Advance landing in that window arms the just-registered
+	// waiter for now+pollInterval (post-advance) and wakes nothing
+	// (RescheduleQueueItem does not signal wakeCh), so the row stays
+	// deferred and the test times out. Wait for the scheduler to be
+	// parked on clk.After before advancing. See clock.go NumWaiters doc;
+	// without this barrier this test flaked on CI run #75 (queue_test.go:295
+	// "never re-delivered after clock advance").
+	if !waitFor(t, 5*time.Second, func() bool {
+		return f.clk.NumWaiters() >= 1
+	}) {
+		t.Fatalf("scheduler never re-armed clk.After")
+	}
+
 	// Advance the clock past the next-attempt window.
 	f.clk.Advance(45 * time.Second)
-	if !waitFor(t, 2*time.Second, func() bool {
+	if !waitFor(t, 30*time.Second, func() bool {
 		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
 		return len(rows) == 1 && rows[0].State == store.QueueStateDone
 	}) {
