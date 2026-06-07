@@ -160,6 +160,38 @@ tls = "starttls"
 	if cfg.Server.Chat.MaxFrameBytes != 65536 {
 		t.Errorf("default chat max_frame_bytes: got %d", cfg.Server.Chat.MaxFrameBytes)
 	}
+	// max_upload_size is optional; unset parses to the zero ByteSize so the
+	// JMAP server applies its own 50 MiB default.
+	if cfg.Server.MaxUploadSize.AsInt64() != 0 {
+		t.Errorf("unset max_upload_size: got %d, want 0", cfg.Server.MaxUploadSize.AsInt64())
+	}
+}
+
+func TestParse_MaxUploadSize(t *testing.T) {
+	const cfgText = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+max_upload_size = "1 GiB"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/etc/herold/admin.crt"
+key_file  = "/etc/herold/admin.key"
+
+[[listener]]
+name = "smtp-relay"
+address = "0.0.0.0:25"
+protocol = "smtp"
+tls = "starttls"
+`
+	cfg, err := Parse([]byte(cfgText))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got, want := cfg.Server.MaxUploadSize.AsInt64(), int64(1024*1024*1024); got != want {
+		t.Errorf("max_upload_size: got %d, want %d", got, want)
+	}
 }
 
 func TestValidate_RejectsChatPongBelowPing(t *testing.T) {

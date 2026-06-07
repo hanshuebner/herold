@@ -2551,6 +2551,8 @@ func composeAdminAndUI(
 		SessionCookieConfig:   &publicCookieCfg,
 		DefaultMethodDeadline: cfg.Performance.DefaultDeadline.AsDuration(),
 		MethodDeadlines:       jmapMethodDeadlinesFromConfig(cfg.Performance.MethodDeadline),
+		// 0 when unset -> protojmap applies its 50 MiB default.
+		MaxSizeUpload: cfg.Server.MaxUploadSize.AsInt64(),
 	})
 	// JMAP Mail core handlers: Mailbox/* + Email/* + Sieve/* +
 	// per-account capability provider (REQ-PROTO-41, REQ-PROTO-53,

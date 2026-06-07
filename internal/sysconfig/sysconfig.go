@@ -286,6 +286,14 @@ type ServerConfig struct {
 	RunAsUser     string   `toml:"run_as_user"`
 	RunAsGroup    string   `toml:"run_as_group"`
 	ShutdownGrace Duration `toml:"shutdown_grace,omitempty"`
+	// MaxUploadSize caps a single JMAP /jmap/upload request body (the
+	// Blob/upload endpoint backing attachment, inline-image, and
+	// attachment-share uploads), and is advertised to clients as the JMAP
+	// core maxSizeUpload capability. The upload streams straight to the
+	// content-addressed blob store, so a large value does not buffer in
+	// RAM. Accepts IEC/SI byte sizes ("1 GiB", "250 MB"). Unset/0 -> the
+	// JMAP server's 50 MiB default.
+	MaxUploadSize ByteSize `toml:"max_upload_size,omitempty"`
 	// DevMode relaxes the production-only validate rules so a single
 	// developer config can run the whole suite on one HTTP listener
 	// (Wave 3.6). Specifically: when DevMode is true, configs without
