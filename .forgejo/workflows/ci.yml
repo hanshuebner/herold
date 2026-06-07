@@ -661,21 +661,32 @@ jobs:
           set -euo pipefail
           API="${GITHUB_SERVER_URL}/api/v1"
           REPO="herold/herold"
+          AUTH="Authorization: token ${RELEASE_TOKEN}"
 
-          # Create a pre-release tagged at the pushed commit.
-          RELEASE_ID=$(curl -fsSL \
-            -X POST "${API}/repos/${REPO}/releases" \
-            -H "Authorization: token ${RELEASE_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"tag_name\": \"${REF}\",
-              \"target_commitish\": \"${GITHUB_SHA}\",
-              \"name\": \"${REF}\",
-              \"prerelease\": true,
-              \"draft\": false
-            }" | sed -nE 's/.*"id":[[:space:]]*([0-9]+).*/\1/p' | head -1)
+          # Idempotent: drop any pre-existing release + tag for this ref so a
+          # re-run of the same commit recreates cleanly instead of 409ing on
+          # the duplicate tag.
+          existing=$(curl -fsS -H "${AUTH}" \
+            "${API}/repos/${REPO}/releases/tags/${REF}" 2>/dev/null \
+            | jq -r '.id // empty' || true)
+          if [ -n "${existing}" ]; then
+            echo "removing existing release ${REF} (id ${existing})"
+            curl -fsS -X DELETE -H "${AUTH}" "${API}/repos/${REPO}/releases/${existing}" || true
+          fi
+          curl -fsS -X DELETE -H "${AUTH}" "${API}/repos/${REPO}/tags/${REF}" >/dev/null 2>&1 || true
 
-          if [ -z "${RELEASE_ID}" ]; then
+          # Create a pre-release tagged at the pushed commit. Parse the id
+          # with jq: the previous sed pattern greedily matched the LAST "id"
+          # in the single-line JSON -- the nested author.id (=1) -- so every
+          # asset upload 404'd against releases/1. jq -r '.id' takes the
+          # top-level release id.
+          RELEASE_ID=$(curl -fsSL -X POST "${API}/repos/${REPO}/releases" \
+            -H "${AUTH}" -H "Content-Type: application/json" \
+            -d "$(jq -nc --arg t "${REF}" --arg c "${GITHUB_SHA}" \
+                  '{tag_name:$t, target_commitish:$c, name:$t, prerelease:true, draft:false}')" \
+            | jq -r '.id')
+
+          if [ -z "${RELEASE_ID}" ] || [ "${RELEASE_ID}" = "null" ]; then
             echo "ERROR: failed to create release; no id returned" >&2
             exit 1
           fi
@@ -684,13 +695,13 @@ jobs:
           # Upload tarball asset.
           curl -fsSL \
             -X POST "${API}/repos/${REPO}/releases/${RELEASE_ID}/assets?name=herold-${REF}.tar.gz" \
-            -H "Authorization: token ${RELEASE_TOKEN}" \
+            -H "${AUTH}" \
             -F "attachment=@herold-${REF}.tar.gz" > /dev/null
 
           # Upload checksum asset.
           curl -fsSL \
             -X POST "${API}/repos/${REPO}/releases/${RELEASE_ID}/assets?name=herold-${REF}.sha256" \
-            -H "Authorization: token ${RELEASE_TOKEN}" \
+            -H "${AUTH}" \
             -F "attachment=@herold-${REF}.sha256" > /dev/null
 
           echo "Uploaded herold-${REF}.tar.gz and herold-${REF}.sha256 to release ${RELEASE_ID}"
