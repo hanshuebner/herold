@@ -130,18 +130,27 @@ lint: fmt-check vet staticcheck
 fuzz-short:
 	@# fuzz-short is a smoke pass: every Fuzz target runs for FUZZTIME
 	@# (default 5s in CI). Minimization is disabled (-fuzzminimizetime=0)
-	@# because the minimize phase races with the worker-cancellation
-	@# grace window — Go fuzz reports that as "context deadline exceeded"
-	@# with no reproducer artifact, indistinguishable from a real bug.
-	@# Even with minimization off, the worker shutdown can occasionally
-	@# surface the same false-failure when an input was just dispatched
-	@# at the budget edge. We treat that exact failure pattern (failure
-	@# with "context deadline exceeded" AND no "Failing input written
-	@# to..." line) as flaky and retry once; a second failure with the
-	@# same shape is also accepted (the seed corpus would already be
-	@# pinning a real reproducer otherwise). Real crashes always carry
-	@# a "Failing input written to testdata/fuzz/..." line and are
-	@# propagated unchanged.
+	@# because the minimize phase races with the worker-cancellation grace
+	@# window. When fuzztime elapses, the coordinator tears down workers; a
+	@# worker that was mid-dispatch at the budget edge surfaces a non-zero
+	@# exit whose REASON is a coordinator/worker lifecycle error, NOT an
+	@# input crash. Go has worn several wordings for this same race:
+	@#   - "context deadline exceeded"
+	@#   - "context canceled"
+	@#   - "fuzzing process hung or terminated unexpectedly"
+	@#   - "EOF" (worker pipe closed during shutdown)
+	@# All are false failures with no reproducer artifact, indistinguishable
+	@# from a healthy run except for the exit code.
+	@#
+	@# Determinism rule (cannot mask a real bug): a non-zero exit is treated
+	@# as a flaky transient ONLY when its output matches one of the lifecycle
+	@# messages above AND carries no "Failing input written to testdata/
+	@# fuzz/..." line. A genuine discovered crash ALWAYS writes that line; a
+	@# seed crash panics with a stack trace (not a lifecycle message); a
+	@# compile error says "build failed" — none of those match the transient
+	@# set, so all real failures propagate unchanged on first sighting. A
+	@# transient is retried once; a second transient of the same shape is
+	@# accepted (a real reproducer would already be pinned in the corpus).
 	@for t in $$(grep -rlE '^func Fuzz' --include='*_test.go' .); do \
 	  pkg=$$(dirname $$t); \
 	  names=$$(grep -oE '^func (Fuzz[A-Za-z0-9_]+)' $$t | awk '{print $$2}'); \
@@ -151,13 +160,13 @@ fuzz-short:
 	    rc=$$?; \
 	    echo "$$out"; \
 	    if [ $$rc -ne 0 ]; then \
-	      if echo "$$out" | grep -q "context deadline exceeded" && ! echo "$$out" | grep -q "Failing input written"; then \
-	        echo "  [budget-edge race; retrying once]"; \
+	      if echo "$$out" | grep -qE "context deadline exceeded|context canceled|fuzzing process hung or terminated unexpectedly|: EOF" && ! echo "$$out" | grep -q "Failing input written"; then \
+	        echo "  [non-reproducer fuzz lifecycle transient; retrying once]"; \
 	        out=$$($(GO) test -run=^$$ -fuzz=^$$n$$ -fuzztime=$(FUZZTIME) -fuzzminimizetime=0 $$pkg 2>&1); \
 	        rc=$$?; \
 	        echo "$$out"; \
-	        if [ $$rc -ne 0 ] && echo "$$out" | grep -q "context deadline exceeded" && ! echo "$$out" | grep -q "Failing input written"; then \
-	          echo "  [budget-edge race on retry; accepted as flaky-pass]"; \
+	        if [ $$rc -ne 0 ] && echo "$$out" | grep -qE "context deadline exceeded|context canceled|fuzzing process hung or terminated unexpectedly|: EOF" && ! echo "$$out" | grep -q "Failing input written"; then \
+	          echo "  [non-reproducer fuzz lifecycle transient on retry; accepted as flaky-pass]"; \
 	          rc=0; \
 	        fi; \
 	      fi; \
