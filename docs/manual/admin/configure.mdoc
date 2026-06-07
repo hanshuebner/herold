@@ -344,6 +344,35 @@ per_user_concurrent = 8
 Mounts `/proxy/image` on the admin listener. Operators behind an
 upstream proxy that owns image rewriting can disable.
 
+### `[server.attachment_shares]` - large/unsafe attachment offload (REQ-SHARE-*)
+
+```toml
+[server.attachment_shares]
+enabled = true                         # default true; inert unless public_base_url is set.
+public_base_url = "https://mail.example.com"  # REQUIRED when enabled; MUST be https.
+default_ttl  = "30d"                   # active share lifetime on send.
+max_ttl      = "90d"                   # ceiling the owner cannot exceed.
+pending_ttl  = "1h"                    # unconfirmed (compose-abandoned) shares expire here.
+revoked_grace = "24h"                  # how long a revoked share lingers before deletion.
+max_shares_per_principal = 1000
+share_quota_per_principal = "5 GiB"
+download_requests_per_ip_per_share = 50
+download_requests_window = "10m"
+```
+
+Lets the web composer lift a large or scanner-hostile attachment (ZIP,
+executables, ...) out of the message and replace it with a capability
+URL served from the **public** listener at `/share/{id}`. The link is the
+bearer credential (unguessable >=128-bit token); recipients are external
+and unauthenticated. `public_base_url` is the externally reachable HTTPS
+origin embedded in the link and **must be https** -- the server refuses
+to start with `enabled = true` and a missing or non-https value. When the
+block is absent (or `public_base_url` unset), the feature is off: the
+`/share` routes 404, the JMAP `file-shares` capability is not advertised,
+and the composer hides the offload affordance. Shares count against a
+per-principal storage quota (deduplicated against blobs the principal
+already stores). See `docs/design/server/requirements/25-attachment-shares.md`.
+
 ### `[server.categorise]`
 
 LLM-driven message categorisation (REQ-FILT-200..220) lives in the
