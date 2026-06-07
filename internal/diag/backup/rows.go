@@ -768,6 +768,66 @@ type FileShareRow struct {
 	SourceRecipients *string `json:"source_recipients,omitempty"`
 }
 
+// IMAPImportAccountRow mirrors one row of the imapimport_account table
+// introduced in migration 0057 (issue #25, REQ-IMAP-IMP-02). The
+// credential_ct column is a BLOB (AEAD-sealed ciphertext) serialised as
+// base64 by encoding/json. BackfillFloorDate and LastSuccessAt are
+// nullable unix-micros integers.
+type IMAPImportAccountRow struct {
+	ID                string `json:"id"`
+	PrincipalID       int64  `json:"principal_id"`
+	AccountName       string `json:"account_name"`
+	Host              string `json:"host"`
+	Port              int64  `json:"port"`
+	TLSMode           string `json:"tls_mode"`
+	Username          string `json:"username"`
+	AuthMethod        string `json:"auth_method"`
+	BackfillFloorDate *int64 `json:"backfill_floor_date,omitempty"` // unix-micros, NULL = no floor
+	CredentialCT      []byte `json:"credential_ct"`                 // base64, v1: prefix
+	State             string `json:"state"`
+	LastSuccessAt     *int64 `json:"last_success_at,omitempty"` // unix-micros, NULL = never
+	LastError         string `json:"last_error"`
+	DeletePropagates  bool   `json:"delete_propagates"` // SQLite 0/1, Postgres bool
+	CreatedAt         int64  `json:"created_at"`
+	UpdatedAt         int64  `json:"updated_at"`
+}
+
+// IMAPImportFolderMapRow mirrors one row of the imapimport_folder_map
+// table introduced in migration 0057 (issue #25, REQ-IMAP-IMP-10).
+// PK is (account_id, upstream_folder).
+type IMAPImportFolderMapRow struct {
+	AccountID         string `json:"account_id"`
+	UpstreamFolder    string `json:"upstream_folder"`
+	HeroldMailboxName string `json:"herold_mailbox_name"`
+}
+
+// IMAPImportFolderCursorRow mirrors one row of the
+// imapimport_folder_cursor table introduced in migration 0057
+// (issue #25, REQ-IMAP-IMP-17, -24, -74). All cursor fields are
+// non-null integers (default 0).
+type IMAPImportFolderCursorRow struct {
+	AccountID      string `json:"account_id"`
+	UpstreamFolder string `json:"upstream_folder"`
+	UIDValidity    int64  `json:"uidvalidity"`
+	UIDNext        int64  `json:"uidnext"`
+	LowWaterUID    int64  `json:"low_water_uid"`
+	HighWaterUID   int64  `json:"high_water_uid"`
+	HighestModSeq  int64  `json:"highest_modseq"`
+}
+
+// IMAPImportMessageStateRow mirrors one row of the
+// imapimport_message_state table introduced in migration 0057
+// (issue #25, REQ-IMAP-IMP-34 / REQ-IMAP-IMP-42). LastSyncedFlags is
+// an INTEGER bitfield: bit0 = \Seen, bit1 = \Flagged.
+type IMAPImportMessageStateRow struct {
+	AccountID       string `json:"account_id"`
+	UpstreamFolder  string `json:"upstream_folder"`
+	UpstreamUID     int64  `json:"upstream_uid"`
+	HeroldMessageID int64  `json:"herold_message_id"`
+	HeroldMailboxID int64  `json:"herold_mailbox_id"`
+	LastSyncedFlags int64  `json:"last_synced_flags"`
+}
+
 // PushSubscriptionRow mirrors the push_subscription table introduced
 // in migration 0017 (Phase 3 Wave 3.8a, REQ-PROTO-120..122). The
 // JMAP keys.p256dh / keys.auth byte slices are persisted verbatim;

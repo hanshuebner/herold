@@ -242,6 +242,14 @@ func rowsForTable(table string) (any, bool) {
 		return &SessionRow{}, true
 	case "clientlog":
 		return &ClientLogRow{}, true
+	case "imapimport_account":
+		return &IMAPImportAccountRow{}, true
+	case "imapimport_folder_map":
+		return &IMAPImportFolderMapRow{}, true
+	case "imapimport_folder_cursor":
+		return &IMAPImportFolderCursorRow{}, true
+	case "imapimport_message_state":
+		return &IMAPImportMessageStateRow{}, true
 	}
 	return nil, false
 }

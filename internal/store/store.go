@@ -2158,6 +2158,86 @@ type Metadata interface {
 	// MaxDownloads or newMax < current DownloadCount.
 	// REQ-SHARE-42.
 	UpdateFileShareMaxDownloads(ctx context.Context, principalID PrincipalID, id string, newMax int64) error
+
+	// -- IMAP import (issue #25, REQ-IMAP-IMP-02, -15..19, -34, -42, -70, -74) --
+
+	// CreateIMAPImportAccount creates a new imapimport_account row. The
+	// state defaults to IMAPImportAccountStateEnabled when zero-valued.
+	// CredentialCT must carry the "v1:" prefix (REQ-IMAP-IMP-70).
+	// Returns ErrInvalidArgument when the credential validation fails.
+	CreateIMAPImportAccount(ctx context.Context, create IMAPImportAccountCreate) (IMAPImportAccount, error)
+
+	// UpdateIMAPImportAccount replaces mutable fields on an existing
+	// imapimport_account row owned by update.PrincipalID. When
+	// update.CredentialCT is non-nil it replaces the sealed credential
+	// and is validated. Returns ErrNotFound when the (id, principal_id)
+	// row is absent. Returns ErrInvalidArgument on credential validation
+	// failure.
+	UpdateIMAPImportAccount(ctx context.Context, update IMAPImportAccountUpdate) (IMAPImportAccount, error)
+
+	// GetIMAPImportAccount returns the account row identified by id.
+	// Returns ErrNotFound when absent.
+	GetIMAPImportAccount(ctx context.Context, id string) (IMAPImportAccount, error)
+
+	// ListIMAPImportAccountsByPrincipal returns all accounts owned by
+	// principalID in ascending created_at order.
+	ListIMAPImportAccountsByPrincipal(ctx context.Context, principalID PrincipalID) ([]IMAPImportAccount, error)
+
+	// ListEnabledIMAPImportAccounts returns all accounts with state ==
+	// "enabled" across all principals in ascending created_at order.
+	// Used by the worker scheduler at startup and on config-change
+	// events (REQ-IMAP-IMP-25).
+	ListEnabledIMAPImportAccounts(ctx context.Context) ([]IMAPImportAccount, error)
+
+	// DeleteIMAPImportAccount removes the account row and (via ON DELETE
+	// CASCADE) all folder_map, folder_cursor, and message_state rows
+	// associated with it. Returns ErrNotFound when the (id, principalID)
+	// row is absent.
+	DeleteIMAPImportAccount(ctx context.Context, principalID PrincipalID, id string) error
+
+	// SetIMAPImportAccountState updates the state, last_error, and
+	// optionally last_success_at on an existing account row. When
+	// lastSuccessAt is non-nil the column is advanced; when nil the
+	// column is left unchanged (COALESCE semantics). Returns ErrNotFound
+	// when id is absent.
+	SetIMAPImportAccountState(ctx context.Context, id string, state IMAPImportAccountState, lastError string, lastSuccessAt *time.Time) error
+
+	// GetIMAPImportFolderMap returns the folder-name mapping entries for
+	// accountID in ascending upstream_folder order. Returns an empty
+	// slice (nil) and nil error when no entries exist.
+	GetIMAPImportFolderMap(ctx context.Context, accountID string) ([]IMAPImportFolderMapEntry, error)
+
+	// SetIMAPImportFolderMap replaces the entire folder map for accountID
+	// in one transaction: delete all existing rows, then insert entries.
+	// Passing nil or an empty slice clears the mapping.
+	SetIMAPImportFolderMap(ctx context.Context, accountID string, entries []IMAPImportFolderMapEntry) error
+
+	// GetIMAPImportFolderCursor returns the sync cursor for the
+	// (accountID, upstreamFolder) pair. The bool return is false when no
+	// cursor row exists yet (the folder has not been synced).
+	GetIMAPImportFolderCursor(ctx context.Context, accountID, upstreamFolder string) (IMAPImportFolderCursor, bool, error)
+
+	// UpsertIMAPImportFolderCursor inserts or updates the sync cursor for
+	// the (accountID, upstreamFolder) pair identified inside cursor.
+	// Idempotent: calling with the same values is a no-op.
+	UpsertIMAPImportFolderCursor(ctx context.Context, cursor IMAPImportFolderCursor) error
+
+	// GetIMAPImportMessageState returns the per-message sync state for
+	// the (accountID, upstreamFolder, upstreamUID) triple. The bool
+	// return is false when no row exists (message not yet imported or
+	// its state was not recorded).
+	GetIMAPImportMessageState(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32) (IMAPImportMessageState, bool, error)
+
+	// GetIMAPImportMessageStateByMessage looks up the message state by
+	// the herold-side (accountID, heroldMessageID) pair — the write-back
+	// path (REQ-IMAP-IMP-34 / REQ-IMAP-IMP-42). The bool return is
+	// false when no row exists.
+	GetIMAPImportMessageStateByMessage(ctx context.Context, accountID string, heroldMessageID MessageID) (IMAPImportMessageState, bool, error)
+
+	// UpsertIMAPImportMessageState inserts or updates the per-message
+	// sync state. On conflict (accountID, upstreamFolder, upstreamUID)
+	// the herold-side IDs and LastSyncedFlags are replaced.
+	UpsertIMAPImportMessageState(ctx context.Context, state IMAPImportMessageState) error
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

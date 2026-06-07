@@ -351,7 +351,27 @@ const CurrentBackupVersion = 1
 //	caller supplies a non-zero FileShareSource. NULL while pending or
 //	when the caller supplied no context. Recipient-facing surfaces
 //	MUST NOT expose these columns.
-const CurrentSchemaVersion = 57
+//
+// 58 — 0058_imap_import.sql (issue #25, REQ-IMAP-IMP-02, -15..19,
+//
+//	-34, -42, -70, -74). Adds four tables for the upstream IMAP
+//	live-mirror worker:
+//	  imapimport_account       — per-principal upstream account config
+//	                             with AEAD-sealed credential_ct BLOB,
+//	                             nullable backfill_floor_date and
+//	                             last_success_at timestamps, boolean
+//	                             delete_propagates, and state lifecycle.
+//	  imapimport_folder_map    — (account_id, upstream_folder) →
+//	                             herold_mailbox_name translation table;
+//	                             ON DELETE CASCADE from the account.
+//	  imapimport_folder_cursor — per-folder IMAP sync cursors (UIDVALIDITY,
+//	                             UIDNEXT, low/high-water UIDs, CONDSTORE
+//	                             HIGHESTMODSEQ); ON DELETE CASCADE.
+//	  imapimport_message_state — upstream-UID → herold message mapping
+//	                             for flag/delete write-back with a
+//	                             last_synced_flags INTEGER bitfield;
+//	                             ON DELETE CASCADE.
+const CurrentSchemaVersion = 58
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -490,6 +510,16 @@ var TableNames = []string{
 	// exist when the backup verifier replays them.
 	"file_shares",
 	"blob_refs",
+	// IMAP import (issue #25, REQ-IMAP-IMP-02, -15..19, -34, -42, -70,
+	// -74, migration 0057). imapimport_account FKs to principals(id) ON
+	// DELETE CASCADE; the three child tables all FK to
+	// imapimport_account(id) ON DELETE CASCADE. Restore order:
+	// account first, then children. Reverse-order DELETE clears children
+	// before the account row.
+	"imapimport_account",
+	"imapimport_folder_map",
+	"imapimport_folder_cursor",
+	"imapimport_message_state",
 	// Server-side session rows (REQ-OPS-208, REQ-CLOG-06, migration 0039).
 	// FK to principals(id) ON DELETE CASCADE; restored after principals.
 	// Excluded from backup by default: sessions expire naturally and

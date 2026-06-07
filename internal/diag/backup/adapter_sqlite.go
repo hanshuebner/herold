@@ -1103,6 +1103,77 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "imapimport_account":
+		return enumerate(ctx, s.tx,
+			`SELECT id, principal_id, account_name, host, port, tls_mode,
+			        username, auth_method, backfill_floor_date,
+			        credential_ct, state, last_success_at, last_error,
+			        delete_propagates, created_at, updated_at
+			   FROM imapimport_account ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r IMAPImportAccountRow
+				var backfillFloor, lastSuccessAt sql.NullInt64
+				var deletePropagatesInt int64
+				if err := rs.Scan(
+					&r.ID, &r.PrincipalID, &r.AccountName, &r.Host, &r.Port, &r.TLSMode,
+					&r.Username, &r.AuthMethod, &backfillFloor,
+					&r.CredentialCT, &r.State, &lastSuccessAt, &r.LastError,
+					&deletePropagatesInt, &r.CreatedAt, &r.UpdatedAt,
+				); err != nil {
+					return nil, err
+				}
+				r.DeletePropagates = deletePropagatesInt != 0
+				if backfillFloor.Valid {
+					v := backfillFloor.Int64
+					r.BackfillFloorDate = &v
+				}
+				if lastSuccessAt.Valid {
+					v := lastSuccessAt.Int64
+					r.LastSuccessAt = &v
+				}
+				return &r, nil
+			}, fn)
+	case "imapimport_folder_map":
+		return enumerate(ctx, s.tx,
+			`SELECT account_id, upstream_folder, herold_mailbox_name
+			   FROM imapimport_folder_map
+			  ORDER BY account_id, upstream_folder`,
+			func(rs *sql.Rows) (any, error) {
+				var r IMAPImportFolderMapRow
+				if err := rs.Scan(&r.AccountID, &r.UpstreamFolder, &r.HeroldMailboxName); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
+	case "imapimport_folder_cursor":
+		return enumerate(ctx, s.tx,
+			`SELECT account_id, upstream_folder, uidvalidity, uidnext,
+			        low_water_uid, high_water_uid, highest_modseq
+			   FROM imapimport_folder_cursor
+			  ORDER BY account_id, upstream_folder`,
+			func(rs *sql.Rows) (any, error) {
+				var r IMAPImportFolderCursorRow
+				if err := rs.Scan(&r.AccountID, &r.UpstreamFolder,
+					&r.UIDValidity, &r.UIDNext,
+					&r.LowWaterUID, &r.HighWaterUID, &r.HighestModSeq); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
+	case "imapimport_message_state":
+		return enumerate(ctx, s.tx,
+			`SELECT account_id, upstream_folder, upstream_uid,
+			        herold_message_id, herold_mailbox_id, last_synced_flags
+			   FROM imapimport_message_state
+			  ORDER BY account_id, upstream_folder, upstream_uid`,
+			func(rs *sql.Rows) (any, error) {
+				var r IMAPImportMessageStateRow
+				if err := rs.Scan(&r.AccountID, &r.UpstreamFolder, &r.UpstreamUID,
+					&r.HeroldMessageID, &r.HeroldMailboxID, &r.LastSyncedFlags); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			}, fn)
 	}
 	return fmt.Errorf("sqlite: unknown table %q", table)
 }
@@ -1800,6 +1871,52 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			r.ID, r.Slice, r.ServerTS, r.ClientTS, r.ClockSkewMS,
 			r.App, r.Kind, r.Level, r.UserID, r.SessionID, r.PageID,
 			r.RequestID, r.Route, r.BuildSHA, r.UA, r.Msg, r.Stack, r.PayloadJSON)
+		return err
+	case "imapimport_account":
+		r := row.(*IMAPImportAccountRow)
+		var deletePropagatesInt int64
+		if r.DeletePropagates {
+			deletePropagatesInt = 1
+		}
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO imapimport_account
+			   (id, principal_id, account_name, host, port, tls_mode,
+			    username, auth_method, backfill_floor_date,
+			    credential_ct, state, last_success_at, last_error,
+			    delete_propagates, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.PrincipalID, r.AccountName, r.Host, r.Port, r.TLSMode,
+			r.Username, r.AuthMethod, r.BackfillFloorDate,
+			nullableBytes(r.CredentialCT), r.State, r.LastSuccessAt, r.LastError,
+			deletePropagatesInt, r.CreatedAt, r.UpdatedAt)
+		return err
+	case "imapimport_folder_map":
+		r := row.(*IMAPImportFolderMapRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO imapimport_folder_map (account_id, upstream_folder, herold_mailbox_name)
+			 VALUES (?, ?, ?)`,
+			r.AccountID, r.UpstreamFolder, r.HeroldMailboxName)
+		return err
+	case "imapimport_folder_cursor":
+		r := row.(*IMAPImportFolderCursorRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO imapimport_folder_cursor
+			   (account_id, upstream_folder, uidvalidity, uidnext,
+			    low_water_uid, high_water_uid, highest_modseq)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.AccountID, r.UpstreamFolder,
+			r.UIDValidity, r.UIDNext,
+			r.LowWaterUID, r.HighWaterUID, r.HighestModSeq)
+		return err
+	case "imapimport_message_state":
+		r := row.(*IMAPImportMessageStateRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO imapimport_message_state
+			   (account_id, upstream_folder, upstream_uid,
+			    herold_message_id, herold_mailbox_id, last_synced_flags)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			r.AccountID, r.UpstreamFolder, r.UpstreamUID,
+			r.HeroldMessageID, r.HeroldMailboxID, r.LastSyncedFlags)
 		return err
 	}
 	return fmt.Errorf("sqlite sink: unknown table %q", table)
