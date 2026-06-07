@@ -1,7 +1,6 @@
 package vapid
 
 import (
-	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -181,18 +180,13 @@ func EncodePrivatePEM(priv *ecdsa.PrivateKey) (string, error) {
 // PublicKey.Bytes — the byte shape (0x04 || X || Y) is identical to
 // the now-deprecated elliptic.Marshal.
 func MarshalUncompressed(pub *ecdsa.PublicKey) []byte {
-	if pub == nil || pub.Curve != elliptic.P256() || pub.X == nil || pub.Y == nil {
+	if pub == nil || pub.Curve != elliptic.P256() {
 		return nil
 	}
-	// Reconstruct the 65-byte SEC1 uncompressed encoding so the
-	// crypto/ecdh public-key parser accepts it. ecdh's PublicKey.Bytes
-	// then re-emits the same shape.
-	byteLen := (elliptic.P256().Params().BitSize + 7) / 8
-	buf := make([]byte, 1+2*byteLen)
-	buf[0] = 0x04
-	pub.X.FillBytes(buf[1 : 1+byteLen])
-	pub.Y.FillBytes(buf[1+byteLen:])
-	ek, err := ecdh.P256().NewPublicKey(buf)
+	// ecdsa.PublicKey.ECDH crosses to crypto/ecdh without touching the
+	// deprecated X/Y coordinates; ecdh's PublicKey.Bytes emits the
+	// 65-byte SEC1 uncompressed encoding (0x04 || X || Y) RFC 8292 wants.
+	ek, err := pub.ECDH()
 	if err != nil {
 		return nil
 	}
