@@ -43,7 +43,7 @@ Web-side counterpart: `../../web/requirements/17-attachments.md` § "Large or un
 
 ## Lifecycle and states
 
-- **REQ-SHARE-20** A share is created in state `pending` with a **short TTL** (default 1 hour, `pending_ttl`). The composer confirms it to `active` (with the full TTL, REQ-SHARE-21) only after the carrying message is successfully submitted. This two-phase create means a share whose draft is abandoned — or whose client crashes before send — expires on its own within the hour and never becomes a durable orphan.
+- **REQ-SHARE-20** A share is created in state `pending` with `pending_ttl` (default 48h, matched to `default_ttl` so a still-pending share shows the same lifetime it will keep once sent). The composer confirms it to `active` (with `default_ttl`, REQ-SHARE-21) only after the carrying message is successfully submitted. This two-phase create means a share whose draft is abandoned — or whose client crashes before send — expires on its own within `pending_ttl` and never becomes a durable orphan; the composer also destroys pending shares on discard (REQ-SHARE-21), so the longer window only matters for an abnormal exit.
   - `pending` → `active`: on send confirmation. `expires_at` is reset to `now + default_ttl` (clamped to `max_ttl`).
   - `active` → `revoked`: owner or admin revocation (REQ-SHARE-22). Sets `revoked_at`.
   - Terminal access conditions (expiry, exhaustion, revocation) are evaluated at fetch time (REQ-SHARE-11e); they are not separate stored states beyond `revoked`.
@@ -81,9 +81,9 @@ enabled = true
 public_base_url = "https://mail.example.com"
 
 # Lifecycle.
-default_ttl  = "30d"   # active share lifetime on confirmation
+default_ttl  = "48h"   # active share lifetime on confirmation (user-overridable per share, REQ-ATT-65)
 max_ttl      = "90d"   # ceiling the owner cannot exceed
-pending_ttl  = "1h"    # unconfirmed (compose-abandoned) shares expire here
+pending_ttl  = "48h"   # unconfirmed (compose-abandoned) shares expire here; matched to default_ttl
 revoked_grace = "24h"  # how long a revoked share lingers as "revoked" before deletion
 
 # Per-principal caps.

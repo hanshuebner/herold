@@ -589,9 +589,9 @@ func (c *TaggedAddressesConfig) TaggedAddressesEnabled() bool {
 //	[server.attachment_shares]
 //	enabled = true
 //	public_base_url = "https://mail.example.com"
-//	default_ttl  = "30d"
+//	default_ttl  = "48h"
 //	max_ttl      = "90d"
-//	pending_ttl  = "1h"
+//	pending_ttl  = "48h"
 //	revoked_grace = "24h"
 //	max_shares_per_principal = 1000
 //	share_quota_per_principal = "5 GiB"
@@ -615,7 +615,8 @@ type AttachmentSharesConfig struct {
 	// DefaultTTL is the share lifetime applied when a pending share is
 	// confirmed to active state (REQ-SHARE-20 / REQ-SHARE-21). Accepts
 	// standard Go durations plus a "d" day suffix ("30d" == 720h). Default
-	// "30d". Must not exceed MaxTTL.
+	// "48h". Must not exceed MaxTTL. The end user can override per share
+	// when offloading (compose expiry picker, REQ-ATT-65).
 	DefaultTTL DurationExtended `toml:"default_ttl,omitempty"`
 	// MaxTTL is the ceiling the owner cannot exceed when creating or
 	// shortening a share's expiry (REQ-SHARE-03 / REQ-SHARE-42). Accepts
@@ -623,9 +624,9 @@ type AttachmentSharesConfig struct {
 	MaxTTL DurationExtended `toml:"max_ttl,omitempty"`
 	// PendingTTL is the lifetime of an unconfirmed (compose-abandoned)
 	// share before the sweeper deletes it (REQ-SHARE-20 / REQ-SHARE-23).
-	// Accepts the same format as DefaultTTL. Default "1h". Must be <=
-	// DefaultTTL (a pending share cannot live longer than the active one
-	// it would become).
+	// Accepts the same format as DefaultTTL. Default "48h" -- matched to
+	// DefaultTTL so a still-pending share shows the same lifetime it will
+	// keep once sent. Must be <= DefaultTTL.
 	PendingTTL DurationExtended `toml:"pending_ttl,omitempty"`
 	// RevokedGrace is the delay between a revocation and the sweeper
 	// removing the row (REQ-SHARE-22 / REQ-SHARE-23). During this window
@@ -2235,13 +2236,16 @@ func applyAttachmentSharesDefaults(as *AttachmentSharesConfig) {
 		as.Enabled = &t
 	}
 	if as.DefaultTTL == 0 {
-		as.DefaultTTL = DurationExtended(30 * 24 * time.Hour) // 30d
+		as.DefaultTTL = DurationExtended(48 * time.Hour) // 48h
 	}
 	if as.MaxTTL == 0 {
 		as.MaxTTL = DurationExtended(90 * 24 * time.Hour) // 90d
 	}
 	if as.PendingTTL == 0 {
-		as.PendingTTL = DurationExtended(1 * time.Hour) // 1h
+		// Match DefaultTTL so a freshly-offloaded (still pending) share
+		// shows the same 48h lifetime it will keep once the message is
+		// sent, rather than a misleading short window.
+		as.PendingTTL = DurationExtended(48 * time.Hour) // 48h
 	}
 	if as.RevokedGrace == 0 {
 		as.RevokedGrace = DurationExtended(24 * time.Hour) // 24h

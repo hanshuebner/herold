@@ -49,15 +49,15 @@ func TestAttachmentShares_Defaults(t *testing.T) {
 		t.Errorf("PublicBaseURL: got %q, want empty", as.PublicBaseURL)
 	}
 	// default_ttl = 30d.
-	if got, want := as.DefaultTTL.AsDuration(), 30*24*time.Hour; got != want {
+	if got, want := as.DefaultTTL.AsDuration(), 48*time.Hour; got != want {
 		t.Errorf("DefaultTTL: got %s, want %s", got, want)
 	}
 	// max_ttl = 90d.
 	if got, want := as.MaxTTL.AsDuration(), 90*24*time.Hour; got != want {
 		t.Errorf("MaxTTL: got %s, want %s", got, want)
 	}
-	// pending_ttl = 1h.
-	if got, want := as.PendingTTL.AsDuration(), time.Hour; got != want {
+	// pending_ttl = 48h (matched to default_ttl).
+	if got, want := as.PendingTTL.AsDuration(), 48*time.Hour; got != want {
 		t.Errorf("PendingTTL: got %s, want %s", got, want)
 	}
 	// revoked_grace = 24h.

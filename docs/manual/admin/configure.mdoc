@@ -350,9 +350,9 @@ upstream proxy that owns image rewriting can disable.
 [server.attachment_shares]
 enabled = true                         # default true; inert unless public_base_url is set.
 public_base_url = "https://mail.example.com"  # REQUIRED when enabled; MUST be https.
-default_ttl  = "30d"                   # active share lifetime on send.
+default_ttl  = "48h"                   # active share lifetime on send; the user can override per share in compose.
 max_ttl      = "90d"                   # ceiling the owner cannot exceed.
-pending_ttl  = "1h"                    # unconfirmed (compose-abandoned) shares expire here.
+pending_ttl  = "48h"                   # unconfirmed (compose-abandoned) shares expire here; matched to default_ttl.
 revoked_grace = "24h"                  # how long a revoked share lingers before deletion.
 max_shares_per_principal = 1000
 share_quota_per_principal = "5 GiB"
