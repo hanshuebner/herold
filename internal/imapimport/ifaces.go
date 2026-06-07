@@ -97,6 +97,14 @@ type Conn interface {
 	// REQ-IMAP-IMP-31.
 	UIDFetch(ctx context.Context, uids []imap.UID) ([]fetchedMessage, error)
 
+	// UIDFetchEnvelope fetches ENVELOPE, UID, INTERNALDATE, and FLAGS for
+	// the given UIDs WITHOUT fetching the message body. This is used by the
+	// Gmail All Mail envelope-dedup path to cheaply determine which messages
+	// are already mirrored before committing to a body download.
+	// The returned MessageID is the normalized RFC 5322 Message-ID (without
+	// angle brackets), or "" if the message has no Message-ID header.
+	UIDFetchEnvelope(ctx context.Context, uids []imap.UID) ([]envelopeFetchResult, error)
+
 	// UIDFetchFlags fetches FLAGS only for the given UID. Returns nil, nil
 	// when the message does not exist in the currently-selected mailbox.
 	// Used by the write-back reconcile path to read the upstream-current

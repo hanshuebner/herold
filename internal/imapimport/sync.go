@@ -375,8 +375,16 @@ func (w *accountWorker) fetchAndIngest(
 // ingestMessage inserts fm into the herold store. Returns (isNew,
 // heroldMessageID, heroldMailboxID, error). isNew is false when the
 // message already existed (dedup hit). On a dedup hit msgID and mbID
-// are still populated from the existing row so the caller can record
-// the import state.
+// are still populated (mbID is the current heroldMailbox's ID) so the
+// caller can record the import state.
+//
+// Multi-mailbox dedup (the foundation of Gmail label placement and any
+// multi-folder IMAP account): if the message already exists in herold
+// but is NOT yet a member of heroldMailbox, AddMessageToMailbox is
+// called to create the additional membership. This makes "a message in
+// K upstream folders -> K herold mailbox memberships" correct for any
+// IMAP account. Re-fetching the SAME folder is a no-op (the membership
+// already exists), keeping TestDedup green.
 func (w *accountWorker) ingestMessage(
 	ctx context.Context,
 	fm fetchedMessage,
@@ -397,8 +405,32 @@ func (w *accountWorker) ingestMessage(
 		normID := mailparse.NormalizeMessageID(rawMsgID)
 		existing, lookupErr := w.opts.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, normID)
 		if lookupErr == nil {
-			// Message already exists; return it for state recording.
-			return false, existing.ID, existing.MailboxID, nil
+			// Message already exists in herold. Ensure it is also a member of
+			// the current target mailbox (multi-mailbox dedup path).
+			targetMB, mbErr := w.ensureMailbox(ctx, principalID, heroldMailbox)
+			if mbErr != nil {
+				return false, existing.ID, existing.MailboxID, fmt.Errorf("imapimport: ensureMailbox %q (dedup): %w", heroldMailbox, mbErr)
+			}
+			// Check whether the message is already in this mailbox.
+			alreadyMember := false
+			for _, mm := range existing.Mailboxes {
+				if mm.MailboxID == targetMB.ID {
+					alreadyMember = true
+					break
+				}
+			}
+			if !alreadyMember {
+				// Add the membership. This is idempotent per AddMessageToMailbox's
+				// ErrConflict guard — a concurrent ingest of the same message
+				// into the same mailbox loses the race harmlessly.
+				if _, _, addErr := w.opts.store.Meta().AddMessageToMailbox(ctx, existing.ID, targetMB.ID); addErr != nil {
+					if !errors.Is(addErr, store.ErrConflict) {
+						return false, existing.ID, targetMB.ID, fmt.Errorf("imapimport: AddMessageToMailbox (dedup): %w", addErr)
+					}
+					// ErrConflict means a concurrent path already added it; harmless.
+				}
+			}
+			return false, existing.ID, targetMB.ID, nil
 		}
 		if !errors.Is(lookupErr, store.ErrNotFound) {
 			return false, 0, 0, fmt.Errorf("imapimport: GetMessageByMessageIDHeader: %w", lookupErr)

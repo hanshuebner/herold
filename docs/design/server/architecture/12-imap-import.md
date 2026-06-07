@@ -304,14 +304,56 @@ GCs old mail off the edge. Concretely:
 - `herold_imapimport_backfill_remaining{account}` lets the operator
   watch a large initial mirror drain.
 
-## Gmail All-Mail optimization
+## Gmail folder-based label placement (Option B)
 
-`[Gmail]/All Mail` is the canonical body source; per-label folders are
-skipped to avoid N-fold body fetches (REQ-IMAP-IMP-50). The horizon's
-`UID SEARCH SINCE` applies to All Mail. `X-Gmail-Labels` drives mailbox
-placement via the locale-aware label table shared with the takeout
-importer (REQ-IMAP-IMP-51); IMAP folder names themselves are always
-English so no locale detection is needed on the IMAP path.
+Gmail exposes per-message labels as IMAP folders. The worker uses
+**folder-based label placement** rather than per-message label metadata
+(REQ-IMAP-IMP-50/51):
+
+**Why not per-message labels?** `X-Gmail-Labels:` is a Takeout/Vault
+export artifact — it is NOT present in messages FETCHed over live IMAP.
+`X-GM-LABELS` (the X-GM-EXT-1 FETCH data item) cannot be fetched by the
+pinned `emersion/go-imap/v2 v2.0.0-beta.8` client because its FETCH
+parser errors on unknown msg-att names.
+
+**Folder classification:**
+
+| Class     | Folders                                                                          | Action                          |
+|-----------|----------------------------------------------------------------------------------|----------------------------------|
+| Skip      | `[Gmail]/Important`, `[Gmail]/Starred`, `[Gmail]/Chats`                          | No sync — virtual/flag, no unique content |
+| Normal    | `INBOX`, `[Gmail]/Sent Mail` → Sent, `[Gmail]/Drafts` → Drafts, `[Gmail]/Spam` → Junk, `[Gmail]/Trash` → Trash, every user-label folder → same name | Sync into mapped herold mailbox |
+| AllMail   | `[Gmail]/All Mail`                                                                | Synced LAST, envelope-first dedup (see below) |
+
+**Multi-mailbox-on-dedup:** A message appearing in K label folders gets K
+herold mailbox memberships. When `ingestMessage` hits a dedup (Message-ID
+already in herold), it checks whether the message is already a member of
+the current target mailbox. If not, `AddMessageToMailbox` adds the
+membership. Re-syncing the same folder is idempotent (`AddMessageToMailbox`
+returns `ErrConflict` for existing memberships; caught and ignored). This
+mechanism is general — it applies to all IMAP accounts, not just Gmail.
+
+**All Mail envelope-first dedup (archived mail capture):** After all Normal
+folders are synced, `[Gmail]/All Mail` is synced last. For each UID in the
+horizon the worker fetches ENVELOPE + UID + INTERNALDATE + FLAGS (no body).
+If the Message-ID is already in herold (placed by a label folder), the body
+download is skipped entirely. Only for un-mirrored messages (archived mail
+with no label), the worker body-fetches (BODY.PEEK[]) and ingests into
+"Archive". This captures archived-unlabeled mail without re-downloading
+bodies already placed by label folders.
+
+**Category tabs:** Gmail category tabs are NOT replicated — they are not
+consistent IMAP folders across all accounts. herold's own LLM categoriser
+runs on imported INBOX mail (REQ-IMAP-IMP-31) and produces `$category-*`
+keywords locally.
+
+**Testability:** The Gmail-specific path (`syncAllFoldersGmail`,
+`syncFolderGmailAllMailEnvelopeDedup`) is not exercised by the automated
+test suite because the in-process `imapmemserver` does not implement
+X-GM-EXT-1 or `[Gmail]/All Mail` semantics. The multi-mailbox-on-dedup
+mechanism IS tested end-to-end via `TestMultiMailboxPlacement` (normal IMAP
+folders, same Message-ID in two folders → two herold memberships, idempotent
+on re-sync). The All Mail envelope-dedup decision is unit-tested in
+`gmail_test.go` via `TestEnvelopeDedupDecision_*`.
 
 ## Observability of the workers (REQ-IMAP-IMP-65)
 

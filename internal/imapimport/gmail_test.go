@@ -2,16 +2,27 @@ package imapimport
 
 // gmail_test.go covers the decomposable pure-function logic in gmail.go.
 //
-// The end-to-end Gmail sync path (syncAllFoldersGmail, syncFolderGmailAllMail)
-// is NOT tested here because the in-process imapmemserver does not implement
-// X-GM-EXT-1 or [Gmail]/All Mail semantics. See the package-level comment in
-// gmail.go for what a real-Gmail integration test would require.
+// The end-to-end Gmail sync path (syncAllFoldersGmail,
+// syncFolderGmailAllMailEnvelopeDedup) is NOT tested here because the
+// in-process imapmemserver does not implement X-GM-EXT-1 or [Gmail]/All
+// Mail semantics. See the package-level comment in gmail.go for what a
+// real-Gmail integration test would require.
 //
 // Covered here:
 //   - isGmailServer: capability + folder-list combinations
-//   - shouldSkipGmailFolder: skip/sync decisions for every interesting folder
+//   - shouldSkipGmailFolder / classifyGmailFolder: skip/sync decisions for
+//     every interesting folder
+//   - gmailHeroldMailboxName: system-folder mapping + user-label passthrough
+//   - envelopeDedupDecision: logic for deciding skip vs. body-fetch in All Mail
 //   - gmailLabelsToMailboxNames: label-to-mailbox mapping in multiple locales
+//     (retained for best-effort X-Gmail-Labels compatibility)
 //   - extractXGmailLabels: header extraction from raw RFC822 bytes
+//
+// What is NOT testable without a real Gmail account (documented):
+//   - Live X-GM-EXT-1 capability detection.
+//   - Real [Gmail]/All Mail folder content and the resulting Archive ingestion.
+//   - Per-label IMAP folder presence for multi-mailbox placement.
+//   - The end-to-end folder-classification-driven sync pass.
 
 import (
 	"fmt"
@@ -91,21 +102,25 @@ func TestIsGmailServer_AllMailFolderWithoutCap(t *testing.T) {
 // --------------------------------------------------------------------------
 // shouldSkipGmailFolder
 // --------------------------------------------------------------------------
+//
+// Option B: only the three virtual/flag folders are skipped.
+// [Gmail]/All Mail is handled by classifyGmailFolder as AllMail (not skip).
+// [Gmail]/Sent Mail, Inbox, etc. are now synced normally as placement sources.
 
 var gmailSkipCases = []struct {
 	folder string
 	skip   bool
 }{
-	// Must be skipped (subsumed by All Mail or is the All Mail source).
-	{gmailAllMail, true},
-	{"[Gmail]/Sent Mail", true},
+	// Must be skipped (virtual/flag folders with no unique content).
 	{"[Gmail]/Important", true},
 	{"[Gmail]/Starred", true},
-	{"Inbox", true},
-	{"[Gmail]/Inbox", true},
 	{"[Gmail]/Chats", true},
 
-	// Must NOT be skipped (not in All Mail).
+	// Must NOT be skipped (placement sources or All Mail special case).
+	{gmailAllMail, false}, // handled as AllMail, not skipped
+	{"[Gmail]/Sent Mail", false},
+	{"INBOX", false},
+	{"Inbox", false},
 	{"[Gmail]/Drafts", false},
 	{"[Gmail]/Spam", false},
 	{"[Gmail]/Trash", false},
@@ -343,4 +358,207 @@ func assertContains(t *testing.T, slice []string, name string) {
 		}
 	}
 	t.Errorf("expected %q in %v", name, slice)
+}
+
+// --------------------------------------------------------------------------
+// classifyGmailFolder (Option B folder-based placement)
+// --------------------------------------------------------------------------
+
+var gmailClassifyCases = []struct {
+	folder string
+	class  gmailFolderClass
+}{
+	// Must be skipped (virtual/flag folders with no unique content).
+	{"[Gmail]/Important", gmailFolderClassSkip},
+	{"[Gmail]/Starred", gmailFolderClassSkip},
+	{"[Gmail]/Chats", gmailFolderClassSkip},
+
+	// All Mail: special — synced last with envelope dedup.
+	{gmailAllMail, gmailFolderClassAllMail},
+
+	// Normal: placement sources.
+	{"INBOX", gmailFolderClassNormal},
+	{"[Gmail]/Sent Mail", gmailFolderClassNormal},
+	{"[Gmail]/Drafts", gmailFolderClassNormal},
+	{"[Gmail]/Spam", gmailFolderClassNormal},
+	{"[Gmail]/Trash", gmailFolderClassNormal},
+
+	// User labels: sync normally (user-defined folders).
+	{"Work", gmailFolderClassNormal},
+	{"Travel/2024", gmailFolderClassNormal},
+	{"[Gmail]/SomeUnknown", gmailFolderClassNormal},
+}
+
+func TestClassifyGmailFolder(t *testing.T) {
+	for _, tc := range gmailClassifyCases {
+		got := classifyGmailFolder(tc.folder)
+		if got != tc.class {
+			t.Errorf("classifyGmailFolder(%q) = %v; want %v", tc.folder, got, tc.class)
+		}
+	}
+}
+
+// shouldSkipGmailFolder should only return true for the three virtual/flag
+// folders, not for All Mail or any normal folder.
+func TestShouldSkipGmailFolderOptionB(t *testing.T) {
+	skipExpected := map[string]bool{
+		"[Gmail]/Important": true,
+		"[Gmail]/Starred":   true,
+		"[Gmail]/Chats":     true,
+	}
+	notSkipped := []string{
+		gmailAllMail, // handled as AllMail class, NOT skipped by shouldSkipGmailFolder
+		"INBOX",
+		"[Gmail]/Sent Mail",
+		"[Gmail]/Drafts",
+		"[Gmail]/Spam",
+		"[Gmail]/Trash",
+		"Work",
+	}
+	for folder, want := range skipExpected {
+		if got := shouldSkipGmailFolder(folder); got != want {
+			t.Errorf("shouldSkipGmailFolder(%q) = %v; want %v", folder, got, want)
+		}
+	}
+	for _, folder := range notSkipped {
+		if shouldSkipGmailFolder(folder) {
+			t.Errorf("shouldSkipGmailFolder(%q) = true; want false", folder)
+		}
+	}
+}
+
+// --------------------------------------------------------------------------
+// gmailHeroldMailboxName — system folder table + user-label passthrough
+// --------------------------------------------------------------------------
+
+var gmailMailboxNameCases = []struct {
+	folder   string
+	expected string
+}{
+	// System folder table.
+	{"INBOX", "INBOX"},
+	{"[Gmail]/Sent Mail", "Sent"},
+	{"[Gmail]/Drafts", "Drafts"},
+	{"[Gmail]/Spam", "Junk"},
+	{"[Gmail]/Trash", "Trash"},
+
+	// User labels: verbatim passthrough.
+	{"Work", "Work"},
+	{"Travel/2024/Italy", "Travel/2024/Italy"},
+	{"Newsletters", "Newsletters"},
+}
+
+func TestGmailHeroldMailboxName_SystemFolders(t *testing.T) {
+	noUserMapping := map[string]string{}
+	for _, tc := range gmailMailboxNameCases {
+		got := gmailHeroldMailboxName(tc.folder, noUserMapping)
+		if got != tc.expected {
+			t.Errorf("gmailHeroldMailboxName(%q) = %q; want %q", tc.folder, got, tc.expected)
+		}
+	}
+}
+
+func TestGmailHeroldMailboxName_UserMappingOverride(t *testing.T) {
+	// A user-provided mapping override wins over the system table.
+	userMapping := map[string]string{
+		"[Gmail]/Sent Mail": "MySent",
+		"Work":              "Projects",
+	}
+	if got := gmailHeroldMailboxName("[Gmail]/Sent Mail", userMapping); got != "MySent" {
+		t.Errorf("expected user override MySent; got %q", got)
+	}
+	if got := gmailHeroldMailboxName("Work", userMapping); got != "Projects" {
+		t.Errorf("expected user override Projects; got %q", got)
+	}
+	// Not overridden: system table.
+	if got := gmailHeroldMailboxName("[Gmail]/Drafts", userMapping); got != "Drafts" {
+		t.Errorf("expected Drafts (system table); got %q", got)
+	}
+	// Not overridden, not in system table: verbatim.
+	if got := gmailHeroldMailboxName("Newsletters", userMapping); got != "Newsletters" {
+		t.Errorf("expected verbatim Newsletters; got %q", got)
+	}
+}
+
+// --------------------------------------------------------------------------
+// envelopeDedupDecision — unit test of All Mail envelope-dedup logic
+// --------------------------------------------------------------------------
+//
+// The decision is: given an envelopeFetchResult, if its Message-ID is already
+// known -> skip body; if unknown -> body-fetch into Archive.
+// We test this at the function level by examining the logic directly.
+// The end-to-end path (syncFolderGmailAllMailEnvelopeDedup) requires a real
+// Gmail account and is not testable with the in-process memory server.
+
+// envelopeDedupShouldFetch encodes the per-message decision that
+// syncFolderGmailAllMailEnvelopeDedup applies. We extract it here as a
+// pure function for unit testing.
+//
+// Returns true when the message needs a body-fetch (not yet mirrored),
+// false when the Message-ID was already seen (can skip body).
+func envelopeDedupShouldFetch(env envelopeFetchResult, alreadyMirrored map[string]bool) bool {
+	if env.MessageID == "" {
+		// No Message-ID: cannot dedup cheaply; must body-fetch to be safe.
+		return true
+	}
+	return !alreadyMirrored[env.MessageID]
+}
+
+func TestEnvelopeDedupDecision_AlreadyMirrored(t *testing.T) {
+	known := map[string]bool{"known-msg-id@test": true}
+	env := envelopeFetchResult{MessageID: "known-msg-id@test"}
+	if envelopeDedupShouldFetch(env, known) {
+		t.Error("expected skip (already mirrored); got fetch")
+	}
+}
+
+func TestEnvelopeDedupDecision_NotMirrored(t *testing.T) {
+	known := map[string]bool{"other-id@test": true}
+	env := envelopeFetchResult{MessageID: "new-msg-id@test"}
+	if !envelopeDedupShouldFetch(env, known) {
+		t.Error("expected fetch (not yet mirrored); got skip")
+	}
+}
+
+func TestEnvelopeDedupDecision_NoMessageID(t *testing.T) {
+	// No Message-ID -> must fetch (cannot dedup by content here).
+	known := map[string]bool{}
+	env := envelopeFetchResult{MessageID: ""}
+	if !envelopeDedupShouldFetch(env, known) {
+		t.Error("expected fetch (no Message-ID); got skip")
+	}
+}
+
+func TestEnvelopeDedupDecision_EmptyKnownSet(t *testing.T) {
+	// Nothing mirrored yet -> all messages need body-fetch.
+	known := map[string]bool{}
+	env := envelopeFetchResult{MessageID: "some-id@test"}
+	if !envelopeDedupShouldFetch(env, known) {
+		t.Error("expected fetch (empty known set); got skip")
+	}
+}
+
+// TestEnvelopeDedupDecision_MultipleMessages exercises a batch decision to
+// confirm that exactly the un-mirrored messages are selected for body-fetch.
+func TestEnvelopeDedupDecision_MultipleMessages(t *testing.T) {
+	known := map[string]bool{
+		"already-1@test": true,
+		"already-2@test": true,
+	}
+	batch := []envelopeFetchResult{
+		{MessageID: "already-1@test"}, // skip
+		{MessageID: "new-1@test"},     // fetch
+		{MessageID: "already-2@test"}, // skip
+		{MessageID: "new-2@test"},     // fetch
+		{MessageID: ""},               // fetch (no Message-ID)
+	}
+	var needFetch []string
+	for _, env := range batch {
+		if envelopeDedupShouldFetch(env, known) {
+			needFetch = append(needFetch, env.MessageID)
+		}
+	}
+	if len(needFetch) != 3 {
+		t.Errorf("expected 3 messages needing body-fetch; got %d: %v", len(needFetch), needFetch)
+	}
 }

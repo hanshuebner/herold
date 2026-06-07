@@ -1007,6 +1007,129 @@ func TestSyncCredentialSealRoundtrip(t *testing.T) {
 	}
 }
 
+// TestMultiMailboxPlacement verifies the multi-mailbox-on-dedup mechanism:
+// the same message (same Message-ID) APPENDed to two upstream folders lands
+// in BOTH mapped herold mailboxes after sync (one messages row, two
+// message_mailboxes rows). A second sync with the same folders is idempotent
+// (no duplicate memberships). REQ-IMAP-IMP-50/51 general mechanism.
+func TestMultiMailboxPlacement(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	u := ts.addUser("mmb1", "pw")
+
+	// Create two folders that will hold the same message.
+	if err := u.Create("FolderA", nil); err != nil {
+		t.Fatalf("Create FolderA: %v", err)
+	}
+	if err := u.Create("FolderB", nil); err != nil {
+		t.Fatalf("Create FolderB: %v", err)
+	}
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	d := time.Date(2025, 10, 1, 12, 0, 0, 0, time.UTC)
+	// Same Message-ID in both folders — simulates a message in multiple labels.
+	raw := buildRFC822("multi-mb-unique@test", "Multi Mailbox", d)
+	appendToServer(t, ts, "mmb1", "pw", "FolderA", raw, nil, d)
+	appendToServer(t, ts, "mmb1", "pw", "FolderB", raw, nil, d)
+
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "mmb1@example.test",
+		username:            "mmb1",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	// First sync.
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	// Verify: one message row exists in herold, with memberships in BOTH
+	// herold mailboxes (FolderA and FolderB, since no mapping override).
+	ctx := context.Background()
+	normID := "multi-mb-unique@test"
+	msg, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, normID)
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader: %v", err)
+	}
+	if len(msg.Mailboxes) != 2 {
+		t.Errorf("message has %d mailbox memberships; want 2 (FolderA and FolderB)", len(msg.Mailboxes))
+	}
+
+	// Verify the message appears in both mailboxes.
+	inA := countMailboxMessages(t, ha.Store, acc.PrincipalID, "FolderA")
+	inB := countMailboxMessages(t, ha.Store, acc.PrincipalID, "FolderB")
+	if inA != 1 {
+		t.Errorf("FolderA has %d messages; want 1", inA)
+	}
+	if inB != 1 {
+		t.Errorf("FolderB has %d messages; want 1", inB)
+	}
+
+	// Second sync: must be idempotent (no duplicate memberships).
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	msg2, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, normID)
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader (second): %v", err)
+	}
+	if len(msg2.Mailboxes) != 2 {
+		t.Errorf("after second sync: message has %d mailbox memberships; want 2 (idempotent)", len(msg2.Mailboxes))
+	}
+}
+
+// TestMultiMailboxPlacementThreeFolders verifies the multi-mailbox mechanism
+// with three folders holding the same message. Membership count must be 3.
+func TestMultiMailboxPlacementThreeFolders(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	u := ts.addUser("mmb2", "pw")
+
+	for _, name := range []string{"Alpha", "Beta", "Gamma"} {
+		if err := u.Create(name, nil); err != nil {
+			t.Fatalf("Create %s: %v", name, err)
+		}
+	}
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	d := time.Date(2025, 11, 1, 12, 0, 0, 0, time.UTC)
+	raw := buildRFC822("three-folder-dedup@test", "Three Folder", d)
+	for _, name := range []string{"Alpha", "Beta", "Gamma"} {
+		appendToServer(t, ts, "mmb2", "pw", name, raw, nil, d)
+	}
+
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "mmb2@example.test",
+		username:            "mmb2",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	ctx := context.Background()
+	msg, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "three-folder-dedup@test")
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader: %v", err)
+	}
+	if len(msg.Mailboxes) != 3 {
+		t.Errorf("message has %d mailbox memberships; want 3 (Alpha, Beta, Gamma)", len(msg.Mailboxes))
+	}
+
+	// Idempotency: second sync must not add more memberships.
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	msg2, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "three-folder-dedup@test")
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader (second): %v", err)
+	}
+	if len(msg2.Mailboxes) != 3 {
+		t.Errorf("after second sync: %d memberships; want 3 (idempotent)", len(msg2.Mailboxes))
+	}
+}
+
 // TestSyncFakeClock verifies that the FakeClock passed to the worker is
 // used for metrics timing (smoke test to ensure clock injection works
 // in sync tests; the FakeClock does not drift unless explicitly advanced).

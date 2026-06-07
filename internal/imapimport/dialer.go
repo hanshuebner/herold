@@ -12,6 +12,7 @@ import (
 	imapclient "github.com/emersion/go-imap/v2/imapclient"
 	gosql "github.com/emersion/go-sasl"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
@@ -191,6 +192,45 @@ func (c *prodConn) UIDSearchSince(_ context.Context, since time.Time) ([]imap.UI
 		return nil, fmt.Errorf("imapimport: UID SEARCH SINCE: %w", err)
 	}
 	return data.AllUIDs(), nil
+}
+
+// UIDFetchEnvelope fetches ENVELOPE, UID, INTERNALDATE, and FLAGS for
+// the given UIDs WITHOUT fetching the body. Used by the Gmail All Mail
+// envelope-dedup path so we can check whether a message is already
+// mirrored before spending bandwidth on the full body download.
+func (c *prodConn) UIDFetchEnvelope(_ context.Context, uids []imap.UID) ([]envelopeFetchResult, error) {
+	if len(uids) == 0 {
+		return nil, nil
+	}
+	var uidSet imap.UIDSet
+	for _, uid := range uids {
+		uidSet.AddNum(uid)
+	}
+	fetchOpts := &imap.FetchOptions{
+		Flags:        true,
+		InternalDate: true,
+		Envelope:     true,
+		UID:          true,
+	}
+	cmd := c.client.Fetch(uidSet, fetchOpts)
+	bufs, err := cmd.Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imapimport: UID FETCH ENVELOPE: %w", err)
+	}
+	out := make([]envelopeFetchResult, 0, len(bufs))
+	for _, buf := range bufs {
+		var msgID string
+		if buf.Envelope != nil && buf.Envelope.MessageID != "" {
+			msgID = mailparse.NormalizeMessageID(buf.Envelope.MessageID)
+		}
+		out = append(out, envelopeFetchResult{
+			UID:          buf.UID,
+			MessageID:    msgID,
+			InternalDate: buf.InternalDate,
+			Flags:        buf.Flags,
+		})
+	}
+	return out, nil
 }
 
 // UIDFetch fetches FLAGS, INTERNALDATE, and BODY.PEEK[] for the given
