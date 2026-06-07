@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"sync"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
@@ -223,7 +224,34 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 		// level error so the backoff + errored logic applies.
 		return fmt.Errorf("imapimport: syncAllFolders: %w", err)
 	}
-	return nil
+
+	// 3d-B: start the write-back goroutine on a dedicated third connection.
+	// If the third connection fails we start the write-back goroutine in
+	// degraded mode (no write-back) but still run the IDLE loop.
+	wbCtx, wbCancel := context.WithCancel(ctx)
+	var wbWg sync.WaitGroup
+	if wbConn, wbErr := w.openSecondaryConn(wbCtx); wbErr == nil {
+		wbWg.Add(1)
+		go func() {
+			defer wbWg.Done()
+			w.runWriteBack(wbCtx, wbConn)
+		}()
+	} else {
+		w.opts.log.Info("imapimport: write-back connection unavailable; skipping write-back for this session",
+			slog.String("account_id", account.ID),
+			slog.String("error", redactError(wbErr)),
+		)
+	}
+	defer func() {
+		wbCancel()
+		wbWg.Wait()
+	}()
+
+	// 3d-A: enter the durable IDLE / poll loop now that the initial sync is
+	// done. runIDLELoop returns only on ctx cancellation (nil) or a fatal
+	// connection error (non-nil). A nil return causes run() to record success
+	// and reconnect; a non-nil return triggers the backoff path.
+	return w.runIDLELoop(ctx, conn)
 }
 
 // openCredential decrypts the account's sealed credential using the

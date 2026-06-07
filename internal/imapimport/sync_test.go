@@ -110,17 +110,30 @@ func getUpstreamFlags(t *testing.T, ts *testIMAPServer, user, password, mailbox 
 	}
 	var uidSet imap.UIDSet
 	uidSet.AddNum(uid)
-	bufs, err := client.Fetch(uidSet, &imap.FetchOptions{Flags: true}).Collect()
+	// Request UID alongside FLAGS so the imapclient can route the FETCH
+	// response to the pending command. Without UID in the response, the
+	// client cannot match the response and discards it (see UIDFetchFlags
+	// comment in dialer.go for the full explanation).
+	bufs, err := client.Fetch(uidSet, &imap.FetchOptions{Flags: true, UID: true}).Collect()
 	if err != nil {
 		t.Fatalf("getUpstreamFlags: FETCH: %v", err)
 	}
 	if len(bufs) == 0 {
+		// Message not found upstream.
 		return nil
+	}
+	if bufs[0].Flags == nil {
+		// Message found but has no flags set; normalise to empty non-nil slice
+		// so callers can distinguish "not found" (nil) from "found, no flags"
+		// (empty slice).
+		return []imap.Flag{}
 	}
 	return bufs[0].Flags
 }
 
-// runSyncOnce creates a worker, runs attempt once, and returns any error.
+// runSyncOnce creates a worker, dials once, runs a single syncAllFolders
+// pass, and returns any error. It does NOT enter the IDLE / poll loop;
+// use TestIDLE* tests for that. This keeps the download-path tests fast.
 func runSyncOnce(t *testing.T, ha *testharness.Server, ts *testIMAPServer, acc store.IMAPImportAccount, cat Categoriser) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -140,7 +153,32 @@ func runSyncOnce(t *testing.T, ha *testharness.Server, ts *testIMAPServer, acc s
 		dialer:      &fakeDialer{ts: ts},
 		categoriser: cat,
 	})
-	return w.attempt(ctx)
+
+	// Dial once and run a single syncAllFolders pass without entering
+	// the IDLE loop.
+	credPlaintext, err := w.openCredential(ctx, acc)
+	if err != nil {
+		return err
+	}
+	conn, err := w.opts.dialer.Dial(ctx, dialParams{
+		AccountID:           acc.ID,
+		Host:                acc.Host,
+		Port:                acc.Port,
+		TLSMode:             string(acc.TLSMode),
+		Username:            acc.Username,
+		AuthMethod:          string(acc.AuthMethod),
+		CredentialPlaintext: credPlaintext,
+	})
+	credPlaintext = ""
+	_ = credPlaintext
+	if err != nil {
+		return err
+	}
+	defer func() {
+		conn.Logout()
+		conn.Close()
+	}()
+	return w.syncAllFolders(ctx, conn)
 }
 
 // countMailboxMessages returns the number of messages in the named herold

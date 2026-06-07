@@ -41,6 +41,21 @@ type fetchedMessage struct {
 	RFC822 []byte
 }
 
+// idleHandle is the handle returned by Conn.Idle. The worker calls
+// Wait to block until an unsolicited update arrives, and Close to stop
+// IDLE and return to the command-capable state.
+type idleHandle interface {
+	// Wait blocks until the IDLE command ends — either because Close
+	// was called (nil return) or because the server sent a BYE / the
+	// connection dropped (non-nil return).
+	Wait() error
+
+	// Close stops the IDLE command. Blocks until DONE has been written.
+	// Returns nil on a clean stop. After Close returns, the connection is
+	// in the command-capable (authenticated) state again.
+	Close() error
+}
+
 // Conn is the minimal interface the accountWorker needs from an IMAP
 // client connection. Each sub-step extends the set of methods the
 // production dialer satisfies; the fake in tests implements the same
@@ -67,6 +82,11 @@ type Conn interface {
 	// HIGHESTMODSEQ, NUM_MESSAGES. REQ-IMAP-IMP-24/35.
 	Select(ctx context.Context, mailbox string) (selectInfo, error)
 
+	// SelectReadWrite opens the named mailbox read-write (SELECT, not
+	// EXAMINE). Used by the write-back path which needs to issue STORE /
+	// EXPUNGE. Returns the same selectInfo shape. REQ-IMAP-IMP-40..44.
+	SelectReadWrite(ctx context.Context, mailbox string) (selectInfo, error)
+
 	// UIDSearchSince returns UIDs of messages whose INTERNALDATE is on
 	// or after `since`. If since is zero the entire mailbox is returned
 	// (no SINCE criterion). REQ-IMAP-IMP-17/19.
@@ -76,6 +96,42 @@ type Conn interface {
 	// in uids. Uses BODY.PEEK so the upstream \Seen flag is NOT set.
 	// REQ-IMAP-IMP-31.
 	UIDFetch(ctx context.Context, uids []imap.UID) ([]fetchedMessage, error)
+
+	// UIDFetchFlags fetches FLAGS only for the given UID. Returns nil, nil
+	// when the message does not exist in the currently-selected mailbox.
+	// Used by the write-back reconcile path to read the upstream-current
+	// flags before deciding whether to push. REQ-IMAP-IMP-42.
+	UIDFetchFlags(ctx context.Context, uid imap.UID) ([]imap.Flag, error)
+
+	// UIDStoreFlags applies a flag delta to the message identified by uid
+	// in the currently-selected (read-write) mailbox. op must be
+	// imap.StoreFlagsAdd or imap.StoreFlagsDel. REQ-IMAP-IMP-40/42.
+	UIDStoreFlags(ctx context.Context, uid imap.UID, op imap.StoreFlagsOp, flags []imap.Flag) error
+
+	// UIDMove moves the message identified by uid to destMailbox. Uses
+	// MOVE when the upstream advertises it; falls back to COPY + UID STORE
+	// +FLAGS \Deleted + UID EXPUNGE per RFC 6851. REQ-IMAP-IMP-43.
+	UIDMove(ctx context.Context, uid imap.UID, destMailbox string) error
+
+	// UIDExpunge expunges the message identified by uid from the
+	// currently-selected mailbox. Requires UID EXPUNGE (UIDPLUS). On
+	// servers without UIDPLUS it is equivalent to EXPUNGE (which expunges
+	// all \Deleted messages). REQ-IMAP-IMP-44.
+	UIDExpunge(ctx context.Context, uid imap.UID) error
+
+	// Noop issues the IMAP NOOP command. Used as the poll heartbeat when
+	// the upstream does not advertise IDLE (REQ-IMAP-IMP-23). Also causes
+	// the server to flush any pending unsolicited responses.
+	Noop(ctx context.Context) error
+
+	// Idle starts an IDLE command on the currently-selected mailbox.
+	// Returns an idleHandle whose Wait blocks until an unsolicited
+	// EXISTS / EXPUNGE / FETCH update is delivered or the handle is
+	// closed. The connection cannot accept other commands until the handle
+	// is closed. Callers must check Caps().Has(imap.CapIdle) before
+	// calling; the behaviour on servers that don't advertise IDLE is
+	// undefined. REQ-IMAP-IMP-20/23.
+	Idle(ctx context.Context) (idleHandle, error)
 }
 
 // Dialer establishes an authenticated IMAP connection to an upstream

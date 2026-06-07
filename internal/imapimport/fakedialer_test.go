@@ -36,26 +36,44 @@ func (d *fakeDialer) Dial(_ context.Context, p dialParams) (Conn, error) {
 	}
 
 	var addr string
-	var opts *imapclient.Options
 	switch p.TLSMode {
 	case "implicit":
 		addr = d.ts.ImplicitAddr
-		opts = &imapclient.Options{
-			TLSConfig: &tls.Config{
-				RootCAs:    d.ts.ClientTLSConfig.RootCAs,
-				ServerName: "127.0.0.1",
-			},
-		}
 	case "starttls":
 		addr = d.ts.StartTLSAddr
-		opts = &imapclient.Options{
-			TLSConfig: &tls.Config{
-				RootCAs:    d.ts.ClientTLSConfig.RootCAs,
-				ServerName: "127.0.0.1",
-			},
-		}
 	default:
 		return nil, fmt.Errorf("fakeDialer: unsupported TLSMode=%q", p.TLSMode)
+	}
+
+	// Wire the UnilateralDataHandler so IDLE notifications reach the
+	// prodIdleHandle.Wait path.  The handler writes to a shared notify
+	// channel that the fakeDialer stores for test access.
+	notify := make(chan struct{}, 4)
+	opts := &imapclient.Options{
+		TLSConfig: &tls.Config{
+			RootCAs:    d.ts.ClientTLSConfig.RootCAs,
+			ServerName: "127.0.0.1",
+		},
+		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+			Mailbox: func(_ *imapclient.UnilateralDataMailbox) {
+				select {
+				case notify <- struct{}{}:
+				default:
+				}
+			},
+			Expunge: func(_ uint32) {
+				select {
+				case notify <- struct{}{}:
+				default:
+				}
+			},
+			Fetch: func(_ *imapclient.FetchMessageData) {
+				select {
+				case notify <- struct{}{}:
+				default:
+				}
+			},
+		},
 	}
 
 	var client *imapclient.Client
@@ -74,7 +92,7 @@ func (d *fakeDialer) Dial(_ context.Context, p dialParams) (Conn, error) {
 		client.Close()
 		return nil, authErr
 	}
-	return &prodConn{client: client}, nil
+	return &prodConn{client: client, notify: notify}, nil
 }
 
 // --------------------------------------------------------------------------
@@ -163,12 +181,20 @@ func (d *xoauthFakeDialer) Dial(ctx context.Context, p dialParams) (Conn, error)
 	// access token as CredentialPlaintext. So here CredentialPlaintext IS
 	// the access token; we just use it as a LOGIN password.
 	accessToken := p.CredentialPlaintext
-	_ = accessToken
 
+	notify := make(chan struct{}, 4)
 	opts := &imapclient.Options{
 		TLSConfig: &tls.Config{
 			RootCAs:    d.ts.ClientTLSConfig.RootCAs,
 			ServerName: "127.0.0.1",
+		},
+		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+			Mailbox: func(_ *imapclient.UnilateralDataMailbox) {
+				select {
+				case notify <- struct{}{}:
+				default:
+				}
+			},
 		},
 	}
 	client, err := imapclient.DialTLS(d.ts.ImplicitAddr, opts)
@@ -179,5 +205,5 @@ func (d *xoauthFakeDialer) Dial(ctx context.Context, p dialParams) (Conn, error)
 		client.Close()
 		return nil, fmt.Errorf("authenticate: xoauth2 LOGIN failed: %w", err)
 	}
-	return &prodConn{client: client}, nil
+	return &prodConn{client: client, notify: notify}, nil
 }

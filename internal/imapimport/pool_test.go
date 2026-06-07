@@ -105,14 +105,39 @@ func (w testLogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// runWorkerOnce runs a single accountWorker cycle (connect + disconnect)
-// and returns the first error. It uses a context with a short deadline so
-// the test does not hang.
+// runWorkerOnce runs a single accountWorker connection attempt (connect,
+// authenticate, initial sync, then cancel). It cancels the context after a
+// short grace period so the worker exits the IDLE loop cleanly. Returns
+// the first error from attempt (nil on clean cancellation).
 func runWorkerOnce(t *testing.T, w *accountWorker) error {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	return w.attempt(ctx)
+
+	type result struct {
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		ch <- result{err: w.attempt(ctx)}
+	}()
+
+	// Give the worker enough time to connect and run its initial sync.
+	// Then cancel to exit the IDLE loop.
+	select {
+	case r := <-ch:
+		// Worker exited before we cancelled — return the error as-is.
+		return r.err
+	case <-time.After(2 * time.Second):
+		// Worker is running (in IDLE loop); cancel and wait for it.
+		cancel()
+		r := <-ch
+		// A nil return after ctx cancel is a clean exit.
+		if r.err == nil || r.err == ctx.Err() {
+			return nil
+		}
+		return r.err
+	}
 }
 
 // TestConnectImplicitTLS verifies a successful connection over implicit
@@ -328,8 +353,11 @@ func TestAllowPasswordFalse_AllowsXOAuth2(t *testing.T) {
 	if err := runWorkerOnce(t, w); err != nil {
 		t.Fatalf("attempt (xoauth2 with allow_password=false): %v", err)
 	}
-	if fakeTok.calls != 1 {
-		t.Errorf("expected 1 token exchange call, got %d", fakeTok.calls)
+	// Each successful connection dials once; we now open up to 3 connections
+	// (primary + secondary-sync + write-back) per session, so >=1 call is the
+	// correct bound. The key property is that at least one exchange happened.
+	if fakeTok.calls < 1 {
+		t.Errorf("expected >= 1 token exchange call, got %d", fakeTok.calls)
 	}
 }
 
@@ -382,8 +410,10 @@ func TestXOAuth2HappyPath(t *testing.T) {
 	if err := runWorkerOnce(t, w); err != nil {
 		t.Fatalf("xoauth2 happy path: %v", err)
 	}
-	if fakeTok.calls != 1 {
-		t.Errorf("expected 1 token call, got %d", fakeTok.calls)
+	// We open up to 3 connections per session; at least 1 token exchange is
+	// required.
+	if fakeTok.calls < 1 {
+		t.Errorf("expected >= 1 token call, got %d", fakeTok.calls)
 	}
 }
 

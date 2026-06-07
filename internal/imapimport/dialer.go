@@ -8,10 +8,9 @@ import (
 	"strconv"
 	"time"
 
+	imap "github.com/emersion/go-imap/v2"
 	imapclient "github.com/emersion/go-imap/v2/imapclient"
 	gosql "github.com/emersion/go-sasl"
-
-	imap "github.com/emersion/go-imap/v2"
 
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/sysconfig"
@@ -40,11 +39,27 @@ func (d *productionDialer) Dial(ctx context.Context, p dialParams) (Conn, error)
 	}
 
 	addr := net.JoinHostPort(p.Host, strconv.Itoa(p.Port))
+
+	// Wire a UnilateralDataHandler before dialing so unsolicited EXISTS /
+	// EXPUNGE / FETCH updates during IDLE are forwarded to the notify
+	// channel.  The channel is consumed by the idle loop in idle.go.
+	notify := make(chan struct{}, 1)
+	signalNotify := func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
 	opts := &imapclient.Options{
 		TLSConfig: &tls.Config{ServerName: p.Host},
 		// DebugWriter intentionally left nil — wire-level tracing is
 		// only enabled via a separate debug flag and must redact auth
 		// payloads (REQ-IMAP-IMP-71).
+		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+			Mailbox: func(_ *imapclient.UnilateralDataMailbox) { signalNotify() },
+			Expunge: func(_ uint32) { signalNotify() },
+			Fetch:   func(_ *imapclient.FetchMessageData) { signalNotify() },
+		},
 	}
 
 	var client *imapclient.Client
@@ -66,7 +81,7 @@ func (d *productionDialer) Dial(ctx context.Context, p dialParams) (Conn, error)
 		return nil, authErr
 	}
 
-	return &prodConn{client: client}, nil
+	return &prodConn{client: client, notify: notify}, nil
 }
 
 // authenticate performs the IMAP authentication exchange using the
@@ -109,10 +124,13 @@ func (d *productionDialer) authenticate(client *imapclient.Client, p dialParams)
 }
 
 // prodConn wraps *imapclient.Client and satisfies the Conn interface.
-// Sub-steps 3b-3e will add Select, Search, Fetch, Store, Idle methods
-// to both this struct and the Conn interface.
 type prodConn struct {
 	client *imapclient.Client
+	// notify is a buffered channel that receives a signal whenever the
+	// server delivers an unsolicited mailbox update during IDLE (EXISTS,
+	// EXPUNGE, or FETCH). The write happens in the UnilateralDataHandler
+	// wired at dial time. The IDLE loop in idle.go reads from it.
+	notify chan struct{}
 }
 
 func (c *prodConn) Caps() imap.CapSet {
@@ -212,4 +230,173 @@ func (c *prodConn) UIDFetch(_ context.Context, uids []imap.UID) ([]fetchedMessag
 		out = append(out, fm)
 	}
 	return out, nil
+}
+
+// SelectReadWrite opens the mailbox for read-write access (SELECT, not EXAMINE).
+// Used by the write-back path. REQ-IMAP-IMP-40..44.
+func (c *prodConn) SelectReadWrite(_ context.Context, mailbox string) (selectInfo, error) {
+	data, err := c.client.Select(mailbox, &imap.SelectOptions{ReadOnly: false}).Wait()
+	if err != nil {
+		return selectInfo{}, fmt.Errorf("imapimport: SELECT (rw) %q: %w", mailbox, err)
+	}
+	return selectInfo{
+		UIDValidity:   data.UIDValidity,
+		UIDNext:       data.UIDNext,
+		HighestModSeq: data.HighestModSeq,
+		NumMessages:   data.NumMessages,
+	}, nil
+}
+
+// UIDFetchFlags fetches only the flags for the given UID. Returns nil when
+// the message does not exist. REQ-IMAP-IMP-42.
+//
+// Note: we must request UID:true in addition to Flags:true.  The
+// imapclient routes FETCH responses to the matching pending command by
+// checking the UID field in the response.  When only FLAGS are requested,
+// the server omits the UID from the response, uid==0, and the client
+// cannot match the response to the command — it falls through to the
+// UnilateralDataHandler.Fetch callback instead.  Requesting UID:true
+// ensures the server includes "UID N" in the response so the client
+// can route it correctly.
+// UIDFetchFlags fetches only the flags for the given UID. Returns nil when
+// the message does not exist. REQ-IMAP-IMP-42.
+//
+// Note: we must request UID:true in addition to Flags:true.  The
+// imapclient routes FETCH responses to the matching pending command by
+// checking the UID field in the response.  When only FLAGS are requested,
+// the server omits the UID from the response, uid==0, and the client
+// cannot match the response to the command — it falls through to the
+// UnilateralDataHandler.Fetch callback instead.  Requesting UID:true
+// ensures the server includes "UID N" in the response so the client
+// can route it correctly.
+//
+// Also: when a message has no flags set, the server returns FLAGS () and
+// FetchMessageBuffer.Flags is nil (not []imap.Flag{}).  We normalise this
+// to an empty non-nil slice so callers can distinguish "message found,
+// no flags" from "message not found (nil return)".
+func (c *prodConn) UIDFetchFlags(_ context.Context, uid imap.UID) ([]imap.Flag, error) {
+	var uidSet imap.UIDSet
+	uidSet.AddNum(uid)
+	cmd := c.client.Fetch(uidSet, &imap.FetchOptions{Flags: true, UID: true})
+	bufs, err := cmd.Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imapimport: UID FETCH FLAGS: %w", err)
+	}
+	if len(bufs) == 0 {
+		return nil, nil
+	}
+	if bufs[0].Flags == nil {
+		return []imap.Flag{}, nil
+	}
+	return bufs[0].Flags, nil
+}
+
+// UIDStoreFlags applies a flag delta to the message identified by uid.
+// op must be StoreFlagsAdd or StoreFlagsDel. REQ-IMAP-IMP-40/42.
+func (c *prodConn) UIDStoreFlags(_ context.Context, uid imap.UID, op imap.StoreFlagsOp, flags []imap.Flag) error {
+	var uidSet imap.UIDSet
+	uidSet.AddNum(uid)
+	sf := &imap.StoreFlags{
+		Op:     op,
+		Silent: true,
+		Flags:  flags,
+	}
+	cmd := c.client.Store(uidSet, sf, nil)
+	if err := cmd.Close(); err != nil {
+		return fmt.Errorf("imapimport: UID STORE flags: %w", err)
+	}
+	return nil
+}
+
+// UIDMove moves the message to destMailbox. The imapclient.Move method
+// already implements the COPY+STORE+EXPUNGE fallback for servers without
+// the MOVE extension. REQ-IMAP-IMP-43.
+func (c *prodConn) UIDMove(_ context.Context, uid imap.UID, destMailbox string) error {
+	var uidSet imap.UIDSet
+	uidSet.AddNum(uid)
+	_, err := c.client.Move(uidSet, destMailbox).Wait()
+	if err != nil {
+		return fmt.Errorf("imapimport: UID MOVE -> %q: %w", destMailbox, err)
+	}
+	return nil
+}
+
+// UIDExpunge expunges the given UID from the currently-selected mailbox.
+// When the server advertises UIDPLUS, uses UID EXPUNGE; otherwise falls back
+// to plain EXPUNGE. REQ-IMAP-IMP-44.
+func (c *prodConn) UIDExpunge(_ context.Context, uid imap.UID) error {
+	var uidSet imap.UIDSet
+	uidSet.AddNum(uid)
+	// imapclient.UIDExpunge emits UID EXPUNGE when the server supports UIDPLUS;
+	// plain Expunge is the fallback.
+	if c.client.Caps().Has(imap.CapUIDPlus) {
+		if err := c.client.UIDExpunge(uidSet).Close(); err != nil {
+			return fmt.Errorf("imapimport: UID EXPUNGE: %w", err)
+		}
+		return nil
+	}
+	if err := c.client.Expunge().Close(); err != nil {
+		return fmt.Errorf("imapimport: EXPUNGE: %w", err)
+	}
+	return nil
+}
+
+// Noop issues an IMAP NOOP and waits for the server response.
+// REQ-IMAP-IMP-23.
+func (c *prodConn) Noop(_ context.Context) error {
+	if err := c.client.Noop().Wait(); err != nil {
+		return fmt.Errorf("imapimport: NOOP: %w", err)
+	}
+	return nil
+}
+
+// prodIdleHandle wraps imapclient.IdleCommand and satisfies idleHandle.
+// The Wait method blocks until:
+//   - an unsolicited update arrives via the notify channel (returns nil), or
+//   - Close is called (returns nil), or
+//   - the connection drops / IDLE ends unexpectedly (returns an error).
+type prodIdleHandle struct {
+	cmd    *imapclient.IdleCommand
+	notify chan struct{}
+	// done is closed when the underlying IdleCommand completes.
+	done chan error
+}
+
+// Idle starts an IDLE command. The returned idleHandle.Wait blocks until an
+// unsolicited EXISTS / EXPUNGE / FETCH update arrives or Close is called.
+// REQ-IMAP-IMP-20.
+func (c *prodConn) Idle(_ context.Context) (idleHandle, error) {
+	cmd, err := c.client.Idle()
+	if err != nil {
+		return nil, fmt.Errorf("imapimport: IDLE: %w", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	return &prodIdleHandle{cmd: cmd, notify: c.notify, done: done}, nil
+}
+
+// Wait blocks until an unsolicited update arrives or IDLE ends unexpectedly.
+// Returns nil on a clean wake (update received or Close already called).
+func (h *prodIdleHandle) Wait() error {
+	select {
+	case <-h.notify:
+		return nil
+	case err := <-h.done:
+		// Re-queue so a subsequent Wait (if any) also sees the terminal state.
+		h.done <- err
+		return err
+	}
+}
+
+// Close stops the IDLE command (sends DONE to the server).
+func (h *prodIdleHandle) Close() error {
+	err := h.cmd.Close()
+	// Drain done so the goroutine in Idle() doesn't leak.
+	select {
+	case <-h.done:
+	default:
+	}
+	return err
 }
