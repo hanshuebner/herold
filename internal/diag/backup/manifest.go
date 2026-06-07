@@ -331,7 +331,14 @@ const CurrentBackupVersion = 1
 //	for the management list and idx_file_shares_state_expires
 //	(state, expires_at_us) for the sweeper. Cap and quota enforcement
 //	live in the store helpers (REQ-SHARE-12, REQ-SHARE-50).
-const CurrentSchemaVersion = 55
+//
+// 56 — 0056_jmap_states_file_share.sql (REQ-SHARE-40..44).
+//
+//	Adds file_share_state to jmap_states, the per-principal JMAP state
+//	counter bumped on every FileShare/set create/update/destroy so
+//	clients track drift via FileShare/changes. No new table; defaults
+//	to 0 so existing rows remain valid.
+const CurrentSchemaVersion = 56
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

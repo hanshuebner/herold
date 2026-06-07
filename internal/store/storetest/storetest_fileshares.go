@@ -832,3 +832,337 @@ func testFileShareMaxDownloads(t *testing.T, s store.Store) {
 		t.Fatalf("GetByID.MaxDownloads = %v, want 2", got.MaxDownloads)
 	}
 }
+
+// --- REQ-SHARE-42: UpdateFileShareExpiry compliance tests -----------------
+
+func testFileShareUpdateExpiryShorten(t *testing.T, s store.Store) {
+	// Successful shorten: newExpiry in the future and before current ExpiresAt.
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-expiry-shorten@example.com")
+	hash, size := putShareBlob(t, s, "expiry shorten blob")
+
+	fs := mustCreateShare(t, s, p.ID, hash, size, "f.bin", "application/octet-stream")
+	cfg := defaultShareConfig()
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg)
+	if err != nil {
+		t.Fatalf("ConfirmFileShare: %v", err)
+	}
+
+	// Shorten by a week — must succeed.
+	newExpiry := active.ExpiresAt.Add(-7 * 24 * time.Hour)
+	if err := s.Meta().UpdateFileShareExpiry(ctx, p.ID, fs.ID, newExpiry); err != nil {
+		t.Fatalf("UpdateFileShareExpiry (shorten): %v", err)
+	}
+
+	got, err := s.Meta().GetFileShareByID(ctx, fs.ID)
+	if err != nil {
+		t.Fatalf("GetFileShareByID after shorten: %v", err)
+	}
+	// Allow 1-second rounding slack from microsecond storage.
+	diff := got.ExpiresAt.Sub(newExpiry)
+	if diff < -time.Second || diff > time.Second {
+		t.Fatalf("ExpiresAt after shorten = %v, want ~%v (diff %v)", got.ExpiresAt, newExpiry, diff)
+	}
+}
+
+func testFileShareUpdateExpiryRejectNotShortening(t *testing.T, s store.Store) {
+	// Reject when newExpiry == current ExpiresAt (not shorter).
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-expiry-not-short@example.com")
+	hash, size := putShareBlob(t, s, "not shorter blob")
+
+	fs := mustCreateShare(t, s, p.ID, hash, size, "f.bin", "application/octet-stream")
+	cfg := defaultShareConfig()
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg)
+	if err != nil {
+		t.Fatalf("ConfirmFileShare: %v", err)
+	}
+
+	// Same instant as current: must fail.
+	err = s.Meta().UpdateFileShareExpiry(ctx, p.ID, fs.ID, active.ExpiresAt)
+	if !errors.Is(err, store.ErrShareExpiryNotShortenable) {
+		t.Fatalf("UpdateFileShareExpiry(same expiry) = %v, want ErrShareExpiryNotShortenable", err)
+	}
+}
+
+func testFileShareUpdateExpiryRejectExtend(t *testing.T, s store.Store) {
+	// Reject when newExpiry is after current ExpiresAt (extension attempt).
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-expiry-extend@example.com")
+	hash, size := putShareBlob(t, s, "extend blob")
+
+	fs := mustCreateShare(t, s, p.ID, hash, size, "f.bin", "application/octet-stream")
+	cfg := defaultShareConfig()
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg)
+	if err != nil {
+		t.Fatalf("ConfirmFileShare: %v", err)
+	}
+
+	extended := active.ExpiresAt.Add(24 * time.Hour)
+	err = s.Meta().UpdateFileShareExpiry(ctx, p.ID, fs.ID, extended)
+	if !errors.Is(err, store.ErrShareExpiryNotShortenable) {
+		t.Fatalf("UpdateFileShareExpiry(extend) = %v, want ErrShareExpiryNotShortenable", err)
+	}
+}
+
+func testFileShareUpdateExpiryWrongPrincipal(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "share-expiry-owner@example.com")
+	other := mustInsertPrincipal(t, s, "share-expiry-other@example.com")
+	hash, size := putShareBlob(t, s, "wrong principal expiry blob")
+
+	fs := mustCreateShare(t, s, owner.ID, hash, size, "f.bin", "application/octet-stream")
+	cfg := defaultShareConfig()
+	active, err := s.Meta().ConfirmFileShare(ctx, owner.ID, fs.ID, cfg)
+	if err != nil {
+		t.Fatalf("ConfirmFileShare: %v", err)
+	}
+
+	newExpiry := active.ExpiresAt.Add(-time.Hour)
+	err = s.Meta().UpdateFileShareExpiry(ctx, other.ID, fs.ID, newExpiry)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("UpdateFileShareExpiry(wrong principal) = %v, want ErrNotFound", err)
+	}
+}
+
+func testFileShareUpdateExpiryRevokedShare(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-expiry-revoked@example.com")
+	hash, size := putShareBlob(t, s, "revoked expiry blob")
+
+	fs := mustCreateShare(t, s, p.ID, hash, size, "f.bin", "application/octet-stream")
+	cfg := defaultShareConfig()
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg)
+	if err != nil {
+		t.Fatalf("ConfirmFileShare: %v", err)
+	}
+	if err := s.Meta().RevokeFileShare(ctx, p.ID, fs.ID); err != nil {
+		t.Fatalf("RevokeFileShare: %v", err)
+	}
+
+	newExpiry := active.ExpiresAt.Add(-time.Hour)
+	err = s.Meta().UpdateFileShareExpiry(ctx, p.ID, fs.ID, newExpiry)
+	if !errors.Is(err, store.ErrShareNotConfirmable) {
+		t.Fatalf("UpdateFileShareExpiry(revoked) = %v, want ErrShareNotConfirmable", err)
+	}
+}
+
+// --- REQ-SHARE-42: UpdateFileShareMaxDownloads compliance tests -----------
+
+func testFileShareUpdateMaxDownloadsLower(t *testing.T, s store.Store) {
+	// Successful lower: newMax < current MaxDownloads and >= download_count.
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-maxdl-lower@example.com")
+	hash, size := putShareBlob(t, s, "lower max dl blob")
+
+	var maxDL int64 = 10
+	cfg := defaultShareConfig()
+	fs, err := s.Meta().CreateFileShare(ctx, store.FileShareCreate{
+		PrincipalID:  p.ID,
+		BlobHash:     hash,
+		BlobSize:     size,
+		Filename:     "lower.bin",
+		ContentType:  "application/octet-stream",
+		PendingTTL:   cfg.PendingTTL,
+		MaxDownloads: &maxDL,
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatalf("CreateFileShare: %v", err)
+	}
+
+	if err := s.Meta().UpdateFileShareMaxDownloads(ctx, p.ID, fs.ID, 5); err != nil {
+		t.Fatalf("UpdateFileShareMaxDownloads(lower): %v", err)
+	}
+
+	got, err := s.Meta().GetFileShareByID(ctx, fs.ID)
+	if err != nil {
+		t.Fatalf("GetFileShareByID after lower: %v", err)
+	}
+	if got.MaxDownloads == nil || *got.MaxDownloads != 5 {
+		t.Fatalf("MaxDownloads after lower = %v, want 5", got.MaxDownloads)
+	}
+}
+
+func testFileShareUpdateMaxDownloadsRejectRaise(t *testing.T, s store.Store) {
+	// Reject when newMax >= current MaxDownloads.
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-maxdl-raise@example.com")
+	hash, size := putShareBlob(t, s, "raise max dl blob")
+
+	var maxDL int64 = 5
+	cfg := defaultShareConfig()
+	fs, err := s.Meta().CreateFileShare(ctx, store.FileShareCreate{
+		PrincipalID:  p.ID,
+		BlobHash:     hash,
+		BlobSize:     size,
+		Filename:     "raise.bin",
+		ContentType:  "application/octet-stream",
+		PendingTTL:   cfg.PendingTTL,
+		MaxDownloads: &maxDL,
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatalf("CreateFileShare: %v", err)
+	}
+
+	// Same value: must fail.
+	if err := s.Meta().UpdateFileShareMaxDownloads(ctx, p.ID, fs.ID, 5); !errors.Is(err, store.ErrShareMaxDownloadsNotLowerable) {
+		t.Fatalf("UpdateFileShareMaxDownloads(same) = %v, want ErrShareMaxDownloadsNotLowerable", err)
+	}
+
+	// Higher value: must fail.
+	if err := s.Meta().UpdateFileShareMaxDownloads(ctx, p.ID, fs.ID, 10); !errors.Is(err, store.ErrShareMaxDownloadsNotLowerable) {
+		t.Fatalf("UpdateFileShareMaxDownloads(raise) = %v, want ErrShareMaxDownloadsNotLowerable", err)
+	}
+}
+
+func testFileShareUpdateMaxDownloadsRejectBelowDownloadCount(t *testing.T, s store.Store) {
+	// Reject when newMax < current download_count.
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-maxdl-belowcount@example.com")
+	hash, size := putShareBlob(t, s, "below count blob")
+
+	var maxDL int64 = 10
+	cfg := defaultShareConfig()
+	fs, err := s.Meta().CreateFileShare(ctx, store.FileShareCreate{
+		PrincipalID:  p.ID,
+		BlobHash:     hash,
+		BlobSize:     size,
+		Filename:     "count.bin",
+		ContentType:  "application/octet-stream",
+		PendingTTL:   cfg.PendingTTL,
+		MaxDownloads: &maxDL,
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatalf("CreateFileShare: %v", err)
+	}
+
+	// Record 3 downloads.
+	for i := 0; i < 3; i++ {
+		if _, err := s.Meta().RecordFileShareDownload(ctx, fs.ID); err != nil {
+			t.Fatalf("RecordFileShareDownload #%d: %v", i+1, err)
+		}
+	}
+
+	// newMax = 2 < download_count 3: must fail.
+	if err := s.Meta().UpdateFileShareMaxDownloads(ctx, p.ID, fs.ID, 2); !errors.Is(err, store.ErrShareMaxDownloadsNotLowerable) {
+		t.Fatalf("UpdateFileShareMaxDownloads(below count) = %v, want ErrShareMaxDownloadsNotLowerable", err)
+	}
+
+	// newMax = 3 == download_count: must succeed (>= is OK, only < is rejected).
+	if err := s.Meta().UpdateFileShareMaxDownloads(ctx, p.ID, fs.ID, 3); err != nil {
+		t.Fatalf("UpdateFileShareMaxDownloads(equal to download_count): %v", err)
+	}
+}
+
+func testFileShareUpdateMaxDownloadsUnlimitedToFinite(t *testing.T, s store.Store) {
+	// When current MaxDownloads is nil (unlimited), lowering to a finite
+	// cap is allowed as long as newMax >= download_count.
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-maxdl-unlimited@example.com")
+	hash, size := putShareBlob(t, s, "unlimited blob")
+
+	// Create without max_downloads cap (unlimited).
+	cfg := defaultShareConfig()
+	fs, err := s.Meta().CreateFileShare(ctx, store.FileShareCreate{
+		PrincipalID: p.ID,
+		BlobHash:    hash,
+		BlobSize:    size,
+		Filename:    "unlimited.bin",
+		ContentType: "application/octet-stream",
+		PendingTTL:  cfg.PendingTTL,
+		Config:      cfg,
+	})
+	if err != nil {
+		t.Fatalf("CreateFileShare: %v", err)
+	}
+	if fs.MaxDownloads != nil {
+		t.Fatalf("expected unlimited share, got MaxDownloads=%v", fs.MaxDownloads)
+	}
+
+	// Record 2 downloads.
+	for i := 0; i < 2; i++ {
+		if _, err := s.Meta().RecordFileShareDownload(ctx, fs.ID); err != nil {
+			t.Fatalf("RecordFileShareDownload #%d: %v", i+1, err)
+		}
+	}
+
+	// newMax = 1 < download_count 2: must fail even when coming from unlimited.
+	if err := s.Meta().UpdateFileShareMaxDownloads(ctx, p.ID, fs.ID, 1); !errors.Is(err, store.ErrShareMaxDownloadsNotLowerable) {
+		t.Fatalf("UpdateFileShareMaxDownloads(unlimited->1 < count) = %v, want ErrShareMaxDownloadsNotLowerable", err)
+	}
+
+	// newMax = 5 >= download_count 2: must succeed.
+	if err := s.Meta().UpdateFileShareMaxDownloads(ctx, p.ID, fs.ID, 5); err != nil {
+		t.Fatalf("UpdateFileShareMaxDownloads(unlimited->5): %v", err)
+	}
+
+	got, err := s.Meta().GetFileShareByID(ctx, fs.ID)
+	if err != nil {
+		t.Fatalf("GetFileShareByID after cap: %v", err)
+	}
+	if got.MaxDownloads == nil || *got.MaxDownloads != 5 {
+		t.Fatalf("MaxDownloads after cap = %v, want 5", got.MaxDownloads)
+	}
+}
+
+func testFileShareUpdateMaxDownloadsWrongPrincipal(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "share-maxdl-owner@example.com")
+	other := mustInsertPrincipal(t, s, "share-maxdl-other@example.com")
+	hash, size := putShareBlob(t, s, "wrong principal maxdl blob")
+
+	var maxDL int64 = 10
+	cfg := defaultShareConfig()
+	fs, err := s.Meta().CreateFileShare(ctx, store.FileShareCreate{
+		PrincipalID:  owner.ID,
+		BlobHash:     hash,
+		BlobSize:     size,
+		Filename:     "f.bin",
+		ContentType:  "application/octet-stream",
+		PendingTTL:   cfg.PendingTTL,
+		MaxDownloads: &maxDL,
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatalf("CreateFileShare: %v", err)
+	}
+
+	if err := s.Meta().UpdateFileShareMaxDownloads(ctx, other.ID, fs.ID, 5); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("UpdateFileShareMaxDownloads(wrong principal) = %v, want ErrNotFound", err)
+	}
+}
+
+func testFileShareUpdateMaxDownloadsRevokedShare(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-maxdl-revoked@example.com")
+	hash, size := putShareBlob(t, s, "revoked maxdl blob")
+
+	var maxDL int64 = 10
+	cfg := defaultShareConfig()
+	fs, err := s.Meta().CreateFileShare(ctx, store.FileShareCreate{
+		PrincipalID:  p.ID,
+		BlobHash:     hash,
+		BlobSize:     size,
+		Filename:     "f.bin",
+		ContentType:  "application/octet-stream",
+		PendingTTL:   cfg.PendingTTL,
+		MaxDownloads: &maxDL,
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatalf("CreateFileShare: %v", err)
+	}
+	if _, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg); err != nil {
+		t.Fatalf("ConfirmFileShare: %v", err)
+	}
+	if err := s.Meta().RevokeFileShare(ctx, p.ID, fs.ID); err != nil {
+		t.Fatalf("RevokeFileShare: %v", err)
+	}
+
+	if err := s.Meta().UpdateFileShareMaxDownloads(ctx, p.ID, fs.ID, 5); !errors.Is(err, store.ErrShareNotConfirmable) {
+		t.Fatalf("UpdateFileShareMaxDownloads(revoked) = %v, want ErrShareNotConfirmable", err)
+	}
+}

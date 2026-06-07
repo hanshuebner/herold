@@ -1317,7 +1317,7 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			ppid, mb, em, th, ide, es, vr, sv, ab, ct, cal, ce int64
 			conv, msgChat, memb                                int64
 			pushSub, coach, catSettings, managedRule           int64
-			seenAddr, internalizeStatus                        int64
+			seenAddr, internalizeStatus, fileShare             int64
 			updatedUs                                          int64
 		)
 		err := tx.QueryRow(ctx, `
@@ -1330,11 +1330,12 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			       category_settings_state, managed_rule_state,
 			       seen_address_state,
 			       internalize_status_state,
+			       file_share_state,
 			       updated_at_us
 			  FROM jmap_states WHERE principal_id = $1`, int64(pid)).Scan(
 			&ppid, &mb, &em, &th, &ide, &es, &vr, &sv, &ab, &ct, &cal, &ce,
 			&conv, &msgChat, &memb, &pushSub, &coach, &catSettings, &managedRule,
-			&seenAddr, &internalizeStatus, &updatedUs)
+			&seenAddr, &internalizeStatus, &fileShare, &updatedUs)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -1360,6 +1361,7 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			ManagedRule:       managedRule,
 			SeenAddress:       seenAddr,
 			InternalizeStatus: internalizeStatus,
+			FileShare:         fileShare,
 			UpdatedAt:         fromMicros(updatedUs),
 		}
 		return nil
@@ -1440,6 +1442,8 @@ func jmapStateColumnPG(kind store.JMAPStateKind) (string, error) {
 		return "seen_address_state", nil
 	case store.JMAPStateKindInternalizeStatus:
 		return "internalize_status_state", nil
+	case store.JMAPStateKindFileShare:
+		return "file_share_state", nil
 	default:
 		return "", fmt.Errorf("storepg: unknown JMAPStateKind %d", kind)
 	}

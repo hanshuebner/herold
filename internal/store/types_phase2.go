@@ -1017,6 +1017,9 @@ type JMAPStates struct {
 	// the InternalizeStatus type so the SPA refreshes the
 	// urn:netzhansa:params:jmap:internalize-status session capability.
 	InternalizeStatus int64
+	// FileShare is the JMAP FileShare state (REQ-SHARE-40). Bumped on
+	// every FileShare/set create, update, or destroy.
+	FileShare int64
 	// UpdatedAt is the instant of the most recent increment.
 	UpdatedAt time.Time
 }

@@ -202,6 +202,18 @@ func Run(t *testing.T, f Factory) {
 		{"FileShare_InvalidArguments", testFileShareInvalidArguments},
 		{"FileShare_Password", testFileSharePassword},
 		{"FileShare_MaxDownloads", testFileShareMaxDownloads},
+		// -- REQ-SHARE-42: UpdateFileShareExpiry / UpdateFileShareMaxDownloads --
+		{"FileShare_UpdateExpiry_Shorten", testFileShareUpdateExpiryShorten},
+		{"FileShare_UpdateExpiry_RejectNotShortening", testFileShareUpdateExpiryRejectNotShortening},
+		{"FileShare_UpdateExpiry_RejectExtend", testFileShareUpdateExpiryRejectExtend},
+		{"FileShare_UpdateExpiry_WrongPrincipal", testFileShareUpdateExpiryWrongPrincipal},
+		{"FileShare_UpdateExpiry_RevokedShare", testFileShareUpdateExpiryRevokedShare},
+		{"FileShare_UpdateMaxDownloads_Lower", testFileShareUpdateMaxDownloadsLower},
+		{"FileShare_UpdateMaxDownloads_RejectRaise", testFileShareUpdateMaxDownloadsRejectRaise},
+		{"FileShare_UpdateMaxDownloads_RejectBelowDownloadCount", testFileShareUpdateMaxDownloadsRejectBelowDownloadCount},
+		{"FileShare_UpdateMaxDownloads_UnlimitedToFinite", testFileShareUpdateMaxDownloadsUnlimitedToFinite},
+		{"FileShare_UpdateMaxDownloads_WrongPrincipal", testFileShareUpdateMaxDownloadsWrongPrincipal},
+		{"FileShare_UpdateMaxDownloads_RevokedShare", testFileShareUpdateMaxDownloadsRevokedShare},
 		// -- Wave 2.5 (REQ-PROTO-53/56/57; REQ-STORE-34/35) --------
 		{"Mailbox_Color_RoundTrip", testMailboxColorRoundTrip},
 		{"Mailbox_Color_RejectsInvalidFormat", testMailboxColorRejectsInvalid},

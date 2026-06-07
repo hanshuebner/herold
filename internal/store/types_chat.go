@@ -416,6 +416,12 @@ const (
 	// iota chain so the contiguous-iota invariant is preserved (the
 	// jmap_states column ordering follows this enum order).
 	JMAPStateKindInternalizeStatus
+	// JMAPStateKindFileShare tracks JMAP FileShare changes (REQ-SHARE-40).
+	// Bumped on every FileShare/set create, update, or destroy. Surfaced
+	// over the EventSource push channel as the FileShare type so the
+	// suite SPA can refresh its share management view. The underlying
+	// column is jmap_states.file_share_state.
+	JMAPStateKindFileShare
 )
 
 // Chat-side server-enforced caps. CHECK constraints in SQL would

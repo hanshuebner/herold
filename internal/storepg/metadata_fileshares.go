@@ -456,3 +456,74 @@ func (m *metadata) IsFileShareBlobReferenced(ctx context.Context, hash string) (
 	}
 	return count > 0, nil
 }
+
+func (m *metadata) UpdateFileShareExpiry(ctx context.Context, principalID store.PrincipalID, id string, newExpiry time.Time) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var (
+			expiresUs int64
+			state     string
+		)
+		err := tx.QueryRow(ctx,
+			`SELECT expires_at_us, state FROM file_shares WHERE id = $1 AND principal_id = $2`,
+			id, int64(principalID)).Scan(&expiresUs, &state)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return store.ErrNotFound
+			}
+			return mapErr(err)
+		}
+		if store.FileShareState(state) == store.FileShareStateRevoked {
+			return fmt.Errorf("share %s is revoked: %w", id, store.ErrShareNotConfirmable)
+		}
+		now := m.s.clock.Now().UTC()
+		newExpiry = newExpiry.UTC()
+		if !newExpiry.After(now) {
+			return fmt.Errorf("share %s: newExpiry is not in the future: %w", id, store.ErrShareExpiryNotShortenable)
+		}
+		current := fromMicros(expiresUs)
+		if !newExpiry.Before(current) {
+			return fmt.Errorf("share %s: newExpiry %v is not before current %v: %w",
+				id, newExpiry, current, store.ErrShareExpiryNotShortenable)
+		}
+		_, err = tx.Exec(ctx,
+			`UPDATE file_shares SET expires_at_us = $1 WHERE id = $2`,
+			usMicros(newExpiry), id)
+		return mapErr(err)
+	})
+}
+
+func (m *metadata) UpdateFileShareMaxDownloads(ctx context.Context, principalID store.PrincipalID, id string, newMax int64) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var (
+			maxDownloads  *int64
+			downloadCount int64
+			state         string
+		)
+		err := tx.QueryRow(ctx,
+			`SELECT max_downloads, download_count, state FROM file_shares WHERE id = $1 AND principal_id = $2`,
+			id, int64(principalID)).Scan(&maxDownloads, &downloadCount, &state)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return store.ErrNotFound
+			}
+			return mapErr(err)
+		}
+		if store.FileShareState(state) == store.FileShareStateRevoked {
+			return fmt.Errorf("share %s is revoked: %w", id, store.ErrShareNotConfirmable)
+		}
+		// newMax must be >= download_count.
+		if newMax < downloadCount {
+			return fmt.Errorf("share %s: newMax %d < download_count %d: %w",
+				id, newMax, downloadCount, store.ErrShareMaxDownloadsNotLowerable)
+		}
+		// newMax must be strictly less than current MaxDownloads, unless current is unlimited (nil).
+		if maxDownloads != nil && newMax >= *maxDownloads {
+			return fmt.Errorf("share %s: newMax %d >= current max_downloads %d: %w",
+				id, newMax, *maxDownloads, store.ErrShareMaxDownloadsNotLowerable)
+		}
+		_, err = tx.Exec(ctx,
+			`UPDATE file_shares SET max_downloads = $1 WHERE id = $2`,
+			newMax, id)
+		return mapErr(err)
+	})
+}

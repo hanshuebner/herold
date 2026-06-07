@@ -63,6 +63,18 @@ var (
 	// be transitioned to active. Confirming an already-active share is
 	// idempotent (returns nil). REQ-SHARE-21.
 	ErrShareNotConfirmable = errors.New("store: share not confirmable")
+
+	// ErrShareExpiryNotShortenable is returned by UpdateFileShareExpiry
+	// when the requested newExpiry is not strictly earlier than the
+	// current ExpiresAt (i.e. the caller is trying to extend or keep
+	// the expiry unchanged). REQ-SHARE-42.
+	ErrShareExpiryNotShortenable = errors.New("store: share expiry not shortenable")
+
+	// ErrShareMaxDownloadsNotLowerable is returned by
+	// UpdateFileShareMaxDownloads when the requested newMax is not
+	// strictly less than the current MaxDownloads, or when newMax is
+	// below the existing DownloadCount. REQ-SHARE-42.
+	ErrShareMaxDownloadsNotLowerable = errors.New("store: share max-downloads not lowerable")
 )
 
 // Store is the composite handle every subsystem consumes to reach
@@ -2112,6 +2124,34 @@ type Metadata interface {
 	// liveness callback (REQ-STORE-12 interaction, REQ-SHARE-01) to
 	// extend the referenced set beyond message blobs.
 	IsFileShareBlobReferenced(ctx context.Context, hash string) (bool, error)
+
+	// UpdateFileShareExpiry shortens the expiry on an active or pending
+	// share owned by principalID. newExpiry must be in the future and
+	// strictly earlier than the share's current ExpiresAt (only
+	// shortening is allowed; extending is rejected).
+	//
+	// Returns ErrNotFound when the share does not exist or is owned by a
+	// different principal.
+	// Returns ErrShareNotConfirmable when the share is in state revoked.
+	// Returns ErrShareExpiryNotShortenable when newExpiry >= current
+	// ExpiresAt or newExpiry is not in the future.
+	// REQ-SHARE-42.
+	UpdateFileShareExpiry(ctx context.Context, principalID PrincipalID, id string, newExpiry time.Time) error
+
+	// UpdateFileShareMaxDownloads lowers the max-downloads cap on an
+	// active or pending share owned by principalID. newMax must be
+	// strictly less than the current MaxDownloads value and must not be
+	// below the current DownloadCount. When the current MaxDownloads is
+	// nil (unlimited), lowering to any newMax >= DownloadCount is
+	// allowed.
+	//
+	// Returns ErrNotFound when the share does not exist or is owned by a
+	// different principal.
+	// Returns ErrShareNotConfirmable when the share is in state revoked.
+	// Returns ErrShareMaxDownloadsNotLowerable when newMax >= current
+	// MaxDownloads or newMax < current DownloadCount.
+	// REQ-SHARE-42.
+	UpdateFileShareMaxDownloads(ctx context.Context, principalID PrincipalID, id string, newMax int64) error
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical
