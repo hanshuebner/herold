@@ -994,17 +994,20 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 		return enumerate(ctx, s.tx,
 			`SELECT id, principal_id, blob_hash, blob_size, filename, content_type,
 			        created_at_us, expires_at_us, max_downloads, download_count,
-			        password_hash, state, last_downloaded_at_us, revoked_at_us
+			        password_hash, state, last_downloaded_at_us, revoked_at_us,
+			        source_message_id, source_subject, source_recipients
 			   FROM file_shares ORDER BY id`,
 			func(rs *sql.Rows) (any, error) {
 				var r FileShareRow
 				var maxDL sql.NullInt64
 				var ph sql.NullString
 				var lastDL, revokedAt sql.NullInt64
+				var srcMsgID, srcSubj, srcRcp sql.NullString
 				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.BlobHash, &r.BlobSize,
 					&r.Filename, &r.ContentType,
 					&r.CreatedAtUs, &r.ExpiresAtUs, &maxDL, &r.DownloadCount,
-					&ph, &r.State, &lastDL, &revokedAt); err != nil {
+					&ph, &r.State, &lastDL, &revokedAt,
+					&srcMsgID, &srcSubj, &srcRcp); err != nil {
 					return nil, err
 				}
 				if maxDL.Valid {
@@ -1018,6 +1021,15 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				if revokedAt.Valid {
 					r.RevokedAtUs = &revokedAt.Int64
+				}
+				if srcMsgID.Valid {
+					r.SourceMessageID = &srcMsgID.String
+				}
+				if srcSubj.Valid {
+					r.SourceSubject = &srcSubj.String
+				}
+				if srcRcp.Valid {
+					r.SourceRecipients = &srcRcp.String
 				}
 				return &r, nil
 			}, fn)
@@ -1750,11 +1762,13 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			`INSERT INTO file_shares
 			   (id, principal_id, blob_hash, blob_size, filename, content_type,
 			    created_at_us, expires_at_us, max_downloads, download_count,
-			    password_hash, state, last_downloaded_at_us, revoked_at_us)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			    password_hash, state, last_downloaded_at_us, revoked_at_us,
+			    source_message_id, source_subject, source_recipients)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.PrincipalID, r.BlobHash, r.BlobSize, r.Filename, r.ContentType,
 			r.CreatedAtUs, r.ExpiresAtUs, r.MaxDownloads, r.DownloadCount,
-			r.PasswordHash, r.State, r.LastDownloadedAtUs, r.RevokedAtUs)
+			r.PasswordHash, r.State, r.LastDownloadedAtUs, r.RevokedAtUs,
+			r.SourceMessageID, r.SourceSubject, r.SourceRecipients)
 		return err
 	case "blob_refs":
 		r := row.(*BlobRefRow)

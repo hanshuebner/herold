@@ -2,6 +2,7 @@ package storepg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -22,7 +23,8 @@ import (
 const fileShareSelectColsPG = `
 	id, principal_id, blob_hash, blob_size, filename, content_type,
 	created_at_us, expires_at_us, max_downloads, download_count,
-	password_hash, state, last_downloaded_at_us, revoked_at_us`
+	password_hash, state, last_downloaded_at_us, revoked_at_us,
+	source_message_id, source_subject, source_recipients`
 
 func scanFileSharePG(row rowLike) (store.FileShare, error) {
 	var (
@@ -34,11 +36,15 @@ func scanFileSharePG(row rowLike) (store.FileShare, error) {
 		passwordHash                               *string
 		lastDownloadedUs                           *int64
 		revokedUs                                  *int64
+		srcMessageID                               *string
+		srcSubject                                 *string
+		srcRecipients                              *string
 	)
 	if err := row.Scan(
 		&id, &pid, &blobHash, &blobSize, &filename, &contentType,
 		&createdUs, &expiresUs, &maxDownloads, &downloadCount,
 		&passwordHash, &state, &lastDownloadedUs, &revokedUs,
+		&srcMessageID, &srcSubject, &srcRecipients,
 	); err != nil {
 		return store.FileShare{}, mapErr(err)
 	}
@@ -68,6 +74,19 @@ func scanFileSharePG(row rowLike) (store.FileShare, error) {
 	if revokedUs != nil {
 		t := fromMicros(*revokedUs)
 		fs.RevokedAt = &t
+	}
+	if srcMessageID != nil {
+		fs.SourceMessageID = *srcMessageID
+	}
+	if srcSubject != nil {
+		fs.SourceSubject = *srcSubject
+	}
+	if srcRecipients != nil && *srcRecipients != "" {
+		var recipients []string
+		if err := json.Unmarshal([]byte(*srcRecipients), &recipients); err != nil {
+			return store.FileShare{}, fmt.Errorf("storepg: decode source_recipients: %w", err)
+		}
+		fs.SourceRecipients = recipients
 	}
 	return fs, nil
 }
@@ -189,7 +208,7 @@ func (m *metadata) CreateFileShare(ctx context.Context, req store.FileShareCreat
 	return fs, nil
 }
 
-func (m *metadata) ConfirmFileShare(ctx context.Context, principalID store.PrincipalID, id string, cfg store.FileSharesConfig) (store.FileShare, error) {
+func (m *metadata) ConfirmFileShare(ctx context.Context, principalID store.PrincipalID, id string, cfg store.FileSharesConfig, source store.FileShareSource) (store.FileShare, error) {
 	var fs store.FileShare
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
 		row := tx.QueryRow(ctx,
@@ -205,7 +224,14 @@ func (m *metadata) ConfirmFileShare(ctx context.Context, principalID store.Princ
 		}
 		switch fs.State {
 		case store.FileShareStateActive:
-			return nil // idempotent (REQ-SHARE-21)
+			// Idempotent (REQ-SHARE-21). Update source columns when a
+			// non-zero source is provided on a re-confirm.
+			if !source.IsZero() {
+				if err := updateFileShareSourcePG(ctx, tx, id, source, &fs); err != nil {
+					return err
+				}
+			}
+			return nil
 		case store.FileShareStateRevoked:
 			return fmt.Errorf("share %s is revoked: %w", id, store.ErrShareNotConfirmable)
 		case store.FileShareStatePending:
@@ -221,10 +247,41 @@ func (m *metadata) ConfirmFileShare(ctx context.Context, principalID store.Princ
 			newExpires = maxExpires
 		}
 
-		if _, err := tx.Exec(ctx,
-			`UPDATE file_shares SET state = 'active', expires_at_us = $1 WHERE id = $2`,
-			usMicros(newExpires), id); err != nil {
-			return mapErr(err)
+		if !source.IsZero() {
+			recipientsJSON, err := json.Marshal(source.Recipients)
+			if err != nil {
+				return fmt.Errorf("storepg: encode source_recipients: %w", err)
+			}
+			var srcMsgID, srcSubj, srcRcp *string
+			if source.MessageID != "" {
+				srcMsgID = &source.MessageID
+			}
+			if source.Subject != "" {
+				srcSubj = &source.Subject
+			}
+			if len(source.Recipients) > 0 {
+				s := string(recipientsJSON)
+				srcRcp = &s
+			}
+			if _, err := tx.Exec(ctx,
+				`UPDATE file_shares
+				    SET state = 'active', expires_at_us = $1,
+				        source_message_id = $2, source_subject = $3, source_recipients = $4
+				  WHERE id = $5`,
+				usMicros(newExpires), srcMsgID, srcSubj, srcRcp, id); err != nil {
+				return mapErr(err)
+			}
+			fs.SourceMessageID = source.MessageID
+			fs.SourceSubject = source.Subject
+			if len(source.Recipients) > 0 {
+				fs.SourceRecipients = source.Recipients
+			}
+		} else {
+			if _, err := tx.Exec(ctx,
+				`UPDATE file_shares SET state = 'active', expires_at_us = $1 WHERE id = $2`,
+				usMicros(newExpires), id); err != nil {
+				return mapErr(err)
+			}
 		}
 		fs.State = store.FileShareStateActive
 		fs.ExpiresAt = newExpires
@@ -234,6 +291,39 @@ func (m *metadata) ConfirmFileShare(ctx context.Context, principalID store.Princ
 		return store.FileShare{}, err
 	}
 	return fs, nil
+}
+
+// updateFileShareSourcePG writes source columns on an already-active share
+// when the caller provides a non-zero source on a re-confirm.
+func updateFileShareSourcePG(ctx context.Context, tx pgx.Tx, id string, source store.FileShareSource, fs *store.FileShare) error {
+	recipientsJSON, err := json.Marshal(source.Recipients)
+	if err != nil {
+		return fmt.Errorf("storepg: encode source_recipients: %w", err)
+	}
+	var srcMsgID, srcSubj, srcRcp *string
+	if source.MessageID != "" {
+		srcMsgID = &source.MessageID
+	}
+	if source.Subject != "" {
+		srcSubj = &source.Subject
+	}
+	if len(source.Recipients) > 0 {
+		s := string(recipientsJSON)
+		srcRcp = &s
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE file_shares
+		    SET source_message_id = $1, source_subject = $2, source_recipients = $3
+		  WHERE id = $4`,
+		srcMsgID, srcSubj, srcRcp, id); err != nil {
+		return mapErr(err)
+	}
+	fs.SourceMessageID = source.MessageID
+	fs.SourceSubject = source.Subject
+	if len(source.Recipients) > 0 {
+		fs.SourceRecipients = source.Recipients
+	}
+	return nil
 }
 
 func (m *metadata) RevokeFileShare(ctx context.Context, principalID store.PrincipalID, id string) error {

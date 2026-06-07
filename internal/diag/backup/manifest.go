@@ -338,7 +338,20 @@ const CurrentBackupVersion = 1
 //	counter bumped on every FileShare/set create/update/destroy so
 //	clients track drift via FileShare/changes. No new table; defaults
 //	to 0 so existing rows remain valid.
-const CurrentSchemaVersion = 56
+//
+// 57 — 0057_file_shares_source.sql (REQ-SHARE-04).
+//
+//	Adds three nullable message back-reference columns to file_shares:
+//	source_message_id TEXT NULL (JMAP Email id / store message id of
+//	the originating message; soft reference, no FK so the snapshot
+//	survives message deletion), source_subject TEXT NULL (subject line
+//	snapshot), source_recipients TEXT NULL (JSON array of To+Cc+Bcc
+//	recipient email addresses). All three are populated atomically on
+//	the pending -> active transition by ConfirmFileShare when the
+//	caller supplies a non-zero FileShareSource. NULL while pending or
+//	when the caller supplied no context. Recipient-facing surfaces
+//	MUST NOT expose these columns.
+const CurrentSchemaVersion = 57
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

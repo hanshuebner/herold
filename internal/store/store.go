@@ -2077,11 +2077,17 @@ type Metadata interface {
 	CreateFileShare(ctx context.Context, req FileShareCreate) (FileShare, error)
 
 	// ConfirmFileShare transitions a pending share to active, resetting
-	// expires_at to now+DefaultTTL clamped to now+MaxTTL. Idempotent on
-	// already-active shares (returns the current row, nil error).
-	// Returns ErrShareNotConfirmable when the share is revoked or
-	// does not exist. REQ-SHARE-20, REQ-SHARE-21.
-	ConfirmFileShare(ctx context.Context, principalID PrincipalID, id string, cfg FileSharesConfig) (FileShare, error)
+	// expires_at to now+DefaultTTL clamped to now+MaxTTL. The source
+	// argument carries the optional message back-reference (REQ-SHARE-04):
+	// when source is non-zero, source_message_id, source_subject, and
+	// source_recipients are persisted atomically with the state transition.
+	// A zero-value source leaves the columns NULL. Re-confirming an already
+	// active share is idempotent (returns the current row, nil error); the
+	// source columns are updated only when source is non-zero so a re-confirm
+	// with an empty source does not wipe a previously-stored context.
+	// Returns ErrShareNotConfirmable when the share is revoked or does not
+	// exist. REQ-SHARE-04, REQ-SHARE-20, REQ-SHARE-21.
+	ConfirmFileShare(ctx context.Context, principalID PrincipalID, id string, cfg FileSharesConfig, source FileShareSource) (FileShare, error)
 
 	// RevokeFileShare transitions a share to revoked and stamps
 	// revoked_at. Returns ErrNotFound when the share does not exist or

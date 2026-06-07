@@ -56,6 +56,13 @@ type jmapFileShare struct {
 	// LastDownloadedAt is the instant of the most recent download, or
 	// null when no download has occurred.
 	LastDownloadedAt *string `json:"lastDownloadedAt"`
+	// SourceMessageId / SourceSubject / SourceRecipients are the
+	// owner-only message back-reference (REQ-SHARE-04), captured at
+	// confirmation. Null/empty while pending. Never exposed on the
+	// recipient-facing surfaces.
+	SourceMessageID  *string  `json:"sourceMessageId"`
+	SourceSubject    *string  `json:"sourceSubject"`
+	SourceRecipients []string `json:"sourceRecipients,omitempty"`
 }
 
 // recordToJMAP converts a store.FileShare to the wire form.
@@ -79,5 +86,14 @@ func recordToJMAP(fs store.FileShare, publicBaseURL string) jmapFileShare {
 		s := jmapUTCDate(*fs.LastDownloadedAt)
 		wire.LastDownloadedAt = &s
 	}
+	if fs.SourceMessageID != "" {
+		v := fs.SourceMessageID
+		wire.SourceMessageID = &v
+	}
+	if fs.SourceSubject != "" {
+		v := fs.SourceSubject
+		wire.SourceSubject = &v
+	}
+	wire.SourceRecipients = fs.SourceRecipients
 	return wire
 }

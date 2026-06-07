@@ -521,6 +521,11 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		State        *string `json:"state,omitempty"`
 		ExpiresAt    *string `json:"expiresAt,omitempty"`
 		MaxDownloads *int64  `json:"maxDownloads,omitempty"`
+		// Message back-reference (REQ-SHARE-04), accepted only alongside
+		// the confirm transition (state:"active").
+		SourceMessageID  *string  `json:"sourceMessageId,omitempty"`
+		SourceSubject    *string  `json:"sourceSubject,omitempty"`
+		SourceRecipients []string `json:"sourceRecipients,omitempty"`
 	}
 
 	for id, raw := range req.Update {
@@ -545,8 +550,9 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		badProp := ""
 		for k := range rawMap {
 			switch k {
-			case "state", "expiresAt", "maxDownloads":
-				// Mutable.
+			case "state", "expiresAt", "maxDownloads",
+				"sourceMessageId", "sourceSubject", "sourceRecipients":
+				// Mutable (the source fields only take effect on confirm).
 			case "id", "blobId", "name", "type", "size", "url",
 				"createdAt", "hasPassword", "downloadCount", "lastDownloadedAt":
 				badProp = k
@@ -578,50 +584,85 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			continue
 		}
 
-		// state: only "active" is accepted (confirm transition).
+		// state: "active" confirms a pending share; "revoked" revokes an
+		// active one (the row survives so it shows as revoked until the
+		// sweeper reaps it, REQ-SHARE-22).
 		if in.State != nil {
-			if *in.State != string(store.FileShareStateActive) {
+			switch *in.State {
+			case string(store.FileShareStateActive):
+				var source store.FileShareSource
+				if in.SourceMessageID != nil {
+					source.MessageID = *in.SourceMessageID
+				}
+				if in.SourceSubject != nil {
+					source.Subject = *in.SourceSubject
+				}
+				source.Recipients = in.SourceRecipients
+				confirmed, cerr := s.h.store.Meta().ConfirmFileShare(ctx, p.ID, id, s.h.cfg, source)
+				if cerr != nil {
+					if errors.Is(cerr, store.ErrShareNotConfirmable) {
+						if resp.NotUpdated == nil {
+							resp.NotUpdated = make(map[jmapID]setError)
+						}
+						resp.NotUpdated[id] = setError{
+							Type:        "shareNotConfirmable",
+							Description: "share is revoked or does not exist",
+						}
+						continue
+					}
+					if errors.Is(cerr, store.ErrNotFound) {
+						if resp.NotUpdated == nil {
+							resp.NotUpdated = make(map[jmapID]setError)
+						}
+						resp.NotUpdated[id] = setError{Type: "notFound"}
+						continue
+					}
+					return nil, protojmap.NewMethodError("serverFail", cerr.Error())
+				}
+				jrow := recordToJMAP(confirmed, s.h.publicBaseURL)
+				if resp.Updated == nil {
+					resp.Updated = make(map[jmapID]*jmapFileShare)
+				}
+				resp.Updated[id] = &jrow
+				mutated = true
+				s.audit(ctx, p, "file_share.confirm", id, map[string]string{
+					"blob_hash": confirmed.BlobHash,
+				})
+				continue
+			case string(store.FileShareStateRevoked):
+				if rerr := s.h.store.Meta().RevokeFileShare(ctx, p.ID, id); rerr != nil {
+					if resp.NotUpdated == nil {
+						resp.NotUpdated = make(map[jmapID]setError)
+					}
+					if errors.Is(rerr, store.ErrNotFound) {
+						resp.NotUpdated[id] = setError{Type: "notFound"}
+						continue
+					}
+					return nil, protojmap.NewMethodError("serverFail", rerr.Error())
+				}
+				revoked, gerr := s.h.store.Meta().GetFileShareByID(ctx, id)
+				if gerr != nil {
+					return nil, protojmap.NewMethodError("serverFail", gerr.Error())
+				}
+				jrow := recordToJMAP(revoked, s.h.publicBaseURL)
+				if resp.Updated == nil {
+					resp.Updated = make(map[jmapID]*jmapFileShare)
+				}
+				resp.Updated[id] = &jrow
+				mutated = true
+				s.audit(ctx, p, "file_share.revoke", id, nil)
+				continue
+			default:
 				if resp.NotUpdated == nil {
 					resp.NotUpdated = make(map[jmapID]setError)
 				}
 				resp.NotUpdated[id] = setError{
 					Type:        "invalidProperties",
 					Properties:  []string{"state"},
-					Description: "state may only be set to active (confirm)",
+					Description: "state may only be set to active (confirm) or revoked",
 				}
 				continue
 			}
-			confirmed, cerr := s.h.store.Meta().ConfirmFileShare(ctx, p.ID, id, s.h.cfg)
-			if cerr != nil {
-				if errors.Is(cerr, store.ErrShareNotConfirmable) {
-					if resp.NotUpdated == nil {
-						resp.NotUpdated = make(map[jmapID]setError)
-					}
-					resp.NotUpdated[id] = setError{
-						Type:        "shareNotConfirmable",
-						Description: "share is revoked or does not exist",
-					}
-					continue
-				}
-				if errors.Is(cerr, store.ErrNotFound) {
-					if resp.NotUpdated == nil {
-						resp.NotUpdated = make(map[jmapID]setError)
-					}
-					resp.NotUpdated[id] = setError{Type: "notFound"}
-					continue
-				}
-				return nil, protojmap.NewMethodError("serverFail", cerr.Error())
-			}
-			jrow := recordToJMAP(confirmed, s.h.publicBaseURL)
-			if resp.Updated == nil {
-				resp.Updated = make(map[jmapID]*jmapFileShare)
-			}
-			resp.Updated[id] = &jrow
-			mutated = true
-			s.audit(ctx, p, "file_share.confirm", id, map[string]string{
-				"blob_hash": confirmed.BlobHash,
-			})
-			continue
 		}
 
 		// expiresAt: only shortening is allowed.

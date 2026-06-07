@@ -739,8 +739,9 @@ type TaggedAddressDismissalRow struct {
 }
 
 // FileShareRow mirrors the file_shares table introduced in migration
-// 0055 (REQ-SHARE-01..23, REQ-SHARE-10). One row per owner-scoped,
-// TTL-bounded share of a content-addressed blob.
+// 0055 (REQ-SHARE-01..23, REQ-SHARE-10) and extended in migration 0057
+// (REQ-SHARE-04). One row per owner-scoped, TTL-bounded share of a
+// content-addressed blob.
 type FileShareRow struct {
 	ID                 string  `json:"id"`
 	PrincipalID        int64   `json:"principal_id"`
@@ -756,6 +757,15 @@ type FileShareRow struct {
 	State              string  `json:"state"`
 	LastDownloadedAtUs *int64  `json:"last_downloaded_at_us,omitempty"`
 	RevokedAtUs        *int64  `json:"revoked_at_us,omitempty"`
+	// Message back-reference (REQ-SHARE-04, migration 0057). NULL while
+	// pending; populated atomically on the pending -> active transition.
+	// All three use omitempty so pre-0057 bundles restore without errors.
+	SourceMessageID *string `json:"source_message_id,omitempty"`
+	SourceSubject   *string `json:"source_subject,omitempty"`
+	// SourceRecipients is a JSON array of recipient email addresses
+	// (To + Cc + Bcc). Stored verbatim from the column; the backup
+	// round-trip preserves the raw JSON text.
+	SourceRecipients *string `json:"source_recipients,omitempty"`
 }
 
 // PushSubscriptionRow mirrors the push_subscription table introduced

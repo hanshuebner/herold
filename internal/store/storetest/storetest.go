@@ -214,6 +214,11 @@ func Run(t *testing.T, f Factory) {
 		{"FileShare_UpdateMaxDownloads_UnlimitedToFinite", testFileShareUpdateMaxDownloadsUnlimitedToFinite},
 		{"FileShare_UpdateMaxDownloads_WrongPrincipal", testFileShareUpdateMaxDownloadsWrongPrincipal},
 		{"FileShare_UpdateMaxDownloads_RevokedShare", testFileShareUpdateMaxDownloadsRevokedShare},
+		// -- REQ-SHARE-04: message back-reference (source) -----------
+		{"FileShare_Source_RoundTrip", testFileShareSourceRoundTrip},
+		{"FileShare_Source_EmptyLeavesNULL", testFileShareSourceEmptyLeavesNULL},
+		{"FileShare_Source_PendingIsNULL", testFileShareSourcePendingIsNULL},
+		{"FileShare_Source_ReconfirmUpdates", testFileShareSourceReconfirmUpdates},
 		// -- Wave 2.5 (REQ-PROTO-53/56/57; REQ-STORE-34/35) --------
 		{"Mailbox_Color_RoundTrip", testMailboxColorRoundTrip},
 		{"Mailbox_Color_RejectsInvalidFormat", testMailboxColorRejectsInvalid},

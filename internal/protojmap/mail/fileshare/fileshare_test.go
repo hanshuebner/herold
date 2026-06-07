@@ -486,6 +486,51 @@ func TestUpdate_RejectImmutableFields(t *testing.T) {
 	}
 }
 
+// TestUpdate_Revoke exercises the REQ-SHARE-22 revoke path: update
+// state to "revoked" marks the share revoked (the row survives so the
+// management view can show it) and the public surface then 410s.
+func TestUpdate_Revoke(t *testing.T) {
+	h, st, p := newHandlers(t)
+	blobHash := uploadBlob(t, st, []byte("revoke me"))
+
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"create": map[string]any{
+			"c1": map[string]any{"blobId": blobHash, "name": "x.txt", "type": "text/plain", "expiresIn": 3600},
+		},
+	})
+	cr, _ := setHandler{h: h}.executeAs(p, createArgs)
+	shareID := cr.(setResponse).Created["c1"].ID
+
+	// Confirm to active, then revoke.
+	confirmArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update":    map[string]any{shareID: map[string]any{"state": "active"}},
+	})
+	if _, merr := (setHandler{h: h}).executeAs(p, confirmArgs); merr != nil {
+		t.Fatalf("confirm: %v", merr)
+	}
+	revokeArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update":    map[string]any{shareID: map[string]any{"state": "revoked"}},
+	})
+	ur, merr := setHandler{h: h}.executeAs(p, revokeArgs)
+	if merr != nil {
+		t.Fatalf("revoke: %v", merr)
+	}
+	resp := ur.(setResponse)
+	if len(resp.NotUpdated) != 0 {
+		t.Fatalf("unexpected notUpdated: %v", resp.NotUpdated)
+	}
+	u, ok := resp.Updated[shareID]
+	if !ok {
+		t.Fatalf("share not in Updated")
+	}
+	if u.State != "revoked" {
+		t.Fatalf("state = %q, want revoked", u.State)
+	}
+}
+
 func TestUpdate_RejectInvalidState(t *testing.T) {
 	h, st, p := newHandlers(t)
 	blobHash := uploadBlob(t, st, []byte("state test"))
@@ -504,12 +549,12 @@ func TestUpdate_RejectInvalidState(t *testing.T) {
 	cr, _ := setHandler{h: h}.executeAs(p, createArgs)
 	shareID := cr.(setResponse).Created["c1"].ID
 
-	// Try to set state to "revoked" via /set update (not allowed —
-	// only "active" is accepted per REQ-SHARE-42).
+	// "pending" is not a valid update target — only "active" (confirm)
+	// and "revoked" are accepted.
 	updateArgs, _ := json.Marshal(map[string]any{
 		"accountId": accountID(p),
 		"update": map[string]any{
-			shareID: map[string]any{"state": "revoked"},
+			shareID: map[string]any{"state": "pending"},
 		},
 	})
 	ur, merr := setHandler{h: h}.executeAs(p, updateArgs)

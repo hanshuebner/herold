@@ -163,7 +163,7 @@ func testFileShareConfirmIdempotent(t *testing.T, s store.Store) {
 	cfg := defaultShareConfig()
 
 	// First confirm: pending -> active.
-	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg)
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
 	if err != nil {
 		t.Fatalf("ConfirmFileShare (first): %v", err)
 	}
@@ -182,7 +182,7 @@ func testFileShareConfirmIdempotent(t *testing.T, s store.Store) {
 	}
 
 	// Second confirm: idempotent, must succeed and return active.
-	active2, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg)
+	active2, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
 	if err != nil {
 		t.Fatalf("ConfirmFileShare (second, idempotent): %v", err)
 	}
@@ -203,7 +203,7 @@ func testFileShareConfirmClampedToMaxTTL(t *testing.T, s store.Store) {
 	cfg.DefaultTTL = 120 * 24 * time.Hour // 120 days (> MaxTTL 90 days)
 	cfg.MaxTTL = 90 * 24 * time.Hour
 
-	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg)
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
 	if err != nil {
 		t.Fatalf("ConfirmFileShare: %v", err)
 	}
@@ -224,14 +224,14 @@ func testFileShareConfirmRevokedFails(t *testing.T, s store.Store) {
 	cfg := defaultShareConfig()
 
 	// Confirm first, then revoke.
-	if _, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg); err != nil {
+	if _, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{}); err != nil {
 		t.Fatalf("ConfirmFileShare: %v", err)
 	}
 	if err := s.Meta().RevokeFileShare(ctx, p.ID, fs.ID); err != nil {
 		t.Fatalf("RevokeFileShare: %v", err)
 	}
 
-	_, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg)
+	_, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
 	if !errors.Is(err, store.ErrShareNotConfirmable) {
 		t.Fatalf("ConfirmFileShare(revoked) = %v, want ErrShareNotConfirmable", err)
 	}
@@ -308,7 +308,7 @@ func testFileShareGetByIDReturnsAllStates(t *testing.T, s store.Store) {
 	}
 
 	// active
-	if _, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg); err != nil {
+	if _, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{}); err != nil {
 		t.Fatalf("ConfirmFileShare: %v", err)
 	}
 	got, err = s.Meta().GetFileShareByID(ctx, fs.ID)
@@ -576,7 +576,7 @@ func testFileShareSweepExpiredActive(t *testing.T, s store.Store) {
 	// Confirm to active with a very short TTL.
 	cfg.DefaultTTL = time.Millisecond
 	cfg.MaxTTL = time.Millisecond
-	if _, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg); err != nil {
+	if _, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{}); err != nil {
 		t.Fatalf("ConfirmFileShare: %v", err)
 	}
 
@@ -604,7 +604,7 @@ func testFileShareSweepRevoked(t *testing.T, s store.Store) {
 	fs := mustCreateShare(t, s, p.ID, hash, size, "sr.bin", "application/octet-stream")
 	cfg := defaultShareConfig()
 
-	if _, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg); err != nil {
+	if _, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{}); err != nil {
 		t.Fatalf("ConfirmFileShare: %v", err)
 	}
 	if err := s.Meta().RevokeFileShare(ctx, p.ID, fs.ID); err != nil {
@@ -843,7 +843,7 @@ func testFileShareUpdateExpiryShorten(t *testing.T, s store.Store) {
 
 	fs := mustCreateShare(t, s, p.ID, hash, size, "f.bin", "application/octet-stream")
 	cfg := defaultShareConfig()
-	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg)
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
 	if err != nil {
 		t.Fatalf("ConfirmFileShare: %v", err)
 	}
@@ -873,7 +873,7 @@ func testFileShareUpdateExpiryRejectNotShortening(t *testing.T, s store.Store) {
 
 	fs := mustCreateShare(t, s, p.ID, hash, size, "f.bin", "application/octet-stream")
 	cfg := defaultShareConfig()
-	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg)
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
 	if err != nil {
 		t.Fatalf("ConfirmFileShare: %v", err)
 	}
@@ -893,7 +893,7 @@ func testFileShareUpdateExpiryRejectExtend(t *testing.T, s store.Store) {
 
 	fs := mustCreateShare(t, s, p.ID, hash, size, "f.bin", "application/octet-stream")
 	cfg := defaultShareConfig()
-	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg)
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
 	if err != nil {
 		t.Fatalf("ConfirmFileShare: %v", err)
 	}
@@ -913,7 +913,7 @@ func testFileShareUpdateExpiryWrongPrincipal(t *testing.T, s store.Store) {
 
 	fs := mustCreateShare(t, s, owner.ID, hash, size, "f.bin", "application/octet-stream")
 	cfg := defaultShareConfig()
-	active, err := s.Meta().ConfirmFileShare(ctx, owner.ID, fs.ID, cfg)
+	active, err := s.Meta().ConfirmFileShare(ctx, owner.ID, fs.ID, cfg, store.FileShareSource{})
 	if err != nil {
 		t.Fatalf("ConfirmFileShare: %v", err)
 	}
@@ -932,7 +932,7 @@ func testFileShareUpdateExpiryRevokedShare(t *testing.T, s store.Store) {
 
 	fs := mustCreateShare(t, s, p.ID, hash, size, "f.bin", "application/octet-stream")
 	cfg := defaultShareConfig()
-	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg)
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
 	if err != nil {
 		t.Fatalf("ConfirmFileShare: %v", err)
 	}
@@ -1155,7 +1155,7 @@ func testFileShareUpdateMaxDownloadsRevokedShare(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatalf("CreateFileShare: %v", err)
 	}
-	if _, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg); err != nil {
+	if _, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{}); err != nil {
 		t.Fatalf("ConfirmFileShare: %v", err)
 	}
 	if err := s.Meta().RevokeFileShare(ctx, p.ID, fs.ID); err != nil {
@@ -1164,5 +1164,201 @@ func testFileShareUpdateMaxDownloadsRevokedShare(t *testing.T, s store.Store) {
 
 	if err := s.Meta().UpdateFileShareMaxDownloads(ctx, p.ID, fs.ID, 5); !errors.Is(err, store.ErrShareNotConfirmable) {
 		t.Fatalf("UpdateFileShareMaxDownloads(revoked) = %v, want ErrShareNotConfirmable", err)
+	}
+}
+
+// --- REQ-SHARE-04: FileShareSource / message back-reference tests ----------
+
+func testFileShareSourceRoundTrip(t *testing.T, s store.Store) {
+	// Confirm with a full source; GetByID and ListByPrincipal must both
+	// surface all three fields correctly decoded.
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-src-rt@example.com")
+	hash, size := putShareBlob(t, s, "source round-trip blob")
+	cfg := defaultShareConfig()
+
+	fs := mustCreateShare(t, s, p.ID, hash, size, "src.bin", "application/octet-stream")
+
+	src := store.FileShareSource{
+		MessageID:  "msg-abc-123",
+		Subject:    "Important contract draft",
+		Recipients: []string{"alice@example.com", "bob@example.com", "carol@example.com"},
+	}
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, src)
+	if err != nil {
+		t.Fatalf("ConfirmFileShare(with source): %v", err)
+	}
+	if active.State != store.FileShareStateActive {
+		t.Fatalf("State = %q, want active", active.State)
+	}
+	if active.SourceMessageID != src.MessageID {
+		t.Fatalf("ConfirmFileShare returned SourceMessageID = %q, want %q", active.SourceMessageID, src.MessageID)
+	}
+	if active.SourceSubject != src.Subject {
+		t.Fatalf("ConfirmFileShare returned SourceSubject = %q, want %q", active.SourceSubject, src.Subject)
+	}
+	if len(active.SourceRecipients) != len(src.Recipients) {
+		t.Fatalf("ConfirmFileShare returned SourceRecipients len = %d, want %d", len(active.SourceRecipients), len(src.Recipients))
+	}
+	for i, r := range src.Recipients {
+		if active.SourceRecipients[i] != r {
+			t.Fatalf("SourceRecipients[%d] = %q, want %q", i, active.SourceRecipients[i], r)
+		}
+	}
+
+	// Verify persistence via GetByID.
+	got, err := s.Meta().GetFileShareByID(ctx, fs.ID)
+	if err != nil {
+		t.Fatalf("GetFileShareByID: %v", err)
+	}
+	if got.SourceMessageID != src.MessageID {
+		t.Fatalf("GetByID.SourceMessageID = %q, want %q", got.SourceMessageID, src.MessageID)
+	}
+	if got.SourceSubject != src.Subject {
+		t.Fatalf("GetByID.SourceSubject = %q, want %q", got.SourceSubject, src.Subject)
+	}
+	if len(got.SourceRecipients) != len(src.Recipients) {
+		t.Fatalf("GetByID.SourceRecipients len = %d, want %d", len(got.SourceRecipients), len(src.Recipients))
+	}
+	for i, r := range src.Recipients {
+		if got.SourceRecipients[i] != r {
+			t.Fatalf("GetByID.SourceRecipients[%d] = %q, want %q", i, got.SourceRecipients[i], r)
+		}
+	}
+
+	// Verify persistence via ListByPrincipal.
+	list, err := s.Meta().ListFileSharesByPrincipal(ctx, p.ID, store.FileShareListFilter{})
+	if err != nil {
+		t.Fatalf("ListFileSharesByPrincipal: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("ListByPrincipal len = %d, want 1", len(list))
+	}
+	lst := list[0]
+	if lst.SourceMessageID != src.MessageID {
+		t.Fatalf("List.SourceMessageID = %q, want %q", lst.SourceMessageID, src.MessageID)
+	}
+	if lst.SourceSubject != src.Subject {
+		t.Fatalf("List.SourceSubject = %q, want %q", lst.SourceSubject, src.Subject)
+	}
+	if len(lst.SourceRecipients) != len(src.Recipients) {
+		t.Fatalf("List.SourceRecipients len = %d, want %d", len(lst.SourceRecipients), len(src.Recipients))
+	}
+}
+
+func testFileShareSourceEmptyLeavesNULL(t *testing.T, s store.Store) {
+	// Confirm with a zero source: all three source columns must remain
+	// empty/nil in the returned row and in subsequent reads.
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-src-null@example.com")
+	hash, size := putShareBlob(t, s, "source null blob")
+	cfg := defaultShareConfig()
+
+	fs := mustCreateShare(t, s, p.ID, hash, size, "null.bin", "application/octet-stream")
+
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
+	if err != nil {
+		t.Fatalf("ConfirmFileShare(empty source): %v", err)
+	}
+	if active.SourceMessageID != "" {
+		t.Fatalf("SourceMessageID = %q, want empty", active.SourceMessageID)
+	}
+	if active.SourceSubject != "" {
+		t.Fatalf("SourceSubject = %q, want empty", active.SourceSubject)
+	}
+	if len(active.SourceRecipients) != 0 {
+		t.Fatalf("SourceRecipients = %v, want empty", active.SourceRecipients)
+	}
+
+	got, err := s.Meta().GetFileShareByID(ctx, fs.ID)
+	if err != nil {
+		t.Fatalf("GetFileShareByID: %v", err)
+	}
+	if got.SourceMessageID != "" {
+		t.Fatalf("GetByID.SourceMessageID = %q, want empty", got.SourceMessageID)
+	}
+	if got.SourceSubject != "" {
+		t.Fatalf("GetByID.SourceSubject = %q, want empty", got.SourceSubject)
+	}
+	if len(got.SourceRecipients) != 0 {
+		t.Fatalf("GetByID.SourceRecipients = %v, want empty", got.SourceRecipients)
+	}
+}
+
+func testFileShareSourcePendingIsNULL(t *testing.T, s store.Store) {
+	// A newly created (pending) share must have empty source fields.
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-src-pending@example.com")
+	hash, size := putShareBlob(t, s, "source pending blob")
+
+	fs := mustCreateShare(t, s, p.ID, hash, size, "pending.bin", "application/octet-stream")
+
+	got, err := s.Meta().GetFileShareByID(ctx, fs.ID)
+	if err != nil {
+		t.Fatalf("GetFileShareByID: %v", err)
+	}
+	if got.SourceMessageID != "" || got.SourceSubject != "" || len(got.SourceRecipients) != 0 {
+		t.Fatalf("pending share has non-empty source fields: id=%q subj=%q recip=%v",
+			got.SourceMessageID, got.SourceSubject, got.SourceRecipients)
+	}
+}
+
+func testFileShareSourceReconfirmUpdates(t *testing.T, s store.Store) {
+	// Re-confirming an already-active share with a non-empty source MUST
+	// update the source columns. Re-confirming with an empty source MUST
+	// NOT overwrite existing source context.
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-src-reconfirm@example.com")
+	hash, size := putShareBlob(t, s, "reconfirm source blob")
+	cfg := defaultShareConfig()
+
+	fs := mustCreateShare(t, s, p.ID, hash, size, "rc.bin", "application/octet-stream")
+
+	// First confirm: with full source.
+	src := store.FileShareSource{
+		MessageID:  "msg-first",
+		Subject:    "First send",
+		Recipients: []string{"alice@example.com"},
+	}
+	if _, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, src); err != nil {
+		t.Fatalf("ConfirmFileShare (first): %v", err)
+	}
+
+	// Re-confirm with empty source: existing source must be preserved.
+	active2, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
+	if err != nil {
+		t.Fatalf("ConfirmFileShare (re-confirm empty): %v", err)
+	}
+	if active2.SourceMessageID != src.MessageID {
+		t.Fatalf("after empty re-confirm: SourceMessageID = %q, want %q", active2.SourceMessageID, src.MessageID)
+	}
+
+	// Verify the stored row is unchanged too.
+	got, err := s.Meta().GetFileShareByID(ctx, fs.ID)
+	if err != nil {
+		t.Fatalf("GetFileShareByID: %v", err)
+	}
+	if got.SourceMessageID != src.MessageID {
+		t.Fatalf("GetByID after empty re-confirm: SourceMessageID = %q, want %q", got.SourceMessageID, src.MessageID)
+	}
+
+	// Re-confirm with a fresh non-empty source: columns must be updated.
+	src2 := store.FileShareSource{
+		MessageID:  "msg-second",
+		Subject:    "Second send",
+		Recipients: []string{"bob@example.com", "carol@example.com"},
+	}
+	active3, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, src2)
+	if err != nil {
+		t.Fatalf("ConfirmFileShare (re-confirm with new source): %v", err)
+	}
+	if active3.SourceMessageID != src2.MessageID {
+		t.Fatalf("after new re-confirm: SourceMessageID = %q, want %q", active3.SourceMessageID, src2.MessageID)
+	}
+	if active3.SourceSubject != src2.Subject {
+		t.Fatalf("after new re-confirm: SourceSubject = %q, want %q", active3.SourceSubject, src2.Subject)
+	}
+	if len(active3.SourceRecipients) != len(src2.Recipients) {
+		t.Fatalf("after new re-confirm: SourceRecipients len = %d, want %d", len(active3.SourceRecipients), len(src2.Recipients))
 	}
 }

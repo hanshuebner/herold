@@ -3,6 +3,7 @@ package storesqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -20,7 +21,8 @@ import (
 const fileShareSelectCols = `
 	id, principal_id, blob_hash, blob_size, filename, content_type,
 	created_at_us, expires_at_us, max_downloads, download_count,
-	password_hash, state, last_downloaded_at_us, revoked_at_us`
+	password_hash, state, last_downloaded_at_us, revoked_at_us,
+	source_message_id, source_subject, source_recipients`
 
 // scanFileShare scans one row of file_shares into a store.FileShare.
 // Column order must match fileShareSelectCols verbatim.
@@ -34,11 +36,15 @@ func scanFileShare(row rowLike) (store.FileShare, error) {
 		passwordHash                               sql.NullString
 		lastDownloadedUs                           sql.NullInt64
 		revokedUs                                  sql.NullInt64
+		srcMessageID                               sql.NullString
+		srcSubject                                 sql.NullString
+		srcRecipients                              sql.NullString
 	)
 	if err := row.Scan(
 		&id, &pid, &blobHash, &blobSize, &filename, &contentType,
 		&createdUs, &expiresUs, &maxDownloads, &downloadCount,
 		&passwordHash, &state, &lastDownloadedUs, &revokedUs,
+		&srcMessageID, &srcSubject, &srcRecipients,
 	); err != nil {
 		return store.FileShare{}, mapErr(err)
 	}
@@ -68,6 +74,19 @@ func scanFileShare(row rowLike) (store.FileShare, error) {
 	if revokedUs.Valid {
 		t := fromMicros(revokedUs.Int64)
 		fs.RevokedAt = &t
+	}
+	if srcMessageID.Valid {
+		fs.SourceMessageID = srcMessageID.String
+	}
+	if srcSubject.Valid {
+		fs.SourceSubject = srcSubject.String
+	}
+	if srcRecipients.Valid && srcRecipients.String != "" {
+		var recipients []string
+		if err := json.Unmarshal([]byte(srcRecipients.String), &recipients); err != nil {
+			return store.FileShare{}, fmt.Errorf("storesqlite: decode source_recipients: %w", err)
+		}
+		fs.SourceRecipients = recipients
 	}
 	return fs, nil
 }
@@ -200,7 +219,7 @@ func (m *metadata) CreateFileShare(ctx context.Context, req store.FileShareCreat
 	return fs, nil
 }
 
-func (m *metadata) ConfirmFileShare(ctx context.Context, principalID store.PrincipalID, id string, cfg store.FileSharesConfig) (store.FileShare, error) {
+func (m *metadata) ConfirmFileShare(ctx context.Context, principalID store.PrincipalID, id string, cfg store.FileSharesConfig, source store.FileShareSource) (store.FileShare, error) {
 	var fs store.FileShare
 	err := m.runTx(ctx, func(tx *sql.Tx) error {
 		row := tx.QueryRowContext(ctx,
@@ -216,7 +235,15 @@ func (m *metadata) ConfirmFileShare(ctx context.Context, principalID store.Princ
 		}
 		switch fs.State {
 		case store.FileShareStateActive:
-			// Idempotent: already active, no-op (REQ-SHARE-21).
+			// Idempotent: already active (REQ-SHARE-21). Update source
+			// columns only when a non-zero source is provided and the
+			// stored source is currently empty, to avoid wiping an existing
+			// context with an accidental empty re-confirm.
+			if !source.IsZero() {
+				if err := updateFileShareSourceSQLite(ctx, tx, id, source, &fs); err != nil {
+					return err
+				}
+			}
 			return nil
 		case store.FileShareStateRevoked:
 			return fmt.Errorf("share %s is revoked: %w", id, store.ErrShareNotConfirmable)
@@ -234,12 +261,43 @@ func (m *metadata) ConfirmFileShare(ctx context.Context, principalID store.Princ
 		}
 		newExpiresUs := usMicros(newExpires)
 
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE file_shares
-			    SET state = 'active', expires_at_us = ?
-			  WHERE id = ?`,
-			newExpiresUs, id); err != nil {
-			return mapErr(err)
+		if !source.IsZero() {
+			// Encode recipients as JSON; empty slice -> "[]".
+			recipientsJSON, err := json.Marshal(source.Recipients)
+			if err != nil {
+				return fmt.Errorf("storesqlite: encode source_recipients: %w", err)
+			}
+			var srcMsgID, srcSubj, srcRcp any
+			if source.MessageID != "" {
+				srcMsgID = source.MessageID
+			}
+			if source.Subject != "" {
+				srcSubj = source.Subject
+			}
+			if len(source.Recipients) > 0 {
+				srcRcp = string(recipientsJSON)
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE file_shares
+				    SET state = 'active', expires_at_us = ?,
+				        source_message_id = ?, source_subject = ?, source_recipients = ?
+				  WHERE id = ?`,
+				newExpiresUs, srcMsgID, srcSubj, srcRcp, id); err != nil {
+				return mapErr(err)
+			}
+			fs.SourceMessageID = source.MessageID
+			fs.SourceSubject = source.Subject
+			if len(source.Recipients) > 0 {
+				fs.SourceRecipients = source.Recipients
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE file_shares
+				    SET state = 'active', expires_at_us = ?
+				  WHERE id = ?`,
+				newExpiresUs, id); err != nil {
+				return mapErr(err)
+			}
 		}
 		fs.State = store.FileShareStateActive
 		fs.ExpiresAt = newExpires
@@ -249,6 +307,38 @@ func (m *metadata) ConfirmFileShare(ctx context.Context, principalID store.Princ
 		return store.FileShare{}, err
 	}
 	return fs, nil
+}
+
+// updateFileShareSourceSQLite writes source columns on an already-active
+// share when the caller provides a non-zero source on a re-confirm.
+func updateFileShareSourceSQLite(ctx context.Context, tx *sql.Tx, id string, source store.FileShareSource, fs *store.FileShare) error {
+	recipientsJSON, err := json.Marshal(source.Recipients)
+	if err != nil {
+		return fmt.Errorf("storesqlite: encode source_recipients: %w", err)
+	}
+	var srcMsgID, srcSubj, srcRcp any
+	if source.MessageID != "" {
+		srcMsgID = source.MessageID
+	}
+	if source.Subject != "" {
+		srcSubj = source.Subject
+	}
+	if len(source.Recipients) > 0 {
+		srcRcp = string(recipientsJSON)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE file_shares
+		    SET source_message_id = ?, source_subject = ?, source_recipients = ?
+		  WHERE id = ?`,
+		srcMsgID, srcSubj, srcRcp, id); err != nil {
+		return mapErr(err)
+	}
+	fs.SourceMessageID = source.MessageID
+	fs.SourceSubject = source.Subject
+	if len(source.Recipients) > 0 {
+		fs.SourceRecipients = source.Recipients
+	}
+	return nil
 }
 
 func (m *metadata) RevokeFileShare(ctx context.Context, principalID store.PrincipalID, id string) error {

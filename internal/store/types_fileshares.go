@@ -2,6 +2,35 @@ package store
 
 import "time"
 
+// FileShareSource carries the message back-reference captured at
+// confirmation (REQ-SHARE-04). All fields are optional: a zero-value
+// FileShareSource means "no source context was provided", which leaves
+// the corresponding database columns NULL.
+//
+// The source is a snapshot, not a live join: it survives deletion of the
+// originating message. source_message_id is a soft reference (no FK).
+//
+// The recipient-facing surfaces MUST NOT expose FileShareSource fields.
+type FileShareSource struct {
+	// MessageID is the JMAP Email id / store message id of the originating
+	// message. Empty string means the caller did not supply a message id.
+	MessageID string
+	// Subject is the subject line snapshot taken at confirmation time.
+	// Empty string means the caller did not supply a subject.
+	Subject string
+	// Recipients is the snapshot of envelope recipient addresses (To + Cc
+	// + Bcc) at confirmation time. Nil/empty slice means the caller did
+	// not supply recipients. Stored as a JSON array in source_recipients.
+	Recipients []string
+}
+
+// IsZero reports whether the FileShareSource carries no context at all:
+// all fields empty/nil. A zero source does not update the stored columns
+// on a re-confirm.
+func (s FileShareSource) IsZero() bool {
+	return s.MessageID == "" && s.Subject == "" && len(s.Recipients) == 0
+}
+
 // FileShareState is the lifecycle state of a FileShare row.
 // REQ-SHARE-20.
 type FileShareState string
@@ -67,6 +96,19 @@ type FileShare struct {
 	// RevokedAt is the instant the share was revoked, or the zero value
 	// when not revoked. REQ-SHARE-22.
 	RevokedAt *time.Time
+	// SourceMessageID is the JMAP Email id / store message id of the
+	// originating message, or empty when no back-reference was captured.
+	// Populated atomically on the pending -> active transition.
+	// REQ-SHARE-04.
+	SourceMessageID string
+	// SourceSubject is the subject line snapshot at confirmation time, or
+	// empty when no subject was captured. REQ-SHARE-04.
+	SourceSubject string
+	// SourceRecipients is the snapshot of envelope recipient addresses
+	// (To + Cc + Bcc) at confirmation time, or nil when no recipients
+	// were captured. Decoded from the JSON array stored in
+	// source_recipients. REQ-SHARE-04.
+	SourceRecipients []string
 }
 
 // FileShareCreate carries the parameters for FileShares.Create.
