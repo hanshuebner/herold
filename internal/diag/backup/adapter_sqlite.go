@@ -990,6 +990,37 @@ func (s *sqliteSource) EnumerateRows(ctx context.Context, table string, fn func(
 				}
 				return &r, nil
 			}, fn)
+	case "file_shares":
+		return enumerate(ctx, s.tx,
+			`SELECT id, principal_id, blob_hash, blob_size, filename, content_type,
+			        created_at_us, expires_at_us, max_downloads, download_count,
+			        password_hash, state, last_downloaded_at_us, revoked_at_us
+			   FROM file_shares ORDER BY id`,
+			func(rs *sql.Rows) (any, error) {
+				var r FileShareRow
+				var maxDL sql.NullInt64
+				var ph sql.NullString
+				var lastDL, revokedAt sql.NullInt64
+				if err := rs.Scan(&r.ID, &r.PrincipalID, &r.BlobHash, &r.BlobSize,
+					&r.Filename, &r.ContentType,
+					&r.CreatedAtUs, &r.ExpiresAtUs, &maxDL, &r.DownloadCount,
+					&ph, &r.State, &lastDL, &revokedAt); err != nil {
+					return nil, err
+				}
+				if maxDL.Valid {
+					r.MaxDownloads = &maxDL.Int64
+				}
+				if ph.Valid {
+					r.PasswordHash = &ph.String
+				}
+				if lastDL.Valid {
+					r.LastDownloadedAtUs = &lastDL.Int64
+				}
+				if revokedAt.Valid {
+					r.RevokedAtUs = &revokedAt.Int64
+				}
+				return &r, nil
+			}, fn)
 	case "blob_refs":
 		return enumerate(ctx, s.tx,
 			`SELECT hash, size, ref_count, last_change_us FROM blob_refs ORDER BY hash`,
@@ -1712,6 +1743,18 @@ func (s *sqliteSink) Insert(ctx context.Context, table string, row any) error {
 			   (principal_id, base_identity_id, suffix, dismissed_at_us)
 			 VALUES (?, ?, ?, ?)`,
 			r.PrincipalID, r.BaseIdentityID, r.Suffix, r.DismissedAtUs)
+		return err
+	case "file_shares":
+		r := row.(*FileShareRow)
+		_, err := s.tx.ExecContext(ctx,
+			`INSERT INTO file_shares
+			   (id, principal_id, blob_hash, blob_size, filename, content_type,
+			    created_at_us, expires_at_us, max_downloads, download_count,
+			    password_hash, state, last_downloaded_at_us, revoked_at_us)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.PrincipalID, r.BlobHash, r.BlobSize, r.Filename, r.ContentType,
+			r.CreatedAtUs, r.ExpiresAtUs, r.MaxDownloads, r.DownloadCount,
+			r.PasswordHash, r.State, r.LastDownloadedAtUs, r.RevokedAtUs)
 		return err
 	case "blob_refs":
 		r := row.(*BlobRefRow)

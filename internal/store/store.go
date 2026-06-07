@@ -50,6 +50,19 @@ var (
 	// the window state; the cooldown/cap thresholds are supplied as
 	// arguments so the operator's tunables flow in from sysconfig.
 	ErrRateLimited = errors.New("store: rate limited")
+
+	// ErrTooManyShares is returned by FileShares.Create when the
+	// principal already holds the configured MaxSharesPerPrincipal
+	// active+pending shares (REQ-SHARE-12). Distinct from
+	// ErrQuotaExceeded so the JMAP surface can map this to a
+	// "too_many_shares" error token.
+	ErrTooManyShares = errors.New("store: too many shares")
+
+	// ErrShareNotConfirmable is returned by FileShares.Confirm when the
+	// share is in state revoked or does not exist, and therefore cannot
+	// be transitioned to active. Confirming an already-active share is
+	// idempotent (returns nil). REQ-SHARE-21.
+	ErrShareNotConfirmable = errors.New("store: share not confirmable")
 )
 
 // Store is the composite handle every subsystem consumes to reach
@@ -2034,6 +2047,71 @@ type Metadata interface {
 	// sweeper; the comparison also happens at read time so this is a
 	// cosmetic cleanup only (REQ-OPS-211).
 	ClearExpiredLivetail(ctx context.Context, nowMicros int64) (cleared int, err error)
+
+	// -- Attachment shares (REQ-SHARE-01..23) --------------------------
+
+	// CreateFileShare creates a file_shares row in state pending. The
+	// store generates the capability token (CSPRNG, >= 128 bits,
+	// URL-safe base64), installs an incRef on the blob, enforces the
+	// per-principal count cap (FileSharesConfig.MaxSharesPerPrincipal)
+	// and the dedup-aware share quota
+	// (FileSharesConfig.ShareQuotaPerPrincipal) inside the same
+	// transaction. REQ-SHARE-11b, REQ-SHARE-12, REQ-SHARE-50.
+	//
+	// Returns ErrTooManyShares when the count cap is exceeded.
+	// Returns ErrQuotaExceeded when adding this blob's distinct size
+	// would exceed the principal's share quota.
+	// Returns ErrInvalidArgument when required fields are empty.
+	CreateFileShare(ctx context.Context, req FileShareCreate) (FileShare, error)
+
+	// ConfirmFileShare transitions a pending share to active, resetting
+	// expires_at to now+DefaultTTL clamped to now+MaxTTL. Idempotent on
+	// already-active shares (returns the current row, nil error).
+	// Returns ErrShareNotConfirmable when the share is revoked or
+	// does not exist. REQ-SHARE-20, REQ-SHARE-21.
+	ConfirmFileShare(ctx context.Context, principalID PrincipalID, id string, cfg FileSharesConfig) (FileShare, error)
+
+	// RevokeFileShare transitions a share to revoked and stamps
+	// revoked_at. Returns ErrNotFound when the share does not exist or
+	// is owned by a different principal. REQ-SHARE-22.
+	RevokeFileShare(ctx context.Context, principalID PrincipalID, id string) error
+
+	// DestroyFileShare deletes the file_shares row and decrements the
+	// blob refcount. Returns ErrNotFound when the share does not exist
+	// or is owned by a different principal. REQ-SHARE-21.
+	DestroyFileShare(ctx context.Context, principalID PrincipalID, id string) error
+
+	// GetFileShareByID returns the file_shares row identified by the
+	// capability token id, regardless of state. The public download
+	// path is the sole caller; it performs serveability decisions
+	// itself (REQ-SHARE-11e). Returns ErrNotFound when no row matches.
+	GetFileShareByID(ctx context.Context, id string) (FileShare, error)
+
+	// ListFileSharesByPrincipal returns file_shares rows owned by
+	// principalID, ordered by created_at_us DESC (newest first),
+	// subject to filter. REQ-SHARE-40.
+	ListFileSharesByPrincipal(ctx context.Context, principalID PrincipalID, filter FileShareListFilter) ([]FileShare, error)
+
+	// RecordFileShareDownload atomically increments download_count and
+	// sets last_downloaded_at to now for the share identified by id.
+	// Returns the post-increment row so the caller can enforce
+	// max_downloads without a race. Returns ErrNotFound when the row
+	// does not exist. REQ-SHARE-30, REQ-SHARE-44.
+	RecordFileShareDownload(ctx context.Context, id string) (FileShare, error)
+
+	// SweepFileShares deletes:
+	//   - pending shares whose created_at_us < now-pending_ttl
+	//   - active shares whose expires_at_us < now
+	//   - revoked shares whose revoked_at_us < now-revoked_grace
+	// Each deletion decrements the blob refcount. Returns per-reason
+	// counts. REQ-SHARE-23.
+	SweepFileShares(ctx context.Context, now time.Time, cfg FileSharesConfig) (SweepStats, error)
+
+	// IsFileShareBlobReferenced returns true when any non-deleted
+	// file_shares row has blob_hash = hash. Used by the blob-GC
+	// liveness callback (REQ-STORE-12 interaction, REQ-SHARE-01) to
+	// extend the referenced set beyond message blobs.
+	IsFileShareBlobReferenced(ctx context.Context, hash string) (bool, error)
 }
 
 // Blobs is the content-addressed blob surface: one object per canonical

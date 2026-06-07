@@ -236,6 +236,8 @@ func rowsForTable(table string) (any, bool) {
 		return &TaggedAddressFilterRow{}, true
 	case "tagged_address_dismissals":
 		return &TaggedAddressDismissalRow{}, true
+	case "file_shares":
+		return &FileShareRow{}, true
 	case "sessions":
 		return &SessionRow{}, true
 	case "clientlog":

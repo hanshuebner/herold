@@ -25,6 +25,9 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 	// keeps the test predictable when the schema grows. Children
 	// listed before parents only as a readability convention.
 	tables := []string{
+		// Attachment shares (per-principal; FK to principals). Cascades
+		// from principals, but enumerated per the convention above.
+		"file_shares",
 		// Phase 3 Wave 3.10 — coach (per-principal; FK to principals).
 		"coach_dismiss",
 		"coach_events",

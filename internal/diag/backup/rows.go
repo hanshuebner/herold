@@ -738,6 +738,26 @@ type TaggedAddressDismissalRow struct {
 	DismissedAtUs  int64  `json:"dismissed_at_us"`
 }
 
+// FileShareRow mirrors the file_shares table introduced in migration
+// 0055 (REQ-SHARE-01..23, REQ-SHARE-10). One row per owner-scoped,
+// TTL-bounded share of a content-addressed blob.
+type FileShareRow struct {
+	ID                 string  `json:"id"`
+	PrincipalID        int64   `json:"principal_id"`
+	BlobHash           string  `json:"blob_hash"`
+	BlobSize           int64   `json:"blob_size"`
+	Filename           string  `json:"filename"`
+	ContentType        string  `json:"content_type"`
+	CreatedAtUs        int64   `json:"created_at_us"`
+	ExpiresAtUs        int64   `json:"expires_at_us"`
+	MaxDownloads       *int64  `json:"max_downloads,omitempty"`
+	DownloadCount      int64   `json:"download_count"`
+	PasswordHash       *string `json:"password_hash,omitempty"`
+	State              string  `json:"state"`
+	LastDownloadedAtUs *int64  `json:"last_downloaded_at_us,omitempty"`
+	RevokedAtUs        *int64  `json:"revoked_at_us,omitempty"`
+}
+
 // PushSubscriptionRow mirrors the push_subscription table introduced
 // in migration 0017 (Phase 3 Wave 3.8a, REQ-PROTO-120..122). The
 // JMAP keys.p256dh / keys.auth byte slices are persisted verbatim;

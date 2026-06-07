@@ -319,7 +319,19 @@ const CurrentBackupVersion = 1
 //	(now - last_seen_at) exceeds SessionConfig.IdleTTL. Existing
 //	rows are backfilled from created_at_us so the column appearing
 //	does not retroactively expire any live session.
-const CurrentSchemaVersion = 54
+//
+// 55 — 0055_file_shares.sql (REQ-SHARE-01..23, REQ-SHARE-10).
+//
+//	Adds the file_shares table (id TEXT pk, principal_id FK ON DELETE
+//	CASCADE, blob_hash, blob_size, filename, content_type,
+//	created_at_us, expires_at_us, max_downloads NULL, download_count,
+//	password_hash NULL, state CHECK IN ('pending','active','revoked'),
+//	last_downloaded_at_us NULL, revoked_at_us NULL). Two indexes:
+//	idx_file_shares_principal_created (principal_id, created_at_us DESC)
+//	for the management list and idx_file_shares_state_expires
+//	(state, expires_at_us) for the sweeper. Cap and quota enforcement
+//	live in the store helpers (REQ-SHARE-12, REQ-SHARE-50).
+const CurrentSchemaVersion = 55
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -452,6 +464,11 @@ var TableNames = []string{
 	// AND jmap_identities(id) — both parents are restored above.
 	"tagged_address_filters",
 	"tagged_address_dismissals",
+	// Attachment shares (REQ-SHARE-01..23, migration 0055).
+	// FK to principals(id) ON DELETE CASCADE; restored after principals.
+	// blob_refs must be restored after file_shares so the refcount rows
+	// exist when the backup verifier replays them.
+	"file_shares",
 	"blob_refs",
 	// Server-side session rows (REQ-OPS-208, REQ-CLOG-06, migration 0039).
 	// FK to principals(id) ON DELETE CASCADE; restored after principals.
