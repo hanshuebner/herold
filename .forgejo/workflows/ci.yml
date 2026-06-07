@@ -33,7 +33,7 @@ jobs:
   # contributors see exactly what CI sees.
   pre-commit:
     name: pre-commit (run --all-files)
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +70,7 @@ jobs:
 
   lint:
     name: lint
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -181,7 +181,7 @@ jobs:
 
   web:
     name: web (build + check)
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -206,7 +206,7 @@ jobs:
 
   web-e2e:
     name: web-e2e (admin SPA Playwright)
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 15
     needs: web
     steps:
@@ -226,7 +226,7 @@ jobs:
 
   test:
     name: test (arm64 / ${{ matrix.store }})
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     # 45 min: the sqlite lane historically ran the entire tree under
     # -race and hit ~37 min wall on the arm64 self-hosted runner. The
     # lane is now split into a race-on subset (test/race-packages.txt)
@@ -361,7 +361,7 @@ jobs:
 
   fuzz-short:
     name: fuzz (short)
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -375,7 +375,7 @@ jobs:
 
   conformance:
     name: conformance (imaptest + scripted-smtp + pigeonhole + mail-auth vectors)
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -391,7 +391,7 @@ jobs:
 
   docker:
     name: docker (build + publish to code.netzhansa.com registry)
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 30
     needs: [lint, web, test]
     # On PRs we build both platforms (linux/amd64 and linux/arm64) without
@@ -445,22 +445,24 @@ jobs:
           fi
           echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
           echo "image=${image}" >> "${GITHUB_OUTPUT}"
-      # Step 1: build the native arm64 image and load it into the local
-      # daemon so the smoke-test can run it. `load: true` only works for
-      # a single platform, so we build arm64 here and build the full
-      # multi-arch image (with push) separately below.
+      # Step 1: build the native image for THIS runner's arch (amd64; see
+      # the [self-hosted, herold, amd64] label above) and load it into
+      # the local daemon so the smoke-test runs it natively, with no
+      # runtime QEMU. `load: true` only works for a single platform, so
+      # we build the host arch here and build the full multi-arch image
+      # (with push) separately below.
       #
-      # The Dockerfile pins web-build and build stages to $BUILDPLATFORM
-      # (arm64 on this runner) so esbuild and Go both run natively.  The
-      # Go build stage uses GOOS/GOARCH cross-compilation for the target
-      # platform, so no QEMU emulation is needed even for the amd64 leg.
-      - name: build arm64 image (load for smoke-test)
-        id: build-arm64
+      # The Dockerfile pins web-build/build stages to $BUILDPLATFORM so
+      # esbuild and Go run natively, and the Go stage cross-compiles via
+      # GOOS/GOARCH, so the multi-arch push step below needs no QEMU even
+      # for the arm64 leg.
+      - name: build native image (load for smoke-test)
+        id: build-native
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/docker/Dockerfile
-          platforms: linux/arm64
+          platforms: linux/amd64
           load: true
           push: false
           tags: ${{ steps.tags.outputs.tags }}
@@ -513,7 +515,7 @@ jobs:
 
   jmaptest:
     name: jmap conformance (jmapio/jmap-test-suite)
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -535,7 +537,7 @@ jobs:
     # web jobs above; cross-compiling every PR commit doubles runner
     # load with no consumer.
     if: github.event_name != 'pull_request'
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 30
     needs: [lint, web, test]
     strategy:

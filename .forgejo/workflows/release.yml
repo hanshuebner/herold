@@ -16,7 +16,7 @@ env:
 
 jobs:
   release:
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -59,6 +59,11 @@ jobs:
           path: .
           format: cyclonedx-json
           output-file: dist/sbom-${{ matrix.os }}-${{ matrix.arch }}.cdx.json
+          # Forgejo does not support the v4 artifact API sbom-action uses
+          # for its built-in upload (GHESNotSupportedError). The SBOM is
+          # written to dist/ and shipped by the upload-artifact@v3 step
+          # below, so disable the auto-upload.
+          upload-artifact: false
       - name: cosign sign
         uses: sigstore/cosign-installer@v3
       - name: sign artefacts

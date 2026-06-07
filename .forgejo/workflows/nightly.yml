@@ -16,19 +16,25 @@ env:
 jobs:
   fuzz-long:
     name: fuzz (long)
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+      # make fuzz-short runs EVERY registered fuzz target sequentially
+      # for FUZZTIME each. There are ~39 targets, so the per-target
+      # budget must fit timeout-minutes above: 39 * 8m = 312m leaves
+      # headroom under the 360m (6h) cap. The old FUZZTIME=45m meant
+      # ~29h of work and the job failed by timeout every night. If the
+      # target count grows, lower FUZZTIME or shard across a job matrix.
       - name: run long fuzz on every registered fuzz target
-        run: make fuzz-short FUZZTIME=45m
+        run: make fuzz-short FUZZTIME=8m
 
   load:
     name: load (REQ-NFR-01 targets)
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +48,7 @@ jobs:
 
   interop:
     name: interop (third-party deliverability canary)
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -56,7 +62,7 @@ jobs:
 
   jmaptest-pin-check:
     name: jmaptest pin freshness
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 5
     # Fails when JMAPTEST_SHA in test/interop/config/jmaptest/Dockerfile
     # is no longer the upstream master HEAD of jmapio/jmap-test-suite.
@@ -97,7 +103,7 @@ jobs:
 
   sbom-diff:
     name: sbom diff
-    runs-on: [self-hosted, herold, arm64]
+    runs-on: [self-hosted, herold, amd64]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -110,6 +116,13 @@ jobs:
           path: .
           format: cyclonedx-json
           output-file: sbom.cdx.json
+          # sbom-action auto-uploads the SBOM via the GitHub v4 artifact
+          # API (@actions/artifact v2), which Forgejo does not implement
+          # ("GHESNotSupportedError: upload-artifact@v4+ ... not supported
+          # on GHES") and which failed this job every run. Disable the
+          # built-in upload; the explicit upload-artifact@v3 step below
+          # uses the older protocol Forgejo does support.
+          upload-artifact: false
       - name: upload
         uses: actions/upload-artifact@v3
         with:
