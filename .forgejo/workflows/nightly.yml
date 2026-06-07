@@ -16,7 +16,7 @@ env:
 jobs:
   fuzz-long:
     name: fuzz (long)
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +34,7 @@ jobs:
 
   load:
     name: load (REQ-NFR-01 targets)
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -48,7 +48,7 @@ jobs:
 
   interop:
     name: interop (third-party deliverability canary)
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +62,7 @@ jobs:
 
   jmaptest-pin-check:
     name: jmaptest pin freshness
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 5
     # Fails when JMAPTEST_SHA in test/interop/config/jmaptest/Dockerfile
     # is no longer the upstream master HEAD of jmapio/jmap-test-suite.
@@ -103,7 +103,7 @@ jobs:
 
   sbom-diff:
     name: sbom diff
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

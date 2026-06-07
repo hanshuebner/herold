@@ -33,7 +33,7 @@ jobs:
   # contributors see exactly what CI sees.
   pre-commit:
     name: pre-commit (run --all-files)
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +70,7 @@ jobs:
 
   lint:
     name: lint
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -108,7 +108,7 @@ jobs:
   # operators run". Hard-fail blocks merge.
   confidence-x86:
     name: confidence (x86_64 sanity smoke)
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 10
     # No `services:` block: act_runner host-mode does not start
     # workflow service containers (confirmed in run #21: no
@@ -181,7 +181,7 @@ jobs:
 
   web:
     name: web (build + check)
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -206,7 +206,7 @@ jobs:
 
   web-e2e:
     name: web-e2e (admin SPA Playwright)
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 15
     needs: web
     steps:
@@ -226,7 +226,7 @@ jobs:
 
   test:
     name: test (arm64 / ${{ matrix.store }})
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     # 45 min: the sqlite lane historically ran the entire tree under
     # -race and hit ~37 min wall on the arm64 self-hosted runner. The
     # lane is now split into a race-on subset (test/race-packages.txt)
@@ -361,7 +361,7 @@ jobs:
 
   fuzz-short:
     name: fuzz (short)
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -375,7 +375,7 @@ jobs:
 
   conformance:
     name: conformance (imaptest + scripted-smtp + pigeonhole + mail-auth vectors)
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -391,7 +391,7 @@ jobs:
 
   docker:
     name: docker (build + publish to code.netzhansa.com registry)
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 30
     needs: [lint, web, test]
     # On PRs we build both platforms (linux/amd64 and linux/arm64) without
@@ -446,7 +446,7 @@ jobs:
           echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
           echo "image=${image}" >> "${GITHUB_OUTPUT}"
       # Step 1: build the native image for THIS runner's arch (amd64; see
-      # the [self-hosted, herold, amd64] label above) and load it into
+      # the [self-hosted, netzhansa, amd64] label above) and load it into
       # the local daemon so the smoke-test runs it natively, with no
       # runtime QEMU. `load: true` only works for a single platform, so
       # we build the host arch here and build the full multi-arch image
@@ -515,7 +515,7 @@ jobs:
 
   jmaptest:
     name: jmap conformance (jmapio/jmap-test-suite)
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -537,7 +537,7 @@ jobs:
     # web jobs above; cross-compiling every PR commit doubles runner
     # load with no consumer.
     if: github.event_name != 'pull_request'
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 30
     needs: [lint, web, test]
     strategy:

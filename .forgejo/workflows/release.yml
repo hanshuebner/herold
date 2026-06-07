@@ -16,7 +16,7 @@ env:
 
 jobs:
   release:
-    runs-on: [self-hosted, herold, amd64]
+    runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 30
     strategy:
       fail-fast: false
