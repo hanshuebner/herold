@@ -27,6 +27,7 @@ import (
 	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/autodns"
+	"github.com/hanshuebner/herold/internal/categorise"
 	"github.com/hanshuebner/herold/internal/chatretention"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
@@ -740,18 +741,35 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		}
 	}
 
+	// IMAP import categoriser (REQ-IMAP-IMP-31). Constructed here so the same
+	// instance serves both the Pool below and (if needed) the JMAP layer.
+	// categorise.New returns nil when Store is nil; we always supply a non-nil
+	// store so the result is non-nil. LLM endpoint / model / API key come from
+	// per-principal DB config rows (CategorisationConfig), not sysconfig, so
+	// no operator fields need to be threaded through here — the Categoriser
+	// reads them lazily on each call via GetCategorisationConfig.
+	imapImportCat := categorise.New(categorise.Options{
+		Store:  st,
+		Logger: logger.With("subsystem", "imap-import-categoriser"),
+		Clock:  clk,
+	})
+	imapImportCatAdapter := newIMAPImportCategoriserAdapter(
+		st,
+		imapImportCat,
+		logger.With("subsystem", "imap-import-categoriser"),
+	)
+
 	// IMAP import worker pool (REQ-IMAP-IMP-26, wave 5). Constructed before
 	// adminServerOpts so the pool pointer can be passed as IMAPImportStatus.
-	// Categoriser is nil (pool falls back to noopCategoriser); real
-	// categorisation of imported INBOX mail is deferred — see wave 5 report.
 	// Dialer is nil (pool defaults to the production dialer, which wires
 	// OAuth from cfg.IMAPImport.OAuth via accountWorker.tokenSourceForProvider).
 	imapImportPool := imapimport.NewPool(imapimport.PoolOptions{
-		Store:   st,
-		DataKey: imapImportDataKey,
-		Config:  cfg.IMAPImport,
-		Logger:  logger.With("subsystem", "imap-import"),
-		Clock:   clk,
+		Store:       st,
+		DataKey:     imapImportDataKey,
+		Categoriser: imapImportCatAdapter,
+		Config:      cfg.IMAPImport,
+		Logger:      logger.With("subsystem", "imap-import"),
+		Clock:       clk,
 	})
 
 	// Admin HTTP handler: the real protoadmin server. Options defaults
