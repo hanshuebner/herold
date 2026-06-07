@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"time"
 
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -75,6 +76,12 @@ func (d *fakeDialer) Dial(_ context.Context, p dialParams) (Conn, error) {
 	}
 	return &prodConn{client: client}, nil
 }
+
+// --------------------------------------------------------------------------
+// time import is used by sync_test.go for test message construction
+// --------------------------------------------------------------------------
+
+var _ = time.Time{} // keep time import for tests
 
 // fakeAuth mirrors productionDialer.authenticate for the fake path.
 func fakeAuth(client *imapclient.Client, p dialParams) error {

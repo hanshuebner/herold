@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"time"
 
 	imapclient "github.com/emersion/go-imap/v2/imapclient"
 	gosql "github.com/emersion/go-sasl"
@@ -125,4 +126,90 @@ func (c *prodConn) Logout() error {
 
 func (c *prodConn) Close() error {
 	return c.client.Close()
+}
+
+// List issues LIST "" "*" and collects all mailboxes into folderInfo
+// slices. The ctx is used for cancellation only; the imapclient
+// command itself does not accept a context directly.
+func (c *prodConn) List(_ context.Context) ([]folderInfo, error) {
+	cmd := c.client.List("", "*", nil)
+	listData, err := cmd.Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imapimport: LIST: %w", err)
+	}
+	out := make([]folderInfo, 0, len(listData))
+	for _, d := range listData {
+		out = append(out, folderInfo{Name: d.Mailbox, Attrs: d.Attrs})
+	}
+	return out, nil
+}
+
+// Select opens the mailbox read-only (EXAMINE) and returns the key
+// SELECT response fields. REQ-IMAP-IMP-24/35.
+func (c *prodConn) Select(_ context.Context, mailbox string) (selectInfo, error) {
+	data, err := c.client.Select(mailbox, &imap.SelectOptions{ReadOnly: true}).Wait()
+	if err != nil {
+		return selectInfo{}, fmt.Errorf("imapimport: EXAMINE %q: %w", mailbox, err)
+	}
+	return selectInfo{
+		UIDValidity:   data.UIDValidity,
+		UIDNext:       data.UIDNext,
+		HighestModSeq: data.HighestModSeq,
+		NumMessages:   data.NumMessages,
+	}, nil
+}
+
+// UIDSearchSince issues UID SEARCH (SINCE <date> when since is non-zero,
+// ALL otherwise) and returns the matching UIDs.
+func (c *prodConn) UIDSearchSince(_ context.Context, since time.Time) ([]imap.UID, error) {
+	criteria := &imap.SearchCriteria{}
+	if !since.IsZero() {
+		// SINCE is INTERNALDATE-based (date only, per RFC 3501 §6.4.4).
+		// Truncate to midnight UTC to match server-side date comparison.
+		criteria.Since = time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, time.UTC)
+	}
+	data, err := c.client.UIDSearch(criteria, nil).Wait()
+	if err != nil {
+		return nil, fmt.Errorf("imapimport: UID SEARCH SINCE: %w", err)
+	}
+	return data.AllUIDs(), nil
+}
+
+// UIDFetch fetches FLAGS, INTERNALDATE, and BODY.PEEK[] for the given
+// UIDs. Uses BODY.PEEK so the upstream \Seen flag is NOT set.
+func (c *prodConn) UIDFetch(_ context.Context, uids []imap.UID) ([]fetchedMessage, error) {
+	if len(uids) == 0 {
+		return nil, nil
+	}
+	var uidSet imap.UIDSet
+	for _, uid := range uids {
+		uidSet.AddNum(uid)
+	}
+	fetchOpts := &imap.FetchOptions{
+		Flags:        true,
+		InternalDate: true,
+		BodySection: []*imap.FetchItemBodySection{
+			{Peek: true}, // BODY.PEEK[] — full RFC822, no \Seen side-effect
+		},
+	}
+	cmd := c.client.Fetch(uidSet, fetchOpts)
+	bufs, err := cmd.Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imapimport: UID FETCH: %w", err)
+	}
+	out := make([]fetchedMessage, 0, len(bufs))
+	for _, buf := range bufs {
+		fm := fetchedMessage{
+			UID:          buf.UID,
+			Flags:        buf.Flags,
+			InternalDate: buf.InternalDate,
+		}
+		// Extract the body bytes from the first BODY.PEEK[] section.
+		for _, bs := range buf.BodySection {
+			fm.RFC822 = bs.Bytes
+			break
+		}
+		out = append(out, fm)
+	}
+	return out, nil
 }

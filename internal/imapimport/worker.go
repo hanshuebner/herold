@@ -216,8 +216,13 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 		slog.String("host", account.Host),
 	)
 
-	// 3a: nothing more to do — connection verified. 3b will do folder
-	// sync here before returning.
+	// 3b: drive a full sync pass for all mapped folders.
+	if err := w.syncAllFolders(ctx, conn); err != nil {
+		// Sync errors are logged inside syncAllFolders per folder; a
+		// non-nil return means all folders failed. Treat as a connection-
+		// level error so the backoff + errored logic applies.
+		return fmt.Errorf("imapimport: syncAllFolders: %w", err)
+	}
 	return nil
 }
 

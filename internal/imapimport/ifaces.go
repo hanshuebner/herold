@@ -2,17 +2,49 @@ package imapimport
 
 import (
 	"context"
+	"time"
 
 	imap "github.com/emersion/go-imap/v2"
 )
+
+// folderInfo carries the minimal per-folder data returned by LIST.
+type folderInfo struct {
+	// Name is the upstream folder name.
+	Name string
+	// Attrs is the set of IMAP mailbox attributes (e.g. \NoSelect,
+	// \HasNoChildren).
+	Attrs []imap.MailboxAttr
+}
+
+// selectInfo carries the key fields from a SELECT / EXAMINE response.
+type selectInfo struct {
+	// UIDValidity is the upstream UIDVALIDITY value.
+	UIDValidity uint32
+	// UIDNext is the next UID that will be assigned.
+	UIDNext imap.UID
+	// HighestModSeq is the CONDSTORE HIGHESTMODSEQ (0 when unsupported).
+	HighestModSeq uint64
+	// NumMessages is the number of messages in the mailbox.
+	NumMessages uint32
+}
+
+// fetchedMessage is one message returned by UIDFetch.
+type fetchedMessage struct {
+	// UID is the upstream IMAP UID.
+	UID imap.UID
+	// Flags is the upstream system-flag set.
+	Flags []imap.Flag
+	// InternalDate is the upstream INTERNALDATE.
+	InternalDate time.Time
+	// RFC822 is the raw message bytes. Using BODY.PEEK[] so \Seen is
+	// NOT set upstream (REQ-IMAP-IMP-31 byte-fidelity + non-mutation).
+	RFC822 []byte
+}
 
 // Conn is the minimal interface the accountWorker needs from an IMAP
 // client connection. Each sub-step extends the set of methods the
 // production dialer satisfies; the fake in tests implements the same
 // interface.
-//
-// 3a methods only — capabilities and orderly close. Sub-steps 3b-3e
-// will add Select, UIDSearch, UIDFetch, UIDStore, Idle, etc.
 type Conn interface {
 	// Caps returns the capability set advertised by the upstream after
 	// login. The result is stable for the connection lifetime.
@@ -25,6 +57,25 @@ type Conn interface {
 	// Close releases the underlying network connection. Idempotent;
 	// safe to call after Logout or on an already-closed connection.
 	Close() error
+
+	// List issues LIST "" "*" and returns all folders with their attributes.
+	// REQ-IMAP-IMP-10/12.
+	List(ctx context.Context) ([]folderInfo, error)
+
+	// Select opens the named mailbox read-only (EXAMINE). Returns the
+	// key fields from the SELECT response: UIDVALIDITY, UIDNEXT,
+	// HIGHESTMODSEQ, NUM_MESSAGES. REQ-IMAP-IMP-24/35.
+	Select(ctx context.Context, mailbox string) (selectInfo, error)
+
+	// UIDSearchSince returns UIDs of messages whose INTERNALDATE is on
+	// or after `since`. If since is zero the entire mailbox is returned
+	// (no SINCE criterion). REQ-IMAP-IMP-17/19.
+	UIDSearchSince(ctx context.Context, since time.Time) ([]imap.UID, error)
+
+	// UIDFetch fetches FLAGS, INTERNALDATE, and BODY.PEEK[] for each UID
+	// in uids. Uses BODY.PEEK so the upstream \Seen flag is NOT set.
+	// REQ-IMAP-IMP-31.
+	UIDFetch(ctx context.Context, uids []imap.UID) ([]fetchedMessage, error)
 }
 
 // Dialer establishes an authenticated IMAP connection to an upstream
