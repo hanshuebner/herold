@@ -713,7 +713,11 @@ jobs:
         run: |
           KEY_FILE="$(mktemp)"
           chmod 0600 "${KEY_FILE}"
-          printf '%s' "${DEPLOY_SSH_KEY}" > "${KEY_FILE}"
+          # Trailing newline is required: OpenSSH refuses a private key whose
+          # final line is not newline-terminated with "error in libcrypto".
+          # printf '%s' drops it; printf '%s\n' restores it (matches the
+          # proven html-scrabble deploy).
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > "${KEY_FILE}"
           echo "KEY_FILE=${KEY_FILE}" >> "${GITHUB_ENV}"
 
       - name: trigger host activation
