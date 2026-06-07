@@ -23,6 +23,7 @@
   import { recipientToString } from './recipient-parse';
   import { hasExternalSubmission } from '../auth/capabilities';
   import { hasFileShares } from '../jmap/file-shares';
+  import { attachmentBadge } from '../mail/attachment-icon';
   import { submissionStore } from '../identities/identity-submission.svelte';
   import type { Identity } from '../mail/types';
   import type { SubmissionSummary } from '../identities/identity-status';
@@ -950,7 +951,13 @@
           <span class="label">Shared links</span>
           <ul class="shares-list">
             {#each compose.shares as s (s.key)}
+              {@const badge = attachmentBadge(s.type, s.name)}
               <li class="share-item">
+                <span
+                  class="share-type-badge"
+                  style="--icon-bg: {badge.bg}"
+                  aria-hidden="true"
+                >{badge.label}</span>
                 <span class="share-name">{s.name}</span>
                 <span class="share-size">{formatSize(s.size)}</span>
                 <span class="share-expiry">{formatExpiry(s.expiresAt)}</span>
@@ -1402,13 +1409,29 @@
   }
   .share-item {
     display: grid;
-    grid-template-columns: 1fr auto auto auto auto auto;
+    grid-template-columns: auto 1fr auto auto auto auto auto;
     gap: var(--spacing-03);
     align-items: center;
     padding: var(--spacing-02) var(--spacing-03);
     background: color-mix(in srgb, var(--interactive) 6%, var(--layer-01));
     border: 1px solid color-mix(in srgb, var(--interactive) 20%, var(--border-subtle-01));
     border-radius: var(--radius-md);
+  }
+  .share-type-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 20px;
+    border-radius: 3px;
+    background: var(--icon-bg, #697077);
+    color: #ffffff;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    font-family: var(--font-mono);
+    flex: 0 0 auto;
+    user-select: none;
   }
   .share-name {
     color: var(--text-primary);

@@ -44,6 +44,51 @@ const BG_IMG = '#007d79';
 const BG_FILE = '#697077';
 
 /**
+ * Pure helper: given a MIME content type and filename, return the badge
+ * label and background colour. Image content types always map to "IMG"
+ * here; the thumbnail threshold check is the caller's responsibility.
+ *
+ * Exported so the compose strip and other contexts can obtain a badge
+ * descriptor without constructing a full EmailBodyPart.
+ */
+export function attachmentBadge(contentType: string, _filename: string): { label: string; bg: string } {
+  const type = contentType ?? '';
+
+  if (type.startsWith('image/')) {
+    return { label: 'IMG', bg: BG_IMG };
+  }
+
+  if (type === 'application/pdf') {
+    return { label: 'PDF', bg: BG_PDF };
+  }
+
+  if (
+    type === 'application/msword' ||
+    type.includes('officedocument.wordprocessingml')
+  ) {
+    return { label: 'DOC', bg: BG_DOC };
+  }
+
+  if (
+    type === 'application/vnd.ms-excel' ||
+    type.includes('spreadsheetml')
+  ) {
+    return { label: 'XLS', bg: BG_XLS };
+  }
+
+  if (
+    type === 'application/zip' ||
+    type === 'application/x-7z-compressed' ||
+    type.includes('tar') ||
+    type.includes('gzip')
+  ) {
+    return { label: 'ZIP', bg: BG_ZIP };
+  }
+
+  return { label: 'FILE', bg: BG_FILE };
+}
+
+/**
  * Returns the icon descriptor for a body part.
  *
  * Image parts under THUMB_SIZE_CAP return `{kind: 'thumbnail'}` so the
@@ -57,35 +102,7 @@ export function attachmentIcon(part: EmailBodyPart): AttachmentIcon {
     if (part.size > 0 && part.size <= THUMB_SIZE_CAP) {
       return { kind: 'thumbnail' };
     }
-    return { kind: 'badge', label: 'IMG', bg: BG_IMG };
   }
 
-  if (type === 'application/pdf') {
-    return { kind: 'badge', label: 'PDF', bg: BG_PDF };
-  }
-
-  if (
-    type === 'application/msword' ||
-    type.includes('officedocument.wordprocessingml')
-  ) {
-    return { kind: 'badge', label: 'DOC', bg: BG_DOC };
-  }
-
-  if (
-    type === 'application/vnd.ms-excel' ||
-    type.includes('spreadsheetml')
-  ) {
-    return { kind: 'badge', label: 'XLS', bg: BG_XLS };
-  }
-
-  if (
-    type === 'application/zip' ||
-    type === 'application/x-7z-compressed' ||
-    type.includes('tar') ||
-    type.includes('gzip')
-  ) {
-    return { kind: 'badge', label: 'ZIP', bg: BG_ZIP };
-  }
-
-  return { kind: 'badge', label: 'FILE', bg: BG_FILE };
+  return { kind: 'badge', ...attachmentBadge(type, part.name ?? '') };
 }

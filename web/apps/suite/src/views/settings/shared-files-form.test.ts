@@ -33,6 +33,27 @@ vi.mock('../../lib/jmap/client', () => ({
     hasCapability: vi.fn(() => true),
   },
   strict: vi.fn((r: unknown) => r),
+  setJmapOnUnauthenticated: vi.fn(),
+}));
+
+// ── Router mock ───────────────────────────────────────────────────────────────
+
+vi.mock('../../lib/router/router.svelte', () => ({
+  router: {
+    navigate: vi.fn(),
+    current: '/settings',
+    parts: ['settings'],
+  },
+}));
+
+// ── Mail store mock ───────────────────────────────────────────────────────────
+
+vi.mock('../../lib/mail/store.svelte', () => ({
+  mail: {
+    mailAccountId: 'acct-1',
+    identities: new Map(),
+    primaryIdentity: null,
+  },
 }));
 
 // ── Dialog mock ───────────────────────────────────────────────────────────────

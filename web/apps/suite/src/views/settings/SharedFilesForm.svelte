@@ -18,6 +18,10 @@
     type FileShare,
     type FileShareState,
   } from '../../lib/jmap/file-shares';
+  import { jmap } from '../../lib/jmap/client';
+  import { Capability, type Invocation } from '../../lib/jmap/types';
+  import { mail } from '../../lib/mail/store.svelte';
+  import { router } from '../../lib/router/router.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
   import { confirm } from '../../lib/dialog/confirm.svelte';
 
@@ -29,6 +33,8 @@
   let filter = $state<FileShareState | 'all'>('all');
   let sortBy = $state<'createdAt' | 'expiresAt'>('createdAt');
   let revoking = $state<Set<string>>(new Set());
+  /** Set of sourceMessageIds currently being resolved to a threadId. */
+  let resolving = $state<Set<string>>(new Set());
 
   // ── Capability ────────────────────────────────────────────────────────────
 
@@ -136,6 +142,51 @@
     }
   }
 
+  /**
+   * Resolve a sourceMessageId to its threadId via JMAP Email/get, then
+   * navigate to the thread in the mail view. Shows a toast when the message
+   * has been deleted and does not navigate in that case (REQ-ATT-70a).
+   */
+  async function openSourceMessage(sourceMessageId: string): Promise<void> {
+    if (resolving.has(sourceMessageId)) return;
+    const accountId = mail.mailAccountId;
+    if (!accountId) {
+      toast.show({ message: 'No mail account available', kind: 'error', timeoutMs: 4000 });
+      return;
+    }
+    resolving = new Set([...resolving, sourceMessageId]);
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Email/get',
+          { accountId, ids: [sourceMessageId], properties: ['id', 'threadId'] },
+          [Capability.Mail],
+        );
+      });
+      const result = (responses[0] as Invocation)[1] as {
+        list?: { id: string; threadId: string }[];
+      };
+      const email = result.list?.[0];
+      if (!email) {
+        toast.show({ message: 'That message no longer exists', timeoutMs: 4000 });
+        return;
+      }
+      // Prime the thread into the mail store BEFORE navigating. Opening
+      // /mail/thread/<id> cold (the source thread is rarely already loaded
+      // when coming from Settings) otherwise lands on the inbox; once the
+      // thread is in the store the thread route renders it directly.
+      await mail.loadThread(email.threadId);
+      router.navigate('/mail/thread/' + encodeURIComponent(email.threadId));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not open message';
+      toast.show({ message: msg, kind: 'error', timeoutMs: 6000 });
+    } finally {
+      const next = new Set(resolving);
+      next.delete(sourceMessageId);
+      resolving = next;
+    }
+  }
+
   let copyingId = $state<string | null>(null);
 
   async function copyLink(share: FileShare): Promise<void> {
@@ -235,17 +286,24 @@
             {/if}
           </span>
           {#if share.sourceMessageId || share.sourceSubject || (share.sourceRecipients && share.sourceRecipients.length > 0)}
-            <!-- REQ-ATT-70a: back-reference to the originating message. Shown
-                 whenever any source field is present (a no-subject message
-                 still carries recipients + a message id). -->
-            <!-- TODO REQ-ATT-70a: make subject a clickable link to open the
-                 message in the mail view once the route supports opening by
-                 Email id. Currently sourceMessageId is an Email id but the
-                 router expects a threadId (#/mail/thread/<threadId>), so a
-                 safe deep-link requires a JMAP lookup that is deferred. -->
+            <!-- REQ-ATT-70a: back-reference to the originating message. When
+                 sourceMessageId is present the subject is a deep-link button
+                 that resolves the Email id to a threadId via JMAP and navigates
+                 to the thread. When no id is available (deleted-without-id
+                 snapshot) the subject renders as plain text. -->
             <span class="share-source">
               {'Shared in '}
-              <span class="share-source-subject">"{share.sourceSubject || '(no subject)'}"</span>
+              {#if share.sourceMessageId}
+                <button
+                  type="button"
+                  class="share-source-link"
+                  onclick={() => void openSourceMessage(share.sourceMessageId!)}
+                  disabled={resolving.has(share.sourceMessageId)}
+                  aria-label="Open originating message: {share.sourceSubject || '(no subject)'}"
+                >"{share.sourceSubject || '(no subject)'}"</button>
+              {:else}
+                <span class="share-source-subject">"{share.sourceSubject || '(no subject)'}"</span>
+              {/if}
               {#if share.sourceRecipients && share.sourceRecipients.length > 0}
                 {' — to '}
                 <span class="share-source-recipients">{share.sourceRecipients.join(', ')}</span>
@@ -431,6 +489,28 @@
 
   .share-source-subject {
     font-style: italic;
+  }
+
+  .share-source-link {
+    font-style: italic;
+    color: var(--interactive);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--interactive) 50%, transparent);
+    text-underline-offset: 2px;
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: inherit;
+    font-family: inherit;
+    line-height: inherit;
+    cursor: pointer;
+  }
+  .share-source-link:hover:not(:disabled) {
+    text-decoration-color: var(--interactive);
+  }
+  .share-source-link:disabled {
+    opacity: 0.6;
+    cursor: wait;
   }
 
   .share-source-recipients {
