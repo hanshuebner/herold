@@ -222,6 +222,20 @@ target = "herold.jsonl"
 format = "json"
 level  = "debug"
 EOF
+
+    # Optional: enable the attachment-share offload feature for puppeteer
+    # verification. public_base_url must be https to pass config
+    # validation; a placeholder host is fine for UI flows (the suite only
+    # embeds the returned URL as a string). HEROLD_DEV_SHARE_BASE_URL
+    # overrides the placeholder.
+    if [ -n "${HEROLD_DEV_ATTACHMENT_SHARES:-}" ]; then
+        cat >> "$dir/system.toml" <<EOF
+
+[server.attachment_shares]
+enabled = true
+public_base_url = "${HEROLD_DEV_SHARE_BASE_URL:-https://mail.example.local}"
+EOF
+    fi
 }
 
 # Seed the domain + non-admin principals via the admin REST surface.
