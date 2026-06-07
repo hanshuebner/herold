@@ -128,6 +128,36 @@ max_ttl     = "90d"
 share_quota_per_principal = "512 MiB"
 `))
 
+	// [imap_import] seeds (REQ-IMAP-IMP-05, -23, -26).
+	f.Add([]byte(minimalNoObs + `
+[imap_import]
+allow_password = true
+concurrent_accounts = 16
+poll_interval = "60s"
+
+[imap_import.oauth.google]
+client_id         = "123456789012-abc.apps.googleusercontent.com"
+client_secret_ref = "$HEROLD_GOOGLE_IMAP_CLIENT_SECRET"
+token_endpoint    = "https://oauth2.googleapis.com/token"
+scope             = "https://mail.google.com/"
+`))
+	f.Add([]byte(minimalNoObs + `
+[imap_import]
+allow_password = false
+concurrent_accounts = 4
+poll_interval = "30s"
+`))
+	f.Add([]byte(minimalNoObs + `
+[imap_import]
+concurrent_accounts = 0
+`))
+	f.Add([]byte(minimalNoObs + `
+[imap_import.oauth.google]
+client_id         = "id"
+client_secret_ref = "not-a-ref"
+token_endpoint    = "https://oauth2.googleapis.com/token"
+`))
+
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		_, _ = Parse(raw)
 	})

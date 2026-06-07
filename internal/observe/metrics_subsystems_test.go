@@ -42,6 +42,8 @@ func TestRegisterSubsystemMetrics_Idempotent(t *testing.T) {
 		RegisterProtojmapContactsMetrics()
 		// Phase 3 REQ-SEND-12 send policy:
 		RegisterSendPolicyMetrics()
+		// IMAP import worker metrics (REQ-IMAP-IMP-63):
+		RegisterIMAPImportMetrics()
 	}
 }
 
@@ -69,6 +71,7 @@ func TestMetricsHandler_ExposesSubsystemMetrics(t *testing.T) {
 	RegisterProtojmapCalendarsMetrics()
 	RegisterProtojmapContactsMetrics()
 	RegisterSendPolicyMetrics()
+	RegisterIMAPImportMetrics()
 
 	// Drive at least one observation through each metric so it shows
 	// up in the registry's text output (counters with zero observations
@@ -94,6 +97,13 @@ func TestMetricsHandler_ExposesSubsystemMetrics(t *testing.T) {
 	ProtojmapCalendarsMethodsTotal.WithLabelValues("Calendar/get").Inc()
 	ProtojmapContactsMethodsTotal.WithLabelValues("Contact/get").Inc()
 	SendForbiddenFromTotal.WithLabelValues("smtp").Inc()
+	IMAPImportMessagesFetchedTotal.WithLabelValues("acc1").Inc()
+	IMAPImportFlagsPropagatedTotal.WithLabelValues("acc1", "up").Inc()
+	IMAPImportConflictsTotal.WithLabelValues("acc1", "flag").Inc()
+	IMAPImportIdleSeconds.WithLabelValues("acc1").Set(0)
+	IMAPImportFetchDurationSeconds.WithLabelValues("acc1").Observe(0.5)
+	IMAPImportConnectionErrorsTotal.WithLabelValues("acc1", "network").Inc()
+	IMAPImportBackfillRemaining.WithLabelValues("acc1").Set(0)
 
 	srv := httptest.NewServer(MetricsHandler())
 	defer srv.Close()
@@ -125,6 +135,14 @@ func TestMetricsHandler_ExposesSubsystemMetrics(t *testing.T) {
 		"herold_protojmap_calendars_methods_total",
 		"herold_protojmap_contacts_methods_total",
 		"herold_send_forbidden_from_total",
+		// IMAP import worker metrics (REQ-IMAP-IMP-63):
+		"herold_imapimport_messages_fetched_total",
+		"herold_imapimport_flags_propagated_total",
+		"herold_imapimport_conflicts_total",
+		"herold_imapimport_idle_seconds",
+		"herold_imapimport_fetch_duration_seconds",
+		"herold_imapimport_connection_errors_total",
+		"herold_imapimport_backfill_remaining",
 	}
 	for _, m := range wantOneOf {
 		if !strings.Contains(out, m) {

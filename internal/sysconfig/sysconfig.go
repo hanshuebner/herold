@@ -41,6 +41,14 @@ type Config struct {
 	// JMAP method and IMAP command; per-method/command overrides live
 	// under [performance.method_deadline].
 	Performance PerformanceConfig `toml:"performance,omitempty"`
+	// IMAPImport holds operator-wide configuration for the inbound IMAP
+	// live-mirror feature (docs/design/server/requirements/19-imap-import.md).
+	// An absent block produces a fully defaulted configuration with
+	// allow_password=true, concurrent_accounts=16, and poll_interval=60s.
+	// Per-account upstream settings (credentials, folder maps, etc.) live in
+	// the DB (REQ-IMAP-IMP-01); only the instance-wide knobs and OAuth
+	// application registrations belong here.
+	IMAPImport IMAPImportConfig `toml:"imap_import,omitempty"`
 }
 
 // PerformanceConfig configures the response-time budget enforced by
@@ -710,6 +718,112 @@ type OAuthProviderConfig struct {
 	TokenURL string `toml:"token_url"`
 	// Scopes is the set of OAuth scopes requested. Must be non-empty.
 	Scopes []string `toml:"scopes"`
+}
+
+// IMAPImportConfig is the operator-facing [imap_import] block for the
+// inbound IMAP live-mirror feature (docs/design/server/requirements/
+// 19-imap-import.md REQ-IMAP-IMP-05, -11, -22, -23, -26).
+//
+// Per-account upstream settings (host, credentials, folder maps, etc.)
+// are stored in the DB; only instance-wide policy knobs and OAuth
+// application registrations belong here. An absent block is valid and
+// produces a fully defaulted, functional configuration.
+//
+// Example (system.toml):
+//
+//	[imap_import]
+//	allow_password = true          # REQ-IMAP-IMP-05: set false to forbid plain-password auth
+//	concurrent_accounts = 16       # REQ-IMAP-IMP-26: goroutine-pool size
+//	poll_interval = "60s"          # REQ-IMAP-IMP-23: NOOP-poll cadence when IDLE unsupported
+//
+//	[imap_import.oauth.google]
+//	client_id         = "123456789012-abc.apps.googleusercontent.com"
+//	client_secret_ref = "$HEROLD_GOOGLE_IMAP_CLIENT_SECRET"
+//	token_endpoint    = "https://oauth2.googleapis.com/token"
+//	scope             = "https://mail.google.com/"
+//
+//	[imap_import.oauth.microsoft]
+//	client_id         = "..."
+//	client_secret_ref = "$HEROLD_MICROSOFT_IMAP_CLIENT_SECRET"
+//	token_endpoint    = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+//	scope             = "https://outlook.office.com/IMAP.AccessAsUser.All"
+type IMAPImportConfig struct {
+	// AllowPassword controls whether auth_method=password is accepted for
+	// per-account upstream configurations (REQ-IMAP-IMP-05). Defaults to
+	// true so existing deployments keep working; operators who want to
+	// mandate app-password or xoauth2 set this to false. auth_method=
+	// app_password and auth_method=xoauth2 are unaffected by this knob.
+	// Pointer so an absent key (default-true) is distinguishable from an
+	// explicit `allow_password = false`.
+	AllowPassword *bool `toml:"allow_password,omitempty"`
+	// ConcurrentAccounts is the size of the goroutine pool that supervises
+	// per-account IMAP workers (REQ-IMAP-IMP-26). One slow upstream does not
+	// block other accounts on the same herold instance. Default 16; must be >= 1.
+	ConcurrentAccounts int `toml:"concurrent_accounts,omitempty"`
+	// PollInterval is the cadence at which the worker sends a NOOP command
+	// to poll for new mail when the upstream IMAP server does not advertise
+	// RFC 2177 IDLE (REQ-IMAP-IMP-23). Default 60s. Must be > 0. Has no
+	// effect when the upstream supports IDLE.
+	PollInterval Duration `toml:"poll_interval,omitempty"`
+	// OAuth maps provider names (e.g. "google", "microsoft") to their OAuth
+	// 2.0 application credentials. Provider names are normalised to lowercase
+	// at parse time. These entries are required when any per-account
+	// auth_method=xoauth2 configuration references the provider; the per-
+	// account record stores a sealed refresh token and the worker exchanges it
+	// here before each IMAP connection (REQ-IMAP-IMP-03; decision 3).
+	// This is distinct from [server.oauth_providers], which is for outbound
+	// SMTP submission OAuth — IMAP OAuth needs the restricted IMAP scope under
+	// a separately-registered application (NG11).
+	OAuth map[string]IMAPImportOAuthProvider `toml:"oauth,omitempty"`
+}
+
+// IMAPImportAllowPassword reports whether plain-password auth is permitted for
+// upstream IMAP accounts (REQ-IMAP-IMP-05). Returns true when AllowPassword is
+// nil (the documented default) or explicitly true; false when the operator set
+// allow_password = false.
+func (ii *IMAPImportConfig) IMAPImportAllowPassword() bool {
+	if ii == nil || ii.AllowPassword == nil {
+		return true
+	}
+	return *ii.AllowPassword
+}
+
+// IMAPImportOAuthProvider holds the OAuth 2.0 application credentials an
+// operator registers for IMAP xoauth2 access (REQ-IMAP-IMP-03; decision 3).
+// This is NOT herold's login-OIDC federation (that is RP-for-login only, NG11):
+// IMAP access requires the restricted IMAP scope under an OAuth application the
+// operator separately registers with the provider.
+//
+// Example (system.toml):
+//
+//	[imap_import.oauth.google]
+//	client_id         = "123456789012-abc.apps.googleusercontent.com"
+//	client_secret_ref = "$HEROLD_GOOGLE_IMAP_CLIENT_SECRET"
+//	token_endpoint    = "https://oauth2.googleapis.com/token"
+//	scope             = "https://mail.google.com/"
+type IMAPImportOAuthProvider struct {
+	// ClientID is the OAuth 2.0 client identifier issued by the provider.
+	// Required.
+	ClientID string `toml:"client_id"`
+	// ClientSecretRef is a secret reference ("$VAR" or "file:/path") resolving
+	// to the OAuth 2.0 client secret. Inline values are rejected at Validate
+	// per STANDARDS §9 / REQ-OPS-04 / REQ-OPS-161.
+	ClientSecretRef string `toml:"client_secret_ref"`
+	// TokenEndpoint is the provider's token endpoint URL, used to exchange a
+	// refresh token for a short-lived access token before each IMAP connection.
+	// Required; must be an absolute HTTPS URL.
+	// Canonical values:
+	//   google:    "https://oauth2.googleapis.com/token"
+	//   microsoft: "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+	TokenEndpoint string `toml:"token_endpoint"`
+	// Scope is the OAuth scope string passed in the token-refresh request.
+	// Optional; when empty the worker omits the scope parameter and relies on
+	// the refresh token already carrying the correct scope from the initial
+	// authorisation grant.
+	// Canonical values:
+	//   google:    "https://mail.google.com/"
+	//   microsoft: "https://outlook.office.com/IMAP.AccessAsUser.All"
+	Scope string `toml:"scope,omitempty"`
 }
 
 // PushConfig configures the deployment-level VAPID key pair the Web
@@ -2180,6 +2294,10 @@ func applyDefaults(c *Config) {
 	// produces a fully defaulted (but inert) configuration; the feature
 	// only becomes active when public_base_url is also set.
 	applyAttachmentSharesDefaults(&c.Server.AttachmentShares)
+	// IMAP import (REQ-IMAP-IMP-05, -23, -26). A missing [imap_import]
+	// block produces a fully defaulted configuration: allow_password=true,
+	// concurrent_accounts=16, poll_interval=60s.
+	applyIMAPImportDefaults(&c.IMAPImport)
 }
 
 // applyClientLogDefaults fills in the documented default values for
@@ -2269,6 +2387,33 @@ func applyAttachmentSharesDefaults(as *AttachmentSharesConfig) {
 	}
 	if as.DownloadRequestsWindow == 0 {
 		as.DownloadRequestsWindow = Duration(10 * time.Minute) // 10m
+	}
+}
+
+// applyIMAPImportDefaults fills in the documented default values for the
+// [imap_import] block (REQ-IMAP-IMP-05, -23, -26) when fields are absent.
+func applyIMAPImportDefaults(ii *IMAPImportConfig) {
+	// AllowPassword defaults to true (REQ-IMAP-IMP-05). Pointer so an absent
+	// key is distinguishable from an explicit `allow_password = false`; same
+	// pattern as TaggedAddressesConfig.Enabled and CallConfig.Enabled.
+	if ii.AllowPassword == nil {
+		t := true
+		ii.AllowPassword = &t
+	}
+	if ii.ConcurrentAccounts == 0 {
+		ii.ConcurrentAccounts = 16
+	}
+	if ii.PollInterval == 0 {
+		ii.PollInterval = Duration(60 * time.Second)
+	}
+	// Normalise OAuth provider names to lowercase (same convention as
+	// [server.oauth_providers]).
+	if len(ii.OAuth) > 0 {
+		normalised := make(map[string]IMAPImportOAuthProvider, len(ii.OAuth))
+		for k, v := range ii.OAuth {
+			normalised[strings.ToLower(k)] = v
+		}
+		ii.OAuth = normalised
 	}
 }
 
@@ -3097,6 +3242,10 @@ func Validate(c *Config) error {
 	if err := validateAttachmentShares(&c.Server.AttachmentShares); err != nil {
 		return err
 	}
+	// IMAP import (REQ-IMAP-IMP-03, -05, -23, -26).
+	if err := validateIMAPImport(&c.IMAPImport); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3313,6 +3462,47 @@ func validateAttachmentShares(as *AttachmentSharesConfig) error {
 	if as.DownloadRequestsPerIPPerShare <= 0 {
 		return fmt.Errorf("sysconfig: [server.attachment_shares] download_requests_per_ip_per_share %d must be > 0",
 			as.DownloadRequestsPerIPPerShare)
+	}
+	return nil
+}
+
+// validateIMAPImport checks semantic constraints on the [imap_import] block
+// (REQ-IMAP-IMP-03, -05, -23, -26). applyDefaults has already run so the
+// numeric fields carry their defaults when the operator left them absent.
+func validateIMAPImport(ii *IMAPImportConfig) error {
+	// concurrent_accounts must be >= 1 (REQ-IMAP-IMP-26). applyDefaults
+	// sets 16 for an absent field; only an explicit 0/negative is an error.
+	if ii.ConcurrentAccounts < 1 {
+		return fmt.Errorf("sysconfig: [imap_import] concurrent_accounts %d must be >= 1",
+			ii.ConcurrentAccounts)
+	}
+	// poll_interval must be > 0 (REQ-IMAP-IMP-23). applyDefaults sets 60s
+	// for an absent field.
+	if ii.PollInterval <= 0 {
+		return errors.New("sysconfig: [imap_import] poll_interval must be > 0")
+	}
+	// OAuth providers: each entry requires client_id, client_secret_ref (as
+	// a secret reference), and token_endpoint (as an absolute URL). Scope is
+	// optional. Provider names are already normalised to lowercase by
+	// applyDefaults. (REQ-IMAP-IMP-03; STANDARDS §9.)
+	for name, p := range ii.OAuth {
+		if p.ClientID == "" {
+			return fmt.Errorf("sysconfig: [imap_import.oauth.%s] client_id is required", name)
+		}
+		if p.ClientSecretRef == "" {
+			return fmt.Errorf("sysconfig: [imap_import.oauth.%s] client_secret_ref is required (STANDARDS §9)", name)
+		}
+		if !IsSecretReference(p.ClientSecretRef) {
+			return fmt.Errorf("sysconfig: [imap_import.oauth.%s] client_secret_ref %q must be \"$VAR\" or \"file:/path\" (STANDARDS §9)",
+				name, p.ClientSecretRef)
+		}
+		if p.TokenEndpoint == "" {
+			return fmt.Errorf("sysconfig: [imap_import.oauth.%s] token_endpoint is required", name)
+		}
+		if u, err := url.ParseRequestURI(p.TokenEndpoint); err != nil || !u.IsAbs() {
+			return fmt.Errorf("sysconfig: [imap_import.oauth.%s] token_endpoint %q is not a valid absolute URL",
+				name, p.TokenEndpoint)
+		}
 	}
 	return nil
 }

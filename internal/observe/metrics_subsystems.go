@@ -1172,3 +1172,71 @@ func RegisterTaggedAddressMetrics() {
 		)
 	})
 }
+
+// IMAP import worker metrics (REQ-IMAP-IMP-63). Label vocabulary is closed:
+//
+//   - account: the upstream account id (bounded per principal; acceptable per
+//     STANDARDS §7 — same rationale as per-plugin labels).
+//   - direction (flags_propagated_total): "up" (herold→upstream) |
+//     "down" (upstream→herold).
+//   - kind (conflicts_total): "flag" | "move" | "delete".
+//   - kind (connection_errors_total): "auth" | "network" | "tls" |
+//     "rate_limit" | "other".
+var (
+	imapImportMetricsOnce sync.Once
+
+	IMAPImportMessagesFetchedTotal  *prometheus.CounterVec
+	IMAPImportFlagsPropagatedTotal  *prometheus.CounterVec
+	IMAPImportConflictsTotal        *prometheus.CounterVec
+	IMAPImportIdleSeconds           *prometheus.GaugeVec
+	IMAPImportFetchDurationSeconds  *prometheus.HistogramVec
+	IMAPImportConnectionErrorsTotal *prometheus.CounterVec
+	IMAPImportBackfillRemaining     *prometheus.GaugeVec
+)
+
+// RegisterIMAPImportMetrics registers the IMAP import worker collector set;
+// idempotent so test fixtures that construct multiple workers against the
+// process-global Registry stay race- and panic-free. Called by the
+// imapimport package at pool construction time.
+func RegisterIMAPImportMetrics() {
+	imapImportMetricsOnce.Do(func() {
+		IMAPImportMessagesFetchedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_imapimport_messages_fetched_total",
+			Help: "Total messages fetched from upstream IMAP accounts and stored in herold, by account.",
+		}, []string{"account"})
+		IMAPImportFlagsPropagatedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_imapimport_flags_propagated_total",
+			Help: "Total flag changes propagated, by account and direction (up=herold→upstream, down=upstream→herold).",
+		}, []string{"account", "direction"})
+		IMAPImportConflictsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_imapimport_conflicts_total",
+			Help: "Total upstream-authoritative conflict resolutions where both sides changed, by account and kind (flag|move|delete).",
+		}, []string{"account", "kind"})
+		IMAPImportIdleSeconds = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "herold_imapimport_idle_seconds",
+			Help: "Seconds spent in IMAP IDLE for the current idle session, by account. Reset to 0 on each IDLE re-arm.",
+		}, []string{"account"})
+		IMAPImportFetchDurationSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "herold_imapimport_fetch_duration_seconds",
+			Help:    "Duration of a single IMAP fetch round (FETCH + store), by account.",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"account"})
+		IMAPImportConnectionErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_imapimport_connection_errors_total",
+			Help: "Total IMAP connection errors by account and kind (auth|network|tls|rate_limit|other).",
+		}, []string{"account", "kind"})
+		IMAPImportBackfillRemaining = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "herold_imapimport_backfill_remaining",
+			Help: "Approximate number of upstream UIDs below the high-water mark still to be fetched in the initial backfill, by account.",
+		}, []string{"account"})
+		MustRegister(
+			IMAPImportMessagesFetchedTotal,
+			IMAPImportFlagsPropagatedTotal,
+			IMAPImportConflictsTotal,
+			IMAPImportIdleSeconds,
+			IMAPImportFetchDurationSeconds,
+			IMAPImportConnectionErrorsTotal,
+			IMAPImportBackfillRemaining,
+		)
+	})
+}
