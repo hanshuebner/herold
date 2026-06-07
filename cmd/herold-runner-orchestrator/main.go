@@ -51,13 +51,9 @@ func loadConfig() (config, error) {
 		maxPerPoolArm:  4,
 		maxPerPoolAmd:  2,
 		pollInterval:   15 * time.Second,
-		// Generous by default so a VM is not reaped out from under a
-		// late-arriving job in a long run (e.g. a deploy job gated behind
-		// the full test+binaries chain). Tune down via the flags / env
-		// (ORCHESTRATOR_VM_MAX_LIFETIME / _IDLE) to trade warmth for cost.
-		vmMaxLifetime: 48 * time.Hour,
-		vmMaxIdle:     48 * time.Hour,
-		logFormat:     "text",
+		vmMaxLifetime:  60 * time.Minute,
+		vmMaxIdle:      60 * time.Minute,
+		logFormat:      "text",
 	}
 
 	flag.StringVar(&c.forgejoRepo, "repo", envOr("ORCHESTRATOR_FORGEJO_REPO", "hanshuebner/herold"),
