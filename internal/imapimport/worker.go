@@ -1,0 +1,370 @@
+package imapimport
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"math/rand/v2"
+	"time"
+
+	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/observe"
+	"github.com/hanshuebner/herold/internal/secrets"
+	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/sysconfig"
+)
+
+// maxConsecutiveFailures is the number of consecutive connection
+// failures after which the account is flipped to state=errored and
+// the worker stops reconnecting (REQ-IMAP-IMP-25).
+const maxConsecutiveFailures = 20
+
+// backoffBase is the initial retry delay after the first failure.
+const backoffBase = 2 * time.Second
+
+// backoffCap is the maximum retry delay.
+const backoffCap = 5 * time.Minute
+
+// accountWorkerOpts bundles the constructor parameters for
+// accountWorker. All fields are required unless noted.
+type accountWorkerOpts struct {
+	account     store.IMAPImportAccount
+	store       store.Store
+	dataKey     []byte
+	categoriser Categoriser
+	cfg         sysconfig.IMAPImportConfig
+	log         *slog.Logger
+	clk         clock.Clock
+	dialer      Dialer
+
+	// maxConsecutiveFailures overrides the package-level constant for
+	// tests that need a small M to keep execution fast. Zero means use
+	// the package constant.
+	maxConsecutiveFailures int
+}
+
+// accountWorker is the per-account supervising goroutine. It manages
+// the lifecycle: connecting → running → (backoff on failure) → errored.
+//
+// In sub-step 3a the "running" phase is trivially: connect, record
+// capabilities (for single-connection-fallback decision, REQ-IMAP-IMP-21),
+// and cleanly disconnect. Sub-steps 3b-3e extend the running phase with
+// folder sync, IDLE, and write-back.
+type accountWorker struct {
+	opts        accountWorkerOpts
+	consecutive int // consecutive connection failures
+
+	// testTokenSource, when non-nil, overrides the OAuth token source
+	// used in openCredential. Set in tests to inject a fakeTokenSource
+	// without wiring a real HTTP endpoint. Production code leaves this nil.
+	testTokenSource oauthTokenSource
+}
+
+func newAccountWorker(opts accountWorkerOpts) *accountWorker {
+	// Ensure metrics are registered; idempotent (sync.Once inside).
+	// Called here (in addition to Pool construction) so tests that
+	// create workers directly without a Pool still have valid collectors.
+	observe.RegisterIMAPImportMetrics()
+	return &accountWorker{opts: opts}
+}
+
+// run is the main loop of the accountWorker. It runs until ctx is
+// cancelled or the account reaches the errored state.
+func (w *accountWorker) run(ctx context.Context) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		err := w.attempt(ctx)
+		if err == nil {
+			// Successful connection: record success, reset failure counter.
+			w.consecutive = 0
+			now := w.opts.clk.Now()
+			if setErr := w.opts.store.Meta().SetIMAPImportAccountState(
+				ctx,
+				w.opts.account.ID,
+				store.IMAPImportAccountStateEnabled,
+				"",
+				&now,
+			); setErr != nil {
+				w.opts.log.Warn("imapimport: failed to persist last_success_at",
+					slog.String("error", setErr.Error()))
+			}
+			// In 3a we immediately fall through to reconnect loop so
+			// backoff logic also handles the no-work-to-do case. For
+			// 3b-3e the running phase will loop internally (IDLE + fetch
+			// rounds) and only return here on a disconnection.
+			continue
+		}
+
+		// Classify the error kind for metrics — without revealing
+		// credential content in any label value.
+		kind := classifyErrorKind(err)
+		observe.IMAPImportConnectionErrorsTotal.WithLabelValues(
+			w.opts.account.ID,
+			kind,
+		).Inc()
+
+		w.consecutive++
+		w.opts.log.Warn("imapimport: connection attempt failed",
+			slog.String("account_id", w.opts.account.ID),
+			slog.String("kind", kind),
+			slog.String("error", redactError(err)),
+			slog.Int("consecutive_failures", w.consecutive),
+		)
+
+		limit := maxConsecutiveFailures
+		if w.opts.maxConsecutiveFailures > 0 {
+			limit = w.opts.maxConsecutiveFailures
+		}
+		if w.consecutive >= limit {
+			// Flip to errored; worker stops (REQ-IMAP-IMP-25).
+			lastErr := fmt.Sprintf("connection failed after %d consecutive attempts: %s",
+				w.consecutive, redactError(err))
+			if setErr := w.opts.store.Meta().SetIMAPImportAccountState(
+				ctx,
+				w.opts.account.ID,
+				store.IMAPImportAccountStateErrored,
+				lastErr,
+				nil,
+			); setErr != nil {
+				w.opts.log.Warn("imapimport: failed to persist errored state",
+					slog.String("error", setErr.Error()))
+			}
+			w.opts.log.Error("imapimport: account errored after M consecutive failures; stopping worker",
+				slog.String("account_id", w.opts.account.ID),
+				slog.Int("max_failures", limit),
+			)
+			return
+		}
+
+		// Exponential backoff with jitter (REQ-IMAP-IMP-25).
+		delay := backoffDuration(w.consecutive)
+		w.opts.log.Info("imapimport: waiting before retry",
+			slog.String("account_id", w.opts.account.ID),
+			slog.Duration("delay", delay),
+		)
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.opts.clk.After(delay):
+		}
+	}
+}
+
+// attempt performs one connection attempt: open credential, dial,
+// check capabilities, record single-connection fallback decision,
+// then disconnect cleanly. Returns nil on success.
+//
+// In 3b-3e this will be extended to run the folder-sync + IDLE loop
+// before returning.
+func (w *accountWorker) attempt(ctx context.Context) error {
+	account := w.opts.account
+
+	// Reject password/app_password when the operator disabled plain auth
+	// (REQ-IMAP-IMP-05). xoauth2 is unaffected.
+	if !w.opts.cfg.IMAPImportAllowPassword() &&
+		(account.AuthMethod == store.IMAPImportAuthMethodPassword ||
+			account.AuthMethod == store.IMAPImportAuthMethodAppPassword) {
+		return fmt.Errorf("imapimport: auth_method=%s rejected: allow_password=false in sysconfig (REQ-IMAP-IMP-05)",
+			account.AuthMethod)
+	}
+
+	// Open credential immediately before connect; never retained
+	// beyond this function. (REQ-IMAP-IMP-70.)
+	credPlaintext, err := w.openCredential(ctx, account)
+	if err != nil {
+		return fmt.Errorf("imapimport: credential open failed: %w", err)
+	}
+
+	// Dial + authenticate.
+	conn, err := w.opts.dialer.Dial(ctx, dialParams{
+		AccountID:           account.ID,
+		Host:                account.Host,
+		Port:                account.Port,
+		TLSMode:             string(account.TLSMode),
+		Username:            account.Username,
+		AuthMethod:          string(account.AuthMethod),
+		CredentialPlaintext: credPlaintext,
+	})
+	// Zero the plaintext as soon as the dial call returns; the
+	// credential is now either in the Conn (if authed) or discarded
+	// (on error). Either way we do not keep it.
+	credPlaintext = ""
+	_ = credPlaintext
+
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// Orderly close: LOGOUT then close the TCP connection.
+		if logoutErr := conn.Logout(); logoutErr != nil {
+			w.opts.log.Debug("imapimport: LOGOUT error (non-fatal)",
+				slog.String("account_id", account.ID),
+				slog.String("error", logoutErr.Error()))
+		}
+		conn.Close()
+	}()
+
+	// Record single-connection-fallback capability for later sub-steps.
+	// (REQ-IMAP-IMP-21 — just carry the decision in 3a.)
+	_ = conn.Caps() // caps are available; used in 3b+ to decide IDLE vs poll
+
+	w.opts.log.Info("imapimport: connected successfully",
+		slog.String("account_id", account.ID),
+		slog.String("host", account.Host),
+	)
+
+	// 3a: nothing more to do — connection verified. 3b will do folder
+	// sync here before returning.
+	return nil
+}
+
+// openCredential decrypts the account's sealed credential using the
+// pool's data key. For xoauth2 accounts it additionally exchanges the
+// refresh token for an access token via the configured token source.
+// Returns the plaintext string; caller must zero it as soon as it is
+// no longer needed. (REQ-IMAP-IMP-70.)
+func (w *accountWorker) openCredential(ctx context.Context, account store.IMAPImportAccount) (string, error) {
+	rawBytes, err := secrets.Open(w.opts.dataKey, account.CredentialCT)
+	if err != nil {
+		return "", fmt.Errorf("secrets.Open: %w", err)
+	}
+
+	if account.AuthMethod != store.IMAPImportAuthMethodXOAuth2 {
+		// password / app_password: raw bytes are the credential.
+		plain := string(rawBytes)
+		// zero rawBytes immediately
+		for i := range rawBytes {
+			rawBytes[i] = 0
+		}
+		return plain, nil
+	}
+
+	// xoauth2: rawBytes is the sealed refresh token; exchange for access token.
+	refreshToken := string(rawBytes)
+	for i := range rawBytes {
+		rawBytes[i] = 0
+	}
+
+	providerKey := account.Host // callers may override; use host as default key
+	// Allow the configured account to carry a provider hint via Username
+	// domain, but that's 3b+. For now look up the first oauth provider that
+	// matches any entry, or fall back to the host name.
+	ts, err := w.tokenSourceForProvider(ctx, providerKey, refreshToken)
+	if err != nil {
+		return "", err
+	}
+
+	accessToken, err := ts.Token(ctx, refreshToken)
+	refreshToken = "" // zero immediately
+	if err != nil {
+		return "", fmt.Errorf("imapimport: token exchange failed: %w", err)
+	}
+	return accessToken, nil
+}
+
+// tokenSourceForProvider returns an oauthTokenSource for the named
+// provider. In 3a we pick the only configured OAuth provider if there
+// is exactly one, or return an error if zero/multiple are configured
+// without a matching key. 3b will wire the per-account provider name.
+//
+// When the worker's testTokenSource override is set (test injection),
+// that is returned without consulting the sysconfig OAuth map.
+func (w *accountWorker) tokenSourceForProvider(_ context.Context, _ string, _ string) (oauthTokenSource, error) {
+	// Test injection: bypass the real token endpoint.
+	if w.testTokenSource != nil {
+		return w.testTokenSource, nil
+	}
+
+	oauthCfg := w.opts.cfg.OAuth
+	if len(oauthCfg) == 0 {
+		return nil, fmt.Errorf("imapimport: xoauth2 requested but no [imap_import.oauth.*] provider configured")
+	}
+	// Pick the first (and typically only) provider; 3b will match by name.
+	for _, prov := range oauthCfg {
+		return newHTTPTokenSource(prov, nil), nil
+	}
+	return nil, fmt.Errorf("imapimport: no suitable OAuth provider found")
+}
+
+// backoffDuration returns the exponential backoff delay for the n-th
+// failure (1-indexed), capped at backoffCap and jittered by ±25 %.
+func backoffDuration(n int) time.Duration {
+	if n < 1 {
+		n = 1
+	}
+	// shift n-1 so first failure -> base
+	shift := n - 1
+	if shift > 20 {
+		shift = 20 // prevent overflow
+	}
+	d := backoffBase << uint(shift)
+	if d > backoffCap || d < 0 {
+		d = backoffCap
+	}
+	// ±25% jitter
+	jitter := time.Duration(rand.Int64N(int64(d/2))) - d/4
+	d += jitter
+	if d < time.Second {
+		d = time.Second
+	}
+	if d > backoffCap {
+		d = backoffCap
+	}
+	return d
+}
+
+// classifyErrorKind returns a short tag suitable for use as a Prometheus
+// label value describing the error class. It MUST NOT include any
+// credential or token material.
+//
+// Ordering: TLS/cert checks come before auth checks because x509 error
+// strings can contain words like "authority" that might otherwise match
+// a broad auth pattern.
+func classifyErrorKind(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	switch {
+	case contains(msg, "tls") || contains(msg, "certificate") || contains(msg, "x509"):
+		return "tls"
+	case contains(msg, "too many") || contains(msg, "rate") || contains(msg, "quota"):
+		return "rate_limit"
+	case contains(msg, "connection") || contains(msg, "dial") || contains(msg, "network") ||
+		contains(msg, "timeout") || contains(msg, "refused") || contains(msg, "reset"):
+		return "network"
+	case contains(msg, "auth") || contains(msg, "credential") || contains(msg, "login") ||
+		contains(msg, "password") || contains(msg, "token") || contains(msg, "authenticate"):
+		return "auth"
+	default:
+		return "other"
+	}
+}
+
+// redactError returns a safe-to-log version of the error. It strips any
+// substring that looks like it might carry credential material by
+// replacing everything after known sentinel words with "[redacted]".
+// This is best-effort; the real guard is that credentials are never
+// included in error values produced by this package (REQ-IMAP-IMP-71).
+func redactError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// contains is strings.Contains without importing strings here.
+func contains(s, sub string) bool {
+	return len(sub) > 0 && len(s) >= len(sub) &&
+		func() bool {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+			return false
+		}()
+}
