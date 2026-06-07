@@ -580,3 +580,141 @@ jobs:
           name: herold-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/*
           retention-days: 30
+
+  # Deploy to outpost.netzhansa.com via the release-pull framework.
+  #
+  # The activate script on the host fetches a Forgejo release by tag and
+  # downloads exactly two assets: herold-<ref>.tar.gz and
+  # herold-<ref>.sha256.  It verifies the checksum, extracts the tarball
+  # (which must contain only `herold` at the archive root, mode 0755),
+  # swaps current -> releases/<ref>, and restarts the herold systemd unit.
+  #
+  # NOTE: ci-<sha> release tags accumulate in this repo indefinitely.
+  # The host-side activate script already prunes release dirs (KEEP=5),
+  # but the Forgejo release objects and their asset binaries are not
+  # pruned.  A scheduled Forgejo-side retention sweep is a follow-up task.
+  deploy:
+    name: deploy (outpost.netzhansa.com)
+    runs-on: [self-hosted, herold, amd64]
+    needs: [test, binaries]
+    # Only deploy on pushes to the default branch, never on PRs or tags.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    steps:
+      # Guard: if DEPLOY_SSH_KEY is not configured, skip remaining steps
+      # rather than failing.  Forgejo/Actions does not permit secrets.*
+      # in a job-level `if` condition, so we use a step-output gate
+      # instead.  This makes the job a safe no-op until the operator
+      # configures the required secrets (see runbook below).
+      - name: check secrets configured
+        id: guard
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "${DEPLOY_SSH_KEY}" ]; then
+            echo "DEPLOY_SSH_KEY is not set; skipping deploy"
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # Download the linux/amd64 binary produced by the binaries job.
+      # Artifact name is herold-linux-amd64; it contains the file
+      # dist/herold-linux-amd64 (and any co-built plugin binaries).
+      - name: download linux/amd64 binary
+        if: steps.guard.outputs.enabled == 'true'
+        uses: actions/download-artifact@v3
+        with:
+          name: herold-linux-amd64
+          path: downloaded/
+
+      - name: package release assets
+        if: steps.guard.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          REF="ci-${GITHUB_SHA::10}"
+          echo "REF=${REF}" >> "${GITHUB_ENV}"
+
+          # Lay out a bare `herold` binary at the archive root so that
+          # `tar -C releases/<ref> -xzf herold-<ref>.tar.gz` produces
+          # releases/<ref>/herold directly (no subdirectory).
+          install -m 0755 downloaded/herold-linux-amd64 herold
+
+          tar -czf "herold-${REF}.tar.gz" herold
+          sha256sum "herold-${REF}.tar.gz" > "herold-${REF}.sha256"
+
+          echo "Packaged herold-${REF}.tar.gz"
+          cat "herold-${REF}.sha256"
+
+      - name: create Forgejo release and upload assets
+        if: steps.guard.outputs.enabled == 'true'
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          API="${GITHUB_SERVER_URL}/api/v1"
+          REPO="herold/herold"
+
+          # Create a pre-release tagged at the pushed commit.
+          RELEASE_ID=$(curl -fsSL \
+            -X POST "${API}/repos/${REPO}/releases" \
+            -H "Authorization: token ${RELEASE_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"tag_name\": \"${REF}\",
+              \"target_commitish\": \"${GITHUB_SHA}\",
+              \"name\": \"${REF}\",
+              \"prerelease\": true,
+              \"draft\": false
+            }" | sed -nE 's/.*"id":[[:space:]]*([0-9]+).*/\1/p' | head -1)
+
+          if [ -z "${RELEASE_ID}" ]; then
+            echo "ERROR: failed to create release; no id returned" >&2
+            exit 1
+          fi
+          echo "Created release id=${RELEASE_ID} tag=${REF}"
+
+          # Upload tarball asset.
+          curl -fsSL \
+            -X POST "${API}/repos/${REPO}/releases/${RELEASE_ID}/assets?name=herold-${REF}.tar.gz" \
+            -H "Authorization: token ${RELEASE_TOKEN}" \
+            -F "attachment=@herold-${REF}.tar.gz" > /dev/null
+
+          # Upload checksum asset.
+          curl -fsSL \
+            -X POST "${API}/repos/${REPO}/releases/${RELEASE_ID}/assets?name=herold-${REF}.sha256" \
+            -H "Authorization: token ${RELEASE_TOKEN}" \
+            -F "attachment=@herold-${REF}.sha256" > /dev/null
+
+          echo "Uploaded herold-${REF}.tar.gz and herold-${REF}.sha256 to release ${RELEASE_ID}"
+
+      - name: write SSH key
+        if: steps.guard.outputs.enabled == 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          KEY_FILE="$(mktemp)"
+          chmod 0600 "${KEY_FILE}"
+          printf '%s' "${DEPLOY_SSH_KEY}" > "${KEY_FILE}"
+          echo "KEY_FILE=${KEY_FILE}" >> "${GITHUB_ENV}"
+
+      - name: trigger host activation
+        if: steps.guard.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          ssh \
+            -i "${KEY_FILE}" \
+            -p ${{ secrets.DEPLOY_PORT }} \
+            -o StrictHostKeyChecking=accept-new \
+            -o IdentitiesOnly=yes \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "deploy ${REF}"
+
+      - name: remove SSH key
+        if: always() && steps.guard.outputs.enabled == 'true'
+        run: |
+          if [ -n "${KEY_FILE:-}" ] && [ -f "${KEY_FILE}" ]; then
+            rm -f "${KEY_FILE}"
+          fi
