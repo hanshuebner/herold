@@ -35,6 +35,7 @@ import (
 	"github.com/hanshuebner/herold/internal/extimg/internalizeworker"
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/identityverify"
+	"github.com/hanshuebner/herold/internal/imapimport"
 	"github.com/hanshuebner/herold/internal/linkpreview"
 	"github.com/hanshuebner/herold/internal/mailarc"
 	"github.com/hanshuebner/herold/internal/mailauth"
@@ -61,6 +62,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap/mail/emailsubmission"
 	jmapfileshare "github.com/hanshuebner/herold/internal/protojmap/mail/fileshare"
 	jmapidentity "github.com/hanshuebner/herold/internal/protojmap/mail/identity"
+	jmapimapimport "github.com/hanshuebner/herold/internal/protojmap/mail/imapimport"
 	jmapsearchsnippet "github.com/hanshuebner/herold/internal/protojmap/mail/searchsnippet"
 	jmapseenaddress "github.com/hanshuebner/herold/internal/protojmap/mail/seenaddress"
 	jmaptaggedaddress "github.com/hanshuebner/herold/internal/protojmap/mail/taggedaddress"
@@ -718,6 +720,40 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		}
 	}
 
+	// IMAP import data key (REQ-IMAP-IMP-70, wave 5). Reuse the external-
+	// submission data key if it was already loaded (same cfg.Server.Secrets
+	// source); otherwise load it fresh. A not-configured or unresolvable key
+	// is a non-fatal warning: the pool still starts (workers that try to open
+	// a sealed credential will report an error per-account), and the admin
+	// create/update endpoints gate-check the key themselves (returning 503).
+	// Boot must not fail here (REQ-IMAP-IMP-70 / architecture §Lifecycle).
+	var imapImportDataKey []byte
+	if len(extSubmitDataKey) > 0 {
+		// External submission already loaded the same key; share the slice.
+		imapImportDataKey = extSubmitDataKey
+	} else {
+		if dk, dkErr := secrets.LoadDataKey(cfg.Server.Secrets); dkErr != nil {
+			logger.Warn("imap-import: data key not available; credential sealing/opening will fail until data_key_ref is configured",
+				slog.String("err", dkErr.Error()))
+		} else {
+			imapImportDataKey = dk
+		}
+	}
+
+	// IMAP import worker pool (REQ-IMAP-IMP-26, wave 5). Constructed before
+	// adminServerOpts so the pool pointer can be passed as IMAPImportStatus.
+	// Categoriser is nil (pool falls back to noopCategoriser); real
+	// categorisation of imported INBOX mail is deferred — see wave 5 report.
+	// Dialer is nil (pool defaults to the production dialer, which wires
+	// OAuth from cfg.IMAPImport.OAuth via accountWorker.tokenSourceForProvider).
+	imapImportPool := imapimport.NewPool(imapimport.PoolOptions{
+		Store:   st,
+		DataKey: imapImportDataKey,
+		Config:  cfg.IMAPImport,
+		Logger:  logger.With("subsystem", "imap-import"),
+		Clock:   clk,
+	})
+
 	// Admin HTTP handler: the real protoadmin server. Options defaults
 	// are applied inside NewServer; we pass only subsystem-level fields.
 	// health was constructed before the ACME block above so the ACME gate
@@ -750,6 +786,8 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			Emitter:       clientEmitter,
 			TelemetryGate: telemetryGate,
 		},
+		IMAPImportDataKey: imapImportDataKey,
+		IMAPImportStatus:  imapImportPoolStatusAdapter{pool: imapImportPool},
 	}
 	if prebuiltExtSubmitter != nil {
 		adminServerOpts.ExternalProbe = protoadmin.DefaultProbeFromSubmitter(prebuiltExtSubmitter)
@@ -799,7 +837,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// ReloadConfig updates propagate to in-flight JMAP calls.
 	sharedCfg := new(atomic.Pointer[sysconfig.Config])
 	sharedCfg.Store(cfg)
-	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer, smtpServer, hookSigningKey, shareSigningKey, sharesCfg, health, sieveInterp, prebuiltExtSubmitter, clientEmitter, telemetryGate)
+	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer, smtpServer, hookSigningKey, shareSigningKey, sharesCfg, health, sieveInterp, prebuiltExtSubmitter, clientEmitter, telemetryGate, imapImportDataKey)
 	if err != nil {
 		return err
 	}
@@ -908,6 +946,20 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			return nil
 		})
 	}
+
+	// IMAP import worker pool (REQ-IMAP-IMP-26, wave 5). Runs until gctx
+	// cancels; mirrors every enabled account from its persisted cursor.
+	// A nil return from Run means clean shutdown (context cancelled or no
+	// enabled accounts); non-nil is a fatal setup failure.
+	imapImportLog := logger.With("subsystem", "imap-import")
+	g.Go(func() error {
+		if err := imapImportPool.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+			imapImportLog.LogAttrs(context.Background(), slog.LevelWarn,
+				"imap-import pool exited", slog.String("err", err.Error()))
+			return err
+		}
+		return nil
+	})
 
 	// External-image internalize worker (REQ-EXTIMG-BG-01). Runs from
 	// startup so the importer-flagged backlog drains while the user
@@ -2220,6 +2272,7 @@ func composeAdminAndUI(
 	extSubmitter *extsubmit.Submitter,
 	clientEmitter protoadmin.ClientlogEmitter,
 	telemetryGate protoadmin.TelemetryGate,
+	imapImportDataKey []byte,
 ) (composedHandlers, error) {
 	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
 	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
@@ -2723,6 +2776,15 @@ func composeAdminAndUI(
 			slog.String("subsystem", "jmap-fileshare"),
 			slog.String("public_base_url", cfg.Server.AttachmentShares.PublicBaseURL))
 	}
+	// IMAP import (REQ-IMAP-IMP-61, wave 5). Registered unconditionally —
+	// no on/off gate; every server advertises the capability. The data key
+	// may be nil when data_key_ref is unconfigured; the JMAP set handlers
+	// gate-check it themselves (returning serverFail when absent) so boot
+	// does not fail. REQ-IMAP-IMP-70.
+	jmapimapimport.Register(jmapSrv.Registry(), st,
+		logger.With("subsystem", "jmap-imap-import"), clk,
+		imapImportDataKey)
+
 	// SeenAddress (REQ-MAIL-11e..m): recipient autocomplete history, exposed
 	// under urn:ietf:params:jmap:mail (no new capability URI needed).
 	jmapseenaddress.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-seenaddress"), clk)
