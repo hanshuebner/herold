@@ -283,6 +283,92 @@ export function removeImageBySrc(view: EditorView | null, src: string): void {
 }
 
 /**
+ * Insert an HTML fragment at the end of the document (before the
+ * signature delimiter when present). Used by the share-link offload path
+ * to inject the download-link block directly into the live ProseMirror
+ * document so the resulting `onUpdate` propagates the new HTML back into
+ * `compose.body` naturally (REQ-ATT-63).
+ *
+ * The HTML is parsed into ProseMirror nodes via the compose schema's
+ * DOMParser. The insertion point is the end of the document. If the
+ * last top-level block is the signature-delimiter paragraph (`<p>-- </p>`),
+ * the block is inserted before it; otherwise it is appended.
+ */
+export function insertHtmlBlockAtEnd(view: EditorView | null, html: string): void {
+  if (!view) return;
+  const trimmed = html.trim();
+  if (!trimmed) return;
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = trimmed;
+  // Parse the wrapper as a full document and take the content fragment,
+  // which is a sequence of block nodes ready to be inserted.
+  const parsedDoc = PMDOMParser.fromSchema(composeSchema).parse(wrapper);
+  const fragment = parsedDoc.content;
+  const { doc, tr } = view.state;
+  // Find the insertion point: before the first signature-delimiter paragraph
+  // (content "-- " i.e. trimmed "--") when present; otherwise append.
+  let insertPos = doc.content.size;
+  let foundSig = false;
+  doc.forEach((node, offset) => {
+    if (
+      !foundSig &&
+      node.type.name === 'paragraph' &&
+      node.textContent.trim() === '--'
+    ) {
+      insertPos = offset;
+      foundSig = true;
+    }
+  });
+  const transaction = tr.insert(insertPos, fragment);
+  view.dispatch(transaction);
+}
+
+/**
+ * Remove all top-level block nodes that contain a link whose `href`
+ * matches the given URL. Used by the share-link offload path to retract
+ * the download-link block from the live ProseMirror document (REQ-ATT-64).
+ *
+ * ProseMirror's DOMParser does not preserve arbitrary `data-*` attributes
+ * (the compose schema's paragraph spec does not declare them). We therefore
+ * match share-link blocks by scanning for nodes that contain the share URL
+ * as a link mark — each share URL is unique within a compose session so
+ * this is an unambiguous identifier.
+ */
+export function removeHtmlBlockByShareUrl(
+  view: EditorView | null,
+  shareUrl: string,
+): void {
+  if (!view) return;
+  const { doc, tr } = view.state;
+  const linkMarkType = composeSchema.marks.link;
+  if (!linkMarkType) return;
+  const toDelete: Array<{ from: number; to: number }> = [];
+  doc.forEach((node, offset) => {
+    // Walk all inline content of this block looking for a link with the URL.
+    let found = false;
+    node.descendants((inlineNode) => {
+      if (found) return false;
+      const linkMark = inlineNode.marks.find(
+        (m) => m.type === linkMarkType && (m.attrs.href as string) === shareUrl,
+      );
+      if (linkMark) found = true;
+      return true;
+    });
+    if (found) {
+      toDelete.push({ from: offset, to: offset + node.nodeSize });
+    }
+  });
+  if (toDelete.length === 0) return;
+  // Apply in reverse so earlier positions stay valid after each delete.
+  let transaction = tr;
+  for (let i = toDelete.length - 1; i >= 0; i--) {
+    const { from, to } = toDelete[i]!;
+    transaction = transaction.delete(from, to);
+  }
+  view.dispatch(transaction);
+}
+
+/**
  * Insert an image node at the current cursor position. The src is a
  * `cid:<content-id>` URL that points to an inline part attached to the
  * outbound message at send time (issue #20). Alt text describes the

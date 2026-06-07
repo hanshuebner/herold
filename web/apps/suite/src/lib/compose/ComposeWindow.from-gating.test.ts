@@ -63,6 +63,7 @@ vi.mock('./compose.svelte', () => {
     ccRecipients: [],
     bccRecipients: [],
     attachments: [],
+    shares: [],
     attachmentsBusy: false,
     editingDraftId: null,
     hasContent: false,
@@ -74,8 +75,11 @@ vi.mock('./compose.svelte', () => {
     addAttachments: vi.fn(),
     addInlineImage: vi.fn(),
     removeAttachment: vi.fn(),
+    removeShare: vi.fn(),
     flipToInline: vi.fn(),
     flipToAttachment: vi.fn(),
+    setOffloadOfferFn: vi.fn(),
+    setShareEditorFns: vi.fn(),
   };
   return {
     compose,
@@ -83,6 +87,14 @@ vi.mock('./compose.svelte', () => {
     bodyTextWithoutSignature: vi.fn(() => ''),
   };
 });
+
+// Mock file-shares so ComposeWindow's $effect does not touch the live jmap client.
+vi.mock('../jmap/file-shares', () => ({
+  hasFileShares: vi.fn(() => false),
+  offloadThresholdBytes: vi.fn(() => 25 * 1024 * 1024),
+  defaultTtlSeconds: vi.fn(() => 30 * 24 * 3600),
+  maxTtlSeconds: vi.fn(() => 90 * 24 * 3600),
+}));
 
 vi.mock('./compose-stack.svelte', () => ({
   composeStack: { minimizeCurrent: vi.fn() },

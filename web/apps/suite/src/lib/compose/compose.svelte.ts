@@ -47,10 +47,82 @@ import {
 } from './recipient-parse';
 import { buildSelfEmailSet, isFromSelf } from '../mail/identity-match';
 import { selectReplyIdentity } from './reply-identity';
+import {
+  createFileShare,
+  destroyFileShares,
+  confirmFileShares,
+  isUnsafeExtension,
+  offloadThresholdBytes,
+  defaultTtlSeconds,
+  hasFileShares,
+  type FileShare,
+  type FileShareCreateArgs,
+  type FileShareSourceInfo,
+} from '../jmap/file-shares';
 
 export type { Recipient };
 
 type ComposeStatus = 'idle' | 'editing' | 'sending';
+
+/**
+ * An offloaded file share tracked per compose session (REQ-ATT-64).
+ * Created in 'pending' state; confirmed to 'active' on successful send;
+ * destroyed on compose discard.
+ */
+export interface ComposeShare {
+  /** Stable per-compose key matching the original attachment key. */
+  key: string;
+  /** Server-assigned share id. */
+  shareId: string;
+  name: string;
+  size: number;
+  type: string;
+  /** Public URL inserted into the message body. */
+  url: string;
+  /** Absolute expiry as returned by the server (ISO-8601 UTC). */
+  expiresAt: string;
+  maxDownloads: number | null;
+  hasPassword: boolean;
+}
+
+/**
+ * Options chosen in the offload offer dialog (REQ-ATT-65).
+ * Consumed by `addAttachments` after the user confirms.
+ */
+export interface ShareOptions {
+  /** Desired lifetime in seconds. */
+  expiresIn: number;
+  maxDownloads?: number;
+  password?: string;
+}
+
+/**
+ * Callback type injected into compose by ComposeWindow so the UI can
+ * display an offer dialog (REQ-ATT-61) and return the user's decision.
+ *
+ * resolve(true)  => proceed with offload (with opts).
+ * resolve(false) => attach normally (or give up when forced).
+ * resolve(null)  => user cancelled (abort the whole attachment add).
+ */
+export type OffloadOfferFn = (args: {
+  file: File;
+  forced: boolean;
+  opts: ShareOptions;
+}) => Promise<{ offload: boolean; opts: ShareOptions } | null>;
+
+/**
+ * Callback type injected into compose by ComposeWindow so #offloadOne can
+ * insert the share-link HTML block directly into the live ProseMirror
+ * document (REQ-ATT-63). When null the fallback string-mutation path runs.
+ */
+export type InsertShareLinkFn = (html: string) => void;
+
+/**
+ * Callback type injected into compose by ComposeWindow so removeShare can
+ * retract the share-link HTML block from the live ProseMirror document
+ * (REQ-ATT-64). When null the fallback string-mutation path runs.
+ */
+export type RemoveShareLinkFn = (url: string) => void;
 
 /** One queued attachment, owned by a single compose state-machine. */
 export interface ComposeAttachment {
@@ -149,6 +221,42 @@ class ComposeStore {
   #attachmentSeq = 0;
 
   /**
+   * Offloaded file shares for the current compose session (REQ-ATT-64).
+   * Each entry corresponds to an attachment that was offloaded via
+   * FileShare/set create. Shares are pending until the message is sent;
+   * they are destroyed on discard.
+   */
+  shares = $state<ComposeShare[]>([]);
+
+  /**
+   * Callback wired by ComposeWindow so addAttachments can present the
+   * offload offer dialog to the user (REQ-ATT-61). When null (e.g.
+   * when the capability is absent), offload is never attempted.
+   */
+  #offloadOfferFn: OffloadOfferFn | null = null;
+
+  setOffloadOfferFn(fn: OffloadOfferFn | null): void {
+    this.#offloadOfferFn = fn;
+  }
+
+  /**
+   * Editor-backed callbacks for share-link insertion and removal (REQ-ATT-63/64).
+   * Registered by ComposeWindow when the ProseMirror view mounts; cleared when
+   * it unmounts. When null the string-mutation fallback is used (covers unit
+   * tests and any not-yet-opened compose path).
+   */
+  #insertShareLinkFn: InsertShareLinkFn | null = null;
+  #removeShareLinkFn: RemoveShareLinkFn | null = null;
+
+  setShareEditorFns(
+    insert: InsertShareLinkFn | null,
+    remove: RemoveShareLinkFn | null,
+  ): void {
+    this.#insertShareLinkFn = insert;
+    this.#removeShareLinkFn = remove;
+  }
+
+  /**
    * Server-assigned id of the draft this compose is currently editing.
    * null on fresh compose; set when:
    *   1. the auto-save effect creates a draft (Email/set create), or
@@ -204,6 +312,7 @@ class ComposeStore {
     this.replyContext = { ...EMPTY_REPLY };
     this.editingDraftId = null;
     this.attachments = [];
+    this.shares = [];
     this.selectedIdentity = null;
     this.status = 'editing';
     this.#ensureAccountReady();
@@ -263,6 +372,7 @@ class ComposeStore {
     this.ccBccVisible = Boolean(this.cc || this.bcc);
     this.editingDraftId = args.draftId ?? null;
     this.attachments = [];
+    this.shares = [];
     this.status = 'editing';
     this.#snapshot = {
       to: this.to,
@@ -429,6 +539,7 @@ class ComposeStore {
    */
   get hasContent(): boolean {
     if (this.attachments.length > 0) return true;
+    if (this.shares.length > 0) return true;
     const snap = this.#snapshot;
     if (!snap) {
       // Pre-open or post-close state -- fall back to the original
@@ -458,6 +569,10 @@ class ComposeStore {
    * flips to `ready` (with `blobId`) or `failed` (with `error`) on its own.
    * Files exceeding the server's advertised maxSizeUpload (when present)
    * are rejected immediately as `failed`.
+   *
+   * When the file-shares capability is present, files that are offload
+   * candidates (REQ-ATT-60) trigger the offer dialog (REQ-ATT-61) via
+   * #offloadOfferFn before deciding whether to upload or offload.
    */
   async addAttachments(files: File[] | FileList): Promise<void> {
     const accountId = mail.mailAccountId;
@@ -468,6 +583,50 @@ class ComposeStore {
     const tasks: Promise<void>[] = [];
     for (const file of list) {
       const key = `att-${++this.#attachmentSeq}`;
+
+      // ── Offload candidacy check (REQ-ATT-60) ──────────────────────────
+      // Inline images are never candidates (handled by addInlineImage path).
+      const canOffload = hasFileShares() && this.#offloadOfferFn !== null;
+      if (canOffload) {
+        const threshold = offloadThresholdBytes();
+        const unsafeType = isUnsafeExtension(file.name);
+        const oversized = maxSize !== null && file.size >= maxSize;
+        const candidate = file.size >= threshold || unsafeType || oversized;
+        if (candidate) {
+          // Forced when the file cannot fit as a MIME attachment at all.
+          const forced = oversized;
+          const defaultOpts: ShareOptions = { expiresIn: defaultTtlSeconds() };
+          const decision = await this.#offloadOfferFn!({ file, forced, opts: defaultOpts });
+          if (decision === null) {
+            // User cancelled — skip this file entirely.
+            continue;
+          }
+          if (decision.offload) {
+            // User chose to offload: upload the blob, then create the share.
+            tasks.push(this.#offloadOne(key, file, accountId, decision.opts));
+            continue;
+          }
+          // User chose "Attach anyway". If it is forced-over-quota, prevent
+          // the attachment anyway (the dialog should have disabled that path,
+          // but guard here for safety).
+          if (forced) {
+            const att: ComposeAttachment = {
+              key,
+              name: file.name || 'file',
+              size: file.size,
+              type: file.type || 'application/octet-stream',
+              status: 'failed',
+              blobId: null,
+              error: `File is too large to attach (${formatBytes(file.size)})`,
+            };
+            this.attachments = [...this.attachments, att];
+            continue;
+          }
+          // Fall through to normal attachment below.
+        }
+      }
+
+      // ── Normal attachment path ─────────────────────────────────────────
       const att: ComposeAttachment = {
         key,
         name: file.name || 'file',
@@ -486,6 +645,34 @@ class ComposeStore {
       tasks.push(this.#uploadOne(att.key, file, accountId));
     }
     await Promise.all(tasks);
+  }
+
+  /**
+   * Remove a share by key (REQ-ATT-64 remove control). Issues
+   * FileShare/set destroy and removes the link block from the body.
+   * When the ProseMirror editor is mounted the removal goes through the
+   * editor so the live document updates immediately and the `onUpdate`
+   * callback writes the new HTML back into `compose.body`. Falls back to
+   * string mutation when the editor is not available (unit tests, etc.).
+   */
+  async removeShare(key: string): Promise<void> {
+    const share = this.shares.find((s) => s.key === key);
+    if (!share) return;
+    this.shares = this.shares.filter((s) => s.key !== key);
+    // Remove the link block through the editor when possible, otherwise
+    // mutate the body string directly as a fallback.
+    if (this.#removeShareLinkFn) {
+      this.#removeShareLinkFn(share.url);
+    } else {
+      this.body = removeShareLinkFromBody(this.body, share.url);
+    }
+    // Destroy the share server-side (fire and forget; errors are non-fatal
+    // since the pending_ttl sweeper is the backstop for abandoned shares).
+    try {
+      await destroyFileShares([share.shareId]);
+    } catch (err) {
+      console.warn('compose: could not destroy share', share.shareId, err);
+    }
   }
 
   /** Remove a queued attachment by key. */
@@ -667,6 +854,92 @@ class ComposeStore {
     }
   }
 
+  /**
+   * Offload path (REQ-ATT-62): upload the blob (same as normal attachment),
+   * then issue FileShare/set create to promote it to a share. On success,
+   * insert the share link into the body (REQ-ATT-63) and add a ComposeShare
+   * row (REQ-ATT-64). On failure, surface the error as a failed attachment
+   * so the user can decide what to do (REQ-ATT-67).
+   */
+  async #offloadOne(
+    key: string,
+    file: File,
+    accountId: string,
+    opts: ShareOptions,
+  ): Promise<void> {
+    // Phase 1: show a temporary "Uploading…" placeholder in the attachment
+    // strip while the blob upload and share creation run.
+    const att: ComposeAttachment = {
+      key,
+      name: file.name || 'file',
+      size: file.size,
+      type: file.type || 'application/octet-stream',
+      status: 'uploading',
+      blobId: null,
+      error: null,
+    };
+    this.attachments = [...this.attachments, att];
+
+    try {
+      // Phase 2: blob upload (reuse path, same endpoint as normal attachment).
+      const uploadResult = await jmap.uploadBlob({
+        accountId,
+        body: file,
+        type: file.type || 'application/octet-stream',
+      });
+
+      // Phase 3: FileShare/set create — reuses the blobId, no re-upload.
+      const shareArgs: FileShareCreateArgs = {
+        blobId: uploadResult.blobId,
+        name: file.name || 'file',
+        type: file.type || 'application/octet-stream',
+        expiresIn: opts.expiresIn,
+        ...(opts.maxDownloads !== undefined ? { maxDownloads: opts.maxDownloads } : {}),
+        ...(opts.password ? { password: opts.password } : {}),
+      };
+      const share: FileShare = await createFileShare(shareArgs);
+
+      // Phase 4: remove the placeholder chip (offloaded files appear in the
+      // shared links strip, not the attachment strip).
+      this.attachments = this.attachments.filter((a) => a.key !== key);
+
+      // Phase 5: register in the shares strip (REQ-ATT-64).
+      const composeShare: ComposeShare = {
+        key,
+        shareId: share.id,
+        name: share.name,
+        size: share.size,
+        type: share.type,
+        url: share.url,
+        expiresAt: share.expiresAt,
+        maxDownloads: share.maxDownloads,
+        hasPassword: share.hasPassword,
+      };
+      this.shares = [...this.shares, composeShare];
+
+      // Phase 6: insert link into the body (REQ-ATT-63).
+      // When the ProseMirror editor is mounted, drive the insertion through
+      // the editor so the live document updates immediately and the resulting
+      // `onUpdate` propagates the new HTML back into `compose.body`. Falls
+      // back to string mutation when the editor is not available (unit tests,
+      // or a compose that has not yet opened its window).
+      if (this.#insertShareLinkFn) {
+        // Build the HTML block and pass it to the editor. The editor's
+        // onUpdate callback will write the serialised HTML back into
+        // this.body, so no direct mutation is needed here.
+        const htmlBlock = buildShareLinkHtml(composeShare);
+        this.#insertShareLinkFn(htmlBlock);
+      } else {
+        this.body = insertShareLinkIntoBody(this.body, composeShare);
+      }
+    } catch (err) {
+      // On failure: surface as a failed attachment so the file is not
+      // silently dropped (REQ-ATT-67).
+      const msg = err instanceof Error ? err.message : 'Offload failed';
+      this.#patchAttachment(key, { status: 'failed', error: msg });
+    }
+  }
+
   #patchAttachment(key: string, patch: Partial<ComposeAttachment>): void {
     this.attachments = this.attachments.map((a) =>
       a.key === key ? { ...a, ...patch } : a,
@@ -689,6 +962,7 @@ class ComposeStore {
     this.replyContext = { ...EMPTY_REPLY };
     this.editingDraftId = null;
     this.attachments = [];
+    this.shares = [];
     this.selectedIdentity = null;
     this.#snapshot = null;
   }
@@ -698,10 +972,16 @@ class ComposeStore {
    * been auto-saved, destroy the row so it doesn't accumulate in the
    * Drafts folder; otherwise just reset state. This is what
    * closeWithConfirm calls on user-confirmed discard.
+   *
+   * Any pending shares created in this session are destroyed (REQ-ATT-66).
+   * The pending_ttl sweeper is the backstop if the client crashes before
+   * getting here.
    */
   async discard(): Promise<void> {
     const draftId = this.editingDraftId;
     const accountId = mail.mailAccountId;
+    const pendingShareIds = this.shares.map((s) => s.shareId);
+
     if (draftId && accountId) {
       try {
         const { responses } = await jmap.batch((b) => {
@@ -724,6 +1004,15 @@ class ComposeStore {
         });
       }
     }
+
+    // Destroy pending shares (REQ-ATT-66). Fire-and-forget; the
+    // pending_ttl sweeper is the backstop.
+    if (pendingShareIds.length > 0) {
+      void destroyFileShares(pendingShareIds).catch((err) => {
+        console.warn('compose: could not destroy pending shares on discard', err);
+      });
+    }
+
     this.close();
   }
 
@@ -1083,6 +1372,36 @@ class ComposeStore {
       const submissionId = subResult.created?.sub1?.id;
       if (!submissionId) {
         throw new Error('Submission created but no id returned');
+      }
+
+      // Confirm all pending shares to 'active' now that the message has
+      // been successfully submitted (REQ-ATT-66). Fire-and-forget: a
+      // failure here means the shares stay pending and expire via
+      // pending_ttl, which is safe (the server enforces the TTL).
+      // Include source metadata (REQ-SHARE-04 / REQ-ATT-70a) so the
+      // management view can display the originating message.
+      const pendingShareIds = this.shares.map((s) => s.shareId);
+      if (pendingShareIds.length > 0) {
+        // Resolve the final Email id. For an existing draft we already have
+        // it; for a freshly created draft we read it from the Email/set result
+        // (REQ-MAIL-20: the suite reuses the draft Email id on send).
+        let sentEmailId: string | null = existingDraftId;
+        if (!sentEmailId) {
+          const emailSetResult = invocationArgs<{
+            created?: Record<string, { id: string }>;
+          }>(responses[0]);
+          sentEmailId = emailSetResult.created?.draft1?.id ?? null;
+        }
+        const source: FileShareSourceInfo | undefined = sentEmailId
+          ? {
+              sourceMessageId: sentEmailId,
+              sourceSubject: subject,
+              sourceRecipients: allRecipients.map((r) => r.email),
+            }
+          : undefined;
+        void confirmFileShares(pendingShareIds, source).catch((err) => {
+          console.warn('compose: could not confirm shares after send', err);
+        });
       }
 
       this.close();
@@ -1624,6 +1943,91 @@ function formatReplyQuote(parent: Email): string {
   return `<p></p><p></p><p>${escapeHtml(header)}</p><blockquote>${quotedHtml}</blockquote><p></p>`;
 }
 
+// ── Share link body helpers (REQ-ATT-63) ─────────────────────────────────
+
+/**
+ * Format a human-readable relative expiry string given an ISO-8601 UTC date.
+ * Returns strings like "30 days", "1 day", "2 hours", or a short date for
+ * expiries more than 90 days away.
+ */
+function formatExpiry(expiresAt: string): string {
+  const now = Date.now();
+  const exp = new Date(expiresAt).getTime();
+  const diffMs = exp - now;
+  if (diffMs <= 0) return 'expired';
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (diffDays >= 2) return `${diffDays} days`;
+  if (diffDays === 1) return '1 day';
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  if (diffHours >= 1) return `${diffHours} hour${diffHours > 1 ? 's' : ''}`;
+  return 'less than 1 hour';
+}
+
+/**
+ * Build the data-share-url sentinel value used to locate and remove link
+ * blocks from the HTML body. The url is safe to embed as an attribute
+ * because the server generates it as a URL-safe base64 token.
+ */
+function shareBlockSelector(url: string): string {
+  return url;
+}
+
+/**
+ * Build the HTML for a single share-link block (REQ-ATT-63). The block
+ * carries a `data-herold-share` attribute whose value is the share URL so
+ * removal code can locate it by attribute match rather than fragile text
+ * search. Extracted so it can be called standalone when driving the editor
+ * via a ProseMirror transaction.
+ */
+export function buildShareLinkHtml(share: ComposeShare): string {
+  const humanSize = formatBytes(share.size);
+  const expiryLabel = formatExpiry(share.expiresAt);
+  const safeUrl = escapeHtml(share.url);
+  const safeName = escapeHtml(share.name);
+  const safeSize = escapeHtml(humanSize);
+  const safeExpiry = escapeHtml(expiryLabel);
+  return `<p data-herold-share="${safeUrl}" style="border-left:3px solid #697077;padding:0.5em 1em;margin:0.5em 0;font-family:monospace,monospace"><strong>${safeName}</strong> (${safeSize})<br><a href="${safeUrl}">${safeUrl}</a><br><small>Expires in ${safeExpiry}</small></p>`;
+}
+
+/**
+ * Insert a styled share link block into the HTML body (REQ-ATT-63).
+ * Appends before the signature delimiter when present, or at the end.
+ * Also injects a plain-text fallback line before the HTML block so
+ * the text/plain alternative stays useful. Because we store only HTML
+ * in compose.body and derive plain-text at send time via htmlToPlainText,
+ * the link block only needs to appear in the HTML.
+ *
+ * This is the string-mutation fallback used when the editor is not mounted
+ * (unit tests, pre-open compose). The live path goes through the editor via
+ * `InsertShareLinkFn` (see `setShareEditorFns`).
+ */
+export function insertShareLinkIntoBody(body: string, share: ComposeShare): string {
+  const htmlBlock = buildShareLinkHtml(share);
+
+  // Insert before the sig-dash when present; otherwise append.
+  const SIG_DELIMITER = /<p>-- <\/p>/i;
+  if (SIG_DELIMITER.test(body)) {
+    return body.replace(SIG_DELIMITER, `${htmlBlock}<p>-- </p>`);
+  }
+  return body + htmlBlock;
+}
+
+/**
+ * Remove the share link block for `url` from the HTML body (REQ-ATT-64).
+ * Matches the data-herold-share attribute inserted by insertShareLinkIntoBody.
+ * Returns the body unchanged when no matching block is found.
+ */
+export function removeShareLinkFromBody(body: string, url: string): string {
+  const safeUrl = escapeHtml(shareBlockSelector(url));
+  // Match the paragraph element with the data-herold-share attribute.
+  // The data attribute value is the URL; strip the whole <p>...</p> block.
+  const re = new RegExp(
+    `<p[^>]*data-herold-share="${safeUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*>.*?<\\/p>`,
+    'gis',
+  );
+  return body.replace(re, '');
+}
+
 function formatForwardQuote(parent: Email): string {
   const fromStr = addressListToString(parent.from);
   const toStr = addressListToString(parent.to);
@@ -1673,4 +2077,7 @@ export const _internals_forTest = {
   buildBodyStructure,
   buildAttachmentParts,
   generateInlineCID,
+  insertShareLinkIntoBody,
+  removeShareLinkFromBody,
+  buildShareLinkHtml,
 };

@@ -89,7 +89,15 @@ vi.mock('../compose/compose.svelte', () => ({
     openReply: vi.fn(),
     openReplyAll: vi.fn(),
     openForward: vi.fn(),
+    isOpen: false,
+    status: 'idle',
+    attachments: [],
+    shares: [],
+    setOffloadOfferFn: vi.fn(),
+    setShareEditorFns: vi.fn(),
   },
+  bodyHasContent: vi.fn(() => false),
+  bodyTextWithoutSignature: vi.fn(() => ''),
 }));
 
 vi.mock('../mail/move-picker.svelte', () => ({
@@ -146,6 +154,8 @@ vi.mock('../jmap/client', () => ({
   jmap: {
     downloadUrl: () => null,
     batch: vi.fn(),
+    hasCapability: vi.fn(() => false),
+    session: null,
   },
 }));
 

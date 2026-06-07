@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { compose, bodyHasContent, type Recipient } from './compose.svelte';
+  import { compose, bodyHasContent, type Recipient, type ShareOptions } from './compose.svelte';
   import { composeStack } from './compose-stack.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
   import { mail } from '../mail/store.svelte';
@@ -8,12 +8,21 @@
   import ComposeToolbar from './ComposeToolbar.svelte';
   import RecipientField from './RecipientField.svelte';
   import FromPicker from './FromPicker.svelte';
+  import OffloadOfferDialog from './OffloadOfferDialog.svelte';
   import { confirm } from '../dialog/confirm.svelte';
   import { t } from '../i18n/i18n.svelte';
-  import { EMPTY_ACTIVE, type ActiveState, applyImage, removeImageBySrc } from './editor';
+  import {
+    EMPTY_ACTIVE,
+    type ActiveState,
+    applyImage,
+    removeImageBySrc,
+    insertHtmlBlockAtEnd,
+    removeHtmlBlockByShareUrl,
+  } from './editor';
   import type { EditorView } from 'prosemirror-view';
   import { recipientToString } from './recipient-parse';
   import { hasExternalSubmission } from '../auth/capabilities';
+  import { hasFileShares } from '../jmap/file-shares';
   import { submissionStore } from '../identities/identity-submission.svelte';
   import type { Identity } from '../mail/types';
   import type { SubmissionSummary } from '../identities/identity-status';
@@ -265,6 +274,100 @@
     void compose.addAttachments(input.files);
     // Reset so the same file can be picked again immediately afterward.
     input.value = '';
+  }
+
+  // ── Offload offer dialog state (REQ-ATT-61) ────────────────────────────
+  //
+  // When the file-shares capability is present, addAttachments calls
+  // compose.#offloadOfferFn for each candidate file. ComposeWindow wires
+  // this callback so it can show a modal dialog and resolve the user's
+  // decision back into the offload flow.
+
+  interface OffloadPending {
+    file: File;
+    forced: boolean;
+    opts: ShareOptions;
+    resolve: (result: { offload: boolean; opts: ShareOptions } | null) => void;
+  }
+
+  let offloadPending = $state<OffloadPending | null>(null);
+
+  // Register / deregister the offer callback as the capability comes and goes.
+  $effect(() => {
+    if (!hasFileShares()) {
+      compose.setOffloadOfferFn(null);
+      return;
+    }
+    compose.setOffloadOfferFn(
+      (args) =>
+        new Promise<{ offload: boolean; opts: ShareOptions } | null>((resolve) => {
+          offloadPending = { ...args, resolve };
+        }),
+    );
+    return () => {
+      compose.setOffloadOfferFn(null);
+    };
+  });
+
+  function onOffloadConfirm(opts: ShareOptions): void {
+    const pending = offloadPending;
+    offloadPending = null;
+    pending?.resolve({ offload: true, opts });
+  }
+
+  function onOffloadAttach(): void {
+    const pending = offloadPending;
+    offloadPending = null;
+    pending?.resolve({ offload: false, opts: pending.opts });
+  }
+
+  function onOffloadCancel(): void {
+    const pending = offloadPending;
+    offloadPending = null;
+    pending?.resolve(null);
+  }
+
+  // ── Share-link editor bridge (REQ-ATT-63 / REQ-ATT-64) ────────────────
+  //
+  // When the ProseMirror view is mounted, register editor-backed insert /
+  // remove callbacks so #offloadOne and removeShare drive the document
+  // directly via transactions instead of mutating compose.body behind the
+  // editor's back. The onUpdate callback then propagates the serialised HTML
+  // back into compose.body naturally, keeping the plain-text derivation in
+  // sync. When the view is null (editor not yet mounted or destroyed) the
+  // callbacks are cleared and the compose store falls back to string mutation.
+
+  $effect(() => {
+    const view = editorView;
+    if (!view) {
+      compose.setShareEditorFns(null, null);
+      return;
+    }
+    compose.setShareEditorFns(
+      (html: string) => {
+        insertHtmlBlockAtEnd(view, html);
+      },
+      (url: string) => {
+        removeHtmlBlockByShareUrl(view, url);
+      },
+    );
+    return () => {
+      compose.setShareEditorFns(null, null);
+    };
+  });
+
+  /** Format expiry for the shared links strip. */
+  function formatExpiry(expiresAt: string): string {
+    const now = Date.now();
+    const exp = new Date(expiresAt).getTime();
+    const diffMs = exp - now;
+    if (diffMs <= 0) return 'expired';
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    if (diffDays >= 2) return `expires in ${diffDays} days`;
+    if (diffDays === 1) return 'expires in 1 day';
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    if (diffHours >= 1) return `expires in ${diffHours} hour${diffHours > 1 ? 's' : ''}`;
+    return 'expires in less than 1 hour';
   }
 
   function formatSize(bytes: number): string {
@@ -578,6 +681,17 @@
   }
 </script>
 
+{#if offloadPending}
+  <OffloadOfferDialog
+    file={offloadPending.file}
+    forced={offloadPending.forced}
+    opts={offloadPending.opts}
+    onoffload={onOffloadConfirm}
+    onattach={onOffloadAttach}
+    oncancel={onOffloadCancel}
+  />
+{/if}
+
 {#if compose.isOpen}
   <div class="backdrop" onclick={closeWithConfirm} aria-hidden="true"></div>
   <div
@@ -819,6 +933,38 @@
                   class="att-remove"
                   aria-label="Remove {a.name}"
                   onclick={() => compose.removeAttachment(a.key)}
+                >
+                  ×
+                </button>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+
+      <!-- Shared links strip (REQ-ATT-64): offloaded files distinct from
+           the attachment chip strip. Only shown when there are shares and
+           the capability is present. -->
+      {#if compose.shares.length > 0}
+        <div class="row shares-row">
+          <span class="label">Shared links</span>
+          <ul class="shares-list">
+            {#each compose.shares as s (s.key)}
+              <li class="share-item">
+                <span class="share-name">{s.name}</span>
+                <span class="share-size">{formatSize(s.size)}</span>
+                <span class="share-expiry">{formatExpiry(s.expiresAt)}</span>
+                {#if s.maxDownloads !== null}
+                  <span class="share-cap" title="Download limit">{s.maxDownloads} dl max</span>
+                {/if}
+                {#if s.hasPassword}
+                  <span class="share-lock" title="Password protected">lock</span>
+                {/if}
+                <button
+                  type="button"
+                  class="share-remove"
+                  aria-label="Remove shared link for {s.name}"
+                  onclick={() => void compose.removeShare(s.key)}
                 >
                   ×
                 </button>
@@ -1237,6 +1383,67 @@
     line-height: 1;
   }
   .att-remove:hover {
+    background: var(--layer-03);
+    color: var(--text-primary);
+  }
+
+  /* Shared links strip (REQ-ATT-64) */
+  .shares-row {
+    align-items: flex-start;
+  }
+  .shares-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+    flex: 1;
+  }
+  .share-item {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto auto auto;
+    gap: var(--spacing-03);
+    align-items: center;
+    padding: var(--spacing-02) var(--spacing-03);
+    background: color-mix(in srgb, var(--interactive) 6%, var(--layer-01));
+    border: 1px solid color-mix(in srgb, var(--interactive) 20%, var(--border-subtle-01));
+    border-radius: var(--radius-md);
+  }
+  .share-name {
+    color: var(--text-primary);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .share-size,
+  .share-expiry {
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    white-space: nowrap;
+  }
+  .share-cap {
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    background: var(--layer-02);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-pill);
+    padding: 1px var(--spacing-02);
+  }
+  .share-lock {
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    font-variant: small-caps;
+  }
+  .share-remove {
+    width: 24px;
+    height: 24px;
+    color: var(--text-helper);
+    border-radius: var(--radius-pill);
+    line-height: 1;
+  }
+  .share-remove:hover {
     background: var(--layer-03);
     color: var(--text-primary);
   }

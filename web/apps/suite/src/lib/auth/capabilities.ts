@@ -75,6 +75,20 @@ export function hasIdentityVerification(): boolean {
 }
 
 /**
+ * True when the server advertises the file-shares capability
+ * (`https://netzhansa.com/jmap/file-shares`), i.e.
+ * `[server.attachment_shares].enabled = true` in the operator config.
+ *
+ * When false, the suite hides ALL offload affordances, the "Shared links"
+ * compose strip, and the "Shared files" settings section (REQ-ATT-60..73).
+ *
+ * This function is a thin wrapper over the identical helper in
+ * lib/jmap/file-shares.ts and is provided here so callers in
+ * capabilities.ts have a consistent import pattern.
+ */
+export { hasFileShares } from '../jmap/file-shares';
+
+/**
  * Seconds threshold under which a chat message's timestamp is hidden
  * because the previous message in the same day-group is recent enough.
  * Sourced from the chat capability descriptor; defaults to 120 (2

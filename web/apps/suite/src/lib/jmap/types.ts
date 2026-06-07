@@ -147,6 +147,26 @@ export const Capability = {
    * Both sides MUST be updated together if the URI changes.
    */
   HeroldTaggedAddresses: 'https://netzhansa.com/jmap/tagged-addresses',
+  /**
+   * File share offload (REQ-ATT-60..73 / REQ-SHARE-40..44).
+   * Advertised when [server.attachment_shares].enabled = true. When
+   * absent, the suite hides ALL offload affordances and the "Shared
+   * files" settings section.
+   *
+   * The capability value carries optional server-side knobs:
+   *   offload_threshold_bytes: size at which the suite offers offload
+   *     (default 25 MB when absent).
+   *   default_ttl_seconds: seconds until a confirmed share expires
+   *     (surfaced as the default expiry preset).
+   *   max_ttl_seconds: ceiling for the expiry picker.
+   *   quota_used_bytes: principal's current share storage use.
+   *   quota_max_bytes: principal's share storage cap.
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/registry.go CapabilityFileShares.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldFileShares: 'https://netzhansa.com/jmap/file-shares',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

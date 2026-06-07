@@ -26,8 +26,10 @@
   import PrivacyForm from './settings/PrivacyForm.svelte';
   import ImageProcessingForm from './settings/ImageProcessingForm.svelte';
   import DiagnosticsForm from './settings/DiagnosticsForm.svelte';
+  import SharedFilesForm from './settings/SharedFilesForm.svelte';
   import { Capability } from '../lib/jmap/types';
   import { jmap } from '../lib/jmap/client';
+  import { hasFileShares } from '../lib/jmap/file-shares';
   import { LOCALES, type Locale } from '../lib/i18n/i18n.svelte';
   import { t } from '../lib/i18n/i18n.svelte';
   import { llmTransparency } from '../lib/llm/transparency.svelte';
@@ -49,7 +51,7 @@
   sounds.hydrate();
 
   // Section order: Account, Security, Appearance, Mail, Categories, Filters,
-  // Notifications, API keys, Privacy, Diagnostics, About.
+  // Notifications, API keys, Privacy, Shared files, Diagnostics, About.
   type Section =
     | 'account'
     | 'security'
@@ -61,6 +63,7 @@
     | 'notifications'
     | 'api-keys'
     | 'privacy'
+    | 'shared-files'
     | 'diagnostics'
     | 'about';
 
@@ -69,6 +72,7 @@
   let hasTaggedAddresses = $derived(jmap.hasCapability(Capability.HeroldTaggedAddresses));
   let hasLLMTransparency = $derived(jmap.hasCapability(Capability.HeroldLLMTransparency));
   let hasPush = $derived(jmap.hasCapability(Capability.HeroldPush));
+  let hasSharedFiles = $derived(hasFileShares());
 
   let SECTIONS = $derived.by<{ id: Section; label: string }[]>(() => {
     const result: { id: Section; label: string }[] = [
@@ -85,6 +89,7 @@
     result.push({ id: 'notifications', label: t('settings.notifications') });
     result.push({ id: 'api-keys', label: t('settings.apiKeys') });
     result.push({ id: 'privacy', label: t('settings.privacy.heading') });
+    if (hasSharedFiles) result.push({ id: 'shared-files', label: 'Shared files' });
     result.push({ id: 'diagnostics', label: t('settings.diagnostics.heading') });
     result.push({ id: 'about', label: t('settings.about') });
     return result;
@@ -694,6 +699,14 @@
 
       <h3>{t('settings.privacy.autocompleteHeading')}</h3>
       <PrivacyForm />
+
+    {:else if activeSection === 'shared-files'}
+      <h2>Shared files</h2>
+      <p class="hint">
+        Files you have shared as links. Active shares can be revoked at any time.
+        Download counts reflect the last time this view was loaded (REQ-ATT-73).
+      </p>
+      <SharedFilesForm />
 
     {:else if activeSection === 'diagnostics'}
       <h2>{t('settings.diagnostics.heading')}</h2>
