@@ -37,6 +37,7 @@
   /** Standard presets; filtered to those within max_ttl. */
   const ALL_PRESETS = [
     { label: '1 day', seconds: 1 * 24 * 3600 },
+    { label: '2 days', seconds: 2 * 24 * 3600 },
     { label: '7 days', seconds: 7 * 24 * 3600 },
     { label: '14 days', seconds: 14 * 24 * 3600 },
     { label: '30 days', seconds: 30 * 24 * 3600 },
