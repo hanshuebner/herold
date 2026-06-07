@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"mime"
@@ -632,10 +633,18 @@ func writeMultipartAlternativeInto(w io.Writer, boundary, textVal, htmlVal strin
 }
 
 // generateBoundary returns a random MIME boundary string.
+//
+// Hex encoding is used deliberately: the character set is 0-9a-f, which never
+// includes '-'. Boundaries ending in '-' are rewritten by
+// mailparse.normalizeTrailingDashBoundaries (which works around an enmime
+// substring-match bug) but only updates the delimiters, not an unquoted
+// boundary= parameter value, leaving the two out of sync and breaking MIME
+// parsing. Using hex sidesteps the issue entirely and stays compatible with
+// RFC 2045 §5.1 bcharsnospace.
 func generateBoundary() string {
-	b := make([]byte, 12)
+	b := make([]byte, 16)
 	_, _ = rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
+	return hex.EncodeToString(b)
 }
 
 // readBlobBytes fetches a blob by ID and returns its raw bytes.
