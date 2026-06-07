@@ -333,7 +333,9 @@ func (s *Server) collectStateMap(ctx context.Context, p store.Principal, types m
 	// batch and writes a paired EntityKindInternalizeStatus state_changes
 	// row that arms the push flush; the SPA then refreshes the
 	// urn:netzhansa:params:jmap:internalize-status session capability.
-	rowTypes := []string{"Identity", "EmailSubmission", "VacationResponse", "InternalizeStatus"}
+	// FileShare joins the same row-based set (REQ-SHARE-40): its state
+	// counter is bumped on every FileShare/set mutation.
+	rowTypes := []string{"Identity", "EmailSubmission", "VacationResponse", "InternalizeStatus", "FileShare"}
 	rowNeeded := false
 	for _, t := range rowTypes {
 		if matchesEventSourceTypeName(types, t) {
@@ -357,6 +359,9 @@ func (s *Server) collectStateMap(ctx context.Context, p store.Principal, types m
 		}
 		if matchesEventSourceTypeName(types, "InternalizeStatus") {
 			out["InternalizeStatus"] = strconv.FormatInt(st.InternalizeStatus, 10)
+		}
+		if matchesEventSourceTypeName(types, "FileShare") {
+			out["FileShare"] = strconv.FormatInt(st.FileShare, 10)
 		}
 	}
 	return out, nil

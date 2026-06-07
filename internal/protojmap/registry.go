@@ -146,6 +146,14 @@ const (
 	// an empty per-server descriptor in v1; the per-principal caps live in
 	// sysconfig and are read at request time by the method handlers.
 	CapabilityTaggedAddresses CapabilityID = "https://netzhansa.com/jmap/tagged-addresses"
+
+	// CapabilityFileShares is the attachment-share offload capability
+	// (REQ-SHARE-40). Advertised only when [server.attachment_shares].enabled
+	// is true. Signals to JMAP clients that the FileShare datatype
+	// (FileShare/get, /set, /changes, /query) is available and that the
+	// server will serve /share/{id} download URLs. When absent the suite
+	// hides the offload affordance entirely.
+	CapabilityFileShares CapabilityID = "https://netzhansa.com/jmap/file-shares"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP
