@@ -119,6 +119,7 @@ func (w *accountWorker) runWriteBack(ctx context.Context, writeBackConn Conn) {
 				continue
 			}
 			msgID := store.MessageID(ch.EntityID)
+			w.status.setPhase(PhaseWriteback, w.opts.clk.Now())
 			w.processWriteBack(ctx, writeBackConn, ch, msgID)
 			fromSeq = uint64(ch.Seq)
 		}
@@ -242,6 +243,8 @@ func (w *accountWorker) writeBackFlags(ctx context.Context, conn Conn, ms store.
 		ms.LastSyncedFlags = heroldSynced
 		w.upsertMessageState(ctx, ms)
 		observe.IMAPImportFlagsPropagatedTotal.WithLabelValues(account.ID, "up").Inc()
+		// Mirror to live snapshot counter (REQ-IMAP-IMP-65).
+		w.status.incPropagated(1)
 
 	case heroldSynced == lastSynced:
 		// Only upstream changed → apply upstream to herold.

@@ -68,6 +68,8 @@ func (w *accountWorker) syncAllFolders(ctx context.Context, conn Conn) error {
 			// Default: same name (REQ-IMAP-IMP-10/12).
 			heroldName = fi.Name
 		}
+		// Update live status so observers see which folder is active.
+		w.status.setSyncingFolder(fi.Name)
 		if err := w.syncFolder(ctx, conn, fi.Name, heroldName); err != nil {
 			log.Warn("imapimport: folder sync failed (continuing)",
 				slog.String("account_id", account.ID),
@@ -237,6 +239,8 @@ persistCursor:
 	// Metrics.
 	total := backfillNewCount + forwardNewCount
 	observe.IMAPImportMessagesFetchedTotal.WithLabelValues(accountID).Add(float64(total))
+	// Live snapshot counter mirrors the Prometheus counter.
+	w.status.incFetched(int64(total))
 	observe.IMAPImportFetchDurationSeconds.WithLabelValues(accountID).Observe(
 		w.opts.clk.Now().Sub(start).Seconds(),
 	)

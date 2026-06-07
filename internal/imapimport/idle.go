@@ -78,6 +78,13 @@ func (w *accountWorker) runIDLELoop(ctx context.Context, primary Conn) error {
 		syncConn = primary
 	}
 
+	// Record the connection mode in the live status (REQ-IMAP-IMP-65).
+	if useSingleConn {
+		w.status.setConnMode("single")
+	} else {
+		w.status.setConnMode("dual")
+	}
+
 	log.Info("imapimport: entering running loop",
 		slog.String("account_id", account.ID),
 		slog.Bool("idle", supportsIDLE),
@@ -114,6 +121,8 @@ func (w *accountWorker) idleLoop(ctx context.Context, primary, syncConn Conn, us
 		}
 
 		idleStart := w.opts.clk.Now()
+		// Phase: idle (blocking in IDLE command).
+		w.status.setPhase(PhaseIdle, idleStart)
 
 		handle, err := primary.Idle(ctx)
 		if err != nil {
@@ -149,6 +158,7 @@ func (w *accountWorker) idleLoop(ctx context.Context, primary, syncConn Conn, us
 
 		// Run sync on the sync connection (second conn or primary in
 		// single-conn mode). REQ-IMAP-IMP-22 latency target is here.
+		w.status.setPhase(PhaseSyncing, w.opts.clk.Now())
 		if err := w.syncAfterWake(ctx, syncConn, useSingleConn); err != nil {
 			// Non-fatal: log and continue the IDLE loop (don't reconnect for
 			// a single failed sync round).
@@ -156,6 +166,8 @@ func (w *accountWorker) idleLoop(ctx context.Context, primary, syncConn Conn, us
 				slog.String("account_id", account.ID),
 				slog.String("error", err.Error()),
 			)
+		} else {
+			w.status.recordSyncOK(w.opts.clk.Now())
 		}
 	}
 }
@@ -172,6 +184,11 @@ func (w *accountWorker) noopPollLoop(ctx context.Context, primary, syncConn Conn
 	}
 
 	for {
+		// Phase: polling — waiting for the next NOOP tick.
+		nextPoll := w.opts.clk.Now().Add(pollInterval)
+		w.status.setPhase(PhasePolling, w.opts.clk.Now())
+		w.status.setNextPoll(nextPoll)
+
 		select {
 		case <-ctx.Done():
 			return nil
@@ -188,11 +205,14 @@ func (w *accountWorker) noopPollLoop(ctx context.Context, primary, syncConn Conn
 			return err
 		}
 
+		w.status.setPhase(PhaseSyncing, w.opts.clk.Now())
 		if err := w.syncAfterWake(ctx, syncConn, useSingleConn); err != nil {
 			log.Warn("imapimport: sync after NOOP poll failed",
 				slog.String("account_id", account.ID),
 				slog.String("error", err.Error()),
 			)
+		} else {
+			w.status.recordSyncOK(w.opts.clk.Now())
 		}
 	}
 }

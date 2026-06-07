@@ -3,6 +3,7 @@ package imapimport
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"sync"
 
 	"github.com/hanshuebner/herold/internal/clock"
@@ -25,6 +26,13 @@ type Pool struct {
 	log         *slog.Logger
 	clk         clock.Clock
 	dialer      Dialer
+
+	// registry guards the live worker map. Workers register on launch and
+	// deregister on return. Snapshot reads it under the same mutex so that
+	// reads never block a running worker for more than the time needed to
+	// copy a single pointer. REQ-IMAP-IMP-65.
+	registryMu sync.Mutex
+	registry   map[string]*accountWorker // keyed by accountID
 }
 
 // PoolOptions carries the constructor parameters for Pool. All fields
@@ -74,6 +82,7 @@ func NewPool(opts PoolOptions) *Pool {
 		log:         opts.Logger.With(slog.String("activity", "imap-import")),
 		clk:         opts.Clock,
 		dialer:      d,
+		registry:    make(map[string]*accountWorker),
 	}
 }
 
@@ -134,14 +143,50 @@ launch:
 			clk:    p.clk,
 			dialer: p.dialer,
 		})
-		go func(w *accountWorker) {
+		// Register before launching so Snapshot sees the worker immediately.
+		p.registryMu.Lock()
+		p.registry[acct.ID] = w
+		p.registryMu.Unlock()
+		go func(w *accountWorker, accountID string) {
 			defer func() {
+				// Drop-out on return: a stopped worker disappears from Snapshot.
+				p.registryMu.Lock()
+				delete(p.registry, accountID)
+				p.registryMu.Unlock()
 				<-sem // release
 				wg.Done()
 			}()
 			w.run(ctx)
-		}(w)
+		}(w, acct.ID)
 	}
 	wg.Wait()
 	return nil
+}
+
+// Snapshot returns a point-in-time copy of every live worker's status,
+// sorted by AccountID. It is a pure in-memory read: no store calls, no
+// network I/O. Each call acquires the registry mutex briefly to copy the
+// worker pointer slice, then acquires each worker's per-field mutex to copy
+// the status fields — neither lock is held for more than a field copy, so
+// workers are never blocked. REQ-IMAP-IMP-65.
+func (p *Pool) Snapshot() []WorkerStatus {
+	// Collect live worker pointers under the registry lock.
+	p.registryMu.Lock()
+	workers := make([]*accountWorker, 0, len(p.registry))
+	for _, w := range p.registry {
+		workers = append(workers, w)
+	}
+	p.registryMu.Unlock()
+
+	// Copy each worker's status without holding the registry lock.
+	out := make([]WorkerStatus, 0, len(workers))
+	for _, w := range workers {
+		out = append(out, w.status.snapshot())
+	}
+
+	// Sort by AccountID for deterministic output.
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].AccountID < out[j].AccountID
+	})
+	return out
 }

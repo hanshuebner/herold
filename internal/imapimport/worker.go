@@ -55,6 +55,11 @@ type accountWorker struct {
 	opts        accountWorkerOpts
 	consecutive int // consecutive connection failures
 
+	// status is the live, mutex-guarded status of this worker.
+	// Read via workerStatus.snapshot(); mutated via setPhase etc.
+	// REQ-IMAP-IMP-65.
+	status workerStatus
+
 	// testTokenSource, when non-nil, overrides the OAuth token source
 	// used in openCredential. Set in tests to inject a fakeTokenSource
 	// without wiring a real HTTP endpoint. Production code leaves this nil.
@@ -66,21 +71,37 @@ func newAccountWorker(opts accountWorkerOpts) *accountWorker {
 	// Called here (in addition to Pool construction) so tests that
 	// create workers directly without a Pool still have valid collectors.
 	observe.RegisterIMAPImportMetrics()
-	return &accountWorker{opts: opts}
+	w := &accountWorker{opts: opts}
+	// Initialise the static identity fields of the live status once.
+	w.status.mu.Lock()
+	w.status.accountID = opts.account.ID
+	w.status.principalID = fmt.Sprint(opts.account.PrincipalID)
+	w.status.accountName = opts.account.AccountName
+	w.status.host = opts.account.Host
+	w.status.phase = PhaseStarting
+	w.status.phaseSince = opts.clk.Now()
+	w.status.mu.Unlock()
+	return w
 }
 
 // run is the main loop of the accountWorker. It runs until ctx is
 // cancelled or the account reaches the errored state.
 func (w *accountWorker) run(ctx context.Context) {
+	defer w.status.setPhase(PhaseStopped, w.opts.clk.Now())
+
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
+		// Transition to connecting before each attempt.
+		w.status.setPhase(PhaseConnecting, w.opts.clk.Now())
+
 		err := w.attempt(ctx)
 		if err == nil {
 			// Successful connection: record success, reset failure counter.
 			w.consecutive = 0
+			w.status.setConsecutiveFailures(0)
 			now := w.opts.clk.Now()
 			if setErr := w.opts.store.Meta().SetIMAPImportAccountState(
 				ctx,
@@ -108,10 +129,13 @@ func (w *accountWorker) run(ctx context.Context) {
 		).Inc()
 
 		w.consecutive++
+		redacted := redactError(err)
+		w.status.setConsecutiveFailures(w.consecutive)
+		w.status.setLastError(redacted)
 		w.opts.log.Warn("imapimport: connection attempt failed",
 			slog.String("account_id", w.opts.account.ID),
 			slog.String("kind", kind),
-			slog.String("error", redactError(err)),
+			slog.String("error", redacted),
 			slog.Int("consecutive_failures", w.consecutive),
 		)
 
@@ -122,7 +146,9 @@ func (w *accountWorker) run(ctx context.Context) {
 		if w.consecutive >= limit {
 			// Flip to errored; worker stops (REQ-IMAP-IMP-25).
 			lastErr := fmt.Sprintf("connection failed after %d consecutive attempts: %s",
-				w.consecutive, redactError(err))
+				w.consecutive, redacted)
+			w.status.setPhase(PhaseErrored, w.opts.clk.Now())
+			w.status.setLastError(lastErr)
 			if setErr := w.opts.store.Meta().SetIMAPImportAccountState(
 				ctx,
 				w.opts.account.ID,
@@ -142,6 +168,7 @@ func (w *accountWorker) run(ctx context.Context) {
 
 		// Exponential backoff with jitter (REQ-IMAP-IMP-25).
 		delay := backoffDuration(w.consecutive)
+		w.status.setPhase(PhaseBackoff, w.opts.clk.Now())
 		w.opts.log.Info("imapimport: waiting before retry",
 			slog.String("account_id", w.opts.account.ID),
 			slog.Duration("delay", delay),
@@ -196,9 +223,12 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 	_ = credPlaintext
 
 	if err != nil {
+		w.status.setConnected(false)
 		return err
 	}
+	w.status.setConnected(true)
 	defer func() {
+		w.status.setConnected(false)
 		// Orderly close: LOGOUT then close the TCP connection.
 		if logoutErr := conn.Logout(); logoutErr != nil {
 			w.opts.log.Debug("imapimport: LOGOUT error (non-fatal)",
@@ -218,12 +248,14 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 	)
 
 	// 3b: drive a full sync pass for all mapped folders.
+	w.status.setPhase(PhaseSyncing, w.opts.clk.Now())
 	if err := w.syncAllFolders(ctx, conn); err != nil {
 		// Sync errors are logged inside syncAllFolders per folder; a
 		// non-nil return means all folders failed. Treat as a connection-
 		// level error so the backoff + errored logic applies.
 		return fmt.Errorf("imapimport: syncAllFolders: %w", err)
 	}
+	w.status.recordSyncOK(w.opts.clk.Now())
 
 	// 3d-B: start the write-back goroutine on a dedicated third connection.
 	// If the third connection fails we start the write-back goroutine in

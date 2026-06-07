@@ -313,6 +313,32 @@ placement via the locale-aware label table shared with the takeout
 importer (REQ-IMAP-IMP-51); IMAP folder names themselves are always
 English so no locale detection is needed on the IMAP path.
 
+## Observability of the workers (REQ-IMAP-IMP-65)
+
+Three layers, each answering a different question:
+
+- **Prometheus** (`herold_imapimport_*`) — "how much, over time": fetch
+  counts, flag propagation, conflicts, connection errors, idle seconds,
+  backfill remaining. Aggregate and alertable, but not introspective.
+- **Persisted account state** (`imapimport_account.state` / `last_error` /
+  `last_success_at`) — "is it enabled / did it give up": coarse, durable,
+  survives restart.
+- **Live snapshot** (`Pool.Snapshot()`) — "what is each worker doing right
+  *now*": the missing middle. Each `accountWorker` owns a small status
+  value it mutates as it moves through phases (`starting`, `connecting`,
+  `backoff`, `syncing` + current folder, `idle`, `polling`, `writeback`,
+  `errored`, `stopped`), recording connection mode (single/dual), the
+  phase-start time, last-successful-sync time, consecutive failures, next
+  poll time, and run-cumulative fetched/propagated counts. The Pool holds
+  these behind a mutex (or per-worker atomics) and `Snapshot()` copies them
+  out — a pure in-memory read, no DB round-trip, never blocking a worker.
+
+The snapshot is the substrate the operator surfaces consume: the
+`herold imapimport status` CLI (REQ-IMAP-IMP-62) and the read-only
+`GET /api/v1/imap-imports/status` admin endpoint render it directly. This
+keeps the "what's happening now" view honest — it reflects the worker's
+actual in-loop state rather than a value written to the DB on a timer.
+
 ## Failure and edge behaviour
 
 - **UIDVALIDITY rollover** — invalidate the folder's UID map, re-fetch
