@@ -37,9 +37,33 @@ import (
 // The conn must already be authenticated and in the "Authenticated" state
 // (no mailbox selected). Returns nil on success. A partial failure on one
 // folder is logged and does not abort the other folders.
+//
+// When the upstream is detected as Gmail (X-GM-EXT-1 capability +
+// [Gmail]/All Mail folder), this function delegates to syncAllFoldersGmail
+// (gmail.go) which skips per-label folders and uses All Mail as the
+// canonical body source. All non-Gmail upstreams proceed through the
+// original per-folder loop below. (REQ-IMAP-IMP-50/51.)
 func (w *accountWorker) syncAllFolders(ctx context.Context, conn Conn) error {
 	account := w.opts.account
 	log := w.opts.log
+
+	// Enumerate upstream folders (needed for both Gmail detection and the
+	// default per-folder loop).
+	folders, err := conn.List(ctx)
+	if err != nil {
+		return fmt.Errorf("imapimport: LIST: %w", err)
+	}
+
+	// Gmail detection: gate ALL Gmail-specific behaviour on this check.
+	if isGmailServer(conn.Caps(), folders, account.Host) {
+		log.Info("imapimport: Gmail detected; using All-Mail optimization",
+			slog.String("account_id", account.ID),
+			slog.String("host", account.Host),
+		)
+		return w.syncAllFoldersGmail(ctx, conn, folders)
+	}
+
+	// Non-Gmail path: standard per-folder loop.
 
 	// Build the effective folder mapping: upstream name -> herold name.
 	folderMap, err := w.opts.store.Meta().GetIMAPImportFolderMap(ctx, account.ID)
@@ -49,12 +73,6 @@ func (w *accountWorker) syncAllFolders(ctx context.Context, conn Conn) error {
 	mapping := make(map[string]string, len(folderMap))
 	for _, e := range folderMap {
 		mapping[e.UpstreamFolder] = e.HeroldMailboxName
-	}
-
-	// Enumerate upstream folders.
-	folders, err := conn.List(ctx)
-	if err != nil {
-		return fmt.Errorf("imapimport: LIST: %w", err)
 	}
 
 	var lastErr error
