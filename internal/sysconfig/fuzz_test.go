@@ -95,6 +95,39 @@ livetail_default_duration = "90m"
 livetail_max_duration = "60m"
 `))
 
+	// [server.attachment_shares] seeds (REQ-SHARE-30..52).
+	f.Add([]byte(minimalNoObs + `
+[server.attachment_shares]
+enabled = true
+public_base_url = "https://mail.example.com"
+default_ttl  = "30d"
+max_ttl      = "90d"
+pending_ttl  = "1h"
+revoked_grace = "24h"
+max_shares_per_principal = 1000
+share_quota_per_principal = "5 GiB"
+download_requests_per_ip_per_share = 50
+download_requests_window = "10m"
+`))
+	f.Add([]byte(minimalNoObs + `
+[server.attachment_shares]
+enabled = false
+`))
+	f.Add([]byte(minimalNoObs + `
+[server.attachment_shares]
+public_base_url = "http://mail.example.com"
+`))
+	f.Add([]byte(minimalNoObs + `
+[server.attachment_shares]
+public_base_url = "https://mail.example.com"
+default_ttl = "91d"
+max_ttl     = "90d"
+`))
+	f.Add([]byte(minimalNoObs + `
+[server.attachment_shares]
+share_quota_per_principal = "512 MiB"
+`))
+
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		_, _ = Parse(raw)
 	})

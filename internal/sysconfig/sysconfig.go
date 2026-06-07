@@ -323,6 +323,13 @@ type ServerConfig struct {
 	// (REQ-STORE-90). Defaults match the trashretention package
 	// constants: 30 days, 1-hour sweep interval.
 	TrashRetention TrashRetentionConfig `toml:"trash_retention,omitempty"`
+	// AttachmentShares configures the attachment-share feature
+	// (docs/design/server/requirements/25-attachment-shares.md
+	// REQ-SHARE-30..52). An omitted section produces a fully functional
+	// configuration with the documented defaults. The feature is enabled
+	// by default but is inert (the JMAP capability is not advertised and
+	// /share routes return 404) until public_base_url is set.
+	AttachmentShares AttachmentSharesConfig `toml:"attachment_shares,omitempty"`
 	// OAuthProviders maps provider name to per-provider OAuth 2.0 client
 	// configuration for server-mediated OAuth flows (REQ-AUTH-EXT-SUBMIT-03).
 	// Provider names are normalised to lowercase at parse time. The reserved
@@ -563,6 +570,109 @@ func (c *TaggedAddressesConfig) TaggedAddressesEnabled() bool {
 		return true
 	}
 	return *c.Enabled
+}
+
+// AttachmentSharesConfig controls the attachment-share feature
+// (docs/design/server/requirements/25-attachment-shares.md).
+//
+// The feature lets a sender lift a large or scanner-hostile attachment out of
+// a message and replace it with a capability URL the recipient fetches over
+// HTTPS. A share is an owner-scoped, TTL-bounded, content-addressed object
+// with its own lifecycle, independent of any mailbox.
+//
+// When Enabled is true but PublicBaseURL is empty (the zero value) the feature
+// is inert: the JMAP capability is not advertised and the /share routes return
+// 404. Set PublicBaseURL to activate the surface.
+//
+// Example (system.toml):
+//
+//	[server.attachment_shares]
+//	enabled = true
+//	public_base_url = "https://mail.example.com"
+//	default_ttl  = "30d"
+//	max_ttl      = "90d"
+//	pending_ttl  = "1h"
+//	revoked_grace = "24h"
+//	max_shares_per_principal = 1000
+//	share_quota_per_principal = "5 GiB"
+//	download_requests_per_ip_per_share = 50
+//	download_requests_window = "10m"
+type AttachmentSharesConfig struct {
+	// Enabled is the master switch for the attachment-share feature. When
+	// false the JMAP capability is not advertised, the /share routes return
+	// 404, and the composer's offload affordance disappears. Pointer so an
+	// absent key (default-true) is distinguishable from an explicit false.
+	// The feature is also inert when PublicBaseURL is empty regardless of
+	// this flag (REQ-SHARE-30).
+	Enabled *bool `toml:"enabled,omitempty"`
+	// PublicBaseURL is the externally-reachable HTTPS origin of the public
+	// listener (e.g. "https://mail.example.com"). Recipients receive
+	// capability URLs of the form {public_base_url}/share/{id}. Required
+	// when Enabled; MUST use the https scheme. An http URL is rejected at
+	// Validate because capability tokens carried over http are trivially
+	// intercepted (REQ-SHARE-11d).
+	PublicBaseURL string `toml:"public_base_url,omitempty"`
+	// DefaultTTL is the share lifetime applied when a pending share is
+	// confirmed to active state (REQ-SHARE-20 / REQ-SHARE-21). Accepts
+	// standard Go durations plus a "d" day suffix ("30d" == 720h). Default
+	// "30d". Must not exceed MaxTTL.
+	DefaultTTL DurationExtended `toml:"default_ttl,omitempty"`
+	// MaxTTL is the ceiling the owner cannot exceed when creating or
+	// shortening a share's expiry (REQ-SHARE-03 / REQ-SHARE-42). Accepts
+	// the same format as DefaultTTL. Default "90d". Must be >= DefaultTTL.
+	MaxTTL DurationExtended `toml:"max_ttl,omitempty"`
+	// PendingTTL is the lifetime of an unconfirmed (compose-abandoned)
+	// share before the sweeper deletes it (REQ-SHARE-20 / REQ-SHARE-23).
+	// Accepts the same format as DefaultTTL. Default "1h". Must be <=
+	// DefaultTTL (a pending share cannot live longer than the active one
+	// it would become).
+	PendingTTL DurationExtended `toml:"pending_ttl,omitempty"`
+	// RevokedGrace is the delay between a revocation and the sweeper
+	// removing the row (REQ-SHARE-22 / REQ-SHARE-23). During this window
+	// the owner's management view shows the share as "revoked" rather than
+	// making it vanish immediately. Accepts the same format as DefaultTTL.
+	// Default "24h".
+	RevokedGrace DurationExtended `toml:"revoked_grace,omitempty"`
+	// MaxSharesPerPrincipal caps the number of active+pending shares a
+	// single principal may hold simultaneously (REQ-SHARE-12). Creation
+	// past this cap fails with forbidden { too_many_shares }. Default 1000.
+	// Must be > 0.
+	MaxSharesPerPrincipal int `toml:"max_shares_per_principal,omitempty"`
+	// ShareQuotaPerPrincipal is the per-principal share storage quota
+	// (REQ-SHARE-50). Accepts human-readable byte sizes ("5 GiB",
+	// "512 MiB"). Quota is measured over distinct blobs referenced by the
+	// principal's shares; a blob already referenced by a mailbox message
+	// adds zero marginal share quota. Default "5 GiB". Must be > 0.
+	ShareQuotaPerPrincipal ByteSize `toml:"share_quota_per_principal,omitempty"`
+	// DownloadRequestsPerIPPerShare caps how many download requests a
+	// single source IP may make against a single share within
+	// DownloadRequestsWindow (REQ-SHARE-32). On exceed the server returns
+	// 429 with Retry-After. In-process state; restarting the server resets
+	// the counters. Default 50. Must be > 0.
+	DownloadRequestsPerIPPerShare int `toml:"download_requests_per_ip_per_share,omitempty"`
+	// DownloadRequestsWindow is the sliding time window for
+	// DownloadRequestsPerIPPerShare (REQ-SHARE-32). Accepts standard Go
+	// durations. Default "10m". Must be > 0.
+	DownloadRequestsWindow Duration `toml:"download_requests_window,omitempty"`
+}
+
+// AttachmentSharesEnabled reports whether the attachment-share feature is
+// active. The feature requires both Enabled (default true) and a non-empty
+// PublicBaseURL; returning true here does NOT mean the surface is live — the
+// caller must also check PublicBaseURL.
+func (c *AttachmentSharesConfig) AttachmentSharesEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
+// AttachmentSharesActive reports whether the full attachment-share surface is
+// operational: Enabled is true (or defaulted) AND PublicBaseURL is set. The
+// JMAP capability is only advertised and /share routes only mounted when this
+// returns true.
+func (c *AttachmentSharesConfig) AttachmentSharesActive() bool {
+	return c.AttachmentSharesEnabled() && c.PublicBaseURL != ""
 }
 
 // OAuthProviderConfig is the per-provider OAuth 2.0 client configuration for
@@ -1095,6 +1205,144 @@ func (d Duration) MarshalText() ([]byte, error) {
 
 // AsDuration returns the value as a time.Duration.
 func (d Duration) AsDuration() time.Duration { return time.Duration(d) }
+
+// DurationExtended is a TOML-friendly duration that additionally accepts a
+// trailing "d" suffix as a 24-hour multiplier ("30d" == 720h). This extends
+// the base Duration type for knobs where operators naturally express values in
+// days. Standard Go duration strings ("1h", "30m", "10s") are also accepted.
+// The zero value marshals to an empty string so omitempty works.
+type DurationExtended time.Duration
+
+// parseDurationExtended parses a duration string that may carry a "d" suffix
+// for days, or any string accepted by time.ParseDuration. It returns an error
+// for empty input or unparseable values.
+func parseDurationExtended(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, errors.New("empty duration")
+	}
+	// "Nd" with an optional decimal: only allow pure-day strings (no mixing
+	// "1d2h") — the rest fall through to time.ParseDuration.
+	if strings.HasSuffix(s, "d") && !strings.ContainsAny(s[:len(s)-1], "hms") {
+		prefix := s[:len(s)-1]
+		hours, err := time.ParseDuration(prefix + "h")
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+		}
+		return hours * 24, nil
+	}
+	dur, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	return dur, nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler for go-toml strict decoding.
+func (d *DurationExtended) UnmarshalText(text []byte) error {
+	if len(text) == 0 {
+		*d = 0
+		return nil
+	}
+	dur, err := parseDurationExtended(string(text))
+	if err != nil {
+		return err
+	}
+	*d = DurationExtended(dur)
+	return nil
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (d DurationExtended) MarshalText() ([]byte, error) {
+	if d == 0 {
+		return []byte{}, nil
+	}
+	return []byte(time.Duration(d).String()), nil
+}
+
+// AsDuration returns the value as a time.Duration.
+func (d DurationExtended) AsDuration() time.Duration { return time.Duration(d) }
+
+// ByteSize is a TOML-friendly byte quantity. It accepts strings in the form
+// "N unit" where unit is one of B, KiB, MiB, GiB, TiB (binary units per
+// IEC 80000-13), or KB, MB, GB, TB (decimal SI units). Plain integers are
+// also accepted as a byte count with no unit. The zero value marshals to an
+// empty string so omitempty works.
+//
+// Examples:
+//
+//	"5 GiB"  -> 5368709120
+//	"512 MiB" -> 536870912
+//	"1024"   -> 1024
+type ByteSize int64
+
+// parseByteSize parses a human-readable byte size string into a byte count.
+func parseByteSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("empty byte size")
+	}
+	// Split into numeric and unit parts.
+	i := 0
+	for i < len(s) && (s[i] >= '0' && s[i] <= '9') {
+		i++
+	}
+	if i == 0 {
+		return 0, fmt.Errorf("invalid byte size %q: must start with a number", s)
+	}
+	numStr := s[:i]
+	unit := strings.TrimSpace(s[i:])
+	n := int64(0)
+	for _, ch := range numStr {
+		n = n*10 + int64(ch-'0')
+	}
+	switch unit {
+	case "", "B":
+		return n, nil
+	case "KiB":
+		return n * 1024, nil
+	case "MiB":
+		return n * 1024 * 1024, nil
+	case "GiB":
+		return n * 1024 * 1024 * 1024, nil
+	case "TiB":
+		return n * 1024 * 1024 * 1024 * 1024, nil
+	case "KB":
+		return n * 1000, nil
+	case "MB":
+		return n * 1000 * 1000, nil
+	case "GB":
+		return n * 1000 * 1000 * 1000, nil
+	case "TB":
+		return n * 1000 * 1000 * 1000 * 1000, nil
+	default:
+		return 0, fmt.Errorf("invalid byte size %q: unknown unit %q (want B, KiB, MiB, GiB, TiB, KB, MB, GB, TB)", s, unit)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler for go-toml strict decoding.
+func (b *ByteSize) UnmarshalText(text []byte) error {
+	if len(text) == 0 {
+		*b = 0
+		return nil
+	}
+	n, err := parseByteSize(string(text))
+	if err != nil {
+		return err
+	}
+	*b = ByteSize(n)
+	return nil
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (b ByteSize) MarshalText() ([]byte, error) {
+	if b == 0 {
+		return []byte{}, nil
+	}
+	return []byte(fmt.Sprintf("%d", int64(b))), nil
+}
+
+// AsInt64 returns the byte count as an int64.
+func (b ByteSize) AsInt64() int64 { return int64(b) }
 
 // AdminTLSConfig controls the cert used for the admin HTTPS surface.
 // source may be:
@@ -1918,6 +2166,11 @@ func applyDefaults(c *Config) {
 	// REQ-OPS-216. A missing [clientlog] block produces a fully
 	// functional configuration with the documented default values.
 	applyClientLogDefaults(&c.ClientLog)
+	// Attachment shares (REQ-SHARE-30..52). Defaults match the
+	// configuration knobs in 25-attachment-shares.md. A missing section
+	// produces a fully defaulted (but inert) configuration; the feature
+	// only becomes active when public_base_url is also set.
+	applyAttachmentSharesDefaults(&c.Server.AttachmentShares)
 }
 
 // applyClientLogDefaults fills in the documented default values for
@@ -1969,6 +2222,41 @@ func applyClientLogDefaults(cl *ClientLogConfig) {
 	}
 	if cl.Public.BodyMaxBytes == 0 {
 		cl.Public.BodyMaxBytes = 8192 // 8 KiB
+	}
+}
+
+// applyAttachmentSharesDefaults populates the documented default values for
+// the [server.attachment_shares] block (REQ-SHARE-30..52) when fields are
+// absent. The feature defaults to enabled but is inert until public_base_url
+// is also set.
+func applyAttachmentSharesDefaults(as *AttachmentSharesConfig) {
+	if as.Enabled == nil {
+		t := true
+		as.Enabled = &t
+	}
+	if as.DefaultTTL == 0 {
+		as.DefaultTTL = DurationExtended(30 * 24 * time.Hour) // 30d
+	}
+	if as.MaxTTL == 0 {
+		as.MaxTTL = DurationExtended(90 * 24 * time.Hour) // 90d
+	}
+	if as.PendingTTL == 0 {
+		as.PendingTTL = DurationExtended(1 * time.Hour) // 1h
+	}
+	if as.RevokedGrace == 0 {
+		as.RevokedGrace = DurationExtended(24 * time.Hour) // 24h
+	}
+	if as.MaxSharesPerPrincipal == 0 {
+		as.MaxSharesPerPrincipal = 1000
+	}
+	if as.ShareQuotaPerPrincipal == 0 {
+		as.ShareQuotaPerPrincipal = ByteSize(5 * 1024 * 1024 * 1024) // 5 GiB
+	}
+	if as.DownloadRequestsPerIPPerShare == 0 {
+		as.DownloadRequestsPerIPPerShare = 50
+	}
+	if as.DownloadRequestsWindow == 0 {
+		as.DownloadRequestsWindow = Duration(10 * time.Minute) // 10m
 	}
 }
 
@@ -2793,6 +3081,10 @@ func Validate(c *Config) error {
 	if err := validateClientLog(&c.ClientLog); err != nil {
 		return err
 	}
+	// Attachment shares (REQ-SHARE-30..52).
+	if err := validateAttachmentShares(&c.Server.AttachmentShares); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2951,6 +3243,64 @@ func validateClientLog(cl *ClientLogConfig) error {
 	}
 	if cl.Public.BodyMaxBytes < 0 {
 		return fmt.Errorf("sysconfig: [clientlog.public] body_max_bytes %d must be >= 0", cl.Public.BodyMaxBytes)
+	}
+	return nil
+}
+
+// validateAttachmentShares checks semantic constraints on the
+// [server.attachment_shares] block (REQ-SHARE-30..52). applyDefaults has
+// already run, so every knob has a non-zero value.
+func validateAttachmentShares(as *AttachmentSharesConfig) error {
+	// When enabled, public_base_url is required and MUST be https.
+	// The feature is inert (but not an error) when public_base_url is absent.
+	if as.AttachmentSharesEnabled() && as.PublicBaseURL != "" {
+		u, err := url.ParseRequestURI(as.PublicBaseURL)
+		if err != nil || !u.IsAbs() {
+			return fmt.Errorf("sysconfig: [server.attachment_shares] public_base_url %q is not a valid absolute URL",
+				as.PublicBaseURL)
+		}
+		if u.Scheme != "https" {
+			return fmt.Errorf("sysconfig: [server.attachment_shares] public_base_url %q must use https scheme (REQ-SHARE-11d)",
+				as.PublicBaseURL)
+		}
+	}
+	// TTL ordering: max_ttl >= default_ttl >= pending_ttl (REQ-SHARE-20..21).
+	if as.MaxTTL > 0 && as.DefaultTTL > 0 && as.DefaultTTL > as.MaxTTL {
+		return fmt.Errorf("sysconfig: [server.attachment_shares] default_ttl %s exceeds max_ttl %s",
+			as.DefaultTTL.AsDuration(), as.MaxTTL.AsDuration())
+	}
+	if as.DefaultTTL > 0 && as.PendingTTL > 0 && as.PendingTTL > as.DefaultTTL {
+		return fmt.Errorf("sysconfig: [server.attachment_shares] pending_ttl %s exceeds default_ttl %s",
+			as.PendingTTL.AsDuration(), as.DefaultTTL.AsDuration())
+	}
+	// All durations must be positive.
+	if as.DefaultTTL <= 0 {
+		return errors.New("sysconfig: [server.attachment_shares] default_ttl must be > 0")
+	}
+	if as.MaxTTL <= 0 {
+		return errors.New("sysconfig: [server.attachment_shares] max_ttl must be > 0")
+	}
+	if as.PendingTTL <= 0 {
+		return errors.New("sysconfig: [server.attachment_shares] pending_ttl must be > 0")
+	}
+	if as.RevokedGrace <= 0 {
+		return errors.New("sysconfig: [server.attachment_shares] revoked_grace must be > 0")
+	}
+	if as.DownloadRequestsWindow <= 0 {
+		return errors.New("sysconfig: [server.attachment_shares] download_requests_window must be > 0")
+	}
+	// Caps must be positive.
+	if as.MaxSharesPerPrincipal <= 0 {
+		return fmt.Errorf("sysconfig: [server.attachment_shares] max_shares_per_principal %d must be > 0",
+			as.MaxSharesPerPrincipal)
+	}
+	if as.ShareQuotaPerPrincipal <= 0 {
+		return fmt.Errorf("sysconfig: [server.attachment_shares] share_quota_per_principal %d must be > 0",
+			as.ShareQuotaPerPrincipal.AsInt64())
+	}
+	if as.DownloadRequestsPerIPPerShare <= 0 {
+		return fmt.Errorf("sysconfig: [server.attachment_shares] download_requests_per_ip_per_share %d must be > 0",
+			as.DownloadRequestsPerIPPerShare)
 	}
 	return nil
 }
