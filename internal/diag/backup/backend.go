@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -132,124 +133,23 @@ func BackendFor(s store.Store) (Backend, error) {
 	return nil, ErrUnsupported
 }
 
-// rowsForTable returns a freshly-allocated zero value of the row
-// struct for table. The Source uses it to type-allocate during
-// EnumerateRows; the Sink uses the type assertion in Insert. Returns
-// (nil, false) for unknown tables.
+// rowsForTable returns a freshly-allocated zero value of the row struct for
+// table. The Source uses it to type-allocate during EnumerateRows; the Sink
+// uses the type assertion in Insert. Returns (nil, false) for unknown tables.
+//
+// The implementation is backed by tableReg (engine.go) so every table added to
+// the registry is automatically covered here without a separate switch case.
 func rowsForTable(table string) (any, bool) {
-	switch table {
-	case "domains":
-		return &DomainRow{}, true
-	case "principals":
-		return &PrincipalRow{}, true
-	case "oidc_providers":
-		return &OIDCProviderRow{}, true
-	case "oidc_links":
-		return &OIDCLinkRow{}, true
-	case "api_keys":
-		return &APIKeyRow{}, true
-	case "aliases":
-		return &AliasRow{}, true
-	case "sieve_scripts":
-		return &SieveScriptRow{}, true
-	case "jmap_categorisation_config":
-		return &CategorisationConfigRow{}, true
-	case "mailboxes":
-		return &MailboxRow{}, true
-	case "messages":
-		return &MessageRow{}, true
-	case "message_mailboxes":
-		return &MessageMailboxRow{}, true
-	case "email_pretrash_mailboxes":
-		return &EmailPretrashMailboxRow{}, true
-	case "mailbox_acl":
-		return &MailboxACLRow{}, true
-	case "state_changes":
-		return &StateChangeRow{}, true
-	case "audit_log":
-		return &AuditLogRow{}, true
-	case "cursors":
-		return &CursorRow{}, true
-	case "queue":
-		return &QueueRow{}, true
-	case "dkim_keys":
-		return &DKIMKeyRow{}, true
-	case "acme_accounts":
-		return &ACMEAccountRow{}, true
-	case "acme_orders":
-		return &ACMEOrderRow{}, true
-	case "acme_certs":
-		return &ACMECertRow{}, true
-	case "webhooks":
-		return &WebhookRow{}, true
-	case "dmarc_reports_raw":
-		return &DMARCReportRow{}, true
-	case "dmarc_rows":
-		return &DMARCRowRow{}, true
-	case "jmap_states":
-		return &JMAPStateRow{}, true
-	case "jmap_email_submissions":
-		return &JMAPEmailSubmissionRow{}, true
-	case "jmap_identities":
-		return &JMAPIdentityRow{}, true
-	case "tlsrpt_failures":
-		return &TLSRPTFailureRow{}, true
-	case "address_books":
-		return &AddressBookRow{}, true
-	case "contacts":
-		return &ContactRow{}, true
-	case "calendars":
-		return &CalendarRow{}, true
-	case "calendar_events":
-		return &CalendarEventRow{}, true
-	case "chat_account_settings":
-		return &ChatAccountSettingsRow{}, true
-	case "chat_conversations":
-		return &ChatConversationRow{}, true
-	case "chat_memberships":
-		return &ChatMembershipRow{}, true
-	case "chat_messages":
-		return &ChatMessageRow{}, true
-	case "chat_blocks":
-		return &ChatBlockRow{}, true
-	case "chat_dm_pairs":
-		return &ChatDMPairRow{}, true
-	case "blob_refs":
-		return &BlobRefRow{}, true
-	case "push_subscription":
-		return &PushSubscriptionRow{}, true
-	case "ses_seen_messages":
-		return &SESSeenMessageRow{}, true
-	case "email_reactions":
-		return &EmailReactionRow{}, true
-	case "coach_events":
-		return &CoachEventRow{}, true
-	case "coach_dismiss":
-		return &CoachDismissRow{}, true
-	case "managed_rules":
-		return &ManagedRuleRow{}, true
-	case "llm_classifications":
-		return &LLMClassificationRow{}, true
-	case "seen_addresses":
-		return &SeenAddressRow{}, true
-	case "tagged_address_filters":
-		return &TaggedAddressFilterRow{}, true
-	case "tagged_address_dismissals":
-		return &TaggedAddressDismissalRow{}, true
-	case "file_shares":
-		return &FileShareRow{}, true
-	case "sessions":
-		return &SessionRow{}, true
-	case "clientlog":
-		return &ClientLogRow{}, true
-	case "imapimport_account":
-		return &IMAPImportAccountRow{}, true
-	case "imapimport_folder_map":
-		return &IMAPImportFolderMapRow{}, true
-	case "imapimport_folder_cursor":
-		return &IMAPImportFolderCursorRow{}, true
-	case "imapimport_message_state":
-		return &IMAPImportMessageStateRow{}, true
+	desc, ok := tableReg[table]
+	if !ok {
+		return nil, false
 	}
-	return nil, false
+	// Allocate a fresh zero-value instance of the same type as desc.proto.
+	// reflect.New returns a *T; the caller expects a *T (not T) so the JSON
+	// decoder can fill in the fields through the pointer.
+	t := reflect.TypeOf(desc.proto)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return reflect.New(t).Interface(), true
 }

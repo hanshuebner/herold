@@ -46,27 +46,10 @@ var intentionalExclusions = map[string]string{
 }
 
 // knownBackupGaps lists tables that SHOULD be backed up but currently are not.
-// These are pre-existing omissions on main, surfaced by this guard; they are
-// standing data-safety bugs, not policy, to be fixed in the backup-hardening
-// follow-up. Fixing one means deleting its entry here and wiring the table in.
-var knownBackupGaps = map[string]string{
-	// identity_submission (migration 0032) carries AEAD-sealed external SMTP
-	// submission credentials. Per the decision to back up sealed-credential
-	// tables (so same-host kill -9 recovery preserves accounts), this MUST be
-	// added to the backup — the new imapimport_account is already handled the
-	// same way. Tracked for the backup-hardening follow-up.
-	"identity_submission": "sealed outbound SMTP creds not yet wired into backup — data loss on restore",
-	// sieve_named_scripts (migration 0042) stores user-named ManageSieve
-	// scripts. Losing them on restore loses the user's script library — should
-	// be backed up.
-	"sieve_named_scripts": "user named Sieve scripts not yet wired into backup",
-	// inbound_attpol_domain / inbound_attpol_recipient (migration 0014) hold
-	// per-domain / per-recipient inbound attachment policy. These are
-	// application state mutated via API, not system.toml, so a restore should
-	// preserve them. Not yet wired into backup.
-	"inbound_attpol_domain":    "inbound attachment policy not yet wired into backup",
-	"inbound_attpol_recipient": "inbound attachment policy not yet wired into backup",
-}
+// All previously-tracked gaps have been wired in; this map is empty. It is
+// retained so the test infrastructure compiles without change — any new
+// omission must be added here immediately rather than left silent.
+var knownBackupGaps = map[string]string{}
 
 func TestBackupCompleteness(t *testing.T) {
 	t.Parallel()

@@ -425,6 +425,11 @@ var TableNames = []string{
 	"api_keys",
 	"aliases",
 	"sieve_scripts",
+	// ManageSieve named-script storage (RFC 5804, migration 0042). FK to
+	// principals(id) ON DELETE CASCADE; restored after sieve_scripts so the
+	// legacy single-slot and the named-script set are both present before any
+	// child table that might reference them.
+	"sieve_named_scripts",
 	// Phase 3 Wave 3.15 ManagedRule structured filter abstraction
 	// (REQ-FLT-01..31, migration 0026). FK to principals(id); restored
 	// after principals are in place.
@@ -458,6 +463,11 @@ var TableNames = []string{
 	"state_changes",
 	"audit_log",
 	"cursors",
+	// Inbound attachment policy tables (migration 0014, REQ-FLOW-ATTPOL-01).
+	// No FK to other user tables (plain TEXT PKs); restored before queue so
+	// inbound delivery policies are in place before any queued retries.
+	"inbound_attpol_domain",
+	"inbound_attpol_recipient",
 	"queue",
 	"dkim_keys",
 	"acme_accounts",
@@ -469,6 +479,10 @@ var TableNames = []string{
 	"jmap_states",
 	"jmap_email_submissions",
 	"jmap_identities",
+	// Per-Identity external SMTP submission config (migration 0032,
+	// REQ-AUTH-EXT-SUBMIT-01..10). FK to jmap_identities(id) ON DELETE
+	// CASCADE; restored after jmap_identities.
+	"identity_submission",
 	"tlsrpt_failures",
 	// Phase 2 Wave 2.6 JMAP for Contacts (REQ-PROTO-55). address_books
 	// must precede contacts so the FK-respecting restore order holds.

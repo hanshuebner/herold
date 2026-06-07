@@ -43,7 +43,8 @@ type PrincipalRow struct {
 	UpdatedAtUs          int64 `json:"updated_at_us"`
 	// Avatar / X-Face columns added in migration 0036 (REQ-SET-03b /
 	// REQ-MAIL-44). The default Identity is synthesised from this row.
-	AvatarBlobHash string `json:"avatar_blob_hash,omitempty"`
+	// nullable:"true" — the DB column is TEXT (NULLable); empty Go string = SQL NULL.
+	AvatarBlobHash string `json:"avatar_blob_hash,omitempty" nullable:"true"`
 	AvatarBlobSize int64  `json:"avatar_blob_size,omitempty"`
 	XFaceEnabled   bool   `json:"xface_enabled,omitempty"`
 }
@@ -77,13 +78,15 @@ type APIKeyRow struct {
 	// grants (REQ-AUTH-SCOPE-04). Backup/restore round-trip preserves
 	// the operator-set capability so a restored key keeps the same
 	// scope it had at backup time.
-	ScopeJSON string `json:"scope_json,omitempty"`
+	// default tag: a backup taken before migration 0016 carries no scope_json;
+	// restore inserts the admin sentinel so the legacy capability is preserved.
+	ScopeJSON string `json:"scope_json,omitempty" default:"[\"admin\"]"`
 	// AllowedFromAddressesJSON and AllowedFromDomainsJSON are the
 	// migration-0021 per-key sender allowlists (REQ-SEND-12 /
 	// REQ-SEND-30). Stored as JSON text arrays. Empty string is
 	// equivalent to '[]' (no constraint).
-	AllowedFromAddressesJSON string `json:"allowed_from_addresses_json,omitempty"`
-	AllowedFromDomainsJSON   string `json:"allowed_from_domains_json,omitempty"`
+	AllowedFromAddressesJSON string `json:"allowed_from_addresses_json,omitempty" default:"[]"`
+	AllowedFromDomainsJSON   string `json:"allowed_from_domains_json,omitempty" default:"[]"`
 }
 
 type AliasRow struct {
@@ -226,7 +229,9 @@ type StateChangeRow struct {
 	// (the omitempty tag preserves backwards compatibility for
 	// pre-migration backups, and the storesqlite/storepg writer
 	// substitutes 'user' on empty input).
-	Cause        string `json:"cause,omitempty"`
+	// default tag: pre-migration-0044 bundles omit this field; restore
+	// substitutes 'user' so the NOT NULL constraint is satisfied.
+	Cause        string `json:"cause,omitempty" default:"user"`
 	ProducedAtUs int64  `json:"produced_at_us"`
 }
 
@@ -409,18 +414,19 @@ type JMAPEmailSubmissionRow struct {
 }
 
 type JMAPIdentityRow struct {
-	ID             string `json:"id"`
-	PrincipalID    int64  `json:"principal_id"`
-	Name           string `json:"name"`
-	Email          string `json:"email"`
-	ReplyToJSON    []byte `json:"reply_to_json,omitempty"`
-	BccJSON        []byte `json:"bcc_json,omitempty"`
-	TextSignature  string `json:"text_signature"`
-	HTMLSignature  string `json:"html_signature"`
-	MayDelete      bool   `json:"may_delete"`
-	CreatedAtUs    int64  `json:"created_at_us"`
-	UpdatedAtUs    int64  `json:"updated_at_us"`
-	AvatarBlobHash string `json:"avatar_blob_hash,omitempty"`
+	ID            string `json:"id"`
+	PrincipalID   int64  `json:"principal_id"`
+	Name          string `json:"name"`
+	Email         string `json:"email"`
+	ReplyToJSON   []byte `json:"reply_to_json,omitempty"`
+	BccJSON       []byte `json:"bcc_json,omitempty"`
+	TextSignature string `json:"text_signature"`
+	HTMLSignature string `json:"html_signature"`
+	MayDelete     bool   `json:"may_delete"`
+	CreatedAtUs   int64  `json:"created_at_us"`
+	UpdatedAtUs   int64  `json:"updated_at_us"`
+	// nullable:"true" — the DB column is TEXT (NULLable); empty Go string = SQL NULL.
+	AvatarBlobHash string `json:"avatar_blob_hash,omitempty" nullable:"true"`
 	AvatarBlobSize int64  `json:"avatar_blob_size,omitempty"`
 	XFaceEnabled   bool   `json:"xface_enabled,omitempty"`
 	// Identity verification (REQ-IDENT-01, migration 0048). Backup
@@ -570,9 +576,9 @@ type ChatMessageRow struct {
 	BodyHTML          *string `json:"body_html,omitempty"`
 	BodyFormat        string  `json:"body_format"`
 	ReplyToMessageID  *int64  `json:"reply_to_message_id,omitempty"`
-	ReactionsJSON     []byte  `json:"reactions_json,omitempty"`
-	AttachmentsJSON   []byte  `json:"attachments_json,omitempty"`
-	MetadataJSON      []byte  `json:"metadata_json,omitempty"`
+	ReactionsJSON     []byte  `json:"reactions_json,omitempty" nullable:"true"`
+	AttachmentsJSON   []byte  `json:"attachments_json,omitempty" nullable:"true"`
+	MetadataJSON      []byte  `json:"metadata_json,omitempty" nullable:"true"`
 	EditedAtUs        *int64  `json:"edited_at_us,omitempty"`
 	DeletedAtUs       *int64  `json:"deleted_at_us,omitempty"`
 	CreatedAtUs       int64   `json:"created_at_us"`
@@ -783,7 +789,7 @@ type IMAPImportAccountRow struct {
 	Username          string `json:"username"`
 	AuthMethod        string `json:"auth_method"`
 	BackfillFloorDate *int64 `json:"backfill_floor_date,omitempty"` // unix-micros, NULL = no floor
-	CredentialCT      []byte `json:"credential_ct"`                 // base64, v1: prefix
+	CredentialCT      []byte `json:"credential_ct" nullable:"true"` // base64, v1: prefix — NULLable BLOB in schema
 	State             string `json:"state"`
 	LastSuccessAt     *int64 `json:"last_success_at,omitempty"` // unix-micros, NULL = never
 	LastError         string `json:"last_error"`
@@ -844,10 +850,68 @@ type PushSubscriptionRow struct {
 	VerificationCode       string `json:"verification_code"`
 	Verified               bool   `json:"verified"`
 	VAPIDKeyAtRegistration string `json:"vapid_key_at_registration"`
-	NotificationRulesJSON  []byte `json:"notification_rules_json,omitempty"`
+	NotificationRulesJSON  []byte `json:"notification_rules_json,omitempty" nullable:"true"`
 	QuietHoursStartLocal   *int64 `json:"quiet_hours_start_local,omitempty"`
 	QuietHoursEndLocal     *int64 `json:"quiet_hours_end_local,omitempty"`
 	QuietHoursTZ           string `json:"quiet_hours_tz"`
 	CreatedAtUs            int64  `json:"created_at_us"`
 	UpdatedAtUs            int64  `json:"updated_at_us"`
+}
+
+// IdentitySubmissionRow mirrors the identity_submission table introduced
+// in migration 0032 (REQ-AUTH-EXT-SUBMIT-01..10). Carries the external
+// SMTP submission config for a JMAP Identity; FK to jmap_identities(id)
+// ON DELETE CASCADE. Credential columns are AEAD-sealed BLOBs — treated
+// as opaque []byte (base64 in JSONL). All BLOB columns are NULLable in the
+// schema (absent credential type means unused auth method).
+type IdentitySubmissionRow struct {
+	IdentityID          string  `json:"identity_id"`
+	SubmitHost          string  `json:"submit_host"`
+	SubmitPort          int64   `json:"submit_port"`
+	SubmitSecurity      string  `json:"submit_security"`
+	SubmitAuthMethod    string  `json:"submit_auth_method"`
+	PasswordCT          []byte  `json:"password_ct,omitempty" nullable:"true"`
+	OAuthAccessCT       []byte  `json:"oauth_access_ct,omitempty" nullable:"true"`
+	OAuthRefreshCT      []byte  `json:"oauth_refresh_ct,omitempty" nullable:"true"`
+	OAuthTokenEndpoint  *string `json:"oauth_token_endpoint,omitempty"`
+	OAuthClientID       *string `json:"oauth_client_id,omitempty"`
+	OAuthClientSecretCT []byte  `json:"oauth_client_secret_ct,omitempty" nullable:"true"`
+	OAuthExpiresAtUs    *int64  `json:"oauth_expires_at_us,omitempty"`
+	RefreshDueUs        *int64  `json:"refresh_due_us,omitempty"`
+	State               string  `json:"state"`
+	StateAtUs           int64   `json:"state_at_us"`
+	CreatedAtUs         int64   `json:"created_at_us"`
+	UpdatedAtUs         int64   `json:"updated_at_us"`
+}
+
+// SieveNamedScriptRow mirrors the sieve_named_scripts table introduced
+// in migration 0042 (ManageSieve named-script storage, RFC 5804). PK is
+// (principal_id, name); is_active flags the currently active script for
+// a principal (at most one per principal, enforced by a partial unique index).
+type SieveNamedScriptRow struct {
+	PrincipalID int64  `json:"principal_id"`
+	Name        string `json:"name"`
+	Script      string `json:"script"`
+	IsActive    bool   `json:"is_active"`
+	UpdatedAtUs int64  `json:"updated_at_us"`
+}
+
+// InboundAttpolDomainRow mirrors the inbound_attpol_domain table
+// introduced in migration 0014 (REQ-FLOW-ATTPOL-01). Per-domain inbound
+// attachment policy; policy is "accept" or "reject_at_data".
+type InboundAttpolDomainRow struct {
+	Domain      string `json:"domain"`
+	Policy      string `json:"policy"`
+	RejectText  string `json:"reject_text"`
+	UpdatedAtUs int64  `json:"updated_at_us"`
+}
+
+// InboundAttpolRecipientRow mirrors the inbound_attpol_recipient table
+// introduced in migration 0014 (REQ-FLOW-ATTPOL-01). Per-recipient inbound
+// attachment policy; policy is "accept" or "reject_at_data".
+type InboundAttpolRecipientRow struct {
+	Address     string `json:"address"`
+	Policy      string `json:"policy"`
+	RejectText  string `json:"reject_text"`
+	UpdatedAtUs int64  `json:"updated_at_us"`
 }
