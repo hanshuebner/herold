@@ -1,0 +1,15 @@
+From: sender@third-party.example
+To: user@example.com
+Subject: unquoted trailing-dash boundary seed
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary=abc123-
+
+--abc123-
+Content-Type: text/plain; charset=utf-8
+
+PLAIN BODY
+--abc123-
+Content-Type: text/html; charset=utf-8
+
+<html><body>HTML BODY</body></html>
+--abc123---
