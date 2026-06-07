@@ -58,20 +58,30 @@ nothing slips between "documented" and "implemented" by being invisible.
 
 - Status: `backlog`
 - Requirements: `docs/design/server/requirements/19-imap-import.md`
-  (REQ-IMAP-IMP-01..84).
-- Size: **L**. New `internal/import/imap` package: connection manager
+  (REQ-IMAP-IMP-01..86). Architecture:
+  `docs/design/server/architecture/12-imap-import.md`. Both revised
+  2026-06-07 for issue #25 under six maintainer decisions (store
+  as-synced; app-encrypted credentials; app-password-first OAuth;
+  full live-mirror; upstream-authoritative conflicts; user-chosen
+  backfill horizon that accumulates, no GC).
+- Size: **L**. New `internal/imapimport` package: connection manager
   (IDLE + FETCH connection pair per remote account), OAuth /
-  app-password / plain auth, folder-mapping table reused from the Gmail
-  Takeout work, mirror semantics (one-way external → herold by default),
-  bidirectional `\Seen` / `\Flagged` sync, custom keywords stay
-  herold-local, inbound pipeline (spam, sieve, attpol, webhooks, extimg)
-  runs on imported mail, 10 s p95 notification-to-store target, Gmail
+  app-password / password auth (credentials sealed via `internal/secrets`,
+  reusing the `IdentitySubmission` pattern), folder-mapping table reused
+  from the Gmail Takeout work, **store-as-synced** mirror semantics
+  (verbatim bytes via `InsertMessage`; FTS comes free off the change
+  feed; NO spam/sieve/attpol/webhooks/import-time extimg; categorise only
+  new INBOX mail), backfill-horizon floor (`UID SEARCH SINCE` + low-water
+  mark), best-effort upstream-authoritative `\Seen`/`\Flagged`/move/delete
+  write-back driven by `ReadChangeFeedAll`, custom keywords stay
+  herold-local, 10 s p95 notification-to-store target, Gmail
   All-Mail-as-canonical-source quirk.
-- Dependencies: REQ-EXTIMG-* (external-image internalisation, just shipped)
-  is reused on the imported messages; the Gmail locale-label table from
-  `internal/import/gmail/labels.go` is reused for the Gmail-specific
-  branch; `protoevents` already ships so per-account state changes can
-  publish.
+- Dependencies: `internal/secrets` (`Seal`/`Open` + `data_key_ref`) and
+  the `store.IdentitySubmission` sealed-credential precedent; the Gmail
+  locale-label table from `internal/import/gmail/labels.go` is reused for
+  the Gmail-specific branch; `emersion/go-imap/v2` (already a dep) for the
+  client. External-image internalisation runs on-demand at view time only
+  (not forced at import — byte-fidelity preserves upstream DKIM).
 - Decomposition: (1) connection manager + IDLE + FETCH for a single
   account with plain auth; (2) OAuth + app-password auth modes;
   (3) bidirectional flag sync; (4) Gmail-specific All-Mail handling;

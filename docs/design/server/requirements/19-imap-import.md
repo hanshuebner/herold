@@ -12,16 +12,70 @@ while FETCHing concurrently. The user-facing requirement is "low
 latency from upstream-arrival to herold-visible," not the connection
 count. We spec the latency target.)*
 
+*(Revised 2026-06-07 to reconcile against issue #25 "IMAP client mode".
+Six design decisions taken by the maintainer drive this revision and
+are called out inline at the requirements they touch:*
+
+1. ***Store as-synced.** Mirrored messages are persisted verbatim and
+   indexed for FTS; they do NOT re-run the inbound delivery pipeline
+   (no spam, no Sieve, no attachment policy, no webhooks, no
+   import-time external-image internalization). Only LLM categorisation
+   of newly-arrived INBOX-mapped mail runs, matching the live delivery
+   path's own gating. Rationale: a mirror's folder placement is dictated
+   by the upstream folder mapping, and Sieve `fileinto` would fight that
+   mapping; re-running spam/webhooks on a historical backfill is
+   redundant and dangerous. (Supersedes the original REQ-IMAP-IMP-31.)*
+2. ***App-encrypted credentials.** Upstream credentials are sealed in
+   the DB with the existing `internal/secrets` data key
+   (`[server.secrets].data_key_ref`), exactly as outbound submission
+   credentials already are (`store.IdentitySubmission` `*CT` fields).
+   This is reuse of an established pattern, not new crypto surface, and
+   it is what makes user self-service possible. (Rewrites
+   REQ-IMAP-IMP-02 / -04 / -70.)*
+3. ***App-password first; xoauth2 is operator-provided.** The default
+   credential is a password / app-password. `xoauth2` is supported but
+   requires the operator to register an OAuth application carrying the
+   restricted IMAP scope; it does NOT fall out of herold's login-OIDC
+   plumbing, which is RP-only for login (NG11). (Rewrites
+   REQ-IMAP-IMP-03 / -52.)*
+4. ***Full live-mirror is the single target.** IDLE + second connection
+   + the 10 s latency target + MOVE/EXPUNGE/delete write-back are in
+   scope from the first cut, not phased. (REQ-IMAP-IMP-20..26 and the
+   write-back section stand.)*
+5. ***Upstream-authoritative conflicts.** Write-back is best-effort and
+   the upstream is the source of truth. On a genuine both-sides-changed
+   conflict the upstream value wins and the herold-side change is
+   overwritten on the next reconcile. No hybrid-logical-clock machinery.
+   (Supersedes the original REQ-IMAP-IMP-42's HLC borrow.)*
+6. ***User-chosen backfill horizon (accumulate).** The user picks how
+   far back the initial mirror reaches; mail older than the horizon is
+   never fetched. The horizon bounds only the initial backfill — once
+   mirrored, mail accumulates in herold forever (herold becomes the
+   daily-driver / archive). There is NO retention GC; this is the
+   explicit contrast with 18-partial-replica.md, whose `window_days` is
+   a rolling cache window. (New REQ-IMAP-IMP-15..19.)*
+
+*The "how" lives in architecture/12-imap-import.md.)*
+
 ## Scope
 
 A herold principal can configure one or more **upstream IMAP
 accounts**. A per-account worker maintains a long-lived authenticated
 IMAP connection, observes new-mail notifications via IDLE, fetches
-new messages, runs them through the herold inbound pipeline (spam,
-sieve, webhooks, attachment policy), and stores them in the
-principal's mailboxes. Flag changes the user makes in herold (mark
-read, star) propagate back upstream via IMAP STORE. Folder
-mappings are configurable per account.
+new messages **bounded by a user-chosen backfill horizon**, stores
+them **as-synced** (verbatim bytes) in the principal's mailboxes,
+and indexes them for full-text search. Flag changes the user makes in
+herold (mark read, star) propagate back upstream via IMAP STORE on a
+best-effort basis. Folder mappings are configurable per account.
+
+Mirrored messages do **not** re-run herold's inbound delivery
+pipeline (decision 1): spam classification, Sieve, attachment policy,
+webhooks, and import-time external-image internalization are all
+skipped. The bytes that arrive over IMAP are the bytes that land in
+the store, so the upstream's DKIM signatures and `Authentication-Results`
+stay intact and verifiable. LLM categorisation runs only for
+newly-arrived mail mapped into INBOX, mirroring the live delivery
+path's own INBOX-only / not-spam gating.
 
 Out of scope:
 
@@ -36,6 +90,10 @@ Out of scope:
 - Sending mail through the upstream's submission server. If the
   user wants outbound to go via the upstream, they configure that
   separately via the existing identity / smarthost path.
+- Retention / aging-out of mirrored mail. The backfill horizon bounds
+  the *initial* reach only; herold keeps everything it has mirrored.
+  Rolling-window retention with GC is 18-partial-replica.md's job, not
+  this worker's.
 
 ## Motivating user flows
 
@@ -43,7 +101,9 @@ Out of scope:
    filtering, herold becomes the daily MUA. Folders mapped:
    gmail INBOX → herold INBOX, gmail All Mail → herold All Mail,
    etc. Gmail Takeout (file 16-import.md) gets the historical
-   archive in once; live IMAP import takes over from there.
+   archive in once; live IMAP import takes over from there. The user
+   typically sets a short backfill horizon (e.g. 90 days) because the
+   deep archive came in via Takeout.
 2. **Multi-provider consolidation.** A user has work + personal +
    alias accounts. Each is an upstream IMAP source; all mirror into
    one herold principal's mailboxes. Sent mail still goes via
@@ -51,19 +111,37 @@ Out of scope:
    one-way feeds for inbound and two-way for `\Seen`/`\Flagged`.
 3. **Archive-from-elsewhere.** A user's old hosted mail provider
    doesn't have a takeout export. They configure an upstream IMAP
-   pointing at it; herold mirrors the entire account on first
-   connect, then keeps following.
+   pointing at it and choose a backfill horizon (often `all`); herold
+   mirrors the account from the horizon forward on first connect, then
+   keeps following. A large account is never mirrored in full by
+   accident — the horizon is a required choice at account creation
+   (REQ-IMAP-IMP-15).
 
 ## Configuration
 
 | ID | Requirement |
 |----|-------------|
 | REQ-IMAP-IMP-01 | Each principal MAY configure zero-or-more upstream IMAP accounts. The configuration is stored per-principal in the metadata store (not in `system.toml`); a JMAP `IMAPImport/set` surface mutates it. |
-| REQ-IMAP-IMP-02 | Each upstream-account record carries: `id`, `account_name` (operator-visible label), `host`, `port`, `tls_mode` (`starttls` / `implicit` / `none`), `username`, `auth_method` (`plain`, `login`, `app_password`, `xoauth2`), `auth_secret_ref` (secret reference per the operator's secrets config), `state` (`enabled` / `disabled` / `errored`), `last_success_at`, `last_error`. |
-| REQ-IMAP-IMP-03 | `auth_method = xoauth2` is the OAuth path used by gmail and microsoft. The OAuth token is refreshed via the operator's existing OIDC provider plumbing (REQ-OIDC-*); the upstream-account record stores a refresh-token reference, the worker exchanges it for an access token before each connect. |
-| REQ-IMAP-IMP-04 | `auth_method = app_password` and `auth_method = plain` both write a static credential to the secrets store; the difference is the upstream's intended audience. App-passwords are the apple / fastmail flow; plain is the cpanel / bare-IMAP flow. The IMAP layer treats them identically. |
-| REQ-IMAP-IMP-05 | Operators MAY block plain-text auth with an explicit `[imap_import] allow_plaintext = false` config knob (default true so existing setups keep working; future iterations should flip the default). |
+| REQ-IMAP-IMP-02 | Each upstream-account record carries non-secret fields stored plaintext — `id`, `account_name` (operator-visible label), `host`, `port`, `tls_mode` (`starttls` / `implicit`), `username`, `auth_method` (`password`, `app_password`, `xoauth2`), `backfill_horizon` (REQ-IMAP-IMP-15), `state` (`enabled` / `disabled` / `errored`), `last_success_at`, `last_error` — plus exactly one **sealed** credential column (`credential_ct`) holding the password / app-password / OAuth-refresh-token encrypted with the `internal/secrets` data key. The non-secret/secret split mirrors `store.IdentitySubmission` (plaintext config fields + `*CT` sealed fields). (Decision 2.) |
+| REQ-IMAP-IMP-03 | `auth_method = xoauth2` is the OAuth path for gmail / microsoft. It requires the **operator** to have registered an OAuth application that carries the restricted IMAP scope (e.g. Google's `https://mail.google.com/`, Microsoft's `https://outlook.office.com/IMAP.AccessAsUser.All`). This is a different grant from herold's login-OIDC federation (which is RP-for-login only, NG11) and is configured separately under `[imap_import.oauth.<provider>]` in `system.toml`. The per-account record stores a sealed refresh-token (`credential_ct`); the worker exchanges it for an access token before each connect and re-seals a rotated refresh token if the provider issues one. (Decision 3.) |
+| REQ-IMAP-IMP-04 | `auth_method = app_password` and `auth_method = password` both store a static credential, sealed in `credential_ct`. The difference is the upstream's intended audience (app-passwords are the apple / fastmail / gmail-with-2FA flow; `password` is the cpanel / bare-IMAP flow). The IMAP layer treats them identically. Self-service users enter the credential through the suite; it is sealed before it touches the DB (REQ-IMAP-IMP-70). (Decision 2.) |
+| REQ-IMAP-IMP-05 | Operators MAY block plain-password auth with an explicit `[imap_import] allow_password = false` config knob (default true so existing setups keep working; future iterations should flip the default). `app_password` and `xoauth2` are unaffected by this knob. |
 | REQ-IMAP-IMP-06 | The connection MUST use TLS. `tls_mode = none` is rejected at config-time. STARTTLS that fails to negotiate is treated as a connection error. (Operators with internal-only legacy IMAP servers can VPN to them.) |
+
+## Backfill horizon
+
+*(Decision 6. The horizon bounds how far back the **initial** mirror
+reaches; it is not a retention window. Contrast 18-partial-replica.md
+REQ-REPL-10, whose `window_days` continuously evicts old mail — here
+nothing is ever evicted.)*
+
+| ID | Requirement |
+|----|-------------|
+| REQ-IMAP-IMP-15 | Every upstream-account record carries a `backfill_horizon`. It is a **required choice at account creation** — there is no implicit default that would mirror an entire large account by accident. The suite offers presets `30d` / `90d` / `1y` / `all` / `custom date`. |
+| REQ-IMAP-IMP-16 | A relative horizon (`30d`, `90d`, `1y`) is **resolved to an absolute floor date at enable-time** and stored as that absolute date, so the horizon does not silently drift as time passes. `all` is stored as a sentinel meaning "no floor". |
+| REQ-IMAP-IMP-17 | On initial sync of each mapped folder the worker issues `UID SEARCH SINCE <floor-date>` (INTERNALDATE-based) and fetches only the resulting UID set. The lowest fetched UID is recorded as the folder cursor's **low-water mark**; UIDs below it are never re-examined on subsequent passes. (The high-water mark — UIDNEXT / last-seen-UID — governs forward sync as usual; see REQ-IMAP-IMP-34.) |
+| REQ-IMAP-IMP-18 | The horizon bounds only the historical backfill. **New** mail (UID ≥ the high-water mark) is always mirrored regardless of the horizon. Mirrored mail is retained indefinitely; there is no aging-out, eviction, or GC pass over imported messages. |
+| REQ-IMAP-IMP-19 | Lowering the horizon (moving the floor date earlier) is allowed and triggers a **bounded re-scan**: the worker re-issues `UID SEARCH SINCE <new-floor>` and fetches the UID range between the new floor and the existing low-water mark, then lowers the low-water mark. Raising the horizon (moving the floor later) is a no-op — already-mirrored older mail is kept (REQ-IMAP-IMP-18). |
 
 ## Folder mapping
 
@@ -91,51 +169,55 @@ Out of scope:
 
 | ID | Requirement |
 |----|-------------|
-| REQ-IMAP-IMP-30 | Each upstream message is persisted in herold with the canonical `Message-ID` header preserved. The worker dedupes against the principal's existing `env_message_id` index; a message that already exists in herold (via prior takeout, prior IMAP-import session, or any other source) is not duplicated. |
-| REQ-IMAP-IMP-31 | When a message is fetched from upstream, the bytes are passed through the **same** SMTP-inbound pipeline used for direct mail delivery: spam classification (REQ-FLOW-SPAM-*), Sieve (REQ-PROTO-50..53), inbound attachment policy (REQ-FLOW-ATTPOL-01), webhook dispatch (REQ-HOOK-02), DKIM verification, external-image internalization (REQ-EXTIMG-02). The fetched message is stored exactly as if it had arrived over SMTP. |
-| REQ-IMAP-IMP-32 | The `Received:` header chain is preserved verbatim from upstream, plus the worker prepends one additional `Received: from <upstream-host> via imap-import; <date>` so the audit trail records the IMAP-import path. |
-| REQ-IMAP-IMP-33 | Authentication-Results: the upstream's verdict is preserved. The worker does NOT re-run DKIM verification on top of the upstream's verdict — DKIM signatures over the body are likely still valid (we have not modified the body) but the upstream-recorded result is the authoritative one for this hop. (Note: if the upstream rewrote the body, the signature would be invalid; see REQ-EXTIMG-46 for the parallel discussion of body modification stripping signatures.) |
-| REQ-IMAP-IMP-34 | UID continuity: the worker stores the upstream UID per message in a `imapimport_message_state(account_id, upstream_uid, herold_message_id, herold_modseq)` table so flag-write-back can address upstream messages. The herold-side message_id is independent and stable across upstream UID changes (e.g. UIDVALIDITY rollover). |
-| REQ-IMAP-IMP-35 | UIDVALIDITY rollover on an upstream mailbox triggers a forced re-sync of that mailbox: previous UID mapping is invalidated; the worker re-fetches the entire mailbox and reconciles by Message-ID. |
+| REQ-IMAP-IMP-30 | Each upstream message is persisted in herold with the canonical `Message-ID` header preserved. The worker dedupes against the principal's existing `env_message_id` index; a message that already exists in herold (via prior takeout, prior IMAP-import session, dual SMTP+IMAP delivery during migration, or any other source) is not duplicated. Messages with no usable `Message-ID` fall back to a body content-hash (`blob_hash`) for dedup, matching the importer. |
+| REQ-IMAP-IMP-31 | **(Decision 1 — supersedes the original "run the full inbound pipeline" wording.)** A fetched message is stored **as-synced**: the exact upstream bytes are written to the blob store and a `messages` row is inserted into the mapped mailbox via the same low-level store append that IMAP APPEND uses (`InsertMessage`). The mirror does **not** invoke spam classification, Sieve, attachment policy, mail-arrival webhooks, or import-time external-image internalization. FTS indexing happens automatically off the store change feed (as for any inserted message). LLM categorisation (`$category-*`) runs only for messages mapped into INBOX and only on newly-arrived mail, mirroring the live path's INBOX-only / not-classified-spam gating — it is NOT run across the historical backfill. External-image internalization still occurs on demand at view time via the existing on-demand path; it is not forced at import so the stored bytes stay byte-identical to upstream. |
+| REQ-IMAP-IMP-32 | The `Received:` header chain is preserved verbatim from upstream. The worker does NOT prepend a synthetic `Received:` header, because rewriting the message would change the stored bytes and could invalidate the upstream's DKIM signature (decision 1 requires byte-fidelity). The IMAP-import provenance is recorded out-of-band in the per-message import-state row (account_id, upstream folder, upstream UID) and surfaced in the message-inspect view, not by mutating the message. |
+| REQ-IMAP-IMP-33 | Authentication-Results: the upstream's verdict is preserved verbatim. The worker does NOT re-run DKIM verification on top of the upstream's verdict — and because the body is stored unmodified, the upstream's signatures remain independently verifiable by any client that wants to check them. |
+| REQ-IMAP-IMP-34 | UID continuity: the worker stores the upstream UID per message in an `imapimport_message_state(account_id, upstream_folder, upstream_uid, herold_message_id, herold_mailbox_id, last_synced_flags)` table so flag-write-back can address upstream messages. The herold-side message_id is independent and stable across upstream UID changes (e.g. UIDVALIDITY rollover). Per-folder cursors (UIDVALIDITY, UIDNEXT, low-water mark, high-water mark, HIGHESTMODSEQ) live in `imapimport_folder_cursor`. |
+| REQ-IMAP-IMP-35 | UIDVALIDITY rollover on an upstream mailbox triggers a forced re-sync of that mailbox: previous UID mapping is invalidated; the worker re-fetches the mailbox (from the backfill-horizon floor, not from UID 1 — REQ-IMAP-IMP-17 still bounds it) and reconciles by Message-ID against already-stored messages so no duplicates are created. |
 
-## Bidirectional flag sync
+## Bidirectional flag sync (upstream-authoritative)
+
+*(Decision 5. Write-back is best-effort; the upstream is the source of
+truth. There is no hybrid-logical-clock; the original REQ-IMAP-IMP-42
+HLC borrow from 18-partial-replica.md is withdrawn.)*
 
 | ID | Requirement |
 |----|-------------|
-| REQ-IMAP-IMP-40 | The worker syncs `\Seen` and `\Flagged` bidirectionally. A herold-side `MessageFlagSeen` change replicates to the upstream message via IMAP STORE; an upstream STORE notification replicates back to herold. |
+| REQ-IMAP-IMP-40 | The worker syncs `\Seen` and `\Flagged`. A herold-side flag change (observed on the store change feed as an `EntityKindEmail` update) is pushed to the upstream message via IMAP STORE promptly and best-effort. An upstream flag change (observed via IDLE / CONDSTORE / poll) is applied to the herold-side message. |
 | REQ-IMAP-IMP-41 | Custom keywords (`$category-foo`, `$snoozed`, etc.) are stored locally on herold only. They are NOT replicated upstream. (Some upstreams accept arbitrary keywords; gmail's labels are something else; the safe default is "don't write custom keywords upstream.") |
-| REQ-IMAP-IMP-42 | Conflict resolution: bidirectional flag sync uses a "last-writer-wins by HLC" approach mirroring REQ-REPL-40 (see 18-partial-replica.md). When the user toggles a flag in herold while the upstream simultaneously toggles via another client, the later-HLC value wins. |
-| REQ-IMAP-IMP-43 | Move semantics: when the user moves a message between mailboxes in herold, the change replicates to upstream as an IMAP MOVE (or COPY+EXPUNGE on servers without MOVE — RFC 6851). |
-| REQ-IMAP-IMP-44 | Delete semantics: a herold-side `Email/set destroy` removes the message from herold AND issues an IMAP STORE +FLAGS \Deleted + EXPUNGE upstream. Operators can opt into a "delete-locally-only" mode (`delete_propagates = false`) for users who use herold to declutter without removing upstream history. |
+| REQ-IMAP-IMP-42 | **(Decision 5 — supersedes the prior HLC wording.)** Conflict resolution is **upstream-authoritative**. The worker keeps `last_synced_flags` per message (REQ-IMAP-IMP-34). Each reconcile compares three states: herold-now, upstream-now, last-synced. If only herold changed, push to upstream. If only upstream changed, apply to herold. If **both** changed since the last sync (a genuine conflict), the **upstream value wins** and the herold-side flag is overwritten to match; `last_synced_flags` is then set to the upstream value. A best-effort herold→upstream STORE that fails (connection drop, rate limit) leaves `last_synced_flags` unchanged so the push is retried on the next reconcile. |
+| REQ-IMAP-IMP-43 | Move semantics: when the user moves a message between mailboxes in herold, the change replicates to upstream as an IMAP MOVE (or COPY+EXPUNGE on servers without MOVE — RFC 6851), best-effort. On conflict (the message also moved upstream) the upstream location wins and herold's membership is reconciled to it on the next pass. |
+| REQ-IMAP-IMP-44 | Delete semantics: a herold-side `Email/set destroy` removes the message from herold AND issues a best-effort IMAP STORE +FLAGS `\Deleted` + EXPUNGE upstream. Operators / users can opt into a "delete-locally-only" mode (`delete_propagates = false`) for users who use herold to declutter without removing upstream history. Because the design is upstream-authoritative, a destroy whose upstream EXPUNGE failed to land will see the message re-mirrored on a later pass (it still exists upstream); this is the documented best-effort consequence, surfaced in the worker log. |
 | REQ-IMAP-IMP-45 | Snooze, reactions, and other herold-specific datatypes are local-only and never propagate upstream. |
 
 ## Operator surface
 
 | ID | Requirement |
 |----|-------------|
-| REQ-IMAP-IMP-60 | Per-principal admin REST: `GET /api/v1/principals/<id>/imap-imports`, `POST` to add, `DELETE` to remove. The body of an add lists every config field from REQ-IMAP-IMP-02 except secrets, which use the standard secret-reference syntax. |
-| REQ-IMAP-IMP-61 | The principal's own JMAP surface exposes `IMAPImport/get` and `IMAPImport/set` so a user-driven UI can manage upstream accounts. The capability advertises under `https://netzhansa.com/jmap/imap-import`. |
-| REQ-IMAP-IMP-62 | A `herold imapimport status` admin command summarises every active worker: account_id, principal, upstream host, last-fetch timestamp, messages-fetched-today, last-error. |
-| REQ-IMAP-IMP-63 | Per-account Prometheus metrics: `imapimport_messages_fetched_total{account}`, `imapimport_flags_propagated_total{account,direction}`, `imapimport_idle_seconds{account}` (gauge), `imapimport_fetch_duration_seconds{account}` (histogram), `imapimport_connection_errors_total{account,kind}`. |
+| REQ-IMAP-IMP-60 | Per-principal admin REST: `GET /api/v1/principals/<id>/imap-imports`, `POST` to add, `PATCH` to edit, `DELETE` to remove. The body of an add lists every non-secret config field from REQ-IMAP-IMP-02 plus the credential as a write-only field that is sealed server-side before persistence (never returned on read). |
+| REQ-IMAP-IMP-61 | The principal's own JMAP surface exposes `IMAPImport/get` and `IMAPImport/set` so a user-driven UI can manage upstream accounts, including entering the credential (write-only; sealed server-side). The capability advertises under `https://netzhansa.com/jmap/imap-import`. |
+| REQ-IMAP-IMP-62 | A `herold imapimport status` admin command summarises every active worker: account_id, principal, upstream host, backfill floor, last-fetch timestamp, messages-fetched-today, low/high-water marks per folder, last-error. |
+| REQ-IMAP-IMP-63 | Per-account Prometheus metrics: `herold_imapimport_messages_fetched_total{account}`, `herold_imapimport_flags_propagated_total{account,direction}`, `herold_imapimport_conflicts_total{account,kind}`, `herold_imapimport_idle_seconds{account}` (gauge), `herold_imapimport_fetch_duration_seconds{account}` (histogram), `herold_imapimport_connection_errors_total{account,kind}`, `herold_imapimport_backfill_remaining{account}` (gauge, UIDs left below the high-water mark). |
 | REQ-IMAP-IMP-64 | Logs name `account_id` and `principal_id` on every line; activity = `imap-import`. |
 
 ## Security and operational concerns
 
 | ID | Requirement |
 |----|-------------|
-| REQ-IMAP-IMP-70 | Upstream credentials live in the operator's secrets store via secret reference (`$IMAP_GMAIL_OAUTH`, `file:/run/secrets/...`). Inline credentials are rejected. |
+| REQ-IMAP-IMP-70 | **(Decision 2.)** Upstream credentials are sealed at rest with the `internal/secrets` data key (`[server.secrets].data_key_ref`) using `secrets.Seal`, stored only in the `credential_ct` column, and validated to carry the `v1:` ciphertext prefix before insert (mirroring `ValidateIdentitySubmissionCTs`). Plaintext credentials are rejected at the store layer. The worker calls `secrets.Open` to obtain the live credential immediately before connect and never holds it longer than a connection attempt. Self-service users may enter their own credentials (through the suite / JMAP `IMAPImport/set`); the credential is sealed server-side and never echoed back on read. Operators who prefer external secret material MAY instead point the account at a secret-reference resolved at connect time, but the default and self-service path is the sealed column. |
 | REQ-IMAP-IMP-71 | The worker MUST NOT log credentials or auth headers. The IMAP wire trace (when enabled at debug level) redacts AUTHENTICATE / LOGIN payloads. |
-| REQ-IMAP-IMP-72 | The worker MUST NOT trust upstream-supplied bytes for SSRF-shaped lookups. (External-image internalization continues to apply per REQ-EXTIMG-02; the SSRF guard there is the relevant fence.) |
+| REQ-IMAP-IMP-72 | The worker MUST NOT trust upstream-supplied bytes for SSRF-shaped lookups. (On-demand external-image internalization continues to apply per REQ-EXTIMG-02 when the user views a message; the SSRF guard there is the relevant fence. Import itself fetches no remote content beyond the IMAP connection.) |
 | REQ-IMAP-IMP-73 | Upstream rate limits: when an upstream returns a "too-many-connections" or "rate-limited" error, the worker drops to a single connection and increases its backoff exponent. Repeated rate-limiting flips the account to `errored` and surfaces the last_error to the operator. |
-| REQ-IMAP-IMP-74 | The worker survives a herold restart cleanly: state is persisted (cursors, account state); on boot the worker pool reconnects every `enabled` account, falling back to forced re-sync if its persisted UIDVALIDITY no longer matches the upstream's. |
+| REQ-IMAP-IMP-74 | The worker survives a herold restart cleanly: cursors, account state, and `last_synced_flags` are persisted; on boot the worker pool reconnects every `enabled` account, falling back to forced re-sync (bounded by the horizon floor) if its persisted UIDVALIDITY no longer matches the upstream's. |
 
 ## Gmail specifics
 
 | ID | Requirement |
 |----|-------------|
-| REQ-IMAP-IMP-50 | Gmail's `[Gmail]/All Mail` contains every message the account ever received, with `X-Gmail-Labels:` indicating the user's chosen labels. The worker treats All Mail as the canonical source of message bytes; visited per-label folders (`Inbox`, `Important`, etc.) are skipped on the assumption every message there is also in All Mail. This avoids fetching the same body N times for messages tagged into many labels. |
+| REQ-IMAP-IMP-50 | Gmail's `[Gmail]/All Mail` contains every message the account ever received, with `X-Gmail-Labels:` indicating the user's chosen labels. The worker treats All Mail as the canonical source of message bytes; visited per-label folders (`Inbox`, `Important`, etc.) are skipped on the assumption every message there is also in All Mail. This avoids fetching the same body N times for messages tagged into many labels. The backfill horizon (REQ-IMAP-IMP-17) applies to All Mail via `UID SEARCH SINCE`. |
 | REQ-IMAP-IMP-51 | Mailbox mapping for gmail uses the same locale-aware label table as the takeout importer (REQ-IMPORT-10..14). Gmail's UI labels are localised; the IMAP folder names are NOT (gmail always serves IMAP folder names in English: `Inbox`, `Sent Mail`, etc.). The worker does not need locale detection for the IMAP path; the labels inside `X-Gmail-Labels:` are localised so the takeout label-translation table applies there. |
-| REQ-IMAP-IMP-52 | `auth_method = xoauth2` MUST be used for gmail. App passwords stopped working in 2024. The OAuth refresh-token storage uses the operator's existing OIDC plumbing. |
+| REQ-IMAP-IMP-52 | **(Decision 3.)** For gmail, `auth_method = app_password` remains viable (app-passwords still work for accounts with 2-step verification; only the legacy "less secure app access" toggle was removed). `auth_method = xoauth2` is the cleaner long-term path but requires the operator to register a Google Cloud OAuth application with the restricted `https://mail.google.com/` scope and pass Google's verification (CASA security assessment) — a real operator burden, configured under `[imap_import.oauth.google]`. herold does NOT obtain this scope from its login-OIDC federation (NG11). The suite surfaces both options with the operator burden documented. |
 
 ## Out of scope (deferred / future iterations)
 
@@ -153,3 +235,11 @@ Out of scope:
 - **REQ-IMAP-IMP-84** — A "pause for the night" scheduling layer
   for operators who want to reduce upstream-API load during sleep
   hours.
+- **REQ-IMAP-IMP-85** — Rolling-retention mode (age mirrored mail out
+  of herold past a window). Deliberately NOT this feature; see
+  18-partial-replica.md for the edge/home cache-window design if a
+  user actually wants eviction.
+- **REQ-IMAP-IMP-86** — Re-running Sieve over imported mail as an
+  opt-in per account. Decision 1 stores as-synced; a future iteration
+  could offer "run my Sieve over newly-imported INBOX mail" once the
+  fileinto-vs-mapping reconciliation is designed.
