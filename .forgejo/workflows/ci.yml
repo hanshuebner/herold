@@ -595,7 +595,12 @@ jobs:
   # pruned.  A scheduled Forgejo-side retention sweep is a follow-up task.
   deploy:
     name: deploy (outpost.netzhansa.com)
-    runs-on: [self-hosted, herold, amd64]
+    # The release-pull deploy runs on any standard orchestrator-provisioned
+    # runner (it publishes a release and SSH-triggers `activate` on outpost
+    # -- it does not run on outpost itself). The `herold` label advertised by
+    # no runner left this job perpetually unschedulable and cancelled; use the
+    # same `netzhansa` pool every other job (and html-scrabble's deploy) uses.
+    runs-on: [self-hosted, netzhansa, amd64]
     needs: [test, binaries]
     # Only deploy on pushes to the default branch, never on PRs or tags.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
