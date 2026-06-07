@@ -27,6 +27,31 @@ How files attach to outgoing messages, how received attachments render and downl
 | REQ-ATT-25 | The suite fetches attachment and inline-image content via `Blob/get` or `GET /jmap/download/<account-id>/<blob-id>/<filename>` per RFC 8620 §6.2. Authentication header is the bearer token. |
 | REQ-ATT-26 | Each rendered inline image is independently downloadable with a single action: a small download button overlays the image on hover and on keyboard focus, the right-click context menu offers "Save image as…", and the image is also listed (with its filename and size) in an "Inline images" sub-section of the attachment chip strip below the body, with the same chip-level download button as attachments. The download path uses the blobId per REQ-ATT-25. (G16.) |
 
+## Large or unsafe attachments: offload to a share link
+
+Server contract: `../../server/requirements/25-attachment-shares.md` (`REQ-SHARE-*`). When the `https://netzhansa.com/jmap/file-shares` capability is absent from the session descriptor, none of REQ-ATT-60..73 apply and the affordance is hidden; compose behaves exactly as REQ-ATT-01..08.
+
+| ID | Requirement |
+|----|-------------|
+| REQ-ATT-60 | An added attachment is a candidate for **offload** — uploading it to herold storage and replacing it in the message with a download link — when either (a) its size is at or above the offload threshold (`server.attachment_shares` surfaced via the file-shares capability; suite default 25 MB), or (b) its filename matches the unsafe-type list (the REQ-ATT-30 extensions plus archive types `.zip .rar .7z .tar .gz .tgz .dmg .iso .img`). Inline images are never offload candidates. |
+| REQ-ATT-61 | **Offer below the hard limit, force above it.** When a candidate would still fit under the message's hard submission size limit (`maxSizeUpload`), the suite offers a choice via a confirm dialog ("`name` is `size`. Send it as a download link instead of attaching?" — "Upload as link" / "Attach anyway"). When the candidate is at or above the hard limit, plain attachment is disabled and offload is the only way to include the file; the dialog drops the "Attach anyway" option and explains why. An unsafe-type candidate under the size limit defaults the dialog to "Upload as link" but keeps "Attach anyway" enabled. |
+| REQ-ATT-62 | Offload reuses the already-uploaded blob (REQ-ATT-02) — it does NOT re-upload. On the user choosing "Upload as link", the suite issues `FileShare/set create { blobId, name, type, expiresIn, maxDownloads?, password? }` against the blob already obtained for that file, then removes the file from the MIME attachment set. There is no second upload and no progress bar beyond the original. |
+| REQ-ATT-63 | On a successful `FileShare/set create`, the suite inserts the share into the message body **in both alternatives**: a styled link block into the `text/html` body (filename, human size, type icon, expiry date, and the `url` as the anchor) and a plain-text line (`name (size) — url`) into the `text/plain` alternative. The block is inserted at the cursor, or appended above the signature when compose is not focused in the body. The inserted link is ordinary body content — it carries no special markup and survives autosave like any other edit (REQ-DFT-03). |
+| REQ-ATT-64 | Offloaded files appear in a dedicated **"Shared links"** strip, visually distinct from the attachment chip strip, each row showing: filename, size, type icon, expiry ("expires in 30 days"), an optional download-cap badge, a lock icon when password-protected, and a remove control. Removing a row issues `FileShare/set destroy` and deletes the corresponding link block from both body alternatives. |
+| REQ-ATT-65 | Before creating the share the suite MAY offer, behind a small "Options" disclosure on the offer dialog, an expiry selector (presets within `max_ttl`; default `default_ttl`), an optional download cap, and an optional password. When a password is set, the suite shows the password once with a copy affordance and a reminder that it must be shared out-of-band; the password is write-only and cannot be retrieved later (REQ-SHARE-43). |
+| REQ-ATT-66 | Shares are created in the `pending` state (REQ-SHARE-20). On a successful send (after `EmailSubmission/set`), the suite batches `FileShare/set update { <id>: { state: "active" } }` for every share whose link is in the message. If the user discards the compose, the suite issues `FileShare/set destroy` for every `pending` share it created; any it misses expire server-side within `pending_ttl` and never become durable orphans. |
+| REQ-ATT-67 | If `FileShare/set create` fails (over quota, too many shares, network), the dialog surfaces the server error ("You're out of share storage — N MB over") and the file stays a normal attachment (or, when offload was forced by REQ-ATT-61, the file cannot be included and the chip shows the blocking error). The suite never silently drops the file. |
+| REQ-ATT-68 | Replying to or forwarding a message whose body contains share links treats those links as ordinary body text — the suite does not re-offload, re-host, or rewrite them. A forwarded share link points at the original sender's share and breaks when that share expires; this is expected and not the suite's concern. |
+
+### Managing your shares
+
+| ID | Requirement |
+|----|-------------|
+| REQ-ATT-70 | A "Shared files" view (reachable from Settings, `20-settings.md`) lists the principal's shares via `FileShare/query` + `FileShare/get`, showing filename, size, created date, expiry, download count (and cap, if any), lock state, and state (`active` / `revoked`). Sortable by created date and expiry. |
+| REQ-ATT-71 | Each active share offers **Revoke** (`FileShare/set update` → revoked, or `destroy`), **Copy link**, and shortening expiry. Revoking takes effect immediately server-side (REQ-SHARE-22); the suite warns that any already-sent message linking the share will show a dead link. |
+| REQ-ATT-72 | The view surfaces share-quota usage ("3.1 GB of 5 GB used") from the file-shares capability so the user understands why a create might be refused (REQ-ATT-67). |
+| REQ-ATT-73 | Download counts are not live: the view reflects `download_count` as of its last `FileShare/get` and refreshes on open / manual refresh (REQ-SHARE-44). The suite does not promise real-time download notifications. |
+
 ## Suspicious attachments
 
 | ID | Requirement |
@@ -53,7 +78,7 @@ How files attach to outgoing messages, how received attachments render and downl
 
 ## Out of scope
 
-- Drive-style cloud-attachment links (`Send a Drive link instead of the file`). This is a Drive integration; Drive is out (`../00-scope.md`).
+- Third-party Drive/Dropbox-style cloud-attachment links (`Send a Drive link instead of the file`). Integrating an external cloud provider is out (`../00-scope.md`). herold's own storage-backed share links are in scope and specified above (REQ-ATT-60..73, `../../server/requirements/25-attachment-shares.md`) — this exclusion is only about third-party Drive integration.
 - Server-side virus scanning. That's herold's job; the suite surfaces the result if herold sets a per-attachment flag (TBD on the server contract — file in `../notes/server-contract.md` if/when herold ships this).
 - Encrypted attachments via PGP/MIME, S/MIME. NG5.
 - Editing an attachment in-place (rich-text or office formats). Out forever.
