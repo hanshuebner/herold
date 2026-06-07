@@ -59,6 +59,7 @@ import (
 	jmapmail "github.com/hanshuebner/herold/internal/protojmap/mail"
 	jmapcatsettings "github.com/hanshuebner/herold/internal/protojmap/mail/categorysettings"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/emailsubmission"
+	jmapfileshare "github.com/hanshuebner/herold/internal/protojmap/mail/fileshare"
 	jmapidentity "github.com/hanshuebner/herold/internal/protojmap/mail/identity"
 	jmapsearchsnippet "github.com/hanshuebner/herold/internal/protojmap/mail/searchsnippet"
 	jmapseenaddress "github.com/hanshuebner/herold/internal/protojmap/mail/seenaddress"
@@ -69,6 +70,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protologin"
 	"github.com/hanshuebner/herold/internal/protomanagesieve"
 	"github.com/hanshuebner/herold/internal/protosend"
+	"github.com/hanshuebner/herold/internal/protoshare"
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/protowebhook"
 	"github.com/hanshuebner/herold/internal/queue"
@@ -634,6 +636,30 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	if err != nil {
 		return fmt.Errorf("admin: webhook signing key: %w", err)
 	}
+
+	// Attachment-share unlock-cookie signing key (REQ-SHARE-30). Persisted
+	// under a distinct path from the webhook key so both survive independent
+	// rotation. The file is only created / loaded when attachment_shares is
+	// active; the zero-value key is never passed to protoshare.New.
+	var shareSigningKey []byte
+	sharesCfg := store.FileSharesConfig{
+		DefaultTTL:             cfg.Server.AttachmentShares.DefaultTTL.AsDuration(),
+		MaxTTL:                 cfg.Server.AttachmentShares.MaxTTL.AsDuration(),
+		PendingTTL:             cfg.Server.AttachmentShares.PendingTTL.AsDuration(),
+		RevokedGrace:           cfg.Server.AttachmentShares.RevokedGrace.AsDuration(),
+		MaxSharesPerPrincipal:  int64(cfg.Server.AttachmentShares.MaxSharesPerPrincipal),
+		ShareQuotaPerPrincipal: cfg.Server.AttachmentShares.ShareQuotaPerPrincipal.AsInt64(),
+	}
+	if cfg.Server.AttachmentShares.AttachmentSharesActive() {
+		shareSigningKey, err = loadOrGenerateWebhookSigningKey(
+			filepath.Join(cfg.Server.DataDir, "secrets", "share", "sign.key"),
+			logger,
+		)
+		if err != nil {
+			return fmt.Errorf("admin: share signing key: %w", err)
+		}
+	}
+
 	// Build the public base URL for fetch URLs (REQ-HOOK-30..31).
 	// The fetch handler is mounted on the public listener; the URL
 	// must match the externally-reachable address of that listener.
@@ -773,7 +799,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// ReloadConfig updates propagate to in-flight JMAP calls.
 	sharedCfg := new(atomic.Pointer[sysconfig.Config])
 	sharedCfg.Store(cfg)
-	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer, smtpServer, hookSigningKey, health, sieveInterp, prebuiltExtSubmitter, clientEmitter, telemetryGate)
+	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer, smtpServer, hookSigningKey, shareSigningKey, sharesCfg, health, sieveInterp, prebuiltExtSubmitter, clientEmitter, telemetryGate)
 	if err != nil {
 		return err
 	}
@@ -1084,6 +1110,45 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		}
 		return nil
 	})
+
+	// Attachment-share sweeper (REQ-SHARE-23). Deletes pending shares
+	// older than pending_ttl, active shares whose expires_at has passed,
+	// and revoked shares whose revoked_grace window has closed. The
+	// sweeper runs on the same 60-second cadence as other retention
+	// workers; shares expire on minute+ scales so this is plenty
+	// fine-grained. Only started when attachment_shares is active.
+	if cfg.Server.AttachmentShares.AttachmentSharesActive() {
+		shareSweeperCfg := sharesCfg // capture for the goroutine closure
+		shareLogger := logger.With("subsystem", "fileshare-sweeper")
+		g.Go(func() error {
+			ticker := time.NewTicker(60 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-gctx.Done():
+					return nil
+				case <-ticker.C:
+					stats, serr := st.Meta().SweepFileShares(gctx, clk.Now(), shareSweeperCfg)
+					if serr != nil {
+						if errors.Is(serr, context.Canceled) {
+							return nil
+						}
+						shareLogger.LogAttrs(context.Background(), slog.LevelWarn,
+							"fileshare sweeper: SweepFileShares",
+							slog.String("err", serr.Error()))
+						continue
+					}
+					if stats.DeletedPending > 0 || stats.DeletedExpired > 0 || stats.DeletedRevoked > 0 {
+						shareLogger.LogAttrs(context.Background(), slog.LevelDebug,
+							"fileshare sweeper: swept",
+							slog.Int64("deleted_pending", stats.DeletedPending),
+							slog.Int64("deleted_expired", stats.DeletedExpired),
+							slog.Int64("deleted_revoked", stats.DeletedRevoked))
+					}
+				}
+			}
+		})
+	}
 
 	// JMAP clientlog livetail sweeper (REQ-OPS-211). Clears expired
 	// clientlog_livetail_until_us column values every 60 s. Bounded by
@@ -2148,6 +2213,8 @@ func composeAdminAndUI(
 	adminServer *protoadmin.Server,
 	smtpSrv *protosmtp.Server,
 	webhookSigningKey []byte,
+	shareSigningKey []byte,
+	sharesCfg store.FileSharesConfig,
 	health *observe.Health,
 	sieveInterp *sieve.Interpreter,
 	extSubmitter *extsubmit.Submitter,
@@ -2639,6 +2706,21 @@ func composeAdminAndUI(
 			slog.Int("max_filters", cfg.Server.TaggedAddresses.MaxFiltersPerPrincipal),
 			slog.Int("max_dismissals", cfg.Server.TaggedAddresses.MaxDismissalsPerPrincipal))
 	}
+	// Attachment shares (REQ-SHARE-40). The capability is only advertised
+	// when attachment_shares is fully active (enabled=true AND
+	// public_base_url is set). A SIGHUP that changes the flag does not
+	// retract an already-issued session capability; the operator must
+	// restart to remove it. shareSigningKey is non-nil exactly when
+	// AttachmentSharesActive() is true (gated at boot by StartServer).
+	if cfg.Server.AttachmentShares.AttachmentSharesActive() {
+		jmapfileshare.Register(jmapSrv.Registry(), st,
+			logger.With("subsystem", "jmap-fileshare"), clk,
+			sharesCfg,
+			cfg.Server.AttachmentShares.PublicBaseURL)
+		logger.Info("attachment-shares enabled",
+			slog.String("subsystem", "jmap-fileshare"),
+			slog.String("public_base_url", cfg.Server.AttachmentShares.PublicBaseURL))
+	}
 	// SeenAddress (REQ-MAIL-11e..m): recipient autocomplete history, exposed
 	// under urn:ietf:params:jmap:mail (no new capability URI needed).
 	jmapseenaddress.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-seenaddress"), clk)
@@ -2796,6 +2878,22 @@ func composeAdminAndUI(
 	publicMux.Handle(protowebhook.FetchPath,
 		withPanicRecover(logger.With("subsystem", "protowebhook-fetch"),
 			"webhook.fetch", fetchSrv.FetchHandler()))
+
+	// Attachment-share public download routes (REQ-SHARE-30..32).
+	// Mounted only when attachment_shares is fully active. shareSigningKey
+	// is non-nil exactly when AttachmentSharesActive() is true.
+	if cfg.Server.AttachmentShares.AttachmentSharesActive() {
+		shareSrv := protoshare.NewFromStore(st, protoshare.Options{
+			SigningKey: shareSigningKey,
+			RateLimit: protoshare.RateLimitConfig{
+				RequestsPerWindow: cfg.Server.AttachmentShares.DownloadRequestsPerIPPerShare,
+				Window:            cfg.Server.AttachmentShares.DownloadRequestsWindow.AsDuration(),
+			},
+			Clock:  clk,
+			Logger: logger.With("subsystem", "protoshare"),
+		})
+		shareSrv.RegisterRoutes(publicMux)
+	}
 
 	// SES inbound webhook (REQ-HOOK-SES-01..07). Mounted on the public
 	// listener only when [hooks.ses_inbound.enabled] is true.
