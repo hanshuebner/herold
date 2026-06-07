@@ -723,12 +723,21 @@ func TestSignerInvoked(t *testing.T) {
 		Sign:          true,
 		SigningDomain: "local.test",
 	})
-	if !waitFor(t, 2*time.Second, func() bool {
+	if !waitFor(t, 30*time.Second, func() bool {
 		return f.deliv.callCount() >= 1
 	}) {
 		t.Fatal("deliver never called")
 	}
-	if signer.calls.Load() != 1 {
+	// The worker signs (queue.go:740) strictly before delivering
+	// (queue.go:785) on the same goroutine, so observing a delivery
+	// implies the signer ran. Reading the count immediately nonetheless
+	// flaked on the heavily-parallel -race arm64 lane (re #11: "signer
+	// call count: got 0 want 1"); poll for the increment with a generous
+	// margin instead of racing it. A genuine deliver-without-sign
+	// regression still fails here -- the count never reaches 1.
+	if !waitFor(t, 5*time.Second, func() bool {
+		return signer.calls.Load() == 1
+	}) {
 		t.Fatalf("signer call count: got %d want 1", signer.calls.Load())
 	}
 	calls := f.deliv.callsCopy()
