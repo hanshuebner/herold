@@ -568,47 +568,10 @@ func validateState(s string) error {
 
 // resolveHorizon converts the backfillHorizon value to an absolute floor
 // date pointer (nil = "all") using now as the reference time
-// (REQ-IMAP-IMP-15, -16).
-//
-// Accepted forms:
-//   - "all"              — no floor; returns nil.
-//   - "30d"/"90d"/"1y"  — relative; resolved to an absolute date.
-//   - "YYYY-MM-DD"       — absolute date; parsed and returned.
+// (REQ-IMAP-IMP-15, -16). Delegates to store.ParseBackfillHorizon so
+// the admin REST and JMAP paths share one implementation.
 func resolveHorizon(horizon string, now time.Time) (*time.Time, error) {
-	if horizon == "all" {
-		return nil, nil
-	}
-	// Relative forms.
-	if strings.HasSuffix(horizon, "d") || strings.HasSuffix(horizon, "y") {
-		var dur time.Duration
-		switch horizon {
-		case "30d":
-			dur = 30 * 24 * time.Hour
-		case "90d":
-			dur = 90 * 24 * time.Hour
-		case "180d":
-			dur = 180 * 24 * time.Hour
-		case "365d", "1y":
-			dur = 365 * 24 * time.Hour
-		case "2y":
-			dur = 2 * 365 * 24 * time.Hour
-		default:
-			// Unrecognised relative form; fall through to date parse.
-			goto parseAbsolute
-		}
-		t := now.Add(-dur).UTC().Truncate(24 * time.Hour)
-		return &t, nil
-	}
-parseAbsolute:
-	// Absolute date form "YYYY-MM-DD".
-	t, err := time.Parse("2006-01-02", horizon)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"backfillHorizon must be %q, a relative form (30d/90d/1y), or an absolute date (YYYY-MM-DD); got %q",
-			"all", horizon)
-	}
-	t = t.UTC()
-	return &t, nil
+	return store.ParseBackfillHorizon(horizon, now)
 }
 
 // immutableUpdateField returns the first property name that is not

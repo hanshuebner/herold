@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -234,4 +235,54 @@ func ValidateIMAPImportCredentialCT(ct []byte) error {
 			ErrInvalidArgument)
 	}
 	return nil
+}
+
+// ParseBackfillHorizon converts the backfillHorizon string to an absolute
+// floor date pointer (nil means "all" — no floor) using now as the
+// reference time for relative forms. It is the single authoritative
+// implementation used by both the admin REST handlers and the JMAP
+// IMAPImport/set path. (REQ-IMAP-IMP-15, -16.)
+//
+// Accepted forms:
+//   - "all"             — no floor; returns (nil, nil).
+//   - "30d"/"90d"/"1y"  — relative durations; resolved to an absolute
+//     truncated-to-midnight UTC date at now-duration.
+//   - "YYYY-MM-DD"      — absolute date; parsed and returned UTC.
+//
+// Any other value returns a descriptive error.
+func ParseBackfillHorizon(s string, now time.Time) (*time.Time, error) {
+	if s == "all" {
+		return nil, nil
+	}
+	// Relative forms: strings ending in "d" or "y".
+	if strings.HasSuffix(s, "d") || strings.HasSuffix(s, "y") {
+		var dur time.Duration
+		switch s {
+		case "30d":
+			dur = 30 * 24 * time.Hour
+		case "90d":
+			dur = 90 * 24 * time.Hour
+		case "180d":
+			dur = 180 * 24 * time.Hour
+		case "365d", "1y":
+			dur = 365 * 24 * time.Hour
+		case "2y":
+			dur = 2 * 365 * 24 * time.Hour
+		default:
+			// Unrecognised relative token; fall through to absolute parse below.
+			goto parseAbsolute
+		}
+		t := now.Add(-dur).UTC().Truncate(24 * time.Hour)
+		return &t, nil
+	}
+parseAbsolute:
+	// Absolute date "YYYY-MM-DD".
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"backfill_horizon must be %q, a relative form (30d/90d/1y), or an absolute date (YYYY-MM-DD); got %q",
+			"all", s)
+	}
+	t = t.UTC()
+	return &t, nil
 }

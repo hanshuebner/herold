@@ -59,6 +59,41 @@ type CertRenewer interface {
 	RenewCert(ctx context.Context, hostname string) error
 }
 
+// IMAPImportWorkerStatus is the point-in-time snapshot of one IMAP import
+// worker. It mirrors imapimport.WorkerStatus without importing that package
+// directly (no import cycle: imapimport does not import protoadmin).
+// Wave 5 populates this from imapimport.WorkerStatus values returned by
+// Pool.Snapshot().
+type IMAPImportWorkerStatus struct {
+	AccountID           string     `json:"account_id"`
+	PrincipalID         string     `json:"principal_id"`
+	AccountName         string     `json:"account_name"`
+	Host                string     `json:"host"`
+	Phase               string     `json:"phase"`
+	CurrentFolder       string     `json:"current_folder,omitempty"`
+	ConnMode            string     `json:"conn_mode,omitempty"`
+	Connected           bool       `json:"connected"`
+	PhaseSince          time.Time  `json:"phase_since"`
+	LastSyncAt          *time.Time `json:"last_sync_at,omitempty"`
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	NextPollAt          *time.Time `json:"next_poll_at,omitempty"`
+	MessagesFetched     int64      `json:"messages_fetched"`
+	FlagsPropagated     int64      `json:"flags_propagated"`
+	LastError           string     `json:"last_error,omitempty"`
+}
+
+// IMAPImportStatusProvider is the interface the admin server uses to obtain
+// a live point-in-time snapshot of every IMAP import worker. The concrete
+// implementation is *imapimport.Pool (method Snapshot). Nil means the pool
+// has not been wired yet; the status endpoint returns an empty list.
+//
+// REQ-IMAP-IMP-65.
+type IMAPImportStatusProvider interface {
+	// Snapshot returns a copy of every live worker's current status.
+	// Implementations must be concurrency-safe and must not block workers.
+	Snapshot() []IMAPImportWorkerStatus
+}
+
 // DNSVerifier reports drift between herold-published DNS records and
 // the live state for domain. Nil disables /api/v1/diag/dns-check/...
 // (returns 501).
@@ -249,6 +284,18 @@ type Options struct {
 	// originating listener in the ring buffer and metrics. Empty defaults
 	// to "admin"; the public listener wiring passes "public".
 	ListenerTag string
+
+	// IMAPImportDataKey is the 32-byte AEAD data key used to seal and open
+	// per-account IMAP import credentials (REQ-IMAP-IMP-70). Sourced from
+	// sysconfig.SecretsConfig.DataKeyRef at server boot (wave 5). When nil
+	// the imap-import create/update endpoints return 503.
+	IMAPImportDataKey []byte
+
+	// IMAPImportStatus provides the live point-in-time worker snapshot for
+	// GET /api/v1/imap-imports/status (REQ-IMAP-IMP-65). The concrete
+	// implementation is *imapimport.Pool; wave 5 injects it. When nil the
+	// endpoint returns an empty list (200 OK).
+	IMAPImportStatus IMAPImportStatusProvider
 }
 
 // ClientlogOptions configures the client-log ingest pipeline parameters.
