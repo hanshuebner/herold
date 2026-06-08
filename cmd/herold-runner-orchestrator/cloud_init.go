@@ -37,6 +37,13 @@ log:
 runner:
   file: /var/lib/forgejo-runner/.runner
   capacity: 1
+  # act_runner's per-job timeout defaults to 3h, which silently caps
+  # any job regardless of its workflow-level timeout-minutes. The
+  # nightly "fuzz (long)" job runs ~39 targets * 8m = ~5h of work
+  # under a 6h timeout-minutes, so the 3h default killed it at exactly
+  # 3:00:00 every night (reported as "cancelled", VM still alive).
+  # Raise the daemon cap above the longest nightly job's budget.
+  timeout: 6h
   # In host-mode, act_runner does not import the daemon process's
   # environment for the job; jobs run with an empty env unless we
   # set it here. actions/setup-go invocation of "go env" then dies
