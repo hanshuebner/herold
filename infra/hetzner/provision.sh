@@ -31,7 +31,7 @@ esac
 apt-get update -y
 apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg lsb-release apt-transport-https \
-  git make jq build-essential \
+  git make jq build-essential unzip zip \
   python3 python3-pip python3-venv
 
 #---- Docker (rootful, official repo) -----------------------------------------
@@ -102,6 +102,30 @@ python3 -m venv /opt/pre-commit
 /opt/pre-commit/bin/pip install --no-cache-dir --upgrade pip
 /opt/pre-commit/bin/pip install --no-cache-dir pre-commit
 ln -sf /opt/pre-commit/bin/pre-commit /usr/local/bin/pre-commit
+
+#---- Android SDK + JDK (amd64 only; for the wetteronline APK build) -----------
+# Baked in so CI doesn't re-download ~1 GB of SDK every run. The android job
+# only runs on amd64, so skip on arm64 (its build-tools binaries are x86 anyway).
+if [ "$ARCH" = "amd64" ]; then
+  apt-get install -y --no-install-recommends openjdk-17-jdk-headless
+  ANDROID_HOME=/opt/android-sdk
+  ANDROID_CLT=12266719   # commandlinetools-linux-<n>_latest.zip
+  mkdir -p "$ANDROID_HOME/cmdline-tools"
+  curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/clt.zip \
+    "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CLT}_latest.zip"
+  unzip -q /tmp/clt.zip -d "$ANDROID_HOME/cmdline-tools"
+  mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+  rm /tmp/clt.zip
+  yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
+  "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" \
+    "platform-tools" "platforms;android-36" "build-tools;36.0.0" >/dev/null
+  cat >/etc/profile.d/android.sh <<'EOF'
+export ANDROID_HOME=/opt/android-sdk
+export ANDROID_SDK_ROOT=/opt/android-sdk
+export PATH="$PATH:/opt/android-sdk/platform-tools:/opt/android-sdk/cmdline-tools/latest/bin"
+EOF
+  chmod +x /etc/profile.d/android.sh
+fi
 
 #---- Preload commonly-used docker images -------------------------------------
 docker pull "postgres:16"
