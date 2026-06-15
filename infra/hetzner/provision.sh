@@ -116,7 +116,14 @@ if [ "$ARCH" = "amd64" ]; then
   unzip -q /tmp/clt.zip -d "$ANDROID_HOME/cmdline-tools"
   mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
   rm /tmp/clt.zip
+  # sdkmanager accepts a fixed number of license prompts then exits, so
+  # `yes` gets SIGPIPE (exit 141). Under `set -o pipefail` that 141 fails
+  # the pipeline even though licensing succeeded; drop pipefail for this
+  # one line so the pipeline's exit reflects sdkmanager (still caught by
+  # `set -e` on a real error).
+  set +o pipefail
   yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
+  set -o pipefail
   "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" \
     "platform-tools" "platforms;android-36" "build-tools;36.0.0" >/dev/null
   cat >/etc/profile.d/android.sh <<'EOF'
