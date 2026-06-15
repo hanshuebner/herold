@@ -46,8 +46,9 @@ jobs:
           go install honnef.co/go/tools/cmd/staticcheck@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # The bake snapshot ships pre-commit at /usr/local/bin/pre-commit
-      # (set up by infra/hetzner/provision.sh in an isolated venv at
-      # /opt/pre-commit), plus python3.12, pip, and node + pnpm. The
+      # (set up by the runner-bakery provision.sh in netzhansa-infra, in
+      # an isolated venv at /opt/pre-commit), plus python3.12, pip, and
+      # node + pnpm. The
       # earlier apt-install workaround was needed only when the
       # runner ran jobs inside a node:22-bookworm container; with the
       # host-mode runner labels (see cmd/herold-runner-orchestrator/

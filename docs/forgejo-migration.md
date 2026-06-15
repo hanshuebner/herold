@@ -8,8 +8,11 @@ configuration for the Debian host lives in a sibling repo,
 `netzhansa-infra` (at `code.netzhansa.com/hanshuebner/netzhansa-infra`).
 The `infra/freebsd/` directory referenced throughout the older entries
 below has been removed -- the FreeBSD VM is scheduled for retirement.
-`infra/hetzner/` (the runner-VM bakery) is still active and used by
-`cmd/herold-runner-orchestrator/`.
+The `infra/hetzner/` runner-VM bakery (`bake.sh` + `provision.sh`,
+referenced throughout the entries below) has likewise moved out of this
+repo into the `runner-bakery` role in `netzhansa-infra`; only
+`cmd/herold-runner-orchestrator/` (which consumes the baked snapshots
+by their `herold-ci=runner` label) still lives here.
 
 The plan + execution log below documents the whole journey including
 the Codeberg phase and the self-hosted FreeBSD interlude; it's kept

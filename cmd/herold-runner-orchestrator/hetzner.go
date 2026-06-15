@@ -10,15 +10,15 @@ import (
 )
 
 // labelSelectorRunner scopes Hetzner queries to the VMs the
-// orchestrator owns (i.e. not the bake VMs from infra/hetzner/bake.sh,
-// which use herold-ci=bake instead).
+// orchestrator owns (i.e. not the bake VMs the runner-bakery role in
+// netzhansa-infra spawns, which use herold-ci=bake instead).
 const labelSelectorRunner = "herold-ci=runner"
 
 // latestSnapshotID picks the newest snapshot tagged with our runner
 // label for the given arch. This is how the orchestrator discovers
-// the current image without needing a config file: bake.sh applies
-// the same labels, so each Monday's fresh bake automatically becomes
-// the new spawn source.
+// the current image without needing a config file: the bakery's
+// bake.sh applies the same labels, so each Monday's fresh bake
+// automatically becomes the new spawn source.
 func latestSnapshotID(ctx context.Context, hc *hcloud.Client, arch string) (int64, error) {
 	images, err := hc.Image.AllWithOpts(ctx, hcloud.ImageListOpts{
 		ListOpts: hcloud.ListOpts{

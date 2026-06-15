@@ -76,7 +76,8 @@ CFGEOF
 # jobs directly on this VM's host OS instead of inside a default
 # node:22-bookworm container. The bake snapshot already has docker,
 # go, node, pnpm, python3.12 + pip, pre-commit, Playwright deps, and
-# the other toolchain CI needs (see infra/hetzner/provision.sh), so
+# the other toolchain CI needs (baked by the runner-bakery role in
+# netzhansa-infra: roles/runner-bakery/files/provision.sh), so
 # host-mode is the cheapest way to unblock jobs that need docker
 # (docker-build, jmap conformance) and to make localhost:5432-style
 # service mappings work the way GitHub-hosted runners do.
