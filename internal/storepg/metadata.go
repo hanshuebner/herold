@@ -877,8 +877,8 @@ func (m *metadata) insertMessageTx(
 			  internal_date_us, received_at_us, size, blob_hash, blob_size, thread_id,
 			  env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
 			  env_message_id, env_in_reply_to, env_references, env_date_us,
-			  internalize_pending)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+			  internalize_pending, preview, has_attachment, body_meta_computed)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 			RETURNING id`,
 			pid,
 			usMicros(msg.InternalDate), usMicros(msg.ReceivedAt), msg.Size,
@@ -886,7 +886,8 @@ func (m *metadata) insertMessageTx(
 			msg.Envelope.Subject, msg.Envelope.From, msg.Envelope.To,
 			msg.Envelope.Cc, msg.Envelope.Bcc, msg.Envelope.ReplyTo,
 			msg.Envelope.MessageID, msg.Envelope.InReplyTo, msg.Envelope.References, usMicros(msg.Envelope.Date),
-			boolToInt16(msg.InternalizePending),
+			boolToInt16(msg.InternalizePending), msg.Preview,
+			msg.HasAttachment, msg.BodyMetaComputed,
 		).Scan(&mid); err != nil {
 			return mapErr(err)
 		}
@@ -1076,13 +1077,15 @@ func (m *metadata) ReplaceMessageBody(
 		}
 		// Clear internalize_pending alongside the body swap so the
 		// on-demand path (REQ-EXTIMG-93) doesn't need a follow-up
-		// transaction; mirror of the storesqlite UPDATE.
+		// transaction; mirror of the storesqlite UPDATE. Also reset
+		// body_meta_computed so the background sweep worker re-derives
+		// preview / has_attachment from the new body.
 		if _, err := tx.Exec(ctx, `
 			UPDATE messages
 			   SET blob_hash = $1, blob_size = $2, size = $3,
 			       env_subject = $4, env_from = $5, env_to = $6, env_cc = $7, env_bcc = $8, env_reply_to = $9,
 			       env_message_id = $10, env_in_reply_to = $11, env_references = $12, env_date_us = $13,
-			       internalize_pending = 0
+			       internalize_pending = 0, preview = '', has_attachment = FALSE, body_meta_computed = FALSE
 			 WHERE id = $14`,
 			ref.Hash, ref.Size, size,
 			env.Subject, env.From, env.To, env.Cc, env.Bcc, env.ReplyTo,
@@ -1157,7 +1160,7 @@ func (m *metadata) GetMessage(ctx context.Context, id store.MessageID) (store.Me
 		       blob_hash, blob_size, thread_id,
 		       env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
 		       env_message_id, env_in_reply_to, env_references, env_date_us,
-		       internalize_pending
+		       internalize_pending, preview, has_attachment, body_meta_computed
 		  FROM messages WHERE id = $1`, int64(id))
 	msg, err := scanMessageRow(row)
 	if err != nil {
@@ -1183,7 +1186,7 @@ func scanMessageRow(row rowLike) (store.Message, error) {
 		&msg.Envelope.Subject, &msg.Envelope.From, &msg.Envelope.To,
 		&msg.Envelope.Cc, &msg.Envelope.Bcc, &msg.Envelope.ReplyTo,
 		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &msg.Envelope.References, &envDateUs,
-		&pending)
+		&pending, &msg.Preview, &msg.HasAttachment, &msg.BodyMetaComputed)
 	if err != nil {
 		return store.Message{}, mapErr(err)
 	}
@@ -1273,6 +1276,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 	var blobSize int64
 	var thread int64
 	var envDateUs int64
+	var pending int16
 	// message_mailboxes fields
 	var mbox, uid, modseq, flags int64
 	var keywords string
@@ -1284,6 +1288,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 		&msg.Envelope.Subject, &msg.Envelope.From, &msg.Envelope.To,
 		&msg.Envelope.Cc, &msg.Envelope.Bcc, &msg.Envelope.ReplyTo,
 		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &msg.Envelope.References, &envDateUs,
+		&pending, &msg.Preview, &msg.HasAttachment, &msg.BodyMetaComputed,
 		// message_mailboxes columns
 		&mbox, &uid, &modseq, &flags, &keywords, &snoozedUs, &receivedTo,
 	)
@@ -1297,6 +1302,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 	msg.Blob.Size = blobSize
 	msg.ThreadID = uint64(thread)
 	msg.Envelope.Date = fromMicros(envDateUs)
+	msg.InternalizePending = pending != 0
 	msg.MailboxID = store.MailboxID(mbox)
 	msg.UID = store.UID(uid)
 	msg.ModSeq = store.ModSeq(modseq)
@@ -1506,6 +1512,45 @@ func (m *metadata) ClearMessageInternalizePending(ctx context.Context, msgID sto
 		return store.ErrNotFound
 	}
 	return nil
+}
+
+func (m *metadata) SetMessageBodyMeta(ctx context.Context, id store.MessageID, preview string, hasAttachment bool) error {
+	res, err := m.s.pool.Exec(ctx,
+		`UPDATE messages SET preview = $1, has_attachment = $2, body_meta_computed = TRUE WHERE id = $3`,
+		preview, hasAttachment, int64(id))
+	if err != nil {
+		return mapErr(err)
+	}
+	if res.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (m *metadata) ListMessagesNeedingBodyMeta(ctx context.Context, beforeID store.MessageID, limit int) ([]store.MessageID, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	upper := int64(beforeID)
+	if upper == 0 {
+		upper = math.MaxInt64
+	}
+	rows, err := m.s.pool.Query(ctx,
+		`SELECT id FROM messages WHERE NOT body_meta_computed AND id < $1 ORDER BY id DESC LIMIT $2`,
+		upper, limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make([]store.MessageID, 0, limit)
+	for rows.Next() {
+		var mid int64
+		if err := rows.Scan(&mid); err != nil {
+			return nil, fmt.Errorf("storepg: list body meta pending: scan: %w", err)
+		}
+		out = append(out, store.MessageID(mid))
+	}
+	return out, rows.Err()
 }
 
 func (m *metadata) ListMessagesWithInternalizePending(ctx context.Context, beforeID store.MessageID, limit int) ([]store.MessageID, error) {
@@ -2745,6 +2790,7 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 			       m.size, m.blob_hash, m.blob_size, m.thread_id,
 			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
 			       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
+			       m.internalize_pending, m.preview, m.has_attachment, m.body_meta_computed,
 			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.received_to
 			  FROM messages m
 			  JOIN message_mailboxes mm ON mm.message_id = m.id AND mm.mailbox_id = $1
@@ -2757,6 +2803,7 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 			       m.size, m.blob_hash, m.blob_size, m.thread_id,
 			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
 			       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
+			       m.internalize_pending, m.preview, m.has_attachment, m.body_meta_computed,
 			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.received_to
 			  FROM messages m
 			  JOIN message_mailboxes mm ON mm.message_id = m.id AND mm.mailbox_id = $1
@@ -3375,6 +3422,7 @@ func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, li
 		       m.size, m.blob_hash, m.blob_size, m.thread_id,
 		       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
 		       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
+		       m.internalize_pending, m.preview, m.has_attachment, m.body_meta_computed,
 		       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.received_to
 		  FROM messages m
 		  JOIN message_mailboxes mm ON mm.message_id = m.id

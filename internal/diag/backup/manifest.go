@@ -371,7 +371,22 @@ const CurrentBackupVersion = 1
 //	                             for flag/delete write-back with a
 //	                             last_synced_flags INTEGER bitfield;
 //	                             ON DELETE CASCADE.
-const CurrentSchemaVersion = 58
+//
+// 59 — 0059_messages_body_meta.sql. Adds three columns to messages for
+//
+//	precomputed body metadata (JMAP Email/get preview + hasAttachment
+//	fast path):
+//	  preview            — TEXT NOT NULL DEFAULT '' — first 256 chars of
+//	                       plain-text body; empty until computed.
+//	  has_attachment     — BOOLEAN/INTEGER NOT NULL DEFAULT FALSE/0 —
+//	                       true when the message has a non-inline
+//	                       attachment part.
+//	  body_meta_computed — BOOLEAN/INTEGER NOT NULL DEFAULT FALSE/0 —
+//	                       0 = not yet computed; 1 = authoritative.
+//	Partial index idx_messages_body_meta_pending on id WHERE
+//	body_meta_computed = 0 (SQLite) / NOT body_meta_computed (Postgres)
+//	makes the background sweep worker's paged scan cheap.
+const CurrentSchemaVersion = 59
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

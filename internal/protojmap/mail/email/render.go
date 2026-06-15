@@ -84,6 +84,14 @@ func renderEmailMetadata(m store.Message) jmapEmail {
 	if m.Envelope.InReplyTo != "" {
 		out.InReplyTo = []string{m.Envelope.InReplyTo}
 	}
+	// Serve preview and hasAttachment from precomputed metadata when
+	// available. The caller (renderOne) still dispatches to
+	// renderFullWithProperties when body-only properties are requested or
+	// when BodyMetaComputed is false; this path is the zero-blob fast lane.
+	if m.BodyMetaComputed {
+		out.Preview = m.Preview
+		out.HasAttachment = m.HasAttachment
+	}
 	return out
 }
 

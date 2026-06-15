@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/mail"
 	"sort"
@@ -73,10 +74,6 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 		NotFound:  []jmapID{},
 	}
 
-	// Determine what level of rendering is needed based on requested properties.
-	needBody := req.FetchTextBodyValues || req.FetchHTMLBodyValues || req.FetchAllBodyValues ||
-		propertiesNeedBody(req.Properties)
-
 	if req.IDs == nil {
 		// RFC 8621 §4.2 permits ids:null to mean "return all"; herold
 		// refuses because servicing it would require an un-indexed
@@ -135,7 +132,15 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			resp.NotFound = append(resp.NotFound, e.raw)
 			continue
 		}
-		rendered, err := g.renderOne(ctx, e.msg, needBody, req.MaxBodyValueBytes, req.Properties)
+		needBody := needBodyForMessage(
+			e.msg,
+			req.FetchTextBodyValues,
+			req.FetchHTMLBodyValues,
+			req.FetchAllBodyValues,
+			req.Properties,
+		)
+		fetchBodyValues := req.FetchTextBodyValues || req.FetchHTMLBodyValues || req.FetchAllBodyValues
+		rendered, err := g.renderOne(ctx, e.msg, needBody, fetchBodyValues, req.MaxBodyValueBytes, req.Properties)
 		if err != nil {
 			return nil, serverFail(err)
 		}
@@ -146,22 +151,67 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 }
 
 // propertiesNeedBody reports whether the properties list requests any
-// property that requires full blob parsing. When props is nil (client
-// did not specify a properties filter), all properties are returned
-// including body-level ones, so we always need the blob.
+// property that ALWAYS requires full blob parsing regardless of the
+// per-message BodyMetaComputed state. When props is nil (client did not
+// specify a properties filter) we may still skip the blob when all
+// individual messages have BodyMetaComputed; the call site handles that.
+//
+// Note: "preview" and "hasAttachment" are NOT in this list — they are
+// served from precomputed metadata when BodyMetaComputed is true; they
+// only force the blob path per-message when BodyMetaComputed is false
+// (lazy fallback). See needBodyForMessage.
 func propertiesNeedBody(props *[]string) bool {
 	if props == nil {
+		// nil means "all properties" — body-only props are in that set.
 		return true
 	}
 	for _, p := range *props {
 		switch p {
-		case "preview", "bodyStructure", "textBody", "htmlBody", "attachments",
-			"bodyValues", "hasAttachment", "references":
+		case "bodyStructure", "textBody", "htmlBody", "attachments",
+			"bodyValues", "references":
 			return true
 		}
 		// Dynamic header accessors: "header:X:asY"
 		if strings.HasPrefix(p, "header:") {
 			return true
+		}
+	}
+	return false
+}
+
+// needBodyForMessage returns true when the full body blob must be parsed
+// for message m given the request's properties list and fetch flags.
+//
+// The decision is per-message because "preview" and "hasAttachment" are
+// served from m.Preview / m.HasAttachment when m.BodyMetaComputed is true
+// and only require the blob path when BodyMetaComputed is false.
+func needBodyForMessage(
+	m store.Message,
+	fetchTextBodyValues, fetchHTMLBodyValues, fetchAllBodyValues bool,
+	properties *[]string,
+) bool {
+	// Fetch flags always require the blob.
+	if fetchTextBodyValues || fetchHTMLBodyValues || fetchAllBodyValues {
+		return true
+	}
+	// Properties that unconditionally require the blob.
+	if propertiesNeedBody(properties) {
+		return true
+	}
+	// nil properties means "all" — the body-only check above already
+	// returns true in that branch, but if BodyMetaComputed is true and
+	// the caller supplied no explicit properties, we would still need
+	// bodyStructure/textBody/htmlBody etc. So: nil properties -> need body.
+	if properties == nil {
+		return true
+	}
+	// preview / hasAttachment require the blob only when not precomputed.
+	for _, p := range *properties {
+		switch p {
+		case "preview", "hasAttachment":
+			if !m.BodyMetaComputed {
+				return true
+			}
 		}
 	}
 	return false
@@ -189,10 +239,16 @@ func reactionsToWire(r map[string]map[store.PrincipalID]struct{}) map[string][]s
 // renderOne produces the wire-form Email object. When needBody is true
 // we round-trip through the blob store and parser to populate body
 // properties and header accessors.
+//
+// fetchBodyValues is true when the request had fetchTextBodyValues /
+// fetchHTMLBodyValues / fetchAllBodyValues set; it forces bodyValues into the
+// response even when properties is a restrictive list that does not name
+// "bodyValues" explicitly (per RFC 8621 §4.2).
 func (g *getHandler) renderOne(
 	ctx context.Context,
 	m store.Message,
 	needBody bool,
+	fetchBodyValues bool,
 	truncateAt int,
 	properties *[]string,
 ) (jmapEmail, error) {
@@ -212,18 +268,51 @@ func (g *getHandler) renderOne(
 	if parser == nil {
 		parser = defaultParseFn
 	}
-	return renderFullWithProperties(ctx, g.h.store.Blobs(), m, truncateAt, parser, properties)
+	return renderFullWithProperties(ctx, g.h.store.Blobs(), g.h.store.Meta(), m, fetchBodyValues, truncateAt, parser, properties, g.h.logger)
+}
+
+// wantProp reports whether the named property should be included in the
+// response given the requested properties list. When properties is nil
+// (meaning "all properties"), every property is included.
+func wantProp(properties *[]string, name string) bool {
+	if properties == nil {
+		return true
+	}
+	for _, p := range *properties {
+		if p == name {
+			return true
+		}
+	}
+	return false
 }
 
 // renderFullWithProperties extends renderFull to also populate dynamic
 // header property accessors requested in properties.
+//
+// When properties is non-nil, only the explicitly requested body-level
+// fields are populated; omitting them avoids returning MBs of body data
+// for a "preview only" request. When properties is nil (JMAP default = all
+// properties), all fields are populated.
+//
+// fetchBodyValues, when true, forces bodyValues to be populated regardless of
+// the properties filter. Callers set this when the request had
+// fetchTextBodyValues / fetchHTMLBodyValues / fetchAllBodyValues set (RFC
+// 8621 §4.2).
+//
+// meta, when non-nil, enables the opportunistic body-meta persist: if the
+// message's BodyMetaComputed is false, the computed preview and hasAttachment
+// values are written back via SetMessageBodyMeta as a best-effort side effect
+// so future Email/get calls can skip the blob. Errors are logged and ignored.
 func renderFullWithProperties(
 	ctx context.Context,
 	blobs store.Blobs,
+	meta store.Metadata,
 	m store.Message,
+	fetchBodyValues bool,
 	truncateAt int,
 	parser parseFn,
 	properties *[]string,
+	logger *slog.Logger,
 ) (jmapEmail, error) {
 	out := renderEmailMetadata(m)
 
@@ -275,17 +364,60 @@ func renderFullWithProperties(
 			values[*p.PartID] = bv
 		}
 	}
-	out.BodyStructure = bs
-	out.BodyValues = values
-	out.TextBody = textParts
-	out.HTMLBody = htmlParts
-	out.Attachments = attParts
-	out.HasAttachment = len(attParts) > 0
-	out.Preview = previewFromValues(values, textParts, 256)
+
+	// Compute preview and hasAttachment from the parsed body. We always
+	// compute these so the opportunistic persist path below can call
+	// SetMessageBodyMeta regardless of what properties were requested.
+	computedPreview := previewFromValues(values, textParts, 256)
+	computedHasAttachment := len(attParts) > 0
+
+	// Opportunistic persist: if the message has not yet had its body-meta
+	// computed, write it back now so future list-view calls skip the blob.
+	// Best-effort: log and continue on error; never fail the GET.
+	if !m.BodyMetaComputed && meta != nil {
+		if serr := meta.SetMessageBodyMeta(ctx, m.ID, computedPreview, computedHasAttachment); serr != nil {
+			if logger != nil {
+				logger.LogAttrs(ctx, slog.LevelWarn, "email/get: persist body meta failed",
+					slog.String("activity", "system"),
+					slog.Uint64("message_id", uint64(m.ID)),
+					slog.String("err", serr.Error()),
+				)
+			}
+		}
+	}
+
+	// Property projection: only populate fields the client asked for.
+	// When properties is nil (all properties), all fields are set.
+	if wantProp(properties, "bodyStructure") {
+		out.BodyStructure = bs
+	}
+	if fetchBodyValues ||
+		wantProp(properties, "bodyValues") ||
+		wantProp(properties, "textBody") ||
+		wantProp(properties, "htmlBody") {
+		// bodyValues is populated alongside the part arrays — the client
+		// needs values to render the body it asked for.
+		out.BodyValues = values
+	}
+	if wantProp(properties, "textBody") {
+		out.TextBody = textParts
+	}
+	if wantProp(properties, "htmlBody") {
+		out.HTMLBody = htmlParts
+	}
+	if wantProp(properties, "attachments") {
+		out.Attachments = attParts
+	}
+	if wantProp(properties, "hasAttachment") {
+		out.HasAttachment = computedHasAttachment
+	}
+	if wantProp(properties, "preview") {
+		out.Preview = computedPreview
+	}
 
 	// Also populate References from the parsed message if the envelope
-	// didn't carry it.
-	if len(out.References) == 0 {
+	// didn't carry it. Only if the client asked for it.
+	if wantProp(properties, "references") && len(out.References) == 0 {
 		if refs := parsed.Headers.Get("References"); refs != "" {
 			out.References = splitMessageIDs(refs)
 		}
@@ -303,6 +435,11 @@ func renderFullWithProperties(
 			val := resolveHeaderProperty(parsed, prop)
 			out.HeaderProperties[prop] = val
 		}
+	} else {
+		// properties == nil: populate all dynamic header properties that
+		// appear in the parsed message. In practice JMAP clients that want
+		// header accessors name them explicitly; nil means "standard props
+		// only" per RFC 8621.  We skip the full-scan here (no-op for nil).
 	}
 
 	return out, nil

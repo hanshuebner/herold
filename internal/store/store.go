@@ -344,6 +344,23 @@ type Metadata interface {
 	// principal enumeration.
 	CountInternalizePendingTotal(ctx context.Context) (uint64, error)
 
+	// SetMessageBodyMeta writes precomputed body metadata for the message
+	// identified by id: sets preview, has_attachment, and flips
+	// body_meta_computed to true (1) in a single atomic UPDATE. Idempotent:
+	// calling again with updated values is safe and overwrites the prior
+	// state. Returns ErrNotFound when id no longer exists.
+	SetMessageBodyMeta(ctx context.Context, id MessageID, preview string, hasAttachment bool) error
+
+	// ListMessagesNeedingBodyMeta returns up to limit MessageIDs in
+	// DESCENDING order (newest first, highest ID first) with id < beforeID,
+	// scanning only rows where body_meta_computed = 0. Pass beforeID = 0 to
+	// start from the newest uncomputed message (the implementation treats 0
+	// as a sentinel for "no upper bound", effectively MAX_INT64). The partial
+	// index idx_messages_body_meta_pending makes this scan cheap regardless
+	// of table size. Used by the background sweep worker that fills in
+	// Preview + HasAttachment without touching protocol handlers.
+	ListMessagesNeedingBodyMeta(ctx context.Context, beforeID MessageID, limit int) ([]MessageID, error)
+
 	// AppendStateChange writes a single change-feed row directly,
 	// honouring the supplied PrincipalID, Kind, EntityID,
 	// ParentEntityID, Op and Cause. It is intended for synthetic /

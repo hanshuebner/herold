@@ -27,6 +27,7 @@ import (
 	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/autodns"
+	"github.com/hanshuebner/herold/internal/bodymeta"
 	"github.com/hanshuebner/herold/internal/categorise"
 	"github.com/hanshuebner/herold/internal/chatretention"
 	"github.com/hanshuebner/herold/internal/clock"
@@ -985,6 +986,17 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// hook registered at construction.
 	g.Go(func() error {
 		extimgWorker.Run(gctx)
+		return nil
+	})
+
+	// Body-meta backfill worker. Sweeps messages whose body_meta_computed
+	// flag is false, parses each body, and persists preview + hasAttachment
+	// via SetMessageBodyMeta. Newest-first so the inbox backfills before
+	// archive. The worker is modest by design: small batches and a long idle
+	// sleep so it does not compete with real request traffic on the store.
+	bodyMetaWorker := bodymeta.New(st, logger.With("subsystem", "bodymeta-worker"), clk, bodymeta.Options{})
+	g.Go(func() error {
+		bodyMetaWorker.Run(gctx)
 		return nil
 	})
 

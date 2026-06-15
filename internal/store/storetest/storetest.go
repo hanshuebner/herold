@@ -385,6 +385,10 @@ func Run(t *testing.T, f Factory) {
 		{"PreTrash_SnapshotClearedAfterRestore", testPreTrashSnapshotClearedAfterRestore},
 		{"PreTrash_FreshSnapshotOnRetrash", testPreTrashFreshSnapshotOnRetrash},
 		{"PreTrash_PermanentDeleteClearsSnapshot", testPreTrashPermanentDeleteClearsSnapshot},
+		// -- body-meta precompute (preview + has_attachment, migration 0059) --
+		{"BodyMeta_DefaultsToUncomputed", testBodyMetaDefaultsToUncomputed},
+		{"BodyMeta_SetAndGet_RoundTrip", testBodyMetaSetAndGetRoundTrip},
+		{"BodyMeta_ListNeedingBodyMeta_Pagination", testBodyMetaListNeedingBodyMetaPagination},
 	}
 	for _, c := range cases {
 		tc := c
@@ -8832,5 +8836,249 @@ func testPreTrashPermanentDeleteClearsSnapshot(t *testing.T, s store.Store) {
 	// Message should be gone entirely.
 	if _, err := s.Meta().GetMessage(ctx, msgID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetMessage after expunge: expected ErrNotFound, got %v", err)
+	}
+}
+
+// testBodyMetaDefaultsToUncomputed verifies that newly inserted messages
+// land with BodyMetaComputed == false and Preview / HasAttachment at their
+// zero values, regardless of what the caller puts in the struct fields
+// (callers leave them zero; the background worker fills them in).
+func testBodyMetaDefaultsToUncomputed(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "bodymeta-defaults@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	ref := putBlob(t, s, "some-body")
+	_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID,
+		Blob:        ref,
+		Size:        ref.Size,
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("want 1 message, got %d", len(msgs))
+	}
+	m := msgs[0]
+	if m.BodyMetaComputed {
+		t.Fatalf("BodyMetaComputed: want false on fresh insert, got true")
+	}
+	if m.Preview != "" {
+		t.Fatalf("Preview: want empty on fresh insert, got %q", m.Preview)
+	}
+	if m.HasAttachment {
+		t.Fatalf("HasAttachment: want false on fresh insert, got true")
+	}
+
+	// GetMessage must agree.
+	got, err := s.Meta().GetMessage(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.BodyMetaComputed {
+		t.Fatalf("GetMessage: BodyMetaComputed want false, got true")
+	}
+	if got.Preview != "" {
+		t.Fatalf("GetMessage: Preview want empty, got %q", got.Preview)
+	}
+	if got.HasAttachment {
+		t.Fatalf("GetMessage: HasAttachment want false, got true")
+	}
+}
+
+// testBodyMetaSetAndGetRoundTrip verifies the full lifecycle of body-meta
+// precomputation:
+//   - SetMessageBodyMeta persists preview, has_attachment and flips
+//     body_meta_computed to true.
+//   - GetMessage returns the updated values.
+//   - The row no longer appears in ListMessagesNeedingBodyMeta.
+//   - SetMessageBodyMeta on a missing id returns ErrNotFound.
+func testBodyMetaSetAndGetRoundTrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "bodymeta-lifecycle@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	ref := putBlob(t, s, "body-lifecycle")
+	_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID,
+		Blob:        ref,
+		Size:        ref.Size,
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("want 1 message, got %d", len(msgs))
+	}
+	msgID := msgs[0].ID
+
+	// Before SetMessageBodyMeta the row must appear in the pending list.
+	pending, err := s.Meta().ListMessagesNeedingBodyMeta(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("ListMessagesNeedingBodyMeta before set: %v", err)
+	}
+	found := false
+	for _, id := range pending {
+		if id == msgID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("message %d not in ListMessagesNeedingBodyMeta before set; got %v", msgID, pending)
+	}
+
+	// Call SetMessageBodyMeta.
+	const wantPreview = "Hello, world preview text"
+	if err := s.Meta().SetMessageBodyMeta(ctx, msgID, wantPreview, true); err != nil {
+		t.Fatalf("SetMessageBodyMeta: %v", err)
+	}
+
+	// GetMessage must reflect the new values.
+	got, err := s.Meta().GetMessage(ctx, msgID)
+	if err != nil {
+		t.Fatalf("GetMessage after set: %v", err)
+	}
+	if !got.BodyMetaComputed {
+		t.Fatalf("BodyMetaComputed: want true after set, got false")
+	}
+	if got.Preview != wantPreview {
+		t.Fatalf("Preview: want %q, got %q", wantPreview, got.Preview)
+	}
+	if !got.HasAttachment {
+		t.Fatalf("HasAttachment: want true after set, got false")
+	}
+
+	// The row must no longer appear in ListMessagesNeedingBodyMeta.
+	pending, err = s.Meta().ListMessagesNeedingBodyMeta(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("ListMessagesNeedingBodyMeta after set: %v", err)
+	}
+	for _, id := range pending {
+		if id == msgID {
+			t.Fatalf("message %d still in ListMessagesNeedingBodyMeta after SetMessageBodyMeta", msgID)
+		}
+	}
+
+	// SetMessageBodyMeta is idempotent: calling again updates values without error.
+	if err := s.Meta().SetMessageBodyMeta(ctx, msgID, "updated preview", false); err != nil {
+		t.Fatalf("SetMessageBodyMeta (idempotent): %v", err)
+	}
+	got, _ = s.Meta().GetMessage(ctx, msgID)
+	if got.Preview != "updated preview" || got.HasAttachment {
+		t.Fatalf("idempotent set: want preview=%q hasAttachment=false, got preview=%q hasAttachment=%v",
+			"updated preview", got.Preview, got.HasAttachment)
+	}
+
+	// SetMessageBodyMeta on a missing id returns ErrNotFound.
+	if err := s.Meta().SetMessageBodyMeta(ctx, 99999999, "x", false); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetMessageBodyMeta missing id: want ErrNotFound, got %v", err)
+	}
+}
+
+// testBodyMetaListNeedingBodyMetaPagination verifies that
+// ListMessagesNeedingBodyMeta pages correctly via beforeID in DESCENDING
+// order, and that SetMessageBodyMeta removes rows from the result set.
+func testBodyMetaListNeedingBodyMetaPagination(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "bodymeta-page@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	// Insert five messages; all start with body_meta_computed = 0.
+	var ids []store.MessageID
+	for i := 0; i < 5; i++ {
+		ref := putBlob(t, s, fmt.Sprintf("page-body-%d", i))
+		_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID: p.ID,
+			Blob:        ref,
+			Size:        ref.Size,
+		}, []store.MessageMailbox{{MailboxID: mb.ID}})
+		if err != nil {
+			t.Fatalf("InsertMessage[%d]: %v", i, err)
+		}
+	}
+
+	// Collect all IDs in descending order (newest inserted = highest ID first).
+	all, err := s.Meta().ListMessagesNeedingBodyMeta(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("ListMessagesNeedingBodyMeta all: %v", err)
+	}
+	if len(all) < 5 {
+		t.Fatalf("want at least 5, got %d: %v", len(all), all)
+	}
+	// Verify descending order.
+	for i := 1; i < len(all); i++ {
+		if all[i] >= all[i-1] {
+			t.Fatalf("not descending at index %d: %v", i, all)
+		}
+	}
+	// Collect only our 5 IDs (there may be rows from other tests on the same backend).
+	msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	for _, m := range msgs {
+		ids = append(ids, m.ID)
+	}
+	if len(ids) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(ids))
+	}
+
+	// Paginate: take 2 rows from the full list, then continue with beforeID.
+	page1, err := s.Meta().ListMessagesNeedingBodyMeta(ctx, 0, 2)
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1) < 2 {
+		t.Fatalf("page1: want at least 2, got %d", len(page1))
+	}
+	if page1[1] >= page1[0] {
+		t.Fatalf("page1 not descending: %v", page1)
+	}
+	lastOfPage1 := page1[len(page1)-1]
+
+	page2, err := s.Meta().ListMessagesNeedingBodyMeta(ctx, lastOfPage1, 10)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	for _, id := range page2 {
+		if id >= lastOfPage1 {
+			t.Fatalf("page2 contains id %d >= cursor %d; cursor not advanced", id, lastOfPage1)
+		}
+	}
+
+	// limit=0 returns no rows and no error.
+	none, err := s.Meta().ListMessagesNeedingBodyMeta(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("limit=0: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("limit=0: got %v, want empty", none)
+	}
+
+	// After SetMessageBodyMeta on one of our messages it must leave the list.
+	targetID := ids[0]
+	if err := s.Meta().SetMessageBodyMeta(ctx, targetID, "preview", false); err != nil {
+		t.Fatalf("SetMessageBodyMeta: %v", err)
+	}
+	afterSet, err := s.Meta().ListMessagesNeedingBodyMeta(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("list after set: %v", err)
+	}
+	for _, id := range afterSet {
+		if id == targetID {
+			t.Fatalf("targetID %d still in pending list after SetMessageBodyMeta", targetID)
+		}
 	}
 }

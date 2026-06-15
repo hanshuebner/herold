@@ -583,6 +583,23 @@ type Message struct {
 	// every message stored by live SMTP delivery.
 	InternalizePending bool
 
+	// Preview is the precomputed RFC 8621 Email.preview value: the first
+	// 256 characters of the plain-text body. Empty string when
+	// BodyMetaComputed is false (not yet computed by the background
+	// sweep worker). Authoritative only when BodyMetaComputed is true.
+	Preview string
+
+	// HasAttachment is true when the message contains at least one
+	// non-inline attachment part. False until BodyMetaComputed is true.
+	// Authoritative only when BodyMetaComputed is true.
+	HasAttachment bool
+
+	// BodyMetaComputed is false (0) until the background sweep worker
+	// has called SetMessageBodyMeta for this message. When true,
+	// Preview and HasAttachment are authoritative and may be served
+	// directly to JMAP Email/get callers without touching the blob.
+	BodyMetaComputed bool
+
 	// -- Multi-mailbox membership (REQ-STORE-36) -----------------------
 
 	// Mailboxes is the full set of per-(message, mailbox) rows for this
