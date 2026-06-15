@@ -1431,8 +1431,24 @@ func TestDelayDSN_SuppressedByNotifyNever(t *testing.T) {
 
 // -- helpers ----------------------------------------------------------
 
+// waitForMinTimeout is a floor applied to every waitFor deadline. The
+// callers pass timeouts (1-30s) sized for an unloaded machine, but the
+// CI "test (arm64 / sqlite)" lane runs the concurrency-heavy packages
+// under -race on a shared self-hosted runner, where goroutine scheduling
+// for a state transition can stall far past those nominal values. Two
+// margin flakes surfaced this way (TestDelayDSN_EmittedAfterThreshold at
+// a 15s waitDeferred, and the protochat shutdown drain). Because waitFor
+// short-circuits the instant the predicate holds, raising the floor only
+// buys patience under contention -- it never slows the happy path, which
+// still returns in milliseconds. 45s is well above the observed stalls
+// yet small against the job-level timeout.
+const waitForMinTimeout = 45 * time.Second
+
 func waitFor(t *testing.T, timeout time.Duration, pred func() bool) bool {
 	t.Helper()
+	if timeout < waitForMinTimeout {
+		timeout = waitForMinTimeout
+	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if pred() {

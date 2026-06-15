@@ -22,6 +22,16 @@ import (
 // pattern internal/protoimg uses in its own server_test.go.
 const pidHeader = "X-Test-PID"
 
+// testSyncTimeout is the backstop for every "wait until X happens"
+// synchronization point in this package's tests. The nominal 2s these
+// replaced was sized for an unloaded machine; the CI "test (arm64 /
+// sqlite)" lane runs protochat under -race on a shared self-hosted
+// runner where the awaited goroutine can be scheduled well past 2s,
+// producing margin flakes. Every use is a positive wait that returns
+// the instant its condition holds, so a generous backstop only buys
+// patience under contention and never slows the happy path.
+const testSyncTimeout = 30 * time.Second
+
 func testResolver(r *http.Request) (store.PrincipalID, bool) {
 	v := r.Header.Get(pidHeader)
 	if v == "" {
@@ -551,7 +561,7 @@ func TestHeartbeat_NoPongWithinTimeout_ClosesConnection(t *testing.T) {
 	// Synchronise on the FakeClock's own waiter count instead: poll
 	// until the writePump has registered its pingTimer, THEN Advance.
 	// That makes the sequence deterministic regardless of host load.
-	waiterDeadline := time.Now().Add(2 * time.Second)
+	waiterDeadline := time.Now().Add(testSyncTimeout)
 	for h.clk.NumWaiters() == 0 {
 		if time.Now().After(waiterDeadline) {
 			t.Fatalf("writePump never registered its pingTimer within 2s")
@@ -561,7 +571,7 @@ func TestHeartbeat_NoPongWithinTimeout_ClosesConnection(t *testing.T) {
 	h.clk.Advance(50 * time.Millisecond) // first ping
 	select {
 	case <-gotPing:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testSyncTimeout):
 		t.Fatalf("test client never observed a ping after 2s")
 	}
 	h.clk.Advance(200 * time.Millisecond) // exceed pong-timeout
@@ -571,7 +581,7 @@ func TestHeartbeat_NoPongWithinTimeout_ClosesConnection(t *testing.T) {
 		if code != closePolicyViolation {
 			t.Fatalf("close code: got %d want %d", code, closePolicyViolation)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testSyncTimeout):
 		t.Fatalf("expected close within 2s")
 	}
 }
@@ -601,7 +611,7 @@ func TestPresence_DisconnectGracePeriod_Offline_After30s(t *testing.T) {
 	// Disconnect.
 	c.Close()
 	// Wait for the disconnect to register on the broadcaster.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testSyncTimeout)
 	for time.Now().Before(deadline) {
 		if !h.bcast.HasConnection(1) {
 			break
@@ -618,7 +628,7 @@ func TestPresence_DisconnectGracePeriod_Offline_After30s(t *testing.T) {
 	// Advance past the 30s grace.
 	h.clk.Advance(31 * time.Second)
 	// Poll for the offline transition.
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(testSyncTimeout)
 	for time.Now().Before(deadline) {
 		if pr, ok := h.srv.presence.Get(1); ok && pr.State == "offline" {
 			return
@@ -700,7 +710,7 @@ func TestRegisterHandler_OverridesBuiltInDispatch(t *testing.T) {
 		if got.frame.Type != clientTypeCallSignal {
 			t.Fatalf("type: got %q want %q", got.frame.Type, clientTypeCallSignal)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testSyncTimeout):
 		t.Fatal("handler not invoked within 2s")
 	}
 }
@@ -775,7 +785,7 @@ func mustJSON(t *testing.T, v any) []byte {
 // connection so a misbehaving server can't hang the test forever.
 func deadlineUnblock(t *testing.T, c *testClient) {
 	t.Helper()
-	_ = c.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = c.conn.SetReadDeadline(time.Now().Add(testSyncTimeout))
 }
 
 // ----- origin / CSWSH tests (Wave 2.9.5 Track A #2) -----
@@ -909,7 +919,7 @@ func TestSocketDeadline_ReadDeadline_FiresOnSilentPeer(t *testing.T) {
 		if code != closePolicyViolation {
 			t.Fatalf("close code: got %d, want %d (1008)", code, closePolicyViolation)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testSyncTimeout):
 		t.Fatal("server did not close silent peer within 2s")
 	}
 }
@@ -938,7 +948,7 @@ func TestPresence_LateConnector_ReceivesSnapshotOfOnlinePeers(t *testing.T) {
 	// Wait for the server to record the state by busy-reading the
 	// presence tracker; without this the snapshot may run before
 	// handlePresence has stored alice's state.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testSyncTimeout)
 	for {
 		if pr, ok := h.srv.Presence().Get(1); ok && pr.State == "online" {
 			break

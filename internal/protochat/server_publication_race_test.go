@@ -168,7 +168,7 @@ func runPublicationRaceIteration(t *testing.T) {
 	// inside run() never synchronises with Shutdown's cc.shutdown read
 	// (no shared mutex or channel covers cc.cancel), so the race fires
 	// regardless of when Shutdown finally calls cc.shutdown.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testSyncTimeout)
 	for {
 		srv.connsMu.Lock()
 		n := len(srv.conns)
@@ -177,7 +177,7 @@ func runPublicationRaceIteration(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("connection never published into s.conns within 2s")
+			t.Fatalf("connection never published into s.conns within %s", testSyncTimeout)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
