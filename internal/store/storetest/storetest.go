@@ -386,9 +386,12 @@ func Run(t *testing.T, f Factory) {
 		{"PreTrash_FreshSnapshotOnRetrash", testPreTrashFreshSnapshotOnRetrash},
 		{"PreTrash_PermanentDeleteClearsSnapshot", testPreTrashPermanentDeleteClearsSnapshot},
 		// -- body-meta precompute (preview + has_attachment, migration 0059) --
-		{"BodyMeta_DefaultsToUncomputed", testBodyMetaDefaultsToUncomputed},
-		{"BodyMeta_SetAndGet_RoundTrip", testBodyMetaSetAndGetRoundTrip},
-		{"BodyMeta_ListNeedingBodyMeta_Pagination", testBodyMetaListNeedingBodyMetaPagination},
+		// The three scenarios run as subtests of a single case so they share
+		// one freshly-migrated store: each top-level case re-applies the full
+		// migration chain via the factory (see the f(t) call below), which on
+		// Postgres is slow enough that three separate cases tipped the
+		// 5-minute confidence-smoke storepg budget over its timeout.
+		{"BodyMeta", testBodyMeta},
 	}
 	for _, c := range cases {
 		tc := c
@@ -8837,6 +8840,16 @@ func testPreTrashPermanentDeleteClearsSnapshot(t *testing.T, s store.Store) {
 	if _, err := s.Meta().GetMessage(ctx, msgID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetMessage after expunge: expected ErrNotFound, got %v", err)
 	}
+}
+
+// testBodyMeta runs the body-meta precompute scenarios as subtests against
+// a single freshly-migrated store. Each scenario provisions its own
+// principal + mailbox, so they are independent despite sharing the store;
+// bundling them keeps the (Postgres-expensive) migration setup to one run.
+func testBodyMeta(t *testing.T, s store.Store) {
+	t.Run("DefaultsToUncomputed", func(t *testing.T) { testBodyMetaDefaultsToUncomputed(t, s) })
+	t.Run("SetAndGetRoundTrip", func(t *testing.T) { testBodyMetaSetAndGetRoundTrip(t, s) })
+	t.Run("ListNeedingBodyMetaPagination", func(t *testing.T) { testBodyMetaListNeedingBodyMetaPagination(t, s) })
 }
 
 // testBodyMetaDefaultsToUncomputed verifies that newly inserted messages
