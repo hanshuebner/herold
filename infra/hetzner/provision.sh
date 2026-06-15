@@ -31,7 +31,7 @@ esac
 apt-get update -y
 apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg lsb-release apt-transport-https \
-  git make jq build-essential unzip zip \
+  git make cmake jq build-essential unzip zip \
   python3 python3-pip python3-venv
 
 #---- Docker (rootful, official repo) -----------------------------------------
