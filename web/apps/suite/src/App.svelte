@@ -141,6 +141,13 @@
     void setMailFavicon(mail.inbox?.unreadEmails ?? 0);
   });
 
+  // Reflect the inbox unread count in the document title so the tab's
+  // hover tooltip (and the tab label) shows it, e.g. "(5) Herold".
+  $effect(() => {
+    const unread = mail.inbox?.unreadEmails ?? 0;
+    document.title = unread > 0 ? `(${unread}) Herold` : 'Herold';
+  });
+
   // Wire the compose stack's auto-minimize hook.
   compose.setBeforeOpenHook(() => composeStack.beforeOpenNew());
 
