@@ -1,6 +1,9 @@
 package storepg
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // TruncateAll wipes every application table while preserving the
 // schema_migrations row so subsequent Open calls see a fully-applied
@@ -21,32 +24,9 @@ import "context"
 // schema-version invariant test in internal/diag/backup, which fires
 // on the manifest side.
 func (s *Store) TruncateAll(ctx context.Context) error {
-	// Terminate any server-side sessions that belong to a previous test's
-	// pool. pgxpool.Pool.Close() sends Terminate to every pooled connection
-	// and waits until the client-side sockets are closed, but the Postgres
-	// server processes Terminate messages asynchronously: there is a brief
-	// but real window on a loaded host where a server backend is still
-	// "idle in transaction" — holding AccessShareLocks on the tables below
-	// — after the client pool considers itself shut down. TRUNCATE requires
-	// ACCESS EXCLUSIVE, so it blocks on those lingering locks.
-	//
-	// pg_terminate_backend sends SIGTERM to the backend process, which
-	// causes it to roll back any open transaction and exit immediately,
-	// releasing all locks. This call is idempotent and safe: every caller
-	// of TruncateAll already guarantees they own the database exclusively.
-	//
-	// Errors are intentionally ignored: if there are no sessions to
-	// terminate, the function returns an empty result set, not an error.
-	_, _ = s.pool.Exec(ctx, `
-		SELECT pg_terminate_backend(pid)
-		FROM pg_stat_activity
-		WHERE datname = current_database()
-		  AND pid != pg_backend_pid()
-	`)
-
-	// Order is loose because every TRUNCATE has CASCADE, but enumerating
-	// keeps the test predictable when the schema grows. Children
-	// listed before parents only as a readability convention.
+	// Enumerating the managed tables keeps the test predictable when the
+	// schema grows. Order is loose because the TRUNCATE below uses CASCADE;
+	// children are listed before parents only as a readability convention.
 	tables := []string{
 		// Attachment shares (per-principal; FK to principals). Cascades
 		// from principals, but enumerated per the convention above.
@@ -116,10 +96,61 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		"principals",
 		"domains",
 	}
-	for _, t := range tables {
-		if _, err := s.pool.Exec(ctx, "TRUNCATE TABLE "+t+" RESTART IDENTITY CASCADE"); err != nil {
-			return err
-		}
+	// Reset row state between tests by truncating every managed table in
+	// one statement, which acquires all the ACCESS EXCLUSIVE locks together.
+	//
+	// The hazard this guards against: pgxpool.Pool.Close() sends Terminate
+	// to each pooled connection and returns once the client sockets are
+	// closed, but the Postgres server reaps those backends asynchronously.
+	// On a loaded host a backend from the *previous* test's pool can still
+	// be alive for a moment afterwards, holding an AccessShareLock from its
+	// last query. The TRUNCATE then waits for ACCESS EXCLUSIVE behind it.
+	// Left unbounded, that wait runs all the way to the package test
+	// timeout (observed as the 5-minute storepg hang in CI runs 112/115/116).
+	//
+	// Everything runs on a single acquired connection so the session-level
+	// lock_timeout actually applies to the TRUNCATE that follows on the
+	// same backend:
+	//   - lock_timeout bounds every TRUNCATE attempt, so a straggler can
+	//     never turn into a multi-minute hang -- worst case is a prompt,
+	//     legible 55P03 error.
+	//   - pg_terminate_backend(pid, timeout) (the two-argument form) BLOCKS
+	//     until the signalled backend has actually exited, unlike the
+	//     one-argument form which returns the instant SIGTERM is sent.
+	//     Terminating stragglers up front clears their locks before we ask
+	//     for ACCESS EXCLUSIVE; the bounded retry re-clears any that raced
+	//     in, then surfaces the error rather than spinning forever.
+	const truncateAttempts = 3
+	truncate := "TRUNCATE TABLE " + strings.Join(tables, ", ") + " RESTART IDENTITY CASCADE"
+
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return err
 	}
-	return nil
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, "SET lock_timeout = '20s'"); err != nil {
+		return err
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < truncateAttempts; attempt++ {
+		// Wait (up to 5s each) for any other backend in this database to
+		// terminate before attempting the TRUNCATE. Errors are ignored:
+		// an empty result set when nothing needs terminating is not an
+		// error, and a transient failure here is retried below anyway.
+		_, _ = conn.Exec(ctx, `
+			SELECT pg_terminate_backend(pid, 5000)
+			FROM pg_stat_activity
+			WHERE datname = current_database()
+			  AND pid <> pg_backend_pid()
+		`)
+
+		if _, err := conn.Exec(ctx, truncate); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
