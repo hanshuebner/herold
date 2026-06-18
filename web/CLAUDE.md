@@ -266,3 +266,25 @@ headers, web manifest `name`) say "Herold". The directory
 apps), not a brand. The pre-import "tabard" name survives only in
 git history, in the merge plan filename, and in the ADR filename;
 new code does not introduce it.
+
+## German strings use real umlauts
+
+German user-facing text must use the actual characters ä/ö/ü/Ä/Ö/Ü
+and ß — never the ASCII transliterations ae/oe/ue/Ae/Oe/Ue/ss. The
+repo is UTF-8 throughout, so type the umlaut. This applies to the
+i18n catalogue (`web/apps/suite/src/lib/i18n/de.ts`), any future
+German catalogue, and German content in `.svelte` literals, error
+messages, comments shown to users, READMEs, and docs.
+
+This regression has shipped to the UI more than once (`Aendern` for
+`Ändern`; a privacy-confirm body full of
+`angehaengt`/`Empfaenger`/`unterstuetzen`/`Identitaet`), so verify
+deliberately rather than trusting that it was done right:
+
+- After editing German strings, grep the file for
+  `(ae|oe|ue|Ae|Oe|Ue|ss)` inside any reader-visible value and
+  replace each transliteration with the proper character before
+  committing.
+- `ss` is legitimate in many words (*Wasser*, *muss*, *dass*) — use
+  grammar judgement, not blanket replacement. The test is "would
+  Duden write `ß` here?"; if yes, write `ß`.
