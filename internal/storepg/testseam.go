@@ -21,6 +21,29 @@ import "context"
 // schema-version invariant test in internal/diag/backup, which fires
 // on the manifest side.
 func (s *Store) TruncateAll(ctx context.Context) error {
+	// Terminate any server-side sessions that belong to a previous test's
+	// pool. pgxpool.Pool.Close() sends Terminate to every pooled connection
+	// and waits until the client-side sockets are closed, but the Postgres
+	// server processes Terminate messages asynchronously: there is a brief
+	// but real window on a loaded host where a server backend is still
+	// "idle in transaction" — holding AccessShareLocks on the tables below
+	// — after the client pool considers itself shut down. TRUNCATE requires
+	// ACCESS EXCLUSIVE, so it blocks on those lingering locks.
+	//
+	// pg_terminate_backend sends SIGTERM to the backend process, which
+	// causes it to roll back any open transaction and exit immediately,
+	// releasing all locks. This call is idempotent and safe: every caller
+	// of TruncateAll already guarantees they own the database exclusively.
+	//
+	// Errors are intentionally ignored: if there are no sessions to
+	// terminate, the function returns an empty result set, not an error.
+	_, _ = s.pool.Exec(ctx, `
+		SELECT pg_terminate_backend(pid)
+		FROM pg_stat_activity
+		WHERE datname = current_database()
+		  AND pid != pg_backend_pid()
+	`)
+
 	// Order is loose because every TRUNCATE has CASCADE, but enumerating
 	// keeps the test predictable when the schema grows. Children
 	// listed before parents only as a readability convention.

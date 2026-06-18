@@ -68,8 +68,12 @@ func (m *metadata) runTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	if err != nil {
 		return fmt.Errorf("storepg: begin: %w", err)
 	}
+	// Deferred rollback is a no-op after a successful Commit but ensures
+	// the transaction is always closed — both on error return and on any
+	// panic inside fn. Without this guard, a panic would orphan an open
+	// transaction on the server until the pool connection is later closed.
+	defer tx.Rollback(ctx) //nolint:errcheck
 	if err := fn(tx); err != nil {
-		_ = tx.Rollback(ctx)
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
