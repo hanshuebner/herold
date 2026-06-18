@@ -29,6 +29,7 @@
   // worker bumps the count (REQ-EXTIMG-BG-INTERNAL-30).
   import './lib/extimg/internalize-status-sync';
   import { contacts } from './lib/contacts/store.svelte';
+  import { setMailFavicon } from './lib/mail-favicon';
   import MailView from './views/MailView.svelte';
   import ChatView from './views/ChatView.svelte';
   import ContactsView from './views/ContactsView.svelte';
@@ -131,6 +132,13 @@
   // Mirror the active locale onto <html lang>.
   $effect(() => {
     document.documentElement.lang = settings.locale;
+  });
+
+  // Keep the browser-tab favicon badge in sync with the inbox unread count.
+  // setMailFavicon only touches document.head (no tracked $state writes) so a
+  // plain $effect is correct here -- no untrack wrapper needed.
+  $effect(() => {
+    void setMailFavicon(mail.inbox?.unreadEmails ?? 0);
   });
 
   // Wire the compose stack's auto-minimize hook.

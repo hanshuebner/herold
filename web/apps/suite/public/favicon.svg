@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>.env{stroke:#222a3d}@media(prefers-color-scheme:dark){.env{stroke:#e9ecef}}</style>
+  <rect class="env" x="1.5" y="3.5" width="22.5" height="16.5" rx="3" fill="none" stroke-width="2.6"/>
+  <path class="env" d="M3 5.7 L12.75 13.2 L22.5 5.7" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
