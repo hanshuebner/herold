@@ -24,8 +24,8 @@ interface SizeDesign {
 const DESIGNS: Record<16 | 32, SizeDesign> = {
   16: {
     env:
-      '<rect x="1.5" y="3.5" width="22.5" height="16.5" rx="3" fill="none" stroke="{S}" stroke-width="2.6"/>' +
-      '<path d="M3 5.7 L12.75 13.2 L22.5 5.7" fill="none" stroke="{S}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>',
+      '<rect x="2.5" y="5.5" width="27" height="21" rx="3.5" fill="none" stroke="{S}" stroke-width="2.6"/>' +
+      '<path d="M4.7 8.5 L16 16.8 L27.3 8.5" fill="none" stroke="{S}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>',
     badge:
       '<rect x="10" y="11" width="20.5" height="20" rx="4.5" fill="#fa5252" stroke="#fff" stroke-width="1.5"/>' +
       '<text x="20.25" y="{Y}" font-size="{FS}" font-weight="bold" fill="#fff" text-anchor="middle" font-family="Arial,Helvetica,sans-serif">{N}</text>',
@@ -33,12 +33,12 @@ const DESIGNS: Record<16 | 32, SizeDesign> = {
   },
   32: {
     env:
-      '<rect x="2" y="4.5" width="22" height="16" rx="3" fill="none" stroke="{S}" stroke-width="2.2"/>' +
-      '<path d="M3.5 6.7 L13 13.6 L22.5 6.7" fill="none" stroke="{S}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
+      '<rect x="2.5" y="5.5" width="27" height="21" rx="3.5" fill="none" stroke="{S}" stroke-width="2.2"/>' +
+      '<path d="M4.7 8.5 L16 16.8 L27.3 8.5" fill="none" stroke="{S}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
     badge:
-      '<rect x="16.5" y="18" width="14" height="12.5" rx="3.5" fill="#fa5252" stroke="#fff" stroke-width="1.6"/>' +
-      '<text x="23.5" y="{Y}" font-size="{FS}" font-weight="bold" fill="#fff" text-anchor="middle" font-family="Arial,Helvetica,sans-serif">{N}</text>',
-    fs: { 1: [10, 27.7], 2: [9.5, 27.5], 3: [7.5, 27] },
+      '<rect x="10" y="11" width="20.5" height="20" rx="4.5" fill="#fa5252" stroke="#fff" stroke-width="1.5"/>' +
+      '<text x="20.25" y="{Y}" font-size="{FS}" font-weight="bold" fill="#fff" text-anchor="middle" font-family="Arial,Helvetica,sans-serif">{N}</text>',
+    fs: { 1: [18, 26.9], 2: [16.5, 26.7], 3: [12, 25.6] },
   },
 };
 
