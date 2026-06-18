@@ -14,8 +14,45 @@ env:
   GO_VERSION: "1.26.4"
 
 jobs:
+  # Gate: skip the heavy nightly jobs when nothing has been pushed since
+  # the previous run. The schedule fires once a day, so "no commits in the
+  # last ~24h" means last night's run already covered the current HEAD and
+  # re-running would just burn a runner VM for the same result. A manual
+  # workflow_dispatch always runs. checkout's default shallow clone is
+  # enough: we only read HEAD's commit timestamp.
+  gate:
+    name: gate (commits since last run)
+    runs-on: [self-hosted, netzhansa, amd64]
+    timeout-minutes: 5
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: gate
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "manual dispatch -- running nightly"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          last=$(git log -1 --format=%ct)
+          now=$(date +%s)
+          age=$(( now - last ))
+          # 24h plus a 1h grace for scheduler jitter, so a commit landing
+          # just after last night's run is never falsely skipped.
+          if [ "${age}" -gt 90000 ]; then
+            echo "HEAD is ${age}s old (no commits in the last ~24h) -- skipping nightly"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "HEAD is ${age}s old -- running nightly"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   fuzz-long:
     name: fuzz (long)
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 360
     steps:
@@ -34,6 +71,8 @@ jobs:
 
   load:
     name: load (REQ-NFR-01 targets)
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 180
     steps:
@@ -48,6 +87,8 @@ jobs:
 
   interop:
     name: interop (third-party deliverability canary)
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 60
     steps:
@@ -62,6 +103,8 @@ jobs:
 
   jmaptest-pin-check:
     name: jmaptest pin freshness
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 5
     # Fails when JMAPTEST_SHA in test/interop/config/jmaptest/Dockerfile
@@ -103,6 +146,8 @@ jobs:
 
   sbom-diff:
     name: sbom diff
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 20
     steps:
