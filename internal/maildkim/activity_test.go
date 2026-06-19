@@ -4,6 +4,7 @@ package maildkim_test
 // a valid activity attribute (REQ-OPS-86a).
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"testing"
@@ -33,7 +34,7 @@ func TestVerify_TruncatedSignatures_ActivityTagged(t *testing.T) {
 			clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 			maildkim.WithMaxVerifications(1),
 		)
-		_, _ = v.Verify(context.Background(), raw)
+		_, _ = v.Verify(context.Background(), bytes.NewReader(raw))
 	})
 }
 
@@ -48,6 +49,6 @@ func TestVerify_NormalPath_ActivityTagged(t *testing.T) {
 			log,
 			clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 		)
-		_, _ = v.Verify(context.Background(), []byte(verifiedMailCRLF))
+		_, _ = v.Verify(context.Background(), bytes.NewReader([]byte(verifiedMailCRLF)))
 	})
 }

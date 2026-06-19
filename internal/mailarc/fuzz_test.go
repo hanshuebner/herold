@@ -1,6 +1,7 @@
 package mailarc_test
 
 import (
+	"bytes"
 	"context"
 	"testing"
 )
@@ -42,7 +43,7 @@ func FuzzVerify(f *testing.F) {
 		if len(raw) > 64*1024 {
 			t.Skip()
 		}
-		_, err := v.Verify(context.Background(), raw)
+		_, err := v.Verify(context.Background(), bytes.NewReader(raw))
 		if err != nil {
 			t.Fatalf("unexpected internal error on fuzz input: %v", err)
 		}

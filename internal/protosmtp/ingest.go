@@ -70,10 +70,13 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 	}
 
 	// Mail-auth: DKIM / SPF (using SES-reported source IP per REQ-HOOK-SES-04)
-	// / DMARC / ARC.
+	// / DMARC / ARC. The IngestBytes caller holds req.Body as a []byte
+	// (SES path); the verifiers accept io.Reader so we wrap with
+	// bytes.NewReader. The body is not held twice: each verifier streams the
+	// reader forward and does not buffer the body.
 	var authResults mailauth.AuthResults
 	if s.dkim != nil {
-		if dkimRes, err := s.dkim.Verify(ctx, req.Body); err == nil {
+		if dkimRes, err := s.dkim.Verify(ctx, bytes.NewReader(req.Body)); err == nil {
 			authResults.DKIM = dkimRes
 		} else {
 			s.log.WarnContext(ctx, "ingest: dkim verify error",
@@ -106,7 +109,7 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 		}
 	}
 	if s.arc != nil {
-		if arcRes, err := s.arc.Verify(ctx, req.Body); err == nil {
+		if arcRes, err := s.arc.Verify(ctx, bytes.NewReader(req.Body)); err == nil {
 			authResults.ARC = arcRes
 		}
 	}

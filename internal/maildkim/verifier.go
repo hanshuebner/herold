@@ -1,6 +1,7 @@
 package maildkim
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -14,6 +15,12 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailauth"
 )
+
+// maxHeaderSize is the upper bound for the header block buffered by Verify.
+// RFC 5321 §4.5.3.1.6 limits the total header line count; realistic MTA
+// headers stay well under 256 KB. Anything larger is treated as a malformed
+// message.
+const maxHeaderSize = 256 * 1024
 
 // DefaultMaxVerifications caps how many DKIM signatures the verifier will
 // evaluate on a single message. RFC 6376 does not impose a limit; we pick
@@ -72,23 +79,39 @@ func New(resolver mailauth.Resolver, logger *slog.Logger, clk clock.Clock, opts 
 	return v
 }
 
-// Verify verifies every DKIM-Signature header present in raw (RFC 5322
-// message bytes, headers + body) and returns one mailauth.DKIMResult per
-// signature. An empty slice with a nil error means the message carried no
-// DKIM signatures.
+// Verify verifies every DKIM-Signature header present in r (a seekable-or-
+// single-pass RFC 5322 message stream: headers + body) and returns one
+// mailauth.DKIMResult per signature. An empty slice with a nil error means the
+// message carried no DKIM signatures.
 //
-// Verify does not return an error for a bad signature: bad signatures
-// surface as DKIMResult.Status == AuthFail with a reason. A non-nil error
-// indicates an I/O or internal failure: the caller should treat the
-// whole message's DKIM verdict as indeterminate (the caller will usually
-// report a synthetic AuthTempError DKIMResult in that case).
-func (v *Verifier) Verify(ctx context.Context, raw []byte) ([]mailauth.DKIMResult, error) {
+// Verify buffers only the header block (up to maxHeaderSize bytes) so it can
+// extract selector/algorithm tags without holding the body in RAM. The body is
+// streamed through go-msgauth's body-hash computation; nothing beyond the header
+// block is ever held in memory.
+//
+// Verify does not return an error for a bad signature: bad signatures surface as
+// DKIMResult.Status == AuthFail with a reason. A non-nil error indicates an I/O
+// or internal failure; the caller should treat the whole message's DKIM verdict
+// as indeterminate.
+func (v *Verifier) Verify(ctx context.Context, r io.Reader) ([]mailauth.DKIMResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if len(raw) == 0 {
+
+	// Buffer the header block (up to maxHeaderSize). We need it for two
+	// purposes:
+	//   1. ExtractSignatureTags: parses s=, a=, d= from DKIM-Signature
+	//      headers — go-msgauth's Verification struct does not expose them.
+	//   2. Reconstruct the full stream: io.MultiReader(header, rest) feeds
+	//      VerifyWithOptions so the body is streamed rather than buffered.
+	headerBuf, rest, err := readHeaderBlock(r)
+	if err != nil {
+		return nil, fmt.Errorf("maildkim: read header: %w", err)
+	}
+	if len(headerBuf) == 0 {
 		return nil, nil
 	}
+
 	opts := &dkim.VerifyOptions{
 		// Bridge the dkim lookup callback through our Resolver. The
 		// library invokes it synchronously from Verify, so the closure
@@ -99,7 +122,10 @@ func (v *Verifier) Verify(ctx context.Context, raw []byte) ([]mailauth.DKIMResul
 		MaxVerifications: v.max,
 	}
 
-	verifs, err := dkim.VerifyWithOptions(bytes.NewReader(raw), opts)
+	// Reconstruct the full message stream: the buffered header block
+	// (including the blank separator line) followed by the unconsumed body.
+	fullStream := io.MultiReader(bytes.NewReader(headerBuf), rest)
+	verifs, err := dkim.VerifyWithOptions(fullStream, opts)
 	// ErrTooManySignatures is returned alongside the first v.max
 	// verifications; we accept that result and log a note but do not
 	// propagate the error to the caller (we have already enforced the
@@ -122,11 +148,11 @@ func (v *Verifier) Verify(ctx context.Context, raw []byte) ([]mailauth.DKIMResul
 	for _, vr := range verifs {
 		results = append(results, verificationToResult(vr))
 	}
-	// Overlay s= / a= tags from the raw signature headers: go-msgauth
+	// Overlay s= / a= tags from the buffered header block: go-msgauth
 	// does not surface those on its Verification struct but downstream
 	// consumers (DMARC alignment, spam scoring, Authentication-Results
 	// rendering) need them.
-	return enrichWithTags(results, ExtractSignatureTags(raw)), nil
+	return enrichWithTags(results, ExtractSignatureTags(headerBuf)), nil
 }
 
 // verificationToResult maps a dkim.Verification to mailauth.DKIMResult,
@@ -289,14 +315,52 @@ func enrichWithTags(results []mailauth.DKIMResult, tags []SignatureTags) []maila
 	return results
 }
 
-// ReadAll is a helper for callers that have a streaming body. It reads
-// the entire message into memory and delegates to Verify. The stdlib
-// already does this for net/mail-sized messages; SMTP delivery paths
-// cap the message at the configured max size before reaching here.
-func (v *Verifier) ReadAll(ctx context.Context, r io.Reader) ([]mailauth.DKIMResult, error) {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return nil, err
+// readHeaderBlock reads from r until the RFC 5322 header/body separator
+// (CRLF CRLF or LF LF) is found or maxHeaderSize bytes have been consumed.
+// It returns the header bytes including the separator so the full stream can
+// be reconstructed as io.MultiReader(header, rest). The returned rest reader
+// must be consumed (or drained) by the caller to avoid leaving the underlying
+// reader in an indeterminate state.
+//
+// readHeaderBlock is a package-level helper used by both Verify and
+// ExtractSignatureTags to avoid reading the body into memory.
+func readHeaderBlock(r io.Reader) (header []byte, rest io.Reader, err error) {
+	br := bufio.NewReaderSize(r, 4096)
+	var buf bytes.Buffer
+	// Scan line by line (handling both CRLF and LF endings). We detect the
+	// blank line that separates headers from body.
+	for buf.Len() < maxHeaderSize {
+		line, readErr := br.ReadBytes('\n')
+		buf.Write(line)
+		// A blank line (CRLF or lone LF) marks the end of the header.
+		trimmed := bytes.TrimRight(line, "\r\n")
+		if len(trimmed) == 0 && len(line) > 0 {
+			// Return the buffered header and a MultiReader that prepends
+			// whatever the bufio.Reader already buffered ahead of the
+			// separator, then the original reader.
+			remaining := io.MultiReader(br, r)
+			return buf.Bytes(), remaining, nil
+		}
+		if readErr == io.EOF {
+			// No body separator found; the whole input is a header (or
+			// malformed message). Return the header block and an empty
+			// reader.
+			return buf.Bytes(), bytes.NewReader(nil), nil
+		}
+		if readErr != nil {
+			return nil, nil, readErr
+		}
 	}
-	return v.Verify(ctx, raw)
+	// Exceeded maxHeaderSize without finding the separator. Return what we
+	// have so the caller gets a bounded error rather than an infinite loop.
+	remaining := io.MultiReader(br, r)
+	return buf.Bytes(), remaining, nil
+}
+
+// ExtractHeaderBlock buffers only the header portion of r and returns it
+// as a byte slice, discarding the body. It is exported for use by deliver.go
+// when extracting the From: header for DMARC without reading the body.
+func ExtractHeaderBlock(r io.Reader) ([]byte, error) {
+	h, _, err := readHeaderBlock(r)
+	return h, err
 }

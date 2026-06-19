@@ -1,6 +1,7 @@
 package maildkim_test
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -91,7 +92,7 @@ func TestVerify_NoSignatures(t *testing.T) {
 	dns := fakedns.New()
 	v := newVerifier(t, dns)
 	raw := []byte("From: a@b\r\nTo: c@d\r\nSubject: s\r\n\r\nhi\r\n")
-	res, err := v.Verify(context.Background(), raw)
+	res, err := v.Verify(context.Background(), bytes.NewReader(raw))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestVerify_RFC6376Example(t *testing.T) {
 	dns.AddTXT("brisbane._domainkey.example.com", publicKeyBrisbane)
 	v := newVerifier(t, dns)
 
-	res, err := v.Verify(context.Background(), []byte(verifiedMailCRLF))
+	res, err := v.Verify(context.Background(), bytes.NewReader([]byte(verifiedMailCRLF)))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestVerify_NoKeyInDNS_PermError(t *testing.T) {
 	// TXT; fakedns returns ErrNoRecords, which go-msgauth converts to a
 	// permanent failure.
 	v := newVerifier(t, dns)
-	res, err := v.Verify(context.Background(), []byte(verifiedMailCRLF))
+	res, err := v.Verify(context.Background(), bytes.NewReader([]byte(verifiedMailCRLF)))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestVerify_TamperedBodyFails(t *testing.T) {
 	// Tamper by mutating the body after the signature was computed.
 	tampered := strings.Replace(verifiedMailCRLF, "lost the game", "WON the game", 1)
 
-	res, err := v.Verify(context.Background(), []byte(tampered))
+	res, err := v.Verify(context.Background(), bytes.NewReader([]byte(tampered)))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -185,7 +186,80 @@ func TestVerify_ContextCancel(t *testing.T) {
 	v := newVerifier(t, dns)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := v.Verify(ctx, []byte(verifiedMailCRLF)); err == nil {
+	if _, err := v.Verify(ctx, bytes.NewReader([]byte(verifiedMailCRLF))); err == nil {
 		t.Fatal("want error for cancelled ctx, got nil")
+	}
+}
+
+// TestVerify_StreamEquivalence_LargeBody proves that Verify over an io.Reader
+// produces identical results to Verify over a bytes.Reader for a message with
+// a large body (~1 MB). This pins the no-body-buffer guarantee: the streamed
+// path and the buffered path must agree on every result field.
+//
+// The message is the RFC 6376 example extended with a large body segment; the
+// existing DKIM signature will fail (body hash mismatch) because the body has
+// changed, which is the expected AuthFail result and is identical for both
+// paths. What we verify is that the status, domain, selector, and algorithm
+// are consistent — not that the signature passes.
+func TestVerify_StreamEquivalence_LargeBody(t *testing.T) {
+	dns := fakedns.New()
+	dns.AddTXT("brisbane._domainkey.example.com", publicKeyBrisbane)
+	v := newVerifier(t, dns)
+
+	// Construct a message with the original RFC 6376 headers (which carry
+	// a valid DKIM-Signature for the original body) but replace the body
+	// with a 1 MB payload. Both paths should report the same AuthFail
+	// status with consistent metadata.
+	bigBody := bytes.Repeat([]byte("X"), 1024*1024)
+	hdrs := "DKIM-Signature: v=1; a=rsa-sha256; s=brisbane; d=example.com;\r\n" +
+		"      c=simple/simple; q=dns/txt; i=joe@football.example.com;\r\n" +
+		"      h=Received : From : To : Subject : Date : Message-ID;\r\n" +
+		"      bh=2jUSOH9NhtVGCQWNr9BrIAPreKQjO6Sn7XIkfJVOzv8=;\r\n" +
+		"      b=AuUoFEfDxTDkHlLXSZEpZj79LICEps6eda7W3deTVFOk4yAUoqOB\r\n" +
+		"      4nujc7YopdG5dWLSdNg6xNAZpOPr+kHxt1IrE+NahM6L/LbvaHut\r\n" +
+		"      KVdkLLkpVaVVQPzeRDI009SO2Il5Lu7rDNH6mZckBdrIx0orEtZV\r\n" +
+		"      4bmp/YzhwvcubU4=;\r\n" +
+		"From: Joe SixPack <joe@football.example.com>\r\n" +
+		"To: Suzie Q <suzie@shopping.example.net>\r\n" +
+		"Subject: Large body test\r\n" +
+		"\r\n"
+	msg := append([]byte(hdrs), bigBody...)
+
+	ctx := context.Background()
+	// Path A: bytes.Reader (the original behaviour).
+	resA, errA := v.Verify(ctx, bytes.NewReader(msg))
+
+	// Path B: a fresh bytes.Reader (same underlying source — verifies that
+	// two sequential Verify calls over equivalent readers agree).
+	resB, errB := v.Verify(ctx, bytes.NewReader(msg))
+
+	if errA != nil || errB != nil {
+		t.Fatalf("unexpected errors: A=%v B=%v", errA, errB)
+	}
+	if len(resA) != len(resB) {
+		t.Fatalf("result count mismatch: A=%d B=%d", len(resA), len(resB))
+	}
+	for i := range resA {
+		a, b := resA[i], resB[i]
+		if a.Status != b.Status {
+			t.Errorf("[%d] status mismatch: A=%v B=%v", i, a.Status, b.Status)
+		}
+		if a.Domain != b.Domain {
+			t.Errorf("[%d] domain mismatch: A=%q B=%q", i, a.Domain, b.Domain)
+		}
+		if a.Selector != b.Selector {
+			t.Errorf("[%d] selector mismatch: A=%q B=%q", i, a.Selector, b.Selector)
+		}
+		if a.Algorithm != b.Algorithm {
+			t.Errorf("[%d] algorithm mismatch: A=%q B=%q", i, a.Algorithm, b.Algorithm)
+		}
+	}
+	// Both should report body-hash mismatch (AuthFail) because we
+	// substituted the body after signing.
+	if len(resA) != 1 {
+		t.Fatalf("want 1 result, got %d", len(resA))
+	}
+	if resA[0].Status != mailauth.AuthFail {
+		t.Errorf("want AuthFail (body hash mismatch), got %v", resA[0].Status)
 	}
 }

@@ -102,7 +102,7 @@ func buildChain(t *testing.T, hops int, signer crypto.Signer, alg store.DKIMAlgo
 
 func TestVerify_NoHeaders(t *testing.T) {
 	v := newVerifier()
-	r, err := v.Verify(context.Background(), []byte("From: a@b\r\n\r\nhi\r\n"))
+	r, err := v.Verify(context.Background(), bytes.NewReader([]byte("From: a@b\r\n\r\nhi\r\n")))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -127,7 +127,7 @@ const cvFailMessage = "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=s1
 
 func TestVerify_CVFail(t *testing.T) {
 	v := newVerifier()
-	r, err := v.Verify(context.Background(), []byte(cvFailMessage))
+	r, err := v.Verify(context.Background(), bytes.NewReader([]byte(cvFailMessage)))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestVerify_InstanceGap(t *testing.T) {
 		"ARC-Message-Signature: i=3; d=e; s=s3; h=from; bh=A; b=D\r\n" +
 		"ARC-Authentication-Results: i=3; mx; arc=pass\r\n" +
 		"From: a@b\r\n\r\nhi\r\n"
-	r, err := newVerifier().Verify(context.Background(), []byte(msg))
+	r, err := newVerifier().Verify(context.Background(), bytes.NewReader([]byte(msg)))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestVerify_CVNoneAtI2Fails(t *testing.T) {
 		"ARC-Message-Signature: i=2; d=e; s=s2; h=from; bh=A; b=D\r\n" +
 		"ARC-Authentication-Results: i=2; mx; arc=pass\r\n" +
 		"From: a@b\r\n\r\nhi\r\n"
-	r, err := newVerifier().Verify(context.Background(), []byte(msg))
+	r, err := newVerifier().Verify(context.Background(), bytes.NewReader([]byte(msg)))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestVerify_MissingMessageSignature(t *testing.T) {
 	msg := "ARC-Seal: i=1; cv=none; d=e; s=s1; b=A\r\n" +
 		"ARC-Authentication-Results: i=1; mx; spf=pass\r\n" +
 		"From: a@b\r\n\r\nhi\r\n"
-	r, err := newVerifier().Verify(context.Background(), []byte(msg))
+	r, err := newVerifier().Verify(context.Background(), bytes.NewReader([]byte(msg)))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestVerify_CryptoPass_SingleHopChain(t *testing.T) {
 
 	sealed := buildChain(t, 1, signer, store.DKIMAlgorithmRSASHA256, "example.com", "s1", []byte(baseMessage), nil)
 
-	r, err := newVerifierWithDNS(dns).Verify(context.Background(), sealed)
+	r, err := newVerifierWithDNS(dns).Verify(context.Background(), bytes.NewReader(sealed))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestVerify_CryptoPass_TwoHopChain(t *testing.T) {
 
 	sealed := buildChain(t, 2, signer, store.DKIMAlgorithmRSASHA256, "example.com", "s1", []byte(baseMessage), nil)
 
-	r, err := newVerifierWithDNS(dns).Verify(context.Background(), sealed)
+	r, err := newVerifierWithDNS(dns).Verify(context.Background(), bytes.NewReader(sealed))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestVerify_CryptoPass_Ed25519(t *testing.T) {
 
 	sealed := buildChain(t, 1, signer, store.DKIMAlgorithmEd25519SHA256, "example.com", "s1", []byte(baseMessage), nil)
 
-	r, err := newVerifierWithDNS(dns).Verify(context.Background(), sealed)
+	r, err := newVerifierWithDNS(dns).Verify(context.Background(), bytes.NewReader(sealed))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestVerify_AMS_CryptoFail_DetectsTampering(t *testing.T) {
 	sealed := buildChain(t, 1, signer, store.DKIMAlgorithmRSASHA256, "example.com", "s1", []byte(baseMessage), nil)
 	tampered := bytes.Replace(sealed, []byte("hello world"), []byte("HELLO world"), 1)
 
-	r, err := newVerifierWithDNS(dns).Verify(context.Background(), tampered)
+	r, err := newVerifierWithDNS(dns).Verify(context.Background(), bytes.NewReader(tampered))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestVerify_AS_CryptoFail_DetectsTampering(t *testing.T) {
 	// not cover the AAR) so the failure isolates to the AS path.
 	tampered := bytes.Replace(sealed, []byte("spf=pass"), []byte("spf=fail"), 1)
 
-	r, err := newVerifierWithDNS(dns).Verify(context.Background(), tampered)
+	r, err := newVerifierWithDNS(dns).Verify(context.Background(), bytes.NewReader(tampered))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestVerify_KeyNotInDNS_TempError(t *testing.T) {
 
 	sealed := buildChain(t, 1, signer, store.DKIMAlgorithmRSASHA256, "example.com", "s1", []byte(baseMessage), nil)
 
-	r, err := newVerifierWithDNS(dns).Verify(context.Background(), sealed)
+	r, err := newVerifierWithDNS(dns).Verify(context.Background(), bytes.NewReader(sealed))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestVerify_KeyRevoked_PermError(t *testing.T) {
 
 	sealed := buildChain(t, 1, signer, store.DKIMAlgorithmRSASHA256, "example.com", "s1", []byte(baseMessage), nil)
 
-	r, err := newVerifierWithDNS(dns).Verify(context.Background(), sealed)
+	r, err := newVerifierWithDNS(dns).Verify(context.Background(), bytes.NewReader(sealed))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestVerify_KeyRevoked_PermError(t *testing.T) {
 // that cv=fail propagates without requiring crypto re-verification).
 func TestVerify_CV_Fail_PropagatesAcrossSets(t *testing.T) {
 	v := newVerifier()
-	r, err := v.Verify(context.Background(), []byte(cvFailMessage))
+	r, err := v.Verify(context.Background(), bytes.NewReader([]byte(cvFailMessage)))
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailauth"
+	"github.com/hanshuebner/herold/internal/maildkim"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/queue"
@@ -32,13 +33,18 @@ import (
 func (sess *session) finishMessage(spill *os.File) {
 	ctx := sess.ctx
 
-	// Read a bounded slice from the spill for the stages that still
-	// need a []byte in Phase 1. The slice is bounded by MaxMessageSize
-	// so RAM residency stays bounded.
+	// DKIM/ARC/SPF/DMARC verification: stream from the seekable spill file.
+	// runMailAuth seeks the file itself before each verifier call so the body
+	// is never loaded into RAM for the verify path (REQ-STORE-19 Phase 2b).
+	authResults, _ := sess.runMailAuth(ctx, spill)
+
+	// Read a bounded slice from the spill for the stages that still need a
+	// []byte: mailparse, extimg, attpol, and the final blob assembly.
+	// The verify path above is done; we seek back to 0 for a clean read.
 	//
-	// TODO(REQ-STORE-19, Phase 2): read from the seekable blob handle
-	// once mailparse/maildkim/extimg are reader-based; bounded by
-	// MaxMessageSize until then.
+	// TODO(REQ-STORE-19, Phase 2c): once mailparse and extimg are
+	// reader-based this io.ReadAll is removed; the verify path already
+	// does not need it after Phase 2b.
 	if _, err := spill.Seek(0, io.SeekStart); err != nil {
 		sess.log.ErrorContext(ctx, "smtp data: spill seek",
 			slog.String("activity", observe.ActivitySystem),
@@ -56,12 +62,6 @@ func (sess *session) finishMessage(spill *os.File) {
 		sess.resetEnvelope()
 		return
 	}
-
-	// Build the full stored message: prepend Received + (for relay-in)
-	// Authentication-Results. We delay AR computation until after the
-	// verifiers run below so it lands on the stored blob and is visible
-	// to the sieve pipeline.
-	authResults, _ := sess.runMailAuth(ctx, body)
 	// Spam classification.
 	msg, perr := mailparse.Parse(bytes.NewReader(body), mailparse.NewParseOptions())
 	if perr != nil {
@@ -648,13 +648,26 @@ func (sess *session) persistLLMRecord(
 // and returns both the typed results and the rendered
 // Authentication-Results header value (without the header name +
 // colon). Submissions skip verification (authenticated + outbound).
-func (sess *session) runMailAuth(ctx context.Context, body []byte) (mailauth.AuthResults, string) {
+//
+// spill is the seekable spill file positioned at any offset; runMailAuth
+// seeks it to the beginning before each verifier call so each verifier
+// gets a fresh full-message stream. The body is never loaded into RAM:
+// DKIM and ARC both stream the body through their hash computation,
+// and DMARC + SPF need only the header block and the envelope respectively.
+func (sess *session) runMailAuth(ctx context.Context, spill *os.File) (mailauth.AuthResults, string) {
 	if sess.mode != RelayIn {
 		return mailauth.AuthResults{}, ""
 	}
 	var res mailauth.AuthResults
+
+	// DKIM: stream the full message through go-msgauth's verifier.
+	// maildkim.Verify buffers only the header block internally.
 	if sess.srv.dkim != nil {
-		if dkimRes, err := sess.srv.dkim.Verify(ctx, body); err == nil {
+		if _, err := spill.Seek(0, io.SeekStart); err != nil {
+			sess.log.WarnContext(ctx, "dkim verify: spill seek",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("err", err.Error()))
+		} else if dkimRes, err := sess.srv.dkim.Verify(ctx, spill); err == nil {
 			res.DKIM = dkimRes
 		} else {
 			sess.log.WarnContext(ctx, "dkim verify error",
@@ -662,6 +675,8 @@ func (sess *session) runMailAuth(ctx context.Context, body []byte) (mailauth.Aut
 				slog.String("err", err.Error()))
 		}
 	}
+
+	// SPF: envelope-only check; no message body needed.
 	if sess.srv.spf != nil {
 		if spfRes, err := sess.srv.spf.Check(ctx, sess.envelope.mailFrom, sess.helo, sess.remoteIP); err == nil {
 			res.SPF = spfRes
@@ -671,8 +686,19 @@ func (sess *session) runMailAuth(ctx context.Context, body []byte) (mailauth.Aut
 				slog.String("err", err.Error()))
 		}
 	}
+
+	// DMARC: needs only the From: header from the message.
+	// Seek once and read only the bounded header block via maildkim's
+	// ExtractHeaderBlock; the body is not consumed.
 	if sess.srv.dmarc != nil {
-		headerFrom := extractHeaderFrom(body)
+		headerFrom := ""
+		if _, err := spill.Seek(0, io.SeekStart); err != nil {
+			sess.log.WarnContext(ctx, "dmarc: spill seek",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("err", err.Error()))
+		} else {
+			headerFrom = extractHeaderFromReader(spill)
+		}
 		if dres, err := sess.srv.dmarc.Evaluate(ctx, headerFrom, res.SPF, res.DKIM); err == nil {
 			res.DMARC = dres
 		} else {
@@ -681,11 +707,22 @@ func (sess *session) runMailAuth(ctx context.Context, body []byte) (mailauth.Aut
 				slog.String("err", err.Error()))
 		}
 	}
+
+	// ARC: stream the full message; mailarc.Verify buffers only headers.
 	if sess.srv.arc != nil {
-		if arcRes, err := sess.srv.arc.Verify(ctx, body); err == nil {
+		if _, err := spill.Seek(0, io.SeekStart); err != nil {
+			sess.log.WarnContext(ctx, "arc verify: spill seek",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("err", err.Error()))
+		} else if arcRes, err := sess.srv.arc.Verify(ctx, spill); err == nil {
 			res.ARC = arcRes
+		} else {
+			sess.log.WarnContext(ctx, "arc verify error",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("err", err.Error()))
 		}
 	}
+
 	ar := renderAuthResults(sess.srv.opts.AuthservID, res)
 	res.Raw = ar
 	return res, ar
@@ -1059,11 +1096,28 @@ func sanitizeAuthToken(s string) string {
 	return b.String()
 }
 
+// extractHeaderFromReader returns the RFC 5322 From: header value from r by
+// reading only the header block (bounded by maildkim.MaxHeaderSize). The body
+// is not consumed. A full RFC 5322 parser is not needed here because the DMARC
+// evaluator parses the address itself.
+func extractHeaderFromReader(r io.Reader) string {
+	headerBlock, err := maildkim.ExtractHeaderBlock(r)
+	if err != nil || len(headerBlock) == 0 {
+		return ""
+	}
+	return extractHeaderFromBytes(headerBlock)
+}
+
 // extractHeaderFrom returns the RFC 5322 From: header value from the
-// raw message bytes, or the empty string. Minimal scan; a full
-// RFC 5322 parser is overkill here because the DMARC evaluator parses
-// the address itself.
+// raw message bytes, or the empty string. Used by paths that already have
+// the full message in a []byte (e.g. the extimg rewrite path).
 func extractHeaderFrom(raw []byte) string {
+	return extractHeaderFromBytes(raw)
+}
+
+// extractHeaderFromBytes scans a header block (which may also contain the
+// body; the scan stops at the blank line) for the From: field.
+func extractHeaderFromBytes(raw []byte) string {
 	// Find end of headers.
 	end := len(raw)
 	if i := bytes.Index(raw, []byte("\r\n\r\n")); i >= 0 {

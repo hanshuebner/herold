@@ -1,6 +1,7 @@
 package mailarc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto"
@@ -12,6 +13,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +21,11 @@ import (
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// maxHeaderSize is the upper bound for the header block buffered by Verify.
+// Must match the DKIM verifier's constant; both are bounded well below any
+// real MTA's working set.
+const maxHeaderSize = 256 * 1024
 
 // HeaderARCSeal is the ARC-Seal header name as defined in RFC 8617 §4.1.2.
 const HeaderARCSeal = "ARC-Seal"
@@ -53,20 +60,31 @@ func New(resolver mailauth.Resolver) *Verifier {
 	return &Verifier{resolver: resolver}
 }
 
-// Verify inspects raw (RFC 5322 message bytes) for an ARC chain and
-// returns its status.
+// Verify inspects r (a single-forward RFC 5322 message stream) for an ARC
+// chain and returns its status.
+//
+// Verify buffers only the header block (up to maxHeaderSize bytes) to extract
+// the ARC sets; the body is streamed through a single SHA-256 pass to verify
+// each AMS body hash. Nothing beyond the header block is held in RAM.
 //
 // When no ARC headers are present the result is Status == AuthNone with
 // Chain == 0 and a nil error. When the chain is structurally valid the
 // status is AuthPass; structural failures produce AuthFail with a
 // reason. A non-nil error indicates an internal failure (context
 // cancel, allocator limits).
-func (v *Verifier) Verify(ctx context.Context, raw []byte) (mailauth.ARCResult, error) {
+func (v *Verifier) Verify(ctx context.Context, r io.Reader) (mailauth.ARCResult, error) {
 	if err := ctx.Err(); err != nil {
 		return mailauth.ARCResult{}, err
 	}
 
-	sets, err := extractARCSets(raw)
+	// Buffer the header block (bounded) for ARC-set extraction; leave the
+	// body as a streaming reader for the body-hash computation below.
+	headerBuf, bodyReader, err := readARCHeaderBlock(r)
+	if err != nil {
+		return mailauth.ARCResult{Status: mailauth.AuthFail, Reason: "header read: " + err.Error()}, nil
+	}
+
+	sets, err := extractARCSets(headerBuf)
 	if err != nil {
 		return mailauth.ARCResult{
 			Status: mailauth.AuthFail,
@@ -74,9 +92,12 @@ func (v *Verifier) Verify(ctx context.Context, raw []byte) (mailauth.ARCResult, 
 		}, nil
 	}
 	if len(sets) == 0 {
+		// Drain the body so the underlying reader is not left mid-stream.
+		_, _ = io.Copy(io.Discard, bodyReader)
 		return mailauth.ARCResult{Status: mailauth.AuthNone}, nil
 	}
 	if len(sets) > MaxChainLength {
+		_, _ = io.Copy(io.Discard, bodyReader)
 		return mailauth.ARCResult{
 			Status: mailauth.AuthFail,
 			Chain:  len(sets),
@@ -90,6 +111,7 @@ func (v *Verifier) Verify(ctx context.Context, raw []byte) (mailauth.ARCResult, 
 	for i, s := range sets {
 		want := i + 1
 		if s.instance != want {
+			_, _ = io.Copy(io.Discard, bodyReader)
 			return mailauth.ARCResult{
 				Status: mailauth.AuthFail,
 				Chain:  len(sets),
@@ -97,6 +119,7 @@ func (v *Verifier) Verify(ctx context.Context, raw []byte) (mailauth.ARCResult, 
 			}, nil
 		}
 		if !s.hasSeal || !s.hasMsgSig || !s.hasAAR {
+			_, _ = io.Copy(io.Discard, bodyReader)
 			return mailauth.ARCResult{
 				Status: mailauth.AuthFail,
 				Chain:  len(sets),
@@ -118,6 +141,7 @@ func (v *Verifier) Verify(ctx context.Context, raw []byte) (mailauth.ARCResult, 
 		// Continue to crypto-verify below.
 	case "none":
 		if last.instance != 1 {
+			_, _ = io.Copy(io.Discard, bodyReader)
 			return mailauth.ARCResult{
 				Status: mailauth.AuthFail,
 				Chain:  len(sets),
@@ -128,12 +152,14 @@ func (v *Verifier) Verify(ctx context.Context, raw []byte) (mailauth.ARCResult, 
 	case "fail":
 		// RFC 8617 §5.1.1: cv=fail is permanent; no need to crypto-
 		// verify the chain — the seal's own author declared it broken.
+		_, _ = io.Copy(io.Discard, bodyReader)
 		return mailauth.ARCResult{
 			Status: mailauth.AuthFail,
 			Chain:  len(sets),
 			Reason: "cv=fail",
 		}, nil
 	default:
+		_, _ = io.Copy(io.Discard, bodyReader)
 		return mailauth.ARCResult{
 			Status: mailauth.AuthFail,
 			Chain:  len(sets),
@@ -141,11 +167,19 @@ func (v *Verifier) Verify(ctx context.Context, raw []byte) (mailauth.ARCResult, 
 		}, nil
 	}
 
+	// Compute the relaxed-body SHA-256 hash once by streaming the body;
+	// all AMS instances check the same body hash so we do it here before
+	// the per-set loop and pass the result in.
+	bodyHash, herr := streamBodyHash(bodyReader)
+	if herr != nil {
+		return mailauth.ARCResult{}, fmt.Errorf("mailarc: body hash: %w", herr)
+	}
+
 	// Per-set cryptographic verification. We require every prior AS to
 	// be cryptographically valid AND every prior AMS to be valid; the
 	// final cv= tag's claim ("pass"/"none") is only honoured if the
 	// crypto agrees.
-	if cryptoStatus, reason, err := v.verifyChainCrypto(ctx, sets, raw); err != nil {
+	if cryptoStatus, reason, err := v.verifyChainCrypto(ctx, sets, headerBuf, bodyHash); err != nil {
 		// Internal error (context cancel) propagates.
 		return mailauth.ARCResult{}, err
 	} else if cryptoStatus != mailauth.AuthPass {
@@ -160,25 +194,136 @@ func (v *Verifier) Verify(ctx context.Context, raw []byte) (mailauth.ARCResult, 
 	return mailauth.ARCResult{Status: mailauth.AuthPass, Chain: len(sets)}, nil
 }
 
+// readARCHeaderBlock reads from r until the RFC 5322 header/body separator
+// (CRLF CRLF or lone LF LF) is found, bounded at maxHeaderSize. The returned
+// header slice includes the separator bytes so it can be fed directly to
+// extractARCSets (which calls splitHeaderBody internally). The returned
+// bodyReader is the rest of the stream starting at the first body byte.
+func readARCHeaderBlock(r io.Reader) (header []byte, bodyReader io.Reader, err error) {
+	br := bufio.NewReaderSize(r, 4096)
+	var buf bytes.Buffer
+	for buf.Len() < maxHeaderSize {
+		line, readErr := br.ReadBytes('\n')
+		buf.Write(line)
+		trimmed := bytes.TrimRight(line, "\r\n")
+		if len(trimmed) == 0 && len(line) > 0 {
+			// Blank line found: header/body separator.
+			remaining := io.MultiReader(br, r)
+			return buf.Bytes(), remaining, nil
+		}
+		if readErr == io.EOF {
+			return buf.Bytes(), bytes.NewReader(nil), nil
+		}
+		if readErr != nil {
+			return nil, nil, readErr
+		}
+	}
+	remaining := io.MultiReader(br, r)
+	return buf.Bytes(), remaining, nil
+}
+
+// streamBodyHash streams body through the relaxed body canonicaliser and
+// returns the SHA-256 digest. It does not buffer body; it exists so the ARC
+// verifier computes the body hash without holding the entire body in RAM.
+func streamBodyHash(body io.Reader) ([]byte, error) {
+	h := sha256.New()
+	if err := canonicaliseBodyRelaxedStream(body, h); err != nil {
+		return nil, err
+	}
+	return h.Sum(nil), nil
+}
+
+// canonicaliseBodyRelaxedStream applies RFC 6376 §3.4.4 relaxed body
+// canonicalisation by reading from body and writing the canonical form into
+// w. It:
+//   - collapses runs of whitespace inside each line to a single SP,
+//   - strips trailing whitespace at end of each line,
+//   - strips trailing empty lines,
+//   - ensures the final output ends with exactly one CRLF.
+//
+// This is the streaming equivalent of canonicaliseBodyRelaxed([]byte) in
+// sealer.go; the sealer keeps its []byte path for signing (where it assembles
+// the full canonical body into a buffer anyway).
+func canonicaliseBodyRelaxedStream(r io.Reader, w io.Writer) error {
+	br := bufio.NewReaderSize(r, 4096)
+	// We maintain a queue of "pending empty lines" to implement the
+	// strip-trailing-blank-lines rule: we only emit them when a non-empty
+	// line follows. At EOF we discard the pending empties.
+	var pendingCRLFs int
+	writeCRLF := func() error {
+		_, err := w.Write([]byte("\r\n"))
+		return err
+	}
+	writePending := func() error {
+		for pendingCRLFs > 0 {
+			if err := writeCRLF(); err != nil {
+				return err
+			}
+			pendingCRLFs--
+		}
+		return nil
+	}
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			// Strip trailing CRLF / LF before processing.
+			raw := string(bytes.TrimRight(line, "\r\n"))
+			// Collapse runs of whitespace (SP/TAB) per RFC 6376 §3.4.4.
+			canonical := collapseWSP(strings.TrimRight(raw, " \t"))
+			if canonical == "" {
+				// Empty line after stripping: defer until we see a
+				// non-empty line (or EOF to discard).
+				pendingCRLFs++
+			} else {
+				// Non-empty line: flush any deferred empty lines first.
+				if err2 := writePending(); err2 != nil {
+					return err2
+				}
+				if _, werr := fmt.Fprintf(w, "%s\r\n", canonical); werr != nil {
+					return werr
+				}
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+	// discard pendingCRLFs — they are trailing empty lines per RFC 6376.
+	// If we wrote zero non-empty lines the body is effectively empty; the
+	// RFC says an empty body produces the hash of an empty string (no CRLF).
+	return nil
+}
+
 // verifyChainCrypto walks the ARC chain in instance order and verifies
 // each set's AMS and AS signatures using public keys retrieved from DNS.
 // Per RFC 8617 §5.1.2 the chain is valid iff every AMS verifies AND
 // every AS verifies; a failure at any instance taints the chain.
+//
+// headerBuf is the pre-buffered header block (including the separator line).
+// bodyHash is the pre-computed SHA-256 of the relaxed-canonicalised body,
+// computed once from the streaming body reader before this call.
 //
 // Returns AuthPass when every set verifies. Returns AuthFail with a
 // machine-readable reason when a signature does not verify, the key is
 // revoked, or the body has been tampered with. Returns AuthTempError
 // for transient DNS conditions (no records yet) so callers can retry
 // without poisoning the verdict.
-func (v *Verifier) verifyChainCrypto(ctx context.Context, sets []arcSet, raw []byte) (mailauth.AuthStatus, string, error) {
-	header, body := splitHeaderBody(raw)
+func (v *Verifier) verifyChainCrypto(ctx context.Context, sets []arcSet, headerBuf, bodyHash []byte) (mailauth.AuthStatus, string, error) {
+	// Extract the raw header block (without separator) from the buffered
+	// header for header-hash computation. splitHeaderBody handles both
+	// CRLF and LF separators.
+	header, _ := splitHeaderBody(headerBuf)
 	if header == nil {
-		return mailauth.AuthFail, "no header/body separator", nil
+		// No separator found — treat the full buffer as the header.
+		header = headerBuf
 	}
 	for _, s := range sets {
 		// AMS first: it covers headers + body, so any tampering of the
 		// payload surfaces here regardless of how the chain looks.
-		if status, reason, err := v.verifyAMS(ctx, s, header, body); err != nil {
+		if status, reason, err := v.verifyAMS(ctx, s, header, bodyHash); err != nil {
 			return 0, "", err
 		} else if status != mailauth.AuthPass {
 			return status, fmt.Sprintf("AMS i=%d: %s", s.instance, reason), nil
@@ -200,7 +345,11 @@ func (v *Verifier) verifyChainCrypto(ctx context.Context, sets []arcSet, raw []b
 // public key advertised at <selector>._domainkey.<domain>. The
 // reconstructed input mirrors buildAMS in sealer.go: sealed-header hash
 // followed by the canonicalised AMS skeleton with b= emptied.
-func (v *Verifier) verifyAMS(ctx context.Context, s arcSet, header, body []byte) (mailauth.AuthStatus, string, error) {
+//
+// bodyHash is the pre-computed SHA-256 of the relaxed-canonicalised message
+// body, supplied by the caller (verifyChainCrypto) to avoid re-reading the
+// body for each ARC instance in a multi-hop chain.
+func (v *Verifier) verifyAMS(ctx context.Context, s arcSet, header, bodyHash []byte) (mailauth.AuthStatus, string, error) {
 	domain := s.msgSigParams["d"]
 	selector := s.msgSigParams["s"]
 	algoTag := s.msgSigParams["a"]
@@ -217,13 +366,14 @@ func (v *Verifier) verifyAMS(ctx context.Context, s arcSet, header, body []byte)
 
 	// Body hash MUST match bh=. Done before the signature check so a
 	// modified body produces a clear "body hash mismatch" reason rather
-	// than a generic signature error.
-	gotBH := sha256.Sum256(canonicaliseBodyRelaxed(body))
+	// than a generic signature error. bodyHash is the pre-computed
+	// SHA-256 of the relaxed-canonical body (same digest for every set
+	// in the chain — ARC signs the original body at every hop).
 	wantBH, err := base64.StdEncoding.DecodeString(stripWhitespaceB64(bhTag))
 	if err != nil {
 		return mailauth.AuthPermError, "bad bh= base64", nil
 	}
-	if subtle.ConstantTimeCompare(gotBH[:], wantBH) != 1 {
+	if subtle.ConstantTimeCompare(bodyHash, wantBH) != 1 {
 		return mailauth.AuthFail, "body hash mismatch", nil
 	}
 
