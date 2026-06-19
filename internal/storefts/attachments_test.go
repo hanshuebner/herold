@@ -3,19 +3,45 @@ package storefts
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/hanshuebner/herold/internal/mailparse"
 )
 
+// buildOOXMLMessage wraps raw OOXML bytes into a minimal RFC 5322
+// message with a single base64-encoded attachment and returns both the
+// raw message bytes and the first attachment Part after parsing.
+func buildOOXMLMessage(t *testing.T, ct string, raw []byte) ([]byte, mailparse.Part, *bytes.Reader) {
+	t.Helper()
+	enc := base64.StdEncoding.EncodeToString(raw)
+	msg := fmt.Sprintf(
+		"From: sender@example.com\r\nTo: rcpt@example.com\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n--b0\r\nContent-Type: %s\r\nContent-Transfer-Encoding: base64\r\n\r\n%s\r\n--b0--\r\n",
+		ct, enc,
+	)
+	msgBytes := []byte(msg)
+	src := bytes.NewReader(msgBytes)
+	parsed, err := mailparse.Parse(src, mailparse.NewParseOptions())
+	if err != nil {
+		t.Fatalf("mailparse.Parse: %v", err)
+	}
+	atts := mailparse.Attachments(parsed)
+	if len(atts) == 0 {
+		t.Fatalf("no attachments found in parsed message")
+	}
+	return msgBytes, atts[0], bytes.NewReader(msgBytes)
+}
+
 func TestExtractAttachmentText_HTML(t *testing.T) {
 	html := `<html><body><h1>Quarterly Report</h1><p>Revenue grew <b>15%</b>.</p></body></html>`
+	// text/html parts land in Part.Text after mailparse decodes them.
 	p := mailparse.Part{
 		ContentType: "text/html; charset=utf-8",
-		Bytes:       []byte(html),
+		Text:        html,
 	}
-	got, format, trunc, err := extractAttachmentText(p, 0)
+	got, format, trunc, err := extractAttachmentText(p, nil, 0)
 	if err != nil {
 		t.Fatalf("extractAttachmentText: %v", err)
 	}
@@ -32,11 +58,12 @@ func TestExtractAttachmentText_HTML(t *testing.T) {
 
 func TestExtractAttachmentText_PlainText(t *testing.T) {
 	body := "first line\nsecond line"
+	// text/* parts land in Part.Text after mailparse decodes them.
 	p := mailparse.Part{
 		ContentType: "text/csv",
-		Bytes:       []byte(body),
+		Text:        body,
 	}
-	got, format, _, err := extractAttachmentText(p, 0)
+	got, format, _, err := extractAttachmentText(p, nil, 0)
 	if err != nil {
 		t.Fatalf("extractAttachmentText: %v", err)
 	}
@@ -57,11 +84,9 @@ func TestExtractAttachmentText_DOCX(t *testing.T) {
     <w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p>
   </w:body>
 </w:document>`)
-	p := mailparse.Part{
-		ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-		Bytes:       docx,
-	}
-	got, format, _, err := extractAttachmentText(p, 0)
+	_, p, src := buildOOXMLMessage(t,
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document", docx)
+	got, format, _, err := extractAttachmentText(p, src, 0)
 	if err != nil {
 		t.Fatalf("extractAttachmentText: %v", err)
 	}
@@ -87,11 +112,9 @@ func TestExtractAttachmentText_PPTX(t *testing.T) {
     </p:txBody></p:sp>
   </p:spTree></p:cSld>
 </p:sld>`)
-	p := mailparse.Part{
-		ContentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-		Bytes:       pptx,
-	}
-	got, format, _, err := extractAttachmentText(p, 0)
+	_, p, src := buildOOXMLMessage(t,
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation", pptx)
+	got, format, _, err := extractAttachmentText(p, src, 0)
 	if err != nil {
 		t.Fatalf("extractAttachmentText: %v", err)
 	}
@@ -110,11 +133,9 @@ func TestExtractAttachmentText_XLSX(t *testing.T) {
   <si><t>cell-token-alpha</t></si>
   <si><t>cell-token-beta</t></si>
 </sst>`)
-	p := mailparse.Part{
-		ContentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-		Bytes:       xlsx,
-	}
-	got, format, _, err := extractAttachmentText(p, 0)
+	_, p, src := buildOOXMLMessage(t,
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", xlsx)
+	got, format, _, err := extractAttachmentText(p, src, 0)
 	if err != nil {
 		t.Fatalf("extractAttachmentText: %v", err)
 	}
@@ -136,19 +157,19 @@ func TestExtractAttachmentText_XLSX(t *testing.T) {
 // because the disabled path makes them indistinguishable.
 func TestExtractAttachmentText_PDF_DisabledStopgap(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		bytes []byte
+		name string
+		text string
 	}{
-		{"empty", nil},
-		{"malformed", []byte("this is not a pdf")},
-		{"non-empty-arbitrary", []byte("%PDF-1.4 ... fake")},
+		{"empty", ""},
+		{"malformed", "this is not a pdf"},
+		{"non-empty-arbitrary", "%PDF-1.4 ... fake"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := mailparse.Part{
 				ContentType: "application/pdf",
-				Bytes:       tc.bytes,
+				Text:        tc.text,
 			}
-			got, format, trunc, err := extractAttachmentText(p, 0)
+			got, format, trunc, err := extractAttachmentText(p, nil, 0)
 			if err != nil {
 				t.Fatalf("extractAttachmentText: %v", err)
 			}
@@ -169,9 +190,9 @@ func TestExtractAttachmentText_PerAttachmentCap(t *testing.T) {
 	body := strings.Repeat("a", 1024)
 	p := mailparse.Part{
 		ContentType: "text/plain",
-		Bytes:       []byte(body),
+		Text:        body,
 	}
-	got, _, trunc, err := extractAttachmentText(p, 100)
+	got, _, trunc, err := extractAttachmentText(p, nil, 100)
 	if err != nil {
 		t.Fatalf("extractAttachmentText: %v", err)
 	}
@@ -186,9 +207,8 @@ func TestExtractAttachmentText_PerAttachmentCap(t *testing.T) {
 func TestExtractAttachmentText_UnknownFormat(t *testing.T) {
 	p := mailparse.Part{
 		ContentType: "application/octet-stream",
-		Bytes:       []byte{0x00, 0x01, 0x02, 0x03},
 	}
-	got, format, _, err := extractAttachmentText(p, 0)
+	got, format, _, err := extractAttachmentText(p, nil, 0)
 	if err != nil {
 		t.Fatalf("extractAttachmentText: %v", err)
 	}
@@ -201,11 +221,11 @@ func TestExtractAttachmentText_UnknownFormat(t *testing.T) {
 }
 
 func TestExtractAttachmentText_MalformedDOCX(t *testing.T) {
-	p := mailparse.Part{
-		ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-		Bytes:       []byte("this is not a zip file"),
-	}
-	_, format, _, err := extractAttachmentText(p, 0)
+	// Construct a message with a non-zip payload in a docx part.
+	_, p, src := buildOOXMLMessage(t,
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		[]byte("this is not a zip file"))
+	_, format, _, err := extractAttachmentText(p, src, 0)
 	if err == nil {
 		t.Fatalf("expected zip error, got nil")
 	}

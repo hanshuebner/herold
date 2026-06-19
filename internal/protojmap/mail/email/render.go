@@ -226,7 +226,11 @@ func walkParts(root mailparse.Part, truncateAt int, msgBlobHash string) (
 	walk = func(p mailparse.Part) bodyPart {
 		idx++
 		partID := fmt.Sprintf("%d", idx)
-		size := int64(len(p.Bytes))
+		// Part.Size holds the decoded body length (set by Parse). For text
+		// parts it reflects the full decoded size even when Part.Text is
+		// truncated. Use it directly; fall back to len(Text) for legacy text
+		// parts that may have been built without a Size.
+		size := p.Size
 		if size == 0 && p.Text != "" {
 			size = int64(len(p.Text))
 		}

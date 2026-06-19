@@ -1,6 +1,7 @@
 package storefts
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -93,9 +94,17 @@ func (e *MailparseExtractor) Extract(
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	parsed, err := mailparse.Parse(body, e.Options)
+	// Buffer the body so we can pass it as both an io.Reader to
+	// mailparse.Parse and as an io.ReaderAt to Part.OpenBody for
+	// streaming non-text attachment bodies (REQ-STORE-17).
+	raw, err := io.ReadAll(body)
 	if err != nil {
-		return "", fmt.Errorf("storefts: parse: %w", err)
+		return "", fmt.Errorf("storefts: read body: %w", err)
+	}
+	src := bytes.NewReader(raw)
+	parsed, perr := mailparse.Parse(src, e.Options)
+	if perr != nil {
+		return "", fmt.Errorf("storefts: parse: %w", perr)
 	}
 	var b strings.Builder
 	for i, p := range mailparse.TextParts(parsed) {
@@ -104,7 +113,7 @@ func (e *MailparseExtractor) Extract(
 		}
 		b.WriteString(p.Text)
 	}
-	e.appendAttachmentText(&b, mailparse.Attachments(parsed))
+	e.appendAttachmentText(&b, mailparse.Attachments(parsed), src)
 	return b.String(), nil
 }
 
@@ -113,7 +122,7 @@ func (e *MailparseExtractor) Extract(
 // PerMessageMaxBytes (running total). Per-attachment errors are logged
 // to the metric and skipped; a single malformed PDF or DOCX must not
 // fail the whole index call.
-func (e *MailparseExtractor) appendAttachmentText(b *strings.Builder, parts []mailparse.Part) {
+func (e *MailparseExtractor) appendAttachmentText(b *strings.Builder, parts []mailparse.Part, src io.ReaderAt) {
 	if len(parts) == 0 {
 		return
 	}
@@ -127,7 +136,7 @@ func (e *MailparseExtractor) appendAttachmentText(b *strings.Builder, parts []ma
 	}
 	remaining := perMsg
 	for _, p := range parts {
-		text, format, attachTrunc, err := extractAttachmentText(p, perAttach)
+		text, format, attachTrunc, err := extractAttachmentText(p, src, perAttach)
 		if err != nil {
 			recordExtraction(format, "error")
 			continue

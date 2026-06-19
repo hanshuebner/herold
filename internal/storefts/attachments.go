@@ -34,43 +34,56 @@ const (
 // text capped at maxBytes. The boolean reports whether the cap was hit
 // (so the caller can record the truncation in the metric). Unrecognised
 // formats return "" with no error and no counter bump.
-func extractAttachmentText(p mailparse.Part, maxBytes int) (text string, format string, truncated bool, err error) {
+//
+// src is the io.ReaderAt for the message raw bytes, used to stream
+// non-text part bodies via p.OpenBody. It may be nil when the caller
+// knows only text/* parts will be processed.
+func extractAttachmentText(p mailparse.Part, src io.ReaderAt, maxBytes int) (text string, format string, truncated bool, err error) {
 	ct := strings.ToLower(strings.TrimSpace(p.ContentType))
 	if i := strings.IndexByte(ct, ';'); i >= 0 {
 		ct = strings.TrimSpace(ct[:i])
 	}
-	// mailparse decodes text/* parts into p.Text and leaves p.Bytes
-	// empty (parse.go:395). Non-text parts get the raw decoded bytes
-	// in p.Bytes. partRaw normalises that for text-based attachments
-	// so HTML extraction sees the body even when enmime took the
-	// Text-decoded path.
+	// mailparse decodes text/* leaves into p.Text. Non-text leaves have
+	// no decoded body in RAM; partRaw streams via OpenBody for those.
 	switch {
 	case ct == "text/html":
-		t, err := html2text.FromString(partRaw(p), html2text.Options{OmitLinks: true})
+		t, err := html2text.FromString(partRaw(p, src), html2text.Options{OmitLinks: true})
 		if err != nil {
 			return "", "html", false, fmt.Errorf("html2text: %w", err)
 		}
 		out, trunc := capString(t, maxBytes)
 		return out, "html", trunc, nil
 	case strings.HasPrefix(ct, "text/"):
-		out, trunc := capString(partRaw(p), maxBytes)
+		out, trunc := capString(partRaw(p, src), maxBytes)
 		return out, "text", trunc, nil
 	case ct == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-		t, err := extractOOXMLText(p.Bytes, "docx")
+		blob, berr := readPartBody(p, src)
+		if berr != nil {
+			return "", "docx", false, berr
+		}
+		t, err := extractOOXMLText(blob, "docx")
 		if err != nil {
 			return "", "docx", false, err
 		}
 		out, trunc := capString(t, maxBytes)
 		return out, "docx", trunc, nil
 	case ct == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-		t, err := extractOOXMLText(p.Bytes, "xlsx")
+		blob, berr := readPartBody(p, src)
+		if berr != nil {
+			return "", "xlsx", false, berr
+		}
+		t, err := extractOOXMLText(blob, "xlsx")
 		if err != nil {
 			return "", "xlsx", false, err
 		}
 		out, trunc := capString(t, maxBytes)
 		return out, "xlsx", trunc, nil
 	case ct == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
-		t, err := extractOOXMLText(p.Bytes, "pptx")
+		blob, berr := readPartBody(p, src)
+		if berr != nil {
+			return "", "pptx", false, berr
+		}
+		t, err := extractOOXMLText(blob, "pptx")
 		if err != nil {
 			return "", "pptx", false, err
 		}
@@ -226,16 +239,38 @@ func capString(s string, maxBytes int) (string, bool) {
 	return s[:cut], true
 }
 
-// partRaw returns the attachment's body bytes as a string, preferring
-// p.Bytes (filled for non-text parts) and falling back to p.Text
-// (filled for text/* parts). mailparse splits these two fields on the
-// text/non-text axis (see internal/mailparse/parse.go:395), so a
-// text/html attachment lands in p.Text rather than p.Bytes.
-func partRaw(p mailparse.Part) string {
-	if len(p.Bytes) > 0 {
-		return string(p.Bytes)
+// partRaw returns the attachment's body as a string. For text/* parts
+// the decoded content is already in p.Text. For non-text parts (e.g.
+// text/html treated as an attachment) we stream via OpenBody when src
+// is available; if src is nil or the open fails we return empty.
+func partRaw(p mailparse.Part, src io.ReaderAt) string {
+	if p.Text != "" {
+		return p.Text
 	}
-	return p.Text
+	if src == nil {
+		return ""
+	}
+	blob, err := readPartBody(p, src)
+	if err != nil {
+		return ""
+	}
+	return string(blob)
+}
+
+// readPartBody opens p.OpenBody(src) and reads all bytes into memory.
+// It is used by extractAttachmentText for OOXML and similar formats
+// that require random-access (zip.NewReader). The caller is responsible
+// for enforcing any size cap before calling this function.
+func readPartBody(p mailparse.Part, src io.ReaderAt) ([]byte, error) {
+	if src == nil {
+		return nil, nil
+	}
+	rc, err := p.OpenBody(src)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
 }
 
 // recordExtraction bumps the FTS attachment metric in a closed-vocab

@@ -1,6 +1,8 @@
 package mailparse
 
 import (
+	"fmt"
+	"io"
 	"net/mail"
 	"strings"
 )
@@ -158,7 +160,9 @@ func addrList(addrs []mail.Address) string {
 	return strings.Join(parts, ", ")
 }
 
-// Part is a node in the MIME tree. Leaves carry decoded Text or Bytes; branches carry Children.
+// Part is a node in the MIME tree. Text leaves carry decoded Text; non-text
+// leaves record only metadata and a raw byte offset so callers can stream the
+// body on demand via OpenBody. Branches carry Children.
 type Part struct {
 	ContentType             string
 	Charset                 string
@@ -167,12 +171,26 @@ type Part struct {
 	Disposition             Disposition
 	Filename                string
 	Children                []Part
-	Text                    string
-	// Bytes is the decoded raw content of a non-text leaf. The slice
-	// aliases enmime's per-part decoded buffer; callers MUST treat it as
-	// read-only.
-	Bytes        []byte
+	// Text is the decoded, charset-converted body of a text/* leaf, capped at
+	// ParseOptions.MaxTextPartBytes. Empty for non-text leaves and containers.
+	Text string
+	// TextTruncated is true when the decoded text body exceeded MaxTextPartBytes
+	// and Part.Text holds only the first MaxTextPartBytes bytes of it.
+	TextTruncated bool
+	// Size is the decoded (CTE-decoded) byte length of this leaf's body.
+	// Zero for containers (multipart/*). For text parts it reflects the
+	// full decoded size even when Text is truncated.
+	Size int64
+	// DecodeErrors is a list of non-fatal decode warnings (e.g. lenient
+	// base64 recovery). Populated even when Parse does not return an error.
 	DecodeErrors []string
+
+	// rawOffset is the byte offset of this part's raw (CTE-encoded) body
+	// within the bytes passed to Parse. Zero for containers.
+	rawOffset int64
+	// rawLen is the byte length of this part's raw (CTE-encoded) body.
+	// Zero for containers.
+	rawLen int64
 }
 
 // IsText reports whether the part's media type is textual.
@@ -185,6 +203,26 @@ func (p Part) IsMultipart() bool {
 	return strings.HasPrefix(strings.ToLower(p.ContentType), "multipart/")
 }
 
+// OpenBody returns a streaming reader that CTE-decodes and (for text parts)
+// charset-converts the raw body of this leaf part. src must be an io.ReaderAt
+// over the same byte stream that was passed to Parse (e.g. the store blob
+// reader, a spill *os.File, or bytes.NewReader for tests). Returns an error
+// when the part is a container (Children present) or src is nil.
+//
+// The returned ReadCloser streams — it does not buffer the whole body. Callers
+// should call Close() when done to release any underlying resources (the
+// implementation may return a no-op closer).
+func (p Part) OpenBody(src io.ReaderAt) (io.ReadCloser, error) {
+	if src == nil {
+		return nil, fmt.Errorf("mailparse: OpenBody: src is nil")
+	}
+	if len(p.Children) > 0 {
+		return nil, fmt.Errorf("mailparse: OpenBody: part is a multipart container")
+	}
+	rawSection := io.NewSectionReader(src, p.rawOffset, p.rawLen)
+	return openBodyDecoder(rawSection, p.ContentTransferEncoding, p.Charset, p.IsText())
+}
+
 // Message is the parsed, decoded form of an RFC 5322 message.
 type Message struct {
 	Headers        Headers
@@ -192,5 +230,4 @@ type Message struct {
 	Body           Part
 	AuthResultsRaw string
 	Size           int64
-	Raw            []byte
 }

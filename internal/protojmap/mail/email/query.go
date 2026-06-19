@@ -395,9 +395,6 @@ func extractBodyText(m mailparse.Message) string {
 			if p.Text != "" {
 				sb.WriteString(p.Text)
 				sb.WriteByte(' ')
-			} else if len(p.Bytes) > 0 {
-				sb.Write(p.Bytes)
-				sb.WriteByte(' ')
 			}
 		}
 		for _, child := range p.Children {

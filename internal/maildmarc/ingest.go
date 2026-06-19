@@ -75,7 +75,7 @@ func (i *Ingestor) IngestMessage(ctx context.Context, raw []byte) (bool, error) 
 		return false, nil
 	}
 
-	att, ok := findReportAttachment(&msg)
+	att, ok := findReportAttachment(&msg, bytes.NewReader(raw))
 	if !ok {
 		// No plausible attachment; if the message also lacks the textual
 		// signals fall through.
@@ -190,8 +190,9 @@ type reportAttachment struct {
 // findReportAttachment walks the parsed MIME tree depth-first looking
 // for the first leaf whose filename or media type matches an aggregate
 // report attachment (gzip or zip carrying XML, or raw application/xml
-// for the rare inline report).
-func findReportAttachment(msg *mailparse.Message) (reportAttachment, bool) {
+// for the rare inline report). src is the io.ReaderAt for the raw
+// message bytes, used to stream non-text part bodies via p.OpenBody.
+func findReportAttachment(msg *mailparse.Message, src io.ReaderAt) (reportAttachment, bool) {
 	var found reportAttachment
 	var ok bool
 	walkParts(&msg.Body, func(p *mailparse.Part) bool {
@@ -203,12 +204,14 @@ func findReportAttachment(msg *mailparse.Message) (reportAttachment, bool) {
 		switch {
 		case strings.HasPrefix(ct, "application/gzip"),
 			strings.HasPrefix(ct, "application/x-gzip"):
-			found = reportAttachment{filename: fn, contentType: ct, bytes: p.Bytes}
+			b := readPartBodyCapped(p, src, reportSizeCap)
+			found = reportAttachment{filename: fn, contentType: ct, bytes: b}
 			ok = true
 			return false
 		case strings.HasPrefix(ct, "application/zip"),
 			strings.HasPrefix(ct, "application/x-zip-compressed"):
-			found = reportAttachment{filename: fn, contentType: ct, bytes: p.Bytes}
+			b := readPartBodyCapped(p, src, reportSizeCap)
+			found = reportAttachment{filename: fn, contentType: ct, bytes: b}
 			ok = true
 			return false
 		case ct == "application/xml" || ct == "text/xml":
@@ -216,9 +219,11 @@ func findReportAttachment(msg *mailparse.Message) (reportAttachment, bool) {
 			// filename also fits the DMARC pattern so we don't slurp a
 			// random XML attachment.
 			if filenameLooksLikeReport(fn) {
-				body := p.Bytes
-				if len(body) == 0 && p.Text != "" {
+				var body []byte
+				if p.Text != "" {
 					body = []byte(p.Text)
+				} else {
+					body = readPartBodyCapped(p, src, reportSizeCap)
 				}
 				found = reportAttachment{filename: fn, contentType: ct, bytes: body}
 				ok = true
@@ -229,13 +234,29 @@ func findReportAttachment(msg *mailparse.Message) (reportAttachment, bool) {
 		// reporter forgot to set Content-Type but the filename is still
 		// canonical. Honour it.
 		if (ct == "application/octet-stream" || ct == "") && filenameLooksLikeReport(fn) {
-			found = reportAttachment{filename: fn, contentType: ct, bytes: p.Bytes}
+			b := readPartBodyCapped(p, src, reportSizeCap)
+			found = reportAttachment{filename: fn, contentType: ct, bytes: b}
 			ok = true
 			return false
 		}
 		return true
 	})
 	return found, ok
+}
+
+// readPartBodyCapped opens p.OpenBody(src) and reads at most cap bytes.
+// Returns nil on error or when src is nil.
+func readPartBodyCapped(p *mailparse.Part, src io.ReaderAt, cap int64) []byte {
+	if src == nil {
+		return nil
+	}
+	rc, err := p.OpenBody(src)
+	if err != nil {
+		return nil
+	}
+	defer rc.Close()
+	b, _ := io.ReadAll(io.LimitReader(rc, cap))
+	return b
 }
 
 // walkParts performs a depth-first traversal of the MIME tree, invoking

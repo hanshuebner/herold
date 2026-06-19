@@ -210,9 +210,7 @@ func resolvePartBlob(ctx context.Context, blobs store.Blobs, msgHash string, par
 		return nil, err
 	}
 	defer rc.Close()
-	// TODO(REQ-STORE-19, Phase 2): stream via the seekable blob handle /
-	// streaming parser; bounded at 64MiB until then.
-	raw, err := io.ReadAll(io.LimitReader(rc, 64<<20))
+	raw, err := io.ReadAll(rc)
 	if err != nil {
 		return nil, fmt.Errorf("resolvePartBlob: read: %w", err)
 	}
@@ -222,6 +220,7 @@ func resolvePartBlob(ctx context.Context, blobs store.Blobs, msgHash string, par
 	}
 	// Walk the part tree in the same pre-order DFS as walkParts so that the
 	// index here matches the partId assigned during rendering.
+	src := bytes.NewReader(raw)
 	idx := 0
 	var found *partBlobResult
 	var walk func(p mailparse.Part)
@@ -235,9 +234,21 @@ func resolvePartBlob(ctx context.Context, blobs store.Blobs, msgHash string, par
 			if ct == "" {
 				ct = "application/octet-stream"
 			}
-			data := p.Bytes
-			if len(data) == 0 && p.Text != "" {
-				data = []byte(p.Text)
+			// For text parts the decoded content is already in p.Text.
+			// For non-text parts we stream via OpenBody.
+			if p.IsText() && p.Text != "" {
+				found = &partBlobResult{contentType: ct, data: []byte(p.Text)}
+				return
+			}
+			bodyRC, berr := p.OpenBody(src)
+			if berr != nil {
+				found = &partBlobResult{contentType: ct, data: nil}
+				return
+			}
+			defer bodyRC.Close()
+			data, rerr := io.ReadAll(bodyRC)
+			if rerr != nil {
+				data = nil
 			}
 			found = &partBlobResult{contentType: ct, data: data}
 			return

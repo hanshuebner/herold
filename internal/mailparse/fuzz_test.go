@@ -2,6 +2,7 @@ package mailparse
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,26 +42,51 @@ func FuzzParse(f *testing.F) {
 			// Errors are fine; the invariant is no panic.
 			return
 		}
-		// Invariant: Size matches Raw length.
-		if msg.Size != int64(len(msg.Raw)) {
-			t.Fatalf("size mismatch: Size=%d len(Raw)=%d", msg.Size, len(msg.Raw))
-		}
-		// Invariant: Raw equals input (up to what was read within MaxSize).
-		if !bytes.Equal(msg.Raw, data) {
-			t.Fatal("Raw should equal input on success")
+		// Invariant: Size matches input length (within MaxSize).
+		if msg.Size != int64(len(data)) {
+			t.Fatalf("size mismatch: Size=%d len(data)=%d", msg.Size, len(data))
 		}
 		// Invariant: walking Part tree terminates and content types are non-empty strings.
 		walkFuzzCheck(t, msg.Body, 0)
+		// Invariant: for each leaf, OpenBody over the input bytes decodes without panic
+		// and returns a reader whose content length equals Part.Size (for non-text leaves).
+		checkOpenBody(t, data, msg.Body)
 	})
 }
 
 func walkFuzzCheck(t *testing.T, p Part, depth int) {
+	t.Helper()
 	if depth > 64 {
 		t.Fatalf("walk depth exceeded 64; tree may be cyclic")
 	}
-	// ContentType may be empty for trivial plain text in enmime; do not fail on that.
 	_ = strings.TrimSpace(p.ContentType)
 	for _, c := range p.Children {
 		walkFuzzCheck(t, c, depth+1)
+	}
+}
+
+// checkOpenBody walks the part tree and verifies that OpenBody over src does
+// not panic and returns a reader (offset/length invariants).
+func checkOpenBody(t *testing.T, src []byte, p Part) {
+	t.Helper()
+	if len(p.Children) == 0 {
+		ra := bytes.NewReader(src)
+		rc, err := p.OpenBody(ra)
+		if err != nil {
+			return // containers or error: fine
+		}
+		n, err := io.Copy(io.Discard, rc)
+		_ = rc.Close()
+		if err != nil {
+			return // decode error on fuzz input: fine
+		}
+		// For non-text parts the decoded size should match Part.Size.
+		if !p.IsText() && n != p.Size {
+			t.Errorf("OpenBody size mismatch: read %d bytes, Part.Size=%d", n, p.Size)
+		}
+		return
+	}
+	for _, c := range p.Children {
+		checkOpenBody(t, src, c)
 	}
 }

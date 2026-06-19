@@ -2,12 +2,16 @@ package mailparse
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
+	"mime/quotedprintable"
 	"net/mail"
+	"net/textproto"
 	"strings"
 
-	"github.com/jhillyerd/enmime"
+	"golang.org/x/text/transform"
 )
 
 // DefaultMaxSize caps a parsed message at 50 MiB unless the caller overrides it.
@@ -23,6 +27,11 @@ const DefaultMaxParts = 10000
 // RFC 5322 §2.1.1 requires 998 chars; we allow a small tolerance for accidental trailing CR.
 const DefaultMaxHeaderLine = 998
 
+// DefaultMaxTextPartBytes caps how many decoded bytes are stored in Part.Text.
+// Parts larger than this are truncated and Part.TextTruncated is set to true.
+// The decoded size is always stored accurately in Part.Size.
+const DefaultMaxTextPartBytes = 1 << 20 // 1 MiB
+
 // ParseOptions controls the strictness caps applied by Parse. The zero value is
 // not recommended; use NewParseOptions for defaults.
 type ParseOptions struct {
@@ -30,9 +39,14 @@ type ParseOptions struct {
 	MaxDepth      int
 	MaxParts      int
 	MaxHeaderLine int
-	StrictCharset bool
-	StrictBase64  bool
-	StrictQP      bool
+	// MaxTextPartBytes caps the number of decoded bytes stored in Part.Text.
+	// Parts larger than this are truncated and Part.TextTruncated is set.
+	// The full decoded size is always recorded in Part.Size.
+	// Defaults to DefaultMaxTextPartBytes when zero.
+	MaxTextPartBytes int64
+	StrictCharset    bool
+	StrictBase64     bool
+	StrictQP         bool
 	// StrictHeaderLine, when true, rejects any header line longer than MaxHeaderLine.
 	StrictHeaderLine bool
 	// StrictBoundary, when true, rejects messages that end without a closing boundary marker.
@@ -46,6 +60,7 @@ func NewParseOptions() ParseOptions {
 		MaxDepth:         DefaultMaxDepth,
 		MaxParts:         DefaultMaxParts,
 		MaxHeaderLine:    DefaultMaxHeaderLine,
+		MaxTextPartBytes: DefaultMaxTextPartBytes,
 		StrictCharset:    true,
 		StrictBase64:     true,
 		StrictQP:         true,
@@ -68,11 +83,19 @@ func (o *ParseOptions) applyDefaults() {
 	if o.MaxHeaderLine <= 0 {
 		o.MaxHeaderLine = DefaultMaxHeaderLine
 	}
+	if o.MaxTextPartBytes <= 0 {
+		o.MaxTextPartBytes = DefaultMaxTextPartBytes
+	}
 }
 
 // Parse consumes an RFC 5322 message from r and returns the decoded Message.
-// Parse is pure CPU work; it does not take a context. Helpers that may call
-// external decoders in later phases accept context.Context.
+// Parse is pure CPU work; it does not take a context.
+//
+// The raw message is buffered in RAM (bounded by MaxSize) in order to walk the
+// MIME tree and record raw part offsets. Non-text part bodies are NOT decoded
+// into RAM; only their raw byte offset and decoded size are stored. Text parts
+// are decoded into Part.Text up to MaxTextPartBytes. Call Part.OpenBody to
+// stream any part's decoded content on demand.
 func Parse(r io.Reader, opts ParseOptions) (Message, error) {
 	opts.applyDefaults()
 
@@ -92,89 +115,708 @@ func Parse(r io.Reader, opts ParseOptions) (Message, error) {
 		}
 	}
 
-	// Normalize multipart boundaries whose values end in `-`. enmime
-	// substring-matches delimiters and trips when one boundary's `--<B>`
-	// is a substring of another's. See normalizeTrailingDashBoundaries.
-	parseInput := normalizeTrailingDashBoundaries(raw)
-	env, enerr := enmime.ReadEnvelope(bytes.NewReader(parseInput))
-	if enerr != nil {
-		return Message{}, &ParseError{
-			Reason:    ReasonMalformed,
-			Message:   "enmime rejected input",
-			PartIndex: -1,
-			Cause:     enerr,
+	w := &mimeWalker{
+		raw:  raw,
+		opts: &opts,
+	}
+	return w.parseMessage()
+}
+
+// mimeWalker drives the recursive MIME parse over the raw bytes.
+type mimeWalker struct {
+	raw       []byte
+	opts      *ParseOptions
+	partCount int // total parts allocated so far
+}
+
+func (w *mimeWalker) nextPartIdx() (int, error) {
+	idx := w.partCount
+	w.partCount++
+	if w.partCount > w.opts.MaxParts {
+		return idx, &ParseError{
+			Reason:    ReasonTooManyParts,
+			Message:   fmt.Sprintf("part count exceeded MaxParts=%d", w.opts.MaxParts),
+			PartIndex: idx,
 		}
 	}
-	if env == nil || env.Root == nil {
+	return idx, nil
+}
+
+func (w *mimeWalker) parseMessage() (Message, error) {
+	// net/mail.ReadMessage parses top-level RFC 5322 headers. It is very
+	// tolerant of malformed headers and missing MIME-Version.
+	nmsg, err := mail.ReadMessage(bytes.NewReader(w.raw))
+	if err != nil {
 		return Message{}, &ParseError{
 			Reason:    ReasonMalformed,
-			Message:   "no parseable root part",
+			Message:   "net/mail: " + err.Error(),
 			PartIndex: -1,
 		}
 	}
+
+	hdrs := mimeHeaderToHeaders(textproto.MIMEHeader(nmsg.Header))
+
+	// Locate the body start offset within w.raw.
+	bodyStart := findBodyStart(w.raw)
+
+	var wd mime.WordDecoder
+	rawSubject := hdrs.Get("Subject")
+	subject, _ := wd.DecodeHeader(rawSubject)
+
+	// Collect Authentication-Results values.
+	arVals := hdrs.GetAll("Authentication-Results")
+	authResultsRaw := strings.Join(arVals, ", ")
 
 	msg := Message{
-		Headers:        convertHeaders(env.Root.Header),
-		AuthResultsRaw: joinHeader(env.Root.Header, "Authentication-Results"),
-		Size:           int64(len(raw)),
-		Raw:            raw,
+		Headers:        hdrs,
+		Size:           int64(len(w.raw)),
+		AuthResultsRaw: authResultsRaw,
 	}
-	msg.Envelope = buildEnvelope(env, msg.Headers)
 
-	counter := &partCounter{max: opts.MaxParts}
-	body, convErr := convertPart(env.Root, &opts, 0, counter)
-	if convErr != nil {
-		return Message{}, convErr
+	// Parse top-level Content-Type.
+	ct, ctParams, ctErr := parseContentType(hdrs.Get("Content-Type"))
+	if ctErr != nil || ct == "" {
+		// RFC 2045 §5.2: no Content-Type defaults to text/plain; charset=us-ascii.
+		ct = "text/plain"
+		ctParams = map[string]string{"charset": "us-ascii"}
+	}
+
+	bodyLen := int64(len(w.raw)) - bodyStart
+	if bodyLen < 0 {
+		bodyLen = 0
+	}
+
+	body, perr := w.walkPart(hdrs, ct, ctParams, bodyStart, bodyLen, 0)
+	if perr != nil {
+		return Message{}, perr
 	}
 	msg.Body = body
-
-	if opts.StrictBoundary {
-		if terr := checkTruncation(env, counter.index); terr != nil {
-			return Message{}, terr
-		}
-		// Use parseInput (post-boundary-normalization) here: env.Root's
-		// boundary values may have been rewritten in normalize, and we
-		// need to look for the rewritten markers in the bytes we actually
-		// parsed.
-		if terr := checkRawBoundariesRecursive(parseInput, env.Root, counter.index); terr != nil {
-			return Message{}, terr
-		}
-	}
+	msg.Envelope = buildEnvelopeFromHeaders(hdrs, subject, &wd)
 
 	return msg, nil
 }
 
-// checkRawBoundariesRecursive walks each multipart container and verifies a closing marker
-// is present somewhere in the raw bytes.
-func checkRawBoundariesRecursive(raw []byte, p *enmime.Part, idx int) *ParseError {
-	if p == nil {
-		return nil
-	}
-	if strings.HasPrefix(strings.ToLower(p.ContentType), "multipart/") {
-		boundary := p.Boundary
-		if boundary == "" {
-			boundary = p.ContentTypeParams["boundary"]
+// walkPart processes a single MIME part (either the message root or a part
+// within a multipart container). rawBodyOff and rawBodyLen describe the raw
+// (CTE-encoded) body bytes within w.raw. depth is the recursion depth for cap enforcement.
+func (w *mimeWalker) walkPart(hdrs Headers, ct string, ctParams map[string]string, rawBodyOff, rawBodyLen int64, depth int) (Part, error) {
+	if depth > w.opts.MaxDepth {
+		return Part{}, &ParseError{
+			Reason:    ReasonDepthExceeded,
+			Message:   fmt.Sprintf("nesting depth exceeded MaxDepth=%d", w.opts.MaxDepth),
+			PartIndex: w.partCount,
 		}
-		if boundary != "" {
-			close := "--" + boundary + "--"
-			if !bytes.Contains(raw, []byte(close)) {
-				return &ParseError{
-					Reason:    ReasonTruncated,
-					Message:   fmt.Sprintf("multipart boundary %q has no closing marker", boundary),
-					PartIndex: idx,
-				}
+	}
+	idx, err := w.nextPartIdx()
+	if err != nil {
+		return Part{}, err
+	}
+
+	ctLower := strings.ToLower(ct)
+	charset := strings.TrimSpace(ctParams["charset"])
+	cteHeader := strings.TrimSpace(hdrs.Get("Content-Transfer-Encoding"))
+	cteLower := strings.ToLower(cteHeader)
+
+	dispHeader := hdrs.Get("Content-Disposition")
+	dispType, dispParams, _ := parseContentType(dispHeader)
+
+	p := Part{
+		ContentType:             ct,
+		Charset:                 charset,
+		ContentTransferEncoding: cteHeader,
+		Headers:                 hdrs,
+		Disposition:             parseDisposition(dispType),
+		Filename:                extractFilename(ctParams, dispParams),
+		rawOffset:               rawBodyOff,
+		rawLen:                  rawBodyLen,
+	}
+
+	// Multipart containers: recurse into children.
+	if strings.HasPrefix(ctLower, "multipart/") {
+		boundary := ctParams["boundary"]
+		if boundary == "" {
+			// No boundary parameter: treat as an opaque leaf. Guard against a
+			// negative rawBodyLen produced by malformed scanner output.
+			if rawBodyLen < 0 || rawBodyOff < 0 || rawBodyOff+rawBodyLen > int64(len(w.raw)) {
+				p.rawOffset = 0
+				p.rawLen = 0
+				p.Size = 0
+			} else {
+				p.Size = rawBodyLen
+			}
+			return p, nil
+		}
+		// Bounds check.
+		if rawBodyOff < 0 || rawBodyLen < 0 || rawBodyOff+rawBodyLen > int64(len(w.raw)) {
+			// Safety: treat as opaque leaf with no accessible body.
+			p.rawOffset = 0
+			p.rawLen = 0
+			p.Size = 0
+			return p, nil
+		}
+		bodySlice := w.raw[rawBodyOff : rawBodyOff+rawBodyLen]
+		children, truncated, walkErr := w.walkMultipart(bodySlice, rawBodyOff, boundary, depth)
+		if walkErr != nil {
+			return Part{}, walkErr
+		}
+		if truncated && w.opts.StrictBoundary {
+			return Part{}, &ParseError{
+				Reason:    ReasonTruncated,
+				Message:   fmt.Sprintf("multipart boundary %q has no closing marker", boundary),
+				PartIndex: idx,
 			}
 		}
+		p.Children = children
+		// Containers have no direct raw body for OpenBody.
+		p.rawOffset = 0
+		p.rawLen = 0
+		return p, nil
 	}
-	for c := p.FirstChild; c != nil; c = c.NextSibling {
-		if e := checkRawBoundariesRecursive(raw, c, idx); e != nil {
-			return e
+
+	// Leaf part: decode for text parts, count size for non-text.
+	if rawBodyOff < 0 || rawBodyLen < 0 || rawBodyOff+rawBodyLen > int64(len(w.raw)) {
+		// Safety bounds failure: clear raw offsets so OpenBody cannot read
+		// bytes that were not accounted for in p.Size.
+		p.rawOffset = 0
+		p.rawLen = 0
+		return p, nil
+	}
+	rawBody := w.raw[rawBodyOff : rawBodyOff+rawBodyLen]
+
+	if strings.HasPrefix(ctLower, "text/") {
+		text, size, truncated, decErrs, parseErr := w.decodeTextPart(rawBody, cteLower, charset, idx)
+		if parseErr != nil {
+			return Part{}, parseErr
 		}
+		p.Text = text
+		p.TextTruncated = truncated
+		p.Size = size
+		p.DecodeErrors = decErrs
+	} else {
+		size, decErrs, parseErr := w.countDecodedSize(rawBody, cteLower, idx)
+		if parseErr != nil {
+			return Part{}, parseErr
+		}
+		p.Size = size
+		p.DecodeErrors = decErrs
 	}
-	return nil
+
+	return p, nil
 }
 
-// readCapped reads at most limit+1 bytes so we can distinguish exactly-at-limit from over-limit.
+// walkMultipart walks the raw body of a multipart/* part using a custom boundary
+// scanner to track exact byte offsets. bodySlice is the raw bytes of the
+// multipart body (after the container's headers). bodyBaseOff is the absolute
+// offset of bodySlice[0] within w.raw. Returns child parts, a truncation flag,
+// and any fatal error.
+func (w *mimeWalker) walkMultipart(bodySlice []byte, bodyBaseOff int64, boundary string, depth int) ([]Part, bool, error) {
+	// Use our own boundary scanner instead of mime/multipart so we have exact
+	// byte offsets for each part's body. mime/multipart strips the pre-boundary
+	// CRLF from part bodies, making offset tracking via substring search
+	// unreliable when parts share content.
+	parts, hasClose := scanMultipartBoundaries(bodySlice, boundary)
+
+	var children []Part
+	for _, sp := range parts {
+		// Parse the part headers using net/mail's textproto reader.
+		partHdrs, hdrErr := parsePartHeaders(bodySlice[sp.hdrStart:sp.hdrEnd])
+		if hdrErr != nil {
+			// Malformed part headers: skip this part but continue.
+			continue
+		}
+
+		partCT, partCTParams, partCTErr := parseContentType(partHdrs.Get("Content-Type"))
+		if partCTErr != nil || partCT == "" {
+			partCT = "text/plain"
+			partCTParams = map[string]string{"charset": "us-ascii"}
+		}
+
+		absBodyOff := bodyBaseOff + sp.bodyStart
+		bodyLen := sp.bodyEnd - sp.bodyStart
+
+		child, perr := w.walkPart(partHdrs, partCT, partCTParams, absBodyOff, bodyLen, depth+1)
+		if perr != nil {
+			return nil, false, perr
+		}
+		children = append(children, child)
+	}
+
+	return children, !hasClose, nil
+}
+
+// scannedPart holds the byte ranges of one MIME part within a multipart body.
+type scannedPart struct {
+	hdrStart  int64 // offset of first header byte within bodySlice
+	hdrEnd    int64 // offset of blank line terminator end within bodySlice
+	bodyStart int64 // offset of first body byte (after header blank line)
+	bodyEnd   int64 // offset of last body byte + 1 (before trailing CRLF before boundary)
+}
+
+// scanMultipartBoundaries splits bodySlice into MIME parts using the given boundary
+// string. It returns the list of parts found and whether the close boundary
+// (--boundary--) was present.
+//
+// Per RFC 2046 §5.1.1, each part is delimited by --boundary lines.
+// The boundary line may optionally have a trailing LWSP before the CRLF.
+// This scanner tolerates both CRLF and LF line endings.
+func scanMultipartBoundaries(bodySlice []byte, boundary string) ([]scannedPart, bool) {
+	delimiter := []byte("--" + boundary)
+	var parts []scannedPart
+	hasClose := false
+
+	// Find all delimiter positions. A delimiter must appear at the start of a
+	// line (i.e., preceded by \n or at position 0) and be followed by optional
+	// LWSP and then CRLF or LF.
+	pos := 0
+	for pos < len(bodySlice) {
+		// Find next occurrence of delimiter.
+		idx := bytes.Index(bodySlice[pos:], delimiter)
+		if idx < 0 {
+			break
+		}
+		delimStart := pos + idx
+
+		// Verify it's at the start of a line.
+		if delimStart > 0 && bodySlice[delimStart-1] != '\n' {
+			pos = delimStart + 1
+			continue
+		}
+
+		// Find end of delimiter line.
+		lineEnd := delimStart + len(delimiter)
+		// Skip optional LWSP.
+		for lineEnd < len(bodySlice) && (bodySlice[lineEnd] == ' ' || bodySlice[lineEnd] == '\t') {
+			lineEnd++
+		}
+		// Check for close marker (--boundary--).
+		isClose := false
+		if lineEnd+2 <= len(bodySlice) && bodySlice[lineEnd] == '-' && bodySlice[lineEnd+1] == '-' {
+			isClose = true
+			lineEnd += 2
+			// Skip optional LWSP after --.
+			for lineEnd < len(bodySlice) && (bodySlice[lineEnd] == ' ' || bodySlice[lineEnd] == '\t') {
+				lineEnd++
+			}
+		}
+		// Skip CRLF or LF at end of delimiter line.
+		if lineEnd < len(bodySlice) && bodySlice[lineEnd] == '\r' {
+			lineEnd++
+		}
+		if lineEnd < len(bodySlice) && bodySlice[lineEnd] == '\n' {
+			lineEnd++
+		}
+
+		if isClose {
+			hasClose = true
+			break
+		}
+
+		// This is a part-start delimiter. Part headers start at lineEnd.
+		hdrStart := int64(lineEnd)
+
+		// Find the end of the part headers (blank line: CRLFCRLF or LFLF).
+		hdrEnd, bodyStart := findHdrEnd(bodySlice, lineEnd)
+		if hdrEnd < 0 {
+			// No header separator found; treat the rest as one big body.
+			hdrEnd = len(bodySlice)
+			bodyStart = hdrEnd
+		}
+
+		// Find start of next delimiter line (which ends this part's body).
+		nextDelimPos := findNextBoundaryLine(bodySlice, bodyStart, delimiter)
+		var bodyEnd int64
+		if nextDelimPos < 0 {
+			// No next boundary: body runs to end of bodySlice.
+			bodyEnd = int64(len(bodySlice))
+		} else {
+			bodyEnd = int64(nextDelimPos)
+			// Strip the trailing CRLF or LF that precedes the boundary.
+			if bodyEnd > 0 && bodySlice[bodyEnd-1] == '\n' {
+				bodyEnd--
+			}
+			if bodyEnd > 0 && bodySlice[bodyEnd-1] == '\r' {
+				bodyEnd--
+			}
+		}
+
+		parts = append(parts, scannedPart{
+			hdrStart:  hdrStart,
+			hdrEnd:    int64(hdrEnd),
+			bodyStart: int64(bodyStart),
+			bodyEnd:   bodyEnd,
+		})
+
+		// Advance scan position to just before the next delimiter.
+		if nextDelimPos >= 0 {
+			pos = nextDelimPos
+		} else {
+			break
+		}
+	}
+
+	return parts, hasClose
+}
+
+// findHdrEnd finds the blank line (CRLFCRLF or LFLF) that separates part
+// headers from the body, starting from startOff. Returns (hdrEnd, bodyStart)
+// where hdrEnd is the index of the first byte of the blank-line separator and
+// bodyStart is the first byte after it. Returns (-1, -1) if not found.
+func findHdrEnd(b []byte, startOff int) (hdrEnd, bodyStart int) {
+	sub := b[startOff:]
+	if i := bytes.Index(sub, []byte("\r\n\r\n")); i >= 0 {
+		return startOff + i, startOff + i + 4
+	}
+	if i := bytes.Index(sub, []byte("\n\n")); i >= 0 {
+		return startOff + i, startOff + i + 2
+	}
+	return -1, -1
+}
+
+// findNextBoundaryLine finds the byte offset (within b) of the next delimiter
+// line (--boundary) that starts at the beginning of a line, at or after fromOff.
+// Returns -1 if not found.
+func findNextBoundaryLine(b []byte, fromOff int, delimiter []byte) int {
+	pos := fromOff
+	for pos < len(b) {
+		idx := bytes.Index(b[pos:], delimiter)
+		if idx < 0 {
+			return -1
+		}
+		delimPos := pos + idx
+		// Must be at line start: preceded by \n or at pos 0.
+		if delimPos == 0 || b[delimPos-1] == '\n' {
+			return delimPos
+		}
+		pos = delimPos + 1
+	}
+	return -1
+}
+
+// parsePartHeaders parses the raw header bytes of a MIME part.
+// hdrBytes should NOT include the trailing blank line; it's the raw header block.
+func parsePartHeaders(hdrBytes []byte) (Headers, error) {
+	// Append \r\n\r\n to make net/mail.ReadMessage happy.
+	// net/mail requires a proper header+body input.
+	full := make([]byte, 0, len(hdrBytes)+4)
+	full = append(full, hdrBytes...)
+	full = append(full, '\r', '\n', '\r', '\n')
+	nmsg, err := mail.ReadMessage(bytes.NewReader(full))
+	if err != nil {
+		return NewHeaders(), err
+	}
+	return mimeHeaderToHeaders(textproto.MIMEHeader(nmsg.Header)), nil
+}
+
+// findBodyStart returns the byte offset of the first byte after the header/body
+// separator (CRLFCRLF or LFLF) in raw. Returns int64(len(raw)) if no separator found.
+func findBodyStart(raw []byte) int64 {
+	if i := bytes.Index(raw, []byte("\r\n\r\n")); i >= 0 {
+		return int64(i + 4)
+	}
+	if i := bytes.Index(raw, []byte("\n\n")); i >= 0 {
+		return int64(i + 2)
+	}
+	return int64(len(raw))
+}
+
+// decodeTextPart CTE-decodes and charset-converts the raw encoded body of a text part.
+// Returns text (capped), full decoded size, truncation flag, non-fatal warnings, and any fatal error.
+func (w *mimeWalker) decodeTextPart(raw []byte, cteLower, charset string, idx int) (text string, size int64, truncated bool, decErrs []string, parseErr error) {
+	cteDecoded, warn, parseErr := decodeCTEBytes(raw, cteLower, w.opts.StrictBase64, w.opts.StrictQP, idx)
+	if parseErr != nil {
+		return "", 0, false, nil, parseErr
+	}
+	if warn != "" {
+		decErrs = append(decErrs, warn)
+	}
+	size = int64(len(cteDecoded))
+
+	// Charset-convert to UTF-8.
+	utf8Bytes, charsetErr := convertCharset(cteDecoded, charset)
+	if charsetErr != nil {
+		if w.opts.StrictCharset {
+			return "", 0, false, nil, &ParseError{
+				Reason:    ReasonUnknownCharset,
+				Message:   fmt.Sprintf("declared charset %q did not decode cleanly: %v", charset, charsetErr),
+				PartIndex: idx,
+			}
+		}
+		decErrs = append(decErrs, fmt.Sprintf("charset %q: %v", charset, charsetErr))
+		utf8Bytes = cteDecoded // best effort: use raw bytes
+	}
+
+	utf8Text := string(utf8Bytes)
+
+	// Validate UTF-8 when strictness is on.
+	if w.opts.StrictCharset && charset != "" && !isUTF8OrASCII(utf8Text) {
+		return "", 0, false, nil, &ParseError{
+			Reason:    ReasonUnknownCharset,
+			Message:   fmt.Sprintf("declared charset %q did not decode cleanly", charset),
+			PartIndex: idx,
+		}
+	}
+
+	// Cap to MaxTextPartBytes.
+	if int64(len(utf8Text)) > w.opts.MaxTextPartBytes {
+		cut := int(w.opts.MaxTextPartBytes)
+		// Retreat to a UTF-8 rune boundary.
+		for cut > 0 && (utf8Text[cut]&0xC0) == 0x80 {
+			cut--
+		}
+		return utf8Text[:cut], size, true, decErrs, nil
+	}
+	return utf8Text, size, false, decErrs, nil
+}
+
+// countDecodedSize decodes raw through the CTE decoder to count bytes without
+// materializing them in RAM for non-text parts. For identity CTEs, returns
+// the raw length directly. Returns the decoded size, any non-fatal warnings, and
+// any fatal parse error.
+func (w *mimeWalker) countDecodedSize(raw []byte, cteLower string, idx int) (size int64, decErrs []string, parseErr error) {
+	switch cteLower {
+	case "", "7bit", "8bit", "binary":
+		return int64(len(raw)), nil, nil
+	}
+	decoded, warn, perr := decodeCTEBytes(raw, cteLower, w.opts.StrictBase64, w.opts.StrictQP, idx)
+	if perr != nil {
+		return 0, nil, perr
+	}
+	if warn != "" {
+		decErrs = append(decErrs, warn)
+	}
+	return int64(len(decoded)), decErrs, nil
+}
+
+// decodeCTEBytes decodes b according to its Content-Transfer-Encoding.
+// For base64 and quoted-printable it returns the decoded bytes; for identity
+// encodings it returns b unmodified. strict* controls whether errors are fatal.
+func decodeCTEBytes(b []byte, cteLower string, strictBase64, strictQP bool, partIdx int) (decoded []byte, warn string, parseErr error) {
+	switch cteLower {
+	case "base64":
+		stripped := stripBase64Whitespace(b)
+		decoded, err := base64.StdEncoding.DecodeString(string(stripped))
+		if err != nil {
+			if strictBase64 {
+				return nil, "", &ParseError{
+					Reason:    ReasonMalformedBase64,
+					Message:   err.Error(),
+					PartIndex: partIdx,
+				}
+			}
+			decoded, warn = lenientBase64Decode(stripped)
+		}
+		return decoded, warn, nil
+
+	case "quoted-printable":
+		decoded, err := io.ReadAll(quotedprintable.NewReader(bytes.NewReader(b)))
+		if err != nil {
+			if strictQP {
+				return nil, "", &ParseError{
+					Reason:    ReasonMalformedQP,
+					Message:   err.Error(),
+					PartIndex: partIdx,
+				}
+			}
+			warn = fmt.Sprintf("quoted-printable decode error: %v", err)
+			decoded = b // fallback to raw
+		}
+		return decoded, warn, nil
+
+	default:
+		return b, "", nil
+	}
+}
+
+// stripBase64Whitespace removes ASCII whitespace (CR LF SP HT) from base64 input.
+func stripBase64Whitespace(b []byte) []byte {
+	out := make([]byte, 0, len(b))
+	for _, c := range b {
+		if c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// lenientBase64Decode attempts to salvage a malformed base64 payload by stripping
+// all non-alphabet characters and re-decoding. Returns best-effort decoded bytes
+// and a warning message.
+func lenientBase64Decode(b []byte) ([]byte, string) {
+	const alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+	cleaned := make([]byte, 0, len(b))
+	for _, c := range b {
+		if strings.IndexByte(alpha, c) >= 0 {
+			cleaned = append(cleaned, c)
+		}
+	}
+	for len(cleaned)%4 != 0 {
+		cleaned = append(cleaned, '=')
+	}
+	decoded, err := base64.StdEncoding.DecodeString(string(cleaned))
+	if err != nil {
+		return b, fmt.Sprintf("base64 lenient decode failed: %v", err)
+	}
+	return decoded, "base64: invalid characters stripped in lenient mode"
+}
+
+// convertCharset converts src from the named charset to UTF-8.
+// If charset is empty, "utf-8", "utf8", "us-ascii", "ascii", or "7bit", src
+// is returned unchanged (it is already ASCII/UTF-8). Returns an error if the
+// charset is unknown or conversion fails.
+func convertCharset(src []byte, charset string) ([]byte, error) {
+	dec := charsetDecoder(charset)
+	if dec == nil {
+		return src, nil
+	}
+	decoded, _, err := transform.Bytes(dec, src)
+	if err != nil {
+		return nil, fmt.Errorf("charset decode %q: %w", charset, err)
+	}
+	return decoded, nil
+}
+
+// parseContentType parses a Content-Type or Content-Disposition header value.
+// Returns empty strings + nil map on error or empty input.
+func parseContentType(v string) (mediaType string, params map[string]string, err error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", nil, fmt.Errorf("empty")
+	}
+	mt, ps, err := mime.ParseMediaType(v)
+	if err != nil {
+		return "", nil, err
+	}
+	return strings.ToLower(mt), ps, nil
+}
+
+// parseDisposition maps a raw Content-Disposition media-type string to our enum.
+func parseDisposition(raw string) Disposition {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "inline":
+		return DispositionInline
+	case "attachment":
+		return DispositionAttachment
+	default:
+		return DispositionUnknown
+	}
+}
+
+// extractFilename returns the filename for a part by checking the
+// Content-Disposition filename= parameter first, then Content-Type name=.
+func extractFilename(ctParams, dispParams map[string]string) string {
+	if fn := dispParams["filename"]; fn != "" {
+		return decodeHeaderWord(fn)
+	}
+	if fn := ctParams["name"]; fn != "" {
+		return decodeHeaderWord(fn)
+	}
+	return ""
+}
+
+// decodeHeaderWord applies RFC 2047 encoded-word decoding to a MIME parameter value.
+func decodeHeaderWord(v string) string {
+	var wd mime.WordDecoder
+	decoded, err := wd.DecodeHeader(v)
+	if err != nil {
+		return v
+	}
+	return decoded
+}
+
+// mimeHeaderToHeaders converts a textproto.MIMEHeader to our Headers type.
+func mimeHeaderToHeaders(src textproto.MIMEHeader) Headers {
+	h := NewHeaders()
+	for k, vs := range src {
+		for _, v := range vs {
+			h.add(k, v)
+		}
+	}
+	return h
+}
+
+// buildEnvelopeFromHeaders constructs an Envelope from parsed message headers.
+func buildEnvelopeFromHeaders(h Headers, decodedSubject string, wd *mime.WordDecoder) Envelope {
+	out := Envelope{
+		Subject:    decodedSubject,
+		MessageID:  strings.TrimSpace(h.Get("Message-ID")),
+		Date:       h.Get("Date"),
+		InReplyTo:  splitMessageIDs(decodeHeaderWord(h.Get("In-Reply-To"))),
+		References: splitMessageIDs(decodeHeaderWord(h.Get("References"))),
+	}
+
+	parseAddrField := func(raw string) []mail.Address {
+		decoded, _ := wd.DecodeHeader(raw)
+		if addrs, err := mail.ParseAddressList(decoded); err == nil {
+			return derefAddrs(addrs)
+		}
+		// Lenient fallback: try raw.
+		return parseAddrsLenient(raw)
+	}
+
+	out.From = parseAddrField(h.Get("From"))
+	out.To = parseAddrField(h.Get("To"))
+	out.Cc = parseAddrField(h.Get("Cc"))
+	out.Bcc = parseAddrField(h.Get("Bcc"))
+	out.ReplyTo = parseAddrField(h.Get("Reply-To"))
+
+	if raw := h.Get("Sender"); raw != "" {
+		decoded, _ := wd.DecodeHeader(raw)
+		if addrs, err := mail.ParseAddressList(decoded); err == nil && len(addrs) > 0 {
+			a := *addrs[0]
+			out.Sender = &a
+		}
+	}
+
+	return out
+}
+
+func derefAddrs(in []*mail.Address) []mail.Address {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]mail.Address, 0, len(in))
+	for _, a := range in {
+		if a != nil {
+			out = append(out, *a)
+		}
+	}
+	return out
+}
+
+// parseAddrsLenient tolerates malformed address headers.
+func parseAddrsLenient(s string) []mail.Address {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	addrs, err := mail.ParseAddressList(s)
+	if err != nil {
+		return nil
+	}
+	return derefAddrs(addrs)
+}
+
+// splitMessageIDs extracts angle-bracketed Message-IDs from a References / In-Reply-To value.
+func splitMessageIDs(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for i := 0; i < len(s); i++ {
+		if s[i] != '<' {
+			continue
+		}
+		j := strings.IndexByte(s[i:], '>')
+		if j <= 0 {
+			break
+		}
+		out = append(out, s[i:i+j+1])
+		i += j
+	}
+	return out
+}
+
+// readCapped reads at most limit+1 bytes so we can distinguish exactly-at-limit from over.
 func readCapped(r io.Reader, limit int64) ([]byte, error) {
 	if limit <= 0 {
 		limit = DefaultMaxSize
@@ -195,9 +837,8 @@ func readCapped(r io.Reader, limit int64) ([]byte, error) {
 }
 
 // findOverlongHeaderLine scans the header section and returns the 1-based line
-// number of the first line that exceeds max bytes (CRLF excluded), or 0.
+// number of the first line exceeding max bytes (CRLF excluded), or 0.
 func findOverlongHeaderLine(raw []byte, max int) int {
-	// Header ends at the first empty line (CRLF CRLF or LF LF).
 	end := headerEnd(raw)
 	if end <= 0 {
 		end = len(raw)
@@ -220,7 +861,8 @@ func findOverlongHeaderLine(raw []byte, max int) int {
 	return 0
 }
 
-// headerEnd returns the byte offset of the blank line that terminates the header section.
+// headerEnd returns the byte offset of the blank-line separator that ends the
+// header block, or -1 when absent.
 func headerEnd(raw []byte) int {
 	if i := bytes.Index(raw, []byte("\r\n\r\n")); i >= 0 {
 		return i
@@ -231,265 +873,17 @@ func headerEnd(raw []byte) int {
 	return -1
 }
 
-// joinHeader returns all values of a header joined by ", " preserving raw form.
-func joinHeader(h map[string][]string, name string) string {
-	key := canonicalHeaderKey(name)
-	for k, vs := range h {
-		if canonicalHeaderKey(k) == key {
-			return strings.Join(vs, ", ")
-		}
-	}
-	return ""
-}
-
-// convertHeaders maps a textproto.MIMEHeader-like map into our Headers type.
-func convertHeaders(src map[string][]string) Headers {
-	h := NewHeaders()
-	for k, vs := range src {
-		for _, v := range vs {
-			h.add(k, v)
-		}
-	}
-	return h
-}
-
-// buildEnvelope fills the Envelope struct from enmime's convenience accessors, which handle
-// RFC 2047 decoding. The SMTPUTF8 case works because enmime uses mail.ParseAddressList under
-// the hood, which accepts UTF-8 local parts when they are already UTF-8 bytes.
-func buildEnvelope(env *enmime.Envelope, h Headers) Envelope {
-	out := Envelope{
-		Subject:    env.GetHeader("Subject"),
-		MessageID:  strings.TrimSpace(env.GetHeader("Message-ID")),
-		Date:       env.GetHeader("Date"),
-		InReplyTo:  splitMessageIDs(env.GetHeader("In-Reply-To")),
-		References: splitMessageIDs(env.GetHeader("References")),
-	}
-	if addrs, err := env.AddressList("From"); err == nil {
-		out.From = deref(addrs)
-	} else {
-		out.From = parseAddrsLenient(h.Get("From"))
-	}
-	if addrs, err := env.AddressList("Sender"); err == nil && len(addrs) > 0 {
-		a := *addrs[0]
-		out.Sender = &a
-	}
-	if addrs, err := env.AddressList("Reply-To"); err == nil {
-		out.ReplyTo = deref(addrs)
-	}
-	if addrs, err := env.AddressList("To"); err == nil {
-		out.To = deref(addrs)
-	} else {
-		out.To = parseAddrsLenient(h.Get("To"))
-	}
-	if addrs, err := env.AddressList("Cc"); err == nil {
-		out.Cc = deref(addrs)
-	}
-	if addrs, err := env.AddressList("Bcc"); err == nil {
-		out.Bcc = deref(addrs)
-	}
-	return out
-}
-
-func deref(in []*mail.Address) []mail.Address {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]mail.Address, 0, len(in))
-	for _, a := range in {
-		if a != nil {
-			out = append(out, *a)
-		}
-	}
-	return out
-}
-
-// parseAddrsLenient tolerates malformed address headers; unparseable input yields nil, not an error.
-func parseAddrsLenient(s string) []mail.Address {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	addrs, err := mail.ParseAddressList(s)
-	if err != nil {
-		return nil
-	}
-	return deref(addrs)
-}
-
-// splitMessageIDs extracts angle-bracketed Message-IDs from an In-Reply-To or References header.
-func splitMessageIDs(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var out []string
-	for i := 0; i < len(s); i++ {
-		if s[i] != '<' {
-			continue
-		}
-		j := strings.IndexByte(s[i:], '>')
-		if j <= 0 {
-			break
-		}
-		out = append(out, s[i:i+j+1])
-		i += j
-	}
-	return out
-}
-
-// partCounter tracks the sequential walk index and enforces MaxParts.
-type partCounter struct {
-	index int
-	max   int
-}
-
-func (pc *partCounter) next() (int, error) {
-	idx := pc.index
-	pc.index++
-	if pc.max > 0 && pc.index > pc.max {
-		return idx, &ParseError{
-			Reason:    ReasonTooManyParts,
-			Message:   fmt.Sprintf("part count exceeded MaxParts=%d", pc.max),
-			PartIndex: idx,
-		}
-	}
-	return idx, nil
-}
-
-// convertPart walks an enmime Part tree, applies the strictness layer, and produces our Part.
-func convertPart(src *enmime.Part, opts *ParseOptions, depth int, pc *partCounter) (Part, error) {
-	if depth > opts.MaxDepth {
-		return Part{}, &ParseError{
-			Reason:    ReasonDepthExceeded,
-			Message:   fmt.Sprintf("nesting depth exceeded MaxDepth=%d", opts.MaxDepth),
-			PartIndex: pc.index,
-		}
-	}
-	idx, err := pc.next()
-	if err != nil {
-		return Part{}, err
-	}
-
-	p := Part{
-		ContentType:             src.ContentType,
-		Charset:                 src.Charset,
-		ContentTransferEncoding: src.Header.Get("Content-Transfer-Encoding"),
-		Headers:                 convertHeaders(src.Header),
-		Disposition:             parseDisposition(src.Disposition),
-		Filename:                src.FileName,
-	}
-
-	for _, e := range src.Errors {
-		if e == nil {
-			continue
-		}
-		p.DecodeErrors = append(p.DecodeErrors, e.Error())
-		if serr := mapEnmimeError(e, idx, opts); serr != nil {
-			return Part{}, serr
-		}
-	}
-
-	// Walk children if present.
-	for c := src.FirstChild; c != nil; c = c.NextSibling {
-		child, cerr := convertPart(c, opts, depth+1, pc)
-		if cerr != nil {
-			return Part{}, cerr
-		}
-		p.Children = append(p.Children, child)
-	}
-
-	// Assign content for leaves. enmime populates Content with the decoded,
-	// charset-converted bytes for text parts and raw decoded bytes for non-text.
-	// Non-text parts alias enmime's per-part Content slice rather than copying
-	// — Content is freshly allocated per part inside enmime, the surrounding
-	// envelope tree drops out of scope when Parse returns, and callers must
-	// treat Part.Bytes as read-only. The previous defensive copy doubled the
-	// transient peak allocation for attachment-heavy mail with no semantic
-	// benefit.
-	if src.FirstChild == nil {
-		if p.IsText() {
-			text := string(src.Content)
-			if opts.StrictCharset && p.Charset != "" && !isUTF8OrASCII(text) {
-				return Part{}, &ParseError{
-					Reason:    ReasonUnknownCharset,
-					Message:   fmt.Sprintf("declared charset %q did not decode cleanly", p.Charset),
-					PartIndex: idx,
-				}
-			}
-			p.Text = text
-		} else {
-			p.Bytes = src.Content
-		}
-	}
-
-	return p, nil
-}
-
-// parseDisposition maps enmime's raw disposition string to our enum.
-func parseDisposition(raw string) Disposition {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "inline":
-		return DispositionInline
-	case "attachment":
-		return DispositionAttachment
-	default:
-		return DispositionUnknown
-	}
-}
-
-// mapEnmimeError turns one of enmime's *Error entries into a structural error if the
-// caller has strictness enabled for the corresponding class. enmime marks several classes
-// of silent corruption as non-severe warnings; we treat them as hard errors when strictness
-// is on, because the spike identified these as the silent-corruption cases to catch.
-func mapEnmimeError(e *enmime.Error, partIdx int, opts *ParseOptions) *ParseError {
-	switch e.Name {
-	case enmime.ErrorMalformedBase64:
-		if opts.StrictBase64 {
-			return &ParseError{
-				Reason:    ReasonMalformedBase64,
-				Message:   e.Detail,
-				PartIndex: partIdx,
-			}
-		}
-	case enmime.ErrorCharsetConversion, enmime.ErrorCharsetDeclaration:
-		// enmime reports this when it cannot resolve the declared charset name, or when
-		// auto-detected bytes contradict the declaration. The authoritative check for
-		// "bytes do not match declared charset" is the UTF-8 validation performed on the
-		// decoded leaf text in convertPart; surfacing enmime's warning here would also
-		// fire on malformed-but-fallback-parseable Content-Type headers, which the spike
-		// deliberately wants us to tolerate. Leave this as a DecodeErrors note.
-	case enmime.ErrorContentEncoding:
-		// Covers malformed quoted-printable and similar CTE failures.
-		if opts.StrictQP && looksLikeQPError(e.Detail) {
-			return &ParseError{
-				Reason:    ReasonMalformedQP,
-				Message:   e.Detail,
-				PartIndex: partIdx,
-			}
-		}
-	}
-	return nil
-}
-
-func looksLikeQPError(detail string) bool {
-	d := strings.ToLower(detail)
-	return strings.Contains(d, "quoted") || strings.Contains(d, "qp") || strings.Contains(d, "quotedprintable")
-}
-
-// isUTF8OrASCII reports whether s decodes as a valid UTF-8 string. A naive byte-range check.
+// isUTF8OrASCII reports whether s is valid UTF-8 (fast path using range).
 func isUTF8OrASCII(s string) bool {
-	// Fast path: use the stdlib's invariant that range over string iterates runes and returns
-	// RuneError for invalid sequences.
 	for _, r := range s {
 		if r == '�' {
-			// Only treat as invalid if the original bytes actually had no valid U+FFFD; we
-			// re-check by scanning raw bytes.
 			return !hasRawInvalidUTF8(s)
 		}
 	}
 	return true
 }
 
-// hasRawInvalidUTF8 does a strict byte-level UTF-8 validation.
+// hasRawInvalidUTF8 performs strict byte-level UTF-8 validation.
 func hasRawInvalidUTF8(s string) bool {
 	for i := 0; i < len(s); {
 		b := s[i]

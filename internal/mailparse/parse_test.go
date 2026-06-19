@@ -87,9 +87,6 @@ func TestParseCorpus(t *testing.T) {
 			if int64(len(data)) != msg.Size {
 				t.Errorf("size: got %d want %d", msg.Size, len(data))
 			}
-			if !bytes.Equal(msg.Raw, data) {
-				t.Error("Raw bytes should match input")
-			}
 		})
 	}
 }

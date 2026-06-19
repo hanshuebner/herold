@@ -662,7 +662,7 @@ func buildAttachments(m mailparse.Message, base, deliveryID, blobHash string, ex
 		out = append(out, Attachment{
 			Filename:    p.Filename,
 			ContentType: p.ContentType,
-			Size:        int64(len(p.Bytes)),
+			Size:        p.Size,
 			FetchURL:    url,
 		})
 	}

@@ -665,10 +665,10 @@ func (s *state) extractText(c Command) error {
 // body. Used by extracttext.
 func (s *state) partOrMessageText() string {
 	if s.currentPart != nil {
-		if s.currentPart.IsText() && s.currentPart.Text != "" {
+		if s.currentPart.Text != "" {
 			return s.currentPart.Text
 		}
-		return string(s.currentPart.Bytes)
+		return ""
 	}
 	return mailparse.PrimaryTextBody(s.msg)
 }
@@ -1427,9 +1427,6 @@ func (s *state) testSize(t Test) (bool, error) {
 		}
 	}
 	size := s.msg.Size
-	if size == 0 {
-		size = int64(len(s.msg.Raw))
-	}
 	switch mode {
 	case "over":
 		return size > n, nil
@@ -2085,9 +2082,6 @@ func extractAddressParts(raw, part string) []string {
 func collectBody(p mailparse.Part, mode string, filters []string) string {
 	switch mode {
 	case ":raw":
-		if len(p.Bytes) > 0 {
-			return string(p.Bytes)
-		}
 		return p.Text
 	case ":content":
 		var parts []string
@@ -2114,8 +2108,6 @@ func collectContent(p mailparse.Part, filters []string, out *[]string) {
 		if contentTypePrefixMatch(p.ContentType, f) {
 			if p.Text != "" {
 				*out = append(*out, p.Text)
-			} else if len(p.Bytes) > 0 {
-				*out = append(*out, string(p.Bytes))
 			}
 			break
 		}

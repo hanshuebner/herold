@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("Content-TYpe:multipArt/0;BoundArY=\"outer-mixed\"\n\n--outer-mixedContent-TYpe:multipArt/0\n\n--outer-mixed")
