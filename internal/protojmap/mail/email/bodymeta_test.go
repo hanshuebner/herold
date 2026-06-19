@@ -50,7 +50,7 @@ func (c *countingBlobs) Put(ctx context.Context, r io.Reader) (store.BlobRef, er
 	return c.inner.Put(ctx, r)
 }
 
-func (c *countingBlobs) Get(ctx context.Context, hash string) (io.ReadCloser, error) {
+func (c *countingBlobs) Get(ctx context.Context, hash string) (store.BlobReader, error) {
 	c.getCount.Add(1)
 	return c.inner.Get(ctx, hash)
 }

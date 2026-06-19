@@ -129,9 +129,10 @@ func (s *Store) Put(ctx context.Context, r io.Reader) (store.BlobRef, error) {
 	return store.BlobRef{Hash: hash, Size: n}, nil
 }
 
-// Get opens the blob at hash for streaming read. The caller must Close
-// the returned reader. Returns store.ErrNotFound if the file is absent.
-func (s *Store) Get(ctx context.Context, hash string) (io.ReadCloser, error) {
+// Get opens the blob at hash for seekable, range-capable read
+// (REQ-STORE-14). The caller must Close the returned BlobReader.
+// Returns store.ErrNotFound if the file is absent.
+func (s *Store) Get(ctx context.Context, hash string) (store.BlobReader, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

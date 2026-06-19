@@ -130,8 +130,9 @@ If steps 1–4 succeed but the transaction fails, the blob is orphaned. GC clean
 
 ### Reads
 
-- Direct open-read by hash. No in-memory copy required.
-- Range reads for IMAP partial fetch / JMAP download.
+- `store.Blobs.Get` returns a `store.BlobReader` — a seekable, `ReaderAt`-capable handle (REQ-STORE-14). Callers stream, seek, or range-read without buffering the blob.
+- The filesystem backend returns `*os.File` directly; it satisfies the interface natively.
+- Range reads for IMAP partial fetch / JMAP download use the seekable handle; no in-memory copy of the full blob is ever required.
 
 ### Refcount and GC
 

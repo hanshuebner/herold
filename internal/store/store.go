@@ -2257,12 +2257,22 @@ type Metadata interface {
 	UpsertIMAPImportMessageState(ctx context.Context, state IMAPImportMessageState) error
 }
 
+// BlobReader is a seekable, range-capable blob handle (REQ-STORE-14):
+// sequential streaming plus random access, so callers read headers,
+// a bounded excerpt, or one part at a time without buffering the blob.
+// The caller must Close the handle when done.
+type BlobReader interface {
+	io.ReadSeekCloser
+	io.ReaderAt
+}
+
 // Blobs is the content-addressed blob surface: one object per canonical
 // message body, identified by BLAKE3 hex hash (REQ-STORE-10..16).
 //
 // Writes are atomic at the filesystem level (temp + fsync + rename, see
-// docs/design/server/architecture/02-storage-architecture.md §Writes). Reads are
-// streamed; Get returns an io.ReadCloser the caller must Close.
+// docs/design/server/architecture/02-storage-architecture.md §Writes). Reads
+// return a seekable, ReaderAt-capable BlobReader (REQ-STORE-14) so callers
+// can stream, seek, or range-read without buffering the whole blob.
 type Blobs interface {
 	// Put writes the bytes read from r as a new blob, canonicalizing
 	// CRLF line endings before hashing (REQ-STORE-10). Returns the
@@ -2271,9 +2281,10 @@ type Blobs interface {
 	// existing file untouched.
 	Put(ctx context.Context, r io.Reader) (BlobRef, error)
 
-	// Get opens the blob for streaming read. Returns ErrNotFound if the
-	// blob does not exist. The caller must Close the returned reader.
-	Get(ctx context.Context, hash string) (io.ReadCloser, error)
+	// Get opens the blob for seekable, range-capable read (REQ-STORE-14).
+	// Returns ErrNotFound if the blob does not exist. The caller must
+	// Close the returned BlobReader.
+	Get(ctx context.Context, hash string) (BlobReader, error)
 
 	// Stat returns the blob size and refcount. Returns ErrNotFound if
 	// the blob is not present in the blob store (irrespective of any

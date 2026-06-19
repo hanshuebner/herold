@@ -7,6 +7,7 @@ package protoshare_test
 // octet-stream (REQ-SHARE-63), and RFC 5987 filename encoding.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -23,6 +24,12 @@ import (
 	"github.com/hanshuebner/herold/internal/protoshare"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// bytesReadCloser wraps a *bytes.Reader with a no-op Close so it
+// satisfies store.BlobReader (io.ReadSeekCloser + io.ReaderAt).
+type bytesReadCloser struct{ *bytes.Reader }
+
+func (bytesReadCloser) Close() error { return nil }
 
 // ---- fake store ----------------------------------------------------------------
 
@@ -83,14 +90,14 @@ func (f *fakeStore) RecordFileShareDownload(_ context.Context, id string) (store
 	return *fs, nil
 }
 
-func (f *fakeStore) BlobGet(_ context.Context, hash string) (io.ReadCloser, error) {
+func (f *fakeStore) BlobGet(_ context.Context, hash string) (store.BlobReader, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	data, ok := f.blobs[hash]
 	if !ok {
 		return nil, store.ErrNotFound
 	}
-	return io.NopCloser(strings.NewReader(string(data))), nil
+	return bytesReadCloser{bytes.NewReader(data)}, nil
 }
 
 func (f *fakeStore) BlobStat(_ context.Context, hash string) (int64, int, error) {

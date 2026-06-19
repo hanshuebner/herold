@@ -34,8 +34,8 @@ type ShareStore interface {
 	// RecordFileShareDownload atomically increments download_count and
 	// returns the post-increment row.
 	RecordFileShareDownload(ctx context.Context, id string) (store.FileShare, error)
-	// BlobGet opens the blob for streaming read.
-	BlobGet(ctx context.Context, hash string) (io.ReadCloser, error)
+	// BlobGet opens the blob for seekable, range-capable read (REQ-STORE-14).
+	BlobGet(ctx context.Context, hash string) (store.BlobReader, error)
 	// BlobStat returns (size, refs, err) for a hash; used to fill
 	// Content-Length on HEAD without opening the blob.
 	BlobStat(ctx context.Context, hash string) (size int64, refs int, err error)
@@ -50,7 +50,7 @@ func (a storeAdapter) GetFileShareByID(ctx context.Context, id string) (store.Fi
 func (a storeAdapter) RecordFileShareDownload(ctx context.Context, id string) (store.FileShare, error) {
 	return a.s.Meta().RecordFileShareDownload(ctx, id)
 }
-func (a storeAdapter) BlobGet(ctx context.Context, hash string) (io.ReadCloser, error) {
+func (a storeAdapter) BlobGet(ctx context.Context, hash string) (store.BlobReader, error) {
 	return a.s.Blobs().Get(ctx, hash)
 }
 func (a storeAdapter) BlobStat(ctx context.Context, hash string) (int64, int, error) {
@@ -568,23 +568,13 @@ func (srv *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 	srv.writeDownloadHeaders(w, fs)
 
-	// Honour range requests using http.ServeContent. ServeContent needs
-	// an io.ReadSeeker; our blob reader is a plain io.ReadCloser. We wrap
-	// it in a seekableBlob that buffers just enough to satisfy the range
-	// request from a forward-only stream. For full compliance the blob
-	// store could expose a seekable reader, but the current interface only
-	// provides Get(). We fall back to sending the full body when the
-	// Range request would require backward seeking — this is compliant:
-	// RFC 7233 §3.1 allows ignoring ranges a server cannot satisfy.
-	rangeHdr := r.Header.Get("Range")
-	if rangeHdr != "" {
-		if sb, ok := newSeekableBlob(rc, fs.BlobSize); ok {
-			// ServeContent sets Content-Range and 206 for us.
-			http.ServeContent(w, r, "", time.Time{}, sb)
-			return
-		}
-		// Cannot seek: send full body (headers already written by
-		// writeDownloadHeaders, which set Accept-Ranges).
+	// Honour range requests using http.ServeContent. The BlobReader is
+	// seekable (REQ-STORE-14) so ServeContent can satisfy any Range
+	// without buffering the blob into memory.
+	if r.Header.Get("Range") != "" {
+		// ServeContent sets Content-Range and 206 for us.
+		http.ServeContent(w, r, "", time.Time{}, rc)
+		return
 	}
 	if _, err := io.Copy(w, rc); err != nil {
 		srv.logger.Debug("protoshare: stream copy",
@@ -638,64 +628,6 @@ func isFirstRange(rangeHdr string) bool {
 		return false
 	}
 	return n == 0
-}
-
-// ---- seekable blob wrapper --------------------------------------------------
-
-// seekableBlob wraps a forward-only io.ReadCloser with a full in-memory
-// buffer so http.ServeContent can seek within it. Only created for small
-// enough blobs (≤ 32 MiB) to bound memory use; larger blobs fall through
-// to the non-range path.
-const seekableMaxBytes = 32 * 1024 * 1024 // 32 MiB
-
-type seekableBlob struct {
-	data []byte
-	pos  int64
-}
-
-// newSeekableBlob reads all of rc into memory (up to seekableMaxBytes) and
-// returns a *seekableBlob. Returns (nil, false) if the blob exceeds the
-// limit or any read error occurs.
-func newSeekableBlob(rc io.Reader, size int64) (*seekableBlob, bool) {
-	if size > seekableMaxBytes {
-		return nil, false
-	}
-	data, err := io.ReadAll(io.LimitReader(rc, seekableMaxBytes+1))
-	if err != nil {
-		return nil, false
-	}
-	if int64(len(data)) > seekableMaxBytes {
-		return nil, false
-	}
-	return &seekableBlob{data: data}, true
-}
-
-func (sb *seekableBlob) Read(p []byte) (int, error) {
-	if sb.pos >= int64(len(sb.data)) {
-		return 0, io.EOF
-	}
-	n := copy(p, sb.data[sb.pos:])
-	sb.pos += int64(n)
-	return n, nil
-}
-
-func (sb *seekableBlob) Seek(offset int64, whence int) (int64, error) {
-	var abs int64
-	switch whence {
-	case io.SeekStart:
-		abs = offset
-	case io.SeekCurrent:
-		abs = sb.pos + offset
-	case io.SeekEnd:
-		abs = int64(len(sb.data)) + offset
-	default:
-		return 0, fmt.Errorf("protoshare: unknown seek whence %d", whence)
-	}
-	if abs < 0 {
-		return 0, fmt.Errorf("protoshare: seek before beginning")
-	}
-	sb.pos = abs
-	return abs, nil
 }
 
 // ---- landing page template --------------------------------------------------
