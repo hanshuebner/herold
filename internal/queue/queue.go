@@ -727,12 +727,10 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 	// receivers will treat a freshly-seen unsigned domain as spam (see
 	// re #20). Classify the row instead so the failure is visible.
 	//
-	// NOTE: the Signer interface takes and returns []byte, so the signed
-	// path must materialise the body in RAM. This is flagged for a future
-	// phase when the Signer grows a streaming interface: for now the body
-	// is bounded in practice by DKIM's sane limits on signable messages.
-	// The unsigned path (Sign=false, forwarding / alias / relay) is fully
-	// streaming and never allocates the body (REQ-STORE-17/19).
+	// SignStream reads the seekable blobReader twice (pass 1: body hash +
+	// header signature; pass 2: output) without ever holding the full
+	// body in RAM (REQ-STORE-17). The blob is seeked back to 0 before
+	// each attempt so re-signing on retry is correct.
 	var messageReader io.Reader
 	intent, _ := q.lookupSigning(item.EnvelopeID)
 	if intent.Sign {
@@ -750,22 +748,20 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 			})
 			return
 		}
-		// Signer.Sign takes []byte; materialise now. The signature
-		// header is prepended in-memory; the result is wrapped in a
-		// bytes.Reader so the deliverer still receives an io.Reader.
-		rawBytes, rErr := io.ReadAll(blobReader)
-		if rErr != nil {
-			q.opts.Logger.ErrorContext(ctx, "queue: read body for signing failed",
+		// Seek to the start of the blob so each delivery attempt signs
+		// from offset 0 regardless of any prior reads.
+		if _, seekErr := blobReader.Seek(0, io.SeekStart); seekErr != nil {
+			q.opts.Logger.ErrorContext(ctx, "queue: seek body for signing failed",
 				slog.String("activity", observe.ActivitySystem),
 				slog.Uint64("id", uint64(item.ID)),
-				slog.Any("err", rErr))
+				slog.Any("err", seekErr))
 			q.handleTransient(ctx, item, DeliveryOutcome{
 				Status: DeliveryStatusTransient,
-				Detail: "blob read error: " + rErr.Error(),
+				Detail: "blob seek error: " + seekErr.Error(),
 			})
 			return
 		}
-		signed, sErr := q.opts.Signer.Sign(ctx, intent.Domain, rawBytes)
+		signedReader, sErr := q.opts.Signer.SignStream(ctx, intent.Domain, blobReader)
 		if sErr != nil {
 			// Context cancellation is the worker shutting down or the
 			// per-attempt deadline expiring; route to transient so the
@@ -799,7 +795,7 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 			})
 			return
 		}
-		messageReader = bytes.NewReader(signed)
+		messageReader = signedReader
 	} else {
 		// Unsigned path: stream the blob reader directly to the
 		// deliverer; no full-body allocation (REQ-STORE-17/19).

@@ -6,7 +6,9 @@ import (
 	"crypto"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"strings"
 
 	"github.com/emersion/go-msgauth/dkim"
 
@@ -99,6 +101,10 @@ func NewSigner(km *keymgmt.Manager, logger *slog.Logger, clk clock.Clock, opts .
 // SHA-256; signed headers default to DefaultSignedHeaders. Sign performs
 // no I/O beyond the keymgmt lookup.
 //
+// Sign is the reference implementation used by the equivalence test suite.
+// Production code calls SignStream instead to avoid buffering the full body
+// in RAM (REQ-STORE-17). Do not delete Sign — it is the test oracle.
+//
 // A non-nil error is returned for missing keys (ErrNoActiveKey), key
 // material that cannot be parsed, or signature failures from the
 // underlying signer. Callers must treat this as a permanent classify
@@ -144,4 +150,84 @@ func (s *Signer) Sign(ctx context.Context, domain string, message []byte) ([]byt
 		slog.String("selector", key.Selector),
 		slog.String("algorithm", key.Algorithm.String()))
 	return out.Bytes(), nil
+}
+
+// SignStream signs the message read from src and returns an io.Reader that
+// emits the DKIM-Signature header(s) followed by the original message body
+// without ever accumulating the full body in RAM (REQ-STORE-17).
+//
+// src must be an io.ReadSeeker (store.BlobReader satisfies this). SignStream
+// reads src twice:
+//
+//   - Pass 1: the full message is streamed through go-msgauth's dkim.NewSigner
+//     to compute the relaxed body hash and the header signature. The signer
+//     is driven by an io.Copy; nothing beyond the signer's internal state is
+//     held.
+//   - After Close: src is seeked back to offset 0.
+//   - Output: io.MultiReader(signatureHeader, src) so the caller streams the
+//     signed message with a single subsequent io.Copy.
+//
+// The signature produced by SignStream is byte-identical to Sign for the same
+// key and message on deterministic algorithms (RSA PKCS#1 v1.5, Ed25519).
+// The equivalence test suite in signer_stream_test.go enforces this.
+//
+// Errors: same classification as Sign — ErrNoActiveKey for missing keys,
+// permanent otherwise. Context cancellation routes to transient.
+func (s *Signer) SignStream(ctx context.Context, domain string, src io.ReadSeeker) (io.Reader, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	key, err := s.keys.ActiveKey(ctx, domain)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, fmt.Errorf("%w: %s", ErrNoActiveKey, domain)
+		}
+		return nil, fmt.Errorf("maildkim: lookup key: %w", err)
+	}
+	cryptoSigner, err := keymgmt.LoadPrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("maildkim: load key: %w", err)
+	}
+
+	opts := &dkim.SignOptions{
+		Domain:                 key.Domain,
+		Selector:               key.Selector,
+		Signer:                 cryptoSigner,
+		Hash:                   crypto.SHA256,
+		HeaderCanonicalization: dkim.CanonicalizationRelaxed,
+		BodyCanonicalization:   dkim.CanonicalizationRelaxed,
+		HeaderKeys:             s.headers,
+	}
+
+	// Pass 1: stream src through go-msgauth's NewSigner to compute the body
+	// hash and header signature. NewSigner runs a goroutine internally; we
+	// drive it synchronously via io.Copy. No body bytes are retained.
+	dkimSigner, err := dkim.NewSigner(opts)
+	if err != nil {
+		return nil, fmt.Errorf("maildkim: create signer: %w", err)
+	}
+	if _, err := io.Copy(dkimSigner, src); err != nil {
+		_ = dkimSigner.Close()
+		return nil, fmt.Errorf("maildkim: stream message for signing: %w", err)
+	}
+	if err := dkimSigner.Close(); err != nil {
+		return nil, fmt.Errorf("maildkim: finalize signature: %w", err)
+	}
+	sigHeader := dkimSigner.Signature()
+
+	// Seek the source back to the start so the caller's io.Copy reads the
+	// full original message as the body portion of the signed output.
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("maildkim: seek body for output: %w", err)
+	}
+
+	s.logger.DebugContext(ctx, "maildkim: signed message (stream)",
+		slog.String("activity", "system"),
+		slog.String("subsystem", "maildkim"),
+		slog.String("domain", key.Domain),
+		slog.String("selector", key.Selector),
+		slog.String("algorithm", key.Algorithm.String()))
+
+	return io.MultiReader(strings.NewReader(sigHeader), src), nil
 }

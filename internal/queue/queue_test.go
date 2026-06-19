@@ -127,16 +127,20 @@ type recordingSigner struct {
 	tag   string
 }
 
-func (s *recordingSigner) Sign(ctx context.Context, domain string, message []byte) ([]byte, error) {
+func (s *recordingSigner) SignStream(ctx context.Context, domain string, src io.ReadSeeker) (io.Reader, error) {
 	s.calls.Add(1)
-	out := append([]byte("X-Test-Signed: "+domain+";\r\n"), message...)
+	msg, err := io.ReadAll(src)
+	if err != nil {
+		return nil, err
+	}
+	out := append([]byte("X-Test-Signed: "+domain+";\r\n"), msg...)
 	if s.tag != "" {
 		out = append([]byte("X-Tag: "+s.tag+"\r\n"), out...)
 	}
-	return out, nil
+	return bytes.NewReader(out), nil
 }
 
-// failingSigner returns the same error from every Sign call. Used to
+// failingSigner returns the same error from every SignStream call. Used to
 // verify the queue worker classifies signer failures as permanent (or
 // transient for context errors) without falling through to an unsigned
 // delivery — re #20.
@@ -145,7 +149,7 @@ type failingSigner struct {
 	calls atomic.Int32
 }
 
-func (s *failingSigner) Sign(ctx context.Context, domain string, message []byte) ([]byte, error) {
+func (s *failingSigner) SignStream(ctx context.Context, domain string, src io.ReadSeeker) (io.Reader, error) {
 	s.calls.Add(1)
 	return nil, s.err
 }

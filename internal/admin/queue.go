@@ -25,8 +25,8 @@ import (
 // Sign=true. A non-nil error indicates a misconfiguration the caller
 // should surface.
 //
-// The queue.Signer interface (Sign(ctx, domain, message) ([]byte, error))
-// is satisfied by *maildkim.Signer directly so no adapter is required.
+// The queue.Signer interface (SignStream) is satisfied by *maildkim.Signer
+// directly so no adapter is required.
 func buildDKIMSigner(st store.Store, logger *slog.Logger, clk clock.Clock) (queue.Signer, error) {
 	if st == nil {
 		return nil, errors.New("admin: buildDKIMSigner: nil store")

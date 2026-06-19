@@ -148,14 +148,19 @@ type Deliverer interface {
 // signature, and silently delivering unsigned is exactly the
 // deliverability footgun re #20 closed.
 //
-// The Sign method is pure: given (domain, message), it returns a fresh
-// byte slice with the appropriate signature header(s) prepended. The
-// orchestrator never mutates message in place.
+// SignStream streams the DKIM-Signature header(s) followed by the
+// original message: the body is never accumulated in RAM (REQ-STORE-17).
+// src must be seekable (store.BlobReader satisfies this requirement);
+// the implementation reads src twice (pass 1 to compute the body hash
+// and header signature, pass 2 as the body portion of the output).
 type Signer interface {
-	// Sign returns a signed copy of message for the given signing
-	// domain. The returned slice is owned by the caller; implementations
-	// must not retain it.
-	Sign(ctx context.Context, domain string, message []byte) ([]byte, error)
+	// SignStream signs the message readable from src and returns an
+	// io.Reader that emits the DKIM-Signature header(s) immediately
+	// followed by the original message. src is seeked back to 0 after
+	// the signature is computed so the returned reader can stream it
+	// from the start. The caller must consume the returned reader fully
+	// to avoid leaking the underlying source.
+	SignStream(ctx context.Context, domain string, src io.ReadSeeker) (io.Reader, error)
 }
 
 // RetryPolicy encodes the per-attempt backoff schedule. Element i is
