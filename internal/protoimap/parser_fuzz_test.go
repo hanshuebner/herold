@@ -19,6 +19,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -90,17 +91,17 @@ func FuzzCommandLine(f *testing.F) {
 		// fuzzer's memory footprint while still exercising the
 		// continuation-and-literal control path.
 		used := false
-		readLit := func(size int64, _ bool) ([]byte, error) {
+		readLit := func(size int64, _ bool) ([]byte, *os.File, error) {
 			if used || size > 4096 {
-				return nil, ErrTooBig
+				return nil, nil, ErrTooBig
 			}
 			used = true
 			if size < 0 {
-				return nil, errors.New("negative")
+				return nil, nil, errors.New("negative")
 			}
 			buf := make([]byte, size)
 			_, _ = br.Read(buf)
-			return buf, nil
+			return buf, nil, nil
 		}
 		_, _ = readCommand(br, readLit)
 	})

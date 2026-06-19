@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -24,17 +25,19 @@ import (
 // underlying store the same way *queue.Queue.Cancel does so the
 // JMAP destroy path observes the same semantics in tests.
 type fakeSubmitter struct {
-	mu      sync.Mutex
-	calls   []queue.Submission
-	bodies  [][]byte
-	envs    []queue.EnvelopeID
-	cancels []queue.EnvelopeID
-	store   store.Store
+	mu        sync.Mutex
+	calls     []queue.Submission
+	bodies    [][]byte
+	bodyTypes []reflect.Type // concrete type of sub.Body at Submit time (REQ-STORE-17/18)
+	envs      []queue.EnvelopeID
+	cancels   []queue.EnvelopeID
+	store     store.Store
 }
 
 func (f *fakeSubmitter) Submit(ctx context.Context, sub queue.Submission) (queue.EnvelopeID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.bodyTypes = append(f.bodyTypes, reflect.TypeOf(sub.Body))
 	body, _ := io.ReadAll(sub.Body)
 	f.calls = append(f.calls, sub)
 	f.bodies = append(f.bodies, body)
@@ -641,15 +644,14 @@ func TestEmailSubmission_Set_DedupsEnvelopeRcptTo_WithWhitespace(t *testing.T) {
 // TestEmailSubmission_Set_StreamsBodyToQueue verifies REQ-STORE-17/18
 // (Phase 1): EmailSubmission/set must hand the queue a streaming
 // io.Reader backed by the blob store rather than a *bytes.Reader wrapping
-// a fully-materialised copy. A 1 MiB message body is used; the correct
-// implementation passes the store.BlobReader directly to queue.Submit
-// without io.ReadAll. The body content is verified byte-identical to the
-// stored blob so the queue receives the right data.
+// a fully-materialised copy. A 1 MiB message body is used so that any
+// accidental full-body allocation is observable via the Body type captured
+// in fakeSubmitter.bodyTypes.
 //
-// The streaming property is enforced structurally by the code (processCreate
-// passes rc directly to queue.Submit), and by the absence of io.ReadAll in
-// the submission path. This test validates the content correctness half of
-// the contract; the type invariant (no *bytes.Reader) is visible in the code.
+// The correct streaming path passes a store.BlobReader (concrete type
+// *os.File from storeblobfs) directly, which is not *bytes.Reader.
+// The body content is also verified byte-identical to the stored blob
+// so the queue receives the right data.
 func TestEmailSubmission_Set_StreamsBodyToQueue(t *testing.T) {
 	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
 		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
@@ -664,8 +666,7 @@ func TestEmailSubmission_Set_StreamsBodyToQueue(t *testing.T) {
 		PrincipalID: p.ID, Name: "Drafts", Attributes: store.MailboxAttrDrafts,
 	})
 
-	// A 1 MiB body makes any accidental full-body copy easy to spot in
-	// a heap profile and sets a meaningful baseline for the size check.
+	// A 1 MiB body makes any accidental full-body copy easy to spot.
 	const bodySize = 1 << 20
 	rawBody := "From: alice@example.test\r\nTo: bob@example.test\r\nSubject: large\r\n\r\n" +
 		strings.Repeat("x", bodySize)
@@ -716,17 +717,16 @@ func TestEmailSubmission_Set_StreamsBodyToQueue(t *testing.T) {
 		t.Fatalf("expected 1 queue submit, got %d", len(sub.calls))
 	}
 
-	// Body content must arrive at the queue byte-identical to the stored
-	// blob. The streaming path passes the blob handle directly to Submit;
-	// the fakeSubmitter drains it via io.ReadAll(sub.Body) so we can inspect
-	// the received bytes here.
-	if !bytes.Equal(sub.bodies[0], []byte(rawBody)) {
-		t.Fatalf("body content mismatch: got %d bytes, want %d", len(sub.bodies[0]), len(rawBody))
+	// REQ-STORE-17/18: the Body must not be *bytes.Reader — that would
+	// indicate the full message was buffered in RAM before submission.
+	// storeblobfs.Get returns *os.File (implements store.BlobReader) which
+	// is never *bytes.Reader.
+	if sub.bodyTypes[0] == reflect.TypeOf((*bytes.Reader)(nil)) {
+		t.Fatalf("Body was *bytes.Reader — full message was materialised before submission (REQ-STORE-17/18)")
 	}
 
-	// A 1 MiB body must arrive in full, confirming the streaming handle is
-	// fully consumed by the queue and no truncation occurred.
-	if len(sub.bodies[0]) != len(rawBody) {
-		t.Fatalf("body truncated: got %d bytes, want %d (REQ-STORE-17/18)", len(sub.bodies[0]), len(rawBody))
+	// The body content must be byte-identical to the stored blob.
+	if !bytes.Equal(sub.bodies[0], []byte(rawBody)) {
+		t.Fatalf("body content mismatch: got %d bytes, want %d", len(sub.bodies[0]), len(rawBody))
 	}
 }

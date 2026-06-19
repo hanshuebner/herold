@@ -33,6 +33,12 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
+// maxImportMessageBytes is the Phase-1 ceiling on how many bytes of a stored
+// message we read into RAM during categorisation. Blobs larger than this
+// truncate silently; mailparse only needs headers + initial body bytes to
+// classify. Phase 2 will pipe the blob reader directly into mailparse.
+const maxImportMessageBytes = 50 * 1024 * 1024 // 50 MiB
+
 // imapImportCategoriserAdapter implements imapimport.Categoriser using a real
 // categorise.Categoriser. Construct via newIMAPImportCategoriserAdapter.
 type imapImportCategoriserAdapter struct {
@@ -103,7 +109,10 @@ func (a *imapImportCategoriserAdapter) Categorise(ctx context.Context, principal
 		)
 		return nil
 	}
-	rawBytes, readErr := io.ReadAll(rc)
+	// Phase-1 floor: bound the read so a corrupt or abnormally large blob
+	// cannot exhaust memory. TODO(REQ-STORE-19, Phase 2): stream the blob
+	// reader directly into mailparse once mailparse accepts an io.Reader.
+	rawBytes, readErr := io.ReadAll(io.LimitReader(rc, maxImportMessageBytes+1))
 	_ = rc.Close()
 	if readErr != nil {
 		a.logger.WarnContext(ctx, "imap-import categorise: read blob",

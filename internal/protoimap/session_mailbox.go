@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/mail"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +18,26 @@ import (
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// cleanupSpill closes and removes a spill temp file if non-nil. Safe to
+// call with nil (no-op). Used to ensure all APPEND spill files are
+// released on every exit path.
+func cleanupSpill(f *os.File) {
+	if f == nil {
+		return
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+}
+
+// cleanupAppendSpills releases all spill files held by a Command after
+// its APPEND/MULTIAPPEND handler has finished (success or failure).
+func cleanupAppendSpills(c *Command) {
+	for _, item := range c.AppendItems {
+		cleanupSpill(item.Spill)
+	}
+}
 
 // keywordsFromMsgs collects all unique keyword flags seen across msgs into a
 // set.  The set is used to track which keywords have already been advertised
@@ -774,13 +796,38 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 	if len(c.AppendItems) > 1 {
 		return ses.applyMultiAppend(ctx, c, mb)
 	}
-	blobRef, err := ses.s.store.Blobs().Put(ctx, bytes.NewReader(c.AppendData))
+	// Single APPEND — stream the spill file into the blob store.
+	// Cleanup of spill files is the caller's (dispatch) responsibility via
+	// cleanupAppendSpills(c), deferred before this function is called.
+	spill := c.AppendSpill
+	if spill == nil {
+		return ses.resp.taggedNO(c.Tag, "", "internal error: missing spill")
+	}
+	spillInfo, serr := spill.Stat()
+	if serr != nil {
+		return ses.resp.taggedNO(c.Tag, "", "blob write failed")
+	}
+	msgSize := spillInfo.Size()
+	// Bounded read for envelope extraction only — full message remains
+	// on disk. TODO(REQ-STORE-19, Phase 2): read from the seekable blob
+	// handle once mailparse is reader-based.
+	if _, err := spill.Seek(0, io.SeekStart); err != nil {
+		return ses.resp.taggedNO(c.Tag, "", "blob write failed")
+	}
+	headerBytes, err := io.ReadAll(io.LimitReader(spill, maxAppendLiteral+1))
+	if err != nil {
+		return ses.resp.taggedNO(c.Tag, "", "blob write failed")
+	}
+	env := parseEnvelope(headerBytes)
+	if _, err := spill.Seek(0, io.SeekStart); err != nil {
+		return ses.resp.taggedNO(c.Tag, "", "blob write failed")
+	}
+	blobRef, err := ses.s.store.Blobs().Put(ctx, spill)
 	if err != nil {
 		return ses.resp.taggedNO(c.Tag, "", "blob write failed")
 	}
 	flags := flagMaskFromNames(c.AppendFlags)
 	kw := keywordsFromNames(c.AppendFlags)
-	env := parseEnvelope(c.AppendData)
 	now := ses.s.clk.Now()
 	internal := c.AppendInternal
 	if internal.IsZero() {
@@ -792,7 +839,7 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 		Keywords:     kw,
 		InternalDate: internal,
 		ReceivedAt:   now,
-		Size:         int64(len(c.AppendData)),
+		Size:         msgSize,
 		Blob:         blobRef,
 		Envelope:     env,
 	}
@@ -821,7 +868,7 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 		"activity", "user",
 		"mailbox", canonical,
 		"uid", uid,
-		"size", len(c.AppendData),
+		"size", msgSize,
 	)
 	code := fmt.Sprintf("APPENDUID %d %d", mb.UIDValidity, uid)
 	return ses.resp.taggedOK(c.Tag, code, "APPEND completed")

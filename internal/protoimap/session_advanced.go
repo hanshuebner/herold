@@ -6,10 +6,10 @@
 package protoimap
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/hanshuebner/herold/internal/observe"
@@ -249,17 +249,47 @@ func (ses *session) handleCOMPRESS(ctx context.Context, c *Command) error {
 // now this best-effort path is correct under crash-free conditions and
 // degrades cleanly when the store rejects an insert.
 func (ses *session) applyMultiAppend(ctx context.Context, c *Command, mb store.Mailbox) error {
+	// All spills are cleaned up by the caller via cleanupAppendSpills;
+	// this function only cleans up the current item's spill when we
+	// encounter an error and cannot guarantee the item was transferred.
 	inserted := make([]store.MessageID, 0, len(c.AppendItems))
 	uids := make([]store.UID, 0, len(c.AppendItems))
-	for _, item := range c.AppendItems {
-		blobRef, err := ses.s.store.Blobs().Put(ctx, bytes.NewReader(item.Data))
+	for i := range c.AppendItems {
+		item := &c.AppendItems[i]
+		if item.Spill == nil {
+			ses.rollbackMultiAppend(ctx, mb.ID, inserted)
+			return ses.resp.taggedNO(c.Tag, "", "internal error: missing spill")
+		}
+		spillInfo, serr := item.Spill.Stat()
+		if serr != nil {
+			ses.rollbackMultiAppend(ctx, mb.ID, inserted)
+			return ses.resp.taggedNO(c.Tag, "", "blob write failed")
+		}
+		msgSize := spillInfo.Size()
+		// Bounded read for envelope extraction (Phase-1 floor).
+		// TODO(REQ-STORE-19, Phase 2): read from the seekable blob handle
+		// once mailparse is reader-based.
+		if _, err := item.Spill.Seek(0, io.SeekStart); err != nil {
+			ses.rollbackMultiAppend(ctx, mb.ID, inserted)
+			return ses.resp.taggedNO(c.Tag, "", "blob write failed")
+		}
+		headerBytes, err := io.ReadAll(io.LimitReader(item.Spill, maxAppendLiteral+1))
+		if err != nil {
+			ses.rollbackMultiAppend(ctx, mb.ID, inserted)
+			return ses.resp.taggedNO(c.Tag, "", "blob write failed")
+		}
+		env := parseEnvelope(headerBytes)
+		if _, err := item.Spill.Seek(0, io.SeekStart); err != nil {
+			ses.rollbackMultiAppend(ctx, mb.ID, inserted)
+			return ses.resp.taggedNO(c.Tag, "", "blob write failed")
+		}
+		blobRef, err := ses.s.store.Blobs().Put(ctx, item.Spill)
 		if err != nil {
 			ses.rollbackMultiAppend(ctx, mb.ID, inserted)
 			return ses.resp.taggedNO(c.Tag, "", "blob write failed")
 		}
 		flags := flagMaskFromNames(item.Flags)
 		kw := keywordsFromNames(item.Flags)
-		env := parseEnvelope(item.Data)
 		now := ses.s.clk.Now()
 		internal := item.Internal
 		if internal.IsZero() {
@@ -271,7 +301,7 @@ func (ses *session) applyMultiAppend(ctx context.Context, c *Command, mb store.M
 			Keywords:     kw,
 			InternalDate: internal,
 			ReceivedAt:   now,
-			Size:         int64(len(item.Data)),
+			Size:         msgSize,
 			Blob:         blobRef,
 			Envelope:     env,
 		}

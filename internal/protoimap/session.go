@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,12 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
+
+// appendSpillThreshold is the literal size above which APPEND literals
+// are streamed to a temp spill file instead of being held in RAM.
+// Non-APPEND literals (passwords, mailbox names) are always well below
+// this so they take the in-memory path.
+const appendSpillThreshold = 64 * 1024
 
 // sessionState enumerates the IMAP state-machine positions we track.
 type sessionState int
@@ -168,17 +175,38 @@ func isClose(err error) bool {
 // readLiteral satisfies the parser's literalReader hook. For a synchronising
 // literal we write a "+ Ready for literal data" continuation then read the
 // declared bytes. LITERAL+ skips the continuation.
-func (ses *session) readLiteral(size int64, nonSync bool) ([]byte, error) {
+//
+// Literals >= appendSpillThreshold are streamed to a temp file (REQ-STORE-17);
+// smaller literals are returned in-memory. The caller must close and remove
+// the spill file when done.
+func (ses *session) readLiteral(size int64, nonSync bool) (data []byte, spill *os.File, err error) {
 	if !nonSync {
 		if err := ses.resp.continuation("Ready for literal data"); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+	}
+	if size >= appendSpillThreshold {
+		f, ferr := os.CreateTemp("", "herold-imap-append-spill-*")
+		if ferr != nil {
+			return nil, nil, fmt.Errorf("protoimap: create spill: %w", ferr)
+		}
+		n, cerr := io.CopyN(f, ses.br, size)
+		if cerr != nil || n != size {
+			name := f.Name()
+			_ = f.Close()
+			_ = os.Remove(name)
+			if cerr != nil {
+				return nil, nil, cerr
+			}
+			return nil, nil, fmt.Errorf("protoimap: short literal read: got %d want %d", n, size)
+		}
+		return nil, f, nil
 	}
 	buf := make([]byte, size)
 	if _, err := io.ReadFull(ses.br, buf); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return buf, nil
+	return buf, nil, nil
 }
 
 // dispatch routes a parsed command to its handler. Handlers return an
@@ -274,6 +302,12 @@ func (ses *session) dispatch(parentCtx context.Context, c *Command) (err error) 
 	case "STATUS":
 		return ses.handleSTATUS(ctx, c)
 	case "APPEND":
+		// Spill files for all items are always cleaned up on return,
+		// whether the command succeeds or fails. handleAPPEND may also
+		// defer cleanup on individual items via cleanupSpill for the
+		// single-message path (where it takes ownership to nil out
+		// c.AppendSpill); cleanupAppendSpills is safe to call redundantly.
+		defer cleanupAppendSpills(c)
 		return ses.handleAPPEND(ctx, c)
 	case "FETCH":
 		return ses.handleFETCH(ctx, c)

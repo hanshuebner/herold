@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -29,8 +30,17 @@ var ErrTooBig = errors.New("protoimap: literal size exceeds limit")
 // literalReader is injected by the session so the parser can request a
 // literal mid-line: the session writes the continuation request (if
 // nonSync is false) and returns the literal bytes from the underlying
-// reader.
-type literalReader func(size int64, nonSync bool) ([]byte, error)
+// reader. For literals that exceed appendSpillThreshold the bytes are
+// written to a temp file (spill != nil, data is nil); small literals
+// return data directly (data != nil, spill is nil).
+type literalReader func(size int64, nonSync bool) (data []byte, spill *os.File, err error)
+
+// parsedLiteral is the discriminated union returned by the literalReader
+// and stored in parser.lits. Exactly one of data / spill is non-nil.
+type parsedLiteral struct {
+	data  []byte
+	spill *os.File
+}
 
 // Command is the parsed representation of a client command line plus any
 // attached literals. Fields are populated per Op; a command that fails to
@@ -67,15 +77,15 @@ type Command struct {
 	CopyMoveSet  imap.NumSet
 	CopyMoveDest string
 
-	// AppendItems carries a MULTIAPPEND payload: each entry is one
-	// (flags, internal-date, data) tuple. For non-multiappend commands
-	// AppendItems is empty and AppendFlags / AppendInternal /
-	// AppendData hold the single-message form.
+	// AppendItems carries the per-literal tuples for both plain APPEND
+	// and MULTIAPPEND (RFC 3502). AppendFlags / AppendInternal /
+	// AppendSpill mirror AppendItems[0] for convenience; callers should
+	// prefer iterating AppendItems.
 	AppendItems []AppendItem
 
 	AppendFlags    []string
 	AppendInternal time.Time
-	AppendData     []byte
+	AppendSpill    *os.File
 
 	// CreateSpecialUse is the parenthesised "(USE (\Drafts \Sent))"
 	// suffix on a CREATE command per RFC 6154 §5.2. Names are kept as
@@ -128,14 +138,16 @@ type Command struct {
 	IsUID bool
 }
 
-// AppendItem is one (flags, internal-date, data) tuple in a MULTIAPPEND
+// AppendItem is one (flags, internal-date, spill) tuple in a MULTIAPPEND
 // payload (RFC 3502). Plain APPEND populates the legacy
-// Command.AppendFlags / AppendInternal / AppendData fields; MULTIAPPEND
-// populates Command.AppendItems with one entry per literal.
+// Command.AppendFlags / AppendInternal fields; both single and
+// multi-item APPEND populate Command.AppendItems. The body is always a
+// spill file (REQ-STORE-17): even sub-threshold literals are written to
+// disk by takeSpillLiteral so the handler always has a seekable *os.File.
 type AppendItem struct {
 	Flags    []string
 	Internal time.Time
-	Data     []byte
+	Spill    *os.File
 }
 
 // parser walks a flattened command string, expanding literal placeholders
@@ -144,17 +156,27 @@ type AppendItem struct {
 type parser struct {
 	src  []byte
 	pos  int
-	lits [][]byte // FIFO of literal payloads (oldest first)
+	lits []parsedLiteral // FIFO of literal payloads (oldest first)
 }
 
 // readCommand consumes one complete tagged command line (and its literals)
 // from br, invoking readLit to materialise each literal chunk.
 //
 // Returns a fully-populated Command or an error. A zero-length command
-// (caller sent only CRLF) returns (&Command{}, nil).
+// (caller sent only CRLF) returns (&Command{}, nil). On error all spill
+// files accumulated so far are closed and removed to prevent leaks.
 func readCommand(br *bufio.Reader, readLit literalReader) (*Command, error) {
 	var sb strings.Builder
-	var lits [][]byte
+	var lits []parsedLiteral
+	cleanupSpills := func() {
+		for _, pl := range lits {
+			if pl.spill != nil {
+				name := pl.spill.Name()
+				_ = pl.spill.Close()
+				_ = os.Remove(name)
+			}
+		}
+	}
 	first, err := readLine(br)
 	if err != nil {
 		return nil, err
@@ -169,11 +191,12 @@ func readCommand(br *bufio.Reader, readLit literalReader) (*Command, error) {
 		if !ok {
 			break
 		}
-		data, lerr := readLit(size, nonSync)
+		data, spill, lerr := readLit(size, nonSync)
 		if lerr != nil {
+			cleanupSpills()
 			return nil, lerr
 		}
-		lits = append(lits, data)
+		lits = append(lits, parsedLiteral{data: data, spill: spill})
 		// Replace "{N}"/"{N+}" with a single NUL marker so the tokeniser
 		// recognises the literal slot without re-scanning for braces.
 		sb.Reset()
@@ -181,6 +204,7 @@ func readCommand(br *bufio.Reader, readLit literalReader) (*Command, error) {
 		sb.WriteByte(0)
 		cont, cerr := readLine(br)
 		if cerr != nil {
+			cleanupSpills()
 			return nil, cerr
 		}
 		sb.WriteString(cont)
@@ -192,6 +216,13 @@ func readCommand(br *bufio.Reader, readLit literalReader) (*Command, error) {
 		// cmd.Raw alongside the error — without that surface a parser
 		// rejection ("unknown fetch item BODY.PEEK") tells the
 		// operator nothing about what the client actually sent.
+		//
+		// Spill files attached to AppendItems are NOT cleaned up here
+		// because takeSpillLiteral transfers ownership to AppendItem.Spill
+		// and the caller (dispatch) owns cleanup via cleanupAppendSpills.
+		// Spill files still in lits (never consumed by takeSpillLiteral)
+		// are cleaned up now.
+		cleanupSpills()
 		return cmd, err
 	}
 	return cmd, nil
@@ -346,9 +377,60 @@ func (p *parser) takeLiteral() (string, error) {
 	if len(p.lits) == 0 {
 		return "", fmt.Errorf("protoimap: literal slot with no data")
 	}
-	data := p.lits[0]
+	pl := p.lits[0]
 	p.lits = p.lits[1:]
-	return string(data), nil
+	if pl.spill != nil {
+		// Non-APPEND callers (readAstring, etc.) should never see a spill
+		// because non-APPEND literals are always small (passwords, mailbox
+		// names). Read it out defensively — callers get a string and the
+		// spill file is cleaned up here.
+		defer func() {
+			name := pl.spill.Name()
+			_ = pl.spill.Close()
+			_ = os.Remove(name)
+		}()
+		if _, err := pl.spill.Seek(0, io.SeekStart); err != nil {
+			return "", fmt.Errorf("protoimap: spill seek: %w", err)
+		}
+		b, err := io.ReadAll(pl.spill)
+		if err != nil {
+			return "", fmt.Errorf("protoimap: spill read: %w", err)
+		}
+		return string(b), nil
+	}
+	return string(pl.data), nil
+}
+
+// takeSpillLiteral is like takeLiteral but transfers ownership of the
+// spill *os.File to the caller. When the literal was small (in-memory),
+// a new temp file is created and the data written to it so the APPEND
+// handler always receives a seekable *os.File regardless of body size.
+func (p *parser) takeSpillLiteral() (*os.File, error) {
+	if err := p.expect(0); err != nil {
+		return nil, err
+	}
+	if len(p.lits) == 0 {
+		return nil, fmt.Errorf("protoimap: literal slot with no data")
+	}
+	pl := p.lits[0]
+	p.lits = p.lits[1:]
+	if pl.spill != nil {
+		// Large literal — already on disk; return ownership.
+		return pl.spill, nil
+	}
+	// Small literal — write to a new temp file so the handler sees a
+	// seekable reader in all cases.
+	f, err := os.CreateTemp("", "herold-imap-append-spill-*")
+	if err != nil {
+		return nil, fmt.Errorf("protoimap: create spill for small literal: %w", err)
+	}
+	if _, err := f.Write(pl.data); err != nil {
+		name := f.Name()
+		_ = f.Close()
+		_ = os.Remove(name)
+		return nil, fmt.Errorf("protoimap: write spill for small literal: %w", err)
+	}
+	return f, nil
 }
 
 // -----------------------------------------------------------------------------
@@ -736,16 +818,16 @@ func parseAppend(p *parser, cmd *Command) error {
 			}
 			break
 		}
-		data, err := p.takeLiteral()
+		spill, err := p.takeSpillLiteral()
 		if err != nil {
 			return err
 		}
-		item.Data = []byte(data)
+		item.Spill = spill
 		cmd.AppendItems = append(cmd.AppendItems, item)
 		if first {
 			cmd.AppendFlags = item.Flags
 			cmd.AppendInternal = item.Internal
-			cmd.AppendData = item.Data
+			cmd.AppendSpill = item.Spill
 			first = false
 		}
 	}
