@@ -17,6 +17,12 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
+// maxCmdLineBytes is the largest command line accepted by readLineRaw.
+// Any byte sequence longer than this is rejected before tokeniseLine is
+// called; the fuzz target uses this constant to stay in the realistic
+// input domain.
+const maxCmdLineBytes = 8 * 1024
+
 // sessionState enumerates the RFC 5804 states the session can be in.
 // The post-LOGOUT terminal state is "logout".
 type sessionState int
@@ -321,11 +327,10 @@ func quoteString(s string) string {
 	return sb.String()
 }
 
-// readLineRaw returns one line without the CRLF, capped at 8 KiB.
+// readLineRaw returns one line without the CRLF, capped at maxCmdLineBytes.
 func (ses *session) readLineRaw() (string, error) {
-	const maxLine = 8 * 1024
 	var sb strings.Builder
-	for sb.Len() < maxLine {
+	for sb.Len() < maxCmdLineBytes {
 		b, err := ses.br.ReadByte()
 		if err != nil {
 			if err == io.EOF && sb.Len() > 0 {
@@ -350,7 +355,7 @@ func (ses *session) readLineRaw() (string, error) {
 		}
 		sb.WriteByte(b)
 	}
-	return "", fmt.Errorf("protomanagesieve: line exceeds %d bytes", maxLine)
+	return "", fmt.Errorf("protomanagesieve: line exceeds %d bytes", maxCmdLineBytes)
 }
 
 // readScriptLiteral consumes a {N}/{N+}-prefixed literal. The prefix

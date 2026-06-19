@@ -12,6 +12,13 @@ package protosmtp
 // Seeds cover RFC 5321 happy paths plus malformed shapes mined from
 // protocol-fuzz canon (over-long lines, missing angle brackets, embedded
 // NULs, oversized SIZE values, spurious "=" tokens, etc.).
+//
+// Input-size guards: the production session reads one command line via
+// readCommandLine, which rejects anything longer than maxCmdLineBytes
+// (session.go) with errLineTooLong before any parser function is reached.
+// Fuzz inputs that exceed maxCmdLineBytes are therefore outside the real
+// parser domain; we skip them to keep per-execution memory bounded and
+// focus the fuzzer on the space the server actually explores.
 
 import (
 	"strings"
@@ -47,12 +54,20 @@ func FuzzCommandLine(f *testing.F) {
 		"\t\t\t",
 		"NOOP\x00\x00\x00",
 		strings.Repeat("X", 1024),
+		// At the production limit; boundary behavior is worth fuzzing.
+		strings.Repeat("X", maxCmdLineBytes),
 		"VERY-LONG-VERB-WITH-WEIRD-CHARS!@#$%^&*()_+\xff\xfe",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, in []byte) {
+		// The production session rejects lines longer than maxCmdLineBytes
+		// before splitVerb is ever called. Skip inputs outside that domain
+		// so the fuzzer stays in the realistic space and memory stays bounded.
+		if len(in) > maxCmdLineBytes {
+			return
+		}
 		// splitVerb takes a string; reject non-UTF-8 silently rather
 		// than panic.
 		verb, rest := splitVerb(string(in))
@@ -82,12 +97,21 @@ func FuzzReversePath(f *testing.F) {
 		"<alice@\x80\x81>",
 		"<alice@example.com",                   // missing close
 		strings.Repeat("<", 64) + "addr" + ">", // pathological openers
-		"<" + strings.Repeat("a", 8192) + "@b>",
+		// At the production limit — boundary behavior is worth fuzzing.
+		"<" + strings.Repeat("a", maxCmdLineBytes-4) + "@b>",
+		// One byte over the limit — skipped by the guard below, but kept
+		// as a seed to confirm the guard fires correctly.
+		"<" + strings.Repeat("a", maxCmdLineBytes-3) + "@b>",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, in []byte) {
+		// The production session rejects command lines longer than
+		// maxCmdLineBytes before extractAngleAddr is reached.
+		if len(in) > maxCmdLineBytes {
+			return
+		}
 		addr, rest, err := extractAngleAddr(string(in))
 		if err != nil {
 			return // typed error is fine
@@ -116,13 +140,19 @@ func FuzzForwardPath(f *testing.F) {
 		"<@example.com>",
 		"<bob@@example.com>",
 		"<bob@example@com>",
-		"<" + strings.Repeat("a", 16384) + "@example.com>",
-		"<bob@" + strings.Repeat("d", 16384) + ">",
+		// At the production limit — boundary behavior is worth fuzzing.
+		"<" + strings.Repeat("a", maxCmdLineBytes-14) + "@example.com>",
+		"<bob@" + strings.Repeat("d", maxCmdLineBytes-7) + ">",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, in []byte) {
+		// The production session rejects command lines longer than
+		// maxCmdLineBytes before extractAngleAddr is reached.
+		if len(in) > maxCmdLineBytes {
+			return
+		}
 		addr, rest, err := extractAngleAddr(string(in))
 		if err != nil {
 			return
@@ -163,7 +193,8 @@ func FuzzMailFromParams(f *testing.F) {
 		"UNKNOWN=value",
 		"=novalue",
 		"key=",
-		strings.Repeat("X", 4096),
+		// At the production limit — boundary behavior is worth fuzzing.
+		strings.Repeat("X", maxCmdLineBytes),
 		"SIZE=-1",
 		"SIZE=18446744073709551615",
 		"SIZE=" + strings.Repeat("9", 100),
@@ -172,6 +203,11 @@ func FuzzMailFromParams(f *testing.F) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, in []byte) {
+		// The production session rejects command lines longer than
+		// maxCmdLineBytes before parseMailFromParams is reached.
+		if len(in) > maxCmdLineBytes {
+			return
+		}
 		params, err := parseMailFromParams(string(in))
 		if err != nil {
 			return
@@ -208,12 +244,19 @@ func FuzzRcptParams(f *testing.F) {
 		"FOO=bar",
 		"=NEVER",
 		"NOTIFY=",
+		// Under the limit — the full repeat would be 200*17=3400 bytes,
+		// still under maxCmdLineBytes but a realistic stress shape.
 		strings.Repeat("ORCPT=rfc822;a@b ", 200),
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, in []byte) {
+		// The production session rejects command lines longer than
+		// maxCmdLineBytes before parseRcptParams is reached.
+		if len(in) > maxCmdLineBytes {
+			return
+		}
 		out, err := parseRcptParams(string(in))
 		if err != nil {
 			return

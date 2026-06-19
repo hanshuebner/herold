@@ -14,6 +14,13 @@ package protoimap
 // literals, unbalanced parens, missing tags, embedded NULs, very long
 // FETCH item lists, SEARCH with deeply nested OR / NOT, and
 // pathological STORE flag lists.
+//
+// Input-size guards: the production session reads command lines via
+// readLine, which enforces maxLineLength (parser.go). Any byte sequence
+// exceeding maxLineLength is rejected before the parser sub-functions
+// are reached. Fuzz inputs that exceed this bound are skipped so the
+// fuzzer explores only the realistic input domain and per-execution
+// memory stays bounded.
 
 import (
 	"bufio"
@@ -78,13 +85,20 @@ func FuzzCommandLine(f *testing.F) {
 		"a1 FETCH 1 (BODY[1.2.3.HEADER.FIELDS.NOT (Subject To)])\r\n",
 		"a1 FETCH 1 (BODY[]<0.100>)\r\n",
 		"a1 FETCH 1 (BODY[]<0.>)\r\n",
-		// Long line
+		// Long line — still well under maxLineLength (64 KiB).
 		"a1 SEARCH " + strings.Repeat("OR FROM \"x\" ", 100) + "ALL\r\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, in []byte) {
+		// The production session rejects lines longer than maxLineLength
+		// (64 KiB) before command parsing begins. Skip inputs outside
+		// that domain to keep the fuzzer in the realistic space and cap
+		// per-execution memory.
+		if len(in) > maxLineLength {
+			return
+		}
 		br := bufio.NewReader(bytes.NewReader(in))
 		// The literal reader returns a fixed-size payload, but only
 		// once: subsequent calls return ErrTooBig. This bounds the
@@ -126,12 +140,19 @@ func FuzzLiteralMarker(f *testing.F) {
 		"{}",
 		"{99999999999999999}",
 		"{0+}",
+		// 100*4 = 400 bytes — well under maxLineLength.
 		strings.Repeat("{99}", 100),
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, in []byte) {
+		// lastLiteral is called on a line already bounded by the
+		// session's line reader (maxLineLength). Skip inputs that exceed
+		// that bound.
+		if len(in) > maxLineLength {
+			return
+		}
 		_, size, _, ok := lastLiteral(string(in))
 		if ok && size > maxAppendLiteral {
 			t.Fatalf("lastLiteral returned size > cap: %d", size)
@@ -179,8 +200,11 @@ func FuzzFetchItems(f *testing.F) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, in []byte) {
-		// The fetch parser expects to be embedded in a parser{} with
-		// src set; drive it directly.
+		// parseFetchItemList is a sub-parser driven by readCommand, which
+		// is itself bounded by the session's line reader (maxLineLength).
+		if len(in) > maxLineLength {
+			return
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				t.Fatalf("parseFetchItem panicked: %v on %q", r, in)
@@ -225,6 +249,11 @@ func FuzzSearchCriteria(f *testing.F) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, in []byte) {
+		// parseSearchCriteriaList is a sub-parser driven by readCommand,
+		// which is bounded by the session's line reader (maxLineLength).
+		if len(in) > maxLineLength {
+			return
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				t.Fatalf("parseSearchCriteriaList panicked: %v on %q", r, in)
