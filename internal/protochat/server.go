@@ -799,15 +799,34 @@ func (c *chatConn) shutdown(code closeCode, reason string) {
 		// on CI run 26327157787 as a 3-s DeadlineExceeded against
 		// the test-side 24-hour writeTimeout.
 		_ = c.netConn.SetWriteDeadline(time.Unix(1, 0))
-		// Force the in-flight readFrame call inside readPump to
-		// error out immediately so connWG.Wait() in Server.Shutdown
-		// can return before the drain window expires. The existing
-		// nerr.Timeout() branch in readPump's error classifier
-		// handles the resulting net.Error cleanly, so this change
-		// introduces no new error path. The final c.netConn.Close()
-		// at the end of run() still runs after the pumps exit,
-		// preserving FIN ordering.
+		// Force the in-flight readFrame call inside readPump to error out
+		// immediately so connWG.Wait() in Server.Shutdown can return
+		// before the drain window expires.
+		//
+		// A past read deadline alone is NOT sufficient under load: it
+		// asks the netpoller to wake the parked Read, but under heavy
+		// -race scheduling contention the runtime work that re-arms the
+		// poll deadline is not scheduled promptly, so the blocked
+		// readFrame can sit until the peer's own close lands a TCP RST.
+		// That surfaced as a 10 s drain stall on the CI "test (arm64 /
+		// sqlite)" lane: traced, the read only unblocked with "connection
+		// reset by peer" at the full Shutdown ctx deadline, never via the
+		// SetReadDeadline(time.Unix(1,0)) nudge.
+		//
+		// CloseRead() shuts down the read half at the socket layer, which
+		// unblocks the parked Read deterministically through the
+		// FD-shutdown path rather than a deadline re-arm the scheduler may
+		// defer. It preserves the write half, so the close frame written
+		// above survives and the final c.netConn.Close() at the end of
+		// run() still sends FIN for the write half -- FIN ordering is
+		// unchanged. *net.TCPConn (the type hijacked from net/http over a
+		// TCP listener, in both production and the httptest-backed tests)
+		// implements CloseRead; the past read deadline set just above
+		// remains the fallback nudge for any conn type that does not.
 		_ = c.netConn.SetReadDeadline(time.Unix(1, 0))
+		if cr, ok := c.netConn.(interface{ CloseRead() error }); ok {
+			_ = cr.CloseRead()
+		}
 		close(c.closeCh)
 		if c.cancel != nil {
 			c.cancel()
