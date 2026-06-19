@@ -855,3 +855,92 @@ func TestPanic_InHandler_Returns500_NotCrash(t *testing.T) {
 		t.Fatalf("expected 500 got %d body=%s", res.StatusCode, buf)
 	}
 }
+
+// TestSendRaw_PrependPath_NoRedundantCopy verifies that the REQ-STORE-17
+// Phase-1 streaming change in inspectRawMessage is correct when headers
+// need to be prepended.  The queue body must contain both the prepended
+// header(s) AND the original message body verbatim — the io.MultiReader
+// composition must not drop, reorder, or duplicate any bytes.
+//
+// Three sub-cases:
+//
+//  1. Message-ID and Date both absent — both are prepended.
+//  2. Date present, Message-ID absent — only Message-ID is prepended.
+//  3. Both present — no prepend; raw bytes pass through unchanged.
+func TestSendRaw_PrependPath_NoRedundantCopy(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         string
+		wantDate    bool
+		wantMsgID   bool
+		wantSubject string
+	}{
+		{
+			name: "no_date_no_msgid",
+			raw: "From: alice@example.test\r\n" +
+				"To: bob@dest.test\r\n" +
+				"Subject: prepend-both\r\n" +
+				"\r\n" +
+				"body text\r\n",
+			wantDate:    true,
+			wantMsgID:   true,
+			wantSubject: "prepend-both",
+		},
+		{
+			name: "has_date_no_msgid",
+			raw: "From: alice@example.test\r\n" +
+				"To: bob@dest.test\r\n" +
+				"Subject: prepend-msgid\r\n" +
+				"Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n" +
+				"\r\n" +
+				"body text\r\n",
+			wantDate:    true,
+			wantMsgID:   true,
+			wantSubject: "prepend-msgid",
+		},
+		{
+			name: "has_date_and_msgid",
+			raw: "From: alice@example.test\r\n" +
+				"To: bob@dest.test\r\n" +
+				"Subject: no-prepend\r\n" +
+				"Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n" +
+				"Message-ID: <existing@example.test>\r\n" +
+				"\r\n" +
+				"body text\r\n",
+			wantDate:    true,
+			wantMsgID:   true,
+			wantSubject: "no-prepend",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			h := newSendHarness(t)
+			body := map[string]any{
+				"destinations": []string{"bob@dest.test"},
+				"rawMessage":   base64.StdEncoding.EncodeToString([]byte(tc.raw)),
+			}
+			res, buf := h.doRequest("POST", "/api/v1/mail/send-raw", h.apiKey, body)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s", res.StatusCode, buf)
+			}
+			bodies := h.q.Bodies()
+			if len(bodies) != 1 {
+				t.Fatalf("expected 1 queue body, got %d", len(bodies))
+			}
+			got := bodies[0]
+			if tc.wantDate && !bytes.Contains(got, []byte("Date:")) {
+				t.Errorf("Date header missing from queue body:\n%s", got)
+			}
+			if tc.wantMsgID && !bytes.Contains(got, []byte("Message-ID:")) {
+				t.Errorf("Message-ID header missing from queue body:\n%s", got)
+			}
+			if !bytes.Contains(got, []byte("Subject: "+tc.wantSubject)) {
+				t.Errorf("original Subject not present in queue body:\n%s", got)
+			}
+			if !bytes.Contains(got, []byte("body text")) {
+				t.Errorf("original body text not present in queue body:\n%s", got)
+			}
+		})
+	}
+}

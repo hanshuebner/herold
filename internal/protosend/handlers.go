@@ -248,6 +248,11 @@ func (s *Server) processSendRaw(ctx context.Context, r *http.Request, req sendRa
 		return nil, newProblem(r, http.StatusBadRequest, "validation-failed",
 			fmt.Sprintf("destinations exceeds %d", s.opts.MaxRecipients), "")
 	}
+	// TODO(REQ-STORE-19, Phase 2): a streaming raw-upload endpoint
+	// (octet-stream body) would remove this full base64 decode; bounded
+	// by MaxBodySize.  The JSON-string contract forces the entire
+	// base64-encoded message to be in the request body before we can
+	// start decoding.
 	raw, err := base64.StdEncoding.DecodeString(req.RawMessage)
 	if err != nil {
 		return nil, newProblem(r, http.StatusBadRequest, "invalid-body",
@@ -281,7 +286,11 @@ func (s *Server) processSendRaw(ctx context.Context, r *http.Request, req sendRa
 	if problem := s.checkFromPolicy(ctx, r, p, &key, source); problem != nil {
 		return nil, problem
 	}
-	final, msgID, err := inspectRawMessage(raw, s.opts.Hostname, source, s.clk.Now())
+	// inspectRawMessage returns an io.Reader that streams prepended
+	// headers + raw bytes without a second full-message copy
+	// (REQ-STORE-17 Phase-1 win: eliminates the make([]byte)+append
+	// allocation when Date/Message-ID need to be prepended).
+	bodyReader, msgID, err := inspectRawMessage(raw, s.opts.Hostname, source, s.clk.Now())
 	if err != nil {
 		return nil, newProblem(r, http.StatusBadRequest, "invalid-message",
 			err.Error(), "")
@@ -291,7 +300,7 @@ func (s *Server) processSendRaw(ctx context.Context, r *http.Request, req sendRa
 		PrincipalID:    pidPtr(p.ID),
 		MailFrom:       source,
 		Recipients:     req.Destinations,
-		Body:           bytes.NewReader(final),
+		Body:           bodyReader,
 		IdempotencyKey: idempKey,
 		Sign:           true,
 		SigningDomain:  domainOf(source),

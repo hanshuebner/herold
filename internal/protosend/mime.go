@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"mime/quotedprintable"
 	"net/mail"
 	"sort"
@@ -110,12 +111,15 @@ func buildStructuredMessage(req sendRequest, hostname string, now time.Time) (bu
 	return builtMessage{bytes: buf.Bytes(), messageID: msgID}, nil
 }
 
-// inspectRawMessage scans raw RFC 5322 bytes and returns the existing
-// Message-ID (or empty if absent). It also returns the full message
-// bytes with prepended Date / Message-ID / From if those headers are
-// missing. The current function only mints Message-ID and Date when
-// missing; From is left to the caller (REQ-SEND-02 spec).
-func inspectRawMessage(raw []byte, hostname, defaultFrom string, now time.Time) ([]byte, string, error) {
+// inspectRawMessage scans raw RFC 5322 bytes and returns an io.Reader
+// over the full message (with prepended Date / Message-ID / From if
+// those headers are missing) together with the Message-ID string. The
+// raw slice is referenced directly — no full copy is made; only the
+// small prepend header fragment (if any) is buffered.
+//
+// The current function only mints Message-ID and Date when missing;
+// From is left to the caller (REQ-SEND-02 spec).
+func inspectRawMessage(raw []byte, hostname, defaultFrom string, now time.Time) (io.Reader, string, error) {
 	msg, err := mail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
 		return nil, "", fmt.Errorf("parse raw message: %w", err)
@@ -143,13 +147,15 @@ func inspectRawMessage(raw []byte, hostname, defaultFrom string, now time.Time) 
 	if existingFrom == "" && defaultFrom != "" {
 		fmt.Fprintf(&prepend, "From: %s\r\n", defaultFrom)
 	}
+	rawReader := bytes.NewReader(raw)
 	if prepend.Len() == 0 {
-		return raw, existingMsgID, nil
+		// No headers to prepend: hand back the raw bytes without any
+		// extra allocation.
+		return rawReader, existingMsgID, nil
 	}
-	out := make([]byte, 0, prepend.Len()+len(raw))
-	out = append(out, prepend.Bytes()...)
-	out = append(out, raw...)
-	return out, existingMsgID, nil
+	// Stream prepended headers + raw bytes via io.MultiReader so no
+	// second full-message copy is needed (REQ-STORE-17 Phase-1).
+	return io.MultiReader(bytes.NewReader(prepend.Bytes()), rawReader), existingMsgID, nil
 }
 
 func writeHeaders(buf *bytes.Buffer, h map[string]string) {

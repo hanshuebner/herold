@@ -107,7 +107,14 @@ func (s *FetchServer) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Token verified. Stream the blob.
+	// Token verified. Stream the blob via the seekable BlobReader
+	// (REQ-STORE-14 / REQ-STORE-19): io.Copy pushes bytes from the
+	// blob store to the response writer through a fixed-size internal
+	// buffer without ever materialising the full body in RAM.  This is
+	// the recommended path for large bodies; inline base64 in the JSON
+	// webhook payload inherently requires the full body in RAM and is
+	// limited to messages below InlineBodyMaxSize (REQ-STORE-17,
+	// Phase 1; TODO REQ-STORE-19, Phase 2 for a streaming alternative).
 	rc, err := s.store.Blobs().Get(r.Context(), blobHash)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {

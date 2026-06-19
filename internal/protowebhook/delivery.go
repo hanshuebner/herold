@@ -366,15 +366,31 @@ func (d *Dispatcher) fillLegacyBody(
 	useFetch := !wantInline || tooBig
 
 	if !useFetch {
-		raw, err := readBlob(ctx, d.store, msg.Blob.Hash)
-		if err != nil {
-			// Fall through to fetch_url mode if the body cannot be
-			// read inline; the receiver still gets a usable payload.
-			d.logger.Warn("protowebhook: inline body read",
-				"activity", observe.ActivityInternal,
-				"webhook_id", uint64(hook.ID),
-				"message_id", uint64(msg.ID),
-				"err", err.Error())
+		// readBlob caps at d.inlineMaxSize bytes (REQ-STORE-17, Phase 1).
+		// If the blob exceeds that cap despite the msg.Size check having
+		// passed (store metadata discrepancy), fall through to fetch_url
+		// — no silent truncation, no partial inline payload.
+		raw, oversized, err := readBlob(ctx, d.store, msg.Blob.Hash, d.inlineMaxSize)
+		if err != nil || oversized {
+			if oversized {
+				// Blob exceeded inline cap despite msg.Size check; the
+				// store-side size field disagrees with the actual content.
+				// Emit a warning and fall through to fetch_url so the
+				// receiver still gets a usable, complete payload.
+				d.logger.Warn("protowebhook: inline body oversized, falling back to fetch_url",
+					"activity", observe.ActivityInternal,
+					"webhook_id", uint64(hook.ID),
+					"message_id", uint64(msg.ID),
+					"cap_bytes", d.inlineMaxSize)
+			} else {
+				// Fall through to fetch_url mode if the body cannot be
+				// read inline; the receiver still gets a usable payload.
+				d.logger.Warn("protowebhook: inline body read",
+					"activity", observe.ActivityInternal,
+					"webhook_id", uint64(hook.ID),
+					"message_id", uint64(msg.ID),
+					"err", err.Error())
+			}
 			useFetch = true
 		} else {
 			pl.Body = Body{
@@ -470,13 +486,24 @@ func (d *Dispatcher) fillLegacyBodySynthetic(
 	useFetch := !wantInline || tooBig
 
 	if !useFetch {
-		raw, err := readBlob(ctx, d.store, in.BlobHash)
-		if err != nil {
-			d.logger.Warn("protowebhook: synthetic inline body read",
-				"activity", observe.ActivityInternal,
-				"webhook_id", uint64(hook.ID),
-				"recipient", in.Recipient,
-				"err", err.Error())
+		// readBlob caps at d.inlineMaxSize bytes (REQ-STORE-17, Phase 1).
+		// If the blob exceeds that cap, fall through to fetch_url — no
+		// silent truncation, no partial inline payload.
+		raw, oversized, err := readBlob(ctx, d.store, in.BlobHash, d.inlineMaxSize)
+		if err != nil || oversized {
+			if oversized {
+				d.logger.Warn("protowebhook: synthetic inline body oversized, falling back to fetch_url",
+					"activity", observe.ActivityInternal,
+					"webhook_id", uint64(hook.ID),
+					"recipient", in.Recipient,
+					"cap_bytes", d.inlineMaxSize)
+			} else {
+				d.logger.Warn("protowebhook: synthetic inline body read",
+					"activity", observe.ActivityInternal,
+					"webhook_id", uint64(hook.ID),
+					"recipient", in.Recipient,
+					"err", err.Error())
+			}
 			useFetch = true
 		} else {
 			pl.Body = Body{
@@ -555,9 +582,23 @@ func (d *Dispatcher) fillExtractedBody(
 	if d.fetchBase == "" || len(d.signingKey) == 0 {
 		return false, errors.New("protowebhook: extracted mode requires FetchURLBaseURL/SigningKey")
 	}
-	raw, err := readBlob(ctx, d.store, msg.Blob.Hash)
+	// TODO(REQ-STORE-19, Phase 2): inline base64 in the JSON envelope
+	// inherently materialises the full message body in RAM — the JSON
+	// payload cannot stream.  The raw_rfc822_url path (fetcher.go) is
+	// the streaming answer for large bodies; receivers should prefer it.
+	// For now we cap the parse read at extractedParseCap to prevent
+	// unbounded RAM growth; messages that exceed the cap fall through
+	// with origin=none (which drops text_required hooks cleanly).
+	raw, oversized, err := readBlob(ctx, d.store, msg.Blob.Hash, extractedParseCap)
 	if err != nil {
 		return false, fmt.Errorf("protowebhook: read blob: %w", err)
+	}
+	if oversized {
+		d.logger.Warn("protowebhook: extracted blob exceeds parse cap, treating as no-text",
+			"activity", observe.ActivityInternal,
+			"webhook_id", uint64(hook.ID),
+			"message_id", uint64(msg.ID),
+			"cap_bytes", extractedParseCap)
 	}
 	parsed, perr := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
 	var (
@@ -628,18 +669,53 @@ func buildAttachments(m mailparse.Message, base, deliveryID, blobHash string, ex
 	return out
 }
 
-// readBlob slurps a blob into memory. Used only when the message is
-// known to be below the inline threshold.
-func readBlob(ctx context.Context, st store.Store, hash string) ([]byte, error) {
+// extractedParseCap is the maximum number of raw message bytes that
+// fillExtractedBody will materialise for mailparse.Parse.
+//
+// TODO(REQ-STORE-19, Phase 2): mailparse.Parse requires the full
+// message in a single io.Reader today.  A streaming MIME parser would
+// remove this cap and let us extract body text from arbitrarily large
+// messages without holding them in RAM.  For now, messages larger than
+// this cap that arrive in extracted-mode webhooks will fall back to an
+// empty text body (origin=none) so text_required hooks drop cleanly
+// rather than reading unbounded data into RAM.
+const extractedParseCap int64 = 32 * 1024 * 1024 // 32 MiB
+
+// readBlob materialises up to capBytes bytes of a stored blob into RAM.
+//
+// capBytes is the hard upper bound on in-memory residency (REQ-STORE-17,
+// Phase 1). We read capBytes+1 bytes to distinguish "blob fits" from "blob
+// exceeds cap" without a second Stat call:
+//
+//   - If the blob yields <= capBytes bytes: oversized=false, data is complete.
+//   - If the blob yields capBytes+1 bytes: oversized=true, the truncated
+//     bytes MUST NOT be used as content — the caller must fall through to
+//     fetch_url (inline) or treat as no-text (extracted).
+//
+// This is a defence-in-depth guard: inline callers already check
+// msg.Size <= inlineMaxSize, so oversized only fires when the stored size
+// metadata and the actual blob content disagree.
+func readBlob(ctx context.Context, st store.Store, hash string, capBytes int64) ([]byte, bool, error) {
 	if hash == "" {
-		return nil, nil
+		return nil, false, nil
 	}
 	r, err := st.Blobs().Get(ctx, hash)
 	if err != nil {
-		return nil, fmt.Errorf("blob get: %w", err)
+		return nil, false, fmt.Errorf("blob get: %w", err)
 	}
 	defer r.Close()
-	return io.ReadAll(r)
+	// Read at most capBytes+1 to detect overrun (REQ-STORE-17, Phase 1).
+	limited := io.LimitReader(r, capBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, false, fmt.Errorf("blob read: %w", err)
+	}
+	if int64(len(data)) > capBytes {
+		// Blob exceeds cap — return oversized=true; caller must not use
+		// the excess byte in any payload.
+		return data[:capBytes], true, nil
+	}
+	return data, false, nil
 }
 
 // encodeBase64 returns the standard base64 encoding of b.
