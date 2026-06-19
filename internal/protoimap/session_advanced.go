@@ -249,9 +249,11 @@ func (ses *session) handleCOMPRESS(ctx context.Context, c *Command) error {
 // now this best-effort path is correct under crash-free conditions and
 // degrades cleanly when the store rejects an insert.
 func (ses *session) applyMultiAppend(ctx context.Context, c *Command, mb store.Mailbox) error {
-	// All spills are cleaned up by the caller via cleanupAppendSpills;
-	// this function only cleans up the current item's spill when we
-	// encounter an error and cannot guarantee the item was transferred.
+	// Each item's spill is cleaned up immediately after its blob Put
+	// returns (prompt cleanup). The deferred cleanupAppendSpills in
+	// dispatch() is the idempotent safety net for error / early-return
+	// paths; items that have already been cleaned up have nil Spill
+	// fields and cleanupSpill(nil) is a no-op.
 	inserted := make([]store.MessageID, 0, len(c.AppendItems))
 	uids := make([]store.UID, 0, len(c.AppendItems))
 	for i := range c.AppendItems {
@@ -288,6 +290,12 @@ func (ses *session) applyMultiAppend(ctx context.Context, c *Command, mb store.M
 			ses.rollbackMultiAppend(ctx, mb.ID, inserted)
 			return ses.resp.taggedNO(c.Tag, "", "blob write failed")
 		}
+		// Prompt cleanup: the spill is consumed by Put; remove it now
+		// so all spills are gone before the tagged OK is written. Nil
+		// out the Spill pointer so cleanupAppendSpills in dispatch() is
+		// idempotent (cleanupSpill(nil) is a no-op).
+		cleanupSpill(item.Spill)
+		item.Spill = nil
 		flags := flagMaskFromNames(item.Flags)
 		kw := keywordsFromNames(item.Flags)
 		now := ses.s.clk.Now()

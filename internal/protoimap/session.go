@@ -186,7 +186,8 @@ func (ses *session) readLiteral(size int64, nonSync bool) (data []byte, spill *o
 		}
 	}
 	if size >= appendSpillThreshold {
-		f, ferr := os.CreateTemp("", "herold-imap-append-spill-*")
+		spillDir := ses.s.opts.SpillDir // empty string → os.TempDir() per os.CreateTemp contract
+		f, ferr := os.CreateTemp(spillDir, "herold-imap-append-spill-*")
 		if ferr != nil {
 			return nil, nil, fmt.Errorf("protoimap: create spill: %w", ferr)
 		}

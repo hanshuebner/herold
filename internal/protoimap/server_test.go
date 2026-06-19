@@ -43,6 +43,7 @@ type fixture struct {
 	dir      *directory.Directory
 	tlsCfg   *tls.Config
 	inbox    store.Mailbox
+	spillDir string // directory used for APPEND spill files; empty means os.TempDir()
 }
 
 type fxOpts struct {
@@ -50,6 +51,7 @@ type fxOpts struct {
 	allowPlainLogin bool
 	downloadRate    int64 // bytes/sec, 0 disables
 	downloadBurst   int64
+	spillDir        string // override the APPEND spill directory; empty means os.TempDir()
 }
 
 func newFixture(t *testing.T, fo fxOpts) *fixture {
@@ -88,6 +90,8 @@ func newFixture(t *testing.T, fo fxOpts) *fixture {
 	// TLS store + client config.
 	tlsStore, clientCfg := newTestTLSStore(t)
 
+	spillDir := fo.spillDir
+
 	srv := protoimap.NewServer(
 		ha.Store,
 		dir,
@@ -107,6 +111,7 @@ func newFixture(t *testing.T, fo fxOpts) *fixture {
 			// Tests are not deadline tests; raise from the 1s default to
 			// keep slow CI hardware (arm64) from tripping LOGIN/APPEND.
 			DefaultCommandDeadline: 30 * time.Second,
+			SpillDir:               spillDir,
 		},
 	)
 	mode := protoimap.ListenerModeSTARTTLS
@@ -120,6 +125,7 @@ func newFixture(t *testing.T, fo fxOpts) *fixture {
 		ha: ha, srv: srv, name: name,
 		pid: pid, password: password,
 		dir: dir, tlsCfg: clientCfg, inbox: inbox,
+		spillDir: spillDir,
 	}
 }
 

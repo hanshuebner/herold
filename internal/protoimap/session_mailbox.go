@@ -33,9 +33,12 @@ func cleanupSpill(f *os.File) {
 
 // cleanupAppendSpills releases all spill files held by a Command after
 // its APPEND/MULTIAPPEND handler has finished (success or failure).
+// Safe to call when individual items have already been cleaned up early
+// (their Spill field will be nil, and cleanupSpill(nil) is a no-op).
 func cleanupAppendSpills(c *Command) {
-	for _, item := range c.AppendItems {
-		cleanupSpill(item.Spill)
+	for i := range c.AppendItems {
+		cleanupSpill(c.AppendItems[i].Spill)
+		c.AppendItems[i].Spill = nil
 	}
 }
 
@@ -797,8 +800,10 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 		return ses.applyMultiAppend(ctx, c, mb)
 	}
 	// Single APPEND — stream the spill file into the blob store.
-	// Cleanup of spill files is the caller's (dispatch) responsibility via
-	// cleanupAppendSpills(c), deferred before this function is called.
+	// After Put returns the spill is no longer needed; clean it up
+	// immediately so the spill is gone before the tagged OK is written.
+	// The deferred cleanupAppendSpills(c) in dispatch() handles any
+	// early-return / error path where we did not reach this point.
 	spill := c.AppendSpill
 	if spill == nil {
 		return ses.resp.taggedNO(c.Tag, "", "internal error: missing spill")
@@ -825,6 +830,15 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 	blobRef, err := ses.s.store.Blobs().Put(ctx, spill)
 	if err != nil {
 		return ses.resp.taggedNO(c.Tag, "", "blob write failed")
+	}
+	// Prompt cleanup: spill is consumed; remove it before writing the
+	// tagged OK so the file is gone by the time the client sees the
+	// response. Nil out c.AppendSpill and c.AppendItems[0].Spill so the
+	// deferred cleanupAppendSpills is idempotent (cleanupSpill(nil) is a no-op).
+	cleanupSpill(spill)
+	c.AppendSpill = nil
+	if len(c.AppendItems) > 0 {
+		c.AppendItems[0].Spill = nil
 	}
 	flags := flagMaskFromNames(c.AppendFlags)
 	kw := keywordsFromNames(c.AppendFlags)

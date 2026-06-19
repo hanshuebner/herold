@@ -85,6 +85,11 @@ type Options struct {
 	// system.toml — the server maps both forms to the same lookup
 	// table.
 	CommandDeadlines map[string]time.Duration
+	// SpillDir is the directory used for APPEND spill temp files
+	// (REQ-STORE-17). Defaults to os.TempDir() when empty. Tests set
+	// this to t.TempDir() so spill accounting is isolated per test and
+	// not polluted by concurrent runs sharing the global /tmp.
+	SpillDir string
 }
 
 // IMAP server caps. Defaults are chosen to match the REQ-PROTO-31

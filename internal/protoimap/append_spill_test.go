@@ -51,11 +51,16 @@ func buildLargeMessage(subject, bodyPattern string, bodySize int) string {
 	return full + "\r\n"
 }
 
-// countTempSpills returns the number of herold-imap-append-spill-*
-// files currently in os.TempDir(). Used to assert cleanup.
-func countTempSpills(t *testing.T) int {
+// countSpillsInDir returns the number of herold-imap-append-spill-*
+// files currently in dir. Pass the fixture's spillDir so the count is
+// isolated to this test's temp directory and not polluted by concurrent
+// runs sharing the global os.TempDir().
+func countSpillsInDir(t *testing.T, dir string) int {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "herold-imap-append-spill-*"))
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "herold-imap-append-spill-*"))
 	if err != nil {
 		t.Fatalf("glob spill files: %v", err)
 	}
@@ -89,13 +94,13 @@ func firstDiffByte(a, b []byte) int {
 //   - The stored blob content is byte-identical to the sent bytes.
 //   - No spill temp files remain after the command completes.
 func TestAPPEND_LargeBody_SpillRoundTrip(t *testing.T) {
-	f := newFixture(t, fxOpts{implicitTLS: true})
+	f := newFixture(t, fxOpts{implicitTLS: true, spillDir: t.TempDir()})
 	ctx := context.Background()
 
 	const bodySize = 128 * 1024 // 128 KiB — well above 64 KiB threshold
 	msg := buildLargeMessage("spill-round-trip", "ABCDEFGHIJ", bodySize)
 
-	before := countTempSpills(t)
+	before := countSpillsInDir(t, f.spillDir)
 
 	c := loggedInClient(t, f)
 	defer c.close()
@@ -114,7 +119,7 @@ func TestAPPEND_LargeBody_SpillRoundTrip(t *testing.T) {
 	}
 
 	// No spill files should remain after successful APPEND.
-	after := countTempSpills(t)
+	after := countSpillsInDir(t, f.spillDir)
 	if after > before {
 		t.Fatalf("spill file leak: before=%d after=%d", before, after)
 	}
@@ -144,12 +149,12 @@ func TestAPPEND_LargeBody_SpillRoundTrip(t *testing.T) {
 // (LITERAL+) literal to send a 70 KiB body and verifies the spill file is
 // removed on success even without the continuation round-trip.
 func TestAPPEND_LargeBody_LiteralPlus_SpillCleanup(t *testing.T) {
-	f := newFixture(t, fxOpts{implicitTLS: true})
+	f := newFixture(t, fxOpts{implicitTLS: true, spillDir: t.TempDir()})
 
 	const bodySize = 70 * 1024 // 70 KiB — above 64 KiB threshold
 	msg := buildLargeMessage("spill-literal-plus", "XYZXYZ", bodySize)
 
-	before := countTempSpills(t)
+	before := countSpillsInDir(t, f.spillDir)
 
 	c := loggedInClient(t, f)
 	defer c.close()
@@ -163,7 +168,7 @@ func TestAPPEND_LargeBody_LiteralPlus_SpillCleanup(t *testing.T) {
 		t.Fatalf("APPEND LITERAL+ failed: %v", resp)
 	}
 
-	after := countTempSpills(t)
+	after := countSpillsInDir(t, f.spillDir)
 	if after > before {
 		t.Fatalf("spill file leak after LITERAL+: before=%d after=%d", before, after)
 	}
@@ -173,14 +178,14 @@ func TestAPPEND_LargeBody_LiteralPlus_SpillCleanup(t *testing.T) {
 // one MULTIAPPEND command, verifies both messages are stored, and checks
 // that all spill temp files are removed after the successful command.
 func TestMULTIAPPEND_LargeBodies_SpillCleanup(t *testing.T) {
-	f := newFixture(t, fxOpts{implicitTLS: true})
+	f := newFixture(t, fxOpts{implicitTLS: true, spillDir: t.TempDir()})
 	ctx := context.Background()
 
 	const bodySize = 80 * 1024 // 80 KiB each
 	msg1 := buildLargeMessage("multi-spill-1", "AAAA", bodySize)
 	msg2 := buildLargeMessage("multi-spill-2", "BBBB", bodySize)
 
-	before := countTempSpills(t)
+	before := countSpillsInDir(t, f.spillDir)
 
 	c := loggedInClient(t, f)
 	defer c.close()
@@ -206,7 +211,7 @@ func TestMULTIAPPEND_LargeBodies_SpillCleanup(t *testing.T) {
 	}
 
 	// Spill cleanup check.
-	after := countTempSpills(t)
+	after := countSpillsInDir(t, f.spillDir)
 	if after > before {
 		t.Fatalf("spill file leak after MULTIAPPEND: before=%d after=%d", before, after)
 	}
